@@ -1,6 +1,6 @@
 # Architecture decisions cho Agent Kit
 
-> Trạng thái: PROPOSED — chờ product owner xác nhận trước khi viết Go core spec.
+> Trạng thái: ACCEPTED — product owner xác nhận toàn bộ baseline ngày 2026-08-28.
 >
 > Ngày lập baseline: 2026-08-28.
 
@@ -19,7 +19,7 @@ Những quyết định này đã được thống nhất và không còn là c�
 
 ## 2. ADR-001 — Authoring và publish workflow definition
 
-**Đề xuất:** authoring bằng file declarative có thể review bằng Git; publish qua CLI/API để validate,
+**Quyết định:** authoring bằng file declarative có thể review bằng Git; publish qua CLI/API để validate,
 canonicalize, hash và lưu một WorkflowVersion bất biến trong database.
 
 - File authoring là nguồn để con người review/chỉnh sửa.
@@ -32,7 +32,7 @@ Lý do: vừa giữ review/diff tốt ở alpha, vừa cho runtime bền vững 
 
 ## 3. ADR-002 — Mở rộng repository scope trong khi run đang chạy
 
-**Đề xuất:** cho phép add-only bằng operation tường minh; không tự thêm và không remove repository
+**Quyết định:** cho phép add-only bằng operation tường minh; không tự thêm và không remove repository
 khỏi TaskFamily đang chạy.
 
 Flow:
@@ -47,7 +47,7 @@ Mở rộng scope là mở rộng quyền và context nên không được ẩn 
 
 ## 4. ADR-003 — Mutating attempt xuyên repository
 
-**Đề xuất:** mặc định mỗi mutating attempt chỉ có một RepositoryWorkspace read-write; các repository
+**Quyết định:** mặc định mỗi mutating attempt chỉ có một RepositoryWorkspace read-write; các repository
 khác trong effective scope được expose read-only.
 
 Một integration node có thể ghi nhiều repository khi:
@@ -61,7 +61,7 @@ Không dùng prompt để thay thế filesystem permission và diff enforcement.
 
 ## 5. ADR-004 — Release xuyên repository và Git authority
 
-**Đề xuất:** dùng correlated ReleaseSet, không giả định atomic commit/merge xuyên Git repository.
+**Quyết định:** dùng correlated ReleaseSet, không giả định atomic commit/merge xuyên Git repository.
 
 Mỗi repository có branch/commit/pull request và gate riêng. Parent chỉ DONE khi mọi repository bắt
 buộc đạt release policy. Partial failure đưa family về BLOCKED hoặc compensation flow; không ghi
@@ -76,31 +76,32 @@ Quyền alpha:
 
 ## 6. ADR-005 — Conversation và context ownership
 
-**Đề xuất:** platform giữ canonical conversation message và context snapshot; provider transcript
+**Quyết định:** platform giữ canonical conversation message và context snapshot; provider transcript
 chỉ là artifact hỗ trợ debug.
 
 - Message là append-only, có actor, timestamp và correlation với WorkItem/Attempt.
 - ContextSnapshot lưu manifest chính xác của message/resource/revision được chọn.
-- ProviderSessionRef chỉ tối ưu resume và có thể mất.
-- Alpha giữ dữ liệu local cho đến khi người dùng cleanup/project deletion.
+- Alpha luôn khởi động agent mới từ ContextSnapshot; không resume provider session dù ref còn sống.
+- ProviderSessionRef chỉ là diagnostic/correlation artifact và có thể mất.
+- Evidence alpha lưu local disk trong 7 ngày rồi cleanup theo policy; không mã hóa at-rest ở alpha.
 - Beta áp retention policy theo organization; raw provider event có TTL riêng.
 
 Mất provider session không được làm mất khả năng dựng lại context từ platform state.
 
 ## 7. ADR-006 — Operating systems
 
-**Đề xuất:** core contract hỗ trợ Windows và Linux từ đầu.
+**Quyết định:** core contract hỗ trợ Windows và Linux từ đầu.
 
-- Spike đầu chạy trên Windows là môi trường hiện tại.
+- Spike chạy Windows trước là môi trường/gate thực thi đầu tiên.
 - Process, path, signal và worktree nằm sau adapter; domain không chứa OS path semantics.
-- Trước khi alpha được coi là usable, core test suite phải pass trên Windows và Linux.
+- Sau khi Windows pass, cùng semantic suite vẫn bắt buộc pass trên Linux trước khi full gate alpha đạt.
 - Beta worker target mặc định là Linux container.
 
 Không yêu cầu mọi shell/toolchain layer chạy đa nền tảng; layer phải khai báo compatibility.
 
 ## 8. ADR-007 — Provider và executable extension
 
-**Đề xuất:** dùng versioned process/protocol adapter, không dùng Go dynamic plugin làm extension
+**Quyết định:** dùng versioned process/protocol adapter, không dùng Go dynamic plugin làm extension
 boundary chính.
 
 - AgentExecutor chuẩn hóa start/resume/cancel/event/outcome.
@@ -111,7 +112,7 @@ boundary chính.
 
 ## 9. ADR-008 — Persistence, event và projection
 
-**Đề xuất:** state tables là runtime authority, kèm append-only audit/domain events và durable job/
+**Quyết định:** state tables là runtime authority, kèm append-only audit/domain events và durable job/
 outbox ghi cùng transaction; không áp full event sourcing cho alpha.
 
 - SQLite adapter ở alpha, PostgreSQL adapter ở beta.
@@ -124,7 +125,7 @@ Cách này giữ recovery/audit mà không buộc toàn bộ domain phải repla
 
 ## 10. ADR-009 — Workflow graph, retry và rework
 
-**Đề xuất:** WorkflowVersion là typed directed graph.
+**Quyết định:** WorkflowVersion là typed directed graph.
 
 - Technical retry nằm trong AttemptPolicy của node và luôn tạo attempt mới.
 - Business rework là edge tường minh trong graph.
@@ -134,7 +135,7 @@ Cách này giữ recovery/audit mà không buộc toàn bộ domain phải repla
 
 ## 11. ADR-010 — UI technology
 
-**Đề xuất:** cố ý chưa chọn Angular/React hay UI stack trước khi Go spike đạt.
+**Quyết định:** cố ý chưa chọn Angular/React hay UI stack trước khi Go spike đạt.
 
 Các contract được khóa trước:
 
@@ -146,11 +147,12 @@ Các contract được khóa trước:
 Sau spike sẽ làm một UI decision riêng dựa trên tốc độ MVP, component library và năng lực team.
 Prototype cũ chỉ là wireframe/reference, không khóa API hay framework.
 
-## 12. Confirmation gate
+## 12. Baseline đã xác nhận
 
-Go core spec chỉ bắt đầu sau khi các ADR-001 đến ADR-010 được xác nhận hoặc sửa.
+Các ADR-001 đến ADR-010 là baseline bắt buộc cho Go core spec và spike. Thay đổi sau này phải tạo
+ADR superseding, không sửa lịch sử quyết định âm thầm.
 
-Baseline được đề nghị chốt là:
+Baseline đã chốt:
 
 1. File declarative để author; database giữ published immutable version.
 2. Scope expansion add-only, cần operator approval.
