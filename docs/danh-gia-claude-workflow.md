@@ -1,493 +1,253 @@
-# Đánh giá `claude-workflow`: sửa tiếp hay xây core mới bằng Go
+# Kinh nghiệm từ claude-workflow để xây Agent Kit
 
-> Trạng thái: **đề xuất để thảo luận, chưa phải quyết định triển khai đã chốt**.
+> Đây là tài liệu hồi cứu kỹ thuật. Mục tiêu là giữ lại những bài học bền vững đã rút ra từ
+> prototype claude-workflow, không phải đánh giá lại mã nguồn cũ, lựa chọn ngôn ngữ triển khai
+> hay mô tả kiến trúc cuối cùng.
 >
-> Project được đánh giá: `D:\Documents new\project\claude-workflow`, nhánh `master`, commit
-> `63410f9c1e0e8ac7561f9ee5ce988978ec5cb742`, worktree sạch tại thời điểm đọc.
->
-> Thước đo: bộ [15 tài liệu Harness Engineering](harness-engineering/00-tong-quan.md), tổng hợp từ
-> [walkinglabs/learn-harness-engineering tại commit `77e7a3e`](https://github.com/walkinglabs/learn-harness-engineering/tree/77e7a3e21469dcbece2558086c8d91657abeaa40).
-
-## 1. Kết luận sơ bộ
+> Các tiêu chí Harness Engineering đầy đủ nằm tại
+> [Bộ tiêu chí nền tảng cho Agent Kit](harness-engineering/00-tong-quan.md).
 
-Với phạm vi sản phẩm đã nêu, nên **xây một core mới bằng Go**, đồng thời dùng `claude-workflow` làm
-nguồn tri thức và compatibility corpus. Đây là **greenfield runtime, brownfield knowledge**:
+## 1. Phạm vi tài liệu
 
-- không tiếp tục kéo Python prototype thành workflow server;
-- không vứt tài liệu, rule, skill, template, fixture và các phát hiện thực nghiệm;
-- không big-bang thay mọi thứ trong một lần;
-- dựng từng vertical slice mới và dùng hành vi hữu ích của prototype làm regression input.
+claude-workflow có giá trị như một prototype khám phá vấn đề: nó giúp nhìn thấy những gì xảy ra
+khi task tracking, quy trình, CLI agent, trạng thái repository và verification được ghép vào cùng
+một hệ thống.
 
-Lý do quyết định không phải “Python không scale”. Python vẫn có thể chạy server tốt. Lý do là
-**mô hình lõi hiện tại không cùng loại với sản phẩm đích**:
+Tài liệu này chỉ giữ:
 
-```text
-claude-workflow hiện tại
-  = scaffold cho một repo + task tracker 9 trạng thái + Claude launcher local
+- bài học có thể chuyển thành invariant hoặc guardrail cho Agent Kit;
+- ranh giới domain cần đúng từ đầu để không phải thay core khi mở rộng;
+- tài sản tri thức có thể tái sử dụng.
 
-Agent Kit cần có
-  = definition runtime + workflow execution engine + worker/workspace isolation
-    + provider-neutral agents + evidence/context/conversation platform
-```
+Tài liệu này cố ý không chứa:
 
-Để đạt đích bằng refactor, gần như toàn bộ phần tạo ra danh tính của core hiện tại đều phải đổi:
-domain model, schema, service boundary, executor, concurrency, provider adapter và UI state model.
-Giữ nguyên ngôn ngữ không còn giúp giảm rủi ro đủ nhiều.
+- audit file, hàm hoặc bug cụ thể của prototype;
+- tranh luận sửa prototype hay xây lại;
+- lựa chọn Go hoặc cấu trúc package triển khai;
+- roadmap, spike plan hoặc backlog;
+- bản sao ma trận tiêu chí của 14 lecture.
 
-## 2. Phạm vi và cách đánh giá
+## 2. Mô hình lõi phải đúng loại sản phẩm
 
-Đã đọc:
+Một task tracker có state machine cố định không phải là workflow runtime. Agent Kit cần tách rõ:
 
-- `AGENTS.md`, `CLAUDE.md`, `README.md` và toàn bộ `HANDOFF.md`;
-- thiết kế V1–V4 và 23 acceptance scenarios của V4 alpha;
-- toàn bộ Python core, SQLite schema, service, projection, layer compiler;
-- backend/UI local và đường gọi Claude CLI;
-- layer manifests, rules, skills, fixtures và lịch sử commit gần nhất.
+    WorkItem
+      -> WorkflowRun (pin WorkflowVersion)
+           -> NodeRun (pin BlockVersion và execution profile)
+                -> ExecutionAttempt
+                     -> AgentSession / CommandExecution
 
-Không sửa file nào trong `claude-workflow`. Không chạy code/plugin từ layer vì đó chính là một bề
-mặt thực thi cần đánh giá, không phải dependency đáng tin mặc định.
+- WorkItem là đối tượng nghiệp vụ hiển thị trên Kanban.
+- WorkflowDefinition/Version là graph bất biến sau khi publish.
+- WorkflowRun là một lần áp dụng đúng một version cho WorkItem.
+- NodeRun biểu diễn một node đang chờ, chạy, block hoặc đã có outcome.
+- ExecutionAttempt giữ từng lần thử; retry không được ghi đè lịch sử cũ.
+- AgentSession là metadata của provider, không phải trạng thái workflow chuẩn.
 
-Một số số liệu cấu trúc của prototype:
+Run đang chạy phải tiếp tục trên version đã pin. Publish workflow mới chỉ ảnh hưởng run mới, trừ
+khi có một migration operation được mô hình hóa và audit riêng.
 
-- 25 file Python, khoảng 4.058 dòng trong `harness/`;
-- 12 file JavaScript, khoảng 1.721 dòng;
-- không có suite `test_*.py`; việc kiểm chứng hiện nằm chủ yếu trong tài liệu, fixture và golden
-  command được chạy thủ công;
-- core không có `WorkflowRun`, `NodeRun`, `ExecutionAttempt`, worktree manager hay provider interface;
-- 23/25 file Python có tham chiếu `claude`/`.claude`; không có Codex adapter.
+UI, CLI adapter và model không được tự chuyển trạng thái domain. Mọi mutation phải đi qua
+application command và invariant của orchestrator.
 
-## 3. Những tài sản có giá trị nên giữ
+## 3. Project đa repository cần workspace ownership rõ ràng
 
-`claude-workflow` là một prototype tốt cho discovery. Các phần sau có giá trị cao:
+Agent Kit phải coi dự án nhiều repository là trường hợp bình thường:
 
-1. **Kỷ luật “kiểm chứng, không suy đoán”.** `HANDOFF.md` ghi cả giả định sai, cách dựng sandbox và
-   các lỗi chỉ lộ khi bấm/chạy thật.
-2. **Nguyên tắc agent không tự tuyên bố hoàn thành.** Gate và human approval được tách khỏi lời kể
-   của Claude.
-3. **Thông báo WHAT/WHY/FIX.** Đây là format tốt cho agent tự sửa và cho operator chẩn đoán.
-4. **Fixture/golden cross-shell.** Chúng có thể trở thành compatibility tests cho importer hoặc
-   CLI mới.
-5. **Tài liệu/rule/skill/template theo stack.** Sau khi tách code thực thi, đây là seed tốt cho
-   passive Engineering Pack.
-6. **Kinh nghiệm gọi Claude headless.** Các phát hiện về session ID, `stream-json`, non-interactive
-   shell và đường dẫn executable là dữ liệu đầu vào quý cho Claude adapter.
-7. **UI prototype.** Token CSS, bố cục task detail, evidence/timeline và chat cho thấy nhu cầu sản
-   phẩm; có thể tái dùng làm wireframe hoặc một phần presentation layer tạm thời.
-8. **Ý thức về DB authority và event cùng transaction.** Hướng tư duy đúng, dù schema hiện tại chưa
-   đủ cho workflow runtime.
+    Project
+      -> Repository[]
+           -> Component[]
 
-Những tài sản này nên được chuyển thành test case, resource và ADR; không nhất thiết port nguyên mã.
+    WorkItem
+      -> TaskFamily
+           -> RepositoryScope[]
+           -> WorkspaceSet
+                -> RepositoryWorkspace[]
+                     -> Worktree
 
-## 4. Các blocker kiến trúc
+Các semantics cần giữ:
 
-### P0 — core không có workflow runtime
+- Kanban và task detail hoạt động ở cấp Project, có thể tổng hợp task từ mọi repository.
+- UI có thể focus một repository trong file/log/diff panel, nhưng focus không làm giới hạn domain.
+- Một WorkItem có thể scope vào một hoặc nhiều repository.
+- Mỗi root WorkItem sở hữu một TaskFamily và một WorkspaceSet riêng.
+- Trong WorkspaceSet, mỗi repository có worktree và revision identity riêng.
+- Subtask kế thừa WorkspaceSet của task cha; subtask một-repository chỉ thao tác trên phần tương ứng.
+- Hai root task độc lập không dùng chung mutable worktree.
+- Mọi lease, artifact, evidence và context về code phải mang repository_id cùng revision cụ thể.
 
-`state.py` cố định một máy trạng thái 9 bước. `task-board.js` và `flow-tracking.js` cũng hard-code
-chính chín trạng thái và tọa độ graph. Không tồn tại các khái niệm:
+Với feature xuyên nhiều service, nên phân rã thành subtask một-repository khi có thể. Đây là cách
+giảm shared mutable state, không phải giới hạn bắt buộc của domain.
 
-- `WorkflowDefinition/Version`;
-- `BlockDefinition/Version`;
-- `WorkflowRun`, `NodeRun`, `ExecutionAttempt`;
-- typed node input/output và edge outcome;
-- durable checkpoint cho node;
-- fork/join, wait/signal, rework policy theo workflow.
+## 4. Execution phải bền vững và tách khỏi UI
 
-Vì vậy “thêm một workflow mới” hiện đồng nghĩa sửa core, schema và UI. Đây là ngược với yêu cầu
-định nghĩa block rồi cắm vào nhiều luồng.
+UI chỉ phát command và đọc projection. API/control plane quyết định mutation, tạo durable job; worker
+mới được chạy agent CLI, command, gate hoặc thao tác workspace.
 
-### P0 — boundary `Store` không thể đưa alpha lên beta bằng đổi adapter
+Một execution path tối thiểu cần có:
 
-Thiết kế beta nói chỉ đổi `store=HttpStore(...)`. Nhưng `Store` thực tế chỉ khai hai hàm
-`init_schema()` và `tx()`. Service mở transaction rồi gọi hàng chục method không nằm trong interface
-trên object `_SqliteTx`.
+1. Validate command và ghi intent.
+2. Tạo job bền vững gắn WorkItem/Run/NodeRun.
+3. Worker claim job bằng lease có thời hạn và fencing token.
+4. Tạo ExecutionAttempt trước khi gây side effect.
+5. Stream canonical event và lưu artifact/evidence.
+6. Commit outcome cùng checkpoint.
+7. Scheduler quyết định node tiếp theo, retry, block hoặc escalation.
 
-Một HTTP client không thể giữ cùng transaction boundary và row-object semantics như kết nối SQLite
-bằng cách “đổi adapter”. Beta cần một API ở **application/service boundary**, không phải mô phỏng
-remote database transaction ở storage boundary.
+Process chết không được làm mất vị trí workflow. Khi khởi động lại, hệ thống phải phân biệt được:
 
-Hệ quả: đường beta hiện tại không phải một adapter nhỏ; nó là thay lại service protocol, auth,
-authorization, transaction/idempotency và error semantics.
+- side effect chưa bắt đầu;
+- side effect đang chạy nhưng chưa rõ outcome;
+- side effect đã hoàn tất và có evidence;
+- checkpoint đã commit.
 
-### P0 — completion có thể pass mà không có evidence
+Raw CLI hoặc shell command không đảm bảo exactly-once. Harness phải dùng idempotency key khi adapter
+hỗ trợ, lưu intent/outcome và đưa trạng thái không chắc chắn về recovery/escalation thay vì chạy lại
+mù quáng.
 
-Ba đường hiện tại kết hợp thành false pass:
+## 5. Completion phải dựa trên evidence và fail-closed
 
-- `gate.py` dùng `all([])`, nên `verify=[]` cho kết quả `passed=True`;
-- API duyệt task chỉ chặn gate có giá trị `FAIL`; gate rỗng hoặc `NOT_RUN` không chặn;
-- wrapper Stop trả exit 0 khi thiếu `harness.json` với chủ ý fail-open.
+Agent có thể đề xuất rằng công việc đã xong, nhưng không có quyền tự quyết định DONE.
 
-Điều này trái với nguyên tắc trung tâm của chính project: thiếu verification không thể trở thành
-`DONE`. Policy cần phân biệt `REQUIRED`, `NOT_APPLICABLE`, `NOT_RUN`, `PASS`, `FAIL`, `ERROR` và
-chỉ checker có thẩm quyền mới phát terminal outcome.
+Kết quả verification phải phân biệt tối thiểu:
 
-### P0 — execution nằm trong UI process và không có isolation
+- NOT_RUN: chưa thực thi;
+- NOT_APPLICABLE: không áp dụng và có lý do/policy cho phép;
+- PASS: đã chạy và evidence hợp lệ;
+- FAIL: đã chạy, tiêu chí không đạt;
+- ERROR: verifier không thể đưa ra verdict đáng tin cậy.
 
-UI trực tiếp `subprocess.Popen` Claude trong repo đang mở. Gate trực tiếp chạy chuỗi command từ
-`harness.json`. Check loader import và thực thi Python từ `.claude/checks/*.py` ngay trong process.
+Không có gate, thiếu cấu hình gate bắt buộc hoặc mất evidence không được suy thành PASS.
 
-Hiện không có:
+Evidence phải truy ngược được:
 
-- worker/job/lease;
-- worktree manager hoặc task-family ownership;
-- sandbox, resource quota, cancellation và process-tree cleanup;
-- capability negotiation;
-- secret/redaction policy cho stdout;
-- idempotency key hoặc fencing token;
-- command/evidence provenance đầy đủ;
-- giới hạn fan-out và backpressure.
+    WorkItem -> WorkflowRun -> NodeRun -> Attempt
+             -> Gate/Command -> Artifact -> Repository revision
 
-Đây là blocker cho cả chạy song song local lẫn chạy CLI trên server.
+Completion policy cần kiểm tra Definition of Done, required gates, approval, artifact và repository
+state. Maker và checker nên tách vai trò đối với thay đổi có rủi ro.
 
-### P0 — chưa có provider-neutral contract
+## 6. Agent runtime phải độc lập provider
 
-Session map, config, subprocess arguments và event parsing đều gắn trực tiếp với Claude. Task UUID
-là khóa duy nhất của `harness-sessions.json`, nên hai project có cùng UUID còn có thể dùng nhầm
-session. Không có interface cho `start/resume/cancel/stream/capabilities`, không có normalized event
-và không có platform-owned conversation/context snapshot.
+Claude CLI và Codex CLI chỉ là adapter của một contract chung. Domain không được chứa tên file,
+session format, event type hoặc assumption riêng của provider.
 
-Thêm Codex vào cấu trúc hiện tại sẽ tạo một nhánh `if provider == ...` xuyên UI và core, không phải
-một adapter độc lập.
+Contract AgentExecutor cần biểu diễn các capability như:
 
-### P0 — boundary dự án chưa an toàn cho beta
+- start/resume/cancel execution;
+- capability discovery;
+- canonical event stream;
+- usage và termination reason;
+- provider session reference;
+- structured outcome và artifact reference.
 
-`TaskService` và `DocService` nhận `project_id`, nhưng `get_task(task_id)`, `transition(task_id)` và
-`get_doc(doc_id)` không query kèm project. Một service được dựng cho project A có thể update record
-của project B rồi ghi event dưới project A nếu biết ID.
+Adapter chịu trách nhiệm chuyển event riêng của provider về canonical event. Contract test phải chạy
+cùng một scenario trên adapter giả lập Claude và Codex để chứng minh orchestrator không phụ thuộc
+provider.
 
-Các foreign key cũng không bảo đảm `active_task.project_id`, `task_id`, `design_doc_id` và event refs
-thuộc cùng project. Đây là lỗi tenant isolation ở domain/storage layer; UI filter không thể sửa nó.
+Conversation, selected messages, context manifest và checkpoint thuộc platform. Provider session có
+thể giúp resume nhanh, nhưng mất session không được làm mất khả năng dựng lại context cần thiết.
 
-### Dẫn chứng mã nguồn nhanh
+## 7. Skill và Layer là tri thức thụ động
 
-| Nhận định | Vị trí |
-|---|---|
-| Máy trạng thái là enum cố định | [`state.py`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/harness/state.py:35) |
-| UI hard-code chín cột | [`task-board.js`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/harness/ui/static/areas/task-board.js:16) |
-| Graph UI hard-code tọa độ/edge | [`flow-tracking.js`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/harness/ui/static/areas/flow-tracking.js:21) |
-| `Store` chỉ có `init_schema/tx` | [`store/__init__.py`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/harness/store/__init__.py:16) |
-| Thiết kế cho rằng beta chỉ đổi `HttpStore` | [`V4-ke-hoach.md`](../../claude-workflow/docs/ai-workflow/versions/V4-ke-hoach.md:137) |
-| Gate rỗng được `all([])` coi là pass | [`harness/gate.py`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/harness/gate.py:182) |
-| Thiếu config ở Stop hook trả success | [`scripts/gate.py`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/scripts/gate.py:46) |
-| UI chỉ chặn verdict `FAIL` | [`ui/api.py`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/harness/ui/api.py:344) |
-| Claude được spawn trực tiếp trong UI backend | [`claude_proc.py`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/harness/ui/claude_proc.py:179) |
-| Layer khai executable checks | [`java-spring/layer.json`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/layers/java-spring/layer.json:25) |
-| Apply copy executable checks vào repo | [`apply.py`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/harness/apply.py:271) |
-| Service lấy task/doc không kèm project scope | [`service/__init__.py`](../../claude-workflow/docs/ai-workflow/02-scaffold/dot-claude/harness/service/__init__.py:115) |
+Skill/Layer có thể chứa:
 
-## 5. Các khoảng trống quan trọng khác
+- instruction, rule, convention và checklist;
+- reference, example và template;
+- metadata về version, selector, dependency, conflict và owner;
+- source code hoặc script dưới dạng resource để đọc hoặc dùng làm template.
 
-### Layer đang vượt ranh giới instruction/resource
+Cài Skill/Layer không được tự động cấp quyền chạy code, gọi network, sửa workspace, đọc secret hoặc
+thêm verification gate.
 
-`java-spring/layer.json` chứa build/verify command, runtime/toolchain, executable Python checks và
-file scaffold. `apply.py` copy checks vào `.claude/checks`, rồi check loader import chúng như code.
+Một script resource chỉ là bytes cho đến khi được đăng ký riêng thành executable object, ví dụ:
 
-Điều này trái quyết định mới: Skill/Layer chỉ chứa instruction/resource. Cần tách:
+- CommandDefinition;
+- GateDefinition;
+- ScaffoldDefinition;
+- provider/tool adapter.
 
-- **Layer/Pack:** rule, convention, reference, checklist, template, example;
-- **Command/Gate/Scaffold definition:** object executable riêng, được publish và cấp quyền riêng;
-- **Executor:** process tin cậy thực hiện side effect, thu evidence và audit.
+Executable object phải pin content hash/version và khai báo argv/input, working-directory policy,
+permission, sandbox, timeout, resource limit, network/secret policy, output contract và audit
+evidence. Side effect luôn đi qua worker/executor được kiểm soát.
 
-Một file `.py` hoặc `.sh` có thể nằm trong Pack như **resource để đọc**. Nó chỉ trở thành executable
-khi được đăng ký riêng, pin hash/version, qua policy rồi được executor gọi. Extension thực thi cần
-sandbox, timeout, permissions, secret policy, audit, idempotency và ownership của file sinh ra.
+## 8. Boundary dữ liệu và API phải đúng từ alpha
 
-### Layer model giả định một repo chỉ có một stack
+Domain/application không được phụ thuộc vào transaction API hoặc SQL shape của SQLite. SQLite và
+PostgreSQL là persistence adapter của cùng application semantics, không phải hai hệ thống được nối
+bằng cách giả lập database transaction qua HTTP.
 
-`java-spring` khai xung đột với `angular` và `nextjs`. Điều này không phù hợp project lớn có backend,
-micro frontend, mobile, Docker/Kubernetes và automation tests cùng tồn tại.
+Các nguyên tắc:
 
-Pack phải resolve theo `Repository -> Component -> path/task selector`. Java và Angular không xung
-đột nếu áp cho hai component khác nhau. Chỉ hai giá trị đơn áp vào **cùng scope** mới là conflict.
+- client gọi application API; chỉ server truy cập persistence repository;
+- mutation có command boundary và transaction boundary rõ;
+- event, job và checkpoint được ghi atomically khi cùng thuộc một quyết định;
+- projection/Kanban là read model có thể dựng lại, không phải nguồn trạng thái độc lập;
+- schema migration và repository contract test tồn tại từ alpha;
+- mọi query/mutation beta phải scope rõ organization, project và repository;
+- optimistic concurrency hoặc expected version bảo vệ mutation cạnh tranh.
 
-### SQLite schema là task tracker, chưa phải execution schema
+Alpha có thể là modular monolith dùng SQLite và embedded worker. Các ranh giới application, worker,
+provider, workspace, artifact và persistence vẫn phải tồn tại để beta có thể tách process và dùng
+PostgreSQL mà không đổi domain semantics. Alpha và beta không cần cơ chế đồng bộ dữ liệu.
 
-13 bảng hiện tại chưa có:
+## 9. Source of truth, observability và an toàn vận hành
 
-- workflow/block/skill/pack/profile versions;
-- workflow run, node run, attempt và route decision;
-- job, lease, heartbeat, retry budget và idempotency;
-- workspace, repository, component, branch/worktree và task family;
-- conversation, message, context snapshot và provider session;
-- artifact/evidence với hash, revision, command, cwd và retention;
-- approval policy, permission grant và canonical execution event.
+Mỗi concern có một nguồn authoritative:
 
-`task_gate` còn ghi đè kết quả mới nhất thay vì giữ từng GateRun/evidence. `schema_version` chỉ phát
-hiện “đã có bảng” rồi dừng; chưa có migration runner. SQLite cũng chưa bật WAL/busy timeout, chưa có
-optimistic version hay lease để xử lý writer cạnh tranh.
+- Git repository tại revision cụ thể: code, cấu hình và convention nằm trong repo.
+- Agent Kit database: WorkItem, workflow runtime, job, lease, approval và audit event.
+- Artifact store: log, diff, report và output lớn; database giữ metadata/hash.
+- Platform conversation/context state: dữ liệu chuẩn để tiếp tục công việc.
+- Provider session: metadata tối ưu resume, không phải canonical context.
 
-### Repo/DB projection vẫn tạo hai bề mặt dễ lệch
+Trace tối thiểu phải nối được:
 
-Thiết kế nói DB authoritative, nhưng nội dung AC/Target/Out-of-scope vẫn do file sở hữu và runtime
-không tự ingest lại. Task tạo mới không có API hoàn chỉnh để cập nhật `lane`, `design`, objective và
-AC; `migrate` cho task tồn tại cũng không đồng bộ mọi trường. `HANDOFF.md` đã ghi nhiều giới hạn này.
+    Project/Repository
+      -> WorkItem/TaskFamily
+      -> WorkflowRun/NodeRun/Attempt
+      -> Agent/Command/Gate event
+      -> Artifact/Evidence/Revision
 
-Projection có thể giữ như artifact/resume view, nhưng không nên là contract bắt buộc để runtime
-hoạt động. Runtime phải đọc platform state và repository resources tại revision cụ thể.
-
-### Identity và approval chỉ đủ cho demo local
+Log cần có correlation ID, timestamp, actor, policy/version và outcome; đồng thời phải redact secret.
+Artifact lớn hoặc dữ liệu nhạy cảm không được đẩy mù vào Markdown hay Git history.
 
-- UI nhận tên người duyệt từ body đối với document và có thể tạo member theo tên đó.
-- Task approval kiểm body có tên, nhưng authoritative writer lại lấy identity file cục bộ; hai tên
-  có thể khác nhau.
-- Chạy lại `whoami.py --init` sinh member UUID mới; nếu username đã tồn tại, DB giữ ID cũ còn file
-  identity giữ ID mới, dễ gây foreign-key failure lần ghi sau.
-
-Beta cần principal do server xác thực, membership/role theo tenant và authorization ở command
-handler. Không nhận actor identity từ request payload.
+Concurrency cần lease có TTL, heartbeat và fencing token. Mặc định mỗi RepositoryWorkspace chỉ có
+một writer; chỉ mở path-scoped parallel write khi engine có thể chứng minh phạm vi không giao nhau.
+Timeout, cancel, retry budget, no-progress detector và escalation là capability của runtime, không
+phải convention trong prompt.
 
-### Observability chưa đủ để vận hành workflow
-
-Event hiện chỉ mô tả task/gate/doc ở mức cao. Không có trace
-`WorkItem -> Run -> Node -> Attempt -> Tool/Gate`. Gate không persist stdout artifact/hash, command
-version, cwd, code revision và environment. Một phần output còn được nối vào Markdown, có rủi ro
-đưa secret vào git.
+## 10. Tài sản tri thức nên mang sang
 
-### Bộ test chưa bảo vệ core như một product runtime
-
-Golden/manual acceptance đã bắt được nhiều lỗi thật và nên giữ. Tuy nhiên không có automated unit/
-integration suite chạy liên tục cho domain invariants, crash recovery, concurrent writers, process
-supervision, tenant isolation và security boundaries. Việc nhiều bug chỉ lộ ở phiên sau là tín hiệu
-rằng test corpus tốt nhưng test harness chưa được sản phẩm hóa.
+Những phần có giá trị từ prototype nên được giữ như input, fixture hoặc reference:
 
-## 6. Đối chiếu 15 phần Harness Engineering
+- cách mô tả lỗi theo WHAT / WHY / FIX;
+- template SPEC, DESIGN, TASK và checklist;
+- rule, skill, snippet sau khi chuẩn hóa thành resource thụ động;
+- golden scenario và fixture cho verification;
+- discovery về stream/event/session của Claude CLI;
+- bố cục Kanban, task detail, graph, evidence và chat như UI reference;
+- các failure case đã quan sát để chuyển thành automated regression test.
 
-| Phần | Hiện trạng | Khoảng trống để đạt Agent Kit |
-|---|---|---|
-| Tổng quan | Có prototype local và tài liệu tốt | Chưa có definition/runtime/execution planes |
-| Lec 01 — failure diagnosis | Có nhật ký lỗi và văn hóa kiểm chứng | Failure chưa thành taxonomy/event runtime chuẩn |
-| Lec 02 — năm phân hệ | Có mầm instruction, tool, env, state, gate | Không có resolved manifest, capability/permission boundary |
-| Lec 03 — source of truth | Đã chuyển status vào DB | AC/config/projection còn lệch; project identity chưa đủ |
-| Lec 04 — disclosure | Có rules theo path và layer compiler | Không có context snapshot/provenance; Pack đang chứa executable |
-| Lec 05 — continuity | Có task Markdown và Claude session map | Không có checkpoint/context/conversation do platform sở hữu |
-| Lec 06 — initialization | Có `init_check.py` | Chưa tách project onboarding, run bootstrap và runner readiness |
-| Lec 07 — scope/WIP | Có Target/Out-of-scope trong Task | Không có scope enforcement, worktree, lease hay task family |
-| Lec 08 — work item | Có Task + AC + events trong DB | Không có cha-con/family, WorkflowRun/NodeRun/Attempt |
-| Lec 09 — external completion | Có machine gate và human approval | Empty/NOT_RUN có thể pass; checker chưa độc lập và evidence thiếu |
-| Lec 10 — full pipeline | Có danh sách verify command | Mapping theo vị trí; không risk-based/component-aware/evidence-rich |
-| Lec 11 — observability | Có append-only event | Không có canonical trace/tool events/artifact policy |
-| Lec 12 — clean handoff | Có projection/log/golden | Không có clean-state policy thực thi hay workspace ownership |
-| Lec 13 — autonomous loops | Chưa có | Thiếu loop state, budgets, no-progress, trigger/idempotency |
-| Lec 14 — graph orchestration | UI vẽ graph cố định | Thiếu versioned typed graph, checkpoint, fork/join và routing engine |
-
-## 7. Ma trận quyết định
+Giữ tri thức không đồng nghĩa port nguyên core, schema, API hoặc state machine cũ.
 
-| Tiêu chí | Sửa tiếp Python core | Core mới bằng Go |
-|---|---|---|
-| Giữ demo cá nhân hiện tại | Tốt nhất | Cần dựng lại một vertical slice |
-| Nhiều workflow/block versioned | Phải thay domain/schema/UI lõi | Thiết kế đúng ngay từ domain |
-| Claude + Codex + provider tương lai | Cần tháo coupling xuyên nhiều module | Đặt port `AgentExecutor` từ đầu |
-| Task family + worktree + parallelism | Gần như thêm mới hoàn toàn | Đặt workspace/lease là primitive |
-| Server worker + PostgreSQL | `HttpStore` hiện tại không phải boundary đúng | API/service/worker boundary được thiết kế trước |
-| Crash resume và evidence | Thay phần lớn persistence/runtime | Đưa Run/Node/Attempt/Event vào schema đầu tiên |
-| Multi-repo/multi-component stack | Layer conflict và repo model phải đổi | Component-scoped Pack từ đầu |
-| Tận dụng code hiện tại | Cao ở ngắn hạn, thấp sau khi đổi core | Thấp với Python code, cao với docs/fixtures/resources |
-| Rủi ro legacy constraint | Cao | Thấp hơn nếu giữ scope alpha nhỏ |
-| Thời gian tới product đúng kiến trúc | Dễ nhanh lúc đầu, chậm dần vì “ship of Theseus” | Chậm hơn ở slice đầu, ít phải tháo lại |
+## 11. Guardrail dùng khi xây Agent Kit
 
-**Khi nào nên sửa tiếp:** nếu sản phẩm được thu hẹp về một người, một repo, một workflow 9 trạng
-thái, chỉ Claude và không cần worker/worktree.
+Một thay đổi core chỉ được coi là đi đúng hướng khi:
 
-**Với yêu cầu hiện tại:** xây mới hợp lý hơn. Sửa tiếp cuối cùng vẫn là rewrite, nhưng rewrite bị
-ràng bởi API/schema cũ và khó biết đoạn nào còn an toàn.
+1. Không hard-code một workflow nghiệp vụ vào domain.
+2. Run pin definition version và retry tạo Attempt mới.
+3. Process có thể chết rồi resume từ durable state.
+4. UI không trực tiếp chạy CLI hoặc sửa runtime state.
+5. Project nhiều repository và WorkspaceSet có identity rõ.
+6. Root task có workspace riêng; subtask kế thừa workspace family.
+7. Provider mới được thêm bằng adapter và contract test.
+8. Skill/Layer không tự có executable permission.
+9. Completion fail-closed và luôn dựa trên evidence.
+10. Trace truy được đến exact repository revision.
+11. SQLite/PostgreSQL không làm thay đổi application semantics.
+12. Mỗi slice có test cho success, failure, crash/recovery và concurrency liên quan.
 
-## 8. Vì sao Go phù hợp — và Go không tự giải quyết điều gì
-
-Go phù hợp với core mới vì:
-
-- dễ đóng gói local thành một binary;
-- hợp với HTTP control plane, durable worker và process supervision;
-- concurrency/cancellation/context phù hợp job, lease và streaming event;
-- cùng domain/application layer có thể dùng SQLite ở alpha và PostgreSQL ở beta;
-- interface rõ cho provider, workspace, artifact và persistence adapter.
-
-Nhưng Go không tự mang lại scale hoặc an toàn. Vẫn phải thiết kế đúng:
-
-- không dùng Go plugin động làm cơ chế extension chính; dùng interface nội bộ và protocol/process
-  adapter có version;
-- không để raw shell command chạy trong API process;
-- không giả vờ SQLite transaction và HTTP request là cùng một storage adapter;
-- không tách microservice sớm; alpha nên là modular monolith với embedded worker;
-- không để provider session thay platform state.
-
-## 9. Bộ khung Go đề xuất để thảo luận
-
-```text
-cmd/
-  agentkit               local all-in-one alpha
-  agentkit-server        beta control plane
-  agentkit-worker        beta execution worker
-
-internal/domain/
-  definitions            Workflow/Block/Skill/Pack/Profile versions
-  work                    WorkItem/TaskFamily/Scope
-  execution               Run/NodeRun/Attempt/Outcome/Budget
-  evidence                GateRun/Artifact/Evidence
-  workspace               Project/Repository/Component/WorkspaceSet/Lease
-  conversation            Conversation/Message/ContextSnapshot
-
-internal/application/
-  commands                authoritative mutations
-  queries                 projections/read models
-  scheduler               durable jobs, leases, retry/escalation
-
-internal/ports/
-  persistence, agent_executor, command_executor, workspace,
-  artifact_store, context_assembler, clock, id_generator
-
-internal/adapters/
-  sqlite, postgres, git_worktree, local_artifact,
-  claude_cli, codex_cli, local_process
-
-web/                      management UI; chỉ nói chuyện qua API
-```
-
-Alpha có thể chạy tất cả trong một process/binary, nhưng vẫn đi qua application ports. Beta tách
-worker thành process/server khác mà không đổi domain semantics.
-
-Không có BPMN. Workflow là typed directed graph nội bộ, được version, validate và checkpoint.
-
-## 10. Semantics worktree/task family cần khóa trong core mới
-
-```text
-Project -> Repository A, Repository B, ...
-
-Root WorkItem A -> TaskFamily A -> WorkspaceSet[Repository A -> Worktree A]
-  |- child A1
-  |- child A2
-  `- child A3
-
-Root WorkItem B -> TaskFamily B -> WorkspaceSet[Repository A -> Worktree B]
-```
-
-- Domain hỗ trợ `Project -> Repository[]` ngay từ alpha.
-- UI alpha chỉ giữ một `active_repository_id` và chỉ hiển thị/thao tác trên repository đó.
-- Alpha policy giới hạn `RepositoryScope`/`WorkspaceSet` của một WorkItem/TaskFamily có đúng một repository; collection shape được giữ từ đầu để không phải đổi core khi mở multi-repository execution.
-- Hai root family chạy song song trên hai worktree.
-- Child/subtask luôn kế thừa family/worktree của cha.
-- Mặc định một write lease trên family.
-- Chỉ cho sibling ghi song song khi path scopes không giao nhau và có fencing token.
-- Read-only checker dùng immutable revision/snapshot khi có thể.
-- Parent/integration node quản merge, full verification và release worktree.
-
-Các object cần có từ alpha: `TaskFamily`, `RepositoryScope`, `WorkspaceSet`, `RepositoryWorkspace`,
-`WorkspaceGeneration`, `Lease`, `PathScope`, `RepositoryRevision`. Mọi object runtime/evidence liên quan
-workspace phải mang `repository_id`. Đợi tới beta mới thêm sẽ buộc sửa scheduler và evidence model.
-
-## 11. Ranh giới Skill/Layer và executable trong core mới
-
-### Passive package
-
-Skill/Layer được phép chứa:
-
-- Markdown instruction, rule, checklist và reference;
-- template source code/config;
-- example command dưới dạng tài liệu;
-- metadata selector, dependency, conflict và version/hash.
-
-Chúng không được tự chạy, tự copy file, cấp permission hoặc thêm gate.
-
-### Executable objects
-
-- `ScaffoldDefinition`: mô tả input/output và template refs; `ScaffoldExecutor` mới được ghi file.
-- `CommandDefinition`: argv, cwd policy, env allow-list, timeout, capability và output contract.
-- `GateDefinition`: command/evaluator refs, required evidence và verdict policy.
-- `AgentExecutor`: Claude/Codex adapter chạy dưới worker policy.
-
-Nếu một resource chứa script, nó vẫn chỉ là bytes để đọc. Muốn chạy phải đăng ký thành
-`CommandDefinition` riêng, pin content hash và qua trust/permission policy. Nhờ vậy “cài layer”
-không đồng nghĩa “cho code trong layer quyền chạy trên server”.
-
-## 12. Phần nào giữ, port hay bỏ
-
-| Tài sản từ `claude-workflow` | Xử lý |
-|---|---|
-| `HANDOFF.md`, nhật ký chẩn đoán, quyết định đã kiểm chứng | Giữ làm research record/ADR input |
-| `00-luong.md`, SPEC/DESIGN/TASK templates | Giữ làm requirement corpus; không biến enum thành core |
-| Rules/Skills/snippets | Chuẩn hóa thành passive resources, bỏ phần BPM khỏi baseline chung |
-| `ArchitectureTest.java`, Python checks | Giữ như resource/fixture; đăng ký gate riêng nếu muốn thực thi |
-| Golden outputs và fixtures | Port thành compatibility/integration tests tự động |
-| WHAT/WHY/FIX messages | Giữ làm error contract |
-| CSS tokens và bố cục UI | Có thể tái dùng; task graph/data fetching phải viết lại |
-| Claude `stream-json` discoveries | Chuyển thành contract tests cho `claude_cli` adapter |
-| `Task` SQLite data | Chỉ cân nhắc importer một lần cho dữ liệu cần giữ; không xây sync alpha↔beta |
-| Python `Harness`, `Store`, `TaskService`, fixed state machine | Không port nguyên mã; dùng làm negative/behavior reference |
-| `HttpStore` beta idea | Bỏ; client gọi application API, server dùng PostgreSQL repository |
-| `apply.py` và active layer config | Thay bằng passive package resolver + controlled scaffold/gate registry |
-| UI spawn Claude trực tiếp | Bỏ; UI tạo command/job, worker thực thi |
-
-## 13. Lộ trình tránh big-bang
-
-### Chặng 0 — khóa contracts trước khi code
-
-- Chốt glossary/domain IDs và boundary Definition/Runtime/Execution.
-- Chọn định dạng definition alpha và versioning rule.
-- Chuyển các scenario giá trị từ `claude-workflow` thành test corpus độc lập.
-- Ghi rõ dữ liệu alpha không sync sang beta; schema portability không đồng nghĩa data replication.
-
-### Chặng 1 — vertical slice local nhỏ nhất
-
-- Một WorkflowVersion tuyến tính 3 node: AI -> machine gate -> human approval.
-- WorkItem/Run/NodeRun/Attempt/Event trên SQLite.
-- Một root task tạo worktree, durable job chạy mock executor, crash-resume được.
-- API và CLI cùng gọi application service; chưa cần visual editor.
-
-### Chặng 2 — provider và evidence
-
-- Claude CLI và Codex CLI qua cùng `AgentExecutor` contract.
-- Canonical event normalization, conversation/message/context snapshot.
-- Command/Gate executor thu argv, cwd, revision, exit, duration, output artifact và hash.
-- Empty verification không thể tạo PASS.
-
-### Chặng 3 — task family và parallelism
-
-- Parent/child WorkItem, shared family worktree.
-- Family write lease trước; path-scoped parallel write chỉ thêm sau benchmark.
-- Fork/join, retry budget, no-progress và escalation.
-
-### Chặng 4 — package/context và UI
-
-- Passive Skill/Layer registry cùng context manifest.
-- Kanban, task detail, graph overlay, evidence, chat và operator actions.
-- Có thể dùng UI prototype cũ làm wireframe, không giữ API shape cũ.
-
-### Chặng 5 — beta server
-
-- PostgreSQL repository, authentication/authorization, organization/team/workspace.
-- Server worker pool với isolated workspace, secret policy và quotas.
-- Object storage cho artifact lớn.
-- Không có đồng bộ với alpha; beta là deployment/data plane riêng.
-
-## 14. Decision gate trước khi cam kết full build
-
-Chỉ nên chốt kiến trúc sau một Go spike vượt qua các bài sau:
-
-1. Publish workflow version mới không đổi run đang chạy.
-2. Kill process sau node commit; process mới resume, không lặp side effect đã commit.
-3. Một Project chứa nhiều repository; alpha UI chỉ mở một repository, hai root tasks trên repository
-   đang active vẫn có worktree riêng và chạy song song.
-4. Hai sibling cùng family tranh write lease; chỉ một writer được cấp.
-5. Claude/Codex mock adapters tạo cùng canonical event sequence.
-6. Provider session bị mất nhưng platform dựng lại context từ checkpoint/message state.
-7. Agent tự trả `done=true`, hoặc gate list rỗng: WorkItem vẫn không `DONE`.
-8. Gate evidence truy được command -> attempt -> node -> run -> WorkItem và exact revision.
-9. Pack chứa file script không thể chạy nếu chưa có executable registration/policy.
-10. Cùng application test suite chạy với SQLite; repository contract suite sẵn cho PostgreSQL.
-
-Nếu spike không đạt, sửa model trước khi xây UI hay thêm provider.
-
-## 15. Quyết định đã chốt và những câu còn mở
-
-1. **Đã chốt:** domain hỗ trợ `Project -> Repository[]`; UI alpha chỉ mở một repository. Alpha giới
-   hạn một WorkItem/TaskFamily vào một repository nhưng dùng `RepositoryScope`/`WorkspaceSet` dạng
-   collection từ đầu. Multi-repository task execution chưa nằm trong phạm vi alpha.
-2. Definition ban đầu nên nằm trong file declarative có review bằng git, hay tạo trong DB qua API?
-   Đề xuất khởi đầu bằng file declarative + publish/compile, UI designer đến sau.
-3. Khi root task hoàn tất, Agent Kit chỉ tạo commit/branch để người merge, hay được phép tự merge
-   theo policy?
-4. Chat canonical cần giữ toàn bộ message hay chỉ message đã chọn + ContextSnapshot? Provider raw
-   transcript giữ bao lâu?
-5. Alpha ưu tiên Windows trước hay phải chạy đồng đều Windows/Linux ngay từ slice đầu?
-6. UI mới có cần giữ HTML/JS thuần để ra nhanh, hay chọn framework ngay khi API/domain ổn định?
-
-Khuyến nghị hiện tại là **greenfield Go core + tái sử dụng tri thức có chọn lọc**. Chỉ thay đổi
-khuyến nghị này nếu phạm vi sản phẩm được thu nhỏ đáng kể về đúng mô hình prototype hiện tại.
+Những guardrail này là đầu vào cho architecture/spec và acceptance test. Chi tiết triển khai phải
+được mô tả ở tài liệu thiết kế riêng, theo từng version và subtask đủ nhỏ để hoàn thành, kiểm chứng và
+handoff trong một session.

@@ -4,7 +4,9 @@
 >
 > Nguồn tổng hợp: [walkinglabs/learn-harness-engineering tại commit `77e7a3e`](https://github.com/walkinglabs/learn-harness-engineering/tree/77e7a3e21469dcbece2558086c8d91657abeaa40). Bộ tài liệu diễn giải lại bằng ngôn ngữ của Agent Kit; không sao chép nguyên văn lecture và không coi các con số minh họa trong khóa học là cam kết hiệu năng.
 >
-> Áp dụng vào prototype hiện có: [Đánh giá `claude-workflow`: sửa tiếp hay xây core mới bằng Go](../danh-gia-claude-workflow.md).
+> Bài học từ prototype hiện có: [Kinh nghiệm từ `claude-workflow` để xây Agent Kit](../danh-gia-claude-workflow.md).
+>
+> Mô hình domain đã thống nhất: [Project, Repository, TaskFamily và WorkspaceSet](../architecture/01-project-repository-workspace-model.md).
 
 ## 1. Mục đích
 
@@ -31,8 +33,8 @@ Các từ khóa chuẩn:
 5. Hệ thống cho phép nhiều task hoặc nhánh chạy song song.
 6. Mỗi task gốc có một worktree riêng. Các subtask sinh từ task gốc kế thừa cùng một worktree, tạo thành một **task family**.
 7. Trong cùng task family, nhiều subtask chỉ được ghi song song khi phạm vi path không giao nhau và engine cấp lease phù hợp; mặc định là một writer tại một thời điểm.
-8. Domain hỗ trợ `Project -> Repository[]` ngay từ alpha. UI alpha chỉ mở một repository đang active và mỗi WorkItem/TaskFamily alpha chỉ được scope vào một repository.
-9. Runtime dùng `RepositoryScope`/`WorkspaceSet` dạng tập hợp từ đầu, nhưng alpha áp policy cardinality bằng một; mở multi-repository execution sau này không được buộc đổi identity hoặc aggregate cốt lõi.
+8. Domain và runtime hỗ trợ `Project -> Repository[]` ngay từ alpha. Kanban/task detail hoạt động ở cấp Project; source/diff/log/terminal panel có thể focus một repository tại một thời điểm.
+9. Một WorkItem/TaskFamily có thể scope nhiều repository. Mỗi root family sở hữu một `WorkspaceSet` gồm một worktree cho từng repository trong scope; các subtask kế thừa cùng WorkspaceSet.
 
 ## 3. Định nghĩa harness dùng trong Agent Kit
 
@@ -122,15 +124,19 @@ Nếu một package có code/script có thể scaffold, format, migrate, chạy 
 
 ```text
 Project -> Repository A, Repository B, ...
-                  |
-             alpha UI active repository
 
-Task A family -> WorkspaceSet[Repository A -> Worktree A]
+Task A family -> WorkspaceSet
+   |- Repository A -> Worktree A-user
+   `- Repository B -> Worktree A-web
+
+Subtasks cùng family dùng lại WorkspaceSet A
   |- Subtask A1
   |- Subtask A2
   `- Subtask A3
 
-Task B family -> WorkspaceSet[Repository A -> Worktree B]
+Task B family -> WorkspaceSet riêng
+   |- Repository A -> Worktree B-user
+   `- Repository B -> Worktree B-web
 ```
 
 Quy tắc nền:
@@ -142,7 +148,7 @@ Quy tắc nền:
 - Read-only analysis/review có thể chạy song song với writer nếu dùng snapshot/commit ổn định.
 - Merge, rebase, release worktree và completion của parent là thao tác do orchestrator quản lý.
 - Mọi workspace, lease, revision và evidence đều mang `repository_id`; không suy repository từ path hoặc process hiện tại.
-- Alpha giới hạn mỗi `WorkspaceSet` có đúng một repository workspace. Đây là capability policy của alpha, không phải giới hạn của domain `Project`.
+- Write lease mặc định theo từng `RepositoryWorkspace`; sibling có thể ghi song song ở hai repository khác nhau nhưng cùng repository phải serialize.
 
 WIP=1 trong Lecture 07 được áp dụng theo **execution lane có shared mutable state**, không áp dụng thành “toàn hệ thống chỉ chạy một task”.
 
