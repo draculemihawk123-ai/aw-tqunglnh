@@ -7,6 +7,8 @@
 > Bài học từ prototype hiện có: [Kinh nghiệm từ `claude-workflow` để xây Agent Kit](../danh-gia-claude-workflow.md).
 >
 > Mô hình domain đã thống nhất: [Project, Repository, TaskFamily và WorkspaceSet](../architecture/01-project-repository-workspace-model.md).
+>
+> Các lựa chọn cần xác nhận trước Go spec: [Architecture decisions cho Agent Kit](../architecture/02-architecture-decisions.md).
 
 ## 1. Mục đích
 
