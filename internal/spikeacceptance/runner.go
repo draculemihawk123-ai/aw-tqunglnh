@@ -58,6 +58,9 @@ type RunRequest struct {
 	SuiteID      string
 }
 
+// RunResult is the outcome of the offline go-test baseline only; it is not
+// an SPK-01..SPK-14 gate verdict. See SPKManifest for the typed, validated
+// per-SPK result schema.
 type RunResult struct {
 	SuiteID         string
 	EvidenceDir     string
