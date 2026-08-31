@@ -2,7 +2,7 @@
 
 > Trạng thái: IN PROGRESS — chưa đạt gate để bắt đầu alpha UI/runtime.
 >
-> Cập nhật: 2026-08-28
+> Cập nhật: 2026-08-29
 >
 > Phạm vi đối chiếu: [kế hoạch spike](01-go-core-spike-plan.md).
 
@@ -18,8 +18,10 @@ Không bắt đầu UI alpha từ báo cáo này.
 ## 2. Quyết định product owner đã chốt
 
 1. Full gate giữ nguyên SPK-01 đến SPK-14; không có alpha rút gọn.
-2. Mỗi resume luôn tạo agent execution mới từ `ContextSnapshot`; provider session không là resume path.
-3. Evidence alpha lưu local disk 7 ngày, không mã hóa at-rest; vẫn phải redact secret trước persist.
+2. Mỗi crash recovery luôn tạo Attempt/execution mới bằng `Start` từ `ContextSnapshot`; provider
+   session không là recovery path và Alpha orchestrator không gọi `Resume`.
+3. Raw spike/evidence payload local mặc định 7 ngày; canonical context/audit metadata không dùng
+   blanket TTL. Alpha không mã hóa at-rest và vẫn phải redact secret trước persist.
 4. Windows là platform chạy/đạt trước; Linux chạy tiếp theo và vẫn bắt buộc để full gate PASS.
 
 ## 3. Bằng chứng đã chạy
@@ -71,7 +73,7 @@ credential môi trường, seal checksum và chỉ prune bundle sealed/verify đ
 | SPK-01 | PASS cục bộ | canonical publish/hash/immutable load |
 | SPK-02 | PASS cục bộ | pin R1 v1 qua restart rồi publish v2 |
 | SPK-03 | PARTIAL | hard kill + recover, checkpoint/context SQLite restart và fresh start pass; chưa nối cùng một crash acceptance flow |
-| SPK-04 | PARTIAL | hard-kill sau job claim và ngay sau atomic finalization pass; còn node-complete/next-dispatch và process-exit/outcome-commit |
+| SPK-04 | PARTIAL | hai boundary cục bộ đã có; full registry/evidence cho đủ sáu crash boundary chuẩn chưa hoàn tất |
 | SPK-05 | PASS cục bộ | multi-repo WorkspaceSet và child reuse |
 | SPK-06 | PASS cục bộ | root family worktree isolation |
 | SPK-07 | PARTIAL | scope guard chặn trước fenced SQLite mutation pass; chưa có mount isolation/process-provider end-to-end |

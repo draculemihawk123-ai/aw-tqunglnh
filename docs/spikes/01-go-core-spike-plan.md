@@ -5,7 +5,8 @@
 > Phạm vi: CLI-only, chạy offline mặc định, ưu tiên bằng chứng có thể tái lập.
 >
 > Baseline bắt buộc: [mô hình Project–Repository–WorkspaceSet](../architecture/01-project-repository-workspace-model.md)
-> và [ADR-001 đến ADR-010](../architecture/02-architecture-decisions.md).
+> và [ADR-001 đến ADR-025](../architecture/02-architecture-decisions.md). Chỉ các SPK/gate ghi trong
+> tài liệu này thuộc V0; capability downstream vẫn theo phân kỳ của Go core spec/roadmap.
 > Trạng thái/handoff session: [Start here](../00-start-here.md).
 
 ## 1. Mục đích của spike
@@ -31,7 +32,7 @@ Spike chỉ được coi là đạt khi cả năm giả thuyết có evidence m�
 ## 2. Goals
 
 - Dựng vertical slice nhỏ nhất từ publish definition đến run, attempt, process execution, evidence
-  và resume.
+  và crash recovery bằng Attempt mới.
 - Dùng SQLite file thật, Git repository/worktree thật và OS child process thật.
 - Chứng minh state transition và side effect có optimistic version/fencing protection.
 - Chứng minh multi-repository `RevisionSet` và diff provenance.
@@ -104,7 +105,7 @@ Domain không import package SQLite, Git, filesystem, `os/exec`, Claude hoặc C
 | `LeaseRepository` | Cấp lease, renew và validate fencing token |
 | `WorkspaceProvider` | Provision/inspect/release worktree theo repository |
 | `RevisionInspector` | Pin revision, diff và tạo `RevisionSet` |
-| `AgentExecutor` | Start/resume/cancel và stream normalized event |
+| `AgentExecutor` | Start/cancel và stream normalized event; optional Resume chỉ để future capability-test |
 | `ProcessRunner` | Chạy/giám sát OS process theo execution spec |
 | `Clock` | Thời gian cho lease/test; domain không gọi wall clock trực tiếp |
 | `EvidenceStore` | Lưu manifest, log, hash và locator artifact |
@@ -116,7 +117,7 @@ application command; CLI không chứa rule domain.
 
     Describe() -> provider, adapter_version, capabilities
     Start(ExecutionRequest) -> event stream, ExecutionOutcome
-    Resume(ExecutionRequest, ProviderSessionRef) -> event stream, ExecutionOutcome
+    Resume?(ExecutionRequest, ProviderSessionRef) -> event stream, ExecutionOutcome
     Cancel(ExecutionHandle) -> result
 
 `ExecutionRequest` chứa attempt ID, workspace mount/scope, `ContextSnapshot`, timeout và policy đã
@@ -128,7 +129,7 @@ resolve. Nó không chứa switch buộc orchestrator biết Claude hay Codex. N
 Layout này là giới hạn tổ chức cho spike, chưa phải cấu trúc repository production cuối cùng:
 
     cmd/
-      agentkit-spike/             # publish/run/resume/inspect/evidence commands
+      agentkit-spike/             # publish/run/recover/inspect/evidence commands
       fake-claude/                # executable mô phỏng Claude protocol
       fake-codex/                 # executable mô phỏng Codex protocol
       spike-helper/               # deterministic command/fault helper
@@ -195,54 +196,62 @@ suy từ tên thư mục.
 
 ## 9. Acceptance tests bắt buộc
 
+Full-suite runner phải có registry one-to-one từ SPK-01…14 tới runnable handler. Manifest đủ ID nhưng
+handler thiếu/trùng/no-op phải fail trước khi chạy verdict; result không được tổng hợp từ test rời chưa
+được dispatcher gọi.
+
 ### SPK-01 — Publish tạo version bất biến và hash ổn định
 
 **Arrange:** publish cùng nội dung workflow v1 hai lần với khác biệt whitespace/key order không có
 ý nghĩa; sau đó publish nội dung v2 có semantic change.
 
-**Assert:** canonical content của v1 có cùng hash; publish có thể deduplicate hoặc trả version đã
-tồn tại. V2 có version ID/hash khác. Không command nào sửa được snapshot v1 đã publish. Graph sai
-hoặc terminal unreachable bị reject trước khi lưu runtime version.
+**Assert:** canonical source của v1 có cùng SourceHash/canonical snapshot hash và có thể deduplicate.
+V2 mới triển khai general dependency registry + CompiledSnapshotHash; spike chỉ phải ghi exact
+version/hash của dependency tối thiểu thực sự dùng trong fixture, không được đọc dependency mutable.
+Không command nào sửa snapshot v1. Graph sai hoặc terminal unreachable bị reject.
 
 **Evidence:** manifest gồm source hash, canonical hash, version ID, validation result và audit event.
 
 ### SPK-02 — Run pin version xuyên qua publish mới và restart
 
 **Arrange:** start `R1` bằng v1 rồi dừng worker ở fault point trước node thứ hai. Sửa file authoring,
-publish v2, restart worker và resume `R1`. Sau đó start `R2` bằng v2.
+publish v2, restart worker và recover `R1`. Sau đó start `R2` bằng v2.
 
 **Assert:** `R1.workflow_version_id/hash` vẫn là v1 và marker cuối là `contract=v1`; `R2` dùng v2.
 Restart hoặc thay đổi file trên disk không đổi graph/node config của R1.
 
 **Evidence:** hai run manifests, exact version snapshot/hash, state transition và marker artifact.
 
-### SPK-03 — Hard crash và durable resume
+### SPK-03 — Hard crash và durable recovery
 
 **Arrange:** worker spawn fake provider process thật. Fake provider phát một checkpoint rồi giữ
 process sống. Test cưỡng bức terminate worker process, không gọi graceful shutdown. Khởi động worker
 mới chỉ với DB/evidence root; không truyền object/session trong memory.
 
-**Assert:** completed node không chạy lại. Attempt bị gián đoạn được chuyển `RUNNING -> LOST` hoặc
-`UNKNOWN` qua reconciliation có audit event, không bị coi là success. Retry tạo attempt ID mới theo
-policy; nó dùng canonical ContextSnapshot và có thể dùng `ProviderSessionRef` nếu còn hợp lệ nhưng
-không phụ thuộc ref đó. Run đi đến terminal đúng một lần.
+**Assert:** completed node không chạy lại. Read-only Attempt bị gián đoạn chuyển `RUNNING -> LOST`;
+mutating Attempt chuyển `INDETERMINATE` và quarantine/reconcile, không bị coi là success. Retry tạo
+attempt ID mới theo policy, dùng canonical ContextSnapshot và luôn gọi `Start`; Resume call count bằng
+0 dù ProviderSessionRef còn hợp lệ. Run đi đến terminal đúng một lần.
 
 **Evidence:** PID/process timeline, attempt IDs, checkpoint, reconciliation event, retry relation,
 context manifest và terminal outcome.
 
 ### SPK-04 — Crash tại transaction boundaries
 
-Chạy SPK-03 lần lượt tại các fault point xác định:
+Chạy SPK-03 lần lượt tại đủ sáu fault point chuẩn:
 
-1. `after_process_exit_before_outcome_commit`;
-2. `after_outcome_commit_before_job_ack`;
-3. `after_node_complete_before_next_job_dispatch`;
-4. `after_job_claim_before_process_spawn`.
+1. `before_intent_job_commit`;
+2. `after_job_commit_before_claim`;
+3. `after_job_claim_before_process_spawn`;
+4. `after_checkpoint_before_process_exit`;
+5. `after_process_exit_before_outcome_commit`;
+6. `after_outcome_commit_before_next_dispatch`.
 
 **Assert chung:** restart không mất job, không tạo hai terminal transitions, không tự suy success từ
 process exit đơn lẻ, và không chạy lại committed side effect như một attempt cũ. Nếu side effect
-không chứng minh được, trạng thái phải là `UNKNOWN/BLOCKED` hoặc retry attempt mới theo policy, không
-được âm thầm `DONE`.
+không chứng minh được, trạng thái phải là `INDETERMINATE/BLOCKED` hoặc retry attempt mới theo policy, không
+được âm thầm `DONE`. Boundary 1 phải không để state/job/event; boundary 2 phải giữ đủ state/job/event
+và được claim đúng một lần authoritative.
 
 **Evidence:** fault point, state/event/outbox sequence, attempt/process correlation và invariant check.
 
@@ -326,14 +335,14 @@ registry/capability. Unknown capability bị reject trước execution.
 **Evidence:** raw event logs, normalized event logs, adapter version/capabilities, contract-test diff
 và import/dependency check.
 
-### SPK-12 — Mất provider session vẫn resume được
+### SPK-12 — Mất provider session vẫn recover được
 
 **Arrange:** hoàn thành một attempt có `ProviderSessionRef`, xóa/invalidate fake provider session,
-crash trước node kế tiếp rồi resume.
+crash trước node kế tiếp rồi recover.
 
 **Assert:** runtime dựng ContextSnapshot từ platform message/resource/revision manifest và tiếp tục
-qua `Start` mới hoặc fallback policy. ProviderSessionRef mất không làm mất conversation/context và
-không đổi pinned RevisionSet.
+chỉ qua `Start` mới. Fake adapter fail nếu `Resume` được gọi; call count phải bằng 0. ProviderSessionRef
+mất không làm mất conversation/context và không đổi pinned RevisionSet.
 
 **Evidence:** canonical messages, context snapshot/hash, invalid-session outcome, fallback event và
 revision manifest.
@@ -365,11 +374,12 @@ transaction boundary cho phép.
 
 | Fault point | Cách gây lỗi | Điều cần chứng minh |
 |---|---|---|
+| before intent/job commit | terminate API/command process | state, event và job cùng không tồn tại |
+| after job commit, before claim | terminate process | durable state/job tồn tại và được claim authoritative đúng một lần |
 | before process spawn | terminate worker | claimed job được recover, không có phantom process |
 | after provider checkpoint | terminate worker | session chỉ là optimization; attempt được reconcile |
 | after process exit, before outcome commit | terminate worker | exit code không tự biến thành committed success |
-| after outcome commit, before job ack | terminate worker | durable state ngăn duplicate completion |
-| after node complete, before dispatch | terminate worker | outbox/durable job nối tiếp không bị mất |
+| after outcome commit, before next dispatch | terminate worker | durable state/outbox ngăn duplicate completion và không mất bước kế |
 | after lease expiry, before stale write | pause/resume W1 | fencing chặn writer cũ |
 | after first repo mutation | helper returns failure | multi-repo result là partial, không giả atomic rollback |
 | after workspace recreate | submit old token | generation fence vô hiệu hóa cache/lease cũ |
@@ -386,7 +396,8 @@ binary:
 
 - đọc request qua protocol mà adapter tương ứng kỳ vọng;
 - phát raw JSONL/event fixture có khác biệt provider thực tế cần normalize;
-- hỗ trợ start, resume, cancel, invalid-session và configurable fault/checkpoint;
+- hỗ trợ start, optional resume-contract, cancel, invalid-session và configurable fault/checkpoint;
+  full runtime scenario fail nếu orchestrator gọi resume;
 - chỉ sửa file được khai báo trong fixture;
 - có adapter/fixture protocol version rõ ràng.
 
@@ -475,7 +486,8 @@ Spike chỉ PASS khi:
 5. Crash tests dùng process kill thật và restart bằng process mới.
 6. Không invariant WorkspaceSet, RevisionSet, lease/fencing hay version pinning nào chỉ được chứng
    minh bằng mock trong memory.
-7. Kết quả và giới hạn được ghi vào spike report, kể cả live smoke chưa chạy hoặc fail.
+7. Registry chứng minh đủ 14 scenario runnable và cả sáu crash boundary có machine evidence.
+8. Kết quả và giới hạn được ghi vào spike report, kể cả live smoke chưa chạy hoặc fail.
 
 ### FAIL
 
@@ -504,7 +516,7 @@ Spike kết thúc với đúng các artifact reviewable:
 3. `spike-report.md` ghi kết quả từng SPK, fault finding và giới hạn;
 4. dependency/boundary report;
 5. danh sách ADR cần bổ sung hoặc supersede, nếu có;
-6. đề xuất `GO`, `REWORK` hoặc `STOP` cho core Go.
+6. đề xuất `GO`, `REWORK`, `STOP` hoặc `CHƯA ĐỦ EVIDENCE` cho core Go.
 
 Chỉ khi kết quả là `GO` mới bắt đầu alpha runtime và quyết định UI. `REWORK` quay lại đúng primitive
 thất bại bằng một spike hẹp hơn. `STOP` phải nêu bằng chứng rằng kiến trúc hoặc lựa chọn Go không đạt,

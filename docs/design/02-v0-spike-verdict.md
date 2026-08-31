@@ -3,9 +3,13 @@
 > Entry: spike report đang `IN PROGRESS`.
 >
 > Exit: SPK-01…14 pass offline trên Windows/Linux, race/stability pass, evidence verify được và report
-> ghi `GO`; nếu evidence cho thấy invariant sai thì dừng ở `REWORK` hoặc `STOP`.
+> ghi `GO`; nếu gate fail hoặc môi trường chưa đủ thì vẫn chạy assessment và ghi
+> `REWORK|STOP|CHƯA ĐỦ EVIDENCE`.
 >
 > Không được làm: Alpha API/UI, production feature, hạ gate hoặc thay PASS bằng local unit pass.
+
+> Phạm vi task mặc định: kế thừa mục 3 của `00-roadmap.md`; task không ghi `Phạm vi` riêng vẫn chỉ
+> được sửa đúng code/test/fixture/doc cần cho mục tiêu và bước thực hiện của task đó.
 
 ## V0-01 — Khóa schema acceptance result theo từng SPK
 
@@ -17,6 +21,16 @@
   verify cho bundle baseline chỉ dưới nhãn non-verdict.
 - **Verify:** unit test manifest thiếu/trùng/đủ 14 SPK và `go test ./internal/spikeacceptance`.
 - **Hoàn thành khi:** machine có thể phân biệt rõ suite baseline với full SPK verdict.
+
+## V0-01A — Đăng ký đủ 14 scenario vào full-suite runner
+
+- **Mục tiêu:** mỗi SPK-01…14 có scenario runnable thật, không chỉ có constant/result ID trong manifest.
+- **Phụ thuộc:** V0-01.
+- **Phạm vi:** registry, CLI dispatcher và negative fixture; không implement behavior còn thiếu của SPK.
+- **Thực hiện:** map chính xác từng `spkId` tới scenario entrypoint; reject missing/duplicate/no-op
+  handler; full suite phải gọi đủ 14 và thu result thực của từng handler.
+- **Verify:** test registry thiếu/trùng/no-op, spy execution count và clean full-suite dry run.
+- **Hoàn thành khi:** manifest đủ 14 nhưng thiếu một wiring runnable luôn fail trước verdict.
 
 ## V0-02 — Nối checkpoint/context vào hard-crash flow SPK-03
 
@@ -34,8 +48,9 @@
 - **Mục tiêu:** đóng fault point đầu còn thiếu của SPK-04.
 - **Phụ thuộc:** V0-02.
 - **Phạm vi:** named fault hook và crash integration test.
-- **Thực hiện:** kill worker sau external exit nhưng trước finalize; recovery phải biểu diễn
-  `INDETERMINATE` hoặc reconcile được bằng evidence, tuyệt đối không suy exit code 0 thành success.
+- **Thực hiện:** kill worker sau external exit nhưng trước finalize; read-only attempt phải thành
+  `LOST`, mutating attempt phải thành `INDETERMINATE` rồi reconcile bằng evidence; tuyệt đối không suy
+  exit code 0 thành success.
 - **Verify:** chạy test hai lần với side effect read-only và mutating.
 - **Hoàn thành khi:** không duplicate terminal/outbox và kết quả recovery có typed reason.
 
@@ -47,7 +62,17 @@
 - **Thực hiện:** kill đúng boundary sau commit node; restart dispatcher; deduplicate transition và tạo
   downstream job đúng một lần.
 - **Verify:** subprocess crash test đếm node activation, event sequence và job idempotency.
-- **Hoàn thành khi:** SPK-04 pass đủ bốn fault point trong spike plan.
+- **Hoàn thành khi:** boundary này pass và có artifact riêng trong ma trận sáu crash boundary.
+
+## V0-04A — Hai crash boundary quanh transaction intent/job
+
+- **Mục tiêu:** đóng hai boundary còn thiếu trước và ngay sau transaction tạo intent/job.
+- **Phụ thuộc:** V0-04.
+- **Phạm vi:** fault hooks tại application transaction, subprocess fixture và assertion job/outbox.
+- **Thực hiện:** (1) kill trước commit: state/job/event cùng không tồn tại; (2) kill sau commit job nhưng
+  trước claim: state/job/event cùng tồn tại và replacement claim đúng một lần.
+- **Verify:** subprocess crash tests trên SQLite thật, đếm receipt/event/job/claim và chạy lặp.
+- **Hoàn thành khi:** cả sáu boundary trong Go core spec có named hook, runnable scenario và evidence.
 
 ## V0-05 — Invalid provider session trong crash flow SPK-12
 
@@ -113,7 +138,7 @@
 ## V0-11 — Chạy full offline suite trên Windows và Ubuntu CI
 
 - **Mục tiêu:** SPK-01…14 thực thi thật trên cả hai OS.
-- **Phụ thuộc:** V0-03…V0-10.
+- **Phụ thuộc:** V0-01A, V0-03…V0-10 và V0-04A.
 - **Phạm vi:** CI workflow, toolchain setup và evidence upload; không cần network provider.
 - **Thực hiện:** build helper/provider binaries; chạy acceptance; verify bundle; upload platform
   manifests; compare semantic results.
@@ -142,18 +167,22 @@
 
 ## V0-14 — Ghi verdict và đóng gate
 
-- **Mục tiêu:** cập nhật report/start-here bằng kết luận evidence-backed.
-- **Phụ thuộc:** V0-09, V0-11, V0-12, V0-13.
+- **Mục tiêu:** luôn tạo assessment cuối và cập nhật report/start-here bằng kết luận evidence-backed,
+  kể cả khi một execution gate fail.
+- **Phụ thuộc:** V0-09, V0-11, V0-12 và V0-13 đã tạo assessment artifact/trạng thái; không yêu cầu
+  chúng phải PASS để chạy task này.
 - **Phạm vi:** `docs/spikes/02-go-core-spike-report.md`, `docs/00-start-here.md`; không sửa ADR để hợp
   thức hóa failure.
 - **Thực hiện:** cập nhật từng SPK, environment/evidence IDs, limits/live-smoke status và verdict
-  `GO|REWORK|STOP` đúng gate.
+  `GO|REWORK|STOP|CHƯA ĐỦ EVIDENCE` đúng gate; không đổi failure thành deferred.
 - **Verify:** link/path evidence tồn tại, bundle verify command pass, doc không còn claim mâu thuẫn.
-- **Hoàn thành khi:** chỉ verdict `GO` mới đổi V1 thành allowed; mọi verdict khác ghi next narrow task.
+- **Hoàn thành khi:** assessment matrix đầy đủ; chỉ verdict `GO` mới đổi V1 thành allowed, mọi verdict
+  khác ghi blocker và next narrow task.
 
 ## Exit evidence V0
 
 - Full SPK result manifests Windows/Linux.
+- Registry chứng minh đủ 14 scenario runnable và ma trận đủ sáu crash boundary.
 - Race và 10-run stability reports.
 - Verified/tamper-negative evidence bundle.
 - Dependency boundary report.

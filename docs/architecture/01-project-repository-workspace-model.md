@@ -16,8 +16,9 @@ Agent Kit coi dự án nhiều repository là trường hợp bình thường:
       |- web-app
       `- deployment
 
-UI quản lý task ở cấp Project. Source, diff, log và terminal có thể focus một repository tại một
-thời điểm, nhưng đây chỉ là cách hiển thị; domain và runtime không bị giới hạn một repository.
+UI quản lý task ở cấp Project. Source, diff và log read-only có thể focus một repository tại một
+thời điểm, nhưng đây chỉ là cách hiển thị; domain và runtime không bị giới hạn một repository. Alpha
+không có interactive terminal.
 
 ## 2. Meta-model
 
@@ -31,6 +32,7 @@ thời điểm, nhưng đây chỉ là cách hiển thị; domain và runtime kh
            -> WorkspaceSet
                 -> RepositoryWorkspace[]
                      -> Worktree
+           -> ReleaseSet
 
     Child WorkItem
       -> same TaskFamily
@@ -52,6 +54,7 @@ thời điểm, nhưng đây chỉ là cách hiển thị; domain và runtime kh
 | WorkspaceSet | Logical workspace đa repository của TaskFamily |
 | RepositoryWorkspace | Worktree mutable của đúng một repository trong family |
 | RevisionSet | Tập repository_id và exact revision dùng cho context/evidence |
+| ReleaseSet | Kết quả local đã correlate/seal của từng repository; không phải transaction Git xuyên repo |
 
 ## 3. Semantics của scope và ownership
 
@@ -134,7 +137,8 @@ context, gate hoặc evidence đã sử dụng.
 2. Chạy integration/release gate trên RevisionSet cuối.
 3. Giữ artifact/evidence cần thiết.
 4. Thực hiện release theo policy.
-5. Chỉ cleanup khi không còn nhu cầu resume.
+5. Seal ReleaseSet local hoặc ghi explicit abandon decision theo policy.
+6. Chỉ cleanup khi không còn nhu cầu recovery và ReleaseSet đã seal hoặc abandon.
 
 ## 7. Concurrency, lease và runner
 
@@ -146,12 +150,13 @@ WriteLease alpha mặc định exclusive theo family_id + repository_id + genera
 - hai sibling cùng ghi một RepositoryWorkspace phải serialize;
 - lease có TTL, heartbeat và fencing token;
 - token cũ không được commit sau expiry hoặc generation change;
-- checker read-only dùng pinned revision/snapshot.
+- checker read-only dùng pinned revision/snapshot và chỉ ghi scratch ngoài source workspace.
 
 Mặc định một mutating attempt mount repository mục tiêu read-write và các repository tham chiếu
 read-only. Runner kiểm diff sau execution không vượt write scope.
 
-Integration attempt cần ghi nhiều repository phải khai báo capability riêng và acquire batch lease.
+Integration attempt cần ghi nhiều repository phải khai báo capability
+`INTEGRATION_MULTI_REPOSITORY_WRITE` và acquire batch lease.
 PathScope alpha dùng để giới hạn quyền và kiểm diff; concurrent writers cùng một worktree để sau.
 
 ## 8. Boundary UI alpha
@@ -168,19 +173,21 @@ PathScope alpha dùng để giới hạn quyền và kiểm diff; concurrent wri
 - Hiển thị READ/WRITE scope, WorkspaceSet, revision, lease và blocker theo repository.
 - Graph hiển thị repository scope của từng node.
 
-### Source, diff, log, terminal và chat
+### Source, diff, log và chat
 
 - Mỗi panel focus/tab một repository tại một thời điểm.
 - Chuyển tab không ảnh hưởng runtime hoặc scope.
 - File/context đưa vào chat luôn giữ repository_id.
 - UI không trực tiếp chạy Git hoặc agent CLI; chỉ gửi application command.
+- UI Alpha không có interactive browser terminal theo ADR-018; terminal capability cần policy/isolation
+  và audit riêng trước khi được bổ sung.
 
 ## 9. Failure và recovery
 
 | Failure | Hành vi bắt buộc |
 |---|---|
 | Provision một repository thất bại | WorkspaceSet chưa ready; không chạy node cần repository đó |
-| Worker chết khi giữ lease | Lease hết hạn; token cũ bị fence; attempt thành lost/unknown |
+| Worker chết khi giữ lease | Lease hết hạn; token cũ bị fence; read-only Attempt `LOST`, mutating Attempt `INDETERMINATE` |
 | Worktree bị recreate | Tăng generation; lease/cache cũ mất hiệu lực |
 | Multi-repo operation fail một phần | Ghi partial outcome; không tuyên bố atomic rollback |
 | Diff vượt write scope | Attempt fail/block và giữ evidence vi phạm |
@@ -201,20 +208,22 @@ directory hay provider session còn tồn tại.
 7. Sibling cùng RepositoryWorkspace không thể cùng giữ WriteLease.
 8. Fencing token cũ không thể commit.
 9. Evidence xuyên repository chứa exact RevisionSet.
-10. Kanban hiển thị task multi-repository; source panel focus từng repository.
+10. Kanban hiển thị task multi-repository; source/diff/log panel focus từng repository.
 11. UI không cần spawn Git/CLI.
 12. Restart process dựng lại được family, WorkspaceSet, lease state và provenance.
+13. Checker không ghi được source workspace; multi-repository writer thiếu integration capability bị chặn.
+14. Cleanup bị chặn cho tới khi ReleaseSet local đã seal hoặc có abandon decision.
 
 ## 11. Ranh giới với tài liệu tiếp theo
 
-Architecture decision record riêng sẽ quyết định:
+Các architecture decision hiện hành đã quyết định:
 
-- mở rộng RepositoryScope khi run đang chạy;
-- mức cho phép mutating node xuyên nhiều repository;
-- release set và compensation xuyên repository;
-- quyền local commit, push, tạo pull request và merge;
-- authoring/publish WorkflowDefinition;
-- conversation retention và target operating systems.
+- mở rộng RepositoryScope bằng append-only RunManifestAmendment và NodeRun activation mới;
+- mutating node mặc định một repository, multi-repository chỉ integration capability;
+- Alpha có ReleaseSet/local commit, không có push/PR/merge executor;
+- authoring/publish WorkflowDefinition dùng compiled snapshot hash;
+- conversation/context có retention class riêng; core hỗ trợ Windows/Linux;
+- UI Alpha có source/diff/log read-only, không có interactive terminal.
 
 Go core spec phải triển khai đúng model và invariant này. Spike phải chứng minh workspace isolation,
 lease/fencing và RevisionSet trước khi bắt đầu alpha UI/runtime.

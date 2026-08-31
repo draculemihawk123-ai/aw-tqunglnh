@@ -3,7 +3,7 @@
 > Đọc tài liệu này đầu tiên khi bắt đầu một session mới. Nó là điểm vào cho mục tiêu, các quyết định
 > đã chốt, trạng thái thực thi và ranh giới công việc hiện tại.
 >
-> Cập nhật: 2026-08-28. Nếu tài liệu này khác ADR, ADR là authority về quyết định kiến trúc; cần sửa
+> Cập nhật: 2026-08-31. Nếu tài liệu này khác ADR, ADR là authority về quyết định kiến trúc; cần sửa
 > tài liệu này trong cùng thay đổi, không tự suy diễn.
 
 ## 1. Mục tiêu sản phẩm
@@ -28,17 +28,43 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
 3. Workflow, Block, Skill, Layer, policy và adapter đều có version publish bất biến. Một run pin đúng
    version/hash đã bắt đầu, không đọc definition hiện tại trên disk để đổi hành vi.
 4. Context là dữ liệu do platform sở hữu. Sau crash/retry, execution mới luôn được `Start` từ
-   `ContextSnapshot`; `ProviderSessionRef` chỉ để correlation/debug, không là điều kiện resume.
+   `ContextSnapshot`; `ProviderSessionRef` chỉ để correlation/debug, không là điều kiện recovery.
 5. Claude CLI, Codex CLI và CLI tương lai đi qua process/protocol adapter. Domain/application không
    có nhánh xử lý riêng theo provider.
 6. Skill/Layer/Engineering Pack chỉ chứa instruction và resource. Command, gate, scaffold hay script
    thực thi phải là executable definition/executor versioned, được policy cấp quyền tường minh.
-7. Alpha là single-user local, lưu SQLite và evidence local disk 7 ngày, không mã hóa at-rest; secret
-   vẫn phải redact trước persist. Beta là deployment tập trung riêng với PostgreSQL, login/RBAC,
+7. Alpha là single-user local, lưu SQLite và artifact local disk, không mã hóa at-rest; TTL 7 ngày chỉ
+   áp cho raw output/evidence tạm theo retention class, secret vẫn phải redact trước persist. Beta là
+   deployment tập trung riêng với PostgreSQL, login/RBAC,
    tổ chức/team và server worker. Alpha và beta **không đồng bộ dữ liệu** với nhau.
 8. UI cuối cùng cần Kanban, task detail/timeline, workflow/block đang chạy hoặc bị block, quản lý
    Skill/Layer/Agent và chat theo task. UI chỉ gọi application API, không spawn Git/CLI hay ghi state
    runtime trực tiếp.
+9. Scope expansion không sửa manifest/NodeRun cũ: approval tạo `RunManifestAmendment` và activation
+   mới. END chỉ tạo completion candidate; CompletionPolicy mới chuyển Run/WorkItem thành công.
+10. Alpha phân biệt isolation được enforce với executable local được operator tin cậy; không gọi
+    cwd/diff guard là sandbox. Multi-repository write chỉ dành cho integration capability.
+11. Alpha có ReleaseSet local và local commit theo policy; không có push/PR/merge executor. Projection
+    dùng JournalPosition durable và recovery lease chạy định kỳ, không chỉ khi startup.
+12. TTL 7 ngày áp cho evidence/raw payload mặc định. Canonical conversation/context phục vụ recovery
+    không bị blanket TTL và hold được tôn trọng. UI Alpha có source/diff/log read-only và không có
+    interactive browser terminal.
+13. `ExecutionAttempt` có terminal `BLOCKED` tách khỏi `FAILED`; scope expansion dùng
+    `TerminationReason=SCOPE_EXPANSION_REQUIRED` và không tiêu thụ retry budget.
+14. Cancel run đi qua `CANCELLING` và quiesce thật; outcome chưa xác định là `INDETERMINATE` +
+    `QUARANTINED`, không phải `CANCELLED`. Cancel không tự cleanup workspace hay abandon ReleaseSet.
+    `CancelRun` chỉ no-op khi **Run** đã terminal; Attempt terminal hay END không làm cancel no-op.
+    `CancelRun`, `CancelWorkItem` và `ResolveWorkItemBlocker` là ba command khác nhau.
+15. CompletionPolicy có đúng bốn outcome `PASS|REWORK|BLOCK|FAIL` với transition cố định; `REWORK` thiếu
+    rework edge đã publish phải thành `BLOCK`.
+16. `AdapterBuildVersion` là operational registry, không phải DefinitionKind; có surface probe/register
+    riêng và run đang chạy không bao giờ bị tự động repin.
+17. Isolation profile đã pin không auto-downgrade. Mọi admission check fail-closed cho Attempt kết thúc
+    `QUEUED → BLOCKED` với reason typed; `RetryBlockedActivation` tạo activation mới sau khi revalidate
+    pin, không hồi sinh Attempt cũ.
+18. Acceptance criteria được phân loại phase trước V1 bằng pre-V1 gate `V1-00A…V1-00C`; V8 không phân loại lại.
+19. Command envelope dùng `CommandScope = INSTALLATION | PROJECT(ProjectID)`; adapter registry, Doctor
+    và safe settings là installation-scoped.
 
 ## 3. Glossary chuẩn
 
@@ -54,18 +80,27 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
 | Engineering Pack | Gói versioned để resolve một tập Layer/Skill/resource tương thích; không phải executable authority và không thay thế Layer. |
 | Executor | Capability thực thi đã đăng ký/versioned, ví dụ agent CLI adapter, command/gate/scaffold runner. |
 | ContextSnapshot | Snapshot canonical của message/resource/revision để bắt đầu execution mới. |
+| CompletionDecision | Quyết định typed của CompletionPolicy: `PASS`, `REWORK`, `BLOCK` hoặc `FAIL`. |
+| CancellationIntent | Durable intent đưa Run vào `CANCELLING`; Run chỉ `CANCELLED` sau khi quiesce. |
+| Phase label | Nhãn scope của một acceptance criterion: `ALPHA_MUST`, `BETA_ADAPTER_GATE`, `BETA_PARITY_GATE`, `CROSS_PHASE_GUARD` hoặc `NOT_APPLICABLE`. |
+| TerminationReason | Enum runtime giải thích vì sao một Attempt kết thúc; khác `AppError.Code`. |
+| SourceRef | Tham chiếu chuẩn trong trường `Nguồn`: `ADR`, `AK-ARCH`, `HE`, `GC-INV`, `GC-ACC`, `ROADMAP`. |
 | Evidence | Artifact immutable, redacted, hash-verified chứng minh outcome/gate. |
+| RunManifestAmendment | Revision append-only mở rộng scope đã được duyệt mà không sửa ExecutionManifest cũ. |
+| ReleaseSet | Kết quả release tương quan nhiều repository; mỗi repository có revision/gate/result riêng. |
+| AdapterBuildVersion | Identity bất biến của adapter/protocol/build/capability thực thi. |
+| JournalPosition | Vị trí delivery monotonic của event, tách khỏi sequence trong từng aggregate. |
 
 ## 4. Trạng thái lộ trình hiện tại
 
 | Mục | Trạng thái | Quy tắc |
 |---|---|---|
 | 1. Domain Project/Repository/TaskFamily/WorkspaceSet | Hoàn tất tài liệu baseline | Không đổi semantics nếu không có ADR mới. |
-| 2. Quyết định kiến trúc | ACCEPTED | ADR-001…010 là baseline. |
+| 2. Quyết định kiến trúc | ACCEPTED | ADR-001…025 là baseline sau review thiết kế ngày 2026-08-31. |
 | 3. Go core architecture/spec | Hoàn tất specification baseline | Code phải bám spec hoặc tạo ADR superseding. |
 | 4. Go spike | **IN PROGRESS** | Phải đạt SPK-01…SPK-14 trước alpha. |
 | 5. Alpha UI/runtime | **CHƯA ĐƯỢC BẮT ĐẦU** | Chỉ bắt đầu sau verdict `GO` của spike. |
-| 6. Thiết kế chi tiết version/subtask | **DRAFT CHỜ REVIEW** | Roadmap Alpha và task theo session nằm tại `docs/design/`; chưa thực thi V1 trước verdict `GO` của spike. |
+| 6. Thiết kế chi tiết version/subtask | **BASELINE ĐÃ QUYẾT ĐỊNH** | Roadmap Alpha và task theo session nằm tại `docs/design/`; đã cập nhật theo ADR-020…025. Vẫn chưa thực thi V1 trước verdict `GO` của spike. |
 
 Spike hiện đã có primitive và baseline evidence Windows, nhưng **chưa đạt gate**: còn acceptance
 end-to-end từng SPK, một số fault path, Linux semantic suite và `go test -race` trên CI. Không được
@@ -77,7 +112,7 @@ diễn đạt local unit pass là `GO` cho alpha.
 2. [Kinh nghiệm từ claude-workflow](danh-gia-claude-workflow.md).
 3. [Tổng quan harness engineering](harness-engineering/00-tong-quan.md) và lecture liên quan.
 4. [Mô hình Project–Repository–WorkspaceSet](architecture/01-project-repository-workspace-model.md).
-5. [Architecture decisions](architecture/02-architecture-decisions.md).
+5. [Architecture decisions](architecture/02-architecture-decisions.md), gồm ADR-001…025.
 6. [System architecture](architecture/03-system-architecture.md) và [Go core spec](architecture/04-go-core-spec.md).
 7. [Roadmap Alpha](design/00-roadmap.md) và [thiết kế hệ thống Alpha](design/01-system-design.md).
 8. [Go spike plan](spikes/01-go-core-spike-plan.md), rồi [spike report](spikes/02-go-core-spike-report.md).
@@ -98,7 +133,8 @@ go run ./cmd/agentkit-spike evidence verify --evidence-dir docs/spikes/evidence 
 ```
 
 `acceptance --offline` hiện tạo evidence cho baseline test suite, **không** tự động biến mọi SPK thành
-PASS. Evidence generated nằm dưới `docs/spikes/evidence/`, bị Git ignore và retention là 7 ngày.
+PASS. Evidence generated nằm dưới `docs/spikes/evidence/`, bị Git ignore và raw spike payload có
+retention mặc định 7 ngày.
 Linux/race là CI gate bắt buộc, không được bỏ qua chỉ vì local Go bundle không hỗ trợ race detector.
 
 ## 7. Definition of done cho mục 4
