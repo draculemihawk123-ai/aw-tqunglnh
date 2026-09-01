@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,15 +13,15 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
 
-// Fixture identities shared between the top-level test and its crashed
-// worker child, exactly as in the other crash_resume_*_integration_test.go
-// files.
+// Aliases onto crashworker_fixtures.go's exported constants: this file was
+// written against these unexported names before the shared, non-test worker
+// logic was extracted (docs/design/02-v0-spike-verdict.md V0-10B).
 const (
-	crashNodeDispatchRunID              = "workflow-run-crash-dispatch"
-	crashNodeDispatchNodeRunID          = "node-run-crash-dispatch"
-	crashNodeDispatchJobID              = "job-crash-dispatch-current"
-	crashNodeDispatchNextJobID          = "job-crash-dispatch-next"
-	crashNodeDispatchNextIdempotencyKey = "dispatch-next-node-crash"
+	crashNodeDispatchRunID              = CrashNodeDispatchRunID
+	crashNodeDispatchNodeRunID          = CrashNodeDispatchNodeRunID
+	crashNodeDispatchJobID              = CrashNodeDispatchJobID
+	crashNodeDispatchNextJobID          = CrashNodeDispatchNextJobID
+	crashNodeDispatchNextIdempotencyKey = CrashNodeDispatchNextIdempotencyKey
 )
 
 // TestSPK04FaultAfterNodeCompleteBeforeNextDispatch closes fault point 6/6
@@ -189,16 +187,7 @@ func TestSPK04FaultAfterNodeCompleteBeforeNextDispatch(t *testing.T) {
 }
 
 func crashNodeDispatchNextJobRequest() ports.EnqueueJobRequest {
-	return ports.EnqueueJobRequest{
-		ID:             crashNodeDispatchNextJobID,
-		ProjectID:      "project-crash",
-		Kind:           "EXECUTE_NODE",
-		AggregateType:  "WorkflowRun",
-		AggregateID:    crashNodeDispatchRunID,
-		Payload:        json.RawMessage(`{}`),
-		MaxClaims:      3,
-		IdempotencyKey: crashNodeDispatchNextIdempotencyKey,
-	}
+	return CrashNodeDispatchNextJobRequest()
 }
 
 func assertCrashNodeDispatchInvariants(t *testing.T, ctx context.Context, store *Store) {
@@ -223,74 +212,19 @@ func assertCrashNodeDispatchInvariants(t *testing.T, ctx context.Context, store 
 	}
 }
 
-// runNodeDispatchWorkerProcess is the crashed-worker child. It commits a
-// real node-completion-and-dispatch transaction, then is hard-killed with no
-// chance to do anything else — including telling a caller it succeeded.
+// runNodeDispatchWorkerProcess and seedCrashNodeDispatchNodeRun delegate to
+// the shared RunCrashWorker (internal/adapters/sqlite/crashworker.go) and
+// crashworker_fixtures.go's exported seed helper.
 func runNodeDispatchWorkerProcess(t *testing.T) {
 	t.Helper()
-	databasePath := strings.TrimSpace(os.Getenv(crashWorkerDBEnvironment))
-	if databasePath == "" {
-		t.Fatal("crash node-dispatch worker database path is required")
+	if err := RunCrashWorker(CrashModeNodeDispatch, testBinarySpawner); err != nil {
+		t.Fatal(err)
 	}
-	ttl, err := time.ParseDuration(os.Getenv(crashWorkerTTLEnvironment))
-	if err != nil || ttl <= 0 {
-		t.Fatalf("parse crash node-dispatch worker TTL: %v", err)
-	}
-
-	ctx := context.Background()
-	store, err := Open(ctx, databasePath)
-	if err != nil {
-		t.Fatalf("crash node-dispatch worker open store: %v", err)
-	}
-	// Intentionally no Close: the parent terminates this process while its
-	// SQLite connection is still live, right after the dispatch transaction
-	// committed for real.
-
-	run, err := store.LoadWorkflowRun(ctx, crashNodeDispatchRunID)
-	if err != nil {
-		t.Fatalf("crash node-dispatch worker load workflow run: %v", err)
-	}
-	_, lease, err := store.ClaimJob(ctx, "worker-before-crash", ttl)
-	if err != nil {
-		t.Fatalf("crash node-dispatch worker claim job: %v", err)
-	}
-
-	if _, _, err := store.CompleteNodeAndDispatchNext(ctx, ports.NodeCompletionDispatch{
-		NodeRunID:       crashNodeDispatchNodeRunID,
-		ExpectedVersion: 1,
-		SelectedOutcome: "done",
-		JobLease:        lease,
-		NextJob:         crashNodeDispatchNextJobRequest(),
-		EventID:         "event-node-dispatch-1",
-		CorrelationID:   "crash-node-dispatch",
-		OccurredAt:      time.Date(2026, 8, 28, 14, 0, 0, 0, time.UTC),
-	}); err != nil {
-		t.Fatalf("crash node-dispatch worker complete+dispatch: %v", err)
-	}
-
-	fmt.Printf(
-		"%s %s %d %s %s %s\n",
-		crashWorkerReadyPrefix,
-		lease.JobID,
-		lease.Token,
-		lease.LeaseUntil.UTC().Format(time.RFC3339Nano),
-		run.WorkflowVersionID,
-		run.WorkflowVersionHash,
-	)
-	_ = os.Stdout.Sync()
-	select {}
 }
 
 func seedCrashNodeDispatchNodeRun(t *testing.T, ctx context.Context, store *Store, runID runtime.WorkflowRunID) {
 	t.Helper()
-	const timestamp = "2026-08-28T14:00:00Z"
-	if _, err := store.db.ExecContext(ctx, `
-INSERT INTO node_runs(
-  id, run_id, node_key, activation_sequence, iteration, state,
-  input_state_hash, version, created_at, updated_at
-) VALUES (?, ?, 'implement', 1, 0, 'RUNNING', 'sha256:input-crash-dispatch', 1, ?, ?);`,
-		crashNodeDispatchNodeRunID, runID, timestamp, timestamp,
-	); err != nil {
-		t.Fatalf("seed crash node-dispatch node run: %v", err)
+	if err := SeedCrashNodeDispatchNodeRun(ctx, store, runID); err != nil {
+		t.Fatal(err)
 	}
 }

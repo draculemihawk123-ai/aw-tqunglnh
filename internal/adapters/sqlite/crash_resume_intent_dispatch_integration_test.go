@@ -4,10 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -15,14 +13,14 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
 
-// Fixture identities shared between each top-level test and its crashed
-// worker child. Each test opens its own temp SQLite file, so reusing the
-// same literal ids across the two tests in this file is safe.
+// Aliases onto crashworker_fixtures.go's exported constants: this file was
+// written against these unexported names before the shared, non-test worker
+// logic was extracted (docs/design/02-v0-spike-verdict.md V0-10B).
 const (
-	crashIntentRunID          = "workflow-run-crash-intent"
-	crashIntentNodeRunID      = "node-run-crash-intent"
-	crashIntentJobID          = "job-crash-intent"
-	crashIntentIdempotencyKey = "dispatch-intent-crash"
+	crashIntentRunID          = CrashIntentRunID
+	crashIntentNodeRunID      = CrashIntentNodeRunID
+	crashIntentJobID          = CrashIntentJobID
+	crashIntentIdempotencyKey = CrashIntentIdempotencyKey
 )
 
 // TestSPK04FaultBeforeIntentJobCommitLeavesNothing closes crash boundary 1/6
@@ -217,107 +215,19 @@ func TestSPK04FaultAfterIntentJobCommitBeforeClaim(t *testing.T) {
 	}
 }
 
-// runBeforeIntentCommitWorkerProcess is the crashed-worker child for
-// boundary 1. It deliberately never calls DispatchNodeIntent — proving
-// "before commit" by never attempting the transaction, not by racing a real
-// call against the kill signal.
+// runBeforeIntentCommitWorkerProcess and runAfterIntentCommitWorkerProcess
+// (boundaries 1 and 2) delegate to the shared RunCrashWorker
+// (internal/adapters/sqlite/crashworker.go).
 func runBeforeIntentCommitWorkerProcess(t *testing.T) {
 	t.Helper()
-	databasePath := strings.TrimSpace(os.Getenv(crashWorkerDBEnvironment))
-	if databasePath == "" {
-		t.Fatal("crash before-intent worker database path is required")
+	if err := RunCrashWorker(CrashModeBeforeIntentCommit, testBinarySpawner); err != nil {
+		t.Fatal(err)
 	}
-	ttl, err := time.ParseDuration(os.Getenv(crashWorkerTTLEnvironment))
-	if err != nil || ttl <= 0 {
-		t.Fatalf("parse crash before-intent worker TTL: %v", err)
-	}
-
-	ctx := context.Background()
-	store, err := Open(ctx, databasePath)
-	if err != nil {
-		t.Fatalf("crash before-intent worker open store: %v", err)
-	}
-	// Intentionally no Close.
-
-	run, err := store.LoadWorkflowRun(ctx, crashIntentRunID)
-	if err != nil {
-		t.Fatalf("crash before-intent worker load workflow run: %v", err)
-	}
-
-	fmt.Printf(
-		"%s %s %d %s %s %s\n",
-		crashWorkerReadyPrefix,
-		"no-job-dispatched-yet",
-		uint64(0),
-		time.Now().UTC().Add(ttl).Format(time.RFC3339Nano),
-		run.WorkflowVersionID,
-		run.WorkflowVersionHash,
-	)
-	_ = os.Stdout.Sync()
-	select {}
 }
 
-// runAfterIntentCommitWorkerProcess is the crashed-worker child for
-// boundary 2. It commits a real DispatchNodeIntent transaction, then hangs;
-// the parent hard-kills it only after that commit succeeded.
 func runAfterIntentCommitWorkerProcess(t *testing.T) {
 	t.Helper()
-	databasePath := strings.TrimSpace(os.Getenv(crashWorkerDBEnvironment))
-	if databasePath == "" {
-		t.Fatal("crash after-intent worker database path is required")
+	if err := RunCrashWorker(CrashModeAfterIntentCommit, testBinarySpawner); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := time.ParseDuration(os.Getenv(crashWorkerTTLEnvironment)); err != nil {
-		t.Fatalf("parse crash after-intent worker TTL: %v", err)
-	}
-
-	ctx := context.Background()
-	store, err := Open(ctx, databasePath)
-	if err != nil {
-		t.Fatalf("crash after-intent worker open store: %v", err)
-	}
-	// Intentionally no Close: the parent terminates this process while its
-	// SQLite connection is still live, right after the dispatch transaction
-	// committed for real.
-
-	run, err := store.LoadWorkflowRun(ctx, crashIntentRunID)
-	if err != nil {
-		t.Fatalf("crash after-intent worker load workflow run: %v", err)
-	}
-
-	_, newJob, err := store.DispatchNodeIntent(ctx, ports.NodeIntentDispatch{
-		RunID:              crashIntentRunID,
-		ExpectedRunVersion: 1,
-		NodeRunID:          crashIntentNodeRunID,
-		NodeKey:            "implement",
-		ActivationSequence: 1,
-		InputStateHash:     "sha256:input-crash-intent",
-		Job: ports.EnqueueJobRequest{
-			ID:             crashIntentJobID,
-			ProjectID:      "project-crash",
-			Kind:           "EXECUTE_NODE",
-			AggregateType:  "WorkflowRun",
-			AggregateID:    crashIntentRunID,
-			Payload:        json.RawMessage(`{}`),
-			MaxClaims:      3,
-			IdempotencyKey: crashIntentIdempotencyKey,
-		},
-		EventID:       "event-crash-intent-1",
-		CorrelationID: "crash-intent",
-		OccurredAt:    time.Date(2026, 8, 28, 15, 0, 0, 0, time.UTC),
-	})
-	if err != nil {
-		t.Fatalf("crash after-intent worker dispatch: %v", err)
-	}
-
-	fmt.Printf(
-		"%s %s %d %s %s %s\n",
-		crashWorkerReadyPrefix,
-		newJob.ID,
-		uint64(0),
-		time.Now().UTC().Format(time.RFC3339Nano),
-		run.WorkflowVersionID,
-		run.WorkflowVersionHash,
-	)
-	_ = os.Stdout.Sync()
-	select {}
 }

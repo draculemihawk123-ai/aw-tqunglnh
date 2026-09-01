@@ -38,12 +38,12 @@ func notYetProven(id SPKID, detail string) ScenarioFunc {
 }
 
 // DefaultScenarios is the production SPK-01..SPK-14 registration list.
-// Eleven of the fourteen SPKs run a real Arrange/Act/Assert scenario against
-// this codebase's real adapters (docs/design/02-v0-spike-verdict.md V0-10A);
-// they are not wrappers around `go test`'s exit code — each one performs its
-// own arrange/act/assert and writes its own evidence. Three are deliberately
-// left as notYetProven, each for a reason specific to that SPK, not "no
-// dedicated task":
+// Twelve of the fourteen SPKs run a real Arrange/Act/Assert scenario against
+// this codebase's real adapters (docs/design/02-v0-spike-verdict.md
+// V0-10A/V0-10B); they are not wrappers around `go test`'s exit code — each
+// one performs its own arrange/act/assert and writes its own evidence. Two
+// are deliberately left as notYetProven, each for a reason specific to that
+// SPK, not "no dedicated task":
 //
 //   - SPK-03: the interrupted execution_attempts row is left at RUNNING
 //     instead of transitioning to LOST/INDETERMINATE (see
@@ -51,12 +51,8 @@ func notYetProven(id SPKID, detail string) ScenarioFunc {
 //     own "Known limitation" doc comment, confirmed against
 //     TerminateInterruptedAttempt/ClassifyInterruptedAttempt: both exist,
 //     but no crash-flow integration test calls them). Closing this is its
-//     own task, deliberately not bundled into V0-10A's wiring work.
-//   - SPK-04: the six-boundary crash matrix is proven only through tests
-//     that re-invoke the go-test binary as their crashed worker, which a
-//     standalone acceptance-suite run cannot do; wiring it for real needs
-//     its own spike-worker binary (the same shape as fake-claude/fake-codex/
-//     spike-helper), not yet built.
+//     own task (V0-10C), deliberately not bundled into V0-10A/V0-10B's
+//     wiring work.
 //   - SPK-13: a single platform run cannot conclude Windows/Linux parity by
 //     itself. This registry's own result is intentionally
 //     "PENDING_PEER_PLATFORM"; the authoritative SPK-13 result comes from
@@ -66,8 +62,8 @@ func DefaultScenarios() []ScenarioEntry {
 	return []ScenarioEntry{
 		{SPK01, runSPK01Scenario},
 		{SPK02, runSPK02Scenario},
-		{SPK03, notYetProven(SPK03, "interrupted execution_attempts row is left at RUNNING instead of transitioning to LOST/INDETERMINATE after a hard crash (see crash_resume_checkpoint_integration_test.go's own doc comment); TerminateInterruptedAttempt/ClassifyInterruptedAttempt exist but no crash-flow integration test calls them yet — closing this is its own task, run before V0-11/V0-12 are declared closed, not part of V0-10A")},
-		{SPK04, notYetProven(SPK04, "6-boundary crash-transaction fault matrix is proven by internal/adapters/sqlite's crash_resume_*_integration_test.go files, but each re-invokes the go-test binary as its crashed worker (AGENTKIT_SPIKE_CRASH_WORKER_MODE); a standalone acceptance-suite run has no test binary to re-invoke, so wiring this scenario for real needs its own spike-worker binary sharing that fixture logic — tracked as a follow-up of the same shape as fake-claude/fake-codex/spike-helper, not yet built")},
+		{SPK03, notYetProven(SPK03, "interrupted execution_attempts row is left at RUNNING instead of transitioning to LOST/INDETERMINATE after a hard crash (see crash_resume_checkpoint_integration_test.go's own doc comment); TerminateInterruptedAttempt/ClassifyInterruptedAttempt exist but no crash-flow integration test calls them yet — closing this is its own task (V0-10C), run before V0-11/V0-12 are declared closed")},
+		{SPK04, runSPK04Scenario},
 		{SPK05, runSPK05Scenario},
 		{SPK06, runSPK06Scenario},
 		{SPK07, runSPK07Scenario},

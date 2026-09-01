@@ -36,6 +36,7 @@ type ScenarioBinaries struct {
 	FakeClaude  string
 	FakeCodex   string
 	SpikeHelper string
+	SpikeWorker string
 }
 
 // ScenarioContext is what RunAll gives every ScenarioFunc: its own sealed

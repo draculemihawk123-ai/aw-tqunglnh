@@ -186,9 +186,11 @@
   SPK-04 trong `internal/spikeacceptance`. Không sửa domain/app crash-recovery invariant đã có, không mở
   rộng ra ngoài sáu boundary đã định nghĩa trong spike plan §9/§10.
 - **Thực hiện:**
-  1. Extract bốn crash-worker flow (checkpoint join, node dispatch, intent dispatch, attempt
-     termination) thành fixture logic dùng chung — cùng nguyên tắc "không sao chép hành vi" đã áp dụng
-     cho `internal/adapters/providers/fixtures.go`.
+  1. Extract toàn bộ crash-worker flow từ năm file `crash_resume_*_integration_test.go` (base
+     claim/finalize, checkpoint join, node dispatch, intent dispatch x2, attempt termination x2 —
+     đủ tám mode, khớp sáu boundary chuẩn cộng hai mode dùng chung với SPK-02/SPK-03) thành fixture
+     logic dùng chung (`internal/adapters/sqlite/crashworker.go` + `crashworker_fixtures.go`) — cùng
+     nguyên tắc "không sao chép hành vi" đã áp dụng cho `internal/adapters/providers/fixtures.go`.
   2. Thêm `cmd/spike-worker`: wrapper mỏng gọi lại fixture logic trên, chạy được như tiến trình độc lập
      (không cần `go test`/`-test.run`), hỗ trợ chọn fault point qua flag/env var (khớp
      `agentkit-spike worker start --id <id> --fault <fault-point>` trong spike plan §7).

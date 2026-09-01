@@ -277,5 +277,6 @@ func buildScenarioBinaries(t *testing.T) ScenarioBinaries {
 		FakeClaude:  build("fake-claude", "./cmd/fake-claude"),
 		FakeCodex:   build("fake-codex", "./cmd/fake-codex"),
 		SpikeHelper: build("spike-helper", "./cmd/spike-helper"),
+		SpikeWorker: build("spike-worker", "./cmd/spike-worker"),
 	}
 }

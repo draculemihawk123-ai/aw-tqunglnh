@@ -47,6 +47,7 @@ func runAcceptance(arguments []string) error {
 	fakeClaude := flags.String("fake-claude", "", "path to the fake-claude binary (required by SPK-11/SPK-12)")
 	fakeCodex := flags.String("fake-codex", "", "path to the fake-codex binary (required by SPK-11/SPK-12)")
 	spikeHelper := flags.String("spike-helper", "", "path to the spike-helper binary (required by SPK-06/SPK-07)")
+	spikeWorker := flags.String("spike-worker", "", "path to the spike-worker binary (required by SPK-04)")
 	if err := flags.Parse(arguments); err != nil {
 		return err
 	}
@@ -62,7 +63,7 @@ func runAcceptance(arguments []string) error {
 			mode = fullSuiteRequireAllPass
 		}
 		return runFullSuite(*evidenceDir, mode, spikeacceptance.ScenarioBinaries{
-			FakeClaude: *fakeClaude, FakeCodex: *fakeCodex, SpikeHelper: *spikeHelper,
+			FakeClaude: *fakeClaude, FakeCodex: *fakeCodex, SpikeHelper: *spikeHelper, SpikeWorker: *spikeWorker,
 		})
 	case *offline:
 		return runOfflineBaseline(*evidenceDir, *goExecutable)

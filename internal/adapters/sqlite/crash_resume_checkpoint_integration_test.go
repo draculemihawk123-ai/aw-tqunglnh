@@ -1,37 +1,31 @@
 package sqlite
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/worker"
-	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
-	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
-// Fixture identities shared verbatim between the three processes below: the
-// top-level test, the crashed worker child and the fake-provider grandchild
-// all compile from this same source, so there is no need to echo them over
-// stdout the way the genuinely dynamic lease/job values are.
+// Aliases onto crashworker.go/crashworker_fixtures.go's exported
+// constants: this file was written against these unexported names before
+// the shared, non-test worker logic was extracted
+// (docs/design/02-v0-spike-verdict.md V0-10B).
 const (
-	crashCheckpointProviderModeEnvironment = "AGENTKIT_SPIKE_CRASH_CKPT_PROVIDER"
-	crashCheckpointProviderReadyPrefix     = "AGENTKIT_SPIKE_CRASH_CKPT_PROVIDER_READY"
-	crashCheckpointRunID                   = "workflow-run-crash-ckpt"
-	crashCheckpointNodeRunID               = "node-run-crash-ckpt"
-	crashCheckpointInterruptedAttempt      = "attempt-before-crash-ckpt"
-	crashCheckpointID                      = "checkpoint-crash-ckpt-1"
-	crashCheckpointContextSnapshotID       = "context-crash-ckpt-1"
-	crashCheckpointReplacementAttempt      = "attempt-after-crash-ckpt"
+	crashCheckpointProviderModeEnvironment = CrashCheckpointProviderModeEnvironment
+	crashCheckpointProviderReadyPrefix     = CrashCheckpointProviderReadyPrefix
+	crashCheckpointRunID                   = CrashCheckpointRunID
+	crashCheckpointNodeRunID               = CrashCheckpointNodeRunID
+	crashCheckpointInterruptedAttempt      = CrashCheckpointInterruptedAttempt
+	crashCheckpointID                      = CrashCheckpointID
+	crashCheckpointContextSnapshotID       = CrashCheckpointContextSnapshotID
+	crashCheckpointReplacementAttempt      = CrashCheckpointReplacementAttempt
 )
 
 // TestSPK03HardCrashJoinsCheckpointContextRecovery joins the two pieces that
@@ -183,191 +177,26 @@ func TestSPK03HardCrashJoinsCheckpointContextRecovery(t *testing.T) {
 	}
 }
 
-// runCrashCheckpointWorkerProcess is the crashed-worker child. It never
-// closes its Store and is hard-killed by the parent (see
-// startAndHardKillCrashWorker), so nothing it does after printing the READY
-// line, including releasing the fake-provider grandchild, can be relied on.
+// runCrashCheckpointWorkerProcess and runCrashCheckpointFakeProviderProcess
+// delegate to the shared RunCrashWorker/RunCrashCheckpointFakeProvider
+// (internal/adapters/sqlite/crashworker.go); seedCrashCheckpointNodeRunAndAttempt
+// delegates to crashworker_fixtures.go's exported equivalent. Kept under
+// their original names so nothing else in this file needs to change.
 func runCrashCheckpointWorkerProcess(t *testing.T) {
 	t.Helper()
-	databasePath := strings.TrimSpace(os.Getenv(crashWorkerDBEnvironment))
-	if databasePath == "" {
-		t.Fatal("crash checkpoint worker database path is required")
-	}
-	ttl, err := time.ParseDuration(os.Getenv(crashWorkerTTLEnvironment))
-	if err != nil || ttl <= 0 {
-		t.Fatalf("parse crash checkpoint worker TTL: %v", err)
-	}
-
-	ctx := context.Background()
-	store, err := Open(ctx, databasePath)
-	if err != nil {
-		t.Fatalf("crash checkpoint worker open store: %v", err)
-	}
-	// Intentionally no Close: the parent terminates this process while its
-	// SQLite connection, durable lease and just-written checkpoint are live.
-
-	run, err := store.LoadWorkflowRun(ctx, crashCheckpointRunID)
-	if err != nil {
-		t.Fatalf("crash checkpoint worker load workflow run: %v", err)
-	}
-	_, lease, err := store.ClaimJob(ctx, "worker-before-crash", ttl)
-	if err != nil {
-		t.Fatalf("crash checkpoint worker claim job: %v", err)
-	}
-
-	providerEvent := spawnCrashCheckpointFakeProvider(t)
-
-	revisions, err := workspace.NewRevisionSet([]workspace.Revision{{
-		RepositoryID: project.RepositoryID("repo-crash-ckpt"), VCSObjectID: "rev-crash-ckpt-1", WorkspaceGeneration: 1,
-	}})
-	if err != nil {
-		t.Fatalf("crash checkpoint worker build revision set: %v", err)
-	}
-	snapshot, err := runtime.NewContextSnapshot(runtime.ContextSnapshotInput{
-		ID:        crashCheckpointContextSnapshotID,
-		AttemptID: crashCheckpointInterruptedAttempt,
-		Messages:  []runtime.ContextMessage{{Role: runtime.ContextRoleSystem, Content: "provider event: " + providerEvent}},
-		Revisions: revisions,
-		CreatedAt: time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC),
-	})
-	if err != nil {
-		t.Fatalf("crash checkpoint worker build context snapshot: %v", err)
-	}
-	// Persisted before the worker signals READY, i.e. strictly before the
-	// parent hard-kills it: the checkpoint is durable at the moment of crash.
-	if _, err := store.StoreContextSnapshot(ctx, "project-crash", snapshot); err != nil {
-		t.Fatalf("crash checkpoint worker persist context snapshot: %v", err)
-	}
-	checkpoint, err := runtime.NewCheckpoint(
-		crashCheckpointID, run.ID, crashCheckpointNodeRunID, crashCheckpointInterruptedAttempt,
-		1, 1, snapshot.ID(), revisions, "sha256:crash-checkpoint-shared-state", nil,
-		time.Date(2026, 8, 28, 12, 0, 1, 0, time.UTC),
-	)
-	if err != nil {
-		t.Fatalf("crash checkpoint worker build checkpoint: %v", err)
-	}
-	if _, err := store.StoreCheckpoint(ctx, checkpoint); err != nil {
-		t.Fatalf("crash checkpoint worker persist checkpoint: %v", err)
-	}
-
-	// Same READY line shape as runCrashWorkerProcess: startAndHardKillCrashWorker
-	// and parseCrashWorkerReady are reused as-is.
-	fmt.Printf(
-		"%s %s %d %s %s %s\n",
-		crashWorkerReadyPrefix,
-		lease.JobID,
-		lease.Token,
-		lease.LeaseUntil.UTC().Format(time.RFC3339Nano),
-		run.WorkflowVersionID,
-		run.WorkflowVersionHash,
-	)
-	_ = os.Stdout.Sync()
-	select {}
-}
-
-// spawnCrashCheckpointFakeProvider starts the fake-provider grandchild and
-// waits for its single readiness line. The grandchild is never explicitly
-// waited on or killed: the worker itself is about to be hard-killed with no
-// cleanup path, exactly like a real crash, so the provider is left to
-// self-terminate on its own bounded timer instead.
-func spawnCrashCheckpointFakeProvider(t *testing.T) string {
-	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatalf("resolve current test executable for fake provider: %v", err)
-	}
-	command := exec.Command(
-		executable,
-		"-test.run=^TestSPK03HardCrashJoinsCheckpointContextRecovery$",
-		"-test.v",
-		"-test.timeout=30s",
-	)
-	command.Env = append(os.Environ(), crashCheckpointProviderModeEnvironment+"=1")
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		t.Fatalf("create fake provider stdout pipe: %v", err)
-	}
-	if err := command.Start(); err != nil {
-		t.Fatalf("start fake provider process: %v", err)
-	}
-
-	type scanResult struct {
-		event string
-		err   error
-	}
-	readyChannel := make(chan scanResult, 1)
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, crashCheckpointProviderReadyPrefix+" ") {
-				continue
-			}
-			fields := strings.Fields(line)
-			if len(fields) != 2 {
-				readyChannel <- scanResult{err: fmt.Errorf("invalid fake provider READY line %q", line)}
-				return
-			}
-			readyChannel <- scanResult{event: fields[1]}
-			return
-		}
-		readyChannel <- scanResult{err: fmt.Errorf("fake provider exited before signalling a checkpoint-worthy event: %v", scanner.Err())}
-	}()
-
-	select {
-	case result := <-readyChannel:
-		if result.err != nil {
-			t.Fatalf("fake provider readiness: %v", result.err)
-		}
-		return result.event
-	case <-time.After(10 * time.Second):
-		t.Fatal("timeout waiting for fake provider READY")
-		return ""
+	if err := RunCrashWorker(CrashModeCheckpointThenHang, testBinarySpawner); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// runCrashCheckpointFakeProviderProcess plays the fake-provider grandchild.
-// It deliberately does not touch SQLite, ports.ProcessSupervisor or any
-// AgentExecutor/provider-adapter code: V0-02 is scoped to the crash
-// fixture/worker recovery/checkpoint join, not the provider domain, so this
-// is a bare fixture process communicating over stdout only.
 func runCrashCheckpointFakeProviderProcess(t *testing.T) {
 	t.Helper()
-	fmt.Printf("%s provider-checkpoint-event-1\n", crashCheckpointProviderReadyPrefix)
-	_ = os.Stdout.Sync()
-	time.Sleep(2 * time.Second)
+	RunCrashCheckpointFakeProvider()
 }
 
-// seedCrashCheckpointNodeRunAndAttempt seeds the one node_runs and one
-// execution_attempts row that checkpoints/context_snapshots have real
-// foreign keys against. No production Store method creates these yet (only
-// the runtime/durable-job/lease surface is wired at this point in the
-// spike), so this mirrors the raw-SQL seeding already used by
-// seedSchedulingFixture in scheduling_test.go.
 func seedCrashCheckpointNodeRunAndAttempt(t *testing.T, ctx context.Context, store *Store, runID runtime.WorkflowRunID) {
 	t.Helper()
-	const timestamp = "2026-08-28T12:00:00Z"
-	// Two separate statements (not one semicolon-joined multi-statement
-	// Exec): the driver's multi-statement placeholder distribution is only
-	// exercised elsewhere in this package with literal identity columns and
-	// `?` reserved for the repeated timestamp pair, and did not reliably
-	// bind `?` ids/foreign keys across statement boundaries here.
-	if _, err := store.db.ExecContext(ctx, `
-INSERT INTO node_runs(
-  id, run_id, node_key, activation_sequence, iteration, state,
-  input_state_hash, version, created_at, updated_at
-) VALUES (?, ?, 'implement', 1, 0, 'RUNNING', 'sha256:input-crash-ckpt', 1, ?, ?);`,
-		crashCheckpointNodeRunID, runID, timestamp, timestamp,
-	); err != nil {
-		t.Fatalf("seed crash checkpoint node run: %v", err)
-	}
-	if _, err := store.db.ExecContext(ctx, `
-INSERT INTO execution_attempts(
-  id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
-  input_revision_set_json, version, created_at, updated_at
-) VALUES (?, ?, 1, 'RUNNING', 'codex', 'sha256:profile-crash-ckpt', '[]', 1, ?, ?);`,
-		crashCheckpointInterruptedAttempt, crashCheckpointNodeRunID, timestamp, timestamp,
-	); err != nil {
-		t.Fatalf("seed crash checkpoint execution attempt: %v", err)
+	if err := SeedCrashCheckpointNodeRunAndAttempt(ctx, store, runID); err != nil {
+		t.Fatal(err)
 	}
 }
