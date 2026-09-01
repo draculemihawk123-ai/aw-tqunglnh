@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -66,6 +67,11 @@ func Open(ctx context.Context, path string) (*Store, error) {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
+	if err := verifyDurabilityPragmas(pingCtx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
 	store := &Store{db: db}
 	if err := store.Migrate(ctx); err != nil {
 		_ = db.Close()
@@ -79,4 +85,48 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+// sqliteSynchronousOff is PRAGMA synchronous's integer value for OFF —
+// the one durability mode Alpha must never run under, since it is the
+// only setting where SQLite can lose committed transactions on a power
+// loss or OS crash instead of just an application crash
+// (docs/design/03-v1-alpha-foundation.md V1-04A's "cấm hạ xuống OFF").
+const sqliteSynchronousOff = 0
+
+// verifyDurabilityPragmas re-reads the DSN-level pragmas db.go's Open sets
+// (foreign_keys, journal_mode, synchronous) directly from the connection
+// instead of trusting the DSN silently took effect, and fails closed if
+// any of them did not — "bật và verify WAL lúc startup" is a real
+// assertion, not a comment next to the DSN string. The _pragma DSN
+// parameter modernc.org/sqlite uses applies at connection-open time for
+// every physical connection in the pool, not just the one this check
+// happens to run on, so verifying the connection Ping already established
+// is representative of every connection Open's pool will hand out.
+func verifyDurabilityPragmas(ctx context.Context, db *sql.DB) error {
+	var foreignKeys int
+	if err := db.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("verify foreign_keys pragma: %w", err)
+	}
+	if foreignKeys != 1 {
+		return fmt.Errorf("foreign_keys pragma is %d, want enabled (1)", foreignKeys)
+	}
+
+	var journalMode string
+	if err := db.QueryRowContext(ctx, `PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		return fmt.Errorf("verify journal_mode pragma: %w", err)
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		return fmt.Errorf("journal_mode pragma is %q, want wal", journalMode)
+	}
+
+	var synchronous int
+	if err := db.QueryRowContext(ctx, `PRAGMA synchronous`).Scan(&synchronous); err != nil {
+		return fmt.Errorf("verify synchronous pragma: %w", err)
+	}
+	if synchronous == sqliteSynchronousOff {
+		return fmt.Errorf("synchronous pragma is OFF (%d) — durability mode must never be lowered to OFF", synchronous)
+	}
+
+	return nil
 }
