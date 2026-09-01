@@ -452,6 +452,17 @@
 > lại.** Run 33516182656 ở trên không còn đủ làm bằng chứng cho tiêu chí gốc — cần run mới với test đã
 > sửa. Không tính là REWORK (không có invariant nào sai — SPK-01…14 registry code vẫn đúng, luôn đúng);
 > đây là **thiếu evidence trong chính bài kiểm** (semantics gap), đã sửa hẹp đúng chỗ.
+>
+> **Đóng lại — chuỗi 10 lần chạy lại từ đầu, bằng chứng thật đúng semantics.** Run
+> [33524345962](https://github.com/taQuangLing/agent-workflow/actions/runs/33524345962) (commit
+> `f954582`, đối chiếu `git rev-parse` = `headRefOid` khớp đúng). `Linux race and stability` mất 6m22s
+> (tăng từ 3m22s do thêm 10 lần chạy `-v` riêng bài registry test). Đã tải artifact và đọc trực tiếp cả
+> `v0-12-stability-report.json` lẫn 10 file `spk-summary-run-N.log`: **cả 10/10 lần đều ghi rõ ràng
+> "13 SPKs genuinely Passed:true, 1 correctly PENDING_PEER_PLATFORM (SPK-13, single-platform) — 14
+> total"** — không còn suy từ boolean `allTenRunsStable` nữa, mà là bằng chứng tường minh từng lần.
+> `raceDetector: {passed: true, durationSeconds: 104}`, `spk08WriteLeaseRace: {iterationCount: 100,
+> meetsMinimum100: true}`. Cả 6 job xanh; PR `state=OPEN mergeable=MERGEABLE`, mọi status check
+> `SUCCESS`.
 
 ## V0-13 — Boundary/dependency report
 
