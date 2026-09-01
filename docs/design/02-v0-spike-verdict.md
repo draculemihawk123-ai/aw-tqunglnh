@@ -301,7 +301,13 @@
 >
 > Cục bộ: 30 lần chạy `TestSPK09QuarantineRecreateFencesStaleGeneration` sau sửa đều pass (lỗi này chưa
 > từng tái hiện cục bộ trước đó nên đây chỉ là kiểm tra không-regress, không phải bằng chứng lỗi đã
-> đóng — bằng chứng thật phải đến từ CI thật, xem cập nhật dưới V0-11).
+> đóng — bằng chứng thật phải đến từ CI thật).
+>
+> **Đóng — bằng chứng CI thật:** run
+> [33511037773](https://github.com/taQuangLing/agent-workflow/actions/runs/33511037773) (commit
+> `b23dacb`, đúng HEAD hiện tại của PR #1): 30 lần
+> `TestSPK09QuarantineRecreateFencesStaleGeneration` trên chính `contract (windows-latest)` = 18.6s
+> tổng, không lần nào fail. Xem chi tiết đầy đủ (cả ba test trong bước stress) dưới mục V0-11.
 
 ## V0-11 — Chạy full offline suite trên Windows và Ubuntu CI
 
@@ -313,11 +319,11 @@
 - **Thực hiện:** build helper/provider binaries; chạy `acceptance --full --assessment` trên cả hai OS;
   verify bundle; upload platform manifests với `if: always()`; job thứ ba (Ubuntu, phụ thuộc cả hai
   matrix job) tải hai manifest rồi chạy `semantic-diff` để sinh SPK-13 result authoritative.
-- **Verify:** hai matrix jobs xanh từ clean checkout. **Chưa đạt ổn định** — một run đã xanh cả 6 job
-  (xem cập nhật cuối mục này), nhưng run kế tiếp trên cùng PR fail vì lỗi khác (V0-11A phần 2). Chỉ coi
-  là đạt khi run mới nhất tại HEAD hiện tại của PR xanh, không dựa vào run cũ.
-- **Hoàn thành khi:** SPK-13 pass và report liên kết được CI run/evidence ID, **tại HEAD hiện tại của
-  PR**, không phải một run lịch sử đã bị commit sau đó làm outdated.
+- **Verify:** hai matrix jobs xanh từ clean checkout. **Đạt tại HEAD hiện tại** — xem cập nhật cuối mục
+  này (đã đối chiếu `git rev-parse ci/v0-11-draft` khớp đúng `gh pr view --json headRefOid` trước khi
+  ghi nhận, không dựa vào run cũ đã bị commit sau vượt qua).
+- **Hoàn thành khi:** SPK-13 pass và report liên kết được CI run/evidence ID, tại HEAD hiện tại của PR.
+  **Đạt** — xem cập nhật cuối mục này.
 
 > **Trạng thái hiện tại: draft đã push, chờ CI thật xác nhận, chưa đóng.** `.github/workflows/spike-gate.yml`
 > đã cập nhật để khớp phạm vi trên: job `spike-acceptance` (matrix windows-latest/ubuntu-latest,
@@ -371,7 +377,23 @@
 > Đã sửa (`waitPastLeaseUntil`/`waitPastWriteLeaseUntil`), đã push, đang chờ CI thật xác nhận — không
 > tự nhận "hai matrix jobs xanh" cho tới khi có run mới xanh tại HEAD hiện tại.
 >
-> **Vẫn giữ đúng ranh giới đã thống nhất, áp dụng cho khi nào PR thật sự xanh ổn định:** "hai matrix jobs
+> **Cập nhật sau khi sửa V0-11A phần 2 (`waitPastLeaseUntil`/`waitPastWriteLeaseUntil`), push commit
+> `b23dacb`: CI run
+> [33511037773](https://github.com/taQuangLing/agent-workflow/actions/runs/33511037773) — cả 6 job
+> xanh: `contract` (Windows 4m9s bao gồm bước stress đủ ba test, Ubuntu 39s), `spike acceptance`
+> (Windows 1m28s, Ubuntu 38s), `Linux race and stability` (3m26s), `cross-platform semantic diff`
+> (37s). Bước stress Windows: 20 lần race test = 22.7s, **30 lần
+> `TestSPK09QuarantineRecreateFencesStaleGeneration` = 18.6s (không lần nào fail — bằng chứng thật cho
+> lỗi V0-11A phần 2 đã đóng)**, 5 lần full registry test = 101.4s — cả ba đều xa dưới timeout.
+> `semantic-diff`: `SPK-13 authoritative passed=true (0 unexplained difference(s) across 13 SPK(s),
+> left=full-20260901t130749.783821200z/windows right=full-20260901t130709.729703778z/linux)`, bundle
+> seal+verify, artifact `spk13-authoritative-result` (ID 9801860568).
+>
+> **Đã đối chiếu đây thật sự là HEAD hiện tại, không phải run cũ:** `git rev-parse ci/v0-11-draft` =
+> `b23dacb80c41d84c9b0c60ffcfba3ebd30aaef04`, khớp đúng `gh pr view 1 --json headRefOid`. `gh pr view 1`
+> báo `state=OPEN mergeable=MERGEABLE`, mọi status check `conclusion=SUCCESS`, không có check nào đỏ.
+>
+> **Vẫn giữ đúng ranh giới đã thống nhất:** "hai matrix jobs
 > xanh" theo nghĩa harness/evidence hoàn chỉnh + SPK-13 cross-platform pass thật, **không** phải tuyên bố
 > `GO` (chỉ V0-14 kết luận GO) và không đồng nghĩa toàn bộ nhánh `docs/alpha-design-adr-020-025` đã sẵn
 > sàng merge vào `master` — PR #1 chỉ nhắm vào nhánh feature đó để kiểm chứng CI, chưa phải quyết định
