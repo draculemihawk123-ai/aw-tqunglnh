@@ -13,7 +13,8 @@ func TestSystemReturnsUTC(t *testing.T) {
 }
 
 func TestSystemNeverZero(t *testing.T) {
-	if System{}.Now().IsZero() {
+	now := System{}.Now()
+	if now.IsZero() {
 		t.Fatal("System.Now() must never be the zero time")
 	}
 }
