@@ -121,7 +121,79 @@ var (
 	// ErrSPKIDUnknown means a result's SPKID is not one of the fourteen
 	// required ids.
 	ErrSPKIDUnknown = errors.New("full-suite manifest has an SPK id outside SPK-01..SPK-14")
+	// ErrCorrelationMissing means a result carries an artifact of a kind that
+	// requires certain CorrelationIDs fields (see requiredCorrelationFieldsFor)
+	// and at least one of those fields is empty.
+	ErrCorrelationMissing = errors.New("full-suite manifest result is missing a correlation field required by one of its artifact kinds")
 )
+
+// requiredCorrelationFieldsFor names the CorrelationIDs fields a result must
+// populate once it carries at least one artifact of the given kind, per
+// docs/spikes/01-go-core-spike-plan.md §12: "record liên quan execution phải
+// correlate được ít nhất project_id, family_id, run_id, node_run_id,
+// attempt_id; record code-related phải có repository_id và exact revision."
+//
+// Runtime/providers/processes artifacts are execution-related (they only
+// exist once a NodeRun/ExecutionAttempt is dispatched), so they take the
+// project/family/run/node/attempt baseline. Workspace artifacts are the
+// code-related record: they need project/family plus repository/revision,
+// but deliberately not run/node/attempt, because SPK-05/06 (WorkspaceSet
+// provisioning and root-family isolation) produce workspace evidence with no
+// workflow run involved at all. Workflow artifacts (publish/hash — they can
+// predate any run, and WorkflowDefinition.ProjectID is itself optional in
+// the domain model) and assertions artifacts (a pass/fail summary wrapper,
+// not itself an execution or code record) carry no kind-specific
+// requirement here.
+func requiredCorrelationFieldsFor(kind string) []string {
+	switch kind {
+	case ArtifactKindRuntime, ArtifactKindProviders, ArtifactKindProcesses:
+		return []string{"projectId", "familyId", "runId", "nodeRunId", "attemptId"}
+	case ArtifactKindWorkspace:
+		return []string{"projectId", "familyId", "repositoryId", "revision"}
+	default:
+		return nil
+	}
+}
+
+func correlationFieldValue(correlation CorrelationIDs, field string) string {
+	switch field {
+	case "projectId":
+		return correlation.ProjectID
+	case "familyId":
+		return correlation.FamilyID
+	case "runId":
+		return correlation.RunID
+	case "nodeRunId":
+		return correlation.NodeRunID
+	case "attemptId":
+		return correlation.AttemptID
+	case "repositoryId":
+		return correlation.RepositoryID
+	case "revision":
+		return correlation.Revision
+	default:
+		return ""
+	}
+}
+
+// missingCorrelationFields reports, in stable sorted order, every
+// CorrelationIDs field result's own artifact kinds require but left empty.
+func missingCorrelationFields(result SPKResult) []string {
+	required := make(map[string]struct{})
+	for _, artifact := range result.Artifacts {
+		for _, field := range requiredCorrelationFieldsFor(artifact.Kind) {
+			required[field] = struct{}{}
+		}
+	}
+	missing := make([]string, 0, len(required))
+	for field := range required {
+		if correlationFieldValue(result.Correlation, field) == "" {
+			missing = append(missing, field)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
 
 // NewSPKManifest validates results against RequiredSPKIDs and, only if the
 // set is exactly the fourteen required ids with no duplicates and nothing
@@ -165,6 +237,12 @@ func NewSPKManifest(suiteID string, generatedAt time.Time, results []SPKResult) 
 		}
 		if counts[id] > 1 {
 			problems = append(problems, fmt.Errorf("%w: %s", ErrSPKIDDuplicate, id))
+		}
+	}
+	for _, result := range results {
+		if missing := missingCorrelationFields(result); len(missing) > 0 {
+			problems = append(problems, fmt.Errorf("%w: %s missing %s",
+				ErrCorrelationMissing, result.SPKID, strings.Join(missing, ", ")))
 		}
 	}
 	if len(problems) > 0 {

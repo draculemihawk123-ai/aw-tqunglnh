@@ -3,7 +3,7 @@ name: Go core spike gate
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [master]
 
 permissions:
   contents: read
@@ -12,13 +12,14 @@ jobs:
   contract:
     name: contract (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: '1.27.0'
           check-latest: true
@@ -26,23 +27,312 @@ jobs:
         run: go vet ./...
       - name: Offline contract suite
         run: go test -count=1 ./...
+      # V0-11A diagnostic: the only place these timing-sensitive failures
+      # (docs/design/02-v0-spike-verdict.md V0-11A) were ever observed is the
+      # real windows-latest runner — neither reproduced locally. Repeat
+      # exactly the tests that failed, on this same runner, well beyond their
+      # normal single pass, to build real confidence in the fixes
+      # (_txlock=immediate in internal/adapters/sqlite/db.go; the deterministic
+      # waitPastLeaseUntil/waitPastWriteLeaseUntil wait in
+      # spk09_workspace_quarantine_test.go and spk09_scenario.go) rather than
+      # trusting one lucky green run.
+      - name: Stress write-lease race path (Windows, V0-11A diagnostic)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          go test -run '^TestWriteLeaseRaceHasOneWinnerForSameRepository$' -count=20 -timeout 120s ./internal/adapters/sqlite/...
+          go test -run '^TestSPK09QuarantineRecreateFencesStaleGeneration$' -count=30 -timeout 120s ./internal/adapters/sqlite/...
+          go test -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=5 -timeout 300s ./internal/spikeacceptance/...
 
+      # V0-12 (docs/design/02-v0-spike-verdict.md): internal/archtest enforces
+      # domain/app never depends on adapter/OS/provider specifics — a
+      # violation already fails "Offline contract suite" above on both OS
+      # (it is a real `go test ./...` package). This step additionally
+      # produces a standalone, human-readable report artifact so the result
+      # is traceable without digging through the full suite's log. Checks are
+      # OS-independent (pure import-graph/AST/reflection analysis), so this
+      # only needs to run once.
+      - name: Boundary/dependency report (V0-13)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          mkdir -p boundary-report
+          if go test -v ./internal/archtest/... > boundary-report/v0-13-boundary-report.log 2>&1; then
+            echo "V0-13 boundary/dependency checks: all passed"
+          else
+            echo "V0-13 boundary/dependency checks FAILED — see boundary-report/v0-13-boundary-report.log"
+            cat boundary-report/v0-13-boundary-report.log
+            exit 1
+          fi
+          cat boundary-report/v0-13-boundary-report.log
+
+      - name: Upload V0-13 boundary/dependency report
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-13-boundary-report
+          path: boundary-report/
+          if-no-files-found: error
+          retention-days: 7
+
+  # V0-12 (docs/design/02-v0-spike-verdict.md): race detector clean + 10 full
+  # offline-suite runs not flaky, with SPK-08's own 100-iteration write-lease
+  # race (internal/spikeacceptance/spk08_scenario.go) exercised inside every
+  # one of those 10 runs via TestDefaultScenariosFormAValidRegistryAndCleanRun.
+  # A failure anywhere in this job is a real signal to root-cause, never a
+  # reason to just retry until it goes green.
   linux-race-and-stability:
-    name: Linux race and stability
+    name: Linux race and stability (V0-12)
     runs-on: ubuntu-latest
     needs: contract
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: '1.27.0'
           check-latest: true
-      - name: Race detector
-        run: go test -race -count=1 ./...
-      - name: Repeat offline suite ten times
+
+      - name: Race detector and 10x offline-suite stability, aggregated report
         shell: bash
         run: |
-          for run in $(seq 1 10); do
-            echo "offline suite run ${run}/10"
-            go test -count=1 ./...
+          set -uo pipefail
+          mkdir -p stability-report
+
+          echo "== race detector (go test -race -count=1 ./...) =="
+          race_start=$(date +%s)
+          if go test -race -count=1 ./... > stability-report/race-detector.log 2>&1; then
+            race_passed=true
+          else
+            race_passed=false
+          fi
+          race_end=$(date +%s)
+          cat stability-report/race-detector.log
+          echo "race detector passed=${race_passed} duration=$((race_end - race_start))s"
+
+          echo "== SPK-08 write-lease race iteration count (static check) =="
+          spk08_iterations=$(grep -oP 'iterations\s*=\s*\K\d+' internal/spikeacceptance/spk08_scenario.go | head -n1)
+          if [ -z "${spk08_iterations}" ] || [ "${spk08_iterations}" -lt 100 ]; then
+            echo "SPK-08 iteration count check FAILED: found '${spk08_iterations}', want >= 100"
+            spk08_ok=false
+          else
+            echo "SPK-08 iteration count = ${spk08_iterations} (>= 100, required in every one of the 10 runs below via TestDefaultScenariosFormAValidRegistryAndCleanRun)"
+            spk08_ok=true
+          fi
+
+          echo "== 10x full offline suite, no retry-until-green =="
+          runs_json="[]"
+          all_stable=true
+          for i in $(seq 1 10); do
+            echo "-- offline suite run ${i}/10 --"
+            run_start=$(date +%s)
+            if go test -count=1 ./... > "stability-report/suite-run-${i}.log" 2>&1; then
+              run_passed=true
+            else
+              run_passed=false
+              all_stable=false
+              echo "run ${i} FAILED, see stability-report/suite-run-${i}.log"
+              tail -n 60 "stability-report/suite-run-${i}.log"
+            fi
+            run_end=$(date +%s)
+            duration=$((run_end - run_start))
+            echo "run ${i}/10 passed=${run_passed} duration=${duration}s"
+
+            # TestDefaultScenariosFormAValidRegistryAndCleanRun (part of the
+            # suite run above) requires every SPK except SPK-13 to genuinely
+            # report Passed:true, and SPK-13 to report exactly
+            # PENDING_PEER_PLATFORM — a bare pass/fail boolean for the whole
+            # suite doesn't show that explicitly per run, so capture this one
+            # test's own -v output (its t.Logf prints "N SPKs genuinely
+            # Passed:true, M correctly PENDING_PEER_PLATFORM") into its own
+            # small, readable per-run log. This must fail the run (not be
+            # silently swallowed) if the command itself fails to execute or
+            # the expected summary line never appears — either would mean
+            # this run's "13 PASS + 1 PENDING" evidence is missing, not just
+            # unreadable.
+            if ! go test -v -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=1 ./internal/spikeacceptance/... \
+              > "stability-report/spk-summary-run-${i}.log" 2>&1; then
+              run_passed=false
+              all_stable=false
+              echo "run ${i} SPK-summary re-run FAILED, see stability-report/spk-summary-run-${i}.log"
+            elif ! grep -q "clean run:" "stability-report/spk-summary-run-${i}.log"; then
+              run_passed=false
+              all_stable=false
+              echo "run ${i} SPK-summary log missing the expected \"clean run:\" confirmation"
+            fi
+            runs_json=$(echo "${runs_json}" | jq --argjson run "${i}" --argjson passed "${run_passed}" --argjson duration "${duration}" \
+              '. + [{"run": $run, "passed": $passed, "durationSeconds": $duration}]')
           done
+
+          jq -n \
+            --argjson racePassed "${race_passed}" \
+            --argjson raceDurationSeconds "$((race_end - race_start))" \
+            --argjson spk08IterationCount "${spk08_iterations:-0}" \
+            --argjson spk08Ok "${spk08_ok}" \
+            --argjson runs "${runs_json}" \
+            --argjson allTenRunsStable "${all_stable}" \
+            --arg goos "$(go env GOOS)" \
+            --arg goVersion "$(go version)" \
+            --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              goos: $goos,
+              goVersion: $goVersion,
+              generatedAt: $generatedAt,
+              raceDetector: {passed: $racePassed, durationSeconds: $raceDurationSeconds},
+              spk08WriteLeaseRace: {iterationCount: $spk08IterationCount, meetsMinimum100: $spk08Ok},
+              fullSuiteRuns: $runs,
+              allTenRunsStable: $allTenRunsStable
+            }' > stability-report/v0-12-stability-report.json
+
+          echo "== aggregated stability report =="
+          cat stability-report/v0-12-stability-report.json
+
+          if [ "${race_passed}" != "true" ] || [ "${spk08_ok}" != "true" ] || [ "${all_stable}" != "true" ]; then
+            echo "V0-12 stability gate FAILED — see stability-report/ artifact for the full report and per-run logs"
+            exit 1
+          fi
+
+      - name: Upload V0-12 stability report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-12-stability-report
+          path: stability-report/
+          if-no-files-found: error
+          retention-days: 7
+
+  # spike-acceptance runs the real SPK-01..SPK-14 registry through the
+  # standalone agentkit-spike binary (docs/spikes/01-go-core-spike-plan.md
+  # §9, docs/design/02-v0-spike-verdict.md V0-10A..V0-10C) — never `go test`
+  # wrapped as a pass/fail proxy. --assessment is the gate this job uses: it
+  # exits 0 once the harness/evidence itself is complete (every SPK
+  # dispatched, every bundle sealed and verified, the manifest valid) even
+  # when SPK-13 (and, on a single platform, nothing else) reports false. A
+  # harness failure — a missing handler, an unusable bundle, a malformed
+  # manifest — is always a non-zero exit. "This job is green" therefore means
+  # the acceptance mechanism itself works on this OS, not that every SPK
+  # passed and never means GO (only V0-14 declares GO — see the note at the
+  # bottom of docs/design/02-v0-spike-verdict.md's V0-11 section).
+  spike-acceptance:
+    name: spike acceptance (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: contract
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      - name: Build acceptance binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          ext=""
+          if [ "${RUNNER_OS}" = "Windows" ]; then ext=".exe"; fi
+          go build -o "bin/agentkit-spike${ext}" ./cmd/agentkit-spike
+          go build -o "bin/fake-claude${ext}" ./cmd/fake-claude
+          go build -o "bin/fake-codex${ext}" ./cmd/fake-codex
+          go build -o "bin/spike-helper${ext}" ./cmd/spike-helper
+          go build -o "bin/spike-worker${ext}" ./cmd/spike-worker
+
+      - name: Run full SPK-01..SPK-14 registry (assessment mode)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ext=""
+          if [ "${RUNNER_OS}" = "Windows" ]; then ext=".exe"; fi
+          ./bin/agentkit-spike${ext} acceptance --full --assessment \
+            --evidence-dir spike-evidence \
+            --fake-claude "bin/fake-claude${ext}" \
+            --fake-codex "bin/fake-codex${ext}" \
+            --spike-helper "bin/spike-helper${ext}" \
+            --spike-worker "bin/spike-worker${ext}"
+
+      # No separate "evidence verify" step here: Registry.RunAll
+      # (internal/spikeacceptance/registry.go) already calls evidence.Verify
+      # on every sealed per-SPK bundle before the acceptance command above
+      # returns — a verification failure there is already a non-zero exit
+      # from the previous step, in both --assessment and --require-all-pass
+      # modes. `agentkit-spike evidence verify` is a separate CLI path for
+      # the single-bundle --offline baseline, not full-suite bundles.
+
+      # Uploaded even when a prior step fails (a harness error is exactly
+      # what this evidence exists to diagnose), and always uploaded on
+      # success so the semantic-diff job below has both platforms' manifests
+      # to compare.
+      - name: Upload platform manifest + evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: spike-evidence-${{ matrix.os }}
+          path: spike-evidence/
+          if-no-files-found: error
+          retention-days: 7
+
+  # semantic-diff is the only place SPK-13 gets an authoritative result
+  # (docs/design/02-v0-spike-verdict.md V0-10A/V0-11): a single platform run
+  # cannot conclude Windows/Linux parity by itself, so this job downloads
+  # both platforms' manifests spike-acceptance produced and runs
+  # `agentkit-spike semantic-diff`, which compares every other SPK's result
+  # field-by-field and writes SPK-13's real Passed value from that
+  # comparison — never from a single-platform guess.
+  semantic-diff:
+    name: cross-platform semantic diff (SPK-13)
+    runs-on: ubuntu-latest
+    needs: spike-acceptance
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      - name: Build agentkit-spike
+        run: |
+          mkdir -p bin
+          go build -o bin/agentkit-spike ./cmd/agentkit-spike
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: spike-evidence-windows-latest
+          path: windows-evidence
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: spike-evidence-ubuntu-latest
+          path: ubuntu-evidence
+
+      - name: Run semantic-diff and produce the SPK-13 authoritative result
+        shell: bash
+        run: |
+          set -euo pipefail
+          windows_manifest=$(ls windows-evidence/*-manifest.json)
+          ubuntu_manifest=$(ls ubuntu-evidence/*-manifest.json)
+          ./bin/agentkit-spike semantic-diff \
+            --left "${windows_manifest}" \
+            --right "${ubuntu_manifest}" \
+            --out spk13-result.json \
+            --evidence-dir spk13-evidence
+
+      # Uploads both the plain-JSON convenience copy and the sealed,
+      # checksum-verified evidence bundle (evidence.Verify already ran on it
+      # inside the step above; a corrupt/incomplete bundle would already have
+      # failed that step, so this upload never ships an unverified result).
+      - name: Upload SPK-13 authoritative result
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: spk13-authoritative-result
+          path: |
+            spk13-result.json
+            spk13-evidence/
+          if-no-files-found: error
+          retention-days: 7

@@ -10,24 +10,58 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
-	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
+// Aliases onto crashworker.go's exported constants/types: every
+// crash_resume_*_integration_test.go file in this package was written
+// against these unexported names before the shared, non-test worker logic
+// was extracted (docs/design/02-v0-spike-verdict.md V0-10B); aliasing here
+// keeps every other file's call sites unchanged.
 const (
-	crashWorkerModeEnvironment = "AGENTKIT_SPIKE_CRASH_WORKER"
-	crashWorkerDBEnvironment   = "AGENTKIT_SPIKE_CRASH_DB"
-	crashWorkerTTLEnvironment  = "AGENTKIT_SPIKE_CRASH_TTL"
-	crashWorkerReadyPrefix     = "AGENTKIT_SPIKE_CRASH_READY"
+	crashWorkerModeEnvironment = CrashWorkerModeEnvironment
+	crashWorkerDBEnvironment   = CrashWorkerDBEnvironment
+	crashWorkerTTLEnvironment  = CrashWorkerTTLEnvironment
+	crashWorkerReadyPrefix     = CrashWorkerReadyPrefix
 )
+
+type crashWorkerReady = CrashWorkerReady
+
+func parseCrashWorkerReady(line string) (crashWorkerReady, error) {
+	return ParseCrashWorkerReady(line)
+}
+
+// testBinarySpawner is the SelfSpawner every crash_resume_*_integration_test.go
+// file's parent-side orchestration and crashworker.go's CheckpointThenHang/
+// process-exit fault points use when running inside `go test`: it re-invokes
+// the current test binary scoped to just the one test function that owns the
+// requested role, via -test.run, so re-invoking it does not run this
+// package's entire test suite. cmd/spike-worker uses its own SelfSpawner
+// instead (it is not a `go test` binary and has no -test.run flag).
+func testBinarySpawner(role SpawnRole) (*exec.Cmd, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve current test executable: %w", err)
+	}
+	if role == SpawnRoleFakeProvider {
+		command := exec.Command(
+			executable,
+			"-test.run=^TestSPK03HardCrashJoinsCheckpointContextRecovery$",
+			"-test.v",
+			"-test.timeout=30s",
+		)
+		command.Env = append(os.Environ(), CrashCheckpointProviderModeEnvironment+"=1")
+		return command, nil
+	}
+	return exec.Command(executable, "-test.run=^$"), nil
+}
 
 // TestCrashRestartReclaimsLeasedJobAndPreservesPinnedWorkflow uses a real
 // child OS process as the first worker. The child deliberately never closes
@@ -311,64 +345,16 @@ func TestCrashAfterAtomicFinalizationDoesNotDuplicateTerminalState(t *testing.T)
 	}
 }
 
-type crashWorkerReady struct {
-	JobID               ports.JobID
-	LeaseToken          uint64
-	LeaseUntil          time.Time
-	WorkflowVersionID   workflow.WorkflowVersionID
-	WorkflowVersionHash string
-}
-
+// runCrashWorkerProcess delegates to the shared RunCrashWorker
+// (internal/adapters/sqlite/crashworker.go): it handles both "claim-and-hang"
+// and "finalize-and-hang" itself based on the mode env var already set by
+// the parent (see startAndHardKillCrashWorker below).
 func runCrashWorkerProcess(t *testing.T) {
 	t.Helper()
 	mode := os.Getenv(crashWorkerModeEnvironment)
-	databasePath := strings.TrimSpace(os.Getenv(crashWorkerDBEnvironment))
-	if databasePath == "" {
-		t.Fatal("crash worker database path is required")
+	if err := RunCrashWorker(mode, testBinarySpawner); err != nil {
+		t.Fatal(err)
 	}
-	ttl, err := time.ParseDuration(os.Getenv(crashWorkerTTLEnvironment))
-	if err != nil || ttl <= 0 {
-		t.Fatalf("parse crash worker TTL: %v", err)
-	}
-
-	ctx := context.Background()
-	store, err := Open(ctx, databasePath)
-	if err != nil {
-		t.Fatalf("crash worker open store: %v", err)
-	}
-	// Intentionally no Close: the parent must terminate this process while its
-	// SQLite connection and durable lease are still live.
-	run, err := store.LoadWorkflowRun(ctx, "workflow-run-crash")
-	if err != nil {
-		t.Fatalf("crash worker load workflow run: %v", err)
-	}
-	_, lease, err := store.ClaimJob(ctx, "worker-before-crash", ttl)
-	if err != nil {
-		t.Fatalf("crash worker claim job: %v", err)
-	}
-	if mode == "finalize-and-hang" {
-		if _, err := store.FinalizeWorkflowRun(ctx, ports.WorkerWorkflowRunFinalization{
-			Transition: ports.WorkflowRunTransition{
-				RunID: run.ID, ExpectedState: runtime.WorkflowRunRunning, ExpectedVersion: 2,
-				NextState: runtime.WorkflowRunSucceeded, SharedState: json.RawMessage(`{"terminal":"child"}`),
-				OccurredAt: time.Date(2026, 8, 28, 11, 0, 1, 0, time.UTC),
-			},
-			JobLease: lease, EventID: "event-child-finalized", CorrelationID: "atomic-finalization-crash",
-		}); err != nil {
-			t.Fatalf("crash worker finalize: %v", err)
-		}
-	}
-	fmt.Printf(
-		"%s %s %d %s %s %s\n",
-		crashWorkerReadyPrefix,
-		lease.JobID,
-		lease.Token,
-		lease.LeaseUntil.UTC().Format(time.RFC3339Nano),
-		run.WorkflowVersionID,
-		run.WorkflowVersionHash,
-	)
-	_ = os.Stdout.Sync()
-	select {}
 }
 
 func startAndHardKillCrashWorker(
@@ -481,28 +467,6 @@ func startAndHardKillCrashWorker(
 	}
 	waited = true
 	return ready
-}
-
-func parseCrashWorkerReady(line string) (crashWorkerReady, error) {
-	fields := strings.Fields(line)
-	if len(fields) != 6 || fields[0] != crashWorkerReadyPrefix {
-		return crashWorkerReady{}, fmt.Errorf("invalid crash worker READY line %q", line)
-	}
-	token, err := strconv.ParseUint(fields[2], 10, 64)
-	if err != nil {
-		return crashWorkerReady{}, fmt.Errorf("parse crash worker lease token: %w", err)
-	}
-	leaseUntil, err := time.Parse(time.RFC3339Nano, fields[3])
-	if err != nil {
-		return crashWorkerReady{}, fmt.Errorf("parse crash worker lease expiry: %w", err)
-	}
-	return crashWorkerReady{
-		JobID:               ports.JobID(fields[1]),
-		LeaseToken:          token,
-		LeaseUntil:          leaseUntil,
-		WorkflowVersionID:   workflow.WorkflowVersionID(fields[4]),
-		WorkflowVersionHash: fields[5],
-	}, nil
 }
 
 func waitForExpiredJobRecovery(
@@ -623,41 +587,20 @@ WHERE aggregate_type = 'WorkflowRun' AND aggregate_id = ? AND event_type = 'WORK
 	}
 }
 
+// seedCrashResumeOwners and the workflow fixture builders below delegate to
+// crashworker_fixtures.go's exported equivalents (shared with cmd/spike-worker
+// and internal/spikeacceptance's SPK-04 scenario); thin t.Fatal-wrapping
+// versions are kept under their original names so every other
+// crash_resume_*_integration_test.go file's call sites stay unchanged.
 func seedCrashResumeOwners(t *testing.T, ctx context.Context, store *Store) {
 	t.Helper()
-	const timestamp = "2026-08-28T00:00:00Z"
-	_, err := store.db.ExecContext(ctx, `
-INSERT INTO projects(id, name, status, version, created_at, updated_at)
-VALUES ('project-crash', 'Crash/restart spike', 'ACTIVE', 1, ?, ?);
-
-INSERT INTO task_families(
-  id, project_id, root_work_item_id, scope_version, status, version, created_at, updated_at
-) VALUES ('family-crash', 'project-crash', 'work-item-crash', 1, 'ACTIVE', 1, ?, ?);
-
-INSERT INTO work_items(
-  id, project_id, kind, parent_id, family_id, title, status, version, created_at, updated_at
-) VALUES (
-  'work-item-crash', 'project-crash', 'ROOT', NULL, 'family-crash',
-  'Crash/restart spike', 'ACTIVE', 1, ?, ?
-);`,
-		timestamp, timestamp,
-		timestamp, timestamp,
-		timestamp, timestamp,
-	)
-	if err != nil {
-		t.Fatalf("seed crash/restart owners: %v", err)
+	if err := SeedCrashResumeOwners(ctx, store); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func crashResumeWorkflowDefinition() workflow.WorkflowDefinition {
-	projectID := project.ProjectID("project-crash")
-	return workflow.WorkflowDefinition{
-		ID:        "workflow-definition-crash",
-		ProjectID: &projectID,
-		Name:      "Crash/restart workflow",
-		Status:    workflow.DefinitionActive,
-		Version:   1,
-	}
+	return CrashResumeWorkflowDefinition()
 }
 
 func compileCrashResumeWorkflowVersion(
@@ -669,55 +612,17 @@ func compileCrashResumeWorkflowVersion(
 	dependencyVersion string,
 ) workflow.WorkflowVersion {
 	t.Helper()
-	version, err := workflow.Compile(definition, workflow.PublishRequest{
-		VersionID:     id,
-		VersionNumber: versionNumber,
-		Document:      document,
-		Dependencies: workflow.DependencyManifest{Pins: []workflow.DependencyPin{
-			{
-				Kind:    "skill",
-				Key:     "implement",
-				Version: dependencyVersion,
-				Hash:    "sha256:" + dependencyVersion,
-			},
-		}},
-		PublishedBy: "crash-restart-spike",
-		PublishedAt: time.Date(2026, 8, 28, int(versionNumber), 0, 0, 0, time.UTC),
-	})
+	version, err := CompileCrashResumeWorkflowVersion(definition, id, versionNumber, document, dependencyVersion)
 	if err != nil {
-		t.Fatalf("compile crash/restart workflow %s: %v", id, err)
+		t.Fatal(err)
 	}
 	return version
 }
 
 func crashResumeWorkflowDocumentV1() workflow.WorkflowDocument {
-	return workflow.WorkflowDocument{
-		SchemaVersion: "1",
-		Nodes: []workflow.Node{
-			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"execute"}},
-			{Key: "implement", Type: workflow.NodeAgent, Outcomes: []string{"done"}, ExecutorRef: "agent/default"},
-			{Key: "end", Type: workflow.NodeEnd},
-		},
-		Edges: []workflow.Edge{
-			{Key: "start-implement", From: "start", Outcome: "execute", To: "implement"},
-			{Key: "implement-end", From: "implement", Outcome: "done", To: "end"},
-		},
-	}
+	return CrashResumeWorkflowDocumentV1()
 }
 
 func crashResumeWorkflowDocumentV2() workflow.WorkflowDocument {
-	return workflow.WorkflowDocument{
-		SchemaVersion: "1",
-		Nodes: []workflow.Node{
-			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"execute"}},
-			{Key: "implement", Type: workflow.NodeAgent, Outcomes: []string{"verify"}, ExecutorRef: "agent/default"},
-			{Key: "verify", Type: workflow.NodeCommand, Outcomes: []string{"done"}, ExecutorRef: "command/test"},
-			{Key: "end", Type: workflow.NodeEnd},
-		},
-		Edges: []workflow.Edge{
-			{Key: "start-implement", From: "start", Outcome: "execute", To: "implement"},
-			{Key: "implement-verify", From: "implement", Outcome: "verify", To: "verify"},
-			{Key: "verify-end", From: "verify", Outcome: "done", To: "end"},
-		},
-	}
+	return CrashResumeWorkflowDocumentV2()
 }

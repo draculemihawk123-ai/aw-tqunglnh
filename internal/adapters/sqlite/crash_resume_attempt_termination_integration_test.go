@@ -4,11 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -17,16 +14,17 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
 
-// Fixture identities shared between the top-level test and its crashed
-// worker child, exactly as in crash_resume_checkpoint_integration_test.go.
+// Aliases onto crashworker_fixtures.go's exported constants: this file was
+// written against these unexported names before the shared, non-test worker
+// logic was extracted (docs/design/02-v0-spike-verdict.md V0-10B).
 const (
-	crashAttemptTermRunID                 = "workflow-run-crash-term"
-	crashAttemptTermNodeRunID             = "node-run-crash-term"
-	crashAttemptTermAttemptID             = "attempt-crash-term"
-	crashAttemptTermRepositoryID          = "repo-crash-term"
-	crashAttemptTermWorkspaceSetID        = "workspace-set-crash-term"
-	crashAttemptTermRepositoryWorkspaceID = "rw-crash-term"
-	crashAttemptTermBaseRevision          = "rev-crash-term-base"
+	crashAttemptTermRunID                 = CrashAttemptTermRunID
+	crashAttemptTermNodeRunID             = CrashAttemptTermNodeRunID
+	crashAttemptTermAttemptID             = CrashAttemptTermAttemptID
+	crashAttemptTermRepositoryID          = CrashAttemptTermRepositoryID
+	crashAttemptTermWorkspaceSetID        = CrashAttemptTermWorkspaceSetID
+	crashAttemptTermRepositoryWorkspaceID = CrashAttemptTermRepositoryWorkspaceID
+	crashAttemptTermBaseRevision          = CrashAttemptTermBaseRevision
 )
 
 // TestSPK04FaultAfterProcessExitReadOnlyAttemptBecomesLost and
@@ -198,128 +196,31 @@ func runFaultAfterProcessExitScenario(t *testing.T, mutating bool) {
 	}
 }
 
-// runFaultAfterProcessExitWorkerProcess is the crashed-worker child. It runs
-// a real external process to completion (the fault point under test: the
-// external exit is genuine and already observed) and, for the mutating
-// variant, acquires a real WriteLease before that — then is hard-killed with
-// no chance to commit any outcome.
+// runFaultAfterProcessExitWorkerProcess, seedCrashAttemptTermNodeRunAndAttempt
+// and seedCrashAttemptTermWorkspace delegate to the shared RunCrashWorker
+// (internal/adapters/sqlite/crashworker.go) and crashworker_fixtures.go's
+// exported seed helpers.
 func runFaultAfterProcessExitWorkerProcess(t *testing.T, mutating bool) {
 	t.Helper()
-	databasePath := strings.TrimSpace(os.Getenv(crashWorkerDBEnvironment))
-	if databasePath == "" {
-		t.Fatal("crash attempt-termination worker database path is required")
-	}
-	ttl, err := time.ParseDuration(os.Getenv(crashWorkerTTLEnvironment))
-	if err != nil || ttl <= 0 {
-		t.Fatalf("parse crash attempt-termination worker TTL: %v", err)
-	}
-
-	ctx := context.Background()
-	store, err := Open(ctx, databasePath)
-	if err != nil {
-		t.Fatalf("crash attempt-termination worker open store: %v", err)
-	}
-	// Intentionally no Close: the parent terminates this process while its
-	// SQLite connection and durable lease are still live.
-
-	run, err := store.LoadWorkflowRun(ctx, crashAttemptTermRunID)
-	if err != nil {
-		t.Fatalf("crash attempt-termination worker load workflow run: %v", err)
-	}
-	_, lease, err := store.ClaimJob(ctx, "worker-before-crash", ttl)
-	if err != nil {
-		t.Fatalf("crash attempt-termination worker claim job: %v", err)
-	}
-
+	mode := CrashModeProcessExitReadonly
 	if mutating {
-		if _, err := store.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
-			JobLease:  lease,
-			AttemptID: crashAttemptTermAttemptID,
-			Targets: []ports.WorkspaceLeaseTarget{{
-				RepositoryID:          crashAttemptTermRepositoryID,
-				RepositoryWorkspaceID: crashAttemptTermRepositoryWorkspaceID,
-				Generation:            1,
-			}},
-			TTL: ttl,
-		}); err != nil {
-			t.Fatalf("crash attempt-termination worker acquire write lease: %v", err)
-		}
+		mode = CrashModeProcessExitMutating
 	}
-
-	// A real external process runs to completion and exits cleanly (code 0).
-	// The worker is about to be killed with no chance to act on that exit;
-	// nothing downstream may treat this clean exit as a committed success.
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatalf("resolve current test executable for external process: %v", err)
+	if err := RunCrashWorker(mode, testBinarySpawner); err != nil {
+		t.Fatal(err)
 	}
-	external := exec.Command(executable, "-test.run=^$")
-	if err := external.Run(); err != nil {
-		t.Fatalf("external process did not exit cleanly: %v", err)
-	}
-
-	fmt.Printf(
-		"%s %s %d %s %s %s\n",
-		crashWorkerReadyPrefix,
-		lease.JobID,
-		lease.Token,
-		lease.LeaseUntil.UTC().Format(time.RFC3339Nano),
-		run.WorkflowVersionID,
-		run.WorkflowVersionHash,
-	)
-	_ = os.Stdout.Sync()
-	select {}
 }
 
 func seedCrashAttemptTermNodeRunAndAttempt(t *testing.T, ctx context.Context, store *Store, runID runtime.WorkflowRunID) {
 	t.Helper()
-	const timestamp = "2026-08-28T13:00:00Z"
-	if _, err := store.db.ExecContext(ctx, `
-INSERT INTO node_runs(
-  id, run_id, node_key, activation_sequence, iteration, state,
-  input_state_hash, version, created_at, updated_at
-) VALUES (?, ?, 'implement', 1, 0, 'RUNNING', 'sha256:input-crash-term', 1, ?, ?);`,
-		crashAttemptTermNodeRunID, runID, timestamp, timestamp,
-	); err != nil {
-		t.Fatalf("seed crash attempt-termination node run: %v", err)
-	}
-	if _, err := store.db.ExecContext(ctx, `
-INSERT INTO execution_attempts(
-  id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
-  input_revision_set_json, version, created_at, updated_at
-) VALUES (?, ?, 1, 'RUNNING', 'codex', 'sha256:profile-crash-term', '[]', 1, ?, ?);`,
-		crashAttemptTermAttemptID, crashAttemptTermNodeRunID, timestamp, timestamp,
-	); err != nil {
-		t.Fatalf("seed crash attempt-termination execution attempt: %v", err)
+	if err := SeedCrashAttemptTermNodeRunAndAttempt(ctx, store, runID); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func seedCrashAttemptTermWorkspace(t *testing.T, ctx context.Context, store *Store) {
 	t.Helper()
-	const timestamp = "2026-08-28T13:00:00Z"
-	if _, err := store.db.ExecContext(ctx, `
-INSERT INTO repositories(id, project_id, name, local_path, default_ref, status, version, created_at, updated_at)
-VALUES (?, 'project-crash', 'attempt-term-repo', 'C:/fixture/attempt-term', 'main', 'ACTIVE', 1, ?, ?);`,
-		crashAttemptTermRepositoryID, timestamp, timestamp,
-	); err != nil {
-		t.Fatalf("seed crash attempt-termination repository: %v", err)
-	}
-	if _, err := store.db.ExecContext(ctx, `
-INSERT INTO workspace_sets(id, project_id, family_id, state, version, created_at, updated_at)
-VALUES (?, 'project-crash', 'family-crash', 'READY', 1, ?, ?);`,
-		crashAttemptTermWorkspaceSetID, timestamp, timestamp,
-	); err != nil {
-		t.Fatalf("seed crash attempt-termination workspace set: %v", err)
-	}
-	if _, err := store.db.ExecContext(ctx, `
-INSERT INTO repository_workspaces(
-  id, project_id, workspace_set_id, family_id, repository_id, generation,
-  locator, branch_ref, base_revision, current_revision, state, version, created_at, updated_at
-) VALUES (?, 'project-crash', ?, 'family-crash', ?, 1,
-          'opaque:attempt-term', 'agentkit/family-crash/attempt-term', ?, ?, 'READY', 1, ?, ?);`,
-		crashAttemptTermRepositoryWorkspaceID, crashAttemptTermWorkspaceSetID, crashAttemptTermRepositoryID,
-		crashAttemptTermBaseRevision, crashAttemptTermBaseRevision, timestamp, timestamp,
-	); err != nil {
-		t.Fatalf("seed crash attempt-termination repository workspace: %v", err)
+	if err := SeedCrashAttemptTermWorkspace(ctx, store); err != nil {
+		t.Fatal(err)
 	}
 }

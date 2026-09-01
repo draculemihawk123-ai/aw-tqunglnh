@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	processadapter "github.com/taQuangLing/agent-workflow/internal/adapters/process"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/providers"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -329,20 +328,13 @@ func assertArgumentSequence(t *testing.T, arguments, sequence []string) {
 	t.Fatalf("argument sequence %#v is absent from %#v", sequence, arguments)
 }
 
-type invocationCapture struct {
-	Provider         string   `json:"provider"`
-	Argv             []string `json:"argv"`
-	Stdin            string   `json:"stdin"`
-	WorkingDirectory string   `json:"workingDirectory"`
-}
-
-func readCapture(t *testing.T, path string) invocationCapture {
+func readCapture(t *testing.T, path string) providers.FakeCLIInvocation {
 	t.Helper()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read invocation capture: %v", err)
 	}
-	var capture invocationCapture
+	var capture providers.FakeCLIInvocation
 	if err := json.Unmarshal(content, &capture); err != nil {
 		t.Fatalf("decode invocation capture: %v", err)
 	}
@@ -377,6 +369,11 @@ func (c *eventCollector) snapshot() []ports.AgentEvent {
 	return append([]ports.AgentEvent(nil), c.events...)
 }
 
+// TestProviderHelperProcess is the re-invoked-test-binary path used by every
+// test above (see helperPrefix): it delegates to the exact same
+// providers.RunFakeProviderCLI that cmd/fake-claude and cmd/fake-codex call
+// directly, so the two paths (under `go test` vs. a standalone
+// agentkit-spike acceptance run) can never diverge in fixture behavior.
 func TestProviderHelperProcess(t *testing.T) {
 	if os.Getenv("AGENTKIT_PROVIDER_HELPER") != "1" {
 		return
@@ -385,111 +382,13 @@ func TestProviderHelperProcess(t *testing.T) {
 	if len(arguments) < 1 {
 		os.Exit(2)
 	}
-	provider := arguments[0]
-	providerArguments := arguments[1:]
-	input, _ := io.ReadAll(os.Stdin)
-	workingDirectory, _ := os.Getwd()
-	capture := invocationCapture{
-		Provider:         provider,
-		Argv:             providerArguments,
-		Stdin:            string(input),
-		WorkingDirectory: workingDirectory,
-	}
-	captureContent, _ := json.Marshal(capture)
-	if err := os.WriteFile(os.Getenv("AGENTKIT_CAPTURE_PATH"), captureContent, 0o600); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(3)
-	}
-
-	mode := os.Getenv("AGENTKIT_HELPER_MODE")
-	if mode == "malformed" {
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":`)
-		os.Exit(0)
-	}
-	if mode == "invalid-session" && isResumeInvocation(provider, providerArguments) {
-		// A real CLI whose session expired server-side still runs to
-		// completion and reports a failed turn — it does not crash. Exit 0
-		// here on purpose: SPK-12 is about the orchestrator never calling
-		// Resume in the first place, not about surviving a process crash.
-		writeProviderFailedTurn(provider)
-		_ = os.Stdout.Sync()
-		os.Exit(0)
-	}
-	writeProviderStarted(provider)
-	if mode == "cancel" {
-		_ = os.Stdout.Sync()
-		time.Sleep(30 * time.Second)
-		os.Exit(0)
-	}
-	writeProviderSuccess(provider)
+	code := providers.RunFakeProviderCLI(
+		arguments[0], arguments[1:],
+		os.Getenv("AGENTKIT_HELPER_MODE"), os.Getenv("AGENTKIT_CAPTURE_PATH"),
+		os.Stdin, os.Stdout,
+	)
 	_ = os.Stdout.Sync()
-	os.Exit(0)
-}
-
-// isResumeInvocation inspects the provider argv (after the "--" separator)
-// for the same resume-shaped flags contract_test.go's own assertResumeArgs
-// checks for, so the invalid-session mode can fail only resume attempts and
-// leave Start attempts on the same fake CLI succeeding normally.
-func isResumeInvocation(provider string, arguments []string) bool {
-	switch provider {
-	case "claude":
-		for _, argument := range arguments {
-			if argument == "--resume" {
-				return true
-			}
-		}
-		return false
-	case "codex":
-		return len(arguments) >= 2 && arguments[0] == "exec" && arguments[1] == "resume"
-	default:
-		return false
-	}
-}
-
-// writeProviderFailedTurn emits a well-formed but failed terminal event for
-// each provider's real wire protocol: Codex's "turn.failed" after
-// thread.started, Claude's is_error result after system init. Both
-// normalizers map this to AgentExecutionFailed/"provider_failure" — see
-// codex.go and claude.go's finalStatus.
-func writeProviderFailedTurn(provider string) {
-	switch provider {
-	case "codex":
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"thread.started","thread_id":"codex-session-0001"}`)
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"turn.failed"}`)
-	case "claude":
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"system","subtype":"init","session_id":"claude-session-0001"}`)
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"claude-session-0001","usage":{"input_tokens":1,"output_tokens":1}}`)
-	default:
-		os.Exit(4)
-	}
-}
-
-func writeProviderStarted(provider string) {
-	switch provider {
-	case "codex":
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"thread.started","thread_id":"codex-session-0001"}`)
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"turn.started"}`)
-	case "claude":
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"system","subtype":"init","session_id":"claude-session-0001"}`)
-	default:
-		os.Exit(4)
-	}
-}
-
-func writeProviderSuccess(provider string) {
-	switch provider {
-	case "codex":
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"item.started","item":{"id":"tool-1","type":"command_execution","command":"git status","status":"in_progress","exit_code":null}}`)
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"item.completed","item":{"id":"tool-1","type":"command_execution","command":"git status","aggregated_output":"clean","status":"completed","exit_code":0}}`)
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"done"}}`)
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":3,"output_tokens":5}}`)
-	case "claude":
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"assistant","session_id":"claude-session-0001","message":{"content":[{"type":"text","text":"done"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"git status"}}],"usage":{"input_tokens":12,"cache_read_input_tokens":3,"output_tokens":5}}}`)
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"user","session_id":"claude-session-0001","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"clean","is_error":false}]}}`)
-		_, _ = fmt.Fprintln(os.Stdout, `{"type":"result","subtype":"success","is_error":false,"session_id":"claude-session-0001","total_cost_usd":0.01,"usage":{"input_tokens":12,"cache_read_input_tokens":3,"output_tokens":5}}`)
-	default:
-		os.Exit(4)
-	}
+	os.Exit(code)
 }
 
 func argumentsAfterSeparator(arguments []string) []string {

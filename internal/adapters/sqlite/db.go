@@ -38,6 +38,17 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	query.Add("_pragma", "journal_mode(WAL)")
 	query.Add("_pragma", "busy_timeout(5000)")
 	query.Add("_pragma", "synchronous(FULL)")
+	// Every BeginTx call in this package writes (docs/design/02-v0-spike-verdict.md
+	// V0-11A): a plain DEFERRED transaction only takes its SHARED read lock
+	// up front and lazily upgrades to a write lock on its first write
+	// statement. When two such transactions both already hold a SHARED lock
+	// and race to upgrade simultaneously, SQLite returns SQLITE_BUSY without
+	// ever invoking the busy-handler — busy_timeout above does not apply to
+	// that specific case, only to ordinary lock contention. _txlock=immediate
+	// makes every transaction on this connection acquire its write-intent
+	// (RESERVED) lock at BEGIN time instead, so concurrent writers contend
+	// for that lock the normal way busy_timeout does cover.
+	query.Add("_txlock", "immediate")
 	u.RawQuery = query.Encode()
 
 	db, err := sql.Open("sqlite", u.String())

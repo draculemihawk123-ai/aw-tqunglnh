@@ -4,16 +4,77 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"sort"
 	"time"
+
+	"github.com/taQuangLing/agent-workflow/internal/adapters/evidence"
 )
+
+// EvidenceWriter is the narrow evidence-bundle write surface a ScenarioFunc
+// uses to persist its own workflow/runtime/workspace/provider/process
+// artifacts as it runs (docs/spikes/01-go-core-spike-plan.md §12). It is
+// satisfied by *evidence.Bundle; RunAll owns creating, finalizing and
+// verifying the bundle instance a scenario receives, so a ScenarioFunc never
+// decides evidence-bundle lifecycle for itself.
+type EvidenceWriter interface {
+	Put(path string, body []byte) (evidence.Artifact, error)
+	PutJSON(path string, value any) (evidence.Artifact, error)
+	PutRedacted(path string, body []byte, secrets ...string) (evidence.Artifact, error)
+}
+
+// ScenarioBinaries are the paths to the standalone fixture binaries a
+// ScenarioFunc spawns as real, separate OS processes (docs/design/02-v0-spike-verdict.md
+// V0-10A): agentkit-spike acceptance --full runs outside `go test`, so a
+// scenario that needs a fake-provider or generic write-helper child process
+// cannot use the re-invoke-the-test-binary trick internal/adapters/providers
+// and internal/adapters/gitworktree's own tests use — it needs an actual
+// built binary. An empty path means that binary was not supplied; a
+// scenario that needs it and finds it empty must return a harness error
+// (see ScenarioFunc), not silently report Passed: false.
+type ScenarioBinaries struct {
+	FakeClaude  string
+	FakeCodex   string
+	SpikeHelper string
+	SpikeWorker string
+}
+
+// ScenarioContext is what RunAll gives every ScenarioFunc: its own sealed
+// evidence bundle, the fixture binaries it may need to spawn, and enough
+// identity to create additional, independently sealed bundles of its own
+// when a scenario's own contract requires more than one (see NewSubBundle).
+type ScenarioContext struct {
+	SPKID        SPKID
+	Bundle       EvidenceWriter
+	Binaries     ScenarioBinaries
+	evidenceRoot string
+	suiteID      string
+	now          time.Time
+}
+
+// NewSubBundle creates and returns an additional, independently sealed
+// evidence bundle for scenarios whose own contract requires more than one —
+// e.g. SPK-14 must prove tamper DETECTION, which means sealing then
+// deliberately corrupting bundles that are not the scenario's own
+// designated Bundle (RunAll finalizes and verifies that one automatically
+// right after the scenario returns; corrupting it would break RunAll
+// itself, not demonstrate anything). suffix names the new bundle
+// "<suiteID>-<spkId>-<suffix>", alongside but distinct from the scenario's
+// own "<suiteID>-<spkId>" bundle. The caller owns this bundle's entire
+// lifecycle (Put/Finalize/Verify); RunAll never touches it.
+func (sc ScenarioContext) NewSubBundle(suffix string) (*evidence.Bundle, error) {
+	return evidence.CreateAt(sc.evidenceRoot, sc.suiteID+"-"+string(sc.SPKID)+"-"+suffix, sc.now)
+}
 
 // ScenarioFunc executes one SPK-01..SPK-14 acceptance scenario and reports
 // its genuine outcome. A ScenarioFunc must always return a well-formed
 // SPKResult; a non-nil error signals that the scenario harness itself could
-// not run (fixture setup failure, environment problem, ...), not that the
-// SPK's contract failed to hold — that case is Passed: false in the result.
-type ScenarioFunc func(ctx context.Context) (SPKResult, error)
+// not run (fixture setup failure, environment problem, a required binary in
+// ScenarioContext.Binaries was not supplied, ...), not that the SPK's
+// contract failed to hold — that case is Passed: false in the result. Any
+// artifact the scenario writes to ScenarioContext.Bundle should show up,
+// kind-tagged, in the SPKResult.Artifacts it returns.
+type ScenarioFunc func(ctx context.Context, sc ScenarioContext) (SPKResult, error)
 
 // ScenarioEntry binds one SPKID to its ScenarioFunc. Registrations are kept
 // as a slice, not a map literal, so NewRegistry can detect a caller
@@ -96,18 +157,53 @@ func NewRegistry(entries []ScenarioEntry) (Registry, error) {
 // NewSPKManifest. A non-nil error means the dispatch harness itself failed
 // for one SPK (see ScenarioFunc); it does not mean an SPK's contract failed
 // to hold — that is Passed: false inside the returned manifest.
-func (r Registry) RunAll(ctx context.Context, suiteID string, now time.Time) (SPKManifest, error) {
+//
+// Each SPK gets its own sealed evidence bundle under evidenceRoot, named
+// "<suiteID>-<spkId>" — one bundle per SPK, not one shared bundle, because
+// artifact paths inside a bundle (e.g. "runtime/run.json") are not scoped
+// per SPK and would collide if fourteen scenarios wrote into the same
+// bundle. RunAll finalizes and verifies each bundle itself immediately
+// after its scenario returns, before moving to the next SPK: a scenario
+// never controls its own bundle's lifecycle. A scenario that errors leaves
+// its bundle unfinalized rather than sealed with a partial result;
+// evidence.PruneExpired never removes an unfinalized bundle, so it stays
+// available for investigation.
+func (r Registry) RunAll(
+	ctx context.Context,
+	evidenceRoot, suiteID string,
+	now time.Time,
+	binaries ScenarioBinaries,
+) (SPKManifest, error) {
 	results := make([]SPKResult, 0, len(RequiredSPKIDs()))
 	for _, id := range RequiredSPKIDs() {
 		handler := r.entries[id]
 		if handler == nil {
 			return SPKManifest{}, fmt.Errorf("%w: %s", ErrScenarioMissing, id)
 		}
-		result, err := handler(ctx)
+		bundle, err := evidence.CreateAt(evidenceRoot, suiteID+"-"+string(id), now)
+		if err != nil {
+			return SPKManifest{}, fmt.Errorf("create evidence bundle for %s: %w", id, err)
+		}
+		if _, err := bundle.PutJSON("environment.json", map[string]string{
+			"goos": runtime.GOOS, "goarch": runtime.GOARCH, "suiteId": suiteID, "spkId": string(id),
+		}); err != nil {
+			return SPKManifest{}, fmt.Errorf("write environment for %s: %w", id, err)
+		}
+		sc := ScenarioContext{
+			SPKID: id, Bundle: bundle, Binaries: binaries,
+			evidenceRoot: evidenceRoot, suiteID: suiteID, now: now,
+		}
+		result, err := handler(ctx, sc)
 		if err != nil {
 			return SPKManifest{}, fmt.Errorf("run scenario %s: %w", id, err)
 		}
 		result.SPKID = id
+		if _, err := bundle.Finalize(map[string]string{"suiteId": suiteID, "spkId": string(id)}); err != nil {
+			return SPKManifest{}, fmt.Errorf("finalize evidence bundle for %s: %w", id, err)
+		}
+		if _, err := evidence.Verify(bundle.Directory()); err != nil {
+			return SPKManifest{}, fmt.Errorf("verify evidence bundle for %s: %w", id, err)
+		}
 		results = append(results, result)
 	}
 	return NewSPKManifest(suiteID, now, results)

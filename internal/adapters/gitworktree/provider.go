@@ -176,6 +176,21 @@ func (p *Provider) Inspect(ctx context.Context, handle ports.WorkspaceHandle) (p
 	return p.inspectActive(ctx, handle, metadata)
 }
 
+// WorkingDirectory resolves a WorkspaceHandle this Provider issued to a real
+// filesystem path suitable as a child process's working directory. This is
+// the one sanctioned bridge from an opaque handle to a spawnable cwd — for
+// starting the real AgentExecutor/helper process a workspace exists to
+// support — not a general path leak: the handle is still fully validated
+// (existence, identity, containment) exactly as Inspect does, and nothing
+// about the handle's own representation changes. Callers still cannot
+// derive or guess a workspace's path any other way.
+func (p *Provider) WorkingDirectory(ctx context.Context, handle ports.WorkspaceHandle) (string, error) {
+	if _, err := p.Inspect(ctx, handle); err != nil {
+		return "", err
+	}
+	return p.workspacePath(handle)
+}
+
 func (p *Provider) CaptureRevision(ctx context.Context, handle ports.WorkspaceHandle) (workspace.Revision, error) {
 	inspection, err := p.Inspect(ctx, handle)
 	if err != nil {

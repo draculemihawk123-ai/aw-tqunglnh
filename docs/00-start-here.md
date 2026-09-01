@@ -98,13 +98,15 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
 | 1. Domain Project/Repository/TaskFamily/WorkspaceSet | Hoàn tất tài liệu baseline | Không đổi semantics nếu không có ADR mới. |
 | 2. Quyết định kiến trúc | ACCEPTED | ADR-001…025 là baseline sau review thiết kế ngày 2026-08-31. |
 | 3. Go core architecture/spec | Hoàn tất specification baseline | Code phải bám spec hoặc tạo ADR superseding. |
-| 4. Go spike | **IN PROGRESS** | Phải đạt SPK-01…SPK-14 trước alpha. |
-| 5. Alpha UI/runtime | **CHƯA ĐƯỢC BẮT ĐẦU** | Chỉ bắt đầu sau verdict `GO` của spike. |
-| 6. Thiết kế chi tiết version/subtask | **BASELINE ĐÃ QUYẾT ĐỊNH** | Roadmap Alpha và task theo session nằm tại `docs/design/`; đã cập nhật theo ADR-020…025. Vẫn chưa thực thi V1 trước verdict `GO` của spike. |
+| 4. Go spike | **GO** (2026-09-01, V0-14) | SPK-01…SPK-14 đều pass thật trên Windows và Linux (CI), evidence verify được, 10/10 suite runs không flaky đúng semantics, `-race` pass trên CI. Chi tiết: [spike report](spikes/02-go-core-spike-report.md). |
+| 5. Alpha UI/runtime | **ĐƯỢC PHÉP BẮT ĐẦU** | Verdict `GO` đã ghi; bắt đầu theo đúng dependency/gate trong `docs/design/00-roadmap.md`, mỗi session một Task ID. |
+| 6. Thiết kế chi tiết version/subtask | **BASELINE ĐÃ QUYẾT ĐỊNH** | Roadmap Alpha và task theo session nằm tại `docs/design/`; đã cập nhật theo ADR-020…025. V1 được phép thực thi từ verdict `GO` (mục 4), vẫn phải tuân dependency/gate trong roadmap. |
 
-Spike hiện đã có primitive và baseline evidence Windows, nhưng **chưa đạt gate**: còn acceptance
-end-to-end từng SPK, một số fault path, Linux semantic suite và `go test -race` trên CI. Không được
-diễn đạt local unit pass là `GO` cho alpha.
+Spike đã đạt gate: SPK-01…SPK-14 đều có evidence PASS thật (13/14 trực tiếp trên mỗi platform, SPK-13
+qua job `semantic-diff` cross-platform riêng — không thể/không được kết luận từ một platform đơn lẻ).
+Race detector sạch, 10 lần chạy full suite liên tiếp không flaky, mỗi lần có bằng chứng tường minh
+(không suy từ exit code). Xem [spike report](spikes/02-go-core-spike-report.md) mục 3 để có đầy đủ CI
+run ID/evidence ID.
 
 ## 5. Đọc theo thứ tự này
 
@@ -123,19 +125,36 @@ code hiện có. Khi cần quyết định mới, kiểm ADR trước; thay đ�
 
 ## 6. Cách chạy spike hiện có
 
-Từ repository root, dùng Go toolchain đã cài:
+Từ repository root, dùng Go toolchain đã cài. `acceptance --offline` (baseline `go test` wrapper) và
+`acceptance --full` (registry thật, 14 scenario, dùng để đóng gate) là hai lệnh khác nhau — `--full`
+mới là lệnh tạo evidence cho verdict `GO`:
 
 ```text
-go test ./...
 go vet ./...
-go run ./cmd/agentkit-spike acceptance --offline --evidence-dir docs/spikes/evidence
-go run ./cmd/agentkit-spike evidence verify --evidence-dir docs/spikes/evidence --suite <suite-id>
+go test -count=1 ./...
+go build -o bin/agentkit-spike ./cmd/agentkit-spike
+go build -o bin/fake-claude ./cmd/fake-claude
+go build -o bin/fake-codex ./cmd/fake-codex
+go build -o bin/spike-helper ./cmd/spike-helper
+go build -o bin/spike-worker ./cmd/spike-worker
+./bin/agentkit-spike acceptance --full --assessment \
+  --evidence-dir docs/spikes/evidence \
+  --fake-claude bin/fake-claude --fake-codex bin/fake-codex \
+  --spike-helper bin/spike-helper --spike-worker bin/spike-worker
+./bin/agentkit-spike evidence verify --evidence-dir docs/spikes/evidence --suite <suite-id>-<spkId>
 ```
 
-`acceptance --offline` hiện tạo evidence cho baseline test suite, **không** tự động biến mọi SPK thành
-PASS. Evidence generated nằm dưới `docs/spikes/evidence/`, bị Git ignore và raw spike payload có
-retention mặc định 7 ngày.
-Linux/race là CI gate bắt buộc, không được bỏ qua chỉ vì local Go bundle không hỗ trợ race detector.
+`--assessment` thoát mã 0 khi harness/evidence hoàn chỉnh dù một SPK cụ thể (SPK-13, khi chạy đơn
+platform) báo `false` — dùng cho CI thường trực, không tự nhận `GO`. `--require-all-pass` là gate đóng
+cuối, thoát khác 0 nếu bất kỳ SPK nào false. SPK-13 chỉ có kết luận thật (authoritative) qua
+`agentkit-spike semantic-diff --left --right --out --evidence-dir`, so hai manifest từ hai platform
+thật — xem CI job `cross-platform semantic diff` trong
+[spike-gate.yml](../.github/workflows/spike-gate.yml).
+
+Evidence generated nằm dưới `docs/spikes/evidence/`, bị Git ignore và raw spike payload có retention
+mặc định 7 ngày. CI (`.github/workflows/spike-gate.yml`) chạy đủ: `contract` (vet+test hai OS),
+`spike acceptance` (registry thật hai OS), `Linux race and stability` (`-race` + 10 lần full suite,
+V0-12), `cross-platform semantic diff` (SPK-13, V0-11), `Boundary/dependency report` (V0-13).
 
 ## 7. Definition of done cho mục 4
 
@@ -148,6 +167,12 @@ không flaky qua 10 suite runs và `-race` chạy trên CI hỗ trợ. Nếu ch�
   làm mục 5.
 - **STOP:** evidence chứng minh một lựa chọn lõi không thể giữ invariant; ghi phương án thay thế bằng
   ADR, không suy từ cảm nhận hay số dòng code.
+
+**Đã ghi `GO` ngày 2026-09-01 (V0-14).** Toàn bộ bốn tiêu chí trên đạt bằng evidence thật, dẫn chi tiết
+tại [spike report](spikes/02-go-core-spike-report.md) mục 3 (CI run ID, artifact name, evidence suite
+ID cụ thể). Một gap thật từng phát hiện ở chính bài kiểm 10-run (không kiểm `result.Passed`, chỉ kiểm
+có evidence) đã được sửa và chạy lại nguyên chuỗi 10 lần từ đầu trước khi verdict này được ghi — xem
+spike report mục 6, finding #10.
 
 ## 8. Quy tắc cập nhật tài liệu
 
