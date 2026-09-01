@@ -430,6 +430,28 @@
 > `spk08WriteLeaseRace: {iterationCount: 100, meetsMinimum100: true}`,
 > `fullSuiteRuns`: cả 10 lần `passed: true` (9–11s mỗi lần), `allTenRunsStable: true`. Cả 6 job trong
 > run đều xanh; `gh pr view 1`: `state=OPEN mergeable=MERGEABLE`, mọi status check `SUCCESS`.
+>
+> **Phát hiện gap khi soát lại cho V0-14 (không phải "Đạt" đầy đủ như ghi trên):** `10x full offline
+> suite` dựa vào `go test -count=1 ./...` pass/fail — nhưng
+> `TestDefaultScenariosFormAValidRegistryAndCleanRun` (bài test mà "full suite" tin cậy để chứng minh
+> cả 14 SPK) trước đây **không kiểm `result.Passed`**, chỉ kiểm có assertion, có artifact, bundle
+> verify được. Một SPK thật sự fail (`Passed:false`) nhưng vẫn có assertion/artifact/bundle hợp lệ sẽ
+> lọt qua — nghĩa là `allTenRunsStable:true` mới chỉ chứng minh "harness/evidence hoàn chỉnh 10 lần",
+> **chưa** chứng minh "SPK-01…14 đều genuinely pass 10 lần" như mục tiêu gate yêu cầu. Đã tái hiện bằng
+> vi phạm thật: ép `SPK-01` trả `Passed:false` (vẫn giữ nguyên assertion/artifact) — test cũ sẽ pass
+> nhầm; sau khi sửa test, xác nhận catch đúng lỗi rồi revert violation.
+>
+> **Sửa:** `TestDefaultScenariosFormAValidRegistryAndCleanRun`
+> (`internal/spikeacceptance/registry_test.go`) giờ bắt buộc SPK-01…12 và SPK-14 phải `Passed:true`;
+> SPK-13 phải đúng `Passed:false` kèm lý do `PENDING_PEER_PLATFORM` — không chấp nhận `Passed:true` hay
+> `Passed:false` vì lý do khác cho SPK-13. Thêm bước CI riêng mỗi vòng lặp: chạy `-v` chỉ test này,
+> ghi log `spk-summary-run-N.log` (13 PASS + 1 PENDING per run) làm bằng chứng tường minh, không suy từ
+> boolean pass/fail của cả suite.
+>
+> **Trạng thái sau sửa: draft đã push, chờ chạy lại nguyên chuỗi 10 lần từ đầu trên CI thật, chưa đóng
+> lại.** Run 33516182656 ở trên không còn đủ làm bằng chứng cho tiêu chí gốc — cần run mới với test đã
+> sửa. Không tính là REWORK (không có invariant nào sai — SPK-01…14 registry code vẫn đúng, luôn đúng);
+> đây là **thiếu evidence trong chính bài kiểm** (semantics gap), đã sửa hẹp đúng chỗ.
 
 ## V0-13 — Boundary/dependency report
 

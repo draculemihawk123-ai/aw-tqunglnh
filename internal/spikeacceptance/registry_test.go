@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -214,6 +215,7 @@ func TestDefaultScenariosFormAValidRegistryAndCleanRun(t *testing.T) {
 	if len(manifest.Results) != len(RequiredSPKIDs()) {
 		t.Fatalf("got %d results, want %d", len(manifest.Results), len(RequiredSPKIDs()))
 	}
+	passed, pending := 0, 0
 	for _, result := range manifest.Results {
 		if len(result.Assertions) == 0 {
 			t.Fatalf("SPK %s result has no assertions explaining its current status", result.SPKID)
@@ -224,7 +226,35 @@ func TestDefaultScenariosFormAValidRegistryAndCleanRun(t *testing.T) {
 		if _, err := evidence.Verify(filepath.Join(evidenceRoot, suiteID+"-"+string(result.SPKID))); err != nil {
 			t.Fatalf("Verify(bundle for %s) error = %v", result.SPKID, err)
 		}
+		// A "clean run" means every SPK genuinely passed, not merely that it
+		// produced evidence: a real functional failure (Passed:false) still
+		// has assertions/artifacts/a verifiable bundle, so the three checks
+		// above alone would silently accept it. SPK-13 is the one designed
+		// exception — a single-platform run can never conclude it (V0-11);
+		// it must report exactly PENDING_PEER_PLATFORM, never Passed:true and
+		// never Passed:false for any other reason.
+		if result.SPKID == SPK13 {
+			if result.Passed {
+				t.Fatalf("SPK-13 reported Passed:true from a single-platform run — only the cross-platform semantic-diff job (V0-11) may conclude SPK-13")
+			}
+			isPending := false
+			for _, assertion := range result.Assertions {
+				if strings.Contains(assertion.Detail, "PENDING_PEER_PLATFORM") {
+					isPending = true
+				}
+			}
+			if !isPending {
+				t.Fatalf("SPK-13 result is Passed:false but not for the expected PENDING_PEER_PLATFORM reason: %+v", result.Assertions)
+			}
+			pending++
+			continue
+		}
+		if !result.Passed {
+			t.Fatalf("SPK %s reported Passed:false — every SPK except SPK-13 (single-platform) must genuinely pass for this to be a clean run: %+v", result.SPKID, result.Assertions)
+		}
+		passed++
 	}
+	t.Logf("clean run: %d SPKs genuinely Passed:true, %d correctly PENDING_PEER_PLATFORM (SPK-13, single-platform) — %d total", passed, pending, passed+pending)
 }
 
 // moduleRoot walks up from this test file's own directory to find go.mod,

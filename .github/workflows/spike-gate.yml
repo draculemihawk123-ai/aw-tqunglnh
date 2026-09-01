@@ -137,6 +137,17 @@ jobs:
             run_end=$(date +%s)
             duration=$((run_end - run_start))
             echo "run ${i}/10 passed=${run_passed} duration=${duration}s"
+
+            # TestDefaultScenariosFormAValidRegistryAndCleanRun (part of the
+            # suite run above) requires every SPK except SPK-13 to genuinely
+            # report Passed:true, and SPK-13 to report exactly
+            # PENDING_PEER_PLATFORM — a bare pass/fail boolean for the whole
+            # suite doesn't show that explicitly per run, so capture this one
+            # test's own -v output (its t.Logf prints "N SPKs genuinely
+            # Passed:true, M correctly PENDING_PEER_PLATFORM") into its own
+            # small, readable per-run log.
+            go test -v -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=1 ./internal/spikeacceptance/... \
+              > "stability-report/spk-summary-run-${i}.log" 2>&1 || true
             runs_json=$(echo "${runs_json}" | jq --argjson run "${i}" --argjson passed "${run_passed}" --argjson duration "${duration}" \
               '. + [{"run": $run, "passed": $passed, "durationSeconds": $duration}]')
           done
