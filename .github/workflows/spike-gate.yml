@@ -145,9 +145,21 @@ jobs:
             # suite doesn't show that explicitly per run, so capture this one
             # test's own -v output (its t.Logf prints "N SPKs genuinely
             # Passed:true, M correctly PENDING_PEER_PLATFORM") into its own
-            # small, readable per-run log.
-            go test -v -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=1 ./internal/spikeacceptance/... \
-              > "stability-report/spk-summary-run-${i}.log" 2>&1 || true
+            # small, readable per-run log. This must fail the run (not be
+            # silently swallowed) if the command itself fails to execute or
+            # the expected summary line never appears — either would mean
+            # this run's "13 PASS + 1 PENDING" evidence is missing, not just
+            # unreadable.
+            if ! go test -v -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=1 ./internal/spikeacceptance/... \
+              > "stability-report/spk-summary-run-${i}.log" 2>&1; then
+              run_passed=false
+              all_stable=false
+              echo "run ${i} SPK-summary re-run FAILED, see stability-report/spk-summary-run-${i}.log"
+            elif ! grep -q "clean run:" "stability-report/spk-summary-run-${i}.log"; then
+              run_passed=false
+              all_stable=false
+              echo "run ${i} SPK-summary log missing the expected \"clean run:\" confirmation"
+            fi
             runs_json=$(echo "${runs_json}" | jq --argjson run "${i}" --argjson passed "${run_passed}" --argjson duration "${duration}" \
               '. + [{"run": $run, "passed": $passed, "durationSeconds": $duration}]')
           done

@@ -169,7 +169,7 @@ không flaky qua 10 suite runs và `-race` chạy trên CI hỗ trợ. Nếu ch�
   ADR, không suy từ cảm nhận hay số dòng code.
 
 **Đã ghi `GO` ngày 2026-09-01 (V0-14).** Toàn bộ bốn tiêu chí trên đạt bằng evidence thật, dẫn chi tiết
-tại [spike report](spikes/02-go-core-spike-report.md) mục 3 (CI run ID, artifact ID, evidence suite
+tại [spike report](spikes/02-go-core-spike-report.md) mục 3 (CI run ID, artifact name, evidence suite
 ID cụ thể). Một gap thật từng phát hiện ở chính bài kiểm 10-run (không kiểm `result.Passed`, chỉ kiểm
 có evidence) đã được sửa và chạy lại nguyên chuỗi 10 lần từ đầu trước khi verdict này được ghi — xem
 spike report mục 6, finding #10.

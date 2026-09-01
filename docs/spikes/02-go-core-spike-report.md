@@ -38,10 +38,13 @@ wiring/thiếu evidence, đã đóng bằng task hẹp đúng chỗ (xem mục 5
 
 ## 3. Bằng chứng đã chạy
 
-CI thật ([spike-gate.yml](../../.github/workflows/spike-gate.yml)), run cuối cùng dùng để đóng gate:
-[GitHub Actions run 33525614475](https://github.com/taQuangLing/agent-workflow/actions/runs/33525614475)
-(nhánh `ci/v0-11-draft`, commit `d7be9fa`, PR [#1](https://github.com/taQuangLing/agent-workflow/pull/1)).
-Cả 6 job xanh:
+CI thật ([spike-gate.yml](../../.github/workflows/spike-gate.yml)). Evidence dưới đây được tạo bởi
+run [33525614475](https://github.com/taQuangLing/agent-workflow/actions/runs/33525614475) (commit
+`d7be9fa`, nhánh `ci/v0-11-draft`) — run này chạy **trước** khi verdict được viết vào chính tài liệu
+này, nên là nguồn evidence, không phải run xác nhận tài liệu. Commit chứa verdict (`cfc906b`, cùng
+nhánh/PR) có run xác nhận bổ sung riêng —
+[33527255158](https://github.com/taQuangLing/agent-workflow/actions/runs/33527255158) — xanh cả 6 job
+tại đúng HEAD chứa văn bản verdict này. Cả 6 job của run gốc `33525614475` xanh:
 
 - `contract` (windows-latest, ubuntu-latest): `go vet ./...`, `go test -count=1 ./...` PASS cả hai OS.
 - `spike acceptance` (windows-latest, ubuntu-latest): `agentkit-spike acceptance --full --assessment`
