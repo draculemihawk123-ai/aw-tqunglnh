@@ -85,18 +85,22 @@ WHERE aggregate_type = 'ExecutionAttempt' AND aggregate_id = ?`, update.AttemptI
 	).Scan(&sequence); err != nil {
 		return fmt.Errorf("allocate attempt termination event sequence: %w", err)
 	}
+	journalPosition, err := allocateJournalPosition(ctx, tx)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO domain_events(
-    id, project_id, aggregate_type, aggregate_id, sequence,
+    id, project_id, aggregate_type, aggregate_id, sequence, journal_position,
     event_type, schema_version, payload_json, correlation_id, created_at
 )
-SELECT ?, wr.project_id, 'ExecutionAttempt', ea.id, ?,
+SELECT ?, wr.project_id, 'ExecutionAttempt', ea.id, ?, ?,
        'EXECUTION_ATTEMPT_TERMINATED', 1, ?, ?, ?
 FROM execution_attempts ea
 JOIN node_runs nr ON nr.id = ea.node_run_id
 JOIN workflow_runs wr ON wr.id = nr.run_id
 WHERE ea.id = ?`,
-		update.EventID, sequence, string(payload), update.CorrelationID, timestamp, update.AttemptID,
+		update.EventID, sequence, journalPosition, string(payload), update.CorrelationID, timestamp, update.AttemptID,
 	); err != nil {
 		return fmt.Errorf("append attempt termination event: %w", err)
 	}

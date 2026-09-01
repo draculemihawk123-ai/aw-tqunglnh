@@ -77,18 +77,27 @@ type RuntimeRepository interface{}
 type JobsRepository interface{}
 
 // EventsRepository appends a domain event inside the current transaction.
-// This is deliberately minimal (V1-06's own illustrative "state+event"
-// proof, not V1-07's full outbox/sequence-allocation contract): the
-// caller supplies Sequence explicitly rather than this repository
-// allocating it, since real per-aggregate sequence allocation under
-// concurrent writers is V1-07's job (GC-INV-15).
+// The caller still supplies Sequence explicitly rather than this
+// repository allocating it, since real per-aggregate sequence allocation
+// under concurrent writers belongs to whichever later task first needs
+// it composed with a real aggregate write. Append itself allocates
+// JournalPosition (database-monotonic, V1-07, ADR-015) and writes exactly
+// one matching outbox row in the same transaction (GC-INV-16) — a
+// committed event can never be missing its durable-delivery record, even
+// if the process crashes immediately after commit.
 type EventsRepository interface {
 	Append(ctx context.Context, event DomainEvent) error
 }
 
-// DomainEvent is the minimal event shape EventsRepository.Append persists
-// to domain_events. ProjectID is optional (some aggregates are
-// installation-scoped); every other field is required.
+// DomainEvent is the event shape EventsRepository.Append persists to
+// domain_events (and, via its outbox row, makes durably deliverable).
+// ProjectID, CausationID and Topic are optional; every other field is
+// required. CausationID is the ID of the event or command that directly
+// caused this one (distinct from CorrelationID, which ties a whole chain
+// of related activity together, not just the immediate cause). Topic
+// defaults to EventType when left empty — it exists so a caller can group
+// events onto a coarser outbox routing channel than one topic per event
+// type, once a real consumer needs that.
 type DomainEvent struct {
 	ID            string
 	ProjectID     string // empty means installation-scoped, stored as NULL
@@ -99,6 +108,8 @@ type DomainEvent struct {
 	SchemaVersion int
 	PayloadJSON   string
 	CorrelationID string
+	CausationID   string
+	Topic         string
 	CreatedAt     time.Time
 }
 

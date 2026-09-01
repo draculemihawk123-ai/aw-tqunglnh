@@ -565,18 +565,23 @@ FROM domain_events
 WHERE aggregate_type = 'WorkflowRun' AND aggregate_id = ?`, transition.RunID).Scan(&sequence); err != nil {
 		return runtime.WorkflowRun{}, fmt.Errorf("allocate workflow finalization event sequence: %w", err)
 	}
+	journalPosition, err := allocateJournalPosition(ctx, tx)
+	if err != nil {
+		return runtime.WorkflowRun{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO domain_events(
-    id, project_id, aggregate_type, aggregate_id, sequence,
+    id, project_id, aggregate_type, aggregate_id, sequence, journal_position,
     event_type, schema_version, payload_json, correlation_id, created_at
 )
-SELECT ?, project_id, 'WorkflowRun', id, ?,
+SELECT ?, project_id, 'WorkflowRun', id, ?, ?,
        'WORKFLOW_RUN_FINALIZED', 1, ?, ?,
        strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 FROM workflow_runs
 WHERE id = ?`,
 		finalization.EventID,
 		sequence,
+		journalPosition,
 		string(payload),
 		finalization.CorrelationID,
 		transition.RunID,

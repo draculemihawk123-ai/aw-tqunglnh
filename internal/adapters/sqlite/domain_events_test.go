@@ -109,3 +109,175 @@ func TestEventsRepository_Append_DuplicateAggregateSequence_Rejected(t *testing.
 		t.Fatalf("err = %v, want it mapped through MapSQLiteError to a typed apperror.Error", err)
 	}
 }
+
+// TestEventsRepository_Append_JournalPositionMonotonicAcrossAggregates
+// proves journal_position is one global, monotonically increasing
+// sequence (ADR-015) shared across every aggregate — not reset or scoped
+// per aggregate the way `sequence` is.
+func TestEventsRepository_Append_JournalPositionMonotonicAcrossAggregates(t *testing.T) {
+	ctx := context.Background()
+	store := openReceiptsStore(t, "agentkit-events-journal-position.db")
+
+	events := []ports.DomainEvent{
+		{ID: "evt-1", AggregateType: "Project", AggregateID: "proj-1", Sequence: 1,
+			EventType: "ProjectCreated", SchemaVersion: 1, PayloadJSON: `{}`, CorrelationID: "corr-1", CreatedAt: time.Now().UTC()},
+		{ID: "evt-2", AggregateType: "Project", AggregateID: "proj-2", Sequence: 1,
+			EventType: "ProjectCreated", SchemaVersion: 1, PayloadJSON: `{}`, CorrelationID: "corr-1", CreatedAt: time.Now().UTC()},
+		{ID: "evt-3", AggregateType: "Project", AggregateID: "proj-1", Sequence: 2,
+			EventType: "ProjectRenamed", SchemaVersion: 1, PayloadJSON: `{}`, CorrelationID: "corr-1", CreatedAt: time.Now().UTC()},
+	}
+	for _, event := range events {
+		if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+			return appendEvent(ctx, tx, event)
+		}); err != nil {
+			t.Fatalf("Append(%s): %v", event.ID, err)
+		}
+	}
+
+	rows, err := store.db.QueryContext(ctx, `SELECT id, journal_position FROM domain_events ORDER BY journal_position`)
+	if err != nil {
+		t.Fatalf("query journal positions: %v", err)
+	}
+	defer rows.Close()
+	var gotIDs []string
+	var gotPositions []int64
+	for rows.Next() {
+		var id string
+		var position int64
+		if err := rows.Scan(&id, &position); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		gotIDs = append(gotIDs, id)
+		gotPositions = append(gotPositions, position)
+	}
+	wantIDs := []string{"evt-1", "evt-2", "evt-3"}
+	wantPositions := []int64{1, 2, 3}
+	for i := range wantIDs {
+		if i >= len(gotIDs) || gotIDs[i] != wantIDs[i] || gotPositions[i] != wantPositions[i] {
+			t.Fatalf("row %d = (id=%v, journal_position=%v), want (id=%s, journal_position=%d)",
+				i, gotIDs, gotPositions, wantIDs[i], wantPositions[i])
+		}
+	}
+}
+
+func TestEventsRepository_Append_CausationIDOptional(t *testing.T) {
+	ctx := context.Background()
+	store := openReceiptsStore(t, "agentkit-events-causation.db")
+
+	withCausation := ports.DomainEvent{
+		ID: "evt-1", AggregateType: "Project", AggregateID: "proj-1", Sequence: 1,
+		EventType: "ProjectCreated", SchemaVersion: 1, PayloadJSON: `{}`,
+		CorrelationID: "corr-1", CausationID: "cmd-1", CreatedAt: time.Now().UTC(),
+	}
+	withoutCausation := ports.DomainEvent{
+		ID: "evt-2", AggregateType: "Project", AggregateID: "proj-2", Sequence: 1,
+		EventType: "ProjectCreated", SchemaVersion: 1, PayloadJSON: `{}`,
+		CorrelationID: "corr-1", CreatedAt: time.Now().UTC(),
+	}
+	for _, event := range []ports.DomainEvent{withCausation, withoutCausation} {
+		if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+			return appendEvent(ctx, tx, event)
+		}); err != nil {
+			t.Fatalf("Append(%s): %v", event.ID, err)
+		}
+	}
+
+	var causationID sql.NullString
+	if err := store.db.QueryRowContext(ctx, `SELECT causation_id FROM domain_events WHERE id = ?`, "evt-1").Scan(&causationID); err != nil {
+		t.Fatalf("read back evt-1 causation_id: %v", err)
+	}
+	if !causationID.Valid || causationID.String != "cmd-1" {
+		t.Fatalf("evt-1 causation_id = %+v, want valid \"cmd-1\"", causationID)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT causation_id FROM domain_events WHERE id = ?`, "evt-2").Scan(&causationID); err != nil {
+		t.Fatalf("read back evt-2 causation_id: %v", err)
+	}
+	if causationID.Valid {
+		t.Fatalf("evt-2 causation_id = %q, want NULL", causationID.String)
+	}
+}
+
+func TestEventsRepository_Append_PayloadExceedsSizeLimit_Rejected(t *testing.T) {
+	ctx := context.Background()
+	store := openReceiptsStore(t, "agentkit-events-payload-too-big.db")
+
+	oversized := make([]byte, maxDomainEventPayloadBytes+1)
+	for i := range oversized {
+		oversized[i] = 'a'
+	}
+	event := ports.DomainEvent{
+		ID: "evt-1", AggregateType: "Project", AggregateID: "proj-1", Sequence: 1,
+		EventType: "ProjectCreated", SchemaVersion: 1, PayloadJSON: string(oversized),
+		CorrelationID: "corr-1", CreatedAt: time.Now().UTC(),
+	}
+
+	err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		return appendEvent(ctx, tx, event)
+	})
+	if apperror.CodeOf(err) != apperror.CodeInvalidArgument {
+		t.Fatalf("err = %v, want apperror.CodeInvalidArgument", err)
+	}
+
+	var count int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM domain_events`).Scan(&count); err != nil {
+		t.Fatalf("count domain_events: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 (a rejected oversized payload must never partially commit)", count)
+	}
+}
+
+// TestEventsRepository_Append_AlsoEnqueuesOutboxMessage is V1-07's own
+// "outbox same transaction" requirement (GC-INV-16): appending a domain
+// event must always leave a matching outbox row committed alongside it.
+func TestEventsRepository_Append_AlsoEnqueuesOutboxMessage(t *testing.T) {
+	ctx := context.Background()
+	store := openReceiptsStore(t, "agentkit-events-outbox-enqueue.db")
+
+	event := ports.DomainEvent{
+		ID: "evt-1", AggregateType: "Project", AggregateID: "proj-1", Sequence: 1,
+		EventType: "ProjectCreated", SchemaVersion: 1, PayloadJSON: `{"name":"demo"}`,
+		CorrelationID: "corr-1", CreatedAt: time.Now().UTC(),
+	}
+	if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		return appendEvent(ctx, tx, event)
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	var eventID, topic, payload, status string
+	err := store.db.QueryRowContext(ctx,
+		`SELECT event_id, topic, payload_json, status FROM outbox WHERE event_id = ?`, event.ID,
+	).Scan(&eventID, &topic, &payload, &status)
+	if err != nil {
+		t.Fatalf("read back outbox row: %v", err)
+	}
+	if eventID != event.ID || topic != event.EventType || payload != event.PayloadJSON || status != string(ports.OutboxAvailable) {
+		t.Fatalf("outbox row = (event_id=%q topic=%q payload=%q status=%q), want (%q %q %q %q)",
+			eventID, topic, payload, status, event.ID, event.EventType, event.PayloadJSON, ports.OutboxAvailable)
+	}
+}
+
+func TestEventsRepository_Append_ExplicitTopicOverridesEventTypeDefault(t *testing.T) {
+	ctx := context.Background()
+	store := openReceiptsStore(t, "agentkit-events-topic-override.db")
+
+	event := ports.DomainEvent{
+		ID: "evt-1", AggregateType: "Project", AggregateID: "proj-1", Sequence: 1,
+		EventType: "ProjectCreated", Topic: "project.lifecycle", SchemaVersion: 1, PayloadJSON: `{}`,
+		CorrelationID: "corr-1", CreatedAt: time.Now().UTC(),
+	}
+	if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		return appendEvent(ctx, tx, event)
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+
+	var topic string
+	if err := store.db.QueryRowContext(ctx, `SELECT topic FROM outbox WHERE event_id = ?`, event.ID).Scan(&topic); err != nil {
+		t.Fatalf("read back outbox topic: %v", err)
+	}
+	if topic != "project.lifecycle" {
+		t.Fatalf("topic = %q, want %q (explicit Topic must win over the EventType default)", topic, "project.lifecycle")
+	}
+}

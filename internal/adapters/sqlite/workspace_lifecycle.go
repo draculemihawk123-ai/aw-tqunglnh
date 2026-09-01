@@ -225,12 +225,16 @@ WHERE aggregate_type = 'RepositoryWorkspace' AND aggregate_id = ?`, event.worksp
 	).Scan(&sequence); err != nil {
 		return fmt.Errorf("allocate repository workspace event sequence: %w", err)
 	}
+	journalPosition, err := allocateJournalPosition(ctx, tx)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO domain_events(
-    id, project_id, aggregate_type, aggregate_id, sequence,
+    id, project_id, aggregate_type, aggregate_id, sequence, journal_position,
     event_type, schema_version, payload_json, correlation_id, created_at
-) VALUES (?, ?, 'RepositoryWorkspace', ?, ?, ?, 1, ?, ?, ?)`,
-		event.id, event.projectID, event.workspaceID, sequence, event.eventType, string(payload), event.correlationID, event.timestamp,
+) VALUES (?, ?, 'RepositoryWorkspace', ?, ?, ?, ?, 1, ?, ?, ?)`,
+		event.id, event.projectID, event.workspaceID, sequence, journalPosition, event.eventType, string(payload), event.correlationID, event.timestamp,
 	); err != nil {
 		return fmt.Errorf("append repository workspace event: %w", err)
 	}

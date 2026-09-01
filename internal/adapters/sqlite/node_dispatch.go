@@ -107,17 +107,21 @@ WHERE aggregate_type = 'NodeRun' AND aggregate_id = ?`, dispatch.NodeRunID,
 	).Scan(&sequence); err != nil {
 		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("allocate node completion event sequence: %w", err)
 	}
+	journalPosition, err := allocateJournalPosition(ctx, tx)
+	if err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO domain_events(
-    id, project_id, aggregate_type, aggregate_id, sequence,
+    id, project_id, aggregate_type, aggregate_id, sequence, journal_position,
     event_type, schema_version, payload_json, correlation_id, created_at
 )
-SELECT ?, wr.project_id, 'NodeRun', nr.id, ?,
+SELECT ?, wr.project_id, 'NodeRun', nr.id, ?, ?,
        'NODE_RUN_COMPLETED', 1, ?, ?, ?
 FROM node_runs nr
 JOIN workflow_runs wr ON wr.id = nr.run_id
 WHERE nr.id = ?`,
-		dispatch.EventID, sequence, string(payload), dispatch.CorrelationID, timestamp, dispatch.NodeRunID,
+		dispatch.EventID, sequence, journalPosition, string(payload), dispatch.CorrelationID, timestamp, dispatch.NodeRunID,
 	); err != nil {
 		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("append node completion event: %w", err)
 	}
@@ -274,16 +278,20 @@ WHERE aggregate_type = 'NodeRun' AND aggregate_id = ?`, dispatch.NodeRunID,
 	).Scan(&sequence); err != nil {
 		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("allocate node intent dispatch event sequence: %w", err)
 	}
+	journalPosition, err := allocateJournalPosition(ctx, tx)
+	if err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO domain_events(
-    id, project_id, aggregate_type, aggregate_id, sequence,
+    id, project_id, aggregate_type, aggregate_id, sequence, journal_position,
     event_type, schema_version, payload_json, correlation_id, created_at
 )
-SELECT ?, project_id, 'NodeRun', ?, ?,
+SELECT ?, project_id, 'NodeRun', ?, ?, ?,
        'NODE_RUN_DISPATCHED', 1, ?, ?, ?
 FROM workflow_runs
 WHERE id = ?`,
-		dispatch.EventID, dispatch.NodeRunID, sequence, string(payload), dispatch.CorrelationID, timestamp, dispatch.RunID,
+		dispatch.EventID, dispatch.NodeRunID, sequence, journalPosition, string(payload), dispatch.CorrelationID, timestamp, dispatch.RunID,
 	); err != nil {
 		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("append node intent dispatch event: %w", err)
 	}
