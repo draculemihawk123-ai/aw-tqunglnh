@@ -1,14 +1,16 @@
 # Bộ tiêu chí nền tảng cho Agent Kit
 
-> Trạng thái: bản cơ sở để thảo luận và kiểm chứng, chưa phải thiết kế triển khai cuối cùng.
+> Trạng thái: bộ tiêu chí harness đã tổng hợp; implementation detail nằm ở architecture/spec và Go spike.
 >
 > Nguồn tổng hợp: [walkinglabs/learn-harness-engineering tại commit `77e7a3e`](https://github.com/walkinglabs/learn-harness-engineering/tree/77e7a3e21469dcbece2558086c8d91657abeaa40). Bộ tài liệu diễn giải lại bằng ngôn ngữ của Agent Kit; không sao chép nguyên văn lecture và không coi các con số minh họa trong khóa học là cam kết hiệu năng.
 >
 > Bài học từ prototype hiện có: [Kinh nghiệm từ `claude-workflow` để xây Agent Kit](../danh-gia-claude-workflow.md).
 >
+> Điểm vào cho session mới và trạng thái hiện tại: [Start here / handoff](../00-start-here.md).
+>
 > Mô hình domain đã thống nhất: [Project, Repository, TaskFamily và WorkspaceSet](../architecture/01-project-repository-workspace-model.md).
 >
-> Các lựa chọn cần xác nhận trước Go spec: [Architecture decisions cho Agent Kit](../architecture/02-architecture-decisions.md).
+> Quyết định architecture đã chốt: [Architecture decisions cho Agent Kit](../architecture/02-architecture-decisions.md).
 
 ## 1. Mục đích
 
