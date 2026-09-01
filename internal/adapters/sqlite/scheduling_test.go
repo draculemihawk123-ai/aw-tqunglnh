@@ -404,6 +404,31 @@ func waitForRecoveredJob(t *testing.T, store *Store) {
 	}
 }
 
+// waitPastLeaseUntil blocks, deterministically, until the wall clock has
+// passed a specific WriteLeaseGrant's own recorded LeaseUntil (plus a small
+// safety margin for clock-read granularity). A job lease and a write lease
+// acquired moments apart with the same TTL do not share one expiry instant:
+// the write lease's clock started a little later, so it expires a little
+// later too. waitForRecoveredJob alone only proves the job lease died; a
+// caller that goes on to contend for the SAME write lease still needs this,
+// or it can race a write lease that is technically still live for a few
+// milliseconds (see docs/design/02-v0-spike-verdict.md V0-11A's follow-up
+// finding, surfaced by a real Windows CI run, not reproduced locally).
+func waitPastLeaseUntil(t *testing.T, leaseUntil time.Time) {
+	t.Helper()
+	deadline := leaseUntil.Add(2 * time.Second)
+	for {
+		now := time.Now().UTC()
+		if now.After(leaseUntil.Add(20 * time.Millisecond)) {
+			return
+		}
+		if now.After(deadline) {
+			t.Fatalf("write lease did not pass its own LeaseUntil (%s) before deadline", leaseUntil)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func workerName(index int) string {
 	const digits = "0123456789abcdef"
 	return "worker-" + string(digits[index%len(digits)])

@@ -124,19 +124,17 @@ func runSPK09Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 		return SPKResult{}, fmt.Errorf("spk09: W1 acquire write lease: %w", err)
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		recovered, err := store.RecoverExpiredJobs(ctx)
-		if err != nil {
-			return SPKResult{}, fmt.Errorf("spk09: recover expired jobs: %w", err)
-		}
-		if recovered == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			return SPKResult{}, errors.New("spk09: durable job lease did not expire before deadline")
-		}
-		time.Sleep(5 * time.Millisecond)
+	// The job lease and the write lease are two independent expiry instants
+	// (the write lease's clock started a few milliseconds after the job
+	// lease's, from the same TTL): waiting only for job-lease recovery can
+	// still race a write lease that is technically still live for a few
+	// milliseconds (a real Windows-CI failure, never reproduced locally —
+	// docs/design/02-v0-spike-verdict.md V0-11A's follow-up finding).
+	if err := waitForExpiredJobRecovery(ctx, store); err != nil {
+		return SPKResult{}, fmt.Errorf("spk09: %w", err)
+	}
+	if err := waitPastWriteLeaseUntil(ctx, w1Grants[0].LeaseUntil); err != nil {
+		return SPKResult{}, fmt.Errorf("spk09: %w", err)
 	}
 
 	_, w2JobLease, err := store.ClaimJob(ctx, "worker-2", 5*time.Second)

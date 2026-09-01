@@ -272,6 +272,29 @@ func waitForExpiredJobRecovery(ctx context.Context, store *sqlite.Store) error {
 	}
 }
 
+// waitPastWriteLeaseUntil blocks, deterministically, until the wall clock
+// has passed a specific WriteLeaseGrant's own recorded LeaseUntil (plus a
+// small safety margin for clock-read granularity). See
+// internal/adapters/sqlite/scheduling_test.go's waitPastLeaseUntil, the same
+// fix applied on the test side of this exact race.
+func waitPastWriteLeaseUntil(ctx context.Context, leaseUntil time.Time) error {
+	deadline := leaseUntil.Add(2 * time.Second)
+	for {
+		now := time.Now().UTC()
+		if now.After(leaseUntil.Add(20 * time.Millisecond)) {
+			return nil
+		}
+		if now.After(deadline) {
+			return fmt.Errorf("write lease did not pass its own LeaseUntil (%s) before deadline", leaseUntil)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
 const spk04CrashedWorkerTTL = 900 * time.Millisecond
 
 // spk04Boundary1BeforeIntentCommit closes fault point 1/6: killed before the

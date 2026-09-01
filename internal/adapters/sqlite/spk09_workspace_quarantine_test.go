@@ -65,7 +65,12 @@ func TestSPK09QuarantineRecreateFencesStaleGeneration(t *testing.T) {
 	}
 
 	// W1 stops heartbeating; both its job lease and write lease expire.
+	// These are two independent expiry instants (the write lease's clock
+	// started a few milliseconds after the job lease's, from the same TTL),
+	// so both must be waited on explicitly — see waitPastLeaseUntil's doc
+	// comment for the real Windows-CI failure this closes.
 	waitForRecoveredJob(t, store)
+	waitPastLeaseUntil(t, w1Grants[0].LeaseUntil)
 
 	// W2 takes over the same durable job: T2 > T1.
 	_, w2JobLease, err := store.ClaimJob(ctx, "worker-2", 5*time.Second)

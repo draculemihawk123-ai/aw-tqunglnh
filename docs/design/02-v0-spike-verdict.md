@@ -276,13 +276,32 @@
   thường), và không có lỗi rò ra ngoài adapter dưới dạng khác `ErrWriteLeaseConflict`/`ErrJobLeaseLost`
   đã định nghĩa.
 
-> **Đạt.** CI run thật
+> **Phần SQLITE_BUSY: đạt.** CI run thật
 > [33506869479](https://github.com/taQuangLing/agent-workflow/actions/runs/33506869479):
 > `contract (windows-latest)` xanh trong 3m59s bao gồm bước stress. 20 lần
 > `TestWriteLeaseRaceHasOneWinnerForSameRepository` (2000 iteration race) = 34.0s tổng, không lần nào
-> SQLITE_BUSY. 5 lần `TestDefaultScenariosFormAValidRegistryAndCleanRun` = 101.2s tổng, không lần nào
-> fail. Cả hai đều xa dưới timeout đã đặt (120s/300s) — thời gian chờ bounded thật, không phải "may mắn
-> né được" trong 1 lần chạy.
+> SQLITE_BUSY. Cả hai đều xa dưới timeout đã đặt — thời gian chờ bounded thật, không phải "may mắn né
+> được" trong 1 lần chạy. `_txlock=immediate` chưa bị bác bỏ bởi bất kỳ lỗi nào sau đó.
+>
+> **Phát hiện thêm (run tiếp theo, commit tài liệu thuần túy 31528a6 → CI run
+> [33507762210](https://github.com/taQuangLing/agent-workflow/actions/runs/33507762210)): một race
+> thời gian khác, không phải SQLITE_BUSY.** `TestSPK09QuarantineRecreateFencesStaleGeneration` fail với
+> `ErrWriteLeaseConflict` thật (không phải "database is locked"). Nguyên nhân: job lease và write lease
+> của W1 cùng TTL 300ms nhưng được tạo ở hai thời điểm khác nhau (job lease trước, write lease sau vài
+> mili giây) — hai thời điểm hết hạn tuyệt đối khác nhau. `waitForRecoveredJob`/vòng lặp tương đương chỉ
+> đợi job lease hết hạn (`RecoverExpiredJobs`), không đợi write lease riêng; W2 gọi `AcquireWriteLeases`
+> ngay sau đó có thể va phải write lease của W1 còn hiệu lực vài mili giây. Cùng pattern lặp lại ở
+> `internal/spikeacceptance/spk09_scenario.go` (viết từ V0-10A, dùng chung logic đợi).
+>
+> **Sửa (V0-11A, phần 2):** thêm `waitPastLeaseUntil` (test, `scheduling_test.go`) và
+> `waitPastWriteLeaseUntil` (scenario, `spk04_scenario.go`, dùng chung trong package `spikeacceptance`)
+> — đợi xác định tới đúng `WriteLeaseGrant.LeaseUntil` đã ghi nhận, không suy đoán khoảng cách TTL. Áp
+> dụng ở `spk09_workspace_quarantine_test.go` và `spk09_scenario.go`. Thêm
+> `TestSPK09QuarantineRecreateFencesStaleGeneration -count=30` vào bước stress Windows trong CI.
+>
+> Cục bộ: 30 lần chạy `TestSPK09QuarantineRecreateFencesStaleGeneration` sau sửa đều pass (lỗi này chưa
+> từng tái hiện cục bộ trước đó nên đây chỉ là kiểm tra không-regress, không phải bằng chứng lỗi đã
+> đóng — bằng chứng thật phải đến từ CI thật, xem cập nhật dưới V0-11).
 
 ## V0-11 — Chạy full offline suite trên Windows và Ubuntu CI
 
@@ -294,9 +313,11 @@
 - **Thực hiện:** build helper/provider binaries; chạy `acceptance --full --assessment` trên cả hai OS;
   verify bundle; upload platform manifests với `if: always()`; job thứ ba (Ubuntu, phụ thuộc cả hai
   matrix job) tải hai manifest rồi chạy `semantic-diff` để sinh SPK-13 result authoritative.
-- **Verify:** hai matrix jobs xanh từ clean checkout. **Đạt** — xem cập nhật cuối mục này.
-- **Hoàn thành khi:** SPK-13 pass và report liên kết được CI run/evidence ID. **Đạt** — xem cập nhật
-  cuối mục này.
+- **Verify:** hai matrix jobs xanh từ clean checkout. **Chưa đạt ổn định** — một run đã xanh cả 6 job
+  (xem cập nhật cuối mục này), nhưng run kế tiếp trên cùng PR fail vì lỗi khác (V0-11A phần 2). Chỉ coi
+  là đạt khi run mới nhất tại HEAD hiện tại của PR xanh, không dựa vào run cũ.
+- **Hoàn thành khi:** SPK-13 pass và report liên kết được CI run/evidence ID, **tại HEAD hiện tại của
+  PR**, không phải một run lịch sử đã bị commit sau đó làm outdated.
 
 > **Trạng thái hiện tại: draft đã push, chờ CI thật xác nhận, chưa đóng.** `.github/workflows/spike-gate.yml`
 > đã cập nhật để khớp phạm vi trên: job `spike-acceptance` (matrix windows-latest/ubuntu-latest,
@@ -332,27 +353,29 @@
 > chẩn đoán root cause cụ thể và sửa (`_txlock=immediate`), thêm bước stress thật (20x race test + 5x
 > registry test) trên chính `contract (windows-latest)`.
 >
-> **V0-11A đóng, V0-11 đạt "hai matrix jobs xanh" thật:** CI run
-> [33506869479](https://github.com/taQuangLing/agent-workflow/actions/runs/33506869479) (nhánh
-> `ci/v0-11-draft`, PR taQuangLing/agent-workflow#1) — cả 6 job đều xanh: `contract` (Windows 3m59s bao
-> gồm bước stress, Ubuntu 37s), `spike acceptance` (Windows 1m22s, Ubuntu 36s), `Linux race and
-> stability` (3m22s), `cross-platform semantic diff` (21s). Bước stress V0-11A trên chính
-> `contract (windows-latest)`: 20 lần race test = 34.0s tổng (100 iteration × 20 lần chạy, không lần nào
-> SQLITE_BUSY, không block bất thường), 5 lần full registry test = 101.2s tổng — cả hai đều xa dưới
-> timeout, chứng minh thời gian chờ bounded và lỗi không rò khỏi adapter đúng tiêu chí "Hoàn thành khi"
-> của V0-11A.
->
-> `semantic-diff` chạy trên hai manifest thật (Windows runner thật vs Ubuntu runner thật, không phải mô
-> phỏng cục bộ): `SPK-13 authoritative passed=true (0 unexplained difference(s) across 13 SPK(s), left=
+> **Một run trung gian đã xanh cả 6 job (bằng chứng cơ chế hoạt động đúng, không phải trạng thái cuối
+> của PR):** CI run
+> [33506869479](https://github.com/taQuangLing/agent-workflow/actions/runs/33506869479) (commit
+> `b105522`) — `contract` (Windows 3m59s bao gồm bước stress, Ubuntu 37s), `spike acceptance` (Windows
+> 1m22s, Ubuntu 36s), `Linux race and stability` (3m22s), `cross-platform semantic diff` (21s) đều xanh.
+> `semantic-diff` chạy trên hai manifest thật (Windows runner thật vs Ubuntu runner thật):
+> `SPK-13 authoritative passed=true (0 unexplained difference(s) across 13 SPK(s), left=
 > full-20260901t122228.133407700z/windows right=full-20260901t122157.335508398z/linux)`. Bundle SPK-13
-> đã seal+verify, upload thành artifact `spk13-authoritative-result` (artifact ID 9800147596). Kết hợp
-> với V0-10C (local assessment 13/14, chỉ SPK-13 PENDING_PEER_PLATFORM per-platform), CI thật này là
-> nguồn duy nhất kết luận SPK-13 — và đã pass thật.
+> đã seal+verify, upload thành artifact `spk13-authoritative-result` (artifact ID 9800147596).
 >
-> **Vẫn giữ đúng ranh giới đã thống nhất:** đây là "hai matrix jobs xanh" theo nghĩa harness/evidence
-> hoàn chỉnh + SPK-13 cross-platform pass thật, **không** phải tuyên bố `GO` (chỉ V0-14 kết luận GO) và
-> không đồng nghĩa toàn bộ nhánh `docs/alpha-design-adr-020-025` đã sẵn sàng merge vào `master` — PR #1
-> chỉ nhắm vào nhánh feature đó để kiểm chứng CI, chưa phải quyết định merge.
+> **Nhưng commit tài liệu thuần túy ngay sau đó (`31528a6`) tạo CI run
+> [33507762210](https://github.com/taQuangLing/agent-workflow/actions/runs/33507762210), và run này
+> FAIL** tại `contract (windows-latest)` — một race thời gian khác (SPK-09 write-lease timing, xem cập
+> nhật trong V0-11A ở trên), không phải SQLITE_BUSY. `spike acceptance`, `Linux race and stability`,
+> `semantic-diff` đều bị skip do phụ thuộc `contract`. **PR #1 tại HEAD hiện tại đang đỏ, không xanh.**
+> Đã sửa (`waitPastLeaseUntil`/`waitPastWriteLeaseUntil`), đã push, đang chờ CI thật xác nhận — không
+> tự nhận "hai matrix jobs xanh" cho tới khi có run mới xanh tại HEAD hiện tại.
+>
+> **Vẫn giữ đúng ranh giới đã thống nhất, áp dụng cho khi nào PR thật sự xanh ổn định:** "hai matrix jobs
+> xanh" theo nghĩa harness/evidence hoàn chỉnh + SPK-13 cross-platform pass thật, **không** phải tuyên bố
+> `GO` (chỉ V0-14 kết luận GO) và không đồng nghĩa toàn bộ nhánh `docs/alpha-design-adr-020-025` đã sẵn
+> sàng merge vào `master` — PR #1 chỉ nhắm vào nhánh feature đó để kiểm chứng CI, chưa phải quyết định
+> merge.
 
 > Làm rõ theo quyết định product owner (cùng lúc thêm V0-10A): "hai matrix jobs xanh" nghĩa là clean
 > checkout/build/test pass, full-suite dispatcher chạy đủ 14 handler, manifest hợp lệ, evidence bundle
