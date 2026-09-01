@@ -17,6 +17,7 @@
   ComponentPackAssignment pin exact PackVersion/effective time/actor.
 - **Verify:** CRUD/CAS/idempotency/cross-project và pack-assignment version/provenance tests.
 - **Hoàn thành khi:** list/filter không suy identity từ slug/cwd/remote.
+- **Nguồn:** ROADMAP-§2.
 
 ## V3-02 — Repository onboarding probe
 
@@ -27,6 +28,7 @@
   safety, base commit, dirty/baseline result, component discovery proposal; typed retry từ `BLOCKED`.
 - **Verify:** temp valid/invalid/bare/dirty repos; Windows/Linux path cases.
 - **Hoàn thành khi:** environment failure khác validation/business failure.
+- **Nguồn:** HE-06-M03, HE-06-M07.
 
 ## V3-03 — WorkItem contract và readiness gate
 
@@ -37,6 +39,7 @@
   Validator MAY chạy trước V3-04 nhưng không persist WorkItem hoặc transition độc lập.
 - **Verify:** missing field, invalid workflow/project/scope và CAS tests.
 - **Hoàn thành khi:** task thiếu executable acceptance không thể READY nếu chưa có approval ngoại lệ.
+- **Nguồn:** HE-01-M02, HE-07-M02.
 
 ## V3-04 — Root TaskFamily và initial scope transaction
 
@@ -47,6 +50,7 @@
   validation, provision jobs/outbox/event/receipt trong transaction.
 - **Verify:** rollback failure, duplicate command và multi-repo fixture.
 - **Hoàn thành khi:** không có root task orphan family/workspace hoặc job intent thiếu.
+- **Nguồn:** AK-ARCH-011.
 
 ## V3-05 — Child WorkItem subset scope
 
@@ -55,6 +59,7 @@
 - **Thực hiện:** parent/family inheritance, subset algorithm access/path, parent relation/join metadata.
 - **Verify:** child same/different repo, path subset, READ→WRITE escalation rejection.
 - **Hoàn thành khi:** tạo child không enqueue provision workspace mới.
+- **Nguồn:** AK-ARCH-012, GC-INV-05.
 
 ## V3-06 — Persist WorkspaceSet/RepositoryWorkspace lifecycle
 
@@ -64,6 +69,7 @@
   base RevisionSet after all required ready.
 - **Verify:** multi-repo provision/restart/partial failure tests.
 - **Hoàn thành khi:** family chỉ ready khi mọi required repository ready.
+- **Nguồn:** GC-INV-03.
 
 ## V3-07 — Initialization/readiness evidence
 
@@ -73,6 +79,7 @@
   typed environment blocker.
 - **Verify:** baseline green/red/command-error fixtures.
 - **Hoàn thành khi:** baseline debt được pin, không giả PASS.
+- **Nguồn:** HE-06-M01, HE-06-M06.
 
 ## V3-08 — Scope expansion request/approval
 
@@ -84,6 +91,7 @@
   RunManifestAmendment và reactivate.
 - **Verify:** duplicate approval, remove request, cross-project, concurrent scope update tests.
 - **Hoàn thành khi:** provider/prompt không thể tự mở scope.
+- **Nguồn:** AK-ARCH-015A.
 
 ## V3-09 — WriteLease service production hóa
 
@@ -93,6 +101,7 @@
   Alpha exclusive per RepositoryWorkspace.
 - **Verify:** 100 race iterations, TTL/takeover/stale job/generation tests.
 - **Hoàn thành khi:** không có hai valid writer cho cùng workspace generation.
+- **Nguồn:** AK-ARCH-013, AK-ARCH-009, GC-INV-19.
 
 ## V3-10 — Quarantine/reconcile/recreate commands
 
@@ -104,6 +113,7 @@
   filesystem/Git); API chỉ được gọi command public.
 - **Verify:** kill writer, stale token, dirty unknown, idempotent reconcile tests.
 - **Hoàn thành khi:** quarantined workspace không cấp writer hoặc release.
+- **Nguồn:** GC-ACC-05.
 
 ## V3-11 — Workspace release request và eligibility primitive
 
@@ -118,6 +128,7 @@
 - **Verify:** active lease/dirty/quarantined/partial release/restart tests; architecture test khẳng định
   request command không tự chạy filesystem/Git.
 - **Hoàn thành khi:** cleanup không đụng base repo/family khác và không tự quyết family đã hoàn tất.
+- **Nguồn:** AK-ARCH-015C, GC-INV-26.
 
 ## V3-12 — V3 multi-repository acceptance gate
 
@@ -127,3 +138,4 @@
 - **Verify:** full test/vet + Windows/Linux workspace semantic suite.
 - **Hoàn thành khi:** exact RevisionSet/provision evidence trace đủ và mọi invariant thuộc phạm vi V3
   pass; completion/evidence/ReleaseSet authority được để cho V5.
+- **Nguồn:** GC-ACC-06, GC-ACC-07, GC-ACC-08.

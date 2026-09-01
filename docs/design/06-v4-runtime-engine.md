@@ -36,6 +36,7 @@
   hai thứ tự commit (intent trước → start bị CAS từ chối; start trước → Run mới được quiesce cùng các
   Run khác).
 - **Hoàn thành khi:** một WorkItem policy chỉ có số active run cho phép và không orphan job.
+- **Nguồn:** GC-INV-39.
 
 ## V4-03 — Deterministic activation/router core
 
@@ -44,6 +45,7 @@
 - **Thực hiện:** branch token-independent linear/router routing, shared-state typed writes, activation sequence.
 - **Verify:** table/property tests order, missing/outside outcome, restart.
 - **Hoàn thành khi:** scheduler không parse free text hoặc query authoring file.
+- **Nguồn:** GC-INV-11, HE-14-M07.
 
 ## V4-04 — NodeRun/Attempt scheduling transaction
 
@@ -53,6 +55,7 @@
   states; idempotency by `NodeRun activation`, không reuse key giữa activation scope-expanded.
 - **Verify:** duplicate ADVANCE_RUN và concurrent scheduler tests.
 - **Hoàn thành khi:** queue delivery lặp không tạo duplicate attempt.
+- **Nguồn:** AK-ARCH-008, GC-INV-08.
 
 ## V4-05 — Generic worker execution envelope với fake executor
 
@@ -61,6 +64,7 @@
 - **Thực hiện:** job claim, attempt RUNNING, optional write leases, fake typed events/result, fenced finalize.
 - **Verify:** success/failure/timeout/cancel/lease-loss tests.
 - **Hoàn thành khi:** worker chỉ propose outcome; orchestrator quyết transition.
+- **Nguồn:** GC-INV-17, HE-09-M01.
 
 ## V4-06 — Technical retry policy
 
@@ -79,6 +83,7 @@
 - **Thực hiện:** iteration counter, max iteration, escalation route, audit causation.
 - **Verify:** bounded cycle pass/exhaust/restart tests.
 - **Hoàn thành khi:** không có infinite graph loop hoặc overwrite activation history.
+- **Nguồn:** AK-ARCH-004, GC-INV-10.
 
 ## V4-08 — WAIT persistence và signal semantics
 
@@ -103,6 +108,7 @@
 - **Thực hiện:** approval request/evidence/actor/reason/timeout; approve/reject outcomes; chat không tự resolve.
 - **Verify:** unauthorized-shaped input, duplicate decision, timeout/restart tests.
 - **Hoàn thành khi:** decision append-only và route audit đủ.
+- **Nguồn:** HE-14-S03, GC-INV-11.
 
 ## V4-10 — FORK branch tokens
 
@@ -111,6 +117,7 @@
 - **Thực hiện:** create tokens atomically, activate branches idempotently, static write-scope admission.
 - **Verify:** duplicate dispatch, partial crash, branch failure tests.
 - **Hoàn thành khi:** mỗi declared branch có đúng một live token/terminal record.
+- **Nguồn:** HE-14-M09.
 
 ## V4-11 — JOIN ALL/ANY/QUORUM
 
@@ -119,6 +126,7 @@
 - **Thực hiện:** readiness/short-circuit/cancel remaining policy, shared-state merge validation, integration scope.
 - **Verify:** policy matrix, restart, impossible quorum và duplicate completion tests.
 - **Hoàn thành khi:** queue empty không ảnh hưởng join verdict.
+- **Nguồn:** HE-14-M04.
 
 ## V4-12 — Run completion candidate và WorkItem projection proposal
 
@@ -244,6 +252,7 @@
   vẫn chỉ tạo một recovery job cho generation; kill coordinator giữa lúc quiesce rồi restart phải hoàn
   tất cả cancel Run lẫn cancel WorkItem, không tạo intent trùng.
 - **Hoàn thành khi:** mỗi crash state có typed recovery, không blind retry.
+- **Nguồn:** GC-ACC-04, GC-ACC-05, HE-05-M05.
 
 ## V4-14 — Runtime engine acceptance gate
 
@@ -253,3 +262,4 @@
   BLOCKED và một cancel giữa chừng; inject crash.
 - **Verify:** deterministic event/activation golden, race test, full test/vet Windows/Linux.
 - **Hoàn thành khi:** same input/decisions tạo same domain result trừ IDs/timestamps cho phép.
+- **Nguồn:** GC-ACC-03.

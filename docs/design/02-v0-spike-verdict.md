@@ -545,3 +545,36 @@
 - Verified/tamper-negative evidence bundle.
 - Dependency boundary report.
 - Spike report có verdict và `docs/00-start-here.md` đồng bộ.
+
+## SPK → criterion coverage map (V1-00B)
+
+Task V0 được miễn trường `Nguồn` (`00-roadmap.md` §3) vì đã có traceability riêng bằng SPK ID, nhưng
+V1-00B yêu cầu map SPK-01…14 sang criterion tương ứng để coverage checker (V1-00C) vẫn tính được các
+criterion mà V0 đã chứng minh. Mapping dưới đây lấy từ Arrange/Assert thật của từng SPK ở
+`docs/spikes/01-go-core-spike-plan.md` §9, không suy diễn.
+
+| SPK | Criterion đã chứng minh | Vì sao |
+|---|---|---|
+| SPK-01 | AK-ARCH-001, GC-ACC-02 | Publish idempotent theo canonical hash; graph sai/terminal unreachable bị reject. |
+| SPK-02 | GC-ACC-01 | Run pin version xuyên qua publish mới và restart. |
+| SPK-03 | GC-ACC-03, GC-ACC-04, GC-ACC-05, GC-ACC-11, GC-ACC-14 | Node đã commit không chạy lại; read-only LOST, mutating INDETERMINATE/quarantine; recover từ SQLite không cần transcript; không tự suy DONE từ crash/exit. |
+| SPK-04 | GC-ACC-05, GC-ACC-16 | Sáu fault point transaction boundary chuẩn đều có fixture; không tạo hai terminal transition. |
+| SPK-05 | GC-ACC-07 | Family scope hai repository tạo đúng một WorkspaceSet, hai RepositoryWorkspace; child reuse. |
+| SPK-06 | GC-ACC-06 | Hai root family cùng repository nhận hai worktree/branch độc lập. |
+| SPK-07 | GC-ACC-10 | Diff vượt scope bị phát hiện, attempt không pass, current revision không cập nhật. |
+| SPK-08 | GC-ACC-08, GC-ACC-15 | Lease exclusivity đúng repository qua ≥100 race iteration; một phần của SQLite lease contract suite. |
+| SPK-09 | GC-ACC-09, GC-ACC-15, AK-ARCH-009 | Fencing token cũ bị từ chối sau TTL/generation change. |
+| SPK-10 | GC-ACC-15, AK-ARCH-008 | Optimistic concurrency/CAS trên Attempt/NodeRun state; đúng một transition thắng. |
+| SPK-11 | GC-ACC-12, GC-ACC-13, AK-ARCH-016 | Cùng scenario qua fake Claude/Codex không đổi domain code; unknown capability bị reject trước execution. |
+| SPK-12 | GC-ACC-11 | Mất ProviderSessionRef vẫn recover context từ platform state; `Resume` call count bằng 0. |
+| SPK-13 | AK-ARCH-020 | Cùng semantic suite pass trên Windows và Linux; authoritative qua semantic-diff (V0-11). |
+| SPK-14 | AK-ARCH-021 | Evidence bundle tự verify hash/correlation; bundle bị sửa fail verify — chứng minh nhánh evidence của traceability chain. |
+
+`GC-ACC-15` (SQLite repository/lease/transaction contract suite, race test và migration test) không
+thuộc riêng một SPK — nó là kết luận tổng hợp từ SPK-08/09/10 cộng
+`internal/adapters/sqlite/*_test.go` chạy trong cùng CI job. `GC-ACC-16` được SPK-04 chứng minh trực
+tiếp vì đó chính là nội dung sáu fault point của nó.
+
+Các GC-INV/GC-ACC/GC-DS không xuất hiện ở bảng trên (ví dụ GC-INV liên quan CompletionPolicy, cancel
+coordinator, WorkItem cancellation — các invariant thuộc V4/V5) không được V0 chứng minh; chúng chờ
+owner ở Task ID V4/V5 tương ứng đã gán Nguồn ở trên, không phải nợ của V0.

@@ -14,6 +14,7 @@
 - **Thực hiện:** deterministic fixture và assertions cho trace IDs, event sequence, revision/evidence links.
 - **Verify:** trace completeness report; missing link fail.
 - **Hoàn thành khi:** workload chạy clean checkout không cần secret/network.
+- **Nguồn:** AK-ARCH-021, HE-11-S03.
 
 ## V8-02 — Full fault-injection matrix Alpha
 
@@ -24,6 +25,7 @@
 - **Verify:** mỗi failure map fresh-Start/retry/reconcile/escalate; no duplicate authoritative outcome
   hoặc committed side effect.
 - **Hoàn thành khi:** unknown outcome không bị biến thành PASS/FAIL giả.
+- **Nguồn:** GC-ACC-16.
 
 ## V8-03 — Concurrency/race/stability soak
 
@@ -32,6 +34,7 @@
 - **Thực hiện:** bounded workload parallel, same/different repository, duplicate commands/events, 10 runs.
 - **Verify:** `go test -race`, UI/API suite, leak/flake report Windows/Linux.
 - **Hoàn thành khi:** 10/10 pass và stale fence success bằng 0.
+- **Nguồn:** AK-ARCH-009, GC-ACC-09.
 
 > V8-04A…V8-04D là các suite nhỏ chạy độc lập; V8-04E là aggregate gate trên kết quả của chúng.
 > Aggregate mang hậu tố E để nó đứng sau các suite theo thứ tự Task ID.
@@ -99,6 +102,7 @@
 - **Verify:** before/after manifest và active bundle preservation.
 - **Hoàn thành khi:** cleanup chỉ xóa owned eligible payload; conversation, referenced context, hold và
   metadata audit giữ nguyên.
+- **Nguồn:** AK-ARCH-025B.
 
 ## V8-06 — SQLite backup/restore và corruption diagnostics
 
@@ -108,6 +112,7 @@
   không hứa sync/merge hai installs.
 - **Verify:** backup active-disabled window/policy, restore temp root, corrupt/missing artifact cases.
 - **Hoàn thành khi:** restored system mở/read/rebuild projection và nhận biết missing evidence.
+- **Nguồn:** ROADMAP-§7.
 
 ## V8-07 — Performance budgets và large-state checks
 
@@ -118,6 +123,7 @@
   cùng owner/reason trước khi đo release candidate cuối.
 - **Verify:** reproducible benchmark report; pre-frozen threshold pass/fail, không đặt ngưỡng sau khi xem RC.
 - **Hoàn thành khi:** không có unbounded query/render/memory path trong Alpha workload.
+- **Nguồn:** ROADMAP-§6.
 
 ## V8-08 — Reproducible cross-platform build
 
@@ -129,6 +135,7 @@
 - **Verify:** clean CI build twice và compare bằng allowlist field cụ thể được version-control; unknown
   difference fail; smoke each artifact.
 - **Hoàn thành khi:** binary chạy doctor/serve và UI journey tối thiểu trên cả OS.
+- **Nguồn:** AK-ARCH-020.
 
 ## V8-09 — First-run/operator documentation
 
@@ -139,6 +146,7 @@
   troubleshooting; chỉ ghi capability đã verify.
 - **Verify:** fresh-session test trả lời WHAT/WHERE/HOW/DONE/out-of-scope bằng source.
 - **Hoàn thành khi:** clean machine path không cần giải thích miệng ngoài docs.
+- **Nguồn:** HE-03-M05, HE-06-S05.
 
 ## V8-10 — Upgrade and rollback rehearsal
 
@@ -148,6 +156,7 @@
   compatible, nếu không fail với hướng restore backup.
 - **Verify:** upgrade matrix và failure rollback evidence.
 - **Hoàn thành khi:** unsupported downgrade không làm hỏng DB im lặng.
+- **Nguồn:** ROADMAP-§7.
 
 ## V8-11 — Alpha release acceptance
 
@@ -176,3 +185,4 @@
 - **Verify:** links/evidence/checksums tồn tại, docs/status nhất quán, fresh install smoke.
 - **Hoàn thành khi:** `ALPHA_READY` chỉ khi `gatePass=true`; verdict khác ghi blocker và next narrow
   rework/evidence task.
+- **Nguồn:** ADR-024, ROADMAP-§3.

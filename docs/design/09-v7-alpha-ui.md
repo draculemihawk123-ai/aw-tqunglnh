@@ -15,6 +15,7 @@
   test, accessibility, build embedding; so tốc độ, ecosystem, bundle, team maintainability.
 - **Verify:** cùng một mini screen/contract test cho candidates và decision matrix.
 - **Hoàn thành khi:** ADR mới ghi choice, alternatives, versions, build/test commands; xóa spike không chọn.
+- **Nguồn:** ROADMAP-§8.
 
 ## V7-02 — UI workspace, generated API client và quality gates
 
@@ -37,6 +38,7 @@
 - **Thực hiện:** buttons/forms/dialog/tabs/table/badge/toast/skeleton; light theme tối thiểu; semantic status colors.
 - **Verify:** component tests, keyboard/focus và automated accessibility smoke.
 - **Hoàn thành khi:** status không chỉ truyền bằng màu và error liên kết field.
+- **Nguồn:** ROADMAP-§4.
 
 ## V7-04 — Application shell, routing và SSE state
 
@@ -46,6 +48,7 @@
   typed full-resync khi cursor quá cũ, stale/degraded projection indicator.
 - **Verify:** navigation refresh, disconnect/reconnect, slow API component tests.
 - **Hoàn thành khi:** browser cache không tự quyết runtime state.
+- **Nguồn:** AK-ARCH-023.
 
 ## V7-05 — First-run Doctor screen
 
@@ -69,6 +72,7 @@
   component; không hiển thị register response như ACTIVE sớm.
 - **Verify:** success/invalid/dirty/partial probe E2E.
 - **Hoàn thành khi:** UI dùng IDs từ API và không suy repo từ path/name.
+- **Nguồn:** ROADMAP-§2.
 
 ## V7-07 — Definition catalog và version detail
 
@@ -78,6 +82,7 @@
   dependency/resource/adapter pins và compatibility diagnostics.
 - **Verify:** empty/list/filter/version selection/component tests.
 - **Hoàn thành khi:** published version thể hiện immutable và run references exact version.
+- **Nguồn:** AK-ARCH-001.
 
 ## V7-08 — Declarative editor, validate và publish
 
@@ -87,6 +92,7 @@
   confirm SourceHash + CompiledSnapshotHash/dependency pins; không visual graph editing.
 - **Verify:** invalid schema/duplicate/publish/idempotent version E2E.
 - **Hoàn thành khi:** người dùng publish workflow mới không cần CLI.
+- **Nguồn:** ROADMAP-§2.
 
 ## V7-09 — Kanban và filters
 
@@ -96,6 +102,7 @@
   drag/drop chỉ là command và rollback UI on reject.
 - **Verify:** filter/reconnect/conflict/keyboard E2E.
 - **Hoàn thành khi:** UI không tự set DONE và hiển thị agent claim khác verified.
+- **Nguồn:** HE-08-M03, HE-01-M04.
 
 ## V7-10 — Create root/child WorkItem forms
 
@@ -104,6 +111,7 @@
 - **Thực hiện:** READ/WRITE repo/path selector, child subset UI, server diagnostics mapping.
 - **Verify:** missing acceptance, invalid scope, concurrent version E2E.
 - **Hoàn thành khi:** readiness errors actionable trước activate.
+- **Nguồn:** HE-01-M02.
 
 ## V7-11 — Task detail overview và actions
 
@@ -117,6 +125,7 @@
   cho blocked activation; action retry thuộc V7-12 nơi có đủ ngữ cảnh node/attempt.
 - **Verify:** active/blocked/waiting/done fixtures và optimistic conflict.
 - **Hoàn thành khi:** destructive/privileged action có target/impact confirm.
+- **Nguồn:** ADR-020.
 
 ## V7-12 — Runtime graph và timeline
 
@@ -129,6 +138,7 @@
 - **Verify:** fork/join/rework/restart fixtures; large graph performance smoke; fixture cho từng
   admission reason, và assert retry thất bại không sinh thêm blocked activation trong view.
 - **Hoàn thành khi:** operator xác định được node đang chờ gì và route đã chọn.
+- **Nguồn:** ADR-022.
 
 ## V7-13 — Workspace và source/diff/log viewers
 
@@ -160,6 +170,7 @@
 - **Thực hiện:** safe media/text preview, download, truncation indicator, PASS/FAIL/ERROR/N/A distinction.
 - **Verify:** tampered/expired/redacted/large artifact E2E.
 - **Hoàn thành khi:** raw HTML/script artifact không execute.
+- **Nguồn:** AK-ARCH-021, HE-11-M07.
 
 ## V7-15 — Task chat và typed controls
 
@@ -168,6 +179,7 @@
 - **Thực hiện:** append messages/attachments, attempt linkage, context-used indicator; separate control buttons/dialogs.
 - **Verify:** ordering/retry/duplicate/SSE reconnect và message-not-approval tests.
 - **Hoàn thành khi:** chat reload từ platform state, không provider transcript.
+- **Nguồn:** HE-05-M07.
 
 ## V7-16 — Settings và run diagnostics
 
@@ -177,6 +189,7 @@
   retention classes, correlation copy và remediation actions.
 - **Verify:** redaction, invalid config, lease/provider/workspace failure fixtures.
 - **Hoàn thành khi:** secret value không round-trip về browser.
+- **Nguồn:** ADR-016, ADR-017.
 
 ## V7-17 — UI full-journey gate
 
@@ -190,3 +203,4 @@
   Windows/Linux browser CI.
 - **Hoàn thành khi:** journey không cần CLI/SQLite/Git thủ công, không có interactive terminal và mọi
   blocked/error/degraded state có recovery path.
+- **Nguồn:** ROADMAP-§2, ADR-018.

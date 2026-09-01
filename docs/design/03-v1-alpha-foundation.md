@@ -74,6 +74,7 @@
   cause; bỏ parse message SQL/provider khỏi application decisions.
 - **Verify:** unit/property tests cho zero ID, UTC, wrapping và redaction.
 - **Hoàn thành khi:** handler mới không dùng raw string ID hoặc `time.Now()` trực tiếp trong domain/app.
+- **Nguồn:** ROADMAP-§7.
 
 ## V1-02A — Redactor dùng chung trước mọi persistence sink
 
@@ -85,6 +86,7 @@
   preview; mọi sink sau phải nhận dữ liệu qua cùng contract.
 - **Verify:** property/table tests nested value, argv/env/error/detail và false-positive allowlist.
 - **Hoàn thành khi:** config/event/artifact/log task có một redactor nền bắt buộc để reuse.
+- **Nguồn:** AK-ARCH-024, HE-11-M07.
 
 ## V1-03 — Config loader và startup validation
 
@@ -94,6 +96,7 @@
   worker ID/concurrency và provider executable; config dump luôn redact secret/reference.
 - **Verify:** table tests precedence, invalid combination, secret redaction.
 - **Hoàn thành khi:** startup fail-fast với WHAT/WHY/FIX và correlation ID.
+- **Nguồn:** HE-06-M04, HE-09-M08.
 
 ## V1-04 — Chuyển migration thành numbered SQL assets
 
@@ -103,6 +106,7 @@
   migration đã ghi checksum.
 - **Verify:** DB trống, DB migration V1 cũ, checksum tamper và restart idempotency.
 - **Hoàn thành khi:** dữ liệu fixture hiện có mở được và migration failure rollback toàn bộ.
+- **Nguồn:** ROADMAP-§7.
 
 ## V1-04A — SQLite connection/transaction policy và error mapping
 
@@ -133,6 +137,7 @@
   V1-04A, không nhận SQL/pragma.
 - **Verify:** fake UoW handler tests và architecture import test.
 - **Hoàn thành khi:** app service có thể test không SQLite và không tồn tại Store tổng hợp public.
+- **Nguồn:** ROADMAP-§7.
 
 ## V1-06 — Command envelope, idempotency và expected version
 
@@ -147,6 +152,7 @@
   command installation-scoped mang ProjectID đều bị reject; **duplicate và concurrent installation
   command** cùng idempotency key phải trả stored result chứ không tạo hai receipt.
 - **Hoàn thành khi:** một handler mẫu commit state+event+receipt atomically.
+- **Nguồn:** ADR-025, GC-INV-35.
 
 ## V1-07 — Domain event và outbox nền
 
@@ -181,6 +187,7 @@
   traversal defense và verify-open.
 - **Verify:** corruption, duplicate content, interrupted write, traversal, Windows/Linux path tests.
 - **Hoàn thành khi:** artifact lớn không cần inline SQLite và tamper bị phát hiện.
+- **Nguồn:** AK-ARCH-021, HE-11-S06.
 
 ## V1-09 — Structured logging và redaction pipeline
 
@@ -190,6 +197,7 @@
   buộc reuse redactor V1-02A cho event/log/artifact preview.
 - **Verify:** secret fixture search bằng 0; correlation fields present tests.
 - **Hoàn thành khi:** error safe/public tách raw private cause.
+- **Nguồn:** HE-11-M01, HE-11-M07.
 
 ## V1-10 — Embedded worker lifecycle
 
@@ -200,6 +208,7 @@
 - **Verify:** cancel shutdown, lease hết hạn sau startup, hai worker tranh recovery, không tạo recovery
   job trùng và handler panic containment tests.
 - **Hoàn thành khi:** worker crash không crash control loop và job không mất.
+- **Nguồn:** AK-ARCH-010A, GC-DS-05.
 
 ## V1-11 — Health/doctor contracts
 

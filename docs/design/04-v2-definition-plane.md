@@ -14,6 +14,7 @@
 - **Thực hiện:** kind-safe IDs/status/version metadata, project/global scope, create/archive rules.
 - **Verify:** domain transition tests; không có update/delete public trên Version.
 - **Hoàn thành khi:** các kind reuse lifecycle behavior nhưng vẫn có payload type riêng.
+- **Nguồn:** AK-ARCH-001.
 
 ## V2-02 — Definition schema migrations
 
@@ -24,6 +25,7 @@
   repository methods.
 - **Verify:** migration upgrade/idempotency/cross-project constraint tests.
 - **Hoàn thành khi:** publish concurrent không cấp trùng version number/hash.
+- **Nguồn:** ROADMAP-§7.
 
 ## V2-03 — Strict YAML/JSON decoder và canonicalizer
 
@@ -33,6 +35,7 @@
   semantic list; exclude publisher metadata khỏi SourceHash.
 - **Verify:** golden/property/fuzz tests YAML/JSON/map order/platform.
 - **Hoàn thành khi:** invalid input trả location + WHAT/WHY/FIX.
+- **Nguồn:** AK-ARCH-001, AK-ARCH-020.
 
 ## V2-04 — BlockVersion contract
 
@@ -41,6 +44,7 @@
 - **Thực hiện:** node compatibility metadata, required capability, timeout, scope selector và done condition.
 - **Verify:** valid/invalid block fixtures và hash tests.
 - **Hoàn thành khi:** block không thể dùng Skill/Layer như executable ref.
+- **Nguồn:** HE-14-M02.
 
 ## V2-05 — Command và Gate versions
 
@@ -50,6 +54,7 @@
   timeout/output contract; Gate thêm verdict/evidence mapping.
 - **Verify:** reject shell string, unknown placeholder, unpinned executable và missing evidence mapping.
 - **Hoàn thành khi:** publish payload tạo exact content/dependency hash.
+- **Nguồn:** AK-ARCH-017.
 
 ## V2-06 — Skill, Layer và Engineering Pack versions
 
@@ -59,6 +64,7 @@
   owner/lastVerified, pack graph resolution; hard-constraint conflict fail closed.
 - **Verify:** selector/dependency/cycle/conflict/golden manifest tests.
 - **Hoàn thành khi:** install/resolve không tạo command, gate hay permission grant.
+- **Nguồn:** HE-04-M02, HE-04-M04.
 
 ## V2-07 — Agent Profile và Policy versions
 
@@ -68,6 +74,7 @@
   PolicyVersion; compatibility validation; profile chỉ tham chiếu published dependencies.
 - **Verify:** missing capability, OS mismatch, invalid budget và policy dependency tests.
 - **Hoàn thành khi:** effective profile canonical/hash được.
+- **Nguồn:** ROADMAP-§2.
 
 ## V2-07A — Immutable AdapterBuildVersion registry
 
@@ -121,6 +128,7 @@
 - **Thực hiện:** typed node config, edges/outcomes, shared-state writers, attempt/iteration/join policies.
 - **Verify:** schema fixtures cho từng node type.
 - **Hoàn thành khi:** runtime không cần đọc authoring file để hiểu node.
+- **Nguồn:** HE-14-M03, HE-14-M04.
 
 ## V2-09 — Graph/dependency compiler
 
@@ -132,6 +140,7 @@
 - **Verify:** malformed corpus, fuzz/property và compiler golden tests.
 - **Hoàn thành khi:** cùng SourceHash + exact registry snapshot tạo cùng CompiledSnapshotHash; thay một
   dependency pin tạo hash khác.
+- **Nguồn:** AK-ARCH-003, HE-14-M06, AK-ARCH-005B.
 
 ## V2-10 — Validate/publish application commands
 
@@ -141,6 +150,7 @@
   deduplicate chỉ theo `DefinitionID + CompiledSnapshotHash`, không theo SourceHash.
 - **Verify:** handler tests duplicate publish/concurrent publish/cross-project ref.
 - **Hoàn thành khi:** publish event + version + receipt atomic.
+- **Nguồn:** AK-ARCH-005B, GC-INV-15.
 
 ## V2-11 — Definition CLI
 
@@ -149,6 +159,7 @@
 - **Thực hiện:** `agentkit definition validate|publish|list|show|diff`; JSON output; safe diagnostics.
 - **Verify:** CLI golden và temp DB integration tests.
 - **Hoàn thành khi:** không cần sửa SQLite thủ công để author/publish.
+- **Nguồn:** ROADMAP-§2.
 
 ## V2-12 — Definition plane gate
 
@@ -159,3 +170,4 @@
 - **Verify:** full test/vet, Windows/Linux canonical diff, architecture import check.
 - **Hoàn thành khi:** V1 snapshot không đổi; dependency/adapter drift và invalid executable authority
   đều bị reject.
+- **Nguồn:** AK-ARCH-002.

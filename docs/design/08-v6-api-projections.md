@@ -47,6 +47,7 @@
 - **Thực hiện:** middleware/DTO mapping, replay stored response, conflict status, version ETag.
 - **Verify:** duplicate/same-key-different-body/stale version/concurrent requests.
 - **Hoàn thành khi:** retry browser không tạo duplicate aggregate/job.
+- **Nguồn:** AK-ARCH-008.
 
 ## V6-03 — Project/repository/component endpoints
 
@@ -57,6 +58,7 @@
   success trước probe.
 - **Verify:** OpenAPI/contract fixtures success/validation/not-found/conflict.
 - **Hoàn thành khi:** local path chỉ xuất ở view được phép và repository ID là authority.
+- **Nguồn:** ROADMAP-§2.
 
 ## V6-04 — WorkItem/family/scope endpoints
 
@@ -66,6 +68,7 @@
   scope request/approve/reject; không expose setters cho family/workspace/status authority.
 - **Verify:** multi-repo filters, subset violations, approval and version conflict contracts.
 - **Hoàn thành khi:** client không thể trực tiếp set DONE hoặc family/workspace IDs.
+- **Nguồn:** HE-08-M03.
 
 ## V6-05 — Definition validate/publish endpoints
 
@@ -75,6 +78,7 @@
   SourceHash/CompiledSnapshotHash/exact pins và list/version/diff queries.
 - **Verify:** location diagnostics, duplicate publish, version list/diff contracts.
 - **Hoàn thành khi:** API không lưu invalid draft thành runtime version.
+- **Nguồn:** AK-ARCH-001.
 
 ## V6-06 — Run/approval/signal/cancel endpoints
 
@@ -131,6 +135,7 @@
   media headers, sensitivity policy, no trusted HTML, content hash ETag.
 - **Verify:** traversal/unauthorized-shaped ID/tamper/large stream/redaction tests.
 - **Hoàn thành khi:** raw filesystem locator không xuất API.
+- **Nguồn:** AK-ARCH-021, HE-11-M07.
 
 ## V6-08 — Projection event consumer
 
@@ -142,6 +147,7 @@
 - **Verify:** replay twice, stop/restart, gap and poison event tests.
 - **Hoàn thành khi:** runtime không query projection cho readiness/completion; poison event đưa
   projection sang `DEGRADED/STALE`, không nhảy cursor.
+- **Nguồn:** AK-ARCH-022, AK-ARCH-023.
 
 ## V6-09 — Projection rebuild command
 
@@ -152,6 +158,7 @@
   JournalPosition sau watermark trước atomic swap; progress/status/error diagnostics.
 - **Verify:** before/after canonical projection diff và interrupted rebuild recovery.
 - **Hoàn thành khi:** authoritative tables/events không bị sửa.
+- **Nguồn:** AK-ARCH-022.
 
 ## V6-10 — Kanban/task detail query endpoints
 
@@ -161,6 +168,7 @@
   summary và projection JournalPosition/status trong response.
 - **Verify:** pagination/filter/sort/stale projection contracts.
 - **Hoàn thành khi:** task multi-repo vẫn là một card với repository badges.
+- **Nguồn:** ROADMAP-§2, AK-ARCH-023.
 
 > V6-10A…V6-10F thay cho một umbrella task duy nhất: mỗi task dưới đây là một contract suite verify
 > được độc lập, theo nguyên tắc kích thước task ở `00-roadmap.md` §3.
@@ -254,6 +262,7 @@
   payload; Last-Event-ID là JournalPosition, cursor quá cũ trả typed resync action.
 - **Verify:** reconnect/duplicate/lag/slow consumer/shutdown tests.
 - **Hoàn thành khi:** SSE không chứa artifact/log lớn hoặc secret fixture.
+- **Nguồn:** AK-ARCH-023, HE-11-M07.
 
 ## V6-12 — Machine-readable API contract
 
@@ -268,6 +277,7 @@
   trùng path+method, không handler đăng ký mà không được nối.
 - **Hoàn thành khi:** every public endpoint/example/error code documented, và router khớp OpenAPI theo
   cả hai chiều.
+- **Nguồn:** HE-04-M07.
 
 ## V6-13 — API security and boundary tests
 
@@ -277,6 +287,7 @@
   CORS deny default, path/content injection, request cancellation và artifact MIME safety.
 - **Verify:** automated security/boundary suite.
 - **Hoàn thành khi:** no handler imports Git/process/provider/SQLite concrete package.
+- **Nguồn:** AK-ARCH-018, AK-ARCH-025A, AK-ARCH-027.
 
 ## V6-14 — API/projection acceptance gate
 
@@ -287,3 +298,4 @@
   source/diff/log/timeline/diagnostics/evidence/ReleaseSet; local commit; await SSE; rebuild projection.
 - **Verify:** black-box test from clean DB, full/race/Windows/Linux.
 - **Hoàn thành khi:** không có test setup sửa SQLite/Git runtime state thủ công.
+- **Nguồn:** AK-ARCH-018, AK-ARCH-023.

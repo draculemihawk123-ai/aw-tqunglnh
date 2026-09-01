@@ -16,6 +16,7 @@
   và audit metadata không nhận blanket TTL.
 - **Verify:** attach/restart/orphan/tamper/retention tests.
 - **Hoàn thành khi:** evidence bắt buộc không commit trước artifact durable/hash verified.
+- **Nguồn:** AK-ARCH-021, GC-INV-20.
 
 ## V5-02 — Conversation và Message authority
 
@@ -25,6 +26,7 @@
   append/list commands; verified-before-attach, size/media/redaction policy.
 - **Verify:** ordering/idempotency/attempt linkage/secret tests.
 - **Hoàn thành khi:** provider transcript không phải canonical message store.
+- **Nguồn:** HE-05-M07.
 
 ## V5-03 — Resource registry và ContextAssembler
 
@@ -33,6 +35,7 @@
 - **Thực hiện:** applicability, conflict detection, relevance order, reserved budget, exact provenance/reason.
 - **Verify:** component/task/block/risk selector matrix, conflict và deterministic manifest tests.
 - **Hoàn thành khi:** resolver không last-wins hard constraint và không nạp mọi resource mặc định.
+- **Nguồn:** HE-04-M05, HE-04-S03.
 
 ## V5-04 — Persist ContextSnapshot trước dispatch
 
@@ -41,6 +44,7 @@
 - **Thực hiện:** snapshot schema/repository, canonical hash, attempt binding, dispatch precondition.
 - **Verify:** tamper/mismatch/restart/missing resource tests.
 - **Hoàn thành khi:** provider không start nếu snapshot chưa durable.
+- **Nguồn:** HE-04-M06, GC-INV-08.
 
 ## V5-05 — Production ProcessSupervisor hardening
 
@@ -66,6 +70,7 @@
   Start/event/result/cancel, malformed JSONL fail-closed, ProviderSessionRef diagnostic-only.
 - **Verify:** recorded/offline contract suite và fake child process.
 - **Hoàn thành khi:** adapter không import app orchestrator/persistence và raw metadata không route state.
+- **Nguồn:** GC-INV-23.
 
 ## V5-07 — Codex adapter production contract
 
@@ -75,6 +80,7 @@
   Start/event/result/cancel, normalized differences allowlist.
 - **Verify:** chạy nguyên suite V5-06 và semantic event diff.
 - **Hoàn thành khi:** thêm Codex không tạo provider branch trong domain/app.
+- **Nguồn:** AK-ARCH-016, GC-ACC-12.
 
 ## V5-08 — AGENT admission và execution envelope
 
@@ -159,6 +165,7 @@
 - **Verify:** injection, forbidden env/path/network-shaped policy, nonzero/timeout/lease-loss tests; và
   cancel giữa một mutating command dùng đúng đường V5-08C, không có đường terminate riêng.
 - **Hoàn thành khi:** resource script không chạy nếu thiếu exact CommandVersion/policy grant.
+- **Nguồn:** AK-ARCH-017.
 
 ## V5-10 — Gate runner và criteria-level Evidence
 
@@ -169,6 +176,7 @@
   nằm ngoài source workspace.
 - **Verify:** exit mapping, missing output, stale revision, N/A policy và tamper tests.
 - **Hoàn thành khi:** error/missing evidence không thể PASS.
+- **Nguồn:** GC-INV-13, GC-INV-25, HE-09-M03.
 
 ## V5-10A — ReleaseSet và typed local Git operation
 
@@ -181,6 +189,7 @@
 - **Verify:** partial result, stale revision, duplicate seal, cleanup eligibility, local commit và spy
   adapter chứng minh remote mutation call count bằng 0.
 - **Hoàn thành khi:** ReleaseSet sealed/abandoned là input có provenance cho completion và cleanup.
+- **Nguồn:** AK-ARCH-015C.
 
 ## V5-11 — CompletionPolicy service
 
@@ -213,6 +222,7 @@
 - **Verify:** snapshot manifest asserts forbidden maker resources absent; write source/local commit bị
   policy/fence từ chối.
 - **Hoàn thành khi:** same provider/model vẫn có independent attempt/context identity.
+- **Nguồn:** HE-09-M04, HE-05-M06.
 
 ## V5-13 — Checkpoint/handoff và recovery integration
 
@@ -222,6 +232,7 @@
   fresh context rebuild, no-progress/budget escalation.
 - **Verify:** six fault boundaries với agent/command/gate fixtures.
 - **Hoàn thành khi:** session mới không cần raw transcript hoặc cwd cũ.
+- **Nguồn:** HE-05-M03, HE-13-M05.
 
 ## V5-14 — Cleanup/retention sweeper
 
@@ -234,6 +245,7 @@
 - **Verify:** run twice, active hold/reference, canonical message/context, unknown file và 7-day raw
   artifact boundary tests.
 - **Hoàn thành khi:** cleanup không xóa material cần recovery/evidence/audit.
+- **Nguồn:** AK-ARCH-025B, HE-12-M05.
 
 ## V5-15 — Execution/evidence acceptance gate
 
@@ -244,3 +256,4 @@
   unavailable, cancel giữa mutating attempt và artifact tamper.
 - **Verify:** full/race/Windows/Linux offline; optional manual live smoke ghi `UNVERIFIED_LIVE` nếu chưa chạy.
 - **Hoàn thành khi:** trace WorkItem→revision/evidence đầy đủ và false completion bằng 0 trong fixtures.
+- **Nguồn:** AK-ARCH-005, GC-ACC-14.
