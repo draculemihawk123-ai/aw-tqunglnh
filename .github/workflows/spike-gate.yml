@@ -25,6 +25,8 @@ jobs:
           check-latest: true
       - name: Vet
         run: go vet ./...
+      - name: Docs coverage gate (V1-00C pre-V1 aggregate gate)
+        run: go run ./cmd/docs-coverage-check
       - name: Offline contract suite
         run: go test -count=1 ./...
       # V0-11A diagnostic: the only place these timing-sensitive failures
