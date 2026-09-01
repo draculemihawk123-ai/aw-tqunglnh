@@ -135,15 +135,115 @@
 - **Verify:** golden fixtures Windows/Linux equivalent và intentional domain mismatch.
 - **Hoàn thành khi:** semantic diff deterministic, không dùng broad JSON field deletion.
 
+## V0-10A — Nối scenario thật cho registry và tách CI assessment khỏi GO verdict
+
+> Task được product owner thêm giữa V0-10 và V0-11 sau khi phát hiện `DefaultScenarios()` vẫn trả
+> `Passed: false` cho cả 14 SPK trong khi `runFullSuite` exit 0 nếu registry chạy thành công — nghĩa là
+> CI matrix job có thể "xanh" dù SPK gate thực tế là 0/14. V0-11 tự nó không được coi "hai matrix jobs
+> xanh" là bằng chứng SPK pass.
+
+- **Mục tiêu:** registry phản ánh đúng trạng thái SPK thật (không còn `notYetProven` cho SPK đã có
+  evidence thật), và CLI phân biệt rõ "harness/evidence hoàn chỉnh" với "toàn bộ SPK pass".
+- **Phụ thuộc:** V0-10.
+- **Phạm vi:** `internal/spikeacceptance` (registry/scenario wiring, CLI mode), `cmd/fake-claude`,
+  `cmd/fake-codex`, `cmd/spike-helper` (binary mới, wrapper mỏng dùng chung fixture logic đã có, không
+  sao chép hành vi), extract shared provider-fixture logic nếu cần để tránh trùng lặp. Không sửa domain
+  invariant, không thêm gate mới ngoài những gì liệt kê.
+- **Thực hiện:**
+  1. Wire 11 SPK có evidence thật thành `ScenarioFunc` chạy đúng Arrange/Act/Assert và ghi evidence qua
+     `EvidenceWriter`/`ScenarioContext` — không được chỉ gọi `go test` rồi chuyển exit code thành
+     `Passed: true`: SPK-01, 02, 05, 06, 07, 08, 09, 10, 11, 12, 14.
+  2. SPK-03 và SPK-04 giữ `Passed: false` với lý do cụ thể, chính xác theo code hiện tại — không sửa
+     hành vi của hai SPK này trong task này. SPK-04 giao rõ cho **V0-10B** (cần `cmd/spike-worker` hợp
+     nhất bốn crash-worker flow hiện có, chưa tồn tại); SPK-03 giao rõ cho **V0-10C** (interrupted
+     `execution_attempts` bị bỏ ở `RUNNING` thay vì chuyển `LOST/INDETERMINATE`).
+  3. SPK-13 không tự kết luận trong lần chạy một-platform: ghi `Passed: false` kèm assertion nêu rõ
+     "PENDING_PEER_PLATFORM". Kết quả authoritative của SPK-13 chỉ do job so sánh cross-platform (V0-11)
+     sinh ra sau khi có cả hai manifest Windows/Linux.
+  4. CLI `agentkit-spike acceptance --full` tách hai mode: `--assessment` (exit 0 nếu harness/evidence
+     hoàn chỉnh dù có SPK `false`, in rõ N/14, không claim GO) và `--require-all-pass` (exit non-zero
+     nếu bất kỳ SPK nào fail). Lỗi harness/handler thiếu/manifest sai/evidence hỏng luôn exit non-zero ở
+     cả hai mode.
+  5. Thêm CLI `agentkit-spike semantic-diff --left <manifest> --right <manifest>`: chạy `SemanticDiff`
+     cho các SPK khác SPK-13, sinh SPK-13 result authoritative kèm cross-platform evidence.
+  6. Chạy full suite local (Windows) thành công — nghĩa là harness/evidence hoàn chỉnh theo mode
+     `--assessment` — trước khi đưa YAML CI lên (V0-11).
+- **Verify:** `go build/vet` sạch; test cho từng scenario mới; `acceptance --full --assessment` chạy
+  local thật, in đúng 11/14 và ghi 14 bundle sealed/verified; `acceptance --full --require-all-pass` exit
+  non-zero đúng như kỳ vọng (SPK-03/04/13 chưa qua); `semantic-diff` demo trên hai manifest từ hai lần
+  chạy riêng biệt.
+- **Hoàn thành khi:** registry không còn "0/14 thật" bị CI report nhầm thành xanh; SPK-03/04/13 có lý do
+  `false` chính xác, không phải placeholder cũ; V0-11 có thể dùng `--assessment` làm gate CI mà không tự
+  nhận nhầm là GO verdict.
+
+## V0-10B — `cmd/spike-worker` và SPK-04 thật
+
+- **Mục tiêu:** đóng sáu crash boundary của SPK-04 thành một scenario thật trong registry, không chỉ
+  bốn integration test rời từng re-invoke test binary riêng.
+- **Phụ thuộc:** V0-10A.
+- **Phạm vi:** extract fixture logic dùng chung từ bốn file
+  `internal/adapters/sqlite/crash_resume_*_integration_test.go`; `cmd/spike-worker` (binary mới); wiring
+  SPK-04 trong `internal/spikeacceptance`. Không sửa domain/app crash-recovery invariant đã có, không mở
+  rộng ra ngoài sáu boundary đã định nghĩa trong spike plan §9/§10.
+- **Thực hiện:**
+  1. Extract bốn crash-worker flow (checkpoint join, node dispatch, intent dispatch, attempt
+     termination) thành fixture logic dùng chung — cùng nguyên tắc "không sao chép hành vi" đã áp dụng
+     cho `internal/adapters/providers/fixtures.go`.
+  2. Thêm `cmd/spike-worker`: wrapper mỏng gọi lại fixture logic trên, chạy được như tiến trình độc lập
+     (không cần `go test`/`-test.run`), hỗ trợ chọn fault point qua flag/env var (khớp
+     `agentkit-spike worker start --id <id> --fault <fault-point>` trong spike plan §7).
+  3. Wire SPK-04 thành `ScenarioFunc` thật: spawn `spike-worker` cho từng fault point trong sáu boundary
+     chuẩn, kill đúng ranh giới, khởi động worker thay thế, assert theo đúng "Assert chung" của SPK-04
+     trong spike plan §9.
+  4. Ghi evidence đủ: fault point, state/event/outbox sequence, attempt/process correlation, invariant
+     check cho từng boundary — theo đúng mục "Evidence" của SPK-04 trong spike plan.
+- **Verify:** `go build/vet` sạch; scenario SPK-04 chạy qua `agentkit-spike acceptance --full
+  --assessment` (binary thật, không qua `go test`) và báo `Passed: true`; bốn integration test cũ vẫn
+  pass sau khi refactor dùng chung fixture logic.
+- **Hoàn thành khi:** SPK-04 chuyển từ `notYetProven` sang `Passed: true` thật trong registry; local
+  assessment không còn liệt SPK-04 là lý do fail.
+
+## V0-10C — Đóng SPK-03: interrupted attempt LOST/INDETERMINATE thật
+
+- **Mục tiêu:** interrupted `ExecutionAttempt` sau crash chuyển đúng `LOST` hoặc `INDETERMINATE` thay vì
+  bị bỏ ở `RUNNING`, rồi wire SPK-03 thành scenario thật.
+- **Phụ thuộc:** V0-10B (có thể dùng lại `cmd/spike-worker`).
+- **Phạm vi:** nối `worker.ClassifyInterruptedAttempt`/`TerminateInterruptedAttempt` (đã có từ trước)
+  vào crash-recovery flow thật; mutating path phải quarantine/reconcile qua các primitive đã có từ V0-07
+  (`QuarantineRepositoryWorkspace`/`RecreateRepositoryWorkspace`); wiring SPK-03 trong
+  `internal/spikeacceptance`. Không tạo primitive mới nếu primitive cần thiết đã tồn tại.
+- **Thực hiện:**
+  1. Trong flow crash-recovery thật (worker thay thế sau hard kill), gọi
+     `ClassifyInterruptedAttempt` rồi `TerminateInterruptedAttempt` để chuyển attempt bị gián đoạn khỏi
+     `RUNNING` sang đúng `LOST` (read-only) hoặc `INDETERMINATE` (mutating).
+  2. Với attempt `INDETERMINATE`, nối `ReconcileMutatingAttempt` rồi quarantine/reconcile workspace
+     đúng như SPK-09 đã chứng minh (V0-07), không suy exit code thành success.
+  3. Wire SPK-03 thành `ScenarioFunc` thật, có thể dùng lại `cmd/spike-worker` (V0-10B) làm worker bị
+     crash.
+- **Verify:** `go build/vet` sạch; scenario SPK-03 báo `Passed: true` qua `acceptance --full
+  --assessment` thật; `crash_resume_checkpoint_integration_test.go` cập nhật lại, không còn ghi "Known
+  limitation" cho phần LOST/INDETERMINATE.
+- **Hoàn thành khi:** local assessment đạt 13/14, chỉ còn SPK-13 `PENDING_PEER_PLATFORM` — mọi SPK khác
+  đã `Passed: true` thật, không còn `notYetProven` nào ngoài SPK-13.
+
 ## V0-11 — Chạy full offline suite trên Windows và Ubuntu CI
 
 - **Mục tiêu:** SPK-01…14 thực thi thật trên cả hai OS.
-- **Phụ thuộc:** V0-01A, V0-03…V0-10 và V0-04A.
+- **Phụ thuộc:** V0-01A, V0-03…V0-10C và V0-04A. Local assessment (V0-10C) phải đạt 13/14 trước khi
+  V0-11 được coi là sẵn sàng chạy chính thức/đóng gate — chỉ còn SPK-13 chờ job cross-platform.
 - **Phạm vi:** CI workflow, toolchain setup và evidence upload; không cần network provider.
-- **Thực hiện:** build helper/provider binaries; chạy acceptance; verify bundle; upload platform
-  manifests; compare semantic results.
+- **Thực hiện:** build helper/provider binaries; chạy `acceptance --full --assessment` trên cả hai OS;
+  verify bundle; upload platform manifests với `if: always()`; job thứ ba (Ubuntu, phụ thuộc cả hai
+  matrix job) tải hai manifest rồi chạy `semantic-diff` để sinh SPK-13 result authoritative.
 - **Verify:** hai matrix jobs xanh từ clean checkout.
 - **Hoàn thành khi:** SPK-13 pass và report liên kết được CI run/evidence ID.
+
+> Làm rõ theo quyết định product owner (cùng lúc thêm V0-10A): "hai matrix jobs xanh" nghĩa là clean
+> checkout/build/test pass, full-suite dispatcher chạy đủ 14 handler, manifest hợp lệ, evidence bundle
+> verify được và artifact upload thành công — **không** đồng nghĩa 14/14 SPK pass, và không phải verdict
+> `GO`. `GO` chỉ do V0-14 kết luận. V0-11 dùng mode `--assessment` (xem V0-10A) làm gate CI, không dùng
+> `--require-all-pass`. SPK-13 pass ở đây nghĩa là job so sánh cross-platform (mục 3, Thực hiện) sinh ra
+> được authoritative result — không phải điều kiện tiên quyết trước khi V0-11 được phép chạy.
 
 ## V0-12 — Race và stability gate
 
