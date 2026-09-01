@@ -186,6 +186,122 @@ func loadDurableJobByIdempotencyKey(ctx context.Context, tx *sql.Tx, idempotency
 	return job, nil
 }
 
+// DispatchNodeIntent is the fenced application transaction that creates a
+// WorkflowRun's first durable intent to execute: it transitions the run
+// CREATED -> RUNNING, inserts its first NodeRun and enqueues the dispatching
+// job, all in one SQLite transaction — closing crash boundaries 1-2 of
+// SPK-04 ("before intent/job commit" and "after job commit, before claim").
+//
+// A caller that replays the exact same request after a crash (recognized by
+// Job.IdempotencyKey) gets back the job that transaction already created,
+// exactly as CompleteNodeAndDispatchNext does for later dispatches.
+func (s *Store) DispatchNodeIntent(
+	ctx context.Context,
+	dispatch ports.NodeIntentDispatch,
+) (runtime.NodeRun, ports.DurableJob, error) {
+	if dispatch.RunID == "" || dispatch.NodeRunID == "" || strings.TrimSpace(dispatch.NodeKey) == "" ||
+		dispatch.EventID == "" || dispatch.OccurredAt.IsZero() {
+		return runtime.NodeRun{}, ports.DurableJob{}, errors.New("node intent dispatch is incomplete")
+	}
+	if err := validateEnqueueJob(dispatch.Job); err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
+	if err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("begin node intent dispatch: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	timestamp := formatWorkflowTime(dispatch.OccurredAt)
+	result, err := tx.ExecContext(ctx, `
+UPDATE workflow_runs
+SET state = 'RUNNING',
+    version = version + 1,
+    started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END,
+    updated_at = ?
+WHERE id = ? AND state = 'CREATED' AND version = ?`,
+		timestamp, timestamp, dispatch.RunID, dispatch.ExpectedRunVersion,
+	)
+	if err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("dispatch intent for run %s: %w", dispatch.RunID, err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("read node intent dispatch result: %w", err)
+	}
+
+	if affected != 1 {
+		// Not a fresh dispatch. The only legitimate reason is that this
+		// exact transaction already committed before a crash — prove it
+		// from the job's idempotency key rather than assuming either way.
+		existingJob, loadErr := loadDurableJobByIdempotencyKey(ctx, tx, dispatch.Job.IdempotencyKey)
+		if loadErr != nil {
+			return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf(
+				"%w: workflow run %s expected CREATED@%d", ports.ErrOptimisticConflict, dispatch.RunID, dispatch.ExpectedRunVersion)
+		}
+		nodeRun, err := loadNodeRunByID(ctx, tx, dispatch.NodeRunID)
+		if err != nil {
+			return runtime.NodeRun{}, ports.DurableJob{}, err
+		}
+		return nodeRun, existingJob, nil
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO node_runs(
+    id, run_id, node_key, activation_sequence, iteration, state,
+    input_state_hash, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, 0, 'RUNNING', ?, 1, ?, ?)`,
+		dispatch.NodeRunID, dispatch.RunID, strings.TrimSpace(dispatch.NodeKey), dispatch.ActivationSequence,
+		dispatch.InputStateHash, timestamp, timestamp,
+	); err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("insert dispatched node run %s: %w", dispatch.NodeRunID, err)
+	}
+
+	payload, err := json.Marshal(map[string]string{
+		"runId":     string(dispatch.RunID),
+		"nodeRunId": string(dispatch.NodeRunID),
+		"nodeKey":   dispatch.NodeKey,
+	})
+	if err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("encode node intent dispatch event: %w", err)
+	}
+	var sequence uint64
+	if err := tx.QueryRowContext(ctx, `
+SELECT COALESCE(MAX(sequence), 0) + 1
+FROM domain_events
+WHERE aggregate_type = 'NodeRun' AND aggregate_id = ?`, dispatch.NodeRunID,
+	).Scan(&sequence); err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("allocate node intent dispatch event sequence: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO domain_events(
+    id, project_id, aggregate_type, aggregate_id, sequence,
+    event_type, schema_version, payload_json, correlation_id, created_at
+)
+SELECT ?, project_id, 'NodeRun', ?, ?,
+       'NODE_RUN_DISPATCHED', 1, ?, ?, ?
+FROM workflow_runs
+WHERE id = ?`,
+		dispatch.EventID, dispatch.NodeRunID, sequence, string(payload), dispatch.CorrelationID, timestamp, dispatch.RunID,
+	); err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("append node intent dispatch event: %w", err)
+	}
+
+	newJob, err := insertDispatchedJob(ctx, tx, dispatch.Job)
+	if err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, err
+	}
+	nodeRun, err := loadNodeRunByID(ctx, tx, dispatch.NodeRunID)
+	if err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("commit node intent dispatch: %w", err)
+	}
+	return nodeRun, newJob, nil
+}
+
 func loadNodeRunByID(ctx context.Context, tx *sql.Tx, id runtime.NodeRunID) (runtime.NodeRun, error) {
 	var nodeRun runtime.NodeRun
 	var selectedOutcome sql.NullString

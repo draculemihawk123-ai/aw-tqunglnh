@@ -78,6 +78,27 @@ type NodeCompletionDispatch struct {
 	OccurredAt      time.Time
 }
 
+// NodeIntentDispatch is the fenced application transaction that creates a
+// WorkflowRun's first durable intent to execute: transitioning the run to
+// RUNNING, creating its first NodeRun and enqueuing the job that dispatches
+// it, all in one SQLite transaction. It closes crash boundaries 1-2 of
+// SPK-04's six-boundary matrix: killed before this commits, nothing exists;
+// killed after, everything exists and is claimable exactly once. A caller
+// replaying the same request (same Job.IdempotencyKey) after a crash gets
+// back the job that transaction already created, never a duplicate.
+type NodeIntentDispatch struct {
+	RunID              runtime.WorkflowRunID
+	ExpectedRunVersion uint64
+	NodeRunID          runtime.NodeRunID
+	NodeKey            string
+	ActivationSequence uint64
+	InputStateHash     string
+	Job                EnqueueJobRequest
+	EventID            string
+	CorrelationID      string
+	OccurredAt         time.Time
+}
+
 // WorkflowPersistence is deliberately narrow for the spike. WorkflowVersion
 // has no update operation: publishing either inserts a new immutable snapshot
 // or returns the already-published snapshot with identical canonical content.

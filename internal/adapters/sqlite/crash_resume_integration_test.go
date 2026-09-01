@@ -396,6 +396,10 @@ func startAndHardKillCrashWorker(
 		testName = "^TestSPK04FaultAfterProcessExitMutatingAttemptBecomesIndeterminate$"
 	case "node-dispatch-then-hang":
 		testName = "^TestSPK04FaultAfterNodeCompleteBeforeNextDispatch$"
+	case "before-intent-commit-then-hang":
+		testName = "^TestSPK04FaultBeforeIntentJobCommitLeavesNothing$"
+	case "after-intent-commit-then-hang":
+		testName = "^TestSPK04FaultAfterIntentJobCommitBeforeClaim$"
 	}
 	command := exec.Command(
 		executable,
