@@ -250,6 +250,15 @@
 - **Verify:** hai matrix jobs xanh từ clean checkout.
 - **Hoàn thành khi:** SPK-13 pass và report liên kết được CI run/evidence ID.
 
+> **Trạng thái hiện tại: DRAFT, chưa chạy/đóng.** `.github/workflows/spike-gate.yml` đã cập nhật cục bộ
+> để khớp phạm vi trên: job `spike-acceptance` (matrix windows-latest/ubuntu-latest, `needs: contract`)
+> build năm binary (`agentkit-spike`, `fake-claude`, `fake-codex`, `spike-helper`, `spike-worker`) rồi
+> chạy `acceptance --full --assessment`, upload evidence với `if: always()`; job `semantic-diff`
+> (ubuntu-latest, `needs: spike-acceptance`) tải hai manifest rồi chạy `semantic-diff` để sinh SPK-13
+> authoritative result. File đã qua kiểm tra cú pháp YAML cục bộ (PyYAML) và đối chiếu job graph đúng
+> như thiết kế; **chưa** được chạy thật trên GitHub Actions (chưa push), theo đúng quyết định trước đó
+> — chỉ soạn draft song song, không tự đóng V0-11 trong task này.
+
 > Làm rõ theo quyết định product owner (cùng lúc thêm V0-10A): "hai matrix jobs xanh" nghĩa là clean
 > checkout/build/test pass, full-suite dispatcher chạy đủ 14 handler, manifest hợp lệ, evidence bundle
 > verify được và artifact upload thành công — **không** đồng nghĩa 14/14 SPK pass, và không phải verdict
