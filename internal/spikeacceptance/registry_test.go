@@ -3,12 +3,15 @@ package spikeacceptance
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/taQuangLing/agent-workflow/internal/adapters/evidence"
 )
 
 func passingHandler(id SPKID) ScenarioFunc {
-	return func(ctx context.Context) (SPKResult, error) {
+	return func(ctx context.Context, writer EvidenceWriter) (SPKResult, error) {
 		return SPKResult{SPKID: id, Passed: true}, nil
 	}
 }
@@ -71,7 +74,7 @@ func TestRegistryRunAllInvokesEveryHandlerExactlyOnceAndStampsSPKID(t *testing.T
 	entries := make([]ScenarioEntry, 0, len(RequiredSPKIDs()))
 	for _, id := range RequiredSPKIDs() {
 		id := id
-		entries = append(entries, ScenarioEntry{SPKID: id, Handler: func(context.Context) (SPKResult, error) {
+		entries = append(entries, ScenarioEntry{SPKID: id, Handler: func(context.Context, EvidenceWriter) (SPKResult, error) {
 			counts[id]++
 			return SPKResult{Passed: id == SPK01}, nil // SPKID intentionally left blank: RunAll must stamp it
 		}})
@@ -80,9 +83,9 @@ func TestRegistryRunAllInvokesEveryHandlerExactlyOnceAndStampsSPKID(t *testing.T
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
-	manifest, err := registry.RunAll(context.Background(), "full-suite-dry-run", time.Now().UTC())
+	manifest, err := registry.RunAll(context.Background(), t.TempDir(), "full-suite-dry-run", time.Now().UTC())
 	if err != nil {
-		t.Fatalf("RunAll() error = %v, want nil (clean full-suite dry run)", err)
+		t.Fatalf("RunAll() error = %v, want nil (clean full-suite run)", err)
 	}
 	if len(manifest.Results) != len(RequiredSPKIDs()) {
 		t.Fatalf("got %d results, want %d", len(manifest.Results), len(RequiredSPKIDs()))
@@ -99,11 +102,51 @@ func TestRegistryRunAllInvokesEveryHandlerExactlyOnceAndStampsSPKID(t *testing.T
 	}
 }
 
+func TestRegistryRunAllWritesOneSealedVerifiedBundlePerSPK(t *testing.T) {
+	entries := make([]ScenarioEntry, 0, len(RequiredSPKIDs()))
+	for _, id := range RequiredSPKIDs() {
+		id := id
+		entries = append(entries, ScenarioEntry{SPKID: id, Handler: func(_ context.Context, writer EvidenceWriter) (SPKResult, error) {
+			artifact, err := writer.PutJSON("assertions/report.json", map[string]bool{"passed": true})
+			if err != nil {
+				return SPKResult{}, err
+			}
+			return SPKResult{
+				Passed:    true,
+				Artifacts: []ArtifactRef{{Kind: ArtifactKindAssertions, Artifact: artifact}},
+			}, nil
+		}})
+	}
+	registry, err := NewRegistry(entries)
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	evidenceRoot := t.TempDir()
+	suiteID := "full-suite-bundles"
+	now := time.Now().UTC()
+	manifest, err := registry.RunAll(context.Background(), evidenceRoot, suiteID, now)
+	if err != nil {
+		t.Fatalf("RunAll() error = %v", err)
+	}
+	for _, id := range RequiredSPKIDs() {
+		verified, err := evidence.Verify(filepath.Join(evidenceRoot, suiteID+"-"+string(id)))
+		if err != nil {
+			t.Fatalf("Verify(bundle for %s) error = %v", id, err)
+		}
+		if verified.Metadata["spkId"] != string(id) || verified.Metadata["suiteId"] != suiteID {
+			t.Fatalf("bundle metadata for %s = %#v", id, verified.Metadata)
+		}
+	}
+	if len(manifest.Results) != len(RequiredSPKIDs()) {
+		t.Fatalf("got %d results, want %d", len(manifest.Results), len(RequiredSPKIDs()))
+	}
+}
+
 func TestRegistryRunAllPropagatesHandlerError(t *testing.T) {
 	entries := requiredEntries(t)
 	for i, entry := range entries {
 		if entry.SPKID == SPK05 {
-			entries[i].Handler = func(context.Context) (SPKResult, error) {
+			entries[i].Handler = func(context.Context, EvidenceWriter) (SPKResult, error) {
 				return SPKResult{}, errors.New("fixture setup failed")
 			}
 		}
@@ -112,19 +155,21 @@ func TestRegistryRunAllPropagatesHandlerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
-	if _, err := registry.RunAll(context.Background(), "full-suite-broken", time.Now().UTC()); err == nil {
+	if _, err := registry.RunAll(context.Background(), t.TempDir(), "full-suite-broken", time.Now().UTC()); err == nil {
 		t.Fatal("RunAll() error = nil, want a propagated handler error")
 	}
 }
 
-func TestDefaultScenariosFormAValidRegistryAndCleanDryRun(t *testing.T) {
+func TestDefaultScenariosFormAValidRegistryAndCleanRun(t *testing.T) {
 	registry, err := NewRegistry(DefaultScenarios())
 	if err != nil {
 		t.Fatalf("NewRegistry(DefaultScenarios()) error = %v, want nil", err)
 	}
-	manifest, err := registry.RunAll(context.Background(), "full-suite-default", time.Now().UTC())
+	evidenceRoot := t.TempDir()
+	suiteID := "full-suite-default"
+	manifest, err := registry.RunAll(context.Background(), evidenceRoot, suiteID, time.Now().UTC())
 	if err != nil {
-		t.Fatalf("RunAll(DefaultScenarios) error = %v, want nil (clean dry run)", err)
+		t.Fatalf("RunAll(DefaultScenarios) error = %v, want nil (clean run)", err)
 	}
 	if len(manifest.Results) != len(RequiredSPKIDs()) {
 		t.Fatalf("got %d results, want %d", len(manifest.Results), len(RequiredSPKIDs()))
@@ -132,6 +177,12 @@ func TestDefaultScenariosFormAValidRegistryAndCleanDryRun(t *testing.T) {
 	for _, result := range manifest.Results {
 		if len(result.Assertions) == 0 {
 			t.Fatalf("SPK %s result has no assertions explaining its current status", result.SPKID)
+		}
+		if len(result.Artifacts) == 0 {
+			t.Fatalf("SPK %s result has no artifacts even though its bundle was sealed", result.SPKID)
+		}
+		if _, err := evidence.Verify(filepath.Join(evidenceRoot, suiteID+"-"+string(result.SPKID))); err != nil {
+			t.Fatalf("Verify(bundle for %s) error = %v", result.SPKID, err)
 		}
 	}
 }

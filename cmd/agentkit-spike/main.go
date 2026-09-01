@@ -36,7 +36,7 @@ func runAcceptance(arguments []string) error {
 	flags := flag.NewFlagSet("acceptance", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	offline := flags.Bool("offline", false, "run offline baseline only")
-	full := flags.Bool("full", false, "dispatch the SPK-01..SPK-14 registry as a dry run (prints per-SPK status; does not write an evidence bundle)")
+	full := flags.Bool("full", false, "dispatch the SPK-01..SPK-14 registry, one sealed+verified evidence bundle per SPK")
 	evidenceDir := flags.String("evidence-dir", "docs/spikes/evidence", "evidence root")
 	goExecutable := flags.String("go", "go", "Go executable")
 	if err := flags.Parse(arguments); err != nil {
@@ -46,7 +46,7 @@ func runAcceptance(arguments []string) error {
 	case *offline && *full:
 		return fmt.Errorf("--offline and --full are mutually exclusive")
 	case *full:
-		return runFullSuite()
+		return runFullSuite(*evidenceDir)
 	case *offline:
 		return runOfflineBaseline(*evidenceDir, *goExecutable)
 	default:
@@ -69,18 +69,20 @@ func runOfflineBaseline(evidenceDir, goExecutable string) error {
 	return err
 }
 
-// runFullSuite dispatches every registered SPK-01..SPK-14 scenario and
-// prints its real, current status. It is a dry run: dispatch succeeding
-// (err == nil) means the registry/dispatcher mechanism itself ran cleanly,
-// not that every SPK passed — that distinction is what V0-01A locks down.
-// Evidence-bundle persistence for a full run is out of scope here (V0-08).
-func runFullSuite() error {
+// runFullSuite dispatches every registered SPK-01..SPK-14 scenario, each
+// into its own sealed and verified evidence bundle under evidenceDir (see
+// Registry.RunAll), and prints each SPK's real, current status. Dispatch
+// succeeding (err == nil) means the registry/dispatcher mechanism itself ran
+// cleanly and every bundle verified — it does not mean every SPK passed;
+// that distinction is what V0-01A locks down and manifest.Results reports.
+func runFullSuite(evidenceDir string) error {
 	registry, err := spikeacceptance.NewRegistry(spikeacceptance.DefaultScenarios())
 	if err != nil {
 		return fmt.Errorf("build SPK registry: %w", err)
 	}
 	now := time.Now().UTC()
-	manifest, err := registry.RunAll(context.Background(), "full-"+now.Format("20060102t150405.000000000z"), now)
+	suiteID := "full-" + now.Format("20060102t150405.000000000z")
+	manifest, err := registry.RunAll(context.Background(), evidenceDir, suiteID, now)
 	if err != nil {
 		return fmt.Errorf("run SPK registry: %w", err)
 	}
@@ -93,8 +95,12 @@ func runFullSuite() error {
 		}
 		fmt.Printf("%s %s\n", result.SPKID, status)
 	}
-	fmt.Printf("suite=%s spk=%d/%d passed=%t (dry run; not an evidence-bundled gate verdict)\n",
-		manifest.SuiteID, passed, len(manifest.Results), passed == len(manifest.Results))
+	evidenceRootAbs, err := filepath.Abs(evidenceDir)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("suite=%s spk=%d/%d passed=%t evidence-root=%s (one sealed bundle per SPK, named <suite>-<spkId>)\n",
+		manifest.SuiteID, passed, len(manifest.Results), passed == len(manifest.Results), evidenceRootAbs)
 	return nil
 }
 

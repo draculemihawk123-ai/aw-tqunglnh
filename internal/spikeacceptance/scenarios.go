@@ -2,29 +2,37 @@ package spikeacceptance
 
 import (
 	"context"
+	"fmt"
 	"runtime"
 	"time"
 )
 
 // notYetProven builds a ScenarioFunc that honestly reports an SPK as not yet
 // provable through this registry. It is a real, callable handler (not a
-// no-op: it runs, stamps real platform/timing data and returns a well-formed
-// SPKResult) — it simply has nothing further to assert until the cited
-// blocking task lands. See docs/spikes/02-go-core-spike-report.md §5 for the
-// current per-SPK status this text is grounded in.
+// no-op: it runs, writes a real assertions artifact into its own sealed
+// evidence bundle, stamps real platform/timing data and returns a
+// well-formed SPKResult) — it simply has nothing further to assert until the
+// cited blocking task lands. See docs/spikes/02-go-core-spike-report.md §5
+// for the current per-SPK status this text is grounded in.
 func notYetProven(id SPKID, detail string) ScenarioFunc {
-	return func(ctx context.Context) (SPKResult, error) {
+	return func(ctx context.Context, writer EvidenceWriter) (SPKResult, error) {
 		started := time.Now().UTC()
-		return SPKResult{
-			SPKID:  id,
+		assertion := Assertion{
+			Name:   "full acceptance scenario runnable through the SPK registry",
 			Passed: false,
-			Assertions: []Assertion{{
-				Name:   "full acceptance scenario runnable through the SPK registry",
-				Passed: false,
-				Detail: detail,
-			}},
-			Platform: Platform{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH},
-			Timing:   Timing{StartedAt: started, EndedAt: time.Now().UTC()},
+			Detail: detail,
+		}
+		artifact, err := writer.PutJSON("assertions/report.json", assertion)
+		if err != nil {
+			return SPKResult{}, fmt.Errorf("write %s assertions report: %w", id, err)
+		}
+		return SPKResult{
+			SPKID:      id,
+			Passed:     false,
+			Assertions: []Assertion{assertion},
+			Platform:   Platform{GOOS: runtime.GOOS, GOARCH: runtime.GOARCH},
+			Timing:     Timing{StartedAt: started, EndedAt: time.Now().UTC()},
+			Artifacts:  []ArtifactRef{{Kind: ArtifactKindAssertions, Artifact: artifact}},
 		}, nil
 	}
 }
