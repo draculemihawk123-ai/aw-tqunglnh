@@ -1,6 +1,9 @@
 package ports
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // UnitOfWork is the one write/read-transaction boundary application
 // command handlers use (docs/design/03-v1-alpha-foundation.md V1-05): a
@@ -23,20 +26,21 @@ type UnitOfWork interface {
 // UnitOfWork call — replacing WorkflowPersistence's single flat interface
 // (internal/app/ports/persistence.go) with one accessor per concern, so a
 // handler that only needs Definitions never has to see Runtime's surface
-// and vice versa. Catalog/Work/Definitions/Runtime/Receipts are
-// deliberately left as thin, near-empty interfaces here: their concrete
-// methods are added by the task that actually owns building that concern
-// against a real caller (Catalog: V3-01; Work: V3-04/V3-06; Definitions:
-// V2; Runtime: V4; Receipts: V1-06) — adding methods speculatively ahead
-// of a real handler that calls them is exactly what 00-roadmap.md §3
-// warns against ("Không chia chỉ để tạo file/field nếu phần đó chưa có
-// contract test hoặc behavior quan sát được"). Jobs and Events keep the
-// same treatment for the same reason: EnqueueJob/ClaimJob/domain-event
-// append already exist as real, tested logic in the pre-existing
-// sqlite.Store (V0 spike) with their own internal transaction handling;
-// re-deriving Tx-composable versions belongs to whichever later task
-// first needs true cross-repository atomicity through this port, once a
-// real caller makes the exact required method shape clear.
+// and vice versa. Catalog/Work/Definitions/Runtime/Jobs are deliberately
+// left as thin, near-empty interfaces here: their concrete methods are
+// added by the task that actually owns building that concern against a
+// real caller (Catalog: V3-01; Work: V3-04/V3-06; Definitions: V2;
+// Runtime: V4; Jobs: whichever later task first needs
+// EnqueueJob/ClaimJob/AcquireWriteLeases composed inside a shared Tx — the
+// pre-existing sqlite.Store already covers them outside one) — adding
+// methods speculatively ahead of a real handler that calls them is
+// exactly what 00-roadmap.md §3 warns against ("Không chia chỉ để tạo
+// file/field nếu phần đó chưa có contract test hoặc behavior quan sát
+// được"). Events and Receipts are populated now (V1-06): a minimal
+// domain-event append plus the command-receipt idempotency ledger, just
+// enough for V1-06's own "một handler mẫu commit state+event+receipt
+// atomically" — full outbox/sequence-allocation semantics remain V1-07's
+// job.
 type Tx interface {
 	Catalog() CatalogRepository
 	Work() WorkRepository
@@ -72,17 +76,47 @@ type RuntimeRepository interface{}
 // AcquireWriteLeases already cover this outside a shared Tx).
 type JobsRepository interface{}
 
-// EventsRepository will expose domain_events append/query once a later
-// task needs it composed inside a UnitOfWork transaction (every existing
-// domain_events writer today already appends it correctly inside its own
-// aggregate-specific transaction — see internal/adapters/sqlite/
-// workflow_store.go, node_dispatch.go, workspace_lifecycle.go,
-// attempt_store.go).
-type EventsRepository interface{}
+// EventsRepository appends a domain event inside the current transaction.
+// This is deliberately minimal (V1-06's own illustrative "state+event"
+// proof, not V1-07's full outbox/sequence-allocation contract): the
+// caller supplies Sequence explicitly rather than this repository
+// allocating it, since real per-aggregate sequence allocation under
+// concurrent writers is V1-07's job (GC-INV-15).
+type EventsRepository interface {
+	Append(ctx context.Context, event DomainEvent) error
+}
 
-// ReceiptsRepository will expose command_receipts persistence once V1-06
-// builds the command envelope this repository backs.
-type ReceiptsRepository interface{}
+// DomainEvent is the minimal event shape EventsRepository.Append persists
+// to domain_events. ProjectID is optional (some aggregates are
+// installation-scoped); every other field is required.
+type DomainEvent struct {
+	ID            string
+	ProjectID     string // empty means installation-scoped, stored as NULL
+	AggregateType string
+	AggregateID   string
+	Sequence      int64
+	EventType     string
+	SchemaVersion int
+	PayloadJSON   string
+	CorrelationID string
+	CreatedAt     time.Time
+}
+
+// ReceiptsRepository is the command-receipt idempotency ledger a handler
+// consults before doing real work, and writes to atomically with
+// whatever state/event change the command causes (V1-06,
+// docs/design/00-roadmap.md's GC-INV-35).
+type ReceiptsRepository interface {
+	// Load returns the stored receipt for (actor, scope, idempotencyKey,
+	// commandType) if one exists.
+	Load(ctx context.Context, actor string, scope CommandScope, idempotencyKey, commandType string) (Receipt, bool, error)
+	// Record stores a new receipt, or returns ErrReceiptConflict if one
+	// already exists for the same key with a different RequestHash. A
+	// handler checks Load first for the identical-payload replay case;
+	// Record is the storage layer's own second line of defense against a
+	// different-payload conflict racing in concurrently.
+	Record(ctx context.Context, receipt Receipt) error
+}
 
 // QueryStore is the read path V1-05 keeps separate from UnitOfWork's
 // write-transaction-scoped Tx ("query store tách read"): a query does not
