@@ -32,9 +32,12 @@ var phaseTableRow = regexp.MustCompile("^\\| ([A-Z0-9-]+) \\| `([A-Z_]+)` \\| (.
 // parsePhaseSection scans lines starting after a "### Phase classification"
 // (or "## NN. Phase classification"/"§14 Phase classification") heading for
 // the default-label statement and the closed exceptions table, stopping at
-// the next heading of equal-or-higher level. headingPrefixes lists the
-// heading line(s) that open the subsection in this file (a file may have
-// more than one candidate heading spelling across the three doc families).
+// the next heading of equal-or-higher level. Prose lines are joined with a
+// single space before the defaultMarker check: source markdown wraps long
+// paragraphs across lines (03-system-architecture.md's pre-existing §17
+// default statement splits "Mặc" and "định" across a line break), so a
+// per-line Contains check would miss a marker that genuinely is present,
+// just not on one physical line.
 func parsePhaseSection(lines []string, headingMatch func(string) bool, defaultMarker string) (defaultFound bool, rows []exceptionRow) {
 	start := -1
 	for i, line := range lines {
@@ -46,22 +49,20 @@ func parsePhaseSection(lines []string, headingMatch func(string) bool, defaultMa
 	if start == -1 {
 		return false, nil
 	}
+	var prose []string
 	for i := start; i < len(lines); i++ {
 		line := lines[i]
 		if strings.HasPrefix(line, "## ") {
 			break // next top-level section
 		}
-		if strings.Contains(line, defaultMarker) {
-			defaultFound = true
-		}
 		if m := phaseTableRow.FindStringSubmatch(line); m != nil {
 			id, label, reason := m[1], m[2], strings.TrimSpace(m[3])
-			if id == "Criterion" { // header row, e.g. "| Criterion | Nhãn | ... |"
-				continue
-			}
 			rows = append(rows, exceptionRow{id: id, label: Label(label), reason: reason, line: i + 1})
+			continue
 		}
+		prose = append(prose, line)
 	}
+	defaultFound = strings.Contains(strings.Join(prose, " "), defaultMarker)
 	return defaultFound, rows
 }
 
