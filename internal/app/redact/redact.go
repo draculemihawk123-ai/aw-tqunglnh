@@ -136,7 +136,17 @@ func (m Matcher) redactReflect(v reflect.Value, depth int) (any, error) {
 	switch v.Kind() {
 	case reflect.String:
 		return m.String(v.String()), nil
-	case reflect.Ptr, reflect.Interface:
+	case reflect.Interface:
+		// A map[string]any value, []any element or struct field typed any
+		// reflects as Kind()==Interface wrapping the real concrete value;
+		// unwrapping that boxing is not itself a nesting step, so it must
+		// not consume depth budget — only Ptr, Map, Slice/Array and Struct
+		// do, matching one increment per real level of nesting.
+		if v.IsNil() {
+			return nil, nil
+		}
+		return m.redactReflect(v.Elem(), depth)
+	case reflect.Ptr:
 		if v.IsNil() {
 			return nil, nil
 		}
