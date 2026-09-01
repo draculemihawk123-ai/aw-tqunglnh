@@ -390,6 +390,10 @@ func startAndHardKillCrashWorker(
 		testName = "^TestCrashAfterAtomicFinalizationDoesNotDuplicateTerminalState$"
 	case "checkpoint-then-hang":
 		testName = "^TestSPK03HardCrashJoinsCheckpointContextRecovery$"
+	case "process-exit-readonly-then-hang":
+		testName = "^TestSPK04FaultAfterProcessExitReadOnlyAttemptBecomesLost$"
+	case "process-exit-mutating-then-hang":
+		testName = "^TestSPK04FaultAfterProcessExitMutatingAttemptBecomesIndeterminate$"
 	}
 	command := exec.Command(
 		executable,

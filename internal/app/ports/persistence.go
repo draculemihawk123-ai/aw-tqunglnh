@@ -46,6 +46,21 @@ type WorkerWorkflowRunFinalization struct {
 	CorrelationID string
 }
 
+// AttemptTerminationUpdate is the fenced, recovery-time request that moves a
+// crashed ExecutionAttempt from RUNNING to a terminal/quarantine state
+// (LOST or INDETERMINATE). It mirrors WorkflowRunTransition's CAS shape at
+// the attempt level: a stale caller racing on the same attempt is rejected
+// with ErrOptimisticConflict instead of writing a second terminal record.
+type AttemptTerminationUpdate struct {
+	AttemptID       runtime.ExecutionAttemptID
+	ExpectedVersion uint64
+	NextState       runtime.ExecutionAttemptState
+	Reason          runtime.TerminationReason
+	EventID         string
+	CorrelationID   string
+	OccurredAt      time.Time
+}
+
 // WorkflowPersistence is deliberately narrow for the spike. WorkflowVersion
 // has no update operation: publishing either inserts a new immutable snapshot
 // or returns the already-published snapshot with identical canonical content.
