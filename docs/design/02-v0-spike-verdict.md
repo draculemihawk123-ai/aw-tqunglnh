@@ -438,10 +438,11 @@
 - **Phạm vi:** import check và report generated.
 - **Thực hiện:** kiểm import graph, shell-string absence ở process port, provider branch absence trong
   domain/orchestrator, mutable workflow version operation absence.
-- **Verify:** automated architecture test và report artifact.
-- **Hoàn thành khi:** violation làm acceptance fail, không chỉ warning.
+- **Verify:** automated architecture test và report artifact. **Đạt** — xem cập nhật cuối mục này.
+- **Hoàn thành khi:** violation làm acceptance fail, không chỉ warning. **Đạt** — đã kiểm chứng bằng bốn
+  vi phạm thật lần lượt, mỗi lần test FAIL đúng, không chỉ warning (xem cập nhật cuối mục này).
 
-> **Trạng thái: draft đã push, chờ CI thật xác nhận, chưa đóng.** Package `internal/archtest` mới, bốn
+> **Đạt.** Package `internal/archtest` mới, bốn
 > test thật: `TestDomainAppNeverImportAdapters` (`go list -json` trên import graph thật, không phải
 > text search — bắt được cả dependency transitive), `TestProcessSpecHasNoShellStringField` (reflection
 > trên `ports.ProcessSpec`, cấm field `Command`/`Shell`/... , bắt buộc `Argv []string`),
@@ -463,8 +464,15 @@
 > thuộc OS nên chỉ chạy một lần): chạy `go test -v ./internal/archtest/...`, upload log làm artifact
 > `v0-13-boundary-report`. Enforcement thật sự đã có sẵn từ trước: vì đây là gói `go test` thật, một vi
 > phạm đã tự làm fail bước "Offline contract suite" trên cả hai OS — bước report chỉ thêm truy vết độc
-> lập, không phải cơ chế chặn duy nhất. Đã dry-run cục bộ script CI y hệt, pass sạch. **Chưa** coi V0-13
-> đóng cho tới khi CI thật xác nhận tại HEAD hiện tại.
+> lập, không phải cơ chế chặn duy nhất. Đã dry-run cục bộ script CI y hệt, pass sạch.
+>
+> **Bằng chứng CI thật, đã tải artifact và đọc trực tiếp:** run
+> [33519463314](https://github.com/taQuangLing/agent-workflow/actions/runs/33519463314) (commit
+> `0ba3b2b`, đối chiếu `git rev-parse ci/v0-11-draft` = `gh pr view 1 --json headRefOid` khớp đúng). Cả
+> 6 job xanh; `v0-13-boundary-report` artifact tải về và đọc trực tiếp: cả bốn test
+> (`TestDomainAppNeverImportAdapters`, `TestProcessSpecHasNoShellStringField`,
+> `TestNoProviderBranchingOutsidePorts`, `TestWorkflowVersionHasNoMutatingMethods`) đều `PASS` thật trên
+> runner Ubuntu thật. `gh pr view 1`: `state=OPEN mergeable=MERGEABLE`, mọi status check `SUCCESS`.
 
 ## V0-14 — Ghi verdict và đóng gate
 
