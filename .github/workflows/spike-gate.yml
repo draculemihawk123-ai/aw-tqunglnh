@@ -44,6 +44,37 @@ jobs:
           go test -run '^TestSPK09QuarantineRecreateFencesStaleGeneration$' -count=30 -timeout 120s ./internal/adapters/sqlite/...
           go test -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=5 -timeout 300s ./internal/spikeacceptance/...
 
+      # V0-12 (docs/design/02-v0-spike-verdict.md): internal/archtest enforces
+      # domain/app never depends on adapter/OS/provider specifics — a
+      # violation already fails "Offline contract suite" above on both OS
+      # (it is a real `go test ./...` package). This step additionally
+      # produces a standalone, human-readable report artifact so the result
+      # is traceable without digging through the full suite's log. Checks are
+      # OS-independent (pure import-graph/AST/reflection analysis), so this
+      # only needs to run once.
+      - name: Boundary/dependency report (V0-13)
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          mkdir -p boundary-report
+          if go test -v ./internal/archtest/... > boundary-report/v0-13-boundary-report.log 2>&1; then
+            echo "V0-13 boundary/dependency checks: all passed"
+          else
+            echo "V0-13 boundary/dependency checks FAILED — see boundary-report/v0-13-boundary-report.log"
+            cat boundary-report/v0-13-boundary-report.log
+            exit 1
+          fi
+          cat boundary-report/v0-13-boundary-report.log
+
+      - name: Upload V0-13 boundary/dependency report
+        if: always() && matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-13-boundary-report
+          path: boundary-report/
+          if-no-files-found: error
+          retention-days: 7
+
   # V0-12 (docs/design/02-v0-spike-verdict.md): race detector clean + 10 full
   # offline-suite runs not flaky, with SPK-08's own 100-iteration write-lease
   # race (internal/spikeacceptance/spk08_scenario.go) exercised inside every

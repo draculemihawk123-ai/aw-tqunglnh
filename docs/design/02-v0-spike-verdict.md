@@ -441,6 +441,31 @@
 - **Verify:** automated architecture test và report artifact.
 - **Hoàn thành khi:** violation làm acceptance fail, không chỉ warning.
 
+> **Trạng thái: draft đã push, chờ CI thật xác nhận, chưa đóng.** Package `internal/archtest` mới, bốn
+> test thật: `TestDomainAppNeverImportAdapters` (`go list -json` trên import graph thật, không phải
+> text search — bắt được cả dependency transitive), `TestProcessSpecHasNoShellStringField` (reflection
+> trên `ports.ProcessSpec`, cấm field `Command`/`Shell`/... , bắt buộc `Argv []string`),
+> `TestNoProviderBranchingOutsidePorts` (AST walk thật qua `go/parser`+`go/ast`, chỉ bắt if/switch
+> **branch** trên `ProviderClaude`/`ProviderCodex` ngoài `internal/app/ports` và ngoài `_test.go` — phân
+> biệt được với việc dùng hằng số đó làm giá trị/tham số, ví dụ registry lookup ở
+> `internal/app/agentregistry` hay test assertion, vốn không phải vi phạm), `TestWorkflowVersionHasNoMutatingMethods`
+> (reflection so method set value-type vs pointer-type, bắt method pointer-receiver-only — dấu hiệu duy
+> nhất của mutator tại chỗ). Đã kiểm tra thư viện hiện tại: cả bốn PASS, không có vi phạm sẵn có (codebase
+> vốn đã sạch, task này chỉ khóa lại bằng test thật).
+>
+> **Đã kiểm chứng cả bốn test thật sự bắt được vi phạm** (không chỉ pass vì viết sai): tạo lần lượt bốn
+> vi phạm thật trên file tạm (domain import adapter thật — kể cả case gây import cycle lẫn case không;
+> thêm field `Command string` vào `ProcessSpec`; thêm if-branch thật trên `ProviderClaude` trong
+> `internal/app/worker`; thêm method con trỏ thật trên `WorkflowVersion`), mỗi lần xác nhận test FAIL
+> đúng dòng/đúng lý do, rồi xoá file tạm, xác nhận `git status` sạch lại và cả bốn test PASS trở lại.
+>
+> Thêm bước CI `Boundary/dependency report (V0-13)` trong `contract (ubuntu-latest)` (checks không phụ
+> thuộc OS nên chỉ chạy một lần): chạy `go test -v ./internal/archtest/...`, upload log làm artifact
+> `v0-13-boundary-report`. Enforcement thật sự đã có sẵn từ trước: vì đây là gói `go test` thật, một vi
+> phạm đã tự làm fail bước "Offline contract suite" trên cả hai OS — bước report chỉ thêm truy vết độc
+> lập, không phải cơ chế chặn duy nhất. Đã dry-run cục bộ script CI y hệt, pass sạch. **Chưa** coi V0-13
+> đóng cho tới khi CI thật xác nhận tại HEAD hiện tại.
+
 ## V0-14 — Ghi verdict và đóng gate
 
 - **Mục tiêu:** luôn tạo assessment cuối và cập nhật report/start-here bằng kết luận evidence-backed,
