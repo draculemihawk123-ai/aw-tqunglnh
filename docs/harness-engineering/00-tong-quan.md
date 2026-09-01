@@ -258,7 +258,23 @@ Không dùng số dòng code hoặc số token sinh ra làm chỉ số thành c�
 13. [Lec 13 — Vòng lặp tự động](13-lec-13-vong-lap-tu-dong.md)
 14. [Lec 14 — Đồ thị điều phối](14-lec-14-do-thi-dieu-phoi.md)
 
-## 14. Cách dùng bộ tài liệu khi build
+## 14. Phase classification
+
+Theo ADR-024 (`docs/architecture/02-architecture-decisions.md` §26), mỗi tiêu chí bắt buộc `HE-NN-Mxx`
+trong 14 lecture mang đúng một nhãn phase — `ALPHA_MUST | BETA_ADAPTER_GATE | BETA_PARITY_GATE |
+CROSS_PHASE_GUARD | NOT_APPLICABLE` — chốt **trước** khi V1 bắt đầu. Nhãn chỉ áp cho tiêu chí `Mxx`
+(MUST); tiêu chí `Sxx` (SHOULD/MAY, §1) là guidance, không phải acceptance criterion mang nhãn phase.
+
+Mặc định của mọi `HE-NN-Mxx` là `ALPHA_MUST`. Ngoại lệ dưới đây là danh sách đóng:
+
+| Criterion | Nhãn | Lý do |
+|---|---|---|
+| HE-06-M08 | `NOT_APPLICABLE` | Tiêu chí nói về "beta worker" — hạ tầng server worker pool chỉ tồn tại ở beta (§8: "Server worker pool chạy CLI trong workspace cô lập" chỉ liệt kê dưới Beta). Alpha là local single-user, không có server worker để kiểm; guarantee tương đương của alpha (clean base, canonical commands) đã được HE-06-M01/M06/M07 phủ. |
+
+Nhãn `NOT_APPLICABLE` chỉ hợp lệ kèm authority reason như trên. V8 không được phân loại lại criteria và
+không được dùng `deferred` cho một `ALPHA_MUST`.
+
+## 15. Cách dùng bộ tài liệu khi build
 
 Mỗi feature thiết kế của Agent Kit cần chỉ ra:
 

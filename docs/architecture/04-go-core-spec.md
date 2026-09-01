@@ -1101,6 +1101,22 @@ recorded protocol fixtures MUST chạy tự động. Live smoke SHOULD được 
 trường được hỗ trợ; khi chưa chạy, báo cáo phải ghi adapter compatibility là `UNVERIFIED_LIVE`, không
 được diễn đạt như đã kiểm chứng với dịch vụ thật.
 
+### Phase classification
+
+Theo ADR-024, mỗi `GC-INV-*` (§5), `GC-ACC-*` (§22) và `GC-DS-*` (§22.1) mang đúng một nhãn phase,
+chốt **trước** khi V1 bắt đầu. Mặc định của mọi tiêu chí trong ba mục này là `ALPHA_MUST`.
+
+Rà soát V1-00A không tìm thấy ngoại lệ nào: không mục nào trong §5/§22/§22.1 đòi một adapter persistence
+thứ hai (PostgreSQL) tồn tại để kiểm, và không mục nào đòi so sánh hai deployment topology — kể cả
+GC-ACC-12 (chạy qua fake/Claude/Codex adapter) chỉ cần hai provider CLI đã có sẵn trong alpha, không
+phải một persistence adapter thứ hai như AK-ARCH-019. `GC-DS-*` tuy gắn nhãn version lộ trình (V1, V2,
+V4, V5, V6) nhưng toàn bộ nằm trong phạm vi **Alpha** theo tiêu đề §22.1; nhãn version chỉ nói *khi nào*
+trong V1..V8, không nói *có thuộc alpha hay không*. Vì vậy danh sách ngoại lệ của mục này là danh sách
+đóng và hiện **rỗng**.
+
+Nhãn `NOT_APPLICABLE` chỉ hợp lệ kèm authority reason. V8 không được phân loại lại criteria và không
+được dùng `deferred` cho một `ALPHA_MUST`.
+
 ## 23. Definition of Done của từng implementation slice
 
 Mỗi slice sau này chỉ được hoàn tất khi:
