@@ -12,7 +12,7 @@ jobs:
   contract:
     name: contract (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -27,6 +27,19 @@ jobs:
         run: go vet ./...
       - name: Offline contract suite
         run: go test -count=1 ./...
+      # V0-11A diagnostic: the only place SQLITE_BUSY under the write-lease
+      # race (docs/design/02-v0-spike-verdict.md V0-11A) was ever observed is
+      # the real windows-latest runner — it never reproduced locally. Repeat
+      # exactly the two tests that failed, on this same runner, well beyond
+      # their normal single pass, to build real confidence in the
+      # _txlock=immediate fix (internal/adapters/sqlite/db.go) rather than
+      # trusting one lucky green run.
+      - name: Stress write-lease race path (Windows, V0-11A diagnostic)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          go test -run '^TestWriteLeaseRaceHasOneWinnerForSameRepository$' -count=20 -timeout 120s ./internal/adapters/sqlite/...
+          go test -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=5 -timeout 300s ./internal/spikeacceptance/...
 
   linux-race-and-stability:
     name: Linux race and stability

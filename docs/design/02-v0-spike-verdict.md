@@ -238,11 +238,50 @@
 > `LOST@2`. Xác minh qua binary `agentkit-spike acceptance --full --assessment` thật: 13/14 SPK pass,
 > chỉ còn SPK-13 `PENDING_PEER_PLATFORM`.
 
+## V0-11A — Windows SQLite contention stabilization (blocker của V0-11)
+
+- **Mục tiêu:** đóng lỗi `SQLITE_BUSY` ("database is locked") xuất hiện thật trên runner
+  `windows-latest` của GitHub Actions (chưa từng tái hiện trên máy dev cục bộ), phát hiện khi chạy PR
+  kiểm chứng V0-11 draft. Lỗi chặn đúng job `contract (windows-latest)`, mà `spike-acceptance` và
+  `semantic-diff` đều phụ thuộc — nên chặn cả tiêu chí "hai matrix jobs xanh" của V0-11.
+- **Phụ thuộc:** không phụ thuộc V0-10 nào; đây là lỗi trong code SQLite adapter có từ trước (V0-02…V0-09),
+  chỉ mới lộ ra khi chạy trên CI thật.
+- **Phạm vi:** `internal/adapters/sqlite/db.go` (connection DSN); không đổi schema, không đổi domain logic.
+- **Chẩn đoán (bằng chứng cụ thể, không phải đoán):**
+  1. `modernc.org/sqlite@v1.57.0` bật `extended_result_codes` mặc định cho mọi connection
+     (`conn.go:113`). Message log CI `database is locked (5) (SQLITE_BUSY)` chỉ có suffix
+     `"(SQLITE_BUSY)"` khi mã lỗi đúng bằng 5 (`conn.go:872`, so sánh chính xác) — xác nhận đây là
+     `SQLITE_BUSY` thường (5), **không phải** `SQLITE_BUSY_SNAPSHOT` (517) hay `SQLITE_LOCKED` (6).
+  2. `busy_timeout(5000)` được áp lại cho **mọi** connection mới trong pool qua `applyQueryParams`
+     (chạy trong `newConn`, không chỉ lần mở đầu tiên) — không phải lỗi cấu hình pool bị áp thiếu.
+  3. Test lỗi (`TestWriteLeaseRaceHasOneWinnerForSameRepository`, 100 iteration) chỉ chạy 1.09s trên CI
+     — nếu busy_timeout thật sự chờ 5s mỗi lần thì con số này vô lý. Khớp đúng hành vi SQLite đã biết:
+     khi hai transaction **cùng đã giữ SHARED (read) lock** rồi cùng giành nâng cấp lên WRITE lock,
+     SQLite bỏ qua busy-handler cho một bên để tránh livelock — `busy_timeout` không áp dụng cho case
+     này.
+  4. `acquireWriteLeasesOnce` (`scheduling.go`) đúng pattern gây lỗi: `SELECT` (lập read lock) trước
+     `INSERT...RETURNING` (cần write lock) trong cùng một `BeginTx` DEFERRED mặc định.
+  5. Kiểm tra cả 13 điểm gọi `BeginTx` trong package: tất cả dùng `&sql.TxOptions{}` trần, tất cả là
+     transaction ghi thật (Terminate/Dispatch/Acquire/Publish/Quarantine/...) — không điểm nào là
+     read-only transaction bị ảnh hưởng oan nếu đổi transaction mode.
+- **Sửa:** thêm `_txlock=immediate` vào DSN (`db.go`) — mọi transaction trên connection giành
+  write-intent (RESERVED) lock ngay từ `BEGIN`, loại bỏ hoàn toàn tình huống "hai bên cùng đọc trước
+  rồi giành nâng cấp"; contention giờ đi qua đường mà `busy_timeout` xử lý đúng.
+- **Verify:** cục bộ `TestWriteLeaseRaceHasOneWinnerForSameRepository -count=20` (2000 lần race) và
+  `TestDefaultScenariosFormAValidRegistryAndCleanRun -count=5` đều pass, không regress. Thêm bước
+  stress thật trên `contract (windows-latest)` (không chỉ 1 lần rồi rerun-until-green): 20 lần race
+  test + 5 lần full registry test, chạy trên chính runner đã tái hiện lỗi.
+- **Hoàn thành khi:** stress step trên `windows-latest` xanh nhiều lần liên tiếp trên CI thật (không
+  phải 1 lần ăn may), thời gian chờ mỗi transaction vẫn bounded (không xuất hiện block nhiều giây bất
+  thường), và không có lỗi rò ra ngoài adapter dưới dạng khác `ErrWriteLeaseConflict`/`ErrJobLeaseLost`
+  đã định nghĩa.
+
 ## V0-11 — Chạy full offline suite trên Windows và Ubuntu CI
 
 - **Mục tiêu:** SPK-01…14 thực thi thật trên cả hai OS.
-- **Phụ thuộc:** V0-01A, V0-03…V0-10C và V0-04A. Local assessment (V0-10C) phải đạt 13/14 trước khi
-  V0-11 được coi là sẵn sàng chạy chính thức/đóng gate — chỉ còn SPK-13 chờ job cross-platform.
+- **Phụ thuộc:** V0-01A, V0-03…V0-10C, V0-04A và **V0-11A** (contention Windows phải ổn định trước khi
+  coi hai matrix job có thể xanh thật). Local assessment (V0-10C) phải đạt 13/14 trước khi V0-11 được
+  coi là sẵn sàng chạy chính thức/đóng gate — chỉ còn SPK-13 chờ job cross-platform.
 - **Phạm vi:** CI workflow, toolchain setup và evidence upload; không cần network provider.
 - **Thực hiện:** build helper/provider binaries; chạy `acceptance --full --assessment` trên cả hai OS;
   verify bundle; upload platform manifests với `if: always()`; job thứ ba (Ubuntu, phụ thuộc cả hai
@@ -277,6 +316,13 @@
 > ([taQuangLing/agent-workflow#1](https://github.com/taQuangLing/agent-workflow/pull/1)) nhắm vào
 > `docs/alpha-design-adr-020-025`, không nhắm `master`. **Chưa** coi V0-11 là đóng cho tới khi CI thật
 > trên GitHub Actions xác nhận xanh và có CI run ID/evidence ID thật ghi lại.
+>
+> **Cập nhật sau lần chạy CI thật đầu tiên:** `contract (windows-latest)` fail thật với `SQLITE_BUSY`
+> trong `TestWriteLeaseRaceHasOneWinnerForSameRepository` và SPK-08 — lỗi chưa từng tái hiện cục bộ, chỉ
+> lộ ra trên runner Windows thật của GitHub. Đã tách thành task riêng **V0-11A** (xem mục ngay trên),
+> chẩn đoán root cause cụ thể và sửa (`_txlock=immediate`), thêm bước stress thật (20x race test + 5x
+> registry test) trên chính `contract (windows-latest)`. V0-11 **BLOCKED** chờ V0-11A xác nhận xanh
+> nhiều lần liên tiếp trên CI thật trước khi coi "hai matrix jobs xanh" là đạt.
 
 > Làm rõ theo quyết định product owner (cùng lúc thêm V0-10A): "hai matrix jobs xanh" nghĩa là clean
 > checkout/build/test pass, full-suite dispatcher chạy đủ 14 handler, manifest hợp lệ, evidence bundle
