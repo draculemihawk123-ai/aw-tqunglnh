@@ -416,17 +416,20 @@
 - **Verify:** CI log và aggregated stability report.
 - **Hoàn thành khi:** 10/10 pass; mọi failure được sửa root cause và chạy lại chuỗi từ đầu.
 
-> **Trạng thái: draft đã push, chờ CI thật xác nhận, chưa đóng.** `linux-race-and-stability` job trong
-> `.github/workflows/spike-gate.yml` viết lại để sinh `stability-report/v0-12-stability-report.json`
-> (race detector pass/fail+duration, SPK-08 iteration count kiểm tĩnh qua grep phải >= 100, cả 10 lần
-> chạy full suite với pass/fail+duration riêng từng lần), upload làm artifact `v0-12-stability-report`.
-> Job fail (exit 1) nếu race detector fail, SPK-08 iteration count check fail, hoặc bất kỳ lần nào trong
-> 10 lần fail — không che giấu, không retry-until-green ở cấp CI. Đã kiểm cục bộ: YAML hợp lệ,
-> `actionlint` 0 lỗi, `grep -P` extract đúng iteration count = 100, control flow bash dưới
-> `set -uo pipefail` xác nhận đúng (capture pass/fail không abort script). **Chưa** chạy `jq` cục bộ
-> (không có sẵn, không cài do cần quyền admin) — cú pháp jq đã soát lại thủ công, xác nhận thật trên CI.
-> **Chưa** coi V0-12 đóng cho tới khi CI thật xác nhận 10/10 tại HEAD hiện tại, đối chiếu
-> `git rev-parse`/`headRefOid` đúng quy trình đã rút kinh nghiệm từ V0-11.
+> **Đạt.** `linux-race-and-stability` job trong `.github/workflows/spike-gate.yml` viết lại để sinh
+> `stability-report/v0-12-stability-report.json` (race detector pass/fail+duration, SPK-08 iteration
+> count kiểm tĩnh qua `grep -P` phải >= 100, cả 10 lần chạy full suite với pass/fail+duration riêng
+> từng lần), upload làm artifact `v0-12-stability-report`. Job fail (exit 1) nếu bất kỳ phần nào fail —
+> không che giấu, không retry-until-green ở cấp CI.
+>
+> **Bằng chứng CI thật, đã tải artifact và đọc trực tiếp** (không chỉ đọc log): run
+> [33516182656](https://github.com/taQuangLing/agent-workflow/actions/runs/33516182656) (commit
+> `a2779d3`, đối chiếu `git rev-parse ci/v0-11-draft` = `gh pr view 1 --json headRefOid` khớp đúng
+> trước khi ghi nhận). `v0-12-stability-report.json` thật:
+> `raceDetector: {passed: true, durationSeconds: 84}`,
+> `spk08WriteLeaseRace: {iterationCount: 100, meetsMinimum100: true}`,
+> `fullSuiteRuns`: cả 10 lần `passed: true` (9–11s mỗi lần), `allTenRunsStable: true`. Cả 6 job trong
+> run đều xanh; `gh pr view 1`: `state=OPEN mergeable=MERGEABLE`, mọi status check `SUCCESS`.
 
 ## V0-13 — Boundary/dependency report
 
