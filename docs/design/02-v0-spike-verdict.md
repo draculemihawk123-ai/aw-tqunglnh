@@ -250,14 +250,33 @@
 - **Verify:** hai matrix jobs xanh từ clean checkout.
 - **Hoàn thành khi:** SPK-13 pass và report liên kết được CI run/evidence ID.
 
-> **Trạng thái hiện tại: DRAFT, chưa chạy/đóng.** `.github/workflows/spike-gate.yml` đã cập nhật cục bộ
-> để khớp phạm vi trên: job `spike-acceptance` (matrix windows-latest/ubuntu-latest, `needs: contract`)
-> build năm binary (`agentkit-spike`, `fake-claude`, `fake-codex`, `spike-helper`, `spike-worker`) rồi
-> chạy `acceptance --full --assessment`, upload evidence với `if: always()`; job `semantic-diff`
-> (ubuntu-latest, `needs: spike-acceptance`) tải hai manifest rồi chạy `semantic-diff` để sinh SPK-13
-> authoritative result. File đã qua kiểm tra cú pháp YAML cục bộ (PyYAML) và đối chiếu job graph đúng
-> như thiết kế; **chưa** được chạy thật trên GitHub Actions (chưa push), theo đúng quyết định trước đó
-> — chỉ soạn draft song song, không tự đóng V0-11 trong task này.
+> **Trạng thái hiện tại: draft đã push, chờ CI thật xác nhận, chưa đóng.** `.github/workflows/spike-gate.yml`
+> đã cập nhật để khớp phạm vi trên: job `spike-acceptance` (matrix windows-latest/ubuntu-latest,
+> `needs: contract`) build năm binary (`agentkit-spike`, `fake-claude`, `fake-codex`, `spike-helper`,
+> `spike-worker`) rồi chạy `acceptance --full --assessment`, upload evidence với `if: always()`; job
+> `semantic-diff` (ubuntu-latest, `needs: spike-acceptance`) tải hai manifest rồi chạy `semantic-diff`
+> để sinh SPK-13 authoritative result.
+>
+> Sau một vòng review độc lập, đã sửa thêm trước khi push:
+> - `push:` trigger trỏ nhầm nhánh `main` (repo chỉ có `master`) — đã sửa.
+> - `runSemanticDiff` (`cmd/agentkit-spike/main.go`) giờ re-validate cả hai manifest qua
+>   `NewSPKManifest` (không chỉ `json.Unmarshal`), assert `left.GOOS != right.GOOS` (chặn đúng lỗi so
+>   sánh Windows-vs-Windows mà tôi mắc phải khi dry-run cục bộ — đã tái hiện và xác nhận bằng test thật),
+>   re-verify từng evidence bundle hai bên qua `VerifySuite` trước khi diff (đã tái hiện: bundle bị
+>   tamper sau download bị chặn đúng, không âm thầm trôi qua), và seal kết quả SPK-13 thành evidence
+>   bundle thật (`--evidence-dir`, cùng cơ chế Finalize+Verify như mọi SPK khác) thay vì chỉ ghi JSON rời.
+> - `actions/checkout`, `actions/setup-go`, `actions/upload-artifact`, `actions/download-artifact` đã
+>   pin bằng full commit SHA (kèm comment version) thay vì tag di động `@v4`/`@v6`.
+> - Artifact retention đổi 14→7 ngày, khớp TTL 7 ngày mặc định cho evidence/raw (`docs/00-start-here.md`,
+>   ADR-017); thêm `if-no-files-found: error` và `timeout-minutes` cho mọi job.
+>
+> Đã kiểm cục bộ: YAML hợp lệ (PyYAML), `actionlint` 0 lỗi, chạy tay toàn bộ pipeline (build 5 binary →
+> hai lượt `acceptance --full --assessment` → `semantic-diff --evidence-dir`) đúng như CI sẽ chạy, cả
+> case dương tính lẫn hai case âm tính (so sánh cùng platform bị chặn; bundle bị tamper bị chặn).
+> Nhánh `ci/v0-11-draft` đã push, PR kiểm chứng đã mở
+> ([taQuangLing/agent-workflow#1](https://github.com/taQuangLing/agent-workflow/pull/1)) nhắm vào
+> `docs/alpha-design-adr-020-025`, không nhắm `master`. **Chưa** coi V0-11 là đóng cho tới khi CI thật
+> trên GitHub Actions xác nhận xanh và có CI run ID/evidence ID thật ghi lại.
 
 > Làm rõ theo quyết định product owner (cùng lúc thêm V0-10A): "hai matrix jobs xanh" nghĩa là clean
 > checkout/build/test pass, full-suite dispatcher chạy đủ 14 handler, manifest hợp lệ, evidence bundle
