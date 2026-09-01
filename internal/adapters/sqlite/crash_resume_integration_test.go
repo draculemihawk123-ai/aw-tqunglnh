@@ -394,6 +394,8 @@ func startAndHardKillCrashWorker(
 		testName = "^TestSPK04FaultAfterProcessExitReadOnlyAttemptBecomesLost$"
 	case "process-exit-mutating-then-hang":
 		testName = "^TestSPK04FaultAfterProcessExitMutatingAttemptBecomesIndeterminate$"
+	case "node-dispatch-then-hang":
+		testName = "^TestSPK04FaultAfterNodeCompleteBeforeNextDispatch$"
 	}
 	command := exec.Command(
 		executable,

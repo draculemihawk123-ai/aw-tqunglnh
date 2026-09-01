@@ -61,6 +61,23 @@ type AttemptTerminationUpdate struct {
 	OccurredAt      time.Time
 }
 
+// NodeCompletionDispatch is the fenced worker path from a RUNNING NodeRun to
+// SUCCEEDED plus the downstream job that dispatches the next node. The
+// persistence adapter must complete the node, acknowledge the driving job
+// and enqueue the downstream job in one transaction: a caller replaying the
+// exact same request after a crash (same NextJob.IdempotencyKey) must get
+// back the job that transaction already created, never a duplicate.
+type NodeCompletionDispatch struct {
+	NodeRunID       runtime.NodeRunID
+	ExpectedVersion uint64
+	SelectedOutcome string
+	JobLease        JobLease
+	NextJob         EnqueueJobRequest
+	EventID         string
+	CorrelationID   string
+	OccurredAt      time.Time
+}
+
 // WorkflowPersistence is deliberately narrow for the spike. WorkflowVersion
 // has no update operation: publishing either inserts a new immutable snapshot
 // or returns the already-published snapshot with identical canonical content.
