@@ -23,7 +23,7 @@
   reload đúng qua restart.
 - **Hoàn thành khi:** workflow/compiled dependency/adapter pins không đổi; scope mới chỉ xuất hiện ở
   amendment revision kế tiếp, không overwrite initial manifest.
-- **Nguồn:** ADR-011, ADR-020, ADR-021.
+- **Nguồn:** ADR-011, ADR-020, ADR-021, GC-INV-06, HE-03-M08, HE-05-M02, HE-14-M05.
 
 ## V4-02 — StartWorkflowRun transaction
 
@@ -74,7 +74,7 @@
 - **Verify:** fake clock tests retry/nonretry/timeout/exhaustion/restart; test khẳng định Attempt
   `BLOCKED` không tiêu thụ retry budget và không sinh Attempt kế tiếp tự động.
 - **Hoàn thành khi:** không parse message, không retry INDETERMINATE và không retry BLOCKED.
-- **Nguồn:** ADR-020.
+- **Nguồn:** ADR-020, GC-INV-09, GC-INV-27, HE-13-M01, HE-13-M04.
 
 ## V4-07 — Business rework/cycle budget
 
@@ -83,7 +83,7 @@
 - **Thực hiện:** iteration counter, max iteration, escalation route, audit causation.
 - **Verify:** bounded cycle pass/exhaust/restart tests.
 - **Hoàn thành khi:** không có infinite graph loop hoặc overwrite activation history.
-- **Nguồn:** AK-ARCH-004, GC-INV-10.
+- **Nguồn:** AK-ARCH-004, GC-INV-10, HE-09-M07, HE-13-M03.
 
 ## V4-08 — WAIT persistence và signal semantics
 
@@ -99,7 +99,7 @@
 - **Verify:** duplicate/early/wrong signal, restart timer, hai signal đồng thời cùng identity, và test
   khẳng định xóa/replay timer job không consume thêm lần nào.
 - **Hoàn thành khi:** WAIT sống qua process restart và signal chỉ consume một lần.
-- **Nguồn:** GC-INV-31.
+- **Nguồn:** GC-INV-31, HE-13-M06.
 
 ## V4-09 — APPROVAL semantics
 
@@ -108,7 +108,7 @@
 - **Thực hiện:** approval request/evidence/actor/reason/timeout; approve/reject outcomes; chat không tự resolve.
 - **Verify:** unauthorized-shaped input, duplicate decision, timeout/restart tests.
 - **Hoàn thành khi:** decision append-only và route audit đủ.
-- **Nguồn:** HE-14-S03, GC-INV-11.
+- **Nguồn:** HE-14-S03, GC-INV-11, HE-08-M08.
 
 ## V4-10 — FORK branch tokens
 
@@ -126,7 +126,7 @@
 - **Thực hiện:** readiness/short-circuit/cancel remaining policy, shared-state merge validation, integration scope.
 - **Verify:** policy matrix, restart, impossible quorum và duplicate completion tests.
 - **Hoàn thành khi:** queue empty không ảnh hưởng join verdict.
-- **Nguồn:** HE-14-M04.
+- **Nguồn:** HE-14-M04, HE-07-M06.
 
 ## V4-12 — Run completion candidate và WorkItem projection proposal
 
@@ -138,7 +138,7 @@
 - **Verify:** agent proposed done/no evidence test; assert END không có transition nào tới `CANCELLED`.
 - **Hoàn thành khi:** exit code/outcome/END không có đường trực tiếp tới Run SUCCEEDED, WorkItem DONE
   hoặc Run CANCELLED.
-- **Nguồn:** ADR-011, ADR-020, AK-ARCH-005A.
+- **Nguồn:** ADR-011, ADR-020, AK-ARCH-005A, GC-INV-12.
 
 ## V4-12A — Scope amendment và NodeRun reactivation
 
@@ -152,7 +152,7 @@
   cũ và Attempt đã BLOCKED không được hồi sinh.
 - **Verify:** concurrent approval, duplicate delivery, restart và negative sibling/effective-scope tests.
 - **Hoàn thành khi:** chỉ activation mới nhận grant và audit nối request→approval→amendment→activation.
-- **Nguồn:** ADR-011, ADR-020, AK-ARCH-015A.
+- **Nguồn:** ADR-011, ADR-020, AK-ARCH-015A, GC-INV-22, GC-DS-02.
 
 ## V4-12B — Cancellation coordinator
 
@@ -202,7 +202,7 @@
   Kind không thuộc allow-list bị constraint từ chối.
 - **Hoàn thành khi:** mọi đường tới `CANCELLED` đều đi qua `CANCELLING`, cancel không tự sinh quyết định
   cleanup/abandon nào, và không race nào tạo được `SUCCEEDED` sau khi cancel intent đã commit.
-- **Nguồn:** ADR-020, GC-INV-32, GC-INV-33, GC-INV-37.
+- **Nguồn:** ADR-020, GC-INV-32, GC-INV-33, GC-INV-37, GC-INV-28.
 
 ## V4-12C — WorkItem cancellation và blocker commands
 
@@ -252,7 +252,7 @@
   vẫn chỉ tạo một recovery job cho generation; kill coordinator giữa lúc quiesce rồi restart phải hoàn
   tất cả cancel Run lẫn cancel WorkItem, không tạo intent trùng.
 - **Hoàn thành khi:** mỗi crash state có typed recovery, không blind retry.
-- **Nguồn:** GC-ACC-04, GC-ACC-05, HE-05-M05.
+- **Nguồn:** GC-ACC-04, GC-ACC-05, HE-05-M05, AK-ARCH-006, AK-ARCH-007, HE-01-M01, HE-01-M05.
 
 ## V4-14 — Runtime engine acceptance gate
 

@@ -14,7 +14,7 @@
 - **Thực hiện:** deterministic fixture và assertions cho trace IDs, event sequence, revision/evidence links.
 - **Verify:** trace completeness report; missing link fail.
 - **Hoàn thành khi:** workload chạy clean checkout không cần secret/network.
-- **Nguồn:** AK-ARCH-021, HE-11-S03.
+- **Nguồn:** AK-ARCH-021, HE-11-S03, HE-01-M06, HE-10-M05.
 
 ## V8-02 — Full fault-injection matrix Alpha
 
@@ -34,7 +34,7 @@
 - **Thực hiện:** bounded workload parallel, same/different repository, duplicate commands/events, 10 runs.
 - **Verify:** `go test -race`, UI/API suite, leak/flake report Windows/Linux.
 - **Hoàn thành khi:** 10/10 pass và stale fence success bằng 0.
-- **Nguồn:** AK-ARCH-009, GC-ACC-09.
+- **Nguồn:** AK-ARCH-009, GC-ACC-09, HE-10-M08.
 
 > V8-04A…V8-04D là các suite nhỏ chạy độc lập; V8-04E là aggregate gate trên kết quả của chúng.
 > Aggregate mang hậu tố E để nó đứng sau các suite theo thứ tự Task ID.
@@ -135,7 +135,7 @@
 - **Verify:** clean CI build twice và compare bằng allowlist field cụ thể được version-control; unknown
   difference fail; smoke each artifact.
 - **Hoàn thành khi:** binary chạy doctor/serve và UI journey tối thiểu trên cả OS.
-- **Nguồn:** AK-ARCH-020.
+- **Nguồn:** AK-ARCH-020, HE-02-M04.
 
 ## V8-09 — First-run/operator documentation
 
@@ -146,7 +146,7 @@
   troubleshooting; chỉ ghi capability đã verify.
 - **Verify:** fresh-session test trả lời WHAT/WHERE/HOW/DONE/out-of-scope bằng source.
 - **Hoàn thành khi:** clean machine path không cần giải thích miệng ngoài docs.
-- **Nguồn:** HE-03-M05, HE-06-S05.
+- **Nguồn:** HE-03-M05, HE-06-S05, HE-03-M03, HE-04-M01.
 
 ## V8-10 — Upgrade and rollback rehearsal
 

@@ -106,7 +106,7 @@
 - **Verify:** pagination bằng cursor ổn định qua ghi mới; bounded response; contract test khẳng định
   response không chứa PID, argv, cwd hay secret; fork/join/rework fixture cho timeline.
 - **Hoàn thành khi:** hai screen tương ứng không cần dữ liệu nào ngoài các endpoint này.
-- **Nguồn:** ADR-018, AK-ARCH-025.
+- **Nguồn:** ADR-018, AK-ARCH-025, HE-11-M02, HE-11-M03, HE-11-M04.
 
 ## V6-06B — Recovery command endpoints
 
@@ -147,7 +147,7 @@
 - **Verify:** replay twice, stop/restart, gap and poison event tests.
 - **Hoàn thành khi:** runtime không query projection cho readiness/completion; poison event đưa
   projection sang `DEGRADED/STALE`, không nhảy cursor.
-- **Nguồn:** AK-ARCH-022, AK-ARCH-023.
+- **Nguồn:** AK-ARCH-022, AK-ARCH-023, HE-12-M08.
 
 ## V6-09 — Projection rebuild command
 
@@ -168,7 +168,7 @@
   summary và projection JournalPosition/status trong response.
 - **Verify:** pagination/filter/sort/stale projection contracts.
 - **Hoàn thành khi:** task multi-repo vẫn là một card với repository badges.
-- **Nguồn:** ROADMAP-§2, AK-ARCH-023.
+- **Nguồn:** ROADMAP-§2, AK-ARCH-023, HE-08-M05.
 
 > V6-10A…V6-10F thay cho một umbrella task duy nhất: mỗi task dưới đây là một contract suite verify
 > được độc lập, theo nguyên tắc kích thước task ở `00-roadmap.md` §3.
@@ -287,7 +287,7 @@
   CORS deny default, path/content injection, request cancellation và artifact MIME safety.
 - **Verify:** automated security/boundary suite.
 - **Hoàn thành khi:** no handler imports Git/process/provider/SQLite concrete package.
-- **Nguồn:** AK-ARCH-018, AK-ARCH-025A, AK-ARCH-027.
+- **Nguồn:** AK-ARCH-018, AK-ARCH-025A, AK-ARCH-027, GC-INV-14, HE-10-M04.
 
 ## V6-14 — API/projection acceptance gate
 
