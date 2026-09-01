@@ -416,6 +416,18 @@
 - **Verify:** CI log và aggregated stability report.
 - **Hoàn thành khi:** 10/10 pass; mọi failure được sửa root cause và chạy lại chuỗi từ đầu.
 
+> **Trạng thái: draft đã push, chờ CI thật xác nhận, chưa đóng.** `linux-race-and-stability` job trong
+> `.github/workflows/spike-gate.yml` viết lại để sinh `stability-report/v0-12-stability-report.json`
+> (race detector pass/fail+duration, SPK-08 iteration count kiểm tĩnh qua grep phải >= 100, cả 10 lần
+> chạy full suite với pass/fail+duration riêng từng lần), upload làm artifact `v0-12-stability-report`.
+> Job fail (exit 1) nếu race detector fail, SPK-08 iteration count check fail, hoặc bất kỳ lần nào trong
+> 10 lần fail — không che giấu, không retry-until-green ở cấp CI. Đã kiểm cục bộ: YAML hợp lệ,
+> `actionlint` 0 lỗi, `grep -P` extract đúng iteration count = 100, control flow bash dưới
+> `set -uo pipefail` xác nhận đúng (capture pass/fail không abort script). **Chưa** chạy `jq` cục bộ
+> (không có sẵn, không cài do cần quyền admin) — cú pháp jq đã soát lại thủ công, xác nhận thật trên CI.
+> **Chưa** coi V0-12 đóng cho tới khi CI thật xác nhận 10/10 tại HEAD hiện tại, đối chiếu
+> `git rev-parse`/`headRefOid` đúng quy trình đã rút kinh nghiệm từ V0-11.
+
 ## V0-13 — Boundary/dependency report
 
 - **Mục tiêu:** chứng minh domain/app không phụ thuộc adapter/OS/provider.

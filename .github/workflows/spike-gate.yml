@@ -44,26 +44,108 @@ jobs:
           go test -run '^TestSPK09QuarantineRecreateFencesStaleGeneration$' -count=30 -timeout 120s ./internal/adapters/sqlite/...
           go test -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=5 -timeout 300s ./internal/spikeacceptance/...
 
+  # V0-12 (docs/design/02-v0-spike-verdict.md): race detector clean + 10 full
+  # offline-suite runs not flaky, with SPK-08's own 100-iteration write-lease
+  # race (internal/spikeacceptance/spk08_scenario.go) exercised inside every
+  # one of those 10 runs via TestDefaultScenariosFormAValidRegistryAndCleanRun.
+  # A failure anywhere in this job is a real signal to root-cause, never a
+  # reason to just retry until it goes green.
   linux-race-and-stability:
-    name: Linux race and stability
+    name: Linux race and stability (V0-12)
     runs-on: ubuntu-latest
     needs: contract
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: '1.27.0'
           check-latest: true
-      - name: Race detector
-        run: go test -race -count=1 ./...
-      - name: Repeat offline suite ten times
+
+      - name: Race detector and 10x offline-suite stability, aggregated report
         shell: bash
         run: |
-          for run in $(seq 1 10); do
-            echo "offline suite run ${run}/10"
-            go test -count=1 ./...
+          set -uo pipefail
+          mkdir -p stability-report
+
+          echo "== race detector (go test -race -count=1 ./...) =="
+          race_start=$(date +%s)
+          if go test -race -count=1 ./... > stability-report/race-detector.log 2>&1; then
+            race_passed=true
+          else
+            race_passed=false
+          fi
+          race_end=$(date +%s)
+          cat stability-report/race-detector.log
+          echo "race detector passed=${race_passed} duration=$((race_end - race_start))s"
+
+          echo "== SPK-08 write-lease race iteration count (static check) =="
+          spk08_iterations=$(grep -oP 'iterations\s*=\s*\K\d+' internal/spikeacceptance/spk08_scenario.go | head -n1)
+          if [ -z "${spk08_iterations}" ] || [ "${spk08_iterations}" -lt 100 ]; then
+            echo "SPK-08 iteration count check FAILED: found '${spk08_iterations}', want >= 100"
+            spk08_ok=false
+          else
+            echo "SPK-08 iteration count = ${spk08_iterations} (>= 100, required in every one of the 10 runs below via TestDefaultScenariosFormAValidRegistryAndCleanRun)"
+            spk08_ok=true
+          fi
+
+          echo "== 10x full offline suite, no retry-until-green =="
+          runs_json="[]"
+          all_stable=true
+          for i in $(seq 1 10); do
+            echo "-- offline suite run ${i}/10 --"
+            run_start=$(date +%s)
+            if go test -count=1 ./... > "stability-report/suite-run-${i}.log" 2>&1; then
+              run_passed=true
+            else
+              run_passed=false
+              all_stable=false
+              echo "run ${i} FAILED, see stability-report/suite-run-${i}.log"
+              tail -n 60 "stability-report/suite-run-${i}.log"
+            fi
+            run_end=$(date +%s)
+            duration=$((run_end - run_start))
+            echo "run ${i}/10 passed=${run_passed} duration=${duration}s"
+            runs_json=$(echo "${runs_json}" | jq --argjson run "${i}" --argjson passed "${run_passed}" --argjson duration "${duration}" \
+              '. + [{"run": $run, "passed": $passed, "durationSeconds": $duration}]')
           done
+
+          jq -n \
+            --argjson racePassed "${race_passed}" \
+            --argjson raceDurationSeconds "$((race_end - race_start))" \
+            --argjson spk08IterationCount "${spk08_iterations:-0}" \
+            --argjson spk08Ok "${spk08_ok}" \
+            --argjson runs "${runs_json}" \
+            --argjson allTenRunsStable "${all_stable}" \
+            --arg goos "$(go env GOOS)" \
+            --arg goVersion "$(go version)" \
+            --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{
+              goos: $goos,
+              goVersion: $goVersion,
+              generatedAt: $generatedAt,
+              raceDetector: {passed: $racePassed, durationSeconds: $raceDurationSeconds},
+              spk08WriteLeaseRace: {iterationCount: $spk08IterationCount, meetsMinimum100: $spk08Ok},
+              fullSuiteRuns: $runs,
+              allTenRunsStable: $allTenRunsStable
+            }' > stability-report/v0-12-stability-report.json
+
+          echo "== aggregated stability report =="
+          cat stability-report/v0-12-stability-report.json
+
+          if [ "${race_passed}" != "true" ] || [ "${spk08_ok}" != "true" ] || [ "${all_stable}" != "true" ]; then
+            echo "V0-12 stability gate FAILED — see stability-report/ artifact for the full report and per-run logs"
+            exit 1
+          fi
+
+      - name: Upload V0-12 stability report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-12-stability-report
+          path: stability-report/
+          if-no-files-found: error
+          retention-days: 7
 
   # spike-acceptance runs the real SPK-01..SPK-14 registry through the
   # standalone agentkit-spike binary (docs/spikes/01-go-core-spike-plan.md
