@@ -38,31 +38,20 @@ func notYetProven(id SPKID, detail string) ScenarioFunc {
 }
 
 // DefaultScenarios is the production SPK-01..SPK-14 registration list.
-// Twelve of the fourteen SPKs run a real Arrange/Act/Assert scenario against
-// this codebase's real adapters (docs/design/02-v0-spike-verdict.md
-// V0-10A/V0-10B); they are not wrappers around `go test`'s exit code — each
-// one performs its own arrange/act/assert and writes its own evidence. Two
-// are deliberately left as notYetProven, each for a reason specific to that
-// SPK, not "no dedicated task":
-//
-//   - SPK-03: the interrupted execution_attempts row is left at RUNNING
-//     instead of transitioning to LOST/INDETERMINATE (see
-//     internal/adapters/sqlite/crash_resume_checkpoint_integration_test.go's
-//     own "Known limitation" doc comment, confirmed against
-//     TerminateInterruptedAttempt/ClassifyInterruptedAttempt: both exist,
-//     but no crash-flow integration test calls them). Closing this is its
-//     own task (V0-10C), deliberately not bundled into V0-10A/V0-10B's
-//     wiring work.
-//   - SPK-13: a single platform run cannot conclude Windows/Linux parity by
-//     itself. This registry's own result is intentionally
-//     "PENDING_PEER_PLATFORM"; the authoritative SPK-13 result comes from
-//     the cross-platform semantic-diff job (V0-11), never from a
-//     single-platform notYetProven-style guess.
+// Thirteen of the fourteen SPKs run a real Arrange/Act/Assert scenario
+// against this codebase's real adapters (docs/design/02-v0-spike-verdict.md
+// V0-10A/V0-10B/V0-10C); they are not wrappers around `go test`'s exit code
+// — each one performs its own arrange/act/assert and writes its own
+// evidence. Only SPK-13 is left as notYetProven: a single platform run
+// cannot conclude Windows/Linux parity by itself. This registry's own
+// result is intentionally "PENDING_PEER_PLATFORM"; the authoritative SPK-13
+// result comes from the cross-platform semantic-diff job (V0-11), never
+// from a single-platform notYetProven-style guess.
 func DefaultScenarios() []ScenarioEntry {
 	return []ScenarioEntry{
 		{SPK01, runSPK01Scenario},
 		{SPK02, runSPK02Scenario},
-		{SPK03, notYetProven(SPK03, "interrupted execution_attempts row is left at RUNNING instead of transitioning to LOST/INDETERMINATE after a hard crash (see crash_resume_checkpoint_integration_test.go's own doc comment); TerminateInterruptedAttempt/ClassifyInterruptedAttempt exist but no crash-flow integration test calls them yet — closing this is its own task (V0-10C), run before V0-11/V0-12 are declared closed")},
+		{SPK03, runSPK03Scenario},
 		{SPK04, runSPK04Scenario},
 		{SPK05, runSPK05Scenario},
 		{SPK06, runSPK06Scenario},

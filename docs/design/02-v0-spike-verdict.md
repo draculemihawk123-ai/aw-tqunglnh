@@ -228,6 +228,16 @@
 - **Hoàn thành khi:** local assessment đạt 13/14, chỉ còn SPK-13 `PENDING_PEER_PLATFORM` — mọi SPK khác
   đã `Passed: true` thật, không còn `notYetProven` nào ngoài SPK-13.
 
+> **Kết quả:** triển khai gộp bốn primitive trên vào một hàm điều phối duy nhất,
+> `worker.ReconcileInterruptedAttempt` (`internal/app/worker/interruption.go`) — không phải primitive
+> mới, chỉ nối `ClassifyInterruptedAttempt` → `TerminateInterruptedAttempt` → (nếu `INDETERMINATE`)
+> `ReconcileMutatingAttempt` → (nếu không sạch) `QuarantineRepositoryWorkspace` thành một flow tái dùng
+> được cho worker thay thế thật. `crash_resume_checkpoint_integration_test.go` và scenario SPK-03 mới
+> (`internal/spikeacceptance/spk03_scenario.go`, tái dùng `cmd/spike-worker` chế độ
+> `checkpoint-then-hang`) đều gọi hàm này và xác nhận attempt bị gián đoạn chuyển `RUNNING@1` →
+> `LOST@2`. Xác minh qua binary `agentkit-spike acceptance --full --assessment` thật: 13/14 SPK pass,
+> chỉ còn SPK-13 `PENDING_PEER_PLATFORM`.
+
 ## V0-11 — Chạy full offline suite trên Windows và Ubuntu CI
 
 - **Mục tiêu:** SPK-01…14 thực thi thật trên cả hai OS.

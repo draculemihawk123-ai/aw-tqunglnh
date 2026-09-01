@@ -28,21 +28,19 @@ const (
 	crashCheckpointReplacementAttempt      = CrashCheckpointReplacementAttempt
 )
 
-// TestSPK03HardCrashJoinsCheckpointContextRecovery joins the two pieces that
-// were previously proven separately: a genuinely killed worker OS process
-// (see crash_resume_integration_test.go) and checkpoint/context recovery
-// (see checkpoint_store_test.go). The worker child spawns a real fake
-// provider grandchild process, persists a Checkpoint+ContextSnapshot only
-// after it hears back from that process, then is hard-killed with no
-// graceful shutdown. A replacement worker recovers purely from SQLite,
-// always calling AgentExecutor.Start (never Resume), from a new attempt id.
-//
-// Known limitation (V0-02 scope, see docs/design/02-v0-spike-verdict.md):
-// this does not transition the interrupted execution_attempts row to
-// LOST/INDETERMINATE — no store or domain function does that anywhere in
-// the codebase yet, and it is not one of V0-02's listed steps. The row is
-// left at state='RUNNING' after the crash; only the replacement attempt id
-// and the exactly-once terminal transition are asserted.
+// TestSPK03HardCrashJoinsCheckpointContextRecovery joins the three pieces
+// that were previously proven separately: a genuinely killed worker OS
+// process (see crash_resume_integration_test.go), checkpoint/context
+// recovery (see checkpoint_store_test.go), and interrupted-attempt recovery
+// (worker.ReconcileInterruptedAttempt, docs/design/02-v0-spike-verdict.md
+// V0-10C). The worker child spawns a real fake provider grandchild process,
+// persists a Checkpoint+ContextSnapshot only after it hears back from that
+// process, then is hard-killed with no graceful shutdown. A replacement
+// worker recovers purely from SQLite: it terminates the interrupted attempt
+// out of RUNNING (this fixture never acquires a WriteLease, so it always
+// classifies read-only -> LOST) and starts a distinct execution attempt from
+// the checkpoint's canonical ContextSnapshot, always calling
+// AgentExecutor.Start (never Resume).
 func TestSPK03HardCrashJoinsCheckpointContextRecovery(t *testing.T) {
 	if os.Getenv(crashCheckpointProviderModeEnvironment) == "1" {
 		runCrashCheckpointFakeProviderProcess(t)
@@ -162,6 +160,29 @@ func TestSPK03HardCrashJoinsCheckpointContextRecovery(t *testing.T) {
 	}
 	if crashCheckpointReplacementAttempt == persistedCheckpoint.AttemptID {
 		t.Fatalf("replacement attempt id %s must differ from the interrupted attempt id", crashCheckpointReplacementAttempt)
+	}
+
+	// The interrupted attempt must never be left stranded at RUNNING: this
+	// fixture's crashed worker never acquires a WriteLease, so recovery must
+	// classify it read-only and terminate it LOST — never inferring anything
+	// from the killed process's own (unobserved) exit code.
+	recovery, err := worker.ReconcileInterruptedAttempt(ctx, restarted, restarted, worker.InterruptedAttemptRecoveryRequest{
+		AttemptID: crashCheckpointInterruptedAttempt, ExpectedAttemptVersion: 1,
+		TerminationEventID: "event-crash-ckpt-terminate", CorrelationID: "crash-resume-checkpoint",
+		OccurredAt: time.Date(2026, 8, 28, 12, 0, 2, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("ReconcileInterruptedAttempt() error = %v", err)
+	}
+	if recovery.NextState != runtime.ExecutionAttemptLost || recovery.Reason != runtime.TerminationReasonProcessExitBeforeOutcomeCommit {
+		t.Fatalf("interrupted attempt recovery = %+v, want LOST/PROCESS_EXIT_BEFORE_OUTCOME_COMMIT", recovery)
+	}
+	attemptState, attemptVersion, err := restarted.LoadExecutionAttemptState(ctx, crashCheckpointInterruptedAttempt)
+	if err != nil {
+		t.Fatalf("load interrupted attempt state after recovery: %v", err)
+	}
+	if attemptState != runtime.ExecutionAttemptLost || attemptVersion != 2 {
+		t.Fatalf("interrupted attempt after recovery = %s@%d, want LOST@2", attemptState, attemptVersion)
 	}
 
 	assertExactlyOneTerminalWorkflowTransition(t, ctx, restarted, run.ID, replacementLease)
