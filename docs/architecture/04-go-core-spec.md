@@ -1112,7 +1112,10 @@ GC-ACC-12 (chạy qua fake/Claude/Codex adapter) chỉ cần hai provider CLI đ
 phải một persistence adapter thứ hai như AK-ARCH-019. `GC-DS-*` tuy gắn nhãn version lộ trình (V1, V2,
 V4, V5, V6) nhưng toàn bộ nằm trong phạm vi **Alpha** theo tiêu đề §22.1; nhãn version chỉ nói *khi nào*
 trong V1..V8, không nói *có thuộc alpha hay không*. Vì vậy danh sách ngoại lệ của mục này là danh sách
-đóng và hiện **rỗng**.
+đóng và hiện rỗng:
+
+| Criterion | Nhãn | Phần Alpha vẫn phải làm |
+|---|---|---|
 
 Nhãn `NOT_APPLICABLE` chỉ hợp lệ kèm authority reason. V8 không được phân loại lại criteria và không
 được dùng `deferred` cho một `ALPHA_MUST`.

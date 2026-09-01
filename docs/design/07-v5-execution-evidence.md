@@ -16,7 +16,7 @@
   và audit metadata không nhận blanket TTL.
 - **Verify:** attach/restart/orphan/tamper/retention tests.
 - **Hoàn thành khi:** evidence bắt buộc không commit trước artifact durable/hash verified.
-- **Nguồn:** AK-ARCH-021, GC-INV-20.
+- **Nguồn:** AK-ARCH-021, GC-INV-20, HE-10-M07.
 
 ## V5-02 — Conversation và Message authority
 
@@ -26,7 +26,7 @@
   append/list commands; verified-before-attach, size/media/redaction policy.
 - **Verify:** ordering/idempotency/attempt linkage/secret tests.
 - **Hoàn thành khi:** provider transcript không phải canonical message store.
-- **Nguồn:** HE-05-M07.
+- **Nguồn:** HE-05-M07, HE-02-M05.
 
 ## V5-03 — Resource registry và ContextAssembler
 
@@ -35,7 +35,7 @@
 - **Thực hiện:** applicability, conflict detection, relevance order, reserved budget, exact provenance/reason.
 - **Verify:** component/task/block/risk selector matrix, conflict và deterministic manifest tests.
 - **Hoàn thành khi:** resolver không last-wins hard constraint và không nạp mọi resource mặc định.
-- **Nguồn:** HE-04-M05, HE-04-S03.
+- **Nguồn:** HE-04-M05, HE-04-S03, HE-13-M08.
 
 ## V5-04 — Persist ContextSnapshot trước dispatch
 
@@ -44,7 +44,7 @@
 - **Thực hiện:** snapshot schema/repository, canonical hash, attempt binding, dispatch precondition.
 - **Verify:** tamper/mismatch/restart/missing resource tests.
 - **Hoàn thành khi:** provider không start nếu snapshot chưa durable.
-- **Nguồn:** HE-04-M06, GC-INV-08.
+- **Nguồn:** HE-04-M06, GC-INV-08, HE-02-M01, HE-03-M02, HE-05-M04.
 
 ## V5-05 — Production ProcessSupervisor hardening
 
@@ -60,7 +60,7 @@
 - **Hoàn thành khi:** không có shell string hoặc inherited environment mặc định; không có đường code nào
   auto-downgrade `ENFORCED_ISOLATED` xuống `OPERATOR_TRUSTED_LOCAL`, và profile không cưỡng chế được trả
   `ISOLATION_ENFORCEMENT_UNAVAILABLE` **trước** `ProcessSupervisor.Start`.
-- **Nguồn:** ADR-013, ADR-023.
+- **Nguồn:** ADR-013, ADR-023, HE-02-M03, GC-INV-30, GC-DS-09.
 
 ## V5-06 — Claude adapter production contract
 
@@ -70,7 +70,7 @@
   Start/event/result/cancel, malformed JSONL fail-closed, ProviderSessionRef diagnostic-only.
 - **Verify:** recorded/offline contract suite và fake child process.
 - **Hoàn thành khi:** adapter không import app orchestrator/persistence và raw metadata không route state.
-- **Nguồn:** GC-INV-23.
+- **Nguồn:** GC-INV-23, HE-05-M01.
 
 ## V5-07 — Codex adapter production contract
 
@@ -80,7 +80,7 @@
   Start/event/result/cancel, normalized differences allowlist.
 - **Verify:** chạy nguyên suite V5-06 và semantic event diff.
 - **Hoàn thành khi:** thêm Codex không tạo provider branch trong domain/app.
-- **Nguồn:** AK-ARCH-016, GC-ACC-12.
+- **Nguồn:** AK-ARCH-016, GC-ACC-12, HE-11-M08.
 
 ## V5-08 — AGENT admission và execution envelope
 
@@ -98,7 +98,7 @@
 - **Hoàn thành khi:** không request nào tới được ProcessSupervisor nếu thiếu một pin/grant bắt buộc,
   admission blocker không bị ghi nhầm thành `FAILED`, và mọi reason đều thuộc ma trận state–reason ở Go
   core spec §4.5.
-- **Nguồn:** ADR-012, ADR-013, ADR-022, ADR-023, AK-ARCH-020A.
+- **Nguồn:** ADR-012, ADR-013, ADR-022, ADR-023, AK-ARCH-020A, GC-INV-24, GC-DS-03, HE-02-M02.
 
 ## V5-08A — AgentEvent contract, checkpoint batching và diff capture
 
@@ -110,7 +110,7 @@
 - **Verify:** event ordering/duplicate/oversized payload, checkpoint restart, diff vượt scope, secret
   fixture search bằng 0.
 - **Hoàn thành khi:** raw provider metadata không route state và mọi event emit đều qua registry.
-- **Nguồn:** ADR-005, ADR-017.
+- **Nguồn:** ADR-005, ADR-017, HE-01-M03.
 
 ## V5-08B — Fenced finalize cho AGENT node
 
@@ -121,7 +121,7 @@
 - **Verify:** success/fail/lease loss/scope violation/provider loss E2E; assert Resume call count bằng 0
   và stale token không commit được.
 - **Hoàn thành khi:** exit code 0 không tự tạo node success và stale finalize bị từ chối.
-- **Nguồn:** ADR-005, ADR-011, AK-ARCH-009.
+- **Nguồn:** ADR-005, ADR-011, AK-ARCH-009, GC-INV-18.
 
 ## V5-08C — Cancellation execution path
 
@@ -136,7 +136,7 @@
   release sớm. COMMAND node dùng lại chính đường này và được verify ở V5-09.
 - **Hoàn thành khi:** Run tới `CANCELLED` chỉ sau quiesce thật, và không có side effect nào bị tuyên bố
   sai trạng thái.
-- **Nguồn:** ADR-020.
+- **Nguồn:** ADR-020, GC-DS-06.
 
 ## V5-08D — RetryBlockedActivation handler
 
@@ -153,7 +153,7 @@
   không đường nào repin Run sang build khác.
 - **Hoàn thành khi:** mọi reason trong nhóm admission blocker đều có đường thoát hoặc một valid action
   thay thế tường minh.
-- **Nguồn:** ADR-020, ADR-022.
+- **Nguồn:** ADR-020, ADR-022, GC-INV-34.
 
 ## V5-09 — Command executor và COMMAND handler
 
@@ -165,7 +165,7 @@
 - **Verify:** injection, forbidden env/path/network-shaped policy, nonzero/timeout/lease-loss tests; và
   cancel giữa một mutating command dùng đúng đường V5-08C, không có đường terminate riêng.
 - **Hoàn thành khi:** resource script không chạy nếu thiếu exact CommandVersion/policy grant.
-- **Nguồn:** AK-ARCH-017.
+- **Nguồn:** AK-ARCH-017, AK-ARCH-014, HE-07-M04.
 
 ## V5-10 — Gate runner và criteria-level Evidence
 
@@ -176,7 +176,7 @@
   nằm ngoài source workspace.
 - **Verify:** exit mapping, missing output, stale revision, N/A policy và tamper tests.
 - **Hoàn thành khi:** error/missing evidence không thể PASS.
-- **Nguồn:** GC-INV-13, GC-INV-25, HE-09-M03.
+- **Nguồn:** GC-INV-13, GC-INV-25, HE-09-M03, AK-ARCH-015, HE-08-M04, HE-09-M05, HE-11-M06.
 
 ## V5-10A — ReleaseSet và typed local Git operation
 
@@ -189,7 +189,7 @@
 - **Verify:** partial result, stale revision, duplicate seal, cleanup eligibility, local commit và spy
   adapter chứng minh remote mutation call count bằng 0.
 - **Hoàn thành khi:** ReleaseSet sealed/abandoned là input có provenance cho completion và cleanup.
-- **Nguồn:** AK-ARCH-015C.
+- **Nguồn:** AK-ARCH-015C, GC-DS-04.
 
 ## V5-11 — CompletionPolicy service
 
@@ -211,7 +211,7 @@
   và transition.
 - **Hoàn thành khi:** chỉ service có command path chuyển cả Run SUCCEEDED và WorkItem DONE, và không
   outcome nào rời `VERIFYING` mà thiếu DecisionArtifact.
-- **Nguồn:** ADR-011, ADR-021, AK-ARCH-005A.
+- **Nguồn:** ADR-011, ADR-021, AK-ARCH-005A, GC-INV-21, GC-INV-29, GC-DS-01, GC-DS-07, HE-02-M06, HE-09-M02, HE-09-M06, HE-13-M02, HE-14-M10.
 
 ## V5-12 — Maker/checker isolation
 
@@ -222,7 +222,7 @@
 - **Verify:** snapshot manifest asserts forbidden maker resources absent; write source/local commit bị
   policy/fence từ chối.
 - **Hoàn thành khi:** same provider/model vẫn có independent attempt/context identity.
-- **Nguồn:** HE-09-M04, HE-05-M06.
+- **Nguồn:** HE-09-M04, HE-05-M06, HE-14-M08.
 
 ## V5-13 — Checkpoint/handoff và recovery integration
 
@@ -232,7 +232,7 @@
   fresh context rebuild, no-progress/budget escalation.
 - **Verify:** six fault boundaries với agent/command/gate fixtures.
 - **Hoàn thành khi:** session mới không cần raw transcript hoặc cwd cũ.
-- **Nguồn:** HE-05-M03, HE-13-M05.
+- **Nguồn:** HE-05-M03, HE-13-M05, AK-ARCH-010, HE-12-M02, HE-12-M06.
 
 ## V5-14 — Cleanup/retention sweeper
 
@@ -245,7 +245,7 @@
 - **Verify:** run twice, active hold/reference, canonical message/context, unknown file và 7-day raw
   artifact boundary tests.
 - **Hoàn thành khi:** cleanup không xóa material cần recovery/evidence/audit.
-- **Nguồn:** AK-ARCH-025B, HE-12-M05.
+- **Nguồn:** AK-ARCH-025B, HE-12-M05, HE-12-M04.
 
 ## V5-15 — Execution/evidence acceptance gate
 
@@ -256,4 +256,4 @@
   unavailable, cancel giữa mutating attempt và artifact tamper.
 - **Verify:** full/race/Windows/Linux offline; optional manual live smoke ghi `UNVERIFIED_LIVE` nếu chưa chạy.
 - **Hoàn thành khi:** trace WorkItem→revision/evidence đầy đủ và false completion bằng 0 trong fixtures.
-- **Nguồn:** AK-ARCH-005, GC-ACC-14.
+- **Nguồn:** AK-ARCH-005, GC-ACC-14, HE-10-M02, HE-10-M03.

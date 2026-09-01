@@ -14,7 +14,7 @@
 - **Thực hiện:** kind-safe IDs/status/version metadata, project/global scope, create/archive rules.
 - **Verify:** domain transition tests; không có update/delete public trên Version.
 - **Hoàn thành khi:** các kind reuse lifecycle behavior nhưng vẫn có payload type riêng.
-- **Nguồn:** AK-ARCH-001.
+- **Nguồn:** AK-ARCH-001, HE-14-M01.
 
 ## V2-02 — Definition schema migrations
 
@@ -64,7 +64,7 @@
   owner/lastVerified, pack graph resolution; hard-constraint conflict fail closed.
 - **Verify:** selector/dependency/cycle/conflict/golden manifest tests.
 - **Hoàn thành khi:** install/resolve không tạo command, gate hay permission grant.
-- **Nguồn:** HE-04-M02, HE-04-M04.
+- **Nguồn:** HE-04-M02, HE-04-M04, HE-03-M06, HE-04-M03.
 
 ## V2-07 — Agent Profile và Policy versions
 
@@ -91,7 +91,7 @@
   registry không lộ ra như một DefinitionKind.
 - **Hoàn thành khi:** build khác exact pin bị reject, version đã publish không sửa được, và run đang
   chạy không bị repin khi build mới được đăng ký.
-- **Nguồn:** ADR-012, ADR-022, AK-ARCH-020A.
+- **Nguồn:** ADR-012, ADR-022, AK-ARCH-020A, HE-02-M07.
 
 ## V2-07B — Operator surface cho adapter build
 
@@ -119,7 +119,7 @@
   khẳng định không có lời gọi filesystem/process nào nằm trong transaction đăng ký.
 - **Hoàn thành khi:** kịch bản “nâng cấp Claude CLI rồi chạy lại workflow” hoàn tất được bằng CLI, không
   cần sửa SQLite thủ công.
-- **Nguồn:** ADR-022.
+- **Nguồn:** ADR-022, GC-DS-08.
 
 ## V2-08 — Workflow graph schema đầy đủ Alpha
 
@@ -170,4 +170,4 @@
 - **Verify:** full test/vet, Windows/Linux canonical diff, architecture import check.
 - **Hoàn thành khi:** V1 snapshot không đổi; dependency/adapter drift và invalid executable authority
   đều bị reject.
-- **Nguồn:** AK-ARCH-002.
+- **Nguồn:** AK-ARCH-002, GC-INV-07.

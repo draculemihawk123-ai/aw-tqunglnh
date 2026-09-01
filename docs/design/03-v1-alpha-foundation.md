@@ -96,7 +96,7 @@
   worker ID/concurrency và provider executable; config dump luôn redact secret/reference.
 - **Verify:** table tests precedence, invalid combination, secret redaction.
 - **Hoàn thành khi:** startup fail-fast với WHAT/WHY/FIX và correlation ID.
-- **Nguồn:** HE-06-M04, HE-09-M08.
+- **Nguồn:** HE-06-M04, HE-09-M08, HE-10-M06.
 
 ## V1-04 — Chuyển migration thành numbered SQL assets
 
@@ -137,7 +137,7 @@
   V1-04A, không nhận SQL/pragma.
 - **Verify:** fake UoW handler tests và architecture import test.
 - **Hoàn thành khi:** app service có thể test không SQLite và không tồn tại Store tổng hợp public.
-- **Nguồn:** ROADMAP-§7.
+- **Nguồn:** ROADMAP-§7, HE-03-M01, HE-03-M07, HE-08-M02.
 
 ## V1-06 — Command envelope, idempotency và expected version
 
@@ -163,7 +163,7 @@
   dispatcher cursor; payload size/redaction limits.
 - **Verify:** crash after commit before dispatch, duplicate delivery và sequence conflict tests.
 - **Hoàn thành khi:** delivery lặp không tạo hai logical effects.
-- **Nguồn:** ADR-008, ADR-015.
+- **Nguồn:** ADR-008, ADR-015, GC-INV-16.
 
 ## V1-07A — Registry schema của domain event
 
@@ -177,7 +177,7 @@
 - **Verify:** emit unregistered type/version bị reject; decode golden fixture của mọi version đã đăng ký;
   test fail khi decoder đang được fixture tham chiếu bị xóa.
 - **Hoàn thành khi:** CI chặn được thay đổi payload phá replay, thay vì phát hiện lúc rebuild ở V6-09.
-- **Nguồn:** ADR-008, ADR-015, AK-ARCH-022.
+- **Nguồn:** ADR-008, ADR-015, AK-ARCH-022, GC-DS-11.
 
 ## V1-08 — Filesystem ArtifactStore production port
 
