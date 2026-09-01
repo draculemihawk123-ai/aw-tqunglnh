@@ -385,8 +385,11 @@ func startAndHardKillCrashWorker(
 		t.Fatalf("resolve current test executable: %v", err)
 	}
 	testName := "^TestCrashRestartReclaimsLeasedJobAndPreservesPinnedWorkflow$"
-	if mode == "finalize-and-hang" {
+	switch mode {
+	case "finalize-and-hang":
 		testName = "^TestCrashAfterAtomicFinalizationDoesNotDuplicateTerminalState$"
+	case "checkpoint-then-hang":
+		testName = "^TestSPK03HardCrashJoinsCheckpointContextRecovery$"
 	}
 	command := exec.Command(
 		executable,
