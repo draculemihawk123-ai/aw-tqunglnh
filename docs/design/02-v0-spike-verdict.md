@@ -276,6 +276,14 @@
   thường), và không có lỗi rò ra ngoài adapter dưới dạng khác `ErrWriteLeaseConflict`/`ErrJobLeaseLost`
   đã định nghĩa.
 
+> **Đạt.** CI run thật
+> [33506869479](https://github.com/taQuangLing/agent-workflow/actions/runs/33506869479):
+> `contract (windows-latest)` xanh trong 3m59s bao gồm bước stress. 20 lần
+> `TestWriteLeaseRaceHasOneWinnerForSameRepository` (2000 iteration race) = 34.0s tổng, không lần nào
+> SQLITE_BUSY. 5 lần `TestDefaultScenariosFormAValidRegistryAndCleanRun` = 101.2s tổng, không lần nào
+> fail. Cả hai đều xa dưới timeout đã đặt (120s/300s) — thời gian chờ bounded thật, không phải "may mắn
+> né được" trong 1 lần chạy.
+
 ## V0-11 — Chạy full offline suite trên Windows và Ubuntu CI
 
 - **Mục tiêu:** SPK-01…14 thực thi thật trên cả hai OS.
@@ -286,8 +294,9 @@
 - **Thực hiện:** build helper/provider binaries; chạy `acceptance --full --assessment` trên cả hai OS;
   verify bundle; upload platform manifests với `if: always()`; job thứ ba (Ubuntu, phụ thuộc cả hai
   matrix job) tải hai manifest rồi chạy `semantic-diff` để sinh SPK-13 result authoritative.
-- **Verify:** hai matrix jobs xanh từ clean checkout.
-- **Hoàn thành khi:** SPK-13 pass và report liên kết được CI run/evidence ID.
+- **Verify:** hai matrix jobs xanh từ clean checkout. **Đạt** — xem cập nhật cuối mục này.
+- **Hoàn thành khi:** SPK-13 pass và report liên kết được CI run/evidence ID. **Đạt** — xem cập nhật
+  cuối mục này.
 
 > **Trạng thái hiện tại: draft đã push, chờ CI thật xác nhận, chưa đóng.** `.github/workflows/spike-gate.yml`
 > đã cập nhật để khớp phạm vi trên: job `spike-acceptance` (matrix windows-latest/ubuntu-latest,
@@ -321,8 +330,29 @@
 > trong `TestWriteLeaseRaceHasOneWinnerForSameRepository` và SPK-08 — lỗi chưa từng tái hiện cục bộ, chỉ
 > lộ ra trên runner Windows thật của GitHub. Đã tách thành task riêng **V0-11A** (xem mục ngay trên),
 > chẩn đoán root cause cụ thể và sửa (`_txlock=immediate`), thêm bước stress thật (20x race test + 5x
-> registry test) trên chính `contract (windows-latest)`. V0-11 **BLOCKED** chờ V0-11A xác nhận xanh
-> nhiều lần liên tiếp trên CI thật trước khi coi "hai matrix jobs xanh" là đạt.
+> registry test) trên chính `contract (windows-latest)`.
+>
+> **V0-11A đóng, V0-11 đạt "hai matrix jobs xanh" thật:** CI run
+> [33506869479](https://github.com/taQuangLing/agent-workflow/actions/runs/33506869479) (nhánh
+> `ci/v0-11-draft`, PR taQuangLing/agent-workflow#1) — cả 6 job đều xanh: `contract` (Windows 3m59s bao
+> gồm bước stress, Ubuntu 37s), `spike acceptance` (Windows 1m22s, Ubuntu 36s), `Linux race and
+> stability` (3m22s), `cross-platform semantic diff` (21s). Bước stress V0-11A trên chính
+> `contract (windows-latest)`: 20 lần race test = 34.0s tổng (100 iteration × 20 lần chạy, không lần nào
+> SQLITE_BUSY, không block bất thường), 5 lần full registry test = 101.2s tổng — cả hai đều xa dưới
+> timeout, chứng minh thời gian chờ bounded và lỗi không rò khỏi adapter đúng tiêu chí "Hoàn thành khi"
+> của V0-11A.
+>
+> `semantic-diff` chạy trên hai manifest thật (Windows runner thật vs Ubuntu runner thật, không phải mô
+> phỏng cục bộ): `SPK-13 authoritative passed=true (0 unexplained difference(s) across 13 SPK(s), left=
+> full-20260901t122228.133407700z/windows right=full-20260901t122157.335508398z/linux)`. Bundle SPK-13
+> đã seal+verify, upload thành artifact `spk13-authoritative-result` (artifact ID 9800147596). Kết hợp
+> với V0-10C (local assessment 13/14, chỉ SPK-13 PENDING_PEER_PLATFORM per-platform), CI thật này là
+> nguồn duy nhất kết luận SPK-13 — và đã pass thật.
+>
+> **Vẫn giữ đúng ranh giới đã thống nhất:** đây là "hai matrix jobs xanh" theo nghĩa harness/evidence
+> hoàn chỉnh + SPK-13 cross-platform pass thật, **không** phải tuyên bố `GO` (chỉ V0-14 kết luận GO) và
+> không đồng nghĩa toàn bộ nhánh `docs/alpha-design-adr-020-025` đã sẵn sàng merge vào `master` — PR #1
+> chỉ nhắm vào nhánh feature đó để kiểm chứng CI, chưa phải quyết định merge.
 
 > Làm rõ theo quyết định product owner (cùng lúc thêm V0-10A): "hai matrix jobs xanh" nghĩa là clean
 > checkout/build/test pass, full-suite dispatcher chạy đủ 14 handler, manifest hợp lệ, evidence bundle
