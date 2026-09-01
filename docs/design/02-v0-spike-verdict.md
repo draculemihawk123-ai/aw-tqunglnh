@@ -521,6 +521,22 @@
 - **Hoàn thành khi:** assessment matrix đầy đủ; chỉ verdict `GO` mới đổi V1 thành allowed, mọi verdict
   khác ghi blocker và next narrow task.
 
+> **Đạt — verdict `GO`.** Đối chiếu Definition of done (`docs/00-start-here.md` mục 7) với toàn bộ
+> evidence tích luỹ từ V0-07…V0-13, tất cả trên CI run
+> [33525614475](https://github.com/taQuangLing/agent-workflow/actions/runs/33525614475) (commit
+> `d7be9fa`, dùng HEAD hiện tại của PR #1, cả 6 job xanh): SPK-01…14 pass thật Windows+Linux (13 trực
+> tiếp mỗi platform, SPK-13 qua `semantic-diff` cross-platform authoritative `passed=true`); evidence
+> verify được (`agentkit-spike evidence verify` PASS, bundle SPK-13 sealed+verified); 10/10 suite runs
+> không flaky **đúng semantics** (mỗi lần có bằng chứng tường minh "13 Passed:true + 1
+> PENDING_PEER_PLATFORM", không suy từ exit code — gap này tự phát hiện khi soát lại cho task này, đã
+> sửa và chạy lại nguyên chuỗi trước khi ghi verdict, xem V0-12); `-race` PASS trên CI (82s).
+>
+> Đã viết verdict `GO` vào `docs/spikes/02-go-core-spike-report.md` (rewrite đầy đủ: kết luận, ma trận
+> 14 SPK không còn PARTIAL, evidence ID cụ thể, 10 finding gồm cả finding mới từ V0-11A/V0-12) và
+> `docs/00-start-here.md` (mục 4 `GO`, mục 5 `ĐƯỢC PHÉP BẮT ĐẦU`, mục 6 lệnh chạy `--full`/`--assessment`
+> thật thay vì `--offline`, mục 7 xác nhận đã ghi `GO`). Không sửa ADR nào. `docs/00-start-here.md` và
+> spike report đồng bộ, không còn claim mâu thuẫn (đã soát lại toàn bộ hai file).
+
 ## Exit evidence V0
 
 - Full SPK result manifests Windows/Linux.
