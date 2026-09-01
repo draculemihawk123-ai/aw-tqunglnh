@@ -406,6 +406,15 @@ func TestProviderHelperProcess(t *testing.T) {
 		_, _ = fmt.Fprintln(os.Stdout, `{"type":`)
 		os.Exit(0)
 	}
+	if mode == "invalid-session" && isResumeInvocation(provider, providerArguments) {
+		// A real CLI whose session expired server-side still runs to
+		// completion and reports a failed turn — it does not crash. Exit 0
+		// here on purpose: SPK-12 is about the orchestrator never calling
+		// Resume in the first place, not about surviving a process crash.
+		writeProviderFailedTurn(provider)
+		_ = os.Stdout.Sync()
+		os.Exit(0)
+	}
 	writeProviderStarted(provider)
 	if mode == "cancel" {
 		_ = os.Stdout.Sync()
@@ -415,6 +424,44 @@ func TestProviderHelperProcess(t *testing.T) {
 	writeProviderSuccess(provider)
 	_ = os.Stdout.Sync()
 	os.Exit(0)
+}
+
+// isResumeInvocation inspects the provider argv (after the "--" separator)
+// for the same resume-shaped flags contract_test.go's own assertResumeArgs
+// checks for, so the invalid-session mode can fail only resume attempts and
+// leave Start attempts on the same fake CLI succeeding normally.
+func isResumeInvocation(provider string, arguments []string) bool {
+	switch provider {
+	case "claude":
+		for _, argument := range arguments {
+			if argument == "--resume" {
+				return true
+			}
+		}
+		return false
+	case "codex":
+		return len(arguments) >= 2 && arguments[0] == "exec" && arguments[1] == "resume"
+	default:
+		return false
+	}
+}
+
+// writeProviderFailedTurn emits a well-formed but failed terminal event for
+// each provider's real wire protocol: Codex's "turn.failed" after
+// thread.started, Claude's is_error result after system init. Both
+// normalizers map this to AgentExecutionFailed/"provider_failure" — see
+// codex.go and claude.go's finalStatus.
+func writeProviderFailedTurn(provider string) {
+	switch provider {
+	case "codex":
+		_, _ = fmt.Fprintln(os.Stdout, `{"type":"thread.started","thread_id":"codex-session-0001"}`)
+		_, _ = fmt.Fprintln(os.Stdout, `{"type":"turn.failed"}`)
+	case "claude":
+		_, _ = fmt.Fprintln(os.Stdout, `{"type":"system","subtype":"init","session_id":"claude-session-0001"}`)
+		_, _ = fmt.Fprintln(os.Stdout, `{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"claude-session-0001","usage":{"input_tokens":1,"output_tokens":1}}`)
+	default:
+		os.Exit(4)
+	}
 }
 
 func writeProviderStarted(provider string) {
