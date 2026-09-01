@@ -1,0 +1,7 @@
+# SQL migration files must be byte-identical on every checkout platform:
+# their SHA256 checksum is load-bearing (docs/design/03-v1-alpha-foundation.md
+# V1-04's tamper detection — internal/adapters/sqlite/migrations.go computes
+# it from the embedded file bytes). Line-ending normalization on checkout
+# would silently change that checksum per-platform, so it must never apply
+# here regardless of a contributor's or CI runner's core.autocrlf setting.
+*.sql text eol=lf
