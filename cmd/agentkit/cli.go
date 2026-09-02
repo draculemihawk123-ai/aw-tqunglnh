@@ -37,7 +37,7 @@ Commands:
   serve       start the local API/control-plane server
   worker      start an embedded worker process
   doctor      run readiness/capability diagnostics
-  definition  validate/publish/inspect definitions
+  definition  create/validate/publish/list/show/diff definitions
   evidence    inspect and verify evidence bundles
   adapter     probe/register/list/show adapter builds
 
@@ -99,7 +99,7 @@ var subcommands = map[string]func(arguments []string, stdout io.Writer) error{
 	"serve":      stub("serve"),
 	"worker":     stub("worker"),
 	"doctor":     stub("doctor"),
-	"definition": stub("definition"),
+	"definition": runDefinition,
 	"evidence":   runEvidence,
 	"adapter":    runAdapter,
 }

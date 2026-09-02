@@ -53,7 +53,7 @@ func TestRun_UnknownCommand(t *testing.T) {
 }
 
 func TestRun_StubCommandsReportNotYetImplemented(t *testing.T) {
-	for _, name := range []string{"serve", "worker", "doctor", "definition"} {
+	for _, name := range []string{"serve", "worker", "doctor"} {
 		var stdout, stderr bytes.Buffer
 		code := run([]string{name}, &stdout, &stderr)
 		if code != exitFailure {

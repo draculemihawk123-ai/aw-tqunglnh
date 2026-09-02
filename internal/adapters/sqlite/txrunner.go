@@ -45,6 +45,30 @@ func (s *Store) runTx(ctx context.Context, fn func(*sql.Tx) error) error {
 			return nil
 		}
 		if !isSQLiteBusy(err) || attempt == maxBusyRetryAttempts-1 {
+			// fn's own error propagates completely unchanged -- this
+			// function's own doc comment already promises this ("fn's own
+			// returned error ... passes through MapSQLiteError unchanged
+			// in shape"), but until this fix the code beneath actually
+			// routed it through MapSQLiteError's generic "sqlite:
+			// unexpected error" summarization like every other error here,
+			// silently discarding any domain/business-logic error's own
+			// clean, specific message (e.g. authoring.Diagnostics' WHAT/
+			// WHY/FIX text, or workflowcompiler.ResolutionError's own
+			// unresolved-pin explanation) the moment it was raised from
+			// inside a WithReadOnly/WithSerializedWrite closure — a real
+			// caller-facing regression exactly V2-11's own "safe
+			// diagnostics" bar depends on not happening, and an
+			// inconsistency with internal/app/ports/fake.UnitOfWork, whose
+			// WithReadOnly/WithSerializedWrite never wraps fn's error at
+			// all, so the exact same domain error already read cleanly
+			// through every fake-backed test that exercised it. Only an
+			// error runTxOnce/runTx itself generates (BeginTx failure,
+			// Commit failure, or the sentinel string below) is a genuine
+			// driver-level condition MapSQLiteError exists to sanitize.
+			var fe *fnError
+			if errors.As(err, &fe) {
+				return fe.err
+			}
 			return MapSQLiteError(err)
 		}
 		delay := time.Duration(1<<attempt) * time.Millisecond
@@ -61,6 +85,17 @@ func (s *Store) runTx(ctx context.Context, fn func(*sql.Tx) error) error {
 	return errors.New("unreachable transaction retry state")
 }
 
+// fnError marks an error runTxOnce received from the caller's own fn, so
+// runTx can tell it apart from an error runTxOnce/runTx generated itself
+// (BeginTx, Commit) while still letting isSQLiteBusy see straight through
+// to the original message (Error()/Unwrap() both delegate) for the
+// busy-retry check above, which must keep working identically regardless
+// of which of the two an error came from.
+type fnError struct{ err error }
+
+func (e *fnError) Error() string { return e.err.Error() }
+func (e *fnError) Unwrap() error { return e.err }
+
 func (s *Store) runTxOnce(ctx context.Context, fn func(*sql.Tx) error) error {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
@@ -69,7 +104,7 @@ func (s *Store) runTxOnce(ctx context.Context, fn func(*sql.Tx) error) error {
 	defer func() { _ = tx.Rollback() }()
 
 	if err := fn(tx); err != nil {
-		return err
+		return &fnError{err: err}
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit transaction: %w", err)
