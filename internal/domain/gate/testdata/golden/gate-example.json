@@ -1,0 +1,1 @@
+{"commandRef":{"definitionId":"command-1","kind":"COMMAND","versionId":"command-1-v1"},"criteria":[{"evidenceKey":"exitCode","name":"exit-code-zero"},{"evidenceKey":"stderr","name":"no-stderr"}],"policyRefs":[{"definitionId":"policy-1","kind":"POLICY","versionId":"policy-1-v1"}]}
