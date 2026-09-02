@@ -3,18 +3,25 @@ package workflow
 import (
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 )
 
 type WorkflowDefinitionID string
 type WorkflowVersionID string
 
-type DefinitionStatus string
+// DefinitionStatus is a type alias (not a distinct type) for
+// definition.Status — Workflow is the first DefinitionKind to reuse the
+// shared lifecycle model (docs/design/04-v2-definition-plane.md V2-01):
+// every existing comparison, switch case and struct field below keeps
+// compiling and behaving identically, since an alias is the exact same
+// type as what it aliases, not a new one requiring a conversion.
+type DefinitionStatus = definition.Status
 
 const (
-	DefinitionDraft    DefinitionStatus = "DRAFT"
-	DefinitionActive   DefinitionStatus = "ACTIVE"
-	DefinitionArchived DefinitionStatus = "ARCHIVED"
+	DefinitionDraft    = definition.StatusDraft
+	DefinitionActive   = definition.StatusActive
+	DefinitionArchived = definition.StatusArchived
 )
 
 type WorkflowDefinition struct {
