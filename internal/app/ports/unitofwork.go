@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
 // UnitOfWork is the one write/read-transaction boundary application
@@ -66,15 +67,15 @@ type CatalogRepository interface{}
 // once V3-04/V3-06 build it.
 type WorkRepository interface{}
 
-// DefinitionsRepository is populated now (V2-09) with the one method its
-// own "Graph/dependency compiler" task actually needs: resolving a
-// node-level definition.DependencyPin against the real, published
-// Version it names. It deliberately stops there — publishing a new
-// Version, creating a Definition, and every other WorkflowDefinition/
-// WorkflowVersion (and the other DefinitionKinds) persistence concern
-// V1-05's original placeholder comment anticipated stays out of scope
-// here, reserved for whichever later task (V2-10's "validate/publish
-// application commands") actually needs it composed inside a Tx.
+// DefinitionsRepository is populated now (V2-09/V2-10): V2-09 gave it
+// LoadVersion, the one method its "Graph/dependency compiler" task
+// needed; V2-10 ("validate/publish application commands") adds the rest —
+// creating a Definition, publishing a new Version (both the eight shared
+// kinds and Workflow), and listing every Version a Definition has
+// published — so a command handler can do all of it composed inside one
+// Tx, alongside whatever Events()/Receipts() write the same handler
+// performs (GC-INV-15: a state transition and its domain event must
+// commit in the same transaction).
 type DefinitionsRepository interface {
 	// LoadVersion returns the Version with the given ID, or
 	// ErrDefinitionVersionNotFound. The caller is responsible for
@@ -83,8 +84,40 @@ type DefinitionsRepository interface {
 	// the same way internal/adapters/sqlite's own existing
 	// LoadSharedDefinitionVersion already does, since a mismatched
 	// Kind/DefinitionID is a pin-validity question the caller (the
-	// resolver, not the repository) owns.
+	// resolver, not the repository) owns. It only ever resolves a
+	// shared-kind Version — Workflow keeps its own dedicated tables and
+	// is never the target of a node-level dependency pin (V2-08's own
+	// schema never lets a workflow node pin another Workflow).
 	LoadVersion(ctx context.Context, versionID string) (definition.VersionFields, error)
+
+	// CreateDefinition creates a new Definition — DRAFT, generation 1,
+	// the same rule definition.Create expresses for every kind, Workflow
+	// included, even though Workflow's own row lives in a different
+	// table (workflow_definitions, not definitions) than the other eight
+	// kinds do.
+	CreateDefinition(ctx context.Context, id string, kind definition.Kind, scope definition.Scope, name string, now time.Time) error
+
+	// PublishVersion publishes a new Version for one of the eight shared
+	// DefinitionKinds — never KindWorkflow, whose already-compiled
+	// candidate (produced by workflowcompiler.CompileAndResolve, which
+	// needs its own read-only registry snapshot and so cannot run inside
+	// the same write transaction this method is composed inside) is
+	// published through PublishWorkflowVersion below instead. Publishing
+	// is idempotent by (DefinitionID, CompiledSnapshotHash), never by
+	// SourceHash (AK-ARCH-005B): identical compiled content returns the
+	// already-published Version rather than inserting a duplicate row.
+	PublishVersion(ctx context.Context, req PublishVersionRequest) (definition.VersionFields, error)
+
+	// PublishWorkflowVersion publishes a new WorkflowVersion from an
+	// already-compiled candidate — the Tx-composable counterpart of
+	// WorkflowPersistence.PublishWorkflowVersion, for a command handler
+	// that needs the version insert and whatever domain event/receipt it
+	// writes alongside it to commit as one atomic transaction.
+	PublishWorkflowVersion(ctx context.Context, def workflow.WorkflowDefinition, candidate workflow.WorkflowVersion) (workflow.WorkflowVersion, error)
+
+	// ListVersions returns every Version definitionID has published,
+	// oldest first.
+	ListVersions(ctx context.Context, kind definition.Kind, definitionID string) ([]definition.VersionFields, error)
 }
 
 // RuntimeRepository will expose WorkflowRun/NodeRun/ExecutionAttempt/

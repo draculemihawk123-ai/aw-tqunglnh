@@ -10,11 +10,14 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
 // ErrNestedTransaction is returned when WithSerializedWrite or
@@ -211,14 +214,27 @@ func (r *ReceiptsRepository) Record(_ context.Context, receipt ports.Receipt) er
 }
 
 // DefinitionsRepository is an in-memory ports.DefinitionsRepository —
-// V2-09 gives this concern real behavior (LoadVersion), unlike its
-// still-empty siblings above. Unlike Events/Receipts/AdapterBuilds, no
-// port-level write method exists to populate it (LoadVersion is
-// read-only by design — publishing a Version is a different concern,
-// reserved for V2-10), so a test seeds known Version data directly via
-// Seed before exercising whatever reads it.
+// V2-09 gave this concern its first real behavior (LoadVersion); V2-10
+// adds CreateDefinition/PublishVersion/PublishWorkflowVersion/ListVersions,
+// so an application-command test never needs sqlite (the same V1-05
+// discipline fake.AdapterBuildRepository already follows). A test can
+// still seed known Version data directly via Seed, standing in for a
+// publish that already happened before the code under test ever runs.
 type DefinitionsRepository struct {
-	versions map[string]definition.VersionFields
+	versions            map[string]definition.VersionFields    // by Version ID (shared kinds)
+	definitions         map[string]definitionRecord            // by Definition ID (shared kinds)
+	workflowDefinitions map[string]workflow.WorkflowDefinition // by Definition ID
+	workflowVersions    map[string][]workflow.WorkflowVersion  // by Definition ID, oldest first
+}
+
+// definitionRecord is the fake's in-memory stand-in for one row of the
+// real definitions table: just enough of definition.Fields for
+// PublishVersion's own CanPublish/cross-project checks to run against.
+type definitionRecord struct {
+	Kind   definition.Kind
+	Scope  definition.Scope
+	Name   string
+	Status definition.Status
 }
 
 var _ ports.DefinitionsRepository = (*DefinitionsRepository)(nil)
@@ -228,7 +244,22 @@ func (d *DefinitionsRepository) clone() *DefinitionsRepository {
 	for k, v := range d.versions {
 		versions[k] = v
 	}
-	return &DefinitionsRepository{versions: versions}
+	definitions := make(map[string]definitionRecord, len(d.definitions))
+	for k, v := range d.definitions {
+		definitions[k] = v
+	}
+	workflowDefinitions := make(map[string]workflow.WorkflowDefinition, len(d.workflowDefinitions))
+	for k, v := range d.workflowDefinitions {
+		workflowDefinitions[k] = v
+	}
+	workflowVersions := make(map[string][]workflow.WorkflowVersion, len(d.workflowVersions))
+	for k, v := range d.workflowVersions {
+		workflowVersions[k] = append([]workflow.WorkflowVersion(nil), v...)
+	}
+	return &DefinitionsRepository{
+		versions: versions, definitions: definitions,
+		workflowDefinitions: workflowDefinitions, workflowVersions: workflowVersions,
+	}
 }
 
 func (d *DefinitionsRepository) LoadVersion(_ context.Context, versionID string) (definition.VersionFields, error) {
@@ -247,6 +278,214 @@ func (d *DefinitionsRepository) Seed(fields definition.VersionFields) {
 		d.versions = map[string]definition.VersionFields{}
 	}
 	d.versions[fields.ID()] = fields
+}
+
+// CreateDefinition mirrors sqlite's createSharedDefinitionTx/
+// definitionsRepository.CreateDefinition: KindWorkflow upserts an
+// in-memory workflow_definitions-equivalent record (a repeat call with
+// the same identity is a safe no-op, mirroring ensureWorkflowDefinition's
+// own ON CONFLICT DO NOTHING + identity-match behavior); every other kind
+// starts a fresh Definition at DRAFT/generation 1 via definition.Create.
+func (d *DefinitionsRepository) CreateDefinition(_ context.Context, id string, kind definition.Kind, scope definition.Scope, name string, _ time.Time) error {
+	if kind == definition.KindWorkflow {
+		if existing, ok := d.workflowDefinitions[id]; ok {
+			if existing.Name != name {
+				return fmt.Errorf("fake: workflow definition %s already exists with a different identity", id)
+			}
+			return nil
+		}
+		wfDefinition := workflow.WorkflowDefinition{
+			ID: workflow.WorkflowDefinitionID(id), Name: name,
+			Status: workflow.DefinitionStatus(definition.StatusDraft), Version: 1,
+		}
+		if !scope.IsGlobal() {
+			pid := *scope.ProjectID
+			wfDefinition.ProjectID = &pid
+		}
+		if d.workflowDefinitions == nil {
+			d.workflowDefinitions = map[string]workflow.WorkflowDefinition{}
+		}
+		d.workflowDefinitions[id] = wfDefinition
+		return nil
+	}
+
+	if _, exists := d.definitions[id]; exists {
+		return fmt.Errorf("fake: definition %s already exists", id)
+	}
+	fields, err := definition.Create(definition.CreateRequest{Kind: kind, Scope: scope, Name: name})
+	if err != nil {
+		return err
+	}
+	if d.definitions == nil {
+		d.definitions = map[string]definitionRecord{}
+	}
+	d.definitions[id] = definitionRecord{Kind: fields.Kind, Scope: fields.Scope, Name: fields.Name, Status: fields.Status}
+	return nil
+}
+
+// PublishVersion mirrors sqlite's publishSharedDefinitionVersionTx: it
+// serves the eight shared kinds only (never KindWorkflow — see
+// ports.DefinitionsRepository's own doc comment on PublishVersion for
+// why), validates the Definition can still publish, resolves each
+// dependency pin's own project against this fake's records (never
+// trusting the pin's own claim, the same real-repository discipline
+// ports.ErrCrossProjectDependency documents), and deduplicates by
+// (DefinitionID, CompiledHash) — never SourceHash (AK-ARCH-005B).
+func (d *DefinitionsRepository) PublishVersion(_ context.Context, req ports.PublishVersionRequest) (definition.VersionFields, error) {
+	if req.Kind == definition.KindWorkflow {
+		return definition.VersionFields{}, errors.New("fake: DefinitionsRepository.PublishVersion does not support KindWorkflow — use PublishWorkflowVersion instead")
+	}
+	record, ok := d.definitions[req.DefinitionID]
+	if !ok {
+		return definition.VersionFields{}, fmt.Errorf("fake: %w: definition %s", ports.ErrPersistenceNotFound, req.DefinitionID)
+	}
+	if err := definition.CanPublish(record.Status); err != nil {
+		return definition.VersionFields{}, err
+	}
+
+	for _, pin := range req.Dependencies.Pins {
+		depRecord, ok := d.definitions[pin.DefinitionID]
+		if !ok {
+			return definition.VersionFields{}, fmt.Errorf("fake: %w: dependency %s not found", ports.ErrPersistenceNotFound, pin.DefinitionID)
+		}
+		if !sameDefinitionScope(depRecord.Scope, record.Scope) {
+			return definition.VersionFields{}, fmt.Errorf("%w: dependency %s", ports.ErrCrossProjectDependency, pin.DefinitionID)
+		}
+	}
+
+	// Idempotent republish: identical compiled content for this
+	// definition already exists — return it rather than "insert" a
+	// duplicate.
+	var nextVersionNo uint64
+	for _, existing := range d.versions {
+		if existing.DefinitionID() != req.DefinitionID {
+			continue
+		}
+		if existing.CompiledHash() == req.CompiledHash {
+			return existing, nil
+		}
+		if existing.VersionNumber() > nextVersionNo {
+			nextVersionNo = existing.VersionNumber()
+		}
+	}
+	nextVersionNo++
+
+	fields, err := definition.NewVersionFields(definition.NewVersionFieldsRequest{
+		ID: req.VersionID, DefinitionID: req.DefinitionID, Kind: req.Kind,
+		VersionNumber: nextVersionNo, SchemaVersion: req.SchemaVersion,
+		CanonicalSource: req.CanonicalSource, SourceHash: req.SourceHash,
+		CompiledSnapshot: req.CompiledSnapshot, CompiledHash: req.CompiledHash,
+		Dependencies: req.Dependencies, PublishedBy: req.PublishedBy, PublishedAt: req.PublishedAt,
+	})
+	if err != nil {
+		return definition.VersionFields{}, err
+	}
+	if d.versions == nil {
+		d.versions = map[string]definition.VersionFields{}
+	}
+	d.versions[fields.ID()] = fields
+	return fields, nil
+}
+
+// PublishWorkflowVersion mirrors sqlite's publishWorkflowVersionTx: an
+// already-compiled candidate is idempotent by ContentHash, a candidate ID
+// reused with different content is rejected, and VersionNumber must match
+// the next number this fake would allocate.
+func (d *DefinitionsRepository) PublishWorkflowVersion(_ context.Context, def workflow.WorkflowDefinition, candidate workflow.WorkflowVersion) (workflow.WorkflowVersion, error) {
+	if def.ID == "" || candidate.ID() == "" || candidate.DefinitionID() != def.ID {
+		return workflow.WorkflowVersion{}, errors.New("fake: PublishWorkflowVersion requires a definition and a matching candidate")
+	}
+	if existing, ok := d.workflowDefinitions[string(def.ID)]; ok {
+		if existing.Name != def.Name || existing.Status != def.Status || existing.Version != def.Version {
+			return workflow.WorkflowVersion{}, fmt.Errorf("fake: %w: workflow definition %s differs from its persisted identity", ports.ErrPersistenceAlreadyExists, def.ID)
+		}
+	} else {
+		if d.workflowDefinitions == nil {
+			d.workflowDefinitions = map[string]workflow.WorkflowDefinition{}
+		}
+		d.workflowDefinitions[string(def.ID)] = def
+	}
+
+	existingVersions := d.workflowVersions[string(def.ID)]
+	for _, existing := range existingVersions {
+		if existing.ContentHash() == candidate.ContentHash() {
+			return existing, nil
+		}
+	}
+	for _, versions := range d.workflowVersions {
+		for _, existing := range versions {
+			if existing.ID() == candidate.ID() {
+				return workflow.WorkflowVersion{}, fmt.Errorf("fake: %w: workflow version %s already stores hash %s", ports.ErrImmutableVersionConflict, candidate.ID(), existing.ContentHash())
+			}
+		}
+	}
+	nextVersion := uint64(len(existingVersions)) + 1
+	if candidate.VersionNumber() != nextVersion {
+		return workflow.WorkflowVersion{}, fmt.Errorf("fake: %w: workflow definition %s expects version %d, got %d", ports.ErrOptimisticConflict, def.ID, nextVersion, candidate.VersionNumber())
+	}
+
+	if d.workflowVersions == nil {
+		d.workflowVersions = map[string][]workflow.WorkflowVersion{}
+	}
+	d.workflowVersions[string(def.ID)] = append(existingVersions, candidate)
+	return candidate, nil
+}
+
+// ListVersions mirrors sqlite's DefinitionsRepository.ListVersions,
+// routed by Kind the same way CreateDefinition/PublishVersion are.
+func (d *DefinitionsRepository) ListVersions(_ context.Context, kind definition.Kind, definitionID string) ([]definition.VersionFields, error) {
+	if kind == definition.KindWorkflow {
+		versions := d.workflowVersions[definitionID]
+		result := make([]definition.VersionFields, 0, len(versions))
+		for _, version := range versions {
+			fields, err := fakeWorkflowVersionToDefinitionFields(version)
+			if err != nil {
+				return nil, err
+			}
+			result = append(result, fields)
+		}
+		return result, nil
+	}
+	var result []definition.VersionFields
+	for _, fields := range d.versions {
+		if fields.DefinitionID() == definitionID {
+			result = append(result, fields)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].VersionNumber() < result[j].VersionNumber() })
+	return result, nil
+}
+
+func sameDefinitionScope(a, b definition.Scope) bool {
+	if a.IsGlobal() != b.IsGlobal() {
+		return false
+	}
+	if a.IsGlobal() {
+		return true
+	}
+	return *a.ProjectID == *b.ProjectID
+}
+
+// fakeWorkflowVersionToDefinitionFields mirrors sqlite's own
+// workflowVersionToDefinitionFields (internal/adapters/sqlite/definitions.go)
+// — duplicated rather than shared, since fake must never import the
+// sqlite adapter package (V1-05's own "app service có thể test không
+// SQLite" boundary).
+func fakeWorkflowVersionToDefinitionFields(v workflow.WorkflowVersion) (definition.VersionFields, error) {
+	var dependencies definition.DependencyManifest
+	for _, pin := range v.Dependencies().Pins {
+		dependencies.Pins = append(dependencies.Pins, definition.DependencyPin{
+			Kind: definition.Kind(pin.Kind), DefinitionID: pin.Key, VersionID: pin.Version,
+		})
+	}
+	schemaVersion, _ := strconv.Atoi(v.SchemaVersion())
+	return definition.NewVersionFields(definition.NewVersionFieldsRequest{
+		ID: string(v.ID()), DefinitionID: string(v.DefinitionID()), Kind: definition.KindWorkflow,
+		VersionNumber: v.VersionNumber(), SchemaVersion: schemaVersion,
+		CanonicalSource: string(v.CanonicalContent()), SourceHash: v.ContentHash(),
+		CompiledSnapshot: string(v.CanonicalContent()), CompiledHash: v.ContentHash(),
+		Dependencies: dependencies, PublishedBy: v.PublishedBy(), PublishedAt: v.PublishedAt(),
+	})
 }
 
 // AdapterBuildRepository is an in-memory ports.AdapterBuildRepository —

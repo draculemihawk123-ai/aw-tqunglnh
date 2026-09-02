@@ -30,15 +30,41 @@ func (s *Store) PublishWorkflowVersion(
 	definition workflow.WorkflowDefinition,
 	candidate workflow.WorkflowVersion,
 ) (workflow.WorkflowVersion, error) {
-	if err := validateWorkflowPublication(definition, candidate); err != nil {
-		return workflow.WorkflowVersion{}, err
-	}
-
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return workflow.WorkflowVersion{}, fmt.Errorf("begin workflow publication: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+
+	result, err := publishWorkflowVersionTx(ctx, tx, definition, candidate)
+	if err != nil {
+		return workflow.WorkflowVersion{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return workflow.WorkflowVersion{}, fmt.Errorf("commit workflow publication: %w", err)
+	}
+	return result, nil
+}
+
+// publishWorkflowVersionTx is PublishWorkflowVersion's own core, scoped to
+// an already-open *sql.Tx it neither begins nor commits/rolls back — that
+// lifecycle stays the caller's own responsibility, so this function is
+// composable either inside PublishWorkflowVersion's own BeginTx/Commit (its
+// only caller before V2-10) or inside an already-open UnitOfWork
+// WithSerializedWrite transaction (definitionsRepository.PublishWorkflowVersion,
+// V2-10's own Tx-composable entry point — see definitions.go): GC-INV-15
+// requires the state write and its domain event to land in the very same
+// transaction, which is only possible if this function never owns commit
+// itself.
+func publishWorkflowVersionTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	definition workflow.WorkflowDefinition,
+	candidate workflow.WorkflowVersion,
+) (workflow.WorkflowVersion, error) {
+	if err := validateWorkflowPublication(definition, candidate); err != nil {
+		return workflow.WorkflowVersion{}, err
+	}
 
 	if err := ensureWorkflowDefinition(ctx, tx, definition, candidate.PublishedAt()); err != nil {
 		return workflow.WorkflowVersion{}, err
@@ -47,18 +73,11 @@ func (s *Store) PublishWorkflowVersion(
 	// Publishing identical semantic content is idempotent even when the caller
 	// generated another candidate ID/version number.
 	var existingID workflow.WorkflowVersionID
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 SELECT id FROM workflow_versions WHERE definition_id = ? AND content_hash = ?`,
 		definition.ID, candidate.ContentHash()).Scan(&existingID)
 	if err == nil {
-		existing, loadErr := loadWorkflowVersion(ctx, tx, existingID)
-		if loadErr != nil {
-			return workflow.WorkflowVersion{}, loadErr
-		}
-		if err := tx.Commit(); err != nil {
-			return workflow.WorkflowVersion{}, fmt.Errorf("commit idempotent workflow publication: %w", err)
-		}
-		return existing, nil
+		return loadWorkflowVersion(ctx, tx, existingID)
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return workflow.WorkflowVersion{}, fmt.Errorf("find workflow content hash: %w", err)
@@ -121,22 +140,46 @@ INSERT INTO workflow_versions (
 SELECT id FROM workflow_versions WHERE definition_id = ? AND content_hash = ?`,
 			definition.ID, candidate.ContentHash()).Scan(&winnerID)
 		if winnerErr == nil {
-			winner, loadErr := loadWorkflowVersion(ctx, tx, winnerID)
-			if loadErr != nil {
-				return workflow.WorkflowVersion{}, loadErr
-			}
-			if commitErr := tx.Commit(); commitErr != nil {
-				return workflow.WorkflowVersion{}, fmt.Errorf("commit concurrent workflow publication: %w", commitErr)
-			}
-			return winner, nil
+			return loadWorkflowVersion(ctx, tx, winnerID)
 		}
 		return workflow.WorkflowVersion{}, fmt.Errorf("%w: %v", ports.ErrImmutableVersionConflict, err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return workflow.WorkflowVersion{}, fmt.Errorf("commit workflow publication: %w", err)
-	}
 	return candidate, nil
+}
+
+// listWorkflowVersionsTx returns every published WorkflowVersion for
+// definitionID, oldest first — the Tx-scoped list counterpart
+// loadWorkflowVersion (one version by ID) already has for a single lookup.
+func listWorkflowVersionsTx(ctx context.Context, tx *sql.Tx, definitionID string) ([]workflow.WorkflowVersion, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT id FROM workflow_versions WHERE definition_id = ? ORDER BY version_no`, definitionID)
+	if err != nil {
+		return nil, fmt.Errorf("list workflow version ids: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []workflow.WorkflowVersionID
+	for rows.Next() {
+		var id workflow.WorkflowVersionID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan workflow version id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate workflow version ids: %w", err)
+	}
+
+	versions := make([]workflow.WorkflowVersion, 0, len(ids))
+	for _, id := range ids {
+		version, err := loadWorkflowVersion(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		versions = append(versions, version)
+	}
+	return versions, nil
 }
 
 func (s *Store) LoadWorkflowVersion(
