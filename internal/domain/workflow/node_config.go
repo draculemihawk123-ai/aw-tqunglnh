@@ -35,6 +35,25 @@ type AgentNodeConfig struct {
 	// internal/domain/agentprofile.AgentProfileDocument.ContextPolicyRef
 	// already documents; resolving and checking that is V2-09's job.
 	PolicyRefs []definition.DependencyPin `json:"policyRefs,omitempty"`
+	// AdapterBuildID optionally pins the exact, content-addressed
+	// AdapterBuildVersion (internal/domain/adapterbuild.Build.ID()) this
+	// node's provider must run — ADR-012's "Run pin expected version" bar
+	// for the provider-adapter axis, finally reachable from a node
+	// (V2-07A/B built the registry and its resolvable Build.ID() identity
+	// but deliberately never gave any authoring schema a field
+	// referencing one; V2-09's own "resolve exact ... AdapterBuildVersion
+	// pins" line is the first task whose scope actually calls for one).
+	// It is NOT a definition.DependencyPin: AdapterBuildVersion is
+	// deliberately not a DefinitionKind (ADR-022) and is keyed by a
+	// content hash of its own measured tuple, never a DefinitionID+
+	// VersionID pair, so reusing DependencyPin's shape here would imply a
+	// resolution mechanism that does not exist. Left optional (a nil
+	// value is not validated further) rather than required: not pinning
+	// one is a legitimate, deliberately deferred Alpha state — the
+	// registry itself is optional infrastructure until an operator
+	// actually registers a build (V2-07B) and a workflow author chooses
+	// to pin it.
+	AdapterBuildID *string `json:"adapterBuildId,omitempty"`
 }
 
 func (c *AgentNodeConfig) clone() *AgentNodeConfig {
@@ -43,6 +62,10 @@ func (c *AgentNodeConfig) clone() *AgentNodeConfig {
 	}
 	cloned := *c
 	cloned.PolicyRefs = append([]definition.DependencyPin(nil), c.PolicyRefs...)
+	if c.AdapterBuildID != nil {
+		id := *c.AdapterBuildID
+		cloned.AdapterBuildID = &id
+	}
 	return &cloned
 }
 

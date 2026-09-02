@@ -3,6 +3,8 @@ package ports
 import (
 	"context"
 	"time"
+
+	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 )
 
 // UnitOfWork is the one write/read-transaction boundary application
@@ -64,11 +66,26 @@ type CatalogRepository interface{}
 // once V3-04/V3-06 build it.
 type WorkRepository interface{}
 
-// DefinitionsRepository will expose WorkflowDefinition/WorkflowVersion
-// (and the other DefinitionKinds) persistence once V2 builds it —
-// superseding WorkflowPersistence's PublishWorkflowVersion/
-// LoadWorkflowVersion methods with a Tx-composable equivalent.
-type DefinitionsRepository interface{}
+// DefinitionsRepository is populated now (V2-09) with the one method its
+// own "Graph/dependency compiler" task actually needs: resolving a
+// node-level definition.DependencyPin against the real, published
+// Version it names. It deliberately stops there — publishing a new
+// Version, creating a Definition, and every other WorkflowDefinition/
+// WorkflowVersion (and the other DefinitionKinds) persistence concern
+// V1-05's original placeholder comment anticipated stays out of scope
+// here, reserved for whichever later task (V2-10's "validate/publish
+// application commands") actually needs it composed inside a Tx.
+type DefinitionsRepository interface {
+	// LoadVersion returns the Version with the given ID, or
+	// ErrDefinitionVersionNotFound. The caller is responsible for
+	// checking the returned VersionFields' Kind()/DefinitionID() match
+	// what the pin claimed — this method resolves by VersionID alone,
+	// the same way internal/adapters/sqlite's own existing
+	// LoadSharedDefinitionVersion already does, since a mismatched
+	// Kind/DefinitionID is a pin-validity question the caller (the
+	// resolver, not the repository) owns.
+	LoadVersion(ctx context.Context, versionID string) (definition.VersionFields, error)
+}
 
 // RuntimeRepository will expose WorkflowRun/NodeRun/ExecutionAttempt/
 // ContextSnapshot/Checkpoint persistence once V4 builds it — superseding

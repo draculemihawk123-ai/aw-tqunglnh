@@ -195,6 +195,14 @@ func TestValidateDocumentRejectsInvalidNodeTypeConfigs(t *testing.T) {
 			wantProblem: "duplicate policy ref",
 		},
 		{
+			name: "AGENT blank adapter build id",
+			mutate: func(doc *WorkflowDocument) {
+				blank := "   "
+				findNode(doc, "agent").Agent.AdapterBuildID = &blank
+			},
+			wantProblem: `agent.adapterBuildId must not be blank when present`,
+		},
+		{
 			name: "COMMAND missing command config",
 			mutate: func(doc *WorkflowDocument) {
 				findNode(doc, "command").Command = nil

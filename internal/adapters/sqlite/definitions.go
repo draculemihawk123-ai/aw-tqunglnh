@@ -187,6 +187,9 @@ JOIN definitions d ON d.id = dv.definition_id
 WHERE dv.id = ?`, versionID,
 	).Scan(&definitionID, &kind, &versionNo, &schemaVersion, &canonicalSource, &sourceHash,
 		&compiledSnapshot, &compiledHash, &dependenciesJSON, &publishedBy, &publishedAtText)
+	if errors.Is(err, sql.ErrNoRows) {
+		return definition.VersionFields{}, ports.ErrDefinitionVersionNotFound
+	}
 	if err != nil {
 		return definition.VersionFields{}, MapSQLiteError(fmt.Errorf("load definition version: %w", err))
 	}
@@ -205,6 +208,15 @@ WHERE dv.id = ?`, versionID,
 		CompiledSnapshot: compiledSnapshot, CompiledHash: compiledHash,
 		Dependencies: dependencies, PublishedBy: publishedBy, PublishedAt: publishedAt,
 	})
+}
+
+// LoadVersion implements ports.DefinitionsRepository (V2-09): the
+// Tx-composable equivalent of Store.LoadSharedDefinitionVersion above,
+// for a caller (the graph/dependency compiler) resolving a node-level
+// dependency pin from inside an already-open UnitOfWork call rather than
+// opening its own separate read transaction per pin.
+func (r definitionsRepository) LoadVersion(ctx context.Context, versionID string) (definition.VersionFields, error) {
+	return loadSharedDefinitionVersion(ctx, r.tx, versionID)
 }
 
 func validatePublishVersionRequest(req ports.PublishVersionRequest) error {

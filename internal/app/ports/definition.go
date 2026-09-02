@@ -15,6 +15,12 @@ import (
 // publisher supplied, which would make this check spoofable.
 var ErrCrossProjectDependency = errors.New("ports: dependency pin references a definition in a different project")
 
+// ErrDefinitionVersionNotFound is returned by
+// DefinitionsRepository.LoadVersion when no Version exists for the given
+// ID — the resolution-time counterpart of a dependency pin naming a
+// Version that was never published (or never will be, e.g. a typo).
+var ErrDefinitionVersionNotFound = errors.New("ports: definition version not found")
+
 // PublishVersionRequest is what a caller supplies to
 // DefinitionPublisher.PublishDefinitionVersion — kind-agnostic; the
 // Definition it publishes against must already exist (create is a

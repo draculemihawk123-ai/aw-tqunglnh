@@ -157,6 +157,7 @@ func validateNormalizedDocument(document WorkflowDocument) error {
 	}
 
 	problems = append(problems, validateBoundedCycles(nodes, outgoing)...)
+	problems = append(problems, validateForkJoinTopology(nodes, outgoing)...)
 	problems = append(problems, validateSharedState(document.SharedState, nodes)...)
 	if len(problems) == 0 {
 		return nil
@@ -318,6 +319,149 @@ func stronglyConnectedComponents(nodes map[string]Node, outgoing map[string][]Ed
 	return components
 }
 
+// validateForkJoinTopology is V2-09's own "fork-join" graph-topology
+// check (docs/design/04-v2-definition-plane.md V2-09, HE-14-M06),
+// explicitly deferred here by both JoinNodeConfig's and Node's own doc
+// comments in workflow.go/node_config.go: every branch a FORK fans out
+// must reconverge at exactly one JOIN, and that JOIN's QuorumCount (for
+// Mode QUORUM) must be between 1 and the FORK's actual branch count —
+// the cross-check V2-08's own validateJoinConfig explicitly declined to
+// make since it has no access to the FORK that owns a given JOIN.
+//
+// Scope, deliberately narrowed: nested FORK/JOIN pairs (a branch itself
+// containing another FORK before reconverging at the outer JOIN) are
+// rejected as unsupported rather than resolved — correctly matching
+// nested fork/join topology (like balanced parentheses) is materially
+// more complex than Alpha's own graph authoring needs justify building
+// right now, and rejecting with a clear message is safer than a
+// half-correct nested implementation that silently mishandles some
+// topologies. A JOIN is also required to be the reconvergence point of
+// at most one FORK — two different forks both routing branches into the
+// same JOIN is exactly the "ambiguous branch identity" HE-14-M06 names
+// as a case to reject.
+func validateForkJoinTopology(nodes map[string]Node, outgoing map[string][]Edge) []string {
+	problems := make([]string, 0)
+	joinOwners := make(map[string][]string, 8)
+
+	forkKeys := make([]string, 0)
+	for key, node := range nodes {
+		if node.Type == NodeFork {
+			forkKeys = append(forkKeys, key)
+		}
+	}
+	sort.Strings(forkKeys)
+
+	for _, forkKey := range forkKeys {
+		branches := outgoing[forkKey]
+		if len(branches) == 0 {
+			problems = append(problems, fmt.Sprintf("fork %q has no outgoing branches", forkKey))
+			continue
+		}
+
+		reachedJoins := make(map[string]bool, 1)
+		nestedFork := false
+		deadEnd := false
+		for _, branch := range branches {
+			joins, hitNestedFork, hitDeadEnd := firstJoinsReachableFromBranch(branch.To, nodes, outgoing)
+			if hitNestedFork {
+				nestedFork = true
+			}
+			if hitDeadEnd {
+				deadEnd = true
+			}
+			for join := range joins {
+				reachedJoins[join] = true
+			}
+		}
+
+		switch {
+		case nestedFork:
+			problems = append(problems, fmt.Sprintf("fork %q has a branch containing another fork before reconverging — nested fork/join is not supported", forkKey))
+		case deadEnd:
+			problems = append(problems, fmt.Sprintf("fork %q has a branch that reaches END without reconverging at a join", forkKey))
+		case len(reachedJoins) == 0:
+			problems = append(problems, fmt.Sprintf("fork %q branches never reach a join", forkKey))
+		case len(reachedJoins) > 1:
+			joinList := make([]string, 0, len(reachedJoins))
+			for join := range reachedJoins {
+				joinList = append(joinList, join)
+			}
+			sort.Strings(joinList)
+			problems = append(problems, fmt.Sprintf("fork %q branches converge at more than one join: %s", forkKey, strings.Join(joinList, ", ")))
+		default:
+			var joinKey string
+			for join := range reachedJoins {
+				joinKey = join
+			}
+			joinOwners[joinKey] = append(joinOwners[joinKey], forkKey)
+			if joinNode, ok := nodes[joinKey]; ok && joinNode.Join != nil && joinNode.Join.Mode == JoinModeQuorum {
+				if int(joinNode.Join.QuorumCount) > len(branches) {
+					problems = append(problems, fmt.Sprintf(
+						"join %q quorum count %d exceeds its owning fork %q's branch count %d",
+						joinKey, joinNode.Join.QuorumCount, forkKey, len(branches),
+					))
+				}
+			}
+		}
+	}
+
+	joinKeys := make([]string, 0, len(joinOwners))
+	for join := range joinOwners {
+		joinKeys = append(joinKeys, join)
+	}
+	sort.Strings(joinKeys)
+	for _, join := range joinKeys {
+		owners := joinOwners[join]
+		if len(owners) > 1 {
+			sort.Strings(owners)
+			problems = append(problems, fmt.Sprintf(
+				"join %q receives branches from more than one fork (%s) — branch identity is ambiguous",
+				join, strings.Join(owners, ", "),
+			))
+		}
+	}
+
+	return problems
+}
+
+// firstJoinsReachableFromBranch walks forward from start, stopping at
+// (not past) the first JOIN node reached along each path — the set of
+// stop-points for one FORK branch. It reports hitNestedFork if the walk
+// reaches another FORK before any JOIN (validateForkJoinTopology treats
+// this as an unsupported nested topology), and hitDeadEnd if it reaches
+// an END node without ever reaching a JOIN.
+func firstJoinsReachableFromBranch(start string, nodes map[string]Node, outgoing map[string][]Edge) (joins map[string]bool, hitNestedFork, hitDeadEnd bool) {
+	visited := make(map[string]bool)
+	joins = make(map[string]bool)
+	var walk func(key string)
+	walk = func(key string) {
+		if visited[key] {
+			return
+		}
+		visited[key] = true
+		node, ok := nodes[key]
+		if !ok {
+			return
+		}
+		switch node.Type {
+		case NodeJoin:
+			joins[key] = true
+			return
+		case NodeFork:
+			hitNestedFork = true
+			return
+		case NodeEnd:
+			hitDeadEnd = true
+			return
+		}
+		for _, edge := range outgoing[key] {
+			walk(edge.To)
+		}
+	}
+	walk(start)
+	return joins, hitNestedFork, hitDeadEnd
+}
+
 // expectedNodeConfigField is which typed config field name (used in
 // error messages) validateNodeConfig requires populated for each
 // NodeType that carries one. A NodeType absent from this map — START,
@@ -386,6 +530,9 @@ func validateNodeConfig(node Node) []string {
 	case node.Agent != nil:
 		problems = append(problems, validateExecutorPin(node.Agent.ProfileRef, definition.KindAgentProfile, "agent.profileRef", node.Key)...)
 		problems = append(problems, validatePolicyRefs(node.Agent.PolicyRefs, "agent.policyRefs", node.Key)...)
+		if node.Agent.AdapterBuildID != nil && strings.TrimSpace(*node.Agent.AdapterBuildID) == "" {
+			problems = append(problems, fmt.Sprintf("node %q agent.adapterBuildId must not be blank when present", node.Key))
+		}
 	case node.Command != nil:
 		problems = append(problems, validateExecutorPin(node.Command.CommandRef, definition.KindCommand, "command.commandRef", node.Key)...)
 		problems = append(problems, validatePolicyRefs(node.Command.PolicyRefs, "command.policyRefs", node.Key)...)

@@ -14,6 +14,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
+	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 )
 
 // ErrNestedTransaction is returned when WithSerializedWrite or
@@ -82,7 +83,7 @@ func (u *UnitOfWork) run(fn func(ports.Tx) error, persistOnSuccess bool) error {
 type Tx struct {
 	catalog       CatalogRepository
 	work          WorkRepository
-	definitions   DefinitionsRepository
+	definitions   *DefinitionsRepository
 	runtime       RuntimeRepository
 	jobs          JobsRepository
 	events        *EventsRepository
@@ -95,6 +96,7 @@ func newTx() Tx {
 		events:        &EventsRepository{},
 		receipts:      &ReceiptsRepository{},
 		adapterBuilds: &AdapterBuildRepository{},
+		definitions:   &DefinitionsRepository{},
 	}
 }
 
@@ -103,6 +105,7 @@ func (t Tx) clone() Tx {
 	clone.events = t.events.clone()
 	clone.receipts = t.receipts.clone()
 	clone.adapterBuilds = t.adapterBuilds.clone()
+	clone.definitions = t.definitions.clone()
 	return clone
 }
 
@@ -119,7 +122,6 @@ func (t Tx) AdapterBuilds() ports.AdapterBuildRepository { return t.adapterBuild
 
 type CatalogRepository struct{}
 type WorkRepository struct{}
-type DefinitionsRepository struct{}
 type RuntimeRepository struct{}
 type JobsRepository struct{}
 
@@ -206,6 +208,45 @@ func (r *ReceiptsRepository) Record(_ context.Context, receipt ports.Receipt) er
 	}
 	r.records[key] = receipt
 	return nil
+}
+
+// DefinitionsRepository is an in-memory ports.DefinitionsRepository —
+// V2-09 gives this concern real behavior (LoadVersion), unlike its
+// still-empty siblings above. Unlike Events/Receipts/AdapterBuilds, no
+// port-level write method exists to populate it (LoadVersion is
+// read-only by design — publishing a Version is a different concern,
+// reserved for V2-10), so a test seeds known Version data directly via
+// Seed before exercising whatever reads it.
+type DefinitionsRepository struct {
+	versions map[string]definition.VersionFields
+}
+
+var _ ports.DefinitionsRepository = (*DefinitionsRepository)(nil)
+
+func (d *DefinitionsRepository) clone() *DefinitionsRepository {
+	versions := make(map[string]definition.VersionFields, len(d.versions))
+	for k, v := range d.versions {
+		versions[k] = v
+	}
+	return &DefinitionsRepository{versions: versions}
+}
+
+func (d *DefinitionsRepository) LoadVersion(_ context.Context, versionID string) (definition.VersionFields, error) {
+	fields, ok := d.versions[versionID]
+	if !ok {
+		return definition.VersionFields{}, ports.ErrDefinitionVersionNotFound
+	}
+	return fields, nil
+}
+
+// Seed registers fields as resolvable by its own ID() — test setup
+// standing in for a real publish that already happened before the code
+// under test ever runs.
+func (d *DefinitionsRepository) Seed(fields definition.VersionFields) {
+	if d.versions == nil {
+		d.versions = map[string]definition.VersionFields{}
+	}
+	d.versions[fields.ID()] = fields
 }
 
 // AdapterBuildRepository is an in-memory ports.AdapterBuildRepository —
