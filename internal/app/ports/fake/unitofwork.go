@@ -6,11 +6,14 @@ package fake
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
 )
 
 // ErrNestedTransaction is returned when WithSerializedWrite or
@@ -77,19 +80,21 @@ func (u *UnitOfWork) run(fn func(ports.Tx) error, persistOnSuccess bool) error {
 // call; clone() deep-copies both before each attempt so a failed or
 // read-only attempt never mutates the committed Snapshot.
 type Tx struct {
-	catalog     CatalogRepository
-	work        WorkRepository
-	definitions DefinitionsRepository
-	runtime     RuntimeRepository
-	jobs        JobsRepository
-	events      *EventsRepository
-	receipts    *ReceiptsRepository
+	catalog       CatalogRepository
+	work          WorkRepository
+	definitions   DefinitionsRepository
+	runtime       RuntimeRepository
+	jobs          JobsRepository
+	events        *EventsRepository
+	receipts      *ReceiptsRepository
+	adapterBuilds *AdapterBuildRepository
 }
 
 func newTx() Tx {
 	return Tx{
-		events:   &EventsRepository{},
-		receipts: &ReceiptsRepository{},
+		events:        &EventsRepository{},
+		receipts:      &ReceiptsRepository{},
+		adapterBuilds: &AdapterBuildRepository{},
 	}
 }
 
@@ -97,18 +102,20 @@ func (t Tx) clone() Tx {
 	clone := t
 	clone.events = t.events.clone()
 	clone.receipts = t.receipts.clone()
+	clone.adapterBuilds = t.adapterBuilds.clone()
 	return clone
 }
 
 var _ ports.Tx = Tx{}
 
-func (t Tx) Catalog() ports.CatalogRepository         { return t.catalog }
-func (t Tx) Work() ports.WorkRepository               { return t.work }
-func (t Tx) Definitions() ports.DefinitionsRepository { return t.definitions }
-func (t Tx) Runtime() ports.RuntimeRepository         { return t.runtime }
-func (t Tx) Jobs() ports.JobsRepository               { return t.jobs }
-func (t Tx) Events() ports.EventsRepository           { return t.events }
-func (t Tx) Receipts() ports.ReceiptsRepository       { return t.receipts }
+func (t Tx) Catalog() ports.CatalogRepository            { return t.catalog }
+func (t Tx) Work() ports.WorkRepository                  { return t.work }
+func (t Tx) Definitions() ports.DefinitionsRepository    { return t.definitions }
+func (t Tx) Runtime() ports.RuntimeRepository            { return t.runtime }
+func (t Tx) Jobs() ports.JobsRepository                  { return t.jobs }
+func (t Tx) Events() ports.EventsRepository              { return t.events }
+func (t Tx) Receipts() ports.ReceiptsRepository          { return t.receipts }
+func (t Tx) AdapterBuilds() ports.AdapterBuildRepository { return t.adapterBuilds }
 
 type CatalogRepository struct{}
 type WorkRepository struct{}
@@ -199,6 +206,79 @@ func (r *ReceiptsRepository) Record(_ context.Context, receipt ports.Receipt) er
 	}
 	r.records[key] = receipt
 	return nil
+}
+
+// AdapterBuildRepository is an in-memory ports.AdapterBuildRepository —
+// V2-07A gives this concern real behavior from the start (unlike
+// Catalog/Work/Definitions/Runtime/Jobs above), so an application-layer
+// test of ProbeAdapterBuild/RegisterAdapterBuild never needs sqlite.
+type AdapterBuildRepository struct {
+	signingKey []byte
+	builds     map[string]adapterbuild.Build
+}
+
+var _ ports.AdapterBuildRepository = (*AdapterBuildRepository)(nil)
+
+func (a *AdapterBuildRepository) clone() *AdapterBuildRepository {
+	builds := make(map[string]adapterbuild.Build, len(a.builds))
+	for k, v := range a.builds {
+		builds[k] = v
+	}
+	key := append([]byte(nil), a.signingKey...)
+	return &AdapterBuildRepository{signingKey: key, builds: builds}
+}
+
+func (a *AdapterBuildRepository) LoadOrCreateSigningKey(context.Context) ([]byte, error) {
+	if len(a.signingKey) == 0 {
+		a.signingKey = randomKey()
+	}
+	return a.signingKey, nil
+}
+
+func (a *AdapterBuildRepository) LoadSigningKey(context.Context) ([]byte, error) {
+	if len(a.signingKey) == 0 {
+		return nil, ports.ErrNoSigningKey
+	}
+	return a.signingKey, nil
+}
+
+func (a *AdapterBuildRepository) RotateSigningKey(context.Context) ([]byte, error) {
+	a.signingKey = randomKey()
+	return a.signingKey, nil
+}
+
+func (a *AdapterBuildRepository) InsertIfAbsent(_ context.Context, build adapterbuild.Build) (adapterbuild.Build, bool, error) {
+	if existing, ok := a.builds[build.ID()]; ok {
+		return existing, true, nil
+	}
+	if a.builds == nil {
+		a.builds = map[string]adapterbuild.Build{}
+	}
+	a.builds[build.ID()] = build
+	return build, false, nil
+}
+
+func (a *AdapterBuildRepository) Get(_ context.Context, id string) (adapterbuild.Build, error) {
+	build, ok := a.builds[id]
+	if !ok {
+		return adapterbuild.Build{}, ports.ErrAdapterBuildNotFound
+	}
+	return build, nil
+}
+
+func (a *AdapterBuildRepository) List(context.Context) ([]adapterbuild.Build, error) {
+	builds := make([]adapterbuild.Build, 0, len(a.builds))
+	for _, build := range a.builds {
+		builds = append(builds, build)
+	}
+	sort.Slice(builds, func(i, j int) bool { return builds[i].RegisteredAt().Before(builds[j].RegisteredAt()) })
+	return builds, nil
+}
+
+func randomKey() []byte {
+	key := make([]byte, 32)
+	_, _ = rand.Read(key)
+	return key
 }
 
 // QueryStore is an in-memory ports.QueryStore that is always reachable.

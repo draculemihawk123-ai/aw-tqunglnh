@@ -49,6 +49,11 @@ type Tx interface {
 	Jobs() JobsRepository
 	Events() EventsRepository
 	Receipts() ReceiptsRepository
+	// AdapterBuilds is populated now (V2-07A) with real methods — unlike
+	// its near-empty siblings above, it is not a placeholder: this task
+	// owns building the immutable AdapterBuildVersion registry (ADR-022)
+	// end to end, so its accessor gets a real interface from the start.
+	AdapterBuilds() AdapterBuildRepository
 }
 
 // CatalogRepository will expose Project/Repository/Component persistence

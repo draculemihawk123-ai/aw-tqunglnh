@@ -57,6 +57,9 @@ func (t *txAdapter) Runtime() ports.RuntimeRepository         { return runtimeRe
 func (t *txAdapter) Jobs() ports.JobsRepository               { return jobsRepository{tx: t.tx} }
 func (t *txAdapter) Events() ports.EventsRepository           { return eventsRepository{tx: t.tx} }
 func (t *txAdapter) Receipts() ports.ReceiptsRepository       { return receiptsRepository{tx: t.tx} }
+func (t *txAdapter) AdapterBuilds() ports.AdapterBuildRepository {
+	return adapterBuildRepository{tx: t.tx}
+}
 
 // Each placeholder repository already carries the shared *sql.Tx so the
 // task that populates it with real methods (see ports.Tx's doc comment)
