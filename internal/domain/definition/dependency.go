@@ -11,9 +11,9 @@ package definition
 // resolves the pin's actual project through the repository at publish
 // time instead (see ports.ErrCrossProjectDependency).
 type DependencyPin struct {
-	Kind         Kind   `json:"kind"`
-	DefinitionID string `json:"definitionId"`
-	VersionID    string `json:"versionId"`
+	Kind         Kind   `json:"kind" yaml:"kind"`
+	DefinitionID string `json:"definitionId" yaml:"definitionId"`
+	VersionID    string `json:"versionId" yaml:"versionId"`
 }
 
 // DependencyManifest is the complete, ordered set of pins a Version
