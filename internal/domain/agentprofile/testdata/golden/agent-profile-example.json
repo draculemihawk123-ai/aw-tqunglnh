@@ -1,0 +1,1 @@
+{"budget":{"maxTokens":100000},"compatibility":{"os":["linux","windows"],"toolchain":["git"]},"contextPolicyRef":{"definitionId":"policy-context-1","kind":"POLICY","versionId":"policy-context-1-v1"},"model":"claude-opus-4","providerKey":"claude","requiredCapabilities":["INTEGRATION_MULTI_REPOSITORY_WRITE"],"toolRefs":["read_file","write_file"]}

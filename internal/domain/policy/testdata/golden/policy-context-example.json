@@ -1,0 +1,1 @@
+{"category":"CONTEXT","context":{"budget":{"maxTokens":8000},"order":["layers/base","skills/lint"],"resourceRefs":[{"contentHash":"sha256:abc","ownerVersionId":"skill-1-v1","resourceKey":"lint.md"}],"selector":["layers/*","skills/*"]}}
