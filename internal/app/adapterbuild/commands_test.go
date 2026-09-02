@@ -285,6 +285,37 @@ func TestProbe_RejectsMissingExecutable(t *testing.T) {
 	}
 }
 
+// TestRegister_RejectsTokenSignedUnderRotatedKey proves ADR-022's own
+// stated rotation semantics (docs/architecture/02-architecture-decisions.md
+// ADR-022): "Xoay key làm mọi token đang lưu hành mất hiệu lực, và đó là
+// hành vi đúng" — rotating the per-installation signing key invalidates
+// every outstanding candidate token, including one issued moments before
+// the rotation, not just tokens issued after it.
+func TestRegister_RejectsTokenSignedUnderRotatedKey(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	path := writeExecutable(t, "binary-content-v1")
+
+	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, probeRequest(path))
+	if err != nil {
+		t.Fatalf("probe: %v", err)
+	}
+
+	if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		_, err := tx.AdapterBuilds().RotateSigningKey(ctx)
+		return err
+	}); err != nil {
+		t.Fatalf("rotate signing key: %v", err)
+	}
+
+	_, err = adapterbuild.RegisterAdapterBuild(ctx, uow, adapterbuild.RegisterRequest{
+		Token: token, CapabilityManifest: validManifest(), RegisteredBy: "operator-1",
+	})
+	if err == nil {
+		t.Fatal("RegisterAdapterBuild should reject a token signed under a since-rotated signing key")
+	}
+}
+
 // TestRegister_NoUpdateMethodExists proves V2-07A's own "version đã
 // publish không sửa được" bar at the port level: ports.AdapterBuildRepository
 // has no Update/Delete method for anyone to call in the first place.

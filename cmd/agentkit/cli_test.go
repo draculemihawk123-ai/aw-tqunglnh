@@ -149,7 +149,7 @@ func TestRun_EvidenceVerify_TamperedBundleFails(t *testing.T) {
 // name the usage text advertises must have a real handler, and vice versa,
 // so the two can never drift apart silently.
 func TestRun_AllSubcommandsAreWiredAtCompositionRootOnly(t *testing.T) {
-	want := []string{"serve", "worker", "doctor", "definition", "evidence"}
+	want := []string{"serve", "worker", "doctor", "definition", "evidence", "adapter"}
 	if len(subcommands) != len(want) {
 		t.Fatalf("subcommands has %d entries, want %d: %v", len(subcommands), len(want), subcommands)
 	}

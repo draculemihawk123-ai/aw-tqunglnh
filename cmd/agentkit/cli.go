@@ -39,6 +39,7 @@ Commands:
   doctor      run readiness/capability diagnostics
   definition  validate/publish/inspect definitions
   evidence    inspect and verify evidence bundles
+  adapter     probe/register/list/show adapter builds
 
 Run 'agentkit <command> -h' for command-specific flags.
 `
@@ -100,6 +101,7 @@ var subcommands = map[string]func(arguments []string, stdout io.Writer) error{
 	"doctor":     stub("doctor"),
 	"definition": stub("definition"),
 	"evidence":   runEvidence,
+	"adapter":    runAdapter,
 }
 
 // stub returns a handler for a subcommand skeleton that has not been

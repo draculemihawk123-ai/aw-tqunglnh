@@ -219,6 +219,82 @@ func TestWorkflowVersionHasNoMutatingMethods(t *testing.T) {
 	}
 }
 
+// TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess proves
+// §11.1's own rule (docs/architecture/04-go-core-spec.md "11.1 Application
+// transaction", restated at docs/design/04-v2-definition-plane.md V2-07B
+// and ADR-022: "Re-hash bên trong transaction cũng không hợp lệ vì §11.1
+// cấm gọi filesystem/process trong application transaction"):
+// RegisterAdapterBuild's database transaction closure — the func literal
+// it passes to uow.WithSerializedWrite — must never itself touch the
+// filesystem or spawn a process. Re-measuring the executable/capability
+// manifest must happen entirely BEFORE the transaction opens; the
+// transaction is only allowed to persist values already measured. This
+// parses the real source of internal/app/adapterbuild/commands.go,
+// locates that one func literal, and fails if its body contains a call
+// into os/exec/ioutil, or a call to the package's own hashExecutableFile
+// helper (which itself wraps a filesystem read).
+func TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess(t *testing.T) {
+	moduleRoot := findModuleRoot(t)
+	path := filepath.Join(moduleRoot, "internal", "app", "adapterbuild", "commands.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	forbiddenPackages := map[string]bool{"os": true, "exec": true, "ioutil": true}
+	forbiddenCalls := map[string]bool{"hashExecutableFile": true}
+
+	var txClosure *ast.FuncLit
+	ast.Inspect(file, func(n ast.Node) bool {
+		fn, ok := n.(*ast.FuncDecl)
+		if !ok || fn.Name.Name != "RegisterAdapterBuild" {
+			return true
+		}
+		ast.Inspect(fn.Body, func(inner ast.Node) bool {
+			call, ok := inner.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			selector, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || selector.Sel.Name != "WithSerializedWrite" {
+				return true
+			}
+			for _, arg := range call.Args {
+				if lit, ok := arg.(*ast.FuncLit); ok {
+					txClosure = lit
+				}
+			}
+			return true
+		})
+		return false
+	})
+	if txClosure == nil {
+		t.Fatal("could not find the func literal passed to uow.WithSerializedWrite inside RegisterAdapterBuild — this test needs updating alongside the implementation")
+	}
+
+	ast.Inspect(txClosure, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		switch fun := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			if ident, ok := fun.X.(*ast.Ident); ok && forbiddenPackages[ident.Name] {
+				t.Errorf("%s: RegisterAdapterBuild's transaction closure calls %s.%s — filesystem/process calls must happen before the transaction opens, never inside it (§11.1)",
+					fset.Position(call.Pos()), ident.Name, fun.Sel.Name)
+			}
+		case *ast.Ident:
+			if forbiddenCalls[fun.Name] {
+				t.Errorf("%s: RegisterAdapterBuild's transaction closure calls %s — filesystem/process calls must happen before the transaction opens, never inside it (§11.1)",
+					fset.Position(call.Pos()), fun.Name)
+			}
+		}
+		return true
+	})
+}
+
 func findModuleRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

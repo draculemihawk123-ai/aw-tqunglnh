@@ -45,6 +45,39 @@ func TestVerifyToken_RejectsTamperedTuple(t *testing.T) {
 	}
 }
 
+// TestVerifyToken_RejectsTamperedTupleField is V2-07B's own addition to
+// TestVerifyToken_RejectsTamperedTuple above: since a candidate token
+// binds the WHOLE tuple (docs/design/04-v2-definition-plane.md V2-07B —
+// "token bind toàn bộ tuple"), tampering with ANY single axis, not just
+// ExecutableContentHash (already covered above), must independently fail
+// verification. This enumerates every axis V2-07B's own Verify line calls
+// out by name — protocol version, capability-manifest hash, and
+// OS/toolchain/config identity — plus the two remaining tuple fields for
+// completeness.
+func TestVerifyToken_RejectsTamperedTupleField(t *testing.T) {
+	mutations := map[string]func(*adapterbuild.CandidateTuple){
+		"providerKey":            func(tuple *adapterbuild.CandidateTuple) { tuple.ProviderKey = "codex" },
+		"executablePath":         func(tuple *adapterbuild.CandidateTuple) { tuple.ExecutablePath = "/usr/local/bin/other" },
+		"protocolVersion":        func(tuple *adapterbuild.CandidateTuple) { tuple.ProtocolVersion = "claude-stream-json/v2" },
+		"capabilityManifestHash": func(tuple *adapterbuild.CandidateTuple) { tuple.CapabilityManifestHash = "sha256:tampered" },
+		"os":                     func(tuple *adapterbuild.CandidateTuple) { tuple.OS = "windows" },
+		"toolchain":              func(tuple *adapterbuild.CandidateTuple) { tuple.Toolchain = "node-22" },
+		"configIdentity":         func(tuple *adapterbuild.CandidateTuple) { tuple.ConfigIdentity = "alternate" },
+	}
+	for field, mutate := range mutations {
+		t.Run(field, func(t *testing.T) {
+			token, err := adapterbuild.SignToken(validTuple(), "nonce-1", time.Now().UTC().Add(5*time.Minute), testKey())
+			if err != nil {
+				t.Fatalf("SignToken: %v", err)
+			}
+			mutate(&token.Tuple)
+			if err := adapterbuild.VerifyToken(token, testKey(), time.Now().UTC()); err == nil {
+				t.Fatalf("VerifyToken should reject a token whose %s was tampered with after signing", field)
+			}
+		})
+	}
+}
+
 func TestVerifyToken_RejectsExpiredToken(t *testing.T) {
 	expiresAt := time.Now().UTC().Add(-1 * time.Second)
 	token, err := adapterbuild.SignToken(validTuple(), "nonce-1", expiresAt, testKey())
