@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
@@ -138,12 +139,37 @@ func CrashResumeWorkflowDocumentV1() workflow.WorkflowDocument {
 		SchemaVersion: "1",
 		Nodes: []workflow.Node{
 			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"execute"}},
-			{Key: "implement", Type: workflow.NodeAgent, Outcomes: []string{"done"}, ExecutorRef: "agent/default"},
+			{Key: "implement", Type: workflow.NodeAgent, Outcomes: []string{"done"}, Agent: crashResumeAgentNodeConfig()},
 			{Key: "end", Type: workflow.NodeEnd},
 		},
 		Edges: []workflow.Edge{
 			{Key: "start-implement", From: "start", Outcome: "execute", To: "implement"},
 			{Key: "implement-end", From: "implement", Outcome: "done", To: "end"},
+		},
+	}
+}
+
+// crashResumeAgentNodeConfig/crashResumeCommandNodeConfig are fixed
+// fixture pins for the crash-worker fixtures' AGENT/COMMAND nodes — the
+// fixtures never resolve these against a real published version, they
+// only need workflow.Compile's own structural validation to accept them
+// (see internal/domain/workflow/validation.go's validateExecutorPin).
+func crashResumeAgentNodeConfig() *workflow.AgentNodeConfig {
+	return &workflow.AgentNodeConfig{
+		ProfileRef: definition.DependencyPin{
+			Kind:         definition.KindAgentProfile,
+			DefinitionID: "agent-default",
+			VersionID:    "agent-default-v1",
+		},
+	}
+}
+
+func crashResumeCommandNodeConfig() *workflow.CommandNodeConfig {
+	return &workflow.CommandNodeConfig{
+		CommandRef: definition.DependencyPin{
+			Kind:         definition.KindCommand,
+			DefinitionID: "command-test",
+			VersionID:    "command-test-v1",
 		},
 	}
 }
@@ -155,8 +181,8 @@ func CrashResumeWorkflowDocumentV2() workflow.WorkflowDocument {
 		SchemaVersion: "1",
 		Nodes: []workflow.Node{
 			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"execute"}},
-			{Key: "implement", Type: workflow.NodeAgent, Outcomes: []string{"verify"}, ExecutorRef: "agent/default"},
-			{Key: "verify", Type: workflow.NodeCommand, Outcomes: []string{"done"}, ExecutorRef: "command/test"},
+			{Key: "implement", Type: workflow.NodeAgent, Outcomes: []string{"verify"}, Agent: crashResumeAgentNodeConfig()},
+			{Key: "verify", Type: workflow.NodeCommand, Outcomes: []string{"done"}, Command: crashResumeCommandNodeConfig()},
 			{Key: "end", Type: workflow.NodeEnd},
 		},
 		Edges: []workflow.Edge{

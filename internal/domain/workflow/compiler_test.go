@@ -4,7 +4,29 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 )
+
+func testAgentNodeConfig() *AgentNodeConfig {
+	return &AgentNodeConfig{
+		ProfileRef: definition.DependencyPin{
+			Kind:         definition.KindAgentProfile,
+			DefinitionID: "agent-default",
+			VersionID:    "agent-default-v1",
+		},
+	}
+}
+
+func testCommandNodeConfig() *CommandNodeConfig {
+	return &CommandNodeConfig{
+		CommandRef: definition.DependencyPin{
+			Kind:         definition.KindCommand,
+			DefinitionID: "command-test",
+			VersionID:    "command-test-v1",
+		},
+	}
+}
 
 func TestCompileCanonicalHashIgnoresSetOrderAndPublishMetadata(t *testing.T) {
 	t.Parallel()
@@ -20,9 +42,9 @@ func TestCompileCanonicalHashIgnoresSetOrderAndPublishMetadata(t *testing.T) {
 		SchemaVersion: "1",
 		Nodes: []Node{
 			{Key: "end", Type: NodeEnd},
-			{Key: "command", Type: NodeCommand, Outcomes: []string{"pass"}, ExecutorRef: "command:test"},
+			{Key: "command", Type: NodeCommand, Outcomes: []string{"pass"}, Command: testCommandNodeConfig()},
 			{Key: "start", Type: NodeStart, Outcomes: []string{"next"}},
-			{Key: "agent", Type: NodeAgent, Outcomes: []string{"ok"}, ExecutorRef: "agent:default"},
+			{Key: "agent", Type: NodeAgent, Outcomes: []string{"ok"}, Agent: testAgentNodeConfig()},
 		},
 		Edges: []Edge{
 			{Key: "edge-command-end", From: "command", Outcome: "pass", To: "end"},
@@ -216,8 +238,8 @@ func validLinearDocument() WorkflowDocument {
 		SchemaVersion: "1",
 		Nodes: []Node{
 			{Key: "start", Type: NodeStart, Outcomes: []string{"next"}},
-			{Key: "agent", Type: NodeAgent, Outcomes: []string{"ok"}, ExecutorRef: "agent:default"},
-			{Key: "command", Type: NodeCommand, Outcomes: []string{"pass"}, ExecutorRef: "command:test"},
+			{Key: "agent", Type: NodeAgent, Outcomes: []string{"ok"}, Agent: testAgentNodeConfig()},
+			{Key: "command", Type: NodeCommand, Outcomes: []string{"pass"}, Command: testCommandNodeConfig()},
 			{Key: "end", Type: NodeEnd},
 		},
 		Edges: []Edge{
@@ -233,7 +255,7 @@ func unboundedCycleDocument() WorkflowDocument {
 		SchemaVersion: "1",
 		Nodes: []Node{
 			{Key: "start", Type: NodeStart, Outcomes: []string{"next"}},
-			{Key: "agent", Type: NodeAgent, Outcomes: []string{"retry", "done"}},
+			{Key: "agent", Type: NodeAgent, Outcomes: []string{"retry", "done"}, Agent: testAgentNodeConfig()},
 			{Key: "end", Type: NodeEnd},
 		},
 		Edges: []Edge{

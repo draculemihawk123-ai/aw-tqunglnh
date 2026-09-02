@@ -11,6 +11,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/worker"
+	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
@@ -187,7 +188,13 @@ func spk12WorkflowDocument() workflow.WorkflowDocument {
 		SchemaVersion: "1",
 		Nodes: []workflow.Node{
 			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"execute"}},
-			{Key: "implement", Type: workflow.NodeAgent, Outcomes: []string{"done"}, ExecutorRef: "agent/default"},
+			{Key: "implement", Type: workflow.NodeAgent, Outcomes: []string{"done"}, Agent: &workflow.AgentNodeConfig{
+				ProfileRef: definition.DependencyPin{
+					Kind:         definition.KindAgentProfile,
+					DefinitionID: "agent-default",
+					VersionID:    "agent-default-v1",
+				},
+			}},
 			{Key: "end", Type: workflow.NodeEnd},
 		},
 		Edges: []workflow.Edge{

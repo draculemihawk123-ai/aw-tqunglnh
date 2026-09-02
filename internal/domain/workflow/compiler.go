@@ -10,6 +10,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 )
 
 type canonicalWorkflow struct {
@@ -104,11 +106,55 @@ func normalizeDocument(document WorkflowDocument) WorkflowDocument {
 	})
 	for index := range normalized.Nodes {
 		sort.Strings(normalized.Nodes[index].Outcomes)
+		normalizeNodeConfig(&normalized.Nodes[index])
 	}
 	sort.Slice(normalized.Edges, func(i, j int) bool {
 		return normalized.Edges[i].Key < normalized.Edges[j].Key
 	})
+	sort.Slice(normalized.SharedState, func(i, j int) bool {
+		return normalized.SharedState[i].Name < normalized.SharedState[j].Name
+	})
+	for index := range normalized.SharedState {
+		sort.Strings(normalized.SharedState[index].Writers)
+		sort.Strings(normalized.SharedState[index].Readers)
+	}
 	return normalized
+}
+
+// sortDependencyPins sorts a set-like []definition.DependencyPin slice
+// in place by Kind then DefinitionID then VersionID, the same
+// order-never-carries-meaning normalization normalizeManifest already
+// applies to this package's own DependencyPin — two authors listing the
+// same pins in a different order must canonicalize identically.
+func sortDependencyPins(pins []definition.DependencyPin) {
+	sort.Slice(pins, func(i, j int) bool {
+		left, right := pins[i], pins[j]
+		if left.Kind != right.Kind {
+			return left.Kind < right.Kind
+		}
+		if left.DefinitionID != right.DefinitionID {
+			return left.DefinitionID < right.DefinitionID
+		}
+		return left.VersionID < right.VersionID
+	})
+}
+
+// normalizeNodeConfig sorts every set-like field inside node's typed
+// config in place. At most one of the config pointers is non-nil (Type
+// determines which — see validateNormalizedDocument), so this only ever
+// touches the one config the node actually declares.
+func normalizeNodeConfig(node *Node) {
+	switch {
+	case node.Agent != nil:
+		sortDependencyPins(node.Agent.PolicyRefs)
+	case node.Command != nil:
+		sortDependencyPins(node.Command.PolicyRefs)
+	case node.MachineGate != nil:
+		sortDependencyPins(node.MachineGate.PolicyRefs)
+	case node.Approval != nil:
+		sort.Strings(node.Approval.AuthorizedRoles)
+		sort.Strings(node.Approval.RequestedEvidenceKinds)
+	}
 }
 
 func normalizeManifest(manifest DependencyManifest) (DependencyManifest, error) {
