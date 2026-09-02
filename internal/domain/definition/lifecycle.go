@@ -184,50 +184,103 @@ func Activate(current Fields) (Fields, error) {
 	return next, nil
 }
 
-// VersionFields is the kind-agnostic identity/metadata every published
-// Version carries — never its kind-specific payload (that stays in each
-// kind's own domain package, e.g. workflow.WorkflowVersion.Document()).
-// It has no exported way to mutate any field once constructed: a
-// published Version is immutable forever (V2-01's own "không có update/
-// delete public trên Version").
+// VersionFields is the kind-agnostic identity/content/metadata every
+// published Version carries — never its kind-specific payload (that
+// stays in each kind's own domain package, e.g.
+// workflow.WorkflowVersion.Document()). CanonicalSource/SourceHash is
+// the exact authored content and its hash (ADR-012's SourceHash);
+// CompiledSnapshot/CompiledHash is the resolved runtime payload plus
+// dependency manifest and its own hash (ADR-012's CompiledSnapshotHash)
+// — the two differ because a dependency's own version can change what a
+// definition compiles to even when its own authored source is untouched.
+// VersionFields has no exported way to mutate any field once
+// constructed: a published Version is immutable forever (V2-01's own
+// "không có update/delete public trên Version").
 type VersionFields struct {
-	id            string
-	definitionID  string
-	kind          Kind
-	versionNumber uint64
-	publishedBy   string
-	publishedAt   time.Time
+	id               string
+	definitionID     string
+	kind             Kind
+	versionNumber    uint64
+	schemaVersion    int
+	canonicalSource  string
+	sourceHash       string
+	compiledSnapshot string
+	compiledHash     string
+	dependencies     DependencyManifest
+	publishedBy      string
+	publishedAt      time.Time
+}
+
+// NewVersionFieldsRequest is what a caller supplies to NewVersionFields.
+type NewVersionFieldsRequest struct {
+	ID               string
+	DefinitionID     string
+	Kind             Kind
+	VersionNumber    uint64
+	SchemaVersion    int
+	CanonicalSource  string
+	SourceHash       string
+	CompiledSnapshot string
+	CompiledHash     string
+	Dependencies     DependencyManifest
+	PublishedBy      string
+	PublishedAt      time.Time
 }
 
 // NewVersionFields validates and constructs an immutable VersionFields.
-func NewVersionFields(id, definitionID string, kind Kind, versionNumber uint64, publishedBy string, publishedAt time.Time) (VersionFields, error) {
-	if strings.TrimSpace(id) == "" {
+func NewVersionFields(req NewVersionFieldsRequest) (VersionFields, error) {
+	if strings.TrimSpace(req.ID) == "" {
 		return VersionFields{}, errors.New("definition: version id is required")
 	}
-	if strings.TrimSpace(definitionID) == "" {
+	if strings.TrimSpace(req.DefinitionID) == "" {
 		return VersionFields{}, errors.New("definition: version's definition id is required")
 	}
-	if !kind.Valid() {
-		return VersionFields{}, fmt.Errorf("definition: unknown kind %q", kind)
+	if !req.Kind.Valid() {
+		return VersionFields{}, fmt.Errorf("definition: unknown kind %q", req.Kind)
 	}
-	if versionNumber == 0 {
+	if req.VersionNumber == 0 {
 		return VersionFields{}, errors.New("definition: version number must be positive")
 	}
-	if strings.TrimSpace(publishedBy) == "" {
+	if req.SchemaVersion <= 0 {
+		return VersionFields{}, errors.New("definition: schema version must be positive")
+	}
+	if strings.TrimSpace(req.CanonicalSource) == "" {
+		return VersionFields{}, errors.New("definition: canonical source is required")
+	}
+	if strings.TrimSpace(req.SourceHash) == "" {
+		return VersionFields{}, errors.New("definition: source hash is required")
+	}
+	if strings.TrimSpace(req.CompiledSnapshot) == "" {
+		return VersionFields{}, errors.New("definition: compiled snapshot is required")
+	}
+	if strings.TrimSpace(req.CompiledHash) == "" {
+		return VersionFields{}, errors.New("definition: compiled hash is required")
+	}
+	if strings.TrimSpace(req.PublishedBy) == "" {
 		return VersionFields{}, errors.New("definition: publishedBy is required")
 	}
-	if publishedAt.IsZero() {
+	if req.PublishedAt.IsZero() {
 		return VersionFields{}, errors.New("definition: publishedAt is required")
 	}
 	return VersionFields{
-		id: id, definitionID: definitionID, kind: kind,
-		versionNumber: versionNumber, publishedBy: publishedBy, publishedAt: publishedAt,
+		id: req.ID, definitionID: req.DefinitionID, kind: req.Kind,
+		versionNumber: req.VersionNumber, schemaVersion: req.SchemaVersion,
+		canonicalSource: req.CanonicalSource, sourceHash: req.SourceHash,
+		compiledSnapshot: req.CompiledSnapshot, compiledHash: req.CompiledHash,
+		dependencies: req.Dependencies.Clone(),
+		publishedBy:  req.PublishedBy, publishedAt: req.PublishedAt,
 	}, nil
 }
 
-func (v VersionFields) ID() string             { return v.id }
-func (v VersionFields) DefinitionID() string   { return v.definitionID }
-func (v VersionFields) Kind() Kind             { return v.kind }
-func (v VersionFields) VersionNumber() uint64  { return v.versionNumber }
-func (v VersionFields) PublishedBy() string    { return v.publishedBy }
-func (v VersionFields) PublishedAt() time.Time { return v.publishedAt }
+func (v VersionFields) ID() string                       { return v.id }
+func (v VersionFields) DefinitionID() string             { return v.definitionID }
+func (v VersionFields) Kind() Kind                       { return v.kind }
+func (v VersionFields) VersionNumber() uint64            { return v.versionNumber }
+func (v VersionFields) SchemaVersion() int               { return v.schemaVersion }
+func (v VersionFields) CanonicalSource() string          { return v.canonicalSource }
+func (v VersionFields) SourceHash() string               { return v.sourceHash }
+func (v VersionFields) CompiledSnapshot() string         { return v.compiledSnapshot }
+func (v VersionFields) CompiledHash() string             { return v.compiledHash }
+func (v VersionFields) Dependencies() DependencyManifest { return v.dependencies.Clone() }
+func (v VersionFields) PublishedBy() string              { return v.publishedBy }
+func (v VersionFields) PublishedAt() time.Time           { return v.publishedAt }

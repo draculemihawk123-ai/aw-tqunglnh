@@ -170,14 +170,27 @@ func TestActivate_FromArchived_Rejected(t *testing.T) {
 	}
 }
 
+func validVersionFieldsRequest(now time.Time) definition.NewVersionFieldsRequest {
+	return definition.NewVersionFieldsRequest{
+		ID: "ver-1", DefinitionID: "def-1", Kind: definition.KindWorkflow,
+		VersionNumber: 3, SchemaVersion: 1,
+		CanonicalSource: `{"nodes":[]}`, SourceHash: "sha256:source",
+		CompiledSnapshot: `{"nodes":[],"dependencies":[]}`, CompiledHash: "sha256:compiled",
+		PublishedBy: "operator-1", PublishedAt: now,
+	}
+}
+
 func TestNewVersionFields_ValidAndAccessors(t *testing.T) {
 	now := time.Now().UTC()
-	v, err := definition.NewVersionFields("ver-1", "def-1", definition.KindWorkflow, 3, "operator-1", now)
+	v, err := definition.NewVersionFields(validVersionFieldsRequest(now))
 	if err != nil {
 		t.Fatalf("NewVersionFields: %v", err)
 	}
 	if v.ID() != "ver-1" || v.DefinitionID() != "def-1" || v.Kind() != definition.KindWorkflow ||
-		v.VersionNumber() != 3 || v.PublishedBy() != "operator-1" || !v.PublishedAt().Equal(now) {
+		v.VersionNumber() != 3 || v.SchemaVersion() != 1 ||
+		v.CanonicalSource() != `{"nodes":[]}` || v.SourceHash() != "sha256:source" ||
+		v.CompiledSnapshot() != `{"nodes":[],"dependencies":[]}` || v.CompiledHash() != "sha256:compiled" ||
+		v.PublishedBy() != "operator-1" || !v.PublishedAt().Equal(now) {
 		t.Fatalf("NewVersionFields accessors = %+v, want matching constructor args", v)
 	}
 }
@@ -185,26 +198,78 @@ func TestNewVersionFields_ValidAndAccessors(t *testing.T) {
 func TestNewVersionFields_RejectsMissingFields(t *testing.T) {
 	now := time.Now().UTC()
 	cases := []struct {
-		name                          string
-		id, definitionID, publishedBy string
-		kind                          definition.Kind
-		versionNumber                 uint64
-		publishedAt                   time.Time
+		name   string
+		mutate func(req definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest
 	}{
-		{"empty id", "", "def-1", "op", definition.KindWorkflow, 1, now},
-		{"empty definitionID", "ver-1", "", "op", definition.KindWorkflow, 1, now},
-		{"unknown kind", "ver-1", "def-1", "op", "NOT_REAL", 1, now},
-		{"zero version number", "ver-1", "def-1", "op", definition.KindWorkflow, 0, now},
-		{"empty publishedBy", "ver-1", "def-1", "", definition.KindWorkflow, 1, now},
-		{"zero publishedAt", "ver-1", "def-1", "op", definition.KindWorkflow, 1, time.Time{}},
+		{"empty id", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest { r.ID = ""; return r }},
+		{"empty definitionID", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.DefinitionID = ""
+			return r
+		}},
+		{"unknown kind", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.Kind = "NOT_REAL"
+			return r
+		}},
+		{"zero version number", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.VersionNumber = 0
+			return r
+		}},
+		{"zero schema version", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.SchemaVersion = 0
+			return r
+		}},
+		{"empty canonical source", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.CanonicalSource = ""
+			return r
+		}},
+		{"empty source hash", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.SourceHash = ""
+			return r
+		}},
+		{"empty compiled snapshot", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.CompiledSnapshot = ""
+			return r
+		}},
+		{"empty compiled hash", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.CompiledHash = ""
+			return r
+		}},
+		{"empty publishedBy", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.PublishedBy = ""
+			return r
+		}},
+		{"zero publishedAt", func(r definition.NewVersionFieldsRequest) definition.NewVersionFieldsRequest {
+			r.PublishedAt = time.Time{}
+			return r
+		}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			_, err := definition.NewVersionFields(c.id, c.definitionID, c.kind, c.versionNumber, c.publishedBy, c.publishedAt)
+			_, err := definition.NewVersionFields(c.mutate(validVersionFieldsRequest(now)))
 			if err == nil {
 				t.Fatalf("NewVersionFields(%s) should have failed", c.name)
 			}
 		})
+	}
+}
+
+func TestNewVersionFields_ClonesDependencyManifest(t *testing.T) {
+	now := time.Now().UTC()
+	req := validVersionFieldsRequest(now)
+	req.Dependencies = definition.DependencyManifest{
+		Pins: []definition.DependencyPin{{Kind: definition.KindBlock, DefinitionID: "def-2", VersionID: "ver-2"}},
+	}
+	v, err := definition.NewVersionFields(req)
+	if err != nil {
+		t.Fatalf("NewVersionFields: %v", err)
+	}
+	req.Dependencies.Pins[0].VersionID = "mutated"
+	if v.Dependencies().Pins[0].VersionID != "ver-2" {
+		t.Fatal("VersionFields.Dependencies() was affected by mutating the caller's original manifest — NewVersionFields must clone it")
+	}
+	v.Dependencies().Pins[0].VersionID = "also-mutated"
+	if v.Dependencies().Pins[0].VersionID != "ver-2" {
+		t.Fatal("mutating a Dependencies() result affected VersionFields' own state — Dependencies() must return a clone")
 	}
 }
 
@@ -216,7 +281,10 @@ func TestNewVersionFields_RejectsMissingFields(t *testing.T) {
 func TestVersionFields_NoExportedMutationMethod(t *testing.T) {
 	allowed := map[string]bool{
 		"ID": true, "DefinitionID": true, "Kind": true,
-		"VersionNumber": true, "PublishedBy": true, "PublishedAt": true,
+		"VersionNumber": true, "SchemaVersion": true,
+		"CanonicalSource": true, "SourceHash": true,
+		"CompiledSnapshot": true, "CompiledHash": true, "Dependencies": true,
+		"PublishedBy": true, "PublishedAt": true,
 	}
 	typ := reflect.TypeOf(definition.VersionFields{})
 	for i := 0; i < typ.NumMethod(); i++ {
