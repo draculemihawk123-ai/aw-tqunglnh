@@ -54,7 +54,13 @@ type Config struct {
 	RecoveryInterval time.Duration
 }
 
-func (c Config) validate() (Config, error) {
+// Validate fills in sane defaults for any zero-value field it can, and
+// rejects a combination that could never behave correctly (e.g. a
+// HeartbeatEvery that can't outrun LeaseTTL). New calls this internally;
+// it is also exported so a caller — V1-11's doctor package, for one —
+// can check a Config's lease/reaper settings are sane without needing a
+// real ports.JobQueue/Registry to construct a Pool just to find out.
+func (c Config) Validate() (Config, error) {
 	if c.Concurrency <= 0 {
 		c.Concurrency = 1
 	}
@@ -110,7 +116,7 @@ func New(queue ports.JobQueue, registry *Registry, config Config) (*Pool, error)
 	if registry == nil {
 		return nil, errors.New("workerpool: registry is required")
 	}
-	validated, err := config.validate()
+	validated, err := config.Validate()
 	if err != nil {
 		return nil, err
 	}

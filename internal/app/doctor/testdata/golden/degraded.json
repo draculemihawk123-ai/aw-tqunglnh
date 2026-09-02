@@ -1,0 +1,49 @@
+{
+  "status": "DEGRADED",
+  "checks": [
+    {
+      "name": "process_liveness",
+      "category": "LIVENESS",
+      "status": "HEALTHY",
+      "detail": "process is running and able to respond"
+    },
+    {
+      "name": "app_config",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "startup configuration is valid"
+    },
+    {
+      "name": "database",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "database is reachable"
+    },
+    {
+      "name": "artifact_root",
+      "category": "READINESS",
+      "status": "DEGRADED",
+      "detail": "{{ARTIFACT_ROOT}} does not exist yet",
+      "remediation": "create {{ARTIFACT_ROOT}}, or let it be created automatically on first write"
+    },
+    {
+      "name": "git",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "{{GIT_VERSION}}"
+    },
+    {
+      "name": "worker_config",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "lease/reaper worker configuration is valid"
+    },
+    {
+      "name": "provider:claude",
+      "category": "CAPABILITY",
+      "status": "DEGRADED",
+      "detail": "configured executable was not found",
+      "remediation": "verify the configured executable path for claude is correct and the file exists"
+    }
+  ]
+}

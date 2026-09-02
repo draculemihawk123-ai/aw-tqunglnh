@@ -1,0 +1,42 @@
+{
+  "status": "BLOCKED",
+  "checks": [
+    {
+      "name": "process_liveness",
+      "category": "LIVENESS",
+      "status": "HEALTHY",
+      "detail": "process is running and able to respond"
+    },
+    {
+      "name": "app_config",
+      "category": "READINESS",
+      "status": "BLOCKED",
+      "detail": "startup configuration failed validation",
+      "remediation": "worker_id: WHAT is empty; WHY lease/recovery identity has no safe default; FIX set worker_id (file, env AGENTKIT_WORKER_ID, or --worker-id)"
+    },
+    {
+      "name": "database",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "database is reachable"
+    },
+    {
+      "name": "artifact_root",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "{{ARTIFACT_ROOT}} exists and is writable"
+    },
+    {
+      "name": "git",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "{{GIT_VERSION}}"
+    },
+    {
+      "name": "worker_config",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "lease/reaper worker configuration is valid"
+    }
+  ]
+}

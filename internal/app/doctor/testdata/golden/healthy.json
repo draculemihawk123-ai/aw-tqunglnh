@@ -1,0 +1,47 @@
+{
+  "status": "HEALTHY",
+  "checks": [
+    {
+      "name": "process_liveness",
+      "category": "LIVENESS",
+      "status": "HEALTHY",
+      "detail": "process is running and able to respond"
+    },
+    {
+      "name": "app_config",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "startup configuration is valid"
+    },
+    {
+      "name": "database",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "database is reachable"
+    },
+    {
+      "name": "artifact_root",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "{{ARTIFACT_ROOT}} exists and is writable"
+    },
+    {
+      "name": "git",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "{{GIT_VERSION}}"
+    },
+    {
+      "name": "worker_config",
+      "category": "READINESS",
+      "status": "HEALTHY",
+      "detail": "lease/reaper worker configuration is valid"
+    },
+    {
+      "name": "provider:claude",
+      "category": "CAPABILITY",
+      "status": "HEALTHY",
+      "detail": "observed executable fingerprint sha256:4081d28510401cab5c502be3145ce136b3b9c4a65d4d84637642a52d338ddfb5, size=24 bytes (observed only — not a registered AdapterBuildVersion; that registry does not exist until V2-07A)"
+    }
+  ]
+}

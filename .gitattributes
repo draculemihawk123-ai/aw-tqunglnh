@@ -5,3 +5,12 @@
 # would silently change that checksum per-platform, so it must never apply
 # here regardless of a contributor's or CI runner's core.autocrlf setting.
 *.sql text eol=lf
+
+# Golden JSON fixtures (e.g. internal/app/doctor/testdata/golden/*.json)
+# are compared byte-for-byte against freshly json.MarshalIndent-ed output,
+# which always emits LF only. Without this, a Windows checkout normalizes
+# these to CRLF while Linux keeps LF, making the exact same golden test
+# pass on one CI OS and fail on the other for a reason that has nothing to
+# do with the code under test (V1-11 hit this for real on windows-latest —
+# same root cause as the *.sql rule above).
+*.json text eol=lf
