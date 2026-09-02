@@ -1,0 +1,1 @@
+{"resources":[{"convention":"controllers under src/main/java/.../web, services under .../service","key":"spring-boot-layout","priority":"REQUIRED_PROCEDURE","provenance":{"lastVerified":"2026-01-01T00:00:00Z","owner":"platform-team","source":"docs/style/spring-boot-layout.md"},"selector":{"componentTags":["backend"],"taskKinds":["code-change"]}}]}
