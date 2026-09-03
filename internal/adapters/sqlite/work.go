@@ -679,6 +679,46 @@ FROM repository_workspaces WHERE workspace_set_id = ? ORDER BY repository_id, ge
 	return result, nil
 }
 
+// GetRepositoryWorkspaceByID implements ports.WorkRepository (V3-10): see
+// that interface method's own doc comment for why it returns FamilyID
+// alongside the RepositoryWorkspace itself.
+func (r workRepository) GetRepositoryWorkspaceByID(ctx context.Context, id string) (ports.RepositoryWorkspaceRecord, error) {
+	return getRepositoryWorkspaceByIDTx(ctx, r.tx, id)
+}
+
+func getRepositoryWorkspaceByIDTx(ctx context.Context, tx *sql.Tx, id string) (ports.RepositoryWorkspaceRecord, error) {
+	if id == "" {
+		return ports.RepositoryWorkspaceRecord{}, errors.New("repository workspace id is required")
+	}
+	row := tx.QueryRowContext(ctx, `
+SELECT `+repositoryWorkspaceColumns+`, family_id
+FROM repository_workspaces WHERE id = ?`, id)
+
+	var result workspace.RepositoryWorkspace
+	var branchRef sql.NullString
+	var currentRevision sql.NullString
+	var lastProvisionErrorCode sql.NullString
+	var familyID string
+	err := row.Scan(
+		&result.ID, &result.WorkspaceSetID, &result.RepositoryID, &result.Generation,
+		&result.Locator, &branchRef, &result.BaseRevision, &currentRevision,
+		&result.State, &result.Version, &lastProvisionErrorCode, &familyID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.RepositoryWorkspaceRecord{}, fmt.Errorf("%w: repository workspace %s", ports.ErrPersistenceNotFound, id)
+	}
+	if err != nil {
+		return ports.RepositoryWorkspaceRecord{}, MapSQLiteError(fmt.Errorf("get repository workspace by id: %w", err))
+	}
+	result.BranchRef = branchRef.String
+	result.CurrentRevision = currentRevision.String
+	if lastProvisionErrorCode.Valid {
+		code := lastProvisionErrorCode.String
+		result.LastProvisionErrorCode = &code
+	}
+	return ports.RepositoryWorkspaceRecord{Workspace: result, FamilyID: familyID}, nil
+}
+
 // --- TaskFamily ScopeVersion / ScopeExpansionRequest (V3-08) ---
 //
 // This section gives workRepository the persistence half of

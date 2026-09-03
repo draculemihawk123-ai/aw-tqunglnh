@@ -729,7 +729,14 @@ func (j *JobsRepository) clone() *JobsRepository {
 func (j *JobsRepository) EnqueueJob(_ context.Context, req ports.EnqueueJobRequest) (ports.DurableJob, error) {
 	for _, existing := range j.jobs {
 		if existing.IdempotencyKey == req.IdempotencyKey {
-			return ports.DurableJob{}, fmt.Errorf("fake: duplicate durable job idempotency key %q", req.IdempotencyKey)
+			// Mirrors the real sqlite adapter's own identical mapping of a
+			// durable_jobs.idempotency_key UNIQUE conflict to
+			// ports.ErrPersistenceAlreadyExists (scheduling.go's own
+			// enqueueJobTx, V3-10) — internal/app/workspacereconcile's own
+			// "already has an open reconciliation" check relies on this
+			// exact sentinel, and the fake must return what the real
+			// adapter returns for every caller that can run against either.
+			return ports.DurableJob{}, fmt.Errorf("fake: %w: durable job with idempotency key %q", ports.ErrPersistenceAlreadyExists, req.IdempotencyKey)
 		}
 	}
 	j.jobs = append(j.jobs, req)

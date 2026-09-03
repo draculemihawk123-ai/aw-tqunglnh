@@ -76,6 +76,29 @@ RETURNING `+durableJobColumns,
 	)
 	job, err := scanDurableJob(row)
 	if err != nil {
+		// A conflict on durable_jobs.idempotency_key (UNIQUE,
+		// 0001_initial_schema.sql) is this table's own idempotent-enqueue
+		// guarantee, not a genuine failure: a caller that derives its own
+		// job's IdempotencyKey deterministically from the aggregate it is
+		// about to reconcile (internal/app/workspacereconcile's own
+		// "workspace-reconciliation:<id>@<version>" key, V3-10) relies on
+		// this exact conflict to reject a second, concurrent request for an
+		// already-in-flight reconciliation, mirroring
+		// createRepositoryWorkspaceTx's own identical "insert failed, a row
+		// for the unique key already exists" fallback lookup (work.go)
+		// rather than a raw, unclassified SQLite error.
+		idempotencyKey := strings.TrimSpace(request.IdempotencyKey)
+		if idempotencyKey != "" {
+			var existingID string
+			lookupErr := q.QueryRowContext(ctx,
+				`SELECT id FROM durable_jobs WHERE idempotency_key = ?`, idempotencyKey,
+			).Scan(&existingID)
+			if lookupErr == nil {
+				return ports.DurableJob{}, fmt.Errorf(
+					"%w: durable job with idempotency key %s (existing job %s)",
+					ports.ErrPersistenceAlreadyExists, idempotencyKey, existingID)
+			}
+		}
 		return ports.DurableJob{}, fmt.Errorf("enqueue durable job: %w", err)
 	}
 	return job, nil

@@ -178,6 +178,23 @@ type WorkRepository interface {
 	// required repository now READY" read.
 	ListWorkspaceSetRepositoryWorkspaces(ctx context.Context, workspaceSetID string) ([]workspace.RepositoryWorkspace, error)
 
+	// GetRepositoryWorkspaceByID returns the RepositoryWorkspace row for id,
+	// together with the FamilyID of the TaskFamily whose WorkspaceSet owns
+	// it (V3-10, docs/design/05-v3-project-workspace.md): an operator- or
+	// API-triggered reconciliation request names a RepositoryWorkspace by
+	// its own bare ID alone — it has no reason to already know the
+	// WorkspaceSetID/RepositoryID/Generation composite key
+	// GetRepositoryWorkspace above requires — and
+	// internal/app/workspacereconcile.RequestWorkspaceReconciliation needs
+	// FamilyID specifically to build the fresh ports.ProvisionSpec a later
+	// RECREATE decision issues. repository_workspaces.family_id is already
+	// stored on every row (see CreateRepositoryWorkspace's own doc comment:
+	// "carried for query-convenience/FK-safety") but workspace.RepositoryWorkspace
+	// itself never exposes it, so this returns it alongside rather than
+	// growing that domain type for one caller's own narrow need. Returns
+	// ErrPersistenceNotFound if no row exists for id.
+	GetRepositoryWorkspaceByID(ctx context.Context, id string) (RepositoryWorkspaceRecord, error)
+
 	// TransitionTaskFamilyScopeVersion is populated now (V3-08,
 	// docs/design/05-v3-project-workspace.md): the fenced CAS that increments
 	// a TaskFamily's own ScopeVersion (and its generic Version) by exactly
@@ -230,6 +247,15 @@ type WorkRepository interface {
 	// to the decided request row, recording which family ScopeVersion its
 	// grants were persisted at); nil for REJECTED/WITHDRAWN.
 	TransitionScopeExpansionRequestStatus(ctx context.Context, req TransitionScopeExpansionRequestStatusRequest) (work.ScopeExpansionRequest, error)
+}
+
+// RepositoryWorkspaceRecord pairs a RepositoryWorkspace with the FamilyID
+// of the TaskFamily whose WorkspaceSet owns it — see
+// WorkRepository.GetRepositoryWorkspaceByID's own doc comment for why this
+// is not just workspace.RepositoryWorkspace itself.
+type RepositoryWorkspaceRecord struct {
+	Workspace workspace.RepositoryWorkspace
+	FamilyID  string
 }
 
 // TransitionWorkspaceSetStateRequest is an optimistic compare-and-swap

@@ -295,6 +295,49 @@ func TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess(t *testing
 	})
 }
 
+// TestRequestWorkspaceReconciliationNeverImportsWorkspaceIO proves V3-10's
+// own public/internal split (docs/design/05-v3-project-workspace.md V3-10:
+// "Tách public RequestWorkspaceReconciliation ... khỏi internal
+// ExecuteWorkspaceReconciliation ...; API chỉ được gọi command public") at
+// the import level: internal/app/workspacereconcile/commands.go — which
+// declares RequestWorkspaceReconciliation, the one entry point any
+// API/CLI-shaped caller may ever call — must never import anything that
+// could reach a real workspace's filesystem or Git state (os, os/exec, or
+// any internal/adapters/... package, most pointedly
+// internal/adapters/gitworktree itself). ExecuteWorkspaceReconciliation
+// (handler.go, a different file in the same package) is exactly where that
+// real I/O belongs instead, via ports.WorkspaceProvider/
+// ports.WorkspaceLifecycle — this test intentionally checks commands.go
+// alone, mirroring TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess's
+// own "parse the one real source file, check its own call graph" technique
+// for an identical "public path never touches I/O directly" boundary.
+func TestRequestWorkspaceReconciliationNeverImportsWorkspaceIO(t *testing.T) {
+	moduleRoot := findModuleRoot(t)
+	path := filepath.Join(moduleRoot, "internal", "app", "workspacereconcile", "commands.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	forbidden := map[string]bool{
+		`"os"`:      true,
+		`"os/exec"`: true,
+	}
+	found := false
+	for _, imp := range file.Imports {
+		found = true
+		if forbidden[imp.Path.Value] || strings.Contains(imp.Path.Value, "agent-workflow/internal/adapters") {
+			t.Errorf("%s imports %s — RequestWorkspaceReconciliation's own file must never reach real workspace filesystem/Git state directly; that belongs only in ExecuteWorkspaceReconciliation (handler.go), behind ports.WorkspaceProvider/ports.WorkspaceLifecycle",
+				path, imp.Path.Value)
+		}
+	}
+	if !found {
+		t.Fatal("commands.go declared no imports at all — this test needs updating alongside the implementation")
+	}
+}
+
 func findModuleRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)

@@ -332,6 +332,25 @@ func repositoryWorkspaceKey(workspaceSetID, repositoryID string, generation uint
 	return fmt.Sprintf("%s/%s/%d", workspaceSetID, repositoryID, generation)
 }
 
+// GetRepositoryWorkspaceByID mirrors sqlite's getRepositoryWorkspaceByIDTx
+// (V3-10): a linear scan of repositoryWorkspaces for the row whose own ID
+// matches, same "fine for the fake's small in-memory fixture sizes" trade-off
+// findWorkspaceSetByID above already makes, then resolves FamilyID via that
+// same helper.
+func (w *WorkRepository) GetRepositoryWorkspaceByID(_ context.Context, id string) (ports.RepositoryWorkspaceRecord, error) {
+	for _, rw := range w.repositoryWorkspaces {
+		if string(rw.ID) != id {
+			continue
+		}
+		familyID, _, ok := w.findWorkspaceSetByID(string(rw.WorkspaceSetID))
+		if !ok {
+			return ports.RepositoryWorkspaceRecord{}, fmt.Errorf("fake: %w: workspace set %s", ports.ErrPersistenceNotFound, rw.WorkspaceSetID)
+		}
+		return ports.RepositoryWorkspaceRecord{Workspace: rw, FamilyID: familyID}, nil
+	}
+	return ports.RepositoryWorkspaceRecord{}, fmt.Errorf("fake: %w: repository workspace %s", ports.ErrPersistenceNotFound, id)
+}
+
 // --- TaskFamily ScopeVersion / ScopeExpansionRequest (V3-08) ---
 
 // TransitionTaskFamilyScopeVersion mirrors sqlite's
