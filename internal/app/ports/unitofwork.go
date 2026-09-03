@@ -59,6 +59,14 @@ type Tx interface {
 	// owns building the immutable AdapterBuildVersion registry (ADR-022)
 	// end to end, so its accessor gets a real interface from the start.
 	AdapterBuilds() AdapterBuildRepository
+	// Readiness is populated now (V3-07,
+	// docs/design/05-v3-project-workspace.md): the same "gets a real
+	// interface from the start" treatment AdapterBuilds above already
+	// established for a concern this task owns end to end — readiness
+	// profiles, pre-change baseline evidence and this task's own narrow
+	// typed environment blocker (see ReadinessRepository's own doc
+	// comment, internal/app/ports/readiness.go).
+	Readiness() ReadinessRepository
 }
 
 // CatalogRepository is populated now (V3-01,

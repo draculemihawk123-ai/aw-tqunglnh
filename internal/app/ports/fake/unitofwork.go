@@ -93,6 +93,7 @@ type Tx struct {
 	events        *EventsRepository
 	receipts      *ReceiptsRepository
 	adapterBuilds *AdapterBuildRepository
+	readiness     *ReadinessRepository
 }
 
 func newTx() Tx {
@@ -105,6 +106,7 @@ func newTx() Tx {
 		catalog:       catalog,
 		work:          &WorkRepository{catalog: catalog},
 		jobs:          &JobsRepository{},
+		readiness:     &ReadinessRepository{catalog: catalog},
 	}
 }
 
@@ -117,6 +119,7 @@ func (t Tx) clone() Tx {
 	clone.catalog = t.catalog.clone()
 	clone.work = t.work.cloneWith(clone.catalog)
 	clone.jobs = t.jobs.clone()
+	clone.readiness = t.readiness.cloneWith(clone.catalog)
 	return clone
 }
 
@@ -130,6 +133,7 @@ func (t Tx) Jobs() ports.JobsRepository                  { return t.jobs }
 func (t Tx) Events() ports.EventsRepository              { return t.events }
 func (t Tx) Receipts() ports.ReceiptsRepository          { return t.receipts }
 func (t Tx) AdapterBuilds() ports.AdapterBuildRepository { return t.adapterBuilds }
+func (t Tx) Readiness() ports.ReadinessRepository        { return t.readiness }
 
 type RuntimeRepository struct{}
 

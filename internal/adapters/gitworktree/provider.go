@@ -37,6 +37,15 @@ type Provider struct {
 
 var _ ports.WorkspaceProvider = (*Provider)(nil)
 
+// Provider also satisfies ports.WorkspaceDirectoryResolver (V3-07,
+// internal/app/ports/readiness.go's own doc comment): WorkingDirectory
+// below is already exactly that one method — this assertion is a
+// compile-time guarantee that internal/app/readinesscheck's own real
+// composition wiring (whenever a later task builds it) can pass a
+// *Provider directly wherever a ports.WorkspaceDirectoryResolver is
+// wanted, with zero further changes to this file.
+var _ ports.WorkspaceDirectoryResolver = (*Provider)(nil)
+
 func New(config Config) (*Provider, error) {
 	if strings.TrimSpace(config.Root) == "" {
 		return nil, fmt.Errorf("%w: root is required", ErrInvalidConfig)
