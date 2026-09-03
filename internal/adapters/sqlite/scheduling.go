@@ -23,7 +23,23 @@ type rowScanner interface {
 	Scan(...any) error
 }
 
+// sqlQueryRower is satisfied by both *sql.DB and *sql.Tx: the common
+// surface enqueueJobTx needs so it runs identically whether called from
+// Store.EnqueueJob's own single-statement autocommit (its pre-existing
+// external behavior, unchanged by this extraction) or from
+// jobsRepository.EnqueueJob's already-open transaction (V3-01: the first
+// caller that needs a durable job enqueued atomically with other writes
+// in the same transaction — RegisterRepository's own Repository-row +
+// probe-job atomicity, docs/design/05-v3-project-workspace.md).
+type sqlQueryRower interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
 func (s *Store) EnqueueJob(ctx context.Context, request ports.EnqueueJobRequest) (ports.DurableJob, error) {
+	return enqueueJobTx(ctx, s.db, request)
+}
+
+func enqueueJobTx(ctx context.Context, q sqlQueryRower, request ports.EnqueueJobRequest) (ports.DurableJob, error) {
 	if err := validateEnqueueJob(request); err != nil {
 		return ports.DurableJob{}, err
 	}
@@ -36,7 +52,7 @@ func (s *Store) EnqueueJob(ctx context.Context, request ports.EnqueueJobRequest)
 		availableAt = request.AvailableAt.UTC().Format(time.RFC3339Nano)
 	}
 
-	row := s.db.QueryRowContext(ctx, `
+	row := q.QueryRowContext(ctx, `
 INSERT INTO durable_jobs (
     id, project_id, kind, aggregate_type, aggregate_id, payload_json, state,
     available_at, priority, claim_count, max_claims, lease_token,
@@ -63,6 +79,15 @@ RETURNING `+durableJobColumns,
 		return ports.DurableJob{}, fmt.Errorf("enqueue durable job: %w", err)
 	}
 	return job, nil
+}
+
+// jobsRepository implements ports.JobsRepository (V3-01): the
+// Tx-composable equivalent of Store.EnqueueJob above, for a command
+// handler (internal/app/catalog.RegisterRepository) that needs the job
+// insert and whatever Repository-row/event/receipt writes it performs
+// alongside it to commit as one atomic transaction.
+func (r jobsRepository) EnqueueJob(ctx context.Context, request ports.EnqueueJobRequest) (ports.DurableJob, error) {
+	return enqueueJobTx(ctx, r.tx, request)
 }
 
 func (s *Store) ClaimJob(

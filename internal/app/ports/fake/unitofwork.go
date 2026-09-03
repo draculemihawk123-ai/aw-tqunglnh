@@ -17,6 +17,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
@@ -84,11 +85,11 @@ func (u *UnitOfWork) run(fn func(ports.Tx) error, persistOnSuccess bool) error {
 // call; clone() deep-copies both before each attempt so a failed or
 // read-only attempt never mutates the committed Snapshot.
 type Tx struct {
-	catalog       CatalogRepository
+	catalog       *CatalogRepository
 	work          WorkRepository
 	definitions   *DefinitionsRepository
 	runtime       RuntimeRepository
-	jobs          JobsRepository
+	jobs          *JobsRepository
 	events        *EventsRepository
 	receipts      *ReceiptsRepository
 	adapterBuilds *AdapterBuildRepository
@@ -100,6 +101,8 @@ func newTx() Tx {
 		receipts:      &ReceiptsRepository{},
 		adapterBuilds: &AdapterBuildRepository{},
 		definitions:   &DefinitionsRepository{},
+		catalog:       &CatalogRepository{},
+		jobs:          &JobsRepository{},
 	}
 }
 
@@ -109,6 +112,8 @@ func (t Tx) clone() Tx {
 	clone.receipts = t.receipts.clone()
 	clone.adapterBuilds = t.adapterBuilds.clone()
 	clone.definitions = t.definitions.clone()
+	clone.catalog = t.catalog.clone()
+	clone.jobs = t.jobs.clone()
 	return clone
 }
 
@@ -123,10 +128,8 @@ func (t Tx) Events() ports.EventsRepository              { return t.events }
 func (t Tx) Receipts() ports.ReceiptsRepository          { return t.receipts }
 func (t Tx) AdapterBuilds() ports.AdapterBuildRepository { return t.adapterBuilds }
 
-type CatalogRepository struct{}
 type WorkRepository struct{}
 type RuntimeRepository struct{}
-type JobsRepository struct{}
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the
@@ -464,6 +467,212 @@ func sameDefinitionScope(a, b definition.Scope) bool {
 		return true
 	}
 	return *a.ProjectID == *b.ProjectID
+}
+
+// CatalogRepository is an in-memory ports.CatalogRepository — V3-01 gives
+// this concern its first real behavior (Project/Repository/Component/
+// ComponentPackAssignment), mirroring the same cross-project resolution
+// discipline sqlite's own catalogRepository follows: a Component's
+// Repository, and a ComponentPackAssignment's Component, are always
+// resolved from the fake's own stored records, never trusted from the
+// request.
+type CatalogRepository struct {
+	projects     map[string]project.Project
+	repositories map[string]project.Repository
+	components   map[string]project.Component
+	assignments  map[string][]project.ComponentPackAssignment // by ComponentID, oldest first
+}
+
+var _ ports.CatalogRepository = (*CatalogRepository)(nil)
+
+func (c *CatalogRepository) clone() *CatalogRepository {
+	projects := make(map[string]project.Project, len(c.projects))
+	for k, v := range c.projects {
+		projects[k] = v
+	}
+	repositories := make(map[string]project.Repository, len(c.repositories))
+	for k, v := range c.repositories {
+		repositories[k] = v
+	}
+	components := make(map[string]project.Component, len(c.components))
+	for k, v := range c.components {
+		components[k] = v
+	}
+	assignments := make(map[string][]project.ComponentPackAssignment, len(c.assignments))
+	for k, v := range c.assignments {
+		assignments[k] = append([]project.ComponentPackAssignment(nil), v...)
+	}
+	return &CatalogRepository{projects: projects, repositories: repositories, components: components, assignments: assignments}
+}
+
+func (c *CatalogRepository) CreateProject(_ context.Context, req ports.CreateProjectRequest) (project.Project, error) {
+	created, err := project.NewProject(project.ProjectID(req.ID), req.Name)
+	if err != nil {
+		return project.Project{}, err
+	}
+	if c.projects == nil {
+		c.projects = map[string]project.Project{}
+	}
+	c.projects[req.ID] = created
+	return created, nil
+}
+
+func (c *CatalogRepository) GetProject(_ context.Context, id string) (project.Project, error) {
+	p, ok := c.projects[id]
+	if !ok {
+		return project.Project{}, fmt.Errorf("fake: %w: project %s", ports.ErrPersistenceNotFound, id)
+	}
+	return p, nil
+}
+
+func (c *CatalogRepository) RegisterRepository(_ context.Context, req ports.RegisterRepositoryRequest) (project.Repository, error) {
+	created, err := project.NewRepository(
+		project.RepositoryID(req.ID), project.ProjectID(req.ProjectID), req.Name, req.RemoteLocator, req.DefaultRef,
+	)
+	if err != nil {
+		return project.Repository{}, err
+	}
+	if _, ok := c.projects[req.ProjectID]; !ok {
+		return project.Repository{}, fmt.Errorf("fake: %w: project %s", ports.ErrPersistenceNotFound, req.ProjectID)
+	}
+	if c.repositories == nil {
+		c.repositories = map[string]project.Repository{}
+	}
+	c.repositories[req.ID] = created
+	return created, nil
+}
+
+func (c *CatalogRepository) GetRepository(_ context.Context, id string) (project.Repository, error) {
+	repo, ok := c.repositories[id]
+	if !ok {
+		return project.Repository{}, fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceNotFound, id)
+	}
+	return repo, nil
+}
+
+func (c *CatalogRepository) ListProjectRepositories(_ context.Context, projectID string) ([]project.Repository, error) {
+	var result []project.Repository
+	for _, repo := range c.repositories {
+		if string(repo.ProjectID) == projectID {
+			result = append(result, repo)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
+func (c *CatalogRepository) CreateComponent(_ context.Context, req ports.CreateComponentRequest) (project.Component, error) {
+	created, err := project.NewComponent(
+		project.ComponentID(req.ID), project.ProjectID(req.ProjectID), project.RepositoryID(req.RepositoryID),
+		req.Name, req.Path, req.Kind,
+	)
+	if err != nil {
+		return project.Component{}, err
+	}
+	repo, ok := c.repositories[req.RepositoryID]
+	if !ok {
+		return project.Component{}, fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceNotFound, req.RepositoryID)
+	}
+	if string(repo.ProjectID) != req.ProjectID {
+		return project.Component{}, fmt.Errorf("fake: %w: component repository %s belongs to project %s, not %s",
+			ports.ErrCrossProjectReference, req.RepositoryID, repo.ProjectID, req.ProjectID)
+	}
+	if c.components == nil {
+		c.components = map[string]project.Component{}
+	}
+	c.components[req.ID] = created
+	return created, nil
+}
+
+func (c *CatalogRepository) GetComponent(_ context.Context, id string) (project.Component, error) {
+	component, ok := c.components[id]
+	if !ok {
+		return project.Component{}, fmt.Errorf("fake: %w: component %s", ports.ErrPersistenceNotFound, id)
+	}
+	return component, nil
+}
+
+func (c *CatalogRepository) AssignComponentPack(_ context.Context, req ports.AssignComponentPackRequest) (project.ComponentPackAssignment, error) {
+	created, err := project.NewComponentPackAssignment(
+		project.ComponentPackAssignmentID(req.ID), project.ProjectID(req.ProjectID), project.ComponentID(req.ComponentID),
+		project.PackVersionID(req.PackVersionID), req.EffectiveAt, req.Actor,
+	)
+	if err != nil {
+		return project.ComponentPackAssignment{}, err
+	}
+	component, ok := c.components[req.ComponentID]
+	if !ok {
+		return project.ComponentPackAssignment{}, fmt.Errorf("fake: %w: component %s", ports.ErrPersistenceNotFound, req.ComponentID)
+	}
+	if string(component.ProjectID) != req.ProjectID {
+		return project.ComponentPackAssignment{}, fmt.Errorf("fake: %w: component %s belongs to project %s, not %s",
+			ports.ErrCrossProjectReference, req.ComponentID, component.ProjectID, req.ProjectID)
+	}
+	if c.assignments == nil {
+		c.assignments = map[string][]project.ComponentPackAssignment{}
+	}
+	c.assignments[req.ComponentID] = append(c.assignments[req.ComponentID], created)
+	return created, nil
+}
+
+func (c *CatalogRepository) ListComponentPackAssignments(_ context.Context, componentID string) ([]project.ComponentPackAssignment, error) {
+	assignments := append([]project.ComponentPackAssignment(nil), c.assignments[componentID]...)
+	sort.Slice(assignments, func(i, j int) bool { return assignments[i].EffectiveAt.Before(assignments[j].EffectiveAt) })
+	return assignments, nil
+}
+
+func (c *CatalogRepository) GetEffectiveComponentPackAssignment(_ context.Context, componentID string, at time.Time) (project.ComponentPackAssignment, error) {
+	var best project.ComponentPackAssignment
+	found := false
+	for _, assignment := range c.assignments[componentID] {
+		if assignment.EffectiveAt.After(at) {
+			continue
+		}
+		if !found || assignment.EffectiveAt.After(best.EffectiveAt) {
+			best = assignment
+			found = true
+		}
+	}
+	if !found {
+		return project.ComponentPackAssignment{}, fmt.Errorf("fake: %w: no component pack assignment for component %s effective at or before %s",
+			ports.ErrPersistenceNotFound, componentID, at)
+	}
+	return best, nil
+}
+
+// JobsRepository is an in-memory ports.JobsRepository — V3-01 gives this
+// concern its first real method (EnqueueJob), so
+// internal/app/catalog.RegisterRepository's own atomic Repository-row +
+// probe-job enqueue can be tested against the fake without sqlite.
+type JobsRepository struct {
+	jobs []ports.EnqueueJobRequest
+}
+
+var _ ports.JobsRepository = (*JobsRepository)(nil)
+
+func (j *JobsRepository) clone() *JobsRepository {
+	jobs := append([]ports.EnqueueJobRequest(nil), j.jobs...)
+	return &JobsRepository{jobs: jobs}
+}
+
+func (j *JobsRepository) EnqueueJob(_ context.Context, req ports.EnqueueJobRequest) (ports.DurableJob, error) {
+	for _, existing := range j.jobs {
+		if existing.IdempotencyKey == req.IdempotencyKey {
+			return ports.DurableJob{}, fmt.Errorf("fake: duplicate durable job idempotency key %q", req.IdempotencyKey)
+		}
+	}
+	j.jobs = append(j.jobs, req)
+	return ports.DurableJob{
+		ID: req.ID, ProjectID: req.ProjectID, Kind: req.Kind, AggregateType: req.AggregateType,
+		AggregateID: req.AggregateID, Payload: req.Payload, State: ports.JobAvailable,
+		Priority: req.Priority, MaxClaims: req.MaxClaims, IdempotencyKey: req.IdempotencyKey, Version: 1,
+	}, nil
+}
+
+// Items returns a copy of every job enqueued so far, in enqueue order —
+// for test assertions (mirroring EventsRepository.Items's own shape).
+func (j *JobsRepository) Items() []ports.EnqueueJobRequest {
+	return append([]ports.EnqueueJobRequest(nil), j.jobs...)
 }
 
 // fakeWorkflowVersionToDefinitionFields mirrors sqlite's own

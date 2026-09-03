@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
@@ -59,9 +60,85 @@ type Tx interface {
 	AdapterBuilds() AdapterBuildRepository
 }
 
-// CatalogRepository will expose Project/Repository/Component persistence
-// once V3-01 builds it.
-type CatalogRepository interface{}
+// CatalogRepository is populated now (V3-01,
+// docs/design/05-v3-project-workspace.md): Project/Repository/Component/
+// ComponentPackAssignment persistence, composed inside the same
+// UnitOfWork call whatever Events()/Receipts()/Jobs() write alongside it
+// (GC-INV-15: a state transition and its domain event commit in the same
+// transaction — RegisterRepository's own "atomically tạo record
+// REGISTERING và probe job/outbox" needs exactly this). Every method here
+// takes and returns identity as plain strings (mirroring
+// DefinitionsRepository.CreateDefinition/LoadVersion's own id-as-string
+// convention), converting to/from the typed project.ProjectID/
+// RepositoryID/ComponentID/ComponentPackAssignmentID domain types
+// internally. list/filter methods (ListProjectRepositories,
+// ListComponentPackAssignments) scope strictly by the stored foreign-key
+// column alone, never by name/path/slug — V3-01's own "Hoàn thành khi:
+// list/filter không suy identity từ slug/cwd/remote".
+type CatalogRepository interface {
+	// CreateProject inserts a new Project row (ACTIVE, generation 1, per
+	// project.NewProject). Not itself a cited public command in
+	// docs/architecture/04-go-core-spec.md's §8 command table for V3-01's
+	// own scope (ADR-025 makes CreateProject installation-scoped, a
+	// concern this task's own Thực hiện line never names) — this method
+	// exists purely so RegisterRepository/CreateComponent has a Project
+	// to reference and so tests can set up fixtures without reaching
+	// into sqlite directly; a later task adding the full idempotent
+	// CreateProject command wraps this same method rather than
+	// duplicating the insert.
+	CreateProject(ctx context.Context, req CreateProjectRequest) (project.Project, error)
+	// GetProject returns the Project with the given ID, or
+	// ErrPersistenceNotFound.
+	GetProject(ctx context.Context, id string) (project.Project, error)
+
+	// RegisterRepository atomically creates a new Repository row —
+	// always RepositoryRegistering (project.NewRepository's own rule) —
+	// after verifying req.ProjectID names a Project that actually exists
+	// (ErrPersistenceNotFound otherwise). It does not itself enqueue the
+	// probe job or append a domain event: those are the calling command
+	// handler's job (internal/app/catalog.RegisterRepository), composed
+	// alongside this call inside the same ports.Tx, exactly the way
+	// DefinitionsRepository.CreateDefinition never itself appends
+	// DefinitionCreated either.
+	RegisterRepository(ctx context.Context, req RegisterRepositoryRequest) (project.Repository, error)
+	// GetRepository returns the Repository with the given ID, or
+	// ErrPersistenceNotFound.
+	GetRepository(ctx context.Context, id string) (project.Repository, error)
+	// ListProjectRepositories returns every Repository whose stored
+	// project_id column equals projectID — never a name/slug match.
+	ListProjectRepositories(ctx context.Context, projectID string) ([]project.Repository, error)
+
+	// CreateComponent inserts a new Component row after verifying
+	// req.RepositoryID names a Repository that actually exists and that
+	// its own project_id matches req.ProjectID exactly —
+	// ErrCrossProjectReference otherwise (the Repository's own stored
+	// project is always what is checked, never trusted from the
+	// request, the same "resolve from the referenced row itself" rule
+	// publishSharedDefinitionVersionTx's own cross-project dependency
+	// check already follows).
+	CreateComponent(ctx context.Context, req CreateComponentRequest) (project.Component, error)
+	// GetComponent returns the Component with the given ID, or
+	// ErrPersistenceNotFound.
+	GetComponent(ctx context.Context, id string) (project.Component, error)
+
+	// AssignComponentPack appends a new ComponentPackAssignment row after
+	// verifying req.ComponentID names a Component that actually exists
+	// and that its own project_id matches req.ProjectID —
+	// ErrCrossProjectReference otherwise. It never mutates or replaces an
+	// existing assignment (see project.ComponentPackAssignment's own doc
+	// comment): a second assignment for the same Component is always a
+	// new row with its own EffectiveAt.
+	AssignComponentPack(ctx context.Context, req AssignComponentPackRequest) (project.ComponentPackAssignment, error)
+	// ListComponentPackAssignments returns every ComponentPackAssignment
+	// for componentID, ordered oldest-EffectiveAt-first.
+	ListComponentPackAssignments(ctx context.Context, componentID string) ([]project.ComponentPackAssignment, error)
+	// GetEffectiveComponentPackAssignment returns the ComponentPackAssignment
+	// with the greatest EffectiveAt that is still <= at — "the pack
+	// version resolved configuration should use as of time T" — or
+	// ErrPersistenceNotFound if componentID has no assignment effective
+	// by then.
+	GetEffectiveComponentPackAssignment(ctx context.Context, componentID string, at time.Time) (project.ComponentPackAssignment, error)
+}
 
 // WorkRepository will expose WorkItem/TaskFamily/WorkspaceSet persistence
 // once V3-04/V3-06 build it.
@@ -125,11 +202,23 @@ type DefinitionsRepository interface {
 // the rest of WorkflowPersistence's methods.
 type RuntimeRepository interface{}
 
-// JobsRepository will expose durable_jobs/write_leases persistence once a
-// later task needs it composed inside a UnitOfWork transaction alongside
-// other concerns (the pre-existing sqlite.Store.EnqueueJob/ClaimJob/
-// AcquireWriteLeases already cover this outside a shared Tx).
-type JobsRepository interface{}
+// JobsRepository gains its first real method now (V3-01,
+// docs/design/05-v3-project-workspace.md): EnqueueJob, composed inside the
+// same transaction as RegisterRepository's own Repository-row insert, so
+// the REPOSITORY_PROBE job it enqueues is genuinely atomic with the
+// Repository becoming REGISTERING — "RegisterRepository atomically tạo
+// record REGISTERING và probe job/outbox nguyên tử"
+// (docs/architecture/04-go-core-spec.md §4.1) is impossible to satisfy
+// with the pre-existing sqlite.Store.EnqueueJob alone, since that method
+// always opens (and commits) its own separate transaction. ClaimJob/
+// HeartbeatJob/CompleteJob/AcquireWriteLeases stay outside this interface
+// (Store's existing JobQueue/WriteLeaseManager cover them) until a later
+// task genuinely needs one of those composed inside a shared Tx too — the
+// same "don't add speculatively" discipline every other placeholder
+// concern here follows.
+type JobsRepository interface {
+	EnqueueJob(ctx context.Context, req EnqueueJobRequest) (DurableJob, error)
+}
 
 // EventsRepository appends a domain event inside the current transaction.
 // The caller still supplies Sequence explicitly rather than this
