@@ -247,6 +247,23 @@ type WorkRepository interface {
 	// to the decided request row, recording which family ScopeVersion its
 	// grants were persisted at); nil for REJECTED/WITHDRAWN.
 	TransitionScopeExpansionRequestStatus(ctx context.Context, req TransitionScopeExpansionRequestStatusRequest) (work.ScopeExpansionRequest, error)
+
+	// HasActiveWriteLease is populated now (V3-11,
+	// docs/design/05-v3-project-workspace.md): a read-only existence check
+	// over write_leases for "no active lease" — one of
+	// RequestWorkspaceSetRelease's own three eligibility checks (this
+	// task's own Mục tiêu line). It reports whether any of
+	// repositoryWorkspaceIDs currently holds a live (non-expired)
+	// write_leases row. This is deliberately NOT
+	// ports.WriteLeaseManager.AcquireWriteLeases/ValidateWriteLease: those
+	// mutate or validate one already-held WriteLeaseGrant for a worker that
+	// is actually claiming write access; this is a plain existence read for
+	// an eligibility check, composed inside the exact same ports.Tx as the
+	// rest of RequestWorkspaceSetRelease's own eligibility check and
+	// intent-write/job-enqueue, so the whole thing commits — or fails to
+	// even begin — atomically. Returns false, nil for an empty
+	// repositoryWorkspaceIDs.
+	HasActiveWriteLease(ctx context.Context, repositoryWorkspaceIDs []string) (bool, error)
 }
 
 // RepositoryWorkspaceRecord pairs a RepositoryWorkspace with the FamilyID

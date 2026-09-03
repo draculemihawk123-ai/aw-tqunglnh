@@ -257,6 +257,23 @@ type RuntimeRepository interface{}
 // concern here follows.
 type JobsRepository interface {
 	EnqueueJob(ctx context.Context, req EnqueueJobRequest) (DurableJob, error)
+
+	// HasActiveJobForAggregateIDs is populated now (V3-11,
+	// docs/design/05-v3-project-workspace.md): a read-only existence check
+	// over durable_jobs for "no active job" — one of
+	// RequestWorkspaceSetRelease's own three eligibility checks (this
+	// task's own Mục tiêu line). It reports whether any durable_jobs row in
+	// a non-terminal state (JobAvailable or JobLeased — JobSucceeded/
+	// JobFailed/JobDead/JobCancelled never count) has one of aggregateIDs as
+	// its own AggregateID. Every V3 job kind that targets a WorkspaceSet or
+	// one of its RepositoryWorkspaces stores that exact ID as AggregateID
+	// (internal/app/work.WorkspaceProvisionJobKind's own AggregateType
+	// "WorkspaceSet"; internal/app/workspacereconcile.WorkspaceReconciliationJobKind's
+	// own AggregateType "RepositoryWorkspace"), so a caller passes the
+	// target WorkspaceSetID together with every one of its
+	// RepositoryWorkspace IDs to cover both. Returns false, nil for an
+	// empty aggregateIDs.
+	HasActiveJobForAggregateIDs(ctx context.Context, aggregateIDs []string) (bool, error)
 }
 
 // EventsRepository appends a domain event inside the current transaction.

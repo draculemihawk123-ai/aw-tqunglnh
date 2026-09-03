@@ -3,8 +3,12 @@ package sqlite
 import (
 	"context"
 	"fmt"
+	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
 // SeedFixtureOwners and SeedFixtureNodeRunAndAttempt insert the minimum
@@ -125,6 +129,112 @@ INSERT INTO execution_attempts(
 		attemptID, nodeRunID, timestamp, timestamp,
 	); err != nil {
 		return fmt.Errorf("seed fixture second execution attempt: %w", err)
+	}
+	return nil
+}
+
+// SeedFixtureWriteLease inserts one real, currently-active (non-expired)
+// write_leases row for repositoryWorkspaceID (V3-11's own "active lease"
+// acceptance scenario, docs/design/05-v3-project-workspace.md), together
+// with the minimal workflow_definitions/workflow_versions/workflow_runs/
+// node_runs/execution_attempts/durable_jobs chain write_leases's own real
+// foreign keys require. Every one of those upstream rows is a V4/V5-era
+// runtime concept this V3-era codebase has no real production writer for
+// yet (see SeedFixtureNodeRunAndAttempt's own doc comment for the identical
+// reasoning) — Store.StartWorkflowRun itself additionally requires an
+// already-published WorkflowVersion (LoadWorkflowVersion), so this seeds
+// the whole chain with plain INSERTs instead, mirroring
+// scheduling_test.go's own seedSchedulingFixture technique (same package,
+// so it can use store.db directly) rather than the real publish/start
+// pipeline. Calls the real, already-tested Store.EnqueueJob/ClaimJob/
+// AcquireWriteLeases for the write_leases row itself, so the row this
+// produces is byte-for-byte what that real production path would have
+// written. projectID/familyID/workItemID must already exist
+// (SeedFixtureOwners); repositoryID/repositoryWorkspaceID/generation must
+// already exist and be READY (SeedFixtureRepositoryWorkspace) — Store's
+// own INSERT...WHERE rw.state = 'READY' guard requires it. See
+// SeedFixtureOwners for why this exists only for cross-package acceptance
+// tests; production code must never call this.
+func SeedFixtureWriteLease(
+	ctx context.Context, store *Store,
+	projectID, familyID, workItemID, repositoryID, repositoryWorkspaceID string, generation uint64,
+) error {
+	const timestamp = "2026-08-28T16:00:00Z"
+	suffix := repositoryWorkspaceID
+	definitionID := "wf-def-" + suffix
+	versionID := "wf-ver-" + suffix
+	runID := "wf-run-" + suffix
+	nodeRunID := "node-run-" + suffix
+	attemptID := "attempt-" + suffix
+	jobID := "job-lease-" + suffix
+
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO workflow_definitions(id, project_id, name, status, version, created_at, updated_at)
+VALUES (?, ?, 'Fixture workflow', 'ACTIVE', 1, ?, ?);`,
+		definitionID, projectID, timestamp, timestamp,
+	); err != nil {
+		return fmt.Errorf("seed fixture workflow definition: %w", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO workflow_versions(
+  id, definition_id, version_no, schema_version, canonical_content, content_hash,
+  dependency_manifest, published_by, published_at
+) VALUES (?, ?, 1, 1, '{}', ?, '{}', 'test-fixture', ?);`,
+		versionID, definitionID, "sha256:fixture-"+suffix, timestamp,
+	); err != nil {
+		return fmt.Errorf("seed fixture workflow version: %w", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO workflow_runs(
+  id, project_id, work_item_id, workflow_version_id, family_id,
+  scope_version, state, shared_state_json, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, 1, 'RUNNING', '{}', 1, ?, ?);`,
+		runID, projectID, workItemID, versionID, familyID, timestamp, timestamp,
+	); err != nil {
+		return fmt.Errorf("seed fixture workflow run: %w", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO node_runs(
+  id, run_id, node_key, activation_sequence, iteration, state,
+  input_state_hash, version, created_at, updated_at
+) VALUES (?, ?, 'agent', 1, 0, 'RUNNING', 'sha256:input-fixture', 1, ?, ?);`,
+		nodeRunID, runID, timestamp, timestamp,
+	); err != nil {
+		return fmt.Errorf("seed fixture node run: %w", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO execution_attempts(
+  id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
+  input_revision_set_json, version, created_at, updated_at
+) VALUES (?, ?, 1, 'RUNNING', 'codex', 'sha256:profile-fixture', '[]', 1, ?, ?);`,
+		attemptID, nodeRunID, timestamp, timestamp,
+	); err != nil {
+		return fmt.Errorf("seed fixture write-lease execution attempt: %w", err)
+	}
+
+	if _, err := store.EnqueueJob(ctx, ports.EnqueueJobRequest{
+		ID: ports.JobID(jobID), ProjectID: project.ProjectID(projectID), Kind: "EXECUTE_NODE",
+		AggregateType: "ExecutionAttempt", AggregateID: attemptID, MaxClaims: 3,
+		IdempotencyKey: "fixture-write-lease-job:" + suffix,
+	}); err != nil {
+		return fmt.Errorf("seed fixture write lease job: %w", err)
+	}
+	_, jobLease, err := store.ClaimJob(ctx, "fixture-worker", time.Hour)
+	if err != nil {
+		return fmt.Errorf("claim fixture write lease job: %w", err)
+	}
+
+	if _, err := store.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
+		JobLease:  jobLease,
+		AttemptID: runtime.ExecutionAttemptID(attemptID),
+		Targets: []ports.WorkspaceLeaseTarget{{
+			RepositoryID:          project.RepositoryID(repositoryID),
+			RepositoryWorkspaceID: workspace.RepositoryWorkspaceID(repositoryWorkspaceID),
+			Generation:            generation,
+		}},
+		TTL: time.Hour,
+	}); err != nil {
+		return fmt.Errorf("seed fixture write lease: %w", err)
 	}
 	return nil
 }

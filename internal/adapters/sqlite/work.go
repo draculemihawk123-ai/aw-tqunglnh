@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -971,4 +972,44 @@ RETURNING `+scopeExpansionRequestColumns,
 		return work.ScopeExpansionRequest{}, MapSQLiteError(fmt.Errorf("transition scope expansion request %s status: %w", req.RequestID, err))
 	}
 	return updated, nil
+}
+
+// --- Release eligibility (V3-11) ---
+
+// HasActiveWriteLease implements ports.WorkRepository (V3-11): see that
+// interface method's own doc comment for the full contract. A row's own
+// lease_until is never deleted on release (see ReleaseWriteLeases in
+// scheduling.go — it only pulls lease_until back to "now"), so "active"
+// here means genuinely live, not merely "a row exists" — the same
+// julianday(lease_until) > julianday('now') freshness test
+// ValidateWriteLease/HeartbeatWriteLeases already use for the identical
+// column in scheduling.go.
+func (r workRepository) HasActiveWriteLease(ctx context.Context, repositoryWorkspaceIDs []string) (bool, error) {
+	return hasActiveWriteLeaseTx(ctx, r.tx, repositoryWorkspaceIDs)
+}
+
+func hasActiveWriteLeaseTx(ctx context.Context, tx *sql.Tx, repositoryWorkspaceIDs []string) (bool, error) {
+	if len(repositoryWorkspaceIDs) == 0 {
+		return false, nil
+	}
+	placeholders := make([]string, len(repositoryWorkspaceIDs))
+	args := make([]any, len(repositoryWorkspaceIDs))
+	for i, id := range repositoryWorkspaceIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `
+SELECT 1 FROM write_leases
+WHERE repository_workspace_id IN (` + strings.Join(placeholders, ",") + `)
+  AND julianday(lease_until) > julianday('now')
+LIMIT 1`
+	var exists int
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, MapSQLiteError(fmt.Errorf("check active write lease: %w", err))
+	}
+	return true, nil
 }

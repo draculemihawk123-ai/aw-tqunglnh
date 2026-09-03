@@ -113,6 +113,38 @@ func (r jobsRepository) EnqueueJob(ctx context.Context, request ports.EnqueueJob
 	return enqueueJobTx(ctx, r.tx, request)
 }
 
+// HasActiveJobForAggregateIDs implements ports.JobsRepository (V3-11): see
+// that interface method's own doc comment for the full contract.
+func (r jobsRepository) HasActiveJobForAggregateIDs(ctx context.Context, aggregateIDs []string) (bool, error) {
+	return hasActiveJobForAggregateIDsTx(ctx, r.tx, aggregateIDs)
+}
+
+func hasActiveJobForAggregateIDsTx(ctx context.Context, tx *sql.Tx, aggregateIDs []string) (bool, error) {
+	if len(aggregateIDs) == 0 {
+		return false, nil
+	}
+	placeholders := make([]string, len(aggregateIDs))
+	args := make([]any, len(aggregateIDs))
+	for i, id := range aggregateIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := `
+SELECT 1 FROM durable_jobs
+WHERE aggregate_id IN (` + strings.Join(placeholders, ",") + `)
+  AND state IN ('AVAILABLE', 'LEASED')
+LIMIT 1`
+	var exists int
+	err := tx.QueryRowContext(ctx, query, args...).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, MapSQLiteError(fmt.Errorf("check active durable job: %w", err))
+	}
+	return true, nil
+}
+
 func (s *Store) ClaimJob(
 	ctx context.Context,
 	owner string,

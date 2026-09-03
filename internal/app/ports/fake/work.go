@@ -332,6 +332,20 @@ func repositoryWorkspaceKey(workspaceSetID, repositoryID string, generation uint
 	return fmt.Sprintf("%s/%s/%d", workspaceSetID, repositoryID, generation)
 }
 
+// HasActiveWriteLease always reports false, nil (V3-11): this fake never
+// models write_leases at all — ports.WriteLeaseManager itself has no fake
+// counterpart anywhere in this codebase (it is only ever exercised against
+// real sqlite, see internal/adapters/sqlite/scheduling_test.go's own V3-09
+// coverage), so there is no in-memory lease state here to consult. A
+// RequestWorkspaceSetRelease unit test that needs to exercise the "active
+// lease blocks release" path does so against real sqlite instead (see
+// internal/app/workspacerelease's own commands_sqlite_test.go), the same
+// "checkable for real today, not faked" treatment this method's own
+// ports.WorkRepository doc comment already documents.
+func (w *WorkRepository) HasActiveWriteLease(_ context.Context, _ []string) (bool, error) {
+	return false, nil
+}
+
 // GetRepositoryWorkspaceByID mirrors sqlite's getRepositoryWorkspaceByIDTx
 // (V3-10): a linear scan of repositoryWorkspaces for the row whose own ID
 // matches, same "fine for the fake's small in-memory fixture sizes" trade-off

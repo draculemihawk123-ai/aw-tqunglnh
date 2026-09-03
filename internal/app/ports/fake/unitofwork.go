@@ -753,6 +753,28 @@ func (j *JobsRepository) Items() []ports.EnqueueJobRequest {
 	return append([]ports.EnqueueJobRequest(nil), j.jobs...)
 }
 
+// HasActiveJobForAggregateIDs mirrors sqlite's
+// hasActiveJobForAggregateIDsTx (V3-11), with one deliberate
+// simplification: this fake's own EnqueueJob never models a job actually
+// completing (no ClaimJob/CompleteJob exists here — see JobsRepository's
+// own doc comment), so every job this fake has ever enqueued is, as far as
+// it is concerned, still active. That is exactly the state a
+// RequestWorkspaceSetRelease unit test needs to exercise "an existing open
+// job for one of this WorkspaceSet's own repository workspaces blocks a
+// second release request" without sqlite.
+func (j *JobsRepository) HasActiveJobForAggregateIDs(_ context.Context, aggregateIDs []string) (bool, error) {
+	wanted := make(map[string]bool, len(aggregateIDs))
+	for _, id := range aggregateIDs {
+		wanted[id] = true
+	}
+	for _, job := range j.jobs {
+		if wanted[job.AggregateID] {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // fakeWorkflowVersionToDefinitionFields mirrors sqlite's own
 // workflowVersionToDefinitionFields (internal/adapters/sqlite/definitions.go)
 // — duplicated rather than shared, since fake must never import the

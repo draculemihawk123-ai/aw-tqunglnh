@@ -338,6 +338,45 @@ func TestRequestWorkspaceReconciliationNeverImportsWorkspaceIO(t *testing.T) {
 	}
 }
 
+// TestRequestWorkspaceSetReleaseNeverImportsWorkspaceIO is V3-11's own
+// identical boundary proof (docs/design/05-v3-project-workspace.md V3-11's
+// own Phạm vi line: "V3-11 sở hữu public RequestWorkspaceSetRelease ...
+// Internal ExecuteWorkspaceSetRelease (thực thi filesystem/Git) thuộc
+// V5-14") for internal/app/workspacerelease/commands.go, mirroring
+// TestRequestWorkspaceReconciliationNeverImportsWorkspaceIO above exactly:
+// the one file declaring RequestWorkspaceSetRelease must never import "os",
+// "os/exec", or any internal/adapters/... package. ExecuteWorkspaceSetRelease
+// does not exist anywhere in this codebase — it belongs to V5-14, a future
+// task — so this test also proves this package builds no such handler for
+// itself under a different name: there is exactly one source file in this
+// package's own public-command surface, and it stays free of real I/O.
+func TestRequestWorkspaceSetReleaseNeverImportsWorkspaceIO(t *testing.T) {
+	moduleRoot := findModuleRoot(t)
+	path := filepath.Join(moduleRoot, "internal", "app", "workspacerelease", "commands.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	forbidden := map[string]bool{
+		`"os"`:      true,
+		`"os/exec"`: true,
+	}
+	found := false
+	for _, imp := range file.Imports {
+		found = true
+		if forbidden[imp.Path.Value] || strings.Contains(imp.Path.Value, "agent-workflow/internal/adapters") {
+			t.Errorf("%s imports %s — RequestWorkspaceSetRelease's own file must never reach real workspace filesystem/Git state directly; that belongs only to a future V5-14 executor, behind ports.WorkspaceProvider/ports.WorkspaceLifecycle",
+				path, imp.Path.Value)
+		}
+	}
+	if !found {
+		t.Fatal("commands.go declared no imports at all — this test needs updating alongside the implementation")
+	}
+}
+
 func findModuleRoot(t *testing.T) string {
 	t.Helper()
 	_, file, _, ok := runtime.Caller(0)
