@@ -432,3 +432,330 @@ func TestCreateRootWorkItem_PartialFailure_NoRowsPersisted(t *testing.T) {
 		}
 	}
 }
+
+// --- CreateChildWorkItem ---
+
+// createRootFixture seeds project-1/repo-1 ACTIVE and creates a root
+// WorkItem granting repositoryAccess on paths, returning the root's own
+// CreateRootWorkItemResult so a child test can build a request against its
+// real WorkItemID/FamilyID.
+func createRootFixture(t *testing.T, uow *fake.UnitOfWork, ids idsource.Source, repositoryID string, access workdomain.RepositoryAccess, paths []string) work.CreateRootWorkItemResult {
+	t.Helper()
+	ctx := context.Background()
+	mustCreateProject(t, uow, "project-1")
+	mustCreateActiveRepository(t, uow, ids, "project-1", repositoryID)
+
+	cmd := testCommand("idem-root-"+repositoryID, "hash-root-"+repositoryID, ports.ProjectScope("project-1"), "CreateRootWorkItem")
+	result, err := work.CreateRootWorkItem(ctx, uow, ids, cmd, work.CreateRootWorkItemRequest{
+		ProjectID: "project-1", Title: "Root task", InitialScope: []work.ScopeGrantRequest{
+			{RepositoryID: repositoryID, Access: string(access), PathScopes: paths, Reason: "root scope"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRootWorkItem: %v", err)
+	}
+	return result
+}
+
+func childRequest(parentWorkItemID, title string, grants ...work.ScopeGrantRequest) work.CreateChildWorkItemRequest {
+	return work.CreateChildWorkItemRequest{
+		ParentWorkItemID: parentWorkItemID, Title: title, ParentJoinPolicy: "PARENT_BLOCKS_ON_CHILD",
+		EffectiveScope: grants,
+	}
+}
+
+func childGrant(repositoryID string, access workdomain.RepositoryAccess, paths []string) work.ScopeGrantRequest {
+	return work.ScopeGrantRequest{
+		RepositoryID: repositoryID, Access: string(access), PathScopes: paths, Reason: "child scope",
+	}
+}
+
+// TestCreateChildWorkItem_SameRepositoryPathSubset_Succeeds is this task's
+// own "child same repo, path subset" Verify-line case: the child requests
+// the SAME repository/access as the family's own grant, on a path that is a
+// strict subset of the granted path — must succeed, reuse the family
+// (never creating a second TaskFamily/WorkspaceSet), and record exactly one
+// work_item_effective_scopes-equivalent row.
+func TestCreateChildWorkItem_SameRepositoryPathSubset_Succeeds(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	root := createRootFixture(t, uow, ids, "repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+
+	provisionJobsBefore := len(provisionJobsOnly(uow.Snapshot.Jobs().(*fake.JobsRepository).Items()))
+
+	cmd := testCommand("idem-child-1", "hash-child-1", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	result, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, childRequest(
+		root.WorkItemID, "Implement the handler",
+		childGrant("repo-1", workdomain.RepositoryWrite, []string{"services/api/handler"}),
+	))
+	if err != nil {
+		t.Fatalf("CreateChildWorkItem: %v", err)
+	}
+	if result.WorkItemID == "" || result.FamilyID != root.FamilyID || result.ParentWorkItemID != root.WorkItemID {
+		t.Fatalf("result = %+v, want non-empty WorkItemID with FamilyID=%s and ParentWorkItemID=%s", result, root.FamilyID, root.WorkItemID)
+	}
+	if len(result.EffectiveScope) != 1 || result.EffectiveScope[0].RepositoryID != "repo-1" || result.EffectiveScope[0].Access != string(workdomain.RepositoryWrite) {
+		t.Fatalf("result.EffectiveScope = %+v, want exactly one WRITE entry for repo-1", result.EffectiveScope)
+	}
+
+	item, err := uow.Snapshot.Work().GetWorkItem(ctx, result.WorkItemID)
+	if err != nil {
+		t.Fatalf("GetWorkItem: %v", err)
+	}
+	if item.Kind != workdomain.WorkItemChild || item.ParentID == nil || *item.ParentID != workdomain.WorkItemID(root.WorkItemID) {
+		t.Fatalf("persisted child = %+v, want CHILD with ParentID=%s", item, root.WorkItemID)
+	}
+	if item.FamilyID != workdomain.TaskFamilyID(root.FamilyID) || item.ProjectID != "project-1" {
+		t.Fatalf("persisted child = %+v, want FamilyID=%s inherited from parent (GC-INV-01)", item, root.FamilyID)
+	}
+	if item.ParentJoinPolicy != workdomain.JoinPolicy("PARENT_BLOCKS_ON_CHILD") {
+		t.Fatalf("persisted child ParentJoinPolicy = %q, want the requested policy", item.ParentJoinPolicy)
+	}
+	if item.SourceNodeRunID != nil {
+		t.Fatalf("persisted child SourceNodeRunID = %v, want nil (no SourceNodeRunID was requested)", item.SourceNodeRunID)
+	}
+
+	scopes, err := uow.Snapshot.Work().ListWorkItemEffectiveScopes(ctx, result.WorkItemID)
+	if err != nil {
+		t.Fatalf("ListWorkItemEffectiveScopes: %v", err)
+	}
+	if len(scopes) != 1 || scopes[0].RepositoryID() != "repo-1" || scopes[0].Access() != workdomain.RepositoryWrite {
+		t.Fatalf("persisted effective scopes = %+v, want exactly one WRITE entry for repo-1", scopes)
+	}
+	if paths := scopes[0].PathScopes(); len(paths) != 1 || paths[0] != "services/api/handler" {
+		t.Fatalf("persisted effective scope paths = %v, want [services/api/handler]", paths)
+	}
+
+	// The task's own "Hoàn thành khi" bar: creating a child must never
+	// enqueue a new WORKSPACE_PROVISION job or create a second
+	// TaskFamily/WorkspaceSet — the family already has both from its own
+	// root creation.
+	set, err := uow.Snapshot.Work().GetWorkspaceSetByFamilyID(ctx, root.FamilyID)
+	if err != nil {
+		t.Fatalf("GetWorkspaceSetByFamilyID: %v", err)
+	}
+	if string(set.ID) != root.WorkspaceSetID {
+		t.Fatalf("workspace set id = %s, want the family's original %s (no second WorkspaceSet created)", set.ID, root.WorkspaceSetID)
+	}
+
+	provisionJobsAfter := len(provisionJobsOnly(uow.Snapshot.Jobs().(*fake.JobsRepository).Items()))
+	if provisionJobsAfter != provisionJobsBefore {
+		t.Fatalf("provision job count after CreateChildWorkItem = %d, want unchanged from %d (no new WORKSPACE_PROVISION job)", provisionJobsAfter, provisionJobsBefore)
+	}
+
+	childCreatedEvents := 0
+	for _, e := range uow.Snapshot.Events().(*fake.EventsRepository).Items() {
+		if e.EventType == "ChildWorkItemCreated" && e.AggregateID == result.WorkItemID {
+			childCreatedEvents++
+		}
+	}
+	if childCreatedEvents != 1 {
+		t.Fatalf("ChildWorkItemCreated events = %d, want exactly 1", childCreatedEvents)
+	}
+}
+
+// TestCreateChildWorkItem_DifferentRepositoryNeverGranted_Rejected is this
+// task's own "child ... different repo" Verify-line case: the family only
+// ever granted repo-1, so a child requesting repo-2 (never granted at all,
+// not merely a path/access mismatch) must be rejected.
+func TestCreateChildWorkItem_DifferentRepositoryNeverGranted_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	root := createRootFixture(t, uow, ids, "repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+
+	cmd := testCommand("idem-child-1", "hash-child-1", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	_, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, childRequest(
+		root.WorkItemID, "Touch a different repo",
+		childGrant("repo-2", workdomain.RepositoryWrite, nil),
+	))
+	if !errors.Is(err, work.ErrEffectiveScopeExceedsFamilyScope) {
+		t.Fatalf("err = %v, want work.ErrEffectiveScopeExceedsFamilyScope (repo-2 was never granted to the family)", err)
+	}
+}
+
+// TestCreateChildWorkItem_PathOutsideFamilyGrant_Rejected is the "path
+// subset" Verify-line case's negative half: a path outside every grant's
+// own PathScopes must be rejected even though the repository/access match.
+func TestCreateChildWorkItem_PathOutsideFamilyGrant_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	root := createRootFixture(t, uow, ids, "repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+
+	cmd := testCommand("idem-child-1", "hash-child-1", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	_, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, childRequest(
+		root.WorkItemID, "Touch an unrelated path",
+		childGrant("repo-1", workdomain.RepositoryWrite, []string{"services/other"}),
+	))
+	if !errors.Is(err, work.ErrEffectiveScopeExceedsFamilyScope) {
+		t.Fatalf("err = %v, want work.ErrEffectiveScopeExceedsFamilyScope (services/other is outside services/api)", err)
+	}
+}
+
+// TestCreateChildWorkItem_ReadToWriteEscalation_Rejected is this task's own
+// explicit "READ→WRITE escalation rejection" Verify-line requirement: the
+// family granted READ only, the child requests WRITE on the identical
+// repository/path — must be rejected.
+func TestCreateChildWorkItem_ReadToWriteEscalation_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	root := createRootFixture(t, uow, ids, "repo-1", workdomain.RepositoryRead, []string{"services/api"})
+
+	cmd := testCommand("idem-child-1", "hash-child-1", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	_, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, childRequest(
+		root.WorkItemID, "Escalate to WRITE",
+		childGrant("repo-1", workdomain.RepositoryWrite, []string{"services/api"}),
+	))
+	if !errors.Is(err, work.ErrEffectiveScopeExceedsFamilyScope) {
+		t.Fatalf("err = %v, want work.ErrEffectiveScopeExceedsFamilyScope (family only granted READ)", err)
+	}
+}
+
+func TestCreateChildWorkItem_DuplicateSameRequest_ReplaysWithoutNewRowsOrJobs(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	root := createRootFixture(t, uow, ids, "repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+
+	cmd := testCommand("idem-child-1", "hash-child-1", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	req := childRequest(root.WorkItemID, "Implement the handler", childGrant("repo-1", workdomain.RepositoryWrite, []string{"services/api/handler"}))
+	first, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, req)
+	if err != nil {
+		t.Fatalf("first CreateChildWorkItem: %v", err)
+	}
+	second, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, req)
+	if err != nil {
+		t.Fatalf("second (replayed) CreateChildWorkItem: %v", err)
+	}
+	if second.WorkItemID != first.WorkItemID {
+		t.Fatalf("replayed result = %+v, want identical to first %+v", second, first)
+	}
+
+	scopes, err := uow.Snapshot.Work().ListWorkItemEffectiveScopes(ctx, first.WorkItemID)
+	if err != nil {
+		t.Fatalf("ListWorkItemEffectiveScopes: %v", err)
+	}
+	if len(scopes) != 1 {
+		t.Fatalf("effective scopes after replay = %d, want 1 (a replay must never redo the mutation)", len(scopes))
+	}
+}
+
+func TestCreateChildWorkItem_DuplicateDifferentPayload_ReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	root := createRootFixture(t, uow, ids, "repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+
+	first := testCommand("idem-child-1", "hash-child-1", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	if _, err := work.CreateChildWorkItem(ctx, uow, ids, first, childRequest(
+		root.WorkItemID, "Implement the handler", childGrant("repo-1", workdomain.RepositoryWrite, []string{"services/api/handler"}),
+	)); err != nil {
+		t.Fatalf("first CreateChildWorkItem: %v", err)
+	}
+
+	second := testCommand("idem-child-1", "hash-child-2", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	_, err := work.CreateChildWorkItem(ctx, uow, ids, second, childRequest(
+		root.WorkItemID, "A different title", childGrant("repo-1", workdomain.RepositoryWrite, []string{"services/api/handler"}),
+	))
+	if !errors.Is(err, ports.ErrReceiptConflict) {
+		t.Fatalf("second CreateChildWorkItem err = %v, want ports.ErrReceiptConflict", err)
+	}
+}
+
+func TestCreateChildWorkItem_RequiresParentTitleJoinPolicyAndScope(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	root := createRootFixture(t, uow, ids, "repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+	grant := childGrant("repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+
+	cases := []struct {
+		name string
+		req  work.CreateChildWorkItemRequest
+	}{
+		{"missing ParentWorkItemID", work.CreateChildWorkItemRequest{Title: "T", ParentJoinPolicy: "P", EffectiveScope: []work.ScopeGrantRequest{grant}}},
+		{"missing Title", work.CreateChildWorkItemRequest{ParentWorkItemID: root.WorkItemID, ParentJoinPolicy: "P", EffectiveScope: []work.ScopeGrantRequest{grant}}},
+		{"missing ParentJoinPolicy", work.CreateChildWorkItemRequest{ParentWorkItemID: root.WorkItemID, Title: "T", EffectiveScope: []work.ScopeGrantRequest{grant}}},
+		{"empty EffectiveScope", work.CreateChildWorkItemRequest{ParentWorkItemID: root.WorkItemID, Title: "T", ParentJoinPolicy: "P"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := testCommand("idem-"+tc.name, "hash-"+tc.name, ports.ProjectScope("project-1"), "CreateChildWorkItem")
+			_, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, tc.req)
+			if err == nil {
+				t.Fatalf("%s: want a validation error, got nil", tc.name)
+			}
+		})
+	}
+}
+
+func TestCreateChildWorkItem_UnknownParent_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	mustCreateProject(t, uow, "project-1")
+
+	cmd := testCommand("idem-child-1", "hash-child-1", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	_, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, childRequest(
+		"work-item-missing", "Orphan child", childGrant("repo-1", workdomain.RepositoryWrite, nil),
+	))
+	if !errors.Is(err, ports.ErrPersistenceNotFound) {
+		t.Fatalf("err = %v, want ports.ErrPersistenceNotFound (parent does not exist)", err)
+	}
+}
+
+func TestCreateChildWorkItem_DuplicateRepositoryInEffectiveScope_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	root := createRootFixture(t, uow, ids, "repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+
+	cmd := testCommand("idem-child-1", "hash-child-1", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	_, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, childRequest(
+		root.WorkItemID, "Duplicate repo",
+		childGrant("repo-1", workdomain.RepositoryWrite, []string{"services/api/a"}),
+		childGrant("repo-1", workdomain.RepositoryWrite, []string{"services/api/b"}),
+	))
+	if err == nil {
+		t.Fatal("CreateChildWorkItem with a duplicate repository in EffectiveScope succeeded, want an error")
+	}
+}
+
+// TestCreateChildWorkItem_DifferentRepository_MultipleFamilyGrants_Succeeds
+// is the positive half of "child same/different repo": a family granted
+// scope on TWO repositories, and a child may request either one — proving
+// "different repo" alone is not what gets rejected, only a repo the family
+// never granted at all.
+func TestCreateChildWorkItem_DifferentRepository_MultipleFamilyGrants_Succeeds(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	mustCreateProject(t, uow, "project-1")
+	mustCreateActiveRepository(t, uow, ids, "project-1", "repo-a")
+	mustCreateActiveRepository(t, uow, ids, "project-1", "repo-b")
+
+	rootCmd := testCommand("idem-root-1", "hash-root-1", ports.ProjectScope("project-1"), "CreateRootWorkItem")
+	root, err := work.CreateRootWorkItem(ctx, uow, ids, rootCmd, work.CreateRootWorkItemRequest{
+		ProjectID: "project-1", Title: "Root task", InitialScope: []work.ScopeGrantRequest{
+			grant("repo-a"), grant("repo-b"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRootWorkItem: %v", err)
+	}
+
+	cmd := testCommand("idem-child-1", "hash-child-1", ports.ProjectScope("project-1"), "CreateChildWorkItem")
+	result, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, childRequest(
+		root.WorkItemID, "Work on repo-b only",
+		childGrant("repo-b", workdomain.RepositoryWrite, []string{"services/api"}),
+	))
+	if err != nil {
+		t.Fatalf("CreateChildWorkItem: %v", err)
+	}
+	if len(result.EffectiveScope) != 1 || result.EffectiveScope[0].RepositoryID != "repo-b" {
+		t.Fatalf("result.EffectiveScope = %+v, want exactly one entry for repo-b", result.EffectiveScope)
+	}
+}

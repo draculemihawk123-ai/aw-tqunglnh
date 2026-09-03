@@ -59,13 +59,21 @@ func createWorkItemTx(ctx context.Context, tx *sql.Tx, item work.WorkItem) (work
 	if item.ParentID != nil {
 		parentID = string(*item.ParentID)
 	}
+	var parentJoinPolicy any
+	if item.ParentJoinPolicy != "" {
+		parentJoinPolicy = string(item.ParentJoinPolicy)
+	}
+	var sourceNodeRunID any
+	if item.SourceNodeRunID != nil {
+		sourceNodeRunID = string(*item.SourceNodeRunID)
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO work_items (id, project_id, kind, parent_id, family_id, title, status, version, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO work_items (id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(item.ID), string(item.ProjectID), string(item.Kind), parentID, string(item.FamilyID),
-		item.Title, string(item.Status), item.Version, now, now,
+		item.Title, string(item.Status), item.Version, parentJoinPolicy, sourceNodeRunID, now, now,
 	); err != nil {
 		return work.WorkItem{}, MapSQLiteError(fmt.Errorf("create work item: %w", err))
 	}
@@ -79,7 +87,8 @@ func (r workRepository) GetWorkItem(ctx context.Context, id string) (work.WorkIt
 
 func getWorkItemTx(ctx context.Context, tx *sql.Tx, id string) (work.WorkItem, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, kind, parent_id, family_id, title, status, version FROM work_items WHERE id = ?`, id)
+SELECT id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id
+FROM work_items WHERE id = ?`, id)
 	item, err := scanWorkItemRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return work.WorkItem{}, fmt.Errorf("%w: work item %s", ports.ErrPersistenceNotFound, id)
@@ -89,9 +98,9 @@ SELECT id, project_id, kind, parent_id, family_id, title, status, version FROM w
 
 func scanWorkItemRow(row repositoryRowScanner) (work.WorkItem, error) {
 	var id, projectID, kind, familyID, title, status string
-	var parentID sql.NullString
+	var parentID, parentJoinPolicy, sourceNodeRunID sql.NullString
 	var version uint64
-	if err := row.Scan(&id, &projectID, &kind, &parentID, &familyID, &title, &status, &version); err != nil {
+	if err := row.Scan(&id, &projectID, &kind, &parentID, &familyID, &title, &status, &version, &parentJoinPolicy, &sourceNodeRunID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return work.WorkItem{}, err
 		}
@@ -104,6 +113,13 @@ func scanWorkItemRow(row repositoryRowScanner) (work.WorkItem, error) {
 	if parentID.Valid {
 		pid := work.WorkItemID(parentID.String)
 		item.ParentID = &pid
+	}
+	if parentJoinPolicy.Valid {
+		item.ParentJoinPolicy = work.JoinPolicy(parentJoinPolicy.String)
+	}
+	if sourceNodeRunID.Valid {
+		nodeRunID := work.SourceNodeRunID(sourceNodeRunID.String)
+		item.SourceNodeRunID = &nodeRunID
 	}
 	return item, nil
 }
@@ -337,4 +353,97 @@ func scanRepositoryScopeRow(row repositoryRowScanner) (work.RepositoryScope, err
 		work.TaskFamilyID(familyID), scopeVersion, project.RepositoryID(repositoryID),
 		work.RepositoryAccess(access), paths, reason, addedBy, createdAt,
 	)
+}
+
+// --- WorkItem effective scope (V3-05) ---
+//
+// work_item_effective_scopes is a separate table from
+// family_repository_scopes (0011_work_item_effective_scopes.sql's own doc
+// comment explains why): a child WorkItem's own effective scope is a
+// per-WorkItem subset *declaration*, checked by
+// work.ValidateEffectiveScopes against the family's already-audited
+// RepositoryScope grants, never a new grant of its own. Reusing
+// work.RepositoryScope end to end here (rather than inventing a second,
+// near-duplicate "effective scope" domain type) mirrors exactly how
+// AddRepositoryScope/ListFamilyRepositoryScopes above already round-trip
+// that same type — see the migration's own comment for why this table
+// carries reason/added_by/created_at columns too, beyond the design doc's
+// own terse row listing.
+
+// AddEffectiveScope implements ports.WorkRepository.
+func (r workRepository) AddEffectiveScope(ctx context.Context, workItemID string, scope work.RepositoryScope) (work.RepositoryScope, error) {
+	return addEffectiveScopeTx(ctx, r.tx, workItemID, scope)
+}
+
+func addEffectiveScopeTx(ctx context.Context, tx *sql.Tx, workItemID string, scope work.RepositoryScope) (work.RepositoryScope, error) {
+	if workItemID == "" || scope.RepositoryID() == "" {
+		return work.RepositoryScope{}, errors.New("effective scope work item id and repository id are required")
+	}
+
+	var workItemProjectID string
+	err := tx.QueryRowContext(ctx, `SELECT project_id FROM work_items WHERE id = ?`, workItemID).Scan(&workItemProjectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return work.RepositoryScope{}, fmt.Errorf("%w: work item %s", ports.ErrPersistenceNotFound, workItemID)
+	}
+	if err != nil {
+		return work.RepositoryScope{}, MapSQLiteError(fmt.Errorf("resolve effective scope work item: %w", err))
+	}
+
+	var repositoryExists int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM repositories WHERE id = ?`, string(scope.RepositoryID())).Scan(&repositoryExists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return work.RepositoryScope{}, fmt.Errorf("%w: repository %s", ports.ErrPersistenceNotFound, scope.RepositoryID())
+	}
+	if err != nil {
+		return work.RepositoryScope{}, MapSQLiteError(fmt.Errorf("resolve effective scope repository: %w", err))
+	}
+
+	pathsJSON, err := json.Marshal(scope.PathScopes())
+	if err != nil {
+		return work.RepositoryScope{}, fmt.Errorf("marshal effective scope paths: %w", err)
+	}
+
+	createdAt := scope.AddedAt().UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO work_item_effective_scopes (work_item_id, project_id, family_id, repository_id, scope_version, access, paths_json, reason, added_by, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		workItemID, workItemProjectID, string(scope.FamilyID()), string(scope.RepositoryID()), scope.AddedInScopeVersion(),
+		string(scope.Access()), string(pathsJSON), scope.Reason(), scope.AddedBy(), createdAt,
+	); err != nil {
+		return work.RepositoryScope{}, MapSQLiteError(fmt.Errorf("add effective scope: %w", err))
+	}
+	return scope, nil
+}
+
+// ListWorkItemEffectiveScopes implements ports.WorkRepository, ordered by
+// (repository_id, access) for a stable, deterministic result a test can
+// assert on exactly, the same as ListFamilyRepositoryScopes' own ordering
+// discipline (minus scope_version, since every row this task's own
+// CreateChildWorkItem ever writes for one work item shares a single pinned
+// ScopeVersion).
+func (r workRepository) ListWorkItemEffectiveScopes(ctx context.Context, workItemID string) ([]work.RepositoryScope, error) {
+	return listWorkItemEffectiveScopesTx(ctx, r.tx, workItemID)
+}
+
+func listWorkItemEffectiveScopesTx(ctx context.Context, tx *sql.Tx, workItemID string) ([]work.RepositoryScope, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT family_id, repository_id, scope_version, access, paths_json, reason, added_by, created_at
+FROM work_item_effective_scopes WHERE work_item_id = ? ORDER BY repository_id, access`, workItemID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list work item effective scopes: %w", err))
+	}
+	defer rows.Close()
+
+	var result []work.RepositoryScope
+	for rows.Next() {
+		scope, err := scanRepositoryScopeRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, scope)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("iterate work item effective scopes: %w", err))
+	}
+	return result, nil
 }

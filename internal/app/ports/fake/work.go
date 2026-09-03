@@ -26,6 +26,7 @@ type WorkRepository struct {
 	taskFamilies     map[string]work.TaskFamily
 	workspaceSets    map[string]workspace.WorkspaceSet // by FamilyID (mirrors UNIQUE(family_id))
 	repositoryScopes map[string][]work.RepositoryScope // by FamilyID, insertion order
+	effectiveScopes  map[string][]work.RepositoryScope // by WorkItemID, insertion order (V3-05)
 }
 
 var _ ports.WorkRepository = (*WorkRepository)(nil)
@@ -52,9 +53,13 @@ func (w *WorkRepository) cloneWith(catalog *CatalogRepository) *WorkRepository {
 	for k, v := range w.repositoryScopes {
 		repositoryScopes[k] = append([]work.RepositoryScope(nil), v...)
 	}
+	effectiveScopes := make(map[string][]work.RepositoryScope, len(w.effectiveScopes))
+	for k, v := range w.effectiveScopes {
+		effectiveScopes[k] = append([]work.RepositoryScope(nil), v...)
+	}
 	return &WorkRepository{
 		catalog: catalog, workItems: workItems, taskFamilies: taskFamilies,
-		workspaceSets: workspaceSets, repositoryScopes: repositoryScopes,
+		workspaceSets: workspaceSets, repositoryScopes: repositoryScopes, effectiveScopes: effectiveScopes,
 	}
 }
 
@@ -159,6 +164,42 @@ func (w *WorkRepository) ListFamilyRepositoryScopes(_ context.Context, familyID 
 		if scopes[i].AddedInScopeVersion() != scopes[j].AddedInScopeVersion() {
 			return scopes[i].AddedInScopeVersion() < scopes[j].AddedInScopeVersion()
 		}
+		if scopes[i].RepositoryID() != scopes[j].RepositoryID() {
+			return scopes[i].RepositoryID() < scopes[j].RepositoryID()
+		}
+		return scopes[i].Access() < scopes[j].Access()
+	})
+	return scopes, nil
+}
+
+// AddEffectiveScope mirrors sqlite's addEffectiveScopeTx (V3-05):
+// workItemID must name a WorkItem that already exists and
+// scope.RepositoryID() must name a Repository that already exists
+// (resolved from the shared CatalogRepository) — ErrPersistenceNotFound
+// otherwise. Same-family-subset validation is deliberately not this
+// method's job (see ports.WorkRepository.AddEffectiveScope's own doc
+// comment): the calling command handler already ran
+// work.ValidateEffectiveScopes before ever reaching here.
+func (w *WorkRepository) AddEffectiveScope(_ context.Context, workItemID string, scope work.RepositoryScope) (work.RepositoryScope, error) {
+	if _, ok := w.workItems[workItemID]; !ok {
+		return work.RepositoryScope{}, fmt.Errorf("fake: %w: work item %s", ports.ErrPersistenceNotFound, workItemID)
+	}
+	if _, ok := w.catalog.repositories[string(scope.RepositoryID())]; !ok {
+		return work.RepositoryScope{}, fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceNotFound, scope.RepositoryID())
+	}
+	if w.effectiveScopes == nil {
+		w.effectiveScopes = map[string][]work.RepositoryScope{}
+	}
+	w.effectiveScopes[workItemID] = append(w.effectiveScopes[workItemID], scope)
+	return scope, nil
+}
+
+// ListWorkItemEffectiveScopes mirrors sqlite's listWorkItemEffectiveScopesTx,
+// ordered by (RepositoryID, Access) for a stable, deterministic result a
+// test can assert on exactly, the same as the real adapter's own ORDER BY.
+func (w *WorkRepository) ListWorkItemEffectiveScopes(_ context.Context, workItemID string) ([]work.RepositoryScope, error) {
+	scopes := append([]work.RepositoryScope(nil), w.effectiveScopes[workItemID]...)
+	sort.Slice(scopes, func(i, j int) bool {
 		if scopes[i].RepositoryID() != scopes[j].RepositoryID() {
 			return scopes[i].RepositoryID() < scopes[j].RepositoryID()
 		}

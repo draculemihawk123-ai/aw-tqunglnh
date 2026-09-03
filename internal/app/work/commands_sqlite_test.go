@@ -14,6 +14,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
@@ -297,6 +298,204 @@ func TestCreateRootWorkItem_DuplicateCommandSQLite_Idempotent(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("provision job count after replay = %d, want exactly 1 (never redo the mutation)", count)
 	}
+
+	eventCount, err := store.CountDomainEvents(ctx, "WorkItem", first.WorkItemID)
+	if err != nil {
+		t.Fatalf("CountDomainEvents: %v", err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("domain event count after replay = %d, want exactly 1", eventCount)
+	}
+}
+
+// --- CreateChildWorkItem (V3-05) ---
+
+// seedRootFixtureSQLite mirrors commands_test.go's own createRootFixture,
+// against a real sqlite store: seeds project-1/repositoryID ACTIVE and
+// creates a root WorkItem granting access on paths.
+func seedRootFixtureSQLite(t *testing.T, uow ports.UnitOfWork, ids idsource.Source, repositoryID string, access workdomain.RepositoryAccess, paths []string) work.CreateRootWorkItemResult {
+	t.Helper()
+	ctx := context.Background()
+	seedProjectSQLite(t, uow, "project-1")
+	seedActiveRepositorySQLite(t, uow, ids, "project-1", repositoryID)
+
+	cmd := ports.Command{
+		ID: "cmd-root-" + repositoryID, IdempotencyKey: "idem-root-" + repositoryID, Actor: "actor-1",
+		CorrelationID: "corr-1", Scope: ports.ProjectScope("project-1"), RequestedAt: time.Now().UTC(),
+		Type: "CreateRootWorkItem", RequestHash: "hash-root-" + repositoryID,
+	}
+	result, err := work.CreateRootWorkItem(ctx, uow, ids, cmd, work.CreateRootWorkItemRequest{
+		ProjectID: "project-1", Title: "Root task", InitialScope: []work.ScopeGrantRequest{
+			{RepositoryID: repositoryID, Access: string(access), PathScopes: paths, Reason: "root scope"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateRootWorkItem: %v", err)
+	}
+	return result
+}
+
+// TestCreateChildWorkItem_NoNewWorkspaceSetOrProvisionJobSQLite is this
+// task's own explicit "Hoàn thành khi: tạo child không enqueue provision
+// workspace mới" bar, proven against real sqlite by direct table counts —
+// not merely "the function didn't call X" — mirroring
+// TestCreateRootWorkItem_MultiRepoFixtureSQLite's own rigor. A successful
+// CreateChildWorkItem must leave workspace_sets and the WORKSPACE_PROVISION
+// durable_jobs count exactly where the root's own creation left them.
+func TestCreateChildWorkItem_NoNewWorkspaceSetOrProvisionJobSQLite(t *testing.T) {
+	ctx := context.Background()
+	store := openSQLiteStore(t, "agentkit-child-no-provision.db")
+	uow := sqlite.NewUnitOfWork(store)
+	ids := idsource.Random{}
+
+	root := seedRootFixtureSQLite(t, uow, ids, "repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+
+	assertCount(t, "work_items (before child)", 1, func() (int, error) { return store.CountWorkItems(ctx) })
+	assertCount(t, "workspace_sets (before child)", 1, func() (int, error) { return store.CountWorkspaceSets(ctx) })
+	assertCount(t, "task_families (before child)", 1, func() (int, error) { return store.CountTaskFamilies(ctx) })
+	provisionJobsBefore, err := store.CountDurableJobsByKind(ctx, work.WorkspaceProvisionJobKind)
+	if err != nil {
+		t.Fatalf("CountDurableJobsByKind (before child): %v", err)
+	}
+	if provisionJobsBefore != 1 {
+		t.Fatalf("provision jobs before child = %d, want 1 (from the root's own creation)", provisionJobsBefore)
+	}
+
+	cmd := ports.Command{
+		ID: "cmd-child-1", IdempotencyKey: "idem-child-1", Actor: "actor-1",
+		CorrelationID: "corr-1", Scope: ports.ProjectScope("project-1"), RequestedAt: time.Now().UTC(),
+		Type: "CreateChildWorkItem", RequestHash: "hash-child-1",
+	}
+	result, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, work.CreateChildWorkItemRequest{
+		ParentWorkItemID: root.WorkItemID, Title: "Implement the handler", ParentJoinPolicy: "PARENT_BLOCKS_ON_CHILD",
+		EffectiveScope: []work.ScopeGrantRequest{
+			{RepositoryID: "repo-1", Access: string(workdomain.RepositoryWrite), PathScopes: []string{"services/api/handler"}, Reason: "child scope"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateChildWorkItem: %v", err)
+	}
+
+	assertCount(t, "work_items (after child)", 2, func() (int, error) { return store.CountWorkItems(ctx) })
+	// The load-bearing assertions: creating a child must NEVER create a
+	// second TaskFamily/WorkspaceSet (AK-ARCH-012's own "Child cùng family
+	// reuse WorkspaceSet") and must NEVER enqueue a new WORKSPACE_PROVISION
+	// job (this task's own "Hoàn thành khi" bar) — both counts must stay
+	// exactly where the root's own creation left them.
+	assertCount(t, "task_families (after child)", 1, func() (int, error) { return store.CountTaskFamilies(ctx) })
+	assertCount(t, "workspace_sets (after child)", 1, func() (int, error) { return store.CountWorkspaceSets(ctx) })
+	assertCount(t, "work_item_effective_scopes (after child)", 1, func() (int, error) { return store.CountWorkItemEffectiveScopes(ctx) })
+
+	provisionJobsAfter, err := store.CountDurableJobsByKind(ctx, work.WorkspaceProvisionJobKind)
+	if err != nil {
+		t.Fatalf("CountDurableJobsByKind (after child): %v", err)
+	}
+	if provisionJobsAfter != provisionJobsBefore {
+		t.Fatalf("provision jobs after child = %d, want unchanged from %d (no new WORKSPACE_PROVISION job)", provisionJobsAfter, provisionJobsBefore)
+	}
+
+	eventCount, err := store.CountDomainEvents(ctx, "WorkItem", result.WorkItemID)
+	if err != nil {
+		t.Fatalf("CountDomainEvents: %v", err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("ChildWorkItemCreated event count = %d, want exactly 1", eventCount)
+	}
+}
+
+// TestCreateChildWorkItem_RollbackOnEscalation_NoOrphanRowsSQLite mirrors
+// TestCreateRootWorkItem_RollbackOnMidTransactionFailure_NoOrphanRows for
+// CreateChildWorkItem: a REAL failure (READ→WRITE escalation, rejected by
+// work.ValidateEffectiveScopes deep inside the transaction, after the child
+// WorkItem row has already been written to the live *sql.Tx) must roll back
+// EVERYTHING — zero new work_items/work_item_effective_scopes rows, no
+// ChildWorkItemCreated event, no command receipt — proven against a real
+// sqlite database, not the fake.
+func TestCreateChildWorkItem_RollbackOnEscalation_NoOrphanRowsSQLite(t *testing.T) {
+	ctx := context.Background()
+	store := openSQLiteStore(t, "agentkit-child-rollback.db")
+	uow := sqlite.NewUnitOfWork(store)
+	ids := idsource.Random{}
+
+	root := seedRootFixtureSQLite(t, uow, ids, "repo-1", workdomain.RepositoryRead, []string{"services/api"})
+
+	assertCount(t, "work_items (before child attempt)", 1, func() (int, error) { return store.CountWorkItems(ctx) })
+
+	cmd := ports.Command{
+		ID: "cmd-child-1", IdempotencyKey: "idem-child-1", Actor: "actor-1",
+		CorrelationID: "corr-1", Scope: ports.ProjectScope("project-1"), RequestedAt: time.Now().UTC(),
+		Type: "CreateChildWorkItem", RequestHash: "hash-child-1",
+	}
+	_, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, work.CreateChildWorkItemRequest{
+		ParentWorkItemID: root.WorkItemID, Title: "Escalate to WRITE", ParentJoinPolicy: "PARENT_BLOCKS_ON_CHILD",
+		EffectiveScope: []work.ScopeGrantRequest{
+			{RepositoryID: "repo-1", Access: string(workdomain.RepositoryWrite), PathScopes: []string{"services/api"}, Reason: "escalate"},
+		},
+	})
+	if !errors.Is(err, work.ErrEffectiveScopeExceedsFamilyScope) {
+		t.Fatalf("CreateChildWorkItem err = %v, want work.ErrEffectiveScopeExceedsFamilyScope (family only granted READ)", err)
+	}
+
+	// The child WorkItem row itself was written to the live *sql.Tx before
+	// ValidateEffectiveScopes ever ran (CreateWorkItem happens first) —
+	// proving the whole transaction, not just the scope write, rolled back.
+	assertCount(t, "work_items (after failed child attempt)", 1, func() (int, error) { return store.CountWorkItems(ctx) })
+	assertCount(t, "work_item_effective_scopes (after failed child attempt)", 0, func() (int, error) { return store.CountWorkItemEffectiveScopes(ctx) })
+
+	eventCount, err := store.CountDomainEventsByType(ctx, "ChildWorkItemCreated")
+	if err != nil {
+		t.Fatalf("CountDomainEventsByType: %v", err)
+	}
+	if eventCount != 0 {
+		t.Fatalf("ChildWorkItemCreated event count = %d, want 0", eventCount)
+	}
+
+	receiptCount, err := store.CountCommandReceiptsByIdempotencyKey(ctx, "idem-child-1")
+	if err != nil {
+		t.Fatalf("CountCommandReceiptsByIdempotencyKey: %v", err)
+	}
+	if receiptCount != 0 {
+		t.Fatalf("command receipt count = %d, want 0 (a failed command must remain retryable)", receiptCount)
+	}
+}
+
+// TestCreateChildWorkItem_DuplicateCommandSQLite_Idempotent is this task's
+// own "duplicate command" requirement against real sqlite: a retry with the
+// same IdempotencyKey/RequestHash replays the first attempt's exact result
+// without creating any duplicate row.
+func TestCreateChildWorkItem_DuplicateCommandSQLite_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	store := openSQLiteStore(t, "agentkit-child-duplicate.db")
+	uow := sqlite.NewUnitOfWork(store)
+	ids := idsource.Random{}
+
+	root := seedRootFixtureSQLite(t, uow, ids, "repo-1", workdomain.RepositoryWrite, []string{"services/api"})
+
+	cmd := ports.Command{
+		ID: "cmd-child-1", IdempotencyKey: "idem-child-1", Actor: "actor-1",
+		CorrelationID: "corr-1", Scope: ports.ProjectScope("project-1"), RequestedAt: time.Now().UTC(),
+		Type: "CreateChildWorkItem", RequestHash: "hash-child-1",
+	}
+	req := work.CreateChildWorkItemRequest{
+		ParentWorkItemID: root.WorkItemID, Title: "Implement the handler", ParentJoinPolicy: "PARENT_BLOCKS_ON_CHILD",
+		EffectiveScope: []work.ScopeGrantRequest{
+			{RepositoryID: "repo-1", Access: string(workdomain.RepositoryWrite), PathScopes: []string{"services/api/handler"}, Reason: "child scope"},
+		},
+	}
+	first, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, req)
+	if err != nil {
+		t.Fatalf("first CreateChildWorkItem: %v", err)
+	}
+	second, err := work.CreateChildWorkItem(ctx, uow, ids, cmd, req)
+	if err != nil {
+		t.Fatalf("second (replayed) CreateChildWorkItem: %v", err)
+	}
+	if second.WorkItemID != first.WorkItemID {
+		t.Fatalf("replayed result = %+v, want identical to first %+v", second, first)
+	}
+
+	assertCount(t, "work_items", 2, func() (int, error) { return store.CountWorkItems(ctx) })
+	assertCount(t, "work_item_effective_scopes", 1, func() (int, error) { return store.CountWorkItemEffectiveScopes(ctx) })
 
 	eventCount, err := store.CountDomainEvents(ctx, "WorkItem", first.WorkItemID)
 	if err != nil {

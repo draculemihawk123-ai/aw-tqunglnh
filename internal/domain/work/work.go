@@ -26,6 +26,18 @@
 //     CreateRootWorkItem/CreateChildWorkItem commands that call this
 //     validator from inside a real persisted transition are a later
 //     task's job (V3-04), not this package's.
+//   - Child lineage/join fields and the effective-scope subset algorithm
+//     (V3-05, this file's own newest half): WorkItem.SourceNodeRunID/
+//     ParentJoinPolicy (HE-08-M07), enforced by NewChildWorkItem, and
+//     ValidateEffectiveScopes (AK-ARCH-012, GC-INV-05) — the pure
+//     READ/WRITE-and-path subset check a child/node/attempt's own
+//     effective scope must pass against the family's already-approved
+//     RepositoryScope grants at a given ScopeVersion. Like
+//     ValidateReadinessGate, ValidateEffectiveScopes is pure: it takes
+//     plain TaskFamily/RepositoryScope values, never touches a database,
+//     and never persists anything — internal/app/work.CreateChildWorkItem
+//     (V3-05) is its first real caller, loading the real persisted family
+//     grants inside its own transaction before calling this validator.
 package work
 
 import (
@@ -42,6 +54,18 @@ import (
 
 type WorkItemID string
 type TaskFamilyID string
+
+// SourceNodeRunID is an opaque reference to the runtime NodeRun that
+// spawned a child WorkItem, when one exists — see WorkItem.SourceNodeRunID's
+// own doc comment for why this stays a package-local string type instead of
+// importing internal/domain/runtime.NodeRunID (that would be an import
+// cycle: runtime already imports this package).
+type SourceNodeRunID string
+
+// JoinPolicy is a child WorkItem's own declared parent-completion/join
+// policy — see WorkItem.ParentJoinPolicy's own doc comment for why this
+// stays a plain non-empty string rather than a closed enum.
+type JoinPolicy string
 
 type WorkItemKind string
 
@@ -74,6 +98,45 @@ type WorkItem struct {
 	Kind      WorkItemKind
 	ParentID  *WorkItemID
 	FamilyID  TaskFamilyID
+
+	// SourceNodeRunID optionally names the runtime NodeRun whose activity
+	// spawned this child WorkItem (HE-08-M07: "child WorkItem MUST gắn
+	// source NodeRun/parent"). It is deliberately a plain, package-local
+	// string type rather than runtime.NodeRunID:
+	// internal/domain/runtime already imports this package (NodeRun.
+	// EffectiveScope is []work.RepositoryScope), so this package importing
+	// runtime back would be a cycle. It is also deliberately optional
+	// (nil): no runtime engine exists yet in this codebase (V4 is that
+	// future work) to ever produce a real NodeRun, so every child created
+	// by this V3-era codebase — e.g. an operator decomposing an oversized
+	// task during planning, HE-07-M07's own framing — has no real NodeRun
+	// to attach and leaves this nil. A future V4 runtime that spawns a
+	// child from inside a live NodeRun (go-core-spec's own future
+	// SPAWN_WORK_ITEMS outcome, lecture 08's "Ánh xạ vào Agent Kit" list)
+	// sets it; nothing in this package ever resolves it against a real
+	// node_runs row — that FK-style check needs I/O this pure package does
+	// not have, exactly the same boundary WorkflowVersionID already draws
+	// for ValidateReadinessGate.
+	SourceNodeRunID *SourceNodeRunID
+	// ParentJoinPolicy is this child's own declared answer to "does the
+	// parent depend on this child's completion, and how" (HE-08-M07:
+	// "child WorkItem MUST gắn ... parent completion/join policy";
+	// HE-07-M07: "task quá lớn MUST được chia thành child WorkItems có
+	// ownership, acceptance và parent join policy rõ"). No citation this
+	// package's task reads enumerates a closed set of policy names — HE-08's
+	// own "Ánh xạ vào Agent Kit" list names a future `SPAWN_WORK_ITEMS và
+	// join policy` mechanism without ever spelling out its vocabulary either
+	// — so, per this codebase's own established discipline for a
+	// loosely-specified vocabulary (see RiskLevel's own doc comment
+	// immediately below, and node_config.go's repeated "minimal, defensible
+	// reading" comments), ParentJoinPolicy stays a plain non-empty string
+	// rather than a closed enum. It is purely declarative/structural at
+	// this stage: no runtime engine exists yet (V4) to actually execute a
+	// join against it, so NewChildWorkItem only ever checks the string is
+	// non-blank — the same "structural, not behavioral" boundary
+	// ValidateReadinessGate's own doc comment already draws for fields this
+	// package cannot yet enforce with real I/O.
+	ParentJoinPolicy JoinPolicy
 
 	// SchemaVersion is this WorkItem contract's own schema version
 	// (HE-08-M01: "WorkItem MUST có schema version"). No citation in this
@@ -203,20 +266,26 @@ func (a ApprovalException) Reason() string        { return a.reason }
 func (a ApprovalException) ApprovedBy() string    { return a.approvedBy }
 func (a ApprovalException) ApprovedAt() time.Time { return a.approvedAt }
 
-// NewRootWorkItem and NewChildWorkItem remain the thin, identity-only
-// constructors they were before V3-03 (their only two callers today are
-// this package's own work_test.go and workspace/workspace_test.go — no
-// production code path constructs a WorkItem yet). They deliberately do
-// not populate SchemaVersion/Behavior/AcceptanceCriteria/VerificationSpec/
-// RiskLevel/Exclusions/WorkflowVersionID/ApprovalException: filling in a
-// WorkItem's full contract from real caller input is explicitly V3-04's
+// NewRootWorkItem and NewChildWorkItem remain the thin constructors they
+// were before V3-03: neither populates SchemaVersion/Behavior/
+// AcceptanceCriteria/VerificationSpec/RiskLevel/Exclusions/
+// WorkflowVersionID/ApprovalException. Filling in a WorkItem's full
+// contract from real caller input is explicitly V3-04/V3-05's
 // CreateRootWorkItem/CreateChildWorkItem job
-// (docs/architecture/04-go-core-spec.md §8), not this package's — adding
-// a second, richer constructor here without a real caller to drive its
-// shape would be guessing at V3-04's own request DTO. A caller that needs
-// a fully-contracted WorkItem today sets the exported fields directly (a
-// WorkItem's fields are all exported for exactly this reason) and then
-// calls ValidateReadinessGate itself.
+// (docs/architecture/04-go-core-spec.md §8), not this package's — adding a
+// second, richer constructor here without a real caller to drive its shape
+// would be guessing at those commands' own request DTOs. A caller that
+// needs a fully-contracted WorkItem today sets the exported fields
+// directly (a WorkItem's fields are all exported for exactly this reason)
+// and then calls ValidateReadinessGate itself. NewChildWorkItem's own
+// joinPolicy/sourceNodeRunID parameters are the one exception to "thin,
+// identity-only": they are lineage/ownership fields (the same block as
+// ParentID/FamilyID, not the contract block), and HE-08-M07's own "child
+// WorkItem MUST gắn ... parent completion/join policy" bar is about a
+// child's structural identity, not its task contract — so NewChildWorkItem
+// (V3-05, this package's real first production caller for CHILD kind) is
+// exactly where that "MUST" is enforced, the same place ParentID's own
+// non-blank requirement already lives.
 func NewRootWorkItem(
 	id WorkItemID,
 	projectID project.ProjectID,
@@ -241,7 +310,16 @@ func NewRootWorkItem(
 	}, nil
 }
 
-func NewChildWorkItem(id WorkItemID, parent WorkItem, title string) (WorkItem, error) {
+// NewChildWorkItem builds a BACKLOG, generation-1 child sharing parent's own
+// ProjectID/FamilyID (GC-INV-01: "child có cùng ProjectID và FamilyID với
+// parent") — a child never creates its own TaskFamily/WorkspaceSet, it
+// reuses the parent's (AK-ARCH-012). joinPolicy is required non-blank
+// (HE-08-M07's own "MUST gắn ... parent completion/join policy" — see
+// WorkItem.ParentJoinPolicy's own doc comment for why it stays a plain
+// string); sourceNodeRunID is optional (nil is the normal case for every
+// child this V3-era codebase can create — see
+// WorkItem.SourceNodeRunID's own doc comment for that boundary).
+func NewChildWorkItem(id WorkItemID, parent WorkItem, title string, joinPolicy JoinPolicy, sourceNodeRunID *SourceNodeRunID) (WorkItem, error) {
 	if id == "" {
 		return WorkItem{}, errors.New("child work item id is required")
 	}
@@ -252,16 +330,21 @@ func NewChildWorkItem(id WorkItemID, parent WorkItem, title string) (WorkItem, e
 	if title == "" {
 		return WorkItem{}, errors.New("work item title is required")
 	}
+	if strings.TrimSpace(string(joinPolicy)) == "" {
+		return WorkItem{}, errors.New("child work item parent join policy is required")
+	}
 	parentID := parent.ID
 	return WorkItem{
-		ID:        id,
-		ProjectID: parent.ProjectID,
-		Kind:      WorkItemChild,
-		ParentID:  &parentID,
-		FamilyID:  parent.FamilyID,
-		Title:     title,
-		Status:    WorkItemBacklog,
-		Version:   1,
+		ID:               id,
+		ProjectID:        parent.ProjectID,
+		Kind:             WorkItemChild,
+		ParentID:         &parentID,
+		FamilyID:         parent.FamilyID,
+		SourceNodeRunID:  sourceNodeRunID,
+		ParentJoinPolicy: joinPolicy,
+		Title:            title,
+		Status:           WorkItemBacklog,
+		Version:          1,
 	}, nil
 }
 

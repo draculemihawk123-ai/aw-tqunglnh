@@ -90,12 +90,54 @@ func TestChildWorkItemInheritsTaskFamilyAndProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create root: %v", err)
 	}
-	child, err := NewChildWorkItem("child", root, "Child")
+	child, err := NewChildWorkItem("child", root, "Child", JoinPolicy("PARENT_BLOCKS_ON_CHILD"), nil)
 	if err != nil {
 		t.Fatalf("create child: %v", err)
 	}
 	if child.ProjectID != root.ProjectID || child.FamilyID != root.FamilyID || child.ParentID == nil || *child.ParentID != root.ID {
 		t.Fatalf("child did not inherit root ownership: %#v", child)
+	}
+	if child.ParentJoinPolicy != JoinPolicy("PARENT_BLOCKS_ON_CHILD") {
+		t.Fatalf("child.ParentJoinPolicy = %q, want the policy passed to NewChildWorkItem", child.ParentJoinPolicy)
+	}
+	if child.SourceNodeRunID != nil {
+		t.Fatalf("child.SourceNodeRunID = %v, want nil (no runtime engine exists yet to spawn a real NodeRun)", child.SourceNodeRunID)
+	}
+}
+
+// TestNewChildWorkItem_RequiresParentJoinPolicy is HE-08-M07's own "child
+// WorkItem MUST gắn ... parent completion/join policy" bar, made concrete:
+// a blank join policy is rejected outright, the same way a blank title is.
+func TestNewChildWorkItem_RequiresParentJoinPolicy(t *testing.T) {
+	t.Parallel()
+
+	root, err := NewRootWorkItem("root", "project", "family", "Root")
+	if err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	if _, err := NewChildWorkItem("child", root, "Child", JoinPolicy("   "), nil); err == nil {
+		t.Fatal("expected rejection for a blank parent join policy")
+	}
+}
+
+// TestNewChildWorkItem_AcceptsSourceNodeRunID confirms a caller MAY attach a
+// source NodeRun reference (a future V4 runtime spawning a child from a live
+// NodeRun) even though no production caller in this V3-era codebase does so
+// yet.
+func TestNewChildWorkItem_AcceptsSourceNodeRunID(t *testing.T) {
+	t.Parallel()
+
+	root, err := NewRootWorkItem("root", "project", "family", "Root")
+	if err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	nodeRunID := SourceNodeRunID("node-run-1")
+	child, err := NewChildWorkItem("child", root, "Child", JoinPolicy("PARENT_BLOCKS_ON_CHILD"), &nodeRunID)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	if child.SourceNodeRunID == nil || *child.SourceNodeRunID != nodeRunID {
+		t.Fatalf("child.SourceNodeRunID = %v, want %q", child.SourceNodeRunID, nodeRunID)
 	}
 }
 

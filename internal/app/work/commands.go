@@ -1,4 +1,4 @@
-// Package work is V3-04's application-command layer
+// Package work is V3-04/V3-05's application-command layer
 // (docs/design/05-v3-project-workspace.md), mirroring the domain package it
 // is built on, internal/domain/work — the same "app package named after the
 // domain package it orchestrates" convention internal/app/catalog follows
@@ -8,7 +8,19 @@
 // WorkItem/TaskFamily/WorkspaceSet task creation, even though both live
 // under internal/app and both compose the same ports.UnitOfWork.
 //
-// CreateRootWorkItem is this package's one public command
+// This file has two public commands, at two very different points in a
+// task family's own lifecycle: CreateRootWorkItem (V3-04, below) creates a
+// family from nothing; CreateChildWorkItem (V3-05, this file's own newer
+// half, see its own doc comment further down) decomposes an
+// already-existing one. The two deliberately share almost nothing at the
+// persistence level beyond ScopeGrantRequest's own shape and the
+// receipt/idempotency envelope pattern — a child never creates a
+// TaskFamily/WorkspaceSet of its own (AK-ARCH-012) and never enqueues a
+// WORKSPACE_PROVISION job, so CreateChildWorkItem's own transaction body
+// looks structurally different from CreateRootWorkItem's, not just
+// shorter.
+//
+// CreateRootWorkItem is this package's original public command
 // (docs/architecture/04-go-core-spec.md §8's command table: "CreateRootWorkItem
 // | WorkItem + TaskFamily + WorkspaceSet + scope + provision jobs nguyên
 // tử"; that same doc's own "CreateRootWorkItem là public boundary duy nhất
@@ -353,6 +365,258 @@ func CreateRootWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 		result = CreateRootWorkItemResult{
 			WorkItemID: workItemID, ProjectID: req.ProjectID, FamilyID: familyID, WorkspaceSetID: workspaceSetID,
 			Status: string(root.Status), ProvisionedRepositories: provisioned,
+		}
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("marshal receipt result: %w", err)
+		}
+		return tx.Receipts().Record(ctx, ports.Receipt{
+			Actor: cmd.Actor, Scope: cmd.Scope, IdempotencyKey: cmd.IdempotencyKey,
+			CommandType: cmd.Type, RequestHash: cmd.RequestHash, ResultJSON: string(resultJSON),
+			CreatedAt: cmd.RequestedAt,
+		})
+	})
+	return result, err
+}
+
+// ErrEffectiveScopeExceedsFamilyScope is returned when a requested child
+// effective-scope entry is not covered by the parent's TaskFamily's own
+// already-approved RepositoryScope grants at its current ScopeVersion —
+// GC-INV-05's own "Child/node/attempt không được mở rộng quyền vượt scope
+// family đã phê duyệt", concretely: a repository the family never granted
+// at all, a path outside every grant's own PathScopes, or a WRITE request
+// where the family only ever granted READ (this task's own explicit
+// "READ→WRITE escalation rejection" Verify-line requirement). The
+// underlying work.ValidateEffectiveScopes error (wrapped via %w below)
+// names the specific repository.
+var ErrEffectiveScopeExceedsFamilyScope = errors.New("work: child effective scope exceeds approved family scope")
+
+// EffectiveScopeGrant is one repository entry CreateChildWorkItem recorded
+// as part of a child's own effective scope.
+type EffectiveScopeGrant struct {
+	RepositoryID string `json:"repositoryId"`
+	Access       string `json:"access"`
+}
+
+// CreateChildWorkItemRequest is what a caller supplies to
+// CreateChildWorkItem. Unlike CreateRootWorkItemRequest, it carries no
+// ProjectID: a child's ProjectID/FamilyID are always inherited from
+// ParentWorkItemID's own already-persisted row (GC-INV-01, AK-ARCH-012),
+// never re-declared by the caller — the same "the repository's own stored
+// row is always what is checked, never trusted from the request"
+// discipline CreateRootWorkItem's own same-project check already follows,
+// applied here to the parent lookup instead of a Repository lookup.
+type CreateChildWorkItemRequest struct {
+	ParentWorkItemID string
+	Title            string
+	// ParentJoinPolicy is this child's own declared parent-completion/join
+	// policy (HE-08-M07: "child WorkItem MUST gắn ... parent completion/
+	// join policy"). Required — see work.WorkItem.ParentJoinPolicy's own
+	// doc comment for why it stays a plain, open string rather than a
+	// closed enum, and NewChildWorkItem for where the non-blank
+	// requirement is actually enforced (this request field is just what
+	// carries the caller's value there).
+	ParentJoinPolicy string
+	// SourceNodeRunID optionally names the runtime NodeRun that spawned
+	// this child (HE-08-M07's other half: "child WorkItem MUST gắn source
+	// NodeRun/parent"). Blank (the only case any real caller in this V3-era
+	// codebase can supply — no runtime engine exists yet, V4's own future
+	// job) means "created directly, not from a real NodeRun" — see
+	// work.WorkItem.SourceNodeRunID's own doc comment for that boundary.
+	SourceNodeRunID string
+	// EffectiveScope is this child's own requested effective scope: every
+	// entry must already be covered by the parent's TaskFamily's own
+	// approved RepositoryScope grants at its current ScopeVersion
+	// (GC-INV-05) — work.ValidateEffectiveScopes rejects anything wider (an
+	// ungranted repository, a path outside every grant, or WRITE where the
+	// family only ever granted READ). Reuses ScopeGrantRequest, the exact
+	// same shape CreateRootWorkItemRequest.InitialScope already uses.
+	EffectiveScope []ScopeGrantRequest
+}
+
+// CreateChildWorkItemResult is what CreateChildWorkItem returns (and what a
+// replayed command-receipt reconstructs).
+type CreateChildWorkItemResult struct {
+	WorkItemID       string                `json:"workItemId"`
+	ProjectID        string                `json:"projectId"`
+	FamilyID         string                `json:"familyId"`
+	ParentWorkItemID string                `json:"parentWorkItemId"`
+	Status           string                `json:"status"`
+	EffectiveScope   []EffectiveScopeGrant `json:"effectiveScope"`
+}
+
+// CreateChildWorkItem is go-core-spec §8's other WorkItem-creating public
+// command: "CreateChildWorkItem | Child cùng family, effective scope là tập
+// con". Inside one ports.UnitOfWork.WithSerializedWrite call it:
+//
+//   - loads req.ParentWorkItemID's own already-persisted WorkItem row —
+//     never trusted from the request beyond its ID, the parent's own
+//     ProjectID/FamilyID are always what the child inherits (GC-INV-01);
+//   - builds the child WorkItem itself (work.NewChildWorkItem — BACKLOG,
+//     generation 1, ParentID set, ParentJoinPolicy/SourceNodeRunID
+//     attached per HE-08-M07) and persists it;
+//   - loads the parent's TaskFamily and its own full accumulated
+//     RepositoryScope grant history (tx.Work().ListFamilyRepositoryScopes)
+//     at the family's current ScopeVersion;
+//   - builds one candidate RepositoryScope per req.EffectiveScope entry and
+//     validates the whole set via work.ValidateEffectiveScopes — the
+//     already-existing, already-tested subset algorithm (READ/WRITE
+//     escalation and path-prefix subset checking) this task reuses rather
+//     than reimplements — rejecting anything that is not a genuine subset
+//     of the family's own approved grants (GC-INV-05);
+//   - persists each validated candidate as a work_item_effective_scopes row
+//     (tx.Work().AddEffectiveScope);
+//   - the domain event and command receipt every mutating command in this
+//     codebase already gets.
+//
+// What this command deliberately never does, per this task's own explicit
+// "Hoàn thành khi: tạo child không enqueue provision workspace mới" bar and
+// AK-ARCH-012 ("Child cùng family reuse WorkspaceSet"): it never calls
+// work.NewTaskFamily or workspace.NewWorkspaceSet, and it never enqueues a
+// WorkspaceProvisionJobKind job — the family's WorkspaceSet already exists
+// (created by the family's own root CreateRootWorkItem call) and this
+// command reuses it outright. There is nothing new to provision.
+//
+// Same-family/subset validation is the load-bearing check here, the direct
+// counterpart of CreateRootWorkItem's own same-project/ACTIVE-repository
+// validation: every repository named in req.EffectiveScope must already be
+// covered by the family's own RepositoryScope history at its current
+// ScopeVersion. This command deliberately does NOT separately re-check
+// same-project or Repository ACTIVE status via tx.Catalog() the way
+// CreateRootWorkItem does — those checks already ran once, for real,
+// against every row ValidateEffectiveScopes's own familyScopes argument can
+// possibly contain (CreateRootWorkItem is the only path that ever writes a
+// family_repository_scopes row, and it already required same-project/
+// ACTIVE before writing one) — re-deriving them here would duplicate a
+// check the family's own grant history already encodes, not add any real
+// safety.
+func CreateChildWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, cmd ports.Command, req CreateChildWorkItemRequest) (CreateChildWorkItemResult, error) {
+	if strings.TrimSpace(req.ParentWorkItemID) == "" {
+		return CreateChildWorkItemResult{}, errors.New("work: ParentWorkItemID is required")
+	}
+	if strings.TrimSpace(req.Title) == "" {
+		return CreateChildWorkItemResult{}, errors.New("work: Title is required")
+	}
+	if strings.TrimSpace(req.ParentJoinPolicy) == "" {
+		return CreateChildWorkItemResult{}, errors.New("work: ParentJoinPolicy is required")
+	}
+	if len(req.EffectiveScope) == 0 {
+		return CreateChildWorkItemResult{}, errors.New("work: at least one effective scope entry is required")
+	}
+
+	var result CreateChildWorkItemResult
+	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		existingReceipt, found, err := tx.Receipts().Load(ctx, cmd.Actor, cmd.Scope, cmd.IdempotencyKey, cmd.Type)
+		if err != nil {
+			return err
+		}
+		if found {
+			if existingReceipt.RequestHash != cmd.RequestHash {
+				return ports.ErrReceiptConflict
+			}
+			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
+		}
+
+		parent, err := tx.Work().GetWorkItem(ctx, req.ParentWorkItemID)
+		if err != nil {
+			return err
+		}
+
+		family, err := tx.Work().GetTaskFamily(ctx, string(parent.FamilyID))
+		if err != nil {
+			return err
+		}
+
+		var sourceNodeRunID *workdomain.SourceNodeRunID
+		if trimmed := strings.TrimSpace(req.SourceNodeRunID); trimmed != "" {
+			nodeRunID := workdomain.SourceNodeRunID(trimmed)
+			sourceNodeRunID = &nodeRunID
+		}
+
+		childID := ids.NewID()
+		child, err := workdomain.NewChildWorkItem(
+			workdomain.WorkItemID(childID), parent, req.Title,
+			workdomain.JoinPolicy(req.ParentJoinPolicy), sourceNodeRunID,
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Work().CreateWorkItem(ctx, child); err != nil {
+			return err
+		}
+
+		familyScopes, err := tx.Work().ListFamilyRepositoryScopes(ctx, string(parent.FamilyID))
+		if err != nil {
+			return err
+		}
+
+		seenRepositories := make(map[string]bool, len(req.EffectiveScope))
+		candidates := make([]workdomain.RepositoryScope, 0, len(req.EffectiveScope))
+		for _, grant := range req.EffectiveScope {
+			if seenRepositories[grant.RepositoryID] {
+				return fmt.Errorf("work: duplicate repository %q in effective scope", grant.RepositoryID)
+			}
+			seenRepositories[grant.RepositoryID] = true
+
+			candidate, err := workdomain.NewRepositoryScope(
+				parent.FamilyID, family.ScopeVersion, project.RepositoryID(grant.RepositoryID),
+				workdomain.RepositoryAccess(grant.Access), grant.PathScopes, grant.Reason, cmd.Actor, cmd.RequestedAt,
+			)
+			if err != nil {
+				return err
+			}
+			candidates = append(candidates, candidate)
+		}
+
+		// The reused, already-tested subset algorithm (GC-INV-05,
+		// AK-ARCH-012) — this command never reimplements READ/WRITE
+		// escalation or path-prefix subset checking itself.
+		if err := workdomain.ValidateEffectiveScopes(family, family.ScopeVersion, familyScopes, candidates); err != nil {
+			return fmt.Errorf("%w: %v", ErrEffectiveScopeExceedsFamilyScope, err)
+		}
+
+		persisted := make([]EffectiveScopeGrant, 0, len(candidates))
+		for _, candidate := range candidates {
+			if _, err := tx.Work().AddEffectiveScope(ctx, childID, candidate); err != nil {
+				return err
+			}
+			persisted = append(persisted, EffectiveScopeGrant{
+				RepositoryID: string(candidate.RepositoryID()), Access: string(candidate.Access()),
+			})
+		}
+
+		eventPayload, err := json.Marshal(struct {
+			WorkItemID       string `json:"workItemId"`
+			ProjectID        string `json:"projectId"`
+			FamilyID         string `json:"familyId"`
+			ParentWorkItemID string `json:"parentWorkItemId"`
+			Title            string `json:"title"`
+			ScopeCount       int    `json:"scopeCount"`
+		}{
+			WorkItemID: childID, ProjectID: string(child.ProjectID), FamilyID: string(child.FamilyID),
+			ParentWorkItemID: req.ParentWorkItemID, Title: child.Title, ScopeCount: len(candidates),
+		})
+		if err != nil {
+			return fmt.Errorf("marshal ChildWorkItemCreated payload: %w", err)
+		}
+		// AggregateID is the new child WorkItem's own ID; Sequence=1 is safe
+		// for the identical reason CreateRootWorkItem's own
+		// RootWorkItemCreated event gives: this is the child's very first
+		// and only event from this command, and the receipt check above
+		// guarantees this branch runs at most once per distinct (Actor,
+		// Scope, IdempotencyKey, Type).
+		if err := tx.Events().Append(ctx, ports.DomainEvent{
+			ID: cmd.ID + "-created", ProjectID: string(child.ProjectID),
+			AggregateType: "WorkItem", AggregateID: childID, Sequence: 1,
+			EventType: "ChildWorkItemCreated", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
+		}); err != nil {
+			return err
+		}
+
+		result = CreateChildWorkItemResult{
+			WorkItemID: childID, ProjectID: string(child.ProjectID), FamilyID: string(child.FamilyID),
+			ParentWorkItemID: req.ParentWorkItemID, Status: string(child.Status), EffectiveScope: persisted,
 		}
 		resultJSON, err := json.Marshal(result)
 		if err != nil {

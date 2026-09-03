@@ -1,0 +1,33 @@
+-- work_items.parent_join_policy / work_items.source_node_run_id (V3-05,
+-- docs/design/05-v3-project-workspace.md; docs/harness-engineering/08-lec-08-work-item-la-primitive.md
+-- HE-08-M07: "child WorkItem MUST gắn source NodeRun/parent và parent
+-- completion/join policy"; docs/harness-engineering/07-lec-07-kiem-soat-scope-va-wip.md
+-- HE-07-M07: "task quá lớn MUST được chia thành child WorkItems có
+-- ownership, acceptance và parent join policy rõ").
+--
+-- Both columns are nullable, the same reasoning 0007_work_items_contract.sql
+-- already gives for its own new work_items columns: existing fixture rows
+-- (internal/adapters/sqlite/fixtures.go, crashworker_fixtures.go) insert
+-- work_items by explicit column list without either of these fields and
+-- must keep working unmodified, and a ROOT work item never carries a
+-- parent to join to at all (NewRootWorkItem never sets ParentJoinPolicy,
+-- exactly the way it never sets ParentID). No CHECK constraint on
+-- parent_join_policy: internal/domain/work.JoinPolicy is deliberately a
+-- plain, open string rather than a closed enum (see WorkItem.
+-- ParentJoinPolicy's own doc comment — no citation in this task's own
+-- scope enumerates a fixed vocabulary of join policy names), so a DB-level
+-- CHECK would be inventing a closed set this codebase's own domain layer
+-- explicitly declines to invent. source_node_run_id carries no FK either:
+-- no node_runs row can exist yet in this codebase (no runtime engine has
+-- shipped — V4's own future job), so there is nothing yet to reference,
+-- and internal/domain/work deliberately does not import
+-- internal/domain/runtime (see SourceNodeRunID's own doc comment for the
+-- import-cycle reason) — a FK naming a table this migration has no reason
+-- to depend on would misstate that boundary.
+--
+-- A plain additive ALTER TABLE ADD COLUMN set is correct and sufficient
+-- here, the identical reasoning 0007's and 0009's own comments give: no
+-- existing CHECK constraint on work_items needs to change, and neither new
+-- column needs one tight enough to force a rebuild.
+ALTER TABLE work_items ADD COLUMN parent_join_policy TEXT;
+ALTER TABLE work_items ADD COLUMN source_node_run_id TEXT;

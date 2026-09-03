@@ -96,4 +96,26 @@ type WorkRepository interface {
 	// familyID, ordered by (scope_version, repository_id, access) for a
 	// stable, deterministic result a test can assert on exactly.
 	ListFamilyRepositoryScopes(ctx context.Context, familyID string) ([]work.RepositoryScope, error)
+
+	// AddEffectiveScope inserts a new work_item_effective_scopes row for
+	// workItemID after verifying workItemID names a WorkItem that exists and
+	// scope.RepositoryID() names a Repository that exists —
+	// ErrPersistenceNotFound otherwise (V3-05, docs/design/05-v3-project-workspace.md;
+	// docs/design/01-system-design.md §6.1's own work_item_effective_scopes
+	// row). It does not itself check that scope is actually a subset of
+	// familyID's own approved grants — that is
+	// work.ValidateEffectiveScopes's job (GC-INV-05), already run by the
+	// calling command handler (CreateChildWorkItem) against the real
+	// persisted family grants before this method is ever reached, the same
+	// "construct/validate in the app layer, persist an already-valid domain
+	// value" discipline AddRepositoryScope already follows for its own
+	// family-level counterpart. Reuses work.RepositoryScope as the
+	// persisted value's own type rather than a second, near-duplicate
+	// "effective scope" type — see work.go's own "WorkItem effective scope"
+	// doc comment for why.
+	AddEffectiveScope(ctx context.Context, workItemID string, scope work.RepositoryScope) (work.RepositoryScope, error)
+	// ListWorkItemEffectiveScopes returns every RepositoryScope declared as
+	// workItemID's own effective scope, ordered by (repository_id, access)
+	// for a stable, deterministic result a test can assert on exactly.
+	ListWorkItemEffectiveScopes(ctx context.Context, workItemID string) ([]work.RepositoryScope, error)
 }
