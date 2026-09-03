@@ -18,6 +18,23 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
+// The tests below (V3-09) close the gaps a full audit of the pre-existing
+// AcquireWriteLeases/HeartbeatWriteLeases/ValidateWriteLease/ReleaseWriteLeases
+// implementation found, without changing any of that implementation: batch
+// order by RepositoryID, all-or-none acquisition and the fencing/generation
+// guarantees were already correct and already covered above (this file) and
+// by TestSPK09QuarantineRecreateFencesStaleGeneration
+// (spk09_workspace_quarantine_test.go, real quarantine/recreate generation
+// supersession) and TestWriteLeaseRaceHasOneWinnerForSameRepository (the
+// 100-iteration race this task's own Verify line names). HeartbeatWriteLeases
+// itself, however, had zero coverage anywhere in the repository — no test,
+// no spike scenario, no production caller — before this task; the tests
+// below exercise it for the first time, plus two narrow gaps the audit found
+// nothing else already proving: a direct (non-quarantine) generation
+// mismatch rejection, and AK-ARCH-013's "different repositories may hold
+// WriteLeases at the same time" half (only the same-repository exclusivity
+// half had a prior test).
+
 func TestDurableJobClaimIsExclusive(t *testing.T) {
 	store := openSchedulingTestStore(t)
 	seedSchedulingFixture(t, store)
@@ -351,6 +368,372 @@ func TestWriteLeaseRaceHasOneWinnerForSameRepository(t *testing.T) {
 		lastFence = winner[0].FenceToken
 		if err := store.ReleaseWriteLeases(context.Background(), winner); err != nil {
 			t.Fatalf("iteration %d release error: %v", iteration, err)
+		}
+	}
+}
+
+// TestWriteLeaseHeartbeatExtendsLeaseAndBlocksConflictingAcquire is
+// HeartbeatWriteLeases' first-ever exercise in this repository. It proves
+// the heartbeat genuinely pushes lease_until forward (not a no-op): a rival
+// acquire attempt that arrives after the ORIGINAL short TTL would have
+// elapsed is still fenced out, and the heartbeated grant still validates.
+func TestWriteLeaseHeartbeatExtendsLeaseAndBlocksConflictingAcquire(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	seedSchedulingFixture(t, store)
+	enqueueSchedulingTestJob(t, store, "job-hb-extend", "job-hb-extend-key", 3)
+	_, jobLease, err := store.ClaimJob(context.Background(), "worker-hb", 5*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimJob() error = %v", err)
+	}
+	target := ports.WorkspaceLeaseTarget{
+		RepositoryID:          "repo-user",
+		RepositoryWorkspaceID: "rw-user",
+		Generation:            1,
+	}
+	grants, err := store.AcquireWriteLeases(context.Background(), ports.AcquireWriteLeasesRequest{
+		JobLease: jobLease, AttemptID: runtime.ExecutionAttemptID("attempt-1"),
+		Targets: []ports.WorkspaceLeaseTarget{target},
+		TTL:     300 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("AcquireWriteLeases() error = %v", err)
+	}
+	originalLeaseUntil := grants[0].LeaseUntil
+
+	heartbeated, err := store.HeartbeatWriteLeases(context.Background(), grants, 5*time.Second)
+	if err != nil {
+		t.Fatalf("HeartbeatWriteLeases() error = %v", err)
+	}
+	if len(heartbeated) != 1 {
+		t.Fatalf("heartbeated grants = %d, want 1", len(heartbeated))
+	}
+	if diff := heartbeated[0].LeaseUntil.Sub(originalLeaseUntil); diff < time.Second {
+		t.Fatalf("heartbeat extended lease by %s, want a real multi-second extension past the original TTL", diff)
+	}
+
+	// The original 300ms TTL would have expired by now if the heartbeat had
+	// not genuinely pushed lease_until forward.
+	waitPastLeaseUntil(t, originalLeaseUntil)
+	enqueueSchedulingTestJob(t, store, "job-hb-rival", "job-hb-rival-key", 3)
+	_, rivalLease, err := store.ClaimJob(context.Background(), "worker-hb-rival", 5*time.Second)
+	if err != nil {
+		t.Fatalf("rival ClaimJob() error = %v", err)
+	}
+	if _, err := store.AcquireWriteLeases(context.Background(), ports.AcquireWriteLeasesRequest{
+		JobLease: rivalLease, AttemptID: runtime.ExecutionAttemptID("attempt-2"),
+		Targets: []ports.WorkspaceLeaseTarget{target},
+		TTL:     5 * time.Second,
+	}); !errors.Is(err, ports.ErrWriteLeaseConflict) {
+		t.Fatalf("rival AcquireWriteLeases() after heartbeat error = %v, want ErrWriteLeaseConflict", err)
+	}
+	if err := store.ValidateWriteLease(context.Background(), heartbeated[0]); err != nil {
+		t.Fatalf("ValidateWriteLease() after heartbeat error = %v", err)
+	}
+}
+
+// TestWriteLeaseHeartbeatRejectsStaleJobLease is this task's own Verify
+// line, sub-scenario (b), against HeartbeatWriteLeases specifically (the
+// pre-existing TestWriteLeaseRequiresItsOriginalActiveJobFence above proves
+// the same JobLease-vs-WriteLease authority split for ValidateWriteLease):
+// once the underlying JobLease has been reassigned to a new token, the
+// original holder can no longer heartbeat its WriteLease forward, even
+// though the WriteLease's own TTL has not yet elapsed.
+func TestWriteLeaseHeartbeatRejectsStaleJobLease(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	seedSchedulingFixture(t, store)
+	enqueueSchedulingTestJob(t, store, "job-hb-stale", "job-hb-stale-key", 3)
+
+	_, firstJobLease, err := store.ClaimJob(context.Background(), "same-worker-name", 300*time.Millisecond)
+	if err != nil {
+		t.Fatalf("first ClaimJob() error = %v", err)
+	}
+	grants, err := store.AcquireWriteLeases(context.Background(), ports.AcquireWriteLeasesRequest{
+		JobLease: firstJobLease, AttemptID: runtime.ExecutionAttemptID("attempt-1"),
+		Targets: []ports.WorkspaceLeaseTarget{{
+			RepositoryID: "repo-user", RepositoryWorkspaceID: "rw-user", Generation: 1,
+		}},
+		TTL: 5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("AcquireWriteLeases() error = %v", err)
+	}
+
+	waitForRecoveredJob(t, store)
+	_, replacementJobLease, err := store.ClaimJob(context.Background(), "same-worker-name", 2*time.Second)
+	if err != nil {
+		t.Fatalf("replacement ClaimJob() error = %v", err)
+	}
+	if replacementJobLease.Token <= firstJobLease.Token {
+		t.Fatalf("replacement job token = %d, want greater than %d", replacementJobLease.Token, firstJobLease.Token)
+	}
+
+	if _, err := store.HeartbeatWriteLeases(context.Background(), grants, 5*time.Second); !errors.Is(err, ports.ErrWriteLeaseLost) {
+		t.Fatalf("HeartbeatWriteLeases() with stale job lease error = %v, want ErrWriteLeaseLost", err)
+	}
+}
+
+// TestWriteLeaseHeartbeatBatchIsAllOrNone proves HeartbeatWriteLeases shares
+// AcquireWriteLeases' all-or-none semantics: one stale grant in a multi-target
+// batch must abort the whole heartbeat, never partially extend the other,
+// still-valid grant in the same call.
+func TestWriteLeaseHeartbeatBatchIsAllOrNone(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	seedSchedulingFixture(t, store)
+	enqueueSchedulingTestJob(t, store, "job-hb-batch", "job-hb-batch-key", 3)
+	_, jobLease, err := store.ClaimJob(context.Background(), "worker-hb-batch", 5*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimJob() error = %v", err)
+	}
+	userTarget := ports.WorkspaceLeaseTarget{RepositoryID: "repo-user", RepositoryWorkspaceID: "rw-user", Generation: 1}
+	webTarget := ports.WorkspaceLeaseTarget{RepositoryID: "repo-web", RepositoryWorkspaceID: "rw-web", Generation: 1}
+	grants, err := store.AcquireWriteLeases(context.Background(), ports.AcquireWriteLeasesRequest{
+		JobLease: jobLease, AttemptID: runtime.ExecutionAttemptID("attempt-1"),
+		Targets: []ports.WorkspaceLeaseTarget{userTarget, webTarget},
+		TTL:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("AcquireWriteLeases() error = %v", err)
+	}
+	if len(grants) != 2 {
+		t.Fatalf("grants = %d, want 2", len(grants))
+	}
+
+	var userGrant, webGrant ports.WriteLeaseGrant
+	for _, grant := range grants {
+		switch grant.RepositoryWorkspaceID {
+		case "rw-user":
+			userGrant = grant
+		case "rw-web":
+			webGrant = grant
+		}
+	}
+	if userGrant.RepositoryWorkspaceID == "" || webGrant.RepositoryWorkspaceID == "" {
+		t.Fatal("did not receive grants for both targets")
+	}
+
+	// "repo-user" sorts before "repo-web", so the batch processes the (still
+	// valid) user grant first. Presenting a fence token for the web grant
+	// that no longer matches its row forces the batch to fail partway
+	// through; the assertion below confirms the user grant's own successful
+	// UPDATE was rolled back along with it, not left committed.
+	corrupted := webGrant
+	corrupted.FenceToken = webGrant.FenceToken + 1000
+	mixed := []ports.WriteLeaseGrant{userGrant, corrupted}
+
+	if _, err := store.HeartbeatWriteLeases(context.Background(), mixed, 5*time.Second); !errors.Is(err, ports.ErrWriteLeaseLost) {
+		t.Fatalf("HeartbeatWriteLeases() with one stale grant error = %v, want ErrWriteLeaseLost", err)
+	}
+
+	var leaseUntilText string
+	if err := store.db.QueryRowContext(context.Background(), `
+SELECT lease_until FROM write_leases WHERE repository_workspace_id = 'rw-user' AND generation = 1`,
+	).Scan(&leaseUntilText); err != nil {
+		t.Fatalf("query rw-user lease_until: %v", err)
+	}
+	leaseUntil, err := parseDBTime(leaseUntilText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !leaseUntil.Equal(userGrant.LeaseUntil) {
+		t.Fatalf("rw-user lease_until = %s, want unchanged at %s (batch heartbeat must be all-or-none)",
+			leaseUntil, userGrant.LeaseUntil)
+	}
+}
+
+// TestReleaseWriteLeasesBatchIsAllOrNone mirrors the heartbeat batch
+// all-or-none proof above for ReleaseWriteLeases: one stale grant in the
+// batch must abort the whole release, never partially release the other,
+// still-valid grant.
+func TestReleaseWriteLeasesBatchIsAllOrNone(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	seedSchedulingFixture(t, store)
+	enqueueSchedulingTestJob(t, store, "job-release-batch", "job-release-batch-key", 3)
+	_, jobLease, err := store.ClaimJob(context.Background(), "worker-release-batch", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userTarget := ports.WorkspaceLeaseTarget{RepositoryID: "repo-user", RepositoryWorkspaceID: "rw-user", Generation: 1}
+	webTarget := ports.WorkspaceLeaseTarget{RepositoryID: "repo-web", RepositoryWorkspaceID: "rw-web", Generation: 1}
+	grants, err := store.AcquireWriteLeases(context.Background(), ports.AcquireWriteLeasesRequest{
+		JobLease: jobLease, AttemptID: runtime.ExecutionAttemptID("attempt-1"),
+		Targets: []ports.WorkspaceLeaseTarget{userTarget, webTarget},
+		TTL:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("AcquireWriteLeases() error = %v", err)
+	}
+	var userGrant, webGrant ports.WriteLeaseGrant
+	for _, grant := range grants {
+		switch grant.RepositoryWorkspaceID {
+		case "rw-user":
+			userGrant = grant
+		case "rw-web":
+			webGrant = grant
+		}
+	}
+
+	corrupted := webGrant
+	corrupted.FenceToken = webGrant.FenceToken + 1000
+	mixed := []ports.WriteLeaseGrant{userGrant, corrupted}
+	if err := store.ReleaseWriteLeases(context.Background(), mixed); !errors.Is(err, ports.ErrWriteLeaseLost) {
+		t.Fatalf("ReleaseWriteLeases() with one stale grant error = %v, want ErrWriteLeaseLost", err)
+	}
+
+	// rw-user must still be genuinely held: a rival cannot acquire it.
+	enqueueSchedulingTestJob(t, store, "job-release-rival", "job-release-rival-key", 3)
+	_, rivalLease, err := store.ClaimJob(context.Background(), "worker-release-rival", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AcquireWriteLeases(context.Background(), ports.AcquireWriteLeasesRequest{
+		JobLease: rivalLease, AttemptID: runtime.ExecutionAttemptID("attempt-2"),
+		Targets: []ports.WorkspaceLeaseTarget{userTarget},
+		TTL:     5 * time.Second,
+	}); !errors.Is(err, ports.ErrWriteLeaseConflict) {
+		t.Fatalf("rival AcquireWriteLeases(rw-user) after aborted batch release error = %v, want ErrWriteLeaseConflict", err)
+	}
+}
+
+// TestAcquireWriteLeasesRejectsGenerationMismatch closes this task's Verify
+// sub-scenario (c) directly against AcquireWriteLeases: naming a generation
+// number that does not match the RepositoryWorkspace's actual current
+// generation is rejected outright, and grants nothing.
+// TestSPK09QuarantineRecreateFencesStaleGeneration (in this package) proves
+// the same guarantee through the real production path (quarantine then
+// recreate at generation+1); this test isolates the check itself, with no
+// quarantine machinery involved, against a plain wrong generation number.
+func TestAcquireWriteLeasesRejectsGenerationMismatch(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	seedSchedulingFixture(t, store)
+	enqueueSchedulingTestJob(t, store, "job-gen-mismatch", "job-gen-mismatch-key", 3)
+	_, jobLease, err := store.ClaimJob(context.Background(), "worker-gen", 5*time.Second)
+	if err != nil {
+		t.Fatalf("ClaimJob() error = %v", err)
+	}
+	if _, err := store.AcquireWriteLeases(context.Background(), ports.AcquireWriteLeasesRequest{
+		JobLease: jobLease, AttemptID: runtime.ExecutionAttemptID("attempt-1"),
+		Targets: []ports.WorkspaceLeaseTarget{{
+			RepositoryID: "repo-user", RepositoryWorkspaceID: "rw-user", Generation: 2,
+		}},
+		TTL: 5 * time.Second,
+	}); !errors.Is(err, ports.ErrWriteLeaseConflict) {
+		t.Fatalf("AcquireWriteLeases() for a generation not matching the current row error = %v, want ErrWriteLeaseConflict", err)
+	}
+
+	var leaseCount int
+	if err := store.db.QueryRowContext(context.Background(), `
+SELECT COUNT(*) FROM write_leases WHERE repository_workspace_id = 'rw-user'`,
+	).Scan(&leaseCount); err != nil {
+		t.Fatal(err)
+	}
+	if leaseCount != 0 {
+		t.Fatalf("write_leases rows for rw-user = %d, want 0 (mismatched generation must never be granted)", leaseCount)
+	}
+}
+
+// TestWriteLeaseAllowsDifferentSiblingRepositoriesSimultaneously proves
+// AK-ARCH-013's other half: two different attempts each hold a currently
+// valid WriteLease on two DIFFERENT repositories' workspaces at the same
+// time without conflict. (The same-repository exclusivity half already has
+// dedicated coverage above: TestWriteLeaseRaceHasOneWinnerForSameRepository
+// and TestWriteLeaseBatchIsAtomicAndFencesPreviousGrant.)
+func TestWriteLeaseAllowsDifferentSiblingRepositoriesSimultaneously(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	seedSchedulingFixture(t, store)
+	enqueueSchedulingTestJob(t, store, "job-sibling-a", "job-sibling-a-key", 3)
+	_, leaseA, err := store.ClaimJob(context.Background(), "worker-sibling-a", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueueSchedulingTestJob(t, store, "job-sibling-b", "job-sibling-b-key", 3)
+	_, leaseB, err := store.ClaimJob(context.Background(), "worker-sibling-b", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	userGrants, err := store.AcquireWriteLeases(context.Background(), ports.AcquireWriteLeasesRequest{
+		JobLease: leaseA, AttemptID: runtime.ExecutionAttemptID("attempt-1"),
+		Targets: []ports.WorkspaceLeaseTarget{{RepositoryID: "repo-user", RepositoryWorkspaceID: "rw-user", Generation: 1}},
+		TTL:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("AcquireWriteLeases(repo-user) error = %v", err)
+	}
+	webGrants, err := store.AcquireWriteLeases(context.Background(), ports.AcquireWriteLeasesRequest{
+		JobLease: leaseB, AttemptID: runtime.ExecutionAttemptID("attempt-2"),
+		Targets: []ports.WorkspaceLeaseTarget{{RepositoryID: "repo-web", RepositoryWorkspaceID: "rw-web", Generation: 1}},
+		TTL:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("AcquireWriteLeases(repo-web) error = %v", err)
+	}
+
+	if err := store.ValidateWriteLease(context.Background(), userGrants[0]); err != nil {
+		t.Fatalf("ValidateWriteLease(repo-user) error = %v", err)
+	}
+	if err := store.ValidateWriteLease(context.Background(), webGrants[0]); err != nil {
+		t.Fatalf("ValidateWriteLease(repo-web) error = %v", err)
+	}
+}
+
+// TestSortedLeaseTargetsOrdersByRepositoryID is a direct unit test of the
+// sort AcquireWriteLeases applies before acquiring anything (GC-INV-19:
+// "Multi-repository write lease được acquire all-or-none theo thứ tự
+// RepositoryID ổn định"). The behavioral tests above already prove the
+// batch commits atomically; this isolates the ordering itself, including
+// its stable tie-break and that it never mutates the caller's own slice.
+func TestSortedLeaseTargetsOrdersByRepositoryID(t *testing.T) {
+	input := []ports.WorkspaceLeaseTarget{
+		{RepositoryID: "repo-c", RepositoryWorkspaceID: "rw-c", Generation: 1},
+		{RepositoryID: "repo-a", RepositoryWorkspaceID: "rw-a-2", Generation: 2},
+		{RepositoryID: "repo-a", RepositoryWorkspaceID: "rw-a-1", Generation: 1},
+		{RepositoryID: "repo-b", RepositoryWorkspaceID: "rw-b", Generation: 1},
+	}
+	original := append([]ports.WorkspaceLeaseTarget(nil), input...)
+
+	got := sortedLeaseTargets(input)
+
+	want := []project.RepositoryID{"repo-a", "repo-a", "repo-b", "repo-c"}
+	if len(got) != len(want) {
+		t.Fatalf("sortedLeaseTargets length = %d, want %d", len(got), len(want))
+	}
+	for i, id := range want {
+		if got[i].RepositoryID != id {
+			t.Fatalf("sortedLeaseTargets[%d].RepositoryID = %s, want %s", i, got[i].RepositoryID, id)
+		}
+	}
+	if got[0].RepositoryWorkspaceID != "rw-a-1" || got[1].RepositoryWorkspaceID != "rw-a-2" {
+		t.Fatalf("sortedLeaseTargets did not tie-break same RepositoryID by workspace/generation: %+v", got)
+	}
+	for i := range input {
+		if input[i] != original[i] {
+			t.Fatalf("sortedLeaseTargets mutated its input slice at index %d", i)
+		}
+	}
+}
+
+// TestSortedWriteLeaseGrantsOrdersByRepositoryID is TestSortedLeaseTargetsOrdersByRepositoryID's
+// counterpart for the identical sort HeartbeatWriteLeases and
+// ReleaseWriteLeases apply to their own grant batches.
+func TestSortedWriteLeaseGrantsOrdersByRepositoryID(t *testing.T) {
+	input := []ports.WriteLeaseGrant{
+		{RepositoryID: "repo-c", RepositoryWorkspaceID: "rw-c"},
+		{RepositoryID: "repo-a", RepositoryWorkspaceID: "rw-a"},
+		{RepositoryID: "repo-b", RepositoryWorkspaceID: "rw-b"},
+	}
+	original := append([]ports.WriteLeaseGrant(nil), input...)
+
+	got := sortedWriteLeaseGrants(input)
+
+	want := []project.RepositoryID{"repo-a", "repo-b", "repo-c"}
+	for i, id := range want {
+		if got[i].RepositoryID != id {
+			t.Fatalf("sortedWriteLeaseGrants[%d].RepositoryID = %s, want %s", i, got[i].RepositoryID, id)
+		}
+	}
+	for i := range input {
+		if input[i] != original[i] {
+			t.Fatalf("sortedWriteLeaseGrants mutated its input slice at index %d", i)
 		}
 	}
 }
