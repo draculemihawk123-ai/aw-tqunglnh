@@ -678,3 +678,257 @@ FROM repository_workspaces WHERE workspace_set_id = ? ORDER BY repository_id, ge
 	}
 	return result, nil
 }
+
+// --- TaskFamily ScopeVersion / ScopeExpansionRequest (V3-08) ---
+//
+// This section gives workRepository the persistence half of
+// internal/app/work's four scope-expansion commands
+// (RequestScopeExpansion/ApproveScopeExpansion/RejectScopeExpansion/
+// WithdrawScopeExpansion, docs/design/05-v3-project-workspace.md V3-08):
+// the fenced CAS that bumps a TaskFamily's own ScopeVersion, and CRUD/CAS
+// for the scope_expansion_requests table (0015_scope_expansion_requests.sql).
+
+// TransitionTaskFamilyScopeVersion implements ports.WorkRepository (V3-08):
+// see that interface method's own doc comment for the full CAS contract.
+func (r workRepository) TransitionTaskFamilyScopeVersion(ctx context.Context, req ports.TransitionTaskFamilyScopeVersionRequest) (work.TaskFamily, error) {
+	return transitionTaskFamilyScopeVersionTx(ctx, r.tx, req)
+}
+
+func transitionTaskFamilyScopeVersionTx(ctx context.Context, tx *sql.Tx, req ports.TransitionTaskFamilyScopeVersionRequest) (work.TaskFamily, error) {
+	if req.FamilyID == "" {
+		return work.TaskFamily{}, errors.New("task family id is required")
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	row := tx.QueryRowContext(ctx, `
+UPDATE task_families
+SET scope_version = scope_version + 1, version = version + 1, updated_at = ?
+WHERE id = ? AND scope_version = ? AND version = ?
+RETURNING id, project_id, root_work_item_id, scope_version, status, version`,
+		now, req.FamilyID, req.ExpectedScopeVersion, req.ExpectedVersion,
+	)
+	family, err := scanTaskFamilyRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		var exists int
+		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM task_families WHERE id = ?`, req.FamilyID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return work.TaskFamily{}, fmt.Errorf("%w: task family %s", ports.ErrPersistenceNotFound, req.FamilyID)
+		}
+		if lookupErr != nil {
+			return work.TaskFamily{}, MapSQLiteError(fmt.Errorf("check stale task family scope version transition: %w", lookupErr))
+		}
+		return work.TaskFamily{}, fmt.Errorf(
+			"%w: task family %s expected scope version %d@%d",
+			ports.ErrOptimisticConflict, req.FamilyID, req.ExpectedScopeVersion, req.ExpectedVersion,
+		)
+	}
+	if err != nil {
+		return work.TaskFamily{}, MapSQLiteError(fmt.Errorf("transition task family %s scope version: %w", req.FamilyID, err))
+	}
+	return family, nil
+}
+
+// scopeExpansionRequestColumns is shared by every read of a
+// scope_expansion_requests row so both stay in the exact column order
+// scanScopeExpansionRequestRow expects.
+const scopeExpansionRequestColumns = `
+id, project_id, family_id, referenced_work_item_id, requested_grants_json, reason, status,
+requested_by, requested_at, decided_by, decided_at, decision_note, approved_scope_version, version`
+
+// CreateScopeExpansionRequest implements ports.WorkRepository (V3-08): see
+// that interface method's own doc comment.
+func (r workRepository) CreateScopeExpansionRequest(ctx context.Context, req work.ScopeExpansionRequest) (work.ScopeExpansionRequest, error) {
+	return createScopeExpansionRequestTx(ctx, r.tx, req)
+}
+
+func createScopeExpansionRequestTx(ctx context.Context, tx *sql.Tx, req work.ScopeExpansionRequest) (work.ScopeExpansionRequest, error) {
+	if req.ID == "" || req.FamilyID == "" {
+		return work.ScopeExpansionRequest{}, errors.New("scope expansion request id and family id are required")
+	}
+
+	var familyProjectID string
+	err := tx.QueryRowContext(ctx, `SELECT project_id FROM task_families WHERE id = ?`, string(req.FamilyID)).Scan(&familyProjectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return work.ScopeExpansionRequest{}, fmt.Errorf("%w: task family %s", ports.ErrPersistenceNotFound, req.FamilyID)
+	}
+	if err != nil {
+		return work.ScopeExpansionRequest{}, MapSQLiteError(fmt.Errorf("resolve scope expansion request family: %w", err))
+	}
+
+	grantsJSON, err := json.Marshal(req.RequestedGrants)
+	if err != nil {
+		return work.ScopeExpansionRequest{}, fmt.Errorf("marshal scope expansion request grants: %w", err)
+	}
+	var referencedWorkItemID any
+	if req.ReferencedWorkItemID != nil {
+		referencedWorkItemID = string(*req.ReferencedWorkItemID)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	requestedAt := req.RequestedAt.UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO scope_expansion_requests (
+    id, project_id, family_id, referenced_work_item_id, requested_grants_json, reason, status,
+    requested_by, requested_at, decided_by, decided_at, decision_note, approved_scope_version, version,
+    created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)`,
+		string(req.ID), familyProjectID, string(req.FamilyID), referencedWorkItemID, string(grantsJSON), req.Reason,
+		string(req.Status), req.RequestedBy, requestedAt, req.Version, now, now,
+	); err != nil {
+		return work.ScopeExpansionRequest{}, MapSQLiteError(fmt.Errorf("create scope expansion request: %w", err))
+	}
+	return req, nil
+}
+
+// GetScopeExpansionRequest implements ports.WorkRepository (V3-08).
+func (r workRepository) GetScopeExpansionRequest(ctx context.Context, id string) (work.ScopeExpansionRequest, error) {
+	return getScopeExpansionRequestTx(ctx, r.tx, id)
+}
+
+func getScopeExpansionRequestTx(ctx context.Context, tx *sql.Tx, id string) (work.ScopeExpansionRequest, error) {
+	row := tx.QueryRowContext(ctx, `SELECT `+scopeExpansionRequestColumns+` FROM scope_expansion_requests WHERE id = ?`, id)
+	req, err := scanScopeExpansionRequestRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return work.ScopeExpansionRequest{}, fmt.Errorf("%w: scope expansion request %s", ports.ErrPersistenceNotFound, id)
+	}
+	return req, err
+}
+
+// ListFamilyScopeExpansionRequests implements ports.WorkRepository (V3-08),
+// ordered by (requested_at, id) for a stable, deterministic result a test
+// can assert on exactly.
+func (r workRepository) ListFamilyScopeExpansionRequests(ctx context.Context, familyID string) ([]work.ScopeExpansionRequest, error) {
+	return listFamilyScopeExpansionRequestsTx(ctx, r.tx, familyID)
+}
+
+func listFamilyScopeExpansionRequestsTx(ctx context.Context, tx *sql.Tx, familyID string) ([]work.ScopeExpansionRequest, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT `+scopeExpansionRequestColumns+`
+FROM scope_expansion_requests WHERE family_id = ? ORDER BY requested_at, id`, familyID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list family scope expansion requests: %w", err))
+	}
+	defer rows.Close()
+
+	var result []work.ScopeExpansionRequest
+	for rows.Next() {
+		req, err := scanScopeExpansionRequestRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, req)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("iterate family scope expansion requests: %w", err))
+	}
+	return result, nil
+}
+
+func scanScopeExpansionRequestRow(row repositoryRowScanner) (work.ScopeExpansionRequest, error) {
+	var id, projectID, familyID, grantsJSON, reason, status, requestedBy, requestedAtText string
+	var referencedWorkItemID, decidedBy, decisionNote, decidedAtText sql.NullString
+	var approvedScopeVersion sql.NullInt64
+	var version uint64
+	if err := row.Scan(
+		&id, &projectID, &familyID, &referencedWorkItemID, &grantsJSON, &reason, &status,
+		&requestedBy, &requestedAtText, &decidedBy, &decidedAtText, &decisionNote, &approvedScopeVersion, &version,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return work.ScopeExpansionRequest{}, err
+		}
+		return work.ScopeExpansionRequest{}, MapSQLiteError(fmt.Errorf("scan scope expansion request row: %w", err))
+	}
+
+	var grants []work.RequestedGrant
+	if err := json.Unmarshal([]byte(grantsJSON), &grants); err != nil {
+		return work.ScopeExpansionRequest{}, fmt.Errorf("unmarshal scope expansion request grants: %w", err)
+	}
+	requestedAt, err := parseDBTime(requestedAtText)
+	if err != nil {
+		return work.ScopeExpansionRequest{}, err
+	}
+
+	req := work.ScopeExpansionRequest{
+		ID: work.ScopeExpansionRequestID(id), FamilyID: work.TaskFamilyID(familyID), ProjectID: project.ProjectID(projectID),
+		RequestedGrants: grants, Reason: reason, Status: work.ScopeExpansionStatus(status),
+		RequestedBy: requestedBy, RequestedAt: requestedAt, Version: version,
+	}
+	if referencedWorkItemID.Valid {
+		workItemID := work.WorkItemID(referencedWorkItemID.String)
+		req.ReferencedWorkItemID = &workItemID
+	}
+	if decidedBy.Valid {
+		req.DecidedBy = decidedBy.String
+	}
+	if decisionNote.Valid {
+		req.DecisionNote = decisionNote.String
+	}
+	if decidedAtText.Valid {
+		decidedAt, err := parseDBTime(decidedAtText.String)
+		if err != nil {
+			return work.ScopeExpansionRequest{}, err
+		}
+		req.DecidedAt = &decidedAt
+	}
+	if approvedScopeVersion.Valid {
+		v := uint64(approvedScopeVersion.Int64)
+		req.ApprovedScopeVersion = &v
+	}
+	return req, nil
+}
+
+// TransitionScopeExpansionRequestStatus implements ports.WorkRepository
+// (V3-08): see that interface method's own doc comment for the full CAS
+// contract.
+func (r workRepository) TransitionScopeExpansionRequestStatus(ctx context.Context, req ports.TransitionScopeExpansionRequestStatusRequest) (work.ScopeExpansionRequest, error) {
+	return transitionScopeExpansionRequestStatusTx(ctx, r.tx, req)
+}
+
+func transitionScopeExpansionRequestStatusTx(ctx context.Context, tx *sql.Tx, req ports.TransitionScopeExpansionRequestStatusRequest) (work.ScopeExpansionRequest, error) {
+	if req.RequestID == "" {
+		return work.ScopeExpansionRequest{}, errors.New("scope expansion request id is required")
+	}
+	if err := work.CanTransitionScopeExpansionStatus(req.ExpectedStatus, req.NextStatus); err != nil {
+		return work.ScopeExpansionRequest{}, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	decidedAt := req.DecidedAt.UTC().Format(time.RFC3339Nano)
+	var decisionNote any
+	if req.DecisionNote != "" {
+		decisionNote = req.DecisionNote
+	}
+	var approvedScopeVersion any
+	if req.ApprovedScopeVersion != nil {
+		approvedScopeVersion = *req.ApprovedScopeVersion
+	}
+
+	row := tx.QueryRowContext(ctx, `
+UPDATE scope_expansion_requests
+SET status = ?, decided_by = ?, decided_at = ?, decision_note = ?, approved_scope_version = ?,
+    version = version + 1, updated_at = ?
+WHERE id = ? AND status = ? AND version = ?
+RETURNING `+scopeExpansionRequestColumns,
+		string(req.NextStatus), req.DecidedBy, decidedAt, decisionNote, approvedScopeVersion, now,
+		req.RequestID, string(req.ExpectedStatus), req.ExpectedVersion,
+	)
+	updated, err := scanScopeExpansionRequestRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		var exists int
+		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM scope_expansion_requests WHERE id = ?`, req.RequestID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return work.ScopeExpansionRequest{}, fmt.Errorf("%w: scope expansion request %s", ports.ErrPersistenceNotFound, req.RequestID)
+		}
+		if lookupErr != nil {
+			return work.ScopeExpansionRequest{}, MapSQLiteError(fmt.Errorf("check stale scope expansion request transition: %w", lookupErr))
+		}
+		return work.ScopeExpansionRequest{}, fmt.Errorf(
+			"%w: scope expansion request %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.RequestID, req.ExpectedStatus, req.ExpectedVersion,
+		)
+	}
+	if err != nil {
+		return work.ScopeExpansionRequest{}, MapSQLiteError(fmt.Errorf("transition scope expansion request %s status: %w", req.RequestID, err))
+	}
+	return updated, nil
+}

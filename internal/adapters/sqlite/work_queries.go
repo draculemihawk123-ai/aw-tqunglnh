@@ -122,3 +122,32 @@ func (s *Store) CountCommandReceiptsByIdempotencyKey(ctx context.Context, idempo
 	}
 	return count, nil
 }
+
+// CountScopeExpansionRequests returns the total number of rows in
+// scope_expansion_requests (V3-08) — used the same way CountWorkItems etc.
+// above are used, to prove a rolled-back RequestScopeExpansion attempt left
+// zero rows behind.
+func (s *Store) CountScopeExpansionRequests(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM scope_expansion_requests`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count scope expansion requests: %w", err)
+	}
+	return count, nil
+}
+
+// CountScopeExpansionRequestsByStatus answers how many scope_expansion_requests
+// rows exist for one status, regardless of family — used by the duplicate-
+// approval/withdraw-idempotency tests to assert exactly one request ever
+// reached a given terminal status.
+func (s *Store) CountScopeExpansionRequestsByStatus(ctx context.Context, status string) (int, error) {
+	if status == "" {
+		return 0, fmt.Errorf("status is required")
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM scope_expansion_requests WHERE status = ?`, status,
+	).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count scope expansion requests by status: %w", err)
+	}
+	return count, nil
+}

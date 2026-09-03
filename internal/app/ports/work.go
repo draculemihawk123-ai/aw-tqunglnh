@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -176,6 +177,59 @@ type WorkRepository interface {
 	// can assert on exactly — the state-aggregation step's own "is every
 	// required repository now READY" read.
 	ListWorkspaceSetRepositoryWorkspaces(ctx context.Context, workspaceSetID string) ([]workspace.RepositoryWorkspace, error)
+
+	// TransitionTaskFamilyScopeVersion is populated now (V3-08,
+	// docs/design/05-v3-project-workspace.md): the fenced CAS that increments
+	// a TaskFamily's own ScopeVersion (and its generic Version) by exactly
+	// one, atomically — internal/app/work.ApproveScopeExpansion's own single
+	// mutation to the family row itself. It mirrors
+	// TransitionWorkspaceSetState/TransitionRepositoryStatus's identical CAS
+	// discipline (req.ExpectedScopeVersion and req.ExpectedVersion must both
+	// match the row's current values, or the whole call fails with
+	// ports.ErrOptimisticConflict; ports.ErrPersistenceNotFound if the
+	// TaskFamily does not exist at all) — but, unlike those two, there is no
+	// separate "NextState"/"NextStatus" to choose: ScopeVersion only ever
+	// moves forward by one, so this method always computes
+	// ExpectedScopeVersion+1 itself rather than taking a caller-supplied
+	// target. ApproveScopeExpansion's own doc comment names the exact
+	// ordering this establishes: the family's own ScopeVersion is bumped
+	// FIRST, inside the same transaction, and the newly-approved
+	// RepositoryScope grant(s) are then written at that already-bumped
+	// value (AddedInScopeVersion = the returned TaskFamily.ScopeVersion) —
+	// never the reverse — so at every point after this call returns, no
+	// grant this transaction is about to write can ever be mistaken for
+	// exceeding the family's own current ScopeVersion.
+	TransitionTaskFamilyScopeVersion(ctx context.Context, req TransitionTaskFamilyScopeVersionRequest) (work.TaskFamily, error)
+
+	// CreateScopeExpansionRequest inserts a new PENDING ScopeExpansionRequest
+	// row (V3-08) after verifying req.FamilyID names a TaskFamily that
+	// exists — ErrPersistenceNotFound otherwise. req is an already-
+	// constructed, already-validated domain value (work.NewScopeExpansionRequest
+	// — the same "construct/validate in the app layer via the domain
+	// package's own pure constructor, persist an already-valid value"
+	// discipline CreateWorkItem/CreateTaskFamily/CreateWorkspaceSet above
+	// already follow). It never mutates req; the return value is req itself
+	// for symmetry with those same methods.
+	CreateScopeExpansionRequest(ctx context.Context, req work.ScopeExpansionRequest) (work.ScopeExpansionRequest, error)
+	// GetScopeExpansionRequest returns the ScopeExpansionRequest with the
+	// given ID, or ErrPersistenceNotFound.
+	GetScopeExpansionRequest(ctx context.Context, id string) (work.ScopeExpansionRequest, error)
+	// ListFamilyScopeExpansionRequests returns every ScopeExpansionRequest
+	// ever created for familyID (every status, every decision), ordered by
+	// (requested_at, id) for a stable, deterministic result a test can
+	// assert on exactly.
+	ListFamilyScopeExpansionRequests(ctx context.Context, familyID string) ([]work.ScopeExpansionRequest, error)
+	// TransitionScopeExpansionRequestStatus is the fenced CAS transition
+	// that moves a ScopeExpansionRequest from PENDING to one of its three
+	// terminal decisions (work.CanTransitionScopeExpansionStatus's own
+	// closed set) — the identical req.ExpectedStatus/req.ExpectedVersion
+	// CAS discipline TransitionWorkspaceSetState/TransitionRepositoryStatus
+	// already establish, applied here to ScopeExpansionStatus.
+	// req.ApprovedScopeVersion is only ever non-nil when req.NextStatus is
+	// work.ScopeExpansionApproved (ApproveScopeExpansion's own single write
+	// to the decided request row, recording which family ScopeVersion its
+	// grants were persisted at); nil for REJECTED/WITHDRAWN.
+	TransitionScopeExpansionRequestStatus(ctx context.Context, req TransitionScopeExpansionRequestStatusRequest) (work.ScopeExpansionRequest, error)
 }
 
 // TransitionWorkspaceSetStateRequest is an optimistic compare-and-swap
@@ -193,4 +247,34 @@ type TransitionWorkspaceSetStateRequest struct {
 	ExpectedVersion uint64
 	NextState       workspace.WorkspaceSetState
 	BaseRevisionSet *workspace.RevisionSet
+}
+
+// TransitionTaskFamilyScopeVersionRequest is the fenced CAS request for
+// WorkRepository.TransitionTaskFamilyScopeVersion (V3-08): see that
+// interface method's own doc comment for the full contract, including why
+// there is no separate "next version" field.
+type TransitionTaskFamilyScopeVersionRequest struct {
+	FamilyID             string
+	ExpectedScopeVersion uint64
+	ExpectedVersion      uint64
+}
+
+// TransitionScopeExpansionRequestStatusRequest is the fenced CAS request for
+// WorkRepository.TransitionScopeExpansionRequestStatus (V3-08): see that
+// interface method's own doc comment for the full contract.
+// DecidedBy/DecidedAt are always set (every one of the three terminal
+// transitions is a real, attributed decision); DecisionNote is only ever
+// populated by RejectScopeExpansion in the real command layer today, but
+// stays a plain optional string here rather than being restricted to one
+// caller — nothing about this port method itself requires DecisionNote be
+// empty for an approval or a withdrawal.
+type TransitionScopeExpansionRequestStatusRequest struct {
+	RequestID            string
+	ExpectedStatus       work.ScopeExpansionStatus
+	ExpectedVersion      uint64
+	NextStatus           work.ScopeExpansionStatus
+	DecidedBy            string
+	DecidedAt            time.Time
+	DecisionNote         string
+	ApprovedScopeVersion *uint64
 }

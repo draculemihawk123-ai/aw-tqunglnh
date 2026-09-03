@@ -34,6 +34,8 @@ type WorkRepository struct {
 	// nothing, it is rejected exactly like the real adapter's own
 	// constraint conflict — see CreateRepositoryWorkspace below.
 	repositoryWorkspaces map[string]workspace.RepositoryWorkspace
+	// scopeExpansionRequests is keyed by ScopeExpansionRequest.ID (V3-08).
+	scopeExpansionRequests map[string]work.ScopeExpansionRequest
 }
 
 var _ ports.WorkRepository = (*WorkRepository)(nil)
@@ -68,10 +70,14 @@ func (w *WorkRepository) cloneWith(catalog *CatalogRepository) *WorkRepository {
 	for k, v := range w.repositoryWorkspaces {
 		repositoryWorkspaces[k] = v
 	}
+	scopeExpansionRequests := make(map[string]work.ScopeExpansionRequest, len(w.scopeExpansionRequests))
+	for k, v := range w.scopeExpansionRequests {
+		scopeExpansionRequests[k] = v
+	}
 	return &WorkRepository{
 		catalog: catalog, workItems: workItems, taskFamilies: taskFamilies,
 		workspaceSets: workspaceSets, repositoryScopes: repositoryScopes, effectiveScopes: effectiveScopes,
-		repositoryWorkspaces: repositoryWorkspaces,
+		repositoryWorkspaces: repositoryWorkspaces, scopeExpansionRequests: scopeExpansionRequests,
 	}
 }
 
@@ -324,4 +330,93 @@ func (w *WorkRepository) ListWorkspaceSetRepositoryWorkspaces(_ context.Context,
 
 func repositoryWorkspaceKey(workspaceSetID, repositoryID string, generation uint64) string {
 	return fmt.Sprintf("%s/%s/%d", workspaceSetID, repositoryID, generation)
+}
+
+// --- TaskFamily ScopeVersion / ScopeExpansionRequest (V3-08) ---
+
+// TransitionTaskFamilyScopeVersion mirrors sqlite's
+// transitionTaskFamilyScopeVersionTx: the identical CAS
+// TransitionWorkspaceSetState's own fake counterpart already performs for
+// WorkspaceSet.State, applied here to TaskFamily.ScopeVersion — always
+// exactly +1, never a caller-supplied target (see
+// ports.WorkRepository.TransitionTaskFamilyScopeVersion's own doc comment).
+func (w *WorkRepository) TransitionTaskFamilyScopeVersion(_ context.Context, req ports.TransitionTaskFamilyScopeVersionRequest) (work.TaskFamily, error) {
+	family, ok := w.taskFamilies[req.FamilyID]
+	if !ok {
+		return work.TaskFamily{}, fmt.Errorf("fake: %w: task family %s", ports.ErrPersistenceNotFound, req.FamilyID)
+	}
+	if family.ScopeVersion != req.ExpectedScopeVersion || family.Version != req.ExpectedVersion {
+		return work.TaskFamily{}, fmt.Errorf("fake: %w: task family %s expected scope version %d@%d",
+			ports.ErrOptimisticConflict, req.FamilyID, req.ExpectedScopeVersion, req.ExpectedVersion)
+	}
+	family.ScopeVersion++
+	family.Version++
+	w.taskFamilies[req.FamilyID] = family
+	return family, nil
+}
+
+// CreateScopeExpansionRequest mirrors sqlite's createScopeExpansionRequestTx:
+// req.FamilyID must name a TaskFamily that already exists —
+// ErrPersistenceNotFound otherwise.
+func (w *WorkRepository) CreateScopeExpansionRequest(_ context.Context, req work.ScopeExpansionRequest) (work.ScopeExpansionRequest, error) {
+	if _, ok := w.taskFamilies[string(req.FamilyID)]; !ok {
+		return work.ScopeExpansionRequest{}, fmt.Errorf("fake: %w: task family %s", ports.ErrPersistenceNotFound, req.FamilyID)
+	}
+	if w.scopeExpansionRequests == nil {
+		w.scopeExpansionRequests = map[string]work.ScopeExpansionRequest{}
+	}
+	w.scopeExpansionRequests[string(req.ID)] = req
+	return req, nil
+}
+
+// GetScopeExpansionRequest mirrors sqlite's getScopeExpansionRequestTx.
+func (w *WorkRepository) GetScopeExpansionRequest(_ context.Context, id string) (work.ScopeExpansionRequest, error) {
+	req, ok := w.scopeExpansionRequests[id]
+	if !ok {
+		return work.ScopeExpansionRequest{}, fmt.Errorf("fake: %w: scope expansion request %s", ports.ErrPersistenceNotFound, id)
+	}
+	return req, nil
+}
+
+// ListFamilyScopeExpansionRequests mirrors sqlite's
+// listFamilyScopeExpansionRequestsTx, ordered by (RequestedAt, ID) for a
+// stable, deterministic result a test can assert on exactly.
+func (w *WorkRepository) ListFamilyScopeExpansionRequests(_ context.Context, familyID string) ([]work.ScopeExpansionRequest, error) {
+	var result []work.ScopeExpansionRequest
+	for _, req := range w.scopeExpansionRequests {
+		if string(req.FamilyID) == familyID {
+			result = append(result, req)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].RequestedAt.Equal(result[j].RequestedAt) {
+			return result[i].RequestedAt.Before(result[j].RequestedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result, nil
+}
+
+// TransitionScopeExpansionRequestStatus mirrors sqlite's
+// transitionScopeExpansionRequestStatusTx: the identical CAS discipline
+// TransitionTaskFamilyScopeVersion/TransitionWorkspaceSetState above already
+// perform, applied here to ScopeExpansionRequest.Status.
+func (w *WorkRepository) TransitionScopeExpansionRequestStatus(_ context.Context, req ports.TransitionScopeExpansionRequestStatusRequest) (work.ScopeExpansionRequest, error) {
+	existing, ok := w.scopeExpansionRequests[req.RequestID]
+	if !ok {
+		return work.ScopeExpansionRequest{}, fmt.Errorf("fake: %w: scope expansion request %s", ports.ErrPersistenceNotFound, req.RequestID)
+	}
+	if existing.Status != req.ExpectedStatus || existing.Version != req.ExpectedVersion {
+		return work.ScopeExpansionRequest{}, fmt.Errorf("fake: %w: scope expansion request %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.RequestID, req.ExpectedStatus, req.ExpectedVersion)
+	}
+	existing.Status = req.NextStatus
+	existing.DecidedBy = req.DecidedBy
+	decidedAt := req.DecidedAt
+	existing.DecidedAt = &decidedAt
+	existing.DecisionNote = req.DecisionNote
+	existing.ApprovedScopeVersion = req.ApprovedScopeVersion
+	existing.Version++
+	w.scopeExpansionRequests[req.RequestID] = existing
+	return existing, nil
 }
