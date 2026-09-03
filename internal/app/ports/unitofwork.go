@@ -108,6 +108,40 @@ type CatalogRepository interface {
 	// project_id column equals projectID — never a name/slug match.
 	ListProjectRepositories(ctx context.Context, projectID string) ([]project.Repository, error)
 
+	// TransitionRepositoryStatus is populated now (V3-02,
+	// docs/design/05-v3-project-workspace.md): an optimistic
+	// compare-and-swap on a Repository's own status, the persistence half
+	// of every legal RepositoryStatus edge project.CanTransitionRepositoryStatus
+	// declares (REGISTERING->PROBING, BLOCKED->PROBING, PROBING->ACTIVE,
+	// PROBING->BLOCKED). It validates req.ExpectedStatus->req.NextStatus is
+	// itself a legal transition via project.CanTransitionRepositoryStatus
+	// before ever touching storage (mirroring
+	// WorkflowPersistence.CompareAndSwapWorkflowRun's own
+	// validateWorkflowRunTransition-first discipline), then performs the
+	// CAS: req.ExpectedVersion must match the row's current version and
+	// its current status must equal req.ExpectedStatus, or the whole call
+	// fails with ErrOptimisticConflict (a stale caller never silently
+	// overwrites a transition another worker already committed) —
+	// ErrPersistenceNotFound if the Repository does not exist at all. On
+	// success, version increments by exactly one and the returned
+	// Repository reflects the new row.
+	TransitionRepositoryStatus(ctx context.Context, req TransitionRepositoryStatusRequest) (project.Repository, error)
+
+	// RecordRepositoryProbeAttempt appends one row to the append-only
+	// repository_probe_attempts evidence log (V3-02,
+	// docs/design/01-system-design.md §6.1) — never updated or replaced
+	// once written. req.JobID is UNIQUE at the storage layer: this is what
+	// "active probe idempotent" (§6.1) means concretely — the same durable
+	// job can never produce two attempt rows, no matter how many times its
+	// own claim is retried after a crash.
+	RecordRepositoryProbeAttempt(ctx context.Context, req RecordRepositoryProbeAttemptRequest) (RepositoryProbeAttempt, error)
+	// ListRepositoryProbeAttempts returns every RepositoryProbeAttempt for
+	// repositoryID, oldest-CreatedAt-first — the "probe history" evidence
+	// docs/design/01-system-design.md's own API sketch names ("GET
+	// /repositories/{id}/onboarding | trạng thái/error/probe history có
+	// thể hành động").
+	ListRepositoryProbeAttempts(ctx context.Context, repositoryID string) ([]RepositoryProbeAttempt, error)
+
 	// CreateComponent inserts a new Component row after verifying
 	// req.RepositoryID names a Repository that actually exists and that
 	// its own project_id matches req.ProjectID exactly —

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -494,5 +496,354 @@ func TestCatalogRepository_AssignComponentPack_OrdersByActualTimeNotLexicalText(
 	})
 	if effective.PackVersionID != "pack-version-later" {
 		t.Fatalf("GetEffectiveComponentPackAssignment(later) = %+v, want pack-version-later (the true most-recent assignment)", effective)
+	}
+}
+
+// --- TransitionRepositoryStatus (V3-02 CAS) ---
+
+func seedProbeJob(t *testing.T, store *Store, projectID, repositoryID, jobID string) ports.DurableJob {
+	t.Helper()
+	job, err := store.EnqueueJob(context.Background(), ports.EnqueueJobRequest{
+		ID: ports.JobID(jobID), ProjectID: project.ProjectID(projectID), Kind: "REPOSITORY_PROBE",
+		AggregateType: "Repository", AggregateID: repositoryID, MaxClaims: 3, IdempotencyKey: jobID + "-key",
+	})
+	if err != nil {
+		t.Fatalf("seedProbeJob: %v", err)
+	}
+	return job
+}
+
+func TestCatalogRepository_TransitionRepositoryStatus_Success(t *testing.T) {
+	store := openCatalogTestStore(t, "catalog-transition-success.db")
+	ctx := context.Background()
+	seedProject(t, store, "project-1")
+	seedRepository(t, store, "project-1", "repo-1")
+
+	var updated project.Repository
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		updated, err = catalogRepository{tx: tx}.TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: "repo-1", ExpectedStatus: project.RepositoryRegistering, ExpectedVersion: 1,
+			NextStatus: project.RepositoryProbing, LastProbeErrorCode: nil,
+		})
+		return err
+	})
+	if updated.Status != project.RepositoryProbing || updated.Version != 2 {
+		t.Fatalf("updated = %+v, want Status=PROBING Version=2", updated)
+	}
+
+	var loaded project.Repository
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		loaded, err = catalogRepository{tx: tx}.GetRepository(ctx, "repo-1")
+		return err
+	})
+	if loaded != updated {
+		t.Fatalf("loaded = %+v, want %+v", loaded, updated)
+	}
+}
+
+func TestCatalogRepository_TransitionRepositoryStatus_WrongExpectedVersion_Conflict(t *testing.T) {
+	store := openCatalogTestStore(t, "catalog-transition-wrong-version.db")
+	ctx := context.Background()
+	seedProject(t, store, "project-1")
+	seedRepository(t, store, "project-1", "repo-1")
+
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := catalogRepository{tx: tx}.TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: "repo-1", ExpectedStatus: project.RepositoryRegistering, ExpectedVersion: 99,
+			NextStatus: project.RepositoryProbing, LastProbeErrorCode: nil,
+		})
+		if !errors.Is(err, ports.ErrOptimisticConflict) {
+			t.Fatalf("err = %v, want ports.ErrOptimisticConflict", err)
+		}
+		return nil
+	})
+
+	// The row must be completely untouched by the rejected attempt.
+	var loaded project.Repository
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		loaded, err = catalogRepository{tx: tx}.GetRepository(ctx, "repo-1")
+		return err
+	})
+	if loaded.Status != project.RepositoryRegistering || loaded.Version != 1 {
+		t.Fatalf("loaded = %+v, want unchanged Status=REGISTERING Version=1", loaded)
+	}
+}
+
+func TestCatalogRepository_TransitionRepositoryStatus_WrongExpectedStatus_Conflict(t *testing.T) {
+	store := openCatalogTestStore(t, "catalog-transition-wrong-status.db")
+	ctx := context.Background()
+	seedProject(t, store, "project-1")
+	seedRepository(t, store, "project-1", "repo-1")
+
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		// repo-1 is actually REGISTERING, not PROBING -- BLOCKED->PROBING
+		// is a legal edge in the abstract, but the row's own current
+		// status does not match ExpectedStatus.
+		_, err := catalogRepository{tx: tx}.TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: "repo-1", ExpectedStatus: project.RepositoryBlocked, ExpectedVersion: 1,
+			NextStatus: project.RepositoryProbing, LastProbeErrorCode: nil,
+		})
+		if !errors.Is(err, ports.ErrOptimisticConflict) {
+			t.Fatalf("err = %v, want ports.ErrOptimisticConflict", err)
+		}
+		return nil
+	})
+}
+
+func TestCatalogRepository_TransitionRepositoryStatus_NotFound(t *testing.T) {
+	store := openCatalogTestStore(t, "catalog-transition-notfound.db")
+	ctx := context.Background()
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := catalogRepository{tx: tx}.TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: "repo-missing", ExpectedStatus: project.RepositoryRegistering, ExpectedVersion: 1,
+			NextStatus: project.RepositoryProbing, LastProbeErrorCode: nil,
+		})
+		if !errors.Is(err, ports.ErrPersistenceNotFound) {
+			t.Fatalf("err = %v, want ports.ErrPersistenceNotFound", err)
+		}
+		return nil
+	})
+}
+
+// TestCatalogRepository_TransitionRepositoryStatus_IllegalTransition_Rejected
+// proves TransitionRepositoryStatus validates the edge itself
+// (project.CanTransitionRepositoryStatus) before ever touching storage —
+// REGISTERING can never jump straight to ACTIVE, skipping PROBING
+// entirely, no matter what ExpectedVersion a caller supplies.
+func TestCatalogRepository_TransitionRepositoryStatus_IllegalTransition_Rejected(t *testing.T) {
+	store := openCatalogTestStore(t, "catalog-transition-illegal.db")
+	ctx := context.Background()
+	seedProject(t, store, "project-1")
+	seedRepository(t, store, "project-1", "repo-1")
+
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := catalogRepository{tx: tx}.TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: "repo-1", ExpectedStatus: project.RepositoryRegistering, ExpectedVersion: 1,
+			NextStatus: project.RepositoryActive, LastProbeErrorCode: nil,
+		})
+		if !errors.Is(err, project.ErrIllegalRepositoryTransition) {
+			t.Fatalf("err = %v, want project.ErrIllegalRepositoryTransition", err)
+		}
+		return nil
+	})
+
+	// The illegal request must never have touched the row at all.
+	var loaded project.Repository
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		loaded, err = catalogRepository{tx: tx}.GetRepository(ctx, "repo-1")
+		return err
+	})
+	if loaded.Status != project.RepositoryRegistering || loaded.Version != 1 {
+		t.Fatalf("loaded = %+v, want unchanged Status=REGISTERING Version=1", loaded)
+	}
+}
+
+// TestCatalogRepository_TransitionRepositoryStatus_SetsThenClearsLastProbeErrorCode
+// proves LastProbeErrorCode is always written exactly as given: PROBING->BLOCKED
+// sets it, and the following BLOCKED->PROBING retry clears it back to nil —
+// there is no third "leave unchanged" mode.
+func TestCatalogRepository_TransitionRepositoryStatus_SetsThenClearsLastProbeErrorCode(t *testing.T) {
+	store := openCatalogTestStore(t, "catalog-transition-error-code.db")
+	ctx := context.Background()
+	seedProject(t, store, "project-1")
+	seedRepository(t, store, "project-1", "repo-1")
+
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := catalogRepository{tx: tx}.TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: "repo-1", ExpectedStatus: project.RepositoryRegistering, ExpectedVersion: 1,
+			NextStatus: project.RepositoryProbing, LastProbeErrorCode: nil,
+		})
+		return err
+	})
+	code := "UNAVAILABLE"
+	var blocked project.Repository
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		blocked, err = catalogRepository{tx: tx}.TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: "repo-1", ExpectedStatus: project.RepositoryProbing, ExpectedVersion: 2,
+			NextStatus: project.RepositoryBlocked, LastProbeErrorCode: &code,
+		})
+		return err
+	})
+	if blocked.LastProbeErrorCode == nil || *blocked.LastProbeErrorCode != "UNAVAILABLE" {
+		t.Fatalf("blocked.LastProbeErrorCode = %v, want \"UNAVAILABLE\"", blocked.LastProbeErrorCode)
+	}
+
+	var retried project.Repository
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		retried, err = catalogRepository{tx: tx}.TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: "repo-1", ExpectedStatus: project.RepositoryBlocked, ExpectedVersion: 3,
+			NextStatus: project.RepositoryProbing, LastProbeErrorCode: nil,
+		})
+		return err
+	})
+	if retried.LastProbeErrorCode != nil {
+		t.Fatalf("retried.LastProbeErrorCode = %v, want nil (cleared by the retry)", retried.LastProbeErrorCode)
+	}
+}
+
+// TestCatalogRepository_TransitionRepositoryStatus_ConcurrentCAS_OnlyOneWins
+// is a real concurrency proof (real sqlite, real goroutines, no fake) that
+// the CAS is genuinely exclusive: N goroutines race to CAS the exact same
+// (RepositoryID, ExpectedStatus, ExpectedVersion) REGISTERING->PROBING at
+// once — exactly one must succeed, every other must lose with
+// ports.ErrOptimisticConflict, and the row's final version must reflect
+// exactly one applied transition, never more.
+func TestCatalogRepository_TransitionRepositoryStatus_ConcurrentCAS_OnlyOneWins(t *testing.T) {
+	store := openCatalogTestStore(t, "catalog-transition-concurrent-cas.db")
+	ctx := context.Background()
+	seedProject(t, store, "project-1")
+	seedRepository(t, store, "project-1", "repo-1")
+
+	const racers = 8
+	var succeeded atomic.Int32
+	var conflicted atomic.Int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < racers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+				_, err := catalogRepository{tx: tx}.TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+					RepositoryID: "repo-1", ExpectedStatus: project.RepositoryRegistering, ExpectedVersion: 1,
+					NextStatus: project.RepositoryProbing, LastProbeErrorCode: nil,
+				})
+				return err
+			})
+			switch {
+			case err == nil:
+				succeeded.Add(1)
+			case errors.Is(err, ports.ErrOptimisticConflict):
+				conflicted.Add(1)
+			default:
+				t.Errorf("unexpected error racing TransitionRepositoryStatus: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if succeeded.Load() != 1 {
+		t.Fatalf("succeeded = %d, want exactly 1 (two+ racing CAS callers must never both win)", succeeded.Load())
+	}
+	if conflicted.Load() != racers-1 {
+		t.Fatalf("conflicted = %d, want %d", conflicted.Load(), racers-1)
+	}
+
+	var loaded project.Repository
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		loaded, err = catalogRepository{tx: tx}.GetRepository(ctx, "repo-1")
+		return err
+	})
+	if loaded.Status != project.RepositoryProbing || loaded.Version != 2 {
+		t.Fatalf("loaded = %+v, want exactly one applied transition (Status=PROBING Version=2)", loaded)
+	}
+}
+
+// --- RepositoryProbeAttempt (V3-02, append-only, active probe idempotent) ---
+
+func TestCatalogRepository_RecordRepositoryProbeAttempt_And_List(t *testing.T) {
+	store := openCatalogTestStore(t, "catalog-probe-attempt-record-list.db")
+	ctx := context.Background()
+	seedProject(t, store, "project-1")
+	seedRepository(t, store, "project-1", "repo-1")
+	seedProbeJob(t, store, "project-1", "repo-1", "job-1")
+	seedProbeJob(t, store, "project-1", "repo-1", "job-2")
+
+	blockedResult := project.RepositoryBlocked
+	errorCode := "INVALID_ARGUMENT"
+	errorMessage := "repository local path is not a Git working tree"
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := catalogRepository{tx: tx}.RecordRepositoryProbeAttempt(ctx, ports.RecordRepositoryProbeAttemptRequest{
+			ID: "attempt-1", ProjectID: "project-1", RepositoryID: "repo-1", JobID: "job-1",
+			State: ports.RepositoryProbeAttemptSucceeded, Result: &blockedResult,
+			ErrorCode: &errorCode, ErrorMessage: &errorMessage,
+		})
+		return err
+	})
+
+	activeResult := project.RepositoryActive
+	baseCommit := "abc123abc123abc123abc123abc123abc123ab"
+	dirty := true
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := catalogRepository{tx: tx}.RecordRepositoryProbeAttempt(ctx, ports.RecordRepositoryProbeAttemptRequest{
+			ID: "attempt-2", ProjectID: "project-1", RepositoryID: "repo-1", JobID: "job-2",
+			State: ports.RepositoryProbeAttemptSucceeded, Result: &activeResult,
+			BaseCommit: &baseCommit, Dirty: &dirty,
+		})
+		return err
+	})
+
+	var attempts []ports.RepositoryProbeAttempt
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		attempts, err = catalogRepository{tx: tx}.ListRepositoryProbeAttempts(ctx, "repo-1")
+		return err
+	})
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %+v, want exactly 2 rows", attempts)
+	}
+	first, second := attempts[0], attempts[1]
+	if first.JobID != "job-1" || first.Result == nil || *first.Result != project.RepositoryBlocked {
+		t.Fatalf("attempts[0] = %+v, want JobID=job-1 Result=BLOCKED", first)
+	}
+	if first.ErrorCode == nil || *first.ErrorCode != "INVALID_ARGUMENT" || first.BaseCommit != nil || first.Dirty != nil {
+		t.Fatalf("attempts[0] = %+v, want ErrorCode set and BaseCommit/Dirty nil", first)
+	}
+	if second.JobID != "job-2" || second.Result == nil || *second.Result != project.RepositoryActive {
+		t.Fatalf("attempts[1] = %+v, want JobID=job-2 Result=ACTIVE", second)
+	}
+	if second.BaseCommit == nil || *second.BaseCommit != baseCommit || second.Dirty == nil || !*second.Dirty || second.ErrorCode != nil {
+		t.Fatalf("attempts[1] = %+v, want BaseCommit/Dirty set and ErrorCode nil", second)
+	}
+}
+
+// TestCatalogRepository_RecordRepositoryProbeAttempt_DuplicateJobID_Rejected
+// is "active probe idempotent" (docs/design/01-system-design.md §6.1) made
+// concrete at the storage layer: the exact same durable job can never
+// produce two attempt rows.
+func TestCatalogRepository_RecordRepositoryProbeAttempt_DuplicateJobID_Rejected(t *testing.T) {
+	store := openCatalogTestStore(t, "catalog-probe-attempt-duplicate-job.db")
+	ctx := context.Background()
+	seedProject(t, store, "project-1")
+	seedRepository(t, store, "project-1", "repo-1")
+	seedProbeJob(t, store, "project-1", "repo-1", "job-1")
+
+	activeResult := project.RepositoryActive
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := catalogRepository{tx: tx}.RecordRepositoryProbeAttempt(ctx, ports.RecordRepositoryProbeAttemptRequest{
+			ID: "attempt-1", ProjectID: "project-1", RepositoryID: "repo-1", JobID: "job-1",
+			State: ports.RepositoryProbeAttemptSucceeded, Result: &activeResult,
+		})
+		return err
+	})
+
+	err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		_, err := catalogRepository{tx: tx}.RecordRepositoryProbeAttempt(ctx, ports.RecordRepositoryProbeAttemptRequest{
+			ID: "attempt-2", ProjectID: "project-1", RepositoryID: "repo-1", JobID: "job-1", // same job id
+			State: ports.RepositoryProbeAttemptSucceeded, Result: &activeResult,
+		})
+		return err
+	})
+	if err == nil {
+		t.Fatal("second RecordRepositoryProbeAttempt with a duplicate job_id succeeded, want a UNIQUE(job_id) violation")
+	}
+
+	var attempts []ports.RepositoryProbeAttempt
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		attempts, err = catalogRepository{tx: tx}.ListRepositoryProbeAttempts(ctx, "repo-1")
+		return err
+	})
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %+v, want exactly 1 row (the duplicate must never have been written)", attempts)
 	}
 }

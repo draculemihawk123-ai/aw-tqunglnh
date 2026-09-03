@@ -322,6 +322,232 @@ func TestAssignComponentPack_SecondPackVersion_CreatesNewRowNotUpdate(t *testing
 	_ = beforeAny
 }
 
+// --- RetryRepositoryProbe ---
+
+// moveRepositoryToBlocked drives a freshly REGISTERING repository straight
+// through REGISTERING->PROBING->BLOCKED via direct Catalog() calls,
+// standing in for what V3-02's own REPOSITORY_PROBE job handler would
+// otherwise do — test setup, not the behavior under test. Returns the
+// Version the repository ends up at (2, after two transitions from
+// version 1) so a test can supply the correct cmd.ExpectedVersion.
+func moveRepositoryToBlocked(t *testing.T, uow *fake.UnitOfWork, repositoryID string) uint64 {
+	t.Helper()
+	ctx := context.Background()
+	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		if _, err := tx.Catalog().TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: repositoryID, ExpectedStatus: project.RepositoryRegistering, ExpectedVersion: 1,
+			NextStatus: project.RepositoryProbing, LastProbeErrorCode: nil,
+		}); err != nil {
+			return err
+		}
+		code := "INVALID_ARGUMENT"
+		_, err := tx.Catalog().TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: repositoryID, ExpectedStatus: project.RepositoryProbing, ExpectedVersion: 2,
+			NextStatus: project.RepositoryBlocked, LastProbeErrorCode: &code,
+		})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("moveRepositoryToBlocked(%s): %v", repositoryID, err)
+	}
+	return 3
+}
+
+func setupBlockedRepository(t *testing.T, uow *fake.UnitOfWork, ids idsource.Source, projectID, repositoryID string) uint64 {
+	t.Helper()
+	ctx := context.Background()
+	mustCreateProject(t, uow, projectID)
+	regCmd := testCommand("idem-repo-"+repositoryID, "hash-repo-"+repositoryID, ports.ProjectScope(projectID), "RegisterRepository")
+	if _, err := catalog.RegisterRepository(ctx, uow, ids, regCmd, catalog.RegisterRepositoryRequest{
+		RepositoryID: repositoryID, ProjectID: projectID, Name: "svc",
+		RemoteLocator: "https://example.invalid/repo.git", DefaultRef: "main",
+	}); err != nil {
+		t.Fatalf("RegisterRepository: %v", err)
+	}
+	return moveRepositoryToBlocked(t, uow, repositoryID)
+}
+
+func TestRetryRepositoryProbe_TransitionsBlockedToProbingAndEnqueuesNewJob(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	version := setupBlockedRepository(t, uow, ids, "project-1", "repo-1")
+
+	cmd := testCommand("idem-retry-1", "hash-retry-a", ports.ProjectScope("project-1"), "RetryRepositoryProbe")
+	cmd.ExpectedVersion = version
+	result, err := catalog.RetryRepositoryProbe(ctx, uow, ids, cmd, catalog.RetryRepositoryProbeRequest{
+		RepositoryID: "repo-1", ProjectID: "project-1",
+	})
+	if err != nil {
+		t.Fatalf("RetryRepositoryProbe: %v", err)
+	}
+	if result.RepositoryID != "repo-1" || result.Status != string(project.RepositoryProbing) {
+		t.Fatalf("result = %+v, want RepositoryID=repo-1 Status=PROBING", result)
+	}
+	if result.ProbeJobID == "" {
+		t.Fatal("result.ProbeJobID is empty, want a freshly minted probe job id")
+	}
+
+	repo, err := uow.Snapshot.Catalog().GetRepository(ctx, "repo-1")
+	if err != nil {
+		t.Fatalf("GetRepository: %v", err)
+	}
+	if repo.Status != project.RepositoryProbing {
+		t.Fatalf("persisted Status = %q, want PROBING", repo.Status)
+	}
+	if repo.LastProbeErrorCode != nil {
+		t.Fatalf("persisted LastProbeErrorCode = %v, want nil (cleared for the fresh probe)", repo.LastProbeErrorCode)
+	}
+
+	jobs := uow.Snapshot.Jobs().(*fake.JobsRepository).Items()
+	if len(jobs) != 2 { // RegisterRepository's original job, plus this retry's fresh job
+		t.Fatalf("enqueued jobs = %d, want exactly 2 (original + retry, never resurrecting the dead one)", len(jobs))
+	}
+	retryJob := jobs[len(jobs)-1]
+	if retryJob.Kind != "REPOSITORY_PROBE" || retryJob.AggregateType != "Repository" || retryJob.AggregateID != "repo-1" {
+		t.Fatalf("retry job = %+v, want Kind=REPOSITORY_PROBE AggregateType=Repository AggregateID=repo-1", retryJob)
+	}
+	if retryJob.ID == jobs[0].ID {
+		t.Fatalf("retry job id %q reused the original job's id %q, want a distinct freshly minted job", retryJob.ID, jobs[0].ID)
+	}
+
+	events := uow.Snapshot.Events().(*fake.EventsRepository).Items()
+	found := false
+	for _, event := range events {
+		if event.EventType == "RepositoryProbeRetried" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("events = %+v, want a RepositoryProbeRetried event", events)
+	}
+}
+
+func TestRetryRepositoryProbe_DuplicateSameRequest_ReplaysWithoutNewJobOrEvent(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	version := setupBlockedRepository(t, uow, ids, "project-1", "repo-1")
+
+	cmd := testCommand("idem-retry-1", "hash-retry-a", ports.ProjectScope("project-1"), "RetryRepositoryProbe")
+	cmd.ExpectedVersion = version
+	req := catalog.RetryRepositoryProbeRequest{RepositoryID: "repo-1", ProjectID: "project-1"}
+	first, err := catalog.RetryRepositoryProbe(ctx, uow, ids, cmd, req)
+	if err != nil {
+		t.Fatalf("first RetryRepositoryProbe: %v", err)
+	}
+	second, err := catalog.RetryRepositoryProbe(ctx, uow, ids, cmd, req)
+	if err != nil {
+		t.Fatalf("second (replayed) RetryRepositoryProbe: %v", err)
+	}
+	if second != first {
+		t.Fatalf("replayed result = %+v, want identical to first %+v", second, first)
+	}
+
+	jobs := uow.Snapshot.Jobs().(*fake.JobsRepository).Items()
+	if len(jobs) != 2 { // original RegisterRepository job + exactly one retry job, never a second
+		t.Fatalf("enqueued jobs after replay = %d, want 2 (a replay must never redo the mutation)", len(jobs))
+	}
+}
+
+func TestRetryRepositoryProbe_DuplicateDifferentPayload_ReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	version := setupBlockedRepository(t, uow, ids, "project-1", "repo-1")
+
+	first := testCommand("idem-retry-1", "hash-retry-a", ports.ProjectScope("project-1"), "RetryRepositoryProbe")
+	first.ExpectedVersion = version
+	if _, err := catalog.RetryRepositoryProbe(ctx, uow, ids, first, catalog.RetryRepositoryProbeRequest{
+		RepositoryID: "repo-1", ProjectID: "project-1",
+	}); err != nil {
+		t.Fatalf("first RetryRepositoryProbe: %v", err)
+	}
+
+	second := testCommand("idem-retry-1", "hash-retry-b", ports.ProjectScope("project-1"), "RetryRepositoryProbe")
+	second.ExpectedVersion = version
+	_, err := catalog.RetryRepositoryProbe(ctx, uow, ids, second, catalog.RetryRepositoryProbeRequest{
+		RepositoryID: "repo-1", ProjectID: "project-1",
+	})
+	if !errors.Is(err, ports.ErrReceiptConflict) {
+		t.Fatalf("second RetryRepositoryProbe err = %v, want ports.ErrReceiptConflict", err)
+	}
+}
+
+func TestRetryRepositoryProbe_WrongExpectedVersion_Conflict(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	setupBlockedRepository(t, uow, ids, "project-1", "repo-1")
+
+	cmd := testCommand("idem-retry-1", "hash-retry-a", ports.ProjectScope("project-1"), "RetryRepositoryProbe")
+	cmd.ExpectedVersion = 99 // stale/wrong
+	_, err := catalog.RetryRepositoryProbe(ctx, uow, ids, cmd, catalog.RetryRepositoryProbeRequest{
+		RepositoryID: "repo-1", ProjectID: "project-1",
+	})
+	if !errors.Is(err, ports.ErrOptimisticConflict) {
+		t.Fatalf("err = %v, want ports.ErrOptimisticConflict", err)
+	}
+}
+
+func TestRetryRepositoryProbe_NotBlocked_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	mustCreateProject(t, uow, "project-1")
+	regCmd := testCommand("idem-repo", "hash-repo", ports.ProjectScope("project-1"), "RegisterRepository")
+	if _, err := catalog.RegisterRepository(ctx, uow, ids, regCmd, catalog.RegisterRepositoryRequest{
+		RepositoryID: "repo-1", ProjectID: "project-1", Name: "svc",
+		RemoteLocator: "https://example.invalid/repo.git", DefaultRef: "main",
+	}); err != nil {
+		t.Fatalf("RegisterRepository: %v", err)
+	}
+
+	// repo-1 is still REGISTERING, never BLOCKED -- BLOCKED->PROBING's own
+	// ExpectedStatus check must reject this, not silently transition it.
+	cmd := testCommand("idem-retry-1", "hash-retry-a", ports.ProjectScope("project-1"), "RetryRepositoryProbe")
+	cmd.ExpectedVersion = 1
+	_, err := catalog.RetryRepositoryProbe(ctx, uow, ids, cmd, catalog.RetryRepositoryProbeRequest{
+		RepositoryID: "repo-1", ProjectID: "project-1",
+	})
+	if !errors.Is(err, ports.ErrOptimisticConflict) {
+		t.Fatalf("err = %v, want ports.ErrOptimisticConflict", err)
+	}
+}
+
+func TestRetryRepositoryProbe_CrossProject_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	version := setupBlockedRepository(t, uow, ids, "project-1", "repo-1")
+	mustCreateProject(t, uow, "project-2")
+
+	cmd := testCommand("idem-retry-1", "hash-retry-a", ports.ProjectScope("project-2"), "RetryRepositoryProbe")
+	cmd.ExpectedVersion = version
+	_, err := catalog.RetryRepositoryProbe(ctx, uow, ids, cmd, catalog.RetryRepositoryProbeRequest{
+		RepositoryID: "repo-1", ProjectID: "project-2", // repo-1 actually belongs to project-1
+	})
+	if !errors.Is(err, ports.ErrCrossProjectReference) {
+		t.Fatalf("err = %v, want ports.ErrCrossProjectReference", err)
+	}
+}
+
+func TestRetryRepositoryProbe_RequiresExpectedVersion(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	setupBlockedRepository(t, uow, ids, "project-1", "repo-1")
+
+	cmd := testCommand("idem-retry-1", "hash-retry-a", ports.ProjectScope("project-1"), "RetryRepositoryProbe")
+	// cmd.ExpectedVersion left at its zero value deliberately.
+	_, err := catalog.RetryRepositoryProbe(ctx, uow, ids, cmd, catalog.RetryRepositoryProbeRequest{
+		RepositoryID: "repo-1", ProjectID: "project-1",
+	})
+	if err == nil {
+		t.Fatal("RetryRepositoryProbe with ExpectedVersion=0 succeeded, want a validation error")
+	}
+}
+
 func TestAssignComponentPack_UnknownComponent_Rejected(t *testing.T) {
 	ctx := context.Background()
 	uow := fake.New()

@@ -1,10 +1,11 @@
-// Package catalog is V3-01's application-command layer
-// (docs/design/05-v3-project-workspace.md): RegisterRepository and
-// AssignComponentPack, the two named public commands
-// docs/architecture/04-go-core-spec.md §8's command table calls out for
-// this task's own scope. Both follow V1-06's established idempotent
-// envelope — a command-receipt idempotency check, the real work, and a
-// domain event plus a fresh receipt, all inside one
+// Package catalog is V3-01/V3-02's application-command layer
+// (docs/design/05-v3-project-workspace.md): RegisterRepository,
+// AssignComponentPack and RetryRepositoryProbe are the three named public
+// commands docs/architecture/04-go-core-spec.md §8's command table calls
+// out for this task's own scope (RetryRepositoryProbe added by V3-02, on
+// the exact same rung as the other two). All three follow V1-06's
+// established idempotent envelope — a command-receipt idempotency check,
+// the real work, and a domain event plus a fresh receipt, all inside one
 // ports.UnitOfWork.WithSerializedWrite call — the same shape
 // internal/app/definitions/commands.go's CreateDefinition/
 // PublishDefinitionVersion already establish (see that file's own
@@ -51,13 +52,19 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 )
 
-// repositoryProbeJobKind is durable_jobs.kind's value for the job
-// RegisterRepository enqueues. durable_jobs.kind is a plain TEXT NOT NULL
-// column with no CHECK constraint (internal/adapters/sqlite/migrations/0001_initial_schema.sql),
-// so introducing this new kind string needs no migration change. Nothing
-// in this task claims or processes a job of this kind — that is entirely
-// V3-02's job.
-const repositoryProbeJobKind = "REPOSITORY_PROBE"
+// RepositoryProbeJobKind is durable_jobs.kind's value for the job
+// RegisterRepository (and RetryRepositoryProbe, below) enqueue.
+// durable_jobs.kind is a plain TEXT NOT NULL column with no CHECK
+// constraint (internal/adapters/sqlite/migrations/0001_initial_schema.sql),
+// so introducing this new kind string needs no migration change. Exported
+// (V3-02 renamed this from the original unexported repositoryProbeJobKind)
+// because V3-02's own internal/app/repositoryprobe package is this job
+// kind's real consumer — the workerpool.Registry.Register(kind, handler)
+// call site needs the exact same string RegisterRepository/
+// RetryRepositoryProbe already enqueue, and a second, independently
+// maintained string literal would be exactly the kind of drift-prone
+// duplication a single exported constant exists to prevent.
+const RepositoryProbeJobKind = "REPOSITORY_PROBE"
 
 // defaultProbeJobMaxClaims mirrors this codebase's own most common
 // durable-job MaxClaims value for a single logical unit of work (see
@@ -130,11 +137,11 @@ func RegisterRepository(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 			ProjectID    string `json:"projectId"`
 		}{RepositoryID: req.RepositoryID, ProjectID: req.ProjectID})
 		if err != nil {
-			return fmt.Errorf("marshal %s job payload: %w", repositoryProbeJobKind, err)
+			return fmt.Errorf("marshal %s job payload: %w", RepositoryProbeJobKind, err)
 		}
 		jobID := ids.NewID()
 		job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
-			ID: ports.JobID(jobID), ProjectID: project.ProjectID(req.ProjectID), Kind: repositoryProbeJobKind,
+			ID: ports.JobID(jobID), ProjectID: project.ProjectID(req.ProjectID), Kind: RepositoryProbeJobKind,
 			AggregateType: "Repository", AggregateID: req.RepositoryID, Payload: jobPayload,
 			AvailableAt: cmd.RequestedAt, MaxClaims: defaultProbeJobMaxClaims,
 			IdempotencyKey: cmd.IdempotencyKey + "-probe",
@@ -175,6 +182,164 @@ func RegisterRepository(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 		result = RegisterRepositoryResult{
 			RepositoryID: req.RepositoryID, ProjectID: req.ProjectID,
 			Status: string(created.Status), ProbeJobID: string(job.ID),
+		}
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("marshal receipt result: %w", err)
+		}
+		return tx.Receipts().Record(ctx, ports.Receipt{
+			Actor: cmd.Actor, Scope: cmd.Scope, IdempotencyKey: cmd.IdempotencyKey,
+			CommandType: cmd.Type, RequestHash: cmd.RequestHash, ResultJSON: string(resultJSON),
+			CreatedAt: cmd.RequestedAt,
+		})
+	})
+	return result, err
+}
+
+// RetryRepositoryProbeRequest is what a caller supplies to
+// RetryRepositoryProbe. The caller is expected to have already loaded the
+// Repository (e.g. via GetRepository) and pass the exact Version it
+// observed as cmd.ExpectedVersion — this command is this codebase's first
+// genuine call site for ports.Command.ExpectedVersion
+// (docs/architecture/04-go-core-spec.md §3's "Mọi command mutation mang
+// ... ExpectedVersion khi sửa aggregate đã tồn tại"), since RegisterRepository
+// only ever creates a fresh row and V3-01 itself had no update path at all.
+type RetryRepositoryProbeRequest struct {
+	RepositoryID string
+	ProjectID    string
+}
+
+// RetryRepositoryProbeResult is what RetryRepositoryProbe returns (and
+// what a replayed command-receipt reconstructs).
+type RetryRepositoryProbeResult struct {
+	RepositoryID string `json:"repositoryId"`
+	ProjectID    string `json:"projectId"`
+	Status       string `json:"status"`
+	ProbeJobID   string `json:"probeJobId"`
+}
+
+// RetryRepositoryProbe is V3-02's own named public command
+// (docs/architecture/04-go-core-spec.md §8's command table: "RetryRepositoryProbe
+// | Probe lại repository BLOCKED"): it CAS-transitions a BLOCKED
+// Repository back to PROBING (project.CanTransitionRepositoryStatus's own
+// closed BLOCKED->PROBING edge) against cmd.ExpectedVersion, clears any
+// stale LastProbeErrorCode (a fresh probe is about to run — see
+// ports.TransitionRepositoryStatusRequest's own doc comment for why this
+// is not a third "leave unchanged" mode), and enqueues a brand new
+// REPOSITORY_PROBE durable job — never the old failed job's row.
+// internal/adapters/sqlite/crashworker.go's own crash-worker fault points
+// are this codebase's established precedent for "mint a fresh job/attempt
+// rather than resurrect a dead one" (a crashed attempt is never revived in
+// place); RetryBlockedActivation's own go-core-spec §8 line ("tạo
+// activation/Attempt mới sau admission blocker; không hồi sinh Attempt
+// cũ") states the identical principle for a different aggregate. Both the
+// Repository-row CAS and the fresh job enqueue happen inside the same
+// WithSerializedWrite call, exactly like RegisterRepository's own atomic
+// row+job creation above — a crash between the two is impossible.
+//
+// Follows V1-06's idempotent-command shape like RegisterRepository:  a
+// retry with the same IdempotencyKey and RequestHash replays the first
+// call's result (including the same ProbeJobID) without transitioning the
+// Repository or enqueuing a second job; the same key with a different
+// RequestHash is rejected as ports.ErrReceiptConflict. Rejects a mismatched
+// ProjectID as ports.ErrCrossProjectReference, resolving the Repository's
+// actual project from its own stored row rather than trusting the
+// request — the same discipline CreateComponent/AssignComponentPack
+// already follow for their own parent references.
+func RetryRepositoryProbe(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, cmd ports.Command, req RetryRepositoryProbeRequest) (RetryRepositoryProbeResult, error) {
+	if strings.TrimSpace(req.RepositoryID) == "" {
+		return RetryRepositoryProbeResult{}, errors.New("catalog: RepositoryID is required")
+	}
+	if strings.TrimSpace(req.ProjectID) == "" {
+		return RetryRepositoryProbeResult{}, errors.New("catalog: ProjectID is required")
+	}
+	if cmd.ExpectedVersion == 0 {
+		return RetryRepositoryProbeResult{}, errors.New("catalog: RetryRepositoryProbe requires cmd.ExpectedVersion (the Repository version the caller observed)")
+	}
+
+	var result RetryRepositoryProbeResult
+	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		existingReceipt, found, err := tx.Receipts().Load(ctx, cmd.Actor, cmd.Scope, cmd.IdempotencyKey, cmd.Type)
+		if err != nil {
+			return err
+		}
+		if found {
+			if existingReceipt.RequestHash != cmd.RequestHash {
+				return ports.ErrReceiptConflict
+			}
+			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
+		}
+
+		current, err := tx.Catalog().GetRepository(ctx, req.RepositoryID)
+		if err != nil {
+			return err
+		}
+		if string(current.ProjectID) != req.ProjectID {
+			return fmt.Errorf("%w: repository %s belongs to project %s, not %s",
+				ports.ErrCrossProjectReference, req.RepositoryID, current.ProjectID, req.ProjectID)
+		}
+
+		updated, err := tx.Catalog().TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
+			RepositoryID: req.RepositoryID, ExpectedStatus: project.RepositoryBlocked, ExpectedVersion: cmd.ExpectedVersion,
+			NextStatus: project.RepositoryProbing, LastProbeErrorCode: nil,
+		})
+		if err != nil {
+			return err
+		}
+
+		jobPayload, err := json.Marshal(struct {
+			RepositoryID string `json:"repositoryId"`
+			ProjectID    string `json:"projectId"`
+		}{RepositoryID: req.RepositoryID, ProjectID: req.ProjectID})
+		if err != nil {
+			return fmt.Errorf("marshal %s job payload: %w", RepositoryProbeJobKind, err)
+		}
+		jobID := ids.NewID()
+		job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+			ID: ports.JobID(jobID), ProjectID: project.ProjectID(req.ProjectID), Kind: RepositoryProbeJobKind,
+			AggregateType: "Repository", AggregateID: req.RepositoryID, Payload: jobPayload,
+			AvailableAt: cmd.RequestedAt, MaxClaims: defaultProbeJobMaxClaims,
+			IdempotencyKey: cmd.IdempotencyKey + "-probe",
+		})
+		if err != nil {
+			return err
+		}
+
+		eventPayload, err := json.Marshal(struct {
+			RepositoryID string `json:"repositoryId"`
+			ProjectID    string `json:"projectId"`
+			Status       string `json:"status"`
+			ProbeJobID   string `json:"probeJobId"`
+		}{
+			RepositoryID: req.RepositoryID, ProjectID: req.ProjectID,
+			Status: string(updated.Status), ProbeJobID: string(job.ID),
+		})
+		if err != nil {
+			return fmt.Errorf("marshal RepositoryProbeRetried payload: %w", err)
+		}
+		// AggregateID is the freshly minted probe job's own ID, not the
+		// Repository's — deliberately, the same technique
+		// AssignComponentPack's own ComponentPackAssigned event uses (see
+		// that function's doc comment): this package has no real
+		// per-aggregate event-sequence allocator for "Repository" (whose
+		// own event stream already claims Sequence=1 via
+		// RegisterRepository's RepositoryRegistered, with no safe way from
+		// here to know what the next number should be under concurrent
+		// retries), and a freshly minted job ID is only ever assigned
+		// once, ever, so Sequence=1 on its own aggregate identity can
+		// never collide with any other event.
+		if err := tx.Events().Append(ctx, ports.DomainEvent{
+			ID: cmd.ID + "-retried", ProjectID: req.ProjectID,
+			AggregateType: "RepositoryProbeRetry", AggregateID: string(job.ID), Sequence: 1,
+			EventType: "RepositoryProbeRetried", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
+		}); err != nil {
+			return err
+		}
+
+		result = RetryRepositoryProbeResult{
+			RepositoryID: req.RepositoryID, ProjectID: req.ProjectID,
+			Status: string(updated.Status), ProbeJobID: string(job.ID),
 		}
 		resultJSON, err := json.Marshal(result)
 		if err != nil {

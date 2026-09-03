@@ -477,10 +477,12 @@ func sameDefinitionScope(a, b definition.Scope) bool {
 // resolved from the fake's own stored records, never trusted from the
 // request.
 type CatalogRepository struct {
-	projects     map[string]project.Project
-	repositories map[string]project.Repository
-	components   map[string]project.Component
-	assignments  map[string][]project.ComponentPackAssignment // by ComponentID, oldest first
+	projects      map[string]project.Project
+	repositories  map[string]project.Repository
+	components    map[string]project.Component
+	assignments   map[string][]project.ComponentPackAssignment // by ComponentID, oldest first
+	probeAttempts map[string][]ports.RepositoryProbeAttempt    // by RepositoryID, oldest first
+	probeJobIDs   map[string]bool                              // JobID -> already recorded, mirroring the sqlite adapter's UNIQUE(job_id)
 }
 
 var _ ports.CatalogRepository = (*CatalogRepository)(nil)
@@ -502,7 +504,18 @@ func (c *CatalogRepository) clone() *CatalogRepository {
 	for k, v := range c.assignments {
 		assignments[k] = append([]project.ComponentPackAssignment(nil), v...)
 	}
-	return &CatalogRepository{projects: projects, repositories: repositories, components: components, assignments: assignments}
+	probeAttempts := make(map[string][]ports.RepositoryProbeAttempt, len(c.probeAttempts))
+	for k, v := range c.probeAttempts {
+		probeAttempts[k] = append([]ports.RepositoryProbeAttempt(nil), v...)
+	}
+	probeJobIDs := make(map[string]bool, len(c.probeJobIDs))
+	for k, v := range c.probeJobIDs {
+		probeJobIDs[k] = v
+	}
+	return &CatalogRepository{
+		projects: projects, repositories: repositories, components: components,
+		assignments: assignments, probeAttempts: probeAttempts, probeJobIDs: probeJobIDs,
+	}
 }
 
 func (c *CatalogRepository) CreateProject(_ context.Context, req ports.CreateProjectRequest) (project.Project, error) {
@@ -559,6 +572,58 @@ func (c *CatalogRepository) ListProjectRepositories(_ context.Context, projectID
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result, nil
+}
+
+// TransitionRepositoryStatus mirrors sqlite's transitionRepositoryStatusTx:
+// project.CanTransitionRepositoryStatus is checked first, then the CAS
+// (ExpectedStatus/ExpectedVersion must match the stored row) either
+// succeeds — version incremented by exactly one, LastProbeErrorCode
+// written exactly as given — or fails with ports.ErrOptimisticConflict.
+func (c *CatalogRepository) TransitionRepositoryStatus(_ context.Context, req ports.TransitionRepositoryStatusRequest) (project.Repository, error) {
+	if err := project.CanTransitionRepositoryStatus(req.ExpectedStatus, req.NextStatus); err != nil {
+		return project.Repository{}, err
+	}
+	repo, ok := c.repositories[req.RepositoryID]
+	if !ok {
+		return project.Repository{}, fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceNotFound, req.RepositoryID)
+	}
+	if repo.Status != req.ExpectedStatus || repo.Version != req.ExpectedVersion {
+		return project.Repository{}, fmt.Errorf("fake: %w: repository %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.RepositoryID, req.ExpectedStatus, req.ExpectedVersion)
+	}
+	repo.Status = req.NextStatus
+	repo.LastProbeErrorCode = req.LastProbeErrorCode
+	repo.Version++
+	c.repositories[req.RepositoryID] = repo
+	return repo, nil
+}
+
+// RecordRepositoryProbeAttempt mirrors sqlite's
+// recordRepositoryProbeAttemptTx: req.JobID is unique across every
+// attempt this fake ever records, the same "active probe idempotent"
+// guarantee the sqlite adapter's UNIQUE(job_id) constraint gives.
+func (c *CatalogRepository) RecordRepositoryProbeAttempt(_ context.Context, req ports.RecordRepositoryProbeAttemptRequest) (ports.RepositoryProbeAttempt, error) {
+	if c.probeJobIDs[req.JobID] {
+		return ports.RepositoryProbeAttempt{}, fmt.Errorf("fake: duplicate repository probe attempt job id %q", req.JobID)
+	}
+	attempt := ports.RepositoryProbeAttempt{
+		ID: req.ID, ProjectID: req.ProjectID, RepositoryID: req.RepositoryID, JobID: req.JobID,
+		State: req.State, Result: req.Result, ErrorCode: req.ErrorCode, ErrorMessage: req.ErrorMessage,
+		BaseCommit: req.BaseCommit, Dirty: req.Dirty, CreatedAt: time.Now().UTC(),
+	}
+	if c.probeAttempts == nil {
+		c.probeAttempts = map[string][]ports.RepositoryProbeAttempt{}
+	}
+	if c.probeJobIDs == nil {
+		c.probeJobIDs = map[string]bool{}
+	}
+	c.probeAttempts[req.RepositoryID] = append(c.probeAttempts[req.RepositoryID], attempt)
+	c.probeJobIDs[req.JobID] = true
+	return attempt, nil
+}
+
+func (c *CatalogRepository) ListRepositoryProbeAttempts(_ context.Context, repositoryID string) ([]ports.RepositoryProbeAttempt, error) {
+	return append([]ports.RepositoryProbeAttempt(nil), c.probeAttempts[repositoryID]...), nil
 }
 
 func (c *CatalogRepository) CreateComponent(_ context.Context, req ports.CreateComponentRequest) (project.Component, error) {

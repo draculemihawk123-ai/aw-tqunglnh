@@ -175,6 +175,180 @@ type repositoryRowScanner interface {
 	Scan(dest ...any) error
 }
 
+// TransitionRepositoryStatus implements ports.CatalogRepository (V3-02):
+// see that interface method's own doc comment for the full CAS contract.
+func (r catalogRepository) TransitionRepositoryStatus(ctx context.Context, req ports.TransitionRepositoryStatusRequest) (project.Repository, error) {
+	return transitionRepositoryStatusTx(ctx, r.tx, req)
+}
+
+func transitionRepositoryStatusTx(ctx context.Context, tx *sql.Tx, req ports.TransitionRepositoryStatusRequest) (project.Repository, error) {
+	if err := project.CanTransitionRepositoryStatus(req.ExpectedStatus, req.NextStatus); err != nil {
+		return project.Repository{}, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var lastProbeErrorCode sql.NullString
+	if req.LastProbeErrorCode != nil {
+		lastProbeErrorCode = sql.NullString{String: *req.LastProbeErrorCode, Valid: true}
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE repositories
+SET status = ?, last_probe_error_code = ?, version = version + 1, updated_at = ?
+WHERE id = ? AND status = ? AND version = ?`,
+		string(req.NextStatus), lastProbeErrorCode, now,
+		req.RepositoryID, string(req.ExpectedStatus), req.ExpectedVersion,
+	)
+	if err != nil {
+		return project.Repository{}, MapSQLiteError(fmt.Errorf("transition repository %s status: %w", req.RepositoryID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return project.Repository{}, MapSQLiteError(fmt.Errorf("read repository status transition result: %w", err))
+	}
+	if affected != 1 {
+		var exists int
+		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM repositories WHERE id = ?`, req.RepositoryID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return project.Repository{}, fmt.Errorf("%w: repository %s", ports.ErrPersistenceNotFound, req.RepositoryID)
+		}
+		if lookupErr != nil {
+			return project.Repository{}, MapSQLiteError(fmt.Errorf("check stale repository status transition: %w", lookupErr))
+		}
+		return project.Repository{}, fmt.Errorf(
+			"%w: repository %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.RepositoryID, req.ExpectedStatus, req.ExpectedVersion,
+		)
+	}
+
+	return getRepositoryTx(ctx, tx, req.RepositoryID)
+}
+
+// --- RepositoryProbeAttempt ---
+
+// RecordRepositoryProbeAttempt implements ports.CatalogRepository (V3-02).
+// job_id's UNIQUE constraint (0008_repository_probe_attempts.sql) is what
+// makes a duplicate insert for the same durable job a real, storage-level
+// impossibility rather than a convention callers must remember to honor.
+func (r catalogRepository) RecordRepositoryProbeAttempt(ctx context.Context, req ports.RecordRepositoryProbeAttemptRequest) (ports.RepositoryProbeAttempt, error) {
+	return recordRepositoryProbeAttemptTx(ctx, r.tx, req)
+}
+
+func recordRepositoryProbeAttemptTx(ctx context.Context, tx *sql.Tx, req ports.RecordRepositoryProbeAttemptRequest) (ports.RepositoryProbeAttempt, error) {
+	now := time.Now().UTC()
+	var result sql.NullString
+	if req.Result != nil {
+		result = sql.NullString{String: string(*req.Result), Valid: true}
+	}
+	errorCode := nullableStringPtr(req.ErrorCode)
+	errorMessage := nullableStringPtr(req.ErrorMessage)
+	baseCommit := nullableStringPtr(req.BaseCommit)
+	var dirty sql.NullInt64
+	if req.Dirty != nil {
+		value := int64(0)
+		if *req.Dirty {
+			value = 1
+		}
+		dirty = sql.NullInt64{Int64: value, Valid: true}
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO repository_probe_attempts (
+    id, project_id, repository_id, job_id, state, result,
+    error_code, error_message, base_commit, dirty, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.ID, req.ProjectID, req.RepositoryID, req.JobID, string(req.State), result,
+		errorCode, errorMessage, baseCommit, dirty, now.Format(time.RFC3339Nano),
+	); err != nil {
+		return ports.RepositoryProbeAttempt{}, MapSQLiteError(fmt.Errorf("record repository probe attempt: %w", err))
+	}
+
+	return ports.RepositoryProbeAttempt{
+		ID: req.ID, ProjectID: req.ProjectID, RepositoryID: req.RepositoryID, JobID: req.JobID,
+		State: req.State, Result: req.Result, ErrorCode: req.ErrorCode, ErrorMessage: req.ErrorMessage,
+		BaseCommit: req.BaseCommit, Dirty: req.Dirty, CreatedAt: now,
+	}, nil
+}
+
+// ListRepositoryProbeAttempts implements ports.CatalogRepository,
+// oldest-CreatedAt-first.
+func (r catalogRepository) ListRepositoryProbeAttempts(ctx context.Context, repositoryID string) ([]ports.RepositoryProbeAttempt, error) {
+	return listRepositoryProbeAttemptsTx(ctx, r.tx, repositoryID)
+}
+
+func listRepositoryProbeAttemptsTx(ctx context.Context, tx *sql.Tx, repositoryID string) ([]ports.RepositoryProbeAttempt, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT id, project_id, repository_id, job_id, state, result, error_code, error_message, base_commit, dirty, created_at
+FROM repository_probe_attempts WHERE repository_id = ? ORDER BY julianday(created_at)`, repositoryID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list repository probe attempts: %w", err))
+	}
+	defer rows.Close()
+
+	var result []ports.RepositoryProbeAttempt
+	for rows.Next() {
+		attempt, err := scanRepositoryProbeAttemptRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, attempt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("iterate repository probe attempts: %w", err))
+	}
+	return result, nil
+}
+
+func scanRepositoryProbeAttemptRow(row repositoryRowScanner) (ports.RepositoryProbeAttempt, error) {
+	var id, projectID, repositoryID, jobID, state, createdAtText string
+	var resultValue, errorCode, errorMessage, baseCommit sql.NullString
+	var dirty sql.NullInt64
+	if err := row.Scan(&id, &projectID, &repositoryID, &jobID, &state, &resultValue, &errorCode, &errorMessage, &baseCommit, &dirty, &createdAtText); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ports.RepositoryProbeAttempt{}, err
+		}
+		return ports.RepositoryProbeAttempt{}, MapSQLiteError(fmt.Errorf("scan repository probe attempt row: %w", err))
+	}
+	createdAt, err := parseDBTime(createdAtText)
+	if err != nil {
+		return ports.RepositoryProbeAttempt{}, err
+	}
+	attempt := ports.RepositoryProbeAttempt{
+		ID: id, ProjectID: projectID, RepositoryID: repositoryID, JobID: jobID,
+		State: ports.RepositoryProbeAttemptState(state), CreatedAt: createdAt,
+	}
+	if resultValue.Valid {
+		status := project.RepositoryStatus(resultValue.String)
+		attempt.Result = &status
+	}
+	if errorCode.Valid {
+		attempt.ErrorCode = &errorCode.String
+	}
+	if errorMessage.Valid {
+		attempt.ErrorMessage = &errorMessage.String
+	}
+	if baseCommit.Valid {
+		attempt.BaseCommit = &baseCommit.String
+	}
+	if dirty.Valid {
+		value := dirty.Int64 != 0
+		attempt.Dirty = &value
+	}
+	return attempt, nil
+}
+
+// nullableStringPtr converts a Go *string (nil means SQL NULL) to
+// sql.NullString for a parameterized query — distinct from this package's
+// own nullableString(string) any (command_receipts.go), which instead
+// treats an empty string as NULL; the two helpers exist for two genuinely
+// different nullability conventions already established at their own call
+// sites, not duplicated by accident.
+func nullableStringPtr(value *string) sql.NullString {
+	if value == nil {
+		return sql.NullString{}
+	}
+	return sql.NullString{String: *value, Valid: true}
+}
+
 // --- Component ---
 
 // CreateComponent implements ports.CatalogRepository (V3-01). It
