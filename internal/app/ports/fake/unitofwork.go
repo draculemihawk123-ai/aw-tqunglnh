@@ -86,7 +86,7 @@ func (u *UnitOfWork) run(fn func(ports.Tx) error, persistOnSuccess bool) error {
 // read-only attempt never mutates the committed Snapshot.
 type Tx struct {
 	catalog       *CatalogRepository
-	work          WorkRepository
+	work          *WorkRepository
 	definitions   *DefinitionsRepository
 	runtime       RuntimeRepository
 	jobs          *JobsRepository
@@ -96,12 +96,14 @@ type Tx struct {
 }
 
 func newTx() Tx {
+	catalog := &CatalogRepository{}
 	return Tx{
 		events:        &EventsRepository{},
 		receipts:      &ReceiptsRepository{},
 		adapterBuilds: &AdapterBuildRepository{},
 		definitions:   &DefinitionsRepository{},
-		catalog:       &CatalogRepository{},
+		catalog:       catalog,
+		work:          &WorkRepository{catalog: catalog},
 		jobs:          &JobsRepository{},
 	}
 }
@@ -113,6 +115,7 @@ func (t Tx) clone() Tx {
 	clone.adapterBuilds = t.adapterBuilds.clone()
 	clone.definitions = t.definitions.clone()
 	clone.catalog = t.catalog.clone()
+	clone.work = t.work.cloneWith(clone.catalog)
 	clone.jobs = t.jobs.clone()
 	return clone
 }
@@ -128,7 +131,6 @@ func (t Tx) Events() ports.EventsRepository              { return t.events }
 func (t Tx) Receipts() ports.ReceiptsRepository          { return t.receipts }
 func (t Tx) AdapterBuilds() ports.AdapterBuildRepository { return t.adapterBuilds }
 
-type WorkRepository struct{}
 type RuntimeRepository struct{}
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects

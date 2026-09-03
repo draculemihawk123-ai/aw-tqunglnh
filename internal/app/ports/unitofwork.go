@@ -33,8 +33,9 @@ type UnitOfWork interface {
 // and vice versa. Catalog/Work/Definitions/Runtime/Jobs are deliberately
 // left as thin, near-empty interfaces here: their concrete methods are
 // added by the task that actually owns building that concern against a
-// real caller (Catalog: V3-01; Work: V3-04/V3-06; Definitions: V2;
-// Runtime: V4; Jobs: whichever later task first needs
+// real caller (Catalog: V3-01; Work: V3-04, see ports/work.go — V3-06 adds
+// RepositoryWorkspace persistence for provisioning on top of it;
+// Definitions: V2; Runtime: V4; Jobs: whichever later task first needs
 // EnqueueJob/ClaimJob/AcquireWriteLeases composed inside a shared Tx — the
 // pre-existing sqlite.Store already covers them outside one) — adding
 // methods speculatively ahead of a real handler that calls them is
@@ -173,10 +174,6 @@ type CatalogRepository interface {
 	// by then.
 	GetEffectiveComponentPackAssignment(ctx context.Context, componentID string, at time.Time) (project.ComponentPackAssignment, error)
 }
-
-// WorkRepository will expose WorkItem/TaskFamily/WorkspaceSet persistence
-// once V3-04/V3-06 build it.
-type WorkRepository interface{}
 
 // DefinitionsRepository is populated now (V2-09/V2-10): V2-09 gave it
 // LoadVersion, the one method its "Graph/dependency compiler" task

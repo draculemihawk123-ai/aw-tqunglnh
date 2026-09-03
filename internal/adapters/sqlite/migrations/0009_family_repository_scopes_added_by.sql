@@ -1,0 +1,28 @@
+-- family_repository_scopes.added_by (V3-04,
+-- docs/design/05-v3-project-workspace.md; docs/architecture/04-go-core-spec.md
+-- §4.2's RepositoryScope struct sketch: "{ FamilyID, AddedInScopeVersion,
+-- RepositoryID, Access(READ|WRITE), PathScope[], Reason, AddedBy, AddedAt }").
+-- 0001_initial_schema.sql's own family_repository_scopes table never carried
+-- this column: it was designed before internal/domain/work.RepositoryScope's
+-- own addedBy field had a real persistence caller. V3-04's CreateRootWorkItem
+-- is that first real caller (the initial scope grants a root task family is
+-- created with) — reason/created_at already round-trip RepositoryScope's own
+-- Reason()/AddedAt(), but AddedBy() had nowhere to go until now.
+--
+-- A plain ALTER TABLE ADD COLUMN is correct and sufficient here, the same
+-- reasoning 0007_work_items_contract.sql's own comment gives: no existing
+-- CHECK constraint on this table needs to change, and this new column needs
+-- none either. NOT NULL DEFAULT '' (rather than a nullable column, unlike
+-- 0007's own contract columns) because AddedBy is not optional at the domain
+-- level the way a not-yet-filled-in WorkItem contract field is —
+-- work.NewRepositoryScope's own constructor already rejects a blank addedBy
+-- before persistence is ever reached, so every real row this codebase ever
+-- writes here always has a genuine, non-blank actor; the DEFAULT '' only
+-- exists to satisfy SQLite's own ADD COLUMN ... NOT NULL syntax requirement
+-- and is never actually observed by a real row. Safe as a plain additive
+-- change (no rebuild) for the identical reason 0006's own repositories
+-- rebuild explains at length: nothing in this codebase, at any point in its
+-- history up to and including this migration, ever writes a real row to
+-- family_repository_scopes — CreateRootWorkItem (V3-04) is the very first
+-- command that can.
+ALTER TABLE family_repository_scopes ADD COLUMN added_by TEXT NOT NULL DEFAULT '';
