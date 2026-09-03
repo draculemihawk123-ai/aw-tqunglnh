@@ -12,9 +12,17 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
+// repositoryWorkspaceColumns is shared by every reader of a
+// repository_workspaces row across this package: the pre-existing
+// Quarantine/Release/Recreate methods below (V3-09/V3-10/V3-11) and V3-06's
+// own first-generation creation path in work.go. last_provision_error_code
+// (V3-06) is appended at the end deliberately — RecreateRepositoryWorkspace's
+// own INSERT below never lists it explicitly, so a recreated (successful)
+// row simply gets it as NULL by SQLite's own column-default behavior,
+// exactly correct for a row that was never a first-provision failure.
 const repositoryWorkspaceColumns = `
 id, workspace_set_id, repository_id, generation, locator, branch_ref,
-base_revision, current_revision, state, version`
+base_revision, current_revision, state, version, last_provision_error_code`
 
 // QuarantineRepositoryWorkspace is the fenced CAS transition from READY to
 // QUARANTINED. It commits the state change and its correlated domain event
@@ -245,6 +253,7 @@ func scanRepositoryWorkspace(scanner rowScanner) (workspace.RepositoryWorkspace,
 	var result workspace.RepositoryWorkspace
 	var branchRef sql.NullString
 	var currentRevision sql.NullString
+	var lastProvisionErrorCode sql.NullString
 	if err := scanner.Scan(
 		&result.ID,
 		&result.WorkspaceSetID,
@@ -256,11 +265,16 @@ func scanRepositoryWorkspace(scanner rowScanner) (workspace.RepositoryWorkspace,
 		&currentRevision,
 		&result.State,
 		&result.Version,
+		&lastProvisionErrorCode,
 	); err != nil {
 		return workspace.RepositoryWorkspace{}, err
 	}
 	result.BranchRef = branchRef.String
 	result.CurrentRevision = currentRevision.String
+	if lastProvisionErrorCode.Valid {
+		code := lastProvisionErrorCode.String
+		result.LastProvisionErrorCode = &code
+	}
 	return result, nil
 }
 

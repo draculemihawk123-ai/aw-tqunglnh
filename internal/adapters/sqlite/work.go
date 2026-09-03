@@ -226,7 +226,7 @@ func (r workRepository) GetWorkspaceSetByFamilyID(ctx context.Context, familyID 
 
 func getWorkspaceSetByFamilyIDTx(ctx context.Context, tx *sql.Tx, familyID string) (workspace.WorkspaceSet, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, family_id, state, version FROM workspace_sets WHERE family_id = ?`, familyID)
+SELECT `+workspaceSetColumns+` FROM workspace_sets WHERE family_id = ?`, familyID)
 	set, err := scanWorkspaceSetRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return workspace.WorkspaceSet{}, fmt.Errorf("%w: workspace set for family %s", ports.ErrPersistenceNotFound, familyID)
@@ -234,19 +234,50 @@ SELECT id, project_id, family_id, state, version FROM workspace_sets WHERE famil
 	return set, err
 }
 
+// workspaceSetColumns is shared by every read of a workspace_sets row
+// (GetWorkspaceSetByFamilyID and TransitionWorkspaceSetState's own
+// UPDATE...RETURNING below) so both stay in the exact column order
+// scanWorkspaceSetRow expects.
+const workspaceSetColumns = `id, project_id, family_id, state, version, base_revision_set_json, base_revision_set_hash`
+
 func scanWorkspaceSetRow(row repositoryRowScanner) (workspace.WorkspaceSet, error) {
 	var id, projectID, familyID, state string
 	var version uint64
-	if err := row.Scan(&id, &projectID, &familyID, &state, &version); err != nil {
+	var baseRevisionSetJSON, baseRevisionSetHash sql.NullString
+	if err := row.Scan(&id, &projectID, &familyID, &state, &version, &baseRevisionSetJSON, &baseRevisionSetHash); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return workspace.WorkspaceSet{}, err
 		}
 		return workspace.WorkspaceSet{}, MapSQLiteError(fmt.Errorf("scan workspace set row: %w", err))
 	}
-	return workspace.WorkspaceSet{
+	set := workspace.WorkspaceSet{
 		ID: workspace.WorkspaceSetID(id), ProjectID: project.ProjectID(projectID), FamilyID: work.TaskFamilyID(familyID),
 		State: workspace.WorkspaceSetState(state), Version: version,
-	}, nil
+	}
+	if baseRevisionSetJSON.Valid {
+		var entries []workspace.Revision
+		if err := json.Unmarshal([]byte(baseRevisionSetJSON.String), &entries); err != nil {
+			return workspace.WorkspaceSet{}, fmt.Errorf("unmarshal workspace set %s base revision set: %w", id, err)
+		}
+		// Re-run through NewRevisionSet rather than trusting the stored JSON
+		// directly (the same "round-trip a stored row back through the exact
+		// same normalization/validation every write already passed"
+		// discipline scanRepositoryScopeRow already follows above) and
+		// cross-check the stored hash against the freshly recomputed one —
+		// a real, if cheap, integrity check that base_revision_set_hash was
+		// never edited independently of base_revision_set_json.
+		revisionSet, err := workspace.NewRevisionSet(entries)
+		if err != nil {
+			return workspace.WorkspaceSet{}, fmt.Errorf("reconstruct workspace set %s base revision set: %w", id, err)
+		}
+		if baseRevisionSetHash.Valid && revisionSet.ContentHash() != baseRevisionSetHash.String {
+			return workspace.WorkspaceSet{}, fmt.Errorf(
+				"workspace set %s base revision set hash mismatch: stored=%s recomputed=%s",
+				id, baseRevisionSetHash.String, revisionSet.ContentHash())
+		}
+		set.BaseRevisionSet = &revisionSet
+	}
+	return set, nil
 }
 
 // --- RepositoryScope ---
@@ -444,6 +475,206 @@ FROM work_item_effective_scopes WHERE work_item_id = ? ORDER BY repository_id, a
 	}
 	if err := rows.Err(); err != nil {
 		return nil, MapSQLiteError(fmt.Errorf("iterate work item effective scopes: %w", err))
+	}
+	return result, nil
+}
+
+// --- WorkspaceSet state / RepositoryWorkspace (V3-06) ---
+//
+// This section gives workRepository the persistence half of
+// internal/app/workspaceprovision.Handler, the WORKSPACE_PROVISION job
+// consumer V3-04's own CreateRootWorkItem already enqueues one of per
+// repository in a root task's initial scope. It reuses
+// repositoryWorkspaceColumns/scanRepositoryWorkspace from
+// workspace_lifecycle.go (same package, V3-09/V3-10/V3-11's own
+// QuarantineRepositoryWorkspace/ReleaseRepositoryWorkspace/
+// RecreateRepositoryWorkspace) rather than duplicating that column list/scan
+// shape a second time — first-generation creation (this section's own job)
+// and later-generation lifecycle transitions (workspace_lifecycle.go's own
+// job) are two different concerns over the identical row shape.
+
+// TransitionWorkspaceSetState implements ports.WorkRepository (V3-06): see
+// that interface method's own doc comment for the full CAS contract.
+func (r workRepository) TransitionWorkspaceSetState(ctx context.Context, req ports.TransitionWorkspaceSetStateRequest) (workspace.WorkspaceSet, error) {
+	return transitionWorkspaceSetStateTx(ctx, r.tx, req)
+}
+
+func transitionWorkspaceSetStateTx(ctx context.Context, tx *sql.Tx, req ports.TransitionWorkspaceSetStateRequest) (workspace.WorkspaceSet, error) {
+	if req.WorkspaceSetID == "" {
+		return workspace.WorkspaceSet{}, errors.New("workspace set id is required")
+	}
+
+	var revisionSetJSON, revisionSetHash sql.NullString
+	if req.BaseRevisionSet != nil {
+		entries := req.BaseRevisionSet.Entries()
+		encoded, err := json.Marshal(entries)
+		if err != nil {
+			return workspace.WorkspaceSet{}, fmt.Errorf("marshal workspace set base revision set: %w", err)
+		}
+		revisionSetJSON = sql.NullString{String: string(encoded), Valid: true}
+		revisionSetHash = sql.NullString{String: req.BaseRevisionSet.ContentHash(), Valid: true}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	row := tx.QueryRowContext(ctx, `
+UPDATE workspace_sets
+SET state = ?, version = version + 1, updated_at = ?,
+    base_revision_set_json = COALESCE(?, base_revision_set_json),
+    base_revision_set_hash = COALESCE(?, base_revision_set_hash)
+WHERE id = ? AND state = ? AND version = ?
+RETURNING `+workspaceSetColumns,
+		string(req.NextState), now, revisionSetJSON, revisionSetHash,
+		req.WorkspaceSetID, string(req.ExpectedState), req.ExpectedVersion,
+	)
+	set, err := scanWorkspaceSetRow(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		var exists int
+		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM workspace_sets WHERE id = ?`, req.WorkspaceSetID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return workspace.WorkspaceSet{}, fmt.Errorf("%w: workspace set %s", ports.ErrPersistenceNotFound, req.WorkspaceSetID)
+		}
+		if lookupErr != nil {
+			return workspace.WorkspaceSet{}, MapSQLiteError(fmt.Errorf("check stale workspace set transition: %w", lookupErr))
+		}
+		return workspace.WorkspaceSet{}, fmt.Errorf(
+			"%w: workspace set %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.WorkspaceSetID, req.ExpectedState, req.ExpectedVersion,
+		)
+	}
+	if err != nil {
+		return workspace.WorkspaceSet{}, MapSQLiteError(fmt.Errorf("transition workspace set %s state: %w", req.WorkspaceSetID, err))
+	}
+	return set, nil
+}
+
+// CreateRepositoryWorkspace implements ports.WorkRepository (V3-06): see
+// that interface method's own doc comment for the full contract, including
+// why rw is accepted as an already-constructed value and how a UNIQUE
+// conflict (GC-INV-03) is mapped to ports.ErrPersistenceAlreadyExists.
+func (r workRepository) CreateRepositoryWorkspace(ctx context.Context, rw workspace.RepositoryWorkspace) (workspace.RepositoryWorkspace, error) {
+	return createRepositoryWorkspaceTx(ctx, r.tx, rw)
+}
+
+func createRepositoryWorkspaceTx(ctx context.Context, tx *sql.Tx, rw workspace.RepositoryWorkspace) (workspace.RepositoryWorkspace, error) {
+	if rw.ID == "" || rw.WorkspaceSetID == "" || rw.RepositoryID == "" || rw.Generation == 0 {
+		return workspace.RepositoryWorkspace{}, errors.New("repository workspace id, workspace set id, repository id and generation are required")
+	}
+
+	// project_id/family_id are not part of the domain struct (they are
+	// always implied by WorkspaceSetID — see this method's own interface
+	// doc comment) but the repository_workspaces schema carries both
+	// redundantly, the same "carried for query-convenience/FK-safety"
+	// reason family_repository_scopes/work_item_effective_scopes already
+	// do (0011_work_item_effective_scopes.sql). Resolving them here also
+	// doubles as this method's own WorkspaceSetID existence check.
+	var projectID, familyID string
+	err := tx.QueryRowContext(ctx, `SELECT project_id, family_id FROM workspace_sets WHERE id = ?`, string(rw.WorkspaceSetID)).
+		Scan(&projectID, &familyID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workspace.RepositoryWorkspace{}, fmt.Errorf("%w: workspace set %s", ports.ErrPersistenceNotFound, rw.WorkspaceSetID)
+	}
+	if err != nil {
+		return workspace.RepositoryWorkspace{}, MapSQLiteError(fmt.Errorf("resolve repository workspace's workspace set: %w", err))
+	}
+
+	var repositoryExists int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM repositories WHERE id = ?`, string(rw.RepositoryID)).Scan(&repositoryExists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workspace.RepositoryWorkspace{}, fmt.Errorf("%w: repository %s", ports.ErrPersistenceNotFound, rw.RepositoryID)
+	}
+	if err != nil {
+		return workspace.RepositoryWorkspace{}, MapSQLiteError(fmt.Errorf("resolve repository workspace's repository: %w", err))
+	}
+
+	var branchRef, currentRevision, lastProvisionErrorCode any
+	if rw.BranchRef != "" {
+		branchRef = rw.BranchRef
+	}
+	if rw.CurrentRevision != "" {
+		currentRevision = rw.CurrentRevision
+	}
+	if rw.LastProvisionErrorCode != nil {
+		lastProvisionErrorCode = *rw.LastProvisionErrorCode
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	row := tx.QueryRowContext(ctx, `
+INSERT INTO repository_workspaces (
+    id, project_id, workspace_set_id, family_id, repository_id, generation,
+    locator, branch_ref, base_revision, current_revision, state, version,
+    last_provision_error_code, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING `+repositoryWorkspaceColumns,
+		string(rw.ID), projectID, string(rw.WorkspaceSetID), familyID, string(rw.RepositoryID), rw.Generation,
+		rw.Locator, branchRef, rw.BaseRevision, currentRevision, string(rw.State), rw.Version,
+		lastProvisionErrorCode, now, now,
+	)
+	created, err := scanRepositoryWorkspace(row)
+	if err != nil {
+		var existing int
+		lookupErr := tx.QueryRowContext(ctx, `
+SELECT 1 FROM repository_workspaces WHERE workspace_set_id = ? AND repository_id = ? AND generation = ?`,
+			string(rw.WorkspaceSetID), string(rw.RepositoryID), rw.Generation,
+		).Scan(&existing)
+		if lookupErr == nil {
+			return workspace.RepositoryWorkspace{}, fmt.Errorf(
+				"%w: repository workspace for workspace set %s repository %s generation %d",
+				ports.ErrPersistenceAlreadyExists, rw.WorkspaceSetID, rw.RepositoryID, rw.Generation,
+			)
+		}
+		return workspace.RepositoryWorkspace{}, MapSQLiteError(fmt.Errorf("create repository workspace: %w", err))
+	}
+	return created, nil
+}
+
+// GetRepositoryWorkspace implements ports.WorkRepository (V3-06).
+func (r workRepository) GetRepositoryWorkspace(ctx context.Context, workspaceSetID, repositoryID string, generation uint64) (workspace.RepositoryWorkspace, error) {
+	return getRepositoryWorkspaceTx(ctx, r.tx, workspaceSetID, repositoryID, generation)
+}
+
+func getRepositoryWorkspaceTx(ctx context.Context, tx *sql.Tx, workspaceSetID, repositoryID string, generation uint64) (workspace.RepositoryWorkspace, error) {
+	row := tx.QueryRowContext(ctx, `
+SELECT `+repositoryWorkspaceColumns+`
+FROM repository_workspaces WHERE workspace_set_id = ? AND repository_id = ? AND generation = ?`,
+		workspaceSetID, repositoryID, generation)
+	rw, err := scanRepositoryWorkspace(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return workspace.RepositoryWorkspace{}, fmt.Errorf(
+			"%w: repository workspace for workspace set %s repository %s generation %d",
+			ports.ErrPersistenceNotFound, workspaceSetID, repositoryID, generation)
+	}
+	if err != nil {
+		return workspace.RepositoryWorkspace{}, MapSQLiteError(fmt.Errorf("get repository workspace: %w", err))
+	}
+	return rw, nil
+}
+
+// ListWorkspaceSetRepositoryWorkspaces implements ports.WorkRepository
+// (V3-06), ordered by (repository_id, generation) for a stable,
+// deterministic result a test can assert on exactly.
+func (r workRepository) ListWorkspaceSetRepositoryWorkspaces(ctx context.Context, workspaceSetID string) ([]workspace.RepositoryWorkspace, error) {
+	return listWorkspaceSetRepositoryWorkspacesTx(ctx, r.tx, workspaceSetID)
+}
+
+func listWorkspaceSetRepositoryWorkspacesTx(ctx context.Context, tx *sql.Tx, workspaceSetID string) ([]workspace.RepositoryWorkspace, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT `+repositoryWorkspaceColumns+`
+FROM repository_workspaces WHERE workspace_set_id = ? ORDER BY repository_id, generation`, workspaceSetID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list workspace set repository workspaces: %w", err))
+	}
+	defer rows.Close()
+
+	var result []workspace.RepositoryWorkspace
+	for rows.Next() {
+		rw, err := scanRepositoryWorkspace(rows)
+		if err != nil {
+			return nil, MapSQLiteError(fmt.Errorf("scan repository workspace row: %w", err))
+		}
+		result = append(result, rw)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("iterate workspace set repository workspaces: %w", err))
 	}
 	return result, nil
 }

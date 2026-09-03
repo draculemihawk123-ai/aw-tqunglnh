@@ -34,6 +34,16 @@ type WorkspaceSet struct {
 	FamilyID  work.TaskFamilyID
 	State     WorkspaceSetState
 	Version   uint64
+	// BaseRevisionSet is the exact-commit snapshot across every one of this
+	// set's required repositories (V3-06,
+	// docs/design/05-v3-project-workspace.md), computed and persisted
+	// exactly once, only after every required repository's own
+	// RepositoryWorkspace reaches READY (this task's own "base RevisionSet
+	// after all required ready" and "Hoàn thành khi: family chỉ ready khi
+	// mọi required repository ready"). nil for every WorkspaceSet that has
+	// not yet reached READY — and forever, for one that never does — never
+	// a placeholder/partial value.
+	BaseRevisionSet *RevisionSet
 }
 
 func NewWorkspaceSet(id WorkspaceSetID, family work.TaskFamily) (WorkspaceSet, error) {
@@ -74,6 +84,20 @@ type RepositoryWorkspace struct {
 	CurrentRevision string
 	State           RepositoryWorkspaceState
 	Version         uint64
+	// LastProvisionErrorCode is set only for a FAILED RepositoryWorkspace —
+	// mirroring project.Repository.LastProbeErrorCode's identical role for
+	// the analogous REGISTERING/PROBING->BLOCKED transition (V3-02): a
+	// short, typed/coarse reason a caller building a FAILED
+	// RepositoryWorkspace (V3-06, docs/design/05-v3-project-workspace.md's
+	// own "failure partial state") records directly on the struct literal
+	// it builds — never NewRepositoryWorkspace's own happy-path
+	// constructor, which always leaves this nil. This is the "whatever
+	// error info you capture" this task's own scope note asks for, kept as
+	// a short code (never a raw provider/SQL error string) rather than a
+	// free-form message, the same "typed Code, not a parsed message"
+	// discipline every other error-classification field in this codebase
+	// already follows.
+	LastProvisionErrorCode *string
 }
 
 func NewRepositoryWorkspace(

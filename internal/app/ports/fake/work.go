@@ -27,6 +27,13 @@ type WorkRepository struct {
 	workspaceSets    map[string]workspace.WorkspaceSet // by FamilyID (mirrors UNIQUE(family_id))
 	repositoryScopes map[string][]work.RepositoryScope // by FamilyID, insertion order
 	effectiveScopes  map[string][]work.RepositoryScope // by WorkItemID, insertion order (V3-05)
+	// repositoryWorkspaces is keyed by "workspaceSetID/repositoryID/generation"
+	// (V3-06), mirroring the real adapter's own
+	// UNIQUE(workspace_set_id, repository_id, generation) (GC-INV-03): a
+	// second CreateRepositoryWorkspace call for the same key overwrites
+	// nothing, it is rejected exactly like the real adapter's own
+	// constraint conflict — see CreateRepositoryWorkspace below.
+	repositoryWorkspaces map[string]workspace.RepositoryWorkspace
 }
 
 var _ ports.WorkRepository = (*WorkRepository)(nil)
@@ -57,9 +64,14 @@ func (w *WorkRepository) cloneWith(catalog *CatalogRepository) *WorkRepository {
 	for k, v := range w.effectiveScopes {
 		effectiveScopes[k] = append([]work.RepositoryScope(nil), v...)
 	}
+	repositoryWorkspaces := make(map[string]workspace.RepositoryWorkspace, len(w.repositoryWorkspaces))
+	for k, v := range w.repositoryWorkspaces {
+		repositoryWorkspaces[k] = v
+	}
 	return &WorkRepository{
 		catalog: catalog, workItems: workItems, taskFamilies: taskFamilies,
 		workspaceSets: workspaceSets, repositoryScopes: repositoryScopes, effectiveScopes: effectiveScopes,
+		repositoryWorkspaces: repositoryWorkspaces,
 	}
 }
 
@@ -206,4 +218,110 @@ func (w *WorkRepository) ListWorkItemEffectiveScopes(_ context.Context, workItem
 		return scopes[i].Access() < scopes[j].Access()
 	})
 	return scopes, nil
+}
+
+// --- WorkspaceSet state / RepositoryWorkspace (V3-06) ---
+
+// findWorkspaceSetByID linear-scans workspaceSets (keyed by FamilyID, not
+// ID — mirroring the real table's own UNIQUE(family_id) rather than a
+// second by-ID index) for the set whose own ID matches. Fine for the fake's
+// small in-memory fixture sizes; the real sqlite adapter indexes by primary
+// key directly.
+func (w *WorkRepository) findWorkspaceSetByID(id string) (familyID string, set workspace.WorkspaceSet, ok bool) {
+	for fid, s := range w.workspaceSets {
+		if string(s.ID) == id {
+			return fid, s, true
+		}
+	}
+	return "", workspace.WorkspaceSet{}, false
+}
+
+// TransitionWorkspaceSetState mirrors sqlite's transitionWorkspaceSetStateTx:
+// the identical CAS TransitionRepositoryStatus's own fake counterpart
+// already performs for Repository, applied here to WorkspaceSet.State.
+// req.BaseRevisionSet, when non-nil, is stored directly onto the returned/
+// persisted WorkspaceSet's own BaseRevisionSet field (V3-06 added this
+// field to the shared workspace.WorkspaceSet domain type precisely so both
+// this fake and the real sqlite adapter round-trip the identical value
+// through the identical struct, rather than a side channel only one of the
+// two exposes).
+func (w *WorkRepository) TransitionWorkspaceSetState(_ context.Context, req ports.TransitionWorkspaceSetStateRequest) (workspace.WorkspaceSet, error) {
+	familyID, set, ok := w.findWorkspaceSetByID(req.WorkspaceSetID)
+	if !ok {
+		return workspace.WorkspaceSet{}, fmt.Errorf("fake: %w: workspace set %s", ports.ErrPersistenceNotFound, req.WorkspaceSetID)
+	}
+	if set.State != req.ExpectedState || set.Version != req.ExpectedVersion {
+		return workspace.WorkspaceSet{}, fmt.Errorf("fake: %w: workspace set %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.WorkspaceSetID, req.ExpectedState, req.ExpectedVersion)
+	}
+	set.State = req.NextState
+	set.Version++
+	if req.BaseRevisionSet != nil {
+		set.BaseRevisionSet = req.BaseRevisionSet
+	}
+	w.workspaceSets[familyID] = set
+	return set, nil
+}
+
+// CreateRepositoryWorkspace mirrors sqlite's createRepositoryWorkspaceTx:
+// rw.WorkspaceSetID must name a WorkspaceSet that already exists and
+// rw.RepositoryID must name a Repository that already exists (resolved
+// from the shared CatalogRepository) — ErrPersistenceNotFound otherwise.
+// The composite (WorkspaceSetID, RepositoryID, Generation) key mirrors the
+// real table's own UNIQUE constraint (GC-INV-03): a second call for the
+// same key is rejected with ErrPersistenceAlreadyExists, never silently
+// overwritten.
+func (w *WorkRepository) CreateRepositoryWorkspace(_ context.Context, rw workspace.RepositoryWorkspace) (workspace.RepositoryWorkspace, error) {
+	if _, _, ok := w.findWorkspaceSetByID(string(rw.WorkspaceSetID)); !ok {
+		return workspace.RepositoryWorkspace{}, fmt.Errorf("fake: %w: workspace set %s", ports.ErrPersistenceNotFound, rw.WorkspaceSetID)
+	}
+	if _, ok := w.catalog.repositories[string(rw.RepositoryID)]; !ok {
+		return workspace.RepositoryWorkspace{}, fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceNotFound, rw.RepositoryID)
+	}
+	key := repositoryWorkspaceKey(string(rw.WorkspaceSetID), string(rw.RepositoryID), rw.Generation)
+	if _, exists := w.repositoryWorkspaces[key]; exists {
+		return workspace.RepositoryWorkspace{}, fmt.Errorf(
+			"fake: %w: repository workspace for workspace set %s repository %s generation %d",
+			ports.ErrPersistenceAlreadyExists, rw.WorkspaceSetID, rw.RepositoryID, rw.Generation)
+	}
+	if w.repositoryWorkspaces == nil {
+		w.repositoryWorkspaces = map[string]workspace.RepositoryWorkspace{}
+	}
+	w.repositoryWorkspaces[key] = rw
+	return rw, nil
+}
+
+// GetRepositoryWorkspace mirrors sqlite's getRepositoryWorkspaceTx.
+func (w *WorkRepository) GetRepositoryWorkspace(_ context.Context, workspaceSetID, repositoryID string, generation uint64) (workspace.RepositoryWorkspace, error) {
+	rw, ok := w.repositoryWorkspaces[repositoryWorkspaceKey(workspaceSetID, repositoryID, generation)]
+	if !ok {
+		return workspace.RepositoryWorkspace{}, fmt.Errorf(
+			"fake: %w: repository workspace for workspace set %s repository %s generation %d",
+			ports.ErrPersistenceNotFound, workspaceSetID, repositoryID, generation)
+	}
+	return rw, nil
+}
+
+// ListWorkspaceSetRepositoryWorkspaces mirrors sqlite's
+// listWorkspaceSetRepositoryWorkspacesTx, ordered by (RepositoryID,
+// Generation) for a stable, deterministic result a test can assert on
+// exactly, the same as the real adapter's own ORDER BY.
+func (w *WorkRepository) ListWorkspaceSetRepositoryWorkspaces(_ context.Context, workspaceSetID string) ([]workspace.RepositoryWorkspace, error) {
+	var result []workspace.RepositoryWorkspace
+	for _, rw := range w.repositoryWorkspaces {
+		if string(rw.WorkspaceSetID) == workspaceSetID {
+			result = append(result, rw)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].RepositoryID != result[j].RepositoryID {
+			return result[i].RepositoryID < result[j].RepositoryID
+		}
+		return result[i].Generation < result[j].Generation
+	})
+	return result, nil
+}
+
+func repositoryWorkspaceKey(workspaceSetID, repositoryID string, generation uint64) string {
+	return fmt.Sprintf("%s/%s/%d", workspaceSetID, repositoryID, generation)
 }

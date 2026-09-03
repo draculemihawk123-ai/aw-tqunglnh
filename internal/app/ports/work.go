@@ -118,4 +118,79 @@ type WorkRepository interface {
 	// workItemID's own effective scope, ordered by (repository_id, access)
 	// for a stable, deterministic result a test can assert on exactly.
 	ListWorkItemEffectiveScopes(ctx context.Context, workItemID string) ([]work.RepositoryScope, error)
+
+	// TransitionWorkspaceSetState is populated now (V3-06,
+	// docs/design/05-v3-project-workspace.md): an optimistic
+	// compare-and-swap on a WorkspaceSet's own State, the persistence half
+	// of internal/app/workspaceprovision.Handler's own state-aggregation
+	// step — the exact same CAS discipline
+	// CatalogRepository.TransitionRepositoryStatus already established for
+	// Repository (req.ExpectedVersion and the row's current State must both
+	// match, or the whole call fails with ports.ErrOptimisticConflict;
+	// ports.ErrPersistenceNotFound if the WorkspaceSet does not exist at
+	// all). It does not itself decide which transitions are legal — that is
+	// workspaceprovision.Handler's own job, the same way
+	// TransitionRepositoryStatus defers to project.CanTransitionRepositoryStatus
+	// instead of duplicating that graph — it only performs the fenced
+	// write, optionally persisting req.BaseRevisionSet in the same
+	// statement when req.NextState is workspace.WorkspaceSetReady (never
+	// partially: a set only ever gets a base RevisionSet once it is
+	// genuinely READY, per this task's own "base RevisionSet after all
+	// required ready").
+	TransitionWorkspaceSetState(ctx context.Context, req TransitionWorkspaceSetStateRequest) (workspace.WorkspaceSet, error)
+
+	// CreateRepositoryWorkspace inserts a new RepositoryWorkspace row
+	// (V3-06) after verifying rw.WorkspaceSetID names a WorkspaceSet that
+	// exists and rw.RepositoryID names a Repository that exists —
+	// ErrPersistenceNotFound otherwise. rw is an already-constructed domain
+	// value (mirroring CreateWorkItem/CreateTaskFamily/CreateWorkspaceSet's
+	// own "accept an already-constructed value" convention above): the
+	// READY-bound happy path is workspace.NewRepositoryWorkspace (locator/
+	// baseRevision already resolved by the real
+	// ports.WorkspaceProvider.Provision call the caller already ran,
+	// entirely outside this — or any — transaction, per
+	// workspaceprovision.Handler's own doc comment), while a FAILED outcome
+	// (the provider call itself failed, so there is no real locator/
+	// baseRevision to record) is a plain struct literal the caller builds
+	// directly — workspace.RepositoryWorkspace carries no private fields
+	// precisely so a caller can do this when a failure genuinely has no
+	// happy-path value to satisfy NewRepositoryWorkspace's own non-empty
+	// invariants. The table's own UNIQUE(workspace_set_id, repository_id,
+	// generation) (0001_initial_schema.sql, GC-INV-03: "Mỗi WorkspaceSetID +
+	// RepositoryID + Generation có tối đa một RepositoryWorkspace") rejects
+	// a second row for the same triple outright, mapped to
+	// ErrPersistenceAlreadyExists rather than a raw SQL conflict — this
+	// task's own "map the resulting SQLite conflict to a sensible typed
+	// error" line.
+	CreateRepositoryWorkspace(ctx context.Context, rw workspace.RepositoryWorkspace) (workspace.RepositoryWorkspace, error)
+	// GetRepositoryWorkspace returns the RepositoryWorkspace for
+	// (workspaceSetID, repositoryID, generation), or
+	// ErrPersistenceNotFound — the crash-recovery idempotency check
+	// workspaceprovision.Handler's own Handle runs first, mirroring
+	// repositoryprobe.Handler's identical "already resolved" reclaim check
+	// for a different aggregate.
+	GetRepositoryWorkspace(ctx context.Context, workspaceSetID, repositoryID string, generation uint64) (workspace.RepositoryWorkspace, error)
+	// ListWorkspaceSetRepositoryWorkspaces returns every RepositoryWorkspace
+	// row for workspaceSetID (every generation, every state), ordered by
+	// (repository_id, generation) for a stable, deterministic result a test
+	// can assert on exactly — the state-aggregation step's own "is every
+	// required repository now READY" read.
+	ListWorkspaceSetRepositoryWorkspaces(ctx context.Context, workspaceSetID string) ([]workspace.RepositoryWorkspace, error)
+}
+
+// TransitionWorkspaceSetStateRequest is an optimistic compare-and-swap
+// request for WorkspaceSet.State (V3-06, mirroring
+// TransitionRepositoryStatusRequest's identical CAS shape in
+// ports/catalog.go). BaseRevisionSet is only meaningful — and should only
+// ever be non-nil — when NextState is workspace.WorkspaceSetReady: the base
+// RevisionSet is computed and persisted in the same CAS transaction that
+// flips the set to READY, never before or after (this task's own "base
+// RevisionSet after all required ready", computed only once, never
+// partially).
+type TransitionWorkspaceSetStateRequest struct {
+	WorkspaceSetID  string
+	ExpectedState   workspace.WorkspaceSetState
+	ExpectedVersion uint64
+	NextState       workspace.WorkspaceSetState
+	BaseRevisionSet *workspace.RevisionSet
 }
