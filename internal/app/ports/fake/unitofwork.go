@@ -88,7 +88,7 @@ type Tx struct {
 	catalog       *CatalogRepository
 	work          *WorkRepository
 	definitions   *DefinitionsRepository
-	runtime       RuntimeRepository
+	runtime       *RuntimeRepository
 	jobs          *JobsRepository
 	events        *EventsRepository
 	receipts      *ReceiptsRepository
@@ -105,6 +105,7 @@ func newTx() Tx {
 		definitions:   &DefinitionsRepository{},
 		catalog:       catalog,
 		work:          &WorkRepository{catalog: catalog},
+		runtime:       &RuntimeRepository{},
 		jobs:          &JobsRepository{},
 		readiness:     &ReadinessRepository{catalog: catalog},
 	}
@@ -118,6 +119,7 @@ func (t Tx) clone() Tx {
 	clone.definitions = t.definitions.clone()
 	clone.catalog = t.catalog.clone()
 	clone.work = t.work.cloneWith(clone.catalog)
+	clone.runtime = t.runtime.clone()
 	clone.jobs = t.jobs.clone()
 	clone.readiness = t.readiness.cloneWith(clone.catalog)
 	return clone
@@ -134,8 +136,6 @@ func (t Tx) Events() ports.EventsRepository              { return t.events }
 func (t Tx) Receipts() ports.ReceiptsRepository          { return t.receipts }
 func (t Tx) AdapterBuilds() ports.AdapterBuildRepository { return t.adapterBuilds }
 func (t Tx) Readiness() ports.ReadinessRepository        { return t.readiness }
-
-type RuntimeRepository struct{}
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the

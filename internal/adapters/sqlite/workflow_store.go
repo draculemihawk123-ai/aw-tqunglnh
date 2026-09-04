@@ -859,26 +859,38 @@ func validateWorkflowRunTransition(transition ports.WorkflowRunTransition) error
 	if !json.Valid(transition.SharedState) {
 		return errors.New("workflow run transition shared state must be valid JSON")
 	}
-	allowed := false
+	// Every non-terminal state, CREATED included, has an edge into CANCELLING
+	// (go-core-spec §4.5, ADR-020's cancellation protocol: "Run có thể bị
+	// cancel từ CREATED... đường đó đi qua CANCELLING như mọi đường khác").
+	// This is additive only — it does not remove any pre-existing direct
+	// ...->CANCELLED edge below, since replacing those with the full
+	// quiesce protocol is V4-12B's own scope, not V4-01's.
+	allowed := transition.NextState == runtime.WorkflowRunCancelling
 	switch transition.ExpectedState {
 	case runtime.WorkflowRunCreated:
-		allowed = transition.NextState == runtime.WorkflowRunRunning ||
+		allowed = allowed ||
+			transition.NextState == runtime.WorkflowRunRunning ||
 			transition.NextState == runtime.WorkflowRunCancelled
 	case runtime.WorkflowRunRunning:
-		allowed = transition.NextState == runtime.WorkflowRunWaiting ||
+		allowed = allowed ||
+			transition.NextState == runtime.WorkflowRunWaiting ||
 			transition.NextState == runtime.WorkflowRunBlocked ||
 			transition.NextState == runtime.WorkflowRunSucceeded ||
 			transition.NextState == runtime.WorkflowRunFailed ||
 			transition.NextState == runtime.WorkflowRunCancelled
 	case runtime.WorkflowRunWaiting:
-		allowed = transition.NextState == runtime.WorkflowRunRunning ||
+		allowed = allowed ||
+			transition.NextState == runtime.WorkflowRunRunning ||
 			transition.NextState == runtime.WorkflowRunBlocked ||
 			transition.NextState == runtime.WorkflowRunFailed ||
 			transition.NextState == runtime.WorkflowRunCancelled
 	case runtime.WorkflowRunBlocked:
-		allowed = transition.NextState == runtime.WorkflowRunRunning ||
+		allowed = allowed ||
+			transition.NextState == runtime.WorkflowRunRunning ||
 			transition.NextState == runtime.WorkflowRunFailed ||
 			transition.NextState == runtime.WorkflowRunCancelled
+	default:
+		allowed = false
 	}
 	if !allowed {
 		return fmt.Errorf(

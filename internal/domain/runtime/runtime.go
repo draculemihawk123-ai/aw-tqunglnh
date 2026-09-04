@@ -22,13 +22,27 @@ type BlockVersionID string
 type WorkflowRunState string
 
 const (
-	WorkflowRunCreated   WorkflowRunState = "CREATED"
-	WorkflowRunRunning   WorkflowRunState = "RUNNING"
-	WorkflowRunWaiting   WorkflowRunState = "WAITING"
-	WorkflowRunBlocked   WorkflowRunState = "BLOCKED"
+	WorkflowRunCreated WorkflowRunState = "CREATED"
+	WorkflowRunRunning WorkflowRunState = "RUNNING"
+	WorkflowRunWaiting WorkflowRunState = "WAITING"
+	WorkflowRunBlocked WorkflowRunState = "BLOCKED"
+	// WorkflowRunVerifying is END's completion-candidate state (ADR-011,
+	// ADR-021): added to the closed enum and CHECK constraint now, while the
+	// table is still empty, so V4-12 (the first real caller — "END chuyển
+	// run sang VERIFYING") never has to rebuild a non-empty workflow_runs
+	// table the way V3-01 had to for repositories. No transition in this
+	// codebase produces it yet.
+	WorkflowRunVerifying WorkflowRunState = "VERIFYING"
 	WorkflowRunSucceeded WorkflowRunState = "SUCCEEDED"
 	WorkflowRunFailed    WorkflowRunState = "FAILED"
-	WorkflowRunCancelled WorkflowRunState = "CANCELLED"
+	// WorkflowRunCancelling is the mandatory quiesce phase between a cancel
+	// intent and WorkflowRunCancelled (ADR-020's cancellation protocol);
+	// every non-terminal state, CREATED included, has an edge into it. The
+	// full protocol (durable intent, cancel_epoch fence, quiesce) is
+	// V4-12B's own scope — this task only makes the state/enum/transition
+	// representable and persistable.
+	WorkflowRunCancelling WorkflowRunState = "CANCELLING"
+	WorkflowRunCancelled  WorkflowRunState = "CANCELLED"
 )
 
 type WorkflowRun struct {
@@ -158,6 +172,13 @@ const (
 	ExecutionAttemptCancelled     ExecutionAttemptState = "CANCELLED"
 	ExecutionAttemptLost          ExecutionAttemptState = "LOST"
 	ExecutionAttemptIndeterminate ExecutionAttemptState = "INDETERMINATE"
+	// ExecutionAttemptBlocked is ADR-020's terminal business/admission
+	// blocker state, deliberately separate from ExecutionAttemptFailed: it
+	// never consumes AttemptPolicy retry budget and a BLOCKED attempt is
+	// never revived (RetryBlockedActivation instead creates a new
+	// activation/Attempt after revalidating the exact pin — V4-12A/V4-13's
+	// own scope, not this one's).
+	ExecutionAttemptBlocked ExecutionAttemptState = "BLOCKED"
 )
 
 type ExecutionAttempt struct {
@@ -172,7 +193,7 @@ type ExecutionAttempt struct {
 	LastCheckpointID     *CheckpointID
 	StartedAt            *time.Time
 	FinishedAt           *time.Time
-	TerminationReason    string
+	TerminationReason    TerminationReason
 	Version              uint64
 }
 

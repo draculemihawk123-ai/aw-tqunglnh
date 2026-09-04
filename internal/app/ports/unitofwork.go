@@ -6,6 +6,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
+	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
@@ -236,10 +237,93 @@ type DefinitionsRepository interface {
 	ListVersions(ctx context.Context, kind definition.Kind, definitionID string) ([]definition.VersionFields, error)
 }
 
-// RuntimeRepository will expose WorkflowRun/NodeRun/ExecutionAttempt/
-// ContextSnapshot/Checkpoint persistence once V4 builds it — superseding
-// the rest of WorkflowPersistence's methods.
-type RuntimeRepository interface{}
+// RuntimeRepository is populated now (V4-01,
+// docs/design/06-v4-runtime-engine.md): the schema/repository-contract
+// foundation for the whole V4 runtime engine. It does not yet expose
+// WorkflowRun/NodeRun/ExecutionAttempt/ContextSnapshot/Checkpoint
+// persistence — WorkflowPersistence (persistence.go) already covers those
+// for the spike, and superseding it into this Tx-composable accessor is
+// deferred to whichever later V4 task first needs one of those methods
+// composed inside the same transaction as a new concern here (V4-02's
+// StartWorkflowRun transaction is the most likely first caller). This
+// task's own five new aggregates have no such pre-existing spike-era
+// surface, so they get real methods here from the start, the same
+// "populated now" treatment AdapterBuildRepository/ReadinessRepository
+// already received for the same reason.
+type RuntimeRepository interface {
+	// CreateExecutionManifest inserts the one immutable ExecutionManifest a
+	// WorkflowRun ever has (GC-INV-06). manifest.RunID must name a
+	// WorkflowRun that exists, and manifest.WorkflowVersionID's own
+	// WorkflowDefinition must be either installation-shared (nil
+	// ProjectID) or belong to the exact same Project as that WorkflowRun —
+	// ErrCrossProjectReference otherwise, resolved from the referenced rows
+	// themselves, never trusted from the caller. A second call for the same
+	// RunID with byte-identical CompiledSnapshotHash/DependencyManifest/
+	// BaseRevisionSet is idempotent and returns the already-stored
+	// manifest; a second call with any different pin is
+	// ErrImmutableVersionConflict — "workflow/compiled dependency/adapter
+	// pins không đổi" (this task's own Hoàn thành khi) admits no update
+	// path at all, idempotent or otherwise.
+	CreateExecutionManifest(ctx context.Context, manifest runtime.ExecutionManifest) (runtime.ExecutionManifest, error)
+	// GetExecutionManifest returns the ExecutionManifest for runID, or
+	// ErrPersistenceNotFound.
+	GetExecutionManifest(ctx context.Context, runID string) (runtime.ExecutionManifest, error)
+
+	// AppendRunManifestAmendment inserts one new RunManifestAmendment
+	// (ADR-011) after verifying amendment.RunID names a WorkflowRun that
+	// already has an ExecutionManifest and that amendment.PreviousRevision
+	// equals the run's current highest amendment revision (0 if it has
+	// none yet) — ErrOptimisticConflict on a gap or replay, never a second
+	// row for the same next revision. The initial ExecutionManifest itself
+	// is never touched: an amendment is always a new, append-only row.
+	AppendRunManifestAmendment(ctx context.Context, amendment runtime.RunManifestAmendment) (runtime.RunManifestAmendment, error)
+	// ListRunManifestAmendments returns every RunManifestAmendment for
+	// runID, oldest-Revision-first.
+	ListRunManifestAmendments(ctx context.Context, runID string) ([]runtime.RunManifestAmendment, error)
+
+	// CreateBranchToken inserts a new, ACTIVE BranchToken (HE-14-M09) after
+	// verifying token.RunID names a WorkflowRun that exists. A second call
+	// for the same (RunID, ForkKey, BranchKey) with an identical
+	// CurrentNodeKey is idempotent and returns the already-stored token; a
+	// second call with a different CurrentNodeKey is
+	// ErrOptimisticConflict — creating is not how a token's CurrentNodeKey
+	// advances (that mutation belongs to whichever later task first needs
+	// it, V4-10/V4-11).
+	CreateBranchToken(ctx context.Context, token runtime.BranchToken) (runtime.BranchToken, error)
+	// GetBranchToken returns the BranchToken for (runID, forkKey,
+	// branchKey), or ErrPersistenceNotFound.
+	GetBranchToken(ctx context.Context, runID, forkKey, branchKey string) (runtime.BranchToken, error)
+	// ListBranchTokensForRun returns every BranchToken for runID.
+	ListBranchTokensForRun(ctx context.Context, runID string) ([]runtime.BranchToken, error)
+
+	// RecordDecisionArtifact inserts one new, immutable DecisionArtifact
+	// (HE-03-M08). There is no corresponding update/delete method, now or
+	// ever: every call is a plain append.
+	RecordDecisionArtifact(ctx context.Context, artifact runtime.DecisionArtifact) (runtime.DecisionArtifact, error)
+	// GetDecisionArtifact returns the DecisionArtifact with the given ID,
+	// or ErrPersistenceNotFound.
+	GetDecisionArtifact(ctx context.Context, id string) (runtime.DecisionArtifact, error)
+
+	// RecordRunCancellationIntent inserts the one durable cancellation
+	// intent a WorkflowRun ever has. It is idempotent by RunID: a second
+	// call for a run that already has an intent returns the existing row
+	// unchanged (matching its own actor/reason or not — idempotency here
+	// means "an intent for this run already exists", not "with this exact
+	// payload"), never a second row and never an error, since ADR-020
+	// requires CancelRun itself to be idempotent per run.
+	RecordRunCancellationIntent(ctx context.Context, intent runtime.RunCancellationIntent) (runtime.RunCancellationIntent, error)
+	// GetRunCancellationIntent returns the RunCancellationIntent for runID,
+	// or ErrPersistenceNotFound.
+	GetRunCancellationIntent(ctx context.Context, runID string) (runtime.RunCancellationIntent, error)
+
+	// RecordWorkItemCancellationIntent is RecordRunCancellationIntent's own
+	// counterpart at the WorkItem level, with the identical
+	// idempotent-by-WorkItemID contract.
+	RecordWorkItemCancellationIntent(ctx context.Context, intent runtime.WorkItemCancellationIntent) (runtime.WorkItemCancellationIntent, error)
+	// GetWorkItemCancellationIntent returns the WorkItemCancellationIntent
+	// for workItemID, or ErrPersistenceNotFound.
+	GetWorkItemCancellationIntent(ctx context.Context, workItemID string) (runtime.WorkItemCancellationIntent, error)
+}
 
 // JobsRepository gains its first real method now (V3-01,
 // docs/design/05-v3-project-workspace.md): EnqueueJob, composed inside the

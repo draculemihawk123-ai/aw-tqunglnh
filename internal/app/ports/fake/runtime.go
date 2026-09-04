@@ -1,0 +1,226 @@
+package fake
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"sort"
+
+	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+)
+
+// RuntimeRepository is an in-memory ports.RuntimeRepository — V4-01 gives
+// this concern its first real behavior, so a later V4 command handler can
+// be tested without sqlite (the same V1-05 discipline every other fake
+// repository here already follows). Unlike ReadinessRepository/
+// WorkRepository, it does not cross-check RunID/WorkItemID against any
+// other fake store: no fake WorkflowRun/WorkItem persistence exists yet
+// (WorkflowPersistence, the spike-era interface that already covers
+// WorkflowRun, is never exposed through ports.Tx/fake.Tx) — so its
+// idempotency/immutability contracts are self-consistent only, matching
+// exactly what a caller can observe through ports.RuntimeRepository's own
+// methods.
+type RuntimeRepository struct {
+	manifests   map[string]runtime.ExecutionManifest          // by RunID
+	amendments  map[string][]runtime.RunManifestAmendment     // by RunID, Revision order
+	branches    map[string]runtime.BranchToken                // by RunID+"\x00"+ForkKey+"\x00"+BranchKey
+	decisions   map[string]runtime.DecisionArtifact           // by ID
+	runIntents  map[string]runtime.RunCancellationIntent      // by RunID
+	workIntents map[string]runtime.WorkItemCancellationIntent // by WorkItemID
+}
+
+var _ ports.RuntimeRepository = (*RuntimeRepository)(nil)
+
+func (r *RuntimeRepository) clone() *RuntimeRepository {
+	manifests := make(map[string]runtime.ExecutionManifest, len(r.manifests))
+	for k, v := range r.manifests {
+		manifests[k] = v
+	}
+	amendments := make(map[string][]runtime.RunManifestAmendment, len(r.amendments))
+	for k, v := range r.amendments {
+		amendments[k] = append([]runtime.RunManifestAmendment(nil), v...)
+	}
+	branches := make(map[string]runtime.BranchToken, len(r.branches))
+	for k, v := range r.branches {
+		branches[k] = v
+	}
+	decisions := make(map[string]runtime.DecisionArtifact, len(r.decisions))
+	for k, v := range r.decisions {
+		decisions[k] = v
+	}
+	runIntents := make(map[string]runtime.RunCancellationIntent, len(r.runIntents))
+	for k, v := range r.runIntents {
+		runIntents[k] = v
+	}
+	workIntents := make(map[string]runtime.WorkItemCancellationIntent, len(r.workIntents))
+	for k, v := range r.workIntents {
+		workIntents[k] = v
+	}
+	return &RuntimeRepository{
+		manifests: manifests, amendments: amendments, branches: branches,
+		decisions: decisions, runIntents: runIntents, workIntents: workIntents,
+	}
+}
+
+func sameExecutionManifestContent(left, right runtime.ExecutionManifest) bool {
+	leftManifest, errLeft := json.Marshal(left.DependencyManifest)
+	rightManifest, errRight := json.Marshal(right.DependencyManifest)
+	leftRevisions, errLeftRevisions := json.Marshal(left.BaseRevisionSet.Entries())
+	rightRevisions, errRightRevisions := json.Marshal(right.BaseRevisionSet.Entries())
+	return errLeft == nil && errRight == nil && errLeftRevisions == nil && errRightRevisions == nil &&
+		left.WorkflowVersionID == right.WorkflowVersionID &&
+		left.CompiledSnapshotHash == right.CompiledSnapshotHash &&
+		string(leftManifest) == string(rightManifest) &&
+		string(leftRevisions) == string(rightRevisions)
+}
+
+func (r *RuntimeRepository) CreateExecutionManifest(_ context.Context, manifest runtime.ExecutionManifest) (runtime.ExecutionManifest, error) {
+	key := string(manifest.RunID)
+	if existing, ok := r.manifests[key]; ok {
+		if sameExecutionManifestContent(existing, manifest) {
+			return existing, nil
+		}
+		return runtime.ExecutionManifest{}, fmt.Errorf("fake: %w: execution manifest for run %s", ports.ErrImmutableVersionConflict, key)
+	}
+	if r.manifests == nil {
+		r.manifests = map[string]runtime.ExecutionManifest{}
+	}
+	r.manifests[key] = manifest
+	return manifest, nil
+}
+
+func (r *RuntimeRepository) GetExecutionManifest(_ context.Context, runID string) (runtime.ExecutionManifest, error) {
+	manifest, ok := r.manifests[runID]
+	if !ok {
+		return runtime.ExecutionManifest{}, fmt.Errorf("fake: %w: execution manifest for run %s", ports.ErrPersistenceNotFound, runID)
+	}
+	return manifest, nil
+}
+
+func (r *RuntimeRepository) AppendRunManifestAmendment(_ context.Context, amendment runtime.RunManifestAmendment) (runtime.RunManifestAmendment, error) {
+	key := string(amendment.RunID)
+	existing := r.amendments[key]
+	var highest uint64
+	if len(existing) > 0 {
+		highest = existing[len(existing)-1].Revision
+	}
+	if amendment.PreviousRevision != highest {
+		return runtime.RunManifestAmendment{}, fmt.Errorf(
+			"fake: %w: run %s expected previous revision %d, got %d",
+			ports.ErrOptimisticConflict, key, highest, amendment.PreviousRevision,
+		)
+	}
+	if r.amendments == nil {
+		r.amendments = map[string][]runtime.RunManifestAmendment{}
+	}
+	r.amendments[key] = append(r.amendments[key], amendment)
+	return amendment, nil
+}
+
+func (r *RuntimeRepository) ListRunManifestAmendments(_ context.Context, runID string) ([]runtime.RunManifestAmendment, error) {
+	return append([]runtime.RunManifestAmendment(nil), r.amendments[runID]...), nil
+}
+
+func branchTokenKey(runID, forkKey, branchKey string) string {
+	return runID + "\x00" + forkKey + "\x00" + branchKey
+}
+
+func (r *RuntimeRepository) CreateBranchToken(_ context.Context, token runtime.BranchToken) (runtime.BranchToken, error) {
+	key := branchTokenKey(string(token.RunID), token.ForkKey, token.BranchKey)
+	if existing, ok := r.branches[key]; ok {
+		if existing.CurrentNodeKey == token.CurrentNodeKey {
+			return existing, nil
+		}
+		return runtime.BranchToken{}, fmt.Errorf("fake: %w: branch token %s", ports.ErrOptimisticConflict, key)
+	}
+	if r.branches == nil {
+		r.branches = map[string]runtime.BranchToken{}
+	}
+	r.branches[key] = token
+	return token, nil
+}
+
+func (r *RuntimeRepository) GetBranchToken(_ context.Context, runID, forkKey, branchKey string) (runtime.BranchToken, error) {
+	token, ok := r.branches[branchTokenKey(runID, forkKey, branchKey)]
+	if !ok {
+		return runtime.BranchToken{}, fmt.Errorf("fake: %w: branch token %s/%s/%s", ports.ErrPersistenceNotFound, runID, forkKey, branchKey)
+	}
+	return token, nil
+}
+
+func (r *RuntimeRepository) ListBranchTokensForRun(_ context.Context, runID string) ([]runtime.BranchToken, error) {
+	var tokens []runtime.BranchToken
+	for _, token := range r.branches {
+		if string(token.RunID) == runID {
+			tokens = append(tokens, token)
+		}
+	}
+	sort.Slice(tokens, func(i, j int) bool {
+		if tokens[i].ForkKey != tokens[j].ForkKey {
+			return tokens[i].ForkKey < tokens[j].ForkKey
+		}
+		return tokens[i].BranchKey < tokens[j].BranchKey
+	})
+	return tokens, nil
+}
+
+func (r *RuntimeRepository) RecordDecisionArtifact(_ context.Context, artifact runtime.DecisionArtifact) (runtime.DecisionArtifact, error) {
+	key := string(artifact.ID)
+	if _, exists := r.decisions[key]; exists {
+		return runtime.DecisionArtifact{}, fmt.Errorf("fake: %w: decision artifact %s", ports.ErrPersistenceAlreadyExists, key)
+	}
+	if r.decisions == nil {
+		r.decisions = map[string]runtime.DecisionArtifact{}
+	}
+	r.decisions[key] = artifact
+	return artifact, nil
+}
+
+func (r *RuntimeRepository) GetDecisionArtifact(_ context.Context, id string) (runtime.DecisionArtifact, error) {
+	artifact, ok := r.decisions[id]
+	if !ok {
+		return runtime.DecisionArtifact{}, fmt.Errorf("fake: %w: decision artifact %s", ports.ErrPersistenceNotFound, id)
+	}
+	return artifact, nil
+}
+
+func (r *RuntimeRepository) RecordRunCancellationIntent(_ context.Context, intent runtime.RunCancellationIntent) (runtime.RunCancellationIntent, error) {
+	key := string(intent.RunID)
+	if existing, ok := r.runIntents[key]; ok {
+		return existing, nil
+	}
+	if r.runIntents == nil {
+		r.runIntents = map[string]runtime.RunCancellationIntent{}
+	}
+	r.runIntents[key] = intent
+	return intent, nil
+}
+
+func (r *RuntimeRepository) GetRunCancellationIntent(_ context.Context, runID string) (runtime.RunCancellationIntent, error) {
+	intent, ok := r.runIntents[runID]
+	if !ok {
+		return runtime.RunCancellationIntent{}, fmt.Errorf("fake: %w: run cancellation intent for run %s", ports.ErrPersistenceNotFound, runID)
+	}
+	return intent, nil
+}
+
+func (r *RuntimeRepository) RecordWorkItemCancellationIntent(_ context.Context, intent runtime.WorkItemCancellationIntent) (runtime.WorkItemCancellationIntent, error) {
+	key := string(intent.WorkItemID)
+	if existing, ok := r.workIntents[key]; ok {
+		return existing, nil
+	}
+	if r.workIntents == nil {
+		r.workIntents = map[string]runtime.WorkItemCancellationIntent{}
+	}
+	r.workIntents[key] = intent
+	return intent, nil
+}
+
+func (r *RuntimeRepository) GetWorkItemCancellationIntent(_ context.Context, workItemID string) (runtime.WorkItemCancellationIntent, error) {
+	intent, ok := r.workIntents[workItemID]
+	if !ok {
+		return runtime.WorkItemCancellationIntent{}, fmt.Errorf("fake: %w: work item cancellation intent for work item %s", ports.ErrPersistenceNotFound, workItemID)
+	}
+	return intent, nil
+}
