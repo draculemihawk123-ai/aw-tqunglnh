@@ -52,7 +52,10 @@ Task chỉ được hoàn thành khi tất cả level bắt buộc của policy 
 - `CompletionPolicyVersion`, `VerificationLevel`, `GateRun`.
 - Maker/Checker `AgentProfileVersion` riêng.
 - `Evaluation` theo rubric/criteria.
-- Router `PASS -> next`, `FAIL -> rework`, `NEEDS_INFO -> wait`.
+- Router `PASS -> next`, `FAIL -> rework`, `NEEDS_INFO -> wait` (vocabulary minh họa từ lecture gốc;
+  Alpha's own `ROUTER` node type hiện chỉ hỗ trợ đúng một outcome khai báo — ADR-026 — nên một mapping
+  ba nhánh như ví dụ này cần một `MACHINE_GATE`/`APPROVAL` thật quyết định outcome, hoặc chờ multi-
+  outcome `ROUTER` rule ở phiên bản sau).
 - UI tách agent claim khỏi authoritative verdict.
 
 ## Anti-patterns

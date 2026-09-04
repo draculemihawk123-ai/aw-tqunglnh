@@ -249,10 +249,12 @@ func StartWorkflowRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.So
 			return err
 		}
 
-		jobPayload, err := json.Marshal(struct {
-			RunID     string `json:"runId"`
-			NodeRunID string `json:"nodeRunId"`
-		}{RunID: string(run.ID), NodeRunID: nodeRunID})
+		// CorrelationID seeds AdvanceRunJobPayload's own chain (correction
+		// found during V4-03 review): every downstream AdvanceRun hop
+		// forwards it unchanged into its own follow-up job, so the whole
+		// run's own sequence of NODE_ROUTED events shares this command's
+		// CorrelationID (go-core-spec §20).
+		jobPayload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: nodeRunID, CorrelationID: cmd.CorrelationID})
 		if err != nil {
 			return fmt.Errorf("marshal %s job payload: %w", AdvanceRunJobKind, err)
 		}

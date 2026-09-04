@@ -45,7 +45,7 @@
 - **Thực hiện:** branch token-independent linear/router routing, shared-state typed writes, activation sequence.
 - **Verify:** table/property tests order, missing/outside outcome, restart.
 - **Hoàn thành khi:** scheduler không parse free text hoặc query authoring file.
-- **Nguồn:** GC-INV-11, HE-14-M07.
+- **Nguồn:** ADR-026, GC-INV-11, HE-14-M07.
 
 ## V4-04 — NodeRun/Attempt scheduling transaction
 

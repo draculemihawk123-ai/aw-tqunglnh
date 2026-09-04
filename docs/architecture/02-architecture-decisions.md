@@ -2,8 +2,9 @@
 
 > Trạng thái: ACCEPTED — product owner xác nhận ADR-001…010 ngày 2026-08-28, ủy quyền chốt
 > ADR-011…019 ngày 2026-08-29 và chốt ADR-020…025 ngày 2026-08-31 sau review bộ thiết kế Alpha.
+> ADR-026 chốt ngày 2026-09-05, phát hiện và quyết định trực tiếp trong lúc user review code V4-03.
 >
-> Ngày lập baseline hiện hành: 2026-08-31.
+> Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -633,9 +634,39 @@ cho tập installation đã liệt kê, không phải mặc định mới.
 Handler MUST validate scope khớp command type; command project-scoped thiếu ProjectID và command
 installation-scoped mang ProjectID đều bị reject.
 
-## 28. Baseline sau review thiết kế
+## 28. ADR-026 — ROUTER giới hạn một outcome cho Alpha
 
-ADR-001…025 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** phát hiện trong lúc review V4-03 (`docs/design/06-v4-runtime-engine.md`, sau khi PR đã
+merge): go-core-spec §6 mô tả `ROUTER` là "chọn outcome từ typed state bằng rule deterministic", và
+`docs/harness-engineering/14-lec-14-do-thi-dieu-phoi.md`/`09-lec-09-...` đều giữ nguyên vocabulary
+`ROUTER` từ lecture gốc mà không tự giới hạn số outcome. Nhưng V2-08 (authoring schema) không cho
+`ROUTER` bất kỳ config field nào (`internal/domain/workflow/node_config.go` không có
+`RouterNodeConfig`) — không ADR, design doc hay lecture nào định nghĩa "rule deterministic" đó thực sự
+là gì khi `ROUTER` khai báo từ hai outcome trở lên. Trước ADR này, compiler vẫn chấp nhận publish một
+`ROUTER` nhiều outcome; chỉ runtime (`internal/app/runtime.AdvanceRun`, V4-03) từ chối, và chỉ khi
+không có outcome được cung cấp từ bên ngoài — nghĩa là một workflow publish hợp lệ vẫn có thể deadlock
+vĩnh viễn tại `ROUTER` đó lúc chạy, không có lỗi nào được báo ở thời điểm publish.
+
+**Quyết định:** Alpha giới hạn `ROUTER` chỉ được khai báo **đúng một** outcome. Publish một `ROUTER`
+với từ hai outcome trở lên là lỗi validation (compile-time), không phải hành vi runtime âm thầm
+deadlock. Với đúng một outcome, `ROUTER` là pass-through xác định (deterministic) — không cần rule gì
+khác, tương đương một node structural như `START`.
+
+Multi-outcome `ROUTER` (chọn outcome từ typed shared-state bằng một rule thật) là khả năng hoãn lại:
+cần một ADR riêng định nghĩa chính xác hình dạng của rule đó (biểu thức trên field nào, kiểu so sánh
+gì, ai/khi nào evaluate) và một `RouterNodeConfig` mới trong authoring schema (V2-08's kế nhiệm) trước
+khi runtime có thể tự resolve. Không phát minh rule đó trong V4.
+
+**Hệ quả code (đã thực hiện cùng ADR này):**
+- `internal/domain/workflow/validation.go`: publish-time reject `ROUTER` có > 1 outcome.
+- `internal/app/runtime.AdvanceRun` (V4-03) giữ nguyên hành vi tự resolve `ROUTER` một-outcome, giữ
+  `ErrOutcomeRequired` làm defense-in-depth cho trường hợp không qua compiler thật (không còn reachable
+  qua `workflow.Compile` sau ADR này, nhưng vẫn đúng nếu một `WorkflowVersion` được dựng theo cách khác
+  trong tương lai).
+
+## 29. Baseline sau review thiết kế
+
+ADR-001…026 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -653,6 +684,8 @@ dụng ma trận sau:
 - ADR-023 refine ADR-013 bằng thời điểm và cách từ chối khi enforcement không khả dụng;
 - ADR-024 thêm phase classification cho acceptance criteria, chưa được ADR cũ khóa;
 - ADR-025 supersede ràng buộc `ProjectID` bắt buộc trong command envelope và "mọi query scope bằng
-  ProjectID" của Go core spec §8/§9.
+  ProjectID" của Go core spec §8/§9;
+- ADR-026 refine mô tả `ROUTER` của Go core spec §6 bằng ràng buộc Alpha "đúng một outcome", đóng gap
+  runtime-only-reject phát hiện lúc review V4-03.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

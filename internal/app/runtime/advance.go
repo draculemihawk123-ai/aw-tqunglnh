@@ -72,6 +72,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
@@ -121,13 +122,20 @@ var (
 
 // AdvanceRunJobPayload is the exact JSON shape internal/app/runtime's own
 // StartWorkflowRun (V4-02) and AdvanceRun (V4-03, this file) both marshal
-// for an AdvanceRunJobKind job: {"runId", "nodeRunId"}. It is defined once
-// here, not duplicated as an anonymous struct at each producer, so a
-// consumer (Scheduler.Handle, below) always unmarshals the exact shape
-// every producer writes.
+// for an AdvanceRunJobKind job. It is defined once here, not duplicated as
+// an anonymous struct at each producer, so a consumer (Scheduler.Handle,
+// below) always unmarshals the exact shape every producer writes.
 type AdvanceRunJobPayload struct {
 	RunID     string `json:"runId"`
 	NodeRunID string `json:"nodeRunId"`
+	// CorrelationID threads the originating command's own correlation
+	// chain through every hop (correction found during review, go-core-
+	// spec §20's own "Mọi log/event có CorrelationID... khi có"): V4-02's
+	// StartWorkflowRun seeds this from cmd.CorrelationID on the very first
+	// job; each subsequent AdvanceRun hop that enqueues a follow-up job
+	// carries its own req.CorrelationID forward unchanged, so the whole
+	// run's own chain of NODE_ROUTED events shares one CorrelationID.
+	CorrelationID string `json:"correlationId,omitempty"`
 }
 
 const defaultAdvanceRunJobMaxClaimsFollowUp = 3
@@ -151,11 +159,18 @@ type AdvanceRunRequest struct {
 	// Nil/empty applies no write at all — most hops (every one this task's
 	// own auto-derivation ever drives) write nothing.
 	SharedStatePatch map[string]json.RawMessage
-	// CorrelationID optionally threads a broader command/event chain
-	// through this hop's own NODE_ROUTED event. Blank when nothing
-	// upstream has one yet — no caller in this codebase supplies one
-	// today.
+	// CorrelationID threads a broader command/event chain through this
+	// hop's own NODE_ROUTED event and, when this hop enqueues a follow-up
+	// job, forward into that job's own AdvanceRunJobPayload — see that
+	// type's own doc comment for the full chain. Blank when nothing
+	// upstream has one.
 	CorrelationID string
+	// JobID names the durable job that drove this call (Scheduler.Handle
+	// passes the job.ID it was handed) — go-core-spec §20's own "Mọi log/
+	// event có... JobID khi có". Blank for a caller that is not itself
+	// job-driven (none in this codebase today; every real caller goes
+	// through Scheduler).
+	JobID string
 }
 
 // AdvanceRunResult reports what one hop actually did.
@@ -254,10 +269,11 @@ func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, 
 			}
 		}
 
-		if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
+		completedNodeRun, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
 			NodeRunID: req.NodeRunID, ExpectedState: runtimedomain.NodeRunRunning, ExpectedVersion: current.Version,
 			NextState: runtimedomain.NodeRunSucceeded, SelectedOutcome: outcome,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
 
@@ -286,17 +302,28 @@ func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, 
 
 		// GC-INV-15: append the domain event in the same transaction as
 		// the transition/activation/job above, not as an afterthought.
+		// Sequence is completedNodeRun.Version (the NodeRun row's own
+		// post-transition optimistic version), not a hardcoded 1 —
+		// correction found during review: V4-04 will add further
+		// transitions (PENDING->QUEUED->RUNNING) on this SAME NodeRun
+		// aggregate, each also needing its own event per GC-INV-15, and a
+		// hardcoded Sequence would collide with domain_events' own UNIQUE
+		// (aggregate_type, aggregate_id, sequence) constraint the moment a
+		// second one landed. Tying Sequence to the aggregate's own version
+		// needs no extra query/allocation step and is exactly monotonic
+		// with the transitions that produce each event, one per version.
 		eventPayload, err := json.Marshal(nodeRoutedEventPayload{
-			RunID: string(run.ID), NodeRunID: req.NodeRunID, NodeKey: node.Key, SelectedOutcome: outcome,
-			NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key,
+			RunID: string(run.ID), WorkItemID: string(run.WorkItemID), NodeRunID: req.NodeRunID,
+			NodeKey: node.Key, SelectedOutcome: outcome,
+			NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key, JobID: req.JobID,
 		})
 		if err != nil {
 			return fmt.Errorf("marshal NODE_ROUTED event payload: %w", err)
 		}
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: req.NodeRunID + "-routed", ProjectID: string(run.ProjectID),
-			AggregateType: "NodeRun", AggregateID: req.NodeRunID, Sequence: 1,
-			EventType: "NODE_ROUTED", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			AggregateType: "NodeRun", AggregateID: req.NodeRunID, Sequence: int64(completedNodeRun.Version),
+			EventType: NodeRoutedEventType, SchemaVersion: NodeRoutedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
 		}); err != nil {
 			return err
@@ -307,7 +334,7 @@ func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, 
 		}
 
 		jobID := ids.NewID()
-		payload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: nextID})
+		payload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: nextID, CorrelationID: req.CorrelationID})
 		if err != nil {
 			return fmt.Errorf("marshal %s job payload: %w", AdvanceRunJobKind, err)
 		}
@@ -325,14 +352,29 @@ func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, 
 	return result, err
 }
 
+// NodeRoutedEventType/NodeRoutedSchemaVersion identify NODE_ROUTED's own
+// registered (EventType, SchemaVersion) pair in internal/app/eventschema's
+// registry (RegisterEventSchemas, event_schema.go) — exported so that
+// registration and the golden-fixture test can both reference the exact
+// same constants AdvanceRun itself appends with, rather than each
+// hardcoding the string/int a second time.
+const (
+	NodeRoutedEventType     = "NODE_ROUTED"
+	NodeRoutedSchemaVersion = 1
+)
+
 // nodeRoutedEventPayload is NODE_ROUTED's own JSON shape.
 type nodeRoutedEventPayload struct {
 	RunID           string `json:"runId"`
+	WorkItemID      string `json:"workItemId"`
 	NodeRunID       string `json:"nodeRunId"`
 	NodeKey         string `json:"nodeKey"`
 	SelectedOutcome string `json:"selectedOutcome"`
 	NextNodeRunID   string `json:"nextNodeRunId"`
 	NextNodeKey     string `json:"nextNodeKey"`
+	// JobID is the durable job that drove this hop (blank if the caller
+	// did not supply one via AdvanceRunRequest.JobID).
+	JobID string `json:"jobId,omitempty"`
 }
 
 // isStructuralRoutingNode reports whether nodeType is one of the two node
@@ -401,7 +443,18 @@ func applySharedStatePatch(
 		}
 	}
 
-	for name, value := range patch {
+	// Sort patch keys before validating — correction found during review:
+	// Go's own map iteration order is randomized, so a request with more
+	// than one invalid field used to surface a different error on every
+	// call, making a caller's own retry-on-error behavior nondeterministic.
+	names := make([]string, 0, len(patch))
+	for name := range patch {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		value := patch[name]
 		field, declared := fieldsByName[name]
 		if !declared {
 			return nil, fmt.Errorf("%w: field %q", ErrSharedStateFieldNotDeclared, name)

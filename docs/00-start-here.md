@@ -3,8 +3,8 @@
 > Đọc tài liệu này đầu tiên khi bắt đầu một session mới. Nó là điểm vào cho mục tiêu, các quyết định
 > đã chốt, trạng thái thực thi và ranh giới công việc hiện tại.
 >
-> Cập nhật: 2026-08-31. Nếu tài liệu này khác ADR, ADR là authority về quyết định kiến trúc; cần sửa
-> tài liệu này trong cùng thay đổi, không tự suy diễn.
+> Cập nhật: 2026-09-05 (mục 20, ADR-026). Nếu tài liệu này khác ADR, ADR là authority về quyết định
+> kiến trúc; cần sửa tài liệu này trong cùng thay đổi, không tự suy diễn.
 
 ## 1. Mục tiêu sản phẩm
 
@@ -65,6 +65,9 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
 18. Acceptance criteria được phân loại phase trước V1 bằng pre-V1 gate `V1-00A…V1-00C`; V8 không phân loại lại.
 19. Command envelope dùng `CommandScope = INSTALLATION | PROJECT(ProjectID)`; adapter registry, Doctor
     và safe settings là installation-scoped.
+20. Node type `ROUTER` chỉ được khai báo đúng một outcome cho Alpha (ADR-026); publish một `ROUTER`
+    nhiều outcome là lỗi validation, không phải hành vi runtime âm thầm deadlock. Multi-outcome rule
+    thật hoãn tới ADR/authoring schema riêng.
 
 ## 3. Glossary chuẩn
 

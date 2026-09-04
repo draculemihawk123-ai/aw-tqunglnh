@@ -46,6 +46,9 @@ func (s *Scheduler) Handle(ctx context.Context, job ports.DurableJob) error {
 	if payload.RunID == "" || payload.NodeRunID == "" {
 		return fmt.Errorf("runtime: %s job %s payload missing runId/nodeRunId", AdvanceRunJobKind, job.ID)
 	}
-	_, err := AdvanceRun(ctx, s.uow, s.ids, AdvanceRunRequest{RunID: payload.RunID, NodeRunID: payload.NodeRunID})
+	_, err := AdvanceRun(ctx, s.uow, s.ids, AdvanceRunRequest{
+		RunID: payload.RunID, NodeRunID: payload.NodeRunID,
+		CorrelationID: payload.CorrelationID, JobID: string(job.ID),
+	})
 	return err
 }

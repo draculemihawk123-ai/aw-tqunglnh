@@ -242,40 +242,125 @@ func TestAdvanceRun_SharedStatePatch_TypeMismatch_Rejected(t *testing.T) {
 	}
 }
 
+type nodeRoutedPayload struct {
+	RunID           string `json:"runId"`
+	WorkItemID      string `json:"workItemId"`
+	NodeRunID       string `json:"nodeRunId"`
+	NodeKey         string `json:"nodeKey"`
+	SelectedOutcome string `json:"selectedOutcome"`
+	NextNodeRunID   string `json:"nextNodeRunId"`
+	NextNodeKey     string `json:"nextNodeKey"`
+	JobID           string `json:"jobId,omitempty"`
+}
+
+func findNodeRoutedEvent(t *testing.T, uow *fake.UnitOfWork, nodeRunID string) (ports.DomainEvent, nodeRoutedPayload) {
+	t.Helper()
+	events := uow.Snapshot.Events().(*fake.EventsRepository).Items()
+	for i := range events {
+		if events[i].AggregateType == "NodeRun" && events[i].AggregateID == nodeRunID && events[i].EventType == runtime.NodeRoutedEventType {
+			var payload nodeRoutedPayload
+			if err := json.Unmarshal([]byte(events[i].PayloadJSON), &payload); err != nil {
+				t.Fatalf("unmarshal NODE_ROUTED payload: %v", err)
+			}
+			return events[i], payload
+		}
+	}
+	t.Fatalf("no NODE_ROUTED event for node run %s", nodeRunID)
+	return ports.DomainEvent{}, nodeRoutedPayload{}
+}
+
 func TestAdvanceRun_NodeRoutedEvent_AppendedInSameTransaction(t *testing.T) {
 	ctx := context.Background()
 	uow, ids, runID, startNodeRunID := startWorkflowRunFixture(t, workflowDocumentV1())
 
-	result, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{RunID: runID, NodeRunID: startNodeRunID})
+	run, err := uow.Snapshot.Runtime().GetWorkflowRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetWorkflowRun: %v", err)
+	}
+
+	result, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{
+		RunID: runID, NodeRunID: startNodeRunID, JobID: "job-driving-hop-1",
+	})
 	if err != nil {
 		t.Fatalf("AdvanceRun: %v", err)
 	}
 
-	events := uow.Snapshot.Events().(*fake.EventsRepository).Items()
-	var found *ports.DomainEvent
-	for i := range events {
-		if events[i].AggregateType == "NodeRun" && events[i].AggregateID == startNodeRunID && events[i].EventType == "NODE_ROUTED" {
-			found = &events[i]
+	event, payload := findNodeRoutedEvent(t, uow, startNodeRunID)
+	if payload.RunID != runID || payload.WorkItemID != string(run.WorkItemID) || payload.NodeRunID != startNodeRunID || payload.NodeKey != "start" ||
+		payload.SelectedOutcome != "next" || payload.NextNodeRunID != result.NextNodeRunID || payload.NextNodeKey != "end" || payload.JobID != "job-driving-hop-1" {
+		t.Fatalf("NODE_ROUTED payload = %+v, want it to describe this exact hop including WorkItemID/JobID", payload)
+	}
+
+	// Sequence must be the NodeRun's own post-transition version, not a
+	// hardcoded 1 — a startNodeRunID that was PENDING@1 before StartWorkflowRun
+	// activated it RUNNING is still @1 (StartWorkflowRun inserts it directly
+	// as RUNNING@1, see commands.go), so completing it here bumps it to @2.
+	startNodeRun, err := uow.Snapshot.Runtime().GetNodeRun(ctx, startNodeRunID)
+	if err != nil {
+		t.Fatalf("GetNodeRun(start): %v", err)
+	}
+	if int64(startNodeRun.Version) != event.Sequence {
+		t.Fatalf("event.Sequence = %d, want it to equal the completed NodeRun's own version %d", event.Sequence, startNodeRun.Version)
+	}
+}
+
+// TestAdvanceRun_CorrelationID_PropagatesAcrossHopsAndIntoFollowUpJob proves
+// the full chain a correction found during review requires: the
+// originating command's CorrelationID reaches every hop's own NODE_ROUTED
+// event AND is forwarded into each follow-up job's own payload, so a
+// caller three hops downstream never loses it.
+func TestAdvanceRun_CorrelationID_PropagatesAcrossHopsAndIntoFollowUpJob(t *testing.T) {
+	ctx := context.Background()
+	uow, ids, runID, startNodeRunID := startWorkflowRunFixture(t, routerChainDocument())
+
+	const correlationID = "corr-end-to-end"
+	hop1, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{
+		RunID: runID, NodeRunID: startNodeRunID, CorrelationID: correlationID,
+	})
+	if err != nil {
+		t.Fatalf("hop 1 AdvanceRun: %v", err)
+	}
+	event1, payload1 := findNodeRoutedEvent(t, uow, startNodeRunID)
+	if payload1.NodeKey != "start" {
+		t.Fatalf("unexpected hop 1 payload: %+v", payload1)
+	}
+	if event1.CorrelationID != correlationID {
+		t.Fatalf("hop 1 event CorrelationID = %q, want %q", event1.CorrelationID, correlationID)
+	}
+
+	jobs := uow.Snapshot.Jobs().(*fake.JobsRepository).Items()
+	var followUpPayload runtime.AdvanceRunJobPayload
+	found := false
+	for _, j := range jobs {
+		if string(j.ID) == hop1.NextJobID {
+			if err := json.Unmarshal(j.Payload, &followUpPayload); err != nil {
+				t.Fatalf("unmarshal follow-up job payload: %v", err)
+			}
+			found = true
 		}
 	}
-	if found == nil {
-		t.Fatalf("no NODE_ROUTED event for node run %s, events = %+v", startNodeRunID, events)
+	if !found {
+		t.Fatalf("follow-up job %s not found among enqueued jobs", hop1.NextJobID)
 	}
-	var payload struct {
-		RunID           string `json:"runId"`
-		NodeRunID       string `json:"nodeRunId"`
-		NodeKey         string `json:"nodeKey"`
-		SelectedOutcome string `json:"selectedOutcome"`
-		NextNodeRunID   string `json:"nextNodeRunId"`
-		NextNodeKey     string `json:"nextNodeKey"`
+	if followUpPayload.CorrelationID != correlationID {
+		t.Fatalf("follow-up job CorrelationID = %q, want %q (forwarded from hop 1's own request)", followUpPayload.CorrelationID, correlationID)
 	}
-	if err := json.Unmarshal([]byte(found.PayloadJSON), &payload); err != nil {
-		t.Fatalf("unmarshal NODE_ROUTED payload: %v", err)
+
+	// Simulate Scheduler.Handle claiming that follow-up job: the SAME
+	// CorrelationID must still be what hop 2's own event carries, proving
+	// the chain survives a real job round-trip, not just an in-memory
+	// struct copy.
+	hop2, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{
+		RunID: followUpPayload.RunID, NodeRunID: followUpPayload.NodeRunID, CorrelationID: followUpPayload.CorrelationID,
+	})
+	if err != nil {
+		t.Fatalf("hop 2 AdvanceRun: %v", err)
 	}
-	if payload.RunID != runID || payload.NodeRunID != startNodeRunID || payload.NodeKey != "start" ||
-		payload.SelectedOutcome != "next" || payload.NextNodeRunID != result.NextNodeRunID || payload.NextNodeKey != "end" {
-		t.Fatalf("NODE_ROUTED payload = %+v, want it to describe this exact hop", payload)
+	event2, _ := findNodeRoutedEvent(t, uow, hop1.NextNodeRunID)
+	if event2.CorrelationID != correlationID {
+		t.Fatalf("hop 2 event CorrelationID = %q, want %q", event2.CorrelationID, correlationID)
 	}
+	_ = hop2
 }
 
 func TestAdvanceRun_NoSharedStatePatch_DoesNotBumpWorkflowRunVersion(t *testing.T) {

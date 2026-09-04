@@ -76,20 +76,31 @@ func NewExecutionManifest(
 	if createdAt.IsZero() {
 		return ExecutionManifest{}, errors.New("execution manifest created timestamp is required")
 	}
+	// ExecutionProfileHash and ContextRoutePolicyHash are reserved, not a
+	// second authority for a node-level concept (see this type's own doc
+	// comment) — a correction found during review after an earlier version
+	// of this constructor silently accepted whatever a caller passed.
+	// Rejecting a non-empty value here, rather than removing the two
+	// parameters/columns outright, keeps the already-shipped V4-01 schema
+	// and this constructor's own signature stable while still closing the
+	// gap: any future caller that tries to "fill in" a run-wide profile
+	// hash fails loudly instead of quietly creating a value nothing reads
+	// as authoritative.
+	if strings.TrimSpace(executionProfileHash) != "" || strings.TrimSpace(contextRoutePolicyHash) != "" {
+		return ExecutionManifest{}, errors.New("execution manifest ExecutionProfileHash and ContextRoutePolicyHash are reserved and must be empty — the authoritative profile pin lives on NodeRun/ExecutionAttempt instead")
+	}
 	revisions, err := workspace.NewRevisionSet(baseRevisionSet.Entries())
 	if err != nil {
 		return ExecutionManifest{}, err
 	}
 	return ExecutionManifest{
-		ID:                     id,
-		RunID:                  runID,
-		WorkflowVersionID:      workflowVersionID,
-		CompiledSnapshotHash:   compiledSnapshotHash,
-		DependencyManifest:     dependencyManifest,
-		BaseRevisionSet:        revisions,
-		ExecutionProfileHash:   strings.TrimSpace(executionProfileHash),
-		ContextRoutePolicyHash: strings.TrimSpace(contextRoutePolicyHash),
-		CreatedAt:              createdAt.UTC(),
+		ID:                   id,
+		RunID:                runID,
+		WorkflowVersionID:    workflowVersionID,
+		CompiledSnapshotHash: compiledSnapshotHash,
+		DependencyManifest:   dependencyManifest,
+		BaseRevisionSet:      revisions,
+		CreatedAt:            createdAt.UTC(),
 	}, nil
 }
 

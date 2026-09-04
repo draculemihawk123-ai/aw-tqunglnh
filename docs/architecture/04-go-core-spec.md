@@ -412,7 +412,7 @@ Node type nền của spike:
 | `COMMAND` | Chạy CommandDefinition đã đăng ký |
 | `MACHINE_GATE` | Verifier deterministic, tạo Evidence |
 | `APPROVAL` | Chờ operator decision |
-| `ROUTER` | Chọn outcome từ typed state bằng rule deterministic |
+| `ROUTER` | Chọn outcome từ typed state bằng rule deterministic — Alpha giới hạn đúng một outcome khai báo (ADR-026); multi-outcome rule thật hoãn tới ADR/authoring schema riêng |
 | `FORK` | Phát hành các branch token |
 | `JOIN` | Gom token theo `ALL`, `ANY` hoặc `QUORUM` |
 | `WAIT` | Chờ signal/timer bền vững |

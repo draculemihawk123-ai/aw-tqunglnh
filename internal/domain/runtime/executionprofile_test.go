@@ -18,7 +18,9 @@ func validAgentProfile() ResolvedExecutionProfileV1 {
 			{DefinitionID: "permission-policy", VersionID: "v1", Category: policy.CategoryPermission, CompiledHash: "sha256:permission-v1"},
 		},
 		ProviderKey: "claude", Model: "claude-sonnet", ToolRefs: []string{"read_file", "write_file"}, MaxTokens: 100000,
-		TimeoutSeconds: 3600, IsolationTier: policy.IsolationTierEnforcedIsolated,
+		AdapterBuild:               &ResolvedAdapterBuildRef{BuildID: "sha256:build-1", ProtocolVersion: "1", CapabilityHash: "sha256:capability-1"},
+		RuntimeExecutionConfigHash: "sha256:runtime-config-1",
+		TimeoutSeconds:             3600, IsolationTier: policy.IsolationTierEnforcedIsolated,
 		AllowedCapabilities: []string{"WRITE_REPOSITORY"},
 	}
 }
@@ -29,11 +31,9 @@ func validCommandProfile() ResolvedExecutionProfileV1 {
 		Executor: ResolvedExecutorRef{
 			Kind: ExecutorKindCommand, DefinitionID: "command-test", VersionID: "v1", CompiledHash: "sha256:command-v1",
 		},
-		Policies:       []ResolvedPolicyRef{{DefinitionID: "attempt-policy", VersionID: "v1", Category: policy.CategoryAttempt, CompiledHash: "sha256:attempt-v1"}},
-		EnvAllowlist:   []string{"PATH"},
-		NetworkAccess:  "NONE",
-		SecretRefs:     []string{"npm-token"},
-		TimeoutSeconds: 300, IsolationTier: policy.IsolationTierEnforcedIsolated,
+		Policies:                   []ResolvedPolicyRef{{DefinitionID: "attempt-policy", VersionID: "v1", Category: policy.CategoryAttempt, CompiledHash: "sha256:attempt-v1"}},
+		RuntimeExecutionConfigHash: "sha256:runtime-config-1",
+		TimeoutSeconds:             300, IsolationTier: policy.IsolationTierEnforcedIsolated,
 	}
 }
 
@@ -43,8 +43,9 @@ func validMachineGateProfile() ResolvedExecutionProfileV1 {
 		Executor: ResolvedExecutorRef{
 			Kind: ExecutorKindMachineGate, DefinitionID: "gate-verify", VersionID: "v1", CompiledHash: "sha256:gate-v1",
 		},
-		Policies:       []ResolvedPolicyRef{{DefinitionID: "gate-policy", VersionID: "v1", Category: policy.CategoryCompletion, CompiledHash: "sha256:gate-policy-v1"}},
-		TimeoutSeconds: 120, IsolationTier: policy.IsolationTierOperatorTrustedLocal,
+		Policies:                   []ResolvedPolicyRef{{DefinitionID: "gate-policy", VersionID: "v1", Category: policy.CategoryCompletion, CompiledHash: "sha256:gate-policy-v1"}},
+		RuntimeExecutionConfigHash: "sha256:runtime-config-1",
+		TimeoutSeconds:             120, IsolationTier: policy.IsolationTierOperatorTrustedLocal,
 	}
 }
 
@@ -105,6 +106,29 @@ func TestNewResolvedExecutionProfileV1_DifferentContentProducesDifferentHash(t *
 	}
 }
 
+// TestNewResolvedExecutionProfileV1_RuntimeExecutionConfigDifference_ChangesHash
+// is this task's own most important correctness proof (a real gap the
+// previous version of this type had): two otherwise-identical AGENT
+// profiles that differ ONLY in their effective runtime execution config
+// (environment/network/secret/output-limit policy) must never hash the
+// same.
+func TestNewResolvedExecutionProfileV1_RuntimeExecutionConfigDifference_ChangesHash(t *testing.T) {
+	base := validAgentProfile()
+	_, hashA, err := NewResolvedExecutionProfileV1(base)
+	if err != nil {
+		t.Fatalf("base: %v", err)
+	}
+	changed := base
+	changed.RuntimeExecutionConfigHash = "sha256:runtime-config-2"
+	_, hashB, err := NewResolvedExecutionProfileV1(changed)
+	if err != nil {
+		t.Fatalf("changed: %v", err)
+	}
+	if hashA == hashB {
+		t.Fatal("changing RuntimeExecutionConfigHash produced the same hash, want a different one")
+	}
+}
+
 func TestNewResolvedExecutionProfileV1_DeduplicatesSetLikeFields(t *testing.T) {
 	profile := validAgentProfile()
 	profile.ToolRefs = []string{"read_file", "read_file", "write_file"}
@@ -114,6 +138,29 @@ func TestNewResolvedExecutionProfileV1_DeduplicatesSetLikeFields(t *testing.T) {
 	}
 	if len(normalized.ToolRefs) != 2 {
 		t.Fatalf("normalized.ToolRefs = %v, want exactly 2 deduplicated entries", normalized.ToolRefs)
+	}
+}
+
+// TestNewResolvedExecutionProfileV1_DeduplicatesRepeatedPolicy is a
+// correction found during review: a repeated Policy pin used to hash
+// differently from the same profile without the repeat.
+func TestNewResolvedExecutionProfileV1_DeduplicatesRepeatedPolicy(t *testing.T) {
+	withRepeat := validAgentProfile()
+	withRepeat.Policies = append(withRepeat.Policies, withRepeat.Policies[0])
+	normalized, hashWithRepeat, err := NewResolvedExecutionProfileV1(withRepeat)
+	if err != nil {
+		t.Fatalf("NewResolvedExecutionProfileV1(withRepeat): %v", err)
+	}
+	if len(normalized.Policies) != 2 {
+		t.Fatalf("normalized.Policies = %+v, want exactly 2 deduplicated entries", normalized.Policies)
+	}
+
+	_, hashWithoutRepeat, err := NewResolvedExecutionProfileV1(validAgentProfile())
+	if err != nil {
+		t.Fatalf("NewResolvedExecutionProfileV1(withoutRepeat): %v", err)
+	}
+	if hashWithRepeat != hashWithoutRepeat {
+		t.Fatalf("hashWithRepeat = %s, hashWithoutRepeat = %s, want identical (a repeated pin must not change the hash)", hashWithRepeat, hashWithoutRepeat)
 	}
 }
 
@@ -170,6 +217,15 @@ func TestNewResolvedExecutionProfileV1_RejectsInvalidProfiles(t *testing.T) {
 			wantErr: "unsupported isolation tier",
 		},
 		{
+			name: "missing runtime execution config hash",
+			base: validAgentProfile,
+			mutate: func(p ResolvedExecutionProfileV1) ResolvedExecutionProfileV1 {
+				p.RuntimeExecutionConfigHash = ""
+				return p
+			},
+			wantErr: "runtime execution config hash is required",
+		},
+		{
 			name: "policy missing compiled hash",
 			base: validAgentProfile,
 			mutate: func(p ResolvedExecutionProfileV1) ResolvedExecutionProfileV1 {
@@ -179,22 +235,31 @@ func TestNewResolvedExecutionProfileV1_RejectsInvalidProfiles(t *testing.T) {
 			wantErr: "compiled hash are required",
 		},
 		{
-			name: "adapter build with blank id",
+			name: "policy has invalid category",
 			base: validAgentProfile,
 			mutate: func(p ResolvedExecutionProfileV1) ResolvedExecutionProfileV1 {
-				p.AdapterBuild = &ResolvedAdapterBuildRef{}
+				p.Policies[0].Category = "NOT_A_CATEGORY"
 				return p
 			},
-			wantErr: "adapter build id is required",
+			wantErr: "unsupported category",
 		},
 		{
-			name: "AGENT executor with COMMAND fields populated",
+			name: "adapter build with blank protocol/capability",
 			base: validAgentProfile,
 			mutate: func(p ResolvedExecutionProfileV1) ResolvedExecutionProfileV1 {
-				p.NetworkAccess = "ALLOWED"
+				p.AdapterBuild = &ResolvedAdapterBuildRef{BuildID: "sha256:build-1"}
 				return p
 			},
-			wantErr: "AGENT executor must not populate",
+			wantErr: "adapter build id, protocol version and capability hash are all required",
+		},
+		{
+			name: "adapter build on COMMAND executor",
+			base: validCommandProfile,
+			mutate: func(p ResolvedExecutionProfileV1) ResolvedExecutionProfileV1 {
+				p.AdapterBuild = &ResolvedAdapterBuildRef{BuildID: "sha256:build-1", ProtocolVersion: "1", CapabilityHash: "sha256:capability-1"}
+				return p
+			},
+			wantErr: "AdapterBuild is only meaningful for the AGENT executor",
 		},
 		{
 			name: "AGENT executor missing ProviderKey",
@@ -213,15 +278,6 @@ func TestNewResolvedExecutionProfileV1_RejectsInvalidProfiles(t *testing.T) {
 				return p
 			},
 			wantErr: "COMMAND executor must not populate",
-		},
-		{
-			name: "COMMAND executor missing NetworkAccess",
-			base: validCommandProfile,
-			mutate: func(p ResolvedExecutionProfileV1) ResolvedExecutionProfileV1 {
-				p.NetworkAccess = ""
-				return p
-			},
-			wantErr: "COMMAND executor requires NetworkAccess",
 		},
 		{
 			name: "MACHINE_GATE executor with AGENT fields populated",

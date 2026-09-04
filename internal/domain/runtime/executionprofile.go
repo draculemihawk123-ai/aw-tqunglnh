@@ -50,13 +50,20 @@ type ResolvedPolicyRef struct {
 	CompiledHash string          `json:"compiledHash"`
 }
 
-// ResolvedAdapterBuildRef optionally pins the exact, content-addressed
+// ResolvedAdapterBuildRef pins the exact, content-addressed
 // AdapterBuildVersion this node's provider must run (ADR-012's own "Run
-// pin expected version" bar for the provider-adapter axis).
+// pin expected version" bar for the provider-adapter axis). Only ever
+// meaningful for Executor.Kind == AGENT (see ResolvedExecutionProfileV1's
+// own doc comment for why) — ProtocolVersion and CapabilityHash are
+// required whenever this ref is present at all: a caller that has an
+// AdapterBuildID but could not resolve its own protocol/capability
+// measurement has not actually resolved an exact build (correction found
+// during V4-04 scoping review: "V4-04 phải fail closed nếu không resolve
+// được exact build; Attempt không được tạo với build không pin").
 type ResolvedAdapterBuildRef struct {
 	BuildID         string `json:"buildId"`
-	ProtocolVersion string `json:"protocolVersion,omitempty"`
-	CapabilityHash  string `json:"capabilityHash,omitempty"`
+	ProtocolVersion string `json:"protocolVersion"`
+	CapabilityHash  string `json:"capabilityHash"`
 }
 
 // ResolvedExecutionProfileV1 is the immutable, canonicalizable, hashable
@@ -80,13 +87,14 @@ type ResolvedAdapterBuildRef struct {
 // resolver itself is V4-04's.
 //
 // Deliberately excluded from this hash (per the same review): secret
-// values (SecretRefs names them, never resolves them — go-core-spec's own
-// "secret chỉ resolve ở worker ngay trước spawn và không persist"),
-// ContextSnapshot and RevisionSet (both already have their own separate
-// pins on ExecutionAttempt — InputRevisionSet/ContextSnapshotID — so
-// folding them in here would pin the same fact twice under two different
-// names) and repository scope (NodeRun.EffectiveScope is its own separate
-// pin, GC-INV-08's own "input hash, effective scope và execution profile"
+// values (SecretRefs, folded into RuntimeExecutionConfigHash below, names
+// them, never resolves them — go-core-spec's own "secret chỉ resolve ở
+// worker ngay trước spawn và không persist"), ContextSnapshot and
+// RevisionSet (both already have their own separate pins on
+// ExecutionAttempt — InputRevisionSet/ContextSnapshotID — so folding them
+// in here would pin the same fact twice under two different names) and
+// repository scope (NodeRun.EffectiveScope is its own separate pin,
+// GC-INV-08's own "input hash, effective scope và execution profile"
 // naming three siblings, not one merged concept).
 type ResolvedExecutionProfileV1 struct {
 	// SchemaVersion is this contract's own version — 1 for everything this
@@ -101,10 +109,14 @@ type ResolvedExecutionProfileV1 struct {
 	// Policies is every resolved Policy pin governing this execution —
 	// ATTEMPT (timeout/retry), PERMISSION (isolation tier/capabilities),
 	// CONTEXT, COMPLETION or CLEANUP, in any combination a node's own
-	// PolicyRefs declares. Sorted by (DefinitionID, VersionID) for
-	// canonicalization — declaration order carries no meaning here, the
-	// same "set-like list được normalize/sort" rule go-core-spec §6
-	// already applies to a compiled WorkflowDocument.
+	// PolicyRefs declares. Deduplicated (same DefinitionID+VersionID
+	// collapses to one entry — correction found during review: two inputs
+	// differing only by a repeated pin used to hash differently) and
+	// sorted by (DefinitionID, VersionID) for canonicalization —
+	// declaration order carries no meaning here, the same "set-like list
+	// được normalize/sort" rule go-core-spec §6 already applies to a
+	// compiled WorkflowDocument. Every Category must be
+	// policy.Category.Valid() (also found missing during review).
 	Policies []ResolvedPolicyRef `json:"policies"`
 	// ProviderKey/Model/ToolRefs/MaxTokens are populated only when
 	// Executor.Kind == AGENT (resolved from the pinned AgentProfileVersion's
@@ -116,22 +128,36 @@ type ResolvedExecutionProfileV1 struct {
 	Model       string   `json:"model,omitempty"`
 	ToolRefs    []string `json:"toolRefs,omitempty"`
 	MaxTokens   uint32   `json:"maxTokens,omitempty"`
-	// EnvAllowlist/NetworkAccess/SecretRefs are populated only when
-	// Executor.Kind == COMMAND (resolved from the pinned CommandVersion's
-	// own CommandDocument) — every one must be its zero value otherwise.
-	// AGENT/MACHINE_GATE never carry these: a provider adapter's own
-	// environment/network posture is the adapter's responsibility
-	// (go-core-spec §19's own provider "argv template/protocol version/
-	// capability allow-list" line), not something a workflow node declares
-	// per execution.
-	EnvAllowlist  []string `json:"envAllowlist,omitempty"`
-	NetworkAccess string   `json:"networkAccess,omitempty"`
-	SecretRefs    []string `json:"secretRefs,omitempty"`
-	// AdapterBuild optionally pins the exact provider build/protocol this
-	// execution must run — nil when nothing pins one yet (a legitimate,
-	// deliberately deferred Alpha state, the same optionality
-	// workflow.AgentNodeConfig.AdapterBuildID already documents).
+	// AdapterBuild pins the exact provider build/protocol this execution
+	// must run — only ever meaningful for Executor.Kind == AGENT (the
+	// authoring schema's own AgentNodeConfig.AdapterBuildID is the only
+	// place a workflow can declare one; COMMAND/MACHINE_GATE nodes have no
+	// such field to begin with — correction found during review: this
+	// type used to accept one for any executor kind). nil when nothing
+	// pins one yet (a legitimate, deliberately deferred Alpha state for
+	// AGENT, the same optionality workflow.AgentNodeConfig.AdapterBuildID
+	// already documents) — never nil is not itself an error at this
+	// contract's own level; V4-04's own resolver is where "AGENT needs a
+	// build and none resolved" becomes a fail-closed rejection (Attempt
+	// creation refuses to proceed), not here.
 	AdapterBuild *ResolvedAdapterBuildRef `json:"adapterBuild,omitempty"`
+	// RuntimeExecutionConfigHash pins the exact effective, composition-
+	// root Configuration (go-core-spec §19: process timeout, output limit,
+	// environment/network/secret-reference policy) this execution ran
+	// under. Required for every Executor.Kind uniformly — correction found
+	// during review: an earlier version of this type put
+	// environment/network/secret fields only on COMMAND, so two AGENT
+	// executions with genuinely different effective environment/network/
+	// secret policy could hash identically. This field is deliberately
+	// opaque (this type does not itself know how it was computed, the
+	// same "pin by identity, not content" discipline CompiledHash already
+	// uses elsewhere in this codebase) — AGENT's own environment/network
+	// posture is never authored per-node (nothing in AgentNodeConfig
+	// declares one), it is entirely a composition-root concern shared with
+	// COMMAND, so a single opaque hash covering "whatever effective
+	// config this execution actually ran under" is the only shape that
+	// can be uniform across all three executor kinds.
+	RuntimeExecutionConfigHash string `json:"runtimeExecutionConfigHash"`
 	// TimeoutSeconds is this execution's own ceiling — required and
 	// positive; an execution with no timeout could run forever.
 	TimeoutSeconds uint32 `json:"timeoutSeconds"`
@@ -166,49 +192,41 @@ func NewResolvedExecutionProfileV1(profile ResolvedExecutionProfileV1) (Resolved
 	if !validIsolationTierForProfile(profile.IsolationTier) {
 		return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile has unsupported isolation tier %q", profile.IsolationTier)
 	}
+	if strings.TrimSpace(profile.RuntimeExecutionConfigHash) == "" {
+		return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile runtime execution config hash is required")
+	}
 	for i, p := range profile.Policies {
 		if strings.TrimSpace(p.DefinitionID) == "" || strings.TrimSpace(p.VersionID) == "" || strings.TrimSpace(p.CompiledHash) == "" {
 			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile policy[%d] definition id, version id and compiled hash are required", i)
 		}
+		if !p.Category.Valid() {
+			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile policy[%d] has unsupported category %q", i, p.Category)
+		}
 	}
-	if profile.AdapterBuild != nil && strings.TrimSpace(profile.AdapterBuild.BuildID) == "" {
-		return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile adapter build id is required when AdapterBuild is set")
+	if profile.AdapterBuild != nil {
+		if profile.Executor.Kind != ExecutorKindAgent {
+			return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile: AdapterBuild is only meaningful for the AGENT executor")
+		}
+		if strings.TrimSpace(profile.AdapterBuild.BuildID) == "" || strings.TrimSpace(profile.AdapterBuild.ProtocolVersion) == "" || strings.TrimSpace(profile.AdapterBuild.CapabilityHash) == "" {
+			return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile adapter build id, protocol version and capability hash are all required when AdapterBuild is set")
+		}
 	}
 
 	agentFieldsPopulated := profile.ProviderKey != "" || profile.Model != "" || len(profile.ToolRefs) > 0 || profile.MaxTokens != 0
-	commandFieldsPopulated := len(profile.EnvAllowlist) > 0 || profile.NetworkAccess != "" || len(profile.SecretRefs) > 0
 	switch profile.Executor.Kind {
 	case ExecutorKindAgent:
-		if commandFieldsPopulated {
-			return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile: AGENT executor must not populate EnvAllowlist/NetworkAccess/SecretRefs")
-		}
 		if strings.TrimSpace(profile.ProviderKey) == "" || strings.TrimSpace(profile.Model) == "" {
 			return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile: AGENT executor requires ProviderKey and Model")
 		}
-	case ExecutorKindCommand:
+	case ExecutorKindCommand, ExecutorKindMachineGate:
 		if agentFieldsPopulated {
-			return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile: COMMAND executor must not populate ProviderKey/Model/ToolRefs/MaxTokens")
-		}
-		if strings.TrimSpace(profile.NetworkAccess) == "" {
-			return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile: COMMAND executor requires NetworkAccess")
-		}
-	case ExecutorKindMachineGate:
-		if agentFieldsPopulated || commandFieldsPopulated {
-			return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile: MACHINE_GATE executor must not populate AGENT or COMMAND fields")
+			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile: %s executor must not populate ProviderKey/Model/ToolRefs/MaxTokens", profile.Executor.Kind)
 		}
 	}
 
 	normalized := profile
-	normalized.Policies = append([]ResolvedPolicyRef(nil), profile.Policies...)
-	sort.Slice(normalized.Policies, func(i, j int) bool {
-		if normalized.Policies[i].DefinitionID != normalized.Policies[j].DefinitionID {
-			return normalized.Policies[i].DefinitionID < normalized.Policies[j].DefinitionID
-		}
-		return normalized.Policies[i].VersionID < normalized.Policies[j].VersionID
-	})
+	normalized.Policies = dedupeAndSortPolicies(profile.Policies)
 	normalized.ToolRefs = sortedUniqueStrings(profile.ToolRefs)
-	normalized.EnvAllowlist = sortedUniqueStrings(profile.EnvAllowlist)
-	normalized.SecretRefs = sortedUniqueStrings(profile.SecretRefs)
 	normalized.AllowedCapabilities = sortedUniqueStrings(profile.AllowedCapabilities)
 	if profile.AdapterBuild != nil {
 		adapterBuild := *profile.AdapterBuild
@@ -225,6 +243,29 @@ func NewResolvedExecutionProfileV1(profile ResolvedExecutionProfileV1) (Resolved
 
 func validIsolationTierForProfile(tier policy.IsolationTier) bool {
 	return tier == policy.IsolationTierEnforcedIsolated || tier == policy.IsolationTierOperatorTrustedLocal
+}
+
+func dedupeAndSortPolicies(policies []ResolvedPolicyRef) []ResolvedPolicyRef {
+	if len(policies) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(policies))
+	unique := make([]ResolvedPolicyRef, 0, len(policies))
+	for _, p := range policies {
+		key := p.DefinitionID + "\x00" + p.VersionID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, p)
+	}
+	sort.Slice(unique, func(i, j int) bool {
+		if unique[i].DefinitionID != unique[j].DefinitionID {
+			return unique[i].DefinitionID < unique[j].DefinitionID
+		}
+		return unique[i].VersionID < unique[j].VersionID
+	})
+	return unique
 }
 
 func sortedUniqueStrings(values []string) []string {
