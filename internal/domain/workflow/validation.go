@@ -61,6 +61,29 @@ func validateNormalizedDocument(document WorkflowDocument) error {
 		if node.Type != NodeEnd && len(node.Outcomes) == 0 {
 			problems = append(problems, fmt.Sprintf("node %q must declare at least one outcome", node.Key))
 		}
+		// ROUTER may declare exactly one outcome for Alpha (correction
+		// found during V4-03 review, docs/design/06-v4-runtime-engine.md):
+		// go-core-spec §6 describes ROUTER as picking an outcome "từ typed
+		// state bằng rule deterministic", but no ADR or authoring schema
+		// (this package's own Node/AgentNodeConfig-sibling types) defines
+		// what that rule actually is or where it would be declared — V2-08
+		// never gave ROUTER any typed config of its own precisely because
+		// that decision was left open. Publishing a ROUTER with two or
+		// more declared outcomes today would compile successfully but can
+		// never route at runtime: nothing in this codebase can ever
+		// produce that outcome (internal/app/runtime.AdvanceRun only
+		// auto-resolves a node with exactly one declared outcome, by
+		// design — see that file's own doc comment), so the run
+		// permanently deadlocks at that node with no error surfaced at
+		// publish time. Rejecting it here, at compile time, turns that
+		// silent runtime deadlock into an immediate, actionable publish
+		// error. A future ADR introducing a real, typed RouterRule can
+		// relax this the same way it would have to define the rule format
+		// in the first place — this is not a permanent ceiling, just the
+		// honest Alpha boundary given no rule exists to author yet.
+		if node.Type == NodeRouter && len(node.Outcomes) > 1 {
+			problems = append(problems, fmt.Sprintf("node %q is a ROUTER with %d declared outcomes, but Alpha has no typed rule to choose between them — ROUTER may declare exactly one outcome", node.Key, len(node.Outcomes)))
+		}
 		if node.CyclePolicy != nil {
 			if node.CyclePolicy.MaxIterations == 0 {
 				problems = append(problems, fmt.Sprintf("node %q cycle max iterations must be greater than zero", node.Key))

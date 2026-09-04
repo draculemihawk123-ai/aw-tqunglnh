@@ -108,7 +108,15 @@ func TestValidateForkJoinTopology_RejectsNestedForkJoin(t *testing.T) {
 
 // TestValidateForkJoinTopology_RejectsAmbiguousSharedJoin adds a second
 // FORK whose branches also route into the very same "join" node — two
-// different forks both claiming ownership of one join.
+// different forks both claiming ownership of one join. fork2 is reached
+// via a third outcome declared on "approval" itself (a real decision
+// producer, so a third outcome is legitimate) rather than router — router
+// may declare only one outcome (Alpha, correction found during V4-03
+// review), so it can no longer serve as a second branch point. Hanging
+// fork2 off "approval" (a sibling entry point, not downstream of "fork")
+// keeps it outside fork's own branch region — attaching it inside that
+// region instead trips the unrelated "nested fork/join" rule first, not
+// the ambiguous-shared-join rule this test targets.
 func TestValidateForkJoinTopology_RejectsAmbiguousSharedJoin(t *testing.T) {
 	t.Parallel()
 	doc := comprehensiveDocument()
@@ -121,19 +129,18 @@ func TestValidateForkJoinTopology_RejectsAmbiguousSharedJoin(t *testing.T) {
 			CommandRef: definition.DependencyPin{Kind: definition.KindCommand, DefinitionID: "branch-d-cmd", VersionID: "v1"},
 		}},
 	)
+	for i, node := range doc.Nodes {
+		if node.Key == "approval" {
+			doc.Nodes[i].Outcomes = append(doc.Nodes[i].Outcomes, "escalated")
+		}
+	}
 	doc.Edges = append(doc.Edges,
-		Edge{Key: "e-start2-fork2", From: "router", Outcome: "skip", To: "fork2"},
+		Edge{Key: "e-approval-fork2", From: "approval", Outcome: "escalated", To: "fork2"},
 		Edge{Key: "e-fork2-c", From: "fork2", Outcome: "c", To: "branch_c"},
 		Edge{Key: "e-fork2-d", From: "fork2", Outcome: "d", To: "branch_d"},
 		Edge{Key: "e-branch-c-join", From: "branch_c", Outcome: "done", To: "join"},
 		Edge{Key: "e-branch-d-join", From: "branch_d", Outcome: "done", To: "join"},
 	)
-	for i, edge := range doc.Edges {
-		if edge.Key == "e-router-end2" {
-			doc.Edges = append(doc.Edges[:i], doc.Edges[i+1:]...)
-			break
-		}
-	}
 
 	err := ValidateDocument(doc)
 	if err == nil {

@@ -73,28 +73,6 @@ func routerChainDocument() workflow.WorkflowDocument {
 	}
 }
 
-// twoOutcomeRouterDocument is start -> router(two outcomes) -> end-a | end-b:
-// this task's own confirmed ROUTER scope decision (see advance.go's package
-// doc comment) means a ROUTER with more than one declared outcome cannot be
-// auto-resolved — AdvanceRun must reject it with ErrOutcomeRequired rather
-// than guess, which this document exists to exercise.
-func twoOutcomeRouterDocument() workflow.WorkflowDocument {
-	return workflow.WorkflowDocument{
-		SchemaVersion: "1",
-		Nodes: []workflow.Node{
-			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"next"}},
-			{Key: "router", Type: workflow.NodeRouter, Outcomes: []string{"a", "b"}},
-			{Key: "end-a", Type: workflow.NodeEnd},
-			{Key: "end-b", Type: workflow.NodeEnd},
-		},
-		Edges: []workflow.Edge{
-			{Key: "start-to-router", From: "start", Outcome: "next", To: "router"},
-			{Key: "router-to-end-a", From: "router", Outcome: "a", To: "end-a"},
-			{Key: "router-to-end-b", From: "router", Outcome: "b", To: "end-b"},
-		},
-	}
-}
-
 func startWorkflowRunFixture(t *testing.T, document workflow.WorkflowDocument) (uow *fake.UnitOfWork, ids idsource.Source, runID, startNodeRunID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -237,45 +215,20 @@ func TestAdvanceRun_OutsideOutcome_RejectedByAllowList(t *testing.T) {
 	}
 }
 
-func TestAdvanceRun_MissingOutcome_MultiOutcomeRouterRejected(t *testing.T) {
-	ctx := context.Background()
-	uow, ids, runID, startNodeRunID := startWorkflowRunFixture(t, twoOutcomeRouterDocument())
-
-	hop1, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{RunID: runID, NodeRunID: startNodeRunID})
-	if err != nil {
-		t.Fatalf("hop 1 AdvanceRun: %v", err)
-	}
-	if hop1.NextNodeKey != "router" || hop1.NextAutoAdvanced {
-		t.Fatalf("hop 1 = %+v, want NextNodeKey=router NOT auto-advanced (2 declared outcomes, no rule)", hop1)
-	}
-	routerNodeRun, err := uow.Snapshot.Runtime().GetNodeRun(ctx, hop1.NextNodeRunID)
-	if err != nil {
-		t.Fatalf("GetNodeRun(router): %v", err)
-	}
-	if routerNodeRun.State != runtimedomain.NodeRunPending {
-		t.Fatalf("router node run = %+v, want PENDING (never auto-activated without a resolvable outcome)", routerNodeRun)
-	}
-
-	// Simulate a future caller (there is none yet) trying to advance the
-	// multi-outcome ROUTER without supplying an outcome: must fail closed,
-	// not guess. seedRunningNodeRun below stands in for whatever future
-	// dispatcher would first move it PENDING->RUNNING.
-	seedRunningNodeRun(t, uow, hop1.NextNodeRunID)
-	_, err = runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{RunID: runID, NodeRunID: hop1.NextNodeRunID})
-	if !errors.Is(err, runtime.ErrOutcomeRequired) {
-		t.Fatalf("err = %v, want ErrOutcomeRequired", err)
-	}
-
-	// An explicit, allow-listed outcome still works even though it could
-	// not be auto-derived.
-	hop2, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{RunID: runID, NodeRunID: hop1.NextNodeRunID, Outcome: "b"})
-	if err != nil {
-		t.Fatalf("hop 2 AdvanceRun with explicit outcome: %v", err)
-	}
-	if hop2.NextNodeKey != "end-b" || hop2.SelectedOutcome != "b" {
-		t.Fatalf("hop 2 = %+v, want NextNodeKey=end-b SelectedOutcome=b", hop2)
-	}
-}
+// A multi-outcome ROUTER can no longer be published at all (correction
+// found during V4-03 review, docs/design/06-v4-runtime-engine.md):
+// internal/domain/workflow's own compiler now rejects it at publish time —
+// see TestValidateDocumentRejectsInvalidGraphs's own "router with more than
+// one outcome" case in internal/domain/workflow/compiler_test.go. That
+// makes the runtime-level ErrOutcomeRequired branch for a multi-outcome
+// ROUTER specifically unreachable through any WorkflowVersion this
+// package's own public API can construct (workflow.Compile is the only
+// constructor, and it now refuses such a document) — there is nothing left
+// to exercise here. The identical ErrOutcomeRequired code path (a node
+// AdvanceRun does not own auto-deriving for) is still exercised below by
+// TestAdvanceRun_AgentNodeNeverAutoAdvances, and AdvanceRun's own
+// isStructuralRoutingNode check keeps the runtime guard as defense in
+// depth regardless.
 
 // --- AdvanceRun: never auto-derives for a node type that needs real work ---
 

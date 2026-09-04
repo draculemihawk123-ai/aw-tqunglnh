@@ -12,8 +12,11 @@ import (
 
 // comprehensiveDocument builds one WorkflowDocument that exercises all
 // nine of V2-08's Alpha node types (START, AGENT, COMMAND, MACHINE_GATE,
-// APPROVAL, WAIT, ROUTER, FORK, JOIN, END — ROUTER fans out to either a
-// FORK/JOIN pair or a second END, and FORK's two branches are plain
+// APPROVAL, WAIT, ROUTER, FORK, JOIN, END — ROUTER is a trivial single-
+// outcome pass-through into the FORK/JOIN pair (Alpha's own ROUTER may
+// declare exactly one outcome, a correction found during V4-03 review; see
+// that node's own doc comment below), approval's own "timeout" outcome
+// reaches the second END instead, and FORK's two branches are plain
 // COMMAND nodes) plus a declared shared-state schema touching several of
 // them. It is deliberately valid end-to-end: every test in this file
 // either asserts it stays valid, or copies it and mutates exactly one
@@ -56,7 +59,13 @@ func comprehensiveDocument() WorkflowDocument {
 				Key: "wait", Type: NodeWait, Outcomes: []string{"resumed"},
 				Wait: &WaitNodeConfig{Mode: WaitModeSignal, SignalName: "resume-signal", TimeoutSeconds: 600},
 			},
-			{Key: "router", Type: NodeRouter, Outcomes: []string{"fanout", "skip"}},
+			// ROUTER may declare exactly one outcome for Alpha (correction
+			// found during V4-03 review) — this fixture used to route
+			// "fanout"/"skip" from a two-outcome router; "end2" now stays
+			// reachable via approval's own "timeout" outcome instead (see
+			// e-approval-end below), and router is a trivial single-outcome
+			// pass-through to fork.
+			{Key: "router", Type: NodeRouter, Outcomes: []string{"fanout"}},
 			{Key: "fork", Type: NodeFork, Outcomes: []string{"branch-a", "branch-b"}},
 			{
 				Key: "branch_a", Type: NodeCommand, Outcomes: []string{"done"},
@@ -83,10 +92,9 @@ func comprehensiveDocument() WorkflowDocument {
 			{Key: "e-command-gate", From: "command", Outcome: "pass", To: "gate"},
 			{Key: "e-gate-approval", From: "gate", Outcome: "verified", To: "approval"},
 			{Key: "e-approval-wait", From: "approval", Outcome: "approved", To: "wait"},
-			{Key: "e-approval-end", From: "approval", Outcome: "timeout", To: "end"},
+			{Key: "e-approval-end", From: "approval", Outcome: "timeout", To: "end2"},
 			{Key: "e-wait-router", From: "wait", Outcome: "resumed", To: "router"},
 			{Key: "e-router-fork", From: "router", Outcome: "fanout", To: "fork"},
-			{Key: "e-router-end2", From: "router", Outcome: "skip", To: "end2"},
 			{Key: "e-fork-branch-a", From: "fork", Outcome: "branch-a", To: "branch_a"},
 			{Key: "e-fork-branch-b", From: "fork", Outcome: "branch-b", To: "branch_b"},
 			{Key: "e-branch-a-join", From: "branch_a", Outcome: "done", To: "join"},

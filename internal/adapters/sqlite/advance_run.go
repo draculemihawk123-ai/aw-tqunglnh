@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -33,6 +34,56 @@ func (r runtimeRepository) GetNodeRun(ctx context.Context, id string) (runtime.N
 // of work.go's own transitionWorkItemStatusTx.
 func (r runtimeRepository) TransitionNodeRun(ctx context.Context, req ports.TransitionNodeRunRequest) (runtime.NodeRun, error) {
 	return transitionNodeRunTx(ctx, r.tx, req)
+}
+
+// UpdateWorkflowRunSharedState implements ports.RuntimeRepository (V4-03
+// correction): a narrow CAS over just workflow_runs.shared_state_json —
+// see this method's own ports interface doc comment for why it does not
+// reuse the spike-era combined State+SharedState CAS.
+func (r runtimeRepository) UpdateWorkflowRunSharedState(ctx context.Context, req ports.UpdateWorkflowRunSharedStateRequest) (runtime.WorkflowRun, error) {
+	return updateWorkflowRunSharedStateTx(ctx, r.tx, req)
+}
+
+func updateWorkflowRunSharedStateTx(ctx context.Context, tx *sql.Tx, req ports.UpdateWorkflowRunSharedStateRequest) (runtime.WorkflowRun, error) {
+	if req.RunID == "" {
+		return runtime.WorkflowRun{}, errors.New("workflow run id is required")
+	}
+	sharedState := req.SharedState
+	if len(sharedState) == 0 {
+		sharedState = json.RawMessage(`{}`)
+	}
+	if !json.Valid(sharedState) {
+		return runtime.WorkflowRun{}, errors.New("workflow run shared state must be valid JSON")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `
+UPDATE workflow_runs
+SET shared_state_json = ?, version = version + 1, updated_at = ?
+WHERE id = ? AND version = ?`,
+		string(sharedState), now, req.RunID, req.ExpectedVersion,
+	)
+	if err != nil {
+		return runtime.WorkflowRun{}, MapSQLiteError(fmt.Errorf("update workflow run %s shared state: %w", req.RunID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return runtime.WorkflowRun{}, fmt.Errorf("read workflow run shared state update result: %w", err)
+	}
+	if affected != 1 {
+		var exists int
+		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM workflow_runs WHERE id = ?`, req.RunID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return runtime.WorkflowRun{}, fmt.Errorf("%w: workflow run %s", ports.ErrPersistenceNotFound, req.RunID)
+		}
+		if lookupErr != nil {
+			return runtime.WorkflowRun{}, MapSQLiteError(fmt.Errorf("check stale workflow run shared state update: %w", lookupErr))
+		}
+		return runtime.WorkflowRun{}, fmt.Errorf(
+			"%w: workflow run %s expected version %d",
+			ports.ErrOptimisticConflict, req.RunID, req.ExpectedVersion,
+		)
+	}
+	return loadWorkflowRun(ctx, tx, runtime.WorkflowRunID(req.RunID))
 }
 
 func transitionNodeRunTx(ctx context.Context, tx *sql.Tx, req ports.TransitionNodeRunRequest) (runtime.NodeRun, error) {

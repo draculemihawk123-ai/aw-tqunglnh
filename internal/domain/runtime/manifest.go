@@ -21,10 +21,21 @@ type ExecutionManifestID string
 // column — today nothing does, but ExecutionManifest is the durable proof
 // either way, never updated once inserted.
 //
-// ExecutionProfileHash and ContextRoutePolicyHash are optional: no task
-// before V4-01 resolves a default ExecutionProfile or context-route
-// PolicyVersion at run-start time, so both stay empty until a real caller
-// (V4-04's node scheduling, most likely) has one to pin.
+// ExecutionProfileHash and ContextRoutePolicyHash are optional and, per a
+// correction made during V4-04 scoping review, stay empty/reserved for the
+// foreseeable future rather than something a later task "fills in": this
+// manifest is RUN-level and immutable ("never updated once inserted",
+// above), but a ResolvedExecutionProfileV1 (executionprofile.go) is
+// necessarily NODE-level — different nodes in the same run pin different
+// executors/policies/timeouts — so there is no single run-wide value that
+// could ever correctly populate this field, and no update path to revise
+// it per node even if there were. The authoritative
+// ExecutionProfileHash pin lives on NodeRun and ExecutionAttempt instead
+// (each created per activation/attempt, so each can correctly carry the
+// profile actually resolved for that one node's own execution). These two
+// fields remain here only as space reserved for a possible future run-wide
+// default/fallback profile, not a value V4-04 or any later task should
+// attempt to write into an already-inserted manifest row.
 type ExecutionManifest struct {
 	ID                     ExecutionManifestID
 	RunID                  WorkflowRunID

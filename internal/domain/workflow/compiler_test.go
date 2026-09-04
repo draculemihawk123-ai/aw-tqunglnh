@@ -200,6 +200,32 @@ func TestValidateDocumentRejectsInvalidGraphs(t *testing.T) {
 			document:    unboundedCycleDocument(),
 			wantProblem: "requires a positive iteration budget",
 		},
+		{
+			// Correction found during V4-03 review
+			// (docs/design/06-v4-runtime-engine.md): a ROUTER with two or
+			// more declared outcomes used to compile successfully but could
+			// never route at runtime — nothing in this codebase can ever
+			// produce that outcome (internal/app/runtime.AdvanceRun only
+			// auto-resolves a node with exactly one declared outcome), so
+			// the run would permanently deadlock at that node with no
+			// error ever surfaced. This must fail at publish time instead.
+			name: "router with more than one outcome",
+			document: WorkflowDocument{
+				SchemaVersion: "1",
+				Nodes: []Node{
+					{Key: "start", Type: NodeStart, Outcomes: []string{"next"}},
+					{Key: "router", Type: NodeRouter, Outcomes: []string{"a", "b"}},
+					{Key: "end-a", Type: NodeEnd},
+					{Key: "end-b", Type: NodeEnd},
+				},
+				Edges: []Edge{
+					{Key: "start-to-router", From: "start", Outcome: "next", To: "router"},
+					{Key: "router-to-end-a", From: "router", Outcome: "a", To: "end-a"},
+					{Key: "router-to-end-b", From: "router", Outcome: "b", To: "end-b"},
+				},
+			},
+			wantProblem: "ROUTER may declare exactly one outcome",
+		},
 	}
 
 	for _, test := range tests {

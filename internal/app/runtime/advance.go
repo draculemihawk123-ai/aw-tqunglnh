@@ -58,10 +58,13 @@
 // attempting to recreate a downstream NodeRun the UNIQUE(run_id, node_key,
 // activation_sequence) constraint would otherwise reject as a raw DB error.
 //
-// No domain event is appended here, matching workspaceprovision.Handler and
-// repositoryprobe's own job handlers (neither appends one): the CAS
-// transition's own version/updated_at is this hop's audit trail, the same
-// as every other job-driven state transition in this codebase.
+// A single NODE_ROUTED domain event is appended in the same transaction as
+// the NodeRun transition, the downstream NodeRun activation and the
+// follow-up job — GC-INV-15's own "mọi state transition tạo domain event
+// trong cùng database transaction" (correction found during review: this
+// file's first pass reasoned from workspaceprovision.Handler/
+// repositoryprobe's job handlers, neither of which appends one, but that
+// precedent does not override an explicit invariant).
 package runtime
 
 import (
@@ -69,6 +72,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -97,6 +101,22 @@ var (
 	// ErrNodeRunMismatch is returned when NodeRunID does not belong to
 	// RunID — a defensive cross-check against a malformed job payload.
 	ErrNodeRunMismatch = errors.New("runtime: node run does not belong to the given workflow run")
+
+	// ErrSharedStateFieldNotDeclared is HE-14-M04's own enforcement point
+	// (correction found during V4-03 review): AdvanceRunRequest.SharedStatePatch
+	// named a field the pinned WorkflowVersion's own SharedState schema
+	// never declared.
+	ErrSharedStateFieldNotDeclared = errors.New("runtime: shared state field is not declared in the workflow document")
+	// ErrSharedStateWriterNotAllowed is returned when the node being routed
+	// away from is not in a patched field's own declared Writers allowlist.
+	ErrSharedStateWriterNotAllowed = errors.New("runtime: node is not an allowed writer for this shared state field")
+	// ErrSharedStateTypeMismatch is returned when a patched value's JSON
+	// kind does not match the field's declared SharedStateFieldType.
+	ErrSharedStateTypeMismatch = errors.New("runtime: shared state value does not match the field's declared type")
+	// ErrSharedStateMergeConflict is MergeRuleRejectOnConflict's own
+	// enforcement point: the field already carries a value, so this write
+	// is rejected rather than silently overwriting it.
+	ErrSharedStateMergeConflict = errors.New("runtime: shared state field already has a value and its merge rule rejects the conflicting write")
 )
 
 // AdvanceRunJobPayload is the exact JSON shape internal/app/runtime's own
@@ -121,6 +141,21 @@ type AdvanceRunRequest struct {
 	// structural node (START, or ROUTER with exactly one declared outcome).
 	// See this file's own package doc comment for the full scope decision.
 	Outcome string
+	// SharedStatePatch is a set of typed writes to the WorkflowRun's own
+	// shared state (HE-14-M04), attributed to the node this call routes
+	// away from (the NodeRun named by NodeRunID). Every key must name a
+	// field the pinned WorkflowVersion's own WorkflowDocument.SharedState
+	// schema declares, with that node's key listed in the field's own
+	// Writers; each value's JSON kind must match the field's declared
+	// Type; the actual merge follows the field's own declared MergeRule.
+	// Nil/empty applies no write at all — most hops (every one this task's
+	// own auto-derivation ever drives) write nothing.
+	SharedStatePatch map[string]json.RawMessage
+	// CorrelationID optionally threads a broader command/event chain
+	// through this hop's own NODE_ROUTED event. Blank when nothing
+	// upstream has one yet — no caller in this codebase supplies one
+	// today.
+	CorrelationID string
 }
 
 // AdvanceRunResult reports what one hop actually did.
@@ -205,6 +240,20 @@ func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, 
 			return fmt.Errorf("runtime: edge %s targets unknown node %s", edge.Key, edge.To)
 		}
 
+		newSharedState := run.SharedState
+		if len(req.SharedStatePatch) > 0 {
+			merged, err := applySharedStatePatch(document, node.Key, run.SharedState, req.SharedStatePatch)
+			if err != nil {
+				return err
+			}
+			newSharedState = merged
+			if _, err := tx.Runtime().UpdateWorkflowRunSharedState(ctx, ports.UpdateWorkflowRunSharedStateRequest{
+				RunID: req.RunID, ExpectedVersion: run.Version, SharedState: newSharedState,
+			}); err != nil {
+				return err
+			}
+		}
+
 		if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
 			NodeRunID: req.NodeRunID, ExpectedState: runtimedomain.NodeRunRunning, ExpectedVersion: current.Version,
 			NextState: runtimedomain.NodeRunSucceeded, SelectedOutcome: outcome,
@@ -216,7 +265,7 @@ func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, 
 		nextID := ids.NewID()
 		nextNodeRun, err := runtimedomain.NewNodeRun(
 			runtimedomain.NodeRunID(nextID), run.ID, downstreamNode.Key, nextSequence, 0, nil,
-			canonicalStateHash(run.SharedState), "",
+			canonicalStateHash(newSharedState), "",
 		)
 		if err != nil {
 			return err
@@ -233,6 +282,24 @@ func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, 
 		result = AdvanceRunResult{
 			Advanced: true, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: outcome,
 			NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key, NextAutoAdvanced: autoAdvance,
+		}
+
+		// GC-INV-15: append the domain event in the same transaction as
+		// the transition/activation/job above, not as an afterthought.
+		eventPayload, err := json.Marshal(nodeRoutedEventPayload{
+			RunID: string(run.ID), NodeRunID: req.NodeRunID, NodeKey: node.Key, SelectedOutcome: outcome,
+			NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key,
+		})
+		if err != nil {
+			return fmt.Errorf("marshal NODE_ROUTED event payload: %w", err)
+		}
+		if err := tx.Events().Append(ctx, ports.DomainEvent{
+			ID: req.NodeRunID + "-routed", ProjectID: string(run.ProjectID),
+			AggregateType: "NodeRun", AggregateID: req.NodeRunID, Sequence: 1,
+			EventType: "NODE_ROUTED", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return err
 		}
 
 		if !autoAdvance {
@@ -256,6 +323,16 @@ func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, 
 		return nil
 	})
 	return result, err
+}
+
+// nodeRoutedEventPayload is NODE_ROUTED's own JSON shape.
+type nodeRoutedEventPayload struct {
+	RunID           string `json:"runId"`
+	NodeRunID       string `json:"nodeRunId"`
+	NodeKey         string `json:"nodeKey"`
+	SelectedOutcome string `json:"selectedOutcome"`
+	NextNodeRunID   string `json:"nextNodeRunId"`
+	NextNodeKey     string `json:"nextNodeKey"`
 }
 
 // isStructuralRoutingNode reports whether nodeType is one of the two node
@@ -296,4 +373,127 @@ func outcomeDeclared(node workflow.Node, outcome string) bool {
 		}
 	}
 	return false
+}
+
+// applySharedStatePatch validates and applies patch to currentState per the
+// document's own declared SharedState schema (HE-14-M04): every patched
+// field must be declared, writerNodeKey must be one of that field's own
+// Writers, each value's JSON kind must match the field's declared Type,
+// and the actual merge follows the field's own MergeRule. It returns the
+// new canonical shared-state JSON — currentState itself unchanged when
+// patch is empty.
+func applySharedStatePatch(
+	document workflow.WorkflowDocument, writerNodeKey string,
+	currentState json.RawMessage, patch map[string]json.RawMessage,
+) (json.RawMessage, error) {
+	if len(patch) == 0 {
+		return currentState, nil
+	}
+	fieldsByName := make(map[string]workflow.SharedStateField, len(document.SharedState))
+	for _, field := range document.SharedState {
+		fieldsByName[field.Name] = field
+	}
+
+	current := map[string]json.RawMessage{}
+	if len(currentState) > 0 {
+		if err := json.Unmarshal(currentState, &current); err != nil {
+			return nil, fmt.Errorf("runtime: current shared state is not a JSON object: %w", err)
+		}
+	}
+
+	for name, value := range patch {
+		field, declared := fieldsByName[name]
+		if !declared {
+			return nil, fmt.Errorf("%w: field %q", ErrSharedStateFieldNotDeclared, name)
+		}
+		writerAllowed := false
+		for _, writer := range field.Writers {
+			if writer == writerNodeKey {
+				writerAllowed = true
+				break
+			}
+		}
+		if !writerAllowed {
+			return nil, fmt.Errorf("%w: node %q, field %q", ErrSharedStateWriterNotAllowed, writerNodeKey, name)
+		}
+		if !jsonValueMatchesSharedStateType(value, field.Type) {
+			return nil, fmt.Errorf("%w: field %q declared type %s", ErrSharedStateTypeMismatch, name, field.Type)
+		}
+		merged, err := mergeSharedStateValue(field, current[name], value)
+		if err != nil {
+			return nil, err
+		}
+		current[name] = merged
+	}
+
+	merged, err := json.Marshal(current)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: marshal merged shared state: %w", err)
+	}
+	return merged, nil
+}
+
+// jsonValueMatchesSharedStateType reports whether value's own JSON kind
+// matches fieldType — ARTIFACT_REF is represented as a plain string
+// identifier (HE-14-M04's "artifact lớn lưu bằng reference": the field
+// never carries the artifact's own content, only a reference a runtime
+// resolves separately, and a string identifier is the minimal shape that
+// can name one).
+func jsonValueMatchesSharedStateType(value json.RawMessage, fieldType workflow.SharedStateFieldType) bool {
+	var decoded any
+	if err := json.Unmarshal(value, &decoded); err != nil {
+		return false
+	}
+	switch fieldType {
+	case workflow.SharedStateTypeString, workflow.SharedStateTypeArtifactRef:
+		_, ok := decoded.(string)
+		return ok
+	case workflow.SharedStateTypeNumber:
+		_, ok := decoded.(float64)
+		return ok
+	case workflow.SharedStateTypeBoolean:
+		_, ok := decoded.(bool)
+		return ok
+	case workflow.SharedStateTypeObject:
+		_, ok := decoded.(map[string]any)
+		return ok
+	case workflow.SharedStateTypeArray:
+		_, ok := decoded.([]any)
+		return ok
+	default:
+		return false
+	}
+}
+
+// mergeSharedStateValue applies field's own declared MergeRule between its
+// existing value (may be absent/empty) and an already type-checked
+// incoming value.
+func mergeSharedStateValue(field workflow.SharedStateField, existing, incoming json.RawMessage) (json.RawMessage, error) {
+	switch field.MergeRule {
+	case workflow.MergeRuleLastWriteWins:
+		return incoming, nil
+	case workflow.MergeRuleAppend:
+		var existingArr []json.RawMessage
+		if len(existing) > 0 {
+			if err := json.Unmarshal(existing, &existingArr); err != nil {
+				return nil, fmt.Errorf("runtime: field %q existing value is not an array for APPEND merge: %w", field.Name, err)
+			}
+		}
+		var incomingArr []json.RawMessage
+		if err := json.Unmarshal(incoming, &incomingArr); err != nil {
+			return nil, fmt.Errorf("%w: field %q APPEND merge requires an array value", ErrSharedStateTypeMismatch, field.Name)
+		}
+		mergedArr, err := json.Marshal(append(existingArr, incomingArr...))
+		if err != nil {
+			return nil, fmt.Errorf("runtime: marshal appended field %q: %w", field.Name, err)
+		}
+		return mergedArr, nil
+	case workflow.MergeRuleRejectOnConflict:
+		if len(existing) > 0 && string(existing) != "null" {
+			return nil, fmt.Errorf("%w: field %q", ErrSharedStateMergeConflict, field.Name)
+		}
+		return incoming, nil
+	default:
+		return nil, fmt.Errorf("runtime: field %q has unsupported merge rule %q", field.Name, field.MergeRule)
+	}
 }

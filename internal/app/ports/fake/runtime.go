@@ -140,6 +140,30 @@ func (r *RuntimeRepository) TransitionNodeRun(_ context.Context, req ports.Trans
 	return nodeRun, nil
 }
 
+// UpdateWorkflowRunSharedState mirrors sqlite's updateWorkflowRunSharedStateTx
+// (V4-03 correction): a stale ExpectedVersion gets ErrOptimisticConflict,
+// never a silent overwrite.
+func (r *RuntimeRepository) UpdateWorkflowRunSharedState(_ context.Context, req ports.UpdateWorkflowRunSharedStateRequest) (runtime.WorkflowRun, error) {
+	run, ok := r.workflowRuns[req.RunID]
+	if !ok {
+		return runtime.WorkflowRun{}, fmt.Errorf("fake: %w: workflow run %s", ports.ErrPersistenceNotFound, req.RunID)
+	}
+	if run.Version != req.ExpectedVersion {
+		return runtime.WorkflowRun{}, fmt.Errorf(
+			"fake: %w: workflow run %s expected version %d",
+			ports.ErrOptimisticConflict, req.RunID, req.ExpectedVersion,
+		)
+	}
+	sharedState := req.SharedState
+	if len(sharedState) == 0 {
+		sharedState = json.RawMessage(`{}`)
+	}
+	run.SharedState = append(json.RawMessage(nil), sharedState...)
+	run.Version++
+	r.workflowRuns[req.RunID] = run
+	return run, nil
+}
+
 func sameExecutionManifestContent(left, right runtime.ExecutionManifest) bool {
 	leftManifest, errLeft := json.Marshal(left.DependencyManifest)
 	rightManifest, errRight := json.Marshal(right.DependencyManifest)

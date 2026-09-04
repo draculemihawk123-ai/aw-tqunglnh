@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
@@ -323,6 +324,20 @@ type RuntimeRepository interface {
 	// ErrPersistenceNotFound for an unknown NodeRunID.
 	TransitionNodeRun(ctx context.Context, req TransitionNodeRunRequest) (runtime.NodeRun, error)
 
+	// UpdateWorkflowRunSharedState is populated now (V4-03 correction,
+	// docs/design/06-v4-runtime-engine.md — HE-14-M04's own "shared-state
+	// typed writes", found missing during review of this task's first
+	// pass): a narrow CAS over just WorkflowRun.SharedState/Version, the
+	// shared-state half of what the spike-era Store.CompareAndSwapWorkflowRun
+	// (persistence.go's own WorkflowRunTransition) does combined with a
+	// State transition — AdvanceRun's own typed shared-state patch applies
+	// while the Run stays in the exact same State throughout (routing a
+	// node never itself changes WorkflowRunState), so reusing that
+	// combined CAS would force an artificial no-op State transition just
+	// to reach the SharedState write. ErrOptimisticConflict on a stale
+	// ExpectedVersion, ErrPersistenceNotFound for an unknown RunID.
+	UpdateWorkflowRunSharedState(ctx context.Context, req UpdateWorkflowRunSharedStateRequest) (runtime.WorkflowRun, error)
+
 	// CreateExecutionManifest inserts the one immutable ExecutionManifest a
 	// WorkflowRun ever has (GC-INV-06). manifest.RunID must name a
 	// WorkflowRun that exists, and manifest.WorkflowVersionID's own
@@ -410,6 +425,18 @@ type TransitionNodeRunRequest struct {
 	ExpectedVersion uint64
 	NextState       runtime.NodeRunState
 	SelectedOutcome string
+}
+
+// UpdateWorkflowRunSharedStateRequest is the CAS request for
+// RuntimeRepository.UpdateWorkflowRunSharedState (V4-03 correction):
+// SharedState replaces the row's entire shared_state_json — the caller
+// (AdvanceRun) is responsible for merging its own patch into the
+// already-loaded current value first, the same "read-modify-write inside
+// one Tx" shape every other CAS in this codebase uses.
+type UpdateWorkflowRunSharedStateRequest struct {
+	RunID           string
+	ExpectedVersion uint64
+	SharedState     json.RawMessage
 }
 
 // JobsRepository gains its first real method now (V3-01,
