@@ -106,6 +106,26 @@ func (w *WorkRepository) GetWorkItem(_ context.Context, id string) (work.WorkIte
 	return item, nil
 }
 
+// TransitionWorkItemStatus mirrors sqlite's transitionWorkItemStatusTx
+// (V4-02): a stale caller (wrong ExpectedStatus/ExpectedVersion) gets
+// ErrOptimisticConflict, never a silent overwrite.
+func (w *WorkRepository) TransitionWorkItemStatus(_ context.Context, req ports.TransitionWorkItemStatusRequest) (work.WorkItem, error) {
+	item, ok := w.workItems[req.WorkItemID]
+	if !ok {
+		return work.WorkItem{}, fmt.Errorf("fake: %w: work item %s", ports.ErrPersistenceNotFound, req.WorkItemID)
+	}
+	if item.Status != req.ExpectedStatus || item.Version != req.ExpectedVersion {
+		return work.WorkItem{}, fmt.Errorf(
+			"fake: %w: work item %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.WorkItemID, req.ExpectedStatus, req.ExpectedVersion,
+		)
+	}
+	item.Status = req.NextStatus
+	item.Version++
+	w.workItems[req.WorkItemID] = item
+	return item, nil
+}
+
 // CreateTaskFamily mirrors sqlite's createTaskFamilyTx: family.ProjectID
 // must name a Project that already exists (resolved from the shared
 // CatalogRepository) — ErrPersistenceNotFound otherwise.

@@ -465,6 +465,20 @@ func (d *DefinitionsRepository) ListVersions(_ context.Context, kind definition.
 	return result, nil
 }
 
+// GetWorkflowVersion mirrors sqlite's GetWorkflowVersion (V4-02): scans
+// every definition's own version list for a matching VersionID, since
+// workflowVersions is keyed by DefinitionID, not VersionID.
+func (d *DefinitionsRepository) GetWorkflowVersion(_ context.Context, versionID string) (workflow.WorkflowVersion, error) {
+	for _, versions := range d.workflowVersions {
+		for _, version := range versions {
+			if string(version.ID()) == versionID {
+				return version, nil
+			}
+		}
+	}
+	return workflow.WorkflowVersion{}, fmt.Errorf("fake: %w: workflow version %s", ports.ErrPersistenceNotFound, versionID)
+}
+
 func sameDefinitionScope(a, b definition.Scope) bool {
 	if a.IsGlobal() != b.IsGlobal() {
 		return false

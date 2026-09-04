@@ -354,6 +354,15 @@ func (r definitionsRepository) PublishWorkflowVersion(ctx context.Context, def w
 	return publishWorkflowVersionTx(ctx, r.tx, def, candidate)
 }
 
+// GetWorkflowVersion implements ports.DefinitionsRepository (V4-02): reuses
+// workflow_store.go's own loadWorkflowVersion, the identical rebuild/
+// verify-against-hash logic WorkflowPersistence.LoadWorkflowVersion already
+// runs for the spike-era caller, composed here against the given Tx instead
+// of Store's own connection pool.
+func (r definitionsRepository) GetWorkflowVersion(ctx context.Context, versionID string) (workflow.WorkflowVersion, error) {
+	return loadWorkflowVersion(ctx, r.tx, workflow.WorkflowVersionID(versionID))
+}
+
 // ListVersions implements ports.DefinitionsRepository (V2-10): every
 // published Version for definitionID, oldest first, routed by Kind the
 // same way PublishVersion/CreateDefinition are.

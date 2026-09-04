@@ -13,26 +13,35 @@ import (
 // RuntimeRepository is an in-memory ports.RuntimeRepository — V4-01 gives
 // this concern its first real behavior, so a later V4 command handler can
 // be tested without sqlite (the same V1-05 discipline every other fake
-// repository here already follows). Unlike ReadinessRepository/
-// WorkRepository, it does not cross-check RunID/WorkItemID against any
-// other fake store: no fake WorkflowRun/WorkItem persistence exists yet
-// (WorkflowPersistence, the spike-era interface that already covers
-// WorkflowRun, is never exposed through ports.Tx/fake.Tx) — so its
-// idempotency/immutability contracts are self-consistent only, matching
-// exactly what a caller can observe through ports.RuntimeRepository's own
-// methods.
+// repository here already follows). workflowRuns/nodeRuns are populated now
+// (V4-02, StartWorkflowRun's own first real caller for both) — before that,
+// this fake did not cross-check RunID/WorkItemID against any other fake
+// store, since no fake WorkflowRun/WorkItem persistence existed yet; the
+// rest of this type's idempotency/immutability contracts remain
+// self-consistent only, exactly what a caller can observe through
+// ports.RuntimeRepository's own methods.
 type RuntimeRepository struct {
-	manifests   map[string]runtime.ExecutionManifest          // by RunID
-	amendments  map[string][]runtime.RunManifestAmendment     // by RunID, Revision order
-	branches    map[string]runtime.BranchToken                // by RunID+"\x00"+ForkKey+"\x00"+BranchKey
-	decisions   map[string]runtime.DecisionArtifact           // by ID
-	runIntents  map[string]runtime.RunCancellationIntent      // by RunID
-	workIntents map[string]runtime.WorkItemCancellationIntent // by WorkItemID
+	workflowRuns map[string]runtime.WorkflowRun                // by ID
+	nodeRuns     map[string]runtime.NodeRun                    // by ID
+	manifests    map[string]runtime.ExecutionManifest          // by RunID
+	amendments   map[string][]runtime.RunManifestAmendment     // by RunID, Revision order
+	branches     map[string]runtime.BranchToken                // by RunID+"\x00"+ForkKey+"\x00"+BranchKey
+	decisions    map[string]runtime.DecisionArtifact           // by ID
+	runIntents   map[string]runtime.RunCancellationIntent      // by RunID
+	workIntents  map[string]runtime.WorkItemCancellationIntent // by WorkItemID
 }
 
 var _ ports.RuntimeRepository = (*RuntimeRepository)(nil)
 
 func (r *RuntimeRepository) clone() *RuntimeRepository {
+	workflowRuns := make(map[string]runtime.WorkflowRun, len(r.workflowRuns))
+	for k, v := range r.workflowRuns {
+		workflowRuns[k] = v
+	}
+	nodeRuns := make(map[string]runtime.NodeRun, len(r.nodeRuns))
+	for k, v := range r.nodeRuns {
+		nodeRuns[k] = v
+	}
 	manifests := make(map[string]runtime.ExecutionManifest, len(r.manifests))
 	for k, v := range r.manifests {
 		manifests[k] = v
@@ -58,9 +67,36 @@ func (r *RuntimeRepository) clone() *RuntimeRepository {
 		workIntents[k] = v
 	}
 	return &RuntimeRepository{
-		manifests: manifests, amendments: amendments, branches: branches,
+		workflowRuns: workflowRuns, nodeRuns: nodeRuns, manifests: manifests, amendments: amendments, branches: branches,
 		decisions: decisions, runIntents: runIntents, workIntents: workIntents,
 	}
+}
+
+func (r *RuntimeRepository) CreateWorkflowRun(_ context.Context, run runtime.WorkflowRun) (runtime.WorkflowRun, error) {
+	key := string(run.ID)
+	if _, exists := r.workflowRuns[key]; exists {
+		return runtime.WorkflowRun{}, fmt.Errorf("fake: %w: workflow run %s", ports.ErrPersistenceAlreadyExists, key)
+	}
+	if r.workflowRuns == nil {
+		r.workflowRuns = map[string]runtime.WorkflowRun{}
+	}
+	r.workflowRuns[key] = run
+	return run, nil
+}
+
+func (r *RuntimeRepository) CreateNodeRun(_ context.Context, nodeRun runtime.NodeRun) (runtime.NodeRun, error) {
+	if _, ok := r.workflowRuns[string(nodeRun.RunID)]; !ok {
+		return runtime.NodeRun{}, fmt.Errorf("fake: %w: workflow run %s", ports.ErrPersistenceNotFound, nodeRun.RunID)
+	}
+	key := string(nodeRun.ID)
+	if _, exists := r.nodeRuns[key]; exists {
+		return runtime.NodeRun{}, fmt.Errorf("fake: %w: node run %s", ports.ErrPersistenceAlreadyExists, key)
+	}
+	if r.nodeRuns == nil {
+		r.nodeRuns = map[string]runtime.NodeRun{}
+	}
+	r.nodeRuns[key] = nodeRun
+	return nodeRun, nil
 }
 
 func sameExecutionManifestContent(left, right runtime.ExecutionManifest) bool {

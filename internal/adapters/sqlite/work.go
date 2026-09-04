@@ -12,6 +12,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
@@ -88,7 +89,7 @@ func (r workRepository) GetWorkItem(ctx context.Context, id string) (work.WorkIt
 
 func getWorkItemTx(ctx context.Context, tx *sql.Tx, id string) (work.WorkItem, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id
+SELECT id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id, workflow_version_id
 FROM work_items WHERE id = ?`, id)
 	item, err := scanWorkItemRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -99,9 +100,9 @@ FROM work_items WHERE id = ?`, id)
 
 func scanWorkItemRow(row repositoryRowScanner) (work.WorkItem, error) {
 	var id, projectID, kind, familyID, title, status string
-	var parentID, parentJoinPolicy, sourceNodeRunID sql.NullString
+	var parentID, parentJoinPolicy, sourceNodeRunID, workflowVersionID sql.NullString
 	var version uint64
-	if err := row.Scan(&id, &projectID, &kind, &parentID, &familyID, &title, &status, &version, &parentJoinPolicy, &sourceNodeRunID); err != nil {
+	if err := row.Scan(&id, &projectID, &kind, &parentID, &familyID, &title, &status, &version, &parentJoinPolicy, &sourceNodeRunID, &workflowVersionID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return work.WorkItem{}, err
 		}
@@ -122,7 +123,51 @@ func scanWorkItemRow(row repositoryRowScanner) (work.WorkItem, error) {
 		nodeRunID := work.SourceNodeRunID(sourceNodeRunID.String)
 		item.SourceNodeRunID = &nodeRunID
 	}
+	if workflowVersionID.Valid {
+		versionID := workflow.WorkflowVersionID(workflowVersionID.String)
+		item.WorkflowVersionID = &versionID
+	}
 	return item, nil
+}
+
+// TransitionWorkItemStatus implements ports.WorkRepository (V4-02).
+func (r workRepository) TransitionWorkItemStatus(ctx context.Context, req ports.TransitionWorkItemStatusRequest) (work.WorkItem, error) {
+	return transitionWorkItemStatusTx(ctx, r.tx, req)
+}
+
+func transitionWorkItemStatusTx(ctx context.Context, tx *sql.Tx, req ports.TransitionWorkItemStatusRequest) (work.WorkItem, error) {
+	if req.WorkItemID == "" {
+		return work.WorkItem{}, errors.New("work item id is required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(ctx, `
+UPDATE work_items
+SET status = ?, version = version + 1, updated_at = ?
+WHERE id = ? AND status = ? AND version = ?`,
+		string(req.NextStatus), now, req.WorkItemID, string(req.ExpectedStatus), req.ExpectedVersion,
+	)
+	if err != nil {
+		return work.WorkItem{}, MapSQLiteError(fmt.Errorf("transition work item %s: %w", req.WorkItemID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return work.WorkItem{}, fmt.Errorf("read work item transition result: %w", err)
+	}
+	if affected != 1 {
+		var exists int
+		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM work_items WHERE id = ?`, req.WorkItemID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return work.WorkItem{}, fmt.Errorf("%w: work item %s", ports.ErrPersistenceNotFound, req.WorkItemID)
+		}
+		if lookupErr != nil {
+			return work.WorkItem{}, MapSQLiteError(fmt.Errorf("check stale work item transition: %w", lookupErr))
+		}
+		return work.WorkItem{}, fmt.Errorf(
+			"%w: work item %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.WorkItemID, req.ExpectedStatus, req.ExpectedVersion,
+		)
+	}
+	return getWorkItemTx(ctx, tx, req.WorkItemID)
 }
 
 // --- TaskFamily ---

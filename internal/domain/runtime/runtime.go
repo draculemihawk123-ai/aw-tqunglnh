@@ -125,6 +125,11 @@ type NodeRun struct {
 	Version              uint64
 }
 
+// NewNodeRun validates and builds a new NodeRun activation, PENDING at
+// version 1. ExecutionProfileHash may be blank: a structural node with no
+// real execution (e.g. START, V4-02) has no profile to pin — only a node
+// that actually dispatches an ExecutionAttempt (V4-04) needs one, and that
+// task is responsible for supplying it.
 func NewNodeRun(
 	id NodeRunID,
 	runID WorkflowRunID,
@@ -144,8 +149,8 @@ func NewNodeRun(
 	if activationSequence == 0 {
 		return NodeRun{}, errors.New("node activation sequence must be greater than zero")
 	}
-	if inputStateHash == "" || executionProfileHash == "" {
-		return NodeRun{}, errors.New("node input state and execution profile hashes are required")
+	if inputStateHash == "" {
+		return NodeRun{}, errors.New("node input state hash is required")
 	}
 	return NodeRun{
 		ID:                   id,

@@ -59,6 +59,27 @@ type WorkRepository interface {
 	// ErrPersistenceNotFound.
 	GetWorkItem(ctx context.Context, id string) (work.WorkItem, error)
 
+	// TransitionWorkItemStatus is populated now (V4-02,
+	// docs/design/06-v4-runtime-engine.md): the first real caller of a
+	// WorkItemStatus CAS is StartWorkflowRun's own READY->ACTIVE transition
+	// ("ACTIVE cần WorkspaceSet ready và run started",
+	// docs/design/01-system-design.md §5.2). It mirrors
+	// TransitionRepositoryStatus/TransitionWorkspaceSetState's identical CAS
+	// shape: req.ExpectedVersion must match the row's current version and
+	// its current status must equal req.ExpectedStatus, or the whole call
+	// fails with ErrOptimisticConflict — ErrPersistenceNotFound if the
+	// WorkItem does not exist at all. This is deliberately narrow (no
+	// general WorkItemStatus state-machine legality check the way
+	// project.CanTransitionRepositoryStatus enforces for Repository): the
+	// only transition any real caller needs today is READY->ACTIVE, and a
+	// stale CAS observing WorkItem is already ACTIVE (a second
+	// StartWorkflowRun call racing on the same WorkItem, or one called while
+	// a prior run is still active) is exactly how "một WorkItem policy chỉ
+	// có số active run cho phép" (this task's own Hoàn thành khi) is
+	// enforced — structurally, by this same CAS, not by a separate active-run
+	// counter.
+	TransitionWorkItemStatus(ctx context.Context, req TransitionWorkItemStatusRequest) (work.WorkItem, error)
+
 	// CreateTaskFamily inserts a new TaskFamily row after verifying
 	// family.ProjectID names a Project that exists — ErrPersistenceNotFound
 	// otherwise. It does not itself verify family.RootWorkItemID names an
@@ -300,6 +321,16 @@ type TransitionTaskFamilyScopeVersionRequest struct {
 	FamilyID             string
 	ExpectedScopeVersion uint64
 	ExpectedVersion      uint64
+}
+
+// TransitionWorkItemStatusRequest is an optimistic compare-and-swap request
+// for WorkItem.Status (V4-02), mirroring TransitionWorkspaceSetStateRequest's
+// identical CAS shape.
+type TransitionWorkItemStatusRequest struct {
+	WorkItemID      string
+	ExpectedStatus  work.WorkItemStatus
+	ExpectedVersion uint64
+	NextStatus      work.WorkItemStatus
 }
 
 // TransitionScopeExpansionRequestStatusRequest is the fenced CAS request for

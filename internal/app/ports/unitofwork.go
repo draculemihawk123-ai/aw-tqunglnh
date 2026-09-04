@@ -235,6 +235,17 @@ type DefinitionsRepository interface {
 	// ListVersions returns every Version definitionID has published,
 	// oldest first.
 	ListVersions(ctx context.Context, kind definition.Kind, definitionID string) ([]definition.VersionFields, error)
+
+	// GetWorkflowVersion is populated now (V4-01A/V4-02,
+	// docs/design/06-v4-runtime-engine.md): StartWorkflowRun's first real
+	// caller needs to resolve an already-published WorkflowVersion by ID —
+	// composed inside the same Tx as everything else it validates/creates —
+	// which neither LoadVersion (shared kinds only) nor ListVersions
+	// (definition-scoped listing) can do. It returns the identical
+	// workflow.WorkflowVersion WorkflowPersistence.LoadWorkflowVersion
+	// already resolves for the spike-era caller, or
+	// ErrPersistenceNotFound.
+	GetWorkflowVersion(ctx context.Context, versionID string) (workflow.WorkflowVersion, error)
 }
 
 // RuntimeRepository is populated now (V4-01,
@@ -251,6 +262,35 @@ type DefinitionsRepository interface {
 // "populated now" treatment AdapterBuildRepository/ReadinessRepository
 // already received for the same reason.
 type RuntimeRepository interface {
+	// CreateWorkflowRun is populated now (V4-02,
+	// docs/design/06-v4-runtime-engine.md): the Tx-composable counterpart
+	// of WorkflowPersistence.StartWorkflowRun (persistence.go), needed so a
+	// command handler can create the run atomically alongside its
+	// ExecutionManifest, START NodeRun, domain event and advance job in one
+	// UnitOfWork call — the exact "deferred until a later V4 task needs it
+	// composed inside the same Tx" moment this interface's own doc comment
+	// anticipated. It performs the identical pin/identity validation
+	// StartWorkflowRun does (run must be CREATED at version 1, pinned
+	// WorkflowVersionID/Hash/DependencyManifest must match the real
+	// published WorkflowVersion) but writes through the given Tx instead of
+	// opening its own transaction, and returns ErrPersistenceAlreadyExists
+	// for a reused RunID exactly like the spike-era method does.
+	CreateWorkflowRun(ctx context.Context, run runtime.WorkflowRun) (runtime.WorkflowRun, error)
+
+	// CreateNodeRun is populated now (V4-02): inserts a new NodeRun
+	// activation after verifying nodeRun.RunID names a WorkflowRun that
+	// exists. Unlike ExecutionAttempt (whose full column set was already
+	// persisted from the spike), node_runs' schema does not yet carry
+	// EffectiveScope/ExecutionProfileHash — this method persists exactly
+	// the columns 0001_initial_schema.sql already has (id, run_id,
+	// node_key, activation_sequence, iteration, state, selected_outcome,
+	// input_state_hash, version), the same boundary the pre-existing
+	// spike-era DispatchNodeIntent/loadNodeRunByID (node_dispatch.go)
+	// already draw; persisting the rest is deferred to whichever later V4
+	// task first needs it for a real executable node (V4-04's own "resolve
+	// effective scope/profile/context inputs").
+	CreateNodeRun(ctx context.Context, nodeRun runtime.NodeRun) (runtime.NodeRun, error)
+
 	// CreateExecutionManifest inserts the one immutable ExecutionManifest a
 	// WorkflowRun ever has (GC-INV-06). manifest.RunID must name a
 	// WorkflowRun that exists, and manifest.WorkflowVersionID's own

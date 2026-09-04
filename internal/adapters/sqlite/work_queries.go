@@ -55,6 +55,57 @@ func (s *Store) CountFamilyRepositoryScopes(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// CountWorkflowRuns returns the total number of rows in workflow_runs —
+// internal/app/runtime's own rollback test (V4-02,
+// docs/design/06-v4-runtime-engine.md) needs this and the two counts below
+// for the identical "no orphan row in any table this command touches" proof
+// CreateRootWorkItem's own rollback test above already established.
+func (s *Store) CountWorkflowRuns(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_runs`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count workflow runs: %w", err)
+	}
+	return count, nil
+}
+
+// CountExecutionManifests returns the total number of rows in
+// execution_manifests.
+func (s *Store) CountExecutionManifests(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM execution_manifests`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count execution manifests: %w", err)
+	}
+	return count, nil
+}
+
+// CountNodeRuns returns the total number of rows in node_runs.
+func (s *Store) CountNodeRuns(ctx context.Context) (int, error) {
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM node_runs`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count node runs: %w", err)
+	}
+	return count, nil
+}
+
+// SetWorkItemWorkflowVersionForTest directly pins work_items.workflow_version_id
+// (migration 0007) for a test fixture. No application command in this
+// codebase can produce this precondition yet — V3-03's own scope note is
+// explicit that a WorkItem's contract fields, WorkflowVersionID included,
+// are set directly on the exported domain struct by a future caller, not
+// through any command this task's own dependency set builds — so this is
+// the same "reach a state no real command produces yet via a direct SQL
+// write" discipline runtime_manifest_test.go's own tamper tests already use
+// for CHECK-constraint-only states. It exists purely for
+// internal/app/runtime's own ErrWorkflowVersionMismatch test; it adds no
+// write path or business rule of its own.
+func (s *Store) SetWorkItemWorkflowVersionForTest(ctx context.Context, workItemID, workflowVersionID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE work_items SET workflow_version_id = ? WHERE id = ?`, workflowVersionID, workItemID)
+	if err != nil {
+		return fmt.Errorf("pin work item %s to workflow version %s: %w", workItemID, workflowVersionID, err)
+	}
+	return nil
+}
+
 // CountDomainEventsByType answers how many domain_events rows exist for one
 // event_type, regardless of aggregate — a coarser sibling of
 // CountDomainEvents (spk04_queries.go), for a caller that does not know
