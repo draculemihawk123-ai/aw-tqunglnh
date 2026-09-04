@@ -291,6 +291,38 @@ type RuntimeRepository interface {
 	// effective scope/profile/context inputs").
 	CreateNodeRun(ctx context.Context, nodeRun runtime.NodeRun) (runtime.NodeRun, error)
 
+	// GetWorkflowRun is populated now (V4-03,
+	// docs/design/06-v4-runtime-engine.md): the scheduler's own "Advance"
+	// routing decision needs to re-read a Run's pinned WorkflowVersionID and
+	// current SharedState inside the same Tx as everything else it reads/
+	// writes, composed the same way CreateWorkflowRun's own sibling reader
+	// (StartWorkflowRun's caller) already resolves WorkItem/WorkspaceSet —
+	// this is the identical "populated now" reader half CreateWorkflowRun's
+	// own writer half already anticipated. Returns ErrPersistenceNotFound
+	// for an unknown RunID.
+	GetWorkflowRun(ctx context.Context, id string) (runtime.WorkflowRun, error)
+
+	// GetNodeRun is populated now (V4-03): the scheduler's own "Advance"
+	// routing decision reads the NodeRun it is asked to route away from —
+	// its current State (idempotent-replay check, mirroring
+	// workspaceprovision.Handler's own "idempotent early-return" discipline
+	// for an already-terminal target), NodeKey and ActivationSequence — all
+	// inside the same Tx the eventual TransitionNodeRun/CreateNodeRun calls
+	// use. Returns ErrPersistenceNotFound for an unknown NodeRunID.
+	GetNodeRun(ctx context.Context, id string) (runtime.NodeRun, error)
+
+	// TransitionNodeRun is populated now (V4-03): the CAS that closes a
+	// NodeRun's own routing decision — State/SelectedOutcome/Version — the
+	// same optimistic-CAS shape ports.TransitionWorkItemStatusRequest
+	// already uses for WorkItem.Status (V4-02). It is deliberately narrow,
+	// like that sibling method: no general NodeRunState legality check the
+	// way project.CanTransitionRepositoryStatus enforces — the only
+	// transition V4-03's own scheduler needs today is RUNNING->SUCCEEDED
+	// with a resolved, allow-listed outcome (GC-INV-11); a stale CAS
+	// (ExpectedState/ExpectedVersion mismatch) is ErrOptimisticConflict,
+	// ErrPersistenceNotFound for an unknown NodeRunID.
+	TransitionNodeRun(ctx context.Context, req TransitionNodeRunRequest) (runtime.NodeRun, error)
+
 	// CreateExecutionManifest inserts the one immutable ExecutionManifest a
 	// WorkflowRun ever has (GC-INV-06). manifest.RunID must name a
 	// WorkflowRun that exists, and manifest.WorkflowVersionID's own
@@ -363,6 +395,21 @@ type RuntimeRepository interface {
 	// GetWorkItemCancellationIntent returns the WorkItemCancellationIntent
 	// for workItemID, or ErrPersistenceNotFound.
 	GetWorkItemCancellationIntent(ctx context.Context, workItemID string) (runtime.WorkItemCancellationIntent, error)
+}
+
+// TransitionNodeRunRequest is an optimistic compare-and-swap request for
+// NodeRun.State/SelectedOutcome (V4-03), mirroring
+// TransitionWorkItemStatusRequest's identical CAS shape. SelectedOutcome is
+// only meaningful — and should only ever be non-empty — when NextState is
+// runtime.NodeRunSucceeded, the same "only meaningful for one specific
+// NextState" discipline TransitionWorkspaceSetStateRequest.BaseRevisionSet
+// already documents for itself.
+type TransitionNodeRunRequest struct {
+	NodeRunID       string
+	ExpectedState   runtime.NodeRunState
+	ExpectedVersion uint64
+	NextState       runtime.NodeRunState
+	SelectedOutcome string
 }
 
 // JobsRepository gains its first real method now (V3-01,

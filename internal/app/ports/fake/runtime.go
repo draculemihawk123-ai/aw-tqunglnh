@@ -99,6 +99,47 @@ func (r *RuntimeRepository) CreateNodeRun(_ context.Context, nodeRun runtime.Nod
 	return nodeRun, nil
 }
 
+// GetWorkflowRun mirrors sqlite's GetWorkflowRun (V4-03).
+func (r *RuntimeRepository) GetWorkflowRun(_ context.Context, id string) (runtime.WorkflowRun, error) {
+	run, ok := r.workflowRuns[id]
+	if !ok {
+		return runtime.WorkflowRun{}, fmt.Errorf("fake: %w: workflow run %s", ports.ErrPersistenceNotFound, id)
+	}
+	return run, nil
+}
+
+// GetNodeRun mirrors sqlite's GetNodeRun (V4-03).
+func (r *RuntimeRepository) GetNodeRun(_ context.Context, id string) (runtime.NodeRun, error) {
+	nodeRun, ok := r.nodeRuns[id]
+	if !ok {
+		return runtime.NodeRun{}, fmt.Errorf("fake: %w: node run %s", ports.ErrPersistenceNotFound, id)
+	}
+	return nodeRun, nil
+}
+
+// TransitionNodeRun mirrors sqlite's transitionNodeRunTx (V4-03): a stale
+// caller (wrong ExpectedState/ExpectedVersion) gets ErrOptimisticConflict,
+// never a silent overwrite.
+func (r *RuntimeRepository) TransitionNodeRun(_ context.Context, req ports.TransitionNodeRunRequest) (runtime.NodeRun, error) {
+	nodeRun, ok := r.nodeRuns[req.NodeRunID]
+	if !ok {
+		return runtime.NodeRun{}, fmt.Errorf("fake: %w: node run %s", ports.ErrPersistenceNotFound, req.NodeRunID)
+	}
+	if nodeRun.State != req.ExpectedState || nodeRun.Version != req.ExpectedVersion {
+		return runtime.NodeRun{}, fmt.Errorf(
+			"fake: %w: node run %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.NodeRunID, req.ExpectedState, req.ExpectedVersion,
+		)
+	}
+	nodeRun.State = req.NextState
+	if req.SelectedOutcome != "" {
+		nodeRun.SelectedOutcome = req.SelectedOutcome
+	}
+	nodeRun.Version++
+	r.nodeRuns[req.NodeRunID] = nodeRun
+	return nodeRun, nil
+}
+
 func sameExecutionManifestContent(left, right runtime.ExecutionManifest) bool {
 	leftManifest, errLeft := json.Marshal(left.DependencyManifest)
 	rightManifest, errRight := json.Marshal(right.DependencyManifest)
