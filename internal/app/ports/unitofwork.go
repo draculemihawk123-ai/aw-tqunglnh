@@ -77,6 +77,10 @@ type Tx interface {
 	// task owns end to end — WaitRegistration/WaitSignal persistence (see
 	// WaitRepository's own doc comment, internal/app/ports/wait.go).
 	Wait() WaitRepository
+	// Approvals is populated now (V4-09, docs/design/06-v4-runtime-engine.md):
+	// the same treatment for ApprovalRequest persistence (see
+	// ApprovalRepository's own doc comment, internal/app/ports/approval.go).
+	Approvals() ApprovalRepository
 }
 
 // CatalogRepository is populated now (V3-01,

@@ -320,7 +320,34 @@
 - **Mục tiêu:** approval node chỉ resolve bằng typed operator command.
 - **Phụ thuộc:** V4-08.
 - **Thực hiện:** approval request/evidence/actor/reason/timeout; approve/reject outcomes; chat không tự resolve.
-- **Verify:** unauthorized-shaped input, duplicate decision, timeout/restart tests.
+  Khác V4-08's own WAIT (SignalWait's own signal không mang thông tin outcome nào cả), quyết định của
+  operator TỰ mang outcome (GC-INV-11's own allow-list check, `advanceRunTx`, xác thực nó) — nên
+  `ApprovalNodeConfig` không cần thêm field pin outcome kiểu CompletionOutcome/TimeoutOutcome của WAIT;
+  chỉ `EscalationOutcome` (đã có từ V2-08) là cần pin, cho đường timeout.
+  **Một câu hỏi chốt với user trước khi code:** làm sao lệnh resolve-approval biết actor có thuộc
+  `AuthorizedRoles` hay không, khi `ports.Command.Actor` trước giờ luôn là chuỗi identity thuần, chưa
+  từng được re-authenticate ở bất kỳ layer nào, và không có cơ chế role/permission thật nào trong toàn bộ
+  codebase? Chọn: `ports.Command` (struct dùng chung cho MỌI command trong repo) thêm field
+  `ActorRoles []string` — **authentication context** do transport/API layer tạo từ local session, KHÔNG
+  decode từ request body, KHÔNG thuộc `RequestHash` (vì đó là context, không phải payload). Handler chỉ
+  check intersection chính xác/case-sensitive giữa `cmd.ActorRoles` và `AuthorizedRoles`; rỗng hoặc không
+  giao nhau → `errorcode.CodePolicyDenied` (typed, dùng thẳng enum V4-06), reject TRƯỚC khi chạm state
+  của request (kể cả khi request đã DECIDED). Ghi actor VÀ role đã match vào request để audit
+  (HE-08-M08's own "MUST ghi actor, cause, previous/new state, time"). Alpha dùng local-session principal
+  tối giản; Beta thay bằng identity provider thật mà không đổi semantics V4-09.
+  **Phát hiện thêm khi code (siết một validation cũ, không phải câu hỏi mới):** `ApprovalNodeConfig.
+  EscalationOutcome` (V2-08) được document là "Optional" — nhưng `TimeoutSeconds` lại LUÔN bắt buộc và
+  dương (không như WAIT's own optional ceiling). Một timeout luôn xảy ra mà không có đường thoát sẽ tái
+  tạo đúng cái unbounded-wait mà chính TimeoutSeconds tồn tại để ngăn — và không có "standardized timeout
+  outcome" convention nào (dù comment cũ hứa hẹn) từng thực sự được xây ở đâu trong repo. Sửa:
+  `validateApprovalConfig` giờ BẮT BUỘC `EscalationOutcome`, không còn optional.
+- **Verify:** unauthorized-shaped input, duplicate decision, timeout/restart tests. Đã triển khai
+  (`approval_test.go`, `approval_sqlite_test.go`, 8 test): happy path approve+route, unauthorized actor
+  (role sai và không có role nào) reject bằng `POLICY_DENIED`/không ghi gì/không route, duplicate decision
+  (command invocation khác, sau khi đã DECIDED) Won=false/không re-route/không đè outcome đã thắng, timer
+  route qua EscalationOutcome, timer replay sau khi đã DECIDED (no-op) — cộng
+  `TestApprovalTimeoutHandler_SQLite_PersistsAcrossRestart` (đóng/mở lại sqlite.Store thật, timer job vẫn
+  claim/fire đúng sau restart).
 - **Hoàn thành khi:** decision append-only và route audit đủ.
 - **Nguồn:** HE-14-S03, GC-INV-11, HE-08-M08.
 

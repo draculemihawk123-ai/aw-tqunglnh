@@ -242,6 +242,15 @@ type AdvanceRunResult struct {
 	// TimeoutSeconds ceiling).
 	NextWaitRegistrationID string
 	NextWaitTimerJobID     string
+	// NextApprovalRequestID/NextApprovalTimerJobID are populated now
+	// (V4-09) when the downstream node actually dispatched is an APPROVAL
+	// node — an ApprovalRequest is always created inline (mirroring
+	// WaitRegistration), and its own timer job is always enqueued too
+	// (ApprovalNodeConfig.TimeoutSeconds is itself always required and
+	// positive, unlike WAIT's own optional ceiling, so unlike
+	// NextWaitTimerJobID this one is never empty for an APPROVAL node).
+	NextApprovalRequestID  string
+	NextApprovalTimerJobID string
 }
 
 // AdvanceRun performs exactly one routing hop. See this file's own package
@@ -446,15 +455,19 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 
 	autoAdvance := isStructuralRoutingNode(finalTargetNode.Type) && len(finalTargetNode.Outcomes) == 1
 	isWaitNode := finalTargetNode.Type == workflow.NodeWait
+	isApprovalNode := finalTargetNode.Type == workflow.NodeApproval
 	if autoAdvance {
 		nextNodeRun.State = runtimedomain.NodeRunRunning
-	} else if isWaitNode {
-		// V4-08: a WAIT node's own NodeRun goes straight to WAITING —
-		// never RUNNING (nothing ever dispatches an Attempt for it) and
-		// never QUEUED (there is no scheduling transaction the way an
-		// executable node needs). advanceRunTx's own idempotent-replay
+	} else if isWaitNode || isApprovalNode {
+		// V4-08/V4-09: a WAIT or APPROVAL node's own NodeRun goes straight
+		// to WAITING — never RUNNING (nothing ever dispatches an Attempt
+		// for either) and never QUEUED (there is no scheduling transaction
+		// the way an executable node needs). Both share this one generic
+		// "durably pending an external event" NodeRun state rather than
+		// each minting its own — advanceRunTx's own idempotent-replay
 		// guard above already accepts WAITING alongside RUNNING as a
-		// valid "still active" state to route away from later.
+		// valid "still active" state to route away from later, for
+		// either node type.
 		nextNodeRun.State = runtimedomain.NodeRunWaiting
 	}
 	if _, err := tx.Runtime().CreateNodeRun(ctx, nextNodeRun); err != nil {
@@ -649,6 +662,47 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 			}
 			result.NextWaitTimerJobID = string(job.ID)
 		}
+
+	case isApprovalNode:
+		// V4-09: an ApprovalRequest, like a WaitRegistration, needs no
+		// external resolution — pure data derived entirely from the
+		// pinned, already-compiled ApprovalNodeConfig — so it is created
+		// inline, in this same transaction. Unlike WAIT, TimeoutSeconds is
+		// always required and positive and EscalationOutcome is always
+		// required too (validateApprovalConfig, workflow package,
+		// tightened for this exact reason — see that function's own doc
+		// comment), so a timer job is always enqueued, never conditional.
+		approvalCfg := finalTargetNode.Approval
+		dueAt := time.Now().UTC().Add(time.Duration(approvalCfg.TimeoutSeconds) * time.Second)
+
+		requestID := ids.NewID()
+		approvalRequest, err := runtimedomain.NewApprovalRequest(
+			runtimedomain.ApprovalRequestID(requestID), run.ProjectID, run.ID, runtimedomain.NodeRunID(nextID),
+			finalTargetNode.Key, approvalCfg.AuthorizedRoles, approvalCfg.RequestedEvidenceKinds, dueAt, approvalCfg.EscalationOutcome,
+		)
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		if _, err := tx.Approvals().CreateApprovalRequest(ctx, approvalRequest); err != nil {
+			return AdvanceRunResult{}, err
+		}
+		result.NextApprovalRequestID = requestID
+
+		timerPayload, err := json.Marshal(ApprovalTimerJobPayload{
+			RunID: string(run.ID), NodeRunID: nextID, ApprovalRequestID: requestID, CorrelationID: req.CorrelationID,
+		})
+		if err != nil {
+			return AdvanceRunResult{}, fmt.Errorf("marshal %s job payload: %w", ApprovalTimerJobKind, err)
+		}
+		job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+			ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: ApprovalTimerJobKind,
+			AggregateType: "ApprovalRequest", AggregateID: requestID, Payload: timerPayload,
+			AvailableAt: dueAt, MaxClaims: defaultApprovalTimerJobMaxClaims, IdempotencyKey: "approval-timer-" + requestID,
+		})
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		result.NextApprovalTimerJobID = string(job.ID)
 	}
 	return result, nil
 }

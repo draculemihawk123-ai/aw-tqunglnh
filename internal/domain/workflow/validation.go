@@ -658,9 +658,22 @@ func validatePolicyRefs(refs []definition.DependencyPin, path, nodeKey string) [
 }
 
 // validateApprovalConfig checks an APPROVAL node's HE-14-S03-derived
-// config: at least one authorized role, a positive timeout, an
-// escalation outcome (if declared) that names one of this node's own
-// declared Outcomes, and no duplicate/empty entries anywhere.
+// config: at least one authorized role, a positive timeout, an escalation
+// outcome that names one of this node's own declared Outcomes, and no
+// duplicate/empty entries anywhere.
+//
+// EscalationOutcome is required now (V4-09, correction found while
+// building this task's own real consumer — the field's own doc comment
+// used to call it merely optional, "not every approval needs an
+// escalation path"): TimeoutSeconds is itself already required and
+// positive precisely because "an approval with no timeout could wait
+// forever" is the failure mode this schema exists to prevent, so a
+// declared timeout with nowhere to route once it actually fires would
+// silently reintroduce that exact same unbounded wait the moment
+// TimeoutSeconds elapses — V4-09's own timer has to route somewhere,
+// deterministically, and there is no "standardized timeout outcome"
+// convention anywhere in this codebase for it to fall back to (confirmed
+// by search before making this change) for it to lean on instead.
 func validateApprovalConfig(node Node) []string {
 	problems := make([]string, 0)
 	cfg := node.Approval
@@ -684,7 +697,9 @@ func validateApprovalConfig(node Node) []string {
 		problems = append(problems, fmt.Sprintf("node %q approval timeout must be greater than zero", node.Key))
 	}
 
-	if cfg.EscalationOutcome != "" && !contains(node.Outcomes, cfg.EscalationOutcome) {
+	if cfg.EscalationOutcome == "" {
+		problems = append(problems, fmt.Sprintf("node %q approval must declare an escalation outcome", node.Key))
+	} else if !contains(node.Outcomes, cfg.EscalationOutcome) {
 		problems = append(problems, fmt.Sprintf("node %q approval escalation outcome %q is not declared", node.Key, cfg.EscalationOutcome))
 	}
 

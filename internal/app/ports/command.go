@@ -67,15 +67,38 @@ func (s CommandScope) Key() string {
 // (docs/design/03-v1-alpha-foundation.md V1-06's own Mục tiêu: "mọi
 // mutation dùng cùng command boundary").
 type Command struct {
-	ID              string
-	IdempotencyKey  string
-	Actor           string
+	ID             string
+	IdempotencyKey string
+	Actor          string
+	// ActorRoles is populated now (V4-09, confirmed with the user before
+	// writing that task's code): the role names already vetted for Actor
+	// by the local session at the moment this Command was constructed —
+	// authentication CONTEXT, the exact same trust boundary Actor itself
+	// already sits on (never re-authenticated by any command handler in
+	// this codebase, always treated as already-vetted by the caller). The
+	// transport/API layer populates this from its own session, never by
+	// decoding it out of a request body — a command handler that needs an
+	// authorization decision (ResolveApproval's own AuthorizedRoles check
+	// is the first real caller) checks set-intersection against it
+	// directly, never resolves roles itself. Deliberately excluded from
+	// RequestHash (see that field's own doc comment): it is authentication
+	// context, not command payload, so two requests that are otherwise
+	// identical must never conflict merely because the session that
+	// carried them resolved a different role set. Alpha's own "local-
+	// session" principal is intentionally the simplest thing that lets
+	// this field exist at all; a later real identity provider/resolver
+	// can populate it differently without changing any command handler's
+	// own semantics.
+	ActorRoles      []string
 	CorrelationID   string
 	Scope           CommandScope
 	ExpectedVersion uint64
 	RequestedAt     time.Time
 	Type            string
-	RequestHash     string
+	// RequestHash is caller-computed over the command's own business
+	// payload — never over authentication context like ActorRoles (see
+	// that field's own doc comment for why).
+	RequestHash string
 }
 
 // ErrReceiptConflict is returned by CommandReceipts.Record when a receipt

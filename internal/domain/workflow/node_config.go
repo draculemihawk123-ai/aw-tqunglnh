@@ -129,20 +129,24 @@ type ApprovalNodeConfig struct {
 	// resolve could never complete.
 	AuthorizedRoles []string `json:"authorizedRoles"`
 	// TimeoutSeconds is how long this approval waits for an authorized
-	// role to respond before EscalationOutcome (if declared) or a
-	// standardized timeout outcome applies (HE-14-S03's "timeout").
-	// Required, and must be positive — an approval with no timeout could
-	// wait forever, exactly the kind of unbounded wait
+	// role to respond before EscalationOutcome applies (HE-14-S03's
+	// "timeout"). Required, and must be positive — an approval with no
+	// timeout could wait forever, exactly the kind of unbounded wait
 	// docs/harness-engineering/14-lec-14-do-thi-dieu-phoi.md's failure
 	// modes warn against.
 	TimeoutSeconds uint32 `json:"timeoutSeconds"`
 	// EscalationOutcome is which of this node's declared Outcomes fires
 	// when TimeoutSeconds elapses without a response (HE-14-S03's
-	// "escalation"). Optional: not every approval needs an escalation
-	// path, but when declared it must name an outcome this node itself
-	// declares (validation.go checks this the same way CyclePolicy's own
-	// EscalationOutcome already does).
-	EscalationOutcome string `json:"escalationOutcome,omitempty"`
+	// "escalation"). Required now (V4-09, correction found while building
+	// this task's own real consumer — this field used to be documented as
+	// optional): TimeoutSeconds is itself already mandatory, so a declared
+	// timeout with nowhere to route once it actually fires would silently
+	// reintroduce the exact unbounded wait requiring TimeoutSeconds exists
+	// to prevent — there is no "standardized timeout outcome" fallback
+	// convention anywhere in this codebase to lean on instead. Must name
+	// an outcome this node itself declares (validation.go checks this the
+	// same way CyclePolicy's own EscalationOutcome already does).
+	EscalationOutcome string `json:"escalationOutcome"`
 	// RequestedEvidenceKinds is the set of Evidence.Kind values shown to
 	// an authorized approver alongside the request (HE-14-S03's
 	// "requested evidence") — the same Evidence.Kind vocabulary
