@@ -94,6 +94,7 @@ type Tx struct {
 	receipts      *ReceiptsRepository
 	adapterBuilds *AdapterBuildRepository
 	readiness     *ReadinessRepository
+	wait          *WaitRepository
 }
 
 func newTx() Tx {
@@ -108,6 +109,7 @@ func newTx() Tx {
 		runtime:       &RuntimeRepository{},
 		jobs:          &JobsRepository{},
 		readiness:     &ReadinessRepository{catalog: catalog},
+		wait:          &WaitRepository{},
 	}
 }
 
@@ -122,6 +124,7 @@ func (t Tx) clone() Tx {
 	clone.runtime = t.runtime.clone()
 	clone.jobs = t.jobs.clone()
 	clone.readiness = t.readiness.cloneWith(clone.catalog)
+	clone.wait = t.wait.clone()
 	return clone
 }
 
@@ -136,6 +139,7 @@ func (t Tx) Events() ports.EventsRepository              { return t.events }
 func (t Tx) Receipts() ports.ReceiptsRepository          { return t.receipts }
 func (t Tx) AdapterBuilds() ports.AdapterBuildRepository { return t.adapterBuilds }
 func (t Tx) Readiness() ports.ReadinessRepository        { return t.readiness }
+func (t Tx) Wait() ports.WaitRepository                  { return t.wait }
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the

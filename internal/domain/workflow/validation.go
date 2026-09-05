@@ -706,7 +706,12 @@ func validateApprovalConfig(node Node) []string {
 // validateWaitConfig checks a WAIT node's config: exactly one of
 // DurationSeconds (Mode DURATION) or SignalName (Mode SIGNAL) is set,
 // consistent with the Mode declared, per WaitNodeConfig's own doc
-// comment.
+// comment — plus (V4-08) CompletionOutcome/TimeoutOutcome, which must
+// each name a declared Outcome when set, must stay empty for a completion
+// path that can never fire (TimeoutOutcome under DURATION, or under
+// SIGNAL with no TimeoutSeconds ceiling), and must be explicitly pinned
+// the moment more than one Outcome makes the "which one fires" question
+// genuinely ambiguous.
 func validateWaitConfig(node Node) []string {
 	problems := make([]string, 0)
 	cfg := node.Wait
@@ -722,6 +727,9 @@ func validateWaitConfig(node Node) []string {
 		if cfg.TimeoutSeconds != 0 {
 			problems = append(problems, fmt.Sprintf("node %q wait timeout must be zero for mode DURATION; duration is already its own ceiling", node.Key))
 		}
+		if cfg.TimeoutOutcome != "" {
+			problems = append(problems, fmt.Sprintf("node %q wait timeout outcome must be empty for mode DURATION; reaching duration is normal completion, not a timeout", node.Key))
+		}
 	case WaitModeSignal:
 		if strings.TrimSpace(cfg.SignalName) == "" {
 			problems = append(problems, fmt.Sprintf("node %q wait signal name is required for mode SIGNAL", node.Key))
@@ -729,8 +737,26 @@ func validateWaitConfig(node Node) []string {
 		if cfg.DurationSeconds != 0 {
 			problems = append(problems, fmt.Sprintf("node %q wait duration must be zero for mode SIGNAL", node.Key))
 		}
+		if cfg.TimeoutSeconds == 0 && cfg.TimeoutOutcome != "" {
+			problems = append(problems, fmt.Sprintf("node %q wait timeout outcome must be empty when timeout seconds is zero (no timeout ceiling)", node.Key))
+		}
 	default:
 		problems = append(problems, fmt.Sprintf("node %q has unsupported wait mode %q", node.Key, cfg.Mode))
+	}
+
+	if cfg.CompletionOutcome != "" && !contains(node.Outcomes, cfg.CompletionOutcome) {
+		problems = append(problems, fmt.Sprintf("node %q wait completion outcome %q is not declared", node.Key, cfg.CompletionOutcome))
+	}
+	if cfg.TimeoutOutcome != "" && !contains(node.Outcomes, cfg.TimeoutOutcome) {
+		problems = append(problems, fmt.Sprintf("node %q wait timeout outcome %q is not declared", node.Key, cfg.TimeoutOutcome))
+	}
+	if len(node.Outcomes) > 1 {
+		if cfg.CompletionOutcome == "" {
+			problems = append(problems, fmt.Sprintf("node %q has %d declared outcomes but no wait completion outcome pinned", node.Key, len(node.Outcomes)))
+		}
+		if cfg.Mode == WaitModeSignal && cfg.TimeoutSeconds > 0 && cfg.TimeoutOutcome == "" {
+			problems = append(problems, fmt.Sprintf("node %q has %d declared outcomes and a wait timeout ceiling but no timeout outcome pinned", node.Key, len(node.Outcomes)))
+		}
 	}
 
 	return problems

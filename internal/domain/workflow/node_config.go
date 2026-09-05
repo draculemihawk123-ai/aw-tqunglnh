@@ -201,6 +201,31 @@ type WaitNodeConfig struct {
 	// for DURATION, whose own DurationSeconds is already its ceiling —
 	// must be zero there.
 	TimeoutSeconds uint32 `json:"timeoutSeconds,omitempty"`
+	// CompletionOutcome/TimeoutOutcome are populated now (V4-08, confirmed
+	// with the user before writing this task's code): which of this
+	// node's own declared Outcomes fires on normal completion (DURATION
+	// reaching its own DurationSeconds; SIGNAL receiving the expected
+	// signal) versus on a SIGNAL wait's own TimeoutSeconds elapsing —
+	// mirroring the exact ApprovalNodeConfig.EscalationOutcome pattern
+	// this package already established, rather than inventing a
+	// convention-based/"magic string" outcome name. Both are optional
+	// ONLY when this node declares exactly one Outcome (unambiguous by
+	// construction); validateWaitConfig requires an explicit,
+	// already-declared value for either field the moment this node
+	// declares more than one Outcome AND that field's own completion path
+	// is actually reachable (TimeoutOutcome only when Mode is SIGNAL and
+	// TimeoutSeconds > 0). This ambiguity is rejected at compile/publish
+	// time, never deferred to schedule/signal time — the runtime that
+	// eventually routes a resolved WAIT (SignalWait, the timer job) never
+	// chooses an outcome itself; it only races a CAS on the wait's own
+	// registration, and the winner routes using whichever of these two
+	// fields this already-immutable, published WorkflowVersion pinned.
+	CompletionOutcome string `json:"completionOutcome,omitempty"`
+	// TimeoutOutcome must stay empty for DURATION (reaching the duration
+	// is normal completion, never a timeout) and for a SIGNAL wait with no
+	// TimeoutSeconds ceiling (nothing to time out against) — see
+	// CompletionOutcome's own doc comment above for the shared contract.
+	TimeoutOutcome string `json:"timeoutOutcome,omitempty"`
 }
 
 func (c *WaitNodeConfig) clone() *WaitNodeConfig {

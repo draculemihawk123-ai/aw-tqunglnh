@@ -232,6 +232,16 @@ type AdvanceRunResult struct {
 	CycleExhausted   bool
 	SkippedNodeRunID string
 	SkippedNodeKey   string
+	// NextWaitRegistrationID/NextWaitTimerJobID are populated now (V4-08)
+	// when the downstream node actually dispatched is a WAIT node:
+	// NextWaitRegistrationID always (a WaitRegistration is created inline,
+	// in this same transaction, the moment a WAIT node is activated —
+	// there is no separate scheduling job the way an executable node
+	// needs), NextWaitTimerJobID only when that registration has a due
+	// time at all (DURATION always does; SIGNAL only when it declares a
+	// TimeoutSeconds ceiling).
+	NextWaitRegistrationID string
+	NextWaitTimerJobID     string
 }
 
 // AdvanceRun performs exactly one routing hop. See this file's own package
@@ -269,8 +279,14 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 	if string(current.RunID) != req.RunID {
 		return AdvanceRunResult{}, fmt.Errorf("%w: node run %s belongs to run %s, not %s", ErrNodeRunMismatch, req.NodeRunID, current.RunID, req.RunID)
 	}
-	if current.State != runtimedomain.NodeRunRunning {
+	if current.State != runtimedomain.NodeRunRunning && current.State != runtimedomain.NodeRunWaiting {
 		// Idempotent no-op — see this file's own package doc comment.
+		// NodeRunWaiting is accepted alongside NodeRunRunning (V4-08): a
+		// WAIT node's own NodeRun sits in WAITING — never RUNNING, since
+		// nothing ever dispatches an Attempt for it — while its own
+		// registration is pending, and is routed away from here the exact
+		// same way once SignalWait or the timer job wins the fenced CAS on
+		// that registration.
 		return AdvanceRunResult{
 			Advanced: false, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: current.SelectedOutcome,
 		}, nil
@@ -326,7 +342,7 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 	}
 
 	completedNodeRun, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
-		NodeRunID: req.NodeRunID, ExpectedState: runtimedomain.NodeRunRunning, ExpectedVersion: current.Version,
+		NodeRunID: req.NodeRunID, ExpectedState: current.State, ExpectedVersion: current.Version,
 		NextState: runtimedomain.NodeRunSucceeded, SelectedOutcome: outcome,
 	})
 	if err != nil {
@@ -429,8 +445,17 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 	}
 
 	autoAdvance := isStructuralRoutingNode(finalTargetNode.Type) && len(finalTargetNode.Outcomes) == 1
+	isWaitNode := finalTargetNode.Type == workflow.NodeWait
 	if autoAdvance {
 		nextNodeRun.State = runtimedomain.NodeRunRunning
+	} else if isWaitNode {
+		// V4-08: a WAIT node's own NodeRun goes straight to WAITING —
+		// never RUNNING (nothing ever dispatches an Attempt for it) and
+		// never QUEUED (there is no scheduling transaction the way an
+		// executable node needs). advanceRunTx's own idempotent-replay
+		// guard above already accepts WAITING alongside RUNNING as a
+		// valid "still active" state to route away from later.
+		nextNodeRun.State = runtimedomain.NodeRunWaiting
 	}
 	if _, err := tx.Runtime().CreateNodeRun(ctx, nextNodeRun); err != nil {
 		return AdvanceRunResult{}, err
@@ -557,6 +582,73 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 			return AdvanceRunResult{}, err
 		}
 		result.NextScheduleJobID = string(job.ID)
+
+	case isWaitNode:
+		// V4-08: unlike an executable node, a WAIT registration needs no
+		// external resolution (no RuntimeExecutionConfigProvider, no
+		// ADR-027 concern) — it is pure data derived entirely from the
+		// pinned, already-compiled WaitNodeConfig, so it is created
+		// inline, in this same transaction, rather than handed off to a
+		// separate job/handler. CompletionOutcome/TimeoutOutcome are
+		// resolved from the compiled document exactly as pinned
+		// (validateWaitConfig, workflow package, already guarantees this
+		// is unambiguous); when the node declares exactly one Outcome,
+		// that single value fills in for whichever of the two fields was
+		// left blank, per WaitNodeConfig's own documented inference rule.
+		waitCfg := finalTargetNode.Wait
+		completionOutcome := waitCfg.CompletionOutcome
+		timeoutOutcome := waitCfg.TimeoutOutcome
+		if len(finalTargetNode.Outcomes) == 1 {
+			only := finalTargetNode.Outcomes[0]
+			if completionOutcome == "" {
+				completionOutcome = only
+			}
+			if waitCfg.Mode == workflow.WaitModeSignal && waitCfg.TimeoutSeconds > 0 && timeoutOutcome == "" {
+				timeoutOutcome = only
+			}
+		}
+		var dueAt *time.Time
+		switch waitCfg.Mode {
+		case workflow.WaitModeDuration:
+			due := time.Now().UTC().Add(time.Duration(waitCfg.DurationSeconds) * time.Second)
+			dueAt = &due
+		case workflow.WaitModeSignal:
+			if waitCfg.TimeoutSeconds > 0 {
+				due := time.Now().UTC().Add(time.Duration(waitCfg.TimeoutSeconds) * time.Second)
+				dueAt = &due
+			}
+		}
+
+		registrationID := ids.NewID()
+		registration, err := runtimedomain.NewWaitRegistration(
+			runtimedomain.WaitRegistrationID(registrationID), run.ProjectID, run.ID, runtimedomain.NodeRunID(nextID),
+			finalTargetNode.Key, waitCfg.SignalName, dueAt, completionOutcome, timeoutOutcome,
+		)
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		if _, err := tx.Wait().CreateWaitRegistration(ctx, registration); err != nil {
+			return AdvanceRunResult{}, err
+		}
+		result.NextWaitRegistrationID = registrationID
+
+		if dueAt != nil {
+			timerPayload, err := json.Marshal(WaitTimerJobPayload{
+				RunID: string(run.ID), NodeRunID: nextID, WaitRegistrationID: registrationID, CorrelationID: req.CorrelationID,
+			})
+			if err != nil {
+				return AdvanceRunResult{}, fmt.Errorf("marshal %s job payload: %w", WaitTimerJobKind, err)
+			}
+			job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+				ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: WaitTimerJobKind,
+				AggregateType: "WaitRegistration", AggregateID: registrationID, Payload: timerPayload,
+				AvailableAt: *dueAt, MaxClaims: defaultWaitTimerJobMaxClaims, IdempotencyKey: "wait-timer-" + registrationID,
+			})
+			if err != nil {
+				return AdvanceRunResult{}, err
+			}
+			result.NextWaitTimerJobID = string(job.ID)
+		}
 	}
 	return result, nil
 }

@@ -270,8 +270,48 @@
   signal identity/idempotency key kèm payload ref/hash và actor/time, unique theo signal identity.
   Consume-once đến từ unique signal identity cộng CAS trên registration — `durable_jobs` chỉ đánh thức
   timer đến hạn và **không** là authority của signal. Public command `SignalWait`, cancel/timeout route.
+  **Hai câu hỏi chốt với user trước khi code:**
+  1. *Outcome khi timeout:* `workflow.WaitNodeConfig` (V2-08) không có field nào tên outcome fire khi
+     TIMEOUT, khác `ApprovalNodeConfig.EscalationOutcome` đã có. Chọn mở rộng authoring schema, không
+     dùng convention/magic string: thêm `CompletionOutcome`/`TimeoutOutcome` (cả hai optional khi node
+     chỉ có đúng một outcome — suy luận được; bắt buộc khai báo tường minh khi có nhiều outcome, reject
+     ngay lúc compile/publish nếu thiếu). `TimeoutOutcome` chỉ hợp lệ với SIGNAL có `TimeoutSeconds>0`;
+     với DURATION, hết thời lượng luôn là `CompletionOutcome` (never a timeout). `SignalWait`/timer job
+     không tự chọn outcome — chỉ tranh CAS trên registration, bên thắng dùng outcome đã pin sẵn trong
+     WorkflowVersion.
+  2. *Signal identity:* `SignalWaitRequest` có field riêng `SignalKey` (opaque, caller-supplied), KHÔNG
+     dùng `cmd.IdempotencyKey`. Unique trên `wait_signals` là (WaitRegistrationID, SignalKey) — không lặp
+     thêm cột Run/NodeRun/SignalName vì WaitRegistrationID đã định danh đúng activation đó.
+     `cmd.IdempotencyKey` bảo vệ một lần gọi command + receipt; `SignalKey` bảo vệ cùng một external
+     event gửi qua nhiều command invocation khác nhau (actor/idempotency key khác nhau) — hai lớp
+     dedupe tách biệt, cột đặt tên `signal_key` chứ không phải `idempotency_key` để không nhập nhằng.
+     Cùng SignalKey + cùng payload → idempotent replay (không consume lại); cùng SignalKey + payload khác
+     → `errorcode.CodeIdempotencyConflict` (lần đầu package đó có real caller ngoài test); hai SignalKey
+     khác nhau đến đồng thời → CAS registration quyết định đúng một winner. Timer timeout không tạo
+     `wait_signals` row nào cả.
+  **Phát hiện thêm khi code (không phải câu hỏi, nhưng cần một state mới ngoài dự kiến ban đầu):**
+  `WaitRegistrationState` cần 4 giá trị, không phải 3 — ACTIVE, CONSUMED (SIGNAL resolve bởi signal thật,
+  luôn có `ConsumedSignalID`), **ELAPSED** (DURATION đến hạn — hoàn thành bình thường, route qua
+  `CompletionOutcome`, KHÔNG dùng CONSUMED vì tên đó ngụ ý có signal thật, và KHÔNG dùng TIMED_OUT vì đó
+  không phải thất bại), TIMED_OUT (SIGNAL hết `TimeoutSeconds` mà không có signal — route qua
+  `TimeoutOutcome`). Timer handler tự phân biệt DURATION/SIGNAL bằng `registration.SignalName == ""`
+  (đúng discriminator `validateWaitConfig` đã enforce — SignalName luôn rỗng cho DURATION).
+  `advanceRunTx`'s own idempotent-replay guard (V4-03) nới từ `current.State != RUNNING` thành chấp nhận
+  cả `RUNNING` lẫn `WAITING` — một WAIT NodeRun nằm ở WAITING (không bao giờ RUNNING, không có Attempt
+  nào cả) và được route đi từ đó theo đúng cách một RUNNING NodeRun được route, tái dùng nguyên
+  `advanceRunTx` cho `SignalWait`/timer handler thay vì viết lại pipeline routing riêng.
+  `Tx` gains accessor mới `Wait() WaitRepository` (mirror `AdapterBuilds()`/`Readiness()` — "gets a real
+  interface from the start" cho concern task này sở hữu trọn vẹn).
 - **Verify:** duplicate/early/wrong signal, restart timer, hai signal đồng thời cùng identity, và test
-  khẳng định xóa/replay timer job không consume thêm lần nào.
+  khẳng định xóa/replay timer job không consume thêm lần nào. Đã triển khai (`wait_test.go`,
+  `wait_sqlite_test.go`): fake tests cho happy path DURATION/SIGNAL, duplicate signal khác command
+  invocation (idempotent replay), same-key-different-payload (IDEMPOTENCY_CONFLICT), wrong-run reject,
+  signal đến sau khi đã CONSUMED (Won=false, không re-route), timer replay sau khi đã CONSUMED (no-op) —
+  cộng 2 test sqlite bắt buộc: `TestWaitTimeoutHandler_SQLite_PersistsAcrossRestart` (đóng/mở lại
+  sqlite.Store thật, timer job vẫn claim và fire đúng sau restart) và
+  `TestSignalWait_SQLite_ConcurrentSameSignalKey_ExactlyOneWinner` (5 goroutine gọi `SignalWait` thật sự
+  đồng thời, cùng SignalKey/payload, khác command invocation — đúng 1 winner, registration CONSUMED đúng
+  một lần).
 - **Hoàn thành khi:** WAIT sống qua process restart và signal chỉ consume một lần.
 - **Nguồn:** GC-INV-31, HE-13-M06.
 

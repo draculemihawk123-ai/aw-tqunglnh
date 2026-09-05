@@ -71,6 +71,12 @@ type Tx interface {
 	// typed environment blocker (see ReadinessRepository's own doc
 	// comment, internal/app/ports/readiness.go).
 	Readiness() ReadinessRepository
+	// Wait is populated now (V4-08, docs/design/06-v4-runtime-engine.md):
+	// the same "gets a real interface from the start" treatment
+	// AdapterBuilds/Readiness above already established for a concern this
+	// task owns end to end — WaitRegistration/WaitSignal persistence (see
+	// WaitRepository's own doc comment, internal/app/ports/wait.go).
+	Wait() WaitRepository
 }
 
 // CatalogRepository is populated now (V3-01,
