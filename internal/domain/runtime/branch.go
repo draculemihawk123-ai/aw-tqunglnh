@@ -24,12 +24,18 @@ const (
 
 // BranchToken is one persisted, queue-order-independent branch identity for
 // a FORK node (HE-14-M09, design/01-system-design.md §6.3: "run/fork/branch/
-// current node/state/version; unique run+fork+branch"). ForkKey is the
-// FORK NodeRun's own NodeKey; BranchKey is the declared branch identifier
-// within that fork.
+// current node/state/version; unique run+fork+branch"). ForkNodeRunID is
+// the exact FORK NodeRun ACTIVATION that spawned this token (V4-10,
+// correction found while building this task's own real consumer — a token
+// scoped only to ForkKey could never distinguish two separate activations
+// of the same FORK node key, which V4-07's own business-rework cycle
+// budget makes a legitimate, real scenario); ForkKey is kept alongside it
+// purely for query/audit. BranchKey is the declared branch identifier
+// (the FORK's own outcome name) within that one activation.
 type BranchToken struct {
 	ID             BranchTokenID
 	RunID          WorkflowRunID
+	ForkNodeRunID  NodeRunID
 	ForkKey        string
 	BranchKey      string
 	CurrentNodeKey string
@@ -41,6 +47,7 @@ type BranchToken struct {
 func NewBranchToken(
 	id BranchTokenID,
 	runID WorkflowRunID,
+	forkNodeRunID NodeRunID,
 	forkKey string,
 	branchKey string,
 	currentNodeKey string,
@@ -48,7 +55,7 @@ func NewBranchToken(
 	forkKey = strings.TrimSpace(forkKey)
 	branchKey = strings.TrimSpace(branchKey)
 	currentNodeKey = strings.TrimSpace(currentNodeKey)
-	if id == "" || runID == "" {
+	if id == "" || runID == "" || forkNodeRunID == "" {
 		return BranchToken{}, errors.New("branch token identities are required")
 	}
 	if forkKey == "" || branchKey == "" || currentNodeKey == "" {
@@ -57,6 +64,7 @@ func NewBranchToken(
 	return BranchToken{
 		ID:             id,
 		RunID:          runID,
+		ForkNodeRunID:  forkNodeRunID,
 		ForkKey:        forkKey,
 		BranchKey:      branchKey,
 		CurrentNodeKey: currentNodeKey,

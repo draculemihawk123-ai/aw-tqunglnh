@@ -130,7 +130,18 @@ type NodeRun struct {
 	// scheduling pins it — a structural node (START, ROUTER) that never
 	// dispatches an Attempt never needs one.
 	ManifestRevision uint64
-	Version          uint64
+	// BranchTokenID is populated now (V4-10, HE-14-M09): nil for every
+	// NodeRun outside a FORK's own branch (the common case — including the
+	// FORK's own NodeRun itself, and anything reached before the first
+	// FORK or after its own JOIN). A non-nil value names the exact
+	// BranchToken this NodeRun activation belongs to — set by the caller
+	// after construction (NewNodeRun itself never takes it, mirroring how
+	// State is already set post-construction by callers that need
+	// something other than the default PENDING), and propagated unchanged
+	// by advanceRunTx across every ordinary hop within a branch, in lock-
+	// step with a CAS on that same token's own CurrentNodeKey.
+	BranchTokenID *BranchTokenID
+	Version       uint64
 }
 
 // NewNodeRun validates and builds a new NodeRun activation, PENDING at

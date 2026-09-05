@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/eventschema"
@@ -255,6 +256,63 @@ func TestNodeCycleExhaustedV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode: %v", err)
 	}
 	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
+
+// TestNodeForkedV1_GoldenFixtureDecodes is NODE_FORKED's own golden-fixture
+// proof, mirroring TestNodeCycleExhaustedV1_GoldenFixtureDecodes. Compared
+// with reflect.DeepEqual, not ==, since nodeForkedEventPayload carries a
+// slice field (Branches) that Go's own == operator cannot compare.
+func TestNodeForkedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "node_forked_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(NodeForkedEventType, NodeForkedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", NodeForkedEventType, NodeForkedSchemaVersion, err)
+	}
+	want := nodeForkedEventPayload{
+		RunID: "run-1", WorkItemID: "work-item-1", ForkNodeRunID: "node-run-fork-1", ForkKey: "fork",
+		Branches: []forkedBranchEventEntry{
+			{BranchKey: "branch_a", BranchTokenID: "token-1", NodeRunID: "node-run-a-1", NodeKey: "a_step"},
+			{BranchKey: "branch_b", BranchTokenID: "token-2", NodeRunID: "node-run-b-1", NodeKey: "b_step"},
+			{BranchKey: "branch_c", BranchTokenID: "token-3", ReachedJoin: true},
+		},
+		JobID: "job-1",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", NodeForkedEventType, NodeForkedSchemaVersion, got, want)
+	}
+}
+
+// TestNodeForkedV1_RealEventPayloadDecodes proves dispatchForkBranches' own
+// actual marshaled NODE_FORKED payload round-trips through the registered
+// decoder, mirroring TestNodeCycleExhaustedV1_RealEventPayloadDecodes.
+func TestNodeForkedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := nodeForkedEventPayload{
+		RunID: "run-9", WorkItemID: "work-item-9", ForkNodeRunID: "node-run-fork-9", ForkKey: "fork",
+		Branches: []forkedBranchEventEntry{
+			{BranchKey: "branch_a", BranchTokenID: "token-9a", NodeRunID: "node-run-a-9", NodeKey: "a_step"},
+		},
+		JobID: "job-9",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(NodeForkedEventType, NodeForkedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if !reflect.DeepEqual(got, produced) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }

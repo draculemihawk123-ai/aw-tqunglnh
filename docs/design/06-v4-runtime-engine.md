@@ -356,7 +356,69 @@
 - **Mục tiêu:** phát persisted branch identity không dựa queue order.
 - **Phụ thuộc:** V4-03.
 - **Thực hiện:** create tokens atomically, activate branches idempotently, static write-scope admission.
-- **Verify:** duplicate dispatch, partial crash, branch failure tests.
+  **Hai câu hỏi chốt với user trước khi code:**
+  1. *Branch identity theo dõi thế nào:* chọn thêm `BranchTokenID *BranchTokenID` vào `NodeRun` (V4-01's
+     own schema/domain already scaffolded `BranchToken`, chưa có consumer thật). Branch identity phải đi
+     cùng activation thực tế, không được suy từ queue hoặc `CurrentNodeKey`. Khóa semantics: trước FORK,
+     `BranchTokenID=nil`. FORK dispatch tạo atomically một token và NodeRun đầu tiên cho mỗi branch (hoặc,
+     khi branch's own first edge target đã là JOIN, mark token đó SUCCEEDED ngay, không tạo NodeRun nào).
+     Mỗi hop thông thường trong branch kế thừa cùng `BranchTokenID`, đồng thời CAS
+     `BranchToken.CurrentNodeKey` trong cùng transaction. Khi branch tới JOIN: không gắn một token duy
+     nhất vào JOIN NodeRun (nhiều branch cùng hội tụ) — chỉ mark token đến nơi SUCCEEDED,
+     `CurrentNodeKey=<join key>`; JOIN's own NodeRun là activation dùng chung, V4-11 mới đánh giá tập
+     token. Sau JOIN, downstream trở lại `BranchTokenID=nil`. NodeRun trong branch FAILED/CANCELLED phải
+     terminalize token tương ứng trong cùng transaction. Mọi update token dùng expected version để chống
+     stale/duplicate hop.
+     **Lỗi schema tự phát hiện khi thiết kế câu trả lời này (không phải câu hỏi riêng, nhưng sửa cùng
+     lúc):** unique constraint gốc của V4-01 là `(RunID, ForkKey, BranchKey)` — không hỗ trợ cùng một FORK
+     node key được kích hoạt lại trong một cycle (V4-07). Token phải gắn với đúng lần FORK activation đó,
+     không phải node key tĩnh: thêm `ForkNodeRunID NodeRunID` vào `BranchToken`, đổi unique thành
+     `UNIQUE(ForkNodeRunID, BranchKey)` (giữ `ForkKey` lại chỉ để query/audit). Không sửa điểm này thì lần
+     FORK thứ hai trong cùng Run sẽ đụng token của lần activation trước.
+  2. *"Static write-scope admission" nghĩa là gì trong Alpha:* V4-10 không thể kiểm tra path overlap tĩnh
+     vì schema hiện tại không có scope riêng cho từng node/branch — không phát minh một kiểm tra giả.
+     Trong Alpha, phần việc này chỉ gồm: mỗi branch giữ nguyên Run/TaskFamily/WorkspaceSet/manifest
+     authority hiện có, không tự thêm repository, không tự nâng READ→WRITE, không tự mở rộng PathScope.
+     Khi một executable NodeRun trong branch được schedule, nó pin effective scope từ authority hiện có
+     (không copy literal `FORK.NodeRun.EffectiveScope`, vì trường đó có thể còn rỗng — FORK là node cấu
+     trúc, chưa từng thật sự được schedule). Nhiều branch cùng có quyền WRITE trên một
+     RepositoryWorkspace vẫn được dispatch — execution mới cần serialize bằng exclusive WriteLease; hai
+     branch ghi hai repository khác nhau nhận hai lease và chạy song song. Việc đổi tên chính xác hơn:
+     "scope-containment admission + repository-level write serialization **contract**" — V4-04/V4-05 mới
+     có lease contract và fenced-finalize, `ExecuteNodeHandler` hiện chưa thật sự acquire WriteLease; việc
+     caller acquisition end-to-end thuộc V5. V4-10 chỉ giữ scope ceiling và không mint quyền mới; không
+     claim rằng write concurrency đã được enforce hoàn chỉnh ở task này.
+  Kết quả: `NodeRun.BranchTokenID` set post-construction bởi caller (như `.State` đã làm), không thêm
+  tham số vào `NewNodeRun`. `ports.RuntimeRepository` thêm `GetBranchTokenByID`/`TransitionBranchToken`
+  (fenced CAS) bên cạnh `CreateBranchToken`/`GetBranchToken` đã đổi khóa sang `(forkNodeRunID, branchKey)`.
+  `advanceRunTx` (V4-03): khi downstream node là JOIN và upstream NodeRun mang một `BranchTokenID`, CAS
+  token đó SUCCEEDED và trả `ReachedJoin`/`JoinBranchTokenID`/`JoinNodeKey` — không tạo NodeRun nào cho
+  JOIN. Khi downstream node là FORK, một hàm mới `dispatchForkBranches` fan-out atomically: với mỗi
+  outcome khai báo trên FORK (= một branch), tạo token, và hoặc terminalize ngay (branch's own first edge
+  đã là JOIN) hoặc tạo branch's own first NodeRun (gắn `BranchTokenID`) rồi dispatch nó bằng đúng logic
+  autoAdvance/executable/WAIT/APPROVAL routing path chính đã có — cố ý DUPLICATE một phần nhỏ logic đó
+  thay vì tổng quát hoá route chính (đã test rất kỹ qua V4-03…V4-09) thành một hàm đệ quy chung, đổi lấy
+  việc giữ nguyên path chính không đổi. Một branch's own first node là FORK khác (nested fork) bị bỏ
+  PENDING có chủ đích — cùng kỷ luật "enqueue only, task sau sở hữu" đã dùng cho mọi node type chưa có
+  owner; thực ra `validateForkJoinTopology` (V2-08) đã reject nested fork/join ở compile time nên nhánh
+  này defensive/unreachable trên document hợp lệ. `decideRetryOrExhaustion` (V4-06,
+  `internal/app/runtime/finalize.go`) mở rộng: khi CAS NodeRun sang FAILED (non-retryable hoặc hết
+  budget) và NodeRun đó mang `BranchTokenID`, CAS token đó FAILED trong CÙNG transaction. FORK's own
+  NodeRun tự CAS thẳng SUCCEEDED với `SelectedOutcome` rỗng ngay khi fan-out xong (một FORK nhận mọi
+  outcome khai báo cùng lúc, không chỉ một). Domain event mới `NODE_FORKED` (registered, golden fixture)
+  ghi lại toàn bộ fan-out một lần cho mỗi FORK activation.
+- **Verify:** duplicate dispatch, partial crash, branch failure tests. Đã triển khai (`fork_test.go`,
+  `fork_sqlite_test.go`, 4 test): fan-out atomically tạo đúng BranchToken/NodeRun cho mỗi declared branch
+  (kể cả zero-hop "branch's own first edge là chính JOIN") cộng một `NODE_FORKED` event
+  (`TestAdvanceRun_Fork_FansOutToEveryBranchAtomically`); redelivered job trên chính NodeRun đã route đi
+  không tạo token/NodeRun/job/event thứ hai nào (`advanceRunTx`'s own idempotent-replay guard đã có từ
+  V4-03, không cần logic mới) — `TestAdvanceRun_Fork_DuplicateDispatch_IsIdempotent`; một branch's own
+  NodeRun thật sự chạy tới FAILED (non-retryable) CAS đúng token của nó sang FAILED trong cùng transaction
+  mà không đụng token của branch khác —
+  `TestExecuteNodeHandler_Fork_BranchFailure_TerminalizesOwnBranchToken`; cộng
+  `TestAdvanceRun_SQLite_Fork_PersistsAcrossRestart` (đóng/mở lại `sqlite.Store` thật giữa fan-out và lần
+  đọc lại — chứng minh cả FORK's own NodeRun lẫn hai BranchToken quan sát đúng state sau restart, vì cả
+  fan-out cam kết trong đúng một transaction nên chỉ có thể quan sát "toàn bộ" hoặc "chưa gì cả").
 - **Hoàn thành khi:** mỗi declared branch có đúng một live token/terminal record.
 - **Nguồn:** HE-14-M09.
 

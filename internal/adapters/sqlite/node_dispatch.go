@@ -312,17 +312,17 @@ WHERE id = ?`,
 
 func loadNodeRunByID(ctx context.Context, tx *sql.Tx, id runtime.NodeRunID) (runtime.NodeRun, error) {
 	var nodeRun runtime.NodeRun
-	var selectedOutcome, effectiveScopeJSON, executionProfileHash sql.NullString
+	var selectedOutcome, effectiveScopeJSON, executionProfileHash, branchTokenID sql.NullString
 	var manifestRevision sql.NullInt64
 	err := tx.QueryRowContext(ctx, `
 SELECT id, run_id, node_key, activation_sequence, iteration, state,
        selected_outcome, input_state_hash, version,
-       effective_scope_json, execution_profile_hash, manifest_revision
+       effective_scope_json, execution_profile_hash, manifest_revision, branch_token_id
 FROM node_runs WHERE id = ?`, id,
 	).Scan(
 		&nodeRun.ID, &nodeRun.RunID, &nodeRun.NodeKey, &nodeRun.ActivationSequence,
 		&nodeRun.Iteration, &nodeRun.State, &selectedOutcome, &nodeRun.InputStateHash, &nodeRun.Version,
-		&effectiveScopeJSON, &executionProfileHash, &manifestRevision,
+		&effectiveScopeJSON, &executionProfileHash, &manifestRevision, &branchTokenID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.NodeRun{}, fmt.Errorf("%w: node run %s", ports.ErrPersistenceNotFound, id)
@@ -345,6 +345,10 @@ FROM node_runs WHERE id = ?`, id,
 			return runtime.NodeRun{}, fmt.Errorf("decode node run %s effective scope: %w", id, err)
 		}
 		nodeRun.EffectiveScope = scope
+	}
+	if branchTokenID.Valid {
+		ref := runtime.BranchTokenID(branchTokenID.String)
+		nodeRun.BranchTokenID = &ref
 	}
 	return nodeRun, nil
 }

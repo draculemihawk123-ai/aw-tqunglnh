@@ -405,13 +405,36 @@ func TestAppendRunManifestAmendment_AppendOnlyAndDoesNotOverwriteInitialManifest
 	}
 }
 
-func TestCreateBranchToken_IdempotentByRunForkBranch(t *testing.T) {
+// createTestNodeRun inserts a minimal, real NodeRun row (RUNNING, so it can
+// stand in for either a FORK's own activation or a plain node reached
+// inside a branch) — branch_tokens.fork_node_run_id is a real FOREIGN KEY,
+// so tests that create tokens need an actual referenced row to exist.
+func createTestNodeRun(t *testing.T, ctx context.Context, uow ports.UnitOfWork, runID runtime.WorkflowRunID, id, nodeKey string, activationSequence uint64) runtime.NodeRun {
+	t.Helper()
+	nodeRun, err := runtime.NewNodeRun(runtime.NodeRunID(id), runID, nodeKey, activationSequence, 0, nil, "sha256:input", "")
+	if err != nil {
+		t.Fatalf("new node run %s: %v", id, err)
+	}
+	nodeRun.State = runtime.NodeRunRunning
+	var created runtime.NodeRun
+	if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		var err error
+		created, err = tx.Runtime().CreateNodeRun(ctx, nodeRun)
+		return err
+	}); err != nil {
+		t.Fatalf("create node run %s: %v", id, err)
+	}
+	return created
+}
+
+func TestCreateBranchToken_IdempotentByForkOccurrenceAndBranch(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	fixture := newRuntimeTestFixture(t, ctx)
 	run := fixture.createRun(t, ctx, "run-branch")
+	forkNodeRun := createTestNodeRun(t, ctx, fixture.uow, run.ID, "fork-run-1", "fork-node", 2)
 
-	token, err := runtime.NewBranchToken("branch-1", run.ID, "fork-node", "branch-a", "child-node")
+	token, err := runtime.NewBranchToken("branch-1", run.ID, forkNodeRun.ID, "fork-node", "branch-a", "child-node")
 	if err != nil {
 		t.Fatalf("new branch token: %v", err)
 	}
@@ -436,8 +459,8 @@ func TestCreateBranchToken_IdempotentByRunForkBranch(t *testing.T) {
 		t.Fatalf("idempotent create branch token: %v", err)
 	}
 
-	// A different CurrentNodeKey for the same (run, fork, branch) is a
-	// conflict, not a silent overwrite.
+	// A different CurrentNodeKey for the same (fork occurrence, branch) is
+	// a conflict, not a silent overwrite.
 	drifted := token
 	drifted.CurrentNodeKey = "other-node"
 	if err := fixture.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
@@ -447,7 +470,7 @@ func TestCreateBranchToken_IdempotentByRunForkBranch(t *testing.T) {
 		t.Fatalf("drifted branch token error = %v, want ErrOptimisticConflict", err)
 	}
 
-	second, err := runtime.NewBranchToken("branch-2", run.ID, "fork-node", "branch-b", "child-node-2")
+	second, err := runtime.NewBranchToken("branch-2", run.ID, forkNodeRun.ID, "fork-node", "branch-b", "child-node-2")
 	if err != nil {
 		t.Fatalf("new branch token 2: %v", err)
 	}
@@ -464,6 +487,55 @@ func TestCreateBranchToken_IdempotentByRunForkBranch(t *testing.T) {
 		}
 		if len(tokens) != 2 {
 			t.Fatalf("branch tokens = %#v, want 2", tokens)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("list branch tokens: %v", err)
+	}
+}
+
+// TestCreateBranchToken_SameForkKeyDifferentOccurrence_DoesNotCollide is
+// V4-10's own correction proof: two SEPARATE activations of the exact same
+// FORK node key (e.g. via a V4-07 business-rework cycle re-entering the
+// same fork) must each get their own independent set of branch tokens,
+// never colliding on branch_key alone — the exact gap the old
+// UNIQUE(run_id, fork_key, branch_key) constraint had.
+func TestCreateBranchToken_SameForkKeyDifferentOccurrence_DoesNotCollide(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fixture := newRuntimeTestFixture(t, ctx)
+	run := fixture.createRun(t, ctx, "run-branch-reentry")
+	firstFork := createTestNodeRun(t, ctx, fixture.uow, run.ID, "fork-run-1", "fork-node", 2)
+	secondFork := createTestNodeRun(t, ctx, fixture.uow, run.ID, "fork-run-2", "fork-node", 5)
+
+	first, err := runtime.NewBranchToken("branch-1a", run.ID, firstFork.ID, "fork-node", "branch-a", "child-node-1")
+	if err != nil {
+		t.Fatalf("new branch token (first occurrence): %v", err)
+	}
+	second, err := runtime.NewBranchToken("branch-2a", run.ID, secondFork.ID, "fork-node", "branch-a", "child-node-2")
+	if err != nil {
+		t.Fatalf("new branch token (second occurrence): %v", err)
+	}
+	if err := fixture.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		_, err := tx.Runtime().CreateBranchToken(ctx, first)
+		return err
+	}); err != nil {
+		t.Fatalf("create branch token (first occurrence): %v", err)
+	}
+	if err := fixture.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		_, err := tx.Runtime().CreateBranchToken(ctx, second)
+		return err
+	}); err != nil {
+		t.Fatalf("create branch token (second occurrence, same fork key + branch key as the first): %v", err)
+	}
+
+	if err := fixture.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		tokens, err := tx.Runtime().ListBranchTokensForRun(ctx, string(run.ID))
+		if err != nil {
+			return err
+		}
+		if len(tokens) != 2 {
+			t.Fatalf("branch tokens = %#v, want 2 independent tokens across the two fork occurrences", tokens)
 		}
 		return nil
 	}); err != nil {

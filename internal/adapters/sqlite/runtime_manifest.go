@@ -251,10 +251,9 @@ FROM run_manifest_amendments WHERE run_id = ? ORDER BY revision`, runID)
 
 // --- BranchToken ---
 
-// CreateBranchToken implements ports.RuntimeRepository (V4-01, HE-14-M09).
-// A second call for the same (RunID, ForkKey, BranchKey) is idempotent when
-// CurrentNodeKey matches; V4-01 does not otherwise mutate a token — that
-// belongs to whichever later task (V4-10/V4-11) first needs it.
+// CreateBranchToken implements ports.RuntimeRepository (V4-01/V4-10,
+// HE-14-M09). A second call for the same (ForkNodeRunID, BranchKey) is
+// idempotent when CurrentNodeKey matches.
 func (r runtimeRepository) CreateBranchToken(ctx context.Context, token runtime.BranchToken) (runtime.BranchToken, error) {
 	return createBranchTokenTx(ctx, r.tx, token)
 }
@@ -272,57 +271,72 @@ func createBranchTokenTx(ctx context.Context, tx *sql.Tx, token runtime.BranchTo
 	now := formatWorkflowTime(time.Now())
 	_, insertErr := tx.ExecContext(ctx, `
 INSERT INTO branch_tokens (
-    id, run_id, fork_key, branch_key, current_node_key, state, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		string(token.ID), string(token.RunID), token.ForkKey, token.BranchKey, token.CurrentNodeKey,
+    id, run_id, fork_node_run_id, fork_key, branch_key, current_node_key, state, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		string(token.ID), string(token.RunID), string(token.ForkNodeRunID), token.ForkKey, token.BranchKey, token.CurrentNodeKey,
 		string(token.State), token.Version, now, now,
 	)
 	if insertErr == nil {
 		return token, nil
 	}
 
-	existing, loadErr := loadBranchTokenTx(ctx, tx, string(token.RunID), token.ForkKey, token.BranchKey)
+	existing, loadErr := loadBranchTokenTx(ctx, tx, string(token.ForkNodeRunID), token.BranchKey)
 	if loadErr != nil {
 		return runtime.BranchToken{}, MapSQLiteError(fmt.Errorf("create branch token: %w", insertErr))
 	}
 	if existing.CurrentNodeKey == token.CurrentNodeKey {
 		return existing, nil
 	}
-	return runtime.BranchToken{}, fmt.Errorf("%w: branch token %s/%s/%s", ports.ErrOptimisticConflict, token.RunID, token.ForkKey, token.BranchKey)
+	return runtime.BranchToken{}, fmt.Errorf("%w: branch token %s/%s", ports.ErrOptimisticConflict, token.ForkNodeRunID, token.BranchKey)
 }
 
 // GetBranchToken implements ports.RuntimeRepository.
-func (r runtimeRepository) GetBranchToken(ctx context.Context, runID, forkKey, branchKey string) (runtime.BranchToken, error) {
-	return loadBranchTokenTx(ctx, r.tx, runID, forkKey, branchKey)
+func (r runtimeRepository) GetBranchToken(ctx context.Context, forkNodeRunID, branchKey string) (runtime.BranchToken, error) {
+	return loadBranchTokenTx(ctx, r.tx, forkNodeRunID, branchKey)
 }
 
-func loadBranchTokenTx(ctx context.Context, tx *sql.Tx, runID, forkKey, branchKey string) (runtime.BranchToken, error) {
+func loadBranchTokenTx(ctx context.Context, tx *sql.Tx, forkNodeRunID, branchKey string) (runtime.BranchToken, error) {
 	var (
 		id             string
+		runID          string
+		forkKey        string
 		currentNodeKey string
 		state          string
 		version        uint64
 	)
 	err := tx.QueryRowContext(ctx, `
-SELECT id, current_node_key, state, version FROM branch_tokens
-WHERE run_id = ? AND fork_key = ? AND branch_key = ?`, runID, forkKey, branchKey).Scan(&id, &currentNodeKey, &state, &version)
+SELECT id, run_id, fork_key, current_node_key, state, version FROM branch_tokens
+WHERE fork_node_run_id = ? AND branch_key = ?`, forkNodeRunID, branchKey).Scan(&id, &runID, &forkKey, &currentNodeKey, &state, &version)
 	if errors.Is(err, sql.ErrNoRows) {
-		return runtime.BranchToken{}, fmt.Errorf("%w: branch token %s/%s/%s", ports.ErrPersistenceNotFound, runID, forkKey, branchKey)
+		return runtime.BranchToken{}, fmt.Errorf("%w: branch token %s/%s", ports.ErrPersistenceNotFound, forkNodeRunID, branchKey)
 	}
 	if err != nil {
 		return runtime.BranchToken{}, MapSQLiteError(fmt.Errorf("load branch token: %w", err))
 	}
 	return runtime.BranchToken{
-		ID: runtime.BranchTokenID(id), RunID: runtime.WorkflowRunID(runID), ForkKey: forkKey, BranchKey: branchKey,
-		CurrentNodeKey: currentNodeKey, State: runtime.BranchTokenState(state), Version: version,
+		ID: runtime.BranchTokenID(id), RunID: runtime.WorkflowRunID(runID), ForkNodeRunID: runtime.NodeRunID(forkNodeRunID),
+		ForkKey: forkKey, BranchKey: branchKey, CurrentNodeKey: currentNodeKey, State: runtime.BranchTokenState(state), Version: version,
 	}, nil
+}
+
+// GetBranchTokenByID implements ports.RuntimeRepository (V4-10).
+func (r runtimeRepository) GetBranchTokenByID(ctx context.Context, id string) (runtime.BranchToken, error) {
+	var forkNodeRunID, branchKey string
+	err := r.tx.QueryRowContext(ctx, `SELECT fork_node_run_id, branch_key FROM branch_tokens WHERE id = ?`, id).Scan(&forkNodeRunID, &branchKey)
+	if errors.Is(err, sql.ErrNoRows) {
+		return runtime.BranchToken{}, fmt.Errorf("%w: branch token %s", ports.ErrPersistenceNotFound, id)
+	}
+	if err != nil {
+		return runtime.BranchToken{}, MapSQLiteError(fmt.Errorf("resolve branch token %s: %w", id, err))
+	}
+	return loadBranchTokenTx(ctx, r.tx, forkNodeRunID, branchKey)
 }
 
 // ListBranchTokensForRun implements ports.RuntimeRepository, ordered by
 // (ForkKey, BranchKey).
 func (r runtimeRepository) ListBranchTokensForRun(ctx context.Context, runID string) ([]runtime.BranchToken, error) {
 	rows, err := r.tx.QueryContext(ctx, `
-SELECT id, fork_key, branch_key, current_node_key, state, version
+SELECT id, fork_node_run_id, fork_key, branch_key, current_node_key, state, version
 FROM branch_tokens WHERE run_id = ? ORDER BY fork_key, branch_key`, runID)
 	if err != nil {
 		return nil, MapSQLiteError(fmt.Errorf("list branch tokens: %w", err))
@@ -333,24 +347,69 @@ FROM branch_tokens WHERE run_id = ? ORDER BY fork_key, branch_key`, runID)
 	for rows.Next() {
 		var (
 			id             string
+			forkNodeRunID  string
 			forkKey        string
 			branchKey      string
 			currentNodeKey string
 			state          string
 			version        uint64
 		)
-		if err := rows.Scan(&id, &forkKey, &branchKey, &currentNodeKey, &state, &version); err != nil {
+		if err := rows.Scan(&id, &forkNodeRunID, &forkKey, &branchKey, &currentNodeKey, &state, &version); err != nil {
 			return nil, fmt.Errorf("scan branch token: %w", err)
 		}
 		tokens = append(tokens, runtime.BranchToken{
-			ID: runtime.BranchTokenID(id), RunID: runtime.WorkflowRunID(runID), ForkKey: forkKey, BranchKey: branchKey,
-			CurrentNodeKey: currentNodeKey, State: runtime.BranchTokenState(state), Version: version,
+			ID: runtime.BranchTokenID(id), RunID: runtime.WorkflowRunID(runID), ForkNodeRunID: runtime.NodeRunID(forkNodeRunID),
+			ForkKey: forkKey, BranchKey: branchKey, CurrentNodeKey: currentNodeKey, State: runtime.BranchTokenState(state), Version: version,
 		})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate branch tokens: %w", err)
 	}
 	return tokens, nil
+}
+
+// TransitionBranchToken implements ports.RuntimeRepository (V4-10): the
+// fenced CAS a branch's own progress/completion is always recorded
+// through.
+func (r runtimeRepository) TransitionBranchToken(ctx context.Context, req ports.TransitionBranchTokenRequest) (runtime.BranchToken, error) {
+	return transitionBranchTokenTx(ctx, r.tx, req)
+}
+
+func transitionBranchTokenTx(ctx context.Context, tx *sql.Tx, req ports.TransitionBranchTokenRequest) (runtime.BranchToken, error) {
+	if req.BranchTokenID == "" || req.NextState == "" || req.NextCurrentNodeKey == "" {
+		return runtime.BranchToken{}, errors.New("branch token id, next state and next current node key are required")
+	}
+	now := formatWorkflowTime(time.Now())
+	result, err := tx.ExecContext(ctx, `
+UPDATE branch_tokens
+SET state = ?, current_node_key = ?, version = version + 1, updated_at = ?
+WHERE id = ? AND version = ?`,
+		string(req.NextState), req.NextCurrentNodeKey, now, req.BranchTokenID, req.ExpectedVersion,
+	)
+	if err != nil {
+		return runtime.BranchToken{}, MapSQLiteError(fmt.Errorf("transition branch token %s: %w", req.BranchTokenID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return runtime.BranchToken{}, fmt.Errorf("read branch token transition result: %w", err)
+	}
+	if affected != 1 {
+		var exists int
+		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM branch_tokens WHERE id = ?`, req.BranchTokenID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return runtime.BranchToken{}, fmt.Errorf("%w: branch token %s", ports.ErrPersistenceNotFound, req.BranchTokenID)
+		}
+		if lookupErr != nil {
+			return runtime.BranchToken{}, MapSQLiteError(fmt.Errorf("check stale branch token transition: %w", lookupErr))
+		}
+		return runtime.BranchToken{}, fmt.Errorf("%w: branch token %s expected version %d", ports.ErrOptimisticConflict, req.BranchTokenID, req.ExpectedVersion)
+	}
+
+	var forkNodeRunID, branchKey string
+	if scanErr := tx.QueryRowContext(ctx, `SELECT fork_node_run_id, branch_key FROM branch_tokens WHERE id = ?`, req.BranchTokenID).Scan(&forkNodeRunID, &branchKey); scanErr != nil {
+		return runtime.BranchToken{}, MapSQLiteError(fmt.Errorf("resolve transitioned branch token %s: %w", req.BranchTokenID, scanErr))
+	}
+	return loadBranchTokenTx(ctx, tx, forkNodeRunID, branchKey)
 }
 
 // --- DecisionArtifact ---

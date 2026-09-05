@@ -342,12 +342,12 @@ func (r *RuntimeRepository) ListRunManifestAmendments(_ context.Context, runID s
 	return append([]runtime.RunManifestAmendment(nil), r.amendments[runID]...), nil
 }
 
-func branchTokenKey(runID, forkKey, branchKey string) string {
-	return runID + "\x00" + forkKey + "\x00" + branchKey
+func branchTokenKey(forkNodeRunID, branchKey string) string {
+	return forkNodeRunID + "\x00" + branchKey
 }
 
 func (r *RuntimeRepository) CreateBranchToken(_ context.Context, token runtime.BranchToken) (runtime.BranchToken, error) {
-	key := branchTokenKey(string(token.RunID), token.ForkKey, token.BranchKey)
+	key := branchTokenKey(string(token.ForkNodeRunID), token.BranchKey)
 	if existing, ok := r.branches[key]; ok {
 		if existing.CurrentNodeKey == token.CurrentNodeKey {
 			return existing, nil
@@ -361,12 +361,42 @@ func (r *RuntimeRepository) CreateBranchToken(_ context.Context, token runtime.B
 	return token, nil
 }
 
-func (r *RuntimeRepository) GetBranchToken(_ context.Context, runID, forkKey, branchKey string) (runtime.BranchToken, error) {
-	token, ok := r.branches[branchTokenKey(runID, forkKey, branchKey)]
+func (r *RuntimeRepository) GetBranchToken(_ context.Context, forkNodeRunID, branchKey string) (runtime.BranchToken, error) {
+	token, ok := r.branches[branchTokenKey(forkNodeRunID, branchKey)]
 	if !ok {
-		return runtime.BranchToken{}, fmt.Errorf("fake: %w: branch token %s/%s/%s", ports.ErrPersistenceNotFound, runID, forkKey, branchKey)
+		return runtime.BranchToken{}, fmt.Errorf("fake: %w: branch token %s/%s", ports.ErrPersistenceNotFound, forkNodeRunID, branchKey)
 	}
 	return token, nil
+}
+
+// GetBranchTokenByID implements ports.RuntimeRepository (V4-10).
+func (r *RuntimeRepository) GetBranchTokenByID(_ context.Context, id string) (runtime.BranchToken, error) {
+	for _, token := range r.branches {
+		if string(token.ID) == id {
+			return token, nil
+		}
+	}
+	return runtime.BranchToken{}, fmt.Errorf("fake: %w: branch token %s", ports.ErrPersistenceNotFound, id)
+}
+
+// TransitionBranchToken mirrors sqlite's identical fenced CAS — a stale
+// caller (wrong ExpectedVersion) gets ErrOptimisticConflict, never a
+// silent overwrite.
+func (r *RuntimeRepository) TransitionBranchToken(_ context.Context, req ports.TransitionBranchTokenRequest) (runtime.BranchToken, error) {
+	for key, token := range r.branches {
+		if string(token.ID) != req.BranchTokenID {
+			continue
+		}
+		if token.Version != req.ExpectedVersion {
+			return runtime.BranchToken{}, fmt.Errorf("fake: %w: branch token %s expected version %d", ports.ErrOptimisticConflict, req.BranchTokenID, req.ExpectedVersion)
+		}
+		token.State = req.NextState
+		token.CurrentNodeKey = req.NextCurrentNodeKey
+		token.Version++
+		r.branches[key] = token
+		return token, nil
+	}
+	return runtime.BranchToken{}, fmt.Errorf("fake: %w: branch token %s", ports.ErrPersistenceNotFound, req.BranchTokenID)
 }
 
 func (r *RuntimeRepository) ListBranchTokensForRun(_ context.Context, runID string) ([]runtime.BranchToken, error) {

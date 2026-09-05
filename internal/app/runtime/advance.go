@@ -251,6 +251,56 @@ type AdvanceRunResult struct {
 	// NextWaitTimerJobID this one is never empty for an APPROVAL node).
 	NextApprovalRequestID  string
 	NextApprovalTimerJobID string
+	// ReachedJoin/JoinBranchTokenID/JoinNodeKey are populated now (V4-10)
+	// when this hop's own literal edge target is a JOIN node AND the
+	// completing NodeRun (req.NodeRunID) belonged to a FORK branch: no
+	// normal NodeRun is created for the JOIN at all (see
+	// dispatchForkBranches' own doc comment for why) — only the arriving
+	// branch's own token is terminalized SUCCEEDED. Every other Next*
+	// field above stays empty in this case. The JOIN's own eventual
+	// shared NodeRun activation and policy evaluation (ALL/ANY/QUORUM)
+	// are V4-11's own scope entirely.
+	ReachedJoin       bool
+	JoinBranchTokenID string
+	JoinNodeKey       string
+	// ForkedBranches is populated now (V4-10) when the downstream node
+	// actually dispatched is a FORK: one entry per declared Outcome
+	// (HE-14-M09's own "branch"), each with its own freshly created
+	// BranchToken and first NodeRun — created atomically, in this same
+	// transaction, alongside the FORK's own NodeRun (which itself
+	// immediately reaches SUCCEEDED with a blank SelectedOutcome, since a
+	// FORK takes every one of its own declared outcomes simultaneously,
+	// never just one). NextNodeRunID/NextNodeKey above name the FORK's
+	// own NodeRun in this case — there is no single "next" node beyond
+	// it.
+	ForkedBranches []ForkedBranch
+}
+
+// ForkedBranch describes one branch a FORK dispatch created (V4-10). See
+// dispatchForkBranches' own doc comment for the full, deliberately
+// simplified dispatch contract a branch's own first node gets (autoAdvance/
+// executable/WAIT/APPROVAL are all supported; a branch's own first node
+// being itself a FORK or reaching its own outer JOIN immediately are the
+// two cases this task explicitly scopes out — see that function's own doc
+// comment for why neither is required by this task's own Hoàn thành khi
+// line).
+type ForkedBranch struct {
+	BranchKey     string
+	BranchTokenID string
+	// NodeRunID/NodeKey are empty when ReachedJoin is true (this branch's
+	// own first edge already targets its own outer JOIN — the same
+	// zero-hop case AdvanceRunResult.ReachedJoin describes for an ordinary
+	// in-branch hop).
+	NodeRunID          string
+	NodeKey            string
+	ReachedJoin        bool
+	AutoAdvanced       bool
+	JobID              string
+	ScheduleJobID      string
+	WaitRegistrationID string
+	WaitTimerJobID     string
+	ApprovalRequestID  string
+	ApprovalTimerJobID string
 }
 
 // AdvanceRun performs exactly one routing hop. See this file's own package
@@ -358,6 +408,52 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		return AdvanceRunResult{}, err
 	}
 
+	// V4-10 (HE-14-M09): current.BranchTokenID names the FORK branch this
+	// completing NodeRun belongs to, if any — resolved once here so both
+	// the JOIN-arrival short-circuit below and the normal downstream-
+	// creation path further down can use it. Confirmed with the user
+	// before writing this task's code: reaching the branch's own declared
+	// JOIN never creates a normal downstream NodeRun at all — it only
+	// terminalizes this one arriving token (SUCCEEDED); the JOIN's own
+	// eventual shared NodeRun activation and ALL/ANY/QUORUM policy
+	// evaluation across every arriving branch are V4-11's own scope
+	// entirely, not this one's.
+	var branchToken *runtimedomain.BranchToken
+	if current.BranchTokenID != nil {
+		loaded, err := tx.Runtime().GetBranchTokenByID(ctx, string(*current.BranchTokenID))
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		branchToken = &loaded
+	}
+	if branchToken != nil && downstreamNode.Type == workflow.NodeJoin {
+		if _, err := tx.Runtime().TransitionBranchToken(ctx, ports.TransitionBranchTokenRequest{
+			BranchTokenID: string(branchToken.ID), ExpectedVersion: branchToken.Version,
+			NextState: runtimedomain.BranchTokenSucceeded, NextCurrentNodeKey: downstreamNode.Key,
+		}); err != nil {
+			return AdvanceRunResult{}, err
+		}
+		eventPayload, err := json.Marshal(nodeRoutedEventPayload{
+			RunID: string(run.ID), WorkItemID: string(run.WorkItemID), NodeRunID: req.NodeRunID,
+			NodeKey: node.Key, SelectedOutcome: outcome, NextNodeKey: downstreamNode.Key, JobID: req.JobID,
+		})
+		if err != nil {
+			return AdvanceRunResult{}, fmt.Errorf("marshal NODE_ROUTED event payload: %w", err)
+		}
+		if err := tx.Events().Append(ctx, ports.DomainEvent{
+			ID: req.NodeRunID + "-routed", ProjectID: string(run.ProjectID),
+			AggregateType: "NodeRun", AggregateID: req.NodeRunID, Sequence: int64(completedNodeRun.Version),
+			EventType: NodeRoutedEventType, SchemaVersion: NodeRoutedSchemaVersion, PayloadJSON: string(eventPayload),
+			CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return AdvanceRunResult{}, err
+		}
+		return AdvanceRunResult{
+			Advanced: true, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: outcome,
+			ReachedJoin: true, JoinBranchTokenID: string(branchToken.ID), JoinNodeKey: downstreamNode.Key,
+		}, nil
+	}
+
 	// V4-07 (GC-INV-10/AK-ARCH-004): resolve how many times the literal
 	// edge target (downstreamNode) has already been activated in this Run
 	// — a real MAX query over durable history, never a raw COUNT(*), so a
@@ -421,6 +517,9 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		}
 		skippedNodeRun.State = runtimedomain.NodeRunSkipped
 		skippedNodeRun.SelectedOutcome = downstreamNode.CyclePolicy.EscalationOutcome
+		if branchToken != nil {
+			skippedNodeRun.BranchTokenID = &branchToken.ID
+		}
 		createdSkipped, err := tx.Runtime().CreateNodeRun(ctx, skippedNodeRun)
 		if err != nil {
 			return AdvanceRunResult{}, err
@@ -456,6 +555,7 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 	autoAdvance := isStructuralRoutingNode(finalTargetNode.Type) && len(finalTargetNode.Outcomes) == 1
 	isWaitNode := finalTargetNode.Type == workflow.NodeWait
 	isApprovalNode := finalTargetNode.Type == workflow.NodeApproval
+	isForkNode := finalTargetNode.Type == workflow.NodeFork
 	if autoAdvance {
 		nextNodeRun.State = runtimedomain.NodeRunRunning
 	} else if isWaitNode || isApprovalNode {
@@ -469,9 +569,36 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		// valid "still active" state to route away from later, for
 		// either node type.
 		nextNodeRun.State = runtimedomain.NodeRunWaiting
+	} else if isForkNode {
+		// V4-10: FORK completes the instant it is created — it takes
+		// every one of its own declared Outcomes simultaneously (the
+		// fan-out happens inline, below), so there is no single
+		// SelectedOutcome to wait on the way WAIT/APPROVAL do.
+		nextNodeRun.State = runtimedomain.NodeRunSucceeded
+	}
+	if branchToken != nil {
+		// V4-10: this hop's own downstream target continues the SAME
+		// branch its upstream (current) belonged to — propagate the
+		// token unchanged. A nested FORK reached from inside a branch is
+		// deliberately not given special treatment here: it still
+		// carries the outer branch's own token forward (CurrentNodeKey
+		// advances to the nested FORK's own key below, same as any other
+		// node type), while the nested FORK's own new branches each mint
+		// entirely independent tokens of their own — known, documented
+		// scope limitation (dispatchForkBranches' own doc comment), not
+		// required by this task's own Hoàn thành khi line.
+		nextNodeRun.BranchTokenID = &branchToken.ID
 	}
 	if _, err := tx.Runtime().CreateNodeRun(ctx, nextNodeRun); err != nil {
 		return AdvanceRunResult{}, err
+	}
+	if branchToken != nil {
+		if _, err := tx.Runtime().TransitionBranchToken(ctx, ports.TransitionBranchTokenRequest{
+			BranchTokenID: string(branchToken.ID), ExpectedVersion: branchToken.Version,
+			NextState: runtimedomain.BranchTokenActive, NextCurrentNodeKey: finalTargetNode.Key,
+		}); err != nil {
+			return AdvanceRunResult{}, err
+		}
 	}
 
 	result = AdvanceRunResult{
@@ -703,8 +830,276 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 			return AdvanceRunResult{}, err
 		}
 		result.NextApprovalTimerJobID = string(job.ID)
+
+	case isForkNode:
+		// V4-10: like WAIT/APPROVAL, a FORK needs no external resolution
+		// (no RuntimeExecutionConfigProvider, no ADR-027 concern) — every
+		// branch token and its own first NodeRun are pure data derived
+		// from the compiled document, so the entire fan-out happens
+		// inline, in this same transaction (HE-14-M09's own "create
+		// tokens atomically"), rather than via a separate job/handler.
+		branches, err := dispatchForkBranches(ctx, tx, ids, run, document, finalTargetNode, nextID, newSharedState, req.CorrelationID)
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		result.ForkedBranches = branches
+
+		forkedPayload := make([]forkedBranchEventEntry, len(branches))
+		for i, b := range branches {
+			forkedPayload[i] = forkedBranchEventEntry{BranchKey: b.BranchKey, BranchTokenID: b.BranchTokenID, NodeRunID: b.NodeRunID, NodeKey: b.NodeKey, ReachedJoin: b.ReachedJoin}
+		}
+		forkEventPayload, err := json.Marshal(nodeForkedEventPayload{
+			RunID: string(run.ID), WorkItemID: string(run.WorkItemID), ForkNodeRunID: nextID, ForkKey: finalTargetNode.Key,
+			Branches: forkedPayload, JobID: req.JobID,
+		})
+		if err != nil {
+			return AdvanceRunResult{}, fmt.Errorf("marshal %s event payload: %w", NodeForkedEventType, err)
+		}
+		// AggregateID/Sequence=1: the FORK's own NodeRun reaches its one
+		// and only terminal state (SUCCEEDED) directly at creation — the
+		// same "tie Sequence to the aggregate's own version" rule NODE_
+		// CYCLE_EXHAUSTED already documents, applied to a row whose
+		// version never moves past its own creation value.
+		if err := tx.Events().Append(ctx, ports.DomainEvent{
+			ID: nextID + "-forked", ProjectID: string(run.ProjectID),
+			AggregateType: "NodeRun", AggregateID: nextID, Sequence: 1,
+			EventType: NodeForkedEventType, SchemaVersion: NodeForkedSchemaVersion, PayloadJSON: string(forkEventPayload),
+			CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return AdvanceRunResult{}, err
+		}
 	}
 	return result, nil
+}
+
+// dispatchForkBranches performs V4-10's own "create tokens atomically,
+// activate branches idempotently" line: for every one of forkNode's own
+// declared Outcomes (HE-14-M09's own "branch"), it creates a fresh
+// BranchToken scoped to this exact FORK occurrence (forkNodeRunID) and
+// that branch's own first NodeRun, all inside the SAME transaction the
+// FORK's own NodeRun was just created in.
+//
+// A branch's own first node gets the same autoAdvance/executable/WAIT/
+// APPROVAL dispatch treatment advanceRunTx's own main routing path already
+// gives any other downstream node — deliberately duplicated here rather
+// than factored into one shared, fully generalized recursive helper: this
+// keeps the already-extensively-tested main single-outcome path (V4-03
+// through V4-09) completely untouched, at the cost of this one, smaller,
+// self-contained duplication.
+//
+// Two cases are deliberately NOT supported by this task (documented, not
+// silently wrong): a branch's own first edge target being ANOTHER FORK is
+// left PENDING (no further fan-out) — the exact same "enqueue only, a
+// later task owns this node type" boundary this codebase already draws
+// for every not-yet-owned node type, so nested FORK support can be added
+// later without redesigning anything here; and a branch's own first hop
+// is never checked against any CyclePolicy (cycle-exhaustion interaction
+// with FORK is out of this task's own scope — HE-14-M09 and this task's
+// own Verify line name duplicate dispatch/partial crash/branch failure,
+// never a cycle inside a fork).
+func dispatchForkBranches(
+	ctx context.Context, tx ports.Tx, ids idsource.Source, run runtimedomain.WorkflowRun, document workflow.WorkflowDocument,
+	forkNode workflow.Node, forkNodeRunID string, newSharedState json.RawMessage, correlationID string,
+) ([]ForkedBranch, error) {
+	forkRun, err := tx.Runtime().GetNodeRun(ctx, forkNodeRunID)
+	if err != nil {
+		return nil, err
+	}
+	sequence := forkRun.ActivationSequence
+
+	branches := make([]ForkedBranch, 0, len(forkNode.Outcomes))
+	for _, branchKey := range forkNode.Outcomes {
+		edge, ok := findEdge(document, forkNode.Key, branchKey)
+		if !ok {
+			return nil, fmt.Errorf("%w: fork %s branch %q", ErrRouteNotFound, forkNode.Key, branchKey)
+		}
+		branchNode, ok := findNode(document, edge.To)
+		if !ok {
+			return nil, fmt.Errorf("runtime: fork edge %s targets unknown node %s", edge.Key, edge.To)
+		}
+
+		tokenID := ids.NewID()
+		token, err := runtimedomain.NewBranchToken(
+			runtimedomain.BranchTokenID(tokenID), run.ID, runtimedomain.NodeRunID(forkNodeRunID), forkNode.Key, branchKey, branchNode.Key,
+		)
+		if err != nil {
+			return nil, err
+		}
+		createdToken, err := tx.Runtime().CreateBranchToken(ctx, token)
+		if err != nil {
+			return nil, err
+		}
+
+		if branchNode.Type == workflow.NodeJoin {
+			// V4-10: a branch whose own first edge already targets its
+			// outer JOIN directly (fork -> join, no real work in
+			// between) never gets a NodeRun either — see advanceRunTx's
+			// own identical "reached join" handling for the ordinary
+			// in-branch-hop case, this is that same rule applied to a
+			// branch's own very first hop.
+			if _, err := tx.Runtime().TransitionBranchToken(ctx, ports.TransitionBranchTokenRequest{
+				BranchTokenID: tokenID, ExpectedVersion: createdToken.Version,
+				NextState: runtimedomain.BranchTokenSucceeded, NextCurrentNodeKey: branchNode.Key,
+			}); err != nil {
+				return nil, err
+			}
+			branches = append(branches, ForkedBranch{BranchKey: branchKey, BranchTokenID: tokenID, NodeKey: branchNode.Key, ReachedJoin: true})
+			continue
+		}
+
+		priorMax, found, err := tx.Runtime().GetMaxNodeIteration(ctx, string(run.ID), branchNode.Key)
+		if err != nil {
+			return nil, err
+		}
+		iteration := uint32(0)
+		if found {
+			iteration = priorMax + 1
+		}
+
+		sequence++
+		branchNodeRunID := ids.NewID()
+		branchNodeRun, err := runtimedomain.NewNodeRun(
+			runtimedomain.NodeRunID(branchNodeRunID), run.ID, branchNode.Key, sequence, iteration, nil,
+			canonicalStateHash(newSharedState), "",
+		)
+		if err != nil {
+			return nil, err
+		}
+		branchAutoAdvance := isStructuralRoutingNode(branchNode.Type) && len(branchNode.Outcomes) == 1
+		switch {
+		case branchAutoAdvance:
+			branchNodeRun.State = runtimedomain.NodeRunRunning
+		case branchNode.Type == workflow.NodeWait, branchNode.Type == workflow.NodeApproval:
+			branchNodeRun.State = runtimedomain.NodeRunWaiting
+		}
+		tokenIDTyped := runtimedomain.BranchTokenID(tokenID)
+		branchNodeRun.BranchTokenID = &tokenIDTyped
+		if _, err := tx.Runtime().CreateNodeRun(ctx, branchNodeRun); err != nil {
+			return nil, err
+		}
+
+		result := ForkedBranch{
+			BranchKey: branchKey, BranchTokenID: tokenID, NodeRunID: branchNodeRunID, NodeKey: branchNode.Key, AutoAdvanced: branchAutoAdvance,
+		}
+		switch {
+		case branchAutoAdvance:
+			payload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: branchNodeRunID, CorrelationID: correlationID})
+			if err != nil {
+				return nil, fmt.Errorf("marshal %s job payload: %w", AdvanceRunJobKind, err)
+			}
+			job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+				ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: AdvanceRunJobKind,
+				AggregateType: "WorkflowRun", AggregateID: string(run.ID), Payload: payload,
+				MaxClaims: defaultAdvanceRunJobMaxClaimsFollowUp, IdempotencyKey: "advance-" + branchNodeRunID,
+			})
+			if err != nil {
+				return nil, err
+			}
+			result.JobID = string(job.ID)
+
+		case isExecutableNode(branchNode.Type):
+			payload, err := json.Marshal(ScheduleNodeRunJobPayload{RunID: string(run.ID), NodeRunID: branchNodeRunID, CorrelationID: correlationID})
+			if err != nil {
+				return nil, fmt.Errorf("marshal %s job payload: %w", ScheduleNodeRunJobKind, err)
+			}
+			job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+				ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: ScheduleNodeRunJobKind,
+				AggregateType: "NodeRun", AggregateID: branchNodeRunID, Payload: payload,
+				MaxClaims: defaultScheduleNodeRunJobMaxClaims, IdempotencyKey: "schedule-" + branchNodeRunID,
+			})
+			if err != nil {
+				return nil, err
+			}
+			result.ScheduleJobID = string(job.ID)
+
+		case branchNode.Type == workflow.NodeWait:
+			waitCfg := branchNode.Wait
+			completionOutcome := waitCfg.CompletionOutcome
+			timeoutOutcome := waitCfg.TimeoutOutcome
+			if len(branchNode.Outcomes) == 1 {
+				only := branchNode.Outcomes[0]
+				if completionOutcome == "" {
+					completionOutcome = only
+				}
+				if waitCfg.Mode == workflow.WaitModeSignal && waitCfg.TimeoutSeconds > 0 && timeoutOutcome == "" {
+					timeoutOutcome = only
+				}
+			}
+			var dueAt *time.Time
+			switch waitCfg.Mode {
+			case workflow.WaitModeDuration:
+				due := time.Now().UTC().Add(time.Duration(waitCfg.DurationSeconds) * time.Second)
+				dueAt = &due
+			case workflow.WaitModeSignal:
+				if waitCfg.TimeoutSeconds > 0 {
+					due := time.Now().UTC().Add(time.Duration(waitCfg.TimeoutSeconds) * time.Second)
+					dueAt = &due
+				}
+			}
+			registrationID := ids.NewID()
+			registration, err := runtimedomain.NewWaitRegistration(
+				runtimedomain.WaitRegistrationID(registrationID), run.ProjectID, run.ID, runtimedomain.NodeRunID(branchNodeRunID),
+				branchNode.Key, waitCfg.SignalName, dueAt, completionOutcome, timeoutOutcome,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := tx.Wait().CreateWaitRegistration(ctx, registration); err != nil {
+				return nil, err
+			}
+			result.WaitRegistrationID = registrationID
+			if dueAt != nil {
+				timerPayload, err := json.Marshal(WaitTimerJobPayload{RunID: string(run.ID), NodeRunID: branchNodeRunID, WaitRegistrationID: registrationID, CorrelationID: correlationID})
+				if err != nil {
+					return nil, fmt.Errorf("marshal %s job payload: %w", WaitTimerJobKind, err)
+				}
+				job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+					ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: WaitTimerJobKind,
+					AggregateType: "WaitRegistration", AggregateID: registrationID, Payload: timerPayload,
+					AvailableAt: *dueAt, MaxClaims: defaultWaitTimerJobMaxClaims, IdempotencyKey: "wait-timer-" + registrationID,
+				})
+				if err != nil {
+					return nil, err
+				}
+				result.WaitTimerJobID = string(job.ID)
+			}
+
+		case branchNode.Type == workflow.NodeApproval:
+			approvalCfg := branchNode.Approval
+			dueAt := time.Now().UTC().Add(time.Duration(approvalCfg.TimeoutSeconds) * time.Second)
+			requestID := ids.NewID()
+			approvalRequest, err := runtimedomain.NewApprovalRequest(
+				runtimedomain.ApprovalRequestID(requestID), run.ProjectID, run.ID, runtimedomain.NodeRunID(branchNodeRunID),
+				branchNode.Key, approvalCfg.AuthorizedRoles, approvalCfg.RequestedEvidenceKinds, dueAt, approvalCfg.EscalationOutcome,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := tx.Approvals().CreateApprovalRequest(ctx, approvalRequest); err != nil {
+				return nil, err
+			}
+			result.ApprovalRequestID = requestID
+			timerPayload, err := json.Marshal(ApprovalTimerJobPayload{RunID: string(run.ID), NodeRunID: branchNodeRunID, ApprovalRequestID: requestID, CorrelationID: correlationID})
+			if err != nil {
+				return nil, fmt.Errorf("marshal %s job payload: %w", ApprovalTimerJobKind, err)
+			}
+			job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+				ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: ApprovalTimerJobKind,
+				AggregateType: "ApprovalRequest", AggregateID: requestID, Payload: timerPayload,
+				AvailableAt: dueAt, MaxClaims: defaultApprovalTimerJobMaxClaims, IdempotencyKey: "approval-timer-" + requestID,
+			})
+			if err != nil {
+				return nil, err
+			}
+			result.ApprovalTimerJobID = string(job.ID)
+
+			// case branchNode.Type == workflow.NodeFork: deliberately falls
+			// through to no-op (PENDING) — see this function's own doc
+			// comment for why nested FORK is out of this task's own scope.
+		}
+		branches = append(branches, result)
+	}
+	return branches, nil
 }
 
 // NodeRoutedEventType/NodeRoutedSchemaVersion identify NODE_ROUTED's own
@@ -764,6 +1159,44 @@ type nodeCycleExhaustedEventPayload struct {
 	EscalationOutcome   string `json:"escalationOutcome"`
 	EscalationNodeRunID string `json:"escalationNodeRunId"`
 	EscalationNodeKey   string `json:"escalationNodeKey"`
+	// JobID is the durable job that drove this hop (blank if the caller
+	// did not supply one via AdvanceRunRequest.JobID).
+	JobID string `json:"jobId,omitempty"`
+}
+
+// NodeForkedEventType/NodeForkedSchemaVersion identify NODE_FORKED's own
+// registered (EventType, SchemaVersion) pair (V4-10, event_schema.go) —
+// registered from the same changeset that produces this event, not
+// deferred.
+const (
+	NodeForkedEventType     = "NODE_FORKED"
+	NodeForkedSchemaVersion = 1
+)
+
+// forkedBranchEventEntry is one BranchToken/NodeRun pair NODE_FORKED
+// reports — the event-payload mirror of ForkedBranch, trimmed to what an
+// audit reader actually needs (job/timer ids are dispatch mechanics, not
+// business-relevant history).
+type forkedBranchEventEntry struct {
+	BranchKey     string `json:"branchKey"`
+	BranchTokenID string `json:"branchTokenId"`
+	NodeRunID     string `json:"nodeRunId,omitempty"`
+	NodeKey       string `json:"nodeKey,omitempty"`
+	ReachedJoin   bool   `json:"reachedJoin,omitempty"`
+}
+
+// nodeForkedEventPayload is NODE_FORKED's own JSON shape (V4-10): the typed
+// audit record of one FORK dispatch fanning out to every one of its own
+// declared branches atomically — HE-14-M09's own "create tokens
+// atomically". ForkNodeRunID names the FORK's own NodeRun (which reaches
+// SUCCEEDED the instant it fans out); Branches lists every BranchToken/
+// NodeRun this same dispatch created.
+type nodeForkedEventPayload struct {
+	RunID         string                   `json:"runId"`
+	WorkItemID    string                   `json:"workItemId"`
+	ForkNodeRunID string                   `json:"forkNodeRunId"`
+	ForkKey       string                   `json:"forkKey"`
+	Branches      []forkedBranchEventEntry `json:"branches"`
 	// JobID is the durable job that drove this hop (blank if the caller
 	// did not supply one via AdvanceRunRequest.JobID).
 	JobID string `json:"jobId,omitempty"`

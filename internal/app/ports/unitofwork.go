@@ -465,18 +465,35 @@ type RuntimeRepository interface {
 
 	// CreateBranchToken inserts a new, ACTIVE BranchToken (HE-14-M09) after
 	// verifying token.RunID names a WorkflowRun that exists. A second call
-	// for the same (RunID, ForkKey, BranchKey) with an identical
+	// for the same (ForkNodeRunID, BranchKey) — V4-10's own correction:
+	// scoped to the exact FORK activation, not merely its NodeKey, since
+	// V4-07's own cycle budget can legitimately re-enter the same FORK
+	// node key more than once in one Run — with an identical
 	// CurrentNodeKey is idempotent and returns the already-stored token; a
-	// second call with a different CurrentNodeKey is
-	// ErrOptimisticConflict — creating is not how a token's CurrentNodeKey
-	// advances (that mutation belongs to whichever later task first needs
-	// it, V4-10/V4-11).
+	// second call with a different CurrentNodeKey is ErrOptimisticConflict
+	// — creating is not how a token's CurrentNodeKey advances (that is
+	// TransitionBranchToken's own job).
 	CreateBranchToken(ctx context.Context, token runtime.BranchToken) (runtime.BranchToken, error)
-	// GetBranchToken returns the BranchToken for (runID, forkKey,
+	// GetBranchToken returns the BranchToken for (forkNodeRunID,
 	// branchKey), or ErrPersistenceNotFound.
-	GetBranchToken(ctx context.Context, runID, forkKey, branchKey string) (runtime.BranchToken, error)
+	GetBranchToken(ctx context.Context, forkNodeRunID, branchKey string) (runtime.BranchToken, error)
+	// GetBranchTokenByID returns the BranchToken named by id, or
+	// ErrPersistenceNotFound. Populated now (V4-10): the lookup a NodeRun's
+	// own BranchTokenID reference needs — that field only ever carries the
+	// bare token ID, not the (ForkNodeRunID, BranchKey) pair
+	// GetBranchToken itself is keyed on.
+	GetBranchTokenByID(ctx context.Context, id string) (runtime.BranchToken, error)
 	// ListBranchTokensForRun returns every BranchToken for runID.
 	ListBranchTokensForRun(ctx context.Context, runID string) ([]runtime.BranchToken, error)
+	// TransitionBranchToken is populated now (V4-10): the fenced CAS that
+	// advances a branch's own CurrentNodeKey as it moves through the
+	// graph, and that terminalizes it (SUCCEEDED on reaching its own
+	// JOIN, FAILED/CANCELLED when the NodeRun it currently names
+	// terminates badly) — always composed inside the SAME transaction as
+	// whatever NodeRun transition/creation caused it, never independently.
+	// ExpectedVersion mismatch is ErrOptimisticConflict, mirroring every
+	// other CAS in this codebase.
+	TransitionBranchToken(ctx context.Context, req TransitionBranchTokenRequest) (runtime.BranchToken, error)
 
 	// RecordDecisionArtifact inserts one new, immutable DecisionArtifact
 	// (HE-03-M08). There is no corresponding update/delete method, now or
@@ -505,6 +522,22 @@ type RuntimeRepository interface {
 	// GetWorkItemCancellationIntent returns the WorkItemCancellationIntent
 	// for workItemID, or ErrPersistenceNotFound.
 	GetWorkItemCancellationIntent(ctx context.Context, workItemID string) (runtime.WorkItemCancellationIntent, error)
+}
+
+// TransitionBranchTokenRequest is the CAS request for
+// RuntimeRepository.TransitionBranchToken (V4-10). NextCurrentNodeKey and
+// NextState are always both supplied: an ordinary hop within a branch sets
+// NextState to runtime.BranchTokenActive (unchanged) alongside the new
+// CurrentNodeKey; reaching the branch's own JOIN sets NextState to
+// runtime.BranchTokenSucceeded alongside the JOIN's own NodeKey; a branch
+// NodeRun terminating badly sets NextState to
+// runtime.BranchTokenFailed/BranchTokenCancelled, leaving CurrentNodeKey
+// at whatever node actually failed.
+type TransitionBranchTokenRequest struct {
+	BranchTokenID      string
+	ExpectedVersion    uint64
+	NextState          runtime.BranchTokenState
+	NextCurrentNodeKey string
 }
 
 // TransitionNodeRunRequest is an optimistic compare-and-swap request for

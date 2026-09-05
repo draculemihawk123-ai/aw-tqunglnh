@@ -103,14 +103,18 @@ func createNodeRunTx(ctx context.Context, tx *sql.Tx, nodeRun runtime.NodeRun) (
 	if nodeRun.SelectedOutcome != "" {
 		selectedOutcome = nodeRun.SelectedOutcome
 	}
+	var branchTokenID any
+	if nodeRun.BranchTokenID != nil {
+		branchTokenID = string(*nodeRun.BranchTokenID)
+	}
 	now := formatWorkflowTime(time.Now())
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO node_runs (
     id, run_id, node_key, activation_sequence, iteration, state,
-    selected_outcome, input_state_hash, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    selected_outcome, input_state_hash, version, branch_token_id, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(nodeRun.ID), string(nodeRun.RunID), nodeRun.NodeKey, nodeRun.ActivationSequence, nodeRun.Iteration,
-		string(nodeRun.State), selectedOutcome, nodeRun.InputStateHash, nodeRun.Version, now, now,
+		string(nodeRun.State), selectedOutcome, nodeRun.InputStateHash, nodeRun.Version, branchTokenID, now, now,
 	); err != nil {
 		var existing int
 		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM node_runs WHERE id = ?`, nodeRun.ID).Scan(&existing)

@@ -362,6 +362,25 @@ func decideRetryOrExhaustion(
 	}); err != nil {
 		return err
 	}
+	// V4-10: a NodeRun belonging to a FORK branch that FAILS terminally
+	// (non-retryable, or retryable but budget exhausted) must terminalize
+	// its own BranchToken in this SAME transaction — locked with the user
+	// ("NodeRun trong branch FAILED/CANCELLED phải terminalize token
+	// tương ứng trong cùng transaction") so a JOIN's own later ALL/ANY/
+	// QUORUM evaluation (V4-11's own scope) never waits forever on a
+	// branch whose own work already died.
+	if nodeRun.BranchTokenID != nil {
+		branchToken, err := tx.Runtime().GetBranchTokenByID(ctx, string(*nodeRun.BranchTokenID))
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Runtime().TransitionBranchToken(ctx, ports.TransitionBranchTokenRequest{
+			BranchTokenID: string(branchToken.ID), ExpectedVersion: branchToken.Version,
+			NextState: runtimedomain.BranchTokenFailed, NextCurrentNodeKey: nodeRun.NodeKey,
+		}); err != nil {
+			return err
+		}
+	}
 	failureKind := NodeRunFailureKindNonRetryableFailure
 	if retryable {
 		failureKind = NodeRunFailureKindRetryExhausted
