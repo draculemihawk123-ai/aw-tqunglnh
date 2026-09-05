@@ -247,6 +247,9 @@ func (r *RuntimeRepository) TransitionExecutionAttempt(_ context.Context, req po
 	if req.TerminationReason != "" {
 		attempt.TerminationReason = req.TerminationReason
 	}
+	if req.FailureCode != "" {
+		attempt.FailureCode = req.FailureCode
+	}
 	attempt.Version++
 	r.attempts[req.AttemptID] = attempt
 	return attempt, nil

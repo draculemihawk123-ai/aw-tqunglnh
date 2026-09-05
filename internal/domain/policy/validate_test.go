@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/authoring"
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 )
 
@@ -12,7 +13,7 @@ func validAttemptDocument() policy.PolicyDocument {
 		Category: policy.CategoryAttempt,
 		Attempt: &policy.AttemptRules{
 			MaxAttempts:         3,
-			RetryableErrorCodes: []string{"UNAVAILABLE", "TIMEOUT"},
+			RetryableErrorCodes: []errorcode.Code{errorcode.CodeUnavailable, errorcode.CodeTimeout},
 			BackoffSeconds:      5,
 			TimeoutSeconds:      60,
 		},
@@ -132,7 +133,7 @@ func TestValidateDocument_Attempt_RejectsZeroBackoff(t *testing.T) {
 
 func TestValidateDocument_Attempt_RejectsUnknownErrorCode(t *testing.T) {
 	doc := validAttemptDocument()
-	doc.Attempt.RetryableErrorCodes = []string{"NOT_A_REAL_CODE"}
+	doc.Attempt.RetryableErrorCodes = []errorcode.Code{"NOT_A_REAL_CODE"}
 	diags := policy.ValidateDocument(doc)
 	requireProblemPath(t, diags, "attempt.retryableErrorCodes[0]")
 }
@@ -142,14 +143,14 @@ func TestValidateDocument_Attempt_RejectsUnknownErrorCode(t *testing.T) {
 // never be treated as retryable.
 func TestValidateDocument_Attempt_RejectsNonRetryableCode(t *testing.T) {
 	doc := validAttemptDocument()
-	doc.Attempt.RetryableErrorCodes = []string{"ISOLATION_ENFORCEMENT_UNAVAILABLE"}
+	doc.Attempt.RetryableErrorCodes = []errorcode.Code{errorcode.CodeIsolationEnforcementUnavailable}
 	diags := policy.ValidateDocument(doc)
 	requireProblemPath(t, diags, "attempt.retryableErrorCodes[0]")
 }
 
 func TestValidateDocument_Attempt_RejectsDuplicateErrorCode(t *testing.T) {
 	doc := validAttemptDocument()
-	doc.Attempt.RetryableErrorCodes = []string{"TIMEOUT", "TIMEOUT"}
+	doc.Attempt.RetryableErrorCodes = []errorcode.Code{errorcode.CodeTimeout, errorcode.CodeTimeout}
 	diags := policy.ValidateDocument(doc)
 	requireProblemPath(t, diags, "attempt.retryableErrorCodes[1]")
 }

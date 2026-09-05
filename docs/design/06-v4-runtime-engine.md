@@ -142,8 +142,59 @@
 - **Mục tiêu:** retryable failure tạo Attempt mới dưới cùng NodeRun với budget/backoff.
 - **Phụ thuộc:** V4-05.
 - **Thực hiện:** typed error allowlist, max attempts, scheduled time, exhaustion outcome/escalation.
+  **Prerequisite bắt buộc chốt với user trước khi code:** V4-05 chưa lưu bền `AppError.Code` nào trên
+  Attempt/kết quả thực thi, nên retry không thể áp `RetryableErrorCodes` bền vững qua restart nếu chỉ có
+  `TerminationReason` (một vocabulary thô hơn — loại CAS RUNNING→terminal, không phải AppError code cụ
+  thể). Bổ sung: `runtime.ExecutionAttempt.FailureCode` (mới) lưu đúng code phân loại cho Attempt FAILED/
+  TIMED_OUT, `ports.NodeExecutionResult.ErrorCode` (mới, bắt buộc khi `State=FAILED`) cho executor tự
+  phân loại, `ports.TransitionExecutionAttemptRequest.FailureCode` xuyên qua sqlite/fake — tuyệt đối
+  không phân loại bằng cách parse error message.
+  **Kiến trúc error-code chốt với user trước khi code** (đã chỉnh: go-core-spec §18 có 22 mã, không phải
+  20 như tôi đếm nhầm lần đầu — `apperror.Code` cũ chỉ có 5): tạo `internal/domain/errorcode.Code` làm
+  enum chuẩn 22 giá trị duy nhất (không tạo `runtime.ErrorCode` song song) — `apperror.Code` trở thành
+  type alias (`type Code = errorcode.Code`) re-export 5 hằng cũ để ~80 call site hiện có không phải đổi;
+  giữ đúng luật domain <- app vì enum nằm ở domain layer. `policy.AttemptRules.RetryableErrorCodes` đổi
+  từ `[]string` sang `[]errorcode.Code`, validate bằng `errorcode.Code.Valid()`/`.NeverRetryable()` thay
+  vì hai map riêng đã xoá (`knownErrorCodes`/`nonRetryableErrorCodes`). Timeout do chính execution
+  envelope xác định và ghi `CodeTimeout` (V4-05's own derived-deadline context), không do executor tự đề
+  xuất — `NodeExecutionResult.ErrorCode` không bao giờ tự nhận TIMED_OUT.
+  **Semantics retry/exhaustion chốt với user trước khi code:** `MaxAttempts` tính cả Attempt đầu tiên.
+  Retryable (code nằm trong `RetryableErrorCodes` đã pin VÀ không `NeverRetryable()`) và còn budget
+  (`AttemptNumber < MaxAttempts`) → tạo Attempt mới (`AttemptNumber+1`, cùng `ExecutionProfileHash`/
+  `ProviderKey`/`InputRevisionSet`) với job `EXECUTE_NODE` mới có `AvailableAt = clock.Now() +
+  BackoffSeconds` (threading `clock.Clock` — package này có sẵn từ V1-02 nhưng chưa từng có real caller
+  nào trước V4-06). Retryable nhưng hết budget → CAS NodeRun `RUNNING → FAILED`. Non-retryable → NodeRun
+  → FAILED ngay, không chờ hết budget. Cả hai trường hợp exhaustion/non-retryable đều append event mới
+  `NODE_RUN_FAILED` (đăng ký cùng changeset, không deferred) với payload typed: `failureKind`
+  (`RETRY_EXHAUSTED` | `NON_RETRYABLE_FAILURE`), `lastAttemptId`, `attemptsUsed`, `maxAttempts`,
+  `lastErrorCode`, `attemptPolicyVersionId` — Attempt cuối vẫn giữ nguyên `TerminationReason`/
+  `FailureCode` gốc (vd `EXECUTION_FAILED`/`PROVIDER_UNAVAILABLE`), không ghi đè `RETRY_EXHAUSTED` lên
+  Attempt vì exhaustion là phân loại cấp NodeRun, không phải cấp Attempt. Không tạo blocker giả (bảng
+  `blockers` chưa tồn tại, thuộc phạm vi V4-12A/V4-12C) và không dùng `NodeRun.BLOCKED` (một state khác
+  hẳn — scope-amendment flow của ADR-011/V4-12A). Không tự chuyển WorkflowRun → FAILED — tổng hợp thất
+  bại cấp Run thuộc V4-12. `BLOCKED`/`INDETERMINATE` không đi qua logic này chút nào:
+  `isFinalizableExecutionAttemptState` (đã có từ V4-05, không đổi) chỉ chấp nhận
+  SUCCEEDED/FAILED/TIMED_OUT/CANCELLED làm `NextState` — gọi `FinalizeExecutionAttempt` với `BLOCKED` bị
+  từ chối bằng `ErrUnsupportedFinalizeState` trước khi chạm tới bất kỳ logic retry nào, nên BLOCKED không
+  thể tiêu thụ budget hay tự sinh Attempt kế tiếp bằng cấu trúc, không phải bằng một check runtime riêng.
+  Transition Attempt cuối, quyết định retry/exhaustion, CAS NodeRun, append event và hoàn tất job đều
+  nằm trong cùng một `WithSerializedWrite` transaction bên trong `FinalizeExecutionAttempt` (không mở
+  transaction thứ hai) để không tạo crash gap.
+  `resolvePinnedAttemptRules` (helper mới, `finalize.go`) đọc lại đúng `DecisionArtifact`
+  `"<nodeRunId>-execution-profile-v1"` V4-04 đã ghi, tìm `ResolvedPolicyRef` category ATTEMPT, rồi
+  `tx.Definitions().LoadVersion` + `decodeCompiledPolicy` (tái dùng helper `schedule.go` đã có) — an toàn
+  để đọc lại vì PolicyVersion published là immutable/content-hashed, không lệch so với giá trị đã pin.
 - **Verify:** fake clock tests retry/nonretry/timeout/exhaustion/restart; test khẳng định Attempt
-  `BLOCKED` không tiêu thụ retry budget và không sinh Attempt kế tiếp tự động.
+  `BLOCKED` không tiêu thụ retry budget và không sinh Attempt kế tiếp tự động. Đã triển khai:
+  `TestExecuteNodeHandler_RetryableFailure_CreatesNextAttemptWithBackoff` (clock.Fixed chứng minh
+  AvailableAt = now + BackoffSeconds chính xác), `TestExecuteNodeHandler_RetryableFailure_
+  BudgetExhausted_FailsNodeRun` (payload NODE_RUN_FAILED/RETRY_EXHAUSTED đầy đủ, Attempt cuối không đổi),
+  `TestExecuteNodeHandler_Failure_NonRetryableCode_FailsNodeRun` và
+  `TestExecuteNodeHandler_AttemptDeadlineFinalizesTimedOut` (cả hai cùng chứng minh non-retryable/timeout
+  fail NodeRun ngay khi policy không khai báo code retryable),
+  `TestFinalizeExecutionAttempt_BlockedState_RejectedNeverConsumesRetryBudget`, và
+  `TestFinalizeExecutionAttempt_SQLite_RetryChain_PersistsAcrossRestart` (đóng/mở lại sqlite.Store thật,
+  chứng minh Attempt/job retry sống qua restart) — `finalize_retry_test.go`, `execute_test.go`.
 - **Hoàn thành khi:** không parse message, không retry INDETERMINATE và không retry BLOCKED.
 - **Nguồn:** ADR-020, GC-INV-09, GC-INV-27, HE-13-M01, HE-13-M04.
 

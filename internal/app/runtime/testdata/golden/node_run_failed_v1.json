@@ -1,0 +1,1 @@
+{"runId":"run-1","workItemId":"work-item-1","nodeRunId":"node-run-1","failureKind":"RETRY_EXHAUSTED","lastAttemptId":"attempt-3","attemptsUsed":3,"maxAttempts":3,"lastErrorCode":"PROVIDER_UNAVAILABLE","attemptPolicyVersionId":"policy-version-1","jobId":"job-1"}

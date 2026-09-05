@@ -1,0 +1,17 @@
+-- V4-06 Technical retry policy
+-- (docs/design/06-v4-runtime-engine.md; docs/architecture/04-go-core-spec.md
+-- GC-INV-09/27).
+--
+-- execution_attempts already carries termination_reason (V4-01) — a
+-- coarser "which RUNNING->terminal transition kind" vocabulary. A retry
+-- decision needs the EXACT errorcode.Code (go-core-spec §18) an Attempt's
+-- own FAILED/TIMED_OUT result classified as, so AttemptRules.RetryableErrorCodes
+-- can be re-checked durably (across a process restart) from this column
+-- alone, never by re-parsing an error message.
+--
+-- Plain ADD COLUMN, no rebuild: execution_attempts already has real rows
+-- written through real application commands (V4-04's CreateExecutionAttempt,
+-- V4-05's fenced finalize), so the DROP TABLE; CREATE TABLE rebuild V4-01
+-- used (safe only because the table was still provably empty) is no longer
+-- available here.
+ALTER TABLE execution_attempts ADD COLUMN failure_code TEXT;

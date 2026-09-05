@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
 
@@ -37,7 +38,17 @@ type NodeExecutionResult struct {
 	// GC-INV-11 allow-list check is the actual enforcement point) when
 	// State == SUCCEEDED, meaningless otherwise.
 	SelectedOutcome string
-	ResultPayload   json.RawMessage
+	// ErrorCode is populated now (V4-06): required when State == FAILED —
+	// the exact errorcode.Code (go-core-spec §18) this executor classifies
+	// its own failure as, so ExecuteNodeHandler's retry decision
+	// (FinalizeExecutionAttempt) can check it against the pinned
+	// AttemptRules.RetryableErrorCodes allow-list. Never populated for
+	// State == SUCCEEDED. TIMED_OUT is deliberately NOT a value this type
+	// itself ever carries — the execution envelope's own derived deadline
+	// decides that outcome, never the executor (see ExecuteNodeHandler's
+	// own doc comment).
+	ErrorCode     errorcode.Code
+	ResultPayload json.RawMessage
 }
 
 // NodeExecutor executes one ExecutionAttempt's actual work — a real

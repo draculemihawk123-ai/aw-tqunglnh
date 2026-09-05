@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
@@ -20,15 +21,15 @@ func (r runtimeRepository) GetExecutionAttempt(ctx context.Context, id string) (
 
 func loadExecutionAttemptByID(ctx context.Context, tx *sql.Tx, id runtime.ExecutionAttemptID) (runtime.ExecutionAttempt, error) {
 	var attempt runtime.ExecutionAttempt
-	var providerKey, terminationReason sql.NullString
+	var providerKey, terminationReason, failureCode sql.NullString
 	var inputRevisionSetJSON string
 	err := tx.QueryRowContext(ctx, `
 SELECT id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
-       input_revision_set_json, termination_reason, version
+       input_revision_set_json, termination_reason, failure_code, version
 FROM execution_attempts WHERE id = ?`, id,
 	).Scan(
 		&attempt.ID, &attempt.NodeRunID, &attempt.AttemptNumber, &attempt.State, &providerKey,
-		&attempt.ExecutionProfileHash, &inputRevisionSetJSON, &terminationReason, &attempt.Version,
+		&attempt.ExecutionProfileHash, &inputRevisionSetJSON, &terminationReason, &failureCode, &attempt.Version,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.ExecutionAttempt{}, fmt.Errorf("%w: execution attempt %s", ports.ErrPersistenceNotFound, id)
@@ -41,6 +42,9 @@ FROM execution_attempts WHERE id = ?`, id,
 	}
 	if terminationReason.Valid {
 		attempt.TerminationReason = runtime.TerminationReason(terminationReason.String)
+	}
+	if failureCode.Valid {
+		attempt.FailureCode = errorcode.Code(failureCode.String)
 	}
 	var revisions []workspace.Revision
 	if inputRevisionSetJSON != "" && inputRevisionSetJSON != "[]" {
@@ -80,12 +84,17 @@ func transitionExecutionAttemptTx(ctx context.Context, tx *sql.Tx, req ports.Tra
 	if req.TerminationReason != "" {
 		terminationReason = string(req.TerminationReason)
 	}
+	var failureCode any
+	if req.FailureCode != "" {
+		failureCode = string(req.FailureCode)
+	}
 	result, err := tx.ExecContext(ctx, `
 UPDATE execution_attempts
 SET state = ?, termination_reason = COALESCE(?, termination_reason),
+    failure_code = COALESCE(?, failure_code),
     finished_at = COALESCE(?, finished_at), version = version + 1, updated_at = ?
 WHERE id = ? AND state = ? AND version = ?`,
-		string(req.NextState), terminationReason, finishedAt, now,
+		string(req.NextState), terminationReason, failureCode, finishedAt, now,
 		req.AttemptID, string(req.ExpectedState), req.ExpectedVersion,
 	)
 	if err != nil {

@@ -69,9 +69,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
 
@@ -90,11 +92,15 @@ type ExecuteNodeHandler struct {
 	uow      ports.UnitOfWork
 	ids      idsource.Source
 	executor ports.NodeExecutor
+	clk      clock.Clock
 }
 
-// NewExecuteNodeHandler returns a ready-to-register ExecuteNodeHandler.
-func NewExecuteNodeHandler(uow ports.UnitOfWork, ids idsource.Source, executor ports.NodeExecutor) *ExecuteNodeHandler {
-	return &ExecuteNodeHandler{uow: uow, ids: ids, executor: executor}
+// NewExecuteNodeHandler returns a ready-to-register ExecuteNodeHandler. clk
+// is threaded through to every FinalizeExecutionAttempt call (V4-06) so a
+// retryable failure's own AvailableAt backoff computation is deterministic
+// under a test's clock.Fixed — pass clock.System{} in production.
+func NewExecuteNodeHandler(uow ports.UnitOfWork, ids idsource.Source, executor ports.NodeExecutor, clk clock.Clock) *ExecuteNodeHandler {
+	return &ExecuteNodeHandler{uow: uow, ids: ids, executor: executor, clk: clk}
 }
 
 var _ workerpool.Handler = (*ExecuteNodeHandler)(nil)
@@ -156,10 +162,10 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 
 	if execErr != nil {
 		if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
-			_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, FinalizeExecutionAttemptRequest{
+			_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
 				RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 				NextState: runtimedomain.ExecutionAttemptTimedOut, TerminationReason: runtimedomain.TerminationReasonDeadlineExceeded,
-				JobLease: jobLease, CorrelationID: payload.CorrelationID,
+				FailureCode: errorcode.CodeTimeout, JobLease: jobLease, CorrelationID: payload.CorrelationID,
 			})
 			return finalizeErr
 		}
@@ -169,25 +175,36 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 			// package doc comment step 4.
 			return attemptCtx.Err()
 		}
-		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, FinalizeExecutionAttemptRequest{
+		// execErr is a bare Go error, not a structured NodeExecutionResult —
+		// the executor returned before it could classify its own failure
+		// (e.g. it panicked/errored outside its own result-construction
+		// path), so this handler falls back to the coarsest classification
+		// rather than leaving FailureCode empty (ErrFailureCodeRequired
+		// would otherwise reject this finalize outright).
+		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
 			RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 			NextState: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
-			JobLease: jobLease, CorrelationID: payload.CorrelationID,
+			FailureCode: errorcode.CodeExecutionFailed, JobLease: jobLease, CorrelationID: payload.CorrelationID,
 		})
 		return finalizeErr
 	}
 
 	nextState := runtimedomain.ExecutionAttemptFailed
 	reason := runtimedomain.TerminationReasonExecutionFailed
+	failureCode := execResult.ErrorCode
+	if failureCode == "" {
+		failureCode = errorcode.CodeExecutionFailed
+	}
 	if execResult.State == runtimedomain.ExecutionAttemptSucceeded {
 		nextState = runtimedomain.ExecutionAttemptSucceeded
 		reason = runtimedomain.TerminationReasonCompleted
+		failureCode = ""
 	} else if execResult.TerminationReason != "" {
 		reason = execResult.TerminationReason
 	}
-	_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, FinalizeExecutionAttemptRequest{
+	_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
 		RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
-		NextState: nextState, TerminationReason: reason, SelectedOutcome: execResult.SelectedOutcome,
+		NextState: nextState, TerminationReason: reason, FailureCode: failureCode, SelectedOutcome: execResult.SelectedOutcome,
 		JobLease: jobLease, CorrelationID: payload.CorrelationID,
 	})
 	return finalizeErr

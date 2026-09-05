@@ -10,12 +10,7 @@
 // never be partially applied.
 //
 // Everything commits or rolls back as one ports.UnitOfWork.WithSerializedWrite
-// transaction (confirmed with the user before writing this file, since the
-// closest existing precedent — internal/adapters/sqlite's own spike-era
-// FinalizeWorkflowRun — is a flat, sqlite-only method with no fake
-// counterpart, which would have made V4-05's own required "success/
-// failure/timeout/cancel/lease-loss" tests far more expensive to write than
-// every other V4 task's fake-first testing discipline):
+// transaction:
 //
 //  1. Validate the driving JobLease is still active and names this exact
 //     ExecutionAttempt as its aggregate (fail fast, before touching the
@@ -28,15 +23,31 @@
 //     duplicate job delivery from ever reaching this function twice for
 //     the same real completion).
 //  5. Append EXECUTION_ATTEMPT_FINALIZED in the same transaction (GC-INV-15).
-//  6. When req.NextState is SUCCEEDED, route the NodeRun forward via
-//     advanceRunTx — composed inside THIS SAME transaction, never a second
-//     transaction opened after this one commits (confirmed with the user:
-//     two separate transactions would leave a crash gap — "Attempt
-//     SUCCEEDED + EXECUTE_NODE completed" could commit, the process could
-//     then crash, and nothing durable would ever trigger the routing step,
-//     leaving the NodeRun stuck). FAILED/TIMED_OUT/CANCELLED never route —
-//     V4-06's own technical retry policy decides what happens next for
-//     those.
+//  6. Branch on req.NextState:
+//     - SUCCEEDED: route the NodeRun forward via advanceRunTx — composed
+//     inside THIS SAME transaction, never a second transaction opened
+//     after this one commits (two transactions would leave a crash gap:
+//     "Attempt SUCCEEDED + job completed" could commit, the process
+//     could then crash, and nothing durable would ever trigger routing,
+//     leaving the NodeRun stuck).
+//     - FAILED / TIMED_OUT (V4-06, Technical retry policy): decide retry
+//     vs exhaustion from req.FailureCode and the pinned ATTEMPT policy
+//     (re-resolved fresh from the SAME immutable PolicyVersion V4-04's
+//     own scheduling already pinned — re-loading an immutable, content-
+//     hashed version can never drift, so this is not a second, looser
+//     authority). Retryable AND budget remains: create the next
+//     ExecutionAttempt (AttemptNumber+1) and enqueue its own
+//     EXECUTE_NODE job with AvailableAt = now + BackoffSeconds — all in
+//     this SAME transaction. Non-retryable, OR retryable but budget
+//     exhausted: CAS the NodeRun RUNNING -> FAILED and append
+//     NODE_RUN_FAILED — never a fabricated blocker record (blockers
+//     does not exist as a table yet, V4-12A/C's own scope) and never
+//     NodeRun.BLOCKED (that state means something else entirely —
+//     ADR-011's own scope-amendment flow). WorkflowRun is deliberately
+//     NEVER auto-failed here — Run-level failure aggregation is V4-12's
+//     own scope.
+//     - CANCELLED: no further action here (forward-compatible target for
+//     a future caller, e.g. V4-12B — V4-06 never produces this state).
 //  7. Complete the driving EXECUTE_NODE job using the exact JobLease, last
 //     — so any earlier step's failure rolls this back too, and a lease
 //     that was valid at step 1 but expired by now still gets one final,
@@ -50,8 +61,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
+	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
 
@@ -59,6 +73,13 @@ import (
 // FinalizeExecutionAttempt to CAS into a NextState this function does not
 // recognize as a valid RUNNING->terminal target.
 var ErrUnsupportedFinalizeState = errors.New("runtime: unsupported execution attempt finalize state")
+
+// ErrFailureCodeRequired is returned when NextState is FAILED or TIMED_OUT
+// and the caller did not supply a FailureCode — GC-INV-27's own "Attempt
+// terminal luôn có TerminationReason typed", extended by V4-06 to also
+// require the exact errorcode.Code a retry decision keys off, never
+// inferred later by parsing anything.
+var ErrFailureCodeRequired = errors.New("runtime: FailureCode is required when NextState is FAILED or TIMED_OUT")
 
 // FinalizeExecutionAttemptRequest is what ExecuteNodeHandler supplies.
 type FinalizeExecutionAttemptRequest struct {
@@ -69,13 +90,17 @@ type FinalizeExecutionAttemptRequest struct {
 	// NextState must be SUCCEEDED, FAILED, TIMED_OUT or CANCELLED —
 	// runtime.ExecutionAttemptState's own closed enum restricted to the
 	// RUNNING->terminal transitions this method is a fenced path for.
-	// V4-05's own ExecuteNodeHandler only ever calls this with SUCCEEDED
-	// or FAILED (see execute.go's own doc comment for why TIMED_OUT/
-	// CANCELLED are never proposed as terminal outcomes by V4-05 itself,
-	// even though this type accepts them as legitimate CAS targets for a
-	// later caller, e.g. V4-12B).
+	// V4-05/V4-06's own ExecuteNodeHandler only ever calls this with
+	// SUCCEEDED, FAILED or TIMED_OUT (see execute.go's own doc comment for
+	// why CANCELLED is never proposed as a terminal outcome by this task
+	// itself, even though this type accepts it as a legitimate CAS target
+	// for a later caller, e.g. V4-12B).
 	NextState         runtimedomain.ExecutionAttemptState
 	TerminationReason runtimedomain.TerminationReason
+	// FailureCode is required exactly when NextState is FAILED or
+	// TIMED_OUT (ErrFailureCodeRequired otherwise) — see
+	// runtime.ExecutionAttempt.FailureCode's own doc comment.
+	FailureCode errorcode.Code
 	// SelectedOutcome is the NodeRun outcome to route on — required when
 	// NextState is SUCCEEDED, forwarded to advanceRunTx unchanged (which
 	// still enforces GC-INV-11's own allow-list check; this method never
@@ -95,11 +120,24 @@ type FinalizeExecutionAttemptResult struct {
 	// SUCCEEDED — see this file's own package doc comment step 6.
 	Advanced      bool
 	AdvanceResult AdvanceRunResult
+	// Retried/NextAttemptID are populated only when a FAILED/TIMED_OUT
+	// Attempt was retryable and budget remained (V4-06).
+	Retried       bool
+	NextAttemptID string
+	// NodeRunFailed is populated only when a FAILED/TIMED_OUT Attempt was
+	// non-retryable, or retryable but exhausted its budget (V4-06).
+	NodeRunFailed bool
 }
 
 const (
 	ExecutionAttemptFinalizedEventType     = "EXECUTION_ATTEMPT_FINALIZED"
 	ExecutionAttemptFinalizedSchemaVersion = 1
+
+	// NodeRunFailedEventType/NodeRunFailedSchemaVersion identify V4-06's
+	// own NODE_RUN_FAILED event — see nodeRunFailedEventPayload's own doc
+	// comment.
+	NodeRunFailedEventType     = "NODE_RUN_FAILED"
+	NodeRunFailedSchemaVersion = 1
 )
 
 type executionAttemptFinalizedEventPayload struct {
@@ -112,9 +150,47 @@ type executionAttemptFinalizedEventPayload struct {
 	JobID             string `json:"jobId,omitempty"`
 }
 
+// nodeRunFailedFailureKind is NODE_RUN_FAILED's own closed "why" vocabulary
+// (V4-06, confirmed with the user before writing this file): a technical
+// retry either exhausts its own budget, or the failure was never eligible
+// for retry at all — two structurally different reasons a later consumer
+// (V4-12A/C, UI) needs to tell apart.
+type nodeRunFailedFailureKind string
+
+const (
+	NodeRunFailureKindRetryExhausted      nodeRunFailedFailureKind = "RETRY_EXHAUSTED"
+	NodeRunFailureKindNonRetryableFailure nodeRunFailedFailureKind = "NON_RETRYABLE_FAILURE"
+)
+
+// nodeRunFailedEventPayload is NODE_RUN_FAILED's own JSON shape (V4-06,
+// confirmed with the user before writing this file): the typed
+// "escalation" this task's own scope stops at — never a fabricated
+// blocker record (the blockers table does not exist yet, V4-12A/C's own
+// scope) and never NodeRun.BLOCKED (a different, unrelated state). The
+// LAST Attempt's own TerminationReason/FailureCode are deliberately left
+// unchanged by exhaustion — RETRY_EXHAUSTED/NON_RETRYABLE_FAILURE are
+// NodeRun-level classifications, not a second Attempt-level reason
+// overwriting what that Attempt actually failed with.
+type nodeRunFailedEventPayload struct {
+	RunID                  string `json:"runId"`
+	WorkItemID             string `json:"workItemId"`
+	NodeRunID              string `json:"nodeRunId"`
+	FailureKind            string `json:"failureKind"`
+	LastAttemptID          string `json:"lastAttemptId"`
+	AttemptsUsed           uint32 `json:"attemptsUsed"`
+	MaxAttempts            uint32 `json:"maxAttempts"`
+	LastErrorCode          string `json:"lastErrorCode"`
+	AttemptPolicyVersionID string `json:"attemptPolicyVersionId"`
+	JobID                  string `json:"jobId,omitempty"`
+}
+
 // FinalizeExecutionAttempt performs exactly one fenced terminal transition.
 // See this file's own package doc comment for the full seven-step design.
-func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, req FinalizeExecutionAttemptRequest) (FinalizeExecutionAttemptResult, error) {
+// clk is V1-02's own clock.Clock (this task is that package's first real
+// caller) — every backoff/"now" computation in the retry path goes through
+// it, never time.Now() directly, so V4-06's own required "fake clock"
+// tests can control backoff timing deterministically.
+func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, req FinalizeExecutionAttemptRequest) (FinalizeExecutionAttemptResult, error) {
 	if req.RunID == "" || req.NodeRunID == "" || req.AttemptID == "" {
 		return FinalizeExecutionAttemptResult{}, errors.New("runtime: RunID, NodeRunID and AttemptID are required")
 	}
@@ -126,6 +202,13 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 	}
 	if req.NextState == runtimedomain.ExecutionAttemptSucceeded && req.SelectedOutcome == "" {
 		return FinalizeExecutionAttemptResult{}, errors.New("runtime: SelectedOutcome is required when NextState is SUCCEEDED")
+	}
+	needsFailureCode := req.NextState == runtimedomain.ExecutionAttemptFailed || req.NextState == runtimedomain.ExecutionAttemptTimedOut
+	if needsFailureCode && req.FailureCode == "" {
+		return FinalizeExecutionAttemptResult{}, ErrFailureCodeRequired
+	}
+	if !needsFailureCode && req.FailureCode != "" {
+		return FinalizeExecutionAttemptResult{}, fmt.Errorf("runtime: FailureCode must be empty unless NextState is FAILED or TIMED_OUT, got %q for %q", req.FailureCode, req.NextState)
 	}
 
 	var result FinalizeExecutionAttemptResult
@@ -155,7 +238,7 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 		// Step 4: CAS the Attempt to its terminal state.
 		updatedAttempt, err := tx.Runtime().TransitionExecutionAttempt(ctx, ports.TransitionExecutionAttemptRequest{
 			AttemptID: req.AttemptID, ExpectedState: runtimedomain.ExecutionAttemptRunning, ExpectedVersion: req.ExpectedVersion,
-			NextState: req.NextState, TerminationReason: req.TerminationReason,
+			NextState: req.NextState, TerminationReason: req.TerminationReason, FailureCode: req.FailureCode,
 		})
 		if err != nil {
 			return err
@@ -183,9 +266,9 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 			return err
 		}
 
-		// Step 6: route the NodeRun forward, in the SAME transaction, only
-		// on SUCCEEDED.
-		if req.NextState == runtimedomain.ExecutionAttemptSucceeded {
+		// Step 6: branch on outcome.
+		switch req.NextState {
+		case runtimedomain.ExecutionAttemptSucceeded:
 			advanceResult, err := advanceRunTx(ctx, tx, ids, AdvanceRunRequest{
 				RunID: req.RunID, NodeRunID: req.NodeRunID, Outcome: req.SelectedOutcome,
 				SharedStatePatch: req.SharedStatePatch, CorrelationID: req.CorrelationID, JobID: string(req.JobLease.JobID),
@@ -195,6 +278,11 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 			}
 			result.Advanced = true
 			result.AdvanceResult = advanceResult
+
+		case runtimedomain.ExecutionAttemptFailed, runtimedomain.ExecutionAttemptTimedOut:
+			if err := decideRetryOrExhaustion(ctx, tx, ids, clk, req, updatedAttempt, run, &result); err != nil {
+				return err
+			}
 		}
 
 		// Step 7: complete the driving job last.
@@ -206,6 +294,150 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 		return nil
 	})
 	return result, err
+}
+
+// decideRetryOrExhaustion is V4-06's own retry policy: re-resolve the
+// pinned ATTEMPT policy (the exact immutable PolicyVersion V4-04's own
+// scheduling already pinned — re-loading it can never drift, since a
+// published PolicyVersion never changes), then either create the next
+// ExecutionAttempt (retryable, budget remains) or CAS the NodeRun to
+// FAILED and append NODE_RUN_FAILED (non-retryable, or budget exhausted).
+// Composed inside FinalizeExecutionAttempt's own transaction — see that
+// function's own doc comment step 6.
+func decideRetryOrExhaustion(
+	ctx context.Context, tx ports.Tx, ids idsource.Source, clk clock.Clock,
+	req FinalizeExecutionAttemptRequest, attempt runtimedomain.ExecutionAttempt, run runtimedomain.WorkflowRun,
+	result *FinalizeExecutionAttemptResult,
+) error {
+	attemptRules, attemptPolicyVersionID, err := resolvePinnedAttemptRules(ctx, tx, req.NodeRunID)
+	if err != nil {
+		return err
+	}
+
+	retryable := !req.FailureCode.NeverRetryable() && retryableErrorCodeDeclared(attemptRules.RetryableErrorCodes, req.FailureCode)
+	budgetRemains := uint32(attempt.AttemptNumber) < attemptRules.MaxAttempts
+
+	if retryable && budgetRemains {
+		nextAttemptID := ids.NewID()
+		nextAttempt, err := runtimedomain.NewExecutionAttempt(
+			runtimedomain.ExecutionAttemptID(nextAttemptID), attempt.NodeRunID, attempt.AttemptNumber+1,
+			attempt.ExecutionProfileHash, attempt.ProviderKey, attempt.InputRevisionSet,
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Runtime().CreateExecutionAttempt(ctx, nextAttempt); err != nil {
+			return err
+		}
+		jobPayload, err := json.Marshal(ExecuteNodeJobPayload{
+			RunID: req.RunID, NodeRunID: req.NodeRunID, AttemptID: nextAttemptID, CorrelationID: req.CorrelationID,
+		})
+		if err != nil {
+			return fmt.Errorf("marshal %s retry job payload: %w", ExecuteNodeJobKind, err)
+		}
+		if _, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+			ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: ExecuteNodeJobKind,
+			AggregateType: "ExecutionAttempt", AggregateID: nextAttemptID, Payload: jobPayload,
+			AvailableAt: clk.Now().Add(time.Duration(attemptRules.BackoffSeconds) * time.Second),
+			MaxClaims:   defaultExecuteNodeJobMaxClaims, IdempotencyKey: "execute-" + nextAttemptID,
+		}); err != nil {
+			return err
+		}
+		result.Retried = true
+		result.NextAttemptID = nextAttemptID
+		return nil
+	}
+
+	// Non-retryable, or retryable but budget exhausted: CAS the NodeRun to
+	// FAILED and append NODE_RUN_FAILED — never a fabricated blocker, never
+	// NodeRun.BLOCKED, never an automatic WorkflowRun failure (V4-12's own
+	// scope).
+	nodeRun, err := tx.Runtime().GetNodeRun(ctx, req.NodeRunID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
+		NodeRunID: req.NodeRunID, ExpectedState: runtimedomain.NodeRunRunning, ExpectedVersion: nodeRun.Version,
+		NextState: runtimedomain.NodeRunFailed,
+	}); err != nil {
+		return err
+	}
+	failureKind := NodeRunFailureKindNonRetryableFailure
+	if retryable {
+		failureKind = NodeRunFailureKindRetryExhausted
+	}
+	eventPayload, err := json.Marshal(nodeRunFailedEventPayload{
+		RunID: req.RunID, WorkItemID: string(run.WorkItemID), NodeRunID: req.NodeRunID,
+		FailureKind: string(failureKind), LastAttemptID: req.AttemptID, AttemptsUsed: attempt.AttemptNumber,
+		MaxAttempts: attemptRules.MaxAttempts, LastErrorCode: string(req.FailureCode),
+		AttemptPolicyVersionID: attemptPolicyVersionID, JobID: string(req.JobLease.JobID),
+	})
+	if err != nil {
+		return fmt.Errorf("marshal %s event payload: %w", NodeRunFailedEventType, err)
+	}
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: req.NodeRunID + "-failed", ProjectID: string(run.ProjectID),
+		AggregateType: "NodeRun", AggregateID: req.NodeRunID, Sequence: int64(nodeRun.Version + 1),
+		EventType: NodeRunFailedEventType, SchemaVersion: NodeRunFailedSchemaVersion, PayloadJSON: string(eventPayload),
+		CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return err
+	}
+	result.NodeRunFailed = true
+	return nil
+}
+
+// resolvePinnedAttemptRules re-loads the exact ATTEMPT-category PolicyRef
+// V4-04's own ScheduleExecutableNodeRun pinned into the NodeRun's own
+// DecisionArtifact ("<nodeRunId>-execution-profile-v1") — this is safe to
+// re-load rather than caching, since a published PolicyVersion is
+// immutable and content-hashed; re-reading it can never observe a
+// different value than what was originally pinned.
+func resolvePinnedAttemptRules(ctx context.Context, tx ports.Tx, nodeRunID string) (policy.AttemptRules, string, error) {
+	decision, err := tx.Runtime().GetDecisionArtifact(ctx, nodeRunID+"-execution-profile-v1")
+	if err != nil {
+		return policy.AttemptRules{}, "", fmt.Errorf("runtime: load execution profile decision for node run %s: %w", nodeRunID, err)
+	}
+	var profile struct {
+		Policies []struct {
+			VersionID string `json:"versionId"`
+			Category  string `json:"category"`
+		} `json:"policies"`
+	}
+	if err := json.Unmarshal(decision.Result, &profile); err != nil {
+		return policy.AttemptRules{}, "", fmt.Errorf("runtime: decode execution profile decision for node run %s: %w", nodeRunID, err)
+	}
+	var attemptPolicyVersionID string
+	for _, p := range profile.Policies {
+		if p.Category == string(policy.CategoryAttempt) {
+			attemptPolicyVersionID = p.VersionID
+			break
+		}
+	}
+	if attemptPolicyVersionID == "" {
+		return policy.AttemptRules{}, "", fmt.Errorf("runtime: node run %s has no pinned ATTEMPT policy", nodeRunID)
+	}
+	policyVersion, err := tx.Definitions().LoadVersion(ctx, attemptPolicyVersionID)
+	if err != nil {
+		return policy.AttemptRules{}, "", fmt.Errorf("runtime: resolve node run %s attempt policy: %w", nodeRunID, err)
+	}
+	policyDoc, err := decodeCompiledPolicy(policyVersion.CompiledSnapshot())
+	if err != nil {
+		return policy.AttemptRules{}, "", fmt.Errorf("runtime: node run %s: %w", nodeRunID, err)
+	}
+	if policyDoc.Attempt == nil {
+		return policy.AttemptRules{}, "", fmt.Errorf("runtime: node run %s pinned policy %s has no Attempt rules", nodeRunID, attemptPolicyVersionID)
+	}
+	return *policyDoc.Attempt, attemptPolicyVersionID, nil
+}
+
+func retryableErrorCodeDeclared(declared []errorcode.Code, code errorcode.Code) bool {
+	for _, c := range declared {
+		if c == code {
+			return true
+		}
+	}
+	return false
 }
 
 func isFinalizableExecutionAttemptState(state runtimedomain.ExecutionAttemptState) bool {

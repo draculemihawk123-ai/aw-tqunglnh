@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
@@ -206,7 +207,18 @@ type ExecutionAttempt struct {
 	StartedAt            *time.Time
 	FinishedAt           *time.Time
 	TerminationReason    TerminationReason
-	Version              uint64
+	// FailureCode is populated now (V4-06) for a terminal FAILED or
+	// TIMED_OUT attempt: the exact errorcode.Code (go-core-spec §18) this
+	// attempt's own failure classifies as, durably pinned so a retry
+	// decision can be re-evaluated across a process restart from this
+	// field alone, never from TerminationReason (a different, coarser
+	// vocabulary — RUNNING->terminal transition kind, not a specific
+	// AppError code) and never by re-parsing an error message. Blank for
+	// every other terminal state (SUCCEEDED, CANCELLED, LOST,
+	// INDETERMINATE, BLOCKED) — those either have no failure to classify
+	// or are already fail-closed by construction.
+	FailureCode errorcode.Code
+	Version     uint64
 }
 
 func NewExecutionAttempt(

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -529,6 +530,11 @@ type TransitionExecutionAttemptRequest struct {
 	ExpectedVersion   uint64
 	NextState         runtime.ExecutionAttemptState
 	TerminationReason runtime.TerminationReason
+	// FailureCode is populated now (V4-06): the exact errorcode.Code a
+	// terminal FAILED or TIMED_OUT attempt classifies as — see
+	// runtime.ExecutionAttempt.FailureCode's own doc comment. Blank for
+	// every other NextState.
+	FailureCode errorcode.Code
 }
 
 // JobsRepository gains its first real method now (V3-01,

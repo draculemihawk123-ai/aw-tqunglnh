@@ -29,6 +29,8 @@
 // every field's citation in its own doc comment.
 package policy
 
+import "github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
+
 // PolicyDefinitionID identifies a Policy's mutable Definition row, kept
 // as its own named type per this codebase's kind-safe-ID convention
 // (each kind declares its own ID type rather than sharing a generic
@@ -60,36 +62,6 @@ var validCategories = map[Category]bool{
 // Valid reports whether c is one of the five defined Categories.
 func (c Category) Valid() bool { return validCategories[c] }
 
-// knownErrorCodes is the closed AppError code enum
-// docs/architecture/04-go-core-spec.md §18 defines. AttemptRules'
-// RetryableErrorCodes validates against exactly this set: a retry
-// decision keys off an exact error code, so a code this repo's error
-// model never produces could never fire, and a typo would silently
-// disable a retry rule the author thought they'd written.
-var knownErrorCodes = map[string]bool{
-	"INVALID_ARGUMENT": true, "NOT_FOUND": true, "ALREADY_EXISTS": true,
-	"CONFLICT": true, "IDEMPOTENCY_CONFLICT": true, "PRECONDITION_FAILED": true,
-	"VALIDATION_FAILED": true, "POLICY_DENIED": true, "SCOPE_VIOLATION": true,
-	"LEASE_LOST": true, "FENCE_REJECTED": true, "WORKSPACE_QUARANTINED": true,
-	"ISOLATION_ENFORCEMENT_UNAVAILABLE": true, "ADAPTER_BUILD_DRIFT": true,
-	"UNAVAILABLE": true, "PROVIDER_UNAVAILABLE": true, "EXECUTION_FAILED": true,
-	"TIMEOUT": true, "CANCELLED": true, "INDETERMINATE": true,
-	"RETRY_EXHAUSTED": true, "INTERNAL": true,
-}
-
-// nonRetryableErrorCodes are known error codes go-core-spec.md §18
-// explicitly says must never become retryable.
-// ISOLATION_ENFORCEMENT_UNAVAILABLE is fail-closed admission behavior
-// ("không bao giờ được đổi thành retryable technical failure hay
-// auto-downgrade profile", go-core-spec.md §14); INDETERMINATE always
-// needs recovery/escalation, never a plain retry ("INDETERMINATE luôn
-// fail-closed và cần recovery/escalation, không được tự đổi thành
-// retryable", go-core-spec.md §18).
-var nonRetryableErrorCodes = map[string]bool{
-	"ISOLATION_ENFORCEMENT_UNAVAILABLE": true,
-	"INDETERMINATE":                     true,
-}
-
 // IsolationTier is the two explicit trust tiers ADR-013 defines for
 // execution admission and enforcement.
 type IsolationTier string
@@ -119,8 +91,14 @@ type AttemptRules struct {
 	// retry may create for one NodeRun occurrence.
 	MaxAttempts uint32 `json:"maxAttempts" yaml:"maxAttempts"`
 	// RetryableErrorCodes is the set of AppError codes
-	// (go-core-spec.md §18) whose technical failure may be retried.
-	RetryableErrorCodes []string `json:"retryableErrorCodes,omitempty" yaml:"retryableErrorCodes,omitempty"`
+	// (internal/domain/errorcode, go-core-spec.md §18) whose technical
+	// failure may be retried — errorcode.Code, not a bare []string
+	// (correction found during V4-06 scoping review: this field used to be
+	// []string, validated against this package's own now-removed private
+	// knownErrorCodes/nonRetryableErrorCodes maps; using the canonical
+	// domain type directly means there is exactly one place in this
+	// codebase that ever defines what a valid/never-retryable code is).
+	RetryableErrorCodes []errorcode.Code `json:"retryableErrorCodes,omitempty" yaml:"retryableErrorCodes,omitempty"`
 	// BackoffSeconds is the delay before a retried attempt is created.
 	// go-core-spec.md §6 names "backoff" as part of AttemptPolicy without
 	// specifying a strategy (linear/exponential/jitter); this package

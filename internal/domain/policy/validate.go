@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/authoring"
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 )
 
 // ValidateDocument checks doc against every rule this package's own doc
@@ -104,10 +105,10 @@ func validateAttemptRules(rules AttemptRules) authoring.Diagnostics {
 		})
 	}
 
-	seen := make(map[string]bool, len(rules.RetryableErrorCodes))
+	seen := make(map[errorcode.Code]bool, len(rules.RetryableErrorCodes))
 	for i, code := range rules.RetryableErrorCodes {
 		path := fmt.Sprintf("attempt.retryableErrorCodes[%d]", i)
-		trimmed := strings.TrimSpace(code)
+		trimmed := errorcode.Code(strings.TrimSpace(string(code)))
 		if trimmed == "" {
 			diags = append(diags, authoring.Diagnostic{
 				Path: path,
@@ -117,7 +118,7 @@ func validateAttemptRules(rules AttemptRules) authoring.Diagnostics {
 			})
 			continue
 		}
-		if !knownErrorCodes[trimmed] {
+		if !trimmed.Valid() {
 			diags = append(diags, authoring.Diagnostic{
 				Path: path,
 				What: fmt.Sprintf("unknown error code %q", trimmed),
@@ -126,7 +127,7 @@ func validateAttemptRules(rules AttemptRules) authoring.Diagnostics {
 			})
 			continue
 		}
-		if nonRetryableErrorCodes[trimmed] {
+		if trimmed.NeverRetryable() {
 			diags = append(diags, authoring.Diagnostic{
 				Path: path,
 				What: fmt.Sprintf("%q is never retryable", trimmed),

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
@@ -68,7 +69,7 @@ func TestExecuteNodeHandler_Success_FinalizesAndAdvances(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -104,14 +105,25 @@ func TestExecuteNodeHandler_Success_FinalizesAndAdvances(t *testing.T) {
 	_ = runID
 }
 
-// --- ExecuteNodeHandler: failure path (no routing) ---
+// --- ExecuteNodeHandler: failure path (never routes via AdvanceRun; V4-06's
+// own retry policy decides retry vs NodeRun-FAILED instead) ---
 
-func TestExecuteNodeHandler_Failure_FinalizesWithoutAdvancing(t *testing.T) {
+// TestExecuteNodeHandler_Failure_NonRetryableCode_FailsNodeRun proves a
+// FAILED Attempt never goes through AdvanceRun's own outcome routing — it is
+// V4-06's own decideRetryOrExhaustion that decides what happens to the
+// NodeRun. attemptPolicyDocument's own fixture declares no
+// RetryableErrorCodes at all, so the executor's (fallback) CodeExecutionFailed
+// is never eligible for retry regardless of remaining budget — the NodeRun
+// is CAS'd straight to FAILED with a NODE_RUN_FAILED/NON_RETRYABLE_FAILURE
+// event, and the Attempt's own already-set TerminationReason is left
+// untouched (exhaustion/non-retryability is a NodeRun-level classification,
+// never rewritten onto the Attempt that actually failed).
+func TestExecuteNodeHandler_Failure_NonRetryableCode_FailsNodeRun(t *testing.T) {
 	uow, ids, _, nodeRunID, attemptID := scheduledExecutionFixture(t, 600)
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -124,14 +136,25 @@ func TestExecuteNodeHandler_Failure_FinalizesWithoutAdvancing(t *testing.T) {
 		t.Fatalf("attempt = %+v, want FAILED/EXECUTION_FAILED", attempt)
 	}
 
-	// The NodeRun must NOT have been routed anywhere — it stays RUNNING,
-	// left for V4-06's own retry policy to decide what happens next.
+	// The NodeRun is NOT routed via AdvanceRun/SelectedOutcome — it is CAS'd
+	// straight to FAILED by decideRetryOrExhaustion instead.
 	nodeRun, err := uow.Snapshot.Runtime().GetNodeRun(context.Background(), nodeRunID)
 	if err != nil {
 		t.Fatalf("GetNodeRun: %v", err)
 	}
-	if nodeRun.State != runtimedomain.NodeRunRunning {
-		t.Fatalf("node run = %+v, want unchanged RUNNING (FAILED must not route)", nodeRun)
+	if nodeRun.State != runtimedomain.NodeRunFailed {
+		t.Fatalf("node run = %+v, want FAILED (non-retryable code fails the node run immediately)", nodeRun)
+	}
+
+	events := uow.Snapshot.Events().(*fake.EventsRepository).Items()
+	found := false
+	for _, e := range events {
+		if e.EventType == runtime.NodeRunFailedEventType && e.AggregateID == nodeRunID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("no %s event found among %+v", runtime.NodeRunFailedEventType, events)
 	}
 }
 
@@ -142,7 +165,7 @@ func TestExecuteNodeHandler_ExecutorReturnsError_FinalizesFailed(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Err: errors.New("boom: provider crashed")}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -163,12 +186,16 @@ func TestExecuteNodeHandler_ExecutorReturnsError_FinalizesFailed(t *testing.T) {
 // ResolvedExecutionProfileV1.TimeoutSeconds), not any bare
 // context.DeadlineExceeded, is what triggers TIMED_OUT/DEADLINE_EXCEEDED —
 // the fake executor blocks until the derived context's own deadline fires.
+// The fixture's own attemptPolicyDocument declares no RetryableErrorCodes,
+// so CodeTimeout is non-retryable here too — decideRetryOrExhaustion CAS's
+// the NodeRun straight to FAILED, mirroring
+// TestExecuteNodeHandler_Failure_NonRetryableCode_FailsNodeRun.
 func TestExecuteNodeHandler_AttemptDeadlineFinalizesTimedOut(t *testing.T) {
 	uow, ids, _, nodeRunID, attemptID := scheduledExecutionFixture(t, 1)
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Block: make(chan struct{})} // never closed: the executor "runs forever"
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -185,8 +212,8 @@ func TestExecuteNodeHandler_AttemptDeadlineFinalizesTimedOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetNodeRun: %v", err)
 	}
-	if nodeRun.State != runtimedomain.NodeRunRunning {
-		t.Fatalf("node run = %+v, want unchanged RUNNING (TIMED_OUT must not route)", nodeRun)
+	if nodeRun.State != runtimedomain.NodeRunFailed {
+		t.Fatalf("node run = %+v, want FAILED (non-retryable TIMEOUT fails the node run immediately)", nodeRun)
 	}
 }
 
@@ -203,7 +230,7 @@ func TestExecuteNodeHandler_CancelledContextDoesNotFinalize(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Block: make(chan struct{})}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -242,7 +269,7 @@ func TestExecuteNodeHandler_ReplayAfterAlreadyRunning_IsNoOp(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	blockedExecutor := &fake.NodeExecutor{Block: make(chan struct{})}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, blockedExecutor)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, blockedExecutor, clock.System{})
 
 	// First delivery: cancel it mid-flight so the Attempt is left RUNNING
 	// (not yet finalized) — exactly the state a redelivered job would find.
@@ -259,7 +286,7 @@ func TestExecuteNodeHandler_ReplayAfterAlreadyRunning_IsNoOp(t *testing.T) {
 	// QUEUED — claimRunning's own idempotent no-op must fire, never
 	// re-executing the (still-blocked) executor a second time.
 	unusedExecutor := &fake.NodeExecutor{Err: errors.New("must not be called")}
-	replayHandler := runtime.NewExecuteNodeHandler(uow, ids, unusedExecutor)
+	replayHandler := runtime.NewExecuteNodeHandler(uow, ids, unusedExecutor, clock.System{})
 	if err := replayHandler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("replayed Handle: %v", err)
 	}
@@ -312,7 +339,7 @@ func TestFinalizeExecutionAttempt_MissingSelectedOutcomeForSucceeded_Rejected(t 
 	seedRunningAttemptAndNodeRun(t, uow, nodeRunID, attemptID)
 
 	lease := ports.JobLease{JobID: job.ID, Owner: job.LeaseOwner, Token: job.LeaseToken, LeaseUntil: *job.LeaseUntil}
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		JobLease: lease,
@@ -324,7 +351,7 @@ func TestFinalizeExecutionAttempt_MissingSelectedOutcomeForSucceeded_Rejected(t 
 
 func TestFinalizeExecutionAttempt_UnsupportedNextState_Rejected(t *testing.T) {
 	uow, ids, runID, nodeRunID, attemptID := scheduledExecutionFixture(t, 600)
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 1,
 		NextState: runtimedomain.ExecutionAttemptRunning, TerminationReason: runtimedomain.TerminationReasonCompleted,
 	})
@@ -339,7 +366,7 @@ func TestFinalizeExecutionAttempt_StaleJobLease_RollsBackEverything(t *testing.T
 	seedRunningAttemptAndNodeRun(t, uow, nodeRunID, attemptID)
 
 	staleLease := ports.JobLease{JobID: job.ID, Owner: "someone-else", Token: 999, LeaseUntil: time.Now().Add(time.Minute)}
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: staleLease,

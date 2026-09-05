@@ -12,27 +12,41 @@ package apperror
 import (
 	"errors"
 	"fmt"
+
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 )
 
-// Code is a stable, typed category for an application error.
-type Code string
+// Code is a stable, typed category for an application error — a type
+// alias (not a wrapper) for internal/domain/errorcode.Code (V4-06,
+// correction found during scoping review): V1-02 originally defined this
+// type locally with only 5 of go-core-spec §18's own 22 values, which left
+// no typed way for an ExecutionAttempt's own failure to carry a code from
+// the other 17 (EXECUTION_FAILED, TIMEOUT, PROVIDER_UNAVAILABLE, ...).
+// Unifying onto the domain package's own canonical enum here — rather than
+// maintaining two independent code sets with the same names and meaning —
+// is what lets every one of this package's ~80 existing call sites keep
+// referencing apperror.Code/apperror.CodeXxx unchanged (a type alias makes
+// apperror.Code and errorcode.Code the exact same type, not merely
+// convertible), while every new caller that needs one of the other 17
+// values reaches the domain package directly.
+type Code = errorcode.Code
 
 const (
 	// CodeInvalidArgument: the caller supplied a request the domain can
 	// never satisfy, no matter how many times it retries.
-	CodeInvalidArgument Code = "INVALID_ARGUMENT"
+	CodeInvalidArgument = errorcode.CodeInvalidArgument
 	// CodeNotFound: the referenced aggregate/entity does not exist.
-	CodeNotFound Code = "NOT_FOUND"
+	CodeNotFound = errorcode.CodeNotFound
 	// CodeConflict: an optimistic-concurrency/CAS check lost against a
 	// value that has genuinely already changed — retrying with the same
 	// expected version will never succeed; the caller must reload first.
-	CodeConflict Code = "CONFLICT"
+	CodeConflict = errorcode.CodeConflict
 	// CodeUnavailable: a transient condition (e.g. lock contention) that a
 	// bounded retry of the exact same operation may resolve on its own.
-	CodeUnavailable Code = "UNAVAILABLE"
+	CodeUnavailable = errorcode.CodeUnavailable
 	// CodeInternal: an unexpected failure with no more specific category;
 	// the private cause is where the actual diagnostic detail lives.
-	CodeInternal Code = "INTERNAL"
+	CodeInternal = errorcode.CodeInternal
 )
 
 // Error is the envelope itself. Message and Details are the public/safe
