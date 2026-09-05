@@ -53,14 +53,17 @@
 - **Phụ thuộc:** V1 config.
 - **Thực hiện:** env allowlist, cwd validation, stdout/stderr bounded sinks, graceful then force cancel,
   termination classification; `ENFORCED_ISOLATED` chỉ khi filesystem/network enforcement thực sự có,
-  còn fallback phải là `OPERATOR_TRUSTED_LOCAL` và vẫn hậu kiểm diff.
+  còn fallback phải là `OPERATOR_TRUSTED_LOCAL` và vẫn hậu kiểm diff. Task này sở hữu production
+  implementation của `ports.RuntimeExecutionConfigProvider` (ADR-027, port định nghĩa ở V4-04) — wiring
+  thật từ `internal/app/config.Config` (đã có `ProcessOutputLimit`/`ProviderExecutables` từ V1-03) sang
+  `RuntimeExecutionConfigSnapshotV1`, không đổi port/type mà V4-04 đã khóa.
 - **Verify:** helper binary argument injection, timeout, cancel descendants, oversized output; profile
   enforced có negative filesystem/network tests, trusted-local không được tự nhận là sandbox; spy
   assertion process spawn count bằng 0 khi enforcement không khả dụng.
 - **Hoàn thành khi:** không có shell string hoặc inherited environment mặc định; không có đường code nào
   auto-downgrade `ENFORCED_ISOLATED` xuống `OPERATOR_TRUSTED_LOCAL`, và profile không cưỡng chế được trả
   `ISOLATION_ENFORCEMENT_UNAVAILABLE` **trước** `ProcessSupervisor.Start`.
-- **Nguồn:** ADR-013, ADR-023, HE-02-M03, GC-INV-30, GC-DS-09.
+- **Nguồn:** ADR-013, ADR-023, ADR-027, HE-02-M03, GC-INV-30, GC-DS-09.
 
 ## V5-06 — Claude adapter production contract
 

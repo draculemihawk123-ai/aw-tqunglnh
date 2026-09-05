@@ -1,0 +1,32 @@
+-- V4-04 NodeRun/Attempt scheduling transaction
+-- (docs/design/06-v4-runtime-engine.md; docs/architecture/04-go-core-spec.md
+-- GC-INV-08: "Mỗi NodeRun pin input hash, effective scope và execution
+-- profile trước attempt đầu tiên").
+--
+-- node_runs already carries input_state_hash (V4-01); this migration adds
+-- the two siblings GC-INV-08 names plus the exact manifest revision this
+-- NodeRun's own scheduling decision was made against:
+--
+--   - effective_scope_json: the RepositoryScope[] snapshot resolved from
+--     the owning WorkItem's own ListWorkItemEffectiveScopes at scheduling
+--     time (V4-04), pinned so a later scope change never retroactively
+--     changes what an already-scheduled NodeRun is entitled to.
+--   - execution_profile_hash: the ResolvedExecutionProfileV1 hash
+--     (internal/domain/runtime/executionprofile.go) this NodeRun's own
+--     Attempt(s) run under — the SAME value pinned onto
+--     execution_attempts.execution_profile_hash (already NOT NULL there
+--     since the spike), never a second independent value.
+--   - manifest_revision: the RunManifestAmendment.Revision (0 meaning
+--     "the initial ExecutionManifest, no amendment yet") this NodeRun's
+--     own effective scope was resolved against.
+--
+-- Plain ADD COLUMN, no rebuild: unlike execution_attempts/workflow_runs at
+-- V4-01 time, node_runs already has real rows written through real
+-- application commands (V4-02's StartWorkflowRun, V4-03's AdvanceRun), so
+-- the DROP TABLE; CREATE TABLE rebuild those tasks used (safe only because
+-- both tables were still provably empty) is no longer available here —
+-- and is unnecessary anyway, since every new column below is nullable with
+-- no CHECK constraint spanning existing columns.
+ALTER TABLE node_runs ADD COLUMN effective_scope_json TEXT;
+ALTER TABLE node_runs ADD COLUMN execution_profile_hash TEXT;
+ALTER TABLE node_runs ADD COLUMN manifest_revision INTEGER;

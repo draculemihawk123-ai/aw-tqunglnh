@@ -122,7 +122,14 @@ type NodeRun struct {
 	ExecutionProfileHash string
 	SelectedOutcome      string
 	BlockReason          string
-	Version              uint64
+	// ManifestRevision is the RunManifestAmendment.Revision (0 meaning
+	// "the initial ExecutionManifest, no amendment yet") this NodeRun's
+	// own EffectiveScope/ExecutionProfileHash were resolved against
+	// (V4-04, GC-INV-08's own "exact manifest revision"). Zero/unset until
+	// scheduling pins it — a structural node (START, ROUTER) that never
+	// dispatches an Attempt never needs one.
+	ManifestRevision uint64
+	Version          uint64
 }
 
 // NewNodeRun validates and builds a new NodeRun activation, PENDING at

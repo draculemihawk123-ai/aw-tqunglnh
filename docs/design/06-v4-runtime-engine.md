@@ -52,16 +52,48 @@
 - **Mục tiêu:** executable node tạo attempt + durable job đúng một lần.
 - **Phụ thuộc:** V4-03.
 - **Thực hiện:** resolve effective scope/profile/context inputs và exact manifest revision; QUEUED
-  states; idempotency by `NodeRun activation`, không reuse key giữa activation scope-expanded.
-- **Verify:** duplicate ADVANCE_RUN và concurrent scheduler tests.
-- **Hoàn thành khi:** queue delivery lặp không tạo duplicate attempt.
-- **Nguồn:** AK-ARCH-008, GC-INV-08.
+  states; idempotency by `NodeRun activation`, không reuse key giữa activation scope-expanded. Profile
+  resolution dùng `ResolvedExecutionProfileV1` (correction round 2 của V4-03) — `RuntimeExecutionConfigHash`
+  của nó đến từ `ports.RuntimeExecutionConfigProvider` mới (ADR-027): task này định nghĩa port + type
+  snapshot + canonicalization/hash + fake provider, KHÔNG tự resolve composition-root config thật (đó là
+  V5-05's scope) và KHÔNG nhận hash trần từ bất kỳ caller nào — chỉ nhận snapshot đã resolve rồi tự tính
+  hash. Thiếu provider hoặc snapshot không hợp lệ phải fail closed, không tạo Attempt/job.
+  Implementation thật (`internal/app/runtime/schedule.go`, `ScheduleExecutableNodeRun`): V4-03's
+  `AdvanceRun` được mở rộng để enqueue một job mới `SCHEDULE_NODE_RUN` (thay vì để NodeRun PENDING
+  không có consumer) bất cứ khi nào downstream node là AGENT/COMMAND/MACHINE_GATE — atomically cùng
+  transaction tạo NodeRun activation đó, giữ đúng discipline "một hop một job" của V4-03.
+  `NodeSchedulingHandler` (workerpool.Handler) claim job này, gọi `ScheduleExecutableNodeRun`:
+  resolve `RuntimeExecutionConfigSnapshotV1` ngoài transaction, mở transaction, re-check NodeRun còn
+  PENDING (không thì no-op idempotent), resolve `ResolvedExecutorRef`/`Policies`/`AdapterBuild` qua
+  `tx.Definitions().LoadVersion`/`tx.AdapterBuilds().Get`, resolve effective scope qua
+  `ListWorkItemEffectiveScopes` và manifest revision qua `ListRunManifestAmendments`, ghi một
+  `DecisionArtifact` (Kind `EXECUTION_PROFILE_V1`) chứa canonical profile cho audit, gọi
+  `tx.Runtime().ScheduleNodeRun` (CAS PENDING->QUEUED, pin EffectiveScope/ExecutionProfileHash/
+  ManifestRevision) rồi `CreateExecutionAttempt` (AttemptNumber=1), append event `NODE_SCHEDULED`
+  (đăng ký ngay trong eventschema registry, không hoãn như NODE_ROUTED lần đầu) và enqueue job
+  `EXECUTE_NODE` cho V4-05's fake executor tương lai, idempotency key theo NodeRun.ID (không reuse
+  giữa activation).
+  **Quyết định fail-closed bổ sung** (mục 22 ở `docs/00-start-here.md`): một node executable không pin
+  đúng một Policy category ATTEMPT (timeout) hoặc PERMISSION (isolation tier) bị từ chối lên lịch
+  (`ErrAttemptPolicyRequired`/`ErrPermissionPolicyRequired`) — `ResolvedExecutionProfileV1` không cho
+  phép timeout=0 hay isolation tier rỗng, nên một profile thiếu policy tương ứng không thể hợp lệ.
+  Một `AdapterBuildID` được khai báo nhưng không resolve được cũng fail closed
+  (`ErrAdapterBuildUnresolved`, theo đúng quyết định round-1 của V4-03).
+- **Verify:** duplicate ADVANCE_RUN và concurrent scheduler tests. Đã triển khai: fake+sqlite tests cho
+  happy path (AGENT), idempotent replay, và mọi fail-closed path kể trên (`schedule_test.go`,
+  `schedule_sqlite_test.go`, `internal/app/runtime`).
+- **Hoàn thành khi:** queue delivery lặp không tạo duplicate attempt — chứng minh bằng
+  `TestScheduleExecutableNodeRun_ReplayAfterAlreadyScheduled_IsNoOp` (fake) và replay sau restart thật
+  trong `TestScheduleExecutableNodeRun_SQLite_SchedulesAttemptAndJob`.
+- **Nguồn:** ADR-027, AK-ARCH-008, GC-INV-08.
 
 ## V4-05 — Generic worker execution envelope với fake executor
 
 - **Mục tiêu:** test engine không phụ thuộc provider/command adapter thật.
 - **Phụ thuộc:** V4-04.
-- **Thực hiện:** job claim, attempt RUNNING, optional write leases, fake typed events/result, fenced finalize.
+- **Thực hiện:** job claim, attempt RUNNING, optional write leases, fake typed events/result, fenced
+  finalize. Dùng fake `ports.RuntimeExecutionConfigProvider` V4-04 đã định nghĩa (ADR-027) — không đổi
+  port, không tự resolve config thật.
 - **Verify:** success/failure/timeout/cancel/lease-loss tests.
 - **Hoàn thành khi:** worker chỉ propose outcome; orchestrator quyết transition.
 - **Nguồn:** GC-INV-17, HE-09-M01.

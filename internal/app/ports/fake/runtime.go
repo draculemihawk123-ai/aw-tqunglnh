@@ -8,6 +8,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
 // RuntimeRepository is an in-memory ports.RuntimeRepository — V4-01 gives
@@ -23,6 +24,7 @@ import (
 type RuntimeRepository struct {
 	workflowRuns map[string]runtime.WorkflowRun                // by ID
 	nodeRuns     map[string]runtime.NodeRun                    // by ID
+	attempts     map[string]runtime.ExecutionAttempt           // by ID
 	manifests    map[string]runtime.ExecutionManifest          // by RunID
 	amendments   map[string][]runtime.RunManifestAmendment     // by RunID, Revision order
 	branches     map[string]runtime.BranchToken                // by RunID+"\x00"+ForkKey+"\x00"+BranchKey
@@ -41,6 +43,10 @@ func (r *RuntimeRepository) clone() *RuntimeRepository {
 	nodeRuns := make(map[string]runtime.NodeRun, len(r.nodeRuns))
 	for k, v := range r.nodeRuns {
 		nodeRuns[k] = v
+	}
+	attempts := make(map[string]runtime.ExecutionAttempt, len(r.attempts))
+	for k, v := range r.attempts {
+		attempts[k] = v
 	}
 	manifests := make(map[string]runtime.ExecutionManifest, len(r.manifests))
 	for k, v := range r.manifests {
@@ -67,8 +73,8 @@ func (r *RuntimeRepository) clone() *RuntimeRepository {
 		workIntents[k] = v
 	}
 	return &RuntimeRepository{
-		workflowRuns: workflowRuns, nodeRuns: nodeRuns, manifests: manifests, amendments: amendments, branches: branches,
-		decisions: decisions, runIntents: runIntents, workIntents: workIntents,
+		workflowRuns: workflowRuns, nodeRuns: nodeRuns, attempts: attempts, manifests: manifests, amendments: amendments,
+		branches: branches, decisions: decisions, runIntents: runIntents, workIntents: workIntents,
 	}
 }
 
@@ -162,6 +168,54 @@ func (r *RuntimeRepository) UpdateWorkflowRunSharedState(_ context.Context, req 
 	run.Version++
 	r.workflowRuns[req.RunID] = run
 	return run, nil
+}
+
+// ScheduleNodeRun mirrors sqlite's scheduleNodeRunTx (V4-04): PENDING->QUEUED
+// CAS, pinning EffectiveScope/ExecutionProfileHash/ManifestRevision together.
+func (r *RuntimeRepository) ScheduleNodeRun(_ context.Context, req ports.ScheduleNodeRunRequest) (runtime.NodeRun, error) {
+	nodeRun, ok := r.nodeRuns[req.NodeRunID]
+	if !ok {
+		return runtime.NodeRun{}, fmt.Errorf("fake: %w: node run %s", ports.ErrPersistenceNotFound, req.NodeRunID)
+	}
+	if nodeRun.State != runtime.NodeRunPending || nodeRun.Version != req.ExpectedVersion {
+		return runtime.NodeRun{}, fmt.Errorf(
+			"fake: %w: node run %s expected PENDING@%d", ports.ErrOptimisticConflict, req.NodeRunID, req.ExpectedVersion,
+		)
+	}
+	nodeRun.State = runtime.NodeRunQueued
+	nodeRun.EffectiveScope = append([]work.RepositoryScope(nil), req.EffectiveScope...)
+	nodeRun.ExecutionProfileHash = req.ExecutionProfileHash
+	nodeRun.ManifestRevision = req.ManifestRevision
+	nodeRun.Version++
+	r.nodeRuns[req.NodeRunID] = nodeRun
+	return nodeRun, nil
+}
+
+// CreateExecutionAttempt mirrors sqlite's createExecutionAttemptTx (V4-04).
+func (r *RuntimeRepository) CreateExecutionAttempt(_ context.Context, attempt runtime.ExecutionAttempt) (runtime.ExecutionAttempt, error) {
+	if _, ok := r.nodeRuns[string(attempt.NodeRunID)]; !ok {
+		return runtime.ExecutionAttempt{}, fmt.Errorf("fake: %w: node run %s", ports.ErrPersistenceNotFound, attempt.NodeRunID)
+	}
+	key := string(attempt.ID)
+	if _, exists := r.attempts[key]; exists {
+		return runtime.ExecutionAttempt{}, fmt.Errorf("fake: %w: execution attempt %s", ports.ErrPersistenceAlreadyExists, key)
+	}
+	if r.attempts == nil {
+		r.attempts = map[string]runtime.ExecutionAttempt{}
+	}
+	r.attempts[key] = attempt
+	return attempt, nil
+}
+
+// Attempts returns every ExecutionAttempt this fake has recorded, keyed by
+// ID — test-only introspection, mirroring JobsRepository.Items()/
+// EventsRepository.Items().
+func (r *RuntimeRepository) Attempts() map[string]runtime.ExecutionAttempt {
+	items := make(map[string]runtime.ExecutionAttempt, len(r.attempts))
+	for k, v := range r.attempts {
+		items[k] = v
+	}
+	return items
 }
 
 func sameExecutionManifestContent(left, right runtime.ExecutionManifest) bool {
@@ -284,6 +338,16 @@ func (r *RuntimeRepository) GetDecisionArtifact(_ context.Context, id string) (r
 		return runtime.DecisionArtifact{}, fmt.Errorf("fake: %w: decision artifact %s", ports.ErrPersistenceNotFound, id)
 	}
 	return artifact, nil
+}
+
+// Decisions returns every DecisionArtifact this fake has recorded, keyed by
+// ID — test-only introspection, mirroring Attempts()/JobsRepository.Items().
+func (r *RuntimeRepository) Decisions() map[string]runtime.DecisionArtifact {
+	items := make(map[string]runtime.DecisionArtifact, len(r.decisions))
+	for k, v := range r.decisions {
+		items[k] = v
+	}
+	return items
 }
 
 func (r *RuntimeRepository) RecordRunCancellationIntent(_ context.Context, intent runtime.RunCancellationIntent) (runtime.RunCancellationIntent, error) {

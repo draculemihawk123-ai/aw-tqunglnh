@@ -2,9 +2,10 @@
 
 > Trạng thái: ACCEPTED — product owner xác nhận ADR-001…010 ngày 2026-08-28, ủy quyền chốt
 > ADR-011…019 ngày 2026-08-29 và chốt ADR-020…025 ngày 2026-08-31 sau review bộ thiết kế Alpha.
-> ADR-026 chốt ngày 2026-09-05, phát hiện và quyết định trực tiếp trong lúc user review code V4-03.
+> ADR-026 và ADR-027 chốt ngày 2026-09-05, phát hiện và quyết định trực tiếp trong lúc user review code
+> V4-03 và scoping V4-04.
 >
-> Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026).
+> Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -664,9 +665,50 @@ khi runtime có thể tự resolve. Không phát minh rule đó trong V4.
   qua `workflow.Compile` sau ADR này, nhưng vẫn đúng nếu một `WorkflowVersion` được dựng theo cách khác
   trong tương lai).
 
-## 29. Baseline sau review thiết kế
+## 29. ADR-027 — RuntimeExecutionConfigProvider: authority nội bộ, không nhận hash từ caller
 
-ADR-001…026 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** phát hiện trong lúc scoping V4-04 (`docs/design/06-v4-runtime-engine.md`):
+`ResolvedExecutionProfileV1.RuntimeExecutionConfigHash` (ADR đóng gap tại correction round 2 của V4-03)
+cần một giá trị thật đại diện cho composition-root Configuration (go-core-spec §19: process timeout,
+output limit, environment/network/secret-reference policy) một execution thực sự chạy dưới. Repo đã có
+`internal/app/config.Config` thật (V1-03, `ProcessOutputLimit`/`ProviderExecutables` đã validate), nhưng
+chưa có projection nào từ `Config` sang một execution snapshot theo node — thiếu resolver, không thiếu
+hoàn toàn dữ liệu.
+
+Phương án đầu tiên được cân nhắc — nhận thẳng một chuỗi hash làm tham số đầu vào cho transaction lên
+lịch của V4-04 — bị bác: một hash do caller tự khai không thể verify được là tính đúng từ config thật
+hay không; nếu API/provider/agent có quyền tự khai hash, authority bị đảo ngược (đúng như cách
+`ProjectID` luôn được tải lại và kiểm chứng từ database thay vì tin ở giá trị caller gửi lên).
+
+**Quyết định:** V4-04 không nhận hash trần. Thay vào đó:
+
+1. `internal/domain/runtime.RuntimeExecutionConfigSnapshotV1` — type domain thuần, canonicalize/hash
+   giống `ResolvedExecutionProfileV1`, chỉ core (`NewRuntimeExecutionConfigSnapshotV1`) mới được tính
+   `RuntimeExecutionConfigHash`, không ai được truyền hash đó trực tiếp.
+2. `ports.RuntimeExecutionConfigProvider` — port bắt buộc V4-04's scheduling transaction phụ thuộc vào,
+   trả về snapshot đã resolve (structured data, không phải hash).
+3. Luồng: resolve snapshot **ngoài** database transaction (I/O thật, giống cách `workspaceprovision`'s
+   provider chạy I/O ngoài Tx) → core validate/normalize/hash snapshot → mở scheduling transaction, kiểm
+   tra lại Run/NodeRun/definition pins (phòng stale trong khoảng ngoài-Tx) → đưa hash vào
+   `ResolvedExecutionProfileV1` → pin `ExecutionProfileHash` (không phải `RuntimeExecutionConfigHash`
+   riêng — tránh hai authority độc lập) vào NodeRun và Attempt → tạo job/event atomically. Provider thiếu
+   hoặc snapshot không hợp lệ → fail closed, không tạo Attempt/job.
+4. `RuntimeExecutionConfigHash` không bao giờ xuất hiện trong HTTP/request DTO nào — chỉ nội bộ giữa
+   Provider và core.
+
+**Phân chia ownership giữa các task:**
+- **V4-04** (task này): định nghĩa port `RuntimeExecutionConfigProvider`, type
+  `RuntimeExecutionConfigSnapshotV1`, canonicalization/hash, và một fake provider cho test — không tự
+  resolve config thật.
+- **V4-05** (Generic worker execution envelope với fake executor): dùng fake provider cùng fake
+  executor, không đổi port.
+- **V5-05** (Production ProcessSupervisor hardening): sở hữu production provider thật + composition-root
+  wiring từ `internal/app/config.Config` — vì task đó đã sở hữu output bound/environment/network/
+  secret/isolation enforcement thật trên Windows/Linux.
+
+## 30. Baseline sau review thiết kế
+
+ADR-001…027 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -686,6 +728,8 @@ dụng ma trận sau:
 - ADR-025 supersede ràng buộc `ProjectID` bắt buộc trong command envelope và "mọi query scope bằng
   ProjectID" của Go core spec §8/§9;
 - ADR-026 refine mô tả `ROUTER` của Go core spec §6 bằng ràng buộc Alpha "đúng một outcome", đóng gap
-  runtime-only-reject phát hiện lúc review V4-03.
+  runtime-only-reject phát hiện lúc review V4-03;
+- ADR-027 thêm `RuntimeExecutionConfigProvider` là port bắt buộc cho V4-04's scheduling transaction,
+  chưa được ADR cũ khóa — resolve config ngoài Tx, core tự tính hash, không nhận hash trần từ caller.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

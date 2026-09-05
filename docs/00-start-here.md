@@ -3,8 +3,8 @@
 > Đọc tài liệu này đầu tiên khi bắt đầu một session mới. Nó là điểm vào cho mục tiêu, các quyết định
 > đã chốt, trạng thái thực thi và ranh giới công việc hiện tại.
 >
-> Cập nhật: 2026-09-05 (mục 20, ADR-026). Nếu tài liệu này khác ADR, ADR là authority về quyết định
-> kiến trúc; cần sửa tài liệu này trong cùng thay đổi, không tự suy diễn.
+> Cập nhật: 2026-09-05 (mục 20-22, ADR-026, ADR-027). Nếu tài liệu này khác ADR, ADR là authority về
+> quyết định kiến trúc; cần sửa tài liệu này trong cùng thay đổi, không tự suy diễn.
 
 ## 1. Mục tiêu sản phẩm
 
@@ -68,6 +68,15 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
 20. Node type `ROUTER` chỉ được khai báo đúng một outcome cho Alpha (ADR-026); publish một `ROUTER`
     nhiều outcome là lỗi validation, không phải hành vi runtime âm thầm deadlock. Multi-outcome rule
     thật hoãn tới ADR/authoring schema riêng.
+21. `ExecutionProfileHash` không bao giờ nhận một hash trần từ caller (ADR-027): scheduling transaction
+    chỉ nhận `RuntimeExecutionConfigSnapshotV1` đã resolve qua `ports.RuntimeExecutionConfigProvider`
+    rồi tự canonicalize/tính hash — nhận thẳng hash từ caller sẽ đảo ngược authority.
+22. V4-04's scheduling resolver (`ScheduleExecutableNodeRun`) fail-closed khi một node executable
+    (AGENT/COMMAND/MACHINE_GATE) không pin được đúng một Policy category ATTEMPT (nguồn của
+    `TimeoutSeconds`) và đúng một Policy category PERMISSION (nguồn của `IsolationTier`) —
+    `ErrAttemptPolicyRequired`/`ErrPermissionPolicyRequired`. Một node thiếu policy này không bao giờ
+    được lên lịch: `ResolvedExecutionProfileV1` (GC-INV-08) đòi hỏi timeout dương và isolation tier
+    tường minh, không có default ngầm.
 
 ## 3. Glossary chuẩn
 

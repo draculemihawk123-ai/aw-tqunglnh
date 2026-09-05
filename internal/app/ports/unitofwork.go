@@ -8,6 +8,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
@@ -338,6 +339,36 @@ type RuntimeRepository interface {
 	// ExpectedVersion, ErrPersistenceNotFound for an unknown RunID.
 	UpdateWorkflowRunSharedState(ctx context.Context, req UpdateWorkflowRunSharedStateRequest) (runtime.WorkflowRun, error)
 
+	// ScheduleNodeRun is populated now (V4-04,
+	// docs/design/06-v4-runtime-engine.md): the CAS that closes an
+	// executable NodeRun's own scheduling decision — PENDING->QUEUED, with
+	// EffectiveScope/ExecutionProfileHash/ManifestRevision pinned together
+	// in the same CAS (GC-INV-08's own "pin input hash, effective scope và
+	// execution profile trước attempt đầu tiên" — input hash is already
+	// pinned at CreateNodeRun time, V4-03; these two siblings plus the
+	// exact manifest revision are what V4-04 adds). Deliberately a
+	// SEPARATE method from TransitionNodeRun (V4-03's own routing-outcome
+	// CAS): that one only ever touches State/SelectedOutcome for the
+	// "which edge did this node take" concern AdvanceRun owns, and has no
+	// reason to also carry three new scheduling-only columns.
+	// ErrOptimisticConflict on a stale ExpectedVersion (including a
+	// NodeRun that is no longer PENDING — the idempotent-replay case a
+	// caller checks BEFORE calling this, the same discipline AdvanceRun's
+	// own idempotent early-return already uses), ErrPersistenceNotFound
+	// for an unknown NodeRunID.
+	ScheduleNodeRun(ctx context.Context, req ScheduleNodeRunRequest) (runtime.NodeRun, error)
+
+	// CreateExecutionAttempt is populated now (V4-04): inserts the first
+	// ExecutionAttempt (AttemptNumber must be 1 — a later technical retry
+	// creating AttemptNumber 2+ is V4-06's own scope) for an executable
+	// NodeRun, after verifying attempt.NodeRunID names a NodeRun that
+	// exists — the execution_attempts counterpart of CreateNodeRun's own
+	// "verify the parent exists" discipline. execution_attempts.execution_profile_hash
+	// has been NOT NULL since the spike, so attempt.ExecutionProfileHash
+	// must be non-empty — runtime.NewExecutionAttempt's own constructor
+	// already enforces this before a caller ever reaches this method.
+	CreateExecutionAttempt(ctx context.Context, attempt runtime.ExecutionAttempt) (runtime.ExecutionAttempt, error)
+
 	// CreateExecutionManifest inserts the one immutable ExecutionManifest a
 	// WorkflowRun ever has (GC-INV-06). manifest.RunID must name a
 	// WorkflowRun that exists, and manifest.WorkflowVersionID's own
@@ -437,6 +468,20 @@ type UpdateWorkflowRunSharedStateRequest struct {
 	RunID           string
 	ExpectedVersion uint64
 	SharedState     json.RawMessage
+}
+
+// ScheduleNodeRunRequest is the CAS request for
+// RuntimeRepository.ScheduleNodeRun (V4-04). ExpectedVersion must observe
+// the NodeRun as PENDING (the CAS itself enforces the PENDING->QUEUED
+// transition; the caller does not separately state ExpectedState the way
+// TransitionNodeRunRequest does, since QUEUED has exactly one legal
+// predecessor for this task's own scope).
+type ScheduleNodeRunRequest struct {
+	NodeRunID            string
+	ExpectedVersion      uint64
+	EffectiveScope       []work.RepositoryScope
+	ExecutionProfileHash string
+	ManifestRevision     uint64
 }
 
 // JobsRepository gains its first real method now (V3-01,

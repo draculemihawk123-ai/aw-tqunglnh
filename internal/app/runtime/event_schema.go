@@ -19,6 +19,19 @@ func DecodeNodeRoutedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// DecodeNodeScheduledV1 is NODE_SCHEDULED v1's own eventschema.Decoder
+// (V4-04, schedule.go) — registered from the same changeset that produces
+// this event, not deferred the way NODE_ROUTED's own registration was the
+// first time (correction found during V4-03 review; this task does not
+// repeat it).
+func DecodeNodeScheduledV1(payloadJSON string) (any, error) {
+	var payload nodeScheduledEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry. A composition root that wires up EnforcingEventsRepository
 // calls this once at startup, the same "register at init/startup time"
@@ -28,4 +41,5 @@ func DecodeNodeRoutedV1(payloadJSON string) (any, error) {
 // to first assemble and call this).
 func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(NodeRoutedEventType, NodeRoutedSchemaVersion, DecodeNodeRoutedV1)
+	registry.Register(NodeScheduledEventType, NodeScheduledSchemaVersion, DecodeNodeScheduledV1)
 }

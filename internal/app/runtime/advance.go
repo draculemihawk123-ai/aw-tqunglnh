@@ -194,6 +194,14 @@ type AdvanceRunResult struct {
 	// node, or "" if the downstream node is not one this task advances
 	// further (left PENDING for a later task's own dispatcher).
 	NextJobID string
+	// NextScheduleJobID is the ScheduleNodeRunJobKind job id enqueued when
+	// the downstream node is executable (AGENT/COMMAND/MACHINE_GATE,
+	// V4-04's own schedule.go) — "" otherwise. Mutually exclusive with
+	// NextJobID: a downstream node is either auto-advanced (structural),
+	// scheduled for execution (executable), or left PENDING for a still-
+	// later task's own dispatcher (WAIT/APPROVAL/FORK/JOIN/END) — never
+	// more than one of the three.
+	NextScheduleJobID string
 }
 
 // AdvanceRun performs exactly one routing hop. See this file's own package
@@ -329,24 +337,49 @@ func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, 
 			return err
 		}
 
-		if !autoAdvance {
-			return nil
-		}
+		switch {
+		case autoAdvance:
+			payload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: nextID, CorrelationID: req.CorrelationID})
+			if err != nil {
+				return fmt.Errorf("marshal %s job payload: %w", AdvanceRunJobKind, err)
+			}
+			job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+				ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: AdvanceRunJobKind,
+				AggregateType: "WorkflowRun", AggregateID: string(run.ID), Payload: payload,
+				MaxClaims: defaultAdvanceRunJobMaxClaimsFollowUp, IdempotencyKey: "advance-" + nextID,
+			})
+			if err != nil {
+				return err
+			}
+			result.NextJobID = string(job.ID)
 
-		jobID := ids.NewID()
-		payload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: nextID, CorrelationID: req.CorrelationID})
-		if err != nil {
-			return fmt.Errorf("marshal %s job payload: %w", AdvanceRunJobKind, err)
+		case isExecutableNode(downstreamNode.Type):
+			// V4-04: an executable downstream node needs its own scheduling
+			// transaction (ResolvedExecutionProfileV1 resolution, effective
+			// scope, exact manifest revision) that this call's own
+			// transaction cannot perform inline — ADR-027 requires
+			// resolving the RuntimeExecutionConfigProvider's snapshot
+			// OUTSIDE any database transaction, which this hop is already
+			// inside of. So, like the auto-advance case above, this hands
+			// off to a separate durable job/handler (schedule.go's
+			// ScheduleExecutableNodeRun via NodeSchedulingHandler) rather
+			// than resolving inline — enqueued atomically here, alongside
+			// the NodeRun activation and NODE_ROUTED event, so the handoff
+			// itself can never be lost.
+			payload, err := json.Marshal(ScheduleNodeRunJobPayload{RunID: string(run.ID), NodeRunID: nextID, CorrelationID: req.CorrelationID})
+			if err != nil {
+				return fmt.Errorf("marshal %s job payload: %w", ScheduleNodeRunJobKind, err)
+			}
+			job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+				ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: ScheduleNodeRunJobKind,
+				AggregateType: "NodeRun", AggregateID: nextID, Payload: payload,
+				MaxClaims: defaultScheduleNodeRunJobMaxClaims, IdempotencyKey: "schedule-" + nextID,
+			})
+			if err != nil {
+				return err
+			}
+			result.NextScheduleJobID = string(job.ID)
 		}
-		job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
-			ID: ports.JobID(jobID), ProjectID: run.ProjectID, Kind: AdvanceRunJobKind,
-			AggregateType: "WorkflowRun", AggregateID: string(run.ID), Payload: payload,
-			MaxClaims: defaultAdvanceRunJobMaxClaimsFollowUp, IdempotencyKey: "advance-" + nextID,
-		})
-		if err != nil {
-			return err
-		}
-		result.NextJobID = string(job.ID)
 		return nil
 	})
 	return result, err

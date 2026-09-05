@@ -312,14 +312,17 @@ WHERE id = ?`,
 
 func loadNodeRunByID(ctx context.Context, tx *sql.Tx, id runtime.NodeRunID) (runtime.NodeRun, error) {
 	var nodeRun runtime.NodeRun
-	var selectedOutcome sql.NullString
+	var selectedOutcome, effectiveScopeJSON, executionProfileHash sql.NullString
+	var manifestRevision sql.NullInt64
 	err := tx.QueryRowContext(ctx, `
 SELECT id, run_id, node_key, activation_sequence, iteration, state,
-       selected_outcome, input_state_hash, version
+       selected_outcome, input_state_hash, version,
+       effective_scope_json, execution_profile_hash, manifest_revision
 FROM node_runs WHERE id = ?`, id,
 	).Scan(
 		&nodeRun.ID, &nodeRun.RunID, &nodeRun.NodeKey, &nodeRun.ActivationSequence,
 		&nodeRun.Iteration, &nodeRun.State, &selectedOutcome, &nodeRun.InputStateHash, &nodeRun.Version,
+		&effectiveScopeJSON, &executionProfileHash, &manifestRevision,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.NodeRun{}, fmt.Errorf("%w: node run %s", ports.ErrPersistenceNotFound, id)
@@ -329,6 +332,19 @@ FROM node_runs WHERE id = ?`, id,
 	}
 	if selectedOutcome.Valid {
 		nodeRun.SelectedOutcome = selectedOutcome.String
+	}
+	if executionProfileHash.Valid {
+		nodeRun.ExecutionProfileHash = executionProfileHash.String
+	}
+	if manifestRevision.Valid {
+		nodeRun.ManifestRevision = uint64(manifestRevision.Int64)
+	}
+	if effectiveScopeJSON.Valid && effectiveScopeJSON.String != "" {
+		scope, err := decodeEffectiveScopeJSON(effectiveScopeJSON.String)
+		if err != nil {
+			return runtime.NodeRun{}, fmt.Errorf("decode node run %s effective scope: %w", id, err)
+		}
+		nodeRun.EffectiveScope = scope
 	}
 	return nodeRun, nil
 }
