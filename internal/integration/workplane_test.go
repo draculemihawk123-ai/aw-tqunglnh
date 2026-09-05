@@ -76,7 +76,17 @@ func TestProjectWorkspaceGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("gitworktree.New: %v", err)
 	}
-	handler := workspaceprovision.New(uow, ids, provider)
+	// The handler's own ID source is deliberately NOT the test's shared
+	// idsource.Sequential above: workerpool.Pool runs this handler from up
+	// to Concurrency=3 goroutines at once (this test's whole point, per
+	// GC-ACC-08's "hai sibling ghi khác repository chạy song song"), and
+	// Sequential's own doc comment says it is "Not safe for concurrent
+	// use." idsource.Random{} has no shared mutable state, so it is safe
+	// under real concurrent Handle() calls — this test never asserts on an
+	// exact minted RepositoryWorkspace ID value, only on identity/
+	// inequality between two of them, so losing determinism here costs
+	// nothing.
+	handler := workspaceprovision.New(uow, idsource.Random{}, provider)
 	registry := workerpool.NewRegistry()
 	registry.Register(appwork.WorkspaceProvisionJobKind, handler)
 	pool, err := workerpool.New(store, registry, workerpool.Config{
@@ -109,6 +119,27 @@ func TestProjectWorkspaceGate(t *testing.T) {
 
 	set1 := waitForWorkplaneSetState(t, store, family1Root.FamilyID, workspace.WorkspaceSetReady)
 	set2 := waitForWorkplaneSetState(t, store, family2Root.FamilyID, workspace.WorkspaceSetReady)
+
+	// WorkspaceSet reaching READY only proves the handler's own
+	// business-state transaction committed — workerpool.Pool's own
+	// CompleteJob call that marks the durable job row itself SUCCEEDED is
+	// a SEPARATE step afterward (pool.go's runJob), which is deliberately
+	// best-effort: under lease expiry it silently leaves the job LEASED
+	// for another owner to reclaim, rather than failing the pool. That
+	// reclaim needs the pool to keep running long enough for the recovery
+	// reaper to notice and retry — but this test calls cancelPool() soon
+	// after this point, so a job whose CompleteJob attempt lost its 500ms
+	// lease (plausible on a loaded CI runner) would stay LEASED forever
+	// once the pool stops, and later fail RequestWorkspaceSetRelease's own
+	// "no active durable job" check. Waiting for each provisioning job's
+	// own terminal state HERE — not just the business state — closes that
+	// gap before this test does anything that depends on provisioning
+	// being fully, durably done.
+	for _, root := range []appwork.CreateRootWorkItemResult{family1Root, family2Root} {
+		for _, provisioned := range root.ProvisionedRepositories {
+			waitForDurableJobState(t, store, provisioned.ProvisionJobID, ports.JobSucceeded)
+		}
+	}
 
 	rwFamily1RepoA := mustGetRepositoryWorkspace(t, ctx, uow, family1Root.WorkspaceSetID, "repo-a")
 	rwFamily2RepoA := mustGetRepositoryWorkspace(t, ctx, uow, family2Root.WorkspaceSetID, "repo-a")
@@ -177,6 +208,9 @@ func TestProjectWorkspaceGate(t *testing.T) {
 	}
 	if len(approveResult.ProvisionedRepositories) != 1 {
 		t.Fatalf("expansion provisioned %d repositories, want exactly 1 (repo-b)", len(approveResult.ProvisionedRepositories))
+	}
+	for _, provisioned := range approveResult.ProvisionedRepositories {
+		waitForDurableJobState(t, store, provisioned.ProvisionJobID, ports.JobSucceeded)
 	}
 
 	set1Expanded := waitForWorkplaneSetState(t, store, family1Root.FamilyID, workspace.WorkspaceSetReady)
@@ -589,6 +623,29 @@ func waitForWorkplaneSetState(t *testing.T, store *sqlite.Store, familyID string
 	}
 	t.Fatalf("workspace set for family %s did not reach state %s within the deadline; last observed = %+v", familyID, want, last)
 	return workspace.WorkspaceSet{}
+}
+
+// waitForDurableJobState polls store for jobID's own State until it reaches
+// want or an 8s deadline elapses — waitForWorkplaneSetState's own sibling,
+// for a durable job's row rather than a WorkspaceSet's business state (see
+// this file's own TestProjectWorkspaceGate comment on why the two are not
+// interchangeable proof that provisioning is actually, durably done).
+func waitForDurableJobState(t *testing.T, store *sqlite.Store, jobID string, want ports.JobState) {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(8 * time.Second)
+	var last ports.JobState
+	for time.Now().Before(deadline) {
+		state, err := store.LoadDurableJobState(ctx, ports.JobID(jobID))
+		if err == nil {
+			last = state
+			if state == want {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("durable job %s did not reach state %s within the deadline; last observed = %s", jobID, want, last)
 }
 
 func mustCountWorkspaceSets(t *testing.T, store *sqlite.Store) int {
