@@ -103,6 +103,25 @@ var (
 	// RunID — a defensive cross-check against a malformed job payload.
 	ErrNodeRunMismatch = errors.New("runtime: node run does not belong to the given workflow run")
 
+	// ErrCycleEscalationRouteNotFound is a defensive, should-be-unreachable
+	// error mirroring ErrRouteNotFound (V4-07, GC-INV-10/AK-ARCH-004): the
+	// compiler already rejects any node whose CyclePolicy.EscalationOutcome
+	// has no matching declared edge before a document can ever be
+	// published (validateNormalizedDocument, workflow package) — this
+	// exists so a corrupted/foreign WorkflowVersion fails closed here
+	// rather than panicking, the moment its own iteration budget is
+	// actually exhausted.
+	ErrCycleEscalationRouteNotFound = errors.New("runtime: no edge declared for this node's cycle escalation outcome")
+	// ErrCycleEscalationNotBounded is a defensive, should-be-unreachable
+	// error: the compiler already rejects any cycle whose
+	// CyclePolicy.EscalationOutcome edge does not lead outside that same
+	// cycle (validateBoundedCycles, workflow package) before a document can
+	// ever be published. This re-verifies that exact fact again here
+	// (workflow.CycleMembership), on the exact same compiled document,
+	// rather than trusting the compiler's own past guarantee blindly —
+	// fails closed if it somehow does not hold.
+	ErrCycleEscalationNotBounded = errors.New("runtime: cycle escalation edge does not lead outside its own cycle")
+
 	// ErrSharedStateFieldNotDeclared is HE-14-M04's own enforcement point
 	// (correction found during V4-03 review): AdvanceRunRequest.SharedStatePatch
 	// named a field the pinned WorkflowVersion's own SharedState schema
@@ -202,6 +221,17 @@ type AdvanceRunResult struct {
 	// later task's own dispatcher (WAIT/APPROVAL/FORK/JOIN/END) — never
 	// more than one of the three.
 	NextScheduleJobID string
+	// CycleExhausted reports whether the literal edge target (edge.To,
+	// V4-07's own business-rework bound, GC-INV-10/AK-ARCH-004) had already
+	// exhausted its own CyclePolicy budget. When true, SkippedNodeRunID/
+	// SkippedNodeKey describe the terminal SKIPPED NodeRun created for that
+	// edge target instead of a normal activation, and every Next* field
+	// above describes the FORCED escalation target instead (the node that
+	// actually needs further dispatch) — never the SKIPPED node itself,
+	// which needs none.
+	CycleExhausted   bool
+	SkippedNodeRunID string
+	SkippedNodeKey   string
 }
 
 // AdvanceRun performs exactly one routing hop. See this file's own package
@@ -303,17 +333,102 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		return AdvanceRunResult{}, err
 	}
 
+	// V4-07 (GC-INV-10/AK-ARCH-004): resolve how many times the literal
+	// edge target (downstreamNode) has already been activated in this Run
+	// — a real MAX query over durable history, never a raw COUNT(*), so a
+	// later V4-12A scope-expansion reactivation (which copies Iteration
+	// forward rather than incrementing it) can never be double-counted as
+	// cycle budget here (confirmed with the user before writing this
+	// task's code). The very first activation of any node key is
+	// Iteration=0; every subsequent reactivation is priorMax+1.
 	nextSequence := current.ActivationSequence + 1
+	priorMax, found, err := tx.Runtime().GetMaxNodeIteration(ctx, req.RunID, downstreamNode.Key)
+	if err != nil {
+		return AdvanceRunResult{}, err
+	}
+	candidateIteration := uint32(0)
+	if found {
+		candidateIteration = priorMax + 1
+	}
+
+	// finalTargetNode/finalIteration/finalSequence describe the node that
+	// actually receives a normal (non-SKIPPED) activation below — either
+	// downstreamNode itself (the common case), or the CyclePolicy's own
+	// EscalationOutcome target when downstreamNode's own budget is
+	// exhausted (see the exhausted branch below). Iterations 1..MaxIterations
+	// are valid rework rounds; a candidate of MaxIterations+1 is exhausted.
+	finalTargetNode := downstreamNode
+	finalIteration := candidateIteration
+	finalSequence := nextSequence
+	exhausted := downstreamNode.CyclePolicy != nil && candidateIteration > downstreamNode.CyclePolicy.MaxIterations
+
+	var skippedID string
+	var skippedVersion uint64
+	if exhausted {
+		// Locked with the user before writing this task's code: forced
+		// escalation is a SKIPPED-node special case, at most two hops
+		// (downstreamNode -> SKIPPED, then immediately -> its own
+		// EscalationOutcome target), never open recursion — the escalation
+		// target's own CyclePolicy (if any) is never itself re-checked
+		// here. The upstream NodeRun (current) keeps its own real
+		// SUCCEEDED/outcome exactly as already transitioned above: a
+		// scheduler running out of cycle budget never turns a genuine
+		// completed execution into a failure.
+		escalationEdge, ok := findEdge(document, downstreamNode.Key, downstreamNode.CyclePolicy.EscalationOutcome)
+		if !ok {
+			return AdvanceRunResult{}, fmt.Errorf("%w: node %s escalation outcome %q", ErrCycleEscalationRouteNotFound, downstreamNode.Key, downstreamNode.CyclePolicy.EscalationOutcome)
+		}
+		if membership := workflow.CycleMembership(document); membership[downstreamNode.Key] == membership[escalationEdge.To] {
+			return AdvanceRunResult{}, fmt.Errorf("%w: node %s escalation edge %s", ErrCycleEscalationNotBounded, downstreamNode.Key, escalationEdge.Key)
+		}
+		escalationTargetNode, ok := findNode(document, escalationEdge.To)
+		if !ok {
+			return AdvanceRunResult{}, fmt.Errorf("runtime: escalation edge %s targets unknown node %s", escalationEdge.Key, escalationEdge.To)
+		}
+
+		skippedID = ids.NewID()
+		skippedNodeRun, err := runtimedomain.NewNodeRun(
+			runtimedomain.NodeRunID(skippedID), run.ID, downstreamNode.Key, nextSequence, candidateIteration, nil,
+			canonicalStateHash(newSharedState), "",
+		)
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		skippedNodeRun.State = runtimedomain.NodeRunSkipped
+		skippedNodeRun.SelectedOutcome = downstreamNode.CyclePolicy.EscalationOutcome
+		createdSkipped, err := tx.Runtime().CreateNodeRun(ctx, skippedNodeRun)
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		skippedVersion = createdSkipped.Version
+
+		escalationPriorMax, escalationFound, err := tx.Runtime().GetMaxNodeIteration(ctx, req.RunID, escalationTargetNode.Key)
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		finalIteration = 0
+		if escalationFound {
+			finalIteration = escalationPriorMax + 1
+		}
+		finalTargetNode = escalationTargetNode
+		finalSequence = nextSequence + 1
+
+		// NODE_CYCLE_EXHAUSTED is appended once (below, after nextID is
+		// minted) rather than here — its own payload needs to name the
+		// escalation target's freshly created NodeRun id, which does not
+		// exist until the "create the final activation" step runs.
+	}
+
 	nextID := ids.NewID()
 	nextNodeRun, err := runtimedomain.NewNodeRun(
-		runtimedomain.NodeRunID(nextID), run.ID, downstreamNode.Key, nextSequence, 0, nil,
+		runtimedomain.NodeRunID(nextID), run.ID, finalTargetNode.Key, finalSequence, finalIteration, nil,
 		canonicalStateHash(newSharedState), "",
 	)
 	if err != nil {
 		return AdvanceRunResult{}, err
 	}
 
-	autoAdvance := isStructuralRoutingNode(downstreamNode.Type) && len(downstreamNode.Outcomes) == 1
+	autoAdvance := isStructuralRoutingNode(finalTargetNode.Type) && len(finalTargetNode.Outcomes) == 1
 	if autoAdvance {
 		nextNodeRun.State = runtimedomain.NodeRunRunning
 	}
@@ -323,7 +438,11 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 
 	result = AdvanceRunResult{
 		Advanced: true, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: outcome,
-		NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key, NextAutoAdvanced: autoAdvance,
+		NextNodeRunID: nextID, NextNodeKey: finalTargetNode.Key, NextAutoAdvanced: autoAdvance,
+		CycleExhausted: exhausted, SkippedNodeRunID: skippedID,
+	}
+	if exhausted {
+		result.SkippedNodeKey = downstreamNode.Key
 	}
 
 	// GC-INV-15: append the domain event in the same transaction as
@@ -338,10 +457,24 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 	// second one landed. Tying Sequence to the aggregate's own version
 	// needs no extra query/allocation step and is exactly monotonic
 	// with the transitions that produce each event, one per version.
+	//
+	// NextNodeRunID/NextNodeKey here describe the LITERAL edge target
+	// (downstreamNode) truthfully — the SKIPPED row's own id when
+	// exhausted, nextID otherwise — never silently rewritten to point at
+	// a forced escalation target: the edge actually taken from node/
+	// outcome genuinely targets downstreamNode, and NODE_CYCLE_EXHAUSTED
+	// (below) is the separate, explicit record of what happened to it
+	// next. This is deliberately a different value than result.NextNodeRunID
+	// above, which describes the node a caller must actually keep
+	// dispatching (the escalation target when exhausted).
+	routedNextID := nextID
+	if exhausted {
+		routedNextID = skippedID
+	}
 	eventPayload, err := json.Marshal(nodeRoutedEventPayload{
 		RunID: string(run.ID), WorkItemID: string(run.WorkItemID), NodeRunID: req.NodeRunID,
 		NodeKey: node.Key, SelectedOutcome: outcome,
-		NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key, JobID: req.JobID,
+		NextNodeRunID: routedNextID, NextNodeKey: downstreamNode.Key, JobID: req.JobID,
 	})
 	if err != nil {
 		return AdvanceRunResult{}, fmt.Errorf("marshal NODE_ROUTED event payload: %w", err)
@@ -353,6 +486,33 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		return AdvanceRunResult{}, err
+	}
+
+	if exhausted {
+		cycleEventPayload, err := json.Marshal(nodeCycleExhaustedEventPayload{
+			RunID: string(run.ID), WorkItemID: string(run.WorkItemID), NodeRunID: skippedID, NodeKey: downstreamNode.Key,
+			MaxIterations: downstreamNode.CyclePolicy.MaxIterations, AttemptedIteration: candidateIteration,
+			TriggeringNodeRunID: req.NodeRunID, TriggeringNodeKey: node.Key, TriggeringOutcome: outcome,
+			EscalationOutcome:   downstreamNode.CyclePolicy.EscalationOutcome,
+			EscalationNodeRunID: nextID, EscalationNodeKey: finalTargetNode.Key, JobID: req.JobID,
+		})
+		if err != nil {
+			return AdvanceRunResult{}, fmt.Errorf("marshal %s event payload: %w", NodeCycleExhaustedEventType, err)
+		}
+		// AggregateID/Sequence=skippedVersion: the SKIPPED row is created
+		// directly in a terminal state and never transitioned again
+		// afterward, so this is its one and only ever event — the same
+		// "tie Sequence to the aggregate's own version" rule above,
+		// applied to a row whose version never moves past its own
+		// creation value.
+		if err := tx.Events().Append(ctx, ports.DomainEvent{
+			ID: skippedID + "-cycle-exhausted", ProjectID: string(run.ProjectID),
+			AggregateType: "NodeRun", AggregateID: skippedID, Sequence: int64(skippedVersion),
+			EventType: NodeCycleExhaustedEventType, SchemaVersion: NodeCycleExhaustedSchemaVersion, PayloadJSON: string(cycleEventPayload),
+			CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
+		}); err != nil {
+			return AdvanceRunResult{}, err
+		}
 	}
 
 	switch {
@@ -371,7 +531,7 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		}
 		result.NextJobID = string(job.ID)
 
-	case isExecutableNode(downstreamNode.Type):
+	case isExecutableNode(finalTargetNode.Type):
 		// V4-04: an executable downstream node needs its own scheduling
 		// transaction (ResolvedExecutionProfileV1 resolution, effective
 		// scope, exact manifest revision) that this call's own
@@ -421,6 +581,43 @@ type nodeRoutedEventPayload struct {
 	SelectedOutcome string `json:"selectedOutcome"`
 	NextNodeRunID   string `json:"nextNodeRunId"`
 	NextNodeKey     string `json:"nextNodeKey"`
+	// JobID is the durable job that drove this hop (blank if the caller
+	// did not supply one via AdvanceRunRequest.JobID).
+	JobID string `json:"jobId,omitempty"`
+}
+
+// NodeCycleExhaustedEventType/NodeCycleExhaustedSchemaVersion identify
+// NODE_CYCLE_EXHAUSTED's own registered (EventType, SchemaVersion) pair
+// (V4-07, event_schema.go) — registered from the same changeset that
+// produces this event, not deferred.
+const (
+	NodeCycleExhaustedEventType     = "NODE_CYCLE_EXHAUSTED"
+	NodeCycleExhaustedSchemaVersion = 1
+)
+
+// nodeCycleExhaustedEventPayload is NODE_CYCLE_EXHAUSTED's own JSON shape
+// (V4-07, confirmed with the user before writing this file): the typed
+// audit record of a forced business-rework escalation — GC-INV-10/
+// AK-ARCH-004's own "business rework tạo graph transition được audit".
+// NodeRunID/NodeKey name the SKIPPED NodeRun this event is attached to
+// (the node whose own CyclePolicy budget was exhausted); TriggeringNodeRunID/
+// TriggeringNodeKey/TriggeringOutcome are the causation — the upstream
+// NodeRun whose real, honored outcome routed into this exhausted node;
+// EscalationOutcome/EscalationNodeRunID/EscalationNodeKey describe the
+// forced escape hop this same call took instead of a normal activation.
+type nodeCycleExhaustedEventPayload struct {
+	RunID               string `json:"runId"`
+	WorkItemID          string `json:"workItemId"`
+	NodeRunID           string `json:"nodeRunId"`
+	NodeKey             string `json:"nodeKey"`
+	MaxIterations       uint32 `json:"maxIterations"`
+	AttemptedIteration  uint32 `json:"attemptedIteration"`
+	TriggeringNodeRunID string `json:"triggeringNodeRunId"`
+	TriggeringNodeKey   string `json:"triggeringNodeKey"`
+	TriggeringOutcome   string `json:"triggeringOutcome"`
+	EscalationOutcome   string `json:"escalationOutcome"`
+	EscalationNodeRunID string `json:"escalationNodeRunId"`
+	EscalationNodeKey   string `json:"escalationNodeKey"`
 	// JobID is the durable job that drove this hop (blank if the caller
 	// did not supply one via AdvanceRunRequest.JobID).
 	JobID string `json:"jobId,omitempty"`

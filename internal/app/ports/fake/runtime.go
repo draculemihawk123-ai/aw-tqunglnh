@@ -146,6 +146,25 @@ func (r *RuntimeRepository) TransitionNodeRun(_ context.Context, req ports.Trans
 	return nodeRun, nil
 }
 
+// GetMaxNodeIteration mirrors sqlite's identical MAX-over-existing-rows
+// query (V4-07) — a linear scan over r.nodeRuns is fine for this fake's own
+// scale (see this package's own doc comment on why fakes never need to be
+// performant).
+func (r *RuntimeRepository) GetMaxNodeIteration(_ context.Context, runID, nodeKey string) (uint32, bool, error) {
+	var max uint32
+	found := false
+	for _, nodeRun := range r.nodeRuns {
+		if string(nodeRun.RunID) != runID || nodeRun.NodeKey != nodeKey {
+			continue
+		}
+		if !found || nodeRun.Iteration > max {
+			max = nodeRun.Iteration
+		}
+		found = true
+	}
+	return max, found, nil
+}
+
 // UpdateWorkflowRunSharedState mirrors sqlite's updateWorkflowRunSharedStateTx
 // (V4-03 correction): a stale ExpectedVersion gets ErrOptimisticConflict,
 // never a silent overwrite.

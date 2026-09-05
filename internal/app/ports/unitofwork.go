@@ -326,6 +326,22 @@ type RuntimeRepository interface {
 	// ErrPersistenceNotFound for an unknown NodeRunID.
 	TransitionNodeRun(ctx context.Context, req TransitionNodeRunRequest) (runtime.NodeRun, error)
 
+	// GetMaxNodeIteration is populated now (V4-07,
+	// docs/design/06-v4-runtime-engine.md): reports the highest Iteration
+	// value any existing NodeRun row for (runID, nodeKey) already carries —
+	// found is false when this exact node key has never been activated in
+	// this Run at all (its first-ever activation is Iteration=0; a fresh
+	// reactivation via a business-rework edge is Iteration = this max + 1).
+	// Deliberately a real MAX query, never a raw COUNT(*) of every NodeRun
+	// row for that key (confirmed with the user before writing this task's
+	// code): a later task (V4-12A scope-expansion reactivation) creates an
+	// ADDITIONAL NodeRun row for an already-visited key that COPIES its
+	// predecessor's own Iteration forward rather than incrementing it, and
+	// a COUNT(*)-based scheme would silently consume cycle budget for that
+	// unrelated reason. Iteration is a business-cycle generation number,
+	// not a row-sequence-number of every NodeRun activation for that key.
+	GetMaxNodeIteration(ctx context.Context, runID, nodeKey string) (iteration uint32, found bool, err error)
+
 	// UpdateWorkflowRunSharedState is populated now (V4-03 correction,
 	// docs/design/06-v4-runtime-engine.md — HE-14-M04's own "shared-state
 	// typed writes", found missing during review of this task's first

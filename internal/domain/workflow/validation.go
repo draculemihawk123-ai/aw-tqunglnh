@@ -284,6 +284,45 @@ func validateBoundedCycles(nodes map[string]Node, outgoing map[string][]Edge) []
 	return problems
 }
 
+// CycleMembership groups every node key in document by which strongly-
+// connected component (Tarjan) it belongs to — two node keys mapping to
+// the same component index are mutually reachable from each other.
+// Exported for internal/app/runtime's own V4-07 defensive runtime check: a
+// CyclePolicy's own EscalationOutcome edge is proven, at PUBLISH time
+// (validateBoundedCycles, this same file), to lead somewhere outside its
+// own cycle — but the runtime enforcement path re-verifies that exact fact
+// again before ever trusting an escalation edge as a forced-escape route,
+// the same "corrupted/foreign WorkflowVersion fails closed rather than
+// panicking" discipline advance.go's own ErrRouteNotFound already
+// documents. Re-deriving this from the compiled document, rather than
+// caching the compiler's own componentization somewhere, means this can
+// never drift from what validateBoundedCycles itself already computed for
+// the exact same document.
+func CycleMembership(document WorkflowDocument) map[string]int {
+	nodes := make(map[string]Node, len(document.Nodes))
+	for _, node := range document.Nodes {
+		nodes[node.Key] = node
+	}
+	outgoing := make(map[string][]Edge, len(document.Nodes))
+	for _, edge := range document.Edges {
+		if _, ok := nodes[edge.From]; !ok {
+			continue
+		}
+		if _, ok := nodes[edge.To]; !ok {
+			continue
+		}
+		outgoing[edge.From] = append(outgoing[edge.From], edge)
+	}
+	components := stronglyConnectedComponents(nodes, outgoing)
+	membership := make(map[string]int, len(nodes))
+	for idx, component := range components {
+		for _, key := range component {
+			membership[key] = idx
+		}
+	}
+	return membership
+}
+
 func stronglyConnectedComponents(nodes map[string]Node, outgoing map[string][]Edge) [][]string {
 	index := 0
 	indices := make(map[string]int, len(nodes))

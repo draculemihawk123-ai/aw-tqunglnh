@@ -207,3 +207,54 @@ func TestNodeRunFailedV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestNodeCycleExhaustedV1_GoldenFixtureDecodes is NODE_CYCLE_EXHAUSTED's
+// own golden-fixture proof, mirroring TestNodeRoutedV1_GoldenFixtureDecodes.
+func TestNodeCycleExhaustedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "node_cycle_exhausted_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(NodeCycleExhaustedEventType, NodeCycleExhaustedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", NodeCycleExhaustedEventType, NodeCycleExhaustedSchemaVersion, err)
+	}
+	want := nodeCycleExhaustedEventPayload{
+		RunID: "run-1", WorkItemID: "work-item-1", NodeRunID: "node-run-skipped-1", NodeKey: "reviewer",
+		MaxIterations: 2, AttemptedIteration: 3, TriggeringNodeRunID: "node-run-maker-1", TriggeringNodeKey: "maker",
+		TriggeringOutcome: "needs_rework", EscalationOutcome: "escalate", EscalationNodeRunID: "node-run-escalation-1",
+		EscalationNodeKey: "human_review", JobID: "job-1",
+	}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", NodeCycleExhaustedEventType, NodeCycleExhaustedSchemaVersion, got, want)
+	}
+}
+
+// TestNodeCycleExhaustedV1_RealEventPayloadDecodes proves AdvanceRun's own
+// actual marshaled NODE_CYCLE_EXHAUSTED payload round-trips through the
+// registered decoder, mirroring TestNodeRoutedV1_RealEventPayloadDecodes.
+func TestNodeCycleExhaustedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := nodeCycleExhaustedEventPayload{
+		RunID: "run-9", WorkItemID: "work-item-9", NodeRunID: "node-run-skipped-9", NodeKey: "reviewer",
+		MaxIterations: 1, AttemptedIteration: 2, TriggeringNodeRunID: "node-run-maker-9", TriggeringNodeKey: "maker",
+		TriggeringOutcome: "needs_rework", EscalationOutcome: "escalate", EscalationNodeRunID: "node-run-escalation-9",
+		EscalationNodeKey: "human_review", JobID: "job-9",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(NodeCycleExhaustedEventType, NodeCycleExhaustedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}

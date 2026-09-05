@@ -29,6 +29,28 @@ func (r runtimeRepository) GetNodeRun(ctx context.Context, id string) (runtime.N
 	return loadNodeRunByID(ctx, r.tx, runtime.NodeRunID(id))
 }
 
+// GetMaxNodeIteration implements ports.RuntimeRepository (V4-07,
+// docs/design/06-v4-runtime-engine.md): the highest Iteration any existing
+// node_runs row for (runID, nodeKey) already carries. found is false (and
+// iteration is meaningless) when no row for this exact key exists yet in
+// this Run — see the ports interface's own doc comment for why this is a
+// real MAX query, never a COUNT(*), so a future V4-12A scope-expansion
+// reactivation that copies Iteration forward (rather than incrementing it)
+// never gets silently double-counted here.
+func (r runtimeRepository) GetMaxNodeIteration(ctx context.Context, runID, nodeKey string) (uint32, bool, error) {
+	var iteration sql.NullInt64
+	err := r.tx.QueryRowContext(ctx, `
+SELECT MAX(iteration) FROM node_runs WHERE run_id = ? AND node_key = ?`, runID, nodeKey,
+	).Scan(&iteration)
+	if err != nil {
+		return 0, false, fmt.Errorf("get max node iteration for run %s node %s: %w", runID, nodeKey, err)
+	}
+	if !iteration.Valid {
+		return 0, false, nil
+	}
+	return uint32(iteration.Int64), true, nil
+}
+
 // TransitionNodeRun implements ports.RuntimeRepository (V4-03): the CAS
 // that closes a NodeRun's own routing decision, the node_runs counterpart
 // of work.go's own transitionWorkItemStatusTx.

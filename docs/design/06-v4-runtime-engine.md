@@ -203,7 +203,59 @@
 - **Mục tiêu:** rework chỉ qua edge và tạo NodeRun activation mới.
 - **Phụ thuộc:** V4-03, V4-06.
 - **Thực hiện:** iteration counter, max iteration, escalation route, audit causation.
-- **Verify:** bounded cycle pass/exhaust/restart tests.
+  Rework tự nó không cần cơ chế mới — `advanceRunTx` (V4-03) đã luôn tạo một NodeRun activation mới cho
+  BẤT KỲ edge target nào, kể cả một node key đã từng activate trước đó trong cùng Run (GC-INV-10's own
+  "business rework chỉ đi qua edge có trong WorkflowVersion" vốn đã được thoả). Việc còn thiếu thật sự
+  (xác nhận qua code, không phải qua đọc doc) là RUNTIME chưa từng enforce `CyclePolicy.MaxIterations`:
+  `NodeRun.Iteration` (cột đã có từ `0001_initial_schema.sql`, field đã có trên domain type từ V4-01)
+  mọi caller đều hardcode 0; `validateBoundedCycles` (compiler, `internal/domain/workflow/validation.go`)
+  chỉ CHỨNG MINH tại publish-time rằng một escape route tồn tại — không có gì tại RUNTIME từng đếm hay ép
+  đi escape route đó cả, nên một workflow published hợp lệ vẫn có thể loop vô hạn nếu không sửa.
+  **Hai câu hỏi chốt với user trước khi code** (đã hỏi qua AskUserQuestion, đề xuất Recommended của tôi
+  cho cả hai được chọn, kèm semantics khoá thêm chi tiết hơn đề xuất gốc):
+  1. *Cơ chế forced-escalation:* budget check chạy trong `advanceRunTx`, SAU khi xác thực outcome/edge
+     của node upstream nhưng TRƯỚC khi tạo activation downstream bình thường — kiểm tra trên
+     `downstreamNode` (edge target sắp được activate), không phải trên node vừa hoàn thành. Activation
+     đầu tiên của một NodeKey có Iteration=0; các vòng rework hợp lệ là Iteration 1..MaxIterations; một
+     candidate MaxIterations+1 là exhausted. Khi exhausted: tạo NodeRun cho downstreamNode ở state
+     `SKIPPED` (giá trị đã có trong domain enum từ V4-01, docs/design/01-system-design.md dòng 213-214 tự
+     liệt SKIPPED cạnh "Rework tạo activation mới" — chưa task nào từng dùng trước V4-07) với
+     `SelectedOutcome=CyclePolicy.EscalationOutcome`, KHÔNG tạo Attempt/execution job; rồi NGAY trong cùng
+     transaction route tiếp qua escalation edge sang target thật của nó — special-case tối đa HAI hop
+     (downstreamNode -> SKIPPED, rồi ngay lập tức -> escalation target), không mở recursion tự do (target
+     của escalation edge không tự bị re-check exhaustion). Upstream NodeRun (node vừa hoàn thành, vd
+     maker's own "done") giữ nguyên SUCCEEDED với outcome thật của nó — một scheduler hết cycle budget
+     không bao giờ biến một execution thật thành lỗi.
+  2. *Phạm vi đếm Iteration:* per (RunID, NodeKey), KHÔNG per-SCC — nhưng KHÔNG được định nghĩa bằng
+     `COUNT(*)` mọi NodeRun row cho key đó (chỉnh lý user tự nêu thêm, tôi chưa nghĩ tới trong đề xuất
+     gốc): một `V4-12A` tương lai (scope-expansion reactivation) sẽ tạo NodeRun MỚI cho một key đã visit
+     mà KHÔNG phải business rework — nó copy Iteration cũ forward thay vì tăng. Vì vậy `Iteration` là một
+     "business cycle generation number", không phải row-sequence-number; nguồn sự thật là
+     `MAX(iteration)` qua lịch sử durable của đúng (RunID, NodeKey), không phải đếm số hàng. Method mới
+     `ports.RuntimeRepository.GetMaxNodeIteration(ctx, runID, nodeKey) (uint32, bool, error)` — Tx-
+     composable, `SELECT MAX(iteration) ... WHERE run_id=? AND node_key=?` (sqlite) / linear scan (fake).
+     Không cần port `stronglyConnectedComponents` (compiler, private) sang runtime cho việc đếm — nhưng
+     RIÊNG bước "khi exhausted, verify escalation edge thật sự thoát khỏi cycle" (defensive, phòng một
+     WorkflowVersion bị hỏng/ngoại lai, cùng tinh thần `ErrRouteNotFound` đã có) VẪN cần biết SCC
+     membership, nên `stronglyConnectedComponents` được export dạng mới `workflow.CycleMembership(document)
+     map[string]int` (tái dùng logic gốc qua hàm private cũ, không viết lại — tránh drift).
+  Event mới `NODE_CYCLE_EXHAUSTED` (đăng ký cùng changeset, `advance.go`/`event_schema.go`) — payload typed
+  đúng như user yêu cầu: `maxIterations`, `attemptedIteration`, triggering edge (`triggeringNodeRunId`/
+  `triggeringNodeKey`/`triggeringOutcome` — causation, node vừa hoàn thành gây ra hop này), escalation
+  outcome/edge (`escalationOutcome`/`escalationNodeRunId`/`escalationNodeKey`). `NODE_ROUTED` của chính
+  hop đó (event đã có từ V4-03) vẫn mô tả trung thực edge target THẬT (downstreamNode's own key), trỏ vào
+  hàng SKIPPED khi exhausted — không âm thầm viết lại thành escalation target; `AdvanceRunResult`'s own
+  `Next*` fields (dùng cho dispatch: `NextAutoAdvanced`/`NextJobID`/`NextScheduleJobID`) thì mô tả node
+  CÒN CẦN xử lý tiếp (escalation target khi exhausted) — hai bộ field khác nhau cho hai mục đích khác
+  nhau, `CycleExhausted`/`SkippedNodeRunID`/`SkippedNodeKey` là field mới lộ rõ trường hợp này cho caller/
+  test mà không đè lên field cũ.
+- **Verify:** bounded cycle pass/exhaust/restart tests. Đã triển khai:
+  `TestAdvanceRun_BoundedCycle_PassesUntilExhaustedThenForcesEscalation` (fake, đi hết 3 vòng rework hợp
+  lệ trong budget MaxIterations=2 rồi chứng minh vòng thứ 4 bị chặn, kèm assert đầy đủ payload
+  NODE_CYCLE_EXHAUSTED và NODE_ROUTED, và Attempt/NodeRun upstream không bị viết đè), và
+  `TestAdvanceRun_SQLite_CycleExhaustion_PersistsAcrossRestart` (đóng/mở lại sqlite.Store thật, chứng
+  minh cả hàng SKIPPED lẫn chính `GetMaxNodeIteration` observe đúng giá trị sau restart) —
+  `cycle_test.go`.
 - **Hoàn thành khi:** không có infinite graph loop hoặc overwrite activation history.
 - **Nguồn:** AK-ARCH-004, GC-INV-10, HE-09-M07, HE-13-M03.
 

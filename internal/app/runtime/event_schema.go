@@ -56,6 +56,17 @@ func DecodeNodeRunFailedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// DecodeNodeCycleExhaustedV1 is NODE_CYCLE_EXHAUSTED v1's own
+// eventschema.Decoder (V4-07, advance.go) — registered from the same
+// changeset that produces this event, not deferred.
+func DecodeNodeCycleExhaustedV1(payloadJSON string) (any, error) {
+	var payload nodeCycleExhaustedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry. A composition root that wires up EnforcingEventsRepository
 // calls this once at startup, the same "register at init/startup time"
@@ -68,4 +79,5 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(NodeScheduledEventType, NodeScheduledSchemaVersion, DecodeNodeScheduledV1)
 	registry.Register(ExecutionAttemptFinalizedEventType, ExecutionAttemptFinalizedSchemaVersion, DecodeExecutionAttemptFinalizedV1)
 	registry.Register(NodeRunFailedEventType, NodeRunFailedSchemaVersion, DecodeNodeRunFailedV1)
+	registry.Register(NodeCycleExhaustedEventType, NodeCycleExhaustedSchemaVersion, DecodeNodeCycleExhaustedV1)
 }
