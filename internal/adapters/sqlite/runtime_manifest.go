@@ -368,6 +368,47 @@ FROM branch_tokens WHERE run_id = ? ORDER BY fork_key, branch_key`, runID)
 	return tokens, nil
 }
 
+// ListBranchTokensForFork implements ports.RuntimeRepository (V4-11): the
+// exact token set a JOIN's own readiness policy (ALL/ANY/QUORUM) is
+// evaluated against — scoped to ONE fork occurrence (forkNodeRunID), never
+// the whole Run (ListBranchTokensForRun's own scope), so a V4-07 cycle
+// that reactivates the same FORK node key more than once never mixes two
+// different occurrences' own tokens into one verdict. Ordered by
+// BranchKey for deterministic output.
+func (r runtimeRepository) ListBranchTokensForFork(ctx context.Context, forkNodeRunID string) ([]runtime.BranchToken, error) {
+	rows, err := r.tx.QueryContext(ctx, `
+SELECT id, run_id, fork_key, branch_key, current_node_key, state, version
+FROM branch_tokens WHERE fork_node_run_id = ? ORDER BY branch_key`, forkNodeRunID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list branch tokens for fork: %w", err))
+	}
+	defer rows.Close()
+
+	var tokens []runtime.BranchToken
+	for rows.Next() {
+		var (
+			id             string
+			runID          string
+			forkKey        string
+			branchKey      string
+			currentNodeKey string
+			state          string
+			version        uint64
+		)
+		if err := rows.Scan(&id, &runID, &forkKey, &branchKey, &currentNodeKey, &state, &version); err != nil {
+			return nil, fmt.Errorf("scan branch token: %w", err)
+		}
+		tokens = append(tokens, runtime.BranchToken{
+			ID: runtime.BranchTokenID(id), RunID: runtime.WorkflowRunID(runID), ForkNodeRunID: runtime.NodeRunID(forkNodeRunID),
+			ForkKey: forkKey, BranchKey: branchKey, CurrentNodeKey: currentNodeKey, State: runtime.BranchTokenState(state), Version: version,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate branch tokens: %w", err)
+	}
+	return tokens, nil
+}
+
 // TransitionBranchToken implements ports.RuntimeRepository (V4-10): the
 // fenced CAS a branch's own progress/completion is always recorded
 // through.

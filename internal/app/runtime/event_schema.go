@@ -78,6 +78,17 @@ func DecodeNodeForkedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// DecodeJoinDecidedV1 is JOIN_DECIDED v1's own eventschema.Decoder (V4-11,
+// advance.go) — registered from the same changeset that produces this
+// event, not deferred.
+func DecodeJoinDecidedV1(payloadJSON string) (any, error) {
+	var payload joinDecidedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry. A composition root that wires up EnforcingEventsRepository
 // calls this once at startup, the same "register at init/startup time"
@@ -92,4 +103,5 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(NodeRunFailedEventType, NodeRunFailedSchemaVersion, DecodeNodeRunFailedV1)
 	registry.Register(NodeCycleExhaustedEventType, NodeCycleExhaustedSchemaVersion, DecodeNodeCycleExhaustedV1)
 	registry.Register(NodeForkedEventType, NodeForkedSchemaVersion, DecodeNodeForkedV1)
+	registry.Register(JoinDecidedEventType, JoinDecidedSchemaVersion, DecodeJoinDecidedV1)
 }

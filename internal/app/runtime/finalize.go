@@ -380,6 +380,36 @@ func decideRetryOrExhaustion(
 		}); err != nil {
 			return err
 		}
+		// V4-11: a branch dying mid-flight (never reaching its own JOIN at
+		// all) may be the exact event that proves the JOIN's own ALL/ANY/
+		// QUORUM policy has become impossible — evaluated here, in this
+		// SAME transaction, the identical "every token-state-change
+		// re-evaluates" discipline advanceRunTx's own JOIN-arrival path
+		// already follows (confirmed with the user before writing this
+		// task's code).
+		version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+		if err != nil {
+			return err
+		}
+		document := version.Document()
+		forkRun, err := tx.Runtime().GetNodeRun(ctx, string(branchToken.ForkNodeRunID))
+		if err != nil {
+			return err
+		}
+		forkNode, ok := findNode(document, forkRun.NodeKey)
+		if !ok {
+			return fmt.Errorf("runtime: fork node %s not found in workflow version %s", forkRun.NodeKey, run.WorkflowVersionID)
+		}
+		joinNode, ok := resolveForkJoinNode(document, forkNode)
+		if !ok {
+			return fmt.Errorf("%w: fork %s", ErrForkJoinNotFound, forkNode.Key)
+		}
+		if _, err := evaluateJoinTx(
+			ctx, tx, ids, run, document, run.SharedState, string(branchToken.ForkNodeRunID), joinNode,
+			req.CorrelationID, string(req.JobLease.JobID),
+		); err != nil {
+			return err
+		}
 	}
 	failureKind := NodeRunFailureKindNonRetryableFailure
 	if retryable {

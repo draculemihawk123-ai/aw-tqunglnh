@@ -316,3 +316,53 @@ func TestNodeForkedV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestJoinDecidedV1_GoldenFixtureDecodes is JOIN_DECIDED's own golden-
+// fixture proof, mirroring TestNodeCycleExhaustedV1_GoldenFixtureDecodes.
+func TestJoinDecidedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "join_decided_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(JoinDecidedEventType, JoinDecidedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", JoinDecidedEventType, JoinDecidedSchemaVersion, err)
+	}
+	want := joinDecidedEventPayload{
+		RunID: "run-1", WorkItemID: "work-item-1", JoinNodeRunID: "join-node-run-1", JoinNodeKey: "join",
+		ForkNodeRunID: "node-run-fork-1", Mode: "QUORUM", QuorumCount: 2,
+		SucceededCount: 2, FailedCount: 1, CancelledCount: 0, ActiveCount: 0,
+		Verdict: "SUCCEEDED", JobID: "job-1",
+	}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", JoinDecidedEventType, JoinDecidedSchemaVersion, got, want)
+	}
+}
+
+// TestJoinDecidedV1_RealEventPayloadDecodes proves evaluateJoinTx's own
+// actual marshaled JOIN_DECIDED payload round-trips through the registered
+// decoder, mirroring TestNodeCycleExhaustedV1_RealEventPayloadDecodes.
+func TestJoinDecidedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := joinDecidedEventPayload{
+		RunID: "run-9", WorkItemID: "work-item-9", JoinNodeRunID: "join-node-run-9", JoinNodeKey: "join",
+		ForkNodeRunID: "node-run-fork-9", Mode: "ALL", SucceededCount: 1, FailedCount: 1, ActiveCount: 0,
+		Verdict: "FAILED", Reason: JoinPolicyUnsatisfiableReason, JobID: "job-9",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(JoinDecidedEventType, JoinDecidedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}

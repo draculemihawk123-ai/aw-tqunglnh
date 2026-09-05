@@ -485,6 +485,15 @@ type RuntimeRepository interface {
 	GetBranchTokenByID(ctx context.Context, id string) (runtime.BranchToken, error)
 	// ListBranchTokensForRun returns every BranchToken for runID.
 	ListBranchTokensForRun(ctx context.Context, runID string) ([]runtime.BranchToken, error)
+	// ListBranchTokensForFork is populated now (V4-11,
+	// docs/design/06-v4-runtime-engine.md): the exact token set a JOIN's
+	// own readiness policy (ALL/ANY/QUORUM) is evaluated against, scoped
+	// to ONE fork occurrence (forkNodeRunID) — never the whole Run
+	// (ListBranchTokensForRun's own scope), since a V4-07 cycle can
+	// legitimately reactivate the same FORK node key more than once in
+	// one Run, and each occurrence's own branches must never be counted
+	// toward a different occurrence's own verdict.
+	ListBranchTokensForFork(ctx context.Context, forkNodeRunID string) ([]runtime.BranchToken, error)
 	// TransitionBranchToken is populated now (V4-10): the fenced CAS that
 	// advances a branch's own CurrentNodeKey as it moves through the
 	// graph, and that terminalizes it (SUCCEEDED on reaching its own

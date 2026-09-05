@@ -69,6 +69,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -256,13 +258,30 @@ type AdvanceRunResult struct {
 	// completing NodeRun (req.NodeRunID) belonged to a FORK branch: no
 	// normal NodeRun is created for the JOIN at all (see
 	// dispatchForkBranches' own doc comment for why) — only the arriving
-	// branch's own token is terminalized SUCCEEDED. Every other Next*
-	// field above stays empty in this case. The JOIN's own eventual
-	// shared NodeRun activation and policy evaluation (ALL/ANY/QUORUM)
-	// are V4-11's own scope entirely.
+	// branch's own token is terminalized SUCCEEDED.
 	ReachedJoin       bool
 	JoinBranchTokenID string
 	JoinNodeKey       string
+	// JoinNodeRunID is populated now (V4-11) whenever ReachedJoin is true
+	// — the JOIN's own NodeRun this arrival's own token now belongs to,
+	// whether or not THIS particular arrival is the one that resolves its
+	// policy. JoinDecided/JoinVerdict/JoinRoute are populated only when
+	// THIS arrival is the one that resolves the JOIN's own ALL/ANY/QUORUM
+	// policy (evaluateJoinTx, confirmed with the user before writing this
+	// task's code) — false/empty for an ordinary arrival that leaves the
+	// JOIN still WAITING on remaining ACTIVE branches, and false (never
+	// true twice) for a late/duplicate arrival at an ALREADY-decided
+	// JOIN. JoinVerdict is "SUCCEEDED" or "FAILED". JoinRoute is
+	// populated only when JoinVerdict is "SUCCEEDED" — the full
+	// AdvanceRunResult routing the JOIN's own NodeRun produced (reusing
+	// advanceRunTx itself, never a second dispatch implementation); a
+	// "FAILED" verdict never routes anywhere (mirrors
+	// decideRetryOrExhaustion's own "CAS NodeRun FAILED, no route" — Run-
+	// level failure aggregation stays V4-12's own scope).
+	JoinDecided   bool
+	JoinVerdict   string
+	JoinNodeRunID string
+	JoinRoute     *AdvanceRunResult
 	// ForkedBranches is populated now (V4-10) when the downstream node
 	// actually dispatched is a FORK: one entry per declared Outcome
 	// (HE-14-M09's own "branch"), each with its own freshly created
@@ -411,13 +430,7 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 	// V4-10 (HE-14-M09): current.BranchTokenID names the FORK branch this
 	// completing NodeRun belongs to, if any — resolved once here so both
 	// the JOIN-arrival short-circuit below and the normal downstream-
-	// creation path further down can use it. Confirmed with the user
-	// before writing this task's code: reaching the branch's own declared
-	// JOIN never creates a normal downstream NodeRun at all — it only
-	// terminalizes this one arriving token (SUCCEEDED); the JOIN's own
-	// eventual shared NodeRun activation and ALL/ANY/QUORUM policy
-	// evaluation across every arriving branch are V4-11's own scope
-	// entirely, not this one's.
+	// creation path further down can use it.
 	var branchToken *runtimedomain.BranchToken
 	if current.BranchTokenID != nil {
 		loaded, err := tx.Runtime().GetBranchTokenByID(ctx, string(*current.BranchTokenID))
@@ -448,10 +461,35 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		}); err != nil {
 			return AdvanceRunResult{}, err
 		}
-		return AdvanceRunResult{
+
+		// V4-11: this branch's own arrival at its declared JOIN may be the
+		// one that resolves (or newly proves impossible) the JOIN's own
+		// ALL/ANY/QUORUM policy — evaluated fresh, in this SAME
+		// transaction, against the live token set for this exact fork
+		// occurrence (locked with the user: evaluation runs on every
+		// token-state-change event, never lazily/out-of-band).
+		result := AdvanceRunResult{
 			Advanced: true, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: outcome,
 			ReachedJoin: true, JoinBranchTokenID: string(branchToken.ID), JoinNodeKey: downstreamNode.Key,
-		}, nil
+		}
+		joinEval, err := evaluateJoinTx(ctx, tx, ids, run, document, newSharedState, string(branchToken.ForkNodeRunID), downstreamNode, req.CorrelationID, req.JobID)
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		// JoinNodeRunID is exposed regardless of Decided — a caller can
+		// always discover which JOIN NodeRun this branch's own arrival
+		// touched, even when the policy is still WAITING on remaining
+		// branches.
+		result.JoinNodeRunID = joinEval.JoinNodeRunID
+		if joinEval.Decided {
+			result.JoinDecided = true
+			result.JoinVerdict = joinEval.Verdict
+			if joinEval.Verdict == joinVerdictSucceeded {
+				route := joinEval.Route
+				result.JoinRoute = &route
+			}
+		}
+		return result, nil
 	}
 
 	// V4-07 (GC-INV-10/AK-ARCH-004): resolve how many times the literal
@@ -838,7 +876,7 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		// from the compiled document, so the entire fan-out happens
 		// inline, in this same transaction (HE-14-M09's own "create
 		// tokens atomically"), rather than via a separate job/handler.
-		branches, err := dispatchForkBranches(ctx, tx, ids, run, document, finalTargetNode, nextID, newSharedState, req.CorrelationID)
+		branches, err := dispatchForkBranches(ctx, tx, ids, run, document, finalTargetNode, nextID, newSharedState, req.CorrelationID, req.JobID)
 		if err != nil {
 			return AdvanceRunResult{}, err
 		}
@@ -899,7 +937,7 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 // never a cycle inside a fork).
 func dispatchForkBranches(
 	ctx context.Context, tx ports.Tx, ids idsource.Source, run runtimedomain.WorkflowRun, document workflow.WorkflowDocument,
-	forkNode workflow.Node, forkNodeRunID string, newSharedState json.RawMessage, correlationID string,
+	forkNode workflow.Node, forkNodeRunID string, newSharedState json.RawMessage, correlationID, jobID string,
 ) ([]ForkedBranch, error) {
 	forkRun, err := tx.Runtime().GetNodeRun(ctx, forkNodeRunID)
 	if err != nil {
@@ -941,6 +979,15 @@ func dispatchForkBranches(
 				BranchTokenID: tokenID, ExpectedVersion: createdToken.Version,
 				NextState: runtimedomain.BranchTokenSucceeded, NextCurrentNodeKey: branchNode.Key,
 			}); err != nil {
+				return nil, err
+			}
+			// V4-11: this zero-hop branch reaching its own outer JOIN is
+			// the exact same "token reached SUCCEEDED at JOIN" event
+			// advanceRunTx's own JOIN-arrival path evaluates — a FORK
+			// whose every branch is a direct zero-hop edge to JOIN would
+			// otherwise never trigger any evaluation at all, since no
+			// later ordinary hop would ever exist to catch it.
+			if _, err := evaluateJoinTx(ctx, tx, ids, run, document, newSharedState, forkNodeRunID, branchNode, correlationID, jobID); err != nil {
 				return nil, err
 			}
 			branches = append(branches, ForkedBranch{BranchKey: branchKey, BranchTokenID: tokenID, NodeKey: branchNode.Key, ReachedJoin: true})
@@ -1102,6 +1149,301 @@ func dispatchForkBranches(
 	return branches, nil
 }
 
+// joinVerdictSucceeded/joinVerdictFailed are JoinEvaluationResult.Verdict's
+// own closed set of values (V4-11) — plain strings, not a new exported
+// domain enum, since a JOIN's own NodeRun already carries its real
+// terminal State (SUCCEEDED/FAILED) and this is only a same-call
+// convenience mirror of that, never persisted anywhere itself.
+const (
+	joinVerdictSucceeded = "SUCCEEDED"
+	joinVerdictFailed    = "FAILED"
+)
+
+// JoinPolicyUnsatisfiableReason is JOIN_DECIDED's own Reason value for a
+// FAILED verdict (V4-11) — the ONE typed reason this task produces,
+// deliberately distinct from NodeRunFailureKindRetryExhausted/
+// NonRetryableFailure (V4-06's own NODE_RUN_FAILED reasons): a JOIN never
+// exhausts a retry budget and is never itself non-retryable in that
+// sense — it fails because its own declared ALL/ANY/QUORUM policy became
+// mathematically impossible to satisfy from the branches that actually
+// ran, a distinct kind of failure this task's own event must not disguise
+// as either of V4-06's own reasons.
+const JoinPolicyUnsatisfiableReason = "JOIN_POLICY_UNSATISFIABLE"
+
+// ErrForkJoinNotFound is a defensive, should-be-unreachable error
+// mirroring ErrRouteNotFound (V4-11): the compiler's own
+// validateForkJoinTopology (workflow package) already rejects any FORK
+// whose branches do not all reconverge at exactly one JOIN before a
+// document can ever publish — this exists so a corrupted/foreign
+// WorkflowVersion fails closed here rather than panicking, the moment a
+// branch belonging to it actually completes.
+var ErrForkJoinNotFound = errors.New("runtime: fork's branches do not reconverge at any join")
+
+// JoinEvaluationResult is evaluateJoinTx's own outcome (V4-11).
+type JoinEvaluationResult struct {
+	// Decided is true iff THIS call newly resolved the JOIN's own policy
+	// (SUCCEEDED or FAILED) — false when the JOIN's own NodeRun is
+	// freshly created/left WAITING (still pending remaining ACTIVE
+	// branches) or when it was ALREADY decided by an earlier call (see
+	// AlreadyDecided) — a late/duplicate arrival at an already-resolved
+	// JOIN never re-decides, re-events or re-routes.
+	Decided        bool
+	AlreadyDecided bool
+	JoinNodeRunID  string
+	// Verdict is joinVerdictSucceeded/joinVerdictFailed, populated
+	// whenever Decided or AlreadyDecided is true.
+	Verdict string
+	// Route is populated only when Verdict is joinVerdictSucceeded and
+	// Decided is true — the AdvanceRunResult produced by routing the
+	// JOIN's own NodeRun forward (evaluateJoinTx reuses advanceRunTx
+	// itself for this, never a second dispatch implementation).
+	Route AdvanceRunResult
+}
+
+// deterministicJoinNodeRunID derives the ONE NodeRunID a JOIN's own shared
+// activation for one fork occurrence always uses (V4-11, confirmed with
+// the user before writing this task's code: "identity tất định từ
+// (ForkNodeRunID, JoinNodeKey), ví dụ helper hash thay vì nối chuỗi tùy
+// ý"). Deterministic — not ids.NewID() — so that whichever branch arrival
+// (of possibly several, across separate transactions) is the first to
+// reach this JOIN can create its NodeRun, and every OTHER arrival
+// naturally finds the exact same row already there: the same "ID tất định
+// không bao giờ va chạm" idempotent-creation trick V4-05's own
+// DecisionArtifact ID already established for this codebase, applied here
+// via a content hash (rather than plain string concatenation) so the
+// derivation never accidentally collides with a real, differently-shaped
+// ID format used elsewhere.
+func deterministicJoinNodeRunID(forkNodeRunID, joinNodeKey string) string {
+	sum := sha256.Sum256([]byte(forkNodeRunID + "\x00" + joinNodeKey))
+	return "join-" + hex.EncodeToString(sum[:16])
+}
+
+// resolveForkJoinNode walks forward from every one of forkNode's own
+// declared branches (Outcomes) until it reaches a JOIN node, returning it.
+// The compiler's own validateForkJoinTopology (workflow package) already
+// guarantees every branch reconverges at exactly one JOIN before a
+// document can ever publish — this duplicates that same walk locally
+// (rather than reaching into workflow's own unexported
+// firstJoinsReachableFromBranch) for the identical reason
+// dispatchForkBranches' own doc comment already gives for its own
+// duplication: keeping this package's own boundary with workflow's
+// internals unchanged, at the cost of one small, self-contained
+// duplication.
+func resolveForkJoinNode(document workflow.WorkflowDocument, forkNode workflow.Node) (workflow.Node, bool) {
+	visited := make(map[string]bool)
+	var walk func(key string) (workflow.Node, bool)
+	walk = func(key string) (workflow.Node, bool) {
+		if visited[key] {
+			return workflow.Node{}, false
+		}
+		visited[key] = true
+		node, ok := findNode(document, key)
+		if !ok {
+			return workflow.Node{}, false
+		}
+		if node.Type == workflow.NodeJoin {
+			return node, true
+		}
+		for _, edge := range document.Edges {
+			if edge.From != key {
+				continue
+			}
+			if found, ok := walk(edge.To); ok {
+				return found, true
+			}
+		}
+		return workflow.Node{}, false
+	}
+	for _, branchKey := range forkNode.Outcomes {
+		edge, ok := findEdge(document, forkNode.Key, branchKey)
+		if !ok {
+			continue
+		}
+		if found, ok := walk(edge.To); ok {
+			return found, true
+		}
+	}
+	return workflow.Node{}, false
+}
+
+// evaluateJoinTx is V4-11's own core: re-evaluates a JOIN's own declared
+// ALL/ANY/QUORUM policy (JoinNodeConfig) against the live BranchToken set
+// for exactly one fork occurrence (forkNodeRunID), every time ANY of that
+// fork's own tokens changes state (a branch reaching this same JOIN, or a
+// branch NodeRun failing terminally — advanceRunTx's own JOIN-arrival
+// block and finalize.go's own decideRetryOrExhaustion both call this, in
+// the SAME transaction as the token change that triggered it — confirmed
+// with the user before writing this task's code).
+//
+// Get-or-create is idempotent via deterministicJoinNodeRunID: the FIRST
+// arrival (in whatever real transaction order actually occurs) creates
+// the JOIN's own NodeRun WAITING; every later call finds it already there
+// under the exact same ID. If that existing row is no longer WAITING, an
+// earlier call already decided it — this call is a late/duplicate arrival
+// and does nothing further (AlreadyDecided=true, no new event, no re-CAS,
+// no re-route: this is the task's own "duplicate completion" case).
+//
+// Short-circuit failure fires the moment the policy becomes mathematically
+// impossible regardless of what any remaining ACTIVE branch does (ALL: any
+// FAILED/CANCELLED token; ANY: every token terminal with zero SUCCEEDED;
+// QUORUM(q): SUCCEEDED+ACTIVE < q) — since a FAILED verdict never routes
+// anywhere, there is nothing "wasted" by deciding early. Success is
+// deliberately NEVER decided early even once ANY/QUORUM's own threshold is
+// already mathematically locked in while branches remain ACTIVE — locked
+// with the user specifically to avoid downstream work starting while a
+// sibling branch may still be running/writing (Alpha has no branch-level
+// cancellation or quiescence fencing yet; that is future work, not this
+// task's own scope). Success is only decided once every token for this
+// fork occurrence has reached a terminal state.
+func evaluateJoinTx(
+	ctx context.Context, tx ports.Tx, ids idsource.Source,
+	run runtimedomain.WorkflowRun, document workflow.WorkflowDocument, sharedState json.RawMessage,
+	forkNodeRunID string, joinNode workflow.Node, correlationID, jobID string,
+) (JoinEvaluationResult, error) {
+	joinNodeRunID := deterministicJoinNodeRunID(forkNodeRunID, joinNode.Key)
+
+	joinNodeRun, err := tx.Runtime().GetNodeRun(ctx, joinNodeRunID)
+	switch {
+	case errors.Is(err, ports.ErrPersistenceNotFound):
+		forkRun, ferr := tx.Runtime().GetNodeRun(ctx, forkNodeRunID)
+		if ferr != nil {
+			return JoinEvaluationResult{}, ferr
+		}
+		iteration := uint32(0)
+		priorMax, found, ierr := tx.Runtime().GetMaxNodeIteration(ctx, string(run.ID), joinNode.Key)
+		if ierr != nil {
+			return JoinEvaluationResult{}, ierr
+		}
+		if found {
+			iteration = priorMax + 1
+		}
+		fresh, nerr := runtimedomain.NewNodeRun(
+			runtimedomain.NodeRunID(joinNodeRunID), run.ID, joinNode.Key, forkRun.ActivationSequence+1, iteration, nil,
+			canonicalStateHash(sharedState), "",
+		)
+		if nerr != nil {
+			return JoinEvaluationResult{}, nerr
+		}
+		fresh.State = runtimedomain.NodeRunWaiting
+		joinNodeRun, err = tx.Runtime().CreateNodeRun(ctx, fresh)
+		if err != nil {
+			return JoinEvaluationResult{}, err
+		}
+	case err != nil:
+		return JoinEvaluationResult{}, err
+	}
+
+	if joinNodeRun.State != runtimedomain.NodeRunWaiting {
+		verdict := joinVerdictSucceeded
+		if joinNodeRun.State == runtimedomain.NodeRunFailed {
+			verdict = joinVerdictFailed
+		}
+		return JoinEvaluationResult{AlreadyDecided: true, JoinNodeRunID: joinNodeRunID, Verdict: verdict}, nil
+	}
+
+	tokens, err := tx.Runtime().ListBranchTokensForFork(ctx, forkNodeRunID)
+	if err != nil {
+		return JoinEvaluationResult{}, err
+	}
+	var succeeded, failed, cancelled, active int
+	for _, token := range tokens {
+		switch token.State {
+		case runtimedomain.BranchTokenSucceeded:
+			succeeded++
+		case runtimedomain.BranchTokenFailed:
+			failed++
+		case runtimedomain.BranchTokenCancelled:
+			cancelled++
+		case runtimedomain.BranchTokenActive:
+			active++
+		}
+	}
+	total := len(tokens)
+
+	cfg := joinNode.Join
+	var infeasible bool
+	switch cfg.Mode {
+	case workflow.JoinModeAll:
+		infeasible = failed > 0 || cancelled > 0
+	case workflow.JoinModeAny:
+		infeasible = succeeded == 0 && active == 0
+	case workflow.JoinModeQuorum:
+		infeasible = succeeded+active < int(cfg.QuorumCount)
+	default:
+		return JoinEvaluationResult{}, fmt.Errorf("runtime: join %s has unsupported mode %q", joinNode.Key, cfg.Mode)
+	}
+
+	satisfied := false
+	if !infeasible && active == 0 {
+		switch cfg.Mode {
+		case workflow.JoinModeAll:
+			satisfied = succeeded == total
+		case workflow.JoinModeAny:
+			satisfied = succeeded >= 1
+		case workflow.JoinModeQuorum:
+			satisfied = succeeded >= int(cfg.QuorumCount)
+		}
+	}
+
+	if !infeasible && !satisfied {
+		// Still waiting on remaining ACTIVE branches, and not yet
+		// provably impossible — the JOIN's own NodeRun (freshly created
+		// or already there) stays WAITING; nothing else to do this call.
+		return JoinEvaluationResult{JoinNodeRunID: joinNodeRunID}, nil
+	}
+
+	verdictLabel := joinVerdictSucceeded
+	reason := ""
+	if infeasible {
+		verdictLabel = joinVerdictFailed
+		reason = JoinPolicyUnsatisfiableReason
+	}
+	eventPayload, err := json.Marshal(joinDecidedEventPayload{
+		RunID: string(run.ID), WorkItemID: string(run.WorkItemID), JoinNodeRunID: joinNodeRunID, JoinNodeKey: joinNode.Key,
+		ForkNodeRunID: forkNodeRunID, Mode: string(cfg.Mode), QuorumCount: cfg.QuorumCount,
+		SucceededCount: succeeded, FailedCount: failed, CancelledCount: cancelled, ActiveCount: active,
+		Verdict: verdictLabel, Reason: reason, JobID: jobID,
+	})
+	if err != nil {
+		return JoinEvaluationResult{}, fmt.Errorf("marshal %s event payload: %w", JoinDecidedEventType, err)
+	}
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: joinNodeRunID + "-decided", ProjectID: string(run.ProjectID),
+		AggregateType: "NodeRun", AggregateID: joinNodeRunID, Sequence: int64(joinNodeRun.Version),
+		EventType: JoinDecidedEventType, SchemaVersion: JoinDecidedSchemaVersion, PayloadJSON: string(eventPayload),
+		CorrelationID: correlationID, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return JoinEvaluationResult{}, err
+	}
+
+	if infeasible {
+		if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
+			NodeRunID: joinNodeRunID, ExpectedState: runtimedomain.NodeRunWaiting, ExpectedVersion: joinNodeRun.Version,
+			NextState: runtimedomain.NodeRunFailed,
+		}); err != nil {
+			return JoinEvaluationResult{}, err
+		}
+		return JoinEvaluationResult{Decided: true, JoinNodeRunID: joinNodeRunID, Verdict: joinVerdictFailed}, nil
+	}
+
+	// Satisfied, every branch terminal: route the JOIN's own NodeRun
+	// forward via the EXISTING routing pipeline — advanceRunTx already
+	// accepts a WAITING NodeRun (V4-08's own relaxed idempotent-replay
+	// guard), so this reuses the exact same CAS/shared-state/cycle-
+	// exhaustion/dispatch-switch logic every other node type already
+	// gets, rather than a second, parallel implementation of it. JOIN
+	// must declare exactly one outcome (validateJoinConfig, V4-11) so no
+	// external Outcome resolution is needed here.
+	route, err := advanceRunTx(ctx, tx, ids, AdvanceRunRequest{
+		RunID: string(run.ID), NodeRunID: joinNodeRunID, Outcome: joinNode.Outcomes[0],
+		CorrelationID: correlationID, JobID: jobID,
+	})
+	if err != nil {
+		return JoinEvaluationResult{}, err
+	}
+	return JoinEvaluationResult{Decided: true, JoinNodeRunID: joinNodeRunID, Verdict: joinVerdictSucceeded, Route: route}, nil
+}
+
 // NodeRoutedEventType/NodeRoutedSchemaVersion identify NODE_ROUTED's own
 // registered (EventType, SchemaVersion) pair in internal/app/eventschema's
 // registry (RegisterEventSchemas, event_schema.go) — exported so that
@@ -1197,6 +1539,41 @@ type nodeForkedEventPayload struct {
 	ForkNodeRunID string                   `json:"forkNodeRunId"`
 	ForkKey       string                   `json:"forkKey"`
 	Branches      []forkedBranchEventEntry `json:"branches"`
+	// JobID is the durable job that drove this hop (blank if the caller
+	// did not supply one via AdvanceRunRequest.JobID).
+	JobID string `json:"jobId,omitempty"`
+}
+
+// JoinDecidedEventType/JoinDecidedSchemaVersion identify JOIN_DECIDED's
+// own registered (EventType, SchemaVersion) pair (V4-11, event_schema.go)
+// — registered from the same changeset that produces this event, not
+// deferred.
+const (
+	JoinDecidedEventType     = "JOIN_DECIDED"
+	JoinDecidedSchemaVersion = 1
+)
+
+// joinDecidedEventPayload is JOIN_DECIDED's own JSON shape (V4-11,
+// confirmed with the user before writing this task's code): the typed
+// audit record of one JOIN policy evaluation reaching a final verdict —
+// the exact token counts it was decided from, so an audit reader never
+// has to re-derive them from raw BranchToken history. Reason is populated
+// only when Verdict is "FAILED" (JoinPolicyUnsatisfiableReason — this
+// task's own one typed reason).
+type joinDecidedEventPayload struct {
+	RunID          string `json:"runId"`
+	WorkItemID     string `json:"workItemId"`
+	JoinNodeRunID  string `json:"joinNodeRunId"`
+	JoinNodeKey    string `json:"joinNodeKey"`
+	ForkNodeRunID  string `json:"forkNodeRunId"`
+	Mode           string `json:"mode"`
+	QuorumCount    uint32 `json:"quorumCount,omitempty"`
+	SucceededCount int    `json:"succeededCount"`
+	FailedCount    int    `json:"failedCount"`
+	CancelledCount int    `json:"cancelledCount"`
+	ActiveCount    int    `json:"activeCount"`
+	Verdict        string `json:"verdict"`
+	Reason         string `json:"reason,omitempty"`
 	// JobID is the durable job that drove this hop (blank if the caller
 	// did not supply one via AdvanceRunRequest.JobID).
 	JobID string `json:"jobId,omitempty"`

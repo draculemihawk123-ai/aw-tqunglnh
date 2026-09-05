@@ -415,6 +415,20 @@ func (r *RuntimeRepository) ListBranchTokensForRun(_ context.Context, runID stri
 	return tokens, nil
 }
 
+// ListBranchTokensForFork implements ports.RuntimeRepository (V4-11): see
+// that interface method's own doc comment for why this is scoped to one
+// fork occurrence rather than the whole Run.
+func (r *RuntimeRepository) ListBranchTokensForFork(_ context.Context, forkNodeRunID string) ([]runtime.BranchToken, error) {
+	var tokens []runtime.BranchToken
+	for _, token := range r.branches {
+		if string(token.ForkNodeRunID) == forkNodeRunID {
+			tokens = append(tokens, token)
+		}
+	}
+	sort.Slice(tokens, func(i, j int) bool { return tokens[i].BranchKey < tokens[j].BranchKey })
+	return tokens, nil
+}
+
 func (r *RuntimeRepository) RecordDecisionArtifact(_ context.Context, artifact runtime.DecisionArtifact) (runtime.DecisionArtifact, error) {
 	key := string(artifact.ID)
 	if _, exists := r.decisions[key]; exists {

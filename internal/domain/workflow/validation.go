@@ -782,9 +782,27 @@ func validateWaitConfig(node Node) []string {
 // comment. It deliberately does not cross-check QuorumCount against this
 // JOIN's actual incoming-edge count — see JoinNodeConfig's own doc
 // comment for why that is V2-09's job, not V2-08's.
+//
+// V4-11 (docs/design/06-v4-runtime-engine.md, confirmed with the user
+// before writing that task's runtime code): a JOIN must declare EXACTLY
+// ONE outcome, never zero and never more than one. The runtime has no
+// authority to pick among several — unlike AGENT/COMMAND/MACHINE_GATE
+// (a real Attempt reports its own outcome) or WAIT/APPROVAL (a signal/
+// operator decision carries one) or ROUTER's own single-outcome-only
+// carve-out, a JOIN's own "outcome" is entirely a function of its
+// declared policy (ALL/ANY/QUORUM) having been satisfied — there is
+// exactly one meaningful event to report, so exactly one outcome is
+// declarable. Rejecting this at compile/publish time, rather than
+// leaving it for the runtime to discover it cannot resolve an outcome,
+// matches this package's own "fail closed at the earliest possible
+// point" discipline.
 func validateJoinConfig(node Node) []string {
 	problems := make([]string, 0)
 	cfg := node.Join
+
+	if len(node.Outcomes) != 1 {
+		problems = append(problems, fmt.Sprintf("node %q join must declare exactly one outcome, got %d", node.Key, len(node.Outcomes)))
+	}
 
 	switch cfg.Mode {
 	case JoinModeAll, JoinModeAny:

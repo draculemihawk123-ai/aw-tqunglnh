@@ -1,0 +1,1 @@
+{"runId":"run-1","workItemId":"work-item-1","joinNodeRunId":"join-node-run-1","joinNodeKey":"join","forkNodeRunId":"node-run-fork-1","mode":"QUORUM","quorumCount":2,"succeededCount":2,"failedCount":1,"cancelledCount":0,"activeCount":0,"verdict":"SUCCEEDED","jobId":"job-1"}

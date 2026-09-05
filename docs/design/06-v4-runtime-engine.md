@@ -427,7 +427,60 @@
 - **Mục tiêu:** join theo persisted tokens và declared policy.
 - **Phụ thuộc:** V4-10.
 - **Thực hiện:** readiness/short-circuit/cancel remaining policy, shared-state merge validation, integration scope.
-- **Verify:** policy matrix, restart, impossible quorum và duplicate completion tests.
+  **Hai câu hỏi chốt với user trước khi code:**
+  1. *Verdict tính từ token set thế nào, và khi bất khả thi thì JOIN đi đâu:* chọn hướng inline, không đổi
+     schema, nhưng user siết lại công thức và semantics chính xác hơn đề xuất ban đầu của tôi. Token set
+     luôn thuộc đúng MỘT lần chạy FORK (`ForkNodeRunID`), không gom theo RunID hay ForkNodeKey — mỗi lần
+     FORK bị V4-07 cycle kích hoạt lại là một tập token độc lập. Công thức khoá: ALL — thành công khi
+     S=N, bất khả thi khi có FAILED hoặc CANCELLED; ANY — thành công khi S≥1, bất khả thi khi S=0 &&
+     ACTIVE=0; QUORUM(q) — thành công khi S≥q, bất khả thi khi S+ACTIVE<q (chính là "impossible quorum"
+     Verify line yêu cầu). JOIN NodeRun dùng identity tất định từ (ForkNodeRunID, JoinNodeKey) qua một
+     content hash (không nối chuỗi tuỳ ý — tránh va chạm với format ID thật khác trong repo), get-or-create
+     tự nhiên idempotent cho nhiều branch cùng tới. Branch ĐẦU TIÊN tới JOIN tạo NodeRun đó ở WAITING,
+     KHÔNG SUCCEEDED thẳng. Mỗi lần token đổi trạng thái (branch tới JOIN, hoặc branch NodeRun FAILED giữa
+     chừng) đều phải, trong CÙNG transaction: CAS token có fencing → đọc lại toàn bộ token set tươi → tính
+     verdict → get-or-create JOIN NodeRun → nếu bất khả thi, CAS WAITING→FAILED (không outcome, không
+     route tiếp, không tạo blocker, chưa tự fail WorkflowRun — V4-12 aggregate cấp Run) → nếu thoả mãn VÀ
+     mọi token đã terminal, CAS WAITING→SUCCEEDED rồi route outcome trong cùng transaction. JOIN phải khai
+     đúng MỘT outcome — compiler reject 0 hoặc nhiều hơn 1 (`validateJoinConfig` siết thêm, không phải chỉ
+     runtime tự suy luận). Event riêng `JOIN_DECIDED` (mode, quorum, đủ 4 count SUCCEEDED/FAILED/
+     CANCELLED/ACTIVE, verdict, reason=`JOIN_POLICY_UNSATISFIABLE` khi FAILED) — không giả làm
+     RETRY_EXHAUSTED của V4-06. Không thêm FailureOutcome vào JoinNodeConfig: user từ chối hướng đó vì
+     biến một lỗi kết hợp song song thành business route mới là mở rộng semantics chưa có authority nào
+     trong tài liệu hiện tại.
+  2. *Nhánh còn ACTIVE khi verdict đã quyết thì xử lý sao:* đây là điểm user SỬA sâu nhất so với đề xuất
+     ban đầu của tôi (tôi đề xuất CAS chúng sang CANCELLED ngay khi ANY/QUORUM đạt ngưỡng sớm). User chỉ
+     ra: dù threshold có thể tính được sớm (mathematically locked in), Alpha KHÔNG được tự ý cancel — worker
+     có thể vẫn đang chạy hoặc ghi dữ liệu thật, và Alpha chưa có branch-level cancellation/quiescence
+     fencing nào. Chốt policy: có thể tính được success sớm, nhưng JOIN vẫn ở WAITING và KHÔNG route
+     downstream cho tới khi MỌI branch của fork đó đạt trạng thái terminal — chỉ nhánh FAILED mới được
+     short-circuit sớm, vì FAILED không bao giờ route đi đâu cả nên không có gì "lãng phí" khi quyết định
+     sớm (không có downstream nào chạy song song với branch còn sống để mà race). Không có early branch
+     cancellation nào trong V4-11 — muốn route sớm thật sự (khi ANY/QUORUM đã chắc chắn) thì phải thiết kế
+     cancellation/quiescence có fencing riêng trước, việc đó nằm ngoài phạm vi task này.
+  Kết quả: `advanceRunTx`'s own JOIN-arrival block (V4-10) và `finalize.go`'s own `decideRetryOrExhaustion`
+  (V4-06, khi CAS một branch NodeRun sang FAILED) đều gọi chung một hàm mới `evaluateJoinTx` — hàm này tái
+  dùng `advanceRunTx` chính nó để route JOIN's own NodeRun đi khi thành công (không viết một dispatch
+  switch thứ hai). `dispatchForkBranches`'s own zero-hop "branch's own first edge đã là JOIN" case (V4-10)
+  cũng phải gọi `evaluateJoinTx` — tự phát hiện khi code: một FORK mà MỌI branch đều zero-hop tới JOIN sẽ
+  không bao giờ có hop bình thường nào để trigger evaluation, nếu bỏ sót điểm này JOIN's own NodeRun sẽ
+  không bao giờ được tạo. `ports.RuntimeRepository` thêm `ListBranchTokensForFork` (scoped đúng một fork
+  occurrence, khác `ListBranchTokensForRun` đã có từ V4-10) cho việc đọc token set tươi.
+- **Verify:** policy matrix, restart, impossible quorum và duplicate completion tests. Đã triển khai
+  (`join_test.go`, `join_sqlite_test.go`, 9 test): ALL thành công khi cả hai branch SUCCEEDED và route
+  đúng "end"; ALL fail ngay khi một branch FAILED mà không chờ branch còn lại (token branch kia vẫn ACTIVE,
+  không bị đụng); ANY chờ đủ MỌI branch terminal dù threshold đã đạt sớm (branch A SUCCEEDED trước, JOIN
+  vẫn chưa quyết cho tới khi branch B cũng terminal); ANY fail khi mọi branch đều FAILED; QUORUM(2)/3
+  branch — "impossible quorum" fail ngay khi 2 branch đã FAILED (branch thứ 3 vẫn ACTIVE, không bị đụng) —
+  đúng test Verify line yêu cầu; QUORUM thành công đạt ngưỡng sớm nhưng vẫn chờ branch cuối terminal; test
+  "duplicate completion" đúng nghĩa đen — branch B hoàn thành THẬT sau khi JOIN đã FAILED từ branch A, token
+  B vẫn SUCCEEDED bình thường nhưng JOIN không bị re-decide/re-event/re-route; test shared-state — hai
+  branch khác nhau patch hai field khác nhau, cả hai cùng có mặt trong SharedState cuối khi JOIN route đi,
+  chứng minh cơ chế `applySharedStatePatch`+CAS (HE-14-M04, V4-03) đã có sẵn áp dụng đúng cho hội tụ FORK/
+  JOIN mà không cần machinery mới — cộng `TestAdvanceRun_SQLite_Join_PersistsAcrossRestart` (đóng/mở lại
+  `sqlite.Store` thật GIỮA lúc branch A đã hoàn thành thật qua pipeline Schedule/Finalize và branch B chưa
+  chạy, verify JOIN NodeRun WAITING trước restart rồi SUCCEEDED/route đúng "end" sau restart trên UnitOfWork
+  hoàn toàn mới).
 - **Hoàn thành khi:** queue empty không ảnh hưởng join verdict.
 - **Nguồn:** HE-14-M04, HE-07-M06.
 
