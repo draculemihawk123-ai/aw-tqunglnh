@@ -366,3 +366,93 @@ func TestJoinDecidedV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestRunCompletionRequestedV1_GoldenFixtureDecodes is
+// RUN_COMPLETION_REQUESTED's own golden-fixture proof, mirroring
+// TestNodeRoutedV1_GoldenFixtureDecodes.
+func TestRunCompletionRequestedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "run_completion_requested_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(RunCompletionRequestedEventType, RunCompletionRequestedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", RunCompletionRequestedEventType, RunCompletionRequestedSchemaVersion, err)
+	}
+	want := runCompletionRequestedEventPayload{
+		RunID: "run-1", WorkItemID: "work-item-1", EndNodeRunID: "node-run-end-1", EndNodeKey: "end", JobID: "job-1",
+	}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", RunCompletionRequestedEventType, RunCompletionRequestedSchemaVersion, got, want)
+	}
+}
+
+// TestRunCompletionRequestedV1_RealEventPayloadDecodes proves
+// transitionRunToVerifyingTx's own actual marshaled
+// RUN_COMPLETION_REQUESTED payload round-trips through the registered
+// decoder, mirroring TestNodeRoutedV1_RealEventPayloadDecodes.
+func TestRunCompletionRequestedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := runCompletionRequestedEventPayload{
+		RunID: "run-9", WorkItemID: "work-item-9", EndNodeRunID: "node-run-end-9", EndNodeKey: "end", JobID: "job-9",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(RunCompletionRequestedEventType, RunCompletionRequestedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
+
+// TestRunFailedV1_GoldenFixtureDecodes is RUN_FAILED's own golden-fixture
+// proof, mirroring TestNodeRoutedV1_GoldenFixtureDecodes.
+func TestRunFailedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "run_failed_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(RunFailedEventType, RunFailedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", RunFailedEventType, RunFailedSchemaVersion, err)
+	}
+	want := runFailedEventPayload{RunID: "run-1", WorkItemID: "work-item-1", Reason: RunFailureReasonRunFailed, JobID: "job-1"}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", RunFailedEventType, RunFailedSchemaVersion, got, want)
+	}
+}
+
+// TestRunFailedV1_RealEventPayloadDecodes proves transitionRunToFailedTx's
+// own actual marshaled RUN_FAILED payload round-trips through the
+// registered decoder, mirroring TestNodeRoutedV1_RealEventPayloadDecodes.
+func TestRunFailedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := runFailedEventPayload{
+		RunID: "run-9", WorkItemID: "work-item-9", Reason: RunFailureReasonTerminalPathInvalid, JobID: "job-9",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(RunFailedEventType, RunFailedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}

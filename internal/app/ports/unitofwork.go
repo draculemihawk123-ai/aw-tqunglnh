@@ -352,6 +352,27 @@ type RuntimeRepository interface {
 	// not a row-sequence-number of every NodeRun activation for that key.
 	GetMaxNodeIteration(ctx context.Context, runID, nodeKey string) (iteration uint32, found bool, err error)
 
+	// ListNodeRunsForRun is populated now (V4-12,
+	// docs/design/06-v4-runtime-engine.md): every NodeRun activation for
+	// runID, across every node key — the raw material
+	// reconcileRunTerminalityTx (internal/app/runtime/completion.go)
+	// classifies into live/blocked/terminal groups to decide whether the
+	// Run can still make progress. Deliberately unfiltered (not
+	// state-scoped at the query layer) so the classification logic itself
+	// stays the single source of truth for which states count as which
+	// group, rather than splitting that policy across a SQL WHERE clause
+	// and Go code.
+	ListNodeRunsForRun(ctx context.Context, runID string) ([]runtime.NodeRun, error)
+
+	// TransitionWorkflowRunState is populated now (V4-12): the fenced CAS
+	// over WorkflowRun.State/Version — the Run-level counterpart of
+	// TransitionNodeRun, used exactly twice by this codebase so far: END
+	// reached with no other live/blocked NodeRun (RUNNING/WAITING ->
+	// VERIFYING) and no live/blocked NodeRun remaining with no END reached
+	// (RUNNING/WAITING -> FAILED). ExpectedVersion mismatch is
+	// ErrOptimisticConflict, ErrPersistenceNotFound for an unknown RunID.
+	TransitionWorkflowRunState(ctx context.Context, req TransitionWorkflowRunStateRequest) (runtime.WorkflowRun, error)
+
 	// UpdateWorkflowRunSharedState is populated now (V4-03 correction,
 	// docs/design/06-v4-runtime-engine.md — HE-14-M04's own "shared-state
 	// typed writes", found missing during review of this task's first
@@ -562,6 +583,15 @@ type TransitionNodeRunRequest struct {
 	ExpectedVersion uint64
 	NextState       runtime.NodeRunState
 	SelectedOutcome string
+}
+
+// TransitionWorkflowRunStateRequest is the CAS request for
+// RuntimeRepository.TransitionWorkflowRunState (V4-12).
+type TransitionWorkflowRunStateRequest struct {
+	RunID           string
+	ExpectedState   runtime.WorkflowRunState
+	ExpectedVersion uint64
+	NextState       runtime.WorkflowRunState
 }
 
 // UpdateWorkflowRunSharedStateRequest is the CAS request for

@@ -51,6 +51,86 @@ SELECT MAX(iteration) FROM node_runs WHERE run_id = ? AND node_key = ?`, runID, 
 	return uint32(iteration.Int64), true, nil
 }
 
+// ListNodeRunsForRun implements ports.RuntimeRepository (V4-12): every
+// NodeRun activation for runID, reusing loadNodeRunByID's own column set
+// via a plain SELECT of ids rather than duplicating its full column list a
+// second time.
+func (r runtimeRepository) ListNodeRunsForRun(ctx context.Context, runID string) ([]runtime.NodeRun, error) {
+	rows, err := r.tx.QueryContext(ctx, `SELECT id FROM node_runs WHERE run_id = ? ORDER BY activation_sequence`, runID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list node runs for run %s: %w", runID, err))
+	}
+	var ids []runtime.NodeRunID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan node run id: %w", err)
+		}
+		ids = append(ids, runtime.NodeRunID(id))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate node run ids: %w", err)
+	}
+	rows.Close()
+
+	nodeRuns := make([]runtime.NodeRun, 0, len(ids))
+	for _, id := range ids {
+		nodeRun, err := loadNodeRunByID(ctx, r.tx, id)
+		if err != nil {
+			return nil, err
+		}
+		nodeRuns = append(nodeRuns, nodeRun)
+	}
+	return nodeRuns, nil
+}
+
+// TransitionWorkflowRunState implements ports.RuntimeRepository (V4-12):
+// the fenced CAS over workflow_runs.state, mirroring transitionNodeRunTx's
+// own exact shape. Sets finished_at when NextState is a genuinely terminal
+// state (FAILED) — VERIFYING is deliberately NOT terminal (ADR-011: it is
+// only a completion CANDIDATE, still pending V5-11's own CompletionPolicy
+// decision), so finished_at stays unset for that transition.
+func (r runtimeRepository) TransitionWorkflowRunState(ctx context.Context, req ports.TransitionWorkflowRunStateRequest) (runtime.WorkflowRun, error) {
+	if req.RunID == "" {
+		return runtime.WorkflowRun{}, errors.New("workflow run id is required")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var finishedAt any
+	if req.NextState == runtime.WorkflowRunFailed {
+		finishedAt = now
+	}
+	result, err := r.tx.ExecContext(ctx, `
+UPDATE workflow_runs
+SET state = ?, finished_at = COALESCE(?, finished_at), version = version + 1, updated_at = ?
+WHERE id = ? AND state = ? AND version = ?`,
+		string(req.NextState), finishedAt, now, req.RunID, string(req.ExpectedState), req.ExpectedVersion,
+	)
+	if err != nil {
+		return runtime.WorkflowRun{}, MapSQLiteError(fmt.Errorf("transition workflow run %s state: %w", req.RunID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return runtime.WorkflowRun{}, fmt.Errorf("read workflow run state transition result: %w", err)
+	}
+	if affected != 1 {
+		var exists int
+		lookupErr := r.tx.QueryRowContext(ctx, `SELECT 1 FROM workflow_runs WHERE id = ?`, req.RunID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return runtime.WorkflowRun{}, fmt.Errorf("%w: workflow run %s", ports.ErrPersistenceNotFound, req.RunID)
+		}
+		if lookupErr != nil {
+			return runtime.WorkflowRun{}, MapSQLiteError(fmt.Errorf("check stale workflow run state transition: %w", lookupErr))
+		}
+		return runtime.WorkflowRun{}, fmt.Errorf(
+			"%w: workflow run %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.RunID, req.ExpectedState, req.ExpectedVersion,
+		)
+	}
+	return loadWorkflowRun(ctx, r.tx, runtime.WorkflowRunID(req.RunID))
+}
+
 // TransitionNodeRun implements ports.RuntimeRepository (V4-03): the CAS
 // that closes a NodeRun's own routing decision, the node_runs counterpart
 // of work.go's own transitionWorkItemStatusTx.

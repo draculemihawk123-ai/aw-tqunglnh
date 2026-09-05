@@ -491,7 +491,68 @@
 - **Thực hiện:** terminal path validation, run `VERIFYING|FAILED`, emit completion-request event;
   WorkItem chỉ giữ ACTIVE/BLOCKED cho tới verification service V5. Task này **không** tạo đường tới
   `CANCELLED`: cancellation chỉ thuộc V4-12B và luôn đi qua `CANCELLING`.
-- **Verify:** agent proposed done/no evidence test; assert END không có transition nào tới `CANCELLED`.
+  **Hai câu hỏi chốt với user trước khi code:**
+  1. *"run VERIFYING|FAILED" nghĩa là gì — FAILED chỉ là nhánh phòng thủ của riêng END, hay V4-12 phải
+     xây Run-level failure aggregation thật:* task text tiếng Việt mơ hồ; đọc kỹ ADR-011/ADR-021/V5-11
+     (CompletionPolicy service) xác nhận PASS/REWORK/BLOCK/FAIL từ `VERIFYING` hoàn toàn thuộc V5-11,
+     KHÔNG phải V4-12. Nhưng V4-06's own `decideRetryOrExhaustion` và V4-11's own `evaluateJoinTx` đều có
+     sẵn comment "never an automatic WorkflowRun failure — V4-12's own scope" / "V4-12 sẽ aggregate trạng
+     thái cấp Run" — forward-reference đã ghi sẵn trong code đã merge. Hỏi thẳng user: đây là yêu cầu thật
+     hay chỉ là ghi chú dự định. User xác nhận: **yêu cầu thật**, có bằng chứng rõ (V4-06/V4-11 đều chủ
+     động dừng ở NodeRun FAILED và giao việc tổng hợp cho V4-12; không xử lý thì một node hết retry budget
+     sẽ để Run mắc vĩnh viễn ở RUNNING dù không còn job hay đường tiến nào) — nhưng SỬA sâu đề xuất ban đầu
+     của tôi ở 3 điểm: (a) không chỉ gọi aggregation lúc NodeRun chuyển FAILED — phải chạy sau MỌI
+     transaction có thể loại bỏ live activation cuối mà không chắc chắn tạo downstream (NodeRun FAILED,
+     JOIN FAILED, branch cuối hoàn tất SAU KHI JOIN đã fail, WAIT/APPROVAL terminal, END dispatch) — dùng
+     MỘT reducer chung, không phải một query gọi riêng lẻ từng nơi; (b) BLOCKED không phải "non-terminal"
+     lẫn "failure" — phải phân loại RIÊNG (live/blocked/terminal, 3 nhóm), vì blocker/retry/cancel protocol
+     (V4-12A/V4-12B) sở hữu BLOCKED, không được tự fail Run chỉ vì còn BLOCKED; (c) END không có "hai
+     outcome bình thường" — reducer phải có priority order rõ: Run không RUNNING/WAITING → no-op; có live
+     → giữ nguyên; không live nhưng có BLOCKED → không fail; END hợp lệ đã đạt → VERIFYING; không live/
+     BLOCKED/END nhưng có FAILED → FAILED (reason RUN_FAILED); còn lại (không gì cả) → FAILED (reason
+     TERMINAL_PATH_INVALID, nhánh phòng thủ). Reducer phải chạy SAU khi downstream activation/job đã được
+     tạo trong cùng transaction, tránh quan sát "zero live" giả giữa hai bước.
+  2. *Điều kiện chính xác "Run không thể tiến thêm":* tôi đề xuất "zero NodeRun còn non-terminal", user
+     CHỌN đúng hướng đó (không cần graph reachability đầy đủ — publish-time validation đã đảm bảo mọi node
+     có đường TỚI END trên document, không có nghĩa Run THẬT SỰ còn tiến được sau khi một node cụ thể đã
+     fail và không có outcome để route) nhưng sửa lại mô tả chính xác: Run đang RUNNING/WAITING AND không
+     có NodeRun live (PENDING/READY/QUEUED/RUNNING/WAITING) AND không có NodeRun BLOCKED AND chưa có END
+     completion candidate hợp lệ AND tồn tại failure/dead-end authoritative (NodeRun FAILED, JOIN FAILED
+     hoặc terminal-path invariant vi phạm) → Run FAILED. Cần query theo NHÓM
+     (`RunNodeStateSummary{LiveCount, BlockedCount, FailedCount, ReachedEndNodeRunID}`), không phải một
+     boolean mơ hồ.
+  **Tự phát hiện một BUG THẬT của V4-11 khi viết test cho task này (không phải câu hỏi mới):**
+  `dispatchForkBranches`'s own zero-hop "branch's own first edge đã là JOIN" case (V4-10, gọi
+  `evaluateJoinTx` từ V4-11) đánh giá JOIN's own policy dựa trên token set TẠI THỜI ĐIỂM ĐÓ trong vòng lặp
+  — nhưng `workflow.Compile` CANONICALIZE (sort alphabetically) `Node.Outcomes`, nên thứ tự
+  `forkNode.Outcomes` sau compile KHÔNG PHẢI thứ tự authoring. Một FORK có 1 branch zero-hop-tới-join
+  ("shortcut") và 1 branch AGENT thật ("to_implement") — sau sort, "shortcut" < "to_implement" nên được xử
+  lý TRƯỚC — tại thời điểm đó "to_implement"'s own token CHƯA được tạo, nên `ListBranchTokensForFork` chỉ
+  thấy 1 token (shortcut, SUCCEEDED) → ALL mode tính sai S=1/N=1 → JOIN quyết SUCCEEDED sớm và route tới
+  END ngay, dù "to_implement" còn chưa chạy. Bug này ĐÃ CÓ trong V4-11 đã merge, chỉ chưa bị test nào bắt
+  được (V4-11's own test dùng `joinPolicyDocument`, không có branch zero-hop nào). Sửa: tách
+  `dispatchForkBranches` thành HAI pass — pass 1 tạo MỌI BranchToken trước (không đánh giá gì), pass 2 mới
+  dispatch/evaluate từng branch — đúng nghĩa đen HE-14-M09's own "create tokens atomically".
+  Phạm vi code: `internal/app/runtime/completion.go` (mới) — `RunNodeStateSummary`,
+  `computeRunNodeStateSummary`, `reconcileRunTerminalityTx` (reducer chung), event mới
+  `RUN_COMPLETION_REQUESTED`/`RUN_FAILED` (registered, golden fixture, round-trip test). `advance.go`:
+  `isEndNode` state assignment (END → SUCCEEDED ngay, không case riêng trong switch — reconciler tail call
+  generic đã đủ); reconciler gọi ở CẢ HAI exit point của `advanceRunTx` (dispatch switch chính, JOIN-arrival
+  early-return) và ở cuối `decideRetryOrExhaustion` (`finalize.go`, document giờ load UNCONDITIONALLY, không
+  chỉ khi có BranchTokenID). `ports.RuntimeRepository` thêm `ListNodeRunsForRun`/`TransitionWorkflowRunState`
+  (sqlite + fake).
+- **Verify:** agent proposed done/no evidence test; assert END không có transition nào tới `CANCELLED`. Đã
+  triển khai (`completion_test.go`, `completion_sqlite_test.go`, `completion_internal_test.go`, 9 test):
+  END reached → Run VERIFYING + `RUN_COMPLETION_REQUESTED`, WorkItem KHÔNG đổi (vẫn ACTIVE) — đúng test
+  "agent proposed done/no evidence" (AK-ARCH-005/GC-INV-12); NodeRun FAILED không còn live nào khác (cả
+  dạng thường lẫn qua FORK branch) → Run FAILED; branch A fail trong khi branch B còn ACTIVE → Run vẫn
+  RUNNING, chỉ FAILED khi branch B sau đó tự terminate thật (chứng minh reducer chạy đúng ở MỌI exit point
+  liên quan, không chỉ lần đầu); BLOCKED sibling không bao giờ tự fail Run (dù là NodeRun duy nhất còn lại)
+  — reuse `TransitionNodeRun` trực tiếp để seed BLOCKED (chưa có producer thật nào); restart thật giữa lúc
+  Run vừa VERIFYING (đóng/mở `sqlite.Store`, verify cả Run.State lẫn END NodeRun lẫn WorkItem chưa đổi sau
+  restart) — cộng 2 white-box test nội bộ (`package runtime`, mirror `event_schema_test.go`'s own tiền lệ)
+  cho nhánh TERMINAL_PATH_INVALID (không có producer thật nào cho CANCELLED để trigger qua public API) và
+  "Run đã quyết rồi thì reducer không re-fire".
 - **Hoàn thành khi:** exit code/outcome/END không có đường trực tiếp tới Run SUCCEEDED, WorkItem DONE
   hoặc Run CANCELLED.
 - **Nguồn:** ADR-011, ADR-020, AK-ARCH-005A, GC-INV-12.

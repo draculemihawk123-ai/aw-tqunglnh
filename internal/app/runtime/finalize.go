@@ -362,6 +362,16 @@ func decideRetryOrExhaustion(
 	}); err != nil {
 		return err
 	}
+	// V4-12: document is needed unconditionally now (not just for the
+	// BranchTokenID case below) — reconcileRunTerminalityTx's own tail
+	// call needs it to recognize an END-type node among any SUCCEEDED
+	// NodeRun.
+	version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+	if err != nil {
+		return err
+	}
+	document := version.Document()
+
 	// V4-10: a NodeRun belonging to a FORK branch that FAILS terminally
 	// (non-retryable, or retryable but budget exhausted) must terminalize
 	// its own BranchToken in this SAME transaction — locked with the user
@@ -387,11 +397,6 @@ func decideRetryOrExhaustion(
 		// re-evaluates" discipline advanceRunTx's own JOIN-arrival path
 		// already follows (confirmed with the user before writing this
 		// task's code).
-		version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
-		if err != nil {
-			return err
-		}
-		document := version.Document()
 		forkRun, err := tx.Runtime().GetNodeRun(ctx, string(branchToken.ForkNodeRunID))
 		if err != nil {
 			return err
@@ -433,7 +438,17 @@ func decideRetryOrExhaustion(
 		return err
 	}
 	result.NodeRunFailed = true
-	return nil
+
+	// V4-12: this NodeRun's own terminal failure — whether or not it
+	// belonged to a FORK branch — may be exactly the event that leaves
+	// the Run with no live NodeRun anywhere and no END ever reached;
+	// reconcileRunTerminalityTx re-derives the Run's own overall
+	// terminality fresh and CASes it to FAILED when that is so (confirmed
+	// with the user before writing this task's code: this is the real
+	// Run-level failure aggregation this file's own earlier "never an
+	// automatic WorkflowRun failure — V4-12's own scope" comment always
+	// deferred to).
+	return reconcileRunTerminalityTx(ctx, tx, run, document, req.CorrelationID, string(req.JobLease.JobID))
 }
 
 // resolvePinnedAttemptRules re-loads the exact ATTEMPT-category PolicyRef

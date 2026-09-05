@@ -489,6 +489,16 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 				result.JoinRoute = &route
 			}
 		}
+		// V4-12: this branch's own arrival at JOIN never itself creates a
+		// new downstream NodeRun (evaluateJoinTx's own SUCCESS path
+		// already reconciles via its own recursive advanceRunTx call —
+		// calling again here is a harmless no-op in that case); a FAILED
+		// verdict, an AlreadyDecided late arrival, or a still-WAITING
+		// evaluation all need this call to actually observe whether the
+		// Run just ran out of live work.
+		if err := reconcileRunTerminalityTx(ctx, tx, run, document, req.CorrelationID, req.JobID); err != nil {
+			return AdvanceRunResult{}, err
+		}
 		return result, nil
 	}
 
@@ -594,8 +604,15 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 	isWaitNode := finalTargetNode.Type == workflow.NodeWait
 	isApprovalNode := finalTargetNode.Type == workflow.NodeApproval
 	isForkNode := finalTargetNode.Type == workflow.NodeFork
+	isEndNode := finalTargetNode.Type == workflow.NodeEnd
 	if autoAdvance {
 		nextNodeRun.State = runtimedomain.NodeRunRunning
+	} else if isEndNode {
+		// V4-12: END completes the instant it is reached — like FORK,
+		// nothing external resolves it (no Attempt, no signal, no
+		// operator decision) and it declares no outcome of its own to
+		// wait on; reaching it is itself the terminal event.
+		nextNodeRun.State = runtimedomain.NodeRunSucceeded
 	} else if isWaitNode || isApprovalNode {
 		// V4-08/V4-09: a WAIT or APPROVAL node's own NodeRun goes straight
 		// to WAITING — never RUNNING (nothing ever dispatches an Attempt
@@ -907,6 +924,17 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 			return AdvanceRunResult{}, err
 		}
 	}
+	// V4-12: every advanceRunTx exit that could have left the Run with no
+	// further live work (an END NodeRun just reached SUCCEEDED above, a
+	// still-pending WAIT/APPROVAL resolved with nowhere new to go, or any
+	// other hop) re-derives the Run's own overall terminality fresh from
+	// durable NodeRun state — confirmed with the user before writing this
+	// task's code: cheap to call even when it is always a no-op (the
+	// common case, since a freshly created downstream NodeRun already
+	// makes it one), and the only way to guarantee no call site is missed.
+	if err := reconcileRunTerminalityTx(ctx, tx, run, document, req.CorrelationID, req.JobID); err != nil {
+		return AdvanceRunResult{}, err
+	}
 	return result, nil
 }
 
@@ -935,6 +963,16 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 // with FORK is out of this task's own scope — HE-14-M09 and this task's
 // own Verify line name duplicate dispatch/partial crash/branch failure,
 // never a cycle inside a fork).
+// forkBranchPlan is dispatchForkBranches' own pass-1 output for one
+// branch: everything pass 2 needs, once every branch's own BranchToken
+// already exists.
+type forkBranchPlan struct {
+	branchKey    string
+	branchNode   workflow.Node
+	tokenID      string
+	tokenVersion uint64
+}
+
 func dispatchForkBranches(
 	ctx context.Context, tx ports.Tx, ids idsource.Source, run runtimedomain.WorkflowRun, document workflow.WorkflowDocument,
 	forkNode workflow.Node, forkNodeRunID string, newSharedState json.RawMessage, correlationID, jobID string,
@@ -945,7 +983,21 @@ func dispatchForkBranches(
 	}
 	sequence := forkRun.ActivationSequence
 
-	branches := make([]ForkedBranch, 0, len(forkNode.Outcomes))
+	// Pass 1: create EVERY branch's own BranchToken first, before
+	// dispatching (or evaluating JOIN for) any single one of them — V4-12
+	// fixed a real bug found while writing that task's own tests: the
+	// compiler canonicalizes (sorts) a node's own declared Outcomes
+	// (workflow/compiler.go), so forkNode.Outcomes is NOT necessarily in
+	// authoring order. A single-pass loop that dispatched (and, for a
+	// zero-hop "branch's own first edge is already JOIN" case,
+	// immediately evaluated the JOIN's own ALL/ANY/QUORUM policy against
+	// whatever tokens existed SO FAR) could observe an INCOMPLETE token
+	// set — e.g. a zero-hop branch sorted before its own still-pending
+	// sibling would see itself as the ONLY token and wrongly satisfy ALL.
+	// Splitting fan-out into "create every token" then "dispatch every
+	// branch" makes HE-14-M09's own "create tokens atomically" literal:
+	// no evaluation ever runs against a partial token set.
+	plans := make([]forkBranchPlan, 0, len(forkNode.Outcomes))
 	for _, branchKey := range forkNode.Outcomes {
 		edge, ok := findEdge(document, forkNode.Key, branchKey)
 		if !ok {
@@ -967,6 +1019,14 @@ func dispatchForkBranches(
 		if err != nil {
 			return nil, err
 		}
+		plans = append(plans, forkBranchPlan{branchKey: branchKey, branchNode: branchNode, tokenID: tokenID, tokenVersion: createdToken.Version})
+	}
+
+	branches := make([]ForkedBranch, 0, len(plans))
+	for _, plan := range plans {
+		branchKey := plan.branchKey
+		branchNode := plan.branchNode
+		tokenID := plan.tokenID
 
 		if branchNode.Type == workflow.NodeJoin {
 			// V4-10: a branch whose own first edge already targets its
@@ -976,7 +1036,7 @@ func dispatchForkBranches(
 			// in-branch-hop case, this is that same rule applied to a
 			// branch's own very first hop.
 			if _, err := tx.Runtime().TransitionBranchToken(ctx, ports.TransitionBranchTokenRequest{
-				BranchTokenID: tokenID, ExpectedVersion: createdToken.Version,
+				BranchTokenID: tokenID, ExpectedVersion: plan.tokenVersion,
 				NextState: runtimedomain.BranchTokenSucceeded, NextCurrentNodeKey: branchNode.Key,
 			}); err != nil {
 				return nil, err
@@ -986,7 +1046,9 @@ func dispatchForkBranches(
 			// advanceRunTx's own JOIN-arrival path evaluates — a FORK
 			// whose every branch is a direct zero-hop edge to JOIN would
 			// otherwise never trigger any evaluation at all, since no
-			// later ordinary hop would ever exist to catch it.
+			// later ordinary hop would ever exist to catch it. Safe to
+			// evaluate now: every sibling's own token (pass 1, above)
+			// already exists, regardless of dispatch order below.
 			if _, err := evaluateJoinTx(ctx, tx, ids, run, document, newSharedState, forkNodeRunID, branchNode, correlationID, jobID); err != nil {
 				return nil, err
 			}

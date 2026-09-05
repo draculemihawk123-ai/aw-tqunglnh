@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
@@ -121,6 +122,43 @@ func (r *RuntimeRepository) GetNodeRun(_ context.Context, id string) (runtime.No
 		return runtime.NodeRun{}, fmt.Errorf("fake: %w: node run %s", ports.ErrPersistenceNotFound, id)
 	}
 	return nodeRun, nil
+}
+
+// ListNodeRunsForRun mirrors sqlite's ListNodeRunsForRun (V4-12), ordered
+// by ActivationSequence for deterministic output.
+func (r *RuntimeRepository) ListNodeRunsForRun(_ context.Context, runID string) ([]runtime.NodeRun, error) {
+	var nodeRuns []runtime.NodeRun
+	for _, nodeRun := range r.nodeRuns {
+		if string(nodeRun.RunID) == runID {
+			nodeRuns = append(nodeRuns, nodeRun)
+		}
+	}
+	sort.Slice(nodeRuns, func(i, j int) bool { return nodeRuns[i].ActivationSequence < nodeRuns[j].ActivationSequence })
+	return nodeRuns, nil
+}
+
+// TransitionWorkflowRunState mirrors sqlite's TransitionWorkflowRunState
+// (V4-12): a stale caller gets ErrOptimisticConflict, never a silent
+// overwrite.
+func (r *RuntimeRepository) TransitionWorkflowRunState(_ context.Context, req ports.TransitionWorkflowRunStateRequest) (runtime.WorkflowRun, error) {
+	run, ok := r.workflowRuns[req.RunID]
+	if !ok {
+		return runtime.WorkflowRun{}, fmt.Errorf("fake: %w: workflow run %s", ports.ErrPersistenceNotFound, req.RunID)
+	}
+	if run.State != req.ExpectedState || run.Version != req.ExpectedVersion {
+		return runtime.WorkflowRun{}, fmt.Errorf(
+			"fake: %w: workflow run %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.RunID, req.ExpectedState, req.ExpectedVersion,
+		)
+	}
+	run.State = req.NextState
+	run.Version++
+	if req.NextState == runtime.WorkflowRunFailed {
+		now := time.Now().UTC()
+		run.FinishedAt = &now
+	}
+	r.workflowRuns[req.RunID] = run
+	return run, nil
 }
 
 // TransitionNodeRun mirrors sqlite's transitionNodeRunTx (V4-03): a stale

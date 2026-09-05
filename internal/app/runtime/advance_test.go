@@ -93,7 +93,15 @@ func startWorkflowRunFixture(t *testing.T, document workflow.WorkflowDocument) (
 
 // --- AdvanceRun: single hop, node not owned by this task (END) ---
 
-func TestAdvanceRun_StartToEnd_CompletesStartAndCreatesPendingEndWithNoFurtherJob(t *testing.T) {
+// TestAdvanceRun_StartToEnd_CompletesStartAndReachesEnd is V4-12's own
+// update to what was, before that task, "END creates a PENDING NodeRun
+// with no owner at all" — END now reaches SUCCEEDED the instant it is
+// created (like FORK, nothing external resolves it) and the Run itself
+// transitions RUNNING -> VERIFYING in the same transaction
+// (reconcileRunTerminalityTx, completion.go) — never SUCCEEDED directly
+// (ADR-011's own "completion candidate" rule), and WorkItem is left
+// completely untouched.
+func TestAdvanceRun_StartToEnd_CompletesStartAndReachesEnd(t *testing.T) {
 	ctx := context.Background()
 	uow, ids, runID, startNodeRunID := startWorkflowRunFixture(t, workflowDocumentV1())
 
@@ -108,7 +116,7 @@ func TestAdvanceRun_StartToEnd_CompletesStartAndCreatesPendingEndWithNoFurtherJo
 		t.Fatalf("result = %+v, want NextNodeKey=end with a minted NextNodeRunID", result)
 	}
 	if result.NextAutoAdvanced || result.NextJobID != "" {
-		t.Fatalf("result = %+v, want NextAutoAdvanced=false and no NextJobID (END is not owned by this task)", result)
+		t.Fatalf("result = %+v, want NextAutoAdvanced=false and no NextJobID (END dispatches inline, no follow-up job)", result)
 	}
 
 	startNodeRun, err := uow.Snapshot.Runtime().GetNodeRun(ctx, startNodeRunID)
@@ -123,8 +131,16 @@ func TestAdvanceRun_StartToEnd_CompletesStartAndCreatesPendingEndWithNoFurtherJo
 	if err != nil {
 		t.Fatalf("GetNodeRun(end): %v", err)
 	}
-	if endNodeRun.State != runtimedomain.NodeRunPending || endNodeRun.NodeKey != "end" || endNodeRun.ActivationSequence != 2 {
-		t.Fatalf("end node run = %+v, want PENDING node=end activation_sequence=2", endNodeRun)
+	if endNodeRun.State != runtimedomain.NodeRunSucceeded || endNodeRun.NodeKey != "end" || endNodeRun.ActivationSequence != 2 {
+		t.Fatalf("end node run = %+v, want SUCCEEDED node=end activation_sequence=2", endNodeRun)
+	}
+
+	run, err := uow.Snapshot.Runtime().GetWorkflowRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetWorkflowRun: %v", err)
+	}
+	if run.State != runtimedomain.WorkflowRunVerifying {
+		t.Fatalf("run state = %s, want VERIFYING (completion candidate, never SUCCEEDED directly)", run.State)
 	}
 
 	jobs := uow.Snapshot.Jobs().(*fake.JobsRepository).Items()
@@ -177,7 +193,7 @@ func TestAdvanceRun_RouterChain_ActivationSequenceIncrementsInOrder(t *testing.T
 		t.Fatalf("router2 node run = %+v, want RUNNING activation_sequence=3", router2NodeRun)
 	}
 
-	// Hop 3: router2 -> end (not owned by this task, PENDING, no job).
+	// Hop 3: router2 -> end (V4-12: END dispatches inline, no follow-up job).
 	hop3, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{RunID: runID, NodeRunID: hop2.NextNodeRunID})
 	if err != nil {
 		t.Fatalf("hop 3 AdvanceRun: %v", err)
@@ -189,8 +205,8 @@ func TestAdvanceRun_RouterChain_ActivationSequenceIncrementsInOrder(t *testing.T
 	if err != nil {
 		t.Fatalf("GetNodeRun(end): %v", err)
 	}
-	if endNodeRun.State != runtimedomain.NodeRunPending || endNodeRun.ActivationSequence != 4 {
-		t.Fatalf("end node run = %+v, want PENDING activation_sequence=4", endNodeRun)
+	if endNodeRun.State != runtimedomain.NodeRunSucceeded || endNodeRun.ActivationSequence != 4 {
+		t.Fatalf("end node run = %+v, want SUCCEEDED activation_sequence=4", endNodeRun)
 	}
 }
 

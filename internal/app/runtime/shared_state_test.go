@@ -363,9 +363,18 @@ func TestAdvanceRun_CorrelationID_PropagatesAcrossHopsAndIntoFollowUpJob(t *test
 	_ = hop2
 }
 
+// TestAdvanceRun_NoSharedStatePatch_DoesNotBumpWorkflowRunVersion uses
+// routerChainDocument (not workflowDocumentV1) deliberately: its own
+// start->router1 hop stays RUNNING rather than reaching END, so this
+// test's own assertion isolates "no SharedStatePatch supplied never
+// touches WorkflowRun.Version" from V4-12's own SEPARATE
+// reconcileRunTerminalityTx, which legitimately bumps that same version
+// via TransitionWorkflowRunState once a Run's own END is actually
+// reached — a real, unrelated write to the same row, not evidence this
+// assertion's own SharedState-patch behavior regressed.
 func TestAdvanceRun_NoSharedStatePatch_DoesNotBumpWorkflowRunVersion(t *testing.T) {
 	ctx := context.Background()
-	uow, ids, runID, startNodeRunID := startWorkflowRunFixture(t, workflowDocumentV1())
+	uow, ids, runID, startNodeRunID := startWorkflowRunFixture(t, routerChainDocument())
 
 	if _, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{RunID: runID, NodeRunID: startNodeRunID}); err != nil {
 		t.Fatalf("AdvanceRun: %v", err)
