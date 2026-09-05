@@ -32,6 +32,17 @@ func DecodeNodeScheduledV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// DecodeExecutionAttemptFinalizedV1 is EXECUTION_ATTEMPT_FINALIZED v1's own
+// eventschema.Decoder (V4-05, finalize.go) — registered from the same
+// changeset that produces this event.
+func DecodeExecutionAttemptFinalizedV1(payloadJSON string) (any, error) {
+	var payload executionAttemptFinalizedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry. A composition root that wires up EnforcingEventsRepository
 // calls this once at startup, the same "register at init/startup time"
@@ -42,4 +53,5 @@ func DecodeNodeScheduledV1(payloadJSON string) (any, error) {
 func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(NodeRoutedEventType, NodeRoutedSchemaVersion, DecodeNodeRoutedV1)
 	registry.Register(NodeScheduledEventType, NodeScheduledSchemaVersion, DecodeNodeScheduledV1)
+	registry.Register(ExecutionAttemptFinalizedEventType, ExecutionAttemptFinalizedSchemaVersion, DecodeExecutionAttemptFinalizedV1)
 }

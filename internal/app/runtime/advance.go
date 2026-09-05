@@ -205,184 +205,200 @@ type AdvanceRunResult struct {
 }
 
 // AdvanceRun performs exactly one routing hop. See this file's own package
-// doc comment for the full design and scope decisions.
+// doc comment for the full design and scope decisions. It is a thin
+// WithSerializedWrite wrapper around advanceRunTx — the actual routing
+// logic is a Tx-composable function of its own (V4-05 scoping review) so
+// that a caller already holding an open transaction (schedule.go's own
+// ScheduleExecutableNodeRun today; finalize.go's own FinalizeExecutionAttempt
+// from V4-05 onward) can route a SUCCEEDED Attempt's own NodeRun forward
+// atomically with that same commit — never as a second, separate
+// transaction after the first one already committed, which would leave a
+// durable job/event stuck mid-flight if the process crashed in between.
 func AdvanceRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, req AdvanceRunRequest) (AdvanceRunResult, error) {
 	if req.RunID == "" || req.NodeRunID == "" {
 		return AdvanceRunResult{}, errors.New("runtime: RunID and NodeRunID are required")
 	}
-
 	var result AdvanceRunResult
 	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
-		current, err := tx.Runtime().GetNodeRun(ctx, req.NodeRunID)
-		if err != nil {
-			return err
-		}
-		if string(current.RunID) != req.RunID {
-			return fmt.Errorf("%w: node run %s belongs to run %s, not %s", ErrNodeRunMismatch, req.NodeRunID, current.RunID, req.RunID)
-		}
-		if current.State != runtimedomain.NodeRunRunning {
-			// Idempotent no-op — see this file's own package doc comment.
-			result = AdvanceRunResult{
-				Advanced: false, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: current.SelectedOutcome,
-			}
-			return nil
-		}
-
-		run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
-		if err != nil {
-			return err
-		}
-
-		version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
-		if err != nil {
-			return err
-		}
-		document := version.Document()
-
-		node, ok := findNode(document, current.NodeKey)
-		if !ok {
-			return fmt.Errorf("runtime: node %s not found in workflow version %s", current.NodeKey, run.WorkflowVersionID)
-		}
-
-		outcome := req.Outcome
-		if outcome == "" {
-			if !isStructuralRoutingNode(node.Type) || len(node.Outcomes) != 1 {
-				return fmt.Errorf("%w: node %s (type %s, %d declared outcomes)", ErrOutcomeRequired, node.Key, node.Type, len(node.Outcomes))
-			}
-			outcome = node.Outcomes[0]
-		}
-		if !outcomeDeclared(node, outcome) {
-			return fmt.Errorf("%w: node %s outcome %q", ErrOutcomeNotAllowed, node.Key, outcome)
-		}
-		edge, ok := findEdge(document, node.Key, outcome)
-		if !ok {
-			return fmt.Errorf("%w: node %s outcome %q", ErrRouteNotFound, node.Key, outcome)
-		}
-		downstreamNode, ok := findNode(document, edge.To)
-		if !ok {
-			return fmt.Errorf("runtime: edge %s targets unknown node %s", edge.Key, edge.To)
-		}
-
-		newSharedState := run.SharedState
-		if len(req.SharedStatePatch) > 0 {
-			merged, err := applySharedStatePatch(document, node.Key, run.SharedState, req.SharedStatePatch)
-			if err != nil {
-				return err
-			}
-			newSharedState = merged
-			if _, err := tx.Runtime().UpdateWorkflowRunSharedState(ctx, ports.UpdateWorkflowRunSharedStateRequest{
-				RunID: req.RunID, ExpectedVersion: run.Version, SharedState: newSharedState,
-			}); err != nil {
-				return err
-			}
-		}
-
-		completedNodeRun, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
-			NodeRunID: req.NodeRunID, ExpectedState: runtimedomain.NodeRunRunning, ExpectedVersion: current.Version,
-			NextState: runtimedomain.NodeRunSucceeded, SelectedOutcome: outcome,
-		})
-		if err != nil {
-			return err
-		}
-
-		nextSequence := current.ActivationSequence + 1
-		nextID := ids.NewID()
-		nextNodeRun, err := runtimedomain.NewNodeRun(
-			runtimedomain.NodeRunID(nextID), run.ID, downstreamNode.Key, nextSequence, 0, nil,
-			canonicalStateHash(newSharedState), "",
-		)
-		if err != nil {
-			return err
-		}
-
-		autoAdvance := isStructuralRoutingNode(downstreamNode.Type) && len(downstreamNode.Outcomes) == 1
-		if autoAdvance {
-			nextNodeRun.State = runtimedomain.NodeRunRunning
-		}
-		if _, err := tx.Runtime().CreateNodeRun(ctx, nextNodeRun); err != nil {
-			return err
-		}
-
-		result = AdvanceRunResult{
-			Advanced: true, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: outcome,
-			NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key, NextAutoAdvanced: autoAdvance,
-		}
-
-		// GC-INV-15: append the domain event in the same transaction as
-		// the transition/activation/job above, not as an afterthought.
-		// Sequence is completedNodeRun.Version (the NodeRun row's own
-		// post-transition optimistic version), not a hardcoded 1 —
-		// correction found during review: V4-04 will add further
-		// transitions (PENDING->QUEUED->RUNNING) on this SAME NodeRun
-		// aggregate, each also needing its own event per GC-INV-15, and a
-		// hardcoded Sequence would collide with domain_events' own UNIQUE
-		// (aggregate_type, aggregate_id, sequence) constraint the moment a
-		// second one landed. Tying Sequence to the aggregate's own version
-		// needs no extra query/allocation step and is exactly monotonic
-		// with the transitions that produce each event, one per version.
-		eventPayload, err := json.Marshal(nodeRoutedEventPayload{
-			RunID: string(run.ID), WorkItemID: string(run.WorkItemID), NodeRunID: req.NodeRunID,
-			NodeKey: node.Key, SelectedOutcome: outcome,
-			NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key, JobID: req.JobID,
-		})
-		if err != nil {
-			return fmt.Errorf("marshal NODE_ROUTED event payload: %w", err)
-		}
-		if err := tx.Events().Append(ctx, ports.DomainEvent{
-			ID: req.NodeRunID + "-routed", ProjectID: string(run.ProjectID),
-			AggregateType: "NodeRun", AggregateID: req.NodeRunID, Sequence: int64(completedNodeRun.Version),
-			EventType: NodeRoutedEventType, SchemaVersion: NodeRoutedSchemaVersion, PayloadJSON: string(eventPayload),
-			CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
-		}); err != nil {
-			return err
-		}
-
-		switch {
-		case autoAdvance:
-			payload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: nextID, CorrelationID: req.CorrelationID})
-			if err != nil {
-				return fmt.Errorf("marshal %s job payload: %w", AdvanceRunJobKind, err)
-			}
-			job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
-				ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: AdvanceRunJobKind,
-				AggregateType: "WorkflowRun", AggregateID: string(run.ID), Payload: payload,
-				MaxClaims: defaultAdvanceRunJobMaxClaimsFollowUp, IdempotencyKey: "advance-" + nextID,
-			})
-			if err != nil {
-				return err
-			}
-			result.NextJobID = string(job.ID)
-
-		case isExecutableNode(downstreamNode.Type):
-			// V4-04: an executable downstream node needs its own scheduling
-			// transaction (ResolvedExecutionProfileV1 resolution, effective
-			// scope, exact manifest revision) that this call's own
-			// transaction cannot perform inline — ADR-027 requires
-			// resolving the RuntimeExecutionConfigProvider's snapshot
-			// OUTSIDE any database transaction, which this hop is already
-			// inside of. So, like the auto-advance case above, this hands
-			// off to a separate durable job/handler (schedule.go's
-			// ScheduleExecutableNodeRun via NodeSchedulingHandler) rather
-			// than resolving inline — enqueued atomically here, alongside
-			// the NodeRun activation and NODE_ROUTED event, so the handoff
-			// itself can never be lost.
-			payload, err := json.Marshal(ScheduleNodeRunJobPayload{RunID: string(run.ID), NodeRunID: nextID, CorrelationID: req.CorrelationID})
-			if err != nil {
-				return fmt.Errorf("marshal %s job payload: %w", ScheduleNodeRunJobKind, err)
-			}
-			job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
-				ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: ScheduleNodeRunJobKind,
-				AggregateType: "NodeRun", AggregateID: nextID, Payload: payload,
-				MaxClaims: defaultScheduleNodeRunJobMaxClaims, IdempotencyKey: "schedule-" + nextID,
-			})
-			if err != nil {
-				return err
-			}
-			result.NextScheduleJobID = string(job.ID)
-		}
-		return nil
+		var err error
+		result, err = advanceRunTx(ctx, tx, ids, req)
+		return err
 	})
 	return result, err
+}
+
+// advanceRunTx is AdvanceRun's own routing logic, composed against an
+// already-open ports.Tx rather than opening its own transaction — see
+// AdvanceRun's own doc comment for why this split exists.
+func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req AdvanceRunRequest) (AdvanceRunResult, error) {
+	var result AdvanceRunResult
+	current, err := tx.Runtime().GetNodeRun(ctx, req.NodeRunID)
+	if err != nil {
+		return AdvanceRunResult{}, err
+	}
+	if string(current.RunID) != req.RunID {
+		return AdvanceRunResult{}, fmt.Errorf("%w: node run %s belongs to run %s, not %s", ErrNodeRunMismatch, req.NodeRunID, current.RunID, req.RunID)
+	}
+	if current.State != runtimedomain.NodeRunRunning {
+		// Idempotent no-op — see this file's own package doc comment.
+		return AdvanceRunResult{
+			Advanced: false, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: current.SelectedOutcome,
+		}, nil
+	}
+
+	run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
+	if err != nil {
+		return AdvanceRunResult{}, err
+	}
+
+	version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+	if err != nil {
+		return AdvanceRunResult{}, err
+	}
+	document := version.Document()
+
+	node, ok := findNode(document, current.NodeKey)
+	if !ok {
+		return AdvanceRunResult{}, fmt.Errorf("runtime: node %s not found in workflow version %s", current.NodeKey, run.WorkflowVersionID)
+	}
+
+	outcome := req.Outcome
+	if outcome == "" {
+		if !isStructuralRoutingNode(node.Type) || len(node.Outcomes) != 1 {
+			return AdvanceRunResult{}, fmt.Errorf("%w: node %s (type %s, %d declared outcomes)", ErrOutcomeRequired, node.Key, node.Type, len(node.Outcomes))
+		}
+		outcome = node.Outcomes[0]
+	}
+	if !outcomeDeclared(node, outcome) {
+		return AdvanceRunResult{}, fmt.Errorf("%w: node %s outcome %q", ErrOutcomeNotAllowed, node.Key, outcome)
+	}
+	edge, ok := findEdge(document, node.Key, outcome)
+	if !ok {
+		return AdvanceRunResult{}, fmt.Errorf("%w: node %s outcome %q", ErrRouteNotFound, node.Key, outcome)
+	}
+	downstreamNode, ok := findNode(document, edge.To)
+	if !ok {
+		return AdvanceRunResult{}, fmt.Errorf("runtime: edge %s targets unknown node %s", edge.Key, edge.To)
+	}
+
+	newSharedState := run.SharedState
+	if len(req.SharedStatePatch) > 0 {
+		merged, err := applySharedStatePatch(document, node.Key, run.SharedState, req.SharedStatePatch)
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		newSharedState = merged
+		if _, err := tx.Runtime().UpdateWorkflowRunSharedState(ctx, ports.UpdateWorkflowRunSharedStateRequest{
+			RunID: req.RunID, ExpectedVersion: run.Version, SharedState: newSharedState,
+		}); err != nil {
+			return AdvanceRunResult{}, err
+		}
+	}
+
+	completedNodeRun, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
+		NodeRunID: req.NodeRunID, ExpectedState: runtimedomain.NodeRunRunning, ExpectedVersion: current.Version,
+		NextState: runtimedomain.NodeRunSucceeded, SelectedOutcome: outcome,
+	})
+	if err != nil {
+		return AdvanceRunResult{}, err
+	}
+
+	nextSequence := current.ActivationSequence + 1
+	nextID := ids.NewID()
+	nextNodeRun, err := runtimedomain.NewNodeRun(
+		runtimedomain.NodeRunID(nextID), run.ID, downstreamNode.Key, nextSequence, 0, nil,
+		canonicalStateHash(newSharedState), "",
+	)
+	if err != nil {
+		return AdvanceRunResult{}, err
+	}
+
+	autoAdvance := isStructuralRoutingNode(downstreamNode.Type) && len(downstreamNode.Outcomes) == 1
+	if autoAdvance {
+		nextNodeRun.State = runtimedomain.NodeRunRunning
+	}
+	if _, err := tx.Runtime().CreateNodeRun(ctx, nextNodeRun); err != nil {
+		return AdvanceRunResult{}, err
+	}
+
+	result = AdvanceRunResult{
+		Advanced: true, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: outcome,
+		NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key, NextAutoAdvanced: autoAdvance,
+	}
+
+	// GC-INV-15: append the domain event in the same transaction as
+	// the transition/activation/job above, not as an afterthought.
+	// Sequence is completedNodeRun.Version (the NodeRun row's own
+	// post-transition optimistic version), not a hardcoded 1 —
+	// correction found during review: V4-04 will add further
+	// transitions (PENDING->QUEUED->RUNNING) on this SAME NodeRun
+	// aggregate, each also needing its own event per GC-INV-15, and a
+	// hardcoded Sequence would collide with domain_events' own UNIQUE
+	// (aggregate_type, aggregate_id, sequence) constraint the moment a
+	// second one landed. Tying Sequence to the aggregate's own version
+	// needs no extra query/allocation step and is exactly monotonic
+	// with the transitions that produce each event, one per version.
+	eventPayload, err := json.Marshal(nodeRoutedEventPayload{
+		RunID: string(run.ID), WorkItemID: string(run.WorkItemID), NodeRunID: req.NodeRunID,
+		NodeKey: node.Key, SelectedOutcome: outcome,
+		NextNodeRunID: nextID, NextNodeKey: downstreamNode.Key, JobID: req.JobID,
+	})
+	if err != nil {
+		return AdvanceRunResult{}, fmt.Errorf("marshal NODE_ROUTED event payload: %w", err)
+	}
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: req.NodeRunID + "-routed", ProjectID: string(run.ProjectID),
+		AggregateType: "NodeRun", AggregateID: req.NodeRunID, Sequence: int64(completedNodeRun.Version),
+		EventType: NodeRoutedEventType, SchemaVersion: NodeRoutedSchemaVersion, PayloadJSON: string(eventPayload),
+		CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return AdvanceRunResult{}, err
+	}
+
+	switch {
+	case autoAdvance:
+		payload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: nextID, CorrelationID: req.CorrelationID})
+		if err != nil {
+			return AdvanceRunResult{}, fmt.Errorf("marshal %s job payload: %w", AdvanceRunJobKind, err)
+		}
+		job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+			ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: AdvanceRunJobKind,
+			AggregateType: "WorkflowRun", AggregateID: string(run.ID), Payload: payload,
+			MaxClaims: defaultAdvanceRunJobMaxClaimsFollowUp, IdempotencyKey: "advance-" + nextID,
+		})
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		result.NextJobID = string(job.ID)
+
+	case isExecutableNode(downstreamNode.Type):
+		// V4-04: an executable downstream node needs its own scheduling
+		// transaction (ResolvedExecutionProfileV1 resolution, effective
+		// scope, exact manifest revision) that this call's own
+		// transaction cannot perform inline — ADR-027 requires
+		// resolving the RuntimeExecutionConfigProvider's snapshot
+		// OUTSIDE any database transaction, which this hop is already
+		// inside of. So, like the auto-advance case above, this hands
+		// off to a separate durable job/handler (schedule.go's
+		// ScheduleExecutableNodeRun via NodeSchedulingHandler) rather
+		// than resolving inline — enqueued atomically here, alongside
+		// the NodeRun activation and NODE_ROUTED event, so the handoff
+		// itself can never be lost.
+		payload, err := json.Marshal(ScheduleNodeRunJobPayload{RunID: string(run.ID), NodeRunID: nextID, CorrelationID: req.CorrelationID})
+		if err != nil {
+			return AdvanceRunResult{}, fmt.Errorf("marshal %s job payload: %w", ScheduleNodeRunJobKind, err)
+		}
+		job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+			ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: ScheduleNodeRunJobKind,
+			AggregateType: "NodeRun", AggregateID: nextID, Payload: payload,
+			MaxClaims: defaultScheduleNodeRunJobMaxClaims, IdempotencyKey: "schedule-" + nextID,
+		})
+		if err != nil {
+			return AdvanceRunResult{}, err
+		}
+		result.NextScheduleJobID = string(job.ID)
+	}
+	return result, nil
 }
 
 // NodeRoutedEventType/NodeRoutedSchemaVersion identify NODE_ROUTED's own

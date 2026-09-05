@@ -108,3 +108,52 @@ func TestNodeScheduledV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestExecutionAttemptFinalizedV1_GoldenFixtureDecodes is
+// EXECUTION_ATTEMPT_FINALIZED's own golden-fixture proof, mirroring
+// TestNodeRoutedV1_GoldenFixtureDecodes.
+func TestExecutionAttemptFinalizedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "execution_attempt_finalized_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(ExecutionAttemptFinalizedEventType, ExecutionAttemptFinalizedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", ExecutionAttemptFinalizedEventType, ExecutionAttemptFinalizedSchemaVersion, err)
+	}
+	want := executionAttemptFinalizedEventPayload{
+		RunID: "run-1", WorkItemID: "work-item-1", NodeRunID: "node-run-1", AttemptID: "attempt-1",
+		NextState: "SUCCEEDED", TerminationReason: "COMPLETED", JobID: "job-1",
+	}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", ExecutionAttemptFinalizedEventType, ExecutionAttemptFinalizedSchemaVersion, got, want)
+	}
+}
+
+// TestExecutionAttemptFinalizedV1_RealEventPayloadDecodes proves
+// FinalizeExecutionAttempt's own actual marshaled EXECUTION_ATTEMPT_FINALIZED
+// payload round-trips through the registered decoder, mirroring
+// TestNodeRoutedV1_RealEventPayloadDecodes.
+func TestExecutionAttemptFinalizedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := executionAttemptFinalizedEventPayload{
+		RunID: "run-9", WorkItemID: "work-item-9", NodeRunID: "node-run-9", AttemptID: "attempt-9",
+		NextState: "FAILED", TerminationReason: "EXECUTION_FAILED", JobID: "job-9",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(ExecutionAttemptFinalizedEventType, ExecutionAttemptFinalizedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}

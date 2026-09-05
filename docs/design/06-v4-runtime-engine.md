@@ -94,9 +94,48 @@
 - **Thực hiện:** job claim, attempt RUNNING, optional write leases, fake typed events/result, fenced
   finalize. Dùng fake `ports.RuntimeExecutionConfigProvider` V4-04 đã định nghĩa (ADR-027) — không đổi
   port, không tự resolve config thật.
-- **Verify:** success/failure/timeout/cancel/lease-loss tests.
-- **Hoàn thành khi:** worker chỉ propose outcome; orchestrator quyết transition.
-- **Nguồn:** GC-INV-17, HE-09-M01.
+  Implementation thật (`internal/app/runtime/execute.go` + `finalize.go`), theo đúng kiến trúc user đã
+  chốt trước khi code: **`FinalizeExecutionAttempt`** là application service DUY NHẤT được phép phối hợp
+  fenced finalize — chạy trong đúng một `WithSerializedWrite`, bên trong: (1) `tx.Jobs().ValidateActiveJob`
+  kiểm JobLease còn LEASED đúng owner/token/chưa hết hạn VÀ đúng aggregate (`ExecutionAttempt`, AttemptID —
+  xem P1 bên dưới); (2) load Attempt, cross-check NodeRunID; (3) `tx.Runtime().ValidateWriteLeaseFencing`
+  cho từng WriteLease (tái dùng nguyên SQL `validateActiveWriteLeaseInTx` đã có từ `FinalizeWorkflowRun`
+  spike-era, không copy lại — chỉ trích thành helper dùng chung); (4) CAS Attempt RUNNING→terminal qua
+  `tx.Runtime().TransitionExecutionAttempt`; (5) append event `EXECUTION_ATTEMPT_FINALIZED` cùng
+  transaction (GC-INV-15); (6) nếu SUCCEEDED, gọi `advanceRunTx` (helper Tx-composable trích ra từ
+  `AdvanceRun` — `AdvanceRun` public giờ chỉ là wrapper `WithSerializedWrite` mỏng quanh nó) NGAY TRONG
+  CÙNG transaction để route NodeRun tiếp — không mở transaction thứ hai sau khi finalize commit (tránh
+  crash gap giữa "Attempt SUCCEEDED" và "NodeRun routed"); (7) `tx.Jobs().CompleteJob` (Tx-composable,
+  mới) hoàn tất job bằng đúng JobLease, cuối cùng để bất kỳ bước nào fail đều rollback toàn bộ.
+  `ExecuteNodeHandler` (workerpool.Handler cho `EXECUTE_NODE`) chỉ là "worker": claim job → CAS cả NodeRun
+  và Attempt QUEUED→RUNNING (unfenced — job đã LEASED hợp lệ là đủ) → chạy `ports.NodeExecutor` dưới một
+  `context.WithDeadline` tự tạo từ `TimeoutSeconds` đã pin (đọc lại từ `DecisionArtifact` V4-04 ghi ở ID
+  tất định `"<nodeRunId>-execution-profile-v1"`) → gọi `FinalizeExecutionAttempt` đúng một lần với kết quả.
+  **Quyết định cancel/timeout đã chốt với user trước khi code:** chỉ đúng 3 reason
+  COMPLETED/EXECUTION_FAILED/DEADLINE_EXCEEDED thuộc phạm vi V4-05 (đúng như `termination.go`'s own doc
+  comment đã phân công); "timeout" nghĩa là context tự tạo từ AttemptPolicy deadline hết hạn (phân biệt
+  bằng `errors.Is(attemptCtx.Err(), context.DeadlineExceeded)` trên chính context đó, không phải context
+  ngoài); "cancel" nghĩa là context ngoài (pool shutdown/heartbeat loss) bị huỷ vì lý do khác — cả hai
+  trường hợp đều KHÔNG finalize, để Attempt RUNNING cho V4-12B/V4-13 xử lý sau bằng authority riêng của
+  họ; không bao giờ tự ghi RUN_CANCELLED hay LEASE_LOST/OWNERSHIP_LOST_MUTATING.
+  Write-lease ACQUISITION (không phải validation) chưa implement thật trong V4-05 — fenced finalize đã
+  chấp nhận và validate `WriteLeaseGrant` end-to-end, nhưng chưa có real executor nào cần ghi vào
+  repository thật để cần acquire; để lại cho V5's real executor tự resolve `NodeRun.EffectiveScope`'s
+  WRITE grant thành `WorkspaceLeaseTarget` và gọi `AcquireWriteLeases` trước Execute.
+  **P1 sửa code V4-04 đã merge (do user phát hiện khi review thiết kế trước khi tôi viết code):**
+  `EXECUTE_NODE` job's `AggregateType`/`AggregateID` đổi từ `"NodeRun"`/NodeRunID sang
+  `"ExecutionAttempt"`/AttemptID — giữ nguyên aggregate cũ sẽ không chứng minh được job thuộc đúng Attempt
+  một khi V4-06 tạo nhiều Attempt dưới cùng NodeRun (retry). `DecisionArtifact`'s ID cũng đổi từ
+  `ids.NewID()` sang tất định `"<nodeRunId>-execution-profile-v1"` để V4-05 đọc lại được `TimeoutSeconds`
+  mà không cần thêm back-reference nào.
+- **Verify:** success/failure/timeout/cancel/lease-loss tests. Đã triển khai: fake tests (happy path,
+  failure, timeout, cancel-context, idempotent replay, validation) + sqlite tests bắt buộc cho deep
+  fencing (expired lease, wrong owner/token, WriteLease sai fence token, concurrent finalize một-winner) —
+  `execute_test.go`, `finalize_execution_attempt_sqlite_test.go`.
+- **Hoàn thành khi:** worker chỉ propose outcome; orchestrator quyết transition — `ExecuteNodeHandler`
+  chỉ đưa `NodeExecutionResult` (State/SelectedOutcome) cho `FinalizeExecutionAttempt`, không tự CAS/route
+  gì; mọi acceptance quyết định bởi fencing bên trong `FinalizeExecutionAttempt`.
+- **Nguồn:** GC-INV-17, GC-INV-18, HE-09-M01.
 
 ## V4-06 — Technical retry policy
 

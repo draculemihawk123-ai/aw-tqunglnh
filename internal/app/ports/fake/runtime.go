@@ -218,6 +218,49 @@ func (r *RuntimeRepository) Attempts() map[string]runtime.ExecutionAttempt {
 	return items
 }
 
+// GetExecutionAttempt mirrors sqlite's GetExecutionAttempt (V4-05).
+func (r *RuntimeRepository) GetExecutionAttempt(_ context.Context, id string) (runtime.ExecutionAttempt, error) {
+	attempt, ok := r.attempts[id]
+	if !ok {
+		return runtime.ExecutionAttempt{}, fmt.Errorf("fake: %w: execution attempt %s", ports.ErrPersistenceNotFound, id)
+	}
+	return attempt, nil
+}
+
+// TransitionExecutionAttempt mirrors sqlite's transitionExecutionAttemptTx
+// (V4-05): a stale caller (wrong ExpectedState/ExpectedVersion) gets
+// ErrOptimisticConflict, never a silent overwrite. Performs no fencing —
+// see ports.RuntimeRepository.TransitionExecutionAttempt's own doc comment
+// for why that is FinalizeExecutionAttempt's own concern, not this method's.
+func (r *RuntimeRepository) TransitionExecutionAttempt(_ context.Context, req ports.TransitionExecutionAttemptRequest) (runtime.ExecutionAttempt, error) {
+	attempt, ok := r.attempts[req.AttemptID]
+	if !ok {
+		return runtime.ExecutionAttempt{}, fmt.Errorf("fake: %w: execution attempt %s", ports.ErrPersistenceNotFound, req.AttemptID)
+	}
+	if attempt.State != req.ExpectedState || attempt.Version != req.ExpectedVersion {
+		return runtime.ExecutionAttempt{}, fmt.Errorf(
+			"fake: %w: execution attempt %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.AttemptID, req.ExpectedState, req.ExpectedVersion,
+		)
+	}
+	attempt.State = req.NextState
+	if req.TerminationReason != "" {
+		attempt.TerminationReason = req.TerminationReason
+	}
+	attempt.Version++
+	r.attempts[req.AttemptID] = attempt
+	return attempt, nil
+}
+
+// ValidateWriteLeaseFencing is a trivial pass-through on this fake (V4-05):
+// this fake never models write_leases state at all, and deep WriteLease
+// fencing edge cases (expired lease, wrong owner/token/generation/fence)
+// are SQLite-only per this task's own test-layering decision — a fake test
+// that wants a write-lease rejection path is testing the wrong layer.
+func (r *RuntimeRepository) ValidateWriteLeaseFencing(_ context.Context, _ ports.JobLease, _ ports.WriteLeaseGrant) error {
+	return nil
+}
+
 func sameExecutionManifestContent(left, right runtime.ExecutionManifest) bool {
 	leftManifest, errLeft := json.Marshal(left.DependencyManifest)
 	rightManifest, errRight := json.Marshal(right.DependencyManifest)

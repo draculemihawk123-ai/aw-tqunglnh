@@ -728,16 +728,43 @@ func (c *CatalogRepository) GetEffectiveComponentPackAssignment(_ context.Contex
 // JobsRepository is an in-memory ports.JobsRepository — V3-01 gives this
 // concern its first real method (EnqueueJob), so
 // internal/app/catalog.RegisterRepository's own atomic Repository-row +
-// probe-job enqueue can be tested against the fake without sqlite.
+// probe-job enqueue can be tested against the fake without sqlite. leases/
+// completed are populated now (V4-05): this fake never itself implements a
+// ClaimJob-equivalent lifecycle (no fake worker pool exists), so a test
+// that needs ValidateActiveJob/CompleteJob to see a job as genuinely LEASED
+// calls the test-only SetActiveLease helper first — deep fencing edge
+// cases (expired lease, wrong owner/token, WriteLease mismatch) are
+// SQLite-only per this task's own test-layering decision; this fake only
+// needs to support the CAS/rollback/happy-path shapes.
 type JobsRepository struct {
-	jobs []ports.EnqueueJobRequest
+	jobs      []ports.EnqueueJobRequest
+	leases    map[string]ports.JobLease
+	completed map[string]bool
 }
 
 var _ ports.JobsRepository = (*JobsRepository)(nil)
 
 func (j *JobsRepository) clone() *JobsRepository {
 	jobs := append([]ports.EnqueueJobRequest(nil), j.jobs...)
-	return &JobsRepository{jobs: jobs}
+	leases := make(map[string]ports.JobLease, len(j.leases))
+	for k, v := range j.leases {
+		leases[k] = v
+	}
+	completed := make(map[string]bool, len(j.completed))
+	for k, v := range j.completed {
+		completed[k] = v
+	}
+	return &JobsRepository{jobs: jobs, leases: leases, completed: completed}
+}
+
+// SetActiveLease records lease as the currently active claim on jobID —
+// test-only setup standing in for a real ClaimJob call, since this fake
+// has no worker-pool lifecycle of its own.
+func (j *JobsRepository) SetActiveLease(jobID string, lease ports.JobLease) {
+	if j.leases == nil {
+		j.leases = map[string]ports.JobLease{}
+	}
+	j.leases[jobID] = lease
 }
 
 func (j *JobsRepository) EnqueueJob(_ context.Context, req ports.EnqueueJobRequest) (ports.DurableJob, error) {
@@ -765,6 +792,51 @@ func (j *JobsRepository) EnqueueJob(_ context.Context, req ports.EnqueueJobReque
 // for test assertions (mirroring EventsRepository.Items's own shape).
 func (j *JobsRepository) Items() []ports.EnqueueJobRequest {
 	return append([]ports.EnqueueJobRequest(nil), j.jobs...)
+}
+
+// ValidateActiveJob mirrors sqlite's jobsRepository.ValidateActiveJob
+// (V4-05): the job named by lease.JobID must exist with the given
+// (aggregateType, aggregateID), have an active lease matching
+// lease.Owner/lease.Token (set via SetActiveLease), and not already be
+// completed.
+func (j *JobsRepository) ValidateActiveJob(_ context.Context, lease ports.JobLease, aggregateType, aggregateID string) error {
+	var found *ports.EnqueueJobRequest
+	for i := range j.jobs {
+		if string(j.jobs[i].ID) == string(lease.JobID) {
+			found = &j.jobs[i]
+			break
+		}
+	}
+	if found == nil || found.AggregateType != aggregateType || found.AggregateID != aggregateID {
+		return fmt.Errorf("fake: %w: job %s", ports.ErrJobLeaseLost, lease.JobID)
+	}
+	if j.completed[string(lease.JobID)] {
+		return fmt.Errorf("fake: %w: job %s already completed", ports.ErrJobLeaseLost, lease.JobID)
+	}
+	active, ok := j.leases[string(lease.JobID)]
+	if !ok || active.Owner != lease.Owner || active.Token != lease.Token {
+		return fmt.Errorf("fake: %w: job %s has no matching active lease", ports.ErrJobLeaseLost, lease.JobID)
+	}
+	return nil
+}
+
+// CompleteJob mirrors sqlite's jobsRepository.CompleteJob (V4-05): same
+// fencing check as ValidateActiveJob (job's own AggregateType/AggregateID
+// is not re-checked here, matching the real adapter's own CompleteJob,
+// which fences purely on JobID/owner/token), then marks the job completed.
+func (j *JobsRepository) CompleteJob(_ context.Context, lease ports.JobLease) error {
+	if j.completed[string(lease.JobID)] {
+		return fmt.Errorf("fake: %w: job %s already completed", ports.ErrJobLeaseLost, lease.JobID)
+	}
+	active, ok := j.leases[string(lease.JobID)]
+	if !ok || active.Owner != lease.Owner || active.Token != lease.Token {
+		return fmt.Errorf("fake: %w: job %s has no matching active lease", ports.ErrJobLeaseLost, lease.JobID)
+	}
+	if j.completed == nil {
+		j.completed = map[string]bool{}
+	}
+	j.completed[string(lease.JobID)] = true
+	return nil
 }
 
 // HasActiveJobForAggregateIDs mirrors sqlite's

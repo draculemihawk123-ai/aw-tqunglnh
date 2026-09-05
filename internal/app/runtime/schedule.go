@@ -263,8 +263,15 @@ func ScheduleExecutableNodeRun(
 		if err != nil {
 			return fmt.Errorf("marshal execution profile decision input: %w", err)
 		}
+		// The DecisionArtifact ID is deterministic (keyed by NodeRunID), not
+		// ids.NewID() — a NodeRun is scheduled at most once (this whole
+		// function's own idempotent-early-return guards that), so this stays
+		// collision-free, and it lets a later reader (V4-05's own execution
+		// envelope, which needs this profile's own TimeoutSeconds to bound
+		// its execution deadline) look the artifact up directly by NodeRunID
+		// without needing a separate stored back-reference anywhere.
 		decision, err := runtimedomain.NewDecisionArtifact(
-			runtimedomain.DecisionArtifactID(ids.NewID()), run.ProjectID, "EXECUTION_PROFILE_V1", "v1",
+			runtimedomain.DecisionArtifactID(req.NodeRunID+"-execution-profile-v1"), run.ProjectID, "EXECUTION_PROFILE_V1", "v1",
 			decisionInput, canonicalProfileJSON, time.Now().UTC(),
 		)
 		if err != nil {
@@ -317,10 +324,19 @@ func ScheduleExecutableNodeRun(
 		if err != nil {
 			return fmt.Errorf("marshal %s job payload: %w", ExecuteNodeJobKind, err)
 		}
+		// AggregateType/AggregateID are the ExecutionAttempt itself, not the
+		// NodeRun — correction found during V4-05 scoping review: a NodeRun
+		// keys ONE EXECUTE_NODE job only as long as it never has more than
+		// one Attempt, but V4-06's own technical retry policy creates a NEW
+		// Attempt (same NodeRun, next AttemptNumber) after a retryable
+		// failure. Keying this job's own fencing identity to NodeRunID would
+		// let a stale job/lease from a PRIOR attempt appear to authorize a
+		// later one — the exact ambient-authority gap V4-05's own fenced
+		// finalize (schedule.go's sibling, finalize.go) exists to close.
 		job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
 			ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: ExecuteNodeJobKind,
-			AggregateType: "NodeRun", AggregateID: req.NodeRunID, Payload: jobPayload,
-			MaxClaims: defaultExecuteNodeJobMaxClaims, IdempotencyKey: "execute-" + req.NodeRunID,
+			AggregateType: "ExecutionAttempt", AggregateID: attemptID, Payload: jobPayload,
+			MaxClaims: defaultExecuteNodeJobMaxClaims, IdempotencyKey: "execute-" + attemptID,
 		})
 		if err != nil {
 			return err

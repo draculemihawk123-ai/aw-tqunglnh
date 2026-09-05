@@ -232,10 +232,30 @@ RETURNING lease_until`, modifier, lease.JobID, lease.Owner, lease.Token).Scan(&l
 }
 
 func (s *Store) CompleteJob(ctx context.Context, lease ports.JobLease) error {
+	return completeJobTx(ctx, s.db, lease)
+}
+
+// CompleteJob implements ports.JobsRepository (V4-05): the Tx-composable
+// twin of Store.CompleteJob above, for FinalizeExecutionAttempt's own
+// fenced finalize — see that interface method's own doc comment for why.
+func (r jobsRepository) CompleteJob(ctx context.Context, lease ports.JobLease) error {
+	return completeJobTx(ctx, r.tx, lease)
+}
+
+// completeJobTx is Store.CompleteJob/jobsRepository.CompleteJob's shared
+// implementation — sqlExecContexter is satisfied by both *sql.DB (Store's
+// own always-separate transaction) and *sql.Tx (a caller's already-open
+// one), the same "one exec function, two callers" extraction
+// enqueueJobTx already established above.
+type sqlExecContexter interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func completeJobTx(ctx context.Context, q sqlExecContexter, lease ports.JobLease) error {
 	if err := validateJobLease(lease); err != nil {
 		return err
 	}
-	result, err := s.db.ExecContext(ctx, `
+	result, err := q.ExecContext(ctx, `
 UPDATE durable_jobs
 SET state = 'SUCCEEDED',
     lease_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
@@ -256,6 +276,32 @@ WHERE id = ?
 	}
 	if affected != 1 {
 		return ports.ErrJobLeaseLost
+	}
+	return nil
+}
+
+// ValidateActiveJob implements ports.JobsRepository (V4-05): see that
+// interface method's own doc comment for the full contract — mirrors
+// workflow_store.go's own validateActiveFinalizationJob, generalized to an
+// arbitrary (aggregateType, aggregateID) rather than hardcoding
+// AggregateType='WorkflowRun'.
+func (r jobsRepository) ValidateActiveJob(ctx context.Context, lease ports.JobLease, aggregateType, aggregateID string) error {
+	if err := validateJobLease(lease); err != nil {
+		return err
+	}
+	var valid int
+	err := r.tx.QueryRowContext(ctx, `
+SELECT 1 FROM durable_jobs
+WHERE id = ? AND aggregate_type = ? AND aggregate_id = ?
+  AND state = 'LEASED' AND lease_owner = ? AND lease_token = ?
+  AND julianday(lease_until) > julianday('now')`,
+		lease.JobID, aggregateType, aggregateID, lease.Owner, lease.Token,
+	).Scan(&valid)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.ErrJobLeaseLost
+	}
+	if err != nil {
+		return fmt.Errorf("validate active job %s: %w", lease.JobID, err)
 	}
 	return nil
 }

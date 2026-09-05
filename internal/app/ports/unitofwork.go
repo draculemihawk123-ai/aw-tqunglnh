@@ -369,6 +369,43 @@ type RuntimeRepository interface {
 	// already enforces this before a caller ever reaches this method.
 	CreateExecutionAttempt(ctx context.Context, attempt runtime.ExecutionAttempt) (runtime.ExecutionAttempt, error)
 
+	// GetExecutionAttempt is populated now (V4-05,
+	// docs/design/06-v4-runtime-engine.md): a NodeSchedulingHandler-adjacent
+	// worker (ExecuteNodeHandler) needs to re-load the exact Attempt it is
+	// driving — its current State/Version — before transitioning or fenced-
+	// finalizing it, composed inside the same Tx as everything else that
+	// transition writes. Returns ErrPersistenceNotFound for an unknown
+	// AttemptID.
+	GetExecutionAttempt(ctx context.Context, id string) (runtime.ExecutionAttempt, error)
+
+	// TransitionExecutionAttempt is populated now (V4-05): the CAS that
+	// moves an ExecutionAttempt from one State/Version to a NextState —
+	// QUEUED->RUNNING (ExecuteNodeHandler's own unfenced claim-time
+	// transition; the job's own already-valid LEASED state at the moment
+	// workerpool.Pool invoked the handler is fencing enough for this one)
+	// or RUNNING->{SUCCEEDED,FAILED,TIMED_OUT,CANCELLED} (the terminal half
+	// of FinalizeExecutionAttempt's own fenced finalize, composed alongside
+	// the JobLease/WriteLease fencing checks that method owns — this method
+	// itself performs no fencing, exactly like TransitionNodeRun performs
+	// none; a caller assembling a fenced transition is responsible for
+	// validating fencing itself, before or alongside calling this). A stale
+	// caller (wrong ExpectedState/ExpectedVersion) gets ErrOptimisticConflict,
+	// never a silent overwrite. TerminationReason is required exactly when
+	// NextState is terminal (never for QUEUED->RUNNING).
+	TransitionExecutionAttempt(ctx context.Context, req TransitionExecutionAttemptRequest) (runtime.ExecutionAttempt, error)
+
+	// ValidateWriteLeaseFencing is populated now (V4-05): a read-only check
+	// that grant is still the authoritative WriteLease for its own
+	// (RepositoryWorkspaceID, Generation) — same fence token, same holder
+	// JobLease (owner/token), same holder AttemptID, lease/job both still
+	// unexpired — composed inside FinalizeExecutionAttempt's own transaction
+	// so GC-INV-17's "kết quả worker chỉ được accept khi... mọi WriteLease
+	// liên quan còn đúng fencing token" is checked at the exact moment the
+	// Attempt's own terminal state is about to be accepted, not as an
+	// earlier, separately-racing pre-check. Returns ErrWriteLeaseLost if
+	// grant no longer validates.
+	ValidateWriteLeaseFencing(ctx context.Context, lease JobLease, grant WriteLeaseGrant) error
+
 	// CreateExecutionManifest inserts the one immutable ExecutionManifest a
 	// WorkflowRun ever has (GC-INV-06). manifest.RunID must name a
 	// WorkflowRun that exists, and manifest.WorkflowVersionID's own
@@ -484,6 +521,16 @@ type ScheduleNodeRunRequest struct {
 	ManifestRevision     uint64
 }
 
+// TransitionExecutionAttemptRequest is the CAS request for
+// RuntimeRepository.TransitionExecutionAttempt (V4-05).
+type TransitionExecutionAttemptRequest struct {
+	AttemptID         string
+	ExpectedState     runtime.ExecutionAttemptState
+	ExpectedVersion   uint64
+	NextState         runtime.ExecutionAttemptState
+	TerminationReason runtime.TerminationReason
+}
+
 // JobsRepository gains its first real method now (V3-01,
 // docs/design/05-v3-project-workspace.md): EnqueueJob, composed inside the
 // same transaction as RegisterRepository's own Repository-row insert, so
@@ -493,11 +540,14 @@ type ScheduleNodeRunRequest struct {
 // (docs/architecture/04-go-core-spec.md §4.1) is impossible to satisfy
 // with the pre-existing sqlite.Store.EnqueueJob alone, since that method
 // always opens (and commits) its own separate transaction. ClaimJob/
-// HeartbeatJob/CompleteJob/AcquireWriteLeases stay outside this interface
-// (Store's existing JobQueue/WriteLeaseManager cover them) until a later
-// task genuinely needs one of those composed inside a shared Tx too — the
-// same "don't add speculatively" discipline every other placeholder
-// concern here follows.
+// HeartbeatJob/AcquireWriteLeases stay outside this interface (Store's
+// existing JobQueue/WriteLeaseManager cover them) until a later task
+// genuinely needs one of those composed inside a shared Tx too —
+// ValidateActiveJob/CompleteJob are that later task (V4-05,
+// FinalizeExecutionAttempt's own fenced finalize, GC-INV-17/18): they
+// needed to be composed alongside the SAME transaction's Attempt CAS and
+// domain event, which the pre-existing flat Store.CompleteJob (its own
+// always-separate transaction) cannot satisfy.
 type JobsRepository interface {
 	EnqueueJob(ctx context.Context, req EnqueueJobRequest) (DurableJob, error)
 
@@ -517,6 +567,24 @@ type JobsRepository interface {
 	// RepositoryWorkspace IDs to cover both. Returns false, nil for an
 	// empty aggregateIDs.
 	HasActiveJobForAggregateIDs(ctx context.Context, aggregateIDs []string) (bool, error)
+
+	// ValidateActiveJob is populated now (V4-05): a read-only fencing check
+	// that lease still names a job LEASED (state, owner, token, unexpired
+	// lease_until) with the exact given (aggregateType, aggregateID) — the
+	// GC-INV-17/18 "worker's proposed result is only accepted when its
+	// JobLease still has the correct fencing token" check, run at the START
+	// of FinalizeExecutionAttempt's own transaction so a lease that was
+	// already lost never gets as far as touching the Attempt's own row at
+	// all. Returns ErrJobLeaseLost if lease no longer validates.
+	ValidateActiveJob(ctx context.Context, lease JobLease, aggregateType, aggregateID string) error
+
+	// CompleteJob is populated now (V4-05): the Tx-composable counterpart
+	// of Store.CompleteJob (JobQueue), for FinalizeExecutionAttempt's own
+	// fenced finalize — see this interface's own doc comment for why this
+	// needed to move here rather than staying flat. Same fencing semantics
+	// as the flat method: state LEASED, owner/token match, lease_until
+	// still unexpired; ErrJobLeaseLost otherwise.
+	CompleteJob(ctx context.Context, lease JobLease) error
 }
 
 // EventsRepository appends a domain event inside the current transaction.

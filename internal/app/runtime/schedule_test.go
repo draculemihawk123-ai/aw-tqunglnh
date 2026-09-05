@@ -282,8 +282,11 @@ func TestScheduleExecutableNodeRun_Agent_SchedulesAttemptAndJob(t *testing.T) {
 	if executeJob == nil {
 		t.Fatalf("no %s job found among %+v", runtime.ExecuteNodeJobKind, jobs)
 	}
-	if executeJob.IdempotencyKey != "execute-"+nodeRunID {
-		t.Fatalf("EXECUTE_NODE job idempotency key = %s, want execute-%s", executeJob.IdempotencyKey, nodeRunID)
+	if executeJob.IdempotencyKey != "execute-"+result.AttemptID {
+		t.Fatalf("EXECUTE_NODE job idempotency key = %s, want execute-%s", executeJob.IdempotencyKey, result.AttemptID)
+	}
+	if executeJob.AggregateType != "ExecutionAttempt" || executeJob.AggregateID != result.AttemptID {
+		t.Fatalf("EXECUTE_NODE job aggregate = (%s, %s), want (ExecutionAttempt, %s)", executeJob.AggregateType, executeJob.AggregateID, result.AttemptID)
 	}
 
 	events := uow.Snapshot.Events().(*fake.EventsRepository).Items()
