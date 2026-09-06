@@ -75,15 +75,51 @@ type RunNodeStateSummary struct {
 }
 
 // computeRunNodeStateSummary loads every NodeRun for runID and classifies
-// it. document is needed only to recognize an END-type node among the
+// only the LATEST activation of each (NodeKey, BranchTokenID) lineage —
+// document is needed only to recognize an END-type node among the
 // SUCCEEDED ones — ListNodeRunsForRun itself is document-agnostic.
+//
+// A lineage's own earlier activations (lower ActivationSequence, same
+// NodeKey+BranchTokenID) are superseded history, never classified: V4-14's
+// own real end-to-end run through a real workerpool.Pool caught this
+// function counting a BLOCKED NodeRun toward BlockedCount even after
+// V4-12A's own reactivateBlockedNodeRunTx had already superseded it with a
+// fresh NodeRun that went on to SUCCEEDED and reached a real END — no
+// Run that ever passed through scope-expansion BLOCKED could ever reach
+// VERIFYING, since BlockedCount never dropped back to zero. BranchTokenID
+// is part of the lineage key, not just NodeKey, because two FORK branches
+// can independently dispatch the identical NodeKey (a cycle inside one
+// branch, say) — a SUCCEEDED activation on one branch's own token must
+// never supersede a BLOCKED activation on a SIBLING branch's own token for
+// the same NodeKey. The latest activation's own state is classified
+// whatever it is — live keeps the Run going, BLOCKED again still blocks,
+// SUCCEEDED reaching END still completes, FAILED still aggregates — this
+// function makes no assumption that a later activation must itself be
+// terminal.
 func computeRunNodeStateSummary(ctx context.Context, tx ports.Tx, runID string, document workflow.WorkflowDocument) (RunNodeStateSummary, error) {
 	nodeRuns, err := tx.Runtime().ListNodeRunsForRun(ctx, runID)
 	if err != nil {
 		return RunNodeStateSummary{}, err
 	}
-	var summary RunNodeStateSummary
+
+	type lineageKey struct {
+		nodeKey       string
+		branchTokenID string
+	}
+	latest := make(map[lineageKey]runtimedomain.NodeRun, len(nodeRuns))
 	for _, nodeRun := range nodeRuns {
+		var branchTokenID string
+		if nodeRun.BranchTokenID != nil {
+			branchTokenID = string(*nodeRun.BranchTokenID)
+		}
+		key := lineageKey{nodeKey: nodeRun.NodeKey, branchTokenID: branchTokenID}
+		if current, ok := latest[key]; !ok || nodeRun.ActivationSequence > current.ActivationSequence {
+			latest[key] = nodeRun
+		}
+	}
+
+	var summary RunNodeStateSummary
+	for _, nodeRun := range latest {
 		switch nodeRun.State {
 		case runtimedomain.NodeRunPending, runtimedomain.NodeRunReady, runtimedomain.NodeRunQueued,
 			runtimedomain.NodeRunRunning, runtimedomain.NodeRunWaiting:

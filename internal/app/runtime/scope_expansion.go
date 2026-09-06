@@ -413,28 +413,19 @@ func reactivateBlockedNodeRunTx(
 	if _, err := tx.Runtime().CreateNodeRun(ctx, reactivated); err != nil {
 		return err
 	}
-
-	// The reactivated NodeRun needs its own DecisionArtifact under its own
-	// deterministic ID — ExecuteNodeHandler's own loadExecutionProfile
-	// looks it up by NodeRunID, and the reactivated activation has a
-	// DIFFERENT NodeRunID than the one ScheduleExecutableNodeRun originally
-	// recorded a profile decision for.
-	originalDecision, err := tx.Runtime().GetDecisionArtifact(ctx, string(origin.NodeRunID)+"-execution-profile-v1")
-	if err == nil {
-		copiedDecision, decisionErr := runtimedomain.NewDecisionArtifact(
-			runtimedomain.DecisionArtifactID(reactivatedID+"-execution-profile-v1"), run.ProjectID, originalDecision.Kind,
-			originalDecision.PolicyVersion, originalDecision.Input, originalDecision.Result, now,
-		)
-		if decisionErr != nil {
-			return decisionErr
-		}
-		if _, err := tx.Runtime().RecordDecisionArtifact(ctx, copiedDecision); err != nil {
-			return err
-		}
-	} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
-		return err
-	}
-
+	// Deliberately no DecisionArtifact copy here: the SCHEDULE_NODE_RUN job
+	// enqueued below runs the real ScheduleExecutableNodeRun, which records
+	// its own EXECUTION_PROFILE_V1 DecisionArtifact under this exact
+	// deterministic ID (NodeRunID+"-execution-profile-v1", schedule.go) —
+	// V4-14's own real end-to-end run through a real workerpool.Pool caught
+	// an earlier version of this function pre-writing that SAME artifact
+	// ID here "for ExecuteNodeHandler's own loadExecutionProfile", which
+	// collided with ScheduleExecutableNodeRun's own real write
+	// (ErrPersistenceAlreadyExists) every single time, permanently
+	// stranding the reactivated NodeRun at PENDING. The reactivated
+	// NodeRun always goes through a REAL SCHEDULE_NODE_RUN dispatch (this
+	// is not a shortcut path straight to EXECUTE_NODE), so nothing else
+	// needs the profile decision to exist before that job runs.
 	nextReactivated := reactivatedID
 	if _, err := tx.Runtime().TransitionScopeExpansionOrigin(ctx, ports.TransitionScopeExpansionOriginRequest{
 		AttemptID: string(origin.AttemptID), ExpectedVersion: origin.Version,

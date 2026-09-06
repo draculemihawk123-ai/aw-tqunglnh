@@ -1,0 +1,378 @@
+[
+  {
+    "aggregateType": "Repository",
+    "aggregateId": "repository-1",
+    "sequence": 1,
+    "eventType": "RepositoryRegistered",
+    "schemaVersion": 1,
+    "payload": "{\"name\":\"repository-1\",\"probeJobId\":\"id-1\",\"projectId\":\"re-project\",\"repositoryId\":\"repository-1\",\"status\":\"REGISTERING\"}"
+  },
+  {
+    "aggregateType": "Repository",
+    "aggregateId": "repository-2",
+    "sequence": 1,
+    "eventType": "RepositoryRegistered",
+    "schemaVersion": 1,
+    "payload": "{\"name\":\"repository-2\",\"probeJobId\":\"id-2\",\"projectId\":\"re-project\",\"repositoryId\":\"repository-2\",\"status\":\"REGISTERING\"}"
+  },
+  {
+    "aggregateType": "WorkItem",
+    "aggregateId": "workitem-1",
+    "sequence": 1,
+    "eventType": "RootWorkItemCreated",
+    "schemaVersion": 1,
+    "payload": "{\"familyId\":\"id-3\",\"projectId\":\"re-project\",\"scopeCount\":1,\"title\":\"Run A golden path\",\"workItemId\":\"workitem-1\",\"workspaceSetId\":\"id-4\"}"
+  },
+  {
+    "aggregateType": "WorkflowRun",
+    "aggregateId": "workflowrun-1",
+    "sequence": 1,
+    "eventType": "WorkflowRunStarted",
+    "schemaVersion": 1,
+    "payload": "{\"nodeKey\":\"start\",\"nodeRunId\":\"noderun-1\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-1",
+    "sequence": 2,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"gate\",\"nextNodeRunId\":\"noderun-2\",\"nodeKey\":\"start\",\"nodeRunId\":\"noderun-1\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"next\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-2",
+    "sequence": 2,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"implement\",\"nextNodeRunId\":\"noderun-3\",\"nodeKey\":\"gate\",\"nodeRunId\":\"noderun-2\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"continue\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-3",
+    "sequence": 2,
+    "eventType": "NODE_SCHEDULED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-1\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-3\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "ExecutionAttempt",
+    "aggregateId": "executionattempt-1",
+    "sequence": 3,
+    "eventType": "EXECUTION_ATTEMPT_FINALIZED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-1\",\"jobId\":\"\\u003cjob\\u003e\",\"nextState\":\"SUCCEEDED\",\"nodeRunId\":\"noderun-3\",\"runId\":\"workflowrun-1\",\"terminationReason\":\"COMPLETED\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-3",
+    "sequence": 4,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"implement\",\"nextNodeRunId\":\"noderun-4\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-3\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"rework\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-4",
+    "sequence": 2,
+    "eventType": "NODE_SCHEDULED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-2\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-4\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "ExecutionAttempt",
+    "aggregateId": "executionattempt-2",
+    "sequence": 3,
+    "eventType": "EXECUTION_ATTEMPT_FINALIZED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-2\",\"jobId\":\"\\u003cjob\\u003e\",\"nextState\":\"SUCCEEDED\",\"nodeRunId\":\"noderun-4\",\"runId\":\"workflowrun-1\",\"terminationReason\":\"COMPLETED\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-4",
+    "sequence": 4,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"wait_node\",\"nextNodeRunId\":\"noderun-5\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-4\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"done\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-5",
+    "sequence": 2,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"approval_node\",\"nextNodeRunId\":\"noderun-10\",\"nodeKey\":\"wait_node\",\"nodeRunId\":\"noderun-5\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"signaled\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "WorkItem",
+    "aggregateId": "workitem-2",
+    "sequence": 1,
+    "eventType": "RootWorkItemCreated",
+    "schemaVersion": 1,
+    "payload": "{\"familyId\":\"id-5\",\"projectId\":\"re-project\",\"scopeCount\":1,\"title\":\"Run B cancellation path\",\"workItemId\":\"workitem-2\",\"workspaceSetId\":\"id-6\"}"
+  },
+  {
+    "aggregateType": "WorkflowRun",
+    "aggregateId": "workflowrun-2",
+    "sequence": 1,
+    "eventType": "WorkflowRunStarted",
+    "schemaVersion": 1,
+    "payload": "{\"nodeKey\":\"start\",\"nodeRunId\":\"noderun-6\",\"runId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-6",
+    "sequence": 2,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"gate\",\"nextNodeRunId\":\"noderun-7\",\"nodeKey\":\"start\",\"nodeRunId\":\"noderun-6\",\"runId\":\"workflowrun-2\",\"selectedOutcome\":\"next\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-7",
+    "sequence": 2,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"implement\",\"nextNodeRunId\":\"noderun-8\",\"nodeKey\":\"gate\",\"nodeRunId\":\"noderun-7\",\"runId\":\"workflowrun-2\",\"selectedOutcome\":\"continue\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-8",
+    "sequence": 2,
+    "eventType": "NODE_SCHEDULED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-3\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-8\",\"runId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "ExecutionAttempt",
+    "aggregateId": "executionattempt-3",
+    "sequence": 3,
+    "eventType": "EXECUTION_ATTEMPT_FINALIZED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-3\",\"jobId\":\"\\u003cjob\\u003e\",\"nextState\":\"SUCCEEDED\",\"nodeRunId\":\"noderun-8\",\"runId\":\"workflowrun-2\",\"terminationReason\":\"COMPLETED\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-8",
+    "sequence": 4,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"implement\",\"nextNodeRunId\":\"noderun-9\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-8\",\"runId\":\"workflowrun-2\",\"selectedOutcome\":\"rework\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-9",
+    "sequence": 2,
+    "eventType": "NODE_SCHEDULED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-4\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-9\",\"runId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "ExecutionAttempt",
+    "aggregateId": "executionattempt-4",
+    "sequence": 3,
+    "eventType": "EXECUTION_ATTEMPT_FINALIZED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-4\",\"jobId\":\"\\u003cjob\\u003e\",\"nextState\":\"SUCCEEDED\",\"nodeRunId\":\"noderun-9\",\"runId\":\"workflowrun-2\",\"terminationReason\":\"COMPLETED\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-9",
+    "sequence": 4,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"wait_node\",\"nextNodeRunId\":\"id-7\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-9\",\"runId\":\"workflowrun-2\",\"selectedOutcome\":\"done\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-10",
+    "sequence": 2,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"fork_node\",\"nextNodeRunId\":\"noderun-11\",\"nodeKey\":\"approval_node\",\"nodeRunId\":\"noderun-10\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"approved\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-11",
+    "sequence": 1,
+    "eventType": "NODE_FORKED",
+    "schemaVersion": 1,
+    "payload": "{\"branches\":[{\"branchKey\":\"branch_a\",\"branchTokenId\":\"id-8\",\"nodeKey\":\"test_a\",\"nodeRunId\":\"noderun-12\"},{\"branchKey\":\"branch_b\",\"branchTokenId\":\"id-9\",\"nodeKey\":\"gate_b\",\"nodeRunId\":\"noderun-13\"}],\"forkKey\":\"fork_node\",\"forkNodeRunId\":\"noderun-11\",\"jobId\":\"\\u003cjob\\u003e\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-12",
+    "sequence": 2,
+    "eventType": "NODE_SCHEDULED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-6\",\"executionProfileHash\":\"sha256:0273a806ae151e2ea2d02677b7a6bfc388869a391aa4a1c19df510ea93c2f9ab\",\"executorKind\":\"COMMAND\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"test_a\",\"nodeRunId\":\"noderun-12\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-13",
+    "sequence": 2,
+    "eventType": "NODE_SCHEDULED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-5\",\"executionProfileHash\":\"sha256:b5c5b0b0ddc9258238adc41bae894e7d8ebb1270659fee52c5c19aeed8bef0d3\",\"executorKind\":\"MACHINE_GATE\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"gate_b\",\"nodeRunId\":\"noderun-13\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "ExecutionAttempt",
+    "aggregateId": "executionattempt-5",
+    "sequence": 3,
+    "eventType": "EXECUTION_ATTEMPT_FINALIZED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-5\",\"jobId\":\"\\u003cjob\\u003e\",\"nextState\":\"SUCCEEDED\",\"nodeRunId\":\"noderun-13\",\"runId\":\"workflowrun-1\",\"terminationReason\":\"COMPLETED\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-13",
+    "sequence": 4,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"join_node\",\"nextNodeRunId\":\"\",\"nodeKey\":\"gate_b\",\"nodeRunId\":\"noderun-13\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"passed\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "ExecutionAttempt",
+    "aggregateId": "executionattempt-6",
+    "sequence": 1,
+    "eventType": "EXECUTION_ATTEMPT_TERMINATED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-6\",\"nextState\":\"LOST\",\"reason\":\"LEASE_LOST\"}"
+  },
+  {
+    "aggregateType": "ExecutionAttempt",
+    "aggregateId": "executionattempt-7",
+    "sequence": 3,
+    "eventType": "EXECUTION_ATTEMPT_FINALIZED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-7\",\"jobId\":\"\\u003cjob\\u003e\",\"nextState\":\"SUCCEEDED\",\"nodeRunId\":\"noderun-12\",\"runId\":\"workflowrun-1\",\"terminationReason\":\"COMPLETED\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-12",
+    "sequence": 4,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"join_node\",\"nextNodeRunId\":\"\",\"nodeKey\":\"test_a\",\"nodeRunId\":\"noderun-12\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"passed\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-14",
+    "sequence": 1,
+    "eventType": "JOIN_DECIDED",
+    "schemaVersion": 1,
+    "payload": "{\"activeCount\":0,\"cancelledCount\":0,\"failedCount\":0,\"forkNodeRunId\":\"noderun-11\",\"jobId\":\"\\u003cjob\\u003e\",\"joinNodeKey\":\"join_node\",\"joinNodeRunId\":\"noderun-14\",\"mode\":\"ALL\",\"runId\":\"workflowrun-1\",\"succeededCount\":2,\"verdict\":\"SUCCEEDED\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-14",
+    "sequence": 2,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"scope_node\",\"nextNodeRunId\":\"noderun-15\",\"nodeKey\":\"join_node\",\"nodeRunId\":\"noderun-14\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"joined\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-15",
+    "sequence": 2,
+    "eventType": "NODE_SCHEDULED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-8\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"scope_node\",\"nodeRunId\":\"noderun-15\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "ExecutionAttempt",
+    "aggregateId": "executionattempt-8",
+    "sequence": 3,
+    "eventType": "EXECUTION_ATTEMPT_FINALIZED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-8\",\"jobId\":\"\\u003cjob\\u003e\",\"nextState\":\"BLOCKED\",\"nodeRunId\":\"noderun-15\",\"runId\":\"workflowrun-1\",\"terminationReason\":\"SCOPE_EXPANSION_REQUIRED\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "WorkItemBlocker",
+    "aggregateId": "workitemblocker-1",
+    "sequence": 1,
+    "eventType": "WORK_ITEM_BLOCKED",
+    "schemaVersion": 1,
+    "payload": "{\"blockerId\":\"workitemblocker-1\",\"blockerType\":\"SCOPE_EXPANSION_REQUIRED\",\"jobId\":\"\\u003cjob\\u003e\",\"sourceRunId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "ScopeExpansionRequest",
+    "aggregateId": "scopeexpansionrequest-1",
+    "sequence": 1,
+    "eventType": "ScopeExpansionRequested",
+    "schemaVersion": 1,
+    "payload": "{\"familyId\":\"id-3\",\"grantCount\":1,\"projectId\":\"re-project\",\"referencedWorkItemId\":\"workitem-1\",\"requestId\":\"scopeexpansionrequest-1\"}"
+  },
+  {
+    "aggregateType": "ScopeExpansionApproval",
+    "aggregateId": "scopeexpansionapproval-1",
+    "sequence": 1,
+    "eventType": "ScopeExpansionApproved",
+    "schemaVersion": 1,
+    "payload": "{\"approvedBy\":\"operator-1\",\"approvedGrants\":[{\"access\":\"WRITE\",\"repositoryId\":\"repository-2\"}],\"familyId\":\"id-3\",\"newScopeVersion\":2,\"projectId\":\"re-project\",\"referencedWorkItemId\":\"workitem-1\",\"requestId\":\"scopeexpansionrequest-1\"}"
+  },
+  {
+    "aggregateType": "WorkItemBlocker",
+    "aggregateId": "workitemblocker-1",
+    "sequence": 2,
+    "eventType": "WORK_ITEM_BLOCKER_RESOLVED",
+    "schemaVersion": 1,
+    "payload": "{\"blockerId\":\"workitemblocker-1\",\"blockerType\":\"SCOPE_EXPANSION_REQUIRED\",\"newWorkItemStatus\":\"ACTIVE\",\"resolutionMode\":\"RESOLVED\",\"resolvedBy\":\"system:runtime\",\"workItemId\":\"workitem-1\",\"workItemUnblocked\":true}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-16",
+    "sequence": 2,
+    "eventType": "NODE_SCHEDULED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-9\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"scope_node\",\"nodeRunId\":\"noderun-16\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "ExecutionAttempt",
+    "aggregateId": "executionattempt-9",
+    "sequence": 3,
+    "eventType": "EXECUTION_ATTEMPT_FINALIZED",
+    "schemaVersion": 1,
+    "payload": "{\"attemptId\":\"executionattempt-9\",\"jobId\":\"\\u003cjob\\u003e\",\"nextState\":\"SUCCEEDED\",\"nodeRunId\":\"noderun-16\",\"runId\":\"workflowrun-1\",\"terminationReason\":\"COMPLETED\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "NodeRun",
+    "aggregateId": "noderun-16",
+    "sequence": 4,
+    "eventType": "NODE_ROUTED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"nextNodeKey\":\"end\",\"nextNodeRunId\":\"id-10\",\"nodeKey\":\"scope_node\",\"nodeRunId\":\"noderun-16\",\"runId\":\"workflowrun-1\",\"selectedOutcome\":\"done\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "WorkflowRun",
+    "aggregateId": "workflowrun-1",
+    "sequence": 2,
+    "eventType": "RUN_COMPLETION_REQUESTED",
+    "schemaVersion": 1,
+    "payload": "{\"endNodeKey\":\"end\",\"endNodeRunId\":\"id-10\",\"jobId\":\"\\u003cjob\\u003e\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+  },
+  {
+    "aggregateType": "WorkflowRun",
+    "aggregateId": "workflowrun-2",
+    "sequence": 2,
+    "eventType": "RUN_CANCELLATION_REQUESTED",
+    "schemaVersion": 1,
+    "payload": "{\"actor\":\"operator-1\",\"reason\":\"runtime engine gate: cancel mid-flight\",\"runId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "WorkflowRun",
+    "aggregateId": "workflowrun-2",
+    "sequence": 3,
+    "eventType": "RUN_CANCELLED",
+    "schemaVersion": 1,
+    "payload": "{\"jobId\":\"\\u003cjob\\u003e\",\"runId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
+  },
+  {
+    "aggregateType": "WorkItemBlocker",
+    "aggregateId": "workitemblocker-2",
+    "sequence": 1,
+    "eventType": "WORK_ITEM_BLOCKED",
+    "schemaVersion": 1,
+    "payload": "{\"blockerId\":\"workitemblocker-2\",\"blockerType\":\"RUN_CANCELLED\",\"jobId\":\"\\u003cjob\\u003e\",\"sourceRunId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
+  }
+]

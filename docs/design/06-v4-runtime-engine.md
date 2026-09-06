@@ -951,5 +951,59 @@
   fresh-Start) chỉ cần chứng minh deterministic bằng fake state ở đây — provider-level fresh execution
   thật (V5-13's own three-phase flow) thuộc gate V5, ngoài phạm vi task này.
 - **Verify:** deterministic event/activation golden, race test, full test/vet Windows/Linux.
+  **Thiết kế golden (chốt với user trước khi code):** hybrid, không chọn thuần một hướng — (1)
+  self-comparison cho `FinalDomainResult` (semantic business outcome: trạng thái cuối Run/WorkItem,
+  outcome theo NodeKey+Iteration, shared state, manifest revision, FORK/JOIN verdict, blocker còn mở —
+  KHÔNG đưa Attempt count/recovery event vào, vì crash hợp lệ tạo thêm Attempt) giữa bản chạy sạch và
+  bản crash+restart của CÙNG fixture/decisions; (2) checked-in golden byte-exact cho `OperationalTrace`
+  của TỪNG kịch bản riêng (clean và crash-recovery không bao giờ so với nhau — bản crash có thật
+  LOST/retry/recovery-decision event bản sạch không có). Canonicalize chỉ theo allow-list đóng: alias
+  ổn định cho mọi ID sinh ra (theo AggregateType/AggregateID, cộng UUID rời rạc như `jobId` không phải
+  aggregate) và bỏ timestamp — không bao giờ xóa event/sort lại journal/bỏ field chỉ vì hai run khác
+  nhau. Golden chỉ regenerate bằng lệnh tường minh
+  (`AGENTKIT_REGENERATE_RUNTIME_ENGINE_GOLDEN=1`), CI không tự cập nhật.
+  **Cấu trúc fixture (chốt với user):** hai Run riêng trên hai WorkItem/TaskFamily khác nhau (không
+  chung một Run — CANCELLED và VERIFYING loại trừ nhau) dưới CÙNG Project/store/`workerpool.Pool`/một
+  lần restart có chủ ý. Run A đi hết "golden path" (technical retry, rework một vòng, WAIT, APPROVAL,
+  FORK/JOIN, scope-expansion BLOCKED→reactivation) tới VERIFYING thật (không gọi là COMPLETED —
+  completion authority thật thuộc V5-11). Run B dừng tại một barrier tất định (wait_node WAITING thật,
+  không sleep) rồi bị CancelRun thật, xác nhận Run A hoàn toàn không bị ảnh hưởng.
 - **Hoàn thành khi:** same input/decisions tạo same domain result trừ IDs/timestamps cho phép.
+  Đã triển khai (`internal/integration/runtimeengine_test.go`,
+  `internal/adapters/sqlite/{event_queries,runtime_engine_queries}.go`): một `WorkflowDocument` phủ đủ
+  cả mười `workflow.NodeType`, chạy qua real `internal/app/runtime` handlers dưới một `workerpool.Pool`
+  thật, một `*sqlite.Store` thật — scripted stub workspace provider (không real Git, khác
+  `workplane_test.go`'s own gitworktree — phạm vi V4 là node/job orchestration, không phải
+  provisioning). Inject crash: `scriptedNodeExecutor`'s own `blockNodeKey` chặn một fork branch
+  ("test_a") tại `<-ctx.Done()` thay vì trả kết quả, `cancelPool()` khiến `ExecuteNodeHandler` để
+  Attempt RUNNING không finalize (đúng "cancel, không phải deadline" nhánh đã có sẵn) — một orphaned
+  attempt thật, chờ lease hết hạn thật rồi `store.Close()`/`sqlite.Open()` lại,
+  `runtime.StartupRecoveryScan` + V4-13's own `RecoveryReaperHandler` hoàn tất retry thật dưới pool thứ
+  hai. **Tự phát hiện 3 bug thật khi viết test end-to-end (chưa test nào trước đây từng cho một Run đã
+  scope-expansion-reactivate đi tiếp thật tới END):**
+  1. `reactivateBlockedNodeRunTx` (V4-12A, đã merge) copy `DecisionArtifact` cũ sang ID tất định
+     `<reactivatedID>-execution-profile-v1` "cho ExecuteNodeHandler" — nhưng NGAY SAU ĐÓ vẫn enqueue
+     `SCHEDULE_NODE_RUN` thật, và `ScheduleExecutableNodeRun` ghi lại ĐÚNG ID đó lần nữa → đụng UNIQUE
+     constraint mãi mãi, NodeRun reactivate kẹt PENDING vĩnh viễn. Sửa: bỏ hẳn bước copy — job thật
+     luôn là writer duy nhất, không cần pre-fill.
+  2. `NodeRun.ReactivationReason` (cột `reactivation_reason`, migration 0022, V4-12A) có trong schema
+     và trong domain struct nhưng CHƯA BAO GIỜ được ghi/đọc ở tầng sqlite (`createNodeRunTx`/
+     `loadNodeRunByID` thiếu cột) — mọi NodeRun reactivate đọc lại `ReactivationReason=""`, không phân
+     biệt được "lần đầu BLOCKED" với "sau khi reactivate". Sửa: thêm cột vào cả INSERT và SELECT.
+  3. `reconcileRunTerminalityTx`'s own `computeRunNodeStateSummary` đếm CẢ NodeRun BLOCKED đã
+     reactivate xong (lịch sử) vào `BlockedCount` — `case summary.BlockedCount > 0: return nil` khiến
+     MỌI Run từng qua scope-expansion không bao giờ đạt VERIFYING dù graph đã thật sự tới END. User
+     chốt hướng sửa chính xác: nhận diện "superseded" bằng lineage `(NodeKey, BranchTokenID)` — chỉ
+     activation có `ActivationSequence` lớn nhất trong cùng lineage mới được phân loại (live/blocked/
+     terminal), không giới hạn nó phải SUCCEEDED/FAILED (activation mới hơn vẫn BLOCKED thì vẫn chặn
+     đúng; vẫn live thì Run vẫn chạy tiếp; FAILED thì Run vẫn aggregate FAILED) — `BranchTokenID` là
+     một phần khóa lineage (không chỉ NodeKey) vì hai nhánh FORK có thể dispatch cùng NodeKey độc lập,
+     một nhánh SUCCEEDED không được che blocker của nhánh kia.
+  Race test: `TestRuntimeEngineGate_ConcurrentPoolsNoDuplicateExecution` — hai `workerpool.Pool` thật
+  đua claim cùng một EXECUTE_NODE job thật (không phải handler tổng hợp), qua `ExecuteNodeHandler`/
+  `FinalizeExecutionAttempt` thật, đúng một Execute call/một SUCCEEDED Attempt. Setup phase (tới lúc
+  job EXECUTE_NODE tồn tại) tự phát hiện một race-window thật nếu chạy dưới bất kỳ pool nào (Pool claim
+  job kind-agnostic ở tầng DB, chỉ tra handler SAU khi claim — pool không có handler vẫn có thể claim
+  nhầm rồi lỗi) — sửa bằng driving trực tiếp qua `AdvanceRun`/`ScheduleExecutableNodeRun`, không pool
+  nào chạy cho tới đúng lúc race.
 - **Nguồn:** GC-ACC-03.

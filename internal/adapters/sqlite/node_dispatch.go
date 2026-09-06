@@ -324,12 +324,12 @@ func loadNodeRunByID(ctx context.Context, tx *sql.Tx, id runtime.NodeRunID) (run
 	err := tx.QueryRowContext(ctx, `
 SELECT id, run_id, node_key, activation_sequence, iteration, state,
        selected_outcome, input_state_hash, version,
-       effective_scope_json, execution_profile_hash, manifest_revision, branch_token_id
+       effective_scope_json, execution_profile_hash, manifest_revision, branch_token_id, reactivation_reason
 FROM node_runs WHERE id = ?`, id,
 	).Scan(
 		&nodeRun.ID, &nodeRun.RunID, &nodeRun.NodeKey, &nodeRun.ActivationSequence,
 		&nodeRun.Iteration, &nodeRun.State, &selectedOutcome, &nodeRun.InputStateHash, &nodeRun.Version,
-		&effectiveScopeJSON, &executionProfileHash, &manifestRevision, &branchTokenID,
+		&effectiveScopeJSON, &executionProfileHash, &manifestRevision, &branchTokenID, &nodeRun.ReactivationReason,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.NodeRun{}, fmt.Errorf("%w: node run %s", ports.ErrPersistenceNotFound, id)
