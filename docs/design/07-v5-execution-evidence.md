@@ -232,7 +232,14 @@
 - **Mục tiêu:** crash real execution để lại structured status/blocker/evidence/next action.
 - **Phụ thuộc:** V5-08…V5-12 và V5-10A.
 - **Thực hiện:** canonical checkpoint batches, recovery classifications, quarantine reconciliation,
-  fresh context rebuild, no-progress/budget escalation.
+  fresh context rebuild, no-progress/budget escalation. Tiêu thụ V4-13's own FRESH_START recovery
+  decision (durable record: interrupted AttemptID, checkpoint/ContextSnapshot đã chọn, recovery
+  generation, reason/failure category) và thực hiện flow ba pha thật: Tx reserve Attempt mới + enqueue
+  job RUN_WORK recovery-execution → ngoài transaction, load checkpoint/snapshot rồi gọi
+  `worker.StartFreshFromLatestCheckpoint` (`internal/app/worker/recovery.go`, đã có primitive từ trước,
+  V4-13 chỉ ghi quyết định chứ không tự gọi) → Tx finalize có fencing bằng JobLease/WriteLease. Không
+  bao giờ đặt lời gọi provider thật vào một CONTROL job hay vào bên trong một `ports.UnitOfWork`
+  transaction.
 - **Verify:** six fault boundaries với agent/command/gate fixtures.
 - **Hoàn thành khi:** session mới không cần raw transcript hoặc cwd cũ.
 - **Nguồn:** HE-05-M03, HE-13-M05, AK-ARCH-010, HE-12-M02, HE-12-M06.

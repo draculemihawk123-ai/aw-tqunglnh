@@ -114,11 +114,20 @@ func TestMigrate_ChecksumTamperDetected(t *testing.T) {
 	}
 }
 
-// TestMigrate_FailureRollsBackEverything simulates a migration that
-// cannot apply (a pre-existing conflicting table) and proves the whole
-// attempt rolls back: no schema_migrations row is left behind, and the
-// conflicting table is untouched — never a half-migrated database.
-func TestMigrate_FailureRollsBackEverything(t *testing.T) {
+// TestMigrate_FailedMigrationRollsBackOnlyItself simulates a migration that
+// cannot apply (a pre-existing conflicting table) and proves ONLY that one
+// migration's own attempt rolls back — V4-13 correction, confirmed with the
+// user: Migrate no longer wraps every pending migration in one shared
+// transaction ("a failure at any point rolls back everything"); each
+// migration now commits, or rolls back, on its own (migrations.go's own doc
+// comment). bootstrapSchema's own CREATE TABLE IF NOT EXISTS runs
+// unconditionally, before the per-migration loop even begins, so
+// schema_migrations itself always survives now — what a failed migration
+// must never leave behind is its OWN row in it. See
+// TestMigrate_EarlierMigrationsSurviveALaterFailure for the complementary
+// proof that an EARLIER, already-committed migration survives a LATER
+// migration's own failure too.
+func TestMigrate_FailedMigrationRollsBackOnlyItself(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "agentkit-rollback.db")
 	store := openWithoutMigrating(t, databasePath)
@@ -133,17 +142,12 @@ func TestMigrate_FailureRollsBackEverything(t *testing.T) {
 		t.Fatal("Migrate should fail when migration 1's CREATE TABLE conflicts with an existing table")
 	}
 
-	// The whole attempt — including bootstrapSchema's own CREATE TABLE —
-	// ran inside the one transaction that failed, so schema_migrations
-	// must not exist at all afterward: a stronger proof of full rollback
-	// than "0 rows" would be, since the table itself never survives.
-	var tableCount int
-	if err := store.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'`).Scan(&tableCount); err != nil {
-		t.Fatalf("check schema_migrations existence: %v", err)
+	var recordedCount int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = 1`).Scan(&recordedCount); err != nil {
+		t.Fatalf("count schema_migrations rows for version 1: %v", err)
 	}
-	if tableCount != 0 {
-		t.Fatalf("schema_migrations table exists after a failed migration, want it absent (rollback must undo everything, including bootstrap)")
+	if recordedCount != 0 {
+		t.Fatal("migration 1 recorded as applied despite failing, want no row")
 	}
 
 	var columnCount int
@@ -152,6 +156,65 @@ func TestMigrate_FailureRollsBackEverything(t *testing.T) {
 	}
 	if columnCount != 1 {
 		t.Fatal("the pre-existing conflicting table should be untouched after a failed migration")
+	}
+}
+
+// TestMigrate_EarlierMigrationsSurviveALaterFailure proves the other half
+// of V4-13's own atomicity correction: an earlier migration that already
+// committed is never undone by a later migration's own failure. Uses two
+// synthetic migration values (not the real embedded ones) so this test
+// stays entirely decoupled from any real migration's own content — it is
+// only ever exercising applyOneMigration's own per-migration transaction
+// boundary, not any particular migration's business logic.
+func TestMigrate_EarlierMigrationsSurviveALaterFailure(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "agentkit-partial-failure.db")
+	store := openWithoutMigrating(t, databasePath)
+	defer store.Close()
+
+	conn, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("Conn: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, bootstrapSchema); err != nil {
+		t.Fatalf("bootstrap: %v", err)
+	}
+
+	first := migration{Version: 90001, Name: "synthetic-ok", SQL: `CREATE TABLE synthetic_ok (id TEXT PRIMARY KEY)`, Checksum: "checksum-ok"}
+	// second deliberately re-creates the same table first already made, so
+	// its own CREATE TABLE fails.
+	second := migration{Version: 90002, Name: "synthetic-fail", SQL: `CREATE TABLE synthetic_ok (id TEXT PRIMARY KEY)`, Checksum: "checksum-fail"}
+
+	if err := applyOneMigration(ctx, conn, first); err != nil {
+		t.Fatalf("apply first synthetic migration: %v", err)
+	}
+	assertRecorded := func(version int, want int) {
+		t.Helper()
+		var count int
+		if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&count); err != nil {
+			t.Fatalf("count schema_migrations for version %d: %v", version, err)
+		}
+		if count != want {
+			t.Fatalf("schema_migrations count for version %d = %d, want %d", version, count, want)
+		}
+	}
+	assertRecorded(first.Version, 1)
+
+	if err := applyOneMigration(ctx, conn, second); err == nil {
+		t.Fatal("second synthetic migration should fail: synthetic_ok already exists")
+	}
+
+	// The earlier, already-committed migration must survive this later
+	// failure — never rolled back, and the table it created still exists.
+	assertRecorded(first.Version, 1)
+	assertRecorded(second.Version, 0)
+	var synthOkExists int
+	if err := conn.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='synthetic_ok'`).Scan(&synthOkExists); err != nil {
+		t.Fatalf("check synthetic_ok table: %v", err)
+	}
+	if synthOkExists != 1 {
+		t.Fatal("synthetic_ok table (created by the first, already-committed migration) should still exist")
 	}
 }
 

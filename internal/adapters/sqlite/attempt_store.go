@@ -28,6 +28,17 @@ func (s *Store) AttemptHeldAnyWriteLease(ctx context.Context, attemptID runtime.
 	return held == 1, nil
 }
 
+// ErrLegacyTerminationReason is returned when a caller tries to write
+// TerminationReasonProcessExitBeforeOutcomeCommit onto a new LOST or
+// INDETERMINATE transition (V4-13, confirmed with the user before writing
+// this check): that reason is legacy-only now, kept in the closed enum
+// solely to read historical/evidence rows a pre-ADR-020 caller already wrote
+// with it — ClassifyInterruptedAttempt (internal/app/worker/interruption.go)
+// never emits it anymore, and this is the defense-in-depth backstop against
+// any other caller reintroducing it, at the one fenced transition that ever
+// produces either state.
+var ErrLegacyTerminationReason = errors.New("sqlite: TerminationReasonProcessExitBeforeOutcomeCommit is legacy-only and must not be written to a new LOST/INDETERMINATE transition")
+
 // TerminateInterruptedAttempt is the fenced recovery-time transition that
 // moves a crashed attempt from RUNNING to LOST or INDETERMINATE. It commits
 // the state change and its correlated domain event in one transaction, CAS
@@ -37,6 +48,10 @@ func (s *Store) AttemptHeldAnyWriteLease(ctx context.Context, attemptID runtime.
 func (s *Store) TerminateInterruptedAttempt(ctx context.Context, update ports.AttemptTerminationUpdate) error {
 	if update.AttemptID == "" || update.NextState == "" || update.Reason == "" || update.EventID == "" {
 		return errors.New("attempt termination update is incomplete")
+	}
+	if (update.NextState == runtime.ExecutionAttemptLost || update.NextState == runtime.ExecutionAttemptIndeterminate) &&
+		update.Reason == runtime.TerminationReasonProcessExitBeforeOutcomeCommit {
+		return ErrLegacyTerminationReason
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {

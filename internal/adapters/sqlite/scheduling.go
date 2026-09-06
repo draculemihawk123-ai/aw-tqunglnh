@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 )
 
 const durableJobColumns = `
@@ -83,6 +84,10 @@ func enqueueJobTx(ctx context.Context, q sqlQueryRower, request ports.EnqueueJob
 	if runID != "" {
 		runIDColumn = runID
 	}
+	var projectIDColumn any
+	if request.ProjectID != "" {
+		projectIDColumn = request.ProjectID
+	}
 
 	row := q.QueryRowContext(ctx, `
 INSERT INTO durable_jobs (
@@ -96,7 +101,7 @@ INSERT INTO durable_jobs (
     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?)
 RETURNING `+durableJobColumns,
 		request.ID,
-		request.ProjectID,
+		projectIDColumn,
 		strings.TrimSpace(request.Kind),
 		strings.TrimSpace(request.AggregateType),
 		strings.TrimSpace(request.AggregateID),
@@ -677,10 +682,13 @@ WHERE repository_workspace_id = ? AND generation = ? AND fence_token = ?
 }
 
 func validateEnqueueJob(request ports.EnqueueJobRequest) error {
-	if request.ID == "" || request.ProjectID == "" || strings.TrimSpace(request.Kind) == "" ||
+	if request.ID == "" || strings.TrimSpace(request.Kind) == "" ||
 		strings.TrimSpace(request.AggregateType) == "" || strings.TrimSpace(request.AggregateID) == "" ||
 		strings.TrimSpace(request.IdempotencyKey) == "" {
 		return errors.New("durable job identities, kind, aggregate and idempotency key are required")
+	}
+	if err := ports.ValidateJobScope(strings.TrimSpace(request.Kind), request.ProjectID, request.RunID); err != nil {
+		return err
 	}
 	if request.MaxClaims == 0 {
 		return errors.New("durable job max claims must be greater than zero")
@@ -753,6 +761,7 @@ func leaseFromJob(job ports.DurableJob) ports.JobLease {
 
 func scanDurableJob(scanner rowScanner) (ports.DurableJob, error) {
 	var job ports.DurableJob
+	var projectID sql.NullString
 	var payload string
 	var state string
 	var availableAtText string
@@ -766,7 +775,7 @@ func scanDurableJob(scanner rowScanner) (ports.DurableJob, error) {
 	var jobClass string
 	var cancelEpoch sql.NullInt64
 	if err := scanner.Scan(
-		&job.ID, &job.ProjectID, &job.Kind, &job.AggregateType, &job.AggregateID,
+		&job.ID, &projectID, &job.Kind, &job.AggregateType, &job.AggregateID,
 		&payload, &state, &availableAtText, &job.Priority, &job.ClaimCount,
 		&job.MaxClaims, &leaseOwner, &job.LeaseToken, &leaseUntilText,
 		&heartbeatAtText, &job.IdempotencyKey, &lastErrorCode, &job.Version,
@@ -774,6 +783,7 @@ func scanDurableJob(scanner rowScanner) (ports.DurableJob, error) {
 	); err != nil {
 		return ports.DurableJob{}, err
 	}
+	job.ProjectID = project.ProjectID(projectID.String)
 	job.Payload = json.RawMessage(payload)
 	job.State = ports.JobState(state)
 	job.LeaseOwner = leaseOwner.String

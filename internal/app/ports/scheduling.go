@@ -32,7 +32,19 @@ const (
 )
 
 type DurableJob struct {
-	ID             JobID
+	ID JobID
+	// ProjectID is required for every job kind except RecoveryReaperJobKind
+	// ("RECOVERY_REAPER", V4-13, ValidateJobScope) — that one job is
+	// genuinely installation-global (sweeps every project's own orphaned
+	// attempts and stranded cancellation intents in one pass), so it is
+	// enqueued with no owning Project at all rather than against a
+	// synthetic "system" Project row (confirmed with the user: a sentinel
+	// Project would leak into every project-scoped query, authorization
+	// check, export and UI as a fake project every one of them has to
+	// remember to filter out). Empty means "no owning Project", persisted
+	// as a real SQL NULL (durable_jobs.project_id, nullable since
+	// migration 25), never the empty string — mirrors RunID's own
+	// identical empty-means-absent convention below.
 	ProjectID      project.ProjectID
 	Kind           string
 	AggregateType  string
@@ -76,7 +88,11 @@ type DurableJob struct {
 }
 
 type EnqueueJobRequest struct {
-	ID             JobID
+	ID JobID
+	// ProjectID is validated by ValidateJobScope at enqueue time: required
+	// for every job kind except "RECOVERY_REAPER" (V4-13), which must
+	// leave this blank — see DurableJob.ProjectID's own doc comment for
+	// why. Persisted as SQL NULL when blank, never the empty string.
 	ProjectID      project.ProjectID
 	Kind           string
 	AggregateType  string
@@ -95,7 +111,9 @@ type EnqueueJobRequest struct {
 	// còn non-cancelling"). There is deliberately no JobClass field here
 	// for a caller to set — JobClass is always derived from Kind
 	// server-side (confirmed with the user: a caller must never be able
-	// to declare its own job CONTROL).
+	// to declare its own job CONTROL). ValidateJobScope also requires this
+	// blank for "RECOVERY_REAPER" — that job is installation-global, not
+	// run-scoped.
 	RunID string
 }
 

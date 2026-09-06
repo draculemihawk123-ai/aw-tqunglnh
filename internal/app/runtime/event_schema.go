@@ -177,6 +177,17 @@ func DecodeWorkItemBlockerResolvedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// DecodeRecoveryDecisionRecordedV1 is RECOVERY_DECISION_RECORDED v1's own
+// eventschema.Decoder (V4-13, recovery_reaper.go) — registered from the same
+// changeset that produces this event, not deferred.
+func DecodeRecoveryDecisionRecordedV1(payloadJSON string) (any, error) {
+	var payload recoveryDecisionRecordedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry. A composition root that wires up EnforcingEventsRepository
 // calls this once at startup, the same "register at init/startup time"
@@ -200,4 +211,5 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(WorkItemCancelledEventType, WorkItemCancelledSchemaVersion, DecodeWorkItemCancelledV1)
 	registry.Register(WorkItemBlockedEventType, WorkItemBlockedSchemaVersion, DecodeWorkItemBlockedV1)
 	registry.Register(WorkItemBlockerResolvedEventType, WorkItemBlockerResolvedSchemaVersion, DecodeWorkItemBlockerResolvedV1)
+	registry.Register(RecoveryDecisionRecordedEventType, RecoveryDecisionRecordedSchemaVersion, DecodeRecoveryDecisionRecordedV1)
 }

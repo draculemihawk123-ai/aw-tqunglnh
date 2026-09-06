@@ -139,12 +139,14 @@ func runFaultAfterProcessExitScenario(t *testing.T, mutating bool) {
 	if err != nil {
 		t.Fatalf("ClassifyInterruptedAttempt() error = %v", err)
 	}
-	if reason != runtime.TerminationReasonProcessExitBeforeOutcomeCommit {
-		t.Fatalf("classify reason = %q, want %q", reason, runtime.TerminationReasonProcessExitBeforeOutcomeCommit)
-	}
 	wantState := runtime.ExecutionAttemptLost
+	wantReason := runtime.TerminationReasonLeaseLost
 	if mutating {
 		wantState = runtime.ExecutionAttemptIndeterminate
+		wantReason = runtime.TerminationReasonOwnershipLostMutating
+	}
+	if reason != wantReason {
+		t.Fatalf("classify reason = %q, want %q", reason, wantReason)
 	}
 	if nextState != wantState {
 		t.Fatalf("classify state = %s, want %s", nextState, wantState)

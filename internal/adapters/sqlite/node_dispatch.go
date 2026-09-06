@@ -141,6 +141,9 @@ WHERE nr.id = ?`,
 }
 
 func insertDispatchedJob(ctx context.Context, tx *sql.Tx, request ports.EnqueueJobRequest) (ports.DurableJob, error) {
+	if err := ports.ValidateJobScope(strings.TrimSpace(request.Kind), request.ProjectID, request.RunID); err != nil {
+		return ports.DurableJob{}, err
+	}
 	payload := request.Payload
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
@@ -148,6 +151,10 @@ func insertDispatchedJob(ctx context.Context, tx *sql.Tx, request ports.EnqueueJ
 	availableAt := ""
 	if !request.AvailableAt.IsZero() {
 		availableAt = request.AvailableAt.UTC().Format(time.RFC3339Nano)
+	}
+	var projectIDColumn any
+	if request.ProjectID != "" {
+		projectIDColumn = request.ProjectID
 	}
 	row := tx.QueryRowContext(ctx, `
 INSERT INTO durable_jobs (
@@ -161,7 +168,7 @@ INSERT INTO durable_jobs (
     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 RETURNING `+durableJobColumns,
 		request.ID,
-		request.ProjectID,
+		projectIDColumn,
 		strings.TrimSpace(request.Kind),
 		strings.TrimSpace(request.AggregateType),
 		strings.TrimSpace(request.AggregateID),

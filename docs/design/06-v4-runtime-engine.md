@@ -871,10 +871,74 @@
   LOST, mutating INDETERMINATE, stale finalize rejection và next diagnostic action. Reaper cũng quét
   `run_cancellation_intents` và `work_item_cancellation_intents` còn dở: một intent đã commit nhưng
   coordinator chết trước khi quiesce xong phải được tiếp tục, không để Run mắc kẹt ở `CANCELLING` hay
-  WorkItem mắc kẹt chờ terminal. Reaper job là `JobClass=CONTROL` nên không tự bị cancel fence.
+  WorkItem mắc kẹt chờ terminal. Reaper job là `JobClass=CONTROL` nên không tự bị cancel fence — và chính
+  vì vậy nó KHÔNG BAO GIỜ được gọi `AgentExecutor.Start`/spawn process thật: mọi job gọi provider thật là
+  workload RUN_WORK có RunID/JobLease/cancel_epoch riêng, để CONTROL handler tự spawn process sẽ phá
+  chính cancellation/fencing contract mà V4-12B/V4-12C vừa xây (confirmed với user trước khi code). Trong
+  bốn quyết định retry/fresh-Start/reconcile/escalate, task này **quyết định** cả bốn từ durable state
+  nhưng chỉ **thực thi thật** ba: RETRY (tạo Attempt mới + enqueue job `EXECUTE_NODE` lớp RUN_WORK, dùng
+  đúng retry budget/policy V4-06 đã có), RECONCILE (classify/terminate Attempt + reconcile/quarantine
+  workspace nếu mutation quan sát được — `ReconcileInterruptedAttempt`, `internal/app/worker`), ESCALATE
+  (ghi typed diagnostic/decision artifact kèm next action, không blind retry). FRESH_START chỉ **ghi một
+  durable recovery decision** (interrupted AttemptID, checkpoint/ContextSnapshot đã chọn, recovery
+  generation, reason/failure category, next action, policy/budget basis) — task này KHÔNG tự tạo
+  Attempt/job mồ côi cho nó và không tự gọi `worker.StartFreshFromLatestCheckpoint` (đã có primitive
+  nhưng vẫn chưa có handler thật thực thi); V5-13 là task tiêu thụ quyết định này và thực hiện flow ba
+  pha thật (Tx reserve Attempt+job RUN_WORK → gọi provider thật ngoài transaction →
+  Tx finalize có fencing).
 - **Verify:** kill tại sáu fault boundary; lease hết hạn sau startup và hai coordinator tranh recovery
   vẫn chỉ tạo một recovery job cho generation; kill coordinator giữa lúc quiesce rồi restart phải hoàn
-  tất cả cancel Run lẫn cancel WorkItem, không tạo intent trùng.
+  tất cả cancel Run lẫn cancel WorkItem, không tạo intent trùng. Thêm: `AgentExecutor.Start` không bao
+  giờ được reaper gọi; nhánh retry tạo đúng một Attempt/job RUN_WORK; nhánh fresh-Start tạo đúng một
+  decision, không Attempt/job mồ côi; cancellation intent đã commit không dẫn tới retry/fresh-Start mới.
+  **Một khoảng trống kiến trúc phát hiện giữa lúc viết test sqlite-backed, chốt với user trước khi
+  code:** `durable_jobs.project_id` là `NOT NULL REFERENCES projects(id)` cho mọi job — nhưng
+  RECOVERY_REAPER là CONTROL job singleton toàn cục (per ADR-020's own vocabulary, không per-origin),
+  không thuộc project nào. User từ chối phương án seed một "system" Project sentinel (rò rỉ vào mọi
+  query/authorization/export/UI project-scoped) và chốt **nullable có invariant chặt theo kind, không
+  phải nullable chung cho mọi CONTROL job**: `project_id` mất `NOT NULL` nhưng migration 25's own CHECK
+  ép buộc — `kind = 'RECOVERY_REAPER'` bắt buộc `project_id`, `run_id`, `cancel_epoch` đều NULL VÀ
+  `job_class = 'CONTROL'`; mọi `kind` khác bắt buộc `project_id NOT NULL` (vẫn FK-checked khi có mặt).
+  `internal/app/ports.ValidateJobScope(kind, projectID, runID)` là authority thứ hai ở tầng Go, gọi từ
+  cả `sqlite.enqueueJobTx`/`insertDispatchedJob` lẫn `fake.JobsRepository.EnqueueJob` — cùng một hàm,
+  không lệch giữa hai backend. `DurableJob.ProjectID`/`EnqueueJobRequest.ProjectID` giữ nguyên kiểu giá
+  trị `project.ProjectID` (không đổi sang con trỏ) với "chuỗi rỗng = không có Project", mirror đúng
+  convention `RunID string` sẵn có trong cùng struct — nhưng tầng SQL luôn bind `nil` thật (không bao
+  giờ `''`) khi rỗng, và scan lại qua `sql.NullString` khi đọc.
+  Đã triển khai (`internal/app/runtime/recovery_reaper.go`,
+  `recovery_reaper_test.go` (fake, 4 test) + `recovery_reaper_sqlite_test.go` (sqlite, 2 test),
+  `internal/adapters/sqlite/recovery_reaper.go`, migration `0025_recovery_reaper_job_class.sql` +
+  `0026_recovery_reaper_state.sql`): ADR-020's own reason vocabulary lên đời —
+  `ClassifyInterruptedAttempt` (`internal/app/worker/interruption.go`) phát `LEASE_LOST`/
+  `OWNERSHIP_LOST_MUTATING` thay vì reason cũ trước SPK-04, reason cũ giữ lại trong enum chỉ để đọc
+  evidence lịch sử và bị `TerminateInterruptedAttempt` chặn ghi mới (`ErrLegacyTerminationReason`,
+  defense-in-depth). `Store.Migrate` đổi từ một transaction chung cho mọi migration còn pending sang
+  một transaction riêng cho từng migration (migration trước đã commit sống sót qua một migration sau
+  fail) — kiểm chứng thật bằng scratch program `modernc.org/sqlite` xác nhận `PRAGMA foreign_keys=OFF`
+  là no-op trong transaction đã mở, nên `migrationsRequiringForeignKeysOff` (chỉ migration 25) phải
+  tắt FK NGOÀI transaction rồi mới rebuild `durable_jobs` (bảng có FK sống từ `write_leases`/
+  `repository_probe_attempts`/`readiness_baseline_attempts`), verify `PRAGMA foreign_key_check` sạch
+  trước khi commit. RECOVERY_REAPER gia nhập `controlJobKinds`/CHECK allow-list làm CONTROL job thật,
+  tự lên lịch lại theo generation qua bảng singleton mới `recovery_reaper_state` (mirror
+  `ScopeExpansionOrigin.PollGeneration` nhưng không có origin row riêng), fence bằng idempotency key
+  `recovery-reaper:<generation>` — hai coordinator tranh nhau chỉ tạo đúng một job cho cùng generation
+  nhờ `EnqueueJob`'s own idempotent-insert contract, không cần lock riêng. Ma trận quyết định: RETRY
+  (budget còn, Run không cancelling → Attempt+job `EXECUTE_NODE` mới, chạy ngay không backoff — đây là
+  crash recovery, không phải provider failure pinned `BackoffSeconds` nhắm tới), RECONCILE (không phải
+  nhánh riêng — mọi Attempt mutating luôn qua `ReconcileInterruptedAttempt` để so revision workspace +
+  quarantine nếu mutation quan sát được), FRESH_START (mutation quan sát được + có checkpoint dùng
+  được → chỉ ghi `DecisionArtifact`, không bao giờ tạo Attempt/job, không gọi
+  `worker.StartFreshFromLatestCheckpoint` — nhường thật cho V5-13), ESCALATE (budget hết, hoặc Run
+  đang cancelling, hoặc không có checkpoint → `DecisionArtifact` với `NextAction=ESCALATE`, không bao
+  giờ blind retry). `RecoveryReaperHandler` nhận cả `ports.UnitOfWork` (bước V4-native) lẫn ba interface
+  spike-era `InterruptionRecoveryStore`/`WorkspaceReconciler`/`RecoveryStore` (bước reconcile duy nhất
+  còn dùng lại primitive SPK-04/SPK-09) — một `*sqlite.Store` thật thỏa cả ba structurally, không ép
+  hợp nhất sớm. **Tự phát hiện 1 bug thật khi viết test sqlite-backed:** helper tìm job RECOVERY_REAPER
+  bằng cách claim-rồi-bỏ-qua từng job không đúng kind — khi có job `EXECUTE_NODE` khác đang AVAILABLE
+  nằm giữa đường, helper vô tình "cứu" nó bằng một lease mới còn hạn, khiến nó không còn orphaned nữa
+  vào lúc `Handle` thật sự quét. Sửa: claim đúng job `EXECUTE_NODE` cần hết hạn TRƯỚC khi tìm
+  RECOVERY_REAPER, không bao giờ để một job đang cần orphaned nằm AVAILABLE lúc search kind khác chạy
+  qua nó.
 - **Hoàn thành khi:** mỗi crash state có typed recovery, không blind retry.
 - **Nguồn:** GC-ACC-04, GC-ACC-05, HE-05-M05, AK-ARCH-006, AK-ARCH-007, HE-01-M01, HE-01-M05.
 
@@ -883,7 +947,9 @@
 - **Mục tiêu:** chạy graph chứa tất cả node types bằng fake executors qua restart.
 - **Phụ thuộc:** V4-01…V4-13, V4-12A, V4-12B và V4-12C.
 - **Thực hiện:** fixture có retry, rework, approval, wait, fork/join, terminal candidate, scope-expansion
-  BLOCKED và một cancel giữa chừng; inject crash.
+  BLOCKED và một cancel giữa chừng; inject crash. V4-13's own recovery decision (retry/reconcile/escalate/
+  fresh-Start) chỉ cần chứng minh deterministic bằng fake state ở đây — provider-level fresh execution
+  thật (V5-13's own three-phase flow) thuộc gate V5, ngoài phạm vi task này.
 - **Verify:** deterministic event/activation golden, race test, full test/vet Windows/Linux.
 - **Hoàn thành khi:** same input/decisions tạo same domain result trừ IDs/timestamps cho phép.
 - **Nguồn:** GC-ACC-03.

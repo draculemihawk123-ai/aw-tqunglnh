@@ -589,12 +589,14 @@ func spk04Boundary5ProcessExit(ctx context.Context, spikeWorker string, record f
 	if err != nil {
 		return ready, fmt.Errorf("spk04 b5 %s: classify interrupted attempt: %w", label, err)
 	}
-	record(fmt.Sprintf("b5 (%s): classification reason is process-exit-before-outcome-commit", label),
-		reason == domainruntime.TerminationReasonProcessExitBeforeOutcomeCommit, string(reason))
 	wantState := domainruntime.ExecutionAttemptLost
+	wantReason := domainruntime.TerminationReasonLeaseLost
 	if mutating {
 		wantState = domainruntime.ExecutionAttemptIndeterminate
+		wantReason = domainruntime.TerminationReasonOwnershipLostMutating
 	}
+	record(fmt.Sprintf("b5 (%s): classification reason matches read-only/mutating history (ADR-020 vocabulary, V4-13)", label),
+		reason == wantReason, string(reason))
 	record(fmt.Sprintf("b5 (%s): classification state matches read-only/mutating history", label), nextState == wantState,
 		fmt.Sprintf("got=%s want=%s", nextState, wantState))
 

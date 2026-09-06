@@ -110,7 +110,7 @@ func runSPK03Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 		return SPKResult{}, fmt.Errorf("spk03: reconcile interrupted attempt: %w", err)
 	}
 	record("interrupted attempt is classified read-only and terminated LOST",
-		recovery.NextState == domainruntime.ExecutionAttemptLost && recovery.Reason == domainruntime.TerminationReasonProcessExitBeforeOutcomeCommit,
+		recovery.NextState == domainruntime.ExecutionAttemptLost && recovery.Reason == domainruntime.TerminationReasonLeaseLost,
 		fmt.Sprintf("%+v", recovery))
 
 	attemptState, attemptVersion, err := restarted.LoadExecutionAttemptState(ctx, sqlite.CrashCheckpointInterruptedAttempt)
@@ -122,7 +122,7 @@ func runSPK03Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 
 	dupErr := restarted.TerminateInterruptedAttempt(ctx, ports.AttemptTerminationUpdate{
 		AttemptID: sqlite.CrashCheckpointInterruptedAttempt, ExpectedVersion: 1,
-		NextState: domainruntime.ExecutionAttemptLost, Reason: domainruntime.TerminationReasonProcessExitBeforeOutcomeCommit,
+		NextState: domainruntime.ExecutionAttemptLost, Reason: domainruntime.TerminationReasonLeaseLost,
 		EventID: "spk03-duplicate-terminate-event", CorrelationID: "spk03", OccurredAt: time.Now().UTC(),
 	})
 	record("a duplicate termination at the stale version is rejected", errors.Is(dupErr, ports.ErrOptimisticConflict), fmt.Sprintf("error=%v", dupErr))

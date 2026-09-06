@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -766,6 +767,74 @@ func enqueueSchedulingTestJob(t *testing.T, store *Store, id, key string, maxCla
 	})
 	if err != nil {
 		t.Fatalf("EnqueueJob(%s) error = %v", id, err)
+	}
+}
+
+// TestEnqueueJob_RecoveryReaper_AcceptsNilProjectID proves the V4-13
+// installation-global exemption end to end through the real adapter: a
+// RECOVERY_REAPER job with no ProjectID is accepted (no "projects" row
+// needed at all — this kind never references one), persisted as a real SQL
+// NULL, and read back as ports.DurableJob's own blank-ProjectID
+// convention (never the literal empty string).
+func TestEnqueueJob_RecoveryReaper_AcceptsNilProjectID(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	job, err := store.EnqueueJob(context.Background(), ports.EnqueueJobRequest{
+		ID: "job-reaper", Kind: "RECOVERY_REAPER",
+		AggregateType: "RecoveryReaper", AggregateID: "singleton",
+		MaxClaims: 1, IdempotencyKey: "recovery-reaper:0",
+	})
+	if err != nil {
+		t.Fatalf("EnqueueJob(RECOVERY_REAPER, blank ProjectID) error = %v", err)
+	}
+	if job.ProjectID != "" {
+		t.Fatalf("job.ProjectID = %q, want blank", job.ProjectID)
+	}
+	var raw sql.NullString
+	if err := store.db.QueryRowContext(context.Background(), `SELECT project_id FROM durable_jobs WHERE id = 'job-reaper'`).Scan(&raw); err != nil {
+		t.Fatalf("read back project_id: %v", err)
+	}
+	if raw.Valid {
+		t.Fatalf("durable_jobs.project_id = %q, want a real SQL NULL, not any string value", raw.String)
+	}
+}
+
+// TestEnqueueJob_NonRecoveryReaperKind_RejectsBlankProjectID proves
+// ValidateJobScope's own rejection surfaces through the real adapter for
+// every OTHER kind — the exemption never silently widens.
+func TestEnqueueJob_NonRecoveryReaperKind_RejectsBlankProjectID(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	seedSchedulingFixture(t, store)
+	_, err := store.EnqueueJob(context.Background(), ports.EnqueueJobRequest{
+		ID: "job-no-project", Kind: "EXECUTE_NODE",
+		AggregateType: "ExecutionAttempt", AggregateID: "attempt-1",
+		MaxClaims: 1, IdempotencyKey: "idem-no-project",
+	})
+	if err == nil {
+		t.Fatal("EnqueueJob(EXECUTE_NODE, blank ProjectID) = nil error, want rejection")
+	}
+}
+
+// TestEnqueueJob_RejectsNonexistentProjectID proves durable_jobs.project_id
+// is still FK-checked against projects(id) whenever it IS present — the
+// nullable column only ever bypasses that check by being genuinely NULL,
+// never by a caller supplying a made-up id.
+func TestEnqueueJob_RejectsNonexistentProjectID(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	seedSchedulingFixture(t, store)
+	_, err := store.EnqueueJob(context.Background(), ports.EnqueueJobRequest{
+		ID: "job-fake-project", ProjectID: "does-not-exist", Kind: "EXECUTE_NODE",
+		AggregateType: "ExecutionAttempt", AggregateID: "attempt-1",
+		MaxClaims: 1, IdempotencyKey: "idem-fake-project",
+	})
+	if err == nil {
+		t.Fatal("EnqueueJob with a nonexistent ProjectID = nil error, want FK rejection")
+	}
+	var count int
+	if err := store.db.QueryRowContext(context.Background(), `SELECT COUNT(*) FROM durable_jobs WHERE id = 'job-fake-project'`).Scan(&count); err != nil {
+		t.Fatalf("count durable_jobs: %v", err)
+	}
+	if count != 0 {
+		t.Fatal("a job referencing a nonexistent project was persisted despite the rejection")
 	}
 }
 

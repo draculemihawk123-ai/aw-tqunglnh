@@ -33,6 +33,18 @@ type RuntimeRepository struct {
 	runIntents   map[string]runtime.RunCancellationIntent      // by RunID
 	workIntents  map[string]runtime.WorkItemCancellationIntent // by WorkItemID
 	scopeOrigins map[string]runtime.ScopeExpansionOrigin       // by AttemptID
+	// reaperState is populated now (V4-13): the fake's own stand-in for
+	// migration 26's own seeded singleton row — lazily initialized to
+	// {Generation: 0, Version: 1} the first time GetRecoveryReaperState (or
+	// AdvanceRecoveryReaperGeneration) is ever called on a given clone,
+	// mirroring that migration's own seed row exactly.
+	reaperState *ports.RecoveryReaperState
+	// jobs is populated now (V4-13): the reverse of JobsRepository's own
+	// pre-existing runtime cross-reference (V4-12B) — see
+	// fake/unitofwork.go's own newTx/clone doc comments for the two-step
+	// wiring this needs. ListOrphanedRunningExecutionAttempts is this
+	// field's only reader.
+	jobs *JobsRepository
 }
 
 var _ ports.RuntimeRepository = (*RuntimeRepository)(nil)
@@ -78,9 +90,18 @@ func (r *RuntimeRepository) clone() *RuntimeRepository {
 	for k, v := range r.scopeOrigins {
 		scopeOrigins[k] = v
 	}
+	var reaperState *ports.RecoveryReaperState
+	if r.reaperState != nil {
+		copied := *r.reaperState
+		reaperState = &copied
+	}
 	return &RuntimeRepository{
 		workflowRuns: workflowRuns, nodeRuns: nodeRuns, attempts: attempts, manifests: manifests, amendments: amendments,
 		branches: branches, decisions: decisions, runIntents: runIntents, workIntents: workIntents, scopeOrigins: scopeOrigins,
+		reaperState: reaperState,
+		// jobs is deliberately left nil here — fake/unitofwork.go's own
+		// clone() wires it (clone.runtime.jobs = clone.jobs) immediately
+		// after this returns, once the sibling JobsRepository clone exists.
 	}
 }
 
@@ -678,4 +699,115 @@ func (r *RuntimeRepository) TransitionScopeExpansionOrigin(_ context.Context, re
 	origin.Version++
 	r.scopeOrigins[req.AttemptID] = origin
 	return origin, nil
+}
+
+// --- Recovery reaper (V4-13) ---
+
+// GetRecoveryReaperState mirrors sqlite's GetRecoveryReaperState: lazily
+// seeds {Generation: 0, Version: 1} on first read, mirroring migration 26's
+// own seeded singleton row (this fake has no migration mechanism of its own
+// to run that seed through).
+func (r *RuntimeRepository) GetRecoveryReaperState(_ context.Context) (ports.RecoveryReaperState, error) {
+	if r.reaperState == nil {
+		r.reaperState = &ports.RecoveryReaperState{Generation: 0, Version: 1}
+	}
+	return *r.reaperState, nil
+}
+
+// AdvanceRecoveryReaperGeneration mirrors sqlite's identical method: the
+// same CAS discipline every other transition in this fake already uses.
+func (r *RuntimeRepository) AdvanceRecoveryReaperGeneration(_ context.Context, req ports.AdvanceRecoveryReaperGenerationRequest) (ports.RecoveryReaperState, error) {
+	if r.reaperState == nil {
+		r.reaperState = &ports.RecoveryReaperState{Generation: 0, Version: 1}
+	}
+	if r.reaperState.Generation != req.ExpectedGeneration || r.reaperState.Version != req.ExpectedVersion {
+		return ports.RecoveryReaperState{}, fmt.Errorf(
+			"fake: %w: recovery reaper state expected generation=%d version=%d",
+			ports.ErrOptimisticConflict, req.ExpectedGeneration, req.ExpectedVersion,
+		)
+	}
+	r.reaperState.Generation++
+	r.reaperState.Version++
+	return *r.reaperState, nil
+}
+
+// ListRunCancellationIntentsByState mirrors sqlite's identical method,
+// ordered by RunID for a stable, deterministic result a test can assert on
+// exactly.
+func (r *RuntimeRepository) ListRunCancellationIntentsByState(_ context.Context, state runtime.CancellationIntentState) ([]runtime.RunCancellationIntent, error) {
+	var result []runtime.RunCancellationIntent
+	for _, intent := range r.runIntents {
+		if intent.State == state {
+			result = append(result, intent)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].RunID < result[j].RunID })
+	return result, nil
+}
+
+// ListWorkItemCancellationIntentsByState mirrors sqlite's identical method,
+// ordered by WorkItemID for a stable, deterministic result a test can assert
+// on exactly.
+func (r *RuntimeRepository) ListWorkItemCancellationIntentsByState(_ context.Context, state runtime.CancellationIntentState) ([]runtime.WorkItemCancellationIntent, error) {
+	var result []runtime.WorkItemCancellationIntent
+	for _, intent := range r.workIntents {
+		if intent.State == state {
+			result = append(result, intent)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].WorkItemID < result[j].WorkItemID })
+	return result, nil
+}
+
+// ListOrphanedRunningExecutionAttempts mirrors sqlite's identical method:
+// every RUNNING ExecutionAttempt whose own driving EXECUTE_NODE job
+// (AggregateType='ExecutionAttempt', AggregateID=the attempt's own ID) has
+// no currently-active lease as of asOf — never enqueued, already completed,
+// never claimed (SetActiveLease never called), or claimed with a lease
+// whose own LeaseUntil has already passed. Ordered by AttemptID for a
+// stable, deterministic result a test can assert on exactly.
+func (r *RuntimeRepository) ListOrphanedRunningExecutionAttempts(_ context.Context, asOf time.Time) ([]runtime.ExecutionAttempt, error) {
+	var result []runtime.ExecutionAttempt
+	for id, attempt := range r.attempts {
+		if attempt.State != runtime.ExecutionAttemptRunning {
+			continue
+		}
+		if !r.hasActiveLeaseForAttempt(id, asOf) {
+			result = append(result, attempt)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
+// GetWriteLeaseRepositoryWorkspaceForAttempt mirrors sqlite's identical
+// method. This fake never itself models write_leases (see JobsRepository's
+// own doc comment: "no fake worker pool exists"), so it always reports
+// found=false — a test that needs the mutating/INDETERMINATE recovery path
+// exercised does so against real sqlite instead, the same "checkable for
+// real today, not faked" treatment this fake's own WorkRepository.HasActiveWriteLease
+// doc comment already documents for the identical underlying concern.
+func (r *RuntimeRepository) GetWriteLeaseRepositoryWorkspaceForAttempt(_ context.Context, _ string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (r *RuntimeRepository) hasActiveLeaseForAttempt(attemptID string, asOf time.Time) bool {
+	if r.jobs == nil {
+		return false
+	}
+	for _, job := range r.jobs.jobs {
+		if job.AggregateType != "ExecutionAttempt" || job.AggregateID != attemptID {
+			continue
+		}
+		jobID := string(job.ID)
+		if r.jobs.completed[jobID] || r.jobs.cancelled[jobID] {
+			return false
+		}
+		lease, ok := r.jobs.leases[jobID]
+		if !ok {
+			return false
+		}
+		return lease.LeaseUntil.After(asOf)
+	}
+	return false
 }

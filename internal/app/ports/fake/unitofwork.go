@@ -102,6 +102,14 @@ type Tx struct {
 func newTx() Tx {
 	catalog := &CatalogRepository{}
 	runtimeRepo := &RuntimeRepository{}
+	jobsRepo := &JobsRepository{runtime: runtimeRepo}
+	// V4-13: RuntimeRepository's own ListOrphanedRunningExecutionAttempts
+	// needs to read JobsRepository's own lease state — the reverse
+	// direction of the cross-reference JobsRepository.runtime already
+	// established in V4-12B. Wired after both exist (both are pointers, so
+	// this two-step construction is safe) rather than trying to construct
+	// either first.
+	runtimeRepo.jobs = jobsRepo
 	return Tx{
 		events:        &EventsRepository{},
 		receipts:      &ReceiptsRepository{},
@@ -110,7 +118,7 @@ func newTx() Tx {
 		catalog:       catalog,
 		work:          &WorkRepository{catalog: catalog},
 		runtime:       runtimeRepo,
-		jobs:          &JobsRepository{runtime: runtimeRepo},
+		jobs:          jobsRepo,
 		readiness:     &ReadinessRepository{catalog: catalog},
 		wait:          &WaitRepository{},
 		approvals:     &ApprovalRepository{},
@@ -127,6 +135,8 @@ func (t Tx) clone() Tx {
 	clone.work = t.work.cloneWith(clone.catalog)
 	clone.runtime = t.runtime.clone()
 	clone.jobs = t.jobs.cloneWith(clone.runtime)
+	// See newTx's own doc comment on this same two-step wiring.
+	clone.runtime.jobs = clone.jobs
 	clone.readiness = t.readiness.cloneWith(clone.catalog)
 	clone.wait = t.wait.clone()
 	clone.approvals = t.approvals.clone()
@@ -796,6 +806,9 @@ func (j *JobsRepository) SetActiveLease(jobID string, lease ports.JobLease) {
 }
 
 func (j *JobsRepository) EnqueueJob(_ context.Context, req ports.EnqueueJobRequest) (ports.DurableJob, error) {
+	if err := ports.ValidateJobScope(req.Kind, req.ProjectID, req.RunID); err != nil {
+		return ports.DurableJob{}, err
+	}
 	for _, existing := range j.jobs {
 		if existing.IdempotencyKey == req.IdempotencyKey {
 			// Mirrors the real sqlite adapter's own identical mapping of a

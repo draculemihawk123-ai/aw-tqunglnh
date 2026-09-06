@@ -10,16 +10,27 @@ package runtime
 type TerminationReason string
 
 const (
-	// TerminationReasonProcessExitBeforeOutcomeCommit marks an attempt whose
-	// worker was killed after its external/child process had already exited
-	// but before any outcome was durably committed. The attempt's actual
-	// success or failure cannot be inferred from that exit code alone. This
-	// predates ADR-020 (it is SPK-04/SPK-09's own crash-classification
-	// primitive, internal/app/worker.ClassifyInterruptedAttempt) and is kept
-	// as-is: V4-13's recovery coordinator is the task that wires real
-	// durable state through that primitive and decides whether it still
-	// needs its own value or should emit one of the ADR-020 reasons below
-	// instead — not V4-01's schema-only scope to redecide.
+	// TerminationReasonProcessExitBeforeOutcomeCommit is LEGACY-ONLY as of
+	// V4-13 (confirmed with the user before making this change): it marked an
+	// attempt whose worker was killed after its external/child process had
+	// already exited but before any outcome was durably committed. It predates
+	// ADR-020 (it was SPK-04/SPK-09's own crash-classification primitive's
+	// original output, internal/app/worker.ClassifyInterruptedAttempt) — V4-13
+	// is the task termination.go's own earlier doc comment already assigned to
+	// "decide whether it still needs its own value or should emit one of the
+	// ADR-020 reasons below instead", and the decision is: no new production
+	// write ever uses it again. ClassifyInterruptedAttempt now emits
+	// TerminationReasonLeaseLost/TerminationReasonOwnershipLostMutating for
+	// exactly the same read-only/mutating split this reason used to cover —
+	// the underlying classification invariant SPK-03/SPK-04 already proved is
+	// unchanged (read-only -> LOST, mutating -> INDETERMINATE, never inferring
+	// success from a process exit code), only the vocabulary is upgraded to
+	// match ADR-020's own state-reason matrix. This value stays in the closed
+	// enum solely so a pre-V4-13 historical/evidence row already written with
+	// it can still be read back — internal/adapters/sqlite's own
+	// TerminateInterruptedAttempt rejects any new write pairing it with LOST
+	// or INDETERMINATE (ErrLegacyTerminationReason), the defense-in-depth
+	// backstop at the one fenced transition that ever produces either state.
 	TerminationReasonProcessExitBeforeOutcomeCommit TerminationReason = "PROCESS_EXIT_BEFORE_OUTCOME_COMMIT"
 
 	// The remaining constants are ADR-020's own closed "ma trận state-reason"

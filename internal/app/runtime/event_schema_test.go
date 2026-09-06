@@ -715,3 +715,50 @@ func TestWorkItemBlockerResolvedV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestRecoveryDecisionRecordedV1_GoldenFixtureDecodes is
+// RECOVERY_DECISION_RECORDED's own golden-fixture proof (V4-13).
+func TestRecoveryDecisionRecordedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "recovery_decision_recorded_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(RecoveryDecisionRecordedEventType, RecoveryDecisionRecordedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", RecoveryDecisionRecordedEventType, RecoveryDecisionRecordedSchemaVersion, err)
+	}
+	want := recoveryDecisionRecordedEventPayload{
+		AttemptID: "attempt-1", NodeRunID: "node-run-1", RunID: "run-1", WorkItemID: "work-item-1",
+		NextAction: "ESCALATE", Reason: "LEASE_LOST",
+	}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", RecoveryDecisionRecordedEventType, RecoveryDecisionRecordedSchemaVersion, got, want)
+	}
+}
+
+// TestRecoveryDecisionRecordedV1_RealEventPayloadDecodes proves
+// recordDecision's own actual marshaled RECOVERY_DECISION_RECORDED payload
+// round-trips through the registered decoder.
+func TestRecoveryDecisionRecordedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := recoveryDecisionRecordedEventPayload{
+		AttemptID: "attempt-9", NodeRunID: "node-run-9", RunID: "run-9", WorkItemID: "work-item-9",
+		NextAction: "FRESH_START", Reason: "OWNERSHIP_LOST_MUTATING",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(RecoveryDecisionRecordedEventType, RecoveryDecisionRecordedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}

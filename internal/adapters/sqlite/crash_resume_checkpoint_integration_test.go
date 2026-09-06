@@ -174,8 +174,8 @@ func TestSPK03HardCrashJoinsCheckpointContextRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReconcileInterruptedAttempt() error = %v", err)
 	}
-	if recovery.NextState != runtime.ExecutionAttemptLost || recovery.Reason != runtime.TerminationReasonProcessExitBeforeOutcomeCommit {
-		t.Fatalf("interrupted attempt recovery = %+v, want LOST/PROCESS_EXIT_BEFORE_OUTCOME_COMMIT", recovery)
+	if recovery.NextState != runtime.ExecutionAttemptLost || recovery.Reason != runtime.TerminationReasonLeaseLost {
+		t.Fatalf("interrupted attempt recovery = %+v, want LOST/LEASE_LOST", recovery)
 	}
 	attemptState, attemptVersion, err := restarted.LoadExecutionAttemptState(ctx, crashCheckpointInterruptedAttempt)
 	if err != nil {

@@ -1,6 +1,11 @@
 package ports
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
+)
 
 // JobClass is V4-12B's own cancel-fence discriminator
 // (docs/design/06-v4-runtime-engine.md, ADR-020): a RUN_WORK job is fenced
@@ -40,17 +45,24 @@ var ErrRunCancelling = errors.New("workflow run is cancelling or cancelled: no n
 // internal/app/workspacerelease owns
 // WorkspaceSetReleaseJobKind="WORKSPACE_SET_RELEASE").
 //
-// RECOVERY_REAPER (named in the ADR's own CONTROL allow-list) is
-// deliberately excluded: internal/app/workerpool.Pool's own recovery
-// sweep (Store.RecoverExpiredJobs) is a direct, ticker-driven maintenance
-// operation with no durable_jobs row, lease, claim, or RunID of its own —
-// JobClass/cancel_epoch fencing has nothing to attach to. Turning it into
-// a real durable job is a separate, future decision, never an existing
-// Alpha capability this mapping should pretend already exists.
+// RECOVERY_REAPER joined this allow-list in V4-13 (docs/design/06-v4-runtime-engine.md,
+// confirmed with the user before making this change): it is now a real,
+// self-rescheduling durable job internal/app/runtime owns
+// (RecoveryReaperJobKind), no longer the bare ticker-driven
+// Store.RecoverExpiredJobs sweep V4-12B's own doc comment described as
+// having "no durable_jobs row, lease, claim, or RunID of its own" — that
+// description predates this task. durable_jobs.job_class's own CHECK
+// constraint (migration 25) enforces the identical four-kind allow-list at
+// the database level; TestClassifyJobKind_EverythingElseDefaultsRunWork's
+// own negative-space assertions cover the three OLD kinds plus this new
+// one, so a rename mismatch between this Go map and that CHECK's own SQL
+// text fails a test immediately (mirroring migration 23's own doc comment
+// on why the CHECK exists as a second authority, not just this map).
 var controlJobKinds = map[string]bool{
 	"CANCEL_RUN_COORDINATOR":   true,
 	"WORKSPACE_RECONCILIATION": true,
 	"WORKSPACE_SET_RELEASE":    true,
+	"RECOVERY_REAPER":          true,
 }
 
 // ClassifyJobKind derives a job's JobClass from its Kind via this fixed,
@@ -64,4 +76,48 @@ func ClassifyJobKind(kind string) JobClass {
 		return JobClassControl
 	}
 	return JobClassRunWork
+}
+
+// installationGlobalJobKinds is the closed set of job kinds that must be
+// enqueued with NO owning Project or Run at all (V4-13, confirmed with the
+// user): today, only RecoveryReaperJobKind ("RECOVERY_REAPER",
+// internal/app/runtime) — a sweep over every project's own orphaned
+// attempts and stranded cancellation intents, not scoped to any one of
+// them. The user explicitly rejected seeding a synthetic "system" Project
+// row to satisfy durable_jobs.project_id's own FK instead: that would
+// leave a fake project every project-scoped query, authorization check,
+// export and UI has to remember to filter out, which is a worse and more
+// permanent liability than one narrow, explicit exception in this map (the
+// same "closed allow-list, fail toward the common case" shape
+// controlJobKinds above already uses). Every OTHER CONTROL kind
+// (CANCEL_RUN_COORDINATOR, WORKSPACE_RECONCILIATION,
+// WORKSPACE_SET_RELEASE) still requires a real ProjectID — CONTROL-ness
+// and installation-global-ness are independent axes, not the same thing.
+var installationGlobalJobKinds = map[string]bool{
+	"RECOVERY_REAPER": true,
+}
+
+// ValidateJobScope enforces EnqueueJobRequest's own Project/Run scoping
+// invariant server-side, the second authority (alongside durable_jobs' own
+// migration-25 CHECK constraint) for the exact same rule — a mismatch
+// between this map and that SQL CHECK's own kind list fails a test
+// immediately, mirroring ClassifyJobKind's own "CHECK in SQL, map in Go"
+// discipline. Both internal/adapters/sqlite's enqueueJobTx and
+// internal/app/ports/fake's JobsRepository.EnqueueJob call this, so the two
+// backends reject the identical malformed requests rather than one
+// silently accepting what the other rejects.
+func ValidateJobScope(kind string, projectID project.ProjectID, runID string) error {
+	if installationGlobalJobKinds[kind] {
+		if projectID != "" {
+			return fmt.Errorf("durable job kind %s is installation-global and must not carry a ProjectID", kind)
+		}
+		if runID != "" {
+			return fmt.Errorf("durable job kind %s is installation-global and must not carry a RunID", kind)
+		}
+		return nil
+	}
+	if projectID == "" {
+		return fmt.Errorf("durable job kind %s requires a ProjectID", kind)
+	}
+	return nil
 }

@@ -589,6 +589,59 @@ type RuntimeRepository interface {
 	// carries no Version column either).
 	TransitionWorkItemCancellationIntentState(ctx context.Context, req TransitionWorkItemCancellationIntentStateRequest) (runtime.WorkItemCancellationIntent, error)
 
+	// GetRecoveryReaperState is populated now (V4-13,
+	// docs/design/06-v4-runtime-engine.md): reads the one, singleton
+	// recovery_reaper_state row (migration 26) — RecoveryReaperState's own
+	// doc comment explains why a global cursor row exists at all. Returns
+	// ErrPersistenceNotFound only if migration 26 itself somehow never ran
+	// (the row is seeded by that migration; a real caller should never
+	// observe this).
+	GetRecoveryReaperState(ctx context.Context) (RecoveryReaperState, error)
+	// AdvanceRecoveryReaperGeneration is populated now (V4-13): the fenced
+	// CAS the recovery reaper's own self-rescheduling job uses to bump
+	// generation by exactly one — the identical req.ExpectedGeneration/
+	// req.ExpectedVersion CAS discipline every other transition in this
+	// codebase already uses. ErrOptimisticConflict on a stale caller.
+	AdvanceRecoveryReaperGeneration(ctx context.Context, req AdvanceRecoveryReaperGenerationRequest) (RecoveryReaperState, error)
+
+	// ListRunCancellationIntentsByState is populated now (V4-13): every
+	// RunCancellationIntent currently in state — the recovery reaper's own
+	// read this task's task text names directly ("Reaper cũng quét
+	// run_cancellation_intents ... còn dở"), scoped to state so the reaper
+	// only ever loads the still-REQUESTED stragglers it actually needs to
+	// resume, never the (potentially much larger over time) COMPLETED set.
+	ListRunCancellationIntentsByState(ctx context.Context, state runtime.CancellationIntentState) ([]runtime.RunCancellationIntent, error)
+	// ListWorkItemCancellationIntentsByState mirrors
+	// ListRunCancellationIntentsByState at the WorkItem level.
+	ListWorkItemCancellationIntentsByState(ctx context.Context, state runtime.CancellationIntentState) ([]runtime.WorkItemCancellationIntent, error)
+
+	// ListOrphanedRunningExecutionAttempts is populated now (V4-13): every
+	// ExecutionAttempt currently RUNNING whose own driving EXECUTE_NODE job
+	// (AggregateType='ExecutionAttempt', AggregateID=the attempt's own ID —
+	// the exact convention finalize.go/schedule.go's own EnqueueJob calls
+	// already establish) is no longer actively, provably held by a live
+	// worker: the job row does not exist at all, is not currently LEASED, or
+	// is LEASED but its own lease_until has already passed as of asOf. This
+	// is deliberately a real evidence-based join rather than a bare
+	// staleness heuristic on the Attempt's own updated_at (ADR-020's own
+	// "không suy... từ... mà từ bằng chứng bền vững" discipline, applied
+	// here to "is this attempt orphaned" the same way it already governs
+	// "did this attempt's own side effect happen") — an Attempt whose job is
+	// still genuinely LEASED with time remaining is never returned, no
+	// matter how long it has sat RUNNING.
+	ListOrphanedRunningExecutionAttempts(ctx context.Context, asOf time.Time) ([]runtime.ExecutionAttempt, error)
+
+	// GetWriteLeaseRepositoryWorkspaceForAttempt is populated now (V4-13):
+	// the one RepositoryWorkspace attemptID's own write_leases row (if any)
+	// names — found is false for a read-only attempt that never acquired
+	// one. Alpha's own existing worker.ReconcileInterruptedAttempt
+	// primitive (internal/app/worker/interruption.go, SPK-04/SPK-09) is
+	// itself only ever shaped for a single (RepositoryWorkspaceID,
+	// PinnedRevision) pair per attempt — this query matches that same
+	// established single-workspace assumption, not a new one this task
+	// introduces.
+	GetWriteLeaseRepositoryWorkspaceForAttempt(ctx context.Context, attemptID string) (repositoryWorkspaceID string, found bool, err error)
+
 	// ListWorkflowRunsForWorkItem is populated now (V4-12C,
 	// docs/design/06-v4-runtime-engine.md): every WorkflowRun a WorkItem has
 	// ever had, across its full history — a WorkItem policy allows only one
@@ -710,6 +763,23 @@ type TransitionWorkItemCancellationIntentStateRequest struct {
 	WorkItemID    string
 	ExpectedState runtime.CancellationIntentState
 	NextState     runtime.CancellationIntentState
+}
+
+// RecoveryReaperState is the recovery reaper's own singleton generation
+// cursor (V4-13, migration 26) — see that migration's own doc comment for
+// why a single global row, rather than a per-Run/per-Attempt origin like
+// ScopeExpansionOrigin.PollGeneration, is this coordinator's own fencing
+// primitive.
+type RecoveryReaperState struct {
+	Generation uint64
+	Version    uint64
+}
+
+// AdvanceRecoveryReaperGenerationRequest is the CAS request for
+// RuntimeRepository.AdvanceRecoveryReaperGeneration (V4-13).
+type AdvanceRecoveryReaperGenerationRequest struct {
+	ExpectedGeneration uint64
+	ExpectedVersion    uint64
 }
 
 // UpdateWorkflowRunSharedStateRequest is the CAS request for

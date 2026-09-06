@@ -20,11 +20,26 @@ type WriteLeaseHistory interface {
 }
 
 // ClassifyInterruptedAttempt decides the terminal state a crashed attempt
-// must move to. A read-only attempt becomes LOST: nothing durable could
-// depend on it. A mutating attempt becomes INDETERMINATE: its side effect
-// cannot be assumed to have happened or not from a bare process exit code,
-// and must be reconciled (see ReconcileMutatingAttempt) before anything
-// relies on it.
+// must move to. A read-only attempt becomes LOST (TerminationReasonLeaseLost):
+// nothing durable could depend on it. A mutating attempt becomes INDETERMINATE
+// (TerminationReasonOwnershipLostMutating): its side effect cannot be assumed
+// to have happened or not from a bare process exit code, and must be
+// reconciled (see ReconcileMutatingAttempt) before anything relies on it.
+//
+// V4-13 (confirmed with the user before making this change): this function's
+// own output used to be the pre-ADR-020 TerminationReasonProcessExitBeforeOutcomeCommit
+// for both branches — that reason is now legacy-only, kept in the closed enum
+// solely to read historical/evidence rows already written with it, and MUST
+// NOT be emitted by any production path (attempt_store.go's own
+// TerminateInterruptedAttempt rejects a write of either LOST or INDETERMINATE
+// paired with it, defense in depth against a future caller reintroducing it).
+// This is not a change to the underlying read-only/mutating classification
+// invariant SPK-03/SPK-04 already proved (still exactly: read-only -> LOST,
+// mutating -> INDETERMINATE, never inferring success from a process exit code)
+// — only the TerminationReason vocabulary is upgraded to the one ADR-020's own
+// state-reason matrix actually specifies for this transition, the exact job
+// runtime.TerminationReasonProcessExitBeforeOutcomeCommit's own doc comment
+// already assigned to this task.
 func ClassifyInterruptedAttempt(
 	ctx context.Context,
 	history WriteLeaseHistory,
@@ -41,9 +56,9 @@ func ClassifyInterruptedAttempt(
 		return "", "", err
 	}
 	if mutating {
-		return runtime.ExecutionAttemptIndeterminate, runtime.TerminationReasonProcessExitBeforeOutcomeCommit, nil
+		return runtime.ExecutionAttemptIndeterminate, runtime.TerminationReasonOwnershipLostMutating, nil
 	}
-	return runtime.ExecutionAttemptLost, runtime.TerminationReasonProcessExitBeforeOutcomeCommit, nil
+	return runtime.ExecutionAttemptLost, runtime.TerminationReasonLeaseLost, nil
 }
 
 // ReconciliationVerdict is the evidence-backed result of comparing a
