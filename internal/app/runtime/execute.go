@@ -195,17 +195,38 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 	if failureCode == "" {
 		failureCode = errorcode.CodeExecutionFailed
 	}
-	if execResult.State == runtimedomain.ExecutionAttemptSucceeded {
+	var scopeProposal *runtimedomain.ScopeExpansionProposal
+	switch execResult.State {
+	case runtimedomain.ExecutionAttemptSucceeded:
 		nextState = runtimedomain.ExecutionAttemptSucceeded
 		reason = runtimedomain.TerminationReasonCompleted
 		failureCode = ""
-	} else if execResult.TerminationReason != "" {
-		reason = execResult.TerminationReason
+	case runtimedomain.ExecutionAttemptBlocked:
+		// V4-12A (confirmed with the user before writing this file): a
+		// malformed proposal is treated as a real, non-retryable FAILURE
+		// — OUTCOME_REJECTED — never a legitimate BLOCKED transition
+		// ("Shape sai → OUTCOME_REJECTED, không tạo scope request"). Only
+		// a well-formed proposal ever reaches FinalizeExecutionAttempt as
+		// BLOCKED.
+		if err := execResult.RequestedScopeExpansion.Validate(); err != nil {
+			nextState = runtimedomain.ExecutionAttemptFailed
+			reason = runtimedomain.TerminationReasonOutcomeRejected
+			failureCode = errorcode.CodeValidationFailed
+		} else {
+			nextState = runtimedomain.ExecutionAttemptBlocked
+			reason = runtimedomain.TerminationReasonScopeExpansionRequired
+			failureCode = ""
+			scopeProposal = execResult.RequestedScopeExpansion
+		}
+	default:
+		if execResult.TerminationReason != "" {
+			reason = execResult.TerminationReason
+		}
 	}
 	_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
 		RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 		NextState: nextState, TerminationReason: reason, FailureCode: failureCode, SelectedOutcome: execResult.SelectedOutcome,
-		JobLease: jobLease, CorrelationID: payload.CorrelationID,
+		RequestedScopeExpansion: scopeProposal, JobLease: jobLease, CorrelationID: payload.CorrelationID,
 	})
 	return finalizeErr
 }

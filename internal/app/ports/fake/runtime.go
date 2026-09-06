@@ -32,6 +32,7 @@ type RuntimeRepository struct {
 	decisions    map[string]runtime.DecisionArtifact           // by ID
 	runIntents   map[string]runtime.RunCancellationIntent      // by RunID
 	workIntents  map[string]runtime.WorkItemCancellationIntent // by WorkItemID
+	scopeOrigins map[string]runtime.ScopeExpansionOrigin       // by AttemptID
 }
 
 var _ ports.RuntimeRepository = (*RuntimeRepository)(nil)
@@ -73,9 +74,13 @@ func (r *RuntimeRepository) clone() *RuntimeRepository {
 	for k, v := range r.workIntents {
 		workIntents[k] = v
 	}
+	scopeOrigins := make(map[string]runtime.ScopeExpansionOrigin, len(r.scopeOrigins))
+	for k, v := range r.scopeOrigins {
+		scopeOrigins[k] = v
+	}
 	return &RuntimeRepository{
 		workflowRuns: workflowRuns, nodeRuns: nodeRuns, attempts: attempts, manifests: manifests, amendments: amendments,
-		branches: branches, decisions: decisions, runIntents: runIntents, workIntents: workIntents,
+		branches: branches, decisions: decisions, runIntents: runIntents, workIntents: workIntents, scopeOrigins: scopeOrigins,
 	}
 }
 
@@ -535,4 +540,63 @@ func (r *RuntimeRepository) GetWorkItemCancellationIntent(_ context.Context, wor
 		return runtime.WorkItemCancellationIntent{}, fmt.Errorf("fake: %w: work item cancellation intent for work item %s", ports.ErrPersistenceNotFound, workItemID)
 	}
 	return intent, nil
+}
+
+// CreateScopeExpansionOrigin mirrors sqlite's identical method (V4-12A).
+func (r *RuntimeRepository) CreateScopeExpansionOrigin(_ context.Context, origin runtime.ScopeExpansionOrigin) (runtime.ScopeExpansionOrigin, error) {
+	key := string(origin.AttemptID)
+	if _, exists := r.scopeOrigins[key]; exists {
+		return runtime.ScopeExpansionOrigin{}, fmt.Errorf("fake: %w: scope expansion origin %s", ports.ErrPersistenceAlreadyExists, key)
+	}
+	if r.scopeOrigins == nil {
+		r.scopeOrigins = map[string]runtime.ScopeExpansionOrigin{}
+	}
+	r.scopeOrigins[key] = origin
+	return origin, nil
+}
+
+// GetScopeExpansionOriginByAttemptID mirrors sqlite's identical method (V4-12A).
+func (r *RuntimeRepository) GetScopeExpansionOriginByAttemptID(_ context.Context, attemptID string) (runtime.ScopeExpansionOrigin, error) {
+	origin, ok := r.scopeOrigins[attemptID]
+	if !ok {
+		return runtime.ScopeExpansionOrigin{}, fmt.Errorf("fake: %w: scope expansion origin attempt_id=%s", ports.ErrPersistenceNotFound, attemptID)
+	}
+	return origin, nil
+}
+
+// GetScopeExpansionOriginByRequestID mirrors sqlite's identical method (V4-12A).
+func (r *RuntimeRepository) GetScopeExpansionOriginByRequestID(_ context.Context, requestID string) (runtime.ScopeExpansionOrigin, error) {
+	for _, origin := range r.scopeOrigins {
+		if origin.RequestID == requestID {
+			return origin, nil
+		}
+	}
+	return runtime.ScopeExpansionOrigin{}, fmt.Errorf("fake: %w: scope expansion origin request_id=%s", ports.ErrPersistenceNotFound, requestID)
+}
+
+// TransitionScopeExpansionOrigin mirrors sqlite's identical method (V4-12A):
+// a stale caller (wrong ExpectedVersion) gets ErrOptimisticConflict, never
+// a silent overwrite.
+func (r *RuntimeRepository) TransitionScopeExpansionOrigin(_ context.Context, req ports.TransitionScopeExpansionOriginRequest) (runtime.ScopeExpansionOrigin, error) {
+	origin, ok := r.scopeOrigins[req.AttemptID]
+	if !ok {
+		return runtime.ScopeExpansionOrigin{}, fmt.Errorf("fake: %w: scope expansion origin %s", ports.ErrPersistenceNotFound, req.AttemptID)
+	}
+	if origin.Version != req.ExpectedVersion {
+		return runtime.ScopeExpansionOrigin{}, fmt.Errorf(
+			"fake: %w: scope expansion origin %s expected version %d",
+			ports.ErrOptimisticConflict, req.AttemptID, req.ExpectedVersion,
+		)
+	}
+	origin.ReconcileStatus = req.NextReconcileStatus
+	if req.NextPollGeneration != nil {
+		origin.PollGeneration = *req.NextPollGeneration
+	}
+	if req.NextReactivatedNodeRunID != nil {
+		ref := runtime.NodeRunID(*req.NextReactivatedNodeRunID)
+		origin.ReactivatedNodeRunID = &ref
+	}
+	origin.Version++
+	r.scopeOrigins[req.AttemptID] = origin
+	return origin, nil
 }

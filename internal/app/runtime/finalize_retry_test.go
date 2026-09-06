@@ -3,7 +3,6 @@ package runtime_test
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -212,14 +211,18 @@ func TestExecuteNodeHandler_RetryableFailure_BudgetExhausted_FailsNodeRun(t *tes
 	}
 }
 
-// TestFinalizeExecutionAttempt_BlockedState_RejectedNeverConsumesRetryBudget
+// TestFinalizeExecutionAttempt_BlockedState_MismatchedReasonRejectedNeverConsumesRetryBudget
 // proves ExecutionAttemptBlocked never reaches the retry decision at all —
-// isFinalizableExecutionAttemptState rejects it outright
-// (ErrUnsupportedFinalizeState), so it can never consume AttemptPolicy
-// retry budget nor spawn a next Attempt automatically. BLOCKED is ADR-020's
-// own terminal business/admission blocker, produced (and revived) by a
-// later task's own scope (V4-12A/V4-13), never by this one.
-func TestFinalizeExecutionAttempt_BlockedState_RejectedNeverConsumesRetryBudget(t *testing.T) {
+// V4-12A widened isFinalizableExecutionAttemptState to accept BLOCKED (it
+// is no longer ErrUnsupportedFinalizeState outright), but a BLOCKED call
+// whose own TerminationReason is not exactly SCOPE_EXPANSION_REQUIRED is
+// still rejected before touching any durable state, and — see
+// TestFinalizeExecutionAttempt_Blocked_RequestsScopeExpansion below for the
+// positive case — a WELL-FORMED BLOCKED call is handled by
+// requestScopeExpansionTx, never decideRetryOrExhaustion, so it can never
+// consume AttemptPolicy retry budget nor spawn a next Attempt
+// automatically either way.
+func TestFinalizeExecutionAttempt_BlockedState_MismatchedReasonRejectedNeverConsumesRetryBudget(t *testing.T) {
 	uow, ids, runID, nodeRunID, attemptID := scheduledExecutionFixture(t, 600)
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 	seedRunningAttemptAndNodeRun(t, uow, nodeRunID, attemptID)
@@ -230,8 +233,8 @@ func TestFinalizeExecutionAttempt_BlockedState_RejectedNeverConsumesRetryBudget(
 		NextState: runtimedomain.ExecutionAttemptBlocked, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 		JobLease: lease,
 	})
-	if !errors.Is(err, runtime.ErrUnsupportedFinalizeState) {
-		t.Fatalf("err = %v, want ErrUnsupportedFinalizeState (BLOCKED must never flow through the retry decision)", err)
+	if err == nil {
+		t.Fatal("err = nil, want a rejection (BLOCKED requires TerminationReason=SCOPE_EXPANSION_REQUIRED)")
 	}
 
 	attempts := uow.Snapshot.Runtime().(*fake.RuntimeRepository).Attempts()

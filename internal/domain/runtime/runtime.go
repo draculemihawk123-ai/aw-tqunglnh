@@ -141,7 +141,18 @@ type NodeRun struct {
 	// by advanceRunTx across every ordinary hop within a branch, in lock-
 	// step with a CAS on that same token's own CurrentNodeKey.
 	BranchTokenID *BranchTokenID
-	Version       uint64
+	// ReactivationReason is populated now (V4-12A, AK-ARCH-015A): "" for
+	// every ordinary activation this codebase creates (advanceRunTx's own
+	// normal routing, V4-07's own cycle escalation, V4-10's own fork
+	// fan-out — none of those ever set it), "SCOPE_EXPANDED" only for the
+	// one NodeRun this task's own reactivation logic creates once an
+	// approved scope-expansion request's own repositories are durably
+	// READY. Set post-construction by that one caller, mirroring how
+	// State/BranchTokenID are already set post-construction elsewhere in
+	// this codebase rather than threaded through NewNodeRun's own
+	// constructor.
+	ReactivationReason string
+	Version            uint64
 }
 
 // NewNodeRun validates and builds a new NodeRun activation, PENDING at

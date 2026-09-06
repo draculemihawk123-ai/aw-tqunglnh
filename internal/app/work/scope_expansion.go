@@ -39,6 +39,27 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
+// ScopeExpansionReconcileJobKind is the durable job ApproveScopeExpansion
+// enqueues (V4-12A, AK-ARCH-015A) exactly once per request that has a real
+// runtime origin — internal/app/runtime owns the ONE consumer/Handler for
+// it (this package only ever enqueues, the same "producer names the job
+// kind it enqueues, the consumer package imports it" convention
+// WorkspaceProvisionJobKind already established for
+// internal/app/workspaceprovision's own Handler).
+const ScopeExpansionReconcileJobKind = "SCOPE_EXPANSION_RECONCILE"
+
+const defaultScopeExpansionReconcileJobMaxClaims = 3
+
+// ScopeExpansionReconcileJobPayload is the exact JSON shape
+// ApproveScopeExpansion marshals for a ScopeExpansionReconcileJobKind job
+// (and every successor that job's own handler enqueues for itself) —
+// defined once here so producer and every consumer always unmarshal the
+// exact same shape.
+type ScopeExpansionReconcileJobPayload struct {
+	AttemptID      string `json:"attemptId"`
+	PollGeneration uint64 `json:"pollGeneration"`
+}
+
 // ErrCrossFamilyReference is returned when RequestScopeExpansion's own
 // optional ReferencedWorkItemID names a real WorkItem that belongs to a
 // DIFFERENT TaskFamily than the one the request itself targets — a "block
@@ -89,6 +110,21 @@ type RequestScopeExpansionRequest struct {
 	// itself drives a WorkItemStatus transition" boundary this field stays
 	// inside of.
 	ReferencedWorkItemID string
+	// RequestID is populated now (V4-12A): internal-runtime-path-only —
+	// left blank for every ordinary (UI/operator) caller, in which case
+	// this command mints one via ids.NewID() exactly as it always has.
+	// V4-12A's own REQUEST_SCOPE_EXPANSION job handler is the one caller
+	// that ever supplies a non-blank value: the exact ScopeExpansionRequestID
+	// FinalizeExecutionAttempt already RESERVED (and persisted into a
+	// ScopeExpansionOrigin row) in the SAME fenced transaction that CASed
+	// the originating Attempt/NodeRun to BLOCKED — before this command
+	// ever runs, so the request this call creates lands under the exact
+	// ID that origin row already names, and a crash/redelivery replays
+	// idempotently by (Actor, Scope, IdempotencyKey) exactly like every
+	// other command in this codebase, never by re-deriving a new ID. A
+	// public/UI-facing caller must never be allowed to choose its own
+	// RequestID (an internal identity a client has no business picking).
+	RequestID string
 }
 
 // RequestScopeExpansionResult is what RequestScopeExpansion returns (and
@@ -196,7 +232,10 @@ func RequestScopeExpansion(ctx context.Context, uow ports.UnitOfWork, ids idsour
 			})
 		}
 
-		requestID := ids.NewID()
+		requestID := strings.TrimSpace(req.RequestID)
+		if requestID == "" {
+			requestID = ids.NewID()
+		}
 		request, err := workdomain.NewScopeExpansionRequest(
 			workdomain.ScopeExpansionRequestID(requestID), family, grants, req.Reason,
 			referencedWorkItemID, cmd.Actor, cmd.RequestedAt,
@@ -579,6 +618,38 @@ func ApproveScopeExpansion(ctx context.Context, uow ports.UnitOfWork, ids idsour
 			ApprovedScopeVersion: &newScopeVersionCopy,
 		}); err != nil {
 			return err
+		}
+
+		// V4-12A (docs/design/06-v4-runtime-engine.md, AK-ARCH-015A):
+		// enqueue exactly one SCOPE_EXPANSION_RECONCILE job when — and
+		// only when — this request has a real runtime origin (a BLOCKED
+		// Attempt raised it via FinalizeExecutionAttempt's own
+		// requestScopeExpansionTx, internal/app/runtime). A manually/
+		// UI-created request (no ReferencedWorkItemID a runtime task ever
+		// wired up, or simply never linked) has no origin row —
+		// ErrPersistenceNotFound is the expected, common case there, not
+		// an error this command surfaces. This command itself never
+		// touches any NodeRun/Attempt (see this function's own doc
+		// comment) — it only ever enqueues the job that will.
+		if origin, err := tx.Runtime().GetScopeExpansionOriginByRequestID(ctx, req.RequestID); err != nil {
+			if !errors.Is(err, ports.ErrPersistenceNotFound) {
+				return err
+			}
+		} else {
+			reconcilePayload, err := json.Marshal(ScopeExpansionReconcileJobPayload{
+				AttemptID: string(origin.AttemptID), PollGeneration: origin.PollGeneration,
+			})
+			if err != nil {
+				return fmt.Errorf("marshal %s job payload: %w", ScopeExpansionReconcileJobKind, err)
+			}
+			if _, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+				ID: ports.JobID(ids.NewID()), ProjectID: family.ProjectID, Kind: ScopeExpansionReconcileJobKind,
+				AggregateType: "ExecutionAttempt", AggregateID: string(origin.AttemptID), Payload: reconcilePayload,
+				AvailableAt: cmd.RequestedAt, MaxClaims: defaultScopeExpansionReconcileJobMaxClaims,
+				IdempotencyKey: fmt.Sprintf("scope-expansion-reconcile:%s:%d", origin.AttemptID, origin.PollGeneration),
+			}); err != nil {
+				return err
+			}
 		}
 
 		eventPayload, err := json.Marshal(struct {

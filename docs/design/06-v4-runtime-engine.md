@@ -567,7 +567,94 @@
   với technical failure và làm AttemptPolicy retry sai. Sau provision append amendment, tạo activation
   mới với `ReactivationReason=SCOPE_EXPANDED`, pin revision mới; sibling/activation/attempt cũ giữ scope
   cũ và Attempt đã BLOCKED không được hồi sinh.
+  **Hai câu hỏi chốt với user trước khi code:**
+  1. *Cơ chế nào để một Attempt thực sự raise được một request thật và giữ đúng liên kết:* đề xuất ban
+     đầu của tôi là "widen `NodeExecutionResult` + một job riêng gọi `work.RequestScopeExpansion`" — user
+     CHỌN đúng hướng đó nhưng sửa một chi tiết chốt: `ScopeExpansionRequestID` phải được **RESERVE ngay
+     trong transaction finalize BLOCKED**, không được backfill sau khi handler tạo request xong — chỉ ra
+     đúng race/crash-window: "`RequestScopeExpansion` tạo request thành công. Process crash trước khi ghi
+     RequestID vào runtime link. Operator có thể approve request mà V4-12A chưa tìm được Attempt nguồn."
+     User chốt luôn state/field matrix chặt: `NodeExecutionResult.RequestedScopeExpansion` chỉ hợp lệ khi
+     `State=BLOCKED` + `TerminationReason=SCOPE_EXPANSION_REQUIRED`; sai hình dạng (SUCCEEDED/FAILED có
+     kèm proposal, hoặc BLOCKED thiếu proposal) → `OUTCOME_REJECTED`, không bao giờ tạo scope request.
+     `requestScopeExpansionTx` (trong transaction finalize) phải: validate JobLease/WriteLease/cancel
+     fence như bình thường, validate + canonicalize proposal, RESERVE RequestID, tạo
+     `attempt_scope_expansion_origins` (attempt_id PK, request_id UNIQUE NOT NULL, proposal_hash,
+     reactivated_node_run_id UNIQUE NULL), CAS Attempt rồi NodeRun sang BLOCKED, enqueue job
+     `REQUEST_SCOPE_EXPANSION` (`IdempotencyKey=scope-expansion:<attempt-id>`) — **BLOCKED tuyệt đối
+     không đi qua retry policy**. Handler của job đó gọi `work.RequestScopeExpansion` thật trong transaction
+     RIÊNG của nó, truyền đúng RequestID đã reserve (không tự mint mới) — actor là `system:runtime`, không
+     phải identity của executor (executor chỉ đề xuất, không tự authenticate) và cũng không phải một
+     operator thật (không ai quyết định raise request này, chính Attempt BLOCKED tự làm). Crash giữa lúc
+     request đã tạo và job chưa complete: redelivery replay đúng cùng request qua idempotency key, không
+     tạo request thứ hai, không mất liên kết. User dứt khoát từ chối phương án hẹp hơn ("chỉ build
+     reactivate, không build đường raise request") vì "để thiếu chính đường tạo request mà ADR-002 đã yêu
+     cầu và không thể kiểm thử flow end-to-end của V4-12A".
+  2. *V4-12A biết khi nào request đã approved VÀ đã provision xong bằng cách nào:* user chọn job tự
+     lên lịch lại (self-rescheduling reconcile job) nhưng sửa: KHÔNG polling ngay từ lúc request còn
+     PENDING chờ người duyệt — job đầu tiên chỉ được enqueue **khi đã approved**, vì "`WAIT_TIMER`/
+     `APPROVAL_TIMER` hiện chỉ chạy một lần tại `DueAt`; chúng không phải tiền lệ chính xác cho polling
+     lặp." Chốt flow: `ApproveScopeExpansion` (V3-08, không sửa hành vi cũ) trong CÙNG transaction đã bump
+     ScopeVersion/ghi grant/enqueue WORKSPACE_PROVISION, giờ thêm bước enqueue ĐÚNG MỘT job
+     `SCOPE_EXPANSION_RECONCILE` **khi và chỉ khi** request có origin runtime thật (tra
+     `GetScopeExpansionOriginByRequestID`, `ErrPersistenceNotFound` là trường hợp bình thường cho request
+     tạo thủ công/UI, không phải lỗi). Handler mỗi lần claim đọc state authoritative: request PENDING là
+     nhánh phòng thủ/không thể xảy ra (no-op, vì approve luôn enqueue job mới); REJECTED/WITHDRAWN → origin
+     REJECTED, không reactivate; APPROVED + WorkspaceSet REQUESTED/PROVISIONING → enqueue successor với
+     backoff tăng dần có trần rồi complete job hiện tại; APPROVED + WorkspaceSet READY → còn phải verify
+     `BaseRevisionSet` thực sự phủ MỌI repository đã request (không tin `State=READY` một mình, vì đó có
+     thể là snapshot cũ/thiếu) rồi mới append amendment + tạo activation MỚI trong cùng transaction;
+     WorkspaceSet BLOCKED/RELEASING/RELEASED → không polling vô hạn, đánh dấu origin NEEDS_RECOVERY và dừng.
+     Kỷ luật job: `SCOPE_EXPANSION_RECONCILE` là `RUN_WORK` (không phải `CONTROL`) vì có thể tạo activation
+     mới nên phải chịu cancel fence (khái niệm V4-12B); enqueue successor và complete job hiện tại phải
+     cùng một transaction, `IdempotencyKey=scope-expansion-reconcile:<attempt-id>:<generation>` với CAS
+     trên `poll_generation` để duplicate delivery không bao giờ mint hai successor. Transaction reactivate
+     cuối cùng phải: check Run không CANCELLING/terminal, check request còn APPROVED, append
+     RunManifestAmendment, tạo ĐÚNG MỘT activation mới, copy Iteration (không tăng cycle budget), **nếu
+     node gốc nằm trong FORK branch thì copy luôn BranchTokenID, nếu không JOIN sẽ chờ sai branch mãi
+     mãi**, pin scope/manifest revision mới, set `ReactivationReason=SCOPE_EXPANDED`, CAS
+     `reactivated_node_run_id` để hai lần approve/reconcile trùng nhau chỉ bao giờ tạo đúng một activation.
+     User từ chối phương án hẹp hơn ("chỉ hỗ trợ trường hợp không cần provision mới") vì "nó để hở chính
+     trường hợp quan trọng nhất của scope expansion: thêm repository mới."
+  Phạm vi code: `internal/domain/runtime/scope_expansion.go` (mới) —
+  `ScopeGrantProposal`/`ScopeExpansionProposal` (`Validate`/`CanonicalJSON` sort theo RepositoryID để hash
+  ổn định), `ScopeExpansionReconcileStatus` (PENDING/REACTIVATED/REJECTED/NEEDS_RECOVERY),
+  `ScopeExpansionOrigin`/`NewScopeExpansionOrigin` (luôn khởi tạo PENDING/pollGeneration=0, hash
+  sha256 canonical proposal). Migration `0022_scope_expansion_reactivation.sql` —
+  `attempt_scope_expansion_origins` (attempt_id PK, request_id UNIQUE NOT NULL, reactivated_node_run_id
+  UNIQUE NULL, poll_generation, version) + `node_runs.reactivation_reason` (`NOT NULL DEFAULT ''`).
+  `ports.RuntimeRepository` thêm bốn method (`CreateScopeExpansionOrigin`,
+  `GetScopeExpansionOriginByAttemptID`, `GetScopeExpansionOriginByRequestID`,
+  `TransitionScopeExpansionOrigin`) — sqlite (`scope_expansion_origin.go`) + fake. `ports.NodeExecutionResult`
+  thêm `RequestedScopeExpansion *runtime.ScopeExpansionProposal`. `finalize.go`: `BLOCKED` giờ nằm trong
+  `isFinalizableExecutionAttemptState`, validation state/field matrix ở tầng finalize (không chỉ tầng
+  domain), `requestScopeExpansionTx` (CAS BLOCKED, reserve RequestID, tạo origin, enqueue job, rồi gọi
+  `reconcileRunTerminalityTx` — V4-12's own reducer — ở cuối, vì BLOCKED loại bỏ live activation cuối
+  giống hệt FAILED). `execute.go`: `ExecuteNodeHandler.Handle` tách nhánh dịch kết quả thành switch theo
+  `State`, thêm case `ExecutionAttemptBlocked` dịch đúng "sai hình dạng → OUTCOME_REJECTED". `internal/app/
+  work/scope_expansion.go`: `RequestScopeExpansionRequest.RequestID` (optional, chỉ runtime path nội bộ
+  truyền; public/UI luôn để trống), `ApproveScopeExpansion` thêm bước tra origin + enqueue
+  `SCOPE_EXPANSION_RECONCILE` đúng một lần. `internal/app/runtime/scope_expansion.go` (mới) —
+  `RequestScopeExpansionHandler` (gọi `work.RequestScopeExpansion` thật với RequestID đã reserve, actor
+  `system:runtime`), `ScopeExpansionReconcileHandler` (state machine đầy đủ ở trên),
+  `workspaceSetCoversEveryGrant` (kiểm tra `BaseRevisionSet` phủ đủ), `enqueueScopeExpansionReconcileSuccessorTx`
+  (backoff tăng dần trần 300s, CAS `poll_generation`), `reactivateBlockedNodeRunTx` (tạo activation mới,
+  copy NodeKey/Iteration/BranchTokenID, copy DecisionArtifact profile sang ID mới, enqueue
+  `ScheduleNodeRunJobKind` — tái dùng nguyên `ScheduleExecutableNodeRun` pipeline, không tự resolve
+  EffectiveScope/ManifestRevision lần hai).
 - **Verify:** concurrent approval, duplicate delivery, restart và negative sibling/effective-scope tests.
+  Đã triển khai (`scope_expansion_test.go`, `scope_expansion_sqlite_test.go`, 6 test): base transition
+  (BLOCKED không spawn attempt retry, tạo đúng origin + job); end-to-end pipeline THẬT hoàn toàn — dùng
+  `workspaceprovision.Handler` thật (không mock) để provision repo-2 THẬT MỚI, chứng minh
+  reconcile job tự reschedule khi còn PROVISIONING rồi mới reactivate khi READY, activation mới có
+  `ReactivationReason=SCOPE_EXPANDED` + NodeKey/Iteration copy đúng + EffectiveScope family có thêm
+  repo-2, Attempt/NodeRun gốc BLOCKED vĩnh viễn; duplicate delivery của job reconcile đã REACTIVATED là
+  no-op tuyệt đối (không tạo activation thứ hai); REJECTED path — origin REJECTED, không bao giờ
+  reactivate; sibling test — mọi NodeRun khác đã tồn tại trước reactivation (START, activation BLOCKED
+  gốc) không bị đụng, chỉ đúng một activation mới xuất hiện với BranchTokenID copy đúng (so sánh theo giá
+  trị, không theo con trỏ, vì fake repository clone() mỗi lần round-trip); restart thật giữa lúc origin
+  còn PENDING (đóng/mở `sqlite.Store`, verify cả `GetScopeExpansionOriginByAttemptID` lẫn
+  `GetScopeExpansionOriginByRequestID` đọc đúng sau restart, Attempt/NodeRun vẫn BLOCKED).
 - **Hoàn thành khi:** chỉ activation mới nhận grant và audit nối request→approval→amendment→activation.
 - **Nguồn:** ADR-011, ADR-020, AK-ARCH-015A, GC-INV-22, GC-DS-02.
 

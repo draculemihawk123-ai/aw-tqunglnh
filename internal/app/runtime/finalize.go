@@ -107,9 +107,18 @@ type FinalizeExecutionAttemptRequest struct {
 	// pre-validates it).
 	SelectedOutcome  string
 	SharedStatePatch map[string]json.RawMessage
-	JobLease         ports.JobLease
-	WriteLeases      []ports.WriteLeaseGrant
-	CorrelationID    string
+	// RequestedScopeExpansion is populated now (V4-12A): required exactly
+	// when NextState is ExecutionAttemptBlocked and TerminationReason is
+	// TerminationReasonScopeExpansionRequired, forbidden otherwise — the
+	// same strict per-NextState mutual exclusivity SelectedOutcome/
+	// FailureCode already enforce below, confirmed with the user before
+	// writing this file: a malformed shape is ErrOutcomeShapeInvalid,
+	// never something that creates a ScopeExpansionOrigin/durable BLOCKED
+	// state.
+	RequestedScopeExpansion *runtimedomain.ScopeExpansionProposal
+	JobLease                ports.JobLease
+	WriteLeases             []ports.WriteLeaseGrant
+	CorrelationID           string
 }
 
 // FinalizeExecutionAttemptResult reports what one fenced finalize actually
@@ -127,6 +136,14 @@ type FinalizeExecutionAttemptResult struct {
 	// NodeRunFailed is populated only when a FAILED/TIMED_OUT Attempt was
 	// non-retryable, or retryable but exhausted its budget (V4-06).
 	NodeRunFailed bool
+	// ScopeExpansionRequested/ScopeExpansionRequestID are populated only
+	// when NextState was BLOCKED (V4-12A): a ScopeExpansionOrigin was
+	// created linking this Attempt to the RESERVED RequestID a
+	// REQUEST_SCOPE_EXPANSION job will use to raise the real
+	// work.ScopeExpansionRequest.
+	ScopeExpansionRequested bool
+	ScopeExpansionRequestID string
+	ScopeExpansionJobID     string
 }
 
 const (
@@ -210,6 +227,27 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 	if !needsFailureCode && req.FailureCode != "" {
 		return FinalizeExecutionAttemptResult{}, fmt.Errorf("runtime: FailureCode must be empty unless NextState is FAILED or TIMED_OUT, got %q for %q", req.FailureCode, req.NextState)
 	}
+	// V4-12A: BLOCKED requires exactly TerminationReasonScopeExpansionRequired
+	// and a well-formed RequestedScopeExpansion — the strict mutual-
+	// exclusivity matrix confirmed with the user before writing this file
+	// (SUCCEEDED has an outcome; FAILED/TIMED_OUT has a FailureCode;
+	// BLOCKED has a scope proposal — never more than one of the three). A
+	// caller with a malformed proposal must never reach here with
+	// NextState BLOCKED at all — ExecuteNodeHandler's own translation
+	// layer (execute.go) rejects that shape as FAILED/OUTCOME_REJECTED
+	// before ever calling this function, so this is this function's own
+	// defensive, should-be-unreachable-in-practice re-check, not the
+	// primary enforcement point.
+	if req.NextState == runtimedomain.ExecutionAttemptBlocked {
+		if req.TerminationReason != runtimedomain.TerminationReasonScopeExpansionRequired {
+			return FinalizeExecutionAttemptResult{}, fmt.Errorf("runtime: BLOCKED requires TerminationReason=%s, got %q", runtimedomain.TerminationReasonScopeExpansionRequired, req.TerminationReason)
+		}
+		if err := req.RequestedScopeExpansion.Validate(); err != nil {
+			return FinalizeExecutionAttemptResult{}, err
+		}
+	} else if req.RequestedScopeExpansion != nil {
+		return FinalizeExecutionAttemptResult{}, fmt.Errorf("runtime: RequestedScopeExpansion must be empty unless NextState is BLOCKED, got %q", req.NextState)
+	}
 
 	var result FinalizeExecutionAttemptResult
 	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
@@ -281,6 +319,11 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 
 		case runtimedomain.ExecutionAttemptFailed, runtimedomain.ExecutionAttemptTimedOut:
 			if err := decideRetryOrExhaustion(ctx, tx, ids, clk, req, updatedAttempt, run, &result); err != nil {
+				return err
+			}
+
+		case runtimedomain.ExecutionAttemptBlocked:
+			if err := requestScopeExpansionTx(ctx, tx, ids, req, run, &result); err != nil {
 				return err
 			}
 		}
@@ -451,6 +494,75 @@ func decideRetryOrExhaustion(
 	return reconcileRunTerminalityTx(ctx, tx, run, document, req.CorrelationID, string(req.JobLease.JobID))
 }
 
+// requestScopeExpansionTx is V4-12A's own BLOCKED branch (confirmed with
+// the user before writing this file): CAS the NodeRun to BLOCKED alongside
+// the Attempt (both already CASed the same way decideRetryOrExhaustion's
+// own FAILED branch CASes the NodeRun — RUNNING -> BLOCKED here, never
+// touching any BranchToken this NodeRun might belong to, since BLOCKED is
+// "paused", not a terminal branch outcome the JOIN's own ALL/ANY/QUORUM
+// policy needs to observe), reserve the ScopeExpansionRequestID a
+// REQUEST_SCOPE_EXPANSION job will use to raise the real
+// work.RequestScopeExpansion command with that exact ID, and persist the
+// durable ScopeExpansionOrigin link — all inside this SAME fenced
+// transaction, before the job is ever claimed.
+func requestScopeExpansionTx(
+	ctx context.Context, tx ports.Tx, ids idsource.Source,
+	req FinalizeExecutionAttemptRequest, run runtimedomain.WorkflowRun, result *FinalizeExecutionAttemptResult,
+) error {
+	nodeRun, err := tx.Runtime().GetNodeRun(ctx, req.NodeRunID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
+		NodeRunID: req.NodeRunID, ExpectedState: runtimedomain.NodeRunRunning, ExpectedVersion: nodeRun.Version,
+		NextState: runtimedomain.NodeRunBlocked,
+	}); err != nil {
+		return err
+	}
+
+	requestID := ids.NewID()
+	origin, err := runtimedomain.NewScopeExpansionOrigin(
+		runtimedomain.ScopeExpansionOriginID(req.AttemptID), runtimedomain.NodeRunID(req.NodeRunID), run.ID,
+		string(run.WorkItemID), string(run.FamilyID), requestID, *req.RequestedScopeExpansion,
+	)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Runtime().CreateScopeExpansionOrigin(ctx, origin); err != nil {
+		return err
+	}
+
+	jobPayload, err := json.Marshal(RequestScopeExpansionJobPayload{
+		RunID: req.RunID, NodeRunID: req.NodeRunID, AttemptID: req.AttemptID, CorrelationID: req.CorrelationID,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal %s job payload: %w", RequestScopeExpansionJobKind, err)
+	}
+	job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+		ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: RequestScopeExpansionJobKind,
+		AggregateType: "ExecutionAttempt", AggregateID: req.AttemptID, Payload: jobPayload,
+		MaxClaims: defaultRequestScopeExpansionJobMaxClaims, IdempotencyKey: "scope-expansion:" + req.AttemptID,
+	})
+	if err != nil {
+		return err
+	}
+
+	result.ScopeExpansionRequested = true
+	result.ScopeExpansionRequestID = requestID
+	result.ScopeExpansionJobID = string(job.ID)
+
+	// V4-12: a BLOCKED NodeRun is recoverable-stalled, never itself a
+	// reason to fail the Run — but reconciling here anyway (harmless,
+	// almost always a no-op) keeps this transition consistent with every
+	// other "could have removed the Run's last live activation" call
+	// site.
+	version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+	if err != nil {
+		return err
+	}
+	return reconcileRunTerminalityTx(ctx, tx, run, version.Document(), req.CorrelationID, string(req.JobLease.JobID))
+}
+
 // resolvePinnedAttemptRules re-loads the exact ATTEMPT-category PolicyRef
 // V4-04's own ScheduleExecutableNodeRun pinned into the NodeRun's own
 // DecisionArtifact ("<nodeRunId>-execution-profile-v1") — this is safe to
@@ -507,7 +619,8 @@ func retryableErrorCodeDeclared(declared []errorcode.Code, code errorcode.Code) 
 func isFinalizableExecutionAttemptState(state runtimedomain.ExecutionAttemptState) bool {
 	switch state {
 	case runtimedomain.ExecutionAttemptSucceeded, runtimedomain.ExecutionAttemptFailed,
-		runtimedomain.ExecutionAttemptTimedOut, runtimedomain.ExecutionAttemptCancelled:
+		runtimedomain.ExecutionAttemptTimedOut, runtimedomain.ExecutionAttemptCancelled,
+		runtimedomain.ExecutionAttemptBlocked:
 		return true
 	default:
 		return false

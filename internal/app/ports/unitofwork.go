@@ -552,6 +552,50 @@ type RuntimeRepository interface {
 	// GetWorkItemCancellationIntent returns the WorkItemCancellationIntent
 	// for workItemID, or ErrPersistenceNotFound.
 	GetWorkItemCancellationIntent(ctx context.Context, workItemID string) (runtime.WorkItemCancellationIntent, error)
+
+	// CreateScopeExpansionOrigin is populated now (V4-12A,
+	// docs/design/06-v4-runtime-engine.md): inserts the durable link
+	// between one BLOCKED ExecutionAttempt and the RESERVED RequestID a
+	// REQUEST_SCOPE_EXPANSION job will use to raise the real
+	// work.ScopeExpansionRequest — created in the SAME transaction that
+	// CASes the Attempt/NodeRun to BLOCKED, never afterward.
+	// ErrPersistenceAlreadyExists for a reused AttemptID (an Attempt is
+	// finalized at most once).
+	CreateScopeExpansionOrigin(ctx context.Context, origin runtime.ScopeExpansionOrigin) (runtime.ScopeExpansionOrigin, error)
+	// GetScopeExpansionOriginByAttemptID returns the ScopeExpansionOrigin
+	// keyed on attemptID, or ErrPersistenceNotFound.
+	GetScopeExpansionOriginByAttemptID(ctx context.Context, attemptID string) (runtime.ScopeExpansionOrigin, error)
+	// GetScopeExpansionOriginByRequestID returns the ScopeExpansionOrigin
+	// whose own RequestID matches — the lookup ApproveScopeExpansion
+	// (internal/app/work, V3-08) uses to decide whether a just-approved
+	// request has a runtime origin at all (a manually/UI-created request
+	// never does) before enqueuing a SCOPE_EXPANSION_RECONCILE job.
+	// ErrPersistenceNotFound when no origin references requestID.
+	GetScopeExpansionOriginByRequestID(ctx context.Context, requestID string) (runtime.ScopeExpansionOrigin, error)
+	// TransitionScopeExpansionOrigin is populated now (V4-12A): the fenced
+	// CAS the SCOPE_EXPANSION_RECONCILE job's own self-rescheduling state
+	// machine uses for every observed transition — bumping PollGeneration
+	// alongside enqueuing a successor job (so a duplicate delivery of the
+	// SAME attempt can never mint two successors), and setting
+	// ReconcileStatus/ReactivatedNodeRunID on a terminal outcome.
+	// ExpectedVersion mismatch is ErrOptimisticConflict.
+	TransitionScopeExpansionOrigin(ctx context.Context, req TransitionScopeExpansionOriginRequest) (runtime.ScopeExpansionOrigin, error)
+}
+
+// TransitionScopeExpansionOriginRequest is the CAS request for
+// RuntimeRepository.TransitionScopeExpansionOrigin (V4-12A).
+// NextPollGeneration/NextReactivatedNodeRunID are optional: nil leaves the
+// corresponding column unchanged, letting one CAS method serve both the
+// "still pending, just bumped the poll generation" transition (only
+// NextPollGeneration set) and the "terminal outcome" transitions (
+// NextReconcileStatus always set; NextReactivatedNodeRunID additionally set
+// only for the REACTIVATED outcome).
+type TransitionScopeExpansionOriginRequest struct {
+	AttemptID                string
+	ExpectedVersion          uint64
+	NextReconcileStatus      runtime.ScopeExpansionReconcileStatus
+	NextPollGeneration       *uint64
+	NextReactivatedNodeRunID *string
 }
 
 // TransitionBranchTokenRequest is the CAS request for

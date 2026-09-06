@@ -25,9 +25,9 @@ type NodeExecutionRequest struct {
 // accept it, based on whether the JobLease/WriteLease fencing this
 // executor ran under is still valid at acceptance time — "worker chỉ
 // propose outcome; orchestrator quyết transition" (V4-05's own Hoàn thành
-// khi). State is only ever SUCCEEDED or FAILED: TIMED_OUT and the
-// "cancelled context, do not finalize" case are both decided by the
-// envelope itself observing its own derived-deadline context, never
+// khi). State is only ever SUCCEEDED, FAILED or (V4-12A) BLOCKED: TIMED_OUT
+// and the "cancelled context, do not finalize" case are both decided by
+// the envelope itself observing its own derived-deadline context, never
 // proposed by the executor as a result value (see ExecuteNodeHandler's own
 // doc comment for why).
 type NodeExecutionResult struct {
@@ -49,6 +49,16 @@ type NodeExecutionResult struct {
 	// own doc comment).
 	ErrorCode     errorcode.Code
 	ResultPayload json.RawMessage
+	// RequestedScopeExpansion is populated now (V4-12A, confirmed with the
+	// user before writing this task's code): required when State ==
+	// ExecutionAttemptBlocked, meaningless (and rejected as
+	// OUTCOME_REJECTED if present) otherwise — mutually exclusive with
+	// SelectedOutcome/ErrorCode, exactly like those two are already
+	// mutually exclusive with each other. The executor only ever
+	// PROPOSES; FinalizeExecutionAttempt validates/canonicalizes it before
+	// anything durable (a ScopeExpansionOrigin, a BLOCKED Attempt/NodeRun)
+	// is ever built from it — never itself a grant.
+	RequestedScopeExpansion *runtime.ScopeExpansionProposal
 }
 
 // NodeExecutor executes one ExecutionAttempt's actual work — a real
