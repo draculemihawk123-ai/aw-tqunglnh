@@ -789,7 +789,7 @@
 
 - **Mục tiêu:** `CancelWorkItem` và `ResolveWorkItemBlocker` có application authority thật; hiện chúng
   chỉ được nhắc như "command riêng" mà không task nào sở hữu handler.
-- **Phụ thuộc:** V4-12B.
+- **Phụ thuộc:** V4-12A, V4-12B.
 - **Phạm vi:** WorkItem-level cancel intent, blocker lifecycle và hai handler; route thuộc V6-06B.
 - **Thực hiện:** thêm `work_item_cancellation_intents` (intent theo Run không đủ vì một task có thể có
   nhiều run) và trạng thái blocker `OPEN|RESOLVED|WAIVED`. `CancelWorkItem` ghi intent bền vững rồi
@@ -806,6 +806,34 @@
   Bốn admission reason và `SCOPE_EXPANSION_REQUIRED` không bao giờ waive được (bảng ở ADR-020). Bốn
   admission reason được lưu thành blocker type để valid-action query đọc được. Intent bền vững phải
   recover được: V4-13 quét intent còn dở sau restart.
+  **Hai câu hỏi chốt với user trước khi code:**
+  1. *V4-12B (đã merge) chưa hề tạo blocker hay đụng `WorkItem.Status` khi Run đóng `CANCELLED` — task đó
+     đúng theo Phạm vi của chính nó ("orchestrator/scheduler, cancel_epoch") không nhắc WorkItem. V4-12C
+     có nên mở rộng ngược lại `transitionRunToCancelledTx` để tạo blocker `RUN_CANCELLED` + chuyển
+     WorkItem sang `BLOCKED` tại đúng thời điểm đó không?* User chốt **có** — nếu chỉ tạo schema/command
+     rồi seed blocker trong test thì contract ADR-020 vẫn chưa được triển khai end-to-end; đây chính là
+     task đầu tiên có blocker persistence và WorkItem authority nên là thời điểm đúng để hoàn thiện hậu
+     điều kiện còn thiếu của V4-12B. Kèm một sửa sâu thêm: `reconcileCancellingRunTx` (V4-12B) đòi cả
+     `LiveCount==0` VÀ `BlockedCount==0` — có thể làm Run mắc kẹt CANCELLING vĩnh viễn vì không gì trong
+     protocol từng resume một activation BLOCKED. Điều kiện đóng đúng: `LiveCount==0` một mình; NodeRun/
+     Attempt BLOCKED giữ nguyên làm lịch sử, không cản Run đóng. Trong cùng transaction đóng Run: CAS
+     CANCELLING→CANCELLED, tạo blocker tất định (Type=RUN_CANCELLED, State=OPEN, liên kết SourceRunID,
+     idempotent theo Run), WorkItem ACTIVE→BLOCKED (hoặc chỉ thêm blocker nếu đã BLOCKED), append event.
+     Ngoại lệ: nếu Run được quiesce do `CancelWorkItem` (đã có `work_item_cancellation_intent`, bất kỳ
+     state nào), KHÔNG tạo blocker mở — WorkItem đã trên đường tới CANCELLED, không được đẩy ngược về
+     BLOCKED.
+  2. *Bốn admission reason và `SCOPE_EXPANSION_REQUIRED` chưa có producer thật trong codebase hôm nay.
+     V4-12C có cần tự xây producer thật cho loại nào trong số này không, hay chỉ RUN_CANCELLED có blocker
+     thật?* User chốt wiring thật thêm cho SCOPE_EXPANSION_REQUIRED (dùng producer có sẵn từ V4-12A),
+     nhưng phải nối đủ cả vòng đời chứ không chỉ tạo blocker: blocker mở trong CÙNG transaction Attempt/
+     NodeRun chuyển BLOCKED (`requestScopeExpansionTx`); approval đơn thuần CHƯA resolve blocker (workspace
+     có thể còn provisioning); chỉ khi SCOPE_EXPANSION_RECONCILE xác nhận approved + WorkspaceSet READY +
+     tạo activation mới xong, TRONG CÙNG transaction: blocker OPEN→RESOLVED, WorkItem BLOCKED→ACTIVE
+     (không phải READY — cùng Run tiếp tục, chưa từng dừng). `ResolveWorkItemBlocker` công khai KHÔNG được
+     tự resolve/waive SCOPE_EXPANSION_REQUIRED ở bất kỳ mode nào — authority chỉ thuộc approval/reconcile
+     flow (ADR-011). Bốn admission reason + `COMPLETION_POLICY_FAILED` chỉ ở tầng type/matrix (producer
+     thuộc V5-08/V5-11); test cho các loại này seed blocker trực tiếp, chỉ khoá authority matrix (WAIVED
+     luôn từ chối cho admission + scope-expansion; RESOLVED generic cho scope-expansion cũng bị từ chối).
 - **Verify:** `CancelWorkItem` với 0/1/nhiều active Run; race `CancelWorkItem`-vs-Completion `PASS` cả
   hai thứ tự commit (PASS trước → no-op idempotent; intent trước → PASS bị CAS từ chối);
   `ResolveWorkItemBlocker` khi blocker `OPEN` (**thành công**), khi đã `RESOLVED|WAIVED` (no-op), khi còn
@@ -816,6 +844,21 @@
   `READY`. Thêm race `ResolveWorkItemBlocker`-vs-`CancelWorkItem` cả hai thứ tự commit (intent trước →
   resolve không đưa được về `READY`; resolve trước → intent vẫn quiesce và terminalize đúng). Assert
   không đường nào terminalize WorkItem trong khi Run còn chạy.
+  **Tự phát hiện 1 bug thật khi viết test:** `ResolveWorkItemBlocker`'s own result ban đầu tính
+  `WorkItemUnblocked` bằng `finalStatus != BLOCKED` — dương tính giả khi WorkItem đã rời BLOCKED vì một lý
+  do KHÁC (CancelWorkItem đóng nó thành CANCELLED trong khi blocker vẫn còn OPEN). Sửa: `closeWorkItemBlockerTx`
+  trả về tín hiệu unblocked thật, tính một lần bên trong hàm nơi hai điều kiện tách rời được kiểm, không
+  bao giờ suy lại từ status cuối ở tầng gọi.
+  Đã triển khai (`internal/app/runtime/cancel_work_item_test.go`,
+  `resolve_work_item_blocker_test.go` + mở rộng `scope_expansion_test.go`/`cancel_run_test.go`, 27 test
+  mới): 0/1/nhiều active Run đều quiesce đúng qua `cancelRunTx` dùng lại từ V4-12B (tách khỏi `CancelRun`
+  thành hàm tx-scoped riêng để không mở transaction lồng); idempotent duplicate; đã DONE/CANCELLED bị
+  `ErrWorkItemAlreadyTerminal`; race intent-trước-PASS mô phỏng CAS thật của một CompletionPolicy tương
+  lai (chưa tồn tại trong codebase) → `ErrOptimisticConflict` tự nhiên, không cần code đặc biệt; toàn bộ
+  ma trận resolution-mode × blocker-type 11 case; race resolve-vs-cancel cả hai thứ tự; blocker
+  SCOPE_EXPANSION_REQUIRED thật resolve đúng + WorkItem về ACTIVE khi reactivation thật xảy ra (mở rộng
+  test end-to-end V4-12A có sẵn); viết lại một test V4-12B cũ (`TestFinalizeExecutionAttempt_BlockedThenCancel_...`)
+  vì hành vi CHỦ Ý thay đổi — Run giờ đóng CANCELLED dù NodeRun còn BLOCKED.
 - **Hoàn thành khi:** mọi WorkItem `BLOCKED` có ít nhất một đường thoát có authority, và không command
   nào có precondition vòng tròn.
 - **Nguồn:** ADR-020, GC-INV-36, GC-INV-38, GC-INV-39.

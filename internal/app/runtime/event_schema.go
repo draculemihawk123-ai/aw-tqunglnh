@@ -133,6 +133,50 @@ func DecodeRunCancelledV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// DecodeWorkItemCancellationRequestedV1 is WORK_ITEM_CANCELLATION_REQUESTED
+// v1's own eventschema.Decoder (V4-12C, cancel_work_item.go) — registered
+// from the same changeset that produces this event, not deferred.
+func DecodeWorkItemCancellationRequestedV1(payloadJSON string) (any, error) {
+	var payload workItemCancellationRequestedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// DecodeWorkItemCancelledV1 is WORK_ITEM_CANCELLED v1's own
+// eventschema.Decoder (V4-12C, cancel_work_item.go) — registered from the
+// same changeset that produces this event, not deferred.
+func DecodeWorkItemCancelledV1(payloadJSON string) (any, error) {
+	var payload workItemCancelledEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// DecodeWorkItemBlockedV1 is WORK_ITEM_BLOCKED v1's own eventschema.Decoder
+// (V4-12C, blocker.go) — registered from the same changeset that produces
+// this event, not deferred.
+func DecodeWorkItemBlockedV1(payloadJSON string) (any, error) {
+	var payload workItemBlockedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// DecodeWorkItemBlockerResolvedV1 is WORK_ITEM_BLOCKER_RESOLVED v1's own
+// eventschema.Decoder (V4-12C, blocker.go) — registered from the same
+// changeset that produces this event, not deferred.
+func DecodeWorkItemBlockerResolvedV1(payloadJSON string) (any, error) {
+	var payload workItemBlockerResolvedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry. A composition root that wires up EnforcingEventsRepository
 // calls this once at startup, the same "register at init/startup time"
@@ -152,4 +196,8 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(RunFailedEventType, RunFailedSchemaVersion, DecodeRunFailedV1)
 	registry.Register(RunCancelledEventType, RunCancelledSchemaVersion, DecodeRunCancelledV1)
 	registry.Register(RunCancellationRequestedEventType, RunCancellationRequestedSchemaVersion, DecodeRunCancellationRequestedV1)
+	registry.Register(WorkItemCancellationRequestedEventType, WorkItemCancellationRequestedSchemaVersion, DecodeWorkItemCancellationRequestedV1)
+	registry.Register(WorkItemCancelledEventType, WorkItemCancelledSchemaVersion, DecodeWorkItemCancelledV1)
+	registry.Register(WorkItemBlockedEventType, WorkItemBlockedSchemaVersion, DecodeWorkItemBlockedV1)
+	registry.Register(WorkItemBlockerResolvedEventType, WorkItemBlockerResolvedSchemaVersion, DecodeWorkItemBlockerResolvedV1)
 }

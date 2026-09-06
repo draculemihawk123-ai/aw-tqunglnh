@@ -36,6 +36,8 @@ type WorkRepository struct {
 	repositoryWorkspaces map[string]workspace.RepositoryWorkspace
 	// scopeExpansionRequests is keyed by ScopeExpansionRequest.ID (V3-08).
 	scopeExpansionRequests map[string]work.ScopeExpansionRequest
+	// blockers is keyed by WorkItemBlocker.ID (V4-12C).
+	blockers map[string]work.WorkItemBlocker
 }
 
 var _ ports.WorkRepository = (*WorkRepository)(nil)
@@ -74,10 +76,14 @@ func (w *WorkRepository) cloneWith(catalog *CatalogRepository) *WorkRepository {
 	for k, v := range w.scopeExpansionRequests {
 		scopeExpansionRequests[k] = v
 	}
+	blockers := make(map[string]work.WorkItemBlocker, len(w.blockers))
+	for k, v := range w.blockers {
+		blockers[k] = v
+	}
 	return &WorkRepository{
 		catalog: catalog, workItems: workItems, taskFamilies: taskFamilies,
 		workspaceSets: workspaceSets, repositoryScopes: repositoryScopes, effectiveScopes: effectiveScopes,
-		repositoryWorkspaces: repositoryWorkspaces, scopeExpansionRequests: scopeExpansionRequests,
+		repositoryWorkspaces: repositoryWorkspaces, scopeExpansionRequests: scopeExpansionRequests, blockers: blockers,
 	}
 }
 
@@ -472,4 +478,75 @@ func (w *WorkRepository) TransitionScopeExpansionRequestStatus(_ context.Context
 	existing.Version++
 	w.scopeExpansionRequests[req.RequestID] = existing
 	return existing, nil
+}
+
+// --- WorkItemBlocker (V4-12C) ---
+
+// CreateWorkItemBlocker mirrors sqlite's createWorkItemBlockerTx: idempotent
+// by ID (a duplicate call with the same deterministic ID returns the
+// already-stored row), and blocker.WorkItemID must name a WorkItem that
+// already exists — ErrPersistenceNotFound otherwise.
+func (w *WorkRepository) CreateWorkItemBlocker(_ context.Context, blocker work.WorkItemBlocker) (work.WorkItemBlocker, error) {
+	if _, ok := w.workItems[string(blocker.WorkItemID)]; !ok {
+		return work.WorkItemBlocker{}, fmt.Errorf("fake: %w: work item %s", ports.ErrPersistenceNotFound, blocker.WorkItemID)
+	}
+	if existing, ok := w.blockers[string(blocker.ID)]; ok {
+		return existing, nil
+	}
+	if w.blockers == nil {
+		w.blockers = map[string]work.WorkItemBlocker{}
+	}
+	w.blockers[string(blocker.ID)] = blocker
+	return blocker, nil
+}
+
+// GetWorkItemBlocker mirrors sqlite's loadWorkItemBlockerTx.
+func (w *WorkRepository) GetWorkItemBlocker(_ context.Context, id string) (work.WorkItemBlocker, error) {
+	blocker, ok := w.blockers[id]
+	if !ok {
+		return work.WorkItemBlocker{}, fmt.Errorf("fake: %w: work item blocker %s", ports.ErrPersistenceNotFound, id)
+	}
+	return blocker, nil
+}
+
+// ListWorkItemBlockersForWorkItem mirrors sqlite's
+// ListWorkItemBlockersForWorkItem, ordered by (OpenedAt, ID) for a stable,
+// deterministic result a test can assert on exactly.
+func (w *WorkRepository) ListWorkItemBlockersForWorkItem(_ context.Context, workItemID string) ([]work.WorkItemBlocker, error) {
+	var result []work.WorkItemBlocker
+	for _, blocker := range w.blockers {
+		if string(blocker.WorkItemID) == workItemID {
+			result = append(result, blocker)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].OpenedAt.Equal(result[j].OpenedAt) {
+			return result[i].OpenedAt.Before(result[j].OpenedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result, nil
+}
+
+// TransitionWorkItemBlockerState mirrors sqlite's
+// TransitionWorkItemBlockerState: the identical CAS discipline every other
+// transition method in this fake already performs.
+func (w *WorkRepository) TransitionWorkItemBlockerState(_ context.Context, req ports.TransitionWorkItemBlockerStateRequest) (work.WorkItemBlocker, error) {
+	blocker, ok := w.blockers[req.BlockerID]
+	if !ok {
+		return work.WorkItemBlocker{}, fmt.Errorf("fake: %w: work item blocker %s", ports.ErrPersistenceNotFound, req.BlockerID)
+	}
+	if blocker.State != req.ExpectedState || blocker.Version != req.ExpectedVersion {
+		return work.WorkItemBlocker{}, fmt.Errorf("fake: %w: work item blocker %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.BlockerID, req.ExpectedState, req.ExpectedVersion)
+	}
+	blocker.State = req.NextState
+	resolvedAt := req.ResolvedAt
+	blocker.ResolvedAt = &resolvedAt
+	blocker.ResolvedBy = req.ResolvedBy
+	blocker.ResolutionNote = req.ResolutionNote
+	blocker.DecisionArtifactID = req.DecisionArtifactID
+	blocker.Version++
+	w.blockers[req.BlockerID] = blocker
+	return blocker, nil
 }

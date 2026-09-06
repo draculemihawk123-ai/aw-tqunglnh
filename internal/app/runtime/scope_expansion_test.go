@@ -403,6 +403,30 @@ func TestScopeExpansion_EndToEnd_NewRepositoryProvisionedReactivatesNodeRun(t *t
 	if !foundRepo2 {
 		t.Fatalf("family scopes = %+v, want a repo-2 grant", scopes)
 	}
+
+	// V4-12C: this reactivation is also the ONLY path with authority to
+	// resolve the SCOPE_EXPANSION_REQUIRED blocker requestScopeExpansionTx's
+	// own BLOCKED branch opened — and it unblocks the WorkItem to ACTIVE
+	// (never READY: the SAME Run resumes, it never stopped).
+	run, err := uow.Snapshot.Runtime().GetWorkflowRun(ctx, runID)
+	if err != nil {
+		t.Fatalf("GetWorkflowRun: %v", err)
+	}
+	blockerID := attemptID + "-scope-expansion-blocker"
+	blocker, err := uow.Snapshot.Work().GetWorkItemBlocker(ctx, blockerID)
+	if err != nil {
+		t.Fatalf("GetWorkItemBlocker: %v", err)
+	}
+	if blocker.State != workdomain.BlockerResolved || blocker.Type != workdomain.BlockerScopeExpansionRequired {
+		t.Fatalf("blocker = %+v, want RESOLVED SCOPE_EXPANSION_REQUIRED", blocker)
+	}
+	item, err := uow.Snapshot.Work().GetWorkItem(ctx, string(run.WorkItemID))
+	if err != nil {
+		t.Fatalf("GetWorkItem: %v", err)
+	}
+	if item.Status != workdomain.WorkItemActive {
+		t.Fatalf("work item status after reactivation = %s, want ACTIVE (the same Run resumes)", item.Status)
+	}
 }
 
 // TestScopeExpansionReconcile_DuplicateDelivery_OnlyOneReactivation proves

@@ -700,3 +700,41 @@ FROM work_item_cancellation_intents WHERE work_item_id = ?`, workItemID).Scan(&i
 		Actor: actor, Reason: reason, State: runtime.CancellationIntentState(state), RequestedAt: requestedAt,
 	}, nil
 }
+
+// TransitionWorkItemCancellationIntentState implements ports.RuntimeRepository
+// (V4-12C): TransitionRunCancellationIntentState's own counterpart at the
+// WorkItem level — fenced purely by (WorkItemID, ExpectedState), mirroring
+// its Run-level sibling exactly (WorkItemCancellationIntent carries no
+// Version column either).
+func (r runtimeRepository) TransitionWorkItemCancellationIntentState(ctx context.Context, req ports.TransitionWorkItemCancellationIntentStateRequest) (runtime.WorkItemCancellationIntent, error) {
+	if req.WorkItemID == "" {
+		return runtime.WorkItemCancellationIntent{}, errors.New("work item id is required")
+	}
+	result, err := r.tx.ExecContext(ctx, `
+UPDATE work_item_cancellation_intents
+SET state = ?
+WHERE work_item_id = ? AND state = ?`,
+		string(req.NextState), req.WorkItemID, string(req.ExpectedState),
+	)
+	if err != nil {
+		return runtime.WorkItemCancellationIntent{}, MapSQLiteError(fmt.Errorf("transition work item cancellation intent for work item %s: %w", req.WorkItemID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return runtime.WorkItemCancellationIntent{}, fmt.Errorf("read work item cancellation intent transition result: %w", err)
+	}
+	if affected != 1 {
+		var exists int
+		lookupErr := r.tx.QueryRowContext(ctx, `SELECT 1 FROM work_item_cancellation_intents WHERE work_item_id = ?`, req.WorkItemID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return runtime.WorkItemCancellationIntent{}, fmt.Errorf("%w: work item cancellation intent for work item %s", ports.ErrPersistenceNotFound, req.WorkItemID)
+		}
+		if lookupErr != nil {
+			return runtime.WorkItemCancellationIntent{}, MapSQLiteError(fmt.Errorf("check stale work item cancellation intent transition: %w", lookupErr))
+		}
+		return runtime.WorkItemCancellationIntent{}, fmt.Errorf(
+			"%w: work item cancellation intent for work item %s expected %s", ports.ErrOptimisticConflict, req.WorkItemID, req.ExpectedState,
+		)
+	}
+	return loadWorkItemCancellationIntentTx(ctx, r.tx, req.WorkItemID)
+}

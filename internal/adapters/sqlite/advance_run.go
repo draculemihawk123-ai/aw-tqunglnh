@@ -22,6 +22,43 @@ func (r runtimeRepository) GetWorkflowRun(ctx context.Context, id string) (runti
 	return loadWorkflowRun(ctx, r.tx, runtime.WorkflowRunID(id))
 }
 
+// ListWorkflowRunsForWorkItem implements ports.RuntimeRepository (V4-12C):
+// every WorkflowRun workItemID has ever had, across its full history —
+// reuses loadWorkflowRun's own column set via a plain SELECT of ids rather
+// than duplicating its full column list a second time, the same
+// "ListXForRun re-lists ids then re-loads each one" discipline
+// ListNodeRunsForRun already establishes.
+func (r runtimeRepository) ListWorkflowRunsForWorkItem(ctx context.Context, workItemID string) ([]runtime.WorkflowRun, error) {
+	rows, err := r.tx.QueryContext(ctx, `SELECT id FROM workflow_runs WHERE work_item_id = ? ORDER BY created_at, id`, workItemID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list workflow runs for work item %s: %w", workItemID, err))
+	}
+	var ids []runtime.WorkflowRunID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan workflow run id: %w", err)
+		}
+		ids = append(ids, runtime.WorkflowRunID(id))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate workflow run ids: %w", err)
+	}
+	rows.Close()
+
+	runs := make([]runtime.WorkflowRun, 0, len(ids))
+	for _, id := range ids {
+		run, err := loadWorkflowRun(ctx, r.tx, id)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	return runs, nil
+}
+
 // GetNodeRun implements ports.RuntimeRepository (V4-03): reuses
 // node_dispatch.go's own loadNodeRunByID (already *sql.Tx-scoped, unlike
 // loadWorkflowRun's Store-or-Tx-polymorphic queryer) directly.

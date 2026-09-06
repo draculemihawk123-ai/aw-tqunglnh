@@ -269,6 +269,39 @@ type WorkRepository interface {
 	// grants were persisted at); nil for REJECTED/WITHDRAWN.
 	TransitionScopeExpansionRequestStatus(ctx context.Context, req TransitionScopeExpansionRequestStatusRequest) (work.ScopeExpansionRequest, error)
 
+	// CreateWorkItemBlocker is populated now (V4-12C,
+	// docs/design/06-v4-runtime-engine.md): inserts a new, OPEN
+	// work.WorkItemBlocker row after verifying blocker.WorkItemID names a
+	// WorkItem that exists — ErrPersistenceNotFound otherwise. Idempotent by
+	// ID: every real producer (transitionRunToCancelledTx's own RUN_CANCELLED
+	// blocker, requestScopeExpansionTx's own SCOPE_EXPANSION_REQUIRED
+	// blocker) mints a deterministic ID from its own originating aggregate
+	// (RunID/AttemptID), so a duplicate delivery of the same underlying
+	// transition returns the already-created row rather than a second one —
+	// the identical "insert; on identical-key conflict, load and return the
+	// existing row" discipline RecordWorkItemCancellationIntent already
+	// establishes for its own aggregate.
+	CreateWorkItemBlocker(ctx context.Context, blocker work.WorkItemBlocker) (work.WorkItemBlocker, error)
+	// GetWorkItemBlocker returns the WorkItemBlocker with the given ID, or
+	// ErrPersistenceNotFound.
+	GetWorkItemBlocker(ctx context.Context, id string) (work.WorkItemBlocker, error)
+	// ListWorkItemBlockersForWorkItem returns every WorkItemBlocker ever
+	// opened for workItemID (every state), ordered by (OpenedAt, ID) for a
+	// stable, deterministic result a test can assert on exactly —
+	// ResolveWorkItemBlocker's own "how many OPEN blockers remain" count and
+	// CancelWorkItem's own audit trail both read the full, unfiltered set.
+	ListWorkItemBlockersForWorkItem(ctx context.Context, workItemID string) ([]work.WorkItemBlocker, error)
+	// TransitionWorkItemBlockerState is the fenced CAS that closes a
+	// blocker's own lifecycle — OPEN -> RESOLVED or OPEN -> WAIVED — the
+	// identical req.ExpectedState/req.ExpectedVersion CAS discipline every
+	// other transition method in this codebase already uses.
+	// ErrOptimisticConflict on a stale caller (including a blocker that is
+	// already RESOLVED/WAIVED — the idempotent-no-op case
+	// ResolveWorkItemBlocker's own caller checks BEFORE calling this, the
+	// same discipline every other idempotent-replay check in this codebase
+	// already uses), ErrPersistenceNotFound for an unknown BlockerID.
+	TransitionWorkItemBlockerState(ctx context.Context, req TransitionWorkItemBlockerStateRequest) (work.WorkItemBlocker, error)
+
 	// HasActiveWriteLease is populated now (V3-11,
 	// docs/design/05-v3-project-workspace.md): a read-only existence check
 	// over write_leases for "no active lease" — one of
@@ -351,4 +384,22 @@ type TransitionScopeExpansionRequestStatusRequest struct {
 	DecidedAt            time.Time
 	DecisionNote         string
 	ApprovedScopeVersion *uint64
+}
+
+// TransitionWorkItemBlockerStateRequest is the CAS request for
+// WorkRepository.TransitionWorkItemBlockerState (V4-12C). ResolvedAt/
+// ResolvedBy are always set (every terminal transition is a real, attributed
+// decision — either ResolveWorkItemBlocker's own caller-supplied Actor, or
+// the internal scope-expansion reconcile flow's own system actor);
+// DecisionArtifactID is only ever non-empty when NextState is
+// work.BlockerWaived.
+type TransitionWorkItemBlockerStateRequest struct {
+	BlockerID          string
+	ExpectedState      work.BlockerState
+	ExpectedVersion    uint64
+	NextState          work.BlockerState
+	ResolvedAt         time.Time
+	ResolvedBy         string
+	ResolutionNote     string
+	DecisionArtifactID string
 }

@@ -67,6 +67,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
@@ -624,6 +625,24 @@ func requestScopeExpansionTx(
 		return err
 	}
 	if _, err := tx.Runtime().CreateScopeExpansionOrigin(ctx, origin); err != nil {
+		return err
+	}
+
+	// V4-12C: open the WorkItem-authority half of this block — ADR-020's own
+	// blocker-type table names SCOPE_EXPANSION_REQUIRED explicitly, and
+	// ScopeExpansionOriginID already equals req.AttemptID, so this blocker's
+	// own deterministic ID (minted from the same AttemptID) is naturally
+	// idempotent against a redelivered finalize the identical way the
+	// ScopeExpansionOrigin row itself already is. Its own closing half —
+	// resolving OPEN -> RESOLVED and unblocking the WorkItem back to ACTIVE —
+	// is reactivateBlockedNodeRunTx's own job (scope_expansion.go), the only
+	// path with authority to ever resolve this specific blocker type
+	// (workdomain.BlockerType.ResolvableViaCommand's own doc comment).
+	blockerID := req.AttemptID + "-scope-expansion-blocker"
+	if _, err := openWorkItemBlockerTx(
+		ctx, tx, run.ProjectID, string(run.WorkItemID), blockerID, workdomain.BlockerScopeExpansionRequired,
+		req.RunID, req.NodeRunID, req.AttemptID, req.RequestedScopeExpansion.Reason, req.CorrelationID, string(req.JobLease.JobID),
+	); err != nil {
 		return err
 	}
 

@@ -579,6 +579,29 @@ type RuntimeRepository interface {
 	// GetWorkItemCancellationIntent returns the WorkItemCancellationIntent
 	// for workItemID, or ErrPersistenceNotFound.
 	GetWorkItemCancellationIntent(ctx context.Context, workItemID string) (runtime.WorkItemCancellationIntent, error)
+	// TransitionWorkItemCancellationIntentState is populated now (V4-12C):
+	// TransitionRunCancellationIntentState's own counterpart at the WorkItem
+	// level — the fenced CAS CancelWorkItem's own reconciliation step
+	// (internal/app/runtime/cancel_work_item.go) uses to mark an intent
+	// COMPLETED once every Run belonging to the WorkItem has reached a
+	// genuinely terminal state. Fenced purely by (WorkItemID, ExpectedState),
+	// identically to its Run-level sibling (WorkItemCancellationIntent
+	// carries no Version column either).
+	TransitionWorkItemCancellationIntentState(ctx context.Context, req TransitionWorkItemCancellationIntentStateRequest) (runtime.WorkItemCancellationIntent, error)
+
+	// ListWorkflowRunsForWorkItem is populated now (V4-12C,
+	// docs/design/06-v4-runtime-engine.md): every WorkflowRun a WorkItem has
+	// ever had, across its full history — a WorkItem policy allows only one
+	// ACTIVE-driving Run at a time (StartWorkflowRun's own READY-only gate),
+	// but a WorkItem can accumulate several over its lifetime (an earlier
+	// Run cancelled/blocked, the WorkItem cycling back to READY, a later Run
+	// started). CancelWorkItem's own quiesce sweep and
+	// ResolveWorkItemBlocker's own "no Run nonterminal" precondition both
+	// need the complete set, not just the current one — deliberately
+	// unfiltered by state, the same "classification is the caller's own job"
+	// discipline ListNodeRunsForRun/ListExecutionAttemptsForRun already
+	// established.
+	ListWorkflowRunsForWorkItem(ctx context.Context, workItemID string) ([]runtime.WorkflowRun, error)
 
 	// CreateScopeExpansionOrigin is populated now (V4-12A,
 	// docs/design/06-v4-runtime-engine.md): inserts the durable link
@@ -675,6 +698,16 @@ type TransitionWorkflowRunStateRequest struct {
 // RuntimeRepository.TransitionRunCancellationIntentState (V4-12B).
 type TransitionRunCancellationIntentStateRequest struct {
 	RunID         string
+	ExpectedState runtime.CancellationIntentState
+	NextState     runtime.CancellationIntentState
+}
+
+// TransitionWorkItemCancellationIntentStateRequest is the CAS request for
+// RuntimeRepository.TransitionWorkItemCancellationIntentState (V4-12C),
+// mirroring TransitionRunCancellationIntentStateRequest exactly at the
+// WorkItem level.
+type TransitionWorkItemCancellationIntentStateRequest struct {
+	WorkItemID    string
 	ExpectedState runtime.CancellationIntentState
 	NextState     runtime.CancellationIntentState
 }

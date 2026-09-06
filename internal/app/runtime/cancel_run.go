@@ -104,6 +104,12 @@ type runCancellationRequestedEventPayload struct {
 
 // CancelRun implements ADR-020's own cancellation protocol entry point.
 // See this file's own package doc comment for the full transaction shape.
+// This top-level function only opens the transaction and delegates to
+// cancelRunTx below — extracted (V4-12C) so CancelWorkItem
+// (cancel_work_item.go) can drive the identical protocol for each of a
+// WorkItem's own active Runs, composed inside its OWN already-open
+// transaction: a ports.UnitOfWork.WithSerializedWrite call must never open a
+// nested one, so CancelWorkItem cannot call this public function directly.
 func CancelRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, req CancelRunRequest) (CancelRunResult, error) {
 	runID := strings.TrimSpace(req.RunID)
 	actor := strings.TrimSpace(req.Actor)
@@ -120,81 +126,92 @@ func CancelRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, r
 
 	var result CancelRunResult
 	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
-		run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
-		if err != nil {
-			return err
-		}
-
-		if _, err := tx.Runtime().GetRunCancellationIntent(ctx, runID); err == nil {
-			// A second CancelRun call for the same run — ADR-020's own
-			// "idempotent theo run": return the already-committed state,
-			// never re-fence, never re-enqueue a second coordinator job.
-			result = CancelRunResult{RunID: runID, AlreadyRequested: true, State: string(run.State)}
-			return nil
-		} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
-			return err
-		}
-
-		if run.State == runtimedomain.WorkflowRunSucceeded || run.State == runtimedomain.WorkflowRunFailed {
-			return fmt.Errorf("%w: workflow run %s is %s", ErrRunAlreadyTerminal, runID, run.State)
-		}
-
-		intentID := ids.NewID()
-		intent, err := runtimedomain.NewRunCancellationIntent(
-			runtimedomain.RunCancellationIntentID(intentID), run.ProjectID, run.ID, actor, reason, time.Now().UTC(),
-		)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Runtime().RecordRunCancellationIntent(ctx, intent); err != nil {
-			return err
-		}
-
-		nextEpoch := uint64(1)
-		updated, err := tx.Runtime().TransitionWorkflowRunState(ctx, ports.TransitionWorkflowRunStateRequest{
-			RunID: runID, ExpectedState: run.State, ExpectedVersion: run.Version,
-			NextState: runtimedomain.WorkflowRunCancelling, NextCancelEpoch: &nextEpoch,
-		})
-		if err != nil {
-			return err
-		}
-
-		if _, err := tx.Jobs().FenceAndCancelRunJobs(ctx, runID); err != nil {
-			return err
-		}
-
-		jobPayload, err := json.Marshal(CancelRunCoordinatorJobPayload{RunID: runID, CorrelationID: req.CorrelationID})
-		if err != nil {
-			return fmt.Errorf("marshal %s job payload: %w", CancelRunCoordinatorJobKind, err)
-		}
-		job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
-			ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: CancelRunCoordinatorJobKind,
-			AggregateType: "WorkflowRun", AggregateID: runID, Payload: jobPayload,
-			MaxClaims: defaultCancelRunCoordinatorJobMaxClaims, IdempotencyKey: "cancel-run-coordinator:" + runID,
-		})
-		if err != nil {
-			return err
-		}
-
-		eventPayload, err := json.Marshal(runCancellationRequestedEventPayload{
-			RunID: runID, WorkItemID: string(run.WorkItemID), Actor: actor, Reason: reason,
-		})
-		if err != nil {
-			return fmt.Errorf("marshal %s event payload: %w", RunCancellationRequestedEventType, err)
-		}
-		if err := tx.Events().Append(ctx, ports.DomainEvent{
-			ID: runID + "-cancellation-requested", ProjectID: string(run.ProjectID),
-			AggregateType: "WorkflowRun", AggregateID: runID, Sequence: int64(updated.Version),
-			EventType: RunCancellationRequestedEventType, SchemaVersion: RunCancellationRequestedSchemaVersion,
-			PayloadJSON: string(eventPayload), CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
-		}); err != nil {
-			return err
-		}
-
-		result = CancelRunResult{
-			RunID: runID, State: string(runtimedomain.WorkflowRunCancelling), CoordinatorJobID: string(job.ID),
-		}
-		return nil
+		var err error
+		result, err = cancelRunTx(ctx, tx, ids, runID, actor, reason, req.CorrelationID)
+		return err
 	})
 	return result, err
+}
+
+// cancelRunTx is CancelRun's own tx-scoped core (V4-12C extraction): the
+// exact idempotent-duplicate check, already-terminal rejection, intent
+// record, CAS to CANCELLING (bumping CancelEpoch in the same CAS), job
+// fence and CANCEL_RUN_COORDINATOR enqueue CancelRun's own transaction
+// always performed — unchanged in every respect from before this
+// extraction. See CancelRun's own doc comment for why this needs to exist
+// as a separate, tx-scoped function at all.
+func cancelRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, runID, actor, reason, correlationID string) (CancelRunResult, error) {
+	run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
+	if err != nil {
+		return CancelRunResult{}, err
+	}
+
+	if _, err := tx.Runtime().GetRunCancellationIntent(ctx, runID); err == nil {
+		// A second CancelRun call for the same run — ADR-020's own
+		// "idempotent theo run": return the already-committed state,
+		// never re-fence, never re-enqueue a second coordinator job.
+		return CancelRunResult{RunID: runID, AlreadyRequested: true, State: string(run.State)}, nil
+	} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
+		return CancelRunResult{}, err
+	}
+
+	if run.State == runtimedomain.WorkflowRunSucceeded || run.State == runtimedomain.WorkflowRunFailed {
+		return CancelRunResult{}, fmt.Errorf("%w: workflow run %s is %s", ErrRunAlreadyTerminal, runID, run.State)
+	}
+
+	intentID := ids.NewID()
+	intent, err := runtimedomain.NewRunCancellationIntent(
+		runtimedomain.RunCancellationIntentID(intentID), run.ProjectID, run.ID, actor, reason, time.Now().UTC(),
+	)
+	if err != nil {
+		return CancelRunResult{}, err
+	}
+	if _, err := tx.Runtime().RecordRunCancellationIntent(ctx, intent); err != nil {
+		return CancelRunResult{}, err
+	}
+
+	nextEpoch := uint64(1)
+	updated, err := tx.Runtime().TransitionWorkflowRunState(ctx, ports.TransitionWorkflowRunStateRequest{
+		RunID: runID, ExpectedState: run.State, ExpectedVersion: run.Version,
+		NextState: runtimedomain.WorkflowRunCancelling, NextCancelEpoch: &nextEpoch,
+	})
+	if err != nil {
+		return CancelRunResult{}, err
+	}
+
+	if _, err := tx.Jobs().FenceAndCancelRunJobs(ctx, runID); err != nil {
+		return CancelRunResult{}, err
+	}
+
+	jobPayload, err := json.Marshal(CancelRunCoordinatorJobPayload{RunID: runID, CorrelationID: correlationID})
+	if err != nil {
+		return CancelRunResult{}, fmt.Errorf("marshal %s job payload: %w", CancelRunCoordinatorJobKind, err)
+	}
+	job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+		ID: ports.JobID(ids.NewID()), ProjectID: run.ProjectID, Kind: CancelRunCoordinatorJobKind,
+		AggregateType: "WorkflowRun", AggregateID: runID, Payload: jobPayload,
+		MaxClaims: defaultCancelRunCoordinatorJobMaxClaims, IdempotencyKey: "cancel-run-coordinator:" + runID,
+	})
+	if err != nil {
+		return CancelRunResult{}, err
+	}
+
+	eventPayload, err := json.Marshal(runCancellationRequestedEventPayload{
+		RunID: runID, WorkItemID: string(run.WorkItemID), Actor: actor, Reason: reason,
+	})
+	if err != nil {
+		return CancelRunResult{}, fmt.Errorf("marshal %s event payload: %w", RunCancellationRequestedEventType, err)
+	}
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: runID + "-cancellation-requested", ProjectID: string(run.ProjectID),
+		AggregateType: "WorkflowRun", AggregateID: runID, Sequence: int64(updated.Version),
+		EventType: RunCancellationRequestedEventType, SchemaVersion: RunCancellationRequestedSchemaVersion,
+		PayloadJSON: string(eventPayload), CorrelationID: correlationID, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return CancelRunResult{}, err
+	}
+
+	return CancelRunResult{
+		RunID: runID, State: string(runtimedomain.WorkflowRunCancelling), CoordinatorJobID: string(job.ID),
+	}, nil
 }

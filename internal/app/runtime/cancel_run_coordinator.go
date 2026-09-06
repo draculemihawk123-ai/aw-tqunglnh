@@ -10,11 +10,17 @@
 // before writing this file, by the same "BLOCKED không được tự fail Run"
 // philosophy V4-12 already locked, extended here to "không được tự
 // cancel"): a NodeRun/ExecutionAttempt sitting BLOCKED for scope expansion
-// is left exactly as-is. This is what makes reconcileCancellingRunTx's own
-// BlockedCount>0 no-op guard (completion.go) a real, load-bearing check
-// rather than dead code — a Run with a lingering BLOCKED NodeRun stays at
-// CANCELLING until an operator or a future CancelWorkItem/
-// ResolveWorkItemBlocker-style mechanism (V4-12C) closes it out.
+// is left exactly as-is, forever — a frozen historical record. Unlike
+// V4-12B's own first pass, reconcileCancellingRunTx (completion.go) does
+// NOT wait on it: V4-12C found that requiring BlockedCount==0 to close the
+// Run would make CANCELLED permanently unreachable for any Run with an open
+// scope-expansion blocker at cancel time (nothing in this protocol ever
+// resumes a BLOCKED activation once cancelling), so the gate is LiveCount==0
+// alone now. The real, durable trace of "this Run stopped with unresolved
+// business left" is the WorkItem-level blocker transitionRunToCancelledTx's
+// own closing step opens instead (openRunCancelledBlockerTx, completion.go) —
+// CancelWorkItem/ResolveWorkItemBlocker (V4-12C) are what eventually clear
+// it, entirely independent of whether the Run itself has already closed.
 //
 // A RUNNING NodeRun is swept too, but ONLY when it has no real
 // ExecutionAttempt of its own: a STRUCTURAL auto-advance node (START/

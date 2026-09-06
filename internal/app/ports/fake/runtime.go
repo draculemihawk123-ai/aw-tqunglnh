@@ -129,6 +129,23 @@ func (r *RuntimeRepository) GetNodeRun(_ context.Context, id string) (runtime.No
 	return nodeRun, nil
 }
 
+// ListWorkflowRunsForWorkItem mirrors sqlite's ListWorkflowRunsForWorkItem
+// (V4-12C), ordered by (CreatedAt-equivalent insertion order, ID) — this
+// fake has no CreatedAt field on runtime.WorkflowRun to sort by, so it
+// sorts by ID alone, a stable-enough order for a small in-memory fixture
+// (every real caller only cares about the unordered set of terminal states,
+// never row order).
+func (r *RuntimeRepository) ListWorkflowRunsForWorkItem(_ context.Context, workItemID string) ([]runtime.WorkflowRun, error) {
+	var runs []runtime.WorkflowRun
+	for _, run := range r.workflowRuns {
+		if string(run.WorkItemID) == workItemID {
+			runs = append(runs, run)
+		}
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].ID < runs[j].ID })
+	return runs, nil
+}
+
 // ListNodeRunsForRun mirrors sqlite's ListNodeRunsForRun (V4-12), ordered
 // by ActivationSequence for deterministic output.
 func (r *RuntimeRepository) ListNodeRunsForRun(_ context.Context, runID string) ([]runtime.NodeRun, error) {
@@ -582,6 +599,25 @@ func (r *RuntimeRepository) GetWorkItemCancellationIntent(_ context.Context, wor
 	if !ok {
 		return runtime.WorkItemCancellationIntent{}, fmt.Errorf("fake: %w: work item cancellation intent for work item %s", ports.ErrPersistenceNotFound, workItemID)
 	}
+	return intent, nil
+}
+
+// TransitionWorkItemCancellationIntentState mirrors sqlite's
+// TransitionWorkItemCancellationIntentState (V4-12C): fenced purely by
+// (WorkItemID, ExpectedState) — WorkItemCancellationIntent carries no
+// Version.
+func (r *RuntimeRepository) TransitionWorkItemCancellationIntentState(_ context.Context, req ports.TransitionWorkItemCancellationIntentStateRequest) (runtime.WorkItemCancellationIntent, error) {
+	intent, ok := r.workIntents[req.WorkItemID]
+	if !ok {
+		return runtime.WorkItemCancellationIntent{}, fmt.Errorf("fake: %w: work item cancellation intent for work item %s", ports.ErrPersistenceNotFound, req.WorkItemID)
+	}
+	if intent.State != req.ExpectedState {
+		return runtime.WorkItemCancellationIntent{}, fmt.Errorf(
+			"fake: %w: work item cancellation intent for work item %s expected %s", ports.ErrOptimisticConflict, req.WorkItemID, req.ExpectedState,
+		)
+	}
+	intent.State = req.NextState
+	r.workIntents[req.WorkItemID] = intent
 	return intent, nil
 }
 

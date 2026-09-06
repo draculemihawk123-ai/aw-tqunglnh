@@ -28,11 +28,13 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
@@ -184,32 +186,38 @@ func reconcileRunTerminalityTx(
 // reconcileCancellingRunTx is V4-12B's own extension to the shared
 // reducer (docs/design/06-v4-runtime-engine.md, ADR-020): once a Run has
 // committed its own cancellation intent (CANCELLING), the only question
-// left is whether anything still live or BLOCKED remains — no END/FAILED/
+// left is whether anything can still make progress — no END/FAILED/
 // TERMINAL_PATH_INVALID distinction matters anymore once cancellation has
-// already been decided. Requires BOTH LiveCount==0 AND BlockedCount==0: a
-// lingering BLOCKED NodeRun (most plausibly one that went BLOCKED for
-// scope expansion in the brief window between the cancel intent
-// committing and that Attempt's own outcome later arriving) is never
-// silently auto-resolved here — it stays exactly as CANCELLING until an
-// operator or a future CancelWorkItem/ResolveWorkItemBlocker-style
-// mechanism (V4-12C) closes it out, the same "BLOCKED không được tự fail
-// Run" philosophy V4-12 already locked, applied here to "BLOCKED không
-// được tự cancel Run" too. This is also the ONLY place
-// WorkflowRunCancelled is ever produced — called both from the
-// CANCEL_RUN_COORDINATOR job's own tail (right after its own sweep) and
-// from every ordinary reconcileRunTerminalityTx call site whenever it
-// observes the Run already CANCELLING (most importantly a RUNNING
-// Attempt's own eventual FinalizeExecutionAttempt, arriving after cancel
-// intent already committed). internal/adapters/sqlite's own Store opens
-// every write transaction with _txlock=immediate (txrunner.go's own doc
-// comment), so two WithSerializedWrite calls fully serialize against each
-// other — whichever of these two call sites' own transaction commits
-// first is unconditionally the only one that ever observes "CANCELLING
-// and now quiesced" at all; every later transaction's own fresh
-// GetWorkflowRun read (this function's own caller, reconcileRunTerminalityTx)
-// already sees CANCELLED and takes the plain no-op branch instead. There
-// is no genuine CAS-conflict race to swallow here the way, say, two
-// concurrent ApproveScopeExpansion calls might need.
+// already been decided. Requires LiveCount==0 ONLY (V4-12C correction,
+// confirmed with the user: BlockedCount is deliberately NOT part of this
+// gate anymore) — a lingering BLOCKED NodeRun/Attempt is left exactly as-is,
+// a frozen historical record CancelRunCoordinatorHandler's own sweep
+// deliberately never touches (see that type's own package doc comment), but
+// it must never be allowed to strand the Run in CANCELLING forever: nothing
+// in this codebase's own cancellation protocol ever resumes a BLOCKED
+// activation (there is no NodeRunCancelled-of-a-BLOCKED-row path — a
+// cancelling Run's own BLOCKED NodeRun can never become live again), so
+// requiring BlockedCount==0 here would make CANCELLED permanently
+// unreachable for any Run that happened to have an open scope-expansion
+// blocker at the moment cancellation was requested. The WorkItem-level
+// blocker this Run's own cancellation may have opened (openRunCancelledBlockerTx,
+// transitionRunToCancelledTx below) is the real, durable trace of "this Run
+// stopped with unresolved business left" — not this reducer's own progress
+// check. This is also the ONLY place WorkflowRunCancelled is ever produced —
+// called both from the CANCEL_RUN_COORDINATOR job's own tail (right after
+// its own sweep) and from every ordinary reconcileRunTerminalityTx call site
+// whenever it observes the Run already CANCELLING (most importantly a
+// RUNNING Attempt's own eventual FinalizeExecutionAttempt, arriving after
+// cancel intent already committed). internal/adapters/sqlite's own Store
+// opens every write transaction with _txlock=immediate (txrunner.go's own
+// doc comment), so two WithSerializedWrite calls fully serialize against
+// each other — whichever of these two call sites' own transaction commits
+// first is unconditionally the only one that ever observes "CANCELLING and
+// now quiesced" at all; every later transaction's own fresh GetWorkflowRun
+// read (this function's own caller, reconcileRunTerminalityTx) already sees
+// CANCELLED and takes the plain no-op branch instead. There is no genuine
+// CAS-conflict race to swallow here the way, say, two concurrent
+// ApproveScopeExpansion calls might need.
 func reconcileCancellingRunTx(
 	ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, document workflow.WorkflowDocument, correlationID, jobID string,
 ) error {
@@ -217,7 +225,7 @@ func reconcileCancellingRunTx(
 	if err != nil {
 		return err
 	}
-	if summary.LiveCount > 0 || summary.BlockedCount > 0 {
+	if summary.LiveCount > 0 {
 		return nil
 	}
 	return transitionRunToCancelledTx(ctx, tx, run, correlationID, jobID)
@@ -305,12 +313,22 @@ func transitionRunToFailedTx(
 	if err != nil {
 		return fmt.Errorf("marshal %s event payload: %w", RunFailedEventType, err)
 	}
-	return tx.Events().Append(ctx, ports.DomainEvent{
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
 		ID: string(run.ID) + "-failed", ProjectID: string(run.ProjectID),
 		AggregateType: "WorkflowRun", AggregateID: string(run.ID), Sequence: int64(updated.Version),
 		EventType: RunFailedEventType, SchemaVersion: RunFailedSchemaVersion, PayloadJSON: string(payload),
 		CorrelationID: correlationID, CreatedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		return err
+	}
+
+	// V4-12C: an ordinary technical failure (unrelated to any cancellation)
+	// may still be the WorkItem's own last non-terminal Run if a
+	// CancelWorkItem call is racing concurrently against it — check whether
+	// this now lets a pending WorkItem-level cancellation finally close out
+	// (a no-op in the overwhelmingly common case: no WorkItemCancellationIntent
+	// exists at all).
+	return reconcileWorkItemCancellationTx(ctx, tx, string(run.WorkItemID), correlationID, jobID)
 }
 
 // RunCancelledEventType/RunCancelledSchemaVersion identify
@@ -333,7 +351,15 @@ type runCancelledEventPayload struct {
 
 // transitionRunToCancelledTx is reconcileCancellingRunTx's own closing
 // step (V4-12B): CAS CANCELLING->CANCELLED and append RUN_CANCELLED — the
-// only place either ever happens in this codebase.
+// only place either ever happens in this codebase. V4-12C extends this same
+// closing step with the WorkItem-authority half ADR-020's own cancel-outcome
+// table requires ("CancelRun -> Run CANCELLED, WorkItem BLOCKED kèm blocker
+// RUN_CANCELLED"): openRunCancelledBlockerTx below, then a check for whether
+// this was also the WorkItem's own last non-terminal Run
+// (reconcileWorkItemCancellationTx, cancel_work_item.go) — both composed in
+// this SAME transaction, never a second one, so "Run CANCELLED" and
+// "WorkItem's own resulting authority state" always commit or roll back
+// together.
 func transitionRunToCancelledTx(
 	ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, correlationID, jobID string,
 ) error {
@@ -350,10 +376,54 @@ func transitionRunToCancelledTx(
 	if err != nil {
 		return fmt.Errorf("marshal %s event payload: %w", RunCancelledEventType, err)
 	}
-	return tx.Events().Append(ctx, ports.DomainEvent{
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
 		ID: string(run.ID) + "-cancelled", ProjectID: string(run.ProjectID),
 		AggregateType: "WorkflowRun", AggregateID: string(run.ID), Sequence: int64(updated.Version),
 		EventType: RunCancelledEventType, SchemaVersion: RunCancelledSchemaVersion, PayloadJSON: string(payload),
 		CorrelationID: correlationID, CreatedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		return err
+	}
+
+	if err := openRunCancelledBlockerTx(ctx, tx, run, correlationID, jobID); err != nil {
+		return err
+	}
+	return reconcileWorkItemCancellationTx(ctx, tx, string(run.WorkItemID), correlationID, jobID)
+}
+
+// openRunCancelledBlockerTx is transitionRunToCancelledTx's own WorkItem-
+// authority closing step (V4-12C, confirmed with the user before writing
+// this file): ADR-020's own "CancelRun -> Run CANCELLED, WorkItem BLOCKED
+// kèm blocker RUN_CANCELLED" — but only when this Run's own cancellation was
+// NOT itself driven by CancelWorkItem. A still-existing
+// WorkItemCancellationIntent (any state — REQUESTED or already COMPLETED)
+// names that case unambiguously: a WorkItem already on its own way to
+// CANCELLED (reconcileWorkItemCancellationTx, called right after this by
+// transitionRunToCancelledTx above, is what actually closes it out) must
+// never be shoved back into BLOCKED by the very Run quiescing that is
+// closing it out — so this opens no blocker at all in that case (a
+// deliberately simpler choice than the closed-from-birth "resolved audit
+// blocker" alternative the user's own answer also offered: ADR-020's own
+// audit trail for a WorkItem-driven cancellation is WORK_ITEM_CANCELLED
+// itself, appended by reconcileWorkItemCancellationTx).
+func openRunCancelledBlockerTx(ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, correlationID, jobID string) error {
+	// Any WorkItemCancellationIntent at all — REQUESTED (still quiescing) or
+	// already COMPLETED (an earlier CancelWorkItem finished quiescing every
+	// OTHER Run before this one got here) — names "this Run's own
+	// cancellation was WorkItem-driven", unlike reconcileWorkItemCancellationTx's
+	// own REQUESTED-only check for "is there still WorkItem-level work left
+	// to close out".
+	switch _, err := tx.Runtime().GetWorkItemCancellationIntent(ctx, string(run.WorkItemID)); {
+	case err == nil:
+		return nil
+	case !errors.Is(err, ports.ErrPersistenceNotFound):
+		return err
+	}
+
+	blockerID := string(run.ID) + "-run-cancelled-blocker"
+	_, err := openWorkItemBlockerTx(
+		ctx, tx, run.ProjectID, string(run.WorkItemID), blockerID, workdomain.BlockerRunCancelled,
+		string(run.ID), "", "", "workflow run "+string(run.ID)+" was cancelled", correlationID, jobID,
+	)
+	return err
 }

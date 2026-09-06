@@ -11,6 +11,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
 // V4-12B's own cancellation-coordinator tests (docs/design/06-v4-runtime-engine.md,
@@ -462,14 +463,23 @@ func TestCancelRun_ClaimVsCancel_CommitOrder(t *testing.T) {
 	})
 }
 
-// TestFinalizeExecutionAttempt_BlockedThenCancel_NotAutoClosedByCancelling
-// is the Verify line's own "cancel-vs-BLOCK... chứng minh KHÔNG biến
-// cancel thành no-op": a BLOCKED NodeRun/Attempt is deliberately never
-// swept by the coordinator (see cancel_run_coordinator.go's own package
-// doc comment) and reconcileCancellingRunTx requires BlockedCount==0
-// before closing the Run — so a Run cancelled while one NodeRun is BLOCKED
-// must stay at CANCELLING, never silently jump to CANCELLED.
-func TestFinalizeExecutionAttempt_BlockedThenCancel_NotAutoClosedByCancelling(t *testing.T) {
+// TestFinalizeExecutionAttempt_BlockedThenCancel_ClosesWhileNodeRunStaysBlocked
+// is the Verify line's own "cancel-vs-BLOCK... chứng minh KHÔNG biến cancel
+// thành no-op", updated for V4-12C's own correction (confirmed with the
+// user): a BLOCKED NodeRun/Attempt is deliberately never swept by the
+// coordinator (see cancel_run_coordinator.go's own package doc comment) and
+// stays exactly as-is forever, a frozen historical record — but
+// reconcileCancellingRunTx no longer requires BlockedCount==0 to close the
+// Run (only LiveCount==0), since nothing in this codebase's own
+// cancellation protocol ever resumes a BLOCKED activation once cancelling,
+// so waiting on it would make CANCELLED permanently unreachable. The real,
+// durable trace of "this Run stopped with unresolved business left" is now
+// the WorkItem-level blocker(s) this scenario opens instead — a
+// SCOPE_EXPANSION_REQUIRED one (from the BLOCKED finalize itself) and a
+// RUN_CANCELLED one (from the Run's own eventual close), both left OPEN on
+// the WorkItem, which is why the WorkItem itself stays BLOCKED even though
+// the Run has fully closed out.
+func TestFinalizeExecutionAttempt_BlockedThenCancel_ClosesWhileNodeRunStaysBlocked(t *testing.T) {
 	uow, ids, runID, nodeRunID, attemptID := scheduledExecutionFixture(t, 600)
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
@@ -488,6 +498,15 @@ func TestFinalizeExecutionAttempt_BlockedThenCancel_NotAutoClosedByCancelling(t 
 		t.Fatal("node run did not reach BLOCKED as expected")
 	}
 
+	run := runState(t, uow, runID)
+	item, err := uow.Snapshot.Work().GetWorkItem(context.Background(), string(run.WorkItemID))
+	if err != nil {
+		t.Fatalf("GetWorkItem: %v", err)
+	}
+	if item.Status != workdomain.WorkItemBlocked {
+		t.Fatalf("work item status after scope-expansion block = %s, want BLOCKED", item.Status)
+	}
+
 	cancelActor(t, uow, ids, runID)
 	driveCancelRunCoordinator(t, uow, ids, runID)
 
@@ -496,8 +515,30 @@ func TestFinalizeExecutionAttempt_BlockedThenCancel_NotAutoClosedByCancelling(t 
 		t.Fatalf("node run state after coordinator sweep = %s, want unchanged BLOCKED (never touched by the sweep)", nodeRun.State)
 	}
 	final := runState(t, uow, runID)
-	if final.State != runtimedomain.WorkflowRunCancelling {
-		t.Fatalf("run state = %s, want still CANCELLING (a lingering BLOCKED NodeRun must never auto-close the Run)", final.State)
+	if final.State != runtimedomain.WorkflowRunCancelled {
+		t.Fatalf("run state = %s, want CANCELLED (a lingering BLOCKED NodeRun must never strand the Run in CANCELLING forever)", final.State)
+	}
+
+	blockers, err := uow.Snapshot.Work().ListWorkItemBlockersForWorkItem(context.Background(), string(run.WorkItemID))
+	if err != nil {
+		t.Fatalf("ListWorkItemBlockersForWorkItem: %v", err)
+	}
+	openTypes := map[workdomain.BlockerType]bool{}
+	for _, b := range blockers {
+		if b.State == workdomain.BlockerOpen {
+			openTypes[b.Type] = true
+		}
+	}
+	if !openTypes[workdomain.BlockerScopeExpansionRequired] || !openTypes[workdomain.BlockerRunCancelled] {
+		t.Fatalf("open blocker types = %+v, want both SCOPE_EXPANSION_REQUIRED and RUN_CANCELLED", openTypes)
+	}
+
+	item, err = uow.Snapshot.Work().GetWorkItem(context.Background(), string(run.WorkItemID))
+	if err != nil {
+		t.Fatalf("GetWorkItem: %v", err)
+	}
+	if item.Status != workdomain.WorkItemBlocked {
+		t.Fatalf("work item status after run closed = %s, want still BLOCKED (two open blockers remain)", item.Status)
 	}
 }
 

@@ -540,3 +540,178 @@ func TestRunCancelledV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestWorkItemCancellationRequestedV1_GoldenFixtureDecodes is
+// WORK_ITEM_CANCELLATION_REQUESTED's own golden-fixture proof (V4-12C),
+// mirroring TestRunCancellationRequestedV1_GoldenFixtureDecodes.
+func TestWorkItemCancellationRequestedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "work_item_cancellation_requested_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(WorkItemCancellationRequestedEventType, WorkItemCancellationRequestedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", WorkItemCancellationRequestedEventType, WorkItemCancellationRequestedSchemaVersion, err)
+	}
+	want := workItemCancellationRequestedEventPayload{WorkItemID: "work-item-1", Actor: "actor-1", Reason: "operator requested cancel"}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", WorkItemCancellationRequestedEventType, WorkItemCancellationRequestedSchemaVersion, got, want)
+	}
+}
+
+// TestWorkItemCancellationRequestedV1_RealEventPayloadDecodes proves
+// CancelWorkItem's own actual marshaled WORK_ITEM_CANCELLATION_REQUESTED
+// payload round-trips through the registered decoder.
+func TestWorkItemCancellationRequestedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := workItemCancellationRequestedEventPayload{WorkItemID: "work-item-9", Actor: "actor-9", Reason: "cleanup"}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(WorkItemCancellationRequestedEventType, WorkItemCancellationRequestedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
+
+// TestWorkItemCancelledV1_GoldenFixtureDecodes is WORK_ITEM_CANCELLED's own
+// golden-fixture proof (V4-12C), mirroring TestRunCancelledV1_GoldenFixtureDecodes.
+func TestWorkItemCancelledV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "work_item_cancelled_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(WorkItemCancelledEventType, WorkItemCancelledSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", WorkItemCancelledEventType, WorkItemCancelledSchemaVersion, err)
+	}
+	want := workItemCancelledEventPayload{WorkItemID: "work-item-1", JobID: "job-1"}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", WorkItemCancelledEventType, WorkItemCancelledSchemaVersion, got, want)
+	}
+}
+
+// TestWorkItemCancelledV1_RealEventPayloadDecodes proves
+// reconcileWorkItemCancellationTx's own actual marshaled WORK_ITEM_CANCELLED
+// payload round-trips through the registered decoder.
+func TestWorkItemCancelledV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := workItemCancelledEventPayload{WorkItemID: "work-item-9", JobID: "job-9"}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(WorkItemCancelledEventType, WorkItemCancelledSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
+
+// TestWorkItemBlockedV1_GoldenFixtureDecodes is WORK_ITEM_BLOCKED's own
+// golden-fixture proof (V4-12C).
+func TestWorkItemBlockedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "work_item_blocked_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(WorkItemBlockedEventType, WorkItemBlockedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", WorkItemBlockedEventType, WorkItemBlockedSchemaVersion, err)
+	}
+	want := workItemBlockedEventPayload{
+		WorkItemID: "work-item-1", BlockerID: "blocker-1", BlockerType: "RUN_CANCELLED", SourceRunID: "run-1", JobID: "job-1",
+	}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", WorkItemBlockedEventType, WorkItemBlockedSchemaVersion, got, want)
+	}
+}
+
+// TestWorkItemBlockedV1_RealEventPayloadDecodes proves openWorkItemBlockerTx's
+// own actual marshaled WORK_ITEM_BLOCKED payload round-trips through the
+// registered decoder.
+func TestWorkItemBlockedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := workItemBlockedEventPayload{
+		WorkItemID: "work-item-9", BlockerID: "blocker-9", BlockerType: "SCOPE_EXPANSION_REQUIRED", SourceRunID: "run-9", JobID: "job-9",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(WorkItemBlockedEventType, WorkItemBlockedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
+
+// TestWorkItemBlockerResolvedV1_GoldenFixtureDecodes is
+// WORK_ITEM_BLOCKER_RESOLVED's own golden-fixture proof (V4-12C).
+func TestWorkItemBlockerResolvedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "work_item_blocker_resolved_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(WorkItemBlockerResolvedEventType, WorkItemBlockerResolvedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", WorkItemBlockerResolvedEventType, WorkItemBlockerResolvedSchemaVersion, err)
+	}
+	want := workItemBlockerResolvedEventPayload{
+		WorkItemID: "work-item-1", BlockerID: "blocker-1", BlockerType: "RUN_CANCELLED", ResolutionMode: "RESOLVED",
+		ResolvedBy: "actor-1", WorkItemUnblocked: true, NewWorkItemStatus: "READY", JobID: "job-1",
+	}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", WorkItemBlockerResolvedEventType, WorkItemBlockerResolvedSchemaVersion, got, want)
+	}
+}
+
+// TestWorkItemBlockerResolvedV1_RealEventPayloadDecodes proves
+// closeWorkItemBlockerTx's own actual marshaled WORK_ITEM_BLOCKER_RESOLVED
+// payload round-trips through the registered decoder.
+func TestWorkItemBlockerResolvedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := workItemBlockerResolvedEventPayload{
+		WorkItemID: "work-item-9", BlockerID: "blocker-9", BlockerType: "COMPLETION_POLICY_FAILED", ResolutionMode: "WAIVED",
+		ResolvedBy: "actor-9", WorkItemUnblocked: false,
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(WorkItemBlockerResolvedEventType, WorkItemBlockerResolvedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}

@@ -443,6 +443,33 @@ func reactivateBlockedNodeRunTx(
 		return err
 	}
 
+	// V4-12C: this reactivation is the ONLY event with authority to resolve
+	// the SCOPE_EXPANSION_REQUIRED blocker requestScopeExpansionTx's own
+	// BLOCKED branch opened (finalize.go) — never ResolveWorkItemBlocker,
+	// the public command (workdomain.BlockerType.ResolvableViaCommand's own
+	// doc comment). Unblocks the WorkItem back to ACTIVE (never READY — the
+	// SAME Run resumes, it never stopped), but only when this was its own
+	// last remaining OPEN blocker and no WorkItem-level cancellation is
+	// pending (closeWorkItemBlockerTx's own two-separate-conditions rule).
+	// ErrPersistenceNotFound is tolerated as a no-op: a ScopeExpansionOrigin
+	// seeded directly (bypassing requestScopeExpansionTx, e.g. an
+	// origin/fixture predating this wiring) has no corresponding blocker to
+	// resolve at all — nothing about the reactivation itself depends on one
+	// existing.
+	blockerID := string(origin.AttemptID) + "-scope-expansion-blocker"
+	blocker, err := tx.Work().GetWorkItemBlocker(ctx, blockerID)
+	switch {
+	case err == nil && blocker.State == workdomain.BlockerOpen:
+		if _, err := closeWorkItemBlockerTx(
+			ctx, tx, blocker, workdomain.BlockerResolved, scopeExpansionSystemActor,
+			"scope expansion approved and reactivated", "", workdomain.WorkItemActive, "", "",
+		); err != nil {
+			return err
+		}
+	case err != nil && !errors.Is(err, ports.ErrPersistenceNotFound):
+		return err
+	}
+
 	schedulePayload, err := json.Marshal(ScheduleNodeRunJobPayload{RunID: string(run.ID), NodeRunID: reactivatedID})
 	if err != nil {
 		return fmt.Errorf("marshal %s job payload: %w", ScheduleNodeRunJobKind, err)
