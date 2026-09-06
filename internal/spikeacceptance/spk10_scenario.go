@@ -125,20 +125,17 @@ func runSPK10Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 	if err != nil {
 		return SPKResult{}, fmt.Errorf("spk10: load final run: %w", err)
 	}
-	consistent := final.Version == 2 &&
-		(final.State == domainruntime.WorkflowRunRunning || final.State == domainruntime.WorkflowRunCancelled)
+	detail, payload, consistent := spk10TransitionsEvidence(winners, stale, final.Version, final.State)
 	consistencyAssertion := Assertion{
 		Name:   "final run state reflects exactly one committed transition, no lost update",
 		Passed: consistent,
-		Detail: fmt.Sprintf("version=%d state=%s", final.Version, final.State),
+		Detail: detail,
 	}
 	if !consistent {
 		passed = false
 	}
 
-	artifact, err := sc.Bundle.PutJSON("runtime/transitions.jsonl", map[string]any{
-		"winners": winners, "stale": stale, "finalVersion": final.Version, "finalState": final.State,
-	})
+	artifact, err := sc.Bundle.PutJSON("runtime/transitions.jsonl", payload)
 	if err != nil {
 		return SPKResult{}, fmt.Errorf("spk10: write evidence: %w", err)
 	}
@@ -154,4 +151,31 @@ func runSPK10Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 		Timing:    Timing{StartedAt: started, EndedAt: time.Now().UTC()},
 		Artifacts: []ArtifactRef{{Kind: ArtifactKindRuntime, Artifact: artifact}},
 	}, nil
+}
+
+// spk10TransitionsEvidence returns the SemanticDiff-stable summary of one
+// SPK-10 race outcome. winners/stale and finalVersion are already
+// deterministic by construction (exactly one CAS wins, the other gets
+// ErrOptimisticConflict, version always advances to 2 regardless of which
+// transition committed first) — but WHICH concrete state won
+// (RUNNING vs CANCELLED) is the one field this scenario deliberately leaves
+// undetermined: worker-a's or worker-b's CAS may commit first depending on
+// the OS scheduler, and both are equally valid. SPK-13's own cross-platform
+// semantic diff (semantic_diff.go) compares every Assertion.Detail and
+// every non-process ArtifactRef byte-for-byte on purpose — it must never
+// silently normalize away a REAL divergence — so the fix belongs here, in
+// what this scenario chooses to report, not in SemanticDiff's own
+// allowlist: only whether the final state is one of the two legitimate
+// winners is ever recorded (finalStateAllowed), never the literal state
+// value itself. This keeps the underlying race genuinely nondeterministic
+// (no fake tie-break) while making the CAPTURED EVIDENCE for two equally
+// legitimate outcomes hash identically on Windows and Linux.
+func spk10TransitionsEvidence(winners, stale int, finalVersion uint64, finalState domainruntime.WorkflowRunState) (detail string, payload map[string]any, consistent bool) {
+	finalStateAllowed := finalState == domainruntime.WorkflowRunRunning || finalState == domainruntime.WorkflowRunCancelled
+	consistent = finalVersion == 2 && finalStateAllowed
+	detail = fmt.Sprintf("version=%d finalStateAllowed=%t", finalVersion, finalStateAllowed)
+	payload = map[string]any{
+		"winners": winners, "stale": stale, "finalVersion": finalVersion, "finalStateAllowed": finalStateAllowed,
+	}
+	return detail, payload, consistent
 }
