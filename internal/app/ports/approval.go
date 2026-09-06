@@ -23,6 +23,12 @@ type ApprovalRepository interface {
 	// GetApprovalRequest returns the ApprovalRequest named by id, or
 	// ErrPersistenceNotFound.
 	GetApprovalRequest(ctx context.Context, id string) (runtime.ApprovalRequest, error)
+	// ListApprovalRequestsForRun is populated now (V4-12B,
+	// docs/design/06-v4-runtime-engine.md): every ApprovalRequest whose own
+	// RunID matches — the CANCEL_RUN_COORDINATOR job's own sweep uses this
+	// to find every still-PENDING request of a cancelling Run and CAS it
+	// CANCELLED. Deliberately unfiltered by state.
+	ListApprovalRequestsForRun(ctx context.Context, runID string) ([]runtime.ApprovalRequest, error)
 
 	// TransitionApprovalRequest is the fenced CAS that closes an
 	// ApprovalRequest's own race: exactly one of a ResolveApproval command

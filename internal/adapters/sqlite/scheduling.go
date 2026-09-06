@@ -17,7 +17,7 @@ const durableJobColumns = `
 id, project_id, kind, aggregate_type, aggregate_id, payload_json, state,
 available_at, priority, claim_count, max_claims, lease_owner, lease_token,
 lease_until, heartbeat_at, idempotency_key, last_error_code, version,
-created_at, updated_at`
+created_at, updated_at, run_id, job_class, cancel_epoch`
 
 type rowScanner interface {
 	Scan(...any) error
@@ -43,6 +43,34 @@ func enqueueJobTx(ctx context.Context, q sqlQueryRower, request ports.EnqueueJob
 	if err := validateEnqueueJob(request); err != nil {
 		return ports.DurableJob{}, err
 	}
+	jobClass := ports.ClassifyJobKind(strings.TrimSpace(request.Kind))
+	runID := strings.TrimSpace(request.RunID)
+	// "Enqueue RUN_WORK mới CAS rằng Run còn non-cancelling"
+	// (docs/design/06-v4-runtime-engine.md, V4-12B): a defense-in-depth
+	// backstop — every real call site in internal/app/runtime already
+	// checks the Run's own state before ever attempting to create new
+	// work, so this should never fire in the normal flow, but the INSERT
+	// itself is still the one place this invariant is actually enforced.
+	// A separate upfront SELECT (rather than folding the check into the
+	// INSERT itself via INSERT...SELECT...WHERE) keeps this readable; it
+	// is race-free for the Tx-scoped jobsRepository.EnqueueJob path (every
+	// real RUN_WORK+RunID caller in this codebase) since both
+	// QueryRowContext calls share the SAME already-open r.tx. The flat,
+	// non-transactional Store.EnqueueJob(ctx, request) — s.db, not a
+	// Tx — has the identical narrow TOCTOU window every other flat/Tx
+	// method pair in this file already has (completeJobTx et al.); no
+	// real caller in this codebase enqueues a run-scoped RUN_WORK job
+	// through that flat path.
+	if jobClass == ports.JobClassRunWork && runID != "" {
+		var cancelling int
+		err := q.QueryRowContext(ctx, `SELECT 1 FROM workflow_runs WHERE id = ? AND state IN ('CANCELLING', 'CANCELLED')`, runID).Scan(&cancelling)
+		if err == nil {
+			return ports.DurableJob{}, ports.ErrRunCancelling
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return ports.DurableJob{}, MapSQLiteError(fmt.Errorf("check run %s cancelling before enqueue: %w", runID, err))
+		}
+	}
 	payload := request.Payload
 	if len(payload) == 0 {
 		payload = json.RawMessage(`{}`)
@@ -51,17 +79,21 @@ func enqueueJobTx(ctx context.Context, q sqlQueryRower, request ports.EnqueueJob
 	if !request.AvailableAt.IsZero() {
 		availableAt = request.AvailableAt.UTC().Format(time.RFC3339Nano)
 	}
+	var runIDColumn any
+	if runID != "" {
+		runIDColumn = runID
+	}
 
 	row := q.QueryRowContext(ctx, `
 INSERT INTO durable_jobs (
     id, project_id, kind, aggregate_type, aggregate_id, payload_json, state,
     available_at, priority, claim_count, max_claims, lease_token,
-    idempotency_key, version, created_at, updated_at
+    idempotency_key, version, created_at, updated_at, run_id, job_class
 ) VALUES (?, ?, ?, ?, ?, ?, 'AVAILABLE',
     COALESCE(NULLIF(?, ''), strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     ?, 0, ?, 0, ?, 1,
     strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?)
 RETURNING `+durableJobColumns,
 		request.ID,
 		request.ProjectID,
@@ -73,6 +105,8 @@ RETURNING `+durableJobColumns,
 		request.Priority,
 		request.MaxClaims,
 		strings.TrimSpace(request.IdempotencyKey),
+		runIDColumn,
+		string(jobClass),
 	)
 	job, err := scanDurableJob(row)
 	if err != nil {
@@ -145,6 +179,34 @@ LIMIT 1`
 	return true, nil
 }
 
+// FenceAndCancelRunJobs implements ports.JobsRepository (V4-12B): see that
+// interface method's own doc comment for the full contract. One UPDATE
+// achieves both fencing (every matching row, AVAILABLE or LEASED) and
+// terminal-state-flipping (AVAILABLE only) — a CASE expression rather than
+// two separate statements, so this is exactly one atomic write.
+func (r jobsRepository) FenceAndCancelRunJobs(ctx context.Context, runID string) (int64, error) {
+	if strings.TrimSpace(runID) == "" {
+		return 0, errors.New("workflow run id is required")
+	}
+	result, err := r.tx.ExecContext(ctx, `
+UPDATE durable_jobs
+SET cancel_epoch = 1,
+    state = CASE WHEN state = 'AVAILABLE' THEN 'CANCELLED' ELSE state END,
+    version = version + 1,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE run_id = ? AND job_class = 'RUN_WORK' AND state IN ('AVAILABLE', 'LEASED') AND cancel_epoch IS NULL`,
+		runID,
+	)
+	if err != nil {
+		return 0, MapSQLiteError(fmt.Errorf("fence and cancel run work jobs for run %s: %w", runID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read fence and cancel run work jobs result: %w", err)
+	}
+	return affected, nil
+}
+
 func (s *Store) ClaimJob(
 	ctx context.Context,
 	owner string,
@@ -159,6 +221,17 @@ func (s *Store) ClaimJob(
 		return ports.DurableJob{}, ports.JobLease{}, err
 	}
 
+	// V4-12B: claim CAS is split by class ("Claim CAS tách theo class") —
+	// a RUN_WORK job additionally requires cancel_epoch IS NULL, so a job
+	// fenced by its owning Run's own cancellation intent can never be
+	// claimed again; a CONTROL job (most importantly the very
+	// CANCEL_RUN_COORDINATOR job that does the fencing) is never subject
+	// to cancel_epoch at all. One candidate query with a compound
+	// predicate — rather than two separate SQL statements the caller
+	// picks between — since Pool.runWorker claims homogeneously and has
+	// no notion of "claim only CONTROL jobs right now"; the two partial
+	// indexes from migration 0023 already let SQLite's own planner serve
+	// either branch efficiently.
 	row := s.db.QueryRowContext(ctx, `
 WITH candidate AS (
     SELECT id
@@ -166,6 +239,7 @@ WITH candidate AS (
     WHERE state = 'AVAILABLE'
       AND claim_count < max_claims
       AND julianday(available_at) <= julianday('now')
+      AND (job_class = 'CONTROL' OR (job_class = 'RUN_WORK' AND cancel_epoch IS NULL))
     ORDER BY priority DESC, created_at, id
     LIMIT 1
 )
@@ -688,12 +762,15 @@ func scanDurableJob(scanner rowScanner) (ports.DurableJob, error) {
 	var lastErrorCode sql.NullString
 	var createdAtText string
 	var updatedAtText string
+	var runID sql.NullString
+	var jobClass string
+	var cancelEpoch sql.NullInt64
 	if err := scanner.Scan(
 		&job.ID, &job.ProjectID, &job.Kind, &job.AggregateType, &job.AggregateID,
 		&payload, &state, &availableAtText, &job.Priority, &job.ClaimCount,
 		&job.MaxClaims, &leaseOwner, &job.LeaseToken, &leaseUntilText,
 		&heartbeatAtText, &job.IdempotencyKey, &lastErrorCode, &job.Version,
-		&createdAtText, &updatedAtText,
+		&createdAtText, &updatedAtText, &runID, &jobClass, &cancelEpoch,
 	); err != nil {
 		return ports.DurableJob{}, err
 	}
@@ -701,6 +778,12 @@ func scanDurableJob(scanner rowScanner) (ports.DurableJob, error) {
 	job.State = ports.JobState(state)
 	job.LeaseOwner = leaseOwner.String
 	job.LastErrorCode = lastErrorCode.String
+	job.RunID = runID.String
+	job.JobClass = ports.JobClass(jobClass)
+	if cancelEpoch.Valid {
+		epoch := uint64(cancelEpoch.Int64)
+		job.CancelEpoch = &epoch
+	}
 	var err error
 	if job.AvailableAt, err = parseDBTime(availableAtText); err != nil {
 		return ports.DurableJob{}, err

@@ -67,6 +67,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
 // ErrUnsupportedFinalizeState is returned when a caller asks
@@ -326,6 +327,11 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 			if err := requestScopeExpansionTx(ctx, tx, ids, req, run, &result); err != nil {
 				return err
 			}
+
+		case runtimedomain.ExecutionAttemptCancelled:
+			if err := decideCancelledOutcomeTx(ctx, tx, ids, req, run); err != nil {
+				return err
+			}
 		}
 
 		// Step 7: complete the driving job last.
@@ -337,6 +343,86 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 		return nil
 	})
 	return result, err
+}
+
+// decideCancelledOutcomeTx is V4-12B's own Step 6 branch (finalize.go's
+// own switch, above): a RUNNING Attempt that ExecuteNodeHandler's own
+// second worker re-check checkpoint (execute.go) caught before real
+// execution ever started — CAS the owning NodeRun RUNNING->CANCELLED
+// (mirroring how the SUCCEEDED/FAILED cases each transition their own
+// NodeRun), terminalize its own BranchToken and re-evaluate the JOIN if
+// it belonged to a FORK branch (the identical "a branch dying mid-flight
+// may prove the JOIN's own policy impossible" logic
+// decideRetryOrExhaustion's own FAILED branch already applies — evaluateJoinTx
+// already tallies BranchTokenCancelled the same way it tallies FAILED),
+// and reconcile — this may be exactly the event that lets a CANCELLING
+// Run finally close out to CANCELLED (reconcileCancellingRunTx's own
+// "zero live" check, completion.go).
+func decideCancelledOutcomeTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req FinalizeExecutionAttemptRequest, run runtimedomain.WorkflowRun) error {
+	nodeRun, err := tx.Runtime().GetNodeRun(ctx, req.NodeRunID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
+		NodeRunID: req.NodeRunID, ExpectedState: runtimedomain.NodeRunRunning, ExpectedVersion: nodeRun.Version,
+		NextState: runtimedomain.NodeRunCancelled,
+	}); err != nil {
+		return err
+	}
+	version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+	if err != nil {
+		return err
+	}
+	document := version.Document()
+
+	if err := terminalizeBranchTokenForCancelledNodeRunTx(ctx, tx, ids, run, document, nodeRun, req.CorrelationID, string(req.JobLease.JobID)); err != nil {
+		return err
+	}
+
+	return reconcileRunTerminalityTx(ctx, tx, run, document, req.CorrelationID, string(req.JobLease.JobID))
+}
+
+// terminalizeBranchTokenForCancelledNodeRunTx is shared by
+// decideCancelledOutcomeTx (above) and CancelRunCoordinatorHandler's own
+// sweep (cancel_run_coordinator.go): when a NodeRun belonging to a FORK
+// branch is cancelled, its own BranchToken must be terminalized in the
+// SAME transaction and the JOIN's own ALL/ANY/QUORUM policy re-evaluated —
+// the identical "a branch dying mid-flight may prove the JOIN's own
+// policy impossible" logic decideRetryOrExhaustion's own FAILED branch
+// already applies (evaluateJoinTx already tallies BranchTokenCancelled
+// the same way it tallies FAILED). A no-op for a nodeRun outside any FORK
+// branch (BranchTokenID nil).
+func terminalizeBranchTokenForCancelledNodeRunTx(
+	ctx context.Context, tx ports.Tx, ids idsource.Source, run runtimedomain.WorkflowRun, document workflow.WorkflowDocument,
+	nodeRun runtimedomain.NodeRun, correlationID, jobID string,
+) error {
+	if nodeRun.BranchTokenID == nil {
+		return nil
+	}
+	branchToken, err := tx.Runtime().GetBranchTokenByID(ctx, string(*nodeRun.BranchTokenID))
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Runtime().TransitionBranchToken(ctx, ports.TransitionBranchTokenRequest{
+		BranchTokenID: string(branchToken.ID), ExpectedVersion: branchToken.Version,
+		NextState: runtimedomain.BranchTokenCancelled, NextCurrentNodeKey: nodeRun.NodeKey,
+	}); err != nil {
+		return err
+	}
+	forkRun, err := tx.Runtime().GetNodeRun(ctx, string(branchToken.ForkNodeRunID))
+	if err != nil {
+		return err
+	}
+	forkNode, ok := findNode(document, forkRun.NodeKey)
+	if !ok {
+		return fmt.Errorf("runtime: fork node %s not found in workflow version %s", forkRun.NodeKey, run.WorkflowVersionID)
+	}
+	joinNode, ok := resolveForkJoinNode(document, forkNode)
+	if !ok {
+		return fmt.Errorf("%w: fork %s", ErrForkJoinNotFound, forkNode.Key)
+	}
+	_, err = evaluateJoinTx(ctx, tx, ids, run, document, run.SharedState, string(branchToken.ForkNodeRunID), joinNode, correlationID, jobID)
+	return err
 }
 
 // decideRetryOrExhaustion is V4-06's own retry policy: re-resolve the
@@ -359,8 +445,17 @@ func decideRetryOrExhaustion(
 
 	retryable := !req.FailureCode.NeverRetryable() && retryableErrorCodeDeclared(attemptRules.RetryableErrorCodes, req.FailureCode)
 	budgetRemains := uint32(attempt.AttemptNumber) < attemptRules.MaxAttempts
+	// V4-12B (ADR-020): "scheduler ngừng tạo activation/technical retry/
+	// rework mới ngay khi intent commit" — a Run already CANCELLING/
+	// CANCELLED never gets a new retry Attempt/job, regardless of
+	// remaining budget; this NodeRun instead falls through to the
+	// existing FAILED path below exactly as a genuinely non-retryable or
+	// budget-exhausted failure already does, and reconcileRunTerminalityTx's
+	// own tail call (this function's own last line) is what eventually
+	// closes the Run out to CANCELLED once nothing live remains.
+	runCancelling := run.State == runtimedomain.WorkflowRunCancelling || run.State == runtimedomain.WorkflowRunCancelled
 
-	if retryable && budgetRemains {
+	if retryable && budgetRemains && !runCancelling {
 		nextAttemptID := ids.NewID()
 		nextAttempt, err := runtimedomain.NewExecutionAttempt(
 			runtimedomain.ExecutionAttemptID(nextAttemptID), attempt.NodeRunID, attempt.AttemptNumber+1,

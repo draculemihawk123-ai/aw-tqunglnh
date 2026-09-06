@@ -86,26 +86,76 @@ func (r runtimeRepository) ListNodeRunsForRun(ctx context.Context, runID string)
 	return nodeRuns, nil
 }
 
+// ListExecutionAttemptsForRun implements ports.RuntimeRepository (V4-12B):
+// every ExecutionAttempt whose own NodeRun belongs to runID — joins
+// through node_runs since execution_attempts carries no run_id column of
+// its own, reusing loadExecutionAttemptByID's own column set via a plain
+// SELECT of ids, the same pattern ListNodeRunsForRun already established.
+func (r runtimeRepository) ListExecutionAttemptsForRun(ctx context.Context, runID string) ([]runtime.ExecutionAttempt, error) {
+	rows, err := r.tx.QueryContext(ctx, `
+SELECT ea.id FROM execution_attempts AS ea
+JOIN node_runs AS nr ON nr.id = ea.node_run_id
+WHERE nr.run_id = ?
+ORDER BY ea.id`, runID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list execution attempts for run %s: %w", runID, err))
+	}
+	var ids []runtime.ExecutionAttemptID
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan execution attempt id: %w", err)
+		}
+		ids = append(ids, runtime.ExecutionAttemptID(id))
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate execution attempt ids: %w", err)
+	}
+	rows.Close()
+
+	attempts := make([]runtime.ExecutionAttempt, 0, len(ids))
+	for _, id := range ids {
+		attempt, err := loadExecutionAttemptByID(ctx, r.tx, id)
+		if err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, nil
+}
+
 // TransitionWorkflowRunState implements ports.RuntimeRepository (V4-12):
 // the fenced CAS over workflow_runs.state, mirroring transitionNodeRunTx's
 // own exact shape. Sets finished_at when NextState is a genuinely terminal
-// state (FAILED) — VERIFYING is deliberately NOT terminal (ADR-011: it is
-// only a completion CANDIDATE, still pending V5-11's own CompletionPolicy
-// decision), so finished_at stays unset for that transition.
+// state (FAILED, CANCELLED) — VERIFYING and CANCELLING are deliberately
+// NOT terminal (ADR-011: VERIFYING is only a completion CANDIDATE, still
+// pending V5-11's own CompletionPolicy decision; CANCELLING is ADR-020's
+// own mandatory quiesce phase, not yet CANCELLED), so finished_at stays
+// unset for either. NextCancelEpoch (V4-12B) is optional: nil leaves
+// cancel_epoch untouched, non-nil sets it in this SAME CAS — CancelRun's
+// own only real use, bumping NULL->1 in the identical transaction that
+// moves the Run to CANCELLING.
 func (r runtimeRepository) TransitionWorkflowRunState(ctx context.Context, req ports.TransitionWorkflowRunStateRequest) (runtime.WorkflowRun, error) {
 	if req.RunID == "" {
 		return runtime.WorkflowRun{}, errors.New("workflow run id is required")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var finishedAt any
-	if req.NextState == runtime.WorkflowRunFailed {
+	if req.NextState == runtime.WorkflowRunFailed || req.NextState == runtime.WorkflowRunCancelled {
 		finishedAt = now
+	}
+	var nextCancelEpoch any
+	if req.NextCancelEpoch != nil {
+		nextCancelEpoch = *req.NextCancelEpoch
 	}
 	result, err := r.tx.ExecContext(ctx, `
 UPDATE workflow_runs
-SET state = ?, finished_at = COALESCE(?, finished_at), version = version + 1, updated_at = ?
+SET state = ?, finished_at = COALESCE(?, finished_at),
+    cancel_epoch = COALESCE(?, cancel_epoch), version = version + 1, updated_at = ?
 WHERE id = ? AND state = ? AND version = ?`,
-		string(req.NextState), finishedAt, now, req.RunID, string(req.ExpectedState), req.ExpectedVersion,
+		string(req.NextState), finishedAt, nextCancelEpoch, now, req.RunID, string(req.ExpectedState), req.ExpectedVersion,
 	)
 	if err != nil {
 		return runtime.WorkflowRun{}, MapSQLiteError(fmt.Errorf("transition workflow run %s state: %w", req.RunID, err))

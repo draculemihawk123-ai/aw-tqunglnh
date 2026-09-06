@@ -143,8 +143,8 @@ func (r *RuntimeRepository) ListNodeRunsForRun(_ context.Context, runID string) 
 }
 
 // TransitionWorkflowRunState mirrors sqlite's TransitionWorkflowRunState
-// (V4-12): a stale caller gets ErrOptimisticConflict, never a silent
-// overwrite.
+// (V4-12, extended V4-12B with NextCancelEpoch): a stale caller gets
+// ErrOptimisticConflict, never a silent overwrite.
 func (r *RuntimeRepository) TransitionWorkflowRunState(_ context.Context, req ports.TransitionWorkflowRunStateRequest) (runtime.WorkflowRun, error) {
 	run, ok := r.workflowRuns[req.RunID]
 	if !ok {
@@ -158,12 +158,37 @@ func (r *RuntimeRepository) TransitionWorkflowRunState(_ context.Context, req po
 	}
 	run.State = req.NextState
 	run.Version++
-	if req.NextState == runtime.WorkflowRunFailed {
+	if req.NextState == runtime.WorkflowRunFailed || req.NextState == runtime.WorkflowRunCancelled {
 		now := time.Now().UTC()
 		run.FinishedAt = &now
 	}
+	if req.NextCancelEpoch != nil {
+		epoch := *req.NextCancelEpoch
+		run.CancelEpoch = &epoch
+	}
 	r.workflowRuns[req.RunID] = run
 	return run, nil
+}
+
+// ListExecutionAttemptsForRun mirrors sqlite's ListExecutionAttemptsForRun
+// (V4-12B): every ExecutionAttempt whose own NodeRun belongs to runID —
+// joined here in Go against r.nodeRuns since this fake's own attempts map
+// (like the real schema) carries no RunID column of its own.
+func (r *RuntimeRepository) ListExecutionAttemptsForRun(_ context.Context, runID string) ([]runtime.ExecutionAttempt, error) {
+	nodeRunIDs := make(map[string]bool)
+	for _, nodeRun := range r.nodeRuns {
+		if string(nodeRun.RunID) == runID {
+			nodeRunIDs[string(nodeRun.ID)] = true
+		}
+	}
+	var attempts []runtime.ExecutionAttempt
+	for _, attempt := range r.attempts {
+		if nodeRunIDs[string(attempt.NodeRunID)] {
+			attempts = append(attempts, attempt)
+		}
+	}
+	sort.Slice(attempts, func(i, j int) bool { return attempts[i].ID < attempts[j].ID })
+	return attempts, nil
 }
 
 // TransitionNodeRun mirrors sqlite's transitionNodeRunTx (V4-03): a stale
@@ -519,6 +544,24 @@ func (r *RuntimeRepository) GetRunCancellationIntent(_ context.Context, runID st
 	if !ok {
 		return runtime.RunCancellationIntent{}, fmt.Errorf("fake: %w: run cancellation intent for run %s", ports.ErrPersistenceNotFound, runID)
 	}
+	return intent, nil
+}
+
+// TransitionRunCancellationIntentState mirrors sqlite's
+// TransitionRunCancellationIntentState (V4-12B): fenced purely by
+// (RunID, ExpectedState) — RunCancellationIntent carries no Version.
+func (r *RuntimeRepository) TransitionRunCancellationIntentState(_ context.Context, req ports.TransitionRunCancellationIntentStateRequest) (runtime.RunCancellationIntent, error) {
+	intent, ok := r.runIntents[req.RunID]
+	if !ok {
+		return runtime.RunCancellationIntent{}, fmt.Errorf("fake: %w: run cancellation intent for run %s", ports.ErrPersistenceNotFound, req.RunID)
+	}
+	if intent.State != req.ExpectedState {
+		return runtime.RunCancellationIntent{}, fmt.Errorf(
+			"fake: %w: run cancellation intent for run %s expected %s", ports.ErrOptimisticConflict, req.RunID, req.ExpectedState,
+		)
+	}
+	intent.State = req.NextState
+	r.runIntents[req.RunID] = intent
 	return intent, nil
 }
 

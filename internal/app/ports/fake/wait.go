@@ -73,6 +73,18 @@ func (r *WaitRepository) GetWaitRegistration(_ context.Context, id string) (runt
 	return registration, nil
 }
 
+// ListWaitRegistrationsForRun mirrors sqlite's ListWaitRegistrationsForRun
+// (V4-12B).
+func (r *WaitRepository) ListWaitRegistrationsForRun(_ context.Context, runID string) ([]runtime.WaitRegistration, error) {
+	var registrations []runtime.WaitRegistration
+	for _, registration := range r.registrations {
+		if string(registration.RunID) == runID {
+			registrations = append(registrations, registration)
+		}
+	}
+	return registrations, nil
+}
+
 // RecordWaitSignal mirrors sqlite's identical idempotent-replay/conflict
 // contract — see ports.WaitRepository.RecordWaitSignal's own doc comment.
 func (r *WaitRepository) RecordWaitSignal(_ context.Context, signal runtime.WaitSignal) (runtime.WaitSignal, bool, error) {

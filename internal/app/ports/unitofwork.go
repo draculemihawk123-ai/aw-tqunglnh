@@ -364,6 +364,20 @@ type RuntimeRepository interface {
 	// and Go code.
 	ListNodeRunsForRun(ctx context.Context, runID string) ([]runtime.NodeRun, error)
 
+	// ListExecutionAttemptsForRun is populated now (V4-12B,
+	// docs/design/06-v4-runtime-engine.md): every ExecutionAttempt whose
+	// own NodeRun belongs to runID, across every node key — ExecutionAttempt
+	// itself carries no RunID column (only NodeRunID), so this joins
+	// through node_runs at the persistence layer rather than making every
+	// caller do that join by hand. The CANCEL_RUN_COORDINATOR job's own
+	// sweep uses this to find every QUEUED (created but never started)
+	// Attempt of a Run and CAS it CANCELLED with
+	// TerminationReasonRunCancelledBeforeStart — "không Attempt nào được
+	// để mắc kẹt ở QUEUED". Deliberately unfiltered by state, the same
+	// "classification is the caller's own job" discipline
+	// ListNodeRunsForRun already established.
+	ListExecutionAttemptsForRun(ctx context.Context, runID string) ([]runtime.ExecutionAttempt, error)
+
 	// TransitionWorkflowRunState is populated now (V4-12): the fenced CAS
 	// over WorkflowRun.State/Version — the Run-level counterpart of
 	// TransitionNodeRun, used exactly twice by this codebase so far: END
@@ -544,6 +558,19 @@ type RuntimeRepository interface {
 	// GetRunCancellationIntent returns the RunCancellationIntent for runID,
 	// or ErrPersistenceNotFound.
 	GetRunCancellationIntent(ctx context.Context, runID string) (runtime.RunCancellationIntent, error)
+	// TransitionRunCancellationIntentState is populated now (V4-12B): the
+	// fenced CAS the CANCEL_RUN_COORDINATOR job's own handler uses to mark
+	// an intent COMPLETED once its own quiesce sweep has finished — the
+	// durable signal V4-13's own recovery reaper will one day read to tell
+	// "coordinator finished" apart from "coordinator died mid-sweep, retry
+	// it". No Version field exists on RunCancellationIntent (it is a
+	// two-state machine; ExpectedState alone is already the CAS), so this
+	// is fenced purely by (RunID, ExpectedState) — ErrOptimisticConflict
+	// when the row's own current State does not match ExpectedState (a
+	// duplicate coordinator delivery observing an already-COMPLETED intent
+	// is exactly this case, and is always a safe, idempotent no-op for the
+	// caller to treat it as).
+	TransitionRunCancellationIntentState(ctx context.Context, req TransitionRunCancellationIntentStateRequest) (runtime.RunCancellationIntent, error)
 
 	// RecordWorkItemCancellationIntent is RecordRunCancellationIntent's own
 	// counterpart at the WorkItem level, with the identical
@@ -636,6 +663,20 @@ type TransitionWorkflowRunStateRequest struct {
 	ExpectedState   runtime.WorkflowRunState
 	ExpectedVersion uint64
 	NextState       runtime.WorkflowRunState
+	// NextCancelEpoch is populated now (V4-12B): nil leaves
+	// WorkflowRun.CancelEpoch untouched (every pre-V4-12B caller); non-nil
+	// sets it in the SAME CAS as the State transition — CancelRun's own
+	// only real use, bumping NULL->1 in the identical transaction that
+	// moves the Run to CANCELLING.
+	NextCancelEpoch *uint64
+}
+
+// TransitionRunCancellationIntentStateRequest is the CAS request for
+// RuntimeRepository.TransitionRunCancellationIntentState (V4-12B).
+type TransitionRunCancellationIntentStateRequest struct {
+	RunID         string
+	ExpectedState runtime.CancellationIntentState
+	NextState     runtime.CancellationIntentState
 }
 
 // UpdateWorkflowRunSharedStateRequest is the CAS request for
@@ -733,6 +774,22 @@ type JobsRepository interface {
 	// as the flat method: state LEASED, owner/token match, lease_until
 	// still unexpired; ErrJobLeaseLost otherwise.
 	CompleteJob(ctx context.Context, lease JobLease) error
+
+	// FenceAndCancelRunJobs is populated now (V4-12B,
+	// docs/design/06-v4-runtime-engine.md): CancelRun's own atomic "fence
+	// every RUN_WORK job of this run" step, run in the SAME transaction as
+	// the RunCancellationIntent record and the CAS to CANCELLING. For
+	// every non-terminal (AVAILABLE or LEASED) RUN_WORK job whose RunID
+	// matches runID and whose own CancelEpoch is still nil: sets
+	// CancelEpoch (so it can never be claimed — or, for one already
+	// LEASED, re-validated at a worker's own two checkpoints — again),
+	// and additionally CASes an AVAILABLE one straight to JobCancelled
+	// (nothing was ever dispatched for it, so there is nothing to wait
+	// on) — a LEASED one stays LEASED; the worker already holding it will
+	// notice the fence at its own checkpoints. A CONTROL job is never
+	// touched, by construction (this method only ever targets
+	// JobClassRunWork rows). Returns the number of jobs affected.
+	FenceAndCancelRunJobs(ctx context.Context, runID string) (int64, error)
 }
 
 // EventsRepository appends a domain event inside the current transaction.

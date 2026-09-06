@@ -58,6 +58,18 @@ func (r *ApprovalRepository) GetApprovalRequest(_ context.Context, id string) (r
 	return request, nil
 }
 
+// ListApprovalRequestsForRun mirrors sqlite's ListApprovalRequestsForRun
+// (V4-12B).
+func (r *ApprovalRepository) ListApprovalRequestsForRun(_ context.Context, runID string) ([]runtime.ApprovalRequest, error) {
+	var requests []runtime.ApprovalRequest
+	for _, request := range r.requests {
+		if string(request.RunID) == runID {
+			requests = append(requests, request)
+		}
+	}
+	return requests, nil
+}
+
 // TransitionApprovalRequest mirrors sqlite's identical fenced CAS — a
 // stale caller (wrong ExpectedState/ExpectedVersion) gets
 // ErrOptimisticConflict, never a silent overwrite.

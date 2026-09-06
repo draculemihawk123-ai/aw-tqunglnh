@@ -589,6 +589,44 @@ FROM run_cancellation_intents WHERE run_id = ?`, runID).Scan(&id, &projectID, &a
 	}, nil
 }
 
+// TransitionRunCancellationIntentState implements ports.RuntimeRepository
+// (V4-12B): the fenced CAS the CANCEL_RUN_COORDINATOR job's own handler
+// uses to mark an intent COMPLETED once its own quiesce sweep finishes.
+// RunCancellationIntent carries no Version column of its own (it is a
+// two-state machine; ExpectedState alone is already the fence).
+func (r runtimeRepository) TransitionRunCancellationIntentState(ctx context.Context, req ports.TransitionRunCancellationIntentStateRequest) (runtime.RunCancellationIntent, error) {
+	if req.RunID == "" {
+		return runtime.RunCancellationIntent{}, errors.New("workflow run id is required")
+	}
+	result, err := r.tx.ExecContext(ctx, `
+UPDATE run_cancellation_intents
+SET state = ?
+WHERE run_id = ? AND state = ?`,
+		string(req.NextState), req.RunID, string(req.ExpectedState),
+	)
+	if err != nil {
+		return runtime.RunCancellationIntent{}, MapSQLiteError(fmt.Errorf("transition run cancellation intent for run %s: %w", req.RunID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return runtime.RunCancellationIntent{}, fmt.Errorf("read run cancellation intent transition result: %w", err)
+	}
+	if affected != 1 {
+		var exists int
+		lookupErr := r.tx.QueryRowContext(ctx, `SELECT 1 FROM run_cancellation_intents WHERE run_id = ?`, req.RunID).Scan(&exists)
+		if errors.Is(lookupErr, sql.ErrNoRows) {
+			return runtime.RunCancellationIntent{}, fmt.Errorf("%w: run cancellation intent for run %s", ports.ErrPersistenceNotFound, req.RunID)
+		}
+		if lookupErr != nil {
+			return runtime.RunCancellationIntent{}, MapSQLiteError(fmt.Errorf("check stale run cancellation intent transition: %w", lookupErr))
+		}
+		return runtime.RunCancellationIntent{}, fmt.Errorf(
+			"%w: run cancellation intent for run %s expected %s", ports.ErrOptimisticConflict, req.RunID, req.ExpectedState,
+		)
+	}
+	return loadRunCancellationIntentTx(ctx, r.tx, req.RunID)
+}
+
 // --- WorkItemCancellationIntent ---
 
 // RecordWorkItemCancellationIntent implements ports.RuntimeRepository

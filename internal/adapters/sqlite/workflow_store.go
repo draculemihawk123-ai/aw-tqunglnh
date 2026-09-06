@@ -366,11 +366,12 @@ func loadWorkflowRun(
 		sharedStateRaw  string
 		startedAtRaw    sql.NullString
 		finishedAtRaw   sql.NullString
+		cancelEpochRaw  sql.NullInt64
 		workflowVersion workflow.WorkflowVersionID
 	)
 	err := queryer.QueryRowContext(ctx, `
 SELECT id, project_id, work_item_id, workflow_version_id, family_id,
-       scope_version, state, shared_state_json, version, started_at, finished_at
+       scope_version, state, shared_state_json, version, started_at, finished_at, cancel_epoch
 FROM workflow_runs
 WHERE id = ?`, id).Scan(
 		&run.ID,
@@ -384,6 +385,7 @@ WHERE id = ?`, id).Scan(
 		&run.Version,
 		&startedAtRaw,
 		&finishedAtRaw,
+		&cancelEpochRaw,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.WorkflowRun{}, fmt.Errorf("%w: workflow run %s", ports.ErrPersistenceNotFound, id)
@@ -416,6 +418,10 @@ WHERE id = ?`, id).Scan(
 			return runtime.WorkflowRun{}, err
 		}
 		run.FinishedAt = &finishedAt
+	}
+	if cancelEpochRaw.Valid {
+		epoch := uint64(cancelEpochRaw.Int64)
+		run.CancelEpoch = &epoch
 	}
 	return run, nil
 }

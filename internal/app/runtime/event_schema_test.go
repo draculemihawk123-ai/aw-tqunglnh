@@ -456,3 +456,87 @@ func TestRunFailedV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestRunCancellationRequestedV1_GoldenFixtureDecodes is
+// RUN_CANCELLATION_REQUESTED's own golden-fixture proof (V4-12B).
+func TestRunCancellationRequestedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "run_cancellation_requested_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(RunCancellationRequestedEventType, RunCancellationRequestedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", RunCancellationRequestedEventType, RunCancellationRequestedSchemaVersion, err)
+	}
+	want := runCancellationRequestedEventPayload{RunID: "run-1", WorkItemID: "work-item-1", Actor: "actor-1", Reason: "operator requested cancel"}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", RunCancellationRequestedEventType, RunCancellationRequestedSchemaVersion, got, want)
+	}
+}
+
+// TestRunCancellationRequestedV1_RealEventPayloadDecodes proves CancelRun's
+// own actual marshaled RUN_CANCELLATION_REQUESTED payload round-trips
+// through the registered decoder.
+func TestRunCancellationRequestedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := runCancellationRequestedEventPayload{
+		RunID: "run-9", WorkItemID: "work-item-9", Actor: "actor-9", Reason: "cleanup",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(RunCancellationRequestedEventType, RunCancellationRequestedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
+
+// TestRunCancelledV1_GoldenFixtureDecodes is RUN_CANCELLED's own
+// golden-fixture proof (V4-12B), mirroring TestRunFailedV1_GoldenFixtureDecodes.
+func TestRunCancelledV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "run_cancelled_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(RunCancelledEventType, RunCancelledSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", RunCancelledEventType, RunCancelledSchemaVersion, err)
+	}
+	want := runCancelledEventPayload{RunID: "run-1", WorkItemID: "work-item-1", JobID: "job-1"}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", RunCancelledEventType, RunCancelledSchemaVersion, got, want)
+	}
+}
+
+// TestRunCancelledV1_RealEventPayloadDecodes proves
+// transitionRunToCancelledTx's own actual marshaled RUN_CANCELLED payload
+// round-trips through the registered decoder.
+func TestRunCancelledV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := runCancelledEventPayload{RunID: "run-9", WorkItemID: "work-item-9", JobID: "job-9"}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(RunCancelledEventType, RunCancelledSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}

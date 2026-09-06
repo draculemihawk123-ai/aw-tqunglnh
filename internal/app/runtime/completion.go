@@ -48,7 +48,15 @@ import (
 //     deliberately given no signal of its own here, since V4-07's own
 //     cycle-exhaustion always creates a live escalation-target NodeRun in
 //     the SAME transaction, so a SKIPPED row never coexists with
-//     LiveCount==0 at the moment this summary is computed.
+//     LiveCount==0 at the moment this summary is computed. CANCELLED
+//     (V4-12B's own first real producer: the CANCEL_RUN_COORDINATOR job's
+//     own sweep) is identically given no signal of its own — a Run in
+//     RUNNING/WAITING never has a CANCELLED NodeRun to begin with (nothing
+//     produces one outside the cancellation protocol, which only ever
+//     runs once the Run itself has already left RUNNING/WAITING for
+//     CANCELLING), so this only ever matters for reconcileCancellingRunTx's
+//     own "zero live" check below, where a CANCELLED NodeRun correctly
+//     counts toward neither LiveCount nor BlockedCount.
 type RunNodeStateSummary struct {
 	LiveCount    int
 	BlockedCount int
@@ -113,12 +121,16 @@ const (
 	RunFailureReasonTerminalPathInvalid = "TERMINAL_PATH_INVALID"
 )
 
-// reconcileRunTerminalityTx implements V4-12's own locked priority order,
-// exactly:
-//  1. Run is not currently RUNNING or WAITING (already VERIFYING/FAILED/
-//     SUCCEEDED/CANCELLING/CANCELLED/CREATED) — no-op; never fights
-//     another authority (a future CompletionPolicy transition, V4-12B's
-//     own cancellation protocol).
+// reconcileRunTerminalityTx implements V4-12's own locked priority order
+// for a Run still RUNNING/WAITING, exactly:
+//  1. Run is not currently RUNNING, WAITING, or CANCELLING (already
+//     VERIFYING/FAILED/SUCCEEDED/CANCELLED/CREATED) — no-op; never fights
+//     another authority (a future CompletionPolicy transition).
+//     1b. Run is CANCELLING — delegates to reconcileCancellingRunTx below
+//     (V4-12B's own extension), a DIFFERENT, simpler rule than 2-6: once
+//     cancellation intent has committed, nothing about END/FAILED/
+//     TERMINAL_PATH_INVALID matters anymore, only whether anything live
+//     or BLOCKED remains.
 //  2. Any live NodeRun exists — no-op; the Run can still make progress.
 //  3. No live, but a BLOCKED NodeRun exists — no-op; recoverable-stalled,
 //     owned by a future blocker/retry/cancel authority, never a Run
@@ -135,14 +147,16 @@ const (
 // Never touches WorkItem.Status — that stays the exclusive authority of a
 // future verification service (V5-11's own CompletionPolicy), exactly as
 // this task's own text requires ("WorkItem chỉ giữ ACTIVE/BLOCKED cho tới
-// verification service V5"). Never produces WorkflowRunCancelled — that
-// path belongs entirely to V4-12B and always goes through CANCELLING.
+// verification service V5").
 func reconcileRunTerminalityTx(
 	ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, document workflow.WorkflowDocument, correlationID, jobID string,
 ) error {
 	current, err := tx.Runtime().GetWorkflowRun(ctx, string(run.ID))
 	if err != nil {
 		return err
+	}
+	if current.State == runtimedomain.WorkflowRunCancelling {
+		return reconcileCancellingRunTx(ctx, tx, current, document, correlationID, jobID)
 	}
 	if current.State != runtimedomain.WorkflowRunRunning && current.State != runtimedomain.WorkflowRunWaiting {
 		return nil
@@ -165,6 +179,48 @@ func reconcileRunTerminalityTx(
 	default:
 		return transitionRunToFailedTx(ctx, tx, current, RunFailureReasonTerminalPathInvalid, correlationID, jobID)
 	}
+}
+
+// reconcileCancellingRunTx is V4-12B's own extension to the shared
+// reducer (docs/design/06-v4-runtime-engine.md, ADR-020): once a Run has
+// committed its own cancellation intent (CANCELLING), the only question
+// left is whether anything still live or BLOCKED remains — no END/FAILED/
+// TERMINAL_PATH_INVALID distinction matters anymore once cancellation has
+// already been decided. Requires BOTH LiveCount==0 AND BlockedCount==0: a
+// lingering BLOCKED NodeRun (most plausibly one that went BLOCKED for
+// scope expansion in the brief window between the cancel intent
+// committing and that Attempt's own outcome later arriving) is never
+// silently auto-resolved here — it stays exactly as CANCELLING until an
+// operator or a future CancelWorkItem/ResolveWorkItemBlocker-style
+// mechanism (V4-12C) closes it out, the same "BLOCKED không được tự fail
+// Run" philosophy V4-12 already locked, applied here to "BLOCKED không
+// được tự cancel Run" too. This is also the ONLY place
+// WorkflowRunCancelled is ever produced — called both from the
+// CANCEL_RUN_COORDINATOR job's own tail (right after its own sweep) and
+// from every ordinary reconcileRunTerminalityTx call site whenever it
+// observes the Run already CANCELLING (most importantly a RUNNING
+// Attempt's own eventual FinalizeExecutionAttempt, arriving after cancel
+// intent already committed). internal/adapters/sqlite's own Store opens
+// every write transaction with _txlock=immediate (txrunner.go's own doc
+// comment), so two WithSerializedWrite calls fully serialize against each
+// other — whichever of these two call sites' own transaction commits
+// first is unconditionally the only one that ever observes "CANCELLING
+// and now quiesced" at all; every later transaction's own fresh
+// GetWorkflowRun read (this function's own caller, reconcileRunTerminalityTx)
+// already sees CANCELLED and takes the plain no-op branch instead. There
+// is no genuine CAS-conflict race to swallow here the way, say, two
+// concurrent ApproveScopeExpansion calls might need.
+func reconcileCancellingRunTx(
+	ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, document workflow.WorkflowDocument, correlationID, jobID string,
+) error {
+	summary, err := computeRunNodeStateSummary(ctx, tx, string(run.ID), document)
+	if err != nil {
+		return err
+	}
+	if summary.LiveCount > 0 || summary.BlockedCount > 0 {
+		return nil
+	}
+	return transitionRunToCancelledTx(ctx, tx, run, correlationID, jobID)
 }
 
 // RunCompletionRequestedEventType/RunCompletionRequestedSchemaVersion
@@ -253,6 +309,51 @@ func transitionRunToFailedTx(
 		ID: string(run.ID) + "-failed", ProjectID: string(run.ProjectID),
 		AggregateType: "WorkflowRun", AggregateID: string(run.ID), Sequence: int64(updated.Version),
 		EventType: RunFailedEventType, SchemaVersion: RunFailedSchemaVersion, PayloadJSON: string(payload),
+		CorrelationID: correlationID, CreatedAt: time.Now().UTC(),
+	})
+}
+
+// RunCancelledEventType/RunCancelledSchemaVersion identify
+// RUN_CANCELLED's own registered (EventType, SchemaVersion) pair (V4-12B,
+// event_schema.go) — registered from the same changeset that produces
+// this event, not deferred.
+const (
+	RunCancelledEventType     = "RUN_CANCELLED"
+	RunCancelledSchemaVersion = 1
+)
+
+// runCancelledEventPayload is RUN_CANCELLED's own JSON shape (V4-12B).
+type runCancelledEventPayload struct {
+	RunID      string `json:"runId"`
+	WorkItemID string `json:"workItemId"`
+	// JobID is the durable job that drove this hop (blank if the caller
+	// did not supply one).
+	JobID string `json:"jobId,omitempty"`
+}
+
+// transitionRunToCancelledTx is reconcileCancellingRunTx's own closing
+// step (V4-12B): CAS CANCELLING->CANCELLED and append RUN_CANCELLED — the
+// only place either ever happens in this codebase.
+func transitionRunToCancelledTx(
+	ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, correlationID, jobID string,
+) error {
+	updated, err := tx.Runtime().TransitionWorkflowRunState(ctx, ports.TransitionWorkflowRunStateRequest{
+		RunID: string(run.ID), ExpectedState: run.State, ExpectedVersion: run.Version,
+		NextState: runtimedomain.WorkflowRunCancelled,
+	})
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(runCancelledEventPayload{
+		RunID: string(run.ID), WorkItemID: string(run.WorkItemID), JobID: jobID,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal %s event payload: %w", RunCancelledEventType, err)
+	}
+	return tx.Events().Append(ctx, ports.DomainEvent{
+		ID: string(run.ID) + "-cancelled", ProjectID: string(run.ProjectID),
+		AggregateType: "WorkflowRun", AggregateID: string(run.ID), Sequence: int64(updated.Version),
+		EventType: RunCancelledEventType, SchemaVersion: RunCancelledSchemaVersion, PayloadJSON: string(payload),
 		CorrelationID: correlationID, CreatedAt: time.Now().UTC(),
 	})
 }

@@ -502,6 +502,21 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		return result, nil
 	}
 
+	if run.State == runtimedomain.WorkflowRunCancelling || run.State == runtimedomain.WorkflowRunCancelled {
+		// V4-12B (ADR-020): "scheduler ngừng tạo activation/technical
+		// retry/rework mới ngay khi intent commit" — current's own
+		// SUCCEEDED transition and shared-state patch above still stand
+		// as real historical facts (Alpha has no process-kill; a RUNNING
+		// Attempt runs to its own natural conclusion), but routing to a
+		// BRAND NEW downstream NodeRun/job is exactly the "no new work"
+		// this ADR requires. Reconcile in case this was the last live
+		// thing keeping the Run at CANCELLING.
+		if err := reconcileRunTerminalityTx(ctx, tx, run, document, req.CorrelationID, req.JobID); err != nil {
+			return AdvanceRunResult{}, err
+		}
+		return AdvanceRunResult{Advanced: true, CompletedNodeRunID: req.NodeRunID, SelectedOutcome: outcome}, nil
+	}
+
 	// V4-07 (GC-INV-10/AK-ARCH-004): resolve how many times the literal
 	// edge target (downstreamNode) has already been activated in this Run
 	// — a real MAX query over durable history, never a raw COUNT(*), so a

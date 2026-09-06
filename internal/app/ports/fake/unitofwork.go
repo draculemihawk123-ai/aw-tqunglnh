@@ -18,6 +18,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
+	domainruntime "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
@@ -100,6 +101,7 @@ type Tx struct {
 
 func newTx() Tx {
 	catalog := &CatalogRepository{}
+	runtimeRepo := &RuntimeRepository{}
 	return Tx{
 		events:        &EventsRepository{},
 		receipts:      &ReceiptsRepository{},
@@ -107,8 +109,8 @@ func newTx() Tx {
 		definitions:   &DefinitionsRepository{},
 		catalog:       catalog,
 		work:          &WorkRepository{catalog: catalog},
-		runtime:       &RuntimeRepository{},
-		jobs:          &JobsRepository{},
+		runtime:       runtimeRepo,
+		jobs:          &JobsRepository{runtime: runtimeRepo},
 		readiness:     &ReadinessRepository{catalog: catalog},
 		wait:          &WaitRepository{},
 		approvals:     &ApprovalRepository{},
@@ -124,7 +126,7 @@ func (t Tx) clone() Tx {
 	clone.catalog = t.catalog.clone()
 	clone.work = t.work.cloneWith(clone.catalog)
 	clone.runtime = t.runtime.clone()
-	clone.jobs = t.jobs.clone()
+	clone.jobs = t.jobs.cloneWith(clone.runtime)
 	clone.readiness = t.readiness.cloneWith(clone.catalog)
 	clone.wait = t.wait.clone()
 	clone.approvals = t.approvals.clone()
@@ -745,14 +747,28 @@ func (c *CatalogRepository) GetEffectiveComponentPackAssignment(_ context.Contex
 // SQLite-only per this task's own test-layering decision; this fake only
 // needs to support the CAS/rollback/happy-path shapes.
 type JobsRepository struct {
+	// runtime is populated now (V4-12B), mirroring WorkRepository's own
+	// catalog field: EnqueueJob's own "run not cancelling" fence
+	// (ports.ErrRunCancelling) needs to read WorkflowRun.State for a
+	// RUN_WORK job's own RunID, and this fake has no other way to reach a
+	// sibling repository's data — each one is its own independent struct.
+	runtime   *RuntimeRepository
 	jobs      []ports.EnqueueJobRequest
 	leases    map[string]ports.JobLease
 	completed map[string]bool
+	// cancelled is populated now (V4-12B): job ID -> this job's own
+	// cancel_epoch has been set by FenceAndCancelRunJobs. This fake never
+	// modeled AVAILABLE/LEASED as a real per-job state machine to begin
+	// with (see this struct's own pre-existing doc comment on
+	// SetActiveLease) — a boolean "has this job been fenced" is the
+	// meaningful signal a fake-backed test needs; the finer AVAILABLE-vs-
+	// LEASED persistence mechanics are exercised at the sqlite level.
+	cancelled map[string]bool
 }
 
 var _ ports.JobsRepository = (*JobsRepository)(nil)
 
-func (j *JobsRepository) clone() *JobsRepository {
+func (j *JobsRepository) cloneWith(runtime *RuntimeRepository) *JobsRepository {
 	jobs := append([]ports.EnqueueJobRequest(nil), j.jobs...)
 	leases := make(map[string]ports.JobLease, len(j.leases))
 	for k, v := range j.leases {
@@ -762,7 +778,11 @@ func (j *JobsRepository) clone() *JobsRepository {
 	for k, v := range j.completed {
 		completed[k] = v
 	}
-	return &JobsRepository{jobs: jobs, leases: leases, completed: completed}
+	cancelled := make(map[string]bool, len(j.cancelled))
+	for k, v := range j.cancelled {
+		cancelled[k] = v
+	}
+	return &JobsRepository{runtime: runtime, jobs: jobs, leases: leases, completed: completed, cancelled: cancelled}
 }
 
 // SetActiveLease records lease as the currently active claim on jobID —
@@ -788,12 +808,51 @@ func (j *JobsRepository) EnqueueJob(_ context.Context, req ports.EnqueueJobReque
 			return ports.DurableJob{}, fmt.Errorf("fake: %w: durable job with idempotency key %q", ports.ErrPersistenceAlreadyExists, req.IdempotencyKey)
 		}
 	}
+	jobClass := ports.ClassifyJobKind(req.Kind)
+	runID := req.RunID
+	if jobClass == ports.JobClassRunWork && runID != "" && j.runtime != nil {
+		if run, ok := j.runtime.workflowRuns[runID]; ok &&
+			(run.State == domainruntime.WorkflowRunCancelling || run.State == domainruntime.WorkflowRunCancelled) {
+			return ports.DurableJob{}, ports.ErrRunCancelling
+		}
+	}
 	j.jobs = append(j.jobs, req)
 	return ports.DurableJob{
 		ID: req.ID, ProjectID: req.ProjectID, Kind: req.Kind, AggregateType: req.AggregateType,
 		AggregateID: req.AggregateID, Payload: req.Payload, State: ports.JobAvailable,
 		Priority: req.Priority, MaxClaims: req.MaxClaims, IdempotencyKey: req.IdempotencyKey, Version: 1,
+		RunID: runID, JobClass: jobClass,
 	}, nil
+}
+
+// FenceAndCancelRunJobs implements ports.JobsRepository (V4-12B): marks
+// every non-completed RUN_WORK job of runID as fenced — see IsCancelled's
+// own doc comment for what "fenced" means in this fake.
+func (j *JobsRepository) FenceAndCancelRunJobs(_ context.Context, runID string) (int64, error) {
+	if j.cancelled == nil {
+		j.cancelled = map[string]bool{}
+	}
+	var affected int64
+	for _, job := range j.jobs {
+		id := string(job.ID)
+		if job.RunID != runID || ports.ClassifyJobKind(job.Kind) != ports.JobClassRunWork {
+			continue
+		}
+		if j.completed[id] || j.cancelled[id] {
+			continue
+		}
+		j.cancelled[id] = true
+		affected++
+	}
+	return affected, nil
+}
+
+// IsCancelled reports whether jobID has been fenced by
+// FenceAndCancelRunJobs (V4-12B) — the fake's own stand-in for a real
+// durable_jobs.cancel_epoch being set (and, for a job that was still
+// AVAILABLE, its state flipping straight to CANCELLED).
+func (j *JobsRepository) IsCancelled(jobID string) bool {
+	return j.cancelled[jobID]
 }
 
 // Items returns a copy of every job enqueued so far, in enqueue order —

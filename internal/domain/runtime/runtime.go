@@ -60,6 +60,13 @@ type WorkflowRun struct {
 	Version             uint64
 	StartedAt           *time.Time
 	FinishedAt          *time.Time
+	// CancelEpoch is populated now (V4-12B): nil until a RunCancellationIntent
+	// commits, then set to 1 in that SAME transaction as the CAS to
+	// CANCELLING — never reset, never bumped again (a Run is ever cancelled
+	// at most once; run_cancellation_intents.run_id is already UNIQUE).
+	// Every non-terminal RUN_WORK durable_jobs row of this Run is fenced by
+	// the identical value in the same transaction (ports.DurableJob.CancelEpoch).
+	CancelEpoch *uint64
 }
 
 func NewWorkflowRun(

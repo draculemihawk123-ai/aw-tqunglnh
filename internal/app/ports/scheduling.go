@@ -52,6 +52,27 @@ type DurableJob struct {
 	Version        uint64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+	// RunID is populated now (V4-12B): the WorkflowRun this job belongs to,
+	// empty for a job with no single owning Run (WORKSPACE_PROVISION,
+	// REPOSITORY_PROBE, BASELINE_EVIDENCE — all family/workspace-scoped,
+	// not run-scoped). Read-only here — set at enqueue time via
+	// EnqueueJobRequest.RunID, never changed afterward.
+	RunID string
+	// JobClass is populated now (V4-12B): always derived from Kind by
+	// ClassifyJobKind at enqueue time (never a caller-supplied value — see
+	// that function's own doc comment), persisted so the claim query can
+	// filter on it without recomputing the mapping on every read.
+	JobClass JobClass
+	// CancelEpoch is populated now (V4-12B): nil until this job's own
+	// owning Run's cancellation intent commits, then set to match that
+	// Run's own WorkflowRun.CancelEpoch in the SAME transaction — for a
+	// RUN_WORK job this both removes it from the claim CAS's own
+	// candidate set (see the claim query's own WHERE clause) and, for a
+	// job a worker already holds LEASED, gives that worker's own two
+	// re-check checkpoints (before QUEUED->RUNNING, immediately before
+	// starting real execution) something durable to observe. Always nil
+	// for a CONTROL job — CONTROL is never fenced.
+	CancelEpoch *uint64
 }
 
 type EnqueueJobRequest struct {
@@ -65,6 +86,17 @@ type EnqueueJobRequest struct {
 	Priority       int
 	MaxClaims      uint32
 	IdempotencyKey string
+	// RunID is populated now (V4-12B): the WorkflowRun this job belongs
+	// to, for a job whose Kind classifies as JobClassRunWork (see
+	// ClassifyJobKind) — leave blank for a job with no single owning Run.
+	// When non-blank and the Kind is RUN_WORK, the enqueue itself is
+	// fenced: it fails with ErrRunCancelling if that Run's own state is
+	// already CANCELLING or CANCELLED ("Enqueue RUN_WORK mới CAS rằng Run
+	// còn non-cancelling"). There is deliberately no JobClass field here
+	// for a caller to set — JobClass is always derived from Kind
+	// server-side (confirmed with the user: a caller must never be able
+	// to declare its own job CONTROL).
+	RunID string
 }
 
 // JobLease is a fencing proof, not just a worker label. Every mutation made by

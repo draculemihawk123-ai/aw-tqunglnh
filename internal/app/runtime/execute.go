@@ -139,7 +139,12 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 		return err
 	}
 	if !advanced {
-		// Idempotent no-op — see this file's own package doc comment.
+		// Idempotent no-op — see this file's own package doc comment. This
+		// is also V4-12B's own FIRST worker re-check checkpoint's own
+		// no-op outcome: claimRunning itself declines to advance
+		// QUEUED->RUNNING when the owning Run is already CANCELLING/
+		// CANCELLED, leaving the actual QUEUED->CANCELLED transition to
+		// the CANCEL_RUN_COORDINATOR job's own sweep (never raced here).
 		return nil
 	}
 
@@ -149,6 +154,33 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 	}
 	if profile.TimeoutSeconds == 0 {
 		return fmt.Errorf("%w: node run %s", ErrExecutionProfileMissingTimeout, payload.NodeRunID)
+	}
+
+	// V4-12B's own SECOND worker re-check checkpoint ("ngay trước
+	// ProcessSupervisor.Start" — this codebase's own closest analogue
+	// today, since no real ProcessSupervisor exists yet; V5-08C owns
+	// real process/provider cancellation): claimRunning's own CAS to
+	// RUNNING and this call are two separate transactions, so a cancel
+	// intent can still commit in between. No real work has started yet
+	// at this exact point, so it is both safe and correct to finalize
+	// straight to CANCELLED here (TerminationReasonRunCancelled, the
+	// RUNNING-sourced reason — distinct from the coordinator's own
+	// QUEUED-sourced TerminationReasonRunCancelledBeforeStart) rather
+	// than ever invoking the executor. Once the executor call below
+	// actually starts, Alpha has no way to interrupt it — that Attempt
+	// runs to its own natural conclusion and is accepted as a historical
+	// fact by FinalizeExecutionAttempt, exactly like every other
+	// authoritative outcome; only the Run's own routing is suppressed
+	// (advanceRunTx/decideRetryOrExhaustion's own cancelling guards).
+	if cancelling, err := h.runIsCancelling(ctx, payload.RunID); err != nil {
+		return err
+	} else if cancelling {
+		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
+			RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
+			NextState: runtimedomain.ExecutionAttemptCancelled, TerminationReason: runtimedomain.TerminationReasonRunCancelled,
+			JobLease: jobLease, CorrelationID: payload.CorrelationID,
+		})
+		return finalizeErr
 	}
 
 	deadline := time.Now().Add(time.Duration(profile.TimeoutSeconds) * time.Second)
@@ -250,6 +282,21 @@ func (h *ExecuteNodeHandler) claimRunning(ctx context.Context, payload ExecuteNo
 		if current.State != runtimedomain.ExecutionAttemptQueued {
 			return nil
 		}
+		// V4-12B's own FIRST worker re-check checkpoint ("trước QUEUED ->
+		// RUNNING"): decline to advance if the owning Run already
+		// committed a cancellation intent — never race the
+		// CANCEL_RUN_COORDINATOR job's own sweep by trying to CAS this
+		// same Attempt/NodeRun to CANCELLED here too; that job is the
+		// SOLE authority for the QUEUED->CANCELLED transition
+		// (TerminationReasonRunCancelledBeforeStart), and will claim this
+		// exact Attempt on its own next pass regardless of this no-op.
+		run, err := tx.Runtime().GetWorkflowRun(ctx, payload.RunID)
+		if err != nil {
+			return err
+		}
+		if run.State == runtimedomain.WorkflowRunCancelling || run.State == runtimedomain.WorkflowRunCancelled {
+			return nil
+		}
 		nodeRun, err := tx.Runtime().GetNodeRun(ctx, payload.NodeRunID)
 		if err != nil {
 			return err
@@ -273,6 +320,22 @@ func (h *ExecuteNodeHandler) claimRunning(ctx context.Context, payload ExecuteNo
 		return nil
 	})
 	return running, advanced, err
+}
+
+// runIsCancelling is V4-12B's own read-only check for the second worker
+// re-check checkpoint (this file's own Handle, right before the executor
+// is ever invoked).
+func (h *ExecuteNodeHandler) runIsCancelling(ctx context.Context, runID string) (bool, error) {
+	var cancelling bool
+	err := h.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		cancelling = run.State == runtimedomain.WorkflowRunCancelling || run.State == runtimedomain.WorkflowRunCancelled
+		return nil
+	})
+	return cancelling, err
 }
 
 func (h *ExecuteNodeHandler) loadExecutionProfile(ctx context.Context, nodeRunID string) (resolvedExecutionProfileView, error) {

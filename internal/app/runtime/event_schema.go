@@ -111,6 +111,28 @@ func DecodeRunFailedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// DecodeRunCancellationRequestedV1 is RUN_CANCELLATION_REQUESTED v1's own
+// eventschema.Decoder (V4-12B, cancel_run.go) — registered from the same
+// changeset that produces this event, not deferred.
+func DecodeRunCancellationRequestedV1(payloadJSON string) (any, error) {
+	var payload runCancellationRequestedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// DecodeRunCancelledV1 is RUN_CANCELLED v1's own eventschema.Decoder
+// (V4-12B, completion.go) — registered from the same changeset that
+// produces this event, not deferred.
+func DecodeRunCancelledV1(payloadJSON string) (any, error) {
+	var payload runCancelledEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry. A composition root that wires up EnforcingEventsRepository
 // calls this once at startup, the same "register at init/startup time"
@@ -128,4 +150,6 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(JoinDecidedEventType, JoinDecidedSchemaVersion, DecodeJoinDecidedV1)
 	registry.Register(RunCompletionRequestedEventType, RunCompletionRequestedSchemaVersion, DecodeRunCompletionRequestedV1)
 	registry.Register(RunFailedEventType, RunFailedSchemaVersion, DecodeRunFailedV1)
+	registry.Register(RunCancelledEventType, RunCancelledSchemaVersion, DecodeRunCancelledV1)
+	registry.Register(RunCancellationRequestedEventType, RunCancellationRequestedSchemaVersion, DecodeRunCancellationRequestedV1)
 }

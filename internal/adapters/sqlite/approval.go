@@ -114,6 +114,41 @@ FROM approval_requests WHERE id = ?`, id,
 	return request, nil
 }
 
+// ListApprovalRequestsForRun implements ports.ApprovalRepository (V4-12B):
+// every ApprovalRequest for runID, reusing loadApprovalRequestByID's own
+// column set via a plain SELECT of ids — the same pattern
+// ListNodeRunsForRun already established.
+func (r approvalRepository) ListApprovalRequestsForRun(ctx context.Context, runID string) ([]runtime.ApprovalRequest, error) {
+	rows, err := r.tx.QueryContext(ctx, `SELECT id FROM approval_requests WHERE run_id = ? ORDER BY id`, runID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list approval requests for run %s: %w", runID, err))
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan approval request id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate approval request ids: %w", err)
+	}
+	rows.Close()
+
+	requests := make([]runtime.ApprovalRequest, 0, len(ids))
+	for _, id := range ids {
+		request, err := loadApprovalRequestByID(ctx, r.tx, id)
+		if err != nil {
+			return nil, err
+		}
+		requests = append(requests, request)
+	}
+	return requests, nil
+}
+
 // TransitionApprovalRequest implements ports.ApprovalRepository (V4-09):
 // the fenced CAS a ResolveApproval command and the timer job both race
 // against.

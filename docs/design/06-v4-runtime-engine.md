@@ -691,6 +691,52 @@
   phải được chấp nhận. Chỉ `PASS` và `FAIL` làm Run terminal và biến cancel thành no-op idempotent;
   `BLOCK` và `REWORK` thì không. Cancel intent commit trước thì mọi authoritative outcome đến muộn bị CAS
   từ chối, và external success đến muộn chỉ lưu thành observation/evidence để reconcile.
+  **Hai câu hỏi chốt với user trước khi code:**
+  1. *Job coordinator CancelRun tự enqueue thực sự làm gì, Run đi tới CANCELLED bằng đường nào:* đề xuất
+     "Recommended" của tôi (một job CONTROL `CANCEL_RUN_COORDINATOR`, sweep đồng bộ MỘT LẦN — CAS mọi WAIT
+     ACTIVE/APPROVAL PENDING/Attempt+NodeRun QUEUED/NodeRun chưa chạy khác sang CANCELLED trong đúng một
+     transaction — rồi hoặc CAS thẳng Run CANCELLING→CANCELLED nếu hết live, hoặc để lại CANCELLING chờ
+     Attempt RUNNING cuối cùng tự finalize; mở rộng `reconcileRunTerminalityTx` — V4-12 — thêm nhánh
+     CANCELLING-và-zero-live→CANCELLED làm điểm đóng DUY NHẤT, gọi từ cả coordinator lẫn mọi call site cũ)
+     được CHỌN — nhưng câu trả lời thứ hai của user cho câu hỏi này bị lỗi công cụ AskUserQuestion lặp lại
+     y hệt nội dung một câu hỏi KHÁC (về hotfix SPK-13 trước đó) hai lần liên tiếp, dù đã hỏi lại riêng.
+     Không hỏi lại lần ba (tránh lặp lỗi và làm phiền user thêm) — tự quyết định tiến tới với phương án
+     "Recommended" vì đó là lựa chọn xuất hiện ĐẦU TIÊN trong nội dung bị lặp lại (dấu hiệu gần nhất với
+     một lựa chọn thật) và tự nó biện minh được chặt chẽ nhất từ chính text task (Verify line đòi test
+     "cancellation job CONTROL vẫn claim được" — vô nghĩa nếu không có job CONTROL nào thực sự cần chạy)
+     và từ tiền lệ codebase (sweep một lần trong một transaction, giống hệt `dispatchForkBranches`/
+     `reconcileRunTerminalityTx` chính nó) — đã báo minh bạch với user đây là quyết định do lỗi công cụ,
+     không phải do user thật sự xác nhận, mời sửa nếu sai trước khi merge.
+  2. *JobClass CONTROL allow-list xử lý sao khi ADR/design doc dùng tên lệch code thật:* user chốt dùng
+     ĐÚNG ba hằng số thật `CANCEL_RUN_COORDINATOR`/`WorkspaceReconciliationJobKind`
+     ("WORKSPACE_RECONCILIATION", không phải `WORKSPACE_RECONCILE` như doc cũ)/`WorkspaceSetReleaseJobKind`
+     ("WORKSPACE_SET_RELEASE"), loại hẳn `RECOVERY_REAPER` khỏi allow-list (không phải placeholder, không
+     mở rộng scope biến nó thành job thật) vì `Store.RecoverExpiredJobs` là một thao tác bảo trì toàn cục
+     do ticker của `workerpool.Pool` gọi trực tiếp — không có row/lease/claim/RunID riêng nên
+     JobClass/cancel_epoch không có gì để gắn vào; và khóa bằng test rằng ba kind trên phân loại CONTROL,
+     mọi kind khác (kể cả `RECOVERY_REAPER`/`WORKSPACE_RECONCILE` chính nó) mặc định `RUN_WORK`, và caller
+     không có field nào để tự khai `JobClass=CONTROL`.
+  **Tự phát hiện 3 vấn đề khi code (không phải câu hỏi mới):**
+  (a) *Migration count off-by-one:* file `0013_*.sql` đã bị thiếu từ lịch sử trước (chỉ có 0001-0012 rồi
+  nhảy thẳng 0014) — nghĩa là SỐ FILE migration luôn kém SỐ HIỆU cao nhất đúng 1. Bump ban đầu
+  `migrationCount != 21` lên `!= 23` (theo đúng số hiệu file mới `0023`) sai — con số ĐÚNG là `22` (21 file
+  cũ + 1 file mới, không phải theo số hiệu). Sửa lại `db_test.go`/`unitofwork_test.go` đúng `22`.
+  (b) *RUNNING structural node bị bỏ sót trong sweep:* thiết kế ban đầu chỉ sweep PENDING/READY/QUEUED/
+  WAITING, loại hẳn RUNNING (lý do: "Alpha không force-stop được Attempt thật đang chạy"). Nhưng viết test
+  `TestCancelRun_CreatedRun_MovesToCancellingThenCancelled` phát hiện: một node CẤU TRÚC (START/ROUTER/
+  FORK/END, auto-advance) được gán RUNNING NGAY LÚC TẠO và KHÔNG BAO GIỜ có ExecutionAttempt thật đi kèm —
+  đường tiến duy nhất của nó là một job `ADVANCE_RUN` mà `FenceAndCancelRunJobs` đã fence từ trước, nên nếu
+  sweep bỏ qua nó, NodeRun đó mắc kẹt RUNNING vĩnh viễn không ai đóng. Sửa: sweep thêm RUNNING nhưng CHỈ
+  khi NodeRun đó không có ExecutionAttempt nào (phân biệt qua tập NodeRunID có Attempt, xây từ
+  `ListExecutionAttemptsForRun`'s own kết quả) — một AGENT node RUNNING có Attempt thật vẫn được bỏ qua
+  nguyên vẹn.
+  (c) *Stale read giữa các lần lặp trong cùng transaction:* sweep NodeRun ban đầu dùng snapshot MỘT LẦN từ
+  `ListNodeRunsForRun` cho cả vòng lặp. Viết test FORK+JOIN(ALL) phát hiện: khi branch thứ nhất bị cancel,
+  `terminalizeBranchTokenForCancelledNodeRunTx`'s own `evaluateJoinTx` có thể NGAY LẬP TỨC CAS JOIN's own
+  NodeRun sang FAILED (ALL-mode infeasible ngay khi có 1 token CANCELLED) — nhưng vòng lặp vẫn cầm bản
+  snapshot CŨ (WAITING, version cũ) của đúng NodeRun đó, nên khi tới lượt xử lý nó sẽ CAS nhầm
+  `ExpectedVersion` đã lỗi thời, ra `ErrOptimisticConflict` làm SẬP TOÀN BỘ transaction sweep. Sửa:
+  `GetNodeRun` lại (fresh) ngay trước mỗi lần quyết định/CAS trong vòng lặp, không tin snapshot ban đầu.
 - **Verify:** cancel khi đang WAIT/APPROVAL/fork branch/retry backoff; duplicate `CancelRun`; cancel rồi
   restart process; test khẳng định không activation/retry/rework mới nào được tạo sau intent; test khẳng
   định Run không nhảy thẳng `RUNNING → CANCELLED`. Bốn race test bắt buộc: cancel-vs-attempt-success,
@@ -704,6 +750,37 @@
   cancel một Run đang `CREATED`. Thêm negative test cho mapping: mọi `Kind` ngoài allow-list `CONTROL`
   phải ra `RUN_WORK`, `Kind` chưa biết mặc định `RUN_WORK`, và ghi thẳng `job_class='CONTROL'` cho một
   Kind không thuộc allow-list bị constraint từ chối.
+  Đã triển khai (`internal/app/ports/job_class_test.go`,
+  `internal/adapters/sqlite/cancel_run_test.go`, `internal/app/runtime/cancel_run_test.go`,
+  `cancel_run_race_test.go`, 30 test): `ClassifyJobKind` — 3 kind CONTROL thật phân loại đúng, mọi kind
+  khác (kể cả `RECOVERY_REAPER`/doc-typo `WORKSPACE_RECONCILE`/kind lạ/rỗng) mặc định `RUN_WORK`; CHECK
+  constraint sqlite từ chối cả hai chiều sai (CONTROL cho kind lạ, RUN_WORK cho kind CONTROL thật) và chấp
+  nhận cặp đúng; `EnqueueJob` tự tính đúng `job_class` từ `Kind`, không có field nào cho caller tự khai;
+  enqueue RUN_WORK cho Run đang CANCELLING/CANCELLED bị `ErrRunCancelling`, mọi state khác (CREATED/
+  RUNNING/WAITING/BLOCKED/VERIFYING) vẫn được chấp nhận; claim CAS thật — job CONTROL vẫn claim được trong
+  khi job RUN_WORK cùng Run đã bị fence không bao giờ claim lại được nữa (kể cả sau khi lease hết hạn và
+  `RecoverExpiredJobs` đưa nó về AVAILABLE); restart thật giữa lúc đã fence (đóng/mở `sqlite.Store`, verify
+  `workflow_runs.cancel_epoch` và `durable_jobs.run_id/job_class/cancel_epoch` đọc đúng sau restart). Ở
+  tầng app (fake): cancel một Run CREATED (không NodeRun nào live/RUNNING) đi qua CANCELLING rồi tự đóng
+  CANCELLED; cancel một Run đã SUCCEEDED/FAILED bị `ErrRunAlreadyTerminal`; duplicate `CancelRun` idempotent
+  (không tạo intent/coordinator job thứ hai); cancel khi đang WAIT — registration CANCELLED, NodeRun
+  CANCELLED, Run đóng CANCELLED; cancel khi đang APPROVAL — tương tự; cancel một Attempt còn QUEUED —
+  đúng `RUN_CANCELLED_BEFORE_START` với `StartedAt` rỗng; cancel giữa một FORK (JOIN ALL, một branch
+  zero-hop đã SUCCEEDED, branch còn lại QUEUED) — branch còn lại CANCELLED, BranchToken CANCELLED, JOIN tự
+  đóng (FAILED hoặc CANCELLED tùy thứ tự sweep — cả hai đều là outcome terminal hợp lệ, không bao giờ treo
+  WAITING mãi); test khẳng định không activation/retry/job mới nào được tạo sau khi intent đã commit (một
+  outcome SUCCEEDED muộn của Attempt đang RUNNING vẫn được chấp nhận như sự kiện lịch sử thật nhưng không
+  tạo NodeRun/job mới nào); cancel-vs-claim cả hai thứ tự (cancel trước → `claimRunning` từ chối tiến
+  QUEUED→RUNNING, để lại cho coordinator; RUNNING trước → đi qua active cancellation); cancel-vs-BLOCK
+  (BLOCKED không bao giờ bị sweep, Run ở lại CANCELLING đúng như thiết kế, không bị coi là no-op) và
+  cancel-vs-REWORK (một hop cycle-exhaustion forced-escalation đang dở dang vẫn để Run tiến tới
+  CANCELLING/CANCELLED, không bị cancel bỏ qua). Bốn race bắt buộc, mỗi cái cả hai thứ tự commit:
+  cancel-vs-attempt-success, cancel-vs-END (Run không bao giờ dừng ở VERIFYING một khi đã cancelling),
+  cancel-vs-CompletionPolicy PASS (giả lập bằng đúng CAS `TransitionWorkflowRunState` V5-11 sẽ dùng —
+  cancel trước thì PASS bị `ErrOptimisticConflict` tự nhiên, không cần code đặc biệt; PASS trước thì
+  `CancelRun` bị `ErrRunAlreadyTerminal`), và stale finalize sau cancel intent (cả nhánh FAILED muộn lẫn
+  một lần finalize lặp lại sau khi Run đã CANCELLED hẳn, bị chặn đúng bởi `ErrJobLeaseLost` — tầng fencing
+  JobLease sẵn có, không cần nhánh code riêng cho "Run đã cancelled").
 - **Hoàn thành khi:** mọi đường tới `CANCELLED` đều đi qua `CANCELLING`, cancel không tự sinh quyết định
   cleanup/abandon nào, và không race nào tạo được `SUCCEEDED` sau khi cancel intent đã commit.
 - **Nguồn:** ADR-020, GC-INV-32, GC-INV-33, GC-INV-37, GC-INV-28.

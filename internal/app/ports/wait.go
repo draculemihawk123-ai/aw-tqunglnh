@@ -24,6 +24,12 @@ type WaitRepository interface {
 	// GetWaitRegistration returns the WaitRegistration named by id, or
 	// ErrPersistenceNotFound.
 	GetWaitRegistration(ctx context.Context, id string) (runtime.WaitRegistration, error)
+	// ListWaitRegistrationsForRun is populated now (V4-12B,
+	// docs/design/06-v4-runtime-engine.md): every WaitRegistration whose
+	// own RunID matches — the CANCEL_RUN_COORDINATOR job's own sweep uses
+	// this to find every still-ACTIVE registration of a cancelling Run and
+	// CAS it CANCELLED. Deliberately unfiltered by state.
+	ListWaitRegistrationsForRun(ctx context.Context, runID string) ([]runtime.WaitRegistration, error)
 
 	// RecordWaitSignal inserts a new immutable WaitSignal row for
 	// signal.WaitRegistrationID/SignalKey. If a row with that exact

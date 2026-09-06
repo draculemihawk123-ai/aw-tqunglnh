@@ -96,6 +96,41 @@ FROM wait_registrations WHERE id = ?`, id,
 	return registration, nil
 }
 
+// ListWaitRegistrationsForRun implements ports.WaitRepository (V4-12B):
+// every WaitRegistration for runID, reusing loadWaitRegistrationByID's own
+// column set via a plain SELECT of ids — the same pattern
+// ListNodeRunsForRun already established.
+func (r waitRepository) ListWaitRegistrationsForRun(ctx context.Context, runID string) ([]runtime.WaitRegistration, error) {
+	rows, err := r.tx.QueryContext(ctx, `SELECT id FROM wait_registrations WHERE run_id = ? ORDER BY id`, runID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list wait registrations for run %s: %w", runID, err))
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan wait registration id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate wait registration ids: %w", err)
+	}
+	rows.Close()
+
+	registrations := make([]runtime.WaitRegistration, 0, len(ids))
+	for _, id := range ids {
+		registration, err := loadWaitRegistrationByID(ctx, r.tx, id)
+		if err != nil {
+			return nil, err
+		}
+		registrations = append(registrations, registration)
+	}
+	return registrations, nil
+}
+
 // RecordWaitSignal implements ports.WaitRepository (V4-08): see that
 // method's own doc comment for the full idempotent-replay/conflict
 // contract.
