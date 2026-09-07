@@ -229,3 +229,98 @@ gofmt -l <12 file .go đổi/mới>                    # rỗng sau gofmt -w (CR
 
 **Việc còn lại:** mở PR, chờ CI 6/6, merge. Task kế tiếp: V5-03 (Resource registry và
 ContextAssembler), phụ thuộc V2-06 + V5-02.
+
+## V5-03 — Resource registry và ContextAssembler
+
+**Trạng thái:** code DONE, verify local PASS, chuẩn bị mở PR.
+
+**Khác biệt với V5-01/V5-02:** đây là task đầu tiên trong V5 đòi hỏi PHÁT MINH thuật toán thật (chưa
+có precedent gần), không phải "nối dây" infrastructure theo pattern có sẵn. Trước khi code, đã dừng
+hỏi user 3 câu hệ trọng (đúng tinh thần roadmap §10 bước 3 — "liệt kê câu hỏi hệ trọng, dừng trước khi
+sửa nếu chưa trả lời") vì fan-out cao (V5-04/V5-08/V5-12 sẽ dùng lại contract này) và vì HE-04 (lecture
+nguồn của task) chính là về nguy cơ "last-wins" instruction conflict — một failure mode an toàn thật,
+không phải chi tiết vặt.
+
+**Research xác nhận trước khi hỏi:** HE-04-M05/HE-04-S03 (`docs/harness-engineering/04-lec-04-progressive-disclosure.md`)
++ HE-13-M08. V2-06 (`docs/design/04-v2-definition-plane.md:62-70`) đã xây `definition.PriorityClass`
+(HARD_CONSTRAINT/REQUIRED_PROCEDURE/GUIDANCE/REFERENCE), `Selector{ComponentTags,PathTags,TaskKinds,
+BlockKinds,RiskClasses}` trên Skill/Layer, và `engineeringpack.CheckResourceConflicts` (fail-closed
+same-key/different-hash/có HARD_CONSTRAINT — NHƯNG chỉ trong phạm vi MỘT pack's resolved manifest).
+V2-06 **cố tình để ngỏ** một câu hỏi ngay trong doc comment của `skill.Selector`: "AND-across-dimensions
+selector language is a context-assembler concern for a later task" — đây chính là V5-03. Phát hiện quan
+trọng khác: `internal/domain/runtime.ContextSnapshot` ĐÃ TỒN TẠI (spike-era, shape khác hẳn go-core-spec
+§4.6, gắn với `WorkflowPersistence` cũ) — nguy cơ trùng tên/shape thật, đã hỏi user và xác nhận V5-03
+không đụng vào nó.
+
+**3 quyết định user chốt tường minh (implement ĐÚNG theo lời user, không tự diễn giải lại):**
+
+1. **Pure resolver, không persist gì, không đụng `runtime.ContextSnapshot`.** Trả về value object
+   in-memory `ContextResolution`-shaped (đặt tên thật: `Resolution`) gồm: danh sách resource đã chọn
+   theo thứ tự xác định, exact identity/provenance, lý do chọn/loại theo từng resource, kết quả tính
+   budget, và phiên bản thuật toán/cost model. V5-04 sở hữu việc biến kết quả này thành snapshot durable
+   (schema, canonical hash, binding Attempt, reload/integrity).
+2. **Conflict trả typed error, không tự chuyển trạng thái runtime.** `HardConstraintConflictError{
+   Conflicts []ConstraintConflict}` — mỗi conflict có constraint key/scope (`ResourceKey`), TOÀN BỘ
+   resource va chạm, content hash, provenance; list sort ổn định; trả HẾT mọi conflict phát hiện được
+   (không dừng ở conflict đầu tiên, không phụ thuộc thứ tự map iteration — implement bằng cách gom
+   theo `ResourceKey` vào map trước, rồi sort kết quả cuối cùng, không bao giờ trả trực tiếp thứ tự từ
+   map). Không gán TerminationReason tạm — ghi rõ trong doc comment đây là gap tường minh cho task nối
+   dây admission (V5-08+) tự quyết định, đúng lời user "Hiện state–reason matrix chưa có reason rõ ràng
+   cho context conflict, nên phần wiring sau cần bổ sung quyết định đó một cách tường minh."
+3. **Byte-based budget, fail-closed với hard constraint, đơn vị KHÔNG BAO GIỜ gọi "token".**
+   `Budget{MaxBytes, ReservedBytes}`; `available() = MaxBytes - ReservedBytes` (0 nếu Reserved ≥ Max,
+   không âm). Cost tính trên UTF-8 byte length của `Candidate.Payload` thật (canonical payload sẽ
+   render) qua interface `CostEstimator{Name() string; Cost(Candidate) uint64}` — implementation mặc
+   định `ByteCostEstimator` đặt tên model `"UTF8_BYTES_V1"` (hằng số `CostModelUTF8BytesV1`), ghi vào
+   `Resolution.CostModel` mọi lần — đổi sang tokenizer thật sau này chỉ cần đổi implementation, không đổi
+   API `Resolve`. Thứ tự: resolve applicability + conflict TRƯỚC, budget SAU. Toàn bộ HARD_CONSTRAINT
+   applicable là non-droppable; nếu tổng cost của riêng chúng vượt `available()` → trả
+   `RequiredContextExceedsBudgetError` (không drop/truncate/vượt âm thầm). Phần còn lại sort theo
+   Priority (REQUIRED_PROCEDURE→GUIDANCE→REFERENCE) rồi tie-break xác định
+   (ResourceKey→OwnerVersionID→ContentHash), greedy include — **quan trọng: greedy KHÔNG dừng ở candidate
+   đầu tiên không vừa** (một candidate nhỏ hơn ở sau vẫn được xét) — resource bị loại vì budget nhận
+   `ReasonBudgetExceeded`.
+
+**Quyết định tự đưa ra (KHÔNG nằm trong 3 câu hỏi, cần user review riêng):**
+- **AND-across-dimensions, OR-within-one-dimension** cho `Selector.MatchesContext` (dimension nào
+  Selector khai báo thì PHẢI khớp, dimension bỏ trống không hạn chế gì; trong 1 dimension chỉ cần giao
+  nhau). Đây CHÍNH LÀ câu hỏi V2-06 cố tình để ngỏ cho task này — chọn AND (khắt khe hơn OR) vì lý do an
+  toàn: đúng tinh thần "failure mode" đầu tiên HE-04 liệt kê là "route không điều kiện nên mọi resource
+  đều nạp." Ghi rõ trong doc comment `MatchesContext` để dễ đảo ngược nếu user muốn OR.
+- **Dedupe CHỈ theo full Identity tuple** (`OwnerVersionID+ResourceKey+ContentHash` giống hệt nhau mới
+  coi là 1 candidate) — KHÔNG dedupe theo "cùng key+hash khác owner" (đó là phạm vi HE-04-M07 "single
+  canonical rule", không nằm trong Nguồn của V5-03: HE-04-M05/HE-04-S03/HE-13-M08). Có test riêng
+  (`TestResolve_NoConflict_SameContentHash_DifferentOwner`) chứng minh case này KHÔNG bị coi là conflict
+  VÀ KHÔNG bị dedupe (cả hai đều được select, cost tính riêng từng cái) — nếu user muốn dedupe case này
+  sau, đây là chỗ cần sửa.
+- **`ResolutionContext.TaskKind/BlockKind/RiskClass` là string tự do, không phải enum đóng** — khớp
+  đúng lý do `work.go`'s own comment tại `WorkItem.RiskLevel` ("no citation... enumerates a closed
+  set... real resolver là task I/O-capable sau") — V5-03 không tự đặt ra vocabulary.
+- **Package location: `internal/domain/contextassembler`**, KHÔNG import `internal/domain/skill`/`layer`
+  trực tiếp — tự định nghĩa `Selector`/`Provenance` riêng (gần như trùng field với skill/layer) để giữ
+  package này không phụ thuộc vào loại authoring cụ thể; caller (V5-04, khi thật sự gather candidate từ
+  Definitions/Messages) tự map `skill.Resource`/`layer.Resource`/`message.Message` sang
+  `contextassembler.Candidate`.
+- **KHÔNG viết application-layer orchestration** (gather candidate thật từ `LoadVersion`/
+  `ListMessagesForWorkItem`/`GetEffectiveComponentPackAssignment`) trong V5-03 — đọc kỹ lại thấy việc
+  "gather" thuộc tự nhiên về V5-04 (task đó mới thật sự cần candidate thật để tính hash/persist), còn
+  V5-03 chỉ cần thuật toán thuần nhận input đã có sẵn (test tự construct `Candidate` bằng tay, không cần
+  sqlite/fake nào).
+
+**File thay đổi:**
+- `internal/domain/contextassembler/contextassembler.go` + `contextassembler_test.go` (mới) — package
+  hoàn toàn mới, KHÔNG động tới ports/sqlite/fake nào (pure domain, không I/O).
+
+**Verify (chạy local, Windows):**
+```
+go build ./...                                   # sạch
+go vet ./internal/domain/contextassembler/...    # sạch
+go test ./internal/domain/contextassembler/... -v -count=1   # 21 test PASS ngay lần đầu
+go run ./cmd/docs-coverage-check                 # debt = 0
+go test -count=1 ./...                           # toàn bộ ~56 package PASS
+gofmt -l <2 file .go mới>                        # rỗng
+```
+
+**Việc còn lại:** mở PR, chờ CI 6/6, merge. Task kế tiếp: V5-04 (Persist ContextSnapshot trước
+dispatch), phụ thuộc V5-03 + V4-04 — đây là task sẽ thật sự gather candidate + gọi `Resolve` + persist,
+và cũng là nơi quyết định cách reconcile với `runtime.ContextSnapshot` cũ.
