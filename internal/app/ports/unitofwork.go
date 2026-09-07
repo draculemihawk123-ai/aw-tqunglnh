@@ -81,6 +81,13 @@ type Tx interface {
 	// the same treatment for ApprovalRequest persistence (see
 	// ApprovalRepository's own doc comment, internal/app/ports/approval.go).
 	Approvals() ApprovalRepository
+	// Artifacts is populated now (V5-01, docs/design/07-v5-execution-evidence.md):
+	// the same "gets a real interface from the start" treatment
+	// AdapterBuilds/Readiness/Wait/Approvals above already established —
+	// the durable Artifact metadata row this task adds on top of the
+	// existing V1 ArtifactStore (see ArtifactRepository's own doc comment,
+	// internal/app/ports/artifactrecord.go).
+	Artifacts() ArtifactRepository
 }
 
 // CatalogRepository is populated now (V3-01,
