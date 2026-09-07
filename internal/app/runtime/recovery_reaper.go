@@ -87,6 +87,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/worker"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
+	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
 
@@ -499,8 +500,42 @@ func (h *RecoveryReaperHandler) retryAttempt(ctx context.Context, attempt runtim
 		if err != nil {
 			return err
 		}
+
+		// V5-04: mirrors decideRetryOrExhaustion's own clone-on-retry
+		// (finalize.go) — a recovery-driven retry attempt needs its own
+		// bound snapshot exactly as much as a technical-retry one does;
+		// without this, ExecuteNodeHandler's own dispatch-time
+		// verification would reject every recovery retry forever (no
+		// bound snapshot to verify), livelocking the exact orphaned
+		// attempt this reaper exists to unstick. Gracefully skipped when
+		// the attempt being retried itself has no bound snapshot (a
+		// pre-V5-04-shaped attempt).
+		var clonedSnapshot contextsnapshot.Snapshot
+		haveClone := false
+		previousSnapshot, err := tx.ContextSnapshots().GetSnapshotByAttemptID(ctx, string(attempt.ID))
+		if err != nil && !errors.Is(err, ports.ErrPersistenceNotFound) {
+			return err
+		}
+		if err == nil {
+			nextSnapshotID := contextsnapshot.ID(h.ids.NewID())
+			clonedSnapshot, err = contextsnapshot.NewSnapshot(
+				nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshot.AttemptID(nextAttemptID),
+				previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.Revisions, h.clk.Now(),
+			)
+			if err != nil {
+				return err
+			}
+			nextAttempt.ContextSnapshotID = &nextSnapshotID
+			haveClone = true
+		}
+
 		if _, err := tx.Runtime().CreateExecutionAttempt(ctx, nextAttempt); err != nil {
 			return err
+		}
+		if haveClone {
+			if _, err := tx.ContextSnapshots().CreateSnapshot(ctx, clonedSnapshot); err != nil {
+				return err
+			}
 		}
 		jobPayload, err := json.Marshal(ExecuteNodeJobPayload{RunID: string(run.ID), NodeRunID: string(nodeRun.ID), AttemptID: nextAttemptID})
 		if err != nil {

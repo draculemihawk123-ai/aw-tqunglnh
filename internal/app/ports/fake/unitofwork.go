@@ -87,19 +87,20 @@ func (u *UnitOfWork) run(fn func(ports.Tx) error, persistOnSuccess bool) error {
 // call; clone() deep-copies both before each attempt so a failed or
 // read-only attempt never mutates the committed Snapshot.
 type Tx struct {
-	catalog       *CatalogRepository
-	work          *WorkRepository
-	definitions   *DefinitionsRepository
-	runtime       *RuntimeRepository
-	jobs          *JobsRepository
-	events        *EventsRepository
-	receipts      *ReceiptsRepository
-	adapterBuilds *AdapterBuildRepository
-	readiness     *ReadinessRepository
-	wait          *WaitRepository
-	approvals     *ApprovalRepository
-	artifacts     *ArtifactRepository
-	messages      *MessageRepository
+	catalog          *CatalogRepository
+	work             *WorkRepository
+	definitions      *DefinitionsRepository
+	runtime          *RuntimeRepository
+	jobs             *JobsRepository
+	events           *EventsRepository
+	receipts         *ReceiptsRepository
+	adapterBuilds    *AdapterBuildRepository
+	readiness        *ReadinessRepository
+	wait             *WaitRepository
+	approvals        *ApprovalRepository
+	artifacts        *ArtifactRepository
+	messages         *MessageRepository
+	contextSnapshots *ContextSnapshotRepository
 }
 
 func newTx() Tx {
@@ -119,19 +120,20 @@ func newTx() Tx {
 	// for the identical reason.
 	workRepo := &WorkRepository{catalog: catalog}
 	return Tx{
-		events:        &EventsRepository{},
-		receipts:      &ReceiptsRepository{},
-		adapterBuilds: &AdapterBuildRepository{},
-		definitions:   &DefinitionsRepository{},
-		catalog:       catalog,
-		work:          workRepo,
-		runtime:       runtimeRepo,
-		jobs:          jobsRepo,
-		readiness:     &ReadinessRepository{catalog: catalog},
-		wait:          &WaitRepository{},
-		approvals:     &ApprovalRepository{},
-		artifacts:     &ArtifactRepository{catalog: catalog},
-		messages:      &MessageRepository{work: workRepo, runtime: runtimeRepo},
+		events:           &EventsRepository{},
+		receipts:         &ReceiptsRepository{},
+		adapterBuilds:    &AdapterBuildRepository{},
+		definitions:      &DefinitionsRepository{},
+		catalog:          catalog,
+		work:             workRepo,
+		runtime:          runtimeRepo,
+		jobs:             jobsRepo,
+		readiness:        &ReadinessRepository{catalog: catalog},
+		wait:             &WaitRepository{},
+		approvals:        &ApprovalRepository{},
+		artifacts:        &ArtifactRepository{catalog: catalog},
+		messages:         &MessageRepository{work: workRepo, runtime: runtimeRepo},
+		contextSnapshots: &ContextSnapshotRepository{runtime: runtimeRepo},
 	}
 }
 
@@ -152,24 +154,26 @@ func (t Tx) clone() Tx {
 	clone.approvals = t.approvals.clone()
 	clone.artifacts = t.artifacts.cloneWith(clone.catalog)
 	clone.messages = t.messages.cloneWith(clone.work, clone.runtime)
+	clone.contextSnapshots = t.contextSnapshots.cloneWith(clone.runtime)
 	return clone
 }
 
 var _ ports.Tx = Tx{}
 
-func (t Tx) Catalog() ports.CatalogRepository            { return t.catalog }
-func (t Tx) Work() ports.WorkRepository                  { return t.work }
-func (t Tx) Definitions() ports.DefinitionsRepository    { return t.definitions }
-func (t Tx) Runtime() ports.RuntimeRepository            { return t.runtime }
-func (t Tx) Jobs() ports.JobsRepository                  { return t.jobs }
-func (t Tx) Events() ports.EventsRepository              { return t.events }
-func (t Tx) Receipts() ports.ReceiptsRepository          { return t.receipts }
-func (t Tx) AdapterBuilds() ports.AdapterBuildRepository { return t.adapterBuilds }
-func (t Tx) Readiness() ports.ReadinessRepository        { return t.readiness }
-func (t Tx) Wait() ports.WaitRepository                  { return t.wait }
-func (t Tx) Approvals() ports.ApprovalRepository         { return t.approvals }
-func (t Tx) Artifacts() ports.ArtifactRepository         { return t.artifacts }
-func (t Tx) Messages() ports.MessageRepository           { return t.messages }
+func (t Tx) Catalog() ports.CatalogRepository                  { return t.catalog }
+func (t Tx) Work() ports.WorkRepository                        { return t.work }
+func (t Tx) Definitions() ports.DefinitionsRepository          { return t.definitions }
+func (t Tx) Runtime() ports.RuntimeRepository                  { return t.runtime }
+func (t Tx) Jobs() ports.JobsRepository                        { return t.jobs }
+func (t Tx) Events() ports.EventsRepository                    { return t.events }
+func (t Tx) Receipts() ports.ReceiptsRepository                { return t.receipts }
+func (t Tx) AdapterBuilds() ports.AdapterBuildRepository       { return t.adapterBuilds }
+func (t Tx) Readiness() ports.ReadinessRepository              { return t.readiness }
+func (t Tx) Wait() ports.WaitRepository                        { return t.wait }
+func (t Tx) Approvals() ports.ApprovalRepository               { return t.approvals }
+func (t Tx) Artifacts() ports.ArtifactRepository               { return t.artifacts }
+func (t Tx) Messages() ports.MessageRepository                 { return t.messages }
+func (t Tx) ContextSnapshots() ports.ContextSnapshotRepository { return t.contextSnapshots }
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the

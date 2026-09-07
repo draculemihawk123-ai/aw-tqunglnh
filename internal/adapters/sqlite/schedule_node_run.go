@@ -160,15 +160,24 @@ func createExecutionAttemptTx(ctx context.Context, tx *sql.Tx, attempt runtime.E
 	if attempt.ProviderKey != "" {
 		providerKey = attempt.ProviderKey
 	}
+	// contextSnapshotID is populated now (V5-04): every production
+	// scheduling path added from V5-04 onward sets attempt.ContextSnapshotID
+	// before calling this method (schedule.go/finalize.go) — nil for
+	// every pre-V5-04 caller, preserving this column's own existing
+	// implicit-NULL behavior for them exactly.
+	var contextSnapshotID any
+	if attempt.ContextSnapshotID != nil {
+		contextSnapshotID = string(*attempt.ContextSnapshotID)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO execution_attempts (
     id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
-    input_revision_set_json, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    context_snapshot_id, input_revision_set_json, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(attempt.ID), string(attempt.NodeRunID), attempt.AttemptNumber, string(attempt.State),
-		providerKey, attempt.ExecutionProfileHash, string(revisionSetJSON), attempt.Version, now, now,
+		providerKey, attempt.ExecutionProfileHash, contextSnapshotID, string(revisionSetJSON), attempt.Version, now, now,
 	); err != nil {
 		var existing int
 		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM execution_attempts WHERE id = ?`, attempt.ID).Scan(&existing)

@@ -92,6 +92,11 @@ type Tx interface {
 	// the durable, append-only task-chat Message row (see
 	// MessageRepository's own doc comment, internal/app/ports/message.go).
 	Messages() MessageRepository
+	// ContextSnapshots is populated now (V5-04, docs/design/07-v5-execution-evidence.md):
+	// the durable, immutable per-Attempt manifest (see
+	// ContextSnapshotRepository's own doc comment,
+	// internal/app/ports/contextsnapshot.go).
+	ContextSnapshots() ContextSnapshotRepository
 }
 
 // CatalogRepository is populated now (V3-01,

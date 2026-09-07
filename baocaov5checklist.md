@@ -324,3 +324,123 @@ gofmt -l <2 file .go mới>                        # rỗng
 **Việc còn lại:** mở PR, chờ CI 6/6, merge. Task kế tiếp: V5-04 (Persist ContextSnapshot trước
 dispatch), phụ thuộc V5-03 + V4-04 — đây là task sẽ thật sự gather candidate + gọi `Resolve` + persist,
 và cũng là nơi quyết định cách reconcile với `runtime.ContextSnapshot` cũ.
+
+## V5-04 — Persist ContextSnapshot trước dispatch
+
+**Trạng thái:** code DONE, verify local PASS (toàn bộ suite + 1 bug thật tự bắt và tự sửa), chuẩn bị
+mở PR.
+
+**Khác biệt với V5-01..V5-03:** đây là task ĐẦU TIÊN trong V5 phải sửa CODE ĐÃ SHIP/ĐÃ TEST của V4
+(schedule.go V4-04, finalize.go V4-06, execute.go V4-05, recovery_reaper.go V4-13) thay vì chỉ thêm
+infrastructure mới. Trước khi code, đã dừng hỏi user 3 câu hệ trọng (naming collision với
+`runtime.ContextSnapshot` cũ, có tái dùng field `ExecutionAttempt.ContextSnapshotID` đang dormant hay
+không, đặt dispatch precondition ở đâu) vì fan-out cao và vì phải sửa code người dùng đã review kỹ.
+
+**3 quyết định user chốt tường minh (implement ĐÚNG theo lời user):**
+1. **Package mới hoàn toàn `internal/domain/contextsnapshot`, KHÔNG đụng `runtime.ContextSnapshot`/
+   bảng `context_snapshots` cũ/call site checkpoint nào.** Bảng mới tên `attempt_context_snapshots`
+   (phân biệt rõ khỏi bảng cũ). Package mới KHÔNG import `runtime` (tránh cycle vì `runtime.
+   ExecutionAttempt` cần import NGƯỢC LẠI để tham chiếu `contextsnapshot.ID`) — `AttemptID` là type cục
+   bộ trong chính package mới, cross-check ở application layer.
+2. **Tái dùng field dormant `ExecutionAttempt.ContextSnapshotID`, đổi type thành
+   `*contextsnapshot.ID`** (không thêm field thứ hai). Xác nhận TRƯỚC khi sửa: grep toàn repo confirm
+   ZERO reference nào tới field NÀY cụ thể (mọi match cũ đều là `Checkpoint.ContextSnapshotID` — field
+   khác, struct khác, không đụng). Snapshot/Attempt/EXECUTE_NODE job ghi trong CÙNG một scheduling
+   transaction; thứ tự bắt buộc: insert Attempt (mang snapshot ID) TRƯỚC, insert snapshot SAU — vì
+   `attempt_context_snapshots.attempt_id` có FK thật vào `execution_attempts(id)`, còn
+   `execution_attempts.context_snapshot_id` CỐ TÌNH không có FK (tránh circular FK giữa 2 bảng tham
+   chiếu lẫn nhau). Technical retry (finalize.go) VÀ recovery retry (recovery_reaper.go) đều clone
+   snapshot từ attempt cũ sang AttemptID mới — không bao giờ share một snapshot row giữa 2 attempt.
+3. **Dispatch precondition ở CẢ hai chỗ**: schedule.go bind snapshot atomic lúc tạo Attempt (khớp
+   GC-INV-08 "pin trước attempt đầu tiên"); execute.go's `ExecuteNodeHandler` load lại + verify NGAY
+   TRƯỚC khi gọi executor (snapshot tồn tại, `snapshot.AttemptID == attempt.ID`, Project/WorkItem khớp
+   run, RevisionSet khớp attempt — recompute/tamper-check đã nằm sẵn trong `GetSnapshot`'s own
+   `ports.ErrImmutableVersionConflict` path, không lặp lại ở đây) — dùng read-only transaction, ĐÓNG
+   trước khi gọi executor (không giữ DB transaction xuyên qua external process call). Verify fail →
+   typed error, KHÔNG finalize Attempt (giữ RUNNING, giống hệt cách cancel/lease-loss đã được để lại
+   cho V4-13/coordinator khác xử lý) — KHÔNG tự bịa TerminationReason mới, để lại tường minh cho V5-08.
+
+**BUG THẬT tự bắt và tự sửa khi chạy full suite (không phải review, không phải CI — chạy
+`go test ./...` local):**
+- **Vòng 1**: sau khi code xong, TOÀN BỘ suite pass NGAY LẦN ĐẦU trừ `internal/integration` — 2 test
+  của V4-14's own runtime-engine gate FAIL (node bị stuck ở QUEUED, không bao giờ tới RUNNING/SUCCEEDED).
+  Root cause: quyết định "chỉ sửa phạm vi được ghi" ban đầu cố tình KHÔNG update SELECT statement nào
+  đọc lại `ExecutionAttempt` (chỉ update INSERT) — nhưng chính `verifyContextSnapshot` MỚI VIẾT lại cần
+  đọc field đó! `loadExecutionAttemptByID` (dùng chung bởi CẢ `GetExecutionAttempt` LẪN
+  `TransitionExecutionAttempt`) chưa bao giờ SELECT cột `context_snapshot_id` — mọi lần load lại đều
+  trả về nil dù đã ghi giá trị thật lúc INSERT. Sửa: thêm cột vào SELECT + scan của
+  `loadExecutionAttemptByID` (một chỗ sửa, fix cả 2 caller).
+- **Vòng 2**: sau fix vòng 1, `TestRuntimeEngineGate_ConcurrentPoolsNoDuplicateExecution` pass nhưng
+  `TestRuntimeEngineGate` (test đầy đủ, có fork/join/scope-expansion) vẫn fail — "scope_node" không
+  bao giờ được tạo NodeRun. Debug bằng cách tạm thêm `fmt.Printf` vào `verifyContextSnapshot`'s error
+  path, chạy 1 lần, thấy: một attempt với ID dạng "h2-586" (rất nhiều attempt number, chứng tỏ retry
+  loop RẤT NHANH, không có backoff) liên tục fail vì "no bound context snapshot". Root cause thật: quyết
+  định BAN ĐẦU (lúc mới thiết kế, TRƯỚC khi biết rõ blast radius) là hoãn việc clone snapshot ở
+  `recovery_reaper.go`'s own retry path sang V5-13 ("fresh context rebuild" đã có sẵn trong scope V5-13).
+  Nhưng THỰC TẾ: nếu MỘT attempt bị coi là "orphaned" bởi recovery reaper (do lease hết hạn — có thể xảy
+  ra với BẤT KỲ lý do gì, kể cả tạm thời), reaper tạo attempt retry MỚI qua chính code path này — và nếu
+  code path đó không bind snapshot, `verifyContextSnapshot` MỚI VIẾT sẽ CHẶN nó MÃI MÃI, tạo ra
+  livelock: reaper retry → không snapshot → verify reject → RUNNING mãi → reaper coi là orphan lần nữa
+  → retry lần nữa → ... Đây không phải edge case hoãn được — bất kỳ attempt nào "kẹt" vì BẤT KỲ lý do gì
+  (kể cả bug ở nơi khác) sẽ kích hoạt reaper, và reaper retry không snapshot sẽ biến một sự cố tạm thời
+  thành PERMANENT LIVELOCK. Sửa: áp dụng ĐÚNG pattern clone-on-retry (đã làm ở finalize.go) sang
+  `recovery_reaper.go`'s own `retryAttempt` — đảo ngược quyết định "hoãn sang V5-13" ban đầu. Sau fix,
+  `TestRuntimeEngineGate` pass NHANH HƠN hẳn (8.26s so với timeout ~13-15s trước đó) — xác nhận đúng root
+  cause (loop retry rất nhanh trước đó đã bị dừng).
+- **Bài học ghi lại cho task sau**: quyết định "hoãn X sang task khác vì X là edge case" cần re-kiểm
+  bằng cách hỏi "nếu để trống, cái gì XẢY RA THẬT khi chạy full pipeline test, không phải suy luận trên
+  giấy". `go test ./...` (không chỉ package đang sửa) là bước bắt buộc — nếu chỉ chạy
+  `internal/app/runtime` (nơi tôi sửa trực tiếp) sẽ KHÔNG bao giờ phát hiện bug này (chỉ lộ ra ở
+  `internal/integration`'s real workerpool.Pool end-to-end test, đúng tinh thần lecture 10 "chỉ full
+  pipeline mới tính là verification thật").
+
+**Quyết định tự đưa ra (không nằm trong 3 câu hỏi):**
+- **ResourceRefs luôn rỗng ở V5-04** — MessageRefs là dữ liệu THẬT (toàn bộ `ListMessagesForWorkItem`
+  của WorkItem, đúng thứ tự Sequence), nhưng gather Skill/Layer/Pack qua `contextassembler.Resolve`
+  (V5-03) rõ ràng KHÔNG nằm trong "Thực hiện" line của V5-04 (chỉ nói schema/repository/hash/binding/
+  precondition). Việc `contextsnapshot.NewSnapshot` cho phép refs rỗng (quyết định lúc viết domain
+  package, xác nhận bằng test `TestNewSnapshot_EmptyRefsAllowed`) hoá ra QUAN TRỌNG hơn dự kiến — chính
+  nhờ vậy mà TOÀN BỘ test suite V4 cũ (dùng fake UnitOfWork, WorkItem không có message nào) chạy qua
+  được mà không cần sửa fixture nào.
+- **`decideRetryOrExhaustion`/`retryAttempt` graceful-skip khi attempt cũ không có snapshot** (thay vì
+  fail cứng) — giữ tương thích ngược với MỌI test cũ tự tạo `ExecutionAttempt` trực tiếp qua fake
+  (không qua schedule.go) — không có gì để clone thì bỏ qua, đúng trạng thái attempt đó vốn đã có từ
+  trước.
+- **Không viết integration test riêng cho "restart"/"tamper" ở tầng ExecuteNodeHandler** — "tamper" đã
+  có test tường minh ở repository layer (`TestContextSnapshotRepository_TamperDetected_ManifestHashMismatch`,
+  sqlite thật); "restart" đã được `TestRuntimeEngineGate`'s own crash-recovery variant (real sqlite +
+  real workerpool.Pool, restart thật) cover NGẦM nhưng THẬT (test này giờ pass, chứng minh snapshot sống
+  sót qua crash+restart trong pipeline thật). "missing"/"mismatch" viết test tường minh mới ở
+  `execute_contextsnapshot_test.go` (fake UnitOfWork, thêm 2 helper method test-only vào
+  `fake.ContextSnapshotRepository`: `DeleteSnapshot`/`Overwrite`, mirroring precedent
+  `JobsRepository.SetActiveLease`).
+- **`fake.NodeExecutor` thêm field `Calls int`** — cần thiết để assert "executor spawn count bằng 0"
+  đúng nghĩa đen lời user, trước đó fake này không đếm số lần gọi.
+
+**File thay đổi:**
+- MỚI: `internal/domain/contextsnapshot/{contextsnapshot.go,contextsnapshot_test.go}`,
+  `internal/app/ports/contextsnapshot.go`, `internal/adapters/sqlite/migrations/0029_attempt_context_snapshots.sql`,
+  `internal/adapters/sqlite/contextsnapshot_repository{.go,_test.go}`, `internal/app/ports/fake/contextsnapshot.go`,
+  `internal/app/runtime/execute_contextsnapshot_test.go`
+- SỬA: `internal/app/ports/unitofwork.go` (+ContextSnapshots()), `internal/adapters/sqlite/unitofwork.go`
+  (wire), `internal/app/ports/fake/unitofwork.go` (wire fake), `internal/domain/runtime/runtime.go`
+  (đổi type `ExecutionAttempt.ContextSnapshotID`), `internal/adapters/sqlite/schedule_node_run.go`
+  (+cột INSERT), `internal/adapters/sqlite/finalize_execution_attempt.go` (+cột SELECT — chính là fix
+  bug vòng 1), `internal/adapters/sqlite/db_test.go`/`unitofwork_test.go` (migration count 27→28),
+  `internal/app/runtime/schedule.go` (bind snapshot lúc tạo attempt đầu), `internal/app/runtime/finalize.go`
+  (clone snapshot lúc technical retry), `internal/app/runtime/execute.go` (dispatch verification — fix
+  bug vòng 2 áp dụng ở đây), `internal/app/runtime/recovery_reaper.go` (clone snapshot lúc recovery
+  retry — fix bug vòng 2), `internal/app/ports/fake/execution.go` (+field `Calls`).
+
+**Verify (chạy local, Windows):**
+```
+go build ./...                                   # sạch
+go vet ./...                                     # sạch (ngầm qua go test)
+go run ./cmd/docs-coverage-check                 # debt = 0
+go test -count=1 ./...                           # TOÀN BỘ ~62 package PASS (kể cả internal/integration,
+                                                  #   sau 2 vòng tự sửa bug — xem narrative trên)
+gofmt -l <19 file .go đổi/mới>                    # rỗng sau gofmt -w
+```
+
+**Việc còn lại:** mở PR, chờ CI 6/6, merge. Task kế tiếp: V5-05 (Production ProcessSupervisor
+hardening) — độc lập với V5-01..04 (chỉ phụ thuộc V1 config), có thể làm ngay sau khi merge.

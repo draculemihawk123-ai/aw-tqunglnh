@@ -64,6 +64,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
@@ -465,8 +466,46 @@ func decideRetryOrExhaustion(
 		if err != nil {
 			return err
 		}
+
+		// V5-04: a technical retry's new Attempt gets its OWN cloned
+		// snapshot — same message/resource refs and revision set as the
+		// attempt it replaces, bound to the NEW AttemptID — never a
+		// shared/reused row (each attempt_context_snapshots row has
+		// exactly one owning attempt_id). Gracefully skipped (nextAttempt
+		// stays unbound) when the PREVIOUS attempt itself has no bound
+		// snapshot — true for any attempt created before this task's own
+		// schedule.go change, or by a test fixture that never went
+		// through it; there is nothing to clone in that case, the same
+		// state such an attempt was already in. The clone is only
+		// INSERTED after nextAttempt itself is (see below) —
+		// attempt_context_snapshots.attempt_id's own foreign key requires
+		// the Attempt row to already exist.
+		var clonedSnapshot contextsnapshot.Snapshot
+		haveClone := false
+		previousSnapshot, err := tx.ContextSnapshots().GetSnapshotByAttemptID(ctx, string(attempt.ID))
+		if err != nil && !errors.Is(err, ports.ErrPersistenceNotFound) {
+			return err
+		}
+		if err == nil {
+			nextSnapshotID := contextsnapshot.ID(ids.NewID())
+			clonedSnapshot, err = contextsnapshot.NewSnapshot(
+				nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshot.AttemptID(nextAttemptID),
+				previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.Revisions, clk.Now(),
+			)
+			if err != nil {
+				return err
+			}
+			nextAttempt.ContextSnapshotID = &nextSnapshotID
+			haveClone = true
+		}
+
 		if _, err := tx.Runtime().CreateExecutionAttempt(ctx, nextAttempt); err != nil {
 			return err
+		}
+		if haveClone {
+			if _, err := tx.ContextSnapshots().CreateSnapshot(ctx, clonedSnapshot); err != nil {
+				return err
+			}
 		}
 		jobPayload, err := json.Marshal(ExecuteNodeJobPayload{
 			RunID: req.RunID, NodeRunID: req.NodeRunID, AttemptID: nextAttemptID, CorrelationID: req.CorrelationID,

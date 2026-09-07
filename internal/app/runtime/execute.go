@@ -86,6 +86,13 @@ import (
 // invariant is ever somehow violated.
 var ErrExecutionProfileMissingTimeout = errors.New("runtime: execution profile decision artifact is missing a positive timeoutSeconds")
 
+// ErrContextSnapshotUnverified is returned by verifyContextSnapshot
+// (V5-04) when the Attempt's own bound context manifest cannot be
+// confirmed durable and intact immediately before dispatch — see Handle's
+// own doc comment at the call site for what happens next (the Attempt is
+// left RUNNING, never finalized here).
+var ErrContextSnapshotUnverified = errors.New("runtime: execution attempt's context snapshot could not be verified before dispatch")
+
 // ExecuteNodeHandler is a ready-to-register workerpool.Handler for
 // ExecuteNodeJobKind.
 type ExecuteNodeHandler struct {
@@ -181,6 +188,24 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 			JobLease: jobLease, CorrelationID: payload.CorrelationID,
 		})
 		return finalizeErr
+	}
+
+	// V5-04's own dispatch precondition ("provider không start nếu
+	// snapshot chưa durable"): re-verify the Attempt's own bound context
+	// snapshot in a fresh read-only transaction, closed BEFORE the
+	// executor is ever invoked (never hold a DB transaction open across
+	// an external process call). A failure here returns without ever
+	// calling h.executor.Execute — executor spawn count is zero — and,
+	// like the cancel/lease-loss cases this file's own doc comment
+	// already documents, does NOT finalize the Attempt: it is left
+	// RUNNING, unterminalized. V5-08 (not yet built) is the future
+	// authority that maps this typed error to a real admission outcome
+	// (BLOCKED + an appropriate TerminationReason); no such reason exists
+	// in today's state-reason matrix (docs/architecture/04-go-core-spec.md
+	// §4.5), and inventing one here would be exactly the kind of
+	// unauthorized state-machine decision this task's own scope avoids.
+	if err := h.verifyContextSnapshot(ctx, payload.RunID, running); err != nil {
+		return err
 	}
 
 	deadline := time.Now().Add(time.Duration(profile.TimeoutSeconds) * time.Second)
@@ -336,6 +361,41 @@ func (h *ExecuteNodeHandler) runIsCancelling(ctx context.Context, runID string) 
 		return nil
 	})
 	return cancelling, err
+}
+
+// verifyContextSnapshot is V5-04's own dispatch-time re-check: attempt's
+// own bound ContextSnapshotID must resolve to a real, durable Snapshot row
+// (whose own load path, contextSnapshotRepository.GetSnapshot, already
+// recomputes ManifestHash and rejects a stored/recomputed mismatch as
+// ports.ErrImmutableVersionConflict — tamper/corruption detection lives
+// there, not duplicated here) genuinely bound to THIS attempt, whose own
+// Project/WorkItem/RevisionSet match what the owning Run/Attempt actually
+// pin. Runs inside its own read-only transaction, closed before Handle's
+// own caller ever invokes the executor.
+func (h *ExecuteNodeHandler) verifyContextSnapshot(ctx context.Context, runID string, attempt runtimedomain.ExecutionAttempt) error {
+	return h.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		if attempt.ContextSnapshotID == nil {
+			return fmt.Errorf("%w: attempt %s has no bound context snapshot", ErrContextSnapshotUnverified, attempt.ID)
+		}
+		snapshot, err := tx.ContextSnapshots().GetSnapshot(ctx, string(*attempt.ContextSnapshotID))
+		if err != nil {
+			return fmt.Errorf("%w: load snapshot %s: %v", ErrContextSnapshotUnverified, *attempt.ContextSnapshotID, err)
+		}
+		if string(snapshot.AttemptID) != string(attempt.ID) {
+			return fmt.Errorf("%w: snapshot %s is bound to attempt %s, not %s", ErrContextSnapshotUnverified, snapshot.ID, snapshot.AttemptID, attempt.ID)
+		}
+		run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		if snapshot.ProjectID != run.ProjectID || snapshot.WorkItemID != run.WorkItemID {
+			return fmt.Errorf("%w: snapshot %s project/work item does not match run %s", ErrContextSnapshotUnverified, snapshot.ID, runID)
+		}
+		if attempt.InputRevisionSet != nil && attempt.InputRevisionSet.ContentHash() != snapshot.Revisions.ContentHash() {
+			return fmt.Errorf("%w: snapshot %s revision set does not match attempt %s", ErrContextSnapshotUnverified, snapshot.ID, attempt.ID)
+		}
+		return nil
+	})
 }
 
 func (h *ExecuteNodeHandler) loadExecutionProfile(ctx context.Context, nodeRunID string) (resolvedExecutionProfileView, error) {

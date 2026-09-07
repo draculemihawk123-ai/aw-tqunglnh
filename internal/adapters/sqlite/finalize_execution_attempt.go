@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -21,15 +22,15 @@ func (r runtimeRepository) GetExecutionAttempt(ctx context.Context, id string) (
 
 func loadExecutionAttemptByID(ctx context.Context, tx *sql.Tx, id runtime.ExecutionAttemptID) (runtime.ExecutionAttempt, error) {
 	var attempt runtime.ExecutionAttempt
-	var providerKey, terminationReason, failureCode sql.NullString
+	var providerKey, terminationReason, failureCode, contextSnapshotID sql.NullString
 	var inputRevisionSetJSON string
 	err := tx.QueryRowContext(ctx, `
 SELECT id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
-       input_revision_set_json, termination_reason, failure_code, version
+       context_snapshot_id, input_revision_set_json, termination_reason, failure_code, version
 FROM execution_attempts WHERE id = ?`, id,
 	).Scan(
 		&attempt.ID, &attempt.NodeRunID, &attempt.AttemptNumber, &attempt.State, &providerKey,
-		&attempt.ExecutionProfileHash, &inputRevisionSetJSON, &terminationReason, &failureCode, &attempt.Version,
+		&attempt.ExecutionProfileHash, &contextSnapshotID, &inputRevisionSetJSON, &terminationReason, &failureCode, &attempt.Version,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.ExecutionAttempt{}, fmt.Errorf("%w: execution attempt %s", ports.ErrPersistenceNotFound, id)
@@ -39,6 +40,10 @@ FROM execution_attempts WHERE id = ?`, id,
 	}
 	if providerKey.Valid {
 		attempt.ProviderKey = providerKey.String
+	}
+	if contextSnapshotID.Valid {
+		id := contextsnapshot.ID(contextSnapshotID.String)
+		attempt.ContextSnapshotID = &id
 	}
 	if terminationReason.Valid {
 		attempt.TerminationReason = runtime.TerminationReason(terminationReason.String)

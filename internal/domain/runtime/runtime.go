@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -230,12 +231,23 @@ type ExecutionAttempt struct {
 	State                ExecutionAttemptState
 	ProviderKey          string
 	ExecutionProfileHash string
-	ContextSnapshotID    *ContextSnapshotID
-	InputRevisionSet     *workspace.RevisionSet
-	LastCheckpointID     *CheckpointID
-	StartedAt            *time.Time
-	FinishedAt           *time.Time
-	TerminationReason    TerminationReason
+	// ContextSnapshotID references V5-04's own
+	// internal/domain/contextsnapshot.Snapshot — deliberately NOT this
+	// package's own (legacy, crash-recovery-only) ContextSnapshotID type;
+	// see contextsnapshot's own package doc comment for why the two are
+	// kept apart and why this package imports contextsnapshot rather than
+	// the reverse. nil until NewExecutionAttempt's caller explicitly
+	// binds it (schedule.go/finalize.go, V5-04) — every production
+	// scheduling path added from V5-04 onward MUST set this to a real,
+	// already-durable Snapshot ID before the Attempt becomes visible to
+	// dispatch; existing callers that never set it (pre-V5-04 tests) are
+	// unaffected, since NewExecutionAttempt's own signature is unchanged.
+	ContextSnapshotID *contextsnapshot.ID
+	InputRevisionSet  *workspace.RevisionSet
+	LastCheckpointID  *CheckpointID
+	StartedAt         *time.Time
+	FinishedAt        *time.Time
+	TerminationReason TerminationReason
 	// FailureCode is populated now (V4-06) for a terminal FAILED or
 	// TIMED_OUT attempt: the exact errorcode.Code (go-core-spec §18) this
 	// attempt's own failure classifies as, durably pinned so a retry

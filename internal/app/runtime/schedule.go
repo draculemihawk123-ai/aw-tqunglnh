@@ -48,6 +48,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/agentprofile"
+	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
@@ -297,7 +298,43 @@ func ScheduleExecutableNodeRun(
 		if err != nil {
 			return err
 		}
+
+		// V5-04: bind this Attempt's own immutable context manifest before
+		// it is ever inserted (GC-INV-08: "pin... trước attempt đầu
+		// tiên"). MessageRefs is every V5-02 Message for this WorkItem so
+		// far, in exactly the order ListMessagesForWorkItem already
+		// returns them (by Sequence) — real, not a placeholder.
+		// ResourceRefs is deliberately empty here: gathering real
+		// Skill/Layer/Pack candidates and calling
+		// contextassembler.Resolve is explicitly out of this task's own
+		// scope (docs/design/07-v5-execution-evidence.md V5-04's own
+		// "Thực hiện" line names schema/repository/hash/binding/
+		// precondition only, never "gather" or "resolve") — a later task
+		// wiring a real AGENT/COMMAND/MACHINE_GATE dispatch caller is
+		// where ResourceRefs stops being empty, without needing to change
+		// this snapshot's own shape or the precondition below.
+		messages, err := tx.Messages().ListMessagesForWorkItem(ctx, string(run.WorkItemID))
+		if err != nil {
+			return err
+		}
+		messageRefs := make([]contextsnapshot.MessageRef, len(messages))
+		for i, m := range messages {
+			messageRefs[i] = contextsnapshot.MessageRef{MessageID: string(m.ID)}
+		}
+		snapshotID := contextsnapshot.ID(ids.NewID())
+		snapshot, err := contextsnapshot.NewSnapshot(
+			snapshotID, run.ProjectID, run.WorkItemID, contextsnapshot.AttemptID(attemptID),
+			messageRefs, nil, baseRevisionSet, time.Now().UTC(),
+		)
+		if err != nil {
+			return err
+		}
+		attempt.ContextSnapshotID = &snapshotID
+
 		if _, err := tx.Runtime().CreateExecutionAttempt(ctx, attempt); err != nil {
+			return err
+		}
+		if _, err := tx.ContextSnapshots().CreateSnapshot(ctx, snapshot); err != nil {
 			return err
 		}
 

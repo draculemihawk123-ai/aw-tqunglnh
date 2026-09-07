@@ -20,11 +20,17 @@ type NodeExecutor struct {
 	// never finishes in time" test: the caller's own derived-deadline
 	// context expires first, and Execute returns that context's own error.
 	Block chan struct{}
+	// Calls counts every Execute call this fake has ever received — V5-04's
+	// own "provider không start nếu snapshot chưa durable" bar is exactly
+	// "executor spawn count bằng 0" on the rejected path, and this field is
+	// what a test asserts that against.
+	Calls int
 }
 
 var _ ports.NodeExecutor = (*NodeExecutor)(nil)
 
 func (e *NodeExecutor) Execute(ctx context.Context, _ ports.NodeExecutionRequest) (ports.NodeExecutionResult, error) {
+	e.Calls++
 	if e.Block != nil {
 		select {
 		case <-ctx.Done():
