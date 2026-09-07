@@ -119,6 +119,45 @@ func TestClaudeCapabilitiesFailsClosedWhenProbeFails(t *testing.T) {
 	}
 }
 
+// TestCodexCapabilitiesProbesRealVersion is TestClaudeCapabilitiesProbesRealVersion's
+// own mirror for Codex (V5-07 applies the identical versionprobe shape).
+func TestCodexCapabilitiesProbesRealVersion(t *testing.T) {
+	t.Parallel()
+
+	adapter, err := codex.New(processadapter.NewSupervisor(), codex.Config{
+		Executable:         os.Args[0],
+		PrefixArgs:         helperPrefix("codex"),
+		VersionEnvironment: map[string]string{"AGENTKIT_PROVIDER_HELPER": "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := adapter.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("capabilities: %v", err)
+	}
+	want := providers.FakeCLIVersion("codex")
+	if capabilities.TestedCLIVersion != want {
+		t.Fatalf("TestedCLIVersion = %q, want %q (a live probe result, not a hardcoded constant)", capabilities.TestedCLIVersion, want)
+	}
+}
+
+// TestCodexCapabilitiesFailsClosedWhenProbeFails mirrors
+// TestClaudeCapabilitiesFailsClosedWhenProbeFails for Codex.
+func TestCodexCapabilitiesFailsClosedWhenProbeFails(t *testing.T) {
+	t.Parallel()
+
+	adapter, err := codex.New(processadapter.NewSupervisor(), codex.Config{
+		Executable: filepath.Join(t.TempDir(), "does-not-exist"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Capabilities(context.Background()); err == nil {
+		t.Fatal("expected Capabilities to fail closed when the configured executable cannot be probed")
+	}
+}
+
 func TestAgentExecutorRejectsMalformedJSONL(t *testing.T) {
 	t.Parallel()
 
@@ -212,8 +251,9 @@ func providerCases() []providerCase {
 			newExecutor: func(t *testing.T, supervisor ports.ProcessSupervisor) ports.AgentExecutor {
 				t.Helper()
 				adapter, err := codex.New(supervisor, codex.Config{
-					Executable: os.Args[0],
-					PrefixArgs: helperPrefix("codex"),
+					Executable:         os.Args[0],
+					PrefixArgs:         helperPrefix("codex"),
+					VersionEnvironment: map[string]string{"AGENTKIT_PROVIDER_HELPER": "1"},
 				})
 				if err != nil {
 					t.Fatal(err)

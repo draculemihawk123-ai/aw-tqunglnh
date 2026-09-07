@@ -699,3 +699,56 @@ go run ./cmd/docs-coverage-check                                  # debt = 0
 
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp: V5-07 (Codex adapter production
 contract) — tái dùng nguyên `versionprobe`, áp dụng y hệt pattern cho `codex.go`.
+
+## V5-07 — Codex adapter production contract
+
+**Trạng thái:** code + local verify DONE, chuẩn bị mở PR. Branch off master sau khi PR #33 (V5-06)
+merge — LẦN NÀY tạo branch TRƯỚC khi viết code (rút kinh nghiệm từ lỗi quy trình ở V5-06: lúc đó lỡ
+commit thẳng vào local master, tự phát hiện và tự sửa trước khi push, nhưng đáng lẽ không nên xảy ra).
+
+**Nghiên cứu trước khi code** (đọc trực tiếp `AK-ARCH-016`/`GC-ACC-12`/`HE-11-M08`, không cần Explore
+agent lần này vì V5-06 đã tự nghiên cứu phần lớn context dùng chung): cả 3 nguồn đều xoay quanh MỘT chủ
+đề — "cùng workflow/scenario chạy qua Claude/Codex mà scheduler/domain không đổi code, event schema
+chuẩn hoá chung." Đây LÀ đúng những gì `contract_test.go`'s `providerCases()` + `assertCanonicalEvents`
+đã kiểm chứng từ trước (chạy chung 1 bộ test cho cả 2 provider qua bảng `providerCase`), và
+`assertCanonicalEvents` vốn đã CHỈ CHECK "7 kind bắt buộc phải CÓ MẶT" (không check khớp tuyệt đối theo
+thứ tự/đủ đúng danh sách) — nghĩa là "normalized differences allowlist" (Codex phát thêm
+`STATUS_CHANGED` mà Claude không có) đã được dung nạp SẴN, không cần cơ chế allowlist mới. Không tìm
+thấy tài liệu nào mô tả một cơ chế allowlist RIÊNG BIỆT khác — kết luận: V5-07 không cần xây gì mới cho
+bullet này.
+
+**Kết luận phạm vi**: V5-07's TOÀN BỘ phần việc thật là ÁP DỤNG Y HỆT pattern V5-06 vừa xây (probe
+`--version` qua `versionprobe` dùng chung) sang `codex.go` — không có fork thiết kế mới nào, không cần
+hỏi user câu nào (mọi quyết định đã chốt ở V5-06, task này chỉ lặp lại đúng công thức đã duyệt).
+
+**File thay đổi:** `internal/adapters/providers/codex/codex.go` (y hệt cấu trúc sửa ở `claude.go`: xoá
+constant `TestedCLIVersion`, thêm `VersionArgs`/`VersionEnvironment` vào `Config`, viết lại
+`Capabilities()` gọi `versionprobe.Probe`, thêm `capabilityProbeProcessID()`), `internal/adapters/
+providers/contract_test.go` (thêm `VersionEnvironment` vào `providerCases()`'s codex case + 2 test mới
+`TestCodexCapabilitiesProbesRealVersion`/`TestCodexCapabilitiesFailsClosedWhenProbeFails`, mirror y hệt
+2 test claude ở V5-06), `cmd/agentkit/adapter.go` (sửa doc comment: bỏ câu "codex vẫn hardcoded" vì giờ
+không còn đúng nữa). `internal/adapters/providers/internal/versionprobe` KHÔNG đổi gì — dùng nguyên,
+đúng như thiết kế "dùng chung cho V5-07" đã ghi ở V5-06.
+
+**Không có bug thật nào tự phát hiện lần này** — khác V5-06 (3 vấn đề thật) và V5-05 (2 bug thật) —
+vì `cmd/agentkit/adapter_test.go` chưa từng có fixture nào test Codex qua CLI probe/register (chỉ test
+claude), nên không có regression kiểu "writeAdapterExecutable" nào bị lộ ra; và `fixtures.go`'s
+`RunFakeProviderCLI`'s nhánh `--version` (viết ở V5-06) đã tổng quát theo `provider string` ngay từ
+đầu, không cần sửa gì thêm cho Codex. Đây là tín hiệu tốt cho thấy quyết định "xây `versionprobe` dùng
+chung ngay từ V5-06" là đúng.
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                            # sạch
+go test ./internal/adapters/providers/... -v -count=1   # PASS (4 test capabilities mới: claude+codex
+                                                         #   × probe-thật + fail-closed)
+go test -count=1 ./...                                  # toàn bộ ~70 package PASS
+go run ./cmd/docs-coverage-check                        # debt = 0
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp: V5-08 (AGENT admission và
+execution envelope) — phụ thuộc V5-04, V5-06, V5-07, V3-09, V4-05 (tất cả đã xong) — đây là task sẽ
+thật sự wire admission check (isolation, adapter build drift, capability, multi-repo write grant) vào
+Attempt/BLOCKED state machine, dùng lại `ports.IsolationEnforcementChecker` (V5-05) và
+`ports.AgentExecutor.Capabilities()` (V5-06/07) làm input.
