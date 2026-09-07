@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -73,7 +74,7 @@ func driveBranchOutcome(t *testing.T, uow *fake.UnitOfWork, ids idsource.Source,
 	} else {
 		executor = &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
 	}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle(%s): %v", nodeRunID, err)
 	}

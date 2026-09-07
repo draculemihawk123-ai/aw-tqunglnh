@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -398,7 +399,7 @@ func TestCancelRun_ClaimVsCancel_CommitOrder(t *testing.T) {
 		cancelActor(t, uow, ids, runID)
 
 		executor := &fake.NodeExecutor{Err: errors.New("must not be called: claimRunning should decline before ever reaching the executor")}
-		handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
+		handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
 		if err := handler.Handle(context.Background(), job); err != nil {
 			t.Fatalf("Handle (cancel already committed): %v", err)
 		}
@@ -430,7 +431,7 @@ func TestCancelRun_ClaimVsCancel_CommitOrder(t *testing.T) {
 		job := claimableExecuteNodeJob(t, uow, attemptID)
 
 		executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-		handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
+		handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
 
 		// Race: cancel intent commits strictly AFTER claimRunning's own
 		// transaction (already claimed this Attempt into RUNNING) but
@@ -490,7 +491,7 @@ func TestFinalizeExecutionAttempt_BlockedThenCancel_ClosesWhileNodeRunStaysBlock
 			Reason:          "need more",
 		},
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle (BLOCKED): %v", err)
 	}

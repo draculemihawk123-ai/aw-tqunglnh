@@ -69,11 +69,13 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
+	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
 
@@ -100,14 +102,29 @@ type ExecuteNodeHandler struct {
 	ids      idsource.Source
 	executor ports.NodeExecutor
 	clk      clock.Clock
+	// isolation and agents are V5-08's own admission dependencies —
+	// isolation answers "is the pinned tier enforceable right now"
+	// (ADR-023, V5-05's own checker); agents resolves the live,
+	// real ports.AgentExecutor a pinned AdapterBuildVersion's own
+	// ProviderKey names, so the adapter-build-drift check can probe it
+	// fresh (V5-06/07). Neither is used for actual task execution — that
+	// still goes through executor (ports.NodeExecutor) unchanged.
+	isolation ports.IsolationEnforcementChecker
+	agents    *agentregistry.Registry
 }
 
 // NewExecuteNodeHandler returns a ready-to-register ExecuteNodeHandler. clk
 // is threaded through to every FinalizeExecutionAttempt call (V4-06) so a
 // retryable failure's own AvailableAt backoff computation is deterministic
-// under a test's clock.Fixed — pass clock.System{} in production.
-func NewExecuteNodeHandler(uow ports.UnitOfWork, ids idsource.Source, executor ports.NodeExecutor, clk clock.Clock) *ExecuteNodeHandler {
-	return &ExecuteNodeHandler{uow: uow, ids: ids, executor: executor, clk: clk}
+// under a test's clock.Fixed — pass clock.System{} in production. isolation
+// and agents are V5-08's own admission dependencies (see their own struct
+// field doc comments) — a caller with no real adapter builds ever pinned
+// can safely pass agentregistry.New(ctx) with zero executors registered.
+func NewExecuteNodeHandler(
+	uow ports.UnitOfWork, ids idsource.Source, executor ports.NodeExecutor, clk clock.Clock,
+	isolation ports.IsolationEnforcementChecker, agents *agentregistry.Registry,
+) *ExecuteNodeHandler {
+	return &ExecuteNodeHandler{uow: uow, ids: ids, executor: executor, clk: clk, isolation: isolation, agents: agents}
 }
 
 var _ workerpool.Handler = (*ExecuteNodeHandler)(nil)
@@ -121,9 +138,25 @@ var _ workerpool.Handler = (*ExecuteNodeHandler)(nil)
 // decodeCompiledPolicy already established for a different snapshot shape).
 type resolvedExecutionProfileView struct {
 	Executor struct {
-		Kind string `json:"kind"`
+		Kind         string `json:"kind"`
+		DefinitionID string `json:"definitionId"`
+		VersionID    string `json:"versionId"`
+		CompiledHash string `json:"compiledHash"`
 	} `json:"executor"`
+	// AdapterBuild is nil whenever the node declared no AdapterBuildID
+	// (a legitimate, deliberately deferred Alpha state — see
+	// runtime.ResolvedExecutionProfileV1.AdapterBuild's own doc comment)
+	// — V5-08's own drift check has nothing to verify in that case.
+	AdapterBuild *struct {
+		BuildID string `json:"buildId"`
+	} `json:"adapterBuild,omitempty"`
 	TimeoutSeconds uint32 `json:"timeoutSeconds"`
+	// IsolationTier and AllowedCapabilities are V5-08's own admission
+	// inputs (ADR-023, HE-02-M02) — both already pinned by schedule.go's
+	// own resolveExecutionProfile, just not previously decoded here since
+	// nothing needed them before this task.
+	IsolationTier       policy.IsolationTier `json:"isolationTier"`
+	AllowedCapabilities []string             `json:"allowedCapabilities,omitempty"`
 }
 
 // Handle implements workerpool.Handler for ExecuteNodeJobKind. See this
@@ -141,26 +174,45 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 	}
 	jobLease := ports.JobLease{JobID: job.ID, Owner: job.LeaseOwner, Token: job.LeaseToken, LeaseUntil: *job.LeaseUntil}
 
-	running, advanced, err := h.claimRunning(ctx, payload)
-	if err != nil {
-		return err
-	}
-	if !advanced {
-		// Idempotent no-op — see this file's own package doc comment. This
-		// is also V4-12B's own FIRST worker re-check checkpoint's own
-		// no-op outcome: claimRunning itself declines to advance
-		// QUEUED->RUNNING when the owning Run is already CANCELLING/
-		// CANCELLED, leaving the actual QUEUED->CANCELLED transition to
-		// the CANCEL_RUN_COORDINATOR job's own sweep (never raced here).
-		return nil
-	}
-
 	profile, err := h.loadExecutionProfile(ctx, payload.NodeRunID)
 	if err != nil {
 		return err
 	}
 	if profile.TimeoutSeconds == 0 {
 		return fmt.Errorf("%w: node run %s", ErrExecutionProfileMissingTimeout, payload.NodeRunID)
+	}
+
+	// V5-08's own admission Phase 1: real I/O (isolation check, live
+	// adapter-build probe), entirely outside any database transaction —
+	// see this package's own admission.go doc comment for why. Must run
+	// even for the idempotent-redelivery case (admitOrClaimRunning below
+	// still needs a probe result to pass into Phase 2), which is
+	// harmless: Phase 2 re-checks the Attempt is still QUEUED before
+	// acting on it either way.
+	probe, err := h.runAdmissionProbePhase(ctx, payload, profile)
+	if err != nil {
+		return err
+	}
+
+	running, outcome, err := h.admitOrClaimRunning(ctx, payload, jobLease, profile, probe)
+	if err != nil {
+		return err
+	}
+	switch outcome {
+	case admissionNoop:
+		// Idempotent no-op — see this file's own package doc comment. This
+		// is also V4-12B's own FIRST worker re-check checkpoint's own
+		// no-op outcome: admitOrClaimRunning itself declines to advance
+		// QUEUED->RUNNING when the owning Run is already CANCELLING/
+		// CANCELLED, leaving the actual QUEUED->CANCELLED transition to
+		// the CANCEL_RUN_COORDINATOR job's own sweep (never raced here).
+		return nil
+	case admissionBlocked:
+		// V5-08's own admission blocker group: the Attempt/NodeRun/
+		// WorkItemBlocker transition already happened, atomically, inside
+		// admitOrClaimRunning's own transaction. Nothing more to do —
+		// spawn count stays zero, no retry budget consumed.
+		return nil
 	}
 
 	// V4-12B's own SECOND worker re-check checkpoint ("ngay trước
@@ -288,17 +340,39 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 	return finalizeErr
 }
 
-// claimRunning transitions the Attempt QUEUED->RUNNING, and — in the same
-// transaction — the NodeRun itself QUEUED->RUNNING alongside it: nothing
-// upstream of this handler ever advances the NodeRun past the QUEUED state
-// V4-04's own ScheduleExecutableNodeRun leaves it in, but advanceRunTx's
-// own routing step (this file's own Handle, on the SUCCEEDED path) only
-// ever completes a NodeRun it observes as RUNNING — exactly the state this
-// step is responsible for establishing before any executor runs. advanced
-// is false for the idempotent no-op case (Attempt was not QUEUED).
-func (h *ExecuteNodeHandler) claimRunning(ctx context.Context, payload ExecuteNodeJobPayload) (runtimedomain.ExecutionAttempt, bool, error) {
+// admissionOutcome is admitOrClaimRunning's own three-way result.
+type admissionOutcome int
+
+const (
+	// admissionNoop: the Attempt was not QUEUED (an earlier delivery of
+	// this exact job already claimed it, or the owning Run already
+	// committed a cancellation intent) — idempotent no-op, mirrors
+	// AdvanceRun/ScheduleExecutableNodeRun's own discipline.
+	admissionNoop admissionOutcome = iota
+	// admissionBlocked: an admission check failed closed. The Attempt/
+	// NodeRun/WorkItemBlocker transition already happened, atomically,
+	// inside admitOrClaimRunning's own transaction.
+	admissionBlocked
+	// admissionRunning: every admission check passed; the Attempt/NodeRun
+	// are now RUNNING and Handle's own caller may proceed to the
+	// executor.
+	admissionRunning
+)
+
+// admitOrClaimRunning is V5-08's own admission Phase 2 (see admission.go's
+// own package doc comment for the full two-phase design and why): re-load
+// the Attempt/Run/NodeRun fresh, re-verify Phase 1's own probe inputs
+// haven't shifted, run the two pure-data checks, and atomically CAS to
+// either BLOCKED (with the resolved reason) or RUNNING — a single
+// transaction decides the outcome, closing the race a separate admission
+// transaction followed by an unmodified claim step would otherwise open
+// between "admission passed" and QUEUED->RUNNING (confirmed with the user
+// before writing this file).
+func (h *ExecuteNodeHandler) admitOrClaimRunning(
+	ctx context.Context, payload ExecuteNodeJobPayload, jobLease ports.JobLease, profile resolvedExecutionProfileView, probe admissionProbe,
+) (runtimedomain.ExecutionAttempt, admissionOutcome, error) {
 	var running runtimedomain.ExecutionAttempt
-	advanced := false
+	outcome := admissionNoop
 	err := h.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
 		current, err := tx.Runtime().GetExecutionAttempt(ctx, payload.AttemptID)
 		if err != nil {
@@ -308,13 +382,12 @@ func (h *ExecuteNodeHandler) claimRunning(ctx context.Context, payload ExecuteNo
 			return nil
 		}
 		// V4-12B's own FIRST worker re-check checkpoint ("trước QUEUED ->
-		// RUNNING"): decline to advance if the owning Run already
-		// committed a cancellation intent — never race the
-		// CANCEL_RUN_COORDINATOR job's own sweep by trying to CAS this
-		// same Attempt/NodeRun to CANCELLED here too; that job is the
-		// SOLE authority for the QUEUED->CANCELLED transition
-		// (TerminationReasonRunCancelledBeforeStart), and will claim this
-		// exact Attempt on its own next pass regardless of this no-op.
+		// RUNNING"), run BEFORE admission (confirmed with the user):
+		// decline to act at all if the owning Run already committed a
+		// cancellation intent — never race the CANCEL_RUN_COORDINATOR
+		// job's own sweep, admission included; that job is the SOLE
+		// authority for the QUEUED->CANCELLED transition
+		// (TerminationReasonRunCancelledBeforeStart).
 		run, err := tx.Runtime().GetWorkflowRun(ctx, payload.RunID)
 		if err != nil {
 			return err
@@ -326,6 +399,44 @@ func (h *ExecuteNodeHandler) claimRunning(ctx context.Context, payload ExecuteNo
 		if err != nil {
 			return err
 		}
+
+		// TOCTOU-closing re-verification (ADR-022's own discipline): the
+		// drift probe's own input pin must still be the exact row Phase 1
+		// measured against. Build rows are immutable/content-addressed
+		// and never updated or deleted, so this can only ever re-confirm
+		// the same row still exists — it never re-runs the probe's own
+		// I/O inside this transaction.
+		if profile.AdapterBuild != nil {
+			if probe.pinnedBuild == nil || probe.pinnedBuild.ID() != profile.AdapterBuild.BuildID {
+				return fmt.Errorf("runtime: admission: node run %s's adapter build probe result does not match its own pin", payload.NodeRunID)
+			}
+			if _, err := tx.AdapterBuilds().Get(ctx, profile.AdapterBuild.BuildID); err != nil {
+				return fmt.Errorf("runtime: admission: re-verify pinned adapter build %s: %w", profile.AdapterBuild.BuildID, err)
+			}
+		}
+
+		decision, err := evaluateAdmission(ctx, tx, profile, nodeRun, probe)
+		if err != nil {
+			return err
+		}
+		if decision.reason != "" {
+			if err := h.blockAdmission(ctx, tx, payload, jobLease, run, nodeRun, current, decision); err != nil {
+				return err
+			}
+			outcome = admissionBlocked
+			return nil
+		}
+
+		// V5-08's own "dựng envelope bất biến": persisted only once
+		// admission has fully passed (an envelope for a BLOCKED attempt
+		// would never have a reader) — the same "record a durable
+		// DecisionArtifact keyed by NodeRunID" pattern schedule.go's own
+		// execution-profile artifact already establishes, so a future
+		// reader can look this up the identical way.
+		if err := recordExecutionEnvelope(ctx, tx, payload.NodeRunID, run.ProjectID, nodeRun); err != nil {
+			return err
+		}
+
 		if nodeRun.State == runtimedomain.NodeRunQueued {
 			if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
 				NodeRunID: payload.NodeRunID, ExpectedState: runtimedomain.NodeRunQueued, ExpectedVersion: nodeRun.Version,
@@ -341,10 +452,49 @@ func (h *ExecuteNodeHandler) claimRunning(ctx context.Context, payload ExecuteNo
 		if err != nil {
 			return err
 		}
-		advanced = true
+		outcome = admissionRunning
 		return nil
 	})
-	return running, advanced, err
+	return running, outcome, err
+}
+
+// blockAdmission is admitOrClaimRunning's own BLOCKED branch: CAS the
+// NodeRun QUEUED->BLOCKED alongside the Attempt QUEUED->BLOCKED in this
+// same transaction (an admission blocker must never leave one advanced
+// and the other stuck QUEUED), open the WorkItem-authority half of the
+// block via openWorkItemBlockerTx (the same helper
+// requestScopeExpansionTx already uses for the OTHER blocker group), and
+// reconcile the Run's own terminality — harmless, almost always a no-op,
+// the same "could have removed the Run's last live activation" reasoning
+// requestScopeExpansionTx's own final step already documents.
+func (h *ExecuteNodeHandler) blockAdmission(
+	ctx context.Context, tx ports.Tx, payload ExecuteNodeJobPayload, jobLease ports.JobLease,
+	run runtimedomain.WorkflowRun, nodeRun runtimedomain.NodeRun, attempt runtimedomain.ExecutionAttempt, decision admissionDecision,
+) error {
+	if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
+		NodeRunID: payload.NodeRunID, ExpectedState: runtimedomain.NodeRunQueued, ExpectedVersion: nodeRun.Version,
+		NextState: runtimedomain.NodeRunBlocked,
+	}); err != nil {
+		return err
+	}
+	if _, err := tx.Runtime().TransitionExecutionAttempt(ctx, ports.TransitionExecutionAttemptRequest{
+		AttemptID: payload.AttemptID, ExpectedState: runtimedomain.ExecutionAttemptQueued, ExpectedVersion: attempt.Version,
+		NextState: runtimedomain.ExecutionAttemptBlocked, TerminationReason: decision.reason,
+	}); err != nil {
+		return err
+	}
+	blockerID := payload.AttemptID + "-admission-blocker"
+	if _, err := openWorkItemBlockerTx(
+		ctx, tx, run.ProjectID, string(run.WorkItemID), blockerID, decision.blockerType,
+		payload.RunID, payload.NodeRunID, payload.AttemptID, decision.detail, payload.CorrelationID, string(jobLease.JobID),
+	); err != nil {
+		return err
+	}
+	version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+	if err != nil {
+		return err
+	}
+	return reconcileRunTerminalityTx(ctx, tx, run, version.Document(), payload.CorrelationID, string(jobLease.JobID))
 }
 
 // runIsCancelling is V4-12B's own read-only check for the second worker

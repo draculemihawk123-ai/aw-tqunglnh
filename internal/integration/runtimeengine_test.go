@@ -65,6 +65,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
+	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
@@ -464,7 +465,7 @@ func registerRuntimeEngineHandlers(
 	registry := workerpool.NewRegistry()
 	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(uow, handlerIDs))
 	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandler(uow, handlerIDs, fake.NewRuntimeExecutionConfigProvider()))
-	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, handlerIDs, executor, clock.System{}))
+	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, handlerIDs, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty()))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(uow, handlerIDs))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(uow, handlerIDs))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(uow, handlerIDs))
@@ -1486,7 +1487,7 @@ func TestRuntimeEngineGate_ConcurrentPoolsNoDuplicateExecution(t *testing.T) {
 	var executions atomic.Int32
 	countingExecutor := &countingNodeExecutor{inner: &scriptedNodeExecutor{uow: uow}, count: &executions}
 	raceRegistry := workerpool.NewRegistry()
-	raceRegistry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, idsource.Random{}, countingExecutor, clock.System{}))
+	raceRegistry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, idsource.Random{}, countingExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty()))
 
 	poolA := newRuntimeEnginePool(t, store, raceRegistry)
 	poolB := newRuntimeEnginePool(t, store, raceRegistry)

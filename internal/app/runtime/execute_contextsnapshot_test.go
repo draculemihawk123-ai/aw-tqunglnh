@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
@@ -28,7 +29,7 @@ func TestExecuteNodeHandler_MissingContextSnapshot_RejectsDispatchWithoutCalling
 	uow.Snapshot.ContextSnapshots().(*fake.ContextSnapshotRepository).DeleteSnapshot(mustSnapshotID(t, uow, attemptID))
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
 	err := handler.Handle(context.Background(), job)
 	if !errors.Is(err, runtime.ErrContextSnapshotUnverified) {
 		t.Fatalf("Handle err = %v, want runtime.ErrContextSnapshotUnverified", err)
@@ -73,7 +74,7 @@ func TestExecuteNodeHandler_ContextSnapshotBoundToDifferentAttempt_RejectsDispat
 	uow.Snapshot.ContextSnapshots().(*fake.ContextSnapshotRepository).Overwrite(mismatched)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
 	err = handler.Handle(context.Background(), job)
 	if !errors.Is(err, runtime.ErrContextSnapshotUnverified) {
 		t.Fatalf("Handle err = %v, want runtime.ErrContextSnapshotUnverified", err)

@@ -34,6 +34,15 @@ type entry struct {
 	capabilities ports.AgentCapabilities
 }
 
+// Empty returns a Registry with no providers registered — useful for a
+// caller (or a test) with no real adapter builds ever pinned yet. New with
+// zero executors can never itself fail (its own loop never runs), so this
+// needs no error return.
+func Empty() *Registry {
+	registry, _ := New(context.Background())
+	return registry
+}
+
 func New(ctx context.Context, executors ...ports.AgentExecutor) (*Registry, error) {
 	registry := &Registry{entries: make(map[ports.ProviderKey]entry, len(executors))}
 	for _, executor := range executors {

@@ -752,3 +752,101 @@ execution envelope) — phụ thuộc V5-04, V5-06, V5-07, V3-09, V4-05 (tất c
 thật sự wire admission check (isolation, adapter build drift, capability, multi-repo write grant) vào
 Attempt/BLOCKED state machine, dùng lại `ports.IsolationEnforcementChecker` (V5-05) và
 `ports.AgentExecutor.Capabilities()` (V5-06/07) làm input.
+
+## V5-08 — AGENT admission và execution envelope
+
+**Trạng thái:** code + local verify DONE (toàn bộ suite xanh, kể cả 2 bug thật tự bắt được), chuẩn bị
+mở PR. Branch tạo TRƯỚC khi viết code (đúng kỷ luật đã tự sửa ở V5-07). Task lớn và phức tạp nhất từ
+đầu V5 tới giờ — 4 câu hỏi lớn hỏi user trước khi code, cả 4 câu đều có correction sâu.
+
+**Nghiên cứu trước khi code** (Explore agent, kết quả khác giả định ban đầu ở NHIỀU điểm quan trọng):
+- BLOCKED state (`ExecutionAttemptBlocked`), cả 4 `TerminationReason` VÀ cả 4 `work.BlockerType` cho
+  admission blocker group ĐÃ TỒN TẠI SẴN từ phase trước (chỉ thiếu người sinh ra chúng thật) — V5-08
+  hoàn toàn KHÔNG cần thêm domain type/migration nào cho việc này.
+- `FinalizeExecutionAttempt` KHÔNG dùng lại được cho `QUEUED→BLOCKED` (hardcode
+  `ExpectedState: RUNNING`) — cần hàm chị em mới, không sửa hàm cũ.
+- `ports.AgentWorkspaceMount`/`WorkspaceAccess` tồn tại từ lâu nhưng CHƯA CÓ NGƯỜI SINH RA nào cả — V5-08
+  là producer ĐẦU TIÊN.
+- KHÔNG có production `ports.NodeExecutor` nào cả (chỉ có fake) — adapter Claude/Codex thật (V5-06/07)
+  hiện chỉ được wire vào `cmd/agentkit adapter probe/register`, chưa bao giờ vào đường dispatch thật.
+- ADR-022 tự trả lời rõ: adapter-build drift PHẢI là re-hash/re-probe SỐNG (không phải re-fetch DB —
+  Build row content-addressed/bất biến nên re-fetch không bao giờ phát hiện được drift).
+
+**4 câu hỏi hỏi user trước khi code, cả 4 đều có correction/bổ sung sâu so với đề xuất ban đầu của tôi:**
+1. **Phạm vi executor bridge:** user chọn "Chỉ xây admission probe" — KHÔNG xây NodeExecutor→AgentExecutor
+   bridge thật (để lại cho lúc có event sink/checkpoint/fenced finalize, làm ngay sẽ lấn V5-08A/B).
+   **Correction quan trọng:** `AgentCapabilities` hiện tại (protocol/CLI version + capability flags)
+   KHÔNG đủ để chứng minh exact BuildID — phải đo lại FULL `CandidateTuple` (content hash + capability
+   manifest hash + OS/toolchain sống) rồi so `ID()`, không phải chỉ so `Capabilities()`. Cũng lưu ý:
+   `agentregistry.Registry.Resolve()` hiện tại CACHE capability lúc khởi tạo — không dùng được thẳng cho
+   probe admission (cần probe SỐNG mỗi lần).
+2. **Cấu trúc transaction 2 phase:** user xác nhận đúng phương án đề xuất (fold vào 1 transaction quyết
+   định) nhưng bổ sung chi tiết bắt buộc: đổi tên `claimRunning`→`admitOrClaimRunning` trả về
+   NOOP|BLOCKED|RUNNING rõ ràng; cancellation/idempotency guard chạy TRƯỚC danh sách admission (không
+   tính vào priority); re-verify probe input (adapter build) vẫn khớp pin đã đọc ở preflight; nếu BLOCKED
+   phải đồng bộ CẢ Attempt + NodeRun + WorkItemBlocker trong CÙNG transaction, không được để NodeRun mắc
+   kẹt QUEUED. Chỉ ra rõ: KHÔNG dùng transaction admission riêng vì tạo race với QUEUED→RUNNING hiện tại
+   ở `execute.go` (đã chỉ đúng dòng).
+3. **Priority khi nhiều check cùng fail:** giữ nguyên đề xuất (isolation > adapter drift > capability >
+   multi-repo-write), nhưng yêu cầu encode ở MỘT CHỖ DUY NHẤT (không rải if), chỉ persist đúng 1 reason/1
+   blocker, và có test table-driven cho toàn bộ tổ hợp.
+4. **Mở rộng `ResolvedExecutionProfileV1`:** user BÁC BỎ hoàn toàn đề xuất thêm field
+   `RequiredCapabilities` vào type đã "khoá" này. **Correction:** tiền đề "chưa pin ở đâu" SAI —
+   `RequiredCapabilities` nằm trong TOÀN BỘ `AgentProfileDocument`, mà compiled hash của nó ĐÃ được pin
+   trong `Executor.CompiledHash`. Cách đúng: admission tự `LoadVersion` lại đúng version đã pin, verify
+   `DefinitionID`/`CompiledHash` khớp, rồi decode `RequiredCapabilities` từ ĐÓ — không denormalize field
+   mới vào V1. Muốn denormalize vì hiệu năng sau này thì làm `ResolvedExecutionProfileV2`, không sửa V1.
+
+**2 bug thật tự phát hiện khi chạy full suite thật (KHÔNG lộ qua unit test riêng gói `runtime`, giống
+hệt bài học V5-04 — chỉ `internal/integration`'s real sqlite end-to-end mới lộ ra):**
+1. **`ports.AgentWorkspaceMount` không marshal được**: `WorkspaceHandle.MarshalText()` tự chặn cứng khi
+   handle rỗng ("workspace handle is empty") — ĐÚNG NHƯ THIẾT KẾ (bảo vệ không cho handle rỗng bị âm
+   thầm serialize), nhưng va ngay vào quyết định của tôi ở câu hỏi 1 (để `Handle` rỗng vì chưa xây
+   bridge thật). Fix: định nghĩa type `persistedEnvelopeMount` riêng (chỉ `RepositoryID`+`Access`) để
+   PERSIST, giữ nguyên `buildExecutionEnvelope` trả về đúng `[]ports.AgentWorkspaceMount` thật (để một
+   caller trong bộ nhớ dùng thẳng được sau này).
+2. **`RecordDecisionArtifact` KHÔNG idempotent** (tự đọc doc comment của chính port: "plain append,
+   không update/delete bao giờ") — nhưng tôi lại gọi nó từ `admitOrClaimRunning`, hàm chạy MỘT LẦN MỖI
+   ATTEMPT, trong khi envelope key theo NodeRunID (một NodeRun có thể có NHIỀU Attempt qua retry) → lần
+   retry thứ 2 insert trùng ID, lỗi "already exists", `Handle()` trả error, job bị retry vô hạn →
+   `TestRuntimeEngineGate` treo giống hệt kiểu livelock ở V5-04's Bug #2 (13s thay vì 5.7s bình thường).
+   Debug bằng in tạm (xoá ngay sau khi chẩn đoán, đúng kỹ thuật đã dùng ở V5-04). Fix: check-tồn-tại
+   trước khi insert (idempotent tại call site, không sửa port).
+3. **(Phát hiện phụ, ngoài phạm vi V5-08, đã spawn task riêng)**: `TestAdapterRegister_DriftCreatesNewBuild`
+   (V5-06's own test) timeout 5s một lần khi chạy TOÀN BỘ `go test ./...` (nhiều package chạy song song
+   gây tranh chấp CPU) — pass sạch khi chạy riêng `cmd/agentkit`. Không phải regression từ V5-08 (không
+   đụng file nào của claude.go/codex.go). Đã tạo task riêng để tăng `defaultVersionProbeTimeout`, không
+   sửa trong PR này để giữ diff đúng phạm vi.
+
+**File thay đổi chính:** `internal/app/runtime/admission.go` (mới, toàn bộ 4 check + envelope resolver +
+priority aggregation), `internal/app/runtime/execute.go` (đổi `claimRunning`→`admitOrClaimRunning`, thêm
+`blockAdmission`, `Handle()` gọi Phase 1 trước Phase 2, `ExecuteNodeHandler` thêm 2 dependency mới),
+`internal/app/adapterbuild/drift.go` (mới, `VerifyNoDrift` — export `HashExecutableFile` từ
+`commands.go`), `internal/app/agentregistry/registry.go` (thêm `Empty()` convenience constructor),
+`internal/app/ports/fake/agent.go` (mới, fake `AgentExecutor`), `internal/app/runtime/admission_test.go`
++ `admission_internal_test.go` (mới, 11 test), `internal/app/adapterbuild/drift_test.go` (mới, 5 test).
+9 file test cũ (`execute_test.go`, `cancel_run_test.go`, `completion_test.go`, `fork_test.go`,
+`join_test.go`, `scope_expansion_test.go`, `finalize_retry_test.go`, `execute_contextsnapshot_test.go`,
+`internal/integration/runtimeengine_test.go`) chỉ đổi call site `NewExecuteNodeHandler` (thêm 2 tham số
+mới, default an toàn `fake.IsolationEnforcementChecker{}`/`agentregistry.Empty()`) — KHÔNG đổi ý nghĩa
+test nào; toàn bộ pass lại ngay vì fixture dùng chung của package này vốn đã set
+`IsolationTier: ENFORCED_ISOLATED` + `GrantedCapabilities: [INTEGRATION_MULTI_REPOSITORY_WRITE]` +
+không có `RequiredCapabilities`/`AdapterBuildID` nào — cả 4 check đều tự thoả mãn "tình cờ" mà không cần
+sửa fixture.
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                             # sạch
+go test ./internal/app/runtime/... -count=1              # PASS (toàn bộ, kể cả 11 test admission mới)
+go test ./internal/app/adapterbuild/... -count=1          # PASS (kể cả 5 test VerifyNoDrift mới)
+go test ./internal/integration/... -count=1               # PASS, TestRuntimeEngineGate 5.7s (không
+                                                           #   livelock, sau khi fix bug #2)
+go test ./internal/integration/... ./internal/app/runtime/... -count=3   # ổn định, không flake
+go test -count=1 ./...                                    # toàn bộ ~70 package PASS (2 lần liên tiếp)
+go run ./cmd/docs-coverage-check                          # debt = 0
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp theo dependency graph: V5-08A
+(AgentEvent contract, checkpoint batching, diff capture) — phụ thuộc V5-08, sẽ là nơi thật sự cần
+NodeExecutor→AgentExecutor bridge mà V5-08 cố tình để lại.

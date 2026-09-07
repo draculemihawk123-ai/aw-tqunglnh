@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -75,7 +76,7 @@ func TestExecuteNodeHandler_RetryableFailure_CreatesNextAttemptWithBackoff(t *te
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
 		State: runtimedomain.ExecutionAttemptFailed, ErrorCode: errorcode.CodeProviderUnavailable,
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clk)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clk, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -154,7 +155,7 @@ func TestExecuteNodeHandler_RetryableFailure_BudgetExhausted_FailsNodeRun(t *tes
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
 		State: runtimedomain.ExecutionAttemptFailed, ErrorCode: errorcode.CodeProviderUnavailable,
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{})
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}

@@ -81,7 +81,7 @@ func ProbeAdapterBuild(ctx context.Context, uow ports.UnitOfWork, req ProbeReque
 		return adapterbuild.CandidateToken{}, errors.New("adapterbuild: os, toolchain and configIdentity are all required")
 	}
 
-	contentHash, err := hashExecutableFile(req.ExecutablePath)
+	contentHash, err := HashExecutableFile(req.ExecutablePath)
 	if err != nil {
 		return adapterbuild.CandidateToken{}, fmt.Errorf("adapterbuild: measure executable: %w", err)
 	}
@@ -161,7 +161,7 @@ func RegisterAdapterBuild(ctx context.Context, uow ports.UnitOfWork, req Registe
 		return RegisterResult{}, err
 	}
 
-	freshExecutableHash, err := hashExecutableFile(req.Token.Tuple.ExecutablePath)
+	freshExecutableHash, err := HashExecutableFile(req.Token.Tuple.ExecutablePath)
 	if err != nil {
 		return RegisterResult{}, fmt.Errorf("adapterbuild: re-measure executable: %w", err)
 	}
@@ -218,7 +218,12 @@ func GetAdapterBuild(ctx context.Context, uow ports.UnitOfWork, id string) (adap
 	return build, err
 }
 
-func hashExecutableFile(path string) (string, error) {
+// HashExecutableFile returns the sha256 content hash of the file at path,
+// prefixed "sha256:" — exported so VerifyNoDrift (drift.go) can reuse the
+// exact same measurement ProbeAdapterBuild/RegisterAdapterBuild already use
+// for registration, rather than a second, potentially-diverging
+// implementation.
+func HashExecutableFile(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
