@@ -161,7 +161,11 @@ type ProcessID string
 
 // ProcessSpec is intentionally argv-based. It has no command-string or shell
 // field. Environment contains exact overrides; InheritedEnvironment is an
-// explicit allow-list of parent environment keys.
+// explicit allow-list of parent environment keys. WorkingDirectory must be
+// an absolute path to an existing directory (V5-05) — a relative path would
+// resolve against the calling process's own cwd, an ambiguous, implicit
+// trust boundary this codebase's own "explicit, not implicit" discipline
+// rejects.
 type ProcessSpec struct {
 	ID                   ProcessID
 	Executable           string
@@ -171,6 +175,15 @@ type ProcessSpec struct {
 	InheritedEnvironment []string
 	Stdin                []byte
 	Timeout              time.Duration
+	// GracePeriod is how long Cancel (or Timeout firing) waits after
+	// asking the process tree to exit gracefully before force-killing it
+	// (V5-05). Zero uses Supervisor's own default.
+	GracePeriod time.Duration
+	// OutputLimitBytes bounds how many bytes of stdout/stderr each
+	// Supervisor implementation keeps — a runaway child must never be able
+	// to exhaust worker memory. Zero uses Supervisor's own default rather
+	// than meaning "unbounded"; this port has no unbounded option (V5-05).
+	OutputLimitBytes int
 }
 
 type ProcessResult struct {
@@ -180,6 +193,11 @@ type ProcessResult struct {
 	FinishedAt time.Time
 	TimedOut   bool
 	Cancelled  bool
+	// OutputTruncated is true when stdout and/or stderr hit
+	// OutputLimitBytes and further bytes were discarded (V5-05) — the
+	// caller must never treat a truncated capture as a complete one for
+	// evidence purposes.
+	OutputTruncated bool
 }
 
 // ProcessSupervisor executes an executable directly with argv. stdout and

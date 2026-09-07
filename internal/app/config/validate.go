@@ -56,6 +56,12 @@ func Validate(cfg Config) error {
 		}
 	}
 
+	for i, name := range cfg.EnvAllowlist {
+		if strings.TrimSpace(name) == "" {
+			problems = append(problems, fmt.Sprintf("env_allowlist[%d]: WHAT entry is blank; WHY a blank name cannot match any real environment variable; FIX remove the blank entry", i))
+		}
+	}
+
 	if len(problems) == 0 {
 		return nil
 	}

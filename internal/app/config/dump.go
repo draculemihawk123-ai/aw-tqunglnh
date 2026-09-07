@@ -20,6 +20,7 @@ func Dump(cfg Config, matcher redact.Matcher) (map[string]any, error) {
 		"lease_heartbeat":      cfg.LeaseHeartbeat.String(),
 		"process_output_limit": cfg.ProcessOutputLimit,
 		"provider_executables": cfg.ProviderExecutables,
+		"env_allowlist":        cfg.EnvAllowlist,
 	}
 	redacted, err := matcher.Value(raw)
 	if err != nil {

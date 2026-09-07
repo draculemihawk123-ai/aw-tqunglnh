@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -39,7 +40,7 @@ func TestSupervisorRunsExecutableWithoutShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run helper: %v", err)
 	}
-	if result.ExitCode != 0 || result.TimedOut || result.Cancelled {
+	if result.ExitCode != 0 || result.TimedOut || result.Cancelled || result.OutputTruncated {
 		t.Fatalf("unexpected process result: %+v", result)
 	}
 
@@ -109,6 +110,115 @@ func TestSupervisorCancelsActiveProcess(t *testing.T) {
 	}
 }
 
+func TestSupervisorCancelKillsDescendantProcess(t *testing.T) {
+	t.Parallel()
+
+	marker := filepath.Join(t.TempDir(), "descendant-alive")
+	supervisor := NewSupervisor()
+	ready := newNotifyingWriter("ready")
+	resultChannel := make(chan ports.ProcessResult, 1)
+	errorChannel := make(chan error, 1)
+
+	spec := helperSpec("descendant", 5*time.Second)
+	spec.Environment["AGENTKIT_DESCENDANT_MARKER"] = marker
+
+	go func() {
+		result, err := supervisor.Run(context.Background(), spec, ready, nil)
+		resultChannel <- result
+		errorChannel <- err
+	}()
+
+	select {
+	case <-ready.notified:
+	case <-time.After(2 * time.Second):
+		t.Fatal("helper did not become ready")
+	}
+	waitForFile(t, marker, 2*time.Second)
+
+	if err := supervisor.Cancel(context.Background(), spec.ID); err != nil {
+		t.Fatalf("cancel active helper: %v", err)
+	}
+	result := <-resultChannel
+	if err := <-errorChannel; err != nil {
+		t.Fatalf("cancelled run returned infrastructure error: %v", err)
+	}
+	if !result.Cancelled {
+		t.Fatalf("unexpected cancellation result: %+v", result)
+	}
+
+	lastMod := modTime(t, marker)
+	time.Sleep(300 * time.Millisecond)
+	if modTime(t, marker) != lastMod {
+		t.Fatal("descendant process kept writing its heartbeat after the parent was cancelled — it was not terminated")
+	}
+}
+
+func TestSupervisorBoundsOversizedOutput(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	const limit = 1024
+	spec := helperSpec("flood", 5*time.Second)
+	spec.OutputLimitBytes = limit
+
+	result, err := NewSupervisor().Run(context.Background(), spec, &stdout, nil)
+	if err != nil {
+		t.Fatalf("run flood helper: %v", err)
+	}
+	if !result.OutputTruncated {
+		t.Fatalf("expected OutputTruncated=true, result: %+v", result)
+	}
+	if stdout.Len() > limit {
+		t.Fatalf("stdout.Len() = %d, want <= %d", stdout.Len(), limit)
+	}
+}
+
+func TestSupervisorRejectsRelativeWorkingDirectory(t *testing.T) {
+	t.Parallel()
+
+	spec := helperSpec("echo", time.Second)
+	spec.WorkingDirectory = "relative/path"
+	result, err := NewSupervisor().Run(context.Background(), spec, nil, nil)
+	if err == nil {
+		t.Fatal("expected an error for a relative working directory")
+	}
+	if !result.StartedAt.IsZero() {
+		t.Fatalf("process must not have been started, StartedAt = %v", result.StartedAt)
+	}
+}
+
+func TestSupervisorRejectsMissingWorkingDirectory(t *testing.T) {
+	t.Parallel()
+
+	spec := helperSpec("echo", time.Second)
+	spec.WorkingDirectory = filepath.Join(t.TempDir(), "does-not-exist")
+	result, err := NewSupervisor().Run(context.Background(), spec, nil, nil)
+	if err == nil {
+		t.Fatal("expected an error for a missing working directory")
+	}
+	if !result.StartedAt.IsZero() {
+		t.Fatalf("process must not have been started, StartedAt = %v", result.StartedAt)
+	}
+}
+
+func TestSupervisorRejectsFileAsWorkingDirectory(t *testing.T) {
+	t.Parallel()
+
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	spec := helperSpec("echo", time.Second)
+	spec.WorkingDirectory = file
+	result, err := NewSupervisor().Run(context.Background(), spec, nil, nil)
+	if err == nil {
+		t.Fatal("expected an error when the working directory is a file")
+	}
+	if !result.StartedAt.IsZero() {
+		t.Fatalf("process must not have been started, StartedAt = %v", result.StartedAt)
+	}
+}
+
 func helperSpec(mode string, timeout time.Duration) ports.ProcessSpec {
 	return ports.ProcessSpec{
 		ID:               ports.ProcessID(mode),
@@ -117,6 +227,7 @@ func helperSpec(mode string, timeout time.Duration) ports.ProcessSpec {
 		WorkingDirectory: os.TempDir(),
 		Environment:      map[string]string{"AGENTKIT_PROCESS_HELPER": "1"},
 		Timeout:          timeout,
+		GracePeriod:      300 * time.Millisecond,
 	}
 }
 
@@ -154,6 +265,31 @@ func TestProcessHelper(t *testing.T) {
 		_, _ = fmt.Fprintln(os.Stdout, "ready")
 		_ = os.Stdout.Sync()
 		time.Sleep(5 * time.Second)
+	case "descendant":
+		marker := os.Getenv("AGENTKIT_DESCENDANT_MARKER")
+		child := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--", "descendant-child", marker)
+		child.Env = append(os.Environ(), "AGENTKIT_PROCESS_HELPER=1")
+		if err := child.Start(); err != nil {
+			os.Exit(4)
+		}
+		_, _ = fmt.Fprintln(os.Stdout, "ready")
+		_ = os.Stdout.Sync()
+		_ = child.Wait()
+	case "descendant-child":
+		if len(arguments) < 2 {
+			os.Exit(5)
+		}
+		marker := arguments[1]
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			_ = os.WriteFile(marker, []byte(time.Now().String()), 0o600)
+			time.Sleep(20 * time.Millisecond)
+		}
+	case "flood":
+		chunk := bytes.Repeat([]byte("x"), 64<<10)
+		for i := 0; i < 64; i++ {
+			_, _ = os.Stdout.Write(chunk)
+		}
 	default:
 		os.Exit(3)
 	}
@@ -167,6 +303,27 @@ func argumentsAfterSeparator(arguments []string) []string {
 		}
 	}
 	return nil
+}
+
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file %s did not appear within %s", path, timeout)
+}
+
+func modTime(t *testing.T, path string) time.Time {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return info.ModTime()
 }
 
 type notifyingWriter struct {

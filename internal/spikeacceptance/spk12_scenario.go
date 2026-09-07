@@ -62,6 +62,22 @@ func runSPK12Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 	}
 	defer os.RemoveAll(tempDir)
 
+	// The real fake-claude/fake-codex binaries these requests spawn are
+	// passed to this scenario as relative paths (cmd/agentkit-spike's own
+	// --fake-claude/--fake-codex flags, e.g. "bin/fake-codex") — Go's
+	// os/exec resolves a relative Executable against the CHILD's own new
+	// working directory (the OS changes directory before resolving/exec'ing
+	// a relative image path), not the calling process's cwd. tempDir broke
+	// this for the two AgentExecutionRequest.WorkingDirectory values below
+	// (V5-05 CI: "fork/exec bin/fake-codex: no such file or directory" on
+	// both platforms) — the calling process's OWN cwd is the only directory
+	// relative binary paths still resolve from. tempDir itself stays in use
+	// for the sqlite database path below, which has no such constraint.
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		return SPKResult{}, fmt.Errorf("spk12: get working directory: %w", err)
+	}
+
 	var recoveredHashes []string
 	var lastCorrelation CorrelationIDs
 	for _, name := range []string{"codex", "claude"} {
@@ -70,7 +86,7 @@ func runSPK12Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 		invalidSessionResult, err := adapter.Resume(ctx, ports.AgentExecutionRequest{
 			AttemptID:         ports.ExecutionAttemptID("spk12-invalid-" + name),
 			ContextSnapshotID: domainruntime.ContextSnapshotID("spk12-invalid-context-" + name),
-			Prompt:            "spk-12 fixture prompt", WorkingDirectory: ".", Timeout: 5 * time.Second,
+			Prompt:            "spk-12 fixture prompt", WorkingDirectory: workingDirectory, Timeout: 5 * time.Second,
 			Environment: map[string]string{"AGENTKIT_HELPER_MODE": "invalid-session"},
 		}, ports.ProviderSessionRef{Provider: ports.ProviderKey(name), SessionID: name + "-session-0001"}, &recordingEventSink{})
 		if err != nil {
@@ -158,7 +174,7 @@ func runSPK12Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 
 		recoveryEvents := &recordingEventSink{}
 		result, err := worker.StartFreshFromLatestCheckpoint(ctx, store, adapter, interruptedAttempt, ports.AgentExecutionRequest{
-			AttemptID: replacementAttempt, WorkingDirectory: ".", Timeout: 5 * time.Second,
+			AttemptID: replacementAttempt, WorkingDirectory: workingDirectory, Timeout: 5 * time.Second,
 			Environment: map[string]string{"AGENTKIT_HELPER_MODE": "invalid-session"},
 		}, recoveryEvents)
 		if err != nil {

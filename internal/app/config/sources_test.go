@@ -27,7 +27,8 @@ func TestFromFile_ParsesAllFields(t *testing.T) {
 		"lease_ttl": "45s",
 		"lease_heartbeat": "15s",
 		"process_output_limit": 4096,
-		"provider_executables": {"claude": "/usr/bin/claude"}
+		"provider_executables": {"claude": "/usr/bin/claude"},
+		"env_allowlist": ["PATH", "HOME"]
 	}`
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("write fixture: %v", err)
@@ -51,6 +52,9 @@ func TestFromFile_ParsesAllFields(t *testing.T) {
 	}
 	if overrides.ProviderExecutables["claude"] != "/usr/bin/claude" {
 		t.Errorf("ProviderExecutables[claude] = %v, want /usr/bin/claude", overrides.ProviderExecutables)
+	}
+	if len(overrides.EnvAllowlist) != 2 || overrides.EnvAllowlist[0] != "PATH" || overrides.EnvAllowlist[1] != "HOME" {
+		t.Errorf("EnvAllowlist = %v, want [PATH HOME]", overrides.EnvAllowlist)
 	}
 }
 

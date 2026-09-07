@@ -444,3 +444,150 @@ gofmt -l <19 file .go đổi/mới>                    # rỗng sau gofmt -w
 
 **Việc còn lại:** mở PR, chờ CI 6/6, merge. Task kế tiếp: V5-05 (Production ProcessSupervisor
 hardening) — độc lập với V5-01..04 (chỉ phụ thuộc V1 config), có thể làm ngay sau khi merge.
+
+## V5-05 — Production ProcessSupervisor hardening
+
+**Trạng thái:** DONE code+local verify, PR [#32](https://github.com/draculemihawk123-ai/agent-workflow/pull/32)
+đã mở, chờ CI. Lưu ý: branch tạo TRƯỚC khi PR #31 (V5-04) merge (từ `d66c6b5`, không phải từ
+`b9f5987`) — hợp lệ vì V5-05 không phụ thuộc code V5-04 (chỉ phụ thuộc V1 config), nhưng vì cả hai
+task cùng append vào file checklist cá nhân này nên khi PR #31 merge xong, nhánh V5-05 phải merge
+lại `origin/master` để lấy đúng narrative V5-04 thật (xem conflict resolution: file này TỪNG có một
+bản backfill V5-04 tự viết lại từ memory sau compaction, đã BỎ vì bản gốc contemporaneous ở master
+đầy đủ và chính xác hơn).
+
+**Bối cảnh trước khi code:** research qua Explore agent xác nhận `internal/adapters/process.Supervisor`
+là component PRODUCTION đã live thật (dùng bởi `claude.go`/`codex.go`/`readinesscheck/handler.go`) —
+argv-only spawn/timeout/cancel một-process/env allowlist cơ bản, nhưng KHÔNG có: output bound, cwd
+validation thật, graceful-then-force cancel, process-tree kill, isolation-enforcement-capability check.
+`internal/app/config.Config` mới chỉ có `ProcessOutputLimit`/`ProviderExecutables` (V1-03) — chưa có
+`EnvAllowlist`/`NetworkAccess`. `policy.IsolationTier{ENFORCED_ISOLATED, OPERATOR_TRUSTED_LOCAL}` đã
+tồn tại (ADR-013), resolve được vào `ResolvedExecutionProfileV1.IsolationTier` ở `schedule.go`, nhưng
+CHƯA có gì kiểm tra tier đó có thực sự enforceable hay không.
+
+**2 câu hỏi hỏi user trước khi code, trả lời rất chi tiết cả 2:**
+1. **Real enforcement vs. honest fail-closed:** chọn "No real enforcement — ENFORCED_ISOLATED luôn fail
+   closed". Trả `ISOLATION_ENFORCEMENT_UNAVAILABLE` TRƯỚC `ProcessSupervisor.Start`, spawn count = 0,
+   KHÔNG tự downgrade sang `OPERATOR_TRUSTED_LOCAL`. `OPERATOR_TRUSTED_LOCAL` là tier duy nhất chạy
+   được, kèm cwd/env allowlist, timeout/cancel, hậu kiểm `scopeguard.ValidateDiffs` (đã build/wire sẵn
+   ở `internal/app/worker/finalizer.go` từ SPK-07, không cần động tới). Windows Job Object hữu ích để
+   quản lý/kill process tree nhưng tự nó không chặn network/filesystem nên không đủ để tuyên bố
+   `ENFORCED_ISOLATED`.
+2. **NetworkAccess default:** chọn luôn là `ALLOWED`. `RuntimeExecutionConfigProvider` phải mô tả
+   capability THỰC TẾ platform enforce được, không phải mong muốn operator — khai `NONE` khi child
+   process thực sự truy cập được network là false safety claim. KHÔNG thêm boolean operator-configurable
+   riêng cho NetworkAccess ở task này; muốn công nhận firewall/sandbox ngoài sau này cần một cơ chế typed
+   external-enforcement attestation có provenance/lifecycle rõ ràng, không phải field tự khai.
+
+**Quyết định tự đưa ra (không nằm trong 2 câu hỏi trên):**
+- **Port mới `ports.IsolationEnforcementChecker`** (`VerifyEnforceable(ctx, tier) error`), tách hẳn khỏi
+  `RuntimeExecutionConfigProvider` (2 trục độc lập: IsolationTier resolve từ Policy pin per-node, không
+  phải từ composition-root config). Production impl `process.IsolationChecker` (ENFORCED_ISOLATED luôn
+  reject, OPERATOR_TRUSTED_LOCAL luôn accept), fake ở `ports/fake/isolation.go`. Lý do bắt buộc phải có
+  port riêng (không thể để V5-08 gọi thẳng `internal/adapters/process`): `TestDomainAppNeverImportAdapters`
+  (`internal/archtest/boundary_test.go`) cấm cứng `internal/app/...`/`internal/domain/...` import
+  `internal/adapters/...`, kể cả transitively.
+- **V5-05 chỉ build primitive + tự chứng minh contract riêng** (spy `ProcessSupervisor` đếm call,
+  assert 0 khi ENFORCED_ISOLATED) — KHÔNG wire vào Attempt/BLOCKED state machine thật (đó là V5-08's own
+  "isolation profile admission theo ADR-023" theo đúng roadmap; vocabulary `errorcode.
+  CodeIsolationEnforcementUnavailable`/`runtime.TerminationReasonIsolationEnforcementUnavailable`/
+  `work.BlockerIsolationEnforcementUnavailable` đã tồn tại sẵn từ phase trước, chỉ chưa có caller thật).
+- **Cross-platform process-tree kill:** Unix dùng process group (`Setpgid: true`, signal `-pid`);
+  Windows dùng Job Object thật (`CreateJobObject` + `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` +
+  `AssignProcessToJobObject` qua `OpenProcess` theo pid) + `CREATE_NEW_PROCESS_GROUP` cho
+  `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)` graceful. File tách theo build tag
+  `processtree_windows.go`/`processtree_other.go`, đúng convention `canonical_windows.go`/
+  `canonical_other.go` đã có sẵn ở `gitworktree`/`repoprobe`. Đã tự chạy test thật trên máy Windows này
+  (không chỉ chờ CI) — `TestSupervisorCancelKillsDescendantProcess` (grandchild qua job object) PASS
+  thật.
+- **Graceful-then-force:** KHÔNG dùng `exec.CommandContext`'s auto-kill mặc định (chỉ kill 1 process) —
+  tự quản lý qua goroutine `Wait()` riêng + `select` đua giữa `waitDone`/`deadline.Done()`/
+  `cancelRequested`, gửi graceful signal trước, đợi `GracePeriod` (mặc định 5s, field mới trên
+  `ports.ProcessSpec`), hết hạn mới force-kill cả tree.
+- **Bounded output:** `ports.ProcessSpec.OutputLimitBytes`/`ports.ProcessResult.OutputTruncated` (field
+  mới, additive, mọi struct literal hiện có đều keyed nên không vỡ). Mặc định 10 MiB khi caller để 0 —
+  ĐỔI hành vi cũ của `readinesscheck` (trước đây unbounded `bytes.Buffer`) nhưng vô hại thực tế (output
+  probe luôn rất nhỏ).
+- **cwd validation:** bắt buộc absolute path + tồn tại + là directory, check TRƯỚC `s.reserve`/spawn.
+  **Regression tự phát hiện khi chạy full suite:** `internal/spikeacceptance` SPK-11/SPK-12 dùng
+  `WorkingDirectory: "."` (placeholder "chỗ nào cũng được" cho fake CLI) — vỡ ngay vì "." không phải
+  absolute. Fix: SPK-11 đổi sang `os.TempDir()`, SPK-12 đổi sang `tempDir` (biến `os.MkdirTemp` đã có
+  sẵn trong scope) — đúng tinh thần "chỉ cần 1 thư mục thật tồn tại", không đổi ý nghĩa scenario. Đã
+  audit toàn bộ codebase (`grep WorkingDirectory:`) để loại trừ chỗ khác bị ảnh hưởng — riêng
+  `internal/domain/readiness.CommandSpec.WorkingDirectory` CỐ Ý là relative path (join với worktree
+  root thật ở `readinesscheck/handler.go`'s `runCommand`), không đụng tới.
+- **`config.Config.EnvAllowlist []string` (field mới):** theo đúng pipeline `Defaults/Overrides/Apply/
+  file source/Validate/Dump` sẵn có — file-only (không env/flags form, giống `ProviderExecutables`),
+  replace-wholesale (không merge như map) vì allowlist một source sau phải là danh sách đầy đủ, không
+  phải "cộng thêm".
+
+**File thay đổi chính:** `internal/app/ports/agent.go` (thêm `GracePeriod`/`OutputLimitBytes` vào
+`ProcessSpec`, `OutputTruncated` vào `ProcessResult`), `internal/app/ports/isolation.go` (port mới),
+`internal/app/ports/fake/isolation.go` (fake mới), `internal/adapters/process/{isolation,
+isolation_test,processtree,processtree_other,processtree_windows,boundedwriter,executionconfig,
+executionconfig_test}.go` (mới), `internal/adapters/process/supervisor.go` (viết lại Run/Cancel),
+`internal/adapters/process/supervisor_test.go` (thêm 7 test mới), `internal/app/config/{config,
+sources,validate,dump}.go` + test tương ứng (EnvAllowlist), `internal/spikeacceptance/
+{spk11,spk12}_scenario.go` (fix regression cwd).
+
+**Verify:**
+```
+go build ./...                                       # sạch
+go vet ./...                                          # sạch
+go test ./internal/adapters/process/... -v -count=1   # 16 test PASS (kể cả cwd/oversized-output/
+                                                       #   descendant-kill/isolation contract)
+go test ./internal/adapters/process/... -count=5      # ổn định, không flake (không có cgo trên máy
+                                                       #   này nên -race không chạy được local, để CI)
+go test ./internal/app/config/... -v -count=1         # PASS (kể cả EnvAllowlist mới)
+go test -count=1 ./...                                # toàn bộ PASS (sau khi fix SPK-11/SPK-12)
+go run ./cmd/docs-coverage-check                      # debt = 0
+```
+
+**BUG THẬT thứ hai, chỉ lộ ra ở CI job "spike acceptance" thật (KHÔNG lộ qua `go test`) — fix
+`os.TempDir()`/`tempDir` đầu tiên cho SPK-11/SPK-12 (thay `WorkingDirectory: "."`) tự nó lại SAI:**
+- **Triệu chứng:** PR #32 mở, CI fail cả `spike acceptance (ubuntu-latest)` LẪN `spike acceptance
+  (windows-latest)` với y hệt lỗi trên cả hai platform: `run scenario SPK-11: spk11: codex start:
+  start executable "bin/fake-codex": fork/exec bin/fake-codex: no such file or directory` (Windows:
+  "The system cannot find the path specified"). `internal/spikeacceptance`'s own `go test` (chạy local
+  ngay trước khi mở PR) PASS sạch — không lộ bug này, vì test đó tự build binary vào đường dẫn TUYỆT
+  ĐỐI, không đi qua flow CLI thật `cmd/agentkit-spike acceptance --full` mà CI job "spike acceptance"
+  chạy với đường dẫn TƯƠNG ĐỐI (`--fake-codex "bin/fake-codex"`, đúng y hệt cách workflow YAML gọi).
+- **Root cause thật (Go/OS semantics, không phải flake):** `ports.ProcessSpec.Executable` tương đối
+  (`"bin/fake-codex"`, không qua PATH vì có dấu `/`) được `os/exec` resolve KHÔNG PHẢI so với cwd của
+  process gọi, mà so với `cmd.Dir` (chính là `WorkingDirectory` mới) SAU KHI OS đã chdir sang đó —
+  chdir xảy ra TRƯỚC khi resolve/exec executable tương đối. `WorkingDirectory: "."` cũ vô tình đúng vì
+  "." tương đương "giữ nguyên cwd hiện tại" nên không đổi gì; đổi sang `os.TempDir()`/`tempDir` (một thư
+  mục KHÁC) làm executable tương đối "bin/fake-codex" bị tìm trong CHÍNH thư mục temp đó — không tồn
+  tại. Root cause của quyết định sai: chỉ nghĩ "cần 1 thư mục tuyệt đối tồn tại thật", không xét
+  `Executable` của scenario này CŨNG tương đối và neo vào cùng cwd mà `WorkingDirectory` cũ (".") từng
+  bảo toàn.
+- **Fix đúng:** dùng `os.Getwd()` (cwd THẬT của process gọi) thay vì một thư mục không liên quan —
+  bảo toàn đúng ý nghĩa gốc của "." trong khi vẫn thoả yêu cầu absolute path mới. SPK-11 (`spk11Request`,
+  không có error return, theo đúng precedent bỏ qua lỗi `os.Getwd()` đã có sẵn ở
+  `internal/adapters/providers/fixtures.go`) và SPK-12 (`runSPK12Scenario`, có error return, xử lý lỗi
+  tường minh theo đúng style hàm này). `tempDir` (từ `os.MkdirTemp`) ở SPK-12 vẫn giữ nguyên cho mục
+  đích KHÁC (đường dẫn sqlite db) — chỉ đổi 2 chỗ `WorkingDirectory` thôi.
+- **Verify thật, không chỉ suy luận:** build cả 5 binary CLI thật (`agentkit-spike`/`fake-claude`/
+  `fake-codex`/`spike-helper`/`spike-worker`) vào một thư mục cô lập, chạy ĐÚNG lệnh CI chạy
+  (`./bin/agentkit-spike acceptance --full --assessment --fake-claude "bin/fake-claude" --fake-codex
+  "bin/fake-codex" ...` từ chính thư mục đó, đường dẫn tương đối y hệt workflow YAML) — SPK-01..12,14
+  PASS, SPK-13 FAIL (đúng kỳ vọng: SPK-13 thật cần evidence CẢ HAI platform, job riêng
+  "cross-platform semantic diff" mới có; trong "spike acceptance" một platform SPK-13 luôn FAIL vô hại,
+  exit code toàn bộ vẫn 0 — xác nhận khớp lần CI xanh trước đó của chính PR này).
+- **Bài học ghi thêm:** "chỉ cần absolute + tồn tại" không đủ để chọn giá trị thay thế cho một placeholder
+  — phải hiểu ĐẦY ĐỦ TẤT CẢ trường liên quan trong cùng request (ở đây là `Executable` VÀ
+  `WorkingDirectory` tương tác qua đúng semantics chdir-trước-resolve của OS), và một lần `go test`
+  xanh không chứng minh được nếu chính code path CI thật sự chạy (CLI binary, đường dẫn tương đối) khác
+  với code path test framework tự dựng (binary tuyệt đối). Đã tự phát hiện và tự sửa TRƯỚC KHI hỏi
+  user, verify lại bằng cách tái tạo chính xác lệnh CI chạy cục bộ — không chỉ tin `go test` xanh lần
+  nữa.
+
+**CI PR #32:** vòng đầu `contract (windows-latest)` fail ở stress write-lease diagnostic (V0-11A,
+"durable job lease is no longer authoritative") — flake đã biết, tiền lệ V1/V4-08, rerun 1 lần qua.
+Nhưng cùng lúc rerun đó lộ ra bug thật ở trên (`spike acceptance` cả 2 platform) vì lần CI ĐẦU TIÊN,
+`contract (windows-latest)` fail sớm nên `spike acceptance`/`Linux race and stability` bị skip toàn bộ
+— chưa từng chạy thật tới lượt SPK-11. Sau khi sửa bug thật + push lại, chờ CI vòng mới. Job "Linux race
+and stability" cũng fail 1 lần ở `TestEndToEnd_PartialFailure_OneReadyOneFailed_SetBlockedRowsKept`
+(`internal/app/workspaceprovision`) — flake đã biết, tiền lệ V4-10 (PR #19), không đụng file nào trong
+diff (`git diff --stat` xác nhận rỗng), kỳ vọng xanh sau rerun.
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge.

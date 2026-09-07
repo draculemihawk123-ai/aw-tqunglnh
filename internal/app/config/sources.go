@@ -22,6 +22,7 @@ type rawFileConfig struct {
 	LeaseHeartbeat      *string           `json:"lease_heartbeat"`
 	ProcessOutputLimit  *int              `json:"process_output_limit"`
 	ProviderExecutables map[string]string `json:"provider_executables"`
+	EnvAllowlist        []string          `json:"env_allowlist"`
 }
 
 // FromFile parses a JSON config file into Overrides. A missing file is
@@ -46,6 +47,7 @@ func FromFile(path string) (Overrides, error) {
 		WorkerConcurrency:   raw.WorkerConcurrency,
 		ProcessOutputLimit:  raw.ProcessOutputLimit,
 		ProviderExecutables: raw.ProviderExecutables,
+		EnvAllowlist:        raw.EnvAllowlist,
 	}
 	if raw.LeaseTTL != nil {
 		d, err := time.ParseDuration(*raw.LeaseTTL)
@@ -76,9 +78,9 @@ const (
 
 // FromEnv reads Overrides from environment variables via lookup (pass
 // os.LookupEnv in production; a test passes a fake with the same
-// signature). ProviderExecutables has no environment form — provider
-// executables are numerous and per-provider, which does not fit a flat
-// env-var scheme; set them via file or flags.
+// signature). ProviderExecutables and EnvAllowlist have no environment
+// form — both are list/map-shaped, which does not fit a flat env-var
+// scheme; set them via file.
 func FromEnv(lookup func(string) (string, bool)) (Overrides, error) {
 	var overrides Overrides
 	if v, ok := lookup(envDatabasePath); ok {

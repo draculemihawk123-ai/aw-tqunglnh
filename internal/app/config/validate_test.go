@@ -101,6 +101,28 @@ func TestValidateAcceptsNonEmptyProviderExecutables(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsBlankEnvAllowlistEntry(t *testing.T) {
+	cfg := validConfig()
+	cfg.EnvAllowlist = []string{"PATH", "  "}
+	assertInvalid(t, cfg, "env_allowlist[1]")
+}
+
+func TestValidateAcceptsEmptyEnvAllowlist(t *testing.T) {
+	cfg := validConfig()
+	cfg.EnvAllowlist = nil
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate with a nil EnvAllowlist should pass (closed, empty by default), got: %v", err)
+	}
+}
+
+func TestValidateAcceptsNonEmptyEnvAllowlist(t *testing.T) {
+	cfg := validConfig()
+	cfg.EnvAllowlist = []string{"PATH", "HOME"}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate with a real env allowlist should pass, got: %v", err)
+	}
+}
+
 // TestValidateCollectsAllProblems proves Validate does not stop at the
 // first failure — an operator fixing config from scratch needs the whole
 // picture in one run, not one error per restart.

@@ -106,6 +106,25 @@ func TestApplyProviderExecutablesOverridesSameKey(t *testing.T) {
 	}
 }
 
+func TestApplyReplacesEnvAllowlistWholesale(t *testing.T) {
+	base := Defaults()
+	base.EnvAllowlist = []string{"PATH", "HOME"}
+	overrides := Overrides{EnvAllowlist: []string{"PATH"}}
+	got := overrides.Apply(base)
+	if len(got.EnvAllowlist) != 1 || got.EnvAllowlist[0] != "PATH" {
+		t.Errorf("EnvAllowlist = %v, want exactly [PATH] (replace, not merge)", got.EnvAllowlist)
+	}
+}
+
+func TestApplyLeavesEnvAllowlistUnchangedWhenNotSet(t *testing.T) {
+	base := Defaults()
+	base.EnvAllowlist = []string{"PATH"}
+	got := Overrides{}.Apply(base)
+	if len(got.EnvAllowlist) != 1 || got.EnvAllowlist[0] != "PATH" {
+		t.Errorf("EnvAllowlist = %v, want unchanged [PATH]", got.EnvAllowlist)
+	}
+}
+
 // TestLoadPrecedence proves the full defaults < file < env < flags chain:
 // each layer sets DatabasePath, and only the last one applied (flags)
 // should win.
@@ -168,7 +187,7 @@ func TestLoadNeverReturnsPartialConfigAlongsideError(t *testing.T) {
 	// the zero-value fields individually instead.
 	if cfg.DatabasePath != "" || cfg.ArtifactRoot != "" || cfg.WorkerID != "" ||
 		cfg.WorkerConcurrency != 0 || cfg.LeaseTTL != 0 || cfg.LeaseHeartbeat != 0 ||
-		cfg.ProcessOutputLimit != 0 || len(cfg.ProviderExecutables) != 0 {
+		cfg.ProcessOutputLimit != 0 || len(cfg.ProviderExecutables) != 0 || len(cfg.EnvAllowlist) != 0 {
 		t.Fatalf("Load returned a non-zero Config alongside an error: %+v", cfg)
 	}
 }

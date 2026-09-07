@@ -3,6 +3,7 @@ package spikeacceptance
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
 	"time"
 
@@ -120,11 +121,22 @@ func runSPK11Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 }
 
 func spk11Request(attemptID string) ports.AgentExecutionRequest {
+	// The real fake-claude/fake-codex binaries this scenario spawns are
+	// passed to it as relative paths (cmd/agentkit-spike's own --fake-claude/
+	// --fake-codex flags, e.g. "bin/fake-codex") — Go's os/exec resolves a
+	// relative Executable against the CHILD's own new working directory
+	// (the OS changes directory before resolving/exec'ing a relative
+	// image path), not the calling process's cwd. os.TempDir() broke this
+	// (V5-05 CI: "fork/exec bin/fake-codex: no such file or directory" on
+	// both platforms) — the calling process's OWN cwd is the only directory
+	// relative binary paths still resolve from, so that is what a scenario
+	// with a relative Executable must use here.
+	workingDirectory, _ := os.Getwd()
 	return ports.AgentExecutionRequest{
 		AttemptID:         ports.ExecutionAttemptID(attemptID),
 		ContextSnapshotID: domainruntime.ContextSnapshotID("context-" + attemptID),
 		Prompt:            "spk-11 fixture prompt",
-		WorkingDirectory:  ".",
+		WorkingDirectory:  workingDirectory,
 		Environment: map[string]string{
 			"AGENTKIT_HELPER_MODE": "success",
 		},

@@ -17,6 +17,12 @@ type Config struct {
 	LeaseHeartbeat       time.Duration
 	ProcessOutputLimit   int
 	ProviderExecutables  map[string]string
+	// EnvAllowlist is the operator's own closed list of parent environment
+	// variable names a spawned provider/command process may inherit
+	// (V5-05, ADR-027's own RuntimeExecutionConfigSnapshotV1.EnvAllowlist)
+	// — an allowlist, not a blocklist: an empty list (the safe default)
+	// means no environment variables pass through at all.
+	EnvAllowlist []string
 }
 
 // Defaults returns the safe, always-valid-shape starting point every Load
@@ -34,15 +40,20 @@ func Defaults() Config {
 		LeaseHeartbeat:      10 * time.Second,
 		ProcessOutputLimit:  1 << 20, // 1 MiB
 		ProviderExecutables: map[string]string{},
+		EnvAllowlist:        []string{},
 	}
 }
 
 // Overrides is a partial Config: a nil field means "this source did not
 // set it", so Apply only overwrites fields the source actually provided —
 // it never overwrites with a zero value that would just mean "absent".
-// ProviderExecutables is the one field merged key-by-key rather than
-// wholesale-replaced, so one source can add a provider without having to
-// repeat every provider an earlier source already set.
+// ProviderExecutables is merged key-by-key rather than wholesale-replaced,
+// so one source can add a provider without having to repeat every provider
+// an earlier source already set. EnvAllowlist is wholesale-replaced (nil
+// means "not set" — same distinction the pointer fields use, without
+// needing a pointer since a slice already has a nil state): unlike a map
+// of providers, a later source setting an allowlist means exactly that
+// list, not that list plus whatever an earlier source already allowed.
 type Overrides struct {
 	DatabasePath        *string
 	ArtifactRoot        *string
@@ -52,6 +63,7 @@ type Overrides struct {
 	LeaseHeartbeat      *time.Duration
 	ProcessOutputLimit  *int
 	ProviderExecutables map[string]string
+	EnvAllowlist        []string
 }
 
 // Apply layers o onto base, field by field, returning the merged Config.
@@ -88,6 +100,9 @@ func (o Overrides) Apply(base Config) Config {
 			merged[k] = v
 		}
 		result.ProviderExecutables = merged
+	}
+	if o.EnvAllowlist != nil {
+		result.EnvAllowlist = append([]string(nil), o.EnvAllowlist...)
 	}
 	return result
 }

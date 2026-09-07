@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -20,15 +21,41 @@ import (
 var (
 	ErrAlreadyRunning = errors.New("process id is already running")
 	ErrNotRunning     = errors.New("process id is not running")
+	// errExplicitCancel marks a termination as caller-requested (Cancel)
+	// rather than deadline-caused, for setCancellationResult's own
+	// TimedOut/Cancelled classification.
+	errExplicitCancel = errors.New("process: cancel requested")
 )
+
+// defaultGracePeriod backstops any caller that leaves
+// ports.ProcessSpec.GracePeriod at zero: how long a graceful signal gets to
+// work before Supervisor force-kills the whole process tree.
+const defaultGracePeriod = 5 * time.Second
 
 type Supervisor struct {
 	mu     sync.Mutex
-	active map[ports.ProcessID]context.CancelFunc
+	active map[ports.ProcessID]*activeProcess
+}
+
+// activeProcess is what Run registers under spec.ID for the duration of one
+// spawn. cancelRequested is closed exactly once by Cancel to signal
+// "terminate the tree" — independent of, and racing against, the run's own
+// timeout deadline in Run's own select.
+type activeProcess struct {
+	cancelRequested chan struct{}
+	cancelOnce      sync.Once
+}
+
+func newActiveProcess() *activeProcess {
+	return &activeProcess{cancelRequested: make(chan struct{})}
+}
+
+func (p *activeProcess) requestCancel() {
+	p.cancelOnce.Do(func() { close(p.cancelRequested) })
 }
 
 func NewSupervisor() *Supervisor {
-	return &Supervisor{active: make(map[ports.ProcessID]context.CancelFunc)}
+	return &Supervisor{active: make(map[ports.ProcessID]*activeProcess)}
 }
 
 func (s *Supervisor) Run(
@@ -41,54 +68,94 @@ func (s *Supervisor) Run(
 	if err := validateSpec(spec); err != nil {
 		return result, err
 	}
-	if stdout == nil {
-		stdout = io.Discard
-	}
-	if stderr == nil {
-		stderr = io.Discard
-	}
 
-	runCtx, cancel := context.WithTimeout(ctx, spec.Timeout)
-	if err := s.reserve(spec.ID, cancel); err != nil {
-		cancel()
-		return result, err
+	outputLimit := spec.OutputLimitBytes
+	if outputLimit <= 0 {
+		outputLimit = defaultOutputLimitBytes
 	}
-	defer func() {
-		cancel()
-		s.release(spec.ID)
-	}()
+	stdoutBound := newBoundedWriter(stdout, outputLimit)
+	stderrBound := newBoundedWriter(stderr, outputLimit)
+
+	grace := spec.GracePeriod
+	if grace <= 0 {
+		grace = defaultGracePeriod
+	}
 
 	environment, err := buildEnvironment(spec.InheritedEnvironment, spec.Environment)
 	if err != nil {
 		return result, err
 	}
 
+	deadline, cancelDeadline := context.WithTimeout(ctx, spec.Timeout)
+	defer cancelDeadline()
+
 	// Never replace this with a shell invocation. Go passes each argv element
 	// directly to the target executable on both Windows and Linux.
-	command := exec.CommandContext(runCtx, spec.Executable, spec.Argv...)
+	command := exec.Command(spec.Executable, spec.Argv...)
 	command.Dir = spec.WorkingDirectory
 	command.Env = environment
 	command.Stdin = bytes.NewReader(spec.Stdin)
-	command.Stdout = stdout
-	command.Stderr = stderr
+	command.Stdout = stdoutBound
+	command.Stderr = stderrBound
+	tree := newProcessTree()
+	tree.configure(command)
+	defer tree.close()
+
+	proc := newActiveProcess()
+	if err := s.reserve(spec.ID, proc); err != nil {
+		return result, err
+	}
+	defer s.release(spec.ID)
 
 	result.StartedAt = time.Now().UTC()
 	if err := command.Start(); err != nil {
 		result.FinishedAt = time.Now().UTC()
-		if runCtx.Err() != nil {
-			setCancellationResult(&result, runCtx.Err())
+		if deadline.Err() != nil {
+			setCancellationResult(&result, deadline.Err())
 		}
 		return result, fmt.Errorf("start executable %q: %w", spec.Executable, err)
 	}
+	if bindErr := tree.bind(command); bindErr != nil {
+		// Best-effort: this run degrades to direct single-process
+		// signaling (see processTree's own doc comment) instead of
+		// failing an already-started attempt over a tree-management
+		// hiccup unrelated to the work itself.
+		_ = bindErr
+	}
 
-	waitErr := command.Wait()
+	waitDone := make(chan error, 1)
+	go func() { waitDone <- command.Wait() }()
+
+	var waitErr error
+	var terminationCause error
+	select {
+	case waitErr = <-waitDone:
+		// Finished on its own — nothing to escalate.
+	case <-deadline.Done():
+		terminationCause = deadline.Err()
+	case <-proc.cancelRequested:
+		terminationCause = errExplicitCancel
+	}
+
+	if terminationCause != nil {
+		_ = tree.signalGraceful(command)
+		select {
+		case waitErr = <-waitDone:
+			// Exited on its own within the grace period.
+		case <-time.After(grace):
+			_ = tree.kill(command)
+			waitErr = <-waitDone
+		}
+	}
+
 	result.FinishedAt = time.Now().UTC()
 	if command.ProcessState != nil {
 		result.ExitCode = command.ProcessState.ExitCode()
 	}
+	result.OutputTruncated = stdoutBound.truncated || stderrBound.truncated
 
-	if runCtx.Err() != nil {
-		setCancellationResult(&result, runCtx.Err())
+	if terminationCause != nil {
+		setCancellationResult(&result, terminationCause)
 		return result, nil
 	}
 	if waitErr == nil {
@@ -103,22 +170,22 @@ func (s *Supervisor) Run(
 
 func (s *Supervisor) Cancel(_ context.Context, id ports.ProcessID) error {
 	s.mu.Lock()
-	cancel, ok := s.active[id]
+	proc, ok := s.active[id]
 	s.mu.Unlock()
 	if !ok {
 		return fmt.Errorf("%w: %s", ErrNotRunning, id)
 	}
-	cancel()
+	proc.requestCancel()
 	return nil
 }
 
-func (s *Supervisor) reserve(id ports.ProcessID, cancel context.CancelFunc) error {
+func (s *Supervisor) reserve(id ports.ProcessID, proc *activeProcess) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.active[id]; exists {
 		return fmt.Errorf("%w: %s", ErrAlreadyRunning, id)
 	}
-	s.active[id] = cancel
+	s.active[id] = proc
 	return nil
 }
 
@@ -137,6 +204,16 @@ func validateSpec(spec ports.ProcessSpec) error {
 	}
 	if strings.TrimSpace(spec.WorkingDirectory) == "" {
 		return errors.New("process working directory is required")
+	}
+	if !filepath.IsAbs(spec.WorkingDirectory) {
+		return fmt.Errorf("process working directory %q must be an absolute path", spec.WorkingDirectory)
+	}
+	info, err := os.Stat(spec.WorkingDirectory)
+	if err != nil {
+		return fmt.Errorf("process working directory %q: %w", spec.WorkingDirectory, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("process working directory %q is not a directory", spec.WorkingDirectory)
 	}
 	if spec.Timeout <= 0 {
 		return errors.New("process timeout must be greater than zero")
