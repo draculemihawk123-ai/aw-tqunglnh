@@ -88,6 +88,10 @@ type Tx interface {
 	// existing V1 ArtifactStore (see ArtifactRepository's own doc comment,
 	// internal/app/ports/artifactrecord.go).
 	Artifacts() ArtifactRepository
+	// Messages is populated now (V5-02, docs/design/07-v5-execution-evidence.md):
+	// the durable, append-only task-chat Message row (see
+	// MessageRepository's own doc comment, internal/app/ports/message.go).
+	Messages() MessageRepository
 }
 
 // CatalogRepository is populated now (V3-01,

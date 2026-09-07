@@ -99,6 +99,7 @@ type Tx struct {
 	wait          *WaitRepository
 	approvals     *ApprovalRepository
 	artifacts     *ArtifactRepository
+	messages      *MessageRepository
 }
 
 func newTx() Tx {
@@ -112,19 +113,25 @@ func newTx() Tx {
 	// this two-step construction is safe) rather than trying to construct
 	// either first.
 	runtimeRepo.jobs = jobsRepo
+	// workRepo is pre-declared (rather than an inline literal) because
+	// MessageRepository below needs the same pointer newTx assigns to
+	// Tx.work — mirroring how catalog/runtimeRepo are already pre-declared
+	// for the identical reason.
+	workRepo := &WorkRepository{catalog: catalog}
 	return Tx{
 		events:        &EventsRepository{},
 		receipts:      &ReceiptsRepository{},
 		adapterBuilds: &AdapterBuildRepository{},
 		definitions:   &DefinitionsRepository{},
 		catalog:       catalog,
-		work:          &WorkRepository{catalog: catalog},
+		work:          workRepo,
 		runtime:       runtimeRepo,
 		jobs:          jobsRepo,
 		readiness:     &ReadinessRepository{catalog: catalog},
 		wait:          &WaitRepository{},
 		approvals:     &ApprovalRepository{},
 		artifacts:     &ArtifactRepository{catalog: catalog},
+		messages:      &MessageRepository{work: workRepo, runtime: runtimeRepo},
 	}
 }
 
@@ -144,6 +151,7 @@ func (t Tx) clone() Tx {
 	clone.wait = t.wait.clone()
 	clone.approvals = t.approvals.clone()
 	clone.artifacts = t.artifacts.cloneWith(clone.catalog)
+	clone.messages = t.messages.cloneWith(clone.work, clone.runtime)
 	return clone
 }
 
@@ -161,6 +169,7 @@ func (t Tx) Readiness() ports.ReadinessRepository        { return t.readiness }
 func (t Tx) Wait() ports.WaitRepository                  { return t.wait }
 func (t Tx) Approvals() ports.ApprovalRepository         { return t.approvals }
 func (t Tx) Artifacts() ports.ArtifactRepository         { return t.artifacts }
+func (t Tx) Messages() ports.MessageRepository           { return t.messages }
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the
