@@ -58,6 +58,59 @@ func TestDomainAppNeverImportAdapters(t *testing.T) {
 	}
 }
 
+// TestProviderAdaptersNeverImportAppOrchestrationOrPersistence proves
+// internal/adapters/providers/... (Claude/Codex, V5-06/07's own "Hoàn
+// thành khi: adapter không import app orchestrator/persistence") never
+// depends, even transitively, on any OTHER internal/adapters/... package
+// (sqlite, process, gitworktree, ...) or on any internal/app/... package
+// beyond internal/app/ports — the same "ports only" contract
+// TestDomainAppNeverImportAdapters enforces from the opposite direction.
+// internal/domain/... is fine: pure data/logic, not an orchestration or
+// persistence dependency, and internal/app/ports itself already depends
+// on it.
+func TestProviderAdaptersNeverImportAppOrchestrationOrPersistence(t *testing.T) {
+	moduleRoot := findModuleRoot(t)
+	output := goList(t, moduleRoot, "-json", "./internal/adapters/providers/...")
+
+	type goListPackage struct {
+		ImportPath string
+		Deps       []string
+	}
+
+	const module = "agent-workflow/internal/"
+	decoder := json.NewDecoder(bytes.NewReader(output))
+	checked := 0
+	for decoder.More() {
+		var pkg goListPackage
+		if err := decoder.Decode(&pkg); err != nil {
+			t.Fatalf("decode go list output: %v", err)
+		}
+		checked++
+		for _, dep := range pkg.Deps {
+			if !strings.Contains(dep, module) {
+				continue
+			}
+			switch {
+			case strings.Contains(dep, module+"adapters/providers"):
+				continue // this package's own siblings/subpackages
+			case strings.Contains(dep, module+"domain/"):
+				continue // pure data/logic, no orchestration or persistence
+			case strings.HasSuffix(dep, module+"app/ports") || strings.Contains(dep, module+"app/ports/"):
+				continue // the one allowed app dependency: the abstraction layer itself
+			case strings.HasSuffix(dep, module+"app/redact"):
+				continue // ports/artifact.go itself depends on this pure, stateless text-redaction utility — no orchestration or persistence of its own
+			case strings.Contains(dep, module+"adapters/"):
+				t.Errorf("%s depends on adapter package %s — a provider adapter must never import another adapter, only ports", pkg.ImportPath, dep)
+			case strings.Contains(dep, module+"app/"):
+				t.Errorf("%s depends on app package %s — a provider adapter must depend only on internal/app/ports, never app orchestration or persistence", pkg.ImportPath, dep)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no provider adapter packages were checked — go list pattern matched nothing")
+	}
+}
+
 // TestProcessSpecHasNoShellStringField proves the process port stays
 // argv-based (Executable + Argv []string): a raw shell-command-line field
 // would be a shell-injection surface baked into the port contract itself,

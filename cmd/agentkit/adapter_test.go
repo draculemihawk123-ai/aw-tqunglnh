@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -17,15 +19,69 @@ import (
 	domainadapterbuild "github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
 )
 
+// adapterTestFixtureVersion is what a copy of this test binary reports for
+// a "--version" invocation — see TestMain and writeAdapterExecutable.
+const adapterTestFixtureVersion = "1.0.0-adapter-fixture"
+
+// TestMain lets this compiled test binary double as its own tiny, real,
+// cross-platform "provider CLI" fixture (V5-06: claude.Adapter.Capabilities
+// now genuinely spawns the configured executable's "--version" — arbitrary
+// file bytes, which writeAdapterExecutable used to write, are no longer
+// runnable on any platform). A bare "--version" invocation short-circuits
+// here, before go test's own flag parsing/run ever sees it (TestMain runs
+// before m.Run() parses os.Args) — this is the same "re-exec the test
+// binary itself as a helper" idiom internal/adapters/process/
+// supervisor_test.go and internal/adapters/providers/contract_test.go
+// already use via -test.run=..., just triggered by a bare flag instead
+// since writeAdapterExecutable's callers pass this path around as one
+// opaque --executable value with no room to also inject -test.run.
+func TestMain(m *testing.M) {
+	if len(os.Args) == 2 && os.Args[1] == "--version" {
+		fmt.Println(adapterTestFixtureVersion)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func adapterTestDB(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "agentkit-adapter.db")
 }
 
+// adapterExecutableFixtureBytes returns a real, runnable executable's own
+// bytes — a copy of this test binary (see TestMain) — with content
+// appended after its own valid image data so otherwise-identical copies
+// still differ byte-for-byte (the content-hash drift tests below need two
+// genuinely different executables, not two genuinely different runtime
+// behaviors). Appending trailing bytes after a PE/ELF/Mach-O binary's own
+// recognized sections is a standard, harmless technique — the OS loader
+// only reads what its own section headers describe.
+func adapterExecutableFixtureBytes(t *testing.T, content string) []byte {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve this test binary's own path: %v", err)
+	}
+	data, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatalf("read this test binary: %v", err)
+	}
+	return append(data, []byte("\n// fixture-marker: "+content)...)
+}
+
+// writeAdapterExecutable writes a fresh real, runnable executable fixture
+// (adapterExecutableFixtureBytes) to a new path. A test simulating the
+// executable changing later (drift, swap) writes a second, differently-
+// marked adapterExecutableFixtureBytes result directly to the same path
+// instead of calling this again.
 func writeAdapterExecutable(t *testing.T, content string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "provider-cli")
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	name := "provider-cli"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, adapterExecutableFixtureBytes(t, content), 0o755); err != nil {
 		t.Fatalf("write executable fixture: %v", err)
 	}
 	return path
@@ -202,7 +258,7 @@ func TestAdapterRegister_DriftCreatesNewBuild(t *testing.T) {
 		t.Fatalf("decode first register output: %v", err)
 	}
 
-	if err := os.WriteFile(executablePath, []byte("binary-v2-genuinely-different"), 0o755); err != nil {
+	if err := os.WriteFile(executablePath, adapterExecutableFixtureBytes(t, "binary-v2-genuinely-different"), 0o755); err != nil {
 		t.Fatalf("overwrite executable: %v", err)
 	}
 	secondTokenPath := writeTokenFile(t, probeAndCaptureToken(t, dbPath, "claude", executablePath))
@@ -244,7 +300,7 @@ func TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister(t *test
 
 	// An operator (or an unrelated upgrade) swaps the binary after the
 	// token was issued but before it is confirmed.
-	if err := os.WriteFile(executablePath, []byte("binary-SWAPPED"), 0o755); err != nil {
+	if err := os.WriteFile(executablePath, adapterExecutableFixtureBytes(t, "binary-SWAPPED"), 0o755); err != nil {
 		t.Fatalf("swap executable: %v", err)
 	}
 

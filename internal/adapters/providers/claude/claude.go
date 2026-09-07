@@ -5,18 +5,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/internal/jsonl"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/internal/versionprobe"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 )
 
 const (
-	AdapterVersion   = "claude-stream-json/v1"
-	ProtocolVersion  = "claude-stream-json/v1"
-	TestedCLIVersion = "2.1.235"
+	AdapterVersion  = "claude-stream-json/v1"
+	ProtocolVersion = "claude-stream-json/v1"
 )
+
+// defaultVersionProbeTimeout bounds Capabilities' own live "--version"
+// spawn (V5-06) — short, since a real CLI's version flag is expected to
+// return near-instantly with no task/network work involved.
+const defaultVersionProbeTimeout = 5 * time.Second
 
 var ErrProtocol = errors.New("invalid Claude stream-json protocol")
 
@@ -28,6 +34,17 @@ type Config struct {
 	PermissionMode       string
 	InheritedEnvironment []string
 	MaxJSONLLineBytes    int
+	// VersionArgs is the argv Capabilities uses to probe the configured
+	// executable's real, live version (V5-06) — defaults to ["--version"],
+	// the common CLI convention. Override if the configured Claude CLI
+	// build reports its version a different way.
+	VersionArgs []string
+	// VersionEnvironment is passed as-is to the capability probe's own
+	// process spawn (V5-06) — a production caller leaves this nil; a test
+	// fixture sets AGENTKIT_PROVIDER_HELPER so a probe spawning the
+	// re-invoked test binary itself is recognized the same way execute's
+	// own Start/Resume spawns already are (helperRequest's own contract).
+	VersionEnvironment map[string]string
 }
 
 type Adapter struct {
@@ -52,15 +69,31 @@ func New(process ports.ProcessSupervisor, config Config) (*Adapter, error) {
 	if config.MaxJSONLLineBytes <= 0 {
 		config.MaxJSONLLineBytes = jsonl.DefaultMaxLineBytes
 	}
+	if len(config.VersionArgs) == 0 {
+		config.VersionArgs = []string{"--version"}
+	} else {
+		config.VersionArgs = append([]string(nil), config.VersionArgs...)
+	}
+	config.VersionEnvironment = cloneEnvironment(config.VersionEnvironment)
 	return &Adapter{process: process, config: config}, nil
 }
 
-func (a *Adapter) Capabilities(context.Context) (ports.AgentCapabilities, error) {
+// Capabilities probes the CONFIGURED executable live (V5-06) — a separate,
+// minimal invocation (config.PrefixArgs + config.VersionArgs) entirely
+// independent of the stream-json task-execution protocol execute builds
+// below. It fails closed: a probe error means Capabilities itself
+// returns an error, never a stale or guessed TestedCLIVersion.
+func (a *Adapter) Capabilities(ctx context.Context) (ports.AgentCapabilities, error) {
+	argv := append(append([]string(nil), a.config.PrefixArgs...), a.config.VersionArgs...)
+	observedVersion, err := versionprobe.Probe(ctx, a.process, capabilityProbeProcessID(), a.config.Executable, argv, a.config.VersionEnvironment, defaultVersionProbeTimeout)
+	if err != nil {
+		return ports.AgentCapabilities{}, fmt.Errorf("claude: capability probe: %w", err)
+	}
 	return ports.AgentCapabilities{
 		Provider:         ports.ProviderClaude,
 		AdapterVersion:   AdapterVersion,
 		ProtocolVersion:  ProtocolVersion,
-		TestedCLIVersion: TestedCLIVersion,
+		TestedCLIVersion: observedVersion,
 		SupportsStart:    true,
 		SupportsResume:   true,
 		SupportsCancel:   true,
@@ -216,6 +249,14 @@ func validatePermissionMode(value string) error {
 
 func processID(attemptID ports.ExecutionAttemptID) ports.ProcessID {
 	return ports.ProcessID(string(ports.ProviderClaude) + ":" + string(attemptID))
+}
+
+// capabilityProbeProcessID mints a fresh id per Capabilities call — unlike
+// processID above, a probe has no caller-supplied AttemptID to derive one
+// from, and a fixed literal would collide if two probes on the same
+// Adapter ever raced (Supervisor rejects a re-used in-flight process ID).
+func capabilityProbeProcessID() ports.ProcessID {
+	return ports.ProcessID(string(ports.ProviderClaude) + ":capability-probe:" + strconv.FormatInt(time.Now().UnixNano(), 10))
 }
 
 func failedResult(request ports.AgentExecutionRequest, reason string) ports.AgentExecutionResult {

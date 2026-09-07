@@ -591,3 +591,111 @@ and stability" cũng fail 1 lần ở `TestEndToEnd_PartialFailure_OneReadyOneFa
 diff (`git diff --stat` xác nhận rỗng), kỳ vọng xanh sau rerun.
 
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge.
+
+## V5-06 — Claude adapter production contract
+
+**Trạng thái:** code + local verify DONE (toàn bộ suite xanh sau khi tự bắt và tự sửa 3 vấn đề thật —
+xem bên dưới), chuẩn bị mở PR. Branch off master sau khi PR #32 (V5-05) merge.
+
+**Nghiên cứu trước khi code** (Explore agent + đọc trực tiếp, kết quả khác với giả định ban đầu ở
+nhiều điểm):
+- `claude.go`/`codex.go`'s `Capabilities()` là 100% static/hardcoded từ trước tới giờ — không spawn gì
+  cả. Chính `cmd/agentkit/adapter.go`'s own doc comment đã tự nhận đây là gap CỐ Ý để lại cho V5-06/07.
+- "AdapterBuildVersion registration" (V2-07A/ADR-022) đã build ĐẦY ĐỦ từ trước — domain/app/sqlite/CLI
+  4 tầng, ~40 test. "Admission" (so pinned build với thực tế lúc dispatch) KHÔNG tồn tại ở đâu cả —
+  chỉ có vocabulary rỗng (`ADAPTER_BUILD_DRIFT` error code/termination reason/blocker type). Roadmap tự
+  giao việc đó cho V5-08, KHÔNG phải V5-06. → V5-06 chỉ cần làm `Capabilities()` sống thật, không cần
+  xây cơ chế admission.
+- HE-05-M01 ("resume MUST không phụ thuộc duy nhất vào session ID") ĐÃ được thoả ở tầng platform từ
+  trước: `docs/architecture/03-system-architecture.md` nói thẳng "Alpha orchestrator không gọi
+  Resume"; `worker.StartFreshFromLatestCheckpoint` luôn resume qua ContextSnapshot/checkpoint, không
+  bao giờ qua session ID; `TestSPK12InvalidProviderSessionNeverBlocksRecovery` đã chứng minh việc này
+  end-to-end với adapter thật. → Không cần sửa gì ở `Resume()` cả, chỉ cần giữ nguyên.
+- Malformed JSONL fail-closed, Start/Resume/Cancel, canonical event mapping: đã build đầy đủ và có
+  test từ trước — không đụng.
+- `AgentEvent.ProviderMetadata` chỉ từng được set field `"raw_type"` (breadcrumb chẩn đoán), không có
+  consumer nào đọc nó ở `internal/app`/`internal/domain` cả (đúng vì V5-08A — consumer thật đầu tiên —
+  chưa build). "Raw metadata không route state" đã đúng NHƯNG chỉ vì chưa có ai đọc, không phải vì có
+  chặn tường minh.
+
+**Quyết định tự đưa ra (không có câu hỏi lớn nào cần hỏi user — đây là task khép kín, rủi ro thấp, dễ
+đảo ngược, có escape hatch qua config field, khác hẳn tính chất các fork ở V5-03..05):**
+- **Cơ chế probe: spawn `<executable> --version` riêng biệt** (không tái dùng protocol stream-json
+  đang có) qua package mới `internal/adapters/providers/internal/versionprobe` (dùng chung được cho cả
+  V5-07/Codex sau này — roadmap TỰ nói V5-07 "cùng contract/semantics như Claude", không phải suy đoán
+  trước). Fail-closed: spawn lỗi/exit khác 0/timeout/output rỗng đều trả error, `Capabilities()` không
+  bao giờ fallback về giá trị cũ đoán mò.
+- **`claude.Config` thêm `VersionArgs []string`** (mặc định `["--version"]`, override được nếu CLI
+  thật dùng flag khác — không có ground-truth về flag thật của Claude CLI trong repo này, nhưng field
+  configurable là escape hatch đủ an toàn) và `VersionEnvironment map[string]string` (chỉ cần cho test
+  fixture, production để nil).
+- **`WorkingDirectory` của probe = `os.Getwd()`** (không phải `os.TempDir()` hay bất kỳ thư mục không
+  liên quan nào) — ÁP DỤNG ĐÚNG bài học vừa rút ra ở V5-05 (relative executable path resolve theo
+  `cmd.Dir` MỚI, không phải cwd gọi ban đầu).
+- **`TestedCLIVersion` đổi nghĩa**: từ "hardcoded constant claim" sang "giá trị probe được ngay bây
+  giờ" — xoá hẳn constant `TestedCLIVersion` cũ (grep xác nhận không ai reference ngoài chính file nó
+  khai), sửa doc comment ở `ports.AgentCapabilities` cho rõ nghĩa mới. `AdapterVersion`/`ProtocolVersion`
+  giữ nguyên là constant tĩnh (mô tả năng lực CODE adapter, không phải năng lực executable đang cấu
+  hình).
+- **KHÔNG đụng `codex.go`** — giữ nguyên static/hardcoded, để lại đúng cho V5-07 tái dùng
+  `versionprobe` (đúng kỷ luật "task nào sở hữu thì task đó sửa" xuyên suốt cả session).
+- **Thêm archtest guard mới** (`TestProviderAdaptersNeverImportAppOrchestrationOrPersistence`) — Explore
+  agent tự phát hiện đây là gap thật (exit criteria "không import app orchestrator/persistence" trước
+  giờ chỉ đúng "tình cờ", chưa có gì enforce). Cho phép `internal/domain/*` (thuần data/logic) và
+  `internal/app/ports` + `internal/app/redact` (redact là transitive dependency thật của
+  `ports/artifact.go`, phát hiện khi chạy test lần đầu bị false-positive).
+
+**3 vấn đề thật tự phát hiện và tự sửa (không phải review, tự chạy full suite bắt được cả 3):**
+1. **Bug ở chính test mới của mình**: `TestClaudeCapabilitiesProbesRealVersion` fail với
+   `TestedCLIVersion = "PASS"` thay vì giá trị fake mong đợi. Root cause: probe spawn
+   `<test-binary> -test.run=TestProviderHelperProcess -- claude --version` nhưng KHÔNG set env
+   `AGENTKIT_PROVIDER_HELPER=1` — `TestProviderHelperProcess` thấy env thiếu nên no-op ngay, để
+   `go test` chạy CHÍNH NÓ như một test suite bình thường (chỉ có đúng 1 test, pass ngay), và output
+   mặc định không-verbose của `go test` chính là chuỗi "PASS" — bị probe bắt nhầm làm "version quan
+   sát được". Fix: thêm `VersionEnvironment map[string]string` vào `claude.Config`, thread qua
+   `versionprobe.Probe`'s param mới `env map[string]string`, set đúng trong test fixture.
+2. **Regression thật ở `cmd/agentkit/adapter_test.go`** (12 test, KHÔNG phải test mới viết): toàn bộ
+   dùng `writeAdapterExecutable` ghi BYTES TUỲ Ý (chuỗi như "binary-v1") vào file đánh dấu executable —
+   trước giờ AN TOÀN vì `Capabilities()` chưa từng thật sự chạy nó. Giờ `Capabilities()` chạy thật
+   `<file> --version` → lỗi "This version of %1 is not compatible..." (Windows PE loader từ chối file
+   không phải PE hợp lệ) trên MỌI test dùng probe qua CLI `adapter probe`/`adapter register`. Fix: thêm
+   `TestMain(m *testing.M)` mới cho package (chưa từng có) chặn TRƯỚC khi `go test`'s flag parsing chạy
+   — nếu `os.Args` đúng `["<self>", "--version"]` thì in version cố định rồi exit, còn lại chạy suite
+   bình thường; `writeAdapterExecutable` đổi sang COPY chính binary test này (`os.Executable()`) rồi
+   APPEND marker phân biệt ở cuối (kỹ thuật an toàn, chuẩn — nhiều self-extracting installer làm y hệt:
+   loader chỉ đọc tới hết section header đã khai, không quan tâm bytes thừa sau đó). 2 chỗ
+   `os.WriteFile(executablePath, []byte("binary-v2..."), ...)` trực tiếp (mô phỏng "executable đổi
+   sau probe") cũng phải đổi sang cùng kỹ thuật (`adapterExecutableFixtureBytes`) — nếu không, file
+   "swap" thứ hai vẫn là garbage, vẫn fail giống hệt.
+3. **False positive ở chính archtest mới viết**: `TestProviderAdaptersNeverImportAppOrchestrationOrPersistence`
+   fail ngay lần chạy đầu vì `internal/app/ports/artifact.go` tự nó import `internal/app/redact` (dùng
+   cho `Sensitivity`/`Matcher`) — transitive dependency THẬT của chính `internal/app/ports` (package
+   DUY NHẤT được phép), không phải vi phạm. Fix: allowlist thêm `internal/app/redact` với comment giải
+   thích rõ lý do (utility thuần, không side-effect, không phải orchestration/persistence).
+
+**File thay đổi chính:** `internal/adapters/providers/internal/versionprobe/{versionprobe,
+versionprobe_test}.go` (mới, dùng chung tương lai cho V5-07), `internal/adapters/providers/claude/
+claude.go` (Capabilities() viết lại, Config thêm 2 field, xoá constant TestedCLIVersion),
+`internal/adapters/providers/fixtures.go` (RunFakeProviderCLI thêm nhánh `--version` trước mọi
+mode-dispatch, `FakeCLIVersion` helper mới), `internal/adapters/providers/contract_test.go` (2 test
+mới + fix `providerCases()`'s claude case thiếu `VersionEnvironment`), `internal/app/ports/agent.go`
+(doc comment `TestedCLIVersion` viết lại), `internal/archtest/boundary_test.go` (guard mới),
+`cmd/agentkit/adapter.go` (sửa doc comment lỗi thời), `cmd/agentkit/adapter_test.go` (`TestMain` mới +
+`writeAdapterExecutable`/`adapterExecutableFixtureBytes` viết lại + 2 call site "swap executable" đổi
+theo).
+
+**Verify:**
+```
+go build ./...                                                    # sạch
+go vet ./...                                                      # sạch
+go test ./internal/adapters/providers/... -v -count=1             # PASS (kể cả 2 test probe mới)
+go test ./internal/adapters/providers/internal/versionprobe/...   # PASS (5 test, package mới)
+go test ./cmd/agentkit/... -count=1                                # PASS (12 test cũ + TestMain mới,
+                                                                    #   sau khi fix regression #2)
+go test ./internal/archtest/... -v -count=1                        # PASS (8 test, kể cả guard mới)
+go test -count=1 ./...                                             # toàn bộ ~70 package PASS
+go run ./cmd/docs-coverage-check                                  # debt = 0
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp: V5-07 (Codex adapter production
+contract) — tái dùng nguyên `versionprobe`, áp dụng y hệt pattern cho `codex.go`.

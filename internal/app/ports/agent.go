@@ -22,9 +22,17 @@ const (
 )
 
 type AgentCapabilities struct {
-	Provider            ProviderKey
-	AdapterVersion      string
-	ProtocolVersion     string
+	Provider       ProviderKey
+	AdapterVersion string
+	ProtocolVersion string
+	// TestedCLIVersion is the version the CONFIGURED executable actually
+	// reports right now (V5-06: Capabilities probes it live, e.g. via
+	// "--version"), never a hardcoded claim about what this adapter code
+	// was built against — AdapterVersion/ProtocolVersion already cover
+	// that. A caller that needs "what did we test this against" pins its
+	// own known-good value elsewhere (e.g. an AdapterBuildVersion record)
+	// and compares it to this field, rather than reading an assumption out
+	// of this one.
 	TestedCLIVersion    string
 	SupportsStart       bool
 	SupportsResume      bool

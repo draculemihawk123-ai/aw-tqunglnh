@@ -24,6 +24,14 @@ type FakeCLIInvocation struct {
 	WorkingDirectory string   `json:"workingDirectory"`
 }
 
+// FakeCLIVersion is what RunFakeProviderCLI reports for a "--version"
+// invocation (V5-06) — provider-specific and clearly synthetic, so a
+// contract test asserting on it can never be confused with either
+// adapter's own real, hardcoded AdapterVersion/ProtocolVersion constants.
+func FakeCLIVersion(provider string) string {
+	return "1.0.0-fake+" + provider
+}
+
 // RunFakeProviderCLI plays one of the two fake provider CLIs' wire protocol
 // for exactly one invocation and returns the process exit code the caller
 // should exit with.
@@ -38,7 +46,17 @@ type FakeCLIInvocation struct {
 //     IsResumeInvocation — so SPK-12 can prove Resume was never called: a
 //     Start invocation on the same fake CLI still succeeds normally).
 //   - capturePath, if non-empty, receives a FakeCLIInvocation as JSON.
+//
+// A "--version" invocation (V5-06's own capability/version probe) is
+// checked FIRST, before any capture/mode handling: a real CLI answers a
+// version query the same way regardless of task state, and this fixture
+// must too.
 func RunFakeProviderCLI(provider string, arguments []string, mode string, capturePath string, stdin io.Reader, stdout io.Writer) int {
+	if len(arguments) == 1 && arguments[0] == "--version" {
+		fmt.Fprintln(stdout, FakeCLIVersion(provider))
+		return 0
+	}
+
 	input, _ := io.ReadAll(stdin)
 	workingDirectory, _ := os.Getwd()
 	if capturePath != "" {

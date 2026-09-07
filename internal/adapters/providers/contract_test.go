@@ -76,6 +76,49 @@ func TestAgentExecutorContractStartAndResume(t *testing.T) {
 	}
 }
 
+// TestClaudeCapabilitiesProbesRealVersion proves Capabilities (V5-06)
+// genuinely spawns the configured executable rather than returning a
+// hardcoded constant: the fake CLI reports a clearly synthetic version
+// (providers.FakeCLIVersion) that no adapter source file could produce by
+// accident, so a match here is only possible via a real probe.
+func TestClaudeCapabilitiesProbesRealVersion(t *testing.T) {
+	t.Parallel()
+
+	adapter, err := claude.New(processadapter.NewSupervisor(), claude.Config{
+		Executable:         os.Args[0],
+		PrefixArgs:         helperPrefix("claude"),
+		VersionEnvironment: map[string]string{"AGENTKIT_PROVIDER_HELPER": "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	capabilities, err := adapter.Capabilities(context.Background())
+	if err != nil {
+		t.Fatalf("capabilities: %v", err)
+	}
+	want := providers.FakeCLIVersion("claude")
+	if capabilities.TestedCLIVersion != want {
+		t.Fatalf("TestedCLIVersion = %q, want %q (a live probe result, not a hardcoded constant)", capabilities.TestedCLIVersion, want)
+	}
+}
+
+// TestClaudeCapabilitiesFailsClosedWhenProbeFails proves a probe failure
+// (here: the configured executable does not exist) fails Capabilities
+// itself closed rather than falling back to a stale or guessed version.
+func TestClaudeCapabilitiesFailsClosedWhenProbeFails(t *testing.T) {
+	t.Parallel()
+
+	adapter, err := claude.New(processadapter.NewSupervisor(), claude.Config{
+		Executable: filepath.Join(t.TempDir(), "does-not-exist"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.Capabilities(context.Background()); err == nil {
+		t.Fatal("expected Capabilities to fail closed when the configured executable cannot be probed")
+	}
+}
+
 func TestAgentExecutorRejectsMalformedJSONL(t *testing.T) {
 	t.Parallel()
 
@@ -199,9 +242,10 @@ func providerCases() []providerCase {
 			newExecutor: func(t *testing.T, supervisor ports.ProcessSupervisor) ports.AgentExecutor {
 				t.Helper()
 				adapter, err := claude.New(supervisor, claude.Config{
-					Executable:     os.Args[0],
-					PrefixArgs:     helperPrefix("claude"),
-					PermissionMode: "dontAsk",
+					Executable:         os.Args[0],
+					PrefixArgs:         helperPrefix("claude"),
+					PermissionMode:     "dontAsk",
+					VersionEnvironment: map[string]string{"AGENTKIT_PROVIDER_HELPER": "1"},
 				})
 				if err != nil {
 					t.Fatal(err)

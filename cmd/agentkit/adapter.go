@@ -260,18 +260,16 @@ func newAgentExecutor(providerKey, executablePath string) (ports.AgentExecutor, 
 // không nhận từ input của client" (docs/design/04-v2-definition-plane.md
 // V2-07B) literally true at this boundary.
 //
-// One honest caveat worth being explicit about: V0/V1's real
-// claude.Adapter/codex.Adapter.Capabilities(ctx) currently return
-// hard-coded constants (see internal/adapters/providers/claude/claude.go,
-// internal/adapters/providers/codex/codex.go) without actually spawning
-// the configured executable to ask it anything live -- so "system
-// measurement" here means "the one measurement mechanism this repo's
-// AgentExecutor port currently offers", not yet a live handshake with the
-// configured binary. Graduating Capabilities() itself to genuinely spawn
-// and observe the executable is V5-06/07's job (V2-07A's own scope note
-// already deferred it); this CLI's responsibility -- never inventing a
-// client-input path around that mechanism -- is satisfied regardless of
-// which one the port ends up backed by.
+// One honest caveat worth being explicit about: as of V5-06,
+// claude.Adapter.Capabilities(ctx) genuinely spawns the configured
+// executable's "--version" and reports what it observes
+// (internal/adapters/providers/claude/claude.go) — codex.Adapter still
+// returns hard-coded constants (internal/adapters/providers/codex/codex.go)
+// until V5-07 graduates it the same way (V2-07A's own scope note deferred
+// this for both providers; V5-06 closes it for Claude only). Either way,
+// this CLI's responsibility -- never inventing a client-input path around
+// whichever measurement mechanism the port is backed by -- is satisfied
+// regardless of which provider is configured.
 func capabilityManifestFromAgentCapabilities(caps ports.AgentCapabilities) domainadapterbuild.CapabilityManifest {
 	kinds := make([]string, len(caps.CanonicalEventKinds))
 	for i, kind := range caps.CanonicalEventKinds {
