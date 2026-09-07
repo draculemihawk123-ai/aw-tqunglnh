@@ -11,7 +11,7 @@
 
 Thứ tự authority:
 
-1. ADR-001 đến ADR-025 đã accepted trong `docs/architecture/02-architecture-decisions.md`.
+1. ADR-001 đến ADR-028 đã accepted trong `docs/architecture/02-architecture-decisions.md`.
 2. Go core spec trong `docs/architecture/04-go-core-spec.md`.
 3. Thiết kế hệ thống Alpha trong `docs/design/01-system-design.md`.
 4. File version trong thư mục này.
@@ -27,10 +27,11 @@ một repository; checker read-only; ReleaseSet/local commit có trong Alpha nh�
 không có; projection dùng JournalPosition; local API có Host/Origin/session-token protection; retention
 theo class; UI có source/diff/log read-only và không có interactive terminal.
 
-Bổ sung sau review thiết kế ngày 2026-08-31 (ADR-020…025): Attempt có terminal `BLOCKED` tách khỏi
+Bổ sung sau review thiết kế ngày 2026-08-31 và các correction kế tiếp (ADR-020…028): Attempt có terminal `BLOCKED` tách khỏi
 `FAILED`; cancel đi qua `CANCELLING` và quiesce thật; CompletionPolicy có bốn outcome với transition cố
 định; AdapterBuildVersion là operational registry có surface probe/register riêng; isolation không
-auto-downgrade; acceptance criteria được phân loại phase trước V1.
+auto-downgrade; acceptance criteria được phân loại phase trước V1; executable sản phẩm canonical là
+`aw` và UI/API/CLI cùng map về một public application authority.
 
 Đọc theo thứ tự:
 
@@ -63,6 +64,8 @@ Alpha là ứng dụng local single-user có thể dùng để:
 12. Vận hành local API loopback an toàn và hiển thị trung thực execution isolation profile.
 13. Probe và đăng ký AdapterBuildVersion khi provider CLI thay đổi, rồi republish để pin build mới.
 14. Hủy một run đang chạy qua `CANCELLING` với quiesce thật, không để lại outcome bị gán nhãn sai.
+15. Vận hành toàn bộ core journey và recovery action từ terminal bằng `aw` sau V6; mọi operation mà UI
+    dùng có CLI tương ứng, không có đường tắt SQLite/Git/provider.
 
 Alpha không cần visual graph editor. Người dùng author workflow dưới dạng YAML/JSON qua file, CLI,
 HTTP API hoặc text editor trong UI; tất cả đi qua cùng compiler/publish contract.
@@ -135,7 +138,7 @@ Task tổng hợp verdict được phép chạy khi execution gate trước đó
 | V3 — Project & workspace | `05-v3-project-workspace.md` | Project đa repo, WorkItem family và WorkspaceSet vận hành | Workspace/scope/recovery suite pass |
 | V4 — Runtime engine | `06-v4-runtime-engine.md` | Workflow graph chạy bền vững qua node/retry/rework/fork/join | Deterministic orchestration suite pass |
 | V5 — Execution & evidence | `07-v5-execution-evidence.md` | Agent/command/gate/context/evidence/ReleaseSet chạy end-to-end | Evidence-bound completion suite pass |
-| V6 — API & projections | `08-v6-api-projections.md` | Local HTTP API/SSE và read models đầy đủ | API contract + rebuild projection pass |
+| V6 — API, projections & operator CLI | `08-v6-api-projections.md` | Local HTTP API/SSE, read models và `aw` operator CLI đầy đủ | API/projection + terminal parity gate pass |
 | V7 — Alpha UI | `09-v7-alpha-ui.md` | Người dùng vận hành toàn bộ core từ local web UI | UI journeys + accessibility smoke pass |
 | V8 — Alpha hardening | `10-v8-alpha-hardening.md` | Recovery/security/packaging/docs đạt release gate | Alpha verdict |
 
@@ -156,7 +159,7 @@ V0 GO
       -> V3 Project/TaskFamily/WorkspaceSet
         -> V4 durable workflow engine
           -> V5 real execution + evidence authority
-            -> V6 stable API + projections
+            -> V6 stable API + projections + `aw` operator CLI
               -> V7 usable UI
                 -> V8 release hardening
 ```
@@ -168,7 +171,8 @@ Lý do thứ tự:
 - Project/workspace phải tồn tại trước mutating execution.
 - Runtime engine được kiểm bằng fake executor trước khi tích hợp CLI thật, giảm số failure boundary
   trong một task.
-- API chỉ mở sau khi application command/query semantics ổn định.
+- API và `aw` CLI chỉ mở sau khi application command/query semantics ổn định; cả hai là delivery
+  adapter của cùng authority.
 - UI phụ thuộc API, không gọi trực tiếp SQLite/Git/CLI.
 - Packaging chỉ có ý nghĩa sau khi full local journey chạy được.
 

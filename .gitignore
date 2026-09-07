@@ -1,3 +1,10 @@
 .tools/
 docs/spikes/evidence/
 bin/
+
+# Personal, never-committed per-phase progress logs (baocaov0checklist.md,
+# baocaov1checklist.md, ...) — see each file's own header.
+baocaov*checklist.md
+
+# Local tooling artifacts unrelated to this repo's own history.
+.codex-remote-attachments/

@@ -1,6 +1,7 @@
 # V7 — Local web UI Alpha
 
-> Entry: V6 API contract pass, UX artifact V6-00 hoàn tất và V0 đã `GO`.
+> Entry: V6-15K pass: API contract, UX artifact, `aw` operator CLI và parity inventory đều hoàn tất;
+> V0 đã `GO`.
 >
 > Exit: operator hoàn thành full Alpha journey bằng browser. Framework chỉ được chọn ở V7-01; các
 > task sau phải tuân decision record đó.
@@ -10,7 +11,7 @@
 ## V7-01 — Quyết định UI framework
 
 - **Mục tiêu:** chọn framework/toolchain bằng evidence, không theo sở thích ngầm.
-- **Phụ thuộc:** V6.
+- **Phụ thuộc:** V6-15K (gate cuối V6).
 - **Thực hiện:** spike nhỏ React/Angular hoặc candidate hợp lý với routing, form schema, SSE, graph,
   test, accessibility, build embedding; so tốc độ, ecosystem, bundle, team maintainability.
 - **Verify:** cùng một mini screen/contract test cho candidates và decision matrix.
@@ -23,10 +24,10 @@
 - **Phụ thuộc:** V7-01, V6-12.
 - **Thực hiện:** API client từ contract, đọc per-start token từ bootstrap rồi chỉ giữ trong memory và
   gửi header cho mutation, route shell; token không đi vào URL/log/local/session storage, không copy DTO
-  tay. Production UI build phải được chính `agentkit serve` phục vụ qua static handler của V6-01 — mọi
+  tay. Production UI build phải được chính `aw serve` phục vụ qua static handler của V6-01 — mọi
   E2E của V7 chạy qua binary-served UI, không qua dev server riêng.
 - **Verify:** clean install/build/lint/test, client compatibility check, và smoke khẳng định
-  `agentkit serve` phục vụ được bundle đã build.
+  `aw serve` phục vụ được bundle đã build.
 - **Hoàn thành khi:** breaking API schema làm UI CI fail, và không journey nào của V7 phụ thuộc dev
   server.
 - **Nguồn:** ADR-016.
@@ -98,11 +99,14 @@
 
 - **Mục tiêu:** project-level WorkItem projection với multi-repo badges/blocker/freshness.
 - **Phụ thuộc:** V7-04, V7-06.
-- **Thực hiện:** status columns, repository/component filter, pagination, typed transition action;
-  drag/drop chỉ là command và rollback UI on reject.
+- **Thực hiện:** status columns, repository/component filter, pagination và server-provided named valid
+  actions. Drag/drop chỉ là shortcut cho một named action đã có trong parity inventory ADR-028 và
+  rollback UI on reject; nếu không có action hợp lệ thì không cho drop. Không tồn tại generic
+  `TransitionWorkItemStatus`/`set-status`: `BACKLOG → READY` map đúng `MarkWorkItemReady`; `ACTIVE`,
+  `BLOCKED`, `DONE`, `CANCELLED` vẫn thuộc authority start-run, blocker/completion/cancellation tương ứng.
 - **Verify:** filter/reconnect/conflict/keyboard E2E.
 - **Hoàn thành khi:** UI không tự set DONE và hiển thị agent claim khác verified.
-- **Nguồn:** HE-08-M03, HE-01-M04.
+- **Nguồn:** HE-08-M03, HE-01-M04, ADR-028.
 
 ## V7-10 — Create root/child WorkItem forms
 
@@ -196,11 +200,12 @@
 - **Mục tiêu:** vận hành project→definition→task→run→approval→evidence→ReleaseSet→DONE bằng browser.
 - **Phụ thuộc:** V7-02…V7-16 và V7-13A.
 - **Thực hiện:** seed fake-provider environment qua public setup, chạy toàn journey bằng UI được
-  `agentkit serve` phục vụ, cover onboarding BLOCKED/retry, adapter probe/register, projection resync,
+  `aw serve` phục vụ, cover onboarding BLOCKED/retry, adapter probe/register, projection resync,
   attachment, scope amendment, cancel một run, ReleaseSet/local commit và recovery action; không sửa
   DB/Git thủ công.
 - **Verify:** deterministic E2E with fake providers, accessibility smoke, build/lint/unit/component tests,
   Windows/Linux browser CI.
 - **Hoàn thành khi:** journey không cần CLI/SQLite/Git thủ công, không có interactive terminal và mọi
-  blocked/error/degraded state có recovery path.
-- **Nguồn:** ROADMAP-§2, ADR-018.
+  blocked/error/degraded state có recovery path; checker ADR-028 xác nhận không action/query UI mới nào
+  thiếu `aw` equivalent.
+- **Nguồn:** ROADMAP-§2, ADR-018, ADR-028.

@@ -7,6 +7,9 @@
 
 > Phạm vi task mặc định: kế thừa mục 3 của `00-roadmap.md`.
 
+> Ghi chú lịch sử tên lệnh: các task V2 đã triển khai dưới tên `agentkit`. ADR-028/V6-15A migrate cùng
+> command groups sang `aw` mà không đổi application contract; `agentkit-spike` không bị đổi tên.
+
 ## V2-01 — Definition identity và lifecycle chung
 
 - **Mục tiêu:** model `Definition` mutable và `Version` immutable không trộn payload runtime.
@@ -99,7 +102,7 @@
   provider CLI sẽ khóa mọi workflow có AGENT node mà không có lối thoát trong sản phẩm.
 - **Phụ thuộc:** V2-07A.
 - **Phạm vi:** CLI `agentkit adapter probe|register|list|show` — một command group riêng, không nằm dưới
-  `agentkit definition` vì AdapterBuildVersion không phải DefinitionKind; API/UI thuộc V6-10F và V7-05.
+  `agentkit definition` vì AdapterBuildVersion không phải DefinitionKind; API/UI thuộc V6-10F/V6-10G và V7-05.
 - **Thực hiện:** `probe` chạy executable đã cấu hình và in candidate fingerprint/protocol/capability mà
   **không** ghi registry; `register` yêu cầu operator xác nhận candidate rồi tạo AdapterBuildVersion bất
   biến; `list|show` trả JSON ổn định. Republish Workflow/Agent Profile là bước riêng, không tự động.
@@ -154,9 +157,9 @@
 
 ## V2-11 — Definition CLI
 
-- **Mục tiêu:** Alpha usable chưa cần UI: validate/publish/inspect/diff từ file.
+- **Mục tiêu:** Alpha usable chưa cần UI: create/validate/publish/inspect/diff từ file.
 - **Phụ thuộc:** V2-10.
-- **Thực hiện:** `agentkit definition validate|publish|list|show|diff`; JSON output; safe diagnostics.
+- **Thực hiện:** `agentkit definition create|validate|publish|list|show|diff`; JSON output; safe diagnostics.
 - **Verify:** CLI golden và temp DB integration tests.
 - **Hoàn thành khi:** không cần sửa SQLite thủ công để author/publish.
 - **Nguồn:** ROADMAP-§2.

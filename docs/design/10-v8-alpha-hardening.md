@@ -129,24 +129,25 @@
 
 - **Mục tiêu:** tạo Alpha artifacts Windows/Linux với pinned Go/UI dependencies.
 - **Phụ thuộc:** V7-17, V8-03.
-- **Thực hiện:** build UI và đóng gói vào binary, build binary, version/schema/adapter manifest,
-  checksums. Việc `agentkit serve` phục vụ được UI đã là điều kiện của V7-02; task này chỉ lo
+- **Thực hiện:** build UI và đóng gói vào binary `aw`/`aw.exe`, build binary, version/schema/adapter manifest,
+  checksums. Việc `aw serve` phục vụ được UI đã là điều kiện của V7-02; task này chỉ lo
   reproducibility, cross-platform packaging và release smoke.
 - **Verify:** clean CI build twice và compare bằng allowlist field cụ thể được version-control; unknown
   difference fail; smoke each artifact.
 - **Hoàn thành khi:** binary chạy doctor/serve và UI journey tối thiểu trên cả OS.
-- **Nguồn:** AK-ARCH-020, HE-02-M04.
+- **Nguồn:** AK-ARCH-020, HE-02-M04, ADR-028.
 
 ## V8-09 — First-run/operator documentation
 
 - **Mục tiêu:** người dùng cài, cấu hình, đăng ký repo, publish workflow, chạy task và recover failure.
 - **Phụ thuộc:** V8-08.
 - **Thực hiện:** quickstart, config reference, authoring schema examples, provider/isolation setup,
-  ReleaseSet/local-only Git, source/diff/log (không terminal), evidence/retention classes, backup/restore,
-  troubleshooting; chỉ ghi capability đã verify.
+  đầy đủ `aw` command/flag/JSON/exit-code reference, ReleaseSet/local-only Git, source/diff/log (không
+  interactive browser terminal), evidence/retention classes, backup/restore, troubleshooting; chỉ ghi
+  capability đã verify.
 - **Verify:** fresh-session test trả lời WHAT/WHERE/HOW/DONE/out-of-scope bằng source.
 - **Hoàn thành khi:** clean machine path không cần giải thích miệng ngoài docs.
-- **Nguồn:** HE-03-M05, HE-06-S05, HE-03-M03, HE-04-M01.
+- **Nguồn:** HE-03-M05, HE-06-S05, HE-03-M03, HE-04-M01, ADR-028.
 
 ## V8-10 — Upgrade and rollback rehearsal
 
@@ -163,13 +164,14 @@
 - **Mục tiêu:** luôn tạo assessment đầy đủ cho toàn bộ system journeys và MUST criteria trong scope
   Alpha, kể cả khi suite có failure.
 - **Phụ thuộc:** V8-01…V8-10.
-- **Thực hiện:** tổng hợp evidence lên coverage map đã dựng từ V1-00A…V1-00C cho ADR-001…025, model workspace,
+- **Thực hiện:** tổng hợp evidence lên coverage map đã dựng từ V1-00A…V1-00C cho ADR-001…028, model workspace,
   Go core MUST/acceptance, system-design journeys, HE criteria và V0–V7 gates →
   test/evidence/failure/nhãn phase. V8 **không** được phân loại lại criteria: nhãn phase đã chốt ở V1-00A
   theo ADR-024. Không dùng `deferred` cho một `ALPHA_MUST` và không implement Beta.
 - **Verify:** full Go/UI/API/E2E/fault/security/race/platform suites và evidence verify; cộng gate cuối
   bắt buộc: cancel-vs-claim chạy cả hai thứ tự commit, route inventory khớp OpenAPI theo hai chiều, mọi
-  recovery command có đủ owner core/API/UI, checker báo SourceRef debt bằng 0, rồi `git diff --check`,
+  recovery command có đủ owner core/API/UI/CLI, parity inventory UI↔operationId↔`aw`↔application
+  operation không có debt, checker báo SourceRef debt bằng 0, rồi `git diff --check`,
   `go test ./...` và `go vet ./...`.
 - **Hoàn thành khi:** assessment matrix hoàn chỉnh và machine-readable `gatePass` được tính; mọi
   `ALPHA_MUST` phải PASS để `gatePass=true`, thiếu môi trường là `CHƯA ĐỦ EVIDENCE`, và criterion mang

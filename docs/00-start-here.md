@@ -3,7 +3,7 @@
 > Đọc tài liệu này đầu tiên khi bắt đầu một session mới. Nó là điểm vào cho mục tiêu, các quyết định
 > đã chốt, trạng thái thực thi và ranh giới công việc hiện tại.
 >
-> Cập nhật: 2026-09-05 (mục 20-22, ADR-026, ADR-027). Nếu tài liệu này khác ADR, ADR là authority về
+> Cập nhật: 2026-09-06 (mục 19-23, ADR-026…ADR-028). Nếu tài liệu này khác ADR, ADR là authority về
 > quyết định kiến trúc; cần sửa tài liệu này trong cùng thay đổi, không tự suy diễn.
 
 ## 1. Mục tiêu sản phẩm
@@ -63,8 +63,9 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
     `QUEUED → BLOCKED` với reason typed; `RetryBlockedActivation` tạo activation mới sau khi revalidate
     pin, không hồi sinh Attempt cũ.
 18. Acceptance criteria được phân loại phase trước V1 bằng pre-V1 gate `V1-00A…V1-00C`; V8 không phân loại lại.
-19. Command envelope dùng `CommandScope = INSTALLATION | PROJECT(ProjectID)`; adapter registry, Doctor
-    và safe settings là installation-scoped.
+19. Command envelope dùng `CommandScope = INSTALLATION | PROJECT(ProjectID)`; adapter registry, Doctor,
+    safe settings và Definition global là installation-scoped; Definition thuộc Project dùng project
+    scope và mọi item/version operation phải cross-check target đã lưu.
 20. Node type `ROUTER` chỉ được khai báo đúng một outcome cho Alpha (ADR-026); publish một `ROUTER`
     nhiều outcome là lỗi validation, không phải hành vi runtime âm thầm deadlock. Multi-outcome rule
     thật hoãn tới ADR/authoring schema riêng.
@@ -77,6 +78,10 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
     `ErrAttemptPolicyRequired`/`ErrPermissionPolicyRequired`. Một node thiếu policy này không bao giờ
     được lên lịch: `ResolvedExecutionProfileV1` (GC-INV-08) đòi hỏi timeout dương và isolation tier
     tường minh, không có default ngầm.
+23. Executable sản phẩm canonical là `aw`; cuối V6 mọi public action/query UI dùng phải có CLI invocation
+    tương ứng trên cùng application authority. HTTP session và one-shot `aw` dùng cùng trusted
+    `LocalPrincipalSnapshot`; actor/roles không nhận từ body/header/CLI flag. `agentkit-spike` vẫn là V0
+    regression/evidence binary.
 
 ## 3. Glossary chuẩn
 
@@ -108,11 +113,11 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
 | Mục | Trạng thái | Quy tắc |
 |---|---|---|
 | 1. Domain Project/Repository/TaskFamily/WorkspaceSet | Hoàn tất tài liệu baseline | Không đổi semantics nếu không có ADR mới. |
-| 2. Quyết định kiến trúc | ACCEPTED | ADR-001…025 là baseline sau review thiết kế ngày 2026-08-31. |
+| 2. Quyết định kiến trúc | ACCEPTED | ADR-001…028 là baseline hiện hành; ADR-028 khóa executable `aw` và UI/API/CLI parity cuối V6. |
 | 3. Go core architecture/spec | Hoàn tất specification baseline | Code phải bám spec hoặc tạo ADR superseding. |
 | 4. Go spike | **GO** (2026-09-01, V0-14) | SPK-01…SPK-14 đều pass thật trên Windows và Linux (CI), evidence verify được, 10/10 suite runs không flaky đúng semantics, `-race` pass trên CI. Chi tiết: [spike report](spikes/02-go-core-spike-report.md). |
 | 5. Alpha UI/runtime | **ĐƯỢC PHÉP BẮT ĐẦU** | Verdict `GO` đã ghi; bắt đầu theo đúng dependency/gate trong `docs/design/00-roadmap.md`, mỗi session một Task ID. |
-| 6. Thiết kế chi tiết version/subtask | **BASELINE ĐÃ QUYẾT ĐỊNH** | Roadmap Alpha và task theo session nằm tại `docs/design/`; đã cập nhật theo ADR-020…025. V1 được phép thực thi từ verdict `GO` (mục 4), vẫn phải tuân dependency/gate trong roadmap. |
+| 6. Thiết kế chi tiết version/subtask | **BASELINE ĐÃ QUYẾT ĐỊNH** | Roadmap Alpha và task theo session nằm tại `docs/design/`; đã cập nhật theo ADR-020…028. V1 được phép thực thi từ verdict `GO` (mục 4), vẫn phải tuân dependency/gate trong roadmap. |
 
 Spike đã đạt gate: SPK-01…SPK-14 đều có evidence PASS thật (13/14 trực tiếp trên mỗi platform, SPK-13
 qua job `semantic-diff` cross-platform riêng — không thể/không được kết luận từ một platform đơn lẻ).
@@ -126,7 +131,7 @@ run ID/evidence ID.
 2. [Kinh nghiệm từ claude-workflow](danh-gia-claude-workflow.md).
 3. [Tổng quan harness engineering](harness-engineering/00-tong-quan.md) và lecture liên quan.
 4. [Mô hình Project–Repository–WorkspaceSet](architecture/01-project-repository-workspace-model.md).
-5. [Architecture decisions](architecture/02-architecture-decisions.md), gồm ADR-001…025.
+5. [Architecture decisions](architecture/02-architecture-decisions.md), gồm ADR-001…028.
 6. [System architecture](architecture/03-system-architecture.md) và [Go core spec](architecture/04-go-core-spec.md).
 7. [Roadmap Alpha](design/00-roadmap.md) và [thiết kế hệ thống Alpha](design/01-system-design.md).
 8. [Go spike plan](spikes/01-go-core-spike-plan.md), rồi [spike report](spikes/02-go-core-spike-report.md).

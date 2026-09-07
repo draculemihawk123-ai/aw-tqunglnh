@@ -2,9 +2,9 @@
 
 > Trạng thái: BASELINE ĐÃ QUYẾT ĐỊNH — product owner đã ủy quyền chốt ngày 2026-08-29.
 >
-> Authority: ADR-001…025 và Go core spec. Tài liệu này chi tiết hóa Alpha, không supersede ADR.
+> Authority: ADR-001…028 và Go core spec. Tài liệu này chi tiết hóa Alpha, không supersede ADR.
 >
-> Cập nhật: 2026-08-31.
+> Cập nhật: 2026-09-06.
 >
 > Phạm vi: modular monolith local, SQLite, filesystem artifacts, embedded worker, local web UI,
 > Claude CLI và Codex CLI.
@@ -27,32 +27,35 @@ Không khóa UI framework. Không thiết kế PostgreSQL; chỉ giữ persisten
 ## 2. Topology Alpha
 
 ```text
-Browser
-  -> loopback HTTP API + local session token + SSE
-       -> application commands / queries
-       -> orchestrator / scheduler
-       -> SQLite transaction + durable jobs + events
-       -> embedded worker loop
-            -> Git worktree adapter
-            -> process supervisor
-            -> Claude/Codex adapter
-            -> command/gate executor
-            -> filesystem artifact store
+Browser -> loopback HTTP API + local session token + SSE --+
+Terminal -> `aw` CLI delivery adapter ---------------------+-> application commands / queries
+                                                               -> orchestrator / scheduler
+                                                               -> SQLite transaction + durable jobs + events
+                                                               -> embedded worker loop
+                                                                    -> Git worktree adapter
+                                                                    -> process supervisor
+                                                                    -> Claude/Codex adapter
+                                                                    -> command/gate executor
+                                                                    -> filesystem artifact store
 ```
 
-Một binary `agentkit` có ba mode:
+Một binary sản phẩm canonical `aw` có ba nhóm mode:
 
 - `serve`: HTTP API, projection consumer và worker cùng process; đây là mode Alpha mặc định.
 - `worker`: chạy worker loop riêng trên cùng máy/SQLite để fault test; không phải distributed mode.
-- `definition|doctor|evidence`: CLI command dùng cùng application/composition contracts.
+- operator CLI theo grammar `aw <resource> <action> [flags]`, cộng top-level `aw doctor`, `aw version`
+  và `aw help`; toàn bộ dùng cùng application/composition contracts với HTTP/UI.
 
-Không có fast path từ HTTP handler sang Git/process/provider. Mọi side effect đi qua durable job,
-ExecutionAttempt và fencing protocol dù tất cả module nằm cùng process.
+`agentkit-spike` là binary regression/evidence riêng của V0, không phải tên cũ được alias sang `aw`.
+
+Không có fast path từ HTTP hoặc CLI handler sang SQLite/Git/process/provider. Mọi side effect đi qua
+public application command, durable job, ExecutionAttempt và fencing protocol dù tất cả module nằm
+cùng process.
 
 ## 3. Boundary module và package Go
 
 ```text
-cmd/agentkit/                   composition root và CLI
+cmd/aw/                         composition root và operator CLI
 internal/domain/
   project/                     Project, Repository, Component
   work/                        WorkItem, TaskFamily, scope, blocker
@@ -83,6 +86,7 @@ internal/adapters/
   providers/claude/
   providers/codex/
 internal/delivery/httpapi/      route, DTO, middleware, SSE
+internal/delivery/cli/          `aw` commands, formatter và typed exit-code mapping
 internal/platform/              config, IDs, clock, logging, redaction
 migrations/sqlite/              immutable numbered SQL migrations
 testdata/                        workflow/provider/repository/golden fixtures
@@ -173,6 +177,8 @@ BACKLOG -> READY -> ACTIVE -> BLOCKED -> ACTIVE -> DONE
 ```
 
 - `READY` cần behavior, acceptance, verification và valid scope.
+- `BACKLOG → READY` chỉ qua public `MarkWorkItemReady`, command chạy lại validator và không nhận target
+  status tùy ý.
 - `ACTIVE` cần WorkspaceSet ready và run started.
 - `DONE` chỉ từ completion service với run `VERIFYING`, evidence/policy/join/clean gate đạt.
 - `BLOCKED → READY` chỉ qua `ResolveWorkItemBlocker`; `→ CANCELLED` chỉ qua `CancelWorkItem`. `CancelRun`
@@ -535,6 +541,14 @@ Server inject token vào bootstrap HTML chỉ khi Host là `localhost`, `127.0.0
 đang listen; response có `Cache-Control: no-store` và CSP chặt. UI giữ token trong memory, không
 local/session storage. API không có endpoint công khai trả token.
 
+Khi startup, composition root resolve một `LocalPrincipalSnapshot {Actor, Roles[]}` từ trusted config.
+HTTP session token được bind trong memory với snapshot đó; one-shot `aw` resolve cùng config. Delivery
+layer điền `Command.Actor/ActorRoles`, tuyệt đối không decode chúng từ HTTP body/header hay CLI flag.
+Principal config là restart-required và không thuộc `PUT /settings/safe`; Alpha không xây role database.
+Keys là `localPrincipal.actor`/`localPrincipal.roles`; nếu thiếu toàn bộ dùng
+`local-operator`/`[operator]`. Giá trị phải non-empty, role unique/case-sensitive; chỉ global config-file
+selection được phép, không có per-command impersonation flag.
+
 Route chính:
 
 | Method/path | Contract |
@@ -545,10 +559,12 @@ Route chính:
 | `GET/POST /projects/{id}/repositories` | list/register; POST trả repository `REGISTERING` + probe job |
 | `GET /repositories/{id}/onboarding` | trạng thái/error/probe history có thể hành động |
 | `POST /repositories/{id}/probe` | retry typed probe khi `BLOCKED` |
-| `GET/POST /projects/{id}/components` | catalog/discover component |
+| `GET /projects/{id}/components` | catalog component đã được repository onboarding/probe discover |
 | `GET/POST /components/{id}/pack-assignments` | list/assign exact Engineering Pack version |
 | `GET/POST /projects/{id}/work-items` | Kanban list/create root task |
 | `POST /work-items/{id}/children` | child cùng family, subset scope |
+| `GET /work-items/{id}/readiness` | contract/readiness diagnostics, không mutate |
+| `POST /work-items/{id}/mark-ready` | dispatch `MarkWorkItemReady`; revalidate rồi chỉ `BACKLOG → READY` |
 | `POST /work-items/{id}/cancel` | dispatch `CancelWorkItem`; quiesce active Run trước khi terminal |
 | `POST /blockers/{id}/resolve` | dispatch `ResolveWorkItemBlocker`; `BLOCKED → READY` |
 | `GET /work-items/{id}` | materialized detail kèm JournalPosition/freshness |
@@ -564,31 +580,59 @@ Route chính:
 | `POST /scope-expansions/{id}/withdraw` | typed `WithdrawScopeExpansion`; chỉ hợp lệ khi `PENDING`, idempotent, không tạo grant/amendment |
 | `POST /approvals/{id}/approve|reject` | resolve approval node |
 | `GET/POST /work-items/{id}/messages` | canonical task chat |
-| `POST /work-items/{id}/attachments` | upload artifact trước rồi append message bằng verified ref |
+| `POST /work-items/{id}/attachments` | `AppendConversationAttachment`: upload artifact rồi append verified ref |
 | `POST /waits/{id}/signals` | typed durable signal cho WAIT node |
 | `GET /work-items/{id}/evidence` | evidence query |
-| `GET /artifacts/{id}/content` | verified streaming content |
+| `GET /artifacts/{id}/content` | authorized `GetArtifactContent`, verified bounded streaming |
 | `GET /workspace-sets/{id}` | repo/revision/lease/quarantine và valid actions |
 | `POST /workspace-sets/{id}/release` | dispatch public `RequestWorkspaceSetRelease`; thực thi là internal `ExecuteWorkspaceSetRelease` |
 | `GET /repository-workspaces/{id}/source|diff|log` | read-only, exact revision, bounded output |
 | `POST /repository-workspaces/{id}/reconcile` | dispatch public `RequestWorkspaceReconciliation`; thực thi là internal command riêng |
 | `GET/POST /families/{id}/release-sets` | query/create local ReleaseSet |
+| `GET /release-sets/{id}` | detail, per-repository verdict và partial state |
 | `POST /release-sets/{id}/seal|abandon` | typed release decision |
 | `POST /release-sets/{id}/entries/{repositoryId}/local-commit` | local commit, không remote mutation |
 | `GET /adapter-builds` | list AdapterBuildVersion đã đăng ký (installation scope, ngoài cây `/projects`) |
 | `GET /adapter-builds/{id}` | detail fingerprint/protocol/capability manifest |
 | `POST /adapter-builds/probe` | probe executable đã cấu hình, trả candidate chưa đăng ký |
 | `POST /adapter-builds` | operator xác nhận đăng ký immutable AdapterBuildVersion |
-| `GET /definitions/{kind}` | list definitions/versions |
-| `POST /definitions/{kind}/validate` | validate without publish |
-| `POST /definitions/{kind}/publish` | publish immutable version |
+| `GET/POST /definitions/{kind}` và `/projects/{projectId}/definitions/{kind}` | list/create global hoặc project Definition |
+| `GET /definitions/{kind}/{id}` và `GET /projects/{projectId}/definitions/{kind}/{id}` | definition detail |
+| `GET /definitions/{kind}/{id}/versions` và project-scoped path tương ứng | version list của một Definition |
+| `POST /definitions/{kind}/{id}/validate|publish` và `/projects/{projectId}/definitions/{kind}/{id}/validate|publish` | validate without publish / publish immutable version |
+| `GET /definition-versions/{id}`, `/definition-versions/{leftId}/diff/{rightId}` và các path tương ứng dưới `/projects/{projectId}` | exact version detail/diff |
 | `GET/PUT /settings/safe` | allow-listed non-secret settings với version/validation |
-| `GET /events/stream?projectId=...` | SSE projection invalidation/runtime events |
+| `GET /projects/{id}/projection` | projection/rebuild status và freshness |
+| `POST /projects/{id}/projection/rebuild` | dispatch public `RequestProjectionRebuild`; không chạy rebuild inline |
+| `GET /projects/{id}/projection-rebuilds/{operationId}` | status chính xác của một rebuild operation, không suy từ lần mới nhất |
+| `GET /events/stream?projectId=...` | `WatchProjectEvents`: SSE projection invalidation/runtime events |
 
-Theo ADR-025, tập installation-scoped là danh sách đóng: `GET/POST /projects`, `/health/*`, `/doctor`,
-`/settings/safe` và `/adapter-builds*`. Chúng không nhận ProjectID và không nằm dưới `/projects/{id}`.
-Mọi route còn lại là project-scoped — bao gồm `/runs/{id}/diagnostics`, vốn là diagnostics của một Run
-thuộc một Project chứ không phải của installation.
+Operator CLI là surface song song của cùng contract, không phải HTTP client bắt buộc và không phải
+authority mới. Inventory canonical được V6-15K kiểm theo đúng bốn chiều
+`UI action/query ↔ HTTP operationId ↔ aw command ↔ public application command/query`. Bootstrap/static
+asset của browser là ngoại lệ không cần CLI; SSE map thành `aw events watch`. Mọi public operation mới
+do ma trận UX V6-00 phát hiện phải có lệnh `aw` trước khi V6 đóng. Không có `aw ... set-status`: Kanban
+chỉ dispatch named valid action do server trả về, và CLI gọi đúng action đó qua cùng command handler.
+
+CLI mutation giữ nguyên scope, expected version và idempotency envelope. Nếu operator bỏ
+`--idempotency-key`, `aw` sinh key trước dispatch và luôn trả lại để retry; key tường minh được giữ nguyên.
+`--wait` chỉ theo dõi query/event sau khi command bất đồng bộ được accept; nó không chạy worker inline.
+Không `--wait` trả đúng một accepted envelope; có `--wait` chỉ trả một final envelope. Timeout/Ctrl-C
+chỉ dừng observer, trả operation reference + last observed state và không dispatch cancellation. Lệnh hữu hạn có
+`--json` machine-readable ổn định; artifact stream dùng `--output`, SSE-equivalent dùng NDJSON, còn
+process/help không tạo JSON giả. Secret không đi qua argv/output. CLI không expose scheduler/worker
+command internal và không có push/PR/merge/force-push.
+
+Trong `--json`, success/error đều phát đúng một document trên stdout; diagnostic/progress ở stderr.
+Human mode dùng stdout cho result, stderr cho error/progress. Command có impact cao chỉ được prompt ở
+TTY human mode; non-interactive/`--json` phải truyền `--yes`, nếu thiếu thì fail trước dispatch bằng
+typed `PRECONDITION_FAILED` với detail `confirmation=required`.
+
+Theo ADR-025 và refinement ADR-028, tập installation-scoped là danh sách đóng: `GET/POST /projects`,
+`/health/*`, `/doctor`, `/settings/safe`, `/adapter-builds*` và **nhánh global** `/definitions*`.
+Nhánh definition dưới `/projects/{id}` là project-scoped; caller không được gửi scope mâu thuẫn với
+route/Definition target. Mọi route còn lại là project-scoped — bao gồm `/runs/{id}/diagnostics`, vốn
+là diagnostics của một Run thuộc một Project chứ không phải của installation.
 
 `GET /runs/{id}/timeline` và `/diagnostics` là read models bounded: pagination bằng stable cursor,
 không stream toàn bộ agent event, và không trả PID/argv/cwd/secret. Đăng ký adapter build không bao giờ

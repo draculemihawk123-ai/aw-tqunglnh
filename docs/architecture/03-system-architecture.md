@@ -1,7 +1,7 @@
 # Kiến trúc hệ thống Agent Kit
 
-> Trạng thái: BASELINE ĐÃ QUYẾT ĐỊNH — đồng bộ ADR-001 đến ADR-025 ngày 2026-08-31; là đầu vào
-> bắt buộc cho Go core spec, spike và system design.
+> Trạng thái: BASELINE ĐÃ QUYẾT ĐỊNH — đồng bộ ADR-001 đến ADR-028; là đầu vào bắt buộc cho Go core
+> spec, spike và system design.
 >
 > Phạm vi: alpha modular monolith chạy local và beta control plane/worker chạy trên server.
 
@@ -465,7 +465,10 @@ authorization.
 Alpha là single-user local nên không giả vờ có multi-tenant authorization hoàn chỉnh. API chỉ bind
 loopback, từ chối external bind, validate `Host`/`Origin` và yêu cầu local session token sinh mỗi lần
 khởi động cho mutation. Token chỉ được inject vào no-store/CSP bootstrap HTML cho Host hợp lệ, UI giữ
-trong memory; token không đi trong URL, log, browser storage hoặc durable state. Alpha vẫn thực thi hoặc
+trong memory; token không đi trong URL, log, browser storage hoặc durable state. Startup config cung cấp
+một `LocalPrincipalSnapshot {Actor, Roles[]}` được bind với session token; one-shot `aw` resolve cùng
+snapshot, và không transport nào cho caller override actor/roles qua payload/flag. Principal config chỉ
+đổi sau restart và không thuộc safe-settings mutation. Alpha vẫn thực thi hoặc
 khai báo rõ execution profile, executable allowlist, secret redaction, remote Git authority và UI/
 worker boundary. Local mode không đồng nghĩa mọi script trong repository đều đáng tin.
 

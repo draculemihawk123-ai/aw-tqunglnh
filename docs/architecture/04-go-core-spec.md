@@ -1,7 +1,6 @@
 # Đặc tả Go core cho Agent Kit
 
-> Trạng thái: BASELINE ĐÃ QUYẾT ĐỊNH — đồng bộ ADR-001 đến ADR-025 ngày 2026-08-31; chưa phải mã
-> triển khai.
+> Trạng thái: BASELINE ĐÃ QUYẾT ĐỊNH — đồng bộ ADR-001 đến ADR-028; chưa phải mã triển khai.
 >
 > Từ khóa `MUST`, `MUST NOT`, `SHOULD`, `MAY` mang nghĩa bắt buộc, cấm, khuyến nghị và tùy chọn.
 > Nếu tài liệu này xung đột với ADR đã accepted thì ADR có quyền cao hơn và thay đổi phải đi qua ADR
@@ -55,7 +54,8 @@ path được đổi; package boundary dưới đây vẫn giữ nguyên.
 
 ```text
 cmd/
-  agentkit/                  composition root, CLI cho spike
+  aw/                        composition root và operator CLI sản phẩm
+  agentkit-spike/            V0 regression/evidence CLI, không phải alias của aw
 internal/
   domain/
     project/                 Project, Repository
@@ -482,17 +482,27 @@ Mọi command có envelope chung:
 
 ```text
 CommandEnvelope {
-  CommandID, IdempotencyKey, Actor, CorrelationID,
+  CommandID, IdempotencyKey, Actor, ActorRoles[], CorrelationID,
   Scope, ExpectedVersion?, RequestedAt
 }
 
 CommandScope = INSTALLATION | PROJECT(ProjectID)
 ```
 
-Theo ADR-025, `ProjectID` không còn bắt buộc cho mọi command. Installation scope dùng cho `CreateProject`,
-installation health/doctor, safe settings và adapter build registry; mọi command runtime/catalog còn
-lại là project scope, kể cả run/job/workspace/release diagnostics. Handler MUST reject command project-scoped thiếu ProjectID và command installation-scoped
-mang ProjectID.
+Theo ADR-025 và ADR-028, `ProjectID` không còn bắt buộc cho mọi command. Installation scope dùng cho
+`CreateProject`, installation health/doctor, safe settings và adapter build registry; definition
+global dùng installation scope còn definition thuộc Project dùng project scope. Mọi command runtime/
+catalog còn lại là project scope, kể cả run/job/workspace/release diagnostics. Handler MUST reject
+command project-scoped thiếu ProjectID, command installation-scoped mang ProjectID không hợp lệ, và
+definition item/publish/version command có scope không khớp Definition target đã lưu. Collection
+create/list lấy scope từ route hoặc CLI invocation shape rồi persist/query đúng scope đó.
+
+`Actor`/`ActorRoles` là authentication context do delivery boundary lấy từ trusted
+`LocalPrincipalSnapshot`, không thuộc request payload và không thuộc `RequestHash`. HTTP body/header và
+CLI flag không được override chúng. Trong Alpha, session token của `aw serve` và one-shot `aw` cùng resolve
+một startup-config snapshot; Beta thay resolver chứ không thay command contract.
+Snapshot dùng config `localPrincipal.actor`/`localPrincipal.roles`; mặc định an toàn cho single-user
+Alpha là `local-operator`/`[operator]`. Actor/role non-empty, roles unique và matching case-sensitive.
 
 Command public target của core (V0 chỉ cần subset được scenario mục 22 gọi):
 
@@ -501,8 +511,10 @@ Command public target của core (V0 chỉ cần subset được scenario mục 
 | `CreateProject` | Project mới |
 | `RegisterRepository` | Repository `REGISTERING` + probe job/outbox nguyên tử |
 | `RetryRepositoryProbe` | Probe lại repository `BLOCKED` |
+| `CreateDefinition` | Tạo Definition `DRAFT`; global dùng installation scope, project definition dùng project scope |
 | `CreateRootWorkItem` | WorkItem + TaskFamily + WorkspaceSet + scope + provision jobs nguyên tử |
 | `CreateChildWorkItem` | Child cùng family, effective scope là tập con |
+| `MarkWorkItemReady` | Revalidate contract rồi CAS duy nhất `BACKLOG → READY`, append registered `WORK_ITEM_MARKED_READY` v1; không nhận target status |
 | `PublishDefinitionVersion` | Publish immutable compiled snapshot cho mọi DefinitionKind, gồm Workflow |
 | `StartWorkflowRun` | Run pin workflow/scope/dependency |
 | `RequestScopeExpansion` | Block node và tạo request add-only |
@@ -518,12 +530,14 @@ Command public target của core (V0 chỉ cần subset được scenario mục 
 | `ApproveNode` / `RejectNode` | Resolve APPROVAL bằng actor/evidence |
 | `CancelRun` | Durable cancel intent đưa Run vào `CANCELLING`; no-op chỉ khi Run đã terminal |
 | `AppendConversationMessage` | Canonical message append-only |
+| `AppendConversationAttachment` | Public application use case: persist artifact qua ArtifactStore rồi append verified reference; không nhận filesystem locator |
 | `SignalWait` | Ghi typed signal để đánh thức WAIT node bền vững |
 | `CreateReleaseSet` / `SealReleaseSet` / `AbandonReleaseSet` | Quản lý kết quả local đa repository |
 | `CreateLocalCommit` | Typed local commit; không có remote mutation |
 | `RequestWorkspaceSetRelease` | Public; kiểm eligibility, ghi intent và enqueue job. Chỉ khi không còn active job/lease và ReleaseSet đã seal/abandon |
 | `UpdateSafeSettings` | Installation scope; allow-listed field, secret chỉ theo reference |
 | `AssignComponentPack` | Pin exact PackVersion cho một Component kèm effective time/actor |
+| `RequestProjectionRebuild` | Project-scoped operator intent; enqueue rebuild job và trả operation ID, không sửa cursor/read-model trực tiếp |
 
 Command internal của scheduler/worker:
 
@@ -552,23 +566,34 @@ không được ẩn trong `CompleteAttempt` hoặc `CreateLocalCommit`.
 
 Query không mutate state và không giữ domain aggregate sống lâu. Tối thiểu gồm:
 
-- `GetProject`, `ListProjectRepositories`;
+- `GetProject`, `ListProjectRepositories`, `ListComponents`, `ListComponentPackAssignments`;
 - `ListWorkItems` với project/repository/status filter;
 - `GetWorkItemDetail` gồm family, scope, active run và blocker;
-- `GetRunGraph` gồm pinned version, NodeRun/Attempt và route đã chọn;
+- `GetRun`, `GetRunGraph` gồm pinned version, NodeRun/Attempt và route đã chọn;
 - `GetWorkspaceSet` gồm state/generation/revision/lease theo repository;
-- `GetRepositoryOnboarding`, `GetReleaseSet`, `GetSource`, `GetDiff`, `GetRepositoryLog` read-only;
+- `GetRepositoryOnboarding`, `ListReleaseSets`, `GetReleaseSet`, `GetSource`, `GetDiff`,
+  `GetRepositoryLog` read-only;
 - `ListEvidence`, `ListArtifacts`;
+- `GetArtifactContent` qua authorized bounded stream; không trả raw filesystem locator;
 - `GetConversation`, `GetContextSnapshot`;
 - `GetJobDiagnostics`, `GetRunTimeline`, `GetRunDiagnostics` (project-scoped) cho operator/spike;
 - `ListProjects`, `GetHealth`, `GetDoctorReport`, `GetSafeSettings`, `ListAdapterBuilds`,
   `GetAdapterBuild` (installation-scoped);
-- `ListComponentPackAssignments`.
+- `GetProjectionStatus`, `GetProjectionRebuildStatus` (project-scoped);
+- `GetWorkItemReadiness` trả validator diagnostics mà không mutate;
+- `WatchProjectEvents` là redacted project-scoped event stream theo JournalPosition;
+- `ListDefinitions`, `GetDefinition`, `ListDefinitionVersions`, `GetDefinitionVersion`,
+  `DiffDefinitionVersions`, `ValidateDefinitionDraft` dùng scope của Definition target; global
+  definition là installation-scoped, project definition là project-scoped.
 
-Query installation-scoped là danh sách đóng: health/doctor, `ListProjects`, safe-settings read, và
-adapter-build list/detail. Mọi query khác là project-scoped và MUST scope bằng ProjectID — kể cả run,
-job, workspace và release diagnostics, vốn thuộc một Project chứ không thuộc installation. Projection dùng JournalPosition và rebuild từ authoritative state tại
-watermark rồi replay event sau watermark. UI không được suy domain transition từ projection.
+Theo ADR-028, cuối V6 mọi query/command public mà UI dùng có một `aw` command tương ứng; CLI không
+expose danh sách command internal ở trên và không được gọi repository concrete như một fast path.
+
+Query installation-scoped là danh sách đóng: health/doctor, `ListProjects`, safe-settings read,
+adapter-build list/detail và definition query khi target là global. Mọi query khác là project-scoped và
+MUST scope bằng ProjectID — kể cả definition thuộc Project cùng run/job/workspace/release diagnostics.
+Projection dùng JournalPosition và rebuild từ authoritative state tại watermark rồi replay event sau
+watermark. UI không được suy domain transition từ projection.
 
 ## 10. Application ports
 
@@ -969,6 +994,7 @@ Configuration được load một lần tại composition root theo precedence r
 Nhóm cấu hình tối thiểu:
 
 - database DSN/path, migration policy, busy timeout;
+- local principal actor/roles và validation; không có per-command impersonation override;
 - worker ID, concurrency, poll interval, shutdown grace;
 - JobLease/WriteLease TTL và heartbeat (`heartbeat interval <= TTL / 3`);
 - workspace root, allowed repository schemes, cleanup/quarantine policy;

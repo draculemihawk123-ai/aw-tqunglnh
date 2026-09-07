@@ -5,7 +5,10 @@
 > ADR-026 và ADR-027 chốt ngày 2026-09-05, phát hiện và quyết định trực tiếp trong lúc user review code
 > V4-03 và scoping V4-04.
 >
-> Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027).
+> ADR-028 chốt ngày 2026-09-06 theo quyết định của product owner về operator CLI cuối V6.
+>
+> Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
+> 2026-09-06 (ADR-028).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -555,8 +558,8 @@ Khoảng TOCTOU còn lại giữa bước 2 và commit là không thể loại b
 sau: execution admission vẫn hash lại executable trước dispatch, nên drift xảy ra *sau* registration bị
 từ chối bằng `ADAPTER_BUILD_DRIFT`.
 
-Surface bắt buộc trong Alpha: CLI `agentkit adapter probe|register|list|show`, API list/detail/probe/
-register, và Doctor UI hiển thị registered/unregistered kèm action đăng ký. Thiếu surface này thì việc
+Surface bắt buộc trong Alpha: CLI `aw adapter probe|register|list|show` (tên canonical theo ADR-028),
+API list/detail/probe/register, và Doctor UI hiển thị registered/unregistered kèm action đăng ký. Thiếu surface này thì việc
 nâng cấp CLI provider sẽ khóa toàn bộ workflow có AGENT node mà không có lối thoát trong sản phẩm.
 
 Doctor trước khi registry tồn tại chỉ được báo observed executable fingerprint/capability; nó không
@@ -706,9 +709,103 @@ hay không; nếu API/provider/agent có quyền tự khai hash, authority bị 
   wiring từ `internal/app/config.Config` — vì task đó đã sở hữu output bound/environment/network/
   secret/isolation enforcement thật trên Windows/Linux.
 
-## 30. Baseline sau review thiết kế
+## 30. ADR-028 — Canonical operator CLI `aw` và parity với UI
 
-ADR-001…027 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** Alpha có nhiều public application command/query trước khi UI được xây. Nếu CLI chỉ giữ
+`definition|doctor|evidence`, người dùng chưa thể vận hành sản phẩm từ terminal sau V6; đồng thời UI và
+CLI rất dễ tạo hai tập capability hoặc hai đường authority khác nhau. Tên binary Alpha ban đầu
+`agentkit` cũng dài và đã bị dùng lẫn với binary bằng chứng V0 `agentkit-spike`.
+
+**Quyết định:** executable sản phẩm canonical là `aw` (`aw.exe` trên Windows), với grammar
+`aw <resource> <action> [flags]`; mode/utility được giữ ở top-level (`aw serve`, `aw worker`,
+`aw doctor`, `aw version`, `aw help`). V6-15A migrate composition root `cmd/agentkit` sang `cmd/aw`. Đây là
+đổi tên trước release nên không duy trì alias production `agentkit`; binary `agentkit-spike` vẫn giữ
+nguyên như live V0 regression/evidence gate và không phải alias của `aw`.
+
+Đến cuối V6, mọi public query/mutation mà V7 UI dùng MUST có đúng một lệnh `aw` tương ứng. Ngoại lệ duy
+nhất là bootstrap/static asset của browser; SSE được biểu diễn bằng `aw events watch`. Quan hệ này được
+khóa bằng inventory machine-readable bốn cột:
+
+```text
+UI action/query <-> HTTP operationId <-> aw command <-> public application command/query
+```
+
+Inventory MUST được kiểm theo cả hai chiều: thiếu hoặc trùng mapping đều fail gate. Mọi action mới thêm
+vào ma trận UX V6-00 phải có public application operation, HTTP operationId và **reserved CLI invocation
+shape** trước khi API freeze ở V6-12; implementation CLI hoàn tất trong V6-15A…V6-15K. Không được ghi
+“UI-only”.
+Kanban drag/drop chỉ là presentation của một **named valid action** đã tồn tại trong inventory, không
+tạo `set-status` generic và không cho client tự đưa WorkItem sang `DONE`.
+
+Khóa parity dùng **invocation shape** (command path + scope discriminator), không chỉ chuỗi verb:
+nhánh definition global và project có thể cùng path CLI nhưng lần lượt là `--scope global` và
+`--project-id <id>`, map tới hai operationId khác nhau. Tập local-only `{aw serve, aw worker, aw help,
+aw version, aw evidence verify}` không có và không được tạo endpoint/UI giả; chúng nằm ngoài inventory
+bốn chiều nhưng vẫn chịu boundary, output, redaction và platform tests của V6-15K.
+
+Gap `BACKLOG → READY` được đóng bằng đúng một public command `MarkWorkItemReady`: server chạy lại
+readiness/contract validator và CAS đúng transition đó, append registered `WORK_ITEM_MARKED_READY` v1.
+Command không nhận target status. Mọi transition
+khác vẫn thuộc authority chuyên biệt đã có: `StartWorkflowRun`, blocker/scope handling,
+CompletionPolicy và cancellation. Component discovery không có operator mutation riêng; nó tiếp tục
+thuộc repository onboarding/probe, nên UI/CLI chỉ query Component đã được discover thay vì expose helper
+`CreateComponent` không có command receipt/event.
+
+ADR này cũng refine danh sách scope đóng của ADR-025 cho definition plane đã tồn tại: `CreateDefinition`
+và `PublishDefinitionVersion` dùng global `INSTALLATION` hoặc `PROJECT(ProjectID)`. Với collection
+create/list, route (`/definitions/...` hay `/projects/{id}/definitions/...`) là authority chọn scope;
+create persist đúng scope đó. Với item/publish/version operation, handler reload Definition rồi
+cross-check scope từ route/CLI; caller không được chọn khác target đã lưu. Đây là ngoại lệ phân biệt
+theo target, không phải quyền biến mọi command thành installation-scoped.
+
+CLI là delivery adapter ngang hàng với HTTP, gọi cùng application command/query contract. Nó MUST NOT
+ghi SQLite, gọi Git/process/provider trực tiếp hoặc expose command internal của scheduler/worker như
+`AdvanceRun`, `ExecuteWorkspaceReconciliation` hay `ExecuteWorkspaceSetRelease`. Composition root được
+phép wire concrete adapters; handler CLI chỉ phụ thuộc application ports/use cases. Không có remote Git
+mutation trong CLI Alpha.
+
+`Actor` và `ActorRoles` là authentication context, không phải input tự khai. Alpha dùng một
+`LocalPrincipalSnapshot {Actor, Roles[]}` đọc từ trusted startup config: `aw serve` bind snapshot đó với
+per-start session token trong memory, còn one-shot `aw` resolve cùng snapshot qua composition root.
+HTTP body/header và CLI flag MUST NOT được phép override actor/roles. Thay đổi principal là
+restart-required và không nằm trong safe-settings mutation. Nhờ vậy HTTP và CLI kiểm
+`AuthorizedRoles` bằng cùng principal; Beta có thể thay resolver bằng identity provider mà không đổi
+command handler hay RequestHash.
+
+Config keys canonical là `localPrincipal.actor` và `localPrincipal.roles`; thiếu toàn bộ thì dùng
+`actor=local-operator`, `roles=[operator]`. Actor/role phải non-empty, roles unique và so khớp
+case-sensitive. “Không override bằng CLI flag” nghĩa là không có per-command `--actor`/`--role`; global
+composition option chọn một trusted config file vẫn được phép.
+
+Mọi mutation giữ nguyên `CommandEnvelope`, scope, expected version và idempotency semantics; CLI cung
+cấp/propagate idempotency key thay vì tạo fast path. `--idempotency-key` là optional cho thao tác tay:
+nếu thiếu, `aw` tạo key trước dispatch và luôn trả key đó trong human/JSON envelope; automation/retry
+SHOULD truyền key tường minh. Job bất đồng bộ trả aggregate/job ID và trạng thái
+được accept; tùy chọn `--wait` chỉ quan sát query/event cho tới terminal hoặc timeout, không thực thi
+side effect thay worker. Lệnh hữu hạn có human output và `--json` ổn định; stream artifact dùng
+`--output <path|->`, event stream dùng NDJSON, còn process/help không bị ép vào JSON giả. Exit code typed
+và diagnostic an toàn; secret không được nhận bằng argv hay in lại trong output.
+
+Không có `--wait`: stdout phát đúng một accepted/result envelope. Có `--wait`: stdout chỉ phát đúng một
+final envelope chứa idempotency key, operation reference và state cuối quan sát được; progress đi stderr.
+Timeout hoặc interrupt trả typed error/exit cùng operation reference + last observed state nhưng **không**
+cancel durable operation và không dispatch `CancelRun`, `CancelWorkItem` hay command hủy nào khác.
+Trong `--json`, success hoặc typed failure đều là đúng một JSON document trên stdout; stderr chỉ dành
+cho diagnostic/progress. Human mode giữ result ở stdout, error/progress ở stderr. Command có impact cao
+chỉ prompt khi stdin là TTY và human mode; `--json`/non-interactive không prompt, phải có `--yes` hoặc
+trả typed `PRECONDITION_FAILED` với detail `confirmation=required` trước dispatch.
+
+Trước parity gate, `ProbeAdapterBuild` và `RegisterAdapterBuild` lịch sử phải nhận installation-scoped
+`CommandEnvelope` và có receipt semantics. Probe same-key trả exact candidate token đã lưu, không tự gia
+hạn; Register chỉ append registered `ADAPTER_BUILD_REGISTERED` v1 khi insert build mới thật sự. Mọi
+probe/re-probe/hash vẫn ở ngoài database transaction theo ADR-022.
+
+Public projection rebuild là operator operation typed, project-scoped và job-backed; HTTP/CLI chỉ ghi
+request rồi quan sát tiến trình. Nó không cho client sửa projection cursor/read-model row trực tiếp.
+
+## 31. Baseline sau review thiết kế
+
+ADR-001…028 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -731,5 +828,8 @@ dụng ma trận sau:
   runtime-only-reject phát hiện lúc review V4-03;
 - ADR-027 thêm `RuntimeExecutionConfigProvider` là port bắt buộc cho V4-04's scheduling transaction,
   chưa được ADR cũ khóa — resolve config ngoài Tx, core tự tính hash, không nhận hash trần từ caller.
+- ADR-028 đổi executable sản phẩm canonical thành `aw`, khóa UI/API/CLI parity trên cùng public
+  application authority ở gate cuối V6, thêm named readiness action thay generic status setter và
+  refine scope của definition global/project; `agentkit-spike` vẫn là binary regression riêng của V0.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

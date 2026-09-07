@@ -7,6 +7,9 @@
 
 > Phạm vi task mặc định: kế thừa mục 3 của `00-roadmap.md`.
 
+> Ghi chú lịch sử tên lệnh: `agentkit`/`cmd/agentkit` dưới đây là output đúng tại mốc V1. ADR-028 giao
+> V6-15A migrate production executable/path sang `aw`/`cmd/aw`; `agentkit-spike` vẫn giữ nguyên.
+
 ## V1-00A — Criterion inventory và stable ID (pre-V1 gate)
 
 > Ba task V1-00A…C là **pre-V1 gate**. ADR-024 yêu cầu phân loại xong *trước* khi V1 bắt đầu, nên không
