@@ -101,6 +101,7 @@ type Tx struct {
 	artifacts        *ArtifactRepository
 	messages         *MessageRepository
 	contextSnapshots *ContextSnapshotRepository
+	agentEvents      *AgentEventsRepository
 }
 
 func newTx() Tx {
@@ -134,6 +135,7 @@ func newTx() Tx {
 		artifacts:        &ArtifactRepository{catalog: catalog},
 		messages:         &MessageRepository{work: workRepo, runtime: runtimeRepo},
 		contextSnapshots: &ContextSnapshotRepository{runtime: runtimeRepo},
+		agentEvents:      &AgentEventsRepository{},
 	}
 }
 
@@ -155,6 +157,7 @@ func (t Tx) clone() Tx {
 	clone.artifacts = t.artifacts.cloneWith(clone.catalog)
 	clone.messages = t.messages.cloneWith(clone.work, clone.runtime)
 	clone.contextSnapshots = t.contextSnapshots.cloneWith(clone.runtime)
+	clone.agentEvents = t.agentEvents.clone()
 	return clone
 }
 
@@ -174,6 +177,7 @@ func (t Tx) Approvals() ports.ApprovalRepository               { return t.approv
 func (t Tx) Artifacts() ports.ArtifactRepository               { return t.artifacts }
 func (t Tx) Messages() ports.MessageRepository                 { return t.messages }
 func (t Tx) ContextSnapshots() ports.ContextSnapshotRepository { return t.contextSnapshots }
+func (t Tx) AgentEvents() ports.AgentEventsRepository          { return t.agentEvents }
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the

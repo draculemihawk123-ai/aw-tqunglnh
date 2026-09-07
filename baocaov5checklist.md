@@ -848,5 +848,119 @@ go run ./cmd/docs-coverage-check                          # debt = 0
 ```
 
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp theo dependency graph: V5-08A
-(AgentEvent contract, checkpoint batching, diff capture) — phụ thuộc V5-08, sẽ là nơi thật sự cần
-NodeExecutor→AgentExecutor bridge mà V5-08 cố tình để lại.
+(AgentEvent contract, checkpoint batching, diff capture) — phụ thuộc V5-08. **Correction so với dòng ngay
+trên (viết trước khi hỏi user):** V5-08A KHÔNG phải nơi xây NodeExecutor→AgentExecutor bridge — xem mục
+V5-08A bên dưới, user đã tách rõ: V5-08A chỉ xây AgentEventSink, bridge thật là V5-08B.
+
+## V5-08A — AgentEvent contract, checkpoint batching và diff capture (branch
+`feat/v5-08a-agent-event-contract`, xây sau khi merge V5-08 tại `42b462f`)
+
+**Nghiên cứu trước khi code** (Explore agent, nhiều điểm khác giả định ban đầu):
+- `internal/app/eventschema` (registry V1-07A) tồn tại nhưng **CHƯA enforce bất cứ event type nào trong
+  production** — không riêng AgentEvent: `EnforcingEventsRepository` là decorator rời, chưa từng được
+  wire vào bất kỳ `Tx.Events()` thật nào (`runtime.RegisterEventSchemas` cũng chỉ được gọi từ test, tự
+  ghi rõ "no composition root exists yet"). Bar "mọi event emit đều qua registry" của V5-08A là bar MỚI
+  cho toàn bộ runtime engine, không phải nợ riêng của AgentEvent.
+- Bảng `agent_events` tồn tại từ migration V0 spike nhưng **CHƯA CÓ MỘT DÒNG GO CODE NÀO** chạm vào nó —
+  không port, không sqlite repository, không gì cả. V5-08A là người viết Go code đầu tiên cho bảng này.
+  V4-01 tự ghi rõ trong design doc: "Production AgentEvent contract thuộc V5-08A" — không phải phát hiện
+  mới, đúng kế hoạch từ đầu.
+- Ngược lại, `checkpoints`/`checkpoint_store.go` đã có implementation ĐẦY ĐỦ, đúng (insert-once, idempotent
+  nếu trùng nội dung, `ErrImmutableVersionConflict` nếu trùng key khác nội dung) — KHÔNG cần sửa, chỉ cần
+  gọi. Cả 2 adapter thật (claude.go/codex.go) đã emit `AgentEventCheckpointProposed` kèm `Session` từ
+  V5-06/07 nhưng chưa ai tiêu thụ event này để tạo Checkpoint thật.
+- `internal/app/scopeguard.ValidateDiffs` + `internal/adapters/gitworktree` (diff/CaptureRevision thật) đã
+  tồn tại từ trước nhưng chỉ được wire vào đường finalize CŨ (`internal/app/worker.Finalizer`, dùng bởi
+  spike acceptance), KHÔNG phải đường V4/V5 thật (`FinalizeExecutionAttempt`/`NodeExecutionResult` không
+  có field diff nào cả). Ghép 2 phần cho AGENT node thật là việc mới của V5-08A.
+- **Xác nhận trực tiếp từ code** (không chỉ suy luận): `execute.go` HIỆN ĐÃ gọi `h.executor.Execute()` rồi
+  đưa thẳng kết quả vào `FinalizeExecutionAttempt` NGAY TRONG `Handle()` — cái thiếu không phải là "gọi
+  executor ở đâu" (chỗ đó có sẵn từ V4-05) mà là: `h.executor` hôm nay vẫn là fake `ports.NodeExecutor`
+  của V4-05, chưa có implementation thật nào bọc `ports.AgentExecutor.Start/Resume` + sink thật để thay
+  vào vị trí đó.
+- HE-01-M03 ("assumption surface"/WAITING-NEEDS_INFO) — nguồn thứ 3 của task — **không có bất kỳ
+  scaffolding nào trong code**: không `Assumption` type, không `NEEDS_INFO` constant ở đâu cả (chỉ xuất
+  hiện trong văn bản harness-engineering). Khác hẳn `RequiredCapabilities` ở V5-08 (tưởng chưa pin nhưng
+  hoá ra đã pin gián tiếp) — đây là khoảng trống thật, không phải ngộ nhận.
+
+**2 câu hỏi hỏi user trước khi code, cả 2 đều có correction/xác nhận rõ so với đề xuất ban đầu:**
+1. **Ranh giới V5-08A dừng ở đâu** (câu hỏi trọng tâm nhất): tôi đưa ra recommendation "chỉ xây
+   AgentEventSink" kèm bằng chứng cụ thể từ `execute.go`/spec text. User chọn đúng recommendation nhưng bổ
+   sung chi tiết quan trọng: V5-08A sở hữu normalize+validate qua registry, ordering/dedup/giới hạn
+   payload, redaction trước persist, batch checkpoint + checkpoint sequence bất biến, diff capture theo
+   EffectiveScope — **KHÔNG wire bridge thật vào `ExecuteNodeHandler`**. Lý do user nêu rõ: nếu thay
+   executor thật vào bây giờ, kết quả thật sẽ đi qua `FinalizeExecutionAttempt` khi các fence về diff/
+   evidence/generation/lease CHƯA được V5-08B xây — vi phạm "worker chỉ propose outcome", có thể biến exit
+   code 0 thành success quá sớm. **Correction về test:** được phép gọi thẳng `Start`/`Resume` để kiểm tra
+   adapter–sink contract trong test, nhưng KHÔNG được dùng `Resume` để mô phỏng recovery của platform —
+   assertion "Resume call count == 0" của V5-08B (replacement Attempt luôn `Start` từ snapshot) phải giữ
+   nguyên, không bị task này làm mờ ranh giới.
+2. **HE-01-M03 có phải build item không:** tôi đề xuất "chỉ là rationale", user đồng ý nhưng yêu cầu RÕ
+   RÀNG bằng văn bản rằng HE-01-M03 **CHƯA được implement, không được đánh dấu là đã đáp ứng** (không
+   được âm thầm coi như "đã xong" chỉ vì registry+redaction đã có). Liệt kê rõ những gì KHÔNG được làm
+   trong V5-08A: không thêm `Assumption` vào `AgentDiagnostic`, không suy luận assumption từ text model,
+   không tự chuyển NodeRun sang WAITING, không tạo `NEEDS_INFO` tạm ngoài state-reason matrix. User tự
+   phác thảo scope tối thiểu cho một task RIÊNG trong tương lai (chưa đặt tên/số trong roadmap chính thức):
+   canonical Assumption/Question type, registry event riêng (không nhét raw metadata), redaction+persist,
+   materiality rule, transition hợp lệ sang `NodeRun.WAITING`, typed reason `NEEDS_INFO`, command/API giải
+   quyết + tiếp tục bằng Attempt mới, test chứng minh provider text không tự route state. **Đã flag qua
+   `spawn_task` để không bị quên** (không tự ý sửa design doc thêm task mới ngoài phạm vi được giao).
+
+**File thay đổi chính:**
+- `internal/app/ports/agentevent.go` (mới): `AgentEventRecord`, `AgentEventsRepository` (Tx accessor mới,
+  theo đúng pattern "populated now" của Artifacts/Messages/ContextSnapshots).
+- `internal/app/ports/unitofwork.go`: thêm `Tx.AgentEvents()`.
+- `internal/adapters/sqlite/agent_events.go` (mới): `agentEventsRepository.AppendBatch`/`ListByAttempt`,
+  bound 256 KiB/event (giống `domain_events`), lỗi duplicate/UNIQUE là lỗi thật (không tự dò-rồi-so-sánh
+  như `checkpoint_store.go` — lý do: duplicate ở tầng này là bug thật, không phải race hợp lệ giữa nhiều
+  caller độc lập như checkpoint).
+- `internal/adapters/sqlite/unitofwork.go`, `internal/app/ports/fake/agentevent.go` (mới),
+  `internal/app/ports/fake/unitofwork.go`: wire accessor cho cả sqlite thật lẫn fake.
+- `internal/app/agentevents/schema.go` (mới): `Payload` shape, `RegisterEventSchemas` (đăng ký 10
+  `AgentEventKind` vào `eventschema.Registry` ở schema version 1) — package doc comment ghi rõ ranh giới
+  scope (không bridge, không assumption surface) để không ai đọc nhầm sau này.
+- `internal/app/agentevents/sink.go` (mới, ~230 dòng): `Sink` — `Accept`/`Flush` implement
+  `ports.AgentEventSink`; ordering/dedup fail-closed trong bộ nhớ (Sink chỉ sống đúng 1 lần Start/Resume
+  cho 1 AttemptID, không có kịch bản resume-cross-instance hợp lệ nên KHÔNG cần idempotent-no-op như
+  checkpoint); redact qua JSON round-trip trước khi `redact.Matcher.Value` chạy (tránh bug thật tự phát
+  hiện: `Value()` phản chiếu (reflect) struct sẽ xoá sạch `time.Time` vì field nội bộ không exported —
+  round-trip qua JSON trước khiến nó chỉ thấy string/map/slice, không bao giờ dính struct riêng); checkpoint
+  + diff capture chạy khi gặp `AgentEventCheckpointProposed`, diff luôn tính từ baseline lúc Sink khởi tạo
+  (không phải từ checkpoint trước) đúng tinh thần ADR-005 "Alpha luôn start fresh".
+- `internal/app/agentevents/sink_test.go` (mới, fake-backed, 10 test): ordering/duplicate/oversized/
+  registry-gating/batching-bound/redaction/checkpoint, tất cả chạy dưới 1 giây.
+- `internal/app/agentevents/sink_sqlite_test.go` (mới, sqlite thật + gitworktree thật, 4 test): checkpoint
+  restart (round-trip `LoadLatestCheckpoint`), diff vượt scope (git repo thật, ghi file thật ngoài scope,
+  assert `scopeguard.ErrScopeViolation` + KHÔNG có checkpoint nào được lưu + 2 event vẫn được flush đúng
+  thứ tự trước khi lỗi), secret fixture search bằng 0 (scan toàn bộ `payload_json` đã persist), và một
+  chuỗi event thực tế mô phỏng đúng thứ tự emit của claude.go end-to-end.
+- `internal/adapters/sqlite/agent_events_test.go` (mới, 3 test): AppendBatch order/oversized/duplicate ở
+  tầng repository thật, độc lập với Sink.
+
+**1 bug thật tự phát hiện khi viết test (không phải khi chạy full suite lần này — full suite pass sạch
+ngay từ đầu, không có livelock kiểu V5-04/V5-08's Bug #2):**
+- `redact.Matcher` chỉ match CHÍNH XÁC (exact-match, tự ghi rõ trong doc comment, không bao giờ substring/
+  regex) — fixture test ban đầu nhúng secret vào giữa chuỗi lớn hơn (`"token=" + secret`) nên KHÔNG bị
+  redact, làm `TestSink_Accept_RedactsKnownSecretBeforePersist` fail thật. Không phải bug ở `Sink`/
+  `redact.Matcher` — là bug ở chính fixture của tôi, sai với hợp đồng đã biết của `Matcher` (đúng cái
+  `internal/app/message`'s `TestAppendMessage_MatcherNeverScansSubstringWithinFreeText` đã cảnh báo sẵn).
+  Fix: fixture value phải LÀ chính secret, không phải chuỗi chứa secret.
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                              # sạch
+go run ./cmd/docs-coverage-check                          # debt = 0
+go test ./internal/archtest/...                            # PASS (domain/app boundary vẫn giữ)
+go test ./internal/app/agentevents/... -v -count=1         # PASS, 14/14 test (10 fake + 4 sqlite/git thật)
+go test ./internal/adapters/sqlite/... -run TestAgentEventsRepository -v -count=1   # PASS, 3/3
+go test -count=1 ./...                                     # PASS toàn bộ ~70 package (không livelock,
+                                                            #   internal/integration 12.7s bình thường)
+```
+`go test -race` không chạy được trên máy Windows local (`-race requires cgo`, không có mingw) — như mọi
+lần trước, để CI's "Linux race and stability" job xác nhận race detector.
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp: V5-08B (Fenced finalize cho AGENT
+node — phụ thuộc V5-08A, sẽ là nơi xây NodeExecutor→AgentExecutor bridge thật + fencing mới cho diff
+scope/evidence/generation trong `FinalizeExecutionAttempt`). Assumption-surface/NEEDS_INFO feature (nguồn
+HE-01-M03) vẫn là nghĩa vụ CHƯA hoàn thành, đã flag task riêng qua `spawn_task`, chưa có số trong roadmap.
