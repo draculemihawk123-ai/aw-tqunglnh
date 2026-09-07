@@ -63,6 +63,7 @@ func (t *txAdapter) AdapterBuilds() ports.AdapterBuildRepository {
 func (t *txAdapter) Readiness() ports.ReadinessRepository { return readinessRepository{tx: t.tx} }
 func (t *txAdapter) Wait() ports.WaitRepository           { return waitRepository{tx: t.tx} }
 func (t *txAdapter) Approvals() ports.ApprovalRepository  { return approvalRepository{tx: t.tx} }
+func (t *txAdapter) Artifacts() ports.ArtifactRepository  { return artifactRepository{tx: t.tx} }
 
 // Each placeholder repository already carries the shared *sql.Tx so the
 // task that populates it with real methods (see ports.Tx's doc comment)

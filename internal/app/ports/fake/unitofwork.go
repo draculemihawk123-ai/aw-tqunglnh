@@ -16,6 +16,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
+	"github.com/taQuangLing/agent-workflow/internal/domain/artifact"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	domainruntime "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
@@ -97,6 +98,7 @@ type Tx struct {
 	readiness     *ReadinessRepository
 	wait          *WaitRepository
 	approvals     *ApprovalRepository
+	artifacts     *ArtifactRepository
 }
 
 func newTx() Tx {
@@ -122,6 +124,7 @@ func newTx() Tx {
 		readiness:     &ReadinessRepository{catalog: catalog},
 		wait:          &WaitRepository{},
 		approvals:     &ApprovalRepository{},
+		artifacts:     &ArtifactRepository{catalog: catalog},
 	}
 }
 
@@ -140,6 +143,7 @@ func (t Tx) clone() Tx {
 	clone.readiness = t.readiness.cloneWith(clone.catalog)
 	clone.wait = t.wait.clone()
 	clone.approvals = t.approvals.clone()
+	clone.artifacts = t.artifacts.cloneWith(clone.catalog)
 	return clone
 }
 
@@ -156,6 +160,7 @@ func (t Tx) AdapterBuilds() ports.AdapterBuildRepository { return t.adapterBuild
 func (t Tx) Readiness() ports.ReadinessRepository        { return t.readiness }
 func (t Tx) Wait() ports.WaitRepository                  { return t.wait }
 func (t Tx) Approvals() ports.ApprovalRepository         { return t.approvals }
+func (t Tx) Artifacts() ports.ArtifactRepository         { return t.artifacts }
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the
@@ -1034,6 +1039,110 @@ func randomKey() []byte {
 	key := make([]byte, 32)
 	_, _ = rand.Read(key)
 	return key
+}
+
+// ArtifactRepository is an in-memory ports.ArtifactRepository — V5-01
+// gives this concern real behavior from the start (the same treatment
+// AdapterBuildRepository/ReadinessRepository/WaitRepository/
+// ApprovalRepository above already received), so an application-layer
+// test of the attach flow never needs sqlite.
+type ArtifactRepository struct {
+	// catalog is populated now (V5-01), mirroring WorkRepository's own
+	// catalog field: InsertArtifact's own "ProjectID must name a Project
+	// that exists" check needs to read CatalogRepository's own project
+	// records, and this fake has no other way to reach a sibling
+	// repository's data.
+	catalog   *CatalogRepository
+	artifacts map[string]artifact.Artifact
+}
+
+var _ ports.ArtifactRepository = (*ArtifactRepository)(nil)
+
+func (a *ArtifactRepository) cloneWith(catalog *CatalogRepository) *ArtifactRepository {
+	artifacts := make(map[string]artifact.Artifact, len(a.artifacts))
+	for k, v := range a.artifacts {
+		artifacts[k] = v
+	}
+	return &ArtifactRepository{catalog: catalog, artifacts: artifacts}
+}
+
+// InsertArtifact mirrors sqlite's insertArtifactTx: rec.ProjectID must name
+// a Project this fake's own CatalogRepository already has, and a duplicate
+// ID returns the already-stored row rather than erroring.
+func (a *ArtifactRepository) InsertArtifact(_ context.Context, rec artifact.Artifact) (artifact.Artifact, error) {
+	if _, ok := a.catalog.projects[string(rec.ProjectID)]; !ok {
+		return artifact.Artifact{}, fmt.Errorf("fake: %w: project %s", ports.ErrPersistenceNotFound, rec.ProjectID)
+	}
+	if existing, ok := a.artifacts[string(rec.ID)]; ok {
+		return existing, nil
+	}
+	if a.artifacts == nil {
+		a.artifacts = map[string]artifact.Artifact{}
+	}
+	a.artifacts[string(rec.ID)] = rec
+	return rec, nil
+}
+
+func (a *ArtifactRepository) GetArtifact(_ context.Context, id string) (artifact.Artifact, error) {
+	rec, ok := a.artifacts[id]
+	if !ok {
+		return artifact.Artifact{}, fmt.Errorf("fake: %w: artifact %s", ports.ErrPersistenceNotFound, id)
+	}
+	return rec, nil
+}
+
+// TransitionArtifactAttachState mirrors sqlite's own fenced CAS.
+func (a *ArtifactRepository) TransitionArtifactAttachState(_ context.Context, req ports.TransitionArtifactAttachStateRequest) (artifact.Artifact, error) {
+	rec, ok := a.artifacts[req.ArtifactID]
+	if !ok {
+		return artifact.Artifact{}, fmt.Errorf("fake: %w: artifact %s", ports.ErrPersistenceNotFound, req.ArtifactID)
+	}
+	if rec.AttachState != req.ExpectedState || rec.Version != req.ExpectedVersion {
+		return artifact.Artifact{}, fmt.Errorf("fake: %w: artifact %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.ArtifactID, req.ExpectedState, req.ExpectedVersion)
+	}
+	rec.AttachState = req.NextState
+	rec.Version++
+	a.artifacts[req.ArtifactID] = rec
+	return rec, nil
+}
+
+// SetArtifactHold mirrors sqlite's own fenced CAS.
+func (a *ArtifactRepository) SetArtifactHold(_ context.Context, req ports.SetArtifactHoldRequest) (artifact.Artifact, error) {
+	rec, ok := a.artifacts[req.ArtifactID]
+	if !ok {
+		return artifact.Artifact{}, fmt.Errorf("fake: %w: artifact %s", ports.ErrPersistenceNotFound, req.ArtifactID)
+	}
+	if rec.Version != req.ExpectedVersion {
+		return artifact.Artifact{}, fmt.Errorf("fake: %w: artifact %s expected version %d",
+			ports.ErrOptimisticConflict, req.ArtifactID, req.ExpectedVersion)
+	}
+	rec.Hold = req.Hold
+	rec.Version++
+	a.artifacts[req.ArtifactID] = rec
+	return rec, nil
+}
+
+// ListOrphanedArtifacts mirrors sqlite's own query, ordered by
+// (CreatedAt, ID) for a deterministic result either implementation gives.
+func (a *ArtifactRepository) ListOrphanedArtifacts(_ context.Context, olderThan time.Time) ([]artifact.Artifact, error) {
+	var result []artifact.Artifact
+	for _, rec := range a.artifacts {
+		if rec.AttachState != artifact.Orphan {
+			continue
+		}
+		if rec.CreatedAt.After(olderThan) {
+			continue
+		}
+		result = append(result, rec)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+	return result, nil
 }
 
 // QueryStore is an in-memory ports.QueryStore that is always reachable.

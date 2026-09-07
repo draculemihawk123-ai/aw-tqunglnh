@@ -1,0 +1,97 @@
+package ports
+
+import (
+	"context"
+	"time"
+
+	"github.com/taQuangLing/agent-workflow/internal/domain/artifact"
+)
+
+// ArtifactRepository is V5-01's Tx accessor for the durable Artifact
+// metadata row (docs/design/07-v5-execution-evidence.md V5-01) — the
+// database-backed layer this task adds on top of the existing V1
+// ArtifactStore (artifact.go, content-addressed bytes only, no metadata/
+// retention/ownership concept of its own). It is deliberately its own
+// accessor, not folded into an existing one: no other Tx concern owns
+// evidence/attachment lifecycle, and every later V5 task that needs to
+// reference an artifact (Message attachments V5-02, checkpoint diff
+// capture V5-08A, gate evidence V5-10, ...) composes InsertArtifact inside
+// ITS OWN transaction alongside whatever else it writes — this accessor is
+// a building block those tasks call, not a command of its own.
+//
+// Every method here is a real, populated-now method (the same
+// "AdapterBuilds/Readiness/Wait/Approvals get real methods from the start"
+// treatment ports.Tx's own doc comment describes) — V5-01 owns this
+// concern end to end, even though no caller composes it inside a LARGER
+// transaction yet.
+type ArtifactRepository interface {
+	// InsertArtifact persists a new Artifact row exactly as constructed —
+	// including whatever AttachState the caller already resolved (Orphan
+	// or Attached both insert through this one method; there is no
+	// separate "insert as orphan" method, since AttachState is just
+	// another field, not a different write path). Idempotent by ID: a
+	// duplicate insert of the identical ID returns the already-stored row
+	// rather than erroring (the same discipline
+	// createWorkItemBlockerTx/RecordRunCancellationIntent already
+	// establish), so a caller retrying after an ambiguous failure never
+	// risks a second row.
+	//
+	// It is the CALLER's own responsibility to have already called
+	// ArtifactStore.Put AND Verify on a.Locator BEFORE this call — this
+	// method never touches ArtifactStore itself and never runs outside a
+	// caller's own transaction, so it cannot enforce that ordering on its
+	// own (docs/architecture/04-go-core-spec.md §11.1: "Không gọi...
+	// filesystem artifact store... trong transaction" — Put/Verify MUST
+	// already be durable by the time this runs; V5-01's own Done-when bar,
+	// "evidence bắt buộc không commit trước artifact durable/hash
+	// verified", is enforced by this ordering, not by this method owning
+	// both halves).
+	//
+	// a.ProjectID must name a Project that actually exists —
+	// ErrPersistenceNotFound otherwise.
+	InsertArtifact(ctx context.Context, a artifact.Artifact) (artifact.Artifact, error)
+	// GetArtifact returns the Artifact with the given ID, or
+	// ErrPersistenceNotFound.
+	GetArtifact(ctx context.Context, id string) (artifact.Artifact, error)
+	// TransitionArtifactAttachState is the fenced CAS that promotes a row
+	// from Orphan to Attached (or, symmetrically, records a rejected
+	// worker transaction's output as Orphan after it was optimistically
+	// inserted Attached — though V5-01's own callers only ever exercise
+	// Orphan->Attached; a future fenced-finalize caller, V5-08B, is what
+	// actually needs the reverse). ExpectedVersion mismatch (including a
+	// row no longer in ExpectedState) is ErrOptimisticConflict,
+	// ErrPersistenceNotFound for an unknown ID — the same CAS discipline
+	// every other transition in this codebase already uses.
+	TransitionArtifactAttachState(ctx context.Context, req TransitionArtifactAttachStateRequest) (artifact.Artifact, error)
+	// SetArtifactHold is the fenced CAS that flips Hold independent of
+	// AttachState/RetentionClass — a governance action (ADR-017) with no
+	// state-machine legality check of its own (Hold can be set or cleared
+	// from either AttachState, any number of times). ExpectedVersion
+	// mismatch is ErrOptimisticConflict, ErrPersistenceNotFound for an
+	// unknown ID.
+	SetArtifactHold(ctx context.Context, req SetArtifactHoldRequest) (artifact.Artifact, error)
+	// ListOrphanedArtifacts returns every Artifact currently AttachState
+	// Orphan with CreatedAt <= olderThan, oldest-CreatedAt-first — the
+	// candidate set a future retention sweeper (V5-14) reconciles/cleans
+	// up. Deliberately unfiltered by Hold (classification is the caller's
+	// own job, the same discipline RuntimeRepository.ListNodeRunsForRun's
+	// own doc comment already establishes for this codebase).
+	ListOrphanedArtifacts(ctx context.Context, olderThan time.Time) ([]artifact.Artifact, error)
+}
+
+// TransitionArtifactAttachStateRequest is the CAS request for
+// ArtifactRepository.TransitionArtifactAttachState (V5-01).
+type TransitionArtifactAttachStateRequest struct {
+	ArtifactID      string
+	ExpectedState   artifact.AttachState
+	ExpectedVersion uint64
+	NextState       artifact.AttachState
+}
+
+// SetArtifactHoldRequest is the CAS request for
+// ArtifactRepository.SetArtifactHold (V5-01).
+type SetArtifactHoldRequest struct {
+	ArtifactID      string
+	ExpectedVersion uint64
+	Hold            bool
+}
