@@ -67,8 +67,24 @@ func (m *MessageRepository) AppendMessage(_ context.Context, req ports.AppendMes
 	}
 	var attemptID *runtime.ExecutionAttemptID
 	if req.AttemptID != "" {
-		if _, ok := m.runtime.attempts[req.AttemptID]; !ok {
+		attempt, ok := m.runtime.attempts[req.AttemptID]
+		if !ok {
 			return message.Message{}, fmt.Errorf("fake: %w: execution attempt %s", ports.ErrPersistenceNotFound, req.AttemptID)
+		}
+		// Mirrors sqlite's own execution_attempts -> node_runs ->
+		// workflow_runs trace — never just an existence check (audit
+		// finding, 2026-09-08).
+		nodeRun, ok := m.runtime.nodeRuns[string(attempt.NodeRunID)]
+		if !ok {
+			return message.Message{}, fmt.Errorf("fake: %w: execution attempt %s node run %s", ports.ErrPersistenceNotFound, req.AttemptID, attempt.NodeRunID)
+		}
+		run, ok := m.runtime.workflowRuns[string(nodeRun.RunID)]
+		if !ok {
+			return message.Message{}, fmt.Errorf("fake: %w: execution attempt %s run %s", ports.ErrPersistenceNotFound, req.AttemptID, nodeRun.RunID)
+		}
+		if string(run.WorkItemID) != req.WorkItemID || string(run.ProjectID) != req.ProjectID {
+			return message.Message{}, fmt.Errorf("fake: %w: execution attempt %s belongs to work item %s / project %s, not %s / %s",
+				ports.ErrCrossWorkItemReference, req.AttemptID, run.WorkItemID, run.ProjectID, req.WorkItemID, req.ProjectID)
 		}
 		id := runtime.ExecutionAttemptID(req.AttemptID)
 		attemptID = &id

@@ -1092,3 +1092,93 @@ and stability" job xác nhận.
 đã chốt ở "Quyết định sau review source of truth — 2026-09-08": nối `AssembleAgentExecutionRequest` +
 NodeExecutor→AgentExecutor bridge, `AttemptFinalizationEvidence` 3 pha, `ProcessSupervisor` quiescence
 postcondition, provider-loss mapping table.
+
+## V5-02 remediation — post-merge audit fixes (2026-09-09)
+
+**Bối cảnh:** user yêu cầu đi lại từng task V5 đã merge, đọc phần "Kết luận và đánh giá sau merge" (viết
+trực tiếp bởi user, audit 2026-09-08, hiện sống trên nhánh `feat/v5-08b-fenced-finalize-agent`'s own
+`baocaov5checklist.md` — chưa merge vào `master` nên không xuất hiện ở phần trên của chính file này), tự
+sửa; nếu block vòng tròn thì hỏi lại. V5-02's audit kết luận **"CHƯA ĐẠT đầy đủ"** với 3 finding. Task này
+sửa 2/3 (rõ ràng, an toàn); finding thứ 3 (redaction substring) bị **block thật** — xem cuối mục.
+
+**Finding 1 — Attempt linkage không cross-check WorkItem/Project:** `message_repository.go`'s cũ chỉ
+chạy `SELECT 1 FROM execution_attempts WHERE id = ?` (bare existence). Sửa: JOIN
+`execution_attempts→node_runs→workflow_runs` để lấy `work_item_id`/`project_id` THẬT của Attempt, so với
+`req.WorkItemID`/`req.ProjectID`, trả `ports.ErrCrossWorkItemReference` (sentinel mới, `ports/message.go`
+— cố tình KHÔNG dùng lại `ErrCrossProjectReference` vì mismatch có thể xảy ra ngay trong CÙNG project,
+chỉ khác WorkItem) nếu lệch. Sửa cả `internal/app/ports/fake/message.go` (trace qua
+`m.runtime.nodeRuns`/`m.runtime.workflowRuns`). Test mới: 2 test sqlite
+(`TestMessageRepository_AppendMessage_AttemptBelongsToDifferentWorkItem_Rejected`,
+`...DifferentProject_Rejected`, thêm helper `seedFixtureSecondWorkItem` vì `SeedFixtureOwners` không gọi
+lại được cho project đã tồn tại) + 2 test fake (`internal/app/message/attempt_linkage_test.go`, thêm
+helper `seedFakeExecutionAttempt` dựng WorkflowRun→NodeRun→ExecutionAttempt thật qua
+`tx.Runtime().CreateWorkflowRun/CreateNodeRun/CreateExecutionAttempt` trực tiếp — không có shortcut như
+sqlite's fixture helper, đúng ghi chú cũ đã để lại).
+
+**Finding 2 — `PrepareAttachment` chạy trước receipt-check:** tách logic receipt-check thành
+`loadOrValidateReceiptTx` (Tx-scoped, dùng chung bởi cả hai chỗ) + `loadOrValidateReceipt` (read-only
+pre-check, gọi TRƯỚC `PrepareAttachment`/`Put`). Một replay hoặc conflict giờ được phát hiện trước khi
+Put chạy; transaction serialized-write vẫn re-check y hệt để đóng race TOCTOU giữa pre-check và
+transaction (đúng pattern hai pha admission.go đã dùng). Test mới
+(`internal/app/message/receipt_precheck_test.go`): `spyArtifactStore` đếm `Put` calls, chứng minh
+`PutCalls` giữ nguyên ở 1 sau một replay VÀ sau một conflict (không tăng thêm) — đúng yêu cầu "Evidence
+nghiệm thu bắt buộc" của audit.
+
+**Finding 3 — secret nhúng trong free text KHÔNG bị redact — BỊ BLOCK, cần user quyết định:**
+`redact.Matcher` chỉ match CHÍNH XÁC (exact-string-equality), một quyết định đã tài liệu hoá tường minh
+từ V1-09 và được `TestAppendMessage_MatcherNeverScansSubstringWithinFreeText` cố tình ghi lại làm hành vi
+ĐÚNG (không phải bug). Audit 2026-09-08 giờ nói ngược lại: "known secret nhúng trong free text có thể đi
+vào canonical conversation" là một khoảng hở thật theo AK-ARCH-024 ("Secret fixture bị redact khỏi
+event, log tìm kiếm, conversation và retained artifact theo policy"), yêu cầu fixture `"token=<secret>"`
+tìm kiếm ra 0 kết quả. Tự nghiên cứu thêm: **AK-ARCH-024 được cite bởi CẢ HAI** V1-03 (`docs/design/
+03-v1-alpha-foundation.md`, redactor gốc — chính là cái đã build, exact-match) **VÀ** V8-04E "Security
+aggregate gate" (`docs/design/10-v8-alpha-hardening.md`, "Hoàn thành khi: không có sink nào bỏ qua
+redactor dùng chung", cùng đúng fixture "secret fixture search bằng 0"). Đây là dấu hiệu rõ AK-ARCH-024
+là một invariant TỔNG HỢP được hiện thực hoá DẦN qua nhiều task/phase — V8-04E mới là "aggregate gate"
+chính thức xác nhận invariant này giữ TOÀN CỤC, không phải V5-02.
+
+Đây là **block vòng tròn thật, không tự sửa**: nếu đổi `redact.Matcher` sang substring-match để thoả audit
+finding 3, sẽ:
+1. Đảo ngược một quyết định đã tài liệu hoá tường minh (`TestAppendMessage_MatcherNeverScansSubstringWithinFreeText`)
+   mà chính user đã duyệt qua nhiều phase trước.
+2. Ảnh hưởng dây chuyền: `agentevents.Sink` (V5-08A) có audit finding **giống hệt** ("fixture secret
+   đứng riêng và nhúng trong text đều có search count bằng 0") — sửa Matcher một lần sẽ tác động CẢ HAI
+   task, không chỉ V5-02.
+3. Có đánh đổi thật (false positive khi secret ngắn/phổ biến xuất hiện tình cờ trong văn bản hợp lệ;
+   chi phí quét substring trên corpus lớn) mà không có hướng dẫn rõ ràng chọn bên nào.
+4. Roadmap đã có sẵn V8-04E làm "aggregate gate" chính thức cho đúng invariant này — chưa rõ ý user là
+   fix ngay ở V5-02/V5-08A hay để nguyên chờ V8-04E.
+
+**Câu hỏi cho user (đã hỏi trong chat, chờ trả lời trước khi động vào `redact.Matcher`):** có nên đổi
+`redact.Matcher` sang substring-match ngay bây giờ (ảnh hưởng cả V5-02 và V5-08A), hay giữ nguyên exact-
+match và để V8-04E làm aggregate gate như roadmap đã định?
+
+**File thay đổi:**
+- `internal/app/ports/message.go` (sentinel `ErrCrossWorkItemReference` mới)
+- `internal/adapters/sqlite/message_repository.go`, `message_repository_test.go` (JOIN cross-check + 2
+  test + helper `seedFixtureSecondWorkItem`)
+- `internal/app/ports/fake/message.go` (JOIN cross-check qua map)
+- `internal/app/message/commands.go` (`loadOrValidateReceipt`/`loadOrValidateReceiptTx`)
+- `internal/app/message/attempt_linkage_test.go` (mới, 2 test fake + helper `seedFakeExecutionAttempt`)
+- `internal/app/message/receipt_precheck_test.go` (mới, 2 test spy Put-count)
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                            # sạch
+go run ./cmd/docs-coverage-check                        # debt = 0
+gofmt -l <7 file .go đổi/mới>                            # rỗng sau gofmt -w
+go test ./internal/app/message/... ./internal/adapters/sqlite/... -count=3   # ổn định, không flake
+go test -count=1 ./...                                  # PASS toàn bộ ~70 package
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Finding 3 (redact.Matcher substring) treo lại
+chờ user trả lời — KHÔNG tự sửa. Task kế tiếp trong remediation pass: V5-03 (MỘT PHẦN — resolver không
+có caller thật, đã ĐÓNG MỘT PHẦN bởi V5-08B0's own gatherContextResourceRefs, cần re-assess lại xem còn
+thiếu gì sau khi V5-08B0 đã merge).
+
+**Quyết định user cho Finding 3 (2026-09-09, ngay trong chat, trước khi PR #38 merge):** "Giữ nguyên, chờ
+V8-04E" — KHÔNG đổi `redact.Matcher` sang substring-match bây giờ. V8-04E (roadmap V8) vẫn là nơi chính
+thức xác nhận AK-ARCH-024 toàn cục ("không sink nào bỏ qua redactor dùng chung"). V5-02 và V5-08A giữ
+nguyên kết luận hiện tại của chúng cho finding này — không coi đây là gap cần đóng ở V5 phase. Không sửa
+code gì thêm cho finding 3.

@@ -2,10 +2,23 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/message"
 )
+
+// ErrCrossWorkItemReference is returned when req.AttemptID names a real
+// ExecutionAttempt, but that Attempt's own NodeRun/WorkflowRun resolves to a
+// WorkItem other than req.WorkItemID (audit finding, 2026-09-08: the
+// original V5-02 check only verified the Attempt ID existed at all, never
+// that it actually belonged to the Message's own claimed WorkItem — a
+// caller could otherwise link a Message to an Attempt from a completely
+// different WorkItem, or a different Project entirely). Deliberately a
+// distinct sentinel from ErrCrossProjectReference (catalog.go): a mismatch
+// here can occur even within the same Project (two WorkItems, one Project),
+// which ErrCrossProjectReference's own name would not describe correctly.
+var ErrCrossWorkItemReference = errors.New("ports: message's own AttemptID belongs to a different WorkItem (or Project) than the message claims")
 
 // MessageRepository is V5-02's Tx accessor for the durable, append-only
 // task-chat Message row (docs/design/07-v5-execution-evidence.md V5-02;
