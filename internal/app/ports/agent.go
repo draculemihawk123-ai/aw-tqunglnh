@@ -6,8 +6,11 @@ import (
 	"io"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
+	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	domainruntime "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
 // ExecutionAttemptID aliases the runtime aggregate identity at the outbound
@@ -22,8 +25,8 @@ const (
 )
 
 type AgentCapabilities struct {
-	Provider       ProviderKey
-	AdapterVersion string
+	Provider        ProviderKey
+	AdapterVersion  string
 	ProtocolVersion string
 	// TestedCLIVersion is the version the CONFIGURED executable actually
 	// reports right now (V5-06: Capabilities probes it live, e.g. via
@@ -50,16 +53,117 @@ const (
 // AgentWorkspaceMount is an already-resolved execution-plane mount. The
 // opaque Handle remains the identity; WorkingDirectory is passed only to the
 // worker-side process adapter and must not be persisted as repository identity.
+//
+// VCSObjectID/WorkspaceGeneration (V5-08B0, go-core-spec.md §14: "Mỗi
+// WorkspaceMount chỉ rõ RepositoryID, revision/generation và READ_ONLY hoặc
+// READ_WRITE") pin the exact revision this mount was resolved against —
+// field names deliberately match workspace.Revision's own so a caller
+// building this from a ContextSnapshot's own Revisions (workspace.RevisionSet)
+// entry needs no translation.
 type AgentWorkspaceMount struct {
-	RepositoryID     project.RepositoryID
-	Handle           WorkspaceHandle
-	WorkingDirectory string
-	Access           WorkspaceAccess
+	RepositoryID        project.RepositoryID
+	Handle              WorkspaceHandle
+	WorkingDirectory    string
+	Access              WorkspaceAccess
+	VCSObjectID         string
+	WorkspaceGeneration uint64
 }
 
+// ContextSnapshotPin is a request's own pin of a V5-04
+// internal/domain/contextsnapshot.Snapshot — deliberately a NEW, separate
+// field from AgentExecutionRequest's own legacy ContextSnapshotID below
+// (domainruntime.ContextSnapshotID names the pre-existing, spike-era
+// runtime.ContextSnapshot/checkpoint-recovery system). The two
+// context-snapshot systems coexist deliberately (see the contextsnapshot
+// package's own doc comment: "no bridge between them, and no ID of one
+// kind is ever loaded through the other kind's own repository") — a
+// request built by V5-08B0's own assembler
+// (internal/app/runtime.AssembleAgentExecutionRequest) populates this
+// field and never the legacy one; legacy recovery (internal/app/worker)
+// populates ContextSnapshotID and never this one.
+type ContextSnapshotPin struct {
+	ID           contextsnapshot.ID
+	ManifestHash string
+}
+
+// AgentExecutionRequest is provider-neutral: go-core-spec.md §14's own
+// AgentExecutionRequest, "tối thiểu" (at minimum) requiring AttemptID,
+// ProviderKey, AdapterBuildVersion, InstructionArtifact, ContextSnapshot,
+// WorkspaceMounts[], EffectiveScope, ExecutionProfileHash, IsolationProfile,
+// AllowedCapabilities, Timeout, CancellationToken, optional
+// RecoveryCheckpoint/IdempotencyKey. "Tối thiểu" is a floor, not a ceiling
+// (docs/design/07-v5-execution-evidence.md's own V5-08B0 entry) — the
+// pre-existing Prompt/WorkingDirectory/Environment/InheritedEnvironment/
+// Model/Sandbox fields stay exactly as they were (every existing caller of
+// this struct — claude.go, codex.go, internal/app/worker's legacy recovery
+// path, spike acceptance — already reads/writes them via keyed struct
+// literals, so this is a purely additive change).
+//
+// ProviderAdapter (claude.go/codex.go) must never infer permission/mount
+// grants from Prompt's own content (go-core-spec.md §14) — WorkspaceMounts,
+// EffectiveScope, AllowedCapabilities and IsolationProfile are the only
+// authorization-bearing fields; Prompt is instruction content only.
 type AgentExecutionRequest struct {
-	AttemptID            ExecutionAttemptID
-	ContextSnapshotID    domainruntime.ContextSnapshotID
+	AttemptID         ExecutionAttemptID
+	ContextSnapshotID domainruntime.ContextSnapshotID
+
+	// ProviderKey, AdapterBuildID and ContextSnapshot pin exactly which
+	// provider/build/manifest this request was assembled against — an
+	// adapter or fencing caller that needs to re-verify identity compares
+	// against these, never re-derives them from Prompt or WorkspaceMounts.
+	ProviderKey ProviderKey
+	// AdapterBuildID names the exact registered adapterbuild.Build (ADR-022)
+	// this request was verified against — a plain string (matching
+	// internal/app/runtime's own resolvedExecutionProfileView.AdapterBuild.BuildID)
+	// rather than the full domain Build value: a request is a wire-shaped
+	// pin, not a place to carry an entire capability manifest.
+	AdapterBuildID string
+	// InstructionArtifact is the durable, hash-verified V5-01 Artifact a
+	// deterministic materialization of task contract + messages + resources
+	// was Put/Verified into (V5-08B0) — reuses ArtifactRef exactly as V5-01
+	// defined it rather than inventing a parallel reference shape.
+	InstructionArtifact ArtifactRef
+	// ContextSnapshot pins the V5-04 Snapshot this request was assembled
+	// from — see ContextSnapshotPin's own doc comment for why this is a
+	// separate field from ContextSnapshotID above. Nil only for a request
+	// built outside V5-08B0's own assembler (e.g. today's tests/spikes,
+	// which predate it).
+	ContextSnapshot *ContextSnapshotPin
+	// EffectiveScope is the authorization-plane grant this Attempt's own
+	// NodeRun actually carries (internal/domain/work.RepositoryScope) —
+	// distinct from WorkspaceMounts, which is the execution-plane resolved
+	// detail (opaque Handle, working directory, exact revision/generation).
+	// A fencing caller can cross-check the two agree without re-deriving
+	// either from the other.
+	EffectiveScope []work.RepositoryScope
+	// ExecutionProfileHash pins the exact ResolvedExecutionProfileV1 this
+	// Attempt was admitted under (internal/app/runtime's own
+	// resolvedExecutionProfileView/running.ExecutionProfileHash).
+	ExecutionProfileHash string
+	// IsolationProfile is the exact IsolationTier (ADR-013/ADR-023) this
+	// Attempt was admitted under.
+	IsolationProfile policy.IsolationTier
+	// AllowedCapabilities is the exact granted-capability set this Attempt
+	// was admitted under (internal/app/runtime admission's own
+	// profile.AllowedCapabilities).
+	AllowedCapabilities []string
+	// CancellationToken is a placeholder field for V5-08C's own
+	// cancellation-execution-path wiring — always empty until that task
+	// gives it real meaning; declared now only so AgentExecutionRequest's
+	// shape already matches go-core-spec.md §14 in full.
+	CancellationToken string
+	// RecoveryCheckpoint is optional (go-core-spec.md §14's own "?") —
+	// V5-13's own checkpoint/recovery integration is what gives this real
+	// meaning; nil until then.
+	RecoveryCheckpoint *string
+	// IdempotencyKey is this request's own dedupe key — AttemptID itself
+	// is already a durable, unique identity for exactly one execution
+	// intent (ADR-005: "Alpha luôn khởi động agent mới từ ContextSnapshot"
+	// — no Attempt is ever legitimately started twice), so V5-08B0's own
+	// assembler sets this to AttemptID's own string value rather than
+	// minting a second, parallel identity.
+	IdempotencyKey string
+
 	Prompt               string
 	WorkingDirectory     string
 	WorkspaceMounts      []AgentWorkspaceMount

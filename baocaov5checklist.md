@@ -964,3 +964,131 @@ lần trước, để CI's "Linux race and stability" job xác nhận race detec
 node — phụ thuộc V5-08A, sẽ là nơi xây NodeExecutor→AgentExecutor bridge thật + fencing mới cho diff
 scope/evidence/generation trong `FinalizeExecutionAttempt`). Assumption-surface/NEEDS_INFO feature (nguồn
 HE-01-M03) vẫn là nghĩa vụ CHƯA hoàn thành, đã flag task riêng qua `spawn_task`, chưa có số trong roadmap.
+
+## V5-08B0 — Canonical AgentExecutionRequest assembly (branch
+`feat/v5-08b0-canonical-agent-execution-request` off `master` tại `7b821fa`)
+
+**Trạng thái:** code DONE, verify local PASS (build/vet/docs-coverage-check/full suite sạch, hai lần liên
+tiếp cho `internal/app/runtime`+`internal/integration`), chuẩn bị mở PR. Task này KHÔNG nằm trong roadmap
+gốc — user tự tách nó ra làm prerequisite riêng cho V5-08B sau khi review trực tiếp go-core-spec/ADR (xem
+`docs/design/07-v5-execution-evidence.md`'s own V5-08B0 entry, thêm cùng đợt trên nhánh
+`feat/v5-08b-fenced-finalize-agent`). Scope, 4 quyết định gốc (request assembly/evidence fencing/final
+diff/provider loss) và lý do bác bỏ đề xuất A/B/C cũ đã ghi đầy đủ ở mục "Quyết định sau review source of
+truth — 2026-09-08" bên trong section V5-08B (nhánh khác) — không lặp lại ở đây, chỉ ghi phần thực thi
+thật của riêng V5-08B0.
+
+**Nghiên cứu trước khi code** (đọc trực tiếp source thật, không qua Explore agent packaged report — tự
+đọc từng file): phát hiện quan trọng nhất là **"Context route" (ADR-012) đã có sẵn cơ chế thật, chưa từng
+được dùng**: `agentprofile.AgentProfileDocument.ContextPolicyRef` (V2-07, doc comment tự trích go-core-
+spec §14) pin đúng một PolicyVersion; `policy.PolicyDocument{Category: CONTEXT, Context: *ContextRules}`
+(`internal/domain/policy/policy.go`) đã có sẵn `Selector/Order/Budget/ResourceRefs` đúng y hệt câu chữ
+ADR-012 "pin selector/order/budget và resource identities" — nhưng KHÔNG AI TỪNG ĐỌC field này
+(`schedule.go` chưa từng resolve `ContextPolicyRef`, mọi PolicyRefs generic resolve theo Category chỉ xử
+lý ATTEMPT/PERMISSION). Đây chính là mảnh ghép còn thiếu giữa `contextassembler.Resolve` (V5-03, thuật
+toán thuần, chưa có caller thật) và snapshot's `ResourceRefs` (V5-04, hardcode nil). Phát hiện khác:
+`ports.AgentExecutionRequest` ĐÃ TỒN TẠI (không phải type mới) nhưng shape hoàn toàn khác go-core-spec
+§14 — và field `ContextSnapshotID domainruntime.ContextSnapshotID` của nó KHÔNG PHẢI bug: nó đúng cho hệ
+thống checkpoint/recovery cũ (`internal/app/worker`, spike acceptance, `checkpoint_store.go` — tất cả
+đang dùng field này thật), chỉ là SAI type cho pipeline V5-04 mới — sửa nhầm field này sẽ vỡ toàn bộ
+recovery path cũ. Phát hiện thứ ba: KHÔNG có bất kỳ liên kết WorkItem→Component→EngineeringPack nào tồn
+tại (`work.WorkItem` không có `ComponentID`) — xác nhận candidate gathering KHÔNG thể đi qua đường
+Component pack assignment (V2-era), phải đi qua đường AgentProfile.ContextPolicyRef ở trên.
+
+**Quyết định thiết kế tự đưa ra (không nằm trong "Quyết định sau review source of truth", cần user review
+riêng vì đây là chi tiết THỰC THI, không phải quyết định phạm vi):**
+1. **Đặt package thực thi trong chính `internal/app/runtime`** (file mới `assemble_execution_request.go`),
+   KHÔNG tạo top-level package mới (`internal/app/agentrequest` như tôi từng phác thảo lúc plan) — lý do:
+   assembler cần tái dùng `resolvedExecutionProfileView` (unexported), `loadResourceCandidate`/
+   `decodeCompiledSkill`/`decodeCompiledLayer` (mới viết cho phần gather ở schedule.go), và các lỗi
+   `ErrContextSnapshotUnverified`/`ErrNodeRunMismatch` đã có sẵn — tách package riêng sẽ phải export lại
+   toàn bộ hoặc trùng lặp code. Đã sửa doc comment cũ trong `ports/agent.go` (viết trước khi quyết định
+   này chốt, nhắc nhầm `internal/app/agentrequest`) cho khớp.
+2. **`contextsnapshot.ResourceRef` thêm `OwnerVersionID` với tag `json:",omitempty"`** — không phải chỉ
+   thêm field trơn: nếu thiếu `omitempty`, MỌI snapshot cũ (2-field shape) sẽ FAIL tamper-check
+   (`ErrImmutableVersionConflict`) ngay lần load đầu tiên sau khi field mới tồn tại, vì
+   `computeManifestHash` marshal lại JSON và JSON của field mới (dù rỗng) sẽ khác JSON gốc đã hash lúc
+   ghi. Test `TestNewSnapshot_ManifestHash_BackwardCompatibleWithoutOwnerVersionID` tự dựng lại chính xác
+   JSON kiểu cũ bằng tay và chứng minh hash trùng khớp — không chỉ tin tưởng suy luận.
+3. **`ports.AgentExecutionRequest`/`AgentWorkspaceMount` chỉ ĐƯỢC THÊM field, không sửa/xoá field cũ nào**
+   (kể cả field thoạt nhìn "thừa" như `Prompt`/`Model`/`Sandbox`) — "tối thiểu" trong go-core-spec §14 là
+   một SÀN, không phải trần; xác nhận bằng `rg` toàn repo trước khi sửa: `ContextSnapshotID` được dùng bởi
+   ~15 call site thật (worker/recovery.go, checkpoint_store*, spike acceptance, claude.go/codex.go) — sửa
+   type của nó sẽ vỡ compile toàn bộ các nơi đó.
+4. **AdapterBuild bắt buộc TẠI THỜI ĐIỂM ASSEMBLY, dù V5-08's own admission vẫn coi `AdapterBuild == nil`
+   là "legitimate deferred Alpha state"** — đây là điểm khác biệt CÓ CHỦ ĐÍCH giữa hai lớp: admission
+   (V5-08) chỉ kiểm "nếu CÓ pin thì không được drift", còn assembly (V5-08B0) phải sinh ra đúng field
+   `AdapterBuildVersion` mà go-core-spec §14 bắt buộc — một request không có build không bao giờ hợp lệ,
+   bất kể admission có cho attempt chạy hay không. Test
+   `TestAssembleAgentExecutionRequest_NoAdapterBuildPinned_FailsClosed` cố tình dùng đúng path KHÔNG pin
+   build (admission vẫn cho RUNNING) để chứng minh assembly vẫn tự fail riêng, không dựa vào admission đã
+   chặn hộ. **Không sửa `admission.go`'s own driftSatisfied=true-khi-nil logic** — đó là quyết định của
+   V5-08 (đã ship, có lý do riêng: "nothing to verify"), sửa nó là việc của một task khác nếu user muốn,
+   không phải hệ quả tất yếu của V5-08B0.
+5. **Token/byte budget unit conflation**: `policy.ContextBudget.MaxTokens` (đặt tên "tokens") được đọc
+   thẳng làm `contextassembler.Budget.MaxBytes` (byte thật) — không có tokenizer nào tồn tại trong repo
+   (đã tự xác nhận qua `contextassembler`'s own doc comment), và V5-03 cố tình chọn byte-based để tránh
+   nhầm lẫn đúng vấn đề này. Ghi rõ trong code comment đây là "known, narrow unit conflation," không âm
+   thầm giả vờ đã có tokenizer.
+6. **"Task contract" trong InstructionArtifact = `WorkItem.Title/Behavior/AcceptanceCriteria/
+   VerificationSpec`** (V3-03's own WorkItem contract fields) — suy luận riêng, không có câu chữ nào
+   trong 5 dòng quyết định gốc nói rõ "task contract" là gì; chọn 4 field này vì đó chính xác là "cái
+   WorkItem hứa" theo doc comment của chính `work.go`.
+7. **WorkspaceMount.Handle/WorkingDirectory để trống** (chỉ điền RepositoryID/Access/VCSObjectID/
+   WorkspaceGeneration) — tái dùng NGUYÊN VĂN lý do `admission.go`'s `buildExecutionEnvelope` đã dùng:
+   resolve `ports.WorkspaceHandle` thật là việc của V5-08B's own execution bridge, không phải assembly.
+8. **Resolve-conflict lúc scheduling (contextassembler trả `HardConstraintConflictError`/
+   `RequiredContextExceedsBudgetError`) chỉ propagate như lỗi Go thường** (job kỹ thuật retry theo cơ chế
+   DurableJob sẵn có), KHÔNG tạo BLOCKED/TerminationReason mới — vì lỗi này xảy ra TRƯỚC khi Attempt tồn
+   tại (PENDING→QUEUED transaction chưa insert Attempt nào), nên không có state machine ExecutionAttempt
+   nào để chuyển; đúng tinh thần "chỉ sinh reason mới qua ADR", không tự bịa. Đóng gap tường minh cũ mà
+   V5-03's checklist để lại ("chưa gán TerminationReason tạm cho context conflict").
+
+**Fixture regression tự phát hiện khi chạy full suite** (không phải bug logic, nhưng chạm ~50 test có
+sẵn): `validAgentProfileDocument()` (schedule_test.go, dùng bởi ~17 call site qua `publishAgentProfileVersion`)
+đã hardcode `ContextPolicyRef: {VersionID: "context-policy-v1"}` từ trước — vô hại vì trước giờ chưa ai
+đọc field này. Ngay khi `gatherContextResourceRefs` bắt đầu resolve nó thật, toàn bộ ~50 test dùng chung
+fixture này fail với "definition version not found". Sửa: `publishAgentProfileVersion` tự động publish
+kèm một CONTEXT policy version rỗng (`Selector: ["*"]`, `ResourceRefs: nil`) khớp đúng `doc.ContextPolicyRef`
+nếu field đó khác rỗng — giữ hành vi quan sát được (ResourceRefs rỗng) y hệt trước khi field này được tiêu
+thụ, không đổi ý nghĩa test nào. Tách riêng `publishAgentProfileVersionOnly` (không tự auto-publish) cho
+3 test mới cần tự kiểm soát nội dung CONTEXT policy thật (`schedule_contextresourcerefs_test.go`,
+`assemble_execution_request_test.go`).
+
+**File thay đổi:**
+- `internal/domain/contextsnapshot/contextsnapshot.go` (sửa: `ResourceRef` +`OwnerVersionID`),
+  `contextsnapshot_test.go` (+1 test backward-compat hash)
+- `internal/app/ports/agent.go` (sửa: `AgentWorkspaceMount` +revision/generation, `AgentExecutionRequest`
+  +9 field mới theo go-core-spec §14, `ContextSnapshotPin` type mới — field cũ giữ nguyên)
+- `internal/app/runtime/schedule.go` (sửa: `resolveExecutionProfile` trả thêm `contextPolicyRef`;
+  `gatherContextResourceRefs`/`loadResourceCandidate`/`decodeCompiledSkill`/`decodeCompiledLayer`/
+  `skillProvenance`/`layerProvenance` mới; thay `ResourceRefs: nil` bằng gather thật)
+- `internal/app/runtime/assemble_execution_request.go` (mới — `AssembleAgentExecutionRequest`, ~230 dòng)
+- `internal/app/runtime/schedule_test.go` (sửa: tách `publishAgentProfileVersionOnly`, auto-publish
+  CONTEXT policy trong `publishAgentProfileVersion`)
+- `internal/app/runtime/schedule_contextresourcerefs_test.go` (mới, 3 test: gather thật/loại theo
+  Selector/tamper fail-closed)
+- `internal/app/runtime/assemble_execution_request_test.go` (mới, 3 test: end-to-end thật với sqlite fake
+  UnitOfWork + filesystem ArtifactStore thật + AdapterBuild thật/mismatched IDs/thiếu AdapterBuild)
+- `docs/design/07-v5-execution-evidence.md`, `baocaov5checklist.md` (đã commit ở nhánh
+  `feat/v5-08b-fenced-finalize-agent` từ trước; entry này bổ sung riêng cho nhánh V5-08B0)
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                               # sạch
+go run ./cmd/docs-coverage-check                           # debt = 0
+gofmt -l <8 file .go đổi/mới>                              # rỗng
+go test ./internal/domain/contextsnapshot/... -v -count=1  # PASS, kể cả test backward-compat mới
+go test ./internal/app/runtime/... -v -count=1             # PASS toàn bộ (kể cả 6 test mới: 3 context-
+                                                            #   route + 3 assemble-request)
+go test ./internal/app/runtime/... ./internal/integration/... -count=2   # ổn định, không flake
+go test -count=1 ./...                                     # PASS toàn bộ ~70 package
+```
+`-race` không chạy được local (không có cgo/mingw trên máy này) — như mọi lần trước, để CI's "Linux race
+and stability" job xác nhận.
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau khi merge, quay lại nhánh
+`feat/v5-08b-fenced-finalize-agent` (rebase lên master mới có V5-08B0), code V5-08B thật theo đúng scope
+đã chốt ở "Quyết định sau review source of truth — 2026-09-08": nối `AssembleAgentExecutionRequest` +
+NodeExecutor→AgentExecutor bridge, `AttemptFinalizationEvidence` 3 pha, `ProcessSupervisor` quiescence
+postcondition, provider-loss mapping table.

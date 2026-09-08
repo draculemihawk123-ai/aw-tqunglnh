@@ -57,9 +57,29 @@ type MessageRef struct {
 // ResourceRef is one resolved resource (a contextassembler.ResolvedCandidate's
 // own identity, or any other resource kind a caller pins) this Snapshot
 // includes, by reference only.
+//
+// OwnerVersionID completes ADR-012's own passive-resource identity triple
+// (definition.ResourceIdentity: OwnerVersionID+ResourceKey+ContentHash) —
+// V5-08B0 adds it because a real request-assembly caller must be able to
+// re-load the EXACT SkillVersion/LayerVersion a resource came from (to
+// re-verify its content hash before dispatch); ResourceKey+ContentHash
+// alone cannot name which published version to re-load. This field is
+// tagged `omitempty` deliberately: a Snapshot written before V5-08B0 was
+// marshaled with a ResourceRef shape that never had this key at all, and
+// computeManifestHash (below) must keep recomputing the IDENTICAL hash for
+// those already-stored rows on every load (tamper-check re-verifies by
+// recomputing from scratch every time) — omitempty is what makes an
+// old row's JSON re-marshal byte-for-byte identical to what was hashed
+// when it was first written. A NEW snapshot's own ResourceRef always has
+// OwnerVersionID populated (the request assembler fails closed on any ref
+// missing it — see internal/app/agentrequest), so this is never
+// ambiguous in practice: an empty OwnerVersionID only ever means "a
+// snapshot written before this field existed," never "a new ref that
+// forgot to set it."
 type ResourceRef struct {
-	ResourceKey string
-	ContentHash string
+	OwnerVersionID string `json:",omitempty"`
+	ResourceKey    string
+	ContentHash    string
 }
 
 // Snapshot is the immutable manifest go-core-spec §4.6 names:
