@@ -1182,3 +1182,71 @@ V8-04E" — KHÔNG đổi `redact.Matcher` sang substring-match bây giờ. V8-0
 thức xác nhận AK-ARCH-024 toàn cục ("không sink nào bỏ qua redactor dùng chung"). V5-02 và V5-08A giữ
 nguyên kết luận hiện tại của chúng cho finding này — không coi đây là gap cần đóng ở V5 phase. Không sửa
 code gì thêm cho finding 3.
+
+## V5-03 remediation — post-merge audit fixes (2026-09-09)
+
+**Bối cảnh:** tiếp tục vòng đi lại từng task V5 theo yêu cầu user. Audit V5-03 (viết 2026-09-08, sống
+trên nhánh `feat/v5-08b-fenced-finalize-agent`) kết luận **"MỘT PHẦN"**: thuật toán `contextassembler.Resolve`
+đạt, nhưng KHÔNG có caller production nào và kết quả không đi vào ContextSnapshot. V5-08B0 (đã merge)
+ĐÃ ĐÓNG phần lớn gap này (schedule.go giờ gather candidate thật + gọi Resolve + persist ResourceRefs với
+đủ OwnerVersionID) — nhưng audit's own "Kết quả cần đạt" còn một phần V5-08B0 CHƯA làm: "persist selected
+resource identity đầy đủ **cùng provenance/reason** có thể audit" — V5-08B0 chỉ lưu identity
+(OwnerVersionID+ResourceKey+ContentHash) vào Snapshot, KHÔNG lưu lý do chọn/loại (`SelectionReason`) hay
+danh sách bị loại (`Excluded`) ở đâu cả — biến mất ngay khi `ScheduleExecutableNodeRun` return.
+
+**Fix:** `gatherContextResourceRefs` đổi return type từ `[]contextsnapshot.ResourceRef` sang
+`contextassembler.Resolution` đầy đủ (Selected + Excluded + budget spent + cost model). Caller
+(`ScheduleExecutableNodeRun`) tự map `.Selected` thành ResourceRefs cho Snapshot (như cũ), CỘNG THÊM
+persist TOÀN BỘ Resolution (kể cả Excluded/reason) thành một DecisionArtifact mới
+`"<nodeRunId>-context-resolution-v1"` — đúng pattern `"<nodeRunId>-execution-profile-v1"`/
+`"<nodeRunId>-execution-envelope-v1"` đã có sẵn trong chính file này. Chỉ persist khi
+`contextPolicyRef.VersionID != ""` (có context route thật để audit) — COMMAND/MACHINE_GATE node hoặc
+AGENT profile không khai ContextPolicyRef thì không có gì để ghi.
+
+**Test coverage bổ sung** (audit's own "Evidence nghiệm thu bắt buộc" liệt kê rõ Skill/Layer/hard-conflict/
+provenance-reason — V5-08B0 trước đó CHỈ test qua Skill, chưa test Layer hay hard-conflict với definition
+thật):
+- `TestScheduleExecutableNodeRun_GathersRealResourceRefsFromLayer` — mirror test Skill hiện có nhưng qua
+  Layer (thêm helper `oneResourceLayerDocument`/`publishLayerVersion`/`layerResourceContentHash`) — trước
+  giờ path `decodeCompiledLayer`/`layer.ResourceIdentities` trong schedule.go mới chỉ được BUILD, chưa
+  từng chạy qua test thật nào.
+- `TestScheduleExecutableNodeRun_ContextRoute_HardConstraintConflict_FailsClosed` — 2 Skill version thật,
+  cùng ResourceKey khác ContentHash, cả hai HARD_CONSTRAINT, gather qua đúng đường ScheduleExecutableNodeRun
+  thật (không phải unit test thuần của contextassembler.Resolve) — chứng minh scheduling fail closed thật
+  khi có conflict thật, không chỉ thuật toán tự nó phát hiện được.
+- `TestScheduleExecutableNodeRun_PersistsContextResolutionDecisionWithReasons` — chứng minh
+  DecisionArtifact mới lưu đúng: 1 resource SELECTED (global, luôn áp dụng) + 1 resource NOT_APPLICABLE
+  (Selector không khớp WorkItem) — cả hai xuất hiện đúng reason trong JSON đã persist, không chỉ trong bộ
+  nhớ.
+
+**Phạm vi KHÔNG làm thêm (để tránh lấn task khác):**
+- Không test "Pack" (EngineeringPack) riêng — thiết kế thật (khám phá ở V5-08B0) đi qua
+  `AgentProfileDocument.ContextPolicyRef → policy.CategoryContext.ResourceRefs` trực tiếp, KHÔNG qua
+  EngineeringPack's own dependency graph (`engineeringpack.ResolvePackGraph`) — audit's gợi ý "Pack" viết
+  trước khi cơ chế thật này được khám phá, không phải một đường thật cần test.
+- Không thêm test riêng cho "manifest giống nhau khi đảo input order/restart" với ResourceRefs thật —
+  `contextsnapshot`'s own order-sensitive hash test (V5-04) và tamper-detection test (sqlite layer) đã
+  cover nguyên lý này ở tầng snapshot; không lặp lại with real Skill/Layer content vì không có gì khác về
+  nguyên lý.
+- Không thêm test "reserved budget được giữ" riêng với gathering thật — `contextassembler`'s own unit
+  test (V5-03 gốc) đã cover budget reservation logic; real-gathering test ở đây chỉ cần chứng minh
+  candidate/payload thật đi vào đúng, không cần lặp lại budget-reservation math.
+
+**File thay đổi:**
+- `internal/app/runtime/schedule.go` (sửa: `gatherContextResourceRefs` trả `contextassembler.Resolution`
+  thay vì `[]contextsnapshot.ResourceRef`; `recordContextResolutionDecision` mới)
+- `internal/app/runtime/schedule_contextresourcerefs_test.go` (thêm 3 test + helper Layer)
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                            # sạch
+go run ./cmd/docs-coverage-check                        # debt = 0
+gofmt -l <2 file .go đổi>                                # rỗng sau gofmt -w
+go test ./internal/app/runtime/... -count=2              # ổn định, không flake
+go test -count=1 ./...                                  # PASS toàn bộ ~70 package
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp trong remediation pass: V5-04
+(CHƯA ĐẠT — ResourceRefs=nil hardcode đã ĐÓNG bởi V5-08B0, nhưng audit còn nêu vấn đề khác: attempt bị
+mắc kẹt RUNNING mãi mãi khi verifyContextSnapshot fail sau CAS — cần re-assess xem còn gì phải sửa).

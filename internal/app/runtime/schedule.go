@@ -53,6 +53,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/layer"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/skill"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
@@ -329,12 +330,33 @@ func ScheduleExecutableNodeRun(
 		if err != nil {
 			return err
 		}
-		resourceRefs, err := gatherContextResourceRefs(ctx, tx, contextPolicyRef, contextassembler.ResolutionContext{
+		resolution, err := gatherContextResourceRefs(ctx, tx, contextPolicyRef, contextassembler.ResolutionContext{
 			TaskKind:  string(workItem.Kind),
 			RiskClass: string(workItem.RiskLevel),
 		})
 		if err != nil {
 			return err
+		}
+		resourceRefs := make([]contextsnapshot.ResourceRef, len(resolution.Selected))
+		for i, selected := range resolution.Selected {
+			resourceRefs[i] = contextsnapshot.ResourceRef{
+				OwnerVersionID: selected.Identity.OwnerVersionID,
+				ResourceKey:    selected.Identity.ResourceKey,
+				ContentHash:    selected.Identity.ContentHash,
+			}
+		}
+		// V5-03's own audit finding (2026-09-08): "provenance và selection
+		// reason cũng chỉ tồn tại trong kết quả in-memory" — persist the
+		// FULL Resolution (Selected AND Excluded, each with its own
+		// SelectionReason/Provenance) as a durable, auditable DecisionArtifact
+		// whenever a context route was actually pinned (contextPolicyRef
+		// non-zero) — skipped entirely for COMMAND/MACHINE_GATE nodes or an
+		// AGENT profile with no ContextPolicyRef, since there is no
+		// resolution to audit in that case.
+		if contextPolicyRef.VersionID != "" {
+			if err := recordContextResolutionDecision(ctx, tx, req.NodeRunID, run.ProjectID, resolution); err != nil {
+				return err
+			}
 		}
 
 		snapshotID := contextsnapshot.ID(ids.NewID())
@@ -611,20 +633,29 @@ func decodeCompiledLayer(compiledSnapshot string) (layer.LayerDocument, error) {
 // AgentProfile at all) or for an AGENT node whose profile simply omits
 // ContextPolicyRef (agentprofile.AgentProfileDocument's own field is not
 // required) — both are legitimate "no context route pinned" states, so
-// this returns (nil, nil), never an error, for a zero-value ref.
+// this returns a zero-value Resolution (empty Selected/Excluded), never an
+// error, for a zero-value ref. The caller (ScheduleExecutableNodeRun)
+// derives the Snapshot's own ResourceRefs from Resolution.Selected AND
+// persists the full Resolution (Selected AND Excluded, each with its own
+// reason) as a DecisionArtifact — V5-03's own audit finding (2026-09-08):
+// "provenance và selection reason cũng chỉ tồn tại trong kết quả
+// in-memory... persist selected resource identity đầy đủ cùng
+// provenance/reason có thể audit". Returning the full Resolution here
+// (rather than only the already-mapped ResourceRefs) is what lets the
+// caller persist that audit trail without re-deriving it.
 func gatherContextResourceRefs(
 	ctx context.Context, tx ports.Tx, contextPolicyRef definition.DependencyPin, resolutionCtx contextassembler.ResolutionContext,
-) ([]contextsnapshot.ResourceRef, error) {
+) (contextassembler.Resolution, error) {
 	if contextPolicyRef.VersionID == "" {
-		return nil, nil
+		return contextassembler.Resolution{}, nil
 	}
 	routeVersion, err := tx.Definitions().LoadVersion(ctx, contextPolicyRef.VersionID)
 	if err != nil {
-		return nil, fmt.Errorf("runtime: resolve context route policy %s: %w", contextPolicyRef.VersionID, err)
+		return contextassembler.Resolution{}, fmt.Errorf("runtime: resolve context route policy %s: %w", contextPolicyRef.VersionID, err)
 	}
 	routeDoc, err := decodeCompiledPolicy(routeVersion.CompiledSnapshot())
 	if err != nil {
-		return nil, fmt.Errorf("runtime: decode context route policy %s: %w", contextPolicyRef.VersionID, err)
+		return contextassembler.Resolution{}, fmt.Errorf("runtime: decode context route policy %s: %w", contextPolicyRef.VersionID, err)
 	}
 	// agentprofile.AgentProfileDocument.ContextPolicyRef's own doc comment
 	// names this exact check as a gap left for "a future compiler" to
@@ -632,14 +663,14 @@ func gatherContextResourceRefs(
 	// actually resolve to a CONTEXT-category policy, never silently treated
 	// as "no resources" just because the wrong category was pinned.
 	if routeDoc.Category != policy.CategoryContext || routeDoc.Context == nil {
-		return nil, fmt.Errorf("runtime: agent profile's own ContextPolicyRef %s does not resolve to a CONTEXT-category policy (got %q)", contextPolicyRef.VersionID, routeDoc.Category)
+		return contextassembler.Resolution{}, fmt.Errorf("runtime: agent profile's own ContextPolicyRef %s does not resolve to a CONTEXT-category policy (got %q)", contextPolicyRef.VersionID, routeDoc.Category)
 	}
 
 	candidates := make([]contextassembler.Candidate, 0, len(routeDoc.Context.ResourceRefs))
 	for _, pinned := range routeDoc.Context.ResourceRefs {
 		candidate, err := loadResourceCandidate(ctx, tx, pinned)
 		if err != nil {
-			return nil, err
+			return contextassembler.Resolution{}, err
 		}
 		candidates = append(candidates, candidate)
 	}
@@ -655,18 +686,44 @@ func gatherContextResourceRefs(
 	budget := contextassembler.Budget{MaxBytes: uint64(routeDoc.Context.Budget.MaxTokens)}
 	resolution, err := contextassembler.Resolve(candidates, resolutionCtx, budget, contextassembler.ByteCostEstimator{})
 	if err != nil {
-		return nil, fmt.Errorf("runtime: resolve context candidates for policy %s: %w", contextPolicyRef.VersionID, err)
+		return contextassembler.Resolution{}, fmt.Errorf("runtime: resolve context candidates for policy %s: %w", contextPolicyRef.VersionID, err)
 	}
+	return resolution, nil
+}
 
-	refs := make([]contextsnapshot.ResourceRef, len(resolution.Selected))
-	for i, selected := range resolution.Selected {
-		refs[i] = contextsnapshot.ResourceRef{
-			OwnerVersionID: selected.Identity.OwnerVersionID,
-			ResourceKey:    selected.Identity.ResourceKey,
-			ContentHash:    selected.Identity.ContentHash,
-		}
+// recordContextResolutionDecision persists resolution as a durable
+// DecisionArtifact keyed by NodeRunID — V5-03's own audit finding
+// (2026-09-08) fix: "lý do chọn/loại" (why each candidate was selected,
+// excluded as NOT_APPLICABLE, or excluded as BUDGET_EXCEEDED) must be
+// auditable, not just held in an in-memory Resolution value that vanishes
+// once ScheduleExecutableNodeRun returns. Mirrors schedule.go's own
+// "<nodeRunId>-execution-profile-v1" pattern exactly. Idempotent by ID for
+// the identical reason recordExecutionEnvelope (admission.go) already is:
+// a NodeRun is scheduled at most once (this whole file's own
+// idempotent-early-return guards that), so in practice this never actually
+// replays — the check-first guard exists purely so a future caller that
+// DOES retry this path never hits a duplicate-insert error instead of a
+// clean no-op.
+func recordContextResolutionDecision(ctx context.Context, tx ports.Tx, nodeRunID string, projectID project.ProjectID, resolution contextassembler.Resolution) error {
+	id := nodeRunID + "-context-resolution-v1"
+	if _, err := tx.Runtime().GetDecisionArtifact(ctx, id); err == nil {
+		return nil
+	} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
+		return fmt.Errorf("runtime: check existing context resolution decision for node run %s: %w", nodeRunID, err)
 	}
-	return refs, nil
+	resultJSON, err := json.Marshal(resolution)
+	if err != nil {
+		return fmt.Errorf("runtime: marshal context resolution for node run %s: %w", nodeRunID, err)
+	}
+	decision, err := runtimedomain.NewDecisionArtifact(
+		runtimedomain.DecisionArtifactID(id), projectID, "CONTEXT_RESOLUTION_V1", "v1",
+		json.RawMessage(`{}`), resultJSON, time.Now().UTC(),
+	)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Runtime().RecordDecisionArtifact(ctx, decision)
+	return err
 }
 
 // loadResourceCandidate re-loads pinned's own OwnerVersionID fresh — never
