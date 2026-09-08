@@ -48,10 +48,13 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/agentprofile"
+	"github.com/taQuangLing/agent-workflow/internal/domain/contextassembler"
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
+	"github.com/taQuangLing/agent-workflow/internal/domain/layer"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/skill"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
@@ -224,7 +227,7 @@ func ScheduleExecutableNodeRun(
 			return fmt.Errorf("%w: node %s is type %s", ErrNodeNotExecutable, node.Key, node.Type)
 		}
 
-		profile, err := resolveExecutionProfile(ctx, tx, node, runtimeExecutionConfigHash)
+		profile, contextPolicyRef, err := resolveExecutionProfile(ctx, tx, node, runtimeExecutionConfigHash)
 		if err != nil {
 			return err
 		}
@@ -304,15 +307,6 @@ func ScheduleExecutableNodeRun(
 		// tiên"). MessageRefs is every V5-02 Message for this WorkItem so
 		// far, in exactly the order ListMessagesForWorkItem already
 		// returns them (by Sequence) — real, not a placeholder.
-		// ResourceRefs is deliberately empty here: gathering real
-		// Skill/Layer/Pack candidates and calling
-		// contextassembler.Resolve is explicitly out of this task's own
-		// scope (docs/design/07-v5-execution-evidence.md V5-04's own
-		// "Thực hiện" line names schema/repository/hash/binding/
-		// precondition only, never "gather" or "resolve") — a later task
-		// wiring a real AGENT/COMMAND/MACHINE_GATE dispatch caller is
-		// where ResourceRefs stops being empty, without needing to change
-		// this snapshot's own shape or the precondition below.
 		messages, err := tx.Messages().ListMessagesForWorkItem(ctx, string(run.WorkItemID))
 		if err != nil {
 			return err
@@ -321,10 +315,32 @@ func ScheduleExecutableNodeRun(
 		for i, m := range messages {
 			messageRefs[i] = contextsnapshot.MessageRef{MessageID: string(m.ID)}
 		}
+
+		// V5-08B0: ResourceRefs is gathered for real — resolve node's own
+		// AgentProfile.ContextPolicyRef (ADR-012's "Context route") into
+		// contextassembler.Candidate values and call contextassembler.Resolve
+		// (V5-03), replacing the "deliberately empty, out of V5-04's own
+		// scope" placeholder that used to sit here. workItem is loaded fresh
+		// (never trusted from a caller) purely to source RiskClass/TaskKind
+		// for ResolutionContext — the same "resolve from the row actually
+		// stored" discipline every other admission/resolution step in this
+		// codebase already follows.
+		workItem, err := tx.Work().GetWorkItem(ctx, string(run.WorkItemID))
+		if err != nil {
+			return err
+		}
+		resourceRefs, err := gatherContextResourceRefs(ctx, tx, contextPolicyRef, contextassembler.ResolutionContext{
+			TaskKind:  string(workItem.Kind),
+			RiskClass: string(workItem.RiskLevel),
+		})
+		if err != nil {
+			return err
+		}
+
 		snapshotID := contextsnapshot.ID(ids.NewID())
 		snapshot, err := contextsnapshot.NewSnapshot(
 			snapshotID, run.ProjectID, run.WorkItemID, contextsnapshot.AttemptID(attemptID),
-			messageRefs, nil, baseRevisionSet, time.Now().UTC(),
+			messageRefs, resourceRefs, baseRevisionSet, time.Now().UTC(),
 		)
 		if err != nil {
 			return err
@@ -395,26 +411,38 @@ func ScheduleExecutableNodeRun(
 // (an unresolvable pin) propagates unchanged: a node whose declared
 // executor/policy/adapter build cannot be resolved fails this whole
 // scheduling attempt closed, never with a partially-populated profile.
+//
+// The second return value is the node's own AgentProfile.ContextPolicyRef
+// (zero-value definition.DependencyPin for COMMAND/MACHINE_GATE, which
+// never have an AgentProfile at all) — returned separately, never
+// denormalized onto ResolvedExecutionProfileV1 itself, for the identical
+// reason V5-08's own checkCapabilityRequirement re-loads
+// AgentProfileDocument.RequiredCapabilities fresh rather than adding a
+// field to that already-hashed, locked type: the caller
+// (ScheduleExecutableNodeRun, V5-08B0) uses it once, in the same
+// transaction, to gather real context candidates — it is never persisted
+// on its own.
 func resolveExecutionProfile(
 	ctx context.Context, tx ports.Tx, node workflow.Node, runtimeExecutionConfigHash string,
-) (runtimedomain.ResolvedExecutionProfileV1, error) {
+) (runtimedomain.ResolvedExecutionProfileV1, definition.DependencyPin, error) {
 	profile := runtimedomain.ResolvedExecutionProfileV1{
 		SchemaVersion: 1, RuntimeExecutionConfigHash: runtimeExecutionConfigHash,
 	}
+	var contextPolicyRef definition.DependencyPin
 
 	var policyRefs []definition.DependencyPin
 	switch node.Type {
 	case workflow.NodeAgent:
 		if node.Agent == nil {
-			return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("runtime: node %s declares AGENT type with no Agent config", node.Key)
+			return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("runtime: node %s declares AGENT type with no Agent config", node.Key)
 		}
 		executorVersion, err := tx.Definitions().LoadVersion(ctx, node.Agent.ProfileRef.VersionID)
 		if err != nil {
-			return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("runtime: resolve node %s agent profile: %w", node.Key, err)
+			return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("runtime: resolve node %s agent profile: %w", node.Key, err)
 		}
 		agentDoc, err := decodeCompiledAgentProfile(executorVersion.CompiledSnapshot())
 		if err != nil {
-			return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("runtime: node %s: %w", node.Key, err)
+			return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("runtime: node %s: %w", node.Key, err)
 		}
 		profile.Executor = runtimedomain.ResolvedExecutorRef{
 			Kind: runtimedomain.ExecutorKindAgent, DefinitionID: executorVersion.DefinitionID(),
@@ -424,11 +452,12 @@ func resolveExecutionProfile(
 		profile.Model = agentDoc.Model
 		profile.ToolRefs = append([]string(nil), agentDoc.ToolRefs...)
 		profile.MaxTokens = agentDoc.Budget.MaxTokens
+		contextPolicyRef = agentDoc.ContextPolicyRef
 		policyRefs = node.Agent.PolicyRefs
 		if node.Agent.AdapterBuildID != nil {
 			build, err := tx.AdapterBuilds().Get(ctx, *node.Agent.AdapterBuildID)
 			if err != nil {
-				return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("%w: node %s build %s: %v", ErrAdapterBuildUnresolved, node.Key, *node.Agent.AdapterBuildID, err)
+				return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("%w: node %s build %s: %v", ErrAdapterBuildUnresolved, node.Key, *node.Agent.AdapterBuildID, err)
 			}
 			tuple := build.Tuple()
 			profile.AdapterBuild = &runtimedomain.ResolvedAdapterBuildRef{
@@ -437,11 +466,11 @@ func resolveExecutionProfile(
 		}
 	case workflow.NodeCommand:
 		if node.Command == nil {
-			return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("runtime: node %s declares COMMAND type with no Command config", node.Key)
+			return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("runtime: node %s declares COMMAND type with no Command config", node.Key)
 		}
 		executorVersion, err := tx.Definitions().LoadVersion(ctx, node.Command.CommandRef.VersionID)
 		if err != nil {
-			return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("runtime: resolve node %s command: %w", node.Key, err)
+			return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("runtime: resolve node %s command: %w", node.Key, err)
 		}
 		profile.Executor = runtimedomain.ResolvedExecutorRef{
 			Kind: runtimedomain.ExecutorKindCommand, DefinitionID: executorVersion.DefinitionID(),
@@ -450,11 +479,11 @@ func resolveExecutionProfile(
 		policyRefs = node.Command.PolicyRefs
 	case workflow.NodeMachineGate:
 		if node.MachineGate == nil {
-			return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("runtime: node %s declares MACHINE_GATE type with no MachineGate config", node.Key)
+			return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("runtime: node %s declares MACHINE_GATE type with no MachineGate config", node.Key)
 		}
 		executorVersion, err := tx.Definitions().LoadVersion(ctx, node.MachineGate.GateRef.VersionID)
 		if err != nil {
-			return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("runtime: resolve node %s gate: %w", node.Key, err)
+			return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("runtime: resolve node %s gate: %w", node.Key, err)
 		}
 		profile.Executor = runtimedomain.ResolvedExecutorRef{
 			Kind: runtimedomain.ExecutorKindMachineGate, DefinitionID: executorVersion.DefinitionID(),
@@ -462,7 +491,7 @@ func resolveExecutionProfile(
 		}
 		policyRefs = node.MachineGate.PolicyRefs
 	default:
-		return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("%w: node %s is type %s", ErrNodeNotExecutable, node.Key, node.Type)
+		return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("%w: node %s is type %s", ErrNodeNotExecutable, node.Key, node.Type)
 	}
 
 	var timeoutSeconds uint32
@@ -472,11 +501,11 @@ func resolveExecutionProfile(
 	for _, ref := range policyRefs {
 		policyVersion, err := tx.Definitions().LoadVersion(ctx, ref.VersionID)
 		if err != nil {
-			return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("runtime: resolve node %s policy %s: %w", node.Key, ref.VersionID, err)
+			return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("runtime: resolve node %s policy %s: %w", node.Key, ref.VersionID, err)
 		}
 		policyDoc, err := decodeCompiledPolicy(policyVersion.CompiledSnapshot())
 		if err != nil {
-			return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("runtime: node %s: %w", node.Key, err)
+			return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("runtime: node %s: %w", node.Key, err)
 		}
 		profile.Policies = append(profile.Policies, runtimedomain.ResolvedPolicyRef{
 			DefinitionID: policyVersion.DefinitionID(), VersionID: policyVersion.ID(),
@@ -503,15 +532,15 @@ func resolveExecutionProfile(
 	// "missing/invalid input fails closed" posture applied to policy
 	// resolution).
 	if timeoutSeconds == 0 {
-		return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("%w: node %s", ErrAttemptPolicyRequired, node.Key)
+		return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("%w: node %s", ErrAttemptPolicyRequired, node.Key)
 	}
 	if !isolationPinned {
-		return runtimedomain.ResolvedExecutionProfileV1{}, fmt.Errorf("%w: node %s", ErrPermissionPolicyRequired, node.Key)
+		return runtimedomain.ResolvedExecutionProfileV1{}, definition.DependencyPin{}, fmt.Errorf("%w: node %s", ErrPermissionPolicyRequired, node.Key)
 	}
 	profile.TimeoutSeconds = timeoutSeconds
 	profile.IsolationTier = isolationTier
 	profile.AllowedCapabilities = allowedCapabilities
-	return profile, nil
+	return profile, contextPolicyRef, nil
 }
 
 // decodeCompiledAgentProfile unwraps an AgentProfileVersion's own
@@ -544,6 +573,205 @@ func decodeCompiledPolicy(compiledSnapshot string) (policy.PolicyDocument, error
 		return policy.PolicyDocument{}, fmt.Errorf("decode compiled policy snapshot: %w", err)
 	}
 	return wrapper.Document, nil
+}
+
+// decodeCompiledSkill is decodeCompiledAgentProfile's own sibling for
+// internal/domain/skill.Compile's private compiledSkillSnapshot shape.
+func decodeCompiledSkill(compiledSnapshot string) (skill.SkillDocument, error) {
+	var wrapper struct {
+		Document skill.SkillDocument `json:"document"`
+	}
+	if err := json.Unmarshal([]byte(compiledSnapshot), &wrapper); err != nil {
+		return skill.SkillDocument{}, fmt.Errorf("decode compiled skill snapshot: %w", err)
+	}
+	return wrapper.Document, nil
+}
+
+// decodeCompiledLayer is decodeCompiledSkill's own sibling for
+// internal/domain/layer.Compile's private compiledLayerSnapshot shape.
+func decodeCompiledLayer(compiledSnapshot string) (layer.LayerDocument, error) {
+	var wrapper struct {
+		Document layer.LayerDocument `json:"document"`
+	}
+	if err := json.Unmarshal([]byte(compiledSnapshot), &wrapper); err != nil {
+		return layer.LayerDocument{}, fmt.Errorf("decode compiled layer snapshot: %w", err)
+	}
+	return wrapper.Document, nil
+}
+
+// gatherContextResourceRefs resolves node's own AgentProfile.ContextPolicyRef
+// (ADR-012: "Context route là một loại PolicyVersion, pin selector/order/
+// budget và resource identities") into the real, budget-resolved
+// []contextsnapshot.ResourceRef V5-08B0 requires — this is what used to be
+// a hardcoded nil at this function's own call site (V5-04's own deliberate,
+// documented scope boundary; V5-08B0 is the "later task wiring a real
+// AGENT... dispatch caller" that V5-04's own comment named).
+//
+// contextPolicyRef is the zero value for a COMMAND/MACHINE_GATE node (no
+// AgentProfile at all) or for an AGENT node whose profile simply omits
+// ContextPolicyRef (agentprofile.AgentProfileDocument's own field is not
+// required) — both are legitimate "no context route pinned" states, so
+// this returns (nil, nil), never an error, for a zero-value ref.
+func gatherContextResourceRefs(
+	ctx context.Context, tx ports.Tx, contextPolicyRef definition.DependencyPin, resolutionCtx contextassembler.ResolutionContext,
+) ([]contextsnapshot.ResourceRef, error) {
+	if contextPolicyRef.VersionID == "" {
+		return nil, nil
+	}
+	routeVersion, err := tx.Definitions().LoadVersion(ctx, contextPolicyRef.VersionID)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: resolve context route policy %s: %w", contextPolicyRef.VersionID, err)
+	}
+	routeDoc, err := decodeCompiledPolicy(routeVersion.CompiledSnapshot())
+	if err != nil {
+		return nil, fmt.Errorf("runtime: decode context route policy %s: %w", contextPolicyRef.VersionID, err)
+	}
+	// agentprofile.AgentProfileDocument.ContextPolicyRef's own doc comment
+	// names this exact check as a gap left for "a future compiler" to
+	// enforce — this is that enforcement: a Profile's own context pin MUST
+	// actually resolve to a CONTEXT-category policy, never silently treated
+	// as "no resources" just because the wrong category was pinned.
+	if routeDoc.Category != policy.CategoryContext || routeDoc.Context == nil {
+		return nil, fmt.Errorf("runtime: agent profile's own ContextPolicyRef %s does not resolve to a CONTEXT-category policy (got %q)", contextPolicyRef.VersionID, routeDoc.Category)
+	}
+
+	candidates := make([]contextassembler.Candidate, 0, len(routeDoc.Context.ResourceRefs))
+	for _, pinned := range routeDoc.Context.ResourceRefs {
+		candidate, err := loadResourceCandidate(ctx, tx, pinned)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+
+	// ContextBudget.MaxTokens is authored in units named "tokens" (ADR-012),
+	// but no tokenizer exists anywhere in this codebase yet
+	// (contextassembler's own doc comment: "no real tokenizer is wired yet")
+	// and V5-03 deliberately made Budget byte-based to avoid conflating the
+	// two. Until policy.ContextBudget itself grows a byte-denominated field,
+	// this reads the authored number straight as a byte ceiling — a known,
+	// narrow unit conflation (flagged here, not hidden) rather than
+	// inventing an unfounded tokens-to-bytes conversion constant.
+	budget := contextassembler.Budget{MaxBytes: uint64(routeDoc.Context.Budget.MaxTokens)}
+	resolution, err := contextassembler.Resolve(candidates, resolutionCtx, budget, contextassembler.ByteCostEstimator{})
+	if err != nil {
+		return nil, fmt.Errorf("runtime: resolve context candidates for policy %s: %w", contextPolicyRef.VersionID, err)
+	}
+
+	refs := make([]contextsnapshot.ResourceRef, len(resolution.Selected))
+	for i, selected := range resolution.Selected {
+		refs[i] = contextsnapshot.ResourceRef{
+			OwnerVersionID: selected.Identity.OwnerVersionID,
+			ResourceKey:    selected.Identity.ResourceKey,
+			ContentHash:    selected.Identity.ContentHash,
+		}
+	}
+	return refs, nil
+}
+
+// loadResourceCandidate re-loads pinned's own OwnerVersionID fresh — never
+// trusting the ContentHash a ContextRoute policy already carries without
+// re-verifying it against the exact published Skill/LayerVersion right
+// now — and builds the contextassembler.Candidate the resolver needs.
+// Fail-closed (a wrapped error, never a partial Candidate) on any
+// missing/mismatched resource: V5-08B0's own "resolve ResourceRef bằng
+// cách load exact published DefinitionVersion, tìm đúng key, tính lại
+// identity/hash, fail-closed khi thiếu hoặc mismatch".
+func loadResourceCandidate(ctx context.Context, tx ports.Tx, pinned policy.ResourceRef) (contextassembler.Candidate, error) {
+	ownerVersion, err := tx.Definitions().LoadVersion(ctx, pinned.OwnerVersionID)
+	if err != nil {
+		return contextassembler.Candidate{}, fmt.Errorf("runtime: resolve pinned resource owner version %s: %w", pinned.OwnerVersionID, err)
+	}
+
+	var (
+		identity definition.ResourceIdentity
+		priority definition.PriorityClass
+		selector contextassembler.Selector
+		prov     contextassembler.Provenance
+		payload  string
+		found    bool
+	)
+	switch ownerVersion.Kind() {
+	case definition.KindSkill:
+		doc, err := decodeCompiledSkill(ownerVersion.CompiledSnapshot())
+		if err != nil {
+			return contextassembler.Candidate{}, fmt.Errorf("runtime: decode skill version %s: %w", pinned.OwnerVersionID, err)
+		}
+		identities, err := skill.ResourceIdentities(skill.SkillVersionID(pinned.OwnerVersionID), doc)
+		if err != nil {
+			return contextassembler.Candidate{}, fmt.Errorf("runtime: compute skill %s resource identities: %w", pinned.OwnerVersionID, err)
+		}
+		for i, resolved := range identities {
+			if resolved.Identity.ResourceKey != pinned.ResourceKey {
+				continue
+			}
+			identity, priority, found = resolved.Identity, resolved.Priority, true
+			res := doc.Resources[i]
+			selector = contextassembler.Selector{
+				ComponentTags: res.Selector.ComponentTags, PathTags: res.Selector.PathTags,
+				TaskKinds: res.Selector.TaskKinds, BlockKinds: res.Selector.BlockKinds, RiskClasses: res.Selector.RiskClasses,
+			}
+			prov = skillProvenance(res.Provenance)
+			payload = res.Instruction
+			break
+		}
+	case definition.KindLayer:
+		doc, err := decodeCompiledLayer(ownerVersion.CompiledSnapshot())
+		if err != nil {
+			return contextassembler.Candidate{}, fmt.Errorf("runtime: decode layer version %s: %w", pinned.OwnerVersionID, err)
+		}
+		identities, err := layer.ResourceIdentities(layer.LayerVersionID(pinned.OwnerVersionID), doc)
+		if err != nil {
+			return contextassembler.Candidate{}, fmt.Errorf("runtime: compute layer %s resource identities: %w", pinned.OwnerVersionID, err)
+		}
+		for i, resolved := range identities {
+			if resolved.Identity.ResourceKey != pinned.ResourceKey {
+				continue
+			}
+			identity, priority, found = resolved.Identity, resolved.Priority, true
+			res := doc.Resources[i]
+			selector = contextassembler.Selector{
+				ComponentTags: res.Selector.ComponentTags, PathTags: res.Selector.PathTags,
+				TaskKinds: res.Selector.TaskKinds, BlockKinds: res.Selector.BlockKinds, RiskClasses: res.Selector.RiskClasses,
+			}
+			prov = layerProvenance(res.Provenance)
+			payload = res.Convention
+			break
+		}
+	default:
+		return contextassembler.Candidate{}, fmt.Errorf("runtime: pinned resource owner version %s is kind %s, not SKILL or LAYER", pinned.OwnerVersionID, ownerVersion.Kind())
+	}
+	if !found {
+		return contextassembler.Candidate{}, fmt.Errorf("runtime: resource key %s not found in owner version %s", pinned.ResourceKey, pinned.OwnerVersionID)
+	}
+	if identity.ContentHash != pinned.ContentHash {
+		return contextassembler.Candidate{}, fmt.Errorf("runtime: resource %s in version %s: content hash %s no longer matches pinned hash %s", pinned.ResourceKey, pinned.OwnerVersionID, identity.ContentHash, pinned.ContentHash)
+	}
+
+	return contextassembler.Candidate{
+		Identity: identity, Priority: priority, Selector: selector, Provenance: prov, Payload: []byte(payload),
+	}, nil
+}
+
+// skillProvenance/layerProvenance map skill.Provenance/layer.Provenance
+// (LastVerified *time.Time) onto contextassembler.Provenance (LastVerified
+// string) — that package declares its own Provenance fresh rather than
+// importing either authoring kind's own type (see its own doc comment), so
+// this is the one place that translation happens.
+func skillProvenance(p skill.Provenance) contextassembler.Provenance {
+	prov := contextassembler.Provenance{Owner: p.Owner, Source: p.Source, Revision: p.Revision}
+	if p.LastVerified != nil {
+		prov.LastVerified = p.LastVerified.UTC().Format(time.RFC3339)
+	}
+	return prov
+}
+
+func layerProvenance(p layer.Provenance) contextassembler.Provenance {
+	prov := contextassembler.Provenance{Owner: p.Owner, Source: p.Source, Revision: p.Revision}
+	if p.LastVerified != nil {
+		prov.LastVerified = p.LastVerified.UTC().Format(time.RFC3339)
+	}
+	return prov
 }
 
 // NodeScheduledEventType/NodeScheduledSchemaVersion identify NODE_SCHEDULED's

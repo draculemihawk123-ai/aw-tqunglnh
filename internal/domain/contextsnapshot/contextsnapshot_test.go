@@ -1,6 +1,8 @@
 package contextsnapshot
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -116,6 +118,46 @@ func TestNewSnapshot_ManifestHash_DeterministicForIdenticalContent(t *testing.T)
 	}
 	if a.ManifestHash != b.ManifestHash {
 		t.Fatalf("ManifestHash = %q vs %q, want identical for identical manifest content", a.ManifestHash, b.ManifestHash)
+	}
+}
+
+// TestNewSnapshot_ManifestHash_BackwardCompatibleWithoutOwnerVersionID proves
+// V5-08B0's own addition of ResourceRef.OwnerVersionID does not change the
+// ManifestHash of a Snapshot whose ResourceRefs were written before this
+// field existed (an empty OwnerVersionID, the only value any pre-V5-08B0
+// row could ever have). This is exactly the tamper-check
+// loadSnapshotTx (internal/adapters/sqlite) re-runs on every load: if this
+// test ever failed, every Snapshot row stored before this field was added
+// would start failing ErrImmutableVersionConflict on the very next read.
+func TestNewSnapshot_ManifestHash_BackwardCompatibleWithoutOwnerVersionID(t *testing.T) {
+	revisions := validRevisions(t)
+	now := time.Now()
+
+	withEmptyOwner, err := NewSnapshot("s1", "p", "w", "a",
+		nil, []ResourceRef{{ResourceKey: "res-1", ContentHash: "hash-1"}}, revisions, now)
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+
+	// The exact JSON a pre-V5-08B0 ResourceRef{ResourceKey, ContentHash}
+	// (no OwnerVersionID field in the Go type at all) would have produced,
+	// hashed through the identical canonicalManifest wrapper this package
+	// has always used.
+	legacyJSON := `{"messageRefs":null,"resourceRefs":[{"ResourceKey":"res-1","ContentHash":"hash-1"}],"revisionSetHash":"` + revisions.ContentHash() + `"}`
+	sum := sha256.Sum256([]byte(legacyJSON))
+	legacyHash := "sha256:" + hex.EncodeToString(sum[:])
+
+	if withEmptyOwner.ManifestHash != legacyHash {
+		t.Fatalf("ManifestHash = %q, want %q (a pre-V5-08B0 row's own hash) — OwnerVersionID must be omitempty so an old row's JSON re-marshals identically", withEmptyOwner.ManifestHash, legacyHash)
+	}
+
+	withOwner, err := NewSnapshot("s2", "p", "w", "a",
+		nil, []ResourceRef{{OwnerVersionID: "owner-1", ResourceKey: "res-1", ContentHash: "hash-1"}}, revisions, now)
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+	if withOwner.ManifestHash == withEmptyOwner.ManifestHash {
+		t.Fatal("ManifestHash must differ once OwnerVersionID is populated — it is part of the manifest content now")
 	}
 }
 

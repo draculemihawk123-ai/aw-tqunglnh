@@ -85,7 +85,34 @@ func permissionPolicyDocument() policy.PolicyDocument {
 // unwrap it in production. Takes ports.UnitOfWork (not *fake.UnitOfWork) so
 // this same helper backs both the fake and the sqlite tests in this
 // package.
+// publishAgentProfileVersion publishes doc, then auto-publishes a matching
+// (empty-candidate) CONTEXT-category policy version for doc's own
+// ContextPolicyRef if it declares one — V5-08B0's gatherContextResourceRefs
+// (schedule.go) now actually resolves that ref, so every fixture document
+// that declares one (validAgentProfileDocument does, unconditionally) must
+// have a real, matching policy version behind it or scheduling fails closed
+// with "definition version not found". An empty ResourceRefs list keeps
+// every existing test's own observable behavior identical to before this
+// field was ever consumed. A test that needs REAL resolved resources
+// (schedule_contextresourcerefs_test.go) publishes its own CONTEXT policy
+// version first (with real ResourceRefs) and calls
+// publishAgentProfileVersionOnly directly instead, to avoid this
+// auto-publish colliding with its own.
 func publishAgentProfileVersion(t *testing.T, uow ports.UnitOfWork, definitionID, versionID string, doc agentprofile.AgentProfileDocument) {
+	t.Helper()
+	publishAgentProfileVersionOnly(t, uow, definitionID, versionID, doc)
+	if doc.ContextPolicyRef.VersionID != "" {
+		publishPolicyVersion(t, uow, doc.ContextPolicyRef.DefinitionID, doc.ContextPolicyRef.VersionID, policy.PolicyDocument{
+			Category: policy.CategoryContext,
+			Context:  &policy.ContextRules{Selector: []string{"*"}, Budget: policy.ContextBudget{MaxTokens: doc.Budget.MaxTokens}},
+		})
+	}
+}
+
+// publishAgentProfileVersionOnly is publishAgentProfileVersion's own body,
+// minus the CONTEXT-policy auto-publish — see that function's own doc
+// comment for why a caller would use this one directly instead.
+func publishAgentProfileVersionOnly(t *testing.T, uow ports.UnitOfWork, definitionID, versionID string, doc agentprofile.AgentProfileDocument) {
 	t.Helper()
 	ctx := context.Background()
 	createCmd := testCommand("idem-def-"+definitionID, "hash-def-"+definitionID, ports.InstallationScope(), "CreateDefinition")
