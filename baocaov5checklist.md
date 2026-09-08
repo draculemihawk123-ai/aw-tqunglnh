@@ -1176,3 +1176,9 @@ go test -count=1 ./...                                  # PASS toàn bộ ~70 pa
 chờ user trả lời — KHÔNG tự sửa. Task kế tiếp trong remediation pass: V5-03 (MỘT PHẦN — resolver không
 có caller thật, đã ĐÓNG MỘT PHẦN bởi V5-08B0's own gatherContextResourceRefs, cần re-assess lại xem còn
 thiếu gì sau khi V5-08B0 đã merge).
+
+**Quyết định user cho Finding 3 (2026-09-09, ngay trong chat, trước khi PR #38 merge):** "Giữ nguyên, chờ
+V8-04E" — KHÔNG đổi `redact.Matcher` sang substring-match bây giờ. V8-04E (roadmap V8) vẫn là nơi chính
+thức xác nhận AK-ARCH-024 toàn cục ("không sink nào bỏ qua redactor dùng chung"). V5-02 và V5-08A giữ
+nguyên kết luận hiện tại của chúng cho finding này — không coi đây là gap cần đóng ở V5 phase. Không sửa
+code gì thêm cho finding 3.
