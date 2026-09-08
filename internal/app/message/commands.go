@@ -126,6 +126,24 @@ func AppendMessage(
 		return AppendMessageResult{}, fmt.Errorf("message: unknown Sensitivity %d", req.Sensitivity)
 	}
 
+	// Pre-check the idempotency receipt BEFORE any ArtifactStore I/O (audit
+	// finding, 2026-09-08): a pure replay or a genuine RequestHash conflict
+	// must be identified before Put ever runs, not just accepted as "wasted
+	// I/O" — a caller retrying after a transient failure with DIFFERENT
+	// content should never see that new content silently discarded only
+	// after already being written to disk. This is a read-only pre-check;
+	// loadOrValidateReceipt runs again unchanged inside the write
+	// transaction below to close the TOCTOU race between the two (a
+	// concurrent caller could record the receipt in between) — the
+	// identical two-phase "read-only pre-check, then re-verify inside a
+	// serialized-write transaction" pattern internal/app/runtime's own
+	// admission probe already established.
+	if preResult, replayed, err := loadOrValidateReceipt(ctx, uow, cmd); err != nil {
+		return AppendMessageResult{}, err
+	} else if replayed {
+		return preResult, nil
+	}
+
 	// Redact BEFORE Put — the same "redact first, then bound" ordering
 	// V1-09's own checklist establishes: content must be in its final,
 	// redacted form before anything durable is ever written from it.
@@ -145,15 +163,11 @@ func AppendMessage(
 
 	var result AppendMessageResult
 	err = uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
-		existingReceipt, found, err := tx.Receipts().Load(ctx, cmd.Actor, cmd.Scope, cmd.IdempotencyKey, cmd.Type)
-		if err != nil {
+		if replayedResult, found, err := loadOrValidateReceiptTx(ctx, tx, cmd); err != nil {
 			return err
-		}
-		if found {
-			if existingReceipt.RequestHash != cmd.RequestHash {
-				return ports.ErrReceiptConflict
-			}
-			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
+		} else if found {
+			result = replayedResult
+			return nil
 		}
 
 		if _, err := tx.Artifacts().InsertArtifact(ctx, prepared); err != nil {
@@ -217,6 +231,45 @@ func AppendMessage(
 		})
 	})
 	return result, err
+}
+
+// loadOrValidateReceipt is AppendMessage's own read-only pre-check, run
+// BEFORE any ArtifactStore I/O — see AppendMessage's own call site doc
+// comment for why. found=true means cmd was already processed (result is
+// the replayed AppendMessageResult); a receipt with a different
+// RequestHash for the same key is ports.ErrReceiptConflict; no receipt at
+// all is (zero value, false, nil).
+func loadOrValidateReceipt(ctx context.Context, uow ports.UnitOfWork, cmd ports.Command) (AppendMessageResult, bool, error) {
+	var result AppendMessageResult
+	var found bool
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		result, found, err = loadOrValidateReceiptTx(ctx, tx, cmd)
+		return err
+	})
+	return result, found, err
+}
+
+// loadOrValidateReceiptTx is loadOrValidateReceipt's own Tx-scoped body —
+// shared verbatim by both the read-only pre-check above and the
+// serialized-write transaction's own re-check (AppendMessage), so the two
+// can never drift out of sync with each other.
+func loadOrValidateReceiptTx(ctx context.Context, tx ports.Tx, cmd ports.Command) (AppendMessageResult, bool, error) {
+	existingReceipt, found, err := tx.Receipts().Load(ctx, cmd.Actor, cmd.Scope, cmd.IdempotencyKey, cmd.Type)
+	if err != nil {
+		return AppendMessageResult{}, false, err
+	}
+	if !found {
+		return AppendMessageResult{}, false, nil
+	}
+	if existingReceipt.RequestHash != cmd.RequestHash {
+		return AppendMessageResult{}, false, ports.ErrReceiptConflict
+	}
+	var result AppendMessageResult
+	if err := json.Unmarshal([]byte(existingReceipt.ResultJSON), &result); err != nil {
+		return AppendMessageResult{}, false, err
+	}
+	return result, true, nil
 }
 
 // ListMessages returns every Message for workItemID, ordered by Sequence —

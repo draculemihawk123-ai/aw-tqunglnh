@@ -4,12 +4,37 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/message"
 )
+
+// seedFixtureSecondWorkItem adds a family + work_item row for an
+// ALREADY-EXISTING project — SeedFixtureOwners' own sibling for a test
+// that needs a second WorkItem in the same project (SeedFixtureOwners
+// itself always inserts a fresh project row, so it cannot be called twice
+// for the same projectID).
+func seedFixtureSecondWorkItem(ctx context.Context, store *Store, projectID, familyID, workItemID string) error {
+	const timestamp = "2026-08-28T16:00:00Z"
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO task_families(id, project_id, root_work_item_id, scope_version, status, version, created_at, updated_at)
+VALUES (?, ?, ?, 1, 'ACTIVE', 1, ?, ?);`,
+		familyID, projectID, workItemID, timestamp, timestamp,
+	); err != nil {
+		return fmt.Errorf("seed fixture family: %w", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO work_items(id, project_id, kind, parent_id, family_id, title, status, version, created_at, updated_at)
+VALUES (?, ?, 'ROOT', NULL, ?, 'Test fixture work item', 'ACTIVE', 1, ?, ?);`,
+		workItemID, projectID, familyID, timestamp, timestamp,
+	); err != nil {
+		return fmt.Errorf("seed fixture work item: %w", err)
+	}
+	return nil
+}
 
 func TestMessageRepository_AppendMessage_GetMessage_RoundTrip(t *testing.T) {
 	store := openCatalogTestStore(t, "messages-roundtrip.db")
@@ -114,6 +139,72 @@ func TestMessageRepository_AppendMessage_AttemptLinkage(t *testing.T) {
 	if appended.AttemptID == nil || string(*appended.AttemptID) != "attempt-1" {
 		t.Fatalf("AttemptID = %v, want attempt-1", appended.AttemptID)
 	}
+}
+
+// TestMessageRepository_AppendMessage_AttemptBelongsToDifferentWorkItem_Rejected
+// is the audit finding (2026-09-08) fix: the original check only verified
+// req.AttemptID named a real execution_attempts row, never that the row
+// actually traced back to req.WorkItemID — a caller could otherwise link a
+// Message to an Attempt from a different WorkItem in the SAME project.
+func TestMessageRepository_AppendMessage_AttemptBelongsToDifferentWorkItem_Rejected(t *testing.T) {
+	store := openCatalogTestStore(t, "messages-attempt-cross-workitem.db")
+	ctx := context.Background()
+	if err := SeedFixtureOwners(ctx, store, "project-1", "family-1", "work-item-1"); err != nil {
+		t.Fatalf("SeedFixtureOwners: %v", err)
+	}
+	// A second WorkItem in the SAME project — SeedFixtureOwners itself
+	// always inserts a fresh project row, so it cannot be called twice for
+	// project-1; this adds only the family + work_item rows a second
+	// sibling WorkItem needs.
+	if err := seedFixtureSecondWorkItem(ctx, store, "project-1", "family-2", "work-item-2"); err != nil {
+		t.Fatalf("seedFixtureSecondWorkItem: %v", err)
+	}
+	// attempt-1 belongs to work-item-2, not work-item-1.
+	if err := SeedFixtureExecutionAttempt(ctx, store, "project-1", "family-2", "work-item-2", "attempt-1"); err != nil {
+		t.Fatalf("SeedFixtureExecutionAttempt: %v", err)
+	}
+	artifactID := seedTestArtifact(t, store, "project-1", "artifact-1")
+
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := messageRepository{tx: tx}.AppendMessage(ctx, ports.AppendMessageRequest{
+			ID: "msg-1", ProjectID: "project-1", WorkItemID: "work-item-1", AttemptID: "attempt-1",
+			Actor: "assistant", Role: message.RoleAssistant, ContentArtifactID: artifactID, CreatedAt: time.Now(),
+		})
+		if !errors.Is(err, ports.ErrCrossWorkItemReference) {
+			t.Fatalf("err = %v, want ports.ErrCrossWorkItemReference", err)
+		}
+		return nil
+	})
+}
+
+// TestMessageRepository_AppendMessage_AttemptBelongsToDifferentProject_Rejected
+// is the same fix's other half: the Attempt's own resolved Project must
+// also match req.ProjectID, not just its WorkItem.
+func TestMessageRepository_AppendMessage_AttemptBelongsToDifferentProject_Rejected(t *testing.T) {
+	store := openCatalogTestStore(t, "messages-attempt-cross-project.db")
+	ctx := context.Background()
+	if err := SeedFixtureOwners(ctx, store, "project-1", "family-1", "work-item-1"); err != nil {
+		t.Fatalf("SeedFixtureOwners: %v", err)
+	}
+	if err := SeedFixtureOwners(ctx, store, "project-2", "family-2", "work-item-2"); err != nil {
+		t.Fatalf("SeedFixtureOwners: %v", err)
+	}
+	// attempt-1 belongs to project-2's own work-item-2.
+	if err := SeedFixtureExecutionAttempt(ctx, store, "project-2", "family-2", "work-item-2", "attempt-1"); err != nil {
+		t.Fatalf("SeedFixtureExecutionAttempt: %v", err)
+	}
+	artifactID := seedTestArtifact(t, store, "project-1", "artifact-1")
+
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := messageRepository{tx: tx}.AppendMessage(ctx, ports.AppendMessageRequest{
+			ID: "msg-1", ProjectID: "project-1", WorkItemID: "work-item-1", AttemptID: "attempt-1",
+			Actor: "assistant", Role: message.RoleAssistant, ContentArtifactID: artifactID, CreatedAt: time.Now(),
+		})
+		if !errors.Is(err, ports.ErrCrossWorkItemReference) {
+			t.Fatalf("err = %v, want ports.ErrCrossWorkItemReference", err)
+		}
+		return nil
+	})
 }
 
 func TestMessageRepository_AppendMessage_AttemptNotFound(t *testing.T) {

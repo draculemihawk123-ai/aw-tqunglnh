@@ -48,13 +48,27 @@ func appendMessageTx(ctx context.Context, tx *sql.Tx, req ports.AppendMessageReq
 
 	var attemptID *runtime.ExecutionAttemptID
 	if req.AttemptID != "" {
-		var attemptExists int
-		err := tx.QueryRowContext(ctx, `SELECT 1 FROM execution_attempts WHERE id = ?`, req.AttemptID).Scan(&attemptExists)
+		// Resolve the Attempt's OWN WorkItem/Project by tracing
+		// execution_attempts -> node_runs -> workflow_runs — never just an
+		// existence check (audit finding, 2026-09-08: a bare "does this ID
+		// exist" check would let a caller link a Message to an Attempt from
+		// a completely different WorkItem or Project).
+		var attemptWorkItemID, attemptProjectID string
+		err := tx.QueryRowContext(ctx, `
+SELECT wr.work_item_id, wr.project_id
+FROM execution_attempts ea
+JOIN node_runs nr ON nr.id = ea.node_run_id
+JOIN workflow_runs wr ON wr.id = nr.run_id
+WHERE ea.id = ?`, req.AttemptID).Scan(&attemptWorkItemID, &attemptProjectID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return message.Message{}, fmt.Errorf("%w: execution attempt %s", ports.ErrPersistenceNotFound, req.AttemptID)
 		}
 		if err != nil {
 			return message.Message{}, MapSQLiteError(fmt.Errorf("resolve message attempt: %w", err))
+		}
+		if attemptWorkItemID != req.WorkItemID || attemptProjectID != req.ProjectID {
+			return message.Message{}, fmt.Errorf("%w: execution attempt %s belongs to work item %s / project %s, not %s / %s",
+				ports.ErrCrossWorkItemReference, req.AttemptID, attemptWorkItemID, attemptProjectID, req.WorkItemID, req.ProjectID)
 		}
 		id := runtime.ExecutionAttemptID(req.AttemptID)
 		attemptID = &id
