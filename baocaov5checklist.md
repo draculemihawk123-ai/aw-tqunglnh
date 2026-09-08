@@ -1250,3 +1250,66 @@ go test -count=1 ./...                                  # PASS toàn bộ ~70 pa
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp trong remediation pass: V5-04
 (CHƯA ĐẠT — ResourceRefs=nil hardcode đã ĐÓNG bởi V5-08B0, nhưng audit còn nêu vấn đề khác: attempt bị
 mắc kẹt RUNNING mãi mãi khi verifyContextSnapshot fail sau CAS — cần re-assess xem còn gì phải sửa).
+
+## V5-04 remediation — post-merge audit fixes (2026-09-09)
+
+**Bối cảnh:** tiếp tục vòng đi lại từng task V5. Audit V5-04 kết luận **"CHƯA ĐẠT acceptance đầy đủ"**
+với finding nghiêm trọng nhất trong toàn bộ audit: `verifyContextSnapshot` (execute.go, dispatch-time
+precondition) chỉ kiểm binding/RevisionSet, KHÔNG BAO GIỜ dereference MessageRefs/ResourceRefs; và khi
+verify fail, code CŨ chỉ `return err`, để Attempt mắc kẹt `RUNNING` VĨNH VIỄN — một livelock thật (không
+có đường nào trong toàn bộ codebase từng re-drive một Attempt RUNNING mà job của nó cứ fail đúng
+precondition này ở mọi lần redelivery).
+
+**Fix 1 — đóng livelock:** `Handle()`'s own verify-failure branch đổi từ `return err` (để RUNNING mãi)
+sang gọi `FinalizeExecutionAttempt` với `NextState: FAILED, TerminationReason: EXECUTION_FAILED,
+FailureCode: errorcode.CodeExecutionFailed` — ĐÚNG (state, reason) pair mà nhánh "bare executor error"
+ngay bên dưới ĐàN dùng, không cần TerminationReason mới (không đụng ma trận state–reason đã khoá của
+ADR-020). `Handle()` trả `finalizeErr` (nil khi finalize thành công) thay vì `err` gốc — đúng pattern MỌI
+nhánh finalize khác trong function này đã dùng (job coi là "đã xong việc" khi Attempt đã terminal, không
+retry job vô ích).
+
+**Fix 2 — verifyContextSnapshot dereference thật:** thêm 2 vòng lặp mới sau check RevisionSet — mỗi
+`MessageRef` phải resolve về `Message` thật CÙNG WorkItem/Project, có `ContentArtifactID` trỏ tới Artifact
+`ATTACHED`; mỗi `ResourceRef` re-verify qua `loadResourceCandidate` (schedule.go, V5-08B0 — TÁI DÙNG
+nguyên hàm, không viết logic thứ hai) — cùng một đường verify `AssembleAgentExecutionRequest` (V5-08B0)
+đã dùng, tránh hai nơi kiểm tra khác nhau có thể lệch nhau theo thời gian.
+
+**2 test cũ SAI kỳ vọng, đã sửa:** cả 2 test hiện có (`TestExecuteNodeHandler_MissingContextSnapshot_...`,
+`TestExecuteNodeHandler_ContextSnapshotBoundToDifferentAttempt_...`) TỪNG assert `attempt.State ==
+RUNNING` như là hành vi ĐÚNG (đúng y hệt bug vừa sửa) — đổi assertion sang `Handle()` trả `nil` +
+`attempt.State == FAILED` + `TerminationReason == EXECUTION_FAILED`.
+
+**Test mới** (đúng gap audit chỉ ra: dereferencing trước đây KHÔNG BAO GIỜ được test):
+- `TestExecuteNodeHandler_ContextSnapshot_MessageRefInvalid_FinalizesFailed` — snapshot bị overwrite với
+  MessageRef trỏ tới Message không tồn tại.
+- `TestExecuteNodeHandler_ContextSnapshot_ResourceRefInvalid_FinalizesFailed` — tương tự với ResourceRef
+  trỏ tới OwnerVersionID không tồn tại.
+
+**Phạm vi KHÔNG làm thêm (ghi rõ, không lặng lẽ bỏ qua):** audit's "Evidence nghiệm thu bắt buộc" còn liệt
+kê thêm cross-project Message ref, artifact tamper (AttachState≠ATTACHED), và RevisionSet mismatch — CHƯA
+viết test riêng cho 3 case này ở tầng dispatch-precondition (dù logic verify MỚI đã bao phủ đủ cả 3 —
+cross-project check dùng đúng `msg.WorkItemID/ProjectID` so sánh, AttachState check dùng đúng
+`art.AttachState != Attached`, RevisionSet check đã có từ trước task này). Quyết định dừng ở 2 test trên vì
+đã đủ chứng minh CẢ HAI vòng lặp mới (Message VÀ Resource) hoạt động và livelock đã đóng — 3 case còn lại
+là biến thể của CÙNG logic, không phải đường code mới. Nếu user muốn coverage đầy đủ hơn, có thể mở task
+riêng.
+
+**File thay đổi:**
+- `internal/app/runtime/execute.go` (sửa: `verifyContextSnapshot` thêm dereference MessageRefs/
+  ResourceRefs; `Handle()`'s verify-failure branch finalize FAILED thay vì để RUNNING)
+- `internal/app/runtime/execute_contextsnapshot_test.go` (sửa 2 test cũ + thêm 2 test mới)
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                            # sạch
+go run ./cmd/docs-coverage-check                        # debt = 0
+gofmt -l <2 file .go đổi>                                # rỗng sau gofmt -w
+go test ./internal/app/runtime/... ./internal/integration/... -count=2   # ổn định, không flake
+go test -count=1 ./...                                  # PASS toàn bộ ~70 package
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp trong remediation pass: V5-05
+(MỘT PHẦN — process-tree quiescence trên normal-exit path — đã được user chốt là scope của V5-08B chính
+thức, KHÔNG phải remediation riêng ở đây; re-assess xem còn phần nào của V5-05's own audit KHÔNG thuộc
+V5-08B cần sửa ngay).

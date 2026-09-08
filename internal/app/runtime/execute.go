@@ -74,6 +74,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
+	"github.com/taQuangLing/agent-workflow/internal/domain/artifact"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
@@ -247,17 +248,33 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 	// snapshot in a fresh read-only transaction, closed BEFORE the
 	// executor is ever invoked (never hold a DB transaction open across
 	// an external process call). A failure here returns without ever
-	// calling h.executor.Execute — executor spawn count is zero — and,
-	// like the cancel/lease-loss cases this file's own doc comment
-	// already documents, does NOT finalize the Attempt: it is left
-	// RUNNING, unterminalized. V5-08 (not yet built) is the future
-	// authority that maps this typed error to a real admission outcome
-	// (BLOCKED + an appropriate TerminationReason); no such reason exists
-	// in today's state-reason matrix (docs/architecture/04-go-core-spec.md
-	// §4.5), and inventing one here would be exactly the kind of
-	// unauthorized state-machine decision this task's own scope avoids.
+	// calling h.executor.Execute — executor spawn count is zero.
+	//
+	// Audit finding (2026-09-08): this used to just `return err` here,
+	// leaving the Attempt RUNNING forever — no path in this codebase ever
+	// re-drives a RUNNING Attempt whose own job keeps failing this exact
+	// precondition on every redelivery/retry (a real livelock, not a
+	// theoretical one). RUNNING→FAILED/EXECUTION_FAILED is already a valid
+	// entry in the closed state-reason matrix (ADR-020,
+	// docs/architecture/04-go-core-spec.md §4.5) — the SAME (state, reason)
+	// pair the bare-executor-error branch below already uses for "this
+	// execution could not be classified more precisely" — so finalizing
+	// here needs no new TerminationReason/vocabulary, unlike the
+	// BLOCKED-admission idea the old comment here used to reserve for
+	// "V5-08 (not yet built)".
 	if err := h.verifyContextSnapshot(ctx, payload.RunID, running); err != nil {
-		return err
+		// Mirrors every other terminal-finalize branch in this function:
+		// once FinalizeExecutionAttempt itself succeeds, the Attempt is
+		// terminal and this job's own work is done — return finalizeErr
+		// (nil on success), not the original verify error, so the job is
+		// never redelivered/retried for an Attempt that already reached a
+		// terminal state.
+		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
+			RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
+			NextState: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
+			FailureCode: errorcode.CodeExecutionFailed, JobLease: jobLease, CorrelationID: payload.CorrelationID,
+		})
+		return finalizeErr
 	}
 
 	deadline := time.Now().Add(time.Duration(profile.TimeoutSeconds) * time.Second)
@@ -520,8 +537,22 @@ func (h *ExecuteNodeHandler) runIsCancelling(ctx context.Context, runID string) 
 // ports.ErrImmutableVersionConflict — tamper/corruption detection lives
 // there, not duplicated here) genuinely bound to THIS attempt, whose own
 // Project/WorkItem/RevisionSet match what the owning Run/Attempt actually
-// pin. Runs inside its own read-only transaction, closed before Handle's
-// own caller ever invokes the executor.
+// pin.
+//
+// Audit finding (2026-09-08): this used to stop at snapshot/binding/
+// RevisionSet — it never dereferenced a single MessageRef or ResourceRef,
+// so a snapshot that itself looked fine but pinned a Message/Resource that
+// had since been deleted, tampered with, or never really matched its own
+// pinned identity would sail through undetected. Every MessageRef is now
+// resolved to a real Message belonging to the SAME WorkItem/Project, whose
+// own ContentArtifactID names an ATTACHED Artifact row; every ResourceRef
+// is re-verified via loadResourceCandidate (schedule.go, V5-08B0) exactly
+// the same way real request assembly does — this function and
+// AssembleAgentExecutionRequest deliberately share that one verification
+// path rather than maintaining two.
+//
+// Runs inside its own read-only transaction, closed before Handle's own
+// caller ever invokes the executor.
 func (h *ExecuteNodeHandler) verifyContextSnapshot(ctx context.Context, runID string, attempt runtimedomain.ExecutionAttempt) error {
 	return h.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
 		if attempt.ContextSnapshotID == nil {
@@ -543,6 +574,34 @@ func (h *ExecuteNodeHandler) verifyContextSnapshot(ctx context.Context, runID st
 		}
 		if attempt.InputRevisionSet != nil && attempt.InputRevisionSet.ContentHash() != snapshot.Revisions.ContentHash() {
 			return fmt.Errorf("%w: snapshot %s revision set does not match attempt %s", ErrContextSnapshotUnverified, snapshot.ID, attempt.ID)
+		}
+		for _, ref := range snapshot.MessageRefs {
+			msg, err := tx.Messages().GetMessage(ctx, ref.MessageID)
+			if err != nil {
+				return fmt.Errorf("%w: snapshot %s message %s: %v", ErrContextSnapshotUnverified, snapshot.ID, ref.MessageID, err)
+			}
+			if msg.WorkItemID != run.WorkItemID || msg.ProjectID != run.ProjectID {
+				return fmt.Errorf("%w: snapshot %s message %s belongs to work item %s / project %s, not %s / %s",
+					ErrContextSnapshotUnverified, snapshot.ID, ref.MessageID, msg.WorkItemID, msg.ProjectID, run.WorkItemID, run.ProjectID)
+			}
+			art, err := tx.Artifacts().GetArtifact(ctx, string(msg.ContentArtifactID))
+			if err != nil {
+				return fmt.Errorf("%w: snapshot %s message %s content artifact: %v", ErrContextSnapshotUnverified, snapshot.ID, ref.MessageID, err)
+			}
+			if art.AttachState != artifact.Attached {
+				return fmt.Errorf("%w: snapshot %s message %s content artifact is not ATTACHED (state %s)", ErrContextSnapshotUnverified, snapshot.ID, ref.MessageID, art.AttachState)
+			}
+		}
+		for _, ref := range snapshot.ResourceRefs {
+			// A pre-V5-08B0 snapshot's own ResourceRef has no OwnerVersionID
+			// (contextsnapshot.ResourceRef's own doc comment) — such a
+			// snapshot must never dispatch silently.
+			if ref.OwnerVersionID == "" {
+				return fmt.Errorf("%w: snapshot %s resource %s has no OwnerVersionID (pre-V5-08B0 snapshot)", ErrContextSnapshotUnverified, snapshot.ID, ref.ResourceKey)
+			}
+			if _, err := loadResourceCandidate(ctx, tx, policy.ResourceRef{OwnerVersionID: ref.OwnerVersionID, ResourceKey: ref.ResourceKey, ContentHash: ref.ContentHash}); err != nil {
+				return fmt.Errorf("%w: snapshot %s resource %s: %v", ErrContextSnapshotUnverified, snapshot.ID, ref.ResourceKey, err)
+			}
 		}
 		return nil
 	})

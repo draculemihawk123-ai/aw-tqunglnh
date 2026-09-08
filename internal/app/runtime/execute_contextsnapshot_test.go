@@ -2,7 +2,6 @@ package runtime_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
@@ -18,6 +17,15 @@ import (
 // is V5-04's own "missing resource" Verify scenario: an Attempt whose bound
 // snapshot has gone missing (deleted, or never durably committed) must
 // never reach the executor — dispatch precondition, not best-effort.
+//
+// Audit finding (2026-09-08): this test used to assert the Attempt was
+// left RUNNING forever on this failure — a real livelock (no path in this
+// codebase ever re-drives a RUNNING Attempt whose own job keeps failing
+// this exact precondition), not a deliberate "not this task's authority"
+// deferral. Handle now finalizes the Attempt FAILED/EXECUTION_FAILED
+// instead (an existing, valid entry in ADR-020's closed state-reason
+// matrix — no new vocabulary needed), and returns nil (the job itself
+// succeeded: it correctly finalized a terminal Attempt).
 func TestExecuteNodeHandler_MissingContextSnapshot_RejectsDispatchWithoutCallingExecutor(t *testing.T) {
 	uow, ids, _, _, attemptID := scheduledExecutionFixture(t, 600)
 	job := claimableExecuteNodeJob(t, uow, attemptID)
@@ -30,23 +38,22 @@ func TestExecuteNodeHandler_MissingContextSnapshot_RejectsDispatchWithoutCalling
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
 	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
-	err := handler.Handle(context.Background(), job)
-	if !errors.Is(err, runtime.ErrContextSnapshotUnverified) {
-		t.Fatalf("Handle err = %v, want runtime.ErrContextSnapshotUnverified", err)
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle: %v (want nil — the job itself succeeded by finalizing a terminal Attempt)", err)
 	}
 	if executor.Calls != 0 {
 		t.Fatalf("executor.Calls = %d, want 0 (spawn count must be zero on a failed precondition)", executor.Calls)
 	}
 
-	// The Attempt must be left RUNNING, never finalized — the same
-	// "un-terminalized, not this task's authority" discipline this
-	// handler's own doc comment already applies to cancel/lease-loss.
 	attempt, err := uow.Snapshot.Runtime().GetExecutionAttempt(context.Background(), attemptID)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v", err)
 	}
-	if attempt.State != runtimedomain.ExecutionAttemptRunning {
-		t.Fatalf("attempt.State = %s, want RUNNING (never finalized on a precondition failure)", attempt.State)
+	if attempt.State != runtimedomain.ExecutionAttemptFailed {
+		t.Fatalf("attempt.State = %s, want FAILED (never left stuck RUNNING on a precondition failure)", attempt.State)
+	}
+	if attempt.TerminationReason != runtimedomain.TerminationReasonExecutionFailed {
+		t.Fatalf("attempt.TerminationReason = %s, want EXECUTION_FAILED", attempt.TerminationReason)
 	}
 }
 
@@ -75,12 +82,18 @@ func TestExecuteNodeHandler_ContextSnapshotBoundToDifferentAttempt_RejectsDispat
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
 	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
-	err = handler.Handle(context.Background(), job)
-	if !errors.Is(err, runtime.ErrContextSnapshotUnverified) {
-		t.Fatalf("Handle err = %v, want runtime.ErrContextSnapshotUnverified", err)
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle: %v (want nil — the job itself succeeded by finalizing a terminal Attempt)", err)
 	}
 	if executor.Calls != 0 {
 		t.Fatalf("executor.Calls = %d, want 0", executor.Calls)
+	}
+	attempt, err := uow.Snapshot.Runtime().GetExecutionAttempt(context.Background(), attemptID)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt: %v", err)
+	}
+	if attempt.State != runtimedomain.ExecutionAttemptFailed {
+		t.Fatalf("attempt.State = %s, want FAILED", attempt.State)
 	}
 }
 
@@ -94,4 +107,89 @@ func mustSnapshotID(t *testing.T, uow *fake.UnitOfWork, attemptID string) string
 		t.Fatalf("attempt %s has no bound context snapshot", attemptID)
 	}
 	return string(*attempt.ContextSnapshotID)
+}
+
+// TestExecuteNodeHandler_ContextSnapshot_MessageRefInvalid_FinalizesFailed
+// and its ResourceRef sibling below are the audit finding (2026-09-08) fix:
+// verifyContextSnapshot used to stop at snapshot/binding/RevisionSet and
+// never dereference a single MessageRef/ResourceRef — a snapshot pinning a
+// Message or Resource that no longer resolves (deleted, or simply never
+// existed — the exact TOCTOU gap between scheduling and dispatch this
+// dispatch-time re-check exists to close) sailed through undetected. Both
+// tests simulate "became invalid between scheduling and dispatch" by
+// overwriting the already-scheduled snapshot with one ref changed to
+// something that cannot resolve — the same Overwrite mechanism
+// TestExecuteNodeHandler_ContextSnapshotBoundToDifferentAttempt_RejectsDispatch
+// already uses.
+func TestExecuteNodeHandler_ContextSnapshot_MessageRefInvalid_FinalizesFailed(t *testing.T) {
+	uow, ids, _, _, attemptID := scheduledExecutionFixture(t, 600)
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+
+	snapshotID := mustSnapshotID(t, uow, attemptID)
+	original, err := uow.Snapshot.ContextSnapshots().GetSnapshot(context.Background(), snapshotID)
+	if err != nil {
+		t.Fatalf("GetSnapshot: %v", err)
+	}
+	tampered, err := contextsnapshot.NewSnapshot(
+		original.ID, original.ProjectID, original.WorkItemID, original.AttemptID,
+		[]contextsnapshot.MessageRef{{MessageID: "message-that-does-not-exist"}}, original.ResourceRefs,
+		original.Revisions, original.CreatedAt,
+	)
+	if err != nil {
+		t.Fatalf("NewSnapshot (tampered): %v", err)
+	}
+	uow.Snapshot.ContextSnapshots().(*fake.ContextSnapshotRepository).Overwrite(tampered)
+
+	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle: %v (want nil — the job itself succeeded by finalizing a terminal Attempt)", err)
+	}
+	if executor.Calls != 0 {
+		t.Fatalf("executor.Calls = %d, want 0", executor.Calls)
+	}
+	attempt, err := uow.Snapshot.Runtime().GetExecutionAttempt(context.Background(), attemptID)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt: %v", err)
+	}
+	if attempt.State != runtimedomain.ExecutionAttemptFailed {
+		t.Fatalf("attempt.State = %s, want FAILED (a MessageRef that cannot resolve must never reach the executor or livelock RUNNING)", attempt.State)
+	}
+}
+
+func TestExecuteNodeHandler_ContextSnapshot_ResourceRefInvalid_FinalizesFailed(t *testing.T) {
+	uow, ids, _, _, attemptID := scheduledExecutionFixture(t, 600)
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+
+	snapshotID := mustSnapshotID(t, uow, attemptID)
+	original, err := uow.Snapshot.ContextSnapshots().GetSnapshot(context.Background(), snapshotID)
+	if err != nil {
+		t.Fatalf("GetSnapshot: %v", err)
+	}
+	tampered, err := contextsnapshot.NewSnapshot(
+		original.ID, original.ProjectID, original.WorkItemID, original.AttemptID,
+		original.MessageRefs, []contextsnapshot.ResourceRef{{
+			OwnerVersionID: "skill-version-that-does-not-exist", ResourceKey: "some-key", ContentHash: "sha256:whatever",
+		}}, original.Revisions, original.CreatedAt,
+	)
+	if err != nil {
+		t.Fatalf("NewSnapshot (tampered): %v", err)
+	}
+	uow.Snapshot.ContextSnapshots().(*fake.ContextSnapshotRepository).Overwrite(tampered)
+
+	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle: %v (want nil — the job itself succeeded by finalizing a terminal Attempt)", err)
+	}
+	if executor.Calls != 0 {
+		t.Fatalf("executor.Calls = %d, want 0", executor.Calls)
+	}
+	attempt, err := uow.Snapshot.Runtime().GetExecutionAttempt(context.Background(), attemptID)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt: %v", err)
+	}
+	if attempt.State != runtimedomain.ExecutionAttemptFailed {
+		t.Fatalf("attempt.State = %s, want FAILED (a ResourceRef that cannot resolve must never reach the executor or livelock RUNNING)", attempt.State)
+	}
 }
