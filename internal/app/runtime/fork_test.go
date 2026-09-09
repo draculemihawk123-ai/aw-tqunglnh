@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -25,15 +24,18 @@ import (
 // "to_implement" exercises the ordinary executable-node dispatch case, and
 // is the one branch this file's own real-attempt tests schedule/execute/
 // fail.
-func forkExecutableDocument() workflow.WorkflowDocument {
+func forkExecutableDocument(t *testing.T) workflow.WorkflowDocument {
+	t.Helper()
+	buildID := sharedTestAdapterBuild(t).ID()
 	return workflow.WorkflowDocument{
 		SchemaVersion: "1",
 		Nodes: []workflow.Node{
 			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"next"}},
 			{Key: "fork", Type: workflow.NodeFork, Outcomes: []string{"to_implement", "shortcut"}},
 			{Key: "implement", Type: workflow.NodeAgent, Outcomes: []string{"done"}, Agent: &workflow.AgentNodeConfig{
-				ProfileRef: definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "agent-profile-def", VersionID: "agent-profile-v1"},
-				PolicyRefs: fullyResolvablePolicyRefs(),
+				ProfileRef:     definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "agent-profile-def", VersionID: "agent-profile-v1"},
+				PolicyRefs:     fullyResolvablePolicyRefs(),
+				AdapterBuildID: &buildID,
 			}},
 			{Key: "join", Type: workflow.NodeJoin, Outcomes: []string{"joined"}, Join: &workflow.JoinNodeConfig{Mode: workflow.JoinModeAll}},
 			{Key: "end", Type: workflow.NodeEnd},
@@ -97,7 +99,7 @@ func findForkedBranch(branches []runtime.ForkedBranch, branchKey string) *runtim
 // domain event recording the whole fan-out.
 func TestAdvanceRun_Fork_FansOutToEveryBranchAtomically(t *testing.T) {
 	ctx := context.Background()
-	uow, _, _, _, hop := forkScheduleFixture(t, forkExecutableDocument())
+	uow, _, _, _, hop := forkScheduleFixture(t, forkExecutableDocument(t))
 
 	if hop.NextNodeKey != "fork" || hop.NextNodeRunID == "" {
 		t.Fatalf("hop = %+v, want NextNodeKey=fork with a minted NextNodeRunID", hop)
@@ -192,7 +194,7 @@ func TestAdvanceRun_Fork_FansOutToEveryBranchAtomically(t *testing.T) {
 // is created.
 func TestAdvanceRun_Fork_DuplicateDispatch_IsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	uow, ids, runID, startNodeRunID, hop := forkScheduleFixture(t, forkExecutableDocument())
+	uow, ids, runID, startNodeRunID, hop := forkScheduleFixture(t, forkExecutableDocument(t))
 
 	tokensBefore, err := uow.Snapshot.Runtime().ListBranchTokensForRun(ctx, runID)
 	if err != nil {
@@ -251,7 +253,8 @@ func TestAdvanceRun_Fork_DuplicateDispatch_IsIdempotent(t *testing.T) {
 // unrelated to this failure, is left exactly as the fan-out created it.
 func TestExecuteNodeHandler_Fork_BranchFailure_TerminalizesOwnBranchToken(t *testing.T) {
 	ctx := context.Background()
-	uow, ids, runID, _, hop := forkScheduleFixture(t, forkExecutableDocument())
+	uow, ids, runID, _, hop := forkScheduleFixture(t, forkExecutableDocument(t))
+	registerSharedTestAdapterBuild(t, uow)
 	publishAgentProfileVersion(t, uow, "agent-profile-def", "agent-profile-v1", validAgentProfileDocument())
 	publishPolicyVersion(t, uow, "attempt-policy-def", "attempt-policy-v1", attemptPolicyDocument(600))
 	publishPolicyVersion(t, uow, "permission-policy-def", "permission-policy-v1", permissionPolicyDocument())
@@ -271,7 +274,7 @@ func TestExecuteNodeHandler_Fork_BranchFailure_TerminalizesOwnBranchToken(t *tes
 	job := claimableExecuteNodeJob(t, uow, scheduled.AttemptID)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}

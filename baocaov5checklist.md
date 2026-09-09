@@ -1442,3 +1442,149 @@ xác nhận cuối cùng.
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6 (đặc biệt "Linux race and stability" — chính job đã bắt
 bug này), merge. Sau khi merge, quay lại PR V5-08 (đang chờ CI) — rebase nếu cần rồi tiếp tục theo đúng
 thứ tự tuyến tính đã thống nhất.
+
+## V5-08 remediation — post-merge audit fixes (2026-09-09)
+
+**Bối cảnh:** tiếp tục vòng đi lại từng task V5. Audit V5-08 kết luận **"CHƯA ĐẠT"** với hai finding: (1)
+`runAdmissionProbePhase` (admission.go) coi `profile.AdapterBuild == nil` là "không có gì để kiểm tra,
+pass" VÔ ĐIỀU KIỆN — trực tiếp mâu thuẫn GC-INV-23 ("Attempt pin immutable AdapterBuildVersion; version
+khác bị từ chối trước dispatch"), vốn coi việc pin build là BẮT BUỘC chứ không phải optional; (2)
+`recordExecutionEnvelope` còn thiếu hầu hết field go-core-spec §14 đòi hỏi (chỉ có RepositoryID/Access,
+thiếu ProviderKey/InstructionArtifact/EffectiveScope/ExecutionProfileHash/... đầy đủ). Task này sửa (1);
+(2) để nguyên, xem cuối mục vì sao.
+
+**Fix 1 — đóng AdapterBuild nil-bypass (GC-INV-23):** `runAdmissionProbePhase`'s nhánh
+`profile.AdapterBuild == nil` đổi từ set `driftSatisfied = true` vô điều kiện sang kiểm tra
+`profile.Executor.Kind`: COMMAND/MACHINE_GATE (không có khái niệm AdapterBuildVersion) vẫn pass-through
+như cũ; AGENT node giờ nhận `driftErr` thật ("AGENT node declares no AdapterBuildID — GC-INV-23 requires
+an Attempt to pin an immutable AdapterBuildVersion") với `driftSatisfied` để nguyên `false` (zero value) —
+`evaluateAdmission` tự resolve thành ADAPTER_BUILD_DRIFT, đúng ma trận state-reason đã khoá của ADR-020
+(QUEUED→BLOCKED).
+
+**Ripple lớn nhất phiên này — gần như TOÀN BỘ fixture của `internal/app/runtime` chưa từng pin build
+thật:** fix trên khiến MỌI test AGENT trong package (execute/finalize/fork/join/scope-expansion/cancel/
+completion — ~30 test) vốn dựa vào hành vi "nil bypass = pass" cũ giờ fail ADAPTER_BUILD_DRIFT. Sửa theo
+lớp, không sửa từng test riêng lẻ:
+- `admission_test.go`: 7 call site cũ + test mới `TestAdmission_NoAdapterBuildPinned_BlocksBeforeSpawn`
+  (executor.Calls=0 — "chặn trước dispatch" thật).
+- `shared_admission_test.go` (mới): một `sync.Once`-backed singleton
+  (`sharedTestAdapterBuild`/`sharedTestAgentRegistry`/`registerSharedTestAdapterBuild`) — build một
+  executable tạm thật ĐÚNG MỘT LẦN cho cả package test binary (qua `os.MkdirTemp`, KHÔNG `t.TempDir()` —
+  file phải sống sót qua nhiều test function), thay vì luồn thêm một return value mới qua ~30 call site
+  của `scheduledExecutionFixture`/`scheduledExecutionFixtureWithAttemptPolicy` trong 8 file test.
+- `execute_test.go`/`finalize_retry_test.go`: 2 fixture trung tâm tự pin + register build bên trong,
+  không đổi signature của chính chúng.
+- `join_test.go`: `joinPolicyDocument` thêm tham số `t *testing.T` (mint `AdapterBuildID` thật cho mỗi
+  branch's own AgentNodeConfig) — 8 call site (7 trong `join_test.go`, 1 trong `join_sqlite_test.go`) cập
+  nhật theo.
+- `fork_test.go`: `forkExecutableDocument` tương tự, thêm tham số `t`.
+- `cancel_run_test.go`/`completion_test.go`/`execute_contextsnapshot_test.go`/`scope_expansion_test.go`/
+  `fork_sqlite_test.go`/`join_sqlite_test.go`: thay `agentregistry.Empty()` → `sharedTestAgentRegistry(t)`.
+
+**Fix 2 (KHÔNG làm ở đây — không phải block vòng tròn, chỉ là ngoài phạm vi đã chốt trước):**
+`recordExecutionEnvelope`'s field-completeness so với go-core-spec §14 — giống hệt lý do V5-05/V5-06 đã
+ghi: `AssembleAgentExecutionRequest` (V5-08B0) đã build ĐÚNG một envelope §14 đầy đủ (ProviderKey,
+InstructionArtifact, ContextSnapshot, EffectiveScope, ExecutionProfileHash, IsolationProfile,
+AllowedCapabilities, ...) nhưng cố tình CHƯA nối vào `ExecuteNodeHandler.Handle` (V5-08B0's own "Phụ
+thuộc" note: "deliberately deferred to V5-08B"). Hợp nhất `recordExecutionEnvelope` cũ vào envelope §14
+mới đó là chính xác việc V5-08B tự làm, không phải một fix riêng ở remediation pass này — sửa 2 lần cùng
+một chỗ (một lần vá field thiếu, một lần thay hẳn bằng V5-08B0) là lãng phí và có nguy cơ tạo hai đường
+envelope khác nhau tạm thời.
+
+**Circular block thật, đã hỏi user trước khi sửa — golden-trace `internal/integration`'s own
+`TestRuntimeEngineGate`:** sau khi Fix 1 làm AGENT node pin build bắt buộc, `internal/integration`'s own
+runtime-engine gate (V4-14, chưa từng pin build trước đây) cũng cần một AdapterBuild thật — nhưng build
+đó cần một file thực thi thật trên đĩa để `HashExecutableFile`/`VerifyNoDrift` hoạt động, và
+`CandidateTuple` của nó nhúng `runtime.GOOS`/`runtime.Version()` thật. Verify thực nghiệm: 2 lần
+`go test` riêng biệt (cùng máy) cho ra 2 giá trị `executionProfileHash` KHÁC NHAU trong golden trace (vì
+build gắn với đường dẫn file tạm ngẫu nhiên mỗi lần chạy process) — và CI's own "contract" job chạy
+CHÍNH test này trên CẢ `windows-latest` LẪN `ubuntu-latest`, nên một so sánh byte-exact trên field này
+KHÔNG THỂ pass trên cả hai platform cùng lúc. Đây là block vòng tròn thật (đóng gap GC-INV-23 cho gate
+này phá vỡ cơ chế golden byte-exact đã được user xác nhận trước đó) — đã hỏi user (AskUserQuestion) thay
+vì tự chọn.
+
+**Quyết định user (2026-09-09):** field-aware canonicalization, KHÔNG xoá field, KHÔNG alias mọi chuỗi
+`sha256:` (phạm vi rộng có thể che regression ở contentHash/revisionHash/policyHash — user tự nêu rõ,
+không chọn phương án alias rộng). Cụ thể: `executionProfileHash` được alias THEO TÊN FIELD thành
+`<execution-profile-hash-N>` (cùng giá trị → cùng alias, khác giá trị → khác alias — golden vẫn phát
+hiện được sai lệch same/different giữa các node), validate đúng format `sha256:<64 hex>` trước khi alias
+(panic nếu không đúng — fail loudly, không âm thầm bỏ qua), mọi field hash khác giữ nguyên byte-exact.
+Giữ AdapterBuild THẬT trong gate (không né tránh việc pin thật). GC-INV-23 được assert TRỰC TIẾP (không
+chỉ dựa vào golden) trong test mới `TestRuntimeEngineGate_AdapterBuildPinning`.
+
+**Fix:**
+- `canonicalizeRuntimeEngineTrace` (runtimeengine_test.go): thêm nhánh field-name-keyed cho
+  `"executionProfileHash"` (alias qua `aliasForExecutionProfileHash`, map riêng — không dùng chung
+  namespace với `aliasForGeneratedID`'s own UUID/t-N/h-N), validate qua `executionProfileHashPattern`
+  (`^sha256:[0-9a-f]{64}$`), panic khi sai shape. Doc comment cập nhật giải thích rõ đây là ngoại lệ
+  platform-derived thứ hai, tương tự ngoại lệ `jobId` đã có.
+- `runtimeEngineDocument`/`publishREWorkflowVersion`: AGENT node ("implement", "scope_node") giờ pin
+  `AdapterBuildID` thật qua singleton package-wide mới `runtimeEngineAdapterBuild`/
+  `runtimeEngineAgentRegistry`/`registerRuntimeEngineAdapterBuild` (cùng pattern
+  `shared_admission_test.go` đã dùng cho `internal/app/runtime`).
+- `TestRuntimeEngineGate_AdapterBuildPinning` (mới): 2 phần — (1) dispatch sạch, đọc lại DecisionArtifact
+  `"<nodeRunId>-execution-profile-v1"` thật, xác nhận `AdapterBuild.BuildID` đúng build đã đăng ký; (2)
+  drift thật (tamper byte thực thi sau khi đăng ký) chặn Attempt MỚI trước khi executor được gọi
+  (`StartedAt == nil`), đúng `TerminationReason=ADAPTER_BUILD_DRIFT` + blocker `OPEN` tương ứng — mirror
+  `internal/app/runtime`'s own `TestAdmission_AdapterBuildDrift_BlocksBeforeSpawn` nhưng qua full stack
+  thật (sqlite + pool + ExecuteNodeHandler thật), không phải fake.
+- `TestCanonicalizeRuntimeEngineTrace_ExecutionProfileHashFieldAware`,
+  `TestCanonicalizeRuntimeEngineTrace_MalformedExecutionProfileHash_PanicsFailClosed` (mới): chứng minh
+  đúng thiết kế user chốt — same/different value → same/different alias, field hash KHÔNG liên quan
+  (vd `contentHash`) giữ nguyên byte-exact, shape sai → panic.
+
+**3 vòng tự bắt và tự sửa flake của chính test mới (không phải bug runtime, lỗi thiết kế fixture):**
+(a) `startPool()` ban đầu tạo `idsource.NewSequential("h")` MỚI mỗi lần gọi lại — khi Part 2 khởi động
+pool mới trên CÙNG store đã có data từ Part 1, id "h-1" reset lại và collide với row Part 1 đã ghi thật;
+(b) dù đã sửa (a) và dừng hẳn pool Part 1 trước khi tamper file, vẫn còn ~1/25 lần fail cục bộ "execution
+attempt not found" — sửa bằng cách tách Part 1/Part 2 thành hai `*sqlite.Store` HOÀN TOÀN độc lập
+(`runAdapterBuildPinningScenario` factor ra) — 30 lần liên tiếp cục bộ đều xanh, PUSH LÊN CI.
+(c) **CI's own `go test -race -count=1 ./...` (job "Linux race and stability") bắt được lỗi THẬT thứ ba,
+sâu hơn cả (a)/(b), mà 30 lần chạy cục bộ KHÔNG `-race` không bao giờ lộ ra** (Windows dev machine không
+có cgo, không chạy được `-race` cục bộ): `runAdapterBuildPinningScenario` khởi động NGUYÊN registry đầy
+đủ (`registerRuntimeEngineHandlers` — gồm cả `Scheduler`'s own `AdvanceRunJobKind` handler) NGAY TRƯỚC
+khi tự gọi trực tiếp `StartWorkflowRun`/`AdvanceRun` ở foreground — pool's own background Scheduler đua
+tranh advance ĐÚNG NodeRun mà code foreground cũng đang advance; bên thua (đôi khi chính là lệnh gọi
+foreground) nhận lại một hop rỗng (`NextNodeKey=""`) từ đường idempotent-replay. Đây CHÍNH XÁC là rủi ro
+`TestRuntimeEngineGate_ConcurrentPoolsNoDuplicateExecution`'s own doc comment đã cảnh báo từ trước (dùng
+provisioning-only pool cho `createREWorkItem`, hủy nó, tự lái foreground, CHỈ start full pool SAU KHI
+`ScheduleExecutableNodeRun` đã tạo job EXECUTE_NODE thật) — bài test mới của tôi không theo đúng pattern
+đó. Sửa: tái cấu trúc `runAdapterBuildPinningScenario` đúng y hệt pattern đã có sẵn (provisioning-only
+pool trước, hủy, lái foreground trực tiếp, full pool CHỈ start sau `ScheduleExecutableNodeRun`) — loại
+bỏ hẳn race bằng kiến trúc, không phải vá triệu chứng. Verify: 50 lần liên tiếp cục bộ + suite tích hợp
++ suite toàn repo đều xanh; `-race` tự nó không verify lại được cục bộ (không cgo trên máy Windows này),
+dựa vào CI's own race job để xác nhận cuối cùng.
+
+**File thay đổi:**
+- `internal/app/runtime/admission.go` (Fix 1: AdapterBuild nil-bypass cho AGENT)
+- `internal/app/runtime/admission_test.go` (7 call site cập nhật + test mới)
+- `internal/app/runtime/shared_admission_test.go` (mới, singleton build+registry)
+- `internal/app/runtime/execute_test.go`, `finalize_retry_test.go` (2 fixture trung tâm tự pin)
+- `internal/app/runtime/join_test.go`, `join_sqlite_test.go`, `fork_test.go`, `fork_sqlite_test.go`,
+  `cancel_run_test.go`, `completion_test.go`, `execute_contextsnapshot_test.go`,
+  `scope_expansion_test.go` (propagate build pin / thay `agentregistry.Empty()`)
+- `internal/integration/runtimeengine_test.go` (canonicalization field-aware fix + AdapterBuild thật cho
+  gate + 3 test mới + tách Part 1/Part 2 thành store độc lập)
+- `internal/integration/testdata/golden/v4-runtime-clean.json`,
+  `v4-runtime-crash-recovery.json` (regenerate — chỉ `executionProfileHash` đổi dạng alias, xác nhận
+  byte-exact giữa 2 process run riêng biệt trước khi commit)
+
+**Verify:**
+```
+go build ./...                                           # sạch
+go vet ./...                                             # sạch
+go run ./cmd/docs-coverage-check                         # debt = 0
+gofmt -l <14 file .go đổi/mới>                            # rỗng sau gofmt -w
+go test ./internal/app/runtime/... -count=1              # PASS toàn bộ (~30 test trước đó fail đều xanh)
+go test ./internal/integration/... -run TestRuntimeEngineGate_AdapterBuildPinning -count=30  # ổn định
+go test ./internal/app/runtime/... ./internal/integration/... -count=2                        # ổn định
+go test -count=1 ./...                                   # PASS toàn bộ ~70 package
+AGENTKIT_REGENERATE_RUNTIME_ENGINE_GOLDEN=1 go test ./internal/integration/... -run TestRuntimeEngineGate$ -count=1  # x2 lần, diff = rỗng (byte-exact giữa 2 process run)
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6 (đặc biệt cả hai platform contract job — chính golden
+này giờ mới thật sự portable), merge. Task kế tiếp trong remediation pass: V5-08A (task cuối cùng trước
+V5-08B chính nó) — audit CHƯA ĐẠT với: Sink/CheckpointStore thiếu JobLease/WriteLease fencing,
+`flushLocked` xoá buffer trước khi commit (rủi ro durability), `validateOrderingLocked` không kiểm
+`event.AttemptID`, `AgentEvent` thiếu `SchemaVersion`/`ArtifactRefs` (SQLite luôn ghi
+`artifact_refs_json='[]'`), checkpoint dùng `SharedStateHash` giả thay vì thật, `ArtifactReferences=nil`.

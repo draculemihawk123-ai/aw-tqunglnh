@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -25,7 +24,9 @@ import (
 // ExecutionAttempt through the exact same ScheduleExecutableNodeRun/
 // ExecuteNodeHandler pipeline fork_test.go's own branch-failure test
 // already established.
-func joinPolicyDocument(mode workflow.JoinMode, quorumCount uint32, branchKeys []string) workflow.WorkflowDocument {
+func joinPolicyDocument(t *testing.T, mode workflow.JoinMode, quorumCount uint32, branchKeys []string) workflow.WorkflowDocument {
+	t.Helper()
+	buildID := sharedTestAdapterBuild(t).ID()
 	nodes := []workflow.Node{
 		{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"next"}},
 		{Key: "fork", Type: workflow.NodeFork, Outcomes: branchKeys},
@@ -36,8 +37,9 @@ func joinPolicyDocument(mode workflow.JoinMode, quorumCount uint32, branchKeys [
 		nodes = append(nodes, workflow.Node{
 			Key: nodeKey, Type: workflow.NodeAgent, Outcomes: []string{"done"},
 			Agent: &workflow.AgentNodeConfig{
-				ProfileRef: definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "agent-profile-def", VersionID: "agent-profile-v1"},
-				PolicyRefs: fullyResolvablePolicyRefs(),
+				ProfileRef:     definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "agent-profile-def", VersionID: "agent-profile-v1"},
+				PolicyRefs:     fullyResolvablePolicyRefs(),
+				AdapterBuildID: &buildID,
 			},
 		})
 		edges = append(edges,
@@ -74,7 +76,7 @@ func driveBranchOutcome(t *testing.T, uow *fake.UnitOfWork, ids idsource.Source,
 	} else {
 		executor = &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
 	}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle(%s): %v", nodeRunID, err)
 	}
@@ -87,6 +89,7 @@ func driveBranchOutcome(t *testing.T, uow *fake.UnitOfWork, ids idsource.Source,
 // restart test.
 func publishJoinPolicyFixtures(t *testing.T, uow ports.UnitOfWork) {
 	t.Helper()
+	registerSharedTestAdapterBuild(t, uow)
 	publishAgentProfileVersion(t, uow, "agent-profile-def", "agent-profile-v1", validAgentProfileDocument())
 	publishPolicyVersion(t, uow, "attempt-policy-def", "attempt-policy-v1", attemptPolicyDocument(600))
 	publishPolicyVersion(t, uow, "permission-policy-def", "permission-policy-v1", permissionPolicyDocument())
@@ -148,7 +151,7 @@ func nodeRoutedEventFor(t *testing.T, uow *fake.UnitOfWork, aggregateID string) 
 // to "end" in the same transaction the second branch's own arrival
 // commits.
 func TestJoin_AllMode_SucceedsOnceEveryBranchSucceeds(t *testing.T) {
-	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(workflow.JoinModeAll, 0, []string{"a", "b"}))
+	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(t, workflow.JoinModeAll, 0, []string{"a", "b"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	branchA := findForkedBranch(hop.ForkedBranches, "a")
@@ -193,7 +196,7 @@ func TestJoin_AllMode_SucceedsOnceEveryBranchSucceeds(t *testing.T) {
 // anywhere, and the still-ACTIVE branch's own token is left untouched (no
 // early cancellation, per the locked Alpha policy).
 func TestJoin_AllMode_FailsAsSoonAsOneBranchFails_WithoutWaitingForOthers(t *testing.T) {
-	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(workflow.JoinModeAll, 0, []string{"a", "b"}))
+	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(t, workflow.JoinModeAll, 0, []string{"a", "b"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	branchA := findForkedBranch(hop.ForkedBranches, "a")
@@ -236,7 +239,7 @@ func TestJoin_AllMode_FailsAsSoonAsOneBranchFails_WithoutWaitingForOthers(t *tes
 // this fork occurrence has reached a terminal state, so a still-running
 // sibling branch is never raced against downstream work.
 func TestJoin_AnyMode_WaitsForFullTerminationEvenAfterThresholdMetEarly(t *testing.T) {
-	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(workflow.JoinModeAny, 0, []string{"a", "b"}))
+	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(t, workflow.JoinModeAny, 0, []string{"a", "b"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	branchA := findForkedBranch(hop.ForkedBranches, "a")
@@ -270,7 +273,7 @@ func TestJoin_AnyMode_WaitsForFullTerminationEvenAfterThresholdMetEarly(t *testi
 // on the failure side: zero SUCCEEDED and zero ACTIVE means ANY can never
 // be satisfied.
 func TestJoin_AnyMode_FailsWhenEveryBranchFails(t *testing.T) {
-	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(workflow.JoinModeAny, 0, []string{"a", "b"}))
+	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(t, workflow.JoinModeAny, 0, []string{"a", "b"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	branchA := findForkedBranch(hop.ForkedBranches, "a")
@@ -294,7 +297,7 @@ func TestJoin_AnyMode_FailsWhenEveryBranchFails(t *testing.T) {
 // bring SUCCEEDED+ACTIVE up to 2, so the JOIN decides FAILED immediately
 // without waiting for that third branch.
 func TestJoin_QuorumMode_ImpossibleQuorum_FailsWithoutWaitingForRemaining(t *testing.T) {
-	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(workflow.JoinModeQuorum, 2, []string{"a", "b", "c"}))
+	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(t, workflow.JoinModeQuorum, 2, []string{"a", "b", "c"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	branchA := findForkedBranch(hop.ForkedBranches, "a")
@@ -330,7 +333,7 @@ func TestJoin_QuorumMode_ImpossibleQuorum_FailsWithoutWaitingForRemaining(t *tes
 // C is still ACTIVE — the join must stay WAITING until C itself
 // terminates (here, by failing) before resolving SUCCEEDED.
 func TestJoin_QuorumMode_SucceedsOnceMetAndAllTerminal(t *testing.T) {
-	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(workflow.JoinModeQuorum, 2, []string{"a", "b", "c"}))
+	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(t, workflow.JoinModeQuorum, 2, []string{"a", "b", "c"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	branchA := findForkedBranch(hop.ForkedBranches, "a")
@@ -357,7 +360,7 @@ func TestJoin_QuorumMode_SucceedsOnceMetAndAllTerminal(t *testing.T) {
 // own token bookkeeping proceeds normally, but the JOIN itself, already
 // terminal, must never be re-decided, re-evented or routed a second time.
 func TestJoin_DuplicateCompletion_LateArrivalAfterAlreadyDecidedIsNoOp(t *testing.T) {
-	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(workflow.JoinModeAll, 0, []string{"a", "b"}))
+	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(t, workflow.JoinModeAll, 0, []string{"a", "b"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	branchA := findForkedBranch(hop.ForkedBranches, "a")

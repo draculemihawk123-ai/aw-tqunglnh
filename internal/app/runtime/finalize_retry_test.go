@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
-	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -34,7 +33,9 @@ import (
 // every other test in this package publishes.
 func scheduledExecutionFixtureWithAttemptPolicy(t *testing.T, attemptDoc policy.PolicyDocument) (uow *fake.UnitOfWork, ids idsource.Source, runID, nodeRunID, attemptID string) {
 	t.Helper()
-	uow, ids, runID, nodeRunID = scheduleFixture(t, agentExecutableDocument("agent-profile-v1", fullyResolvablePolicyRefs(), nil))
+	buildID := sharedTestAdapterBuild(t).ID()
+	uow, ids, runID, nodeRunID = scheduleFixture(t, agentExecutableDocument("agent-profile-v1", fullyResolvablePolicyRefs(), &buildID))
+	registerSharedTestAdapterBuild(t, uow)
 	publishAgentProfileVersion(t, uow, "agent-profile-def", "agent-profile-v1", validAgentProfileDocument())
 	publishPolicyVersion(t, uow, "attempt-policy-def", "attempt-policy-v1", attemptDoc)
 	publishPolicyVersion(t, uow, "permission-policy-def", "permission-policy-v1", permissionPolicyDocument())
@@ -76,7 +77,7 @@ func TestExecuteNodeHandler_RetryableFailure_CreatesNextAttemptWithBackoff(t *te
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
 		State: runtimedomain.ExecutionAttemptFailed, ErrorCode: errorcode.CodeProviderUnavailable,
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clk, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clk, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestExecuteNodeHandler_RetryableFailure_BudgetExhausted_FailsNodeRun(t *tes
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
 		State: runtimedomain.ExecutionAttemptFailed, ErrorCode: errorcode.CodeProviderUnavailable,
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}

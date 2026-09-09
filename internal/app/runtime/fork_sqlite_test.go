@@ -36,7 +36,7 @@ func TestAdvanceRun_SQLite_Fork_PersistsAcrossRestart(t *testing.T) {
 
 	root := readyFixtureSQLite(t, u, seq, "project-1", "repo-1")
 	seedEffectiveScope(t, u, root.WorkItemID, "repo-1")
-	version := publishWorkflowVersionDocument(t, u, "project-1", "wf-def-1", "wf-v-1", forkExecutableDocument())
+	version := publishWorkflowVersionDocument(t, u, "project-1", "wf-def-1", "wf-v-1", forkExecutableDocument(t))
 	startCmd := testCommand("idem-start-1", "hash-a", ports.ProjectScope("project-1"), "StartWorkflowRun")
 	startResult, err := runtime.StartWorkflowRun(ctx, u, seq, startCmd, runtime.StartWorkflowRunRequest{
 		ProjectID: "project-1", WorkItemID: root.WorkItemID, WorkflowVersionID: string(version.ID()),
