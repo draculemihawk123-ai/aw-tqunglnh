@@ -2504,3 +2504,155 @@ go test -count=3 ./internal/app/runtime/... -run "TestRetryBlockedActivation|Tes
 ```
 
 **Việc còn lại:** commit, push nhánh `feat/v5-08d-retry-blocked-activation`, mở PR, chờ CI 6/6, merge.
+
+**Kết quả:** PR #7, merge commit `6ff10ec`. CI xanh 6/6 ngay lần chạy đầu tiên (không cần rerun như
+V5-08C). Merge xong, xoá nhánh local + remote.
+
+## V5-09 — Command executor và COMMAND handler (branch `feat/v5-09-command-executor`)
+
+**Bối cảnh / nghiên cứu trước khi code:** dùng một Explore agent để scope trước (không viết code) trong
+lúc chờ CI của V5-08D — phát hiện quan trọng nhất: `internal/domain/command.CommandDocument` (V2-05, đã
+xong từ lâu) đã có sẵn ĐẦY ĐỦ mọi field cần: `Argv []ArgvElement` (LITERAL/PLACEHOLDER, không bao giờ là
+chuỗi shell), `PlaceholderAllowlist`, `CwdRepositoryTarget`, `EnvAllowlist`, `NetworkAccess`, `SecretRefs`
+(chỉ tên, không giá trị), `TimeoutSeconds`, `Output{CaptureStdout, CaptureStderr, MaxOutputBytes}` —
+nhưng KHÔNG có bất kỳ đường dispatch nào cho COMMAND-kind NodeRun trong production code: `schedule.go`'s
+own `resolveExecutionProfile` chỉ pin identity (`Executor.Kind/DefinitionID/VersionID/CompiledHash`) cho
+nhánh COMMAND, chưa từng decode `CommandDocument` (khác AGENT — decode `AgentProfileDocument` ngay tại
+chỗ); `ExecuteNodeHandler` hoàn toàn generic, không switch theo `ExecutorKind` ở đâu cả. `ports.ProcessSupervisor`
+(V5-05, `internal/adapters/process.Supervisor`) — chính primitive claude.go/codex.go đã dùng để spawn
+provider — hoàn toàn tái dùng được để spawn COMMAND trực tiếp, KHÔNG cần qua `ports.AgentExecutor`.
+**Secret-ref resolution KHÔNG tồn tại ở đâu cả** — chỉ có field khai tên (`SecretRefs []string`), chưa có
+port/adapter nào resolve giá trị thật — đây là gap thật, phải xây từ đầu.
+
+Đọc sâu thêm `attachFinalizationEvidenceTx` (finalize.go) phát hiện: hàm này BẮT BUỘC một row `agent_events`
+thật khớp `TerminalEventSequence` cho MỌI attempt có Evidence — nhưng `ports.AgentEventKind`'s own
+`EXECUTION_STARTED`/`EXECUTION_FINISHED` hoàn toàn generic (không mang ý nghĩa chat-specific gì), nên một
+COMMAND execution hoàn toàn có thể emit đúng 2 event này qua CHÍNH `agentevents.Sink` AGENT đã dùng — đây
+là insight quan trọng nhất: COMMAND KHÔNG cần một evidence pipeline riêng, chỉ cần "đóng vai" một
+AgentExecutor cực đơn giản (2 event, không streaming JSONL) để tái dùng TOÀN BỘ evidence/checkpoint/
+lease-fencing machinery AGENT đã có. Cũng xác nhận `admission.go`'s own 4 check (isolation/adapter-build/
+capability/multi-repo-write) đã hoàn toàn kind-agnostic từ trước (COMMAND tự động qua được, không cần
+sửa), `scopeguard.ValidateDiffs` cũng generic 100%, và `resolveSelectedOutcome(proposed, allowedOutcomes)`
+(agent_node_executor.go) đã là free function sẵn — gọi với `proposed=nil` cho COMMAND (không có marker
+protocol) tái dùng y hệt logic single-outcome-derivation AGENT đã có.
+
+**Quyết định (không hỏi lại, tất cả rút ra trực tiếp từ code hiện có, không đoán):**
+1. **Không mở rộng `ResolvedExecutionProfileV1`** với field riêng cho COMMAND (argv/cwd/env/secret) —
+   `admission.go`'s own `checkCapabilityRequirement` đã tự nêu rõ nguyên tắc: "never denormalizing the
+   requirement onto ResolvedExecutionProfileV1 itself... a future ResolvedExecutionProfileV2 could
+   denormalize this for performance, not V5-08". `decodeCompiledCommand` (mirror `decodeCompiledAgentProfile`,
+   `schedule.go`) được gọi LẠI TỪ ĐẦU tại execution time (`gatherCommandExecutionInputs`), load fresh qua
+   `Executor.VersionID`/`DefinitionID` — không bao giờ tin một bản sao cũ.
+2. **Tái cấu trúc thêm một lần nữa (lần thứ 3 trong V5, tiếp nối V5-08D):** `resolveExecutionResources`,
+   `buildEvidence`, `terminalEventSequence` (agent_node_executor_resources.go), `classifyCancellation`,
+   `handleMutatingCancellation`, `loadAttemptVersion` (agent_node_executor_cancellation.go) đều đổi từ
+   method trên `*AgentNodeExecutor` thành free function nhận tham số trực tiếp — method cũ giữ nguyên,
+   chỉ còn là wrapper mỏng, không đổi hành vi, không đổi call site nào khác. Đây CHÍNH XÁC là yêu cầu khoá
+   cứng của task: "COMMAND node dùng lại chính đường này" (V5-08C) và "cancel giữa một mutating command
+   dùng đúng đường V5-08C, không có đường terminate riêng" (V5-09 tự ghi) — không có cách nào tái dùng
+   thật nếu không tách các hàm này ra khỏi `*AgentNodeExecutor` trước.
+3. **Secret resolution: `ports.SecretResolver` mới, adapter thật đọc từ chính OS environment variable của
+   worker host** (`internal/adapters/secretenv.Resolver`) — cùng tinh thần "trust the local machine" mà
+   ADR-016 (local HTTP trust boundary) đã xác lập ở nơi khác trong chính codebase này; không có secret
+   store thật nào tồn tại (Vault hay tương đương) để tích hợp ở scope Alpha này. Interface hẹp
+   (`Resolve(ctx, name) (string, error)`) nên sau này thay bằng implementation thật không cần đổi gì ở
+   phía gọi.
+4. **Secret luôn resolve vào `ProcessSpec.Environment` (map), KHÔNG BAO GIỜ vào Argv** — lý do bảo mật cụ
+   thể (không phải "không có lựa chọn tốt hơn" mà là lựa chọn ĐÚNG duy nhất): argv của một process hiển
+   thị được cho process/user khác trên cùng host qua `ps`/process listing; env thông qua
+   `ProcessSpec.Environment` (giá trị tường minh) tách biệt hoàn toàn khỏi `InheritedEnvironment` (chỉ
+   tên, kế thừa từ EnvAllowlist) — đúng khớp model 2-field `ports.ProcessSpec` đã có sẵn, không cần thêm
+   gì.
+5. **Placeholder vocabulary: tên PLACEHOLDER phải trùng với một RepositoryID thật trong EffectiveScope của
+   chính NodeRun đó, resolve thành `WorkingDirectory` của mount tương ứng.** `PlaceholderAllowlist` chỉ
+   được validate là một closed set THUẦN TÊN ở publish-time (`command.ValidateDocument`) — không hề kiểm
+   tra tên đó có khớp EffectiveScope thật hay không (EffectiveScope thay đổi theo từng WorkItem/Run, publish-time
+   không biết được) — nên `resolveCommandInvocation` (runtime, execution-time) fail closed nếu một tên
+   PLACEHOLDER không khớp mount nào thật, và fail closed y hệt nếu `CwdRepositoryTarget` không khớp — cả
+   hai đều: KHÔNG BAO GIỜ spawn process (`supervisor.Calls == 0`, test xác nhận trực tiếp), đúng
+   "Hoàn thành khi: resource script không chạy nếu thiếu exact CommandVersion/policy grant" của chính task.
+6. **Timeout: bound chặt hơn thắng.** `ProcessSpec.Timeout = min(AttemptPolicy.TimeoutSeconds,
+   CommandDocument.TimeoutSeconds)` — ctx deadline ngoài (execute.go, từ AttemptPolicy) vẫn luôn cắt đúng
+   hạn nếu CommandDocument khai dài hơn, nhưng một CommandDocument tự khai timeout NGẮN hơn là một ràng
+   buộc thật riêng của chính command đó, không được để AttemptPolicy nuốt mất.
+7. **Output artifact: chèn thẳng ATTACHED, không qua đường ORPHAN→ATTACHED của diff-manifest.**
+   `attachFinalizationEvidenceTx` không hề policing `Evidence.OutputArtifactRefs` (chỉ gộp vào danh sách
+   artifact reference của Checkpoint) — không có bước promote nào sẽ từng chạm tới nó, nên chèn ORPHAN sẽ
+   kẹt vĩnh viễn. Chỉ tạo artifact khi `Output.CaptureStdout || CaptureStderr` đúng như author khai — không
+   bao giờ persist cả 2 stream nếu author chỉ cho phép 1.
+8. **NetworkAccess: chỉ khai báo/audit cho Alpha, không có sandbox OS thật.** Khớp đúng tinh thần honesty
+   sẵn có của `internal/adapters/process.IsolationChecker` ("Alpha has no real OS-level filesystem/network
+   sandbox") — không giả vờ enforce cái không làm được thật. Ghi rõ đây là gap cố ý, không giấu.
+9. **OS/toolchain compatibility của CommandDocument KHÔNG được check ở runtime task này** — không nằm
+   trong "Thực hiện" gốc của task, để lại cho author tự đảm bảo qua file extension/nội dung script (phạm
+   vi rõ ràng, không mở rộng).
+
+**Thực hiện:** `internal/app/ports/secret.go` (mới — `SecretResolver` interface), `internal/adapters/secretenv/resolver.go`
+(mới — adapter thật đọc OS env), `internal/app/ports/fake/secret.go` (mới — fake test double),
+`internal/app/ports/fake/process_supervisor.go` (mới — fake `ports.ProcessSupervisor`, ghi lại mọi
+`ProcessSpec` nhận được + đọc thật nội dung file tại `spec.Executable` để xác nhận bước materialize chạy
+thật), `internal/app/runtime/schedule.go` (`decodeCompiledCommand` mới), `internal/app/runtime/agent_node_executor.go`
++ `agent_node_executor_resources.go` + `agent_node_executor_cancellation.go` (tái cấu trúc free-function,
+quyết định #2), `internal/app/runtime/command_node_executor.go` (file mới — `CommandNodeExecutor`,
+`gatherCommandExecutionInputs`, `resolveCommandInvocation`, `materializeExecutable`,
+`persistCommandOutputArtifact`, `classify`).
+
+**Test (9 test mới, `command_node_executor_test.go`):**
+- `TestCommandNodeExecutor_Success_ResolvesArgvCwdAndFinalizesEndToEnd` — golden path đầy đủ: argv LITERAL
+  + PLACEHOLDER (bao gồm một giá trị chứa `&&`/`|` để chứng minh không hề bị shell diễn giải — "injection"
+  verify point) + cwd đúng mount → SUCCEEDED/outcome "done", Evidence có đúng 1 output artifact ref.
+- `TestCommandNodeExecutor_EnvAllowlist_PassedAsInheritedEnvironment` — EnvAllowlist đúng thành
+  `InheritedEnvironment` (so sánh theo set, vì `command.Compile` tự sort field này — order không mang
+  nghĩa).
+- `TestCommandNodeExecutor_SecretRef_ResolvedIntoEnvironmentNeverArgv` — secret resolve đúng vào
+  `Environment`, KHÔNG xuất hiện ở bất kỳ argv element nào.
+- `TestCommandNodeExecutor_SecretUnresolvable_FailsClosedWithoutSpawning` — secret không resolve được →
+  FAILED/VALIDATION_FAILED, `supervisor.Calls == 0`.
+- `TestCommandNodeExecutor_NonzeroExit_FinalizesFailed` — exit 7 → FAILED/EXECUTION_FAILED.
+- `TestCommandNodeExecutor_ProcessOwnTimeout_FinalizesFailed` — `TimedOut=true` → FAILED/CodeTimeout.
+- `TestCommandNodeExecutor_CommandOwnTimeoutTighterThanAttemptPolicy_Honored` — CommandDocument khai 5s,
+  AttemptPolicy 600s → `ProcessSpec.Timeout == 5s` (quyết định #6, xác nhận trực tiếp qua giá trị thật đã
+  truyền cho supervisor).
+- `TestCommandNodeExecutor_UnknownArgvPlaceholder_FailsClosedWithoutSpawning` /
+  `TestCommandNodeExecutor_CwdRepositoryTargetNotInScope_FailsClosedWithoutSpawning` — quyết định #5, cả
+  hai xác nhận `supervisor.Calls == 0`.
+- `TestCommandNodeExecutor_ProcessCancelled_ReusesV508CMutatingPath` — `CancelRun` thật rồi
+  `Cancelled=true` → `ErrAttemptAlreadyTerminated`, đúng 1 termination INDETERMINATE, 0 quarantine (revision
+  sạch) — chứng minh ĐÚNG dây nối tới free function V5-08C, không lặp lại toàn bộ ma trận đã test kỹ ở
+  `agent_node_executor_test.go`.
+
+**Lỗi tự phát hiện và sửa trong lúc code (ghi lại đầy đủ):**
+- Test golden-path đầu tiên đỏ ngay: `bridgeFakeWorkspaceProvider` fixture của tôi quên set field `diff`
+  (`ports.WorkspaceDiff{}` rỗng) → `buildEvidence`'s own `workspace.NewRevisionSet` từ chối vì
+  RepositoryID/VCSObjectID rỗng — sửa bằng `defaultInScopeDiff()` (helper có sẵn từ agent_node_executor_test.go).
+- Test `EnvAllowlist` đỏ vì assert theo ĐÚNG THỨ TỰ `["PATH","HOME"]` — `command.Compile`'s own
+  `documentSetPaths` đánh dấu `envAllowlist` là set (order không mang nghĩa) nên bị sort lại thành
+  `["HOME","PATH"]` — sửa assertion thành so sánh set, không so sánh order.
+- `gofmt` báo lệch alignment thật (không phải CRLF benign) trên `command_node_executor.go` — 1 dòng struct
+  literal field bị lệch cột do sửa tay — `gofmt -w` tự sửa, build/test lại xác nhận không đổi hành vi.
+
+**Chưa làm / cố ý để lại (ghi rõ, không giấu):**
+- Không có test end-to-end thật kết hợp `ExecuteNodeHandler` (poller/admission thật) + `CommandNodeExecutor`
+  trong cùng một lời gọi — cùng lý do V5-08C đã ghi: rủi ro khoảng trống gần như bằng 0 (ctx-cancel-propagation
+  là ngữ nghĩa chuẩn `context` package; admission đã kind-agnostic và test riêng đầy đủ).
+- Không check `CommandDocument.Compatibility.OS` so với host thật lúc chạy (quyết định #9) — không nằm
+  trong "Thực hiện" gốc.
+- Không đổi `cmd/agentkit` để nối `CommandNodeExecutor` thật vào bất kỳ route/CLI nào — đúng pattern mọi
+  task V4/V5 trước giờ.
+- Không test riêng NetworkAccess=ALLOWED vs NONE thật (quyết định #8 — declared-only, không sandbox thật,
+  nên không có hành vi runtime nào khác nhau để test).
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                               # sạch
+go run ./cmd/docs-coverage-check                           # debt = 0
+gofmt -l <file mới/thay đổi>                                # sạch hết (1 lỗi thật đã tự sửa, xem trên)
+go test -count=1 ./internal/app/runtime/... -v             # PASS toàn bộ, kể cả 9 test mới
+go test -count=1 ./...                                     # PASS toàn bộ ~70 package
+go test -count=1 ./internal/app/runtime/...                # lặp lại, ổn định không flake
+go test -count=3 ./internal/app/runtime/... -run "TestCommandNodeExecutor"
+                                                            # PASS ổn định, không flake
+```
+
+**Việc còn lại:** commit, push nhánh `feat/v5-09-command-executor`, mở PR, chờ CI 6/6, merge.

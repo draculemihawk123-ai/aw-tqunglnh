@@ -539,7 +539,7 @@ func gatherCommandExecutionInputs(ctx context.Context, uow ports.UnitOfWork, req
 		inputs = commandExecutionInputs{
 			doc: doc, scriptPayload: scriptCandidate.Payload, effectiveScope: nodeRun.EffectiveScope,
 			workspaceMounts: assembleWorkspaceMounts(nodeRun.EffectiveScope, snapshot.Revisions.Entries()),
-			timeout: timeout, allowedOutcomes: allowedOutcomes, snapshotID: string(snapshot.ID),
+			timeout:         timeout, allowedOutcomes: allowedOutcomes, snapshotID: string(snapshot.ID),
 			executionProfileHash: attempt.ExecutionProfileHash,
 		}
 		return nil
