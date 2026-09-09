@@ -101,6 +101,13 @@ type Tx interface {
 	// the production, registry-normalized agent_events contract (see
 	// AgentEventsRepository's own doc comment, internal/app/ports/agentevent.go).
 	AgentEvents() AgentEventsRepository
+	// Checkpoints is populated now (V5-08B, docs/design/07-v5-execution-evidence.md):
+	// the Tx-composable half of Checkpoint persistence a fenced finalize
+	// transaction needs for its own completion checkpoint (see
+	// CheckpointsRepository's own doc comment, internal/app/ports/checkpoint.go)
+	// — agentevents.Sink's own mid-run checkpoints deliberately keep using
+	// the pre-existing legacy autocommit CheckpointStore instead, unchanged.
+	Checkpoints() CheckpointsRepository
 }
 
 // CatalogRepository is populated now (V3-01,
