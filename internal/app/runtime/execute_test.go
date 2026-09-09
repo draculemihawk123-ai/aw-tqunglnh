@@ -264,6 +264,166 @@ func TestExecuteNodeHandler_CancelledContextDoesNotFinalize(t *testing.T) {
 	}
 }
 
+// --- ExecuteNodeHandler: V5-08C's own poller detects a durable
+// cancellation intent recorded WHILE the executor is running ---
+
+// cancellationAwareExecutor is a tiny ports.NodeExecutor stand-in for
+// AgentNodeExecutor's own classifyCancellation read-only-attempt branch
+// (agent_node_executor_cancellation.go): it blocks until its ctx is
+// cancelled, then reports a definitive CANCELLED result with no error —
+// exactly what a real bridge does once it has re-derived that a genuine
+// durable RunCancellationIntent, not some other ambiguous cause, is why
+// its own process-level ctx just stopped it. fake.NodeExecutor cannot
+// express this (it only ever returns ctx.Err() itself on ctx.Done()), so
+// this handler-level test needs its own.
+type cancellationAwareExecutor struct{ calls int }
+
+func (e *cancellationAwareExecutor) Execute(ctx context.Context, _ ports.NodeExecutionRequest) (ports.NodeExecutionResult, error) {
+	e.calls++
+	<-ctx.Done()
+	return ports.NodeExecutionResult{
+		State: runtimedomain.ExecutionAttemptCancelled, TerminationReason: runtimedomain.TerminationReasonRunCancelled,
+	}, nil
+}
+
+var _ ports.NodeExecutor = (*cancellationAwareExecutor)(nil)
+
+// TestExecuteNodeHandler_PollerDetectsDurableCancellation_UnrecognizedExecutorLeavesRunning
+// proves the poller mechanism itself: a plain fake.NodeExecutor (blocked,
+// with no idea what V5-08C's own cancellation classification even is) is
+// interrupted within roughly one cancellationPollInterval tick of a real
+// runtime.CancelRun recording its durable intent — nothing about this test
+// touches the outer job ctx directly, unlike
+// TestExecuteNodeHandler_CancelledContextDoesNotFinalize. The Attempt is
+// left RUNNING (the safe default for an executor that does not resolve the
+// cancellation itself, matching every other ambiguous-cause branch in this
+// file) — not silently finalized as FAILED (the bug this task fixed) and
+// not left blocked until the (long) AttemptPolicy deadline.
+func TestExecuteNodeHandler_PollerDetectsDurableCancellation_UnrecognizedExecutorLeavesRunning(t *testing.T) {
+	uow, ids, runID, nodeRunID, attemptID := scheduledExecutionFixture(t, 600) // deliberately long: proves the poller, not the deadline, ends this
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+
+	executor := &fake.NodeExecutor{Block: make(chan struct{})} // never closed: only poller-cancelled execCtx ends this
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+
+	handleErr := make(chan error, 1)
+	start := time.Now()
+	go func() { handleErr <- handler.Handle(context.Background(), job) }()
+
+	// Give Handle time to actually start (claim RUNNING, pass the context
+	// snapshot check, reach the executor call) before recording the
+	// cancellation intent — otherwise CancelRun could race ahead of
+	// admission's own pre-execute cancelling re-check.
+	time.Sleep(50 * time.Millisecond)
+	if _, err := runtime.CancelRun(context.Background(), uow, ids, runtime.CancelRunRequest{
+		RunID: runID, Actor: "actor-1", Reason: "test: mid-execution cancel",
+	}); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+
+	select {
+	case err := <-handleErr:
+		elapsed := time.Since(start)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Handle err = %v, want context.Canceled", err)
+		}
+		// Well under both the 600s AttemptPolicy deadline and a generous
+		// bound on "a couple of poll ticks" — proves the poller, not the
+		// deadline, is what ended this.
+		if elapsed > 3*time.Second {
+			t.Fatalf("Handle took %s to return after CancelRun, want well under the poller's own multi-tick bound", elapsed)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Handle did not return within 5s of a recorded cancellation intent — poller did not fire")
+	}
+
+	attempt, err := uow.Snapshot.Runtime().GetExecutionAttempt(context.Background(), attemptID)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt: %v", err)
+	}
+	if attempt.State != runtimedomain.ExecutionAttemptRunning {
+		t.Fatalf("attempt = %+v, want still RUNNING (unrecognized-cause cancellation must not finalize)", attempt)
+	}
+	nodeRun, err := uow.Snapshot.Runtime().GetNodeRun(context.Background(), nodeRunID)
+	if err != nil {
+		t.Fatalf("GetNodeRun: %v", err)
+	}
+	if nodeRun.State != runtimedomain.NodeRunRunning {
+		t.Fatalf("node run = %+v, want unchanged RUNNING", nodeRun)
+	}
+}
+
+// TestExecuteNodeHandler_PollerDetectsDurableCancellation_DefinitiveResultFinalizesCancelled
+// proves the OTHER half: when the executor itself resolves the
+// poller-triggered cancellation into a definitive CANCELLED result (exactly
+// what AgentNodeExecutor's own classifyCancellation read-only-attempt
+// branch does — see cancellationAwareExecutor above), Handle's own switch
+// (execute.go) now finalizes the Attempt CANCELLED/RUN_CANCELLED instead of
+// silently defaulting to FAILED (the bug this task's own research found:
+// the switch had no explicit case for ExecutionAttemptCancelled, so
+// nextState stayed at its hardcoded Failed default).
+func TestExecuteNodeHandler_PollerDetectsDurableCancellation_DefinitiveResultFinalizesCancelled(t *testing.T) {
+	uow, ids, runID, nodeRunID, attemptID := scheduledExecutionFixture(t, 600)
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+
+	executor := &cancellationAwareExecutor{}
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+
+	handleErr := make(chan error, 1)
+	go func() { handleErr <- handler.Handle(context.Background(), job) }()
+
+	time.Sleep(50 * time.Millisecond)
+	if _, err := runtime.CancelRun(context.Background(), uow, ids, runtime.CancelRunRequest{
+		RunID: runID, Actor: "actor-1", Reason: "test: mid-execution cancel, bridge resolves it",
+	}); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+
+	select {
+	case err := <-handleErr:
+		if err != nil {
+			t.Fatalf("Handle: %v, want nil (finalize succeeded)", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Handle did not return within 5s of a recorded cancellation intent — poller did not fire")
+	}
+
+	if executor.calls != 1 {
+		t.Fatalf("executor.calls = %d, want exactly 1", executor.calls)
+	}
+
+	attempt, err := uow.Snapshot.Runtime().GetExecutionAttempt(context.Background(), attemptID)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt: %v", err)
+	}
+	if attempt.State != runtimedomain.ExecutionAttemptCancelled || attempt.TerminationReason != runtimedomain.TerminationReasonRunCancelled {
+		t.Fatalf("attempt = %+v, want CANCELLED/RUN_CANCELLED", attempt)
+	}
+
+	// FinalizeExecutionAttempt's own switch (finalize.go) routes a
+	// CANCELLED Attempt through decideCancelledOutcomeTx — pre-existing
+	// V4-12B logic that was already fully wired end to end (NodeRun
+	// RUNNING->CANCELLED, branch-token terminalization, run-terminality
+	// reconciliation); this handler's own switch fix (execute.go) was the
+	// only missing link needed to ever reach it via a real poller-detected
+	// cancellation.
+	nodeRun, err := uow.Snapshot.Runtime().GetNodeRun(context.Background(), nodeRunID)
+	if err != nil {
+		t.Fatalf("GetNodeRun: %v", err)
+	}
+	if nodeRun.State != runtimedomain.NodeRunCancelled {
+		t.Fatalf("node run = %+v, want CANCELLED (decideCancelledOutcomeTx)", nodeRun)
+	}
+
+	run, err := uow.Snapshot.Runtime().GetWorkflowRun(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("GetWorkflowRun: %v", err)
+	}
+	if run.State != runtimedomain.WorkflowRunCancelled {
+		t.Fatalf("run = %+v, want CANCELLED (reconcileRunTerminalityTx should close out a CANCELLING run with zero live nodes)", run)
+	}
+}
+
 // --- ExecuteNodeHandler: idempotent replay ---
 
 func TestExecuteNodeHandler_ReplayAfterAlreadyRunning_IsNoOp(t *testing.T) {

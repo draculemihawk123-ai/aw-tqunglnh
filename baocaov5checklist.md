@@ -2213,3 +2213,170 @@ go test -count=1 ./...                                     # PASS toàn bộ ~70
 Tx checkpoint, `fe85099` bridge, `8138166` finalize evidence + E2E, `e11c354` E2E bổ sung — tổng cộng 6
 commit trên nhánh kể từ `3a86477` Bước 3), push nhánh `feat/v5-08b-implementation` lên
 `zlinh4605/agent-workflow`, mở MỘT PR duy nhất cho toàn bộ V5-08B (đúng lựa chọn user), chờ CI 6/6, merge.
+
+## V5-08C — Cancellation execution path (branch `feat/v5-08c-cancellation-execution-path`)
+
+**Bối cảnh / nghiên cứu trước khi code:** `cancel_run_coordinator.go`'s own doc comment đã tự thừa nhận
+lỗ hổng chính task này phải đóng: một `ExecutionAttempt` thật đang RUNNING (process/provider thật đang
+chạy) bị `CancelRunCoordinatorHandler` **bỏ qua nguyên văn**, y hệt BLOCKED — "Alpha has no process-kill;
+it runs to its own natural conclusion". V4-12B (worker-side re-check trước khi gọi executor,
+`h.runIsCancelling` ở `execute.go`) và V4-13 (crash-recovery/interruption sau khi executor đã dừng vì lý
+do khác) đều đã có sẵn — mảnh còn thiếu duy nhất là: làm sao một `RunCancellationIntent` được ghi NHẬN
+GIỮA lúc executor đang chạy thật sự dừng được process đó, và Attempt được phân loại đúng sau khi nó dừng.
+
+Đọc `internal/adapters/process/supervisor.go`'s own `Supervisor.Run` phát hiện: `ctx` truyền vào đã được
+dùng để dựng `deadline := context.WithTimeout(ctx, spec.Timeout)` — hủy `ctx` (không chỉ hết timeout)
+CŨNG khiến `deadline.Done()` fire (child kế thừa cancellation của parent theo đúng ngữ nghĩa
+`context` package), và `setCancellationResult` đã set đúng `result.Cancelled = true` (không phải
+`TimedOut`) khi `terminationCause` là `context.Canceled`. **Kết luận: propagation ctx-cancel xuống tận
+process thật đã hoạt động sẵn — không cần thêm plumbing gì ở tầng `ProcessSupervisor`.** Việc còn lại
+hoàn toàn nằm ở tầng app: (1) khi nào hủy ctx, và (2) diễn giải kết quả `AgentExecutionCancelled` mà
+`claude.go`/`codex.go`'s own `finalStatus` đã trả về sẵn (check đầu tiên, trước cả terminalSeen/protocol)
+thành gì cho Attempt.
+
+**Quyết định (không hỏi lại, theo đúng "tự giác tiếp tục"):**
+1. **Không phát minh cơ chế live-signal mới.** `workerpool.Pool.runJob` có `jobCtx`/`cancelJob` riêng cho
+   từng job nhưng không có registry cho goroutine khác với tới hủy đúng 1 job cụ thể — đúng với triết lý
+   "trust durable state, never a live signal" toàn bộ codebase đã theo từ đầu. Thay vào đó: một poller
+   trong chính `ExecuteNodeHandler.Handle` (`execute.go`) tự đọc lại `WorkflowRun.State` mỗi
+   `cancellationPollInterval` (500ms) TRONG LÚC executor đang chạy — poll đọc, không phải push.
+2. **`execCtx` là con của `attemptCtx`, không phải chính `attemptCtx`.** Nếu poller hủy thẳng
+   `attemptCtx`, nhánh cũ "`attemptCtx.Err() != nil` → để RUNNING" sẽ tự động nuốt luôn case mới này mà
+   không bao giờ phân loại được gì khác — phải tách hẳn một context con để giữ nguyên khả năng phân biệt
+   "deadline của chính mình" / "ctx ngoài bị hủy vì lý do khác" / "poller vừa phát hiện cancel thật".
+3. **Bridge (`AgentNodeExecutor`) tự re-derive lại nguyên nhân dừng, không tin bất kỳ ai gọi nó nói gì.**
+   `classify` (agent_node_executor.go) thêm nhánh `agentResult.Status == AgentExecutionCancelled` →
+   `classifyCancellation` (file mới `agent_node_executor_cancellation.go`) đọc lại
+   `WorkflowRun.State` một lần nữa (transaction read-only riêng, KHÔNG dùng ctx đã bị hủy) — nếu Run
+   không hề có `RunCancellationIntent` (`Cancelling`/`Cancelled`), đây là nguyên nhân mơ hồ (ví dụ
+   `workerpool` tự shutdown) → `ErrIndeterminateExecution`, không bao giờ đoán CANCELLED cho một cause
+   không xác nhận được.
+4. **Read-only attempt vs mutating attempt tách hai nhánh khác nhau** — khớp yêu cầu gốc của task ("mutating
+   attempt không chứng minh được kết quả thành INDETERMINATE với workspace QUARANTINED"):
+   - Không có write mount nào (`resolved.hasWriteMount == false`): không side effect nào từng có thể xảy
+     ra → trả thẳng `NodeExecutionResult{State: Cancelled, TerminationReason: RunCancelled}` (err=nil) —
+     đi qua `FinalizeExecutionAttempt` bình thường, tới `decideCancelledOutcomeTx` (V4-12B, đã có sẵn từ
+     trước, đã tự làm đúng NodeRun RUNNING→CANCELLED + branch-token + run-terminality reconciliation).
+   - Có write mount: KHÔNG được tin process đã dừng sạch chỉ vì `TreeQuiesced` — phải tái xác nhận từng
+     repository workspace bằng CHÍNH các primitive V4-13 đã có sẵn và đã được `RecoveryReaperHandler`
+     dùng y hệt (`worker.ReconcileMutatingAttempt`, `worker.InterruptionRecoveryStore.TerminateInterruptedAttempt`,
+     `worker.WorkspaceReconciler.QuarantineRepositoryWorkspace`) — KHÔNG dùng
+     `worker.ReconcileInterruptedAttempt` (wrapper tiện lợi giả định đúng 1 repo workspace; bridge này có
+     thể có nhiều write mount cùng lúc) mà gọi trực tiếp các primitive cấp thấp hơn, y hệt cách
+     `RecoveryReaperHandler` đã làm — không phát minh đường thứ hai đi tới cùng một kết quả durable.
+     Attempt → INDETERMINATE (`OWNERSHIP_LOST_MUTATING`) LUÔN LUÔN trước (không có nhánh "sạch thì
+     CANCELLED" — mutating attempt bị cắt ngang không bao giờ là CANCELLED sạch, kể cả khi revision
+     cuối cùng trùng khớp — chỉ là INDETERMINATE-không-quarantine so với
+     INDETERMINATE-có-quarantine); WriteLease chỉ release SAU KHI toàn bộ reconciliation (terminate +
+     quarantine nếu có) xong — release trước sẽ mở cửa sổ cho attempt khác giành write lease vào một
+     workspace chưa xác định xong tính toàn vẹn. Hàm này trả `ErrAttemptAlreadyTerminated` (sentinel mới)
+     để báo `execute.go` rằng Attempt đã bị đưa tới trạng thái terminal RỒI, không cần
+     `FinalizeExecutionAttempt` nữa (CAS đó chắc chắn fail vì `ExpectedVersion` không còn khớp RUNNING).
+5. **`execute.go`'s own switch thiếu hẳn case `Cancelled`** — bug phát hiện khi đọc lại code trước khi
+   viết poller: `nextState` mặc định cứng ở `Failed`, và nhánh `default` chỉ copy `TerminationReason`
+   sang mà KHÔNG BAO GIỜ ghi đè `nextState` — nếu không sửa, nhánh read-only-attempt ở quyết định #4 phía
+   trên (execErr == nil, State == Cancelled) sẽ lặng lẽ bị finalize thành FAILED. Thêm hẳn
+   `case runtimedomain.ExecutionAttemptCancelled` copy đúng `TerminationReason` từ `execResult`.
+6. **Check `attemptCtx.Err()` cũ (2 chỗ) đổi thành `execCtxErr`** (snapshot CHỤP TRƯỚC khi gọi
+   `cancelExec()` dọn goroutine poller — nếu chụp sau, `execCtx.Err()` LUÔN non-nil vì chính
+   `cancelExec()` vừa gọi, làm sai lệch mọi executor trả lỗi bare không liên quan gì tới cancel; bug này
+   tự phát hiện qua test `TestExecuteNodeHandler_ExecutorReturnsError_FinalizesFailed` đỏ ngay lần chạy
+   đầu, sửa bằng cách chụp `execCtxErr := execCtx.Err()` NGAY sau khi `Execute` return, trước
+   `cancelExec()`). Dùng `execCtx` (con) thay vì `attemptCtx` (cha) đúng ý nghĩa: một executor CHUNG
+   CHUNG (không biết gì về phân loại V5-08C, ví dụ mọi fake test cũ) mà bị poller hủy execCtx thì PHẢI
+   rơi vào đúng nhánh an toàn "để RUNNING" y hệt outer-cancel trước đây — chỉ `AgentNodeExecutor` mới
+   biết tự giải quyết dứt điểm (qua `ErrAttemptAlreadyTerminated` hoặc `State: Cancelled` thật) và thoát
+   khỏi nhánh này TRƯỚC khi tới check `execCtxErr`.
+
+**Thực hiện:**
+- `agent_node_executor.go`: import `internal/app/worker`; struct thêm `interruptions
+  worker.InterruptionRecoveryStore`, `reconciler worker.WorkspaceReconciler`; constructor thêm 2 tham số;
+  `classify` thêm nhánh `AgentExecutionCancelled` gọi `classifyCancellation`.
+- `agent_node_executor_resources.go`: `resolvedExecutionResources` thêm `writeMounts
+  []mutatingMountInfo` (repositoryWorkspaceID/handle/pinnedRevision/workspaceVersion — đủ dữ liệu để
+  reconcile mà không cần round-trip `AttemptHeldAnyWriteLease`/`LoadRepositoryWorkspaceRevision` như
+  crash-recovery path phải làm); `gatheredMount` thêm `workspaceVersion`; Phase 1 gathering ghi lại
+  `rw.Version`; Phase 2 loop append `writeMounts` khi `access == WorkspaceReadWrite`.
+- `agent_node_executor_cancellation.go` (**file mới**): `ErrAttemptAlreadyTerminated`,
+  `cancellationPollInterval = 500ms`, `classifyCancellation`, `handleMutatingCancellation`,
+  `loadAttemptVersion` — đúng nội dung quyết định #3/#4 ở trên.
+- `execute.go`: package doc + inline comment cập nhật; `execCtx, cancelExec :=
+  context.WithCancel(attemptCtx)` bọc quanh lệnh gọi executor; goroutine `pollForCancellation` (hàm mới,
+  đặt cạnh `runIsCancelling` sẵn có, TÁI DÙNG chính helper đó cho việc đọc — không viết lại logic đọc
+  `WorkflowRun.State` lần hai) dùng `pollCtx` là ctx NGOÀI (`ctx`, không phải `execCtx`) vì bản thân vòng
+  poll phải sống sót qua chính tín hiệu nó tạo ra; `cancelExec()` + `<-pollDone` ngay sau khi `Execute`
+  return để không leak goroutine; `execCtxErr` chụp trước dọn dẹp (quyết định #6); nhận diện
+  `ErrAttemptAlreadyTerminated` đầu tiên trong nhánh `execErr != nil` → `return nil`; switch thêm case
+  `Cancelled` (quyết định #5).
+
+**File thay đổi:** `internal/app/runtime/agent_node_executor.go`, `agent_node_executor_resources.go`,
+`agent_node_executor_cancellation.go` (mới), `agent_node_executor_test.go`, `execute.go`, `execute_test.go`.
+
+**Test:**
+- 3 test mới ở tầng bridge (`agent_node_executor_test.go`), gọi thẳng `executor.Execute` (giống style 7
+  test E2E của V5-08B — không qua `ExecuteNodeHandler`):
+  - `TestAgentNodeExecutor_CancelledWithoutDurableIntent_ReturnsIndeterminateExecution` — không có
+    `CancelRun` nào từng gọi → `ErrIndeterminateExecution`, không termination/quarantine nào.
+  - `TestAgentNodeExecutor_MutatingCancellation_CleanRevision_TerminatesIndeterminateWithoutQuarantine` —
+    gọi `runtime.CancelRun` thật, revision cuối trùng pinned → đúng 1 termination
+    (INDETERMINATE/OWNERSHIP_LOST_MUTATING), 0 quarantine.
+  - `TestAgentNodeExecutor_MutatingCancellation_MutatedRevision_TerminatesIndeterminateAndQuarantines` —
+    revision cuối KHÁC pinned → đúng 1 termination, đúng 1 quarantine với
+    `Reason == string(worker.ReconciliationMutationObserved)`.
+- 2 test mới ở tầng handler (`execute_test.go`), lần đầu tiên chứng minh chính CƠ CHẾ POLLER (không
+  test nào trước đây từng dựng `WorkflowRun.Cancelling` GIỮA LÚC executor đang block) — cả hai chạy
+  `handler.Handle` trong goroutine, sleep 50ms rồi gọi `runtime.CancelRun` thật (không đụng ctx trực
+  tiếp, khác hẳn `TestExecuteNodeHandler_CancelledContextDoesNotFinalize` cũ):
+  - `TestExecuteNodeHandler_PollerDetectsDurableCancellation_UnrecognizedExecutorLeavesRunning` — dùng
+    `fake.NodeExecutor{Block: ...}` (không biết gì về V5-08C) → Handle return trong ~1 tick (đo elapsed,
+    assert < 3s, so với AttemptPolicy timeout 600s cố tình để rất dài) trả `context.Canceled`, Attempt
+    vẫn RUNNING (nhánh an toàn quyết định #6).
+  - `TestExecuteNodeHandler_PollerDetectsDurableCancellation_DefinitiveResultFinalizesCancelled` — dùng
+    executor cục bộ mới `cancellationAwareExecutor` (mô phỏng đúng những gì `classifyCancellation`'s own
+    read-only-attempt branch trả) → Handle return nil (finalize thành công), Attempt CANCELLED/
+    RUN_CANCELLED, và phát hiện thêm: NodeRun tự động CANCELLED + Run tự đóng CANCELLED luôn (qua
+    `decideCancelledOutcomeTx`/`reconcileRunTerminalityTx` — logic V4-12B có sẵn từ trước, task này chỉ
+    cần mở đúng đường tới nó qua switch case mới).
+  - Cả hai test stress `-count=5` liên tục pass, thời gian ổn định ~0.50-0.51s mỗi lần (đúng 1 tick
+    `cancellationPollInterval`), không flake.
+
+**Lỗi tự phát hiện và sửa trong lúc code (ghi lại đầy đủ, không giấu):**
+- `bridgeFakeWriteLeaseManager.ReleaseWriteLeases` hard-code lỗi "must not be called" (chưa từng có test
+  nào gọi thật trước V5-08C) — 2 test mutating-cancellation mới gọi lần đầu tiên → đổi fake từ value-type
+  luôn lỗi sang pointer-type ghi lại `released [][]ports.WriteLeaseGrant`.
+- `TestExecuteNodeHandler_ExecutorReturnsError_FinalizesFailed` đỏ ngay bản đầu tiên vì gọi
+  `cancelExec()` TRƯỚC khi đọc `execCtx.Err()` — mọi lỗi bare không liên quan cancel đều bị hiểu nhầm
+  thành cancel (đã sửa, xem quyết định #6).
+
+**Chưa làm / cố ý để lại:**
+- Không có test end-to-end kết hợp CẢ `ExecuteNodeHandler` (poller thật) LẪN `AgentNodeExecutor` (bridge
+  thật) trong cùng một lời gọi — 2 nhóm test tách riêng (bridge-level dùng `bridgeFixture`/gọi thẳng
+  `Execute`, handler-level dùng `cancellationAwareExecutor` mô phỏng lại đúng hợp đồng
+  `classifyCancellation` trả về). Rủi ro khoảng trống nối 2 lớp gần như bằng 0 vì: (1) việc `execCtx` bị
+  hủy thật sự truyền xuống context nhận được ở `AgentNodeExecutor.Execute` chỉ là ngữ nghĩa chuẩn của
+  `context` package, không phải code tự viết; (2) `AgentExecutionCancelled` status bridge nhận vào đã có
+  đường đi riêng được test kỹ; ghép 2 lớp thật cần dựng thêm `agentregistry`/`ports.AgentExecutor` giả
+  lập process thật — hoãn, không chặn V5-08C, có thể làm ở V5-15 (execution/evidence acceptance gate,
+  task tổng kết cuối V5) nếu cần.
+- Không đổi `cmd/agentkit serve/worker` để nối `AgentNodeExecutor` thật vào `ExecuteNodeHandler` trong
+  production — đúng pattern mọi task V4/V5 trước giờ (library + test, không đụng `cmd/`).
+- `AttemptHeldAnyWriteLease`/`LoadRepositoryWorkspaceRevision` của 2 interface `worker.InterruptionRecoveryStore`/
+  `WorkspaceReconciler` không bao giờ được bridge gọi (đã có sẵn đủ dữ liệu từ `resolved.writeMounts`,
+  không cần round-trip crash-recovery path phải làm) — 2 fake test tương ứng cố tình lỗi "must not be
+  called" để tự khẳng định điều này, không phải thiếu sót.
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                               # sạch
+go run ./cmd/docs-coverage-check                           # debt = 0
+gofmt -l <file thay đổi>                                   # chỉ báo CRLF (đã biết, benign — finalize.go
+                                                            #   không hề đụng tới cũng bị báo y hệt)
+go test -count=1 ./internal/app/runtime/... -v             # PASS toàn bộ, kể cả 5 test mới
+go test -count=1 ./...                                     # PASS toàn bộ ~70 package
+go test -count=1 ./internal/app/runtime/... (x3 lần)       # PASS ổn định, không flake
+go test -count=5 ./internal/app/runtime/... -run PollerDetects -v
+                                                            # PASS 5/5, ~0.50-0.51s mỗi lần, không flake
+```
+
+**Việc còn lại:** commit, push nhánh `feat/v5-08c-cancellation-execution-path`, mở PR, chờ CI 6/6, merge.
