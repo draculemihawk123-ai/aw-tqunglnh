@@ -2380,3 +2380,127 @@ go test -count=5 ./internal/app/runtime/... -run PollerDetects -v
 ```
 
 **Việc còn lại:** commit, push nhánh `feat/v5-08c-cancellation-execution-path`, mở PR, chờ CI 6/6, merge.
+
+**Kết quả:** PR #6, merge commit `4afd51d`. CI lần đầu đỏ ở `contract (windows-latest)` —
+`TestProjectWorkspaceGate` (`internal/integration`), đúng flake timing đã biết từ trước (ghi nhận trong
+chính V5-08B's own checklist entry phía trên), không liên quan gì tới `internal/app/runtime` (package duy
+nhất task này đụng tới) — xác nhận bằng 3 lần chạy lại cục bộ đều pass, sau đó `gh run rerun --failed`
+trả về 6/6 xanh. Merge xong, xoá nhánh local + remote.
+
+## V5-08D — RetryBlockedActivation handler (branch `feat/v5-08d-retry-blocked-activation`)
+
+**Bối cảnh / nghiên cứu trước khi code:** `workdomain.BlockerType`'s own doc comment
+(`internal/domain/work/blocker.go`) đã tự đặt tên chính xác nhiệm vụ này từ trước: bốn admission blocker
+(`ISOLATION_ENFORCEMENT_UNAVAILABLE`, `ADAPTER_BUILD_DRIFT`, `CAPABILITY_REQUIREMENT_UNSATISFIED`,
+`WRITE_CAPABILITY_OR_GRANT_MISSING`) "can never be waived... the only exits are fixing the underlying
+condition (admission reasons — **a future RetryBlockedActivation**)". `admission.go` (V5-08, đã merge)
+đã có sẵn producer thật cho cả bốn (`blockAdmission`, `execute.go`) — CAS đồng thời NodeRun và Attempt
+QUEUED→BLOCKED, mở `WorkItemBlocker` với ID xác định `<attemptID>-admission-blocker` — nhưng KHÔNG có
+đường thoát nào: `evaluateAdmission`'s own 4 check chỉ chạy MỘT LẦN, tại thời điểm admission ban đầu.
+
+Phát hiện quan trọng nhất (đọc code, không đoán): `ResolveWorkItemBlocker` (V4-12C, command công khai duy
+nhất khác có thẩm quyền đóng blocker) có precondition riêng "no non-terminal Run for this WorkItem"
+(`ErrWorkItemHasNonTerminalRun`) — nhưng một NodeRun bị admission-block thì Run CHỦ của nó **không bao
+giờ** rời RUNNING/WAITING (không transition nào trong toàn bộ codebase từng tạo ra
+`runtime.WorkflowRunBlocked` — bốn admission reason chỉ CAS NodeRun/Attempt, chưa từng đụng tới Run).
+Nghĩa là `ResolveWorkItemBlocker` KHÔNG BAO GIỜ dùng được cho một retry thật (Run vẫn đang sống) — nó chỉ
+tồn tại để đóng sổ một blocker mà Run của nó đã terminal theo cách khác. V5-08D cần một command HOÀN TOÀN
+KHÁC, dành riêng cho trường hợp Run vẫn còn sống.
+
+Tìm được precedent gần như giống hệt: `reactivateBlockedNodeRunTx` (`scope_expansion.go`, V4-12A) — cơ chế
+đóng SCOPE_EXPANSION_REQUIRED blocker, MỘT lần approve xong thì "mint a new NodeRunID, bump
+ActivationSequence, copy NodeKey/Iteration/BranchTokenID, hand off to the EXISTING
+ScheduleExecutableNodeRun pipeline (via a plain ScheduleNodeRunJobKind job) rather than re-deriving
+EffectiveScope/ManifestRevision/ExecutionProfileHash a second way here" — đúng NGUYÊN VĂN hình dạng task
+này cần, chỉ khác blocker group. Còn tìm thấy một test PLACEHOLDER đã được viết sẵn từ trước
+(`TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld`, `admission_test.go`, comment tự ghi "the
+full RetryBlockedActivation command is V5-08D's scope") — tự tay dựng NodeRun mới + gọi thẳng
+`ScheduleExecutableNodeRun` để CHỨNG MINH shape khả thi trước khi command thật tồn tại; task này thay hẳn
+đoạn hand-rolled đó bằng lời gọi handler thật.
+
+**Quyết định (không hỏi lại):**
+1. **KHÔNG dùng `ResolveWorkItemBlocker`** — lý do đã nêu ở trên (precondition không bao giờ thoả cho một
+   Run còn sống). `RetryBlockedActivationHandler.Retry` (file mới `retry_blocked_activation.go`) là command
+   RIÊNG, có thẩm quyền đóng blocker admission theo cách `reactivateBlockedNodeRunTx` đã đóng blocker
+   scope-expansion — `unlockedStatus = ACTIVE` (Run vẫn tiếp tục), không phải `READY`.
+2. **Tái cấu trúc thay vì viết lại:** `runAdmissionProbePhase`/`loadExecutionProfile` (cả hai vốn là method
+   của `*ExecuteNodeHandler`, `admission.go`/`execute.go`) đổi thành free function nhận tham số trực tiếp
+   (`uow`, `isolation`, `agents`, `nodeRunID`) — method cũ trên `*ExecuteNodeHandler` giữ nguyên, chỉ còn là
+   wrapper mỏng gọi hàm mới, KHÔNG đổi call site nào khác. Lý do: revalidate của retry PHẢI chạy đúng cùng
+   một logic admission gốc đã chạy — chép lại một bản thứ hai là đúng thứ "one real resolver, every caller
+   reuses it" mà `reactivateBlockedNodeRunTx`'s own doc comment đã cảnh báo tránh.
+3. **"Không repin Run"** (yêu cầu khoá cứng của task, tự suy ra từ code chứ không hỏi): `loadExecutionProfile`
+   chỉ đọc lại ĐÚNG DecisionArtifact bất biến `"<nodeRunId>-execution-profile-v1"` schedule.go đã ghi một
+   lần duy nhất — nghĩa là retry LUÔN re-probe đúng AdapterBuildID gốc, không có cách nào tự thay bằng build
+   mới hơn. Test riêng chứng minh: đăng ký thêm một build thứ hai hoàn toàn hợp lệ (không drift) sau khi đã
+   bị block vì drift — retry vẫn thất bại với `ADAPTER_BUILD_DRIFT`, build mới không hề được xét tới.
+4. **Idempotency gate: State của WorkItemBlocker, không phải State của NodeRun.** Phát hiện lúc viết test
+   idempotent (gọi Retry() lần 2 sau khi lần 1 đã thành công): không có transition nào trong toàn bộ
+   codebase từng đưa một NodeRun đã BLOCKED trở lại một State khác — bản gốc bị block ở lại BLOCKED MÃI MÃI
+   như một historical record (giống hệt cách Attempt bị block cũng ở lại BLOCKED mãi mãi), chỉ một NodeRun
+   MỚI với ActivationSequence cao hơn được tạo ra. Vậy check `nodeRun.State != BLOCKED` không bao giờ đúng
+   nghĩa "đã retry rồi" — tín hiệu thật là blocker của chính Attempt đó không còn OPEN nữa (đã RESOLVED bởi
+   lần retry trước). Sửa lại: `isAdmissionBlockerReason` check trước (loại các lý do khác như
+   SCOPE_EXPANSION_REQUIRED — không có thẩm quyền), rồi mới tới `blocker.State != OPEN` → `AlreadyRetried`
+   (no-op, không lỗi), rồi mới tới cancel-fence Run.
+5. **"Thất bại giữ nguyên blocker hiện tại và không tạo thêm blocked activation":** nhánh
+   `decision.reason != ""` trong transaction cuối cùng KHÔNG GHI GÌ CẢ — chỉ trả về
+   `RetryBlockedActivationResult{FailureReason, FailureDetail}` (business outcome, không phải Go error,
+   cùng vocabulary với `admissionDecision` gốc) rồi return nil (transaction rỗng, an toàn). Test lặp 5 lần
+   xác nhận: đúng 1 blocker OPEN, số NodeRun không đổi so với trước khi bắt đầu retry.
+6. **Cancel fence + "expected version":** thiết kế hai-pha giống hệt `admitOrClaimRunning` (`admission.go`,
+   V5-08) — preflight đọc-only + Phase 1 I/O thật ngoài transaction, rồi Phase 2 một transaction
+   `WithSerializedWrite` duy nhất đọc lại MỌI thứ tươi (đóng đúng race TOCTOU `admitOrClaimRunning` đã tự
+   đóng giữa probe và commit) trước khi quyết định. Không có field `ExpectedVersion` nào lộ ra ngoài request
+   — CAS được xử lý nội bộ hoàn toàn bằng cách đọc lại tươi trong transaction cuối, đúng cách
+   `reactivateBlockedNodeRunTx`/`admitOrClaimRunning` đã làm, không phải một field caller tự cung cấp.
+7. **NodeRun mới không sao chép EffectiveScope/RunManifestAmendment:** khác `reactivateBlockedNodeRunTx`
+   (task đó THÊM scope mới), admission retry không hề đổi scope — `createRetriedNodeRunActivationTx`
+   truyền `nil` cho EffectiveScope giống hệt cách `reactivateBlockedNodeRunTx` cũng làm, vì
+   `ScheduleExecutableNodeRun` tự resolve lại từ snapshot hiện tại của WorkItem bất kể NewNodeRun được
+   dựng với gì.
+
+**Thực hiện:** `admission.go` (`runAdmissionProbePhase` → free function + wrapper method,
+`isAdmissionBlockerReason` helper mới), `execute.go` (`loadExecutionProfile` → free function + wrapper
+method — không đổi hành vi, chỉ đổi chữ ký nội bộ), `blocker.go` (cập nhật 2 doc comment để phản ánh người
+gọi thứ ba của `closeWorkItemBlockerTx`/`openWorkItemBlockerTx`), `retry_blocked_activation.go` (file mới —
+`RetryBlockedActivationHandler`/`Retry`, `loadForRetry`/`loadForRetryTx`, `createRetriedNodeRunActivationTx`,
+3 sentinel error mới), `admission_test.go` (helper mới `claimableScheduleNodeRunJob`; nâng cấp
+`TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld` từ hand-rolled placeholder thành lời gọi
+handler thật + verify blocker RESOLVED/WorkItem ACTIVE + idempotent lần gọi thứ hai; 3 test mới).
+
+**Test (4 test mới + 1 nâng cấp, tất cả trong `admission_test.go`):**
+- `TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld` (nâng cấp) — golden path đầy đủ: block vì
+  isolation → Retry thật → xử lý job SCHEDULE_NODE_RUN thật qua `NodeSchedulingHandler` → Attempt mới thật
+  → Handle thành công → Attempt gốc vẫn BLOCKED nguyên vẹn → blocker RESOLVED, WorkItem ACTIVE → gọi Retry
+  lần 2 trả về AlreadyRetried (không lỗi, không retry lần hai).
+- `TestRetryBlockedActivation_RevalidationStillFails_NoRepeatedBlockedActivation` — lặp 5 lần Retry trên
+  một nguyên nhân vẫn còn sai → đúng 1 blocker OPEN, số NodeRun không đổi so với trước khi bắt đầu.
+- `TestRetryBlockedActivation_RunNotRetryable_Rejected` — `CancelRun` thật rồi Retry → `ErrRunNotRetryable`.
+- `TestRetryBlockedActivation_AdapterDrift_NeverRepinsToNewerBuild` — đăng ký build thứ hai hợp lệ sau khi
+  đã block vì drift → Retry vẫn thất bại với `ADAPTER_BUILD_DRIFT` (build gốc, không phải build mới).
+
+**Chưa làm / cố ý để lại:**
+- Không test riêng "NodeRun BLOCKED vì SCOPE_EXPANSION_REQUIRED bị RetryBlockedActivation từ chối" — logic
+  (`isAdmissionBlockerReason`, so khớp với 4-phần tử `admissionPriority` có sẵn) đơn giản/rủi ro thấp, và
+  dựng lại toàn bộ fixture scope-expansion (`TestFinalizeExecutionAttempt_Blocked_CreatesOriginAndRequestsScopeExpansion`'s
+  own machinery) chỉ để test một nhánh không nằm trong "Verify" gốc của task — không chặn.
+- Không đổi `cmd/agentkit` để nối `RetryBlockedActivationHandler` thật vào bất kỳ route/CLI nào — đúng
+  pattern mọi task V4/V5 trước giờ (library + test, route thuộc V6, action UI thuộc V7-12, đúng "Phạm vi"
+  chính task này tự ghi).
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                               # sạch
+go run ./cmd/docs-coverage-check                           # debt = 0
+gofmt -l <file thay đổi>                                   # chỉ báo CRLF trên file cũ (đã biết, benign);
+                                                            #   file mới retry_blocked_activation.go sạch
+go test -count=1 ./internal/app/runtime/... -v             # PASS toàn bộ, kể cả 4 test mới + 1 nâng cấp
+go test -count=1 ./...                                     # PASS toàn bộ ~70 package
+go test -count=1 ./internal/app/runtime/...                # lặp lại, ổn định không flake
+go test -count=3 ./internal/app/runtime/... -run "TestRetryBlockedActivation|TestAdmission"
+                                                            # PASS ổn định, không flake
+```
+
+**Việc còn lại:** commit, push nhánh `feat/v5-08d-retry-blocked-activation`, mở PR, chờ CI 6/6, merge.
