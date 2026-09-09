@@ -7,11 +7,15 @@
 // admission reasons and COMPLETION_POLICY_FAILED stay type-only, no real
 // producer exists yet, V5-08/V5-11's own future scope).
 // closeWorkItemBlockerTx is called by ResolveWorkItemBlocker
-// (resolve_work_item_blocker.go, the public command) and
-// reactivateBlockedNodeRunTx (scope_expansion.go, the SCOPE_EXPANSION_RECONCILE
-// flow's own automatic resolution once a reactivation is actually created —
-// the ONLY path that may ever resolve a SCOPE_EXPANSION_REQUIRED blocker,
-// see workdomain.BlockerType.ResolvableViaCommand's own doc comment).
+// (resolve_work_item_blocker.go, the public command), reactivateBlockedNodeRunTx
+// (scope_expansion.go, the SCOPE_EXPANSION_RECONCILE flow's own automatic
+// resolution once a reactivation is actually created — the ONLY path that
+// may ever resolve a SCOPE_EXPANSION_REQUIRED blocker, see
+// workdomain.BlockerType.ResolvableViaCommand's own doc comment), and
+// RetryBlockedActivationHandler.Retry (retry_blocked_activation.go, V5-08D
+// — the ONLY path that may ever resolve an admission-reason blocker while
+// its own Run is still live; ResolveWorkItemBlocker's own precondition
+// requires the Run already be terminal, which a live retry's Run never is).
 //
 // Every event this file appends mints a fresh "WorkItemBlocker" aggregate
 // identity keyed by the blocker's own ID (Sequence 1 for the opening event,
@@ -157,10 +161,13 @@ func openWorkItemBlockerTx(
 //
 // unlockedStatus is the caller's own choice of where an unlocked WorkItem
 // lands — ResolveWorkItemBlocker (the public command, RUN_CANCELLED/
-// COMPLETION_POLICY_FAILED/admission-reason blockers) always names READY (the
+// COMPLETION_POLICY_FAILED blockers, or an admission-reason blocker whose
+// own Run has ALREADY gone terminal some other way) always names READY (the
 // Run that caused the block is already gone; a NEW run is what comes next),
 // while reactivateBlockedNodeRunTx's own automatic SCOPE_EXPANSION_REQUIRED
-// resolution always names ACTIVE (the SAME Run resumes, it never stopped).
+// resolution and RetryBlockedActivationHandler.Retry's own admission-reason
+// resolution (retry_blocked_activation.go, V5-08D) both always name ACTIVE
+// (the SAME Run resumes, it never stopped).
 // closeWorkItemBlockerResult reports what closeWorkItemBlockerTx actually
 // did — in particular the REAL Unblocked/NewStatus signal, computed once
 // inside this function from the two-separate-conditions check above. A

@@ -55,6 +55,21 @@ var admissionPriority = []runtimedomain.TerminationReason{
 	runtimedomain.TerminationReasonWriteCapabilityOrGrantMissing,
 }
 
+// isAdmissionBlockerReason reports whether reason is one of the four
+// admission-check reasons admissionPriority itself lists — V5-08D's own
+// retry_blocked_activation.go uses this to reject being invoked against a
+// NodeRun BLOCKED for an unrelated cause (SCOPE_EXPANSION_REQUIRED has its
+// own dedicated resolution path, reactivateBlockedNodeRunTx; this command
+// has no authority over it).
+func isAdmissionBlockerReason(reason runtimedomain.TerminationReason) bool {
+	for _, r := range admissionPriority {
+		if r == reason {
+			return true
+		}
+	}
+	return false
+}
+
 // admissionProbe is what admitOrClaimRunning's own Phase 1 (outside any
 // transaction) gathers via real I/O, carried into Phase 2 as plain
 // already-computed values — Phase 2 re-verifies the STATIC pins these
@@ -75,13 +90,23 @@ type admissionProbe struct {
 // pins closed — the caller (admitOrClaimRunning) treats a returned error
 // as a genuine Handle() failure (retried like any other job error), never
 // as a business BLOCKED outcome.
-func (h *ExecuteNodeHandler) runAdmissionProbePhase(ctx context.Context, payload ExecuteNodeJobPayload, profile resolvedExecutionProfileView) (admissionProbe, error) {
+//
+// A free function (V5-08D: RetryBlockedActivation, retry_blocked_activation.go,
+// needs this EXACT same probe — re-running the identical checks
+// admitOrClaimRunning already runs is the whole point of a retry, never a
+// second hand-written copy of the same four checks) rather than a method on
+// *ExecuteNodeHandler; h.runAdmissionProbePhase below is a thin, unchanged
+// wrapper kept so this file's own single call site needs no edit.
+func runAdmissionProbePhase(
+	ctx context.Context, uow ports.UnitOfWork, isolation ports.IsolationEnforcementChecker, agents *agentregistry.Registry,
+	nodeRunID string, profile resolvedExecutionProfileView,
+) (admissionProbe, error) {
 	var probe admissionProbe
 
 	if profile.IsolationTier == "" {
-		return admissionProbe{}, fmt.Errorf("runtime: admission: node run %s pins no isolation tier", payload.NodeRunID)
+		return admissionProbe{}, fmt.Errorf("runtime: admission: node run %s pins no isolation tier", nodeRunID)
 	}
-	if err := h.isolation.VerifyEnforceable(ctx, profile.IsolationTier); err != nil {
+	if err := isolation.VerifyEnforceable(ctx, profile.IsolationTier); err != nil {
 		probe.isolationErr = err
 	} else {
 		probe.isolationSatisfied = true
@@ -108,7 +133,7 @@ func (h *ExecuteNodeHandler) runAdmissionProbePhase(ctx context.Context, payload
 		return probe, nil
 	}
 	var pinnedBuild domainadapterbuild.Build
-	if err := h.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
 		var err error
 		pinnedBuild, err = tx.AdapterBuilds().Get(ctx, profile.AdapterBuild.BuildID)
 		return err
@@ -117,7 +142,7 @@ func (h *ExecuteNodeHandler) runAdmissionProbePhase(ctx context.Context, payload
 	}
 	probe.pinnedBuild = &pinnedBuild
 
-	executor, _, err := h.agents.Resolve(ports.ProviderKey(pinnedBuild.Tuple().ProviderKey), agentregistry.Requirements{})
+	executor, _, err := agents.Resolve(ports.ProviderKey(pinnedBuild.Tuple().ProviderKey), agentregistry.Requirements{})
 	if err != nil {
 		return admissionProbe{}, fmt.Errorf("runtime: admission: resolve agent executor for provider %s: %w", pinnedBuild.Tuple().ProviderKey, err)
 	}
@@ -127,6 +152,10 @@ func (h *ExecuteNodeHandler) runAdmissionProbePhase(ctx context.Context, payload
 		probe.driftSatisfied = true
 	}
 	return probe, nil
+}
+
+func (h *ExecuteNodeHandler) runAdmissionProbePhase(ctx context.Context, payload ExecuteNodeJobPayload, profile resolvedExecutionProfileView) (admissionProbe, error) {
+	return runAdmissionProbePhase(ctx, h.uow, h.isolation, h.agents, payload.NodeRunID, profile)
 }
 
 // admissionDecision is the single, priority-resolved outcome of every

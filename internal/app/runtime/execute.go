@@ -724,9 +724,14 @@ func (h *ExecuteNodeHandler) verifyContextSnapshot(ctx context.Context, runID st
 	})
 }
 
-func (h *ExecuteNodeHandler) loadExecutionProfile(ctx context.Context, nodeRunID string) (resolvedExecutionProfileView, error) {
+// loadExecutionProfile is a free function (V5-08D: RetryBlockedActivation,
+// retry_blocked_activation.go, needs the exact same load — a caller with
+// no ExecuteNodeHandler of its own to receive it on) rather than a method
+// on *ExecuteNodeHandler; h.loadExecutionProfile below is a thin, unchanged
+// wrapper kept so this file's own single call site needs no edit.
+func loadExecutionProfile(ctx context.Context, uow ports.UnitOfWork, nodeRunID string) (resolvedExecutionProfileView, error) {
 	var decision runtimedomain.DecisionArtifact
-	err := h.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
 		var err error
 		decision, err = tx.Runtime().GetDecisionArtifact(ctx, nodeRunID+"-execution-profile-v1")
 		return err
@@ -739,4 +744,8 @@ func (h *ExecuteNodeHandler) loadExecutionProfile(ctx context.Context, nodeRunID
 		return resolvedExecutionProfileView{}, fmt.Errorf("runtime: decode execution profile decision for node run %s: %w", nodeRunID, err)
 	}
 	return profile, nil
+}
+
+func (h *ExecuteNodeHandler) loadExecutionProfile(ctx context.Context, nodeRunID string) (resolvedExecutionProfileView, error) {
+	return loadExecutionProfile(ctx, h.uow, nodeRunID)
 }
