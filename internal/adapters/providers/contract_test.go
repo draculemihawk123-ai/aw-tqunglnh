@@ -184,6 +184,120 @@ func TestAgentExecutorRejectsMalformedJSONL(t *testing.T) {
 	}
 }
 
+// TestAgentExecutorTerminalOutcomeMarker exercises V5-08B's own terminal
+// <agentkit-outcome> marker contract (ports.AgentProposedOutcome's own doc
+// comment, confirmed with the user 2026-09-09) against both real
+// normalizers via the fake CLI — a valid marker in the allowed set is
+// reported; no marker at all leaves the proposal nil (deriving one when
+// exactly one outcome is allowed is the bridge's own job, never the
+// adapter's); an out-of-range, malformed, or duplicate marker is rejected
+// as a protocol error, exactly like a missing terminal event already is.
+func TestAgentExecutorTerminalOutcomeMarker(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range providerCases() {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			executor := testCase.newExecutor(t, processadapter.NewSupervisor())
+
+			t.Run("valid marker reported", func(t *testing.T) {
+				t.Parallel()
+				request := helperRequestWithOutcome(
+					"outcome-valid-"+testCase.name, t.TempDir(), filepath.Join(t.TempDir(), "capture.json"),
+					"outcome-success", "pass", []string{"pass", "rework"},
+				)
+				request.Sandbox = testCase.startSandbox
+				events := &eventCollector{}
+				result, err := executor.Start(context.Background(), request, events)
+				if err != nil {
+					t.Fatalf("start: %v", err)
+				}
+				if result.Status != ports.AgentExecutionSucceeded {
+					t.Fatalf("status = %v, want Succeeded", result.Status)
+				}
+				if result.ProposedOutcome == nil || result.ProposedOutcome.Value != "pass" ||
+					result.ProposedOutcome.Source != ports.AgentOutcomeReportedByProvider || result.ProposedOutcome.SchemaVersion != 1 {
+					t.Fatalf("ProposedOutcome = %+v, want a valid reported %q proposal", result.ProposedOutcome, "pass")
+				}
+				for _, event := range events.snapshot() {
+					if event.Kind == ports.AgentEventAssistantMessage && strings.Contains(event.Message, "agentkit-outcome") {
+						t.Fatalf("assistant message %q still contains the raw marker — it must be stripped before persisting", event.Message)
+					}
+				}
+			})
+
+			t.Run("no marker leaves proposal nil", func(t *testing.T) {
+				t.Parallel()
+				request := helperRequestWithOutcome(
+					"outcome-absent-"+testCase.name, t.TempDir(), filepath.Join(t.TempDir(), "capture.json"),
+					"success", "", []string{"only-outcome"},
+				)
+				request.Sandbox = testCase.startSandbox
+				result, err := executor.Start(context.Background(), request, &eventCollector{})
+				if err != nil {
+					t.Fatalf("start: %v", err)
+				}
+				if result.Status != ports.AgentExecutionSucceeded || result.ProposedOutcome != nil {
+					t.Fatalf("result = %+v, want Succeeded with a nil ProposedOutcome (the adapter never derives one — that is the bridge's own job)", result)
+				}
+			})
+
+			t.Run("outcome not in allowed set is rejected", func(t *testing.T) {
+				t.Parallel()
+				request := helperRequestWithOutcome(
+					"outcome-outofrange-"+testCase.name, t.TempDir(), filepath.Join(t.TempDir(), "capture.json"),
+					"outcome-success", "pass", []string{"rework"},
+				)
+				request.Sandbox = testCase.startSandbox
+				result, err := executor.Start(context.Background(), request, &eventCollector{})
+				assertRejectedOutcomeMarker(t, testCase, result, err)
+			})
+
+			t.Run("malformed marker is rejected", func(t *testing.T) {
+				t.Parallel()
+				request := helperRequestWithOutcome(
+					"outcome-malformed-"+testCase.name, t.TempDir(), filepath.Join(t.TempDir(), "capture.json"),
+					"outcome-malformed", "", []string{"pass"},
+				)
+				request.Sandbox = testCase.startSandbox
+				result, err := executor.Start(context.Background(), request, &eventCollector{})
+				assertRejectedOutcomeMarker(t, testCase, result, err)
+			})
+
+			t.Run("duplicate marker is rejected", func(t *testing.T) {
+				t.Parallel()
+				request := helperRequestWithOutcome(
+					"outcome-duplicate-"+testCase.name, t.TempDir(), filepath.Join(t.TempDir(), "capture.json"),
+					"outcome-duplicate", "pass", []string{"pass"},
+				)
+				request.Sandbox = testCase.startSandbox
+				result, err := executor.Start(context.Background(), request, &eventCollector{})
+				assertRejectedOutcomeMarker(t, testCase, result, err)
+			})
+		})
+	}
+}
+
+func assertRejectedOutcomeMarker(t *testing.T, testCase providerCase, result ports.AgentExecutionResult, err error) {
+	t.Helper()
+	if err == nil || !testCase.isProtocolError(err) {
+		t.Fatalf("outcome marker error = %v, want provider protocol error", err)
+	}
+	if result.Status != ports.AgentExecutionFailed || result.TerminationReason != "outcome_marker_invalid" || result.ProposedOutcome != nil {
+		t.Fatalf("rejected outcome marker result = %+v", result)
+	}
+}
+
+func helperRequestWithOutcome(
+	attemptID string, workingDirectory string, capturePath string, mode string, outcome string, allowedOutcomes []string,
+) ports.AgentExecutionRequest {
+	request := helperRequest(attemptID, workingDirectory, capturePath, mode)
+	request.AllowedOutcomes = allowedOutcomes
+	request.Environment["AGENTKIT_HELPER_OUTCOME"] = outcome
+	return request
+}
+
 func TestAgentExecutorCancelsRealChildProcess(t *testing.T) {
 	t.Parallel()
 

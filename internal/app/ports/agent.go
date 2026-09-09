@@ -163,6 +163,17 @@ type AgentExecutionRequest struct {
 	// assembler sets this to AttemptID's own string value rather than
 	// minting a second, parallel identity.
 	IdempotencyKey string
+	// AllowedOutcomes is the node's own agent-selectable Outcomes — its
+	// declared Outcomes minus its own CyclePolicy.EscalationOutcome, if
+	// any (V5-08B, confirmed with the user 2026-09-09: the runtime always
+	// assigns the escalation outcome itself, on a SKIPPED NodeRun, once a
+	// cycle exhausts its own MaxIterations — the agent is never invoked
+	// for that round and never needs to name it). Always has at least one
+	// element (internal/domain/workflow's own validation rejects an AGENT
+	// node whose every declared outcome IS its own escalation outcome).
+	// A provider adapter validates a parsed terminal outcome marker
+	// against this exact set — see AgentProposedOutcome's own doc comment.
+	AllowedOutcomes []string
 
 	Prompt               string
 	WorkingDirectory     string
@@ -247,6 +258,56 @@ const (
 	AgentExecutionCancelled AgentExecutionStatus = "CANCELLED"
 )
 
+// AgentOutcomeSource records how AgentProposedOutcome.Value was determined
+// — V5-08B (confirmed with the user 2026-09-09), distinguishing a value the
+// provider itself reported (via the terminal <agentkit-outcome> marker,
+// AgentProposedOutcome's own doc comment) from one the bridge derived on
+// the provider's behalf because no report was possible.
+type AgentOutcomeSource string
+
+const (
+	// AgentOutcomeReportedByProvider means the provider's own terminal
+	// assistant message carried a valid <agentkit-outcome> marker naming
+	// this Value — required whenever AgentExecutionRequest.AllowedOutcomes
+	// has more than one entry (a real choice existed).
+	AgentOutcomeReportedByProvider AgentOutcomeSource = "REPORTED_BY_PROVIDER"
+	// AgentOutcomeDerivedSingleAllowed means no marker was required or
+	// present: AgentExecutionRequest.AllowedOutcomes had exactly one
+	// entry, so the bridge derived Value from the workflow's own pinned
+	// declaration rather than asking the provider to self-report a choice
+	// that was never actually a choice.
+	AgentOutcomeDerivedSingleAllowed AgentOutcomeSource = "DERIVED_SINGLE_ALLOWED"
+)
+
+// AgentProposedOutcome is a PROPOSAL, never trusted as-is — exactly like
+// NodeExecutionResult.SelectedOutcome, which this eventually becomes once
+// FinalizeExecutionAttempt's own allow-list/evidence checks accept it
+// (V5-08B, confirmed with the user 2026-09-09, after finding claude.go/
+// codex.go had no existing mechanism for a provider to self-report which
+// of a node's own declared Outcomes it selected — go-core-spec.md §14
+// requires this "typed proposed outcome" but AgentExecutionResult never
+// had a field for one before this task).
+//
+// The wire mechanism is a single terminal marker — the LAST content
+// (outside whitespace) of the provider's own FINAL assistant message,
+// exactly one occurrence across the whole execution:
+//
+//	<agentkit-outcome>{"schemaVersion":1,"outcome":"pass"}</agentkit-outcome>
+//
+// claude.go/codex.go strip this marker from the ASSISTANT_MESSAGE event
+// they persist (it never reaches durable storage) and populate this field
+// only once the terminal provider event confirms that message really was
+// final. A missing marker when AllowedOutcomes has more than one entry, a
+// duplicate marker anywhere in the run, a malformed body, or a Value
+// outside AllowedOutcomes are ALL protocol errors (AgentExecutionStatus
+// stays FAILED, this field stays nil) — never silently defaulted to
+// AllowedOutcomes[0].
+type AgentProposedOutcome struct {
+	Value         string
+	Source        AgentOutcomeSource
+	SchemaVersion int
+}
+
 type AgentExecutionResult struct {
 	AttemptID         ExecutionAttemptID
 	Provider          ProviderKey
@@ -257,6 +318,23 @@ type AgentExecutionResult struct {
 	ExitCode          int
 	StartedAt         time.Time
 	FinishedAt        time.Time
+	// TreeQuiesced mirrors ProcessResult.TreeQuiesced (V5-08B) — a
+	// provider adapter that spawns via ports.ProcessSupervisor copies its
+	// own Run result through; a mutating attempt's evidence bridge must
+	// never trust a final diff measured while this is false.
+	TreeQuiesced bool
+	// ArtifactRefs names every durable artifact.Artifact.ID this execution
+	// itself produced (V5-08B, go-core-spec.md §14's own "AgentExecutionResult
+	// phải có artifact refs"). Neither claude.go nor codex.go emits an
+	// ARTIFACT_PRODUCED AgentEvent today, so this stays empty coming out of
+	// either adapter — the shape exists now (the same "floor, not ceiling"
+	// precedent V5-08B0 already set for AgentExecutionRequest) for a future
+	// adapter capability, not invented here.
+	ArtifactRefs []string
+	// ProposedOutcome is populated only when Status is
+	// AgentExecutionSucceeded — see AgentProposedOutcome's own doc comment
+	// for the full terminal-marker contract and every rejection case.
+	ProposedOutcome *AgentProposedOutcome
 }
 
 // AgentExecutor is provider-neutral. Start and Resume block until the

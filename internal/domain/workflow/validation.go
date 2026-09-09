@@ -84,6 +84,29 @@ func validateNormalizedDocument(document WorkflowDocument) error {
 		if node.Type == NodeRouter && len(node.Outcomes) > 1 {
 			problems = append(problems, fmt.Sprintf("node %q is a ROUTER with %d declared outcomes, but Alpha has no typed rule to choose between them — ROUTER may declare exactly one outcome", node.Key, len(node.Outcomes)))
 		}
+		// AGENT agent-selectable-outcome restriction (V5-08B, confirmed with
+		// the user 2026-09-09): an AGENT node's own CyclePolicy.EscalationOutcome
+		// (if any) is NEVER something the agent itself proposes — the
+		// runtime assigns it directly on a SKIPPED NodeRun the moment a
+		// cycle exhausts its own MaxIterations budget (advance.go's own
+		// exhausted branch), without ever invoking the agent for that
+		// round (see internal/app/runtime's own agentSelectableOutcomes).
+		// What remains after excluding it — the outcomes the agent's own
+		// terminal <agentkit-outcome> marker protocol can actually name —
+		// must be at least one; a node whose ONLY declared outcome IS its
+		// own escalation outcome would leave the agent nothing it could
+		// ever legitimately propose.
+		if node.Type == NodeAgent {
+			agentSelectable := 0
+			for _, outcome := range node.Outcomes {
+				if node.CyclePolicy == nil || outcome != node.CyclePolicy.EscalationOutcome {
+					agentSelectable++
+				}
+			}
+			if agentSelectable == 0 {
+				problems = append(problems, fmt.Sprintf("node %q is AGENT but every declared outcome is its own CyclePolicy escalation outcome — at least one agent-selectable outcome is required", node.Key))
+			}
+		}
 		if node.CyclePolicy != nil {
 			if node.CyclePolicy.MaxIterations == 0 {
 				problems = append(problems, fmt.Sprintf("node %q cycle max iterations must be greater than zero", node.Key))
