@@ -1588,3 +1588,82 @@ V5-08B chính nó) — audit CHƯA ĐẠT với: Sink/CheckpointStore thiếu Jo
 `flushLocked` xoá buffer trước khi commit (rủi ro durability), `validateOrderingLocked` không kiểm
 `event.AttemptID`, `AgentEvent` thiếu `SchemaVersion`/`ArtifactRefs` (SQLite luôn ghi
 `artifact_refs_json='[]'`), checkpoint dùng `SharedStateHash` giả thay vì thật, `ArtifactReferences=nil`.
+
+## V5-08A remediation — post-merge audit fixes (2026-09-09)
+
+**Bối cảnh:** tiếp tục vòng đi lại từng task V5. Audit V5-08A kết luận **"CHƯA ĐẠT production
+AgentEvent/checkpoint authority"** với 6 finding trong `agentevents.Sink`/`CheckpointStore`: (1) không
+JobLease/WriteLease fencing trên write của Sink; (2) `NewSink` không kiểm mọi repository trong
+`EffectiveScope` đều có Mount; (3) `flushLocked` xoá buffer TRƯỚC KHI commit thành công (mất event vĩnh
+viễn nếu commit fail thật); (4) `validateOrderingLocked` không kiểm `event.AttemptID` dù
+`ports.AgentEvent` đã có field này; (5) `AgentEventRecord` không có field `ArtifactRefs` (SQLite hardcode
+`artifact_refs_json='[]'`); (6) `Checkpoint.SharedStateHash` là hash tổng hợp (synthetic), không phải
+`WorkflowRun.SharedState` thật, `ArtifactReferences` luôn `nil`.
+
+**Quyết định user về phạm vi (2026-09-09):** việc này lớn hơn hẳn mọi remediation trước đó trong phiên
+này (V5-02..V5-08 mỗi task chỉ một chủ đề). Đã hỏi user cách chia phạm vi — chọn: sửa 3 finding cơ học
+NGAY (không có bề mặt thiết kế mới, đóng được bằng fake test hôm nay), hoãn JobLease/WriteLease fencing
++ checkpoint completeness (SharedStateHash/ArtifactRefs) sang V5-08B — task đó đã sở hữu quyết định thiết
+kế "evidence fencing" của chính nó (Câu hỏi 2 của V5-08B, Đề xuất A: "checkpoint CHÍNH LÀ evidence trail
+durable") và sẽ định nghĩa chính xác shape field evidence Checkpoint cần — xây shape đó bây giờ có nguy
+cơ phải sửa lại một lần nữa khi biết được contract tiêu thụ thật của V5-08B.
+
+**Fix 1 — `validateOrderingLocked` kiểm `event.AttemptID`:** thêm check đầu tiên trong hàm, trả
+`ErrWrongAttempt` (sentinel mới) nếu `event.AttemptID` khác `s.attemptID`. **Xác nhận trực tiếp từ code
+(không phải giả định):** cả `claude.go` lẫn `codex.go`'s own `normalizer.emit` ĐÃ stamp
+`event.AttemptID = n.attemptID` tập trung tại một chỗ TRƯỚC KHI gọi `Sink.Accept` — 2 adapter thật hoàn
+toàn không bị ảnh hưởng bởi fix này, chỉ có fixture của chính các test cũ (chưa từng set AttemptID trên
+event literal) cần cập nhật.
+
+**Fix 2 — `flushLocked` giữ buffer cho tới khi commit thành công:** đổi thứ tự — gọi
+`WithSerializedWrite` TRƯỚC, chỉ `s.buffer = nil` SAU KHI transaction trả về không lỗi. Vì
+`AppendBatch` chạy trong đúng MỘT transaction (all-or-nothing rollback), giữ lại batch để retry sau một
+lần fail không có rủi ro duplicate-insert nào — transaction fail thật nghĩa là KHÔNG có gì được ghi.
+
+**Fix 3 — `NewSink` kiểm Mount-coverage:** mọi repository trong `cfg.EffectiveScope` giờ bắt buộc phải có
+Mount tương ứng trong `cfg.Mounts`, nếu không trả `ErrMissingMount` (sentinel mới) ngay tại constructor,
+trước khi Sink được dùng.
+
+**Test:**
+- Cập nhật ~15 event literal cũ trong `sink_test.go`/`sink_sqlite_test.go` (chưa từng set `AttemptID`)
+  để set đúng AttemptID của chính Sink mỗi test — không có test nào đổi hành vi, chỉ đóng gap fixture.
+- `TestSink_Accept_RejectsEventForWrongAttempt` (mới) — event AttemptID khác Sink's own AttemptID bị
+  từ chối với `ErrWrongAttempt`.
+- `TestSink_Flush_RetainsBufferOnCommitFailure` (mới) — `failingUnitOfWork` (wrapper cục bộ quanh
+  `ports.UnitOfWork` thật, inject lỗi vào `WithSerializedWrite` đúng 1 lần) chứng minh: Flush đầu tiên
+  fail → 0 row (chưa persist gì), event vẫn còn trong buffer → Flush retry sau đó persist đúng 1 row —
+  không mất event.
+- `TestNewSink_RejectsEffectiveScopeRepositoryWithoutMount` (mới) — `EffectiveScope` có 1 repository
+  thật (`work.NewRepositoryScope`), không có Mount tương ứng → `NewSink` trả `ErrMissingMount` ngay.
+
+**File thay đổi:**
+- `internal/app/agentevents/sink.go` (3 sentinel/fix trên)
+- `internal/app/agentevents/sink_test.go` (fixture AttemptID + 3 test mới)
+- `internal/app/agentevents/sink_sqlite_test.go` (fixture AttemptID cho 3 test còn thiếu)
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                              # sạch
+go run ./cmd/docs-coverage-check                          # debt = 0
+gofmt -l <3 file .go đổi>                                  # rỗng sau gofmt -w
+go test ./internal/app/agentevents/... -v -count=1        # PASS 17/17 (14 cũ + 3 mới)
+go test ./internal/adapters/providers/... -count=1        # PASS (2 adapter thật không bị ảnh hưởng)
+go test ./internal/app/agentevents/... -count=3           # ổn định, không flake
+go test -count=1 ./...                                    # PASS toàn bộ ~70 package
+```
+
+**Ghi chú hạ tầng (không liên quan code):** đúng lúc task này, GitHub Actions của
+`draculemihawk123-ai/agent-workflow` bắt đầu chặn job CI thật ("recent account payments have failed or
+your spending limit needs to be increased" — billing, không phải lỗi code) — dần lan từ 2 job phụ
+(spike-acceptance, Linux race/stability) tới cả job `contract` chính. Theo quyết định của user, repo gốc
+chuyển sang `zlinh4605/agent-workflow` (2 tài khoản `draculemihawk123-ai`/`taQuangLing` được invite làm
+collaborator) — `master` cùng 2 branch remediation đang mở (V5-07, V5-08) đã được push sang, PR mở lại
+tương ứng trên repo mới (không mang theo được lịch sử PR/comment cũ, chỉ nội dung git).
+
+**Việc còn lại:** commit, push (lên repo mới `zlinh4605/agent-workflow`), mở PR, chờ CI 6/6, merge — có
+thể sẽ conflict tại đúng đuôi `baocaov5checklist.md` với PR V5-07/V5-08 (chưa merge tại thời điểm branch
+này được tạo), xử lý bằng cách nối các mục theo đúng thứ tự (V5-05 → V5-06 → V5-07 → V5-08 → V5-08A) như
+mọi lần trước trong phiên này. Task kế tiếp trong remediation pass: JobLease/WriteLease fencing +
+checkpoint completeness (SharedStateHash/ArtifactRefs thật) — hoãn cho V5-08B tự làm cùng lúc với
+"evidence fencing" design của chính nó, theo đúng quyết định user ở trên.
