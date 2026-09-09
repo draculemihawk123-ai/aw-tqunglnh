@@ -56,6 +56,22 @@ var (
 	// ErrPayloadTooLarge is returned by Accept when an event's encoded,
 	// redacted payload exceeds MaxEventPayloadBytes.
 	ErrPayloadTooLarge = errors.New("agentevents: event payload exceeds the maximum size")
+	// ErrWrongAttempt is returned by Accept when event.AttemptID does not
+	// match the AttemptID this Sink was constructed for. Audit finding
+	// (2026-09-09, V5-08A remediation): a Sink is scoped to exactly one live
+	// Start/Resume call for one AttemptID (this package's own doc comment,
+	// above) — an event carrying a DIFFERENT AttemptID reaching Accept would
+	// otherwise be silently persisted under this Sink's own AttemptID,
+	// mis-attributing it.
+	ErrWrongAttempt = errors.New("agentevents: event AttemptID does not match this Sink's own AttemptID")
+	// ErrMissingMount is returned by NewSink when cfg.EffectiveScope names a
+	// repository with no corresponding entry in cfg.Mounts. Audit finding
+	// (2026-09-09, V5-08A remediation): scopeguard.ValidateDiffs only ever
+	// sees the diffs a caller actually passes it — a repository silently
+	// missing its own Mount would never produce a diff to validate at all,
+	// a false negative that could hide a real out-of-scope mutation in that
+	// repository from every checkpoint this Sink ever captures.
+	ErrMissingMount = errors.New("agentevents: EffectiveScope names a repository with no corresponding Mount")
 )
 
 // CheckpointStore is the narrow slice of the legacy ports.WorkflowPersistence
@@ -156,6 +172,16 @@ func NewSink(ctx context.Context, cfg Config) (*Sink, error) {
 		return nil, errors.New("agentevents: Workspaces, Registry, UOW, Checkpoints, IDs and Clock are all required")
 	}
 
+	mountedRepositories := make(map[project.RepositoryID]struct{}, len(cfg.Mounts))
+	for _, mount := range cfg.Mounts {
+		mountedRepositories[mount.RepositoryID] = struct{}{}
+	}
+	for _, scope := range cfg.EffectiveScope {
+		if _, ok := mountedRepositories[scope.RepositoryID()]; !ok {
+			return nil, fmt.Errorf("%w: repository %s", ErrMissingMount, scope.RepositoryID())
+		}
+	}
+
 	baselines := make([]mountBaseline, 0, len(cfg.Mounts))
 	for _, mount := range cfg.Mounts {
 		revision, err := cfg.Workspaces.CaptureRevision(ctx, mount.Handle)
@@ -219,6 +245,9 @@ func (s *Sink) Flush(ctx context.Context) error {
 }
 
 func (s *Sink) validateOrderingLocked(event ports.AgentEvent) error {
+	if string(event.AttemptID) != s.attemptID {
+		return fmt.Errorf("%w: this Sink is attempt %s, event carries attempt %s", ErrWrongAttempt, s.attemptID, event.AttemptID)
+	}
 	if event.Sequence == 0 {
 		return fmt.Errorf("agentevents: attempt %s: event sequence must be positive", s.attemptID)
 	}
@@ -273,15 +302,27 @@ func (s *Sink) buildRecord(event ports.AgentEvent) (ports.AgentEventRecord, erro
 	}, nil
 }
 
+// flushLocked persists s.buffer and only THEN clears it — audit finding
+// (2026-09-09, V5-08A remediation): the previous version cleared the buffer
+// before the transaction ran, so a genuine commit failure (a real, transient
+// storage error, not a business rejection) permanently lost every buffered
+// event with no way for a caller to retry them. Since AppendBatch runs
+// inside one WithSerializedWrite transaction, a failure here means NOTHING
+// was persisted (an all-or-nothing rollback, never a partial write), so
+// retaining the batch for a later Accept/Flush retry is always safe — never
+// a duplicate-insert risk.
 func (s *Sink) flushLocked(ctx context.Context) error {
 	if len(s.buffer) == 0 {
 		return nil
 	}
 	batch := s.buffer
-	s.buffer = nil
-	return s.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+	if err := s.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
 		return tx.AgentEvents().AppendBatch(ctx, batch)
-	})
+	}); err != nil {
+		return err
+	}
+	s.buffer = nil
+	return nil
 }
 
 // captureCheckpointLocked runs entirely OUTSIDE any database transaction

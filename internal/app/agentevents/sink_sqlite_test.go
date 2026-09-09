@@ -92,11 +92,11 @@ func TestSinkSQLite_CheckpointRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSink: %v", err)
 	}
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventExecutionStarted, ObservedAt: time.Now().UTC()}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: ports.ExecutionAttemptID(attemptID), Sequence: 1, Kind: ports.AgentEventExecutionStarted, ObservedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("accept EXECUTION_STARTED: %v", err)
 	}
 	if err := sink.Accept(ctx, ports.AgentEvent{
-		Sequence: 2, Kind: ports.AgentEventCheckpointProposed, ObservedAt: time.Now().UTC(),
+		AttemptID: ports.ExecutionAttemptID(attemptID), Sequence: 2, Kind: ports.AgentEventCheckpointProposed, ObservedAt: time.Now().UTC(),
 		Session: &ports.ProviderSessionRef{Provider: ports.ProviderClaude, SessionID: "sess-1"},
 	}); err != nil {
 		t.Fatalf("accept CHECKPOINT_PROPOSED: %v", err)
@@ -142,10 +142,10 @@ func TestSinkSQLite_SecretFixtureSearchIsZero(t *testing.T) {
 		t.Fatalf("NewSink: %v", err)
 	}
 	events := []ports.AgentEvent{
-		{Sequence: 1, Kind: ports.AgentEventAssistantMessage, Message: secret, ObservedAt: time.Now().UTC()},
-		{Sequence: 2, Kind: ports.AgentEventToolCallFinished, Tool: &ports.AgentToolEvent{CallID: "c1", Name: "shell", Output: secret}, ObservedAt: time.Now().UTC()},
-		{Sequence: 3, Kind: ports.AgentEventDiagnostic, Diagnostic: &ports.AgentDiagnostic{Code: "X", Message: secret}, ObservedAt: time.Now().UTC()},
-		{Sequence: 4, Kind: ports.AgentEventExecutionFinished, ProviderMetadata: map[string]string{"raw_type": secret}, ObservedAt: time.Now().UTC()},
+		{AttemptID: ports.ExecutionAttemptID(attemptID), Sequence: 1, Kind: ports.AgentEventAssistantMessage, Message: secret, ObservedAt: time.Now().UTC()},
+		{AttemptID: ports.ExecutionAttemptID(attemptID), Sequence: 2, Kind: ports.AgentEventToolCallFinished, Tool: &ports.AgentToolEvent{CallID: "c1", Name: "shell", Output: secret}, ObservedAt: time.Now().UTC()},
+		{AttemptID: ports.ExecutionAttemptID(attemptID), Sequence: 3, Kind: ports.AgentEventDiagnostic, Diagnostic: &ports.AgentDiagnostic{Code: "X", Message: secret}, ObservedAt: time.Now().UTC()},
+		{AttemptID: ports.ExecutionAttemptID(attemptID), Sequence: 4, Kind: ports.AgentEventExecutionFinished, ProviderMetadata: map[string]string{"raw_type": secret}, ObservedAt: time.Now().UTC()},
 	}
 	for _, event := range events {
 		if err := sink.Accept(ctx, event); err != nil {
@@ -209,10 +209,10 @@ func TestSinkSQLite_DiffExceedsEffectiveScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSink: %v", err)
 	}
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventExecutionStarted, ObservedAt: time.Now().UTC()}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: ports.ExecutionAttemptID(attemptID), Sequence: 1, Kind: ports.AgentEventExecutionStarted, ObservedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("accept EXECUTION_STARTED: %v", err)
 	}
-	err = sink.Accept(ctx, ports.AgentEvent{Sequence: 2, Kind: ports.AgentEventCheckpointProposed, ObservedAt: time.Now().UTC()})
+	err = sink.Accept(ctx, ports.AgentEvent{AttemptID: ports.ExecutionAttemptID(attemptID), Sequence: 2, Kind: ports.AgentEventCheckpointProposed, ObservedAt: time.Now().UTC()})
 	if !errors.Is(err, scopeguard.ErrScopeViolation) {
 		t.Fatalf("accept checkpoint-proposed with out-of-scope diff error = %v, want scopeguard.ErrScopeViolation", err)
 	}

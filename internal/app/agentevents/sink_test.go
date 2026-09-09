@@ -14,7 +14,9 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
@@ -89,10 +91,10 @@ func TestSink_Accept_NormalizesBuffersAndFlushesOnCheckpoint(t *testing.T) {
 	sink, uow := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher())
 	ctx := context.Background()
 
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventExecutionStarted, ObservedAt: time.Now().UTC()}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventExecutionStarted, ObservedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("accept event 1: %v", err)
 	}
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 2, Kind: ports.AgentEventAssistantMessage, Message: "hello", ObservedAt: time.Now().UTC()}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 2, Kind: ports.AgentEventAssistantMessage, Message: "hello", ObservedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("accept event 2: %v", err)
 	}
 	// Not flushed yet — still buffered, below MaxBatchEvents and no
@@ -101,7 +103,7 @@ func TestSink_Accept_NormalizesBuffersAndFlushesOnCheckpoint(t *testing.T) {
 		t.Fatalf("rows persisted before flush = %d, want 0", len(rows))
 	}
 
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 3, Kind: ports.AgentEventCheckpointProposed, ObservedAt: time.Now().UTC()}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 3, Kind: ports.AgentEventCheckpointProposed, ObservedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("accept checkpoint-proposed event: %v", err)
 	}
 
@@ -122,10 +124,10 @@ func TestSink_Accept_NormalizesBuffersAndFlushesOnCheckpoint(t *testing.T) {
 func TestSink_Accept_RejectsSequenceGap(t *testing.T) {
 	sink, _ := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher())
 	ctx := context.Background()
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventExecutionStarted}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventExecutionStarted}); err != nil {
 		t.Fatalf("accept event 1: %v", err)
 	}
-	err := sink.Accept(ctx, ports.AgentEvent{Sequence: 3, Kind: ports.AgentEventAssistantMessage})
+	err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 3, Kind: ports.AgentEventAssistantMessage})
 	if !errors.Is(err, agentevents.ErrSequenceGap) {
 		t.Fatalf("accept sequence 3 after 1 error = %v, want ErrSequenceGap", err)
 	}
@@ -134,7 +136,7 @@ func TestSink_Accept_RejectsSequenceGap(t *testing.T) {
 func TestSink_Accept_RejectsDuplicateSequence(t *testing.T) {
 	sink, _ := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher())
 	ctx := context.Background()
-	event := ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventExecutionStarted}
+	event := ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventExecutionStarted}
 	if err := sink.Accept(ctx, event); err != nil {
 		t.Fatalf("accept event 1: %v", err)
 	}
@@ -145,7 +147,7 @@ func TestSink_Accept_RejectsDuplicateSequence(t *testing.T) {
 
 func TestSink_Accept_RejectsUnregisteredEventKind(t *testing.T) {
 	sink, _ := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher())
-	err := sink.Accept(context.Background(), ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventKind("NOT_A_REAL_KIND")})
+	err := sink.Accept(context.Background(), ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventKind("NOT_A_REAL_KIND")})
 	if !errors.Is(err, eventschema.ErrNotRegistered) {
 		t.Fatalf("accept unregistered kind error = %v, want eventschema.ErrNotRegistered", err)
 	}
@@ -154,7 +156,7 @@ func TestSink_Accept_RejectsUnregisteredEventKind(t *testing.T) {
 func TestSink_Accept_RejectsOversizedPayload(t *testing.T) {
 	sink, _ := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher())
 	oversized := strings.Repeat("x", agentevents.MaxEventPayloadBytes+1)
-	err := sink.Accept(context.Background(), ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventAssistantMessage, Message: oversized})
+	err := sink.Accept(context.Background(), ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventAssistantMessage, Message: oversized})
 	if !errors.Is(err, agentevents.ErrPayloadTooLarge) {
 		t.Fatalf("accept oversized payload error = %v, want ErrPayloadTooLarge", err)
 	}
@@ -164,7 +166,7 @@ func TestSink_Accept_BatchesUpToBoundThenFlushesWithoutCheckpoint(t *testing.T) 
 	sink, uow := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher())
 	ctx := context.Background()
 	for i := uint64(1); i <= agentevents.MaxBatchEvents; i++ {
-		if err := sink.Accept(ctx, ports.AgentEvent{Sequence: i, Kind: ports.AgentEventAssistantMessage, Message: "m"}); err != nil {
+		if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: i, Kind: ports.AgentEventAssistantMessage, Message: "m"}); err != nil {
 			t.Fatalf("accept event %d: %v", i, err)
 		}
 	}
@@ -177,7 +179,7 @@ func TestSink_Accept_BatchesUpToBoundThenFlushesWithoutCheckpoint(t *testing.T) 
 func TestSink_Flush_PersistsTrailingBufferedEvents(t *testing.T) {
 	sink, uow := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher())
 	ctx := context.Background()
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventExecutionStarted}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventExecutionStarted}); err != nil {
 		t.Fatalf("accept event 1: %v", err)
 	}
 	if rows := agentEventRows(t, uow, "attempt-1"); len(rows) != 0 {
@@ -205,7 +207,7 @@ func TestSink_Accept_RedactsKnownSecretBeforePersist(t *testing.T) {
 	sink, uow := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher(secret))
 	ctx := context.Background()
 	event := ports.AgentEvent{
-		Sequence: 1, Kind: ports.AgentEventToolCallFinished,
+		AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventToolCallFinished,
 		Tool: &ports.AgentToolEvent{CallID: "call-1", Name: "shell", Output: secret},
 	}
 	if err := sink.Accept(ctx, event); err != nil {
@@ -227,10 +229,10 @@ func TestSink_CheckpointProposed_StoresImmutableCheckpoint(t *testing.T) {
 	checkpoints := &fakeCheckpointStore{}
 	sink, _ := newTestSink(t, checkpoints, redact.NewMatcher())
 	ctx := context.Background()
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventExecutionStarted}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventExecutionStarted}); err != nil {
 		t.Fatalf("accept event 1: %v", err)
 	}
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 2, Kind: ports.AgentEventCheckpointProposed}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 2, Kind: ports.AgentEventCheckpointProposed}); err != nil {
 		t.Fatalf("accept checkpoint-proposed: %v", err)
 	}
 	if len(checkpoints.stored) != 1 {
@@ -250,7 +252,7 @@ func TestSink_CheckpointProposed_StoresImmutableCheckpoint(t *testing.T) {
 	// A second checkpoint-proposed event advances Sequence — proving
 	// checkpoint sequence is a real, monotonic counter, not re-derived from
 	// the triggering event's own Sequence.
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 3, Kind: ports.AgentEventCheckpointProposed}); err != nil {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 3, Kind: ports.AgentEventCheckpointProposed}); err != nil {
 		t.Fatalf("accept second checkpoint-proposed: %v", err)
 	}
 	if len(checkpoints.stored) != 2 || checkpoints.stored[1].Sequence != 2 {
@@ -274,10 +276,112 @@ func TestSink_CheckpointProposed_PropagatesWorkspaceDiffError(t *testing.T) {
 		t.Fatalf("NewSink: %v", err)
 	}
 	ctx := context.Background()
-	if err := sink.Accept(ctx, ports.AgentEvent{Sequence: 1, Kind: ports.AgentEventCheckpointProposed}); !errors.Is(err, boom) {
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventCheckpointProposed}); !errors.Is(err, boom) {
 		t.Fatalf("accept checkpoint-proposed with failing diff error = %v, want %v", err, boom)
 	}
 	if len(checkpoints.stored) != 0 {
 		t.Fatalf("checkpoints stored despite diff failure = %d, want 0", len(checkpoints.stored))
+	}
+}
+
+// TestSink_Accept_RejectsEventForWrongAttempt is the audit's own finding
+// (2026-09-09, V5-08A remediation): a Sink is scoped to exactly one live
+// Start/Resume call for one AttemptID (this package's own doc comment) — an
+// event carrying a DIFFERENT AttemptID must never be silently persisted
+// under this Sink's own AttemptID.
+func TestSink_Accept_RejectsEventForWrongAttempt(t *testing.T) {
+	sink, _ := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher())
+	err := sink.Accept(context.Background(), ports.AgentEvent{AttemptID: "attempt-2", Sequence: 1, Kind: ports.AgentEventExecutionStarted})
+	if !errors.Is(err, agentevents.ErrWrongAttempt) {
+		t.Fatalf("accept event for a different attempt error = %v, want ErrWrongAttempt", err)
+	}
+}
+
+// failingUnitOfWork wraps a real ports.UnitOfWork, injecting a failure into
+// WithSerializedWrite a fixed number of times before delegating to the real
+// implementation — TestSink_Flush_RetainsBufferOnCommitFailure's own way to
+// prove a genuine, transient commit failure never permanently drops
+// buffered events.
+type failingUnitOfWork struct {
+	ports.UnitOfWork
+	failuresRemaining int
+	err               error
+}
+
+func (f *failingUnitOfWork) WithSerializedWrite(ctx context.Context, fn func(ports.Tx) error) error {
+	if f.failuresRemaining > 0 {
+		f.failuresRemaining--
+		return f.err
+	}
+	return f.UnitOfWork.WithSerializedWrite(ctx, fn)
+}
+
+// TestSink_Flush_RetainsBufferOnCommitFailure is the audit's own durability
+// finding (2026-09-09, V5-08A remediation): flushLocked used to clear its
+// in-memory buffer BEFORE the commit ran, so a genuine, transient storage
+// failure permanently lost every buffered event with no way for a caller to
+// retry them. Proves the fix: a failing first Flush leaves the event still
+// buffered, and a later retry against the same (now healthy) store
+// persists it — never silently dropped.
+func TestSink_Flush_RetainsBufferOnCommitFailure(t *testing.T) {
+	boom := errors.New("boom: commit failed")
+	realUOW := fake.New()
+	failing := &failingUnitOfWork{UnitOfWork: realUOW, failuresRemaining: 1, err: boom}
+	registry := eventschema.NewRegistry()
+	agentevents.RegisterEventSchemas(registry)
+	sink, err := agentevents.NewSink(context.Background(), agentevents.Config{
+		RunID: "run-1", NodeRunID: "node-run-1", AttemptID: "attempt-1", ContextSnapshotID: "snapshot-1",
+		Workspaces: &fakeWorkspaceProvider{}, Registry: registry, Matcher: redact.NewMatcher(),
+		UOW: failing, Checkpoints: &fakeCheckpointStore{}, IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Now()),
+	})
+	if err != nil {
+		t.Fatalf("NewSink: %v", err)
+	}
+	ctx := context.Background()
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventExecutionStarted}); err != nil {
+		t.Fatalf("accept event 1: %v", err)
+	}
+	if err := sink.Flush(ctx); !errors.Is(err, boom) {
+		t.Fatalf("Flush (first, failing commit) error = %v, want %v", err, boom)
+	}
+	if rows := agentEventRows(t, realUOW, "attempt-1"); len(rows) != 0 {
+		t.Fatalf("rows persisted despite a failed commit = %d, want 0", len(rows))
+	}
+	// The event must still be buffered — a retry against the (now healthy)
+	// store must persist it, never silently dropped by the failed attempt.
+	if err := sink.Flush(ctx); err != nil {
+		t.Fatalf("Flush (retry): %v", err)
+	}
+	if rows := agentEventRows(t, realUOW, "attempt-1"); len(rows) != 1 {
+		t.Fatalf("rows persisted after retry = %d, want 1 (event must survive a failed commit for a later retry)", len(rows))
+	}
+}
+
+// TestNewSink_RejectsEffectiveScopeRepositoryWithoutMount is the audit's own
+// finding (2026-09-09, V5-08A remediation): NewSink never checked that
+// every repository named in cfg.EffectiveScope has a corresponding Mount —
+// a repository silently missing its own Mount would never produce a diff
+// for scopeguard.ValidateDiffs to check at all, a false negative that could
+// hide a real out-of-scope mutation from every checkpoint this Sink ever
+// captures.
+func TestNewSink_RejectsEffectiveScopeRepositoryWithoutMount(t *testing.T) {
+	scope, err := work.NewRepositoryScope(
+		"family-1", 1, project.RepositoryID("repo-1"), work.RepositoryWrite, []string{"**"},
+		"root task", "actor-1", time.Now().UTC(),
+	)
+	if err != nil {
+		t.Fatalf("NewRepositoryScope: %v", err)
+	}
+	uow := fake.New()
+	registry := eventschema.NewRegistry()
+	agentevents.RegisterEventSchemas(registry)
+	_, err = agentevents.NewSink(context.Background(), agentevents.Config{
+		RunID: "run-1", NodeRunID: "node-run-1", AttemptID: "attempt-1", ContextSnapshotID: "snapshot-1",
+		EffectiveScope: []work.RepositoryScope{scope}, // no Mount for "repo-1"
+		Workspaces:     &fakeWorkspaceProvider{}, Registry: registry, Matcher: redact.NewMatcher(),
+		UOW: uow, Checkpoints: &fakeCheckpointStore{}, IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Now()),
+	})
+	if !errors.Is(err, agentevents.ErrMissingMount) {
+		t.Fatalf("NewSink error = %v, want ErrMissingMount", err)
 	}
 }
