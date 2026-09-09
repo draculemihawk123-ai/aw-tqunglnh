@@ -1391,3 +1391,54 @@ chặn `--full` chạy hết) — dựa vào CI job thật để xác nhận cu�
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6 (đặc biệt "spike acceptance" cả 2 platform — job DUY
 NHẤT thật sự chạy `runSPK11Scenario`), merge. Task kế tiếp trong remediation pass: V5-08 (CHƯA ĐẠT —
 AdapterBuild nil bypass driftSatisfied + envelope thiếu hầu hết field §14).
+
+## Fix ngoài phạm vi V5 — race thật trong `internal/app/workspaceprovision` (2026-09-09)
+
+**Bối cảnh:** trong lúc chờ CI của PR V5-08 (remediation), CI's own "Linux race and stability" job
+(`go test -race -count=1 ./...`) bắt được một race THẬT, hoàn toàn không liên quan V5-08: hai test
+(`TestEndToEnd_MultiRepoProvision_BothReachReadyWithBaseRevisionSet`,
+`TestEndToEnd_PartialFailure_OneReadyOneFailed_SetBlockedRowsKept`) dùng chung một
+`idsource.Sequential` cho `workspaceprovision.Handler` chạy dưới `provisionPoolConfig`'s own
+`Concurrency: 2` — hai repository trong cùng WorkspaceSet được xử lý bởi hai goroutine THẬT đồng thời,
+cả hai cùng gọi `ids.NewID()` trên MỘT instance chưa từng có khoá. `idsource.Sequential`'s own doc
+comment ghi rõ: "Not safe for concurrent use — it is a single-threaded test helper, not a production
+allocator." Đây là bug thật trong fixture của 2 test đó, không phải flake giả — CI's own workflow
+comment cho job này cũng ghi rõ "một failure ở đây là tín hiệu thật để root-cause, không phải lý do để
+rerun tới khi xanh", nên không rerun mù mà sửa gốc.
+
+**Quyết định user (2026-09-09):** dù ngoài phạm vi V5-08/V5-08A đang làm, sửa ngay bằng một PR nhỏ tách
+riêng (đúng doctrine "mỗi fix một PR"), vì bug này chặn CI của TẤT CẢ PR đang mở (race không xác định về
+thời điểm, có thể tái phát ở bất kỳ PR nào chạy job "Linux race and stability" tiếp theo).
+
+**Fix:** cả 2 test đổi ID source của riêng `handler := workspaceprovision.New(uow, ...)` (đối tượng được
+gọi từ nhiều goroutine qua pool) sang `idsource.Random{}` (an toàn concurrent, đúng production allocator)
+— giữ nguyên `ids` (Sequential) cho các lệnh seed đồng bộ trước khi pool chạy (`mustSeedActiveRepositorySQLite`,
+`mustCreateRootWorkItemSQLite`), vì các lệnh đó không bao giờ chạy đồng thời với gì khác. Không đổi gì ở
+`idsource.Sequential` package tự nó (contract "single-threaded" của nó là đúng, đã ghi rõ từ đầu) — bug
+nằm ở phía gọi dùng sai, không phải ở chính type.
+
+Đã kiểm tra `TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady` (dùng `idsource.NewSequential`
+tương tự) KHÔNG có race này: registry của nó cố tình chỉ để job ĐẦU TIÊN claim thật sự gọi
+`realHandler.Handle` (dùng `ids`); job thứ hai luôn rơi vào nhánh "stuck" mô phỏng crash, không bao giờ
+gọi `ids.NewID()` — nên không có 2 lời gọi đồng thời thật, không cần sửa.
+
+**File thay đổi:**
+- `internal/app/workspaceprovision/handler_sqlite_test.go` (2 test đổi ID source của handler sang
+  `idsource.Random{}`)
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                            # sạch
+go run ./cmd/docs-coverage-check                        # debt = 0
+gofmt -l <1 file .go đổi>                                # rỗng sau gofmt -w
+go test ./internal/app/workspaceprovision/... -v -count=1              # PASS 14/14
+go test ./internal/app/workspaceprovision/... -run 'TestEndToEnd_MultiRepoProvision|TestEndToEnd_PartialFailure' -count=10  # ổn định
+go test -count=1 ./...                                  # PASS toàn bộ ~70 package
+```
+`-race` không tự verify lại được cục bộ (máy Windows này không có cgo) — dựa vào CI's own race job để
+xác nhận cuối cùng.
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6 (đặc biệt "Linux race and stability" — chính job đã bắt
+bug này), merge. Sau khi merge, quay lại PR V5-08 (đang chờ CI) — rebase nếu cần rồi tiếp tục theo đúng
+thứ tự tuyến tính đã thống nhất.

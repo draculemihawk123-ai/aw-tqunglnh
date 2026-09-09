@@ -243,7 +243,18 @@ func TestEndToEnd_MultiRepoProvision_BothReachReadyWithBaseRevisionSet(t *testin
 	if err != nil {
 		t.Fatalf("gitworktree.New: %v", err)
 	}
-	handler := workspaceprovision.New(uow, ids, provider)
+	// Audit finding (2026-09-09): the handler's own idsource.Source must be
+	// concurrency-safe — provisionPoolConfig's own Concurrency:2 lets both
+	// repositories' own WORKSPACE_PROVISION jobs run through Handle
+	// simultaneously on two real goroutines, and idsource.Sequential's own
+	// doc comment says plainly "not safe for concurrent use". A real run of
+	// this exact test caught the live data race CI's own `-race` job
+	// reports for exactly this call shape. `ids` (Sequential) stays for the
+	// synchronous seeding calls below (mustSeedActiveRepositorySQLite,
+	// mustCreateRootWorkItemSQLite) — those never run concurrently with
+	// anything — only the handler passed into the pool needs the
+	// concurrency-safe idsource.Random{}.
+	handler := workspaceprovision.New(uow, idsource.Random{}, provider)
 	registry := workerpool.NewRegistry()
 	registry.Register(appwork.WorkspaceProvisionJobKind, handler)
 	pool, err := workerpool.New(store, registry, provisionPoolConfig("w"))
@@ -482,7 +493,12 @@ func TestEndToEnd_PartialFailure_OneReadyOneFailed_SetBlockedRowsKept(t *testing
 	if err != nil {
 		t.Fatalf("gitworktree.New: %v", err)
 	}
-	handler := workspaceprovision.New(uow, ids, provider)
+	// See TestEndToEnd_MultiRepoProvision_BothReachReadyWithBaseRevisionSet's
+	// own comment above: the handler's own idsource.Source must be
+	// concurrency-safe under provisionPoolConfig's Concurrency:2 (two real
+	// repositories' own jobs can run through Handle simultaneously) —
+	// idsource.Sequential is explicitly documented as not safe for that.
+	handler := workspaceprovision.New(uow, idsource.Random{}, provider)
 	registry := workerpool.NewRegistry()
 	registry.Register(appwork.WorkspaceProvisionJobKind, handler)
 	pool, err := workerpool.New(store, registry, provisionPoolConfig("w"))
