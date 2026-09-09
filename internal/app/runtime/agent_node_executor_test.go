@@ -377,3 +377,103 @@ func TestAgentNodeExecutor_OutOfScopeDiff_RejectsAsScopeViolation(t *testing.T) 
 		t.Fatalf("result = %+v, want FAILED/SCOPE_VIOLATION/SCOPE_VIOLATION", result)
 	}
 }
+
+// TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed is
+// V5-08B's own locked provider-loss mapping row 2: the provider itself
+// reported a determinate non-success (AgentExecutionStatus != Succeeded,
+// no error, quiescence confirmed) — a definite FAILED, never indeterminate.
+func TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed(t *testing.T) {
+	executor, req, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+		diff:        defaultInScopeDiff(),
+		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionFailed, TreeQuiesced: true},
+		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
+	})
+	ctx := context.Background()
+
+	result, err := executor.Execute(ctx, req)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.State != domainruntime.ExecutionAttemptFailed || result.TerminationReason != domainruntime.TerminationReasonExecutionFailed ||
+		result.ErrorCode != errorcode.CodeExecutionFailed {
+		t.Fatalf("result = %+v, want FAILED/EXECUTION_FAILED/EXECUTION_FAILED", result)
+	}
+}
+
+// TestAgentNodeExecutor_ProviderUnavailableBareError_ReturnsProviderUnavailable
+// is V5-08B's own locked provider-loss mapping row 1: a bare Go error from
+// AgentExecutor.Start itself (not a lease-lost sentinel, not an
+// unconfirmed-quiescence case) is a definite FAILED, classified
+// PROVIDER_UNAVAILABLE rather than the generic EXECUTION_FAILED row 2 uses
+// for a provider-REPORTED failure.
+func TestAgentNodeExecutor_ProviderUnavailableBareError_ReturnsProviderUnavailable(t *testing.T) {
+	executor, req, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+		diff:        defaultInScopeDiff(),
+		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionFailed, TreeQuiesced: true},
+		agentErr:    errors.New("spawn: executable not found"),
+	})
+	ctx := context.Background()
+
+	result, err := executor.Execute(ctx, req)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.State != domainruntime.ExecutionAttemptFailed || result.TerminationReason != domainruntime.TerminationReasonExecutionFailed ||
+		result.ErrorCode != errorcode.CodeProviderUnavailable {
+		t.Fatalf("result = %+v, want FAILED/EXECUTION_FAILED/PROVIDER_UNAVAILABLE", result)
+	}
+}
+
+// TestFinalizeExecutionAttempt_TamperedEvidence_RejectsBeforeCommitting
+// proves FinalizeExecutionAttempt's own phase-3 revalidation
+// (attachFinalizationEvidenceTx) actually distrusts the proposal it is
+// handed — a TerminalEventSequence naming no real agent_events row must be
+// rejected, and nothing (not the Attempt CAS, not the NodeRun advance)
+// must have committed as a side effect of the attempt.
+func TestFinalizeExecutionAttempt_TamperedEvidence_RejectsBeforeCommitting(t *testing.T) {
+	executor, req, uow, ids := bridgeFixture(t, bridgeFixtureOptions{
+		diff:        defaultInScopeDiff(),
+		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionSucceeded, TreeQuiesced: true},
+		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
+	})
+	ctx := context.Background()
+
+	result, err := executor.Execute(ctx, req)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	tampered := *result.Evidence
+	tampered.TerminalEventSequence = result.Evidence.TerminalEventSequence + 1000
+
+	version := loadAttemptVersion(t, uow, req.AttemptID)
+	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+		RunID: req.RunID, NodeRunID: req.NodeRunID, AttemptID: req.AttemptID, ExpectedVersion: version,
+		NextState: result.State, TerminationReason: result.TerminationReason, SelectedOutcome: result.SelectedOutcome,
+		JobLease: req.JobLease, CorrelationID: "corr-1", Evidence: &tampered,
+	}); err == nil {
+		t.Fatal("FinalizeExecutionAttempt accepted evidence naming a nonexistent terminal event sequence, want a fail-closed error")
+	}
+
+	// The Attempt must still be exactly where it was (RUNNING, unchanged
+	// version) — the whole transaction must have rolled back, not just the
+	// evidence-specific part of it.
+	if after := loadAttemptVersion(t, uow, req.AttemptID); after != version {
+		t.Fatalf("attempt version after rejected finalize = %d, want unchanged %d", after, version)
+	}
+
+	// The diff manifest artifact must still be ORPHAN — never attached
+	// alongside a finalize that itself did not commit.
+	artifactID := result.Evidence.DiffManifestArtifacts[0].ArtifactID
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		record, err := tx.Artifacts().GetArtifact(ctx, artifactID)
+		if err != nil {
+			return err
+		}
+		if record.AttachState != "ORPHAN" {
+			t.Fatalf("diff manifest artifact AttachState after rejected finalize = %s, want still ORPHAN", record.AttachState)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("load diff manifest artifact after rejected finalize: %v", err)
+	}
+}
