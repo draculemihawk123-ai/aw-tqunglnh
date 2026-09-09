@@ -15,6 +15,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	"github.com/taQuangLing/agent-workflow/internal/app/scopeguard"
 	"github.com/taQuangLing/agent-workflow/internal/domain/artifact"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -141,16 +142,35 @@ func (e *AgentNodeExecutor) buildEvidence(
 	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
 	resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
 ) (*ports.AttemptFinalizationEvidence, error) {
-	revisions := make([]workspace.Revision, 0, len(request.WorkspaceMounts))
-	diffArtifacts := make([]ports.DiffManifestArtifactRef, 0, len(request.WorkspaceMounts))
-	var toInsert []artifact.Artifact
-
+	diffs := make([]ports.WorkspaceDiff, 0, len(request.WorkspaceMounts))
 	for _, mount := range request.WorkspaceMounts {
 		base := workspace.Revision{RepositoryID: mount.RepositoryID, VCSObjectID: mount.VCSObjectID, WorkspaceGeneration: mount.WorkspaceGeneration}
 		diff, err := e.workspaces.Diff(ctx, mount.Handle, base)
 		if err != nil {
 			return nil, fmt.Errorf("diff repository %s after quiescence: %w", mount.RepositoryID, err)
 		}
+		diffs = append(diffs, diff)
+	}
+	// The SAME scope-validation discipline agentevents.Sink's own
+	// captureCheckpointLocked already applies to every mid-run checkpoint
+	// — the final diff, measured only now that quiescence is confirmed,
+	// gets the identical check before it is ever staged as evidence
+	// (V5-08B's own locked decision #2's "kiểm... diff scope"). Real diff
+	// bytes only ever exist here, outside any transaction — finalize.go's
+	// own re-validation later can only check what's ALREADY persisted
+	// (artifact existence/count), never re-derive scope correctness from
+	// raw content without violating "no ArtifactStore call inside a
+	// transaction."
+	if err := scopeguard.ValidateDiffs(request.EffectiveScope, diffs); err != nil {
+		return nil, err
+	}
+
+	revisions := make([]workspace.Revision, 0, len(diffs))
+	diffArtifacts := make([]ports.DiffManifestArtifactRef, 0, len(diffs))
+	var toInsert []artifact.Artifact
+
+	for i, mount := range request.WorkspaceMounts {
+		diff := diffs[i]
 		revisions = append(revisions, diff.CurrentRevision)
 
 		body, err := json.Marshal(diff)

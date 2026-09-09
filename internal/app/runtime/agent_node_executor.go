@@ -32,6 +32,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	"github.com/taQuangLing/agent-workflow/internal/app/scopeguard"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
@@ -211,6 +212,18 @@ func (e *AgentNodeExecutor) classify(
 
 	evidence, err := e.buildEvidence(ctx, req, request, resolved, proposedOutcome)
 	if err != nil {
+		if errors.Is(err, scopeguard.ErrScopeViolation) {
+			// ADR-020's own TerminationReasonScopeViolation, reserved but
+			// never produced before V5-08B (baocaov5checklist.md's own
+			// locked decision text names this executor as its likely
+			// first real producer): the final, post-quiescence diff
+			// itself — not just a mid-run checkpoint's own diff — exceeded
+			// this Attempt's own EffectiveScope.
+			return ports.NodeExecutionResult{
+				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
+				ErrorCode: errorcode.CodeScopeViolation,
+			}, nil
+		}
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build finalization evidence: %w", err)
 	}
 	return ports.NodeExecutionResult{

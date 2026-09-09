@@ -64,9 +64,11 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/artifact"
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
@@ -320,6 +322,19 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 		// Step 6: branch on outcome.
 		switch req.NextState {
 		case runtimedomain.ExecutionAttemptSucceeded:
+			// V5-08B's own locked decision #2, protocol phase 3: when the
+			// caller is the NodeExecutor->AgentExecutor bridge (req.Evidence
+			// != nil), re-validate its entire proposal and commit the
+			// evidence it names — atomically, in this SAME transaction,
+			// before ever routing the NodeRun forward. Every pre-existing
+			// SUCCEEDED caller (the fake NodeExecutor V4-05's own tests
+			// still use, any future COMMAND/MACHINE_GATE executor) leaves
+			// Evidence nil and is entirely unaffected.
+			if req.Evidence != nil {
+				if err := attachFinalizationEvidenceTx(ctx, tx, clk, req, attempt, run); err != nil {
+					return err
+				}
+			}
 			advanceResult, err := advanceRunTx(ctx, tx, ids, AdvanceRunRequest{
 				RunID: req.RunID, NodeRunID: req.NodeRunID, Outcome: req.SelectedOutcome,
 				SharedStatePatch: req.SharedStatePatch, CorrelationID: req.CorrelationID, JobID: string(req.JobLease.JobID),
@@ -355,6 +370,124 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 		return nil
 	})
 	return result, err
+}
+
+// attachFinalizationEvidenceTx is V5-08B's own locked decision #2, protocol
+// phase 3 ("Trong MỘT finalize transaction: revalidate JobLease, mọi
+// WriteLease... kiểm terminal event/checkpoint... chuyển artifact ORPHAN ->
+// ATTACHED; persist completion checkpoint..."). Every field req.Evidence
+// carries is a PROPOSAL from the executor that built it — never trusted
+// as-is, exactly like req.SelectedOutcome/FailureCode/RequestedScopeExpansion
+// above it. JobLease/WriteLease fencing already ran in Steps 1/3 before
+// this is ever reached; this function's own job is validating the EVIDENCE
+// itself — the terminal event genuinely exists, the diff-manifest set is
+// complete against this NodeRun's own EffectiveScope, every named artifact
+// is still ORPHAN, and the proposed outcome matches req.SelectedOutcome —
+// before promoting anything to ATTACHED or persisting a completion
+// Checkpoint. The diff CONTENT itself (scope violations) was already
+// checked by the executor outside this transaction, via
+// scopeguard.ValidateDiffs, before it ever proposed SUCCEEDED at all — this
+// function re-checks completeness (every scoped repository produced
+// evidence, none missing, none extra), never re-derives correctness from
+// raw diff bytes (that would require an ArtifactStore call inside a
+// transaction, exactly what docs/architecture/04-go-core-spec.md §11.1
+// forbids).
+func attachFinalizationEvidenceTx(
+	ctx context.Context, tx ports.Tx, clk clock.Clock, req FinalizeExecutionAttemptRequest,
+	attempt runtimedomain.ExecutionAttempt, run runtimedomain.WorkflowRun,
+) error {
+	evidence := req.Evidence
+	if evidence.ProposedOutcome == nil || evidence.ProposedOutcome.Value != req.SelectedOutcome {
+		return fmt.Errorf("runtime: finalization evidence proposed outcome %+v does not match SelectedOutcome %q", evidence.ProposedOutcome, req.SelectedOutcome)
+	}
+
+	events, err := tx.AgentEvents().ListByAttempt(ctx, req.AttemptID)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, event := range events {
+		if event.Sequence == evidence.TerminalEventSequence {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("runtime: finalization evidence names terminal event sequence %d, but no such agent_events row exists for attempt %s", evidence.TerminalEventSequence, req.AttemptID)
+	}
+
+	nodeRun, err := tx.Runtime().GetNodeRun(ctx, req.NodeRunID)
+	if err != nil {
+		return err
+	}
+	expectedRepositories := make(map[project.RepositoryID]struct{}, len(nodeRun.EffectiveScope))
+	for _, scope := range nodeRun.EffectiveScope {
+		expectedRepositories[scope.RepositoryID()] = struct{}{}
+	}
+	actualRepositories := make(map[project.RepositoryID]struct{}, len(evidence.DiffManifestArtifacts))
+	for _, ref := range evidence.DiffManifestArtifacts {
+		actualRepositories[ref.RepositoryID] = struct{}{}
+	}
+	if len(expectedRepositories) != len(actualRepositories) {
+		return fmt.Errorf("runtime: finalization evidence names %d diff manifest artifacts, want exactly one per effective-scope repository (%d)", len(actualRepositories), len(expectedRepositories))
+	}
+	for repositoryID := range expectedRepositories {
+		if _, ok := actualRepositories[repositoryID]; !ok {
+			return fmt.Errorf("runtime: finalization evidence is missing a diff manifest artifact for effective-scope repository %s", repositoryID)
+		}
+	}
+
+	// Promote every named artifact ORPHAN -> ATTACHED — only now, after
+	// every other check above has already passed.
+	for _, ref := range evidence.DiffManifestArtifacts {
+		record, err := tx.Artifacts().GetArtifact(ctx, ref.ArtifactID)
+		if err != nil {
+			return fmt.Errorf("runtime: load diff manifest artifact %s: %w", ref.ArtifactID, err)
+		}
+		if _, err := tx.Artifacts().TransitionArtifactAttachState(ctx, ports.TransitionArtifactAttachStateRequest{
+			ArtifactID: ref.ArtifactID, ExpectedState: artifact.Orphan, ExpectedVersion: record.Version, NextState: artifact.Attached,
+		}); err != nil {
+			return fmt.Errorf("runtime: attach diff manifest artifact %s: %w", ref.ArtifactID, err)
+		}
+	}
+
+	// attempt.ContextSnapshotID (despite its legacy-checkpoint-recovery
+	// type name) is exactly the V5-04 contextsnapshot.ID a V5-08B0-assembled
+	// Attempt is bound to — gatherAssembledRequestInputs already resolves
+	// it the identical way (string-cast through this same field) before
+	// ever calling tx.ContextSnapshots().GetSnapshot.
+	if attempt.ContextSnapshotID == nil {
+		return fmt.Errorf("runtime: attempt %s has no bound context snapshot, cannot build a completion checkpoint", req.AttemptID)
+	}
+	artifactReferences := make([]string, 0, len(evidence.DiffManifestArtifacts)+len(evidence.OutputArtifactRefs))
+	for _, ref := range evidence.DiffManifestArtifacts {
+		artifactReferences = append(artifactReferences, ref.ArtifactID)
+	}
+	artifactReferences = append(artifactReferences, evidence.OutputArtifactRefs...)
+	// Checkpoint.Sequence uses evidence.TerminalEventSequence directly
+	// (rather than continuing agentevents.Sink's own separate, much
+	// smaller checkpointSeq counter, which this transaction has no safe
+	// way to read — LoadLatestCheckpoint is CheckpointStore's own legacy
+	// autocommit call, unsafe to invoke against a second connection while
+	// this transaction already holds the write lock): the terminal
+	// event's own sequence is always the attempt's own highest, so it can
+	// never collide with an earlier mid-run checkpoint's own Sequence: a
+	// real UNIQUE(attempt_id, sequence) conflict would surface as an
+	// ordinary error here, exactly as InsertCheckpoint's own doc comment
+	// describes, rather than silently colliding.
+	checkpoint, err := runtimedomain.NewCheckpoint(
+		runtimedomain.CheckpointID(evidence.CompletionCheckpointID), runtimedomain.WorkflowRunID(req.RunID),
+		runtimedomain.NodeRunID(req.NodeRunID), runtimedomain.ExecutionAttemptID(req.AttemptID),
+		evidence.TerminalEventSequence, evidence.TerminalEventSequence, runtimedomain.ContextSnapshotID(string(*attempt.ContextSnapshotID)),
+		evidence.FinalRevisionSet, canonicalStateHash(run.SharedState), artifactReferences, clk.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("runtime: build completion checkpoint: %w", err)
+	}
+	if err := tx.Checkpoints().InsertCheckpoint(ctx, checkpoint); err != nil {
+		return fmt.Errorf("runtime: insert completion checkpoint: %w", err)
+	}
+	return nil
 }
 
 // decideCancelledOutcomeTx is V4-12B's own Step 6 branch (finalize.go's

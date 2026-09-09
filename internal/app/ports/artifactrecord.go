@@ -54,14 +54,20 @@ type ArtifactRepository interface {
 	// ErrPersistenceNotFound.
 	GetArtifact(ctx context.Context, id string) (artifact.Artifact, error)
 	// TransitionArtifactAttachState is the fenced CAS that promotes a row
-	// from Orphan to Attached (or, symmetrically, records a rejected
+	// from Orphan to Attached (or, symmetrically, could record a rejected
 	// worker transaction's output as Orphan after it was optimistically
-	// inserted Attached — though V5-01's own callers only ever exercise
-	// Orphan->Attached; a future fenced-finalize caller, V5-08B, is what
-	// actually needs the reverse). ExpectedVersion mismatch (including a
-	// row no longer in ExpectedState) is ErrOptimisticConflict,
-	// ErrPersistenceNotFound for an unknown ID — the same CAS discipline
-	// every other transition in this codebase already uses.
+	// inserted Attached, the reverse direction). V5-08B's own fenced
+	// finalize (attachFinalizationEvidenceTx, internal/app/runtime/finalize.go)
+	// confirmed this is Orphan->Attached too, the same direction every
+	// other caller already exercises — its own locked decision text
+	// describes inserting diff-manifest artifacts as ORPHAN first, then
+	// promoting them to ATTACHED inside the finalize transaction, never
+	// the reverse; an earlier draft of this comment speculated V5-08B
+	// might need Attached->Orphan, which turned out not to be the case.
+	// ExpectedVersion mismatch (including a row no longer in ExpectedState)
+	// is ErrOptimisticConflict, ErrPersistenceNotFound for an unknown ID —
+	// the same CAS discipline every other transition in this codebase
+	// already uses.
 	TransitionArtifactAttachState(ctx context.Context, req TransitionArtifactAttachStateRequest) (artifact.Artifact, error)
 	// SetArtifactHold is the fenced CAS that flips Hold independent of
 	// AttachState/RetentionClass — a governance action (ADR-017) with no
