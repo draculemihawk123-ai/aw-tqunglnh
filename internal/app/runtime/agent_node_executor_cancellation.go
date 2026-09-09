@@ -43,11 +43,20 @@ const cancellationPollInterval = 500 * time.Millisecond
 // reason ctx could have been cancelled (e.g. workerpool.Pool's own
 // shutdown-grace escalation, cancelJobs) — trusting durable state, never a
 // live signal from whatever caller happened to cancel this ctx.
-func (e *AgentNodeExecutor) classifyCancellation(
-	ctx context.Context, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
+//
+// A free function (V5-09: CommandNodeExecutor, command_node_executor.go,
+// needs this EXACT same cancellation disposition — the design doc's own
+// locked requirement for COMMAND is "dùng đúng đường V5-08C, không có
+// đường terminate riêng", i.e. reuse this, never a second implementation)
+// rather than a method on *AgentNodeExecutor; e.classifyCancellation below
+// is a thin, unchanged wrapper kept so agent_node_executor.go's own single
+// call site needs no edit.
+func classifyCancellation(
+	ctx context.Context, uow ports.UnitOfWork, interruptions worker.InterruptionRecoveryStore, workspaces ports.WorkspaceProvider,
+	reconciler worker.WorkspaceReconciler, writeLeases ports.WriteLeaseManager, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
 ) (ports.NodeExecutionResult, error) {
 	var runCancelling bool
-	if err := e.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
 		run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
 		if err != nil {
 			return err
@@ -77,7 +86,13 @@ func (e *AgentNodeExecutor) classifyCancellation(
 			State: runtimedomain.ExecutionAttemptCancelled, TerminationReason: runtimedomain.TerminationReasonRunCancelled,
 		}, nil
 	}
-	return ports.NodeExecutionResult{}, e.handleMutatingCancellation(ctx, req, resolved)
+	return ports.NodeExecutionResult{}, handleMutatingCancellation(ctx, uow, interruptions, workspaces, reconciler, writeLeases, req, resolved)
+}
+
+func (e *AgentNodeExecutor) classifyCancellation(
+	ctx context.Context, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
+) (ports.NodeExecutionResult, error) {
+	return classifyCancellation(ctx, e.uow, e.interruptions, e.workspaces, e.reconciler, e.writeLeases, req, resolved)
 }
 
 // handleMutatingCancellation is V5-08C's own locked requirement: "mutating
@@ -102,15 +117,21 @@ func (e *AgentNodeExecutor) classifyCancellation(
 // dừng") — releasing before quarantine would open a real window for
 // another attempt to acquire a write lease against a workspace whose own
 // integrity is not yet decided.
-func (e *AgentNodeExecutor) handleMutatingCancellation(
-	ctx context.Context, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
+//
+// A free function (V5-09: reused by CommandNodeExecutor via
+// classifyCancellation above, for the identical reason) rather than a
+// method on *AgentNodeExecutor; e.handleMutatingCancellation below is a
+// thin, unchanged wrapper.
+func handleMutatingCancellation(
+	ctx context.Context, uow ports.UnitOfWork, interruptions worker.InterruptionRecoveryStore, workspaces ports.WorkspaceProvider,
+	reconciler worker.WorkspaceReconciler, writeLeases ports.WriteLeaseManager, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
 ) error {
 	occurredAt := time.Now().UTC()
-	attemptVersion, err := e.loadAttemptVersion(ctx, req.AttemptID)
+	attemptVersion, err := loadAttemptVersion(ctx, uow, req.AttemptID)
 	if err != nil {
 		return fmt.Errorf("runtime: load attempt version before terminating a cancelled mutating attempt: %w", err)
 	}
-	if err := e.interruptions.TerminateInterruptedAttempt(ctx, ports.AttemptTerminationUpdate{
+	if err := interruptions.TerminateInterruptedAttempt(ctx, ports.AttemptTerminationUpdate{
 		AttemptID: ports.ExecutionAttemptID(req.AttemptID), ExpectedVersion: attemptVersion,
 		NextState: runtimedomain.ExecutionAttemptIndeterminate, Reason: runtimedomain.TerminationReasonOwnershipLostMutating,
 		EventID: req.AttemptID + "-cancelled-indeterminate", CorrelationID: "", OccurredAt: occurredAt,
@@ -119,7 +140,7 @@ func (e *AgentNodeExecutor) handleMutatingCancellation(
 	}
 
 	for _, mount := range resolved.writeMounts {
-		currentRevision, err := e.workspaces.CaptureRevision(ctx, mount.handle)
+		currentRevision, err := workspaces.CaptureRevision(ctx, mount.handle)
 		if err != nil {
 			return fmt.Errorf("runtime: capture current revision for repository workspace %s during cancellation reconciliation: %w", mount.repositoryWorkspaceID, err)
 		}
@@ -130,7 +151,7 @@ func (e *AgentNodeExecutor) handleMutatingCancellation(
 		if verdict != worker.ReconciliationMutationObserved {
 			continue
 		}
-		if err := e.reconciler.QuarantineRepositoryWorkspace(ctx, ports.QuarantineRepositoryWorkspaceUpdate{
+		if err := reconciler.QuarantineRepositoryWorkspace(ctx, ports.QuarantineRepositoryWorkspaceUpdate{
 			RepositoryWorkspaceID: mount.repositoryWorkspaceID, ExpectedVersion: mount.workspaceVersion,
 			Reason: string(verdict), EventID: req.AttemptID + "-cancelled-quarantine-" + string(mount.repositoryWorkspaceID),
 			CorrelationID: "", OccurredAt: occurredAt,
@@ -140,20 +161,31 @@ func (e *AgentNodeExecutor) handleMutatingCancellation(
 	}
 
 	if len(resolved.writeLeaseGrants) > 0 {
-		if err := e.writeLeases.ReleaseWriteLeases(ctx, resolved.writeLeaseGrants); err != nil {
+		if err := writeLeases.ReleaseWriteLeases(ctx, resolved.writeLeaseGrants); err != nil {
 			return fmt.Errorf("runtime: release write leases after cancelled mutating attempt %s: %w", req.AttemptID, err)
 		}
 	}
 	return ErrAttemptAlreadyTerminated
 }
 
-// loadAttemptVersion re-reads req.AttemptID's own current Version — needed
+func (e *AgentNodeExecutor) handleMutatingCancellation(
+	ctx context.Context, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
+) error {
+	return handleMutatingCancellation(ctx, e.uow, e.interruptions, e.workspaces, e.reconciler, e.writeLeases, req, resolved)
+}
+
+// loadAttemptVersion re-reads attemptID's own current Version — needed
 // fresh (not the Version this Attempt had when Execute started) since
 // nothing else has fenced-CAS'd it since; TerminateInterruptedAttempt's own
 // CAS needs the real current value.
-func (e *AgentNodeExecutor) loadAttemptVersion(ctx context.Context, attemptID string) (uint64, error) {
+//
+// A free function (V5-09: reused by CommandNodeExecutor via
+// handleMutatingCancellation above) rather than a method on
+// *AgentNodeExecutor; e.loadAttemptVersion below is a thin, unchanged
+// wrapper.
+func loadAttemptVersion(ctx context.Context, uow ports.UnitOfWork, attemptID string) (uint64, error) {
 	var version uint64
-	if err := e.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
 		attempt, err := tx.Runtime().GetExecutionAttempt(ctx, attemptID)
 		if err != nil {
 			return err
@@ -164,4 +196,8 @@ func (e *AgentNodeExecutor) loadAttemptVersion(ctx context.Context, attemptID st
 		return 0, err
 	}
 	return version, nil
+}
+
+func (e *AgentNodeExecutor) loadAttemptVersion(ctx context.Context, attemptID string) (uint64, error) {
+	return loadAttemptVersion(ctx, e.uow, attemptID)
 }

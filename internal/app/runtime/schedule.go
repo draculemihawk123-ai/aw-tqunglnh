@@ -48,6 +48,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/agentprofile"
+	"github.com/taQuangLing/agent-workflow/internal/domain/command"
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextassembler"
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
@@ -581,6 +582,25 @@ func decodeCompiledAgentProfile(compiledSnapshot string) (agentprofile.AgentProf
 	}
 	if err := json.Unmarshal([]byte(compiledSnapshot), &wrapper); err != nil {
 		return agentprofile.AgentProfileDocument{}, fmt.Errorf("decode compiled agent profile snapshot: %w", err)
+	}
+	return wrapper.Document, nil
+}
+
+// decodeCompiledCommand is decodeCompiledAgentProfile's own sibling for
+// internal/domain/command.Compile's private compiledCommandSnapshot shape
+// (V5-09: CommandNodeExecutor, command_node_executor.go — the AGENT branch
+// of resolveExecutionProfile above decodes its own document eagerly for
+// admission's own capability check; COMMAND deliberately does not, so this
+// is called fresh at execution time instead, the same "re-load from the
+// pin, never denormalize onto ResolvedExecutionProfileV1" discipline
+// admission.go's own checkCapabilityRequirement doc comment already
+// states).
+func decodeCompiledCommand(compiledSnapshot string) (command.CommandDocument, error) {
+	var wrapper struct {
+		Document command.CommandDocument `json:"document"`
+	}
+	if err := json.Unmarshal([]byte(compiledSnapshot), &wrapper); err != nil {
+		return command.CommandDocument{}, fmt.Errorf("decode compiled command snapshot: %w", err)
 	}
 	return wrapper.Document, nil
 }

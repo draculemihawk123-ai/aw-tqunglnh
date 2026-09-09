@@ -13,6 +13,8 @@ import (
 	"fmt"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
+	"github.com/taQuangLing/agent-workflow/internal/app/clock"
+	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/scopeguard"
@@ -71,14 +73,26 @@ type gatheredMount struct {
 // real WriteLeaseGrant fencing proof (execute.go's own package doc
 // comment: "V5's own real executor is the first caller with a genuine
 // reason to... call AcquireWriteLeases before Execute").
-func (e *AgentNodeExecutor) resolveExecutionResources(
-	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
+//
+// A free function (V5-09: CommandNodeExecutor needs this EXACT same mount
+// resolution/write-lease acquisition — a COMMAND node's own EffectiveScope
+// resolves to real workspace mounts the identical way an AGENT node's
+// does) rather than a method on *AgentNodeExecutor; e.resolveExecutionResources
+// below is a thin, unchanged wrapper. request stays typed as
+// ports.AgentExecutionRequest rather than a renamed/generalized shared
+// type — it already carries exactly the two fields this function needs
+// (WorkspaceMounts, Timeout), and CommandNodeExecutor constructs one of
+// its own to pass in rather than this codebase inventing a second,
+// differently-named struct with the identical shape.
+func resolveExecutionResources(
+	ctx context.Context, uow ports.UnitOfWork, workspaces ports.WorkspaceProvider, writeLeases ports.WriteLeaseManager,
+	req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
 ) (resolvedExecutionResources, error) {
 	var (
 		gathered  []gatheredMount
 		projectID project.ProjectID
 	)
-	if err := e.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
 		run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
 		if err != nil {
 			return err
@@ -113,7 +127,7 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 		if err != nil {
 			return resolvedExecutionResources{}, fmt.Errorf("build workspace handle for repository %s: %w", g.repositoryID, err)
 		}
-		workingDirectory, err := e.workspaces.WorkingDirectory(ctx, handle)
+		workingDirectory, err := workspaces.WorkingDirectory(ctx, handle)
 		if err != nil {
 			return resolvedExecutionResources{}, fmt.Errorf("resolve working directory for repository %s: %w", g.repositoryID, err)
 		}
@@ -134,7 +148,7 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 	}
 
 	if len(writeTargets) > 0 {
-		grants, err := e.writeLeases.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
+		grants, err := writeLeases.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
 			JobLease: req.JobLease, AttemptID: ports.ExecutionAttemptID(req.AttemptID),
 			Targets: writeTargets, TTL: request.Timeout + writeLeaseTTLGrace,
 		})
@@ -144,6 +158,12 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 		resolved.writeLeaseGrants = grants
 	}
 	return resolved, nil
+}
+
+func (e *AgentNodeExecutor) resolveExecutionResources(
+	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
+) (resolvedExecutionResources, error) {
+	return resolveExecutionResources(ctx, e.uow, e.workspaces, e.writeLeases, req, request)
 }
 
 // buildEvidence implements V5-08B's own locked 3-phase evidence protocol's
@@ -158,14 +178,23 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 // everything and promote ORPHAN->ATTACHED) is FinalizeExecutionAttempt's
 // own job, atomically with everything else it commits — never repeated or
 // duplicated here.
-func (e *AgentNodeExecutor) buildEvidence(
-	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
-	resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
+//
+// A free function (V5-09: CommandNodeExecutor needs this EXACT same
+// evidence-staging protocol — "diff/fence" is explicitly required of a
+// mutating COMMAND too, and attachFinalizationEvidenceTx's own
+// finalize-time re-validation, finalize.go, has no AGENT-specific
+// coupling at all) rather than a method on *AgentNodeExecutor;
+// e.buildEvidence below is a thin, unchanged wrapper. request stays typed
+// as ports.AgentExecutionRequest for the identical reason
+// resolveExecutionResources's own doc comment already gives.
+func buildEvidence(
+	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, store ports.ArtifactStore, workspaces ports.WorkspaceProvider,
+	req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
 ) (*ports.AttemptFinalizationEvidence, error) {
 	diffs := make([]ports.WorkspaceDiff, 0, len(request.WorkspaceMounts))
 	for _, mount := range request.WorkspaceMounts {
 		base := workspace.Revision{RepositoryID: mount.RepositoryID, VCSObjectID: mount.VCSObjectID, WorkspaceGeneration: mount.WorkspaceGeneration}
-		diff, err := e.workspaces.Diff(ctx, mount.Handle, base)
+		diff, err := workspaces.Diff(ctx, mount.Handle, base)
 		if err != nil {
 			return nil, fmt.Errorf("diff repository %s after quiescence: %w", mount.RepositoryID, err)
 		}
@@ -197,17 +226,17 @@ func (e *AgentNodeExecutor) buildEvidence(
 		if err != nil {
 			return nil, fmt.Errorf("encode diff manifest for repository %s: %w", mount.RepositoryID, err)
 		}
-		ref, err := e.store.Put(ctx, ports.ArtifactMetadata{ContentType: diffManifestArtifactMediaType, Sensitivity: redact.Sensitive}, bytes.NewReader(body))
+		ref, err := store.Put(ctx, ports.ArtifactMetadata{ContentType: diffManifestArtifactMediaType, Sensitivity: redact.Sensitive}, bytes.NewReader(body))
 		if err != nil {
 			return nil, fmt.Errorf("put diff manifest artifact for repository %s: %w", mount.RepositoryID, err)
 		}
-		if err := e.store.Verify(ctx, ref); err != nil {
+		if err := store.Verify(ctx, ref); err != nil {
 			return nil, fmt.Errorf("verify diff manifest artifact for repository %s: %w", mount.RepositoryID, err)
 		}
-		artifactID := e.ids.NewID()
+		artifactID := ids.NewID()
 		a, err := artifact.NewArtifact(
 			artifact.ID(artifactID), resolved.projectID, ref.Locator, ref.SHA256, ref.Size, ref.ContentType,
-			ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Orphan, false, nil, e.clk.Now(), 1,
+			ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Orphan, false, nil, clk.Now(), 1,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("construct diff manifest artifact record for repository %s: %w", mount.RepositoryID, err)
@@ -217,7 +246,7 @@ func (e *AgentNodeExecutor) buildEvidence(
 	}
 
 	if len(toInsert) > 0 {
-		if err := e.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
 			for _, a := range toInsert {
 				if _, err := tx.Artifacts().InsertArtifact(ctx, a); err != nil {
 					return err
@@ -234,15 +263,22 @@ func (e *AgentNodeExecutor) buildEvidence(
 		return nil, fmt.Errorf("build final revision set: %w", err)
 	}
 
-	terminalSequence, err := e.terminalEventSequence(ctx, req.AttemptID)
+	terminalSequence, err := terminalEventSequence(ctx, uow, req.AttemptID)
 	if err != nil {
 		return nil, err
 	}
 
 	return &ports.AttemptFinalizationEvidence{
-		SchemaVersion: 1, TerminalEventSequence: terminalSequence, CompletionCheckpointID: e.ids.NewID(),
+		SchemaVersion: 1, TerminalEventSequence: terminalSequence, CompletionCheckpointID: ids.NewID(),
 		FinalRevisionSet: finalRevisionSet, DiffManifestArtifacts: diffArtifacts, ProposedOutcome: proposedOutcome,
 	}, nil
+}
+
+func (e *AgentNodeExecutor) buildEvidence(
+	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
+	resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
+) (*ports.AttemptFinalizationEvidence, error) {
+	return buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome)
 }
 
 // terminalEventSequence returns the highest agent_events.Sequence durably
@@ -250,9 +286,13 @@ func (e *AgentNodeExecutor) buildEvidence(
 // caller-side ordering) by the time this is ever called, so the terminal
 // EXECUTION_FINISHED event (always the last one any normalizer emits) is
 // guaranteed already committed.
-func (e *AgentNodeExecutor) terminalEventSequence(ctx context.Context, attemptID string) (uint64, error) {
+//
+// A free function (V5-09: reused by buildEvidence above for either
+// caller) rather than a method on *AgentNodeExecutor; e.terminalEventSequence
+// below is a thin, unchanged wrapper.
+func terminalEventSequence(ctx context.Context, uow ports.UnitOfWork, attemptID string) (uint64, error) {
 	var sequence uint64
-	if err := e.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
 		records, err := tx.AgentEvents().ListByAttempt(ctx, attemptID)
 		if err != nil {
 			return err
@@ -270,4 +310,8 @@ func (e *AgentNodeExecutor) terminalEventSequence(ctx context.Context, attemptID
 		return 0, errors.New("no agent events were persisted for this attempt — cannot build finalization evidence")
 	}
 	return sequence, nil
+}
+
+func (e *AgentNodeExecutor) terminalEventSequence(ctx context.Context, attemptID string) (uint64, error) {
+	return terminalEventSequence(ctx, e.uow, attemptID)
 }
