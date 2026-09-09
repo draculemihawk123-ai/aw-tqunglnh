@@ -1999,18 +1999,217 @@ go test ./internal/app/agentevents/... -v -count=1        # PASS 18/18 (14 cũ +
 go test -count=1 ./...                                     # PASS toàn bộ ~70 package
 ```
 
-**Việc còn lại (Bước 4):** `AttemptFinalizationEvidence` typed struct (5 field theo quyết định #2:
-terminal event sequence, completion checkpoint ID, exact final RevisionSet, diff-manifest artifact/
-repository, output artifact refs, typed proposed outcome, schema version); nâng
-`ports.AgentExecutionResult` thêm artifact refs + typed proposed outcome (hiện chỉ có
-AttemptID/Provider/Status/TerminationReason/Session/Usage/ExitCode/StartedAt/FinishedAt — xác nhận qua
-đọc trực tiếp `internal/app/ports/agent.go`, không phải giả định); completion-checkpoint construction
-dùng `canonicalStateHash` THẬT (`internal/app/runtime/commands.go:306`, đã dùng bởi `AdvanceRun` cho
-`NodeRun.InputStateHash`) thay vì `sharedStateHash` surrogate hiện tại của Sink — việc này phải nằm
-trong `internal/app/runtime` (nơi `canonicalStateHash` sống và nơi một `WorkflowRun` mới được load), là
-một checkpoint MỚI riêng cho completion, không phải sửa `sharedStateHash` hiện có của Sink (checkpoint
-giữa chừng của Sink giữ nguyên surrogate — chỉ completion checkpoint ở finalize mới cần hash thật).
-Sau đó tiếp Bước 5 (Tx-composable checkpoint-insert method mới, protocol 3 pha đầy đủ, NodeExecutor→
-AgentExecutor bridge, provider-loss mapping table vào finalize) và Bước 6 (E2E) theo đúng "Thứ tự triển
-khai đã chốt" ở trên. Toàn bộ Bước 3-6 gộp vào MỘT PR duy nhất theo đúng lựa chọn của user
-("Một PR duy nhất cho cả V5-08B").
+**Việc còn lại (Bước 4) tại thời điểm đó:** đã hoàn thành đầy đủ bên dưới — xem các mục kế tiếp.
+
+### Triển khai thật — Quyết định bổ sung: giao thức "terminal outcome marker" cho AGENT node (2026-09-09)
+
+**Bối cảnh:** quyết định #2 gốc yêu cầu `AgentExecutionResult` phải có "typed proposed outcome", nhưng
+đọc trực tiếp `claude.go`/`codex.go` xác nhận: KHÔNG hề có cơ chế nào để provider tự báo cáo nó chọn
+outcome nào trong số các outcome node đã khai báo. Ba vòng hỏi lại user (AskUserQuestion) để chốt đúng vì
+đây là quyết định sản phẩm thật, không thể tự suy đoán:
+
+1. **Vòng 1 — "AGENT phải khai đúng 1 outcome"**: đề xuất ban đầu của tôi, User BÁC BỎ ngay vì phá
+   `TestValidateDocumentAcceptsBoundedCycleWithEscalationExit` ([compiler_test.go:245](internal/domain/workflow/compiler_test.go:245)) — một AGENT node với `CyclePolicy` hợp lệ khai 2 outcome ("retry" tự-loop +
+   "done" là `EscalationOutcome`). Đọc `advance.go:582` xác nhận runtime tự set
+   `skippedNodeRun.SelectedOutcome = downstreamNode.CyclePolicy.EscalationOutcome` trên một NodeRun bị
+   SKIP — agent không hề được gọi thực thi ở vòng escalation, nên không cần "derive proposal" cho outcome
+   đó.
+2. **Vòng 2 — loại `EscalationOutcome` khỏi tập agent-selectable, còn lại đúng 1 → bridge tự suy ra**:
+   User chỉ ra bằng chứng KHÁC còn mạnh hơn — fixture `boundedCycleDocument` ([cycle_test.go:39](internal/app/runtime/cycle_test.go:39)) có node "checker" khai BA outcome
+   `pass/rework/escalate` (escalate là EscalationOutcome); sau khi loại escalate, "checker" vẫn còn ĐÚNG
+   HAI outcome agent-selectable thật (`pass`/`rework`) — một use case multi-outcome AGENT có thật, không
+   phải giả thuyết. Kết luận: multi-outcome AGENT KHÔNG được cấm; cần một giao thức thật để agent tự báo
+   cáo outcome đã chọn khi có >1 lựa chọn; phần protocol này phải làm TRONG V5-08B/B0, không hoãn sang
+   V5-10/11 (agent tự báo cáo là core evidence, không phải criteria-level evidence).
+3. **Vòng 3 — chốt cơ chế encoding**: hai phương án — (a) marker cấu trúc ở cuối assistant message cuối
+   cùng, parse bằng text matching thuần; (b) tool-call riêng, cần agent gọi 1 tool không đăng ký (RỦI RO:
+   chưa xác minh Claude Code CLI/Codex CLI cho phép việc này mà không lỗi/treo trong chế độ stream-json
+   hiện dùng). User chọn (a), format cụ thể:
+   `<agentkit-outcome>{"schemaVersion":1,"outcome":"pass"}</agentkit-outcome>`
+
+**Quy tắc đã chốt với user (áp dụng nguyên văn):**
+- Marker là nội dung cuối cùng (ngoài whitespace) của assistant message CUỐI, xuất hiện đúng 1 lần trong
+  toàn bộ execution.
+- Claude/Codex chỉ PARSE marker nếu có mặt — lưu candidate ngay khi thấy, CHỈ xác nhận khi nhận terminal
+  event (result/turn.completed), vì lúc đọc text chưa biết đó có phải message cuối hay không.
+- Strip marker khỏi `ASSISTANT_MESSAGE` event trước khi persist — marker không bao giờ chạm tới durable
+  storage.
+- Thiếu, trùng, malformed, hoặc outcome ngoài `AllowedOutcomes` → protocol error, không tạo success, không
+  fallback `AllowedOutcomes[0]`.
+- Với ĐÚNG 1 agent-selectable outcome: marker KHÔNG bắt buộc — bridge tự derive
+  (`AgentOutcomeDerivedSingleAllowed`). Với >1: marker bắt buộc; adapter chỉ parse, KHÔNG tự quyết "thiếu
+  marker có phải lỗi không" (đó là việc của bridge, vì chỉ bridge biết `AllowedOutcomes` có thật sự là một
+  lựa chọn hay không).
+- `CyclePolicy.EscalationOutcome` không bao giờ nằm trong `AllowedOutcomes`; runtime vẫn tự đặt nó trên
+  NodeRun SKIPPED như hiện tại, không đổi.
+
+**Triển khai:**
+- `internal/domain/workflow/validation.go`: sửa lại rule AGENT (thay literal "đúng 1 outcome" bằng "ít
+  nhất 1 outcome sau khi loại EscalationOutcome") + test mới `agent with only its own escalation outcome`
+  ([compiler_test.go](internal/domain/workflow/compiler_test.go)).
+- `internal/app/ports/agent.go`: `AgentExecutionRequest` +`AllowedOutcomes []string`; `AgentExecutionResult`
+  +`TreeQuiesced`/+`ArtifactRefs` (shape only, chưa adapter nào sinh ra)/+`ProposedOutcome
+  *AgentProposedOutcome`; type mới `AgentProposedOutcome{Value, Source, SchemaVersion}`,
+  `AgentOutcomeSource` (`REPORTED_BY_PROVIDER`, `DERIVED_SINGLE_ALLOWED`).
+- `claude.go`/`codex.go`: `extractOutcomeMarker`/`trackOutcomeMarker`/`resolveProposedOutcome` (logic giống
+  hệt, duplicate có chủ đích — 2 package độc lập, không base chung); hook vào `emit()` (một điểm chung cho
+  mọi `ASSISTANT_MESSAGE`, dùng chung cho cả `consumeAssistant` của Claude lẫn `consumeItem` agent_message
+  của Codex); `finalStatus` đổi signature thêm `allowedOutcomes []string`, trả thêm `*AgentProposedOutcome`.
+  `result.TreeQuiesced` cũng gán từ `process.TreeQuiesced` (Bước 4 còn thiếu, gộp vào đây).
+- `internal/adapters/providers/fixtures.go`: 3 mode fixture mới (`outcome-success`, `outcome-malformed`,
+  `outcome-duplicate`) + `OutcomeMarker()` helper — dùng chung giữa test binary và `cmd/fake-claude`/
+  `cmd/fake-codex`.
+- `internal/adapters/providers/contract_test.go`: `TestAgentExecutorTerminalOutcomeMarker` — 5 kịch bản ×
+  2 provider (valid/reported, absent/nil, out-of-range/rejected, malformed/rejected, duplicate/rejected).
+- `internal/app/runtime/assemble_execution_request.go`: `agentSelectableOutcomes(node)` (loại
+  EscalationOutcome); load `WorkflowVersion.Document()`, `findNode` theo `nodeRun.NodeKey`, fail closed nếu
+  0 agent-selectable outcome — đây chính là "runtime defense cho WorkflowVersion cũ" user yêu cầu (chạy
+  MỖI LẦN `AssembleAgentExecutionRequest` chạy, kể cả revalidate ngay trước spawn, nên một version cũ đã
+  publish trước khi có rule compile-time vẫn KHÔNG BAO GIỜ spawn được với 0 outcome hợp lệ).
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                               # sạch
+go test ./internal/domain/workflow/... -v -count=1        # PASS, kể cả test escalation-only mới
+go test ./internal/adapters/providers/... -v -count=1      # PASS, 10 test outcome-marker mới (5×2)
+go test ./internal/app/runtime/... -count=1                # PASS
+go test -count=1 ./...                                     # PASS toàn bộ ~70 package
+```
+
+### Triển khai thật — Bước 4 (tiếp) + Bước 5: Tx-composable checkpoint, bridge, finalize evidence (2026-09-09)
+
+**`ports.CheckpointsRepository`** (`internal/app/ports/checkpoint.go`, mới): accessor Tx-composable thứ 2
+cho Checkpoint, chỉ dùng cho completion checkpoint của finalize — checkpoint giữa chừng của
+`agentevents.Sink` giữ nguyên `CheckpointStore` autocommit cũ, không đổi. `InsertCheckpoint(ctx,
+checkpoint) error` — implement thật ở `internal/adapters/sqlite/checkpoint_store.go` (INSERT thuần, UNIQUE
+conflict là bug thật, không dedup như `StoreCheckpoint`) và fake ở `internal/app/ports/fake/checkpoint.go`
+(cùng discipline). Test Tx-composable riêng
+(`TestCheckpointsRepository_InsertCheckpoint_CommitsWithinCallerTransaction`, sqlite thật): chứng minh cả
+commit lẫn rollback (transaction fail → 0 row) và UNIQUE conflict thật bị từ chối.
+
+**`AgentNodeExecutor`** (`internal/app/runtime/agent_node_executor.go` +
+`agent_node_executor_resources.go`, mới) — production `ports.NodeExecutor`, bridge NodeExecutor→
+AgentExecutor mà `execute.go` gọi "V4-05's fake executor tương lai":
+1. Gọi `AssembleAgentExecutionRequest` (V5-08B0) lấy request thật.
+2. `resolveExecutionResources`: Phase 1 (read-only tx) load `WorkflowRun.FamilyID` →
+   `WorkspaceSet` → mỗi mount's `RepositoryWorkspace.Locator` thật; Phase 2 (I/O thật, ngoài tx):
+   `ports.NewWorkspaceHandle(locator)` + `workspaces.WorkingDirectory` — đúng chỗ
+   `AssembleAgentExecutionRequest`/`admission.go`'s `buildExecutionEnvelope` đã cố tình để trống, đúng như
+   comment cũ đã ghi "V5's own real executor is the first caller". Với mount WRITE: gọi thật
+   `writeLeases.AcquireWriteLeases` (execute.go's own doc comment gọi đích danh bridge này là "the first
+   caller with a genuine reason to... call AcquireWriteLeases before Execute") — TTL = Attempt's own
+   Timeout + 2 phút buffer (không có heartbeat mid-flight vì `AgentExecutor.Start` block đồng bộ, không có
+   hook để heartbeat giữa chừng).
+3. Resolve `ports.AgentExecutor` thật qua `agentregistry.Registry.Resolve(request.ProviderKey, ...)`.
+4. Dựng `agentevents.Sink` thật, fenced bằng `req.JobLease`/`resolved.writeLeaseGrants` thật (không phải
+   `nil`/rỗng như trước khi có bridge).
+5. LUÔN gọi `Start`, KHÔNG BAO GIỜ `Resume` (ADR-005 "Alpha luôn khởi động agent mới từ ContextSnapshot" —
+   mọi Attempt, kể cả retry V4-06, luôn là Attempt MỚI gọi Start; không có caller thật nào cho `Resume`
+   trong Alpha — khớp đúng mapping #4 dòng cuối "ProviderSessionRef cũ mất → Start, không Resume").
+6. `sink.Flush(ctx)` bắt buộc ngay sau `Start` trả về (Sink's own doc "caller's own responsibility to call
+   exactly once... regardless of its own error").
+7. `classify`: áp bảng mapping provider-loss ĐÃ CHỐT ở quyết định #4 gốc, rút gọn còn 2 trường hợp thật sự
+   "finalizable" (SUCCEEDED, FAILED định) — LOST/INDETERMINATE (dòng 3-5 bảng gốc: mất lease giữa chừng,
+   quiescence không xác nhận trên mutating attempt) đều map vào MỘT sentinel mới `ErrIndeterminateExecution`
+   thay vì cố propose một NextState — vì `isFinalizableExecutionAttemptState` (finalize.go) LOẠI TRỪ hẳn
+   LOST/INDETERMINATE (không có lease sống nào để fence cho transition đó), nên bridge không được phép tự
+   "phát minh" một finalize call cho 2 state này; `execute.go`'s `Handle` nhận diện sentinel này giống hệt
+   nhánh "outer-cancellation" có sẵn — bỏ qua finalize, để Attempt RUNNING cho crash-recovery path (V4-13,
+   `internal/app/worker/interruption.go`) xử lý.
+8. Trên success: `buildEvidence` — đo diff MỖI mount SAU KHI xác nhận quiesce (dùng `TreeQuiesced` đã có từ
+   Bước 3), gọi `scopeguard.ValidateDiffs` NGAY (cùng discipline `agentevents.Sink`'s own
+   `captureCheckpointLocked` áp cho checkpoint giữa chừng — nhưng đây là lần đo CUỐI, sau quiesce, mà
+   `Sink` không bao giờ thấy) trước khi Put/Verify bất kỳ artifact nào; vi phạm scope → propose
+   FAILED/`TerminationReasonScopeViolation`/`CodeScopeViolation` — ADR-020 reserve reason này từ trước
+   nhưng CHƯA CÓ producer thật nào; bridge V5-08B là producer đầu tiên. Put/Verify từng diff làm artifact
+   riêng, insert ORPHAN trong MỘT transaction ngắn (protocol phase 2 của quyết định #2 gốc). Mint
+   `CompletionCheckpointID` (bridge tự chọn ID, finalize dùng chính ID này khi build Checkpoint thật —
+   không phải finalize tự sinh).
+9. `resolveSelectedOutcome`: nếu adapter đã parse marker → dùng luôn; nếu không và `AllowedOutcomes` có
+   đúng 1 phần tử → tự derive `DERIVED_SINGLE_ALLOWED`; nếu >1 mà không có marker → FAILED/
+   `TerminationReasonOutcomeRejected`/`CodeValidationFailed` (tái dùng đúng pattern execute.go đã có cho
+   scope-expansion proposal sai hình dạng, không phát minh reason mới).
+
+**`FinalizeExecutionAttempt` mở rộng** (`internal/app/runtime/finalize.go`): field mới
+`Evidence *ports.AttemptFinalizationEvidence` trên request — `nil` với MỌI caller cũ (fake NodeExecutor
+V4-05, test hiện có) → hành vi cũ giữ nguyên 100%, xác nhận bằng cách chạy lại toàn bộ suite `internal/app/
+runtime` không đổi kết quả. Khi `Evidence != nil` VÀ `NextState == SUCCEEDED`: hàm mới
+`attachFinalizationEvidenceTx` chạy TRONG transaction fenced sẵn có (Bước 1/3 đã fence JobLease/WriteLease
+từ trước khi tới đây), theo đúng phase 3 của protocol quyết định #2 gốc — validate
+`ProposedOutcome.Value == req.SelectedOutcome`; xác nhận hàng `agent_events` với đúng
+`TerminalEventSequence` tồn tại thật; xác nhận tập diff-manifest artifact ĐẦY ĐỦ so với
+`NodeRun.EffectiveScope` (đúng số lượng, đúng repository set — nội dung diff đã được `scopeguard.ValidateDiffs`
+kiểm ở bridge rồi, TRƯỚC transaction, vì kiểm lại từ artifact bytes trong transaction sẽ vi phạm "không
+gọi ArtifactStore trong transaction"); chuyển từng artifact ORPHAN→ATTACHED (đúng hướng V5-01 vốn đã dùng,
+KHÔNG PHẢI hướng ngược lại — sửa lại doc comment cũ trên `TransitionArtifactAttachState`, vốn đoán sai
+hướng); build + insert completion Checkpoint thật qua `tx.Checkpoints().InsertCheckpoint` — dùng
+`canonicalStateHash(run.SharedState)` thật (không phải surrogate của Sink), `Sequence` =
+`CanonicalEventSequence` = `evidence.TerminalEventSequence` (an toàn không đụng `checkpointSeq` riêng của
+Sink — không có cách nào an toàn đọc `LoadLatestCheckpoint` giữa chừng transaction vì đó là API autocommit
+riêng, một connection khác, có nguy cơ deadlock SQLite nếu gọi khi transaction hiện tại đang giữ write
+lock).
+
+**File thay đổi:** `internal/app/ports/checkpoint.go` (mới), `internal/app/ports/fake/checkpoint.go`
+(mới), `internal/adapters/sqlite/checkpoint_store.go` + `checkpoint_store_test.go`,
+`internal/adapters/sqlite/unitofwork.go`, `internal/app/ports/fake/unitofwork.go`,
+`internal/app/runtime/agent_node_executor.go` (mới), `agent_node_executor_resources.go` (mới),
+`agent_node_executor_test.go` (mới), `internal/app/runtime/execute.go` (JobLease vào
+`NodeExecutionRequest`, nhận diện `ErrIndeterminateExecution`, `Evidence` vào FinalizeExecutionAttemptRequest),
+`internal/app/runtime/finalize.go` (`Evidence` field + `attachFinalizationEvidenceTx`),
+`internal/app/ports/execution.go` (`NodeExecutionResult.Evidence`, type mới `AttemptFinalizationEvidence`/
+`DiffManifestArtifactRef`), `internal/app/ports/workspace.go` (`WorkspaceProvider.WorkingDirectory` — method
+mới, cần sửa mọi fake implement interface này: `internal/app/agentevents/sink_test.go`,
+`internal/app/runtime/commands_test.go`, `internal/app/runtime/scope_expansion_test.go`,
+`internal/app/work/scope_expansion_workspaceprovision_test.go`,
+`internal/app/workspaceprovision/handler_test.go`, `internal/app/workspacereconcile/handler_test.go`,
+`internal/integration/runtimeengine_test.go`), `internal/app/ports/artifactrecord.go` (sửa doc comment
+`TransitionArtifactAttachState`).
+
+**Bước 6 (E2E) — làm được bao nhiêu trong phạm vi PR này:** 7 test end-to-end mới trong
+`agent_node_executor_test.go`, dùng fake UOW + fake `WorkspaceProvider`/`WriteLeaseManager`/`AgentExecutor`
+cục bộ (không cần git thật hay subprocess CLI thật — `gitworktree` package và
+`internal/adapters/providers`'s own contract_test.go đã tự chứng minh riêng phần Diff/WorkingDirectory và
+provider-adapter translation rồi, cùng discipline "không cần toàn bộ subprocess machinery cho một concern
+một lớp bên dưới" mà `contract_test.go` đã có sẵn):
+- `TestAgentNodeExecutor_Success_BuildsEvidenceAndFinalizesEndToEnd` — golden path đầy đủ: assembly →
+  resolve mount/write-lease thật → Start → evidence → ORPHAN → finalize → ATTACHED → NodeRun advance.
+- `TestAgentNodeExecutor_LeaseLostMidExecution_ReturnsIndeterminate` — JobLease bị cướp giữa chừng.
+- `TestAgentNodeExecutor_UnconfirmedQuiescenceOnMutatingAttempt_ReturnsIndeterminate` — `TreeQuiesced=false`
+  trên mutating attempt.
+- `TestAgentNodeExecutor_OutOfScopeDiff_RejectsAsScopeViolation` — diff cuối vi phạm scope.
+- `TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed` — mapping row 2.
+- `TestAgentNodeExecutor_ProviderUnavailableBareError_ReturnsProviderUnavailable` — mapping row 1.
+- `TestFinalizeExecutionAttempt_TamperedEvidence_RejectsBeforeCommitting` — evidence giả (sai
+  TerminalEventSequence) bị từ chối, xác nhận transaction rollback toàn bộ (Attempt version không đổi,
+  artifact vẫn ORPHAN).
+
+**Chưa làm / cố ý để lại (ghi rõ, không giấu):**
+- Test multi-outcome THẬT ở tầng bridge (>1 `AllowedOutcomes`, marker bắt buộc) — đã có ở tầng adapter
+  (`contract_test.go`'s 10 test outcome-marker) nhưng `assembleRequestFixture` dùng cố định
+  `agentExecutableDocument` (1 outcome); dựng fixture multi-outcome riêng cho bridge cần sửa/nhân bản
+  fixture chain — hoãn, không chặn vì logic `resolveSelectedOutcome` đã test đủ qua đường single-outcome +
+  qua unit-level của chính adapter.
+- Test WriteLease-cụ-thể bị stale/generation lệch ở finalize — `FinalizeExecutionAttempt`'s own
+  `ValidateWriteLeaseFencing` fencing đã có test tổng quát từ V4-05, không lặp lại riêng cho AGENT path.
+- KHÔNG có composition root (`cmd/agentkit serve/worker` vẫn stub) nối `AgentNodeExecutor` thật vào
+  `ExecuteNodeHandler` trong production — đúng pattern MỌI task V4/V5 trước giờ (library code + test,
+  không đụng `cmd/`), không phải thiếu sót của riêng task này.
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                               # sạch
+go run ./cmd/docs-coverage-check                           # debt = 0
+go test ./internal/app/runtime/... -v -count=1             # PASS toàn bộ, kể cả 7 test E2E mới
+go test -count=1 ./...                                     # PASS toàn bộ ~70 package (2 lần liên tiếp,
+                                                            #   1 lần gặp đúng flake đã biết trước
+                                                            #   TestProjectWorkspaceGate — pass khi chạy
+                                                            #   lại riêng lẻ, cùng lớp timing-flake đã
+                                                            #   ghi nhận trước đó trong phiên này)
+```
+
+**Việc còn lại:** commit (đã xong theo từng phần: `806f416` outcome marker, `56b49a0` AllowedOutcomes +
+Tx checkpoint, `fe85099` bridge, `8138166` finalize evidence + E2E, `e11c354` E2E bổ sung — tổng cộng 6
+commit trên nhánh kể từ `3a86477` Bước 3), push nhánh `feat/v5-08b-implementation` lên
+`zlinh4605/agent-workflow`, mở MỘT PR duy nhất cho toàn bộ V5-08B (đúng lựa chọn user), chờ CI 6/6, merge.
