@@ -281,14 +281,45 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 	attemptCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 
-	execResult, execErr := h.executor.Execute(attemptCtx, ports.NodeExecutionRequest{
+	// V5-08C: execCtx is deliberately a CHILD of attemptCtx, cancelled by
+	// this handler's own poller below rather than by attemptCtx itself —
+	// attemptCtx.Err() must stay nil when a cancellation intent (not our
+	// own deadline) is what actually stopped the executor, so the
+	// pre-existing "attemptCtx.Err() != nil -> leave RUNNING" branch below
+	// (V4-12B's own safe default for an ambiguous outer-context cancel)
+	// does not also fire for a cause this handler now classifies for real.
+	execCtx, cancelExec := context.WithCancel(attemptCtx)
+	pollDone := make(chan struct{})
+	go h.pollForCancellation(ctx, payload.RunID, execCtx, cancelExec, pollDone)
+
+	execResult, execErr := h.executor.Execute(execCtx, ports.NodeExecutionRequest{
 		AttemptID: payload.AttemptID, NodeRunID: payload.NodeRunID, RunID: payload.RunID,
 		ExecutorKind: profile.Executor.Kind, ExecutionProfileHash: running.ExecutionProfileHash,
 		JobLease: jobLease,
 	})
+	// execCtxErr must be captured BEFORE cancelExec() below — that call
+	// only exists to stop pollForCancellation's own goroutine (and is a
+	// no-op if the poller itself already cancelled execCtx), but it would
+	// otherwise make execCtx.Err() non-nil for every single call, including
+	// ones where the executor returned its own unrelated error well before
+	// any deadline or cancellation ever occurred.
+	execCtxErr := execCtx.Err()
+	cancelExec()
+	<-pollDone
 
 	if execErr != nil {
-		if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
+		if errors.Is(execErr, ErrAttemptAlreadyTerminated) {
+			// AgentNodeExecutor's own handleMutatingCancellation
+			// (agent_node_executor_cancellation.go) already moved the
+			// Attempt to a terminal state itself, durably, before
+			// returning — there is nothing left for this handler to
+			// finalize (that CAS would just fail against a RUNNING
+			// ExpectedVersion that no longer matches). Returning nil marks
+			// this job done, exactly like every other successful finalize
+			// below.
+			return nil
+		}
+		if errors.Is(execCtxErr, context.DeadlineExceeded) {
 			_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
 				RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 				NextState: runtimedomain.ExecutionAttemptTimedOut, TerminationReason: runtimedomain.TerminationReasonDeadlineExceeded,
@@ -296,11 +327,23 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 			})
 			return finalizeErr
 		}
-		if attemptCtx.Err() != nil {
-			// Cancelled for a reason OTHER than our own deadline — do NOT
-			// finalize; leave the Attempt RUNNING. See this file's own
-			// package doc comment step 4.
-			return attemptCtx.Err()
+		if execCtxErr != nil {
+			// Cancelled for a reason this handler does not recognize as a
+			// definitive resolution — either our own outer ctx (pool
+			// shutdown, heartbeat loss), or V5-08C's own poller below
+			// cancelled execCtx but the executor did not return a
+			// recognized sentinel/State for it (a generic ports.NodeExecutor
+			// that predates V5-08C's own cancellation classification, or
+			// any executor that raced and returned its own unrelated error
+			// right as the poller fired). Do NOT finalize; leave the
+			// Attempt RUNNING. See this file's own package doc comment step
+			// 4. AgentNodeExecutor (the real production bridge) never
+			// reaches this branch for a genuine poller-triggered
+			// cancellation — classifyCancellation always resolves it first,
+			// either via ErrAttemptAlreadyTerminated (caught above) or a
+			// definitive Cancelled-state result (execErr == nil, handled by
+			// the switch below instead).
+			return execCtxErr
 		}
 		if errors.Is(execErr, ErrIndeterminateExecution) {
 			// V5-08B's own locked provider-loss mapping (baocaov5checklist.md's
@@ -359,6 +402,18 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 			failureCode = ""
 			scopeProposal = execResult.RequestedScopeExpansion
 		}
+	case runtimedomain.ExecutionAttemptCancelled:
+		// V5-08C: classifyCancellation's own read-only-attempt branch
+		// (agent_node_executor_cancellation.go) returns this State with no
+		// execErr — a confirmed-stopped process under a genuine durable
+		// cancellation intent, with no side effect ever possible to
+		// reconcile. Without this case, nextState fell through to the
+		// generic default below, which never overrides the hardcoded
+		// ExecutionAttemptFailed default — silently finalizing a cancelled
+		// attempt as FAILED.
+		nextState = runtimedomain.ExecutionAttemptCancelled
+		reason = execResult.TerminationReason
+		failureCode = ""
 	default:
 		if execResult.TerminationReason != "" {
 			reason = execResult.TerminationReason
@@ -528,6 +583,52 @@ func (h *ExecuteNodeHandler) blockAdmission(
 		return err
 	}
 	return reconcileRunTerminalityTx(ctx, tx, run, version.Document(), payload.CorrelationID, string(jobLease.JobID))
+}
+
+// pollForCancellation is V5-08C's own poller: the piece that actually
+// notices a durable RunCancellationIntent (CancelRun, cancel_run.go) WHILE
+// h.executor.Execute is running and turns it into real process termination
+// by cancelling execCtx — ctx propagation into a real running provider
+// process already works end to end (ports.ProcessSupervisor.Run, verified
+// during this task's own research; no new plumbing needed there), so this
+// goroutine's only job is deciding WHEN to pull that trigger.
+//
+// pollCtx is deliberately the OUTER job ctx, not execCtx — a poll read
+// must survive execCtx being cancelled (that's this goroutine's own doit
+// signal, not a reason to stop reading), and must still be bounded by
+// something, so the outer ctx (cancelled only by pool shutdown or this
+// job's own natural end) is the correct scope.
+//
+// Runs until execCtx.Done() fires for ANY reason (poller-triggered
+// cancel, attemptCtx's own deadline, or Execute simply returning and this
+// Handle calling cancelExec() itself) — callers must call cancelExec()
+// after Execute returns and receive from pollDone before proceeding, so
+// no goroutine is ever leaked past a single Handle call.
+func (h *ExecuteNodeHandler) pollForCancellation(
+	pollCtx context.Context, runID string, execCtx context.Context, cancelExec context.CancelFunc, done chan<- struct{},
+) {
+	defer close(done)
+	ticker := time.NewTicker(cancellationPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-execCtx.Done():
+			return
+		case <-ticker.C:
+			cancelling, err := h.runIsCancelling(pollCtx, runID)
+			if err != nil {
+				// Transient read failure (e.g. pool shutdown tearing down
+				// the store mid-poll) — never guess; just try again next
+				// tick, exactly like every other ambiguous-cause default
+				// in this handler.
+				continue
+			}
+			if cancelling {
+				cancelExec()
+				return
+			}
+		}
+	}
 }
 
 // runIsCancelling is V4-12B's own read-only check for the second worker

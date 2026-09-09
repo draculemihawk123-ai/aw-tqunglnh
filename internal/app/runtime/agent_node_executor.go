@@ -12,11 +12,16 @@
 //
 // Scope, locked with the user (baocaov5checklist.md's own "Quyết định sau
 // review source of truth — 2026-09-08", V5-08B section): this file
-// implements steps 3-4 (real evidence staging), not step 5's own PROVIDER
-// side of "structured outcome protocol" (that lives in claude.go/codex.go,
-// already built) nor V5-08C's cancellation-execution-path wiring
-// (AgentExecutionRequest.CancellationToken stays an inert placeholder
-// here, unchanged).
+// implements steps 3-4 (real evidence staging) and, since V5-08C
+// (baocaov5checklist.md's own V5-08C section), the cancellation-execution
+// path — real cancellation reaches a running provider process entirely
+// through ctx propagation already built into ports.ProcessSupervisor.Run
+// (no new plumbing needed there); this file's own job is classifying what
+// AgentExecutor.Start reports back once that happens (see classify's own
+// AgentExecutionCancelled case and agent_node_executor_cancellation.go).
+// AgentExecutionRequest.CancellationToken stays an inert placeholder —
+// V5-08C's own real signal is ExecuteNodeHandler's own poller cancelling
+// this Execute call's own ctx, not that field.
 package runtime
 
 import (
@@ -33,6 +38,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/scopeguard"
+	"github.com/taQuangLing/agent-workflow/internal/app/worker"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
@@ -70,16 +76,18 @@ const writeLeaseTTLGrace = 2 * time.Minute
 // WriteLeaseManager) is this file's own caller's decision, not something
 // constructed here.
 type AgentNodeExecutor struct {
-	uow         ports.UnitOfWork
-	ids         idsource.Source
-	store       ports.ArtifactStore
-	workspaces  ports.WorkspaceProvider
-	writeLeases ports.WriteLeaseManager
-	agents      *agentregistry.Registry
-	registry    *eventschema.Registry
-	matcher     redact.Matcher
-	checkpoints agentevents.CheckpointStore
-	clk         clock.Clock
+	uow           ports.UnitOfWork
+	ids           idsource.Source
+	store         ports.ArtifactStore
+	workspaces    ports.WorkspaceProvider
+	writeLeases   ports.WriteLeaseManager
+	agents        *agentregistry.Registry
+	registry      *eventschema.Registry
+	matcher       redact.Matcher
+	checkpoints   agentevents.CheckpointStore
+	clk           clock.Clock
+	interruptions worker.InterruptionRecoveryStore
+	reconciler    worker.WorkspaceReconciler
 }
 
 // NewAgentNodeExecutor returns a ready-to-register AgentNodeExecutor.
@@ -88,14 +96,23 @@ type AgentNodeExecutor struct {
 // *sqlite.Store that also backs uow) — this executor's own COMPLETION
 // checkpoint is separate (built inside FinalizeExecutionAttempt via
 // ports.CheckpointsRepository), never routed through this dependency.
+// interruptions/reconciler are V5-08C's own dependencies (spike-era,
+// *sqlite.Store-direct — the same narrow surfaces RecoveryReaperHandler
+// already uses, recovery_reaper.go), needed only for a genuinely
+// cancelled MUTATING attempt: terminating it INDETERMINATE and
+// reconciling/quarantining the workspace it held a WriteLease against,
+// reusing V4-13's own already-proven primitives rather than inventing a
+// second way to reach the identical durable outcome.
 func NewAgentNodeExecutor(
 	uow ports.UnitOfWork, ids idsource.Source, store ports.ArtifactStore, workspaces ports.WorkspaceProvider,
 	writeLeases ports.WriteLeaseManager, agents *agentregistry.Registry, registry *eventschema.Registry,
 	matcher redact.Matcher, checkpoints agentevents.CheckpointStore, clk clock.Clock,
+	interruptions worker.InterruptionRecoveryStore, reconciler worker.WorkspaceReconciler,
 ) *AgentNodeExecutor {
 	return &AgentNodeExecutor{
 		uow: uow, ids: ids, store: store, workspaces: workspaces, writeLeases: writeLeases,
 		agents: agents, registry: registry, matcher: matcher, checkpoints: checkpoints, clk: clk,
+		interruptions: interruptions, reconciler: reconciler,
 	}
 }
 
@@ -180,14 +197,27 @@ func (e *AgentNodeExecutor) classify(
 			ErrorCode: errorcode.CodeProviderUnavailable,
 		}, nil
 	}
+	if agentResult.Status == ports.AgentExecutionCancelled {
+		// V5-08C: the underlying process genuinely stopped in response to
+		// ctx being cancelled (ports.ProcessSupervisor.Run's own existing
+		// ctx-propagation — no new plumbing needed for the process to
+		// actually die; see this file's own package doc comment). Whether
+		// that ctx cancellation was a genuine, durable run-cancellation
+		// intent or something else entirely (e.g. pool shutdown escalating
+		// jobsCtx) is not something this bridge was TOLD — it re-derives
+		// the truth from durable state itself, the same "trust durable
+		// state, never a live signal" discipline this whole codebase
+		// already follows everywhere else.
+		return e.classifyCancellation(ctx, req, resolved)
+	}
 	if agentResult.Status != ports.AgentExecutionSucceeded {
 		// The provider itself reported a determinate non-success (row 2):
-		// definite FAILED, EXECUTION_FAILED. TIMED_OUT/CANCELLED at the
-		// provider's own internal level fold into the same bucket here —
-		// this executor's own OUTER deadline/cancellation is already
-		// handled one layer up by execute.go's own attemptCtx observation
-		// (this file's own package doc comment), which is what V4-05/V5-08
-		// actually route TIMED_OUT/RUN_CANCELLED through.
+		// definite FAILED, EXECUTION_FAILED. TIMED_OUT at the provider's
+		// own internal level folds into the same bucket here — this
+		// executor's own OUTER deadline is already handled one layer up by
+		// execute.go's own attemptCtx observation (this file's own package
+		// doc comment), which is what V4-05/V5-08 actually route
+		// TIMED_OUT through.
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 			ErrorCode: errorcode.CodeExecutionFailed,

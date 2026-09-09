@@ -31,6 +31,22 @@ type resolvedExecutionResources struct {
 	writeLeaseGrants []ports.WriteLeaseGrant
 	hasWriteMount    bool
 	projectID        project.ProjectID
+	// writeMounts carries exactly what V5-08C's own cancellation-reconciliation
+	// path needs per WRITE mount (handleMutatingCancellation,
+	// agent_node_executor_cancellation.go) — the real RepositoryWorkspaceID/
+	// WorkspaceVersion/pinned revision this bridge already resolved once
+	// during Phase 1 above, so that path never needs a second DB round trip
+	// for the same rows.
+	writeMounts []mutatingMountInfo
+}
+
+// mutatingMountInfo is one WRITE mount's own identity for reconciliation —
+// see resolvedExecutionResources.writeMounts's own doc comment.
+type mutatingMountInfo struct {
+	repositoryWorkspaceID workspace.RepositoryWorkspaceID
+	handle                ports.WorkspaceHandle
+	pinnedRevision        string
+	workspaceVersion      uint64
 }
 
 // gatheredMount is resolveExecutionResources's own Phase 1 output (real DB
@@ -38,12 +54,13 @@ type resolvedExecutionResources struct {
 // WorkingDirectory resolution, AcquireWriteLeases) runs entirely after
 // that transaction has already closed.
 type gatheredMount struct {
-	repositoryID project.RepositoryID
-	locator      string
-	workspaceID  workspace.RepositoryWorkspaceID
-	access       ports.WorkspaceAccess
-	vcsObjectID  string
-	generation   uint64
+	repositoryID     project.RepositoryID
+	locator          string
+	workspaceID      workspace.RepositoryWorkspaceID
+	workspaceVersion uint64
+	access           ports.WorkspaceAccess
+	vcsObjectID      string
+	generation       uint64
 }
 
 // resolveExecutionResources resolves every one of request's own
@@ -80,7 +97,7 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 				return fmt.Errorf("load repository workspace for %s generation %d: %w", mount.RepositoryID, mount.WorkspaceGeneration, err)
 			}
 			gathered = append(gathered, gatheredMount{
-				repositoryID: mount.RepositoryID, locator: rw.Locator, workspaceID: rw.ID,
+				repositoryID: mount.RepositoryID, locator: rw.Locator, workspaceID: rw.ID, workspaceVersion: rw.Version,
 				access: mount.Access, vcsObjectID: mount.VCSObjectID, generation: mount.WorkspaceGeneration,
 			})
 		}
@@ -109,6 +126,9 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 			resolved.hasWriteMount = true
 			writeTargets = append(writeTargets, ports.WorkspaceLeaseTarget{
 				RepositoryID: g.repositoryID, RepositoryWorkspaceID: g.workspaceID, Generation: g.generation,
+			})
+			resolved.writeMounts = append(resolved.writeMounts, mutatingMountInfo{
+				repositoryWorkspaceID: g.workspaceID, handle: handle, pinnedRevision: g.vcsObjectID, workspaceVersion: g.workspaceVersion,
 			})
 		}
 	}
