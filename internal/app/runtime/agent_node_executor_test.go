@@ -15,6 +15,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/app/worker"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	domainruntime "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -32,6 +33,13 @@ import (
 type bridgeFakeWorkspaceProvider struct {
 	diff    ports.WorkspaceDiff
 	diffErr error
+	// captureRevision is consulted by handleMutatingCancellation
+	// (agent_node_executor_cancellation.go) as the live "current on-disk
+	// revision" a cancelled mutating attempt is reconciled against — tests
+	// set this to fixtureFixtureRepo1PinnedRevision (clean) or any other
+	// value (mutation observed) to control ReconcileMutatingAttempt's own
+	// verdict.
+	captureRevision workspace.Revision
 }
 
 func (f *bridgeFakeWorkspaceProvider) Provision(context.Context, ports.ProvisionSpec) (ports.WorkspaceHandle, error) {
@@ -41,7 +49,7 @@ func (f *bridgeFakeWorkspaceProvider) Inspect(context.Context, ports.WorkspaceHa
 	return ports.WorkspaceInspection{}, nil
 }
 func (f *bridgeFakeWorkspaceProvider) CaptureRevision(context.Context, ports.WorkspaceHandle) (workspace.Revision, error) {
-	return workspace.Revision{}, nil
+	return f.captureRevision, nil
 }
 func (f *bridgeFakeWorkspaceProvider) Diff(context.Context, ports.WorkspaceHandle, workspace.Revision) (ports.WorkspaceDiff, error) {
 	return f.diff, f.diffErr
@@ -61,9 +69,16 @@ var _ ports.WorkspaceProvider = (*bridgeFakeWorkspaceProvider)(nil)
 // own E2E test needs SOME AcquireWriteLeases implementation to exercise
 // its own real call site (execute.go's own doc comment names the bridge as
 // "the first caller with a genuine reason to... call AcquireWriteLeases").
-type bridgeFakeWriteLeaseManager struct{}
+type bridgeFakeWriteLeaseManager struct {
+	// released records every ReleaseWriteLeases call — V5-08C's own
+	// cancellation-reconciliation path (handleMutatingCancellation) is a
+	// real, legitimate caller now (release only after reconciliation
+	// completes), unlike every other pre-V5-08C bridge test which never
+	// reaches this call at all.
+	released [][]ports.WriteLeaseGrant
+}
 
-func (bridgeFakeWriteLeaseManager) AcquireWriteLeases(_ context.Context, req ports.AcquireWriteLeasesRequest) ([]ports.WriteLeaseGrant, error) {
+func (m *bridgeFakeWriteLeaseManager) AcquireWriteLeases(_ context.Context, req ports.AcquireWriteLeasesRequest) ([]ports.WriteLeaseGrant, error) {
 	grants := make([]ports.WriteLeaseGrant, 0, len(req.Targets))
 	for i, target := range req.Targets {
 		grants = append(grants, ports.WriteLeaseGrant{
@@ -74,17 +89,18 @@ func (bridgeFakeWriteLeaseManager) AcquireWriteLeases(_ context.Context, req por
 	}
 	return grants, nil
 }
-func (bridgeFakeWriteLeaseManager) HeartbeatWriteLeases(context.Context, []ports.WriteLeaseGrant, time.Duration) ([]ports.WriteLeaseGrant, error) {
+func (m *bridgeFakeWriteLeaseManager) HeartbeatWriteLeases(context.Context, []ports.WriteLeaseGrant, time.Duration) ([]ports.WriteLeaseGrant, error) {
 	return nil, errors.New("bridgeFakeWriteLeaseManager: HeartbeatWriteLeases must not be called")
 }
-func (bridgeFakeWriteLeaseManager) ValidateWriteLease(context.Context, ports.WriteLeaseGrant) error {
+func (m *bridgeFakeWriteLeaseManager) ValidateWriteLease(context.Context, ports.WriteLeaseGrant) error {
 	return errors.New("bridgeFakeWriteLeaseManager: ValidateWriteLease must not be called")
 }
-func (bridgeFakeWriteLeaseManager) ReleaseWriteLeases(context.Context, []ports.WriteLeaseGrant) error {
-	return errors.New("bridgeFakeWriteLeaseManager: ReleaseWriteLeases must not be called")
+func (m *bridgeFakeWriteLeaseManager) ReleaseWriteLeases(_ context.Context, grants []ports.WriteLeaseGrant) error {
+	m.released = append(m.released, grants)
+	return nil
 }
 
-var _ ports.WriteLeaseManager = bridgeFakeWriteLeaseManager{}
+var _ ports.WriteLeaseManager = (*bridgeFakeWriteLeaseManager)(nil)
 
 // bridgeFakeAgentExecutor is a minimal, scripted ports.AgentExecutor —
 // internal/adapters/providers' own contract_test.go already proves a real
@@ -132,20 +148,81 @@ func (bridgeFakeCheckpointStore) StoreCheckpoint(_ context.Context, checkpoint d
 	return checkpoint, nil
 }
 
+// fixtureRepo1PinnedRevision is the exact VCSObjectID readyFixture's own
+// stubProvider pins repo-1 to (commands_test.go) — assembleRequestFixture's
+// whole chain (scheduleFixture -> readyFixture -> workspaceprovision ->
+// ContextSnapshot.Revisions -> AgentExecutionRequest.WorkspaceMounts) never
+// changes this value, so a cancellation test reporting exactly this same
+// string back from CaptureRevision proves "clean, no mutation observed";
+// any other value proves the opposite.
+const fixtureRepo1PinnedRevision = "cafebabecafebabecafebabecafebabecafebabe"
+
+// bridgeFakeInterruptionStore is a minimal worker.InterruptionRecoveryStore
+// backed by the SAME fake.UnitOfWork the rest of this fixture already uses
+// (reusing its own already-tested TransitionExecutionAttempt CAS rather
+// than hand-rolling a parallel state machine) — none exists in the shared
+// ports/fake package (recovery_reaper_sqlite_test.go's own real-sqlite-only
+// precedent), but AgentNodeExecutor's own V5-08C cancellation tests need
+// SOME TerminateInterruptedAttempt implementation.
+type bridgeFakeInterruptionStore struct {
+	uow          *fake.UnitOfWork
+	terminations []ports.AttemptTerminationUpdate
+}
+
+func (s *bridgeFakeInterruptionStore) AttemptHeldAnyWriteLease(context.Context, domainruntime.ExecutionAttemptID) (bool, error) {
+	return false, errors.New("bridgeFakeInterruptionStore: AttemptHeldAnyWriteLease must not be called — the bridge already knows")
+}
+
+func (s *bridgeFakeInterruptionStore) TerminateInterruptedAttempt(ctx context.Context, update ports.AttemptTerminationUpdate) error {
+	if err := s.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		_, err := tx.Runtime().TransitionExecutionAttempt(ctx, ports.TransitionExecutionAttemptRequest{
+			AttemptID: string(update.AttemptID), ExpectedState: domainruntime.ExecutionAttemptRunning, ExpectedVersion: update.ExpectedVersion,
+			NextState: update.NextState, TerminationReason: update.Reason,
+		})
+		return err
+	}); err != nil {
+		return err
+	}
+	s.terminations = append(s.terminations, update)
+	return nil
+}
+
+// bridgeFakeWorkspaceReconciler is a minimal, in-memory
+// worker.WorkspaceReconciler — see bridgeFakeInterruptionStore's own doc
+// comment for why no shared fake exists yet.
+type bridgeFakeWorkspaceReconciler struct {
+	quarantined []ports.QuarantineRepositoryWorkspaceUpdate
+}
+
+func (r *bridgeFakeWorkspaceReconciler) LoadRepositoryWorkspaceRevision(context.Context, string) (string, error) {
+	return "", errors.New("bridgeFakeWorkspaceReconciler: LoadRepositoryWorkspaceRevision must not be called — the bridge uses a live CaptureRevision instead")
+}
+
+func (r *bridgeFakeWorkspaceReconciler) QuarantineRepositoryWorkspace(_ context.Context, update ports.QuarantineRepositoryWorkspaceUpdate) error {
+	r.quarantined = append(r.quarantined, update)
+	return nil
+}
+
 // bridgeFixtureOptions lets each test override just the pieces it cares
 // about; bridgeFixture below fills in golden-path defaults for the rest.
 type bridgeFixtureOptions struct {
-	diff        ports.WorkspaceDiff
-	agentResult ports.AgentExecutionResult
-	agentErr    error
-	agentEvents []ports.AgentEventKind
+	diff            ports.WorkspaceDiff
+	captureRevision workspace.Revision
+	agentResult     ports.AgentExecutionResult
+	agentErr        error
+	agentEvents     []ports.AgentEventKind
 }
 
 // bridgeFixture builds one fully-admitted, RUNNING ExecutionAttempt (reusing
 // assembleRequestFixture's own real message/skill/AdapterBuild chain) plus
 // the claimed EXECUTE_NODE JobLease a real ExecuteNodeHandler would have
-// passed into Execute, and returns a ready-to-drive AgentNodeExecutor.
-func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (executor *runtime.AgentNodeExecutor, req ports.NodeExecutionRequest, uow *fake.UnitOfWork, ids idsource.Source) {
+// passed into Execute, and returns a ready-to-drive AgentNodeExecutor along
+// with the fake interruption store/workspace reconciler V5-08C's own
+// cancellation tests assert against.
+func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (
+	executor *runtime.AgentNodeExecutor, req ports.NodeExecutionRequest, uow *fake.UnitOfWork, ids idsource.Source,
+	interruptions *bridgeFakeInterruptionStore, reconciler *bridgeFakeWorkspaceReconciler,
+) {
 	t.Helper()
 	ctx := context.Background()
 	u, ids, store, runID, nodeRunID, attemptID := assembleRequestFixture(t)
@@ -171,12 +248,15 @@ func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (executor *runtime.A
 		t.Fatalf("agentregistry.New: %v", err)
 	}
 
+	interruptions = &bridgeFakeInterruptionStore{uow: u}
+	reconciler = &bridgeFakeWorkspaceReconciler{}
 	executor = runtime.NewAgentNodeExecutor(
-		u, ids, store, &bridgeFakeWorkspaceProvider{diff: opts.diff}, bridgeFakeWriteLeaseManager{},
+		u, ids, store, &bridgeFakeWorkspaceProvider{diff: opts.diff, captureRevision: opts.captureRevision}, &bridgeFakeWriteLeaseManager{},
 		agents, registry, redact.NewMatcher(), bridgeFakeCheckpointStore{}, clock.System{},
+		interruptions, reconciler,
 	)
 	req = ports.NodeExecutionRequest{AttemptID: attemptID, NodeRunID: nodeRunID, RunID: runID, JobLease: lease}
-	return executor, req, u, ids
+	return executor, req, u, ids, interruptions, reconciler
 }
 
 // defaultInScopeDiff is the fixture's own default WorkspaceDiff for repo-1.
@@ -220,7 +300,7 @@ func loadAttemptVersion(t *testing.T, uow *fake.UnitOfWork, attemptID string) ui
 // and a real NodeRun advance. Proves every new V5-08B piece composes
 // correctly, not just in isolation.
 func TestAgentNodeExecutor_Success_BuildsEvidenceAndFinalizesEndToEnd(t *testing.T) {
-	executor, req, uow, ids := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, uow, ids, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionSucceeded, TreeQuiesced: true},
 		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
@@ -307,7 +387,7 @@ func TestAgentNodeExecutor_Success_BuildsEvidenceAndFinalizesEndToEnd(t *testing
 // Attempt for the crash-recovery path to resolve (isFinalizableExecutionAttemptState
 // accepts neither LOST nor INDETERMINATE).
 func TestAgentNodeExecutor_LeaseLostMidExecution_ReturnsIndeterminate(t *testing.T) {
-	executor, req, uow, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, uow, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionSucceeded, TreeQuiesced: true},
 		// Sink.Flush is a safe no-op on an empty buffer (its own doc
@@ -340,7 +420,7 @@ func TestAgentNodeExecutor_LeaseLostMidExecution_ReturnsIndeterminate(t *testing
 // scripted executor reporting a provider-level failure (Status: FAILED)
 // with quiescence unconfirmed.
 func TestAgentNodeExecutor_UnconfirmedQuiescenceOnMutatingAttempt_ReturnsIndeterminate(t *testing.T) {
-	executor, req, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionFailed, TreeQuiesced: false},
 		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
@@ -358,7 +438,7 @@ func TestAgentNodeExecutor_UnconfirmedQuiescenceOnMutatingAttempt_ReturnsIndeter
 // — validates the FINAL, post-quiescence diff against EffectiveScope
 // (V5-08B's own locked decision #2) before ever proposing SUCCEEDED.
 func TestAgentNodeExecutor_OutOfScopeDiff_RejectsAsScopeViolation(t *testing.T) {
-	executor, req, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff: ports.WorkspaceDiff{
 			RepositoryID: "repo-2", // not in EffectiveScope at all
 			Files:        []ports.FileStatus{{Code: "M", Path: "unauthorized.txt"}},
@@ -383,7 +463,7 @@ func TestAgentNodeExecutor_OutOfScopeDiff_RejectsAsScopeViolation(t *testing.T) 
 // reported a determinate non-success (AgentExecutionStatus != Succeeded,
 // no error, quiescence confirmed) — a definite FAILED, never indeterminate.
 func TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed(t *testing.T) {
-	executor, req, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionFailed, TreeQuiesced: true},
 		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
@@ -407,7 +487,7 @@ func TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed(t *tes
 // PROVIDER_UNAVAILABLE rather than the generic EXECUTION_FAILED row 2 uses
 // for a provider-REPORTED failure.
 func TestAgentNodeExecutor_ProviderUnavailableBareError_ReturnsProviderUnavailable(t *testing.T) {
-	executor, req, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionFailed, TreeQuiesced: true},
 		agentErr:    errors.New("spawn: executable not found"),
@@ -431,7 +511,7 @@ func TestAgentNodeExecutor_ProviderUnavailableBareError_ReturnsProviderUnavailab
 // rejected, and nothing (not the Attempt CAS, not the NodeRun advance)
 // must have committed as a side effect of the attempt.
 func TestFinalizeExecutionAttempt_TamperedEvidence_RejectsBeforeCommitting(t *testing.T) {
-	executor, req, uow, ids := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, uow, ids, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionSucceeded, TreeQuiesced: true},
 		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
@@ -475,5 +555,115 @@ func TestFinalizeExecutionAttempt_TamperedEvidence_RejectsBeforeCommitting(t *te
 		return nil
 	}); err != nil {
 		t.Fatalf("load diff manifest artifact after rejected finalize: %v", err)
+	}
+}
+
+// TestAgentNodeExecutor_CancelledWithoutDurableIntent_ReturnsIndeterminateExecution
+// proves classifyCancellation's own locked rule (V5-08C): a confirmed-
+// stopped process (AgentExecutionStatus == Cancelled) whose owning Run has
+// NO durable RunCancellationIntent (CancelRun was never called — this
+// fixture never calls it) must never be assumed CANCELLED just because ctx
+// happened to be cancelled for some other reason (e.g. workerpool.Pool's
+// own shutdown-grace escalation) — it stays the same safe
+// ErrIndeterminateExecution default every other ambiguous case in this
+// bridge already uses.
+func TestAgentNodeExecutor_CancelledWithoutDurableIntent_ReturnsIndeterminateExecution(t *testing.T) {
+	executor, req, _, _, interruptions, reconciler := bridgeFixture(t, bridgeFixtureOptions{
+		diff:            defaultInScopeDiff(),
+		captureRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: fixtureRepo1PinnedRevision},
+		agentResult:     ports.AgentExecutionResult{Status: ports.AgentExecutionCancelled, TreeQuiesced: true},
+	})
+	ctx := context.Background()
+
+	_, err := executor.Execute(ctx, req)
+	if !errors.Is(err, runtime.ErrIndeterminateExecution) {
+		t.Fatalf("Execute error = %v, want ErrIndeterminateExecution", err)
+	}
+	if len(interruptions.terminations) != 0 {
+		t.Fatalf("terminations = %+v, want none — no durable cancellation intent existed", interruptions.terminations)
+	}
+	if len(reconciler.quarantined) != 0 {
+		t.Fatalf("quarantined = %+v, want none", reconciler.quarantined)
+	}
+}
+
+// TestAgentNodeExecutor_MutatingCancellation_CleanRevision_TerminatesIndeterminateWithoutQuarantine
+// proves V5-08C's own locked requirement for the case a mutating attempt IS
+// genuinely, durably cancelled (a real runtime.CancelRun call, exactly the
+// production entry point) and the workspace's own current revision — read
+// live via CaptureRevision, confirmed only after TreeQuiesced — turns out
+// unchanged from what this attempt was pinned to: the Attempt still becomes
+// INDETERMINATE (a cancelled mutating attempt is never assumed clean just
+// because the revision happens to match; only NOT quarantined), and
+// WriteLeases are released only after that whole reconciliation completes.
+func TestAgentNodeExecutor_MutatingCancellation_CleanRevision_TerminatesIndeterminateWithoutQuarantine(t *testing.T) {
+	executor, req, uow, ids, interruptions, reconciler := bridgeFixture(t, bridgeFixtureOptions{
+		diff:            defaultInScopeDiff(),
+		captureRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: fixtureRepo1PinnedRevision},
+		agentResult:     ports.AgentExecutionResult{Status: ports.AgentExecutionCancelled, TreeQuiesced: true},
+	})
+	ctx := context.Background()
+
+	if _, err := runtime.CancelRun(ctx, uow, ids, runtime.CancelRunRequest{
+		RunID: req.RunID, Actor: "actor-1", Reason: "test cancellation",
+	}); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+
+	_, err := executor.Execute(ctx, req)
+	if !errors.Is(err, runtime.ErrAttemptAlreadyTerminated) {
+		t.Fatalf("Execute error = %v, want ErrAttemptAlreadyTerminated", err)
+	}
+	if len(interruptions.terminations) != 1 || interruptions.terminations[0].NextState != domainruntime.ExecutionAttemptIndeterminate ||
+		interruptions.terminations[0].Reason != domainruntime.TerminationReasonOwnershipLostMutating {
+		t.Fatalf("terminations = %+v, want exactly one INDETERMINATE/OWNERSHIP_LOST_MUTATING", interruptions.terminations)
+	}
+	if len(reconciler.quarantined) != 0 {
+		t.Fatalf("quarantined = %+v, want none — revision was unchanged", reconciler.quarantined)
+	}
+
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		attempt, err := tx.Runtime().GetExecutionAttempt(ctx, req.AttemptID)
+		if err != nil {
+			return err
+		}
+		if attempt.State != domainruntime.ExecutionAttemptIndeterminate {
+			t.Fatalf("attempt state = %s, want INDETERMINATE", attempt.State)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("load attempt: %v", err)
+	}
+}
+
+// TestAgentNodeExecutor_MutatingCancellation_MutatedRevision_TerminatesIndeterminateAndQuarantines
+// is the other half: the workspace's own live current revision no longer
+// matches what this attempt was pinned to — a real, observed mutation the
+// cancelled process could never confirm was complete or consistent. The
+// Attempt still becomes INDETERMINATE, and the repository workspace it held
+// a WriteLease against is quarantined.
+func TestAgentNodeExecutor_MutatingCancellation_MutatedRevision_TerminatesIndeterminateAndQuarantines(t *testing.T) {
+	executor, req, uow, ids, interruptions, reconciler := bridgeFixture(t, bridgeFixtureOptions{
+		diff:            defaultInScopeDiff(),
+		captureRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
+		agentResult:     ports.AgentExecutionResult{Status: ports.AgentExecutionCancelled, TreeQuiesced: true},
+	})
+	ctx := context.Background()
+
+	if _, err := runtime.CancelRun(ctx, uow, ids, runtime.CancelRunRequest{
+		RunID: req.RunID, Actor: "actor-1", Reason: "test cancellation",
+	}); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+
+	_, err := executor.Execute(ctx, req)
+	if !errors.Is(err, runtime.ErrAttemptAlreadyTerminated) {
+		t.Fatalf("Execute error = %v, want ErrAttemptAlreadyTerminated", err)
+	}
+	if len(interruptions.terminations) != 1 || interruptions.terminations[0].NextState != domainruntime.ExecutionAttemptIndeterminate {
+		t.Fatalf("terminations = %+v, want exactly one INDETERMINATE", interruptions.terminations)
+	}
+	if len(reconciler.quarantined) != 1 || string(reconciler.quarantined[0].Reason) != string(worker.ReconciliationMutationObserved) {
+		t.Fatalf("quarantined = %+v, want exactly one MUTATION_OBSERVED_REQUIRES_QUARANTINE", reconciler.quarantined)
 	}
 }
