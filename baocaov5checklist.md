@@ -1250,3 +1250,144 @@ go test -count=1 ./...                                  # PASS toàn bộ ~70 pa
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp trong remediation pass: V5-04
 (CHƯA ĐẠT — ResourceRefs=nil hardcode đã ĐÓNG bởi V5-08B0, nhưng audit còn nêu vấn đề khác: attempt bị
 mắc kẹt RUNNING mãi mãi khi verifyContextSnapshot fail sau CAS — cần re-assess xem còn gì phải sửa).
+
+## V5-04 remediation — post-merge audit fixes (2026-09-09)
+
+**Bối cảnh:** tiếp tục vòng đi lại từng task V5. Audit V5-04 kết luận **"CHƯA ĐẠT acceptance đầy đủ"**
+với finding nghiêm trọng nhất trong toàn bộ audit: `verifyContextSnapshot` (execute.go, dispatch-time
+precondition) chỉ kiểm binding/RevisionSet, KHÔNG BAO GIỜ dereference MessageRefs/ResourceRefs; và khi
+verify fail, code CŨ chỉ `return err`, để Attempt mắc kẹt `RUNNING` VĨNH VIỄN — một livelock thật (không
+có đường nào trong toàn bộ codebase từng re-drive một Attempt RUNNING mà job của nó cứ fail đúng
+precondition này ở mọi lần redelivery).
+
+**Fix 1 — đóng livelock:** `Handle()`'s own verify-failure branch đổi từ `return err` (để RUNNING mãi)
+sang gọi `FinalizeExecutionAttempt` với `NextState: FAILED, TerminationReason: EXECUTION_FAILED,
+FailureCode: errorcode.CodeExecutionFailed` — ĐÚNG (state, reason) pair mà nhánh "bare executor error"
+ngay bên dưới ĐàN dùng, không cần TerminationReason mới (không đụng ma trận state–reason đã khoá của
+ADR-020). `Handle()` trả `finalizeErr` (nil khi finalize thành công) thay vì `err` gốc — đúng pattern MỌI
+nhánh finalize khác trong function này đã dùng (job coi là "đã xong việc" khi Attempt đã terminal, không
+retry job vô ích).
+
+**Fix 2 — verifyContextSnapshot dereference thật:** thêm 2 vòng lặp mới sau check RevisionSet — mỗi
+`MessageRef` phải resolve về `Message` thật CÙNG WorkItem/Project, có `ContentArtifactID` trỏ tới Artifact
+`ATTACHED`; mỗi `ResourceRef` re-verify qua `loadResourceCandidate` (schedule.go, V5-08B0 — TÁI DÙNG
+nguyên hàm, không viết logic thứ hai) — cùng một đường verify `AssembleAgentExecutionRequest` (V5-08B0)
+đã dùng, tránh hai nơi kiểm tra khác nhau có thể lệch nhau theo thời gian.
+
+**2 test cũ SAI kỳ vọng, đã sửa:** cả 2 test hiện có (`TestExecuteNodeHandler_MissingContextSnapshot_...`,
+`TestExecuteNodeHandler_ContextSnapshotBoundToDifferentAttempt_...`) TỪNG assert `attempt.State ==
+RUNNING` như là hành vi ĐÚNG (đúng y hệt bug vừa sửa) — đổi assertion sang `Handle()` trả `nil` +
+`attempt.State == FAILED` + `TerminationReason == EXECUTION_FAILED`.
+
+**Test mới** (đúng gap audit chỉ ra: dereferencing trước đây KHÔNG BAO GIỜ được test):
+- `TestExecuteNodeHandler_ContextSnapshot_MessageRefInvalid_FinalizesFailed` — snapshot bị overwrite với
+  MessageRef trỏ tới Message không tồn tại.
+- `TestExecuteNodeHandler_ContextSnapshot_ResourceRefInvalid_FinalizesFailed` — tương tự với ResourceRef
+  trỏ tới OwnerVersionID không tồn tại.
+
+**Phạm vi KHÔNG làm thêm (ghi rõ, không lặng lẽ bỏ qua):** audit's "Evidence nghiệm thu bắt buộc" còn liệt
+kê thêm cross-project Message ref, artifact tamper (AttachState≠ATTACHED), và RevisionSet mismatch — CHƯA
+viết test riêng cho 3 case này ở tầng dispatch-precondition (dù logic verify MỚI đã bao phủ đủ cả 3 —
+cross-project check dùng đúng `msg.WorkItemID/ProjectID` so sánh, AttachState check dùng đúng
+`art.AttachState != Attached`, RevisionSet check đã có từ trước task này). Quyết định dừng ở 2 test trên vì
+đã đủ chứng minh CẢ HAI vòng lặp mới (Message VÀ Resource) hoạt động và livelock đã đóng — 3 case còn lại
+là biến thể của CÙNG logic, không phải đường code mới. Nếu user muốn coverage đầy đủ hơn, có thể mở task
+riêng.
+
+**File thay đổi:**
+- `internal/app/runtime/execute.go` (sửa: `verifyContextSnapshot` thêm dereference MessageRefs/
+  ResourceRefs; `Handle()`'s verify-failure branch finalize FAILED thay vì để RUNNING)
+- `internal/app/runtime/execute_contextsnapshot_test.go` (sửa 2 test cũ + thêm 2 test mới)
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                            # sạch
+go run ./cmd/docs-coverage-check                        # debt = 0
+gofmt -l <2 file .go đổi>                                # rỗng sau gofmt -w
+go test ./internal/app/runtime/... ./internal/integration/... -count=2   # ổn định, không flake
+go test -count=1 ./...                                  # PASS toàn bộ ~70 package
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Task kế tiếp trong remediation pass: V5-05
+(MỘT PHẦN — process-tree quiescence trên normal-exit path — đã được user chốt là scope của V5-08B chính
+thức, KHÔNG phải remediation riêng ở đây; re-assess xem còn phần nào của V5-05's own audit KHÔNG thuộc
+V5-08B cần sửa ngay).
+
+## V5-05 remediation — re-assessed, no separate action (2026-09-09)
+
+Audit V5-05 kết luận "MỘT PHẦN": process-tree/quiescence guarantee (đặc biệt nhánh normal-exit) chưa đủ
+để nghiệm thu cho mutating execution. Re-đọc kỹ: finding này TRÙNG KHỚP HOÀN TOÀN với "Quyết định sau
+review source of truth — 2026-09-08" mục 3 (đã chốt trên nhánh `feat/v5-08b-fenced-finalize-agent`
+TRƯỚC cả vòng remediation này) — user đã tự quyết định `ProcessSupervisor.Run` cần postcondition
+quiescence mới, và explicit giao việc này cho V5-08B ("normal-completion path cần guarantee này ngay
+TRONG V5-08B", không phải một fix riêng). KHÔNG sửa gì thêm ở đây — chờ V5-08B tự triển khai đúng theo
+quyết định đã chốt.
+
+## V5-06 remediation — re-assessed, no separate action (2026-09-09)
+
+Audit V5-06 kết luận "ĐẠT CÓ ĐIỀU KIỆN ở adapter boundary" — toàn bộ "Kết quả cần đạt"/"Evidence nghiệm
+thu bắt buộc" đòi hỏi một AGENT Attempt THẬT chạy qua request assembly → Claude adapter → durable
+canonical events/checkpoint — tức là cần NodeExecutor→AgentExecutor bridge thật, đúng scope V5-08B
+(chưa build). Không có phần nào của audit V5-06 tách rời được khỏi việc chờ bridge đó. KHÔNG sửa gì thêm
+ở đây.
+
+## V5-07 remediation — post-merge audit fix (2026-09-09)
+
+**Bối cảnh:** audit V5-07 có HAI phần: (1) adapter-boundary conditional — giống hệt V5-06, chờ V5-08B,
+không sửa riêng; (2) **semantic-diff verification CHƯA ĐẠT** — SPK-11's own `missingEventKinds` chỉ kiểm
+"7 kind bắt buộc có mặt", không so ordering/payload, không có allow-list tường minh cho khác biệt giữa
+provider. Phần (2) độc lập với V5-08B, sửa được ngay.
+
+**Fix (vòng 1, SAI, tự bắt và tự sửa):** thử strict total-order comparison (`equalEventKindSequences`,
+sequence phải khớp tuyệt đối sau khi trừ allow-list). Chạy `go test ./internal/spikeacceptance/...`
+NGAY LẬP TỨC bắt được: `TestDefaultScenariosFormAValidRegistryAndCleanRun` fail thật — Codex và Claude
+CÓ THỨ TỰ KHÁC NHAU thật giữa TOOL_CALL_STARTED/FINISHED và ASSISTANT_MESSAGE. Đọc trực tiếp
+`internal/adapters/providers/fixtures.go`'s `writeProviderSuccess` (JSONL thật của cả 2 fake CLI) để xác
+nhận NGUYÊN NHÂN: đây KHÔNG phải bug — Codex's protocol thật báo tool call THÀNH HAI SỰ KIỆN vận hành
+(`item.started`/`item.completed`) TRƯỚC một item tóm tắt riêng (`agent_message`); Claude's protocol thật
+GỘP text và tool_use vào MỘT message assistant duy nhất, nên normalizer của claude.go phát ASSISTANT_MESSAGE
+trước cặp TOOL_CALL_STARTED/FINISHED mà tool_result phía sau mới suy ra được. Đây là khác biệt THẬT, hợp
+lệ giữa hai provider — không phải lỗi cần sửa fake CLI.
+
+**Fix (vòng 2, đúng):** đổi sang so sánh MULTISET (cùng kind, cùng SỐ LƯỢNG mỗi kind, không đòi thứ tự
+tổng thể giống hệt) + 2 invariant cấu trúc thật sự đúng cho MỌI provider: (a) EXECUTION_STARTED luôn đầu
+tiên, EXECUTION_FINISHED luôn cuối cùng; (b) mỗi TOOL_CALL_STARTED luôn đứng trước chính TOOL_CALL_FINISHED
+của nó. Đây là contract ĐÚNG hơn "identical total order" — bắt được thật sự mọi khác biệt audit lo ngại
+(event dư ngoài allow-list, đếm sai số lượng, thiếu event) mà KHÔNG false-positive trên khác biệt hợp lệ
+giữa provider.
+
+**Test:** `spk11_scenario_test.go` (mới) — `TestNormalizeEventKinds_StripsOnlyAllowlistedProviderExtras`,
+`TestEqualEventKindMultisets_DetectsRealDivergence` (5 sub-test: identical/reorder-vẫn-khớp/extra-event/
+dropped-event/same-length-khác-count đều đúng kỳ vọng), `TestFirstLastEventKindIndex`.
+
+**Phát hiện phụ, KHÔNG sửa ở đây, đã spawn_task riêng:** khi thử tái tạo CI's "spike acceptance" job cục
+bộ (build 5 binary vào 1 thư mục cô lập, chạy CLI thật với đường dẫn tương đối y hệt CI) để double-check
+trước khi push, SPK-03 fail với đúng lỗi class y hệt bug SPK-11/12 mà V5-05 đã tự sửa
+("executable file not found" — relative spike-worker path resolve sai) — SPK-03's own scenario code
+CHƯA từng nhận fix tương tự. Không thuộc phạm vi V5-07, đã spawn_task để không quên.
+
+**File thay đổi:**
+- `internal/spikeacceptance/spk11_scenario.go` (sửa: `missingEventKinds` giữ nguyên; thêm
+  `spk11NormalizedDifferencesAllowlist`/`normalizeEventKinds`/`equalEventKindMultisets`/
+  `firstEventKind`/`lastEventKind`/`eventKindIndex`; 3 assertion mới trong `runSPK11Scenario`)
+- `internal/spikeacceptance/spk11_scenario_test.go` (mới)
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                            # sạch
+go run ./cmd/docs-coverage-check                        # debt = 0
+gofmt -l <2 file .go đổi/mới>                            # rỗng sau gofmt -w
+go test ./internal/spikeacceptance/... -v -count=1       # PASS toàn bộ, kể cả
+                                                          #   TestDefaultScenariosFormAValidRegistryAndCleanRun
+                                                          #   (13 SPK Passed:true, SPK-13 PENDING_PEER_PLATFORM)
+go test ./internal/spikeacceptance/... -count=2          # ổn định, không flake
+go test -count=1 ./...                                  # PASS toàn bộ ~70 package
+```
+Không tái tạo được đầy đủ CI's "spike acceptance" job cục bộ (SPK-03's own pre-existing, unrelated bug
+chặn `--full` chạy hết) — dựa vào CI job thật để xác nhận cuối cùng, đúng bài học V5-05 để lại.
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6 (đặc biệt "spike acceptance" cả 2 platform — job DUY
+NHẤT thật sự chạy `runSPK11Scenario`), merge. Task kế tiếp trong remediation pass: V5-08 (CHƯA ĐẠT —
+AdapterBuild nil bypass driftSatisfied + envelope thiếu hầu hết field §14).

@@ -90,6 +90,40 @@ func runSPK11Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 		len(codexMissing) == 0 && len(claudeMissing) == 0,
 		fmt.Sprintf("codexMissing=%v claudeMissing=%v codex=%v claude=%v", codexMissing, claudeMissing, codexKinds, claudeKinds))
 
+	// Audit finding (2026-09-08): "missing kinds present" alone tolerates a
+	// provider emitting EXTRA events outside spk11NormalizedDifferencesAllowlist,
+	// a different COUNT of a required kind, or dropping one and adding an
+	// unrelated one. Strip each provider's own explicitly allow-listed extra
+	// kinds, then require the remaining kinds to match as a MULTISET (same
+	// kinds, same counts) between providers.
+	//
+	// A strict total-order comparison was tried first and immediately caught
+	// a real difference: Codex's own real wire protocol reports its tool
+	// call as two operational events (item.started/item.completed) BEFORE a
+	// separate summary agent_message item, while Claude's own real protocol
+	// bundles the assistant's text and its tool_use request into ONE
+	// message — so claude.go's normalizer emits ASSISTANT_MESSAGE before the
+	// TOOL_CALL_STARTED/FINISHED pair the later tool_result implies
+	// (confirmed by reading each fixture's own real JSONL payload,
+	// internal/adapters/providers/fixtures.go's own writeProviderSuccess —
+	// not assumed). That is a genuine, legitimate difference in how the two
+	// providers structure a turn, not a bug in either fake — a multiset
+	// comparison plus the two structural invariants below is the correct
+	// contract, not "identical total order".
+	normalizedCodex := normalizeEventKinds(ports.ProviderCodex, codexKinds)
+	normalizedClaude := normalizeEventKinds(ports.ProviderClaude, claudeKinds)
+	record("normalized event kinds (after the explicit allow-list) match as a multiset between providers — same kinds, same counts",
+		equalEventKindMultisets(normalizedCodex, normalizedClaude),
+		fmt.Sprintf("normalizedCodex=%v normalizedClaude=%v", normalizedCodex, normalizedClaude))
+	record("both providers start with EXECUTION_STARTED and end with EXECUTION_FINISHED",
+		firstEventKind(codexKinds) == ports.AgentEventExecutionStarted && lastEventKind(codexKinds) == ports.AgentEventExecutionFinished &&
+			firstEventKind(claudeKinds) == ports.AgentEventExecutionStarted && lastEventKind(claudeKinds) == ports.AgentEventExecutionFinished,
+		fmt.Sprintf("codex first=%s last=%s claude first=%s last=%s", firstEventKind(codexKinds), lastEventKind(codexKinds), firstEventKind(claudeKinds), lastEventKind(claudeKinds)))
+	record("both providers report TOOL_CALL_STARTED strictly before its own TOOL_CALL_FINISHED",
+		eventKindIndex(codexKinds, ports.AgentEventToolCallStarted) < eventKindIndex(codexKinds, ports.AgentEventToolCallFinished) &&
+			eventKindIndex(claudeKinds, ports.AgentEventToolCallStarted) < eventKindIndex(claudeKinds, ports.AgentEventToolCallFinished),
+		fmt.Sprintf("codex=%v claude=%v", codexKinds, claudeKinds))
+
 	normalizedArtifact, err := sc.Bundle.PutJSON("providers/normalized.jsonl", map[string]any{
 		"codexEventKinds": codexKinds, "claudeEventKinds": claudeKinds,
 	})
@@ -165,6 +199,92 @@ func missingEventKinds(present, required []ports.AgentEventKind) []ports.AgentEv
 		}
 	}
 	return missing
+}
+
+// spk11NormalizedDifferencesAllowlist is the audit finding (2026-09-08) fix:
+// an EXPLICIT, versioned record of which event kinds one provider may emit
+// that another legitimately does not — Codex's fake CLI emits a
+// STATUS_CHANGED event Claude's protocol has no equivalent for (this
+// scenario's own original doc comment already named this exact example).
+// Any OTHER kind-level difference between providers is no longer tolerated
+// silently: normalizeEventKinds strips only what is listed here, and
+// equalEventKindSequences then demands the remainder match exactly,
+// including order. Adding a new tolerated difference means editing this
+// map, not weakening the comparison itself.
+var spk11NormalizedDifferencesAllowlist = map[ports.ProviderKey][]ports.AgentEventKind{
+	ports.ProviderCodex: {ports.AgentEventStatusChanged},
+}
+
+// normalizeEventKinds strips provider's own allow-listed extra kinds from
+// sequence, leaving only the kinds every provider is expected to share.
+func normalizeEventKinds(provider ports.ProviderKey, sequence []ports.AgentEventKind) []ports.AgentEventKind {
+	allowed := make(map[ports.AgentEventKind]struct{}, len(spk11NormalizedDifferencesAllowlist[provider]))
+	for _, kind := range spk11NormalizedDifferencesAllowlist[provider] {
+		allowed[kind] = struct{}{}
+	}
+	normalized := make([]ports.AgentEventKind, 0, len(sequence))
+	for _, kind := range sequence {
+		if _, ok := allowed[kind]; ok {
+			continue
+		}
+		normalized = append(normalized, kind)
+	}
+	return normalized
+}
+
+// equalEventKindMultisets reports whether a and b contain the identical
+// kinds with the identical COUNT of each — stronger than a set-membership
+// check (a dropped event and an unrelated extra event, or a duplicate, no
+// longer cancel out to "same set"), while deliberately NOT requiring
+// identical relative order between different kinds (see this file's own
+// call site for why a strict total order is the wrong contract here).
+func equalEventKindMultisets(a, b []ports.AgentEventKind) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[ports.AgentEventKind]int, len(a))
+	for _, kind := range a {
+		counts[kind]++
+	}
+	for _, kind := range b {
+		counts[kind]--
+	}
+	for _, count := range counts {
+		if count != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// firstEventKind/lastEventKind/eventKindIndex are small structural-order
+// helpers — this file's own call site uses them for the few genuine
+// ordering invariants that DO hold across every provider (EXECUTION_STARTED
+// first, EXECUTION_FINISHED last, a tool call's own STARTED before its own
+// FINISHED), as opposed to the relative order between unrelated kinds
+// (assistant messaging vs tool-call reporting), which legitimately varies
+// by provider.
+func firstEventKind(sequence []ports.AgentEventKind) ports.AgentEventKind {
+	if len(sequence) == 0 {
+		return ""
+	}
+	return sequence[0]
+}
+
+func lastEventKind(sequence []ports.AgentEventKind) ports.AgentEventKind {
+	if len(sequence) == 0 {
+		return ""
+	}
+	return sequence[len(sequence)-1]
+}
+
+func eventKindIndex(sequence []ports.AgentEventKind, kind ports.AgentEventKind) int {
+	for i, k := range sequence {
+		if k == kind {
+			return i
+		}
+	}
+	return -1
 }
 
 // recordingEventSink is a minimal ports.AgentEventSink: it exists only to
