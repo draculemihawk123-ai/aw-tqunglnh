@@ -55,6 +55,10 @@ func (s *scopeExpansionProvider) Release(context.Context, ports.WorkspaceHandle)
 	return errors.New("scopeExpansionProvider: Release must not be called")
 }
 
+func (s *scopeExpansionProvider) WorkingDirectory(context.Context, ports.WorkspaceHandle) (string, error) {
+	return "", errors.New("scopeExpansionProvider: WorkingDirectory must not be called")
+}
+
 // sameBranchToken compares two *runtimedomain.BranchTokenID by VALUE, never
 // by pointer identity — the fake repository round-trips every NodeRun
 // through its own clone() on every save/load, so two logically-equal

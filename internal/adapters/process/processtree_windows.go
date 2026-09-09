@@ -3,6 +3,7 @@
 package process
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"sync"
@@ -101,6 +102,49 @@ func (t *windowsProcessTree) kill(cmd *exec.Cmd) error {
 		return errNoProcess
 	}
 	return cmd.Process.Kill()
+}
+
+// jobObjectBasicAccountingInformation mirrors Win32's own
+// JOBOBJECT_BASIC_ACCOUNTING_INFORMATION exactly (golang.org/x/sys/windows
+// exposes the JobObjectBasicAccountingInformation information-class
+// constant but no typed struct for it) — a fixed-size layout, unlike the
+// variable-length JOBOBJECT_BASIC_PROCESS_ID_LIST, so a single query
+// always succeeds without an ERROR_MORE_DATA buffer-sizing dance. Only
+// ActiveProcesses is read; the rest exists solely to keep the struct's
+// own memory layout byte-identical to the real Win32 type.
+type jobObjectBasicAccountingInformation struct {
+	TotalUserTime             int64
+	TotalKernelTime           int64
+	ThisPeriodTotalUserTime   int64
+	ThisPeriodTotalKernelTime int64
+	TotalPageFaultCount       uint32
+	TotalProcesses            uint32
+	ActiveProcesses           uint32
+	TotalTerminatedProcesses  uint32
+}
+
+// errNoJobHandle is returned by quiesced when bind never succeeded (or was
+// never called) — no Job Object handle exists to query, so any
+// grandchildren the direct child may have spawned outside the job are
+// unreachable and unconfirmable. Fail-closed: Run's own poller treats this
+// exactly like "not yet quiesced," never like "nothing to check."
+var errNoJobHandle = errors.New("process: no job object handle to query")
+
+func (t *windowsProcessTree) quiesced(*exec.Cmd) (bool, error) {
+	t.mu.Lock()
+	job := t.job
+	t.mu.Unlock()
+	if job == 0 {
+		return false, errNoJobHandle
+	}
+	var info jobObjectBasicAccountingInformation
+	if err := windows.QueryInformationJobObject(
+		job, windows.JobObjectBasicAccountingInformation,
+		uintptr(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info)), nil,
+	); err != nil {
+		return false, fmt.Errorf("process: query job object accounting information: %w", err)
+	}
+	return info.ActiveProcesses == 0, nil
 }
 
 func (t *windowsProcessTree) close() {

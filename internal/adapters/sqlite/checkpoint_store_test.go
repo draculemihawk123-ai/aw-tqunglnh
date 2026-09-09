@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -142,6 +143,62 @@ func (e *freshRecoveryExecutor) Start(_ context.Context, request ports.AgentExec
 func (e *freshRecoveryExecutor) Resume(context.Context, ports.AgentExecutionRequest, ports.ProviderSessionRef, ports.AgentEventSink) (ports.AgentExecutionResult, error) {
 	e.resumeCalls++
 	return ports.AgentExecutionResult{}, errors.New("fresh recovery must not call resume")
+}
+
+// TestCheckpointsRepository_InsertCheckpoint_CommitsWithinCallerTransaction
+// is V5-08B's own Tx-composable twin of TestCheckpointPersistsLatestRecoveryPointAcrossRestart
+// above: unlike Store.StoreCheckpoint (autocommit, its own *sql.DB), this
+// runs inside the caller's existing transaction — proving both that a
+// commit really persists (round-tripped via LoadLatestCheckpoint after
+// commit) and that a rollback really discards it (nothing reaches the
+// database when the caller's own transaction function returns an error).
+func TestCheckpointsRepository_InsertCheckpoint_CommitsWithinCallerTransaction(t *testing.T) {
+	ctx := context.Background()
+	store := openReceiptsStore(t, "agentkit-checkpoints-repository.db")
+	seedSchedulingFixture(t, store)
+	snapshot := testContextSnapshot(t, "context-checkpoints-repository")
+	if _, err := store.StoreContextSnapshot(ctx, "project-1", snapshot); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := testCheckpoint(t, "checkpoint-tx-1", 1, 10, snapshot)
+
+	boom := errors.New("boom: rollback this transaction")
+	rolledBack := testCheckpoint(t, "checkpoint-tx-rolled-back", 2, 20, snapshot)
+	if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		if err := (checkpointsRepository{tx: tx}).InsertCheckpoint(ctx, rolledBack); err != nil {
+			return err
+		}
+		return boom
+	}); !errors.Is(err, boom) {
+		t.Fatalf("RunSerializedWrite (rollback) error = %v, want %v", err, boom)
+	}
+	if _, err := store.LoadLatestCheckpoint(ctx, "attempt-1"); !errors.Is(err, ports.ErrPersistenceNotFound) {
+		t.Fatalf("LoadLatestCheckpoint after rollback = %v, want ErrPersistenceNotFound (nothing should have committed)", err)
+	}
+
+	if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		return (checkpointsRepository{tx: tx}).InsertCheckpoint(ctx, checkpoint)
+	}); err != nil {
+		t.Fatalf("RunSerializedWrite (commit): %v", err)
+	}
+	loaded, err := store.LoadLatestCheckpoint(ctx, "attempt-1")
+	if err != nil {
+		t.Fatalf("LoadLatestCheckpoint: %v", err)
+	}
+	if loaded.ID != checkpoint.ID || loaded.Sequence != 1 || loaded.CanonicalEventSequence != 10 {
+		t.Fatalf("loaded checkpoint = %#v, want %#v", loaded, checkpoint)
+	}
+
+	// A genuine UNIQUE(attempt_id, sequence) conflict is a real bug, not a
+	// legitimate race to dedup (this repository's own doc comment) —
+	// InsertCheckpoint surfaces it as an ordinary error, never the
+	// idempotent-equal-content early return StoreCheckpoint's own
+	// autocommit path performs.
+	if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		return (checkpointsRepository{tx: tx}).InsertCheckpoint(ctx, checkpoint)
+	}); err == nil {
+		t.Fatal("InsertCheckpoint duplicate (attempt_id, sequence) succeeded, want a UNIQUE constraint error")
+	}
 }
 
 func (*freshRecoveryExecutor) Cancel(context.Context, ports.ExecutionAttemptID) error { return nil }

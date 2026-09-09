@@ -226,6 +226,31 @@ func TestValidateDocumentRejectsInvalidGraphs(t *testing.T) {
 			},
 			wantProblem: "ROUTER may declare exactly one outcome",
 		},
+		{
+			// V5-08B (confirmed with the user 2026-09-09): an AGENT node
+			// whose ONLY declared outcome is its own CyclePolicy escalation
+			// outcome would leave the agents own terminal <agentkit-outcome>
+			// marker protocol nothing it could ever legitimately propose --
+			// the runtime always assigns the escalation outcome itself, on a
+			// SKIPPED NodeRun, without ever invoking the agent for that round.
+			name: "agent with only its own escalation outcome",
+			document: WorkflowDocument{
+				SchemaVersion: "1",
+				Nodes: []Node{
+					{Key: "start", Type: NodeStart, Outcomes: []string{"next"}},
+					{
+						Key: "agent", Type: NodeAgent, Outcomes: []string{"escalate"}, Agent: testAgentNodeConfig(),
+						CyclePolicy: &CyclePolicy{MaxIterations: 2, EscalationOutcome: "escalate"},
+					},
+					{Key: "end", Type: NodeEnd},
+				},
+				Edges: []Edge{
+					{Key: "start-to-agent", From: "start", Outcome: "next", To: "agent"},
+					{Key: "agent-to-agent", From: "agent", Outcome: "escalate", To: "agent"},
+				},
+			},
+			wantProblem: "at least one agent-selectable outcome is required",
+		},
 	}
 
 	for _, test := range tests {

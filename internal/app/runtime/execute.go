@@ -284,6 +284,7 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 	execResult, execErr := h.executor.Execute(attemptCtx, ports.NodeExecutionRequest{
 		AttemptID: payload.AttemptID, NodeRunID: payload.NodeRunID, RunID: payload.RunID,
 		ExecutorKind: profile.Executor.Kind, ExecutionProfileHash: running.ExecutionProfileHash,
+		JobLease: jobLease,
 	})
 
 	if execErr != nil {
@@ -300,6 +301,20 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 			// finalize; leave the Attempt RUNNING. See this file's own
 			// package doc comment step 4.
 			return attemptCtx.Err()
+		}
+		if errors.Is(execErr, ErrIndeterminateExecution) {
+			// V5-08B's own locked provider-loss mapping (baocaov5checklist.md's
+			// own "Quyết định sau review source of truth — 2026-09-08",
+			// mapping #4): a lost JobLease/WriteLease mid-execution, or an
+			// unconfirmed process-tree quiescence on a mutating attempt, is
+			// LOST/INDETERMINATE — neither is a state
+			// FinalizeExecutionAttempt's own isFinalizableExecutionAttemptState
+			// accepts (by design: no live lease could ever be fenced for
+			// that transition). Leave the Attempt RUNNING exactly like the
+			// outer-cancellation branch above; internal/app/worker's own
+			// crash-recovery/interruption path (V4-13) is the sole durable
+			// authority that ever resolves it.
+			return execErr
 		}
 		// execErr is a bare Go error, not a structured NodeExecutionResult —
 		// the executor returned before it could classify its own failure
@@ -353,6 +368,7 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 		RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 		NextState: nextState, TerminationReason: reason, FailureCode: failureCode, SelectedOutcome: execResult.SelectedOutcome,
 		RequestedScopeExpansion: scopeProposal, JobLease: jobLease, CorrelationID: payload.CorrelationID,
+		Evidence: execResult.Evidence,
 	})
 	return finalizeErr
 }

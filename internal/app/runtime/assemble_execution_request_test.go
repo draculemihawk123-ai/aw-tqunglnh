@@ -141,6 +141,13 @@ func TestAssembleAgentExecutionRequest_RealSnapshot_ProducesValidRequest(t *test
 	if len(req.WorkspaceMounts) != 1 || req.WorkspaceMounts[0].VCSObjectID == "" {
 		t.Fatalf("req.WorkspaceMounts = %+v, want exactly one mount with a real VCSObjectID", req.WorkspaceMounts)
 	}
+	// V5-08B: agentExecutableDocument's own "implement" node declares
+	// Outcomes: []string{"done"} with no CyclePolicy — AllowedOutcomes
+	// must be resolved from the pinned WorkflowVersion's own Document,
+	// never left empty or hardcoded.
+	if len(req.AllowedOutcomes) != 1 || req.AllowedOutcomes[0] != "done" {
+		t.Fatalf("req.AllowedOutcomes = %+v, want [done]", req.AllowedOutcomes)
+	}
 
 	// Re-assembling from scratch (the "revalidate right before spawn" call
 	// a future V5-08B caller makes) must be fully deterministic: identical

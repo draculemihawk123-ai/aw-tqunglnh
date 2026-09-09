@@ -210,9 +210,10 @@ func (a *Adapter) execute(
 		return result, runErr
 	}
 
-	status, reason, protocolErr := normalizer.finalStatus(processResult, resume == nil)
+	status, reason, proposed, protocolErr := normalizer.finalStatus(processResult, resume == nil, request.AllowedOutcomes)
 	result.Status = status
 	result.TerminationReason = reason
+	result.ProposedOutcome = proposed
 	if err := normalizer.finish(status, reason); err != nil {
 		return result, fmt.Errorf("emit Codex completion: %w", err)
 	}
@@ -284,6 +285,16 @@ type normalizer struct {
 	usage        ports.AgentUsage
 	terminalSeen bool
 	providerOK   bool
+	// outcomeOccurrences/outcomeValid/outcomeValue track the terminal
+	// <agentkit-outcome> marker (V5-08B, ports.AgentProposedOutcome's own
+	// doc comment, mirroring claude.go's own identical fields) across
+	// every ASSISTANT_MESSAGE this normalizer emits — only the FIRST
+	// occurrence's own parsed shape is remembered; a second occurrence
+	// anywhere in the run is a protocol error regardless of either one's
+	// own validity.
+	outcomeOccurrences int
+	outcomeValid       bool
+	outcomeValue       string
 }
 
 func newNormalizer(ctx context.Context, attemptID ports.ExecutionAttemptID, sink ports.AgentEventSink) *normalizer {
@@ -426,6 +437,9 @@ func (n *normalizer) consumeItem(line []byte, eventType string) error {
 }
 
 func (n *normalizer) emit(event ports.AgentEvent, rawType string) error {
+	if event.Kind == ports.AgentEventAssistantMessage {
+		event.Message = n.trackOutcomeMarker(event.Message)
+	}
 	n.sequence++
 	event.AttemptID = n.attemptID
 	event.Sequence = n.sequence
@@ -435,6 +449,86 @@ func (n *normalizer) emit(event ports.AgentEvent, rawType string) error {
 	}
 	event.ProviderMetadata["raw_type"] = rawType
 	return n.sink.Accept(n.ctx, event)
+}
+
+// trackOutcomeMarker mirrors claude.go's own identical method exactly —
+// see its doc comment for the full contract (this package has no shared
+// base normalizer with claude's own, so the logic is intentionally
+// duplicated rather than factored into a third package neither adapter
+// otherwise needs).
+func (n *normalizer) trackOutcomeMarker(text string) string {
+	stripped, found, valid, outcome := extractOutcomeMarker(text)
+	if !found {
+		return text
+	}
+	n.outcomeOccurrences++
+	if n.outcomeOccurrences == 1 {
+		n.outcomeValid = valid
+		n.outcomeValue = outcome
+	}
+	return stripped
+}
+
+// resolveProposedOutcome mirrors claude.go's own identical method — see
+// its doc comment for the full rejection-rule contract.
+func (n *normalizer) resolveProposedOutcome(allowedOutcomes []string) (*ports.AgentProposedOutcome, error) {
+	switch {
+	case n.outcomeOccurrences == 0:
+		return nil, nil
+	case n.outcomeOccurrences > 1:
+		return nil, fmt.Errorf("%w: terminal outcome marker appeared more than once", ErrProtocol)
+	case !n.outcomeValid:
+		return nil, fmt.Errorf("%w: terminal outcome marker is malformed", ErrProtocol)
+	}
+	if !containsOutcome(allowedOutcomes, n.outcomeValue) {
+		return nil, fmt.Errorf("%w: terminal outcome marker names outcome %q, which is not in the allowed set", ErrProtocol, n.outcomeValue)
+	}
+	return &ports.AgentProposedOutcome{
+		Value: n.outcomeValue, Source: ports.AgentOutcomeReportedByProvider, SchemaVersion: outcomeMarkerSchemaVersion,
+	}, nil
+}
+
+const (
+	outcomeMarkerOpenTag       = "<agentkit-outcome>"
+	outcomeMarkerCloseTag      = "</agentkit-outcome>"
+	outcomeMarkerSchemaVersion = 1
+)
+
+type outcomeMarkerPayload struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Outcome       string `json:"outcome"`
+}
+
+// extractOutcomeMarker mirrors claude.go's own identical function exactly
+// — see its doc comment for the full trailing-marker matching contract.
+func extractOutcomeMarker(text string) (stripped string, found bool, valid bool, outcome string) {
+	trimmed := strings.TrimRight(text, " \t\r\n")
+	if !strings.HasSuffix(trimmed, outcomeMarkerCloseTag) {
+		return text, false, false, ""
+	}
+	body := trimmed[:len(trimmed)-len(outcomeMarkerCloseTag)]
+	openIdx := strings.LastIndex(body, outcomeMarkerOpenTag)
+	if openIdx < 0 {
+		return text, true, false, ""
+	}
+	stripped = strings.TrimRight(body[:openIdx], " \t\r\n")
+	var payload outcomeMarkerPayload
+	if err := json.Unmarshal([]byte(body[openIdx+len(outcomeMarkerOpenTag):]), &payload); err != nil {
+		return stripped, true, false, ""
+	}
+	if payload.SchemaVersion != outcomeMarkerSchemaVersion || strings.TrimSpace(payload.Outcome) == "" {
+		return stripped, true, false, ""
+	}
+	return stripped, true, true, payload.Outcome
+}
+
+func containsOutcome(allowed []string, value string) bool {
+	for _, candidate := range allowed {
+		if candidate == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (n *normalizer) finish(status ports.AgentExecutionStatus, reason string) error {
@@ -451,37 +545,43 @@ func (n *normalizer) finish(status ports.AgentExecutionStatus, reason string) er
 func (n *normalizer) finalStatus(
 	process ports.ProcessResult,
 	requireNewSession bool,
-) (ports.AgentExecutionStatus, string, error) {
+	allowedOutcomes []string,
+) (ports.AgentExecutionStatus, string, *ports.AgentProposedOutcome, error) {
 	if process.TimedOut {
-		return ports.AgentExecutionTimedOut, "timeout", nil
+		return ports.AgentExecutionTimedOut, "timeout", nil, nil
 	}
 	if process.Cancelled {
-		return ports.AgentExecutionCancelled, "cancelled", nil
+		return ports.AgentExecutionCancelled, "cancelled", nil, nil
 	}
 	if process.ExitCode != 0 {
-		return ports.AgentExecutionFailed, "process_exit", nil
+		return ports.AgentExecutionFailed, "process_exit", nil, nil
 	}
 	if !n.terminalSeen {
-		return ports.AgentExecutionFailed, "protocol_incomplete", fmt.Errorf("%w: terminal event is missing", ErrProtocol)
+		return ports.AgentExecutionFailed, "protocol_incomplete", nil, fmt.Errorf("%w: terminal event is missing", ErrProtocol)
 	}
 	if requireNewSession && (n.session == nil || n.session.SessionID == "") {
-		return ports.AgentExecutionFailed, "protocol_incomplete", fmt.Errorf("%w: thread.started is missing", ErrProtocol)
+		return ports.AgentExecutionFailed, "protocol_incomplete", nil, fmt.Errorf("%w: thread.started is missing", ErrProtocol)
 	}
 	if !n.providerOK {
-		return ports.AgentExecutionFailed, "provider_failure", nil
+		return ports.AgentExecutionFailed, "provider_failure", nil, nil
 	}
-	return ports.AgentExecutionSucceeded, "completed", nil
+	proposed, err := n.resolveProposedOutcome(allowedOutcomes)
+	if err != nil {
+		return ports.AgentExecutionFailed, "outcome_marker_invalid", nil, err
+	}
+	return ports.AgentExecutionSucceeded, "completed", proposed, nil
 }
 
 func (n *normalizer) result(request ports.AgentExecutionRequest, process ports.ProcessResult) ports.AgentExecutionResult {
 	return ports.AgentExecutionResult{
-		AttemptID:  request.AttemptID,
-		Provider:   ports.ProviderCodex,
-		Session:    cloneSession(n.session),
-		Usage:      n.usage,
-		ExitCode:   process.ExitCode,
-		StartedAt:  process.StartedAt,
-		FinishedAt: process.FinishedAt,
+		AttemptID:    request.AttemptID,
+		Provider:     ports.ProviderCodex,
+		Session:      cloneSession(n.session),
+		Usage:        n.usage,
+		ExitCode:     process.ExitCode,
+		StartedAt:    process.StartedAt,
+		FinishedAt:   process.FinishedAt,
+		TreeQuiesced: process.TreeQuiesced,
 	}
 }
 

@@ -31,6 +31,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
@@ -147,7 +148,33 @@ func AssembleAgentExecutionRequest(
 		AllowedCapabilities:  gathered.allowedCapabilities,
 		WorkspaceMounts:      gathered.workspaceMounts,
 		IdempotencyKey:       req.AttemptID,
+		AllowedOutcomes:      gathered.allowedOutcomes,
 	}, nil
+}
+
+// agentSelectableOutcomes returns node's own declared Outcomes minus its
+// CyclePolicy's own EscalationOutcome (if any) — V5-08B (confirmed with
+// the user 2026-09-09): the runtime ALWAYS assigns EscalationOutcome
+// itself, on a SKIPPED NodeRun, the moment a cycle exhausts its own
+// MaxIterations budget (advance.go's own exhausted branch) — the agent is
+// never even invoked for that round, so it is never a real candidate
+// AgentExecutionRequest.AllowedOutcomes ever needs to cover. Mirrors
+// internal/domain/workflow's own identical validateNormalizedDocument
+// check exactly (that package cannot export this as a shared helper this
+// one calls — domain packages never depend on app packages — so the
+// simple loop is duplicated, not re-derived differently).
+func agentSelectableOutcomes(node workflow.Node) []string {
+	if node.CyclePolicy == nil {
+		return append([]string(nil), node.Outcomes...)
+	}
+	selectable := make([]string, 0, len(node.Outcomes))
+	for _, outcome := range node.Outcomes {
+		if outcome == node.CyclePolicy.EscalationOutcome {
+			continue
+		}
+		selectable = append(selectable, outcome)
+	}
+	return selectable
 }
 
 func readArtifact(ctx context.Context, store ports.ArtifactStore, ref ports.ArtifactRef) (string, error) {
@@ -178,6 +205,7 @@ type assembledRequestInputs struct {
 	workspaceMounts      []ports.AgentWorkspaceMount
 	messages             []assembledMessageInput
 	resources            []contextassembler.Candidate
+	allowedOutcomes      []string
 
 	workItemID                 string
 	workItemTitle              string
@@ -225,6 +253,28 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 	workItem, err := tx.Work().GetWorkItem(ctx, string(run.WorkItemID))
 	if err != nil {
 		return assembledRequestInputs{}, err
+	}
+
+	// V5-08B: resolve this NodeRun's own agent-selectable outcomes from
+	// the pinned WorkflowVersion's own Document — re-checked EVERY time
+	// this function runs (its own "revalidate everything fail-closed" doc
+	// comment), so a WorkflowVersion published BEFORE internal/domain/workflow's
+	// own AGENT-outcome validation rule existed can never reach a real
+	// provider spawn with zero agent-selectable outcomes: this is the
+	// runtime-side defense the compile-time rule alone cannot provide for
+	// already-published versions.
+	version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+	if err != nil {
+		return assembledRequestInputs{}, err
+	}
+	document := version.Document()
+	node, ok := findNode(document, nodeRun.NodeKey)
+	if !ok {
+		return assembledRequestInputs{}, fmt.Errorf("runtime: node %s not found in workflow version %s", nodeRun.NodeKey, run.WorkflowVersionID)
+	}
+	allowedOutcomes := agentSelectableOutcomes(node)
+	if len(allowedOutcomes) == 0 {
+		return assembledRequestInputs{}, fmt.Errorf("runtime: node %s has no agent-selectable outcome (every declared outcome is its own CyclePolicy escalation outcome) — cannot assemble a request for it", nodeRun.NodeKey)
 	}
 
 	decision, err := tx.Runtime().GetDecisionArtifact(ctx, req.NodeRunID+"-execution-profile-v1")
@@ -293,7 +343,7 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		snapshotID: snapshot.ID, snapshotManifestHash: snapshot.ManifestHash,
 		effectiveScope: nodeRun.EffectiveScope, executionProfileHash: attempt.ExecutionProfileHash,
 		isolationTier: profile.IsolationTier, allowedCapabilities: profile.AllowedCapabilities,
-		workspaceMounts: mounts, messages: messages, resources: resources,
+		workspaceMounts: mounts, messages: messages, resources: resources, allowedOutcomes: allowedOutcomes,
 		workItemID: string(workItem.ID), workItemTitle: workItem.Title, workItemBehavior: workItem.Behavior,
 		workItemVerificationSpec: workItem.VerificationSpec, workItemAcceptanceCriteria: acceptance,
 	}, nil

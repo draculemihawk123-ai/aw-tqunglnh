@@ -35,6 +35,19 @@ type processTree interface {
 	signalGraceful(cmd *exec.Cmd) error
 	// kill forcibly terminates every process bind could reach.
 	kill(cmd *exec.Cmd) error
+	// quiesced reports whether every process this tree ever grouped
+	// together (the direct child and any descendants it spawned) has
+	// genuinely exited — never "probably," and never inferred from the
+	// direct child's own Wait() alone (V5-08B's own normal-exit
+	// quiescence postcondition: a parent that exits while a descendant
+	// keeps running/writing must never be reported as a quiesced tree, on
+	// EVERY exit path, not only cancellation/timeout). A non-nil error, or
+	// (false, nil), both mean "not confirmed empty" — Run's own caller
+	// polls this rather than trusting a single call. Returns (false,
+	// non-nil) when bind never succeeded (degraded single-process mode):
+	// there is no OS handle left to ask, so quiescence beyond the direct
+	// child is unconfirmable, fail-closed.
+	quiesced(cmd *exec.Cmd) (bool, error)
 	// close releases any OS handle this tree holds. Safe to call exactly
 	// once, always, even if bind was never called or failed.
 	close()

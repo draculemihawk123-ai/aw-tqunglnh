@@ -66,6 +66,10 @@ func (s *scriptedProvider) Release(context.Context, ports.WorkspaceHandle) error
 	return errors.New("scriptedProvider: Release must not be called by workspaceprovision.Handler")
 }
 
+func (s *scriptedProvider) WorkingDirectory(context.Context, ports.WorkspaceHandle) (string, error) {
+	return "", errors.New("scriptedProvider: WorkingDirectory must not be called by workspaceprovision.Handler")
+}
+
 // provisionJobFor builds the exact ports.DurableJob payload shape
 // ApproveScopeExpansion/CreateRootWorkItem both marshal for a
 // WORKSPACE_PROVISION job, mirroring workspaceprovision's own

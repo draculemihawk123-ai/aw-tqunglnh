@@ -93,10 +93,40 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 		time.Sleep(30 * time.Second)
 		return 0
 	}
+	// V5-08B (confirmed with the user 2026-09-09): outcome-marker fixture
+	// modes exercise claude.go/codex.go's own terminal <agentkit-outcome>
+	// parsing without needing a real CLI — see this function's own doc
+	// comment for the mode vocabulary these three branches implement.
+	switch mode {
+	case "outcome-success":
+		if !writeProviderSuccessWithFinalText(stdout, provider, "done"+OutcomeMarker(os.Getenv("AGENTKIT_HELPER_OUTCOME"))) {
+			return 4
+		}
+		return 0
+	case "outcome-malformed":
+		if !writeProviderSuccessWithFinalText(stdout, provider, "done<agentkit-outcome>{not-json</agentkit-outcome>") {
+			return 4
+		}
+		return 0
+	case "outcome-duplicate":
+		if !writeProviderDuplicateOutcome(stdout, provider, os.Getenv("AGENTKIT_HELPER_OUTCOME")) {
+			return 4
+		}
+		return 0
+	}
 	if !writeProviderSuccess(stdout, provider) {
 		return 4
 	}
 	return 0
+}
+
+// OutcomeMarker builds the exact terminal marker text claude.go/codex.go's
+// own extractOutcomeMarker expects (V5-08B) — exported so a caller
+// composing its own fixture text outside this package (should one ever
+// exist) never has to hand-duplicate the wire format.
+func OutcomeMarker(outcome string) string {
+	encoded, _ := json.Marshal(outcome)
+	return `<agentkit-outcome>{"schemaVersion":1,"outcome":` + string(encoded) + `}</agentkit-outcome>`
 }
 
 // IsResumeInvocation inspects a fake CLI's own argv for the resume-shaped
@@ -154,19 +184,77 @@ func writeProviderStarted(stdout io.Writer, provider string) bool {
 }
 
 func writeProviderSuccess(stdout io.Writer, provider string) bool {
+	return writeProviderSuccessWithFinalText(stdout, provider, "done")
+}
+
+// writeProviderSuccessWithFinalText is writeProviderSuccess parameterized
+// by the final assistant/agent_message text (V5-08B) — the same tool-call
+// exchange either way, only the text a terminal <agentkit-outcome> marker
+// would be appended to ever changes.
+func writeProviderSuccessWithFinalText(stdout io.Writer, provider string, finalText string) bool {
 	switch provider {
 	case "codex":
 		fmt.Fprintln(stdout, `{"type":"item.started","item":{"id":"tool-1","type":"command_execution","command":"git status","status":"in_progress","exit_code":null}}`)
 		fmt.Fprintln(stdout, `{"type":"item.completed","item":{"id":"tool-1","type":"command_execution","command":"git status","aggregated_output":"clean","status":"completed","exit_code":0}}`)
-		fmt.Fprintln(stdout, `{"type":"item.completed","item":{"id":"message-1","type":"agent_message","text":"done"}}`)
+		fmt.Fprintln(stdout, jsonLine(map[string]any{"type": "item.completed", "item": map[string]any{"id": "message-1", "type": "agent_message", "text": finalText}}))
 		fmt.Fprintln(stdout, `{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":3,"output_tokens":5}}`)
 		return true
 	case "claude":
-		fmt.Fprintln(stdout, `{"type":"assistant","session_id":"claude-session-0001","message":{"content":[{"type":"text","text":"done"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"git status"}}],"usage":{"input_tokens":12,"cache_read_input_tokens":3,"output_tokens":5}}}`)
+		fmt.Fprintln(stdout, jsonLine(map[string]any{
+			"type": "assistant", "session_id": "claude-session-0001",
+			"message": map[string]any{
+				"content": []any{
+					map[string]any{"type": "text", "text": finalText},
+					map[string]any{"type": "tool_use", "id": "tool-1", "name": "Bash", "input": map[string]any{"command": "git status"}},
+				},
+				"usage": map[string]any{"input_tokens": 12, "cache_read_input_tokens": 3, "output_tokens": 5},
+			},
+		}))
 		fmt.Fprintln(stdout, `{"type":"user","session_id":"claude-session-0001","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"clean","is_error":false}]}}`)
 		fmt.Fprintln(stdout, `{"type":"result","subtype":"success","is_error":false,"session_id":"claude-session-0001","total_cost_usd":0.01,"usage":{"input_tokens":12,"cache_read_input_tokens":3,"output_tokens":5}}`)
 		return true
 	default:
 		return false
 	}
+}
+
+// writeProviderDuplicateOutcome emits TWO separate assistant/agent_message
+// texts each carrying its own valid terminal marker (V5-08B) — proves
+// claude.go/codex.go reject a duplicate occurrence rather than silently
+// keeping whichever one arrived last.
+func writeProviderDuplicateOutcome(stdout io.Writer, provider string, outcome string) bool {
+	switch provider {
+	case "codex":
+		fmt.Fprintln(stdout, jsonLine(map[string]any{"type": "item.completed", "item": map[string]any{"id": "message-0", "type": "agent_message", "text": "thinking" + OutcomeMarker(outcome)}}))
+		fmt.Fprintln(stdout, jsonLine(map[string]any{"type": "item.completed", "item": map[string]any{"id": "message-1", "type": "agent_message", "text": "done" + OutcomeMarker(outcome)}}))
+		fmt.Fprintln(stdout, `{"type":"turn.completed","usage":{"input_tokens":12,"cached_input_tokens":3,"output_tokens":5}}`)
+		return true
+	case "claude":
+		fmt.Fprintln(stdout, jsonLine(map[string]any{
+			"type": "assistant", "session_id": "claude-session-0001",
+			"message": map[string]any{
+				"content": []any{map[string]any{"type": "text", "text": "thinking" + OutcomeMarker(outcome)}},
+				"usage":   map[string]any{"input_tokens": 6, "output_tokens": 2},
+			},
+		}))
+		fmt.Fprintln(stdout, jsonLine(map[string]any{
+			"type": "assistant", "session_id": "claude-session-0001",
+			"message": map[string]any{
+				"content": []any{map[string]any{"type": "text", "text": "done" + OutcomeMarker(outcome)}},
+				"usage":   map[string]any{"input_tokens": 6, "output_tokens": 3},
+			},
+		}))
+		fmt.Fprintln(stdout, `{"type":"result","subtype":"success","is_error":false,"session_id":"claude-session-0001","total_cost_usd":0.01,"usage":{"input_tokens":12,"cache_read_input_tokens":3,"output_tokens":5}}`)
+		return true
+	default:
+		return false
+	}
+}
+
+func jsonLine(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }

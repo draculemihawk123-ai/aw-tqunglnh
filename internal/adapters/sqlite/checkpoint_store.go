@@ -130,6 +130,47 @@ func loadCheckpoint(
 	)
 }
 
+// checkpointsRepository is V5-08B's Tx-composable ports.CheckpointsRepository
+// — unlike Store.StoreCheckpoint above (autocommit, idempotent-equal-
+// content dedup on a UNIQUE conflict, for agentevents.Sink's own mid-run
+// checkpoints, deliberately left unchanged), this exists for exactly one
+// caller: FinalizeExecutionAttempt's own completion checkpoint, which must
+// commit atomically with the rest of its own fenced finalize transaction.
+type checkpointsRepository struct{ tx *sql.Tx }
+
+var _ ports.CheckpointsRepository = checkpointsRepository{}
+
+func (r checkpointsRepository) InsertCheckpoint(ctx context.Context, checkpoint runtime.Checkpoint) error {
+	revisionJSON, err := json.Marshal(checkpoint.Revisions.Entries())
+	if err != nil {
+		return fmt.Errorf("encode checkpoint revisions: %w", err)
+	}
+	artifactJSON, err := json.Marshal(checkpoint.ArtifactReferences)
+	if err != nil {
+		return fmt.Errorf("encode checkpoint artifacts: %w", err)
+	}
+	if _, err := r.tx.ExecContext(ctx, `
+INSERT INTO checkpoints(
+    id, run_id, node_run_id, attempt_id, sequence, canonical_event_sequence,
+    context_snapshot_id, revision_set_json, shared_state_hash, artifact_refs_json, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		checkpoint.ID,
+		checkpoint.RunID,
+		checkpoint.NodeRunID,
+		checkpoint.AttemptID,
+		checkpoint.Sequence,
+		checkpoint.CanonicalEventSequence,
+		checkpoint.ContextSnapshotID,
+		string(revisionJSON),
+		checkpoint.SharedStateHash,
+		string(artifactJSON),
+		formatWorkflowTime(checkpoint.CreatedAt),
+	); err != nil {
+		return MapSQLiteError(fmt.Errorf("insert checkpoint: %w", err))
+	}
+	return nil
+}
+
 func checkpointsEqual(left, right runtime.Checkpoint) bool {
 	leftRevisionJSON, leftRevisionErr := json.Marshal(left.Revisions.Entries())
 	rightRevisionJSON, rightRevisionErr := json.Marshal(right.Revisions.Entries())

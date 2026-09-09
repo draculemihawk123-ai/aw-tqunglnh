@@ -70,6 +70,10 @@ func (s stubUnreachableProvider) Release(context.Context, ports.WorkspaceHandle)
 	s.t.Fatal("Release must not be called")
 	return nil
 }
+func (s stubUnreachableProvider) WorkingDirectory(context.Context, ports.WorkspaceHandle) (string, error) {
+	s.t.Fatal("WorkingDirectory must not be called")
+	return "", nil
+}
 
 // stubUnreachableLifecycle fails the test outright if any of its methods
 // is ever called.

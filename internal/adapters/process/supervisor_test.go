@@ -151,6 +151,59 @@ func TestSupervisorCancelKillsDescendantProcess(t *testing.T) {
 	if modTime(t, marker) != lastMod {
 		t.Fatal("descendant process kept writing its heartbeat after the parent was cancelled — it was not terminated")
 	}
+	if !result.TreeQuiesced {
+		t.Fatalf("TreeQuiesced = false after a cancel-triggered kill confirmed the whole tree gone, result: %+v", result)
+	}
+}
+
+// TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns is
+// V5-08B's own required test (the design decision's own "test bắt buộc có
+// child process tiếp tục ghi sau khi parent exit"): the direct child exits
+// on its own, successfully — Run's own waitDone case fires, never the
+// cancellation/timeout escalation path — while its own orphaned descendant
+// is still genuinely alive and writing. Before V5-08B, Run reported this
+// exactly like a fully quiesced tree; TreeQuiesced now correctly reports
+// false, since confirmTreeQuiesced runs on every exit path, not only after
+// signalGraceful/kill.
+//
+// This test cannot observe the descendant AFTER Run returns the way
+// TestSupervisorCancelKillsDescendantProcess observes its own descendant
+// after a Cancel: on Windows, closing the Job Object handle (Run's own
+// deferred tree.close()) fires JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE the
+// instant Run returns, killing any still-alive descendant immediately — a
+// real run of this exact test caught that race (the marker had already
+// stopped updating by the time control returned to the test). Proof
+// instead relies on confirmTreeQuiesced's own timing: it only gives up
+// after the full quiescencePollBound elapses, so Run visibly taking close
+// to that long (never a fast return) is itself evidence the descendant was
+// observed alive throughout the poll, not that TreeQuiesced=false for some
+// unrelated reason — combined with the marker file existing at all, which
+// only the descendant ever creates.
+func TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns(t *testing.T) {
+	t.Parallel()
+
+	marker := filepath.Join(t.TempDir(), "orphan-descendant-alive")
+	spec := helperSpec("orphan", 5*time.Second)
+	spec.Environment["AGENTKIT_DESCENDANT_MARKER"] = marker
+
+	start := time.Now()
+	result, err := NewSupervisor().Run(context.Background(), spec, nil, nil)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("run orphan helper: %v", err)
+	}
+	if result.TimedOut || result.Cancelled {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if result.TreeQuiesced {
+		t.Fatalf("TreeQuiesced = true, want false — the orphaned descendant was still alive and writing when Run polled for quiescence: %+v", result)
+	}
+	if elapsed < quiescencePollBound-100*time.Millisecond {
+		t.Fatalf("Run returned in %s, want close to the full quiescence poll bound (%s) — a fast return would mean the descendant was not genuinely observed alive throughout the poll", elapsed, quiescencePollBound)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("descendant marker file: %v (the orphaned descendant never even started writing)", err)
+	}
 }
 
 func TestSupervisorBoundsOversizedOutput(t *testing.T) {
@@ -275,6 +328,22 @@ func TestProcessHelper(t *testing.T) {
 		_, _ = fmt.Fprintln(os.Stdout, "ready")
 		_ = os.Stdout.Sync()
 		_ = child.Wait()
+	case "orphan":
+		// Unlike "descendant" above, this helper exits IMMEDIATELY after
+		// starting its own child, never calling Wait on it — simulating a
+		// process that backgrounds work and returns before it finishes.
+		// command.Wait() (Run's own direct-child wait) sees this parent
+		// exit as an ordinary, successful completion; the child stays
+		// alive and writing, still grouped under the same process
+		// group/Job Object.
+		marker := os.Getenv("AGENTKIT_DESCENDANT_MARKER")
+		child := exec.Command(os.Args[0], "-test.run=TestProcessHelper", "--", "descendant-child", marker)
+		child.Env = append(os.Environ(), "AGENTKIT_PROCESS_HELPER=1")
+		if err := child.Start(); err != nil {
+			os.Exit(4)
+		}
+		_, _ = fmt.Fprintln(os.Stdout, "ready")
+		_ = os.Stdout.Sync()
 	case "descendant-child":
 		if len(arguments) < 2 {
 			os.Exit(5)
