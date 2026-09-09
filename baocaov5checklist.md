@@ -1533,16 +1533,27 @@ chỉ dựa vào golden) trong test mới `TestRuntimeEngineGate_AdapterBuildPin
   đúng thiết kế user chốt — same/different value → same/different alias, field hash KHÔNG liên quan
   (vd `contentHash`) giữ nguyên byte-exact, shape sai → panic.
 
-**Flake tự bắt và tự sửa (không phải logic bug, mà là lỗi thiết kế fixture của chính test mới):** stress
-test `TestRuntimeEngineGate_AdapterBuildPinning` 15-25 lần liên tiếp bắt được 2 lớp lỗi riêng của chính
-test mới (không phải bug runtime): (a) `startPool()` ban đầu tạo `idsource.NewSequential("h")` MỚI mỗi
-lần gọi lại — khi Part 2 khởi động pool mới trên CÙNG store đã có data từ Part 1, id "h-1" reset lại và
-collide với row Part 1 đã ghi thật; (b) dù đã sửa (a) và dừng hẳn pool Part 1 trước khi tamper file, vẫn
-còn ~1/25 lần fail "execution attempt not found" — timing edge còn sót, cùng họ với V0-11A's own
-Windows/SQLite concurrency flake đã biết. Sửa triệt để bằng cách tách Part 1/Part 2 thành hai
-`*sqlite.Store` HOÀN TOÀN độc lập (`runAdapterBuildPinningScenario` factor ra, publish lại definitions
-riêng cho mỗi phần) — loại bỏ toàn bộ họ race này bằng cấu trúc thay vì vá từng biểu hiện. Verify: 30 lần
-liên tiếp + suite tích hợp `-count=3` đều xanh.
+**3 vòng tự bắt và tự sửa flake của chính test mới (không phải bug runtime, lỗi thiết kế fixture):**
+(a) `startPool()` ban đầu tạo `idsource.NewSequential("h")` MỚI mỗi lần gọi lại — khi Part 2 khởi động
+pool mới trên CÙNG store đã có data từ Part 1, id "h-1" reset lại và collide với row Part 1 đã ghi thật;
+(b) dù đã sửa (a) và dừng hẳn pool Part 1 trước khi tamper file, vẫn còn ~1/25 lần fail cục bộ "execution
+attempt not found" — sửa bằng cách tách Part 1/Part 2 thành hai `*sqlite.Store` HOÀN TOÀN độc lập
+(`runAdapterBuildPinningScenario` factor ra) — 30 lần liên tiếp cục bộ đều xanh, PUSH LÊN CI.
+(c) **CI's own `go test -race -count=1 ./...` (job "Linux race and stability") bắt được lỗi THẬT thứ ba,
+sâu hơn cả (a)/(b), mà 30 lần chạy cục bộ KHÔNG `-race` không bao giờ lộ ra** (Windows dev machine không
+có cgo, không chạy được `-race` cục bộ): `runAdapterBuildPinningScenario` khởi động NGUYÊN registry đầy
+đủ (`registerRuntimeEngineHandlers` — gồm cả `Scheduler`'s own `AdvanceRunJobKind` handler) NGAY TRƯỚC
+khi tự gọi trực tiếp `StartWorkflowRun`/`AdvanceRun` ở foreground — pool's own background Scheduler đua
+tranh advance ĐÚNG NodeRun mà code foreground cũng đang advance; bên thua (đôi khi chính là lệnh gọi
+foreground) nhận lại một hop rỗng (`NextNodeKey=""`) từ đường idempotent-replay. Đây CHÍNH XÁC là rủi ro
+`TestRuntimeEngineGate_ConcurrentPoolsNoDuplicateExecution`'s own doc comment đã cảnh báo từ trước (dùng
+provisioning-only pool cho `createREWorkItem`, hủy nó, tự lái foreground, CHỈ start full pool SAU KHI
+`ScheduleExecutableNodeRun` đã tạo job EXECUTE_NODE thật) — bài test mới của tôi không theo đúng pattern
+đó. Sửa: tái cấu trúc `runAdapterBuildPinningScenario` đúng y hệt pattern đã có sẵn (provisioning-only
+pool trước, hủy, lái foreground trực tiếp, full pool CHỈ start sau `ScheduleExecutableNodeRun`) — loại
+bỏ hẳn race bằng kiến trúc, không phải vá triệu chứng. Verify: 50 lần liên tiếp cục bộ + suite tích hợp
++ suite toàn repo đều xanh; `-race` tự nó không verify lại được cục bộ (không cgo trên máy Windows này),
+dựa vào CI's own race job để xác nhận cuối cùng.
 
 **File thay đổi:**
 - `internal/app/runtime/admission.go` (Fix 1: AdapterBuild nil-bypass cho AGENT)

@@ -1985,19 +1985,34 @@ func runAdapterBuildPinningScenario(t *testing.T, title string) (uow ports.UnitO
 	seedREProject(t, u, testIDs, "re-project", "repo-a")
 	version := publishREDefinitions(t, u, "re-project")
 
-	registry := registerRuntimeEngineHandlers(t, store, u, idsource.NewSequential("h"), &scriptedNodeExecutor{uow: u})
-	pool := newRuntimeEnginePool(t, store, registry)
-	poolCtx, cancelPool := context.WithCancel(ctx)
-	poolErr := make(chan error, 1)
-	go func() { poolErr <- pool.Run(poolCtx) }()
-	t.Cleanup(func() {
-		cancelPool()
-		if err := <-poolErr; err != nil {
-			t.Fatalf("pool.Run(%s): %v", title, err)
-		}
-	})
+	// Setup phase mirrors TestRuntimeEngineGate_ConcurrentPoolsNoDuplicateExecution's
+	// own established pattern exactly (see its doc comment): drive
+	// START -> ROUTER -> "implement" via DIRECT foreground calls to
+	// AdvanceRun/ScheduleExecutableNodeRun, with NO full pool running
+	// concurrently. A real run of this exact test caught why that matters:
+	// starting registerRuntimeEngineHandlers' own full registry (Scheduler's
+	// own AdvanceRunJobKind handler included) before this foreground chain
+	// lets the pool's own background Scheduler race to advance the SAME
+	// NodeRun this code is directly advancing — the loser (sometimes this
+	// code's own foreground call) sees an idempotent-replay hop with a
+	// blank NextNodeKey. A short-lived provisioning-only pool is safe here
+	// specifically because no ADVANCE_RUN/EXECUTE_NODE job can race it —
+	// createREWorkItem's own WorkspaceSet provisioning is the only durable
+	// job this phase produces.
+	provisionRegistry := workerpool.NewRegistry()
+	provisionRegistry.Register(appwork.WorkspaceProvisionJobKind, workspaceprovision.New(u, idsource.Random{}, &scriptedWorkspaceProvider{}))
+	provisionPool := newRuntimeEnginePool(t, store, provisionRegistry)
+	provisionCtx, cancelProvision := context.WithCancel(ctx)
+	provisionErr := make(chan error, 1)
+	go func() { provisionErr <- provisionPool.Run(provisionCtx) }()
 
 	workItem := createREWorkItem(t, store, u, testIDs, "re-project", title, "repo-a")
+
+	cancelProvision()
+	if err := <-provisionErr; err != nil {
+		t.Fatalf("provision pool.Run(%s): %v", title, err)
+	}
+
 	start, err := runtime.StartWorkflowRun(ctx, u, testIDs, reCommand("re-start-"+title, ports.ProjectScope("re-project"), "StartWorkflowRun"), runtime.StartWorkflowRunRequest{
 		ProjectID: "re-project", WorkItemID: workItem.WorkItemID, WorkflowVersionID: string(version.ID()),
 	})
@@ -2022,5 +2037,23 @@ func runAdapterBuildPinningScenario(t *testing.T, title string) (uow ports.UnitO
 	}); err != nil {
 		t.Fatalf("ScheduleExecutableNodeRun(%s implement): %v", title, err)
 	}
+
+	// Only now — after the foreground chain above has fully finished
+	// advancing/scheduling, with no risk of racing this same pool's own
+	// Scheduler against it — start the full pool so it can pick up and
+	// process the real, already-QUEUED EXECUTE_NODE job asynchronously; the
+	// caller waits on the resulting NodeRun state (SUCCEEDED or BLOCKED).
+	registry := registerRuntimeEngineHandlers(t, store, u, idsource.NewSequential("h"), &scriptedNodeExecutor{uow: u})
+	pool := newRuntimeEnginePool(t, store, registry)
+	poolCtx, cancelPool := context.WithCancel(ctx)
+	poolErr := make(chan error, 1)
+	go func() { poolErr <- pool.Run(poolCtx) }()
+	t.Cleanup(func() {
+		cancelPool()
+		if err := <-poolErr; err != nil {
+			t.Fatalf("pool.Run(%s): %v", title, err)
+		}
+	})
+
 	return u, hop.NextNodeRunID, start.RunID
 }
