@@ -105,4 +105,13 @@ type WorkspaceProvider interface {
 	CaptureRevision(context.Context, WorkspaceHandle) (workspace.Revision, error)
 	Diff(context.Context, WorkspaceHandle, workspace.Revision) (WorkspaceDiff, error)
 	Release(context.Context, WorkspaceHandle) error
+	// WorkingDirectory resolves handle to the real, absolute filesystem
+	// path a process should run in (V5-08B) — the sanctioned bridge from
+	// an opaque handle to a real cwd for AgentExecutionRequest.
+	// WorkspaceMounts, which AssembleAgentExecutionRequest (V5-08B0)
+	// deliberately leaves unresolved (assembly pins RepositoryID/Access/
+	// VCSObjectID/WorkspaceGeneration only) — the execution bridge that
+	// actually spawns a provider is what needs a real path, not the
+	// request-assembly step.
+	WorkingDirectory(context.Context, WorkspaceHandle) (string, error)
 }

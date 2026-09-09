@@ -60,6 +60,10 @@ func (s *stubProvider) Release(context.Context, ports.WorkspaceHandle) error {
 	return errors.New("stub: Release must not be called by this handler")
 }
 
+func (s *stubProvider) WorkingDirectory(context.Context, ports.WorkspaceHandle) (string, error) {
+	return "", errors.New("stub: WorkingDirectory must not be called by this handler")
+}
+
 func mustHandle(token string) ports.WorkspaceHandle {
 	h, err := ports.NewWorkspaceHandle(token)
 	if err != nil {

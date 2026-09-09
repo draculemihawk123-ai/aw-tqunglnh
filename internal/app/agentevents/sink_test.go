@@ -54,6 +54,9 @@ func (f *fakeWorkspaceProvider) Diff(context.Context, ports.WorkspaceHandle, wor
 	return f.diff, f.err
 }
 func (f *fakeWorkspaceProvider) Release(context.Context, ports.WorkspaceHandle) error { return nil }
+func (f *fakeWorkspaceProvider) WorkingDirectory(context.Context, ports.WorkspaceHandle) (string, error) {
+	return "fixture-working-directory", nil
+}
 
 var _ ports.WorkspaceProvider = (*fakeWorkspaceProvider)(nil)
 

@@ -122,6 +122,16 @@ type FinalizeExecutionAttemptRequest struct {
 	JobLease                ports.JobLease
 	WriteLeases             []ports.WriteLeaseGrant
 	CorrelationID           string
+	// Evidence is populated now (V5-08B) exactly when the caller is the
+	// NodeExecutor->AgentExecutor bridge proposing a real AGENT
+	// completion — required when NextState is SUCCEEDED and the caller is
+	// that bridge, nil for every other caller (the existing fake
+	// NodeExecutor, any future COMMAND/MACHINE_GATE executor): this
+	// method's own evidence-fencing checks below run ONLY when non-nil,
+	// so every pre-existing SUCCEEDED caller is entirely unaffected. See
+	// ports.AttemptFinalizationEvidence's own doc comment for the full
+	// contract this method re-validates.
+	Evidence *ports.AttemptFinalizationEvidence
 }
 
 // FinalizeExecutionAttemptResult reports what one fenced finalize actually

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
 // NodeExecutionRequest is what ExecuteNodeHandler (internal/app/runtime,
@@ -17,6 +19,14 @@ type NodeExecutionRequest struct {
 	RunID                string
 	ExecutorKind         string
 	ExecutionProfileHash string
+	// JobLease is populated now (V5-08B): the exact fencing proof the
+	// driving EXECUTE_NODE job carries at the moment ExecuteNodeHandler
+	// invokes Execute — a real executor (the NodeExecutor->AgentExecutor
+	// bridge) needs this to fence its own AcquireWriteLeases call and to
+	// construct an agentevents.Sink whose every write is fenced against
+	// the same job. Unused by the fake NodeExecutor V4-05's own tests
+	// still use.
+	JobLease JobLease
 }
 
 // NodeExecutionResult is what a NodeExecutor proposes back. This proposal
@@ -59,6 +69,70 @@ type NodeExecutionResult struct {
 	// anything durable (a ScopeExpansionOrigin, a BLOCKED Attempt/NodeRun)
 	// is ever built from it — never itself a grant.
 	RequestedScopeExpansion *runtime.ScopeExpansionProposal
+	// Evidence is populated only when State == ExecutionAttemptSucceeded
+	// (V5-08B) — the terminal evidence bundle FinalizeExecutionAttempt
+	// re-validates, inside its own fenced transaction, before ever
+	// committing SUCCEEDED. See AttemptFinalizationEvidence's own doc
+	// comment for the full contract.
+	Evidence *AttemptFinalizationEvidence
+}
+
+// DiffManifestArtifactRef names one durable artifact.Artifact row holding
+// one repository mount's own post-quiescence diff manifest (V5-08B) — the
+// executor already Put/Verified body and inserted the row as ORPHAN
+// (ArtifactRepository.InsertArtifact) before ever proposing this evidence;
+// FinalizeExecutionAttempt is what promotes it ORPHAN->ATTACHED, and only
+// once every other check in its own transaction has already passed.
+type DiffManifestArtifactRef struct {
+	RepositoryID project.RepositoryID
+	ArtifactID   string
+}
+
+// AttemptFinalizationEvidence is the terminal evidence bundle a NodeExecutor
+// proposes alongside NodeExecutionResult when State is
+// ExecutionAttemptSucceeded — V5-08B's own locked decision #2 ("Quyết định
+// sau review source of truth — 2026-09-08", baocaov5checklist.md): a bare
+// "at least one checkpoint exists" is not evidence. This is a PROPOSAL,
+// never trusted as-is (the same GC-INV-17/18 discipline NodeExecutionResult
+// itself already carries) — FinalizeExecutionAttempt re-validates every
+// field here inside its own fenced transaction: the terminal event/
+// checkpoint really exist for this Attempt/ContextSnapshot, the diff scope
+// matches EffectiveScope, every DiffManifestArtifact transitions cleanly
+// ORPHAN->ATTACHED, and ProposedOutcome names an outcome AdvanceRun's own
+// GC-INV-11 allow-list actually accepts — before ANY of it is committed.
+type AttemptFinalizationEvidence struct {
+	SchemaVersion int
+	// TerminalEventSequence is the Sequence of the agent_events row this
+	// Attempt's own EXECUTION_FINISHED (or provider-equivalent terminal)
+	// event was durably persisted under — FinalizeExecutionAttempt
+	// confirms a matching row actually exists before accepting this
+	// evidence.
+	TerminalEventSequence uint64
+	// CompletionCheckpointID is an ID minted by the executor (never by
+	// FinalizeExecutionAttempt) — the finalize transaction constructs and
+	// inserts the REAL Checkpoint row using exactly this ID (via
+	// CheckpointsRepository.InsertCheckpoint, atomically with everything
+	// else it commits), using a real canonicalStateHash rather than
+	// agentevents.Sink's own mid-run surrogate hash.
+	CompletionCheckpointID string
+	// FinalRevisionSet is the exact workspace.RevisionSet measured AFTER
+	// ProcessSupervisor confirmed process-tree quiescence on every mount
+	// (AgentExecutionResult.TreeQuiesced) — never trusted if that was
+	// false; the executor itself must refuse to propose SUCCEEDED at all
+	// in that case (V5-08B's own locked decision #3).
+	FinalRevisionSet workspace.RevisionSet
+	// DiffManifestArtifacts names one durable, ORPHAN-inserted diff
+	// manifest Artifact per repository mount — mandatory for every mount
+	// regardless of output policy (V5-08B's own locked decision #2).
+	DiffManifestArtifacts []DiffManifestArtifactRef
+	// OutputArtifactRefs is optional — decision #2: "có thể không có
+	// provider output artifact nếu output policy cho phép."
+	OutputArtifactRefs []string
+	// ProposedOutcome is the same value NodeExecutionResult.SelectedOutcome
+	// already carries, repeated here as part of the evidence bundle
+	// FinalizeExecutionAttempt validates as a whole (go-core-spec.md §14's
+	// own "AgentExecutionResult phải có... typed proposed outcome").
+	ProposedOutcome *AgentProposedOutcome
 }
 
 // NodeExecutor executes one ExecutionAttempt's actual work — a real

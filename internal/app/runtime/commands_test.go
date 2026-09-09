@@ -97,6 +97,9 @@ func (s *stubProvider) Diff(context.Context, ports.WorkspaceHandle, workspace.Re
 func (s *stubProvider) Release(context.Context, ports.WorkspaceHandle) error {
 	return errors.New("stub: Release must not be called")
 }
+func (s *stubProvider) WorkingDirectory(context.Context, ports.WorkspaceHandle) (string, error) {
+	return "", errors.New("stub: WorkingDirectory must not be called")
+}
 
 // readyFixture creates one ACTIVE repository, a root WorkItem over it
 // (internal/app/work.CreateRootWorkItem), drives its sole WorkspaceSet all

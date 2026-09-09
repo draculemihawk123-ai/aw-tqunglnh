@@ -1,0 +1,233 @@
+// This file holds AgentNodeExecutor's own two real-I/O staging phases —
+// resolving real workspace resources before spawning a provider, and
+// building the post-quiescence evidence bundle after one succeeds — kept
+// out of agent_node_executor.go itself only to keep that file's own
+// Execute/classify control flow readable.
+package runtime
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+
+	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
+	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	"github.com/taQuangLing/agent-workflow/internal/domain/artifact"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
+)
+
+// resolvedExecutionResources is resolveExecutionResources's own output —
+// real WorkspaceHandle/WorkingDirectory per mount, any WriteLeaseGrant
+// acquired for a WRITE-access mount, and whether any mount is WRITE at all
+// (classify's own quiescence-severity check needs exactly this).
+type resolvedExecutionResources struct {
+	mounts           []ports.AgentWorkspaceMount
+	sinkMounts       []agentevents.Mount
+	writeLeaseGrants []ports.WriteLeaseGrant
+	hasWriteMount    bool
+	projectID        project.ProjectID
+}
+
+// gatheredMount is resolveExecutionResources's own Phase 1 output (real DB
+// facts only, read inside one read-only transaction) — Phase 2 (real I/O:
+// WorkingDirectory resolution, AcquireWriteLeases) runs entirely after
+// that transaction has already closed.
+type gatheredMount struct {
+	repositoryID project.RepositoryID
+	locator      string
+	workspaceID  workspace.RepositoryWorkspaceID
+	access       ports.WorkspaceAccess
+	vcsObjectID  string
+	generation   uint64
+}
+
+// resolveExecutionResources resolves every one of request's own
+// WorkspaceMounts (AssembleAgentExecutionRequest deliberately leaves
+// Handle/WorkingDirectory unresolved — its own doc comment names this
+// exact bridge as the caller that must) into a real WorkspaceHandle and
+// working directory, and — for any mount with WRITE access — acquires a
+// real WriteLeaseGrant fencing proof (execute.go's own package doc
+// comment: "V5's own real executor is the first caller with a genuine
+// reason to... call AcquireWriteLeases before Execute").
+func (e *AgentNodeExecutor) resolveExecutionResources(
+	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
+) (resolvedExecutionResources, error) {
+	var (
+		gathered  []gatheredMount
+		projectID project.ProjectID
+	)
+	if err := e.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
+		if err != nil {
+			return err
+		}
+		projectID = run.ProjectID
+		if len(request.WorkspaceMounts) == 0 {
+			return nil
+		}
+		workspaceSet, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, string(run.FamilyID))
+		if err != nil {
+			return err
+		}
+		for _, mount := range request.WorkspaceMounts {
+			rw, err := tx.Work().GetRepositoryWorkspace(ctx, string(workspaceSet.ID), string(mount.RepositoryID), mount.WorkspaceGeneration)
+			if err != nil {
+				return fmt.Errorf("load repository workspace for %s generation %d: %w", mount.RepositoryID, mount.WorkspaceGeneration, err)
+			}
+			gathered = append(gathered, gatheredMount{
+				repositoryID: mount.RepositoryID, locator: rw.Locator, workspaceID: rw.ID,
+				access: mount.Access, vcsObjectID: mount.VCSObjectID, generation: mount.WorkspaceGeneration,
+			})
+		}
+		return nil
+	}); err != nil {
+		return resolvedExecutionResources{}, err
+	}
+
+	resolved := resolvedExecutionResources{projectID: projectID}
+	var writeTargets []ports.WorkspaceLeaseTarget
+	for _, g := range gathered {
+		handle, err := ports.NewWorkspaceHandle(g.locator)
+		if err != nil {
+			return resolvedExecutionResources{}, fmt.Errorf("build workspace handle for repository %s: %w", g.repositoryID, err)
+		}
+		workingDirectory, err := e.workspaces.WorkingDirectory(ctx, handle)
+		if err != nil {
+			return resolvedExecutionResources{}, fmt.Errorf("resolve working directory for repository %s: %w", g.repositoryID, err)
+		}
+		resolved.mounts = append(resolved.mounts, ports.AgentWorkspaceMount{
+			RepositoryID: g.repositoryID, Handle: handle, WorkingDirectory: workingDirectory,
+			Access: g.access, VCSObjectID: g.vcsObjectID, WorkspaceGeneration: g.generation,
+		})
+		resolved.sinkMounts = append(resolved.sinkMounts, agentevents.Mount{RepositoryID: g.repositoryID, Handle: handle})
+		if g.access == ports.WorkspaceReadWrite {
+			resolved.hasWriteMount = true
+			writeTargets = append(writeTargets, ports.WorkspaceLeaseTarget{
+				RepositoryID: g.repositoryID, RepositoryWorkspaceID: g.workspaceID, Generation: g.generation,
+			})
+		}
+	}
+
+	if len(writeTargets) > 0 {
+		grants, err := e.writeLeases.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
+			JobLease: req.JobLease, AttemptID: ports.ExecutionAttemptID(req.AttemptID),
+			Targets: writeTargets, TTL: request.Timeout + writeLeaseTTLGrace,
+		})
+		if err != nil {
+			return resolvedExecutionResources{}, fmt.Errorf("acquire write leases: %w", err)
+		}
+		resolved.writeLeaseGrants = grants
+	}
+	return resolved, nil
+}
+
+// buildEvidence implements V5-08B's own locked 3-phase evidence protocol's
+// first two phases (decision #2): Phase 1, real I/O entirely outside any
+// transaction — re-measure each mount's own diff now that
+// AgentExecutionResult.TreeQuiesced has already confirmed the process tree
+// is quiesced (classify's own caller-side check, before this is ever
+// invoked), then Put/Verify each diff as its own durable artifact. Phase
+// 2, one short transaction inserting every one of those artifacts as
+// ORPHAN — crash or reject after this point leaves an auditable orphan,
+// never something silently accepted as evidence. Phase 3 (revalidate
+// everything and promote ORPHAN->ATTACHED) is FinalizeExecutionAttempt's
+// own job, atomically with everything else it commits — never repeated or
+// duplicated here.
+func (e *AgentNodeExecutor) buildEvidence(
+	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
+	resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
+) (*ports.AttemptFinalizationEvidence, error) {
+	revisions := make([]workspace.Revision, 0, len(request.WorkspaceMounts))
+	diffArtifacts := make([]ports.DiffManifestArtifactRef, 0, len(request.WorkspaceMounts))
+	var toInsert []artifact.Artifact
+
+	for _, mount := range request.WorkspaceMounts {
+		base := workspace.Revision{RepositoryID: mount.RepositoryID, VCSObjectID: mount.VCSObjectID, WorkspaceGeneration: mount.WorkspaceGeneration}
+		diff, err := e.workspaces.Diff(ctx, mount.Handle, base)
+		if err != nil {
+			return nil, fmt.Errorf("diff repository %s after quiescence: %w", mount.RepositoryID, err)
+		}
+		revisions = append(revisions, diff.CurrentRevision)
+
+		body, err := json.Marshal(diff)
+		if err != nil {
+			return nil, fmt.Errorf("encode diff manifest for repository %s: %w", mount.RepositoryID, err)
+		}
+		ref, err := e.store.Put(ctx, ports.ArtifactMetadata{ContentType: diffManifestArtifactMediaType, Sensitivity: redact.Sensitive}, bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("put diff manifest artifact for repository %s: %w", mount.RepositoryID, err)
+		}
+		if err := e.store.Verify(ctx, ref); err != nil {
+			return nil, fmt.Errorf("verify diff manifest artifact for repository %s: %w", mount.RepositoryID, err)
+		}
+		artifactID := e.ids.NewID()
+		a, err := artifact.NewArtifact(
+			artifact.ID(artifactID), resolved.projectID, ref.Locator, ref.SHA256, ref.Size, ref.ContentType,
+			ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Orphan, false, nil, e.clk.Now(), 1,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("construct diff manifest artifact record for repository %s: %w", mount.RepositoryID, err)
+		}
+		toInsert = append(toInsert, a)
+		diffArtifacts = append(diffArtifacts, ports.DiffManifestArtifactRef{RepositoryID: mount.RepositoryID, ArtifactID: artifactID})
+	}
+
+	if len(toInsert) > 0 {
+		if err := e.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+			for _, a := range toInsert {
+				if _, err := tx.Artifacts().InsertArtifact(ctx, a); err != nil {
+					return err
+				}
+			}
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("insert diff manifest artifacts as ORPHAN: %w", err)
+		}
+	}
+
+	finalRevisionSet, err := workspace.NewRevisionSet(revisions)
+	if err != nil {
+		return nil, fmt.Errorf("build final revision set: %w", err)
+	}
+
+	terminalSequence, err := e.terminalEventSequence(ctx, req.AttemptID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ports.AttemptFinalizationEvidence{
+		SchemaVersion: 1, TerminalEventSequence: terminalSequence, CompletionCheckpointID: e.ids.NewID(),
+		FinalRevisionSet: finalRevisionSet, DiffManifestArtifacts: diffArtifacts, ProposedOutcome: proposedOutcome,
+	}, nil
+}
+
+// terminalEventSequence returns the highest agent_events.Sequence durably
+// persisted for attemptID — sink.Flush has already run (Execute's own
+// caller-side ordering) by the time this is ever called, so the terminal
+// EXECUTION_FINISHED event (always the last one any normalizer emits) is
+// guaranteed already committed.
+func (e *AgentNodeExecutor) terminalEventSequence(ctx context.Context, attemptID string) (uint64, error) {
+	var sequence uint64
+	if err := e.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		records, err := tx.AgentEvents().ListByAttempt(ctx, attemptID)
+		if err != nil {
+			return err
+		}
+		for _, record := range records {
+			if record.Sequence > sequence {
+				sequence = record.Sequence
+			}
+		}
+		return nil
+	}); err != nil {
+		return 0, fmt.Errorf("load terminal agent event sequence: %w", err)
+	}
+	if sequence == 0 {
+		return 0, errors.New("no agent events were persisted for this attempt — cannot build finalization evidence")
+	}
+	return sequence, nil
+}

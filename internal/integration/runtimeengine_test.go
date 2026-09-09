@@ -632,6 +632,9 @@ func (scriptedWorkspaceProvider) Diff(context.Context, ports.WorkspaceHandle, wo
 func (scriptedWorkspaceProvider) Release(context.Context, ports.WorkspaceHandle) error {
 	return errors.New("scriptedWorkspaceProvider: Release must not be called")
 }
+func (scriptedWorkspaceProvider) WorkingDirectory(context.Context, ports.WorkspaceHandle) (string, error) {
+	return "", errors.New("scriptedWorkspaceProvider: WorkingDirectory must not be called")
+}
 
 // --- Project/repository/WorkItem fixture ---
 
