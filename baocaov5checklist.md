@@ -2656,3 +2656,111 @@ go test -count=3 ./internal/app/runtime/... -run "TestCommandNodeExecutor"
 ```
 
 **Việc còn lại:** commit, push nhánh `feat/v5-09-command-executor`, mở PR, chờ CI 6/6, merge.
+
+## V5-10 — Gate runner và criteria-level Evidence (branch `feat/v5-10-gate-runner`, stacked trên `feat/v5-09-command-executor`)
+
+**Bối cảnh:** người dùng chủ động bảo "triển khai luôn được không" ngay khi V5-09's own PR #8 còn đang chờ
+CI — nhánh này được tạo TRÊN `feat/v5-09-command-executor` (chưa merge vào master) vì V5-10 phụ thuộc trực
+tiếp vào code V5-09 vừa viết (`resolveExecutionResources`, `buildEvidence`, `resolveArgvAndSecrets`,
+`materializeExecutable`, `classifyCancellation` — tất cả free function V5-09 đã tách ra). Sẽ rebase nhánh
+này lên `master` ngay khi PR #8 merge xong.
+
+Dùng một Explore agent scope trước (research-only) trong lúc chờ CI của V5-09, phát hiện quan trọng nhất:
+`internal/domain/gate.GateDocument{CommandRef, Criteria []Criterion{Name, EvidenceKey}, PolicyRefs}` đã có
+sẵn từ lâu (V2-05), `Verdict` enum đã đóng đúng 5 giá trị PASS/FAIL/ERROR/NOT_RUN/NOT_APPLICABLE — nhưng
+package tự ghi rõ "never evaluates anything itself... the runtime's job" — nghĩa là TOÀN BỘ logic map
+exit-code/output → verdict từng criterion KHÔNG tồn tại ở đâu cả, phải tự thiết kế (không có ADR nào chỉ
+định cơ chế cụ thể — AK-ARCH-015's own toàn bộ nội dung chỉ là "Gate đa repository pin và hiển thị exact
+RevisionSet", không nói gì về criterion-mapping). Cũng phát hiện: `ReleaseSet` KHÔNG tồn tại ở đâu cả
+(chỉ có placeholder port `ports.IsReleaseAuthorized` tự ghi rõ "chưa implement thật"); V5-10A (task tạo ra
+ReleaseSet thật) tự ghi phụ thuộc NGƯỢC vào V5-10, không phải chiều kia — nghĩa là V5-10's own "Thực hiện"
+line tự nhắc tới ReleaseSet là văn bản hướng-tới-tương-lai, chưa phải yêu cầu thật lúc implement.
+
+**Xác nhận với user (2026-09-10, verbatim, trước khi code):** "Đúng, cứ triển khai như vậy. V5-10 dùng
+exact RevisionSet làm input bắt buộc. Không tạo ReleaseSet giả hoặc dependency ngược. Khi V5-10A cung cấp
+ReleaseSet, bổ sung nó vào provenance/input của gate mà giữ nguyên GateResult, Evidence và verdict
+semantics." — khoá cứng: dùng RevisionSet thật (đã có sẵn, heavily used qua AGENT/COMMAND) làm input duy
+nhất; `GateResult`/`GateCriterionResult` (type export mới, tên user tự đặt) được thiết kế để một field
+provenance ReleaseSet sau này CHỈ CẦN thêm vào, không bao giờ đổi nghĩa OverallVerdict/Criteria hiện có.
+
+**Quyết định (không hỏi lại, trừ quyết định đã xác nhận ở trên):**
+1. **Tái cấu trúc lần thứ 3 (tiếp nối V5-08D, V5-09):** tách `resolveCommandInvocation`
+   (command_node_executor.go) thành `mountsByRepositoryID` + `resolveArgvAndSecrets` (argv/secret, không
+   còn tự resolve cwd) — Command's own cwd vẫn resolve qua CwdRepositoryTarget như cũ (method wrapper giữ
+   hành vi), nhưng Gate giờ gọi thẳng `resolveArgvAndSecrets` với cwd HOÀN TOÀN riêng (xem quyết định #3).
+2. **Giao thức criterion-verdict tự định nghĩa (vì domain schema cố tình không định nghĩa):** underlying
+   Command's own stdout PHẢI là một JSON object duy nhất, key = từng Criterion's own EvidenceKey, value =
+   `{"verdict": "...", "detail": "...", "reason": "..."}`. Một exit code khác 0, timeout, hoặc bare spawn
+   error khiến TẤT CẢ criteria → ERROR ngay (không đọc stdout nữa) — đúng "Hoàn thành khi: error/missing
+   evidence không thể PASS": một evaluator tự thân không chạy sạch thì không output nào của nó còn đáng
+   tin. Một EvidenceKey không được evaluator nhắc tới → NOT_RUN (khác ERROR — "chưa từng chạy" khác
+   "chạy nhưng dữ liệu hỏng"). NOT_APPLICABLE thiếu `reason` → ép về ERROR (đúng convention toàn repo
+   "NOT_APPLICABLE cần policy và reason"). Một verdict string lạ (không phải 1 trong 5 giá trị) → ERROR
+   (tamper/malformed). `OverallVerdict` = verdict có độ nghiêm trọng cao nhất trong toàn bộ criteria
+   (ERROR > FAIL > NOT_RUN > PASS/NOT_APPLICABLE) — chỉ SUCCEEDED khi OverallVerdict == PASS.
+3. **Gate luôn read-only — nhưng qua DOWNGRADE mount, không REJECT khi thấy WRITE grant.** Lúc đầu định
+   viết "fail closed nếu EffectiveScope có bất kỳ repo WRITE nào" — SAI, tự phát hiện trước khi viết test:
+   EffectiveScope là khái niệm CẢ WorkItem (không phải theo từng node/NodeRun) — một workflow thật hoàn
+   toàn có thể có node AGENT/COMMAND ghi VÀ node MACHINE_GATE verify cùng chia sẻ một EffectiveScope —
+   reject thẳng sẽ khiến GẦN NHƯ MỌI Gate thật không chạy được. Sửa: `forceReadOnlyMounts`
+   (gatherGateExecutionInputs's own final step) ép MỌI mount về `ports.WorkspaceReadOnly` trước khi
+   `resolveExecutionResources` từng thấy nó — Gate không bao giờ xin write lease, `hasWriteMount` luôn
+   false, `classifyCancellation`'s own nhánh mutating (INDETERMINATE + reconciliation) không bao giờ chạm
+   tới được cho Gate — chỉ nhánh read-only đơn giản (CANCELLED) mới có thể chạy.
+4. **"Scratch output nằm ngoài source workspace":** cwd của evaluator LUÔN là một temp dir rỗng mới tạo
+   (`scratchDirectory`, `os.MkdirTemp`), KHÔNG BAO GIỜ một repo mount thật — khác hẳn Command (cwd =
+   CwdRepositoryTarget's own mount). Repo vẫn truy cập được qua PLACEHOLDER argv (đọc, không phải cwd).
+5. **Revision freshness:** trước khi spawn, so `mount.VCSObjectID` (đã pin từ ContextSnapshot) với
+   `workspaces.CaptureRevision` SỐNG THẬT (tái dùng đúng primitive V5-08C's own handleMutatingCancellation
+   đã dùng) — lệch → FAILED/VALIDATION_FAILED, KHÔNG spawn (không có Evidence, không side effect nào từng
+   xảy ra).
+6. **Evidence: GateResult luôn được persist làm artifact ATTACHED trực tiếp** (mirror
+   `persistCommandOutputArtifact`'s own pattern — finalize.go không hề policing OutputArtifactRefs) — kể
+   cả khi verdict KHÔNG PASS (một GateResult FAIL/ERROR chính là provenance-bearing record "MACHINE_GATE
+   tạo verdict authoritative với provenance" yêu cầu, không chỉ khi PASS).
+
+**Thực hiện:** `internal/app/runtime/command_node_executor.go` (tách `resolveArgvAndSecrets`/
+`mountsByRepositoryID`, không đổi hành vi Command), `internal/app/runtime/schedule.go`
+(`decodeCompiledGate` mới), `internal/app/runtime/gate_node_executor.go` (file mới — `GateNodeExecutor`,
+`GateResult`/`GateCriterionResult` (export mới), `gatherGateExecutionInputs`, `forceReadOnlyMounts`,
+`staleMountRevision`, `scratchDirectory`, `deriveGateResult`, `persistGateResultArtifact`, `classify`).
+
+**Test (10 test mới, `gate_node_executor_test.go`):**
+- `TestGateNodeExecutor_AllCriteriaPass_FinalizesSucceeded` — golden path, xác nhận cwd KHÔNG phải mount
+  thật (quyết định #4) + đúng 1 output artifact ref.
+- `TestGateNodeExecutor_OneCriterionFails_FinalizesFailed`, `TestGateNodeExecutor_NonzeroExit_AllCriteriaError`,
+  `TestGateNodeExecutor_MissingOutput_AllCriteriaError`, `TestGateNodeExecutor_MissingCriterionKey_ResolvesNotRun`,
+  `TestGateNodeExecutor_NotApplicableWithoutReason_FinalizesFailed`,
+  `TestGateNodeExecutor_NotApplicableWithReason_CountsAsPass`, `TestGateNodeExecutor_UnrecognizedVerdict_FinalizesFailed`
+  — từng nhánh của quyết định #2.
+- `TestGateNodeExecutor_StaleRevision_FailsClosedWithoutSpawning` — quyết định #5, `supervisor.Calls == 0`.
+- `TestGateNodeExecutor_ProcessCancelled_ReusesV508CReadOnlyPath` — xác nhận CANCELLED/RUN_CANCELLED (nhánh
+  đơn giản, không INDETERMINATE), `interruptions`/`reconciler` không hề bị chạm — chứng minh trực tiếp
+  quyết định #3's own hệ quả cấu trúc.
+
+**Lỗi tự phát hiện và sửa TRƯỚC KHI viết test (tránh vòng lặp sửa-test tốn công):** thiết kế ban đầu
+"reject Gate nếu EffectiveScope có WRITE" — tự nhận ra sai ngay khi chuẩn bị dựng fixture test (mọi
+`scheduleFixture` có sẵn đều seed repo-1 WRITE qua `readyFixture`'s own `CreateRootWorkItem`, nghĩa là
+MỌI test sẽ tự reject chính nó) — sửa toàn bộ sang downgrade-to-read-only (quyết định #3 ở trên) trước khi
+viết dòng test đầu tiên, không phải sau khi test đỏ.
+
+**Chưa làm / cố ý để lại:**
+- Chưa rebase nhánh này lên `master` — chờ PR #8 (V5-09) merge xong.
+- Không tích hợp ReleaseSet — đúng quyết định đã xác nhận với user, để lại nguyên vẹn cho V5-10A.
+- Không đổi `cmd/agentkit` để nối `GateNodeExecutor` thật vào route/CLI — đúng pattern mọi task V4/V5.
+- Không check `command.Compatibility.OS`/`NetworkAccess` thật lúc runtime — kế thừa nguyên trạng gap đã
+  ghi ở V5-09's own "Chưa làm" (áp dụng y hệt cho Command mà Gate pin).
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                               # sạch
+go run ./cmd/docs-coverage-check                           # debt = 0
+gofmt -l <file mới/thay đổi>                                # 1 lỗi thật (struct alignment) đã tự sửa
+go test -count=1 ./internal/app/runtime/... -v             # PASS toàn bộ, kể cả 10 test Gate mới
+go test -count=1 ./...                                     # PASS toàn bộ ~70 package
+go test -count=3 ./internal/app/runtime/... -run "TestGateNodeExecutor|TestCommandNodeExecutor"
+                                                            # PASS ổn định, không flake
+```
+
+**Việc còn lại:** chờ PR #8 merge, rebase nhánh này lên `master`, verify lại, push, mở PR, chờ CI 6/6, merge.

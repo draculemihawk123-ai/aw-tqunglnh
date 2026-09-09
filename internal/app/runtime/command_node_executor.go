@@ -347,17 +347,55 @@ func (e *CommandNodeExecutor) persistCommandOutputArtifact(
 func resolveCommandInvocation(
 	ctx context.Context, doc command.CommandDocument, mounts []ports.AgentWorkspaceMount, secrets ports.SecretResolver,
 ) (argv []string, cwd string, env map[string]string, err error) {
-	mountByRepo := make(map[string]ports.AgentWorkspaceMount, len(mounts))
-	for _, m := range mounts {
-		mountByRepo[string(m.RepositoryID)] = m
-	}
-
+	mountByRepo := mountsByRepositoryID(mounts)
 	cwdMount, ok := mountByRepo[doc.CwdRepositoryTarget]
 	if !ok {
 		return nil, "", nil, fmt.Errorf("%w: cwd repository target %q is not in this node run's effective scope", ErrCommandInvocationUnresolvable, doc.CwdRepositoryTarget)
 	}
-	cwd = cwdMount.WorkingDirectory
+	argv, env, err = resolveArgvAndSecrets(ctx, doc, mountByRepo, secrets)
+	if err != nil {
+		return nil, "", nil, err
+	}
+	return argv, cwdMount.WorkingDirectory, env, nil
+}
 
+// mountsByRepositoryID is resolveCommandInvocation/resolveArgvAndSecrets's
+// own shared lookup builder — a free function (V5-10: GateNodeExecutor,
+// gate_node_executor.go, needs the identical map to resolve its own
+// evaluated Command's argv/secrets, just never for cwd — see this file's
+// own package doc comment for why Gate's cwd is never a real repository
+// mount at all).
+func mountsByRepositoryID(mounts []ports.AgentWorkspaceMount) map[string]ports.AgentWorkspaceMount {
+	byRepo := make(map[string]ports.AgentWorkspaceMount, len(mounts))
+	for _, m := range mounts {
+		byRepo[string(m.RepositoryID)] = m
+	}
+	return byRepo
+}
+
+// resolveArgvAndSecrets resolves doc's own Argv/SecretRefs into real,
+// spawnable values — argv-only substitution (never a shell string:
+// PLACEHOLDER elements substitute into their OWN argv slot and no other,
+// exactly like command.CommandDocument's own doc comment requires),
+// secrets resolved into an Environment map (never Argv — see
+// ports.SecretResolver's own doc comment for why a secret value must
+// never appear in a process's own argv). Each PLACEHOLDER name is looked
+// up directly against mountByRepo by RepositoryID — the convention this
+// task locks in (confirmed by reading the code, not asked): a Command's
+// own PlaceholderAllowlist names are validated closed at publish time
+// (command.ValidateDocument) but never checked against a real
+// EffectiveScope until now, since EffectiveScope varies per WorkItem/Run;
+// a name that does not match any repository actually granted to this
+// NodeRun fails closed here rather than ever substituting something
+// unintended.
+//
+// A free function shared by resolveCommandInvocation (COMMAND, cwd
+// resolves to a real repository mount) and GateNodeExecutor (V5-10, cwd
+// is always a fresh scratch directory instead) — cwd resolution is
+// deliberately NOT part of this function; each caller resolves its own.
+func resolveArgvAndSecrets(
+	ctx context.Context, doc command.CommandDocument, mountByRepo map[string]ports.AgentWorkspaceMount, secrets ports.SecretResolver,
+) (argv []string, env map[string]string, err error) {
 	argv = make([]string, 0, len(doc.Argv))
 	for i, element := range doc.Argv {
 		switch element.Kind {
@@ -366,11 +404,11 @@ func resolveCommandInvocation(
 		case command.ArgvPlaceholder:
 			mount, ok := mountByRepo[element.Value]
 			if !ok {
-				return nil, "", nil, fmt.Errorf("%w: argv[%d] placeholder %q does not name a repository in this node run's effective scope", ErrCommandInvocationUnresolvable, i, element.Value)
+				return nil, nil, fmt.Errorf("%w: argv[%d] placeholder %q does not name a repository in this node run's effective scope", ErrCommandInvocationUnresolvable, i, element.Value)
 			}
 			argv = append(argv, mount.WorkingDirectory)
 		default:
-			return nil, "", nil, fmt.Errorf("%w: argv[%d] has unsupported kind %q", ErrCommandInvocationUnresolvable, i, element.Kind)
+			return nil, nil, fmt.Errorf("%w: argv[%d] has unsupported kind %q", ErrCommandInvocationUnresolvable, i, element.Kind)
 		}
 	}
 
@@ -379,12 +417,12 @@ func resolveCommandInvocation(
 		for _, ref := range doc.SecretRefs {
 			value, resolveErr := secrets.Resolve(ctx, ref)
 			if resolveErr != nil {
-				return nil, "", nil, fmt.Errorf("%w: secret %q: %v", ErrCommandInvocationUnresolvable, ref, resolveErr)
+				return nil, nil, fmt.Errorf("%w: secret %q: %v", ErrCommandInvocationUnresolvable, ref, resolveErr)
 			}
 			env[ref] = value
 		}
 	}
-	return argv, cwd, env, nil
+	return argv, env, nil
 }
 
 // materializeExecutable writes payload to a fresh, real, local file — a

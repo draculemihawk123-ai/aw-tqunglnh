@@ -52,6 +52,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextassembler"
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
+	"github.com/taQuangLing/agent-workflow/internal/domain/gate"
 	"github.com/taQuangLing/agent-workflow/internal/domain/layer"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
@@ -601,6 +602,20 @@ func decodeCompiledCommand(compiledSnapshot string) (command.CommandDocument, er
 	}
 	if err := json.Unmarshal([]byte(compiledSnapshot), &wrapper); err != nil {
 		return command.CommandDocument{}, fmt.Errorf("decode compiled command snapshot: %w", err)
+	}
+	return wrapper.Document, nil
+}
+
+// decodeCompiledGate is decodeCompiledCommand's own sibling for
+// internal/domain/gate.Compile's private compiledGateSnapshot shape
+// (V5-10: GateNodeExecutor, gate_node_executor.go — same "re-load from
+// the pin, never denormalize onto ResolvedExecutionProfileV1" discipline).
+func decodeCompiledGate(compiledSnapshot string) (gate.GateDocument, error) {
+	var wrapper struct {
+		Document gate.GateDocument `json:"document"`
+	}
+	if err := json.Unmarshal([]byte(compiledSnapshot), &wrapper); err != nil {
+		return gate.GateDocument{}, fmt.Errorf("decode compiled gate snapshot: %w", err)
 	}
 	return wrapper.Document, nil
 }
