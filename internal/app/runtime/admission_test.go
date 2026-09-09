@@ -357,14 +357,32 @@ func assertBlockedReason(
 	}
 }
 
+// claimableScheduleNodeRunJob finds the ScheduleNodeRunJobKind job
+// RetryBlockedActivationHandler.Retry (or reactivateBlockedNodeRunTx)
+// enqueued for nodeRunID — NodeSchedulingHandler.Handle needs no active
+// lease (unlike ExecuteNodeHandler's own claimableExecuteNodeJob), so this
+// builds a plain ports.DurableJob straight from the enqueued row.
+func claimableScheduleNodeRunJob(t *testing.T, uow *fake.UnitOfWork, nodeRunID string) ports.DurableJob {
+	t.Helper()
+	jobs := uow.Snapshot.Jobs().(*fake.JobsRepository).Items()
+	for _, job := range jobs {
+		if job.Kind == runtime.ScheduleNodeRunJobKind && job.AggregateID == nodeRunID {
+			return ports.DurableJob{ID: job.ID, AggregateType: job.AggregateType, AggregateID: job.AggregateID, Payload: job.Payload}
+		}
+	}
+	t.Fatalf("no %s job found for node run %s among %+v", runtime.ScheduleNodeRunJobKind, nodeRunID, jobs)
+	return ports.DurableJob{}
+}
+
 // TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld is V5-08's
 // own required test (the full RetryBlockedActivation command is V5-08D's
-// scope): after an admission-blocked Attempt's own cause is fixed, a new
-// NodeRun activation (fresh ID, ActivationSequence+1, same NodeKey) goes
-// through the ordinary ScheduleExecutableNodeRun pipeline unchanged and
-// gets its own new Attempt — the original BLOCKED Attempt is never
-// revived, mirroring reactivateBlockedNodeRunTx's own exact shape
-// (scope_expansion.go) for the OTHER blocker group.
+// scope): after an admission-blocked Attempt's own cause is fixed, a real
+// RetryBlockedActivationHandler.Retry call creates a new NodeRun activation
+// (fresh ID, ActivationSequence+1, same NodeKey) that goes through the
+// ordinary ScheduleExecutableNodeRun pipeline unchanged and gets its own
+// new Attempt — the original BLOCKED Attempt is never revived, mirroring
+// reactivateBlockedNodeRunTx's own exact shape (scope_expansion.go) for the
+// OTHER blocker group.
 func TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld(t *testing.T) {
 	uow, ids, runID, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{})
 	job := claimableExecuteNodeJob(t, uow, attemptID)
@@ -378,49 +396,50 @@ func TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld(t *testing.T) {
 	assertBlockedReason(t, uow, attemptID, nodeRunID, runtimedomain.TerminationReasonIsolationEnforcementUnavailable, workdomain.BlockerIsolationEnforcementUnavailable)
 
 	ctx := context.Background()
-	var blocked runtimedomain.NodeRun
-	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
-		var err error
-		blocked, err = tx.Runtime().GetNodeRun(ctx, nodeRunID)
-		return err
-	}); err != nil {
-		t.Fatalf("reload blocked node run: %v", err)
+
+	// The underlying cause is fixed (isolation is enforceable now, a
+	// non-blocking checker below) — Retry must create a new activation for
+	// the SAME node key and resolve the admission blocker.
+	retryHandler := runtime.NewRetryBlockedActivationHandler(uow, ids, fake.IsolationEnforcementChecker{}, registry)
+	retryResult, err := retryHandler.Retry(ctx, runtime.RetryBlockedActivationRequest{
+		NodeRunID: nodeRunID, Actor: "operator-1", Reason: "isolation enforcement is available now",
+	})
+	if err != nil {
+		t.Fatalf("Retry: %v", err)
+	}
+	if !retryResult.Retried || retryResult.ReactivatedNodeRunID == "" {
+		t.Fatalf("retryResult = %+v, want Retried with a ReactivatedNodeRunID", retryResult)
 	}
 
-	// The underlying cause is fixed (isolation is enforceable now) and a
-	// new activation is created for the SAME node key — mirroring
-	// reactivateBlockedNodeRunTx's own "mint a new NodeRunID, bump
-	// ActivationSequence, hand off to ScheduleExecutableNodeRun" shape.
-	newNodeRunID := ids.NewID()
-	var newActivation runtimedomain.NodeRun
-	if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
-		nodeRun, err := runtimedomain.NewNodeRun(
-			runtimedomain.NodeRunID(newNodeRunID), runtimedomain.WorkflowRunID(runID), blocked.NodeKey,
-			blocked.ActivationSequence+1, blocked.Iteration, blocked.EffectiveScope, blocked.InputStateHash, "",
-		)
+	scheduleJob := claimableScheduleNodeRunJob(t, uow, retryResult.ReactivatedNodeRunID)
+	schedulingHandler := runtime.NewNodeSchedulingHandler(uow, ids, fake.NewRuntimeExecutionConfigProvider())
+	if err := schedulingHandler.Handle(ctx, scheduleJob); err != nil {
+		t.Fatalf("NodeSchedulingHandler.Handle (retry): %v", err)
+	}
+
+	var retriedAttemptID string
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		attempts, err := tx.Runtime().ListExecutionAttemptsForRun(ctx, runID)
 		if err != nil {
 			return err
 		}
-		newActivation, err = tx.Runtime().CreateNodeRun(ctx, nodeRun)
-		return err
+		for _, a := range attempts {
+			if string(a.NodeRunID) == retryResult.ReactivatedNodeRunID {
+				retriedAttemptID = string(a.ID)
+			}
+		}
+		return nil
 	}); err != nil {
-		t.Fatalf("create retry activation: %v", err)
+		t.Fatalf("list attempts for reactivated node run: %v", err)
+	}
+	if retriedAttemptID == "" || retriedAttemptID == attemptID {
+		t.Fatalf("retriedAttemptID = %q, want a new, non-empty attempt id distinct from the blocked one %q", retriedAttemptID, attemptID)
 	}
 
-	retried, err := runtime.ScheduleExecutableNodeRun(ctx, uow, ids, fake.NewRuntimeExecutionConfigProvider(), runtime.ScheduleExecutableNodeRunRequest{
-		RunID: runID, NodeRunID: string(newActivation.ID), CorrelationID: "corr-retry",
-	})
-	if err != nil {
-		t.Fatalf("ScheduleExecutableNodeRun (retry): %v", err)
-	}
-	if retried.AttemptID == attemptID {
-		t.Fatal("retry must mint a new AttemptID, never reuse the blocked one")
-	}
-
-	retryJob := claimableExecuteNodeJob(t, uow, retried.AttemptID)
+	retryJob := claimableExecuteNodeJob(t, uow, retriedAttemptID)
 	retryExecutor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	retryHandler := runtime.NewExecuteNodeHandler(uow, ids, retryExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
-	if err := retryHandler.Handle(ctx, retryJob); err != nil {
+	retryExecuteHandler := runtime.NewExecuteNodeHandler(uow, ids, retryExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	if err := retryExecuteHandler.Handle(ctx, retryJob); err != nil {
 		t.Fatalf("Handle (retry): %v", err)
 	}
 	if retryExecutor.Calls != 1 {
@@ -439,6 +458,214 @@ func TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld(t *testing.T) {
 	}
 	if original.State != runtimedomain.ExecutionAttemptBlocked {
 		t.Fatalf("original attempt.State = %s, want it to remain BLOCKED (never revived)", original.State)
+	}
+
+	// The admission blocker itself must now be RESOLVED, and the WorkItem
+	// back to ACTIVE (the SAME Run resumes, it never stopped) — never
+	// READY (that would imply the Run that caused the block is gone).
+	var blockers []workdomain.WorkItemBlocker
+	var item workdomain.WorkItem
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		blockers, err = tx.Work().ListWorkItemBlockersForWorkItem(ctx, string(run.WorkItemID))
+		if err != nil {
+			return err
+		}
+		item, err = tx.Work().GetWorkItem(ctx, string(run.WorkItemID))
+		return err
+	}); err != nil {
+		t.Fatalf("reload blockers/work item: %v", err)
+	}
+	found := false
+	for _, blocker := range blockers {
+		if blocker.SourceAttemptID == attemptID {
+			found = true
+			if blocker.State != workdomain.BlockerResolved {
+				t.Fatalf("blocker.State = %s, want RESOLVED", blocker.State)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no blocker found for original attempt %s among %+v", attemptID, blockers)
+	}
+	if item.Status != workdomain.WorkItemActive {
+		t.Fatalf("work item status = %s, want ACTIVE (the same run resumes)", item.Status)
+	}
+
+	// A second call against the exact same, now-no-longer-BLOCKED NodeRun
+	// (a redelivery, or a second concurrent caller) must be an idempotent
+	// no-op — never a second reactivation, never an error.
+	secondResult, err := retryHandler.Retry(ctx, runtime.RetryBlockedActivationRequest{
+		NodeRunID: nodeRunID, Actor: "operator-1", Reason: "redelivered",
+	})
+	if err != nil {
+		t.Fatalf("second Retry: %v", err)
+	}
+	if !secondResult.AlreadyRetried || secondResult.Retried {
+		t.Fatalf("second Retry result = %+v, want AlreadyRetried, not a second Retried", secondResult)
+	}
+}
+
+// TestRetryBlockedActivation_RevalidationStillFails_NoRepeatedBlockedActivation
+// proves this task's own locked requirement: a retry that still fails
+// leaves the existing blocker exactly as it was and creates no new
+// activation at all — repeated 5 times, never producing a chain of blocked
+// activations or more than one OPEN blocker.
+func TestRetryBlockedActivation_RevalidationStillFails_NoRepeatedBlockedActivation(t *testing.T) {
+	uow, ids, runID, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{})
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+
+	blockingChecker := fake.IsolationEnforcementChecker{Err: errors.New("still no real OS enforcement")}
+	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, blockingChecker, registry)
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle (blocked): %v", err)
+	}
+	assertBlockedReason(t, uow, attemptID, nodeRunID, runtimedomain.TerminationReasonIsolationEnforcementUnavailable, workdomain.BlockerIsolationEnforcementUnavailable)
+
+	ctx := context.Background()
+	var nodeRunsBefore []runtimedomain.NodeRun
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		nodeRunsBefore, err = tx.Runtime().ListNodeRunsForRun(ctx, runID)
+		return err
+	}); err != nil {
+		t.Fatalf("list node runs before retries: %v", err)
+	}
+
+	retryHandler := runtime.NewRetryBlockedActivationHandler(uow, ids, blockingChecker, registry)
+	for i := 0; i < 5; i++ {
+		result, err := retryHandler.Retry(ctx, runtime.RetryBlockedActivationRequest{
+			NodeRunID: nodeRunID, Actor: "operator-1", Reason: "attempting retry",
+		})
+		if err != nil {
+			t.Fatalf("Retry attempt %d: %v", i, err)
+		}
+		if result.Retried || result.AlreadyRetried {
+			t.Fatalf("Retry attempt %d result = %+v, want a still-failing (non-retried) result", i, result)
+		}
+		if result.FailureReason != runtimedomain.TerminationReasonIsolationEnforcementUnavailable {
+			t.Fatalf("Retry attempt %d FailureReason = %s, want ISOLATION_ENFORCEMENT_UNAVAILABLE", i, result.FailureReason)
+		}
+	}
+
+	var nodeRuns []runtimedomain.NodeRun
+	var blockers []workdomain.WorkItemBlocker
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		nodeRuns, err = tx.Runtime().ListNodeRunsForRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		blockers, err = tx.Work().ListWorkItemBlockersForWorkItem(ctx, string(run.WorkItemID))
+		return err
+	}); err != nil {
+		t.Fatalf("reload node runs/blockers: %v", err)
+	}
+	if len(nodeRuns) != len(nodeRunsBefore) {
+		t.Fatalf("node runs for this run = %d, want unchanged from before the retries (%d) — no new activation ever created by a failing retry", len(nodeRuns), len(nodeRunsBefore))
+	}
+	openCount := 0
+	for _, blocker := range blockers {
+		if blocker.State == workdomain.BlockerOpen {
+			openCount++
+		}
+	}
+	if openCount != 1 {
+		t.Fatalf("open blockers = %d, want exactly 1 (5 failing retries must never open a second blocker)", openCount)
+	}
+}
+
+// TestRetryBlockedActivation_RunNotRetryable_Rejected proves the "cancel
+// fence": a retry against a Run that has already left RUNNING/WAITING
+// (CANCELLING here) is rejected outright — reactivating now would create
+// orphaned work with nothing left to route it into.
+func TestRetryBlockedActivation_RunNotRetryable_Rejected(t *testing.T) {
+	uow, ids, runID, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{})
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+
+	blockingChecker := fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}
+	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, blockingChecker, registry)
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle (blocked): %v", err)
+	}
+	assertBlockedReason(t, uow, attemptID, nodeRunID, runtimedomain.TerminationReasonIsolationEnforcementUnavailable, workdomain.BlockerIsolationEnforcementUnavailable)
+
+	ctx := context.Background()
+	if _, err := runtime.CancelRun(ctx, uow, ids, runtime.CancelRunRequest{RunID: runID, Actor: "actor-1", Reason: "test cancel"}); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+
+	retryHandler := runtime.NewRetryBlockedActivationHandler(uow, ids, fake.IsolationEnforcementChecker{}, registry)
+	if _, err := retryHandler.Retry(ctx, runtime.RetryBlockedActivationRequest{
+		NodeRunID: nodeRunID, Actor: "operator-1", Reason: "isolation now enforceable",
+	}); !errors.Is(err, runtime.ErrRunNotRetryable) {
+		t.Fatalf("Retry err = %v, want ErrRunNotRetryable", err)
+	}
+}
+
+// TestRetryBlockedActivation_AdapterDrift_NeverRepinsToNewerBuild proves
+// this task's own locked "không repin Run": once a NodeRun is BLOCKED
+// because its own pinned AdapterBuildVersion drifted, registering a
+// SECOND, perfectly valid, non-drifting build afterward has zero effect on
+// a retry — Retry only ever re-probes the SAME immutable pin
+// loadExecutionProfile reads back, never substitutes a newer one.
+func TestRetryBlockedActivation_AdapterDrift_NeverRepinsToNewerBuild(t *testing.T) {
+	executablePath := writeAdmissionExecutable(t, "binary-v1")
+	capabilities := ports.AgentCapabilities{
+		Provider: ports.ProviderClaude, AdapterVersion: "claude-stream-json/v1", ProtocolVersion: "claude-stream-json/v1",
+		SupportsStart: true, SupportsResume: true, SupportsCancel: true,
+	}
+	originalBuild := admissionPinnedBuild(t, executablePath, capabilities)
+
+	uow, ids, _, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{adapterBuild: &originalBuild})
+
+	// Drift: the executable changes after the build was pinned and
+	// scheduled — the SAME drift TestAdmission_AdapterBuildDrift_BlocksBeforeSpawn
+	// induces.
+	if err := os.WriteFile(executablePath, []byte("binary-v2-swapped"), 0o755); err != nil {
+		t.Fatalf("swap fixture: %v", err)
+	}
+
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle (blocked): %v", err)
+	}
+	assertBlockedReason(t, uow, attemptID, nodeRunID, runtimedomain.TerminationReasonAdapterBuildDrift, workdomain.BlockerAdapterBuildDrift)
+
+	ctx := context.Background()
+
+	// A second, perfectly valid, non-drifting build now exists — a
+	// well-intentioned operator might expect a retry to pick this up.
+	// It must not: RetryBlockedActivation re-probes the ORIGINAL pin only.
+	newExecutablePath := writeAdmissionExecutable(t, "binary-v3-fresh-and-valid")
+	newBuild := admissionPinnedBuild(t, newExecutablePath, capabilities)
+	if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		_, _, err := tx.AdapterBuilds().InsertIfAbsent(ctx, newBuild)
+		return err
+	}); err != nil {
+		t.Fatalf("register second build: %v", err)
+	}
+
+	retryHandler := runtime.NewRetryBlockedActivationHandler(uow, ids, fake.IsolationEnforcementChecker{}, registry)
+	result, err := retryHandler.Retry(ctx, runtime.RetryBlockedActivationRequest{
+		NodeRunID: nodeRunID, Actor: "operator-1", Reason: "a newer build now exists",
+	})
+	if err != nil {
+		t.Fatalf("Retry: %v", err)
+	}
+	if result.Retried {
+		t.Fatal("Retry succeeded, want it to still fail — the drifted ORIGINAL pin was never replaced by the newer build")
+	}
+	if result.FailureReason != runtimedomain.TerminationReasonAdapterBuildDrift {
+		t.Fatalf("result.FailureReason = %s, want ADAPTER_BUILD_DRIFT (the original pin is still drifted)", result.FailureReason)
 	}
 }
 
