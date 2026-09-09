@@ -129,6 +129,15 @@ type Config struct {
 	Checkpoints CheckpointStore
 	IDs         idsource.Source
 	Clock       clock.Clock
+	// JobLease/WriteLeases fence every write this Sink makes — V5-08B audit
+	// finding (2026-09-09, deferred from V5-08A): a worker that already
+	// lost its own JobLease or a mount's own WriteLease must never keep
+	// persisting events/checkpoints as if it were still authoritative,
+	// exactly the same GC-INV-17/18 guarantee FinalizeExecutionAttempt
+	// already enforces for the terminal transition. Required — NewSink
+	// fails closed if either is missing.
+	JobLease    ports.JobLease
+	WriteLeases []ports.WriteLeaseGrant
 }
 
 // Sink is V5-08A's real ports.AgentEventSink: normalize+validate through
@@ -152,6 +161,8 @@ type Sink struct {
 	checkpoints       CheckpointStore
 	ids               idsource.Source
 	clk               clock.Clock
+	jobLease          ports.JobLease
+	writeLeases       []ports.WriteLeaseGrant
 
 	mu            sync.Mutex
 	lastSequence  uint64
@@ -170,6 +181,9 @@ func NewSink(ctx context.Context, cfg Config) (*Sink, error) {
 	}
 	if cfg.Workspaces == nil || cfg.Registry == nil || cfg.UOW == nil || cfg.Checkpoints == nil || cfg.IDs == nil || cfg.Clock == nil {
 		return nil, errors.New("agentevents: Workspaces, Registry, UOW, Checkpoints, IDs and Clock are all required")
+	}
+	if cfg.JobLease.JobID == "" {
+		return nil, errors.New("agentevents: JobLease is required — every write this Sink makes must be fenced against the job driving this Attempt")
 	}
 
 	mountedRepositories := make(map[project.RepositoryID]struct{}, len(cfg.Mounts))
@@ -195,7 +209,26 @@ func NewSink(ctx context.Context, cfg Config) (*Sink, error) {
 		runID: cfg.RunID, nodeRunID: cfg.NodeRunID, attemptID: cfg.AttemptID, contextSnapshotID: cfg.ContextSnapshotID,
 		effectiveScope: cfg.EffectiveScope, mounts: baselines, workspaces: cfg.Workspaces, registry: cfg.Registry,
 		matcher: cfg.Matcher, uow: cfg.UOW, checkpoints: cfg.Checkpoints, ids: cfg.IDs, clk: cfg.Clock,
+		jobLease: cfg.JobLease, writeLeases: append([]ports.WriteLeaseGrant(nil), cfg.WriteLeases...),
 	}, nil
+}
+
+// validateFencingLocked re-checks JobLease and every WriteLeaseGrant this
+// Sink was constructed with are still authoritative — GC-INV-17/18 made
+// real for Sink's own writes (audit finding, 2026-09-09, deferred from
+// V5-08A): a worker that already lost its own lease must never keep
+// persisting events/checkpoints as if nothing changed, the exact case
+// FinalizeExecutionAttempt already fences for the terminal transition.
+func (s *Sink) validateFencingLocked(ctx context.Context, tx ports.Tx) error {
+	if err := tx.Jobs().ValidateActiveJob(ctx, s.jobLease, "ExecutionAttempt", s.attemptID); err != nil {
+		return err
+	}
+	for _, grant := range s.writeLeases {
+		if err := tx.Runtime().ValidateWriteLeaseFencing(ctx, s.jobLease, grant); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 var _ ports.AgentEventSink = (*Sink)(nil)
@@ -317,6 +350,9 @@ func (s *Sink) flushLocked(ctx context.Context) error {
 	}
 	batch := s.buffer
 	if err := s.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		if err := s.validateFencingLocked(ctx, tx); err != nil {
+			return err
+		}
 		return tx.AgentEvents().AppendBatch(ctx, batch)
 	}); err != nil {
 		return err
@@ -364,6 +400,19 @@ func (s *Sink) captureCheckpointLocked(ctx context.Context, triggeringEvent port
 	)
 	if err != nil {
 		return fmt.Errorf("agentevents: build checkpoint: %w", err)
+	}
+	// StoreCheckpoint (checkpoint_store.go) is legacy, autocommit-only — not
+	// ports.Tx-composable — so this fencing re-check cannot be atomic with
+	// the write itself the way flushLocked's own check is. A real, narrow
+	// TOCTOU window remains between this read-only check and the write
+	// immediately below; accepted here (rather than left completely
+	// unchecked, the audit finding this closes) because closing it fully
+	// would require promoting checkpoint storage onto ports.Tx, out of this
+	// task's own scope.
+	if err := s.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		return s.validateFencingLocked(ctx, tx)
+	}); err != nil {
+		return err
 	}
 	_, err = s.checkpoints.StoreCheckpoint(ctx, checkpoint)
 	if err != nil {

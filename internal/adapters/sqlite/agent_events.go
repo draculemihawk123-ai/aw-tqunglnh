@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -35,11 +36,19 @@ func (r agentEventsRepository) AppendBatch(ctx context.Context, records []ports.
 			return fmt.Errorf("%w: agent event payload is %d bytes, exceeds the %d byte limit",
 				ErrAgentEventPayloadTooLarge, len(record.PayloadJSON), maxAgentEventPayloadBytes)
 		}
+		artifactRefs := record.ArtifactRefs
+		if artifactRefs == nil {
+			artifactRefs = []string{}
+		}
+		artifactRefsJSON, err := json.Marshal(artifactRefs)
+		if err != nil {
+			return fmt.Errorf("marshal agent event artifact refs: %w", err)
+		}
 		if _, err := r.tx.ExecContext(ctx, `
 INSERT INTO agent_events (id, attempt_id, sequence, kind, schema_version, payload_json, artifact_refs_json, created_at)
-VALUES (?, ?, ?, ?, ?, ?, '[]', ?)`,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 			record.ID, record.AttemptID, record.Sequence, record.Kind, record.SchemaVersion, record.PayloadJSON,
-			formatWorkflowTime(record.CreatedAt),
+			string(artifactRefsJSON), formatWorkflowTime(record.CreatedAt),
 		); err != nil {
 			return MapSQLiteError(fmt.Errorf("append agent event: %w", err))
 		}
@@ -49,7 +58,7 @@ VALUES (?, ?, ?, ?, ?, ?, '[]', ?)`,
 
 func (r agentEventsRepository) ListByAttempt(ctx context.Context, attemptID string) ([]ports.AgentEventRecord, error) {
 	rows, err := r.tx.QueryContext(ctx, `
-SELECT id, attempt_id, sequence, kind, schema_version, payload_json, created_at
+SELECT id, attempt_id, sequence, kind, schema_version, payload_json, artifact_refs_json, created_at
 FROM agent_events
 WHERE attempt_id = ?
 ORDER BY sequence ASC`, attemptID)
@@ -61,12 +70,18 @@ ORDER BY sequence ASC`, attemptID)
 	var records []ports.AgentEventRecord
 	for rows.Next() {
 		var (
-			record    ports.AgentEventRecord
-			createdAt string
+			record           ports.AgentEventRecord
+			artifactRefsJSON string
+			createdAt        string
 		)
-		if err := rows.Scan(&record.ID, &record.AttemptID, &record.Sequence, &record.Kind, &record.SchemaVersion, &record.PayloadJSON, &createdAt); err != nil {
+		if err := rows.Scan(&record.ID, &record.AttemptID, &record.Sequence, &record.Kind, &record.SchemaVersion, &record.PayloadJSON, &artifactRefsJSON, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan agent event: %w", err)
 		}
+		var artifactRefs []string
+		if err := json.Unmarshal([]byte(artifactRefsJSON), &artifactRefs); err != nil {
+			return nil, fmt.Errorf("decode agent event artifact refs: %w", err)
+		}
+		record.ArtifactRefs = artifactRefs
 		parsed, err := parseWorkflowTime(createdAt)
 		if err != nil {
 			return nil, err

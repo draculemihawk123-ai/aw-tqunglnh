@@ -66,11 +66,36 @@ func newTestSink(t *testing.T, checkpoints agentevents.CheckpointStore, matcher 
 		RunID: "run-1", NodeRunID: "node-run-1", AttemptID: "attempt-1", ContextSnapshotID: "snapshot-1",
 		Workspaces: &fakeWorkspaceProvider{}, Registry: registry, Matcher: matcher,
 		UOW: uow, Checkpoints: checkpoints, IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)),
+		JobLease: testJobLease(t, uow, "attempt-1"),
 	})
 	if err != nil {
 		t.Fatalf("NewSink: %v", err)
 	}
 	return sink, uow
+}
+
+// testJobLease enqueues a fake durable job scoped to (ExecutionAttempt,
+// attemptID) and marks it actively leased by "worker-1" — the minimal
+// fixture every Sink now requires (V5-08B audit finding, 2026-09-09,
+// deferred from V5-08A: NewSink fails closed without a JobLease, since a
+// worker that already lost its own job must never keep persisting
+// events/checkpoints as if it were still authoritative).
+func testJobLease(t *testing.T, uow *fake.UnitOfWork, attemptID string) ports.JobLease {
+	t.Helper()
+	jobID := ports.JobID("job-" + attemptID)
+	if err := uow.WithSerializedWrite(context.Background(), func(tx ports.Tx) error {
+		_, err := tx.Jobs().EnqueueJob(context.Background(), ports.EnqueueJobRequest{
+			ID: jobID, ProjectID: "project-1", Kind: "EXECUTE_NODE",
+			AggregateType: "ExecutionAttempt", AggregateID: attemptID,
+			IdempotencyKey: "idem-" + attemptID,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("EnqueueJob: %v", err)
+	}
+	lease := ports.JobLease{JobID: jobID, Owner: "worker-1", Token: 1, LeaseUntil: time.Now().Add(time.Hour)}
+	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(jobID), lease)
+	return lease
 }
 
 func agentEventRows(t *testing.T, uow *fake.UnitOfWork, attemptID string) []ports.AgentEventRecord {
@@ -271,6 +296,7 @@ func TestSink_CheckpointProposed_PropagatesWorkspaceDiffError(t *testing.T) {
 		Mounts:     []agentevents.Mount{{RepositoryID: "repo-1"}},
 		Workspaces: &fakeWorkspaceProvider{err: boom}, Registry: registry, Matcher: redact.NewMatcher(),
 		UOW: uow, Checkpoints: checkpoints, IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Now()),
+		JobLease: testJobLease(t, uow, "attempt-1"),
 	})
 	if err != nil {
 		t.Fatalf("NewSink: %v", err)
@@ -294,6 +320,42 @@ func TestSink_Accept_RejectsEventForWrongAttempt(t *testing.T) {
 	err := sink.Accept(context.Background(), ports.AgentEvent{AttemptID: "attempt-2", Sequence: 1, Kind: ports.AgentEventExecutionStarted})
 	if !errors.Is(err, agentevents.ErrWrongAttempt) {
 		t.Fatalf("accept event for a different attempt error = %v, want ErrWrongAttempt", err)
+	}
+}
+
+// TestSink_Flush_RejectsWhenJobLeaseFenced is V5-08B's own audit finding fix
+// (deferred from V5-08A, 2026-09-09): flushLocked must never keep persisting
+// events as if this Sink were still authoritative once its own JobLease has
+// been fenced — here, simulated by another worker re-claiming the identical
+// job (a real ClaimJob bumps owner/token exactly like this). Every other
+// test in this file only exercises the "lease still valid" path; this is the
+// one proving validateFencingLocked actually rejects, not just accepts.
+func TestSink_Flush_RejectsWhenJobLeaseFenced(t *testing.T) {
+	sink, uow := newTestSink(t, &fakeCheckpointStore{}, redact.NewMatcher())
+	ctx := context.Background()
+	if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: "attempt-1", Sequence: 1, Kind: ports.AgentEventExecutionStarted}); err != nil {
+		t.Fatalf("accept event: %v", err)
+	}
+
+	jobs := uow.Snapshot.Jobs().(*fake.JobsRepository).Items()
+	var jobID ports.JobID
+	for _, job := range jobs {
+		if job.AggregateType == "ExecutionAttempt" && job.AggregateID == "attempt-1" {
+			jobID = job.ID
+			break
+		}
+	}
+	if jobID == "" {
+		t.Fatal("no job found for attempt-1")
+	}
+	stolen := ports.JobLease{JobID: jobID, Owner: "worker-2", Token: 2, LeaseUntil: time.Now().Add(time.Hour)}
+	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(jobID), stolen)
+
+	if err := sink.Flush(ctx); !errors.Is(err, ports.ErrJobLeaseLost) {
+		t.Fatalf("Flush after JobLease fenced error = %v, want ErrJobLeaseLost", err)
+	}
+	if rows := agentEventRows(t, uow, "attempt-1"); len(rows) != 0 {
+		t.Fatalf("rows persisted despite a fenced JobLease = %d, want 0", len(rows))
 	}
 }
 
@@ -333,6 +395,7 @@ func TestSink_Flush_RetainsBufferOnCommitFailure(t *testing.T) {
 		RunID: "run-1", NodeRunID: "node-run-1", AttemptID: "attempt-1", ContextSnapshotID: "snapshot-1",
 		Workspaces: &fakeWorkspaceProvider{}, Registry: registry, Matcher: redact.NewMatcher(),
 		UOW: failing, Checkpoints: &fakeCheckpointStore{}, IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Now()),
+		JobLease: testJobLease(t, realUOW, "attempt-1"),
 	})
 	if err != nil {
 		t.Fatalf("NewSink: %v", err)
@@ -380,6 +443,7 @@ func TestNewSink_RejectsEffectiveScopeRepositoryWithoutMount(t *testing.T) {
 		EffectiveScope: []work.RepositoryScope{scope}, // no Mount for "repo-1"
 		Workspaces:     &fakeWorkspaceProvider{}, Registry: registry, Matcher: redact.NewMatcher(),
 		UOW: uow, Checkpoints: &fakeCheckpointStore{}, IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Now()),
+		JobLease: testJobLease(t, uow, "attempt-1"),
 	})
 	if !errors.Is(err, agentevents.ErrMissingMount) {
 		t.Fatalf("NewSink error = %v, want ErrMissingMount", err)

@@ -69,6 +69,28 @@ func sqliteSinkFixture(t *testing.T) (store *sqlite.Store, uow ports.UnitOfWork,
 	return dbStore, sqlite.NewUnitOfWork(dbStore), "wf-run-" + sqliteFixtureAttemptID, "node-run-" + sqliteFixtureAttemptID, sqliteFixtureAttemptID
 }
 
+// testSQLiteJobLease enqueues a real durable job scoped to (ExecutionAttempt,
+// attemptID) against store and claims it — the real-adapter twin of
+// sink_test.go's own fake-backed testJobLease, the minimal fixture every
+// Sink now requires (V5-08B audit finding, 2026-09-09, deferred from
+// V5-08A: NewSink fails closed without a JobLease).
+func testSQLiteJobLease(t *testing.T, store *sqlite.Store, attemptID string) ports.JobLease {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := store.EnqueueJob(ctx, ports.EnqueueJobRequest{
+		ID: ports.JobID("job-" + attemptID), ProjectID: "proj-1", Kind: "EXECUTE_NODE",
+		AggregateType: "ExecutionAttempt", AggregateID: attemptID,
+		IdempotencyKey: "idem-" + attemptID, MaxClaims: 1,
+	}); err != nil {
+		t.Fatalf("EnqueueJob: %v", err)
+	}
+	_, lease, err := store.ClaimJob(ctx, "worker-1", time.Hour)
+	if err != nil {
+		t.Fatalf("ClaimJob: %v", err)
+	}
+	return lease
+}
+
 func newRealRegistry() *eventschema.Registry {
 	registry := eventschema.NewRegistry()
 	agentevents.RegisterEventSchemas(registry)
@@ -88,6 +110,7 @@ func TestSinkSQLite_CheckpointRestart(t *testing.T) {
 		Workspaces: &fakeWorkspaceProvider{},
 		Registry:   newRealRegistry(), Matcher: redact.NewMatcher(), UOW: uow, Checkpoints: store,
 		IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)),
+		JobLease: testSQLiteJobLease(t, store, attemptID),
 	})
 	if err != nil {
 		t.Fatalf("NewSink: %v", err)
@@ -137,6 +160,7 @@ func TestSinkSQLite_SecretFixtureSearchIsZero(t *testing.T) {
 		Workspaces: &fakeWorkspaceProvider{},
 		Registry:   newRealRegistry(), Matcher: redact.NewMatcher(secret), UOW: uow, Checkpoints: store,
 		IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Now()),
+		JobLease: testSQLiteJobLease(t, store, attemptID),
 	})
 	if err != nil {
 		t.Fatalf("NewSink: %v", err)
@@ -205,6 +229,7 @@ func TestSinkSQLite_DiffExceedsEffectiveScope(t *testing.T) {
 		Mounts:     []agentevents.Mount{{RepositoryID: "repo-1", Handle: handle}},
 		Workspaces: provider, Registry: newRealRegistry(), Matcher: redact.NewMatcher(),
 		UOW: uow, Checkpoints: store, IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Now()),
+		JobLease: testSQLiteJobLease(t, store, attemptID),
 	})
 	if err != nil {
 		t.Fatalf("NewSink: %v", err)
@@ -244,6 +269,7 @@ func TestSinkSQLite_RealisticEventSequenceEndToEnd(t *testing.T) {
 		Workspaces: &fakeWorkspaceProvider{},
 		Registry:   newRealRegistry(), Matcher: redact.NewMatcher(), UOW: uow, Checkpoints: store,
 		IDs: idsource.NewSequential("evt"), Clock: clock.NewFixed(time.Now()),
+		JobLease: testSQLiteJobLease(t, store, attemptID),
 	})
 	if err != nil {
 		t.Fatalf("NewSink: %v", err)

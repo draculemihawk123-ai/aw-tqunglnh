@@ -1667,3 +1667,350 @@ này được tạo), xử lý bằng cách nối các mục theo đúng thứ t
 mọi lần trước trong phiên này. Task kế tiếp trong remediation pass: JobLease/WriteLease fencing +
 checkpoint completeness (SharedStateHash/ArtifactRefs thật) — hoãn cho V5-08B tự làm cùng lúc với
 "evidence fencing" design của chính nó, theo đúng quyết định user ở trên.
+
+## V5-08B — Fenced finalize cho AGENT node (branch `feat/v5-08b-implementation`)
+
+**Ghi chú nguồn:** nghiên cứu và quyết định thiết kế đầy đủ của task này (mục "Quyết định sau review
+source of truth — 2026-09-08" bên dưới) ban đầu được viết trên nhánh `feat/v5-08b-fenced-finalize-agent`
+(commit tài liệu `c14c7ff`, trước khi repo migrate sang `zlinh4605/agent-workflow`) nhưng CHƯA TỪNG merge
+vào `master` — nhánh đó dừng lại ngay sau V5-08A (`7b821fa`), không có bất kỳ code hay remediation nào
+sau đó (V5-02..V5-08A remediation, V5-08B0, fix race `workspaceprovision` đều KHÔNG có trên nhánh đó).
+Nhánh triển khai thật (`feat/v5-08b-implementation`) được tạo mới từ `master` hiện tại (đã có đủ toàn bộ
+remediation + V5-08B0 merge), nên toàn bộ nội dung nghiên cứu/quyết định dưới đây được chép nguyên văn
+sang đây trước khi tiếp tục code — nếu không chép lại, quyết định gốc sẽ chỉ còn sống trên một nhánh cục
+bộ không bao giờ merge, và PR thật của V5-08B sẽ không có nguồn nào giải thích các lựa chọn thiết kế của
+chính nó.
+
+**Nghiên cứu trước khi code** (Explore agent) phát hiện task này lớn/mơ hồ hơn nhiều so với 5 dòng
+"Thực hiện" của chính nó — tóm tắt những điểm quan trọng nhất:
+- `FinalizeExecutionAttempt` (`internal/app/runtime/finalize.go`) hiện đã fence JobLease
+  (`ValidateActiveJob`), WriteLease (`ValidateWriteLeaseFencing`, bao gồm cả generation — SQL đã
+  join `write_leases`↔`repository_workspaces` và so `generation`, ĐÃ hoạt động, không cần code mới),
+  và attempt version (CAS `ExpectedVersion`). **Chưa có** field/check nào cho diff-scope hay evidence.
+  Allow-list cho `SelectedOutcome` (GC-INV-11) đã được enforce ở tầng dưới (`advanceRunTx`), không phải
+  trong `FinalizeExecutionAttempt` — bridge chỉ cần không tự ý bypass đường đó.
+- `ports.NodeExecutor.Execute(ctx, NodeExecutionRequest) (NodeExecutionResult, error)` — 1 lệnh gọi
+  blocking, không có field Prompt/session ref nào cả. `NodeExecutionRequest` chỉ có
+  AttemptID/NodeRunID/RunID/ExecutorKind/ExecutionProfileHash.
+- **Provider key thật để chọn claude/codex nằm ở `ResolvedExecutionProfileV1.ProviderKey` (field cấp
+  cao, không phải `Executor.Kind` — cái đó chỉ là AGENT/COMMAND/MACHINE_GATE)** — đã pin sẵn, chỉ cần
+  decode thêm vào `resolvedExecutionProfileView` (1 dòng), không phải xây mới.
+- WorkingDirectory/WorkspaceMounts thật: `RepositoryWorkspace.Locator` CHÍNH LÀ chuỗi token của
+  `WorkspaceHandle` — `ports.NewWorkspaceHandle(rw.Locator)` dựng lại được ngay, không cần re-provision.
+  `gitworktree.Provider.WorkingDirectory` đã là "sanctioned bridge" từ handle sang cwd thật. Nhưng
+  **generation bị hardcode = 1 ở MỌI production writer thật** — chưa ai từng test một generation lệch
+  thật.
+- **Lỗ hổng lớn nhất, không nằm trong đề bài:** không có function nào chuyển `contextsnapshot.Snapshot`
+  (V5-04 — chỉ có MessageRefs/ResourceRefs/ContentHash, không text inline) thành request thực thi thật.
+  `renderCanonicalSnapshot` duy nhất đang có nhắm sai type (`runtime.ContextSnapshot` — type thoái hóa,
+  chính package doc của `contextsnapshot` tự ghi "confirmed unused by the real scheduling/dispatch
+  path"). MessageRefs có thể resolve qua Message→ContentArtifactID→ArtifactStore; ResourceRefs hiện còn
+  thiếu `OwnerVersionID` so với identity bắt buộc của ADR-012. `contextassembler` chỉ là pure resolver,
+  không sở hữu content store: resource content thật phải được load từ exact published DefinitionVersion,
+  tìm theo ResourceKey rồi tính lại ContentHash. Ngoài ra `ports.AgentExecutionRequest` hiện thiếu phần
+  lớn minimum contract ở go-core-spec §14, nên một `PromptRenderer` đơn lẻ không đóng được lỗ hổng này.
+  (Lỗ hổng này đã được đóng riêng bởi V5-08B0, merge trước khi nhánh này được tạo.)
+- "Evidence" trong finalize chưa có contract production. Checkpoint V5-08A hiện chưa gắn diff/output
+  artifact và một checkpoint bất kỳ giữa chừng không đủ chứng minh terminal proposal. Artifact lifecycle
+  đã có primitive `ORPHAN → ATTACHED`; V5-08B phải compose primitive đó với completion checkpoint và
+  fenced finalize thay vì xem "checkpoint count ≥ 1" là evidence policy.
+- "Provider loss" không có `TerminationReason` riêng, nhưng đã có `CodeProviderUnavailable`; ADR-020
+  cố ý tách `TerminationReason` khỏi `AppError.Code` và khóa state–reason matrix. Vì vậy thiếu một reason
+  mới không đồng nghĩa thiếu vocabulary để phân loại provider loss.
+  `TerminationReasonScopeViolation` đã reserved từ ADR-020 nhưng CHƯA CÓ producer nào — rất có thể
+  V5-08B là nơi đầu tiên sinh ra nó (lỗi `scopeguard.ErrScopeViolation` đã được `agentevents.Sink` phát
+  hiện giữa chừng ở mỗi checkpoint từ V5-08A, bubble ngược qua `Start`/`Resume` của cả claude.go lẫn
+  codex.go — chỉ cần map đúng reason ở finalize, không phải phát hiện lại từ đầu).
+- **Không có composition root thật nào** (`cmd/agentkit serve`/`worker` vẫn là stub trống, không nơi
+  nào wire `ExecuteNodeHandler`+`workerpool.Pool`+adapter thật với nhau ngoài test) — khớp đúng pattern
+  mọi task V4/V5 trước giờ (library code + test, không đụng `cmd/`), nên đây là giả định làm việc, không
+  phải câu hỏi cần hỏi lại.
+
+**Bốn câu hỏi lịch sử đã hỏi user qua AskUserQuestion:** user chủ động dismiss cả 4 (không chọn option
+nào) và yêu cầu ghi lại vào file. Các option dưới đây được giữ nguyên để audit, kể cả nhãn "khuyến nghị";
+chúng là tham khảo tại thời điểm đó, không phải quyết định triển khai. Quyết định sau khi review kỹ nằm
+ở mục kế tiếp.
+
+1. **Phạm vi dựng prompt thật cho V5-08B đến đâu?** (câu hỏi quan trọng nhất, ảnh hưởng lớn nhất tới
+   kích thước task)
+   - *Đề xuất A (khuyến nghị):* Renderer tối thiểu — chỉ resolve MessageRefs→Message→ContentArtifactID→
+     byte thật qua ArtifactStore, nối theo thứ tự ref. ResourceRefs bị chặn rõ ràng (lỗi nếu snapshot có
+     ResourceRefs, không âm thầm bỏ qua) — đủ để bridge gọi executor thật và test end-to-end cho trường
+     hợp phổ biến, không nuốt luôn bài toán tích hợp contextassembler.
+   - *Đề xuất B:* Renderer đầy đủ — resolve cả ResourceRefs qua contextassembler's own content store,
+     một renderer production-grade hoàn chỉnh ngay trong task này.
+   - *Đề xuất C:* Ngoài phạm vi — chỉ định nghĩa interface `PromptRenderer`, dùng fake trong test của
+     chính V5-08B; một task riêng sau này mới xây renderer thật.
+
+2. **Định nghĩa "evidence fencing" trong finalize?**
+   - *Đề xuất A (khuyến nghị):* Yêu cầu tối thiểu 1 Checkpoint thật tồn tại cho Attempt này
+     (`checkpoints.LoadLatestCheckpoint`) trước khi chấp nhận SUCCEEDED — checkpoint chính là evidence
+     trail durable (Revisions/SharedStateHash đã pin theo GC-INV-20). Không cần xây Artifact lifecycle
+     mới nào.
+   - *Đề xuất B:* Xây đường Orphan→Attached thật cho Artifact liên quan (diff/output) — đúng như doc
+     comment V5-01 gợi ý, nhưng phức tạp hơn đáng kể.
+   - *Đề xuất C:* Bỏ qua evidence fencing ở V5-08B, để lại hoàn toàn cho task sau (V5-10/V5-11).
+
+3. **Finalize có nên tự đo lại diff (real I/O, ngoài transaction) một lần nữa trước khi commit
+   SUCCEEDED, hay chỉ dựa vào lỗi `scopeguard.ErrScopeViolation` đã bubble sẵn từ `agentevents.Sink`'s
+   own mid-run checkpoint check?**
+   - *Đề xuất A (khuyến nghị):* Đo lại thật — gọi `WorkspaceProvider.Diff` cho mỗi mount ngay trước khi
+     mở finalize transaction (two-phase pattern giống hệt admission probe: I/O thật ngoài transaction,
+     quyết định trong transaction) — đóng khoảng hở giữa checkpoint cuối cùng và lúc process thật sự
+     thoát, provider có thể ghi thêm ngoài scope trong khoảng đó mà không ai bắt nếu chỉ dựa vào Sink.
+   - *Đề xuất B:* Chỉ dựa vào lỗi bubble từ Sink, không đo thêm — đơn giản hơn nhưng để hở khoảng thời
+     gian đó.
+
+4. **"Provider loss" (nêu trong Verify của V5-08B) cần `TerminationReason` mới hay tái dùng
+   `EXECUTION_FAILED`?**
+   - *Đề xuất A (khuyến nghị):* `TerminationReason` mới (ví dụ `PROVIDER_LOST`) cho trường hợp process/
+     kết nối executor chết/mất xác nhận được — khác với FAILED thông thường provider tự report, khớp
+     tinh thần GC-INV-18 ("exit code 0 không tự tạo success").
+   - *Đề xuất B:* Tái dùng `EXECUTION_FAILED`/`CodeExecutionFailed` fallback hiện có, không thêm reason
+     mới.
+
+**Trạng thái tại thời điểm commit `c14c7ff`:** KHÔNG có code nào được viết cho V5-08B; commit chỉ ghi
+nghiên cứu và bốn câu hỏi trên. Trạng thái chờ trả lời này đã được thay thế bởi quyết định ngày
+2026-09-08 dưới đây.
+
+### Quyết định sau review source of truth — 2026-09-08
+
+Không chọn nguyên xi option A/B/C nào ở trên. Quyết định dựa trên ADR đã accepted, go-core-spec,
+roadmap V5 và code production hiện tại; nhãn "khuyến nghị" cũ không có authority cao hơn các nguồn đó.
+
+#### 1. Request/prompt thật: tạo prerequisite "Canonical AgentExecutionRequest assembly"
+
+Tách một prerequisite độc lập, tên làm việc `V5-08B0 — Canonical AgentExecutionRequest assembly`, rồi
+để V5-08B phụ thuộc vào nó. Đây không phải chia task theo file: nó là một contract/schema boundary độc
+lập và có thể verify riêng. Option A không đủ vì chỉ render MessageRefs, từ chối ResourceRefs và không
+tạo toàn bộ request; option B mô tả sai `contextassembler` như content store; option C dùng fake không
+đạt E2E của V5-08B. **(Đã DONE — merge trước khi nhánh `feat/v5-08b-implementation` được tạo, xem mục
+V5-08B0 phía trên.)**
+
+Phạm vi bắt buộc của prerequisite:
+
+1. Version ContextSnapshot mới phải pin ResourceRef bằng đủ bộ
+   `OwnerVersionID + ResourceKey + ContentHash`. Giữ read compatibility cho snapshot cũ; snapshot cũ
+   có ResourceRefs thiếu owner không được dispatch âm thầm.
+2. Scheduler phải gather candidate từ exact definition/policy pins và chạy `contextassembler.Resolve`
+   trước khi persist snapshot; không tiếp tục hardcode `ResourceRefs: nil`. Thứ tự resource đã chọn là
+   thứ tự canonical cần giữ nguyên.
+3. Request assembler resolve MessageRef qua Message→Artifact row→ArtifactStore; resolve ResourceRef bằng
+   cách load exact published DefinitionVersion, tìm đúng key, tính lại identity/hash và fail closed khi
+   thiếu hoặc mismatch.
+4. Materialize task contract + messages + resources thành deterministic `InstructionArtifact`, gọi
+   ArtifactStore `Put` và `Verify` ngoài DB transaction, rồi pin artifact/hash vào execution request.
+5. Nâng `ports.AgentExecutionRequest` tới minimum contract của go-core-spec §14: AttemptID, ProviderKey,
+   AdapterBuildVersion, InstructionArtifact, ContextSnapshot, mounts có revision/generation/access,
+   EffectiveScope, ExecutionProfileHash, IsolationProfile, AllowedCapabilities, Timeout,
+   CancellationToken, optional RecoveryCheckpoint và IdempotencyKey. Provider adapter không được tự
+   suy quyền/mount từ prompt.
+6. Trước spawn phải revalidate snapshot/manifest/profile/fences; bất kỳ ref, hash, version hoặc pin nào
+   không hợp lệ đều fail với process spawn count bằng 0.
+
+Verify độc lập: cùng snapshot tạo cùng instruction hash/request; thay đổi thứ tự resource đổi manifest;
+message/resource/artifact bị tamper hoặc thiếu owner bị từ chối; mọi field security/scope của request
+đến adapter đúng exact pin.
+
+#### 2. Evidence fencing: terminal evidence bundle, không phải "có một checkpoint"
+
+V5-08B định nghĩa `AttemptFinalizationEvidence` typed, tối thiểu gồm terminal event sequence,
+completion checkpoint ID, exact final RevisionSet, diff-manifest artifact cho từng repository,
+output artifact refs nếu có, typed proposed outcome và schema version.
+
+Protocol ba pha:
+
+1. Sau execution và ngoài DB transaction: redact, `Put` và `Verify` diff/output artifact.
+2. Trong transaction chuẩn bị ngắn: insert metadata của chúng ở `ORPHAN`; crash/reject sau bước này để
+   lại orphan có thể audit/cleanup, không để artifact chưa được chấp nhận thành evidence.
+3. Trong **một** finalize transaction: revalidate JobLease, mọi WriteLease, workspace generation,
+   Attempt expected version; kiểm terminal event/checkpoint cùng Attempt/ContextSnapshot, exact final
+   RevisionSet, diff scope, output schema và outcome allow-list; chuyển artifact `ORPHAN → ATTACHED`;
+   persist completion checkpoint + Attempt/Node transition + canonical event + downstream job/job
+   completion atomically. Stale fence làm transaction không commit và artifact vẫn ORPHAN.
+
+`AgentEvent` phải có `SchemaVersion` và `ArtifactRefs`; `AgentExecutionResult` phải có artifact refs và
+typed proposed outcome. Completion checkpoint phải dùng shared-state hash canonical thật, không dùng
+surrogate ghép từ AttemptID/event sequence/revision. Có thể không có provider output artifact nếu output
+policy cho phép, nhưng diff manifest cuối là bắt buộc cho mỗi mount. Đây là evidence về execution/finalize;
+criteria-level Evidence thuộc V5-10 và quyết định WorkItem `DONE` theo required evidence thuộc V5-11.
+
+#### 3. Final diff: chỉ đo sau khi process tree đã quiesce
+
+Đo diff cuối là bắt buộc nhưng tự nó chưa đóng TOCTOU. `ProcessSupervisor.Run` phải có postcondition:
+chỉ return kết quả xác định khi toàn bộ process tree không còn process có thể ghi. Nhánh parent exit bình
+thường cũng phải cleanup/confirm descendants, không chỉ cancellation/timeout. Tree binding không được
+"best effort" đối với mutating attempt: nếu không chứng minh quiescence thì không được commit success;
+Attempt thành `INDETERMINATE / RECONCILIATION_REQUIRED`, error code `INDETERMINATE`, workspace bị
+quarantine.
+
+Thứ tự bắt buộc:
+
+`process tree quiesced → flush AgentEvent sink → final Diff/CaptureRevision → Put/Verify artifacts →`
+`finalize transaction re-check fences và commit exact evidence`.
+
+Windows dùng Job Object; Unix dùng process group/isolation primitive và phải kiểm tra group đã hết. V5-08C
+sau này tái sử dụng cùng primitive cho cancellation, nhưng normal-completion path cần guarantee này ngay
+trong V5-08B. Test bắt buộc có child process tiếp tục ghi sau khi parent exit: supervisor không được trả
+success trong lúc child còn sống, và final diff phải bắt được trailing out-of-scope write.
+
+#### 4. Provider loss: không thêm `PROVIDER_LOST` vào TerminationReason
+
+ADR-020 khóa state–reason matrix và tách TerminationReason khỏi AppError.Code. Không sửa enum cục bộ chỉ
+để phản ánh một transport diagnostic; nếu sản phẩm thật sự cần reason mới thì phải có ADR superseding.
+Mapping production được chốt như sau:
+
+| Tình huống | Attempt state / TerminationReason | ErrorCode |
+|---|---|---|
+| Provider unavailable trước side effect, hoặc process đã quiesce và outcome failure xác định | `FAILED / EXECUTION_FAILED` | `PROVIDER_UNAVAILABLE` |
+| Provider báo execution/task failure xác định | `FAILED / EXECUTION_FAILED` | `EXECUTION_FAILED` |
+| Mất kết nối/xác nhận và không chứng minh được kết quả mutating process | `INDETERMINATE / RECONCILIATION_REQUIRED` | `INDETERMINATE` |
+| Mất lease ở read-only attempt | `LOST / LEASE_LOST` | `LEASE_LOST` |
+| Mất lease ở mutating attempt | `INDETERMINATE / OWNERSHIP_LOST_MUTATING` | `INDETERMINATE` |
+| ProviderSessionRef cũ mất/không hợp lệ | Tạo Attempt mới và gọi `Start` từ canonical snapshot | Không gọi `Resume` |
+
+Raw provider reason (`protocol_error`, `process_error`, v.v.) chỉ được lưu làm diagnostic/evidence;
+provider-neutral classifier phải sinh typed transport result/execution result trước khi application map
+sang state, TerminationReason và ErrorCode. Retry chỉ dựa vào ErrorCode/pinned AttemptPolicy;
+`INDETERMINATE` không bao giờ technical-retry tự động.
+
+#### 5. Quản trị checklist
+
+File này là audit/handoff tracked, không phải authority song song với DB/Git. Bảng "Trạng thái hiện tại"
+ở đầu file phải được cập nhật khi chuyển task; các status/remaining cũ giữ nguyên nhưng được hiểu là
+historical snapshot. Mỗi quyết định mới phải ghi nguồn, scope/non-goals, verify thật và commit/PR/CI tương
+ứng; không dùng nhãn "khuyến nghị" trong câu hỏi cũ như authorization để code.
+
+### Thứ tự triển khai đã chốt
+
+1. Cập nhật roadmap/scope với prerequisite `V5-08B0` và dependency của V5-08B. **(DONE.)**
+2. Hoàn thành request assembly/snapshot V2 và các contract test fail-closed trước spawn. **(DONE — qua
+   V5-08B0.)**
+3. Harden normal-exit process-tree quiescence trên Windows/Linux. **(DONE — xem bên dưới.)**
+4. Nâng AgentEvent/AgentExecutionResult và xây terminal evidence staging. **(ĐANG LÀM — xem bên dưới.)**
+5. Nối NodeExecutor→AgentExecutor và mở rộng fenced finalize. **(CHƯA LÀM.)**
+6. Chạy E2E: success; provider-declared failure; exit code 0 thiếu/invalid outcome; missing/tampered
+   evidence; stale JobLease/WriteLease/generation/attempt version; trailing out-of-scope write;
+   provider unavailable xác định; provider loss không xác định; replacement Attempt có `Start` count
+   đúng và `Resume` count bằng 0. **(CHƯA LÀM.)**
+
+### Triển khai thật — Bước 3: harden ProcessSupervisor quiescence postcondition (2026-09-09)
+
+**Thay đổi:** `processTree` interface (`internal/adapters/process/processtree.go`) thêm
+`quiesced(cmd *exec.Cmd) (bool, error)`. Unix (`processtree_other.go`):
+`syscall.Kill(-cmd.Process.Pid, 0)`, `ESRCH` → quiesced=true. Windows (`processtree_windows.go`):
+`windows.QueryInformationJobObject` với information class `JobObjectBasicAccountingInformation` — struct
+Win32 tương ứng (`JOBOBJECT_BASIC_ACCOUNTING_INFORMATION`) KHÔNG có sẵn dạng typed trong
+`golang.org/x/sys/windows` (khác `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`, có sẵn) nên phải tự định nghĩa
+đúng layout ABI; `ActiveProcesses == 0` → quiesced=true. `Supervisor.Run` gọi `confirmTreeQuiesced`
+(poll bounded, 20ms/lần, tối đa 2s) ngay sau khi set `FinishedAt`/`ExitCode`/`OutputTruncated`, TRƯỚC
+nhánh rẽ theo `terminationCause` — chạy trên **mọi** exit path, không riêng cancel/timeout, đúng yêu cầu
+quyết định #3 ở trên ("nhánh parent exit bình thường cũng phải cleanup/confirm descendants"). Kết quả:
+field mới `ports.ProcessResult.TreeQuiesced bool`.
+
+**Lỗi tự phát hiện khi viết test:** thiết kế test ĐẦU TIÊN cố quan sát process con orphan SAU KHI `Run()`
+return (marker file có tiếp tục được ghi hay không) — fail nhất quán ở đúng mốc ~2.1-2.3s cả 3 lần chạy
+lại. Root cause: trên Windows, `defer tree.close()` (chạy khi `Run()` return) gọi
+`windows.CloseHandle(job)` trên một Job Object có `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` — flag này giết
+NGAY LẬP TỨC mọi process còn lại trong job tại thời điểm handle đóng, nghĩa là process con orphan ĐÃ CHẾT
+trước khi test code chạy tiếp, bất kể `TreeQuiesced` bên trong báo đúng gì. Sửa: chứng minh liveness bằng
+TIMING nội bộ của `Run()` thay vì quan sát process sau khi return — assert `elapsed >=
+quiescencePollBound - 100ms` (tức `Run` phải đợi gần hết trọn 2s poll bound, chứng minh process con thật
+sự còn sống trong suốt lúc poll) + xác nhận marker file tồn tại — không bao giờ cần quan sát process sau
+khi `Run` return nữa. Test mới: `TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns`
+(case "orphan" mới trong `TestProcessHelper` — con exit ngay không đợi cháu, khác case "descendant" có
+sẵn). Assertion `TreeQuiesced` cũng thêm vào `TestSupervisorCancelKillsDescendantProcess` hiện có.
+
+**File thay đổi:** `internal/adapters/process/processtree.go`, `processtree_other.go`,
+`processtree_windows.go`, `supervisor.go`, `supervisor_test.go`, `internal/app/ports/agent.go`
+(`ProcessResult.TreeQuiesced`).
+
+**Verify:**
+```
+go build ./...                       # sạch (Windows)
+GOOS=linux go build ./...            # sạch (cross-compile)
+go vet ./...                         # sạch
+go test ./internal/adapters/process/... -v -count=1   # PASS, kể cả test quiescence mới
+go test -count=1 ./...               # PASS toàn bộ
+```
+`-race` không chạy được local — để CI's "Linux race and stability" job xác nhận, như mọi lần trước.
+Commit: `3a86477` — "feat(v5-08b): harden ProcessSupervisor's quiescence postcondition".
+
+### Triển khai thật — Bước 4 (đang làm): nâng AgentEvent, JobLease/WriteLease fencing cho Sink (2026-09-09)
+
+**4a — `AgentEventRecord.ArtifactRefs`:** quyết định #2 ở trên yêu cầu `AgentEvent` phải có
+`ArtifactRefs` (đã có `SchemaVersion` từ V5-08A). Thêm field `[]string` vào `ports.AgentEventRecord`.
+SQLite adapter (`internal/adapters/sqlite/agent_events.go`) trước đây HARDCODE
+`artifact_refs_json='[]'` trong `AppendBatch` bất kể caller truyền gì — giờ marshal thật
+(`nil` → `[]` để round-trip ổn định, không lỗi khi đọc lại), `ListByAttempt` unmarshal thật thay vì bỏ
+qua cột. `fake.AgentEventsRepository` không cần sửa (lưu/trả nguyên struct value, field mới tự đi kèm).
+Test mới: `TestAgentEventsRepository_AppendBatch_RoundTripsArtifactRefs` (2 chiều: có ref và không ref,
+chạy trên sqlite thật).
+
+**4b — JobLease/WriteLease fencing cho `agentevents.Sink`:** đóng finding #1 hoãn từ V5-08A remediation
+("Sink ghi event/checkpoint mà không kiểm JobLease/WriteLease còn hiệu lực — worker đã mất quyền vẫn ghi
+như còn quyền"), đúng tinh thần quyết định #2 ở trên ("evidence fencing" phải là fencing thật, không chỉ
+tồn tại). `Config` thêm `JobLease ports.JobLease` (bắt buộc — `NewSink` fail closed nếu `JobID` rỗng) và
+`WriteLeases []ports.WriteLeaseGrant` (tùy chọn, mặc định rỗng). `Sink` lưu cả hai. Method mới
+`validateFencingLocked` TÁI DÙNG đúng 2 lời gọi `finalize.go`'s own fencing pattern đã dùng
+(`tx.Jobs().ValidateActiveJob` rồi loop `tx.Runtime().ValidateWriteLeaseFencing` cho từng grant), không
+phát minh cơ chế mới. `flushLocked` gọi nó TRƯỚC `AppendBatch`, trong CÙNG transaction — atomic với chính
+write. `captureCheckpointLocked` gọi nó qua một `WithReadOnly` RIÊNG ngay trước `StoreCheckpoint` — ghi rõ
+trong code comment đây KHÔNG atomic với chính write (`StoreCheckpoint` là API autocommit cũ, chưa
+`ports.Tx`-composable) — chấp nhận một khoảng TOCTOU hẹp như cải thiện chặt hơn hẳn so với không kiểm gì,
+thay vì mở rộng phạm vi việc này để đưa checkpoint storage lên `ports.Tx` (ngoài phạm vi sub-task này).
+
+**Test fixture ripple:** `NewSink` bắt buộc `JobLease` phá vỡ toàn bộ 17 test hiện có (cả
+`sink_test.go` fake-backed lẫn `sink_sqlite_test.go` real-sqlite-backed) — dự kiến, không phải bug mới.
+Thêm `testJobLease` (`sink_test.go`, fake: `EnqueueJob` qua `WithSerializedWrite` + `SetActiveLease` trực
+tiếp trên `uow.Snapshot`) và `testSQLiteJobLease` (`sink_sqlite_test.go`, real: `store.EnqueueJob` +
+`store.ClaimJob`) — cùng attempt fixture `"attempt-1"`/`sqliteFixtureAttemptID` mọi test đã dùng sẵn.
+SQLite adapter đòi `MaxClaims > 0` (fake thì không enforce) — set `MaxClaims: 1`.
+
+**Test fencing thật sự reject (không chỉ accept):** mọi test ở trên chỉ set lease HỢP LỆ rồi Sink hoạt
+động bình thường — không chứng minh `validateFencingLocked` THẬT SỰ chặn khi lease đã mất hiệu lực. Thêm
+`TestSink_Flush_RejectsWhenJobLeaseFenced` (`sink_test.go`): sau khi Sink được tạo với lease hợp lệ, mô
+phỏng một worker khác giành lại đúng job đó (`SetActiveLease` lại với Owner/Token mới, đúng cách một
+`ClaimJob` thật bump token) rồi gọi `Flush` — assert `errors.Is(err, ports.ErrJobLeaseLost)` và 0 row
+được ghi. **Không** thêm test WriteLease-fencing-reject: `fake.RuntimeRepository.ValidateWriteLeaseFencing`
+là stub luôn-pass có chủ đích từ V4-05 ("deep WriteLease fencing edge cases are SQLite-only... a fake
+test that wants a write-lease rejection path is testing the wrong layer" — doc comment gốc), và hiện
+CHƯA có sink test nào truyền `WriteLeases` (rỗng ở cả 4 test sqlite) — dựng fixture `write_leases`/
+`repository_workspaces` thật cho một reject-test riêng ở đây sẽ lấn sang phạm vi Bước 6 (E2E), nơi
+"stale JobLease/WriteLease/generation/attempt version" đã được liệt kê rõ là một trong các kịch bản bắt
+buộc phải test — để lại đúng chỗ đó, không tự ý thu hẹp phạm vi Bước 6 bằng cách làm trước một phần ở đây.
+
+**File thay đổi:** `internal/app/ports/agentevent.go` (+`ArtifactRefs`), `internal/adapters/sqlite/
+agent_events.go` + `agent_events_test.go` (ArtifactRefs thật), `internal/app/agentevents/sink.go`
+(+`JobLease`/`WriteLeases`, `validateFencingLocked`, wiring vào `flushLocked`/`captureCheckpointLocked`),
+`internal/app/agentevents/sink_test.go` + `sink_sqlite_test.go` (fixture ripple + 1 test reject mới).
+
+**Verify:**
+```
+go build ./...                                            # sạch
+go vet ./...                                               # sạch
+go run ./cmd/docs-coverage-check                           # debt = 0
+gofmt -l <6 file .go đổi>                                  # 4 flagged là CRLF-only (xác nhận: gofmt
+                                                            #   và bản gốc trùng md5 sau khi tr -d '\r'
+                                                            #   cả hai phía) — không phải lỗi format thật
+go test ./internal/app/agentevents/... -v -count=1        # PASS 18/18 (14 cũ + ArtifactRefs +
+                                                            #   RejectsWhenJobLeaseFenced +
+                                                            #   2 test đã có tên đổi ripple)
+go test -count=1 ./...                                     # PASS toàn bộ ~70 package
+```
+
+**Việc còn lại (Bước 4):** `AttemptFinalizationEvidence` typed struct (5 field theo quyết định #2:
+terminal event sequence, completion checkpoint ID, exact final RevisionSet, diff-manifest artifact/
+repository, output artifact refs, typed proposed outcome, schema version); nâng
+`ports.AgentExecutionResult` thêm artifact refs + typed proposed outcome (hiện chỉ có
+AttemptID/Provider/Status/TerminationReason/Session/Usage/ExitCode/StartedAt/FinishedAt — xác nhận qua
+đọc trực tiếp `internal/app/ports/agent.go`, không phải giả định); completion-checkpoint construction
+dùng `canonicalStateHash` THẬT (`internal/app/runtime/commands.go:306`, đã dùng bởi `AdvanceRun` cho
+`NodeRun.InputStateHash`) thay vì `sharedStateHash` surrogate hiện tại của Sink — việc này phải nằm
+trong `internal/app/runtime` (nơi `canonicalStateHash` sống và nơi một `WorkflowRun` mới được load), là
+một checkpoint MỚI riêng cho completion, không phải sửa `sharedStateHash` hiện có của Sink (checkpoint
+giữa chừng của Sink giữ nguyên surrogate — chỉ completion checkpoint ở finalize mới cần hash thật).
+Sau đó tiếp Bước 5 (Tx-composable checkpoint-insert method mới, protocol 3 pha đầy đủ, NodeExecutor→
+AgentExecutor bridge, provider-loss mapping table vào finalize) và Bước 6 (E2E) theo đúng "Thứ tự triển
+khai đã chốt" ở trên. Toàn bộ Bước 3-6 gộp vào MỘT PR duy nhất theo đúng lựa chọn của user
+("Một PR duy nhất cho cả V5-08B").

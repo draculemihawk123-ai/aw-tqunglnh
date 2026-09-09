@@ -20,7 +20,14 @@ type AgentEventRecord struct {
 	Kind          string
 	SchemaVersion int
 	PayloadJSON   string
-	CreatedAt     time.Time
+	// ArtifactRefs names every durable artifact.Artifact.ID this event
+	// refers to (e.g. an ARTIFACT_PRODUCED event's own output) — V5-08B
+	// audit finding (2026-09-09, deferred from V5-08A): this field did not
+	// exist at all, so the sqlite adapter always wrote a hardcoded '[]'
+	// regardless of what an event actually referenced. Nil/empty is a
+	// normal, valid value for every event kind that references nothing.
+	ArtifactRefs []string
+	CreatedAt    time.Time
 }
 
 // AgentEventsRepository is V5-08A's Tx accessor for the durable agent_events
