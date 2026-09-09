@@ -64,9 +64,9 @@ type admissionProbe struct {
 	isolationSatisfied bool
 	isolationErr       error // the real error VerifyEnforceable returned, kept for a blocker's own diagnostic reason
 
-	pinnedBuild      *domainadapterbuild.Build // nil when the node declares no AdapterBuildID
-	driftSatisfied   bool                      // true when pinnedBuild == nil (nothing to check) or VerifyNoDrift found none
-	driftErr         error
+	pinnedBuild    *domainadapterbuild.Build // nil when the node declares no AdapterBuildID
+	driftSatisfied bool                      // true when pinnedBuild == nil (nothing to check) or VerifyNoDrift found none
+	driftErr       error
 }
 
 // runAdmissionProbePhase is admitOrClaimRunning's own Phase 1: a read-only
@@ -88,7 +88,23 @@ func (h *ExecuteNodeHandler) runAdmissionProbePhase(ctx context.Context, payload
 	}
 
 	if profile.AdapterBuild == nil {
-		probe.driftSatisfied = true
+		// GC-INV-23 ("Attempt pin immutable AdapterBuildVersion; version
+		// khác bị từ chối trước dispatch") assumes pinning one is
+		// mandatory, not optional. Audit finding (2026-09-08): this used
+		// to unconditionally set driftSatisfied=true here (documented as
+		// "a legitimate deferred Alpha state"), which let ANY AGENT node
+		// with no build declared sail through the drift check — directly
+		// contradicting GC-INV-23's own premise and this task's own
+		// "Hoàn thành khi" bar ("không request nào tới được
+		// ProcessSupervisor nếu thiếu một pin/grant bắt buộc").
+		// COMMAND/MACHINE_GATE nodes have no AdapterBuildVersion concept
+		// at all (only AgentNodeConfig ever declares one) — nothing to
+		// verify for those, so they alone keep the original pass-through.
+		if profile.Executor.Kind != string(runtimedomain.ExecutorKindAgent) {
+			probe.driftSatisfied = true
+			return probe, nil
+		}
+		probe.driftErr = fmt.Errorf("AGENT node declares no AdapterBuildID — GC-INV-23 requires an Attempt to pin an immutable AdapterBuildVersion")
 		return probe, nil
 	}
 	var pinnedBuild domainadapterbuild.Build
@@ -139,10 +155,10 @@ func evaluateAdmission(
 	multiRepoSatisfied := checkMultiRepositoryWriteGrant(nodeRun, profile)
 
 	satisfied := map[runtimedomain.TerminationReason]bool{
-		runtimedomain.TerminationReasonIsolationEnforcementUnavailable:     probe.isolationSatisfied,
-		runtimedomain.TerminationReasonAdapterBuildDrift:                   probe.driftSatisfied,
-		runtimedomain.TerminationReasonCapabilityRequirementUnsatisfied:    capabilitySatisfied,
-		runtimedomain.TerminationReasonWriteCapabilityOrGrantMissing:       multiRepoSatisfied,
+		runtimedomain.TerminationReasonIsolationEnforcementUnavailable:  probe.isolationSatisfied,
+		runtimedomain.TerminationReasonAdapterBuildDrift:                probe.driftSatisfied,
+		runtimedomain.TerminationReasonCapabilityRequirementUnsatisfied: capabilitySatisfied,
+		runtimedomain.TerminationReasonWriteCapabilityOrGrantMissing:    multiRepoSatisfied,
 	}
 	detail := map[runtimedomain.TerminationReason]string{
 		runtimedomain.TerminationReasonIsolationEnforcementUnavailable:  fmt.Sprintf("isolation tier %s is not enforceable: %v", profile.IsolationTier, probe.isolationErr),
@@ -299,7 +315,7 @@ func buildExecutionEnvelope(nodeRun runtimedomain.NodeRun) []ports.AgentWorkspac
 // ports.AgentWorkspaceMount this envelope's own RepositoryID/Access
 // already determine.
 type persistedEnvelopeMount struct {
-	RepositoryID string               `json:"repositoryId"`
+	RepositoryID string                `json:"repositoryId"`
 	Access       ports.WorkspaceAccess `json:"access"`
 }
 

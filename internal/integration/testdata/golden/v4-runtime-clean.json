@@ -53,7 +53,7 @@
     "sequence": 2,
     "eventType": "NODE_SCHEDULED",
     "schemaVersion": 1,
-    "payload": "{\"attemptId\":\"executionattempt-1\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-3\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+    "payload": "{\"attemptId\":\"executionattempt-1\",\"executionProfileHash\":\"\\u003cexecution-profile-hash-1\\u003e\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-3\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
   },
   {
     "aggregateType": "ExecutionAttempt",
@@ -77,7 +77,7 @@
     "sequence": 2,
     "eventType": "NODE_SCHEDULED",
     "schemaVersion": 1,
-    "payload": "{\"attemptId\":\"executionattempt-2\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-4\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+    "payload": "{\"attemptId\":\"executionattempt-2\",\"executionProfileHash\":\"\\u003cexecution-profile-hash-1\\u003e\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-4\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
   },
   {
     "aggregateType": "ExecutionAttempt",
@@ -141,7 +141,7 @@
     "sequence": 2,
     "eventType": "NODE_SCHEDULED",
     "schemaVersion": 1,
-    "payload": "{\"attemptId\":\"executionattempt-3\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-8\",\"runId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
+    "payload": "{\"attemptId\":\"executionattempt-3\",\"executionProfileHash\":\"\\u003cexecution-profile-hash-1\\u003e\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-8\",\"runId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
   },
   {
     "aggregateType": "ExecutionAttempt",
@@ -165,7 +165,7 @@
     "sequence": 2,
     "eventType": "NODE_SCHEDULED",
     "schemaVersion": 1,
-    "payload": "{\"attemptId\":\"executionattempt-4\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-9\",\"runId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
+    "payload": "{\"attemptId\":\"executionattempt-4\",\"executionProfileHash\":\"\\u003cexecution-profile-hash-1\\u003e\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"implement\",\"nodeRunId\":\"noderun-9\",\"runId\":\"workflowrun-2\",\"workItemId\":\"workitem-2\"}"
   },
   {
     "aggregateType": "ExecutionAttempt",
@@ -205,7 +205,7 @@
     "sequence": 2,
     "eventType": "NODE_SCHEDULED",
     "schemaVersion": 1,
-    "payload": "{\"attemptId\":\"executionattempt-5\",\"executionProfileHash\":\"sha256:0273a806ae151e2ea2d02677b7a6bfc388869a391aa4a1c19df510ea93c2f9ab\",\"executorKind\":\"COMMAND\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"test_a\",\"nodeRunId\":\"noderun-12\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+    "payload": "{\"attemptId\":\"executionattempt-5\",\"executionProfileHash\":\"\\u003cexecution-profile-hash-2\\u003e\",\"executorKind\":\"COMMAND\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"test_a\",\"nodeRunId\":\"noderun-12\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
   },
   {
     "aggregateType": "NodeRun",
@@ -213,7 +213,7 @@
     "sequence": 2,
     "eventType": "NODE_SCHEDULED",
     "schemaVersion": 1,
-    "payload": "{\"attemptId\":\"executionattempt-6\",\"executionProfileHash\":\"sha256:b5c5b0b0ddc9258238adc41bae894e7d8ebb1270659fee52c5c19aeed8bef0d3\",\"executorKind\":\"MACHINE_GATE\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"gate_b\",\"nodeRunId\":\"noderun-13\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+    "payload": "{\"attemptId\":\"executionattempt-6\",\"executionProfileHash\":\"\\u003cexecution-profile-hash-3\\u003e\",\"executorKind\":\"MACHINE_GATE\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"gate_b\",\"nodeRunId\":\"noderun-13\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
   },
   {
     "aggregateType": "ExecutionAttempt",
@@ -269,7 +269,7 @@
     "sequence": 2,
     "eventType": "NODE_SCHEDULED",
     "schemaVersion": 1,
-    "payload": "{\"attemptId\":\"executionattempt-7\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"scope_node\",\"nodeRunId\":\"noderun-15\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+    "payload": "{\"attemptId\":\"executionattempt-7\",\"executionProfileHash\":\"\\u003cexecution-profile-hash-1\\u003e\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"scope_node\",\"nodeRunId\":\"noderun-15\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
   },
   {
     "aggregateType": "ExecutionAttempt",
@@ -317,7 +317,7 @@
     "sequence": 2,
     "eventType": "NODE_SCHEDULED",
     "schemaVersion": 1,
-    "payload": "{\"attemptId\":\"executionattempt-8\",\"executionProfileHash\":\"sha256:bd8265738e750ab81357177836c777a9f710482754827751caa71092b3003577\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"scope_node\",\"nodeRunId\":\"noderun-16\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
+    "payload": "{\"attemptId\":\"executionattempt-8\",\"executionProfileHash\":\"\\u003cexecution-profile-hash-1\\u003e\",\"executorKind\":\"AGENT\",\"jobId\":\"\\u003cjob\\u003e\",\"nodeKey\":\"scope_node\",\"nodeRunId\":\"noderun-16\",\"runId\":\"workflowrun-1\",\"workItemId\":\"workitem-1\"}"
   },
   {
     "aggregateType": "ExecutionAttempt",

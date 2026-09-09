@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
@@ -116,7 +115,7 @@ func TestReconcileRunTerminality_NodeRunFailedNoOtherLiveWork_RunFailed(t *testi
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -152,7 +151,8 @@ func TestReconcileRunTerminality_NodeRunFailedNoOtherLiveWork_RunFailed(t *testi
 // non-forked case.
 func TestReconcileRunTerminality_ForkBranchFailed_NoOtherLiveWork_RunFailed(t *testing.T) {
 	ctx := context.Background()
-	uow, ids, runID, _, hop := forkScheduleFixture(t, forkExecutableDocument())
+	uow, ids, runID, _, hop := forkScheduleFixture(t, forkExecutableDocument(t))
+	registerSharedTestAdapterBuild(t, uow)
 	publishAgentProfileVersion(t, uow, "agent-profile-def", "agent-profile-v1", validAgentProfileDocument())
 	publishPolicyVersion(t, uow, "attempt-policy-def", "attempt-policy-v1", attemptPolicyDocument(600))
 	publishPolicyVersion(t, uow, "permission-policy-def", "permission-policy-v1", permissionPolicyDocument())
@@ -170,7 +170,7 @@ func TestReconcileRunTerminality_ForkBranchFailed_NoOtherLiveWork_RunFailed(t *t
 	}
 	job := claimableExecuteNodeJob(t, uow, scheduled.AttemptID)
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestReconcileRunTerminality_ForkBranchFailed_NoOtherLiveWork_RunFailed(t *t
 // drives reconcileRunTerminalityTx.
 func TestReconcileRunTerminality_BlockedSibling_NeverFailsRun(t *testing.T) {
 	ctx := context.Background()
-	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(workflow.JoinModeAll, 0, []string{"a", "b"}))
+	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(t, workflow.JoinModeAll, 0, []string{"a", "b"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	branchA := findForkedBranch(hop.ForkedBranches, "a")
@@ -249,7 +249,7 @@ func TestReconcileRunTerminality_BlockedSibling_NeverFailsRun(t *testing.T) {
 // THAT later hop, driven by branch A's own earlier failure (FailedCount
 // still counts it) rather than by branch B's own outcome.
 func TestReconcileRunTerminality_JoinAllMode_SiblingStillActive_ThenLateArrival_RunFailedOnlyOnceEmpty(t *testing.T) {
-	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(workflow.JoinModeAll, 0, []string{"a", "b"}))
+	uow, ids, runID, _, hop := forkScheduleFixture(t, joinPolicyDocument(t, workflow.JoinModeAll, 0, []string{"a", "b"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	branchA := findForkedBranch(hop.ForkedBranches, "a")

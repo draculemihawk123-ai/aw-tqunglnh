@@ -123,7 +123,7 @@ func TestAdvanceRun_SQLite_Join_PersistsAcrossRestart(t *testing.T) {
 	root := readyFixtureSQLite(t, uow, ids, "project-1", "repo-1")
 	seedEffectiveScope(t, uow, root.WorkItemID, "repo-1")
 	version := publishWorkflowVersionDocument(t, uow, "project-1", "wf-def-1", "wf-v-1",
-		joinPolicyDocument(workflow.JoinModeAll, 0, []string{"a", "b"}))
+		joinPolicyDocument(t, workflow.JoinModeAll, 0, []string{"a", "b"}))
 	publishJoinPolicyFixtures(t, uow)
 
 	startCmd := testCommand("idem-start-1", "hash-a", ports.ProjectScope("project-1"), "StartWorkflowRun")

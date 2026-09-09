@@ -23,36 +23,96 @@ import (
 
 // admissionFixtureOptions customizes the shared scheduling fixture for one
 // admission check at a time — each test below fixes every OTHER axis at
-// its trivially-satisfied default (isolation enforceable, no adapter build
-// pinned, no required capability, exactly one write-scoped repository) and
-// varies exactly the one axis it means to exercise.
+// its trivially-satisfied default (isolation enforceable, a real
+// non-drifting adapter build pinned, no required capability, exactly one
+// write-scoped repository) and varies exactly the one axis it means to
+// exercise.
+//
+// Audit finding (2026-09-08): GC-INV-23 makes a pinned AdapterBuildVersion
+// mandatory for an AGENT node, not optional — every test below now pins a
+// real, valid, non-drifting default build UNLESS it opts out via
+// noAdapterBuild (only the one test proving the missing-pin case itself
+// blocks does that) or supplies its own via adapterBuild (only the drift
+// test, which needs to mutate the executable after scheduling).
 type admissionFixtureOptions struct {
 	requiredCapabilities   []string
 	grantedCapabilities    []string
 	extraWriteRepositories []string
 	adapterBuild           *domainadapterbuild.Build
+	// noAdapterBuild skips this fixture's own default AdapterBuild
+	// entirely — set only by the test that proves a missing pin blocks
+	// admission (GC-INV-23).
+	noAdapterBuild bool
 }
 
-func admissionFixture(t *testing.T, opts admissionFixtureOptions) (uow *fake.UnitOfWork, ids idsource.Source, runID, nodeRunID, attemptID string) {
+// defaultAdmissionBuildAndRegistry builds a fresh, trivially-valid,
+// never-drifting AdapterBuild plus a matching agentregistry.Registry whose
+// own fake.AgentExecutor reports the IDENTICAL capabilities — the pair
+// admissionFixture pins by default now that GC-INV-23 makes a pin
+// mandatory. Every OTHER admission check test (isolation/capability/
+// multi-repo/etc.) needs this pair to exist purely so the drift check
+// itself passes cleanly and lets the test's own intended check run.
+func defaultAdmissionBuildAndRegistry(t *testing.T) (domainadapterbuild.Build, *agentregistry.Registry) {
+	t.Helper()
+	executablePath := writeAdmissionExecutable(t, "default-fixture-binary-v1")
+	capabilities := ports.AgentCapabilities{
+		Provider: ports.ProviderClaude, AdapterVersion: "claude-stream-json/v1", ProtocolVersion: "claude-stream-json/v1",
+		SupportsStart: true, SupportsResume: true, SupportsCancel: true,
+	}
+	build := admissionPinnedBuild(t, executablePath, capabilities)
+	registry, err := agentregistry.New(context.Background(), &fake.AgentExecutor{CapabilitiesResult: capabilities})
+	if err != nil {
+		t.Fatalf("agentregistry.New: %v", err)
+	}
+	return build, registry
+}
+
+func admissionFixture(t *testing.T, opts admissionFixtureOptions) (uow *fake.UnitOfWork, ids idsource.Source, runID, nodeRunID, attemptID string, registry *agentregistry.Registry) {
 	t.Helper()
 	granted := opts.grantedCapabilities
 	if granted == nil {
 		granted = []string{"INTEGRATION_MULTI_REPOSITORY_WRITE"}
 	}
+
+	var build *domainadapterbuild.Build
+	switch {
+	case opts.noAdapterBuild:
+		// Intentionally no build, no registry — the one test proving a
+		// missing pin blocks admission (GC-INV-23) wants exactly this.
+	case opts.adapterBuild != nil:
+		build = opts.adapterBuild
+		// The caller supplied its own build (the drift test — it needs to
+		// mutate the executable after scheduling) but still needs a
+		// registry that can resolve its own provider/capabilities to
+		// probe against.
+		r, err := agentregistry.New(context.Background(), &fake.AgentExecutor{CapabilitiesResult: ports.AgentCapabilities{
+			Provider: ports.ProviderClaude, AdapterVersion: "claude-stream-json/v1", ProtocolVersion: "claude-stream-json/v1",
+			SupportsStart: true, SupportsResume: true, SupportsCancel: true,
+		}})
+		if err != nil {
+			t.Fatalf("agentregistry.New: %v", err)
+		}
+		registry = r
+	default:
+		defaultBuild, defaultRegistry := defaultAdmissionBuildAndRegistry(t)
+		build = &defaultBuild
+		registry = defaultRegistry
+	}
+
 	var adapterBuildID *string
-	if opts.adapterBuild != nil {
-		id := opts.adapterBuild.ID()
+	if build != nil {
+		id := build.ID()
 		adapterBuildID = &id
 	}
 
 	uow, ids, runID, nodeRunID = scheduleFixture(t, agentExecutableDocument("agent-profile-v1", fullyResolvablePolicyRefs(), adapterBuildID))
 
-	if opts.adapterBuild != nil {
+	if build != nil {
 		// Must be registered BEFORE scheduling: resolveExecutionProfile
 		// (schedule.go) fails the whole scheduling transaction closed if
 		// a declared AdapterBuildID cannot be resolved.
 		if err := uow.WithSerializedWrite(context.Background(), func(tx ports.Tx) error {
-			_, _, err := tx.AdapterBuilds().InsertIfAbsent(context.Background(), *opts.adapterBuild)
+			_, _, err := tx.AdapterBuilds().InsertIfAbsent(context.Background(), *build)
 			return err
 		}); err != nil {
 			t.Fatalf("register pinned adapter build: %v", err)
@@ -89,23 +149,44 @@ func admissionFixture(t *testing.T, opts admissionFixtureOptions) (uow *fake.Uni
 	if err != nil {
 		t.Fatalf("ScheduleExecutableNodeRun: %v", err)
 	}
-	return uow, ids, runID, nodeRunID, scheduled.AttemptID
+	return uow, ids, runID, nodeRunID, scheduled.AttemptID, registry
 }
 
 func TestAdmission_IsolationUnavailable_BlocksBeforeSpawn(t *testing.T) {
-	uow, ids, _, nodeRunID, attemptID := admissionFixture(t, admissionFixtureOptions{})
+	uow, ids, _, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{})
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{}
 	handler := runtime.NewExecuteNodeHandler(
 		uow, ids, executor, clock.System{},
-		fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}, agentregistry.Empty(),
+		fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}, registry,
 	)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
 
 	assertBlockedReason(t, uow, attemptID, nodeRunID, runtimedomain.TerminationReasonIsolationEnforcementUnavailable, workdomain.BlockerIsolationEnforcementUnavailable)
+	if executor.Calls != 0 {
+		t.Fatalf("executor.Calls = %d, want 0", executor.Calls)
+	}
+}
+
+// TestAdmission_NoAdapterBuildPinned_BlocksBeforeSpawn is the audit finding
+// (2026-09-08) fix: GC-INV-23 ("Attempt pin immutable AdapterBuildVersion")
+// makes a pin mandatory for an AGENT node — an AGENT node that declares NO
+// AdapterBuildID must be blocked with ADAPTER_BUILD_DRIFT before it ever
+// reaches RUNNING, not silently admitted as "nothing to verify".
+func TestAdmission_NoAdapterBuildPinned_BlocksBeforeSpawn(t *testing.T) {
+	uow, ids, _, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{noAdapterBuild: true})
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+
+	executor := &fake.NodeExecutor{}
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	assertBlockedReason(t, uow, attemptID, nodeRunID, runtimedomain.TerminationReasonAdapterBuildDrift, workdomain.BlockerAdapterBuildDrift)
 	if executor.Calls != 0 {
 		t.Fatalf("executor.Calls = %d, want 0", executor.Calls)
 	}
@@ -119,7 +200,7 @@ func TestAdmission_AdapterBuildDrift_BlocksBeforeSpawn(t *testing.T) {
 	}
 	build := admissionPinnedBuild(t, executablePath, capabilities)
 
-	uow, ids, _, nodeRunID, attemptID := admissionFixture(t, admissionFixtureOptions{adapterBuild: &build})
+	uow, ids, _, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{adapterBuild: &build})
 
 	// Drift: the executable changes after the build was pinned and
 	// scheduled.
@@ -129,10 +210,6 @@ func TestAdmission_AdapterBuildDrift_BlocksBeforeSpawn(t *testing.T) {
 
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 	executor := &fake.NodeExecutor{}
-	registry, err := agentregistry.New(context.Background(), &fake.AgentExecutor{CapabilitiesResult: capabilities})
-	if err != nil {
-		t.Fatalf("agentregistry.New: %v", err)
-	}
 	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -145,14 +222,14 @@ func TestAdmission_AdapterBuildDrift_BlocksBeforeSpawn(t *testing.T) {
 }
 
 func TestAdmission_CapabilityRequirementUnsatisfied_BlocksBeforeSpawn(t *testing.T) {
-	uow, ids, _, nodeRunID, attemptID := admissionFixture(t, admissionFixtureOptions{
+	uow, ids, _, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{
 		requiredCapabilities: []string{"SANDBOXED_FILESYSTEM"},
 		grantedCapabilities:  []string{"INTEGRATION_MULTI_REPOSITORY_WRITE"}, // does not include SANDBOXED_FILESYSTEM
 	})
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -164,14 +241,14 @@ func TestAdmission_CapabilityRequirementUnsatisfied_BlocksBeforeSpawn(t *testing
 }
 
 func TestAdmission_MultiRepositoryWriteWithoutGrant_BlocksBeforeSpawn(t *testing.T) {
-	uow, ids, _, nodeRunID, attemptID := admissionFixture(t, admissionFixtureOptions{
+	uow, ids, _, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{
 		grantedCapabilities:    []string{}, // no INTEGRATION_MULTI_REPOSITORY_WRITE
 		extraWriteRepositories: []string{"repo-2"},
 	})
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -188,7 +265,7 @@ func TestAdmission_MultiRepositoryWriteWithoutGrant_BlocksBeforeSpawn(t *testing
 // isolation AND the multi-repo grant both fail at once; only isolation's
 // own reason is ever recorded.
 func TestAdmission_MultiplyFailingChecks_RecordsHighestPriorityReason(t *testing.T) {
-	uow, ids, _, nodeRunID, attemptID := admissionFixture(t, admissionFixtureOptions{
+	uow, ids, _, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{
 		grantedCapabilities:    []string{},
 		extraWriteRepositories: []string{"repo-2"},
 	})
@@ -197,7 +274,7 @@ func TestAdmission_MultiplyFailingChecks_RecordsHighestPriorityReason(t *testing
 	executor := &fake.NodeExecutor{}
 	handler := runtime.NewExecuteNodeHandler(
 		uow, ids, executor, clock.System{},
-		fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}, agentregistry.Empty(),
+		fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}, registry,
 	)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -207,11 +284,11 @@ func TestAdmission_MultiplyFailingChecks_RecordsHighestPriorityReason(t *testing
 }
 
 func TestAdmission_AllChecksPass_ProceedsToRunning(t *testing.T) {
-	uow, ids, _, _, attemptID := admissionFixture(t, admissionFixtureOptions{})
+	uow, ids, _, _, attemptID, registry := admissionFixture(t, admissionFixtureOptions{})
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -289,12 +366,12 @@ func assertBlockedReason(
 // revived, mirroring reactivateBlockedNodeRunTx's own exact shape
 // (scope_expansion.go) for the OTHER blocker group.
 func TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld(t *testing.T) {
-	uow, ids, runID, nodeRunID, attemptID := admissionFixture(t, admissionFixtureOptions{})
+	uow, ids, runID, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{})
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	blockedExecutor := &fake.NodeExecutor{}
 	blockingChecker := fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, blockedExecutor, clock.System{}, blockingChecker, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, blockedExecutor, clock.System{}, blockingChecker, registry)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle (first, blocked): %v", err)
 	}
@@ -342,7 +419,7 @@ func TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld(t *testing.T) {
 
 	retryJob := claimableExecuteNodeJob(t, uow, retried.AttemptID)
 	retryExecutor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	retryHandler := runtime.NewExecuteNodeHandler(uow, ids, retryExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	retryHandler := runtime.NewExecuteNodeHandler(uow, ids, retryExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
 	if err := retryHandler.Handle(ctx, retryJob); err != nil {
 		t.Fatalf("Handle (retry): %v", err)
 	}

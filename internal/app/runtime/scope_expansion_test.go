@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -89,7 +88,7 @@ func blockScopeExpansionFixture(t *testing.T) (
 			Reason: "need repo-2 too",
 		},
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty())
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}

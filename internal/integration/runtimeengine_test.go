@@ -57,15 +57,18 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	stdruntime "runtime"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
-	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
+	"github.com/taQuangLing/agent-workflow/internal/app/adapterbuild"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
+	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
@@ -75,6 +78,7 @@ import (
 	appwork "github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspaceprovision"
+	domainadapterbuild "github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
 	"github.com/taQuangLing/agent-workflow/internal/domain/agentprofile"
 	"github.com/taQuangLing/agent-workflow/internal/domain/command"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
@@ -100,7 +104,9 @@ import (
 //	                     -> gate_b(MACHINE_GATE) -> join_node(JOIN, ALL)
 //	  -> scope_node(AGENT) -- first activation BLOCKED, requests repo-b;
 //	     reactivated after approval+provisioning -> done -> end(END)
-func runtimeEngineDocument() workflow.WorkflowDocument {
+func runtimeEngineDocument(t *testing.T) workflow.WorkflowDocument {
+	t.Helper()
+	buildID := runtimeEngineAdapterBuild(t).ID()
 	agent := func(key string, outcomes []string, cycle *workflow.CyclePolicy) workflow.Node {
 		return workflow.Node{
 			Key: key, Type: workflow.NodeAgent, Outcomes: outcomes, CyclePolicy: cycle,
@@ -110,6 +116,7 @@ func runtimeEngineDocument() workflow.WorkflowDocument {
 					{Kind: definition.KindPolicy, DefinitionID: "re-attempt-policy", VersionID: "re-attempt-policy-v1"},
 					{Kind: definition.KindPolicy, DefinitionID: "re-permission-policy", VersionID: "re-permission-policy-v1"},
 				},
+				AdapterBuildID: &buildID,
 			},
 		}
 	}
@@ -172,6 +179,108 @@ func runtimeEngineDocument() workflow.WorkflowDocument {
 			{Key: "scope-end", From: "scope_node", Outcome: "done", To: "end"},
 		},
 	}
+}
+
+// --- shared AdapterBuild fixture ---
+
+// Audit finding (2026-09-08, V5-08 remediation): GC-INV-23 makes a pinned
+// AdapterBuildVersion mandatory for an AGENT node —
+// runAdmissionProbePhase (internal/app/runtime/admission.go) no longer
+// treats a nil AdapterBuild as "nothing to verify, pass" for an AGENT
+// executor. Both of this file's own tests dispatch "implement"/
+// "scope_node" through real admission, so runtimeEngineDocument's own
+// AGENT nodes must pin one, and ExecuteNodeHandler's own agentregistry
+// must resolve a matching, non-drifting executor for it — mirroring
+// internal/app/runtime's own sharedTestAdapterBuild
+// (shared_admission_test.go): built once (a real temp executable, hashed,
+// wrapped in a domainadapterbuild.Build) via os.MkdirTemp (never
+// t.TempDir(), which would delete the file out from under a LATER test
+// once the FIRST test that built it finishes and cleans up) no matter how
+// many of this file's own tests call it.
+var (
+	runtimeEngineAdapterBuildOnce     sync.Once
+	runtimeEngineAdapterBuildValue    domainadapterbuild.Build
+	runtimeEngineAdapterRegistryValue *agentregistry.Registry
+)
+
+// runtimeEngineAdapterBuild returns the one real, non-drifting AdapterBuild
+// this whole gate's own AGENT nodes pin.
+func runtimeEngineAdapterBuild(t *testing.T) domainadapterbuild.Build {
+	t.Helper()
+	runtimeEngineAdapterBuildOnce.Do(func() { initRuntimeEngineAdapterBuild(t) })
+	return runtimeEngineAdapterBuildValue
+}
+
+// runtimeEngineAgentRegistry returns the agentregistry.Registry whose own
+// fake.AgentExecutor reports capabilities matching runtimeEngineAdapterBuild
+// exactly — the replacement for every agentregistry.Empty() placeholder
+// this file's own ExecuteNodeHandler wiring used before this fix.
+func runtimeEngineAgentRegistry(t *testing.T) *agentregistry.Registry {
+	t.Helper()
+	runtimeEngineAdapterBuildOnce.Do(func() { initRuntimeEngineAdapterBuild(t) })
+	return runtimeEngineAdapterRegistryValue
+}
+
+func initRuntimeEngineAdapterBuild(t *testing.T) {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "runtime-engine-adapter-build")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	executablePath := filepath.Join(dir, "runtime-engine-fixture-binary")
+	if err := os.WriteFile(executablePath, []byte("runtime-engine-fixture-binary-v1"), 0o755); err != nil {
+		t.Fatalf("write fixture executable: %v", err)
+	}
+	capabilities := ports.AgentCapabilities{
+		Provider: ports.ProviderClaude, AdapterVersion: "claude-stream-json/v1", ProtocolVersion: "claude-stream-json/v1",
+		SupportsStart: true, SupportsResume: true, SupportsCancel: true,
+	}
+	contentHash, err := adapterbuild.HashExecutableFile(executablePath)
+	if err != nil {
+		t.Fatalf("hash fixture: %v", err)
+	}
+	manifest := domainadapterbuild.CapabilityManifest{
+		SupportsStart: capabilities.SupportsStart, SupportsResume: capabilities.SupportsResume, SupportsCancel: capabilities.SupportsCancel,
+	}
+	_, manifestHash, err := domainadapterbuild.HashCapabilityManifest(manifest)
+	if err != nil {
+		t.Fatalf("hash manifest: %v", err)
+	}
+	tuple := domainadapterbuild.CandidateTuple{
+		ProviderKey: string(capabilities.Provider), ExecutablePath: executablePath,
+		ExecutableContentHash: contentHash, ProtocolVersion: capabilities.ProtocolVersion,
+		CapabilityManifestHash: manifestHash, OS: stdruntime.GOOS, Toolchain: stdruntime.Version(),
+		ConfigIdentity: "default",
+	}
+	build, err := domainadapterbuild.NewBuild(domainadapterbuild.NewBuildRequest{
+		Tuple: tuple, CapabilityManifest: manifest, RegisteredBy: "operator-1", RegisteredAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("construct pinned build: %v", err)
+	}
+	runtimeEngineAdapterBuildValue = build
+	registry, err := agentregistry.New(context.Background(), &fake.AgentExecutor{CapabilitiesResult: capabilities})
+	if err != nil {
+		t.Fatalf("agentregistry.New: %v", err)
+	}
+	runtimeEngineAdapterRegistryValue = registry
+}
+
+// registerRuntimeEngineAdapterBuild inserts runtimeEngineAdapterBuild(t)
+// into uow's own AdapterBuilds repository — schedule.go's own
+// resolveExecutionProfile fails the whole scheduling transaction closed if
+// a declared AdapterBuildID cannot be resolved. Safe to call more than once
+// for the same uow (InsertIfAbsent is idempotent by ID).
+func registerRuntimeEngineAdapterBuild(t *testing.T, uow ports.UnitOfWork) string {
+	t.Helper()
+	build := runtimeEngineAdapterBuild(t)
+	if err := uow.WithSerializedWrite(context.Background(), func(tx ports.Tx) error {
+		_, _, err := tx.AdapterBuilds().InsertIfAbsent(context.Background(), build)
+		return err
+	}); err != nil {
+		t.Fatalf("register runtime engine adapter build: %v", err)
+	}
+	return build.ID()
 }
 
 func reCommand(idempotencyKey string, scope ports.CommandScope, commandType string) ports.Command {
@@ -313,12 +422,13 @@ func publishREGate(t *testing.T, uow ports.UnitOfWork) {
 func publishREWorkflowVersion(t *testing.T, uow ports.UnitOfWork, projectID string) workflow.WorkflowVersion {
 	t.Helper()
 	ctx := context.Background()
+	registerRuntimeEngineAdapterBuild(t, uow)
 	pid := project.ProjectID(projectID)
 	def := workflow.WorkflowDefinition{
 		ID: "re-workflow", ProjectID: &pid, Name: "re workflow", Status: workflow.DefinitionActive, Version: 1,
 	}
 	candidate, err := workflow.Compile(def, workflow.PublishRequest{
-		VersionID: "re-workflow-v1", VersionNumber: 1, Document: runtimeEngineDocument(),
+		VersionID: "re-workflow-v1", VersionNumber: 1, Document: runtimeEngineDocument(t),
 		Dependencies: workflow.DependencyManifest{Pins: []workflow.DependencyPin{
 			{Kind: "skill", Key: "implement", Version: "1", Hash: "sha256:re-dependency-1"},
 		}},
@@ -460,12 +570,13 @@ func (e *scriptedNodeExecutor) Execute(ctx context.Context, req ports.NodeExecut
 // three spike-era interfaces structurally, exactly RecoveryReaperHandler's
 // own doc comment already establishes).
 func registerRuntimeEngineHandlers(
-	store *sqlite.Store, uow ports.UnitOfWork, handlerIDs idsource.Source, executor ports.NodeExecutor,
+	t *testing.T, store *sqlite.Store, uow ports.UnitOfWork, handlerIDs idsource.Source, executor ports.NodeExecutor,
 ) *workerpool.Registry {
+	t.Helper()
 	registry := workerpool.NewRegistry()
 	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(uow, handlerIDs))
 	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandler(uow, handlerIDs, fake.NewRuntimeExecutionConfigProvider()))
-	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, handlerIDs, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty()))
+	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, handlerIDs, executor, clock.System{}, fake.IsolationEnforcementChecker{}, runtimeEngineAgentRegistry(t)))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(uow, handlerIDs))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(uow, handlerIDs))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(uow, handlerIDs))
@@ -890,7 +1001,7 @@ func runRuntimeEngineScenario(t *testing.T, injectCrash bool) runtimeEngineScena
 	// test's own foreground goroutine — a distinct variable, so no shared
 	// mutable state race) make that tie-break deterministic instead.
 	handlerIDs := idsource.NewSequential("h")
-	registry := registerRuntimeEngineHandlers(store, uow, handlerIDs, executor)
+	registry := registerRuntimeEngineHandlers(t, store, uow, handlerIDs, executor)
 	pool := newRuntimeEnginePool(t, store, registry)
 	poolCtx, cancelPool := context.WithCancel(ctx)
 	poolErr := make(chan error, 1)
@@ -986,7 +1097,7 @@ func runRuntimeEngineScenario(t *testing.T, injectCrash bool) runtimeEngineScena
 		// A fresh prefix ("h2"), not "h" again: pool1's own handlerIDs
 		// already minted real "h-N" ids durably persisted in this SAME
 		// database — restarting "h" from 1 here would collide.
-		registry2 := registerRuntimeEngineHandlers(store, uow, idsource.NewSequential("h2"), recoveredExecutor)
+		registry2 := registerRuntimeEngineHandlers(t, store, uow, idsource.NewSequential("h2"), recoveredExecutor)
 		pool2 := newRuntimeEnginePool(t, store, registry2)
 		poolCtx2, cancelPool2 := context.WithCancel(ctx)
 		poolErr2 := make(chan error, 1)
@@ -1185,6 +1296,15 @@ type canonicalTraceEvent struct {
 // everything the first pass misses.
 var runtimeEngineGeneratedIDPattern = regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|(?:t|h|h2)-\d+)$`)
 
+// executionProfileHashPattern is the exact shape
+// ResolvedExecutionProfileV1's own ExecutionProfileHash always takes (a
+// lowercase-hex SHA-256 digest with its "sha256:" prefix) — validated
+// before aliasing so a genuinely malformed/missing value fails loudly
+// (canonicalizeRuntimeEngineTrace's own established discipline for every
+// other unexpected shape) rather than silently passing through as an
+// un-canonicalized, never-stable literal.
+var executionProfileHashPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+
 // canonicalizeRuntimeEngineTrace walks events in their own real journal
 // order and aliases every distinct (AggregateType, AggregateID) pair to a
 // stable "<lowercase_type>-N" name, plus every distinct bare
@@ -1194,14 +1314,44 @@ var runtimeEngineGeneratedIDPattern = regexp.MustCompile(`^(?:[0-9a-fA-F]{8}-[0-
 // confirmed with the user: only generated IDs/timestamps are ever
 // touched, never event ordering, never a field dropped because two runs
 // happened to differ (that would hide the exact regression this golden
-// exists to catch). The one deliberate exception is "jobId" itself (see
-// its own special case below, in the map-walking branch): a real run of
-// this exact test proved that field's own concrete value is not even a
-// stable FUNCTION of the business decisions made (V4-13's own recovery
-// reaper self-reschedules a genuinely variable number of times before the
-// single Concurrency:1 worker gets back to the retried Attempt, shifting
-// every id minted afterward), so it is normalized to a fixed placeholder
-// instead of aliased.
+// exists to catch). Two deliberate, narrowly-scoped exceptions to that
+// rule live in the map-walking branch below, both keyed by FIELD NAME
+// rather than value shape (so they can never accidentally swallow an
+// unrelated hash-shaped field like contentHash/revisionHash/policyHash,
+// which must stay byte-exact):
+//
+//  1. "jobId" is dropped to a fixed placeholder, never aliased: it is
+//     purely a causal/debugging reference (which durable job produced this
+//     event), not business content, and a real run of this exact test
+//     proved its own concrete value is not even a stable FUNCTION of the
+//     business decisions made (V4-13's own recovery reaper self-reschedules
+//     a genuinely variable number of times before the single Concurrency:1
+//     worker gets back to the retried Attempt, shifting every id minted
+//     afterward).
+//  2. "executionProfileHash" is aliased (same value -> same alias, in
+//     first-appearance order, via its own dedicated alias map — never
+//     folded into the generic aliasForGeneratedID's own UUID/t-N/h-N
+//     namespace) rather than left byte-exact. Audit finding (2026-09-09,
+//     V5-08 remediation): once this gate's own AGENT nodes pin a real
+//     AdapterBuild (GC-INV-23), ResolvedExecutionProfileV1's own hash
+//     folds in that build's CandidateTuple — which embeds the fixture
+//     executable's real OS path and runtime.GOOS/runtime.Version() — so
+//     its concrete value is a function of the MACHINE running the test,
+//     not of any business decision this golden exists to protect. Confirmed
+//     empirically: two separate local `go test` runs on the same source
+//     produced two different executionProfileHash values for the identical
+//     scenario, and CI's own contract job runs this exact test on BOTH
+//     windows-latest and ubuntu-latest, so a byte-exact assertion on this
+//     field could never pass on both platforms at once. Aliasing (rather
+//     than the broader "alias every sha256:-shaped string" the user
+//     explicitly rejected) preserves the one thing this golden actually
+//     needs from the field: whether an AGENT node's profile hash is the
+//     SAME or DIFFERENT across two events/nodes — GC-INV-23's own
+//     "Attempt pin đúng immutable build" property is asserted directly
+//     instead, in TestRuntimeEngineGate_AdapterBuildPinning below, which
+//     reads the durable execution-profile-v1 DecisionArtifact and checks
+//     its own AdapterBuild.BuildID rather than relying on this golden's
+//     now-aliased hash text.
 //
 // Substitution walks each payload as PARSED JSON (json.Unmarshal into
 // any, recurse, re-marshal — encoding/json's own map key sort order is
@@ -1237,6 +1387,21 @@ func canonicalizeRuntimeEngineTrace(events []sqlite.DomainEventRecord) []canonic
 		aliasOf[id] = alias
 		return alias
 	}
+	executionProfileHashAliasOf := map[string]string{}
+	executionProfileHashCount := 0
+	aliasForExecutionProfileHash := func(v any) any {
+		s, ok := v.(string)
+		if !ok || !executionProfileHashPattern.MatchString(s) {
+			panic(fmt.Sprintf("canonicalizeRuntimeEngineTrace: executionProfileHash has unexpected shape %#v, want sha256:<64 lowercase hex>", v))
+		}
+		if alias, ok := executionProfileHashAliasOf[s]; ok {
+			return alias
+		}
+		executionProfileHashCount++
+		alias := fmt.Sprintf("<execution-profile-hash-%d>", executionProfileHashCount)
+		executionProfileHashAliasOf[s] = alias
+		return alias
+	}
 	var canonicalizeValue func(v any) any
 	canonicalizeValue = func(v any) any {
 		switch val := v.(type) {
@@ -1261,6 +1426,10 @@ func canonicalizeRuntimeEngineTrace(events []sqlite.DomainEventRecord) []canonic
 			sort.Strings(keys)
 			out := make(map[string]any, len(val))
 			for _, k := range keys {
+				if k == "executionProfileHash" {
+					out[k] = aliasForExecutionProfileHash(val[k])
+					continue
+				}
 				if k == "jobId" {
 					// jobId is dropped to a fixed placeholder, never
 					// aliased: it is purely a causal/debugging reference
@@ -1329,6 +1498,88 @@ func canonicalizeRuntimeEngineTrace(events []sqlite.DomainEventRecord) []canonic
 		})
 	}
 	return out
+}
+
+// TestCanonicalizeRuntimeEngineTrace_ExecutionProfileHashFieldAware proves
+// the user's own explicit design for the golden-trace fix (2026-09-09,
+// V5-08 remediation): "executionProfileHash" is aliased BY FIELD NAME
+// (same value -> same alias, different value -> different alias — the
+// golden still detects a real business divergence in WHICH nodes share a
+// profile), while an unrelated hash-shaped field is left completely
+// untouched — the field-aware exception must never widen into "alias
+// every sha256:-shaped string" (a broader scope the user explicitly
+// rejected, since many hashes — contentHash, revisionHash, policyHash —
+// ARE genuine business/provenance content this golden must still catch a
+// regression in).
+func TestCanonicalizeRuntimeEngineTrace_ExecutionProfileHashFieldAware(t *testing.T) {
+	hashA := "sha256:" + strings.Repeat("a", 64)
+	hashB := "sha256:" + strings.Repeat("b", 64)
+	contentHashValue := "sha256:" + strings.Repeat("c", 64)
+
+	events := []sqlite.DomainEventRecord{
+		{
+			AggregateType: "ExecutionAttempt", AggregateID: "attempt-1", Sequence: 1,
+			EventType: "NODE_SCHEDULED", SchemaVersion: 1,
+			PayloadJSON: fmt.Sprintf(`{"executionProfileHash":%q,"contentHash":%q}`, hashA, contentHashValue),
+		},
+		{
+			AggregateType: "ExecutionAttempt", AggregateID: "attempt-2", Sequence: 1,
+			EventType: "NODE_SCHEDULED", SchemaVersion: 1,
+			PayloadJSON: fmt.Sprintf(`{"executionProfileHash":%q,"contentHash":%q}`, hashA, contentHashValue),
+		},
+		{
+			AggregateType: "ExecutionAttempt", AggregateID: "attempt-3", Sequence: 1,
+			EventType: "NODE_SCHEDULED", SchemaVersion: 1,
+			PayloadJSON: fmt.Sprintf(`{"executionProfileHash":%q,"contentHash":%q}`, hashB, contentHashValue),
+		},
+	}
+
+	canonical := canonicalizeRuntimeEngineTrace(events)
+	if len(canonical) != 3 {
+		t.Fatalf("canonical trace = %d events, want 3", len(canonical))
+	}
+	var payloads [3]map[string]any
+	for i, e := range canonical {
+		if err := json.Unmarshal([]byte(e.PayloadJSON), &payloads[i]); err != nil {
+			t.Fatalf("unmarshal event %d payload: %v", i, err)
+		}
+	}
+
+	if payloads[0]["executionProfileHash"] != payloads[1]["executionProfileHash"] {
+		t.Fatalf("same executionProfileHash value got different aliases: %v vs %v", payloads[0]["executionProfileHash"], payloads[1]["executionProfileHash"])
+	}
+	if payloads[0]["executionProfileHash"] == payloads[2]["executionProfileHash"] {
+		t.Fatalf("different executionProfileHash values got the SAME alias: %v", payloads[0]["executionProfileHash"])
+	}
+	if got, ok := payloads[0]["executionProfileHash"].(string); !ok || got == hashA {
+		t.Fatalf("executionProfileHash = %v, want an aliased placeholder, not the raw hash", payloads[0]["executionProfileHash"])
+	}
+
+	for i, p := range payloads {
+		if got := p["contentHash"]; got != contentHashValue {
+			t.Fatalf("event %d contentHash = %v, want untouched %q (an unrelated hash field must stay byte-exact)", i, got, contentHashValue)
+		}
+	}
+}
+
+// TestCanonicalizeRuntimeEngineTrace_MalformedExecutionProfileHash_PanicsFailClosed
+// proves the fail-closed half of the same fix: a value under the
+// "executionProfileHash" key that does NOT match the real
+// ResolvedExecutionProfileV1 shape (sha256:<64 lowercase hex>) panics
+// rather than silently passing through un-canonicalized — the same "fail
+// loudly on an unexpected shape" discipline canonicalizePayload's own
+// invalid-JSON branch already establishes.
+func TestCanonicalizeRuntimeEngineTrace_MalformedExecutionProfileHash_PanicsFailClosed(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("canonicalizeRuntimeEngineTrace did not panic on a malformed executionProfileHash")
+		}
+	}()
+	canonicalizeRuntimeEngineTrace([]sqlite.DomainEventRecord{{
+		AggregateType: "ExecutionAttempt", AggregateID: "attempt-1", Sequence: 1,
+		EventType: "NODE_SCHEDULED", SchemaVersion: 1,
+		PayloadJSON: `{"executionProfileHash":"not-a-real-hash"}`,
+	}})
 }
 
 const runtimeEngineRegenerateGoldenEnv = "AGENTKIT_REGENERATE_RUNTIME_ENGINE_GOLDEN"
@@ -1487,7 +1738,7 @@ func TestRuntimeEngineGate_ConcurrentPoolsNoDuplicateExecution(t *testing.T) {
 	var executions atomic.Int32
 	countingExecutor := &countingNodeExecutor{inner: &scriptedNodeExecutor{uow: uow}, count: &executions}
 	raceRegistry := workerpool.NewRegistry()
-	raceRegistry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, idsource.Random{}, countingExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty()))
+	raceRegistry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, idsource.Random{}, countingExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, runtimeEngineAgentRegistry(t)))
 
 	poolA := newRuntimeEnginePool(t, store, raceRegistry)
 	poolB := newRuntimeEnginePool(t, store, raceRegistry)
@@ -1573,4 +1824,203 @@ func uowGetWorkflowRun(ctx context.Context, uow ports.UnitOfWork, runID string) 
 		return err
 	})
 	return run, err
+}
+
+// TestRuntimeEngineGate_AdapterBuildPinning is the user's own explicit
+// follow-up (2026-09-09, V5-08 remediation) to the golden-trace fix above:
+// GC-INV-23's own "Attempt pin immutable AdapterBuildVersion; version khác
+// bị từ chối trước dispatch" invariant is asserted DIRECTLY here —
+// independent of the byte-exact golden comparison, which (after
+// canonicalizeRuntimeEngineTrace's own executionProfileHash exception,
+// documented above) no longer pins that field's literal value — through
+// the real, wired-together system (a real *sqlite.Store, real
+// ExecuteNodeHandler, a real workerpool.Pool), not internal/app/runtime's
+// own unit-level admission_test.go (which already covers this identical
+// invariant with fakes; this test proves the same thing holds through this
+// gate's own full stack). Two parts, mirroring the user's own instruction:
+//  1. a clean AGENT dispatch resolves the pinned build correctly and the
+//     Attempt's own durable execution-profile-v1 DecisionArtifact records
+//     that exact BuildID — "Build được resolve đúng" + "Attempt pin đúng
+//     immutable build";
+//  2. a real drift (the pinned executable's own bytes change on disk after
+//     registration) blocks a FRESH Attempt before the executor is ever
+//     spawned — "mismatch bị chặn trước dispatch", mirroring
+//     internal/app/runtime's own TestAdmission_AdapterBuildDrift_BlocksBeforeSpawn.
+func TestRuntimeEngineGate_AdapterBuildPinning(t *testing.T) {
+	// Part 1/2 and Part 2/2 each get their OWN fresh *sqlite.Store/pool —
+	// a real run of this exact test caught why sharing one store/pool
+	// across both parts (stopping and restarting a pool mid-test, tamper
+	// the shared fixture executable in between) is genuinely racy even
+	// after the pool is fully stopped before tampering and handler ids are
+	// shared rather than reset: an intermittent "execution attempt not
+	// found" (blank AttemptID from ScheduleExecutableNodeRun's own
+	// idempotent-replay guard) surfaced roughly 1 run in 25 under load,
+	// most likely a residual timing edge in this project's own
+	// already-documented class of Windows/SQLite concurrency flakes (see
+	// db.go's own "_txlock=immediate" fix and the V0-11A diagnostic CI
+	// step). Two fully independent scenarios (each publishing its own copy
+	// of "re-project"'s definitions) removes the whole race by
+	// construction rather than chasing one more manifestation of it.
+	wantBuildID := runtimeEngineAdapterBuild(t).ID()
+
+	// Part 1/2: clean dispatch resolves + pins the real build.
+	func() {
+		uow, implementNodeRunID, runID := runAdapterBuildPinningScenario(t, "adapterbuild-clean")
+		ctx := context.Background()
+
+		var recordedProfile runtimedomain.ResolvedExecutionProfileV1
+		if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+			artifact, err := tx.Runtime().GetDecisionArtifact(ctx, implementNodeRunID+"-execution-profile-v1")
+			if err != nil {
+				return err
+			}
+			return json.Unmarshal(artifact.Result, &recordedProfile)
+		}); err != nil {
+			t.Fatalf("load execution-profile-v1 decision artifact: %v", err)
+		}
+		if recordedProfile.AdapterBuild == nil || recordedProfile.AdapterBuild.BuildID != wantBuildID {
+			t.Fatalf("recorded ResolvedExecutionProfileV1.AdapterBuild = %+v, want BuildID=%s", recordedProfile.AdapterBuild, wantBuildID)
+		}
+		if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+			_, err := tx.AdapterBuilds().Get(ctx, wantBuildID)
+			return err
+		}); err != nil {
+			t.Fatalf("AdapterBuilds().Get(%s): %v, want the real registered build to resolve", wantBuildID, err)
+		}
+		waitForRuntimeEngineNodeRunState(t, uow, runID, "implement", runtimedomain.NodeRunSucceeded)
+	}()
+
+	// Part 2/2: a real drift after registration blocks a FRESH Attempt
+	// before the executor is ever spawned. The tampered bytes are restored
+	// via t.Cleanup before this test returns — runtimeEngineAdapterBuild is
+	// a package-wide sync.Once singleton every other test in this file also
+	// depends on staying non-drifted.
+	pinnedExecutablePath := runtimeEngineAdapterBuild(t).Tuple().ExecutablePath
+	originalBytes, err := os.ReadFile(pinnedExecutablePath)
+	if err != nil {
+		t.Fatalf("read pinned executable before tampering: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.WriteFile(pinnedExecutablePath, originalBytes, 0o755); err != nil {
+			t.Fatalf("restore pinned executable: %v", err)
+		}
+	})
+	if err := os.WriteFile(pinnedExecutablePath, []byte("tampered-after-registration"), 0o755); err != nil {
+		t.Fatalf("tamper pinned executable: %v", err)
+	}
+
+	uow, _, driftRunID := runAdapterBuildPinningScenario(t, "adapterbuild-drift")
+	ctx := context.Background()
+
+	blocked := waitForRuntimeEngineNodeRunState(t, uow, driftRunID, "implement", runtimedomain.NodeRunBlocked)
+	var driftAttempt runtimedomain.ExecutionAttempt
+	var driftBlockers []workdomain.WorkItemBlocker
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		attempts, err := tx.Runtime().ListExecutionAttemptsForRun(ctx, driftRunID)
+		if err != nil {
+			return err
+		}
+		for _, a := range attempts {
+			if a.NodeRunID == blocked.ID {
+				driftAttempt = a
+			}
+		}
+		run, err := tx.Runtime().GetWorkflowRun(ctx, driftRunID)
+		if err != nil {
+			return err
+		}
+		driftBlockers, err = tx.Work().ListWorkItemBlockersForWorkItem(ctx, string(run.WorkItemID))
+		return err
+	}); err != nil {
+		t.Fatalf("reload drift attempt/blockers: %v", err)
+	}
+	if driftAttempt.ID == "" {
+		t.Fatalf("no ExecutionAttempt found for blocked node run %s", blocked.ID)
+	}
+	if driftAttempt.State != runtimedomain.ExecutionAttemptBlocked {
+		t.Fatalf("drift attempt.State = %s, want BLOCKED", driftAttempt.State)
+	}
+	if driftAttempt.TerminationReason != runtimedomain.TerminationReasonAdapterBuildDrift {
+		t.Fatalf("drift attempt.TerminationReason = %s, want %s", driftAttempt.TerminationReason, runtimedomain.TerminationReasonAdapterBuildDrift)
+	}
+	if driftAttempt.StartedAt != nil {
+		t.Fatalf("drift attempt.StartedAt = %v, want nil — a real drift must block BEFORE the executor is ever spawned", *driftAttempt.StartedAt)
+	}
+	foundBlocker := false
+	for _, blocker := range driftBlockers {
+		if blocker.Type == workdomain.BlockerAdapterBuildDrift && blocker.SourceAttemptID == string(driftAttempt.ID) {
+			foundBlocker = true
+			if blocker.State != workdomain.BlockerOpen {
+				t.Fatalf("drift blocker.State = %s, want OPEN", blocker.State)
+			}
+		}
+	}
+	if !foundBlocker {
+		t.Fatalf("no %s blocker found for drift attempt %s among %+v", workdomain.BlockerAdapterBuildDrift, driftAttempt.ID, driftBlockers)
+	}
+}
+
+// runAdapterBuildPinningScenario sets up one fully independent
+// "re-project" (fresh store, fresh pool, its own copy of every published
+// definition) and drives it from START through "implement"'s own
+// ScheduleExecutableNodeRun — the common setup
+// TestRuntimeEngineGate_AdapterBuildPinning's own two parts each need,
+// factored out so the two parts never share a store (see that test's own
+// top doc comment for why). The pool keeps running until the test itself
+// ends (t.Cleanup), since the caller still needs to observe the
+// asynchronous EXECUTE_NODE dispatch this function's own
+// ScheduleExecutableNodeRun call enqueues.
+func runAdapterBuildPinningScenario(t *testing.T, title string) (uow ports.UnitOfWork, implementNodeRunID, runID string) {
+	t.Helper()
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "agentkit-runtime-engine-adapterbuild-"+title+".db")
+	store, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("Open(%s): %v", title, err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	u := sqlite.NewUnitOfWork(store)
+	testIDs := idsource.NewSequential("t")
+
+	seedREProject(t, u, testIDs, "re-project", "repo-a")
+	version := publishREDefinitions(t, u, "re-project")
+
+	registry := registerRuntimeEngineHandlers(t, store, u, idsource.NewSequential("h"), &scriptedNodeExecutor{uow: u})
+	pool := newRuntimeEnginePool(t, store, registry)
+	poolCtx, cancelPool := context.WithCancel(ctx)
+	poolErr := make(chan error, 1)
+	go func() { poolErr <- pool.Run(poolCtx) }()
+	t.Cleanup(func() {
+		cancelPool()
+		if err := <-poolErr; err != nil {
+			t.Fatalf("pool.Run(%s): %v", title, err)
+		}
+	})
+
+	workItem := createREWorkItem(t, store, u, testIDs, "re-project", title, "repo-a")
+	start, err := runtime.StartWorkflowRun(ctx, u, testIDs, reCommand("re-start-"+title, ports.ProjectScope("re-project"), "StartWorkflowRun"), runtime.StartWorkflowRunRequest{
+		ProjectID: "re-project", WorkItemID: workItem.WorkItemID, WorkflowVersionID: string(version.ID()),
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflowRun(%s): %v", title, err)
+	}
+	hop, err := runtime.AdvanceRun(ctx, u, testIDs, runtime.AdvanceRunRequest{RunID: start.RunID, NodeRunID: start.NodeRunID})
+	if err != nil {
+		t.Fatalf("AdvanceRun(%s start->gate): %v", title, err)
+	}
+	for hop.NextAutoAdvanced {
+		hop, err = runtime.AdvanceRun(ctx, u, testIDs, runtime.AdvanceRunRequest{RunID: start.RunID, NodeRunID: hop.NextNodeRunID})
+		if err != nil {
+			t.Fatalf("AdvanceRun(%s auto-advance chain): %v", title, err)
+		}
+	}
+	if hop.NextNodeKey != "implement" {
+		t.Fatalf("AdvanceRun(%s) chain reached node %q, want %q", title, hop.NextNodeKey, "implement")
+	}
+	if _, err := runtime.ScheduleExecutableNodeRun(ctx, u, testIDs, fake.NewRuntimeExecutionConfigProvider(), runtime.ScheduleExecutableNodeRunRequest{
+		RunID: start.RunID, NodeRunID: hop.NextNodeRunID,
+	}); err != nil {
+		t.Fatalf("ScheduleExecutableNodeRun(%s implement): %v", title, err)
+	}
+	return u, hop.NextNodeRunID, start.RunID
 }
