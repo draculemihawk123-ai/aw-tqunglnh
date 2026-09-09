@@ -153,6 +153,10 @@ func (s *Supervisor) Run(
 		result.ExitCode = command.ProcessState.ExitCode()
 	}
 	result.OutputTruncated = stdoutBound.truncated || stderrBound.truncated
+	// Confirmed on EVERY exit path, not only cancellation/timeout below —
+	// V5-08B's own normal-exit quiescence postcondition (see
+	// ports.ProcessResult.TreeQuiesced's own doc comment).
+	result.TreeQuiesced = confirmTreeQuiesced(tree, command)
 
 	if terminationCause != nil {
 		setCancellationResult(&result, terminationCause)
@@ -166,6 +170,37 @@ func (s *Supervisor) Run(
 		return result, nil
 	}
 	return result, fmt.Errorf("wait for executable %q: %w", spec.Executable, waitErr)
+}
+
+// quiescencePollInterval/quiescencePollBound bound confirmTreeQuiesced's own
+// retry loop: the direct child is already reaped by Wait() by the time this
+// runs, so a well-behaved tree with no orphaned descendants is quiesced
+// immediately (the first poll succeeds); these only matter for the brief
+// OS-level lag between a kill syscall returning and the kernel actually
+// tearing down every descendant, or for a genuinely-still-alive orphan
+// (which polling can never fix — the bound exists precisely so that case
+// reports false promptly instead of hanging).
+const (
+	quiescencePollInterval = 20 * time.Millisecond
+	quiescencePollBound    = 2 * time.Second
+)
+
+// confirmTreeQuiesced polls tree.quiesced until it reports true or
+// quiescencePollBound elapses. Called on every exit path in Run (normal
+// completion included), never only after signalGraceful/kill — a parent
+// that exits cleanly while a descendant keeps running/writing must report
+// false here exactly like an orphan surviving a forced kill would.
+func confirmTreeQuiesced(tree processTree, cmd *exec.Cmd) bool {
+	deadline := time.Now().Add(quiescencePollBound)
+	for {
+		if quiesced, err := tree.quiesced(cmd); err == nil && quiesced {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(quiescencePollInterval)
+	}
 }
 
 func (s *Supervisor) Cancel(_ context.Context, id ports.ProcessID) error {

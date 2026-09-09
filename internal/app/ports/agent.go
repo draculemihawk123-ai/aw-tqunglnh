@@ -310,6 +310,17 @@ type ProcessResult struct {
 	// caller must never treat a truncated capture as a complete one for
 	// evidence purposes.
 	OutputTruncated bool
+	// TreeQuiesced is true only when Supervisor confirmed every process it
+	// ever grouped under spec.ID (the direct child and any descendants it
+	// spawned) has genuinely exited by the time Run returns — checked on
+	// EVERY exit path, including a plain, successful process exit, not
+	// only cancellation/timeout (V5-08B's own normal-exit quiescence
+	// postcondition: a parent that exits while a descendant keeps
+	// running/writing must never look identical to a fully quiesced
+	// tree). false means the caller must NOT trust the working directory
+	// as settled — a mutating attempt must never measure its own final
+	// diff, or commit any evidence derived from one, while this is false.
+	TreeQuiesced bool
 }
 
 // ProcessSupervisor executes an executable directly with argv. stdout and
