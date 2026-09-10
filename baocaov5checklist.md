@@ -3349,3 +3349,132 @@ recovery scan — package này phiên remediation không hề chạm tới).
 người dùng bảo "check PR feat(v5-10a)" — PR #10 lại conflict với `master` (do PR #12 cũng sửa
 `baocaov5checklist.md`) — resolve lần hai trên `feat/v5-10a-release-set` theo đúng cách lần đầu (merge
 `origin/master`, chỉ nối thêm nội dung mới, verify lại, push).
+
+## V5-09/V5-10 remaining gaps — 4 phần gộp 1 PR (branch `fix/v5-09-v5-10-remaining-gaps`, based on `master` sau khi PR #10/#11/#12 đều đã merge)
+
+**Bối cảnh:** sau khi PR #10 (V5-10A) merge, người dùng hỏi "công việc tiếp theo là gì" — trả lời bằng
+danh sách 4 gap còn lại trong "Rà soát V5-09…V5-15 trên committed master" (mục ở trên) CHƯA được PR1/PR2
+xử lý: (A) `OutputTruncated` chưa fail-closed + secret đã resolve chưa vào redaction matcher, (B)
+Gate's NOT_APPLICABLE chỉ check `reason` chứ chưa check "pinned policy authority", Gate's CommandRef chưa
+re-verify sau load, (C) `CommandDocument.PolicyRefs`/OS-compatibility/`NetworkAccess` chưa được verify/
+enforce lúc execute, (D) chưa có production composition/router chọn executor theo `ExecutorKind`, chưa có
+test nào drive thẳng `ExecuteNodeHandler`→executor→fenced finalize (mọi test Command/Gate hiện có đều gọi
+thẳng `executor.Execute()` rồi tự tay finalize, chưa từng đi qua `Handle` thật). Người dùng chốt: "gộp 4 pr
+thành 1 luôn" — bốn phần này làm chung một nhánh/PR thay vì bốn PR riêng như thường lệ.
+
+### Part A — Output truncation fail-closed + secret redaction (commit `6aed057`)
+
+**Quyết định:** không phát minh `errorcode.Code` mới cho truncation — `internal/domain/errorcode` là enum
+CLOSED 22 giá trị khớp `docs/architecture/04-go-core-spec.md §18`; tái dùng `CodeExecutionFailed` (comment
+giải thích rõ lý do không thêm code mới). Thêm `redact.Matcher.WithSecrets(...)`/`redact.Matcher.Redact(...)`
+— hợp đồng MỚI, khác hẳn `String`/`IsSecret` (so khớp nguyên giá trị): quét-và-thay-thế mọi lần xuất hiện
+secret trong free text, dùng để redact output đã capture.
+
+**Thực hiện:**
+- `CommandNodeExecutor.classify` — check `OutputTruncated` ngay sau `ExitCode != 0`; nhận thêm tham số
+  `secretValues map[string]string` (chính là `env` map đã resolve từ `resolveCommandInvocation`).
+- `GateNodeExecutor.deriveGateResult` — check `OutputTruncated` trong nhánh `errorAllCriteria`, TRƯỚC khi
+  parse JSON (JSON hợp lệ về cú pháp nhưng bị cắt cụt không được lọt qua).
+- `persistCommandOutputArtifact`/`persistGateResultArtifact` — redact stdout/stderr (Command) và mỗi
+  `Detail`/`Reason` của từng criterion (Gate) bằng matcher scoped riêng cho lần chạy đó trước khi marshal,
+  set `Redacted: true`.
+
+**Test:** `internal/app/runtime/truncation_redaction_test.go` (mới) — 5 test cho cả Command/Gate truncation
+và secret redaction; `internal/app/redact/redact_test.go` — 4 test mới cho `WithSecrets`/`Redact`.
+
+### Part B — NOT_APPLICABLE authoring authorization + CommandRef re-verify (commit `6d3892c`)
+
+**Quyết định:** thêm `gate.Criterion.AllowNotApplicable bool` (field additive, mặc định `false` — chặt hơn
+hành vi cũ). `deriveGateResult` check `!c.AllowNotApplicable` TRƯỚC (ERROR nếu tác giả criterion chưa cho
+phép, dù runtime có cung cấp `reason` hay không), rồi mới đến check "reason rỗng" cũ. Thêm re-verify
+`CommandRef.DefinitionID` khớp sau khi load `commandVersion` trong `gatherGateExecutionInputs` (mirror
+đúng check GateVersion pin đã có sẵn).
+
+**Thực hiện:** `internal/domain/gate/gate.go` (+field), `gate_node_executor.go` (2 chỗ trên).
+
+**Test:** sửa `TestGateNodeExecutor_NotApplicableWithReason_CountsAsPass` +
+`TestGateNodeExecutor_NotApplicableWithoutReason_FinalizesFailed` để set `AllowNotApplicable: true` (cô lập
+đúng path đang test); thêm mới `TestGateNodeExecutor_NotApplicableWithoutAuthorization_FinalizesFailed`
+(chứng minh reject dù CÓ reason, khi chưa được authorize).
+
+**Quyết định phạm vi test:** không viết test riêng cho case CommandRef mismatch — cần fixture tuỳ biến sâu
+vượt qua `gateFixture`'s hardcoded pin; check GateVersion pin tương tự đã có sẵn từ trước cũng không có test
+riêng — nhất quán với tiền lệ, không phải gap tự tạo ra.
+
+### Part C — OS compatibility + NetworkAccess/PolicyRefs enforcement (commit `c993270`)
+
+**Quyết định:** thêm `verifyCommandCompatibilityAndPolicy` gọi trong transaction read-only sẵn có của
+`gatherCommandExecutionInputs`, ngay sau `decodeCompiledCommand`. Ba check: (1) OS compatibility — nếu
+`doc.Compatibility.OS` không rỗng, phải chứa `runtime.GOOS` thật (defense-in-depth, vì publish-time
+`validateCompatibility` đã BẮT BUỘC OS list không rỗng — sửa lại 1 test giả định sai "OS rỗng = không ràng
+buộc"); (2) MỌI `doc.PolicyRefs` đều được resolve qua `tx.Definitions().LoadVersion` + re-verify
+`DefinitionID` (không chỉ khi `NetworkAccess=ALLOWED`); (3) `NetworkAccess=ALLOWED` đòi ít nhất một
+`PolicyRefs` đã resolve có `GrantedCapabilities` chứa capability mới `NETWORK_ACCESS` (tái dùng đúng quy ước
+extensible-by-name đã ghi trong doc comment `PermissionRules`). Lỗi dùng sentinel có sẵn
+`ErrCommandInvocationUnresolvable`; `Execute` đổi cách xử lý lỗi từ `gatherCommandExecutionInputs` — check
+`errors.Is(..., ErrCommandInvocationUnresolvable)` → trả `NodeExecutionResult{State: Failed, ErrorCode:
+CodeValidationFailed}` thay vì để lỗi Go cứng lan ra (failure mode này deterministic/pre-spawn, không phải
+transient).
+
+**Thực hiện:** `command_node_executor.go` (+const `networkAccessCapability`, +hàm mới, +call site,
++error-handling ở `Execute`); `commandFixtureOptions` (+3 field mới: `compatibility`, `networkAccess`,
+`policyRefs`).
+
+**Test:** `internal/app/runtime/compatibility_policy_test.go` (mới) — 4 test: OS không tương thích fail
+closed không spawn; `NetworkAccess=ALLOWED` không có grant fail closed; `NetworkAccess=ALLOWED` VỚI policy
+grant thật thì succeed (phải sửa fixture `IsolationTier` — enum chỉ có đúng 2 giá trị hợp lệ, để zero-value
+publish sẽ fail); PolicyRef không resolve được fail closed không spawn.
+
+### Part D — Production NodeExecutor router + integration test qua `ExecuteNodeHandler` thật (mới, chưa có commit riêng, sẽ commit cùng lượt push)
+
+**Nghiên cứu xác nhận trước khi code:** `grep -rln "NodeExecutor\b" cmd/ --include=*.go | grep -v _test.go`
+rỗng — CHƯA CÓ bất kỳ production wiring nào cho NodeExecutor (kể cả AGENT), lặp lại đúng pattern đã ghi
+xuyên suốt mọi task V4/V5 trước ("Không đổi `cmd/agentkit` để nối executor thật vào route/CLI"). `cmd/
+agentkit` chỉ có `adapter.go`/`cli.go`/`definition.go`/`main.go`, không có composition root nào chạy
+`ExecuteNodeHandler`. `ExecuteNodeHandler` có đúng MỘT field/param `executor ports.NodeExecutor` — một slot
+duy nhất phải phục vụ cả 3 loại node.
+
+**Quyết định:** thêm `NodeExecutorRouter` (`internal/app/runtime/node_executor_router.go`) — implement
+`ports.NodeExecutor`, giữ 3 field `Agent`/`Command`/`Gate ports.NodeExecutor`, `Execute` switch trên
+`runtimedomain.ExecutorKind(req.ExecutorKind)` để dispatch đúng executor, cắm thẳng vào slot duy nhất của
+`ExecuteNodeHandler` — không cần đổi gì ở `execute.go`. Kind không nhận diện được HOẶC kind hợp lệ nhưng
+chưa wire field tương ứng đều fail closed bằng lỗi rõ ràng, không panic nil-pointer. **Không** wire router
+vào `cmd/agentkit`'s CLI/composition root thật — đúng pattern "chưa nối CLI" đã lặp lại ở mọi task V4/V5
+trước, tự quyết định theo tiền lệ vì không có gì trong yêu cầu 4-part gap này đòi hỏi CLI thật.
+
+**Test cross-platform smoke — quyết định KHÔNG thêm mới:** `internal/adapters/process/supervisor_test.go`
+đã spawn process thật (`TestSupervisorRunsExecutableWithoutShell` và cùng nhóm) dưới đúng CI matrix Windows+
+Linux của repo — đó mới là hợp đồng "process thật có launch được trên OS này không". Test Command/Gate ở
+package `internal/app/runtime` (kể cả test router mới) luôn dùng `fake.ProcessSupervisor` — đúng nhất quán
+với mọi test executor khác trong package này; thêm 1 real-spawn test ở đây sẽ test lại đúng adapter đã có
+CI riêng, không test thêm gì cho router.
+
+**Thực hiện:**
+- `internal/app/runtime/node_executor_router.go` (mới) — `NodeExecutorRouter` + `Execute`.
+- `internal/app/runtime/node_executor_router_test.go` (mới) —
+  `commandRouterExecutionFixture` (mirror `commandFixture` nhưng dừng ngay sau `ScheduleExecutableNodeRun`,
+  KHÔNG tự claim RUNNING/tự tạo job giả — để chính `Handle` claim job EXECUTE_NODE thật đã enqueue).
+  4 test:
+  - `TestExecuteNodeHandler_CommandExecutorKind_RoutesToRealCommandExecutorAndFinalizes` — test tích hợp
+    ĐẦU TIÊN trong repo drive thẳng `ExecuteNodeHandler.Handle` thật → `NodeExecutorRouter` →
+    `*CommandNodeExecutor` thật → fenced `FinalizeExecutionAttempt` thật, khẳng định Attempt SUCCEEDED/
+    COMPLETED, NodeRun SUCCEEDED với outcome "done", và `supervisor.Calls == 1` (router thực sự dispatch,
+    không phải no-op).
+  - `TestNodeExecutorRouter_DispatchesToMatchingExecutorOnly` — 3 fake executor (Agent/Command/Gate) cùng
+    wire, gọi kind COMMAND thì chỉ `Command.Calls` tăng, 2 cái kia giữ nguyên 0.
+  - `TestNodeExecutorRouter_UnrecognizedKind_FailsClosedWithoutPanicking` — kind lạ ("BOGUS") → lỗi rõ ràng.
+  - `TestNodeExecutorRouter_RecognizedButUnwiredKind_FailsClosedWithoutPanicking` — kind hợp lệ (COMMAND)
+    nhưng field chưa wire (nil) → lỗi rõ ràng, không panic.
+
+**Verify (toàn bộ 4 phần, chạy sau khi Part D xong):**
+```
+go build ./...                                   # sạch
+go vet ./...                                      # sạch
+go run ./cmd/docs-coverage-check                  # debt = 0
+gofmt -l internal/app/runtime/node_executor_router.go internal/app/runtime/node_executor_router_test.go
+                                                   # rỗng
+go test -count=1 ./...                            # PASS toàn bộ (lần 1 + lần 2, không flake)
+```
+
+**Việc còn lại:** commit Part D, push nhánh `fix/v5-09-v5-10-remaining-gaps`, mở PR gộp cả 4 phần, chờ CI
+6/6, merge.
