@@ -324,11 +324,15 @@
   WorkItem về `ACTIVE`.
   `REWORK` không có rework edge hợp lệ trong graph đã pin MUST trở thành `BLOCK`; orchestrator không
   được tự dựng route.
-- **Dữ kiện phải khóa trước khi code — cập nhật 2026-09-10, 3/5 đã chốt (xem
-  `baocaov5checklist.md`'s "V5-11 scoping" cho câu trả lời đầy đủ, đây chỉ là bản tóm tắt cho design
-  doc):**
-  1. **CHƯA CHỐT** — nơi pin đúng một CompletionPolicyVersion cho Run; hiện WorkItem/Workflow/END
-     chưa có ref.
+- **Dữ kiện phải khóa trước khi code — cập nhật 2026-09-10, 5/5 đã chốt (xem
+  `baocaov5checklist.md`'s "V5-11 scoping"/"V5-11 contract 1"/"V5-11 contract 2" cho câu trả lời đầy
+  đủ, đây chỉ là bản tóm tắt cho design doc):**
+  1. **CHỐT:** `WorkflowDocument.CompletionPolicyRef *definition.DependencyPin` — pin ROOT-level (không
+     phải per-node, không phải WorkItem/END, tránh cùng Run đổi policy giữa các lần REWORK re-entry).
+     `internal/app/workflowcompiler`'s `CompileAndResolve` resolve trong cùng registry snapshot, xác
+     minh `Category == COMPLETION` + `CompletionRules != nil`, ghi vào `WorkflowVersion.DependencyManifest`
+     — `StartWorkflowRun` đã copy nguyên manifest này vào `ExecutionManifest` từ trước (không đổi gì ở
+     runtime). Đã triển khai (`baocaov5checklist.md`'s "V5-11 — PR0: schema foundation").
   2. **CHỐT:** mở rộng `CompletionRules` (`internal/domain/policy`) tại chỗ — thêm `AssuranceLevel`
      (enum có thứ tự cố định trong code, không tin thứ tự JSON), `AssuranceRequirement`
      (Level+RequiredEvidenceKinds+RequiredApprovals) và `RequiredAssurance []AssuranceRequirement`
@@ -336,8 +340,9 @@
      mutually exclusive trên một document; level tích lũy (E2E PASS không bù UNIT thiếu); HUMAN đọc
      Approval record đã pin, không phải boolean; N/A cần policy authority+reason, waiver là authority
      riêng; evidence phải đúng exact Attempt/RevisionSet/ReleaseSet và còn fresh; không suy level từ
-     tên EvidenceKind. `ApprovalRequirement` chưa tồn tại — V5-11 tự định nghĩa khi code.
-  3. **CHỐT, giải quyết bởi task riêng V5-10B (xem mục ngay trên):**
+     tên EvidenceKind. `ApprovalRequirement{AuthorizedRoles []string}` đã định nghĩa. Đã triển khai
+     (`baocaov5checklist.md`'s "V5-11 — PR0: schema foundation").
+  3. **CHỐT, giải quyết bởi task riêng V5-10B (đã merge, xem mục ngay trên):**
      `Edge.Kind=COMPLETION_REWORK`+`Edge.ReworkPolicy` đã cho phép khai đúng một rework route
      mỗi END. V5-11 chỉ còn: load route đã publish cho END node của Run, ghi CompletionDecision, CAS
      tạo đúng một activation khi outcome REWORK, chuyển BLOCK nếu route thiếu/invalid.
@@ -349,11 +354,18 @@
      (`WORK_ITEM_RUN_STATE_INCONSISTENT` hoặc tương đương). Multi-Run-đồng-thời thật sự (RunSet,
      winner/supersession) là task/ADR riêng, ngoài phạm vi V5-11. `ParentJoinPolicy` giữa parent/child
      WorkItem là gap khác, chưa có evaluator, không gộp vào đây.
-  5. **CHƯA CHỐT** — idempotency và transaction boundary của DecisionArtifact+transition+event+
-     blocker/activation.
+  5. **CHỐT (contract 2, đầy đủ trong `baocaov5checklist.md`):** cho một completion candidate
+     `(RunID, EndNodeRunID)`, đúng một `COMPLETION_DECISION_V1` được commit — replay check TRƯỚC (ID
+     tất định `hash("completion-decision", RunID, EndNodeRunID)`, khớp input → trả kết quả cũ, khác
+     input → conflict), rồi mới revalidate Run VERIFYING@ExpectedVersion/END SUCCEEDED/WorkItem+cancel
+     fence, rồi ghi TẤT CẢ atomically (DecisionArtifact, state transition, REWORK activation hoặc FAIL
+     blocker, event `COMPLETION_DECIDED`, receipt) trong đúng một transaction — tất cả hoặc không gì cả.
+     ID phụ (Event/ReworkActivation/FailBlocker) đều `hash(DecisionArtifactID, "<vai trò>")`, mirror
+     đúng tiền lệ `deterministicJoinNodeRunID` (`advance.go`) đã dùng sha256 làm ID thay vì string
+     concatenation thuần.
 
-  V5-11 vẫn **CHƯA ĐỦ DỮ KIỆN** cho tới khi (1) và (5) có schema/transition table — nhưng không còn bị
-  chặn bởi rework-edge hay assurance-ladder/join ambiguity như trước.
+  V5-11 giờ **ĐỦ DỮ KIỆN** — không còn câu hỏi scoping nào mở. PR0 (schema foundation) đã xong; PR1
+  (PASS+BLOCK, contract cho cả 4 outcome) và PR2 (REWORK+FAIL) là phần service thật, chưa bắt đầu.
 - **Verify:** maker claim vs gate matrix, stale evidence, required-level skip, approval missing; ma trận
   bốn outcome × transition; test `REWORK` khi graph không có rework edge trả `BLOCK`; test `FAIL` tạo
   đúng một blocker `COMPLETION_POLICY_FAILED` và không tự reactivate WorkItem; test restart giữa decision

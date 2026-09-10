@@ -18,9 +18,19 @@ import (
 var documentSetPaths = map[string]bool{
 	"attempt.retryableErrorCodes":      true,
 	"completion.requiredEvidenceKinds": true,
-	"permission.grantedCapabilities":   true,
-	"context.selector":                 true,
-	"context.resourceRefs":             true,
+	// requiredAssurance itself is a set (2026-09-10: "Thứ tự level do
+	// domain code định nghĩa; không tin thứ tự mảng từ JSON" — two
+	// authors listing the same ladder in a different order mean the
+	// same thing), and each requirement's own nested arrays are sets for
+	// the same reason requiredEvidenceKinds/grantedCapabilities already
+	// are elsewhere in this map.
+	"completion.requiredAssurance":                                   true,
+	"completion.requiredAssurance.requiredEvidenceKinds":             true,
+	"completion.requiredAssurance.requiredApprovals":                 true,
+	"completion.requiredAssurance.requiredApprovals.authorizedRoles": true,
+	"permission.grantedCapabilities":                                 true,
+	"context.selector":                                               true,
+	"context.resourceRefs":                                           true,
 }
 
 // compiledPolicySnapshot is the resolved runtime payload ADR-012's
@@ -37,12 +47,16 @@ type compiledPolicySnapshot struct {
 }
 
 var compiledSetPaths = map[string]bool{
-	"document.attempt.retryableErrorCodes":      true,
-	"document.completion.requiredEvidenceKinds": true,
-	"document.permission.grantedCapabilities":   true,
-	"document.context.selector":                 true,
-	"document.context.resourceRefs":             true,
-	"dependencies":                              true,
+	"document.attempt.retryableErrorCodes":                                    true,
+	"document.completion.requiredEvidenceKinds":                               true,
+	"document.completion.requiredAssurance":                                   true,
+	"document.completion.requiredAssurance.requiredEvidenceKinds":             true,
+	"document.completion.requiredAssurance.requiredApprovals":                 true,
+	"document.completion.requiredAssurance.requiredApprovals.authorizedRoles": true,
+	"document.permission.grantedCapabilities":                                 true,
+	"document.context.selector":                                               true,
+	"document.context.resourceRefs":                                           true,
+	"dependencies":                                                            true,
 }
 
 // PolicyDefinition is a Policy's mutable Definition identity — its own

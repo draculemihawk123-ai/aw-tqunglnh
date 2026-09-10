@@ -3608,3 +3608,193 @@ Lỗi gặp và sửa trong lúc verify: `Nguồn` line ban đầu viết `ADR-0
 merge. Sau khi merge, V5-11 (CompletionPolicy service) vẫn còn 2 điểm chưa chốt (pin CompletionPolicyVersion
 cho Run; idempotency/transaction boundary của DecisionArtifact) — cần làm rõ với người dùng trước khi bắt
 đầu code V5-11 thật.
+
+**Kết quả:** PR #14, 6/6 CI checks pass NGAY LẦN CHẠY ĐẦU, squash-merged 2026-09-10, merge commit
+`82a41a0`. Một WorkflowVersion giờ khai được đúng một `COMPLETION_REWORK` edge mỗi END.
+
+## V5-11 scoping — người dùng chốt 2 câu hỏi mở còn lại (contract 1 và 2, 2026-09-10)
+
+Ngay sau khi PR #14 merge, hỏi lại 2 điểm chưa chốt cuối cùng của V5-11 trong cùng ô chat (đúng yêu cầu
+trước đó "hỏi lại luôn vào ô chat này"). Người dùng trả lời đầy đủ, chi tiết cho cả hai — bản đầy đủ đã
+lưu verbatim vào memory `agent-kit-v5-11-completion-policy-research.md`, tóm tắt ở đây:
+
+**Contract 1 — nơi pin CompletionPolicyVersion:** `WorkflowDocument.CompletionPolicyRef
+*definition.DependencyPin` (ROOT-level, KHÔNG per-node, KHÔNG trên WorkItem/END). Lý do người dùng nêu:
+WorkItem sẽ tạo thêm một nguồn cấu hình độc lập với WorkflowVersion; pin trên END có thể khiến cùng một
+Run đổi policy khi đi qua REWORK (mỗi lần re-entry END có thể tự mang pin riêng nếu pin nằm ở đó). Luồng:
+publish-time resolve trong cùng registry snapshot, xác minh `Category == COMPLETION` + có
+`CompletionRules`, ghi vào `WorkflowVersion.DependencyManifest`; `StartWorkflowRun` đã copy nguyên
+manifest này vào `ExecutionManifest` (đã đúng từ trước, không cần sửa). V5-11 tự đọc root ref rồi đối
+chiếu ID/version/hash trong `ExecutionManifest` trước khi load policy thật.
+
+**Xác minh lại với code thật trước khi nhận (nghiên cứu 2026-09-10,
+`internal/app/workflowcompiler/compiler.go`):** đây CHÍNH XÁC là cơ chế `CompileAndResolve` đã dùng cho
+mọi pin cấp-node (Agent/Command/Gate/PolicyRefs) — `collectReferences` (thêm root ref vào đây) →
+`resolveReferences` (đã có nhánh riêng cho `KindPolicy` soi `doc.Category`/`doc.Permission`, cần thêm 1
+nhánh cho `doc.Category == policy.CategoryCompletion`) → `buildDependencyManifest` (đã tổng quát hoàn
+toàn, không cần sửa). `internal/domain/runtime/manifest.go`'s `ExecutionManifest.DependencyManifest` có
+type CHÍNH LÀ `workflow.DependencyManifest` — xác nhận claim "tự động chảy qua, miễn phí". **Code mới cần
+viết: 1 field + ~10 dòng ở workflowcompiler. Không đổi gì ở runtime/schedule.go** — giống hệt shape
+"chỉ schema, không đụng scheduler" của V5-10B.
+
+**Contract 2 — transaction/idempotency boundary của DecisionArtifact (fencing-critical, spec đầy đủ):**
+
+Với mỗi completion candidate `(RunID, EndNodeRunID)`, đúng một `COMPLETION_DECISION_V1` immutable được
+commit. DecisionArtifact và MỌI effect của quyết định đó commit trong CÙNG MỘT database transaction, hoặc
+không effect nào commit cả.
+
+Transaction boundary, đúng thứ tự:
+1. **Replay check TRƯỚC** (trước khi validate Run state hiện tại, vì lần gọi thành công đầu tiên đã đổi
+   state đó rồi): derive `DecisionArtifactID` tất định từ `(RunID, EndNodeRunID)`. Đã tồn tại với
+   candidate+input khớp → trả kết quả đã lưu. Cùng ID nhưng content khác → trả idempotency conflict.
+2. **Revalidate input có thẩm quyền:** Run đang VERIFYING tại `ExpectedRunVersion`; END NodeRun thuộc
+   đúng Run và đã SUCCEEDED; WorkItem và cancellation fence cho phép completion; load đúng
+   CompletionPolicy đã pin, evidence, approvals, RevisionSet, và đúng SEALED ReleaseSet gắn với
+   candidate này.
+3. **Ghi tất cả atomically:** insert DecisionArtifact immutable; áp state transition đã chọn; tạo REWORK
+   activation hoặc FAIL blocker nếu áp dụng; append `COMPLETION_DECIDED`; tạo outbox record; ghi command
+   receipt/job completion.
+
+Bảng outcome → atomic writes: `PASS` → Run SUCCEEDED + WorkItem DONE; `REWORK` → Run RUNNING + đúng một
+activation trên rework route; `BLOCK` → Run BLOCKED + WorkItem BLOCKED; `FAIL` → Run FAILED + WorkItem
+BLOCKED + đúng một blocker `COMPLETION_POLICY_FAILED`.
+
+ID phụ đều sha256 (không phải string concatenation thuần):
+```
+DecisionArtifact = hash("completion-decision", RunID, EndNodeRunID)
+Event            = hash(DecisionArtifactID, "recorded")
+ReworkActivation = hash(DecisionArtifactID, "rework")
+FailBlocker      = hash(DecisionArtifactID, "failed-blocker")
+```
+Bất kỳ CAS/fence/insert/event/activation/blocker nào fail thì TOÀN BỘ transaction rollback. Hệ quả người
+dùng nêu rõ: không có DecisionArtifact mà thiếu transition+side effect; không có transition committed mà
+thiếu DecisionArtifact; nhiều evaluator đồng thời hội tụ về đúng MỘT quyết định, gọi lại sau đó replay
+đúng kết quả đó; retry với transport idempotency key KHÁC vẫn hội tụ cùng semantic decision vì artifact ID
+đến từ chính completion CANDIDATE, không phải command invocation. Network/filesystem/artifact-store nằm
+NGOÀI transaction — transaction chỉ tiêu thụ ID/version/hash bất biến đã verify sẵn với database state.
+
+**Xác minh lại với code thật (nghiên cứu đầy đủ qua Explore agent, 2026-09-10):**
+- `runtime.DecisionArtifact` ĐÃ TỒN TẠI (`internal/domain/runtime/decision.go`:
+  `{ID, ProjectID, Kind, PolicyVersion, Input, Result, CreatedAt}`), qua `ports.RuntimeRepository.
+  RecordDecisionArtifact`/`GetDecisionArtifact`. ID do caller tự mint (không tự derive) — mọi call site
+  hiện tại dùng string concatenation (`schedule.go`: `NodeRunID+"-execution-profile-v1"`);
+  `RecordDecisionArtifact` tự nó trả `ErrPersistenceAlreadyExists` khi trùng ID — KHÔNG tự làm "replay
+  trả kết quả cũ" — V5-11 phải tự `GetDecisionArtifact` trước, so content, rồi mới
+  `RecordDecisionArtifact`, đúng như contract 2 mô tả.
+- Tiền lệ sha256-làm-ID tốt nhất: `advance.go`'s `deterministicJoinNodeRunID` — `sha256.Sum256(a+"\x00"+b)`,
+  hex, CẮT còn 16 byte, có prefix (`"join-"+hex(sum[:16])`) — doc comment của chính nó trích dẫn
+  DecisionArtifact ID làm tiền lệ mà nó đang mở rộng "qua content hash thay vì string concatenation
+  thuần". Mirror đúng shape này cho cả 4 ID mới.
+- `openWorkItemBlockerTx` (`internal/app/runtime/blocker.go`) là helper CÓ SẴN, DÙNG LẠI ĐƯỢC cho
+  outcome FAIL — đã làm idempotent-insert-or-return-existing + CAS WorkItem sang BLOCKED + event
+  `WORK_ITEM_BLOCKED`, đã được gọi bởi `transitionRunToCancelledTx`/`requestScopeExpansionTx`. Dùng lại
+  trực tiếp với `blockerID` tất định, không viết lại.
+- Không có outbox call riêng — `tx.Events().Append` TỰ NÓ ghi outbox row khớp trong cùng transaction
+  (GC-INV-16). "Append COMPLETION_DECIDED" + "tạo outbox record" trong contract 2 thực ra là MỘT lời gọi,
+  không phải hai.
+- `ApprovalRequest` (không phải "Approval") + `tx.Approvals().ListApprovalRequestsForRun(ctx, runID)` đã
+  có sẵn (chỉ scope theo Run, không có fetch theo WorkItem) — khớp đúng kết luận "join không phải
+  cross-Run" đã chốt trước đó.
+- `tx.Work().ListReleaseSetsForFamily` + so `.State == workdomain.ReleaseSetSealed` là pattern có sẵn
+  (`EligibilityAuthority.IsReleaseAuthorized`, V5-10A) để mirror cho "load SEALED ReleaseSet".
+- Pattern `tx.Receipts().Load/Record` (idempotent-replay-trả-kết-quả-cũ) đã có ở MỌI command handler
+  trong repo — là một lớp RIÊNG, THÊM VÀO, khác với replay check ở cấp DecisionArtifact (người dùng tự
+  phân biệt rõ: "retry với transport idempotency key KHÁC vẫn hội tụ cùng semantic decision" — lớp
+  receipt là per-invocation, lớp DecisionArtifact là per-candidate). Giữ CẢ HAI lớp.
+- Race cancellation đã được xử lý cấu trúc sẵn: `reconcileRunTerminalityTx` không bao giờ để Run đang
+  CANCELLING tới được VERIFYING; check "Run VERIFYING tại ExpectedRunVersion" trong contract 2 tự bắt
+  được race còn lại (CancelRun đến SAU khi đã VERIFYING nhưng trước khi transaction này commit chỉ đơn
+  giản làm version CAS fail) — không cần cơ chế riêng.
+
+**Kết luận:** V5-11 không còn câu hỏi scoping nào mở. Kế hoạch 3-PR (mirror đúng pattern PR1/PR2 của
+Evidence + pattern "schema tách khỏi transaction" của V5-10B): **PR0** = schema foundation (contract 1 +
+assurance ladder của contract cũ) — làm ngay dưới đây. **PR1** = CompletionPolicy service, thiết kế
+contract cho cả 4 outcome nhưng chỉ triển khai PASS+BLOCK trước (hai outcome không có side-effect
+activation/blocker). **PR2** = REWORK+FAIL.
+
+## V5-11 — PR0: schema foundation (branch `fix/v5-10b-completion-rework-route-schema`, tiếp tục trên cùng
+worktree sau khi PR #14 merge, chưa push riêng — xem "Việc còn lại")
+
+**Bối cảnh:** phần schema thuần của V5-11 (contract 1 + phần "assurance levels" đã chốt từ trước khi
+V5-10B bắt đầu) — tách khỏi CompletionPolicy service thật (PR1/PR2), đúng mô hình V5-10B đã dùng ("giữ
+schema/compiler tách khỏi transaction quyết định fencing-critical").
+
+### Phần A — `CompletionRules` V2 assurance ladder
+
+**Thực hiện:** `internal/domain/policy/policy.go` — thêm `AssuranceLevel` (6 hằng số:
+STATIC/LINT/UNIT/INTEGRATION/E2E/HUMAN, thứ tự cố định qua `assuranceLevelOrder` map, KHÔNG dùng thứ tự
+JSON), `ApprovalRequirement{AuthorizedRoles []string}` (mirror đúng `workflow.ApprovalNodeConfig`'s
+"AuthorizedRoles" — tiền lệ cụ thể duy nhất cho khái niệm approval-requirement trong repo),
+`AssuranceRequirement{Level, RequiredEvidenceKinds, RequiredApprovals}`, và `CompletionRules.
+RequiredAssurance []AssuranceRequirement` cạnh `RequiredEvidenceKinds` cũ (tag JSON giữ NGUYÊN, không
+thêm `omitempty`, để hash của mọi CompletionRules V1 đã publish trước đây không đổi).
+`internal/domain/policy/compiler.go` — đăng ký `requiredAssurance` và toàn bộ nested array của nó
+(`requiredEvidenceKinds`, `requiredApprovals`, `requiredApprovals.authorizedRoles`) làm "set path" trong
+CẢ `documentSetPaths` lẫn `compiledSetPaths` (order không mang nghĩa, đúng "Thứ tự level do domain code
+định nghĩa" người dùng đã chốt).
+`internal/domain/policy/validate.go` — viết lại `validateCompletionRules`: V1/V2 mutually exclusive (cả
+hai cùng khai → reject; không cái nào → reject, message nêu cả hai lựa chọn); nhánh V1 giữ NGUYÊN logic
+cũ không đổi 1 dòng; nhánh V2 validate từng `AssuranceRequirement` (Level hợp lệ + không trùng, ít nhất 1
+trong RequiredEvidenceKinds/RequiredApprovals, dedup evidence kind trong CÙNG level, dedup approval
+requirement theo canonical role-set key) + từng `ApprovalRequirement` (ít nhất 1 role, role không rỗng,
+không trùng).
+
+**Quyết định phạm vi (không được người dùng đặc tả chi tiết, tự quyết định có lý do):**
+- Dedup evidence kind CHỈ trong cùng một level, KHÔNG global toàn bộ ladder — các level khác nhau hợp lệ
+  cùng yêu cầu một evidence kind (vd re-verify), global-unique sẽ là luật phát minh thêm không ai yêu cầu.
+- "Thứ tự level do domain code định nghĩa" là hướng dẫn cho EVALUATOR (V5-11 PR1/PR2), không phải luật
+  reject ở bước validate — một tác giả liệt kê level theo thứ tự bất kỳ trong JSON vẫn hợp lệ.
+- `ApprovalRequirement` chỉ có `AuthorizedRoles` — không thêm field nào khác chưa được yêu cầu (không
+  TimeoutSeconds/EscalationOutcome như `ApprovalNodeConfig`, vì đây là policy-level requirement khác hẳn
+  node-level approval instance).
+
+**Test (mới hoàn toàn):** `internal/domain/policy/completion_assurance_test.go` — 11 test: ladder hợp lệ
+không lỗi; cả hai V1+V2 → reject; Level lạ → reject; Level trùng → reject; requirement rỗng (không
+evidence lẫn approval) → reject; evidence kind trùng trong 1 level → reject; evidence kind rỗng → reject;
+approval không role → reject; role trùng → reject; approval requirement trùng (cùng role-set) → reject;
+`TestCompile_AssuranceLadder_SetOrderIndependent` (hash giống nhau dù đảo thứ tự ladder/evidence
+kinds/roles). Sửa 1 test cũ (`TestValidateDocument_Completion_RejectsNoRequiredEvidenceKinds`) — path đổi
+từ `"completion.requiredEvidenceKinds"` sang `"completion"` vì check giờ bao quát cả hai shape.
+
+### Phần B — `WorkflowDocument.CompletionPolicyRef`
+
+**Thực hiện:** `internal/domain/workflow/workflow.go` — thêm field `CompletionPolicyRef
+*definition.DependencyPin` (root-level, `omitempty`) vào `WorkflowDocument`; `cloneDocument` deep-copy
+con trỏ này (mirror đúng cách `Edge.ReworkPolicy` đã clone ở V5-10B — `WorkflowVersion.Document()`'s
+"accessors return copies" contract áp dụng cho field mới này y hệt).
+`internal/app/workflowcompiler/compiler.go` — `collectReferences` gộp thêm root ref (nếu có) như MỘT
+`nodeReferences{policyPins: [...]}` riêng, tái dùng nguyên `resolveReferences`'s logic resolve-theo-
+DefinitionID/conflict-detection có sẵn KHÔNG cần viết lại; hàm mới `checkCompletionPolicyRefCategory` làm
+đúng phần việc pipeline chung KHÔNG làm — xác minh resolved document's `Category == CategoryCompletion`
+(+ `Completion != nil`, defense-in-depth vì policy.ValidateDocument's own publish-time invariant đã đảm
+bảo Category=COMPLETION luôn có Completion non-nil) — gọi ngay sau `checkScopeAndCapability` trong
+`CompileAndResolve`. `buildDependencyManifest` KHÔNG cần sửa gì (đã tổng quát hoàn toàn theo
+DefinitionID).
+
+**Quyết định:** không validate `CompletionPolicyRef.Kind == KindPolicy` ở `validation.go` (domain layer,
+không có registry access) — đúng tiền lệ node-level ref hiện tại (`AgentNodeConfig.ProfileRef.Kind` v.v.
+cũng không được check ở đây), việc verify Kind/Category thật đều nhường cho workflowcompiler's real
+registry resolution, không thêm luật mới không nhất quán.
+
+**Test (mới hoàn toàn):** `internal/app/workflowcompiler/completion_policy_ref_test.go` — 3 test: resolve
+CompletionPolicyRef vào manifest đúng (kind/key/version/hash); reject khi resolved document SAI category
+(policy PERMISSION thay vì COMPLETION); reject khi ref không resolve được (tái dùng đúng message lỗi
+generic "does not resolve to any published version" của pipeline chung). Không viết thêm test tích hợp ở
+tầng `internal/app/runtime` cho việc `ExecutionManifest` nhận đúng manifest này — cơ chế
+`ExecutionManifest.DependencyManifest = workflow.DependencyManifest` đã tồn tại từ trước, được MỌI test
+runtime hiện có gián tiếp chứng minh rồi (test nào cũng pass không cần sửa) — thêm test riêng cho đúng 1
+loại pin sẽ trùng lặp, không test thêm điều gì mới.
+
+**Verify:**
+```
+go build ./...                                                    # sạch
+go vet ./...                                                       # sạch
+go run ./cmd/docs-coverage-check                                   # debt = 0
+gofmt -l <7 file .go đổi + 2 file .go mới>                         # rỗng sau gofmt -w (CRLF do
+                                                                    # git-on-Windows, đúng precedent)
+go test -count=1 ./...                                             # PASS toàn bộ (lần 1 + lần 2,
+                                                                    # không flake)
+```
+
+**Việc còn lại:** commit (cùng branch cũ hay branch mới — quyết định khi commit, xem message tiếp theo),
+push, mở PR, chờ CI 6/6, merge. Sau đó bắt đầu PR1 (CompletionPolicy service, PASS+BLOCK trước).

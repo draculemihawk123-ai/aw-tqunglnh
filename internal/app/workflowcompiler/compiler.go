@@ -94,6 +94,9 @@ func CompileAndResolve(ctx context.Context, uow ports.UnitOfWork, def workflow.W
 	if err := checkScopeAndCapability(resolved); err != nil {
 		return workflow.WorkflowVersion{}, err
 	}
+	if err := checkCompletionPolicyRefCategory(request.Document.CompletionPolicyRef, resolved); err != nil {
+		return workflow.WorkflowVersion{}, err
+	}
 
 	manifest, err := buildDependencyManifest(resolved)
 	if err != nil {
@@ -141,7 +144,50 @@ func collectReferences(document workflow.WorkflowDocument) []nodeReferences {
 			})
 		}
 	}
+	// document.CompletionPolicyRef (V5-11, 2026-09-10) is a root-level
+	// pin, not a per-node one — folded in as its own policyPins-only
+	// entry purely to reuse resolveReferences' own existing
+	// resolve-once-per-DefinitionID/conflict-detection logic unchanged.
+	// checkCompletionPolicyRefCategory (below) is the ADDITIONAL,
+	// completion-specific verification this generic pipeline does not
+	// itself do (it only inspects PERMISSION-category documents).
+	if document.CompletionPolicyRef != nil {
+		refs = append(refs, nodeReferences{policyPins: []definition.DependencyPin{*document.CompletionPolicyRef}})
+	}
 	return refs
+}
+
+// checkCompletionPolicyRefCategory verifies that ref (if any) resolved to
+// a real, published COMPLETION-category policy with CompletionRules
+// populated — the one check resolveReferences' own generic KindPolicy
+// handling does not perform (it only inspects PERMISSION-category
+// documents, for GrantedCapabilities). ref is assumed already resolved
+// into resolved.byDefinitionID by collectReferences/resolveReferences
+// above; a nil ref is a no-op (a workflow with no CompletionPolicy
+// pinned yet — legitimate, see WorkflowDocument.CompletionPolicyRef's own
+// doc comment).
+func checkCompletionPolicyRefCategory(ref *definition.DependencyPin, resolved resolvedReferences) error {
+	if ref == nil {
+		return nil
+	}
+	entry, ok := resolved.byDefinitionID[ref.DefinitionID]
+	if !ok {
+		// Unreachable in practice: resolveReferences would already have
+		// returned a ResolutionError for an unresolvable pin before this
+		// function is ever called. Fails closed rather than panicking on
+		// a map miss if that invariant is ever somehow violated.
+		return &ResolutionError{Problems: []string{fmt.Sprintf("completionPolicyRef %q/%q was never resolved", ref.DefinitionID, ref.VersionID)}}
+	}
+	var doc policy.PolicyDocument
+	if err := json.Unmarshal([]byte(entry.Fields.CanonicalSource()), &doc); err != nil {
+		return &ResolutionError{Problems: []string{fmt.Sprintf("decode completionPolicyRef %q document: %v", ref.DefinitionID, err)}}
+	}
+	if doc.Category != policy.CategoryCompletion || doc.Completion == nil {
+		return &ResolutionError{Problems: []string{fmt.Sprintf(
+			"completionPolicyRef %q/%q is not a COMPLETION-category policy with completion rules", ref.DefinitionID, ref.VersionID,
+		)}}
+	}
+	return nil
 }
 
 // resolvedReferences is every distinct pin collectReferences found,

@@ -204,6 +204,26 @@ type WorkflowDocument struct {
 	// SharedStateField's own doc comment). Optional: a workflow with no
 	// nodes that exchange typed shared state simply declares none.
 	SharedState []SharedStateField `json:"sharedState,omitempty"`
+	// CompletionPolicyRef pins the exact CompletionPolicyVersion V5-11's
+	// own CompletionPolicy service loads once a Run reaches VERIFYING —
+	// 2026-09-10, confirmed with the user before implementing V5-11.
+	// Deliberately a ROOT-level field, not per-node and not on
+	// WorkItem/WorkflowRun: WorkItem would be an independent
+	// configuration source diverging from WorkflowVersion's own pin
+	// discipline, and pinning it on END specifically could let the SAME
+	// Run reference a different policy across a REWORK re-entry (each
+	// END activation could otherwise carry its own pin) — a root
+	// document-level pin is the one place guaranteed identical for
+	// every END this Run's graph might reach. Resolved and verified
+	// (Category == COMPLETION, CompletionRules != nil) by
+	// internal/app/workflowcompiler's own CompileAndResolve, exactly like
+	// every node-level Agent/Command/Gate/PolicyRefs pin already is —
+	// see that package's own collectReferences/resolveReferences. Nil is
+	// a legitimate state for a workflow with no CompletionPolicy pinned
+	// yet (V5-11 predates this field; every already-published
+	// WorkflowVersion has it nil, and `omitempty` keeps their own
+	// content hash unaffected by this field's existence).
+	CompletionPolicyRef *definition.DependencyPin `json:"completionPolicyRef,omitempty"`
 }
 
 type DependencyPin struct {
@@ -262,6 +282,10 @@ func cloneDocument(document WorkflowDocument) WorkflowDocument {
 		Nodes:         make([]Node, len(document.Nodes)),
 		Edges:         make([]Edge, len(document.Edges)),
 		SharedState:   cloneSharedStateFields(document.SharedState),
+	}
+	if document.CompletionPolicyRef != nil {
+		ref := *document.CompletionPolicyRef
+		cloned.CompletionPolicyRef = &ref
 	}
 	for index, edge := range document.Edges {
 		cloned.Edges[index] = edge
