@@ -666,6 +666,16 @@ func validateNodeConfig(node Node) []string {
 		if node.Agent.AdapterBuildID != nil && strings.TrimSpace(*node.Agent.AdapterBuildID) == "" {
 			problems = append(problems, fmt.Sprintf("node %q agent.adapterBuildId must not be blank when present", node.Key))
 		}
+		// Role is deliberately optional here (empty is legal — see
+		// AgentNodeConfig.Role's own doc comment: this permissiveness is
+		// what lets an already-persisted WorkflowVersion predating V5-12
+		// still decode/rebuild). Only an invalid, non-empty value is
+		// rejected. "Every AGENT node must declare an explicit Role" is a
+		// stricter, publish-only bar enforced one layer up, in
+		// internal/app/workflowcompiler.CompileAndResolve.
+		if node.Agent.Role != "" && !validAgentRoles[node.Agent.Role] {
+			problems = append(problems, fmt.Sprintf("node %q agent.role must be %q or %q when present, got %q", node.Key, AgentRoleMaker, AgentRoleChecker, node.Agent.Role))
+		}
 	case node.Command != nil:
 		problems = append(problems, validateExecutorPin(node.Command.CommandRef, definition.KindCommand, "command.commandRef", node.Key)...)
 		problems = append(problems, validatePolicyRefs(node.Command.PolicyRefs, "command.policyRefs", node.Key)...)

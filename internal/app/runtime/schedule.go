@@ -476,6 +476,12 @@ func resolveExecutionProfile(
 		profile.Model = agentDoc.Model
 		profile.ToolRefs = append([]string(nil), agentDoc.ToolRefs...)
 		profile.MaxTokens = agentDoc.Budget.MaxTokens
+		// Role (V5-12) is read only from this node's own pinned
+		// workflow.AgentNodeConfig — never inferred from agentDoc (the
+		// AgentProfile carries no Role of its own, by design), the node's
+		// name, or its position in the graph. EffectiveRole() applies the
+		// one shared "empty means MAKER" backward-compat default.
+		profile.Role = node.Agent.EffectiveRole()
 		contextPolicyRef = agentDoc.ContextPolicyRef
 		policyRefs = node.Agent.PolicyRefs
 		if node.Agent.AdapterBuildID != nil {

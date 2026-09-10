@@ -78,6 +78,9 @@ func CompileAndResolve(ctx context.Context, uow ports.UnitOfWork, def workflow.W
 	if err := workflow.ValidateDocument(request.Document); err != nil {
 		return workflow.WorkflowVersion{}, err
 	}
+	if err := checkAgentRolesExplicit(request.Document); err != nil {
+		return workflow.WorkflowVersion{}, err
+	}
 
 	refs := collectReferences(request.Document)
 
@@ -105,6 +108,58 @@ func CompileAndResolve(ctx context.Context, uow ports.UnitOfWork, def workflow.W
 
 	request.Dependencies = manifest
 	return workflow.Compile(def, request)
+}
+
+// AgentRoleValidationError collects every AGENT node missing an explicit,
+// valid workflow.AgentRole at publish time — checkAgentRolesExplicit's
+// own error shape, distinct from ResolutionError (whose own doc comment
+// scopes it to problems only resolvable against real registry state):
+// every problem here is discoverable from request.Document's own
+// structure alone, with no database round trip needed.
+type AgentRoleValidationError struct {
+	Problems []string
+}
+
+func (e *AgentRoleValidationError) Error() string {
+	return "workflow agent role validation failed: " + strings.Join(e.Problems, "; ")
+}
+
+// checkAgentRolesExplicit enforces V5-12's own publish-time bar: every
+// AGENT node in a document being published through THIS function must
+// declare an explicit, valid Role (MAKER or CHECKER) — never empty.
+// workflow.ValidateDocument (called just above, and the same function
+// internal/adapters/sqlite's own loadWorkflowVersion calls indirectly via
+// workflow.Compile to re-verify an already-persisted row) deliberately
+// stays permissive about an empty Role, precisely so that reload path
+// keeps working for every WorkflowVersion published before this field
+// existed. CompileAndResolve is the one and only real publish
+// entrypoint (internal/app/definitions' own command handlers call this,
+// never workflow.Compile directly) — enforcing the stricter "explicit
+// Role required" bar here, and nowhere lower, is what lets an old row
+// still rebuild while every new publish going forward must comply. Never
+// defaults a missing Role to MAKER itself (unlike
+// workflow.AgentNodeConfig.EffectiveRole(), which a reader uses well
+// after publish) — a fresh publish either declares the Role it means, or
+// is rejected.
+func checkAgentRolesExplicit(document workflow.WorkflowDocument) error {
+	var problems []string
+	for _, node := range document.Nodes {
+		if node.Agent == nil {
+			continue
+		}
+		switch node.Agent.Role {
+		case workflow.AgentRoleMaker, workflow.AgentRoleChecker:
+		default:
+			problems = append(problems, fmt.Sprintf(
+				"node %q must declare an explicit agent.role (%q or %q)", node.Key, workflow.AgentRoleMaker, workflow.AgentRoleChecker,
+			))
+		}
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return &AgentRoleValidationError{Problems: problems}
+	}
+	return nil
 }
 
 // nodeReferences is every dependency.DependencyPin and AdapterBuildID a

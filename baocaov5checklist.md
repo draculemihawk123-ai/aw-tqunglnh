@@ -4067,3 +4067,135 @@ go test -count=1 ./...                                                  # PASS t
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Đây là fix ĐÓNG hẳn item "Gate read-only
 enforcement" trong danh sách rà soát 2026-09-10 — không còn open item nào từ bài rà soát đó. Sau khi
 merge, tiếp tục V5-12 (Maker/checker isolation) theo đúng chỉ dẫn tự động chuyển task.
+
+## V5-12 scoping — 3 contract mở, người dùng chốt contract 1, uỷ quyền contract 2+3 (2026-09-10)
+
+**Bối cảnh:** design doc (`docs/design/07-v5-execution-evidence.md`) tự đánh dấu V5-12 "CHƯA ĐỦ DỮ KIỆN"
+cho tới khi 3 contract chốt: (1) role MAKER|CHECKER pin ở đâu, (2) checker input allowlist + typed
+Evidence/Diff ref trên ContextSnapshot, (3) scratch handle + enforcement semantics. Theo đúng chỉ dẫn tự
+động chuyển task, tự nghiên cứu trước khi hỏi.
+
+**Nghiên cứu:** `AgentProfileDocument` và `workflow.AgentNodeConfig` đều CHƯA có field kiểu Role nào — đây
+là fork kiến trúc thật, không phải cái đã nửa-quyết-định sẵn ở đâu đó. Gate đã có sẵn `scratchDirectory()`
+(`gate_node_executor.go`) — helper `os.MkdirTemp`-based, hoàn toàn generic, không gắn gì riêng Gate — dùng
+lại được thẳng cho checker's scratch. Kết luận: chỉ contract (1) là fork thật cần người dùng tự chọn;
+(2) và (3) tự quyết được dựa trên (1) + tiền lệ Gate `strictReadOnly` vừa xây.
+
+**Hỏi người dùng (AskUserQuestion, header "MAKER|CHECKER role"):** 3 lựa chọn — AgentNodeConfig (Workflow,
+Recommended), AgentProfileDocument, hoặc cả hai (cross-check lúc publish).
+
+**Quyết định của người dùng (verbatim, chốt contract 1):** chọn AgentNodeConfig. Spec chính xác:
+```go
+type AgentRole string
+const (
+    AgentRoleMaker   AgentRole = "MAKER"
+    AgentRoleChecker AgentRole = "CHECKER"
+)
+type AgentNodeConfig struct {
+    AgentProfileRef definition.DependencyPin
+    Role            AgentRole
+    // ...
+}
+```
+Lý do: Role là trách nhiệm của NODE trong graph, còn AgentProfile mô tả cấu hình thực thi tái sử dụng
+(model/provider/tools) — cùng một AgentProfile phục vụ được cả node MAKER và CHECKER, mỗi node vẫn tạo
+NodeRun/Attempt/context riêng. Hợp đồng publish/runtime (verbatim): workflow compiler yêu cầu role hợp lệ
+cho mọi AGENT node thuộc schema mới; role lưu trong canonical WorkflowVersion nên tự động pin theo exact
+WorkflowVersion; AgentProfile không bao giờ có role riêng; runtime chỉ đọc role từ pinned WorkflowVersion,
+không suy ra từ tên/profile/vị trí graph; WorkflowVersion cũ thiếu field vẫn rebuild được, hiểu ngầm là
+MAKER; republish phải ghi role tường minh; KHÔNG BAO GIỜ mặc định một node thành CHECKER.
+
+Field tên trong sketch của người dùng là `AgentProfileRef`, nhưng field thật hiện tại trong code là
+`ProfileRef` — đọc là thêm `Role` cạnh field có sẵn, không phải đổi tên field cũ (giữ nguyên `ProfileRef`
+để tránh phá vỡ mọi call site hiện có).
+
+**Uỷ quyền của người dùng (verbatim):** "các quyết định nhỏ hơn khác của task này tôi có thể tự quyết dựa
+theo đáp án này + tiền lệ read-only vừa xây cho Gate" — contract 2 (checker input allowlist) và contract 3
+(scratch + enforcement semantics) tự thiết kế ở PR sau, không cần hỏi lại.
+
+**Kết luận:** không còn câu hỏi kiến trúc mở cho contract 1. Bắt đầu code ngay theo kế hoạch nhiều PR
+(mirror pattern V5-11): PR0 = schema foundation (Role field + validation 2 tầng + hash + runtime pin) —
+xây trước, tự-chứa, test được độc lập.
+
+## V5-12 — PR0: schema foundation (branch `feat/v5-12-maker-checker-role`, từ `origin/master` sau PR #18)
+
+**Bối cảnh:** phần đầu tiên, tự-chứa của V5-12 — thêm `AgentRole`/`AgentNodeConfig.Role` đúng contract 1,
+cộng cơ chế 2 tầng validate (domain permissive cho reload, app-layer strict cho publish mới) để giải quyết
+đúng yêu cầu "WorkflowVersion cũ vẫn rebuild được, publish mới phải explicit."
+
+**Nghiên cứu then chốt (tìm điểm nối "reload" vs "publish"):** đọc `internal/adapters/sqlite/
+workflow_store.go`'s `loadWorkflowVersion` — hàm này reload MỘT WorkflowVersion đã persist bằng cách gọi
+LẠI `workflow.Compile(...)` (domain-layer) để re-verify hash, KHÔNG đi qua `internal/app/workflowcompiler.
+CompileAndResolve`. Trong khi đó `CompileAndResolve` mới là entrypoint publish THẬT (`internal/app/
+definitions/commands.go` gọi nó, không gọi `workflow.Compile` trực tiếp). Đây chính xác là điểm nối tự
+nhiên người dùng mô tả: domain-layer `workflow.ValidateDocument`/`workflow.Compile` PHẢI giữ permissive
+(Role rỗng hợp lệ) vì nó dùng chung cho CẢ reload lẫn publish gốc; bắt buộc "role tường minh" chỉ đặt ở
+tầng `workflowcompiler.CompileAndResolve` — tầng CHỈ publish mới đi qua, reload không bao giờ chạm tới.
+Không cần thêm field "schema version marker" nào mới — ranh giới structural sẵn có (2 hàm khác nhau) đã đủ.
+
+**Quyết định thiết kế:**
+1. `workflow.AgentRole` (`MAKER`/`CHECKER`) + field `Role AgentRole \`json:"role,omitempty"\`` trên
+   `AgentNodeConfig`, đặt ngay sau `ProfileRef` (giữ nguyên tên field cũ, không đổi).
+2. `EffectiveRole()` (value receiver, exported) — rỗng mặc định về MAKER; một chỗ duy nhất mọi reader
+   (runtime) dùng chung, không tự viết lại rule default ở nhiều nơi.
+3. `validation.go`'s AGENT branch: CHỈ reject giá trị SAI (không rỗng, không phải MAKER/CHECKER) — rỗng
+   vẫn hợp lệ. Đây là tầng permissive giữ reload sống được.
+4. `internal/app/workflowcompiler/compiler.go`: hàm mới `checkAgentRolesExplicit` + type lỗi mới
+   `AgentRoleValidationError` (tách khỏi `ResolutionError` sẵn có — lỗi này KHÔNG cần DB round-trip, thuần
+   structural, nên không hợp với doc comment của `ResolutionError`). Gọi ngay sau `workflow.ValidateDocument`
+   ở đầu `CompileAndResolve`, trước mọi resolve — fail fast, đúng tinh thần "structural trước, DB sau" đã
+   ghi trong doc comment gốc của hàm này.
+5. `internal/domain/runtime/executionprofile.go`: thêm `Role workflow.AgentRole` vào
+   `ResolvedExecutionProfileV1` — TÁI SỬ DỤNG THẲNG `workflow.AgentRole` (không tạo type mirror riêng cho
+   runtime domain), theo đúng tiền lệ `ResolvedPolicyRef.Category`/`IsolationTier` (khi closed-set enum của
+   domain khác khớp thẳng, dùng lại luôn, không mint type song song — khác với `ExecutorKind`, vốn PHẢI có
+   type riêng vì `workflow.NodeType` có nhiều giá trị hơn tập "3 executor thật thi hành được"). Validate
+   trong `NewResolvedExecutionProfileV1`: AGENT executor BẮT BUỘC Role hợp lệ (MAKER/CHECKER); COMMAND/
+   MACHINE_GATE PHẢI để Role rỗng — mirror đúng rule ProviderKey/Model/ToolRefs/MaxTokens sẵn có.
+6. `internal/app/runtime/schedule.go`'s `resolveExecutionProfile` (nhánh AGENT): set
+   `profile.Role = node.Agent.EffectiveRole()` — đọc DUY NHẤT từ node.Agent (WorkflowVersion đã pin), không
+   bao giờ suy ra từ `agentDoc` (AgentProfile), tên node hay vị trí graph — đúng contract 1.
+
+**Rà soát blast radius (trước khi sửa fixture):** grep toàn repo mọi nơi construct `AgentNodeConfig{` (16
+file) + mọi call site thật của `CompileAndResolve` (chỉ 5 nơi: `internal/app/workflowcompiler/
+compiler_test.go`, `completion_policy_ref_test.go`, `internal/adapters/sqlite/
+workflowcompiler_integration_test.go`, `internal/app/definitions/commands_test.go`, và
+`internal/app/definitions/commands.go` — 2 command handler thật). 11 file còn lại dùng `workflow.Compile`
+trực tiếp (permissive, không cần sửa). Riêng `cmd/agentkit/definition_test.go` build JSON string tay (không
+qua struct literal `AgentNodeConfig{`) nên grep struct-literal ban đầu bỏ sót — phát hiện qua lần chạy full
+suite đầu tiên (2 test CLI fail thật), sửa thêm `"role":"MAKER"` vào JSON template. Tương tự
+`internal/integration/definitionplane_test.go` (struct literal có, nhưng nằm ngoài phạm vi grep ban đầu do
+rà soát theo call site `CompileAndResolve` chưa đủ — cũng phát hiện qua full suite, không phải đoán).
+
+**Fixture sửa (giữ mọi test cũ pass, không đổi hành vi được test):** `simpleAgentDocument` +
+2-agent-conflicting-version doc trong `compiler_test.go`; `workflowcompiler_integration_test.go`;
+`simpleAgentWorkflowDocument` trong `commands_test.go`; `workflowDocumentPinning` (JSON string) trong
+`cmd/agentkit/definition_test.go`; `workflowDoc` trong `internal/integration/definitionplane_test.go`;
+golden fixture `testdata/golden/simple-agent-workflow.json` (thêm `"role":"MAKER"` đúng vị trí field mới
+trong canonical JSON, sau `profileRef`).
+
+**Test mới:**
+- `internal/domain/workflow/node_config_test.go`: case "AGENT invalid role" trong bảng reject có sẵn;
+  `TestValidateDocumentAcceptsEmptyAgentRole` (backward-compat); `TestValidateDocumentAcceptsCheckerRole`;
+  `TestAgentNodeConfigEffectiveRole` (3 case: rỗng→MAKER, MAKER giữ nguyên, CHECKER giữ nguyên).
+  `comprehensiveDocument`'s agent node giờ có `Role: AgentRoleMaker` — `TestCompileRoundTripsNodeConfigWithoutLoss`
+  (test có sẵn) tự động chứng minh Role round-trip qua `Document()`/`CanonicalContent()` không mất, đúng
+  yêu cầu "role tự động pin theo canonical WorkflowVersion" — không cần viết test riêng.
+- `internal/domain/runtime/executionprofile_test.go`: `TestNewResolvedExecutionProfileV1_AcceptsCheckerRole`;
+  3 case reject mới trong bảng `RejectsInvalidProfiles` (AGENT thiếu Role, AGENT Role sai, COMMAND có Role).
+- `internal/app/workflowcompiler/agent_role_test.go` (file mới): reject AGENT thiếu role; accept CHECKER
+  tường minh; reject khi 1-trong-2 AGENT node thiếu role (báo đúng tên node).
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l <file đổi>                                                     # rỗng sau gofmt -w (CRLF)
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake)
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau đó tiếp tục V5-12 PR1 (contract 2: checker
+input allowlist / ContextSnapshot typed Evidence+Diff ref) và PR2 (contract 3: enforcement semantics —
+reuse Gate `strictReadOnly`/`scratchDirectory()` precedent cho CHECKER-role Attempt), theo đúng chỉ dẫn tự
+động chuyển task, không cần hỏi lại người dùng trừ khi phát sinh fork kiến trúc mới.

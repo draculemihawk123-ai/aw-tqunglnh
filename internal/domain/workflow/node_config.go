@@ -4,6 +4,22 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 )
 
+// AgentRole is the closed set of responsibilities a typed AGENT node
+// pins for itself within its graph (V5-12's own maker/checker
+// isolation): MAKER performs the work, CHECKER independently verifies
+// it. Deliberately a per-node fact, not a per-AgentProfile one — see
+// AgentNodeConfig.Role's own doc comment for the full contract.
+type AgentRole string
+
+const (
+	AgentRoleMaker   AgentRole = "MAKER"
+	AgentRoleChecker AgentRole = "CHECKER"
+)
+
+var validAgentRoles = map[AgentRole]bool{
+	AgentRoleMaker: true, AgentRoleChecker: true,
+}
+
 // AgentNodeConfig is an AGENT node's typed config
 // (docs/design/04-v2-definition-plane.md V2-08's own design guidance):
 // it pins the exact AgentProfileVersion this node runs under, plus the
@@ -24,6 +40,40 @@ type AgentNodeConfig struct {
 	// package follows that guidance literally to keep the pin target
 	// unambiguous for Alpha).
 	ProfileRef definition.DependencyPin `json:"profileRef"`
+	// Role is this node's own MAKER|CHECKER responsibility in the graph
+	// (V5-12, 2026-09-10, confirmed with the user before implementing):
+	// deliberately pinned here, on the node, rather than on the
+	// referenced AgentProfileDocument — Role is what this NODE is
+	// responsible for in the graph, while AgentProfile describes
+	// reusable execution config (model, provider, tools) that the same
+	// profile can legitimately serve both a MAKER node and a CHECKER
+	// node with, each still getting its own independent NodeRun/
+	// Attempt/context identity. AgentProfileDocument must never gain a
+	// Role field of its own — that would be a second, conflicting
+	// source of authority.
+	//
+	// This field's own validation.go check only rejects an invalid,
+	// non-empty value — it stays optional at THIS (domain) layer so
+	// that an already-published WorkflowVersion predating this field
+	// still decodes and rebuilds (internal/adapters/sqlite's
+	// loadWorkflowVersion re-verifies a persisted row by calling
+	// workflow.Compile a second time; that reload path must keep
+	// working for every already-persisted row). Effective() defaults an
+	// empty Role to MAKER — the safe backward-compat reading, since
+	// MAKER carries no special enforcement.
+	//
+	// A FRESH publish is held to a stricter bar: this package cannot see
+	// "is this a reload or a genuinely new publish" itself, so that
+	// distinction — "every AGENT node must declare an explicit Role" —
+	// is enforced one layer up, in
+	// internal/app/workflowcompiler.CompileAndResolve (the actual
+	// publish entrypoint; loadWorkflowVersion calls workflow.Compile
+	// directly and never goes through that package, which is exactly
+	// what keeps old rows rebuildable while still closing the gap for
+	// every new publish going forward). Never implicitly default a node
+	// to CHECKER: checker-specific read-only/allowlist/enforcement only
+	// ever activates when Role is explicitly pinned CHECKER.
+	Role AgentRole `json:"role,omitempty"`
 	// PolicyRefs pins the policies (attempt/permission/etc.) this node's
 	// execution runs under. Every pin's Kind must be
 	// definition.KindPolicy — the same PolicyRefs convention
@@ -67,6 +117,19 @@ func (c *AgentNodeConfig) clone() *AgentNodeConfig {
 		cloned.AdapterBuildID = &id
 	}
 	return &cloned
+}
+
+// EffectiveRole returns c.Role, defaulted to AgentRoleMaker when unset —
+// the one place this package's own backward-compat reading of an empty
+// Role (see AgentNodeConfig.Role's own doc comment) is applied, so every
+// caller (runtime's own resolveExecutionProfile included) shares exactly
+// one defaulting rule rather than each reimplementing "empty means
+// MAKER" itself.
+func (c AgentNodeConfig) EffectiveRole() AgentRole {
+	if c.Role == "" {
+		return AgentRoleMaker
+	}
+	return c.Role
 }
 
 // CommandNodeConfig is a COMMAND node's typed config: it pins the exact

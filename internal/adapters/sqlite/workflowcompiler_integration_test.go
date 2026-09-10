@@ -62,6 +62,7 @@ func TestWorkflowCompiler_ResolvesAgainstRealSQLite(t *testing.T) {
 			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"go"}},
 			{Key: "agent", Type: workflow.NodeAgent, Outcomes: []string{"done"}, Agent: &workflow.AgentNodeConfig{
 				ProfileRef:     definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "profile-1", VersionID: "profile-1-v1"},
+				Role:           workflow.AgentRoleMaker,
 				AdapterBuildID: &buildID,
 			}},
 			{Key: "end", Type: workflow.NodeEnd},

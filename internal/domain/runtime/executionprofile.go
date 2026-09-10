@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
 // ExecutorKind is which of the three executable node types a
@@ -128,6 +129,20 @@ type ResolvedExecutionProfileV1 struct {
 	Model       string   `json:"model,omitempty"`
 	ToolRefs    []string `json:"toolRefs,omitempty"`
 	MaxTokens   uint32   `json:"maxTokens,omitempty"`
+	// Role is the pinned WorkflowVersion's own node-level
+	// workflow.AgentNodeConfig.Role (V5-12), already defaulted to
+	// workflow.AgentRoleMaker by the caller (via
+	// workflow.AgentNodeConfig.EffectiveRole()) before this profile is
+	// ever built — this type never re-derives or re-defaults it itself,
+	// the same "resolve once, pin immutably" discipline every other
+	// AGENT-only field here already follows. Only ever meaningful for
+	// Executor.Kind == AGENT; must be its zero value otherwise. Reusing
+	// workflow.AgentRole directly (rather than minting a parallel
+	// runtime-local enum, unlike ExecutorKind above) mirrors this same
+	// file's own ResolvedPolicyRef.Category/IsolationTier precedent:
+	// when an already-resolved domain enum's closed set is exactly what
+	// this profile needs, with no narrowing required, it is reused as-is.
+	Role workflow.AgentRole `json:"role,omitempty"`
 	// AdapterBuild pins the exact provider build/protocol this execution
 	// must run — only ever meaningful for Executor.Kind == AGENT (the
 	// authoring schema's own AgentNodeConfig.AdapterBuildID is the only
@@ -218,9 +233,15 @@ func NewResolvedExecutionProfileV1(profile ResolvedExecutionProfileV1) (Resolved
 		if strings.TrimSpace(profile.ProviderKey) == "" || strings.TrimSpace(profile.Model) == "" {
 			return ResolvedExecutionProfileV1{}, "", errors.New("resolved execution profile: AGENT executor requires ProviderKey and Model")
 		}
+		if profile.Role != workflow.AgentRoleMaker && profile.Role != workflow.AgentRoleChecker {
+			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile: AGENT executor requires a valid Role (%q or %q), got %q", workflow.AgentRoleMaker, workflow.AgentRoleChecker, profile.Role)
+		}
 	case ExecutorKindCommand, ExecutorKindMachineGate:
 		if agentFieldsPopulated {
 			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile: %s executor must not populate ProviderKey/Model/ToolRefs/MaxTokens", profile.Executor.Kind)
+		}
+		if profile.Role != "" {
+			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile: %s executor must not populate Role", profile.Executor.Kind)
 		}
 	}
 

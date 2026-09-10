@@ -67,6 +67,7 @@ func simpleAgentDocument(profileVersionID string) workflow.WorkflowDocument {
 				Key: "agent", Type: workflow.NodeAgent, Outcomes: []string{"done"},
 				Agent: &workflow.AgentNodeConfig{
 					ProfileRef: definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "profile-1", VersionID: profileVersionID},
+					Role:       workflow.AgentRoleMaker,
 				},
 			},
 			{Key: "end", Type: workflow.NodeEnd},
@@ -192,9 +193,11 @@ func TestCompileAndResolve_ConflictingVersionsForSameDefinitionRejected(t *testi
 			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"go"}},
 			{Key: "agent1", Type: workflow.NodeAgent, Outcomes: []string{"done"}, Agent: &workflow.AgentNodeConfig{
 				ProfileRef: definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "profile-1", VersionID: "profile-1-v1"},
+				Role:       workflow.AgentRoleMaker,
 			}},
 			{Key: "agent2", Type: workflow.NodeAgent, Outcomes: []string{"done"}, Agent: &workflow.AgentNodeConfig{
 				ProfileRef: definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "profile-1", VersionID: "profile-1-v2"},
+				Role:       workflow.AgentRoleMaker,
 			}},
 			{Key: "end", Type: workflow.NodeEnd},
 		},
