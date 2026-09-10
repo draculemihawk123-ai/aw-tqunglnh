@@ -78,6 +78,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
 // ErrExecutionProfileMissingTimeout is returned when the pinned
@@ -158,6 +159,17 @@ type resolvedExecutionProfileView struct {
 	// nothing needed them before this task.
 	IsolationTier       policy.IsolationTier `json:"isolationTier"`
 	AllowedCapabilities []string             `json:"allowedCapabilities,omitempty"`
+	// Role is V5-12's own contract 3 input (2026-09-10): the node's own
+	// pinned workflow.AgentRole, already resolved and defaulted by
+	// schedule.go's resolveExecutionProfile (node.Agent.EffectiveRole())
+	// — this view never re-derives or re-defaults it. Empty for
+	// COMMAND/MACHINE_GATE (ResolvedExecutionProfileV1 itself forbids a
+	// non-AGENT executor from populating this field). Read by
+	// assemble_execution_request.go's own gatherAssembledRequestInputs to
+	// decide whether this Attempt's workspace mounts must be forced
+	// read-only (CHECKER) or left as EffectiveScope already resolved them
+	// (everything else, unchanged).
+	Role workflow.AgentRole `json:"role,omitempty"`
 }
 
 // Handle implements workerpool.Handler for ExecuteNodeJobKind. See this

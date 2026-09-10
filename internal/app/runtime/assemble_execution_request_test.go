@@ -16,6 +16,7 @@ import (
 	domainmessage "github.com/taQuangLing/agent-workflow/internal/domain/message"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	"github.com/taQuangLing/agent-workflow/internal/domain/skill"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
 // V5-08B0: end-to-end tests for AssembleAgentExecutionRequest — a real
@@ -51,12 +52,22 @@ func artifactstoreForTest(t *testing.T) ports.ArtifactStore {
 // recorded.
 func assembleRequestFixture(t *testing.T) (uow *fake.UnitOfWork, ids idsource.Source, store ports.ArtifactStore, runID, nodeRunID, attemptID string) {
 	t.Helper()
+	return assembleRequestFixtureWithRole(t, workflow.AgentRoleMaker)
+}
+
+// assembleRequestFixtureWithRole is assembleRequestFixture's own sibling
+// for V5-12 contract 3's own CHECKER-role tests — assembleRequestFixture
+// itself stays MAKER (the pre-V5-12 default every existing call site
+// already relies on) by delegating here rather than every one of its
+// many callers needing a new parameter.
+func assembleRequestFixtureWithRole(t *testing.T, role workflow.AgentRole) (uow *fake.UnitOfWork, ids idsource.Source, store ports.ArtifactStore, runID, nodeRunID, attemptID string) {
+	t.Helper()
 	ctx := context.Background()
 	build := assembleFixtureBuild(t)
 	buildID := build.ID()
 	store = artifactstoreForTest(t)
 
-	u, seq, rID, nrID := scheduleFixture(t, agentExecutableDocument("agent-profile-v1", fullyResolvablePolicyRefs(), &buildID))
+	u, seq, rID, nrID := scheduleFixture(t, agentExecutableDocumentWithRole("agent-profile-v1", fullyResolvablePolicyRefs(), &buildID, role))
 	if err := u.WithSerializedWrite(ctx, func(tx ports.Tx) error {
 		_, _, err := tx.AdapterBuilds().InsertIfAbsent(ctx, build)
 		return err
@@ -160,6 +171,32 @@ func TestAssembleAgentExecutionRequest_RealSnapshot_ProducesValidRequest(t *test
 	}
 	if again.InstructionArtifact.SHA256 != req.InstructionArtifact.SHA256 {
 		t.Fatalf("InstructionArtifact.SHA256 changed across identical re-assembly: %s vs %s", req.InstructionArtifact.SHA256, again.InstructionArtifact.SHA256)
+	}
+}
+
+// TestAssembleAgentExecutionRequest_CheckerRole_MountsForcedReadOnly is
+// V5-12 contract 3's own proof (2026-09-10): a CHECKER-role AGENT node's
+// own WorkspaceMounts are ALWAYS read-only, even though EffectiveScope
+// itself grants WRITE (the identical grant the MAKER-role variant of this
+// exact fixture legitimately uses to write — see
+// TestAssembleAgentExecutionRequest_RealSnapshot_ProducesValidRequest's
+// own WorkspaceMounts assertion above) — mirrors GateNodeExecutor's own
+// forceReadOnlyMounts invariant exactly, reused unchanged for CHECKER.
+func TestAssembleAgentExecutionRequest_CheckerRole_MountsForcedReadOnly(t *testing.T) {
+	uow, _, store, runID, nodeRunID, attemptID := assembleRequestFixtureWithRole(t, workflow.AgentRoleChecker)
+	ctx := context.Background()
+
+	req, err := runtime.AssembleAgentExecutionRequest(ctx, uow, store, runtime.AssembleAgentExecutionRequestRequest{
+		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID,
+	})
+	if err != nil {
+		t.Fatalf("AssembleAgentExecutionRequest: %v", err)
+	}
+	if len(req.WorkspaceMounts) != 1 {
+		t.Fatalf("req.WorkspaceMounts = %+v, want exactly one mount", req.WorkspaceMounts)
+	}
+	if req.WorkspaceMounts[0].Access != ports.WorkspaceReadOnly {
+		t.Fatalf("req.WorkspaceMounts[0].Access = %s, want READ_ONLY — a CHECKER's own mounts must always be forced read-only regardless of EffectiveScope's own WRITE grant", req.WorkspaceMounts[0].Access)
 	}
 }
 

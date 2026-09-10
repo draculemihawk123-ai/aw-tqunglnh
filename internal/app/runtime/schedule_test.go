@@ -52,6 +52,18 @@ func agentExecutableDocument(profileVersionID string, policyRefs []definition.De
 	}
 }
 
+// agentExecutableDocumentWithRole is agentExecutableDocument's own sibling
+// for V5-12 contract 3's own CHECKER-role tests (2026-09-10) —
+// agentExecutableDocument itself stays an implicit MAKER (the pre-V5-12
+// default every one of its own many existing callers already relies on)
+// by delegating here, rather than adding a Role parameter there and
+// updating every call site for a value only the new CHECKER tests need.
+func agentExecutableDocumentWithRole(profileVersionID string, policyRefs []definition.DependencyPin, adapterBuildID *string, role workflow.AgentRole) workflow.WorkflowDocument {
+	doc := agentExecutableDocument(profileVersionID, policyRefs, adapterBuildID)
+	doc.Nodes[1].Agent.Role = role
+	return doc
+}
+
 func validAgentProfileDocument() agentprofile.AgentProfileDocument {
 	return agentprofile.AgentProfileDocument{
 		ProviderKey: "fake-provider", Model: "fake-model", ToolRefs: []string{"read_file"},

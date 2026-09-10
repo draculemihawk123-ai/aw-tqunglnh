@@ -18,6 +18,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/worker"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	domainruntime "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
@@ -76,9 +77,15 @@ type bridgeFakeWriteLeaseManager struct {
 	// completes), unlike every other pre-V5-08C bridge test which never
 	// reaches this call at all.
 	released [][]ports.WriteLeaseGrant
+	// acquireCalls counts every AcquireWriteLeases call — V5-12's own
+	// CHECKER-role tests assert this stays zero (forced read-only mounts
+	// mean resolveExecutionResources never builds a non-empty writeTargets
+	// list for a CHECKER, so it never calls this method at all).
+	acquireCalls int
 }
 
 func (m *bridgeFakeWriteLeaseManager) AcquireWriteLeases(_ context.Context, req ports.AcquireWriteLeasesRequest) ([]ports.WriteLeaseGrant, error) {
+	m.acquireCalls++
 	grants := make([]ports.WriteLeaseGrant, 0, len(req.Targets))
 	for i, target := range req.Targets {
 		grants = append(grants, ports.WriteLeaseGrant{
@@ -211,6 +218,12 @@ type bridgeFixtureOptions struct {
 	agentResult     ports.AgentExecutionResult
 	agentErr        error
 	agentEvents     []ports.AgentEventKind
+	// role is V5-12 contract 3's own addition (2026-09-10) — empty (the
+	// zero value, every existing test's own default) resolves to MAKER via
+	// workflow.AgentNodeConfig.EffectiveRole(), identical to every pre-
+	// V5-12 test's own unchanged behavior. Only the new CHECKER-role tests
+	// below set this to workflow.AgentRoleChecker.
+	role workflow.AgentRole
 }
 
 // bridgeFixture builds one fully-admitted, RUNNING ExecutionAttempt (reusing
@@ -221,11 +234,11 @@ type bridgeFixtureOptions struct {
 // cancellation tests assert against.
 func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (
 	executor *runtime.AgentNodeExecutor, req ports.NodeExecutionRequest, uow *fake.UnitOfWork, ids idsource.Source,
-	interruptions *bridgeFakeInterruptionStore, reconciler *bridgeFakeWorkspaceReconciler,
+	interruptions *bridgeFakeInterruptionStore, reconciler *bridgeFakeWorkspaceReconciler, writeLeases *bridgeFakeWriteLeaseManager,
 ) {
 	t.Helper()
 	ctx := context.Background()
-	u, ids, store, runID, nodeRunID, attemptID := assembleRequestFixture(t)
+	u, ids, store, runID, nodeRunID, attemptID := assembleRequestFixtureWithRole(t, opts.role)
 	markAttemptRunning(t, u, runID, nodeRunID, attemptID)
 
 	jobID := ports.JobID("job-" + attemptID)
@@ -250,13 +263,14 @@ func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (
 
 	interruptions = &bridgeFakeInterruptionStore{uow: u}
 	reconciler = &bridgeFakeWorkspaceReconciler{}
+	writeLeases = &bridgeFakeWriteLeaseManager{}
 	executor = runtime.NewAgentNodeExecutor(
-		u, ids, store, &bridgeFakeWorkspaceProvider{diff: opts.diff, captureRevision: opts.captureRevision}, &bridgeFakeWriteLeaseManager{},
+		u, ids, store, &bridgeFakeWorkspaceProvider{diff: opts.diff, captureRevision: opts.captureRevision}, writeLeases,
 		agents, registry, redact.NewMatcher(), bridgeFakeCheckpointStore{}, clock.System{},
 		interruptions, reconciler,
 	)
 	req = ports.NodeExecutionRequest{AttemptID: attemptID, NodeRunID: nodeRunID, RunID: runID, JobLease: lease}
-	return executor, req, u, ids, interruptions, reconciler
+	return executor, req, u, ids, interruptions, reconciler, writeLeases
 }
 
 // defaultInScopeDiff is the fixture's own default WorkspaceDiff for repo-1.
@@ -314,7 +328,7 @@ func loadAttemptVersion(t *testing.T, uow *fake.UnitOfWork, attemptID string) ui
 // and a real NodeRun advance. Proves every new V5-08B piece composes
 // correctly, not just in isolation.
 func TestAgentNodeExecutor_Success_BuildsEvidenceAndFinalizesEndToEnd(t *testing.T) {
-	executor, req, uow, ids, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, uow, ids, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionSucceeded, TreeQuiesced: true},
 		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
@@ -401,7 +415,7 @@ func TestAgentNodeExecutor_Success_BuildsEvidenceAndFinalizesEndToEnd(t *testing
 // Attempt for the crash-recovery path to resolve (isFinalizableExecutionAttemptState
 // accepts neither LOST nor INDETERMINATE).
 func TestAgentNodeExecutor_LeaseLostMidExecution_ReturnsIndeterminate(t *testing.T) {
-	executor, req, uow, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, uow, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionSucceeded, TreeQuiesced: true},
 		// Sink.Flush is a safe no-op on an empty buffer (its own doc
@@ -434,7 +448,7 @@ func TestAgentNodeExecutor_LeaseLostMidExecution_ReturnsIndeterminate(t *testing
 // scripted executor reporting a provider-level failure (Status: FAILED)
 // with quiescence unconfirmed.
 func TestAgentNodeExecutor_UnconfirmedQuiescenceOnMutatingAttempt_ReturnsIndeterminate(t *testing.T) {
-	executor, req, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, _, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionFailed, TreeQuiesced: false},
 		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
@@ -452,7 +466,7 @@ func TestAgentNodeExecutor_UnconfirmedQuiescenceOnMutatingAttempt_ReturnsIndeter
 // — validates the FINAL, post-quiescence diff against EffectiveScope
 // (V5-08B's own locked decision #2) before ever proposing SUCCEEDED.
 func TestAgentNodeExecutor_OutOfScopeDiff_RejectsAsScopeViolation(t *testing.T) {
-	executor, req, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, _, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff: ports.WorkspaceDiff{
 			RepositoryID: "repo-2", // not in EffectiveScope at all
 			Files:        []ports.FileStatus{{Code: "M", Path: "unauthorized.txt"}},
@@ -472,12 +486,72 @@ func TestAgentNodeExecutor_OutOfScopeDiff_RejectsAsScopeViolation(t *testing.T) 
 	}
 }
 
+// TestAgentNodeExecutor_CheckerRole_MutatingDiff_RejectsAsScopeViolation is
+// V5-12 contract 3's own proof (2026-09-10): a CHECKER-role Attempt whose
+// real post-quiescence diff is non-empty is rejected, even though the
+// SAME diff (defaultInScopeDiff) would PASS for a MAKER at this identical
+// node/EffectiveScope (see TestAgentNodeExecutor_Success_BuildsEvidenceAndFinalizesEndToEnd,
+// which uses it as its own golden-path diff). Mirrors
+// TestGateNodeExecutor_MountChangedDespiteReadOnly_FailsWithScopeViolation
+// exactly, reusing the identical buildEvidence strictReadOnly mechanism
+// for a CHECKER-role AGENT instead of a MACHINE_GATE. Also proves
+// contract 3's own "no WriteLease" bar: writeLeases.acquireCalls stays
+// zero — forceReadOnlyMounts (assemble_execution_request.go) already
+// downgraded this Attempt's own mount to READ_ONLY before
+// resolveExecutionResources ever built a writeTargets list from it.
+func TestAgentNodeExecutor_CheckerRole_MutatingDiff_RejectsAsScopeViolation(t *testing.T) {
+	executor, req, _, _, _, _, writeLeases := bridgeFixture(t, bridgeFixtureOptions{
+		role:        workflow.AgentRoleChecker,
+		diff:        defaultInScopeDiff(),
+		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionSucceeded, TreeQuiesced: true},
+		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
+	})
+	ctx := context.Background()
+
+	result, err := executor.Execute(ctx, req)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.State != domainruntime.ExecutionAttemptFailed || result.TerminationReason != domainruntime.TerminationReasonScopeViolation ||
+		result.ErrorCode != errorcode.CodeScopeViolation {
+		t.Fatalf("result = %+v, want FAILED/SCOPE_VIOLATION/SCOPE_VIOLATION (a CHECKER must never accept a non-empty diff, even one in-scope for a MAKER)", result)
+	}
+	if writeLeases.acquireCalls != 0 {
+		t.Fatalf("writeLeases.acquireCalls = %d, want 0 (a CHECKER's own mounts are always read-only, so no write lease is ever sought)", writeLeases.acquireCalls)
+	}
+}
+
+// TestAgentNodeExecutor_CheckerRole_EmptyDiff_Succeeds proves the
+// strictReadOnly check does not itself break a well-behaved CHECKER: an
+// empty diff — the only legitimate shape for a real, correctly-behaving
+// checker whose own mounts are read-only — still succeeds end-to-end.
+func TestAgentNodeExecutor_CheckerRole_EmptyDiff_Succeeds(t *testing.T) {
+	executor, req, _, _, _, _, writeLeases := bridgeFixture(t, bridgeFixtureOptions{
+		role:        workflow.AgentRoleChecker,
+		diff:        defaultReadOnlyDiff(),
+		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionSucceeded, TreeQuiesced: true},
+		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
+	})
+	ctx := context.Background()
+
+	result, err := executor.Execute(ctx, req)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.State != domainruntime.ExecutionAttemptSucceeded {
+		t.Fatalf("result = %+v, want SUCCEEDED (a real, correctly-behaving CHECKER with an empty diff must not be rejected)", result)
+	}
+	if writeLeases.acquireCalls != 0 {
+		t.Fatalf("writeLeases.acquireCalls = %d, want 0", writeLeases.acquireCalls)
+	}
+}
+
 // TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed is
 // V5-08B's own locked provider-loss mapping row 2: the provider itself
 // reported a determinate non-success (AgentExecutionStatus != Succeeded,
 // no error, quiescence confirmed) — a definite FAILED, never indeterminate.
 func TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed(t *testing.T) {
-	executor, req, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, _, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionFailed, TreeQuiesced: true},
 		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
@@ -501,7 +575,7 @@ func TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed(t *tes
 // PROVIDER_UNAVAILABLE rather than the generic EXECUTION_FAILED row 2 uses
 // for a provider-REPORTED failure.
 func TestAgentNodeExecutor_ProviderUnavailableBareError_ReturnsProviderUnavailable(t *testing.T) {
-	executor, req, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, _, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionFailed, TreeQuiesced: true},
 		agentErr:    errors.New("spawn: executable not found"),
@@ -525,7 +599,7 @@ func TestAgentNodeExecutor_ProviderUnavailableBareError_ReturnsProviderUnavailab
 // rejected, and nothing (not the Attempt CAS, not the NodeRun advance)
 // must have committed as a side effect of the attempt.
 func TestFinalizeExecutionAttempt_TamperedEvidence_RejectsBeforeCommitting(t *testing.T) {
-	executor, req, uow, ids, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, uow, ids, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:        defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{Status: ports.AgentExecutionSucceeded, TreeQuiesced: true},
 		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
@@ -582,7 +656,7 @@ func TestFinalizeExecutionAttempt_TamperedEvidence_RejectsBeforeCommitting(t *te
 // ErrIndeterminateExecution default every other ambiguous case in this
 // bridge already uses.
 func TestAgentNodeExecutor_CancelledWithoutDurableIntent_ReturnsIndeterminateExecution(t *testing.T) {
-	executor, req, _, _, interruptions, reconciler := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, _, _, interruptions, reconciler, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:            defaultInScopeDiff(),
 		captureRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: fixtureRepo1PinnedRevision},
 		agentResult:     ports.AgentExecutionResult{Status: ports.AgentExecutionCancelled, TreeQuiesced: true},
@@ -611,7 +685,7 @@ func TestAgentNodeExecutor_CancelledWithoutDurableIntent_ReturnsIndeterminateExe
 // because the revision happens to match; only NOT quarantined), and
 // WriteLeases are released only after that whole reconciliation completes.
 func TestAgentNodeExecutor_MutatingCancellation_CleanRevision_TerminatesIndeterminateWithoutQuarantine(t *testing.T) {
-	executor, req, uow, ids, interruptions, reconciler := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, uow, ids, interruptions, reconciler, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:            defaultInScopeDiff(),
 		captureRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: fixtureRepo1PinnedRevision},
 		agentResult:     ports.AgentExecutionResult{Status: ports.AgentExecutionCancelled, TreeQuiesced: true},
@@ -657,7 +731,7 @@ func TestAgentNodeExecutor_MutatingCancellation_CleanRevision_TerminatesIndeterm
 // Attempt still becomes INDETERMINATE, and the repository workspace it held
 // a WriteLease against is quarantined.
 func TestAgentNodeExecutor_MutatingCancellation_MutatedRevision_TerminatesIndeterminateAndQuarantines(t *testing.T) {
-	executor, req, uow, ids, interruptions, reconciler := bridgeFixture(t, bridgeFixtureOptions{
+	executor, req, uow, ids, interruptions, reconciler, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff:            defaultInScopeDiff(),
 		captureRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"},
 		agentResult:     ports.AgentExecutionResult{Status: ports.AgentExecutionCancelled, TreeQuiesced: true},

@@ -4279,3 +4279,83 @@ go test -count=1 ./...                                                  # PASS t
 — reuse `forceReadOnlyMounts` cho CHECKER-role AGENT node, thêm field `Role` vào
 `resolvedExecutionProfileView`, verify CreateLocalCommit/quarantine semantics), theo đúng chỉ dẫn tự động
 chuyển task.
+
+**Kết quả:** PR #20, 6/6 pass lần đầu (Linux race/stability 16m36s pass — flake đã biết KHÔNG xuất hiện).
+Squash-merged 2026-09-10, merge commit `f087819`. V5-12 contract 1+2 xong; contract 3 (enforcement) là
+phần còn lại duy nhất.
+
+## V5-12 — PR2: contract 3, read-only enforcement (branch `feat/v5-12-checker-readonly-enforcement`, từ
+`origin/master` sau PR #20)
+
+**Bối cảnh:** tiếp tục ngay sau PR1 merge, theo đúng chỉ dẫn tự động chuyển task. Contract 3 (enforcement
+semantics) đã được người dùng uỷ quyền tự quyết ở bước scoping ban đầu.
+
+**Quyết định thiết kế (mọi phần đều reuse cơ chế đã có, không phát minh mới):**
+1. `resolvedExecutionProfileView` (execute.go) thêm field `Role workflow.AgentRole` — trước đây field này
+   tồn tại trên `ResolvedExecutionProfileV1` (PR0) nhưng KHÔNG được decode ở tầng app; đây là chỗ nối
+   thiếu duy nhất giữa PR0's own schema và runtime thật.
+2. `assemble_execution_request.go`'s `gatherAssembledRequestInputs`: khi `profile.Role ==
+   workflow.AgentRoleChecker`, wrap kết quả `assembleWorkspaceMounts(...)` bằng `forceReadOnlyMounts` —
+   ĐÚNG hàm Gate đã dùng từ trước (`gate_node_executor.go`), không viết hàm mới.
+3. **Phát hiện quan trọng, xác nhận bằng test thật (không chỉ đọc code):** ép mount READ_ONLY tự động
+   chặn luôn WriteLease acquisition — `resolveExecutionResources` (agent_node_executor_resources.go) chỉ
+   gọi `AcquireWriteLeases` cho mount có `Access == WRITE`; mount CHECKER không bao giờ WRITE nên
+   `writeTargets` luôn rỗng. Verify bằng field mới `acquireCalls` trên fake WriteLeaseManager của test.
+4. `AgentNodeExecutor.buildEvidence`'s wrapper (trước đây hard-code `strictReadOnly=false`): giờ tự
+   `loadExecutionProfile` (helper có sẵn) để đọc Role thật của chính Attempt, rồi truyền
+   `strictReadOnly = (role == CHECKER)` vào `buildEvidence` — ĐÚNG cơ chế Gate đã dùng
+   (`validateStrictlyReadOnlyDiffs`, PR #18), không viết check mới. Cân nhắc và LOẠI BỎ phương án khác
+   ("suy strictReadOnly từ việc tất cả mount đều read-only") vì kém rõ ràng hơn (không trace thẳng về
+   Role, dù về mặt logic cũng đúng) — chọn Role tường minh cho dễ audit.
+5. Generalize lại doc comment + error message của `validateStrictlyReadOnlyDiffs` (trước đây hard-code
+   chữ "gate mount...") thành trung lập theo executor, vì giờ dùng chung cho cả Gate và CHECKER.
+
+**Nghiên cứu xác nhận (không giả định):**
+- `CreateLocalCommit` (`ports.LocalCommitCreator`, V5-10A): grep toàn `internal/app` xác nhận KHÔNG có
+  caller thật nào — port + adapter implementation tồn tại nhưng chưa wire vào path thực thi AGENT/COMMAND
+  nào. "Bị từ chối trước Git adapter" đúng nghĩa đen vì hiện tại KHÔNG path nào chạm tới nó, không phải
+  giả định suông.
+- "Trusted-local mutation quan sát được phải quarantine": đọc kỹ `agent_node_executor_cancellation.go`'s
+  `handleMutatingCancellation` — chỉ lặp qua `resolved.writeMounts` (chỉ chứa mount WRITE). Với CHECKER,
+  mount luôn READ_ONLY nên nhánh quarantine CẤU TRÚC không bao giờ chạy. Đọc `gate_node_executor.go`'s
+  own package doc comment xác nhận đây CHÍNH LÀ tradeoff Gate đã tự nhận và CHẤP NHẬN từ trước ("resolved.
+  hasWriteMount is always false... classifyCancellation's own mutating-attempt path can structurally
+  never fire for a Gate; only its simple read-only branch (CANCELLED) ever does") — không phải gap MỚI
+  của CHECKER, mà là đúng tiền lệ Gate đã có, áp dụng nhất quán.
+
+**Gap cố ý hoãn (ghi rõ, không giấu):** "scratch nằm ngoài source" cho AGENT. Gate/COMMAND chạy MỘT argv
+với cwd hoàn toàn do platform kiểm soát (`scratchDirectory()` áp dụng thẳng được); AGENT wrap một CLI
+agent tương tác đầy đủ, cwd thật đi qua tầng adapter-translation (`ports.AgentExecutionRequest.
+WorkspaceMounts` nhiều mount -> `WorkingDirectory` đơn cho provider, xem `internal/adapters/providers/
+claude/claude.go`) mà PR này CHƯA nghiên cứu đủ kỹ để implement đúng — cần một pass riêng. Phần AN TOÀN
+cốt lõi (mount read-only, diff-rỗng bắt buộc, không WriteLease) đã xong và test thật; "scratch" là vấn đề
+TIỆN DỤNG, không phải AN TOÀN — checker vẫn an toàn (không thể ghi được vào source, và nếu cố ghi thì bị
+FAILED) dù chưa có chỗ scratch riêng.
+
+**Test mới:**
+- `internal/app/runtime/assemble_execution_request_test.go`:
+  `TestAssembleAgentExecutionRequest_CheckerRole_MountsForcedReadOnly` — cùng fixture với test MAKER
+  golden-path (cùng EffectiveScope cấp WRITE), chỉ đổi Role, assert mount CHECKER là READ_ONLY.
+- `internal/app/runtime/agent_node_executor_test.go`:
+  `TestAgentNodeExecutor_CheckerRole_MutatingDiff_RejectsAsScopeViolation` — CÙNG diff
+  (`defaultInScopeDiff`) làm MAKER golden-path PASS, nhưng CHECKER phải FAILED/SCOPE_VIOLATION; assert
+  thêm `writeLeases.acquireCalls == 0`. `TestAgentNodeExecutor_CheckerRole_EmptyDiff_Succeeds` — chứng
+  minh check mới không phá checker hợp lệ (diff rỗng vẫn SUCCEEDED).
+- Rà soát blast radius: `bridgeFixture`/`bridgeFixtureOptions`/`assembleRequestFixture` (11 call site
+  trong `agent_node_executor_test.go`) thêm field/return value mới nhưng giữ MAKER làm default cho mọi
+  test cũ (zero value Role = "" = MAKER qua `EffectiveRole()`) — không đổi hành vi test nào có sẵn.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l <file đổi>                                                     # rỗng sau gofmt -w (CRLF)
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake)
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau khi merge, V5-12 coi như hoàn thành đúng
+"Hoàn thành khi" (same provider/model vẫn có independent attempt/context identity — đã xong từ PR0) và đi
+xa hơn nhiều (contract 2+3's own "Kết quả kỳ vọng" phần lớn đã thật), với đúng MỘT gap còn lại đã ghi rõ
+("scratch ngoài source" cho AGENT) để dành cho một task sau nếu cần. Bước tiếp theo trong roadmap: V5-13
+(Checkpoint/handoff và recovery integration), theo đúng chỉ dẫn tự động chuyển task.

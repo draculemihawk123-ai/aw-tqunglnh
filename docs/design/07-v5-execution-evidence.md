@@ -416,6 +416,25 @@
   revision mount, no WriteLease, CreateLocalCommit bị từ chối, trusted-local mutation fail+quarantine)
   VẪN CHƯA implement — kế hoạch: reuse `forceReadOnlyMounts` (đã có sẵn cho Gate) cho CHECKER-role AGENT
   node's own mount, việc này dự kiến tự động chặn luôn WriteLease acquisition (chỉ acquire cho mount WRITE).
+  **Cập nhật 2026-09-10 (PR2, IMPLEMENTED phần cốt lõi):** `assemble_execution_request.go` reuse
+  `forceReadOnlyMounts` cho CHECKER-role AGENT — mount luôn READ_ONLY bất kể EffectiveScope; xác nhận
+  điều này tự động chặn WriteLease acquisition (test thật, không chỉ suy luận). `AgentNodeExecutor.
+  buildEvidence` reuse `strictReadOnly` (cơ chế Gate đã có từ trước) cho CHECKER — mọi diff phải HOÀN TOÀN
+  RỖNG, không chỉ "trong scope"; vi phạm FAILED/SCOPE_VIOLATION giống Gate. `CreateLocalCommit` xác nhận
+  KHÔNG có caller thật nào trong toàn bộ `internal/app` (kể cả cho MAKER/COMMAND) — "bị từ chối" đúng
+  nghĩa vì chưa hề được wire, không phải giả định. "Trusted-local mutation quan sát được phải quarantine":
+  cơ chế quarantine hiện có (`handleMutatingCancellation`) chỉ áp dụng cho mount có WRITE access
+  (`resolved.writeMounts`) — với CHECKER mount luôn READ_ONLY nên nhánh này CẤU TRÚC không bao giờ chạy,
+  y hệt tradeoff Gate's own package doc comment đã tự xác nhận từ trước ("resolved.hasWriteMount is
+  always false... classifyCancellation's own mutating-attempt path can structurally never fire for a
+  Gate") — không phải gap mới, mà là tiền lệ Gate đã chấp nhận, áp dụng nhất quán cho CHECKER. **Gap còn
+  lại, cố ý hoãn:** "scratch nằm ngoài source" cho AGENT — khác Gate/COMMAND (một argv+cwd do platform
+  kiểm soát hoàn toàn), AGENT wrap một CLI agent tương tác đầy đủ; cwd thật của provider đi qua một tầng
+  adapter-level translation (`ports.AgentExecutionRequest.WorkspaceMounts` nhiều mount -> một
+  `WorkingDirectory` cho provider) chưa được nghiên cứu kỹ — cần một pass riêng trước khi implement, không
+  rush. Phần CỐT LÕI về an toàn (mount read-only, diff-rỗng bắt buộc, không WriteLease) đã xong và test
+  thật; "scratch" là vấn đề TIỆN DỤNG (checker có chỗ ghi tạm hữu ích) chứ không phải AN TOÀN (checker vẫn
+  an toàn dù chưa có scratch, chỉ có thể kém tiện dụng hơn).
 - **Verify:** snapshot manifest asserts forbidden maker resources absent; write source/local commit bị
   policy/fence từ chối.
 - **Kết quả kỳ vọng:** CHECKER không được suy từ tên node; nó có NodeRun/Attempt/ContextSnapshot/session
