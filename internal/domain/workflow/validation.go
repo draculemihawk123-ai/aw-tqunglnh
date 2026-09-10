@@ -136,7 +136,7 @@ func validateNormalizedDocument(document WorkflowDocument) error {
 		edgeKeys[edge.Key] = struct{}{}
 
 		from, fromExists := nodes[edge.From]
-		_, toExists := nodes[edge.To]
+		to, toExists := nodes[edge.To]
 		if !fromExists {
 			problems = append(problems, fmt.Sprintf("edge %q references missing source node %q", edge.Key, edge.From))
 		}
@@ -146,13 +146,46 @@ func validateNormalizedDocument(document WorkflowDocument) error {
 		if !fromExists || !toExists {
 			continue
 		}
-		outgoing[edge.From] = append(outgoing[edge.From], edge)
-		incoming[edge.To] = append(incoming[edge.To], edge)
 
-		if edge.Outcome == "" {
-			problems = append(problems, fmt.Sprintf("edge %q outcome is required", edge.Key))
-		} else if !contains(from.Outcomes, edge.Outcome) {
-			problems = append(problems, fmt.Sprintf("edge %q uses undeclared outcome %q on node %q", edge.Key, edge.Outcome, edge.From))
+		// EdgeCompletionRework edges are deliberately NEVER added to
+		// outgoing/incoming below — see EdgeCompletionRework's own doc
+		// comment (workflow.go) for why: they are CompletionPolicy's own
+		// out-of-band routing table, not part of the graph
+		// walkForward/walkBackward/validateBoundedCycles/
+		// validateForkJoinTopology reason about.
+		kind := edge.Kind
+		if kind == "" {
+			kind = EdgeFlow
+		}
+		switch kind {
+		case EdgeFlow:
+			if edge.Outcome == "" {
+				problems = append(problems, fmt.Sprintf("edge %q outcome is required", edge.Key))
+			} else if !contains(from.Outcomes, edge.Outcome) {
+				problems = append(problems, fmt.Sprintf("edge %q uses undeclared outcome %q on node %q", edge.Key, edge.Outcome, edge.From))
+			}
+			if edge.ReworkPolicy != nil {
+				problems = append(problems, fmt.Sprintf("edge %q is a FLOW edge and must not declare a reworkPolicy", edge.Key))
+			}
+			outgoing[edge.From] = append(outgoing[edge.From], edge)
+			incoming[edge.To] = append(incoming[edge.To], edge)
+		case EdgeCompletionRework:
+			if edge.Outcome != "" {
+				problems = append(problems, fmt.Sprintf("edge %q is a COMPLETION_REWORK edge and must not declare an outcome", edge.Key))
+			}
+			if from.Type != NodeEnd {
+				problems = append(problems, fmt.Sprintf("edge %q is a COMPLETION_REWORK edge but source %q is not an END node", edge.Key, edge.From))
+			}
+			if to.Type == NodeEnd {
+				problems = append(problems, fmt.Sprintf("edge %q is a COMPLETION_REWORK edge but targets END node %q", edge.Key, edge.To))
+			}
+			if edge.ReworkPolicy == nil {
+				problems = append(problems, fmt.Sprintf("edge %q is a COMPLETION_REWORK edge and requires a reworkPolicy", edge.Key))
+			} else if edge.ReworkPolicy.MaxIterations == 0 {
+				problems = append(problems, fmt.Sprintf("edge %q reworkPolicy max iterations must be greater than zero", edge.Key))
+			}
+		default:
+			problems = append(problems, fmt.Sprintf("edge %q has unsupported kind %q", edge.Key, edge.Kind))
 		}
 		routeKey := edge.From + "\x00" + edge.Outcome
 		if previous, duplicate := routes[routeKey]; duplicate {
@@ -172,8 +205,12 @@ func validateNormalizedDocument(document WorkflowDocument) error {
 		if node.Type == NodeStart && len(incoming[key]) != 0 {
 			problems = append(problems, fmt.Sprintf("START node %q cannot have incoming edges", key))
 		}
+		// outgoing[key] only ever holds FLOW edges here — a COMPLETION_REWORK
+		// edge (the one kind actually allowed to originate from END) is
+		// never added to this map; see this file's own edge-kind switch
+		// above.
 		if node.Type == NodeEnd && len(outgoing[key]) != 0 {
-			problems = append(problems, fmt.Sprintf("END node %q cannot have outgoing edges", key))
+			problems = append(problems, fmt.Sprintf("END node %q cannot have outgoing FLOW edges", key))
 		}
 		if node.Type == NodeEnd {
 			continue
@@ -328,6 +365,17 @@ func CycleMembership(document WorkflowDocument) map[string]int {
 	}
 	outgoing := make(map[string][]Edge, len(document.Nodes))
 	for _, edge := range document.Edges {
+		// Excluded for the same reason validateNormalizedDocument itself
+		// excludes them from its own outgoing/incoming maps — see
+		// EdgeCompletionRework's own doc comment (workflow.go). A rework
+		// edge from END must never merge END's own strongly-connected
+		// component with its rework target's, or this function's own V4-07
+		// caller (advance.go's escalation-edge-leaves-its-own-cycle check)
+		// would be reasoning about a component CompletionPolicy invented,
+		// not the scheduler's real cycle structure.
+		if edge.Kind == EdgeCompletionRework {
+			continue
+		}
 		if _, ok := nodes[edge.From]; !ok {
 			continue
 		}

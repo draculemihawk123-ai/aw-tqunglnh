@@ -3478,3 +3478,133 @@ go test -count=1 ./...                            # PASS toàn bộ (lần 1 + l
 
 **Việc còn lại:** commit Part D, push nhánh `fix/v5-09-v5-10-remaining-gaps`, mở PR gộp cả 4 phần, chờ CI
 6/6, merge.
+
+**Kết quả:** PR #13, 6/6 CI checks pass NGAY LẦN CHẠY ĐẦU (không cần rerun), squash-merged 2026-09-10,
+merge commit `0c2c2d0`. Đóng toàn bộ gap V5-09/V5-10 mà bài rà soát 2026-09-10 tìm thấy, ngoại trừ một
+điểm CỐ Ý để ngoài phạm vi: Gate's read-only mount enforcement vẫn chỉ là descriptor (evaluator vẫn nhận
+host path thật) — cần cơ chế sandbox/`ENFORCED_ISOLATED` thật, một quyết định kiến trúc lớn hơn, chưa
+scope với người dùng.
+
+## V5-11 scoping — người dùng chốt 3 câu hỏi mở (2026-09-10)
+
+Ngay sau khi PR #13 merge, hỏi lại 3 câu hỏi mở của V5-11 (rework edge, assurance levels, "join") qua
+AskUserQuestion — theo đúng yêu cầu người dùng "hỏi lại luôn vào ô chat này". Người dùng trả lời đầy đủ,
+chi tiết (không chỉ chọn option) cho cả 3 câu — spec đầy đủ đã lưu verbatim vào memory
+`agent-kit-v5-11-completion-policy-research.md`. Tóm tắt quyết định (chi tiết đầy đủ ở đó, không lặp lại
+ở đây):
+1. **Rework edge** → tách thành task riêng **V5-10B** (không gộp vào V5-11) — typed `EdgeKind =
+   FLOW|COMPLETION_REWORK`, route pin ID/target/budget, scheduler không traverse, compiler/hash bao
+   gồm route, validation đầy đủ. Lý do người dùng nêu: giữ thay đổi schema/compiler/validator tách khỏi
+   transaction quyết định (fencing-critical) của CompletionPolicy.
+2. **Assurance levels** → mở rộng `policy.CompletionRules` tại chỗ (không tạo aggregate riêng) — shape
+   Go cụ thể người dùng đưa ra (`AssuranceLevel`/`AssuranceRequirement`/`RequiredAssurance`, V1 flat và
+   V2 ladder mutually exclusive) đã lưu nguyên văn vào memory, sẽ dùng khi code V5-11.
+3. **"Join"** → XÁC NHẬN là cơ chế FORK/JOIN branch-token đã có (V4-10/11), không phải cross-Run
+   reconciliation — V5-11 không được gộp evidence giữa nhiều Run của cùng WorkItem; phát hiện Run khác
+   non-terminal cùng WorkItem là invariant violation → BLOCK.
+
+Cập nhật `docs/design/07-v5-execution-evidence.md`: thêm mục **V5-10B** đầy đủ (Mục tiêu/Phụ thuộc/Phạm
+vi/Nền đã có/Thực hiện/Verify/Hoàn thành khi/Nguồn) ngay sau V5-10A; sửa mục **V5-11**'s "Dữ kiện phải
+khóa" — 3/5 điểm chốt (2,3,4), còn 2 điểm chưa chốt (1: nơi pin CompletionPolicyVersion cho Run; 5:
+idempotency/transaction boundary) nên V5-11 vẫn CHƯA ĐỦ DỮ KIỆN, nhưng không còn bị chặn bởi rework-edge
+hay join ambiguity nữa.
+
+## V5-10B — Completion rework route schema (branch `fix/v5-10b-completion-rework-route-schema`, based on
+`origin/master` post-PR#13)
+
+**Bối cảnh:** giải quyết điểm (3) trong 5 "Dữ kiện phải khóa" của V5-11 — ADR-009/ADR-021/GC-INV-10/
+GC-INV-29 đều yêu cầu CompletionPolicy's REWORK outcome route qua "rework edge đã publish trong
+WorkflowVersion", nhưng `validateNormalizedDocument` cấm MỌI outgoing edge từ END, không phân biệt loại —
+không có gì để CompletionPolicy pin. Theo đúng quyết định người dùng: tách hẳn khỏi V5-11, một task/PR
+riêng.
+
+**Nghiên cứu trước khi code (quan trọng, quyết định toàn bộ shape):**
+- `Edge` (`workflow.go`) hiện chỉ có `{Key, From, Outcome, To}` — không phân biệt loại.
+- `validateNormalizedDocument` (`validation.go`): mọi edge cần `Outcome` khớp `From.Outcomes` đã khai;
+  `outgoing[END]` khác rỗng → reject "cannot have outgoing edges" (không phân biệt loại).
+- `findEdge` (`advance.go`, scheduler thật) chỉ bao giờ được gọi với key của node VỪA hoàn thành với một
+  outcome đề xuất — KHÔNG BAO GIỜ với key của END (END terminal, không "advance" qua outcome). Kết luận
+  quan trọng: **scheduler không bao giờ tự động traverse một COMPLETION_REWORK edge, kể cả không sửa gì
+  ở `advance.go`** — thoả mãn "scheduler không được traverse rework edge" hoàn toàn CẤU TRÚC, không cần
+  code runtime mới.
+- Hash (`compiler.go`'s `Compile`) marshal TOÀN BỘ `normalizedDocument` — field mới trên `Edge` tự động
+  vào hash, không cần code hash riêng ("Compiler/hash phải bao gồm route" thoả mãn miễn phí).
+- `cloneDocument` hiện copy `Edges` NÔNG (`append([]Edge(nil), ...)`) — nếu thêm field con trỏ
+  (`ReworkPolicy`) mà không sửa chỗ này, `WorkflowVersion.Document()`'s "immutable, accessors return
+  copies" bị vi phạm (hai lần gọi share cùng con trỏ). Phải sửa thành deep-copy như `Node.CyclePolicy` đã
+  làm.
+- `CycleMembership` (exported, dùng lại bởi V4-07's escalation-edge-rời-cycle check ở `advance.go`) tự
+  build `outgoing` map RIÊNG từ `document.Edges`, độc lập với `validateNormalizedDocument`'s map — nếu
+  không lọc COMPLETION_REWORK ở đây, một rework edge có thể gộp SCC của END và target lại làm một,
+  corrupt component numbering mà V4-07 dựa vào.
+
+**Quyết định thiết kế (một số điểm KHÔNG được người dùng đặc tả chi tiết, tự quyết định có lý do, ghi rõ
+ở đây để review lại nếu cần):**
+1. **Đúng một COMPLETION_REWORK edge mỗi END** (không phải nhiều route theo outcome khác nhau) — dựa
+   trên cách ADR-021/GC-INV-29 luôn dùng số ít "rework edge đã publish", và V5-11's "load exact published
+   rework route" (số ít). Tái dùng CHÍNH `routes` map dedup-theo-(From,Outcome) đã có sẵn để enforce "tối
+   đa 1" miễn phí, vì `Outcome` cố định rỗng cho mọi rework edge.
+2. **`Outcome` PHẢI rỗng cho COMPLETION_REWORK** — không dùng để chọn giữa nhiều route (vì chỉ có 1 route
+   mỗi END), tránh field chết/gây hiểu lầm. FLOW edge giữ nguyên yêu cầu `Outcome` không rỗng + khớp
+   `From.Outcomes` như cũ.
+3. **`ReworkPolicy{MaxIterations uint32}`** mirror đúng `CyclePolicy`'s tiền lệ — KHÔNG có
+   `EscalationOutcome` tương đương, vì ADR-021 đã định nghĩa sẵn fallback khi hết budget (CompletionPolicy
+   trả BLOCK thay vì REWORK — GC-INV-29), không cần một routable escalation target riêng ở edge.
+4. **COMPLETION_REWORK edge bị loại HOÀN TOÀN khỏi mọi graph-structural algorithm** (reachability
+   walkForward/walkBackward, `validateBoundedCycles`/SCC, `validateForkJoinTopology`, `CycleMembership`)
+   — nó là routing table riêng của CompletionPolicy, không phải đồ thị scheduler duyệt. Hệ quả: rework
+   target PHẢI độc lập là node đã kết nối hợp lệ trong đồ thị FLOW thường (reachable từ START, có path
+   tới END) — không thể là node "chỉ tồn tại nhờ rework". Test `TestValidateDocumentRejectsReworkEdge
+   TargetUnreachableFromNormalFlow` chứng minh + ghi rõ đây là ranh giới phạm vi cố ý, không phải thiếu
+   sót.
+5. **`Kind` rỗng ("") và `Kind: EdgeFlow` ("FLOW") tương đương ở mọi nơi** — không normalize document cũ,
+   giữ nguyên hash của mọi WorkflowVersion đã publish trước task này (field mới đều `omitempty`).
+
+**Thực hiện:**
+- `internal/domain/workflow/workflow.go` — `EdgeKind` (`FLOW`/`COMPLETION_REWORK`) + `ReworkPolicy{
+  MaxIterations}` + `Edge.Kind`/`Edge.ReworkPolicy` (cả hai `omitempty`); `cloneDocument` sửa deep-copy
+  Edges (trước đó copy nông, giờ mirror đúng cách Node.CyclePolicy đã clone).
+- `internal/domain/workflow/validation.go` — switch theo Kind trong vòng lặp edge: FLOW giữ nguyên logic
+  cũ + reject nếu có `ReworkPolicy`; COMPLETION_REWORK reject Outcome khác rỗng, From không phải END, To
+  là END, thiếu/`MaxIterations==0` reworkPolicy; CHỈ FLOW mới được thêm vào `outgoing`/`incoming` map.
+  Sửa message "END node cannot have outgoing edges" → "...outgoing FLOW edges" (khớp hành vi mới).
+  `CycleMembership` lọc COMPLETION_REWORK khỏi map riêng của nó.
+- `docs/design/07-v5-execution-evidence.md` — thêm mục V5-10B đầy đủ theo đúng template các task khác
+  (Mục tiêu/Phụ thuộc/Phạm vi/Nền đã có/Thực hiện/Verify/Hoàn thành khi/Nguồn); sửa V5-11's "Dữ kiện phải
+  khóa" phản ánh 3/5 điểm đã chốt.
+
+**Test (mới hoàn toàn):** `internal/domain/workflow/rework_edge_test.go` —
+- `TestValidateDocumentRejectsInvalidReworkEdges` (table, 9 case): FLOW edge từ END; COMPLETION_REWORK
+  không từ END; targets END; có Outcome; thiếu reworkPolicy; `MaxIterations==0`; FLOW có reworkPolicy; 2
+  route cùng END (duplicate); Kind lạ ("BOGUS").
+- `TestValidateDocumentAcceptsCompletionReworkEdge` — golden path: 1 rework edge END→node đã reachable
+  bình thường, validate sạch.
+- `TestValidateDocumentAcceptsExplicitFlowKind` — `Kind:"FLOW"` tường minh tương đương Kind rỗng.
+- `TestValidateDocumentRejectsReworkEdgeTargetUnreachableFromNormalFlow` — ranh giới phạm vi cố ý (xem
+  Quyết định #4).
+- `TestCycleMembership_ExcludesCompletionReworkEdges` — END/target không bị gộp cùng SCC component qua
+  rework edge.
+- `TestCloneDocument_DeepCopiesEdgeReworkPolicy` — 2 lần gọi `WorkflowVersion.Document()` không share con
+  trỏ `ReworkPolicy` (sửa mutation ở bản trả về đầu không leak sang bản thứ hai).
+
+**Verify:**
+```
+go build ./...                                                              # sạch
+go vet ./...                                                                # sạch
+go run ./cmd/docs-coverage-check                                            # debt = 0 (sau khi sửa
+                                                                             # Nguồn token: ADR-NNN
+                                                                             # không được kèm "(§N)")
+gofmt -l internal/domain/workflow/workflow.go internal/domain/workflow/validation.go
+  internal/domain/workflow/rework_edge_test.go                              # rỗng (sau gofmt -w,
+                                                                             # CRLF do git-on-Windows)
+go test -count=1 ./...                                                      # PASS toàn bộ (lần 1 + lần
+                                                                             # 2, không flake)
+```
+Lỗi gặp và sửa trong lúc verify: `Nguồn` line ban đầu viết `ADR-009 (§10), ADR-021 (§23)` — docs-coverage
+-check reject vì grammar `ADR-NNN` không cho hậu tố `(§N)` (chỉ `ROADMAP-§<S>` mới có; xem
+`docs/design/00-roadmap.md §3`'s bảng grammar) — sửa lại bare `ADR-009, ADR-021, GC-INV-10, GC-INV-29`.
+
+**Việc còn lại:** commit, push nhánh `fix/v5-10b-completion-rework-route-schema`, mở PR, chờ CI 6/6,
+merge. Sau khi merge, V5-11 (CompletionPolicy service) vẫn còn 2 điểm chưa chốt (pin CompletionPolicyVersion
+cho Run; idempotency/transaction boundary của DecisionArtifact) — cần làm rõ với người dùng trước khi bắt
+đầu code V5-11 thật.

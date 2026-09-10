@@ -132,11 +132,66 @@ type Node struct {
 	CyclePolicy *CyclePolicy `json:"cyclePolicy,omitempty"`
 }
 
+// EdgeKind distinguishes a normal graph-traversal edge from a
+// COMPLETION_REWORK edge (V5-10B) — the resolution of a real gap the
+// 2026-09-10 post-merge review found: ADR-009/ADR-021/GC-INV-29 all
+// require CompletionPolicy's own REWORK outcome to route through "a
+// rework edge published in the WorkflowVersion," but until this task
+// nothing let a workflow author declare one, since validateNormalizedDocument
+// unconditionally rejected any outgoing edge from END. An empty Kind
+// ("", the zero value for every already-published WorkflowVersion) is
+// treated identically to EdgeFlow everywhere in this package — this is
+// purely additive, so no already-compiled document's own content hash is
+// ever affected by this field's existence.
+type EdgeKind string
+
+const (
+	// EdgeFlow is the normal scheduler-traversed edge kind (advance.go's
+	// own findEdge) — every edge in this codebase before V5-10B.
+	EdgeFlow EdgeKind = "FLOW"
+	// EdgeCompletionRework is a rework route: only CompletionPolicy
+	// (V5-11), never the normal scheduler, ever looks one up. It may
+	// only originate from an END node and must target a non-END node —
+	// see validateNormalizedDocument's own edge-kind switch for the full
+	// rule set, and this file's own CycleMembership/validation.go's
+	// outgoing/incoming map population for why these edges are
+	// deliberately excluded from every structural graph algorithm
+	// (reachability, bounded-cycle SCC, fork/join topology): a
+	// COMPLETION_REWORK edge is CompletionPolicy's own out-of-band
+	// routing table, not part of the graph the scheduler traverses
+	// START-to-END.
+	EdgeCompletionRework EdgeKind = "COMPLETION_REWORK"
+)
+
+// ReworkPolicy is a COMPLETION_REWORK edge's own iteration budget —
+// mirrors CyclePolicy's own MaxIterations field (the established
+// "iteration policy" precedent in this package) rather than inventing a
+// new shape. Unlike CyclePolicy, ReworkPolicy has no EscalationOutcome:
+// ADR-021 already names the forced fallback once a rework budget is
+// exhausted (CompletionPolicy returns BLOCK instead of REWORK — see
+// GC-INV-29), so there is no separate routable escalation target to
+// declare here.
+type ReworkPolicy struct {
+	MaxIterations uint32 `json:"maxIterations"`
+}
+
+func (p *ReworkPolicy) clone() *ReworkPolicy {
+	if p == nil {
+		return nil
+	}
+	cloned := *p
+	return &cloned
+}
+
 type Edge struct {
-	Key     string `json:"key"`
-	From    string `json:"from"`
-	Outcome string `json:"outcome"`
-	To      string `json:"to"`
+	Key     string   `json:"key"`
+	From    string   `json:"from"`
+	Outcome string   `json:"outcome"`
+	To      string   `json:"to"`
+	Kind    EdgeKind `json:"kind,omitempty"`
+	// ReworkPolicy is required when Kind == EdgeCompletionRework and
+	// forbidden otherwise — see validateNormalizedDocument.
+	ReworkPolicy *ReworkPolicy `json:"reworkPolicy,omitempty"`
 }
 
 type WorkflowDocument struct {
@@ -205,8 +260,12 @@ func cloneDocument(document WorkflowDocument) WorkflowDocument {
 	cloned := WorkflowDocument{
 		SchemaVersion: document.SchemaVersion,
 		Nodes:         make([]Node, len(document.Nodes)),
-		Edges:         append([]Edge(nil), document.Edges...),
+		Edges:         make([]Edge, len(document.Edges)),
 		SharedState:   cloneSharedStateFields(document.SharedState),
+	}
+	for index, edge := range document.Edges {
+		cloned.Edges[index] = edge
+		cloned.Edges[index].ReworkPolicy = edge.ReworkPolicy.clone()
 	}
 	for index, node := range document.Nodes {
 		cloned.Nodes[index] = node
