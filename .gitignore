@@ -1,6 +1,7 @@
 .tools/
 docs/spikes/evidence/
 bin/
-
+.pnpm-store/
+UI draft/
 # Local tooling artifacts unrelated to this repo's own history.
 .codex-remote-attachments/

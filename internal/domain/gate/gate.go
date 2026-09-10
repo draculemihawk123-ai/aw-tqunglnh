@@ -38,6 +38,20 @@ const (
 	VerdictNotApplicable Verdict = "NOT_APPLICABLE"
 )
 
+var knownVerdicts = map[Verdict]struct{}{
+	VerdictPass: {}, VerdictFail: {}, VerdictError: {}, VerdictNotRun: {}, VerdictNotApplicable: {},
+}
+
+// IsValid reports whether v is one of this package's own closed 5-value
+// set — used by any caller persisting a Verdict it did not itself just
+// construct from one of the named constants (e.g. work.ReleaseSet, V5-10A,
+// reusing this exact enum for its own per-repository verdict field rather
+// than declaring a second one).
+func (v Verdict) IsValid() bool {
+	_, ok := knownVerdicts[v]
+	return ok
+}
+
 // Criterion is one thing a Gate's evaluation checks, and which evidence
 // key its verdict is recorded against. Evaluating a Criterion against a
 // real Command execution result — and therefore actually producing a

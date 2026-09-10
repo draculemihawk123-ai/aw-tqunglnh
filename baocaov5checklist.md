@@ -3026,6 +3026,143 @@ là tiêu chí phải được chứng minh ở PR tương ứng, không phải 
 - `go test ./internal/docscoverage` — **PASS**.
 - `go test -count=1 ./internal/app/runtime -run 'Test(CommandNodeExecutor|GateNodeExecutor)'` — **PASS**.
 
+**Kết quả:** PR #9 (`feat/v5-10-gate-runner` → `master`), 6/6 CI checks pass (Linux race/stability,
+contract ubuntu/windows, cross-platform semantic diff SPK-13, spike acceptance ubuntu/windows), squash-merged
+2026-09-09, merge commit `39fb39c`.
+
+## V5-10A — ReleaseSet và typed local Git operation (branch `feat/v5-10a-release-set`, stacked trên
+`feat/v5-10-gate-runner` rồi rebase lên `master` sau khi PR #9 merge)
+
+**Bối cảnh:** người dùng bảo "trong lúc chờ CI thì có thể research, nếu không vướng gì có thể triển khai
+song song luôn cũng được" — trong lúc PR #9 (V5-10) còn CI, đã research V5-10A trước (xác nhận: V3-11
+`internal/app/workspacerelease.RequestWorkspaceSetRelease` đã build sẵn phía caller, phụ thuộc duy nhất
+vào `ports.ReleaseEligibilityAuthority` — một interface KHÔNG có implementation thật, tự ghi rõ "a real
+implementation, backed by a real sealed/abandoned ReleaseSet, is left entirely to that later task"; V5-10A
+CHÍNH LÀ task đó). Đã bắt đầu implement song song (domain type, sqlite migration/adapter, fake adapter,
+port interface) trong lúc PR #9 còn CI pending — đúng theo uỷ quyền song song ở trên. PR #9 sau đó pass
+6/6, merge (`39fb39c`) — nhánh này được tạo lại từ đầu (branch mới từ working tree hiện tại), rebase sạch
+lên `master`, rồi mới viết tiếp phần application-layer/local-commit/test còn thiếu.
+
+**Quyết định (không hỏi lại):**
+1. **`work.ReleaseSet` sống trong package domain `work` sẵn có** (không phải package mới) — đây là runtime
+   aggregate theo family (như `WorkItemBlocker`), không phải DefinitionKind schema; tái dùng thẳng
+   `gate.Verdict` cho verdict từng repo (xác nhận không có import cycle: `gate` không import `work`).
+   Mirror đúng "sorted entries + sha256 content hash `sha256:` prefix" của `workspace.RevisionSet`.
+   `ReleaseSetState` CREATED/SEALED/ABANDONED — CREATED là state duy nhất được phép transition ra khỏi.
+   Thêm `gate.Verdict.IsValid()` (map `knownVerdicts` mới) vì chưa tồn tại và `NewReleaseSet` cần nó.
+2. **Persistence: migration `0030_release_sets.sql`** (2 bảng: `release_sets` header + child table
+   `release_set_repositories`, verdict CHECK 5 giá trị) + `internal/adapters/sqlite/release_set.go` mirror
+   đúng pattern Tx-composable của `work_item_blocker.go`. Bump 2 test hardcode migration-count (28→29) ở
+   `db_test.go`/`unitofwork_test.go` — bookkeeping thường lệ mỗi lần thêm migration.
+3. **Application-layer commands sống trong `internal/app/work` (package đã có sẵn, KHÔNG phải package mới
+   `internal/app/releaseset`)** — quyết định này đã tự khoá cứng ngay từ doc comment của
+   `internal/domain/work/release_set.go` viết TRƯỚC (tự ghi "SealReleaseSet/AbandonReleaseSet (internal/app/work,
+   this task's own application layer)"), nên file mới `internal/app/work/release_set.go` đặt đúng nơi đã tự
+   cam kết thay vì tạo package song song với `workspacerelease`/`workspacereconcile`. `CreateReleaseSet`/
+   `SealReleaseSet`/`AbandonReleaseSet` mirror đúng shape idempotent-command của
+   `RequestWorkspaceSetRelease`/`CreateRootWorkItem` (receipt Actor/Scope/IdempotencyKey/RequestHash,
+   `cmd.ExpectedVersion` làm fence cho Seal/Abandon). `CreateReleaseSet` cross-check
+   `family.ProjectID == req.ProjectID` (giống mọi command khác) — phát hiện thêm: `release_set_repositories.
+   repository_id` có FK thật tới `repositories(id)`, nên cả sqlite adapter (check tường minh trước insert,
+   trả `ErrPersistenceNotFound` sạch thay vì FK-violation mù) lẫn fake adapter (`w.catalog.repositories[...]`,
+   mirror đúng `AddRepositoryScope`/`AddEffectiveScope`) đều phải validate repository tồn tại — bug này bắt
+   được ngay từ lần chạy test sqlite đầu tiên (lỗi "sqlite: unexpected error" mù, không phải thiết kế sai
+   từ đầu).
+4. **`ErrReleaseSetNotOpen`** (sentinel riêng, check tường minh state trước khi gọi CAS) thay vì để một
+   "duplicate seal" thật (IdempotencyKey khác, không phải replay) rơi vào `ErrOptimisticConflict` chung
+   chung — mirror đúng tiền lệ `ErrWorkspaceSetAlreadyReleased` của `RequestWorkspaceSetRelease`.
+5. **`IsCleanupEligible(releaseSet) bool`** (`internal/app/work`) — "application policy" trong Phạm vi line:
+   SEALED hoặc ABANDONED mới cleanup-eligible (GC-INV-26). Không phải domain invariant của `ReleaseSet` tự
+   thân (đọc một ReleaseSet CREATED vẫn hợp lệ, chỉ cleanup phải chờ).
+6. **`EligibilityAuthority`** (`internal/app/work`, implement `ports.ReleaseEligibilityAuthority` thật lần
+   đầu tiên) — authorized khi ReleaseSet MỚI NHẤT của family (theo `ListReleaseSetsForFamily`'s own
+   `(CreatedAt, ID)` order) đã SEALED/ABANDONED. Tự mở `uow.WithReadOnly` riêng (không nhận raw
+   `ports.WorkRepository`) — đúng lý do `RequestWorkspaceSetRelease`'s own doc comment cho việc gọi
+   authority NGOÀI mọi `WithSerializedWrite`. Không cần sửa `workspacerelease` — Go structural typing tự
+   thoả interface.
+7. **`ports.LocalCommitCreator`** (port mới, `internal/app/ports/localcommit.go`) — không mở rộng
+   `WorkspaceProvider` sẵn có, mirror đúng lý do `WorkspaceDirectoryResolver` (`readiness.go`) đã tự ghi:
+   port hẹp riêng cho capability mới, `*gitworktree.Provider` tự thoả bằng structural typing, không phải
+   sửa 3 implementer khác (`fakeWorkspaceProvider`, `bridgeFakeWorkspaceProvider`) của `WorkspaceProvider`.
+   `CreateLocalCommit` nhận `AuthorName`/`AuthorEmail` tường minh (không dựa vào `user.name`/`user.email`
+   ambient trong worktree), set qua `-c user.name=...` một-lần trên chính lệnh `git commit` (không ghi vào
+   config lâu dài của repo) — "typed/audited" nghĩa là caller tự khai ai commit, không phải adapter tự suy
+   ra. "Từ chối mọi remote operation trước Git adapter" (AK-ARCH-015C) là bất biến CẤU TRÚC, không phải
+   runtime check: `CreateLocalCommit` là method Git-mutating DUY NHẤT toàn bộ ports — không tồn tại method
+   remote nào để gọi tới dù cố tình.
+
+**Thực hiện:**
+- `internal/domain/work/release_set.go` (mới), `internal/domain/gate/gate.go` (thêm `IsValid`).
+- `internal/adapters/sqlite/migrations/0030_release_sets.sql` (mới), `internal/adapters/sqlite/release_set.go`
+  (mới, có repository-existence check tường minh).
+- `internal/app/ports/work.go` (4 method mới + `TransitionReleaseSetStateRequest` trên `WorkRepository`),
+  `internal/app/ports/fake/work.go` (implement fake, có cùng repository-existence check).
+- `internal/app/ports/localcommit.go` (port mới), `internal/adapters/gitworktree/localcommit.go`
+  (`CreateLocalCommit` — `git add -A` → check status rỗng → `ErrNothingToCommit` → `git -c user.name=...
+  -c user.email=... commit -m ...` → trả `workspace.Revision` mới), `internal/adapters/gitworktree/errors.go`
+  (thêm `ErrNothingToCommit`).
+- `internal/app/work/release_set.go` (mới — `CreateReleaseSet`/`SealReleaseSet`/`AbandonReleaseSet`/
+  `IsCleanupEligible`/`EligibilityAuthority`).
+
+**Test (mới hoàn toàn, chưa test nào tồn tại trước phiên này):**
+- `internal/domain/work/release_set_test.go` — order-independent content hash, immutability, duplicate
+  repo, invalid verdict, missing field, và `TestNewReleaseSetAllowsMixedVerdictsAcrossRepositories`
+  (kịch bản "partial result" của Verify line: PASS+FAIL+ERROR cùng một ReleaseSet).
+- `internal/adapters/sqlite/release_set_test.go` — round-trip, idempotent-by-ID, missing family, missing
+  repository, seal/abandon thành công, `TestReleaseSetRepository_TransitionReleaseSetState_StaleVersion_Conflict`
+  (kịch bản "stale revision"), not-found, list ordered by (CreatedAt, ID) xuyên 2 family.
+- `internal/app/work/release_set_test.go` — persist/mixed-verdict/replay/receipt-conflict/cross-project cho
+  Create; seal/abandon thành công; `TestSealReleaseSet_DuplicateSeal_Rejected` (kịch bản "duplicate seal" —
+  IdempotencyKey khác trên ReleaseSet đã sealed → `ErrReleaseSetNotOpen`); `TestSealReleaseSet_
+  StaleExpectedVersion_Rejected`; `IsCleanupEligible`; `EligibilityAuthority` (chưa có ReleaseSet → false,
+  CREATED → false, SEALED → true).
+- `internal/adapters/gitworktree/localcommit_test.go` — commit staged+untracked, `ErrNothingToCommit` trên
+  workspace sạch, reject field rỗng/control-char, reject workspace đã release,
+  `TestProvider_CreateLocalCommit_NeverTouchesRemote` (kịch bản "spy adapter chứng minh remote mutation
+  call count bằng 0": `spyLocalCommitCreator` đếm call — mirror `spyArtifactStore` pattern — cộng với xác
+  nhận trực tiếp `git remote` rỗng cả trước/sau, vì fixture repo này chưa từng cấu hình remote nào — chứng
+  minh không có remote nào để mutate dù cố ý).
+
+**Lỗi tự phát hiện và sửa:**
+- Type-conversion bug tự bắt lúc build sqlite test lần đầu: truyền `string` (từ `"project."+projectID`)
+  thẳng vào tham số kiểu `project.ProjectID` — Go từ chối compile vì không phải untyped constant; sửa bằng
+  import `project` package + convert tường minh, đồng thời bỏ tiền tố `"project."` thừa không cần thiết.
+- FK thật `release_set_repositories.repository_id → repositories(id)` không được check tường minh ban đầu
+  → test đầu tiên fail với lỗi sqlite mù ("unexpected error"); sửa bằng cách thêm check tồn tại tường minh
+  ở cả sqlite VÀ fake adapter (xem Quyết định #3).
+
+**Chưa làm / cố ý để lại:**
+- Không wiring `CreateLocalCommit` vào bất kỳ command ReleaseSet nào — đúng scope: hai primitive độc lập,
+  một task tương lai (V5-14's own `ExecuteWorkspaceSetRelease`, hoặc luồng thật của V5-11 CompletionPolicy)
+  mới là nơi ghép chúng lại, mirror đúng "producer chỉ enqueue/build primitive, consumer là task khác" mà
+  `workspacerelease`'s own doc comment đã tự xác lập cho `WORKSPACE_SET_RELEASE` job.
+- Không thêm archtest boundary test riêng cho `internal/app/work/release_set.go` — test chung
+  `TestDomainAppNeverImportAdapters` (đã glob toàn bộ `internal/app/...`) đã cover đúng bất biến cần chứng
+  minh (không import `internal/adapters/...`), và file này vốn không có lý do gì để import `os`/`os/exec`
+  (không có internal executor song song trong CÙNG package như `workspacerelease`/`workspacereconcile` có).
+- Không đổi `cmd/agentkit` để expose ReleaseSet qua CLI/route thật — đúng pattern mọi task V4/V5.
+
+**Verify:**
+```
+go build ./...                                             # sạch
+go vet ./...                                                # sạch
+go run ./cmd/docs-coverage-check                            # debt = 0
+gofmt -l <file mới/thay đổi>                                 # chỉ CRLF noise trên file pre-existing
+                                                              # (core.autocrlf=true), không phải lỗi thật
+go test -count=1 ./internal/domain/... ./internal/adapters/sqlite/... ./internal/app/ports/...
+                                                              # PASS
+go test -count=1 ./internal/app/work/... -v                  # PASS toàn bộ, kể cả ReleaseSet mới
+go test -count=1 ./internal/adapters/gitworktree/... -v      # PASS toàn bộ, kể cả CreateLocalCommit mới
+go test -count=1 ./...                                       # PASS toàn bộ ~70 package (lần 1 + lần 2 lặp
+                                                              # lại để loại flake)
+```
+Flake đã gặp và xác nhận KHÔNG liên quan tới thay đổi phiên này (đã tự biết từ trước, xác nhận lại 3 lần
+chạy riêng): `cmd/agentkit`'s `TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister`
+(Windows file-lock race lúc swap executable, local-only).
+
+**Việc còn lại:** rebase sạch lên `master` (đã xong tại thời điểm viết narrative này), verify lại lần cuối,
+commit, push, mở PR, chờ CI 6/6, merge.
+
 ## Remediation PR1 — Criteria-level Evidence, PASS-path only (branch `fix/v5-09-v5-10-evidence-remediation`, based on `master` post-review)
 
 **Bối cảnh:** người dùng bảo "pull lại master" sau khi tự cập nhật rà soát ở trên; rà soát đó chỉ ra V5-09
@@ -3127,7 +3264,11 @@ Flake đã gặp và xác nhận KHÔNG liên quan (lần chạy thứ 2, đã b
 **Việc còn lại:** commit, push nhánh `fix/v5-09-v5-10-evidence-remediation`, mở PR, chờ CI 6/6, merge —
 sau đó mới quay lại PR2 (Evidence cho non-PASS) hoặc PR #10 (V5-10A) tuỳ người dùng chọn tiếp.
 
-**Kết quả:** PR #11, 6/6 CI checks pass, squash-merged 2026-09-10, merge commit `b3845ce`.
+**Kết quả:** PR #11, 6/6 CI checks pass, squash-merged 2026-09-10, merge commit `b3845ce`. Sau đó người
+dùng bảo "PR feat(v5-10a) CI xanh rồi, check rồi resolve conflict" — PR #10 conflict với `master` (do cả
+rà soát lẫn PR #11 đều sửa `baocaov5checklist.md`) được merge `origin/master` vào `feat/v5-10a-release-set`
+và resolve thủ công (giữ nguyên nội dung V5-10A, chỉ nối thêm nội dung mới từ master theo đúng thứ tự thời
+gian: Rà soát → V5-10A → Remediation PR1).
 
 ## Remediation PR2 — Evidence cho FAILED/non-PASS (branch `fix/v5-09-v5-10-evidence-remediation-pr2`, based on `master` sau khi PR #11 merge)
 
@@ -3203,3 +3344,8 @@ Flake gặp lần 1, xác nhận KHÔNG liên quan (chạy riêng 3 lần đều
 recovery scan — package này phiên remediation không hề chạm tới).
 
 **Việc còn lại:** commit, push nhánh `fix/v5-09-v5-10-evidence-remediation-pr2`, mở PR, chờ CI 6/6, merge.
+
+**Kết quả:** PR #12, 6/6 CI checks pass, squash-merged 2026-09-10, merge commit `9b8f397`. Ngay sau đó
+người dùng bảo "check PR feat(v5-10a)" — PR #10 lại conflict với `master` (do PR #12 cũng sửa
+`baocaov5checklist.md`) — resolve lần hai trên `feat/v5-10a-release-set` theo đúng cách lần đầu (merge
+`origin/master`, chỉ nối thêm nội dung mới, verify lại, push).
