@@ -3126,3 +3126,80 @@ Flake đã gặp và xác nhận KHÔNG liên quan (lần chạy thứ 2, đã b
 
 **Việc còn lại:** commit, push nhánh `fix/v5-09-v5-10-evidence-remediation`, mở PR, chờ CI 6/6, merge —
 sau đó mới quay lại PR2 (Evidence cho non-PASS) hoặc PR #10 (V5-10A) tuỳ người dùng chọn tiếp.
+
+**Kết quả:** PR #11, 6/6 CI checks pass, squash-merged 2026-09-10, merge commit `b3845ce`.
+
+## Remediation PR2 — Evidence cho FAILED/non-PASS (branch `fix/v5-09-v5-10-evidence-remediation-pr2`, based on `master` sau khi PR #11 merge)
+
+**Bối cảnh:** ngay sau khi PR #11 (PR1) merge, tiếp tục theo đúng plan hai-PR người dùng đã khoá từ đầu:
+"PR2 — Evidence cho FAILED/non-PASS... Cho `NodeExecutionResult.Evidence` tồn tại khi Attempt FAILED. Gate
+phải trả Evidence cho FAIL/ERROR/NOT_RUN, không persist rồi bỏ artifact ID. Gọi cùng helper trong FAILED
+transaction trước khi commit terminal state/retry decision... Generic AGENT/COMMAND failure không bị bắt
+buộc có criteria Evidence. Với MACHINE_GATE, mỗi terminal attempt phải tạo kết quả cho mọi criterion, kể cả
+pre-spawn failure dưới dạng ERROR/NOT_RUN." (verbatim plan người dùng, xem lịch sử hội thoại). Giữa lúc làm
+PR2, người dùng tách một nhánh xử lý riêng: "PR feat(v5-10a) CI xanh rồi, check rồi resolve conflict" — đã
+xử lý xong ở nhánh `feat/v5-10a-release-set` (merge `origin/master` vào, resolve 1 conflict duy nhất ở
+`baocaov5checklist.md`, verify lại, push) — xem mục V5-10A ở trên; PR2 tiếp tục độc lập trên nhánh riêng.
+
+**Vấn đề thiết kế phát hiện khi bắt tay code (quan trọng, quyết định toàn bộ shape PR2):**
+`validateAndAttachFinalizationEvidenceTx` (PR1) LUÔN build/insert completion Checkpoint — một khái niệm CHỈ
+có nghĩa cho SUCCEEDED (NodeRun advance sang node kế tiếp). Nhánh FAILED (`decideRetryOrExhaustion`) không
+hề build Checkpoint. Vì vậy KHÔNG THỂ gọi thẳng `validateAndAttachFinalizationEvidenceTx` từ FAILED — phải
+tách hàm thật sự trung lập trước. Đã tách:
+- `validateAndAttachEvidenceArtifactsTx` (mới, trung lập hoàn toàn): terminal-event-sequence check,
+  diff-manifest completeness+promote, output-artifact promote (dedup), ghi Evidence row cho từng entry —
+  KHÔNG có ProposedOutcome check, KHÔNG build Checkpoint.
+- `validateAndAttachFinalizationEvidenceTx` (giữ tên, SUCCEEDED-only): check `ProposedOutcome` khớp
+  `SelectedOutcome`, gọi `validateAndAttachEvidenceArtifactsTx`, rồi mới build+insert Checkpoint.
+- `decideRetryOrExhaustion` (FAILED/TIMED_OUT): gọi thẳng `validateAndAttachEvidenceArtifactsTx` khi
+  `req.Evidence != nil` — ngay đầu hàm, trước quyết định retry/exhaustion.
+
+**Quyết định khác:**
+1. **Gate's FAILED path (`classify`, nhánh `OverallVerdict != PASS`) giờ CŨNG gọi `buildEvidence`**
+   (`proposedOutcome: nil`, vì FAILED không có outcome) — an toàn vì EXECUTION_STARTED/FINISHED LUÔN được
+   emit trước khi `classify` chạy, bất kể exit code/timeout/spawn error (xác nhận đọc code `Execute`), nên
+   `terminalEventSequence` luôn resolve được. Gate luôn read-only nên `DiffManifestArtifacts` luôn rỗng có
+   cấu trúc (không có gì để diff) — không tốn thêm chi phí thật, chỉ tái dùng đúng pipeline đã có.
+2. **`persistGateResultArtifact` nhánh FAIL/ERROR giờ dùng `artifact.Orphan`** (trước là `Attached` cố định
+   từ PR1) — cùng promote qua `validateAndAttachEvidenceArtifactsTx` như PASS.
+3. **Evidence entry cho MỌI criterion, không chỉ criterion fail** — `gateResult.Criteria` lặp toàn bộ, mỗi
+   criterion (kể cả PASS lẫn FAIL trong cùng một attempt FAILED tổng thể) có Evidence row riêng, verdict
+   đúng của chính nó — chứng minh bằng test 2 criteria (lint PASS, tests FAIL) cùng lúc.
+4. **`ports.NodeExecutionResult.Evidence`/`FinalizeExecutionAttemptRequest.Evidence` doc comment cập nhật**
+   phản ánh field này giờ populate cả SUCCEEDED lẫn FAILED (chỉ cho MACHINE_GATE non-PASS) — AGENT/COMMAND
+   FAILED giữ nguyên `nil`, đúng scope người dùng khoá.
+
+**Thực hiện:**
+- `internal/app/runtime/finalize.go` — tách hàm như trên; `decideRetryOrExhaustion` gọi
+  `validateAndAttachEvidenceArtifactsTx` khi có Evidence.
+- `internal/app/runtime/gate_node_executor.go` — nhánh non-PASS của `classify` xây `buildEvidence` +
+  `EvidenceEntries` cho mọi criterion + đổi `persistGateResultArtifact` sang `artifact.Orphan`.
+- `internal/app/ports/execution.go` — cập nhật doc comment `Evidence` trên cả hai type.
+
+**Test (mới hoàn toàn, nối tiếp `evidence_remediation_test.go`):**
+- `TestGateNodeExecutor_OneCriterionFails_OutputArtifactOrphanUntilFinalizePromotesItWithEvidencePerCriterion`
+  — 2 criteria (lint PASS, tests FAIL), ORPHAN trước finalize, ATTACHED sau, Evidence row đúng verdict cho
+  TỪNG criterion (kể cả criterion PASS trong một attempt FAILED tổng thể).
+- `TestFinalizeExecutionAttempt_FailedGateEvidenceTampered_RollsBackRetryDecisionToo` — kịch bản "tampered"
+  trên nhánh FAILED: entry trỏ artifact ngoài `OutputArtifactRefs` → reject TRƯỚC KHI
+  `decideRetryOrExhaustion` commit bất kỳ quyết định retry/exhaustion nào (version Attempt không đổi).
+- `TestGateNodeExecutor_NonzeroExit_EvidenceCoversEveryCriterionAsError` — nhánh `errorAllCriteria` riêng
+  (spawn error/timeout/nonzero exit — code path KHÁC với JSON-parse-nhưng-fail ở trên) vẫn tạo đúng Evidence
+  ERROR cho mọi criterion, đúng "kể cả pre-spawn failure dưới dạng ERROR/NOT_RUN" trong plan người dùng.
+
+**Quyết định phạm vi test:** không dựng thêm sqlite fixture riêng cho FAILED path — cùng lý do PR1 đã ghi
+(fencing thật đã được `finalize_execution_attempt_sqlite_test.go` chứng minh cho đúng transaction này; logic
+Evidence mới là thứ cần test, không phải cơ chế fencing).
+
+**Verify:**
+```
+go build ./...                                             # sạch
+go vet ./...                                                # sạch
+go run ./cmd/docs-coverage-check                            # debt = 0
+go test -count=1 ./...                                      # PASS toàn bộ (lần 1 + lần 2)
+```
+Flake gặp lần 1, xác nhận KHÔNG liên quan (chạy riêng 3 lần đều pass): `internal/app/workerpool`'s
+`TestPool_TwoPoolsRaceRecovery_NoDuplicateProcessing` (race/timing test, "context canceled" lúc startup
+recovery scan — package này phiên remediation không hề chạm tới).
+
+**Việc còn lại:** commit, push nhánh `fix/v5-09-v5-10-evidence-remediation-pr2`, mở PR, chờ CI 6/6, merge.

@@ -311,12 +311,41 @@ func (e *GateNodeExecutor) classify(
 	}
 
 	if gateResult.OverallVerdict != gate.VerdictPass {
-		if _, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult, artifact.Attached); err != nil {
+		// V5-10 acceptance-gap remediation PR2 (2026-09-10 post-merge
+		// review): a non-PASS verdict is exactly as much evidence as a PASS
+		// one ("Gate phải trả Evidence cho FAIL/ERROR/NOT_RUN, không persist
+		// rồi bỏ artifact ID" — user's own locked PR2 scope) — every
+		// criterion gets its own Evidence row here too, never just a
+		// dropped artifact ID. buildEvidence is safe to call regardless of
+		// outcome: EXECUTION_STARTED/FINISHED are emitted unconditionally
+		// before classify ever runs (Execute, above), so a real terminal
+		// event always exists, and a Gate's own mounts are always
+		// read-only (forceReadOnlyMounts) — its diff-manifest set is
+		// always structurally empty, never a real mutation to report.
+		evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, nil)
+		if err != nil {
+			if errors.Is(err, scopeguard.ErrScopeViolation) {
+				return ports.NodeExecutionResult{
+					State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
+					ErrorCode: errorcode.CodeScopeViolation,
+				}, nil
+			}
+			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build gate finalization evidence for non-PASS verdict: %w", err)
+		}
+		resultArtifactID, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult, artifact.Orphan)
+		if err != nil {
 			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: persist gate result artifact: %w", err)
+		}
+		evidence.OutputArtifactRefs = append(evidence.OutputArtifactRefs, resultArtifactID)
+		for _, criterion := range gateResult.Criteria {
+			evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
+				Kind: criterion.EvidenceKey, Verdict: string(criterion.Verdict),
+				ArtifactReferences: []string{resultArtifactID}, PolicyVersion: request.ExecutionProfileHash,
+			})
 		}
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
-			ErrorCode: errorcode.CodeExecutionFailed,
+			ErrorCode: errorcode.CodeExecutionFailed, Evidence: evidence,
 		}, nil
 	}
 

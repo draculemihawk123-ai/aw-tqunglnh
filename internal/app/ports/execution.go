@@ -69,11 +69,20 @@ type NodeExecutionResult struct {
 	// anything durable (a ScopeExpansionOrigin, a BLOCKED Attempt/NodeRun)
 	// is ever built from it — never itself a grant.
 	RequestedScopeExpansion *runtime.ScopeExpansionProposal
-	// Evidence is populated only when State == ExecutionAttemptSucceeded
-	// (V5-08B) — the terminal evidence bundle FinalizeExecutionAttempt
-	// re-validates, inside its own fenced transaction, before ever
-	// committing SUCCEEDED. See AttemptFinalizationEvidence's own doc
-	// comment for the full contract.
+	// Evidence is populated when State == ExecutionAttemptSucceeded (V5-08B)
+	// — the terminal evidence bundle FinalizeExecutionAttempt re-validates,
+	// inside its own fenced transaction, before ever committing SUCCEEDED —
+	// and, since the V5-09/V5-10 acceptance-gap remediation PR2
+	// (2026-09-10), also when State == ExecutionAttemptFailed for a
+	// MACHINE_GATE's own non-PASS verdict specifically (a FAILED Gate needs
+	// its own criteria-level Evidence just as much as a PASS one). Nil for
+	// every other FAILED/TIMED_OUT caller — a generic AGENT/COMMAND failure
+	// is never required to carry criteria Evidence. See
+	// AttemptFinalizationEvidence's own doc comment for the full contract;
+	// EvidenceEntries is what actually varies by outcome (ProposedOutcome/
+	// CompletionCheckpointID/DiffManifestArtifacts stay meaningful the same
+	// way regardless, but are only ever consumed into a real Checkpoint on
+	// the SUCCEEDED path).
 	Evidence *AttemptFinalizationEvidence
 }
 
