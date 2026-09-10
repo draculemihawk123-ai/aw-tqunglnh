@@ -311,7 +311,7 @@ func (e *GateNodeExecutor) classify(
 	}
 
 	if gateResult.OverallVerdict != gate.VerdictPass {
-		if _, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult); err != nil {
+		if _, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult, artifact.Attached); err != nil {
 			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: persist gate result artifact: %w", err)
 		}
 		return ports.NodeExecutionResult{
@@ -342,11 +342,26 @@ func (e *GateNodeExecutor) classify(
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build gate finalization evidence: %w", err)
 	}
 
-	resultArtifactID, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult)
+	resultArtifactID, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult, artifact.Orphan)
 	if err != nil {
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: persist gate result artifact: %w", err)
 	}
 	evidence.OutputArtifactRefs = append(evidence.OutputArtifactRefs, resultArtifactID)
+	// V5-10 acceptance-gap remediation (2026-09-10 post-merge review): one
+	// Evidence row per criterion — GateResult artifact is no substitute for
+	// criteria-level Evidence (docs/design/07-v5-execution-evidence.md's
+	// own review finding). Every criterion shares the SAME GateResult
+	// artifact (it covers all of them at once); Kind is that criterion's
+	// own EvidenceKey, Verdict its own resolved gate.Verdict — always PASS
+	// here (a non-PASS OverallVerdict returns FAILED above, before this
+	// point is ever reached; a future remediation PR is what extends
+	// Evidence to the FAILED branch).
+	for _, criterion := range gateResult.Criteria {
+		evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
+			Kind: criterion.EvidenceKey, Verdict: string(criterion.Verdict),
+			ArtifactReferences: []string{resultArtifactID}, PolicyVersion: request.ExecutionProfileHash,
+		})
+	}
 
 	return ports.NodeExecutionResult{
 		State: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
@@ -481,16 +496,25 @@ func scratchDirectory() (path string, cleanup func(), err error) {
 
 const gateResultArtifactMediaType = "application/vnd.agentkit.gate-result+json"
 
-// persistGateResultArtifact persists gateResult as a durable artifact,
-// inserted directly ATTACHED — mirrors CommandNodeExecutor's own
-// persistCommandOutputArtifact exactly (finalize.go never polices
-// AttemptFinalizationEvidence.OutputArtifactRefs the rigorous
-// ORPHAN->ATTACHED way it polices diff-manifest artifacts, so staging
-// this ORPHAN would strand it forever). Persisted for EVERY verdict, not
-// only PASS — a FAILED/ERROR Gate result is exactly the kind of
-// provenance-bearing record this task's own Mục tiêu names, and the
-// caller (classify) reaches this on both its PASS and non-PASS paths.
-func (e *GateNodeExecutor) persistGateResultArtifact(ctx context.Context, projectID project.ProjectID, attemptID string, result GateResult) (string, error) {
+// persistGateResultArtifact persists gateResult as a durable artifact.
+// Persisted for EVERY verdict, not only PASS — a FAILED/ERROR Gate result
+// is exactly the kind of provenance-bearing record this task's own Mục
+// tiêu names, and the caller (classify) reaches this on both its PASS and
+// non-PASS paths.
+//
+// attachState is Orphan on the PASS path (V5-10 acceptance-gap
+// remediation, 2026-09-10 post-merge review):
+// validateAndAttachFinalizationEvidenceTx (finalize.go) now promotes it
+// ORPHAN->ATTACHED itself, atomically with the criteria-level Evidence
+// rows it also writes — mirroring buildEvidence's own Phase 1 (Put/Verify,
+// real I/O, no transaction) + Phase 2 (insert ORPHAN, one short
+// transaction) split exactly. attachState stays Attached, unfenced, on the
+// non-PASS path — that path does not go through finalize's own evidence
+// promotion at all yet (deferred to a later remediation PR, which is also
+// what will give a non-PASS verdict its own criteria-level Evidence rows).
+func (e *GateNodeExecutor) persistGateResultArtifact(
+	ctx context.Context, projectID project.ProjectID, attemptID string, result GateResult, attachState artifact.AttachState,
+) (string, error) {
 	body, err := json.Marshal(result)
 	if err != nil {
 		return "", fmt.Errorf("encode gate result artifact: %w", err)
@@ -505,7 +529,7 @@ func (e *GateNodeExecutor) persistGateResultArtifact(ctx context.Context, projec
 	artifactID := e.ids.NewID()
 	a, err := artifact.NewArtifact(
 		artifact.ID(artifactID), projectID, ref.Locator, ref.SHA256, ref.Size, ref.ContentType,
-		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Attached, false, nil, e.clk.Now(), 1,
+		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, attachState, false, nil, e.clk.Now(), 1,
 	)
 	if err != nil {
 		return "", fmt.Errorf("construct gate result artifact record for attempt %s: %w", attemptID, err)

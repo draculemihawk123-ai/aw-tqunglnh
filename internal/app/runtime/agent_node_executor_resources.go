@@ -181,7 +181,7 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 //
 // A free function (V5-09: CommandNodeExecutor needs this EXACT same
 // evidence-staging protocol — "diff/fence" is explicitly required of a
-// mutating COMMAND too, and attachFinalizationEvidenceTx's own
+// mutating COMMAND too, and validateAndAttachFinalizationEvidenceTx's own
 // finalize-time re-validation, finalize.go, has no AGENT-specific
 // coupling at all) rather than a method on *AgentNodeExecutor;
 // e.buildEvidence below is a thin, unchanged wrapper. request stays typed

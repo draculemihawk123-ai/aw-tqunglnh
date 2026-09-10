@@ -3025,3 +3025,104 @@ là tiêu chí phải được chứng minh ở PR tương ứng, không phải 
 - `go run ./cmd/docs-coverage-check` — **PASS**, debt = 0.
 - `go test ./internal/docscoverage` — **PASS**.
 - `go test -count=1 ./internal/app/runtime -run 'Test(CommandNodeExecutor|GateNodeExecutor)'` — **PASS**.
+
+## Remediation PR1 — Criteria-level Evidence, PASS-path only (branch `fix/v5-09-v5-10-evidence-remediation`, based on `master` post-review)
+
+**Bối cảnh:** người dùng bảo "pull lại master" sau khi tự cập nhật rà soát ở trên; rà soát đó chỉ ra V5-09
+và V5-10 (đã merge) còn acceptance gap thật, và đề nghị đóng gap trước khi tiếp tục V5-10A/V5-11. Người
+dùng xác nhận: "Giữ PR #10, chuyển sang đóng gap V5-09/V5-10 trước" — PR #10 (V5-10A) giữ nguyên, KHÔNG
+merge, KHÔNG sửa thêm; nhánh remediation này tách riêng từ `master` (không dựa trên `feat/v5-10a-release-set`,
+vì hai việc độc lập nhau — remediation không đụng tới ReleaseSet).
+
+**Câu hỏi xác nhận trước khi code:** Evidence phải ghi cho MỌI outcome (PASS lẫn non-PASS) theo design
+doc, nhưng `attachFinalizationEvidenceTx` chỉ chạy trên nhánh SUCCEEDED — mở rộng đúng nghĩa cần sửa cả
+nhánh FAILED của `finalize.go` (function fencing quan trọng nhất repo). Người dùng chọn: **PR1 chỉ
+PASS-path trước**, nhưng thiết kế contract ngay từ đầu phải dùng được cho mọi terminal outcome (verbatim
+plan người dùng đưa, xem lịch sử hội thoại) — PR2 (nhánh FAILED/non-PASS) là task riêng sau.
+
+**Quyết định (theo đúng plan người dùng, không hỏi lại):**
+1. **`work.Evidence` → đặt tên `runtime.Evidence`** (`internal/domain/runtime/evidence.go`, package đã có
+   sẵn `Checkpoint`/`ExecutionAttempt`) — tái dùng bảng `evidence` (migration 0001, có sẵn từ V1, CHƯA từng
+   được ghi bởi bất kỳ code nào cho tới remediation này). Full lineage (WorkItemID/RunID/NodeRunID/
+   AttemptID) là cột có sẵn. ID = `AttemptID + ":" + Kind` (deterministic, không phải cột idempotency-key
+   riêng) — mirror đúng discipline `ReleaseSet`/`WorkItemBlocker`: một redelivered finalize luôn tự
+   re-derive cùng ID, nên `CreateEvidence`'s own insert-or-load-existing đã đủ an toàn cho replay.
+2. **`ports.EvidenceProposal`** (mới, `execution.go`) — field trên `AttemptFinalizationEvidence`: Kind,
+   Verdict, ArtifactReferences (phải là tập con của `OutputArtifactRefs`), PolicyVersion. `nil/empty` cho
+   AGENT (rà soát không gắn cờ AGENT) và fake NodeExecutor cũ.
+3. **Đổi tên `attachFinalizationEvidenceTx` → `validateAndAttachFinalizationEvidenceTx`** (trung lập với
+   terminal state, đúng yêu cầu người dùng) nhưng **CHỈ gọi từ nhánh SUCCEEDED** trong PR1 này — nhánh
+   FAILED của `finalize.go` không đổi, để lại nguyên cho PR2.
+4. **Output artifact chuyển từ ATTACHED trực tiếp sang ORPHAN** (`persistCommandOutputArtifact`,
+   `persistGateResultArtifact` trên nhánh PASS) — mirror đúng `buildEvidence`'s own Phase 1 (Put+Verify,
+   không transaction) + Phase 2 (insert ORPHAN, transaction ngắn). `persistGateResultArtifact` được thêm
+   tham số `attachState artifact.AttachState`: nhánh FAIL/ERROR (không qua finalize evidence trong PR1)
+   VẪN insert ATTACHED như cũ, không đổi hành vi — chỉ nhánh PASS đổi sang ORPHAN.
+5. **`validateAndAttachFinalizationEvidenceTx` mở rộng:** promote `OutputArtifactRefs` ORPHAN→ATTACHED
+   (dedup theo artifact ID, vì Gate's nhiều criteria dùng chung MỘT GateResult artifact); validate mỗi
+   `EvidenceEntry.ArtifactReferences` phải là tập con `OutputArtifactRefs` đã promote (không phải artifact
+   mới, chưa từng thấy); rồi `tx.Runtime().CreateEvidence` cho từng entry — tất cả trong CÙNG transaction
+   fenced đã có (JobLease/WriteLease fencing không đổi).
+6. **PolicyVersion = `request.ExecutionProfileHash`** (field có sẵn trên `ports.AgentExecutionRequest`,
+   đã pin đúng GateVersion/CommandVersion resolved profile) — không cần plumbing mới để lấy VersionID
+   riêng.
+7. **Command: Evidence entry chỉ tạo khi có output artifact thật** (`doc.Output.CaptureStdout ||
+   CaptureStderr`) — `runtime.NewEvidence` tự đòi ≥1 artifact reference (mirror `Checkpoint`'s own
+   invariant), nên khi output capture tắt, không có gì để reference, bỏ qua Evidence hoàn toàn cho case đó
+   (quyết định phạm vi PR1, không phải bug).
+
+**Thực hiện:**
+- `internal/domain/runtime/evidence.go` (mới) — `Evidence`, `NewEvidence`, `EvidenceKindCommandExecution`,
+  `EvidenceVerdictSucceeded`.
+- `internal/app/ports/unitofwork.go` (`RuntimeRepository` +3 method), `internal/app/ports/execution.go`
+  (`EvidenceProposal` mới + field `EvidenceEntries` trên `AttemptFinalizationEvidence`).
+- `internal/adapters/sqlite/evidence.go` (mới, mirror `checkpoint_store.go`'s own JSON-encoding pattern),
+  `internal/app/ports/fake/runtime.go` (+3 method, +field `evidence` + clone).
+- `internal/app/runtime/finalize.go` (`validateAndAttachFinalizationEvidenceTx` — đổi tên + mở rộng),
+  `command_node_executor.go`/`gate_node_executor.go` (ORPHAN staging + xây `EvidenceEntries`).
+- Sửa 4 comment còn tên cũ `attachFinalizationEvidenceTx` (không phải call site, chỉ doc comment) ở
+  `agent_node_executor_resources.go`, `agent_node_executor_test.go`, `command_node_executor.go`,
+  `internal/app/ports/artifactrecord.go`.
+
+**Test (mới hoàn toàn):**
+- `internal/adapters/sqlite/evidence_test.go` — round-trip, idempotent-by-ID (kịch bản "replay"), not-found,
+  list ordered by Kind xuyên nhiều criteria/attempt.
+- `internal/app/runtime/evidence_remediation_test.go`:
+  - `TestCommandNodeExecutor_Success_OutputArtifactOrphanUntilFinalizePromotesItWithEvidence` — ORPHAN
+    trước finalize, ATTACHED sau, đúng 1 Evidence row Kind=COMMAND_EXECUTION.
+  - `TestGateNodeExecutor_AllCriteriaPass_OutputArtifactOrphanUntilFinalizePromotesItWithEvidencePerCriterion`
+    — tương tự cho Gate, 1 Evidence row/criterion, verdict đúng theo criterion.
+  - `TestFinalizeExecutionAttempt_EvidenceEntryNamesUnlistedArtifact_RejectsBeforeCommitting` — kịch bản
+    "tampered": entry trỏ artifact ngoài `OutputArtifactRefs` → reject, rollback (version/artifact state
+    không đổi).
+  - `TestFinalizeExecutionAttempt_MissingOutputArtifact_RejectsBeforeCommitting` — kịch bản
+    "missing/foreign": `OutputArtifactRefs` trỏ artifact không tồn tại → reject, rollback.
+
+**Quyết định phạm vi test (không dựng sqlite fixture riêng cho Command/Gate):** deep fencing edge case
+(expired lease, wrong owner/token, concurrent finalize) đã có sẵn ở `finalize_execution_attempt_sqlite_test.go`
+cho đúng transaction `FinalizeExecutionAttempt` này (dùng AGENT fixture) — code Evidence mới chạy TRONG
+CÙNG transaction đã được test đó chứng minh rollback thật ở sqlite. Việc cần test MỚI là logic Evidence
+validate/promote tự thân, không phải cơ chế fencing đã có sẵn — nên test ở tầng fake (application flow)
+là đủ, đúng "sqlite-only cho fencing, fake-only cho flow" convention file đó tự ghi. Idempotent-replay
+(CreateEvidence) test ở tầng sqlite thật (evidence_test.go) vì đó là nơi đúng để chứng minh.
+
+**Chưa làm / cố ý để lại (PR2 và xa hơn):**
+- Nhánh FAILED/non-PASS của `finalize.go` chưa nhận Evidence — GateResult FAIL/ERROR/NOT_RUN vẫn insert
+  ATTACHED trực tiếp như cũ (không unfenced mới, cũng không được fenced mới).
+- `OutputTruncated` chưa fail-closed, secret chưa vào redaction matcher, `PolicyRefs`/compatibility/
+  network chưa verify/enforce, chưa có production composition/router — đúng danh sách gap còn lại của rà
+  soát, không phải phạm vi PR1.
+- NOT_APPLICABLE chưa kiểm pinned policy authority (mới kiểm reason) — không đổi trong PR1.
+
+**Verify:**
+```
+go build ./...                                             # sạch
+go vet ./...                                                # sạch
+go run ./cmd/docs-coverage-check                            # debt = 0
+go test -count=1 ./...                                      # PASS toàn bộ ~70 package (lần 1 + lần 2)
+```
+Flake đã gặp và xác nhận KHÔNG liên quan (lần chạy thứ 2, đã biết từ trước): `cmd/agentkit`'s
+`TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` (Windows file-lock race, local-only).
+
+**Việc còn lại:** commit, push nhánh `fix/v5-09-v5-10-evidence-remediation`, mở PR, chờ CI 6/6, merge —
+sau đó mới quay lại PR2 (Evidence cho non-PASS) hoặc PR #10 (V5-10A) tuỳ người dùng chọn tiếp.

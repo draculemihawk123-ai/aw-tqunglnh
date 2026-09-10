@@ -25,7 +25,7 @@
 // This bridge's own two events (EXECUTION_STARTED, EXECUTION_FINISHED) are
 // emitted through the exact same agentevents.Sink AGENT uses — its own
 // AgentEventKind vocabulary is already generic (EXECUTION_STARTED/FINISHED
-// carry no chat-specific meaning), and attachFinalizationEvidenceTx's own
+// carry no chat-specific meaning), and validateAndAttachFinalizationEvidenceTx's own
 // finalize-time re-validation (finalize.go) unconditionally requires a
 // real agent_events row matching TerminalEventSequence for ANY
 // Evidence-bearing attempt — reusing Sink is what lets this executor reuse
@@ -260,6 +260,15 @@ func (e *CommandNodeExecutor) classify(
 			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: persist command output artifact: %w", err)
 		}
 		evidence.OutputArtifactRefs = append(evidence.OutputArtifactRefs, outputArtifactID)
+		// V5-09 acceptance-gap remediation (2026-09-10 post-merge review):
+		// one Evidence row for this execution — skipped entirely when
+		// output capture is off (nothing to reference; runtime.NewEvidence
+		// itself requires at least one artifact reference, the same
+		// invariant Checkpoint already enforces).
+		evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
+			Kind: runtimedomain.EvidenceKindCommandExecution, Verdict: runtimedomain.EvidenceVerdictSucceeded,
+			ArtifactReferences: []string{outputArtifactID}, PolicyVersion: request.ExecutionProfileHash,
+		})
 	}
 
 	return ports.NodeExecutionResult{
@@ -282,14 +291,15 @@ type commandOutputArtifactContent struct {
 const commandOutputArtifactMediaType = "application/vnd.agentkit.command-output+json"
 
 // persistCommandOutputArtifact persists this attempt's own captured
-// output as a durable artifact, inserted directly ATTACHED — unlike the
-// diff-manifest artifacts buildEvidence stages ORPHAN for
-// attachFinalizationEvidenceTx to later promote, finalize.go's own
-// evidence re-validation never polices AttemptFinalizationEvidence.OutputArtifactRefs
-// the same rigorous way (finalize.go only ever folds it into the
-// completion Checkpoint's own artifact-reference list) — there is no
-// promotion step that will ever reach it, so staging it ORPHAN would
-// strand it there forever.
+// output as a durable artifact, staged ORPHAN — V5-09 acceptance-gap
+// remediation (2026-09-10 post-merge review): this used to insert directly
+// ATTACHED, in its own unfenced transaction, before finalize.go's own
+// evidence re-validation had any promotion step that would ever reach it.
+// validateAndAttachFinalizationEvidenceTx (finalize.go) now promotes this
+// artifact ORPHAN->ATTACHED itself, atomically with everything else it
+// commits — mirroring buildEvidence's own Phase 1 (Put/Verify, real I/O,
+// no transaction) + Phase 2 (insert ORPHAN, one short transaction) split
+// exactly.
 func (e *CommandNodeExecutor) persistCommandOutputArtifact(
 	ctx context.Context, req ports.NodeExecutionRequest, projectID project.ProjectID, doc command.CommandDocument, stdout, stderr []byte,
 ) (string, error) {
@@ -314,7 +324,7 @@ func (e *CommandNodeExecutor) persistCommandOutputArtifact(
 	artifactID := e.ids.NewID()
 	a, err := artifact.NewArtifact(
 		artifact.ID(artifactID), projectID, ref.Locator, ref.SHA256, ref.Size, ref.ContentType,
-		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Attached, false, nil, e.clk.Now(), 1,
+		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Orphan, false, nil, e.clk.Now(), 1,
 	)
 	if err != nil {
 		return "", fmt.Errorf("construct command output artifact record: %w", err)

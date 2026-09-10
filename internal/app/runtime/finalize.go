@@ -331,7 +331,7 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 			// still use, any future COMMAND/MACHINE_GATE executor) leaves
 			// Evidence nil and is entirely unaffected.
 			if req.Evidence != nil {
-				if err := attachFinalizationEvidenceTx(ctx, tx, clk, req, attempt, run); err != nil {
+				if err := validateAndAttachFinalizationEvidenceTx(ctx, tx, clk, req, attempt, run); err != nil {
 					return err
 				}
 			}
@@ -372,27 +372,36 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 	return result, err
 }
 
-// attachFinalizationEvidenceTx is V5-08B's own locked decision #2, protocol
-// phase 3 ("Trong MỘT finalize transaction: revalidate JobLease, mọi
-// WriteLease... kiểm terminal event/checkpoint... chuyển artifact ORPHAN ->
-// ATTACHED; persist completion checkpoint..."). Every field req.Evidence
-// carries is a PROPOSAL from the executor that built it — never trusted
-// as-is, exactly like req.SelectedOutcome/FailureCode/RequestedScopeExpansion
-// above it. JobLease/WriteLease fencing already ran in Steps 1/3 before
-// this is ever reached; this function's own job is validating the EVIDENCE
-// itself — the terminal event genuinely exists, the diff-manifest set is
-// complete against this NodeRun's own EffectiveScope, every named artifact
-// is still ORPHAN, and the proposed outcome matches req.SelectedOutcome —
-// before promoting anything to ATTACHED or persisting a completion
-// Checkpoint. The diff CONTENT itself (scope violations) was already
-// checked by the executor outside this transaction, via
-// scopeguard.ValidateDiffs, before it ever proposed SUCCEEDED at all — this
-// function re-checks completeness (every scoped repository produced
-// evidence, none missing, none extra), never re-derives correctness from
-// raw diff bytes (that would require an ArtifactStore call inside a
-// transaction, exactly what docs/architecture/04-go-core-spec.md §11.1
-// forbids).
-func attachFinalizationEvidenceTx(
+// validateAndAttachFinalizationEvidenceTx is V5-08B's own locked decision
+// #2, protocol phase 3 ("Trong MỘT finalize transaction: revalidate
+// JobLease, mọi WriteLease... kiểm terminal event/checkpoint... chuyển
+// artifact ORPHAN -> ATTACHED; persist completion checkpoint..."), extended
+// by the V5-09/V5-10 acceptance-gap remediation (2026-09-10 post-merge
+// review) to also promote OutputArtifactRefs and write criteria-level
+// Evidence rows. Every field req.Evidence carries is a PROPOSAL from the
+// executor that built it — never trusted as-is, exactly like
+// req.SelectedOutcome/FailureCode/RequestedScopeExpansion above it.
+// JobLease/WriteLease fencing already ran in Steps 1/3 before this is ever
+// reached; this function's own job is validating the EVIDENCE itself — the
+// terminal event genuinely exists, the diff-manifest set is complete
+// against this NodeRun's own EffectiveScope, every named artifact is still
+// ORPHAN, and the proposed outcome matches req.SelectedOutcome — before
+// promoting anything to ATTACHED or persisting a completion Checkpoint.
+// The diff CONTENT itself (scope violations) was already checked by the
+// executor outside this transaction, via scopeguard.ValidateDiffs, before
+// it ever proposed SUCCEEDED at all — this function re-checks completeness
+// (every scoped repository produced evidence, none missing, none extra),
+// never re-derives correctness from raw diff bytes (that would require an
+// ArtifactStore call inside a transaction, exactly what
+// docs/architecture/04-go-core-spec.md §11.1 forbids).
+//
+// Named neutrally with respect to terminal state (not
+// "...SucceededEvidence...") because a future remediation PR is expected to
+// also call this from the FAILED branch (a non-PASS MACHINE_GATE verdict
+// needs Evidence just as much as a PASS one) — this PR only ever wires it
+// into the SUCCEEDED branch above; extending the FAILED branch is
+// deliberately left to that later PR, not guessed at here.
+func validateAndAttachFinalizationEvidenceTx(
 	ctx context.Context, tx ports.Tx, clk clock.Clock, req FinalizeExecutionAttemptRequest,
 	attempt runtimedomain.ExecutionAttempt, run runtimedomain.WorkflowRun,
 ) error {
@@ -448,6 +457,63 @@ func attachFinalizationEvidenceTx(
 			ArtifactID: ref.ArtifactID, ExpectedState: artifact.Orphan, ExpectedVersion: record.Version, NextState: artifact.Attached,
 		}); err != nil {
 			return fmt.Errorf("runtime: attach diff manifest artifact %s: %w", ref.ArtifactID, err)
+		}
+	}
+
+	// Promote every OutputArtifactRefs entry ORPHAN -> ATTACHED too (V5-09/
+	// V5-10 acceptance-gap remediation): previously CommandNodeExecutor/
+	// GateNodeExecutor inserted this artifact directly ATTACHED, in its own
+	// transaction, before finalize ever ran — an unfenced write nothing
+	// here ever re-validated. It is now staged ORPHAN by the executor
+	// (Put+Verify outside any transaction, insert ORPHAN in its own short
+	// transaction — buildEvidence's own Phase 1+2, applied to output
+	// artifacts too) and promoted here, atomically with everything else
+	// this transaction commits. Deduplicated: more than one EvidenceEntry
+	// may name the SAME shared artifact (a MACHINE_GATE's own GateResult
+	// artifact covers every criterion at once), and an artifact already
+	// promoted must never be re-transitioned a second time.
+	promotedOutputArtifacts := make(map[string]bool, len(evidence.OutputArtifactRefs))
+	for _, artifactID := range evidence.OutputArtifactRefs {
+		if promotedOutputArtifacts[artifactID] {
+			continue
+		}
+		record, err := tx.Artifacts().GetArtifact(ctx, artifactID)
+		if err != nil {
+			return fmt.Errorf("runtime: load output artifact %s: %w", artifactID, err)
+		}
+		if _, err := tx.Artifacts().TransitionArtifactAttachState(ctx, ports.TransitionArtifactAttachStateRequest{
+			ArtifactID: artifactID, ExpectedState: artifact.Orphan, ExpectedVersion: record.Version, NextState: artifact.Attached,
+		}); err != nil {
+			return fmt.Errorf("runtime: attach output artifact %s: %w", artifactID, err)
+		}
+		promotedOutputArtifacts[artifactID] = true
+	}
+
+	// Write one Evidence row per proposed entry (V5-09/V5-10 acceptance-gap
+	// remediation) — idempotent by deterministic ID (AttemptID+Kind, see
+	// runtime.Evidence's own doc comment), so a redelivered finalize never
+	// creates a duplicate. Every entry's own ArtifactReferences must
+	// already be named in OutputArtifactRefs — never a fresh, unlisted
+	// artifact this function has not itself just promoted above.
+	for _, entry := range evidence.EvidenceEntries {
+		if len(entry.ArtifactReferences) == 0 {
+			return fmt.Errorf("runtime: evidence entry %q names no artifact reference", entry.Kind)
+		}
+		for _, artifactID := range entry.ArtifactReferences {
+			if !promotedOutputArtifacts[artifactID] {
+				return fmt.Errorf("runtime: evidence entry %q names artifact %s, which is not in OutputArtifactRefs", entry.Kind, artifactID)
+			}
+		}
+		evidenceRow, err := runtimedomain.NewEvidence(
+			runtimedomain.EvidenceID(req.AttemptID+":"+entry.Kind), run.ProjectID, run.WorkItemID,
+			runtimedomain.WorkflowRunID(req.RunID), runtimedomain.NodeRunID(req.NodeRunID), runtimedomain.ExecutionAttemptID(req.AttemptID),
+			entry.Kind, entry.Verdict, entry.ArtifactReferences, evidence.FinalRevisionSet, entry.PolicyVersion, clk.Now(),
+		)
+		if err != nil {
+			return fmt.Errorf("runtime: build evidence entry %q: %w", entry.Kind, err)
+		}
+		if _, err := tx.Runtime().CreateEvidence(ctx, evidenceRow); err != nil {
+			return fmt.Errorf("runtime: persist evidence entry %q: %w", entry.Kind, err)
 		}
 	}
 

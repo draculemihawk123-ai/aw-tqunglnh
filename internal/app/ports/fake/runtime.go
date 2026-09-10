@@ -33,6 +33,11 @@ type RuntimeRepository struct {
 	runIntents   map[string]runtime.RunCancellationIntent      // by RunID
 	workIntents  map[string]runtime.WorkItemCancellationIntent // by WorkItemID
 	scopeOrigins map[string]runtime.ScopeExpansionOrigin       // by AttemptID
+	// evidence is populated now (V5-09/V5-10 acceptance-gap remediation,
+	// 2026-09-10): the fake's own mirror of the `evidence` table, keyed by
+	// Evidence.ID (deterministic — see internal/domain/runtime/evidence.go's
+	// own doc comment for why this is what makes CreateEvidence idempotent).
+	evidence map[string]runtime.Evidence
 	// reaperState is populated now (V4-13): the fake's own stand-in for
 	// migration 26's own seeded singleton row — lazily initialized to
 	// {Generation: 0, Version: 1} the first time GetRecoveryReaperState (or
@@ -90,6 +95,10 @@ func (r *RuntimeRepository) clone() *RuntimeRepository {
 	for k, v := range r.scopeOrigins {
 		scopeOrigins[k] = v
 	}
+	evidence := make(map[string]runtime.Evidence, len(r.evidence))
+	for k, v := range r.evidence {
+		evidence[k] = v
+	}
 	var reaperState *ports.RecoveryReaperState
 	if r.reaperState != nil {
 		copied := *r.reaperState
@@ -98,7 +107,7 @@ func (r *RuntimeRepository) clone() *RuntimeRepository {
 	return &RuntimeRepository{
 		workflowRuns: workflowRuns, nodeRuns: nodeRuns, attempts: attempts, manifests: manifests, amendments: amendments,
 		branches: branches, decisions: decisions, runIntents: runIntents, workIntents: workIntents, scopeOrigins: scopeOrigins,
-		reaperState: reaperState,
+		evidence: evidence, reaperState: reaperState,
 		// jobs is deliberately left nil here — fake/unitofwork.go's own
 		// clone() wires it (clone.runtime.jobs = clone.jobs) immediately
 		// after this returns, once the sibling JobsRepository clone exists.
@@ -387,6 +396,41 @@ func (r *RuntimeRepository) TransitionExecutionAttempt(_ context.Context, req po
 // that wants a write-lease rejection path is testing the wrong layer.
 func (r *RuntimeRepository) ValidateWriteLeaseFencing(_ context.Context, _ ports.JobLease, _ ports.WriteLeaseGrant) error {
 	return nil
+}
+
+// CreateEvidence mirrors sqlite's createEvidenceTx: idempotent by ID (V5-09/
+// V5-10 acceptance-gap remediation, 2026-09-10).
+func (r *RuntimeRepository) CreateEvidence(_ context.Context, evidence runtime.Evidence) (runtime.Evidence, error) {
+	if existing, ok := r.evidence[string(evidence.ID)]; ok {
+		return existing, nil
+	}
+	if r.evidence == nil {
+		r.evidence = map[string]runtime.Evidence{}
+	}
+	r.evidence[string(evidence.ID)] = evidence
+	return evidence, nil
+}
+
+// GetEvidence mirrors sqlite's loadEvidenceTx.
+func (r *RuntimeRepository) GetEvidence(_ context.Context, id string) (runtime.Evidence, error) {
+	evidence, ok := r.evidence[id]
+	if !ok {
+		return runtime.Evidence{}, fmt.Errorf("fake: %w: evidence %s", ports.ErrPersistenceNotFound, id)
+	}
+	return evidence, nil
+}
+
+// ListEvidenceForAttempt mirrors sqlite's ListEvidenceForAttempt, ordered by
+// Kind for a stable, deterministic result.
+func (r *RuntimeRepository) ListEvidenceForAttempt(_ context.Context, attemptID string) ([]runtime.Evidence, error) {
+	var result []runtime.Evidence
+	for _, evidence := range r.evidence {
+		if string(evidence.AttemptID) == attemptID {
+			result = append(result, evidence)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Kind < result[j].Kind })
+	return result, nil
 }
 
 func sameExecutionManifestContent(left, right runtime.ExecutionManifest) bool {

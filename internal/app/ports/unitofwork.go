@@ -495,6 +495,25 @@ type RuntimeRepository interface {
 	// grant no longer validates.
 	ValidateWriteLeaseFencing(ctx context.Context, lease JobLease, grant WriteLeaseGrant) error
 
+	// CreateEvidence is populated now (V5-09/V5-10 acceptance-gap
+	// remediation, 2026-09-10): inserts a new, durable Evidence row for one
+	// terminal criterion (MACHINE_GATE) or execution (COMMAND/AGENT) —
+	// idempotent by ID, the identical "insert; on identical-ID conflict,
+	// load and return the existing row" discipline CreateWorkItemBlocker/
+	// work.CreateReleaseSet already establish (see
+	// internal/domain/runtime/evidence.go's own doc comment for why
+	// Evidence.ID is deterministic rather than a separate idempotency-key
+	// column). Composed inside FinalizeExecutionAttempt's own fenced
+	// transaction — never called independently.
+	CreateEvidence(ctx context.Context, evidence runtime.Evidence) (runtime.Evidence, error)
+	// GetEvidence returns the Evidence row with the given ID, or
+	// ErrPersistenceNotFound.
+	GetEvidence(ctx context.Context, id string) (runtime.Evidence, error)
+	// ListEvidenceForAttempt returns every Evidence row attemptID has ever
+	// produced (one per MACHINE_GATE criterion, or the single COMMAND/AGENT
+	// execution row), ordered by Kind for a stable, deterministic result.
+	ListEvidenceForAttempt(ctx context.Context, attemptID string) ([]runtime.Evidence, error)
+
 	// CreateExecutionManifest inserts the one immutable ExecutionManifest a
 	// WorkflowRun ever has (GC-INV-06). manifest.RunID must name a
 	// WorkflowRun that exists, and manifest.WorkflowVersionID's own

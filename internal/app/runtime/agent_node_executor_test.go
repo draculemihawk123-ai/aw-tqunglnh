@@ -506,7 +506,7 @@ func TestAgentNodeExecutor_ProviderUnavailableBareError_ReturnsProviderUnavailab
 
 // TestFinalizeExecutionAttempt_TamperedEvidence_RejectsBeforeCommitting
 // proves FinalizeExecutionAttempt's own phase-3 revalidation
-// (attachFinalizationEvidenceTx) actually distrusts the proposal it is
+// (validateAndAttachFinalizationEvidenceTx) actually distrusts the proposal it is
 // handed — a TerminalEventSequence naming no real agent_events row must be
 // rejected, and nothing (not the Attempt CAS, not the NodeRun advance)
 // must have committed as a side effect of the attempt.
