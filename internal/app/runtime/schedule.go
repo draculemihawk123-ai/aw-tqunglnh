@@ -310,13 +310,35 @@ func ScheduleExecutableNodeRun(
 		// tiên"). MessageRefs is every V5-02 Message for this WorkItem so
 		// far, in exactly the order ListMessagesForWorkItem already
 		// returns them (by Sequence) — real, not a placeholder.
-		messages, err := tx.Messages().ListMessagesForWorkItem(ctx, string(run.WorkItemID))
-		if err != nil {
-			return err
-		}
-		messageRefs := make([]contextsnapshot.MessageRef, len(messages))
-		for i, m := range messages {
-			messageRefs[i] = contextsnapshot.MessageRef{MessageID: string(m.ID)}
+		//
+		// V5-12 (checker input allowlist, 2026-09-10, contract 2): a
+		// CHECKER-role AGENT node gets NO maker transcript at all —
+		// MessageRefs stays empty, and EvidenceRefs instead names every
+		// direct predecessor node's own latest terminal Evidence
+		// (gatherCheckerEvidenceRefs). Every other node (MAKER, COMMAND,
+		// MACHINE_GATE — anything whose Role is not explicitly CHECKER)
+		// keeps the unchanged "every message so far" behavior. The
+		// WorkItem's own requirement (Title/Behavior/AcceptanceCriteria)
+		// still reaches a checker regardless of MessageRefs — that flows
+		// through instructionArtifactContent.TaskContract in
+		// assemble_execution_request.go, loaded directly from WorkItem,
+		// never through Messages.
+		var messageRefs []contextsnapshot.MessageRef
+		var evidenceRefs []contextsnapshot.EvidenceRef
+		if node.Type == workflow.NodeAgent && node.Agent.EffectiveRole() == workflow.AgentRoleChecker {
+			evidenceRefs, err = gatherCheckerEvidenceRefs(ctx, tx, run, document, node.Key)
+			if err != nil {
+				return err
+			}
+		} else {
+			messages, err := tx.Messages().ListMessagesForWorkItem(ctx, string(run.WorkItemID))
+			if err != nil {
+				return err
+			}
+			messageRefs = make([]contextsnapshot.MessageRef, len(messages))
+			for i, m := range messages {
+				messageRefs[i] = contextsnapshot.MessageRef{MessageID: string(m.ID)}
+			}
 		}
 
 		// V5-08B0: ResourceRefs is gathered for real — resolve node's own
@@ -364,7 +386,7 @@ func ScheduleExecutableNodeRun(
 		snapshotID := contextsnapshot.ID(ids.NewID())
 		snapshot, err := contextsnapshot.NewSnapshot(
 			snapshotID, run.ProjectID, run.WorkItemID, contextsnapshot.AttemptID(attemptID),
-			messageRefs, resourceRefs, baseRevisionSet, time.Now().UTC(),
+			messageRefs, resourceRefs, evidenceRefs, baseRevisionSet, time.Now().UTC(),
 		)
 		if err != nil {
 			return err
@@ -730,6 +752,88 @@ func gatherContextResourceRefs(
 		return contextassembler.Resolution{}, fmt.Errorf("runtime: resolve context candidates for policy %s: %w", contextPolicyRef.VersionID, err)
 	}
 	return resolution, nil
+}
+
+// gatherCheckerEvidenceRefs resolves nodeKey's own CHECKER-role
+// EvidenceRefs (V5-12 contract 2, 2026-09-10): every DIRECT predecessor
+// node — found from document's own Edges, To == nodeKey — that has
+// already produced a terminal Evidence row in THIS Run. For a predecessor
+// re-executed across a REWORK cycle, only its LATEST SUCCEEDED NodeRun
+// (highest ActivationSequence) counts; for that NodeRun, only its LATEST
+// SUCCEEDED Attempt (highest AttemptNumber) counts — mirroring how the
+// graph itself only ever reaches nodeKey via an edge whose own predecessor
+// NodeRun already reached the matching outcome, so a predecessor that
+// never succeeded structurally cannot be the reason nodeKey is being
+// scheduled at all. A predecessor with no Attempt at all (a structural
+// node — ROUTER/FORK/JOIN/START — or an APPROVAL/WAIT) contributes
+// nothing; that is not an error, just an empty set for that predecessor.
+//
+// Deliberately reuses ListNodeRunsForRun/ListExecutionAttemptsForRun/
+// ListEvidenceForAttempt — all three already exist for V4-12's own
+// terminality classification — rather than adding a new, narrower
+// "evidence for a run" repository query: which NodeRun/Attempt counts as
+// the "latest terminal" one for a given node key is exactly the kind of
+// classification policy ListNodeRunsForRun's own doc comment already says
+// belongs in Go code, not a SQL WHERE clause.
+func gatherCheckerEvidenceRefs(
+	ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, document workflow.WorkflowDocument, nodeKey string,
+) ([]contextsnapshot.EvidenceRef, error) {
+	predecessors := make(map[string]bool)
+	for _, edge := range document.Edges {
+		if edge.To == nodeKey {
+			predecessors[edge.From] = true
+		}
+	}
+	if len(predecessors) == 0 {
+		return nil, nil
+	}
+
+	nodeRuns, err := tx.Runtime().ListNodeRunsForRun(ctx, string(run.ID))
+	if err != nil {
+		return nil, err
+	}
+	latestNodeRun := make(map[string]runtimedomain.NodeRun, len(predecessors))
+	for _, nr := range nodeRuns {
+		if !predecessors[nr.NodeKey] || nr.State != runtimedomain.NodeRunSucceeded {
+			continue
+		}
+		if existing, ok := latestNodeRun[nr.NodeKey]; !ok || nr.ActivationSequence > existing.ActivationSequence {
+			latestNodeRun[nr.NodeKey] = nr
+		}
+	}
+	if len(latestNodeRun) == 0 {
+		return nil, nil
+	}
+
+	attempts, err := tx.Runtime().ListExecutionAttemptsForRun(ctx, string(run.ID))
+	if err != nil {
+		return nil, err
+	}
+	wantNodeRun := make(map[runtimedomain.NodeRunID]bool, len(latestNodeRun))
+	for _, nr := range latestNodeRun {
+		wantNodeRun[nr.ID] = true
+	}
+	latestAttempt := make(map[runtimedomain.NodeRunID]runtimedomain.ExecutionAttempt, len(latestNodeRun))
+	for _, a := range attempts {
+		if !wantNodeRun[a.NodeRunID] || a.State != runtimedomain.ExecutionAttemptSucceeded {
+			continue
+		}
+		if existing, ok := latestAttempt[a.NodeRunID]; !ok || a.AttemptNumber > existing.AttemptNumber {
+			latestAttempt[a.NodeRunID] = a
+		}
+	}
+
+	var refs []contextsnapshot.EvidenceRef
+	for _, attempt := range latestAttempt {
+		evidence, err := tx.Runtime().ListEvidenceForAttempt(ctx, string(attempt.ID))
+		if err != nil {
+			return nil, err
+		}
+		for _, e := range evidence {
+			refs = append(refs, contextsnapshot.EvidenceRef{EvidenceID: string(e.ID)})
+		}
+	}
+	return refs, nil
 }
 
 // recordContextResolutionDecision persists resolution as a durable

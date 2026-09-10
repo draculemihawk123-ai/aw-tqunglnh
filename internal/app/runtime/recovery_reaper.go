@@ -520,7 +520,7 @@ func (h *RecoveryReaperHandler) retryAttempt(ctx context.Context, attempt runtim
 			nextSnapshotID := contextsnapshot.ID(h.ids.NewID())
 			clonedSnapshot, err = contextsnapshot.NewSnapshot(
 				nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshot.AttemptID(nextAttemptID),
-				previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.Revisions, h.clk.Now(),
+				previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.EvidenceRefs, previousSnapshot.Revisions, h.clk.Now(),
 			)
 			if err != nil {
 				return err

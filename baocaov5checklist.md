@@ -4199,3 +4199,83 @@ go test -count=1 ./...                                                  # PASS t
 input allowlist / ContextSnapshot typed Evidence+Diff ref) và PR2 (contract 3: enforcement semantics —
 reuse Gate `strictReadOnly`/`scratchDirectory()` precedent cho CHECKER-role Attempt), theo đúng chỉ dẫn tự
 động chuyển task, không cần hỏi lại người dùng trừ khi phát sinh fork kiến trúc mới.
+
+**Kết quả:** PR #19, 6/6 pass lần đầu (Linux race/stability 16m4s pass — flake đã biết KHÔNG xuất hiện lần
+này). Squash-merged 2026-09-10, merge commit `2c06139`. Trong lúc chờ CI, nghiên cứu trước contract 2+3 để
+PR tiếp theo code được ngay (chi tiết đầy đủ trong memory `agent-kit-v5-12-maker-checker-research.md`):
+điểm enforcement duy nhất của contract 2 là `schedule.go`'s message-gathering trước
+`contextsnapshot.NewSnapshot`; contract 3's read-only mount reuse (`forceReadOnlyMounts`, có sẵn từ Gate)
+tự động chặn luôn WriteLease acquisition (không cần code thêm) vì `resolveExecutionResources` chỉ acquire
+lease cho mount WRITE; `resolvedExecutionProfileView` (execute.go) cần thêm field `Role` mới đọc được.
+
+## V5-12 — PR1: contract 2, checker input allowlist (branch `feat/v5-12-checker-input-allowlist`, từ
+`origin/master` sau PR #19)
+
+**Bối cảnh:** tiếp tục ngay sau PR0 merge, theo đúng chỉ dẫn tự động chuyển task. Contract 2 (checker
+input allowlist) đã được người dùng uỷ quyền tự quyết ở bước scoping ban đầu — không hỏi lại, chỉ nghiên
+cứu kỹ trước khi code vì có MỘT câu hỏi mới phát sinh khi thiết kế cụ thể (dưới đây).
+
+**Câu hỏi tự phát sinh, tự giải quyết bằng nghiên cứu thêm (không phải hỏi người dùng):** "checker nên
+thấy Evidence của node nào?" — không có trong contract gốc. Nghiên cứu: `ports.RuntimeRepository` đã có
+sẵn `ListNodeRunsForRun`/`ListExecutionAttemptsForRun`/`ListEvidenceForAttempt` (không cần port method
+mới). Quyết định: checker's EvidenceRefs = Evidence của mọi predecessor TRỰC TIẾP trong graph (tìm qua
+`document.Edges` với `To == nodeKey`), chỉ lấy NodeRun/Attempt THÀNH CÔNG mới nhất
+(`ActivationSequence`/`AttemptNumber` cao nhất) cho mỗi predecessor — tự nhiên đúng cho FORK/JOIN (nhiều
+predecessor, gộp evidence của tất cả) và REWORK (predecessor chạy lại nhiều lần, chỉ evidence mới nhất).
+Không cần query mới: đúng tinh thần doc comment sẵn có của `ListNodeRunsForRun` ("classification is the
+caller's own job", không phải SQL WHERE clause).
+
+**Quyết định thiết kế:**
+1. `contextsnapshot.EvidenceRef{EvidenceID string}` (mirror `MessageRef`) + field mới
+   `Snapshot.EvidenceRefs []EvidenceRef`. Field trong `canonicalManifest` gắn `omitempty` (đúng tiền lệ
+   `ResourceRef.OwnerVersionID` — Snapshot cũ/MAKER/COMMAND/MACHINE_GATE không có EvidenceRefs, JSON
+   không có key này, hash không đổi). Khác `MessageRefs`/`ResourceRefs` (giữ nguyên thứ tự vì là
+   transcript render order), `EvidenceRefs` được SORT trong `NewSnapshot` vì không có ý nghĩa thứ tự.
+2. Migration 0031 (`ALTER TABLE attempt_context_snapshots ADD COLUMN evidence_refs_json TEXT NOT NULL
+   DEFAULT '[]'`) — plain ADD COLUMN, mirror tiền lệ migration 0018. Default `'[]'` an toàn vì
+   `NewSnapshot`'s own `append([]EvidenceRef(nil), ...)` normalize cả nil lẫn empty-non-nil về nil trước
+   khi hash — không ảnh hưởng hash của row cũ.
+3. `schedule.go`'s Attempt/Snapshot-creation block: nhánh theo `node.Agent.EffectiveRole()` — CHECKER thì
+   `messageRefs` rỗng (không gọi `ListMessagesForWorkItem`) + gọi `gatherCheckerEvidenceRefs` (hàm mới);
+   mọi node khác (MAKER/COMMAND/MACHINE_GATE) giữ nguyên hành vi cũ 100%. Requirement (Title/Behavior/
+   AcceptanceCriteria) vẫn tới checker bình thường qua `instructionArtifactContent.TaskContract`
+   (assemble_execution_request.go) — không phụ thuộc MessageRefs, nên loại bỏ MessageRefs không làm mất
+   requirement.
+
+**Rà soát blast radius:** 7 call site `contextsnapshot.NewSnapshot(...)` toàn repo (schedule.go — hành vi
+mới; finalize.go/recovery_reaper.go — clone `previousSnapshot.EvidenceRefs` không đổi; 2 file test
+domain + 1 file test sqlite + execute_contextsnapshot_test.go×3 — thêm tham số mới, hành vi không đổi).
+Thêm: 3 chỗ hard-code `migration count = 29`/`migrationCount != 29` (db_test.go×2, unitofwork_test.go) —
+cập nhật lên 30 (thêm đúng 1 migration).
+
+**Test mới:**
+- `internal/domain/contextsnapshot/contextsnapshot_test.go`: case "blank EvidenceRef" trong bảng reject;
+  `TestNewSnapshot_EvidenceRefs_OrderInsensitive` (đối lập có chủ đích với
+  `TestNewSnapshot_ManifestHash_OrderSensitive` của MessageRefs); `TestNewSnapshot_ManifestHash_
+  BackwardCompatibleWithoutEvidenceRefs` (mirror tiền lệ OwnerVersionID — proof hash row cũ không đổi).
+- `internal/app/runtime/schedule_test.go`: fixture mới `makerCheckerDocument` (2 AGENT node dùng CHUNG
+  AgentProfileVersion, khác Role — chứng minh trực tiếp "same profile, independent identity");
+  `TestScheduleExecutableNodeRun_Checker_ExcludesMessagesIncludesPredecessorEvidence` — seed 1 Message
+  thật cho WorkItem (chứng minh loại bỏ là THẬT, không phải "vốn đã rỗng"), seed maker's terminal
+  NodeRun/Attempt/Evidence trực tiếp qua `seedRunEvidence` (tái dùng helper có sẵn từ V5-11's completion
+  policy test suite, cùng tinh thần "bypass real executor pipeline, test đúng logic của hàm này"), seed
+  checker's PENDING NodeRun trực tiếp, gọi THẬT `ScheduleExecutableNodeRun`, assert
+  `snapshot.MessageRefs` rỗng và `snapshot.EvidenceRefs` đúng 1 entry trỏ evidence của maker.
+
+**Chưa test (biết trước, chấp nhận được cho Alpha):** "latest wins" khi MỘT predecessor chạy lại nhiều
+lần (REWORK cycle thật) chưa có test riêng — logic đã viết đúng theo thiết kế (so `ActivationSequence`/
+`AttemptNumber`), nhưng end-to-end test chỉ cover trường hợp 1 predecessor chạy 1 lần. Rủi ro thấp (logic
+đơn giản, so sánh số nguyên); có thể bổ sung sau nếu REWORK+CHECKER thực tế bộc lộ vấn đề.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake)
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau đó tiếp tục V5-12 PR2 (contract 3: enforcement
+— reuse `forceReadOnlyMounts` cho CHECKER-role AGENT node, thêm field `Role` vào
+`resolvedExecutionProfileView`, verify CreateLocalCommit/quarantine semantics), theo đúng chỉ dẫn tự động
+chuyển task.

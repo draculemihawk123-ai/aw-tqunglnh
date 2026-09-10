@@ -405,6 +405,17 @@
   ResourceRef); scratch handle; enforcement semantics. Với `OPERATOR_TRUSTED_LOCAL`, platform chỉ có thể
   hậu kiểm mutation rồi fail/quarantine; muốn ngăn write trước process phải yêu cầu
   `ENFORCED_ISOLATED`. Task **CHƯA ĐỦ DỮ KIỆN** cho tới khi ba contract này được chốt.
+  **Cập nhật 2026-09-10** (chốt với người dùng, xem baocaov5checklist.md's "V5-12" section cho narrative
+  đầy đủ): contract 1 chốt — `Role` (typed `MAKER|CHECKER`) pin trên `workflow.AgentNodeConfig`, không
+  phải `AgentProfileDocument` (PR0, PR #19, IMPLEMENTED). Contract 2 (checker input allowlist) tự quyết
+  và IMPLEMENTED (PR1): CHECKER-role AGENT node có `MessageRefs` rỗng (không có maker transcript nào) và
+  `ContextSnapshot.EvidenceRefs` (field mới, additive, omitempty) trỏ tới Evidence của mọi predecessor
+  node trực tiếp (từ edge `To == nodeKey`) — chỉ lấy NodeRun/Attempt THÀNH CÔNG mới nhất (ActivationSequence/
+  AttemptNumber cao nhất) mỗi predecessor, tự nhiên xử lý đúng FORK/JOIN (nhiều predecessor) và REWORK
+  (predecessor chạy lại nhiều lần). Contract 3 (scratch handle + enforcement semantics — read-only exact
+  revision mount, no WriteLease, CreateLocalCommit bị từ chối, trusted-local mutation fail+quarantine)
+  VẪN CHƯA implement — kế hoạch: reuse `forceReadOnlyMounts` (đã có sẵn cho Gate) cho CHECKER-role AGENT
+  node's own mount, việc này dự kiến tự động chặn luôn WriteLease acquisition (chỉ acquire cho mount WRITE).
 - **Verify:** snapshot manifest asserts forbidden maker resources absent; write source/local commit bị
   policy/fence từ chối.
 - **Kết quả kỳ vọng:** CHECKER không được suy từ tên node; nó có NodeRun/Attempt/ContextSnapshot/session

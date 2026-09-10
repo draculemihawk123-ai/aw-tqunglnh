@@ -31,6 +31,7 @@ func newTestSnapshot(t *testing.T, id, projectID, workItemID, attemptID string) 
 		contextsnapshot.ID(id), project.ProjectID(projectID), work.WorkItemID(workItemID), contextsnapshot.AttemptID(attemptID),
 		[]contextsnapshot.MessageRef{{MessageID: "msg-1"}},
 		[]contextsnapshot.ResourceRef{{ResourceKey: "res-1", ContentHash: "hash-1"}},
+		[]contextsnapshot.EvidenceRef{{EvidenceID: "evidence-1"}},
 		testRevisions(t), time.Now().UTC(),
 	)
 	if err != nil {

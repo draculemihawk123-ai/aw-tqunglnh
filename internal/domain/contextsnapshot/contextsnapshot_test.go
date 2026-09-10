@@ -28,6 +28,7 @@ func TestNewSnapshot_Valid_Succeeds(t *testing.T) {
 		"snap-1", project.ProjectID("project-1"), work.WorkItemID("work-item-1"), AttemptID("attempt-1"),
 		[]MessageRef{{MessageID: "msg-1"}, {MessageID: "msg-2"}},
 		[]ResourceRef{{ResourceKey: "res-1", ContentHash: "hash-1"}},
+		nil,
 		validRevisions(t), createdAt,
 	)
 	if err != nil {
@@ -42,12 +43,13 @@ func TestNewSnapshot_Valid_Succeeds(t *testing.T) {
 }
 
 func TestNewSnapshot_EmptyRefsAllowed(t *testing.T) {
-	// A snapshot with zero messages/resources is not itself invalid at the
-	// domain level (e.g. a resolution that selected nothing) — only blank
-	// individual ref values are rejected.
+	// A snapshot with zero messages/resources/evidence is not itself
+	// invalid at the domain level (e.g. a resolution that selected
+	// nothing, or a MAKER/COMMAND/MACHINE_GATE Attempt, which never has
+	// EvidenceRefs) — only blank individual ref values are rejected.
 	_, err := NewSnapshot(
 		"snap-1", "project-1", "work-item-1", "attempt-1",
-		nil, nil, validRevisions(t), time.Now(),
+		nil, nil, nil, validRevisions(t), time.Now(),
 	)
 	if err != nil {
 		t.Fatalf("NewSnapshot with empty refs: %v", err)
@@ -62,19 +64,24 @@ func TestNewSnapshot_RejectsMissingRequiredFields(t *testing.T) {
 		name string
 		fn   func() (Snapshot, error)
 	}{
-		{"empty ID", func() (Snapshot, error) { return NewSnapshot("", "p", "w", "a", nil, nil, revisions, now) }},
-		{"empty ProjectID", func() (Snapshot, error) { return NewSnapshot("s", "", "w", "a", nil, nil, revisions, now) }},
-		{"empty WorkItemID", func() (Snapshot, error) { return NewSnapshot("s", "p", "", "a", nil, nil, revisions, now) }},
-		{"empty AttemptID", func() (Snapshot, error) { return NewSnapshot("s", "p", "w", "", nil, nil, revisions, now) }},
-		{"zero CreatedAt", func() (Snapshot, error) { return NewSnapshot("s", "p", "w", "a", nil, nil, revisions, time.Time{}) }},
+		{"empty ID", func() (Snapshot, error) { return NewSnapshot("", "p", "w", "a", nil, nil, nil, revisions, now) }},
+		{"empty ProjectID", func() (Snapshot, error) { return NewSnapshot("s", "", "w", "a", nil, nil, nil, revisions, now) }},
+		{"empty WorkItemID", func() (Snapshot, error) { return NewSnapshot("s", "p", "", "a", nil, nil, nil, revisions, now) }},
+		{"empty AttemptID", func() (Snapshot, error) { return NewSnapshot("s", "p", "w", "", nil, nil, nil, revisions, now) }},
+		{"zero CreatedAt", func() (Snapshot, error) {
+			return NewSnapshot("s", "p", "w", "a", nil, nil, nil, revisions, time.Time{})
+		}},
 		{"blank MessageRef", func() (Snapshot, error) {
-			return NewSnapshot("s", "p", "w", "a", []MessageRef{{MessageID: ""}}, nil, revisions, now)
+			return NewSnapshot("s", "p", "w", "a", []MessageRef{{MessageID: ""}}, nil, nil, revisions, now)
 		}},
 		{"blank ResourceRef key", func() (Snapshot, error) {
-			return NewSnapshot("s", "p", "w", "a", nil, []ResourceRef{{ResourceKey: "", ContentHash: "h"}}, revisions, now)
+			return NewSnapshot("s", "p", "w", "a", nil, []ResourceRef{{ResourceKey: "", ContentHash: "h"}}, nil, revisions, now)
 		}},
 		{"blank ResourceRef hash", func() (Snapshot, error) {
-			return NewSnapshot("s", "p", "w", "a", nil, []ResourceRef{{ResourceKey: "k", ContentHash: ""}}, revisions, now)
+			return NewSnapshot("s", "p", "w", "a", nil, []ResourceRef{{ResourceKey: "k", ContentHash: ""}}, nil, revisions, now)
+		}},
+		{"blank EvidenceRef", func() (Snapshot, error) {
+			return NewSnapshot("s", "p", "w", "a", nil, nil, []EvidenceRef{{EvidenceID: ""}}, revisions, now)
 		}},
 	}
 	for _, tc := range cases {
@@ -90,11 +97,11 @@ func TestNewSnapshot_ManifestHash_OrderSensitive(t *testing.T) {
 	revisions := validRevisions(t)
 	now := time.Now()
 
-	forward, err := NewSnapshot("s1", "p", "w", "a", []MessageRef{{MessageID: "m1"}, {MessageID: "m2"}}, nil, revisions, now)
+	forward, err := NewSnapshot("s1", "p", "w", "a", []MessageRef{{MessageID: "m1"}, {MessageID: "m2"}}, nil, nil, revisions, now)
 	if err != nil {
 		t.Fatalf("NewSnapshot (forward): %v", err)
 	}
-	reversed, err := NewSnapshot("s2", "p", "w", "a", []MessageRef{{MessageID: "m2"}, {MessageID: "m1"}}, nil, revisions, now)
+	reversed, err := NewSnapshot("s2", "p", "w", "a", []MessageRef{{MessageID: "m2"}, {MessageID: "m1"}}, nil, nil, revisions, now)
 	if err != nil {
 		t.Fatalf("NewSnapshot (reversed): %v", err)
 	}
@@ -103,16 +110,43 @@ func TestNewSnapshot_ManifestHash_OrderSensitive(t *testing.T) {
 	}
 }
 
+// TestNewSnapshot_EvidenceRefs_OrderInsensitive is EvidenceRefs' own
+// counterpart to TestNewSnapshot_ManifestHash_OrderSensitive above — the
+// opposite behavior, deliberately: unlike MessageRefs (a rendered
+// transcript, where order is semantically meaningful), EvidenceRefs has no
+// "rendering order" of its own (see EvidenceRef's own doc comment), so
+// NewSnapshot sorts it and two Snapshots differing only in EvidenceRefs
+// input order must hash identically.
+func TestNewSnapshot_EvidenceRefs_OrderInsensitive(t *testing.T) {
+	revisions := validRevisions(t)
+	now := time.Now()
+
+	forward, err := NewSnapshot("s1", "p", "w", "a", nil, nil, []EvidenceRef{{EvidenceID: "e1"}, {EvidenceID: "e2"}}, revisions, now)
+	if err != nil {
+		t.Fatalf("NewSnapshot (forward): %v", err)
+	}
+	reversed, err := NewSnapshot("s2", "p", "w", "a", nil, nil, []EvidenceRef{{EvidenceID: "e2"}, {EvidenceID: "e1"}}, revisions, now)
+	if err != nil {
+		t.Fatalf("NewSnapshot (reversed): %v", err)
+	}
+	if forward.ManifestHash != reversed.ManifestHash {
+		t.Fatal("ManifestHash must be identical regardless of EvidenceRefs input order — order carries no meaning here")
+	}
+	if len(forward.EvidenceRefs) != 2 || forward.EvidenceRefs[0].EvidenceID != "e1" || forward.EvidenceRefs[1].EvidenceID != "e2" {
+		t.Fatalf("EvidenceRefs = %+v, want sorted [e1 e2]", forward.EvidenceRefs)
+	}
+}
+
 func TestNewSnapshot_ManifestHash_DeterministicForIdenticalContent(t *testing.T) {
 	revisions := validRevisions(t)
 	now := time.Now()
 	refs := []MessageRef{{MessageID: "m1"}}
 
-	a, err := NewSnapshot("s1", "p", "w", "a", refs, nil, revisions, now)
+	a, err := NewSnapshot("s1", "p", "w", "a", refs, nil, nil, revisions, now)
 	if err != nil {
 		t.Fatalf("NewSnapshot (a): %v", err)
 	}
-	b, err := NewSnapshot("s2", "p", "w", "a", refs, nil, revisions, now)
+	b, err := NewSnapshot("s2", "p", "w", "a", refs, nil, nil, revisions, now)
 	if err != nil {
 		t.Fatalf("NewSnapshot (b): %v", err)
 	}
@@ -134,7 +168,7 @@ func TestNewSnapshot_ManifestHash_BackwardCompatibleWithoutOwnerVersionID(t *tes
 	now := time.Now()
 
 	withEmptyOwner, err := NewSnapshot("s1", "p", "w", "a",
-		nil, []ResourceRef{{ResourceKey: "res-1", ContentHash: "hash-1"}}, revisions, now)
+		nil, []ResourceRef{{ResourceKey: "res-1", ContentHash: "hash-1"}}, nil, revisions, now)
 	if err != nil {
 		t.Fatalf("NewSnapshot: %v", err)
 	}
@@ -142,7 +176,8 @@ func TestNewSnapshot_ManifestHash_BackwardCompatibleWithoutOwnerVersionID(t *tes
 	// The exact JSON a pre-V5-08B0 ResourceRef{ResourceKey, ContentHash}
 	// (no OwnerVersionID field in the Go type at all) would have produced,
 	// hashed through the identical canonicalManifest wrapper this package
-	// has always used.
+	// has always used. No "evidenceRefs" key either — V5-12 predates this
+	// row too, and EvidenceRefs is omitempty for exactly this reason.
 	legacyJSON := `{"messageRefs":null,"resourceRefs":[{"ResourceKey":"res-1","ContentHash":"hash-1"}],"revisionSetHash":"` + revisions.ContentHash() + `"}`
 	sum := sha256.Sum256([]byte(legacyJSON))
 	legacyHash := "sha256:" + hex.EncodeToString(sum[:])
@@ -152,12 +187,45 @@ func TestNewSnapshot_ManifestHash_BackwardCompatibleWithoutOwnerVersionID(t *tes
 	}
 
 	withOwner, err := NewSnapshot("s2", "p", "w", "a",
-		nil, []ResourceRef{{OwnerVersionID: "owner-1", ResourceKey: "res-1", ContentHash: "hash-1"}}, revisions, now)
+		nil, []ResourceRef{{OwnerVersionID: "owner-1", ResourceKey: "res-1", ContentHash: "hash-1"}}, nil, revisions, now)
 	if err != nil {
 		t.Fatalf("NewSnapshot: %v", err)
 	}
 	if withOwner.ManifestHash == withEmptyOwner.ManifestHash {
 		t.Fatal("ManifestHash must differ once OwnerVersionID is populated — it is part of the manifest content now")
+	}
+}
+
+// TestNewSnapshot_ManifestHash_BackwardCompatibleWithoutEvidenceRefs is
+// TestNewSnapshot_ManifestHash_BackwardCompatibleWithoutOwnerVersionID's own
+// sibling for V5-12's own EvidenceRefs addition (2026-09-10): a Snapshot
+// with no EvidenceRefs (every MAKER/COMMAND/MACHINE_GATE Attempt, and
+// every pre-V5-12 row) must keep hashing identically to what it hashed
+// before this field existed — the same "old row still re-verifies" bar
+// loadSnapshotTx's own tamper check depends on.
+func TestNewSnapshot_ManifestHash_BackwardCompatibleWithoutEvidenceRefs(t *testing.T) {
+	revisions := validRevisions(t)
+	now := time.Now()
+
+	withoutEvidence, err := NewSnapshot("s1", "p", "w", "a", nil, nil, nil, revisions, now)
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+
+	legacyJSON := `{"messageRefs":null,"resourceRefs":null,"revisionSetHash":"` + revisions.ContentHash() + `"}`
+	sum := sha256.Sum256([]byte(legacyJSON))
+	legacyHash := "sha256:" + hex.EncodeToString(sum[:])
+
+	if withoutEvidence.ManifestHash != legacyHash {
+		t.Fatalf("ManifestHash = %q, want %q (identical to a pre-V5-12 row's own hash) — EvidenceRefs must be omitempty when empty", withoutEvidence.ManifestHash, legacyHash)
+	}
+
+	withEvidence, err := NewSnapshot("s2", "p", "w", "a", nil, nil, []EvidenceRef{{EvidenceID: "evidence-1"}}, revisions, now)
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+	if withEvidence.ManifestHash == withoutEvidence.ManifestHash {
+		t.Fatal("ManifestHash must differ once EvidenceRefs is populated — it is part of the manifest content now")
 	}
 }
 
@@ -172,11 +240,11 @@ func TestNewSnapshot_ManifestHash_ChangesWithRevisions(t *testing.T) {
 		t.Fatalf("NewRevisionSet: %v", err)
 	}
 
-	a, err := NewSnapshot("s1", "p", "w", "a", refs, nil, revisionsA, now)
+	a, err := NewSnapshot("s1", "p", "w", "a", refs, nil, nil, revisionsA, now)
 	if err != nil {
 		t.Fatalf("NewSnapshot (a): %v", err)
 	}
-	b, err := NewSnapshot("s2", "p", "w", "a", refs, nil, revisionsB, now)
+	b, err := NewSnapshot("s2", "p", "w", "a", refs, nil, nil, revisionsB, now)
 	if err != nil {
 		t.Fatalf("NewSnapshot (b): %v", err)
 	}

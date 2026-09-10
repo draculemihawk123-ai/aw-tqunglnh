@@ -51,16 +51,20 @@ func createSnapshotTx(ctx context.Context, tx *sql.Tx, snapshot contextsnapshot.
 	if err != nil {
 		return contextsnapshot.Snapshot{}, fmt.Errorf("marshal context snapshot resource refs: %w", err)
 	}
+	evidenceRefsJSON, err := json.Marshal(snapshot.EvidenceRefs)
+	if err != nil {
+		return contextsnapshot.Snapshot{}, fmt.Errorf("marshal context snapshot evidence refs: %w", err)
+	}
 	revisionSetJSON, err := json.Marshal(snapshot.Revisions.Entries())
 	if err != nil {
 		return contextsnapshot.Snapshot{}, fmt.Errorf("marshal context snapshot revision set: %w", err)
 	}
 
 	_, insertErr := tx.ExecContext(ctx, `
-INSERT INTO attempt_context_snapshots (id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, revision_set_json, manifest_hash, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO attempt_context_snapshots (id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, manifest_hash, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(snapshot.ID), string(snapshot.ProjectID), string(snapshot.WorkItemID), string(snapshot.AttemptID),
-		string(messageRefsJSON), string(resourceRefsJSON), string(revisionSetJSON), snapshot.ManifestHash,
+		string(messageRefsJSON), string(resourceRefsJSON), string(evidenceRefsJSON), string(revisionSetJSON), snapshot.ManifestHash,
 		formatWorkflowTime(snapshot.CreatedAt),
 	)
 	if insertErr == nil {
@@ -85,7 +89,7 @@ func (r contextSnapshotRepository) GetSnapshotByAttemptID(ctx context.Context, a
 
 func loadSnapshotTx(ctx context.Context, tx *sql.Tx, whereClause string, arg string) (contextsnapshot.Snapshot, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, revision_set_json, manifest_hash, created_at
+SELECT id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, manifest_hash, created_at
 FROM attempt_context_snapshots WHERE `+whereClause, arg)
 	snapshot, err := scanSnapshotRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -95,8 +99,8 @@ FROM attempt_context_snapshots WHERE `+whereClause, arg)
 }
 
 func scanSnapshotRow(row repositoryRowScanner) (contextsnapshot.Snapshot, error) {
-	var id, projectID, workItemID, attemptID, messageRefsRaw, resourceRefsRaw, revisionSetRaw, manifestHash, createdAtRaw string
-	if err := row.Scan(&id, &projectID, &workItemID, &attemptID, &messageRefsRaw, &resourceRefsRaw, &revisionSetRaw, &manifestHash, &createdAtRaw); err != nil {
+	var id, projectID, workItemID, attemptID, messageRefsRaw, resourceRefsRaw, evidenceRefsRaw, revisionSetRaw, manifestHash, createdAtRaw string
+	if err := row.Scan(&id, &projectID, &workItemID, &attemptID, &messageRefsRaw, &resourceRefsRaw, &evidenceRefsRaw, &revisionSetRaw, &manifestHash, &createdAtRaw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return contextsnapshot.Snapshot{}, err
 		}
@@ -110,6 +114,10 @@ func scanSnapshotRow(row repositoryRowScanner) (contextsnapshot.Snapshot, error)
 	var resourceRefs []contextsnapshot.ResourceRef
 	if err := json.Unmarshal([]byte(resourceRefsRaw), &resourceRefs); err != nil {
 		return contextsnapshot.Snapshot{}, fmt.Errorf("decode stored context snapshot resource refs: %w", err)
+	}
+	var evidenceRefs []contextsnapshot.EvidenceRef
+	if err := json.Unmarshal([]byte(evidenceRefsRaw), &evidenceRefs); err != nil {
+		return contextsnapshot.Snapshot{}, fmt.Errorf("decode stored context snapshot evidence refs: %w", err)
 	}
 	var revisionEntries []workspace.Revision
 	if err := json.Unmarshal([]byte(revisionSetRaw), &revisionEntries); err != nil {
@@ -131,7 +139,7 @@ func scanSnapshotRow(row repositoryRowScanner) (contextsnapshot.Snapshot, error)
 	// than silently trusted.
 	rebuilt, err := contextsnapshot.NewSnapshot(
 		contextsnapshot.ID(id), project.ProjectID(projectID), work.WorkItemID(workItemID), contextsnapshot.AttemptID(attemptID),
-		messageRefs, resourceRefs, revisions, createdAt,
+		messageRefs, resourceRefs, evidenceRefs, revisions, createdAt,
 	)
 	if err != nil {
 		return contextsnapshot.Snapshot{}, err

@@ -730,7 +730,7 @@ func decideRetryOrExhaustion(
 			nextSnapshotID := contextsnapshot.ID(ids.NewID())
 			clonedSnapshot, err = contextsnapshot.NewSnapshot(
 				nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshot.AttemptID(nextAttemptID),
-				previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.Revisions, clk.Now(),
+				previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.EvidenceRefs, previousSnapshot.Revisions, clk.Now(),
 			)
 			if err != nil {
 				return err

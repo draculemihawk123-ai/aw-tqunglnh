@@ -72,7 +72,7 @@ func TestExecuteNodeHandler_ContextSnapshotBoundToDifferentAttempt_RejectsDispat
 	}
 	mismatched, err := contextsnapshot.NewSnapshot(
 		original.ID, original.ProjectID, original.WorkItemID, contextsnapshot.AttemptID("some-other-attempt"),
-		original.MessageRefs, original.ResourceRefs, original.Revisions, original.CreatedAt,
+		original.MessageRefs, original.ResourceRefs, original.EvidenceRefs, original.Revisions, original.CreatedAt,
 	)
 	if err != nil {
 		t.Fatalf("NewSnapshot (mismatched): %v", err)
@@ -132,7 +132,7 @@ func TestExecuteNodeHandler_ContextSnapshot_MessageRefInvalid_FinalizesFailed(t 
 	tampered, err := contextsnapshot.NewSnapshot(
 		original.ID, original.ProjectID, original.WorkItemID, original.AttemptID,
 		[]contextsnapshot.MessageRef{{MessageID: "message-that-does-not-exist"}}, original.ResourceRefs,
-		original.Revisions, original.CreatedAt,
+		original.EvidenceRefs, original.Revisions, original.CreatedAt,
 	)
 	if err != nil {
 		t.Fatalf("NewSnapshot (tampered): %v", err)
@@ -169,7 +169,7 @@ func TestExecuteNodeHandler_ContextSnapshot_ResourceRefInvalid_FinalizesFailed(t
 		original.ID, original.ProjectID, original.WorkItemID, original.AttemptID,
 		original.MessageRefs, []contextsnapshot.ResourceRef{{
 			OwnerVersionID: "skill-version-that-does-not-exist", ResourceKey: "some-key", ContentHash: "sha256:whatever",
-		}}, original.Revisions, original.CreatedAt,
+		}}, original.EvidenceRefs, original.Revisions, original.CreatedAt,
 	)
 	if err != nil {
 		t.Fatalf("NewSnapshot (tampered): %v", err)
