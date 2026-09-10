@@ -1,9 +1,8 @@
 # V5 checklist — Execution, context, verification và evidence
 
-> File cá nhân, KHÔNG commit (không gitignore nhưng theo đúng precedent
-> baocaov0-4checklist.md — `git status` xác nhận các file đó vẫn untracked
-> qua nhiều phase). Ghi narrative đầy đủ cho mỗi task: quyết định, lý do,
-> câu hỏi tự phát hiện, verify output thật.
+> Nhật ký kiểm chứng V5 được theo dõi trong repository. Ghi narrative đầy đủ cho mỗi task: quyết định,
+> lý do, câu hỏi tự phát hiện và verify output thật. Từ mục rà soát V5-09 trở đi, trạng thái luôn phân
+> biệt rõ “đã có nền”, “đủ dữ kiện để triển khai” và “đã triển khai”; ba khái niệm này không thay thế nhau.
 
 ## V5-01 — Artifact metadata và retention migration
 
@@ -2597,7 +2596,7 @@ quyết định #2), `internal/app/runtime/command_node_executor.go` (file mới
 `gatherCommandExecutionInputs`, `resolveCommandInvocation`, `materializeExecutable`,
 `persistCommandOutputArtifact`, `classify`).
 
-**Test (9 test mới, `command_node_executor_test.go`):**
+**Test (10 test mới, `command_node_executor_test.go`):**
 - `TestCommandNodeExecutor_Success_ResolvesArgvCwdAndFinalizesEndToEnd` — golden path đầy đủ: argv LITERAL
   + PLACEHOLDER (bao gồm một giá trị chứa `&&`/`|` để chứng minh không hề bị shell diễn giải — "injection"
   verify point) + cwd đúng mount → SUCCEEDED/outcome "done", Evidence có đúng 1 output artifact ref.
@@ -2656,6 +2655,15 @@ go test -count=3 ./internal/app/runtime/... -run "TestCommandNodeExecutor"
 ```
 
 **Việc còn lại:** commit, push nhánh `feat/v5-09-command-executor`, mở PR, chờ CI 6/6, merge.
+
+**Kết quả sau merge:** PR #8 đã merge vào master tại `2269cd8` lúc 2026-09-10T06:21:52+07:00.
+Không ghi claim CI ở đây vì lần rà soát này chỉ xác minh commit graph.
+
+**Rà soát sau merge:** test mang tên `FinalizesEndToEnd` mới gọi `CommandNodeExecutor.Execute` và kiểm
+proposal Evidence/ProcessSpec, chưa đi qua ExecuteNodeHandler/finalizer. Admission pipeline dùng chung,
+nhưng capability/AdapterBuild có nhánh riêng cho AGENT; với COMMAND, multi-write mới là check authority
+thực chất. Việc insert output thẳng ATTACHED là hành vi code đã merge, chưa phải lifecycle acceptance
+đã đóng; phần review tổng hợp bên dưới ghi các gap còn lại.
 
 ## V5-10 — Gate runner và criteria-level Evidence (branch `feat/v5-10-gate-runner`, stacked trên `feat/v5-09-command-executor`)
 
@@ -2764,3 +2772,256 @@ go test -count=3 ./internal/app/runtime/... -run "TestGateNodeExecutor|TestComma
 ```
 
 **Việc còn lại:** chờ PR #8 merge, rebase nhánh này lên `master`, verify lại, push, mở PR, chờ CI 6/6, merge.
+
+**Kết quả sau merge:** PR #8 đã merge trước; V5-10 sau đó vào master qua PR #9 tại `39fb39c` lúc
+2026-09-10T06:50:36+07:00. Core Gate runner đã merge; criteria-level Evidence authority vẫn còn thiếu
+như phần rà soát bên dưới.
+
+## Rà soát V5-09…V5-15 trên committed master (2026-09-10)
+
+**Snapshot được đánh giá:** `master`/`origin/master` tại `39fb39c`
+(`feat(v5-10): GateNodeExecutor evaluates a Gate's own pinned Command (#9)`). PR #2, #3, #6 và #7 đã
+merge trước phần việc này; PR #8 (V5-09, merge commit `2269cd8`) và PR #9 (V5-10, `39fb39c`) hiện cũng
+đã có trên master. Không có sự cố usage limit trong phiên này hoặc CI cũ cần xử lý. Mọi WIP ngoài
+committed master không được tính là implementation evidence và không bị review này ghi đè.
+
+Hai nguồn được đối chiếu là `docs/design/07-v5-execution-evidence.md` và checklist này, sau đó kiểm lại
+type, port, migration, handler và test ở đúng snapshot. Kết luận tổng thể: V5-09 và V5-10 đã merge phần
+executor lõi, nhưng chưa đạt toàn bộ acceptance được mô tả; các gap giờ là sai khác cụ thể trong code,
+không còn là giả định trước triển khai. V5-10A…V5-14 chưa đủ contract/implementation để đóng task.
+V5-15 đủ dữ kiện để dựng scenario manifest/oracle, nhưng chưa thể PASS toàn chain.
+
+| Task | Có trên committed master | Kết luận dữ kiện/implementation | Dependency thực tế |
+|---|---|---|---|
+| V5-09 | PR #8: CommandNodeExecutor, SecretResolver, materializer, argv/cwd binding, process mapping, shared fence/cancel | **CORE ĐÃ MERGE; ACCEPTANCE PARTIAL**: còn truncation, redaction, artifact lifecycle, policy/compatibility/network và production wiring | Các gap rõ bằng code; phải đóng trước full acceptance |
+| V5-10 | PR #9: GateNodeExecutor, criterion parser, verdict aggregation, scratch cwd, freshness và GateResult artifact | **CORE ĐÃ MERGE; CRITERIA EVIDENCE PARTIAL**: chưa có Evidence authority/repository, full lineage, N/A policy và hard read-only | RevisionSet là input hiện tại; ReleaseSet bổ sung ở V5-10A |
+| V5-10A | RevisionSet/WorkspaceSet, local workspace Git, release-request intent | **CHƯA ĐỦ**: thiếu ReleaseSet aggregate và local-commit authority | V5-10 core đã có; seal còn chờ criteria Evidence |
+| V5-11 | VERIFYING event, DecisionArtifact, approval, blocker, UoW/CAS | **CHƯA ĐỦ**: thiếu Evidence reader, policy pin/schema, rework route và input→outcome matrix | Chờ V5-10 Evidence + V5-10A |
+| V5-12 | Attempt-bound V5 snapshot, request assembler, mount access | **CHƯA ĐỦ**: thiếu CHECKER role/input manifest/enforcement contract | V5-10 core đã có; Evidence contract còn hở |
+| V5-13 | Recovery reaper/decision/retry/reconcile/checkpoint/fresh-start primitive | **CHƯA ĐỦ**: legacy/V5 snapshot conflict và chưa có exactly-once FRESH_START consumer | Chờ V5-10A/V5-11/V5-12 cùng executor acceptance gaps |
+| V5-14 | Retention metadata, release intent/job, workspace release primitive | **CHƯA ĐỦ**: thiếu purge protocol/reference liveness/release result state | Chờ V5-13 |
+| V5-15 | Integration harness, crash fixtures, cross-platform/race CI pieces; Command/Gate core types | **ĐỦ để viết plan; CHƯA THỂ PASS** | Chờ gap V5-09/V5-10 và V5-10A…V5-14 |
+
+### V5-09 — Command executor và COMMAND handler
+
+**Đã merge trên master:** `CommandNodeExecutor` reload exact CommandVersion/resource hash; resolve argv
+placeholder và cwd theo RepositoryID trong EffectiveScope; resolve secret từ OS environment vào explicit
+process environment; materialize executable rồi spawn trực tiếp không qua shell; dùng timeout chặt hơn,
+bounded output, RevisionSet/diff evidence, event sink, fencing và cancellation V5-08C. Test hiện có phủ
+success, injection-shaped argv, env/secret, nonzero, timeout, invalid placeholder/cwd/secret và cancel.
+
+**Khoảng trống acceptance còn lại:**
+
+1. `ProcessResult.OutputTruncated` bị bỏ qua, nên output thiếu vẫn có thể success.
+2. Secret vừa resolve không được thêm vào redaction matcher; stdout/stderr có thể chứa secret và được
+   persist nguyên với `Redacted=false`.
+3. Output artifact được insert thẳng `ATTACHED`/`CANONICAL_CONTEXT` trong transaction riêng trước
+   finalize, không dùng lifecycle `RAW_OUTPUT_TEMP`/ORPHAN→attach hoặc idempotency key. Finalizer chỉ
+   chép `OutputArtifactRefs` vào checkpoint, không load/verify/promote ID; finalize failure/replay có thể
+   chấp nhận missing/foreign ref hoặc để lại row không owner/duplicate.
+4. `CommandDocument.PolicyRefs` không được đọc; compatibility OS/toolchain và `NetworkAccess` chỉ là
+   declaration/audit, chưa verify/enforce.
+5. Materializer truyền temp path thẳng cho process; test dùng fake supervisor, nên interpreter/.ps1 và
+   compatibility đa nền tảng chưa được chứng minh. Cũng chưa có composition/router production chọn
+   executor theo kind hoặc end-to-end ExecuteNodeHandler→CommandNodeExecutor→Finalize.
+
+**Kết quả kỳ vọng còn lại:** truncation không thể success; echoed secret không xuất hiện trong DB/event/
+artifact/log; output Put+Verify rồi attach idempotently dưới cùng fence với exact RevisionSet; mọi policy/
+compatibility/network pin được reverify; production handler dispatch đúng executor. Chỉ khi đó mới đánh
+dấu toàn bộ V5-09 DONE; PR #8 hiện chứng minh core executor, không chứng minh các acceptance gap này.
+
+### V5-10 — Gate runner và criteria-level Evidence
+
+**Đã merge trên master:** `GateNodeExecutor` reload GateVersion và CommandVersion/resource đã pin, ép
+mount descriptor sang READ_ONLY, dùng scratch cwd, kiểm live revision trước spawn, parse stdout JSON
+theo EvidenceKey và aggregate ERROR > FAIL > NOT_RUN > PASS/N/A. Spawn/nonzero/timeout/malformed fail
+closed; thiếu key thành NOT_RUN; N/A thiếu reason thành ERROR. Mười unit test phủ verdict matrix, stale
+revision và cancellation. GateResult artifact được persist cho mọi verdict.
+
+**Khoảng trống acceptance còn lại:**
+
+1. Chưa có domain `Evidence`, repository/Tx accessor hoặc SQLite writer/query; bảng `evidence` vẫn chưa
+   được dùng. GateResult artifact không thay thế criteria-level Evidence.
+2. GateResult thiếu schema version và full lineage WorkItem/Run/NodeRun/Attempt, Gate/Command/policy pin,
+   exact RevisionSet và artifact hashes. PASS chỉ nối ID gián tiếp qua finalization evidence; non-PASS
+   bỏ artifact ID, nên kết quả không truy ngược được từ Attempt.
+3. Artifact được ghi transaction riêng với ID mới, chưa idempotent hoặc coupled với fenced finalize;
+   finalizer không load/verify/promote `OutputArtifactRefs`, nên crash/replay có thể sinh duplicate/
+   unlinked row hoặc chấp nhận missing/foreign ref.
+4. N/A mới kiểm reason, chưa kiểm pinned policy authority; exact CommandRef DefinitionID chưa được
+   đối chiếu sau load.
+5. READ_ONLY mới là descriptor; evaluator vẫn nhận host path thật, hậu kiểm diff dùng EffectiveScope gốc
+   có thể cho WRITE. `OutputTruncated` chưa fail closed, `TreeQuiesced=false` bị bỏ qua vì gate không có
+   write mount, và Detail/Reason chưa redaction với secret vừa resolve.
+6. Chưa có production composition/router hoặc ExecuteNodeHandler→GateNodeExecutor integration test.
+
+**ReleaseSet:** quyết định phase hiện tại là đúng: V5-10 dùng exact RevisionSet. ReleaseSet thuộc
+V5-10A và chỉ được thêm sau dưới dạng provenance/input additive, không đổi OverallVerdict/Criteria
+semantics.
+
+**Kết quả kỳ vọng còn lại:** mỗi criterion tạo đúng một Evidence row idempotent có full lineage, exact
+pins, RevisionSet và artifact ID/hash cho cả PASS lẫn non-PASS; attach/finalize atomic dưới fencing;
+N/A cần policy+reason; truncation, unquiesced process hoặc evaluator mutation không thể PASS; output được
+redact. Sau V5-10A thêm ReleaseSet ID/hash. Chỉ khi đó mới đánh dấu toàn bộ V5-10 DONE.
+
+### V5-10A — ReleaseSet và typed local Git operation
+
+**Những gì đã có:** RevisionSet, WorkspaceSet/generation, local worktree/revision/diff/release primitives,
+command receipt/event và public `RequestWorkspaceSetRelease`. V5-10 gate core đã merge, nhưng
+criteria-level Evidence authority còn thiếu nên chưa thể seal. `ReleaseEligibilityAuthority` vẫn là
+một port dùng fake; chưa có ReleaseSet aggregate/table/repository hoặc local commit port.
+
+**Khoảng trống blocking:** uniqueness theo FamilyID+ManifestRevision, tập repository bắt buộc, partial
+state, canonical hash/evidence refs, seal/abandon CAS/replay và typed local-commit request/result/fence.
+
+**Kết quả kỳ vọng:** DRAFT sinh idempotently từ exact WorkspaceSet/base revision; entry sort canonical;
+local commit chỉ chạy trên WorkspaceHandle dưới scope/version/revision/fence và lưu commit OID; remote
+Git verb không tồn tại ở adapter surface; seal chỉ khi mọi required entry có exact result+fresh Evidence;
+partial/stale vẫn DRAFT; SEALED/ABANDONED immutable và trở thành authority thật cho completion/cleanup.
+
+### V5-11 — CompletionPolicy service
+
+**Những gì thực sự đã có:**
+- `internal/app/runtime/completion.go` giữ đúng boundary: END chỉ đưa WorkflowRun sang `VERIFYING`, append
+  `RUN_COMPLETION_REQUESTED`, WorkItem vẫn `ACTIVE`.
+- `DecisionArtifact` cùng repository đã có; approval repository, typed blocker
+  `COMPLETION_POLICY_FAILED`, UoW/CAS và cancel-vs-PASS race fixture đã có. Race test hiện mô phỏng PASS
+  bằng CAS, không chứng minh service V5-11.
+- `CompletionRules` mới chỉ có `RequiredEvidenceKinds`. Không có CompletionDecision enum/service/event,
+  production Evidence/ReleaseSet reader hay completion-policy pin trên WorkItem/Workflow/END.
+
+**Khoảng trống blocking:**
+1. Phải pin đúng một CompletionPolicyVersion vào execution authority trước khi Run start; completion
+   command chỉ nhận identity/version guard, không nhận PASS từ caller.
+2. Policy schema cần ordered assurance levels và disposition deterministic cho FAIL/missing/stale/ERROR/
+   NOT_RUN/N/A, approval, clean/quarantine, join và SEALED ReleaseSet. `RequiredEvidenceKinds` đơn lẻ
+   không đủ tạo bốn outcome.
+3. REWORK hiện mâu thuẫn với graph: validator cấm END có outgoing edge, còn ADR-021 yêu cầu published
+   rework edge. Cần typed completion-rework route trong compiled WorkflowVersion hoặc đổi invariant
+   tường minh; runtime không được search một edge tùy ý.
+4. “join” cần chốt là persisted workflow JOIN hay child-WorkItem join; nếu gồm child thì repository/query
+   contract hiện chưa có.
+5. `RecordDecisionArtifact` append-only chứ không tự idempotent. Completion phải dùng deterministic
+   ID/receipt và commit DecisionArtifact + transition + event + blocker/activation trong cùng transaction.
+   SQLite transition cũng phải ghi terminal timestamp khi Run `SUCCEEDED`.
+
+**Kết quả kỳ vọng đã bổ sung vào design:** service tự load mọi exact input; đúng một
+`COMPLETION_DECISION_V1` lưu input IDs/hashes/policy/route/reason; decision và state changes commit/rollback
+cùng nhau. PASS tạo Run SUCCEEDED+WorkItem DONE atomically; REWORK tạo đúng một activation theo route và
+budget, thiếu route→BLOCK; BLOCK khóa cả hai; FAIL tạo Run FAILED+WorkItem BLOCKED+đúng một blocker và
+không auto-reactivate. Không outcome nào rời VERIFYING khi thiếu DecisionArtifact hoặc cancel đã thắng.
+
+### V5-12 — Maker/checker isolation
+
+**Những gì đã có:** V5 `contextsnapshot.Snapshot` immutable, bind Attempt và exact RevisionSet;
+scheduler tạo Attempt/Snapshot, assembler reverify pins; mount có READ_ONLY/READ_WRITE; fresh recovery
+gọi Start thay vì Resume.
+
+**Khoảng trống blocking:** không có typed MAKER/CHECKER role; scheduler hiện đưa toàn bộ WorkItem message
+vào mọi snapshot, nên chưa loại maker transcript. Snapshot chỉ có MessageRef/ResourceRef, thiếu typed
+Evidence/Diff refs. Checker vẫn kế thừa WRITE theo EffectiveScope, chưa có scratch handle hay local-commit
+fence. Với `OPERATOR_TRUSTED_LOCAL`, chỉ có hậu kiểm mutation; prevention thật đòi
+`ENFORCED_ISOLATED`.
+
+**Kết quả kỳ vọng:** CHECKER role được pin, luôn có Attempt/Snapshot/session riêng; snapshot allowlist chỉ
+gồm requirement/acceptance, exact revisions/release, diff/evidence cần thiết và không có maker messages/
+events/transcript/reasoning; tất cả source mount READ_ONLY, scratch ngoài source, không WriteLease/local
+commit. Trusted-local mutation bị fail+quarantine và không thể tạo PASS.
+
+### V5-13 — Checkpoint/handoff và recovery integration
+
+**Những gì thực sự đã có:**
+- Recovery reaper phát hiện orphan RUNNING Attempt, reconcile/quarantine mutating work, phân loại RETRY/
+  FRESH_START/ESCALATE và ghi RecoveryDecision. RETRY đã tạo replacement Attempt+RUN_WORK job.
+- Agent event/checkpoint batching, fenced finalize và `worker.StartFreshFromLatestCheckpoint` đã có.
+  Primitive đó cố ý chỉ dùng provider `Start`, không `Resume`.
+- FRESH_START hiện chỉ ghi decision; không có consumer/claim/exactly-once reservation. Production path
+  cũng chưa dùng `RecoveryCheckpoint` trong AgentExecutionRequest.
+
+**Mâu thuẫn blocking phải sửa trước code:** `worker.StartFreshFromLatestCheckpoint` đọc legacy
+`runtime.ContextSnapshot`, còn scheduling/dispatch thật dùng V5 `contextsnapshot.Snapshot`. Comment của
+V5 type nói rõ hai model không có bridge; V5 Snapshot bind duy nhất với Attempt nên replacement không
+được reuse snapshot ID cũ. Vì vậy mô tả cũ “load checkpoint/snapshot rồi gọi primitive hiện có” là sai
+với production path.
+
+V5-13 phải sở hữu bridge/replacement: claim RecoveryDecision bằng persistent CAS key; tạo replacement
+Attempt + **V5 Snapshot mới bind Attempt mới** + recovery RUN_WORK atomically; ngoài transaction load và
+reverify source checkpoint/new snapshot, assemble request bình thường, set RecoveryCheckpoint và gọi
+Agent `Start` hoặc Command/Gate executor; cuối cùng fenced finalize. Cần thêm handoff V1 chứa completed/
+unverified work, blocker/decision/evidence refs, revision/generation, failure category, next action và
+budget basis; đồng thời định nghĩa no-progress/time/cost/attempt escalation.
+
+**Kết quả kỳ vọng:** một decision chỉ sinh một replacement; Start=1/Resume=0; không phụ thuộc old
+session/transcript/cwd; stale/tampered/missing pin hoặc fence không commit; hết budget/no-progress tạo
+typed blocker. Sáu boundary chuẩn phải chạy cho AGENT/COMMAND/MACHINE_GATE: trước intent commit, sau job
+commit trước claim, sau claim trước process, giữa event/checkpoint, sau side effect trước finalize, sau
+finalize trước scheduler. Không boundary nào làm mất transition, lặp success/side effect hay blind-retry
+mutation indeterminate.
+
+### V5-14 — Cleanup/retention sweeper
+
+**Những gì đã có:** retention class, hold, expiry, ORPHAN/ATTACHED và CAS; orphan query; idempotent
+workspace release primitive; release request đã tạo durable job với per-repository IDs.
+
+**Khoảng trống blocking:** ArtifactStore không có purge/delete; metadata không có PURGE_RESERVED/PURGED
+hoặc deleted_at; chưa có reference/liveness query, shared-locator accounting, attached-expired query,
+sweep claim/report hoặc release result state. DB recheck và filesystem deletion không thể là một atomic
+transaction, nên câu “atomic reference recheck” cần flow reserve Tx → purge ngoài Tx → finalize Tx.
+
+**Kết quả kỳ vọng:** dry-run/actual đều có durable manifest; chỉ orphan quá grace hoặc expired raw output
+không hold/ref/shared-live-locator được purge; canonical/held/unknown/active/quarantined được giữ; metadata
+và hash còn lại cho audit. Release handler recheck ReleaseSet + attempts/jobs/leases/quarantine, persist
+per-repository partial result, resume idempotently và chỉ set whole set RELEASED khi mọi repo thành công.
+
+### V5-15 — Execution/evidence acceptance gate
+
+**Những gì thực sự đã có:** integration runtime với SQLite/workerpool, clean/recovered golden, crash
+fixtures và CI Windows/Linux/race theo từng lớp; committed master đã có core CommandNodeExecutor và
+GateNodeExecutor. Nhưng `internal/integration/runtimeengine_test.go` vẫn dùng scripted fake NodeExecutor
+và chủ ý assert Run dừng ở VERIFYING; không có composition thật, criteria Evidence authority, ReleaseSet
+hay CompletionPolicy service. Đây chưa phải execution evidence toàn chain.
+
+**Acceptance contract đã đủ để chuẩn bị ngay:** fixture offline phải khai rõ real/recorded fake/spy,
+dùng real app handlers+SQLite+filesystem/Git/ProcessSupervisor; recorded provider chỉ thay external CLI,
+không thay Command/Gate/Completion handler. Trace manifest phải nối và verify lại sau restart:
+
+```text
+WorkItem -> WorkflowRun -> NodeRun -> ExecutionAttempt -> V5 ContextSnapshot
+         -> exact RevisionSet -> Evidence + Artifact IDs/hashes
+         -> ReleaseSet -> CompletionDecision -> WorkItem status
+```
+
+Happy path phải chứng minh agent claim hoặc process exit 0 chỉ tạo completion candidate; chỉ fresh
+independent PASS trên exact revision cùng SEALED ReleaseSet mới atomically tạo Run SUCCEEDED/WorkItem
+DONE. Negative matrix phải chứa gate fail, provider loss, scope violation, checker write, adapter drift,
+isolation unavailable, mutating cancel, artifact tamper và cả sáu crash boundary; mỗi case có typed
+non-success/block/escalation/quarantine và false-completion oracle `unexpected DONE count = 0`.
+
+**Kết quả kỳ vọng:** suite offline pass trên Windows/Linux, Linux race và repeated semantic comparison;
+restart verify được full trace, không duplicate side effect. Claude/Codex live smoke chỉ là auxiliary;
+chưa chạy thì ghi đúng `UNVERIFIED_LIVE`, không dùng nó thay acceptance offline.
+
+### Thứ tự triển khai sau review
+
+1. Đóng các gap acceptance đã chỉ rõ của V5-09: truncation/redaction, artifact lifecycle, policy/
+   compatibility/network và production routing.
+2. Hoàn tất criteria-level Evidence cho V5-10, gồm full lineage/idempotency/fencing cho PASS lẫn
+   non-PASS; giữ RevisionSet là input hiện tại.
+3. Implement ReleaseSet/local commit V5-10A rồi thêm ReleaseSet provenance vào gate/completion.
+4. Khóa completion policy pin/rules/rework route rồi implement V5-11; V5-12 có thể chuẩn bị song song sau
+   khi Evidence contract V5-10 ổn định.
+5. Thống nhất legacy/V5 snapshot và exactly-once recovery trước V5-13; sau đó mới làm purge/release V5-14.
+6. Dựng V5-15 scenario manifest/oracle sớm, nhưng chỉ ghi PASS sau khi mọi gap V5-09…V5-14 chạy qua adapter/
+   handler thật.
+
+**Giới hạn của lần rà soát này:** đây là document/code-contract review, không phải implementation run.
+Unit test executor V5-09/V5-10 đã có; chưa có acceptance fixture toàn chain để báo PASS cho V5-15.
+Các kiểm tra bên dưới chỉ xác nhận consistency tài liệu/repository. Mọi dòng “Kết quả kỳ vọng” còn lại
+là tiêu chí phải được chứng minh ở PR tương ứng, không phải claim đã hoàn thành.
+
+**Verify tài liệu đã chạy trên worktree `master` (2026-09-10):**
+
+- `git diff --check` — **PASS**.
+- `go run ./cmd/docs-coverage-check` — **PASS**, debt = 0.
+- `go test ./internal/docscoverage` — **PASS**.
+- `go test -count=1 ./internal/app/runtime -run 'Test(CommandNodeExecutor|GateNodeExecutor)'` — **PASS**.
