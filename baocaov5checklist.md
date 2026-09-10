@@ -3901,3 +3901,86 @@ go test -count=1 ./...                                            # PASS toàn b
 **Việc còn lại:** commit, push nhánh `feat/v5-11-completion-policy-service`, mở PR, chờ CI 6/6, merge.
 Sau đó PR2 (REWORK — tra rework route từ `Edge.Kind=COMPLETION_REWORK` (V5-10B) + tạo activation mới)
 là phần còn lại duy nhất của V5-11.
+
+**Kết quả:** PR #16, 6/6 CI checks pass NGAY LẦN CHẠY ĐẦU, squash-merged 2026-09-10, merge commit
+`7cf82f2`. Một flake không liên quan (`internal/adapters/process`, timing test, package không hề đụng
+tới) gặp lúc verify local, xác nhận pre-existing qua 3 lần chạy riêng.
+
+## V5-11 — PR2: REWORK (branch `feat/v5-11-completion-policy-rework`, based on `origin/master` sau PR #16)
+
+**Bối cảnh:** người dùng bảo "ok" ngay sau khi PR #16 merge — tiếp tục PR2, phần cuối cùng của V5-11.
+
+**Nghiên cứu trước khi code (câu hỏi cốt lõi: activation mới có cần "schedule thật" trong CÙNG transaction
+không, và budget rework đếm thế nào):**
+- `ScheduleExecutableNodeRun` (schedule.go) LUÔN tự mở transaction riêng của chính nó
+  (`uow.WithSerializedWrite`) và resolve `RuntimeExecutionConfigProvider` NGOÀI transaction (ADR-027) —
+  không thể gọi lồng bên trong transaction của `EvaluateCompletionCandidate`.
+- Đọc kỹ `advanceRunTx` (advance.go, dòng ~609-664): với MỘT NodeRun downstream loại executable bình
+  thường (không phải auto-advance/END/WAIT/APPROVAL/FORK), `advanceRunTx` CHỈ tạo NodeRun ở state PENDING
+  mặc định — KHÔNG tự schedule (không resolve execution profile, không enqueue job) trong transaction đó.
+  Việc "gọi ScheduleExecutableNodeRun sau khi AdvanceRun trả về" là một bước RIÊNG, một transaction KHÁC,
+  và (đúng pattern đã lặp lại xuyên suốt V4/V5) **CHƯA CÓ production wiring nào gọi bước đó** — mọi nơi
+  hiện tại (test fixture) tự tay gọi cả hai. Kết luận: PENDING-chưa-schedule là một trạng thái durable
+  hợp lệ, ĐÃ ĐƯỢC CHẤP NHẬN sẵn trong codebase cho MỌI activation khác — REWORK không cần giải quyết gì
+  thêm ở đây, chỉ cần tạo NodeRun đúng PENDING giống hệt cách `advanceRunTx` đã làm.
+- `ActivationSequence` là bộ đếm TOÀN RUN (không phải theo lineage) — `advanceRunTx` dùng
+  `current.ActivationSequence + 1`; vì REWORK không có "current" NodeRun vừa hoàn thành theo nghĩa đó,
+  dùng MAX ActivationSequence trên toàn bộ `ListNodeRunsForRun` + 1.
+- `GetMaxNodeIteration(runID, nodeKey)` (đã có từ V4-07) dùng lại nguyên cho `Iteration` của activation
+  mới — cùng cách `advanceRunTx`'s escalation-target đã làm.
+- **Đếm round rework:** không có port method liệt kê DecisionArtifact theo RunID (DecisionArtifact chỉ
+  có ID, không có cột RunID có thể query) — nên không đếm qua đó. Insight: Run chỉ có thể quay lại
+  VERIFYING→RUNNING→(...)→VERIFYING qua CHÍNH outcome REWORK của file này (không cơ chế nào khác đưa Run
+  từ VERIFYING về RUNNING) — vì vậy **đếm số NodeRun SUCCEEDED có NodeKey = END node đã reach** chính là
+  round hiện tại (1-indexed: lần đầu = round 1, 0 round rework trước đó). Không cần thêm bảng/cột mới.
+
+**Quyết định thiết kế:**
+1. **`decideCompletionOutcome` giờ trả thêm `*reworkPlan`** (nil trừ khi outcome=REWORK) — chỉ khi ladder
+   KHÔNG đạt: tìm `COMPLETION_REWORK` edge từ END node đã reach (`findCompletionReworkEdge`, quét
+   `document.Edges` cho `Kind==EdgeCompletionRework && From==endNodeKey`); nếu KHÔNG có edge → BLOCK y hệt
+   PR1. Nếu CÓ: đếm round (`countEndReaches`); nếu `round > MaxIterations` → BLOCK với reason
+   `REWORK_BUDGET_EXHAUSTED` (GC-INV-29's "hết budget → BLOCK", coi như không có edge); ngược lại → REWORK,
+   build `reworkPlan{targetNodeKey, activationSequence, iteration}`.
+2. **`applyCompletionOutcomeTx` case REWORK:** Run VERIFYING→RUNNING (không phải SUCCEEDED); tạo đúng một
+   `NodeRun` mới (state mặc định PENDING từ `NewNodeRun`, KHÔNG tự schedule — xem nghiên cứu ở trên);
+   WorkItem HOÀN TOÀN không đụng tới (đã ACTIVE sẵn, đúng "WorkItem giữ ACTIVE" của ADR-021).
+3. **`EvaluateCompletionCandidate` giờ nhận thêm `ids idsource.Source`** (cần để mint NodeRunID mới) —
+   thay đổi signature so với PR1 (breaking, nhưng PR1 mới merge trong CÙNG phiên, chưa có caller thật nào
+   khác ngoài test) — theo đúng convention `ScheduleExecutableNodeRun`/`AdvanceRun` đã dùng.
+4. **`gatherCompletionCandidateEvidence` đổi tham số:** nhận `nodeRuns []NodeRun` thay vì tự gọi lại
+   `ListNodeRunsForRun` — `evaluateCompletionCandidateTx` giờ gọi MỘT LẦN, dùng chung cho evidence-gather
+   VÀ rework round-counting, tránh query trùng.
+5. **`CompletionDecisionResult`/event `COMPLETION_DECIDED` đều thêm `ReworkNodeRunID`/`ReworkNodeKey`**
+   (omitempty) — chỉ populate khi outcome=REWORK.
+6. **NodeRun activation mới KHÔNG dùng deterministic ID** (khác DecisionArtifact/Event/FailBlocker) — vẫn
+   `ids.NewID()` như MỌI NodeRun khác trong codebase (NodeRun chưa từng có tiền lệ content-derived ID);
+   an toàn replay đến từ decisionArtifactID, không phải từ ID của chính activation.
+
+**Thực hiện:** `internal/app/runtime/completion_policy.go` — thêm `reworkPlan`, `appliedCompletionOutcome`
+struct; `findCompletionReworkEdge`, `countEndReaches`, `maxActivationSequence` helper mới;
+`decideCompletionOutcome`/`applyCompletionOutcomeTx` mở rộng như trên; `ReasonReworkBudgetExhausted` const
+mới; cập nhật toàn bộ package doc comment (không còn nói "REWORK chưa làm").
+
+**Test (mới hoàn toàn):** thêm vào `internal/app/runtime/completion_policy_test.go` —
+`documentWithReworkEdge(maxIterations)` (start→implement(ROUTER, 1 outcome, auto-advance)→end, cộng
+COMPLETION_REWORK edge end→implement) thay cho `workflowDocumentV1()` phẳng; refactor
+`completionCandidateFixture` nhận thêm `baseDocument` param + đổi từ MỘT `AdvanceRun` cứng sang vòng lặp
+tới khi VERIFYING (tổng quát cho graph nhiều hop). 2 test mới: REWORK hợp lệ dưới budget (ladder không
+đạt, có edge, còn quota → REWORK, Run RUNNING, WorkItem vẫn ACTIVE, NodeRun mới đúng PENDING); BLOCK khi
+budget rework đã hết (seed 2 "end" NodeRun SUCCEEDED giả trước, MaxIterations=2 → round 3 vượt quá →
+BLOCK với reason `REWORK_BUDGET_EXHAUSTED`). Toàn bộ 9 test PR1 cũ vẫn pass không đổi assertion (chỉ đổi
+call-site thêm `ids`).
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                             # sạch
+go run ./cmd/docs-coverage-check                         # debt = 0
+gofmt -l internal/app/runtime/completion_policy.go
+  internal/app/runtime/completion_policy_test.go         # rỗng
+go test -count=1 ./...                                   # PASS toàn bộ (lần 1 + lần 2, không flake)
+```
+
+**Việc còn lại:** commit, push nhánh `feat/v5-11-completion-policy-rework`, mở PR, chờ CI 6/6, merge. Sau
+đó V5-11 (CompletionPolicy service) coi như HOÀN THÀNH đầy đủ cả 4 outcome — bước tiếp theo trong roadmap
+là câu hỏi kiến trúc "Gate read-only enforcement" (chưa scope) rồi tới V5-12.

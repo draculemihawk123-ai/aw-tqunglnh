@@ -21,21 +21,27 @@
 //     already changed that state) — a decisionArtifactID recomputed from the
 //     exact same candidate always finds the exact same row, and this
 //     function returns its stored result rather than re-deciding. Every
-//     derived ID (the DecisionArtifact itself, its event, PR2's own rework
-//     activation/fail blocker) is a sha256 content hash, never a plain
-//     string concatenation — deterministicJoinNodeRunID (advance.go) is the
-//     precedent this mirrors.
+//     derived ID (the DecisionArtifact itself, its event, the FAIL blocker)
+//     is a sha256 content hash, never a plain string concatenation —
+//     deterministicJoinNodeRunID (advance.go) is the precedent this mirrors.
 //
-// PR1's own scope, deliberately smaller than the full four-outcome
-// evaluator: PASS, BLOCK and FAIL are fully implemented; REWORK is not — the
-// decision logic below only ever produces REWORK's sibling, BLOCK, when the
-// completion ladder is unsatisfied (ADR-021's own "no valid rework edge ->
-// BLOCK" fallback, applied unconditionally for now since nothing yet looks
-// up or activates a rework route — V5-10B's own COMPLETION_REWORK edge kind
-// exists, but PR2 is what actually consumes it). This is a conservative,
-// safe default: a workflow that would eventually auto-REWORK today simply
-// waits in BLOCKED for an operator until PR2 lands, never silently
-// reworking through a mechanism that isn't built yet.
+// PR1 covered PASS, BLOCK and FAIL. PR2 (this update) adds REWORK: when the
+// ladder is unsatisfied AND the reached END node has a published
+// COMPLETION_REWORK edge (V5-10B) whose own ReworkPolicy budget is not yet
+// exhausted, the candidate resolves to REWORK instead of BLOCK — Run
+// VERIFYING->RUNNING, WorkItem left untouched (still ACTIVE), and exactly
+// one new NodeRun activation created for the edge's own target node, all in
+// the same transaction as everything else. Getting that new NodeRun
+// actually SCHEDULED (execution-profile resolution, EXECUTE_NODE job
+// enqueue via ScheduleExecutableNodeRun) is deliberately NOT done here — it
+// is created PENDING, exactly the same state advanceRunTx itself already
+// leaves every freshly-created executable-node NodeRun in for an ordinary
+// hop (see that function's own body: none of autoAdvance/isEndNode/
+// isWaitNode/isApprovalNode/isForkNode apply to a plain executable node, so
+// it is never scheduled inline either) — production wiring that calls
+// ScheduleExecutableNodeRun after a hop is a pre-existing, already-accepted
+// gap this codebase has had since V4, not something REWORK needs to solve
+// itself.
 package runtime
 
 import (
@@ -51,6 +57,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
+	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/gate"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
@@ -85,6 +92,13 @@ const (
 	ReasonCompletionRequirementsUnmet  = "COMPLETION_REQUIREMENTS_UNMET"
 	ReasonNoCompletionPolicyPinned     = "NO_COMPLETION_POLICY_PINNED"
 	ReasonCompletionPolicyUnresolvable = "COMPLETION_POLICY_UNRESOLVABLE"
+	// ReasonReworkBudgetExhausted is BLOCK's own reason (2026-09-10, PR2)
+	// when a COMPLETION_REWORK edge exists for the reached END but its own
+	// ReworkPolicy.MaxIterations budget is already spent — ADR-021's own
+	// "REWORK không có rework edge hợp lệ -> BLOCK" fallback, extended the
+	// one way that ADR itself anticipates (GC-INV-29): a budget-exhausted
+	// edge is treated identically to no edge at all.
+	ReasonReworkBudgetExhausted = "REWORK_BUDGET_EXHAUSTED"
 )
 
 // ErrNoCompletionCandidate is returned when RunID has not actually reached
@@ -132,6 +146,11 @@ type CompletionDecisionResult struct {
 	RunID              string            `json:"runId"`
 	WorkItemID         string            `json:"workItemId"`
 	EndNodeRunID       string            `json:"endNodeRunId"`
+	// ReworkNodeRunID/ReworkNodeKey are populated only when Outcome ==
+	// REWORK — the freshly created NodeRun this decision activated on the
+	// published COMPLETION_REWORK edge's own target.
+	ReworkNodeRunID string `json:"reworkNodeRunId,omitempty"`
+	ReworkNodeKey   string `json:"reworkNodeKey,omitempty"`
 }
 
 // completionCandidateInput is the deterministic snapshot of everything this
@@ -158,7 +177,7 @@ type completionCandidateInput struct {
 // to DONE/BLOCKED (ADR-011, ADR-021). See this file's own package doc
 // comment for the full contract this implements.
 func EvaluateCompletionCandidate(
-	ctx context.Context, uow ports.UnitOfWork, clk clock.Clock, cmd ports.Command, req EvaluateCompletionCandidateRequest,
+	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, cmd ports.Command, req EvaluateCompletionCandidateRequest,
 ) (CompletionDecisionResult, error) {
 	if strings.TrimSpace(req.RunID) == "" {
 		return CompletionDecisionResult{}, errors.New("runtime: EvaluateCompletionCandidate requires RunID")
@@ -180,7 +199,7 @@ func EvaluateCompletionCandidate(
 			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
 		}
 
-		decided, err := evaluateCompletionCandidateTx(ctx, tx, clk, cmd, req)
+		decided, err := evaluateCompletionCandidateTx(ctx, tx, ids, clk, cmd, req)
 		if err != nil {
 			return err
 		}
@@ -199,7 +218,7 @@ func EvaluateCompletionCandidate(
 }
 
 func evaluateCompletionCandidateTx(
-	ctx context.Context, tx ports.Tx, clk clock.Clock, cmd ports.Command, req EvaluateCompletionCandidateRequest,
+	ctx context.Context, tx ports.Tx, ids idsource.Source, clk clock.Clock, cmd ports.Command, req EvaluateCompletionCandidateRequest,
 ) (CompletionDecisionResult, error) {
 	run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
 	if err != nil {
@@ -225,7 +244,11 @@ func evaluateCompletionCandidateTx(
 
 	decisionArtifactID := deterministicCompletionDecisionID(req.RunID, summary.ReachedEndNodeRunID)
 
-	evidence, approvals, err := gatherCompletionCandidateEvidence(ctx, tx, req.RunID, document)
+	nodeRuns, err := tx.Runtime().ListNodeRunsForRun(ctx, req.RunID)
+	if err != nil {
+		return CompletionDecisionResult{}, err
+	}
+	evidence, approvals, err := gatherCompletionCandidateEvidence(ctx, tx, req.RunID, nodeRuns)
 	if err != nil {
 		return CompletionDecisionResult{}, err
 	}
@@ -271,12 +294,12 @@ func evaluateCompletionCandidateTx(
 		return CompletionDecisionResult{}, err
 	}
 
-	outcome, reason, err := decideCompletionOutcome(ctx, tx, run, manifest, document, evidence, approvals, releaseGate)
+	outcome, reason, plan, err := decideCompletionOutcome(ctx, tx, run, manifest, document, summary, nodeRuns, evidence, approvals, releaseGate)
 	if err != nil {
 		return CompletionDecisionResult{}, err
 	}
 
-	updatedRun, err := applyCompletionOutcomeTx(ctx, tx, run, workItem, outcome, reason, decisionArtifactID, cmd.CorrelationID)
+	applied, err := applyCompletionOutcomeTx(ctx, tx, ids, run, workItem, outcome, reason, decisionArtifactID, plan, cmd.CorrelationID)
 	if err != nil {
 		return CompletionDecisionResult{}, err
 	}
@@ -284,6 +307,7 @@ func evaluateCompletionCandidateTx(
 	result := CompletionDecisionResult{
 		DecisionArtifactID: string(decisionArtifactID), Outcome: outcome, Reason: reason,
 		RunID: req.RunID, WorkItemID: string(run.WorkItemID), EndNodeRunID: summary.ReachedEndNodeRunID,
+		ReworkNodeRunID: applied.reworkNodeRunID, ReworkNodeKey: applied.reworkNodeKey,
 	}
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
@@ -304,7 +328,7 @@ func evaluateCompletionCandidateTx(
 		return CompletionDecisionResult{}, err
 	}
 
-	if err := appendCompletionDecidedEvent(ctx, tx, updatedRun, decisionArtifactID, result, cmd.CorrelationID); err != nil {
+	if err := appendCompletionDecidedEvent(ctx, tx, applied.run, decisionArtifactID, result, cmd.CorrelationID); err != nil {
 		return CompletionDecisionResult{}, err
 	}
 	return result, nil
@@ -363,20 +387,33 @@ func loadLatestReleaseSetGate(ctx context.Context, tx ports.Tx, familyID string)
 	return releaseSetGate{releaseSetID: string(latest.ID), satisfied: true}, nil
 }
 
+// reworkPlan is decideCompletionOutcome's own output when it resolves to
+// REWORK — everything applyCompletionOutcomeTx needs to actually create the
+// new activation, computed here (read-only) rather than there, so the
+// decision logic stays in one place.
+type reworkPlan struct {
+	targetNodeKey      string
+	activationSequence uint64
+	iteration          uint32
+}
+
 // decideCompletionOutcome is the pure decision logic (no side effects, no
 // writes) — every input it needs has already been loaded/gathered by its
 // caller. Order matters: the sibling-run invariant is checked first (an
 // invariant violation, never a policy failure), then the completion policy
 // pin is resolved (a FAIL-worthy configuration problem if it cannot be),
 // then the ReleaseSet/ladder gates (ordinary BLOCK-worthy "not ready yet"
-// outcomes).
+// outcomes) — and only once the ladder is found unsatisfied does REWORK-
+// vs-BLOCK get decided, per ADR-021's own "no valid rework edge -> BLOCK"
+// rule (extended, GC-INV-29, to "or its own budget is exhausted -> BLOCK").
 func decideCompletionOutcome(
 	ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, manifest runtimedomain.ExecutionManifest, document workflow.WorkflowDocument,
+	summary RunNodeStateSummary, nodeRuns []runtimedomain.NodeRun,
 	evidence []runtimedomain.Evidence, approvals []runtimedomain.ApprovalRequest, releaseGate releaseSetGate,
-) (CompletionOutcome, string, error) {
+) (CompletionOutcome, string, *reworkPlan, error) {
 	siblings, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, string(run.WorkItemID))
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	for _, sibling := range siblings {
 		if sibling.ID == run.ID {
@@ -386,27 +423,105 @@ func decideCompletionOutcome(
 			return CompletionOutcomeBlock, fmt.Sprintf(
 				"%s: workflow run %s belongs to the same work item and is still %s",
 				ReasonWorkItemRunStateInconsistent, sibling.ID, sibling.State,
-			), nil
+			), nil, nil
 		}
 	}
 
 	completionRules, resolveDetail, err := resolveCompletionPolicy(ctx, tx, manifest, document)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if resolveDetail != "" {
-		return CompletionOutcomeFail, resolveDetail, nil
+		return CompletionOutcomeFail, resolveDetail, nil, nil
 	}
 
 	if !releaseGate.satisfied {
-		return CompletionOutcomeBlock, fmt.Sprintf("%s: %s", ReasonReleaseSetNotSealed, releaseGate.detail), nil
+		return CompletionOutcomeBlock, fmt.Sprintf("%s: %s", ReasonReleaseSetNotSealed, releaseGate.detail), nil, nil
 	}
 
 	satisfied, unsatisfiedDetail := evaluateCompletionRules(completionRules, evidence, approvals)
-	if !satisfied {
-		return CompletionOutcomeBlock, fmt.Sprintf("%s: %s", ReasonCompletionRequirementsUnmet, unsatisfiedDetail), nil
+	if satisfied {
+		return CompletionOutcomePass, "", nil, nil
 	}
-	return CompletionOutcomePass, "", nil
+
+	edge, hasReworkEdge := findCompletionReworkEdge(document, summary.ReachedEndNodeKey)
+	if !hasReworkEdge {
+		return CompletionOutcomeBlock, fmt.Sprintf("%s: %s", ReasonCompletionRequirementsUnmet, unsatisfiedDetail), nil, nil
+	}
+	round := countEndReaches(nodeRuns, summary.ReachedEndNodeKey)
+	if round > edge.ReworkPolicy.MaxIterations {
+		return CompletionOutcomeBlock, fmt.Sprintf(
+			"%s: rework edge %s already used %d of %d allowed rounds",
+			ReasonReworkBudgetExhausted, edge.Key, round-1, edge.ReworkPolicy.MaxIterations,
+		), nil, nil
+	}
+	targetNode, ok := findNode(document, edge.To)
+	if !ok {
+		// Unreachable in practice: V5-10B's own validateNormalizedDocument
+		// already requires a COMPLETION_REWORK edge's own To to resolve to a
+		// real, non-END node before the document can ever publish. Fails
+		// closed rather than panicking if that invariant is ever somehow
+		// violated (a corrupted/foreign WorkflowVersion, the same
+		// discipline CycleMembership's own doc comment already documents
+		// elsewhere in this codebase).
+		return CompletionOutcomeFail, fmt.Sprintf(
+			"%s: rework edge %s targets unknown node %s", ReasonCompletionPolicyUnresolvable, edge.Key, edge.To,
+		), nil, nil
+	}
+	priorMax, found, err := tx.Runtime().GetMaxNodeIteration(ctx, string(run.ID), targetNode.Key)
+	if err != nil {
+		return "", "", nil, err
+	}
+	iteration := uint32(0)
+	if found {
+		iteration = priorMax + 1
+	}
+	plan := &reworkPlan{
+		targetNodeKey: targetNode.Key, activationSequence: maxActivationSequence(nodeRuns) + 1, iteration: iteration,
+	}
+	return CompletionOutcomeRework, "", plan, nil
+}
+
+// findCompletionReworkEdge finds the (at most one, per V5-10B's own
+// validation) COMPLETION_REWORK edge published from endNodeKey.
+func findCompletionReworkEdge(document workflow.WorkflowDocument, endNodeKey string) (workflow.Edge, bool) {
+	for _, edge := range document.Edges {
+		if edge.Kind == workflow.EdgeCompletionRework && edge.From == endNodeKey {
+			return edge, true
+		}
+	}
+	return workflow.Edge{}, false
+}
+
+// countEndReaches counts every SUCCEEDED NodeRun for endNodeKey — since END
+// is terminal-once-reached (never superseded/retried) and a Run only ever
+// cycles VERIFYING->RUNNING back to an END-reachable state via THIS file's
+// own REWORK outcome, this count IS the current round number (1-indexed:
+// the very first reach is round 1, with zero prior rework rounds).
+func countEndReaches(nodeRuns []runtimedomain.NodeRun, endNodeKey string) uint32 {
+	var count uint32
+	for _, nodeRun := range nodeRuns {
+		if nodeRun.NodeKey == endNodeKey && nodeRun.State == runtimedomain.NodeRunSucceeded {
+			count++
+		}
+	}
+	return count
+}
+
+// maxActivationSequence returns the highest ActivationSequence among
+// nodeRuns — mirrors advance.go's own "nextSequence := current.
+// ActivationSequence + 1" convention (this Run-wide counter is never
+// per-lineage), generalized to "the run's own current max" since REWORK's
+// new activation has no single upstream "current" NodeRun the way an
+// ordinary hop does.
+func maxActivationSequence(nodeRuns []runtimedomain.NodeRun) uint64 {
+	var max uint64
+	for _, nodeRun := range nodeRuns {
+		if nodeRun.ActivationSequence > max {
+			max = nodeRun.ActivationSequence
+		}
+	}
+	return max
 }
 
 // resolveCompletionPolicy resolves document's own root CompletionPolicyRef
@@ -560,12 +675,8 @@ func anyRoleDecided(decidedRoles map[string]bool, authorizedRoles []string) bool
 // one ever exists per NodeRunID, V4-09's own invariant), sorted by ID for
 // deterministic candidate-input marshaling.
 func gatherCompletionCandidateEvidence(
-	ctx context.Context, tx ports.Tx, runID string, document workflow.WorkflowDocument,
+	ctx context.Context, tx ports.Tx, runID string, nodeRuns []runtimedomain.NodeRun,
 ) ([]runtimedomain.Evidence, []runtimedomain.ApprovalRequest, error) {
-	nodeRuns, err := tx.Runtime().ListNodeRunsForRun(ctx, runID)
-	if err != nil {
-		return nil, nil, err
-	}
 	latestNodeRunIDs := latestNodeRunIDsByLineage(nodeRuns)
 
 	attempts, err := tx.Runtime().ListExecutionAttemptsForRun(ctx, runID)
@@ -663,22 +774,30 @@ func buildCompletionCandidateInput(
 	}
 }
 
+// appliedCompletionOutcome is applyCompletionOutcomeTx's own result: the
+// freshly-updated WorkflowRun (so its caller can use the new Version as the
+// COMPLETION_DECIDED event's own Sequence, mirroring
+// transitionRunToVerifyingTx's own convention, completion.go), plus the new
+// NodeRun's identity when outcome is REWORK (zero values otherwise).
+type appliedCompletionOutcome struct {
+	run             runtimedomain.WorkflowRun
+	reworkNodeRunID string
+	reworkNodeKey   string
+}
+
 // applyCompletionOutcomeTx writes outcome's own atomic state transitions
-// (ADR-021's own outcome table) and returns the freshly-updated WorkflowRun
-// so its caller can use the new Version as the COMPLETION_DECIDED event's
-// own Sequence (mirrors transitionRunToVerifyingTx's own convention,
-// completion.go). BLOCK deliberately opens no WorkItemBlocker row — ADR-021's
-// own outcome table names one only for FAIL ("kèm blocker
+// (ADR-021's own outcome table). BLOCK deliberately opens no WorkItemBlocker
+// row — ADR-021's own outcome table names one only for FAIL ("kèm blocker
 // COMPLETION_POLICY_FAILED"), never for BLOCK; the two state transitions
-// (Run BLOCKED, WorkItem BLOCKED) are themselves the durable signal.
-// REWORK is not yet reachable from decideCompletionOutcome above (PR1's own
-// scope) — the case below exists only so this switch is already exhaustive
-// for PR2 to fill in, and fails loudly rather than silently no-op-ing if
-// ever reached before that.
+// (Run BLOCKED, WorkItem BLOCKED) are themselves the durable signal. REWORK
+// leaves WorkItem completely untouched (ADR-021: "WorkItem giữ ACTIVE") and
+// creates exactly one new PENDING NodeRun per plan — see this file's own
+// package doc comment for why getting it actually scheduled is deliberately
+// out of scope here.
 func applyCompletionOutcomeTx(
-	ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, workItem workdomain.WorkItem,
-	outcome CompletionOutcome, reason string, decisionArtifactID runtimedomain.DecisionArtifactID, correlationID string,
-) (runtimedomain.WorkflowRun, error) {
+	ctx context.Context, tx ports.Tx, ids idsource.Source, run runtimedomain.WorkflowRun, workItem workdomain.WorkItem,
+	outcome CompletionOutcome, reason string, decisionArtifactID runtimedomain.DecisionArtifactID, plan *reworkPlan, correlationID string,
+) (appliedCompletionOutcome, error) {
 	switch outcome {
 	case CompletionOutcomePass:
 		updated, err := tx.Runtime().TransitionWorkflowRunState(ctx, ports.TransitionWorkflowRunStateRequest{
@@ -686,15 +805,15 @@ func applyCompletionOutcomeTx(
 			NextState: runtimedomain.WorkflowRunSucceeded,
 		})
 		if err != nil {
-			return runtimedomain.WorkflowRun{}, err
+			return appliedCompletionOutcome{}, err
 		}
 		if _, err := tx.Work().TransitionWorkItemStatus(ctx, ports.TransitionWorkItemStatusRequest{
 			WorkItemID: string(workItem.ID), ExpectedStatus: workdomain.WorkItemActive, ExpectedVersion: workItem.Version,
 			NextStatus: workdomain.WorkItemDone,
 		}); err != nil {
-			return runtimedomain.WorkflowRun{}, err
+			return appliedCompletionOutcome{}, err
 		}
-		return updated, nil
+		return appliedCompletionOutcome{run: updated}, nil
 
 	case CompletionOutcomeBlock:
 		updated, err := tx.Runtime().TransitionWorkflowRunState(ctx, ports.TransitionWorkflowRunStateRequest{
@@ -702,15 +821,15 @@ func applyCompletionOutcomeTx(
 			NextState: runtimedomain.WorkflowRunBlocked,
 		})
 		if err != nil {
-			return runtimedomain.WorkflowRun{}, err
+			return appliedCompletionOutcome{}, err
 		}
 		if _, err := tx.Work().TransitionWorkItemStatus(ctx, ports.TransitionWorkItemStatusRequest{
 			WorkItemID: string(workItem.ID), ExpectedStatus: workdomain.WorkItemActive, ExpectedVersion: workItem.Version,
 			NextStatus: workdomain.WorkItemBlocked,
 		}); err != nil {
-			return runtimedomain.WorkflowRun{}, err
+			return appliedCompletionOutcome{}, err
 		}
-		return updated, nil
+		return appliedCompletionOutcome{run: updated}, nil
 
 	case CompletionOutcomeFail:
 		updated, err := tx.Runtime().TransitionWorkflowRunState(ctx, ports.TransitionWorkflowRunStateRequest{
@@ -718,28 +837,52 @@ func applyCompletionOutcomeTx(
 			NextState: runtimedomain.WorkflowRunFailed,
 		})
 		if err != nil {
-			return runtimedomain.WorkflowRun{}, err
+			return appliedCompletionOutcome{}, err
 		}
 		if _, err := tx.Work().TransitionWorkItemStatus(ctx, ports.TransitionWorkItemStatusRequest{
 			WorkItemID: string(workItem.ID), ExpectedStatus: workdomain.WorkItemActive, ExpectedVersion: workItem.Version,
 			NextStatus: workdomain.WorkItemBlocked,
 		}); err != nil {
-			return runtimedomain.WorkflowRun{}, err
+			return appliedCompletionOutcome{}, err
 		}
 		blockerID := deterministicCompletionFailBlockerID(decisionArtifactID)
 		if _, err := openWorkItemBlockerTx(
 			ctx, tx, run.ProjectID, string(run.WorkItemID), blockerID, workdomain.BlockerCompletionPolicyFailed,
 			string(run.ID), "", "", reason, correlationID, "",
 		); err != nil {
-			return runtimedomain.WorkflowRun{}, err
+			return appliedCompletionOutcome{}, err
 		}
-		return updated, nil
+		return appliedCompletionOutcome{run: updated}, nil
 
 	case CompletionOutcomeRework:
-		return runtimedomain.WorkflowRun{}, fmt.Errorf("runtime: REWORK outcome is not yet implemented (V5-11 PR2) for run %s", run.ID)
+		if plan == nil {
+			return appliedCompletionOutcome{}, fmt.Errorf("runtime: REWORK outcome for run %s has no activation plan", run.ID)
+		}
+		updated, err := tx.Runtime().TransitionWorkflowRunState(ctx, ports.TransitionWorkflowRunStateRequest{
+			RunID: string(run.ID), ExpectedState: runtimedomain.WorkflowRunVerifying, ExpectedVersion: run.Version,
+			NextState: runtimedomain.WorkflowRunRunning,
+		})
+		if err != nil {
+			return appliedCompletionOutcome{}, err
+		}
+		nodeRunID := ids.NewID()
+		nodeRun, err := runtimedomain.NewNodeRun(
+			runtimedomain.NodeRunID(nodeRunID), run.ID, plan.targetNodeKey, plan.activationSequence, plan.iteration, nil,
+			canonicalStateHash(run.SharedState), "",
+		)
+		if err != nil {
+			return appliedCompletionOutcome{}, err
+		}
+		if _, err := tx.Runtime().CreateNodeRun(ctx, nodeRun); err != nil {
+			return appliedCompletionOutcome{}, err
+		}
+		// WorkItem is deliberately left untouched — ADR-021: "WorkItem giữ
+		// ACTIVE" for REWORK, and it already is (checked by this file's
+		// own caller before ever reaching decideCompletionOutcome).
+		return appliedCompletionOutcome{run: updated, reworkNodeRunID: nodeRunID, reworkNodeKey: plan.targetNodeKey}, nil
 
 	default:
-		return runtimedomain.WorkflowRun{}, fmt.Errorf("runtime: unknown completion outcome %q", outcome)
+		return appliedCompletionOutcome{}, fmt.Errorf("runtime: unknown completion outcome %q", outcome)
 	}
 }
 
@@ -757,6 +900,12 @@ type completionDecidedEventPayload struct {
 	DecisionArtifactID string `json:"decisionArtifactId"`
 	Outcome            string `json:"outcome"`
 	Reason             string `json:"reason,omitempty"`
+	// ReworkNodeRunID/ReworkNodeKey are populated only when Outcome ==
+	// REWORK (PR2) — this event's own record of the new activation this
+	// decision created is what CompletionDecisionResult itself already
+	// exposes; the payload just mirrors it into the durable event too.
+	ReworkNodeRunID string `json:"reworkNodeRunId,omitempty"`
+	ReworkNodeKey   string `json:"reworkNodeKey,omitempty"`
 }
 
 func appendCompletionDecidedEvent(
@@ -766,6 +915,7 @@ func appendCompletionDecidedEvent(
 	payload, err := json.Marshal(completionDecidedEventPayload{
 		RunID: result.RunID, WorkItemID: result.WorkItemID, EndNodeRunID: result.EndNodeRunID,
 		DecisionArtifactID: string(decisionArtifactID), Outcome: string(result.Outcome), Reason: result.Reason,
+		ReworkNodeRunID: result.ReworkNodeRunID, ReworkNodeKey: result.ReworkNodeKey,
 	})
 	if err != nil {
 		return fmt.Errorf("marshal %s event payload: %w", CompletionDecidedEventType, err)
@@ -788,7 +938,13 @@ func appendCompletionDecidedEvent(
 //
 // mirroring deterministicJoinNodeRunID's own exact shape (advance.go):
 // sha256 over NUL-joined parts, hex-encoded, truncated to 16 bytes,
-// human-readable prefix. (ReworkActivation's own ID is PR2's own concern.)
+// human-readable prefix. REWORK's own new NodeRun deliberately does NOT get
+// a deterministic ID the same way — ids.NewID() is used instead
+// (applyCompletionOutcomeTx), since NodeRun identity in this codebase is
+// always minted, never content-derived (every other activation in
+// advance.go/schedule.go mints one via ids.NewID() too); the REPLAY safety
+// contract 2 requires comes from decisionArtifactID/eventID alone, not from
+// the activation's own id.
 func deterministicCompletionDecisionID(runID, endNodeRunID string) runtimedomain.DecisionArtifactID {
 	sum := sha256.Sum256([]byte("completion-decision" + "\x00" + runID + "\x00" + endNodeRunID))
 	return runtimedomain.DecisionArtifactID("completion-decision-" + hex.EncodeToString(sum[:16]))

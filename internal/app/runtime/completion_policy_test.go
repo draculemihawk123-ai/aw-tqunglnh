@@ -62,22 +62,25 @@ func publishCompletionPolicyVersion(t *testing.T, uow *fake.UnitOfWork, definiti
 }
 
 // completionCandidateFixture publishes a real COMPLETION-category
-// PolicyVersion, a start->end WorkflowVersion pinning it via
+// PolicyVersion, a WorkflowVersion (from baseDocument) pinning it via
 // CompletionPolicyRef, starts and drives the Run all the way to a real
 // completion candidate (VERIFYING) — everything EvaluateCompletionCandidate
 // itself needs already durable. Mirrors startWorkflowRunFixture's own shape
 // (advance_test.go) but with a caller-chosen Dependencies manifest, since
 // that helper's own publishWorkflowVersionDocument hardcodes a single
-// unrelated skill dependency with no room for a policy pin. A nil policyDoc
-// publishes no CompletionPolicy at all, leaving CompletionPolicyRef unset —
-// the FAIL/no-pin test case's own fixture shape.
-func completionCandidateFixture(t *testing.T, policyDoc *policy.PolicyDocument) (uow *fake.UnitOfWork, ids idsource.Source, run runtimedomain.WorkflowRun) {
+// unrelated skill dependency with no room for a policy pin, and drives
+// AdvanceRun in a loop (rather than a single hardcoded hop) so any
+// START->...->END shape reaches VERIFYING, not just workflowDocumentV1's own
+// plain two-node graph (documentWithReworkEdge's own three-node shape needs
+// two hops). A nil policyDoc publishes no CompletionPolicy at all, leaving
+// CompletionPolicyRef unset — the FAIL/no-pin test case's own fixture shape.
+func completionCandidateFixture(t *testing.T, baseDocument workflow.WorkflowDocument, policyDoc *policy.PolicyDocument) (uow *fake.UnitOfWork, ids idsource.Source, run runtimedomain.WorkflowRun) {
 	t.Helper()
 	ctx := context.Background()
 	uow = fake.New()
 	ids = idsource.NewSequential("id")
 
-	document := workflowDocumentV1()
+	document := baseDocument
 	dependencies := workflow.DependencyManifest{}
 	if policyDoc != nil {
 		policyFields := publishCompletionPolicyVersion(t, uow, "completion-policy-1", "completion-policy-1-v1", *policyDoc)
@@ -116,16 +119,23 @@ func completionCandidateFixture(t *testing.T, policyDoc *policy.PolicyDocument) 
 	if err != nil {
 		t.Fatalf("StartWorkflowRun: %v", err)
 	}
-	if _, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{RunID: started.RunID, NodeRunID: started.NodeRunID}); err != nil {
-		t.Fatalf("AdvanceRun (start->end): %v", err)
-	}
-
-	run, err = uow.Snapshot.Runtime().GetWorkflowRun(ctx, started.RunID)
-	if err != nil {
-		t.Fatalf("GetWorkflowRun: %v", err)
-	}
-	if run.State != runtimedomain.WorkflowRunVerifying {
-		t.Fatalf("run.State = %s, want VERIFYING", run.State)
+	nodeRunID := started.NodeRunID
+	for {
+		run, err = uow.Snapshot.Runtime().GetWorkflowRun(ctx, started.RunID)
+		if err != nil {
+			t.Fatalf("GetWorkflowRun: %v", err)
+		}
+		if run.State == runtimedomain.WorkflowRunVerifying {
+			break
+		}
+		hop, err := runtime.AdvanceRun(ctx, uow, ids, runtime.AdvanceRunRequest{RunID: started.RunID, NodeRunID: nodeRunID})
+		if err != nil {
+			t.Fatalf("AdvanceRun: %v", err)
+		}
+		if !hop.Advanced {
+			t.Fatalf("AdvanceRun did not advance (nodeRunID=%s) — would loop forever", nodeRunID)
+		}
+		nodeRunID = hop.NextNodeRunID
 	}
 	return uow, ids, run
 }
@@ -194,12 +204,12 @@ func requiredEvidenceCompletionPolicy() policy.PolicyDocument {
 func TestEvaluateCompletionCandidate_Pass_RequiredEvidencePresent(t *testing.T) {
 	ctx := context.Background()
 	doc := requiredEvidenceCompletionPolicy()
-	uow, _, run := completionCandidateFixture(t, &doc)
+	uow, ids, run := completionCandidateFixture(t, workflowDocumentV1(), &doc)
 	seedRunEvidence(t, uow, run, "implement", "TEST_RESULT", runtimedomain.EvidenceVerdictSucceeded)
 
 	cmd := evaluateCompletionCandidateCmd("idem-eval-1")
 	cmd.ExpectedVersion = run.Version
-	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate: %v", err)
 	}
@@ -244,12 +254,12 @@ func TestEvaluateCompletionCandidate_Pass_RequiredEvidencePresent(t *testing.T) 
 func TestEvaluateCompletionCandidate_Block_MissingEvidence(t *testing.T) {
 	ctx := context.Background()
 	doc := requiredEvidenceCompletionPolicy()
-	uow, _, run := completionCandidateFixture(t, &doc)
+	uow, ids, run := completionCandidateFixture(t, workflowDocumentV1(), &doc)
 	// No evidence seeded at all.
 
 	cmd := evaluateCompletionCandidateCmd("idem-eval-1")
 	cmd.ExpectedVersion = run.Version
-	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate: %v", err)
 	}
@@ -288,11 +298,11 @@ func TestEvaluateCompletionCandidate_Block_MissingEvidence(t *testing.T) {
 
 func TestEvaluateCompletionCandidate_Fail_NoCompletionPolicyPinned(t *testing.T) {
 	ctx := context.Background()
-	uow, _, run := completionCandidateFixture(t, nil)
+	uow, ids, run := completionCandidateFixture(t, workflowDocumentV1(), nil)
 
 	cmd := evaluateCompletionCandidateCmd("idem-eval-1")
 	cmd.ExpectedVersion = run.Version
-	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate: %v", err)
 	}
@@ -339,12 +349,12 @@ func TestEvaluateCompletionCandidate_Fail_NoCompletionPolicyPinned(t *testing.T)
 func TestEvaluateCompletionCandidate_Replay_DifferentIdempotencyKeySameResult(t *testing.T) {
 	ctx := context.Background()
 	doc := requiredEvidenceCompletionPolicy()
-	uow, _, run := completionCandidateFixture(t, &doc)
+	uow, ids, run := completionCandidateFixture(t, workflowDocumentV1(), &doc)
 	seedRunEvidence(t, uow, run, "implement", "TEST_RESULT", runtimedomain.EvidenceVerdictSucceeded)
 
 	cmd1 := evaluateCompletionCandidateCmd("idem-eval-1")
 	cmd1.ExpectedVersion = run.Version
-	first, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd1, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	first, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd1, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate (first): %v", err)
 	}
@@ -354,7 +364,7 @@ func TestEvaluateCompletionCandidate_Replay_DifferentIdempotencyKeySameResult(t 
 
 	cmd2 := evaluateCompletionCandidateCmd("idem-eval-2")
 	cmd2.ExpectedVersion = run.Version // stale on purpose — replay must not even reach this check
-	second, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd2, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	second, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd2, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate (second, different idempotency key): %v", err)
 	}
@@ -372,13 +382,13 @@ func TestEvaluateCompletionCandidate_Replay_DifferentIdempotencyKeySameResult(t 
 func TestEvaluateCompletionCandidate_Conflict_InputsChangedBetweenCalls(t *testing.T) {
 	ctx := context.Background()
 	doc := requiredEvidenceCompletionPolicy()
-	uow, _, run := completionCandidateFixture(t, &doc)
+	uow, ids, run := completionCandidateFixture(t, workflowDocumentV1(), &doc)
 	// No evidence yet — first call decides BLOCK and persists that as the
 	// candidate's own DecisionArtifact.
 
 	cmd1 := evaluateCompletionCandidateCmd("idem-eval-1")
 	cmd1.ExpectedVersion = run.Version
-	first, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd1, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	first, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd1, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate (first): %v", err)
 	}
@@ -391,7 +401,7 @@ func TestEvaluateCompletionCandidate_Conflict_InputsChangedBetweenCalls(t *testi
 
 	cmd2 := evaluateCompletionCandidateCmd("idem-eval-2")
 	cmd2.ExpectedVersion = run.Version
-	if _, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd2, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)}); err != runtime.ErrCompletionDecisionConflict {
+	if _, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd2, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)}); err != runtime.ErrCompletionDecisionConflict {
 		t.Fatalf("EvaluateCompletionCandidate (second, changed inputs): err = %v, want ErrCompletionDecisionConflict", err)
 	}
 }
@@ -436,13 +446,13 @@ func seedNonTerminalSiblingRun(t *testing.T, uow *fake.UnitOfWork, run runtimedo
 func TestEvaluateCompletionCandidate_Block_NonTerminalSiblingRun(t *testing.T) {
 	ctx := context.Background()
 	doc := requiredEvidenceCompletionPolicy()
-	uow, _, run := completionCandidateFixture(t, &doc)
+	uow, ids, run := completionCandidateFixture(t, workflowDocumentV1(), &doc)
 	seedRunEvidence(t, uow, run, "implement", "TEST_RESULT", runtimedomain.EvidenceVerdictSucceeded)
 	seedNonTerminalSiblingRun(t, uow, run)
 
 	cmd := evaluateCompletionCandidateCmd("idem-eval-1")
 	cmd.ExpectedVersion = run.Version
-	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate: %v", err)
 	}
@@ -506,13 +516,13 @@ func seedDecidedApprovalRequest(t *testing.T, uow *fake.UnitOfWork, run runtimed
 func TestEvaluateCompletionCandidate_Pass_AssuranceLadderWithApproval(t *testing.T) {
 	ctx := context.Background()
 	doc := assuranceLadderCompletionPolicy()
-	uow, _, run := completionCandidateFixture(t, &doc)
+	uow, ids, run := completionCandidateFixture(t, workflowDocumentV1(), &doc)
 	seedRunEvidence(t, uow, run, "lint", "LINT_RESULT", string(gate.VerdictPass))
 	seedDecidedApprovalRequest(t, uow, run, "tech-lead")
 
 	cmd := evaluateCompletionCandidateCmd("idem-eval-1")
 	cmd.ExpectedVersion = run.Version
-	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate: %v", err)
 	}
@@ -524,13 +534,13 @@ func TestEvaluateCompletionCandidate_Pass_AssuranceLadderWithApproval(t *testing
 func TestEvaluateCompletionCandidate_Block_AssuranceLadderApprovalMissing(t *testing.T) {
 	ctx := context.Background()
 	doc := assuranceLadderCompletionPolicy()
-	uow, _, run := completionCandidateFixture(t, &doc)
+	uow, ids, run := completionCandidateFixture(t, workflowDocumentV1(), &doc)
 	seedRunEvidence(t, uow, run, "lint", "LINT_RESULT", string(gate.VerdictPass))
 	// No approval decided at all — the HUMAN level requirement is unsatisfied.
 
 	cmd := evaluateCompletionCandidateCmd("idem-eval-1")
 	cmd.ExpectedVersion = run.Version
-	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate: %v", err)
 	}
@@ -553,7 +563,7 @@ func TestEvaluateCompletionCandidate_Block_AssuranceLadderApprovalMissing(t *tes
 func TestEvaluateCompletionCandidate_Block_ReleaseSetNotSealed(t *testing.T) {
 	ctx := context.Background()
 	doc := requiredEvidenceCompletionPolicy()
-	uow, ids, run := completionCandidateFixture(t, &doc)
+	uow, ids, run := completionCandidateFixture(t, workflowDocumentV1(), &doc)
 	seedRunEvidence(t, uow, run, "implement", "TEST_RESULT", runtimedomain.EvidenceVerdictSucceeded)
 
 	createCmd := testCommand("idem-release-1", "hash-release-1", ports.ProjectScope("project-1"), "CreateReleaseSet")
@@ -569,7 +579,7 @@ func TestEvaluateCompletionCandidate_Block_ReleaseSetNotSealed(t *testing.T) {
 
 	cmd := evaluateCompletionCandidateCmd("idem-eval-1")
 	cmd.ExpectedVersion = run.Version
-	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
 	if err != nil {
 		t.Fatalf("EvaluateCompletionCandidate: %v", err)
 	}
@@ -578,5 +588,133 @@ func TestEvaluateCompletionCandidate_Block_ReleaseSetNotSealed(t *testing.T) {
 	}
 	if !strings.Contains(result.Reason, runtime.ReasonReleaseSetNotSealed) {
 		t.Fatalf("result.Reason = %q, want it to mention %q", result.Reason, runtime.ReasonReleaseSetNotSealed)
+	}
+}
+
+// documentWithReworkEdge is start -> implement(ROUTER, one outcome, auto-
+// advances — HE-14-M07's own deterministic single-outcome case, no typed
+// config needed) -> end, plus a COMPLETION_REWORK edge (V5-10B) from end
+// back to implement with the given budget. Unlike workflowDocumentV1's own
+// plain two-node graph, the rework TARGET here is a real, ordinarily-
+// reachable node — the realistic shape ADR-021's own "reactivate the
+// implement node" framing describes, and the one V5-10B's own validation
+// requires (a COMPLETION_REWORK edge may never target END, and this file's
+// own completionCandidateFixture already loops AdvanceRun however many
+// hops a document actually needs, so the extra "implement" hop costs
+// nothing here).
+func documentWithReworkEdge(maxIterations uint32) workflow.WorkflowDocument {
+	return workflow.WorkflowDocument{
+		SchemaVersion: "1",
+		Nodes: []workflow.Node{
+			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"next"}},
+			{Key: "implement", Type: workflow.NodeRouter, Outcomes: []string{"done"}},
+			{Key: "end", Type: workflow.NodeEnd},
+		},
+		Edges: []workflow.Edge{
+			{Key: "start-to-implement", From: "start", Outcome: "next", To: "implement"},
+			{Key: "implement-to-end", From: "implement", Outcome: "done", To: "end"},
+			{
+				Key: "end-to-implement-rework", From: "end", To: "implement",
+				Kind: workflow.EdgeCompletionRework, ReworkPolicy: &workflow.ReworkPolicy{MaxIterations: maxIterations},
+			},
+		},
+	}
+}
+
+func TestEvaluateCompletionCandidate_Rework_ValidReworkEdgeUnderBudget(t *testing.T) {
+	ctx := context.Background()
+	doc := requiredEvidenceCompletionPolicy()
+	uow, ids, run := completionCandidateFixture(t, documentWithReworkEdge(3), &doc)
+	// No evidence seeded — the ladder is unsatisfied, but a valid,
+	// under-budget rework edge exists, so this must resolve to REWORK, not
+	// BLOCK.
+
+	cmd := evaluateCompletionCandidateCmd("idem-eval-1")
+	cmd.ExpectedVersion = run.Version
+	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	if err != nil {
+		t.Fatalf("EvaluateCompletionCandidate: %v", err)
+	}
+	if result.Outcome != runtime.CompletionOutcomeRework {
+		t.Fatalf("result = %+v, want REWORK", result)
+	}
+	if result.ReworkNodeKey != "implement" || result.ReworkNodeRunID == "" {
+		t.Fatalf("result = %+v, want a new activation on %q", result, "implement")
+	}
+
+	updatedRun, err := uow.Snapshot.Runtime().GetWorkflowRun(ctx, string(run.ID))
+	if err != nil {
+		t.Fatalf("GetWorkflowRun: %v", err)
+	}
+	if updatedRun.State != runtimedomain.WorkflowRunRunning {
+		t.Fatalf("run.State = %s, want RUNNING", updatedRun.State)
+	}
+	item, err := uow.Snapshot.Work().GetWorkItem(ctx, string(run.WorkItemID))
+	if err != nil {
+		t.Fatalf("GetWorkItem: %v", err)
+	}
+	if item.Status != workdomain.WorkItemActive {
+		t.Fatalf("work item status = %s, want unchanged ACTIVE (ADR-021: REWORK leaves WorkItem ACTIVE)", item.Status)
+	}
+
+	newNodeRun, err := uow.Snapshot.Runtime().GetNodeRun(ctx, result.ReworkNodeRunID)
+	if err != nil {
+		t.Fatalf("GetNodeRun(%s): %v", result.ReworkNodeRunID, err)
+	}
+	if newNodeRun.NodeKey != "implement" || newNodeRun.State != runtimedomain.NodeRunPending {
+		t.Fatalf("new node run = %+v, want NodeKey=implement State=PENDING", newNodeRun)
+	}
+}
+
+// TestEvaluateCompletionCandidate_Block_ReworkBudgetExhausted proves
+// GC-INV-29's own extension of ADR-021's rule: a rework edge that DOES
+// exist but whose own budget is already spent is treated exactly like no
+// edge at all — BLOCK, never a silent extra round. Simulated by seeding
+// TWO prior SUCCEEDED "end" NodeRuns (round 1's original evaluation, round
+// 2's first rework) ahead of the real one completionCandidateFixture
+// itself created (round 3) — countEndReaches counts all of them, so this
+// candidate is round 3 against a MaxIterations of 2.
+func TestEvaluateCompletionCandidate_Block_ReworkBudgetExhausted(t *testing.T) {
+	ctx := context.Background()
+	doc := requiredEvidenceCompletionPolicy()
+	uow, ids, run := completionCandidateFixture(t, documentWithReworkEdge(2), &doc)
+	seedPriorEndReach(t, uow, run, "end-prior-1")
+	seedPriorEndReach(t, uow, run, "end-prior-2")
+
+	cmd := evaluateCompletionCandidateCmd("idem-eval-1")
+	cmd.ExpectedVersion = run.Version
+	result, err := runtime.EvaluateCompletionCandidate(ctx, uow, ids, clock.System{}, cmd, runtime.EvaluateCompletionCandidateRequest{RunID: string(run.ID)})
+	if err != nil {
+		t.Fatalf("EvaluateCompletionCandidate: %v", err)
+	}
+	if result.Outcome != runtime.CompletionOutcomeBlock {
+		t.Fatalf("result = %+v, want BLOCK", result)
+	}
+	if !strings.Contains(result.Reason, runtime.ReasonReworkBudgetExhausted) {
+		t.Fatalf("result.Reason = %q, want it to mention %q", result.Reason, runtime.ReasonReworkBudgetExhausted)
+	}
+}
+
+// seedPriorEndReach directly inserts an extra SUCCEEDED "end" NodeRun —
+// simulating an earlier round's own completion candidate having already
+// reached END (test setup for the rework-budget test above; see this
+// file's own package doc comment on why direct repository seeding is used
+// throughout instead of actually driving multiple real REWORK rounds).
+func seedPriorEndReach(t *testing.T, uow *fake.UnitOfWork, run runtimedomain.WorkflowRun, nodeRunID string) {
+	t.Helper()
+	ctx := context.Background()
+	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		nodeRun, err := runtimedomain.NewNodeRun(
+			runtimedomain.NodeRunID(nodeRunID), run.ID, "end", 1, 0, nil, "input-hash", "",
+		)
+		if err != nil {
+			return err
+		}
+		nodeRun.State = runtimedomain.NodeRunSucceeded
+		_, err = tx.Runtime().CreateNodeRun(ctx, nodeRun)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed prior end reach %s for run %s: %v", nodeRunID, run.ID, err)
 	}
 }

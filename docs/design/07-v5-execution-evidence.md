@@ -364,14 +364,16 @@
      đúng tiền lệ `deterministicJoinNodeRunID` (`advance.go`) đã dùng sha256 làm ID thay vì string
      concatenation thuần.
 
-  V5-11 giờ **ĐỦ DỮ KIỆN** — không còn câu hỏi scoping nào mở. PR0 (schema foundation) đã xong. PR1
-  (`EvaluateCompletionCandidate`, `internal/app/runtime/completion_policy.go`) triển khai PASS/BLOCK/FAIL
-  đầy đủ — phạm vi điều chỉnh so với đề xuất ban đầu ("PASS+BLOCK" / "REWORK+FAIL") sau khi phát hiện
-  FAIL's side effect tái dùng nguyên `openWorkItemBlockerTx` có sẵn (không cần cơ chế mới), nên PR1 gồm
-  cả ba outcome không cần cơ chế mới; chỉ **REWORK** (PR2) còn cần route-lookup+activation-creation thật
-  sự mới, dùng `Edge.Kind=COMPLETION_REWORK` (V5-10B). Xem `baocaov5checklist.md`'s "V5-11 — PR1" cho đầy
-  đủ quyết định thiết kế (khi nào FAIL vs BLOCK, ReleaseSet gating, approval-satisfaction semantics,
-  evidence-freshness qua "latest activation per lineage").
+  V5-11 giờ **ĐÃ TRIỂN KHAI ĐẦY ĐỦ CẢ BỐN OUTCOME**, qua 3 PR: PR0 (schema foundation —
+  `CompletionPolicyRef`+assurance ladder), PR1 (`EvaluateCompletionCandidate`,
+  `internal/app/runtime/completion_policy.go` — PASS/BLOCK/FAIL; phạm vi điều chỉnh so với đề xuất ban
+  đầu "PASS+BLOCK"/"REWORK+FAIL" sau khi phát hiện FAIL's side effect tái dùng nguyên
+  `openWorkItemBlockerTx` có sẵn, không cần cơ chế mới), và PR2 (REWORK — tra `Edge.Kind=
+  COMPLETION_REWORK` (V5-10B) trên END node đã reach, kiểm `ReworkPolicy.MaxIterations` qua đếm số lần
+  END đó từng SUCCEEDED trước đó, tạo đúng một NodeRun activation PENDING mới cho node target). Xem
+  `baocaov5checklist.md`'s "V5-11 — PR1"/"V5-11 — PR2" cho đầy đủ quyết định thiết kế (khi nào FAIL vs
+  BLOCK, ReleaseSet gating, approval-satisfaction semantics, evidence-freshness qua "latest activation
+  per lineage", vì sao NodeRun mới cố ý dừng ở PENDING chưa được schedule thật).
 - **Verify:** maker claim vs gate matrix, stale evidence, required-level skip, approval missing; ma trận
   bốn outcome × transition; test `REWORK` khi graph không có rework edge trả `BLOCK`; test `FAIL` tạo
   đúng một blocker `COMPLETION_POLICY_FAILED` và không tự reactivate WorkItem; test restart giữa decision
