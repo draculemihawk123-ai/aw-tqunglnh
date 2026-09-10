@@ -148,6 +148,18 @@ func (l AssuranceLevel) Valid() bool {
 	return ok
 }
 
+// AssuranceLevelOrder returns every valid AssuranceLevel in the exact
+// canonical order a consumer (V5-11's own CompletionPolicy evaluator,
+// internal/app/runtime) MUST process them in — never the order a
+// CompletionRules document's own RequiredAssurance array happens to list
+// them in (see CompletionRules's own doc comment on why array order is
+// never trusted).
+func AssuranceLevelOrder() []AssuranceLevel {
+	return []AssuranceLevel{
+		AssuranceStatic, AssuranceLint, AssuranceUnit, AssuranceIntegration, AssuranceE2E, AssuranceHuman,
+	}
+}
+
 // ApprovalRequirement is one authoring-time declaration that a named set
 // of roles must have decided an approval before its own AssuranceRequirement
 // counts as satisfied — mirrors workflow.ApprovalNodeConfig's own

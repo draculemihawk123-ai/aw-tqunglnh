@@ -3798,3 +3798,106 @@ go test -count=1 ./...                                             # PASS toàn 
 
 **Việc còn lại:** commit (cùng branch cũ hay branch mới — quyết định khi commit, xem message tiếp theo),
 push, mở PR, chờ CI 6/6, merge. Sau đó bắt đầu PR1 (CompletionPolicy service, PASS+BLOCK trước).
+
+**Kết quả:** PR #15, 6/6 CI checks pass NGAY LẦN CHẠY ĐẦU, squash-merged 2026-09-10, merge commit
+`6db1efd`. `CompletionRules` có V2 assurance ladder; `WorkflowDocument.CompletionPolicyRef` resolve được
+qua đúng pipeline `workflowcompiler` có sẵn.
+
+## V5-11 — PR1: CompletionPolicy service, PASS+BLOCK+FAIL (branch `feat/v5-11-completion-policy-service`,
+based on `origin/master` sau PR #15)
+
+**Bối cảnh:** người dùng bảo "start on pr1" ngay sau khi PR #15 merge — bắt đầu phần service thật của
+V5-11 (contract 2), theo đúng kế hoạch 3-PR đã đề xuất trước đó.
+
+**Quyết định phạm vi (điều chỉnh so với đề xuất ban đầu "PASS+BLOCK / REWORK+FAIL"):** phát hiện khi bắt
+tay code — FAIL's side effect (mở `WorkItemBlocker` typed `COMPLETION_POLICY_FAILED`) tái dùng NGUYÊN
+`openWorkItemBlockerTx` đã có sẵn từ V4-12C, không cần cơ chế mới nào — chỉ REWORK mới cần cơ chế THẬT SỰ
+MỚI (tra rework route từ V5-10B's edge kind + tạo activation). Vì vậy đổi phạm vi PR1 thành
+**PASS+BLOCK+FAIL** (cả ba outcome không cần cơ chế mới), PR2 chỉ còn **REWORK** (outcome duy nhất cần
+route-lookup+activation-creation thật sự mới).
+
+**Nghiên cứu trước khi code** (qua Explore agent, xác nhận lại bằng đọc code thật trước khi dùng):
+- `runtime.DecisionArtifact` đã tồn tại (`internal/domain/runtime/decision.go`), ID do caller tự mint,
+  KHÔNG tự làm "replay trả kết quả cũ" (bản thân `RecordDecisionArtifact` trả
+  `ErrPersistenceAlreadyExists` khi trùng ID) — phải tự implement replay-check ở tầng app.
+- `deterministicJoinNodeRunID` (`advance.go`) là tiền lệ sha256-làm-ID (không phải string concatenation
+  thuần) — mirror đúng shape cho 3 ID mới (DecisionArtifact/Event/FailBlocker).
+- `openWorkItemBlockerTx` (`internal/app/runtime/blocker.go`) dùng lại được nguyên cho FAIL.
+- `tx.Events().Append` tự ghi outbox row trong cùng transaction (GC-INV-16) — "append event" và "tạo
+  outbox record" trong contract 2 là MỘT lời gọi, không phải hai.
+- `ApprovalRequest` (không phải "Approval") + `tx.Approvals().ListApprovalRequestsForRun` đã có sẵn, chỉ
+  scope theo Run — khớp đúng "join không cross-Run" đã chốt trước đó.
+- `tx.Work().ListReleaseSetsForFamily` + so `.State == ReleaseSetSealed` là pattern có sẵn
+  (`EligibilityAuthority.IsReleaseAuthorized`, V5-10A).
+- `tx.Runtime().ListWorkflowRunsForWorkItem` đã có sẵn — dùng để check sibling-Run invariant.
+- Pattern `tx.Receipts().Load/Record` (idempotent-replay per-invocation) là lớp KHÁC, THÊM VÀO, tách biệt
+  với replay check per-candidate của DecisionArtifact — giữ CẢ HAI lớp, đúng contract 2.
+
+**Quyết định thiết kế (một số điểm KHÔNG được đặc tả chi tiết trong 2 contract, tự quyết định có lý do,
+ghi rõ để review lại nếu cần):**
+1. **FAIL chỉ dành cho lỗi cấu hình/evaluation, KHÔNG dành cho "requirements chưa đạt"** — ADR-021 không
+   nói rõ khi nào FAIL fires (chỉ nói rõ REWORK-vs-BLOCK dựa theo rework edge). Quyết định: FAIL khi
+   `CompletionPolicyRef` là nil, không resolve được, sai category, hoặc hash không khớp
+   ExecutionManifest — tức "service không thể evaluate", khác hẳn BLOCK ("evaluate được, chưa đạt yêu
+   cầu"). Sibling-Run-inconsistency CŨNG là BLOCK (không phải FAIL) — đúng quyết định "join" đã chốt
+   trước đó.
+2. **PR1: ladder không đạt LUÔN LUÔN → BLOCK, kể cả khi (giả sử) có rework edge hợp lệ** — vì REWORK
+   chưa có cơ chế thật (PR2's việc); đây là default an toàn, bảo thủ — không rework qua cơ chế chưa xây.
+3. **BLOCK không mở `WorkItemBlocker` row** — ADR-021's bảng chỉ ghi "kèm blocker" cho FAIL, không cho
+   BLOCK; hai state transition (Run BLOCKED, WorkItem BLOCKED) tự nó là tín hiệu durable đủ.
+4. **ReleaseSet gating: gia đình KHÔNG có ReleaseSet nào → bỏ qua check** (coi như thoả mãn) — một
+   workflow không hề mutate gì sẽ không bao giờ phải đi qua luồng ReleaseSet của V5-10A chỉ để complete;
+   gia đình CÓ ReleaseSet thì bản mới nhất phải SEALED (không ABANDONED/CREATED).
+5. **Approval requirement thoả mãn = có ÍT NHẤT MỘT `ApprovalRequest` cho Run này `State=DECIDED` với
+   `DecidedRole` nằm trong `AuthorizedRoles`** — KHÔNG check `DecidedOutcome` cụ thể (approve/reject):
+   routing approve/reject đã là việc của chính graph (APPROVAL node's Outcomes/Edges) TRƯỚC khi tới
+   END/VERIFYING; CompletionPolicy chỉ xác nhận evidence tồn tại, không lặp lại logic routing.
+6. **"Evidence còn fresh" (contract assurance-level trước đó) = evidence của Attempt CUỐI CÙNG (cao nhất
+   AttemptNumber) thuộc NodeRun activation MỚI NHẤT (cao nhất ActivationSequence) theo từng lineage
+   (NodeKey+BranchTokenID)** — dùng lại đúng dedup logic `computeRunNodeStateSummary` (completion.go) đã
+   có, factor thành `latestNodeRunIDsByLineage` dùng chung. KHÔNG cross-check RevisionSet hash — quá suy
+   đoán để tự quyết định ý nghĩa "RevisionSet hiện tại" giữa một Run có COMMAND node mutate workspace.
+7. **Level order (V2 ladder) do domain code định nghĩa** — thêm `policy.AssuranceLevelOrder()` (export
+   mới, PR1 là consumer thật đầu tiên) thay vì để `internal/app/runtime` tự đoán thứ tự.
+
+**Thực hiện:** `internal/app/runtime/completion_policy.go` (mới) —
+`EvaluateCompletionCandidate(ctx, uow, clk, cmd, req{RunID})` là entry point DUY NHẤT được phép chuyển
+Run VERIFYING→{SUCCEEDED,BLOCKED,FAILED} hay WorkItem ACTIVE→{DONE,BLOCKED}. `cmd.ExpectedVersion` là
+CAS fence (đúng quy ước `cmd.ExpectedVersion` đã dùng ở mọi command khác, vd `CreateReleaseSet`), không
+làm field riêng trong request. Luồng: standard receipt check (tầng ngoài) → load Run/ExecutionManifest/
+WorkflowVersion/Document → `computeRunNodeStateSummary` (tái dùng từ completion.go) tìm END node run →
+derive `decisionArtifactID` → gather evidence/approvals/releaseGate → build `completionCandidateInput`
+(deterministic, mọi slice đã sort) → **replay check TRƯỚC** (so `existing.Input` byte-for-byte) → CHỈ
+sau đó mới check Run.State==VERIFYING + `cmd.ExpectedVersion` → load WorkItem →
+`decideCompletionOutcome` (sibling-Run check → resolve policy → ReleaseSet gate → ladder eval) →
+`applyCompletionOutcomeTx` (state transitions theo outcome, blocker cho FAIL) → ghi DecisionArtifact →
+append `COMPLETION_DECIDED` (Sequence = Run's version SAU khi transition, mirror
+`transitionRunToVerifyingTx`'s convention) → ghi receipt.
+
+**Test (mới hoàn toàn):** `internal/app/runtime/completion_policy_test.go` — 9 test, dựng fixture qua
+`workflowDocumentV1()` (start->end có sẵn) + `startWorkflowRunFixture`-style + `AdvanceRun` để tới thật
+VERIFYING; Evidence/ApprovalRequest/sibling-Run được seed TRỰC TIẾP qua repository calls (bỏ qua
+CommandNodeExecutor/ResolveApproval/StartWorkflowRun's precondition thật — test layer này chỉ test
+`EvaluateCompletionCandidate` chính nó, không re-prove các layer dưới đã có test riêng):
+- PASS (V1 flat, evidence đủ); BLOCK (V1 flat, thiếu evidence); FAIL (không pin CompletionPolicyRef);
+  replay (idempotency key KHÁC, cùng kết quả — chứng minh lớp replay theo candidate, không chỉ theo
+  receipt); conflict (input đổi giữa 2 lần gọi cùng candidate → `ErrCompletionDecisionConflict`); BLOCK
+  (sibling Run non-terminal, ladder tự nó đã đạt); PASS (V2 ladder + approval); BLOCK (V2 ladder, thiếu
+  approval); BLOCK (ReleaseSet tồn tại nhưng chưa SEALED).
+
+**Verify:**
+```
+go build ./...                                                    # sạch
+go vet ./...                                                      # sạch
+go run ./cmd/docs-coverage-check                                  # debt = 0
+gofmt -l internal/app/runtime/completion_policy.go
+  internal/app/runtime/completion_policy_test.go
+  internal/domain/policy/policy.go                                # rỗng sau gofmt -w (CRLF do
+                                                                    # git-on-Windows, đúng precedent)
+go test -count=1 ./...                                            # PASS toàn bộ (lần 1 + lần 2,
+                                                                   # không flake)
+```
+
+**Việc còn lại:** commit, push nhánh `feat/v5-11-completion-policy-service`, mở PR, chờ CI 6/6, merge.
+Sau đó PR2 (REWORK — tra rework route từ `Edge.Kind=COMPLETION_REWORK` (V5-10B) + tạo activation mới)
+là phần còn lại duy nhất của V5-11.
