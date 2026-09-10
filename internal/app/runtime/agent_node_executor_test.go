@@ -274,6 +274,20 @@ func defaultInScopeDiff() ports.WorkspaceDiff {
 	}
 }
 
+// defaultReadOnlyDiff is GateNodeExecutor's own fixture default (2026-09-10,
+// buildEvidence's strictReadOnly parameter) — unlike defaultInScopeDiff,
+// Files is empty: a real, correctly-behaving Gate evaluator never changes
+// anything in any of its own mounts (GC-INV-25's own "scratch output nằm
+// ngoài source workspace"), so the fixture's own default diff must reflect
+// that, not defaultInScopeDiff's "a file changed but stayed within write
+// scope" shape every AGENT/COMMAND test fixture legitimately still wants.
+func defaultReadOnlyDiff() ports.WorkspaceDiff {
+	return ports.WorkspaceDiff{
+		RepositoryID:    "repo-1",
+		CurrentRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef", WorkspaceGeneration: 1},
+	}
+}
+
 func loadAttemptVersion(t *testing.T, uow *fake.UnitOfWork, attemptID string) uint64 {
 	t.Helper()
 	var version uint64

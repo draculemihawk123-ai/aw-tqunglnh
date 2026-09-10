@@ -187,9 +187,28 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 // e.buildEvidence below is a thin, unchanged wrapper. request stays typed
 // as ports.AgentExecutionRequest for the identical reason
 // resolveExecutionResources's own doc comment already gives.
+//
+// strictReadOnly is GateNodeExecutor's own addition (2026-09-10 V5 roadmap
+// follow-up, closing the "Gate read-only enforcement is just a mount
+// descriptor" gap the 2026-09-10 post-merge review flagged): false for
+// AGENT/COMMAND (unchanged — scopeguard.ValidateDiffs' own WorkItem-wide
+// write-scope check is the correct, sufficient bar for a node that legitimately
+// has WRITE grants of its own). A Gate is read-only BY DESIGN with no
+// exception anywhere (this package's own gate_node_executor.go doc
+// comment), so scopeguard.ValidateDiffs alone is NOT sufficient for it:
+// that check only rejects a change OUTSIDE the owning WorkItem's own write
+// scope — it would silently accept a Gate writing into a repository some
+// OTHER node in the SAME WorkItem legitimately holds WRITE access to, even
+// though the Gate itself was never granted any. strictReadOnly=true
+// additionally requires every one of this attempt's own mounts to have a
+// COMPLETELY EMPTY diff — GC-INV-25 already requires a Gate's own scratch
+// output to live outside its source workspace mounts entirely, so a real,
+// correctly-behaving Gate evaluator never has a legitimate reason to
+// change anything inside any of them.
 func buildEvidence(
 	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, store ports.ArtifactStore, workspaces ports.WorkspaceProvider,
 	req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
+	strictReadOnly bool,
 ) (*ports.AttemptFinalizationEvidence, error) {
 	diffs := make([]ports.WorkspaceDiff, 0, len(request.WorkspaceMounts))
 	for _, mount := range request.WorkspaceMounts {
@@ -212,6 +231,11 @@ func buildEvidence(
 	// transaction."
 	if err := scopeguard.ValidateDiffs(request.EffectiveScope, diffs); err != nil {
 		return nil, err
+	}
+	if strictReadOnly {
+		if err := validateStrictlyReadOnlyDiffs(diffs); err != nil {
+			return nil, err
+		}
 	}
 
 	revisions := make([]workspace.Revision, 0, len(diffs))
@@ -274,11 +298,30 @@ func buildEvidence(
 	}, nil
 }
 
+// validateStrictlyReadOnlyDiffs is buildEvidence's own strictReadOnly=true
+// check (GateNodeExecutor only, see that parameter's own doc comment) — a
+// Gate's real diffs must be completely empty across every one of its own
+// mounts, not merely "within the owning WorkItem's own write scope"
+// (scopeguard.ValidateDiffs' own, more permissive bar, still checked first
+// either way). Wraps scopeguard.ErrScopeViolation so every caller's own
+// existing `errors.Is(err, scopeguard.ErrScopeViolation)` handling (both
+// gate_node_executor.go call sites) already covers this new check too,
+// with no separate error-classification branch needed anywhere.
+func validateStrictlyReadOnlyDiffs(diffs []ports.WorkspaceDiff) error {
+	for _, diff := range diffs {
+		if len(diff.Files) > 0 {
+			return fmt.Errorf("%w: gate mount %s changed %d file(s) despite being read-only by design",
+				scopeguard.ErrScopeViolation, diff.RepositoryID, len(diff.Files))
+		}
+	}
+	return nil
+}
+
 func (e *AgentNodeExecutor) buildEvidence(
 	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
 	resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
 ) (*ports.AttemptFinalizationEvidence, error) {
-	return buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome)
+	return buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, false)
 }
 
 // terminalEventSequence returns the highest agent_events.Sequence durably

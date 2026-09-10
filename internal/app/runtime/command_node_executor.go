@@ -275,7 +275,7 @@ func (e *CommandNodeExecutor) classify(
 		}, nil
 	}
 
-	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome)
+	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, false)
 	if err != nil {
 		if errors.Is(err, scopeguard.ErrScopeViolation) {
 			return ports.NodeExecutionResult{

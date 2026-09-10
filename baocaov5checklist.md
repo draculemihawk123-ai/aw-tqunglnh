@@ -3984,3 +3984,86 @@ go test -count=1 ./...                                   # PASS toàn bộ (lầ
 **Việc còn lại:** commit, push nhánh `feat/v5-11-completion-policy-rework`, mở PR, chờ CI 6/6, merge. Sau
 đó V5-11 (CompletionPolicy service) coi như HOÀN THÀNH đầy đủ cả 4 outcome — bước tiếp theo trong roadmap
 là câu hỏi kiến trúc "Gate read-only enforcement" (chưa scope) rồi tới V5-12.
+
+**Kết quả:** PR #17, 5/6 pass lần đầu — `Linux race and stability (V0-12)` fail ở lần chạy thứ 9/10 của
+offline suite; tải artifact `v0-12-stability-report` về xác nhận CHÍNH XÁC cùng một flake đã biết
+(`TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns`, `internal/adapters/process`,
+package không hề đụng tới trong PR2), không đoán mà xem trực tiếp `suite-run-9.log`. `gh run rerun
+--failed` → 6/6 xanh. Squash-merged 2026-09-10, merge commit `976f18c`.
+
+## Gate read-only enforcement — nghiên cứu + đóng gap thật (2026-09-10, tự quyết định, không cần hỏi)
+
+**Bối cảnh:** người dùng bảo "sau khi xong, nếu không cần tôi quyết định cái gì thì tự động start sang
+task tiếp theo đi" — tiếp tục ngay, không dừng hỏi "làm gì tiếp" nữa trừ khi thật sự cần quyết định của
+người dùng. Item tiếp theo trong roadmap (từ bài rà soát 2026-09-10) là "Gate read-only enforcement mới
+chỉ là descriptor, evaluator vẫn nhận host path thật — cần sandbox thật, quyết định kiến trúc lớn hơn."
+
+**Nghiên cứu (kết luận: KHÔNG phải quyết định kiến trúc mới — đã có sẵn, chỉ thiếu một chỗ nối):**
+- `internal/adapters/process/isolation.go`'s `IsolationChecker` (V5-05, đã confirm với người dùng từ
+  trước): `ENFORCED_ISOLATED` LUÔN fail-closed (`ErrIsolationEnforcementUnavailable`) vì "codebase này
+  không có real OS-level filesystem/network sandbox cho spawned child process" — đây là quyết định
+  Alpha-wide ĐÃ CHỐT từ V5-05, áp dụng cho MỌI executor (Agent/Command/Gate như nhau), không phải gap
+  riêng của Gate.
+- `OPERATOR_TRUSTED_LOCAL` (tier duy nhất chạy được ở Alpha) được tài liệu hoá chính là "operator-granted
+  trust, không phải least-privilege enforcement" — và cơ chế bù đắp đã có sẵn:
+  `internal/app/scopeguard.ValidateDiffs`, "post-execution guard" đã wire vào TẤT CẢ executor
+  (Agent/Command/Gate) qua `buildEvidence` dùng chung.
+- Đọc kỹ `buildEvidence` (agent_node_executor_resources.go): diff được tính cho MỌI mount (kể cả mount
+  Gate đã force read-only ở tầng descriptor) — `workspaces.Diff` chạy thật, không skip. Nghĩa là MỘT
+  PHẦN bảo vệ đã có thật: bất kỳ write nào NGOÀI write-scope của cả WorkItem đều đã bị `ValidateDiffs`
+  bắt.
+- **Gap THẬT tìm thấy:** `ValidateDiffs` chỉ check theo `EffectiveScope` của WorkItem (dùng chung cho
+  scope-check của Agent/Command, đúng vì các node đó CÓ quyền ghi thật). Gate's own `effectiveScope`
+  KHÔNG bị ép rỗng (chỉ `workspaceMounts.Access` bị ép read-only, xem `gatherGateExecutionInputs`) — nếu
+  MỘT NODE KHÁC trong CÙNG WorkItem có WRITE grant hợp lệ trên MỘT repo, và Gate (được mount READ-ONLY
+  vào CHÍNH repo đó) lỡ ghi gì đó, `ValidateDiffs` sẽ KHÔNG bắt được (vì write đó vẫn "trong scope của
+  WorkItem"), dù Gate CHÍNH NÓ chưa từng được cấp quyền ghi. Đây là gap thật, hẹp, có thể đóng ngay —
+  không phải "cần sandbox mới."
+
+**Quyết định (tự quyết vì đủ hẹp, không cần input mới từ người dùng — mọi tiền đề đã được người dùng
+chốt sẵn ở V5-05):** thêm tham số `strictReadOnly bool` vào `buildEvidence` (dùng chung Agent/Command/
+Gate) — `false` cho Agent/Command (không đổi hành vi), `true` cho CẢ HAI call site của Gate. Khi true,
+sau khi `scopeguard.ValidateDiffs` pass, check THÊM: MỌI diff phải HOÀN TOÀN RỖNG (`len(diff.Files) ==
+0`) — không chỉ "trong scope", mà "không đổi gì cả", đúng với chính doc comment sẵn có của package này
+("A Gate is read-only by design") và GC-INV-25 ("mọi scratch output nằm ngoài source workspace" — nên
+Gate hợp lệ không bao giờ có lý do đổi bất cứ file nào trong mount của mình). Lỗi mới bọc lại
+`scopeguard.ErrScopeViolation` (không phải sentinel mới) nên CẢ HAI `errors.Is(err, scopeguard.
+ErrScopeViolation)` đã có sẵn trong gate_node_executor.go tự động cover luôn, không cần sửa thêm gì ở
+đó.
+
+**Lỗi phát hiện lúc verify:** fixture dùng chung `newTestGateNodeExecutor` hard-code
+`diff: defaultInScopeDiff()` (Files có 1 entry "M **/src/main.go") — vốn chỉ để mô phỏng "đổi file
+nhưng vẫn trong write scope" cho test Command/Agent, KHÔNG có ý nghĩa thật cho Gate (chưa từng cố tình
+mô phỏng "Gate ghi gì đó"). Check strict mới đúng đắn phát hiện fixture này SAI với thực tế Gate — sửa
+bằng cách thêm `defaultReadOnlyDiff()` (Files rỗng) làm default MỚI cho `newTestGateNodeExecutor`, giữ
+nguyên `defaultInScopeDiff()` cho mọi chỗ khác (Agent/Command test, và 1 test Gate khác — stale-revision
+— tự construct executor riêng, không qua path diff-check nên không bị ảnh hưởng).
+
+**Thực hiện:**
+- `internal/app/runtime/agent_node_executor_resources.go` — `buildEvidence` +tham số `strictReadOnly
+  bool`; hàm mới `validateStrictlyReadOnlyDiffs(diffs)`; `AgentNodeExecutor.buildEvidence` wrapper
+  truyền `false`.
+- `internal/app/runtime/command_node_executor.go` — call site truyền `false`.
+- `internal/app/runtime/gate_node_executor.go` — CẢ HAI call site truyền `true`.
+- `internal/app/runtime/agent_node_executor_test.go` — thêm `defaultReadOnlyDiff()`.
+- `internal/app/runtime/gate_node_executor_test.go` — `newTestGateNodeExecutor` đổi default sang
+  `defaultReadOnlyDiff()`.
+
+**Test (mới hoàn toàn):** `TestGateNodeExecutor_MountChangedDespiteReadOnly_FailsWithScopeViolation` —
+dùng CHÍNH `defaultInScopeDiff()` (diff hợp lệ trong write scope của WorkItem) làm workspace diff cho
+Gate → phải FAILED/SCOPE_VIOLATION, chứng minh chính strict check MỚI bắt được (không phải
+`ValidateDiffs` cũ, vốn sẽ PASS với diff này). Toàn bộ test Gate cũ (11+ chỗ dùng
+`newTestGateNodeExecutor`) vẫn pass không đổi assertion sau khi đổi fixture default.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l <5 file .go đổi>                                               # rỗng sau gofmt -w (CRLF)
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2)
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Đây là fix ĐÓNG hẳn item "Gate read-only
+enforcement" trong danh sách rà soát 2026-09-10 — không còn open item nào từ bài rà soát đó. Sau khi
+merge, tiếp tục V5-12 (Maker/checker isolation) theo đúng chỉ dẫn tự động chuyển task.

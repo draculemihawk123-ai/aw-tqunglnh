@@ -165,7 +165,7 @@ func newTestGateNodeExecutor(
 	interruptions = &bridgeFakeInterruptionStore{uow: uow}
 	reconciler = &bridgeFakeWorkspaceReconciler{}
 	workspaces := &bridgeFakeWorkspaceProvider{
-		diff:            defaultInScopeDiff(),
+		diff:            defaultReadOnlyDiff(),
 		captureRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: fixtureRepo1PinnedRevision, WorkspaceGeneration: 1},
 	}
 	executor = runtime.NewGateNodeExecutor(
@@ -426,6 +426,44 @@ func TestGateNodeExecutor_StaleRevision_FailsClosedWithoutSpawning(t *testing.T)
 	}
 	if len(supervisor.Calls) != 0 {
 		t.Fatalf("supervisor.Calls = %d, want 0 — a gate must never evaluate against a stale revision", len(supervisor.Calls))
+	}
+}
+
+// TestGateNodeExecutor_MountChangedDespiteReadOnly_FailsWithScopeViolation
+// closes the "Gate read-only enforcement is just a mount descriptor" gap
+// the 2026-09-10 post-merge review flagged: a Gate is read-only by design
+// (this package's own doc comment), so even a diff that IS within the
+// owning WorkItem's own write scope (defaultInScopeDiff — the exact
+// fixture AGENT/COMMAND tests use for a legitimate change) must still be
+// rejected for a Gate specifically. This proves buildEvidence's own
+// strictReadOnly=true check (agent_node_executor_resources.go) actually
+// fires — not just the generic scopeguard.ValidateDiffs check every other
+// executor already relies on alone, which an in-scope diff would satisfy.
+func TestGateNodeExecutor_MountChangedDespiteReadOnly_FailsWithScopeViolation(t *testing.T) {
+	uow, ids, store, runID, nodeRunID, attemptID, jobLease := gateFixture(t, gateFixtureOptions{})
+	supervisor := &fake.ProcessSupervisor{
+		Result: ports.ProcessResult{ExitCode: 0, TreeQuiesced: true},
+		Stdout: string(gateStdout(t, map[string]map[string]string{"lint": {"verdict": "PASS"}})),
+	}
+	registry := eventschema.NewRegistry()
+	agentevents.RegisterEventSchemas(registry)
+	workspaces := &bridgeFakeWorkspaceProvider{
+		diff:            defaultInScopeDiff(),
+		captureRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: fixtureRepo1PinnedRevision, WorkspaceGeneration: 1},
+	}
+	executor := runtime.NewGateNodeExecutor(
+		uow, ids, store, workspaces, supervisor, fake.SecretResolver{}, registry, redact.NewMatcher(), bridgeFakeCheckpointStore{}, clock.System{},
+		&bridgeFakeInterruptionStore{uow: uow}, &bridgeFakeWorkspaceReconciler{},
+	)
+
+	result, err := executor.Execute(context.Background(), ports.NodeExecutionRequest{
+		AttemptID: attemptID, NodeRunID: nodeRunID, RunID: runID, JobLease: jobLease,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.State != runtimedomain.ExecutionAttemptFailed || result.ErrorCode != errorcode.CodeScopeViolation {
+		t.Fatalf("result = %+v, want FAILED/SCOPE_VIOLATION — a gate's own mount must never actually change, even a change that would be within the owning WorkItem's own write scope", result)
 	}
 }
 

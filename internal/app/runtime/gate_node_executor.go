@@ -322,7 +322,7 @@ func (e *GateNodeExecutor) classify(
 		// event always exists, and a Gate's own mounts are always
 		// read-only (forceReadOnlyMounts) — its diff-manifest set is
 		// always structurally empty, never a real mutation to report.
-		evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, nil)
+		evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, nil, true)
 		if err != nil {
 			if errors.Is(err, scopeguard.ErrScopeViolation) {
 				return ports.NodeExecutionResult{
@@ -357,7 +357,7 @@ func (e *GateNodeExecutor) classify(
 		}, nil
 	}
 
-	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome)
+	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, true)
 	if err != nil {
 		if errors.Is(err, scopeguard.ErrScopeViolation) {
 			// A Gate's own evaluator wrote something despite being
