@@ -153,6 +153,12 @@ type resolvedExecutionProfileView struct {
 		BuildID string `json:"buildId"`
 	} `json:"adapterBuild,omitempty"`
 	TimeoutSeconds uint32 `json:"timeoutSeconds"`
+	// Model is the AgentProfileDocument's own pinned Model (schedule.go's
+	// own resolveExecutionProfile: "profile.Model = agentDoc.Model") — not
+	// previously decoded here since nothing needed it before
+	// AssembleAgentExecutionRequest started populating
+	// ports.AgentExecutionRequest.Model for real (2026-09-11).
+	Model string `json:"model,omitempty"`
 	// IsolationTier and AllowedCapabilities are V5-08's own admission
 	// inputs (ADR-023, HE-02-M02) — both already pinned by schedule.go's
 	// own resolveExecutionProfile, just not previously decoded here since
