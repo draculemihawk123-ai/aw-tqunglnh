@@ -5589,3 +5589,225 @@ PR #17, branch `feat/v5-15c-recovery-availability`, 1 commit (`7260074`), CI 6/6
 attempt; xác minh workspace/revision không bị promote sau khi fence hoặc policy thắng) và V5-15E (full
 conformance matrix — mốc hoàn thành thật sự của V5-15) — theo đúng contract 5 phần, tiếp tục tự động không
 cần hỏi lại trừ khi gặp quyết định kiến trúc thật sự mới.
+
+## V5-15D — Isolation and fencing
+
+### Bối cảnh
+
+Phần 4/5 của V5-15 theo đúng contract 5 phần user đã chốt: "Scope violation. Checker write attempt. Cancel
+giữa mutating attempt. Xác minh workspace/revision không bị promote sau khi fence hoặc policy thắng." Tiếp
+tục xây trên `v5AcceptFixture`/`agent_harness_test.go` đã có từ V5-15A/B/C, tuân thủ 2 quy tắc bắt buộc
+xuyên suốt V5-15 (không sửa DB trực tiếp; mọi scenario đi qua đúng production path thật).
+
+### Nghiên cứu
+
+Chạy một background Explore agent nghiên cứu 4 mảng trước khi code — kết quả cho ra API thật cần dùng:
+
+- **Real cancel-run command**: `runtime.CancelRun(ctx, uow, ids, CancelRunRequest{RunID, Actor, Reason,
+  CorrelationID})` (`cancel_run.go`) — real entrypoint, đã tự enqueue `CANCEL_RUN_COORDINATOR` job.
+- **"Promote" nghĩa cụ thể trong codebase này**: không có state "PROMOTED" nào — khái niệm gần nhất là
+  `RepositoryWorkspace.State == RELEASED` qua `ReleaseRepositoryWorkspace`, mà chính port này TỪ CHỐI vĩnh
+  viễn một workspace đã QUARANTINED (`ErrWorkspaceQuarantined`, không có đường quay lại tại chỗ —
+  `RecreateRepositoryWorkspace` luôn tạo generation MỚI). Đây chính là "never promoted" cần chứng minh.
+- **Phát hiện quan trọng (load-bearing)**: `worker.ReconcileMutatingAttempt` so sánh HEAD SHA thật
+  (`gitworktree.Provider.CaptureRevision`) — một write CHƯA COMMIT không hề đổi giá trị này (khác với diff
+  `git status` mà scope-check dùng). Nghĩa là script thật của scenario "cancel giữa mutating attempt" BẮT
+  BUỘC phải `git commit` thật (đổi HEAD) thì reconciliation mới quan sát được mutation thật — chỉ ghi file
+  chưa commit sẽ reconcile CLEAN, làm hỏng cả scenario một cách âm thầm.
+- **`scopeguard.isAllowed`**: PathScopes rỗng cho phép TOÀN BỘ repo; cần một PathScopes THẬT hẹp hơn
+  (`["allowed"]`) để một diff thật ngoài phạm vi đó mới thực sự vi phạm.
+- **`cmd/fake-claude` không có side-effect filesystem thật nào** (ngoài file capture nội bộ) — cần thêm một
+  cơ chế ghi file thật, có kiểm soát (opt-in qua env var), để scenario "checker write attempt" chứng minh
+  được một AGENT CHECKER thật sự ghi đè lên mount thật của nó.
+
+### Quyết định (tự quyết — không cần hỏi lại)
+
+- **Scope violation**: dùng COMMAND node (đơn giản nhất) — script thật ghi ra file `leaked.txt` ở gốc repo,
+  trong khi WorkItem chỉ được cấp WRITE trong `["allowed"]`.
+- **Checker write attempt**: bắt buộc dùng AGENT node Role=CHECKER (chỉ AGENT mới có khái niệm Role của
+  V5-12; GATE luôn bị force read-only bằng cơ chế khác). Thêm `AGENTKIT_HELPER_WRITE_PATH` — một side-effect
+  thật, opt-in, vào `internal/adapters/providers/fixtures.go`'s `RunFakeProviderCLI` (dùng chung cho
+  `cmd/fake-claude`) để test có thể trỏ CHECKER's real spawned process ghi thật vào đúng mount thật của nó
+  (không phải cwd — CHECKER's own `resolveAgentWorkingDirectory` luôn fallback về scratch dir rỗng).
+- **Cancel giữa mutating attempt**: dùng COMMAND node (COMMAND tái dùng đúng `classifyCancellation`/
+  `handleMutatingCancellation` của V5-08C, theo đúng "dùng đúng đường V5-08C, không có đường terminate
+  riêng" đã locked từ V5-09).
+
+### Thực hiện phần 1 — 2 scenario đơn giản (commit đầu)
+
+- `fixture_test.go`: thêm `createChildWorkItemWithPathScopes` (PathScopes tuỳ chỉnh — `createChildWorkItem`
+  giờ chỉ là wrapper mỏng gọi hàm này với `nil`).
+- `scope_violation_test.go`: `TestV5AcceptScopeViolation_RealDiffRejectsOutOfScopeWrite` — COMMAND node thật
+  ghi `leaked.txt` ngoài `["allowed"]`; assert Run FAILED (NON_RETRYABLE, vì `CodeScopeViolation` không nằm
+  trong `RetryableErrorCodes`), Attempt.TerminationReason=SCOPE_VIOLATION, đúng 1 Attempt (không retry).
+- `internal/adapters/providers/fixtures.go`: thêm `AGENTKIT_HELPER_WRITE_PATH` — nếu set, ghi thật một file
+  tại đường dẫn đó trước khi emit protocol JSONL (production code không bao giờ set biến này —
+  `AssembleAgentExecutionRequest` chưa từng populate `Environment` cho AGENT — nên chỉ test chủ động mới
+  kích hoạt được).
+- `agent_harness_test.go`: thêm `AGENTKIT_HELPER_WRITE_PATH` vào `InheritedEnvironment` của
+  `newClaudeAdapter`.
+- `checker_write_test.go`: `TestV5AcceptCheckerWriteAttempt_RealStrictReadOnlyDiffRejectsRealMutation` —
+  AGENT CHECKER thật, `AGENTKIT_HELPER_WRITE_PATH` trỏ vào WorkingDirectory thật của mount (resolve qua
+  `f.repositoryWorkspaceHandle`+`f.provider.WorkingDirectory`, đúng cách V5-15A resolve); real fake-claude
+  ghi thật file `checker-mutation.txt` vào real repo mount dù mount bị force read-only; real
+  `validateStrictlyReadOnlyDiffs` bắt được. Assert Run FAILED/SCOPE_VIOLATION, và — bằng chứng mạnh nhất —
+  file thật đã tồn tại trên đĩa (chứng minh mutation thật đã xảy ra, không phải logic path chưa từng chạy).
+
+Cả 2 test pass ngay lần chạy đầu.
+
+### Thực hiện phần 2 — cancel giữa mutating attempt: phát hiện một gap production thật
+
+Viết `cancel_mutating_test.go` (COMMAND node thật `git commit` một thay đổi thật rồi sleep, `runtime.CancelRun`
+thật giữa chừng) — liên tục fail: `WorkflowRun` không bao giờ rời CANCELLING dù script bị kill thành công.
+Debug thực nghiệm nhiều vòng (không đoán):
+
+1. Nghi ngờ đầu tiên (sai): git lock contention giữa `CaptureRevision` polling của test và `git commit` của
+   script — sửa bằng cách chuyển sang chờ file marker thật (giống kỹ thuật V5-15C) thay vì gọi git đồng
+   thời. Không sửa được vấn đề.
+2. Debug print tạm thời trực tiếp vào `execute.go`'s `pollForCancellation` — xác nhận poller THẬT SỰ phát
+   hiện cancellation và gọi `cancelExec()` đúng ~1 giây sau `CancelRun`.
+3. Debug print vào `CommandNodeExecutor.Execute` quanh `supervisor.Run` — xác nhận process thật bị kill
+   đúng (~5.6s, khớp `defaultGracePeriod=5s`), `Supervisor.Run` trả về đúng với `result.Cancelled=true`.
+4. Vậy điểm treo nằm SAU đó — trong `classifyCancellation`/`handleMutatingCancellation`. Đọc lại code phát
+   hiện: **`handleMutatingCancellation` (code CŨ, viết từ V5-08C) chỉ CAS Attempt sang INDETERMINATE và
+   quarantine workspace (2 lệnh không nguyên tử, mỗi lệnh tự mở transaction riêng qua
+   `*sqlite.Store`), rồi trả về `ErrAttemptAlreadyTerminated` — mà `execute.go`'s `Handle()` hiểu là "đã xử
+   lý xong, KHÔNG gọi `FinalizeExecutionAttempt`". Nghĩa là NodeRun không bao giờ được chuyển trạng thái,
+   nên `reconcileCancellingRunTx`'s own `LiveCount==0` gate (completion.go) không bao giờ pass được, và
+   WorkflowRun mắc kẹt ở CANCELLING vĩnh viễn** — một gap kiến trúc thật, có từ V5-08C, chưa từng bị phát
+   hiện vì chưa ai thật sự chạy một mutating attempt bị cancel thật qua production path đầy đủ.
+
+**Dùng `AskUserQuestion` hỏi user trước khi sửa production code** (đúng tiền lệ V5-15B's AGENT-dispatch-gap)
+— trình bày phát hiện với trích dẫn file/line cụ thể, 3 lựa chọn (sửa production / document như một giới
+hạn đã biết / hướng khác). User chọn sửa production, và đưa ra một **hợp đồng sửa lỗi ràng buộc bằng văn
+bản, rất chi tiết** (verbatim, tiếng Việt):
+
+> Chọn Fix production code, làm thành commit riêng trước scenario test. Terminal state đúng của NodeRun là
+> CANCELLED.
+> State matrix:
+> Attempt → INDETERMINATE / OWNERSHIP_LOST_MUTATING
+> Workspace → QUARANTINED nếu quan sát thấy mutation
+> NodeRun → CANCELLED
+> BranchToken → CANCELLED nếu có
+> WorkflowRun → CANCELLED khi LiveCount == 0
+> WorkItem → BLOCKED với blocker RUN_CANCELLED
+> Cancel intent → COMPLETED
+> Nên triển khai thành một cancellation-finalization boundary dùng chung cho Agent và Command executor:
+> Xác nhận process đã quiesced.
+> Giữ WriteLease trong lúc capture revision và tính reconciliation verdict.
+> Trong một WithSerializedWrite:
+> Revalidate Run đang CANCELLING và Attempt/NodeRun thuộc đúng Run.
+> CAS Attempt RUNNING → INDETERMINATE.
+> Persist quarantine cho mọi workspace có mutation.
+> CAS NodeRun RUNNING → CANCELLED.
+> Dùng terminalizeBranchTokenForCancelledNodeRunTx.
+> Gọi reconcileRunTerminalityTx.
+> Nếu Run đóng thành CANCELLED, chuyển cancellation intent sang COMPLETED.
+> Append các event/outbox tương ứng và settle driving job.
+> Commit xong mới release WriteLease.
+> ErrAttemptAlreadyTerminated chỉ nên được trả sau khi toàn bộ boundary trên đã hoàn tất, thay vì ngay sau
+> khi Attempt trở thành terminal.
+> Điểm này quan trọng cho crash safety: nếu worker chết trước transaction, Attempt vẫn RUNNING và recovery
+> reaper có thể tiếp quản; nếu transaction commit, Attempt, NodeRun, Run và cancellation intent đã nhất
+> quán. Recovery reaper cũng phải gọi cùng cancellation-finalization path khi orphaned Attempt thuộc một
+> Run đang CANCELLING.
+> Các test cần có: Scenario V5-15D đầy đủ... Branch NodeRun terminalize đúng BranchToken... Replay không
+> tạo event/blocker/quarantine trùng... Failure injection trước và sau transaction không để Run mắc ở
+> CANCELLING... Cancellation intent không còn REQUESTED sau khi Run đã CANCELLED.
+
+### Thực hiện production fix (theo đúng hợp đồng trên)
+
+**Nghiên cứu API thật trước khi sửa** (background agent thứ 2, tránh đoán mò cho một thay đổi production
+lớn): đọc toàn bộ `FinalizeExecutionAttempt` (finalize.go, mẫu cho "một transaction nguyên tử, fence, CAS
+Attempt+NodeRun, reconcile terminality") và `decideCancelledOutcomeTx` (template chính xác cho thứ tự CAS
+NodeRun → load Document → `terminalizeBranchTokenForCancelledNodeRunTx` → `reconcileRunTerminalityTx`);
+xác nhận `tx.Runtime().TransitionExecutionAttempt` (đã tx-scoped) là CAS thay thế an toàn cho
+`TerminateInterruptedAttempt` cũ, nhưng KHÔNG tự append event — phải tự làm; xác nhận
+`QuarantineRepositoryWorkspace` CHƯA có bản tx-scoped nào (chỉ có `*sqlite.Store` với transaction riêng) —
+cần trích xuất theo đúng pattern "một hàm dùng chung, hai caller" mà `completeJobTx` (scheduling.go) đã có
+sẵn.
+
+1. **`internal/adapters/sqlite/workspace_lifecycle.go`**: trích xuất `quarantineRepositoryWorkspaceTx(ctx,
+   tx *sql.Tx, update)` từ `Store.QuarantineRepositoryWorkspace` — store method giờ chỉ mở tx rồi gọi hàm
+   chung.
+2. **`internal/adapters/sqlite/work.go`** + **`internal/app/ports/work.go`**: thêm
+   `WorkRepository.QuarantineRepositoryWorkspace` (tx-scoped, gọi `quarantineRepositoryWorkspaceTx`) — giờ
+   reachable qua `tx.Work()`.
+3. **`internal/app/ports/fake/work.go`**: thêm bản fake tương ứng (linear scan theo ID, cùng CAS semantics)
+   để không phá vỡ interface satisfaction của các fake-uow test khác.
+4. **`internal/app/runtime/agent_node_executor_cancellation.go`** (thay đổi lớn nhất): viết lại
+   `handleMutatingCancellation` thành `finalizeMutatingCancellation` (giữ real I/O CaptureRevision +
+   ReleaseWriteLeases ở "vỏ ngoài") gọi vào `cancelMutatingAttemptTx` — một hàm MỚI, nguyên tử, dùng
+   `uow.WithSerializedWrite` bao trọn: revalidate Run CANCELLING, CAS Attempt→INDETERMINATE + tự append
+   event `EXECUTION_ATTEMPT_TERMINATED`, quarantine mọi mount có mutation, CAS NodeRun→CANCELLED,
+   `terminalizeBranchTokenForCancelledNodeRunTx`, `reconcileRunTerminalityTx` (đây chính là nơi
+   `WorkflowRun`→CANCELLED VÀ WorkItem-blocker RUN_CANCELLED tự động xảy ra — `transitionRunToCancelledTx`
+   đã có sẵn từ V4-12C, không cần code mới cho bước này), và defensive-complete cancellation intent. Tách
+   riêng `cancelledMutatingMountVerdict` (verdict đã tính sẵn, không cần biết cơ chế capture revision cụ
+   thể) để `cancelMutatingAttemptTx` dùng chung được cho CẢ live path (AGENT/COMMAND) LẪN recovery reaper
+   (2 cơ chế capture revision khác nhau — `ports.WorkspaceProvider.CaptureRevision` thật vs
+   `worker.WorkspaceReconciler.LoadRepositoryWorkspaceRevision` hẹp hơn).
+5. **`internal/app/runtime/recovery_reaper.go`**: thêm `finalizeCancelledMutatingOrphan` + routing sớm
+   trong `recoverOneAttempt` — nếu Attempt orphan có real WriteLease (`repositoryWorkspaceID != ""`) VÀ Run
+   đang CANCELLING/CANCELLED, gọi thẳng `cancelMutatingAttemptTx` (bỏ qua toàn bộ
+   RETRY/FRESH_START/ESCALATE decision cũ, vốn không bao giờ đóng được Run).
+6. **`internal/app/runtime/command_node_executor.go`** + **`gate_node_executor.go`**: cập nhật 2 call site
+   còn lại của `classifyCancellation` (chữ ký đổi: bỏ `interruptions`/`reconciler`, thêm `ids`).
+
+**2 bug thật phát hiện thêm qua thực nghiệm (không phải đoán)** khi chạy lại `cancel_mutating_test.go` sau
+fix đầu tiên — vẫn treo y hệt:
+
+- Debug print lại vào `pollForCancellation` + `CommandNodeExecutor.Execute` xác nhận: poller vẫn phát hiện
+  đúng, process vẫn bị kill đúng — nhưng LẦN NÀY hàm mới (`finalizeMutatingCancellation`) không bao giờ
+  return. Nguyên nhân: hàm này dùng `ctx` (chính là `execCtx` — ĐÃ bị cancel bởi poller) cho CHÍNH
+  `uow.WithSerializedWrite(ctx, ...)` của nó — một real SQLite write transaction (`BEGIN IMMEDIATE`) cần
+  chờ dù chỉ một khoảnh khắc để lấy write lock (ví dụ đụng heartbeat loop của chính job đó) có thể TREO VÔ
+  HẠN trên một ctx đã cancel thay vì fail nhanh. **Fix**: `cleanupCtx := context.WithoutCancel(ctx)` — đúng
+  pattern `pool.go`'s own heartbeatLoop đã dùng cho renewal write của chính nó — dùng `cleanupCtx` cho MỌI
+  I/O thật và write bên trong `finalizeMutatingCancellation`.
+- Sau fix trên vẫn treo y hệt (lần 2). Đọc lại `classifyCancellation` phát hiện: bước RE-CHECK ĐẦU TIÊN của
+  nó (`uow.WithReadOnly(ctx, ...)` để xác nhận Run thật sự đang cancelling) CŨNG dùng `ctx` gốc (đã cancel)
+  — khiến chính bước re-check này fail/treo, khiến toàn bộ hàm route sai sang nhánh "leave RUNNING" thay vì
+  bao giờ gọi tới `finalizeMutatingCancellation`. **Fix thứ 2**: derive `cleanupCtx` NGAY ĐẦU
+  `classifyCancellation` luôn, dùng cho bước re-check này. Sau cả 2 fix, test pass ổn định (10.6s, rồi 3x
+  liên tiếp không cache đều 7.2s).
+
+### Test
+
+- `go build ./...`, `go vet ./...` sạch trên toàn bộ module.
+- `go test ./internal/app/runtime/...`: 284 test pass (283 cũ + 1 test mới), gồm việc SỬA 3 test cũ
+  (`TestAgentNodeExecutor_MutatingCancellation_CleanRevision...`,
+  `TestAgentNodeExecutor_MutatingCancellation_MutatedRevision...`,
+  `TestCommandNodeExecutor_ProcessCancelled_ReusesV508CMutatingPath`) — 3 test này assert vào spy CŨ
+  (`interruptions.terminations`) giờ luôn rỗng đúng như kỳ vọng (code mới không gọi path cũ nữa) — đổi
+  assertion sang đọc real Attempt/NodeRun state qua `uow.WithReadOnly`, đúng tinh thần "test thật, không
+  test giả".
+- `TestRecoveryReaperHandler_OrphanedMutatingAttempt_RunCancelling_ClosesRunOutReally` (test MỚI, real
+  SQLite, theo đúng pattern `sqliteExecutionFixture`/`AcquireWriteLeases` có sẵn trong file): real write
+  lease + real `CancelRun` + real lease-expiry → real Attempt INDETERMINATE, real NodeRun CANCELLED, real
+  WorkflowRun CANCELLED, real cancellation intent không còn REQUESTED, và replay (Handle lần 2) không đổi
+  Attempt.Version — pass ngay lần đầu.
+- `internal/integration/v5accept`: cả 10 scenario (3 mới của V5-15D + 7 cũ) pass; 3 scenario mới của
+  V5-15D chạy lặp 3 lần liên tiếp không cache đều pass ổn định.
+- `go test ./...` toàn repo (mọi package): pass 100%.
+
+### Verify
+
+- Mọi debug print tạm thời (trong `execute.go`, `command_node_executor.go`, và các vòng lặp debug trong
+  `cancel_mutating_test.go`) đã revert sạch — `git diff` xác nhận chỉ còn đúng 1 dòng thay đổi thật ở
+  `command_node_executor.go` (chữ ký `classifyCancellation` mới).
+- `gofmt -l` sạch trên đúng 14 file thật sự sửa (2 file báo "khác biệt" hoá ra là noise CRLF toàn file y
+  hệt pattern ~92 file CRLF đã biết từ trước — xác nhận qua `gofmt -d` thấy TOÀN BỘ file bị đánh dấu, không
+  phải riêng đoạn code mới).
+- `git diff --stat origin/master`: đúng 14 file, không đụng file nào ngoài dự định.
+
+### Kết quả
+
+PR #19, branch `feat/v5-15d-isolation-fencing`, 3 commit (`63509fa` scenario 2 phần đầu, `d6f6422`
+production fix riêng theo đúng yêu cầu user, `28b2773` scenario test + recovery-reaper coverage), CI 6/6
+xanh ngay lần chạy đầu tiên (bao gồm "Linux race and stability (V0-12)"), squash-merge vào `master` — merge
+commit `d04dc83`, 2026-09-11.
+
+**Việc còn lại:** V5-15E (full conformance matrix — mốc hoàn thành thật sự của V5-15, theo đúng contract
+gốc của user) — theo đúng contract 5 phần, tiếp tục tự động không cần hỏi lại trừ khi gặp quyết định kiến
+trúc thật sự mới.
