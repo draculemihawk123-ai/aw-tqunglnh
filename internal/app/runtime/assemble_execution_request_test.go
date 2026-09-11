@@ -13,8 +13,10 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	domainadapterbuild "github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
+	contextsnapshotpkg "github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	domainmessage "github.com/taQuangLing/agent-workflow/internal/domain/message"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
+	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/skill"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
@@ -197,6 +199,82 @@ func TestAssembleAgentExecutionRequest_CheckerRole_MountsForcedReadOnly(t *testi
 	}
 	if req.WorkspaceMounts[0].Access != ports.WorkspaceReadOnly {
 		t.Fatalf("req.WorkspaceMounts[0].Access = %s, want READ_ONLY — a CHECKER's own mounts must always be forced read-only regardless of EffectiveScope's own WRITE grant", req.WorkspaceMounts[0].Access)
+	}
+}
+
+// TestAssembleAgentExecutionRequest_RecoveryReplacement_SetsRecoveryCheckpoint
+// is V5-13's own proof (2026-09-11): an Attempt whose own LastCheckpointID
+// is pinned (recovery_reaper.go's own consumeFreshStart does this for a
+// FRESH_START replacement) gets RecoveryCheckpoint populated with that
+// exact Checkpoint ID; an ordinary Attempt (LastCheckpointID nil, every
+// non-recovery case) gets nil, unchanged from before this task.
+func TestAssembleAgentExecutionRequest_RecoveryReplacement_SetsRecoveryCheckpoint(t *testing.T) {
+	uow, ids, store, runID, nodeRunID, attemptID := assembleRequestFixture(t)
+	ctx := context.Background()
+
+	// The ordinary (non-recovery) Attempt this fixture already scheduled:
+	// RecoveryCheckpoint must stay nil, exactly as every pre-V5-13 test
+	// already expects.
+	ordinary, err := runtime.AssembleAgentExecutionRequest(ctx, uow, store, runtime.AssembleAgentExecutionRequestRequest{
+		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID,
+	})
+	if err != nil {
+		t.Fatalf("AssembleAgentExecutionRequest (ordinary): %v", err)
+	}
+	if ordinary.RecoveryCheckpoint != nil {
+		t.Fatalf("ordinary attempt's RecoveryCheckpoint = %v, want nil", ordinary.RecoveryCheckpoint)
+	}
+
+	// Build a replacement Attempt the same way consumeFreshStart does:
+	// AttemptNumber+1, LastCheckpointID pinned, its own cloned Snapshot.
+	const wantCheckpointID = "checkpoint-fixture-1"
+	replacementAttemptID := ids.NewID()
+	if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		original, err := tx.Runtime().GetExecutionAttempt(ctx, attemptID)
+		if err != nil {
+			return err
+		}
+		previousSnapshot, err := tx.ContextSnapshots().GetSnapshotByAttemptID(ctx, attemptID)
+		if err != nil {
+			return err
+		}
+		replacement, err := runtimedomain.NewExecutionAttempt(
+			runtimedomain.ExecutionAttemptID(replacementAttemptID), original.NodeRunID, original.AttemptNumber+1,
+			original.ExecutionProfileHash, original.ProviderKey, original.InputRevisionSet,
+		)
+		if err != nil {
+			return err
+		}
+		checkpointID := runtimedomain.CheckpointID(wantCheckpointID)
+		replacement.LastCheckpointID = &checkpointID
+
+		nextSnapshotID := contextsnapshotpkg.ID(ids.NewID())
+		clonedSnapshot, err := contextsnapshotpkg.NewSnapshot(
+			nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshotpkg.AttemptID(replacementAttemptID),
+			previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.EvidenceRefs, previousSnapshot.Revisions, clock.System{}.Now(),
+		)
+		if err != nil {
+			return err
+		}
+		replacement.ContextSnapshotID = &nextSnapshotID
+
+		if _, err := tx.Runtime().CreateExecutionAttempt(ctx, replacement); err != nil {
+			return err
+		}
+		_, err = tx.ContextSnapshots().CreateSnapshot(ctx, clonedSnapshot)
+		return err
+	}); err != nil {
+		t.Fatalf("seed replacement attempt: %v", err)
+	}
+
+	recovered, err := runtime.AssembleAgentExecutionRequest(ctx, uow, store, runtime.AssembleAgentExecutionRequestRequest{
+		RunID: runID, NodeRunID: nodeRunID, AttemptID: replacementAttemptID,
+	})
+	if err != nil {
+		t.Fatalf("AssembleAgentExecutionRequest (recovery replacement): %v", err)
+	}
+	if recovered.RecoveryCheckpoint == nil || *recovered.RecoveryCheckpoint != wantCheckpointID {
+		t.Fatalf("recovered.RecoveryCheckpoint = %v, want a pointer to %q", recovered.RecoveryCheckpoint, wantCheckpointID)
 	}
 }
 

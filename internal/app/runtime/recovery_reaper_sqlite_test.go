@@ -250,6 +250,48 @@ func TestRecoveryReaperHandler_OrphanedAttempt_BudgetExhausted_Escalates(t *test
 	}
 }
 
+// TestCreateExecutionAttempt_LastCheckpointID_RoundTripsThroughRealSQLite is
+// V5-13's own persistence-layer proof (2026-09-11): ExecutionAttempt.
+// LastCheckpointID has existed since migration 0001, but no Go code ever
+// read or wrote the column until consumeFreshStart (recovery_reaper.go)
+// started setting it in memory for a FRESH_START replacement — a gap this
+// test would have caught immediately, since createExecutionAttemptTx's
+// own INSERT used to silently omit the column (fixed the same changeset).
+func TestCreateExecutionAttempt_LastCheckpointID_RoundTripsThroughRealSQLite(t *testing.T) {
+	ctx := context.Background()
+	uow, _, ids, _, _, attemptID := sqliteExecutionFixture(t)
+
+	const wantCheckpointID = "checkpoint-roundtrip-1"
+	replacementID := ids.NewID()
+	if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		original, err := tx.Runtime().GetExecutionAttempt(ctx, attemptID)
+		if err != nil {
+			return err
+		}
+		replacement, err := runtimedomain.NewExecutionAttempt(
+			runtimedomain.ExecutionAttemptID(replacementID), original.NodeRunID, original.AttemptNumber+1,
+			original.ExecutionProfileHash, original.ProviderKey, original.InputRevisionSet,
+		)
+		if err != nil {
+			return err
+		}
+		checkpointID := runtimedomain.CheckpointID(wantCheckpointID)
+		replacement.LastCheckpointID = &checkpointID
+		_, err = tx.Runtime().CreateExecutionAttempt(ctx, replacement)
+		return err
+	}); err != nil {
+		t.Fatalf("create replacement attempt with LastCheckpointID: %v", err)
+	}
+
+	reloaded, err := uowGetExecutionAttempt(ctx, uow, replacementID)
+	if err != nil {
+		t.Fatalf("reload replacement attempt: %v", err)
+	}
+	if reloaded.LastCheckpointID == nil || string(*reloaded.LastCheckpointID) != wantCheckpointID {
+		t.Fatalf("reloaded.LastCheckpointID = %v, want a pointer to %q", reloaded.LastCheckpointID, wantCheckpointID)
+	}
+}
+
 func firstSQLiteJobOfKind(t *testing.T, ctx context.Context, store interface {
 	ClaimJob(context.Context, string, time.Duration) (ports.DurableJob, ports.JobLease, error)
 }, kind string) ports.DurableJob {

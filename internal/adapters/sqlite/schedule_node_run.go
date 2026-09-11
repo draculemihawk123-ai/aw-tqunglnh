@@ -169,15 +169,26 @@ func createExecutionAttemptTx(ctx context.Context, tx *sql.Tx, attempt runtime.E
 	if attempt.ContextSnapshotID != nil {
 		contextSnapshotID = string(*attempt.ContextSnapshotID)
 	}
+	// lastCheckpointID is populated now (V5-13, 2026-09-11): a FRESH_START
+	// replacement Attempt (recovery_reaper.go's own consumeFreshStart)
+	// pins this to the real Checkpoint it recovers from — the column
+	// itself has existed since migration 0001 but nothing ever wrote to
+	// it before this task gave it real meaning. nil for every ordinary
+	// (non-recovery) Attempt, preserving the same implicit-NULL default
+	// every prior caller already got.
+	var lastCheckpointID any
+	if attempt.LastCheckpointID != nil {
+		lastCheckpointID = string(*attempt.LastCheckpointID)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO execution_attempts (
     id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
-    context_snapshot_id, input_revision_set_json, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    context_snapshot_id, input_revision_set_json, last_checkpoint_id, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(attempt.ID), string(attempt.NodeRunID), attempt.AttemptNumber, string(attempt.State),
-		providerKey, attempt.ExecutionProfileHash, contextSnapshotID, string(revisionSetJSON), attempt.Version, now, now,
+		providerKey, attempt.ExecutionProfileHash, contextSnapshotID, string(revisionSetJSON), lastCheckpointID, attempt.Version, now, now,
 	); err != nil {
 		var existing int
 		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM execution_attempts WHERE id = ?`, attempt.ID).Scan(&existing)
