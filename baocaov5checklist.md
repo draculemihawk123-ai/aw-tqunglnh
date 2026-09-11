@@ -5186,3 +5186,134 @@ user — nằm trong phạm vi "Router + executors + CompletionPolicy + ReleaseS
 **Việc còn lại:** session sau bắt đầu code V5-15A theo 8 bước trên, KHÔNG cần hỏi lại user về những quyết
 định đã tự chốt ở trên (COMMAND+GATE trước AGENT, vị trí file mới, thứ tự 8 bước) — chỉ hỏi nếu gặp một
 quyết định kiến trúc thật sự mới phát sinh khi code (mirroring đúng kỷ luật đã dùng suốt session này).
+
+## V5-15A — Real composition (branch `feat/v5-15a-real-composition`, merged 2026-09-11, PR #13, merge
+commit `d8da9f3`, CI 6/6 xanh)
+
+### Bối cảnh
+
+Bắt tay code trực tiếp theo kế hoạch 8 bước đã có sẵn trong mục "V5-15A — Báo cáo nghiên cứu chi tiết"
+ở trên — không cần hỏi lại user về các quyết định tự chốt trước đó.
+
+### Nghiên cứu / phát hiện trong lúc code
+
+Kế hoạch nghiên cứu trước đó đúng về hầu hết API thật (`CommandNodeExecutor`/`GateNodeExecutor`/
+`NodeExecutorRouter`/`EvaluateCompletionCandidate`/`CreateReleaseSet`/`SealReleaseSet`), nhưng có 3 phát
+hiện kiến trúc THẬT chỉ lộ ra khi chạy hệ thống thật end-to-end — đúng tinh thần "no DB shortcut": nếu
+seed DB trực tiếp thì sẽ không bao giờ chạm phải các ràng buộc này.
+
+1. **`CreateRootWorkItem` không bao giờ populate `EffectiveScope` thật.** Đọc code xác nhận:
+   `tx.Work().AddEffectiveScope` chỉ có 2 caller trong toàn bộ codebase — `CreateChildWorkItem`
+   (`internal/app/work/commands.go:580`) và `ApproveScopeExpansion`'s own reactivation
+   (`internal/app/runtime/scope_expansion.go:367`, cần một AGENT node thật để trigger). Vì PR A tự quyết
+   định "COMMAND+MACHINE_GATE only, chưa cần AGENT", giải pháp thật (không phải shortcut) là dùng
+   `appwork.CreateChildWorkItem` — một production command thật khác — cho WorkItem thực sự chạy Run,
+   trong khi ROOT WorkItem chỉ giữ vai trò neo TaskFamily/WorkspaceSet.
+2. **PathScopes `["**"]` không phải wildcard thật.** `internal/app/scopeguard/guard.go`'s own `isAllowed`
+   so khớp PathScope như MỘT PREFIX CHUỖI LITERAL, không phải glob — `"**"` chỉ khớp path bắt đầu đúng
+   bằng `"**/"`. Các fixture khác trong repo "lách" được vì dùng diff giả với path viết tay kiểu
+   `"**/src/main.go"` (xem `agent_node_executor_test.go`'s own `defaultInScopeDiff` — comment ở đó đã ghi
+   rõ điều này). Với diff THẬT từ git thật, phải dùng `PathScopes: nil` (rỗng) — convention "không giới
+   hạn path" mà `normalizePathScopes` tự xác nhận (`len==0 -> nil, nil`, không lỗi).
+3. **`GateNodeExecutor`'s own strict-read-only diff check là ràng buộc TOÀN WorkItem, không phải riêng
+   script của gate.** `buildEvidence(strictReadOnly=true)` yêu cầu diff trên MỌI mount Attempt resolve
+   (không chỉ mount script gate tham chiếu) phải HOÀN TOÀN RỖNG so với `manifest.BaseRevisionSet` — một
+   giá trị PIN MỘT LẦN DUY NHẤT lúc `StartWorkflowRun` và dùng lại KHÔNG ĐỔI cho mọi NodeRun trong cùng
+   Run (`schedule.go:299`, không có "latest revision" nào cập nhật giữa chừng). Vì MACHINE_GATE mount MỌI
+   repo trong `EffectiveScope` của WorkItem (không chỉ repo nó tham chiếu), nên NẾU maker (test_a) ghi bất
+   kỳ thay đổi nào vào repo-a (dù có commit hay không, dù có write scope hay không), gate_b LUÔN LUÔN fail
+   strict-read-only — đã tự kiểm chứng thực nghiệm cả hai cách (ghi chưa commit → SCOPE_VIOLATION; ghi rồi
+   `git commit` thật → vẫn fail, đổi thành VALIDATION_FAILED vì `staleMountRevision` phát hiện HEAD đã
+   khác pin). Kết luận: một MACHINE_GATE không thể nào hợp lệ quan sát thay đổi CÙNG repo mà một node
+   trước đó (COMMAND/AGENT) đã mutate TRONG CÙNG MỘT RUN — đây là ràng buộc cứng của hệ thống, không phải
+   bug. Giải pháp thật cho happy path: maker ghi output ra một file NGOÀI git worktree hoàn toàn (một path
+   tuyệt đối dưới fixture root, truyền vào cả 2 script qua ArgvLiteral) — gate script thật vẫn spawn thật,
+   đọc thật file đó, trả PASS/FAIL thật dựa trên sự tồn tại thật của nó — còn repo-a giữ nguyên sạch suốt
+   Run. ReleaseSet's own real Base/Result SHA khác nhau thật thì lấy từ MỘT COMMIT THẬT làm SAU khi Run đã
+   đạt VERIFYING (lúc đó không còn NodeRun nào đọc lại revision nữa nên an toàn) — test tự ghi một file
+   "release-note.txt" thật vào working directory thật rồi gọi `gitworktree.Provider.CreateLocalCommit`
+   (V5-10A's own primitive thật) để tạo commit thật.
+
+**Bài học tự rút ra (đã lưu vào memory):** không thể lường trước những ràng buộc kiểu này chỉ bằng
+research/đọc code trước — chỉ có cách chạy thật, đọc lỗi thật (log domain event), rồi thêm print tạm
+thời trực tiếp vào production code để xác nhận đúng nhánh lỗi trước khi sửa design của test, mới lộ ra
+được. Việc user cấm "sửa DB trực tiếp để tạo kết quả cần kiểm chứng" chính là thứ đã ép phải tìm ra 3
+phát hiện trên — nếu seed thẳng bằng `seedRunEvidence`-style helper (như `completion_policy_test.go` đã
+làm) thì sẽ không bao giờ chạm phải các ràng buộc thật này.
+
+Một thiết kế trung gian đã thử rồi bỏ: chèn một APPROVAL node giữa test_a và gate_b làm điểm đồng bộ để
+gọi `CreateLocalCommit` real-time (trước khi phát hiện #3 ở trên đầy đủ) — bị loại bỏ vì không giải
+quyết được gì (pin revision đã cố định từ lúc `StartWorkflowRun`, APPROVAL không thay đổi điều đó).
+
+### Quyết định (tự quyết định trong phạm vi "Router + executors + CompletionPolicy + ReleaseSet" đã được
+user chốt, không cần hỏi lại)
+
+- Package mới `internal/integration/v5accept` (không patch `runtimeengine_test.go`, đúng như research
+  handoff đã tự quyết định trước).
+- Document tối giản: START -> COMMAND(test_a, maker) -> MACHINE_GATE(gate_b, checker) -> END. Không có
+  AGENT/WAIT/APPROVAL/FORK.
+- Marker file ngoài git worktree — quyết định kỹ thuật để thoả mãn ràng buộc #3 ở trên, không đổi phạm vi
+  PR (vẫn là COMMAND+MACHINE_GATE thật, spawn thật, verify thật).
+- `fixture_test.go` (harness dùng chung) tách riêng khỏi `happy_path_test.go` (kịch bản riêng của PR A)
+  — đúng yêu cầu "xây reusable scenario harness cho các PR sau" trong contract.
+
+### Thực hiện
+
+- `internal/integration/v5accept/fixture_test.go` (harness dùng chung): `v5AcceptFixture` (real
+  `*sqlite.Store`, real `gitworktree.Provider`, real filesystem `ArtifactStore`, real
+  `processadapter.Supervisor`, real `secretenv.Resolver`); `newV5AcceptFixture`/`restart` (close+reopen
+  thật); `createRootWorkItem`/`createChildWorkItem` (2 production command thật);
+  `repositoryWorkspaceHandle`; `registerHandlers` (đăng ký ĐỦ mọi real V4/V5 job handler, executor do
+  caller truyền vào — luôn là `*runtime.NodeExecutorRouter` thật); `newCommandExecutor`/`newGateExecutor`
+  (một `*sqlite.Store` thoả mãn cấu trúc cả `WriteLeaseManager`/`CheckpointStore`/
+  `InterruptionRecoveryStore`/`WorkspaceReconciler`); `startPool` (real `workerpool.Pool`,
+  Concurrency:1); polling helper (`waitForJobState`/`waitForNodeRunState`/`waitForRunState`, tự dump
+  toàn bộ domain event trace khi timeout — tiện cho V5-15B/C/D/E debug sau này); publishing helper cho
+  Policy/Skill/Command/Gate/WorkflowVersion (mirror `internal/integration/runtimeengine_test.go`'s own
+  pattern, viết lại riêng vì package mới); `v5AcceptScripts(markerPath)` — sinh script `.bat` (Windows) /
+  `.sh` (Unix) theo `runtime.GOOS` tại thời điểm test chạy (mỗi CI job build/chạy trên đúng OS của nó,
+  matrix windows-latest/ubuntu-latest — đã tự thực nghiệm xác nhận `.bat` chạy trực tiếp qua
+  `exec.Command` không cần shell wrapper, Windows tự fallback qua COMSPEC).
+- `internal/integration/v5accept/happy_path_test.go`: `TestV5AcceptHappyPath_
+  RealCompositionReachesSucceededAndSurvivesRestart` — publish Skill (2 resource: maker+gate script)/2
+  Command/1 Gate/2 Policy (Attempt+Permission)/1 CompletionPolicy (yêu cầu CẢ `COMMAND_EXECUTION` VÀ
+  EvidenceKey tự đặt của gate) + WorkflowVersion (CompletionPolicyRef pin thật, DependencyManifest pin
+  thật) → real Router(Command+Gate) → real pool chạy start->test_a->gate_b->end tới VERIFYING → real
+  `CreateLocalCommit` (sau VERIFYING) → real `CreateReleaseSet`+`SealReleaseSet` (SHA thật, khác nhau
+  thật) → real `EvaluateCompletionCandidate` → assert PASS/SUCCEEDED/DONE → assert state (Run/WorkItem/
+  mọi NodeRun/DecisionArtifact/ReleaseSet/mọi Evidence's own Artifact re-verify qua real
+  `ArtifactStore.Verify`/COMPLETION_DECIDED event) → `stopPool()` + `f.restart()` (real close/reopen
+  sqlite) → assert lại y hệt qua CÙNG một helper.
+
+### Test
+
+- `go vet ./...` sạch.
+- `go build ./...` sạch.
+- `go test ./internal/integration/v5accept/... -run TestV5AcceptHappyPath -v` pass, chạy lặp lại 3 lần
+  liên tiếp không flake (~3.6-3.7s/lần).
+- `go test ./... -count=1` (toàn bộ repo) pass 100% — không có package nào bị regress.
+- `go run ./cmd/docs-coverage-check` pass (`debt = 0`).
+- `gofmt -l` sạch trên 2 file mới.
+- Race detector cục bộ không chạy được trên máy dev (không có cgo) — CI's own Linux race job
+  ("Linux race and stability (V0-12)") tự chạy và pass.
+
+### Verify
+
+- Log sự kiện domain (`RepositoryRegistered` → `RootWorkItemCreated` → `ChildWorkItemCreated` →
+  `WorkflowRunStarted` → `NODE_ROUTED`/`NODE_SCHEDULED`/`EXECUTION_ATTEMPT_FINALIZED` cho cả test_a lẫn
+  gate_b → `RUN_FAILED` khi còn bug, biến mất khi đã đúng) được dùng trực tiếp để debug 3 phát hiện kiến
+  trúc ở trên — không đoán, đọc log thật + đọc code thật (`gate_node_executor.go`, `scopeguard/guard.go`,
+  `schedule.go`) rồi thêm print tạm thời trực tiếp vào production code để xác nhận đúng nhánh lỗi trước
+  khi sửa design của test — mọi print tạm thời đã revert sạch trước khi commit, xác nhận qua
+  `git diff --stat` không còn gì trên `internal/app/runtime/gate_node_executor.go`.
+
+### Kết quả
+
+PR #13, branch `feat/v5-15a-real-composition`, 2 commit (`781c004` code chính, `6813b0d` polish comment
+nhỏ), CI 6/6 xanh cả 2 lần chạy (không cần rerun), squash-merge vào `master` — merge commit `d8da9f3`,
+2026-09-11. `internal/integration/v5accept` package mới, reusable scenario harness sẵn sàng cho
+V5-15B/C/D/E dùng lại.
+
+**Việc còn lại:** V5-15B (completion integrity: claim-done/gate-fail/artifact-tamper + false-completion
+oracle) — theo đúng contract 5 phần đã chốt với user, tiếp tục tự động không cần hỏi lại trừ khi gặp
+quyết định kiến trúc thật sự mới.
