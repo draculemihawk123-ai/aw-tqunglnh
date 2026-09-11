@@ -136,6 +136,11 @@ func AssembleAgentExecutionRequest(
 		return ports.AgentExecutionRequest{}, fmt.Errorf("runtime: verify instruction artifact: %w", err)
 	}
 
+	var recoveryCheckpoint *string
+	if gathered.recoveryCheckpointID != "" {
+		recoveryCheckpoint = &gathered.recoveryCheckpointID
+	}
+
 	return ports.AgentExecutionRequest{
 		AttemptID:            ports.ExecutionAttemptID(req.AttemptID),
 		ProviderKey:          ports.ProviderKey(gathered.providerKey),
@@ -149,6 +154,7 @@ func AssembleAgentExecutionRequest(
 		WorkspaceMounts:      gathered.workspaceMounts,
 		IdempotencyKey:       req.AttemptID,
 		AllowedOutcomes:      gathered.allowedOutcomes,
+		RecoveryCheckpoint:   recoveryCheckpoint,
 	}, nil
 }
 
@@ -206,6 +212,20 @@ type assembledRequestInputs struct {
 	messages             []assembledMessageInput
 	resources            []contextassembler.Candidate
 	allowedOutcomes      []string
+	// recoveryCheckpointID is V5-13's own recovery marker (2026-09-11):
+	// empty for an ordinary Attempt, populated with the real Checkpoint's
+	// own ID when this Attempt is a FRESH_START replacement
+	// (consumeFreshStart, recovery_reaper.go, pins ExecutionAttempt.
+	// LastCheckpointID for exactly this reason). Threaded into
+	// ports.AgentExecutionRequest.RecoveryCheckpoint below — an opaque
+	// reference only, never rendered content: the actual context this
+	// Attempt runs with is ALREADY fully delivered through
+	// InstructionArtifact/messages/resources (the cloned Snapshot
+	// consumeFreshStart itself built), so RecoveryCheckpoint's own job is
+	// narrower — telling the provider adapter "this is a recovery, here is
+	// which checkpoint it recovers from," not re-delivering context a
+	// second time through a different channel.
+	recoveryCheckpointID string
 
 	workItemID                 string
 	workItemTitle              string
@@ -351,6 +371,11 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		acceptance = append(acceptance, fmt.Sprintf("%+v", c))
 	}
 
+	var recoveryCheckpointID string
+	if attempt.LastCheckpointID != nil {
+		recoveryCheckpointID = string(*attempt.LastCheckpointID)
+	}
+
 	return assembledRequestInputs{
 		providerKey: attempt.ProviderKey, adapterBuildID: profile.AdapterBuild.BuildID,
 		snapshotID: snapshot.ID, snapshotManifestHash: snapshot.ManifestHash,
@@ -359,6 +384,7 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		workspaceMounts: mounts, messages: messages, resources: resources, allowedOutcomes: allowedOutcomes,
 		workItemID: string(workItem.ID), workItemTitle: workItem.Title, workItemBehavior: workItem.Behavior,
 		workItemVerificationSpec: workItem.VerificationSpec, workItemAcceptanceCriteria: acceptance,
+		recoveryCheckpointID: recoveryCheckpointID,
 	}, nil
 }
 

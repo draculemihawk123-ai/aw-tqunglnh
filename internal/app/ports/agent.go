@@ -153,8 +153,18 @@ type AgentExecutionRequest struct {
 	// shape already matches go-core-spec.md §14 in full.
 	CancellationToken string
 	// RecoveryCheckpoint is optional (go-core-spec.md §14's own "?") —
-	// V5-13's own checkpoint/recovery integration is what gives this real
-	// meaning; nil until then.
+	// non-nil only when this Attempt is a FRESH_START replacement for a
+	// crashed one (V5-13, 2026-09-11: assemble_execution_request.go sets
+	// it from the replacement ExecutionAttempt's own LastCheckpointID,
+	// pinned by recovery_reaper.go's own consumeFreshStart). Holds the
+	// real Checkpoint's own ID as an OPAQUE reference only, never rendered
+	// content — the actual context this Attempt runs with is already
+	// fully delivered through InstructionArtifact/ContextSnapshot (a fresh
+	// Snapshot cloned from the checkpoint's own referenced one), so this
+	// field's own job is narrower: telling the provider adapter "this is a
+	// recovery, here is which checkpoint it recovers from," never a
+	// second channel re-delivering context already sent through the
+	// first. nil for every ordinary (non-recovery) Attempt.
 	RecoveryCheckpoint *string
 	// IdempotencyKey is this request's own dedupe key — AttemptID itself
 	// is already a durable, unique identity for exactly one execution

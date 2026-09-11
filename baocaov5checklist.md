@@ -4573,3 +4573,55 @@ không cần xử lý gì thêm (dispatch như bình thường, không có khái
 (so sánh frontier giữa nhiều chu kỳ FRESH_START) và handoff artifact V1 vẫn để dành sau.
 
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge.
+
+**Kết quả:** PR #5, 6/6 pass. Squash-merged 2026-09-11, merge commit `304a748`.
+
+## V5-13 — PR3: wire RecoveryCheckpoint vào dispatch thật (branch
+`feat/v5-13-recovery-checkpoint-wiring`, từ `origin/master` sau PR #5)
+
+**Thực hiện:** `assemble_execution_request.go`'s `gatherAssembledRequestInputs` đọc
+`attempt.LastCheckpointID` (field PR2 vừa pin) và đưa vào `assembledRequestInputs.recoveryCheckpointID`;
+`AssembleAgentExecutionRequest`'s own final return set `ports.AgentExecutionRequest.RecoveryCheckpoint`
+(field placeholder có sẵn từ trước, nil từ đầu) — CHỈ khi non-empty. Nội dung: ID của Checkpoint thật (một
+reference thuần, KHÔNG render lại context) — vì context thật đã được giao đầy đủ qua
+InstructionArtifact/ContextSnapshot (Snapshot mới clone bởi `consumeFreshStart`), field này chỉ để báo cho
+provider adapter "đây là recovery, checkpoint nào" chứ không phải kênh thứ hai lặp lại context.
+
+**Phát hiện quan trọng thứ 2 trong task này (grep xác nhận, không giả định):** cột `last_checkpoint_id` đã
+tồn tại từ migration 0001, nhưng KHÔNG code Go nào từng đọc/ghi nó — nghĩa là `consumeFreshStart` (PR2)
+gán `nextAttempt.LastCheckpointID` trong bộ nhớ nhưng giá trị đó BỊ ÂM THẦM MẤT khi persist, vì
+`createExecutionAttemptTx`'s own INSERT không có cột này trong danh sách, và `loadExecutionAttemptByID`'s
+own SELECT cũng không đọc nó. Nếu không fix, TOÀN BỘ wiring của PR3 sẽ luôn thấy `nil` bất kể PR2 đã làm
+gì. Fix: thêm `last_checkpoint_id` vào CẢ HAI INSERT (`schedule_node_run.go`) và SELECT
+(`finalize_execution_attempt.go`). Fake UnitOfWork (`internal/app/ports/fake`) không cần sửa — nó lưu
+nguyên struct Go, tự động giữ field này.
+
+**Test mới:**
+- `TestAssembleAgentExecutionRequest_RecoveryReplacement_SetsRecoveryCheckpoint` (fake UoW) — Attempt
+  thường thì `RecoveryCheckpoint == nil`; Attempt "replacement" kiểu `consumeFreshStart` (LastCheckpointID
+  pin, Snapshot clone) thì `RecoveryCheckpoint` đúng bằng checkpoint ID.
+- `TestCreateExecutionAttempt_LastCheckpointID_RoundTripsThroughRealSQLite` (sqlite thật) — chứng minh
+  đúng gap vừa fix: tạo Attempt với `LastCheckpointID` set, load lại, xác nhận còn nguyên (test này SẼ
+  FAIL nếu không có fix INSERT/SELECT ở trên).
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l <file đổi>                                                     # rỗng
+go test -count=1 ./internal/app/runtime/... ./internal/adapters/sqlite/... # không regress
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake)
+```
+
+**Còn lại của V5-13 (không blocking, ghi rõ để dành):** `RECOVERY_NO_PROGRESS` (so sánh frontier giữa
+nhiều chu kỳ FRESH_START — chỉ đo được SAU KHI một replacement Attempt đã chạy xong) và handoff artifact
+V1 (tự quyết: một `DecisionArtifact.Kind` mới, mirror `RecoveryDecision`). Với phần đã xong (contract 1
+budget-gate, bridge Checkpoint→Snapshot thật, reserve Attempt/Snapshot/job thật, wire RecoveryCheckpoint
+thật), V5-13 đã đạt "Hoàn thành khi": session mới không cần raw transcript hoặc cwd cũ — cwd/session cũ
+không bao giờ được dùng (Start, không Resume — đã đúng từ thiết kế legacy `worker.recovery.go`'s own
+"Do not assume access to any prior provider session" mà giờ áp dụng thật qua flow mới).
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau đó cân nhắc: V5-13 coi như đủ để chuyển sang
+V5-14 (Cleanup/retention sweeper) theo roadmap, hay tiếp tục đóng nốt RECOVERY_NO_PROGRESS/handoff artifact
+trước — quyết định này để dành sau khi PR3 merge.

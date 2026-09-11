@@ -22,15 +22,15 @@ func (r runtimeRepository) GetExecutionAttempt(ctx context.Context, id string) (
 
 func loadExecutionAttemptByID(ctx context.Context, tx *sql.Tx, id runtime.ExecutionAttemptID) (runtime.ExecutionAttempt, error) {
 	var attempt runtime.ExecutionAttempt
-	var providerKey, terminationReason, failureCode, contextSnapshotID sql.NullString
+	var providerKey, terminationReason, failureCode, contextSnapshotID, lastCheckpointID sql.NullString
 	var inputRevisionSetJSON string
 	err := tx.QueryRowContext(ctx, `
 SELECT id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
-       context_snapshot_id, input_revision_set_json, termination_reason, failure_code, version
+       context_snapshot_id, input_revision_set_json, termination_reason, failure_code, last_checkpoint_id, version
 FROM execution_attempts WHERE id = ?`, id,
 	).Scan(
 		&attempt.ID, &attempt.NodeRunID, &attempt.AttemptNumber, &attempt.State, &providerKey,
-		&attempt.ExecutionProfileHash, &contextSnapshotID, &inputRevisionSetJSON, &terminationReason, &failureCode, &attempt.Version,
+		&attempt.ExecutionProfileHash, &contextSnapshotID, &inputRevisionSetJSON, &terminationReason, &failureCode, &lastCheckpointID, &attempt.Version,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.ExecutionAttempt{}, fmt.Errorf("%w: execution attempt %s", ports.ErrPersistenceNotFound, id)
@@ -44,6 +44,10 @@ FROM execution_attempts WHERE id = ?`, id,
 	if contextSnapshotID.Valid {
 		id := contextsnapshot.ID(contextSnapshotID.String)
 		attempt.ContextSnapshotID = &id
+	}
+	if lastCheckpointID.Valid {
+		checkpointID := runtime.CheckpointID(lastCheckpointID.String)
+		attempt.LastCheckpointID = &checkpointID
 	}
 	if terminationReason.Valid {
 		attempt.TerminationReason = runtime.TerminationReason(terminationReason.String)
