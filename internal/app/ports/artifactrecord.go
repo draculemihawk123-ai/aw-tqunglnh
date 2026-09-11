@@ -49,6 +49,13 @@ type ArtifactRepository interface {
 	//
 	// a.ProjectID must name a Project that actually exists —
 	// ErrPersistenceNotFound otherwise.
+	//
+	// V5-14: also refuses with ErrPersistenceAlreadyExists if a.Locator
+	// currently has an open ClaimArtifactLocatorForPurge claim — the other
+	// half of this task's own TOCTOU protection (see that method's own doc
+	// comment): a sweep that is mid-way through deleting a Locator's real
+	// bytes must never let a fresh insert start depending on content that
+	// is about to disappear underneath it.
 	InsertArtifact(ctx context.Context, a artifact.Artifact) (artifact.Artifact, error)
 	// GetArtifact returns the Artifact with the given ID, or
 	// ErrPersistenceNotFound.
@@ -83,6 +90,37 @@ type ArtifactRepository interface {
 	// own job, the same discipline RuntimeRepository.ListNodeRunsForRun's
 	// own doc comment already establishes for this codebase).
 	ListOrphanedArtifacts(ctx context.Context, olderThan time.Time) ([]artifact.Artifact, error)
+	// ListArtifactsByLocator returns every Artifact row (any Project) that
+	// currently shares locator — the retention sweeper's own group-
+	// eligibility/refcount read (V5-14, ADR-017/go-core-spec §19: "Sweeper
+	// phải check reference/hold atomically trước xóa"): the same
+	// content-addressed Locator MAY back more than one row
+	// (0027_artifacts.sql's own "content_hash is deliberately NOT unique"),
+	// so a real ports.ArtifactStore.Delete against that Locator is only
+	// ever safe once EVERY row this returns is independently confirmed
+	// purge-eligible. Ordered by (id) for a stable, deterministic result a
+	// test can assert on exactly.
+	ListArtifactsByLocator(ctx context.Context, locator string) ([]artifact.Artifact, error)
+	// ClaimArtifactLocatorForPurge atomically inserts a durable deletion
+	// intent for locator — the fence that closes the TOCTOU gap between
+	// "confirmed every row sharing this Locator is purge-eligible" and
+	// "actually deleted the real bytes" (this task's own contract: "Sweeper
+	// nên atomically claim Locator bằng durable deletion intent"). A
+	// second claim attempt against a Locator already claimed is
+	// ErrPersistenceAlreadyExists — the same sentinel EnqueueJob's own
+	// duplicate-idempotency-key path already uses for an identical
+	// "someone already claimed this" conflict. InsertArtifact (below) MUST
+	// itself refuse a new artifact whose Locator currently has an open
+	// claim, so a fresh Put of byte-identical content can never race a
+	// sweep that is mid-delete of that exact content.
+	ClaimArtifactLocatorForPurge(ctx context.Context, locator, claimOwner string, claimedAt time.Time) error
+	// ReleaseArtifactLocatorClaim removes locator's own claim row — called
+	// once a purge attempt has either committed (bytes deleted, rows
+	// marked Purged) or been abandoned (group turned out ineligible after
+	// all). Idempotent: releasing a Locator with no open claim is a no-op,
+	// never an error, the same "already resolved" discipline every other
+	// real-I/O operation in this codebase follows.
+	ReleaseArtifactLocatorClaim(ctx context.Context, locator string) error
 }
 
 // TransitionArtifactAttachStateRequest is the CAS request for

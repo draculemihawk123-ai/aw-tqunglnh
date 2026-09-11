@@ -48,4 +48,23 @@ type ArtifactStore interface {
 	Put(ctx context.Context, meta ArtifactMetadata, body io.Reader) (ArtifactRef, error)
 	Open(ctx context.Context, ref ArtifactRef) (io.ReadCloser, error)
 	Verify(ctx context.Context, ref ArtifactRef) error
+	// Delete removes ref's own underlying content (V5-14, the system's
+	// first real destructive filesystem operation) — never a database
+	// row, never metadata, only the content-addressed bytes a prior Put
+	// wrote. It is the CALLER's own responsibility to have already
+	// confirmed, atomically and against real persisted state, that no
+	// other Artifact row anywhere still needs this exact Locator's content
+	// (docs/architecture/04-go-core-spec.md §19: "Sweeper phải check
+	// reference/hold atomically trước xóa") — this method has no
+	// visibility into that decision and never second-guesses it. It MUST
+	// be idempotent (a no-op, not an error, if the content is already
+	// gone — the same crash-safe "already resolved" discipline every
+	// other real-I/O operation in this codebase follows) and MUST refuse
+	// (return an error, delete nothing) if the content actually stored at
+	// ref.Locator no longer hashes/sizes to ref.SHA256/ref.Size — a
+	// mismatch here means the caller's own bookkeeping about what this
+	// Locator holds has drifted from reality, and deleting blindly would
+	// risk destroying content a DIFFERENT, still-live Artifact row
+	// legitimately depends on.
+	Delete(ctx context.Context, ref ArtifactRef) error
 }

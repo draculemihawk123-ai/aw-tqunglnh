@@ -107,6 +107,12 @@ func loadMigrations() ([]migration, error) {
 // applies here).
 var migrationsRequiringForeignKeysOff = map[int]bool{
 	25: true,
+	// 32 (V5-14, 0032_artifacts_purged_state.sql) widens artifacts'
+	// own attach_state CHECK the identical way — see that migration's own
+	// doc comment: messages.content_artifact_id REFERENCES artifacts(id)
+	// (0028_messages.sql) means artifacts is not empty by the time this
+	// migration runs against any real database.
+	32: true,
 }
 
 // Migrate applies every pending numbered migration in version order. Each

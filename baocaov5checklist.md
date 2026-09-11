@@ -4751,3 +4751,128 @@ go test -count=1 ./...                                                  # PASS t
 nghiên cứu kỹ và có thể cần hỏi user trước khi code (capability hủy diệt mới).
 
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge.
+
+**Kết quả:** PR #8, 6/6 pass. Squash-merged 2026-09-11, merge commit `58304fc`.
+
+## V5-14 nửa 2 — Artifact purge/delete: contract từ user (2026-09-11)
+
+Trước khi động vào nửa này (thao tác filesystem hủy diệt ĐẦU TIÊN thật sự trong toàn hệ thống), tôi hỏi
+user 2 câu (làm luôn hay để dành; refcount khi nhiều row share 1 Locator xử lý sao). User yêu cầu hỏi lại
+lần 1 (muốn trả lời kỹ hơn), sau đó trả lời đầy đủ — đây là contract, áp dụng y hệt cách contract
+budget/recovery-ID của V5-13 đã được tôn trọng, không tự diễn giải khác đi.
+
+**Câu 1 — làm luôn hay để dành, verbatim:**
+> Chọn Làm luôn, nhưng phải là PR2 độc lập sau khi PR1 merge; không gộp hai phần.
+> Lý do chính: V5-15 phụ thuộc toàn bộ V5-14. Chuyển sang V5-15 khi Artifact purge chưa hoàn thành sẽ làm
+> acceptance gate chạy trên lifecycle thiếu nửa quan trọng.
+> Cùng session không làm tăng rủi ro nếu giữ các gate sau:
+> Nghiên cứu và chốt deletion-intent/refcount protocol trước khi code.
+> Chỉ purge RAW_OUTPUT_TEMP/ORPHAN đủ hạn, không hold, không logical reference; chưa xóa canonical/attached
+> artifact.
+> Claim Locator atomically trên toàn bộ Project trước khi xóa.
+> Dry-run và report là mặc định; thao tác thật phải explicit.
+> ArtifactStore.Delete idempotent, kiểm locator/hash/root nghiêm ngặt.
+> Test crash ở mọi boundary DB ↔ filesystem, shared Locator, concurrent attach, retry và unknown file.
+> Mọi destructive test chỉ chạy trong temp artifact root.
+> Session không phải safety boundary; contract, PR độc lập, dry-run và test mới là safety boundary. Vì vậy
+> nên hoàn tất V5-14 trước rồi mới sang V5-15.
+
+**Câu 2 — refcount cho Locator dùng chung, verbatim:**
+> Chọn đếm reference thật trước khi xóa, nhưng chỉ thêm một query rồi xóa vẫn chưa đủ an toàn.
+> Project đã xác nhận quan hệ nhiều-nhiều này: cùng bytes có thể tạo nhiều Artifact row, kể cả khác
+> Project, và locator/content_hash cố ý không unique. Vì vậy phương án coi Locator là 1-1 trái với model
+> hiện tại.
+> Quy tắc đúng nên là: chỉ xóa blob khi mọi Artifact row có cùng Locator đều thuộc tập đủ điều kiện xóa và
+> không còn logical reference. Các row chặn xóa gồm: Hold=true; Canonical/unexpired artifact; Orphan chưa
+> đủ tuổi cleanup; Artifact còn được Message, Checkpoint, Evidence… tham chiếu; Row khác Project cũng phải
+> được tính.
+> Ngoài ra cần tránh TOCTOU: không nên query → nhả transaction → xóa file. Sweeper nên atomically claim
+> Locator bằng durable deletion intent; InsertArtifact phải từ chối/retry khi Locator đang được claim. Sau
+> đó xóa blob ngoài transaction và finalize metadata trong transaction khác.
+> Nếu nhiều row cùng Locator đều đủ điều kiện, claim cả nhóm, xóa file đúng một lần rồi xóa/finalize toàn
+> bộ row. Metadata cùng Locator nhưng khác hash/size phải fail closed và quarantine.
+> ArtifactStore hiện chưa có Delete, nên port xóa và deletion-intent protocol thuộc V5-14, không chỉ là
+> một query bổ sung.
+
+**Xác minh trước khi code (đọc code thật, không giả định):** `docs/design/07-v5-execution-evidence.md`'s
+own V5-15 "Phụ thuộc: V5-01…V5-14" xác nhận đúng lý do câu 1. `docs/architecture/04-go-core-spec.md §19`
+("Sweeper phải check reference/hold atomically trước xóa") xác nhận yêu cầu atomic-check không phải tôi
+tự nghĩ ra. `0027_artifacts.sql` xác nhận `content_hash` KHÔNG có UNIQUE, đúng như user trích.
+
+**Phát hiện quan trọng thu hẹp phạm vi PR này (đọc code, không đoán):** truy vết MỌI nơi ghi
+artifact-reference — `messages.content_artifact_id` (FK thật, qua `PrepareAttachment` dựng row với
+`AttachState=Attached` NGAY TỪ ĐẦU, chưa bao giờ Orphan) và `checkpoints.artifact_refs_json`/
+`evidence.artifact_manifest_json` (JSON list ArtifactID, không phải Locator — xác nhận qua
+`command_node_executor.go`/`gate_node_executor.go`'s own `outputArtifactID`) — `finalize.go` (dòng
+~449/477) promote MỌI ArtifactID trong `ArtifactReferences` từ Orphan→Attached NGAY TRONG CÙNG transaction
+ghi Checkpoint/Evidence. Suy ra: một row CÒN Orphan không bao giờ có thể bị Message/Checkpoint/Evidence
+tham chiếu — nghĩa là scope PR này vào ĐÚNG `AttachState=Orphan` làm "no logical reference" tự động đúng,
+không cần dựng reverse-index quét JSON. Đây là cách đọc đúng, hẹp của "chưa xóa canonical/attached artifact"
+— purge Attached-nhưng-hết-hạn (cần quét JSON thật) để dành pha sau.
+
+**Toàn bộ contract + nghiên cứu đã lưu memory** `agent-kit-v5-14-artifact-purge-contract.md` (verbatim,
+đọc lại trước khi code bất kỳ phần nào của nửa này ở phiên sau).
+
+## PR2a — Artifact purge foundation: schema + port (branch
+`feat/v5-14-artifact-purge-foundation`, từ `origin/master` sau PR #8)
+
+**Phạm vi:** CHỈ nền tảng schema/port — chưa có sweep job/handler thật (để dành PR2b). Không tự ý bundle
+với PR1 (user đã nói rõ "không gộp hai phần").
+
+**Thực hiện:**
+- `internal/domain/artifact`: thêm `Purged AttachState` (chỉ đạt được từ Orphan; row/hash/timestamp KHÔNG
+  bao giờ bị xóa, chỉ payload — đúng ADR-017 "giữ audit").
+- `ports.ArtifactStore.Delete(ctx, ref) error` (method mới trên interface có sẵn — không adapter/fake nào
+  khác implement `ports.ArtifactStore` ngoài `artifactstore.Store`, xác nhận qua grep trước khi thêm) +
+  implementation thật (`internal/adapters/artifactstore/filesystem.go`): tái dùng ĐÚNG hash/size check của
+  `Verify` (không viết logic mới) — idempotent (no-op nếu đã xóa), refuse nếu hash/size lệch (KHÔNG xóa gì
+  khi refuse).
+- Migration 0032: rebuild `artifacts` (SQLite không có ALTER CHECK, dùng lại ĐÚNG kỹ thuật
+  create-copy-drop-rename của migration 25) để widen CHECK cho `PURGED`; thêm vào
+  `migrationsRequiringForeignKeysOff` (vì `messages.content_artifact_id REFERENCES artifacts(id)`, giống
+  hệt lý do migration 25 cần OFF cho `durable_jobs`). Thêm index `idx_artifacts_locator` (group-eligibility
+  query của PR2b sau này cần).
+- Migration 0033: bảng mới `artifact_locator_purge_claims` (PK = locator, không phải ArtifactID — vì
+  Locator dùng chung nhiều row) — không cần FK-off (bảng mới, không ai tham chiếu).
+- `ports.ArtifactRepository`: 3 method mới — `ListArtifactsByLocator` (group-eligibility/refcount read,
+  mọi Project), `ClaimArtifactLocatorForPurge` (INSERT, PK conflict → `ErrPersistenceAlreadyExists`),
+  `ReleaseArtifactLocatorClaim` (DELETE, idempotent). `InsertArtifact` sửa: check
+  `artifact_locator_purge_claims` trước khi INSERT, từ chối nếu Locator đang bị claim (nửa kia của TOCTOU
+  fence — nửa 1 là claim atomically trước khi xóa).
+- Đồng bộ implementation thật (sqlite) + fake (`internal/app/ports/fake`) — cả 2 phải cùng hành vi.
+
+**Test:**
+- `internal/adapters/artifactstore/filesystem_test.go`: `TestDelete_RemovesContent_ThenIsIdempotent`,
+  `TestDelete_HashMismatch_RefusesAndLeavesContentInPlace`, `TestDelete_AlreadyAbsent_IsANoOp`,
+  `TestDelete_MalformedLocator_RejectedBeforeTouchingFilesystem`.
+- `internal/adapters/sqlite/migration_0032_test.go` (mirror `migration_0025_test.go`'s own kỹ thuật thật):
+  seed real artifact + real message tham chiếu nó, apply migration 32, xác nhận preserve byte-for-byte +
+  `PRAGMA foreign_key_check` = 0 + CHECK mới nhận PURGED/từ chối giá trị lạ; test sabotage
+  (`artifacts_new` đã tồn tại trước) chứng minh rollback sạch, không ghi `schema_migrations`.
+- `internal/adapters/sqlite/artifact_repository_test.go`: `ListArtifactsByLocator` xuyên Project,
+  `ClaimArtifactLocatorForPurge` reject trùng, `ReleaseArtifactLocatorClaim` idempotent + mở khóa lại được,
+  `InsertArtifact` reject khi Locator đang bị claim.
+- `internal/domain/artifact/artifact_test.go`: `Purged.Valid()`.
+
+**Lỗi gặp khi verify (đã tự sửa):** 3 test hardcode tổng số migration (`want 30`) — cần bump theo từng
+migration mới thêm (30→31 sau migration 32, →32 sau migration 33); đã sửa cả 3
+(`db_test.go`/`unitofwork_test.go`). Một lần full-suite run flake ở
+`TestExecuteNodeHandler_PollerDetectsDurableCancellation_UnrecognizedExecutorLeavesRunning`
+(`internal/app/runtime`, timing-sensitive, không liên quan gì tới `internal/adapters/*`/`internal/domain/
+artifact` — package này PR không hề chạm tới) — pass 3/3 khi chạy riêng, xác nhận flake không phải regression.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l <mọi file đổi>                                                 # rỗng
+go test -count=1 ./internal/adapters/artifactstore/... ./internal/adapters/sqlite/... ./internal/domain/artifact/... # PASS
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake thật)
+```
+
+**Việc còn lại (PR2b, không blocking PR này):** sweep job/handler thật — reserve→delete-ngoài-Tx→finalize
+protocol đầy đủ (dùng các primitive PR2a vừa xây), dry-run report mặc định, thao tác thật cần explicit
+flag, crash-safety test ở từng boundary claim/delete/finalize.
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge.

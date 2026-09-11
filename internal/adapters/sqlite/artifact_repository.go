@@ -38,6 +38,19 @@ func insertArtifactTx(ctx context.Context, tx *sql.Tx, a artifact.Artifact) (art
 		return artifact.Artifact{}, MapSQLiteError(fmt.Errorf("resolve artifact project: %w", err))
 	}
 
+	// V5-14: refuse a fresh insert against a Locator a sweep is currently
+	// mid-purge on — see ClaimArtifactLocatorForPurge's own doc comment for
+	// why this check exists. Read fresh, inside this same transaction, so
+	// it observes any claim already committed by a concurrent sweep.
+	var claimed int
+	claimErr := tx.QueryRowContext(ctx, `SELECT 1 FROM artifact_locator_purge_claims WHERE locator = ?`, a.Locator).Scan(&claimed)
+	if claimErr == nil {
+		return artifact.Artifact{}, fmt.Errorf("%w: locator %s is claimed for purge", ports.ErrPersistenceAlreadyExists, a.Locator)
+	}
+	if !errors.Is(claimErr, sql.ErrNoRows) {
+		return artifact.Artifact{}, MapSQLiteError(fmt.Errorf("check artifact locator purge claim: %w", claimErr))
+	}
+
 	sensitivity, err := sensitivityToDB(a.Sensitivity)
 	if err != nil {
 		return artifact.Artifact{}, err
@@ -217,6 +230,68 @@ func (r artifactRepository) ListOrphanedArtifacts(ctx context.Context, olderThan
 		artifacts = append(artifacts, a)
 	}
 	return artifacts, nil
+}
+
+// ListArtifactsByLocator implements ports.ArtifactRepository.
+func (r artifactRepository) ListArtifactsByLocator(ctx context.Context, locator string) ([]artifact.Artifact, error) {
+	rows, err := r.tx.QueryContext(ctx, `SELECT id FROM artifacts WHERE locator = ? ORDER BY id`, locator)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list artifacts by locator: %w", err))
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan artifact id by locator: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate artifact ids by locator: %w", err)
+	}
+	rows.Close()
+
+	artifacts := make([]artifact.Artifact, 0, len(ids))
+	for _, id := range ids {
+		a, err := loadArtifactTx(ctx, r.tx, id)
+		if err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, a)
+	}
+	return artifacts, nil
+}
+
+// ClaimArtifactLocatorForPurge implements ports.ArtifactRepository: a plain
+// INSERT against the claim table's own PRIMARY KEY(locator) — a second
+// claim attempt against an already-claimed Locator hits that same PK and
+// is mapped to ErrPersistenceAlreadyExists, exactly like every other
+// idempotency-key/PK conflict in this codebase.
+func (r artifactRepository) ClaimArtifactLocatorForPurge(ctx context.Context, locator, claimOwner string, claimedAt time.Time) error {
+	if _, err := r.tx.ExecContext(ctx, `
+INSERT INTO artifact_locator_purge_claims (locator, claim_owner, claimed_at) VALUES (?, ?, ?)`,
+		locator, claimOwner, formatWorkflowTime(claimedAt),
+	); err != nil {
+		var existing int
+		lookupErr := r.tx.QueryRowContext(ctx, `SELECT 1 FROM artifact_locator_purge_claims WHERE locator = ?`, locator).Scan(&existing)
+		if lookupErr == nil {
+			return fmt.Errorf("%w: artifact locator %s", ports.ErrPersistenceAlreadyExists, locator)
+		}
+		return MapSQLiteError(fmt.Errorf("claim artifact locator %s for purge: %w", locator, err))
+	}
+	return nil
+}
+
+// ReleaseArtifactLocatorClaim implements ports.ArtifactRepository.
+// Idempotent: a Locator with no open claim is left exactly as it is
+// (zero rows affected is not an error).
+func (r artifactRepository) ReleaseArtifactLocatorClaim(ctx context.Context, locator string) error {
+	if _, err := r.tx.ExecContext(ctx, `DELETE FROM artifact_locator_purge_claims WHERE locator = ?`, locator); err != nil {
+		return MapSQLiteError(fmt.Errorf("release artifact locator %s purge claim: %w", locator, err))
+	}
+	return nil
 }
 
 // sensitivityToDB/sensitivityFromDB round-trip redact.Sensitivity (a plain

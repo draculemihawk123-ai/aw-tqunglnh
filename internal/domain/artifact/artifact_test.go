@@ -147,7 +147,7 @@ func TestRetentionClassValid(t *testing.T) {
 }
 
 func TestAttachStateValid(t *testing.T) {
-	if !Orphan.Valid() || !Attached.Valid() {
+	if !Orphan.Valid() || !Attached.Valid() || !Purged.Valid() {
 		t.Fatal("known attach states must be valid")
 	}
 	if AttachState("BOGUS").Valid() {
