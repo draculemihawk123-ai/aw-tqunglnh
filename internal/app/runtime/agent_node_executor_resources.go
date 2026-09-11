@@ -167,6 +167,34 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 	return resolveExecutionResources(ctx, e.uow, e.workspaces, e.writeLeases, req, request)
 }
 
+// resolveAgentWorkingDirectory picks ports.AgentExecutionRequest's own
+// WorkingDirectory: the first (deterministic, assembleWorkspaceMounts' own
+// RepositoryID-sorted order) WRITE-access mount's own real
+// WorkingDirectory when one exists — "root of the resolved writable
+// workspace/mount" (2026-09-11, confirmed with the user) — the
+// authoritative source for a real MAKER-role AGENT that actually holds a
+// write grant.
+//
+// No WRITE mount at all is not itself an error: it is a real, structurally
+// legitimate state this codebase already relies on — V5-12's own CHECKER
+// role unconditionally forces every mount read-only (forceReadOnlyMounts),
+// and TestAgentNodeExecutor_CheckerRole_EmptyDiff_Succeeds already asserts
+// a checker with nothing to write is a normal SUCCESS, not a failure. For
+// that case this mirrors GateNodeExecutor's own identical resolution for
+// the same shape of problem (a real, read-only-by-design executor that
+// still needs a real local cwd, but has no real repository mount to
+// derive one from): a fresh, empty scratchDirectory. cleanup is non-nil
+// only for that scratch path — the caller MUST call it once execution is
+// over; nil (a real repository's own working tree) needs no cleanup.
+func resolveAgentWorkingDirectory(mounts []ports.AgentWorkspaceMount) (path string, cleanup func(), err error) {
+	for _, mount := range mounts {
+		if mount.Access == ports.WorkspaceReadWrite {
+			return mount.WorkingDirectory, nil, nil
+		}
+	}
+	return scratchDirectory()
+}
+
 // buildEvidence implements V5-08B's own locked 3-phase evidence protocol's
 // first two phases (decision #2): Phase 1, real I/O entirely outside any
 // transaction — re-measure each mount's own diff now that

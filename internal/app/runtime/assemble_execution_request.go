@@ -23,6 +23,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
@@ -30,6 +31,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
+	domainruntime "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -142,7 +144,20 @@ func AssembleAgentExecutionRequest(
 	}
 
 	return ports.AgentExecutionRequest{
-		AttemptID:            ports.ExecutionAttemptID(req.AttemptID),
+		AttemptID: ports.ExecutionAttemptID(req.AttemptID),
+		// ContextSnapshotID is the legacy, spike-era field
+		// ports.ContextSnapshotPin's own doc comment documents as
+		// coexisting with (never bridged to) the real V5-08B0 pin below —
+		// set here to the SAME real snapshot's own ID (never a distinct
+		// value) purely so a real ports.AgentExecutor's own validateRequest
+		// (every real adapter's own non-empty-ContextSnapshotID check
+		// predates V5-08B0 and was never updated to also accept the new
+		// pin) has something real to check; this is not a second, separate
+		// context system in use, just the one real snapshot's ID read
+		// through both of this request's own historical fields at once
+		// (2026-09-11: confirmed with the user — the mapping is "ID of the
+		// same resolved context snapshot carried by the structured field").
+		ContextSnapshotID:    domainruntime.ContextSnapshotID(gathered.snapshotID),
 		ProviderKey:          ports.ProviderKey(gathered.providerKey),
 		AdapterBuildID:       gathered.adapterBuildID,
 		InstructionArtifact:  instructionRef,
@@ -155,6 +170,21 @@ func AssembleAgentExecutionRequest(
 		IdempotencyKey:       req.AttemptID,
 		AllowedOutcomes:      gathered.allowedOutcomes,
 		RecoveryCheckpoint:   recoveryCheckpoint,
+		// Prompt is the exact bytes just Put as the InstructionArtifact
+		// (contentJSON, above) — "canonical rendered content of the pinned
+		// InstructionArtifact" (2026-09-11, confirmed with the user):
+		// using the in-memory bytes directly, never a redundant
+		// store.Open/readArtifact round trip of what this same call just
+		// wrote.
+		Prompt: string(contentJSON),
+		// Timeout/Model come from the SAME pinned ResolvedExecutionProfileV1
+		// decision every other admission-time value here already reads
+		// (gathered.timeoutSeconds/model, both threaded through
+		// gatherAssembledRequestInputs above) — never a fresh, live re-read
+		// of current profile configuration (2026-09-11, confirmed with the
+		// user: "Do not... read current profile values at dispatch time").
+		Timeout: time.Duration(gathered.timeoutSeconds) * time.Second,
+		Model:   gathered.model,
 	}, nil
 }
 
@@ -206,12 +236,25 @@ type assembledRequestInputs struct {
 	snapshotManifestHash string
 	effectiveScope       []workdomain.RepositoryScope
 	executionProfileHash string
-	isolationTier        policy.IsolationTier
-	allowedCapabilities  []string
-	workspaceMounts      []ports.AgentWorkspaceMount
-	messages             []assembledMessageInput
-	resources            []contextassembler.Candidate
-	allowedOutcomes      []string
+	// timeoutSeconds/model are the pinned AGENT execution profile's own
+	// values (resolveExecutionProfile, schedule.go) — threaded through to
+	// populate ports.AgentExecutionRequest.Timeout/Model for real
+	// (2026-09-11: neither was previously read here, since nothing
+	// consumed them before AssembleAgentExecutionRequest itself started
+	// populating those two request fields). timeoutSeconds is guaranteed
+	// non-zero by resolveExecutionProfile's own admission-time fail-closed
+	// check (ErrAttemptPolicyRequired) — never re-validated here, the same
+	// "trust what admission already enforced" discipline this function's
+	// own AdapterBuild check just above does NOT extend to (that one has
+	// no admission-time equivalent, see its own comment).
+	timeoutSeconds      uint32
+	model               string
+	isolationTier       policy.IsolationTier
+	allowedCapabilities []string
+	workspaceMounts     []ports.AgentWorkspaceMount
+	messages            []assembledMessageInput
+	resources           []contextassembler.Candidate
+	allowedOutcomes     []string
 	// recoveryCheckpointID is V5-13's own recovery marker (2026-09-11):
 	// empty for an ordinary Attempt, populated with the real Checkpoint's
 	// own ID when this Attempt is a FRESH_START replacement
@@ -380,6 +423,7 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		providerKey: attempt.ProviderKey, adapterBuildID: profile.AdapterBuild.BuildID,
 		snapshotID: snapshot.ID, snapshotManifestHash: snapshot.ManifestHash,
 		effectiveScope: nodeRun.EffectiveScope, executionProfileHash: attempt.ExecutionProfileHash,
+		timeoutSeconds: profile.TimeoutSeconds, model: profile.Model,
 		isolationTier: profile.IsolationTier, allowedCapabilities: profile.AllowedCapabilities,
 		workspaceMounts: mounts, messages: messages, resources: resources, allowedOutcomes: allowedOutcomes,
 		workItemID: string(workItem.ID), workItemTitle: workItem.Title, workItemBehavior: workItem.Behavior,

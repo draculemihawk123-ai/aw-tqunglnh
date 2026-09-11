@@ -133,6 +133,14 @@ func (e *AgentNodeExecutor) Execute(ctx context.Context, req ports.NodeExecution
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: resolve agent execution resources: %w", err)
 	}
 	request.WorkspaceMounts = resolved.mounts
+	workingDirectory, cleanupWorkingDirectory, err := resolveAgentWorkingDirectory(resolved.mounts)
+	if err != nil {
+		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: resolve agent working directory: %w", err)
+	}
+	if cleanupWorkingDirectory != nil {
+		defer cleanupWorkingDirectory()
+	}
+	request.WorkingDirectory = workingDirectory
 
 	executor, _, err := e.agents.Resolve(request.ProviderKey, agentregistry.Requirements{})
 	if err != nil {

@@ -355,6 +355,26 @@ func (f *v5AcceptFixture) repositoryWorkspaceHandle(t *testing.T, workspaceSetID
 	return handle
 }
 
+// artifactObjectPath reconstructs the real, on-disk path
+// internal/adapters/artifactstore.Store itself would resolve locator to —
+// "<root>/objects/<hex[0:2]>/<hex[2:4]>/<hex>", mirroring that package's
+// own private objectPath exactly (confirmed by reading
+// filesystem.go — a locator is always "sha256:" plus 64 lowercase hex
+// characters). f.artifacts is only ever a ports.ArtifactStore interface
+// value (never the concrete *artifactstore.Store), so a scenario that
+// needs to corrupt real bytes on disk — proving Verify/Open really detect
+// tampering, V5-15B's own "artifact tamper" injection — has no other real
+// way to reach the exact file a real Put call wrote.
+func (f *v5AcceptFixture) artifactObjectPath(t *testing.T, locator string) string {
+	t.Helper()
+	const prefix = "sha256:"
+	if len(locator) != len(prefix)+64 || locator[:len(prefix)] != prefix {
+		t.Fatalf("artifactObjectPath: locator %q is not a well-formed sha256 locator", locator)
+	}
+	hexDigest := locator[len(prefix):]
+	return filepath.Join(f.fixtureRoot, "artifacts", "objects", hexDigest[0:2], hexDigest[2:4], hexDigest)
+}
+
 // --- job/worker pool wiring ---
 
 // registerHandlers wires every real V4/V5 job handler this package's own
@@ -370,11 +390,24 @@ func (f *v5AcceptFixture) repositoryWorkspaceHandle(t *testing.T, workspaceSetID
 // own "h"/"h2" convention — reusing one would collide with ids that
 // prefix already durably minted in this same database.
 func (f *v5AcceptFixture) registerHandlers(executor ports.NodeExecutor, idPrefix string) *workerpool.Registry {
+	return f.registerHandlersWithAgents(executor, idPrefix, agentregistry.Empty())
+}
+
+// registerHandlersWithAgents is registerHandlers with an explicit
+// *agentregistry.Registry — needed by any real scenario with a real AGENT
+// node: ExecuteNodeHandler's own admission phase (admission.go's own
+// runAdmissionProbePhase, GC-INV-23's drift check) resolves the pinned
+// AdapterBuild's own provider against THIS SAME registry, not against
+// whatever internal registry an AgentNodeExecutor happens to hold — the
+// two must be the identical instance (wrapping the identical real
+// claude.Adapter) or a real Attempt would see its own drift check resolve
+// a DIFFERENT executor than the one that actually ran.
+func (f *v5AcceptFixture) registerHandlersWithAgents(executor ports.NodeExecutor, idPrefix string, agents *agentregistry.Registry) *workerpool.Registry {
 	handlerIDs := idsource.NewSequential(idPrefix)
 	registry := workerpool.NewRegistry()
 	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(f.uow, handlerIDs))
 	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandler(f.uow, handlerIDs, fake.NewRuntimeExecutionConfigProvider()))
-	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(f.uow, handlerIDs, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agentregistry.Empty()))
+	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(f.uow, handlerIDs, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agents))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(f.uow, handlerIDs))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(f.uow, handlerIDs))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(f.uow, handlerIDs))
@@ -502,7 +535,12 @@ func (f *v5AcceptFixture) waitForNodeRunState(t *testing.T, runID, nodeKey strin
 func (f *v5AcceptFixture) waitForRunState(t *testing.T, runID string, want runtimedomain.WorkflowRunState) runtimedomain.WorkflowRun {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(8 * time.Second)
+	// 20s, not 8s like the other two waitFor* helpers below: a real AGENT
+	// scenario's own admission phase re-probes a real process
+	// (adapterbuild.VerifyNoDrift spawning `fake-claude --version` again)
+	// on top of the real task spawn itself, needing more real wall-clock
+	// headroom than a COMMAND/MACHINE_GATE-only scenario ever does.
+	deadline := time.Now().Add(20 * time.Second)
 	var last runtimedomain.WorkflowRun
 	for time.Now().Before(deadline) {
 		var run runtimedomain.WorkflowRun
