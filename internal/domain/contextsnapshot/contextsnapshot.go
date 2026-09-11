@@ -31,6 +31,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -82,6 +83,18 @@ type ResourceRef struct {
 	ContentHash    string
 }
 
+// EvidenceRef is one runtime.Evidence row this Snapshot references, by
+// reference only — mirrors MessageRef's own bare-ID shape exactly.
+// V5-12's own checker input allowlist contract (docs/design/
+// 07-v5-execution-evidence.md V5-12, confirmed with the user 2026-09-10):
+// a CHECKER-role AGENT node's own Snapshot carries EvidenceRefs instead of
+// a maker transcript — see NewSnapshot's own doc comment on ordering for
+// why this field, unlike MessageRefs/ResourceRefs, is sorted rather than
+// order-preserved.
+type EvidenceRef struct {
+	EvidenceID string
+}
+
 // Snapshot is the immutable manifest go-core-spec §4.6 names:
 // "ContextSnapshot { ID, ProjectID, WorkItemID, AttemptID, MessageRefs[],
 // ResourceRefs[], RevisionSet, ManifestHash, CreatedAt }". MessageRefs and
@@ -98,6 +111,14 @@ type Snapshot struct {
 	AttemptID    AttemptID
 	MessageRefs  []MessageRef
 	ResourceRefs []ResourceRef
+	// EvidenceRefs is V5-12's own checker input allowlist addition
+	// (2026-09-10) — empty for every MAKER/COMMAND/MACHINE_GATE Attempt
+	// (unchanged behavior), populated only for a CHECKER-role AGENT
+	// Attempt, whose caller (internal/app/runtime/schedule.go) gathers it
+	// instead of MessageRefs. Unlike MessageRefs/ResourceRefs, order
+	// carries no meaning here (this is not a rendered transcript), so
+	// NewSnapshot sorts it for canonicalization.
+	EvidenceRefs []EvidenceRef
 	Revisions    workspace.RevisionSet
 	ManifestHash string
 	CreatedAt    time.Time
@@ -118,6 +139,7 @@ func NewSnapshot(
 	attemptID AttemptID,
 	messageRefs []MessageRef,
 	resourceRefs []ResourceRef,
+	evidenceRefs []EvidenceRef,
 	revisions workspace.RevisionSet,
 	createdAt time.Time,
 ) (Snapshot, error) {
@@ -149,19 +171,26 @@ func NewSnapshot(
 			return Snapshot{}, errors.New("contextsnapshot: ResourceRef.ResourceKey and ContentHash must not be blank")
 		}
 	}
+	evidenceRefsCopy := append([]EvidenceRef(nil), evidenceRefs...)
+	for _, ref := range evidenceRefsCopy {
+		if strings.TrimSpace(ref.EvidenceID) == "" {
+			return Snapshot{}, errors.New("contextsnapshot: EvidenceRef.EvidenceID must not be blank")
+		}
+	}
+	sort.Slice(evidenceRefsCopy, func(i, j int) bool { return evidenceRefsCopy[i].EvidenceID < evidenceRefsCopy[j].EvidenceID })
 	revisionsCopy, err := workspace.NewRevisionSet(revisions.Entries())
 	if err != nil {
 		return Snapshot{}, err
 	}
 
-	manifestHash, err := computeManifestHash(messageRefsCopy, resourceRefsCopy, revisionsCopy)
+	manifestHash, err := computeManifestHash(messageRefsCopy, resourceRefsCopy, evidenceRefsCopy, revisionsCopy)
 	if err != nil {
 		return Snapshot{}, err
 	}
 
 	return Snapshot{
 		ID: id, ProjectID: projectID, WorkItemID: workItemID, AttemptID: attemptID,
-		MessageRefs: messageRefsCopy, ResourceRefs: resourceRefsCopy, Revisions: revisionsCopy,
+		MessageRefs: messageRefsCopy, ResourceRefs: resourceRefsCopy, EvidenceRefs: evidenceRefsCopy, Revisions: revisionsCopy,
 		ManifestHash: manifestHash, CreatedAt: createdAt.UTC(),
 	}, nil
 }
@@ -174,14 +203,25 @@ func NewSnapshot(
 // rather than raw entries, reusing that type's own established
 // canonicalization instead of re-deriving it.
 type canonicalManifest struct {
-	MessageRefs     []MessageRef  `json:"messageRefs"`
-	ResourceRefs    []ResourceRef `json:"resourceRefs"`
+	MessageRefs  []MessageRef  `json:"messageRefs"`
+	ResourceRefs []ResourceRef `json:"resourceRefs"`
+	// EvidenceRefs is tagged omitempty deliberately — the same reasoning
+	// ResourceRef.OwnerVersionID's own doc comment already gives: a
+	// Snapshot written before V5-12 was marshaled with no EvidenceRefs key
+	// at all, and computeManifestHash must keep recomputing the IDENTICAL
+	// hash for those already-stored rows on every load (loadSnapshotTx's
+	// own tamper check). A NEW MAKER/COMMAND/MACHINE_GATE Snapshot always
+	// has this nil too (unchanged behavior), so omitempty never hides a
+	// real CHECKER Snapshot's own non-empty EvidenceRefs from the hash —
+	// only the "no Evidence at all" case, which is exactly when omitting
+	// the key changes nothing observable.
+	EvidenceRefs    []EvidenceRef `json:"evidenceRefs,omitempty"`
 	RevisionSetHash string        `json:"revisionSetHash"`
 }
 
-func computeManifestHash(messageRefs []MessageRef, resourceRefs []ResourceRef, revisions workspace.RevisionSet) (string, error) {
+func computeManifestHash(messageRefs []MessageRef, resourceRefs []ResourceRef, evidenceRefs []EvidenceRef, revisions workspace.RevisionSet) (string, error) {
 	data, err := json.Marshal(canonicalManifest{
-		MessageRefs: messageRefs, ResourceRefs: resourceRefs, RevisionSetHash: revisions.ContentHash(),
+		MessageRefs: messageRefs, ResourceRefs: resourceRefs, EvidenceRefs: evidenceRefs, RevisionSetHash: revisions.ContentHash(),
 	})
 	if err != nil {
 		return "", fmt.Errorf("contextsnapshot: marshal canonical manifest: %w", err)

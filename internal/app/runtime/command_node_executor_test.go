@@ -94,6 +94,14 @@ type commandFixtureOptions struct {
 	envAllowlist         []string
 	secretRefs           []string
 	timeoutSeconds       uint32
+	// compatibility, networkAccess and policyRefs are populated now
+	// (V5-09 acceptance-gap remediation, 2026-09-10): nil/zero keeps the
+	// fixture's own long-standing defaults (OS compatibility naming the
+	// real worker's own three supported platforms, NetworkAccessNone, no
+	// PolicyRefs) so every pre-existing test is unaffected.
+	compatibility *command.Compatibility
+	networkAccess command.NetworkAccess
+	policyRefs    []definition.DependencyPin
 }
 
 // commandFixture builds one fully-admitted, RUNNING-eligible ExecutionAttempt
@@ -138,18 +146,27 @@ func commandFixture(t *testing.T, opts commandFixtureOptions) (
 	if timeoutSeconds == 0 {
 		timeoutSeconds = 600
 	}
+	compatibility := command.Compatibility{OS: []string{"linux", "windows", "darwin"}}
+	if opts.compatibility != nil {
+		compatibility = *opts.compatibility
+	}
+	networkAccess := opts.networkAccess
+	if networkAccess == "" {
+		networkAccess = command.NetworkAccessNone
+	}
 
 	publishCommandVersion(t, u, "command-def-1", "command-v1", command.CommandDocument{
 		Executable:           command.ExecutableRef{OwnerVersionID: "cmd-skill-v1", ResourceKey: "cmd-script", ContentHash: hash},
 		Argv:                 argv,
 		PlaceholderAllowlist: allowlist,
 		CwdRepositoryTarget:  cwdTarget,
-		Compatibility:        command.Compatibility{OS: []string{"linux", "windows", "darwin"}},
+		Compatibility:        compatibility,
 		EnvAllowlist:         opts.envAllowlist,
-		NetworkAccess:        command.NetworkAccessNone,
+		NetworkAccess:        networkAccess,
 		SecretRefs:           opts.secretRefs,
 		TimeoutSeconds:       timeoutSeconds,
 		Output:               command.OutputContract{CaptureStdout: true, CaptureStderr: true, MaxOutputBytes: 65536},
+		PolicyRefs:           opts.policyRefs,
 	})
 	publishPolicyVersion(t, u, "attempt-policy-def", "attempt-policy-v1", attemptPolicyDocument(600))
 	publishPolicyVersion(t, u, "permission-policy-def", "permission-policy-v1", permissionPolicyDocument())

@@ -332,6 +332,19 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 	}
 
 	mounts := assembleWorkspaceMounts(nodeRun.EffectiveScope, snapshot.Revisions.Entries())
+	// V5-12 contract 3 (2026-09-10): a CHECKER-role AGENT node's own
+	// mounts are ALWAYS forced read-only, regardless of what
+	// EffectiveScope itself grants — reuses gate_node_executor.go's own
+	// forceReadOnlyMounts exactly (the identical "downgrade every mount's
+	// Access" mechanism Gate already relies on for its own "read-only by
+	// design" invariant). This is also what makes "checker never acquires
+	// a WriteLease" true for free: resolveExecutionResources
+	// (agent_node_executor_resources.go) only calls AcquireWriteLeases
+	// for mounts whose Access is WRITE, so forcing every mount READ_ONLY
+	// here leaves nothing for it to ever acquire a lease for.
+	if profile.Role == workflow.AgentRoleChecker {
+		mounts = forceReadOnlyMounts(mounts)
+	}
 
 	acceptance := make([]string, 0, len(workItem.AcceptanceCriteria))
 	for _, c := range workItem.AcceptanceCriteria {

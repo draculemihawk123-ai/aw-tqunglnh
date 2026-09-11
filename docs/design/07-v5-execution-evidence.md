@@ -273,10 +273,43 @@
 - **Hoàn thành khi:** ReleaseSet sealed/abandoned là input có provenance cho completion và cleanup.
 - **Nguồn:** AK-ARCH-015C, GC-DS-04.
 
+## V5-10B — Completion rework route schema
+
+- **Mục tiêu:** cho WorkflowVersion khai được một "rework route" nguồn từ END mà CompletionPolicy
+  (V5-11) dùng khi trả outcome REWORK — tách khỏi V5-11 để giữ transaction quyết định
+  (fencing-critical, đọc/ghi CompletionDecision) không lẫn với thay đổi authoring-schema/compiler/
+  validator.
+- **Phụ thuộc:** không có (thuần schema/validation trong `internal/domain/workflow`, publish-time
+  only; không chạm runtime engine).
+- **Phạm vi:** `Edge.Kind` (`FLOW`|`COMPLETION_REWORK`, mặc định FLOW khi rỗng) và `Edge.ReworkPolicy`
+  (iteration budget); validation đúng một route/END, target tồn tại và không phải END, outcome rỗng,
+  budget dương; compiler/hash tự động bao gồm route qua marshal document chuẩn, không cần code hash
+  riêng. KHÔNG bao gồm: runtime evaluator đọc route, CAS activation theo REWORK, ghi
+  CompletionDecision — các phần đó thuộc V5-11.
+- **Nền đã có trên master:** ADR-009 đã định nghĩa "business rework là edge tường minh trong graph"
+  từ baseline (§10), nhưng `validateNormalizedDocument` cấm MỌI outgoing edge từ END không phân biệt
+  loại — gap thật khiến GC-INV-29 ("REWORK đòi rework edge có trong WorkflowVersion đã pin") không có
+  gì để pin. Phát hiện trong "Rà soát V5-09…V5-15 trên committed master" (2026-09-10) khi scoping
+  V5-11.
+- **Thực hiện:** `EdgeKind`/`ReworkPolicy` field mới trên `Edge` (additive, `omitempty` — không đổi
+  content hash của version đã publish trước task này); `validateNormalizedDocument` tách nhánh kiểm
+  tra theo Kind; COMPLETION_REWORK edge bị loại khỏi các map `outgoing`/`incoming` dùng cho
+  reachability/bounded-cycle/fork-join — nó là routing table riêng của CompletionPolicy, không phải
+  đồ thị scheduler thật sự duyệt qua; `CycleMembership` (dùng lại bởi V4-07's escalation-edge check,
+  `advance.go`) loại trừ tương tự để không lẫn component.
+- **Verify:** publish reject FLOW-edge-từ-END, COMPLETION_REWORK-không-từ-END, target=END,
+  outcome khác rỗng, thiếu/bằng-0 budget, hai route cùng một END; publish accept đúng một route hợp
+  lệ và Kind="FLOW" tường minh tương đương Kind rỗng; CycleMembership không gộp END/target vào cùng
+  component qua route; `WorkflowVersion.Document()`/clone deep-copy `ReworkPolicy` đúng (không leak
+  con trỏ giữa hai lần gọi).
+- **Hoàn thành khi:** một WorkflowVersion đã publish có thể khai đúng một rework route cho mỗi END
+  node, sẵn sàng cho V5-11 load mà không cần đổi gì thêm ở schema/compiler/validator.
+- **Nguồn:** ADR-009, ADR-021, GC-INV-10, GC-INV-29.
+
 ## V5-11 — CompletionPolicy service
 
 - **Mục tiêu:** externalize WorkflowRun/WorkItem completion bằng một authority duy nhất.
-- **Phụ thuộc:** V5-10, V5-10A, V4-12.
+- **Phụ thuộc:** V5-10, V5-10A, V5-10B, V4-12.
 - **Nền đã có trên master:** END đã chỉ đưa Run tới `VERIFYING` và phát
   `RUN_COMPLETION_REQUESTED`; WorkItem vẫn `ACTIVE`. `DecisionArtifact`, approval repository, typed
   blocker `COMPLETION_POLICY_FAILED`, UoW/CAS và cancel-race fixtures đã có. Chưa có completion service,
@@ -291,14 +324,56 @@
   WorkItem về `ACTIVE`.
   `REWORK` không có rework edge hợp lệ trong graph đã pin MUST trở thành `BLOCK`; orchestrator không
   được tự dựng route.
-- **Dữ kiện phải khóa trước khi code:** (1) nơi pin đúng một CompletionPolicyVersion cho Run; hiện
-  WorkItem/Workflow/END chưa có ref; (2) mở rộng `CompletionRules` ngoài `RequiredEvidenceKinds` để có
-  ordered assurance levels, freshness, approval, N/A/waiver, clean/release requirements và disposition
-  deterministic; (3) rework route schema. Validator hiện cấm END có outgoing edge, nên phải thêm typed
-  completion-rework route vào compiled WorkflowVersion hoặc đổi invariant, không thể chỉ “tìm edge”;
-  (4) định nghĩa join là persisted graph JOIN hay child-WorkItem join; (5) idempotency và transaction
-  boundary của DecisionArtifact+transition+event+blocker/activation. Vì vậy V5-11 **CHƯA ĐỦ DỮ KIỆN**
-  và còn bị chặn bởi V5-10/V5-10A.
+- **Dữ kiện phải khóa trước khi code — cập nhật 2026-09-10, 5/5 đã chốt (xem
+  `baocaov5checklist.md`'s "V5-11 scoping"/"V5-11 contract 1"/"V5-11 contract 2" cho câu trả lời đầy
+  đủ, đây chỉ là bản tóm tắt cho design doc):**
+  1. **CHỐT:** `WorkflowDocument.CompletionPolicyRef *definition.DependencyPin` — pin ROOT-level (không
+     phải per-node, không phải WorkItem/END, tránh cùng Run đổi policy giữa các lần REWORK re-entry).
+     `internal/app/workflowcompiler`'s `CompileAndResolve` resolve trong cùng registry snapshot, xác
+     minh `Category == COMPLETION` + `CompletionRules != nil`, ghi vào `WorkflowVersion.DependencyManifest`
+     — `StartWorkflowRun` đã copy nguyên manifest này vào `ExecutionManifest` từ trước (không đổi gì ở
+     runtime). Đã triển khai (`baocaov5checklist.md`'s "V5-11 — PR0: schema foundation").
+  2. **CHỐT:** mở rộng `CompletionRules` (`internal/domain/policy`) tại chỗ — thêm `AssuranceLevel`
+     (enum có thứ tự cố định trong code, không tin thứ tự JSON), `AssuranceRequirement`
+     (Level+RequiredEvidenceKinds+RequiredApprovals) và `RequiredAssurance []AssuranceRequirement`
+     cạnh `RequiredEvidenceKinds` hiện có (giữ nguyên, chỉ dùng cho policy V1). V1 flat và V2 ladder
+     mutually exclusive trên một document; level tích lũy (E2E PASS không bù UNIT thiếu); HUMAN đọc
+     Approval record đã pin, không phải boolean; N/A cần policy authority+reason, waiver là authority
+     riêng; evidence phải đúng exact Attempt/RevisionSet/ReleaseSet và còn fresh; không suy level từ
+     tên EvidenceKind. `ApprovalRequirement{AuthorizedRoles []string}` đã định nghĩa. Đã triển khai
+     (`baocaov5checklist.md`'s "V5-11 — PR0: schema foundation").
+  3. **CHỐT, giải quyết bởi task riêng V5-10B (đã merge, xem mục ngay trên):**
+     `Edge.Kind=COMPLETION_REWORK`+`Edge.ReworkPolicy` đã cho phép khai đúng một rework route
+     mỗi END. V5-11 chỉ còn: load route đã publish cho END node của Run, ghi CompletionDecision, CAS
+     tạo đúng một activation khi outcome REWORK, chuyển BLOCK nếu route thiếu/invalid.
+  4. **CHỐT:** "join" = cơ chế FORK/JOIN branch-token đã có (`evaluateJoinTx`, V4-10/11) — đã tự thoả
+     mãn trước khi Run tới END/VERIFYING (Run chỉ tới VERIFYING khi không còn activation live/blocked
+     và END hợp lệ đã đạt). V5-11 KHÔNG reconcile evidence giữa nhiều Run của cùng WorkItem — chỉ
+     đánh giá exact Run đang VERIFYING cùng END NodeRun của nó; phát hiện Run khác cùng WorkItem còn
+     non-terminal là invariant violation → BLOCK với typed reason
+     (`WORK_ITEM_RUN_STATE_INCONSISTENT` hoặc tương đương). Multi-Run-đồng-thời thật sự (RunSet,
+     winner/supersession) là task/ADR riêng, ngoài phạm vi V5-11. `ParentJoinPolicy` giữa parent/child
+     WorkItem là gap khác, chưa có evaluator, không gộp vào đây.
+  5. **CHỐT (contract 2, đầy đủ trong `baocaov5checklist.md`):** cho một completion candidate
+     `(RunID, EndNodeRunID)`, đúng một `COMPLETION_DECISION_V1` được commit — replay check TRƯỚC (ID
+     tất định `hash("completion-decision", RunID, EndNodeRunID)`, khớp input → trả kết quả cũ, khác
+     input → conflict), rồi mới revalidate Run VERIFYING@ExpectedVersion/END SUCCEEDED/WorkItem+cancel
+     fence, rồi ghi TẤT CẢ atomically (DecisionArtifact, state transition, REWORK activation hoặc FAIL
+     blocker, event `COMPLETION_DECIDED`, receipt) trong đúng một transaction — tất cả hoặc không gì cả.
+     ID phụ (Event/ReworkActivation/FailBlocker) đều `hash(DecisionArtifactID, "<vai trò>")`, mirror
+     đúng tiền lệ `deterministicJoinNodeRunID` (`advance.go`) đã dùng sha256 làm ID thay vì string
+     concatenation thuần.
+
+  V5-11 giờ **ĐÃ TRIỂN KHAI ĐẦY ĐỦ CẢ BỐN OUTCOME**, qua 3 PR: PR0 (schema foundation —
+  `CompletionPolicyRef`+assurance ladder), PR1 (`EvaluateCompletionCandidate`,
+  `internal/app/runtime/completion_policy.go` — PASS/BLOCK/FAIL; phạm vi điều chỉnh so với đề xuất ban
+  đầu "PASS+BLOCK"/"REWORK+FAIL" sau khi phát hiện FAIL's side effect tái dùng nguyên
+  `openWorkItemBlockerTx` có sẵn, không cần cơ chế mới), và PR2 (REWORK — tra `Edge.Kind=
+  COMPLETION_REWORK` (V5-10B) trên END node đã reach, kiểm `ReworkPolicy.MaxIterations` qua đếm số lần
+  END đó từng SUCCEEDED trước đó, tạo đúng một NodeRun activation PENDING mới cho node target). Xem
+  `baocaov5checklist.md`'s "V5-11 — PR1"/"V5-11 — PR2" cho đầy đủ quyết định thiết kế (khi nào FAIL vs
+  BLOCK, ReleaseSet gating, approval-satisfaction semantics, evidence-freshness qua "latest activation
+  per lineage", vì sao NodeRun mới cố ý dừng ở PENDING chưa được schedule thật).
 - **Verify:** maker claim vs gate matrix, stale evidence, required-level skip, approval missing; ma trận
   bốn outcome × transition; test `REWORK` khi graph không có rework edge trả `BLOCK`; test `FAIL` tạo
   đúng một blocker `COMPLETION_POLICY_FAILED` và không tự reactivate WorkItem; test restart giữa decision
@@ -330,6 +405,36 @@
   ResourceRef); scratch handle; enforcement semantics. Với `OPERATOR_TRUSTED_LOCAL`, platform chỉ có thể
   hậu kiểm mutation rồi fail/quarantine; muốn ngăn write trước process phải yêu cầu
   `ENFORCED_ISOLATED`. Task **CHƯA ĐỦ DỮ KIỆN** cho tới khi ba contract này được chốt.
+  **Cập nhật 2026-09-10** (chốt với người dùng, xem baocaov5checklist.md's "V5-12" section cho narrative
+  đầy đủ): contract 1 chốt — `Role` (typed `MAKER|CHECKER`) pin trên `workflow.AgentNodeConfig`, không
+  phải `AgentProfileDocument` (PR0, PR #19, IMPLEMENTED). Contract 2 (checker input allowlist) tự quyết
+  và IMPLEMENTED (PR1): CHECKER-role AGENT node có `MessageRefs` rỗng (không có maker transcript nào) và
+  `ContextSnapshot.EvidenceRefs` (field mới, additive, omitempty) trỏ tới Evidence của mọi predecessor
+  node trực tiếp (từ edge `To == nodeKey`) — chỉ lấy NodeRun/Attempt THÀNH CÔNG mới nhất (ActivationSequence/
+  AttemptNumber cao nhất) mỗi predecessor, tự nhiên xử lý đúng FORK/JOIN (nhiều predecessor) và REWORK
+  (predecessor chạy lại nhiều lần). Contract 3 (scratch handle + enforcement semantics — read-only exact
+  revision mount, no WriteLease, CreateLocalCommit bị từ chối, trusted-local mutation fail+quarantine)
+  VẪN CHƯA implement — kế hoạch: reuse `forceReadOnlyMounts` (đã có sẵn cho Gate) cho CHECKER-role AGENT
+  node's own mount, việc này dự kiến tự động chặn luôn WriteLease acquisition (chỉ acquire cho mount WRITE).
+  **Cập nhật 2026-09-10 (PR2, IMPLEMENTED phần cốt lõi):** `assemble_execution_request.go` reuse
+  `forceReadOnlyMounts` cho CHECKER-role AGENT — mount luôn READ_ONLY bất kể EffectiveScope; xác nhận
+  điều này tự động chặn WriteLease acquisition (test thật, không chỉ suy luận). `AgentNodeExecutor.
+  buildEvidence` reuse `strictReadOnly` (cơ chế Gate đã có từ trước) cho CHECKER — mọi diff phải HOÀN TOÀN
+  RỖNG, không chỉ "trong scope"; vi phạm FAILED/SCOPE_VIOLATION giống Gate. `CreateLocalCommit` xác nhận
+  KHÔNG có caller thật nào trong toàn bộ `internal/app` (kể cả cho MAKER/COMMAND) — "bị từ chối" đúng
+  nghĩa vì chưa hề được wire, không phải giả định. "Trusted-local mutation quan sát được phải quarantine":
+  cơ chế quarantine hiện có (`handleMutatingCancellation`) chỉ áp dụng cho mount có WRITE access
+  (`resolved.writeMounts`) — với CHECKER mount luôn READ_ONLY nên nhánh này CẤU TRÚC không bao giờ chạy,
+  y hệt tradeoff Gate's own package doc comment đã tự xác nhận từ trước ("resolved.hasWriteMount is
+  always false... classifyCancellation's own mutating-attempt path can structurally never fire for a
+  Gate") — không phải gap mới, mà là tiền lệ Gate đã chấp nhận, áp dụng nhất quán cho CHECKER. **Gap còn
+  lại, cố ý hoãn:** "scratch nằm ngoài source" cho AGENT — khác Gate/COMMAND (một argv+cwd do platform
+  kiểm soát hoàn toàn), AGENT wrap một CLI agent tương tác đầy đủ; cwd thật của provider đi qua một tầng
+  adapter-level translation (`ports.AgentExecutionRequest.WorkspaceMounts` nhiều mount -> một
+  `WorkingDirectory` cho provider) chưa được nghiên cứu kỹ — cần một pass riêng trước khi implement, không
+  rush. Phần CỐT LÕI về an toàn (mount read-only, diff-rỗng bắt buộc, không WriteLease) đã xong và test
+  thật; "scratch" là vấn đề TIỆN DỤNG (checker có chỗ ghi tạm hữu ích) chứ không phải AN TOÀN (checker vẫn
+  an toàn dù chưa có scratch, chỉ có thể kém tiện dụng hơn).
 - **Verify:** snapshot manifest asserts forbidden maker resources absent; write source/local commit bị
   policy/fence từ chối.
 - **Kết quả kỳ vọng:** CHECKER không được suy từ tên node; nó có NodeRun/Attempt/ContextSnapshot/session

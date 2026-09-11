@@ -2,6 +2,7 @@ package policy
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/authoring"
@@ -149,40 +150,190 @@ func validateAttemptRules(rules AttemptRules) authoring.Diagnostics {
 	return diags
 }
 
+// validateCompletionRules validates BOTH the V1 flat shape
+// (RequiredEvidenceKinds) and the V2 assurance ladder (RequiredAssurance,
+// 2026-09-10) — the two are mutually exclusive on one document (see
+// CompletionRules's own doc comment), checked first below. Every V1
+// document ever published only ever has RequiredEvidenceKinds set, so its
+// own validation path (the loop over RequiredEvidenceKinds) is completely
+// unchanged from before V2 existed.
 func validateCompletionRules(rules CompletionRules) authoring.Diagnostics {
 	var diags authoring.Diagnostics
-	if len(rules.RequiredEvidenceKinds) == 0 {
+	hasV1 := len(rules.RequiredEvidenceKinds) > 0
+	hasV2 := len(rules.RequiredAssurance) > 0
+
+	if hasV1 && hasV2 {
 		diags = append(diags, authoring.Diagnostic{
-			Path: "completion.requiredEvidenceKinds",
-			What: "no required evidence kinds declared",
+			Path: "completion",
+			What: "both requiredEvidenceKinds and requiredAssurance are declared",
+			Why:  "the V1 flat shape and the V2 assurance ladder are mutually exclusive on one CompletionRules document — declaring both is ambiguous about which one actually governs PASS",
+			Fix:  "remove requiredEvidenceKinds (use requiredAssurance instead) or remove requiredAssurance (stay on the V1 flat shape)",
+		})
+		return diags
+	}
+	if !hasV1 && !hasV2 {
+		diags = append(diags, authoring.Diagnostic{
+			Path: "completion",
+			What: "neither requiredEvidenceKinds nor requiredAssurance is declared",
 			Why:  "GC-INV-12/13 require completion policy and evidence to decide PASS together — a completion policy that requires nothing can never distinguish NOT_RUN from a real pass",
-			Fix:  "declare at least one required Evidence.Kind",
+			Fix:  "declare at least one required Evidence.Kind (requiredEvidenceKinds) or at least one assurance level (requiredAssurance)",
+		})
+		return diags
+	}
+
+	if hasV1 {
+		seen := make(map[string]bool, len(rules.RequiredEvidenceKinds))
+		for i, kind := range rules.RequiredEvidenceKinds {
+			path := fmt.Sprintf("completion.requiredEvidenceKinds[%d]", i)
+			trimmed := strings.TrimSpace(kind)
+			if trimmed == "" {
+				diags = append(diags, authoring.Diagnostic{
+					Path: path,
+					What: "required evidence kind is empty",
+					Why:  "an empty kind can never be matched against a real Evidence.Kind",
+					Fix:  "remove the empty entry or name the evidence kind it should have been",
+				})
+				continue
+			}
+			if seen[trimmed] {
+				diags = append(diags, authoring.Diagnostic{
+					Path: path,
+					What: fmt.Sprintf("duplicate required evidence kind %q", trimmed),
+					Why:  "listing the same evidence kind twice can never mean anything more than listing it once",
+					Fix:  "remove the duplicate entry",
+				})
+			}
+			seen[trimmed] = true
+		}
+		return diags
+	}
+
+	seenLevels := make(map[AssuranceLevel]bool, len(rules.RequiredAssurance))
+	for i, requirement := range rules.RequiredAssurance {
+		path := fmt.Sprintf("completion.requiredAssurance[%d]", i)
+		diags = append(diags, validateAssuranceRequirement(path, requirement, seenLevels)...)
+	}
+	return diags
+}
+
+func validateAssuranceRequirement(path string, requirement AssuranceRequirement, seenLevels map[AssuranceLevel]bool) authoring.Diagnostics {
+	var diags authoring.Diagnostics
+
+	if !requirement.Level.Valid() {
+		diags = append(diags, authoring.Diagnostic{
+			Path: path + ".level",
+			What: fmt.Sprintf("unsupported assurance level %q", requirement.Level),
+			Why:  "HE-09 names a closed static/lint/unit/integration/e2e/human ladder; anything else has no defined position to evaluate cumulatively against",
+			Fix:  "set level to one of STATIC, LINT, UNIT, INTEGRATION, E2E, HUMAN",
+		})
+	} else if seenLevels[requirement.Level] {
+		diags = append(diags, authoring.Diagnostic{
+			Path: path + ".level",
+			What: fmt.Sprintf("duplicate assurance level %q", requirement.Level),
+			Why:  "each level is evaluated at most once; two requirements for the same level can never both be the authoritative one",
+			Fix:  "merge the two requirements into one, or remove the duplicate",
+		})
+	} else {
+		seenLevels[requirement.Level] = true
+	}
+
+	if len(requirement.RequiredEvidenceKinds) == 0 && len(requirement.RequiredApprovals) == 0 {
+		diags = append(diags, authoring.Diagnostic{
+			Path: path,
+			What: "requires neither an evidence kind nor an approval",
+			Why:  "a level requiring nothing can never distinguish NOT_RUN from a real pass at that level, the same GC-INV-12/13 concern the V1 shape already grounds",
+			Fix:  "declare at least one required evidence kind or approval requirement",
 		})
 	}
-	seen := make(map[string]bool, len(rules.RequiredEvidenceKinds))
-	for i, kind := range rules.RequiredEvidenceKinds {
-		path := fmt.Sprintf("completion.requiredEvidenceKinds[%d]", i)
+
+	seenKinds := make(map[string]bool, len(requirement.RequiredEvidenceKinds))
+	for i, kind := range requirement.RequiredEvidenceKinds {
+		kindPath := fmt.Sprintf("%s.requiredEvidenceKinds[%d]", path, i)
 		trimmed := strings.TrimSpace(kind)
 		if trimmed == "" {
 			diags = append(diags, authoring.Diagnostic{
-				Path: path,
+				Path: kindPath,
 				What: "required evidence kind is empty",
 				Why:  "an empty kind can never be matched against a real Evidence.Kind",
 				Fix:  "remove the empty entry or name the evidence kind it should have been",
 			})
 			continue
 		}
+		if seenKinds[trimmed] {
+			diags = append(diags, authoring.Diagnostic{
+				Path: kindPath,
+				What: fmt.Sprintf("duplicate required evidence kind %q", trimmed),
+				Why:  "listing the same evidence kind twice within one assurance level can never mean anything more than listing it once",
+				Fix:  "remove the duplicate entry",
+			})
+		}
+		seenKinds[trimmed] = true
+	}
+
+	seenApprovals := make(map[string]bool, len(requirement.RequiredApprovals))
+	for i, approval := range requirement.RequiredApprovals {
+		approvalPath := fmt.Sprintf("%s.requiredApprovals[%d]", path, i)
+		diags = append(diags, validateApprovalRequirement(approvalPath, approval)...)
+
+		key := approvalRequirementKey(approval)
+		if seenApprovals[key] {
+			diags = append(diags, authoring.Diagnostic{
+				Path: approvalPath,
+				What: "duplicate approval requirement",
+				Why:  "two approval requirements naming the exact same set of authorized roles can never mean anything more than one",
+				Fix:  "remove the duplicate entry",
+			})
+		}
+		seenApprovals[key] = true
+	}
+
+	return diags
+}
+
+func validateApprovalRequirement(path string, approval ApprovalRequirement) authoring.Diagnostics {
+	var diags authoring.Diagnostics
+	if len(approval.AuthorizedRoles) == 0 {
+		diags = append(diags, authoring.Diagnostic{
+			Path: path + ".authorizedRoles",
+			What: "no authorized roles declared",
+			Why:  "an approval requirement nobody is authorized to resolve could never be satisfied",
+			Fix:  "declare at least one authorized role",
+		})
+	}
+	seen := make(map[string]bool, len(approval.AuthorizedRoles))
+	for i, role := range approval.AuthorizedRoles {
+		rolePath := fmt.Sprintf("%s.authorizedRoles[%d]", path, i)
+		trimmed := strings.TrimSpace(role)
+		if trimmed == "" {
+			diags = append(diags, authoring.Diagnostic{
+				Path: rolePath,
+				What: "authorized role is empty",
+				Why:  "an empty role can never be matched against a real approval decision's own DecidedRole",
+				Fix:  "remove the empty entry or name the role it should have been",
+			})
+			continue
+		}
 		if seen[trimmed] {
 			diags = append(diags, authoring.Diagnostic{
-				Path: path,
-				What: fmt.Sprintf("duplicate required evidence kind %q", trimmed),
-				Why:  "listing the same evidence kind twice can never mean anything more than listing it once",
+				Path: rolePath,
+				What: fmt.Sprintf("duplicate authorized role %q", trimmed),
+				Why:  "listing the same role twice can never mean anything more than listing it once",
 				Fix:  "remove the duplicate entry",
 			})
 		}
 		seen[trimmed] = true
 	}
 	return diags
+}
+
+// approvalRequirementKey is a canonical, order-independent key for one
+// ApprovalRequirement's own AuthorizedRoles set — used only to detect a
+// duplicate requirement within the same AssuranceRequirement, never
+// persisted or hashed.
+func approvalRequirementKey(approval ApprovalRequirement) string {
+	roles := append([]string(nil), approval.AuthorizedRoles...)
+	sort.Strings(roles)
+	return strings.Join(roles, "\x00")
 }
 
 func validatePermissionRules(rules PermissionRules) authoring.Diagnostics {

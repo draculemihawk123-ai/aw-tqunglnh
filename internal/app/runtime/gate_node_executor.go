@@ -273,7 +273,7 @@ func (e *GateNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionR
 	})
 	flushErr := sink.Flush(ctx)
 
-	return e.classify(ctx, req, request, resolved, inputs.criteria, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes())
+	return e.classify(ctx, req, request, resolved, inputs.criteria, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), env)
 }
 
 // classify maps one completed ProcessSupervisor.Run call into either a
@@ -284,7 +284,7 @@ func (e *GateNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionR
 // a single exit-code check.
 func (e *GateNodeExecutor) classify(
 	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources,
-	criteria []gate.Criterion, result ports.ProcessResult, runErr error, syncErr error, stdout []byte,
+	criteria []gate.Criterion, result ports.ProcessResult, runErr error, syncErr error, stdout []byte, secretValues map[string]string,
 ) (ports.NodeExecutionResult, error) {
 	if errors.Is(syncErr, ports.ErrJobLeaseLost) || errors.Is(syncErr, ports.ErrWriteLeaseLost) {
 		return ports.NodeExecutionResult{}, fmt.Errorf("%w: job/write lease lost mid-execution: %v", ErrIndeterminateExecution, syncErr)
@@ -311,12 +311,41 @@ func (e *GateNodeExecutor) classify(
 	}
 
 	if gateResult.OverallVerdict != gate.VerdictPass {
-		if _, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult); err != nil {
+		// V5-10 acceptance-gap remediation PR2 (2026-09-10 post-merge
+		// review): a non-PASS verdict is exactly as much evidence as a PASS
+		// one ("Gate phải trả Evidence cho FAIL/ERROR/NOT_RUN, không persist
+		// rồi bỏ artifact ID" — user's own locked PR2 scope) — every
+		// criterion gets its own Evidence row here too, never just a
+		// dropped artifact ID. buildEvidence is safe to call regardless of
+		// outcome: EXECUTION_STARTED/FINISHED are emitted unconditionally
+		// before classify ever runs (Execute, above), so a real terminal
+		// event always exists, and a Gate's own mounts are always
+		// read-only (forceReadOnlyMounts) — its diff-manifest set is
+		// always structurally empty, never a real mutation to report.
+		evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, nil, true)
+		if err != nil {
+			if errors.Is(err, scopeguard.ErrScopeViolation) {
+				return ports.NodeExecutionResult{
+					State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
+					ErrorCode: errorcode.CodeScopeViolation,
+				}, nil
+			}
+			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build gate finalization evidence for non-PASS verdict: %w", err)
+		}
+		resultArtifactID, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult, artifact.Orphan, secretValues)
+		if err != nil {
 			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: persist gate result artifact: %w", err)
+		}
+		evidence.OutputArtifactRefs = append(evidence.OutputArtifactRefs, resultArtifactID)
+		for _, criterion := range gateResult.Criteria {
+			evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
+				Kind: criterion.EvidenceKey, Verdict: string(criterion.Verdict),
+				ArtifactReferences: []string{resultArtifactID}, PolicyVersion: request.ExecutionProfileHash,
+			})
 		}
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
-			ErrorCode: errorcode.CodeExecutionFailed,
+			ErrorCode: errorcode.CodeExecutionFailed, Evidence: evidence,
 		}, nil
 	}
 
@@ -328,7 +357,7 @@ func (e *GateNodeExecutor) classify(
 		}, nil
 	}
 
-	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome)
+	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, true)
 	if err != nil {
 		if errors.Is(err, scopeguard.ErrScopeViolation) {
 			// A Gate's own evaluator wrote something despite being
@@ -342,11 +371,26 @@ func (e *GateNodeExecutor) classify(
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build gate finalization evidence: %w", err)
 	}
 
-	resultArtifactID, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult)
+	resultArtifactID, err := e.persistGateResultArtifact(ctx, resolved.projectID, req.AttemptID, gateResult, artifact.Orphan, secretValues)
 	if err != nil {
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: persist gate result artifact: %w", err)
 	}
 	evidence.OutputArtifactRefs = append(evidence.OutputArtifactRefs, resultArtifactID)
+	// V5-10 acceptance-gap remediation (2026-09-10 post-merge review): one
+	// Evidence row per criterion — GateResult artifact is no substitute for
+	// criteria-level Evidence (docs/design/07-v5-execution-evidence.md's
+	// own review finding). Every criterion shares the SAME GateResult
+	// artifact (it covers all of them at once); Kind is that criterion's
+	// own EvidenceKey, Verdict its own resolved gate.Verdict — always PASS
+	// here (a non-PASS OverallVerdict returns FAILED above, before this
+	// point is ever reached; a future remediation PR is what extends
+	// Evidence to the FAILED branch).
+	for _, criterion := range gateResult.Criteria {
+		evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
+			Kind: criterion.EvidenceKey, Verdict: string(criterion.Verdict),
+			ArtifactReferences: []string{resultArtifactID}, PolicyVersion: request.ExecutionProfileHash,
+		})
+	}
 
 	return ports.NodeExecutionResult{
 		State: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
@@ -374,6 +418,16 @@ func deriveGateResult(criteria []gate.Criterion, result ports.ProcessResult, run
 	if result.ExitCode != 0 {
 		return errorAllCriteria(criteria, fmt.Sprintf("gate evaluator exited %d", result.ExitCode))
 	}
+	// V5-10 acceptance-gap remediation (2026-09-10 post-merge review):
+	// truncated stdout could still happen to end on a syntactically valid
+	// JSON object (e.g. truncation lands after the object but before some
+	// trailing log text) — never trust ANY criterion's own verdict when
+	// bytes beyond OutputLimitBytes were silently discarded, exactly the
+	// same "cannot be trusted as clean" reasoning CommandNodeExecutor's own
+	// classify now applies.
+	if result.OutputTruncated {
+		return errorAllCriteria(criteria, "gate evaluator output was truncated")
+	}
 
 	var output map[string]gateEvaluatorCriterionOutput
 	if err := json.Unmarshal(stdout, &output); err != nil {
@@ -395,10 +449,24 @@ func deriveGateResult(criteria []gate.Criterion, result ports.ProcessResult, run
 		verdict := gate.Verdict(entry.Verdict)
 		switch verdict {
 		case gate.VerdictNotApplicable:
+			// Repo-wide convention (docs/design/01-system-design.md:
+			// "NOT_APPLICABLE cần policy và reason") — BOTH halves are
+			// checked now (V5-10 acceptance-gap remediation, 2026-09-10):
+			// a non-empty reason alone used to be enough, but a claim for
+			// a criterion the author never authorized as
+			// AllowNotApplicable is exactly as untrustworthy as one with
+			// no reason at all — an evaluator's own runtime claim can
+			// never grant itself an exemption authoring time never gave
+			// it. Both failure modes fail closed to ERROR identically.
+			if !c.AllowNotApplicable {
+				results = append(results, GateCriterionResult{
+					Name: c.Name, EvidenceKey: c.EvidenceKey, Verdict: gate.VerdictError,
+					Detail: "gate evaluator reported NOT_APPLICABLE for a criterion not authored as AllowNotApplicable",
+				})
+				overall = maxSeverityVerdict(overall, gate.VerdictError)
+				continue
+			}
 			if strings.TrimSpace(entry.Reason) == "" {
-				// Repo-wide convention (docs/design/01-system-design.md:
-				// "NOT_APPLICABLE cần policy và reason") — a claim with no
-				// reason is never trusted, fail closed to ERROR instead.
 				results = append(results, GateCriterionResult{
 					Name: c.Name, EvidenceKey: c.EvidenceKey, Verdict: gate.VerdictError,
 					Detail: "gate evaluator reported NOT_APPLICABLE with no reason",
@@ -481,21 +549,51 @@ func scratchDirectory() (path string, cleanup func(), err error) {
 
 const gateResultArtifactMediaType = "application/vnd.agentkit.gate-result+json"
 
-// persistGateResultArtifact persists gateResult as a durable artifact,
-// inserted directly ATTACHED — mirrors CommandNodeExecutor's own
-// persistCommandOutputArtifact exactly (finalize.go never polices
-// AttemptFinalizationEvidence.OutputArtifactRefs the rigorous
-// ORPHAN->ATTACHED way it polices diff-manifest artifacts, so staging
-// this ORPHAN would strand it forever). Persisted for EVERY verdict, not
-// only PASS — a FAILED/ERROR Gate result is exactly the kind of
-// provenance-bearing record this task's own Mục tiêu names, and the
-// caller (classify) reaches this on both its PASS and non-PASS paths.
-func (e *GateNodeExecutor) persistGateResultArtifact(ctx context.Context, projectID project.ProjectID, attemptID string, result GateResult) (string, error) {
+// persistGateResultArtifact persists gateResult as a durable artifact.
+// Persisted for EVERY verdict, not only PASS — a FAILED/ERROR Gate result
+// is exactly the kind of provenance-bearing record this task's own Mục
+// tiêu names, and the caller (classify) reaches this on both its PASS and
+// non-PASS paths.
+//
+// attachState is Orphan on both paths since the V5-09/V5-10 acceptance-gap
+// remediation (2026-09-10 post-merge review, PR1+PR2):
+// validateAndAttachEvidenceArtifactsTx (finalize.go) promotes it
+// ORPHAN->ATTACHED itself, atomically with the criteria-level Evidence
+// rows it also writes, from both the SUCCEEDED and FAILED branches —
+// mirroring buildEvidence's own Phase 1 (Put/Verify, real I/O, no
+// transaction) + Phase 2 (insert ORPHAN, one short transaction) split
+// exactly.
+//
+// secretValues redacts every criterion's own Detail/Reason before they are
+// ever marshaled — the evaluator's own stdout is free text an author
+// wrote, and a resolved secret could easily end up echoed into one of
+// these fields the same way it could end up in Command's own captured
+// stdout/stderr.
+func (e *GateNodeExecutor) persistGateResultArtifact(
+	ctx context.Context, projectID project.ProjectID, attemptID string, result GateResult, attachState artifact.AttachState,
+	secretValues map[string]string,
+) (string, error) {
+	scopedMatcher := e.matcher
+	if len(secretValues) > 0 {
+		values := make([]string, 0, len(secretValues))
+		for _, v := range secretValues {
+			values = append(values, v)
+		}
+		scopedMatcher = e.matcher.WithSecrets(values...)
+	}
+	for i, criterion := range result.Criteria {
+		if redactedDetail, _ := scopedMatcher.Redact([]byte(criterion.Detail)); string(redactedDetail) != criterion.Detail {
+			result.Criteria[i].Detail = string(redactedDetail)
+		}
+		if redactedReason, _ := scopedMatcher.Redact([]byte(criterion.Reason)); string(redactedReason) != criterion.Reason {
+			result.Criteria[i].Reason = string(redactedReason)
+		}
+	}
 	body, err := json.Marshal(result)
 	if err != nil {
 		return "", fmt.Errorf("encode gate result artifact: %w", err)
 	}
-	ref, err := e.store.Put(ctx, ports.ArtifactMetadata{ContentType: gateResultArtifactMediaType, Sensitivity: redact.Sensitive}, bytes.NewReader(body))
+	ref, err := e.store.Put(ctx, ports.ArtifactMetadata{ContentType: gateResultArtifactMediaType, Sensitivity: redact.Sensitive, Redacted: true}, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("put gate result artifact: %w", err)
 	}
@@ -505,7 +603,7 @@ func (e *GateNodeExecutor) persistGateResultArtifact(ctx context.Context, projec
 	artifactID := e.ids.NewID()
 	a, err := artifact.NewArtifact(
 		artifact.ID(artifactID), projectID, ref.Locator, ref.SHA256, ref.Size, ref.ContentType,
-		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Attached, false, nil, e.clk.Now(), 1,
+		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, attachState, false, nil, e.clk.Now(), 1,
 	)
 	if err != nil {
 		return "", fmt.Errorf("construct gate result artifact record for attempt %s: %w", attemptID, err)
@@ -621,6 +719,17 @@ func gatherGateExecutionInputs(ctx context.Context, uow ports.UnitOfWork, req po
 		commandVersion, err := tx.Definitions().LoadVersion(ctx, gateDoc.CommandRef.VersionID)
 		if err != nil {
 			return fmt.Errorf("runtime: load gate's own pinned command version %s: %w", gateDoc.CommandRef.VersionID, err)
+		}
+		// V5-10 acceptance-gap remediation (2026-09-10 post-merge review):
+		// re-verify CommandRef's own exact DefinitionID after load — this
+		// pin was loaded by VersionID alone until now, unlike the
+		// GateVersion pin immediately above (which already re-checks
+		// DefinitionID/CompiledHash). A VersionID that happened to resolve
+		// to a version under the WRONG DefinitionID would otherwise be
+		// evaluated as if it were the Gate's own genuinely pinned Command.
+		if commandVersion.DefinitionID() != gateDoc.CommandRef.DefinitionID {
+			return fmt.Errorf("runtime: gate's own pinned command version %s belongs to definition %s, not %s",
+				gateDoc.CommandRef.VersionID, commandVersion.DefinitionID(), gateDoc.CommandRef.DefinitionID)
 		}
 		commandDoc, err := decodeCompiledCommand(commandVersion.CompiledSnapshot())
 		if err != nil {

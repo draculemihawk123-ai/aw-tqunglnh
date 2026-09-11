@@ -14,6 +14,7 @@
 package redact
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"reflect"
@@ -63,6 +64,22 @@ func (m Matcher) IsSecret(s string) bool {
 	return ok
 }
 
+// WithSecrets returns a new Matcher combining m's own known secrets with
+// additional values (V5-09 acceptance-gap remediation, 2026-09-10 post-merge
+// review) — e.g. one Attempt's own just-resolved SecretRefs, which exist
+// only for that one execution and must never be folded into the shared,
+// composition-root-built base Matcher every other caller still uses. m
+// itself is never mutated (Matcher's own fields are unexported and this
+// always returns a fresh value).
+func (m Matcher) WithSecrets(secrets ...string) Matcher {
+	combined := make([]string, 0, len(m.secrets)+len(secrets))
+	for s := range m.secrets {
+		combined = append(combined, s)
+	}
+	combined = append(combined, secrets...)
+	return NewMatcher(combined...)
+}
+
 // String returns s unchanged unless it is an exact secret match, in which
 // case it returns the placeholder.
 func (m Matcher) String(s string) string {
@@ -70,6 +87,32 @@ func (m Matcher) String(s string) string {
 		return placeholder
 	}
 	return s
+}
+
+// Redact scans content for every occurrence of a known secret value and
+// replaces it with the placeholder (V5-09 acceptance-gap remediation,
+// 2026-09-10 post-merge review) — the substring-scan counterpart to
+// String/Tagged's own whole-value matching, for a caller that has a blob
+// of free text (captured process stdout/stderr) a secret might appear
+// embedded within rather than equal the whole of. Still never a pattern/
+// regex guess at an unknown value (this package's own doc comment): every
+// value replaced here is one the caller already resolved and knows for
+// certain is a secret, exactly like every other method on this type.
+// Reports whether anything was actually replaced.
+func (m Matcher) Redact(content []byte) ([]byte, bool) {
+	redacted := false
+	result := content
+	for secret := range m.secrets {
+		if secret == "" {
+			continue
+		}
+		needle := []byte(secret)
+		if bytes.Contains(result, needle) {
+			result = bytes.ReplaceAll(result, needle, []byte(placeholder))
+			redacted = true
+		}
+	}
+	return result, redacted
 }
 
 // mask returns the placeholder, or the placeholder plus s's last few

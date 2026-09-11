@@ -159,7 +159,11 @@ func TestValidateDocument_Completion_RejectsNoRequiredEvidenceKinds(t *testing.T
 	doc := validCompletionDocument()
 	doc.Completion.RequiredEvidenceKinds = nil
 	diags := policy.ValidateDocument(doc)
-	requireProblemPath(t, diags, "completion.requiredEvidenceKinds")
+	// Path is "completion" (not "completion.requiredEvidenceKinds") since
+	// 2026-09-10: this check now covers BOTH the V1 flat shape and the V2
+	// assurance ladder — an empty document satisfies neither, and the
+	// diagnostic names both ways to fix it.
+	requireProblemPath(t, diags, "completion")
 }
 
 func TestValidateDocument_Permission_RejectsUnsupportedIsolationTier(t *testing.T) {

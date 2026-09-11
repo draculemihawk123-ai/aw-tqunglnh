@@ -15,6 +15,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/agentprofile"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
+	"github.com/taQuangLing/agent-workflow/internal/domain/message"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
@@ -49,6 +50,18 @@ func agentExecutableDocument(profileVersionID string, policyRefs []definition.De
 			{Key: "implement-to-end", From: "implement", Outcome: "done", To: "end"},
 		},
 	}
+}
+
+// agentExecutableDocumentWithRole is agentExecutableDocument's own sibling
+// for V5-12 contract 3's own CHECKER-role tests (2026-09-10) —
+// agentExecutableDocument itself stays an implicit MAKER (the pre-V5-12
+// default every one of its own many existing callers already relies on)
+// by delegating here, rather than adding a Role parameter there and
+// updating every call site for a value only the new CHECKER tests need.
+func agentExecutableDocumentWithRole(profileVersionID string, policyRefs []definition.DependencyPin, adapterBuildID *string, role workflow.AgentRole) workflow.WorkflowDocument {
+	doc := agentExecutableDocument(profileVersionID, policyRefs, adapterBuildID)
+	doc.Nodes[1].Agent.Role = role
+	return doc
 }
 
 func validAgentProfileDocument() agentprofile.AgentProfileDocument {
@@ -339,6 +352,139 @@ func TestScheduleExecutableNodeRun_Agent_SchedulesAttemptAndJob(t *testing.T) {
 	}
 	if !decisionFound {
 		t.Fatalf("no EXECUTION_PROFILE_V1 decision artifact recorded among %+v", decisions)
+	}
+}
+
+// --- ScheduleExecutableNodeRun: V5-12 checker input allowlist ---
+
+// makerCheckerDocument is start -> maker(AGENT, Role MAKER) -> checker
+// (AGENT, Role CHECKER) -> end — both AGENT nodes deliberately pin the
+// SAME AgentProfileVersion/PolicyRefs, proving V5-12's own contract 1
+// point directly: one AgentProfile can serve both a MAKER and a CHECKER
+// node, each still getting its own independent NodeRun/Attempt/context.
+func makerCheckerDocument(profileVersionID string, policyRefs []definition.DependencyPin) workflow.WorkflowDocument {
+	return workflow.WorkflowDocument{
+		SchemaVersion: "1",
+		Nodes: []workflow.Node{
+			{Key: "start", Type: workflow.NodeStart, Outcomes: []string{"next"}},
+			{Key: "maker", Type: workflow.NodeAgent, Outcomes: []string{"done"}, Agent: &workflow.AgentNodeConfig{
+				ProfileRef: definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "agent-profile-def", VersionID: profileVersionID},
+				Role:       workflow.AgentRoleMaker,
+				PolicyRefs: policyRefs,
+			}},
+			{Key: "checker", Type: workflow.NodeAgent, Outcomes: []string{"pass"}, Agent: &workflow.AgentNodeConfig{
+				ProfileRef: definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "agent-profile-def", VersionID: profileVersionID},
+				Role:       workflow.AgentRoleChecker,
+				PolicyRefs: policyRefs,
+			}},
+			{Key: "end", Type: workflow.NodeEnd},
+		},
+		Edges: []workflow.Edge{
+			{Key: "start-to-maker", From: "start", Outcome: "next", To: "maker"},
+			{Key: "maker-to-checker", From: "maker", Outcome: "done", To: "checker"},
+			{Key: "checker-to-end", From: "checker", Outcome: "pass", To: "end"},
+		},
+	}
+}
+
+// TestScheduleExecutableNodeRun_Checker_ExcludesMessagesIncludesPredecessorEvidence
+// is V5-12 contract 2's own proof: a CHECKER-role AGENT node's own
+// ContextSnapshot gets NO maker transcript (MessageRefs empty, despite a
+// real Message existing for the WorkItem) and DOES get an EvidenceRef
+// naming its direct predecessor's ("maker") own terminal Evidence.
+//
+// Bypasses the real graph engine for "maker" reaching SUCCEEDED (seeds
+// its terminal NodeRun/Attempt/Evidence directly via seedRunEvidence, and
+// the checker's own PENDING NodeRun directly via NewNodeRun) — the same
+// "this is about ScheduleExecutableNodeRun's own gathering logic, not
+// about a real AGENT executor producing Evidence" bypass discipline
+// completion_policy_test.go's own seedRunEvidence already established
+// (that file's own package doc comment explains why).
+func TestScheduleExecutableNodeRun_Checker_ExcludesMessagesIncludesPredecessorEvidence(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+
+	root := readyFixture(t, uow, ids, "project-1", "repo-1")
+	seedEffectiveScope(t, uow, root.WorkItemID, "repo-1")
+	version := publishWorkflowVersionDocument(t, uow, "project-1", "wf-def-1", "wf-v-1",
+		makerCheckerDocument("agent-profile-v1", fullyResolvablePolicyRefs()))
+	publishAgentProfileVersion(t, uow, "agent-profile-def", "agent-profile-v1", validAgentProfileDocument())
+	publishPolicyVersion(t, uow, "attempt-policy-def", "attempt-policy-v1", attemptPolicyDocument(600))
+	publishPolicyVersion(t, uow, "permission-policy-def", "permission-policy-v1", permissionPolicyDocument())
+
+	startCmd := testCommand("idem-start-checker", "hash-checker", ports.ProjectScope("project-1"), "StartWorkflowRun")
+	startResult, err := runtime.StartWorkflowRun(ctx, uow, ids, startCmd, runtime.StartWorkflowRunRequest{
+		ProjectID: "project-1", WorkItemID: root.WorkItemID, WorkflowVersionID: string(version.ID()),
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflowRun: %v", err)
+	}
+	run, err := uow.Snapshot.Runtime().GetWorkflowRun(ctx, startResult.RunID)
+	if err != nil {
+		t.Fatalf("GetWorkflowRun: %v", err)
+	}
+
+	// A real Message for the WorkItem — proves the checker's own
+	// exclusion is real, not just "happened to be empty already".
+	err = uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		_, err := tx.Messages().AppendMessage(ctx, ports.AppendMessageRequest{
+			ID: "msg-1", ProjectID: "project-1", WorkItemID: string(root.WorkItemID),
+			Actor: "user-1", Role: message.RoleUser, ContentArtifactID: "artifact-1",
+			CorrelationID: "corr-1", CreatedAt: time.Now(),
+		})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("AppendMessage: %v", err)
+	}
+
+	// maker's own terminal NodeRun/Attempt/Evidence, seeded directly.
+	seedRunEvidence(t, uow, run, "maker", "AGENT_EXECUTION", "SUCCEEDED")
+
+	// checker's own PENDING NodeRun, seeded directly (never went through
+	// AdvanceRun — this test only needs ScheduleExecutableNodeRun's own
+	// behavior for it).
+	checkerNodeRunID := runtimedomain.NodeRunID("noderun-checker")
+	err = uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		checkerNodeRun, err := runtimedomain.NewNodeRun(checkerNodeRunID, run.ID, "checker", 2, 0, nil, "input-hash-checker", "")
+		if err != nil {
+			return err
+		}
+		_, err = tx.Runtime().CreateNodeRun(ctx, checkerNodeRun)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("seed checker node run: %v", err)
+	}
+
+	provider := fake.NewRuntimeExecutionConfigProvider()
+	result, err := runtime.ScheduleExecutableNodeRun(ctx, uow, ids, provider, runtime.ScheduleExecutableNodeRunRequest{
+		RunID: string(run.ID), NodeRunID: string(checkerNodeRunID), CorrelationID: "corr-checker", JobID: "job-schedule-checker",
+	})
+	if err != nil {
+		t.Fatalf("ScheduleExecutableNodeRun (checker): %v", err)
+	}
+	if !result.Scheduled || result.AttemptID == "" {
+		t.Fatalf("result = %+v, want Scheduled=true with a minted AttemptID", result)
+	}
+
+	attempts := uow.Snapshot.Runtime().(*fake.RuntimeRepository).Attempts()
+	attempt, ok := attempts[result.AttemptID]
+	if !ok || attempt.ContextSnapshotID == nil {
+		t.Fatalf("attempt %s missing a bound context snapshot; attempts = %+v", result.AttemptID, attempts)
+	}
+	snapshot, err := uow.Snapshot.ContextSnapshots().GetSnapshot(ctx, string(*attempt.ContextSnapshotID))
+	if err != nil {
+		t.Fatalf("GetSnapshot: %v", err)
+	}
+
+	if len(snapshot.MessageRefs) != 0 {
+		t.Fatalf("checker MessageRefs = %+v, want empty (no maker transcript reaches a CHECKER)", snapshot.MessageRefs)
+	}
+	wantEvidenceID := "attempt-maker:AGENT_EXECUTION"
+	if len(snapshot.EvidenceRefs) != 1 || snapshot.EvidenceRefs[0].EvidenceID != wantEvidenceID {
+		t.Fatalf("checker EvidenceRefs = %+v, want exactly one ref to %q (the maker's own Evidence)", snapshot.EvidenceRefs, wantEvidenceID)
 	}
 }
 

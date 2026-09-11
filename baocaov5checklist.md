@@ -3025,3 +3025,1337 @@ là tiêu chí phải được chứng minh ở PR tương ứng, không phải 
 - `go run ./cmd/docs-coverage-check` — **PASS**, debt = 0.
 - `go test ./internal/docscoverage` — **PASS**.
 - `go test -count=1 ./internal/app/runtime -run 'Test(CommandNodeExecutor|GateNodeExecutor)'` — **PASS**.
+
+**Kết quả:** PR #9 (`feat/v5-10-gate-runner` → `master`), 6/6 CI checks pass (Linux race/stability,
+contract ubuntu/windows, cross-platform semantic diff SPK-13, spike acceptance ubuntu/windows), squash-merged
+2026-09-09, merge commit `39fb39c`.
+
+## V5-10A — ReleaseSet và typed local Git operation (branch `feat/v5-10a-release-set`, stacked trên
+`feat/v5-10-gate-runner` rồi rebase lên `master` sau khi PR #9 merge)
+
+**Bối cảnh:** người dùng bảo "trong lúc chờ CI thì có thể research, nếu không vướng gì có thể triển khai
+song song luôn cũng được" — trong lúc PR #9 (V5-10) còn CI, đã research V5-10A trước (xác nhận: V3-11
+`internal/app/workspacerelease.RequestWorkspaceSetRelease` đã build sẵn phía caller, phụ thuộc duy nhất
+vào `ports.ReleaseEligibilityAuthority` — một interface KHÔNG có implementation thật, tự ghi rõ "a real
+implementation, backed by a real sealed/abandoned ReleaseSet, is left entirely to that later task"; V5-10A
+CHÍNH LÀ task đó). Đã bắt đầu implement song song (domain type, sqlite migration/adapter, fake adapter,
+port interface) trong lúc PR #9 còn CI pending — đúng theo uỷ quyền song song ở trên. PR #9 sau đó pass
+6/6, merge (`39fb39c`) — nhánh này được tạo lại từ đầu (branch mới từ working tree hiện tại), rebase sạch
+lên `master`, rồi mới viết tiếp phần application-layer/local-commit/test còn thiếu.
+
+**Quyết định (không hỏi lại):**
+1. **`work.ReleaseSet` sống trong package domain `work` sẵn có** (không phải package mới) — đây là runtime
+   aggregate theo family (như `WorkItemBlocker`), không phải DefinitionKind schema; tái dùng thẳng
+   `gate.Verdict` cho verdict từng repo (xác nhận không có import cycle: `gate` không import `work`).
+   Mirror đúng "sorted entries + sha256 content hash `sha256:` prefix" của `workspace.RevisionSet`.
+   `ReleaseSetState` CREATED/SEALED/ABANDONED — CREATED là state duy nhất được phép transition ra khỏi.
+   Thêm `gate.Verdict.IsValid()` (map `knownVerdicts` mới) vì chưa tồn tại và `NewReleaseSet` cần nó.
+2. **Persistence: migration `0030_release_sets.sql`** (2 bảng: `release_sets` header + child table
+   `release_set_repositories`, verdict CHECK 5 giá trị) + `internal/adapters/sqlite/release_set.go` mirror
+   đúng pattern Tx-composable của `work_item_blocker.go`. Bump 2 test hardcode migration-count (28→29) ở
+   `db_test.go`/`unitofwork_test.go` — bookkeeping thường lệ mỗi lần thêm migration.
+3. **Application-layer commands sống trong `internal/app/work` (package đã có sẵn, KHÔNG phải package mới
+   `internal/app/releaseset`)** — quyết định này đã tự khoá cứng ngay từ doc comment của
+   `internal/domain/work/release_set.go` viết TRƯỚC (tự ghi "SealReleaseSet/AbandonReleaseSet (internal/app/work,
+   this task's own application layer)"), nên file mới `internal/app/work/release_set.go` đặt đúng nơi đã tự
+   cam kết thay vì tạo package song song với `workspacerelease`/`workspacereconcile`. `CreateReleaseSet`/
+   `SealReleaseSet`/`AbandonReleaseSet` mirror đúng shape idempotent-command của
+   `RequestWorkspaceSetRelease`/`CreateRootWorkItem` (receipt Actor/Scope/IdempotencyKey/RequestHash,
+   `cmd.ExpectedVersion` làm fence cho Seal/Abandon). `CreateReleaseSet` cross-check
+   `family.ProjectID == req.ProjectID` (giống mọi command khác) — phát hiện thêm: `release_set_repositories.
+   repository_id` có FK thật tới `repositories(id)`, nên cả sqlite adapter (check tường minh trước insert,
+   trả `ErrPersistenceNotFound` sạch thay vì FK-violation mù) lẫn fake adapter (`w.catalog.repositories[...]`,
+   mirror đúng `AddRepositoryScope`/`AddEffectiveScope`) đều phải validate repository tồn tại — bug này bắt
+   được ngay từ lần chạy test sqlite đầu tiên (lỗi "sqlite: unexpected error" mù, không phải thiết kế sai
+   từ đầu).
+4. **`ErrReleaseSetNotOpen`** (sentinel riêng, check tường minh state trước khi gọi CAS) thay vì để một
+   "duplicate seal" thật (IdempotencyKey khác, không phải replay) rơi vào `ErrOptimisticConflict` chung
+   chung — mirror đúng tiền lệ `ErrWorkspaceSetAlreadyReleased` của `RequestWorkspaceSetRelease`.
+5. **`IsCleanupEligible(releaseSet) bool`** (`internal/app/work`) — "application policy" trong Phạm vi line:
+   SEALED hoặc ABANDONED mới cleanup-eligible (GC-INV-26). Không phải domain invariant của `ReleaseSet` tự
+   thân (đọc một ReleaseSet CREATED vẫn hợp lệ, chỉ cleanup phải chờ).
+6. **`EligibilityAuthority`** (`internal/app/work`, implement `ports.ReleaseEligibilityAuthority` thật lần
+   đầu tiên) — authorized khi ReleaseSet MỚI NHẤT của family (theo `ListReleaseSetsForFamily`'s own
+   `(CreatedAt, ID)` order) đã SEALED/ABANDONED. Tự mở `uow.WithReadOnly` riêng (không nhận raw
+   `ports.WorkRepository`) — đúng lý do `RequestWorkspaceSetRelease`'s own doc comment cho việc gọi
+   authority NGOÀI mọi `WithSerializedWrite`. Không cần sửa `workspacerelease` — Go structural typing tự
+   thoả interface.
+7. **`ports.LocalCommitCreator`** (port mới, `internal/app/ports/localcommit.go`) — không mở rộng
+   `WorkspaceProvider` sẵn có, mirror đúng lý do `WorkspaceDirectoryResolver` (`readiness.go`) đã tự ghi:
+   port hẹp riêng cho capability mới, `*gitworktree.Provider` tự thoả bằng structural typing, không phải
+   sửa 3 implementer khác (`fakeWorkspaceProvider`, `bridgeFakeWorkspaceProvider`) của `WorkspaceProvider`.
+   `CreateLocalCommit` nhận `AuthorName`/`AuthorEmail` tường minh (không dựa vào `user.name`/`user.email`
+   ambient trong worktree), set qua `-c user.name=...` một-lần trên chính lệnh `git commit` (không ghi vào
+   config lâu dài của repo) — "typed/audited" nghĩa là caller tự khai ai commit, không phải adapter tự suy
+   ra. "Từ chối mọi remote operation trước Git adapter" (AK-ARCH-015C) là bất biến CẤU TRÚC, không phải
+   runtime check: `CreateLocalCommit` là method Git-mutating DUY NHẤT toàn bộ ports — không tồn tại method
+   remote nào để gọi tới dù cố tình.
+
+**Thực hiện:**
+- `internal/domain/work/release_set.go` (mới), `internal/domain/gate/gate.go` (thêm `IsValid`).
+- `internal/adapters/sqlite/migrations/0030_release_sets.sql` (mới), `internal/adapters/sqlite/release_set.go`
+  (mới, có repository-existence check tường minh).
+- `internal/app/ports/work.go` (4 method mới + `TransitionReleaseSetStateRequest` trên `WorkRepository`),
+  `internal/app/ports/fake/work.go` (implement fake, có cùng repository-existence check).
+- `internal/app/ports/localcommit.go` (port mới), `internal/adapters/gitworktree/localcommit.go`
+  (`CreateLocalCommit` — `git add -A` → check status rỗng → `ErrNothingToCommit` → `git -c user.name=...
+  -c user.email=... commit -m ...` → trả `workspace.Revision` mới), `internal/adapters/gitworktree/errors.go`
+  (thêm `ErrNothingToCommit`).
+- `internal/app/work/release_set.go` (mới — `CreateReleaseSet`/`SealReleaseSet`/`AbandonReleaseSet`/
+  `IsCleanupEligible`/`EligibilityAuthority`).
+
+**Test (mới hoàn toàn, chưa test nào tồn tại trước phiên này):**
+- `internal/domain/work/release_set_test.go` — order-independent content hash, immutability, duplicate
+  repo, invalid verdict, missing field, và `TestNewReleaseSetAllowsMixedVerdictsAcrossRepositories`
+  (kịch bản "partial result" của Verify line: PASS+FAIL+ERROR cùng một ReleaseSet).
+- `internal/adapters/sqlite/release_set_test.go` — round-trip, idempotent-by-ID, missing family, missing
+  repository, seal/abandon thành công, `TestReleaseSetRepository_TransitionReleaseSetState_StaleVersion_Conflict`
+  (kịch bản "stale revision"), not-found, list ordered by (CreatedAt, ID) xuyên 2 family.
+- `internal/app/work/release_set_test.go` — persist/mixed-verdict/replay/receipt-conflict/cross-project cho
+  Create; seal/abandon thành công; `TestSealReleaseSet_DuplicateSeal_Rejected` (kịch bản "duplicate seal" —
+  IdempotencyKey khác trên ReleaseSet đã sealed → `ErrReleaseSetNotOpen`); `TestSealReleaseSet_
+  StaleExpectedVersion_Rejected`; `IsCleanupEligible`; `EligibilityAuthority` (chưa có ReleaseSet → false,
+  CREATED → false, SEALED → true).
+- `internal/adapters/gitworktree/localcommit_test.go` — commit staged+untracked, `ErrNothingToCommit` trên
+  workspace sạch, reject field rỗng/control-char, reject workspace đã release,
+  `TestProvider_CreateLocalCommit_NeverTouchesRemote` (kịch bản "spy adapter chứng minh remote mutation
+  call count bằng 0": `spyLocalCommitCreator` đếm call — mirror `spyArtifactStore` pattern — cộng với xác
+  nhận trực tiếp `git remote` rỗng cả trước/sau, vì fixture repo này chưa từng cấu hình remote nào — chứng
+  minh không có remote nào để mutate dù cố ý).
+
+**Lỗi tự phát hiện và sửa:**
+- Type-conversion bug tự bắt lúc build sqlite test lần đầu: truyền `string` (từ `"project."+projectID`)
+  thẳng vào tham số kiểu `project.ProjectID` — Go từ chối compile vì không phải untyped constant; sửa bằng
+  import `project` package + convert tường minh, đồng thời bỏ tiền tố `"project."` thừa không cần thiết.
+- FK thật `release_set_repositories.repository_id → repositories(id)` không được check tường minh ban đầu
+  → test đầu tiên fail với lỗi sqlite mù ("unexpected error"); sửa bằng cách thêm check tồn tại tường minh
+  ở cả sqlite VÀ fake adapter (xem Quyết định #3).
+
+**Chưa làm / cố ý để lại:**
+- Không wiring `CreateLocalCommit` vào bất kỳ command ReleaseSet nào — đúng scope: hai primitive độc lập,
+  một task tương lai (V5-14's own `ExecuteWorkspaceSetRelease`, hoặc luồng thật của V5-11 CompletionPolicy)
+  mới là nơi ghép chúng lại, mirror đúng "producer chỉ enqueue/build primitive, consumer là task khác" mà
+  `workspacerelease`'s own doc comment đã tự xác lập cho `WORKSPACE_SET_RELEASE` job.
+- Không thêm archtest boundary test riêng cho `internal/app/work/release_set.go` — test chung
+  `TestDomainAppNeverImportAdapters` (đã glob toàn bộ `internal/app/...`) đã cover đúng bất biến cần chứng
+  minh (không import `internal/adapters/...`), và file này vốn không có lý do gì để import `os`/`os/exec`
+  (không có internal executor song song trong CÙNG package như `workspacerelease`/`workspacereconcile` có).
+- Không đổi `cmd/agentkit` để expose ReleaseSet qua CLI/route thật — đúng pattern mọi task V4/V5.
+
+**Verify:**
+```
+go build ./...                                             # sạch
+go vet ./...                                                # sạch
+go run ./cmd/docs-coverage-check                            # debt = 0
+gofmt -l <file mới/thay đổi>                                 # chỉ CRLF noise trên file pre-existing
+                                                              # (core.autocrlf=true), không phải lỗi thật
+go test -count=1 ./internal/domain/... ./internal/adapters/sqlite/... ./internal/app/ports/...
+                                                              # PASS
+go test -count=1 ./internal/app/work/... -v                  # PASS toàn bộ, kể cả ReleaseSet mới
+go test -count=1 ./internal/adapters/gitworktree/... -v      # PASS toàn bộ, kể cả CreateLocalCommit mới
+go test -count=1 ./...                                       # PASS toàn bộ ~70 package (lần 1 + lần 2 lặp
+                                                              # lại để loại flake)
+```
+Flake đã gặp và xác nhận KHÔNG liên quan tới thay đổi phiên này (đã tự biết từ trước, xác nhận lại 3 lần
+chạy riêng): `cmd/agentkit`'s `TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister`
+(Windows file-lock race lúc swap executable, local-only).
+
+**Việc còn lại:** rebase sạch lên `master` (đã xong tại thời điểm viết narrative này), verify lại lần cuối,
+commit, push, mở PR, chờ CI 6/6, merge.
+
+## Remediation PR1 — Criteria-level Evidence, PASS-path only (branch `fix/v5-09-v5-10-evidence-remediation`, based on `master` post-review)
+
+**Bối cảnh:** người dùng bảo "pull lại master" sau khi tự cập nhật rà soát ở trên; rà soát đó chỉ ra V5-09
+và V5-10 (đã merge) còn acceptance gap thật, và đề nghị đóng gap trước khi tiếp tục V5-10A/V5-11. Người
+dùng xác nhận: "Giữ PR #10, chuyển sang đóng gap V5-09/V5-10 trước" — PR #10 (V5-10A) giữ nguyên, KHÔNG
+merge, KHÔNG sửa thêm; nhánh remediation này tách riêng từ `master` (không dựa trên `feat/v5-10a-release-set`,
+vì hai việc độc lập nhau — remediation không đụng tới ReleaseSet).
+
+**Câu hỏi xác nhận trước khi code:** Evidence phải ghi cho MỌI outcome (PASS lẫn non-PASS) theo design
+doc, nhưng `attachFinalizationEvidenceTx` chỉ chạy trên nhánh SUCCEEDED — mở rộng đúng nghĩa cần sửa cả
+nhánh FAILED của `finalize.go` (function fencing quan trọng nhất repo). Người dùng chọn: **PR1 chỉ
+PASS-path trước**, nhưng thiết kế contract ngay từ đầu phải dùng được cho mọi terminal outcome (verbatim
+plan người dùng đưa, xem lịch sử hội thoại) — PR2 (nhánh FAILED/non-PASS) là task riêng sau.
+
+**Quyết định (theo đúng plan người dùng, không hỏi lại):**
+1. **`work.Evidence` → đặt tên `runtime.Evidence`** (`internal/domain/runtime/evidence.go`, package đã có
+   sẵn `Checkpoint`/`ExecutionAttempt`) — tái dùng bảng `evidence` (migration 0001, có sẵn từ V1, CHƯA từng
+   được ghi bởi bất kỳ code nào cho tới remediation này). Full lineage (WorkItemID/RunID/NodeRunID/
+   AttemptID) là cột có sẵn. ID = `AttemptID + ":" + Kind` (deterministic, không phải cột idempotency-key
+   riêng) — mirror đúng discipline `ReleaseSet`/`WorkItemBlocker`: một redelivered finalize luôn tự
+   re-derive cùng ID, nên `CreateEvidence`'s own insert-or-load-existing đã đủ an toàn cho replay.
+2. **`ports.EvidenceProposal`** (mới, `execution.go`) — field trên `AttemptFinalizationEvidence`: Kind,
+   Verdict, ArtifactReferences (phải là tập con của `OutputArtifactRefs`), PolicyVersion. `nil/empty` cho
+   AGENT (rà soát không gắn cờ AGENT) và fake NodeExecutor cũ.
+3. **Đổi tên `attachFinalizationEvidenceTx` → `validateAndAttachFinalizationEvidenceTx`** (trung lập với
+   terminal state, đúng yêu cầu người dùng) nhưng **CHỈ gọi từ nhánh SUCCEEDED** trong PR1 này — nhánh
+   FAILED của `finalize.go` không đổi, để lại nguyên cho PR2.
+4. **Output artifact chuyển từ ATTACHED trực tiếp sang ORPHAN** (`persistCommandOutputArtifact`,
+   `persistGateResultArtifact` trên nhánh PASS) — mirror đúng `buildEvidence`'s own Phase 1 (Put+Verify,
+   không transaction) + Phase 2 (insert ORPHAN, transaction ngắn). `persistGateResultArtifact` được thêm
+   tham số `attachState artifact.AttachState`: nhánh FAIL/ERROR (không qua finalize evidence trong PR1)
+   VẪN insert ATTACHED như cũ, không đổi hành vi — chỉ nhánh PASS đổi sang ORPHAN.
+5. **`validateAndAttachFinalizationEvidenceTx` mở rộng:** promote `OutputArtifactRefs` ORPHAN→ATTACHED
+   (dedup theo artifact ID, vì Gate's nhiều criteria dùng chung MỘT GateResult artifact); validate mỗi
+   `EvidenceEntry.ArtifactReferences` phải là tập con `OutputArtifactRefs` đã promote (không phải artifact
+   mới, chưa từng thấy); rồi `tx.Runtime().CreateEvidence` cho từng entry — tất cả trong CÙNG transaction
+   fenced đã có (JobLease/WriteLease fencing không đổi).
+6. **PolicyVersion = `request.ExecutionProfileHash`** (field có sẵn trên `ports.AgentExecutionRequest`,
+   đã pin đúng GateVersion/CommandVersion resolved profile) — không cần plumbing mới để lấy VersionID
+   riêng.
+7. **Command: Evidence entry chỉ tạo khi có output artifact thật** (`doc.Output.CaptureStdout ||
+   CaptureStderr`) — `runtime.NewEvidence` tự đòi ≥1 artifact reference (mirror `Checkpoint`'s own
+   invariant), nên khi output capture tắt, không có gì để reference, bỏ qua Evidence hoàn toàn cho case đó
+   (quyết định phạm vi PR1, không phải bug).
+
+**Thực hiện:**
+- `internal/domain/runtime/evidence.go` (mới) — `Evidence`, `NewEvidence`, `EvidenceKindCommandExecution`,
+  `EvidenceVerdictSucceeded`.
+- `internal/app/ports/unitofwork.go` (`RuntimeRepository` +3 method), `internal/app/ports/execution.go`
+  (`EvidenceProposal` mới + field `EvidenceEntries` trên `AttemptFinalizationEvidence`).
+- `internal/adapters/sqlite/evidence.go` (mới, mirror `checkpoint_store.go`'s own JSON-encoding pattern),
+  `internal/app/ports/fake/runtime.go` (+3 method, +field `evidence` + clone).
+- `internal/app/runtime/finalize.go` (`validateAndAttachFinalizationEvidenceTx` — đổi tên + mở rộng),
+  `command_node_executor.go`/`gate_node_executor.go` (ORPHAN staging + xây `EvidenceEntries`).
+- Sửa 4 comment còn tên cũ `attachFinalizationEvidenceTx` (không phải call site, chỉ doc comment) ở
+  `agent_node_executor_resources.go`, `agent_node_executor_test.go`, `command_node_executor.go`,
+  `internal/app/ports/artifactrecord.go`.
+
+**Test (mới hoàn toàn):**
+- `internal/adapters/sqlite/evidence_test.go` — round-trip, idempotent-by-ID (kịch bản "replay"), not-found,
+  list ordered by Kind xuyên nhiều criteria/attempt.
+- `internal/app/runtime/evidence_remediation_test.go`:
+  - `TestCommandNodeExecutor_Success_OutputArtifactOrphanUntilFinalizePromotesItWithEvidence` — ORPHAN
+    trước finalize, ATTACHED sau, đúng 1 Evidence row Kind=COMMAND_EXECUTION.
+  - `TestGateNodeExecutor_AllCriteriaPass_OutputArtifactOrphanUntilFinalizePromotesItWithEvidencePerCriterion`
+    — tương tự cho Gate, 1 Evidence row/criterion, verdict đúng theo criterion.
+  - `TestFinalizeExecutionAttempt_EvidenceEntryNamesUnlistedArtifact_RejectsBeforeCommitting` — kịch bản
+    "tampered": entry trỏ artifact ngoài `OutputArtifactRefs` → reject, rollback (version/artifact state
+    không đổi).
+  - `TestFinalizeExecutionAttempt_MissingOutputArtifact_RejectsBeforeCommitting` — kịch bản
+    "missing/foreign": `OutputArtifactRefs` trỏ artifact không tồn tại → reject, rollback.
+
+**Quyết định phạm vi test (không dựng sqlite fixture riêng cho Command/Gate):** deep fencing edge case
+(expired lease, wrong owner/token, concurrent finalize) đã có sẵn ở `finalize_execution_attempt_sqlite_test.go`
+cho đúng transaction `FinalizeExecutionAttempt` này (dùng AGENT fixture) — code Evidence mới chạy TRONG
+CÙNG transaction đã được test đó chứng minh rollback thật ở sqlite. Việc cần test MỚI là logic Evidence
+validate/promote tự thân, không phải cơ chế fencing đã có sẵn — nên test ở tầng fake (application flow)
+là đủ, đúng "sqlite-only cho fencing, fake-only cho flow" convention file đó tự ghi. Idempotent-replay
+(CreateEvidence) test ở tầng sqlite thật (evidence_test.go) vì đó là nơi đúng để chứng minh.
+
+**Chưa làm / cố ý để lại (PR2 và xa hơn):**
+- Nhánh FAILED/non-PASS của `finalize.go` chưa nhận Evidence — GateResult FAIL/ERROR/NOT_RUN vẫn insert
+  ATTACHED trực tiếp như cũ (không unfenced mới, cũng không được fenced mới).
+- `OutputTruncated` chưa fail-closed, secret chưa vào redaction matcher, `PolicyRefs`/compatibility/
+  network chưa verify/enforce, chưa có production composition/router — đúng danh sách gap còn lại của rà
+  soát, không phải phạm vi PR1.
+- NOT_APPLICABLE chưa kiểm pinned policy authority (mới kiểm reason) — không đổi trong PR1.
+
+**Verify:**
+```
+go build ./...                                             # sạch
+go vet ./...                                                # sạch
+go run ./cmd/docs-coverage-check                            # debt = 0
+go test -count=1 ./...                                      # PASS toàn bộ ~70 package (lần 1 + lần 2)
+```
+Flake đã gặp và xác nhận KHÔNG liên quan (lần chạy thứ 2, đã biết từ trước): `cmd/agentkit`'s
+`TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` (Windows file-lock race, local-only).
+
+**Việc còn lại:** commit, push nhánh `fix/v5-09-v5-10-evidence-remediation`, mở PR, chờ CI 6/6, merge —
+sau đó mới quay lại PR2 (Evidence cho non-PASS) hoặc PR #10 (V5-10A) tuỳ người dùng chọn tiếp.
+
+**Kết quả:** PR #11, 6/6 CI checks pass, squash-merged 2026-09-10, merge commit `b3845ce`. Sau đó người
+dùng bảo "PR feat(v5-10a) CI xanh rồi, check rồi resolve conflict" — PR #10 conflict với `master` (do cả
+rà soát lẫn PR #11 đều sửa `baocaov5checklist.md`) được merge `origin/master` vào `feat/v5-10a-release-set`
+và resolve thủ công (giữ nguyên nội dung V5-10A, chỉ nối thêm nội dung mới từ master theo đúng thứ tự thời
+gian: Rà soát → V5-10A → Remediation PR1).
+
+## Remediation PR2 — Evidence cho FAILED/non-PASS (branch `fix/v5-09-v5-10-evidence-remediation-pr2`, based on `master` sau khi PR #11 merge)
+
+**Bối cảnh:** ngay sau khi PR #11 (PR1) merge, tiếp tục theo đúng plan hai-PR người dùng đã khoá từ đầu:
+"PR2 — Evidence cho FAILED/non-PASS... Cho `NodeExecutionResult.Evidence` tồn tại khi Attempt FAILED. Gate
+phải trả Evidence cho FAIL/ERROR/NOT_RUN, không persist rồi bỏ artifact ID. Gọi cùng helper trong FAILED
+transaction trước khi commit terminal state/retry decision... Generic AGENT/COMMAND failure không bị bắt
+buộc có criteria Evidence. Với MACHINE_GATE, mỗi terminal attempt phải tạo kết quả cho mọi criterion, kể cả
+pre-spawn failure dưới dạng ERROR/NOT_RUN." (verbatim plan người dùng, xem lịch sử hội thoại). Giữa lúc làm
+PR2, người dùng tách một nhánh xử lý riêng: "PR feat(v5-10a) CI xanh rồi, check rồi resolve conflict" — đã
+xử lý xong ở nhánh `feat/v5-10a-release-set` (merge `origin/master` vào, resolve 1 conflict duy nhất ở
+`baocaov5checklist.md`, verify lại, push) — xem mục V5-10A ở trên; PR2 tiếp tục độc lập trên nhánh riêng.
+
+**Vấn đề thiết kế phát hiện khi bắt tay code (quan trọng, quyết định toàn bộ shape PR2):**
+`validateAndAttachFinalizationEvidenceTx` (PR1) LUÔN build/insert completion Checkpoint — một khái niệm CHỈ
+có nghĩa cho SUCCEEDED (NodeRun advance sang node kế tiếp). Nhánh FAILED (`decideRetryOrExhaustion`) không
+hề build Checkpoint. Vì vậy KHÔNG THỂ gọi thẳng `validateAndAttachFinalizationEvidenceTx` từ FAILED — phải
+tách hàm thật sự trung lập trước. Đã tách:
+- `validateAndAttachEvidenceArtifactsTx` (mới, trung lập hoàn toàn): terminal-event-sequence check,
+  diff-manifest completeness+promote, output-artifact promote (dedup), ghi Evidence row cho từng entry —
+  KHÔNG có ProposedOutcome check, KHÔNG build Checkpoint.
+- `validateAndAttachFinalizationEvidenceTx` (giữ tên, SUCCEEDED-only): check `ProposedOutcome` khớp
+  `SelectedOutcome`, gọi `validateAndAttachEvidenceArtifactsTx`, rồi mới build+insert Checkpoint.
+- `decideRetryOrExhaustion` (FAILED/TIMED_OUT): gọi thẳng `validateAndAttachEvidenceArtifactsTx` khi
+  `req.Evidence != nil` — ngay đầu hàm, trước quyết định retry/exhaustion.
+
+**Quyết định khác:**
+1. **Gate's FAILED path (`classify`, nhánh `OverallVerdict != PASS`) giờ CŨNG gọi `buildEvidence`**
+   (`proposedOutcome: nil`, vì FAILED không có outcome) — an toàn vì EXECUTION_STARTED/FINISHED LUÔN được
+   emit trước khi `classify` chạy, bất kể exit code/timeout/spawn error (xác nhận đọc code `Execute`), nên
+   `terminalEventSequence` luôn resolve được. Gate luôn read-only nên `DiffManifestArtifacts` luôn rỗng có
+   cấu trúc (không có gì để diff) — không tốn thêm chi phí thật, chỉ tái dùng đúng pipeline đã có.
+2. **`persistGateResultArtifact` nhánh FAIL/ERROR giờ dùng `artifact.Orphan`** (trước là `Attached` cố định
+   từ PR1) — cùng promote qua `validateAndAttachEvidenceArtifactsTx` như PASS.
+3. **Evidence entry cho MỌI criterion, không chỉ criterion fail** — `gateResult.Criteria` lặp toàn bộ, mỗi
+   criterion (kể cả PASS lẫn FAIL trong cùng một attempt FAILED tổng thể) có Evidence row riêng, verdict
+   đúng của chính nó — chứng minh bằng test 2 criteria (lint PASS, tests FAIL) cùng lúc.
+4. **`ports.NodeExecutionResult.Evidence`/`FinalizeExecutionAttemptRequest.Evidence` doc comment cập nhật**
+   phản ánh field này giờ populate cả SUCCEEDED lẫn FAILED (chỉ cho MACHINE_GATE non-PASS) — AGENT/COMMAND
+   FAILED giữ nguyên `nil`, đúng scope người dùng khoá.
+
+**Thực hiện:**
+- `internal/app/runtime/finalize.go` — tách hàm như trên; `decideRetryOrExhaustion` gọi
+  `validateAndAttachEvidenceArtifactsTx` khi có Evidence.
+- `internal/app/runtime/gate_node_executor.go` — nhánh non-PASS của `classify` xây `buildEvidence` +
+  `EvidenceEntries` cho mọi criterion + đổi `persistGateResultArtifact` sang `artifact.Orphan`.
+- `internal/app/ports/execution.go` — cập nhật doc comment `Evidence` trên cả hai type.
+
+**Test (mới hoàn toàn, nối tiếp `evidence_remediation_test.go`):**
+- `TestGateNodeExecutor_OneCriterionFails_OutputArtifactOrphanUntilFinalizePromotesItWithEvidencePerCriterion`
+  — 2 criteria (lint PASS, tests FAIL), ORPHAN trước finalize, ATTACHED sau, Evidence row đúng verdict cho
+  TỪNG criterion (kể cả criterion PASS trong một attempt FAILED tổng thể).
+- `TestFinalizeExecutionAttempt_FailedGateEvidenceTampered_RollsBackRetryDecisionToo` — kịch bản "tampered"
+  trên nhánh FAILED: entry trỏ artifact ngoài `OutputArtifactRefs` → reject TRƯỚC KHI
+  `decideRetryOrExhaustion` commit bất kỳ quyết định retry/exhaustion nào (version Attempt không đổi).
+- `TestGateNodeExecutor_NonzeroExit_EvidenceCoversEveryCriterionAsError` — nhánh `errorAllCriteria` riêng
+  (spawn error/timeout/nonzero exit — code path KHÁC với JSON-parse-nhưng-fail ở trên) vẫn tạo đúng Evidence
+  ERROR cho mọi criterion, đúng "kể cả pre-spawn failure dưới dạng ERROR/NOT_RUN" trong plan người dùng.
+
+**Quyết định phạm vi test:** không dựng thêm sqlite fixture riêng cho FAILED path — cùng lý do PR1 đã ghi
+(fencing thật đã được `finalize_execution_attempt_sqlite_test.go` chứng minh cho đúng transaction này; logic
+Evidence mới là thứ cần test, không phải cơ chế fencing).
+
+**Verify:**
+```
+go build ./...                                             # sạch
+go vet ./...                                                # sạch
+go run ./cmd/docs-coverage-check                            # debt = 0
+go test -count=1 ./...                                      # PASS toàn bộ (lần 1 + lần 2)
+```
+Flake gặp lần 1, xác nhận KHÔNG liên quan (chạy riêng 3 lần đều pass): `internal/app/workerpool`'s
+`TestPool_TwoPoolsRaceRecovery_NoDuplicateProcessing` (race/timing test, "context canceled" lúc startup
+recovery scan — package này phiên remediation không hề chạm tới).
+
+**Việc còn lại:** commit, push nhánh `fix/v5-09-v5-10-evidence-remediation-pr2`, mở PR, chờ CI 6/6, merge.
+
+**Kết quả:** PR #12, 6/6 CI checks pass, squash-merged 2026-09-10, merge commit `9b8f397`. Ngay sau đó
+người dùng bảo "check PR feat(v5-10a)" — PR #10 lại conflict với `master` (do PR #12 cũng sửa
+`baocaov5checklist.md`) — resolve lần hai trên `feat/v5-10a-release-set` theo đúng cách lần đầu (merge
+`origin/master`, chỉ nối thêm nội dung mới, verify lại, push).
+
+## V5-09/V5-10 remaining gaps — 4 phần gộp 1 PR (branch `fix/v5-09-v5-10-remaining-gaps`, based on `master` sau khi PR #10/#11/#12 đều đã merge)
+
+**Bối cảnh:** sau khi PR #10 (V5-10A) merge, người dùng hỏi "công việc tiếp theo là gì" — trả lời bằng
+danh sách 4 gap còn lại trong "Rà soát V5-09…V5-15 trên committed master" (mục ở trên) CHƯA được PR1/PR2
+xử lý: (A) `OutputTruncated` chưa fail-closed + secret đã resolve chưa vào redaction matcher, (B)
+Gate's NOT_APPLICABLE chỉ check `reason` chứ chưa check "pinned policy authority", Gate's CommandRef chưa
+re-verify sau load, (C) `CommandDocument.PolicyRefs`/OS-compatibility/`NetworkAccess` chưa được verify/
+enforce lúc execute, (D) chưa có production composition/router chọn executor theo `ExecutorKind`, chưa có
+test nào drive thẳng `ExecuteNodeHandler`→executor→fenced finalize (mọi test Command/Gate hiện có đều gọi
+thẳng `executor.Execute()` rồi tự tay finalize, chưa từng đi qua `Handle` thật). Người dùng chốt: "gộp 4 pr
+thành 1 luôn" — bốn phần này làm chung một nhánh/PR thay vì bốn PR riêng như thường lệ.
+
+### Part A — Output truncation fail-closed + secret redaction (commit `6aed057`)
+
+**Quyết định:** không phát minh `errorcode.Code` mới cho truncation — `internal/domain/errorcode` là enum
+CLOSED 22 giá trị khớp `docs/architecture/04-go-core-spec.md §18`; tái dùng `CodeExecutionFailed` (comment
+giải thích rõ lý do không thêm code mới). Thêm `redact.Matcher.WithSecrets(...)`/`redact.Matcher.Redact(...)`
+— hợp đồng MỚI, khác hẳn `String`/`IsSecret` (so khớp nguyên giá trị): quét-và-thay-thế mọi lần xuất hiện
+secret trong free text, dùng để redact output đã capture.
+
+**Thực hiện:**
+- `CommandNodeExecutor.classify` — check `OutputTruncated` ngay sau `ExitCode != 0`; nhận thêm tham số
+  `secretValues map[string]string` (chính là `env` map đã resolve từ `resolveCommandInvocation`).
+- `GateNodeExecutor.deriveGateResult` — check `OutputTruncated` trong nhánh `errorAllCriteria`, TRƯỚC khi
+  parse JSON (JSON hợp lệ về cú pháp nhưng bị cắt cụt không được lọt qua).
+- `persistCommandOutputArtifact`/`persistGateResultArtifact` — redact stdout/stderr (Command) và mỗi
+  `Detail`/`Reason` của từng criterion (Gate) bằng matcher scoped riêng cho lần chạy đó trước khi marshal,
+  set `Redacted: true`.
+
+**Test:** `internal/app/runtime/truncation_redaction_test.go` (mới) — 5 test cho cả Command/Gate truncation
+và secret redaction; `internal/app/redact/redact_test.go` — 4 test mới cho `WithSecrets`/`Redact`.
+
+### Part B — NOT_APPLICABLE authoring authorization + CommandRef re-verify (commit `6d3892c`)
+
+**Quyết định:** thêm `gate.Criterion.AllowNotApplicable bool` (field additive, mặc định `false` — chặt hơn
+hành vi cũ). `deriveGateResult` check `!c.AllowNotApplicable` TRƯỚC (ERROR nếu tác giả criterion chưa cho
+phép, dù runtime có cung cấp `reason` hay không), rồi mới đến check "reason rỗng" cũ. Thêm re-verify
+`CommandRef.DefinitionID` khớp sau khi load `commandVersion` trong `gatherGateExecutionInputs` (mirror
+đúng check GateVersion pin đã có sẵn).
+
+**Thực hiện:** `internal/domain/gate/gate.go` (+field), `gate_node_executor.go` (2 chỗ trên).
+
+**Test:** sửa `TestGateNodeExecutor_NotApplicableWithReason_CountsAsPass` +
+`TestGateNodeExecutor_NotApplicableWithoutReason_FinalizesFailed` để set `AllowNotApplicable: true` (cô lập
+đúng path đang test); thêm mới `TestGateNodeExecutor_NotApplicableWithoutAuthorization_FinalizesFailed`
+(chứng minh reject dù CÓ reason, khi chưa được authorize).
+
+**Quyết định phạm vi test:** không viết test riêng cho case CommandRef mismatch — cần fixture tuỳ biến sâu
+vượt qua `gateFixture`'s hardcoded pin; check GateVersion pin tương tự đã có sẵn từ trước cũng không có test
+riêng — nhất quán với tiền lệ, không phải gap tự tạo ra.
+
+### Part C — OS compatibility + NetworkAccess/PolicyRefs enforcement (commit `c993270`)
+
+**Quyết định:** thêm `verifyCommandCompatibilityAndPolicy` gọi trong transaction read-only sẵn có của
+`gatherCommandExecutionInputs`, ngay sau `decodeCompiledCommand`. Ba check: (1) OS compatibility — nếu
+`doc.Compatibility.OS` không rỗng, phải chứa `runtime.GOOS` thật (defense-in-depth, vì publish-time
+`validateCompatibility` đã BẮT BUỘC OS list không rỗng — sửa lại 1 test giả định sai "OS rỗng = không ràng
+buộc"); (2) MỌI `doc.PolicyRefs` đều được resolve qua `tx.Definitions().LoadVersion` + re-verify
+`DefinitionID` (không chỉ khi `NetworkAccess=ALLOWED`); (3) `NetworkAccess=ALLOWED` đòi ít nhất một
+`PolicyRefs` đã resolve có `GrantedCapabilities` chứa capability mới `NETWORK_ACCESS` (tái dùng đúng quy ước
+extensible-by-name đã ghi trong doc comment `PermissionRules`). Lỗi dùng sentinel có sẵn
+`ErrCommandInvocationUnresolvable`; `Execute` đổi cách xử lý lỗi từ `gatherCommandExecutionInputs` — check
+`errors.Is(..., ErrCommandInvocationUnresolvable)` → trả `NodeExecutionResult{State: Failed, ErrorCode:
+CodeValidationFailed}` thay vì để lỗi Go cứng lan ra (failure mode này deterministic/pre-spawn, không phải
+transient).
+
+**Thực hiện:** `command_node_executor.go` (+const `networkAccessCapability`, +hàm mới, +call site,
++error-handling ở `Execute`); `commandFixtureOptions` (+3 field mới: `compatibility`, `networkAccess`,
+`policyRefs`).
+
+**Test:** `internal/app/runtime/compatibility_policy_test.go` (mới) — 4 test: OS không tương thích fail
+closed không spawn; `NetworkAccess=ALLOWED` không có grant fail closed; `NetworkAccess=ALLOWED` VỚI policy
+grant thật thì succeed (phải sửa fixture `IsolationTier` — enum chỉ có đúng 2 giá trị hợp lệ, để zero-value
+publish sẽ fail); PolicyRef không resolve được fail closed không spawn.
+
+### Part D — Production NodeExecutor router + integration test qua `ExecuteNodeHandler` thật (mới, chưa có commit riêng, sẽ commit cùng lượt push)
+
+**Nghiên cứu xác nhận trước khi code:** `grep -rln "NodeExecutor\b" cmd/ --include=*.go | grep -v _test.go`
+rỗng — CHƯA CÓ bất kỳ production wiring nào cho NodeExecutor (kể cả AGENT), lặp lại đúng pattern đã ghi
+xuyên suốt mọi task V4/V5 trước ("Không đổi `cmd/agentkit` để nối executor thật vào route/CLI"). `cmd/
+agentkit` chỉ có `adapter.go`/`cli.go`/`definition.go`/`main.go`, không có composition root nào chạy
+`ExecuteNodeHandler`. `ExecuteNodeHandler` có đúng MỘT field/param `executor ports.NodeExecutor` — một slot
+duy nhất phải phục vụ cả 3 loại node.
+
+**Quyết định:** thêm `NodeExecutorRouter` (`internal/app/runtime/node_executor_router.go`) — implement
+`ports.NodeExecutor`, giữ 3 field `Agent`/`Command`/`Gate ports.NodeExecutor`, `Execute` switch trên
+`runtimedomain.ExecutorKind(req.ExecutorKind)` để dispatch đúng executor, cắm thẳng vào slot duy nhất của
+`ExecuteNodeHandler` — không cần đổi gì ở `execute.go`. Kind không nhận diện được HOẶC kind hợp lệ nhưng
+chưa wire field tương ứng đều fail closed bằng lỗi rõ ràng, không panic nil-pointer. **Không** wire router
+vào `cmd/agentkit`'s CLI/composition root thật — đúng pattern "chưa nối CLI" đã lặp lại ở mọi task V4/V5
+trước, tự quyết định theo tiền lệ vì không có gì trong yêu cầu 4-part gap này đòi hỏi CLI thật.
+
+**Test cross-platform smoke — quyết định KHÔNG thêm mới:** `internal/adapters/process/supervisor_test.go`
+đã spawn process thật (`TestSupervisorRunsExecutableWithoutShell` và cùng nhóm) dưới đúng CI matrix Windows+
+Linux của repo — đó mới là hợp đồng "process thật có launch được trên OS này không". Test Command/Gate ở
+package `internal/app/runtime` (kể cả test router mới) luôn dùng `fake.ProcessSupervisor` — đúng nhất quán
+với mọi test executor khác trong package này; thêm 1 real-spawn test ở đây sẽ test lại đúng adapter đã có
+CI riêng, không test thêm gì cho router.
+
+**Thực hiện:**
+- `internal/app/runtime/node_executor_router.go` (mới) — `NodeExecutorRouter` + `Execute`.
+- `internal/app/runtime/node_executor_router_test.go` (mới) —
+  `commandRouterExecutionFixture` (mirror `commandFixture` nhưng dừng ngay sau `ScheduleExecutableNodeRun`,
+  KHÔNG tự claim RUNNING/tự tạo job giả — để chính `Handle` claim job EXECUTE_NODE thật đã enqueue).
+  4 test:
+  - `TestExecuteNodeHandler_CommandExecutorKind_RoutesToRealCommandExecutorAndFinalizes` — test tích hợp
+    ĐẦU TIÊN trong repo drive thẳng `ExecuteNodeHandler.Handle` thật → `NodeExecutorRouter` →
+    `*CommandNodeExecutor` thật → fenced `FinalizeExecutionAttempt` thật, khẳng định Attempt SUCCEEDED/
+    COMPLETED, NodeRun SUCCEEDED với outcome "done", và `supervisor.Calls == 1` (router thực sự dispatch,
+    không phải no-op).
+  - `TestNodeExecutorRouter_DispatchesToMatchingExecutorOnly` — 3 fake executor (Agent/Command/Gate) cùng
+    wire, gọi kind COMMAND thì chỉ `Command.Calls` tăng, 2 cái kia giữ nguyên 0.
+  - `TestNodeExecutorRouter_UnrecognizedKind_FailsClosedWithoutPanicking` — kind lạ ("BOGUS") → lỗi rõ ràng.
+  - `TestNodeExecutorRouter_RecognizedButUnwiredKind_FailsClosedWithoutPanicking` — kind hợp lệ (COMMAND)
+    nhưng field chưa wire (nil) → lỗi rõ ràng, không panic.
+
+**Verify (toàn bộ 4 phần, chạy sau khi Part D xong):**
+```
+go build ./...                                   # sạch
+go vet ./...                                      # sạch
+go run ./cmd/docs-coverage-check                  # debt = 0
+gofmt -l internal/app/runtime/node_executor_router.go internal/app/runtime/node_executor_router_test.go
+                                                   # rỗng
+go test -count=1 ./...                            # PASS toàn bộ (lần 1 + lần 2, không flake)
+```
+
+**Việc còn lại:** commit Part D, push nhánh `fix/v5-09-v5-10-remaining-gaps`, mở PR gộp cả 4 phần, chờ CI
+6/6, merge.
+
+**Kết quả:** PR #13, 6/6 CI checks pass NGAY LẦN CHẠY ĐẦU (không cần rerun), squash-merged 2026-09-10,
+merge commit `0c2c2d0`. Đóng toàn bộ gap V5-09/V5-10 mà bài rà soát 2026-09-10 tìm thấy, ngoại trừ một
+điểm CỐ Ý để ngoài phạm vi: Gate's read-only mount enforcement vẫn chỉ là descriptor (evaluator vẫn nhận
+host path thật) — cần cơ chế sandbox/`ENFORCED_ISOLATED` thật, một quyết định kiến trúc lớn hơn, chưa
+scope với người dùng.
+
+## V5-11 scoping — người dùng chốt 3 câu hỏi mở (2026-09-10)
+
+Ngay sau khi PR #13 merge, hỏi lại 3 câu hỏi mở của V5-11 (rework edge, assurance levels, "join") qua
+AskUserQuestion — theo đúng yêu cầu người dùng "hỏi lại luôn vào ô chat này". Người dùng trả lời đầy đủ,
+chi tiết (không chỉ chọn option) cho cả 3 câu — spec đầy đủ đã lưu verbatim vào memory
+`agent-kit-v5-11-completion-policy-research.md`. Tóm tắt quyết định (chi tiết đầy đủ ở đó, không lặp lại
+ở đây):
+1. **Rework edge** → tách thành task riêng **V5-10B** (không gộp vào V5-11) — typed `EdgeKind =
+   FLOW|COMPLETION_REWORK`, route pin ID/target/budget, scheduler không traverse, compiler/hash bao
+   gồm route, validation đầy đủ. Lý do người dùng nêu: giữ thay đổi schema/compiler/validator tách khỏi
+   transaction quyết định (fencing-critical) của CompletionPolicy.
+2. **Assurance levels** → mở rộng `policy.CompletionRules` tại chỗ (không tạo aggregate riêng) — shape
+   Go cụ thể người dùng đưa ra (`AssuranceLevel`/`AssuranceRequirement`/`RequiredAssurance`, V1 flat và
+   V2 ladder mutually exclusive) đã lưu nguyên văn vào memory, sẽ dùng khi code V5-11.
+3. **"Join"** → XÁC NHẬN là cơ chế FORK/JOIN branch-token đã có (V4-10/11), không phải cross-Run
+   reconciliation — V5-11 không được gộp evidence giữa nhiều Run của cùng WorkItem; phát hiện Run khác
+   non-terminal cùng WorkItem là invariant violation → BLOCK.
+
+Cập nhật `docs/design/07-v5-execution-evidence.md`: thêm mục **V5-10B** đầy đủ (Mục tiêu/Phụ thuộc/Phạm
+vi/Nền đã có/Thực hiện/Verify/Hoàn thành khi/Nguồn) ngay sau V5-10A; sửa mục **V5-11**'s "Dữ kiện phải
+khóa" — 3/5 điểm chốt (2,3,4), còn 2 điểm chưa chốt (1: nơi pin CompletionPolicyVersion cho Run; 5:
+idempotency/transaction boundary) nên V5-11 vẫn CHƯA ĐỦ DỮ KIỆN, nhưng không còn bị chặn bởi rework-edge
+hay join ambiguity nữa.
+
+## V5-10B — Completion rework route schema (branch `fix/v5-10b-completion-rework-route-schema`, based on
+`origin/master` post-PR#13)
+
+**Bối cảnh:** giải quyết điểm (3) trong 5 "Dữ kiện phải khóa" của V5-11 — ADR-009/ADR-021/GC-INV-10/
+GC-INV-29 đều yêu cầu CompletionPolicy's REWORK outcome route qua "rework edge đã publish trong
+WorkflowVersion", nhưng `validateNormalizedDocument` cấm MỌI outgoing edge từ END, không phân biệt loại —
+không có gì để CompletionPolicy pin. Theo đúng quyết định người dùng: tách hẳn khỏi V5-11, một task/PR
+riêng.
+
+**Nghiên cứu trước khi code (quan trọng, quyết định toàn bộ shape):**
+- `Edge` (`workflow.go`) hiện chỉ có `{Key, From, Outcome, To}` — không phân biệt loại.
+- `validateNormalizedDocument` (`validation.go`): mọi edge cần `Outcome` khớp `From.Outcomes` đã khai;
+  `outgoing[END]` khác rỗng → reject "cannot have outgoing edges" (không phân biệt loại).
+- `findEdge` (`advance.go`, scheduler thật) chỉ bao giờ được gọi với key của node VỪA hoàn thành với một
+  outcome đề xuất — KHÔNG BAO GIỜ với key của END (END terminal, không "advance" qua outcome). Kết luận
+  quan trọng: **scheduler không bao giờ tự động traverse một COMPLETION_REWORK edge, kể cả không sửa gì
+  ở `advance.go`** — thoả mãn "scheduler không được traverse rework edge" hoàn toàn CẤU TRÚC, không cần
+  code runtime mới.
+- Hash (`compiler.go`'s `Compile`) marshal TOÀN BỘ `normalizedDocument` — field mới trên `Edge` tự động
+  vào hash, không cần code hash riêng ("Compiler/hash phải bao gồm route" thoả mãn miễn phí).
+- `cloneDocument` hiện copy `Edges` NÔNG (`append([]Edge(nil), ...)`) — nếu thêm field con trỏ
+  (`ReworkPolicy`) mà không sửa chỗ này, `WorkflowVersion.Document()`'s "immutable, accessors return
+  copies" bị vi phạm (hai lần gọi share cùng con trỏ). Phải sửa thành deep-copy như `Node.CyclePolicy` đã
+  làm.
+- `CycleMembership` (exported, dùng lại bởi V4-07's escalation-edge-rời-cycle check ở `advance.go`) tự
+  build `outgoing` map RIÊNG từ `document.Edges`, độc lập với `validateNormalizedDocument`'s map — nếu
+  không lọc COMPLETION_REWORK ở đây, một rework edge có thể gộp SCC của END và target lại làm một,
+  corrupt component numbering mà V4-07 dựa vào.
+
+**Quyết định thiết kế (một số điểm KHÔNG được người dùng đặc tả chi tiết, tự quyết định có lý do, ghi rõ
+ở đây để review lại nếu cần):**
+1. **Đúng một COMPLETION_REWORK edge mỗi END** (không phải nhiều route theo outcome khác nhau) — dựa
+   trên cách ADR-021/GC-INV-29 luôn dùng số ít "rework edge đã publish", và V5-11's "load exact published
+   rework route" (số ít). Tái dùng CHÍNH `routes` map dedup-theo-(From,Outcome) đã có sẵn để enforce "tối
+   đa 1" miễn phí, vì `Outcome` cố định rỗng cho mọi rework edge.
+2. **`Outcome` PHẢI rỗng cho COMPLETION_REWORK** — không dùng để chọn giữa nhiều route (vì chỉ có 1 route
+   mỗi END), tránh field chết/gây hiểu lầm. FLOW edge giữ nguyên yêu cầu `Outcome` không rỗng + khớp
+   `From.Outcomes` như cũ.
+3. **`ReworkPolicy{MaxIterations uint32}`** mirror đúng `CyclePolicy`'s tiền lệ — KHÔNG có
+   `EscalationOutcome` tương đương, vì ADR-021 đã định nghĩa sẵn fallback khi hết budget (CompletionPolicy
+   trả BLOCK thay vì REWORK — GC-INV-29), không cần một routable escalation target riêng ở edge.
+4. **COMPLETION_REWORK edge bị loại HOÀN TOÀN khỏi mọi graph-structural algorithm** (reachability
+   walkForward/walkBackward, `validateBoundedCycles`/SCC, `validateForkJoinTopology`, `CycleMembership`)
+   — nó là routing table riêng của CompletionPolicy, không phải đồ thị scheduler duyệt. Hệ quả: rework
+   target PHẢI độc lập là node đã kết nối hợp lệ trong đồ thị FLOW thường (reachable từ START, có path
+   tới END) — không thể là node "chỉ tồn tại nhờ rework". Test `TestValidateDocumentRejectsReworkEdge
+   TargetUnreachableFromNormalFlow` chứng minh + ghi rõ đây là ranh giới phạm vi cố ý, không phải thiếu
+   sót.
+5. **`Kind` rỗng ("") và `Kind: EdgeFlow` ("FLOW") tương đương ở mọi nơi** — không normalize document cũ,
+   giữ nguyên hash của mọi WorkflowVersion đã publish trước task này (field mới đều `omitempty`).
+
+**Thực hiện:**
+- `internal/domain/workflow/workflow.go` — `EdgeKind` (`FLOW`/`COMPLETION_REWORK`) + `ReworkPolicy{
+  MaxIterations}` + `Edge.Kind`/`Edge.ReworkPolicy` (cả hai `omitempty`); `cloneDocument` sửa deep-copy
+  Edges (trước đó copy nông, giờ mirror đúng cách Node.CyclePolicy đã clone).
+- `internal/domain/workflow/validation.go` — switch theo Kind trong vòng lặp edge: FLOW giữ nguyên logic
+  cũ + reject nếu có `ReworkPolicy`; COMPLETION_REWORK reject Outcome khác rỗng, From không phải END, To
+  là END, thiếu/`MaxIterations==0` reworkPolicy; CHỈ FLOW mới được thêm vào `outgoing`/`incoming` map.
+  Sửa message "END node cannot have outgoing edges" → "...outgoing FLOW edges" (khớp hành vi mới).
+  `CycleMembership` lọc COMPLETION_REWORK khỏi map riêng của nó.
+- `docs/design/07-v5-execution-evidence.md` — thêm mục V5-10B đầy đủ theo đúng template các task khác
+  (Mục tiêu/Phụ thuộc/Phạm vi/Nền đã có/Thực hiện/Verify/Hoàn thành khi/Nguồn); sửa V5-11's "Dữ kiện phải
+  khóa" phản ánh 3/5 điểm đã chốt.
+
+**Test (mới hoàn toàn):** `internal/domain/workflow/rework_edge_test.go` —
+- `TestValidateDocumentRejectsInvalidReworkEdges` (table, 9 case): FLOW edge từ END; COMPLETION_REWORK
+  không từ END; targets END; có Outcome; thiếu reworkPolicy; `MaxIterations==0`; FLOW có reworkPolicy; 2
+  route cùng END (duplicate); Kind lạ ("BOGUS").
+- `TestValidateDocumentAcceptsCompletionReworkEdge` — golden path: 1 rework edge END→node đã reachable
+  bình thường, validate sạch.
+- `TestValidateDocumentAcceptsExplicitFlowKind` — `Kind:"FLOW"` tường minh tương đương Kind rỗng.
+- `TestValidateDocumentRejectsReworkEdgeTargetUnreachableFromNormalFlow` — ranh giới phạm vi cố ý (xem
+  Quyết định #4).
+- `TestCycleMembership_ExcludesCompletionReworkEdges` — END/target không bị gộp cùng SCC component qua
+  rework edge.
+- `TestCloneDocument_DeepCopiesEdgeReworkPolicy` — 2 lần gọi `WorkflowVersion.Document()` không share con
+  trỏ `ReworkPolicy` (sửa mutation ở bản trả về đầu không leak sang bản thứ hai).
+
+**Verify:**
+```
+go build ./...                                                              # sạch
+go vet ./...                                                                # sạch
+go run ./cmd/docs-coverage-check                                            # debt = 0 (sau khi sửa
+                                                                             # Nguồn token: ADR-NNN
+                                                                             # không được kèm "(§N)")
+gofmt -l internal/domain/workflow/workflow.go internal/domain/workflow/validation.go
+  internal/domain/workflow/rework_edge_test.go                              # rỗng (sau gofmt -w,
+                                                                             # CRLF do git-on-Windows)
+go test -count=1 ./...                                                      # PASS toàn bộ (lần 1 + lần
+                                                                             # 2, không flake)
+```
+Lỗi gặp và sửa trong lúc verify: `Nguồn` line ban đầu viết `ADR-009 (§10), ADR-021 (§23)` — docs-coverage
+-check reject vì grammar `ADR-NNN` không cho hậu tố `(§N)` (chỉ `ROADMAP-§<S>` mới có; xem
+`docs/design/00-roadmap.md §3`'s bảng grammar) — sửa lại bare `ADR-009, ADR-021, GC-INV-10, GC-INV-29`.
+
+**Việc còn lại:** commit, push nhánh `fix/v5-10b-completion-rework-route-schema`, mở PR, chờ CI 6/6,
+merge. Sau khi merge, V5-11 (CompletionPolicy service) vẫn còn 2 điểm chưa chốt (pin CompletionPolicyVersion
+cho Run; idempotency/transaction boundary của DecisionArtifact) — cần làm rõ với người dùng trước khi bắt
+đầu code V5-11 thật.
+
+**Kết quả:** PR #14, 6/6 CI checks pass NGAY LẦN CHẠY ĐẦU, squash-merged 2026-09-10, merge commit
+`82a41a0`. Một WorkflowVersion giờ khai được đúng một `COMPLETION_REWORK` edge mỗi END.
+
+## V5-11 scoping — người dùng chốt 2 câu hỏi mở còn lại (contract 1 và 2, 2026-09-10)
+
+Ngay sau khi PR #14 merge, hỏi lại 2 điểm chưa chốt cuối cùng của V5-11 trong cùng ô chat (đúng yêu cầu
+trước đó "hỏi lại luôn vào ô chat này"). Người dùng trả lời đầy đủ, chi tiết cho cả hai — bản đầy đủ đã
+lưu verbatim vào memory `agent-kit-v5-11-completion-policy-research.md`, tóm tắt ở đây:
+
+**Contract 1 — nơi pin CompletionPolicyVersion:** `WorkflowDocument.CompletionPolicyRef
+*definition.DependencyPin` (ROOT-level, KHÔNG per-node, KHÔNG trên WorkItem/END). Lý do người dùng nêu:
+WorkItem sẽ tạo thêm một nguồn cấu hình độc lập với WorkflowVersion; pin trên END có thể khiến cùng một
+Run đổi policy khi đi qua REWORK (mỗi lần re-entry END có thể tự mang pin riêng nếu pin nằm ở đó). Luồng:
+publish-time resolve trong cùng registry snapshot, xác minh `Category == COMPLETION` + có
+`CompletionRules`, ghi vào `WorkflowVersion.DependencyManifest`; `StartWorkflowRun` đã copy nguyên
+manifest này vào `ExecutionManifest` (đã đúng từ trước, không cần sửa). V5-11 tự đọc root ref rồi đối
+chiếu ID/version/hash trong `ExecutionManifest` trước khi load policy thật.
+
+**Xác minh lại với code thật trước khi nhận (nghiên cứu 2026-09-10,
+`internal/app/workflowcompiler/compiler.go`):** đây CHÍNH XÁC là cơ chế `CompileAndResolve` đã dùng cho
+mọi pin cấp-node (Agent/Command/Gate/PolicyRefs) — `collectReferences` (thêm root ref vào đây) →
+`resolveReferences` (đã có nhánh riêng cho `KindPolicy` soi `doc.Category`/`doc.Permission`, cần thêm 1
+nhánh cho `doc.Category == policy.CategoryCompletion`) → `buildDependencyManifest` (đã tổng quát hoàn
+toàn, không cần sửa). `internal/domain/runtime/manifest.go`'s `ExecutionManifest.DependencyManifest` có
+type CHÍNH LÀ `workflow.DependencyManifest` — xác nhận claim "tự động chảy qua, miễn phí". **Code mới cần
+viết: 1 field + ~10 dòng ở workflowcompiler. Không đổi gì ở runtime/schedule.go** — giống hệt shape
+"chỉ schema, không đụng scheduler" của V5-10B.
+
+**Contract 2 — transaction/idempotency boundary của DecisionArtifact (fencing-critical, spec đầy đủ):**
+
+Với mỗi completion candidate `(RunID, EndNodeRunID)`, đúng một `COMPLETION_DECISION_V1` immutable được
+commit. DecisionArtifact và MỌI effect của quyết định đó commit trong CÙNG MỘT database transaction, hoặc
+không effect nào commit cả.
+
+Transaction boundary, đúng thứ tự:
+1. **Replay check TRƯỚC** (trước khi validate Run state hiện tại, vì lần gọi thành công đầu tiên đã đổi
+   state đó rồi): derive `DecisionArtifactID` tất định từ `(RunID, EndNodeRunID)`. Đã tồn tại với
+   candidate+input khớp → trả kết quả đã lưu. Cùng ID nhưng content khác → trả idempotency conflict.
+2. **Revalidate input có thẩm quyền:** Run đang VERIFYING tại `ExpectedRunVersion`; END NodeRun thuộc
+   đúng Run và đã SUCCEEDED; WorkItem và cancellation fence cho phép completion; load đúng
+   CompletionPolicy đã pin, evidence, approvals, RevisionSet, và đúng SEALED ReleaseSet gắn với
+   candidate này.
+3. **Ghi tất cả atomically:** insert DecisionArtifact immutable; áp state transition đã chọn; tạo REWORK
+   activation hoặc FAIL blocker nếu áp dụng; append `COMPLETION_DECIDED`; tạo outbox record; ghi command
+   receipt/job completion.
+
+Bảng outcome → atomic writes: `PASS` → Run SUCCEEDED + WorkItem DONE; `REWORK` → Run RUNNING + đúng một
+activation trên rework route; `BLOCK` → Run BLOCKED + WorkItem BLOCKED; `FAIL` → Run FAILED + WorkItem
+BLOCKED + đúng một blocker `COMPLETION_POLICY_FAILED`.
+
+ID phụ đều sha256 (không phải string concatenation thuần):
+```
+DecisionArtifact = hash("completion-decision", RunID, EndNodeRunID)
+Event            = hash(DecisionArtifactID, "recorded")
+ReworkActivation = hash(DecisionArtifactID, "rework")
+FailBlocker      = hash(DecisionArtifactID, "failed-blocker")
+```
+Bất kỳ CAS/fence/insert/event/activation/blocker nào fail thì TOÀN BỘ transaction rollback. Hệ quả người
+dùng nêu rõ: không có DecisionArtifact mà thiếu transition+side effect; không có transition committed mà
+thiếu DecisionArtifact; nhiều evaluator đồng thời hội tụ về đúng MỘT quyết định, gọi lại sau đó replay
+đúng kết quả đó; retry với transport idempotency key KHÁC vẫn hội tụ cùng semantic decision vì artifact ID
+đến từ chính completion CANDIDATE, không phải command invocation. Network/filesystem/artifact-store nằm
+NGOÀI transaction — transaction chỉ tiêu thụ ID/version/hash bất biến đã verify sẵn với database state.
+
+**Xác minh lại với code thật (nghiên cứu đầy đủ qua Explore agent, 2026-09-10):**
+- `runtime.DecisionArtifact` ĐÃ TỒN TẠI (`internal/domain/runtime/decision.go`:
+  `{ID, ProjectID, Kind, PolicyVersion, Input, Result, CreatedAt}`), qua `ports.RuntimeRepository.
+  RecordDecisionArtifact`/`GetDecisionArtifact`. ID do caller tự mint (không tự derive) — mọi call site
+  hiện tại dùng string concatenation (`schedule.go`: `NodeRunID+"-execution-profile-v1"`);
+  `RecordDecisionArtifact` tự nó trả `ErrPersistenceAlreadyExists` khi trùng ID — KHÔNG tự làm "replay
+  trả kết quả cũ" — V5-11 phải tự `GetDecisionArtifact` trước, so content, rồi mới
+  `RecordDecisionArtifact`, đúng như contract 2 mô tả.
+- Tiền lệ sha256-làm-ID tốt nhất: `advance.go`'s `deterministicJoinNodeRunID` — `sha256.Sum256(a+"\x00"+b)`,
+  hex, CẮT còn 16 byte, có prefix (`"join-"+hex(sum[:16])`) — doc comment của chính nó trích dẫn
+  DecisionArtifact ID làm tiền lệ mà nó đang mở rộng "qua content hash thay vì string concatenation
+  thuần". Mirror đúng shape này cho cả 4 ID mới.
+- `openWorkItemBlockerTx` (`internal/app/runtime/blocker.go`) là helper CÓ SẴN, DÙNG LẠI ĐƯỢC cho
+  outcome FAIL — đã làm idempotent-insert-or-return-existing + CAS WorkItem sang BLOCKED + event
+  `WORK_ITEM_BLOCKED`, đã được gọi bởi `transitionRunToCancelledTx`/`requestScopeExpansionTx`. Dùng lại
+  trực tiếp với `blockerID` tất định, không viết lại.
+- Không có outbox call riêng — `tx.Events().Append` TỰ NÓ ghi outbox row khớp trong cùng transaction
+  (GC-INV-16). "Append COMPLETION_DECIDED" + "tạo outbox record" trong contract 2 thực ra là MỘT lời gọi,
+  không phải hai.
+- `ApprovalRequest` (không phải "Approval") + `tx.Approvals().ListApprovalRequestsForRun(ctx, runID)` đã
+  có sẵn (chỉ scope theo Run, không có fetch theo WorkItem) — khớp đúng kết luận "join không phải
+  cross-Run" đã chốt trước đó.
+- `tx.Work().ListReleaseSetsForFamily` + so `.State == workdomain.ReleaseSetSealed` là pattern có sẵn
+  (`EligibilityAuthority.IsReleaseAuthorized`, V5-10A) để mirror cho "load SEALED ReleaseSet".
+- Pattern `tx.Receipts().Load/Record` (idempotent-replay-trả-kết-quả-cũ) đã có ở MỌI command handler
+  trong repo — là một lớp RIÊNG, THÊM VÀO, khác với replay check ở cấp DecisionArtifact (người dùng tự
+  phân biệt rõ: "retry với transport idempotency key KHÁC vẫn hội tụ cùng semantic decision" — lớp
+  receipt là per-invocation, lớp DecisionArtifact là per-candidate). Giữ CẢ HAI lớp.
+- Race cancellation đã được xử lý cấu trúc sẵn: `reconcileRunTerminalityTx` không bao giờ để Run đang
+  CANCELLING tới được VERIFYING; check "Run VERIFYING tại ExpectedRunVersion" trong contract 2 tự bắt
+  được race còn lại (CancelRun đến SAU khi đã VERIFYING nhưng trước khi transaction này commit chỉ đơn
+  giản làm version CAS fail) — không cần cơ chế riêng.
+
+**Kết luận:** V5-11 không còn câu hỏi scoping nào mở. Kế hoạch 3-PR (mirror đúng pattern PR1/PR2 của
+Evidence + pattern "schema tách khỏi transaction" của V5-10B): **PR0** = schema foundation (contract 1 +
+assurance ladder của contract cũ) — làm ngay dưới đây. **PR1** = CompletionPolicy service, thiết kế
+contract cho cả 4 outcome nhưng chỉ triển khai PASS+BLOCK trước (hai outcome không có side-effect
+activation/blocker). **PR2** = REWORK+FAIL.
+
+## V5-11 — PR0: schema foundation (branch `fix/v5-10b-completion-rework-route-schema`, tiếp tục trên cùng
+worktree sau khi PR #14 merge, chưa push riêng — xem "Việc còn lại")
+
+**Bối cảnh:** phần schema thuần của V5-11 (contract 1 + phần "assurance levels" đã chốt từ trước khi
+V5-10B bắt đầu) — tách khỏi CompletionPolicy service thật (PR1/PR2), đúng mô hình V5-10B đã dùng ("giữ
+schema/compiler tách khỏi transaction quyết định fencing-critical").
+
+### Phần A — `CompletionRules` V2 assurance ladder
+
+**Thực hiện:** `internal/domain/policy/policy.go` — thêm `AssuranceLevel` (6 hằng số:
+STATIC/LINT/UNIT/INTEGRATION/E2E/HUMAN, thứ tự cố định qua `assuranceLevelOrder` map, KHÔNG dùng thứ tự
+JSON), `ApprovalRequirement{AuthorizedRoles []string}` (mirror đúng `workflow.ApprovalNodeConfig`'s
+"AuthorizedRoles" — tiền lệ cụ thể duy nhất cho khái niệm approval-requirement trong repo),
+`AssuranceRequirement{Level, RequiredEvidenceKinds, RequiredApprovals}`, và `CompletionRules.
+RequiredAssurance []AssuranceRequirement` cạnh `RequiredEvidenceKinds` cũ (tag JSON giữ NGUYÊN, không
+thêm `omitempty`, để hash của mọi CompletionRules V1 đã publish trước đây không đổi).
+`internal/domain/policy/compiler.go` — đăng ký `requiredAssurance` và toàn bộ nested array của nó
+(`requiredEvidenceKinds`, `requiredApprovals`, `requiredApprovals.authorizedRoles`) làm "set path" trong
+CẢ `documentSetPaths` lẫn `compiledSetPaths` (order không mang nghĩa, đúng "Thứ tự level do domain code
+định nghĩa" người dùng đã chốt).
+`internal/domain/policy/validate.go` — viết lại `validateCompletionRules`: V1/V2 mutually exclusive (cả
+hai cùng khai → reject; không cái nào → reject, message nêu cả hai lựa chọn); nhánh V1 giữ NGUYÊN logic
+cũ không đổi 1 dòng; nhánh V2 validate từng `AssuranceRequirement` (Level hợp lệ + không trùng, ít nhất 1
+trong RequiredEvidenceKinds/RequiredApprovals, dedup evidence kind trong CÙNG level, dedup approval
+requirement theo canonical role-set key) + từng `ApprovalRequirement` (ít nhất 1 role, role không rỗng,
+không trùng).
+
+**Quyết định phạm vi (không được người dùng đặc tả chi tiết, tự quyết định có lý do):**
+- Dedup evidence kind CHỈ trong cùng một level, KHÔNG global toàn bộ ladder — các level khác nhau hợp lệ
+  cùng yêu cầu một evidence kind (vd re-verify), global-unique sẽ là luật phát minh thêm không ai yêu cầu.
+- "Thứ tự level do domain code định nghĩa" là hướng dẫn cho EVALUATOR (V5-11 PR1/PR2), không phải luật
+  reject ở bước validate — một tác giả liệt kê level theo thứ tự bất kỳ trong JSON vẫn hợp lệ.
+- `ApprovalRequirement` chỉ có `AuthorizedRoles` — không thêm field nào khác chưa được yêu cầu (không
+  TimeoutSeconds/EscalationOutcome như `ApprovalNodeConfig`, vì đây là policy-level requirement khác hẳn
+  node-level approval instance).
+
+**Test (mới hoàn toàn):** `internal/domain/policy/completion_assurance_test.go` — 11 test: ladder hợp lệ
+không lỗi; cả hai V1+V2 → reject; Level lạ → reject; Level trùng → reject; requirement rỗng (không
+evidence lẫn approval) → reject; evidence kind trùng trong 1 level → reject; evidence kind rỗng → reject;
+approval không role → reject; role trùng → reject; approval requirement trùng (cùng role-set) → reject;
+`TestCompile_AssuranceLadder_SetOrderIndependent` (hash giống nhau dù đảo thứ tự ladder/evidence
+kinds/roles). Sửa 1 test cũ (`TestValidateDocument_Completion_RejectsNoRequiredEvidenceKinds`) — path đổi
+từ `"completion.requiredEvidenceKinds"` sang `"completion"` vì check giờ bao quát cả hai shape.
+
+### Phần B — `WorkflowDocument.CompletionPolicyRef`
+
+**Thực hiện:** `internal/domain/workflow/workflow.go` — thêm field `CompletionPolicyRef
+*definition.DependencyPin` (root-level, `omitempty`) vào `WorkflowDocument`; `cloneDocument` deep-copy
+con trỏ này (mirror đúng cách `Edge.ReworkPolicy` đã clone ở V5-10B — `WorkflowVersion.Document()`'s
+"accessors return copies" contract áp dụng cho field mới này y hệt).
+`internal/app/workflowcompiler/compiler.go` — `collectReferences` gộp thêm root ref (nếu có) như MỘT
+`nodeReferences{policyPins: [...]}` riêng, tái dùng nguyên `resolveReferences`'s logic resolve-theo-
+DefinitionID/conflict-detection có sẵn KHÔNG cần viết lại; hàm mới `checkCompletionPolicyRefCategory` làm
+đúng phần việc pipeline chung KHÔNG làm — xác minh resolved document's `Category == CategoryCompletion`
+(+ `Completion != nil`, defense-in-depth vì policy.ValidateDocument's own publish-time invariant đã đảm
+bảo Category=COMPLETION luôn có Completion non-nil) — gọi ngay sau `checkScopeAndCapability` trong
+`CompileAndResolve`. `buildDependencyManifest` KHÔNG cần sửa gì (đã tổng quát hoàn toàn theo
+DefinitionID).
+
+**Quyết định:** không validate `CompletionPolicyRef.Kind == KindPolicy` ở `validation.go` (domain layer,
+không có registry access) — đúng tiền lệ node-level ref hiện tại (`AgentNodeConfig.ProfileRef.Kind` v.v.
+cũng không được check ở đây), việc verify Kind/Category thật đều nhường cho workflowcompiler's real
+registry resolution, không thêm luật mới không nhất quán.
+
+**Test (mới hoàn toàn):** `internal/app/workflowcompiler/completion_policy_ref_test.go` — 3 test: resolve
+CompletionPolicyRef vào manifest đúng (kind/key/version/hash); reject khi resolved document SAI category
+(policy PERMISSION thay vì COMPLETION); reject khi ref không resolve được (tái dùng đúng message lỗi
+generic "does not resolve to any published version" của pipeline chung). Không viết thêm test tích hợp ở
+tầng `internal/app/runtime` cho việc `ExecutionManifest` nhận đúng manifest này — cơ chế
+`ExecutionManifest.DependencyManifest = workflow.DependencyManifest` đã tồn tại từ trước, được MỌI test
+runtime hiện có gián tiếp chứng minh rồi (test nào cũng pass không cần sửa) — thêm test riêng cho đúng 1
+loại pin sẽ trùng lặp, không test thêm điều gì mới.
+
+**Verify:**
+```
+go build ./...                                                    # sạch
+go vet ./...                                                       # sạch
+go run ./cmd/docs-coverage-check                                   # debt = 0
+gofmt -l <7 file .go đổi + 2 file .go mới>                         # rỗng sau gofmt -w (CRLF do
+                                                                    # git-on-Windows, đúng precedent)
+go test -count=1 ./...                                             # PASS toàn bộ (lần 1 + lần 2,
+                                                                    # không flake)
+```
+
+**Việc còn lại:** commit (cùng branch cũ hay branch mới — quyết định khi commit, xem message tiếp theo),
+push, mở PR, chờ CI 6/6, merge. Sau đó bắt đầu PR1 (CompletionPolicy service, PASS+BLOCK trước).
+
+**Kết quả:** PR #15, 6/6 CI checks pass NGAY LẦN CHẠY ĐẦU, squash-merged 2026-09-10, merge commit
+`6db1efd`. `CompletionRules` có V2 assurance ladder; `WorkflowDocument.CompletionPolicyRef` resolve được
+qua đúng pipeline `workflowcompiler` có sẵn.
+
+## V5-11 — PR1: CompletionPolicy service, PASS+BLOCK+FAIL (branch `feat/v5-11-completion-policy-service`,
+based on `origin/master` sau PR #15)
+
+**Bối cảnh:** người dùng bảo "start on pr1" ngay sau khi PR #15 merge — bắt đầu phần service thật của
+V5-11 (contract 2), theo đúng kế hoạch 3-PR đã đề xuất trước đó.
+
+**Quyết định phạm vi (điều chỉnh so với đề xuất ban đầu "PASS+BLOCK / REWORK+FAIL"):** phát hiện khi bắt
+tay code — FAIL's side effect (mở `WorkItemBlocker` typed `COMPLETION_POLICY_FAILED`) tái dùng NGUYÊN
+`openWorkItemBlockerTx` đã có sẵn từ V4-12C, không cần cơ chế mới nào — chỉ REWORK mới cần cơ chế THẬT SỰ
+MỚI (tra rework route từ V5-10B's edge kind + tạo activation). Vì vậy đổi phạm vi PR1 thành
+**PASS+BLOCK+FAIL** (cả ba outcome không cần cơ chế mới), PR2 chỉ còn **REWORK** (outcome duy nhất cần
+route-lookup+activation-creation thật sự mới).
+
+**Nghiên cứu trước khi code** (qua Explore agent, xác nhận lại bằng đọc code thật trước khi dùng):
+- `runtime.DecisionArtifact` đã tồn tại (`internal/domain/runtime/decision.go`), ID do caller tự mint,
+  KHÔNG tự làm "replay trả kết quả cũ" (bản thân `RecordDecisionArtifact` trả
+  `ErrPersistenceAlreadyExists` khi trùng ID) — phải tự implement replay-check ở tầng app.
+- `deterministicJoinNodeRunID` (`advance.go`) là tiền lệ sha256-làm-ID (không phải string concatenation
+  thuần) — mirror đúng shape cho 3 ID mới (DecisionArtifact/Event/FailBlocker).
+- `openWorkItemBlockerTx` (`internal/app/runtime/blocker.go`) dùng lại được nguyên cho FAIL.
+- `tx.Events().Append` tự ghi outbox row trong cùng transaction (GC-INV-16) — "append event" và "tạo
+  outbox record" trong contract 2 là MỘT lời gọi, không phải hai.
+- `ApprovalRequest` (không phải "Approval") + `tx.Approvals().ListApprovalRequestsForRun` đã có sẵn, chỉ
+  scope theo Run — khớp đúng "join không cross-Run" đã chốt trước đó.
+- `tx.Work().ListReleaseSetsForFamily` + so `.State == ReleaseSetSealed` là pattern có sẵn
+  (`EligibilityAuthority.IsReleaseAuthorized`, V5-10A).
+- `tx.Runtime().ListWorkflowRunsForWorkItem` đã có sẵn — dùng để check sibling-Run invariant.
+- Pattern `tx.Receipts().Load/Record` (idempotent-replay per-invocation) là lớp KHÁC, THÊM VÀO, tách biệt
+  với replay check per-candidate của DecisionArtifact — giữ CẢ HAI lớp, đúng contract 2.
+
+**Quyết định thiết kế (một số điểm KHÔNG được đặc tả chi tiết trong 2 contract, tự quyết định có lý do,
+ghi rõ để review lại nếu cần):**
+1. **FAIL chỉ dành cho lỗi cấu hình/evaluation, KHÔNG dành cho "requirements chưa đạt"** — ADR-021 không
+   nói rõ khi nào FAIL fires (chỉ nói rõ REWORK-vs-BLOCK dựa theo rework edge). Quyết định: FAIL khi
+   `CompletionPolicyRef` là nil, không resolve được, sai category, hoặc hash không khớp
+   ExecutionManifest — tức "service không thể evaluate", khác hẳn BLOCK ("evaluate được, chưa đạt yêu
+   cầu"). Sibling-Run-inconsistency CŨNG là BLOCK (không phải FAIL) — đúng quyết định "join" đã chốt
+   trước đó.
+2. **PR1: ladder không đạt LUÔN LUÔN → BLOCK, kể cả khi (giả sử) có rework edge hợp lệ** — vì REWORK
+   chưa có cơ chế thật (PR2's việc); đây là default an toàn, bảo thủ — không rework qua cơ chế chưa xây.
+3. **BLOCK không mở `WorkItemBlocker` row** — ADR-021's bảng chỉ ghi "kèm blocker" cho FAIL, không cho
+   BLOCK; hai state transition (Run BLOCKED, WorkItem BLOCKED) tự nó là tín hiệu durable đủ.
+4. **ReleaseSet gating: gia đình KHÔNG có ReleaseSet nào → bỏ qua check** (coi như thoả mãn) — một
+   workflow không hề mutate gì sẽ không bao giờ phải đi qua luồng ReleaseSet của V5-10A chỉ để complete;
+   gia đình CÓ ReleaseSet thì bản mới nhất phải SEALED (không ABANDONED/CREATED).
+5. **Approval requirement thoả mãn = có ÍT NHẤT MỘT `ApprovalRequest` cho Run này `State=DECIDED` với
+   `DecidedRole` nằm trong `AuthorizedRoles`** — KHÔNG check `DecidedOutcome` cụ thể (approve/reject):
+   routing approve/reject đã là việc của chính graph (APPROVAL node's Outcomes/Edges) TRƯỚC khi tới
+   END/VERIFYING; CompletionPolicy chỉ xác nhận evidence tồn tại, không lặp lại logic routing.
+6. **"Evidence còn fresh" (contract assurance-level trước đó) = evidence của Attempt CUỐI CÙNG (cao nhất
+   AttemptNumber) thuộc NodeRun activation MỚI NHẤT (cao nhất ActivationSequence) theo từng lineage
+   (NodeKey+BranchTokenID)** — dùng lại đúng dedup logic `computeRunNodeStateSummary` (completion.go) đã
+   có, factor thành `latestNodeRunIDsByLineage` dùng chung. KHÔNG cross-check RevisionSet hash — quá suy
+   đoán để tự quyết định ý nghĩa "RevisionSet hiện tại" giữa một Run có COMMAND node mutate workspace.
+7. **Level order (V2 ladder) do domain code định nghĩa** — thêm `policy.AssuranceLevelOrder()` (export
+   mới, PR1 là consumer thật đầu tiên) thay vì để `internal/app/runtime` tự đoán thứ tự.
+
+**Thực hiện:** `internal/app/runtime/completion_policy.go` (mới) —
+`EvaluateCompletionCandidate(ctx, uow, clk, cmd, req{RunID})` là entry point DUY NHẤT được phép chuyển
+Run VERIFYING→{SUCCEEDED,BLOCKED,FAILED} hay WorkItem ACTIVE→{DONE,BLOCKED}. `cmd.ExpectedVersion` là
+CAS fence (đúng quy ước `cmd.ExpectedVersion` đã dùng ở mọi command khác, vd `CreateReleaseSet`), không
+làm field riêng trong request. Luồng: standard receipt check (tầng ngoài) → load Run/ExecutionManifest/
+WorkflowVersion/Document → `computeRunNodeStateSummary` (tái dùng từ completion.go) tìm END node run →
+derive `decisionArtifactID` → gather evidence/approvals/releaseGate → build `completionCandidateInput`
+(deterministic, mọi slice đã sort) → **replay check TRƯỚC** (so `existing.Input` byte-for-byte) → CHỈ
+sau đó mới check Run.State==VERIFYING + `cmd.ExpectedVersion` → load WorkItem →
+`decideCompletionOutcome` (sibling-Run check → resolve policy → ReleaseSet gate → ladder eval) →
+`applyCompletionOutcomeTx` (state transitions theo outcome, blocker cho FAIL) → ghi DecisionArtifact →
+append `COMPLETION_DECIDED` (Sequence = Run's version SAU khi transition, mirror
+`transitionRunToVerifyingTx`'s convention) → ghi receipt.
+
+**Test (mới hoàn toàn):** `internal/app/runtime/completion_policy_test.go` — 9 test, dựng fixture qua
+`workflowDocumentV1()` (start->end có sẵn) + `startWorkflowRunFixture`-style + `AdvanceRun` để tới thật
+VERIFYING; Evidence/ApprovalRequest/sibling-Run được seed TRỰC TIẾP qua repository calls (bỏ qua
+CommandNodeExecutor/ResolveApproval/StartWorkflowRun's precondition thật — test layer này chỉ test
+`EvaluateCompletionCandidate` chính nó, không re-prove các layer dưới đã có test riêng):
+- PASS (V1 flat, evidence đủ); BLOCK (V1 flat, thiếu evidence); FAIL (không pin CompletionPolicyRef);
+  replay (idempotency key KHÁC, cùng kết quả — chứng minh lớp replay theo candidate, không chỉ theo
+  receipt); conflict (input đổi giữa 2 lần gọi cùng candidate → `ErrCompletionDecisionConflict`); BLOCK
+  (sibling Run non-terminal, ladder tự nó đã đạt); PASS (V2 ladder + approval); BLOCK (V2 ladder, thiếu
+  approval); BLOCK (ReleaseSet tồn tại nhưng chưa SEALED).
+
+**Verify:**
+```
+go build ./...                                                    # sạch
+go vet ./...                                                      # sạch
+go run ./cmd/docs-coverage-check                                  # debt = 0
+gofmt -l internal/app/runtime/completion_policy.go
+  internal/app/runtime/completion_policy_test.go
+  internal/domain/policy/policy.go                                # rỗng sau gofmt -w (CRLF do
+                                                                    # git-on-Windows, đúng precedent)
+go test -count=1 ./...                                            # PASS toàn bộ (lần 1 + lần 2,
+                                                                   # không flake)
+```
+
+**Việc còn lại:** commit, push nhánh `feat/v5-11-completion-policy-service`, mở PR, chờ CI 6/6, merge.
+Sau đó PR2 (REWORK — tra rework route từ `Edge.Kind=COMPLETION_REWORK` (V5-10B) + tạo activation mới)
+là phần còn lại duy nhất của V5-11.
+
+**Kết quả:** PR #16, 6/6 CI checks pass NGAY LẦN CHẠY ĐẦU, squash-merged 2026-09-10, merge commit
+`7cf82f2`. Một flake không liên quan (`internal/adapters/process`, timing test, package không hề đụng
+tới) gặp lúc verify local, xác nhận pre-existing qua 3 lần chạy riêng.
+
+## V5-11 — PR2: REWORK (branch `feat/v5-11-completion-policy-rework`, based on `origin/master` sau PR #16)
+
+**Bối cảnh:** người dùng bảo "ok" ngay sau khi PR #16 merge — tiếp tục PR2, phần cuối cùng của V5-11.
+
+**Nghiên cứu trước khi code (câu hỏi cốt lõi: activation mới có cần "schedule thật" trong CÙNG transaction
+không, và budget rework đếm thế nào):**
+- `ScheduleExecutableNodeRun` (schedule.go) LUÔN tự mở transaction riêng của chính nó
+  (`uow.WithSerializedWrite`) và resolve `RuntimeExecutionConfigProvider` NGOÀI transaction (ADR-027) —
+  không thể gọi lồng bên trong transaction của `EvaluateCompletionCandidate`.
+- Đọc kỹ `advanceRunTx` (advance.go, dòng ~609-664): với MỘT NodeRun downstream loại executable bình
+  thường (không phải auto-advance/END/WAIT/APPROVAL/FORK), `advanceRunTx` CHỈ tạo NodeRun ở state PENDING
+  mặc định — KHÔNG tự schedule (không resolve execution profile, không enqueue job) trong transaction đó.
+  Việc "gọi ScheduleExecutableNodeRun sau khi AdvanceRun trả về" là một bước RIÊNG, một transaction KHÁC,
+  và (đúng pattern đã lặp lại xuyên suốt V4/V5) **CHƯA CÓ production wiring nào gọi bước đó** — mọi nơi
+  hiện tại (test fixture) tự tay gọi cả hai. Kết luận: PENDING-chưa-schedule là một trạng thái durable
+  hợp lệ, ĐÃ ĐƯỢC CHẤP NHẬN sẵn trong codebase cho MỌI activation khác — REWORK không cần giải quyết gì
+  thêm ở đây, chỉ cần tạo NodeRun đúng PENDING giống hệt cách `advanceRunTx` đã làm.
+- `ActivationSequence` là bộ đếm TOÀN RUN (không phải theo lineage) — `advanceRunTx` dùng
+  `current.ActivationSequence + 1`; vì REWORK không có "current" NodeRun vừa hoàn thành theo nghĩa đó,
+  dùng MAX ActivationSequence trên toàn bộ `ListNodeRunsForRun` + 1.
+- `GetMaxNodeIteration(runID, nodeKey)` (đã có từ V4-07) dùng lại nguyên cho `Iteration` của activation
+  mới — cùng cách `advanceRunTx`'s escalation-target đã làm.
+- **Đếm round rework:** không có port method liệt kê DecisionArtifact theo RunID (DecisionArtifact chỉ
+  có ID, không có cột RunID có thể query) — nên không đếm qua đó. Insight: Run chỉ có thể quay lại
+  VERIFYING→RUNNING→(...)→VERIFYING qua CHÍNH outcome REWORK của file này (không cơ chế nào khác đưa Run
+  từ VERIFYING về RUNNING) — vì vậy **đếm số NodeRun SUCCEEDED có NodeKey = END node đã reach** chính là
+  round hiện tại (1-indexed: lần đầu = round 1, 0 round rework trước đó). Không cần thêm bảng/cột mới.
+
+**Quyết định thiết kế:**
+1. **`decideCompletionOutcome` giờ trả thêm `*reworkPlan`** (nil trừ khi outcome=REWORK) — chỉ khi ladder
+   KHÔNG đạt: tìm `COMPLETION_REWORK` edge từ END node đã reach (`findCompletionReworkEdge`, quét
+   `document.Edges` cho `Kind==EdgeCompletionRework && From==endNodeKey`); nếu KHÔNG có edge → BLOCK y hệt
+   PR1. Nếu CÓ: đếm round (`countEndReaches`); nếu `round > MaxIterations` → BLOCK với reason
+   `REWORK_BUDGET_EXHAUSTED` (GC-INV-29's "hết budget → BLOCK", coi như không có edge); ngược lại → REWORK,
+   build `reworkPlan{targetNodeKey, activationSequence, iteration}`.
+2. **`applyCompletionOutcomeTx` case REWORK:** Run VERIFYING→RUNNING (không phải SUCCEEDED); tạo đúng một
+   `NodeRun` mới (state mặc định PENDING từ `NewNodeRun`, KHÔNG tự schedule — xem nghiên cứu ở trên);
+   WorkItem HOÀN TOÀN không đụng tới (đã ACTIVE sẵn, đúng "WorkItem giữ ACTIVE" của ADR-021).
+3. **`EvaluateCompletionCandidate` giờ nhận thêm `ids idsource.Source`** (cần để mint NodeRunID mới) —
+   thay đổi signature so với PR1 (breaking, nhưng PR1 mới merge trong CÙNG phiên, chưa có caller thật nào
+   khác ngoài test) — theo đúng convention `ScheduleExecutableNodeRun`/`AdvanceRun` đã dùng.
+4. **`gatherCompletionCandidateEvidence` đổi tham số:** nhận `nodeRuns []NodeRun` thay vì tự gọi lại
+   `ListNodeRunsForRun` — `evaluateCompletionCandidateTx` giờ gọi MỘT LẦN, dùng chung cho evidence-gather
+   VÀ rework round-counting, tránh query trùng.
+5. **`CompletionDecisionResult`/event `COMPLETION_DECIDED` đều thêm `ReworkNodeRunID`/`ReworkNodeKey`**
+   (omitempty) — chỉ populate khi outcome=REWORK.
+6. **NodeRun activation mới KHÔNG dùng deterministic ID** (khác DecisionArtifact/Event/FailBlocker) — vẫn
+   `ids.NewID()` như MỌI NodeRun khác trong codebase (NodeRun chưa từng có tiền lệ content-derived ID);
+   an toàn replay đến từ decisionArtifactID, không phải từ ID của chính activation.
+
+**Thực hiện:** `internal/app/runtime/completion_policy.go` — thêm `reworkPlan`, `appliedCompletionOutcome`
+struct; `findCompletionReworkEdge`, `countEndReaches`, `maxActivationSequence` helper mới;
+`decideCompletionOutcome`/`applyCompletionOutcomeTx` mở rộng như trên; `ReasonReworkBudgetExhausted` const
+mới; cập nhật toàn bộ package doc comment (không còn nói "REWORK chưa làm").
+
+**Test (mới hoàn toàn):** thêm vào `internal/app/runtime/completion_policy_test.go` —
+`documentWithReworkEdge(maxIterations)` (start→implement(ROUTER, 1 outcome, auto-advance)→end, cộng
+COMPLETION_REWORK edge end→implement) thay cho `workflowDocumentV1()` phẳng; refactor
+`completionCandidateFixture` nhận thêm `baseDocument` param + đổi từ MỘT `AdvanceRun` cứng sang vòng lặp
+tới khi VERIFYING (tổng quát cho graph nhiều hop). 2 test mới: REWORK hợp lệ dưới budget (ladder không
+đạt, có edge, còn quota → REWORK, Run RUNNING, WorkItem vẫn ACTIVE, NodeRun mới đúng PENDING); BLOCK khi
+budget rework đã hết (seed 2 "end" NodeRun SUCCEEDED giả trước, MaxIterations=2 → round 3 vượt quá →
+BLOCK với reason `REWORK_BUDGET_EXHAUSTED`). Toàn bộ 9 test PR1 cũ vẫn pass không đổi assertion (chỉ đổi
+call-site thêm `ids`).
+
+**Verify:**
+```
+go build ./...                                          # sạch
+go vet ./...                                             # sạch
+go run ./cmd/docs-coverage-check                         # debt = 0
+gofmt -l internal/app/runtime/completion_policy.go
+  internal/app/runtime/completion_policy_test.go         # rỗng
+go test -count=1 ./...                                   # PASS toàn bộ (lần 1 + lần 2, không flake)
+```
+
+**Việc còn lại:** commit, push nhánh `feat/v5-11-completion-policy-rework`, mở PR, chờ CI 6/6, merge. Sau
+đó V5-11 (CompletionPolicy service) coi như HOÀN THÀNH đầy đủ cả 4 outcome — bước tiếp theo trong roadmap
+là câu hỏi kiến trúc "Gate read-only enforcement" (chưa scope) rồi tới V5-12.
+
+**Kết quả:** PR #17, 5/6 pass lần đầu — `Linux race and stability (V0-12)` fail ở lần chạy thứ 9/10 của
+offline suite; tải artifact `v0-12-stability-report` về xác nhận CHÍNH XÁC cùng một flake đã biết
+(`TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns`, `internal/adapters/process`,
+package không hề đụng tới trong PR2), không đoán mà xem trực tiếp `suite-run-9.log`. `gh run rerun
+--failed` → 6/6 xanh. Squash-merged 2026-09-10, merge commit `976f18c`.
+
+## Gate read-only enforcement — nghiên cứu + đóng gap thật (2026-09-10, tự quyết định, không cần hỏi)
+
+**Bối cảnh:** người dùng bảo "sau khi xong, nếu không cần tôi quyết định cái gì thì tự động start sang
+task tiếp theo đi" — tiếp tục ngay, không dừng hỏi "làm gì tiếp" nữa trừ khi thật sự cần quyết định của
+người dùng. Item tiếp theo trong roadmap (từ bài rà soát 2026-09-10) là "Gate read-only enforcement mới
+chỉ là descriptor, evaluator vẫn nhận host path thật — cần sandbox thật, quyết định kiến trúc lớn hơn."
+
+**Nghiên cứu (kết luận: KHÔNG phải quyết định kiến trúc mới — đã có sẵn, chỉ thiếu một chỗ nối):**
+- `internal/adapters/process/isolation.go`'s `IsolationChecker` (V5-05, đã confirm với người dùng từ
+  trước): `ENFORCED_ISOLATED` LUÔN fail-closed (`ErrIsolationEnforcementUnavailable`) vì "codebase này
+  không có real OS-level filesystem/network sandbox cho spawned child process" — đây là quyết định
+  Alpha-wide ĐÃ CHỐT từ V5-05, áp dụng cho MỌI executor (Agent/Command/Gate như nhau), không phải gap
+  riêng của Gate.
+- `OPERATOR_TRUSTED_LOCAL` (tier duy nhất chạy được ở Alpha) được tài liệu hoá chính là "operator-granted
+  trust, không phải least-privilege enforcement" — và cơ chế bù đắp đã có sẵn:
+  `internal/app/scopeguard.ValidateDiffs`, "post-execution guard" đã wire vào TẤT CẢ executor
+  (Agent/Command/Gate) qua `buildEvidence` dùng chung.
+- Đọc kỹ `buildEvidence` (agent_node_executor_resources.go): diff được tính cho MỌI mount (kể cả mount
+  Gate đã force read-only ở tầng descriptor) — `workspaces.Diff` chạy thật, không skip. Nghĩa là MỘT
+  PHẦN bảo vệ đã có thật: bất kỳ write nào NGOÀI write-scope của cả WorkItem đều đã bị `ValidateDiffs`
+  bắt.
+- **Gap THẬT tìm thấy:** `ValidateDiffs` chỉ check theo `EffectiveScope` của WorkItem (dùng chung cho
+  scope-check của Agent/Command, đúng vì các node đó CÓ quyền ghi thật). Gate's own `effectiveScope`
+  KHÔNG bị ép rỗng (chỉ `workspaceMounts.Access` bị ép read-only, xem `gatherGateExecutionInputs`) — nếu
+  MỘT NODE KHÁC trong CÙNG WorkItem có WRITE grant hợp lệ trên MỘT repo, và Gate (được mount READ-ONLY
+  vào CHÍNH repo đó) lỡ ghi gì đó, `ValidateDiffs` sẽ KHÔNG bắt được (vì write đó vẫn "trong scope của
+  WorkItem"), dù Gate CHÍNH NÓ chưa từng được cấp quyền ghi. Đây là gap thật, hẹp, có thể đóng ngay —
+  không phải "cần sandbox mới."
+
+**Quyết định (tự quyết vì đủ hẹp, không cần input mới từ người dùng — mọi tiền đề đã được người dùng
+chốt sẵn ở V5-05):** thêm tham số `strictReadOnly bool` vào `buildEvidence` (dùng chung Agent/Command/
+Gate) — `false` cho Agent/Command (không đổi hành vi), `true` cho CẢ HAI call site của Gate. Khi true,
+sau khi `scopeguard.ValidateDiffs` pass, check THÊM: MỌI diff phải HOÀN TOÀN RỖNG (`len(diff.Files) ==
+0`) — không chỉ "trong scope", mà "không đổi gì cả", đúng với chính doc comment sẵn có của package này
+("A Gate is read-only by design") và GC-INV-25 ("mọi scratch output nằm ngoài source workspace" — nên
+Gate hợp lệ không bao giờ có lý do đổi bất cứ file nào trong mount của mình). Lỗi mới bọc lại
+`scopeguard.ErrScopeViolation` (không phải sentinel mới) nên CẢ HAI `errors.Is(err, scopeguard.
+ErrScopeViolation)` đã có sẵn trong gate_node_executor.go tự động cover luôn, không cần sửa thêm gì ở
+đó.
+
+**Lỗi phát hiện lúc verify:** fixture dùng chung `newTestGateNodeExecutor` hard-code
+`diff: defaultInScopeDiff()` (Files có 1 entry "M **/src/main.go") — vốn chỉ để mô phỏng "đổi file
+nhưng vẫn trong write scope" cho test Command/Agent, KHÔNG có ý nghĩa thật cho Gate (chưa từng cố tình
+mô phỏng "Gate ghi gì đó"). Check strict mới đúng đắn phát hiện fixture này SAI với thực tế Gate — sửa
+bằng cách thêm `defaultReadOnlyDiff()` (Files rỗng) làm default MỚI cho `newTestGateNodeExecutor`, giữ
+nguyên `defaultInScopeDiff()` cho mọi chỗ khác (Agent/Command test, và 1 test Gate khác — stale-revision
+— tự construct executor riêng, không qua path diff-check nên không bị ảnh hưởng).
+
+**Thực hiện:**
+- `internal/app/runtime/agent_node_executor_resources.go` — `buildEvidence` +tham số `strictReadOnly
+  bool`; hàm mới `validateStrictlyReadOnlyDiffs(diffs)`; `AgentNodeExecutor.buildEvidence` wrapper
+  truyền `false`.
+- `internal/app/runtime/command_node_executor.go` — call site truyền `false`.
+- `internal/app/runtime/gate_node_executor.go` — CẢ HAI call site truyền `true`.
+- `internal/app/runtime/agent_node_executor_test.go` — thêm `defaultReadOnlyDiff()`.
+- `internal/app/runtime/gate_node_executor_test.go` — `newTestGateNodeExecutor` đổi default sang
+  `defaultReadOnlyDiff()`.
+
+**Test (mới hoàn toàn):** `TestGateNodeExecutor_MountChangedDespiteReadOnly_FailsWithScopeViolation` —
+dùng CHÍNH `defaultInScopeDiff()` (diff hợp lệ trong write scope của WorkItem) làm workspace diff cho
+Gate → phải FAILED/SCOPE_VIOLATION, chứng minh chính strict check MỚI bắt được (không phải
+`ValidateDiffs` cũ, vốn sẽ PASS với diff này). Toàn bộ test Gate cũ (11+ chỗ dùng
+`newTestGateNodeExecutor`) vẫn pass không đổi assertion sau khi đổi fixture default.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l <5 file .go đổi>                                               # rỗng sau gofmt -w (CRLF)
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2)
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Đây là fix ĐÓNG hẳn item "Gate read-only
+enforcement" trong danh sách rà soát 2026-09-10 — không còn open item nào từ bài rà soát đó. Sau khi
+merge, tiếp tục V5-12 (Maker/checker isolation) theo đúng chỉ dẫn tự động chuyển task.
+
+## V5-12 scoping — 3 contract mở, người dùng chốt contract 1, uỷ quyền contract 2+3 (2026-09-10)
+
+**Bối cảnh:** design doc (`docs/design/07-v5-execution-evidence.md`) tự đánh dấu V5-12 "CHƯA ĐỦ DỮ KIỆN"
+cho tới khi 3 contract chốt: (1) role MAKER|CHECKER pin ở đâu, (2) checker input allowlist + typed
+Evidence/Diff ref trên ContextSnapshot, (3) scratch handle + enforcement semantics. Theo đúng chỉ dẫn tự
+động chuyển task, tự nghiên cứu trước khi hỏi.
+
+**Nghiên cứu:** `AgentProfileDocument` và `workflow.AgentNodeConfig` đều CHƯA có field kiểu Role nào — đây
+là fork kiến trúc thật, không phải cái đã nửa-quyết-định sẵn ở đâu đó. Gate đã có sẵn `scratchDirectory()`
+(`gate_node_executor.go`) — helper `os.MkdirTemp`-based, hoàn toàn generic, không gắn gì riêng Gate — dùng
+lại được thẳng cho checker's scratch. Kết luận: chỉ contract (1) là fork thật cần người dùng tự chọn;
+(2) và (3) tự quyết được dựa trên (1) + tiền lệ Gate `strictReadOnly` vừa xây.
+
+**Hỏi người dùng (AskUserQuestion, header "MAKER|CHECKER role"):** 3 lựa chọn — AgentNodeConfig (Workflow,
+Recommended), AgentProfileDocument, hoặc cả hai (cross-check lúc publish).
+
+**Quyết định của người dùng (verbatim, chốt contract 1):** chọn AgentNodeConfig. Spec chính xác:
+```go
+type AgentRole string
+const (
+    AgentRoleMaker   AgentRole = "MAKER"
+    AgentRoleChecker AgentRole = "CHECKER"
+)
+type AgentNodeConfig struct {
+    AgentProfileRef definition.DependencyPin
+    Role            AgentRole
+    // ...
+}
+```
+Lý do: Role là trách nhiệm của NODE trong graph, còn AgentProfile mô tả cấu hình thực thi tái sử dụng
+(model/provider/tools) — cùng một AgentProfile phục vụ được cả node MAKER và CHECKER, mỗi node vẫn tạo
+NodeRun/Attempt/context riêng. Hợp đồng publish/runtime (verbatim): workflow compiler yêu cầu role hợp lệ
+cho mọi AGENT node thuộc schema mới; role lưu trong canonical WorkflowVersion nên tự động pin theo exact
+WorkflowVersion; AgentProfile không bao giờ có role riêng; runtime chỉ đọc role từ pinned WorkflowVersion,
+không suy ra từ tên/profile/vị trí graph; WorkflowVersion cũ thiếu field vẫn rebuild được, hiểu ngầm là
+MAKER; republish phải ghi role tường minh; KHÔNG BAO GIỜ mặc định một node thành CHECKER.
+
+Field tên trong sketch của người dùng là `AgentProfileRef`, nhưng field thật hiện tại trong code là
+`ProfileRef` — đọc là thêm `Role` cạnh field có sẵn, không phải đổi tên field cũ (giữ nguyên `ProfileRef`
+để tránh phá vỡ mọi call site hiện có).
+
+**Uỷ quyền của người dùng (verbatim):** "các quyết định nhỏ hơn khác của task này tôi có thể tự quyết dựa
+theo đáp án này + tiền lệ read-only vừa xây cho Gate" — contract 2 (checker input allowlist) và contract 3
+(scratch + enforcement semantics) tự thiết kế ở PR sau, không cần hỏi lại.
+
+**Kết luận:** không còn câu hỏi kiến trúc mở cho contract 1. Bắt đầu code ngay theo kế hoạch nhiều PR
+(mirror pattern V5-11): PR0 = schema foundation (Role field + validation 2 tầng + hash + runtime pin) —
+xây trước, tự-chứa, test được độc lập.
+
+## V5-12 — PR0: schema foundation (branch `feat/v5-12-maker-checker-role`, từ `origin/master` sau PR #18)
+
+**Bối cảnh:** phần đầu tiên, tự-chứa của V5-12 — thêm `AgentRole`/`AgentNodeConfig.Role` đúng contract 1,
+cộng cơ chế 2 tầng validate (domain permissive cho reload, app-layer strict cho publish mới) để giải quyết
+đúng yêu cầu "WorkflowVersion cũ vẫn rebuild được, publish mới phải explicit."
+
+**Nghiên cứu then chốt (tìm điểm nối "reload" vs "publish"):** đọc `internal/adapters/sqlite/
+workflow_store.go`'s `loadWorkflowVersion` — hàm này reload MỘT WorkflowVersion đã persist bằng cách gọi
+LẠI `workflow.Compile(...)` (domain-layer) để re-verify hash, KHÔNG đi qua `internal/app/workflowcompiler.
+CompileAndResolve`. Trong khi đó `CompileAndResolve` mới là entrypoint publish THẬT (`internal/app/
+definitions/commands.go` gọi nó, không gọi `workflow.Compile` trực tiếp). Đây chính xác là điểm nối tự
+nhiên người dùng mô tả: domain-layer `workflow.ValidateDocument`/`workflow.Compile` PHẢI giữ permissive
+(Role rỗng hợp lệ) vì nó dùng chung cho CẢ reload lẫn publish gốc; bắt buộc "role tường minh" chỉ đặt ở
+tầng `workflowcompiler.CompileAndResolve` — tầng CHỈ publish mới đi qua, reload không bao giờ chạm tới.
+Không cần thêm field "schema version marker" nào mới — ranh giới structural sẵn có (2 hàm khác nhau) đã đủ.
+
+**Quyết định thiết kế:**
+1. `workflow.AgentRole` (`MAKER`/`CHECKER`) + field `Role AgentRole \`json:"role,omitempty"\`` trên
+   `AgentNodeConfig`, đặt ngay sau `ProfileRef` (giữ nguyên tên field cũ, không đổi).
+2. `EffectiveRole()` (value receiver, exported) — rỗng mặc định về MAKER; một chỗ duy nhất mọi reader
+   (runtime) dùng chung, không tự viết lại rule default ở nhiều nơi.
+3. `validation.go`'s AGENT branch: CHỈ reject giá trị SAI (không rỗng, không phải MAKER/CHECKER) — rỗng
+   vẫn hợp lệ. Đây là tầng permissive giữ reload sống được.
+4. `internal/app/workflowcompiler/compiler.go`: hàm mới `checkAgentRolesExplicit` + type lỗi mới
+   `AgentRoleValidationError` (tách khỏi `ResolutionError` sẵn có — lỗi này KHÔNG cần DB round-trip, thuần
+   structural, nên không hợp với doc comment của `ResolutionError`). Gọi ngay sau `workflow.ValidateDocument`
+   ở đầu `CompileAndResolve`, trước mọi resolve — fail fast, đúng tinh thần "structural trước, DB sau" đã
+   ghi trong doc comment gốc của hàm này.
+5. `internal/domain/runtime/executionprofile.go`: thêm `Role workflow.AgentRole` vào
+   `ResolvedExecutionProfileV1` — TÁI SỬ DỤNG THẲNG `workflow.AgentRole` (không tạo type mirror riêng cho
+   runtime domain), theo đúng tiền lệ `ResolvedPolicyRef.Category`/`IsolationTier` (khi closed-set enum của
+   domain khác khớp thẳng, dùng lại luôn, không mint type song song — khác với `ExecutorKind`, vốn PHẢI có
+   type riêng vì `workflow.NodeType` có nhiều giá trị hơn tập "3 executor thật thi hành được"). Validate
+   trong `NewResolvedExecutionProfileV1`: AGENT executor BẮT BUỘC Role hợp lệ (MAKER/CHECKER); COMMAND/
+   MACHINE_GATE PHẢI để Role rỗng — mirror đúng rule ProviderKey/Model/ToolRefs/MaxTokens sẵn có.
+6. `internal/app/runtime/schedule.go`'s `resolveExecutionProfile` (nhánh AGENT): set
+   `profile.Role = node.Agent.EffectiveRole()` — đọc DUY NHẤT từ node.Agent (WorkflowVersion đã pin), không
+   bao giờ suy ra từ `agentDoc` (AgentProfile), tên node hay vị trí graph — đúng contract 1.
+
+**Rà soát blast radius (trước khi sửa fixture):** grep toàn repo mọi nơi construct `AgentNodeConfig{` (16
+file) + mọi call site thật của `CompileAndResolve` (chỉ 5 nơi: `internal/app/workflowcompiler/
+compiler_test.go`, `completion_policy_ref_test.go`, `internal/adapters/sqlite/
+workflowcompiler_integration_test.go`, `internal/app/definitions/commands_test.go`, và
+`internal/app/definitions/commands.go` — 2 command handler thật). 11 file còn lại dùng `workflow.Compile`
+trực tiếp (permissive, không cần sửa). Riêng `cmd/agentkit/definition_test.go` build JSON string tay (không
+qua struct literal `AgentNodeConfig{`) nên grep struct-literal ban đầu bỏ sót — phát hiện qua lần chạy full
+suite đầu tiên (2 test CLI fail thật), sửa thêm `"role":"MAKER"` vào JSON template. Tương tự
+`internal/integration/definitionplane_test.go` (struct literal có, nhưng nằm ngoài phạm vi grep ban đầu do
+rà soát theo call site `CompileAndResolve` chưa đủ — cũng phát hiện qua full suite, không phải đoán).
+
+**Fixture sửa (giữ mọi test cũ pass, không đổi hành vi được test):** `simpleAgentDocument` +
+2-agent-conflicting-version doc trong `compiler_test.go`; `workflowcompiler_integration_test.go`;
+`simpleAgentWorkflowDocument` trong `commands_test.go`; `workflowDocumentPinning` (JSON string) trong
+`cmd/agentkit/definition_test.go`; `workflowDoc` trong `internal/integration/definitionplane_test.go`;
+golden fixture `testdata/golden/simple-agent-workflow.json` (thêm `"role":"MAKER"` đúng vị trí field mới
+trong canonical JSON, sau `profileRef`).
+
+**Test mới:**
+- `internal/domain/workflow/node_config_test.go`: case "AGENT invalid role" trong bảng reject có sẵn;
+  `TestValidateDocumentAcceptsEmptyAgentRole` (backward-compat); `TestValidateDocumentAcceptsCheckerRole`;
+  `TestAgentNodeConfigEffectiveRole` (3 case: rỗng→MAKER, MAKER giữ nguyên, CHECKER giữ nguyên).
+  `comprehensiveDocument`'s agent node giờ có `Role: AgentRoleMaker` — `TestCompileRoundTripsNodeConfigWithoutLoss`
+  (test có sẵn) tự động chứng minh Role round-trip qua `Document()`/`CanonicalContent()` không mất, đúng
+  yêu cầu "role tự động pin theo canonical WorkflowVersion" — không cần viết test riêng.
+- `internal/domain/runtime/executionprofile_test.go`: `TestNewResolvedExecutionProfileV1_AcceptsCheckerRole`;
+  3 case reject mới trong bảng `RejectsInvalidProfiles` (AGENT thiếu Role, AGENT Role sai, COMMAND có Role).
+- `internal/app/workflowcompiler/agent_role_test.go` (file mới): reject AGENT thiếu role; accept CHECKER
+  tường minh; reject khi 1-trong-2 AGENT node thiếu role (báo đúng tên node).
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l <file đổi>                                                     # rỗng sau gofmt -w (CRLF)
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake)
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau đó tiếp tục V5-12 PR1 (contract 2: checker
+input allowlist / ContextSnapshot typed Evidence+Diff ref) và PR2 (contract 3: enforcement semantics —
+reuse Gate `strictReadOnly`/`scratchDirectory()` precedent cho CHECKER-role Attempt), theo đúng chỉ dẫn tự
+động chuyển task, không cần hỏi lại người dùng trừ khi phát sinh fork kiến trúc mới.
+
+**Kết quả:** PR #19, 6/6 pass lần đầu (Linux race/stability 16m4s pass — flake đã biết KHÔNG xuất hiện lần
+này). Squash-merged 2026-09-10, merge commit `2c06139`. Trong lúc chờ CI, nghiên cứu trước contract 2+3 để
+PR tiếp theo code được ngay (chi tiết đầy đủ trong memory `agent-kit-v5-12-maker-checker-research.md`):
+điểm enforcement duy nhất của contract 2 là `schedule.go`'s message-gathering trước
+`contextsnapshot.NewSnapshot`; contract 3's read-only mount reuse (`forceReadOnlyMounts`, có sẵn từ Gate)
+tự động chặn luôn WriteLease acquisition (không cần code thêm) vì `resolveExecutionResources` chỉ acquire
+lease cho mount WRITE; `resolvedExecutionProfileView` (execute.go) cần thêm field `Role` mới đọc được.
+
+## V5-12 — PR1: contract 2, checker input allowlist (branch `feat/v5-12-checker-input-allowlist`, từ
+`origin/master` sau PR #19)
+
+**Bối cảnh:** tiếp tục ngay sau PR0 merge, theo đúng chỉ dẫn tự động chuyển task. Contract 2 (checker
+input allowlist) đã được người dùng uỷ quyền tự quyết ở bước scoping ban đầu — không hỏi lại, chỉ nghiên
+cứu kỹ trước khi code vì có MỘT câu hỏi mới phát sinh khi thiết kế cụ thể (dưới đây).
+
+**Câu hỏi tự phát sinh, tự giải quyết bằng nghiên cứu thêm (không phải hỏi người dùng):** "checker nên
+thấy Evidence của node nào?" — không có trong contract gốc. Nghiên cứu: `ports.RuntimeRepository` đã có
+sẵn `ListNodeRunsForRun`/`ListExecutionAttemptsForRun`/`ListEvidenceForAttempt` (không cần port method
+mới). Quyết định: checker's EvidenceRefs = Evidence của mọi predecessor TRỰC TIẾP trong graph (tìm qua
+`document.Edges` với `To == nodeKey`), chỉ lấy NodeRun/Attempt THÀNH CÔNG mới nhất
+(`ActivationSequence`/`AttemptNumber` cao nhất) cho mỗi predecessor — tự nhiên đúng cho FORK/JOIN (nhiều
+predecessor, gộp evidence của tất cả) và REWORK (predecessor chạy lại nhiều lần, chỉ evidence mới nhất).
+Không cần query mới: đúng tinh thần doc comment sẵn có của `ListNodeRunsForRun` ("classification is the
+caller's own job", không phải SQL WHERE clause).
+
+**Quyết định thiết kế:**
+1. `contextsnapshot.EvidenceRef{EvidenceID string}` (mirror `MessageRef`) + field mới
+   `Snapshot.EvidenceRefs []EvidenceRef`. Field trong `canonicalManifest` gắn `omitempty` (đúng tiền lệ
+   `ResourceRef.OwnerVersionID` — Snapshot cũ/MAKER/COMMAND/MACHINE_GATE không có EvidenceRefs, JSON
+   không có key này, hash không đổi). Khác `MessageRefs`/`ResourceRefs` (giữ nguyên thứ tự vì là
+   transcript render order), `EvidenceRefs` được SORT trong `NewSnapshot` vì không có ý nghĩa thứ tự.
+2. Migration 0031 (`ALTER TABLE attempt_context_snapshots ADD COLUMN evidence_refs_json TEXT NOT NULL
+   DEFAULT '[]'`) — plain ADD COLUMN, mirror tiền lệ migration 0018. Default `'[]'` an toàn vì
+   `NewSnapshot`'s own `append([]EvidenceRef(nil), ...)` normalize cả nil lẫn empty-non-nil về nil trước
+   khi hash — không ảnh hưởng hash của row cũ.
+3. `schedule.go`'s Attempt/Snapshot-creation block: nhánh theo `node.Agent.EffectiveRole()` — CHECKER thì
+   `messageRefs` rỗng (không gọi `ListMessagesForWorkItem`) + gọi `gatherCheckerEvidenceRefs` (hàm mới);
+   mọi node khác (MAKER/COMMAND/MACHINE_GATE) giữ nguyên hành vi cũ 100%. Requirement (Title/Behavior/
+   AcceptanceCriteria) vẫn tới checker bình thường qua `instructionArtifactContent.TaskContract`
+   (assemble_execution_request.go) — không phụ thuộc MessageRefs, nên loại bỏ MessageRefs không làm mất
+   requirement.
+
+**Rà soát blast radius:** 7 call site `contextsnapshot.NewSnapshot(...)` toàn repo (schedule.go — hành vi
+mới; finalize.go/recovery_reaper.go — clone `previousSnapshot.EvidenceRefs` không đổi; 2 file test
+domain + 1 file test sqlite + execute_contextsnapshot_test.go×3 — thêm tham số mới, hành vi không đổi).
+Thêm: 3 chỗ hard-code `migration count = 29`/`migrationCount != 29` (db_test.go×2, unitofwork_test.go) —
+cập nhật lên 30 (thêm đúng 1 migration).
+
+**Test mới:**
+- `internal/domain/contextsnapshot/contextsnapshot_test.go`: case "blank EvidenceRef" trong bảng reject;
+  `TestNewSnapshot_EvidenceRefs_OrderInsensitive` (đối lập có chủ đích với
+  `TestNewSnapshot_ManifestHash_OrderSensitive` của MessageRefs); `TestNewSnapshot_ManifestHash_
+  BackwardCompatibleWithoutEvidenceRefs` (mirror tiền lệ OwnerVersionID — proof hash row cũ không đổi).
+- `internal/app/runtime/schedule_test.go`: fixture mới `makerCheckerDocument` (2 AGENT node dùng CHUNG
+  AgentProfileVersion, khác Role — chứng minh trực tiếp "same profile, independent identity");
+  `TestScheduleExecutableNodeRun_Checker_ExcludesMessagesIncludesPredecessorEvidence` — seed 1 Message
+  thật cho WorkItem (chứng minh loại bỏ là THẬT, không phải "vốn đã rỗng"), seed maker's terminal
+  NodeRun/Attempt/Evidence trực tiếp qua `seedRunEvidence` (tái dùng helper có sẵn từ V5-11's completion
+  policy test suite, cùng tinh thần "bypass real executor pipeline, test đúng logic của hàm này"), seed
+  checker's PENDING NodeRun trực tiếp, gọi THẬT `ScheduleExecutableNodeRun`, assert
+  `snapshot.MessageRefs` rỗng và `snapshot.EvidenceRefs` đúng 1 entry trỏ evidence của maker.
+
+**Chưa test (biết trước, chấp nhận được cho Alpha):** "latest wins" khi MỘT predecessor chạy lại nhiều
+lần (REWORK cycle thật) chưa có test riêng — logic đã viết đúng theo thiết kế (so `ActivationSequence`/
+`AttemptNumber`), nhưng end-to-end test chỉ cover trường hợp 1 predecessor chạy 1 lần. Rủi ro thấp (logic
+đơn giản, so sánh số nguyên); có thể bổ sung sau nếu REWORK+CHECKER thực tế bộc lộ vấn đề.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake)
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau đó tiếp tục V5-12 PR2 (contract 3: enforcement
+— reuse `forceReadOnlyMounts` cho CHECKER-role AGENT node, thêm field `Role` vào
+`resolvedExecutionProfileView`, verify CreateLocalCommit/quarantine semantics), theo đúng chỉ dẫn tự động
+chuyển task.
+
+**Kết quả:** PR #20, 6/6 pass lần đầu (Linux race/stability 16m36s pass — flake đã biết KHÔNG xuất hiện).
+Squash-merged 2026-09-10, merge commit `f087819`. V5-12 contract 1+2 xong; contract 3 (enforcement) là
+phần còn lại duy nhất.
+
+## V5-12 — PR2: contract 3, read-only enforcement (branch `feat/v5-12-checker-readonly-enforcement`, từ
+`origin/master` sau PR #20)
+
+**Bối cảnh:** tiếp tục ngay sau PR1 merge, theo đúng chỉ dẫn tự động chuyển task. Contract 3 (enforcement
+semantics) đã được người dùng uỷ quyền tự quyết ở bước scoping ban đầu.
+
+**Quyết định thiết kế (mọi phần đều reuse cơ chế đã có, không phát minh mới):**
+1. `resolvedExecutionProfileView` (execute.go) thêm field `Role workflow.AgentRole` — trước đây field này
+   tồn tại trên `ResolvedExecutionProfileV1` (PR0) nhưng KHÔNG được decode ở tầng app; đây là chỗ nối
+   thiếu duy nhất giữa PR0's own schema và runtime thật.
+2. `assemble_execution_request.go`'s `gatherAssembledRequestInputs`: khi `profile.Role ==
+   workflow.AgentRoleChecker`, wrap kết quả `assembleWorkspaceMounts(...)` bằng `forceReadOnlyMounts` —
+   ĐÚNG hàm Gate đã dùng từ trước (`gate_node_executor.go`), không viết hàm mới.
+3. **Phát hiện quan trọng, xác nhận bằng test thật (không chỉ đọc code):** ép mount READ_ONLY tự động
+   chặn luôn WriteLease acquisition — `resolveExecutionResources` (agent_node_executor_resources.go) chỉ
+   gọi `AcquireWriteLeases` cho mount có `Access == WRITE`; mount CHECKER không bao giờ WRITE nên
+   `writeTargets` luôn rỗng. Verify bằng field mới `acquireCalls` trên fake WriteLeaseManager của test.
+4. `AgentNodeExecutor.buildEvidence`'s wrapper (trước đây hard-code `strictReadOnly=false`): giờ tự
+   `loadExecutionProfile` (helper có sẵn) để đọc Role thật của chính Attempt, rồi truyền
+   `strictReadOnly = (role == CHECKER)` vào `buildEvidence` — ĐÚNG cơ chế Gate đã dùng
+   (`validateStrictlyReadOnlyDiffs`, PR #18), không viết check mới. Cân nhắc và LOẠI BỎ phương án khác
+   ("suy strictReadOnly từ việc tất cả mount đều read-only") vì kém rõ ràng hơn (không trace thẳng về
+   Role, dù về mặt logic cũng đúng) — chọn Role tường minh cho dễ audit.
+5. Generalize lại doc comment + error message của `validateStrictlyReadOnlyDiffs` (trước đây hard-code
+   chữ "gate mount...") thành trung lập theo executor, vì giờ dùng chung cho cả Gate và CHECKER.
+
+**Nghiên cứu xác nhận (không giả định):**
+- `CreateLocalCommit` (`ports.LocalCommitCreator`, V5-10A): grep toàn `internal/app` xác nhận KHÔNG có
+  caller thật nào — port + adapter implementation tồn tại nhưng chưa wire vào path thực thi AGENT/COMMAND
+  nào. "Bị từ chối trước Git adapter" đúng nghĩa đen vì hiện tại KHÔNG path nào chạm tới nó, không phải
+  giả định suông.
+- "Trusted-local mutation quan sát được phải quarantine": đọc kỹ `agent_node_executor_cancellation.go`'s
+  `handleMutatingCancellation` — chỉ lặp qua `resolved.writeMounts` (chỉ chứa mount WRITE). Với CHECKER,
+  mount luôn READ_ONLY nên nhánh quarantine CẤU TRÚC không bao giờ chạy. Đọc `gate_node_executor.go`'s
+  own package doc comment xác nhận đây CHÍNH LÀ tradeoff Gate đã tự nhận và CHẤP NHẬN từ trước ("resolved.
+  hasWriteMount is always false... classifyCancellation's own mutating-attempt path can structurally
+  never fire for a Gate; only its simple read-only branch (CANCELLED) ever does") — không phải gap MỚI
+  của CHECKER, mà là đúng tiền lệ Gate đã có, áp dụng nhất quán.
+
+**Gap cố ý hoãn (ghi rõ, không giấu):** "scratch nằm ngoài source" cho AGENT. Gate/COMMAND chạy MỘT argv
+với cwd hoàn toàn do platform kiểm soát (`scratchDirectory()` áp dụng thẳng được); AGENT wrap một CLI
+agent tương tác đầy đủ, cwd thật đi qua tầng adapter-translation (`ports.AgentExecutionRequest.
+WorkspaceMounts` nhiều mount -> `WorkingDirectory` đơn cho provider, xem `internal/adapters/providers/
+claude/claude.go`) mà PR này CHƯA nghiên cứu đủ kỹ để implement đúng — cần một pass riêng. Phần AN TOÀN
+cốt lõi (mount read-only, diff-rỗng bắt buộc, không WriteLease) đã xong và test thật; "scratch" là vấn đề
+TIỆN DỤNG, không phải AN TOÀN — checker vẫn an toàn (không thể ghi được vào source, và nếu cố ghi thì bị
+FAILED) dù chưa có chỗ scratch riêng.
+
+**Test mới:**
+- `internal/app/runtime/assemble_execution_request_test.go`:
+  `TestAssembleAgentExecutionRequest_CheckerRole_MountsForcedReadOnly` — cùng fixture với test MAKER
+  golden-path (cùng EffectiveScope cấp WRITE), chỉ đổi Role, assert mount CHECKER là READ_ONLY.
+- `internal/app/runtime/agent_node_executor_test.go`:
+  `TestAgentNodeExecutor_CheckerRole_MutatingDiff_RejectsAsScopeViolation` — CÙNG diff
+  (`defaultInScopeDiff`) làm MAKER golden-path PASS, nhưng CHECKER phải FAILED/SCOPE_VIOLATION; assert
+  thêm `writeLeases.acquireCalls == 0`. `TestAgentNodeExecutor_CheckerRole_EmptyDiff_Succeeds` — chứng
+  minh check mới không phá checker hợp lệ (diff rỗng vẫn SUCCEEDED).
+- Rà soát blast radius: `bridgeFixture`/`bridgeFixtureOptions`/`assembleRequestFixture` (11 call site
+  trong `agent_node_executor_test.go`) thêm field/return value mới nhưng giữ MAKER làm default cho mọi
+  test cũ (zero value Role = "" = MAKER qua `EffectiveRole()`) — không đổi hành vi test nào có sẵn.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l <file đổi>                                                     # rỗng sau gofmt -w (CRLF)
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake)
+```
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau khi merge, V5-12 coi như hoàn thành đúng
+"Hoàn thành khi" (same provider/model vẫn có independent attempt/context identity — đã xong từ PR0) và đi
+xa hơn nhiều (contract 2+3's own "Kết quả kỳ vọng" phần lớn đã thật), với đúng MỘT gap còn lại đã ghi rõ
+("scratch ngoài source" cho AGENT) để dành cho một task sau nếu cần. Bước tiếp theo trong roadmap: V5-13
+(Checkpoint/handoff và recovery integration), theo đúng chỉ dẫn tự động chuyển task.

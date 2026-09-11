@@ -461,6 +461,7 @@ func simpleAgentWorkflowDocument(profileVersionID string) workflow.WorkflowDocum
 				Key: "agent", Type: workflow.NodeAgent, Outcomes: []string{"done"},
 				Agent: &workflow.AgentNodeConfig{
 					ProfileRef: definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "profile-1", VersionID: profileVersionID},
+					Role:       workflow.AgentRoleMaker,
 				},
 			},
 			{Key: "end", Type: workflow.NodeEnd},

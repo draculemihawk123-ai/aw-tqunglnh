@@ -30,6 +30,7 @@ func comprehensiveDocument() WorkflowDocument {
 				Key: "agent", Type: NodeAgent, Outcomes: []string{"done"},
 				Agent: &AgentNodeConfig{
 					ProfileRef: definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "agent-default", VersionID: "v1"},
+					Role:       AgentRoleMaker,
 					PolicyRefs: []definition.DependencyPin{{Kind: definition.KindPolicy, DefinitionID: "attempt-policy", VersionID: "v1"}},
 				},
 			},
@@ -125,6 +126,62 @@ func TestValidateDocumentAcceptsAllNineNodeTypes(t *testing.T) {
 	t.Parallel()
 	if err := ValidateDocument(comprehensiveDocument()); err != nil {
 		t.Fatalf("comprehensive document exercising all nine node types should be valid: %v", err)
+	}
+}
+
+// TestValidateDocumentAcceptsEmptyAgentRole proves V5-12's own
+// backward-compat contract at the domain layer: an AGENT node with no
+// Role at all must still validate (never rejected here) — this is what
+// lets an already-persisted WorkflowVersion published before V5-12
+// existed keep decoding/rebuilding via internal/adapters/sqlite's own
+// loadWorkflowVersion, which re-verifies a persisted row by calling
+// workflow.Compile a second time. The stricter "every AGENT node must
+// declare an explicit Role" bar lives one layer up, in
+// internal/app/workflowcompiler.CompileAndResolve — see that package's
+// own checkAgentRolesExplicit.
+func TestValidateDocumentAcceptsEmptyAgentRole(t *testing.T) {
+	t.Parallel()
+	document := comprehensiveDocument()
+	findNode(&document, "agent").Agent.Role = ""
+	if err := ValidateDocument(document); err != nil {
+		t.Fatalf("an AGENT node with no Role should still validate: %v", err)
+	}
+}
+
+// TestValidateDocumentAcceptsCheckerRole proves CHECKER is just as valid
+// a Role as MAKER at the domain layer.
+func TestValidateDocumentAcceptsCheckerRole(t *testing.T) {
+	t.Parallel()
+	document := comprehensiveDocument()
+	findNode(&document, "agent").Agent.Role = AgentRoleChecker
+	if err := ValidateDocument(document); err != nil {
+		t.Fatalf("an AGENT node with Role=CHECKER should validate: %v", err)
+	}
+}
+
+// TestAgentNodeConfigEffectiveRole proves EffectiveRole()'s own "empty
+// means MAKER" default, and that it leaves an already-explicit Role
+// (including CHECKER) alone — the single shared defaulting rule every
+// reader (runtime's own resolveExecutionProfile included) relies on
+// rather than reimplementing itself.
+func TestAgentNodeConfigEffectiveRole(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		role AgentRole
+		want AgentRole
+	}{
+		{name: "empty defaults to MAKER", role: "", want: AgentRoleMaker},
+		{name: "explicit MAKER stays MAKER", role: AgentRoleMaker, want: AgentRoleMaker},
+		{name: "explicit CHECKER stays CHECKER", role: AgentRoleChecker, want: AgentRoleChecker},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := AgentNodeConfig{Role: test.role}
+			if got := config.EffectiveRole(); got != test.want {
+				t.Fatalf("EffectiveRole() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -359,6 +416,13 @@ func TestValidateDocumentRejectsInvalidNodeTypeConfigs(t *testing.T) {
 				doc.SharedState[0].Type = "BLOB"
 			},
 			wantProblem: `shared state field "implementationNotes" has unsupported type "BLOB"`,
+		},
+		{
+			name: "AGENT invalid role",
+			mutate: func(doc *WorkflowDocument) {
+				findNode(doc, "agent").Agent.Role = "SUPERVISOR"
+			},
+			wantProblem: `node "agent" agent.role must be "MAKER" or "CHECKER" when present, got "SUPERVISOR"`,
 		},
 	}
 

@@ -38,6 +38,8 @@ type WorkRepository struct {
 	scopeExpansionRequests map[string]work.ScopeExpansionRequest
 	// blockers is keyed by WorkItemBlocker.ID (V4-12C).
 	blockers map[string]work.WorkItemBlocker
+	// releaseSets is keyed by ReleaseSet.ID (V5-10A).
+	releaseSets map[string]work.ReleaseSet
 }
 
 var _ ports.WorkRepository = (*WorkRepository)(nil)
@@ -80,10 +82,15 @@ func (w *WorkRepository) cloneWith(catalog *CatalogRepository) *WorkRepository {
 	for k, v := range w.blockers {
 		blockers[k] = v
 	}
+	releaseSets := make(map[string]work.ReleaseSet, len(w.releaseSets))
+	for k, v := range w.releaseSets {
+		releaseSets[k] = v
+	}
 	return &WorkRepository{
 		catalog: catalog, workItems: workItems, taskFamilies: taskFamilies,
 		workspaceSets: workspaceSets, repositoryScopes: repositoryScopes, effectiveScopes: effectiveScopes,
 		repositoryWorkspaces: repositoryWorkspaces, scopeExpansionRequests: scopeExpansionRequests, blockers: blockers,
+		releaseSets: releaseSets,
 	}
 }
 
@@ -549,4 +556,83 @@ func (w *WorkRepository) TransitionWorkItemBlockerState(_ context.Context, req p
 	blocker.Version++
 	w.blockers[req.BlockerID] = blocker
 	return blocker, nil
+}
+
+// --- ReleaseSet (V5-10A) ---
+
+// CreateReleaseSet mirrors sqlite's createReleaseSetTx: idempotent by ID,
+// releaseSet.FamilyID must name a TaskFamily that already exists, and every
+// entry's own RepositoryID must name a Repository that already exists
+// (resolved from the shared CatalogRepository, the same
+// AddRepositoryScope/AddEffectiveScope convention above).
+func (w *WorkRepository) CreateReleaseSet(_ context.Context, releaseSet work.ReleaseSet) (work.ReleaseSet, error) {
+	if _, ok := w.taskFamilies[string(releaseSet.FamilyID)]; !ok {
+		return work.ReleaseSet{}, fmt.Errorf("fake: %w: task family %s", ports.ErrPersistenceNotFound, releaseSet.FamilyID)
+	}
+	for _, entry := range releaseSet.Entries() {
+		if _, ok := w.catalog.repositories[string(entry.RepositoryID)]; !ok {
+			return work.ReleaseSet{}, fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceNotFound, entry.RepositoryID)
+		}
+	}
+	if existing, ok := w.releaseSets[string(releaseSet.ID)]; ok {
+		return existing, nil
+	}
+	if w.releaseSets == nil {
+		w.releaseSets = map[string]work.ReleaseSet{}
+	}
+	w.releaseSets[string(releaseSet.ID)] = releaseSet
+	return releaseSet, nil
+}
+
+// GetReleaseSet mirrors sqlite's loadReleaseSetTx.
+func (w *WorkRepository) GetReleaseSet(_ context.Context, id string) (work.ReleaseSet, error) {
+	releaseSet, ok := w.releaseSets[id]
+	if !ok {
+		return work.ReleaseSet{}, fmt.Errorf("fake: %w: release set %s", ports.ErrPersistenceNotFound, id)
+	}
+	return releaseSet, nil
+}
+
+// ListReleaseSetsForFamily mirrors sqlite's ListReleaseSetsForFamily,
+// ordered by (CreatedAt, ID) for a stable, deterministic result.
+func (w *WorkRepository) ListReleaseSetsForFamily(_ context.Context, familyID string) ([]work.ReleaseSet, error) {
+	var result []work.ReleaseSet
+	for _, releaseSet := range w.releaseSets {
+		if string(releaseSet.FamilyID) == familyID {
+			result = append(result, releaseSet)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].ID < result[j].ID
+	})
+	return result, nil
+}
+
+// TransitionReleaseSetState mirrors sqlite's TransitionReleaseSetState:
+// the identical CAS discipline every other transition method in this fake
+// already performs.
+func (w *WorkRepository) TransitionReleaseSetState(_ context.Context, req ports.TransitionReleaseSetStateRequest) (work.ReleaseSet, error) {
+	releaseSet, ok := w.releaseSets[req.ReleaseSetID]
+	if !ok {
+		return work.ReleaseSet{}, fmt.Errorf("fake: %w: release set %s", ports.ErrPersistenceNotFound, req.ReleaseSetID)
+	}
+	if releaseSet.State != req.ExpectedState || releaseSet.Version != req.ExpectedVersion {
+		return work.ReleaseSet{}, fmt.Errorf("fake: %w: release set %s expected %s@%d",
+			ports.ErrOptimisticConflict, req.ReleaseSetID, req.ExpectedState, req.ExpectedVersion)
+	}
+	releaseSet.State = req.NextState
+	switch req.NextState {
+	case work.ReleaseSetSealed:
+		sealedAt := req.OccurredAt
+		releaseSet.SealedAt = &sealedAt
+	case work.ReleaseSetAbandoned:
+		abandonedAt := req.OccurredAt
+		releaseSet.AbandonedAt = &abandonedAt
+	}
+	releaseSet.Version++
+	w.releaseSets[req.ReleaseSetID] = releaseSet
+	return releaseSet, nil
 }

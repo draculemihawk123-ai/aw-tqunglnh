@@ -78,6 +78,9 @@ func CompileAndResolve(ctx context.Context, uow ports.UnitOfWork, def workflow.W
 	if err := workflow.ValidateDocument(request.Document); err != nil {
 		return workflow.WorkflowVersion{}, err
 	}
+	if err := checkAgentRolesExplicit(request.Document); err != nil {
+		return workflow.WorkflowVersion{}, err
+	}
 
 	refs := collectReferences(request.Document)
 
@@ -94,6 +97,9 @@ func CompileAndResolve(ctx context.Context, uow ports.UnitOfWork, def workflow.W
 	if err := checkScopeAndCapability(resolved); err != nil {
 		return workflow.WorkflowVersion{}, err
 	}
+	if err := checkCompletionPolicyRefCategory(request.Document.CompletionPolicyRef, resolved); err != nil {
+		return workflow.WorkflowVersion{}, err
+	}
 
 	manifest, err := buildDependencyManifest(resolved)
 	if err != nil {
@@ -102,6 +108,58 @@ func CompileAndResolve(ctx context.Context, uow ports.UnitOfWork, def workflow.W
 
 	request.Dependencies = manifest
 	return workflow.Compile(def, request)
+}
+
+// AgentRoleValidationError collects every AGENT node missing an explicit,
+// valid workflow.AgentRole at publish time — checkAgentRolesExplicit's
+// own error shape, distinct from ResolutionError (whose own doc comment
+// scopes it to problems only resolvable against real registry state):
+// every problem here is discoverable from request.Document's own
+// structure alone, with no database round trip needed.
+type AgentRoleValidationError struct {
+	Problems []string
+}
+
+func (e *AgentRoleValidationError) Error() string {
+	return "workflow agent role validation failed: " + strings.Join(e.Problems, "; ")
+}
+
+// checkAgentRolesExplicit enforces V5-12's own publish-time bar: every
+// AGENT node in a document being published through THIS function must
+// declare an explicit, valid Role (MAKER or CHECKER) — never empty.
+// workflow.ValidateDocument (called just above, and the same function
+// internal/adapters/sqlite's own loadWorkflowVersion calls indirectly via
+// workflow.Compile to re-verify an already-persisted row) deliberately
+// stays permissive about an empty Role, precisely so that reload path
+// keeps working for every WorkflowVersion published before this field
+// existed. CompileAndResolve is the one and only real publish
+// entrypoint (internal/app/definitions' own command handlers call this,
+// never workflow.Compile directly) — enforcing the stricter "explicit
+// Role required" bar here, and nowhere lower, is what lets an old row
+// still rebuild while every new publish going forward must comply. Never
+// defaults a missing Role to MAKER itself (unlike
+// workflow.AgentNodeConfig.EffectiveRole(), which a reader uses well
+// after publish) — a fresh publish either declares the Role it means, or
+// is rejected.
+func checkAgentRolesExplicit(document workflow.WorkflowDocument) error {
+	var problems []string
+	for _, node := range document.Nodes {
+		if node.Agent == nil {
+			continue
+		}
+		switch node.Agent.Role {
+		case workflow.AgentRoleMaker, workflow.AgentRoleChecker:
+		default:
+			problems = append(problems, fmt.Sprintf(
+				"node %q must declare an explicit agent.role (%q or %q)", node.Key, workflow.AgentRoleMaker, workflow.AgentRoleChecker,
+			))
+		}
+	}
+	if len(problems) > 0 {
+		sort.Strings(problems)
+		return &AgentRoleValidationError{Problems: problems}
+	}
+	return nil
 }
 
 // nodeReferences is every dependency.DependencyPin and AdapterBuildID a
@@ -141,7 +199,50 @@ func collectReferences(document workflow.WorkflowDocument) []nodeReferences {
 			})
 		}
 	}
+	// document.CompletionPolicyRef (V5-11, 2026-09-10) is a root-level
+	// pin, not a per-node one — folded in as its own policyPins-only
+	// entry purely to reuse resolveReferences' own existing
+	// resolve-once-per-DefinitionID/conflict-detection logic unchanged.
+	// checkCompletionPolicyRefCategory (below) is the ADDITIONAL,
+	// completion-specific verification this generic pipeline does not
+	// itself do (it only inspects PERMISSION-category documents).
+	if document.CompletionPolicyRef != nil {
+		refs = append(refs, nodeReferences{policyPins: []definition.DependencyPin{*document.CompletionPolicyRef}})
+	}
 	return refs
+}
+
+// checkCompletionPolicyRefCategory verifies that ref (if any) resolved to
+// a real, published COMPLETION-category policy with CompletionRules
+// populated — the one check resolveReferences' own generic KindPolicy
+// handling does not perform (it only inspects PERMISSION-category
+// documents, for GrantedCapabilities). ref is assumed already resolved
+// into resolved.byDefinitionID by collectReferences/resolveReferences
+// above; a nil ref is a no-op (a workflow with no CompletionPolicy
+// pinned yet — legitimate, see WorkflowDocument.CompletionPolicyRef's own
+// doc comment).
+func checkCompletionPolicyRefCategory(ref *definition.DependencyPin, resolved resolvedReferences) error {
+	if ref == nil {
+		return nil
+	}
+	entry, ok := resolved.byDefinitionID[ref.DefinitionID]
+	if !ok {
+		// Unreachable in practice: resolveReferences would already have
+		// returned a ResolutionError for an unresolvable pin before this
+		// function is ever called. Fails closed rather than panicking on
+		// a map miss if that invariant is ever somehow violated.
+		return &ResolutionError{Problems: []string{fmt.Sprintf("completionPolicyRef %q/%q was never resolved", ref.DefinitionID, ref.VersionID)}}
+	}
+	var doc policy.PolicyDocument
+	if err := json.Unmarshal([]byte(entry.Fields.CanonicalSource()), &doc); err != nil {
+		return &ResolutionError{Problems: []string{fmt.Sprintf("decode completionPolicyRef %q document: %v", ref.DefinitionID, err)}}
+	}
+	if doc.Category != policy.CategoryCompletion || doc.Completion == nil {
+		return &ResolutionError{Problems: []string{fmt.Sprintf(
+			"completionPolicyRef %q/%q is not a COMPLETION-category policy with completion rules", ref.DefinitionID, ref.VersionID,
+		)}}
+	}
+	return nil
 }
 
 // resolvedReferences is every distinct pin collectReferences found,

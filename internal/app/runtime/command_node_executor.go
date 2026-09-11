@@ -25,7 +25,7 @@
 // This bridge's own two events (EXECUTION_STARTED, EXECUTION_FINISHED) are
 // emitted through the exact same agentevents.Sink AGENT uses — its own
 // AgentEventKind vocabulary is already generic (EXECUTION_STARTED/FINISHED
-// carry no chat-specific meaning), and attachFinalizationEvidenceTx's own
+// carry no chat-specific meaning), and validateAndAttachFinalizationEvidenceTx's own
 // finalize-time re-validation (finalize.go) unconditionally requires a
 // real agent_events row matching TerminalEventSequence for ANY
 // Evidence-bearing attempt — reusing Sink is what lets this executor reuse
@@ -41,6 +41,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
@@ -111,6 +112,20 @@ var _ ports.NodeExecutor = (*CommandNodeExecutor)(nil)
 func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionRequest) (ports.NodeExecutionResult, error) {
 	inputs, err := gatherCommandExecutionInputs(ctx, e.uow, req)
 	if err != nil {
+		// V5-09 acceptance-gap remediation (2026-09-10 post-merge review):
+		// an incompatible OS or an unauthorized NetworkAccess declaration
+		// (verifyCommandCompatibilityAndPolicy, inside
+		// gatherCommandExecutionInputs's own transaction) is exactly as
+		// deterministic and pre-spawn as an unresolvable argv/cwd/secret —
+		// never a transient error worth retrying, so it gets the identical
+		// typed FAILED classification, not a hard error the caller would
+		// otherwise treat as worth investigating/retrying.
+		if errors.Is(err, ErrCommandInvocationUnresolvable) {
+			return ports.NodeExecutionResult{
+				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
+				ErrorCode: errorcode.CodeValidationFailed,
+			}, nil
+		}
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: gather command execution inputs: %w", err)
 	}
 
@@ -175,7 +190,7 @@ func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecuti
 	})
 	flushErr := sink.Flush(ctx)
 
-	return e.classify(ctx, req, request, resolved, inputs.doc, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), stderr.Bytes())
+	return e.classify(ctx, req, request, resolved, inputs.doc, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), stderr.Bytes(), env)
 }
 
 // classify maps one completed ProcessSupervisor.Run call into either a
@@ -185,7 +200,7 @@ func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecuti
 // cancellation path, but exit-code-driven rather than marker-driven.
 func (e *CommandNodeExecutor) classify(
 	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources,
-	doc command.CommandDocument, result ports.ProcessResult, runErr error, syncErr error, stdout, stderr []byte,
+	doc command.CommandDocument, result ports.ProcessResult, runErr error, syncErr error, stdout, stderr []byte, secretValues map[string]string,
 ) (ports.NodeExecutionResult, error) {
 	if errors.Is(syncErr, ports.ErrJobLeaseLost) || errors.Is(syncErr, ports.ErrWriteLeaseLost) {
 		return ports.NodeExecutionResult{}, fmt.Errorf("%w: job/write lease lost mid-execution: %v", ErrIndeterminateExecution, syncErr)
@@ -227,6 +242,23 @@ func (e *CommandNodeExecutor) classify(
 			ErrorCode: errorcode.CodeExecutionFailed,
 		}, nil
 	}
+	// V5-09 acceptance-gap remediation (2026-09-10 post-merge review):
+	// ports.ProcessResult.OutputTruncated's own doc comment already says
+	// "the caller must never treat a truncated capture as a complete one
+	// for evidence purposes" — never wired up until now. A truncated
+	// capture means bytes beyond OutputLimitBytes were silently discarded;
+	// an exit code of 0 alongside that tells us nothing about what the
+	// discarded bytes would have shown, so this can never be trusted as a
+	// clean success. Reuses CodeExecutionFailed rather than a new code:
+	// go-core-spec §18's own error model is a closed, spec-enumerated set
+	// (internal/domain/errorcode's own doc comment) — adding a value there
+	// is a spec change, not something this remediation invents unilaterally.
+	if result.OutputTruncated {
+		return ports.NodeExecutionResult{
+			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
+			ErrorCode: errorcode.CodeExecutionFailed,
+		}, nil
+	}
 	if syncErr != nil {
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: flush command event sink after a successful execution: %w", syncErr)
 	}
@@ -243,7 +275,7 @@ func (e *CommandNodeExecutor) classify(
 		}, nil
 	}
 
-	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome)
+	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, false)
 	if err != nil {
 		if errors.Is(err, scopeguard.ErrScopeViolation) {
 			return ports.NodeExecutionResult{
@@ -255,11 +287,20 @@ func (e *CommandNodeExecutor) classify(
 	}
 
 	if doc.Output.CaptureStdout || doc.Output.CaptureStderr {
-		outputArtifactID, err := e.persistCommandOutputArtifact(ctx, req, resolved.projectID, doc, stdout, stderr)
+		outputArtifactID, err := e.persistCommandOutputArtifact(ctx, req, resolved.projectID, doc, stdout, stderr, secretValues)
 		if err != nil {
 			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: persist command output artifact: %w", err)
 		}
 		evidence.OutputArtifactRefs = append(evidence.OutputArtifactRefs, outputArtifactID)
+		// V5-09 acceptance-gap remediation (2026-09-10 post-merge review):
+		// one Evidence row for this execution — skipped entirely when
+		// output capture is off (nothing to reference; runtime.NewEvidence
+		// itself requires at least one artifact reference, the same
+		// invariant Checkpoint already enforces).
+		evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
+			Kind: runtimedomain.EvidenceKindCommandExecution, Verdict: runtimedomain.EvidenceVerdictSucceeded,
+			ArtifactReferences: []string{outputArtifactID}, PolicyVersion: request.ExecutionProfileHash,
+		})
 	}
 
 	return ports.NodeExecutionResult{
@@ -282,29 +323,48 @@ type commandOutputArtifactContent struct {
 const commandOutputArtifactMediaType = "application/vnd.agentkit.command-output+json"
 
 // persistCommandOutputArtifact persists this attempt's own captured
-// output as a durable artifact, inserted directly ATTACHED — unlike the
-// diff-manifest artifacts buildEvidence stages ORPHAN for
-// attachFinalizationEvidenceTx to later promote, finalize.go's own
-// evidence re-validation never polices AttemptFinalizationEvidence.OutputArtifactRefs
-// the same rigorous way (finalize.go only ever folds it into the
-// completion Checkpoint's own artifact-reference list) — there is no
-// promotion step that will ever reach it, so staging it ORPHAN would
-// strand it there forever.
+// output as a durable artifact, staged ORPHAN — V5-09 acceptance-gap
+// remediation (2026-09-10 post-merge review): this used to insert directly
+// ATTACHED, in its own unfenced transaction, before finalize.go's own
+// evidence re-validation had any promotion step that would ever reach it.
+// validateAndAttachFinalizationEvidenceTx (finalize.go) now promotes this
+// artifact ORPHAN->ATTACHED itself, atomically with everything else it
+// commits — mirroring buildEvidence's own Phase 1 (Put/Verify, real I/O,
+// no transaction) + Phase 2 (insert ORPHAN, one short transaction) split
+// exactly.
 func (e *CommandNodeExecutor) persistCommandOutputArtifact(
-	ctx context.Context, req ports.NodeExecutionRequest, projectID project.ProjectID, doc command.CommandDocument, stdout, stderr []byte,
+	ctx context.Context, req ports.NodeExecutionRequest, projectID project.ProjectID, doc command.CommandDocument,
+	stdout, stderr []byte, secretValues map[string]string,
 ) (string, error) {
+	// V5-09 acceptance-gap remediation (2026-09-10 post-merge review): a
+	// resolved secret must never reach persisted output unredacted — scope
+	// a Matcher to THIS execution's own just-resolved SecretRefs (never
+	// folded into e.matcher itself, which every other caller still shares)
+	// and scrub both streams before they are ever marshaled, exactly the
+	// "redact BEFORE Put" ordering internal/app/message's own AppendMessage
+	// already establishes.
+	scopedMatcher := e.matcher
+	if len(secretValues) > 0 {
+		values := make([]string, 0, len(secretValues))
+		for _, v := range secretValues {
+			values = append(values, v)
+		}
+		scopedMatcher = e.matcher.WithSecrets(values...)
+	}
 	content := commandOutputArtifactContent{}
 	if doc.Output.CaptureStdout {
-		content.Stdout = string(stdout)
+		redactedStdout, _ := scopedMatcher.Redact(stdout)
+		content.Stdout = string(redactedStdout)
 	}
 	if doc.Output.CaptureStderr {
-		content.Stderr = string(stderr)
+		redactedStderr, _ := scopedMatcher.Redact(stderr)
+		content.Stderr = string(redactedStderr)
 	}
 	body, err := json.Marshal(content)
 	if err != nil {
 		return "", fmt.Errorf("encode command output artifact: %w", err)
 	}
-	ref, err := e.store.Put(ctx, ports.ArtifactMetadata{ContentType: commandOutputArtifactMediaType, Sensitivity: redact.Sensitive}, bytes.NewReader(body))
+	ref, err := e.store.Put(ctx, ports.ArtifactMetadata{ContentType: commandOutputArtifactMediaType, Sensitivity: redact.Sensitive, Redacted: true}, bytes.NewReader(body))
 	if err != nil {
 		return "", fmt.Errorf("put command output artifact: %w", err)
 	}
@@ -314,7 +374,7 @@ func (e *CommandNodeExecutor) persistCommandOutputArtifact(
 	artifactID := e.ids.NewID()
 	a, err := artifact.NewArtifact(
 		artifact.ID(artifactID), projectID, ref.Locator, ref.SHA256, ref.Size, ref.ContentType,
-		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Attached, false, nil, e.clk.Now(), 1,
+		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Orphan, false, nil, e.clk.Now(), 1,
 	)
 	if err != nil {
 		return "", fmt.Errorf("construct command output artifact record: %w", err)
@@ -470,6 +530,90 @@ type commandExecutionInputs struct {
 	executionProfileHash string
 }
 
+// networkAccessCapability is the named PermissionRules.GrantedCapabilities
+// string (V5-09 acceptance-gap remediation, 2026-09-10 post-merge review)
+// a pinned PERMISSION policy must grant before a CommandDocument declaring
+// NetworkAccessAllowed may ever spawn — the same extensible-by-name
+// capability-grant convention PermissionRules.GrantedCapabilities's own
+// doc comment already establishes via INTEGRATION_MULTI_REPOSITORY_WRITE
+// as "the one concrete example."
+const networkAccessCapability = "NETWORK_ACCESS"
+
+// verifyCommandCompatibilityAndPolicy is the V5-09 acceptance-gap
+// remediation's own new pre-spawn gate (2026-09-10 post-merge review:
+// "CommandDocument.PolicyRefs chưa được đọc ở execution time; compatibility
+// OS/toolchain và NetworkAccess chưa được verify/enforce"):
+//
+//  1. OS compatibility: doc.Compatibility.OS must name the worker's own
+//     real runtime.GOOS. Every published CommandDocument already has a
+//     non-empty OS list (validateCompatibility, command/validate.go,
+//     rejects an empty one at publish time) — the len(...)>0 guard below
+//     is defense in depth for a document that reached this function some
+//     other way, never a "no constraint" escape hatch. Toolchain
+//     compatibility is deliberately NOT
+//     checked here — this codebase has no toolchain-version-probing
+//     mechanism anywhere to check it against (a real gap, left honestly
+//     unaddressed rather than a fabricated always-pass check).
+//  2. NetworkAccess: NetworkAccessAllowed requires at least one of
+//     doc.PolicyRefs to resolve to a real, published PolicyVersion whose
+//     own DefinitionID matches the pin (never trusted by VersionID alone —
+//     the same re-verification discipline this remediation already added
+//     for Gate's own CommandRef) and whose PERMISSION rules grant
+//     networkAccessCapability. This is authorization, not sandboxing: Alpha
+//     has no OS-level sandbox for script execution (materializeExecutable's
+//     own doc comment) to actually PREVENT a network call technically —
+//     "enforce" here means the declaration must be authorized before spawn,
+//     not that the spawned process is physically contained.
+//
+// Every doc.PolicyRefs entry is resolved regardless of NetworkAccess (an
+// unresolvable pin is rejected either way) — this is also this task's own
+// "PolicyRefs chưa được đọc ở execution time" fix: they are now read and
+// verified unconditionally, not only consulted for the one capability this
+// function currently cares about.
+func verifyCommandCompatibilityAndPolicy(ctx context.Context, tx ports.Tx, doc command.CommandDocument) error {
+	if len(doc.Compatibility.OS) > 0 {
+		matched := false
+		for _, os := range doc.Compatibility.OS {
+			if os == goruntime.GOOS {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf("%w: command declares OS compatibility %v, worker is %s", ErrCommandInvocationUnresolvable, doc.Compatibility.OS, goruntime.GOOS)
+		}
+	}
+
+	networkGranted := false
+	for _, ref := range doc.PolicyRefs {
+		version, err := tx.Definitions().LoadVersion(ctx, ref.VersionID)
+		if err != nil {
+			return fmt.Errorf("%w: resolve command policy ref %s: %v", ErrCommandInvocationUnresolvable, ref.VersionID, err)
+		}
+		if version.DefinitionID() != ref.DefinitionID {
+			return fmt.Errorf("%w: command policy ref %s belongs to definition %s, not %s",
+				ErrCommandInvocationUnresolvable, ref.VersionID, version.DefinitionID(), ref.DefinitionID)
+		}
+		policyDoc, err := decodeCompiledPolicy(version.CompiledSnapshot())
+		if err != nil {
+			return fmt.Errorf("%w: decode command policy ref %s: %v", ErrCommandInvocationUnresolvable, ref.VersionID, err)
+		}
+		if policyDoc.Permission == nil {
+			continue
+		}
+		for _, capability := range policyDoc.Permission.GrantedCapabilities {
+			if capability == networkAccessCapability {
+				networkGranted = true
+			}
+		}
+	}
+	if doc.NetworkAccess == command.NetworkAccessAllowed && !networkGranted {
+		return fmt.Errorf("%w: command declares NetworkAccess=%s but no pinned policy grants %s",
+			ErrCommandInvocationUnresolvable, command.NetworkAccessAllowed, networkAccessCapability)
+	}
+	return nil
+}
+
 // gatherCommandExecutionInputs is CommandNodeExecutor's own Phase 1 —
 // the COMMAND-shaped counterpart of gatherAssembledRequestInputs
 // (assemble_execution_request.go): the SAME attempt/nodeRun/run/snapshot
@@ -548,6 +692,9 @@ func gatherCommandExecutionInputs(ctx context.Context, uow ports.UnitOfWork, req
 		doc, err := decodeCompiledCommand(commandVersion.CompiledSnapshot())
 		if err != nil {
 			return fmt.Errorf("runtime: node %s: %w", nodeRun.NodeKey, err)
+		}
+		if err := verifyCommandCompatibilityAndPolicy(ctx, tx, doc); err != nil {
+			return err
 		}
 
 		scriptCandidate, err := loadResourceCandidate(ctx, tx, policy.ResourceRef{

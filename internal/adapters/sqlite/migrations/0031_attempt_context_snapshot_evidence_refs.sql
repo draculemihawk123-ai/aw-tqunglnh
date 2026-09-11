@@ -1,0 +1,17 @@
+-- V5-12 contract 2 (Maker/checker isolation, checker input allowlist):
+-- attempt_context_snapshots gains evidence_refs_json, the typed Evidence
+-- reference list a CHECKER-role AGENT node's own Snapshot carries instead
+-- of a maker transcript (docs/design/07-v5-execution-evidence.md V5-12's
+-- own "typed Evidence/Diff refs" gap — Diff needs no new column, the
+-- existing revision_set_json already pins the exact revision a checker's
+-- read-only mount observes).
+--
+-- Plain ADD COLUMN with a default, mirroring migration 0018's own
+-- precedent (attempt_context_snapshots already has real rows written
+-- through CreateSnapshot): every pre-V5-12 row gets '[]' (no Evidence
+-- refs, exactly what an empty JSON array means for message_refs_json/
+-- resource_refs_json too), and contextsnapshot.NewSnapshot's own
+-- recomputed ManifestHash stays identical for those rows since an empty
+-- EvidenceRefs slice folds into canonicalManifest the same way a nil one
+-- does (encoding/json marshals both as `[]`).
+ALTER TABLE attempt_context_snapshots ADD COLUMN evidence_refs_json TEXT NOT NULL DEFAULT '[]';

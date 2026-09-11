@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
 func validAgentProfile() ResolvedExecutionProfileV1 {
@@ -18,6 +19,7 @@ func validAgentProfile() ResolvedExecutionProfileV1 {
 			{DefinitionID: "permission-policy", VersionID: "v1", Category: policy.CategoryPermission, CompiledHash: "sha256:permission-v1"},
 		},
 		ProviderKey: "claude", Model: "claude-sonnet", ToolRefs: []string{"read_file", "write_file"}, MaxTokens: 100000,
+		Role:                       workflow.AgentRoleMaker,
 		AdapterBuild:               &ResolvedAdapterBuildRef{BuildID: "sha256:build-1", ProtocolVersion: "1", CapabilityHash: "sha256:capability-1"},
 		RuntimeExecutionConfigHash: "sha256:runtime-config-1",
 		TimeoutSeconds:             3600, IsolationTier: policy.IsolationTierEnforcedIsolated,
@@ -65,6 +67,23 @@ func TestNewResolvedExecutionProfileV1_AcceptsEachExecutorKind(t *testing.T) {
 				t.Fatalf("normalized.SchemaVersion = %d, want 1", normalized.SchemaVersion)
 			}
 		})
+	}
+}
+
+// TestNewResolvedExecutionProfileV1_AcceptsCheckerRole proves CHECKER is
+// just as valid a Role as the default MAKER (V5-12) — a plain "does this
+// closed-set value validate" check, distinct from the actual CHECKER
+// enforcement (read-only mounts, scratch, input allowlist), which is a
+// later task's own runtime behavior, not this type's own concern.
+func TestNewResolvedExecutionProfileV1_AcceptsCheckerRole(t *testing.T) {
+	profile := validAgentProfile()
+	profile.Role = workflow.AgentRoleChecker
+	normalized, _, err := NewResolvedExecutionProfileV1(profile)
+	if err != nil {
+		t.Fatalf("NewResolvedExecutionProfileV1(CHECKER): %v", err)
+	}
+	if normalized.Role != workflow.AgentRoleChecker {
+		t.Fatalf("normalized.Role = %q, want %q", normalized.Role, workflow.AgentRoleChecker)
 	}
 }
 
@@ -287,6 +306,33 @@ func TestNewResolvedExecutionProfileV1_RejectsInvalidProfiles(t *testing.T) {
 				return p
 			},
 			wantErr: "MACHINE_GATE executor must not populate",
+		},
+		{
+			name: "AGENT executor missing Role",
+			base: validAgentProfile,
+			mutate: func(p ResolvedExecutionProfileV1) ResolvedExecutionProfileV1 {
+				p.Role = ""
+				return p
+			},
+			wantErr: "AGENT executor requires a valid Role",
+		},
+		{
+			name: "AGENT executor with invalid Role",
+			base: validAgentProfile,
+			mutate: func(p ResolvedExecutionProfileV1) ResolvedExecutionProfileV1 {
+				p.Role = "SUPERVISOR"
+				return p
+			},
+			wantErr: "AGENT executor requires a valid Role",
+		},
+		{
+			name: "COMMAND executor with Role populated",
+			base: validCommandProfile,
+			mutate: func(p ResolvedExecutionProfileV1) ResolvedExecutionProfileV1 {
+				p.Role = workflow.AgentRoleMaker
+				return p
+			},
+			wantErr: "COMMAND executor must not populate Role",
 		},
 	}
 

@@ -219,6 +219,7 @@ func TestDefinitionPlaneGate(t *testing.T) {
 					Key: "agent", Type: workflow.NodeAgent, Outcomes: []string{"done"},
 					Agent: &workflow.AgentNodeConfig{
 						ProfileRef:     definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "profile-1", VersionID: profileVersion.ID()},
+						Role:           workflow.AgentRoleMaker,
 						PolicyRefs:     []definition.DependencyPin{{Kind: definition.KindPolicy, DefinitionID: "policy-attempt-1", VersionID: attemptPolicyVersion.ID()}},
 						AdapterBuildID: &buildID,
 					},

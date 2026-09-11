@@ -111,21 +111,111 @@ type AttemptRules struct {
 	TimeoutSeconds uint32 `json:"timeoutSeconds" yaml:"timeoutSeconds"`
 }
 
+// AssuranceLevel is one rung of V5-11's own required-assurance ladder
+// (HE-09's "static/lint → unit → integration → e2e → human" prose,
+// docs/harness-engineering/09-lec-09-khong-tu-tuyen-bo-hoan-thanh.md) —
+// resolved into a real, typed, ordered vocabulary (2026-09-10, confirmed
+// with the user before implementing V5-11: "Thứ tự level do domain code
+// định nghĩa; không tin thứ tự mảng từ JSON"). A consumer (V5-11's own
+// CompletionPolicy evaluator) must iterate levels in the order this
+// const block declares them, never the order a CompletionRules document
+// happens to list AssuranceRequirement entries in.
+type AssuranceLevel string
+
+const (
+	AssuranceStatic      AssuranceLevel = "STATIC"
+	AssuranceLint        AssuranceLevel = "LINT"
+	AssuranceUnit        AssuranceLevel = "UNIT"
+	AssuranceIntegration AssuranceLevel = "INTEGRATION"
+	AssuranceE2E         AssuranceLevel = "E2E"
+	AssuranceHuman       AssuranceLevel = "HUMAN"
+)
+
+// assuranceLevelOrder is the single source of truth for level ordering —
+// its index, not a document's own array position, is what "cumulative"
+// means for AssuranceRequirement (an E2E PASS never compensates for a
+// missing UNIT result; every declared level must independently be
+// satisfied).
+var assuranceLevelOrder = map[AssuranceLevel]int{
+	AssuranceStatic: 0, AssuranceLint: 1, AssuranceUnit: 2,
+	AssuranceIntegration: 3, AssuranceE2E: 4, AssuranceHuman: 5,
+}
+
+// Valid reports whether l is one of this package's own closed set of
+// assurance levels.
+func (l AssuranceLevel) Valid() bool {
+	_, ok := assuranceLevelOrder[l]
+	return ok
+}
+
+// AssuranceLevelOrder returns every valid AssuranceLevel in the exact
+// canonical order a consumer (V5-11's own CompletionPolicy evaluator,
+// internal/app/runtime) MUST process them in — never the order a
+// CompletionRules document's own RequiredAssurance array happens to list
+// them in (see CompletionRules's own doc comment on why array order is
+// never trusted).
+func AssuranceLevelOrder() []AssuranceLevel {
+	return []AssuranceLevel{
+		AssuranceStatic, AssuranceLint, AssuranceUnit, AssuranceIntegration, AssuranceE2E, AssuranceHuman,
+	}
+}
+
+// ApprovalRequirement is one authoring-time declaration that a named set
+// of roles must have decided an approval before its own AssuranceRequirement
+// counts as satisfied — mirrors workflow.ApprovalNodeConfig's own
+// "AuthorizedRoles" vocabulary (HE-14-S03), the only concrete precedent
+// this codebase has for what an approval requirement names. Deliberately
+// minimal: matching AuthorizedRoles against a real, decided
+// runtime.ApprovalRequest (never a bare boolean — 2026-09-10's own
+// binding decision) is V5-11's own evaluator job, not this schema's.
+type ApprovalRequirement struct {
+	AuthorizedRoles []string `json:"authorizedRoles" yaml:"authorizedRoles"`
+}
+
+// AssuranceRequirement is one rung of the V2 ladder: a Level plus what
+// must be satisfied at that level — Evidence kinds, human approvals, or
+// both. At least one of RequiredEvidenceKinds/RequiredApprovals must be
+// non-empty; a level requiring nothing could never distinguish
+// NOT_RUN from a real pass, the same GC-INV-12/13 concern
+// RequiredEvidenceKinds (V1) already grounds.
+type AssuranceRequirement struct {
+	Level                 AssuranceLevel        `json:"level" yaml:"level"`
+	RequiredEvidenceKinds []string              `json:"requiredEvidenceKinds,omitempty" yaml:"requiredEvidenceKinds,omitempty"`
+	RequiredApprovals     []ApprovalRequirement `json:"requiredApprovals,omitempty" yaml:"requiredApprovals,omitempty"`
+}
+
 // CompletionRules is Category COMPLETION's rule shape. ADR-021 defines
 // the four-outcome CompletionDecision state machine itself (PASS/REWORK/
 // BLOCK/FAIL) as engine behavior, not authored content; what a
 // CompletionPolicy document itself can meaningfully declare at this
-// layer is which Evidence kinds are required before a PASS is even
+// layer is which Evidence kinds (and, from V5-11 onward, which ordered
+// assurance levels and approvals) are required before a PASS is even
 // possible — GC-INV-12 ("completion policy và required evidence quyết
 // định") and GC-INV-13 ("NOT_RUN, thiếu evidence hoặc verifier error
-// không được quy thành PASS") both ground this field; the four-outcome
+// không được quy thành PASS") both ground this type; the four-outcome
 // transition machinery itself belongs to the runtime engine (V4/V5), not
 // this authoring-time schema.
+//
+// RequiredEvidenceKinds (V1) and RequiredAssurance (V2) are MUTUALLY
+// EXCLUSIVE on one document — never both populated (2026-09-10, confirmed
+// with the user before implementing V5-11). A published V1 policy keeps
+// its old flat semantics unchanged forever; this is purely additive, so
+// no already-published CompletionRules document's own compiled hash is
+// ever affected by RequiredAssurance's existence. New policies opt into
+// the V2 ladder instead of the V1 flat list.
 type CompletionRules struct {
 	// RequiredEvidenceKinds is the set of Evidence.Kind values that must
 	// be present (and PASS) before a completion candidate may resolve to
-	// CompletionDecision PASS.
+	// CompletionDecision PASS. V1 only — see this type's own doc comment
+	// on mutual exclusion with RequiredAssurance. Tag deliberately
+	// unchanged (no omitempty) from before RequiredAssurance existed, so
+	// an already-published V1 document's own canonical JSON/hash is
+	// byte-for-byte identical to what it was before this task.
 	RequiredEvidenceKinds []string `json:"requiredEvidenceKinds" yaml:"requiredEvidenceKinds"`
+	// RequiredAssurance is the V2 ordered assurance ladder — every entry
+	// is mandatory (all declared levels must independently be satisfied,
+	// never just the highest one reached).
+	RequiredAssurance []AssuranceRequirement `json:"requiredAssurance,omitempty" yaml:"requiredAssurance,omitempty"`
 }
 
 // PermissionRules is Category PERMISSION's rule shape: ADR-013's two

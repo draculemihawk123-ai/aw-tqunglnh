@@ -300,3 +300,61 @@ func TestValue_DoesNotMutateInput(t *testing.T) {
 		t.Fatalf("Value mutated its input: got %v, want unchanged %v", original, snapshot)
 	}
 }
+
+// --- WithSecrets/Redact (V5-09 acceptance-gap remediation, 2026-09-10
+// post-merge review): a per-execution secret set combined with the base
+// Matcher, and free-text substring scrubbing for captured process
+// output — deliberately a different contract from String/IsSecret's own
+// whole-value-only matching (TestFalsePositiveAllowlist above), for a
+// genuinely different use case: a blob of stdout/stderr a KNOWN secret
+// value might appear embedded within, not equal the whole of.
+
+func TestWithSecrets_DoesNotMutateOriginalMatcher(t *testing.T) {
+	base := NewMatcher("base-secret")
+	extended := base.WithSecrets("extra-secret")
+
+	if base.IsSecret("extra-secret") {
+		t.Fatal("WithSecrets mutated the original Matcher — base now recognizes a secret it was never built with")
+	}
+	if !extended.IsSecret("base-secret") || !extended.IsSecret("extra-secret") {
+		t.Fatal("extended Matcher must recognize both the original and the additional secret")
+	}
+}
+
+func TestRedact_ReplacesEveryOccurrenceEmbeddedInFreeText(t *testing.T) {
+	m := NewMatcher("sk-live-abc123")
+	input := []byte("starting up\napi key: sk-live-abc123\nretrying with sk-live-abc123 again\ndone")
+
+	redacted, changed := m.Redact(input)
+	if !changed {
+		t.Fatal("Redact reported no change, want true — the secret appears twice in the input")
+	}
+	if strings.Contains(string(redacted), "sk-live-abc123") {
+		t.Fatalf("Redact left the secret in the output: %q", redacted)
+	}
+	if got := strings.Count(string(redacted), placeholder); got != 2 {
+		t.Fatalf("placeholder count = %d, want 2 (one per occurrence)", got)
+	}
+}
+
+func TestRedact_NoMatch_ReturnsUnchangedAndFalse(t *testing.T) {
+	m := NewMatcher("sk-live-abc123")
+	input := []byte("nothing sensitive here")
+
+	redacted, changed := m.Redact(input)
+	if changed {
+		t.Fatal("Redact reported a change, want false — no known secret appears in the input")
+	}
+	if string(redacted) != string(input) {
+		t.Fatalf("Redact(%q) = %q, want unchanged", input, redacted)
+	}
+}
+
+func TestRedact_EmptyMatcher_NeverPanicsOrChanges(t *testing.T) {
+	m := NewMatcher()
+	input := []byte("anything at all")
+	redacted, changed := m.Redact(input)
+	if changed || string(redacted) != string(input) {
+		t.Fatalf("Redact with no known secrets = (%q, %v), want (%q, false)", redacted, changed, input)
+	}
+}

@@ -57,7 +57,7 @@ type ArtifactRepository interface {
 	// from Orphan to Attached (or, symmetrically, could record a rejected
 	// worker transaction's output as Orphan after it was optimistically
 	// inserted Attached, the reverse direction). V5-08B's own fenced
-	// finalize (attachFinalizationEvidenceTx, internal/app/runtime/finalize.go)
+	// finalize (validateAndAttachFinalizationEvidenceTx, internal/app/runtime/finalize.go)
 	// confirmed this is Orphan->Attached too, the same direction every
 	// other caller already exercises — its own locked decision text
 	// describes inserting diff-manifest artifacts as ORPHAN first, then

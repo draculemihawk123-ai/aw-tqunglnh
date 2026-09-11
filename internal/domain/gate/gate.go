@@ -38,6 +38,20 @@ const (
 	VerdictNotApplicable Verdict = "NOT_APPLICABLE"
 )
 
+var knownVerdicts = map[Verdict]struct{}{
+	VerdictPass: {}, VerdictFail: {}, VerdictError: {}, VerdictNotRun: {}, VerdictNotApplicable: {},
+}
+
+// IsValid reports whether v is one of this package's own closed 5-value
+// set — used by any caller persisting a Verdict it did not itself just
+// construct from one of the named constants (e.g. work.ReleaseSet, V5-10A,
+// reusing this exact enum for its own per-repository verdict field rather
+// than declaring a second one).
+func (v Verdict) IsValid() bool {
+	_, ok := knownVerdicts[v]
+	return ok
+}
+
 // Criterion is one thing a Gate's evaluation checks, and which evidence
 // key its verdict is recorded against. Evaluating a Criterion against a
 // real Command execution result — and therefore actually producing a
@@ -46,6 +60,16 @@ const (
 type Criterion struct {
 	Name        string `json:"name" yaml:"name"`
 	EvidenceKey string `json:"evidenceKey" yaml:"evidenceKey"`
+	// AllowNotApplicable is populated now (V5-10 acceptance-gap
+	// remediation, 2026-09-10 post-merge review: "NOT_APPLICABLE hiện chỉ
+	// cần reason, chưa cần pinned policy authority") — the author's own
+	// explicit, authoring-time authorization that THIS criterion may ever
+	// resolve NOT_APPLICABLE at all. false by default: a criterion an
+	// author never marked this way can never be waived by an evaluator's
+	// own claim, no matter what reason it gives — the runtime (V5-10,
+	// GateNodeExecutor.deriveGateResult) rejects NOT_APPLICABLE as ERROR
+	// for any criterion where this is false, even with a non-empty reason.
+	AllowNotApplicable bool `json:"allowNotApplicable,omitempty" yaml:"allowNotApplicable,omitempty"`
 }
 
 // GateDocument is a Gate's complete authored content: which Command it

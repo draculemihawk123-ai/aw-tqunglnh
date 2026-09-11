@@ -302,6 +302,32 @@ type WorkRepository interface {
 	// already uses), ErrPersistenceNotFound for an unknown BlockerID.
 	TransitionWorkItemBlockerState(ctx context.Context, req TransitionWorkItemBlockerStateRequest) (work.WorkItemBlocker, error)
 
+	// CreateReleaseSet is populated now (V5-10A,
+	// docs/design/07-v5-execution-evidence.md; AK-ARCH-015C): inserts a new,
+	// CREATED work.ReleaseSet row after verifying releaseSet.FamilyID names
+	// a TaskFamily that exists — ErrPersistenceNotFound otherwise.
+	// Idempotent by ID, the identical "insert; on identical-key conflict,
+	// load and return the existing row" discipline CreateWorkItemBlocker
+	// already establishes.
+	CreateReleaseSet(ctx context.Context, releaseSet work.ReleaseSet) (work.ReleaseSet, error)
+	// GetReleaseSet returns the ReleaseSet with the given ID, or
+	// ErrPersistenceNotFound.
+	GetReleaseSet(ctx context.Context, id string) (work.ReleaseSet, error)
+	// ListReleaseSetsForFamily returns every ReleaseSet ever created for
+	// familyID (every state, across every completion attempt that family
+	// has ever gone through), ordered by (CreatedAt, ID) for a stable,
+	// deterministic result a test can assert on exactly.
+	ListReleaseSetsForFamily(ctx context.Context, familyID string) ([]work.ReleaseSet, error)
+	// TransitionReleaseSetState is the fenced CAS that closes a
+	// ReleaseSet's own lifecycle — CREATED -> SEALED or CREATED -> ABANDONED
+	// — the identical req.ExpectedState/req.ExpectedVersion CAS discipline
+	// TransitionWorkItemBlockerState already uses. ErrOptimisticConflict on
+	// a stale caller (including a ReleaseSet that is already SEALED/ABANDONED
+	// — the idempotent-no-op "duplicate seal" case a caller checks BEFORE
+	// calling this, the same discipline ResolveWorkItemBlocker's own caller
+	// already uses), ErrPersistenceNotFound for an unknown ReleaseSetID.
+	TransitionReleaseSetState(ctx context.Context, req TransitionReleaseSetStateRequest) (work.ReleaseSet, error)
+
 	// HasActiveWriteLease is populated now (V3-11,
 	// docs/design/05-v3-project-workspace.md): a read-only existence check
 	// over write_leases for "no active lease" — one of
@@ -402,4 +428,16 @@ type TransitionWorkItemBlockerStateRequest struct {
 	ResolvedBy         string
 	ResolutionNote     string
 	DecisionArtifactID string
+}
+
+// TransitionReleaseSetStateRequest is what a caller supplies to
+// TransitionReleaseSetState (V5-10A). OccurredAt is recorded as SealedAt
+// when NextState is SEALED, or AbandonedAt when NextState is ABANDONED —
+// never both, since CREATED only ever transitions to exactly one of them.
+type TransitionReleaseSetStateRequest struct {
+	ReleaseSetID    string
+	ExpectedState   work.ReleaseSetState
+	ExpectedVersion uint64
+	NextState       work.ReleaseSetState
+	OccurredAt      time.Time
 }

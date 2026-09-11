@@ -40,7 +40,7 @@ func blockDocumentWithTimeout(timeoutSeconds int) string {
 const validAgentProfileDocument = `{"budget":{"maxTokens":100000},"compatibility":{"os":["linux","windows"],"toolchain":["git"]},"contextPolicyRef":{"definitionId":"policy-context-1","kind":"POLICY","versionId":"policy-context-1-v1"},"model":"claude-opus-4","providerKey":"claude","requiredCapabilities":["INTEGRATION_MULTI_REPOSITORY_WRITE"],"toolRefs":["read_file","write_file"]}`
 
 func workflowDocumentPinning(profileDefinitionID, profileVersionID string) string {
-	return fmt.Sprintf(`{"schemaVersion":"1","nodes":[{"key":"start","type":"START","outcomes":["go"]},{"key":"agent","type":"AGENT","outcomes":["done"],"agent":{"profileRef":{"kind":"AGENT_PROFILE","definitionId":%q,"versionId":%q}}},{"key":"end","type":"END"}],"edges":[{"key":"e1","from":"start","outcome":"go","to":"agent"},{"key":"e2","from":"agent","outcome":"done","to":"end"}]}`, profileDefinitionID, profileVersionID)
+	return fmt.Sprintf(`{"schemaVersion":"1","nodes":[{"key":"start","type":"START","outcomes":["go"]},{"key":"agent","type":"AGENT","outcomes":["done"],"agent":{"profileRef":{"kind":"AGENT_PROFILE","definitionId":%q,"versionId":%q},"role":"MAKER"}},{"key":"end","type":"END"}],"edges":[{"key":"e1","from":"start","outcome":"go","to":"agent"},{"key":"e2","from":"agent","outcome":"done","to":"end"}]}`, profileDefinitionID, profileVersionID)
 }
 
 func mustDecodeVersionFieldsView(t *testing.T, raw string) versionFieldsView {

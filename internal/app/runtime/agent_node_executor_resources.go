@@ -20,6 +20,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/scopeguard"
 	"github.com/taQuangLing/agent-workflow/internal/domain/artifact"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
@@ -181,15 +182,43 @@ func (e *AgentNodeExecutor) resolveExecutionResources(
 //
 // A free function (V5-09: CommandNodeExecutor needs this EXACT same
 // evidence-staging protocol — "diff/fence" is explicitly required of a
-// mutating COMMAND too, and attachFinalizationEvidenceTx's own
+// mutating COMMAND too, and validateAndAttachFinalizationEvidenceTx's own
 // finalize-time re-validation, finalize.go, has no AGENT-specific
 // coupling at all) rather than a method on *AgentNodeExecutor;
-// e.buildEvidence below is a thin, unchanged wrapper. request stays typed
-// as ports.AgentExecutionRequest for the identical reason
+// CommandNodeExecutor's own call site below hardcodes strictReadOnly=false
+// (COMMAND has no Role concept at all — V5-12's own MAKER|CHECKER pin is
+// AGENT-only); e.buildEvidence (AgentNodeExecutor's own wrapper) instead
+// re-loads its Attempt's own pinned Role and decides dynamically — see
+// that wrapper's own doc comment. request stays typed as
+// ports.AgentExecutionRequest for the identical reason
 // resolveExecutionResources's own doc comment already gives.
+//
+// strictReadOnly is GateNodeExecutor's own addition (2026-09-10 V5 roadmap
+// follow-up, closing the "Gate read-only enforcement is just a mount
+// descriptor" gap the 2026-09-10 post-merge review flagged), and V5-12's
+// own CHECKER-role AGENT reuses it identically (2026-09-10): false for
+// COMMAND and a MAKER-role (or Role-less, i.e. pre-V5-12) AGENT —
+// unchanged, scopeguard.ValidateDiffs' own WorkItem-wide write-scope check
+// is the correct, sufficient bar for a node that legitimately has WRITE
+// grants of its own. A Gate is read-only BY DESIGN with no exception
+// anywhere (this package's own gate_node_executor.go doc comment), and a
+// CHECKER is read-only by pinned Role with the identical "no exception"
+// invariant (its own workspace mounts are already forced read-only —
+// assemble_execution_request.go), so for either, scopeguard.ValidateDiffs
+// alone is NOT sufficient: that check only rejects a change OUTSIDE the
+// owning WorkItem's own write scope — it would silently accept a Gate or
+// CHECKER writing into a repository some OTHER node in the SAME WorkItem
+// legitimately holds WRITE access to, even though THIS attempt itself was
+// never granted any. strictReadOnly=true additionally requires every one
+// of this attempt's own mounts to have a COMPLETELY EMPTY diff — the same
+// "scratch stays outside source workspace mounts entirely" invariant
+// GC-INV-25 already requires of a Gate's own evaluator, so a real,
+// correctly-behaving Gate or CHECKER never has a legitimate reason to
+// change anything inside any of them.
 func buildEvidence(
 	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, store ports.ArtifactStore, workspaces ports.WorkspaceProvider,
 	req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
+	strictReadOnly bool,
 ) (*ports.AttemptFinalizationEvidence, error) {
 	diffs := make([]ports.WorkspaceDiff, 0, len(request.WorkspaceMounts))
 	for _, mount := range request.WorkspaceMounts {
@@ -212,6 +241,11 @@ func buildEvidence(
 	// transaction."
 	if err := scopeguard.ValidateDiffs(request.EffectiveScope, diffs); err != nil {
 		return nil, err
+	}
+	if strictReadOnly {
+		if err := validateStrictlyReadOnlyDiffs(diffs); err != nil {
+			return nil, err
+		}
 	}
 
 	revisions := make([]workspace.Revision, 0, len(diffs))
@@ -274,11 +308,52 @@ func buildEvidence(
 	}, nil
 }
 
+// validateStrictlyReadOnlyDiffs is buildEvidence's own strictReadOnly=true
+// check (GateNodeExecutor, and V5-12's own CHECKER-role AGENT — see that
+// parameter's own doc comment) — every real diff across every one of this
+// attempt's own mounts must be completely empty, not merely "within the
+// owning WorkItem's own write scope" (scopeguard.ValidateDiffs' own, more
+// permissive bar, still checked first either way). Wraps
+// scopeguard.ErrScopeViolation so every caller's own existing
+// `errors.Is(err, scopeguard.ErrScopeViolation)` handling already covers
+// this new check too, with no separate error-classification branch needed
+// anywhere.
+func validateStrictlyReadOnlyDiffs(diffs []ports.WorkspaceDiff) error {
+	for _, diff := range diffs {
+		if len(diff.Files) > 0 {
+			return fmt.Errorf("%w: mount %s changed %d file(s) despite being read-only by design",
+				scopeguard.ErrScopeViolation, diff.RepositoryID, len(diff.Files))
+		}
+	}
+	return nil
+}
+
+// e.buildEvidence re-loads this Attempt's own pinned Role from its
+// durable EXECUTION_PROFILE_V1 decision (loadExecutionProfile — the same
+// "revalidate everything fail-closed" discipline AssembleAgentExecutionRequest's
+// own doc comment already establishes; one extra read-only DecisionArtifact
+// lookup, not re-derived from request.WorkspaceMounts' own already-forced
+// Access, which would conflate "no write mount granted" with "role pinned
+// CHECKER" — two different facts this codebase keeps separate everywhere
+// else). CHECKER gets the identical strictReadOnly=true treatment Gate
+// already does (V5-12 contract 3, 2026-09-10): a CHECKER-role AGENT is
+// read-only by pinned Role, the same invariant Gate's own doc comment
+// already gives for "read-only by design" — a real, correctly-behaving
+// CHECKER never has a legitimate reason to change anything inside any of
+// its own (already forced read-only, assemble_execution_request.go)
+// mounts, and OPERATOR_TRUSTED_LOCAL's own lack of real OS-level
+// enforcement means an observed mutation is the only defense available;
+// this is that defense.
 func (e *AgentNodeExecutor) buildEvidence(
 	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest,
 	resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
 ) (*ports.AttemptFinalizationEvidence, error) {
-	return buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome)
+	profile, err := loadExecutionProfile(ctx, e.uow, req.NodeRunID)
+	if err != nil {
+		return nil, fmt.Errorf("runtime: load execution profile for node run %s: %w", req.NodeRunID, err)
+	}
+	strictReadOnly := profile.Role == workflow.AgentRoleChecker
+	return buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, strictReadOnly)
 }
 
 // terminalEventSequence returns the highest agent_events.Sequence durably
