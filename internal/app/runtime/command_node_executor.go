@@ -224,7 +224,7 @@ func (e *CommandNodeExecutor) classify(
 	if result.Cancelled {
 		// V5-09's own locked requirement: reuse V5-08C's cancellation path
 		// exactly, no separate terminate path.
-		return classifyCancellation(ctx, e.uow, e.interruptions, e.workspaces, e.reconciler, e.writeLeases, req, resolved)
+		return classifyCancellation(ctx, e.uow, e.ids, e.workspaces, e.writeLeases, req, resolved)
 	}
 	if result.TimedOut {
 		// Folds into the same generic FAILED bucket AgentNodeExecutor's own

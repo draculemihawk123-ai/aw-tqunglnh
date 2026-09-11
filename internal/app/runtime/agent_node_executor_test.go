@@ -15,7 +15,6 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
-	"github.com/taQuangLing/agent-workflow/internal/app/worker"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	domainruntime "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
@@ -702,12 +701,18 @@ func TestAgentNodeExecutor_MutatingCancellation_CleanRevision_TerminatesIndeterm
 	if !errors.Is(err, runtime.ErrAttemptAlreadyTerminated) {
 		t.Fatalf("Execute error = %v, want ErrAttemptAlreadyTerminated", err)
 	}
-	if len(interruptions.terminations) != 1 || interruptions.terminations[0].NextState != domainruntime.ExecutionAttemptIndeterminate ||
-		interruptions.terminations[0].Reason != domainruntime.TerminationReasonOwnershipLostMutating {
-		t.Fatalf("terminations = %+v, want exactly one INDETERMINATE/OWNERSHIP_LOST_MUTATING", interruptions.terminations)
+	// V5-15D: the real cancellation-finalization boundary
+	// (finalizeMutatingCancellation, agent_node_executor_cancellation.go)
+	// CASes the Attempt via the already-tx-scoped
+	// ports.RuntimeRepository.TransitionExecutionAttempt directly — this
+	// legacy fake spy (the OLD, non-atomic worker.InterruptionRecoveryStore/
+	// WorkspaceReconciler path) is no longer called at all, by either
+	// branch, so it must stay empty regardless of outcome.
+	if len(interruptions.terminations) != 0 {
+		t.Fatalf("interruptions.terminations = %+v, want none — the legacy path is no longer called", interruptions.terminations)
 	}
 	if len(reconciler.quarantined) != 0 {
-		t.Fatalf("quarantined = %+v, want none — revision was unchanged", reconciler.quarantined)
+		t.Fatalf("reconciler.quarantined = %+v, want none — the legacy path is no longer called", reconciler.quarantined)
 	}
 
 	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
@@ -715,12 +720,34 @@ func TestAgentNodeExecutor_MutatingCancellation_CleanRevision_TerminatesIndeterm
 		if err != nil {
 			return err
 		}
-		if attempt.State != domainruntime.ExecutionAttemptIndeterminate {
-			t.Fatalf("attempt state = %s, want INDETERMINATE", attempt.State)
+		if attempt.State != domainruntime.ExecutionAttemptIndeterminate || attempt.TerminationReason != domainruntime.TerminationReasonOwnershipLostMutating {
+			t.Fatalf("attempt = %+v, want INDETERMINATE/OWNERSHIP_LOST_MUTATING", attempt)
+		}
+		nodeRun, err := tx.Runtime().GetNodeRun(ctx, req.NodeRunID)
+		if err != nil {
+			return err
+		}
+		if nodeRun.State != domainruntime.NodeRunCancelled {
+			t.Fatalf("nodeRun.State = %s, want CANCELLED", nodeRun.State)
+		}
+		run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
+		if err != nil {
+			return err
+		}
+		workspaceSet, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, string(run.FamilyID))
+		if err != nil {
+			return err
+		}
+		repoWorkspace, err := tx.Work().GetRepositoryWorkspace(ctx, string(workspaceSet.ID), "repo-1", 1)
+		if err != nil {
+			return err
+		}
+		if repoWorkspace.State != workspace.RepositoryWorkspaceReady {
+			t.Fatalf("repositoryWorkspace.State = %s, want still READY (revision was unchanged, never quarantined)", repoWorkspace.State)
 		}
 		return nil
 	}); err != nil {
-		t.Fatalf("load attempt: %v", err)
+		t.Fatalf("load attempt/node run/repository workspace: %v", err)
 	}
 }
 
@@ -748,10 +775,47 @@ func TestAgentNodeExecutor_MutatingCancellation_MutatedRevision_TerminatesIndete
 	if !errors.Is(err, runtime.ErrAttemptAlreadyTerminated) {
 		t.Fatalf("Execute error = %v, want ErrAttemptAlreadyTerminated", err)
 	}
-	if len(interruptions.terminations) != 1 || interruptions.terminations[0].NextState != domainruntime.ExecutionAttemptIndeterminate {
-		t.Fatalf("terminations = %+v, want exactly one INDETERMINATE", interruptions.terminations)
+	// V5-15D: see the sibling CleanRevision test's own identical comment —
+	// the legacy fake spy is never called by either branch anymore.
+	if len(interruptions.terminations) != 0 {
+		t.Fatalf("interruptions.terminations = %+v, want none — the legacy path is no longer called", interruptions.terminations)
 	}
-	if len(reconciler.quarantined) != 1 || string(reconciler.quarantined[0].Reason) != string(worker.ReconciliationMutationObserved) {
-		t.Fatalf("quarantined = %+v, want exactly one MUTATION_OBSERVED_REQUIRES_QUARANTINE", reconciler.quarantined)
+	if len(reconciler.quarantined) != 0 {
+		t.Fatalf("reconciler.quarantined = %+v, want none — the legacy path is no longer called", reconciler.quarantined)
+	}
+
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		attempt, err := tx.Runtime().GetExecutionAttempt(ctx, req.AttemptID)
+		if err != nil {
+			return err
+		}
+		if attempt.State != domainruntime.ExecutionAttemptIndeterminate || attempt.TerminationReason != domainruntime.TerminationReasonOwnershipLostMutating {
+			t.Fatalf("attempt = %+v, want INDETERMINATE/OWNERSHIP_LOST_MUTATING", attempt)
+		}
+		nodeRun, err := tx.Runtime().GetNodeRun(ctx, req.NodeRunID)
+		if err != nil {
+			return err
+		}
+		if nodeRun.State != domainruntime.NodeRunCancelled {
+			t.Fatalf("nodeRun.State = %s, want CANCELLED", nodeRun.State)
+		}
+		run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
+		if err != nil {
+			return err
+		}
+		workspaceSet, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, string(run.FamilyID))
+		if err != nil {
+			return err
+		}
+		repoWorkspace, err := tx.Work().GetRepositoryWorkspace(ctx, string(workspaceSet.ID), "repo-1", 1)
+		if err != nil {
+			return err
+		}
+		if repoWorkspace.State != workspace.RepositoryWorkspaceQuarantined {
+			t.Fatalf("repositoryWorkspace.State = %s, want QUARANTINED (revision was observed to change)", repoWorkspace.State)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("load attempt/node run/repository workspace: %v", err)
 	}
 }

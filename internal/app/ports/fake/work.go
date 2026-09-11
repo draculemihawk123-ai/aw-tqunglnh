@@ -341,6 +341,28 @@ func (w *WorkRepository) GetRepositoryWorkspace(_ context.Context, workspaceSetI
 	return rw, nil
 }
 
+// QuarantineRepositoryWorkspace mirrors sqlite's
+// quarantineRepositoryWorkspaceTx (V5-15D): a fenced READY->QUARANTINED CAS
+// by the workspace's own bare ID, the same linear-scan trade-off
+// GetRepositoryWorkspaceByID above already makes for this fixture's small
+// sizes.
+func (w *WorkRepository) QuarantineRepositoryWorkspace(_ context.Context, update ports.QuarantineRepositoryWorkspaceUpdate) error {
+	for key, rw := range w.repositoryWorkspaces {
+		if string(rw.ID) != string(update.RepositoryWorkspaceID) {
+			continue
+		}
+		if rw.State != workspace.RepositoryWorkspaceReady || rw.Version != update.ExpectedVersion {
+			return fmt.Errorf("fake: %w: repository workspace %s expected READY@%d",
+				ports.ErrOptimisticConflict, update.RepositoryWorkspaceID, update.ExpectedVersion)
+		}
+		rw.State = workspace.RepositoryWorkspaceQuarantined
+		rw.Version++
+		w.repositoryWorkspaces[key] = rw
+		return nil
+	}
+	return fmt.Errorf("fake: %w: repository workspace %s", ports.ErrPersistenceNotFound, update.RepositoryWorkspaceID)
+}
+
 // ListWorkspaceSetRepositoryWorkspaces mirrors sqlite's
 // listWorkspaceSetRepositoryWorkspacesTx, ordered by (RepositoryID,
 // Generation) for a stable, deterministic result a test can assert on

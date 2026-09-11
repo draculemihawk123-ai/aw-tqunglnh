@@ -10,6 +10,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
 // V4-13's own orphaned-RUNNING-attempt recovery tests. These live in
@@ -247,6 +248,161 @@ func TestRecoveryReaperHandler_OrphanedAttempt_BudgetExhausted_Escalates(t *test
 	}
 	if len(attemptsAfter) != 2 {
 		t.Fatalf("attempt count after ESCALATE = %d, want 2 (original + third, no new retry attempt): %+v", len(attemptsAfter), attemptsAfter)
+	}
+}
+
+// TestRecoveryReaperHandler_OrphanedMutatingAttempt_RunCancelling_ClosesRunOutReally
+// is V5-15D's own real proof (2026-09-12, the user's own binding fix
+// contract): "Recovery reaper cũng phải gọi cùng cancellation-finalization
+// path khi orphaned Attempt thuộc một Run đang CANCELLING." A genuinely
+// mutating Attempt (a real AcquireWriteLeases grant, the same real
+// production primitive TestFinalizeExecutionAttempt_SQLite_WriteLeaseWrongFenceToken_RollsBackEverything
+// already uses to build one) whose own driving job lease has genuinely
+// expired, AND whose own owning Run has a real, durable CancelRun already
+// committed against it, must route through the SAME real
+// cancelMutatingAttemptTx boundary the live V5-08C poller path uses
+// (agent_node_executor_cancellation.go) — never the plain RETRY/
+// FRESH_START/ESCALATE decision, which never itself lets the owning NodeRun
+// (let alone WorkflowRun) reach a terminal state. Proves the real,
+// end-to-end outcome: Attempt INDETERMINATE/OWNERSHIP_LOST_MUTATING,
+// NodeRun CANCELLED, WorkflowRun CANCELLED (reconcileCancellingRunTx's own
+// real LiveCount==0 gate, completion.go), and the RunCancellationIntent no
+// longer REQUESTED — this repository workspace's own current_revision is
+// left exactly equal to its own base_revision here (the real,
+// unmodified fixture default), so this test's own real reconciliation
+// verdict is CLEAN — real quarantine-on-mutation is already independently
+// proven by internal/integration/v5accept's own cancel_mutating_test.go
+// (the live poller path, reached via CommandNodeExecutor, DOES observe a
+// real mutated revision there) and by TestQuarantineRepositoryWorkspace's
+// own sqlite-level unit tests (workspace_lifecycle_test.go) — this test's
+// own job is proving the RECOVERY-REAPER's own new routing decision and
+// the shared atomic core it now reaches, not re-proving quarantine itself.
+func TestRecoveryReaperHandler_OrphanedMutatingAttempt_RunCancelling_ClosesRunOutReally(t *testing.T) {
+	ctx := context.Background()
+	uow, store, ids, runID, nodeRunID, attemptID := sqliteExecutionFixture(t)
+
+	_, lease := claimExecuteNodeJob(t, ctx, store, 50*time.Millisecond)
+
+	var repositoryWorkspaceID string
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		nodeRun, err := tx.Runtime().GetNodeRun(ctx, nodeRunID)
+		if err != nil {
+			return err
+		}
+		run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		set, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, string(run.FamilyID))
+		if err != nil {
+			return err
+		}
+		rw, err := tx.Work().GetRepositoryWorkspace(ctx, string(set.ID), string(nodeRun.EffectiveScope[0].RepositoryID()), 1)
+		if err != nil {
+			return err
+		}
+		repositoryWorkspaceID = string(rw.ID)
+		return nil
+	}); err != nil {
+		t.Fatalf("resolve repository workspace: %v", err)
+	}
+
+	// A real write lease — the exact real signal
+	// GetWriteLeaseRepositoryWorkspaceForAttempt (recovery_reaper.go) uses
+	// to decide this orphaned Attempt is genuinely mutating.
+	if _, err := store.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
+		JobLease: lease, AttemptID: runtimedomain.ExecutionAttemptID(attemptID),
+		Targets: []ports.WorkspaceLeaseTarget{{
+			RepositoryID: "repo-1", RepositoryWorkspaceID: workspace.RepositoryWorkspaceID(repositoryWorkspaceID), Generation: 1,
+		}},
+		TTL: 30 * time.Second,
+	}); err != nil {
+		t.Fatalf("AcquireWriteLeases: %v", err)
+	}
+
+	// A real, durable cancellation intent against this Run — the exact
+	// real production entry point, never a hand-crafted row.
+	if _, err := runtime.CancelRun(ctx, uow, ids, runtime.CancelRunRequest{
+		RunID: runID, Actor: "actor-1", Reason: "test: recovery reaper cancelling-mutating routing",
+	}); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+
+	// The driving job's own lease genuinely expires (the SAME real
+	// wall-clock technique every sibling test in this file already uses).
+	time.Sleep(150 * time.Millisecond)
+
+	handler := runtime.NewRecoveryReaperHandler(uow, ids, clock.System{}, store, store, store)
+	if err := runtime.StartupRecoveryScan(ctx, uow, ids); err != nil {
+		t.Fatalf("StartupRecoveryScan: %v", err)
+	}
+	job := firstSQLiteJobOfKind(t, ctx, store, runtime.RecoveryReaperJobKind)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	attempt, err := uowGetExecutionAttempt(ctx, uow, attemptID)
+	if err != nil {
+		t.Fatalf("get attempt: %v", err)
+	}
+	if attempt.State != runtimedomain.ExecutionAttemptIndeterminate || attempt.TerminationReason != runtimedomain.TerminationReasonOwnershipLostMutating {
+		t.Fatalf("attempt = %+v, want INDETERMINATE/OWNERSHIP_LOST_MUTATING", attempt)
+	}
+
+	nodeRun, err := uowGetNodeRun(ctx, uow, nodeRunID)
+	if err != nil {
+		t.Fatalf("get node run: %v", err)
+	}
+	if nodeRun.State != runtimedomain.NodeRunCancelled {
+		t.Fatalf("node run state = %s, want CANCELLED", nodeRun.State)
+	}
+
+	var run runtimedomain.WorkflowRun
+	var repoWorkspace workspace.RepositoryWorkspace
+	var intent runtimedomain.RunCancellationIntent
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		run, err = tx.Runtime().GetWorkflowRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		set, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, string(run.FamilyID))
+		if err != nil {
+			return err
+		}
+		repoWorkspace, err = tx.Work().GetRepositoryWorkspace(ctx, string(set.ID), "repo-1", 1)
+		if err != nil {
+			return err
+		}
+		intent, err = tx.Runtime().GetRunCancellationIntent(ctx, runID)
+		return err
+	}); err != nil {
+		t.Fatalf("read final state: %v", err)
+	}
+	if run.State != runtimedomain.WorkflowRunCancelled {
+		t.Fatalf("run.State = %s, want CANCELLED", run.State)
+	}
+	if repoWorkspace.State != workspace.RepositoryWorkspaceReady {
+		t.Fatalf("repositoryWorkspace.State = %s, want still READY (no mutation was observed)", repoWorkspace.State)
+	}
+	if intent.State == runtimedomain.CancellationIntentRequested {
+		t.Fatalf("cancellation intent state = %s, want no longer REQUESTED", intent.State)
+	}
+
+	// Replay: a second delivery of the SAME recovery job must never
+	// duplicate the Attempt-termination event or attempt a second CAS —
+	// cancelMutatingAttemptTx's own idempotency guard (attempt.State !=
+	// RUNNING) makes this a real no-op, not merely an untested assumption.
+	job2 := firstSQLiteJobOfKind(t, ctx, store, runtime.RecoveryReaperJobKind)
+	if err := handler.Handle(ctx, job2); err != nil {
+		t.Fatalf("second Handle (replay): %v", err)
+	}
+	attemptAfterReplay, err := uowGetExecutionAttempt(ctx, uow, attemptID)
+	if err != nil {
+		t.Fatalf("get attempt after replay: %v", err)
+	}
+	if attemptAfterReplay.Version != attempt.Version {
+		t.Fatalf("attempt.Version after replay = %d, want unchanged %d (no duplicate transition)", attemptAfterReplay.Version, attempt.Version)
 	}
 }
 

@@ -302,7 +302,7 @@ func (e *GateNodeExecutor) classify(
 		// the exact same cancellation path. Structurally always the
 		// simple read-only branch for a Gate (see this file's own
 		// package doc comment).
-		return classifyCancellation(ctx, e.uow, e.interruptions, e.workspaces, e.reconciler, nil, req, resolved)
+		return classifyCancellation(ctx, e.uow, e.ids, e.workspaces, nil, req, resolved)
 	}
 
 	gateResult := deriveGateResult(criteria, result, runErr, stdout)

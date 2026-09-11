@@ -296,23 +296,36 @@ func (f *v5AcceptFixture) createRootWorkItem(t *testing.T, title string, access 
 // needed here the way createRootWorkItem needs for its own provisioning.
 func (f *v5AcceptFixture) createChildWorkItem(t *testing.T, parentWorkItemID, title string, access workdomain.RepositoryAccess) appwork.CreateChildWorkItemResult {
 	t.Helper()
+	// PathScopes is deliberately nil, not []string{"**"}: scopeguard's own
+	// isAllowed (internal/app/scopeguard/guard.go) matches a PathScopes
+	// entry as a literal path PREFIX, never a glob — "**" only ever
+	// matches a changed path that itself literally starts with "**/"
+	// (existing fixtures that use "**" get away with it by also
+	// hand-crafting a fake diff path like "**/src/main.go" — see
+	// agent_node_executor_test.go's own defaultInScopeDiff doc comment).
+	// This package's own real git diffs report ordinary paths (e.g.
+	// "output.txt"), so an empty PathScopes list — the real "no path
+	// restriction, whole repository" convention normalizePathScopes
+	// itself documents (len==0 -> nil, nil, never an error) — is what a
+	// real, unrestricted WRITE grant needs here. A scenario that DOES need
+	// a real, narrower literal-prefix restriction (V5-15D's own "scope
+	// violation") calls createChildWorkItemWithPathScopes directly.
+	return f.createChildWorkItemWithPathScopes(t, parentWorkItemID, title, access, nil)
+}
+
+// createChildWorkItemWithPathScopes is createChildWorkItem with an explicit
+// PathScopes grant — V5-15D's own "scope violation" scenario needs a real,
+// narrower-than-whole-repository WRITE grant (scopeguard.isAllowed's own
+// literal-prefix match, see createChildWorkItem's own doc comment) so a
+// real diff outside it genuinely violates, rather than trivially passing
+// the unrestricted default every earlier V5-15 scenario uses.
+func (f *v5AcceptFixture) createChildWorkItemWithPathScopes(t *testing.T, parentWorkItemID, title string, access workdomain.RepositoryAccess, pathScopes []string) appwork.CreateChildWorkItemResult {
+	t.Helper()
 	ctx := context.Background()
 	result, err := appwork.CreateChildWorkItem(ctx, f.uow, f.ids, testCmd("v5a-child-"+title, ports.ProjectScope(v5AcceptProjectID), "CreateChildWorkItem"), appwork.CreateChildWorkItemRequest{
 		ParentWorkItemID: parentWorkItemID, Title: title, ParentJoinPolicy: "v5-accept-child",
 		EffectiveScope: []appwork.ScopeGrantRequest{{
-			// PathScopes is deliberately nil, not []string{"**"}: scopeguard's
-			// own isAllowed (internal/app/scopeguard/guard.go) matches a
-			// PathScopes entry as a literal path PREFIX, never a glob — "**"
-			// only ever matches a changed path that itself literally starts
-			// with "**/" (existing fixtures that use "**" get away with it by
-			// also hand-crafting a fake diff path like "**/src/main.go" — see
-			// agent_node_executor_test.go's own defaultInScopeDiff doc
-			// comment). This package's own real git diffs report ordinary
-			// paths (e.g. "output.txt"), so an empty PathScopes list — the
-			// real "no path restriction, whole repository" convention
-			// normalizePathScopes itself documents (len==0 -> nil, nil, never
-			// an error) — is what a real, unrestricted WRITE grant needs here.
-			RepositoryID: v5AcceptRepositoryID, Access: string(access), Reason: "v5-15 acceptance",
+			RepositoryID: v5AcceptRepositoryID, Access: string(access), PathScopes: pathScopes, Reason: "v5-15 acceptance",
 		}},
 	})
 	if err != nil {
@@ -469,11 +482,30 @@ func v5AcceptEventRegistry() *eventschema.Registry {
 // this fixture never wants to hide.
 func (f *v5AcceptFixture) startPool(t *testing.T, registry *workerpool.Registry) (pool *workerpool.Pool, stop func()) {
 	t.Helper()
-	pool, err := workerpool.New(f.store, registry, workerpool.Config{
+	return f.startPoolWithConfig(t, registry, workerpool.Config{
 		Concurrency: 1, Owner: "v5-accept", LeaseTTL: 2 * time.Second,
 		HeartbeatEvery: 200 * time.Millisecond, PollInterval: 10 * time.Millisecond,
 		ShutdownGrace: 2 * time.Second, RecoveryInterval: 200 * time.Millisecond,
 	})
+}
+
+// startPoolWithConfig is startPool with an explicit workerpool.Config —
+// V5-15D's own "cancel during a mutating attempt" scenario needs a real,
+// wider LeaseTTL/HeartbeatEvery than this fixture's own 2s/200ms default:
+// empirically confirmed (not guessed) that this fixture's own default
+// LeaseTTL leaves too little real margin for a real Attempt's own driving
+// job to survive real heartbeat-write contention while a real, genuinely
+// long-running process (git commit + sleep) is in flight, causing its
+// still-in-flight lease to expire and the job to be reclaimed out from
+// under itself before V5-08C's own real cancellation poller (a fixed,
+// non-configurable 500ms interval, execute.go's own cancellationPollInterval)
+// ever gets a chance to act. Every other real timing behavior this
+// package's own scenarios depend on (the 500ms cancellation poll itself,
+// ProcessSupervisor's own kill/grace escalation) is unaffected by this —
+// only the pool's own lease bookkeeping gets more real headroom.
+func (f *v5AcceptFixture) startPoolWithConfig(t *testing.T, registry *workerpool.Registry, config workerpool.Config) (pool *workerpool.Pool, stop func()) {
+	t.Helper()
+	pool, err := workerpool.New(f.store, registry, config)
 	if err != nil {
 		t.Fatalf("workerpool.New: %v", err)
 	}

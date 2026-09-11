@@ -678,6 +678,16 @@ func (r workRepository) GetRepositoryWorkspace(ctx context.Context, workspaceSet
 	return getRepositoryWorkspaceTx(ctx, r.tx, workspaceSetID, repositoryID, generation)
 }
 
+// QuarantineRepositoryWorkspace implements ports.WorkRepository (V5-15D) —
+// the tx-composable twin of Store.QuarantineRepositoryWorkspace
+// (workspace_lifecycle.go), needed so runtime's own cancellation-
+// finalization boundary can quarantine a mutated workspace in the SAME
+// atomic transaction that also CASes the owning Attempt/NodeRun and
+// reconciles Run terminality, rather than in a separate, non-atomic commit.
+func (r workRepository) QuarantineRepositoryWorkspace(ctx context.Context, update ports.QuarantineRepositoryWorkspaceUpdate) error {
+	return quarantineRepositoryWorkspaceTx(ctx, r.tx, update)
+}
+
 func getRepositoryWorkspaceTx(ctx context.Context, tx *sql.Tx, workspaceSetID, repositoryID string, generation uint64) (workspace.RepositoryWorkspace, error) {
 	row := tx.QueryRowContext(ctx, `
 SELECT `+repositoryWorkspaceColumns+`
