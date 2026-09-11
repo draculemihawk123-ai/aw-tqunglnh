@@ -49,6 +49,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/command"
@@ -185,7 +186,19 @@ func TestV5AcceptCancelDuringMutatingAttempt_RealQuarantineNeverPromotes(t *test
 
 	// The real cancel — a genuine RunCancellationIntent through the real
 	// production command, never a hand-crafted row.
-	if _, err := runtime.CancelRun(ctx, f.uow, f.ids, runtime.CancelRunRequest{
+	//
+	// Uses its own dedicated idsource.Sequential rather than f.ids: by this
+	// point the real pool worker goroutine is concurrently mid-Execute on
+	// the still-sleeping mutator COMMAND node, and reaches
+	// agentevents.Sink.buildRecord (which mints IDs via f.newCommandExecutor
+	// 's own e.ids == f.ids) at the same real wall-clock time this test's
+	// own goroutine calls CancelRun. idsource.Sequential is explicitly
+	// documented as not safe for concurrent use (confirmed the hard way: Go
+	// race detector caught this exact concurrent NewID() pair in CI's
+	// stability loop). A distinct prefix can never collide with f.ids's own
+	// sequence, so a fresh instance here is both race-free and safe.
+	cancelOperatorIDs := idsource.NewSequential("v5d-cancel-op")
+	if _, err := runtime.CancelRun(ctx, f.uow, cancelOperatorIDs, runtime.CancelRunRequest{
 		RunID: runID, Actor: "operator-1", Reason: "v5-15d cancel during mutating attempt",
 	}); err != nil {
 		t.Fatalf("CancelRun: %v", err)
