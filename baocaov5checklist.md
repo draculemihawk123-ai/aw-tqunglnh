@@ -4625,3 +4625,8 @@ không bao giờ được dùng (Start, không Resume — đã đúng từ thi�
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau đó cân nhắc: V5-13 coi như đủ để chuyển sang
 V5-14 (Cleanup/retention sweeper) theo roadmap, hay tiếp tục đóng nốt RECOVERY_NO_PROGRESS/handoff artifact
 trước — quyết định này để dành sau khi PR3 merge.
+
+**Kết quả:** PR #6, 6/6 pass. Squash-merged 2026-09-11, merge commit `eda2f80`. V5-13 coi như đạt "Hoàn
+thành khi" của chính nó (session mới không cần raw transcript/cwd cũ) — `RECOVERY_NO_PROGRESS` và handoff
+artifact V1 để dành, không blocking. Chuyển sang V5-14 (Cleanup/retention sweeper) theo roadmap — sẽ
+nghiên cứu trước khi code, đúng kỷ luật đã dùng cho mọi task V5 khác.
