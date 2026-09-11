@@ -4359,3 +4359,26 @@ go test -count=1 ./...                                                  # PASS t
 xa hơn nhiều (contract 2+3's own "Kết quả kỳ vọng" phần lớn đã thật), với đúng MỘT gap còn lại đã ghi rõ
 ("scratch ngoài source" cho AGENT) để dành cho một task sau nếu cần. Bước tiếp theo trong roadmap: V5-13
 (Checkpoint/handoff và recovery integration), theo đúng chỉ dẫn tự động chuyển task.
+
+**Gián đoạn giữa chừng — repo migration lần 2 (2026-09-11):** PR #21 (`zlinh4605/agent-workflow`) mở ra,
+nhưng CI KHÔNG chạy được — GitHub trả lỗi "recent account payments have failed" ngay lập tức (0 step nào
+chạy), giống hệt lý do repo từng phải chuyển từ `draculemihawk123-ai` sang `zlinh4605` trước đó
+(2026-09-09) — nghĩa là billing block đó chưa từng thật sự được xử lý, chỉ đổi chỗ. Xác nhận (không đoán):
+`gh api repos/zlinh4605/agent-workflow --jq .permissions` cho CẢ HAI account (`draculemihawk123-ai`,
+`taQuangLing`) đều `admin: false` — không ai trong hai account đang đăng nhập có quyền đổi tên/admin repo
+đó, nên không thể tự sửa bằng `gh repo rename`.
+
+Người dùng tạo repo MỚI, `draculemihawk123-ai/aw-tqunglnh` — cùng account từng bị chặn billing, nhưng lần
+này **Public** (hai repo trước đều Private). Push `master` + branch đang dở
+(`feat/v5-12-checker-readonly-enforcement`) sang đây, remote `origin` cũ đổi tên thành `zlinh4605-old`
+(giữ lại, không xoá) rồi thêm `origin` mới trỏ vào `aw-tqunglnh`. Mở lại PR2 tại đây thành PR #1 — **CI
+chạy được thật** (6/6 pass, kể cả job `contract` từng fail tức thì trên repo cũ). Xác nhận bằng thực nghiệm
+(không chỉ đọc tài liệu GitHub): billing block cho GitHub Actions minutes áp dụng cho repo Private, KHÔNG
+áp dụng cho repo Public — cùng một account, cùng trạng thái billing, nhưng repo Public vẫn chạy CI miễn phí
+bình thường. Đây là phát hiện quan trọng, ghi vào memory riêng
+(`agent-kit-github-remote-migration.md`) để không phải khám phá lại nếu billing lại chặn CI lần sau.
+
+Merge PR #1 (`aw-tqunglnh`), squash, merge commit `95230f3`. Repo hiện tại (remote `origin` chính thức từ
+2026-09-11): `https://github.com/draculemihawk123-ai/aw-tqunglnh.git`. Collaborator: chỉ
+`draculemihawk123-ai` (admin) — không ai khác có quyền push, nên yêu cầu "giới hạn quyền" của người dùng
+coi như đã thoả mãn sẵn, không cần đổi gì thêm.
