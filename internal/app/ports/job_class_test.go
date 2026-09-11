@@ -6,11 +6,11 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 )
 
-// TestClassifyJobKind_ControlAllowList proves the exact four real Kind
+// TestClassifyJobKind_ControlAllowList proves the exact five real Kind
 // constants confirmed with the user classify CONTROL — see this package's
 // own controlJobKinds doc comment for why each one is in this set.
 func TestClassifyJobKind_ControlAllowList(t *testing.T) {
-	for _, kind := range []string{"CANCEL_RUN_COORDINATOR", "WORKSPACE_RECONCILIATION", "WORKSPACE_SET_RELEASE", "RECOVERY_REAPER"} {
+	for _, kind := range []string{"CANCEL_RUN_COORDINATOR", "WORKSPACE_RECONCILIATION", "WORKSPACE_SET_RELEASE", "RECOVERY_REAPER", "ARTIFACT_SWEEP"} {
 		if got := ClassifyJobKind(kind); got != JobClassControl {
 			t.Fatalf("ClassifyJobKind(%q) = %q, want %q", kind, got, JobClassControl)
 		}
@@ -61,6 +61,24 @@ func TestValidateJobScope_RecoveryReaper_RequiresNoProjectOrRun(t *testing.T) {
 	}
 	if err := ValidateJobScope("RECOVERY_REAPER", project.ProjectID("project-1"), "run-1"); err == nil {
 		t.Fatal("ValidateJobScope(RECOVERY_REAPER, non-blank ProjectID, non-blank RunID) = nil, want error")
+	}
+}
+
+// TestValidateJobScope_ArtifactSweep_RequiresNoProjectOrRun mirrors
+// TestValidateJobScope_RecoveryReaper_RequiresNoProjectOrRun exactly for
+// ARTIFACT_SWEEP's own identical installation-global exemption (V5-14).
+func TestValidateJobScope_ArtifactSweep_RequiresNoProjectOrRun(t *testing.T) {
+	if err := ValidateJobScope("ARTIFACT_SWEEP", "", ""); err != nil {
+		t.Fatalf("ValidateJobScope(ARTIFACT_SWEEP, blank, blank) = %v, want nil", err)
+	}
+	if err := ValidateJobScope("ARTIFACT_SWEEP", project.ProjectID("project-1"), ""); err == nil {
+		t.Fatal("ValidateJobScope(ARTIFACT_SWEEP, non-blank ProjectID, blank) = nil, want error")
+	}
+	if err := ValidateJobScope("ARTIFACT_SWEEP", "", "run-1"); err == nil {
+		t.Fatal("ValidateJobScope(ARTIFACT_SWEEP, blank, non-blank RunID) = nil, want error")
+	}
+	if err := ValidateJobScope("ARTIFACT_SWEEP", project.ProjectID("project-1"), "run-1"); err == nil {
+		t.Fatal("ValidateJobScope(ARTIFACT_SWEEP, non-blank ProjectID, non-blank RunID) = nil, want error")
 	}
 }
 

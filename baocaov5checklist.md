@@ -4876,3 +4876,102 @@ protocol đầy đủ (dùng các primitive PR2a vừa xây), dry-run report m�
 flag, crash-safety test ở từng boundary claim/delete/finalize.
 
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge.
+
+**Kết quả:** PR #9, 6/6 pass. Squash-merged 2026-09-11, merge commit `197483c`.
+
+## PR2b — Artifact sweep job/handler (branch `feat/v5-14-artifact-sweep-job`, từ
+`origin/master` sau PR #9)
+
+**Thiết kế:** mirror gần như y hệt `internal/app/runtime.RecoveryReaperHandler` (V4-13) — job
+self-rescheduling, JobClass=CONTROL, installation-global singleton, fence bằng generation cursor riêng.
+Package mới `internal/app/artifactsweep`:
+
+- Migration 0034: widen LẠI 2 CHECK của `durable_jobs` (giống hệt migration 25 làm cho RECOVERY_REAPER,
+  lần này thêm `ARTIFACT_SWEEP`) — cả job_class allow-list lẫn "kind nào được project_id NULL". Cần
+  FK-off giống migration 25 (lý do giống hệt). Đồng bộ `internal/app/ports/job_class.go`'s own
+  `controlJobKinds`/`installationGlobalJobKinds` (Go-level authority thứ hai, mirror đúng cách RECOVERY_REAPER
+  đã làm) + test mới (`TestValidateJobScope_ArtifactSweep_RequiresNoProjectOrRun`, bump
+  `TestClassifyJobKind_ControlAllowList` từ 4 lên 5 kind).
+- Migration 0035: bảng singleton mới `artifact_sweep_state` (mirror `recovery_reaper_state`, migration 26)
+  — thêm cột `dry_run` (mặc định 1/true — đúng contract "Dry-run và report là mặc định; thao tác thật phải
+  explicit"). Không cần FK-off (bảng mới).
+- `ports.ArtifactRepository`: 3 method mới — `GetArtifactSweepState`/`AdvanceArtifactSweepGeneration`
+  (mirror đúng `RuntimeRepository.GetRecoveryReaperState`/`AdvanceRecoveryReaperGeneration`),
+  `SetArtifactSweepDryRun` (CAS flip DryRun, không cần app-layer wrapper — xác nhận `SetArtifactHold` cũng
+  chưa có wrapper nào, đúng "real method từ đầu, chưa cần caller thật" convention V5-01 đã lập).
+- Hàm thuần `classifyLocatorGroup(rows, olderThan) (decision, reason)` — decision đóng 3 giá trị: PURGE
+  (mọi row Orphan + không Hold + qua grace), BLOCKED (một row bất kỳ Attached/Held/chưa qua grace chặn CẢ
+  NHÓM), CORRUPT (content_hash/size lệch nhau giữa các row cùng Locator — fail closed, không tự sửa).
+- `ExecuteArtifactSweep`: đọc state; nếu generation đã bị vượt (job cũ redeliver sau khi job mới đã chạy)
+  → no-op giống hệt RecoveryReaperHandler; list candidate Orphan qua `ListOrphanedArtifacts` (grace = tái
+  dùng đúng 7 ngày của `RAW_OUTPUT_TEMP` — TỰ QUYẾT, ghi rõ lý do, không có "orphan grace" riêng nào khác
+  được định nghĩa ở đâu); group theo Locator (dedupe); mỗi group: classify rồi hoặc PURGE thật (dry_run=
+  false) hoặc chỉ ghi WOULD_PURGE (dry_run=true, mặc định) hoặc BLOCKED/CORRUPT (không đụng gì). Purge thật
+  = ĐÚNG 3 pha reserve→delete-ngoài-Tx→finalize (mirror `consumeFreshStart` của V5-13): (1)
+  `ClaimArtifactLocatorForPurge` — nếu `ErrPersistenceAlreadyExists` thì COI LÀ resume claim cũ của chính
+  job này (job này là singleton, không bao giờ có 2 instance chạy song song thật, nên claim cũ chỉ có thể
+  là do 1 lần crash trước đó của CHÍNH job này để lại — không phải conflict thật); (2) `ArtifactStore.Delete`
+  hẳn ngoài mọi Tx; (3) Tx riêng transition mọi row trong group sang `Purged` + release claim. Ghi manifest
+  (`SweepManifest`) thành domain event `ARTIFACT_SWEEP_COMPLETED` (AggregateType="ArtifactSweep",
+  AggregateID="singleton") — KHÔNG cần bảng mới hay method "next sequence" mới: tái dùng chính
+  `Generation+1` làm Sequence luôn (Generation vốn đã là counter CAS-fenced, đúng-một-lần-mỗi-run cho
+  CÙNG aggregate singleton này). Xong thì advance generation + tự enqueue job kế tiếp, cùng transaction.
+
+**Test:**
+- `sweep_test.go` (package nội bộ `artifactsweep`, không `_test`): bảng quyết định thuần cho
+  `classifyLocatorGroup`, 8 case (rỗng, orphan-qua-grace-1-row, orphan-qua-grace-nhiều-row-cùng-locator,
+  1-row-attached-chặn-cả-nhóm, 1-row-hold-chặn-cả-nhóm, 1-row-chưa-qua-grace-chặn-cả-nhóm,
+  hash-lệch=corrupt, size-lệch=corrupt).
+- `sweep_sqlite_test.go` (package `artifactsweep_test`, thật 100%: sqlite thật + `artifactstore.Store`
+  thật — file thật trên đĩa thật):
+  - `TestExecuteArtifactSweep_DryRunDefault_ReportsWithoutTouchingAnything` — mặc định DryRun=true, content
+    thật + row đều KHÔNG bị đụng, chỉ ghi WOULD_PURGE.
+  - `TestExecuteArtifactSweep_RealRun_DeletesContentAndMarksPurged` — sau khi flip DryRun=false: file thật
+    bị xóa thật, row chuyển Purged (Locator/ContentHash vẫn giữ nguyên — audit trail), generation advance.
+  - `TestExecuteArtifactSweep_AttachedSiblingSharesLocator_BlocksWholeGroup` — Put trùng bytes 2 lần (1
+    Orphan quá hạn, 1 Attached đang sống) → locator giống hệt nhau thật sự (xác nhận content-addressing) →
+    CẢ NHÓM bị block, file thật KHÔNG bị xóa, row Orphan vẫn giữ nguyên.
+  - `TestExecuteArtifactSweep_ResumesAfterCrashedClaim` — tự tạo claim trước (giả lập crash giữa pha 1 và
+    pha 2/3), gọi lại ExecuteArtifactSweep — resume đúng, purge thành công, không bị coi là conflict.
+  - `TestStartupArtifactSweep_EnqueuesExactlyOneJobPerGeneration` — idempotent enqueue.
+- `internal/adapters/sqlite`: `migration_0034_test.go` (mirror `migration_0025_test.go` — preserve
+  byte-for-byte + FK check + CHECK mới nhận ARTIFACT_SWEEP/từ chối project_id non-null + sabotage test),
+  `TestArtifactRepository_ArtifactSweepState_SeededDryRunThenAdvances` (seed đúng {0,true,1}, advance CAS
+  đúng, reject stale, SetArtifactSweepDryRun CAS đúng, reject stale).
+- `internal/app/ports/job_class_test.go`: `TestValidateJobScope_ArtifactSweep_RequiresNoProjectOrRun`.
+
+**Lỗi gặp khi verify (đã tự sửa, không phải bug logic):**
+- 3 test hardcode tổng số migration (đã bump 2 lần trong PR này: 32→34 sau migration 34, 34→... — thực ra
+  chỉ 2 migration mới (34+35) nên bump thẳng 32→34).
+- Một lần full-suite chạy dính `TestAdapterRegister_DuplicateIsIdempotent` (`cmd/agentkit`) timeout 5s khi
+  probe subprocess dưới tải CPU full-suite — pass 3/3 khi chạy riêng (1.1s/lần) — xác nhận flake CPU-load,
+  không phải regression, package này PR không hề chạm tới.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l <mọi file đổi>                                                 # rỗng (chỉ file thật đổi, không
+                                                                         # đụng CRLF noise của file khác)
+go test -count=1 ./internal/app/artifactsweep/... ./internal/adapters/sqlite/... ./internal/app/ports/... # PASS
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2+3 sau khi
+                                                                         # xác nhận flake, không regression)
+```
+
+**Kết quả kỳ vọng của V5-14 (design doc's own "Kết quả kỳ vọng" line) — đối chiếu:** "dry-run và actual run
+cùng tạo durable sweep manifest" ✓ (domain event mọi lần, cả 2 mode); "chỉ ORPHAN quá grace... khi không
+hold, không canonical/recovery/evidence/ReleaseSet ref và không còn row sống chung locator/hash" ✓ (scope
+hẹp Orphan-only khiến "no logical reference" tự động đúng — xem lý luận đã ghi ở "V5-14 nửa 2" phía trên;
+liveness/refcount qua ListArtifactsByLocator + classifyLocatorGroup); "canonical, held, unknown, active và
+quarantine đều được giữ" ✓ (BLOCKED chặn cả nhóm nếu có 1 row không đủ điều kiện); "Purge ba pha chịu
+crash, không gọi filesystem trong Tx và giữ metadata/hash PURGED cho audit" ✓.
+
+**Việc còn lại (ngoài phạm vi PR này, ghi rõ để dành — không phải thiếu sót bị bỏ qua):** purge một
+Attached-nhưng-hết-hạn RAW_OUTPUT_TEMP (cần reverse-index quét JSON Checkpoint/Evidence/agent_events thật
+sự) — chưa làm, vì scope PR này chỉ Orphan. Không có app-layer command wrapper cho `SetArtifactSweepDryRun`
+hay wiring `StartupArtifactSweep` vào composition root thật — đúng "chưa có real CLI wiring" pattern mọi
+task V4/V5 khác đã theo.
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau khi merge: V5-14 coi là HOÀN THÀNH (cả 2 nửa),
+chuyển sang V5-15 theo đúng thứ tự phụ thuộc roadmap.

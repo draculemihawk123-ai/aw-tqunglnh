@@ -408,3 +408,67 @@ func TestArtifactRepository_InsertArtifact_ClaimedLocator_Rejected(t *testing.T)
 		return nil
 	})
 }
+
+// TestArtifactRepository_ArtifactSweepState_SeededDryRunThenAdvances proves
+// migration 35's own seeded singleton row ({Generation:0, DryRun:true,
+// Version:1}), that AdvanceArtifactSweepGeneration bumps Generation/Version
+// by exactly one and rejects a stale caller, and that SetArtifactSweepDryRun
+// flips DryRun independent of Generation.
+func TestArtifactRepository_ArtifactSweepState_SeededDryRunThenAdvances(t *testing.T) {
+	store := openCatalogTestStore(t, "artifacts-sweep-state.db")
+	ctx := context.Background()
+
+	var seeded ports.ArtifactSweepState
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		seeded, err = artifactRepository{tx: tx}.GetArtifactSweepState(ctx)
+		return err
+	})
+	if seeded.Generation != 0 || !seeded.DryRun || seeded.Version != 1 {
+		t.Fatalf("seeded state = %+v, want {Generation:0 DryRun:true Version:1}", seeded)
+	}
+
+	var advanced ports.ArtifactSweepState
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		advanced, err = artifactRepository{tx: tx}.AdvanceArtifactSweepGeneration(ctx, ports.AdvanceArtifactSweepGenerationRequest{
+			ExpectedGeneration: 0, ExpectedVersion: 1,
+		})
+		return err
+	})
+	if advanced.Generation != 1 || advanced.Version != 2 || !advanced.DryRun {
+		t.Fatalf("advanced state = %+v, want {Generation:1 DryRun:true Version:2}", advanced)
+	}
+
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := artifactRepository{tx: tx}.AdvanceArtifactSweepGeneration(ctx, ports.AdvanceArtifactSweepGenerationRequest{
+			ExpectedGeneration: 0, ExpectedVersion: 1,
+		})
+		if !errors.Is(err, ports.ErrOptimisticConflict) {
+			t.Fatalf("stale AdvanceArtifactSweepGeneration error = %v, want ErrOptimisticConflict", err)
+		}
+		return nil
+	})
+
+	var realRun ports.ArtifactSweepState
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		realRun, err = artifactRepository{tx: tx}.SetArtifactSweepDryRun(ctx, ports.SetArtifactSweepDryRunRequest{
+			DryRun: false, ExpectedVersion: 2,
+		})
+		return err
+	})
+	if realRun.DryRun || realRun.Version != 3 || realRun.Generation != 1 {
+		t.Fatalf("state after SetArtifactSweepDryRun = %+v, want {Generation:1 DryRun:false Version:3}", realRun)
+	}
+
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := artifactRepository{tx: tx}.SetArtifactSweepDryRun(ctx, ports.SetArtifactSweepDryRunRequest{
+			DryRun: true, ExpectedVersion: 2,
+		})
+		if !errors.Is(err, ports.ErrOptimisticConflict) {
+			t.Fatalf("stale SetArtifactSweepDryRun error = %v, want ErrOptimisticConflict", err)
+		}
+		return nil
+	})
+}
