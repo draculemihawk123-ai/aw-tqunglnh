@@ -492,6 +492,13 @@ func (f *v5AcceptFixture) waitForNodeRunState(t *testing.T, runID, nodeKey strin
 	return runtimedomain.NodeRun{}
 }
 
+// waitForRunState polls until runID reaches want, or fails with the full
+// real domain-event trace for this fixture's own project — a scenario
+// this package drives fails deep inside a real router/executor/job-
+// handler chain the test itself never touches directly, so a bare
+// timeout with no trace is rarely actionable; every later V5-15 scenario
+// (B/C/D/E, each with its own fault-injection paths) benefits from this
+// same diagnostic, not just PR A's own happy path.
 func (f *v5AcceptFixture) waitForRunState(t *testing.T, runID string, want runtimedomain.WorkflowRunState) runtimedomain.WorkflowRun {
 	t.Helper()
 	ctx := context.Background()
@@ -513,7 +520,7 @@ func (f *v5AcceptFixture) waitForRunState(t *testing.T, runID string, want runti
 	}
 	if events, err := f.store.ListDomainEventsForProject(context.Background(), v5AcceptProjectID); err == nil {
 		for _, e := range events {
-			t.Logf("DEBUG event: type=%s aggregate=%s/%s payload=%s", e.EventType, e.AggregateType, e.AggregateID, e.PayloadJSON)
+			t.Logf("event trace: type=%s aggregate=%s/%s payload=%s", e.EventType, e.AggregateType, e.AggregateID, e.PayloadJSON)
 		}
 	}
 	t.Fatalf("run %s did not reach state %s within the deadline; last observed = %+v", runID, want, last)
