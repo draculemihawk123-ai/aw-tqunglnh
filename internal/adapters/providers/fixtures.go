@@ -59,6 +59,21 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 
 	input, _ := io.ReadAll(stdin)
 	workingDirectory, _ := os.Getwd()
+	// AGENTKIT_HELPER_WRITE_PATH (V5-15D): the one real, opt-in filesystem
+	// side effect this fixture ever performs beyond its own capturePath —
+	// every other mode only ever emits protocol JSONL over stdout, with
+	// zero effect on any real repository mount. A caller that needs a real
+	// AGENT process to really mutate a real path (V5-15D's own "checker
+	// write attempt" scenario, proving a CHECKER-role AGENT's real
+	// spawned write against its own real, forced-read-only mount is really
+	// rejected by validateStrictlyReadOnlyDiffs) sets this env var to that
+	// real absolute path via InheritedEnvironment/t.Setenv — production
+	// code never sets ports.AgentExecutionRequest.Environment for AGENT at
+	// all (confirmed by reading assemble_execution_request.go), so this
+	// can never fire outside a test that deliberately opts in.
+	if writePath := os.Getenv("AGENTKIT_HELPER_WRITE_PATH"); writePath != "" {
+		_ = os.WriteFile(writePath, []byte("mutated by fake CLI\n"), 0o600)
+	}
 	if capturePath != "" {
 		capture := FakeCLIInvocation{Provider: provider, Argv: arguments, Stdin: string(input), WorkingDirectory: workingDirectory}
 		captureContent, err := json.Marshal(capture)

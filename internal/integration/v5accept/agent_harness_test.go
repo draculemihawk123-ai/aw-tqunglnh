@@ -128,7 +128,10 @@ func (f *v5AcceptFixture) newClaudeAdapter(t *testing.T) *claude.Adapter {
 	t.Helper()
 	adapter, err := claude.New(f.supervisor, claude.Config{
 		Executable: v5AcceptFakeClaudeBinary(t), PermissionMode: "dontAsk",
-		InheritedEnvironment: []string{"AGENTKIT_HELPER_MODE", "AGENTKIT_HELPER_OUTCOME"},
+		// AGENTKIT_HELPER_WRITE_PATH: see fixtures.go's own doc comment —
+		// V5-15D's own "checker write attempt" scenario is the one real
+		// caller of this today.
+		InheritedEnvironment: []string{"AGENTKIT_HELPER_MODE", "AGENTKIT_HELPER_OUTCOME", "AGENTKIT_HELPER_WRITE_PATH"},
 	})
 	if err != nil {
 		t.Fatalf("claude.New: %v", err)
