@@ -5317,3 +5317,141 @@ V5-15B/C/D/E dùng lại.
 **Việc còn lại:** V5-15B (completion integrity: claim-done/gate-fail/artifact-tamper + false-completion
 oracle) — theo đúng contract 5 phần đã chốt với user, tiếp tục tự động không cần hỏi lại trừ khi gặp
 quyết định kiến trúc thật sự mới.
+
+## V5-15B — Completion integrity (branch `feat/v5-15b-completion-integrity`, merged 2026-09-11, PR #15,
+merge commit `eee4419`, CI 6/6 xanh)
+
+### Bối cảnh
+
+V5-15B (phần 2/5 trong contract 5 phần user đã chốt cho V5-15) yêu cầu: "Claim-done. Gate failure.
+Artifact tamper. False-completion oracle: không được DONE nếu thiếu bất kỳ authoritative condition nào."
+Bắt đầu ngay sau khi V5-15A merge xong (PR #13 code + PR #14 docs), theo đúng auto-continue doctrine đã
+thiết lập từ các task V5 trước — không dừng lại hỏi vì không có quyết định nào cần user tại thời điểm bắt
+đầu.
+
+### Nghiên cứu — "claim done" cần AGENT thật lần đầu tiên
+
+Không giống V5-15A (chỉ cần COMMAND+MACHINE_GATE), "claim done" đòi hỏi một node có kênh "tự tuyên bố"
+thật — COMMAND/MACHINE_GATE không có kênh này (outcome của chúng LUÔN xuất phát từ exit code thật,
+`CommandNodeExecutor.classify` không bao giờ nhận "proposed outcome"). Chỉ AGENT mới có transcript thật
+với `<agentkit-outcome>` marker — đúng thứ một false-completion oracle phải không bao giờ tin một mình.
+Tự quyết định (không cần hỏi): dùng real `claude.Adapter` + real `cmd/fake-claude` binary (build 1 lần
+qua `go build`, mirror `internal/spikeacceptance/registry_test.go`'s own `buildScenarioBinaries`), driven
+qua `AGENTKIT_HELPER_MODE=outcome-success`/`AGENTKIT_HELPER_OUTCOME=done` — đúng "recorded fake" layer
+contract đã cho phép, không phải live network call.
+
+### Phát hiện kiến trúc lớn nhất phiên này: real AGENT dispatch CHƯA BAO GIỜ hoạt động thật
+
+Khi chạy real `AgentNodeExecutor` → real `claude.Adapter` lần đầu tiên (chưa ai từng làm việc này — mọi
+test khác hoặc tự xây `AgentExecutionRequest` tay bỏ qua `AssembleAgentExecutionRequest`, hoặc dùng
+`scriptedNodeExecutor`/`fake.AgentExecutor` bỏ qua adapter thật), gặp lỗi thật: `claude.Adapter`'s own
+`validateRequest` từ chối NGAY với "context snapshot id is required". Đào sâu bằng debug print tạm thời
+thêm trực tiếp vào `agent_node_executor.go` (revert sạch trước khi commit, xác nhận qua `git diff --stat`)
+phát hiện: `AssembleAgentExecutionRequest` (V5-08B0, ĐÃ MERGE từ lâu) KHÔNG BAO GIỜ populate 4 field thật:
+`Prompt`, `WorkingDirectory`, `Timeout`, `Model` — tất cả đều rỗng/0 khi tới tay adapter thật.
+`AgentNodeExecutor.Execute` cũng KHÔNG bổ sung chúng. Đây là gap production thật, không phải lỗi thiết kế
+test — **real AGENT dispatch qua đường production CHƯA TỪNG hoạt động cho tới session này**, dù đã merge
+từ V5-08B0.
+
+**Đã hỏi user trước khi sửa production code** (đúng kỷ luật "chỉ hỏi khi gặp quyết định kiến trúc thật sự
+mới") — user chọn "Fix it now inside V5-15B" và cho MAPPING CHÍNH XÁC (trả lời verbatim, đã lưu vào memory
+`agent-kit-v5-15-acceptance-gate-contract.md`):
+
+| Field | Authoritative source |
+|---|---|
+| Prompt | Canonical rendered content của InstructionArtifact đã pin |
+| WorkingDirectory | Root của resolved writable workspace/mount |
+| Timeout | Effective timeout từ ExecutionProfile đã pin |
+| Model | Effective model từ execution/agent profile đã pin |
+| ContextSnapshotID | ID của CÙNG context snapshot mà structured field đã mang |
+
+Ràng buộc: thiếu giá trị bắt buộc phải fail closed bằng typed error; KHÔNG default, KHÔNG đọc live profile
+config tại dispatch time.
+
+### Quyết định
+
+- Fix production code NGAY trong V5-15B (theo lựa chọn của user), giữ thành COMMIT RIÊNG tách khỏi commit
+  scenario (theo đúng yêu cầu "Keep the production fix as a separate commit within V5-15B").
+- "Artifact tamper" KHÔNG mở rộng `EvaluateCompletionCandidate` để re-verify artifact bytes — tự quyết
+  định (không cần hỏi, cùng logic với V5-15A's own "prove existing mechanism fires, đừng build capability
+  mới"): `gatherCompletionCandidateEvidence` chỉ đọc DB row, việc thêm re-verify artifact vào completion
+  path là một quyết định kiến trúc RIÊNG, không nằm trong yêu cầu "artifact tamper" ban đầu — ghi nhận
+  trung thực làm một assertion thật trong test, không tự ý mở rộng phạm vi.
+
+### Thực hiện phần production fix (commit `2f676a2`)
+
+- `internal/app/runtime/execute.go`: thêm `Model string` vào `resolvedExecutionProfileView` (partial view,
+  trước đây không decode field này vì chưa ai cần).
+- `internal/app/runtime/assemble_execution_request.go`: thêm `timeoutSeconds`/`model` vào
+  `assembledRequestInputs`, thread qua từ `profile.TimeoutSeconds`/`profile.Model` (đã load sẵn từ CÙNG
+  DecisionArtifact function này vốn đã đọc — chỉ là chưa từng propagate ra ngoài). Return construction của
+  `AssembleAgentExecutionRequest` giờ set `Prompt: string(contentJSON)` (chính xác bytes vừa Put làm
+  InstructionArtifact — không đọc lại qua `store.Open`, tránh round-trip thừa), `Timeout`, `Model`,
+  `ContextSnapshotID: domainruntime.ContextSnapshotID(gathered.snapshotID)` (cast từ CÙNG snapshot ID thật,
+  không phải 2 hệ thống context riêng biệt — `ContextSnapshotPin`'s own doc comment đã ghi rõ 2 field này
+  cố ý tách biệt, không bridge).
+- `internal/app/runtime/agent_node_executor_resources.go`: `resolveAgentWorkingDirectory(mounts)` — mount
+  WRITE đầu tiên (deterministic, đã sort theo RepositoryID) làm WorkingDirectory thật.
+
+**Phát hiện phụ khi chạy full test suite sau fix:** 2 test CHECKER-role ĐÃ MERGE trước đó
+(`TestAgentNodeExecutor_CheckerRole_MutatingDiff_RejectsAsScopeViolation`,
+`TestAgentNodeExecutor_CheckerRole_EmptyDiff_Succeeds`) FAIL vì CHECKER-role AGENT (V5-12, luôn bị force
+read-only) CẤU TRÚC không bao giờ có write mount — "no write mount" ở đây không phải lỗi, mà là trạng thái
+hợp lệ đã có sẵn trong hệ thống (test còn assert rõ "empty diff succeeds" — một positive path thật). Tự
+quyết định (không cần hỏi lại — đây là fix một regression mình vừa gây ra, không phải quyết định kiến trúc
+mới): khi không có write mount, dùng `scratchDirectory()` — CHÍNH cơ chế `GateNodeExecutor` đã dùng cho
+đúng tình huống tương tự (executor read-only-by-design vẫn cần cwd thật nhưng không có mount ghi). Không
+phải phát minh mới — tái dùng precedent đã có sẵn trong chính codebase này. Sau fix:
+`go test ./internal/app/runtime/...` pass 100%, `go test ./...` toàn repo pass 100%.
+
+### Thực hiện phần scenario (commit `873b583`)
+
+- `internal/integration/v5accept/agent_harness_test.go` (harness mới, dùng chung cho B/C/D/E): build real
+  `cmd/fake-claude` 1 lần (`sync.Once`); `newClaudeAdapter`/`newAgentRegistry`/`newAgentExecutor`;
+  `registerAgentBuild` (real AdapterBuild pin từ real `Capabilities()` probe + real content hash của binary
+  thật — khớp CHÍNH XÁC với `adapterbuild.VerifyNoDrift`'s own re-probe logic, không fabricate); publish
+  Context policy + AgentProfile thật (`ProviderKey: string(ports.ProviderClaude)`).
+- `internal/integration/v5accept/claim_done_test.go`: `TestV5AcceptFalseCompletionOracle` — 3 case thật
+  (agent claim alone; agent claim + real gate FAIL; agent claim + real gate PASS), mỗi case fixture riêng,
+  tally cuối cùng assert đúng 1/3 case reach DONE. Document: START→AGENT(maker, real claim "done")→
+  [MACHINE_GATE tuỳ case]→END. Gate dùng fixed-verdict script (không cần check output thật của AGENT vì
+  AGENT — khác COMMAND — không để lại artifact filesystem nào, `fake-claude` chỉ emit protocol qua
+  stdout). WorkItem dùng `RepositoryRead` (không Write) — AGENT/Gate trong scenario này không mutate gì.
+- `internal/integration/v5accept/artifact_tamper_test.go`:
+  `TestV5AcceptArtifactTamper_RealVerifyDetectsRealCorruption` — tái dùng NGUYÊN VẸN document/script của
+  V5-15A (`v5AcceptHappyPathDocument`/`v5AcceptScripts`, cùng package) chạy tới VERIFYING, lấy Evidence
+  Artifact thật của gate_b, TAMPER bytes thật trên đĩa tại đúng content-addressed path
+  (`f.artifactObjectPath` — helper mới, tái tạo đúng sharding scheme của
+  `internal/adapters/artifactstore`), assert `Verify`/`Open` thật đều reject. Đồng thời ghi nhận trung
+  thực một giới hạn ĐÃ CÓ SẴN (không phải gap mới, không tự ý sửa): `gatherCompletionCandidateEvidence`
+  chỉ đọc DB row (Kind/Verdict), không bao giờ re-verify artifact bytes — nên completion evaluation vẫn
+  PASS dù artifact bị tamper. Test tự assert rõ ràng invariant này (không giả vờ đã sửa).
+
+### Test
+
+- `go vet ./...` sạch.
+- `go build ./...` sạch.
+- `go test ./internal/app/runtime/...` pass 100% (bao gồm 2 test CHECKER-role đã regress rồi được fix).
+- `go test ./internal/integration/v5accept/...` pass, chạy lặp lại 3 lần liên tiếp không flake.
+- `go test ./...` (toàn repo) pass 100%, chạy lại lần cuối trước khi mở PR cũng pass 100%.
+- `go run ./cmd/docs-coverage-check` pass (`debt = 0`).
+- `gofmt -l` sạch trên mọi file mới/sửa.
+
+### Verify
+
+- Debug print tạm thời thêm trực tiếp vào `agent_node_executor.go` (2 lần: 1 lần in toàn bộ request, 1 lần
+  in riêng từng field) để xác định CHÍNH XÁC field nào rỗng trước khi quyết định fix — cách làm giống hệt
+  V5-15A (đọc log thật, đọc code thật, không đoán). Đã revert sạch, `git diff --stat` xác nhận không còn gì
+  dư trên các file production trước khi commit.
+- CI 6/6 xanh ngay lần chạy đầu (bao gồm "Linux race and stability (V0-12)", 12m48s — quan trọng vì PR này
+  sửa code liên quan tới concurrency/dispatch thật).
+
+### Kết quả
+
+PR #15, branch `feat/v5-15b-completion-integrity`, 2 commit (`2f676a2` production fix riêng,
+`873b583` scenario code), CI 6/6 xanh ngay lần đầu, squash-merge vào `master` — merge commit `eee4419`,
+2026-09-11.
+
+**Việc còn lại:** V5-15C (recovery/availability: crash/checkpoint recovery, provider loss, adapter drift,
+isolation unavailable; xác minh replay không tạo trùng Attempt/activation/artifact/event) — theo đúng
+contract 5 phần, tiếp tục tự động không cần hỏi lại trừ khi gặp quyết định kiến trúc thật sự mới.
