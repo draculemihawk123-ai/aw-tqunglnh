@@ -4630,3 +4630,124 @@ trước — quyết định này để dành sau khi PR3 merge.
 thành khi" của chính nó (session mới không cần raw transcript/cwd cũ) — `RECOVERY_NO_PROGRESS` và handoff
 artifact V1 để dành, không blocking. Chuyển sang V5-14 (Cleanup/retention sweeper) theo roadmap — sẽ
 nghiên cứu trước khi code, đúng kỷ luật đã dùng cho mọi task V5 khác.
+
+PR docs-only ghi lại việc merge PR3 + quyết định này mở riêng (PR #7, `docs/v5-13-pr3-postmerge`, merge
+commit `1861f68`) — CI của PR đó dính lại đúng flake đã biết
+`TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns` (`internal/adapters/process`, không
+liên quan gì tới diff docs-only) — xử lý bằng `gh run rerun --failed`, không phải sửa code.
+
+# V5-14 — Cleanup/retention sweeper
+
+## Bối cảnh và nghiên cứu trước khi code
+
+Design doc tự nhận task này "CHƯA ĐỦ DỮ KIỆN" giống hệt V5-11/12/13 trước khi mỗi task đó được scope —
+cùng kỷ luật nghiên cứu trước khi viết code được áp dụng lại. V5-14 tự nhận sở hữu HAI việc riêng biệt:
+
+1. **`ExecuteWorkspaceSetRelease`** — phần thực thi filesystem/Git thật của `RequestWorkspaceSetRelease`
+   (V3-11 chỉ ghi intent + enqueue job `WORKSPACE_SET_RELEASE`, chưa có consumer nào cho job đó).
+2. **Artifact purge/delete** — dọn owned temp/orphan/expired artifact thật (xóa file CAS thật) — thao tác
+   filesystem hủy diệt ĐẦU TIÊN thật sự trong toàn bộ hệ thống này.
+
+Đọc kỹ `internal/app/workspacerelease/commands.go`'s own doc comment (package này tự nói rõ:
+`ExecuteWorkspaceSetRelease` "thuộc V5-14", package `workspacerelease` không import bất kỳ thứ gì có thể
+chạm workspace I/O — có test archtest riêng chứng minh, `TestRequestWorkspaceSetReleaseNeverImportsWorkspaceIO`).
+Đọc `internal/archtest/boundary_test.go`'s own hai test song song
+(`TestRequestWorkspaceReconciliationNeverImportsWorkspaceIO` / `TestRequestWorkspaceSetReleaseNeverImportsWorkspaceIO`)
+— cả hai chỉ parse import của DUY NHẤT file `commands.go`, không phải cả package — nghĩa là thêm
+`handler.go` (file mới, cùng package, có I/O thật) là ĐÚNG pattern `workspacereconcile` đã thiết lập
+(`handler.go` riêng, `commands.go` sạch I/O) — không cần package mới, không vi phạm boundary test hiện có.
+
+**Phát hiện cốt lõi (đọc code, không đoán): hầu hết mọi primitive `ExecuteWorkspaceSetRelease` cần ĐÃ CÓ
+SẴN**, không cần thêm port/domain mới:
+- `ports.WorkspaceLifecycle.ReleaseRepositoryWorkspace` — CAS READY→RELEASED đã có, đã test (V3-11).
+- `ports.WorkRepository.TransitionWorkspaceSetState` — CAS chung cho WorkspaceSet.State, generic, không tự
+  validate transition hợp lệ (đọc `sqlite/work.go`'s own `transitionWorkspaceSetStateTx` — chỉ so
+  ExpectedState/ExpectedVersion, không có transition-graph validator riêng cho WorkspaceSetState) — nghĩa
+  là handler mới TỰ quyết định transition nào hợp lệ, y hệt cách `workspaceprovision.Handler` đã làm.
+- `ports.WorkspaceProvider.Release` — real I/O (`git worktree remove`), ĐÃ idempotent sẵn (no-op nếu đã
+  released — đọc `gitworktree/provider.go`'s own `Release`: check `isReleased` trước, return nil sớm) và
+  từ chối nếu dirty (`ErrWorkspaceDirty`) — không phải capability mới, chỉ cần orchestrate.
+- `workspace.WorkspaceSetReleasing`/`RepositoryWorkspaceReleasing` — hai state ĐÃ tồn tại trong domain từ
+  trước (0001_initial_schema.sql era) nhưng CHƯA từng được transition vào bởi bất kỳ code nào (grep xác
+  nhận: 0 non-test reference). `RepositoryWorkspaceReleasing` không dùng được — không port nào transition
+  vào nó (`ports.WorkspaceLifecycle` chỉ có 3 method, không có method thứ 4 cho RELEASING) — thêm method
+  mới cho nó sẽ là thay đổi port, ngoài phạm vi "chỉ orchestrate cái đã có". `WorkspaceSetReleasing` THÌ
+  dùng được — `TransitionWorkspaceSetState` là CAS chung, nhận NextState bất kỳ, không cần đổi port —
+  dùng nó làm marker "release đang chạy" ở tầng WorkspaceSet, không dùng ở tầng RepositoryWorkspace.
+
+**Quyết định tự chốt (không cần hỏi user) — "per-repository release result/retry schema"** (một trong các
+contract design doc liệt kê "phải khóa trước khi code"): KHÔNG cần schema mới. Cột `state` sẵn có của mỗi
+`RepositoryWorkspace` (READY/RELEASED/QUARANTINED) CHÍNH LÀ kết quả + cơ chế retry — đọc lại state tươi mỗi
+lần chạy (kể cả sau crash) đã đủ để biết repo nào xong, repo nào chưa, không cần cột/bảng mới. Tương tự,
+`WorkspaceSetReleasing` (transition trước khi chạm bất kỳ RepositoryWorkspace nào, transition sang
+RELEASED chỉ sau khi mọi entry đã RELEASED) là durable marker đủ cho crash-resume ở tầng Set.
+
+**Không tự ý làm nửa kia (Artifact purge/delete):** đây là thao tác hủy diệt filesystem THẬT SỰ đầu tiên
+trong hệ thống (khác `ReleaseRepositoryWorkspace` — chỉ xóa một working-tree checkout tái tạo được, không
+phải nội dung gốc/evidence). Theo đúng nguyên tắc đã áp dụng suốt phiên này (dừng lại hỏi user trước một
+capability hủy diệt MỚI, tự làm khi chỉ là orchestrate cái đã có) — phần này để dành, chưa động tới trong
+PR này.
+
+## PR1 — ExecuteWorkspaceSetRelease (branch `feat/v5-14-workspace-set-release-executor`, từ
+`origin/master`)
+
+**Thiết kế:** mirror đúng cấu trúc `internal/app/workspacereconcile/handler.go` (file mới, cùng package
+`workspacerelease`):
+- Hàm thuần `classifyRepositoryWorkspaceRelease(state) (action, error)` — SKIP nếu đã RELEASED, RELEASE
+  nếu READY, BLOCKED nếu QUARANTINED, lỗi cho state khác (không bao giờ nên tới được đây nếu eligibility
+  check lúc request-time đúng) — unit test bảng (`handler_test.go`, package nội bộ `workspacerelease`
+  không phải `_test`, giống `recovery_reaper_internal_test.go` của V5-13 — hàm và action đều unexported).
+- `ExecuteWorkspaceSetRelease(ctx, deps, request) error`: đọc `WorkspaceSet` tươi qua
+  `GetWorkspaceSetByFamilyID`; nếu đã RELEASED → no-op (idempotent); nếu đang RELEASING → resume, bỏ qua
+  transition đầu; nếu READY/BLOCKED/FAILED → transition sang RELEASING trước; sau đó release từng
+  RepositoryWorkspace (real I/O ngoài mọi Tx, giống mọi handler khác trong codebase này); nếu MỘT entry
+  QUARANTINED giữa chừng → trả lỗi typed `ErrRepositoryWorkspaceQuarantinedDuringRelease`, dừng toàn bộ
+  (không release phần còn lại, WorkspaceSet ở lại RELEASING cho operator xử lý) — đúng bar "không release
+  quarantined workspace". Chỉ khi MỌI entry đã RELEASED mới transition RELEASING→RELEASED.
+- `Handler`/`NewHandler` implement `workerpool.Handler` cho `WorkspaceSetReleaseJobKind`, y hệt
+  `workspacereconcile.Handler`'s own shape (đặt tên `NewHandler` thay vì `New` vì package này đã có
+  `RequestWorkspaceSetRelease` ở tầng command, không trùng tên nhưng để rõ ràng hơn).
+
+**Test:**
+- `handler_test.go` (package `workspacerelease`, không `_test`): bảng quyết định thuần cho
+  `classifyRepositoryWorkspaceRelease`, 6 case (RELEASED/READY/QUARANTINED/PROVISIONING/RELEASING/FAILED).
+- `handler_sqlite_test.go` (package `workspacerelease_test`, thật 100%: sqlite thật + `gitworktree.Provider`
+  thật + `workerpool.Pool` thật, mirror đúng `workspacereconcile_test`'s own `newRealFixture`):
+  - `TestEndToEnd_Release_ReadyWorkspaceSet_ReleasesRepositoryAndSet` — happy path đầy đủ: worktree thật bị
+    xóa thật trên đĩa (`git worktree remove`), RepositoryWorkspace + WorkspaceSet đều RELEASED.
+  - `TestEndToEnd_Release_IdempotentReplay_SecondRunIsNoOp` — chạy lại y hệt sau khi đã RELEASED xong,
+    không lỗi, không đổi state (giả lập crash-recovery reclaim job).
+  - `TestEndToEnd_Release_QuarantinedMidFlight_RefusesAndPreservesEvidence` — quarantine thật (qua
+    `store.QuarantineRepositoryWorkspace` — API thật, không giả lập) SAU KHI request đã enqueue nhưng
+    TRƯỚC KHI handler chạy — chứng minh recheck tại execution-time, không tin request-time, evidence
+    QUARANTINED giữ nguyên, WorkspaceSet không đạt RELEASED.
+
+**Lỗi gặp khi viết test (đã tự sửa, không phải bug ở code chính):**
+- Ban đầu dùng `f.rw.Version` (version của RepositoryWorkspace) làm `ExpectedVersion` cho lệnh
+  `RequestWorkspaceSetRelease` — sai, field đó fence theo version của WorkspaceSet, không phải
+  RepositoryWorkspace. Sửa: đọc `f.reloadWorkspaceSet(t).Version` tươi.
+  - `provisionHandler.Handle(ctx, job)` gọi TRỰC TIẾP (không qua workerpool thật) khiến job
+  `WORKSPACE_PROVISION` CreateRootWorkItem tự enqueue vẫn nằm "active" trong `durable_jobs` — vì
+  `RequestWorkspaceSetRelease`'s own eligibility check (`HasActiveJobForAggregateIDs`) xét CẢ AggregateID
+  của WorkspaceSet (không chỉ từng RepositoryWorkspace) nên bị chính job provisioning cũ chặn. Khác với
+  `workspacereconcile_test`'s own fixture (không hit vấn đề này vì eligibility check của nó chỉ xét theo
+  RepositoryWorkspaceID). Sửa: chạy job provisioning qua `workerpool.Pool` thật (claim→Handle→complete),
+  không gọi `Handle` trực tiếp.
+  - So sánh `workspace.WorkspaceSet` bằng `!=` trực tiếp thất bại vì `BaseRevisionSet` là con trỏ
+  (`*workspace.RevisionSet`) — hai lần load cùng nội dung ra hai con trỏ khác nhau. Sửa: so từng field
+  (ID/State/Version) thay vì so cả struct.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l internal/app/workspacerelease/*.go                             # rỗng (sau gofmt -w qua CRLF do stash)
+go test -count=1 ./internal/app/workspacerelease/...                    # PASS, bao gồm 3 test E2E + bảng quyết định
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake)
+```
+
+**Việc còn lại (không blocking PR này):** phần Artifact purge/delete (nửa kia của V5-14) — để dành, sẽ
+nghiên cứu kỹ và có thể cần hỏi user trước khi code (capability hủy diệt mới).
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge.
