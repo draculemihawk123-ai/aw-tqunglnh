@@ -294,6 +294,75 @@ func (r artifactRepository) ReleaseArtifactLocatorClaim(ctx context.Context, loc
 	return nil
 }
 
+// GetArtifactSweepState implements ports.ArtifactRepository, mirroring
+// runtimeRepository.GetRecoveryReaperState exactly.
+func (r artifactRepository) GetArtifactSweepState(ctx context.Context) (ports.ArtifactSweepState, error) {
+	var generation, version uint64
+	var dryRun bool
+	err := r.tx.QueryRowContext(ctx,
+		`SELECT generation, dry_run, version FROM artifact_sweep_state WHERE id = 'singleton'`,
+	).Scan(&generation, &dryRun, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.ArtifactSweepState{}, fmt.Errorf("%w: artifact sweep state", ports.ErrPersistenceNotFound)
+	}
+	if err != nil {
+		return ports.ArtifactSweepState{}, MapSQLiteError(fmt.Errorf("load artifact sweep state: %w", err))
+	}
+	return ports.ArtifactSweepState{Generation: generation, DryRun: dryRun, Version: version}, nil
+}
+
+// AdvanceArtifactSweepGeneration implements ports.ArtifactRepository: the
+// fenced CAS that bumps Generation by exactly one, mirroring
+// runtimeRepository.AdvanceRecoveryReaperGeneration exactly.
+func (r artifactRepository) AdvanceArtifactSweepGeneration(ctx context.Context, req ports.AdvanceArtifactSweepGenerationRequest) (ports.ArtifactSweepState, error) {
+	now := formatWorkflowTime(time.Now().UTC())
+	result, err := r.tx.ExecContext(ctx, `
+UPDATE artifact_sweep_state
+SET generation = generation + 1, version = version + 1, updated_at = ?
+WHERE id = 'singleton' AND generation = ? AND version = ?`,
+		now, req.ExpectedGeneration, req.ExpectedVersion,
+	)
+	if err != nil {
+		return ports.ArtifactSweepState{}, MapSQLiteError(fmt.Errorf("advance artifact sweep generation: %w", err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return ports.ArtifactSweepState{}, fmt.Errorf("read artifact sweep generation advance result: %w", err)
+	}
+	if affected != 1 {
+		return ports.ArtifactSweepState{}, fmt.Errorf(
+			"%w: artifact sweep state expected generation=%d version=%d",
+			ports.ErrOptimisticConflict, req.ExpectedGeneration, req.ExpectedVersion,
+		)
+	}
+	return r.GetArtifactSweepState(ctx)
+}
+
+// SetArtifactSweepDryRun implements ports.ArtifactRepository: the fenced
+// CAS an explicit operator action uses to flip DryRun.
+func (r artifactRepository) SetArtifactSweepDryRun(ctx context.Context, req ports.SetArtifactSweepDryRunRequest) (ports.ArtifactSweepState, error) {
+	now := formatWorkflowTime(time.Now().UTC())
+	result, err := r.tx.ExecContext(ctx, `
+UPDATE artifact_sweep_state
+SET dry_run = ?, version = version + 1, updated_at = ?
+WHERE id = 'singleton' AND version = ?`,
+		req.DryRun, now, req.ExpectedVersion,
+	)
+	if err != nil {
+		return ports.ArtifactSweepState{}, MapSQLiteError(fmt.Errorf("set artifact sweep dry run: %w", err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return ports.ArtifactSweepState{}, fmt.Errorf("read artifact sweep dry run update result: %w", err)
+	}
+	if affected != 1 {
+		return ports.ArtifactSweepState{}, fmt.Errorf(
+			"%w: artifact sweep state expected version=%d", ports.ErrOptimisticConflict, req.ExpectedVersion,
+		)
+	}
+	return r.GetArtifactSweepState(ctx)
+}
+
 // sensitivityToDB/sensitivityFromDB round-trip redact.Sensitivity (a plain
 // int enum with no String() method of its own) through this table's own
 // closed-set TEXT column — no other adapter in this codebase persists

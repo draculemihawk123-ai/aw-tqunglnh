@@ -121,6 +121,47 @@ type ArtifactRepository interface {
 	// never an error, the same "already resolved" discipline every other
 	// real-I/O operation in this codebase follows.
 	ReleaseArtifactLocatorClaim(ctx context.Context, locator string) error
+	// GetArtifactSweepState reads the one, singleton artifact_sweep_state
+	// row (migration 35) — mirrors RuntimeRepository.GetRecoveryReaperState
+	// exactly, for the sibling ARTIFACT_SWEEP self-rescheduling CONTROL job
+	// (internal/app/artifactsweep). Returns ErrPersistenceNotFound only if
+	// migration 35 itself somehow never ran.
+	GetArtifactSweepState(ctx context.Context) (ArtifactSweepState, error)
+	// AdvanceArtifactSweepGeneration is the fenced CAS the sweep's own
+	// self-rescheduling job uses to bump Generation by exactly one,
+	// mirroring RuntimeRepository.AdvanceRecoveryReaperGeneration.
+	// ErrOptimisticConflict on a stale caller.
+	AdvanceArtifactSweepGeneration(ctx context.Context, req AdvanceArtifactSweepGenerationRequest) (ArtifactSweepState, error)
+	// SetArtifactSweepDryRun is the fenced CAS an explicit operator action
+	// uses to flip DryRun independent of Generation — this task's own
+	// contract: "Dry-run và report là mặc định; thao tác thật phải
+	// explicit." ErrOptimisticConflict on a stale caller.
+	SetArtifactSweepDryRun(ctx context.Context, req SetArtifactSweepDryRunRequest) (ArtifactSweepState, error)
+}
+
+// ArtifactSweepState is the retention sweeper's own singleton generation
+// cursor plus its DryRun mode (V5-14, migration 35) — mirrors
+// RecoveryReaperState's own identical generation-cursor shape, with DryRun
+// added since this coordinator, unlike RecoveryReaper, has a real/no-op
+// distinction an operator must explicitly cross.
+type ArtifactSweepState struct {
+	Generation uint64
+	DryRun     bool
+	Version    uint64
+}
+
+// AdvanceArtifactSweepGenerationRequest is the CAS request for
+// ArtifactRepository.AdvanceArtifactSweepGeneration (V5-14).
+type AdvanceArtifactSweepGenerationRequest struct {
+	ExpectedGeneration uint64
+	ExpectedVersion    uint64
+}
+
+// SetArtifactSweepDryRunRequest is the CAS request for
+// ArtifactRepository.SetArtifactSweepDryRun (V5-14).
+type SetArtifactSweepDryRunRequest struct {
+	DryRun          bool
+	ExpectedVersion uint64
 }
 
 // TransitionArtifactAttachStateRequest is the CAS request for

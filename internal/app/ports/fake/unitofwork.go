@@ -1079,6 +1079,10 @@ type ArtifactRepository struct {
 	// Locator, not by any one Artifact row's ID — see
 	// ClaimArtifactLocatorForPurge's own doc comment.
 	locatorClaims map[string]artifactLocatorClaim
+	// sweepState mirrors RuntimeRepository's own reaperState field —
+	// lazily seeded on first read, this fake having no migration mechanism
+	// of its own to run migration 35's own seed through.
+	sweepState *ports.ArtifactSweepState
 }
 
 // artifactLocatorClaim mirrors one artifact_locator_purge_claims row.
@@ -1098,7 +1102,12 @@ func (a *ArtifactRepository) cloneWith(catalog *CatalogRepository) *ArtifactRepo
 	for k, v := range a.locatorClaims {
 		claims[k] = v
 	}
-	return &ArtifactRepository{catalog: catalog, artifacts: artifacts, locatorClaims: claims}
+	var sweepState *ports.ArtifactSweepState
+	if a.sweepState != nil {
+		copied := *a.sweepState
+		sweepState = &copied
+	}
+	return &ArtifactRepository{catalog: catalog, artifacts: artifacts, locatorClaims: claims, sweepState: sweepState}
 }
 
 // InsertArtifact mirrors sqlite's insertArtifactTx: rec.ProjectID must name
@@ -1215,6 +1224,47 @@ func (a *ArtifactRepository) ClaimArtifactLocatorForPurge(_ context.Context, loc
 func (a *ArtifactRepository) ReleaseArtifactLocatorClaim(_ context.Context, locator string) error {
 	delete(a.locatorClaims, locator)
 	return nil
+}
+
+// GetArtifactSweepState mirrors sqlite's GetArtifactSweepState: lazily
+// seeds {Generation: 0, DryRun: true, Version: 1} on first read, mirroring
+// migration 35's own seeded singleton row.
+func (a *ArtifactRepository) GetArtifactSweepState(_ context.Context) (ports.ArtifactSweepState, error) {
+	if a.sweepState == nil {
+		a.sweepState = &ports.ArtifactSweepState{Generation: 0, DryRun: true, Version: 1}
+	}
+	return *a.sweepState, nil
+}
+
+// AdvanceArtifactSweepGeneration mirrors sqlite's identical method.
+func (a *ArtifactRepository) AdvanceArtifactSweepGeneration(_ context.Context, req ports.AdvanceArtifactSweepGenerationRequest) (ports.ArtifactSweepState, error) {
+	if a.sweepState == nil {
+		a.sweepState = &ports.ArtifactSweepState{Generation: 0, DryRun: true, Version: 1}
+	}
+	if a.sweepState.Generation != req.ExpectedGeneration || a.sweepState.Version != req.ExpectedVersion {
+		return ports.ArtifactSweepState{}, fmt.Errorf(
+			"fake: %w: artifact sweep state expected generation=%d version=%d",
+			ports.ErrOptimisticConflict, req.ExpectedGeneration, req.ExpectedVersion,
+		)
+	}
+	a.sweepState.Generation++
+	a.sweepState.Version++
+	return *a.sweepState, nil
+}
+
+// SetArtifactSweepDryRun mirrors sqlite's identical method.
+func (a *ArtifactRepository) SetArtifactSweepDryRun(_ context.Context, req ports.SetArtifactSweepDryRunRequest) (ports.ArtifactSweepState, error) {
+	if a.sweepState == nil {
+		a.sweepState = &ports.ArtifactSweepState{Generation: 0, DryRun: true, Version: 1}
+	}
+	if a.sweepState.Version != req.ExpectedVersion {
+		return ports.ArtifactSweepState{}, fmt.Errorf(
+			"fake: %w: artifact sweep state expected version=%d", ports.ErrOptimisticConflict, req.ExpectedVersion,
+		)
+	}
+	a.sweepState.DryRun = req.DryRun
+	a.sweepState.Version++
+	return *a.sweepState, nil
 }
 
 // QueryStore is an in-memory ports.QueryStore that is always reachable.

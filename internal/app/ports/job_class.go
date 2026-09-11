@@ -58,11 +58,17 @@ var ErrRunCancelling = errors.New("workflow run is cancelling or cancelled: no n
 // one, so a rename mismatch between this Go map and that CHECK's own SQL
 // text fails a test immediately (mirroring migration 23's own doc comment
 // on why the CHECK exists as a second authority, not just this map).
+//
+// ARTIFACT_SWEEP joined in V5-14: the retention sweeper's own
+// self-rescheduling CONTROL job (internal/app/artifactsweep,
+// ArtifactSweepJobKind), mirroring RECOVERY_REAPER's own shape exactly —
+// migration 34 widens the identical CHECK constraint again.
 var controlJobKinds = map[string]bool{
 	"CANCEL_RUN_COORDINATOR":   true,
 	"WORKSPACE_RECONCILIATION": true,
 	"WORKSPACE_SET_RELEASE":    true,
 	"RECOVERY_REAPER":          true,
+	"ARTIFACT_SWEEP":           true,
 }
 
 // ClassifyJobKind derives a job's JobClass from its Kind via this fixed,
@@ -93,8 +99,15 @@ func ClassifyJobKind(kind string) JobClass {
 // (CANCEL_RUN_COORDINATOR, WORKSPACE_RECONCILIATION,
 // WORKSPACE_SET_RELEASE) still requires a real ProjectID — CONTROL-ness
 // and installation-global-ness are independent axes, not the same thing.
+//
+// ARTIFACT_SWEEP (V5-14) joins this exemption for the identical reason: a
+// content-addressed Locator can be shared by Artifact rows across
+// different Projects (0027_artifacts.sql's own "content_hash is
+// deliberately NOT unique"), so the sweep itself cannot be pinned to any
+// one Project any more than RECOVERY_REAPER's own sweep can.
 var installationGlobalJobKinds = map[string]bool{
 	"RECOVERY_REAPER": true,
+	"ARTIFACT_SWEEP":  true,
 }
 
 // ValidateJobScope enforces EnqueueJobRequest's own Project/Run scoping

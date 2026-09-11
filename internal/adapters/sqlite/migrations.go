@@ -113,6 +113,11 @@ var migrationsRequiringForeignKeysOff = map[int]bool{
 	// (0028_messages.sql) means artifacts is not empty by the time this
 	// migration runs against any real database.
 	32: true,
+	// 34 (V5-14, 0034_artifact_sweep_job_class.sql) widens durable_jobs'
+	// own two CHECK constraints again, the identical way migration 25 did
+	// for RECOVERY_REAPER — see that migration's own doc comment for why
+	// durable_jobs specifically needs this treatment.
+	34: true,
 }
 
 // Migrate applies every pending numbered migration in version order. Each
