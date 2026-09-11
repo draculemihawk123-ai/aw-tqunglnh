@@ -4519,3 +4519,57 @@ go test -count=1 ./internal/app/runtime/...                             # PASS t
 **Việc còn lại:** gofmt, docs-coverage-check, full test suite ×2, commit, push, mở PR, chờ CI 6/6, merge.
 Sau đó tiếp tục PR2/PR3 (bộ thực thi FRESH_START 3-pha thật + fixture mutation-observed thật + typed
 RECOVERY_NO_PROGRESS + handoff artifact V1), theo đúng chỉ dẫn tự động chuyển task.
+
+**Kết quả:** PR #4, 6/6 pass lần đầu (không bị "Queued" delay lần này). Squash-merged 2026-09-11, merge
+commit `f25566e`.
+
+## V5-13 — PR2: bộ thực thi FRESH_START thật, Phase 1 (branch `feat/v5-13-fresh-start-executor`, từ
+`origin/master` sau PR #4)
+
+**Thực hiện:** `consumeFreshStart` (hàm mới) — Phase 1 thật của flow 3-pha design doc mô tả: MỘT
+transaction reserve Attempt thay thế (deterministic ID từ `(interruptedAttemptID, generation)`, đúng
+contract người dùng đã chốt), clone V5 ContextSnapshot từ checkpoint's own snapshot (TÁI DÙNG NGUYÊN
+pattern `retryAttempt` đã có cho RETRY — không viết logic clone mới), pin `LastCheckpointID` (field đã có
+sẵn trên `ExecutionAttempt` từ trước, CHƯA từng được đọc/ghi ở đâu — tái dùng đúng mục đích thay vì thêm
+field mới), enqueue EXECUTE_NODE job, VÀ ghi `RecoveryDecisionKind` DecisionArtifact — TẤT CẢ trong CÙNG
+một transaction (khác ESCALATE, vốn chỉ ghi decision). Idempotent: nếu deterministic Attempt ID đã tồn
+tại (redelivery), no-op ngay — không tạo Attempt/Snapshot/job thứ hai.
+
+**Refactor:** tách `recordDecision`'s own thân transaction thành `writeRecoveryDecisionArtifactTx` (hàm
+thuần, nhận `tx` có sẵn) — dùng chung bởi `recordDecision` (ESCALATE, tự mở transaction riêng) và
+`consumeFreshStart` (FRESH_START, gọi bên trong transaction reserve của chính nó). `recordDecision` không
+còn nhánh FRESH_START nữa (đã chuyển hẳn sang `consumeFreshStart`).
+
+**Deterministic ID:** `deterministicRecoveryAttemptID`/`deterministicRecoverySnapshotID` — mirror ĐÚNG
+convention sha256/hex/truncated-16-byte đã có từ `deterministicJoinNodeRunID` (advance.go) và
+`deterministicCompletionDecisionID` (completion_policy.go, V5-11) — không phát minh cách mới.
+
+**Quyết định về test (cân nhắc kỹ lần thứ 3, không lặng lẽ bỏ qua — và tìm được xác nhận mạnh):** vẫn
+KHÔNG dựng sqlite fixture "mutation observed" thật. Lần này đào sâu hơn để hiểu TẠI SAO khó: `current_revision`
+(cột DB `ReconcileMutatingAttempt` so sánh) KHÔNG BAO GIỜ được UPDATE bởi bất kỳ production code nào sau
+khi tạo — chỉ INSERT (luôn base==current). Không có port nào tạo được cặp base/current KHÁC nhau ngoài
+raw SQL (private, không truy cập được từ package test ngoài). Xác nhận thêm bằng cách đọc
+CHÍNH test hiện có của `internal/app/workspacereconcile` (package sở hữu khái niệm reconcile) —
+`handler_sqlite_test.go`'s own mutation test CŨNG chỉ gọi `worker.ReconcileMutatingAttempt` với 2 chuỗi
+tay, KHÔNG dựng fixture DB thật với current≠base. Đây là tiền lệ ĐÃ CÓ SẴN trong chính codebase này, xác
+nhận: test logic thuần (đã làm, `TestDecideRecoveryNextAction`) là đúng convention đã được team này chấp
+nhận, không phải tôi lười — dựng sqlite fixture thật cho kịch bản này chưa từng được ai làm, kể cả ở nơi
+"đáng lẽ" phải làm nhất.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go run ./cmd/docs-coverage-check                                        # debt = 0
+gofmt -l internal/app/runtime/recovery_reaper.go                        # rỗng
+go test -count=1 -run "TestRecoveryReaperHandler|TestDecideRecoveryNextAction" ./internal/app/runtime/... # không regress
+go test -count=1 ./...                                                  # PASS toàn bộ (lần 1+2, không flake)
+```
+
+**Chưa làm (PR3):** wire `RecoveryCheckpoint` vào `AssembleAgentExecutionRequest` thật — khi Attempt có
+`LastCheckpointID` được pin (dấu hiệu "đây là replacement của FRESH_START"), request cho AGENT phải set
+`RecoveryCheckpoint` (field placeholder đã có trên `ports.AgentExecutionRequest` từ trước); COMMAND/GATE
+không cần xử lý gì thêm (dispatch như bình thường, không có khái niệm session/Resume). `RECOVERY_NO_PROGRESS`
+(so sánh frontier giữa nhiều chu kỳ FRESH_START) và handoff artifact V1 vẫn để dành sau.
+
+**Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge.

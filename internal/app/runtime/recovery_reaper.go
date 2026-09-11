@@ -83,6 +83,8 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -444,10 +446,14 @@ func (h *RecoveryReaperHandler) recoverOneAttempt(ctx context.Context, attempt r
 	hasCheckpoint := mutationObserved && h.hasUsableCheckpoint(ctx, attempt.ID)
 
 	action, reason := decideRecoveryNextAction(mutationObserved, hasCheckpoint, runCancelling, budgetRemains, string(recovery.Reason))
-	if action == RecoveryActionRetry {
+	switch action {
+	case RecoveryActionRetry:
 		return h.retryAttempt(ctx, attempt, nodeRun, run)
+	case RecoveryActionFreshStart:
+		return h.consumeFreshStart(ctx, attempt, nodeRun, run, payload, reason, policyVersionID, attemptRules)
+	default:
+		return h.recordDecision(ctx, attempt, nodeRun, run, payload, action, reason, policyVersionID, attempt, attemptRules)
 	}
-	return h.recordDecision(ctx, attempt, nodeRun, run, payload, action, reason, policyVersionID, attempt, attemptRules)
 }
 
 // RecoveryReasonAttemptsExhausted is a typed override for
@@ -619,62 +625,210 @@ func (h *RecoveryReaperHandler) retryAttempt(ctx context.Context, attempt runtim
 }
 
 // recordDecision persists a RecoveryDecisionKind DecisionArtifact plus its
-// own RECOVERY_DECISION_RECORDED event — ESCALATE/FRESH_START's own shared
-// closing step.
+// own RECOVERY_DECISION_RECORDED event — ESCALATE's own closing step.
+// FRESH_START no longer goes through this function (see consumeFreshStart
+// below, 2026-09-11 V5-13 PR2): a FRESH_START decision must be recorded
+// ATOMICALLY with reserving its own replacement Attempt/Snapshot/job, not
+// as a separate, later transaction — writeRecoveryDecisionArtifactTx is
+// the shared body both this function and consumeFreshStart call.
 func (h *RecoveryReaperHandler) recordDecision(
 	ctx context.Context, attempt runtimedomain.ExecutionAttempt, nodeRun runtimedomain.NodeRun, run runtimedomain.WorkflowRun,
 	payload RecoveryReaperJobPayload, action RecoveryNextAction, reason, policyVersionID string,
 	sourceAttempt runtimedomain.ExecutionAttempt, attemptRules policyAttemptRules,
 ) error {
 	return h.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
-		result := recoveryDecisionResult{
-			NextAction: string(action), Reason: reason, PolicyVersionID: policyVersionID,
-			AttemptsUsed: uint32(sourceAttempt.AttemptNumber), MaxAttempts: attemptRules.MaxAttempts,
-		}
-		if action == RecoveryActionFreshStart && h.recovery != nil {
-			if checkpoint, err := h.recovery.LoadLatestCheckpoint(ctx, attempt.ID); err == nil {
-				result.CheckpointID = string(checkpoint.ID)
-				result.ContextSnapshotID = string(checkpoint.ContextSnapshotID)
-			}
-		}
-		resultJSON, err := json.Marshal(result)
+		return writeRecoveryDecisionArtifactTx(ctx, tx, attempt, nodeRun, run, payload, action, reason, policyVersionID, sourceAttempt, attemptRules, nil)
+	})
+}
+
+// recoveryCheckpointRef is the already-resolved Checkpoint/ContextSnapshot
+// pair a FRESH_START decision names — resolved once by consumeFreshStart
+// (which also needs the real Checkpoint to clone a Snapshot from) and
+// threaded straight into writeRecoveryDecisionArtifactTx, rather than that
+// shared function re-loading it a second time in the same transaction.
+type recoveryCheckpointRef struct {
+	checkpointID      string
+	contextSnapshotID string
+}
+
+// writeRecoveryDecisionArtifactTx is recordDecision/consumeFreshStart's own
+// shared closing step — persists one RecoveryDecisionKind DecisionArtifact
+// plus its own RECOVERY_DECISION_RECORDED event. checkpointRef is nil for
+// ESCALATE (nothing to name) and populated for FRESH_START.
+func writeRecoveryDecisionArtifactTx(
+	ctx context.Context, tx ports.Tx, attempt runtimedomain.ExecutionAttempt, nodeRun runtimedomain.NodeRun, run runtimedomain.WorkflowRun,
+	payload RecoveryReaperJobPayload, action RecoveryNextAction, reason, policyVersionID string,
+	sourceAttempt runtimedomain.ExecutionAttempt, attemptRules policyAttemptRules, checkpointRef *recoveryCheckpointRef,
+) error {
+	result := recoveryDecisionResult{
+		NextAction: string(action), Reason: reason, PolicyVersionID: policyVersionID,
+		AttemptsUsed: uint32(sourceAttempt.AttemptNumber), MaxAttempts: attemptRules.MaxAttempts,
+	}
+	if checkpointRef != nil {
+		result.CheckpointID = checkpointRef.checkpointID
+		result.ContextSnapshotID = checkpointRef.contextSnapshotID
+	}
+	resultJSON, err := json.Marshal(result)
+	if err != nil {
+		return fmt.Errorf("marshal recovery decision result: %w", err)
+	}
+	inputJSON, err := json.Marshal(recoveryDecisionInput{
+		AttemptID: string(attempt.ID), NodeRunID: string(nodeRun.ID), RunID: string(run.ID),
+		TerminationReason: reason, RecoveryGeneration: payload.Generation,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal recovery decision input: %w", err)
+	}
+	artifactPolicyVersion := policyVersionID
+	if artifactPolicyVersion == "" {
+		artifactPolicyVersion = "none"
+	}
+	artifact, err := runtimedomain.NewDecisionArtifact(
+		runtimedomain.DecisionArtifactID(string(attempt.ID)+"-recovery-decision-gen-"+fmt.Sprint(payload.Generation)),
+		run.ProjectID, RecoveryDecisionKind, artifactPolicyVersion, inputJSON, resultJSON, time.Now().UTC(),
+	)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Runtime().RecordDecisionArtifact(ctx, artifact); err != nil {
+		return err
+	}
+
+	eventPayload, err := json.Marshal(recoveryDecisionRecordedEventPayload{
+		AttemptID: string(attempt.ID), NodeRunID: string(nodeRun.ID), RunID: string(run.ID),
+		WorkItemID: string(run.WorkItemID), NextAction: string(action), Reason: reason,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal %s event payload: %w", RecoveryDecisionRecordedEventType, err)
+	}
+	return tx.Events().Append(ctx, ports.DomainEvent{
+		ID: string(artifact.ID) + "-event", ProjectID: string(run.ProjectID),
+		AggregateType: "RecoveryDecision", AggregateID: string(artifact.ID), Sequence: 1,
+		EventType: RecoveryDecisionRecordedEventType, SchemaVersion: RecoveryDecisionRecordedSchemaVersion,
+		PayloadJSON: string(eventPayload), CorrelationID: payload.CorrelationID, CreatedAt: time.Now().UTC(),
+	})
+}
+
+// deterministicRecoveryAttemptID/deterministicRecoverySnapshotID are
+// V5-13's own contract, confirmed with the user verbatim (2026-09-11):
+// "recovery activation ID phải dẫn xuất deterministic từ Attempt bị crash
+// và recovery generation" — a REPLAY of the same (interrupted attempt,
+// generation) pair must derive the SAME replacement Attempt/Snapshot ID,
+// so consumeFreshStart's own idempotent-no-op guard (a second delivery
+// finds the row already there) is what makes replay safe, never a second
+// replacement. Mirrors the identical sha256/hex/truncated-16-byte
+// convention this codebase already established for every other
+// deterministic ID (deterministicJoinNodeRunID, advance.go;
+// deterministicCompletionDecisionID, completion_policy.go).
+func deterministicRecoveryAttemptID(interruptedAttemptID runtimedomain.ExecutionAttemptID, generation uint64) string {
+	sum := sha256.Sum256([]byte("recovery-fresh-start-attempt" + "\x00" + string(interruptedAttemptID) + "\x00" + fmt.Sprint(generation)))
+	return "recovery-attempt-" + hex.EncodeToString(sum[:16])
+}
+
+func deterministicRecoverySnapshotID(interruptedAttemptID runtimedomain.ExecutionAttemptID, generation uint64) string {
+	sum := sha256.Sum256([]byte("recovery-fresh-start-snapshot" + "\x00" + string(interruptedAttemptID) + "\x00" + fmt.Sprint(generation)))
+	return "recovery-snapshot-" + hex.EncodeToString(sum[:16])
+}
+
+// consumeFreshStart is V5-13's own real Phase 1 (2026-09-11, PR2):
+// "Tx reserve Attempt mới, tạo V5 Snapshot mới bind replacement Attempt và
+// enqueue EXECUTE_NODE ... Tx claim decision đúng một lần" — reserves a
+// replacement ExecutionAttempt (AttemptNumber+1, deterministic ID),
+// clones the checkpoint's own referenced ContextSnapshot for it (the
+// IDENTICAL "clone Snapshot for a new Attempt" pattern retryAttempt above
+// already uses for RETRY — a recovery-driven fresh start needs its own
+// bound Snapshot exactly as much as a technical retry does), pins
+// LastCheckpointID on the new Attempt (so AssembleAgentExecutionRequest's
+// own future consumer, V5-13 PR3, knows to set RecoveryCheckpoint for
+// AGENT), enqueues its own EXECUTE_NODE job, and records the
+// RecoveryDecisionKind DecisionArtifact — all atomically in ONE
+// transaction, so a redelivered reaper job for the identical (interrupted
+// attempt, generation) pair either finds everything already there (its
+// own deterministic IDs collide) and no-ops, or nothing at all exists yet
+// and the whole reservation commits together.
+//
+// Never calls a real ports.AgentExecutor.Start itself (this whole handler
+// is JobClass=CONTROL — see this file's own package doc comment for why
+// that would be a structural violation): dispatch is the EXISTING
+// ExecuteNodeHandler's own job, unchanged, the same as for any other
+// EXECUTE_NODE job this codebase already enqueues.
+func (h *RecoveryReaperHandler) consumeFreshStart(
+	ctx context.Context, attempt runtimedomain.ExecutionAttempt, nodeRun runtimedomain.NodeRun, run runtimedomain.WorkflowRun,
+	payload RecoveryReaperJobPayload, reason, policyVersionID string, attemptRules policyAttemptRules,
+) error {
+	return h.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		current, err := tx.Runtime().GetNodeRun(ctx, string(nodeRun.ID))
 		if err != nil {
-			return fmt.Errorf("marshal recovery decision result: %w", err)
+			return err
 		}
-		inputJSON, err := json.Marshal(recoveryDecisionInput{
-			AttemptID: string(attempt.ID), NodeRunID: string(nodeRun.ID), RunID: string(run.ID),
-			TerminationReason: reason, RecoveryGeneration: payload.Generation,
-		})
+		if current.State != runtimedomain.NodeRunRunning {
+			// Already moved on since the read-only classification pass —
+			// idempotent no-op, mirroring retryAttempt's own guard.
+			return nil
+		}
+
+		nextAttemptIDStr := deterministicRecoveryAttemptID(attempt.ID, payload.Generation)
+		if _, err := tx.Runtime().GetExecutionAttempt(ctx, nextAttemptIDStr); err == nil {
+			// A previous delivery already reserved this exact replacement —
+			// idempotent no-op, never a second Attempt/Snapshot/job for the
+			// same (interrupted attempt, generation) pair.
+			return nil
+		} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
+			return err
+		}
+
+		if h.recovery == nil {
+			return errors.New("runtime: recovery reaper has no RecoveryStore, cannot consume a FRESH_START decision")
+		}
+		checkpoint, err := h.recovery.LoadLatestCheckpoint(ctx, attempt.ID)
 		if err != nil {
-			return fmt.Errorf("marshal recovery decision input: %w", err)
+			return fmt.Errorf("load latest checkpoint for fresh start: %w", err)
 		}
-		artifactPolicyVersion := policyVersionID
-		if artifactPolicyVersion == "" {
-			artifactPolicyVersion = "none"
+		previousSnapshot, err := tx.ContextSnapshots().GetSnapshot(ctx, string(checkpoint.ContextSnapshotID))
+		if err != nil {
+			return fmt.Errorf("load checkpoint's own context snapshot: %w", err)
 		}
-		artifact, err := runtimedomain.NewDecisionArtifact(
-			runtimedomain.DecisionArtifactID(string(attempt.ID)+"-recovery-decision-gen-"+fmt.Sprint(payload.Generation)),
-			run.ProjectID, RecoveryDecisionKind, artifactPolicyVersion, inputJSON, resultJSON, time.Now().UTC(),
+
+		nextAttempt, err := runtimedomain.NewExecutionAttempt(
+			runtimedomain.ExecutionAttemptID(nextAttemptIDStr), attempt.NodeRunID, attempt.AttemptNumber+1,
+			attempt.ExecutionProfileHash, attempt.ProviderKey, attempt.InputRevisionSet,
 		)
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Runtime().RecordDecisionArtifact(ctx, artifact); err != nil {
+		checkpointID := checkpoint.ID
+		nextAttempt.LastCheckpointID = &checkpointID
+
+		nextSnapshotID := contextsnapshot.ID(deterministicRecoverySnapshotID(attempt.ID, payload.Generation))
+		clonedSnapshot, err := contextsnapshot.NewSnapshot(
+			nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshot.AttemptID(nextAttemptIDStr),
+			previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.EvidenceRefs, previousSnapshot.Revisions, h.clk.Now(),
+		)
+		if err != nil {
+			return err
+		}
+		nextAttempt.ContextSnapshotID = &nextSnapshotID
+
+		if _, err := tx.Runtime().CreateExecutionAttempt(ctx, nextAttempt); err != nil {
+			return err
+		}
+		if _, err := tx.ContextSnapshots().CreateSnapshot(ctx, clonedSnapshot); err != nil {
 			return err
 		}
 
-		eventPayload, err := json.Marshal(recoveryDecisionRecordedEventPayload{
-			AttemptID: string(attempt.ID), NodeRunID: string(nodeRun.ID), RunID: string(run.ID),
-			WorkItemID: string(run.WorkItemID), NextAction: string(action), Reason: reason,
-		})
+		jobPayload, err := json.Marshal(ExecuteNodeJobPayload{RunID: string(run.ID), NodeRunID: string(nodeRun.ID), AttemptID: nextAttemptIDStr})
 		if err != nil {
-			return fmt.Errorf("marshal %s event payload: %w", RecoveryDecisionRecordedEventType, err)
+			return fmt.Errorf("marshal %s fresh-start job payload: %w", ExecuteNodeJobKind, err)
 		}
-		return tx.Events().Append(ctx, ports.DomainEvent{
-			ID: string(artifact.ID) + "-event", ProjectID: string(run.ProjectID),
-			AggregateType: "RecoveryDecision", AggregateID: string(artifact.ID), Sequence: 1,
-			EventType: RecoveryDecisionRecordedEventType, SchemaVersion: RecoveryDecisionRecordedSchemaVersion,
-			PayloadJSON: string(eventPayload), CorrelationID: payload.CorrelationID, CreatedAt: time.Now().UTC(),
-		})
+		if _, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+			ID: ports.JobID(h.ids.NewID()), ProjectID: run.ProjectID, Kind: ExecuteNodeJobKind, RunID: string(run.ID),
+			AggregateType: "ExecutionAttempt", AggregateID: nextAttemptIDStr, Payload: jobPayload,
+			MaxClaims: defaultExecuteNodeJobMaxClaims, IdempotencyKey: "execute-" + nextAttemptIDStr,
+		}); err != nil {
+			return err
+		}
+
+		checkpointRef := &recoveryCheckpointRef{checkpointID: string(checkpoint.ID), contextSnapshotID: string(checkpoint.ContextSnapshotID)}
+		return writeRecoveryDecisionArtifactTx(ctx, tx, attempt, nodeRun, run, payload, RecoveryActionFreshStart, reason, policyVersionID, attempt, attemptRules, checkpointRef)
 	})
 }
