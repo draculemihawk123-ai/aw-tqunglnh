@@ -5046,3 +5046,143 @@ PR E chạy được toàn bộ matrix, dù A/B/C/D đã merge độc lập trư
 **Việc còn lại:** bắt đầu V5-15A — thiết kế + xây composition thật (Router+executors+CompletionPolicy+
 ReleaseSet) chạy 1 multi-node Run thật tới SUCCEEDED/DONE, verify được sau restart, cộng reusable scenario
 harness cho B/C/D/E dùng lại.
+
+**Kết quả:** PR #11 (docs, ghi lại contract 5 phần), 6/6 pass, squash-merged 2026-09-11, merge commit
+`7041811`.
+
+## V5-15A — Báo cáo nghiên cứu chi tiết, bàn giao cho session sau (2026-09-11)
+
+User yêu cầu: sau khi PR docs merge xong, viết báo cáo chi tiết để session sau triển khai tiếp — CHƯA code
+V5-15A trong phiên này, chỉ nghiên cứu sâu để phiên sau bắt tay vào code ngay không cần dò lại từ đầu.
+Toàn bộ nghiên cứu dưới đây (một phần từ background Explore agent, phần còn lại tự tôi verify trực tiếp
+bằng grep/đọc code — LUÔN tự kiểm chứng lại phát hiện của agent trước khi tin) đã lưu đầy đủ vào memory
+`agent-kit-v5-15-acceptance-gate-contract.md`; bản này trong checklist là bản đầy đủ nhất, đọc file này
+trước khi code.
+
+### Phát hiện cốt lõi nhất: "no DB shortcut" rule của user LOẠI TRỪ kỹ thuật fixture đã có sẵn
+
+`internal/app/runtime/completion_policy_test.go`'s own `seedRunEvidence` helper (dòng 151-191) tạo NodeRun/
+ExecutionAttempt/Evidence THẲNG bằng `tx.Runtime().CreateNodeRun`/`CreateExecutionAttempt`/`CreateEvidence`
+— bỏ qua hoàn toàn CommandNodeExecutor/GateNodeExecutor thật (file tự ghi rõ: "bypassing the real
+CommandNodeExecutor pipeline entirely"). Đây CHÍNH XÁC là kiểu "sửa DB trực tiếp để tạo ra kết quả cần
+kiểm chứng" mà user đã cấm trong contract V5-15. **Kết luận: V5-15A KHÔNG được tái dùng kỹ thuật này —
+Evidence cho completion candidate phải đến từ một CommandNodeExecutor/GateNodeExecutor THẬT chạy qua
+NodeExecutorRouter thật, dispatch bởi ExecuteNodeHandler thật.**
+
+### Không có test nào từng spawn process thật cho Command/Gate executor
+
+Grep xác nhận `gate_node_executor_test.go`/`command_node_executor_test.go` chỉ dùng `fake.ProcessSupervisor`
+— chưa từng có test nào spawn process thật cho 2 executor này (khác `internal/adapters/process/
+supervisor_test.go`, vốn test adapter process ở tầng thấp hơn, không qua CommandNodeExecutor). V5-15A sẽ là
+lần ĐẦU TIÊN. Cần một binary/script thật, cross-platform (Windows+Linux CI), đơn giản (exit 0 + có thể ghi
+stdout), tương tự cách `cmd/fake-claude`/`cmd/fake-codex` đã làm cho AGENT — có thể tái dùng kỹ thuật đó
+(một `cmd/` binary nhỏ mới, hoặc dùng lại chính `cmd/fake-claude`/`fake-codex` nếu COMMAND node authoring
+cho phép trỏ argv vào một binary Go build sẵn trong CI).
+
+### Quyết định tự chốt: bắt đầu bằng COMMAND + MACHINE_GATE, CHƯA cần AGENT/provider cho happy path
+
+Design doc nói "agent→command→gate→checker→ReleaseSet→end" nhưng đó là tên đầy đủ các loại node cần phủ
+*cuối cùng* (qua cả A-E), không phải yêu cầu bắt buộc PR A phải có AGENT. COMMAND + MACHINE_GATE dùng
+CHUNG một `ports.ProcessSupervisor` thật — không cần AGENT thật (tức không cần "recorded provider" —
+xem mục dưới) cho riêng PR A. Điều này giảm đáng kể độ phức tạp bước đầu: AGENT/CHECKER role/scripted
+fake-CLI provider để dành cho phần cần chúng thật sự (V5-15B's own "claim-done" cần một AGENT maker tự
+xưng done; V5-15C's own "provider loss" cần một AGENT/provider thật để mất kết nối).
+
+### API thật đã xác nhận (đọc trực tiếp, không đoán) — dùng nguyên văn khi code
+
+- `runtime.EvaluateCompletionCandidate(ctx, uow, ids, clk, cmd, EvaluateCompletionCandidateRequest{RunID})`
+  — 1 hàm duy nhất, `cmd.ExpectedVersion` = version của WorkflowRun quan sát được. `completion_policy.go`
+  dòng 179.
+- `loadLatestReleaseSetGate` (dòng 373): nếu family CHƯA có ReleaseSet nào → `satisfied: true` (mặc định
+  qua!) — nghĩa là PR A vẫn PHẢI tạo+seal ReleaseSet thật để chứng minh path đó hoạt động, vì nếu bỏ qua,
+  completion vẫn PASS nhưng không test được gì về ReleaseSet cả.
+- `work.CreateReleaseSet(ctx, uow, ids, cmd, CreateReleaseSetRequest{ProjectID, FamilyID, Repositories})`
+  rồi `work.SealReleaseSet(ctx, uow, cmd, SealReleaseSetRequest{ReleaseSetID})` (`cmd.ExpectedVersion` =
+  version ReleaseSet). `Repositories` cần `BaseVCSObjectID`/`ResultVCSObjectID` (dùng SHA thật từ git
+  fixture) + `Verdict` (kiểu `gate.Verdict`, ví dụ "PASS").
+- `runtime.NewCommandNodeExecutor(uow, ids, store /*ArtifactStore*/, workspaces /*WorkspaceProvider*/,
+  writeLeases, supervisor /*ProcessSupervisor*/, secrets /*SecretResolver*/, registry /*eventschema*/,
+  matcher /*redact.Matcher*/, checkpoints /*agentevents.CheckpointStore*/, clk, interruptions, reconciler)`
+  — **`*sqlite.Store` MỘT INSTANCE thỏa mãn structurally CẢ writeLeases (ports.WriteLeaseManager, xác nhận
+  `var _ ports.WriteLeaseManager = (*Store)(nil)` tại scheduling.go:861), checkpoints
+  (agentevents.CheckpointStore — có `StoreCheckpoint`, checkpoint_store.go:19), interruptions VÀ
+  reconciler** (RecoveryReaperHandler đã dùng đúng `store, store, store` cho 3 tham số tương tự — comment
+  gốc: "it satisfies all three spike-era interfaces structurally"). `NewGateNodeExecutor` shape tương tự,
+  bớt `writeLeases` (Gate không cần acquire write lease). Chỉ CẦN NEW thật: `gitworktree.Provider`
+  (WorkspaceProvider), `artifactstore.Store` (ArtifactStore), `process.Supervisor`/`processadapter.
+  NewSupervisor()` (ProcessSupervisor), `secretenv.Resolver` (SecretResolver).
+- `runtime.NodeExecutorRouter{Agent, Command, Gate}` implements `ports.NodeExecutor` — truyền thẳng vào
+  `runtime.NewExecuteNodeHandler(uow, ids, executor, clk, isolationChecker, agentRegistry)` thay vì
+  scriptedNodeExecutor.
+- Evidence Kind cho COMMAND cố định: `runtimedomain.EvidenceKindCommandExecution = "COMMAND_EXECUTION"`.
+  Evidence Kind cho MACHINE_GATE là `criterion.EvidenceKey` — TỰ ĐẶT ở authoring time trên từng
+  `gate.Criterion`, phải khớp CHÍNH XÁC với `policy.CompletionRules.RequiredEvidenceKinds` mình khai.
+
+### Template tái dùng — `internal/integration/runtimeengine_test.go` (2062 dòng, V4-14 sở hữu)
+
+Đã có SẴN: real `*sqlite.Store` + real `workerpool.Pool` + ĐỦ mọi real job handler (Scheduler,
+NodeSchedulingHandler, ExecuteNodeHandler, WaitTimeoutHandler, ApprovalTimeoutHandler,
+RequestScopeExpansionHandler, ScopeExpansionReconcileHandler, workspaceprovision.Handler,
+CancelRunCoordinatorHandler, RecoveryReaperHandler) + một WorkflowDocument multi-node thật (đủ 10
+NodeType). Nhược điểm: dùng `scriptedNodeExecutor` (fake outcome theo NodeKey) VÀ `scriptedWorkspaceProvider`
+(fake, không phải gitworktree thật) — vì scope V4-14 CHỦ ĐÍCH không cần real Git (V3-12 đã gate rồi) và
+CHỦ ĐÍCH dừng ở VERIFYING ("real completion/COMPLETED authority là V5-11's own job... deliberately out of
+V4-14's scope" — dòng 26). **Kết luận: đây là template wiring rất mạnh để copy PHONG CÁCH
+(registerRuntimeEngineHandlers/newRuntimeEnginePool/seedREProject), nhưng V5-15A phải là một fixture MỚI,
+KHÔNG patch file này** — nó đã là gate riêng 2000+ dòng của V4-14, tự khép kín, và cần real Git (thay
+scriptedWorkspaceProvider bằng gitworktree.Provider thật) + real executor thật (thay scriptedNodeExecutor
+bằng NodeExecutorRouter thật) — hai thay đổi đủ lớn để xứng đáng một file/fixture riêng của V5-15, đặt có
+thể tại `internal/integration/` (cùng chỗ) hoặc một package mới `internal/integration/v5accept` — session
+sau tự quyết định, chưa cần hỏi user (không phải quyết định kiến trúc lớn).
+
+### spikeacceptance package: chỉ tham khảo STYLE, không cắắm vào được
+
+`internal/spikeacceptance` (SPKID cố định đúng 14 giá trị, `RequiredSPKIDs()` hardcode) là cơ chế
+V0-spike-specific, KHÔNG phải harness tổng quát. `SemanticDiff` (semantic_diff.go) so sánh 2 `SPKResult`
+đã có sẵn — kiểu chặt, không generic. V5-15E's own "semantic diff giữa expected và persisted state" nên
+XÂY một comparator MỚI cùng phong cách (typed result struct + so sánh field cố định + allowlist cho
+platform/timing noise), KHÔNG cố nhét vào package `spikeacceptance` (sẽ phá invariant "đúng 14 scenario"
+của nó).
+
+### CompletionPolicy's real evaluator CHƯA từng chạy qua real sqlite
+
+`completion_policy_test.go` chỉ dùng `fake.UnitOfWork`. `completion_sqlite_test.go` (sqlite thật) chỉ chứng
+minh Run tới được VERIFYING bền vững, KHÔNG BAO GIỜ gọi `EvaluateCompletionCandidate`. V5-15A sẽ là lần đầu
+tiên hàm này chạy qua real SQLite + verify được sau restart — đúng tinh thần "Hoàn thành khi" của cả V5-15.
+
+### Checker write injection (dành cho V5-15D, nghiên cứu trước cho tiện) — ĐÃ có detection thật
+
+Tự grep xác nhận (sửa lại phát hiện ban đầu của background agent — nó chỉ thấy `forceReadOnlyMounts`,
+BỎ SÓT phần dưới): `internal/app/runtime/agent_node_executor_resources.go:355` —
+`strictReadOnly := profile.Role == workflow.AgentRoleChecker`, feed vào `validateStrictlyReadOnlyDiffs`
+(dòng 311) bên trong `buildEvidence` — detection diff THẬT đã có từ PR V5-12, không cần xây mới. V5-15D chỉ
+cần dựng 1 kịch bản AGENT Checker thật có process thật cố ghi đè lên workspace, rồi xác nhận
+`buildEvidence` reject đúng.
+
+### Đề xuất chia nhỏ tiếp bên trong V5-15A (session sau tự quyết định thứ tự, không phải quyết định cần hỏi
+user — nằm trong phạm vi "Router + executors + CompletionPolicy + ReleaseSet" user đã chốt)
+
+1. Fixture project/repo real Git (mirror `workspacereconcile_test.go`'s own `newRealFixture` — real
+   `createReconcileFixtureGitRepository` kỹ thuật) + real `workspaceprovision.Handler` với
+   `gitworktree.Provider` thật (không phải `scriptedWorkspaceProvider`).
+2. Một binary/script thật, cross-platform, cho COMMAND node spawn qua `processadapter.NewSupervisor()`
+   thật (exit 0 nhanh) — cân nhắc thêm 1 `cmd/` binary Go nhỏ mới nếu cần argv/output cụ thể, hoặc tái
+   dùng script inline (`sh -c`/`cmd /c`) nếu đơn giản đủ và test matrix Windows/Linux đều chạy được.
+3. WorkflowDocument tối giản: START -> COMMAND(maker, real spawn, output artifact) -> MACHINE_GATE(checker,
+   1 criterion EvidenceKey tự đặt, verdict PASS thật dựa trên output COMMAND) -> END, `CompletionPolicyRef`
+   trỏ một `policy.CompletionRules{RequiredEvidenceKinds: [criterion's EvidenceKey]}` thật, publish qua
+   `workflow.Compile`/`tx.Definitions().PublishWorkflowVersion` thật.
+4. Real `NodeExecutorRouter{Command: real, Gate: real}` đăng ký vào `ExecuteNodeHandler` thật qua
+   `registerRuntimeEngineHandlers`-style helper (copy pattern, sửa `executor`/`workspaceprovision.New`).
+5. Real `CreateReleaseSet`+`SealReleaseSet` cho family, dùng VCS SHA thật từ git fixture.
+6. Chạy pool thật tới VERIFYING (dùng lại kỹ thuật driving loop có sẵn), rồi gọi
+   `EvaluateCompletionCandidate` thật → xác nhận Outcome=PASS, Run=SUCCEEDED, WorkItem=DONE.
+7. `store.Close()` + `sqlite.Open()` lại (restart thật) → load lại toàn bộ trace
+   WorkItem→Run→NodeRun→Attempt→ContextSnapshot→RevisionSet→Evidence/Artifact ID+hash→ReleaseSet→
+   DecisionArtifact, assert mọi ID/hash còn nguyên, đọc lại được y hệt.
+8. Rút phần fixture-building (project/repo/document/pool) thành helper tái dùng được cho V5-15B/C/D/E —
+   "reusable scenario harness" user yêu cầu trong contract.
+
+**Việc còn lại:** session sau bắt đầu code V5-15A theo 8 bước trên, KHÔNG cần hỏi lại user về những quyết
+định đã tự chốt ở trên (COMMAND+GATE trước AGENT, vị trí file mới, thứ tự 8 bước) — chỉ hỏi nếu gặp một
+quyết định kiến trúc thật sự mới phát sinh khi code (mirroring đúng kỷ luật đã dùng suốt session này).
