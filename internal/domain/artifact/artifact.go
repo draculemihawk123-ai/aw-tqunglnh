@@ -69,9 +69,10 @@ func (c RetentionClass) Valid() bool {
 const rawOutputTempTTL = 7 * 24 * time.Hour
 
 // AttachState is whether an Artifact row is trusted, referenceable
-// evidence (Attached) or exists only for investigation/eventual cleanup
-// (Orphan) — docs/architecture/04-go-core-spec.md §11.2's own "Artifact MAY
-// được lưu với nhãn untrusted/orphan để điều tra".
+// evidence (Attached), exists only for investigation/eventual cleanup
+// (Orphan), or has had its own underlying content deleted by a retention
+// sweeper (Purged) — docs/architecture/04-go-core-spec.md §11.2's own
+// "Artifact MAY được lưu với nhãn untrusted/orphan để điều tra".
 type AttachState string
 
 const (
@@ -85,12 +86,24 @@ const (
 	// Attached is confirmed, referenceable evidence — durable AND
 	// hash-verified AND vouched for by whatever transaction attached it.
 	Attached AttachState = "ATTACHED"
+	// Purged is set only once a retention sweeper (V5-14) has actually
+	// deleted this row's own underlying ports.ArtifactStore content — the
+	// row itself, its own ContentHash/Locator/timestamps, is deliberately
+	// NEVER deleted (ADR-017: "Context/evidence metadata và hash được giữ
+	// để audit dù payload evidence đã hết hạn") — only ever reached from
+	// Orphan (never from Attached — this task's own scope never purges
+	// currently-attached evidence). A row transitions here only after the
+	// sweeper has confirmed, atomically, that no other Artifact row
+	// (anywhere, any Project) still shares its own Locator as a live
+	// reference — see the sweeper's own package doc comment for the full
+	// reserve/delete/finalize protocol this state is the terminal step of.
+	Purged AttachState = "PURGED"
 )
 
 // Valid reports whether s is one of this package's own known states.
 func (s AttachState) Valid() bool {
 	switch s {
-	case Orphan, Attached:
+	case Orphan, Attached, Purged:
 		return true
 	default:
 		return false

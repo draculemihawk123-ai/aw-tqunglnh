@@ -228,6 +228,93 @@ func TestVerify_DetectsCorruption(t *testing.T) {
 	}
 }
 
+// TestDelete_RemovesContent_ThenIsIdempotent is V5-14's own bar: Delete
+// actually removes the content, and calling it again against the exact
+// same (now-absent) ref is a safe no-op, never an error — the same
+// "already resolved" idempotency every other real-I/O operation in this
+// codebase follows.
+func TestDelete_RemovesContent_ThenIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	ref, err := store.Put(ctx, ports.ArtifactMetadata{}, bytes.NewReader([]byte("delete me")))
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	path, _, err := store.resolvePath(ref)
+	if err != nil {
+		t.Fatalf("resolvePath: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("stat before delete: %v", err)
+	}
+
+	if err := store.Delete(ctx, ref); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("content still present after Delete (err=%v)", err)
+	}
+
+	if err := store.Delete(ctx, ref); err != nil {
+		t.Fatalf("second Delete (idempotent replay) err = %v, want nil", err)
+	}
+}
+
+// TestDelete_HashMismatch_RefusesAndLeavesContentInPlace is V5-14's own
+// "kiểm hash nghiêm ngặt" bar: Delete must refuse to remove content whose
+// real, on-disk hash/size no longer matches what ref itself claims —
+// exactly the same corruption/drift signal Verify already detects, reused
+// here rather than duplicated — and it must leave the file untouched when
+// it refuses.
+func TestDelete_HashMismatch_RefusesAndLeavesContentInPlace(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	ref, err := store.Put(ctx, ports.ArtifactMetadata{}, bytes.NewReader([]byte("original content")))
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	path, _, err := store.resolvePath(ref)
+	if err != nil {
+		t.Fatalf("resolvePath: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("a totally different payload"), 0o600); err != nil {
+		t.Fatalf("simulate on-disk drift: %v", err)
+	}
+
+	if err := store.Delete(ctx, ref); !errors.Is(err, ErrIntegrity) {
+		t.Fatalf("Delete err = %v, want ErrIntegrity", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("content should still be present after a refused delete: %v", err)
+	}
+}
+
+// TestDelete_AlreadyAbsent_IsANoOp covers content that was never written
+// (or already removed by a prior sweep) at all — Delete must not error
+// just because there was nothing to do.
+func TestDelete_AlreadyAbsent_IsANoOp(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	ref := ports.ArtifactRef{Locator: "sha256:" + strings.Repeat("0", 64), SHA256: "sha256:" + strings.Repeat("0", 64)}
+
+	if err := store.Delete(ctx, ref); err != nil {
+		t.Fatalf("Delete of never-written content err = %v, want nil", err)
+	}
+}
+
+// TestDelete_MalformedLocator_RejectedBeforeTouchingFilesystem mirrors
+// TestOpen_MalformedLocator_RejectedBeforeTouchingFilesystem's own identical
+// traversal-defense requirement for Delete.
+func TestDelete_MalformedLocator_RejectedBeforeTouchingFilesystem(t *testing.T) {
+	ctx := context.Background()
+	store := openStore(t)
+	ref := ports.ArtifactRef{Locator: "../../../etc/passwd"}
+
+	if err := store.Delete(ctx, ref); apperror.CodeOf(err) != apperror.CodeInvalidArgument {
+		t.Fatalf("Delete(%q) err = %v, want apperror.CodeInvalidArgument", ref.Locator, err)
+	}
+}
+
 func TestOpen_DetectsCorruption_NeverReturnsAReader(t *testing.T) {
 	ctx := context.Background()
 	store := openStore(t)

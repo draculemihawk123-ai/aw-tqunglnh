@@ -1075,6 +1075,16 @@ type ArtifactRepository struct {
 	// repository's data.
 	catalog   *CatalogRepository
 	artifacts map[string]artifact.Artifact
+	// locatorClaims mirrors artifact_locator_purge_claims (V5-14): keyed by
+	// Locator, not by any one Artifact row's ID — see
+	// ClaimArtifactLocatorForPurge's own doc comment.
+	locatorClaims map[string]artifactLocatorClaim
+}
+
+// artifactLocatorClaim mirrors one artifact_locator_purge_claims row.
+type artifactLocatorClaim struct {
+	owner     string
+	claimedAt time.Time
 }
 
 var _ ports.ArtifactRepository = (*ArtifactRepository)(nil)
@@ -1084,18 +1094,26 @@ func (a *ArtifactRepository) cloneWith(catalog *CatalogRepository) *ArtifactRepo
 	for k, v := range a.artifacts {
 		artifacts[k] = v
 	}
-	return &ArtifactRepository{catalog: catalog, artifacts: artifacts}
+	claims := make(map[string]artifactLocatorClaim, len(a.locatorClaims))
+	for k, v := range a.locatorClaims {
+		claims[k] = v
+	}
+	return &ArtifactRepository{catalog: catalog, artifacts: artifacts, locatorClaims: claims}
 }
 
 // InsertArtifact mirrors sqlite's insertArtifactTx: rec.ProjectID must name
-// a Project this fake's own CatalogRepository already has, and a duplicate
-// ID returns the already-stored row rather than erroring.
+// a Project this fake's own CatalogRepository already has, rec.Locator must
+// not currently have an open purge claim (V5-14), and a duplicate ID
+// returns the already-stored row rather than erroring.
 func (a *ArtifactRepository) InsertArtifact(_ context.Context, rec artifact.Artifact) (artifact.Artifact, error) {
 	if _, ok := a.catalog.projects[string(rec.ProjectID)]; !ok {
 		return artifact.Artifact{}, fmt.Errorf("fake: %w: project %s", ports.ErrPersistenceNotFound, rec.ProjectID)
 	}
 	if existing, ok := a.artifacts[string(rec.ID)]; ok {
 		return existing, nil
+	}
+	if _, claimed := a.locatorClaims[rec.Locator]; claimed {
+		return artifact.Artifact{}, fmt.Errorf("fake: %w: locator %s is claimed for purge", ports.ErrPersistenceAlreadyExists, rec.Locator)
 	}
 	if a.artifacts == nil {
 		a.artifacts = map[string]artifact.Artifact{}
@@ -1164,6 +1182,39 @@ func (a *ArtifactRepository) ListOrphanedArtifacts(_ context.Context, olderThan 
 		return result[i].CreatedAt.Before(result[j].CreatedAt)
 	})
 	return result, nil
+}
+
+// ListArtifactsByLocator mirrors sqlite's own query, ordered by ID for a
+// deterministic result either implementation gives.
+func (a *ArtifactRepository) ListArtifactsByLocator(_ context.Context, locator string) ([]artifact.Artifact, error) {
+	var result []artifact.Artifact
+	for _, rec := range a.artifacts {
+		if rec.Locator != locator {
+			continue
+		}
+		result = append(result, rec)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
+// ClaimArtifactLocatorForPurge mirrors sqlite's own claim insert: a second
+// claim against an already-claimed Locator is ErrPersistenceAlreadyExists.
+func (a *ArtifactRepository) ClaimArtifactLocatorForPurge(_ context.Context, locator, claimOwner string, claimedAt time.Time) error {
+	if _, claimed := a.locatorClaims[locator]; claimed {
+		return fmt.Errorf("fake: %w: artifact locator %s", ports.ErrPersistenceAlreadyExists, locator)
+	}
+	if a.locatorClaims == nil {
+		a.locatorClaims = map[string]artifactLocatorClaim{}
+	}
+	a.locatorClaims[locator] = artifactLocatorClaim{owner: claimOwner, claimedAt: claimedAt}
+	return nil
+}
+
+// ReleaseArtifactLocatorClaim mirrors sqlite's own idempotent delete.
+func (a *ArtifactRepository) ReleaseArtifactLocatorClaim(_ context.Context, locator string) error {
+	delete(a.locatorClaims, locator)
+	return nil
 }
 
 // QueryStore is an in-memory ports.QueryStore that is always reachable.

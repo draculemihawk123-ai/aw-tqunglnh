@@ -187,6 +187,42 @@ func (s *Store) Open(ctx context.Context, ref ports.ArtifactRef) (io.ReadCloser,
 	return file, nil
 }
 
+// Delete implements ports.ArtifactStore (V5-14): removes the content at
+// ref.Locator only after re-confirming it still hashes/sizes to
+// ref.SHA256/ref.Size — the same strict check Verify itself performs,
+// reused here rather than duplicated, so this method can never be tricked
+// into deleting content that silently drifted from what its caller
+// believes it is deleting. Idempotent: already-absent content is a
+// success, not an error, mirroring gitworktree.Provider.Release's own
+// identical "no-op if already gone" discipline for the sibling filesystem
+// release path.
+func (s *Store) Delete(ctx context.Context, ref ports.ArtifactRef) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	path, digest, err := s.resolvePath(ref)
+	if err != nil {
+		return err
+	}
+	actualDigest, actualSize, err := hashFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("artifactstore: hash artifact before delete: %w", err)
+	}
+	if actualDigest != digest || actualSize != ref.Size {
+		return fmt.Errorf("%w: locator=%s", ErrIntegrity, ref.Locator)
+	}
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("artifactstore: delete artifact: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) objectPath(hexDigest string) string {
 	return filepath.Join(s.root, "objects", hexDigest[0:2], hexDigest[2:4], hexDigest)
 }
