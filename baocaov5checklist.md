@@ -4975,3 +4975,74 @@ task V4/V5 khác đã theo.
 
 **Việc còn lại:** commit, push, mở PR, chờ CI 6/6, merge. Sau khi merge: V5-14 coi là HOÀN THÀNH (cả 2 nửa),
 chuyển sang V5-15 theo đúng thứ tự phụ thuộc roadmap.
+
+**Kết quả:** PR #10, 6/6 pass. Squash-merged 2026-09-11, merge commit `67092d5`. **V5-14 HOÀN THÀNH — cả 2
+nửa (ExecuteWorkspaceSetRelease + Artifact purge/delete) đã merge.**
+
+# V5-15 — Execution/evidence acceptance gate (task cuối cùng của V5)
+
+## Nghiên cứu trước khi scope
+
+Không giống V5-11/12/13/14, design doc không tự đánh dấu V5-15 "CHƯA ĐỦ DỮ KIỆN" — nhưng quy mô lớn hơn
+hẳn mọi task V5 trước (ghép 4 hệ thống chưa từng chạy chung + ~10 kịch bản inject lỗi + false-completion
+oracle), nên trước khi code tôi đã cho một background agent nghiên cứu sâu (đọc `internal/integration/
+runtimeengine_test.go` 2062 dòng, `internal/spikeacceptance`, tra cứu NodeExecutorRouter/CompletionPolicy/
+ReleaseSet đã từng được ghép chung ở đâu chưa, checker read-only enforcement, provider recording, và
+CompletionPolicy's own real-sqlite coverage) rồi hỏi user cách chia PR. Toàn bộ báo cáo nghiên cứu + câu
+trả lời đầy đủ của user đã lưu verbatim vào memory `agent-kit-v5-15-acceptance-gate-contract.md` — đọc lại
+trước khi code bất kỳ phần nào của V5-15.
+
+**Phát hiện quan trọng nhất (tự kiểm chứng lại bằng grep trực tiếp, không chỉ tin báo cáo agent):**
+background agent ban đầu báo "checker write chưa có detection nào" — nhưng grep trực tiếp
+`internal/app/runtime/agent_node_executor_resources.go:355` cho thấy
+`strictReadOnly := profile.Role == workflow.AgentRoleChecker` ĐÃ tồn tại từ V5-12's own PR, feed vào
+`validateStrictlyReadOnlyDiffs` bên trong `buildEvidence` — nghĩa là detection thật cho "checker write" đã
+có sẵn, không cần xây mới. Bài học: luôn tự verify lại phát hiện của subagent bằng công cụ trực tiếp trước
+khi tin, đặc biệt khi nó phủ định một khả năng.
+
+## Contract chia PR từ user (verbatim)
+
+> Nên tách nhiều PR và bắt đầu bằng happy path. Chia V5-15 thành 5 phần:
+>
+> V5-15A — Real composition
+> Router + executors + CompletionPolicy + ReleaseSet.
+> Một multi-node Run thật đi tới SUCCEEDED/DONE.
+> Restart process rồi xác minh Run, WorkItem, DecisionArtifact, events và ReleaseSet vẫn nhất quán.
+> Xây reusable scenario harness cho các PR sau.
+>
+> V5-15B — Completion integrity
+> Claim-done.
+> Gate failure.
+> Artifact tamper.
+> False-completion oracle: không được DONE nếu thiếu bất kỳ authoritative condition nào.
+>
+> V5-15C — Recovery and availability
+> Crash/checkpoint recovery.
+> Provider loss.
+> Adapter drift.
+> Isolation unavailable.
+> Xác minh replay không tạo trùng Attempt, activation, artifact hoặc event.
+>
+> V5-15D — Isolation and fencing
+> Scope violation.
+> Checker write attempt.
+> Cancel giữa mutating attempt.
+> Xác minh workspace/revision không bị promote sau khi fence hoặc policy thắng.
+>
+> V5-15E — Full conformance matrix
+> Chạy toàn bộ scenario trong cùng một matrix.
+> Semantic diff giữa expected và persisted state.
+> Restart verification cho từng terminal outcome.
+> Kiểm tra oracle trên DB state, domain events, outbox, blockers, activations và artifacts.
+>
+> Mỗi PR phải dùng production command/router/repository path; harness không được trực tiếp sửa DB để tạo
+> ra kết quả cần kiểm chứng. Chỉ đánh dấu V5-15 hoàn thành sau khi PR cuối chạy toàn bộ matrix, dù
+> happy-path đã merge từ PR đầu.
+
+**Hai quy tắc áp dụng cho MỌI PR (A-E):** (1) không bao giờ sửa DB trực tiếp để tạo ra kết quả cần kiểm
+chứng — mọi kịch bản phải đi qua đúng command/router/repository path thật; (2) V5-15 CHƯA xong cho tới khi
+PR E chạy được toàn bộ matrix, dù A/B/C/D đã merge độc lập trước đó.
+
+**Việc còn lại:** bắt đầu V5-15A — thiết kế + xây composition thật (Router+executors+CompletionPolicy+
+ReleaseSet) chạy 1 multi-node Run thật tới SUCCEEDED/DONE, verify được sau restart, cộng reusable scenario
+harness cho B/C/D/E dùng lại.
