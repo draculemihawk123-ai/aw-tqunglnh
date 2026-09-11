@@ -5455,3 +5455,137 @@ PR #15, branch `feat/v5-15b-completion-integrity`, 2 commit (`2f676a2` productio
 **Việc còn lại:** V5-15C (recovery/availability: crash/checkpoint recovery, provider loss, adapter drift,
 isolation unavailable; xác minh replay không tạo trùng Attempt/activation/artifact/event) — theo đúng
 contract 5 phần, tiếp tục tự động không cần hỏi lại trừ khi gặp quyết định kiến trúc thật sự mới.
+
+## V5-15C — Recovery and availability
+
+### Bối cảnh
+
+Phần 3/5 của V5-15 theo đúng contract 5 phần user đã chốt (verbatim trong memory
+`agent-kit-v5-15-acceptance-gate-contract.md`): "Crash/checkpoint recovery. Provider loss. Adapter drift.
+Isolation unavailable. Xác minh replay không tạo trùng Attempt, activation, artifact hoặc event." Tiếp tục
+tuân thủ 2 quy tắc bắt buộc xuyên suốt V5-15: không sửa DB trực tiếp để tạo ra kết quả cần kiểm chứng; mọi
+scenario phải đi qua đúng production command/router/repository path thật. Xây dựng trên `v5AcceptFixture`
+và `agent_harness_test.go` đã có sẵn từ V5-15A/B — không tự dựng lại wiring.
+
+### Nghiên cứu
+
+Trước khi code, chạy một background Explore agent để nghiên cứu 4 mảng riêng biệt (không tự đoán) — kết quả
+cho ra đúng API thật cần dùng:
+
+- **Crash/checkpoint recovery**: `runtime.StartupRecoveryScan(ctx, uow, ids)` (`recovery_reaper.go:217`) là
+  entrypoint thật để trigger recovery — enqueue job `RECOVERY_REAPER` (idempotent). `RecoveryReaperHandler`
+  đã được đăng ký sẵn trong `fixture_test.go`'s `registerHandlersWithAgents` — không cần wiring mới. Cơ chế
+  "crash" thật (không fake): dừng hẳn một `workerpool.Pool` đang chạy (không phải xoá row DB) trong lúc một
+  job thật vẫn đang in-flight, để lease của job đó tự hết hạn thật theo đồng hồ thật.
+- **Provider loss**: không có sẵn mode "fail" nào trong `cmd/fake-claude`. Con đường thật, đã có sẵn trong
+  code: `agentregistry.Registry.Resolve` trả về `agentregistry.ErrUnknownProvider` khi registry không chứa
+  provider mà `AdapterBuild` đã pin — đây là lỗi kỹ thuật thật ở `Handle()` (bị retry như mọi lỗi job khác),
+  KHÔNG phải một business outcome BLOCKED.
+- **Adapter drift**: `adapterbuild.VerifyNoDrift` (`internal/app/adapterbuild/drift.go:50`) re-probe live
+  executor thật, dựng `CandidateTuple` mới, so `ID()` với bản đã pin. Một pin bị lệch (dù chỉ 1 field, ví dụ
+  `ExecutableContentHash` bị thêm hậu tố) sẽ luôn mismatch thật khi so với binary thật không đổi.
+- **Isolation unavailable**: có sẵn implementation THẬT (không phải fake) —
+  `process.IsolationChecker{}`/`NewIsolationChecker()` (`internal/adapters/process/isolation.go`) — luôn trả
+  `ErrIsolationEnforcementUnavailable` cho tier `EnforcedIsolated`, không cần I/O. `fixture_test.go` đang
+  hard-code fake `fake.IsolationEnforcementChecker{}` inline — cần một hook mới để dùng được checker thật.
+
+### Quyết định (tự quyết, không cần hỏi lại — không phải fork kiến trúc mới)
+
+- Thêm `registerHandlersWithIsolation` vào `fixture_test.go`, `registerHandlersWithAgents` trở thành một
+  wrapper mỏng gọi hàm này với fake mặc định — mở rộng tối thiểu, đúng tinh thần "mọi PR V5-15 sau tự xây
+  trên fixture chung" mà chính package doc comment của file này đã ghi.
+  "Isolation unavailable" và "Adapter drift" chỉ cần 1 node đơn (không cần multi-node) — đủ để chứng minh
+  admission reject thật trước khi spawn.
+- "Isolation unavailable" dùng COMMAND node (đơn giản nhất, không cần AGENT/registry). "Adapter drift" và
+  "Provider loss" bắt buộc dùng AGENT node — vì admission chỉ thật sự chạy drift-check/provider-resolve cho
+  node AGENT (COMMAND/GATE không có `AdapterBuildID` nên tự động pass hai check này).
+- "Provider loss" mô phỏng thật: pin một `AdapterBuild` ĐÚNG (không drift), nhưng đưa vào
+  `ExecuteNodeHandler` một `agentregistry.Empty()` — registry thật KHÔNG chứa provider mà pin đó chỉ tới —
+  đúng tình huống thật một operator gỡ nhầm provider khỏi config hoặc process đã crash mà chưa đăng ký lại.
+  Assert bằng cách theo dõi `f.store.DebugListJobsByKind` tới khi job EXECUTE_NODE thật chuyển state DEAD
+  sau khi hết `MaxClaims` (=3) — chứng minh fail-closed thật (không silent hang, không silent success), chứ
+  không assert qua NodeRun state (NodeRun/Attempt không bao giờ rời QUEUED trong case này, vì lỗi xảy ra ở
+  Phase 1 trước khi transaction Phase 2 từng chạy).
+
+### Thực hiện
+
+- `internal/integration/v5accept/fixture_test.go`: thêm `registerHandlersWithIsolation(executor, idPrefix,
+  agents, isolation ports.IsolationEnforcementChecker)`; `registerHandlersWithAgents` giờ chỉ gọi hàm này
+  với `fake.IsolationEnforcementChecker{}`.
+- `internal/integration/v5accept/isolation_unavailable_test.go`:
+  `TestV5AcceptIsolationUnavailable_RealAdmissionRejectsBeforeSpawn` — 1 COMMAND node thật, permission
+  policy pin `IsolationTierEnforcedIsolated` (đã có sẵn từ `v5AcceptPermissionPolicyDocument`), dùng
+  `process.NewIsolationChecker()` thật (không fake). Đợi NodeRun `test_a` reach `NodeRunBlocked`, assert
+  Attempt.TerminationReason = `ISOLATION_ENFORCEMENT_UNAVAILABLE`, WorkItemBlocker thật mở đúng type/state,
+  và — bằng chứng mạnh nhất — file marker mà script maker LẼ RA phải ghi thật KHÔNG hề tồn tại trên đĩa,
+  chứng minh process thật chưa từng được spawn.
+- `internal/integration/v5accept/adapter_drift_test.go`: `registerDriftedAgentBuild` (copy
+  `registerAgentBuild` của `agent_harness_test.go`, chỉ đổi đúng 1 dòng: `ExecutableContentHash: contentHash
+  + "-drifted"` sau khi đã hash file thật). `TestV5AcceptAdapterDrift_RealAdmissionRejectsMismatchedPin` — 1
+  AGENT node thật pin build lệch này, `fake-claude` thật vẫn có thể chạy ("outcome-success" mode) nhưng
+  không bao giờ có cơ hội — admission thật reject trước. Assert Attempt.TerminationReason =
+  `ADAPTER_BUILD_DRIFT`, WorkItemBlocker mở đúng type.
+- `internal/integration/v5accept/provider_loss_test.go`:
+  `TestV5AcceptProviderLoss_RealDispatchFailsClosedUntilJobDies` — AgentNodeExecutor wire với registry THẬT
+  (có provider), nhưng `ExecuteNodeHandler` wire với `agentregistry.Empty()` — một sai lệch thật giữa 2
+  thành phần, mô phỏng đúng "hai phần hệ thống trỏ nhầm registry khác nhau". Poll
+  `f.store.DebugListJobsByKind(ExecuteNodeJobKind)` tới khi job thật DEAD; assert Attempt/NodeRun vẫn QUEUED.
+- `internal/integration/v5accept/crash_recovery_test.go`:
+  `TestV5AcceptCrashRecovery_RealRetryReplaysWithNoDuplicates` — phần khó nhất. Document 1 COMMAND node,
+  script thật tự quyết định hành vi dựa trên side-effect thật trên đĩa (không phải flag test): lần chạy đầu
+  ghi marker "started" rồi sleep thật lâu; lần chạy sau thấy marker đã có thì ghi "done" và thoát ngay. Drive
+  attempt tới RUNNING thật qua pool1 (`LeaseTTL=2s, ShutdownGrace=2s` — đúng default của `f.startPool`, cố ý
+  không tự chỉnh nhanh hơn để giữ tính đại diện cho crash thật ngoài production), đợi marker "started" xuất
+  hiện thật trên đĩa (bằng chứng script thật đã bắt đầu chạy), rồi gọi `stopPool1()` — pool tự escalate
+  thật sau ShutdownGrace, `ProcessSupervisor.Run` thấy ctx của chính nó bị cancel và thật sự kill process
+  tree thật. Poll `ListOrphanedRunningExecutionAttempts` thật (không sleep mù) tới khi thấy attempt orphan.
+  Gọi `StartupRecoveryScan` thật, start pool2 (idPrefix mới) — `RecoveryReaperHandler` đã đăng ký sẵn tự
+  classify LOST, tự retry (AttemptNumber+1), script thật chạy lại lần 2 và finish ngay. Đợi Run VERIFYING,
+  gọi `EvaluateCompletionCandidate` thật, assert PASS/SUCCEEDED/DONE. Assert cuối: đúng 2 ExecutionAttempt
+  (không hơn), đúng 2 job EXECUTE_NODE (`DebugListJobsByKind`), đúng 1 event
+  `EXECUTION_ATTEMPT_TERMINATED` cho attempt bị crash, đúng 1 event `EXECUTION_ATTEMPT_FINALIZED` cho attempt
+  retry, đúng 0 event `RECOVERY_DECISION_RECORDED` (RETRY không ghi event này, theo đúng doc comment của
+  chính `recovery_reaper.go`), đúng 1 Evidence `COMMAND_EXECUTION` — không nơi nào bị trùng.
+
+**Phát hiện thật trong lúc code (Windows script debug, tự sửa không cần hỏi lại — bug tự gây ra, không phải
+quyết định kiến trúc)**: lần đầu dùng `ping -n 61 127.0.0.1 >nul` làm cơ chế sleep trên Windows — thực tế đo
+được KHÔNG hề pace ~1s/gói như kỳ vọng, script kết thúc gần như ngay lập tức khiến "crash" không bao giờ bắt
+kịp lúc script còn chạy. Đổi sang `powershell -Command "Start-Sleep..."` gọi bằng tên trần — vẫn fail nhanh
+tương tự. Debug bằng cách chạy tay script y hệt ngoài framework (`Start-Process` + đo thời gian) xác nhận
+script tự nó chạy đúng — vậy lỗi nằm ở cách framework spawn process thật. Đọc lại `command_node_executor.go`
+xác nhận: `ProcessSpec.InheritedEnvironment = inputs.doc.EnvAllowlist`, mà `CommandDocument` của scenario
+này chưa từng set `EnvAllowlist` — nghĩa là process con thật không hề có PATH, nên lệnh `powershell` gọi bằng
+tên trần fail silent (script không check exit code, `exit /b 0` vô điều kiện nuốt luôn lỗi). Fix thật: gọi
+`powershell.exe` bằng đường dẫn tuyệt đối cố định
+(`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`), không phụ thuộc PATH nữa — sau đó `stopPool1`
+đo được mất đúng ~7s (2s ShutdownGrace + tới 5s grace period kill process thật), khớp hoàn toàn với phân
+tích lý thuyết từ việc đọc `pool.go`/`supervisor.go` trước khi code.
+
+### Test
+
+- `go build ./...`, `go vet ./...` sạch.
+- `go test ./internal/integration/v5accept/... -v -count=1`: cả 7 test (3 từ A/B + 4 mới) đều pass.
+- `TestV5AcceptCrashRecovery_RealRetryReplaysWithNoDuplicates` chạy lặp lại 3 lần liên tiếp không cache
+  (`-count=1`), thời gian ổn định ~9.3s mỗi lần — không flake.
+- `TestV5AcceptProviderLoss_RealDispatchFailsClosedUntilJobDies` mất ~9s (khớp tính toán lý thuyết: 3 lần
+  claim × LeaseTTL 2s trước khi job DEAD).
+- `go test ./... -count=1` toàn repo pass 100%.
+- `gofmt -l` sạch trên mọi file mới/sửa.
+
+### Verify
+
+- Toàn bộ debug print tạm thời (đo thời gian `stopPool1`, in state job/attempt sau crash) đã revert sạch
+  trước khi commit — chỉ giữ lại code test thật, không còn `t.Logf("DEBUG...")` nào sót lại.
+- `git status`/`git diff --cached --stat` xác nhận chỉ đúng 5 file dự định thay đổi được stage (1 file sửa
+  — `fixture_test.go`, 4 file mới) — không đụng vào ~92 file CRLF noise sẵn có.
+
+### Kết quả
+
+PR #17, branch `feat/v5-15c-recovery-availability`, 1 commit (`7260074`), CI 6/6 xanh ngay lần chạy đầu tiên
+(bao gồm "Linux race and stability (V0-12)"), squash-merge vào `master` — merge commit `ad70d04`,
+2026-09-11.
+
+**Việc còn lại:** V5-15D (isolation and fencing: scope violation, checker write attempt, cancel giữa mutating
+attempt; xác minh workspace/revision không bị promote sau khi fence hoặc policy thắng) và V5-15E (full
+conformance matrix — mốc hoàn thành thật sự của V5-15) — theo đúng contract 5 phần, tiếp tục tự động không
+cần hỏi lại trừ khi gặp quyết định kiến trúc thật sự mới.
