@@ -37,8 +37,12 @@
 //     provider failure the pinned AttemptRules' own BackoffSeconds was
 //     ever meant to pace).
 //     - FRESH_START: the attempt was mutating and its own workspace
-//     reconciliation observed a real mutation (quarantined) — this handler
-//     records a durable recovery decision (DecisionArtifact,
+//     reconciliation observed a real mutation (quarantined), a usable
+//     checkpoint exists to rebuild from, AND retry budget remains (V5-13's
+//     own budget contract, 2026-09-11, confirmed with the user verbatim:
+//     RETRY and FRESH_START share ONE AttemptNumber/MaxAttempts counter,
+//     never two separate budgets — see decideRecoveryNextAction below) —
+//     this handler records a durable recovery decision (DecisionArtifact,
 //     Kind=RecoveryDecisionKind) naming the interrupted AttemptID, the
 //     latest Checkpoint/ContextSnapshot a fresh execution would need,
 //     this sweep's own recovery generation, the failure reason and the
@@ -52,10 +56,12 @@
 //     that consumes this decision and performs the real three-phase
 //     execution (Tx reserve Attempt+RUN_WORK job -> real call outside any
 //     transaction -> Tx finalize with fencing).
-//     - ESCALATE: retry budget is exhausted, the Run is cancelling, or no
-//     checkpoint exists to build a FRESH_START decision from — records the
-//     identical kind of DecisionArtifact, NextAction=ESCALATE, never a
-//     blind retry.
+//     - ESCALATE: retry/fresh-start budget is exhausted (reason
+//     RecoveryReasonAttemptsExhausted — a NEW replacement Attempt would
+//     exceed MaxAttempts, checked identically for both the mutating and
+//     non-mutating branch), the Run is cancelling, or no checkpoint exists
+//     to build a FRESH_START decision from — records the identical kind of
+//     DecisionArtifact, NextAction=ESCALATE, never a blind retry.
 //  2. Stranded RunCancellationIntent rows still REQUESTED whose own Run has
 //     not yet reached CANCELLED — re-invokes CancelRunCoordinatorHandler's
 //     own already-idempotent Handle for each (cancel_run_coordinator.go);
@@ -431,22 +437,61 @@ func (h *RecoveryReaperHandler) recoverOneAttempt(ctx context.Context, attempt r
 
 	runCancelling := run.State == runtimedomain.WorkflowRunCancelling || run.State == runtimedomain.WorkflowRunCancelled
 	budgetRemains := uint32(attempt.AttemptNumber) < attemptRules.MaxAttempts
+	mutationObserved := recovery.NextState == runtimedomain.ExecutionAttemptIndeterminate && recovery.Reconciliation == worker.ReconciliationMutationObserved
+	// hasUsableCheckpoint does real I/O — only ever consulted when a
+	// mutation was actually observed (Go's && short-circuits), the one
+	// case that can lead to FRESH_START at all.
+	hasCheckpoint := mutationObserved && h.hasUsableCheckpoint(ctx, attempt.ID)
 
-	if recovery.NextState == runtimedomain.ExecutionAttemptIndeterminate && recovery.Reconciliation == worker.ReconciliationMutationObserved {
-		// A confirmed mutation was observed — never retry in place against a
-		// now-QUARANTINED workspace. If there is a checkpoint to build a
-		// FRESH_START decision from, record that; otherwise ESCALATE (no
-		// usable basis for FRESH_START either).
-		if h.hasUsableCheckpoint(ctx, attempt.ID) {
-			return h.recordDecision(ctx, attempt, nodeRun, run, payload, RecoveryActionFreshStart, string(recovery.Reason), policyVersionID, attempt, attemptRules)
-		}
-		return h.recordDecision(ctx, attempt, nodeRun, run, payload, RecoveryActionEscalate, string(recovery.Reason), policyVersionID, attempt, attemptRules)
-	}
-
-	if !runCancelling && budgetRemains {
+	action, reason := decideRecoveryNextAction(mutationObserved, hasCheckpoint, runCancelling, budgetRemains, string(recovery.Reason))
+	if action == RecoveryActionRetry {
 		return h.retryAttempt(ctx, attempt, nodeRun, run)
 	}
-	return h.recordDecision(ctx, attempt, nodeRun, run, payload, RecoveryActionEscalate, string(recovery.Reason), policyVersionID, attempt, attemptRules)
+	return h.recordDecision(ctx, attempt, nodeRun, run, payload, action, reason, policyVersionID, attempt, attemptRules)
+}
+
+// RecoveryReasonAttemptsExhausted is a typed override for
+// recoveryDecisionResult.Reason (2026-09-11, V5-13's own budget contract,
+// confirmed with the user verbatim before implementing it): whenever
+// creating a replacement Attempt would exceed the pinned
+// AttemptRules.MaxAttempts, this handler ESCALATEs instead — for either
+// the mutating (would-be FRESH_START) or non-mutating (would-be RETRY)
+// branch alike — and names this specific reason rather than whatever
+// ReconcileInterruptedAttempt's own classification Reason says (that
+// describes why the ORIGINAL attempt died, e.g. LEASE_LOST, not why
+// recovery cannot proceed with a new one).
+const RecoveryReasonAttemptsExhausted = "RECOVERY_ATTEMPTS_EXHAUSTED"
+
+// decideRecoveryNextAction is recoverOneAttempt's own pure decision core —
+// extracted as a free, side-effect-free function (no ctx/uow) so every
+// branch of this decision matrix is directly unit-testable without a real
+// database or a real observed mutation. budgetRemains gates BOTH the
+// mutating (FRESH_START-eligible) and non-mutating (RETRY-eligible)
+// branches IDENTICALLY — RETRY and FRESH_START share one AttemptNumber/
+// MaxAttempts counter, never two separate budgets a caller could use to
+// dodge the limit (2026-09-11, V5-13's own budget contract, confirmed
+// with the user verbatim: "RETRY và FRESH_START dùng chung một
+// MaxAttempts; không có hai ngân sách để lách giới hạn").
+func decideRecoveryNextAction(mutationObserved, hasUsableCheckpoint, runCancelling, budgetRemains bool, classificationReason string) (action RecoveryNextAction, reason string) {
+	if mutationObserved {
+		// A confirmed mutation was observed — never retry in place against a
+		// now-QUARANTINED workspace.
+		if !budgetRemains {
+			return RecoveryActionEscalate, RecoveryReasonAttemptsExhausted
+		}
+		if hasUsableCheckpoint {
+			return RecoveryActionFreshStart, classificationReason
+		}
+		// No usable basis for FRESH_START either.
+		return RecoveryActionEscalate, classificationReason
+	}
+	if !runCancelling && budgetRemains {
+		return RecoveryActionRetry, classificationReason
+	}
+	if !budgetRemains {
+		return RecoveryActionEscalate, RecoveryReasonAttemptsExhausted
+	}
+	return RecoveryActionEscalate, classificationReason
 }
 
 // policyAttemptRules is the narrow slice of policy.AttemptRules this file

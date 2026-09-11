@@ -4382,3 +4382,93 @@ Merge PR #1 (`aw-tqunglnh`), squash, merge commit `95230f3`. Repo hiện tại (
 2026-09-11): `https://github.com/draculemihawk123-ai/aw-tqunglnh.git`. Collaborator: chỉ
 `draculemihawk123-ai` (admin) — không ai khác có quyền push, nên yêu cầu "giới hạn quyền" của người dùng
 coi như đã thoả mãn sẵn, không cần đổi gì thêm.
+
+## V5-13 scoping — Checkpoint/handoff và recovery integration (2026-09-11)
+
+**Bối cảnh:** V5-12 (Maker/checker isolation) coi như xong phần cốt lõi. Theo đúng chỉ dẫn tự động chuyển
+task, tiếp tục sang V5-13 — task tiếp theo trong dependency order của design doc.
+
+**Nghiên cứu trước khi hỏi:** design doc tự đánh dấu V5-13 "CHƯA ĐỦ DỮ KIỆN". Đọc kỹ code hiện có (không
+đoán):
+- "Hai model ContextSnapshot không có bridge" (design doc's own complaint) hoá ra NÔNG hơn tưởng: lần theo
+  đúng data flow thật (`agent_node_executor.go` dòng `ContextSnapshotID: string(request.ContextSnapshot.ID)`
+  khi tạo sink), MỌI Checkpoint thật từ V5-04 trở đi ĐÃ lưu đúng ID của `contextsnapshot.Snapshot` thật —
+  chỉ bị ép kiểu qua type legacy `runtime.ContextSnapshotID` khi lưu trên `Checkpoint` struct. Giá trị lưu
+  ĐÚNG, chỉ sai type label + `worker.RecoveryStore.LoadContextSnapshot` tra sai bảng (bảng legacy
+  `context_snapshots` thay vì `attempt_context_snapshots` thật). `worker.StartFreshFromLatestCheckpoint`
+  hiện tại coi như CHẾT/hỏng cho mọi Attempt thật từ V5-04 trở đi — tra ID thật vào bảng sai, không bao giờ
+  tìm thấy.
+- `RecoveryDecision` đã tồn tại sẵn, là một `DecisionArtifact.Kind` (không cần bảng mới) — ID đã
+  DETERMINISTIC sẵn (`attempt.ID + "-recovery-decision-gen-" + generation`), đúng tinh thần "recovery
+  activation ID dẫn xuất deterministic" mà (chưa hỏi lúc đó) hoá ra chính là câu trả lời người dùng đưa ra.
+- **Gap thật xác nhận được (không phải đoán):** nhánh "mutation observed" của `recoverOneAttempt` hiện tại
+  KHÔNG check `budgetRemains` trước khi ghi FRESH_START — chỉ nhánh non-mutating (RETRY-eligible) mới
+  check. Trong khi đó, doc comment gốc của file này ĐÃ tuyên bố "ESCALATE: retry budget is exhausted..."
+  như đã xong — nghĩa là doc và code lệch nhau, code chưa làm đúng cái doc đã hứa.
+- Grep toàn bộ `internal` cho "HandoffArtifact"/"NoProgress"/"budget_basis": không có gì ngoài chính
+  `recovery_reaper.go`'s prose — xác nhận đây là schema/policy hoàn toàn mới, không phải thứ đã có sẵn một
+  phần.
+
+**Hỏi người dùng (AskUserQuestion, 1 câu, có recommendation):** V5-13 cần "budget" cho FRESH_START — dùng
+lại `AttemptRules.MaxAttempts` có sẵn, hay thêm policy mới cho time/cost budget?
+
+**Quyết định của người dùng (verbatim, chốt toàn bộ contract V5-13's phần budget/recovery-ID, kể cả một
+câu tôi CHƯA kịp hỏi):**
+> Chọn dùng lại AttemptRules.MaxAttempts.
+> Contract cho V5-13:
+> - Mỗi FRESH_START tạo một Attempt mới và tăng AttemptNumber.
+> - RETRY và FRESH_START dùng chung một MaxAttempts; không có hai ngân sách để lách giới hạn.
+> - Nếu tạo Attempt mới sẽ vượt MaxAttempts, không schedule recovery; chuyển sang ESCALATE/BLOCKED với
+>   reason typed như RECOVERY_ATTEMPTS_EXHAUSTED.
+> - Mỗi recovery decision ghi checkpoint ID/hash và evidence frontier đã quan sát.
+> - Nếu Attempt kết thúc mà checkpoint/evidence frontier không tiến lên, ghi reason RECOVERY_NO_PROGRESS.
+>   Lần FRESH_START đó vẫn tiêu thụ một attempt.
+> - Replay cùng recovery decision không tăng counter hoặc tạo thêm Attempt; recovery activation ID phải
+>   dẫn xuất deterministic từ Attempt bị crash và recovery generation.
+> - V5-13 chưa nên thêm wall-clock/cost policy — có thể bổ sung sau như policy độc lập, không đổi contract
+>   hiện tại.
+
+Contract này TỰ ĐỘNG trả lời luôn câu hỏi "RecoveryExecution/CAS key" mà tôi định hỏi riêng — "recovery
+activation ID deterministic từ (interruptedAttemptID, generation)" ĐÃ LÀ câu trả lời, và
+`RecoveryDecisionKind`'s own DecisionArtifact ID (đã tồn tại) đã đúng khuôn mẫu này sẵn. Ghi đầy đủ vào
+memory `agent-kit-v5-13-checkpoint-recovery-research.md`.
+
+**Kế hoạch nhiều PR (task lớn, mirror V5-11/V5-12):** PR0 = budget-gate fix (branch này); PR1 = bridge
+Checkpoint→V5 Snapshot thật + rebuild fresh Snapshot; PR2 = 3-phase FRESH_START executor thật (tiêu thụ
+decision, AGENT gọi `Start` với `RecoveryCheckpoint`, COMMAND/GATE dispatch như RETRY bình thường).
+
+## V5-13 — PR0: budget gate cho FRESH_START (branch `feat/v5-13-recovery-budget-gate`, từ `origin/master`
+sau PR docs #2)
+
+**Quyết định thiết kế:** tách "quyết định RETRY/FRESH_START/ESCALATE + reason nào" ra một hàm THUẦN
+(`decideRecoveryNextAction`, không ctx/uow/side-effect nào) — lý do: viết test cho nhánh "mutation
+observed" bằng sqlite thật cần dựng WriteLeaseGrant + RepositoryWorkspace với current revision khác pinned
+revision — hạ tầng test lớn, chưa hề tồn tại (grep xác nhận: 0 test nào đụng tới nhánh này trước giờ, kể cả
+test `ESCALATE` có sẵn cũng chỉ test nhánh non-mutating). Tách hàm thuần cho phép test-driven đầy đủ MỌI
+nhánh của decision matrix (7 case) bằng unit test bảng, không cần sqlite/mutation thật — engineering
+tương xứng với quy mô: fix nhỏ, không đáng đầu tư hạ tầng test lớn.
+
+Thêm const `RecoveryReasonAttemptsExhausted = "RECOVERY_ATTEMPTS_EXHAUSTED"`. Budget check
+(`!budgetRemains`) áp dụng ĐỒNG NHẤT cho cả nhánh mutating (FRESH_START-eligible) và non-mutating
+(RETRY-eligible) — đúng contract "RETRY và FRESH_START dùng chung MaxAttempts". Cập nhật doc comment đầu
+file (đã lệch so với code) cho khớp hành vi thật.
+
+**Test mới:** `internal/app/runtime/recovery_reaper_internal_test.go` (file mới, package `runtime` nội bộ)
+— `TestDecideRecoveryNextAction`, bảng 7 case phủ hết decision matrix, gồm case "mutating + budget hết ưu
+tiên hơn cả run cancelling" chứng minh đúng thứ tự ưu tiên.
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go test -count=1 -run TestRecoveryReaperHandler ./internal/app/runtime/...  # 5/5 pass, không regress
+go test -count=1 -run TestDecideRecoveryNextAction ./internal/app/runtime/... # 7/7 pass
+go test -count=1 ./internal/app/runtime/...                             # PASS toàn bộ package
+```
+
+**Chưa làm trong PR0 (để dành PR1/PR2):** RECOVERY_NO_PROGRESS (cần so sánh checkpoint/evidence frontier
+GIỮA nhiều chu kỳ FRESH_START — chỉ tính được SAU KHI một Attempt thay thế đã chạy xong, tức là cần bộ
+thực thi 3-pha thật, chưa tồn tại); bridge Checkpoint→V5 Snapshot thật; handoff artifact V1; bộ thực thi
+FRESH_START thật.
+
+**Việc còn lại:** chạy full verify suite + gofmt, commit, push, mở PR, chờ CI 6/6, merge.
