@@ -97,6 +97,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
 // RecoveryReaperJobKind is the durable, self-rescheduling CONTROL job this
@@ -394,6 +395,40 @@ func (h *RecoveryReaperHandler) recoverOneAttempt(ctx context.Context, attempt r
 		return err
 	}
 
+	// V5-15D (2026-09-12, the user's own binding fix contract, verbatim):
+	// "Recovery reaper cũng phải gọi cùng cancellation-finalization path
+	// khi orphaned Attempt thuộc một Run đang CANCELLING" — a genuinely
+	// mutating orphaned Attempt (repositoryWorkspaceID != "" above) whose
+	// own owning Run is already CANCELLING/CANCELLED must go through the
+	// SAME real, atomic cancellation-finalization boundary the live V5-08C
+	// poller path uses (agent_node_executor_cancellation.go's own
+	// cancelMutatingAttemptTx), never the RETRY/FRESH_START/ESCALATE
+	// decision below — that path only ever records a DecisionArtifact and
+	// never itself lets the owning NodeRun (let alone WorkflowRun) reach a
+	// terminal state, so a Run whose own live cancellation poller happened
+	// to crash before finalizing would otherwise stay stuck in CANCELLING
+	// forever even after the crash-recovery reaper picks it up. A
+	// non-mutating (read-only) orphaned Attempt is unaffected by this
+	// check at all — LOST already routes through decideRecoveryNextAction's
+	// own runCancelling-aware ESCALATE branch below correctly, since a
+	// read-only Attempt was never a live NodeRun blocker to begin with.
+	if repositoryWorkspaceID != "" {
+		var run runtimedomain.WorkflowRun
+		if err := h.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+			nodeRun, err := tx.Runtime().GetNodeRun(ctx, string(attempt.NodeRunID))
+			if err != nil {
+				return err
+			}
+			run, err = tx.Runtime().GetWorkflowRun(ctx, string(nodeRun.RunID))
+			return err
+		}); err != nil {
+			return err
+		}
+		if run.State == runtimedomain.WorkflowRunCancelling || run.State == runtimedomain.WorkflowRunCancelled {
+			return h.finalizeCancelledMutatingOrphan(ctx, attempt, string(run.ID), repositoryWorkspaceID, pinnedRevision, workspaceVersion)
+		}
+	}
+
 	eventID := string(attempt.ID) + "-recovery-terminated-gen-" + fmt.Sprint(payload.Generation)
 	quarantineEventID := string(attempt.ID) + "-recovery-quarantine-gen-" + fmt.Sprint(payload.Generation)
 	recovery, err := worker.ReconcileInterruptedAttempt(ctx, h.interruptions, h.workspaces, worker.InterruptedAttemptRecoveryRequest{
@@ -454,6 +489,50 @@ func (h *RecoveryReaperHandler) recoverOneAttempt(ctx context.Context, attempt r
 	default:
 		return h.recordDecision(ctx, attempt, nodeRun, run, payload, action, reason, policyVersionID, attempt, attemptRules)
 	}
+}
+
+// finalizeCancelledMutatingOrphan is V5-15D's own real production fix
+// (2026-09-12, the user's own binding fix contract): recoverOneAttempt's
+// own early routing above calls this INSTEAD of the RETRY/FRESH_START/
+// ESCALATE decision whenever the orphaned Attempt is genuinely mutating and
+// its own owning Run is already CANCELLING/CANCELLED. It computes this real
+// mount's own reconciliation verdict via h.workspaces
+// (worker.WorkspaceReconciler's own narrower, ID-based
+// LoadRepositoryWorkspaceRevision — this handler's own established real
+// capability, never ports.WorkspaceProvider, which it was never
+// constructed with and does not need to be: see
+// agent_node_executor_cancellation.go's own cancelledMutatingMountVerdict
+// doc comment for why the shared atomic core only ever needs an
+// already-computed verdict, not a specific revision-capture mechanism), then
+// hands off to the SAME real cancelMutatingAttemptTx the live V5-08C poller
+// path uses — CAS Attempt->INDETERMINATE, quarantine if a mutation was
+// observed, CAS NodeRun->CANCELLED, terminalize its own BranchToken,
+// reconcile Run terminality (the real path to WorkflowRun->CANCELLED once
+// LiveCount==0), and defensively complete the cancellation intent.
+func (h *RecoveryReaperHandler) finalizeCancelledMutatingOrphan(
+	ctx context.Context, attempt runtimedomain.ExecutionAttempt, runID, repositoryWorkspaceID, pinnedRevision string, workspaceVersion uint64,
+) error {
+	// context.WithoutCancel mirrors finalizeMutatingCancellation's own
+	// identical discipline (agent_node_executor_cancellation.go) — this
+	// job's own ctx is not expected to be cancelled here (RECOVERY_REAPER
+	// is its own independent CONTROL job, not sharing execCtx with
+	// whatever live Attempt originally ran), but cancelMutatingAttemptTx's
+	// own contract documents that it expects an already-uncancelable ctx,
+	// so this satisfies that unconditionally rather than relying on the
+	// caller's own ctx happening to never be cancelled.
+	cleanupCtx := context.WithoutCancel(ctx)
+	currentRevision, err := h.workspaces.LoadRepositoryWorkspaceRevision(cleanupCtx, repositoryWorkspaceID)
+	if err != nil {
+		return fmt.Errorf("runtime: load current revision for repository workspace %s during recovery cancellation finalization: %w", repositoryWorkspaceID, err)
+	}
+	verdict, err := worker.ReconcileMutatingAttempt(pinnedRevision, currentRevision)
+	if err != nil {
+		return fmt.Errorf("runtime: reconcile orphaned cancelling mutating attempt %s: %w", attempt.ID, err)
+	}
+	return cancelMutatingAttemptTx(cleanupCtx, h.uow, h.ids, string(attempt.ID), string(attempt.NodeRunID), runID, []cancelledMutatingMountVerdict{{
+		repositoryWorkspaceID: workspace.RepositoryWorkspaceID(repositoryWorkspaceID), workspaceVersion: workspaceVersion,
+		mutationObserved: verdict == worker.ReconciliationMutationObserved,
+	}})
 }
 
 // RecoveryReasonAttemptsExhausted is a typed override for

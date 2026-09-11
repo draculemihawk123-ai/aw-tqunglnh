@@ -192,6 +192,16 @@ type WorkRepository interface {
 	// repositoryprobe.Handler's identical "already resolved" reclaim check
 	// for a different aggregate.
 	GetRepositoryWorkspace(ctx context.Context, workspaceSetID, repositoryID string, generation uint64) (workspace.RepositoryWorkspace, error)
+	// QuarantineRepositoryWorkspace is the tx-composable twin of
+	// WorkspaceLifecycle.QuarantineRepositoryWorkspace below (V5-15D) — the
+	// SAME fenced READY->QUARANTINED CAS plus its correlated domain event,
+	// callable inside an already-open transaction. Needed by runtime's own
+	// cancellation-finalization boundary, which must quarantine a mutated
+	// workspace atomically alongside CASing the owning Attempt/NodeRun and
+	// reconciling Run terminality — never as a separate, non-atomic commit
+	// that could leave those steps inconsistent with each other after a
+	// crash between them.
+	QuarantineRepositoryWorkspace(ctx context.Context, update QuarantineRepositoryWorkspaceUpdate) error
 	// ListWorkspaceSetRepositoryWorkspaces returns every RepositoryWorkspace
 	// row for workspaceSetID (every generation, every state), ordered by
 	// (repository_id, generation) for a stable, deterministic result a test

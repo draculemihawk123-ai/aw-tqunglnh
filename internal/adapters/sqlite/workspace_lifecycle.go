@@ -30,18 +30,35 @@ base_revision, current_revision, state, version, last_provision_error_code`
 // racing on the same workspace gets ports.ErrOptimisticConflict, never a
 // second quarantine event for it.
 func (s *Store) QuarantineRepositoryWorkspace(ctx context.Context, update ports.QuarantineRepositoryWorkspaceUpdate) error {
-	if update.RepositoryWorkspaceID == "" || update.EventID == "" || strings.TrimSpace(update.Reason) == "" {
-		return errors.New("workspace quarantine update is incomplete")
-	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("begin workspace quarantine: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if err := quarantineRepositoryWorkspaceTx(ctx, tx, update); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit workspace quarantine: %w", err)
+	}
+	return nil
+}
 
+// quarantineRepositoryWorkspaceTx is Store.QuarantineRepositoryWorkspace's
+// own tx-composable core — the "one function, two callers" pattern
+// completeJobTx (scheduling.go) already established, extended here (V5-15D)
+// so a caller composing a larger atomic transaction (runtime's own
+// cancellation-finalization boundary, which must CAS the Attempt, quarantine
+// the workspace, CAS the NodeRun, and reconcile Run terminality all in ONE
+// commit) can reuse the identical CAS/event logic instead of opening its own
+// separate, non-atomic transaction for just this step.
+func quarantineRepositoryWorkspaceTx(ctx context.Context, tx *sql.Tx, update ports.QuarantineRepositoryWorkspaceUpdate) error {
+	if update.RepositoryWorkspaceID == "" || update.EventID == "" || strings.TrimSpace(update.Reason) == "" {
+		return errors.New("workspace quarantine update is incomplete")
+	}
 	timestamp := formatWorkflowTime(update.OccurredAt)
 	var projectID string
-	err = tx.QueryRowContext(ctx, `
+	err := tx.QueryRowContext(ctx, `
 UPDATE repository_workspaces
 SET state = 'QUARANTINED', version = version + 1, updated_at = ?
 WHERE id = ? AND state = 'READY' AND version = ?
@@ -56,7 +73,7 @@ RETURNING project_id`,
 		return fmt.Errorf("quarantine repository workspace %s: %w", update.RepositoryWorkspaceID, err)
 	}
 
-	if err := appendRepositoryWorkspaceEvent(ctx, tx, repositoryWorkspaceEvent{
+	return appendRepositoryWorkspaceEvent(ctx, tx, repositoryWorkspaceEvent{
 		id:            update.EventID,
 		projectID:     projectID,
 		workspaceID:   update.RepositoryWorkspaceID,
@@ -67,14 +84,7 @@ RETURNING project_id`,
 			"repositoryWorkspaceId": string(update.RepositoryWorkspaceID),
 			"reason":                update.Reason,
 		},
-	}); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit workspace quarantine: %w", err)
-	}
-	return nil
+	})
 }
 
 // ReleaseRepositoryWorkspace is the fenced CAS transition from READY to

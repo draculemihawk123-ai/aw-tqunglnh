@@ -455,16 +455,42 @@ func TestCommandNodeExecutor_ProcessCancelled_ReusesV508CMutatingPath(t *testing
 	supervisor := &fake.ProcessSupervisor{Result: ports.ProcessResult{Cancelled: true, TreeQuiesced: true}}
 	executor, interruptions, reconciler := newTestCommandNodeExecutor(uow, ids, store, supervisor, fake.SecretResolver{})
 
-	_, err := executor.Execute(context.Background(), ports.NodeExecutionRequest{
+	ctx := context.Background()
+	_, err := executor.Execute(ctx, ports.NodeExecutionRequest{
 		AttemptID: attemptID, NodeRunID: nodeRunID, RunID: runID, JobLease: jobLease,
 	})
 	if !errors.Is(err, runtime.ErrAttemptAlreadyTerminated) {
 		t.Fatalf("Execute err = %v, want ErrAttemptAlreadyTerminated", err)
 	}
-	if len(interruptions.terminations) != 1 || interruptions.terminations[0].NextState != runtimedomain.ExecutionAttemptIndeterminate {
-		t.Fatalf("interruptions.terminations = %+v, want exactly one INDETERMINATE termination", interruptions.terminations)
+	// V5-15D: finalizeMutatingCancellation (agent_node_executor_cancellation.go)
+	// CASes the Attempt via the already-tx-scoped
+	// ports.RuntimeRepository.TransitionExecutionAttempt directly, inside
+	// the SAME atomic transaction that also CASes the NodeRun and reconciles
+	// Run terminality — this legacy fake spy is no longer called at all.
+	if len(interruptions.terminations) != 0 {
+		t.Fatalf("interruptions.terminations = %+v, want none — the legacy path is no longer called", interruptions.terminations)
 	}
 	if len(reconciler.quarantined) != 0 {
-		t.Fatalf("reconciler.quarantined = %+v, want none — the fixture's own captureRevision matches the pinned revision (clean)", reconciler.quarantined)
+		t.Fatalf("reconciler.quarantined = %+v, want none — the legacy path is no longer called", reconciler.quarantined)
+	}
+
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		attempt, err := tx.Runtime().GetExecutionAttempt(ctx, attemptID)
+		if err != nil {
+			return err
+		}
+		if attempt.State != runtimedomain.ExecutionAttemptIndeterminate || attempt.TerminationReason != runtimedomain.TerminationReasonOwnershipLostMutating {
+			t.Fatalf("attempt = %+v, want INDETERMINATE/OWNERSHIP_LOST_MUTATING", attempt)
+		}
+		nodeRun, err := tx.Runtime().GetNodeRun(ctx, nodeRunID)
+		if err != nil {
+			return err
+		}
+		if nodeRun.State != runtimedomain.NodeRunCancelled {
+			t.Fatalf("nodeRun.State = %s, want CANCELLED", nodeRun.State)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("load attempt/node run: %v", err)
 	}
 }

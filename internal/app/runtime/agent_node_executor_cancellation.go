@@ -7,22 +7,25 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/worker"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
 // ErrAttemptAlreadyTerminated signals execute.go's own Handle that THIS
 // call already moved the Attempt to a terminal state itself (V5-08C's own
-// mutating-cancellation path, handleMutatingCancellation below) — unlike
-// ErrIndeterminateExecution (which means "leave RUNNING, someone else
-// resolves this later"), this means "already resolved, right now; do not
-// call FinalizeExecutionAttempt at all" (the Attempt is no longer RUNNING
-// by the time this returns, so that CAS would just fail).
+// mutating-cancellation path, finalizeMutatingCancellation below) —
+// unlike ErrIndeterminateExecution (which means "leave RUNNING, someone
+// else resolves this later"), this means "already resolved, right now; do
+// not call FinalizeExecutionAttempt at all" (the Attempt is no longer
+// RUNNING by the time this returns, so that CAS would just fail).
 var ErrAttemptAlreadyTerminated = errors.New("runtime: attempt was terminated directly by the cancellation path, not finalized")
 
 // cancellationPollInterval is how often execute.go's own poller re-checks
@@ -52,12 +55,26 @@ const cancellationPollInterval = 500 * time.Millisecond
 // is a thin, unchanged wrapper kept so agent_node_executor.go's own single
 // call site needs no edit.
 func classifyCancellation(
-	ctx context.Context, uow ports.UnitOfWork, interruptions worker.InterruptionRecoveryStore, workspaces ports.WorkspaceProvider,
-	reconciler worker.WorkspaceReconciler, writeLeases ports.WriteLeaseManager, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
+	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, workspaces ports.WorkspaceProvider,
+	writeLeases ports.WriteLeaseManager, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
 ) (ports.NodeExecutionResult, error) {
+	// By the time this is ever called, ctx (execCtx) has ALREADY been
+	// cancelled — that is precisely what "a cancellation was observed"
+	// means here (pollForCancellation's own doit signal, execute.go). This
+	// re-check read, like finalizeMutatingCancellation's own real I/O and
+	// durable writes below, must use an uncancelable derivative
+	// (context.WithoutCancel, the same real pattern pool.go's own
+	// heartbeatLoop already uses) — running it against the already-done
+	// ctx directly risks the read failing/hanging for the wrong reason
+	// (ctx cancellation) rather than ever really answering the question,
+	// silently routing a genuine cancellation into the generic
+	// "leave RUNNING" branch (execute.go) instead of ever reaching
+	// finalizeMutatingCancellation at all — confirmed empirically (not
+	// guessed) while building this fix.
+	cleanupCtx := context.WithoutCancel(ctx)
 	var runCancelling bool
-	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
-		run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
+	if err := uow.WithReadOnly(cleanupCtx, func(tx ports.Tx) error {
+		run, err := tx.Runtime().GetWorkflowRun(cleanupCtx, req.RunID)
 		if err != nil {
 			return err
 		}
@@ -86,118 +103,272 @@ func classifyCancellation(
 			State: runtimedomain.ExecutionAttemptCancelled, TerminationReason: runtimedomain.TerminationReasonRunCancelled,
 		}, nil
 	}
-	return ports.NodeExecutionResult{}, handleMutatingCancellation(ctx, uow, interruptions, workspaces, reconciler, writeLeases, req, resolved)
+	return ports.NodeExecutionResult{}, finalizeMutatingCancellation(ctx, uow, ids, workspaces, writeLeases, req, resolved)
 }
 
 func (e *AgentNodeExecutor) classifyCancellation(
 	ctx context.Context, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
 ) (ports.NodeExecutionResult, error) {
-	return classifyCancellation(ctx, e.uow, e.interruptions, e.workspaces, e.reconciler, e.writeLeases, req, resolved)
+	return classifyCancellation(ctx, e.uow, e.ids, e.workspaces, e.writeLeases, req, resolved)
 }
 
-// handleMutatingCancellation is V5-08C's own locked requirement: "mutating
-// attempt không chứng minh được kết quả thành INDETERMINATE với workspace
-// QUARANTINED" — a mutating attempt that was genuinely cancelled mid-flight
-// can never be assumed clean just because the process is confirmed dead
-// (classify's own TreeQuiesced check, already run before this is ever
-// reached); it must be reconciled right now, not left for a later
-// crash-recovery sweep to eventually discover. This reuses V4-13's own
-// already-proven primitives exactly as RecoveryReaperHandler does
-// (recovery_reaper.go) — internal/app/worker/interruption.go's own
-// TerminateInterruptedAttempt/ReconcileMutatingAttempt/
-// QuarantineRepositoryWorkspace — rather than inventing a second way to
-// reach the identical durable outcome. Unlike that crash-recovery caller,
-// this bridge already knows definitively that the attempt IS mutating
-// (resolved.hasWriteMount) and already has every repository workspace's
-// own identity/pinned revision in hand (resolved.writeMounts) — no
-// ClassifyInterruptedAttempt/AttemptHeldAnyWriteLease round trip needed.
-//
-// WriteLeases are released only after this whole reconciliation completes
-// (V5-08C's own locked "chỉ release WriteLease SAU KHI xác nhận process đã
-// dừng") — releasing before quarantine would open a real window for
-// another attempt to acquire a write lease against a workspace whose own
-// integrity is not yet decided.
-//
-// A free function (V5-09: reused by CommandNodeExecutor via
-// classifyCancellation above, for the identical reason) rather than a
-// method on *AgentNodeExecutor; e.handleMutatingCancellation below is a
-// thin, unchanged wrapper.
-func handleMutatingCancellation(
-	ctx context.Context, uow ports.UnitOfWork, interruptions worker.InterruptionRecoveryStore, workspaces ports.WorkspaceProvider,
-	reconciler worker.WorkspaceReconciler, writeLeases ports.WriteLeaseManager, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
-) error {
-	occurredAt := time.Now().UTC()
-	attemptVersion, err := loadAttemptVersion(ctx, uow, req.AttemptID)
-	if err != nil {
-		return fmt.Errorf("runtime: load attempt version before terminating a cancelled mutating attempt: %w", err)
-	}
-	if err := interruptions.TerminateInterruptedAttempt(ctx, ports.AttemptTerminationUpdate{
-		AttemptID: ports.ExecutionAttemptID(req.AttemptID), ExpectedVersion: attemptVersion,
-		NextState: runtimedomain.ExecutionAttemptIndeterminate, Reason: runtimedomain.TerminationReasonOwnershipLostMutating,
-		EventID: req.AttemptID + "-cancelled-indeterminate", CorrelationID: "", OccurredAt: occurredAt,
-	}); err != nil {
-		return fmt.Errorf("runtime: terminate cancelled mutating attempt %s indeterminate: %w", req.AttemptID, err)
-	}
+// executionAttemptTerminatedEventPayload is EXECUTION_ATTEMPT_TERMINATED's
+// own JSON shape — mirrors internal/adapters/sqlite/attempt_store.go's own
+// TerminateInterruptedAttempt (the SPK-04-era primitive this function
+// replaces for the CANCELLING-Run case, V5-15D): finalizeMutatingCancellation
+// below CASes the Attempt via the already-tx-scoped
+// ports.RuntimeRepository.TransitionExecutionAttempt instead (so it can
+// share ONE atomic transaction with the NodeRun/Run-terminality steps),
+// which appends no event of its own — this is that same audit event,
+// appended manually here to keep the identical real trace either path
+// produces.
+type executionAttemptTerminatedEventPayload struct {
+	AttemptID string `json:"attemptId"`
+	NextState string `json:"nextState"`
+	Reason    string `json:"reason"`
+}
 
+const (
+	executionAttemptTerminatedEventType     = "EXECUTION_ATTEMPT_TERMINATED"
+	executionAttemptTerminatedSchemaVersion = 1
+)
+
+// finalizeMutatingCancellation is V5-15D's own real production fix
+// (2026-09-12, confirmed with the user before writing this — a genuine,
+// previously-unexercised architectural gap found only by actually running
+// the system, not by reading the code alone): the ORIGINAL V5-08C
+// handleMutatingCancellation only ever CASed the Attempt to INDETERMINATE
+// and quarantined the workspace (both via separate, non-atomic *sqlite.Store
+// calls), then returned ErrAttemptAlreadyTerminated — which execute.go's own
+// Handle treats as "already resolved, skip FinalizeExecutionAttempt
+// entirely." That skip meant the owning NodeRun was NEVER transitioned away
+// from RUNNING, so reconcileCancellingRunTx's own LiveCount==0 gate
+// (completion.go) could never pass, and the owning WorkflowRun was stuck in
+// CANCELLING forever — confirmed empirically (internal/integration/v5accept's
+// own cancel-during-mutating-attempt scenario) before this fix.
+//
+// The user's own binding fix contract (verbatim state matrix, 2026-09-12):
+// Attempt -> INDETERMINATE/OWNERSHIP_LOST_MUTATING; Workspace -> QUARANTINED
+// if a mutation is observed; NodeRun -> CANCELLED; BranchToken -> CANCELLED
+// if present; WorkflowRun -> CANCELLED once LiveCount==0; WorkItem ->
+// BLOCKED with a RUN_CANCELLED blocker; cancellation intent -> COMPLETED.
+// All of this (except the Attempt CAS/event and the workspace quarantine
+// itself) already exists and is reused verbatim here:
+// terminalizeBranchTokenForCancelledNodeRunTx and reconcileRunTerminalityTx
+// (finalize.go/completion.go) are the SAME functions decideCancelledOutcomeTx
+// already uses for a plain (non-mutating) cancelled Attempt — and
+// reconcileRunTerminalityTx's own reconcileCancellingRunTx branch already
+// opens the WorkItem-level RUN_CANCELLED blocker via transitionRunToCancelledTx
+// once it observes LiveCount==0 (openRunCancelledBlockerTx, completion.go) —
+// nothing new needed for that step, only for actually letting the NodeRun
+// reach a terminal state in the first place so LiveCount can ever reach zero.
+//
+// Real I/O (CaptureRevision per write mount) still runs BEFORE the atomic
+// transaction, exactly like the original code — a real git revision read is
+// not something a database transaction should ever wrap. Everything durable
+// this decision produces (Attempt CAS + its own audit event, workspace
+// quarantine, NodeRun CAS, branch-token terminalization, Run-terminality
+// reconciliation, and — defensively — the cancellation intent's own
+// COMPLETED transition) commits together in ONE uow.WithSerializedWrite: a
+// crash before that commit leaves the Attempt still genuinely RUNNING (the
+// recovery reaper can still pick it up for real); a crash after it leaves
+// every one of those rows mutually consistent. WriteLeases are released
+// only AFTER this transaction commits (V5-08C's own already-locked "chỉ
+// release WriteLease SAU KHI xác nhận process đã dừng" — now also after the
+// full finalization is durable, not merely after the Attempt alone is).
+func finalizeMutatingCancellation(
+	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, workspaces ports.WorkspaceProvider,
+	writeLeases ports.WriteLeaseManager, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
+) error {
+	// cleanupCtx (context.WithoutCancel, the SAME real pattern pool.go's own
+	// heartbeatLoop already uses for its lease-renewal write) is what every
+	// real I/O and durable write below actually uses, never ctx directly:
+	// by the time this function is ever called, ctx (execCtx,
+	// pollForCancellation's own doit signal) has ALREADY been cancelled —
+	// that is precisely what "a cancellation was observed" means here. Real
+	// I/O against an already-cancelled ctx does not merely fail fast; a
+	// real SQLite write transaction (uow.WithSerializedWrite, BEGIN
+	// IMMEDIATE) that needs to wait even briefly for another writer (the
+	// SAME Attempt's own still-active heartbeat loop, for one) can hang
+	// INDEFINITELY on an already-done ctx rather than erroring — confirmed
+	// empirically (not guessed) while building this: the real cancellation
+	// poller fired and killed the real process correctly, but this whole
+	// function then never returned, leaving the Run stuck exactly like
+	// before this fix. This finalize step is only ever reached BECAUSE
+	// cancellation was already observed — it must never itself be starved
+	// by that same cancellation.
+	cleanupCtx := context.WithoutCancel(ctx)
+
+	verdicts := make([]cancelledMutatingMountVerdict, 0, len(resolved.writeMounts))
 	for _, mount := range resolved.writeMounts {
-		currentRevision, err := workspaces.CaptureRevision(ctx, mount.handle)
+		currentRevision, err := workspaces.CaptureRevision(cleanupCtx, mount.handle)
 		if err != nil {
-			return fmt.Errorf("runtime: capture current revision for repository workspace %s during cancellation reconciliation: %w", mount.repositoryWorkspaceID, err)
+			return fmt.Errorf("runtime: capture current revision for repository workspace %s during cancellation finalization: %w", mount.repositoryWorkspaceID, err)
 		}
 		verdict, err := worker.ReconcileMutatingAttempt(mount.pinnedRevision, currentRevision.VCSObjectID)
 		if err != nil {
 			return fmt.Errorf("runtime: reconcile cancelled mutating attempt against repository workspace %s: %w", mount.repositoryWorkspaceID, err)
 		}
-		if verdict != worker.ReconciliationMutationObserved {
-			continue
-		}
-		if err := reconciler.QuarantineRepositoryWorkspace(ctx, ports.QuarantineRepositoryWorkspaceUpdate{
-			RepositoryWorkspaceID: mount.repositoryWorkspaceID, ExpectedVersion: mount.workspaceVersion,
-			Reason: string(verdict), EventID: req.AttemptID + "-cancelled-quarantine-" + string(mount.repositoryWorkspaceID),
-			CorrelationID: "", OccurredAt: occurredAt,
-		}); err != nil {
-			return fmt.Errorf("runtime: quarantine repository workspace %s after cancelled mutating attempt: %w", mount.repositoryWorkspaceID, err)
-		}
+		verdicts = append(verdicts, cancelledMutatingMountVerdict{
+			repositoryWorkspaceID: mount.repositoryWorkspaceID, workspaceVersion: mount.workspaceVersion,
+			mutationObserved: verdict == worker.ReconciliationMutationObserved,
+		})
+	}
+
+	if err := cancelMutatingAttemptTx(cleanupCtx, uow, ids, req.AttemptID, req.NodeRunID, req.RunID, verdicts); err != nil {
+		return err
 	}
 
 	if len(resolved.writeLeaseGrants) > 0 {
-		if err := writeLeases.ReleaseWriteLeases(ctx, resolved.writeLeaseGrants); err != nil {
+		if err := writeLeases.ReleaseWriteLeases(cleanupCtx, resolved.writeLeaseGrants); err != nil {
 			return fmt.Errorf("runtime: release write leases after cancelled mutating attempt %s: %w", req.AttemptID, err)
 		}
 	}
 	return ErrAttemptAlreadyTerminated
 }
 
-func (e *AgentNodeExecutor) handleMutatingCancellation(
-	ctx context.Context, req ports.NodeExecutionRequest, resolved resolvedExecutionResources,
-) error {
-	return handleMutatingCancellation(ctx, e.uow, e.interruptions, e.workspaces, e.reconciler, e.writeLeases, req, resolved)
+// cancelledMutatingMountVerdict is one write mount's own already-computed
+// reconciliation verdict — cancelMutatingAttemptTx's own input. Deliberately
+// carries no live capability (no WorkspaceHandle, no ports.WorkspaceProvider):
+// computing the verdict needs real I/O (a live revision read) a caller must
+// do BEFORE ever opening the atomic transaction below, using WHATEVER real
+// mechanism it has access to — finalizeMutatingCancellation above uses
+// ports.WorkspaceProvider.CaptureRevision (a real WorkspaceHandle), while
+// RecoveryReaperHandler's own orphan-sweep caller (recovery_reaper.go) uses
+// its own narrower worker.WorkspaceReconciler.LoadRepositoryWorkspaceRevision
+// (a bare RepositoryWorkspaceID) instead — two different real capabilities,
+// the same real verdict shape once each has one.
+type cancelledMutatingMountVerdict struct {
+	repositoryWorkspaceID workspace.RepositoryWorkspaceID
+	workspaceVersion      uint64
+	mutationObserved      bool
 }
 
-// loadAttemptVersion re-reads attemptID's own current Version — needed
-// fresh (not the Version this Attempt had when Execute started) since
-// nothing else has fenced-CAS'd it since; TerminateInterruptedAttempt's own
-// CAS needs the real current value.
+// cancelMutatingAttemptTx is finalizeMutatingCancellation's own atomic core
+// (V5-15D, 2026-09-12) — extracted so RecoveryReaperHandler's own orphan
+// sweep (recovery_reaper.go) can reuse the IDENTICAL real transaction for a
+// genuinely mutating orphaned Attempt whose own owning Run is CANCELLING,
+// per the user's own binding fix contract: "Recovery reaper cũng phải gọi
+// cùng cancellation-finalization path khi orphaned Attempt thuộc một Run
+// đang CANCELLING." Never called directly by anything outside this file and
+// recovery_reaper.go — both call sites already independently computed
+// verdicts (real revision reads) before ever reaching here, so this
+// function's own only job is the durable, all-or-nothing part: CAS Attempt
+// RUNNING->INDETERMINATE (+ its own audit event), quarantine every mount
+// with an observed mutation, CAS NodeRun RUNNING->CANCELLED, terminalize its
+// own BranchToken if any, reconcile Run terminality (which — once
+// LiveCount==0 — is also where WorkflowRun actually reaches CANCELLED and
+// the WorkItem-level RUN_CANCELLED blocker opens, completion.go, nothing
+// new needed there), and defensively complete the cancellation intent.
 //
-// A free function (V5-09: reused by CommandNodeExecutor via
-// handleMutatingCancellation above) rather than a method on
-// *AgentNodeExecutor; e.loadAttemptVersion below is a thin, unchanged
-// wrapper.
-func loadAttemptVersion(ctx context.Context, uow ports.UnitOfWork, attemptID string) (uint64, error) {
-	var version uint64
-	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+// ctx is expected to already be an uncancelable derivative (both real
+// callers pass one) — this function does not itself derive one, since it
+// has no ctx of its own to derive FROM otherwise.
+func cancelMutatingAttemptTx(
+	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source,
+	attemptID, nodeRunID, runID string, verdicts []cancelledMutatingMountVerdict,
+) error {
+	occurredAt := time.Now().UTC()
+	return uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		if run.State != runtimedomain.WorkflowRunCancelling && run.State != runtimedomain.WorkflowRunCancelled {
+			return fmt.Errorf("runtime: cancellation finalization: run %s is no longer cancelling (state=%s)", runID, run.State)
+		}
+
 		attempt, err := tx.Runtime().GetExecutionAttempt(ctx, attemptID)
 		if err != nil {
 			return err
 		}
-		version = attempt.Version
-		return nil
-	}); err != nil {
-		return 0, err
-	}
-	return version, nil
-}
+		if string(attempt.NodeRunID) != nodeRunID {
+			return fmt.Errorf("runtime: cancellation finalization: attempt %s does not belong to node run %s", attemptID, nodeRunID)
+		}
+		if attempt.State != runtimedomain.ExecutionAttemptRunning {
+			// Already terminated by an earlier winner (a duplicate reaper
+			// delivery, or the live cancellation poller's own path already
+			// won the race) — idempotent no-op, never a second CAS attempt
+			// or a second audit event for it.
+			return nil
+		}
 
-func (e *AgentNodeExecutor) loadAttemptVersion(ctx context.Context, attemptID string) (uint64, error) {
-	return loadAttemptVersion(ctx, e.uow, attemptID)
+		updatedAttempt, err := tx.Runtime().TransitionExecutionAttempt(ctx, ports.TransitionExecutionAttemptRequest{
+			AttemptID: attemptID, ExpectedState: runtimedomain.ExecutionAttemptRunning, ExpectedVersion: attempt.Version,
+			NextState: runtimedomain.ExecutionAttemptIndeterminate, TerminationReason: runtimedomain.TerminationReasonOwnershipLostMutating,
+		})
+		if err != nil {
+			return err
+		}
+		terminatedPayload, err := json.Marshal(executionAttemptTerminatedEventPayload{
+			AttemptID: attemptID, NextState: string(runtimedomain.ExecutionAttemptIndeterminate),
+			Reason: string(runtimedomain.TerminationReasonOwnershipLostMutating),
+		})
+		if err != nil {
+			return fmt.Errorf("marshal %s event payload: %w", executionAttemptTerminatedEventType, err)
+		}
+		if err := tx.Events().Append(ctx, ports.DomainEvent{
+			ID: attemptID + "-cancelled-indeterminate", ProjectID: string(run.ProjectID),
+			AggregateType: "ExecutionAttempt", AggregateID: attemptID, Sequence: int64(updatedAttempt.Version),
+			EventType: executionAttemptTerminatedEventType, SchemaVersion: executionAttemptTerminatedSchemaVersion,
+			PayloadJSON: string(terminatedPayload), CreatedAt: occurredAt,
+		}); err != nil {
+			return fmt.Errorf("append %s event: %w", executionAttemptTerminatedEventType, err)
+		}
+
+		for _, v := range verdicts {
+			if !v.mutationObserved {
+				continue
+			}
+			if err := tx.Work().QuarantineRepositoryWorkspace(ctx, ports.QuarantineRepositoryWorkspaceUpdate{
+				RepositoryWorkspaceID: v.repositoryWorkspaceID, ExpectedVersion: v.workspaceVersion,
+				Reason: string(worker.ReconciliationMutationObserved), EventID: attemptID + "-cancelled-quarantine-" + string(v.repositoryWorkspaceID),
+				OccurredAt: occurredAt,
+			}); err != nil {
+				return fmt.Errorf("quarantine repository workspace %s after cancelled mutating attempt: %w", v.repositoryWorkspaceID, err)
+			}
+		}
+
+		nodeRun, err := tx.Runtime().GetNodeRun(ctx, nodeRunID)
+		if err != nil {
+			return err
+		}
+		if nodeRun.State == runtimedomain.NodeRunRunning {
+			if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
+				NodeRunID: nodeRunID, ExpectedState: runtimedomain.NodeRunRunning, ExpectedVersion: nodeRun.Version,
+				NextState: runtimedomain.NodeRunCancelled,
+			}); err != nil {
+				return err
+			}
+		}
+
+		version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+		if err != nil {
+			return err
+		}
+		document := version.Document()
+
+		if err := terminalizeBranchTokenForCancelledNodeRunTx(ctx, tx, ids, run, document, nodeRun, "", attemptID+"-cancel-finalize"); err != nil {
+			return err
+		}
+
+		if err := reconcileRunTerminalityTx(ctx, tx, run, document, "", attemptID+"-cancel-finalize"); err != nil {
+			return err
+		}
+
+		// Defensive (the user's own contract, item 7): the coordinator's own
+		// earlier one-shot sweep (CancelRunCoordinatorHandler.Handle,
+		// cancel_run_coordinator.go) already marks the RunCancellationIntent
+		// COMPLETED regardless of whether the Run itself closed out yet, so
+		// this is normally already a no-op by the time this transaction
+		// runs — kept only as a safety net, never trusted as the primary
+		// mechanism, and never treated as an error if it no-ops.
+		if _, err := tx.Runtime().TransitionRunCancellationIntentState(ctx, ports.TransitionRunCancellationIntentStateRequest{
+			RunID: runID, ExpectedState: runtimedomain.CancellationIntentRequested, NextState: runtimedomain.CancellationIntentCompleted,
+		}); err != nil && !errors.Is(err, ports.ErrOptimisticConflict) && !errors.Is(err, ports.ErrPersistenceNotFound) {
+			return fmt.Errorf("complete run cancellation intent for run %s: %w", runID, err)
+		}
+
+		return nil
+	})
 }
