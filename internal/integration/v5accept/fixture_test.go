@@ -401,13 +401,28 @@ func (f *v5AcceptFixture) registerHandlers(executor ports.NodeExecutor, idPrefix
 // whatever internal registry an AgentNodeExecutor happens to hold — the
 // two must be the identical instance (wrapping the identical real
 // claude.Adapter) or a real Attempt would see its own drift check resolve
-// a DIFFERENT executor than the one that actually ran.
+// a DIFFERENT executor than the one that actually ran. Always wires the
+// permissive fake.IsolationEnforcementChecker{} (Err: nil) — every V5-15A/B
+// scenario needs isolation to pass so it can reach its own real node
+// executor; a scenario that needs isolation to genuinely FAIL (V5-15C's
+// own "isolation unavailable") uses registerHandlersWithIsolation directly.
 func (f *v5AcceptFixture) registerHandlersWithAgents(executor ports.NodeExecutor, idPrefix string, agents *agentregistry.Registry) *workerpool.Registry {
+	return f.registerHandlersWithIsolation(executor, idPrefix, agents, fake.IsolationEnforcementChecker{})
+}
+
+// registerHandlersWithIsolation is registerHandlersWithAgents with an
+// explicit ports.IsolationEnforcementChecker — V5-15C's own "isolation
+// unavailable" scenario needs the REAL, non-fake
+// process.IsolationChecker{} (internal/adapters/process/isolation.go),
+// which structurally always returns ErrIsolationEnforcementUnavailable for
+// policy.IsolationTierEnforcedIsolated — a real production rejection, not
+// a fake configured to simulate one.
+func (f *v5AcceptFixture) registerHandlersWithIsolation(executor ports.NodeExecutor, idPrefix string, agents *agentregistry.Registry, isolation ports.IsolationEnforcementChecker) *workerpool.Registry {
 	handlerIDs := idsource.NewSequential(idPrefix)
 	registry := workerpool.NewRegistry()
 	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(f.uow, handlerIDs))
 	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandler(f.uow, handlerIDs, fake.NewRuntimeExecutionConfigProvider()))
-	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(f.uow, handlerIDs, executor, clock.System{}, fake.IsolationEnforcementChecker{}, agents))
+	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(f.uow, handlerIDs, executor, clock.System{}, isolation, agents))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(f.uow, handlerIDs))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(f.uow, handlerIDs))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(f.uow, handlerIDs))
