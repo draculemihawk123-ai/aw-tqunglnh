@@ -4472,3 +4472,50 @@ thực thi 3-pha thật, chưa tồn tại); bridge Checkpoint→V5 Snapshot th�
 FRESH_START thật.
 
 **Việc còn lại:** chạy full verify suite + gofmt, commit, push, mở PR, chờ CI 6/6, merge.
+
+**Kết quả:** PR #3, 6/6 pass (chạy chậm bất thường ~15-20 phút ở trạng thái "Queued" trước khi runner thật
+được cấp phát — KHÔNG phải billing block, xác nhận qua Actions web UI, chỉ là delay cấp phát runner của
+GitHub cho repo mới; ghi vào memory `agent-kit-github-remote-migration.md` để lần sau không hoảng khi
+`gh pr checks` báo "no checks reported"). Squash-merged 2026-09-11, merge commit `46f63f2`.
+
+## V5-13 — PR1: bridge Checkpoint→V5 ContextSnapshot thật (branch
+`feat/v5-13-checkpoint-snapshot-bridge`, từ `origin/master` sau PR #3)
+
+**Phát hiện QUAN TRỌNG hơn dự đoán ban đầu — không phải chỉ lệch type label, mà FRESH_START CHƯA TỪNG chạy
+được trong thực tế:** lần theo TOÀN BỘ data flow thật (không đoán):
+- `hasUsableCheckpoint` xác minh Checkpoint's own `ContextSnapshotID` qua `h.recovery.LoadContextSnapshot`
+  — interface `worker.RecoveryStore` LEGACY, tra bảng `context_snapshots` (kiểu cũ, pre-V5-04).
+- Grep toàn bộ `internal/adapters/sqlite`: KHÔNG có nơi nào THẬT SỰ ghi vào bảng đó — chỉ 2 file test/spike
+  (`context_store_test.go`, `crashworker_fixtures.go`) làm vậy. Mọi Checkpoint thật từ V5-04 trở đi lưu
+  ĐÚNG ID của `contextsnapshot.Snapshot` thật (đã xác nhận ở PR0's own research), nhưng tra vào SAI bảng.
+- Hệ quả: `LoadContextSnapshot` LUÔN LUÔN trả not-found cho MỌI Attempt mutating thật → `hasUsableCheckpoint`
+  LUÔN LUÔN false → reaper LUÔN LUÔN chọn ESCALATE thay vì FRESH_START, một cách ÂM THẦM (không có gì phân
+  biệt với một ESCALATE hợp lệ). **FRESH_START chưa từng thực sự kích hoạt trong production.**
+
+**Fix:** `hasUsableCheckpoint` giờ xác minh qua `tx.ContextSnapshots().GetSnapshot(ctx,
+string(checkpoint.ContextSnapshotID))` — repository V5 THẬT — trong một `h.uow.WithReadOnly`, thay vì
+interface `RecoveryStore` legacy.
+
+**Quyết định về test (cân nhắc kỹ, không lặng lẽ bỏ qua):** KHÔNG dựng test E2E sqlite thật cho kịch bản
+"mutation observed" trong PR này. Đã lần ra chính xác cần gì: một `WriteLeaseGrant` thật (để
+`GetWriteLeaseRepositoryWorkspaceForAttempt` tìm thấy) + một `RepositoryWorkspace` thật có
+`current_revision` KHÁC `base_revision` (xác nhận qua `spk04_queries.go`'s own `LoadRepositoryWorkspaceRevision`
+— đọc đúng cột `current_revision`, tách biệt khỏi `base_revision`, nên KHÔNG cần thao tác git thật, chỉ cần
+2 giá trị cột khác nhau lúc tạo row) — nhưng hạ tầng fixture này CHƯA tồn tại (grep xác nhận từ PR0: 0 test
+nào đụng nhánh mutating). Xây dựng nó là công sức hạ tầng thật, không tương xứng với quy mô fix hẹp này.
+Hoãn sang PR2/PR3 (bộ thực thi FRESH_START 3-pha thật) — nơi ĐẰNG NÀO cũng cần đúng fixture này để chứng
+minh dispatch thật của chính nó, xây một lần dùng cho cả hai. Độ tin cậy của fix hiện tại dựa trên: (a)
+lần dấu vết data flow thật chính xác (không đoán), (b) bộ test thuần đầy đủ của PR0 (chứng minh khi
+`hasUsableCheckpoint` trả true, FRESH_START được chọn đúng).
+
+**Verify:**
+```
+go build ./...                                                          # sạch
+go vet ./...                                                            # sạch
+go test -count=1 -run "TestRecoveryReaperHandler|TestDecideRecoveryNextAction" ./internal/app/runtime/... # không regress
+go test -count=1 ./internal/app/runtime/...                             # PASS toàn bộ package
+```
+
+**Việc còn lại:** gofmt, docs-coverage-check, full test suite ×2, commit, push, mở PR, chờ CI 6/6, merge.
+Sau đó tiếp tục PR2/PR3 (bộ thực thi FRESH_START 3-pha thật + fixture mutation-observed thật + typed
+RECOVERY_NO_PROGRESS + handoff artifact V1), theo đúng chỉ dẫn tự động chuyển task.

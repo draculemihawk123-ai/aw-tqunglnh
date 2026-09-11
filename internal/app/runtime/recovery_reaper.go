@@ -505,6 +505,24 @@ type policyAttemptRules struct {
 // Checkpoint/ContextSnapshot pair. Any error (none exists, the store is
 // unreachable) is treated as "no", falling back to ESCALATE — never a
 // FRESH_START decision recorded with nothing real behind it.
+//
+// Confirmed bug fix (2026-09-11, V5-13 PR1): this used to verify the
+// checkpoint's own ContextSnapshotID via h.recovery.LoadContextSnapshot —
+// worker.RecoveryStore's own LEGACY lookup, which queries the pre-V5-04
+// context_snapshots table (internal/domain/runtime.ContextSnapshot).
+// Nothing in this codebase's real execution path has EVER written a row
+// there (grepped internal/adapters/sqlite: only context_store_test.go and
+// crashworker_fixtures.go's own spike fixtures do) — every REAL Checkpoint
+// a live Attempt's own sink writes instead stores the real V5
+// contextsnapshot.Snapshot's own ID (agent_node_executor.go:
+// `ContextSnapshotID: string(request.ContextSnapshot.ID)`), just re-typed
+// through the legacy Go type. The stored value was always correct; only
+// the lookup table was wrong — meaning this check ALWAYS failed for any
+// real orphaned mutating Attempt, so FRESH_START was structurally
+// unreachable in production (every real case silently fell through to
+// ESCALATE instead). Fixed by verifying against the REAL
+// contextsnapshot repository instead of the legacy RecoveryStore
+// interface.
 func (h *RecoveryReaperHandler) hasUsableCheckpoint(ctx context.Context, attemptID runtimedomain.ExecutionAttemptID) bool {
 	if h.recovery == nil {
 		return false
@@ -513,10 +531,15 @@ func (h *RecoveryReaperHandler) hasUsableCheckpoint(ctx context.Context, attempt
 	if err != nil || checkpoint.ContextSnapshotID == "" {
 		return false
 	}
-	if _, err := h.recovery.LoadContextSnapshot(ctx, checkpoint.ContextSnapshotID); err != nil {
+	var found bool
+	if err := h.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		_, snapshotErr := tx.ContextSnapshots().GetSnapshot(ctx, string(checkpoint.ContextSnapshotID))
+		found = snapshotErr == nil
+		return nil
+	}); err != nil {
 		return false
 	}
-	return true
+	return found
 }
 
 // retryAttempt creates a new ExecutionAttempt (AttemptNumber+1) and enqueues
