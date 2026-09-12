@@ -76,7 +76,7 @@ func driveBranchOutcome(t *testing.T, uow *fake.UnitOfWork, ids idsource.Source,
 	} else {
 		executor = &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
 	}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle(%s): %v", nodeRunID, err)
 	}

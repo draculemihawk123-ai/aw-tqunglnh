@@ -93,7 +93,7 @@ func seedRunningAndFinalizeSQLite(
 		req.TerminationReason = runtimedomain.TerminationReasonExecutionFailed
 		req.FailureCode = "EXECUTION_FAILED"
 	}
-	result, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, req)
+	result, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, req)
 	if err != nil {
 		t.Fatalf("FinalizeExecutionAttempt(%s, succeed=%v): %v", nodeRunID, succeed, err)
 	}

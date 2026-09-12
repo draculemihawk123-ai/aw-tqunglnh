@@ -36,7 +36,7 @@ func TestExecuteNodeHandler_MissingContextSnapshot_RejectsDispatchWithoutCalling
 	uow.Snapshot.ContextSnapshots().(*fake.ContextSnapshotRepository).DeleteSnapshot(mustSnapshotID(t, uow, attemptID))
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v (want nil — the job itself succeeded by finalizing a terminal Attempt)", err)
 	}
@@ -80,7 +80,7 @@ func TestExecuteNodeHandler_ContextSnapshotBoundToDifferentAttempt_RejectsDispat
 	uow.Snapshot.ContextSnapshots().(*fake.ContextSnapshotRepository).Overwrite(mismatched)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v (want nil — the job itself succeeded by finalizing a terminal Attempt)", err)
 	}
@@ -140,7 +140,7 @@ func TestExecuteNodeHandler_ContextSnapshot_MessageRefInvalid_FinalizesFailed(t 
 	uow.Snapshot.ContextSnapshots().(*fake.ContextSnapshotRepository).Overwrite(tampered)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v (want nil — the job itself succeeded by finalizing a terminal Attempt)", err)
 	}
@@ -177,7 +177,7 @@ func TestExecuteNodeHandler_ContextSnapshot_ResourceRefInvalid_FinalizesFailed(t
 	uow.Snapshot.ContextSnapshots().(*fake.ContextSnapshotRepository).Overwrite(tampered)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v (want nil — the job itself succeeded by finalizing a terminal Attempt)", err)
 	}

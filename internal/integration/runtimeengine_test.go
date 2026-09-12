@@ -576,7 +576,7 @@ func registerRuntimeEngineHandlers(
 	registry := workerpool.NewRegistry()
 	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(uow, handlerIDs))
 	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandler(uow, handlerIDs, fake.NewRuntimeExecutionConfigProvider()))
-	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, handlerIDs, executor, clock.System{}, fake.IsolationEnforcementChecker{}, runtimeEngineAgentRegistry(t)))
+	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, handlerIDs, executor, clock.System{}, fake.IsolationEnforcementChecker{}, runtimeEngineAgentRegistry(t), nil))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(uow, handlerIDs))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(uow, handlerIDs))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(uow, handlerIDs))
@@ -1741,7 +1741,7 @@ func TestRuntimeEngineGate_ConcurrentPoolsNoDuplicateExecution(t *testing.T) {
 	var executions atomic.Int32
 	countingExecutor := &countingNodeExecutor{inner: &scriptedNodeExecutor{uow: uow}, count: &executions}
 	raceRegistry := workerpool.NewRegistry()
-	raceRegistry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, idsource.Random{}, countingExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, runtimeEngineAgentRegistry(t)))
+	raceRegistry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(uow, idsource.Random{}, countingExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, runtimeEngineAgentRegistry(t), nil))
 
 	poolA := newRuntimeEnginePool(t, store, raceRegistry)
 	poolB := newRuntimeEnginePool(t, store, raceRegistry)

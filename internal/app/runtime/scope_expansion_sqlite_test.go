@@ -99,7 +99,7 @@ func TestFinalizeExecutionAttempt_SQLite_Blocked_OriginSurvivesRestart(t *testin
 		},
 		Reason: "need repo-2 too",
 	}
-	result, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	result, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptBlocked, TerminationReason: runtimedomain.TerminationReasonScopeExpansionRequired,
 		RequestedScopeExpansion: proposal, JobLease: lease,

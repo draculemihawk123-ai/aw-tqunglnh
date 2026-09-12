@@ -64,7 +64,7 @@ func TestRace_CancelVsAttemptSuccess_CancelFirst(t *testing.T) {
 	jobLease := ports.JobLease{JobID: ports.JobID(claimExecuteNodeJobID(t, uow, attemptID)), Owner: "worker-1", Token: 1}
 	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(jobLease.JobID), jobLease)
 
-	result, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	result, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: jobLease,
@@ -100,7 +100,7 @@ func TestRace_CancelVsAttemptSuccess_SuccessFirst(t *testing.T) {
 	jobLease := ports.JobLease{JobID: ports.JobID(claimExecuteNodeJobID(t, uow, attemptID)), Owner: "worker-1", Token: 1}
 	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(jobLease.JobID), jobLease)
 
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: jobLease,
@@ -134,7 +134,7 @@ func TestRace_CancelVsEnd_CancelFirst(t *testing.T) {
 	jobLease := ports.JobLease{JobID: ports.JobID(claimExecuteNodeJobID(t, uow, attemptID)), Owner: "worker-1", Token: 1}
 	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(jobLease.JobID), jobLease)
 
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: jobLease,
@@ -163,7 +163,7 @@ func TestRace_CancelVsEnd_EndFirst(t *testing.T) {
 	jobLease := ports.JobLease{JobID: ports.JobID(claimExecuteNodeJobID(t, uow, attemptID)), Owner: "worker-1", Token: 1}
 	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(jobLease.JobID), jobLease)
 
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: jobLease,
@@ -201,7 +201,7 @@ func TestRace_CancelVsCompletionPolicyPass_CancelFirst(t *testing.T) {
 	markAttemptRunning(t, uow, runID, nodeRunID, attemptID)
 	jobLease := ports.JobLease{JobID: ports.JobID(claimExecuteNodeJobID(t, uow, attemptID)), Owner: "worker-1", Token: 1}
 	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(jobLease.JobID), jobLease)
-	if _, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: jobLease,
@@ -241,7 +241,7 @@ func TestRace_CancelVsCompletionPolicyPass_PassFirst(t *testing.T) {
 	markAttemptRunning(t, uow, runID, nodeRunID, attemptID)
 	jobLease := ports.JobLease{JobID: ports.JobID(claimExecuteNodeJobID(t, uow, attemptID)), Owner: "worker-1", Token: 1}
 	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(jobLease.JobID), jobLease)
-	if _, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: jobLease,
@@ -284,7 +284,7 @@ func TestRace_StaleFinalizeAfterCancelIntent_Failed(t *testing.T) {
 	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(jobLease.JobID), jobLease)
 
 	jobsBefore := len(uow.Snapshot.Jobs().(*fake.JobsRepository).Items())
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 		FailureCode: errorcode.CodeExecutionFailed, JobLease: jobLease,
@@ -330,7 +330,7 @@ func TestRace_StaleFinalizeAfterCancelIntent_ReplayAfterAlreadyCancelled(t *test
 	}
 
 	// Consume the lease once, legitimately.
-	if _, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: jobLease,
@@ -343,7 +343,7 @@ func TestRace_StaleFinalizeAfterCancelIntent_ReplayAfterAlreadyCancelled(t *test
 
 	// A redelivered/duplicate finalize replaying the SAME (now-consumed)
 	// lease must be rejected by the job-lease fence itself.
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: jobLease,

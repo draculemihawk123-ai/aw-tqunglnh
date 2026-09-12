@@ -380,7 +380,7 @@ func TestAgentNodeExecutor_Success_BuildsEvidenceAndFinalizesEndToEnd(t *testing
 	}
 
 	version := loadAttemptVersion(t, uow, req.AttemptID)
-	finalizeResult, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	finalizeResult, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: req.RunID, NodeRunID: req.NodeRunID, AttemptID: req.AttemptID, ExpectedVersion: version,
 		NextState: result.State, TerminationReason: result.TerminationReason, SelectedOutcome: result.SelectedOutcome,
 		JobLease: req.JobLease, CorrelationID: "corr-1", Evidence: result.Evidence,
@@ -613,7 +613,7 @@ func TestFinalizeExecutionAttempt_TamperedEvidence_RejectsBeforeCommitting(t *te
 	tampered.TerminalEventSequence = result.Evidence.TerminalEventSequence + 1000
 
 	version := loadAttemptVersion(t, uow, req.AttemptID)
-	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: req.RunID, NodeRunID: req.NodeRunID, AttemptID: req.AttemptID, ExpectedVersion: version,
 		NextState: result.State, TerminationReason: result.TerminationReason, SelectedOutcome: result.SelectedOutcome,
 		JobLease: req.JobLease, CorrelationID: "corr-1", Evidence: &tampered,

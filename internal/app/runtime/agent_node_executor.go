@@ -130,6 +130,16 @@ func (e *AgentNodeExecutor) Execute(ctx context.Context, req ports.NodeExecution
 
 	resolved, err := e.resolveExecutionResources(ctx, req, request)
 	if err != nil {
+		// See CommandNodeExecutor.Execute's own identical branch for why: a
+		// write lease another Attempt currently, actively holds is a real,
+		// typed, timing-shaped contention — never a bare error the caller
+		// would otherwise treat as immediately non-retryable.
+		if errors.Is(err, ports.ErrWriteLeaseConflict) {
+			return ports.NodeExecutionResult{
+				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
+				ErrorCode: errorcode.CodeConflict,
+			}, nil
+		}
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: resolve agent execution resources: %w", err)
 	}
 	request.WorkspaceMounts = resolved.mounts
@@ -169,6 +179,9 @@ func (e *AgentNodeExecutor) Execute(ctx context.Context, req ports.NodeExecution
 	flushErr := sink.Flush(ctx)
 
 	nodeResult, classifyErr := e.classify(ctx, req, request, resolved, agentResult, agentErr, flushErr)
+	if classifyErr == nil {
+		nodeResult.WriteLeaseGrants = resolved.writeLeaseGrants
+	}
 	return nodeResult, classifyErr
 }
 

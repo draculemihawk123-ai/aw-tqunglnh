@@ -159,7 +159,7 @@ func TestAdmission_IsolationUnavailable_BlocksBeforeSpawn(t *testing.T) {
 	executor := &fake.NodeExecutor{}
 	handler := runtime.NewExecuteNodeHandler(
 		uow, ids, executor, clock.System{},
-		fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}, registry,
+		fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}, registry, nil,
 	)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -181,7 +181,7 @@ func TestAdmission_NoAdapterBuildPinned_BlocksBeforeSpawn(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestAdmission_AdapterBuildDrift_BlocksBeforeSpawn(t *testing.T) {
 
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 	executor := &fake.NodeExecutor{}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestAdmission_CapabilityRequirementUnsatisfied_BlocksBeforeSpawn(t *testing
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -248,7 +248,7 @@ func TestAdmission_MultiRepositoryWriteWithoutGrant_BlocksBeforeSpawn(t *testing
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -274,7 +274,7 @@ func TestAdmission_MultiplyFailingChecks_RecordsHighestPriorityReason(t *testing
 	executor := &fake.NodeExecutor{}
 	handler := runtime.NewExecuteNodeHandler(
 		uow, ids, executor, clock.System{},
-		fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}, registry,
+		fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}, registry, nil,
 	)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
@@ -288,7 +288,7 @@ func TestAdmission_AllChecksPass_ProceedsToRunning(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -389,7 +389,7 @@ func TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld(t *testing.T) {
 
 	blockedExecutor := &fake.NodeExecutor{}
 	blockingChecker := fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, blockedExecutor, clock.System{}, blockingChecker, registry)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, blockedExecutor, clock.System{}, blockingChecker, registry, nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle (first, blocked): %v", err)
 	}
@@ -438,7 +438,7 @@ func TestRetryBlockedActivation_CreatesNewAttemptNeverRevivesOld(t *testing.T) {
 
 	retryJob := claimableExecuteNodeJob(t, uow, retriedAttemptID)
 	retryExecutor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	retryExecuteHandler := runtime.NewExecuteNodeHandler(uow, ids, retryExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	retryExecuteHandler := runtime.NewExecuteNodeHandler(uow, ids, retryExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil)
 	if err := retryExecuteHandler.Handle(ctx, retryJob); err != nil {
 		t.Fatalf("Handle (retry): %v", err)
 	}
@@ -519,7 +519,7 @@ func TestRetryBlockedActivation_RevalidationStillFails_NoRepeatedBlockedActivati
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	blockingChecker := fake.IsolationEnforcementChecker{Err: errors.New("still no real OS enforcement")}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, blockingChecker, registry)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, blockingChecker, registry, nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle (blocked): %v", err)
 	}
@@ -591,7 +591,7 @@ func TestRetryBlockedActivation_RunNotRetryable_Rejected(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	blockingChecker := fake.IsolationEnforcementChecker{Err: errors.New("no real OS enforcement")}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, blockingChecker, registry)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, blockingChecker, registry, nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle (blocked): %v", err)
 	}
@@ -634,7 +634,7 @@ func TestRetryBlockedActivation_AdapterDrift_NeverRepinsToNewerBuild(t *testing.
 	}
 
 	job := claimableExecuteNodeJob(t, uow, attemptID)
-	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, fake.IsolationEnforcementChecker{}, registry)
+	handler := runtime.NewExecuteNodeHandler(uow, ids, &fake.NodeExecutor{}, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle (blocked): %v", err)
 	}

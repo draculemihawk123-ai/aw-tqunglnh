@@ -71,7 +71,7 @@ func TestExecuteNodeHandler_Success_FinalizesAndAdvances(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestExecuteNodeHandler_Failure_NonRetryableCode_FailsNodeRun(t *testing.T) 
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestExecuteNodeHandler_ExecutorReturnsError_FinalizesFailed(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Err: errors.New("boom: provider crashed")}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestExecuteNodeHandler_AttemptDeadlineFinalizesTimedOut(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Block: make(chan struct{})} // never closed: the executor "runs forever"
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -232,7 +232,7 @@ func TestExecuteNodeHandler_CancelledContextDoesNotFinalize(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Block: make(chan struct{})}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -304,7 +304,7 @@ func TestExecuteNodeHandler_PollerDetectsDurableCancellation_UnrecognizedExecuto
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Block: make(chan struct{})} // never closed: only poller-cancelled execCtx ends this
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 
 	handleErr := make(chan error, 1)
 	start := time.Now()
@@ -367,7 +367,7 @@ func TestExecuteNodeHandler_PollerDetectsDurableCancellation_DefinitiveResultFin
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &cancellationAwareExecutor{}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 
 	handleErr := make(chan error, 1)
 	go func() { handleErr <- handler.Handle(context.Background(), job) }()
@@ -431,7 +431,7 @@ func TestExecuteNodeHandler_ReplayAfterAlreadyRunning_IsNoOp(t *testing.T) {
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	blockedExecutor := &fake.NodeExecutor{Block: make(chan struct{})}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, blockedExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, blockedExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 
 	// First delivery: cancel it mid-flight so the Attempt is left RUNNING
 	// (not yet finalized) — exactly the state a redelivered job would find.
@@ -448,7 +448,7 @@ func TestExecuteNodeHandler_ReplayAfterAlreadyRunning_IsNoOp(t *testing.T) {
 	// QUEUED — claimRunning's own idempotent no-op must fire, never
 	// re-executing the (still-blocked) executor a second time.
 	unusedExecutor := &fake.NodeExecutor{Err: errors.New("must not be called")}
-	replayHandler := runtime.NewExecuteNodeHandler(uow, ids, unusedExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	replayHandler := runtime.NewExecuteNodeHandler(uow, ids, unusedExecutor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := replayHandler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("replayed Handle: %v", err)
 	}
@@ -501,7 +501,7 @@ func TestFinalizeExecutionAttempt_MissingSelectedOutcomeForSucceeded_Rejected(t 
 	seedRunningAttemptAndNodeRun(t, uow, nodeRunID, attemptID)
 
 	lease := ports.JobLease{JobID: job.ID, Owner: job.LeaseOwner, Token: job.LeaseToken, LeaseUntil: *job.LeaseUntil}
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		JobLease: lease,
@@ -513,7 +513,7 @@ func TestFinalizeExecutionAttempt_MissingSelectedOutcomeForSucceeded_Rejected(t 
 
 func TestFinalizeExecutionAttempt_UnsupportedNextState_Rejected(t *testing.T) {
 	uow, ids, runID, nodeRunID, attemptID := scheduledExecutionFixture(t, 600)
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 1,
 		NextState: runtimedomain.ExecutionAttemptRunning, TerminationReason: runtimedomain.TerminationReasonCompleted,
 	})
@@ -528,7 +528,7 @@ func TestFinalizeExecutionAttempt_StaleJobLease_RollsBackEverything(t *testing.T
 	seedRunningAttemptAndNodeRun(t, uow, nodeRunID, attemptID)
 
 	staleLease := ports.JobLease{JobID: job.ID, Owner: "someone-else", Token: 999, LeaseUntil: time.Now().Add(time.Minute)}
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: staleLease,

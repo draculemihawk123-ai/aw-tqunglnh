@@ -77,7 +77,7 @@ func TestExecuteNodeHandler_RetryableFailure_CreatesNextAttemptWithBackoff(t *te
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
 		State: runtimedomain.ExecutionAttemptFailed, ErrorCode: errorcode.CodeProviderUnavailable,
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clk, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clk, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -140,6 +140,80 @@ func TestExecuteNodeHandler_RetryableFailure_CreatesNextAttemptWithBackoff(t *te
 	}
 }
 
+// TestExecuteNodeHandler_WriteLeaseConflict_RetriesLikeAnyOtherRetryableCode
+// proves the post-V5-15E write-lease-conflict contract's own retry half:
+// CONFLICT (errorcode.CodeConflict) — the classification
+// CommandNodeExecutor/AgentNodeExecutor.Execute now give a real
+// ports.ErrWriteLeaseConflict from resolveExecutionResources, instead of
+// the bare, always-non-retryable error it used to be wrapped as — goes
+// through the exact same policy-driven retry decision
+// TestExecuteNodeHandler_RetryableFailure_CreatesNextAttemptWithBackoff
+// already proves for PROVIDER_UNAVAILABLE: decideRetryOrExhaustion has no
+// special-cased vocabulary for any one errorcode.Code (fence mismatch/
+// quarantine/scope violation stay non-retryable simply because no policy
+// in this codebase ever lists them in RetryableErrorCodes, exactly as
+// before this fix — nothing about how THOSE codes are classified changed).
+// The real "does CommandNodeExecutor actually classify a genuine
+// ErrWriteLeaseConflict as CodeConflict" half is proven by
+// TestV5AcceptFullComposition_RealFourRoleGraphReachesSucceededAndSurvivesRestart
+// (internal/integration/v5accept/full_composition_test.go): before this
+// fix, that real scenario's own second write-mounting node deterministically
+// hit a real conflict against the first node's never-released lease and
+// failed outright; after it, the same real conflict — when it happens at
+// all — would retry via this exact path rather than failing the Run.
+func TestExecuteNodeHandler_WriteLeaseConflict_RetriesLikeAnyOtherRetryableCode(t *testing.T) {
+	attemptDoc := retryableAttemptPolicyDocument(3, 30, 600, errorcode.CodeConflict)
+	uow, ids, _, nodeRunID, attemptID := scheduledExecutionFixtureWithAttemptPolicy(t, attemptDoc)
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+
+	fixedNow := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	clk := clock.NewFixed(fixedNow)
+
+	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
+		State: runtimedomain.ExecutionAttemptFailed, ErrorCode: errorcode.CodeConflict,
+	}}
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clk, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	original, err := uow.Snapshot.Runtime().GetExecutionAttempt(context.Background(), attemptID)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt(original): %v", err)
+	}
+	if original.State != runtimedomain.ExecutionAttemptFailed ||
+		original.TerminationReason != runtimedomain.TerminationReasonExecutionFailed ||
+		original.FailureCode != errorcode.CodeConflict {
+		t.Fatalf("original attempt = %+v, want FAILED/EXECUTION_FAILED/CONFLICT unchanged", original)
+	}
+
+	nodeRun, err := uow.Snapshot.Runtime().GetNodeRun(context.Background(), nodeRunID)
+	if err != nil {
+		t.Fatalf("GetNodeRun: %v", err)
+	}
+	if nodeRun.State != runtimedomain.NodeRunRunning {
+		t.Fatalf("node run = %+v, want unchanged RUNNING while a retry is pending", nodeRun)
+	}
+
+	attempts := uow.Snapshot.Runtime().(*fake.RuntimeRepository).Attempts()
+	if len(attempts) != 2 {
+		t.Fatalf("attempt count = %d, want exactly 2 (original + retry)", len(attempts))
+	}
+	var next runtimedomain.ExecutionAttempt
+	found := false
+	for id, a := range attempts {
+		if id != attemptID {
+			next, found = a, true
+		}
+	}
+	if !found {
+		t.Fatalf("no retry attempt found among %+v", attempts)
+	}
+	if next.AttemptNumber != 2 || next.State != runtimedomain.ExecutionAttemptQueued {
+		t.Fatalf("retry attempt = %+v, want AttemptNumber=2 QUEUED", next)
+	}
+}
+
 // TestExecuteNodeHandler_RetryableFailure_BudgetExhausted_FailsNodeRun
 // proves the retryable-but-exhausted branch: MaxAttempts=1 means the very
 // first failure already exhausts the budget, so no retry Attempt is
@@ -156,7 +230,7 @@ func TestExecuteNodeHandler_RetryableFailure_BudgetExhausted_FailsNodeRun(t *tes
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
 		State: runtimedomain.ExecutionAttemptFailed, ErrorCode: errorcode.CodeProviderUnavailable,
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -230,7 +304,7 @@ func TestFinalizeExecutionAttempt_BlockedState_MismatchedReasonRejectedNeverCons
 	seedRunningAttemptAndNodeRun(t, uow, nodeRunID, attemptID)
 
 	lease := ports.JobLease{JobID: job.ID, Owner: job.LeaseOwner, Token: job.LeaseToken, LeaseUntil: *job.LeaseUntil}
-	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptBlocked, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 		JobLease: lease,
@@ -352,7 +426,7 @@ func TestFinalizeExecutionAttempt_SQLite_RetryChain_PersistsAcrossRestart(t *tes
 	runID, nodeRunID, attemptID := sqliteExecutionFixtureWithAttemptPolicy(t, u, seq, attemptDoc)
 
 	_, lease := claimExecuteNodeJob(t, ctx, store, 30*time.Second)
-	_, err = runtime.FinalizeExecutionAttempt(ctx, u, seq, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err = runtime.FinalizeExecutionAttempt(ctx, u, seq, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 		FailureCode: errorcode.CodeProviderUnavailable, JobLease: lease,

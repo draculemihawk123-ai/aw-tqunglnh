@@ -115,7 +115,7 @@ func TestReconcileRunTerminality_NodeRunFailedNoOtherLiveWork_RunFailed(t *testi
 	job := claimableExecuteNodeJob(t, uow, attemptID)
 
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestReconcileRunTerminality_ForkBranchFailed_NoOtherLiveWork_RunFailed(t *t
 	}
 	job := claimableExecuteNodeJob(t, uow, scheduled.AttemptID)
 	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptFailed}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}
