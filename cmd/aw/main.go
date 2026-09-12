@@ -1,4 +1,4 @@
-// Command agentkit is the Alpha composition root
+// Command aw is the Alpha composition root
 // (docs/design/03-v1-alpha-foundation.md V1-01): it wires the `serve`,
 // `worker`, `doctor`, `definition`, `evidence` and `adapter` subcommands.
 // Only `evidence` may depend on internal/spikeacceptance-adjacent packages;

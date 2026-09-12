@@ -5,7 +5,7 @@
 // speculative abstraction). Before this package existed,
 // ports.AgentCapabilities.TestedCLIVersion was a hardcoded Go constant,
 // never verified against the executable actually configured
-// (cmd/agentkit/adapter.go's own doc comment named this exact gap as
+// (cmd/aw/adapter.go's own doc comment named this exact gap as
 // deferred to V5-06/07). Probe closes it: a real, separate, minimal
 // invocation of the configured executable (e.g. "--version"), entirely
 // independent of the adapter's own task-execution wire protocol.
