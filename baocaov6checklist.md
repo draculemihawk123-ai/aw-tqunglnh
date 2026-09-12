@@ -594,3 +594,213 @@ PR #31 (branch `feat/v6-10c-workspace-inspection-queries`) — 2 file mới tron
 function thật (26 adapter + 15 application), `go test ./...` xanh 100% trên toàn bộ 68 package. V6-10D (map
 3 query này sang HTTP GET route) giờ có thể bắt đầu ngay khi dependency riêng của nó
 (V6-00, V6-01A, V6-02A, V6-10B) sẵn sàng — không còn chờ gì thêm từ V6-10C.
+
+## V6-02A — Shared HTTP DTO, cursor và schema-fragment contract
+
+### Bối cảnh
+
+V6-01 (PR #30, `d8c1323`) vừa merge — dependency duy nhất của V6-02A đã pass. Theo dependency graph mục 2 của
+`08-v6-api-projections.md`, nhóm P1 "sau V6-01" gồm `{V6-01A, V6-02A, V6-15A}` chạy song song vì sở hữu file
+riêng; task này tự làm trực tiếp (không qua subagent) vì cùng lý do V6-01 tự làm: đây là contract nền mọi
+task endpoint sau này (V6-03A trở đi, hơn chục task) import và tái dùng, sai ở đây dội ngược lên toàn bộ
+V6-03…V6-11. Mục tiêu chính xác theo task spec (trích nguyên văn, không diễn giải lại): "endpoint song song
+dùng cùng error/query/action/stream vocabulary và tự cung cấp schema fragment." Phạm vi khoá cứng: error
+envelope, page/limit, opaque cursor, `Freshness`, `ValidAction`, range/media và SSE envelope. Không làm:
+không compose root router/OpenAPI, không định nghĩa domain transition.
+
+### Nghiên cứu
+
+Đọc toàn bộ `internal/delivery/httpapi` (5 file production V6-01 đã dựng) trước khi viết bất cứ gì:
+`route.go` (`RouteDescriptor`/`RouteRegistry.Register` — đã panic khi trùng `(Method, Path)` hoặc thiếu field,
+nhưng CHƯA có check trùng `OperationID` giữa 2 route khác path — đúng như prompt đã cảnh báo trước, xác nhận
+lại bằng cách đọc code thật chứ không tin lời cảnh báo), `health.go` (có sẵn `writeJSON` helper unexported,
+tái dùng được cho error envelope thay vì viết lại), `json.go` (`ErrBodyTooLarge`/`ErrMalformedJSON` đã typed,
+cần một hàm map 2 lỗi này sang envelope chung), `server.go` (chưa có gì liên quan cursor/error, không cần sửa).
+
+Đọc hết phần còn lại của `08-v6-api-projections.md` để lấy đúng ngữ nghĩa cursor/freshness thật (không chỉ
+đoán từ đoạn spec ngắn của chính V6-02A) như prompt yêu cầu: V6-08 ("rows key `(ProjectID, ProjectionName,
+Generation, EntityKey)`", "Cursor is greatest scanned global JournalPosition"), V6-08A ("verifies active
+generation/fence/cursor", "separate tx records poison and DEGRADED/STALE at last-good cursor"), V6-09A
+("Reader sees old or new; cursor bound old generation returns resync" — xác nhận đúng "generation swap resync"
+là kịch bản V6-09A tạo ra, V6-02A chỉ cung cấp cơ chế phát hiện), V6-10 ("projection lag/status; authoritative
+service recomputes valid actions with target version before response" — xác nhận ValidAction chỉ advisory),
+V6-11 ("Event ID is relevant global JournalPosition", "Heartbeat has no event ID and never advances cursor",
+"Too-old cursor returns typed full-resync").
+
+Grep toàn repo tìm tiền lệ "not found vs unauthorized" leakage policy: KHÔNG có — `errorcode.Code` (22 giá trị,
+`internal/domain/errorcode/errorcode.go`) có `CodePolicyDenied`/`CodeScopeViolation` nhưng đây là domain
+concept khác (workspace write-scope violation của `scopeguard.ErrScopeViolation`, không liên quan gì đến HTTP
+resource-visibility). Không có type `Forbidden`/`Unauthorized` nào tồn tại trong `internal/app`. Xác nhận: đây
+đúng là công việc CỦA task này tự định nghĩa lần đầu, không phải bug bỏ sót ở đâu đó.
+
+Đọc `internal/domain/adapterbuild/token.go` (`CandidateToken`/`SignToken`/`VerifyToken`, ADR-022) làm mẫu
+tham chiếu cho cursor: HMAC-SHA256 trên canonical payload, `hmac.Equal` chống timing attack, một lỗi typed
+duy nhất (`ErrInvalidSignature`) cho mọi kiểu forge/corrupt — quyết định KHÔNG tái dùng trực tiếp package này
+(nó thuộc domain/adapterbuild, ngữ nghĩa CandidateTuple riêng của ADR-022, không phải cursor chung), chỉ mượn
+đúng kỷ luật "HMAC + `hmac.Equal` + 1 lỗi typed duy nhất". Cũng cân nhắc rồi bỏ `internal/domain/authoring.
+Canonicalize` (map-sort canonical JSON dùng cho semantic hash command) — không cần cho cursor vì cursor tự
+control cả 2 đầu encode/decode bằng cùng 1 struct cố định field order, `encoding/json.Marshal` trên struct đã
+tự nhiên deterministic, không cần bộ máy canonicalize phức tạp hơn; dùng thêm sẽ kéo `internal/delivery/httpapi`
+phụ thuộc vào một package domain không thật sự liên quan.
+
+Đọc `internal/archtest/boundary_test.go`: `TestDomainAppNeverImportAdapters` chỉ chặn `internal/domain`/
+`internal/app` import `internal/adapters` — không có rule nào chặn `internal/delivery` import `internal/domain`
+hay `internal/app`, nên `errors.go` tự do import `internal/app/apperror` + `internal/domain/errorcode` mà
+không vi phạm boundary nào.
+
+Đọc `internal/app/catalog/event_schema_test.go` làm mẫu "golden fixture" chuẩn của repo: đọc file JSON qua
+`os.ReadFile`, decode rồi so sánh struct — KHÔNG so byte-for-byte JSON output (không dùng `MarshalIndent` rồi
+diff) — áp dụng đúng mẫu này cho error/freshness/action; riêng SSE (không phải JSON thuần, là wire-format
+text) dùng golden byte-for-byte vì đó chính là điều cần đông cứng.
+
+### Quyết định
+
+1. **7 file mới, mỗi khối 1 file** — đúng nguyên tắc "mỗi endpoint/task sở hữu file riêng" (Contract chung mục
+   1.8): `errors.go` (error envelope + leakage + apperror mapping), `page.go` (limit bound), `cursor.go`
+   (`CursorState`/`CursorCodec`/`Bind`/`ResyncError`), `freshness.go`, `action.go`, `media.go` (Range +
+   Content-Disposition), `sse.go`. `route.go` được EXTEND (không file mới) vì OperationID uniqueness là một
+   check bổ sung ngay trong `Register` đã có, tách file riêng sẽ chia cắt logic liên quan.
+
+2. **`ErrorCode` là vocabulary RIÊNG của httpapi, nhỏ hơn hẳn `errorcode.Code`.** Cân nhắc dùng thẳng
+   `errorcode.Code` (22 giá trị) làm wire code luôn — bỏ vì client HTTP không cần phân biệt hết 22 domain
+   condition, chỉ cần biết "retry được không, conflict, not-found, forbidden hay hard failure"; độ chi tiết còn
+   lại nằm ở HTTP status + Message. Chốt 7 giá trị: `INVALID_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `CONFLICT`,
+   `RESYNC_REQUIRED`, `UNAVAILABLE`, `INTERNAL`. `StatusForAppErrorCode` map đủ cả 22 `errorcode.Code` sang
+   (status, wire code) — bảng generic; document rõ trong comment rằng bảng này KHÔNG được dùng cho nhánh
+   not-found/unauthorized của một scoped resource lookup (nhánh đó luôn gọi thẳng `WriteResourceHidden`), vì
+   bảng generic không có cách nào biết một call site có phải leakage-sensitive hay không.
+
+3. **Leakage normalization = một hàm funnel duy nhất, không phải một rule để nhớ tự áp dụng.**
+   `WriteResourceHidden(w)` là hàm KHÔNG NHẬN tham số nào phân biệt lý do — cả nhánh "not found" và nhánh
+   "unauthorized for this scope" của một future handler đều gọi đúng hàm này, đảm bảo response byte-for-byte
+   giống nhau bằng kiến trúc (không thể tự ý khác nhau dù người viết endpoint sau này có cố ý hay vô ý), thay
+   vì 2 response riêng rồi tự nhắc nhau "nhớ phải giống nhau." Test trung tâm
+   (`TestWriteResourceHidden_NotFoundAndUnauthorizedProduceIdenticalResponse`) giả lập đúng 2 code path độc
+   lập gọi cùng hàm, so cả status/body/Content-Type.
+
+4. **Cursor: tamper (signature sai) và resync (state hợp lệ nhưng stale) là 2 lỗi khác nhau, không gộp.**
+   `ErrCursorInvalid` (sentinel `errors.New`, mirror discipline của `ErrBodyTooLarge`/`ErrMalformedJSON`) cho
+   mọi lỗi base64/JSON/signature — remedy giống nhau: cursor này server chưa từng ký, từ chối thẳng, HTTP 400.
+   `*ResyncError{Reason}` (typed struct, không phải sentinel, vì cần mang thêm `ResyncReason` — 3 giá trị
+   `PROJECT_MISMATCH`/`QUERY_CHANGED`/`GENERATION_CHANGED`) cho cursor ký đúng, verify qua, nhưng không còn
+   khớp project/query/generation hiện tại — remedy khác: client phải bắt đầu lại walk, không phải bị coi là
+   tấn công, HTTP 409 riêng biệt với message rõ ràng "restart pagination".
+
+5. **`Bind` không so `UpperWatermark`/`LastKey`.** Cân nhắc rồi bỏ: 2 field này mô tả cursor tự resume từ đâu
+   (input cho query kế tiếp), không phải điều kiện để kiểm cursor còn hợp lệ hay không — so sánh chúng sẽ vô
+   nghĩa (chúng luôn "khác" giữa request hiện tại chưa có `want` tương ứng). Chỉ so đúng 3 field xác định
+   "cursor này có còn áp dụng được cho ngữ cảnh hiện tại": `ProjectID`, `QueryFingerprint`, `Generation` — theo
+   đúng thứ tự cố định (project trước, rồi query, rồi generation) để một cursor sai nhiều chỗ luôn báo cùng 1
+   lý do xác định, không phụ thuộc thứ tự map/struct field ngẫu nhiên.
+
+6. **`ResolveLimit`: rỗng → default (im lặng), quá `MaxPageLimit` → clamp (im lặng), ≤0 hoặc không phải số →
+   lỗi (ồn ào).** Cân nhắc clamp luôn cả giá trị âm/0 về default — bỏ, vì một giá trị `limit=-5` tường minh là
+   lỗi client đáng báo, khác hẳn "client không truyền gì" (default hợp lý) hay "client xin nhiều hơn giới hạn
+   cho phép" (bound tự bảo vệ, không phải input sai). `MaxPageLimit=200`/`DefaultPageLimit=50` là con số chọn
+   hợp lý cho Alpha, không có yêu cầu cụ thể nào trong doc — ghi rõ đây là quyết định implementation-detail, dễ
+   đổi sau nếu một task endpoint cụ thể cần khác.
+
+7. **`NewCursorCodec` panic khi secret rỗng, không trả error.** Mirror đúng kỷ luật `RouteRegistry.Register`/
+   `ReadinessChecker.Register` đã có: đây là lỗi composition-root lúc wiring, không phải điều kiện runtime một
+   caller cần xử lý duyên dáng. Secret injection (crypto/rand mỗi process, mirror V6-01A's per-start token) là
+   việc của composition root — task nào đầu tiên phát hành cursor thật, KHÔNG phải việc của package chia sẻ
+   này (đúng "Không làm: không compose root router").
+
+### Thực hiện
+
+- `internal/delivery/httpapi/errors.go`: `ErrorCode` (7 giá trị), `ErrorDetail`, `ErrorBody`, `ErrorResponse`,
+  `WriteError` (hàm funnel duy nhất mọi WriteXxx khác gọi qua), `ErrResourceHidden`/`WriteResourceHidden`
+  (leakage policy), `WriteDecodeError` (map `ErrBodyTooLarge`→413, `ErrMalformedJSON`→400), `WriteResyncRequired`
+  (409 + `Details[0]={Field:"cursor", Message:<reason>}`), `WriteCursorInvalid` (400),
+  `StatusForAppErrorCode` (bảng đủ 22 `errorcode.Code`), `WriteAppError` (dùng `errors.As` lấy `*apperror.Error`,
+  không bao giờ lộ raw text của lỗi không-phải-apperror).
+- `internal/delivery/httpapi/page.go`: `DefaultPageLimit=50`, `MaxPageLimit=200`, `ErrInvalidLimit`,
+  `ResolveLimit(raw string) (int, error)`.
+- `internal/delivery/httpapi/cursor.go`: `CursorState{ProjectID, QueryFingerprint, Generation, UpperWatermark,
+  LastKey}` (json tag camelCase), `cursorEnvelope{Payload, Signature}` (unexported), `ErrCursorInvalid`,
+  `CursorCodec{secret}` + `NewCursorCodec`/`Encode`/`Decode`/`sign` (HMAC-SHA256, base64 RawURLEncoding,
+  `hmac.Equal`), `Fingerprint(query any) (string, error)` (sha256 trên `json.Marshal` — caller truyền struct để
+  field order deterministic), `ResyncReason` (3 giá trị), `ResyncError{Reason}` + `Error()`, `Bind(state, want)`.
+- `internal/delivery/httpapi/freshness.go`: `FreshnessStatus` (`LIVE`/`DEGRADED`/`STALE`), `Freshness{Generation,
+  AsOfJournalPosition, Status}`.
+- `internal/delivery/httpapi/action.go`: `ValidAction{OperationID, ScopeKind, TargetVersion}` — tái dùng thẳng
+  `ScopeKind` đã có từ `route.go` (V6-01), không định nghĩa lại.
+- `internal/delivery/httpapi/media.go`: `ByteRange{Start, End}` + `Length()`, `ErrRangeNotSatisfiable`,
+  `ParseRange(header, totalLength) (ByteRange, bool, error)` (hỗ trợ `start-end`/`start-`/`-suffix`, từ chối
+  multi-range và mọi range ngoài `[0, totalLength)`), `ApplyPartialContentHeaders`, `WriteRangeNotSatisfiable`
+  (416 + `Content-Range: bytes */<len>`), `MediaDisposition` (`inline`/`attachment`), `inlineSafeContentTypes`
+  (allow-list đóng: text/plain, text/csv, application/json, image/{png,jpeg,gif}, application/pdf — KHÔNG có
+  text/html/image/svg+xml), `ResolveMediaDisposition`, `ApplyContentHeaders` (set `X-Content-Type-Options:
+  nosniff` cộng `Content-Disposition` đúng theo allow-list).
+- `internal/delivery/httpapi/sse.go`: `SSEMessage{ID, Event, Data}`, `SSEHeaders` (Content-Type/Cache-Control/
+  Connection/X-Accel-Buffering), `WriteSSE` (encode id/event/data theo đúng thứ tự, flush ngay, `flusher` được
+  phép nil cho test), `WriteSSEComment` (heartbeat — không có field id/event nào, đúng "Heartbeat has no event
+  ID and never advances cursor").
+- `internal/delivery/httpapi/route.go`: thêm field `operationIDs map[string]routeKey` vào `RouteRegistry`,
+  `Register` panic khi `OperationID` đã dùng cho một `(Method, Path)` khác — đóng đúng gap prompt đã cảnh báo
+  trước (V6-01 chỉ dedupe theo `(Method, Path)`).
+
+### Test
+
+- 7 file test mới (`errors_test.go`, `cursor_test.go`, `page_test.go`, `freshness_test.go`, `media_test.go`,
+  `sse_test.go`) cộng 1 test thêm vào `route_test.go` — tổng 55 test function mới, tất cả pass, không mock gì
+  (thuần logic + `httptest.NewRecorder`).
+- Cursor round-trip/tamper: `TestCursorCodec_EncodeDecode_RoundTrips`,
+  `TestCursorCodec_Decode_MalformedTokenRejected` (base64 hỏng, JSON hỏng, chuỗi rỗng),
+  `TestCursorCodec_Decode_TamperedPayloadRejected` (bài test tamper THẬT: decode token thật ra, sửa
+  `projectId` trong `Payload` thành project khác — KHÔNG biết secret — rồi encode lại với `Signature` cũ, xác
+  nhận `Decode` từ chối), `TestCursorCodec_Decode_WrongSecretRejected` (2 `CursorCodec` khác secret),
+  `TestNewCursorCodec_EmptySecretPanics`.
+- Bounded defaults/max: `TestResolveLimit_EmptyDefaultsToDefaultPageLimit`,
+  `TestResolveLimit_AboveMaxClampsToMaxPageLimit`, `TestResolveLimit_ZeroOrNegativeReturnsErrInvalidLimit`,
+  `TestResolveLimit_NonNumericReturnsErrInvalidLimit`, `TestResolveLimit_ExactlyMaxPageLimitReturnsAsIs`.
+- Stable paging qua write: `TestCursorPaging_ConcurrentWriteBetweenPages_StaysStable` — dựng 4 row
+  `{a,b,c,d}` (Position 1-4), lấy trang 1 (`{a,b}`, watermark=4), MÃ HOÁ cursor thật qua `CursorCodec`, rồi mới
+  chèn thêm row `"bb"` (Position=5, nằm lexically giữa `b` và `c`) mô phỏng concurrent write. Trang 2 GIẢI MÃ
+  lại cursor thật (không dùng biến closure), dùng đúng `state.UpperWatermark`/`state.LastKey` vừa round-trip
+  để fetch — xác nhận `"bb"` không lọt vào trang 2 dù key của nó lẽ ra nằm trong khoảng chưa đọc, và
+  `page1+page2` đúng bằng 4 row gốc, không thiếu không trùng. Đây là bằng chứng UpperWatermark/LastKey tự
+  ENCODE/DECODE qua HMAC thật, không phải một biến test giả định suông.
+- Generation swap resync: `TestBind_GenerationMismatch_ReturnsResyncError` (test riêng, tách khỏi test paging
+  ở trên) cộng `TestBind_ProjectMismatch_...`/`TestBind_QueryFingerprintMismatch_...` cho 2 lý do resync còn
+  lại, `TestBind_MatchingStateReturnsNil` cho trường hợp khớp.
+- Duplicate operationId/schema omission fail:
+  `TestRouteRegistry_Register_DuplicateOperationIDAcrossDifferentPathsPanics` (mới, đóng gap thật) — schema
+  omission đã có sẵn từ V6-01 (`TestRouteRegistry_Register_MissingRequiredFieldPanics`), không viết lại.
+- Shared error/freshness/SSE golden: `testdata/golden/error_response_v1.json`, `freshness_v1.json`,
+  `valid_action_v1.json` (JSON, decode-and-compare mirror đúng mẫu `catalog/event_schema_test.go`) cộng
+  `sse_message_v1.txt` (wire-format text, so byte-for-byte thật qua `WriteSSE` — struct field order cố định,
+  KHÔNG dùng map, vì `encoding/json` sort key map theo alphabet còn struct giữ đúng thứ tự khai báo — phát
+  hiện lúc viết test đầu tiên dùng map làm golden lệch thứ tự `status`/`workItemId`, sửa lại dùng struct).
+- Leakage: `TestWriteResourceHidden_NotFoundAndUnauthorizedProduceIdenticalResponse` — assert cả status, body
+  string, Content-Type header giống hệt giữa 2 lần gọi độc lập.
+- No-sniff/download: `TestResolveMediaDisposition_ScriptCapableTypesAreForcedToDownload` (text/html có/không
+  charset param, image/svg+xml, application/xhtml+xml đều phải `attachment`).
+- Range bounded/safe: 13 test trong `media_test.go` — start vượt content length, end vượt bị clamp, reversed
+  range, multi-range, thiếu prefix `bytes=`, content length 0 — đều `ErrRangeNotSatisfiable`.
+- `apperror`/`errorcode` mapping: `TestStatusForAppErrorCode_MapsKnownCodes` bảng 17 case phủ đủ mọi nhóm
+  (bad request/not found/conflict-family/forbidden/unavailable/internal) cộng 1 case code lạ chưa từng định
+  nghĩa (`SOME_FUTURE_UNKNOWN_CODE`) xác nhận default an toàn về `INTERNAL`/500, không panic không bỏ sót.
+- `go build ./...`, `go vet ./...` sạch. `go test ./internal/delivery/httpapi/...` 100% pass (đã chạy trước
+  full suite). `go test ./...` toàn bộ module chạy sau, xanh 100% — không phát hiện flake mới, không đụng
+  package nào khác ngoài `internal/delivery/httpapi`.
+
+### Verify
+
+- "round-trip/tamper cursor": `TestCursorCodec_EncodeDecode_RoundTrips` +
+  `TestCursorCodec_Decode_TamperedPayloadRejected`/`WrongSecretRejected`/`MalformedTokenRejected`.
+- "bounded defaults/max": `TestResolveLimit_*` (5 test, liệt kê ở trên).
+- "stable paging qua write": `TestCursorPaging_ConcurrentWriteBetweenPages_StaysStable`.
+- "generation swap resync": `TestBind_GenerationMismatch_ReturnsResyncError`.
+- "duplicate operationId/schema omission fail": operationId — test mới; schema omission — đã có từ V6-01,
+  không duplicate.
+- "shared error/freshness/SSE golden": 4 golden fixture (`error_response_v1.json`, `freshness_v1.json`,
+  `valid_action_v1.json` — bonus, không bắt buộc theo verify line nhưng cùng họ DTO nên thêm cho nhất quán —
+  `sse_message_v1.txt`), mỗi fixture có cả test decode-fixture và test round-trip-qua-marshal.
+- "Hoàn thành khi": "endpoint task không phải tự quyết DTO/cursor/error/action convention" — mọi type/hàm ở
+  trên export công khai, có doc comment trỏ thẳng về đúng dòng design-doc liên quan (V6-08/V6-08A/V6-09A/V6-10/
+  V6-11), một task endpoint tương lai (V6-03A trở đi) chỉ cần import và gọi, không cần tự nghĩ lại shape.
+
+### Kết quả
+
+[Điền sau khi PR merge: số PR, merge commit hash, kết quả CI 6/6.]
