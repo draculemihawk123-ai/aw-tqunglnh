@@ -161,3 +161,44 @@ func TestComponentPackAssignedV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got2, produced)
 	}
 }
+
+// TestProjectCreatedV1_GoldenFixtureDecodes is ProjectCreated's own
+// golden-fixture proof (V6-03), mirroring this file's other three events.
+func TestProjectCreatedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "project_created_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(ProjectCreatedEventType, ProjectCreatedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", ProjectCreatedEventType, ProjectCreatedSchemaVersion, err)
+	}
+	want := projectCreatedEventPayload{ProjectID: "project-1", Name: "demo", Status: "ACTIVE"}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", ProjectCreatedEventType, ProjectCreatedSchemaVersion, got, want)
+	}
+}
+
+// TestProjectCreatedV1_RealEventPayloadDecodes proves CreateProject's own
+// actual marshaled ProjectCreated payload round-trips through the
+// registered decoder.
+func TestProjectCreatedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := projectCreatedEventPayload{ProjectID: "project-9", Name: "ninth project", Status: "ACTIVE"}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(ProjectCreatedEventType, ProjectCreatedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}

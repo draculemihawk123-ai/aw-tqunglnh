@@ -138,16 +138,33 @@ type CatalogRepository interface {
 	// project.NewProject). Not itself a cited public command in
 	// docs/architecture/04-go-core-spec.md's §8 command table for V3-01's
 	// own scope (ADR-025 makes CreateProject installation-scoped, a
-	// concern this task's own Thực hiện line never names) — this method
-	// exists purely so RegisterRepository/CreateComponent has a Project
-	// to reference and so tests can set up fixtures without reaching
-	// into sqlite directly; a later task adding the full idempotent
-	// CreateProject command wraps this same method rather than
-	// duplicating the insert.
+	// concern V3-01's own Thực hiện line never named) — this method
+	// exists so RegisterRepository/CreateComponent has a Project to
+	// reference and so tests can set up fixtures without reaching into
+	// sqlite directly. V6-03 (docs/design/08-v6-api-projections.md) adds
+	// the full idempotent public command that wraps this same method
+	// rather than duplicating the insert: internal/app/catalog.CreateProject
+	// recheck receipt, calls this method to mint the row (the caller
+	// never invokes this CatalogRepository method directly — delivery
+	// MUST NOT bypass the command layer this way), appends the
+	// registered ProjectCreated v1 event and records the receipt, all
+	// inside one WithSerializedWrite call.
 	CreateProject(ctx context.Context, req CreateProjectRequest) (project.Project, error)
 	// GetProject returns the Project with the given ID, or
-	// ErrPersistenceNotFound.
+	// ErrPersistenceNotFound. V6-03's own internal/app/catalog.GetProject
+	// is the public, scope-checked query a caller actually uses; this
+	// method is its persistence half (reload from storage, never a
+	// projection), the same relationship GetRepository below has to any
+	// future project-scoped repository query.
 	GetProject(ctx context.Context, id string) (project.Project, error)
+	// ListProjects returns every Project row, oldest-ID-first (ID order,
+	// like ListProjectRepositories below — never a name/slug ordering).
+	// V6-03's own internal/app/catalog.ListProjects is the public,
+	// installation-scope-checked query; ADR-025 lists ListProjects itself
+	// as one of the closed installation-scoped queries (no ProjectID
+	// filter is possible or meaningful here — a Project IS the scope
+	// unit, so "list scoped to a project" is not a query that exists).
+	ListProjects(ctx context.Context) ([]project.Project, error)
 
 	// RegisterRepository atomically creates a new Repository row —
 	// always RepositoryRegistering (project.NewRepository's own rule) —
