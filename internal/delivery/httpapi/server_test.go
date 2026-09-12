@@ -14,6 +14,14 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 )
 
+// testPrincipal is the LocalPrincipalSnapshot every test in this package
+// uses unless it is specifically exercising principal validation/spoofing —
+// an arbitrary-but-valid stand-in for ADR-028's real "local-operator"/
+// "operator" default.
+func testPrincipal() httpapi.LocalPrincipalSnapshot {
+	return httpapi.LocalPrincipalSnapshot{Actor: "local-operator", Roles: []string{"operator"}}
+}
+
 func newTestServer(t *testing.T, routes *httpapi.RouteRegistry) *httpapi.Server {
 	t.Helper()
 	server, err := httpapi.NewServer(httpapi.Config{
@@ -23,6 +31,8 @@ func newTestServer(t *testing.T, routes *httpapi.RouteRegistry) *httpapi.Server 
 		IDs:          idsource.Random{},
 		Logger:       logging.New(io.Discard, logging.JSON, redact.NewMatcher()),
 		MaxBodyBytes: 1 << 20,
+		Token:        "test-session-token",
+		Principal:    testPrincipal(),
 	})
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
@@ -68,6 +78,8 @@ func TestNewServer_AcceptsLoopbackIPAndLocalhost(t *testing.T) {
 				Routes:       registry,
 				IDs:          idsource.Random{},
 				MaxBodyBytes: 1024,
+				Token:        "test-session-token",
+				Principal:    testPrincipal(),
 			})
 			if err != nil {
 				t.Fatalf("NewServer(%s): %v", host, err)
@@ -324,5 +336,54 @@ func TestNewServer_RequiresRoutesIDsAndPositiveMaxBody(t *testing.T) {
 	zeroMaxBody.MaxBodyBytes = 0
 	if _, err := httpapi.NewServer(zeroMaxBody); err == nil {
 		t.Fatal("NewServer with MaxBodyBytes <= 0 should fail")
+	}
+}
+
+// TestNewServer_RequiresTokenAndPrincipal is V6-01A's own extension of the
+// same "programming error caught at boot" discipline
+// TestNewServer_RequiresRoutesIDsAndPositiveMaxBody already covers for
+// V6-01's fields: a Server with no per-start session token, or an
+// incomplete/empty LocalPrincipalSnapshot, must never start — ADR-016/
+// ADR-028 both treat these as required trust-boundary inputs, not optional
+// ones with a silent zero-value fallback.
+func TestNewServer_RequiresTokenAndPrincipal(t *testing.T) {
+	valid := httpapi.Config{
+		Host: "127.0.0.1", Routes: httpapi.NewRouteRegistry(), IDs: idsource.Random{},
+		MaxBodyBytes: 1024, Token: "test-session-token", Principal: testPrincipal(),
+	}
+	validServer, err := httpapi.NewServer(valid)
+	if err != nil {
+		t.Fatalf("NewServer(valid) = %v, want success", err)
+	}
+	defer validServer.Shutdown(context.Background())
+
+	missingToken := valid
+	missingToken.Token = ""
+	if _, err := httpapi.NewServer(missingToken); err == nil {
+		t.Fatal("NewServer without Token should fail")
+	}
+
+	missingActor := valid
+	missingActor.Principal = httpapi.LocalPrincipalSnapshot{Actor: "", Roles: []string{"operator"}}
+	if _, err := httpapi.NewServer(missingActor); err == nil {
+		t.Fatal("NewServer with an empty Principal.Actor should fail")
+	}
+
+	missingRoles := valid
+	missingRoles.Principal = httpapi.LocalPrincipalSnapshot{Actor: "local-operator", Roles: nil}
+	if _, err := httpapi.NewServer(missingRoles); err == nil {
+		t.Fatal("NewServer with empty Principal.Roles should fail")
+	}
+
+	blankRole := valid
+	blankRole.Principal = httpapi.LocalPrincipalSnapshot{Actor: "local-operator", Roles: []string{""}}
+	if _, err := httpapi.NewServer(blankRole); err == nil {
+		t.Fatal("NewServer with a blank role should fail")
+	}
+
+	dupRoles := valid
+	dupRoles.Principal = httpapi.LocalPrincipalSnapshot{Actor: "local-operator", Roles: []string{"operator", "operator"}}
+	if _, err := httpapi.NewServer(dupRoles); err == nil {
+		t.Fatal("NewServer with a duplicate role should fail")
 	}
 }
