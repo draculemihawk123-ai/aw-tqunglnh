@@ -6,6 +6,16 @@
 // deliberately implements no business endpoint, browser security token or
 // receipt store — those are V6-01A/V6-02/V6-02A and the endpoint tasks
 // themselves.
+//
+// V6-02A extends this same package with the shared HTTP DTO/cursor/schema
+// vocabulary every endpoint task reuses instead of inventing its own: the
+// canonical error envelope (errors.go), page/limit and opaque
+// tamper-evident pagination cursor (page.go, cursor.go), projection
+// freshness and advisory ValidAction (freshness.go, action.go),
+// Range/media-negotiation helpers (media.go), the SSE wire envelope
+// (sse.go), and RouteRegistry.Register's own OperationID-uniqueness check
+// below (V6-01 only deduped by (Method, Path); V6-02A closes the gap of
+// two different routes sharing one OperationID).
 package httpapi
 
 import (
@@ -60,14 +70,15 @@ type routeKey struct {
 // own identical "Register panics on duplicate" discipline (V6-01's own
 // Verify line: "descriptor trùng fail").
 type RouteRegistry struct {
-	mu     sync.RWMutex
-	routes map[routeKey]RouteDescriptor
-	order  []routeKey
+	mu           sync.RWMutex
+	routes       map[routeKey]RouteDescriptor
+	order        []routeKey
+	operationIDs map[string]routeKey
 }
 
 // NewRouteRegistry returns an empty RouteRegistry.
 func NewRouteRegistry() *RouteRegistry {
-	return &RouteRegistry{routes: map[routeKey]RouteDescriptor{}}
+	return &RouteRegistry{routes: map[routeKey]RouteDescriptor{}, operationIDs: map[string]routeKey{}}
 }
 
 // Register adds d to the registry. It panics if any required field is
@@ -101,7 +112,17 @@ func (r *RouteRegistry) Register(d RouteDescriptor) {
 	if _, exists := r.routes[key]; exists {
 		panic(fmt.Sprintf("httpapi: route %s %s already registered", d.Method, d.Path))
 	}
+	// V6-02A's own "Concrete pieces" line: OperationID must be unique
+	// ACROSS different (Method, Path) pairs, not just within one — two
+	// different routes sharing one OperationID would make V6-12's future
+	// machine-readable API contract (and any client generated from it)
+	// ambiguous about which route a given operationId actually names.
+	if existingKey, exists := r.operationIDs[d.OperationID]; exists {
+		panic(fmt.Sprintf("httpapi: operationId %q already registered for %s %s (cannot also register it for %s %s)",
+			d.OperationID, existingKey.Method, existingKey.Path, d.Method, d.Path))
+	}
 	r.routes[key] = d
+	r.operationIDs[d.OperationID] = key
 	r.order = append(r.order, key)
 }
 

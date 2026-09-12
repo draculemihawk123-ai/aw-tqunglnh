@@ -1,0 +1,5 @@
+{
+  "operationId": "resolveWorkItemBlocker",
+  "scopeKind": "PROJECT",
+  "targetVersion": 7
+}

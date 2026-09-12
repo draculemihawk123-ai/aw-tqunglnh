@@ -69,6 +69,30 @@ func TestRouteRegistry_Register_MissingRequiredFieldPanics(t *testing.T) {
 	}
 }
 
+// TestRouteRegistry_Register_DuplicateOperationIDAcrossDifferentPathsPanics
+// proves V6-02A's own gap-closing check: V6-01's Register only deduped by
+// (Method, Path), so two different routes could silently share one
+// OperationID. Two different (Method, Path) pairs must never share one
+// OperationID — V6-12's future machine-readable API contract indexes by
+// operationId, so a collision there would be ambiguous about which route
+// it names.
+func TestRouteRegistry_Register_DuplicateOperationIDAcrossDifferentPathsPanics(t *testing.T) {
+	registry := httpapi.NewRouteRegistry()
+	registry.Register(validDescriptor())
+
+	second := validDescriptor()
+	second.Method = http.MethodPost
+	second.Path = "/gadgets"
+	// Same OperationID as the first descriptor, deliberately.
+
+	defer func() {
+		if recover() == nil {
+			t.Fatal("Register with an OperationID already used by a different (Method, Path) should panic")
+		}
+	}()
+	registry.Register(second)
+}
+
 func TestRouteRegistry_Descriptors_ReturnsInRegistrationOrder(t *testing.T) {
 	registry := httpapi.NewRouteRegistry()
 	first := validDescriptor()
