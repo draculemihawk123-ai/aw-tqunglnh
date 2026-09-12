@@ -732,7 +732,7 @@ UI action/query <-> HTTP operationId <-> aw command <-> public application comma
 
 Inventory MUST được kiểm theo cả hai chiều: thiếu hoặc trùng mapping đều fail gate. Mọi action mới thêm
 vào ma trận UX V6-00 phải có public application operation, HTTP operationId và **reserved CLI invocation
-shape** trước khi API freeze ở V6-12; implementation CLI hoàn tất trong V6-15A…V6-15K. Không được ghi
+shape** trước khi API freeze ở V6-12; implementation CLI hoàn tất trong V6-15A…V6-15P. Không được ghi
 “UI-only”.
 Kanban drag/drop chỉ là presentation của một **named valid action** đã tồn tại trong inventory, không
 tạo `set-status` generic và không cho client tự đưa WorkItem sang `DONE`.
@@ -741,7 +741,7 @@ Khóa parity dùng **invocation shape** (command path + scope discriminator), kh
 nhánh definition global và project có thể cùng path CLI nhưng lần lượt là `--scope global` và
 `--project-id <id>`, map tới hai operationId khác nhau. Tập local-only `{aw serve, aw worker, aw help,
 aw version, aw evidence verify}` không có và không được tạo endpoint/UI giả; chúng nằm ngoài inventory
-bốn chiều nhưng vẫn chịu boundary, output, redaction và platform tests của V6-15K.
+bốn chiều nhưng vẫn chịu boundary, output, redaction và platform tests của V6-15P.
 
 Gap `BACKLOG → READY` được đóng bằng đúng một public command `MarkWorkItemReady`: server chạy lại
 readiness/contract validator và CAS đúng transition đó, append registered `WORK_ITEM_MARKED_READY` v1.

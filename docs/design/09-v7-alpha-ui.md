@@ -1,6 +1,6 @@
 # V7 — Local web UI Alpha
 
-> Entry: V6-15K pass: API contract, UX artifact, `aw` operator CLI và parity inventory đều hoàn tất;
+> Entry: V6-15P pass: API contract, UX artifact, `aw` operator CLI và parity inventory đều hoàn tất;
 > V0 đã `GO`.
 >
 > Exit: operator hoàn thành full Alpha journey bằng browser. Framework chỉ được chọn ở V7-01; các
@@ -11,7 +11,7 @@
 ## V7-01 — Quyết định UI framework
 
 - **Mục tiêu:** chọn framework/toolchain bằng evidence, không theo sở thích ngầm.
-- **Phụ thuộc:** V6-15K (gate cuối V6).
+- **Phụ thuộc:** V6-15P (gate cuối V6).
 - **Thực hiện:** spike nhỏ React/Angular hoặc candidate hợp lý với routing, form schema, SSE, graph,
   test, accessibility, build embedding; so tốc độ, ecosystem, bundle, team maintainability.
 - **Verify:** cùng một mini screen/contract test cho candidates và decision matrix.
@@ -54,7 +54,7 @@
 ## V7-05 — First-run Doctor screen
 
 - **Mục tiêu:** operator biết DB/workspace/artifact/Git/provider nào ready hoặc blocked.
-- **Phụ thuộc:** V7-04, V6-10F.
+- **Phụ thuộc:** V7-04, V6-10A, V6-10J.
 - **Thực hiện:** chỉ gọi Doctor API; readiness cards, remediation, rerun probe, provider capability/
   isolation profile; hiển thị adapter build là registered hay unregistered và cung cấp action probe →
   xác nhận → đăng ký theo ADR-022; observed fingerprint không được trình bày như registry admission;
@@ -134,7 +134,7 @@
 ## V7-12 — Runtime graph và timeline
 
 - **Mục tiêu:** pinned definition overlay NodeRun/Attempt/routes/retries/checkpoints.
-- **Phụ thuộc:** V7-11, V6-06A, V6-06B.
+- **Phụ thuộc:** V7-11, V6-06B, V6-06C, V6-06D.
 - **Thực hiện:** graph renderer read-only, accessible list fallback, timeline correlation/filter/failure
   detail; action `RetryBlockedActivation` trên một blocked activation, hiển thị đúng
   `TerminationReason` và — khi adapter drift không khôi phục được pin — trình bày `CancelRun` là valid
@@ -147,7 +147,7 @@
 ## V7-13 — Workspace và source/diff/log viewers
 
 - **Mục tiêu:** repository tabs với source/diff/log read-only, revision/scope/lease/quarantine status.
-- **Phụ thuộc:** V7-11, V6-10B, V6-10C.
+- **Phụ thuộc:** V7-11, V6-10B, V6-10D.
 - **Thực hiện:** safe bounded source/diff/log viewer, per-repo status, reconcile link; không browser
   terminal trong Alpha.
 - **Verify:** multi-repo, rename, binary/large output, stale revision, scope violation fixtures; assert
@@ -158,7 +158,7 @@
 ## V7-13A — ReleaseSet actions và local commit
 
 - **Mục tiêu:** thao tác release local có confirm rõ ràng và không có lối ra remote.
-- **Phụ thuộc:** V7-13, V6-10D.
+- **Phụ thuộc:** V7-13, V6-10F.
 - **Thực hiện:** create/seal/abandon ReleaseSet, confirmed local commit, per-repository verdict và
   partial state; action release WorkspaceSet dispatch `RequestWorkspaceSetRelease` với confirm nêu rõ
   đây là intent bất đồng bộ, không phải thao tác tức thời.

@@ -790,7 +790,7 @@
 - **Mục tiêu:** `CancelWorkItem` và `ResolveWorkItemBlocker` có application authority thật; hiện chúng
   chỉ được nhắc như "command riêng" mà không task nào sở hữu handler.
 - **Phụ thuộc:** V4-12A, V4-12B.
-- **Phạm vi:** WorkItem-level cancel intent, blocker lifecycle và hai handler; route thuộc V6-06B.
+- **Phạm vi:** WorkItem-level cancel intent, blocker lifecycle và hai handler; route thuộc V6-06D.
 - **Thực hiện:** thêm `work_item_cancellation_intents` (intent theo Run không đủ vì một task có thể có
   nhiều run) và trạng thái blocker `OPEN|RESOLVED|WAIVED`. `CancelWorkItem` ghi intent bền vững rồi
   quiesce từng active Run bằng đúng protocol V4-12B; WorkItem chỉ terminal sau khi mọi Run đã dừng.

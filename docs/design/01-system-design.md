@@ -558,7 +558,7 @@ Route chính:
 | `GET /projects/{id}` | project detail |
 | `GET/POST /projects/{id}/repositories` | list/register; POST trả repository `REGISTERING` + probe job |
 | `GET /repositories/{id}/onboarding` | trạng thái/error/probe history có thể hành động |
-| `POST /repositories/{id}/probe` | retry typed probe khi `BLOCKED` |
+| `POST /repositories/{id}/retry-probe` | dispatch `RetryRepositoryProbe` khi `BLOCKED`; không có generic probe mutation |
 | `GET /projects/{id}/components` | catalog component đã được repository onboarding/probe discover |
 | `GET/POST /components/{id}/pack-assignments` | list/assign exact Engineering Pack version |
 | `GET/POST /projects/{id}/work-items` | Kanban list/create root task |
@@ -582,8 +582,9 @@ Route chính:
 | `GET/POST /work-items/{id}/messages` | canonical task chat |
 | `POST /work-items/{id}/attachments` | `AppendConversationAttachment`: upload artifact rồi append verified ref |
 | `POST /waits/{id}/signals` | typed durable signal cho WAIT node |
-| `GET /work-items/{id}/evidence` | evidence query |
-| `GET /artifacts/{id}/content` | authorized `GetArtifactContent`, verified bounded streaming |
+| `GET /work-items/{id}/evidence`, `/evidence/{id}` | evidence inventory/detail |
+| `GET /context-snapshots/{id}` | authorized immutable ContextSnapshot detail |
+| `GET /artifacts/{id}`, `/artifacts/{id}/content` | artifact metadata và authorized verified bounded streaming |
 | `GET /workspace-sets/{id}` | repo/revision/lease/quarantine và valid actions |
 | `POST /workspace-sets/{id}/release` | dispatch public `RequestWorkspaceSetRelease`; thực thi là internal `ExecuteWorkspaceSetRelease` |
 | `GET /repository-workspaces/{id}/source|diff|log` | read-only, exact revision, bounded output |
@@ -591,7 +592,8 @@ Route chính:
 | `GET/POST /families/{id}/release-sets` | query/create local ReleaseSet |
 | `GET /release-sets/{id}` | detail, per-repository verdict và partial state |
 | `POST /release-sets/{id}/seal|abandon` | typed release decision |
-| `POST /release-sets/{id}/entries/{repositoryId}/local-commit` | local commit, không remote mutation |
+| `POST /release-sets/{id}/entries/{repositoryId}/local-commit` | ghi durable local-commit intent; trả exact operation ID, không remote mutation |
+| `GET /release-sets/{id}/local-commits/{operationId}` | trạng thái đúng local-commit operation để UI/CLI `--wait` |
 | `GET /adapter-builds` | list AdapterBuildVersion đã đăng ký (installation scope, ngoài cây `/projects`) |
 | `GET /adapter-builds/{id}` | detail fingerprint/protocol/capability manifest |
 | `POST /adapter-builds/probe` | probe executable đã cấu hình, trả candidate chưa đăng ký |
@@ -608,7 +610,7 @@ Route chính:
 | `GET /events/stream?projectId=...` | `WatchProjectEvents`: SSE projection invalidation/runtime events |
 
 Operator CLI là surface song song của cùng contract, không phải HTTP client bắt buộc và không phải
-authority mới. Inventory canonical được V6-15K kiểm theo đúng bốn chiều
+authority mới. Inventory canonical được V6-15O kiểm theo đúng bốn chiều
 `UI action/query ↔ HTTP operationId ↔ aw command ↔ public application command/query`. Bootstrap/static
 asset của browser là ngoại lệ không cần CLI; SSE map thành `aw events watch`. Mọi public operation mới
 do ma trận UX V6-00 phát hiện phải có lệnh `aw` trước khi V6 đóng. Không có `aw ... set-status`: Kanban
@@ -712,9 +714,14 @@ render raw artifact như trusted HTML.
 
 ## 12. Configuration, security và local operations
 
-Precedence: safe defaults < config file < environment < CLI flags. Startup validate toàn bộ. Config
-gồm SQLite path, roots, worker concurrency, lease TTL/heartbeat, provider executable/argv/model,
-process/output limits, retention và log level.
+Bootstrap resolve `DatabasePath` trước theo `safe defaults < config file < environment < CLI flags`, rồi
+open/migrate SQLite. Với field thuộc safe-settings allowlist, startup merge theo precedence
+`safe defaults < config file < SQLite desired settings < environment < CLI flags`; environment/flag
+override được báo bằng `maskedByStartupSource`. Effective config bất biến trong một process; PUT chỉ đổi
+desired version và báo `restartRequired`, restart mới áp dụng. LocalPrincipal, session/signing key,
+DatabasePath, WorkerID và raw secret value không thuộc mutable surface. Config gồm SQLite path, roots,
+worker concurrency, lease TTL/heartbeat, provider executable/argv/model, process/output limits, retention
+và log level.
 
 - Chỉ bind loopback; external bind bị từ chối, Host/Origin được validate và mutation cần per-start
   local session token không xuất hiện trong URL/log/durable state.

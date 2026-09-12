@@ -102,7 +102,7 @@
   provider CLI sẽ khóa mọi workflow có AGENT node mà không có lối thoát trong sản phẩm.
 - **Phụ thuộc:** V2-07A.
 - **Phạm vi:** CLI `agentkit adapter probe|register|list|show` — một command group riêng, không nằm dưới
-  `agentkit definition` vì AdapterBuildVersion không phải DefinitionKind; API/UI thuộc V6-10F/V6-10G và V7-05.
+  `agentkit definition` vì AdapterBuildVersion không phải DefinitionKind; command hardening/API thuộc V6-10I/V6-10J và UI thuộc V7-05.
 - **Thực hiện:** `probe` chạy executable đã cấu hình và in candidate fingerprint/protocol/capability mà
   **không** ghi registry; `register` yêu cầu operator xác nhận candidate rồi tạo AdapterBuildVersion bất
   biến; `list|show` trả JSON ổn định. Republish Workflow/Agent Profile là bước riêng, không tự động.
