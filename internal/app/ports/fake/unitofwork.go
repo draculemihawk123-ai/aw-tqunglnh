@@ -103,6 +103,7 @@ type Tx struct {
 	contextSnapshots *ContextSnapshotRepository
 	agentEvents      *AgentEventsRepository
 	checkpoints      *CheckpointsRepository
+	safeSettings     *SafeSettingsRepository
 }
 
 func newTx() Tx {
@@ -138,6 +139,12 @@ func newTx() Tx {
 		contextSnapshots: &ContextSnapshotRepository{runtime: runtimeRepo},
 		agentEvents:      &AgentEventsRepository{},
 		checkpoints:      &CheckpointsRepository{},
+		// safeSettings is seeded at Version 1 with the zero-value ("never
+		// configured") desired document — mirroring migration
+		// 0036_safe_settings.sql's own seeded singleton row exactly, so a
+		// handler test sees the identical starting state against either
+		// implementation.
+		safeSettings: &SafeSettingsRepository{record: ports.SafeSettingsRecord{Version: 1}},
 	}
 }
 
@@ -161,6 +168,7 @@ func (t Tx) clone() Tx {
 	clone.contextSnapshots = t.contextSnapshots.cloneWith(clone.runtime)
 	clone.agentEvents = t.agentEvents.clone()
 	clone.checkpoints = t.checkpoints.clone()
+	clone.safeSettings = t.safeSettings.clone()
 	return clone
 }
 
@@ -182,6 +190,7 @@ func (t Tx) Messages() ports.MessageRepository                 { return t.messag
 func (t Tx) ContextSnapshots() ports.ContextSnapshotRepository { return t.contextSnapshots }
 func (t Tx) AgentEvents() ports.AgentEventsRepository          { return t.agentEvents }
 func (t Tx) Checkpoints() ports.CheckpointsRepository          { return t.checkpoints }
+func (t Tx) SafeSettings() ports.SafeSettingsRepository        { return t.safeSettings }
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the
@@ -1265,6 +1274,38 @@ func (a *ArtifactRepository) SetArtifactSweepDryRun(_ context.Context, req ports
 	a.sweepState.DryRun = req.DryRun
 	a.sweepState.Version++
 	return *a.sweepState, nil
+}
+
+// SafeSettingsRepository is an in-memory ports.SafeSettingsRepository
+// (V6-10G) — the same "gets real behavior from the start" treatment
+// AdapterBuildRepository/ArtifactRepository above already received: a
+// single versioned record, CAS-updated by full-document replacement,
+// mirroring sqlite's own safeSettingsRepository.Update exactly (RowsAffected
+// == 1 there is "expected version matched" here).
+type SafeSettingsRepository struct {
+	record ports.SafeSettingsRecord
+}
+
+var _ ports.SafeSettingsRepository = (*SafeSettingsRepository)(nil)
+
+func (s *SafeSettingsRepository) clone() *SafeSettingsRepository {
+	return &SafeSettingsRepository{record: s.record}
+}
+
+func (s *SafeSettingsRepository) Get(context.Context) (ports.SafeSettingsRecord, error) {
+	return s.record, nil
+}
+
+func (s *SafeSettingsRepository) Update(_ context.Context, req ports.UpdateSafeSettingsRequest) (ports.SafeSettingsRecord, error) {
+	if s.record.Version != req.ExpectedVersion {
+		return ports.SafeSettingsRecord{}, fmt.Errorf(
+			"fake: %w: safe settings expected version=%d", ports.ErrOptimisticConflict, req.ExpectedVersion,
+		)
+	}
+	s.record = ports.SafeSettingsRecord{
+		Desired: req.Desired, Version: s.record.Version + 1, UpdatedAt: req.OccurredAt, UpdatedBy: req.UpdatedBy,
+	}
+	return s.record, nil
 }
 
 // QueryStore is an in-memory ports.QueryStore that is always reachable.

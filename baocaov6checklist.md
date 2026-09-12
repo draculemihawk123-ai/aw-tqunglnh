@@ -1183,3 +1183,264 @@ khoá cứng bất biến "chỉ một composition root, tên `aw`, `agentkit-sp
 vet/test ./...` xanh 100% trên toàn bộ module, 3 assertion Verify (`go build ./cmd/aw` pass, `go build
 ./cmd/agentkit` fail, `go build ./cmd/agentkit-spike` pass) đều xác nhận bằng lệnh thật, không suy đoán. V6-15B
 (nền tảng CLI dùng chung) giờ có đủ dependency `V6-15A` để bắt đầu ngay khi `V6-02`/`V6-02A` cũng sẵn sàng.
+
+## V6-10G — Versioned safe-settings authority
+
+### Bối cảnh
+
+V6-10G chạy song song với V6-10E và V6-10I (3 task đều unblock ngay sau V6-00A, cùng dependency graph
+`docs/design/08-v6-api-projections.md` mục 2), mỗi task một worktree riêng, không đụng chung file production
+— chỉ `baocaov6checklist.md` là điểm giao (append-only, xử lý merge như mọi lần trước). Task tự mô tả là task
+"nền tảng trước endpoint": "Mục tiêu: define persistence, precedence and desired/effective behavior before
+endpoint work" — output không phải HTTP route (đó là V6-10H, chưa unblock vì còn phụ thuộc V6-02/V6-02A) mà là
+một lớp cấu hình THỨ HAI, độc lập với `internal/app/config.Config` (V1-03, immutable per-process, `defaults <
+file < env < flags`): một tập 7 field đóng (workspace root, artifact root, evidence/raw-output retention,
+process output limit, provider executable path, provider default model, provider credential-reference ID) mà
+operator sửa được LÚC SERVER ĐANG CHẠY, lưu SQLite có version, nhưng chỉ có hiệu lực ở lần restart KẾ TIẾP —
+không hot-reload, không mutate config tiến trình hiện tại. Precedence khi resolve ở lần restart đó chèn thêm
+một tầng vào giữa: `defaults < config file < SQLite safe settings < environment < flags`.
+
+### Nghiên cứu
+
+Đọc trước khi viết bất kỳ dòng code nào:
+
+- `internal/app/config/config.go`/`sources.go`/`validate.go`: `Config` hiện tại KHÔNG có field cho
+  `ManagedWorkspaceRoot`, `EvidenceRetention`, `ProviderDefaultModel`, `ProviderCredentialRef` — chỉ
+  `ArtifactRoot` và `ProcessOutputLimit` trùng khái niệm với 2/7 field của allowlist. `Load(file, env, flags
+  Overrides) (Config, error)` chỉ có 3 tầng, không có chỗ chèn SQLite.
+- Grep toàn repo `config\.Load\(` ra **0 kết quả** ở production code — `cmd/aw/serve.go` hiện tại KHÔNG gọi
+  `config.Load` chút nào, tự parse flag `--db`/`--artifact-root` riêng, không đi qua `Config` surface đầy đủ.
+  Đây là phát hiện quan trọng: task mô tả "composition root's own startup sequence changes" giả định `Load`
+  đã được compose thật, nhưng thực tế `cmd/aw serve` chưa từng dùng `Config`/`Load` — V1-03's pipeline đầy đủ
+  chưa được wire vào composition root nào cả, kể cả trước V6-10G.
+- `internal/app/config/local_principal.go` (V6-01A, sibling rất gần): pattern "loader + validator riêng, tách
+  khỏi Config/Overrides pipeline dùng chung" cho một concept mới không cần env/flag override — value trực
+  tiếp cho quyết định giữ `SafeSettings` là type độc lập, không nhét vào `Config`.
+- `internal/app/work/release_set.go` + `internal/adapters/sqlite/release_set.go`
+  (`TransitionReleaseSetState`): pattern CAS chuẩn của repo — `UPDATE ... SET ..., version = version + 1 WHERE
+  id = ? AND version = ?`, check `RowsAffected`, fallback existence-check phân biệt `ErrPersistenceNotFound`
+  với `ErrOptimisticConflict`. `internal/adapters/sqlite/recovery_reaper.go` +
+  `migrations/0026_recovery_reaper_state.sql`: pattern "singleton row, `id CHECK (id = 'singleton')`, seed
+  bằng chính migration" — khớp chính xác nhu cầu "1 row duy nhất, luôn tồn tại, không có state 'chưa tạo'".
+- `internal/app/ports/unitofwork.go`: `Tx` interface có 15 accessor, mỗi accessor gắn doc comment "populated
+  now (V<task>)" — theo đúng convention, thêm `SafeSettings() SafeSettingsRepository` accessor thứ 16.
+- `internal/app/work/event_schema.go` + `event_schema_test.go`: pattern retrofit V6-00A — const
+  `XxxEventType`/`XxxSchemaVersion`, payload struct riêng có json tag, `DecodeXxxV1`, `RegisterEventSchemas`,
+  2 test `GoldenFixtureDecodes`/`RealEventPayloadDecodes`. `internal/archtest/event_catalog_test.go`
+  (`TestEmittedDomainEventInventoryMatchesRegisteredInventory`) tự parse AST tìm mọi `ports.DomainEvent{}`
+  composite literal dưới `internal/app/...` và so registered vs emitted — bắt buộc thêm dòng gọi
+  `safesettings.RegisterEventSchemas(registry)` vào chính file archtest đó, nếu không CI fail ngay
+  ("SafeSettingsUpdated v1 has no registered decoder").
+- `internal/app/doctor/doctor.go`/`checks.go`: `Options{Config, Store ports.QueryStore, WorkerConfig,
+  CheckWorker}`, `Run()` build danh sách `CheckResult` tuyến tính. Không có `aw doctor` CLI nào gọi
+  `doctor.Run` trong `cmd/aw` — chỉ `internal/integration/foundation_test.go` gọi trực tiếp trong test. Đây
+  là gap có sẵn từ trước V6-10G, không phải task này tạo ra.
+- `internal/delivery/httpapi/health.go`: `ReadinessChecker.Register(name, func(ctx) error)` — đơn giản, và
+  `cmd/aw/serve.go` ĐÃ compose 3 check thật (`database`, `artifact_root`, `routes`) ngay trong composition
+  root, có `uow` sẵn trong scope — chỗ hợp lý nhất để thêm 1 check `safe_settings` thật.
+- Không có precedent "credential reference, không phải secret value" nào có sẵn trong
+  `internal/app/adapterbuild` hay nơi khác — phải tự định nghĩa shape validation cho
+  `ProviderCredentialRef` (bounded, whitespace-free, charset hạn chế) làm proxy duy nhất khả thi cho "đây là
+  reference chứ không phải secret dán nhầm vào".
+- `internal/adapters/gitworktree/provider.go` (`isWithin`/`ensureLexicallyWithin`): pattern kiểm tra
+  "root A và root B không được chứa nhau" bằng `filepath.Rel` — domain package không có filesystem access
+  nên viết lại bằng string thuần (`internal/domain/readiness`'s `normalizeRelativeDirectory` là precedent
+  "mỗi domain package tự giữ bản sao nhỏ, không import chéo domain khác").
+
+### Quyết định
+
+1. **Không sửa `internal/app/config/config.go`/`sources.go`/`validate.go`/`Load` một chữ nào.** Đọc "Không
+   làm: ... no live mutation of immutable process config" theo nghĩa chặt nhất: package đó đã ship, được rất
+   nhiều package khác phụ thuộc, và 2 sibling task (V6-10E, V6-10I) đang chạy song song trên cùng batch —
+   sửa một file nền tảng dùng chung là rủi ro không cần thiết cho một task tự mô tả là "định nghĩa trước khi
+   có endpoint". `SafeSettings` là type hoàn toàn mới, độc lập; 2 field trùng khái niệm với `Config`
+   (`ArtifactRoot`, `ProcessOutputLimit`) chỉ tái dùng GIÁ TRỊ default của `config.Defaults()`, không tái
+   dùng field/type.
+2. Domain document (`internal/domain/safesettings.SafeSettings`) tự giữ `MarshalJSON`/`UnmarshalJSON` với
+   `json.Decoder.DisallowUnknownFields()` ngay trong `UnmarshalJSON` — một điểm decode DUY NHẤT dùng cho cả
+   2 chiều: sqlite đọc lại `desired_json` (luôn sạch vì do chính package này ghi) VÀ app layer decode desired
+   document từ request. Tự động chặn mọi field ngoài allowlist, bao gồm chính xác các field bị cấm
+   (`databasePath`, `workerId`, `localPrincipal`, `sessionKey`/`signingKey`) mà không cần liệt kê blacklist
+   riêng — chúng chỉ đơn giản "không nằm trong struct" nên bị `DisallowUnknownFields` từ chối.
+3. `EvidenceRetention` lưu dạng Go-syntax duration string (`"168h0m0s"`) trong JSON, không phải số nanosecond
+   trần — mirror đúng `rawFileConfig.LeaseTTL` của `internal/app/config/sources.go`.
+4. `Validate` domain trả lỗi ĐẦU TIÊN tìm thấy (không collect-all như `config.Validate`) — mirror convention
+   constructor domain khác (`readiness.NewProfile`, `work.NewReleaseSet`), vì đây là single-document update
+   operator sửa lại sau khi thấy lỗi, không phải toàn bộ startup config cần thấy hết vấn đề một lần.
+5. `safe_settings` là bảng 1 row singleton, seed ngay trong migration `0036` với desired document
+   zero-value (`{"managedWorkspaceRoot":"",...,"evidenceRetention":"0s",...}`) tại version 1 — không có
+   state "row chưa tồn tại" nào `Get` phải xử lý riêng.
+6. `UpdateSafeSettingsRequest` (app layer) nhận `DesiredJSON json.RawMessage` — TOÀN BỘ document, không phải
+   patch từng field — đúng "Store full desired document + version". Dùng `cmd.ExpectedVersion` có sẵn trên
+   `ports.Command` làm CAS fence, không thêm field ExpectedVersion riêng (mirror
+   `SealReleaseSetRequest`/`AbandonReleaseSetRequest`).
+7. ADR-025 xếp "safe-settings mutation" và "safe-settings read" vào bảng installation-scope tường minh —
+   `UpdateSafeSettings` reject thẳng nếu `cmd.Scope` không phải `ports.InstallationScope()`
+   (`ErrNotInstallationScoped`); `GetSafeSettings` là query thuần, không cần `CommandEnvelope`/receipt (mirror
+   `adapterbuild.GetAdapterBuild`).
+8. "Startup merge" (`internal/app/safesettings/startup.go`) là hàm thuần `ResolveEffective(defaults, file
+   StartupOverrides, sqlite SafeSettings, env, flags StartupOverrides) Effective` — không tự đọc
+   `os.Environ()`/`os.Args`, nhận layer đã resolve sẵn từ caller (giống `config.FromEnv` nhận `lookup
+   func(string)(string,bool)` thay vì tự gọi `os.LookupEnv`). Vì `cmd/aw serve` hiện tại CHƯA compose
+   `config.Load` (phát hiện ở Nghiên cứu), task này KHÔNG tự ý thêm một refactor lớn vào `serve.go` để wire
+   toàn bộ chuỗi `Load`→DB-open→resolve — phạm vi đó thuộc về một composition-root task khác, ngoài "Phạm vi"
+   của V6-10G. Thay vào đó, `ResolveEffective` được chứng minh đúng bằng test thật mở SQLite thật
+   (`TestStartupSequencing_CurrentProcessUnchangedThenRestartAppliesUnmasked`), theo đúng thứ tự "open DB
+   trước, đọc SQLite safe settings sau, resolve sau cùng" — sẵn sàng cho bất kỳ composition root nào gọi vào
+   khi cần, không có quyết định precedence/allowlist nào còn treo lại.
+9. Vì "Store full desired document": SQLite hoặc cấu hình TẤT CẢ 7 field cùng lúc, hoặc KHÔNG field nào —
+   không có state "SQLite override field A nhưng field B vẫn theo file layer". `ResolveEffective` implement
+   đúng bất biến này: SQLite layer chỉ "bật" khi `!sqlite.IsZero()`, lúc đó cả 7 field đều lấy từ SQLite.
+10. `MaskedByStartupSource` chỉ non-empty khi SQLite đã từng cấu hình thật (khác zero-value) VÀ effective
+    source là `environment`/`flag` — nếu SQLite chưa từng cấu hình, không có gì để "mask" (chỉ là default/file
+    thắng bình thường).
+11. Doctor: thêm `Options.UnitOfWork` (optional, nil-safe, mirror `CheckWorker`'s "opt-in" pattern) và
+    `CheckSafeSettings` — không tự ý wire `doctor.Run` vào `cmd/aw` (không có call site nào tồn tại trước đó
+    để mở rộng, đây là gap có sẵn từ trước, ngoài phạm vi task này). Readiness (`httpapi.ReadinessChecker`)
+    NGƯỢC LẠI được wire thật vào `cmd/aw/serve.go` vì composition root đó đã compose 3 check khác ngay tại
+    chỗ, có `uow` sẵn — thêm 1 check `safe_settings` là extension nhỏ, an toàn, và làm cho Verify line "fail
+    readiness ... typed" có bằng chứng end-to-end thật qua HTTP, không chỉ unit test cô lập.
+12. Test "corrupt persisted settings": vì KHÔNG có code path production nào từng ghi JSON hỏng vào
+    `desired_json` (Update luôn marshal object đã qua Validate), cách DUY NHẤT mô phỏng bit-rot/sửa tay
+    ngoài luồng là UPDATE SQL trực tiếp trong fixture test — không vi phạm nguyên tắc "không mutate database
+    trực tiếp để fabricate kết quả verified", vì đây là fabricate ĐIỀU KIỆN LỖI, không fabricate MỘT KẾT QUẢ
+    THÀNH CÔNG giả. Thêm `sqlite.CorruptSafeSettingsDesiredJSONForTest` (exported, test-only, mirror
+    `SeedFixtureOwners`'s doc-comment pattern "tồn tại chỉ để test ngoài package fixture qua API công khai,
+    production code không bao giờ gọi").
+
+### Thực hiện
+
+File mới:
+
+- `internal/domain/safesettings/safesettings.go`: `SafeSettings` (7 field), `IsZero()`,
+  `MarshalJSON`/`UnmarshalJSON` (strict decode), `Validate` (traversal, root-overlap, retention ≤0, output
+  limit ≤0, model shape, credential-ref shape).
+- `internal/app/ports/safesettings.go`: `ErrSafeSettingsCorrupt`, `SafeSettingsRecord`,
+  `UpdateSafeSettingsRequest`, `SafeSettingsRepository` interface (`Get`/`Update`).
+- `internal/adapters/sqlite/migrations/0036_safe_settings.sql`: bảng `safe_settings` singleton, seed
+  version 1 zero-value.
+- `internal/adapters/sqlite/safe_settings.go`: `safeSettingsRepository` — `Get` (decode +
+  `ErrSafeSettingsCorrupt` typed), `Update` (CAS UPDATE, `RowsAffected` check → `ErrOptimisticConflict`).
+- `internal/app/safesettings/commands.go`: `GetSafeSettings`, `UpdateSafeSettings` (scope check, receipt
+  replay, Validate, CAS, event append, receipt record — cùng transaction).
+- `internal/app/safesettings/event_schema.go`: `SafeSettingsUpdatedEventType`/`SchemaVersion` v1,
+  payload flatten toàn scalar (`EvidenceRetentionSeconds int64`, không nested Duration), `RegisterEventSchemas`.
+- `internal/app/safesettings/startup.go`: `FieldSource`, `StartupOverrides`, `Defaults()`,
+  `StringFieldEffective`/`DurationFieldEffective`/`IntFieldEffective`, `Effective`, `ResolveEffective`.
+- Test mới: `safesettings_test.go` (domain), `safe_settings_test.go` (sqlite repository),
+  `event_schema_test.go`, `commands_sqlite_test.go`, `startup_test.go` (app layer),
+  `checks_sqlite_test.go` (doctor), golden fixture `testdata/golden/safe_settings_updated_v1.json`.
+
+File sửa:
+
+- `internal/app/ports/unitofwork.go`: thêm `SafeSettings() SafeSettingsRepository` vào `Tx`.
+- `internal/app/ports/fake/unitofwork.go`: thêm `SafeSettingsRepository` in-memory (seed version 1 zero-value,
+  CAS `Update` giống hệt semantics sqlite) + wire vào `Tx`/`newTx`/`clone`.
+- `internal/adapters/sqlite/unitofwork.go`: `txAdapter.SafeSettings()`.
+- `internal/adapters/sqlite/fixtures.go`: thêm `CorruptSafeSettingsDesiredJSONForTest`.
+- `internal/app/doctor/doctor.go`: `Options.UnitOfWork` (optional), `Run()` gọi `CheckSafeSettings` nếu
+  non-nil.
+- `internal/app/doctor/checks.go`: `CheckSafeSettings`.
+- `cmd/aw/serve.go`: thêm `checker.Register("safe_settings", ...)` cạnh `database`/`artifact_root`.
+- `cmd/aw/serve_test.go`: thêm `TestServe_ReadyFailsIfSafeSettingsCorrupt` + import `sqlite`.
+- `internal/archtest/event_catalog_test.go`: import + gọi `safesettings.RegisterEventSchemas(registry)`.
+- `internal/adapters/sqlite/db_test.go` (x2) và `unitofwork_test.go` (x1): hardcoded migration count
+  `34` → `35` (thêm 1 migration file thật, không phải flake).
+
+### Test
+
+- `go build ./...`, `go vet ./...`: sạch toàn bộ module.
+- `go test ./internal/domain/safesettings/...`: 16 test — `Validate` cho mọi nhánh (traversal cả 2 root và
+  provider path, overlap cả 2 chiều + identical + sibling-không-overlap + prefix-nhưng-không-overlap
+  `"data/workspaces-extra"` vs `"data/workspaces"`, retention ≤0, output limit ≤0, model rỗng/whitespace/
+  control-char/quá dài, credential ref rỗng/whitespace/chứa-space/quá dài/ký-tự-cấm), JSON round-trip
+  (thường + zero-value + `{}` literal), unknown-field reject (6 case gồm 4 field bị cấm tường minh).
+- `go test ./internal/adapters/sqlite/... -run TestSafeSettingsRepository`: seed-by-migration (version 1,
+  zero desired), update CAS thành công, stale-version conflict (2 writer cùng version 1, writer 2 thua,
+  row vẫn giữ đúng document của writer 1), corrupt row → `ErrSafeSettingsCorrupt` (qua UPDATE SQL trực tiếp).
+- `go test ./internal/app/safesettings/...`: 17 test — golden + real-payload decode; fresh-DB query;
+  happy-path update (version 2, restartRequired true, reread khớp); replay idempotency-key (version không
+  tăng lần 2); replay khác hash → `ErrReceiptConflict`; concurrent CAS conflict (2 command, 2 idempotency
+  key khác nhau, cùng ExpectedVersion 1 → `ErrOptimisticConflict`); wrong scope →
+  `ErrNotInstallationScoped`; unknown field (kèm `databasePath`) reject, version không đổi; invalid
+  retention reject, version không đổi; root overlap reject; traversal reject; `ResolveEffective` cho từng
+  tầng (defaults-only, file-beats-defaults, sqlite-beats-file toàn bộ 7 field cùng lúc, env-masks-sqlite,
+  flag-masks-env-and-sqlite, duration field riêng); và
+  `TestStartupSequencing_CurrentProcessUnchangedThenRestartAppliesUnmasked` mở SQLite thật, resolve "process
+  hiện tại", Update thật, assert `Effective` snapshot cũ KHÔNG đổi (Go value semantics + assert tường minh),
+  resolve lại "restart" thấy giá trị mới unmasked, và biến thể có env override thấy giá trị mới bị mask đúng
+  tên source.
+- `go test ./internal/app/doctor/...`: `CheckSafeSettings` HEALTHY trên DB mới migrate, BLOCKED có
+  Remediation trên row bị corrupt qua `CorruptSafeSettingsDesiredJSONForTest`; toàn bộ suite doctor cũ vẫn
+  pass (check mới chỉ chạy khi `Options.UnitOfWork != nil`, không đổi behavior test cũ nào).
+- `go test ./cmd/aw/...`: `TestServe_ReadyFailsIfSafeSettingsCorrupt` — corrupt row TRƯỚC khi `serve` start,
+  `/health/ready` trả 503 với `safe_settings` trong danh sách check fail ngay từ request đầu tiên; toàn bộ
+  suite `cmd/aw` cũ (bao gồm `TestServe_StartsServesHealthAndShutsDownGracefully`) vẫn pass — chứng minh
+  check mới không phá server thật khi mọi thứ healthy.
+- `go test ./internal/archtest/...`: `TestEmittedDomainEventInventoryMatchesRegisteredInventory` — 41
+  registered = 41 emitted, 0 missing (tăng từ khi chưa có V6-10G, xác nhận `SafeSettingsUpdated` được đăng ký
+  đúng); `TestDomainAppNeverImportAdapters` vẫn pass dù `commands_sqlite_test.go`/`startup_test.go`/
+  `safe_settings_test.go` import `internal/adapters/sqlite` trực tiếp — xác nhận `go list -json` không tính
+  import chỉ dùng trong `_test.go` vào `Deps` (đúng như precedent `workspaceprovision/handler_sqlite_test.go`
+  đã import `gitworktree` từ trước).
+- `go test ./... -count=1`: toàn bộ module (~90 package) pass 100%, 0 dòng FAIL, sau khi sửa 3 assertion
+  migration-count cứng (`34`→`35`) — đây là lần fail DUY NHẤT gặp phải trong suốt quá trình, và là hệ quả
+  trực tiếp, có chủ đích của việc thêm migration `0036`, không phải regression hay flake.
+
+### Verify
+
+- "migration/replay/concurrency/event golden": migration 0036 seed sạch (`TestSafeSettingsRepository_
+  Get_SeededByMigration`), replay idempotency-key giữ nguyên version
+  (`TestUpdateSafeSettings_ReplayReturnsFirstResult`), concurrency CAS 2 writer
+  (`TestSafeSettingsRepository_Update_StaleVersionConflict`,
+  `TestUpdateSafeSettings_ConcurrentUpdateCASConflict`), event golden 2-test pattern
+  (`TestSafeSettingsUpdatedV1_GoldenFixtureDecodes`/`_RealEventPayloadDecodes`).
+- "unknown/startup-security field": `UnmarshalJSON`'s `DisallowUnknownFields` chặn field lạ VÀ 4 field bị
+  cấm tường minh (`databasePath`, `workerId`, `localPrincipal`, `sessionKey`/`signingKey`) — test cả ở domain
+  layer (`TestJSONUnmarshal_UnknownFieldRejected`) lẫn command layer
+  (`TestUpdateSafeSettings_UnknownFieldRejected`).
+- "traversal/root overlap": `TestValidate_RootTraversalRejected`,
+  `TestValidate_ProviderExecutablePathTraversalRejected`, `TestValidate_RootOverlapRejected` (2 chiều +
+  identical + sibling-không-overlap), lặp lại ở command layer
+  (`TestUpdateSafeSettings_TraversalRejected`/`RootOverlapRejected`).
+- "invalid retention/model/provider ref": `TestValidate_InvalidRetentionRejected`,
+  `TestValidate_InvalidProcessOutputLimitRejected`, `TestValidate_InvalidModelRejected` (4 case),
+  `TestValidate_InvalidProviderCredentialRefRejected` (5 case), lặp lại ở command layer
+  (`TestUpdateSafeSettings_InvalidValueRejected`).
+- "current process unchanged": `TestStartupSequencing_...` snapshot `Effective` trước Update, assert bằng
+  `==` sau Update — không đổi vì `Effective` là value type, không phải con trỏ vào state chung.
+- "restart applies unmasked value": cùng test, resolve lại sau Update với sqlite record mới, không có
+  env/flag override → `Source == SourceSQLite`, `MaskedByStartupSource == ""`.
+- "env/flag mask": `TestResolveEffective_EnvMasksSQLite`, `TestResolveEffective_FlagMasksEnvAndSQLite`,
+  cộng biến thể `restartWithEnv` trong `TestStartupSequencing_...` — `MaskedByStartupSource` báo đúng tên
+  source đang che (`"environment"`/`"flag"`), `Desired` vẫn giữ giá trị SQLite thật dù bị mask.
+- "corrupt persisted settings fail readiness/Doctor typed": 3 tầng — sqlite repository
+  (`TestSafeSettingsRepository_Get_CorruptRowFailsTyped` → `ports.ErrSafeSettingsCorrupt`), Doctor
+  (`TestCheckSafeSettings_BlockedOnCorruptRow` → `StatusBlocked` có Remediation), và readiness thật qua HTTP
+  (`TestServe_ReadyFailsIfSafeSettingsCorrupt` → 503, check `safe_settings` trong response) — không nơi nào
+  panic hay fallback im lặng về zero document.
+- "Không làm": `internal/app/config/config.go`/`sources.go`/`validate.go` không có dòng diff nào (xác nhận
+  bằng chính danh sách file sửa ở trên); không field nào tên `DatabasePath`/`WorkerID`/`LocalPrincipal`/
+  session-hoặc-signing-key xuất hiện trong `SafeSettings`; `ProviderCredentialRef` luôn là reference string
+  có shape hạn chế, không có chỗ nào trong response/event/log in ra secret value thật (không tồn tại code
+  path nào resolve reference → giá trị thật trong toàn bộ package này).
+- "Hoàn thành khi": `GetSafeSettings`/`UpdateSafeSettings` + `ResolveEffective` đã đóng mọi quyết định
+  storage/precedence/allowlist thật (schema, CAS, event, receipt, 7-field closed set, 5-tầng precedence,
+  masking) bằng code + test thật — V6-10H (endpoint HTTP) chỉ còn việc bọc `GetSafeSettings`/
+  `UpdateSafeSettings` bằng route/If-Match, không còn quyết định nào ở tầng dưới phải tự nghĩ thêm.
+
+### Kết quả
+
+7 file mới ở `internal/domain/safesettings` (1) + `internal/app/ports` (1) + `internal/adapters/sqlite`
+(migration + repository, 2) + `internal/app/safesettings` (commands/event-schema/startup, 3), cộng 6 file
+test mới và 1 golden fixture; 11 file sửa (2 `ports/unitofwork` thật + fake, sqlite `unitofwork`/`fixtures`,
+doctor `doctor.go`/`checks.go`, `cmd/aw/serve.go`/`serve_test.go`, `archtest/event_catalog_test.go`, 3 dòng
+hardcoded migration-count). `go build/vet/test ./...` xanh 100% trên ~90 package, đúng 1 lần fail thật gặp
+phải trong suốt task (migration-count assertion, đã sửa, không phải flake) — không đụng
+`TestSPK09QuarantineRecreateFencesStaleGeneration`, `TestSupervisorNormalExit_
+TreeQuiescedFalseWhileDescendantStillRuns`, `TestProjectWorkspaceGate`, hay
+`TestRecoveryReaperHandler_OrphanedMutatingAttempt_RunCancelling_ClosesRunOutReally` (không package nào trong
+số đó bị chạm). `internal/app/config` (Config/Load/Overrides) không đổi một dòng nào — đúng quyết định giữ
+lớp thứ nhất bất biến trong khi build lớp thứ hai độc lập bên cạnh nó. Sẵn sàng cho V6-10H build
+`GET/PUT /settings/safe` trực tiếp trên `GetSafeSettings`/`UpdateSafeSettings` không còn quyết định nào phải
+mở lại.

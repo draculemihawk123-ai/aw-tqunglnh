@@ -109,6 +109,15 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		}
 		return nil
 	})
+	// V6-10G (docs/design/08-v6-api-projections.md): a corrupt persisted
+	// safe-settings desired document must fail readiness typed, never a
+	// panic or a silent fallback to the zero document.
+	checker.Register("safe_settings", func(ctx context.Context) error {
+		return uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+			_, err := tx.SafeSettings().Get(ctx)
+			return err
+		})
+	})
 
 	routesFinalized := false
 	checker.Register("routes", func(ctx context.Context) error {

@@ -307,3 +307,21 @@ INSERT INTO execution_attempts(
 	}
 	return nil
 }
+
+// CorruptSafeSettingsDesiredJSONForTest overwrites the singleton
+// safe_settings row's own desired_json column with a deliberately malformed
+// value — V6-10G's own "corrupt persisted settings fail readiness/Doctor
+// typed" Verify scenario needs a fixture no real production code path can
+// ever produce (Update always marshals a real, Validate-passed
+// safesettings.SafeSettings), so this exists purely to let an external test
+// package (internal/app/doctor's own checks_sqlite_test.go) simulate the
+// out-of-band corruption — disk bit rot, a manual DB edit — that check
+// exists to catch, without reaching into this package's unexported
+// internals. Production code must never call this.
+func CorruptSafeSettingsDesiredJSONForTest(ctx context.Context, store *Store) error {
+	_, err := store.db.ExecContext(ctx, `UPDATE safe_settings SET desired_json = ? WHERE id = 'singleton'`, `{not-valid-json`)
+	if err != nil {
+		return fmt.Errorf("corrupt fixture safe_settings row: %w", err)
+	}
+	return nil
+}

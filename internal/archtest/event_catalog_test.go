@@ -30,6 +30,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/eventschema"
 	"github.com/taQuangLing/agent-workflow/internal/app/message"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/app/safesettings"
 	"github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspacereconcile"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspacerelease"
@@ -68,6 +69,7 @@ func TestEmittedDomainEventInventoryMatchesRegisteredInventory(t *testing.T) {
 	workspacereconcile.RegisterEventSchemas(registry)
 	runtime.RegisterEventSchemas(registry)
 	artifactsweep.RegisterEventSchemas(registry)
+	safesettings.RegisterEventSchemas(registry)
 	// internal/app/agentevents.RegisterEventSchemas is deliberately NOT
 	// included here: it registers ports.AgentEventKind decoders for the
 	// separate agent_events journal (V5-08A's own sink/checkpoint
