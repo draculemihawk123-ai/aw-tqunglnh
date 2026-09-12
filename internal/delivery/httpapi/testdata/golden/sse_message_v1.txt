@@ -1,0 +1,4 @@
+id: 42
+event: work_item_updated
+data: {"workItemId":"wi-1","status":"BLOCKED"}
+

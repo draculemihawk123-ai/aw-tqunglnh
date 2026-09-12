@@ -30,6 +30,17 @@ type Server struct {
 // chain. MaxBodyBytes bounds every request body this server accepts
 // (before any handler-specific limit); Logger may be nil (Recover then
 // simply does not log a caught panic, it still recovers).
+//
+// Token and Principal are V6-01A's own browser-security additions
+// (docs/design/08-v6-api-projections.md V6-01A, ADR-016, ADR-028). Both are
+// required, and both are bound to this Server for its entire process
+// lifetime: Token must be generated fresh per process start (a composition
+// root calls IDs.NewID() itself, once, before constructing Config — NOT
+// something NewServer derives on its own, so a caller can register the one
+// bootstrap route that needs to embed it before Serve ever accepts a
+// connection) and Principal must come from trusted startup config, never
+// from a request. Neither has a setter anywhere in this package — the only
+// way to change either is a fresh NewServer call, i.e. a process restart.
 type Config struct {
 	Host         string
 	Port         int
@@ -37,6 +48,8 @@ type Config struct {
 	IDs          idsource.Source
 	Logger       *logging.Logger
 	MaxBodyBytes int64
+	Token        string
+	Principal    LocalPrincipalSnapshot
 }
 
 // NewServer validates cfg, binds the listener and composes the handler
@@ -56,18 +69,48 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.MaxBodyBytes <= 0 {
 		return nil, errors.New("httpapi: Config.MaxBodyBytes must be positive")
 	}
+	if cfg.Token == "" {
+		return nil, errors.New("httpapi: Config.Token is required (a fresh per-start session token — ADR-016)")
+	}
+	if err := cfg.Principal.validate(); err != nil {
+		return nil, fmt.Errorf("httpapi: %w", err)
+	}
 
 	mux := http.NewServeMux()
 	for _, d := range cfg.Routes.Descriptors() {
 		mux.HandleFunc(d.Method+" "+d.Path, d.Handler)
 	}
-	handler := Chain(mux, CorrelationID(cfg.IDs), Recover(cfg.Logger), MaxBytes(cfg.MaxBodyBytes))
 
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, fmt.Errorf("httpapi: listen %s: %w", addr, err)
 	}
+
+	// The Host/Origin a real request must match is derived from cfg.Host
+	// (the literal string an operator configured — "127.0.0.1", "localhost"
+	// or "::1", already proven loopback-only above) joined with the actual
+	// bound port, not cfg.Port itself: Config.Port:0 means "OS-assigned
+	// ephemeral port", so only the listener's own resolved address knows the
+	// real port a request's Host header will name.
+	_, boundPort, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("httpapi: parse bound address %s: %w", listener.Addr().String(), err)
+	}
+	local := LocalOrigin{
+		Host:   net.JoinHostPort(cfg.Host, boundPort),
+		Origin: "http://" + net.JoinHostPort(cfg.Host, boundPort),
+	}
+
+	handler := Chain(mux,
+		HostOriginGuard(local),
+		CorrelationID(cfg.IDs),
+		Recover(cfg.Logger),
+		RequireSessionToken(cfg.Token),
+		MaxBytes(cfg.MaxBodyBytes),
+		BindPrincipal(cfg.Principal),
+	)
 
 	return &Server{
 		httpServer: &http.Server{Handler: handler},

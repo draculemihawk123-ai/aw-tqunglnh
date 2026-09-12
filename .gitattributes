@@ -14,3 +14,13 @@
 # do with the code under test (V1-11 hit this for real on windows-latest —
 # same root cause as the *.sql rule above).
 *.json text eol=lf
+
+# Same root cause, same fix, for a non-JSON golden wire-format fixture:
+# internal/delivery/httpapi/testdata/golden/sse_message_v1.txt is compared
+# byte-for-byte against httpapi.WriteSSE's own output, which always emits
+# LF-only "id:\nevent:\ndata:\n\n" lines (V6-02A hit this for real on
+# windows-latest CI, same failure V1-11 already hit for *.json above —
+# this repo currently has no other tracked *.txt file, so the pattern is
+# scoped this broadly deliberately, matching the existing *.json rule's
+# own scope).
+*.txt text eol=lf

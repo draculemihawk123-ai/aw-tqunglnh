@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "NOT_FOUND",
+    "message": "the requested resource was not found",
+    "details": [
+      {
+        "field": "workItemId",
+        "message": "no work item matches this id in the caller's visible scope"
+      }
+    ]
+  }
+}
