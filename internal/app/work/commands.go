@@ -332,14 +332,7 @@ func CreateRootWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			WorkItemID     string `json:"workItemId"`
-			ProjectID      string `json:"projectId"`
-			FamilyID       string `json:"familyId"`
-			WorkspaceSetID string `json:"workspaceSetId"`
-			Title          string `json:"title"`
-			ScopeCount     int    `json:"scopeCount"`
-		}{
+		eventPayload, err := json.Marshal(rootWorkItemCreatedEventPayload{
 			WorkItemID: workItemID, ProjectID: req.ProjectID, FamilyID: familyID,
 			WorkspaceSetID: workspaceSetID, Title: root.Title, ScopeCount: len(scopes),
 		})
@@ -356,7 +349,7 @@ func CreateRootWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-created", ProjectID: req.ProjectID,
 			AggregateType: "WorkItem", AggregateID: workItemID, Sequence: 1,
-			EventType: "RootWorkItemCreated", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: RootWorkItemCreatedEventType, SchemaVersion: RootWorkItemCreatedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
@@ -585,14 +578,7 @@ func CreateChildWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource
 			})
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			WorkItemID       string `json:"workItemId"`
-			ProjectID        string `json:"projectId"`
-			FamilyID         string `json:"familyId"`
-			ParentWorkItemID string `json:"parentWorkItemId"`
-			Title            string `json:"title"`
-			ScopeCount       int    `json:"scopeCount"`
-		}{
+		eventPayload, err := json.Marshal(childWorkItemCreatedEventPayload{
 			WorkItemID: childID, ProjectID: string(child.ProjectID), FamilyID: string(child.FamilyID),
 			ParentWorkItemID: req.ParentWorkItemID, Title: child.Title, ScopeCount: len(candidates),
 		})
@@ -608,7 +594,7 @@ func CreateChildWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-created", ProjectID: string(child.ProjectID),
 			AggregateType: "WorkItem", AggregateID: childID, Sequence: 1,
-			EventType: "ChildWorkItemCreated", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: ChildWorkItemCreatedEventType, SchemaVersion: ChildWorkItemCreatedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
