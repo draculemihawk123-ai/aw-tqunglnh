@@ -730,3 +730,169 @@ khoá cứng bất biến "chỉ một composition root, tên `aw`, `agentkit-sp
 vet/test ./...` xanh 100% trên toàn bộ module, 3 assertion Verify (`go build ./cmd/aw` pass, `go build
 ./cmd/agentkit` fail, `go build ./cmd/agentkit-spike` pass) đều xác nhận bằng lệnh thật, không suy đoán. V6-15B
 (nền tảng CLI dùng chung) giờ có đủ dependency `V6-15A` để bắt đầu ngay khi `V6-02`/`V6-02A` cũng sẵn sàng.
+
+## V6-03 — Public Project authority (PR #34)
+
+### Bối cảnh
+
+V6-03 nằm trong nhóm P1 ("sau V6-00A"), unblocked ngay khi V6-00A/V1-06/V1-07A đều đã đóng. Trích nguyên
+văn task spec từ `docs/design/08-v6-api-projections.md`: "bổ sung public `CreateProject`, `ListProjects`,
+`GetProject` còn thiếu trước HTTP/CLI"; "Không làm: không để delivery gọi `Tx.Catalog().CreateProject`
+hoặc tạo Component thủ công". Đây là gap thật đã tồn tại từ V3-01: `project.Project`/`ProjectID` được
+dùng khắp codebase như một khái niệm scoping, nhưng chưa từng có một named public application command
+nào cho phép tạo Project — mọi test/seed hiện có (`mustCreateProject`, `seedProjectSQLite` trong chính
+`internal/app/catalog`) đều gọi thẳng `tx.Catalog().CreateProject`, đúng chỗ hở task này phải đóng lại.
+
+### Nghiên cứu
+
+Đọc `internal/app/ports/unitofwork.go`'s `CatalogRepository.CreateProject` — chính doc comment của nó đã
+tự khai: "Not itself a cited public command ... a later task adding the full idempotent CreateProject
+command wraps this same method rather than duplicating the insert" — xác nhận đây đúng là chỗ chờ sẵn cho
+task này, không phải suy diễn.
+
+Mirror cấu trúc `internal/app/catalog.RegisterRepository`/`AssignComponentPack` (đọc toàn bộ
+`commands.go`, 529 dòng, trước khi viết dòng nào mới): cả hai đều theo đúng khuôn "receipt idempotency
+check → real work → domain event → receipt record", tất cả trong một `uow.WithSerializedWrite`. Đối
+chiếu `internal/app/definitions.CreateDefinition` (candidate thứ hai theo gợi ý task) — kết luận
+`RegisterRepository` khớp hơn vì Project là aggregate gốc đơn giản, không có khái niệm scope kép
+(global/project) như `definition.Scope`.
+
+Đọc `internal/app/catalog/event_schema.go` (sản phẩm V6-00A) — 3 event đã đăng ký
+(`RepositoryRegistered`/`RepositoryProbeRetried`/`ComponentPackAssigned`), đúng mẫu 2 test/event
+(`TestXxxV1_GoldenFixtureDecodes`, `TestXxxV1_RealEventPayloadDecodes`) cộng `RegisterEventSchemas` — áp
+dụng y hệt cho `ProjectCreated`.
+
+Đọc ADR-025 (`docs/architecture/02-architecture-decisions.md` §27) nguyên văn: bảng closed-set liệt kê
+`CreateProject` ở cột Command installation-scoped, `ListProjects` ở cột Query installation-scoped —
+`GetProject` KHÔNG có mặt trong bảng, nên theo đúng câu "Mọi query project-scoped vẫn MUST scope bằng
+ProjectID — nới lỏng này chỉ áp cho tập installation đã liệt kê", `GetProject` là project-scoped, xác
+nhận đúng giả thuyết ban đầu chứ không phải đoán suông.
+
+Phát hiện quan trọng nhất: `internal/adapters/sqlite/command_handler_example_test.go` — "V1-06's own
+illustrative handler mẫu" (`handleCreateProject`, unexported, chỉ dùng trong _test.go) — LÀM NGƯỢC hoàn
+toàn ADR-025: chính nó có `TestHandleCreateProject_InstallationScopedCommand_Rejected`, coi CreateProject
+là PROJECT-scoped và reject installation scope. Đây không phải một lỗi cần sửa — file đó viết TRƯỚC khi
+ADR-025 tồn tại (V1-06 là task nền tảng đầu tiên, predate toàn bộ nhóm V6), là ví dụ minh hoạ lịch sử,
+không được bất kỳ command dispatch thật nào gọi tới. Quyết định: giữ nguyên file đó (không sửa, đúng kỷ
+luật bất biến lịch sử ADR-008/ADR-015 áp dụng tương tự cho tài liệu minh hoạ), chỉ ghi rõ sự khác biệt
+này trong doc comment của `CreateProject` thật (commands.go) để người đọc sau không nhầm hai thứ với
+nhau.
+
+### Quyết định
+
+1. **`CreateProjectRequest` không có field `ID`.** Không giống `RegisterRepositoryRequest.RepositoryID`
+   (caller-chosen), Project's ID phải do application tự sinh qua `idsource` — đúng convention
+   `internal/app/idsource`'s "application tạo ID, không để persistence adapter tự sinh", giống hệt
+   `CreateComponent`'s `id := ids.NewID()` đã có sẵn.
+2. **`cmd.Scope.IsInstallation()` bị enforce cứng trong `CreateProject`.** Reject bằng `ports.ErrScopeMismatch`
+   (sentinel mới) trước cả receipt lookup — không im lặng chấp nhận project scope. Đây là command đầu
+   tiên trong repo thật sự cần phân biệt installation/project scope tại chính handler (mọi command khác
+   từ trước tới giờ hoặc luôn project-scoped, hoặc — như `CreateDefinition` — dual-mode theo route, không
+   command nào bắt buộc CHỈ installation).
+3. **`ListProjects` cũng enforce `IsInstallation()`.** Không có "list scoped theo một project" vì Project
+   chính là đơn vị scope của mọi thứ khác — không có khái niệm đó.
+4. **`GetProject` yêu cầu `scope.ProjectID() == projectID` chính xác.** Cả installation scope lẫn scope
+   của một Project KHÁC đều bị reject bằng cùng `ports.ErrScopeMismatch` — mirror đúng kỷ luật
+   `RetryRepositoryProbe`'s cross-project check (resolve từ stored row, không tin request), áp dụng cho
+   authorization thay vì referential integrity.
+5. **Event `ProjectCreated`'s `ProjectID` field = ID của chính Project mới tạo, KHÔNG để rỗng** dù lệnh
+   tạo ra nó là installation-scoped. `ports.DomainEvent.ProjectID`'s doc comment nói "empty means
+   installation-scoped", nhưng field này thực chất track Project nào sở hữu dòng lịch sử của event, không
+   phải CommandScope nào sinh ra nó — một projection/journal theo dự án tương lai (V6-08/V6-09) PHẢI thấy
+   được event khai sinh chính Project đó trong lịch sử của nó. Áp dụng đúng lý luận `RegisterRepository`'s
+   `RepositoryRegistered` event đã dùng (ProjectID = Repository's actual owning project, không phải scope
+   command).
+6. **`ports.ErrScopeMismatch` đặt trong `internal/app/ports/command.go`** (tầng command envelope chung),
+   không phải trong `catalog` — vì `ListProjects`/`GetProject` sau này chắc chắn không phải named
+   command/query duy nhất cần enforce đúng luật ADR-025 này. Ghi rõ trong doc comment: phân biệt với
+   `workspaceinspection.ErrScopeMismatch` đã có sẵn từ V6-10C (cùng tên, khác package, khác concern hoàn
+   toàn — cái đó là referential-integrity giữa RepositoryWorkspace và Project/Repository/WorkspaceSet chain
+   của chính nó, không phải CommandScope authorization).
+
+### Thực hiện
+
+- `internal/app/ports/command.go`: thêm `ErrScopeMismatch` sentinel.
+- `internal/app/ports/unitofwork.go`: `CatalogRepository` interface thêm `ListProjects(ctx) ([]project.Project,
+  error)`; sửa lại doc comment `CreateProject`/`GetProject` trỏ đúng sang `internal/app/catalog.CreateProject`/
+  `GetProject` thật thay vì "a later task" mơ hồ.
+- `internal/adapters/sqlite/catalog.go`: `catalogRepository.ListProjects` + `listProjectsTx` (`SELECT id, name,
+  status, version FROM projects ORDER BY id`, mirror đúng `listProjectRepositoriesTx`).
+- `internal/app/ports/fake/unitofwork.go`: `CatalogRepository.ListProjects` (map → slice, sort by ID).
+- `internal/app/catalog/commands.go`: `CreateProjectRequest{Name}`, `CreateProjectResult{ProjectID, Name,
+  Status}`, `func CreateProject(ctx, uow, ids, cmd, req) (CreateProjectResult, error)`; `func
+  ListProjects(ctx, uow, scope) ([]project.Project, error)`; `func GetProject(ctx, uow, scope, projectID)
+  (project.Project, error)`.
+- `internal/app/catalog/event_schema.go`: `ProjectCreatedEventType = "ProjectCreated"`,
+  `ProjectCreatedSchemaVersion = 1`, `projectCreatedEventPayload{ProjectID, Name, Status}`,
+  `DecodeProjectCreatedV1`, đăng ký trong `RegisterEventSchemas`.
+- `internal/app/catalog/testdata/golden/project_created_v1.json`: golden fixture mới.
+
+### Test
+
+- `internal/app/catalog/commands_test.go` (fake uow, 13 test mới): `TestCreateProject_CreatesProjectAndEmitsEvent`,
+  `TestCreateProject_DuplicateSameRequest_ReplaysExactSameGeneratedID` (dùng `idsource.Sequential` — nếu
+  replay lỡ gọi lại `NewID()` sẽ lộ ra ngay vì source có state, lần hai sẽ khác lần một),
+  `TestCreateProject_DuplicateDifferentPayload_ReturnsConflict`, `TestCreateProject_ProjectScopedCommand_Rejected`,
+  `TestCreateProject_RequiresName`, `TestListProjects_ProjectScopedCaller_Rejected`,
+  `TestListProjects_ReturnsEveryProjectInIDOrder`, `TestGetProject_MatchingProjectScope_ReturnsAuthoritativeDetail`,
+  `TestGetProject_AnotherProjectScope_Rejected`, `TestGetProject_InstallationScopedCaller_Rejected`.
+- `internal/app/catalog/commands_sqlite_test.go` (real sqlite, 3 test mới, vì fake's `WithSerializedWrite`
+  không tạo contention thật — đúng lý do các concurrency test khác trong file này đã giải thích):
+  - `TestCreateProject_ConcurrentDistinctRequests_NoDuplicateOrLostProject` — 8 writer, 8 Project riêng,
+    đối chiếu `ListProjects` trả đúng 8 dòng, không mất/trùng ID.
+  - `TestCreateProject_ConcurrentSameIdempotencyKey_ExactlyOneProjectPersists` — 8 writer CÙNG idempotency
+    key/hash (kịch bản retry storm thật), mỗi writer một `idsource.Random` riêng — nếu 2 writer cùng thật
+    sự chạm `tx.Catalog().CreateProject` sẽ lộ ra ngay vì ID ngẫu nhiên khác nhau; kết quả: mọi writer
+    đồng thuận đúng 1 ProjectID, `ListProjects` xác nhận đúng 1 dòng — chứng minh bằng kịch bản race thật,
+    không chỉ đọc doc comment của `command_receipts.go`'s `ON CONFLICT DO NOTHING`.
+  - `TestCreateProject_ReplayAfterCommit_SimulatesCallerNeverSawFirstAck` — gọi `CreateProject` một lần,
+    xác nhận ĐỘC LẬP qua `store.CountDomainEvents`/`CountCommandReceiptsByIdempotencyKey`/`ListProjects`
+    rằng transaction đã commit thật (mirror `TestHandleCreateProject_CommitsStateEventAndReceiptAtomically`
+    của chính V1-06), rồi mô phỏng caller "crash trước khi thấy response": gọi lại `CreateProject` với một
+    `ports.Command` HOÀN TOÀN MỚI (cùng Actor/Scope/IdempotencyKey/Type/RequestHash) và một
+    `idsource.Sequential` mới (sẽ sinh "crash-project-2" nếu code sai) — xác nhận trả đúng
+    "crash-project-1" ban đầu, không tạo dòng/event thứ hai.
+- `internal/app/catalog/event_schema_test.go`: `TestProjectCreatedV1_GoldenFixtureDecodes`,
+  `TestProjectCreatedV1_RealEventPayloadDecodes`.
+- `go build ./...`, `go vet ./...` sạch. `go test ./...` (70 package, sau khi merge `origin/master` nhận
+  V6-15A's rename `cmd/agentkit`→`cmd/aw`) pass 100%, gồm `internal/archtest`'s
+  `TestEmittedDomainEventInventoryMatchesRegisteredInventory` (V6-00A's CI guard) tự động xác nhận
+  `ProjectCreated` v1 vừa emit vừa registered, không cần sửa tay archtest.
+- Một lần chạy `go test ./...` VỚI CONTENTION (3 lần gọi `go test ./...` chạy song song trên cùng máy do
+  thao tác polling nhầm) làm `internal/integration/v5accept` fail timeout-deadline 3 lần liên tiếp, MỖI
+  LẦN một test khác nhau (`TestV5AcceptFullComposition_...`, rồi `conformance_matrix_test.go` hai lần khác
+  tên) — cùng một triệu chứng "did not reach state VERIFYING within the deadline". Không tin đây là
+  regression thật: chạy lại `go test ./internal/integration/v5accept/... -v` MỘT MÌNH, không contention —
+  toàn bộ 12 test pass sạch, 92.9s, gồm cả 2 test vừa fail ở trên. Xác nhận đúng là CPU/IO contention từ 3
+  full suite chạy đồng thời, không phải lỗi thật từ thay đổi V6-03 (V6-03 không đụng
+  `internal/app/runtime`/`internal/app/work`/scheduler nào cả). Chạy lại `go test ./...` một lần sạch
+  (không contention) sau khi merge master — 100% xanh, kể cả `internal/integration/v5accept` (133.6s).
+
+### Verify
+
+- "command replay/different hash/concurrency/crash-after-commit": cả 4 vế đều có test thật riêng biệt
+  (liệt kê ở trên), replay chứng minh bằng chính ID sinh ra (không chỉ "kết quả giống nhau"), concurrency
+  có cả 2 biến thể (distinct + same-key race) trên sqlite thật, crash-after-commit mô phỏng đúng "commit
+  đã xảy ra, caller không thấy response, retry với envelope mới".
+- "event golden": `project_created_v1.json` + 2 test decode, cộng archtest's inventory guard tự động xác
+  nhận registered=emitted.
+- "list/get scope": `ListProjects` reject project scope, `GetProject` reject cả installation scope lẫn
+  scope của Project khác — đúng "closed installation set" của ADR-025 (`ListProjects` có trong bảng,
+  `GetProject` không có, nên ngược nhau).
+- "Hoàn thành khi": "clean installation tạo Project qua một named public application authority" — có thật:
+  `internal/app/catalog.CreateProject` là con đường duy nhất tạo Project có receipt/event, không còn cách
+  nào khác public.
+
+### Kết quả
+
+PR #34 (`feat/v6-03-public-project-authority`, branch từ `origin/master` tại `d8c1323`, merge
+`origin/master` một lần giữa chừng để nhận V6-15A's `cmd/agentkit`→`cmd/aw` rename + narrative section của
+chính V6-15A trước khi ghi đoạn này — fast-forward, không conflict vì không file nào chung). 3 function
+public mới (`CreateProject`, `ListProjects`, `GetProject`) trong `internal/app/catalog`, 1 sentinel mới
+(`ports.ErrScopeMismatch`), 1 method interface mới (`CatalogRepository.ListProjects`, 2 implementation),
+1 event mới đăng ký đầy đủ (`ProjectCreated` v1). 13 test mới trong `commands_test.go` (fake uow) + 3 test
+mới trong `commands_sqlite_test.go` (real sqlite, concurrency/crash-replay) + 2 test golden/round-trip
+trong `event_schema_test.go`. `go build/vet/test ./...` xanh 100% trên toàn bộ 70 package. Gap "delivery
+không có public CreateProject" đã đóng — V6-03A (Project/repository/component HTTP endpoints) giờ có đủ
+dependency (`V6-00`, `V6-01A`, `V6-02`, `V6-02A`, `V6-03`) để bắt đầu ngay khi 4 dependency còn lại sẵn
+sàng.
