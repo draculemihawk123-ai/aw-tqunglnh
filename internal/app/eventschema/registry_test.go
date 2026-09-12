@@ -64,6 +64,34 @@ func TestRegistry_RegisterUpcaster_WithoutDecoderPanics(t *testing.T) {
 	r.RegisterUpcaster("Foo", 1, func(previous any) (any, error) { return previous, nil })
 }
 
+func TestRegistry_Keys(t *testing.T) {
+	r := eventschema.NewRegistry()
+	if len(r.Keys()) != 0 {
+		t.Fatal("Keys should be empty before any Register call")
+	}
+	r.Register("Foo", 1, decodeEcho)
+	r.Register("Foo", 2, decodeEcho)
+	r.Register("Bar", 1, decodeEcho)
+
+	got := map[eventschema.EventKey]bool{}
+	for _, key := range r.Keys() {
+		got[key] = true
+	}
+	want := map[eventschema.EventKey]bool{
+		{EventType: "Foo", SchemaVersion: 1}: true,
+		{EventType: "Foo", SchemaVersion: 2}: true,
+		{EventType: "Bar", SchemaVersion: 1}: true,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Keys() = %v, want %v", got, want)
+	}
+	for key := range want {
+		if !got[key] {
+			t.Errorf("Keys() missing %+v", key)
+		}
+	}
+}
+
 func TestRegistry_RegisterUpcaster_DuplicatePanics(t *testing.T) {
 	r := eventschema.NewRegistry()
 	r.Register("Foo", 1, decodeEcho)

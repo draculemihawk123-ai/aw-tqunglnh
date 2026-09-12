@@ -100,6 +100,32 @@ func (r *Registry) IsRegistered(eventType string, schemaVersion int) bool {
 	return ok
 }
 
+// EventKey identifies one registered (EventType, SchemaVersion) pair —
+// Keys' own element type. A separate exported type (rather than exporting
+// schemaKey itself) keeps schemaKey free to change shape without breaking
+// callers of this read-only introspection surface.
+type EventKey struct {
+	EventType     string
+	SchemaVersion int
+}
+
+// Keys returns every (EventType, SchemaVersion) pair currently registered.
+// Order is unspecified. This is read-only introspection for a caller that
+// needs to enumerate the full registered set — e.g. V6-00A's own CI
+// inventory guard (internal/archtest), which cross-checks this against every
+// (EventType, SchemaVersion) pair actually emitted in production source, the
+// design doc's own "emitted-key inventory bằng registered-key inventory"
+// Verify line (docs/design/08-v6-api-projections.md V6-00A).
+func (r *Registry) Keys() []EventKey {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	keys := make([]EventKey, 0, len(r.decoders))
+	for key := range r.decoders {
+		keys = append(keys, EventKey{EventType: key.EventType, SchemaVersion: key.SchemaVersion})
+	}
+	return keys
+}
+
 // Decode decodes payloadJSON using the Decoder registered for
 // (eventType, schemaVersion), or returns ErrNotRegistered.
 func (r *Registry) Decode(eventType string, schemaVersion int, payloadJSON string) (any, error) {
