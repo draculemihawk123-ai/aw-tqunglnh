@@ -136,6 +136,9 @@ run ID/evidence ID.
 7. [Roadmap Alpha](design/00-roadmap.md) và [thiết kế hệ thống Alpha](design/01-system-design.md).
 8. [Go spike plan](spikes/01-go-core-spike-plan.md), rồi [spike report](spikes/02-go-core-spike-report.md).
 9. Khi thực thi, đọc đúng file version trong `docs/design/` chứa Task ID được giao.
+10. Task V6-0x (endpoint) hoặc V7-0x (UI) đọc thêm [V6-00 UX artifact — 13-screen
+    inventory](design/11-v6-00-ux-artifact.md) trước khi tự quyết định screen/action/query/state hay
+    request/response shape; mọi gap trong đó đã có Task ID chịu trách nhiệm.
 
 Khi bắt đầu code, đọc spike report trước để biết gate nào thiếu; không suy trạng thái từ tên test hay
 code hiện có. Khi cần quyết định mới, kiểm ADR trước; thay đổi semantics phải bổ sung ADR superseding.
