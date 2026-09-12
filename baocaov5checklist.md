@@ -5811,3 +5811,83 @@ commit `d04dc83`, 2026-09-11.
 **Việc còn lại:** V5-15E (full conformance matrix — mốc hoàn thành thật sự của V5-15, theo đúng contract
 gốc của user) — theo đúng contract 5 phần, tiếp tục tự động không cần hỏi lại trừ khi gặp quyết định kiến
 trúc thật sự mới.
+
+## V5-15D — phụ lục: fix data race thật trong `cancel_mutating_test.go` (phát hiện sau khi PR #19 đã merge)
+
+### Bối cảnh
+
+PR #20 (docs-only, chỉ thêm narrative V5-15D vào file này, branch `docs/v5-15d-pr-merge`) chạy CI và fail
+đúng 1 job trong 6: "Linux race and stability (V0-12)". 5 job còn lại xanh. Job này chạy race detector
+đúng 1 lần cộng với vòng lặp ổn định 10 lần (10x) cho toàn bộ offline suite. Theo đúng thói quen đã thiết
+lập từ trước của dự án — không bao giờ coi CI fail là "flake không liên quan, rerun là xong" mà chưa điều
+tra — đã tải log fail thật của job (`gh run view <run> --job <job> --log-failed`) để xác minh.
+
+### Nghiên cứu
+
+Log cho thấy `--- FAIL: TestV5AcceptCancelDuringMutatingAttempt_RealQuarantineNeverPromotes (3.61s)` xảy ra
+ở lần chạy 9/10 của vòng lặp ổn định, với một `WARNING: DATA RACE` đầy đủ từ Go race detector — không phải
+timeout hay flake ngẫu nhiên vô hại. Race cụ thể:
+- **Read** tại một địa chỉ bộ nhớ, từ goroutine chính của test: `idsource.(*Sequential).NewID()`
+  ← `runtime.cancelRunTx()` ← `runtime.CancelRun()` ← chính dòng gọi `runtime.CancelRun(ctx, f.uow, f.ids,
+  ...)` trong `cancel_mutating_test.go`.
+- **Write** trước đó tại CÙNG địa chỉ, từ một goroutine worker của pool: `idsource.(*Sequential).NewID()`
+  ← `agentevents.(*Sink).buildRecord()` ← `agentevents.(*Sink).Accept()` ← `CommandNodeExecutor.Execute()`
+  ← `ExecuteNodeHandler.Handle()` ← `workerpool.Pool` (goroutine này được `startPoolWithConfig` tạo ra).
+
+Đọc lại toàn bộ `internal/app/idsource/idsource.go` xác nhận `Sequential` có doc comment nói rõ: "Not safe
+for concurrent use — it is a single-threaded test helper, not a production allocator", implementation chỉ
+là `s.next++` không hề có lock nào. Đây là một thiết kế CỐ Ý (test helper đơn luồng), không phải bug của
+`idsource.Sequential` — không được sửa type này.
+
+Rà lại toàn bộ 10 file scenario khác trong `internal/integration/v5accept` (`grep` cho `startPool`/`f.ids`)
+để xác nhận đây có phải rủi ro lan rộng hay chỉ riêng file này: mọi scenario khác đều gọi thêm production
+command qua `f.ids` (vd. `EvaluateCompletionCandidate`) chỉ SAU KHI đã `f.waitForRunState` chờ Run về
+terminal state — tức đã đi qua một lần đọc DB thật (`uow.WithReadOnly`), tạo happens-before edge thật giữa
+goroutine worker và goroutine test qua cơ chế mutex nội bộ của `database/sql`. Riêng
+`cancel_mutating_test.go` lại cố tình poll một file marker trên filesystem thường (`os.Stat`, không đi qua
+DB, không tạo happens-before edge nào theo mô hình bộ nhớ của Go) rồi gọi `CancelRun` NGAY TRONG LÚC script
+thật vẫn còn đang sleep — tức là gọi thẳng vào lúc goroutine worker of pool CÓ THỂ vẫn đang thực thi
+`Execute()` thật, dùng chung `f.ids`. Đây là kịch bản V5-15 ĐẦU TIÊN gọi trực tiếp một production command
+từ goroutine test trong khi pool đang thực-sự-đồng-thời chạy node dùng chung instance đó — một constraint
+luôn tiềm ẩn nhưng chưa từng bị kích hoạt trước đây.
+
+### Quyết định
+
+Không sửa `idsource.Sequential` (thiết kế đơn luồng là cố ý, dùng an toàn ở khắp nơi khác). Thay vào đó,
+cấp một `idsource.Sequential` RIÊNG, prefix riêng (`"v5d-cancel-op"`), chỉ cho đúng lệnh `CancelRun` này —
+đúng tinh thần "one function, two callers"/"mỗi actor có thể chạy đồng thời có ID source riêng" đã có sẵn
+trong `fixture_test.go` (`handlerIDs := idsource.NewSequential(idPrefix)` cho các job handler trong pool,
+tách biệt với `f.ids` của test). Vì `idsource.Sequential` sinh ID dạng `prefix-N`, hai instance với prefix
+khác nhau không bao giờ đụng ID nhau — an toàn tuyệt đối, không cần đổi logic gì khác trong test.
+
+### Thực hiện
+
+Sửa đúng 1 file, `internal/integration/v5accept/cancel_mutating_test.go`: thêm import
+`internal/app/idsource`; ngay trước lệnh `runtime.CancelRun`, tạo
+`cancelOperatorIDs := idsource.NewSequential("v5d-cancel-op")` và truyền `cancelOperatorIDs` thay vì `f.ids`
+vào lệnh gọi đó. Không đụng bất kỳ dòng nào khác trong file, không đụng `idsource.Sequential`, không đụng 9
+scenario còn lại (đã xác nhận không có cùng rủi ro).
+
+### Test
+
+- `go build ./...` sạch.
+- `go test -run TestV5AcceptCancelDuringMutatingAttempt_RealQuarantineNeverPromotes -count=3 -v
+  ./internal/integration/v5accept/...`: pass ổn định cả 3 lần (~7.26s mỗi lần), hành vi test không đổi.
+- Không thể chạy `-race` ngay tại máy local (Windows, thiếu cgo/gcc — `CGO_ENABLED=1` nhưng không có C
+  compiler) — xác nhận qua `go env CC` rỗng và `which gcc`/`where gcc` không tìm thấy; race detector của dự
+  án này vốn chỉ chạy trên CI (Linux). Đẩy fix lên PR #20 để CI tự xác minh lại đúng job đã fail.
+
+### Verify
+
+- `git diff --stat` xác nhận đúng 1 file thay đổi, đúng 14 dòng (13 thêm/1 sửa), không có noise CRLF nào
+  lẫn vào commit.
+- Chờ CI của PR #20 chạy lại sau khi push fix — mục tiêu là job "Linux race and stability (V0-12)" xanh
+  ổn định (không còn `WARNING: DATA RACE` trong log của 10 lần lặp).
+
+### Kết quả
+
+Commit `4190ff6` ("fix(v5-15d): eliminate real data race in cancel_mutating_test.go"), push thẳng vào
+nhánh `docs/v5-15d-pr-merge` (PR #20) — vì file bị lỗi là code test ĐÃ MERGE cùng PR #19, còn PR #20 đang mở
+sẵn và chính là PR đã phát hiện ra race này qua CI của nó, nên gộp fix vào cùng PR #20 thay vì mở PR riêng,
+tránh một PR "chỉ sửa 1 dòng" không cần thiết. Sau khi CI 6/6 xanh, PR #20 (docs + fix race) sẽ được merge,
+khép lại hoàn toàn V5-15D bao gồm cả phát hiện mới này.
