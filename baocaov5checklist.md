@@ -5891,3 +5891,166 @@ nhánh `docs/v5-15d-pr-merge` (PR #20) — vì file bị lỗi là code test Đ�
 sẵn và chính là PR đã phát hiện ra race này qua CI của nó, nên gộp fix vào cùng PR #20 thay vì mở PR riêng,
 tránh một PR "chỉ sửa 1 dòng" không cần thiết. Sau khi CI 6/6 xanh, PR #20 (docs + fix race) sẽ được merge,
 khép lại hoàn toàn V5-15D bao gồm cả phát hiện mới này.
+
+## V5-15E — Full conformance matrix (mốc hoàn thành thật sự của V5-15 và V5)
+
+### Bối cảnh
+
+V5-15E là phần cuối cùng trong contract 5 phần của user cho V5-15 — theo đúng "Hoàn thành khi" của design
+doc gốc (`docs/design/07-v5-execution-evidence.md`): "trace WorkItem→revision/evidence đầy đủ và false
+completion bằng 0 trong fixtures." A-D mỗi PR đã chứng minh MỘT phần của trace này dưới một điều kiện cụ
+thể (happy path, claim-done/gate-fail, crash/provider-loss/adapter-drift/isolation, scope-violation/
+checker-write/cancel-mutating) — nhưng CHƯA CÓ scenario nào compose ĐỦ CẢ 4 role thật design doc gọi tên
+trong dòng "Thực hiện" của chính nó: "workflow agent→command→gate→checker→ReleaseSet→end/completion."
+V5-15A tự giới hạn phạm vi chỉ COMMAND+MACHINE_GATE (ghi rõ trong doc comment của chính nó); V5-15B chỉ
+AGENT(maker)[+MACHINE_GATE]. Không file nào từng chạy AGENT(maker)→COMMAND→MACHINE_GATE→AGENT(checker)
+trong CÙNG một Run.
+
+### Nghiên cứu
+
+Rà lại toàn bộ 10 scenario file hiện có (`grep` node type trong mỗi `*Document()` function) xác nhận đúng
+gap trên. Xác định 6 category oracle cần cho "full conformance matrix" (DB state, domain event, outbox,
+blocker, activation, artifact) — kiểm tra từng category có sẵn read method thật hay chưa:
+- DB state (Run/NodeRun/Attempt, kể cả `ActivationSequence`): đã có sẵn (`ListNodeRunsForRun`/
+  `ListExecutionAttemptsForRun`).
+- Domain event: đã có sẵn `Store.ListDomainEventsForProject`.
+- Blocker: đã có sẵn `WorkRepository.ListWorkItemBlockersForWorkItem`.
+- Artifact: đã có sẵn qua `Evidence.ArtifactReferences` → `tx.Artifacts().GetArtifact`.
+- **Outbox: KHÔNG có read method nào** — `ports.OutboxDispatchStore` chỉ có 3 method, cả 3 đều MUTATING
+  (`ClaimNextOutboxMessage` tự cấp lease, `MarkOutboxMessageDispatched`, `RecoverExpiredOutboxLeases`) —
+  đúng như đã research trước đó, một gap thật cần đóng.
+
+Bắt đầu code `full_composition_test.go` theo mẫu ghép `happy_path_test.go` (COMMAND+GATE, script marker
+ngoài repo) với 2 đầu AGENT (maker/checker) theo mẫu `claim_done_test.go`/`checker_write_test.go` — dùng
+lại `v5AcceptScripts`/`v5AcceptGateEvidenceKey`/`v5AcceptPermissionPolicyDocument` sẵn có, không phát minh
+gì mới cho phần "khung." Test **fail thật** ngay lần chạy đầu: `test_a` (node COMMAND, ngay sau node AGENT
+maker) FAILED với `code=EXECUTION_FAILED`.
+
+Debug thật (thêm `fmt.Println` tạm trong `execute.go`/`command_node_executor.go`, y hệt kỹ thuật đã dùng
+cho V5-15D, revert sạch trước khi commit) lộ ra nguyên nhân thật: `execErr = "runtime: resolve command
+execution resources: acquire write leases: repository workspace already has an active writer:
+workspace=v5eh-1 generation=1"` — tức là `ports.ErrWriteLeaseConflict` từ `AcquireWriteLeases`. `grep -rn
+"ReleaseWriteLeases("` toàn bộ codebase xác nhận: hàm này CHỈ được gọi từ ĐÚNG MỘT nơi —
+`agent_node_executor_cancellation.go`'s own `finalizeMutatingCancellation` (fix V5-15D) — **KHÔNG BAO GIỜ
+được gọi trên đường SUCCESS/FAILED bình thường**, ở bất kỳ đâu, từ trước tới giờ. Đọc `AcquireWriteLeases`'s
+own SQL xác nhận thêm: TTL của write lease = `request.Timeout + writeLeaseTTLGrace` (2 phút) — nghĩa là với
+policy 60s trong test, lease bị giữ tối thiểu 60+ giây dù attempt đã xong gần như ngay lập tức. Đây là một
+**gap production thật, latent từ trước tới giờ**: bất kỳ workflow nào có 2 node liên tiếp CÙNG cần write
+mount trên CÙNG một repo (điều CHƯA từng được test trước V5-15E, vì A/B/C/D mỗi cái chỉ có tối đa 1 node
+giữ write lease mỗi Run) sẽ luôn conflict thật trong production hôm nay. Debug thêm xác nhận `execute.go`'s
+own generic bare-error fallback biến MỌI lỗi chưa được classify (kể cả conflict này) thành FAILED không
+retry ngay từ lần thử đầu tiên, bỏ qua hoàn toàn cơ chế `AttemptPolicy.RetryableErrorCodes` đã có sẵn.
+
+### Quyết định
+
+Hỏi user qua `AskUserQuestion` trước khi sửa production code (đúng tinh thần V5-15D). User chọn fix thật,
+với contract chi tiết (verbatim):
+> "Chọn Fix production code for real.
+> - Release write lease sau khi terminal Attempt đã commit, trên mọi terminal outcome.
+> - Release phải idempotent và kiểm tra fence/holder.
+> - Chỉ typed lease contention được coi là retryable và đi qua AttemptPolicy backoff/MaxAttempts.
+> - Fence mismatch, quarantine, stale generation và scope violation vẫn non-retryable.
+> - Làm commit production riêng trước, sau đó mới thêm scenario V5-15E đầy đủ.
+> Thu hẹp scenario sẽ che một lỗi lifecycle thật và làm full-composition gate mất giá trị."
+
+### Thực hiện
+
+**Production fix (1 commit riêng, trước scenario test, đúng yêu cầu user):**
+- `ports.NodeExecutionResult` (execution.go): thêm field `WriteLeaseGrants []WriteLeaseGrant` — mỗi
+  executor tự gắn `resolved.writeLeaseGrants` của chính nó vào kết quả trả về, CHỈ khi trả về một kết quả
+  classify thật (không gắn khi trả bare error — những đường đó hoặc để RUNNING cho crash-recovery, hoặc
+  (đường cancel) đã tự release rồi).
+- `AgentNodeExecutor.Execute`/`CommandNodeExecutor.Execute` (2 file): thêm nhánh
+  `errors.Is(err, ports.ErrWriteLeaseConflict)` ngay tại điểm `resolveExecutionResources` trả lỗi — trả về
+  `NodeExecutionResult{State: FAILED, ErrorCode: errorcode.CodeConflict}` (một kết quả CLASSIFY thật) thay
+  vì bare error như trước — `CodeConflict` là mã CÓ SẴN trong bộ 22 mã đóng (`internal/domain/errorcode`),
+  không cần mở rộng spec. `GateNodeExecutor` không cần nhánh này (mount luôn bị force read-only, không bao
+  giờ acquire write lease — xác nhận qua đọc code, `resolveExecutionResources` được gọi với
+  `writeLeases=nil` sẵn) nhưng vẫn gắn `WriteLeaseGrants` (luôn rỗng) cho nhất quán giữa 3 executor.
+- `FinalizeExecutionAttempt` (finalize.go): thêm tham số `writeLeases ports.WriteLeaseManager`. Sau khi
+  transaction CAS-terminal của chính nó COMMIT thành công (ngoài transaction, đúng "commit xong mới
+  release" — cùng discipline V5-15D đã lập cho đường cancel), nếu `req.WriteLeases` không rỗng thì gọi
+  `writeLeases.ReleaseWriteLeases` — idempotent thật (dùng lại WHERE clause fence/holder CÓ SẴN của chính
+  `ReleaseWriteLeases`, không viết logic mới): `ErrWriteLeaseLost` từ release này được NUỐT (không coi là
+  lỗi) vì nó nghĩa là trạng thái mong muốn (lease đã tự do) đã đúng theo cách khác rồi.
+- `ExecuteNodeHandler` (execute.go): thêm field/tham số `writeLeases ports.WriteLeaseManager`; cả 5 điểm
+  gọi `FinalizeExecutionAttempt` trong `Handle` đều truyền `h.writeLeases`; nhánh switch chính (classify-
+  driven) truyền thêm `WriteLeases: execResult.WriteLeaseGrants`. 2 nhánh bare-error (verifyContextSnapshot
+  fail, generic fallback) không có gì để gắn (chưa từng gọi `resolveExecutionResources`) — để nguyên, một
+  gap hẹp hơn, đã tồn tại từ trước, không bị fix này làm xấu thêm.
+- **Blast radius thật của thay đổi chữ ký `NewExecuteNodeHandler`/`FinalizeExecutionAttempt`**: 13 file gọi
+  `NewExecuteNodeHandler` + 9 file gọi trực tiếp `FinalizeExecutionAttempt` — sửa TOÀN BỘ, xác nhận từng
+  điểm gọi test nào dùng `fake.NodeExecutor`/`scriptedNodeExecutor` (không bao giờ set `WriteLeaseGrants`,
+  nên `nil` an toàn) và điểm nào dùng executor THẬT (2 chỗ: `node_executor_router_test.go` — đổi sang
+  `&bridgeFakeWriteLeaseManager{}` có sẵn; `v5accept/fixture_test.go` — đổi sang `f.store` thật). Một panic
+  nil-pointer thật xuất hiện đúng ở điểm đầu tiên khi chạy full suite — xác nhận cách rà soát trên là cần
+  thiết, không phải suy đoán thừa.
+- `internal/adapters/sqlite/event_queries.go`: thêm `DebugOutboxRow`/`DebugListOutboxMessagesForProject` —
+  mirror chính xác mẫu `DebugListJobsByKind`/`ListDomainEventsForProject` đã có, đóng gap outbox read đã
+  research thấy trước đó.
+
+**Scenario mới (commit riêng, sau production fix, đúng thứ tự yêu cầu):**
+- `full_composition_test.go`: graph thật START→AGENT(maker)→COMMAND→MACHINE_GATE→AGENT(checker)→END —
+  lần đầu tiên codebase này chạy cả 4 role thật trong một Run. Dùng lại nguyên xi script/evidence-key của
+  V5-15A cho COMMAND/GATE (script maker viết marker NGOÀI repo — bắt buộc, vì `buildEvidence
+  (strictReadOnly=true)` của GATE/CHECKER coi bất kỳ diff nào trong BẤT KỲ mount nào của WorkItem là fail,
+  bất kể ai ghi hay ghi có commit hay không — đã tự confirm lại đúng constraint này khi build). Sau
+  VERIFYING, dùng lại đúng kỹ thuật `CreateLocalCommit` ngoài graph của V5-15A để có RevisionSet thật cho
+  ReleaseSet. Thêm một replay check thật: gọi `EvaluateCompletionCandidate` LẦN 2 với idempotency key khác,
+  xác nhận trả về ĐÚNG `DecisionArtifactID` cũ và số event `COMPLETION_DECIDED` cho Run này vẫn là 1 (không
+  nhân đôi) — dựa trên cơ chế replay-by-deterministic-ID CÓ SẴN trong `evaluateCompletionCandidateTx` (đọc
+  code xác nhận: check replay chạy TRƯỚC cả check `run.State != VERIFYING`, nên vẫn replay đúng dù Run đã
+  SUCCEEDED). Restart-verify qua `assertFullCompositionState` gọi trước VÀ sau `f.restart(t)`, đúng mẫu
+  `assertHappyPathState`.
+- `conformance_matrix_test.go`: `sweepConformanceOracle` đọc đủ 6 category; `TestV5AcceptConformanceMatrix`
+  chạy lại `buildV5AcceptFullCompositionRun` rồi table-drive 6 sub-test (`t.Run` riêng từng category) trước
+  VÀ sau restart — 12 sub-test tổng cộng, mỗi cái fail độc lập không che nhau.
+- `TestExecuteNodeHandler_WriteLeaseConflict_RetriesLikeAnyOtherRetryableCode` (finalize_retry_test.go):
+  mirror chính xác test `_CreatesNextAttemptWithBackoff` có sẵn (dùng `CodeProviderUnavailable`), đổi sang
+  `CodeConflict` — chứng minh cơ chế retry chung (code-agnostic) hoạt động y hệt cho mã mới.
+
+**Việc CHỦ ĐỘNG không làm, ghi rõ ra đây (không âm thầm bỏ qua):** không viết một test tích hợp real-SQLite
+riêng chứng minh "CommandNodeExecutor thật classify ĐÚNG một `ErrWriteLeaseConflict` thật thành
+`CodeConflict`" một cách cô lập — vì dựng lại đủ fixture thật (Run/NodeRun/Attempt SQLite thật + write lease
+thật của một attempt "khác" + executor thật) rủi ro cao hơn giá trị tăng thêm, khi mà: (1) chính
+`TestV5AcceptFullComposition_...` đã chứng minh chain thật hoạt động đúng sau fix (trước fix nó fail đúng
+tại điểm conflict này); (2) nhánh `errors.Is` mới chỉ 8 dòng, đọc code là đủ rõ ràng; (3) cơ chế retry chung
+đã có test riêng ở trên. Tương tự, đường TIMED_OUT (deadline exceeded) chưa được gắn `WriteLeaseGrants` —
+một mutating attempt bị timeout vẫn phải chờ TTL (60s+2 phút grace) mới tự giải phóng lease, KHÔNG được
+release ngay — bounded bởi TTL sẵn có (không phải deadlock vĩnh viễn), nhưng là một gap hẹp hơn còn lại,
+ghi nhận rõ ở đây cho lần sau.
+
+### Test
+
+- `go build ./...`, `go vet ./...` sạch trên toàn bộ module sau MỌI bước sửa.
+- `go test ./internal/app/runtime/...`: pass 100% (bao gồm 1 test mới retry-conflict) — phát hiện và fix 1
+  panic nil-pointer thật (`node_executor_router_test.go`, executor thật + `writeLeases=nil`) trước khi đạt
+  trạng thái xanh này.
+- `go test $(go list ./... | grep -v v5accept)`: TOÀN BỘ module (kể cả `internal/integration`,
+  `internal/spikeacceptance`) pass 100% — xác nhận thay đổi chữ ký không làm vỡ bất kỳ package nào khác.
+- `internal/integration/v5accept`: cả 12 test (10 cũ + 2 mới) pass; riêng
+  `TestV5AcceptFullComposition_...` chạy lặp 3 lần liên tiếp không cache đều pass ổn định
+  (14-18s/lần).
+- `TestV5AcceptConformanceMatrix`: cả 12 sub-test (6 category × trước/sau restart) pass.
+
+### Verify
+
+- `gofmt -l` trên đúng 27 file thật sự sửa (25 sửa + 2 file mới): chỉ 2 file báo khác biệt
+  (`join_sqlite_test.go`, `runtimeengine_test.go`) — xác nhận qua `gofmt -d` là noise CRLF toàn file y hệt
+  pattern đã biết, và `git diff --stat` xác nhận diff thật của 2 file này chỉ 1-4 dòng, không phải viết lại
+  toàn file.
+- `git diff --stat origin/master` trên đúng danh sách file đã sửa: 25 file, 295 dòng thêm/87 dòng xoá — đúng
+  quy mô một fix "chạm nhiều điểm gọi vì đổi chữ ký" (13 điểm gọi `NewExecuteNodeHandler` + 9 điểm gọi
+  `FinalizeExecutionAttempt`), không có file nào ngoài dự định.
+
+### Kết quả
+
+V5-15E — full conformance matrix hoàn thành, bao gồm cả một fix production thật đã tồn tại latent xuyên
+suốt V4/V5: write lease chỉ từng được release qua đường cancel, chưa từng qua đường thành công/thất bại
+bình thường. Branch `feat/v5-15e-conformance-matrix`, 2 commit riêng biệt đúng yêu cầu user (production fix
+trước, scenario/matrix test sau).
+
+**V5-15 (toàn bộ 5 phần A-E) và do đó toàn bộ V5 (15+ task) chính thức hoàn thành theo đúng "Hoàn thành khi"
+gốc của user: trace WorkItem→revision/evidence đầy đủ, false completion bằng 0, đã verify qua real restart,
+qua đúng production command/router/repository path — không có bước nào mutate DB trực tiếp để fabricate kết
+quả đang được verify, xuyên suốt cả 5 phần.**
