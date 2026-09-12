@@ -37,6 +37,23 @@
 // existing Component to pin a pack version to and V3-01 adds no CLI (so
 // there is no other caller yet that would otherwise create one for a
 // test or for V3-02 to build on).
+//
+// CreateProject/ListProjects/GetProject are V6-03's own addition
+// (docs/design/08-v6-api-projections.md V6-03): the public,
+// idempotent/scope-checked authority this package was always missing for
+// the one catalog aggregate every other command in this file already
+// depends on (RegisterRepository/CreateComponent both require an existing
+// Project) — until V6-03, the only way to create one at all was the bare
+// ports.CatalogRepository.CreateProject persistence method this task's own
+// "Không làm" line now forbids delivery from calling directly. CreateProject
+// follows RegisterRepository/AssignComponentPack's exact idempotent
+// envelope; ListProjects/GetProject follow ListProjectRepositories'
+// read-only shape below, with an explicit ports.CommandScope check neither
+// of those two needs (both are always implicitly scoped by an already-
+// resolved projectID/componentID parameter) because ADR-025 makes
+// CreateProject/ListProjects installation-scoped while every other command
+// and query in this file is project-scoped — see CreateProject/ListProjects/
+// GetProject's own doc comments for the exact ADR-025 rule each enforces.
 package catalog
 
 import (
@@ -73,6 +90,139 @@ const RepositoryProbeJobKind = "REPOSITORY_PROBE"
 // deciding its real retry policy; this is only what makes the row a
 // valid durable_jobs insert today.
 const defaultProbeJobMaxClaims = 3
+
+// CreateProjectRequest is what a caller supplies to CreateProject. There
+// is deliberately no ID field: unlike RegisterRepository's own
+// RepositoryID (a caller-chosen identity, ports.RegisterRepositoryRequest's
+// own doc comment), a Project's ID is application-generated
+// (internal/app/idsource's own "application tạo ID, không để persistence
+// adapter tự sinh" convention) — the same rule CreateComponent already
+// follows below (`id := ids.NewID()`), since nothing yet gives a caller a
+// meaningful identity to name a brand-new Project by.
+type CreateProjectRequest struct {
+	Name string
+}
+
+// CreateProjectResult is what CreateProject returns (and what a replayed
+// command-receipt reconstructs) — first execution's ProjectID is the one
+// idsource minted; a replay returns that exact same ID, never a freshly
+// minted one (see CreateProject's own doc comment).
+type CreateProjectResult struct {
+	ProjectID string `json:"projectId"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+}
+
+// CreateProject is V6-03's own named public command
+// (docs/design/08-v6-api-projections.md V6-03: "bổ sung public
+// CreateProject ... còn thiếu trước HTTP/CLI"): the one authority a
+// delivery layer (HTTP/CLI, not yet built) is allowed to call to create a
+// Project — closing the exact gap this task's own "Không làm" line names
+// ("không để delivery gọi Tx.Catalog().CreateProject"). It follows every
+// other named command in this package's own idempotent shape: a
+// command-receipt idempotency check, the real work, and a domain event
+// plus a fresh receipt, all inside one ports.UnitOfWork.WithSerializedWrite
+// call.
+//
+// ADR-025 (docs/architecture/02-architecture-decisions.md §27) lists
+// CreateProject explicitly in the closed installation-scoped command set
+// ("CreateProject, safe-settings mutation, ProbeAdapterBuild,
+// RegisterAdapterBuild") — there is no existing Project yet for this
+// command to be scoped to, so cmd.Scope MUST be ports.InstallationScope();
+// a project-scoped cmd is rejected as ports.ErrScopeMismatch before any
+// receipt lookup or write. This corrects, rather than follows,
+// internal/adapters/sqlite/command_handler_example_test.go's own
+// "handleCreateProject" illustrative handler (V1-06, predating ADR-025 by
+// several tasks): that teaching example's own
+// TestHandleCreateProject_InstallationScopedCommand_Rejected asserts the
+// opposite (project-scoped, installation-scope rejected) — it was V1-06's
+// own best guess before ADR-025 existed to settle the question, is never
+// invoked by any real command dispatch (its own types and handler func are
+// unexported to that one _test.go file), and is deliberately left
+// unchanged here: rewriting a historical illustrative example to match a
+// later ADR would misrepresent what V1-06 itself actually decided at the
+// time, the same immutable-history discipline ADR-008/ADR-015 already
+// apply to real persisted events.
+//
+// First execution mints a fresh ProjectID via idsource (never letting
+// sqlite auto-generate one, idsource's own package doc) and creates the
+// Project row — always ACTIVE, generation 1, project.NewProject's own
+// rule. A retry with the same IdempotencyKey and RequestHash replays the
+// first call's result, including that exact same ProjectID, without
+// minting a second ID or creating a second row/event; the same key with a
+// different RequestHash is rejected as ports.ErrReceiptConflict.
+//
+// The appended ProjectCreated event's own ProjectID field is set to the
+// newly created Project's own ID — not left empty the way an
+// installation-scoped event normally would be (ports.DomainEvent.ProjectID's
+// own doc comment: "empty means installation-scoped") — because that
+// field tracks which Project's own event stream/journal an event belongs
+// to, not which CommandScope produced it: this Project's own future
+// per-project journal (V6-08/V6-09's eventual projection) MUST include its
+// own genesis event, the same reasoning RegisterRepository's own
+// RepositoryRegistered event already applies by setting ProjectID to the
+// Repository's actual owning project below.
+func CreateProject(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, cmd ports.Command, req CreateProjectRequest) (CreateProjectResult, error) {
+	if !cmd.Scope.IsInstallation() {
+		return CreateProjectResult{}, fmt.Errorf("%w: CreateProject is installation-scoped (ADR-025), not %s", ports.ErrScopeMismatch, cmd.Scope.Key())
+	}
+	if strings.TrimSpace(req.Name) == "" {
+		return CreateProjectResult{}, errors.New("catalog: Name is required")
+	}
+
+	var result CreateProjectResult
+	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		existingReceipt, found, err := tx.Receipts().Load(ctx, cmd.Actor, cmd.Scope, cmd.IdempotencyKey, cmd.Type)
+		if err != nil {
+			return err
+		}
+		if found {
+			if existingReceipt.RequestHash != cmd.RequestHash {
+				return ports.ErrReceiptConflict
+			}
+			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
+		}
+
+		projectID := ids.NewID()
+		created, err := tx.Catalog().CreateProject(ctx, ports.CreateProjectRequest{ID: projectID, Name: req.Name})
+		if err != nil {
+			return err
+		}
+
+		eventPayload, err := json.Marshal(projectCreatedEventPayload{
+			ProjectID: string(created.ID), Name: created.Name, Status: string(created.Status),
+		})
+		if err != nil {
+			return fmt.Errorf("marshal ProjectCreated payload: %w", err)
+		}
+		// AggregateID is the new Project's own ID; Sequence=1 is safe
+		// because CreateProject is the only command that ever creates a
+		// Project row, and the receipt check above guarantees this branch
+		// runs at most once per distinct (Actor, Scope, IdempotencyKey,
+		// Type) — the same reasoning RegisterRepository's own
+		// RepositoryRegistered event already relies on.
+		if err := tx.Events().Append(ctx, ports.DomainEvent{
+			ID: cmd.ID + "-created", ProjectID: string(created.ID),
+			AggregateType: "Project", AggregateID: string(created.ID), Sequence: 1,
+			EventType: ProjectCreatedEventType, SchemaVersion: ProjectCreatedSchemaVersion, PayloadJSON: string(eventPayload),
+			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
+		}); err != nil {
+			return err
+		}
+
+		result = CreateProjectResult{ProjectID: string(created.ID), Name: created.Name, Status: string(created.Status)}
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("marshal receipt result: %w", err)
+		}
+		return tx.Receipts().Record(ctx, ports.Receipt{
+			Actor: cmd.Actor, Scope: cmd.Scope, IdempotencyKey: cmd.IdempotencyKey,
+			CommandType: cmd.Type, RequestHash: cmd.RequestHash, ResultJSON: string(resultJSON),
+			CreatedAt: cmd.RequestedAt,
+		})
+	})
+	return result, err
+}
 
 // RegisterRepositoryRequest is what a caller supplies to RegisterRepository.
 type RegisterRepositoryRequest struct {
@@ -484,6 +634,55 @@ func AssignComponentPack(ctx context.Context, uow ports.UnitOfWork, ids idsource
 			CommandType: cmd.Type, RequestHash: cmd.RequestHash, ResultJSON: string(resultJSON),
 			CreatedAt: cmd.RequestedAt,
 		})
+	})
+	return result, err
+}
+
+// ListProjects returns every Project row, ID order — a read-only query,
+// never a Command. ADR-025 lists ListProjects itself as one of the closed
+// installation-scoped queries (docs/architecture/02-architecture-decisions.md
+// §27's own table), so scope MUST be ports.InstallationScope(); anything
+// else (a project scope naming one specific Project) is rejected as
+// ports.ErrScopeMismatch — there is no "list scoped to a project" query,
+// since a Project is itself the scope unit everything else scopes by.
+func ListProjects(ctx context.Context, uow ports.UnitOfWork, scope ports.CommandScope) ([]project.Project, error) {
+	if !scope.IsInstallation() {
+		return nil, fmt.Errorf("%w: ListProjects is installation-scoped (ADR-025), not %s", ports.ErrScopeMismatch, scope.Key())
+	}
+	var result []project.Project
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		projects, err := tx.Catalog().ListProjects(ctx)
+		result = projects
+		return err
+	})
+	return result, err
+}
+
+// GetProject reloads the authoritative Project with the given ID directly
+// from persistence — never a projection — a read-only query, never a
+// Command. GetProject is not one of ADR-025's closed installation-scoped
+// queries (§27's own table only names ListProjects, not GetProject), so
+// per that ADR's own "Mọi query project-scoped vẫn MUST scope bằng
+// ProjectID" rule, scope MUST be ports.ProjectScope(projectID) — the exact
+// Project being requested, never the installation scope and never a scope
+// naming a different Project. This mirrors RetryRepositoryProbe's own
+// discipline above (resolving a referenced row's actual project from the
+// stored row, never trusting the request alone) applied to authorization
+// rather than referential integrity: a caller already scoped to one
+// Project can never read a different Project's detail by ID alone.
+func GetProject(ctx context.Context, uow ports.UnitOfWork, scope ports.CommandScope, projectID string) (project.Project, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return project.Project{}, errors.New("catalog: ProjectID is required")
+	}
+	scopedProjectID, isProjectScoped := scope.ProjectID()
+	if !isProjectScoped || scopedProjectID != projectID {
+		return project.Project{}, fmt.Errorf("%w: GetProject requires project scope %q, got %q", ports.ErrScopeMismatch, projectID, scope.Key())
+	}
+	var result project.Project
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		loaded, err := tx.Catalog().GetProject(ctx, projectID)
+		result = loaded
+		return err
 	})
 	return result, err
 }
