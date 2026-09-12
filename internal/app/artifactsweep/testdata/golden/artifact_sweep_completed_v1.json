@@ -1,0 +1,1 @@
+{"generation":1,"dryRun":true,"groups":[{"locator":"sha256:abc123","artifactIds":["artifact-1"],"decision":"WOULD_PURGE","bytesFreed":0}]}

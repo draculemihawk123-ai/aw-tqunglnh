@@ -238,12 +238,7 @@ func RequestWorkspaceReconciliation(
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			RepositoryWorkspaceID string `json:"repositoryWorkspaceId"`
-			ProjectID             string `json:"projectId"`
-			State                 string `json:"state"`
-			ReconciliationJobID   string `json:"reconciliationJobId"`
-		}{
+		eventPayload, err := json.Marshal(workspaceReconciliationRequestedEventPayload{
 			RepositoryWorkspaceID: string(rw.ID), ProjectID: req.ProjectID,
 			State: string(rw.State), ReconciliationJobID: string(job.ID),
 		})
@@ -263,7 +258,7 @@ func RequestWorkspaceReconciliation(
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-requested", ProjectID: req.ProjectID,
 			AggregateType: "RepositoryWorkspaceReconciliation", AggregateID: string(job.ID), Sequence: 1,
-			EventType: "WorkspaceReconciliationRequested", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: WorkspaceReconciliationRequestedEventType, SchemaVersion: WorkspaceReconciliationRequestedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
