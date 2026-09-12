@@ -96,7 +96,7 @@ func isUsageError(err error) bool {
 }
 
 var subcommands = map[string]func(arguments []string, stdout io.Writer) error{
-	"serve":      stub("serve"),
+	"serve":      runServe,
 	"worker":     stub("worker"),
 	"doctor":     stub("doctor"),
 	"definition": runDefinition,

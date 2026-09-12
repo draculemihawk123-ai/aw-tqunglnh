@@ -53,7 +53,9 @@ func TestRun_UnknownCommand(t *testing.T) {
 }
 
 func TestRun_StubCommandsReportNotYetImplemented(t *testing.T) {
-	for _, name := range []string{"serve", "worker", "doctor"} {
+	// "serve" is V6-01's own real implementation now (see serve.go/serve_test.go)
+	// — it no longer belongs in this stub-only list.
+	for _, name := range []string{"worker", "doctor"} {
 		var stdout, stderr bytes.Buffer
 		code := run([]string{name}, &stdout, &stderr)
 		if code != exitFailure {
@@ -68,7 +70,7 @@ func TestRun_StubCommandsReportNotYetImplemented(t *testing.T) {
 	}
 }
 
-func TestRun_StubCommandRejectsUnknownFlag(t *testing.T) {
+func TestRun_ServeRejectsUnknownFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"serve", "--not-a-real-flag"}, &stdout, &stderr)
 	if code != exitUsage {
