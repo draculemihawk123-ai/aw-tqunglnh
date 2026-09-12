@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/logging"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -31,12 +32,14 @@ func runServe(arguments []string, stdout io.Writer) error {
 	return serve(ctx, arguments, stdout)
 }
 
-// serve is V6-01's own composition root: it wires config/DB/UnitOfWork/
-// artifact-root readiness and the two health routes into a real
-// httpapi.Server, then serves until ctx is done, at which point it
-// gracefully shuts down. No business endpoint is registered here — this
-// task's own "Không làm" line reserves that for the endpoint tasks that
-// come after V6-01A/V6-02/V6-02A.
+// serve is V6-01/V6-01A's own composition root: it wires config/DB/
+// UnitOfWork/artifact-root readiness, the two health routes, the trusted
+// LocalPrincipalSnapshot (ADR-028) and a fresh per-start session token
+// (ADR-016) into a real httpapi.Server, registers the one bootstrap route
+// allowed to hand that token to a browser, then serves until ctx is done,
+// at which point it gracefully shuts down. No business endpoint is
+// registered here — this task's own "Không làm" line reserves that for the
+// endpoint tasks that come after V6-02/V6-02A.
 func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	dbPath := flags.String("db", "", "sqlite database path")
@@ -44,6 +47,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	host := flags.String("host", "127.0.0.1", "loopback bind host")
 	port := flags.Int("port", 0, "bind port (0 = OS-assigned ephemeral port)")
 	maxBodyBytes := flags.Int64("max-body-bytes", 1<<20, "maximum accepted request body size in bytes")
+	principalConfigPath := flags.String("principal-config", "", "path to a trusted JSON config file's localPrincipal.actor/localPrincipal.roles (ADR-028); omitted or missing means the local-operator/[operator] default — this is the only allowed way to select a principal, there is no --actor/--role flag")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
@@ -53,6 +57,26 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	if strings.TrimSpace(*artifactRoot) == "" {
 		return usageError{errors.New("--artifact-root is required")}
 	}
+
+	// ADR-028: Actor/Roles are read only from trusted startup config, never
+	// from a per-command flag — resolved once, here, before anything else
+	// starts, and bound to the server for its whole process lifetime.
+	// Changing --principal-config only ever takes effect on the next
+	// restart (there is no reload path).
+	localPrincipal, err := config.LoadLocalPrincipalFile(*principalConfigPath)
+	if err != nil {
+		return err
+	}
+	if err := config.ValidateLocalPrincipal(localPrincipal); err != nil {
+		return err
+	}
+
+	// ADR-016: a fresh random token every process start, kept only in
+	// memory (via httpapi.Config.Token / the closure BootstrapHandler
+	// captures) — generated here, once, using the same idsource.Source
+	// primitive every other ID in this composition root uses, and never
+	// assigned to a variable that later gets logged, printed or persisted.
+	sessionToken := idsource.Random{}.NewID()
 
 	store, uow, err := openDefinitionDB(ctx, *dbPath)
 	if err != nil {
@@ -64,7 +88,11 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		return fmt.Errorf("--artifact-root %q is not an existing directory", *artifactRoot)
 	}
 
-	logger := logging.New(os.Stderr, logging.JSON, redact.NewMatcher())
+	// sessionToken is registered as a known secret with the shared redactor
+	// as defense-in-depth: ADR-016 forbids ever logging it, and this ensures
+	// that even a future logging call some other code path mistakenly adds
+	// still cannot emit it verbatim.
+	logger := logging.New(os.Stderr, logging.JSON, redact.NewMatcher(sessionToken))
 
 	routes := httpapi.NewRouteRegistry()
 	checker := httpapi.NewReadinessChecker()
@@ -100,6 +128,12 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: checker.ReadyHandler(),
 	})
+	principal := httpapi.LocalPrincipalSnapshot{Actor: localPrincipal.Actor, Roles: localPrincipal.Roles}
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/", OperationID: "bootstrap",
+		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
+		Handler: httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
+	})
 	// No further route fragments exist yet in this task; a later endpoint
 	// task's own composition-root wiring adds its own routes.Register call
 	// here without needing to touch this file's shared setup.
@@ -108,6 +142,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	server, err := httpapi.NewServer(httpapi.Config{
 		Host: *host, Port: *port, Routes: routes, IDs: idsource.Random{},
 		Logger: logger, MaxBodyBytes: *maxBodyBytes,
+		Token: sessionToken, Principal: principal,
 	})
 	if err != nil {
 		return err

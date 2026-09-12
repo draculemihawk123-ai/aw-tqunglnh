@@ -1,10 +1,15 @@
-// Package httpapi is V6-01's own composition: a production loopback HTTP
+// Package httpapi is V6-01's own composition — a production loopback HTTP
 // server with lifecycle, health, bounded decode/error and a route
 // registration primitive, so a later endpoint task (V6-03A onward) never
 // has to edit a shared router file to add its own routes
-// (docs/design/08-v6-api-projections.md V6-01's own "Phạm vi"). It
-// deliberately implements no business endpoint, browser security token or
-// receipt store — those are V6-01A/V6-02/V6-02A and the endpoint tasks
+// (docs/design/08-v6-api-projections.md V6-01's own "Phạm vi") — plus
+// V6-01A's own browser-security layer on top of it: exact Host/Origin
+// validation, deny-by-default CORS, a per-start session token
+// (security.go), the trusted LocalPrincipalSnapshot every request carries
+// in context but can never influence (principal.go), and the one CSP/
+// no-store bootstrap HTML response that is allowed to hand the token to a
+// browser (bootstrap.go). It deliberately implements no business endpoint
+// or receipt store — those are V6-02/V6-02A and the endpoint tasks
 // themselves.
 //
 // V6-02A extends this same package with the shared HTTP DTO/cursor/schema

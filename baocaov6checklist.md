@@ -444,6 +444,238 @@ song song với 2 subagent làm V6-00/V6-10C theo đúng dependency graph P0 c�
 registration primitive đã sẵn sàng để mọi task endpoint sau này (V6-01A trở đi) tự thêm fragment riêng mà
 không cần sửa file chung này.
 
+## V6-01A — Local-browser HTTP security và principal snapshot
+
+### Bối cảnh
+
+V6-01 (`d8c1323`) vừa merge, mở khóa V6-01A — dependency duy nhất của task này. Task đang chạy song song với
+V6-02A, V6-15A, V6-03 (theo đúng nhóm P1 "sau V6-01" của `docs/design/08-v6-api-projections.md` mục 2), tất cả
+cùng append vào `baocaov6checklist.md`. Giữ đúng điều chỉnh quy trình đã chốt từ V6-01: một task một PR duy
+nhất, implementation + narrative gộp chung một commit/PR, chỉ tách khi diff thật sự quá lớn.
+
+**Merge conflict thật, lớn hơn dự kiến ban đầu**: lúc bắt đầu implement, `origin/master` chỉ có tới V6-01
+(`d8c1323`); lúc chuẩn bị mở PR, V6-15A đã merge trước (`fdd95a8`, PR #32) — đổi tên toàn bộ composition root
+từ `cmd/agentkit` sang `cmd/aw`. Đây không chỉ là xung đột 1 file `baocaov6checklist.md` như dự kiến, mà
+`cmd/agentkit/serve.go` (file chính task này sửa) không còn tồn tại ở path cũ nữa. Xử lý bằng cách tạo lại
+branch `feat/v6-01a-browser-security` từ đúng `origin/master` mới nhất, rồi áp lại diff riêng của task này
+(không phải nội dung file) vào `cmd/aw/serve.go` — xác nhận trước bằng `git diff d8c1323:cmd/agentkit/serve.go
+origin/master:cmd/aw/serve.go` rằng nội dung file không đổi qua rename (chỉ đổi path), nên patch áp sạch,
+không có xung đột logic thật nào giữa V6-01A và V6-15A.
+
+### Nghiên cứu
+
+Đọc toàn bộ `internal/delivery/httpapi/server.go` và `middleware.go` trước khi viết bất kỳ dòng nào (đúng yêu
+cầu của task), xác nhận các sự thật sau:
+- `validateLoopbackHost` (V6-01) đã reject external bind thật bằng `net.LookupIP`, không chỉ so chuỗi —
+  Verify bullet "external bind" của chính task này không cần code mới, chỉ cần xác nhận vẫn áp dụng (2 test
+  cũ `TestNewServer_RejectsNonLoopbackHost`/`TestNewServer_RejectsExternalHostname` vẫn còn nguyên, không sửa).
+- `Chain(mux, CorrelationID, Recover, MaxBytes)` là toàn bộ middleware hiện có — chưa có bất kỳ khái niệm nào
+  về Host/Origin/CORS/token/principal. `idsource.Source`/`idsource.Random{}.NewID()` là generator ID chuẩn
+  duy nhất trong codebase (dùng lại cho token và cho CSP nonce, không tự viết `crypto/rand` riêng).
+- Đọc lại `docs/architecture/02-architecture-decisions.md` ADR-016 (mục 18) và ADR-025 (mục 27) đầy đủ —
+  ADR-016 chốt rõ: external bind reject, Host/Origin validate riêng biệt (CORS deny-by-default *không thay
+  thế* 2 kiểm tra này), token per-start không ghi URL/log/artifact/persisted config, chỉ inject vào bootstrap
+  HTML `Cache-Control: no-store` + CSP chặt cho Host loopback hợp lệ.
+- `LocalPrincipalSnapshot {Actor, Roles[]}` **không nằm trong ADR-028's phần đầu** (canonical CLI `aw`) mà
+  nằm ở đoạn văn cuối cùng của chính ADR-028 (dòng 767-778 file ADR) — dễ đọc sót nếu chỉ đọc tiêu đề mục.
+  Đối chiếu thêm 3 chỗ khác nói cùng nội dung để chắc chắn không suy diễn sai: `docs/design/01-system-design.md`
+  dòng 540-550, `docs/architecture/04-go-core-spec.md` dòng 500-505, `docs/architecture/03-system-architecture.md`
+  dòng 463-473 — cả 4 chỗ khớp nhau: config key canonical `localPrincipal.actor`/`localPrincipal.roles`,
+  thiếu toàn bộ thì default `local-operator`/`[operator]`, actor/role non-empty, roles unique case-sensitive,
+  "không có per-command `--actor`/`--role`" nhưng "global composition option chọn một trusted config file vẫn
+  được phép".
+- `grep -r "LocalPrincipal"` xác nhận **chưa có type nào tồn tại** trong `internal/app/config` hay bất kỳ đâu
+  trong `internal/` — phải tự dựng từ đầu, không có aggregate/type có sẵn để tái dùng.
+- `internal/app/config.Config`/`Overrides`/`Load` là pipeline `defaults < file < env < flags` cho
+  DatabasePath/WorkerID/... nhưng **`cmd/agentkit/serve.go` chưa từng gọi `config.Load` cả** — `serve` tự
+  parse flag riêng (`--db`, `--artifact-root`, `--host`, `--port`, `--max-body-bytes`), không đụng gì tới
+  package `config` từ trước tới giờ. Wiring toàn bộ `config.Config` vào `serve` (WorkerID, LeaseTTL, ...) sẽ
+  là một refactor ngoài phạm vi task này.
+- `internal/app/redact.NewMatcher(secrets ...string)` là exact-match matcher (không phải regex/pattern) —
+  đăng ký token làm secret đã biết là cách dùng đúng ý (`WithSecrets` doc comment đã mô tả đúng pattern này
+  cho `Attempt`'s `SecretRefs`, dùng lại y hệt cho session token).
+
+### Quyết định
+
+**`LocalPrincipal` tách khỏi pipeline `Config`/`Overrides`/`Load` chung**, thành file riêng
+`internal/app/config/local_principal.go` với loader/validator riêng (`LoadLocalPrincipalFile`,
+`ValidateLocalPrincipal`), thay vì thêm field vào `Config`/`Overrides`. Hai lý do: (1) pipeline chung hỗ trợ
+`file < env < flags`, nhưng ADR-028 chỉ cho phép đúng một cơ chế — "global composition option chọn một
+trusted config file" — nên thêm field vào pipeline chung sẽ vô tình mở đúng cái cửa hậu ADR-028 cấm (env/flag
+override actor/role); (2) `serve.go` chưa wire `config.Load` bao giờ, kéo cả pipeline vào chỉ để dùng 1 field
+là over-engineering ngoài phạm vi. Key JSON cố tình lồng `{"localPrincipal": {"actor", "roles"}}` (không phải
+snake_case phẳng như các key khác của `Config`) — khớp đúng cách ADR-028 tự viết `localPrincipal.actor` (có
+dấu chấm), và là tín hiệu thị giác rằng đây là loader khác, hẹp hơn.
+
+**File thiếu `localPrincipal` hoàn toàn → default; file có `localPrincipal` nhưng thiếu `roles` → KHÔNG tự
+default nốt phần thiếu, để `Validate` fail thật.** ADR-028 chỉ nói "thiếu toàn bộ" mới default — một khai báo
+nửa vời gần như chắc chắn là lỗi cấu hình của operator, default ngầm phần còn thiếu sẽ che mất lỗi đó.
+
+**Token sinh ở composition root (`serve.go`), không sinh bên trong `NewServer`.** Lý do kỹ thuật, không phải
+sở thích: route bootstrap cần token để dựng `BootstrapHandler` closure, nhưng `RouteRegistry` phải đăng ký
+xong *trước khi* gọi `NewServer` (constructor đọc `cfg.Routes.Descriptors()` ngay lúc dựng mux) — nếu để
+`NewServer` tự sinh token thì xảy ra gà-trứng: token chưa tồn tại lúc route bootstrap cần nó. `Config.Token`
+trở thành field bắt buộc (giống `Routes`/`IDs`/`MaxBodyBytes` đã có), `NewServer` chỉ validate không rỗng.
+
+**`HostOriginGuard` tính `expectedHost` từ `cfg.Host` (chuỗi operator cấu hình gốc) ghép với PORT THẬT đã
+bind** (`net.SplitHostPort(listener.Addr().String())`), không dùng thẳng `listener.Addr().String()`. Nếu
+dùng thẳng địa chỉ đã resolve, cấu hình `--host localhost` sẽ khiến `expectedHost` thành `"127.0.0.1:PORT"`
+(hoặc `"[::1]:PORT"`, tùy resolver) trong khi trình duyệt thật gửi `Host: localhost:PORT` — validate luôn
+fail sai ngay cả với request hợp lệ. Ghép `cfg.Host` gốc với port thật (cần thật vì `Port:0` là ephemeral)
+mới đúng những gì client thật sự gửi.
+
+**CSP dùng `script-src 'self' 'nonce-<random>'` thay vì `'unsafe-inline'`.** Bootstrap HTML dùng `<script>`
+inline để gán `window.__AW_BOOTSTRAP__` — nếu không có nonce, CSP `script-src 'self'` chặt sẽ tự chặn luôn
+chính script đó, token không bao giờ tới được tay UI thật. Nonce sinh mới mỗi response qua `idsource.Source`
+(không phải secret — chỉ cần không đoán trước được, tái dùng nguồn ID chuẩn thay vì tự viết `crypto/rand`).
+Token/actor/roles nhúng qua `encoding/json.Marshal` (tự HTML-escape `<`/`>`/`&`) — không cần tự escape tay,
+không có nguy cơ `</script>` breakout.
+
+**CORS deny-by-default bằng cách không bao giờ set bất kỳ header `Access-Control-Allow-*` nào**, thay vì cấy
+logic preflight riêng rồi tự giới hạn dần. Đơn giản hơn và đúng ADR-016 ("CORS deny-by-default không thay thế
+2 kiểm tra Host/Origin") theo nghĩa đen: không có gì để "thay thế" cả vì CORS không emit gì hết; một preflight
+cross-origin thật sự đã bị `HostOriginGuard` chặn ở tầng Origin trước khi chạm route.
+
+**`RequireSessionToken` chỉ áp cho method không an toàn (không phải GET/HEAD/OPTIONS)** — đúng nghĩa đen
+"Mutation cần token" của ADR-016 (không phải "mọi request"), và giải quyết gọn bài toán gà-trứng bootstrap:
+trang bootstrap tự nó là GET nên không cần token để tải về token.
+
+### Thực hiện
+
+- `internal/app/config/local_principal.go` (mới): `LocalPrincipal{Actor, Roles[]}`, `DefaultLocalPrincipal()`
+  (`local-operator`/`[operator]`), `LoadLocalPrincipalFile(path)` (path rỗng hoặc file không tồn tại hoặc
+  thiếu key `localPrincipal` → default; JSON lỗi → error thật), `ValidateLocalPrincipal` (actor non-empty,
+  roles non-empty, mỗi role non-empty, unique case-sensitive — dùng `apperror.New(CodeInvalidArgument, ...)`
+  + `WithDetails` đúng pattern `Validate` cũ trong `validate.go`).
+- `internal/delivery/httpapi/principal.go` (mới): `LocalPrincipalSnapshot{Actor, Roles[]}` (type riêng của
+  package delivery, không import `internal/app/config` — composition root tự convert), `PrincipalFromContext`/
+  `BindPrincipal` (context injection, không đọc `r` — không body, không header, không URL — đúng nghĩa đen
+  "Actor/ActorRoles là authentication context, không phải input tự khai" của ADR-028).
+- `internal/delivery/httpapi/security.go` (mới): `LocalOrigin{Host, Origin}`, `HostOriginGuard` (exact-match
+  Host bắt buộc; Origin chỉ reject khi có mặt và sai, absent thì cho qua), `SessionTokenHeader = "X-Aw-Session-
+  Token"`, `RequireSessionToken` (`crypto/subtle.ConstantTimeCompare`, skip GET/HEAD/OPTIONS), `isSafeMethod`.
+- `internal/delivery/httpapi/bootstrap.go` (mới): `BootstrapHandler(token, principal, ids)` — set
+  `Cache-Control: no-store` + CSP nonce-based trước `WriteHeader`, nhúng `{token, actor, roles}` qua
+  `json.Marshal` vào `<script nonce=...>`.
+- `internal/delivery/httpapi/server.go`: thêm `Config.Token`/`Config.Principal` (bắt buộc, validate ở đầu
+  `NewServer` — `Principal.validate()` reject actor rỗng/roles rỗng/role rỗng/role trùng case-sensitive), tính
+  `LocalOrigin` từ `cfg.Host` + port thật sau khi listener đã bind, mở rộng `Chain(...)` thành
+  `HostOriginGuard → CorrelationID → Recover → RequireSessionToken → MaxBytes → BindPrincipal → mux` (giữ
+  nguyên thứ tự tương đối 3 middleware cũ của V6-01 để không đổi hành vi test cũ đã có).
+- `cmd/aw/serve.go` (path đổi từ `cmd/agentkit/serve.go` do V6-15A merge trước — nội dung áp lại y nguyên
+  bằng patch, không đổi logic gì so với thiết kế ban đầu): thêm flag `--principal-config` (JSON file, optional
+  — đây là "global composition option" ADR-028 cho phép, không phải per-command `--actor`/`--role`), resolve +
+  validate `LocalPrincipal` trước khi mở DB, sinh `sessionToken := idsource.Random{}.NewID()` một lần duy nhất
+  mỗi lần `serve` khởi động, đăng ký thêm route `GET /` → `httpapi.BootstrapHandler`, đăng ký `sessionToken`
+  làm known secret với `redact.NewMatcher(sessionToken)` (defense-in-depth cho logger — dù không có code path
+  nào chủ động log token, một lỗi tương lai vô tình thêm log vẫn bị chặn).
+- `internal/delivery/httpapi/server_test.go`: `newTestServer` và `TestNewServer_AcceptsLoopbackIPAndLocalhost`
+  thêm `Token`/`Principal` (2 field mới bắt buộc); thêm `TestNewServer_RequiresTokenAndPrincipal` (5 case: hợp
+  lệ, thiếu Token, thiếu Actor, thiếu Roles, role rỗng, role trùng).
+
+### Test
+
+Toàn bộ test là HTTP round-trip thật qua `httptest`/`net/http.Client` tới listener thật đã bind — không
+fabricate DB row, không mock Host/Origin.
+
+- `internal/delivery/httpapi/security_test.go` (mới, 18 test function): `TestHostOriginGuard_RejectsForeignHost`
+  (giả lập DNS rebinding — set `req.Host` khác trong khi TCP peer thật vẫn là 127.0.0.1, đúng cơ chế tấn công
+  thật), `TestHostOriginGuard_RejectsHostnameMismatchEvenWhenBothLoopback` (`localhost` vs `127.0.0.1` — cả
+  hai đều loopback nhưng không "exact match", phải reject), `TestHostOriginGuard_AcceptsExactBoundHost`,
+  `TestHostOriginGuard_RejectsForeignOrigin`, `TestHostOriginGuard_RejectsRightHostWrongPortOrigin` (đúng host
+  sai port — dễ bỏ sót nếu chỉ so sánh hostname), `TestHostOriginGuard_MissingOriginAllowed`,
+  `TestHostOriginGuard_AcceptsExactMatchingOrigin`, `TestCORS_NeverEmitsAccessControlAllowOriginHeader` (cả
+  response thành công lẫn preflight cross-origin bị reject đều không có header `Access-Control-Allow-Origin`),
+  `TestRequireSessionToken_MissingTokenRejectsMutation`/`WrongTokenRejectsMutation`/
+  `CorrectTokenAllowsMutation`/`SafeMethodNeedsNoToken`, `TestActorRoleSpoof_BodyAndHeaderIgnored` (POST body
+  `{"actor":"attacker","roles":["admin","root"]}` + header `X-Actor`/`X-Roles` giả mạo, handler chỉ đọc
+  `PrincipalFromContext` — response echo đúng `local-operator`/`[operator]` của server, không phải giá trị kẻ
+  tấn công khai), `TestPrincipal_ChangeOnlyTakesEffectOnFreshServer` (2 `Server` độc lập, principal khác nhau
+  — server đầu chạy tiếp không đổi khi server thứ 2 dựng xong, chứng minh không có state global rò rỉ),
+  `TestSecretScan_TokenNeverAppearsInLogOutput` (đẩy traffic đa dạng gồm cả request mang đúng token qua
+  header, scan toàn bộ buffer log sau đó — assertion thật, không suy diễn từ "không có code log token"),
+  `TestSecretScan_BootstrapHTMLNeverPutsTokenInAURLOrQueryString` (assert token CÓ mặt trong HTML — sanity
+  chống test giả — rồi assert không xuất hiện trong bất kỳ context giống URL nào: `href="`, `src="`,
+  `?token=`, `&token=`, `?session=`), `TestBootstrapHandler_SetsNoStoreAndCSP`,
+  `TestBootstrapHandler_RejectedByHostGuardLikeAnyOtherRoute` (bootstrap không tự kiểm Host — chứng minh nó
+  dựa hoàn toàn vào middleware chung, không có kiểm tra riêng dễ lệch pha).
+- `internal/app/config/local_principal_test.go` (mới, 12 test function): default khi path rỗng/file không tồn
+  tại/file thiếu key `localPrincipal`, đọc đúng actor/roles tùy chỉnh, JSON lỗi fail, validate reject
+  actor rỗng/actor toàn khoảng trắng/roles rỗng/role rỗng/role trùng case-sensitive, chấp nhận biến thể hoa-
+  thường là 2 role khác nhau (đúng nghĩa "case-sensitive"), và riêng `TestLoadLocalPrincipalFile_
+  PartialDeclarationIsNotSilentlyDefaulted` chứng minh khai báo nửa vời (actor không có roles) KHÔNG bị default
+  ngầm — `Load` trả nguyên trạng, `Validate` mới fail.
+- `cmd/aw/serve_principal_test.go` (mới, path đổi từ `cmd/agentkit/` do V6-15A, 4 test function):
+  `TestServe_BootstrapUsesDefaultPrincipalWhenNoConfigFlag`
+  (không truyền `--principal-config` → bootstrap thật trả `local-operator`/`[operator]`),
+  `TestServe_BootstrapUsesCustomPrincipalFromConfigFile` (file JSON thật với actor/roles tùy chỉnh → bootstrap
+  phản ánh đúng), `TestServe_RejectsInvalidPrincipalConfigAtStartup` (`roles: []` → `serve` fail ngay lúc khởi
+  động, không chạy với principal rỗng), `TestServe_SessionTokenNeverPersistedInSQLite` (secret-scan thật:
+  chạy `serve` thật với SQLite thật, lấy token qua ĐÚNG kênh hợp lệ duy nhất — parse response bootstrap thật,
+  không đọc biến nội bộ — rồi tắt server hẳn, mở lại file `.db` bằng connection độc lập thứ 2, liệt kê mọi
+  table từ `sqlite_master`, scan từng cột từng dòng tìm substring token — assertion thật trên dữ liệu thật).
+- **Flake thật tự phát hiện khi chạy full suite `cmd/aw`** (không phải flake đã biết từ trước — đối
+  chiếu kỹ, đây là do chính task này gây ra): lúc đầu `TestServe_SessionTokenNeverPersistedInSQLite` mở
+  connection SQLite thứ 2 để scan trong khi `serve()` vẫn đang chạy, connection production vẫn giữ pool mở —
+  tranh chấp lock WAL-mode giữa 2 connection khiến CẢ CÁC TEST KHÁC chạy sau nó trong cùng suite chậm hẳn
+  (một test cũ vô can, `TestServe_ReadyFailsIfArtifactRootRemoved`, từ ~0.8s vọt lên 11.48s và timeout hẳn khỏi
+  deadline 5s của `waitForServeAddress`). Sửa bằng cách đổi `startServeForTest` trả thêm `stop func()`
+  (idempotent qua `sync.Once`), gọi `stop()` tắt hẳn server (đóng pool connection production) TRƯỚC KHI mở
+  connection thứ 2 để scan — test giờ đúng nghĩa "process đã dừng để lại gì trên đĩa", không phải "đọc đồng
+  thời với writer đang chạy". Sau khi sửa: suite `cmd/aw` chạy 3 lần liên tiếp (`-count=3`) đều xanh,
+  thời gian giảm từ 36s (có fail) xuống ~17s/lần (toàn xanh).
+- `go build ./...`, `go vet ./...` sạch. `go test ./internal/delivery/httpapi/... -count=10` và
+  `go test ./cmd/aw/... -count=3` đều xanh 100% (không có `-race` local được — máy Windows này
+  `CGO_ENABLED=0`, không có gcc, y hệt giới hạn đã ghi nhận ở V6-01; race thật sẽ do CI Linux bắt nếu có).
+  `go test ./...` toàn bộ module (68+ package) xanh 100%.
+
+### Verify
+
+Đối chiếu từng bullet của Verify line gốc ("external bind, DNS rebinding, foreign/missing Origin, missing/
+wrong token, actor/role spoof, role downgrade sau restart và secret scan trên log/DB/bootstrap cache"):
+
+- **external bind**: tái dùng nguyên vẹn `TestNewServer_RejectsNonLoopbackHost`/`TestNewServer_
+  RejectsExternalHostname` của V6-01 — không sửa, chỉ xác nhận vẫn áp dụng đúng vì `HostOriginGuard` nằm
+  SAU `validateLoopbackHost` trong luồng, không thay thế nó.
+- **DNS rebinding**: `TestHostOriginGuard_RejectsForeignHost` — mô phỏng đúng cơ chế thật (peer TCP là
+  127.0.0.1, `Host` header là domain kẻ tấn công kiểm soát).
+- **foreign/missing Origin**: `TestHostOriginGuard_RejectsForeignOrigin` + `RejectsRightHostWrongPortOrigin`
+  (foreign) và `TestHostOriginGuard_MissingOriginAllowed` (missing — đúng hành vi ADR-016 cho phép, không
+  phải lỗi thiếu sót).
+- **missing/wrong token**: `TestRequireSessionToken_MissingTokenRejectsMutation`/`WrongTokenRejectsMutation`.
+- **actor/role spoof**: `TestActorRoleSpoof_BodyAndHeaderIgnored` — cả body JSON lẫn header giả mạo đều bị
+  bỏ qua, response echo đúng principal server tự giữ.
+- **role downgrade sau restart**: `TestPrincipal_ChangeOnlyTakesEffectOnFreshServer` (tầng httpapi, 2
+  `Server` độc lập) + `TestServe_BootstrapUsesCustomPrincipalFromConfigFile` (tầng composition root, chứng
+  minh đường thật từ file config tới bootstrap) — không có API nào trong `Server` cho phép đổi `Principal`
+  khi đang chạy, chỉ đổi được bằng cách dựng `Server`/khởi động lại `serve` mới.
+- **secret scan trên log**: `TestSecretScan_TokenNeverAppearsInLogOutput` (tầng httpapi, buffer log có thể
+  kiểm soát) — assertion thật trên log output thật, không dựa vào redactor (matcher không đăng ký token làm
+  secret trong test này, để không che giấu một leak thật nếu có).
+- **secret scan trên DB**: `TestServe_SessionTokenNeverPersistedInSQLite` (tầng cmd/aw, SQLite thật) —
+  quét toàn bộ table/column sau khi server đã tắt hẳn.
+- **secret scan trên bootstrap cache**: `TestSecretScan_BootstrapHTMLNeverPutsTokenInAURLOrQueryString` — xác
+  nhận token không nằm trong bất kỳ context giống URL nào trong chính response bootstrap (đây là nơi DUY NHẤT
+  token được phép xuất hiện, nên "cache" ở đây nghĩa là response đó không được tự nó rò rỉ token ra URL).
+
+### Kết quả
+
+V6-01A hoàn thành trong 1 PR duy nhất. 4 file production mới (`internal/app/config/local_principal.go`,
+`internal/delivery/httpapi/{principal,security,bootstrap}.go`), 2 file production sửa
+(`internal/delivery/httpapi/server.go` thêm Token/Principal + middleware chain mới, `cmd/aw/serve.go`
+thêm flag `--principal-config` + wiring token/principal/bootstrap route), 3 file test mới (34 test function
+thật: 18 trong `security_test.go`, 12 trong `local_principal_test.go`, 4 trong `serve_principal_test.go`) cộng
+2 chỗ sửa test cũ (`newTestServer`, `TestNewServer_AcceptsLoopbackIPAndLocalhost` — thêm Token/Principal) và
+1 test mới trong file cũ (`TestNewServer_RequiresTokenAndPrincipal`). Một flake thật tự phát hiện và sửa tận
+gốc (WAL-mode lock contention giữa 2 SQLite connection đồng thời trong chính test mới thêm), cộng một merge
+conflict lớn hơn dự kiến do V6-15A đổi tên `cmd/agentkit` → `cmd/aw` merge trước — xử lý bằng dựng lại branch
+từ `origin/master` mới nhất và áp lại patch riêng của task này (xác nhận trước nội dung file base không đổi
+qua rename, nên không có xung đột logic). `go build ./...`, `go vet ./...`, `go test ./...` xanh 100% toàn bộ
+module. Caller không còn cách nào tự khai actor/role qua HTTP hay CLI flag, và mọi mutation thiếu proof trình
+duyệt (token đúng qua bootstrap loopback hợp lệ) bị chặn tại `HostOriginGuard`/`RequireSessionToken` trước khi
+chạm tới `mux` — đúng "Hoàn thành khi" của chính task này. V6-02 (phụ thuộc trực tiếp V6-01A) có thể bắt đầu
+ngay.
+
 ## V6-10C — Bounded workspace inspection application queries (PR #31)
 
 ### Bối cảnh
