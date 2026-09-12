@@ -188,6 +188,59 @@ func DecodeRecoveryDecisionRecordedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// WorkflowRunStartedEventType/WorkflowRunStartedSchemaVersion identify
+// WorkflowRunStarted's own registered (EventType, SchemaVersion) pair
+// (StartWorkflowRun, commands.go) — a real production event with no
+// decoder/golden/typed constant until V6-00A's own catalog closure
+// (docs/design/08-v6-api-projections.md).
+const (
+	WorkflowRunStartedEventType     = "WorkflowRunStarted"
+	WorkflowRunStartedSchemaVersion = 1
+)
+
+// workflowRunStartedEventPayload is WorkflowRunStarted v1's own shape
+// (StartWorkflowRun, commands.go).
+type workflowRunStartedEventPayload struct {
+	RunID      string `json:"runId"`
+	WorkItemID string `json:"workItemId"`
+	NodeRunID  string `json:"nodeRunId"`
+	NodeKey    string `json:"nodeKey"`
+}
+
+func DecodeWorkflowRunStartedV1(payloadJSON string) (any, error) {
+	var payload workflowRunStartedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// DecodeCompletionDecidedV1 is COMPLETION_DECIDED's own eventschema.Decoder
+// (V5-11, completion_policy.go) — that file already names a real,
+// exported CompletionDecidedEventType/SchemaVersion and a typed payload;
+// V6-00A's own catalog closure is only ever missing the registration
+// (and this package-level decoder function, matching every other
+// decoder's own naming convention) for it, not a rename.
+func DecodeCompletionDecidedV1(payloadJSON string) (any, error) {
+	var payload completionDecidedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// DecodeExecutionAttemptTerminatedV1 is EXECUTION_ATTEMPT_TERMINATED's own
+// eventschema.Decoder (V5-15D, agent_node_executor_cancellation.go) —
+// that file already names a real (if unexported) typed constant/payload;
+// V6-00A's own catalog closure is only ever missing the registration.
+func DecodeExecutionAttemptTerminatedV1(payloadJSON string) (any, error) {
+	var payload executionAttemptTerminatedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry. A composition root that wires up EnforcingEventsRepository
 // calls this once at startup, the same "register at init/startup time"
@@ -212,4 +265,7 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(WorkItemBlockedEventType, WorkItemBlockedSchemaVersion, DecodeWorkItemBlockedV1)
 	registry.Register(WorkItemBlockerResolvedEventType, WorkItemBlockerResolvedSchemaVersion, DecodeWorkItemBlockerResolvedV1)
 	registry.Register(RecoveryDecisionRecordedEventType, RecoveryDecisionRecordedSchemaVersion, DecodeRecoveryDecisionRecordedV1)
+	registry.Register(WorkflowRunStartedEventType, WorkflowRunStartedSchemaVersion, DecodeWorkflowRunStartedV1)
+	registry.Register(CompletionDecidedEventType, CompletionDecidedSchemaVersion, DecodeCompletionDecidedV1)
+	registry.Register(executionAttemptTerminatedEventType, executionAttemptTerminatedSchemaVersion, DecodeExecutionAttemptTerminatedV1)
 }

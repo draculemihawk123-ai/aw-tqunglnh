@@ -762,3 +762,139 @@ func TestRecoveryDecisionRecordedV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestWorkflowRunStartedV1_GoldenFixtureDecodes is WorkflowRunStarted's
+// own golden-fixture proof (V6-00A), mirroring
+// TestNodeRoutedV1_GoldenFixtureDecodes.
+func TestWorkflowRunStartedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "workflow_run_started_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(WorkflowRunStartedEventType, WorkflowRunStartedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", WorkflowRunStartedEventType, WorkflowRunStartedSchemaVersion, err)
+	}
+	want := workflowRunStartedEventPayload{RunID: "run-1", WorkItemID: "work-item-1", NodeRunID: "node-run-1", NodeKey: "start"}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", WorkflowRunStartedEventType, WorkflowRunStartedSchemaVersion, got, want)
+	}
+}
+
+// TestWorkflowRunStartedV1_RealEventPayloadDecodes proves
+// StartWorkflowRun's own actual marshaled WorkflowRunStarted payload
+// round-trips through the registered decoder.
+func TestWorkflowRunStartedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := workflowRunStartedEventPayload{RunID: "run-9", WorkItemID: "work-item-9", NodeRunID: "node-run-9", NodeKey: "start"}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(WorkflowRunStartedEventType, WorkflowRunStartedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
+
+// TestCompletionDecidedV1_GoldenFixtureDecodes is COMPLETION_DECIDED's own
+// golden-fixture proof (V6-00A) — completion_policy.go already named the
+// real constant/payload type; this task only adds the registration this
+// test proves.
+func TestCompletionDecidedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "completion_decided_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(CompletionDecidedEventType, CompletionDecidedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", CompletionDecidedEventType, CompletionDecidedSchemaVersion, err)
+	}
+	want := completionDecidedEventPayload{
+		RunID: "run-1", WorkItemID: "work-item-1", EndNodeRunID: "node-run-end-1",
+		DecisionArtifactID: "decision-1", Outcome: string(CompletionOutcomePass),
+	}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", CompletionDecidedEventType, CompletionDecidedSchemaVersion, got, want)
+	}
+}
+
+// TestCompletionDecidedV1_RealEventPayloadDecodes proves
+// appendCompletionDecidedEvent's own actual marshaled COMPLETION_DECIDED
+// payload round-trips through the registered decoder.
+func TestCompletionDecidedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := completionDecidedEventPayload{
+		RunID: "run-9", WorkItemID: "work-item-9", EndNodeRunID: "node-run-end-9",
+		DecisionArtifactID: "decision-9", Outcome: string(CompletionOutcomeBlock), Reason: "missing evidence",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(CompletionDecidedEventType, CompletionDecidedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
+
+// TestExecutionAttemptTerminatedV1_GoldenFixtureDecodes is
+// EXECUTION_ATTEMPT_TERMINATED's own golden-fixture proof (V6-00A) —
+// agent_node_executor_cancellation.go already named the real (unexported)
+// constant/payload type; this task only adds the registration this test
+// proves.
+func TestExecutionAttemptTerminatedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "execution_attempt_terminated_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(executionAttemptTerminatedEventType, executionAttemptTerminatedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", executionAttemptTerminatedEventType, executionAttemptTerminatedSchemaVersion, err)
+	}
+	want := executionAttemptTerminatedEventPayload{AttemptID: "attempt-1", NextState: "INDETERMINATE", Reason: "OWNERSHIP_LOST_MUTATING"}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", executionAttemptTerminatedEventType, executionAttemptTerminatedSchemaVersion, got, want)
+	}
+}
+
+// TestExecutionAttemptTerminatedV1_RealEventPayloadDecodes proves
+// cancelMutatingAttemptTx's own actual marshaled
+// EXECUTION_ATTEMPT_TERMINATED payload round-trips through the
+// registered decoder.
+func TestExecutionAttemptTerminatedV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := executionAttemptTerminatedEventPayload{AttemptID: "attempt-9", NextState: "CANCELLED", Reason: "RUN_CANCELLED"}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(executionAttemptTerminatedEventType, executionAttemptTerminatedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
