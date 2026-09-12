@@ -145,18 +145,14 @@ func CreateDefinition(ctx context.Context, uow ports.UnitOfWork, cmd ports.Comma
 		if !req.Scope.IsGlobal() {
 			projectID = string(*req.Scope.ProjectID)
 		}
-		payload, err := json.Marshal(struct {
-			DefinitionID string `json:"definitionId"`
-			Kind         string `json:"kind"`
-			Name         string `json:"name"`
-		}{DefinitionID: req.DefinitionID, Kind: string(req.Kind), Name: req.Name})
+		payload, err := json.Marshal(definitionCreatedEventPayload{DefinitionID: req.DefinitionID, Kind: string(req.Kind), Name: req.Name})
 		if err != nil {
 			return fmt.Errorf("marshal DefinitionCreated payload: %w", err)
 		}
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-created", ProjectID: projectID,
 			AggregateType: "Definition", AggregateID: req.DefinitionID, Sequence: 1,
-			EventType: "DefinitionCreated", SchemaVersion: 1, PayloadJSON: string(payload),
+			EventType: DefinitionCreatedEventType, SchemaVersion: DefinitionCreatedSchemaVersion, PayloadJSON: string(payload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
@@ -369,13 +365,10 @@ func PublishDefinitionVersion(ctx context.Context, uow ports.UnitOfWork, cmd por
 		}
 
 		if isNewVersion {
-			payload, err := json.Marshal(struct {
-				DefinitionID  string `json:"definitionId"`
-				VersionID     string `json:"versionId"`
-				Kind          string `json:"kind"`
-				VersionNumber uint64 `json:"versionNumber"`
-				CompiledHash  string `json:"compiledHash"`
-			}{req.DefinitionID, published.ID(), string(req.Kind), published.VersionNumber(), published.CompiledHash()})
+			payload, err := json.Marshal(definitionVersionPublishedEventPayload{
+				DefinitionID: req.DefinitionID, VersionID: published.ID(), Kind: string(req.Kind),
+				VersionNumber: published.VersionNumber(), CompiledHash: published.CompiledHash(),
+			})
 			if err != nil {
 				return fmt.Errorf("marshal DefinitionVersionPublished payload: %w", err)
 			}
@@ -393,8 +386,8 @@ func PublishDefinitionVersion(ctx context.Context, uow ports.UnitOfWork, cmd por
 			// Version's.
 			if err := tx.Events().Append(ctx, ports.DomainEvent{
 				ID: cmd.ID + "-published", AggregateType: "DefinitionVersion", AggregateID: published.ID(),
-				Sequence: 1, EventType: "DefinitionVersionPublished",
-				SchemaVersion: 1, PayloadJSON: string(payload),
+				Sequence: 1, EventType: DefinitionVersionPublishedEventType,
+				SchemaVersion: DefinitionVersionPublishedSchemaVersion, PayloadJSON: string(payload),
 				CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 			}); err != nil {
 				return err
