@@ -108,6 +108,20 @@ type Command struct {
 // never a silent overwrite or a "duplicate" replay.
 var ErrReceiptConflict = errors.New("ports: command receipt exists with a different request hash")
 
+// ErrScopeMismatch is returned when a command or query's declared
+// CommandScope does not match what that operation requires (ADR-025,
+// docs/architecture/02-architecture-decisions.md's own "Handler MUST
+// validate scope khớp command type; command project-scoped thiếu
+// ProjectID và command installation-scoped mang ProjectID đều bị
+// reject"): an installation-scoped operation (e.g. CreateProject,
+// ListProjects) invoked with a project scope, or a project-scoped
+// operation (e.g. GetProject) invoked with the installation scope or a
+// scope naming a different project than the one requested. Distinct from
+// ErrCrossProjectReference (catalog.go), which is about a persisted
+// record's own referential integrity to its parent's project, never
+// about a caller's authorization scope.
+var ErrScopeMismatch = errors.New("ports: command scope does not match what this operation requires")
+
 // Receipt is one durable idempotency record: a command handler writes
 // exactly one of these, atomically with whatever state/event change the
 // command caused, the same UnitOfWork call that request_hash's

@@ -604,6 +604,17 @@ func (c *CatalogRepository) GetProject(_ context.Context, id string) (project.Pr
 	return p, nil
 }
 
+// ListProjects mirrors sqlite's own listProjectsTx: every Project row, ID
+// order.
+func (c *CatalogRepository) ListProjects(_ context.Context) ([]project.Project, error) {
+	result := make([]project.Project, 0, len(c.projects))
+	for _, p := range c.projects {
+		result = append(result, p)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
 func (c *CatalogRepository) RegisterRepository(_ context.Context, req ports.RegisterRepositoryRequest) (project.Repository, error) {
 	created, err := project.NewRepository(
 		project.RepositoryID(req.ID), project.ProjectID(req.ProjectID), req.Name, req.RemoteLocator, req.DefaultRef,

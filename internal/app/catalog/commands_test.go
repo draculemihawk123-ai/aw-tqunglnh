@@ -32,6 +32,203 @@ func mustCreateProject(t *testing.T, uow *fake.UnitOfWork, id string) {
 	}
 }
 
+// --- CreateProject / ListProjects / GetProject ---
+
+func TestCreateProject_CreatesProjectAndEmitsEvent(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("project")
+
+	cmd := testCommand("idem-1", "hash-a", ports.InstallationScope(), "CreateProject")
+	result, err := catalog.CreateProject(ctx, uow, ids, cmd, catalog.CreateProjectRequest{Name: "demo"})
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	if result.ProjectID != "project-1" || result.Name != "demo" || result.Status != string(project.ProjectActive) {
+		t.Fatalf("result = %+v, want ProjectID=project-1 Name=demo Status=ACTIVE", result)
+	}
+
+	loaded, err := uow.Snapshot.Catalog().GetProject(ctx, "project-1")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if loaded.Name != "demo" || loaded.Status != project.ProjectActive || loaded.Version != 1 {
+		t.Fatalf("persisted project = %+v, want Name=demo Status=ACTIVE Version=1", loaded)
+	}
+
+	events := uow.Snapshot.Events().(*fake.EventsRepository).Items()
+	if len(events) != 1 || events[0].EventType != catalog.ProjectCreatedEventType {
+		t.Fatalf("events = %+v, want exactly one %s", events, catalog.ProjectCreatedEventType)
+	}
+	if events[0].ProjectID != "project-1" || events[0].AggregateType != "Project" || events[0].AggregateID != "project-1" {
+		t.Fatalf("event = %+v, want ProjectID=AggregateID=project-1 AggregateType=Project", events[0])
+	}
+}
+
+func TestCreateProject_DuplicateSameRequest_ReplaysExactSameGeneratedID(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	// Sequential is stateful: if a replay ever (incorrectly) called
+	// ids.NewID() again, the second call would observably mint
+	// "project-2" instead of replaying "project-1" — this is what makes
+	// this test a real proof of "replay returns exact ID" (V6-03's own
+	// Thực hiện line), not merely "replay returns *a* consistent result".
+	ids := idsource.NewSequential("project")
+
+	cmd := testCommand("idem-1", "hash-a", ports.InstallationScope(), "CreateProject")
+	req := catalog.CreateProjectRequest{Name: "demo"}
+	first, err := catalog.CreateProject(ctx, uow, ids, cmd, req)
+	if err != nil {
+		t.Fatalf("first CreateProject: %v", err)
+	}
+	if first.ProjectID != "project-1" {
+		t.Fatalf("first.ProjectID = %q, want project-1", first.ProjectID)
+	}
+
+	second, err := catalog.CreateProject(ctx, uow, ids, cmd, req)
+	if err != nil {
+		t.Fatalf("second (replayed) CreateProject: %v", err)
+	}
+	if second != first {
+		t.Fatalf("replayed result = %+v, want identical to first %+v", second, first)
+	}
+	if second.ProjectID != "project-1" {
+		t.Fatalf("replayed ProjectID = %q, want the exact first-execution id project-1 (not a freshly minted one)", second.ProjectID)
+	}
+
+	projects, err := catalog.ListProjects(ctx, uow, ports.InstallationScope())
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("projects after replay = %d, want 1 (a replay must never create a second Project)", len(projects))
+	}
+	events := uow.Snapshot.Events().(*fake.EventsRepository).Items()
+	if len(events) != 1 {
+		t.Fatalf("events after replay = %d, want 1", len(events))
+	}
+}
+
+func TestCreateProject_DuplicateDifferentPayload_ReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("project")
+
+	first := testCommand("idem-1", "hash-a", ports.InstallationScope(), "CreateProject")
+	if _, err := catalog.CreateProject(ctx, uow, ids, first, catalog.CreateProjectRequest{Name: "demo"}); err != nil {
+		t.Fatalf("first CreateProject: %v", err)
+	}
+
+	second := testCommand("idem-1", "hash-b", ports.InstallationScope(), "CreateProject")
+	_, err := catalog.CreateProject(ctx, uow, ids, second, catalog.CreateProjectRequest{Name: "different-name"})
+	if !errors.Is(err, ports.ErrReceiptConflict) {
+		t.Fatalf("second CreateProject err = %v, want ports.ErrReceiptConflict", err)
+	}
+
+	projects, err := catalog.ListProjects(ctx, uow, ports.InstallationScope())
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 1 || projects[0].Name != "demo" {
+		t.Fatalf("projects = %+v, want exactly [demo] (the conflicting retry must never mutate anything)", projects)
+	}
+}
+
+func TestCreateProject_ProjectScopedCommand_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("project")
+
+	cmd := testCommand("idem-1", "hash-a", ports.ProjectScope("project-1"), "CreateProject")
+	_, err := catalog.CreateProject(ctx, uow, ids, cmd, catalog.CreateProjectRequest{Name: "demo"})
+	if !errors.Is(err, ports.ErrScopeMismatch) {
+		t.Fatalf("err = %v, want ports.ErrScopeMismatch (CreateProject is installation-scoped per ADR-025)", err)
+	}
+	projects, err := catalog.ListProjects(ctx, uow, ports.InstallationScope())
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 0 {
+		t.Fatalf("projects = %+v, want none created by a rejected command", projects)
+	}
+}
+
+func TestCreateProject_RequiresName(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("project")
+
+	cmd := testCommand("idem-1", "hash-a", ports.InstallationScope(), "CreateProject")
+	_, err := catalog.CreateProject(ctx, uow, ids, cmd, catalog.CreateProjectRequest{Name: "   "})
+	if err == nil {
+		t.Fatal("CreateProject with a blank Name: want an error, got nil")
+	}
+}
+
+func TestListProjects_ProjectScopedCaller_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	mustCreateProject(t, uow, "project-1")
+
+	_, err := catalog.ListProjects(ctx, uow, ports.ProjectScope("project-1"))
+	if !errors.Is(err, ports.ErrScopeMismatch) {
+		t.Fatalf("err = %v, want ports.ErrScopeMismatch (ListProjects is installation-scoped per ADR-025)", err)
+	}
+}
+
+func TestListProjects_ReturnsEveryProjectInIDOrder(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	mustCreateProject(t, uow, "project-b")
+	mustCreateProject(t, uow, "project-a")
+	mustCreateProject(t, uow, "project-c")
+
+	projects, err := catalog.ListProjects(ctx, uow, ports.InstallationScope())
+	if err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+	if len(projects) != 3 || projects[0].ID != "project-a" || projects[1].ID != "project-b" || projects[2].ID != "project-c" {
+		t.Fatalf("projects = %+v, want [project-a, project-b, project-c] in ID order", projects)
+	}
+}
+
+func TestGetProject_MatchingProjectScope_ReturnsAuthoritativeDetail(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	mustCreateProject(t, uow, "project-1")
+
+	got, err := catalog.GetProject(ctx, uow, ports.ProjectScope("project-1"), "project-1")
+	if err != nil {
+		t.Fatalf("GetProject: %v", err)
+	}
+	if got.ID != "project-1" || got.Name != "project project-1" || got.Status != project.ProjectActive {
+		t.Fatalf("got = %+v, want the persisted project-1 row", got)
+	}
+}
+
+func TestGetProject_AnotherProjectScope_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	mustCreateProject(t, uow, "project-1")
+	mustCreateProject(t, uow, "project-2")
+
+	_, err := catalog.GetProject(ctx, uow, ports.ProjectScope("project-2"), "project-1")
+	if !errors.Is(err, ports.ErrScopeMismatch) {
+		t.Fatalf("err = %v, want ports.ErrScopeMismatch (a caller scoped to project-2 cannot read project-1)", err)
+	}
+}
+
+func TestGetProject_InstallationScopedCaller_Rejected(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	mustCreateProject(t, uow, "project-1")
+
+	_, err := catalog.GetProject(ctx, uow, ports.InstallationScope(), "project-1")
+	if !errors.Is(err, ports.ErrScopeMismatch) {
+		t.Fatalf("err = %v, want ports.ErrScopeMismatch (GetProject is project-scoped, not one of ADR-025's installation set)", err)
+	}
+}
+
 // --- RegisterRepository ---
 
 func TestRegisterRepository_CreatesRepositoryAndProbeJobAtomically(t *testing.T) {

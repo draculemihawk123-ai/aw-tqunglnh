@@ -27,6 +27,17 @@ const (
 
 	ComponentPackAssignedEventType     = "ComponentPackAssigned"
 	ComponentPackAssignedSchemaVersion = 1
+
+	// ProjectCreatedEventType/ProjectCreatedSchemaVersion are V6-03's own
+	// registered event (docs/design/08-v6-api-projections.md V6-03's own
+	// "append registered PROJECT_CREATED v1"), CreateProject's
+	// (commands.go) genesis event for the new Project's own aggregate
+	// stream — unlike the three events above, which were retrofitted for
+	// V6-00A onto business logic V3-01/V3-02 had already shipped, this
+	// one is registered from day one, alongside the command that first
+	// produces it.
+	ProjectCreatedEventType     = "ProjectCreated"
+	ProjectCreatedSchemaVersion = 1
 )
 
 // repositoryRegisteredEventPayload is RepositoryRegistered v1's own shape
@@ -59,6 +70,18 @@ type componentPackAssignedEventPayload struct {
 	Actor         string    `json:"actor"`
 }
 
+// projectCreatedEventPayload is ProjectCreated v1's own shape
+// (CreateProject, commands.go): the new Project's own generated ID, its
+// name and its starting status (always project.ProjectActive, per
+// project.NewProject's own rule — carried explicitly rather than assumed
+// so a future status machine change can never silently make this
+// historical field misleading).
+type projectCreatedEventPayload struct {
+	ProjectID string `json:"projectId"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+}
+
 func DecodeRepositoryRegisteredV1(payloadJSON string) (any, error) {
 	var payload repositoryRegisteredEventPayload
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
@@ -83,6 +106,14 @@ func DecodeComponentPackAssignedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+func DecodeProjectCreatedV1(payloadJSON string) (any, error) {
+	var payload projectCreatedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry — mirrors internal/app/runtime/event_schema.go's own
 // RegisterEventSchemas exactly.
@@ -90,4 +121,5 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(RepositoryRegisteredEventType, RepositoryRegisteredSchemaVersion, DecodeRepositoryRegisteredV1)
 	registry.Register(RepositoryProbeRetriedEventType, RepositoryProbeRetriedSchemaVersion, DecodeRepositoryProbeRetriedV1)
 	registry.Register(ComponentPackAssignedEventType, ComponentPackAssignedSchemaVersion, DecodeComponentPackAssignedV1)
+	registry.Register(ProjectCreatedEventType, ProjectCreatedSchemaVersion, DecodeProjectCreatedV1)
 }

@@ -40,6 +40,37 @@ func (r catalogRepository) GetProject(ctx context.Context, id string) (project.P
 	return getProjectTx(ctx, r.tx, id)
 }
 
+// ListProjects implements ports.CatalogRepository (V6-03): every Project
+// row, ID order — mirroring listProjectRepositoriesTx's own plain
+// unfiltered-scan shape below (there is no foreign key to filter Project
+// itself by; a Project IS the scope unit ADR-025's installation-scoped
+// ListProjects query returns in full).
+func (r catalogRepository) ListProjects(ctx context.Context) ([]project.Project, error) {
+	return listProjectsTx(ctx, r.tx)
+}
+
+func listProjectsTx(ctx context.Context, tx *sql.Tx) ([]project.Project, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, name, status, version FROM projects ORDER BY id`)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list projects: %w", err))
+	}
+	defer rows.Close()
+
+	var result []project.Project
+	for rows.Next() {
+		var id, name, status string
+		var version uint64
+		if err := rows.Scan(&id, &name, &status, &version); err != nil {
+			return nil, MapSQLiteError(fmt.Errorf("scan project row: %w", err))
+		}
+		result = append(result, project.Project{ID: project.ProjectID(id), Name: name, Status: project.ProjectStatus(status), Version: version})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("iterate projects: %w", err))
+	}
+	return result, nil
+}
+
 func getProjectTx(ctx context.Context, tx *sql.Tx, id string) (project.Project, error) {
 	var name, status string
 	var version uint64
