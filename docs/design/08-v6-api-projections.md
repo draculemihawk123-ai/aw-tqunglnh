@@ -26,59 +26,131 @@
   liệu screen cần đều có endpoint tương ứng.
 - **Nguồn:** ADR-010, ADR-018, ADR-028.
 
-## V6-01 — HTTP server và middleware nền
+## V6-00A — Domain-event catalog closure
 
-- **Mục tiêu:** loopback-only server có lifecycle/correlation/body limit/content type/error mapping và
-  local-browser mutation protection.
+> Draft 2026-09-12, tiếng Anh nguyên văn theo user — sẽ chuẩn hoá sang tiếng Việt khi user bổ sung hoàn
+> chỉnh phần còn lại của bản rewrite V6.
+
+- **Mục tiêu:** mọi event đã persist từ V1…V5 đều decode/classify được trước khi projection đọc journal.
+- **Phụ thuộc:** V5, V1-07A.
+- **Phạm vi:** typed constants, decoder/upcaster, scope metadata, golden fixtures và CI inventory guard.
+- **Không làm:** không đổi business transition, sửa raw history hoặc viết projector.
+- **Thực hiện:** tạo machine-readable catalog `(EventType, SchemaVersion)` cho catalog, definition,
+  message, work/scope, workspace/release/recovery, runtime/completion/checkpoint, evidence và ReleaseSet.
+  Append boundary reject event chưa đăng ký. Mỗi emitter mới phải cung cấp decoder và golden trong chính
+  task sinh event; installation/project scope được ghi rõ.
+- **Verify:** `go test ./internal/app/eventschema/...`; replay toàn bộ golden; emitted-key inventory bằng
+  registered-key inventory; unknown version fail-closed; old DB fixture vẫn decode sau restart.
+- **Hoàn thành khi:** không còn historical event hợp lệ nhưng thiếu decoder/golden/scope classification.
+- **Nguồn:** GC-DS-11, AK-ARCH-022.
+
+## V6-01 — HTTP lifecycle, health và route registration
+
+- **Mục tiêu:** production loopback HTTP server có lifecycle, health, bounded decode/error và registration
+  hook để endpoint task không sửa router chung.
 - **Phụ thuộc:** V5.
-- **Thực hiện:** route composition, graceful shutdown, request ID, safe error envelope, JSON strict
-  decode; reject external bind, validate exact loopback Host/port và Origin, sinh per-start session
-  token cho mutation; resolve `LocalPrincipalSnapshot {Actor, Roles[]}` từ trusted startup config rồi
-  bind snapshot với token trong memory; inject token chỉ vào no-store/CSP bootstrap HTML và không đưa
-  token vào URL/log/browser storage/durable state. Command envelope lấy Actor/ActorRoles từ snapshot,
-  không từ body/header. Config canonical `localPrincipal.actor`/`roles`, mặc định
-  `local-operator`/`[operator]`, reject empty/duplicate role và giữ matching case-sensitive.
-- **Verify:** malformed/oversized/cancel/panic/error-code; external bind, DNS-rebinding Host, foreign/
-  missing Origin và missing/wrong token; body/header cố spoof actor/roles bị reject/ignore; đổi principal
-  config chỉ có hiệu lực sau restart.
-- **Hoàn thành khi:** handler không expose private cause/SQL/provider output; tồn tại một static/
-  bootstrap handler tối thiểu để V7-02 gắn production UI build vào — không có UI nào của Alpha được
-  phục vụ ngoài binary; và tồn tại **route registration interface** để các task endpoint đăng ký handler
-  mà không cùng sửa một route table, làm điều kiện cho parallel group ở V6-10.
-- **Nguồn:** ADR-016, ADR-028.
+- **Phạm vi:** composition HTTP, bootstrap/static tối thiểu, `/health/live`, `/health/ready`, correlation,
+  graceful shutdown, strict JSON/body limit, panic recovery và route registration primitive.
+- **Không làm:** không implement business endpoint, browser security token hoặc receipt store.
+- **Thực hiện:** `live` chỉ chứng minh process/event loop còn phục vụ; `ready` gọi installation-scoped
+  health query và chỉ pass sau config, migration, UnitOfWork, artifact root và route composition sẵn sàng.
+  Route fragment mang `{Method, Path, OperationID, ScopeKind, RequestSchema, ResponseSchema, Handler}` và
+  reject duplicate/missing metadata ngay khi register.
+- **Verify:** `go test ./internal/delivery/httpapi/...`; malformed/oversized/cancel/panic/shutdown; live vẫn
+  pass khi dependency degraded; ready fail typed trước readiness và pass sau startup; descriptor trùng fail.
+- **Hoàn thành khi:** server/health chạy production và task endpoint có thể thêm fragment riêng.
+- **Nguồn:** ADR-016, ADR-025, ADR-028.
 
-## V6-02 — Idempotency/optimistic concurrency HTTP contract
+## V6-01A — Local-browser HTTP security và principal snapshot
 
-- **Mục tiêu:** mutation bắt buộc `Idempotency-Key`, update dùng `If-Match`.
-- **Phụ thuộc:** V6-01, V1-06.
-- **Thực hiện:** middleware/DTO mapping, replay stored response, conflict status, version ETag.
-- **Verify:** duplicate/same-key-different-body/stale version/concurrent requests.
-- **Hoàn thành khi:** retry browser không tạo duplicate aggregate/job.
-- **Nguồn:** AK-ARCH-008.
+- **Mục tiêu:** browser mutation chỉ đến từ bootstrap loopback hợp lệ và actor/roles không do caller khai.
+- **Phụ thuộc:** V6-01.
+- **Phạm vi:** bind/Host/Origin/CORS, per-start token, CSP/no-store bootstrap và `LocalPrincipalSnapshot`.
+- **Không làm:** không durable-persist token, nhận actor/role từ body/header hoặc authorize bằng projection.
+- **Thực hiện:** reject external bind; validate exact loopback Host/port và Origin; CORS deny default. Sinh
+  token mỗi start, bind in-memory với principal từ trusted startup config, inject chỉ vào bootstrap HTML
+  no-store/CSP; cấm URL/log/browser storage/artifact. Principal config đổi chỉ có hiệu lực sau restart.
+- **Verify:** external bind, DNS rebinding, foreign/missing Origin, missing/wrong token, actor/role spoof,
+  role downgrade sau restart và secret scan trên log/DB/bootstrap cache.
+- **Hoàn thành khi:** caller không thể tự chọn identity và mutation thiếu browser proof bị chặn trước dispatch.
+- **Nguồn:** ADR-016, ADR-025.
 
-## V6-03 — Project/repository/component endpoints
+## V6-02 — HTTP CommandEnvelope, idempotency và optimistic concurrency
 
-- **Mục tiêu:** expose V3 catalog/onboarding commands/queries.
-- **Phụ thuộc:** V6-02.
-- **Thực hiện:** register trả `REGISTERING`; query trạng thái/probe history/actionable error và typed
-  retry từ `BLOCKED`; component query chỉ đọc topology do onboarding/probe discover — không expose
-  helper `CreateComponent` không có receipt/event; component pack-assignment list/create pin exact
-  version; không giả synchronous success trước probe.
-- **Verify:** OpenAPI/contract fixtures success/validation/not-found/conflict.
-- **Hoàn thành khi:** local path chỉ xuất ở view được phép và repository ID là authority.
-- **Nguồn:** ROADMAP-§2.
+- **Mục tiêu:** mọi HTTP mutation dùng application receipt và concurrency contract duy nhất.
+- **Phụ thuộc:** V6-01A, V1-06.
+- **Phạm vi:** header-to-command mapping, canonical semantic hash, receipt replay, ETag/`If-Match`.
+- **Không làm:** middleware không ghi/cache receipt, chạy business validation hoặc expose legacy mutation
+  thiếu `CommandEnvelope`.
+- **Thực hiện:** `Idempotency-Key` bắt buộc; update bắt buộc strong `If-Match`. Semantic hash gồm command
+  type, scope/target, normalized payload, exact content digest và expected version; loại JSON formatting,
+  request/correlation ID, session token và transport metadata. Flow: authenticate/authorize → canonical
+  decode → receipt lookup → replay/conflict → nếu absent mới kiểm current version/external prework/dispatch;
+  command transaction recheck receipt. Same-key committed replay thắng ETag/state drift nhưng vẫn phải qua
+  current authorization. HTTP deterministically encode stored application result/ETag/operation reference.
+- **Verify:** `go test ./internal/delivery/httpapi/... ./internal/app/...`; reordered JSON same hash; same-key
+  replay sau restart và crash-after-commit; different body conflict trước I/O; stale key mới; concurrent
+  keys; HTTP↔`aw` same-key result; architecture test delivery không ghi receipt/repository transaction.
+- **Hoàn thành khi:** retry không duplicate aggregate/job/external operation và không có transport receipt authority.
+- **Nguồn:** AK-ARCH-008, ADR-025, ADR-028.
 
-## V6-04 — WorkItem/family/scope endpoints
+## V6-02A — Shared HTTP DTO, cursor và schema-fragment contract
 
-- **Mục tiêu:** create/list/detail/child/readiness/scope expansion/decision.
-- **Phụ thuộc:** V6-03.
-- **Thực hiện:** map DTO sang public root-create nguyên tử, child subset command, readiness query
-  `GET /work-items/{id}/readiness`/`GetWorkItemReadiness`; scope request/approve/reject. Không expose
-  generic setter cho family/workspace/status authority.
-- **Verify:** multi-repo filters, subset violations, approval/version conflict; readiness response
-  giải thích criterion chưa đạt nhưng không tự đổi state.
-- **Hoàn thành khi:** client không thể trực tiếp set DONE hoặc family/workspace IDs.
-- **Nguồn:** HE-08-M03.
+- **Mục tiêu:** endpoint song song dùng cùng error/query/action/stream vocabulary và tự cung cấp schema fragment.
+- **Phụ thuộc:** V6-01.
+- **Phạm vi:** error envelope, page/limit, opaque cursor, `Freshness`, `ValidAction`, range/media và SSE envelope.
+- **Không làm:** không compose root router/OpenAPI và không định nghĩa domain transition.
+- **Thực hiện:** cursor bind project, query/filter/sort, projection generation, upper watermark và last key;
+  mismatch/swap trả typed resync. `ValidAction` chứa operationId/scope/targetVersion nhưng chỉ advisory.
+  Normalize unauthorized/not-found theo leakage policy. Mỗi route task sở hữu descriptor/schema/golden và
+  isolated-router test; V6-12 chỉ aggregate/reverse-check.
+- **Verify:** round-trip/tamper cursor; bounded defaults/max; stable paging qua write; generation swap resync;
+  duplicate operationId/schema omission fail; shared error/freshness/SSE golden.
+- **Hoàn thành khi:** endpoint task không phải tự quyết DTO/cursor/error/action convention.
+- **Nguồn:** ADR-028, HE-04-M07, AK-ARCH-023.
+
+## V6-03 — Public Project authority
+
+- **Mục tiêu:** bổ sung public `CreateProject`, `ListProjects`, `GetProject` còn thiếu trước HTTP/CLI.
+- **Phụ thuộc:** V6-00A, V1-06, V1-07A.
+- **Phạm vi:** installation-scoped create/list và authoritative project detail query.
+- **Không làm:** không để delivery gọi `Tx.Catalog().CreateProject` hoặc tạo Component thủ công.
+- **Thực hiện:** `CreateProject` recheck receipt rồi atomically create Project, append registered
+  `PROJECT_CREATED` v1 và store result/receipt; first execution generates ID, replay returns exact ID.
+  List/Get apply installation/project scope from ADR-025.
+- **Verify:** command replay/different hash/concurrency/crash-after-commit, event golden, list/get scope.
+- **Hoàn thành khi:** clean installation tạo Project qua một named public application authority.
+- **Nguồn:** ADR-025, ADR-028, GC-DS-11, ROADMAP-§2.
+
+## V6-03A — Project, repository và component HTTP endpoints
+
+- **Mục tiêu:** expose Project catalog, repository onboarding và discovered component/pack assignment.
+- **Phụ thuộc:** V6-00, V6-01A, V6-02, V6-02A, V6-03.
+- **Phạm vi:** project create/list/detail; repository register/list/detail/onboarding/probe-history/retry;
+  component query và exact pack assignment.
+- **Không làm:** không duplicate Doctor, expose helper `CreateComponent`, hoặc giả sync success trước probe.
+- **Thực hiện:** register trả `REGISTERING`; retry chỉ map `RetryRepositoryProbe` khi `BLOCKED` và leaf/route
+  canonical dùng `retry-probe`. Component chỉ đọc topology do probe discover; assignment pin exact version.
+- **Verify:** isolated route/schema goldens; async state/retry/replay/scope/redaction; handler dispatch spy.
+- **Hoàn thành khi:** catalog/onboarding có một route owner và repository ID là authority.
+- **Nguồn:** ADR-019, ADR-025, ADR-028, ROADMAP-§2.
+
+## V6-04 — WorkItem, family, readiness và scope endpoints
+
+> ⚠️ Overlap tạm thời với V6-06 (chưa được rewrite): `WithdrawScopeExpansion` hiện được ghi ở CẢ task này
+> lẫn V6-06 phía dưới. Giữ nguyên cho tới khi user bổ sung bản rewrite V6-05 trở đi rồi hợp nhất lại một
+> chỗ duy nhất — không tự ý xoá bên nào trước khi có xác nhận.
+
+- **Mục tiêu:** expose root/child WorkItem, family/readiness và toàn bộ scope-expansion lifecycle.
+- **Phụ thuộc:** V6-00, V6-01A, V6-02, V6-02A, V6-03.
+- **Phạm vi:** create/list/authoritative detail/child/readiness; scope request/approve/reject/withdraw.
+- **Không làm:** không generic status/family/workspace setter; không dùng projected detail để authorize.
+- **Thực hiện:** root-create atomic, child subset, readiness criteria explanation; `WithdrawScopeExpansion`
+  thuộc task này, chỉ khi pending và không tạo grant/amendment. Authoritative detail phân biệt với projected
+  card/detail của V6-10.
+- **Verify:** multi-repo/subset/scope negative matrix, concurrent decisions, withdrawal race, no direct DONE.
+- **Hoàn thành khi:** mọi WorkItem/scope control gọi named application command và client không set state.
+- **Nguồn:** ADR-019, ADR-020, HE-08-M03.
 
 ## V6-04A — Public `MarkWorkItemReady` authority
 
