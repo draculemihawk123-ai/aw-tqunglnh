@@ -354,13 +354,7 @@ func RequestWorkspaceSetRelease(
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			WorkspaceSetID string `json:"workspaceSetId"`
-			FamilyID       string `json:"familyId"`
-			ProjectID      string `json:"projectId"`
-			State          string `json:"state"`
-			ReleaseJobID   string `json:"releaseJobId"`
-		}{
+		eventPayload, err := json.Marshal(workspaceSetReleaseRequestedEventPayload{
 			WorkspaceSetID: string(set.ID), FamilyID: req.FamilyID, ProjectID: req.ProjectID,
 			State: string(set.State), ReleaseJobID: string(job.ID),
 		})
@@ -379,7 +373,7 @@ func RequestWorkspaceSetRelease(
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-requested", ProjectID: req.ProjectID,
 			AggregateType: "WorkspaceSetRelease", AggregateID: string(job.ID), Sequence: 1,
-			EventType: "WorkspaceSetReleaseRequested", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: WorkspaceSetReleaseRequestedEventType, SchemaVersion: WorkspaceSetReleaseRequestedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err

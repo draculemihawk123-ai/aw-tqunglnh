@@ -77,12 +77,12 @@ RETURNING project_id`,
 		id:            update.EventID,
 		projectID:     projectID,
 		workspaceID:   update.RepositoryWorkspaceID,
-		eventType:     "REPOSITORY_WORKSPACE_QUARANTINED",
+		eventType:     RepositoryWorkspaceQuarantinedEventType,
 		correlationID: update.CorrelationID,
 		timestamp:     timestamp,
-		payload: map[string]string{
-			"repositoryWorkspaceId": string(update.RepositoryWorkspaceID),
-			"reason":                update.Reason,
+		payload: repositoryWorkspaceQuarantinedEventPayload{
+			RepositoryWorkspaceID: string(update.RepositoryWorkspaceID),
+			Reason:                update.Reason,
 		},
 	})
 }
@@ -130,11 +130,11 @@ RETURNING project_id`,
 		id:            update.EventID,
 		projectID:     projectID,
 		workspaceID:   update.RepositoryWorkspaceID,
-		eventType:     "REPOSITORY_WORKSPACE_RELEASED",
+		eventType:     RepositoryWorkspaceReleasedEventType,
 		correlationID: update.CorrelationID,
 		timestamp:     timestamp,
-		payload: map[string]string{
-			"repositoryWorkspaceId": string(update.RepositoryWorkspaceID),
+		payload: repositoryWorkspaceReleasedEventPayload{
+			RepositoryWorkspaceID: string(update.RepositoryWorkspaceID),
 		},
 	}); err != nil {
 		return err
@@ -202,13 +202,13 @@ RETURNING `+repositoryWorkspaceColumns,
 		id:            request.EventID,
 		projectID:     projectID,
 		workspaceID:   created.ID,
-		eventType:     "REPOSITORY_WORKSPACE_RECREATED",
+		eventType:     RepositoryWorkspaceRecreatedEventType,
 		correlationID: request.CorrelationID,
 		timestamp:     timestamp,
-		payload: map[string]string{
-			"previousRepositoryWorkspaceId": string(request.PreviousRepositoryWorkspaceID),
-			"repositoryWorkspaceId":         string(created.ID),
-			"generation":                    fmt.Sprintf("%d", created.Generation),
+		payload: repositoryWorkspaceRecreatedEventPayload{
+			PreviousRepositoryWorkspaceID: string(request.PreviousRepositoryWorkspaceID),
+			RepositoryWorkspaceID:         string(created.ID),
+			Generation:                    fmt.Sprintf("%d", created.Generation),
 		},
 	}); err != nil {
 		return workspace.RepositoryWorkspace{}, err
@@ -227,7 +227,7 @@ type repositoryWorkspaceEvent struct {
 	eventType     string
 	correlationID string
 	timestamp     string
-	payload       map[string]string
+	payload       any
 }
 
 func appendRepositoryWorkspaceEvent(ctx context.Context, tx *sql.Tx, event repositoryWorkspaceEvent) error {
