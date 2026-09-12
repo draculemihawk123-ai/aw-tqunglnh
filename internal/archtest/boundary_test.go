@@ -297,12 +297,56 @@ func TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess(t *testing
 	}
 
 	forbiddenPackages := map[string]bool{"os": true, "exec": true, "ioutil": true}
-	forbiddenCalls := map[string]bool{"hashExecutableFile": true}
+	// hashExecutableFile (lowercase) was this test's original, aspirational
+	// name for the forbidden call before V6-10I's own hardening pass gave
+	// the real function its final exported name, HashExecutableFile — both
+	// spellings are checked so this test would have caught the mismatch
+	// itself (and so it keeps catching a future rename of either kind).
+	forbiddenCalls := map[string]bool{"hashExecutableFile": true, "HashExecutableFile": true}
 
+	txClosure := findWithSerializedWriteClosure(t, file, "RegisterAdapterBuild")
+	assertClosureNeverCallsFilesystemOrProcess(t, fset, txClosure, forbiddenPackages, forbiddenCalls)
+}
+
+// TestProbeAdapterBuildTransactionNeverCallsFilesystemOrProcess is
+// V6-10I's own extension of
+// TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess to
+// ProbeAdapterBuild's own database transaction: ProbeAdapterBuild
+// measures the executable/capability manifest entirely BEFORE it ever
+// opens a transaction (commands.go), and its own func literal passed to
+// uow.WithSerializedWrite only loads/creates the signing key, signs the
+// already-measured tuple, and records/reloads the command receipt — never
+// touching the filesystem or spawning a process. This mirrors the
+// Register test's exact "parse the one real source file, isolate the one
+// func literal, forbid os/exec/ioutil and the hashing helper" technique,
+// applied to the sibling command V6-10I hardens alongside it.
+func TestProbeAdapterBuildTransactionNeverCallsFilesystemOrProcess(t *testing.T) {
+	moduleRoot := findModuleRoot(t)
+	path := filepath.Join(moduleRoot, "internal", "app", "adapterbuild", "commands.go")
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	forbiddenPackages := map[string]bool{"os": true, "exec": true, "ioutil": true}
+	forbiddenCalls := map[string]bool{"hashExecutableFile": true, "HashExecutableFile": true}
+
+	txClosure := findWithSerializedWriteClosure(t, file, "ProbeAdapterBuild")
+	assertClosureNeverCallsFilesystemOrProcess(t, fset, txClosure, forbiddenPackages, forbiddenCalls)
+}
+
+// findWithSerializedWriteClosure locates the func literal passed to
+// uow.WithSerializedWrite inside the named top-level function declaration
+// in file — shared by both adapter-build transaction-boundary tests
+// above.
+func findWithSerializedWriteClosure(t *testing.T, file *ast.File, funcName string) *ast.FuncLit {
+	t.Helper()
 	var txClosure *ast.FuncLit
 	ast.Inspect(file, func(n ast.Node) bool {
 		fn, ok := n.(*ast.FuncDecl)
-		if !ok || fn.Name.Name != "RegisterAdapterBuild" {
+		if !ok || fn.Name.Name != funcName {
 			return true
 		}
 		ast.Inspect(fn.Body, func(inner ast.Node) bool {
@@ -324,9 +368,19 @@ func TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess(t *testing
 		return false
 	})
 	if txClosure == nil {
-		t.Fatal("could not find the func literal passed to uow.WithSerializedWrite inside RegisterAdapterBuild — this test needs updating alongside the implementation")
+		t.Fatalf("could not find the func literal passed to uow.WithSerializedWrite inside %s — this test needs updating alongside the implementation", funcName)
 	}
+	return txClosure
+}
 
+// assertClosureNeverCallsFilesystemOrProcess walks txClosure's own body
+// and fails the test if it contains a call into any of forbiddenPackages
+// (a selector call like os.Open, exec.Command, ioutil.ReadFile) or a bare
+// call to any of forbiddenCalls (this package's own filesystem-touching
+// helpers) — shared by both adapter-build transaction-boundary tests
+// above.
+func assertClosureNeverCallsFilesystemOrProcess(t *testing.T, fset *token.FileSet, txClosure *ast.FuncLit, forbiddenPackages, forbiddenCalls map[string]bool) {
+	t.Helper()
 	ast.Inspect(txClosure, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {
@@ -335,12 +389,12 @@ func TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess(t *testing
 		switch fun := call.Fun.(type) {
 		case *ast.SelectorExpr:
 			if ident, ok := fun.X.(*ast.Ident); ok && forbiddenPackages[ident.Name] {
-				t.Errorf("%s: RegisterAdapterBuild's transaction closure calls %s.%s — filesystem/process calls must happen before the transaction opens, never inside it (§11.1)",
+				t.Errorf("%s: transaction closure calls %s.%s — filesystem/process calls must happen before the transaction opens, never inside it (§11.1)",
 					fset.Position(call.Pos()), ident.Name, fun.Sel.Name)
 			}
 		case *ast.Ident:
 			if forbiddenCalls[fun.Name] {
-				t.Errorf("%s: RegisterAdapterBuild's transaction closure calls %s — filesystem/process calls must happen before the transaction opens, never inside it (§11.1)",
+				t.Errorf("%s: transaction closure calls %s — filesystem/process calls must happen before the transaction opens, never inside it (§11.1)",
 					fset.Position(call.Pos()), fun.Name)
 			}
 		}

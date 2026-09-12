@@ -1349,3 +1349,249 @@ trong `event_schema_test.go`. `go build/vet/test ./...` xanh 100% trên toàn b�
 không có public CreateProject" đã đóng — V6-03A (Project/repository/component HTTP endpoints) giờ có đủ
 dependency (`V6-00`, `V6-01A`, `V6-02`, `V6-02A`, `V6-03`) để bắt đầu ngay khi 4 dependency còn lại sẵn
 sàng.
+
+## V6-10I — Adapter-build command envelope và receipt hardening (PR #TBD)
+
+### Bối cảnh
+
+V6-10I là 1 trong 3 task nhóm P1 chạy song song ngay sau V6-00A (`sau V6-00A: {V6-03, V6-10E, V6-10G,
+V6-10I}`), unblocked khi V6-00A/V1-06/V1-07A/V2-07A/V2-07B đều đã đóng. Trích nguyên văn task spec từ
+`docs/design/08-v6-api-projections.md`: "harden Probe/Register before any HTTP/CLI exposure"; "receipt/hash
+lookup before external I/O; probe replay exact stored candidate even expired; new key probes anew. Register
+re-probes outside tx then atomically insert-if-absent + event + receipt; Actor supplies RegisteredBy";
+"Không làm: no HTTP, ProjectID or process/file I/O inside transaction"; "Hoàn thành khi: no public legacy
+call lacks CommandEnvelope and fingerprint dedupe is not command replay."
+
+Đây là gap thật, không phải task xây mới: `internal/app/adapterbuild` (V2-07A/V2-07B, đã tồn tại từ trước)
+có đúng 4 command (`ProbeAdapterBuild`, `RegisterAdapterBuild`, `ListAdapterBuilds`, `GetAdapterBuild`) nhưng
+`ProbeAdapterBuild`/`RegisterAdapterBuild` — 2 command MUTATING duy nhất trong package — chưa từng nhận một
+`ports.Command` envelope nào cả: chữ ký cũ là `ProbeAdapterBuild(ctx, uow, req)`/`RegisterAdapterBuild(ctx,
+uow, req)`, không idempotency key, không receipt lookup, không domain event nào được emit khi register thành
+công. `RegisterRequest.RegisteredBy` là một field caller-supplied tự do — đúng thứ "never trust a separate
+caller-supplied field" mà task cảnh báo. Đây chính là "no public legacy call lacks CommandEnvelope" task này
+phải đóng.
+
+### Nghiên cứu
+
+Đọc toàn bộ package trước khi viết dòng nào: `internal/app/adapterbuild/commands.go` (246 dòng gốc),
+`drift.go`, cả 2 file test tương ứng, `internal/app/ports/adapterbuild.go` (interface
+`AdapterBuildRepository`), `internal/adapters/sqlite/adapterbuild.go` (implementation thật), và
+`cmd/aw/adapter.go` (CLI `aw adapter probe|register|list|show`, caller sản xuất duy nhất trong repo ngoài
+test).
+
+Phát hiện chính:
+
+- `ProbeAdapterBuild` đo `HashExecutableFile` (I/O thật) VÔ ĐIỀU KIỆN mỗi lần gọi — không hề có khái niệm
+  idempotency key nào cả, nên "hai lần gọi giống hệt nhau" hiện tại nghĩa là "probe lại thật hai lần", không
+  phải replay.
+- `RegisterAdapterBuild` đã đúng thứ tự re-hash-ngoài-tx-trước-transaction (ADR-022) TỪ TRƯỚC — không cần sửa
+  phần đó — nhưng hoàn toàn không có receipt/event nào: transaction chỉ gọi
+  `tx.AdapterBuilds().InsertIfAbsent`, không `tx.Events().Append`, không `tx.Receipts().Record`.
+- `internal/archtest/boundary_test.go` đã có sẵn
+  `TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess` (parse AST thật, tìm func literal truyền
+  vào `uow.WithSerializedWrite` bên trong `RegisterAdapterBuild`, cấm gọi `os`/`exec`/`ioutil` hoặc identifier
+  `hashExecutableFile`) — ĐÚNG như task spec cảnh báo trước ("THIS EXACT TEST MAY ALREADY EXIST"). Nhưng đọc
+  kỹ phát hiện một bug thật trong chính test đó: `forbiddenCalls` chỉ có `"hashExecutableFile"` (chữ h
+  thường) trong khi hàm thật export là `HashExecutableFile` (chữ H hoa) — nếu implementation mới lỡ gọi hàm
+  này bên trong transaction, test KHÔNG bắt được, vì so sánh identifier phân biệt hoa/thường. Không phải lỗi
+  cần fix ngay lập tức của V2-07B (chưa ai từng phạm lỗi đó), nhưng là lỗ hổng thật của chính bộ test này.
+- Đọc `internal/app/catalog/commands.go` (`CreateProject`, vừa merge PR #34, V6-03) — pattern receipt chuẩn:
+  `Load` trước, so `RequestHash`, không khớp thì `ErrReceiptConflict`, khớp thì unmarshal `ResultJSON` trả
+  thẳng; không tìm thấy thì làm việc thật, rồi `Record` + emit event trong CÙNG MỘT `WithSerializedWrite`. Tuy
+  nhiên pattern đó không có I/O thật nào cả (Project là pure DB insert) — khác V6-10I: Probe/Register có I/O
+  filesystem thật (`HashExecutableFile`), nên "receipt lookup" ở đây PHẢI tách hẳn ra một bước ĐỌC-ONLY riêng
+  (`WithReadOnly`) chạy TRƯỚC khi chạm tới filesystem, không thể gộp lookup+work+record trong cùng một
+  transaction như `CreateProject` làm được (transaction đó không có I/O thật nào để tránh).
+- `ports.ErrScopeMismatch` (sentinel mới của chính V6-03, đặt trong `internal/app/ports/command.go`) — đúng
+  công cụ có sẵn cho "installation-scoped" check ADR-025 yêu cầu cho `ProbeAdapterBuild`/`RegisterAdapterBuild`
+  (bảng closed-set §27 liệt kê đúng 2 tên này ở cột Command installation). Ban đầu định tự tạo sentinel riêng
+  trong `adapterbuild` package rồi phát hiện `ports.ErrScopeMismatch` đã tồn tại đúng mục đích này — dùng lại,
+  không tạo sentinel thứ hai trùng ý nghĩa.
+- `internal/domain/adapterbuild.CandidateTuple`/`CandidateToken` đã có đủ field task spec liệt kê
+  ("executable/provider/protocol/capability/OS/config/nonce/expiry") từ trước (V2-07A) — không cần sửa domain
+  struct nào, "Candidate binds ..." của task spec đã đúng nguyên trạng.
+- `internal/app/eventschema`/`internal/archtest/event_catalog_test.go` (V6-00A's CI inventory guard) — mọi
+  `ports.DomainEvent{}` composite literal dưới `internal/app` bị scan AST thật và bắt buộc có decoder đăng ký;
+  `adapterbuild` package trước giờ CHƯA từng emit event nào nên chưa nằm trong danh sách composed registry
+  của test đó — phải tự thêm `adapterbuild.RegisterEventSchemas(registry)` vào chính test này khi thêm event
+  đầu tiên, nếu không CI guard sẽ tự fail (đúng cơ chế fail-closed nó được thiết kế để làm).
+
+### Quyết định
+
+1. **Nhận `cmd ports.Command` làm tham số bắt buộc** ở cả `ProbeAdapterBuild` và `RegisterAdapterBuild` — đổi
+   chữ ký công khai, breaking change có chủ đích, không giữ overload cũ (không có polyglot version nào khác
+   gọi 2 hàm này ngoài `cmd/aw/adapter.go` và test trong chính repo).
+2. **Receipt lookup tách thành helper riêng (`loadProbeReplay`/`loadRegisterReplay`), chạy qua
+   `uow.WithReadOnly` TRƯỚC bất kỳ I/O thật nào** — không gộp chung với transaction ghi, vì I/O thật
+   (`HashExecutableFile`) phải nằm sau bước lookup này, không phải bên trong nó.
+3. **Probe replay trả `CandidateToken` y hệt đã lưu, kể cả đã hết hạn** — không gọi lại `VerifyToken`/kiểm tra
+   `ExpiresAt` nào trên đường replay; expiry chỉ có ý nghĩa tại thời điểm `RegisterAdapterBuild` verify token,
+   không phải tại thời điểm probe tự đọc lại chính nó.
+4. **Register cũng có receipt lookup riêng, chạy TRƯỚC `VerifyToken`/re-hash** — một replay hợp lệ không bao
+   giờ re-verify token hay chạm filesystem lần nữa, kể cả khi executable đã bị xoá/đổi sau lần commit đầu
+   tiên (đúng kịch bản "crash-after-commit-before-ack": caller không thấy response, retry, thế giới đã đổi,
+   nhưng lệnh CŨ vẫn phải trả đúng kết quả CŨ).
+5. **`RegisterRequest` bỏ hẳn field `RegisteredBy`** — `RegisterAdapterBuild` tự lấy `cmd.Actor`. Reject luôn
+   nếu `cmd.Actor` rỗng, lỗi rõ ràng thay vì để domain layer tự báo lỗi mơ hồ hơn.
+6. **Re-load receipt NGAY SAU KHI `Record` thành công, dùng giá trị re-load làm kết quả trả về cuối cùng** —
+   không tin trực tiếp giá trị vừa tính trong bộ nhớ (`signed`/`computed`). Lý do: hai writer đua cùng một
+   idempotency key đều tự tính ra giá trị RIÊNG của mình trước khi biết ai thắng (Probe: nonce/expiry khác
+   nhau mỗi lần `SignToken`; Register: `AlreadyExisted` khác nhau tuỳ ai chạm `InsertIfAbsent` trước) — SQLite
+   serialize 2 lệnh `WithSerializedWrite`, đúng 1 lệnh `Record` insert thật, lệnh còn lại là no-op (ON
+   CONFLICT DO NOTHING, `receiptsRepository.Record`'s sẵn có). Nếu không re-load, writer thua sẽ trả về giá
+   trị CỦA CHÍNH NÓ (chưa từng persist) thay vì giá trị đã thắng — vi phạm đúng "replay exact stored
+   candidate" khi xảy ra concurrency, dù trường hợp không-đua vẫn đúng.
+7. **`RegisterResult`/`CandidateToken` lưu vào `Receipt.ResultJSON` qua một DTO riêng (`registerReceiptPayload`)
+   thay vì marshal thẳng `adapterbuild.Build`** — `Build` không có field export (bất biến theo thiết kế từ
+   V2-07A), `json.Marshal` trực tiếp sẽ ra `{}`. DTO round-trip qua `Build.Tuple()`/`CapabilityManifest()`/
+   `RegisteredBy()`/`RegisteredAt()` và `adapterbuild.NewBuild` khi decode lại — kỹ thuật giống hệt
+   `cmd/aw/adapter.go`'s `adapterBuildView` đã dùng cho CLI JSON output.
+8. **Event `AdapterBuildRegistered` chỉ emit khi `!alreadyExisted`** — một lệnh register KHÁC (idempotency
+   key khác) trùng đúng fingerprint executable đã đăng ký trước đó vẫn được `Record` receipt của RIÊNG lệnh
+   đó, nhưng KHÔNG emit lại event cho aggregate đã có sẵn (Sequence=1 chỉ được phép xảy ra đúng 1 lần cho mỗi
+   `AggregateID`, `Events().Append` sẽ tự reject nếu emit lại). Đây chính là ranh giới "fingerprint dedupe is
+   not command replay": fingerprint dedupe (`InsertIfAbsent`) quyết định có emit event mới hay không; receipt
+   (command replay) quyết định caller nhận lại kết quả cũ mà không redo việc gì — hai trục độc lập, không
+   trục nào thay thế trục kia.
+9. **Dùng `ports.ErrScopeMismatch`** (sentinel chung V6-03 vừa tạo) cho check installation-scope, không tạo
+   sentinel riêng trong `adapterbuild` — nhất quán với đúng tinh thần chính doc comment của
+   `ports.ErrScopeMismatch` đã tự dự đoán ("ListProjects/GetProject sau này chắc chắn không phải named
+   command/query duy nhất cần enforce đúng luật này").
+10. **Mở rộng `TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess` sang cả `ProbeAdapterBuild`**
+    (test mới `TestProbeAdapterBuildTransactionNeverCallsFilesystemOrProcess`, factor chung 2 helper
+    `findWithSerializedWriteClosure`/`assertClosureNeverCallsFilesystemOrProcess`) và sửa `forbiddenCalls`
+    thêm cả `"HashExecutableFile"` (chữ hoa đúng) bên cạnh `"hashExecutableFile"` cũ — đóng đúng lỗ hổng phát
+    hiện ở bước Nghiên cứu, không xoá bản cũ (giữ lại để chính bộ test tự chứng minh nó bắt được cả 2 cách
+    viết).
+11. **Không đổi domain package `internal/domain/adapterbuild`** — `CandidateTuple`/`CandidateToken` đã đúng
+    hình dạng task spec yêu cầu; toàn bộ thay đổi nằm ở tầng application command + event registry + CLI.
+
+### Thực hiện
+
+- `internal/app/adapterbuild/commands.go` (viết lại hoàn toàn, giữ nguyên toàn bộ logic hash/drift/sign gốc):
+  `ProbeAdapterBuild(ctx, uow, cmd ports.Command, req ProbeRequest)`, `RegisterAdapterBuild(ctx, uow, cmd
+  ports.Command, req RegisterRequest)`; helper mới `requireInstallationScope`, `loadProbeReplay`,
+  `loadRegisterReplay`, `registerReceiptPayload`/`newRegisterReceiptPayload`/`toResult`. `RegisterRequest`
+  không còn field `RegisteredBy`.
+- `internal/app/adapterbuild/event_schema.go` (file mới): `AdapterBuildRegisteredEventType =
+  "AdapterBuildRegistered"`, `AdapterBuildRegisteredSchemaVersion = 1`,
+  `adapterBuildRegisteredEventPayload{BuildID, ProviderKey, ExecutablePath, ExecutableContentHash,
+  ProtocolVersion, OS, Toolchain, ConfigIdentity, RegisteredBy, RegisteredAt}`,
+  `DecodeAdapterBuildRegisteredV1`, `RegisterEventSchemas`.
+- `internal/app/adapterbuild/testdata/golden/adapter_build_registered_v1.json` (fixture mới) +
+  `event_schema_test.go` (file mới): `TestAdapterBuildRegisteredV1_GoldenFixtureDecodes`,
+  `TestAdapterBuildRegisteredV1_RealEventPayloadDecodes` — mirror đúng
+  `internal/app/catalog/event_schema_test.go`.
+- `internal/archtest/boundary_test.go`: refactor `TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess`
+  dùng 2 helper chung mới (`findWithSerializedWriteClosure`, `assertClosureNeverCallsFilesystemOrProcess`);
+  thêm `TestProbeAdapterBuildTransactionNeverCallsFilesystemOrProcess` (test mới); mở rộng `forbiddenCalls`
+  thêm `"HashExecutableFile"`.
+- `internal/archtest/event_catalog_test.go`: import `internal/app/adapterbuild`, thêm
+  `adapterbuild.RegisterEventSchemas(registry)` vào registry tổng hợp của
+  `TestEmittedDomainEventInventoryMatchesRegisteredInventory`.
+- `cmd/aw/adapter.go`: `runAdapterProbe`/`runAdapterRegister` thêm flag `--idempotency-key` (bắt buộc) và
+  `--actor` (mặc định `"operator"`, thay hẳn `--registered-by` cũ ở register); dựng `ports.Command` qua
+  `newDefinitionCommand`/`requestHash` (2 helper có sẵn từ `cmd/aw/definition.go`, cùng package `main`, không
+  viết lại) với `ports.InstallationScope()`; lỗi `ports.ErrReceiptConflict` map qua `mapReceiptConflict` có
+  sẵn.
+- `cmd/aw/adapter_test.go`: helper mới `freshIdempotencyKey`/`registerAdapterBuild` (dùng `sync/atomic`
+  Counter để mỗi lần gọi CLI trong test có 1 idempotency key riêng — mọi test hiện có trong file này kiểm tra
+  trục fingerprint/drift/TOCTOU/expiry/signature, không phải trục command replay, nên phải giữ mỗi lệnh CLI
+  độc lập, không vô tình trùng key); thay toàn bộ `--registered-by` bằng gọi qua helper mới; thêm
+  `TestAdapter_MissingIdempotencyKeyIsUsageError`.
+- `internal/adapters/sqlite/adapterbuild_test.go`, `internal/adapters/sqlite/workflowcompiler_integration_test.go`,
+  `internal/integration/definitionplane_test.go`: cập nhật mọi call site còn lại (chỉ có đúng 2 file sqlite +
+  1 file integration ngoài `internal/app/adapterbuild`/`cmd/aw` từng gọi 2 hàm này) sang chữ ký mới, dựng
+  `ports.Command` tối thiểu hợp lệ tại chỗ.
+
+### Test
+
+- `internal/app/adapterbuild/commands_test.go` (fake uow, cập nhật toàn bộ test cũ sang chữ ký mới + 8 test
+  mới): `TestProbeAdapterBuild_RejectsProjectScopedCommand`,
+  `TestRegisterAdapterBuild_RejectsProjectScopedCommand` (cả 2 assert `errors.Is(err,
+  ports.ErrScopeMismatch)`), `TestProbeAdapterBuild_ReplaySameCommand_ReturnsExactCandidate_NoNewIO` (xoá
+  hẳn executable sau lần probe thật đầu tiên rồi gọi lại cùng command — nếu implementation lỡ re-probe sẽ
+  fail vì file không còn, thành công nghĩa là chứng minh được KHÔNG có I/O mới xảy ra, mạnh hơn một bộ đếm
+  spy thông thường), `TestProbeAdapterBuild_ReplayAfterExpiry_ReturnsExactCandidateEvenExpired` (seed thẳng
+  một receipt với `CandidateToken` đã hết hạn 24 giờ qua `tx.Receipts().Record`, trỏ `ExecutablePath` tới file
+  không tồn tại — probe vẫn phải trả đúng candidate đã hết hạn, không lỗi, không re-probe),
+  `TestProbeAdapterBuild_SameKeyDifferentHash_IsReceiptConflict`,
+  `TestProbeAdapterBuild_NewIdempotencyKey_AlwaysProbesAnew` (2 probe cùng executable, 2 idempotency key khác
+  nhau — nonce PHẢI khác nhau, tuple đo được PHẢI giống nhau).
+- `internal/app/adapterbuild/commands_sqlite_test.go` (file mới, real sqlite, vì fake's
+  `WithSerializedWrite` unlock trước khi chạy `fn` nên không tạo contention thật — đúng lý do
+  `internal/app/catalog/commands_sqlite_test.go` đã giải thích cho trường hợp tương tự):
+  `TestProbeAdapterBuild_ConcurrentSameKey_AllCallersGetIdenticalToken` (8 writer cùng idempotency key/hash,
+  đối chiếu bằng chuỗi `Signature|Nonce|ExpiresAt` — mọi writer PHẢI giống hệt writer 0, cộng
+  `store.CountCommandReceiptsByIdempotencyKey` xác nhận đúng 1 dòng),
+  `TestRegisterAdapterBuild_ConcurrentSameKey_ExactlyOneBuildOneEvent` (8 writer cùng token/command, đối
+  chiếu `Build.ID()`/`AlreadyExisted` giống hệt nhau, `store.CountDomainEvents("AdapterBuildVersion", id)`
+  đúng 1, `CountCommandReceiptsByIdempotencyKey` đúng 1),
+  `TestRegisterAdapterBuild_ReplayAfterCommit_SimulatesCrashBeforeAck` và
+  `TestProbeAdapterBuild_ReplayAfterCommit_SimulatesCrashBeforeAck` (gọi thật lần 1 để commit, xoá executable,
+  gọi lại với CÙNG command envelope — retry phải thành công và trả đúng kết quả cũ mà không chạm file đã bị
+  xoá, đúng kịch bản "crash-after-commit-before-ack" thật, không giả lập bằng cách sửa DB tay).
+- `internal/app/adapterbuild/event_schema_test.go`: 2 test golden/round-trip cho `AdapterBuildRegistered` v1.
+- `internal/archtest`: `TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess` (đã có, giờ pass
+  với transaction mới có thêm `Receipts()`/`Events()` calls),
+  `TestProbeAdapterBuildTransactionNeverCallsFilesystemOrProcess` (test mới),
+  `TestEmittedDomainEventInventoryMatchesRegisteredInventory` (tự động nhận `AdapterBuildRegistered` v1 vào
+  cả 2 phía registered/emitted — log xác nhận "41 registered key(s), 41 emitted key(s), 0 missing
+  decoder(s)").
+- `cmd/aw/adapter_test.go`, `internal/adapters/sqlite/adapterbuild_test.go`,
+  `internal/adapters/sqlite/workflowcompiler_integration_test.go`, `internal/integration/definitionplane_test.go`:
+  toàn bộ test cũ pass nguyên vẹn sau khi cập nhật call site, không có test nào bị xoá hay đổi ý nghĩa.
+- `go build ./...`, `go vet ./...` sạch. `go test ./internal/app/adapterbuild/... -count=1 -v` (28 test) pass
+  100%. `go test ./internal/archtest/... -count=1` pass. `go test ./cmd/aw/... -count=1` pass (12.8s). `go
+  test ./... -count=1` (74 package sau khi merge `origin/master` nhận V6-03) pass 100%, 0 dòng `FAIL`, không
+  regression ở bất kỳ package nào khác.
+
+### Verify
+
+- "replay/hash": `TestProbeAdapterBuild_ReplaySameCommand_ReturnsExactCandidate_NoNewIO`,
+  `TestProbeAdapterBuild_SameKeyDifferentHash_IsReceiptConflict`, và tương ứng phía Register qua
+  `loadRegisterReplay`'s test gián tiếp (`TestRegisterAdapterBuild_ReplayAfterCommit_SimulatesCrashBeforeAck`
+  chính là replay/hash test thật với dữ liệu thật đã commit).
+- "concurrency": `TestProbeAdapterBuild_ConcurrentSameKey_AllCallersGetIdenticalToken`,
+  `TestRegisterAdapterBuild_ConcurrentSameKey_ExactlyOneBuildOneEvent` — cả 2 chạy trên sqlite thật, 8 writer
+  race.
+- "expired replay": `TestProbeAdapterBuild_ReplayAfterExpiry_ReturnsExactCandidateEvenExpired` — candidate hết
+  hạn 24 giờ vẫn được trả nguyên vẹn.
+- "new token": `TestProbeAdapterBuild_NewIdempotencyKey_AlwaysProbesAnew` — nonce khác nhau, tuple đo được
+  giống nhau (executable không đổi).
+- "crash-after-commit": `TestProbeAdapterBuild_ReplayAfterCommit_SimulatesCrashBeforeAck`,
+  `TestRegisterAdapterBuild_ReplayAfterCommit_SimulatesCrashBeforeAck` — mô phỏng bằng xoá executable thật sau
+  commit, không sửa DB tay.
+- "drift/token mismatch": toàn bộ test drift cũ (`TestRegister_RejectsStaleTokenAfterExecutableSwapped`,
+  `TestRegister_RejectsMismatchedCapabilityManifest`, `TestRegister_RejectsExpiredToken`,
+  `TestRegister_RejectsTokenSignedUnderRotatedKey`) vẫn nguyên vẹn, chạy qua chữ ký mới.
+- "event golden": `adapter_build_registered_v1.json` + 2 test decode, cộng archtest's
+  `TestEmittedDomainEventInventoryMatchesRegisteredInventory` tự động xác nhận registered=emitted.
+- "installation scope": `TestProbeAdapterBuild_RejectsProjectScopedCommand`,
+  `TestRegisterAdapterBuild_RejectsProjectScopedCommand`, cả 2 dùng `ports.ErrScopeMismatch`.
+- "no I/O-in-tx architecture test": `TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess` (đã có,
+  giờ mở rộng `forbiddenCalls`) + `TestProbeAdapterBuildTransactionNeverCallsFilesystemOrProcess` (mới) — cả 2
+  parse AST thật của `commands.go`, không phải chạy thử một lần rồi tin.
+- "Hoàn thành khi": không còn public call nào tới `ProbeAdapterBuild`/`RegisterAdapterBuild` thiếu
+  `ports.Command` (chữ ký cũ không còn tồn tại để gọi nhầm); fingerprint dedupe
+  (`InsertIfAbsent`/`AlreadyExisted`) và command replay (receipt) là 2 trục độc lập được chứng minh riêng biệt
+  — `TestRegister_DuplicateIsIdempotent` (2 command khác nhau, cùng fingerprint) tách bạch rõ với
+  `TestRegisterAdapterBuild_ReplayAfterCommit_SimulatesCrashBeforeAck` (1 command, gọi lại 2 lần).
+
+### Kết quả
+
+`internal/app/adapterbuild.ProbeAdapterBuild`/`RegisterAdapterBuild` giờ nhận đủ `ports.Command` envelope,
+có receipt/hash lookup trước mọi I/O thật, probe replay trả đúng candidate gốc kể cả đã hết hạn,
+`RegisterAdapterBuild` derive `RegisteredBy` từ `cmd.Actor`, emit `AdapterBuildRegistered` v1 (đăng ký đầy đủ
+qua `eventschema`) đúng 1 lần cho mỗi build mới, atomic cùng transaction với insert-if-absent và receipt.
+`ports.ErrScopeMismatch` (sentinel chung từ V6-03) enforce installation-scope cho cả 2 command. 2 test kiến
+trúc (`TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess` mở rộng +
+`TestProbeAdapterBuildTransactionNeverCallsFilesystemOrProcess` mới) khoá cứng "không I/O trong transaction"
+bằng AST thật cho cả 2 command, đồng thời đóng luôn một lỗ hổng có sẵn trong chính bộ test cũ (thiếu case chữ
+hoa `HashExecutableFile`). CLI `aw adapter probe|register` chuyển hẳn sang `--idempotency-key`/`--actor`,
+không còn `--registered-by`. 12 test mới trong `commands_test.go` (fake) + 4 test mới trong
+`commands_sqlite_test.go` (real sqlite, concurrency/crash-replay) + 2 test golden/round-trip trong
+`event_schema_test.go`. `go build/vet/test ./...` xanh 100% trên toàn bộ 74 package. V6-10J (adapter-build
+registry HTTP endpoints) giờ có đủ điều kiện bắt đầu ngay khi các dependency còn lại (V6-00, V6-01A, V6-02,
+V6-02A) sẵn sàng — "provider upgrade flow usable without bypassing command contract" không còn là mục tiêu
+hoãn lại.
