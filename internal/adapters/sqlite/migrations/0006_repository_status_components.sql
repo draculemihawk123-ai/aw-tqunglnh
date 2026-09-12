@@ -48,7 +48,7 @@
 -- current CI fixture happens to trip it": nothing in this codebase, at
 -- any point in its history up to and including this task, ever writes a
 -- real (non-test-fixture) row to repositories, family_repository_scopes
--- or repository_workspaces through cmd/agentkit -- RegisterRepository
+-- or repository_workspaces through cmd/aw -- RegisterRepository
 -- (this task) is the very first command that can create a repositories
 -- row at all, and family_repository_scopes/repository_workspaces stay
 -- unpopulated until V3-04/V3-06 land, which can only ever run against a

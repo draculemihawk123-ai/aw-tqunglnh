@@ -185,7 +185,7 @@ func TestDefinitionPlaneGate(t *testing.T) {
 
 	// ADAPTER_BUILD_VERSION: registered through the exact same
 	// application commands docs/design/04-v2-definition-plane.md's own
-	// V2-07B CLI (agentkit adapter probe|register) is built on top of.
+	// V2-07B CLI (aw adapter probe|register) is built on top of.
 	executablePath := filepath.Join(root, "provider-cli")
 	if err := os.WriteFile(executablePath, []byte("fake-provider-binary-v1"), 0o644); err != nil {
 		t.Fatalf("write fake provider executable: %v", err)

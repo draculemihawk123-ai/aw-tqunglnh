@@ -9,7 +9,7 @@
 // forbids domain/app from importing internal/adapters/... at all, but an
 // end-to-end integration test's entire point is wiring adapters and
 // app-layer code together the way a real binary does — exactly what a
-// future cmd/agentkit `serve`/`worker` implementation will also do.
+// future cmd/aw `serve`/`worker` implementation will also do.
 package integration
 
 import (

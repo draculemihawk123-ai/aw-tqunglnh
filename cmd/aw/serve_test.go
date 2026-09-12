@@ -69,7 +69,7 @@ func TestServe_RejectsMissingArtifactRootDirectory(t *testing.T) {
 }
 
 // TestServe_StartsServesHealthAndShutsDownGracefully drives serve exactly
-// as `agentkit serve` would, real SQLite database and real artifact root
+// as `aw serve` would, real SQLite database and real artifact root
 // directory, and proves the full lifecycle V6-01 promises: it starts,
 // announces its bound address on stdout, answers /health/live and
 // /health/ready over a real HTTP round trip, and stops cleanly once its

@@ -61,7 +61,7 @@ func migrationByVersion(t *testing.T, version int) migration {
 // realistic case this migration actually ever runs against: a database
 // migrated 1..5 with empty repositories/family_repository_scopes/
 // repository_workspaces tables (exactly what sqlite.Open produces for
-// every test fixture and every real cmd/agentkit invocation today, since
+// every test fixture and every real cmd/aw invocation today, since
 // nothing before this task ever writes a repositories row and nothing
 // before V3-04/V3-06 ever writes to the other two — see migration 6's own
 // comment for the full argument). Applying it standalone must succeed,
