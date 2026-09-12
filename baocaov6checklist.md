@@ -416,6 +416,15 @@ sau khi đã từng ready, không chỉ đúng lúc startup.
   che bằng tăng timeout.
 - `go test ./...` toàn bộ module pass 100% sau khi sửa `TestRun_StubCommandsReportNotYetImplemented` (test cũ
   giả định "serve" còn là stub — lỗi thật bị phát hiện ngay lần chạy full suite đầu tiên, không phải bỏ qua).
+- **CI race detector ("Linux race and stability") bắt được một data race thật** (không phải flake đã biết từ
+  trước — kiểm tra kỹ trước khi kết luận): `waitForServeAddress` (helper poll `stdout` để lấy địa chỉ server
+  vừa bind) đọc `bytes.Buffer.String()` từ goroutine chính của test, trong khi `serve()` chạy ở goroutine
+  riêng ghi `fmt.Fprintf(stdout, ...)` vào ĐÚNG buffer đó — `bytes.Buffer` không an toàn cho truy cập đồng
+  thời, và race detector chỉ ra chính xác 2 goroutine, 2 dòng code xung đột. Không có CGO/race detector local
+  trên máy Windows này (`CGO_ENABLED=0`, không có gcc) nên không tái hiện được tại chỗ — phải đọc kỹ log CI
+  thật để xác định chính xác nguyên nhân trước khi sửa. Sửa bằng `syncBuffer` (wrapper `bytes.Buffer` +
+  `sync.Mutex` cho cả `Write` và `String`), chỉ dùng ở 2 test có goroutine thật; 3 test còn lại gọi `serve()`
+  đồng bộ (không goroutine) nên giữ nguyên `bytes.Buffer` trần, không cần đổi.
 
 ### Verify
 
