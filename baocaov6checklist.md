@@ -784,6 +784,17 @@ text) dùng golden byte-for-byte vì đó chính là điều cần đông cứng
 - `go build ./...`, `go vet ./...` sạch. `go test ./internal/delivery/httpapi/...` 100% pass (đã chạy trước
   full suite). `go test ./...` toàn bộ module chạy sau, xanh 100% — không phát hiện flake mới, không đụng
   package nào khác ngoài `internal/delivery/httpapi`.
+- **CI job `contract (windows-latest)` bắt được một bug thật sau khi push** (không phải flake đã biết trước —
+  kiểm tra kỹ trước khi kết luận, đúng doctrine): `TestWriteSSE_MatchesGoldenWireFormat` fail chỉ trên
+  windows-latest, pass trên ubuntu-latest — cùng gốc rễ `.gitattributes` đã tự ghi chú trước đó cho golden
+  JSON (V1-11 từng gặp y hệt): `testdata/golden/sse_message_v1.txt` không có rule `eol=lf`, nên checkout trên
+  Windows normalize thành CRLF, trong khi `WriteSSE` luôn emit thuần LF (`"id: ...\nevent: ...\n\n"`) — golden
+  fixture và output thật lệch line ending. Sửa bằng thêm `*.txt text eol=lf` vào `.gitattributes` (mirror
+  đúng rule `*.json` đã có, kèm comment giải thích) — không sửa code, không sửa test, vì cả 2 đều đúng, chỉ
+  checkout bị sai. Xác nhận repo hiện không có file `.txt` nào khác bị ảnh hưởng ngoài ý muốn
+  (`git ls-files "*.txt"` chỉ trả đúng 1 file). Đây đúng là bug thật do task này tạo ra (file mới, thiếu
+  gitattributes rule tương ứng), không phải flake ngẫu nhiên — sửa xong, push lại, CI windows-latest phải
+  chạy lại từ đầu.
 
 ### Verify
 
