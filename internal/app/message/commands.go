@@ -184,12 +184,7 @@ func AppendMessage(
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			WorkItemID        string `json:"workItemId"`
-			Role              string `json:"role"`
-			Sequence          uint64 `json:"sequence"`
-			ContentArtifactID string `json:"contentArtifactId"`
-		}{
+		eventPayload, err := json.Marshal(messageAppendedEventPayload{
 			WorkItemID: req.WorkItemID, Role: string(m.Role),
 			Sequence: m.Sequence, ContentArtifactID: string(m.ContentArtifactID),
 		})
@@ -210,7 +205,7 @@ func AppendMessage(
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-appended", ProjectID: req.ProjectID,
 			AggregateType: "Message", AggregateID: messageID, Sequence: 1,
-			EventType: "MessageAppended", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: MessageAppendedEventType, SchemaVersion: MessageAppendedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err

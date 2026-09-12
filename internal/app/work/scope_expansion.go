@@ -247,13 +247,7 @@ func RequestScopeExpansion(ctx context.Context, uow ports.UnitOfWork, ids idsour
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			RequestID            string `json:"requestId"`
-			FamilyID             string `json:"familyId"`
-			ProjectID            string `json:"projectId"`
-			ReferencedWorkItemID string `json:"referencedWorkItemId,omitempty"`
-			GrantCount           int    `json:"grantCount"`
-		}{
+		eventPayload, err := json.Marshal(scopeExpansionRequestedEventPayload{
 			RequestID: requestID, FamilyID: req.FamilyID, ProjectID: string(family.ProjectID),
 			ReferencedWorkItemID: req.ReferencedWorkItemID, GrantCount: len(grants),
 		})
@@ -267,7 +261,7 @@ func RequestScopeExpansion(ctx context.Context, uow ports.UnitOfWork, ids idsour
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-requested", ProjectID: string(family.ProjectID),
 			AggregateType: "ScopeExpansionRequest", AggregateID: requestID, Sequence: 1,
-			EventType: "ScopeExpansionRequested", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: ScopeExpansionRequestedEventType, SchemaVersion: ScopeExpansionRequestedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
@@ -652,15 +646,7 @@ func ApproveScopeExpansion(ctx context.Context, uow ports.UnitOfWork, ids idsour
 			}
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			RequestID            string          `json:"requestId"`
-			FamilyID             string          `json:"familyId"`
-			ProjectID            string          `json:"projectId"`
-			NewScopeVersion      uint64          `json:"newScopeVersion"`
-			ApprovedGrants       []ApprovedGrant `json:"approvedGrants"`
-			ReferencedWorkItemID string          `json:"referencedWorkItemId,omitempty"`
-			ApprovedBy           string          `json:"approvedBy"`
-		}{
+		eventPayload, err := json.Marshal(scopeExpansionApprovedEventPayload{
 			RequestID: req.RequestID, FamilyID: string(family.ID), ProjectID: string(family.ProjectID),
 			NewScopeVersion: newScopeVersion, ApprovedGrants: approvedGrants,
 			ReferencedWorkItemID: referencedWorkItemIDString(request.ReferencedWorkItemID), ApprovedBy: cmd.Actor,
@@ -684,7 +670,7 @@ func ApproveScopeExpansion(ctx context.Context, uow ports.UnitOfWork, ids idsour
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-approved", ProjectID: string(family.ProjectID),
 			AggregateType: "ScopeExpansionApproval", AggregateID: cmd.ID, Sequence: 1,
-			EventType: "ScopeExpansionApproved", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: ScopeExpansionApprovedEventType, SchemaVersion: ScopeExpansionApprovedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
@@ -779,12 +765,7 @@ func RejectScopeExpansion(ctx context.Context, uow ports.UnitOfWork, cmd ports.C
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			RequestID    string `json:"requestId"`
-			FamilyID     string `json:"familyId"`
-			DecisionNote string `json:"decisionNote"`
-			RejectedBy   string `json:"rejectedBy"`
-		}{
+		eventPayload, err := json.Marshal(scopeExpansionRejectedEventPayload{
 			RequestID: req.RequestID, FamilyID: string(request.FamilyID), DecisionNote: req.DecisionNote, RejectedBy: cmd.Actor,
 		})
 		if err != nil {
@@ -796,7 +777,7 @@ func RejectScopeExpansion(ctx context.Context, uow ports.UnitOfWork, cmd ports.C
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-rejected", ProjectID: string(request.ProjectID),
 			AggregateType: "ScopeExpansionRejection", AggregateID: cmd.ID, Sequence: 1,
-			EventType: "ScopeExpansionRejected", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: ScopeExpansionRejectedEventType, SchemaVersion: ScopeExpansionRejectedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
@@ -890,11 +871,7 @@ func WithdrawScopeExpansion(ctx context.Context, uow ports.UnitOfWork, cmd ports
 				return err
 			}
 
-			eventPayload, err := json.Marshal(struct {
-				RequestID   string `json:"requestId"`
-				FamilyID    string `json:"familyId"`
-				WithdrawnBy string `json:"withdrawnBy"`
-			}{
+			eventPayload, err := json.Marshal(scopeExpansionWithdrawnEventPayload{
 				RequestID: req.RequestID, FamilyID: string(request.FamilyID), WithdrawnBy: cmd.Actor,
 			})
 			if err != nil {
@@ -907,7 +884,7 @@ func WithdrawScopeExpansion(ctx context.Context, uow ports.UnitOfWork, cmd ports
 			if err := tx.Events().Append(ctx, ports.DomainEvent{
 				ID: cmd.ID + "-withdrawn", ProjectID: string(request.ProjectID),
 				AggregateType: "ScopeExpansionWithdrawal", AggregateID: cmd.ID, Sequence: 1,
-				EventType: "ScopeExpansionWithdrawn", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+				EventType: ScopeExpansionWithdrawnEventType, SchemaVersion: ScopeExpansionWithdrawnSchemaVersion, PayloadJSON: string(eventPayload),
 				CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 			}); err != nil {
 				return err
