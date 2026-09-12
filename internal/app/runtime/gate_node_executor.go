@@ -273,7 +273,15 @@ func (e *GateNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionR
 	})
 	flushErr := sink.Flush(ctx)
 
-	return e.classify(ctx, req, request, resolved, inputs.criteria, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), env)
+	classified, err := e.classify(ctx, req, request, resolved, inputs.criteria, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), env)
+	if err == nil {
+		// Always empty in practice (see this method's own "No writeLeases
+		// dependency" comment above) — attached anyway so all three
+		// executors carry this field identically, rather than one silently
+		// omitting it.
+		classified.WriteLeaseGrants = resolved.writeLeaseGrants
+	}
+	return classified, err
 }
 
 // classify maps one completed ProcessSupervisor.Run call into either a

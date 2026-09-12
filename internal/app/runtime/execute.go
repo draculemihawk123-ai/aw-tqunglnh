@@ -100,10 +100,11 @@ var ErrContextSnapshotUnverified = errors.New("runtime: execution attempt's cont
 // ExecuteNodeHandler is a ready-to-register workerpool.Handler for
 // ExecuteNodeJobKind.
 type ExecuteNodeHandler struct {
-	uow      ports.UnitOfWork
-	ids      idsource.Source
-	executor ports.NodeExecutor
-	clk      clock.Clock
+	uow         ports.UnitOfWork
+	ids         idsource.Source
+	executor    ports.NodeExecutor
+	clk         clock.Clock
+	writeLeases ports.WriteLeaseManager
 	// isolation and agents are V5-08's own admission dependencies —
 	// isolation answers "is the pinned tier enforceable right now"
 	// (ADR-023, V5-05's own checker); agents resolves the live,
@@ -124,9 +125,9 @@ type ExecuteNodeHandler struct {
 // can safely pass agentregistry.New(ctx) with zero executors registered.
 func NewExecuteNodeHandler(
 	uow ports.UnitOfWork, ids idsource.Source, executor ports.NodeExecutor, clk clock.Clock,
-	isolation ports.IsolationEnforcementChecker, agents *agentregistry.Registry,
+	isolation ports.IsolationEnforcementChecker, agents *agentregistry.Registry, writeLeases ports.WriteLeaseManager,
 ) *ExecuteNodeHandler {
-	return &ExecuteNodeHandler{uow: uow, ids: ids, executor: executor, clk: clk, isolation: isolation, agents: agents}
+	return &ExecuteNodeHandler{uow: uow, ids: ids, executor: executor, clk: clk, isolation: isolation, agents: agents, writeLeases: writeLeases}
 }
 
 var _ workerpool.Handler = (*ExecuteNodeHandler)(nil)
@@ -253,7 +254,7 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 	if cancelling, err := h.runIsCancelling(ctx, payload.RunID); err != nil {
 		return err
 	} else if cancelling {
-		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
+		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, h.writeLeases, FinalizeExecutionAttemptRequest{
 			RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 			NextState: runtimedomain.ExecutionAttemptCancelled, TerminationReason: runtimedomain.TerminationReasonRunCancelled,
 			JobLease: jobLease, CorrelationID: payload.CorrelationID,
@@ -287,7 +288,7 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 		// (nil on success), not the original verify error, so the job is
 		// never redelivered/retried for an Attempt that already reached a
 		// terminal state.
-		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
+		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, h.writeLeases, FinalizeExecutionAttemptRequest{
 			RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 			NextState: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 			FailureCode: errorcode.CodeExecutionFailed, JobLease: jobLease, CorrelationID: payload.CorrelationID,
@@ -338,7 +339,7 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 			return nil
 		}
 		if errors.Is(execCtxErr, context.DeadlineExceeded) {
-			_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
+			_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, h.writeLeases, FinalizeExecutionAttemptRequest{
 				RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 				NextState: runtimedomain.ExecutionAttemptTimedOut, TerminationReason: runtimedomain.TerminationReasonDeadlineExceeded,
 				FailureCode: errorcode.CodeTimeout, JobLease: jobLease, CorrelationID: payload.CorrelationID,
@@ -383,7 +384,7 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 		// path), so this handler falls back to the coarsest classification
 		// rather than leaving FailureCode empty (ErrFailureCodeRequired
 		// would otherwise reject this finalize outright).
-		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
+		_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, h.writeLeases, FinalizeExecutionAttemptRequest{
 			RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 			NextState: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 			FailureCode: errorcode.CodeExecutionFailed, JobLease: jobLease, CorrelationID: payload.CorrelationID,
@@ -437,11 +438,11 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 			reason = execResult.TerminationReason
 		}
 	}
-	_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, FinalizeExecutionAttemptRequest{
+	_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, h.writeLeases, FinalizeExecutionAttemptRequest{
 		RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 		NextState: nextState, TerminationReason: reason, FailureCode: failureCode, SelectedOutcome: execResult.SelectedOutcome,
 		RequestedScopeExpansion: scopeProposal, JobLease: jobLease, CorrelationID: payload.CorrelationID,
-		Evidence: execResult.Evidence,
+		Evidence: execResult.Evidence, WriteLeases: execResult.WriteLeaseGrants,
 	})
 	return finalizeErr
 }

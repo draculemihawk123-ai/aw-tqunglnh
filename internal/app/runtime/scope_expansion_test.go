@@ -92,7 +92,7 @@ func blockScopeExpansionFixture(t *testing.T) (
 			Reason: "need repo-2 too",
 		},
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(ctx, job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}

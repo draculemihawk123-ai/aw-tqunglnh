@@ -226,7 +226,7 @@ type nodeRunFailedEventPayload struct {
 // caller) — every backoff/"now" computation in the retry path goes through
 // it, never time.Now() directly, so V4-06's own required "fake clock"
 // tests can control backoff timing deterministically.
-func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, req FinalizeExecutionAttemptRequest) (FinalizeExecutionAttemptResult, error) {
+func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, writeLeases ports.WriteLeaseManager, req FinalizeExecutionAttemptRequest) (FinalizeExecutionAttemptResult, error) {
 	if req.RunID == "" || req.NodeRunID == "" || req.AttemptID == "" {
 		return FinalizeExecutionAttemptResult{}, errors.New("runtime: RunID, NodeRunID and AttemptID are required")
 	}
@@ -373,7 +373,33 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 		result.Attempt = updatedAttempt
 		return nil
 	})
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	// Release AFTER commit, never before or inside the transaction above —
+	// the same crash-safety ordering V5-15D's own cancellation-finalization
+	// path established (agent_node_executor_cancellation.go): a crash
+	// between this Attempt's own terminal commit and this release just
+	// leaves the lease held a little longer (its own TTL still bounds
+	// that), never leaves an Attempt whose own outcome is still ambiguous
+	// holding nothing. Idempotent and fence/holder-checked by
+	// ReleaseWriteLeases' own existing WHERE clause (exact
+	// repository_workspace_id/generation/fence_token/holder_job_id/
+	// holder_job_lease_token/holder_attempt_id/lease_owner match, still
+	// active) — a caller racing a second release of the same grant, or one
+	// whose lease already expired/was reclaimed, gets ErrWriteLeaseLost,
+	// never a silent double-release of someone else's now-current lease.
+	if len(req.WriteLeases) > 0 {
+		// ErrWriteLeaseLost here means the desired end state (this Attempt no
+		// longer holds the lease) already holds true some other way — the
+		// grant's own TTL already lapsed naturally, or a duplicate finalize
+		// call already released it — never a reason to fail an Attempt
+		// finalize that itself already committed successfully.
+		if releaseErr := writeLeases.ReleaseWriteLeases(ctx, req.WriteLeases); releaseErr != nil && !errors.Is(releaseErr, ports.ErrWriteLeaseLost) {
+			return result, fmt.Errorf("runtime: release write leases after finalizing attempt %s: %w", req.AttemptID, releaseErr)
+		}
+	}
+	return result, nil
 }
 
 // validateAndAttachEvidenceArtifactsTx is V5-08B's own locked decision #2,

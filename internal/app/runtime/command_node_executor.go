@@ -137,6 +137,22 @@ func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecuti
 
 	resolved, err := resolveExecutionResources(ctx, e.uow, e.workspaces, e.writeLeases, req, request)
 	if err != nil {
+		// A write lease another Attempt currently, actively holds (not a
+		// fence mismatch, not a quarantined workspace, not a stale
+		// generation — those stay non-retryable below/elsewhere) is a real,
+		// typed, timing-shaped contention: the same repository simply had
+		// an active writer at this exact moment. This is exactly the
+		// technical, transient failure AttemptRules.RetryableErrorCodes
+		// exists for — classify it, never wrap it as a bare error, so
+		// FinalizeExecutionAttempt's own existing retry-vs-exhaust decision
+		// gets a chance to run instead of this attempt failing outright on
+		// its very first try.
+		if errors.Is(err, ports.ErrWriteLeaseConflict) {
+			return ports.NodeExecutionResult{
+				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
+				ErrorCode: errorcode.CodeConflict,
+			}, nil
+		}
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: resolve command execution resources: %w", err)
 	}
 	request.WorkspaceMounts = resolved.mounts
@@ -145,7 +161,7 @@ func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecuti
 	if err != nil {
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
-			ErrorCode: errorcode.CodeValidationFailed,
+			ErrorCode: errorcode.CodeValidationFailed, WriteLeaseGrants: resolved.writeLeaseGrants,
 		}, nil
 	}
 
@@ -190,7 +206,11 @@ func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecuti
 	})
 	flushErr := sink.Flush(ctx)
 
-	return e.classify(ctx, req, request, resolved, inputs.doc, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), stderr.Bytes(), env)
+	classified, err := e.classify(ctx, req, request, resolved, inputs.doc, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), stderr.Bytes(), env)
+	if err == nil {
+		classified.WriteLeaseGrants = resolved.writeLeaseGrants
+	}
+	return classified, err
 }
 
 // classify maps one completed ProcessSupervisor.Run call into either a

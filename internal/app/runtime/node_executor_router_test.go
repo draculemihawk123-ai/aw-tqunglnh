@@ -85,7 +85,7 @@ func TestExecuteNodeHandler_CommandExecutorKind_RoutesToRealCommandExecutorAndFi
 	commandExecutor, _, _ := newTestCommandNodeExecutor(uow, ids, store, supervisor, fake.SecretResolver{})
 	router := &runtime.NodeExecutorRouter{Command: commandExecutor}
 
-	handler := runtime.NewExecuteNodeHandler(uow, ids, router, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, router, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), &bridgeFakeWriteLeaseManager{})
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle: %v", err)
 	}

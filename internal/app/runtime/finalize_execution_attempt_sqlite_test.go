@@ -127,7 +127,7 @@ func TestFinalizeExecutionAttempt_SQLite_ExpiredLease_RollsBackEverything(t *tes
 	_, lease := claimExecuteNodeJob(t, ctx, store, 50*time.Millisecond)
 	time.Sleep(100 * time.Millisecond)
 
-	_, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: lease,
@@ -145,7 +145,7 @@ func TestFinalizeExecutionAttempt_SQLite_WrongOwnerAndToken_RollsBackEverything(
 	_, lease := claimExecuteNodeJob(t, ctx, store, 30*time.Second)
 
 	wrongOwner := ports.JobLease{JobID: lease.JobID, Owner: "someone-else", Token: lease.Token, LeaseUntil: lease.LeaseUntil}
-	_, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: wrongOwner,
@@ -155,7 +155,7 @@ func TestFinalizeExecutionAttempt_SQLite_WrongOwnerAndToken_RollsBackEverything(
 	}
 
 	wrongToken := ports.JobLease{JobID: lease.JobID, Owner: lease.Owner, Token: lease.Token + 1, LeaseUntil: lease.LeaseUntil}
-	_, err = runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err = runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: wrongToken,
@@ -213,7 +213,7 @@ func TestFinalizeExecutionAttempt_SQLite_WriteLeaseWrongFenceToken_RollsBackEver
 	tamperedGrant := grants[0]
 	tamperedGrant.FenceToken = tamperedGrant.FenceToken + 1000
 
-	_, err = runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	_, err = runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: lease, WriteLeases: []ports.WriteLeaseGrant{tamperedGrant},
@@ -238,7 +238,7 @@ func TestFinalizeExecutionAttempt_SQLite_ConcurrentFinalize_ExactlyOneWinner(t *
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+			_, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 				RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 				NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 				SelectedOutcome: "done", JobLease: lease,

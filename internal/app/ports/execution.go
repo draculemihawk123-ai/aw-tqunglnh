@@ -84,6 +84,21 @@ type NodeExecutionResult struct {
 	// way regardless, but are only ever consumed into a real Checkpoint on
 	// the SUCCEEDED path).
 	Evidence *AttemptFinalizationEvidence
+	// WriteLeaseGrants names every WriteLeaseGrant this executor's own
+	// resolveExecutionResources call acquired before running (empty when
+	// the resolved mounts were all read-only). Populated on every terminal
+	// proposal this type carries (Succeeded/Failed/Blocked) so
+	// ExecuteNodeHandler can release them, through FinalizeExecutionAttempt,
+	// strictly AFTER that Attempt's own terminal transition durably commits
+	// — never before, the same crash-safety ordering V5-15D's own
+	// cancellation-finalization path already established (a worker crash
+	// between commit and release leaves the lease held a little longer,
+	// never leaves an Attempt whose outcome is ambiguous holding nothing).
+	// Never populated alongside a bare error return (ErrIndeterminateExecution/
+	// ErrAttemptAlreadyTerminated): those paths either leave the Attempt
+	// RUNNING for crash recovery to resolve, or (cancellation) already
+	// released the lease themselves before returning.
+	WriteLeaseGrants []WriteLeaseGrant
 }
 
 // DiffManifestArtifactRef names one durable artifact.Artifact row holding

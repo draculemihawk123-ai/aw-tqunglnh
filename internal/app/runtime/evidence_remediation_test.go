@@ -76,7 +76,7 @@ func TestCommandNodeExecutor_Success_OutputArtifactOrphanUntilFinalizePromotesIt
 	}
 
 	version := loadAttemptVersion(t, uow, attemptID)
-	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: version,
 		NextState: result.State, TerminationReason: result.TerminationReason, SelectedOutcome: result.SelectedOutcome,
 		JobLease: jobLease, CorrelationID: "corr-1", Evidence: result.Evidence,
@@ -130,7 +130,7 @@ func TestGateNodeExecutor_AllCriteriaPass_OutputArtifactOrphanUntilFinalizePromo
 	}
 
 	version := loadAttemptVersion(t, uow, attemptID)
-	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: version,
 		NextState: result.State, TerminationReason: result.TerminationReason, SelectedOutcome: result.SelectedOutcome,
 		JobLease: jobLease, CorrelationID: "corr-1", Evidence: result.Evidence,
@@ -183,7 +183,7 @@ func TestFinalizeExecutionAttempt_EvidenceEntryNamesUnlistedArtifact_RejectsBefo
 	}}
 
 	version := loadAttemptVersion(t, uow, attemptID)
-	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: version,
 		NextState: result.State, TerminationReason: result.TerminationReason, SelectedOutcome: result.SelectedOutcome,
 		JobLease: jobLease, CorrelationID: "corr-1", Evidence: &tampered,
@@ -223,7 +223,7 @@ func TestFinalizeExecutionAttempt_MissingOutputArtifact_RejectsBeforeCommitting(
 	tampered.EvidenceEntries = nil
 
 	version := loadAttemptVersion(t, uow, attemptID)
-	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: version,
 		NextState: result.State, TerminationReason: result.TerminationReason, SelectedOutcome: result.SelectedOutcome,
 		JobLease: jobLease, CorrelationID: "corr-1", Evidence: &tampered,
@@ -290,7 +290,7 @@ func TestGateNodeExecutor_OneCriterionFails_OutputArtifactOrphanUntilFinalizePro
 	}
 
 	version := loadAttemptVersion(t, uow, attemptID)
-	finalizeResult, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	finalizeResult, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: version,
 		NextState: result.State, TerminationReason: result.TerminationReason, FailureCode: result.ErrorCode,
 		JobLease: jobLease, CorrelationID: "corr-1", Evidence: result.Evidence,
@@ -347,7 +347,7 @@ func TestFinalizeExecutionAttempt_FailedGateEvidenceTampered_RollsBackRetryDecis
 	}}
 
 	version := loadAttemptVersion(t, uow, attemptID)
-	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: version,
 		NextState: result.State, TerminationReason: result.TerminationReason, FailureCode: result.ErrorCode,
 		JobLease: jobLease, CorrelationID: "corr-1", Evidence: &tampered,
@@ -398,7 +398,7 @@ func TestGateNodeExecutor_NonzeroExit_EvidenceCoversEveryCriterionAsError(t *tes
 	}
 
 	version := loadAttemptVersion(t, uow, attemptID)
-	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	if _, err := runtime.FinalizeExecutionAttempt(ctx, uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: version,
 		NextState: result.State, TerminationReason: result.TerminationReason, FailureCode: result.ErrorCode,
 		JobLease: jobLease, CorrelationID: "corr-1", Evidence: result.Evidence,

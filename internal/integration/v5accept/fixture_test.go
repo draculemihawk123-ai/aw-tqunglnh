@@ -435,7 +435,7 @@ func (f *v5AcceptFixture) registerHandlersWithIsolation(executor ports.NodeExecu
 	registry := workerpool.NewRegistry()
 	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(f.uow, handlerIDs))
 	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandler(f.uow, handlerIDs, fake.NewRuntimeExecutionConfigProvider()))
-	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(f.uow, handlerIDs, executor, clock.System{}, isolation, agents))
+	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(f.uow, handlerIDs, executor, clock.System{}, isolation, agents, f.store))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(f.uow, handlerIDs))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(f.uow, handlerIDs))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(f.uow, handlerIDs))

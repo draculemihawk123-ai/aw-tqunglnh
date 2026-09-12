@@ -353,7 +353,7 @@ func TestCancelRun_NoNewActivationRetryOrReworkAfterIntent(t *testing.T) {
 
 	jobLease := ports.JobLease{JobID: job.ID, Owner: "worker-1", Token: 1}
 	uow.Snapshot.Jobs().(*fake.JobsRepository).SetActiveLease(string(job.ID), jobLease)
-	result, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, runtime.FinalizeExecutionAttemptRequest{
+	result, err := runtime.FinalizeExecutionAttempt(context.Background(), uow, ids, clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
 		RunID: runID, NodeRunID: nodeRunID, AttemptID: attemptID, ExpectedVersion: 2,
 		NextState: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: "done", JobLease: jobLease,
@@ -398,7 +398,7 @@ func TestCancelRun_ClaimVsCancel_CommitOrder(t *testing.T) {
 		cancelActor(t, uow, ids, runID)
 
 		executor := &fake.NodeExecutor{Err: errors.New("must not be called: claimRunning should decline before ever reaching the executor")}
-		handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+		handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 		if err := handler.Handle(context.Background(), job); err != nil {
 			t.Fatalf("Handle (cancel already committed): %v", err)
 		}
@@ -430,7 +430,7 @@ func TestCancelRun_ClaimVsCancel_CommitOrder(t *testing.T) {
 		job := claimableExecuteNodeJob(t, uow, attemptID)
 
 		executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{State: runtimedomain.ExecutionAttemptSucceeded, SelectedOutcome: "done"}}
-		handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+		handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 
 		// Race: cancel intent commits strictly AFTER claimRunning's own
 		// transaction (already claimed this Attempt into RUNNING) but
@@ -490,7 +490,7 @@ func TestFinalizeExecutionAttempt_BlockedThenCancel_ClosesWhileNodeRunStaysBlock
 			Reason:          "need more",
 		},
 	}}
-	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t))
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
 	if err := handler.Handle(context.Background(), job); err != nil {
 		t.Fatalf("Handle (BLOCKED): %v", err)
 	}
