@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -15,6 +16,29 @@ import (
 func serveTestDB(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(t.TempDir(), "agentkit-serve.db")
+}
+
+// syncBuffer wraps bytes.Buffer with a mutex: serve's own goroutine writes
+// its stdout announcement concurrently with the test's main goroutine
+// polling for it (waitForServeAddress) — a plain bytes.Buffer is not safe
+// for that, and the race detector proves it (a real DATA RACE was caught
+// here, not a pre-existing/unrelated flake: Write from serve's goroutine
+// racing String from waitForServeAddress).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 func TestServe_RequiresDBFlag(t *testing.T) {
@@ -56,7 +80,7 @@ func TestServe_StartsServesHealthAndShutsDownGracefully(t *testing.T) {
 	artifactRoot := t.TempDir()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	var stdout bytes.Buffer
+	var stdout syncBuffer
 	serveDone := make(chan error, 1)
 	go func() {
 		serveDone <- serve(ctx, []string{
@@ -109,7 +133,7 @@ func TestServe_ReadyFailsIfArtifactRootRemoved(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	var stdout bytes.Buffer
+	var stdout syncBuffer
 	serveDone := make(chan error, 1)
 	go func() {
 		serveDone <- serve(ctx, []string{
@@ -168,7 +192,7 @@ func TestServe_ReadyFailsIfArtifactRootRemoved(t *testing.T) {
 
 // waitForServeAddress polls stdout for the {"address":"..."} line serve
 // writes right after it starts listening, and returns the address.
-func waitForServeAddress(t *testing.T, stdout *bytes.Buffer) string {
+func waitForServeAddress(t *testing.T, stdout *syncBuffer) string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
