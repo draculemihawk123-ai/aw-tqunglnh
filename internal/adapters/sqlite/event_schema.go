@@ -91,6 +91,79 @@ func DecodeRepositoryWorkspaceRecreatedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// This second group is the same second-sweep finding, for three more
+// events found in node_dispatch.go/workflow_store.go — runtime-engine
+// concepts (NodeRun/WorkflowRun), but appended via the identical raw-SQL,
+// ports.EventsRepository-bypassing pattern as the three above, so their
+// decoders live here rather than in internal/app/runtime/event_schema.go
+// (which owns only the events IT actually appends through
+// ports.EventsRepository.Append). The event_type/schema_version values
+// stay SQL literals at each call site (`'NODE_RUN_COMPLETED', 1`, etc.)
+// — untouched, since threading a shared Go constant through would mean
+// parameterizing SQL that works fine as literals today, a cosmetic
+// change beyond this task's own decoder-closure scope; the constants
+// below exist only for the registry's own bookkeeping and must be kept
+// byte-for-byte in sync with those literals by inspection.
+
+const (
+	NodeRunCompletedEventType     = "NODE_RUN_COMPLETED"
+	NodeRunCompletedSchemaVersion = 1
+
+	NodeRunDispatchedEventType     = "NODE_RUN_DISPATCHED"
+	NodeRunDispatchedSchemaVersion = 1
+
+	WorkflowRunFinalizedEventType     = "WORKFLOW_RUN_FINALIZED"
+	WorkflowRunFinalizedSchemaVersion = 1
+)
+
+// nodeRunCompletedEventPayload is NODE_RUN_COMPLETED v1's own shape
+// (Store.CompleteNodeAndDispatchNext, node_dispatch.go).
+type nodeRunCompletedEventPayload struct {
+	NodeRunID       string `json:"nodeRunId"`
+	SelectedOutcome string `json:"selectedOutcome"`
+}
+
+// nodeRunDispatchedEventPayload is NODE_RUN_DISPATCHED v1's own shape
+// (node_dispatch.go).
+type nodeRunDispatchedEventPayload struct {
+	RunID     string `json:"runId"`
+	NodeRunID string `json:"nodeRunId"`
+	NodeKey   string `json:"nodeKey"`
+}
+
+// workflowRunFinalizedEventPayload is WORKFLOW_RUN_FINALIZED v1's own
+// shape (workflow_store.go).
+type workflowRunFinalizedEventPayload struct {
+	JobID         string `json:"jobId"`
+	JobLeaseOwner string `json:"jobLeaseOwner"`
+	RunID         string `json:"runId"`
+	TerminalState string `json:"terminalState"`
+}
+
+func DecodeNodeRunCompletedV1(payloadJSON string) (any, error) {
+	var payload nodeRunCompletedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func DecodeNodeRunDispatchedV1(payloadJSON string) (any, error) {
+	var payload nodeRunDispatchedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func DecodeWorkflowRunFinalizedV1(payloadJSON string) (any, error) {
+	var payload workflowRunFinalizedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry — mirrors internal/app/runtime/event_schema.go's own
 // RegisterEventSchemas exactly.
@@ -98,4 +171,7 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(RepositoryWorkspaceQuarantinedEventType, RepositoryWorkspaceQuarantinedSchemaVersion, DecodeRepositoryWorkspaceQuarantinedV1)
 	registry.Register(RepositoryWorkspaceReleasedEventType, RepositoryWorkspaceReleasedSchemaVersion, DecodeRepositoryWorkspaceReleasedV1)
 	registry.Register(RepositoryWorkspaceRecreatedEventType, RepositoryWorkspaceRecreatedSchemaVersion, DecodeRepositoryWorkspaceRecreatedV1)
+	registry.Register(NodeRunCompletedEventType, NodeRunCompletedSchemaVersion, DecodeNodeRunCompletedV1)
+	registry.Register(NodeRunDispatchedEventType, NodeRunDispatchedSchemaVersion, DecodeNodeRunDispatchedV1)
+	registry.Register(WorkflowRunFinalizedEventType, WorkflowRunFinalizedSchemaVersion, DecodeWorkflowRunFinalizedV1)
 }

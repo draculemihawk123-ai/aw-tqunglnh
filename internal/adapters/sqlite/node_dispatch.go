@@ -92,9 +92,9 @@ WHERE id = ? AND state = 'LEASED' AND lease_owner = ? AND lease_token = ?`,
 		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("%w: job %s", ports.ErrJobLeaseLost, dispatch.JobLease.JobID)
 	}
 
-	payload, err := json.Marshal(map[string]string{
-		"nodeRunId":       string(dispatch.NodeRunID),
-		"selectedOutcome": dispatch.SelectedOutcome,
+	payload, err := json.Marshal(nodeRunCompletedEventPayload{
+		NodeRunID:       string(dispatch.NodeRunID),
+		SelectedOutcome: dispatch.SelectedOutcome,
 	})
 	if err != nil {
 		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("encode node completion event: %w", err)
@@ -269,10 +269,8 @@ INSERT INTO node_runs(
 		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("insert dispatched node run %s: %w", dispatch.NodeRunID, err)
 	}
 
-	payload, err := json.Marshal(map[string]string{
-		"runId":     string(dispatch.RunID),
-		"nodeRunId": string(dispatch.NodeRunID),
-		"nodeKey":   dispatch.NodeKey,
+	payload, err := json.Marshal(nodeRunDispatchedEventPayload{
+		RunID: string(dispatch.RunID), NodeRunID: string(dispatch.NodeRunID), NodeKey: dispatch.NodeKey,
 	})
 	if err != nil {
 		return runtime.NodeRun{}, ports.DurableJob{}, fmt.Errorf("encode node intent dispatch event: %w", err)

@@ -598,11 +598,9 @@ WHERE id = ? AND state = ? AND version = ?`,
 		)
 	}
 
-	payload, err := json.Marshal(map[string]string{
-		"jobId":         string(finalization.JobLease.JobID),
-		"jobLeaseOwner": finalization.JobLease.Owner,
-		"runId":         string(transition.RunID),
-		"terminalState": string(transition.NextState),
+	payload, err := json.Marshal(workflowRunFinalizedEventPayload{
+		JobID: string(finalization.JobLease.JobID), JobLeaseOwner: finalization.JobLease.Owner,
+		RunID: string(transition.RunID), TerminalState: string(transition.NextState),
 	})
 	if err != nil {
 		return runtime.WorkflowRun{}, fmt.Errorf("encode workflow finalization event: %w", err)

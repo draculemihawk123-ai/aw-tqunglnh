@@ -231,19 +231,16 @@ func StartWorkflowRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.So
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			RunID      string `json:"runId"`
-			WorkItemID string `json:"workItemId"`
-			NodeRunID  string `json:"nodeRunId"`
-			NodeKey    string `json:"nodeKey"`
-		}{RunID: string(run.ID), WorkItemID: req.WorkItemID, NodeRunID: nodeRunID, NodeKey: startNodeKey})
+		eventPayload, err := json.Marshal(workflowRunStartedEventPayload{
+			RunID: string(run.ID), WorkItemID: req.WorkItemID, NodeRunID: nodeRunID, NodeKey: startNodeKey,
+		})
 		if err != nil {
 			return fmt.Errorf("marshal WorkflowRunStarted payload: %w", err)
 		}
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-started", ProjectID: req.ProjectID,
 			AggregateType: "WorkflowRun", AggregateID: string(run.ID), Sequence: 1,
-			EventType: "WorkflowRunStarted", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: WorkflowRunStartedEventType, SchemaVersion: WorkflowRunStartedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
