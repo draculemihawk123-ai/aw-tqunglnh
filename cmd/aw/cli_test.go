@@ -17,7 +17,7 @@ func TestRun_NoArguments(t *testing.T) {
 	if code != exitUsage {
 		t.Errorf("exit code = %d, want %d", code, exitUsage)
 	}
-	if !strings.Contains(stderr.String(), "Usage: agentkit") {
+	if !strings.Contains(stderr.String(), "Usage: aw") {
 		t.Errorf("stderr should contain usage, got %q", stderr.String())
 	}
 	if stdout.Len() != 0 {
@@ -32,7 +32,7 @@ func TestRun_Help(t *testing.T) {
 		if code != exitSuccess {
 			t.Errorf("run(%q): exit code = %d, want %d", flag, code, exitSuccess)
 		}
-		if !strings.Contains(stdout.String(), "Usage: agentkit") {
+		if !strings.Contains(stdout.String(), "Usage: aw") {
 			t.Errorf("run(%q): stdout should contain usage, got %q", flag, stdout.String())
 		}
 		if stderr.Len() != 0 {

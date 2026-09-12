@@ -803,4 +803,140 @@ text) dùng golden byte-for-byte vì đó chính là điều cần đông cứng
 
 ### Kết quả
 
-[Điền sau khi PR merge: số PR, merge commit hash, kết quả CI 6/6.]
+PR #33 (branch `feat/v6-02a-shared-http-contract`), merge commit sẽ điền sau khi CI xanh và merge xong.
+
+## V6-15A — Composition root canonical `aw`
+
+### Bối cảnh
+
+V6-15A là 1 trong 3 task nhóm P1 được phép chạy ngay sau V6-01 (`sau V6-01: {V6-01A, V6-02A, V6-15A}`,
+dependency graph mục 2 của `docs/design/08-v6-api-projections.md`) — V6-01 vừa merge (`d8c1323`, #30) nên
+task này unblock. ADR-028 đã khoá quyết định từ trước: executable sản phẩm canonical là `aw`, không phải
+`agentkit` — tên ban đầu vừa dài vừa dễ nhầm với binary bằng chứng V0 `agentkit-spike`. V6-15A là task duy
+nhất thực thi đổi tên đó tại tầng composition root, trước khi bất kỳ HTTP black-box acceptance test nào
+(V6-15P) khoá production composition cuối cùng.
+
+Phạm vi khoá cứng theo đúng "Không làm" của chính task: không tạo alias `agentkit` (không giữ lại một
+`cmd/agentkit` stub gọi vào `cmd/aw`), giữ nguyên `cmd/agentkit-spike` không đụng tới, không redesign leaf
+CLI (grammar `aw <command> [flags]` giữ nguyên y hệt, chỉ đổi tên binary xuất hiện trong usage/error text).
+
+### Nghiên cứu
+
+Trước khi sửa, grep toàn bộ repo (không chỉ `cmd/`) cho `cmd/agentkit`, `"agentkit"` và biến thể để tự dựng
+worklist thay vì đoán:
+
+- `cmd/agentkit/` có đúng 9 file (`adapter.go`, `adapter_test.go`, `cli.go`, `cli_test.go`, `definition.go`,
+  `definition_test.go`, `main.go`, `serve.go`, `serve_test.go`) — tất cả `package main`, không có sub-package
+  nào khác cần đổi.
+- Không có Makefile/justfile/Taskfile trong repo; `.github/workflows/` chỉ có một file (`spike-gate.yml`) và
+  nó chỉ build/chạy `cmd/agentkit-spike`, `cmd/fake-claude`, `cmd/fake-codex`, `cmd/spike-worker`,
+  `cmd/spike-helper` — không có step nào build riêng `cmd/agentkit` (mọi job chỉ gọi `go build/vet/test ./...`,
+  glob này tự động nhặt `cmd/aw` sau khi đổi tên, không cần sửa YAML).
+- Bên trong `cmd/agentkit/main.go`/`cli.go` có text thật hiển thị cho operator: package doc comment ("Command
+  agentkit is..."), usage banner (`Usage: agentkit <command> [flags]`, `Run 'agentkit <command> -h'`), 2 dòng
+  lỗi runtime (`"agentkit: unknown command %q"`, `"agentkit:", err`) — đây là phần "serve/worker/version/help
+  wiring" chính task phải đổi, không phải chỉ đường dẫn thư mục. `cli_test.go` có 2 assertion khớp cứng chuỗi
+  `"Usage: agentkit"` nên bắt buộc sửa theo cùng lúc, nếu không test tự vỡ sau khi đổi `cli.go`.
+- 7 file NGOÀI `cmd/` có comment tham chiếu trực tiếp đường dẫn `cmd/agentkit` (mô tả file/composition root cụ
+  thể, sẽ sai sau khi move): `internal/adapters/providers/internal/versionprobe/versionprobe.go`,
+  `internal/app/adapterbuild/drift.go`, `internal/adapters/sqlite/migration_0006_test.go`,
+  `internal/app/runtime/agent_node_executor.go`, `internal/integration/foundation_test.go`,
+  `internal/integration/definitionplane_test.go` (ví dụ CLI `agentkit adapter probe|register`), và
+  `internal/adapters/sqlite/migrations/0006_repository_status_components.sql`.
+- Toàn bộ `docs/architecture/04-go-core-spec.md`, `docs/design/01-system-design.md` đã sẵn ghi `cmd/aw/` là
+  composition root đích và `agentkit-spike` là binary tách riêng — đây là spec baseline "north star", không
+  cần sửa. `docs/architecture/02-architecture-decisions.md` ADR-028 và `docs/design/08-v6-api-projections.md`
+  (chính task này) mô tả quyết định/kế hoạch đổi tên bằng thì hiện tại — giữ nguyên, không viết lại sau khi
+  làm xong, đúng convention đã thấy ở các task V2 khác (`docs/design/04-v2-definition-plane.md` V2-07B/V2-11
+  vẫn giữ nguyên text `agentkit adapter ...`/`agentkit definition ...` dù đã đổi tên, vì dòng 10 của chính file
+  đó tự ghi "Ghi chú lịch sử tên lệnh" — spec/task doc là lịch sử bất biến, không phải tracker sống).
+- Phân biệt rõ các chuỗi `agentkit-*` KHÔNG liên quan đến binary và cố tình KHÔNG đổi: tên file SQLite tạm
+  trong test (`agentkit-*.db`, hàng trăm chỗ khắp `internal/adapters/sqlite`, `internal/app/*`,
+  `internal/integration`), biến môi trường helper subprocess (`AGENTKIT_HELPER_MODE`,
+  `AGENTKIT_PROVIDER_HELPER`, ...), custom media type (`application/vnd.agentkit.*+json`), marker giao thức
+  agent output (`<agentkit-outcome>`), prefix branch/workspace Git (`agentkit/w-...`, `agentkit/family-...`) —
+  tất cả là namespace nội bộ dùng chung chữ "agentkit" nhưng không phải tham chiếu tới binary/thư mục
+  `cmd/agentkit`; đổi các chỗ này là hành vi thật (protocol/naming), vượt phạm vi "no leaf CLI redesign" của
+  chính task.
+
+### Quyết định
+
+1. Dùng `git mv cmd/agentkit cmd/aw` (không xoá-tạo-lại) để diff hiện đúng là rename, giữ file history.
+2. Trong 9 file vừa move: chỉ sửa các chuỗi hiển thị/tự-tham-chiếu thật ("Command agentkit", usage banner,
+   error prefix, comment tự trỏ tới đường dẫn `cmd/agentkit`) — không đổi bất kỳ logic/behavior/flag nào khác,
+   giữ đúng "no leaf CLI redesign". Không đổi tên file tạm `agentkit-*.db` trong 3 test file
+   (`adapter_test.go`, `definition_test.go`, `serve_test.go`) — nhất quán với quyết định không đụng namespace
+   `agentkit-*` nội bộ ở trên.
+3. 7 file ngoài `cmd/` chỉ sửa đúng chuỗi con `cmd/agentkit` → `cmd/aw` bên trong comment, giữ nguyên phần còn
+   lại của câu (kể cả khi câu đó có chỗ đã cũ như "serve/worker/doctor/definition are all still stubs" —
+   không thuộc phạm vi mechanical rename, không tự ý viết lại).
+4. Thêm một test kiến trúc thật `internal/archtest/composition_root_test.go`
+   (`TestCompositionRootIsCmdAwNotCmdAgentkit`), mirror đúng `findModuleRoot` helper có sẵn từ
+   `boundary_test.go` trong cùng package: assert `cmd/aw` tồn tại (có `main.go`), `cmd/agentkit` KHÔNG tồn tại,
+   `cmd/agentkit-spike` vẫn tồn tại nguyên vẹn — để một PR tương lai lỡ tạo lại `cmd/agentkit` hoặc xoá nhầm
+   spike sẽ fail CI ngay, không phải một audit thủ công.
+
+### Thực hiện
+
+- `git mv cmd/agentkit cmd/aw` — diff hiện `R`/`RM` (rename, một vài file có nội dung đổi kèm theo).
+- `cmd/aw/main.go`: "Command agentkit is..." → "Command aw is...".
+- `cmd/aw/cli.go`: usage banner "Usage: agentkit ..." → "Usage: aw ...", "Run 'agentkit <command> -h'" →
+  "Run 'aw <command> -h'", `"agentkit: unknown command %q\n\n%s"` → `"aw: unknown command %q\n\n%s"`,
+  `"agentkit:", err` → `"aw:", err`. Dòng comment nhắc tới `agentkit-spike evidence verify` giữ nguyên.
+- `cmd/aw/cli_test.go`: 2 assertion `strings.Contains(..., "Usage: agentkit")` → `"Usage: aw"`.
+- `cmd/aw/serve_test.go`: comment "as `agentkit serve` would" → "as `aw serve` would".
+- `cmd/aw/adapter.go`: comment tự trỏ "this file is the first place in cmd/agentkit that" → "cmd/aw".
+- 7 file ngoài `cmd/`: `internal/adapters/providers/internal/versionprobe/versionprobe.go`,
+  `internal/app/adapterbuild/drift.go`, `internal/adapters/sqlite/migration_0006_test.go`,
+  `internal/app/runtime/agent_node_executor.go`, `internal/integration/foundation_test.go`,
+  `internal/integration/definitionplane_test.go`, `internal/adapters/sqlite/migrations/
+  0006_repository_status_components.sql` — mỗi file đổi đúng chuỗi con `cmd/agentkit`/`agentkit adapter` sang
+  `cmd/aw`/`aw adapter` trong comment liên quan.
+- `internal/archtest/composition_root_test.go` (file mới): `TestCompositionRootIsCmdAwNotCmdAgentkit` —
+  `os.Stat` trực tiếp trên `cmd/aw` (phải tồn tại + có `main.go`), `cmd/agentkit` (phải `os.IsNotExist`),
+  `cmd/agentkit-spike` (phải tồn tại + là directory).
+- Không sửa `.github/workflows/spike-gate.yml` — xác nhận không có step nào build riêng `cmd/agentkit`, mọi
+  job dùng `go build/vet/test ./...` tự nhặt `cmd/aw` sau khi đổi tên.
+- Không sửa `docs/architecture/02-architecture-decisions.md` (ADR-028), `docs/design/08-v6-api-projections.md`
+  (chính task này), `docs/design/03-v1-alpha-foundation.md`, `docs/design/04-v2-definition-plane.md` — các
+  file này mô tả quyết định/lịch sử tại thời điểm viết, tự ghi rõ là ghi chú lịch sử hoặc là spec/task doc bất
+  biến, không phải trạng thái sống cần đồng bộ theo code hiện tại.
+
+### Test
+
+- `go build ./...` sạch toàn bộ module sau khi move + sửa reference.
+- `go build -o <tmp> ./cmd/aw` — thành công (composition root mới build được).
+- `go build ./cmd/agentkit` — fail đúng như kỳ vọng: `stat .../cmd/agentkit: directory not found` (đường dẫn
+  cũ đã biến mất thật, không phải alias rỗng).
+- `go build -o <tmp> ./cmd/agentkit-spike` — thành công không đổi (binary V0 không bị đụng).
+- `go vet ./...` sạch.
+- `go test ./cmd/aw/... ./internal/archtest/... -count=1 -v` — toàn bộ pass, gồm `TestServe_
+  StartsServesHealthAndShutsDownGracefully` (smoke test start/stop server thật của chính V6-01, giờ chạy tại
+  vị trí mới `cmd/aw`, không đổi nội dung), `TestRun_ServeRejectsUnknownFlag`, và test kiến trúc mới
+  `TestCompositionRootIsCmdAwNotCmdAgentkit`.
+- `go test ./... -count=1` — toàn bộ module (70 package tính cả `cmd/aw` mới và `internal/archtest`) pass
+  100%, 0 dòng `FAIL`. Không có regression ở bất kỳ package nào khác — xác nhận rename không đụng semantics.
+
+### Verify
+
+- Verify line của chính task: "`go build ./cmd/aw`" — pass. "old production path absent" — `go build
+  ./cmd/agentkit` fail với lỗi thư mục không tồn tại, cộng `TestCompositionRootIsCmdAwNotCmdAgentkit` khoá lại
+  bằng CI thật thay vì chỉ một lần chạy tay. "spike builds" — `go build ./cmd/agentkit-spike` pass không đổi.
+  "serve/worker startup/shutdown smoke" — `TestServe_StartsServesHealthAndShutsDownGracefully` (di chuyển
+  nguyên vẹn từ V6-01, chạy tại `cmd/aw`) chứng minh server thật bind/serve health/shutdown graceful đúng như
+  trước khi đổi tên.
+- "Không làm": xác nhận không có alias `agentkit` nào được tạo (không còn thư mục `cmd/agentkit` dưới bất kỳ
+  hình thức nào, kể cả stub gọi sang `cmd/aw`); `cmd/agentkit-spike` không bị sửa nội dung, chỉ xuất hiện
+  trong comment không đổi; không có thay đổi grammar/flag nào trong `cmd/aw/cli.go` ngoài chuỗi tên binary.
+- "Hoàn thành khi": không còn "second root" nào — `cmd/aw` là composition root sản xuất duy nhất trong repo,
+  sẵn sàng cho HTTP black-box acceptance test cuối V6 (V6-15P) khoá lại production composition.
+
+### Kết quả
+
+`cmd/agentkit` → `cmd/aw` bằng `git mv` thật (giữ file history), 9 file bên trong sửa đúng phần text hiển thị
+cho operator (package doc, usage banner, 2 dòng lỗi runtime, 2 assertion test tương ứng), 7 file ngoài `cmd/`
+sửa comment tự tham chiếu đường dẫn cũ, và 1 test kiến trúc mới (`internal/archtest/composition_root_test.go`)
+khoá cứng bất biến "chỉ một composition root, tên `aw`, `agentkit-spike` không đổi" bằng CI thật. `go build/
+vet/test ./...` xanh 100% trên toàn bộ module, 3 assertion Verify (`go build ./cmd/aw` pass, `go build
+./cmd/agentkit` fail, `go build ./cmd/agentkit-spike` pass) đều xác nhận bằng lệnh thật, không suy đoán. V6-15B
+(nền tảng CLI dùng chung) giờ có đủ dependency `V6-15A` để bắt đầu ngay khi `V6-02`/`V6-02A` cũng sẵn sàng.

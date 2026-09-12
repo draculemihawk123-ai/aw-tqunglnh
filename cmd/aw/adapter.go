@@ -27,7 +27,7 @@ import (
 // already built at the application layer (internal/app/adapterbuild). It
 // is deliberately its own top-level command, not nested under
 // "definition" -- AdapterBuildVersion is explicitly not a DefinitionKind
-// (ADR-022) -- and this file is the first place in cmd/agentkit that
+// (ADR-022) -- and this file is the first place in cmd/aw that
 // opens a real SQLite connection, since serve/worker/doctor/definition
 // are all still stubs.
 func runAdapter(arguments []string, stdout io.Writer) error {

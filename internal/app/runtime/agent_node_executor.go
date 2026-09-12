@@ -70,7 +70,7 @@ const diffManifestArtifactMediaType = "application/vnd.agentkit.diff-manifest+js
 const writeLeaseTTLGrace = 2 * time.Minute
 
 // AgentNodeExecutor's own dependencies are all injected — this package
-// still has no composition root (execute.go's own doc comment: "cmd/agentkit
+// still has no composition root (execute.go's own doc comment: "cmd/aw
 // serve/worker vẫn là stub trống"), so every real value (which registry,
 // which matcher's known secrets, which concrete WorkspaceProvider/
 // WriteLeaseManager) is this file's own caller's decision, not something

@@ -33,7 +33,7 @@ var ErrAdapterBuildDrifted = errors.New("adapterbuild: configured executable no 
 // ExecutablePath and ConfigIdentity are carried over unchanged from
 // pinned's own tuple: the former is what gets re-hashed, and the latter is
 // pure operator-declared metadata (the OS/Toolchain a real CLI reports are
-// live facts about the CURRENT process instead — cmd/agentkit/adapter.go's
+// live facts about the CURRENT process instead — cmd/aw/adapter.go's
 // own registration flow already sources them from runtime.GOOS/
 // runtime.Version() the exact same way, never from an operator flag).
 //

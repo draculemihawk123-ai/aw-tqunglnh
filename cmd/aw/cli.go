@@ -31,7 +31,7 @@ const (
 // message instead of forcing every stub to hand-write one.
 var errNotYetImplemented = errors.New("not yet implemented")
 
-const usage = `Usage: agentkit <command> [flags]
+const usage = `Usage: aw <command> [flags]
 
 Commands:
   serve       start the local API/control-plane server
@@ -41,7 +41,7 @@ Commands:
   evidence    inspect and verify evidence bundles
   adapter     probe/register/list/show adapter builds
 
-Run 'agentkit <command> -h' for command-specific flags.
+Run 'aw <command> -h' for command-specific flags.
 `
 
 // run is the composition root's single dispatch point (V1-01's "wiring chỉ
@@ -65,7 +65,7 @@ func run(arguments []string, stdout, stderr io.Writer) exitCode {
 
 	handler, ok := subcommands[name]
 	if !ok {
-		fmt.Fprintf(stderr, "agentkit: unknown command %q\n\n%s", name, usage)
+		fmt.Fprintf(stderr, "aw: unknown command %q\n\n%s", name, usage)
 		return exitUsage
 	}
 
@@ -73,7 +73,7 @@ func run(arguments []string, stdout, stderr io.Writer) exitCode {
 		if errors.Is(err, flag.ErrHelp) {
 			return exitSuccess
 		}
-		fmt.Fprintln(stderr, "agentkit:", err)
+		fmt.Fprintln(stderr, "aw:", err)
 		if isUsageError(err) {
 			return exitUsage
 		}
