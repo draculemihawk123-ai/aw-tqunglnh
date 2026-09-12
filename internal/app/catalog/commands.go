@@ -150,13 +150,7 @@ func RegisterRepository(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			RepositoryID string `json:"repositoryId"`
-			ProjectID    string `json:"projectId"`
-			Name         string `json:"name"`
-			Status       string `json:"status"`
-			ProbeJobID   string `json:"probeJobId"`
-		}{
+		eventPayload, err := json.Marshal(repositoryRegisteredEventPayload{
 			RepositoryID: req.RepositoryID, ProjectID: req.ProjectID,
 			Name: created.Name, Status: string(created.Status), ProbeJobID: string(job.ID),
 		})
@@ -173,7 +167,7 @@ func RegisterRepository(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-registered", ProjectID: req.ProjectID,
 			AggregateType: "Repository", AggregateID: req.RepositoryID, Sequence: 1,
-			EventType: "RepositoryRegistered", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: RepositoryRegisteredEventType, SchemaVersion: RepositoryRegisteredSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
@@ -305,12 +299,7 @@ func RetryRepositoryProbe(ctx context.Context, uow ports.UnitOfWork, ids idsourc
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			RepositoryID string `json:"repositoryId"`
-			ProjectID    string `json:"projectId"`
-			Status       string `json:"status"`
-			ProbeJobID   string `json:"probeJobId"`
-		}{
+		eventPayload, err := json.Marshal(repositoryProbeRetriedEventPayload{
 			RepositoryID: req.RepositoryID, ProjectID: req.ProjectID,
 			Status: string(updated.Status), ProbeJobID: string(job.ID),
 		})
@@ -331,7 +320,7 @@ func RetryRepositoryProbe(ctx context.Context, uow ports.UnitOfWork, ids idsourc
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-retried", ProjectID: req.ProjectID,
 			AggregateType: "RepositoryProbeRetry", AggregateID: string(job.ID), Sequence: 1,
-			EventType: "RepositoryProbeRetried", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: RepositoryProbeRetriedEventType, SchemaVersion: RepositoryProbeRetriedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
@@ -453,13 +442,7 @@ func AssignComponentPack(ctx context.Context, uow ports.UnitOfWork, ids idsource
 			return err
 		}
 
-		eventPayload, err := json.Marshal(struct {
-			AssignmentID  string    `json:"assignmentId"`
-			ComponentID   string    `json:"componentId"`
-			PackVersionID string    `json:"packVersionId"`
-			EffectiveAt   time.Time `json:"effectiveAt"`
-			Actor         string    `json:"actor"`
-		}{
+		eventPayload, err := json.Marshal(componentPackAssignedEventPayload{
 			AssignmentID: string(created.ID), ComponentID: req.ComponentID,
 			PackVersionID: req.PackVersionID, EffectiveAt: created.EffectiveAt, Actor: created.Actor,
 		})
@@ -482,7 +465,7 @@ func AssignComponentPack(ctx context.Context, uow ports.UnitOfWork, ids idsource
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
 			ID: cmd.ID + "-assigned", ProjectID: req.ProjectID,
 			AggregateType: "ComponentPackAssignment", AggregateID: assignmentID, Sequence: 1,
-			EventType: "ComponentPackAssigned", SchemaVersion: 1, PayloadJSON: string(eventPayload),
+			EventType: ComponentPackAssignedEventType, SchemaVersion: ComponentPackAssignedSchemaVersion, PayloadJSON: string(eventPayload),
 			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
 		}); err != nil {
 			return err
