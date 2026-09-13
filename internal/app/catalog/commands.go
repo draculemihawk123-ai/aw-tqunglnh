@@ -725,3 +725,115 @@ func GetEffectiveComponentPackAssignment(ctx context.Context, uow ports.UnitOfWo
 	})
 	return result, err
 }
+
+// GetRepository, ListRepositoryProbeAttempts, GetComponent and
+// ListComponents below are V6-03A's own addition
+// (docs/design/08-v6-api-projections.md V6-03A): the four read-only
+// queries "repository ... detail/onboarding/probe-history" and "component
+// query" need that this package was still missing before its own HTTP
+// route task could wrap them, the same "delivery MUST NOT call
+// Tx.Catalog() directly" gap CreateProject/GetProject closed for Project
+// in V6-03 above.
+//
+// GetRepository and GetComponent are DELIBERATELY unlike GetProject: they
+// take no ports.CommandScope parameter and run no scope check at all.
+// GetProject's own caller already KNOWS which Project it is asking about
+// (every GetProject call site is reached through a route already nested
+// under /projects/{id}, or an equivalent already-resolved context) and
+// uses scope to assert that claim against the authoritative row. A bare
+// `GET /repositories/{id}` or `POST /components/{id}/pack-assignments`
+// route has no such prior context — Repository ID and Component ID are
+// each already a global, unique, caller-opaque identity (V3-01's own
+// "Repository identity là ID đã đăng ký, MUST NOT suy từ path, slug,
+// current directory hoặc remote URL"), so a caller reaches either by ID
+// alone. These two queries are how a caller FIRST learns which Project a
+// given Repository/Component belongs to — V6-03A's own task line "route
+// reload authoritative target để suy Project/scope" (the general contract
+// in §1.3 of the design doc) made concrete: an HTTP handler calls
+// GetRepository/GetComponent first, then builds ports.ProjectScope from
+// the RESULT's own ProjectID field for every scope-sensitive thing it
+// does next (a receipt lookup's own scope key, a nested command's own
+// cmd.Scope) — never the reverse. This is not a laxer authorization rule
+// than GetProject's; it is the one query that necessarily runs BEFORE any
+// scope is known at all, the same role RetryRepositoryProbe's own
+// "resolve the Repository's actual project from its own stored row"
+// already plays for referential integrity, applied here one step earlier
+// in the flow.
+func GetRepository(ctx context.Context, uow ports.UnitOfWork, repositoryID string) (project.Repository, error) {
+	if strings.TrimSpace(repositoryID) == "" {
+		return project.Repository{}, errors.New("catalog: RepositoryID is required")
+	}
+	var result project.Repository
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		loaded, err := tx.Catalog().GetRepository(ctx, repositoryID)
+		result = loaded
+		return err
+	})
+	return result, err
+}
+
+// ListRepositoryProbeAttempts returns every RepositoryProbeAttempt for
+// repositoryID, oldest-CreatedAt-first — the "probe history" evidence
+// docs/design/01-system-design.md §6.1's own API sketch names for `GET
+// /repositories/{id}/onboarding` ("trạng thái/error/probe history có thể
+// hành động"). A read-only query, never a Command; like GetRepository
+// above, it takes no scope (an HTTP caller reaching this by RepositoryID
+// alone reloads GetRepository first for that purpose — the two queries
+// are meant to be called together by that one route, never a substitute
+// for one another).
+func ListRepositoryProbeAttempts(ctx context.Context, uow ports.UnitOfWork, repositoryID string) ([]ports.RepositoryProbeAttempt, error) {
+	if strings.TrimSpace(repositoryID) == "" {
+		return nil, errors.New("catalog: RepositoryID is required")
+	}
+	var result []ports.RepositoryProbeAttempt
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		attempts, err := tx.Catalog().ListRepositoryProbeAttempts(ctx, repositoryID)
+		result = attempts
+		return err
+	})
+	return result, err
+}
+
+// GetComponent reloads the authoritative Component with the given ID
+// directly from persistence — never a projection — a read-only query,
+// never a Command. See GetRepository's own doc comment above for exactly
+// why this takes no ports.CommandScope: Component ID is itself already a
+// caller-opaque global identity, and this is the one query an HTTP
+// caller reaching `/components/{id}/...` by ID alone uses to first learn
+// the Component's own ProjectID before building any scope.
+func GetComponent(ctx context.Context, uow ports.UnitOfWork, componentID string) (project.Component, error) {
+	if strings.TrimSpace(componentID) == "" {
+		return project.Component{}, errors.New("catalog: ComponentID is required")
+	}
+	var result project.Component
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		loaded, err := tx.Catalog().GetComponent(ctx, componentID)
+		result = loaded
+		return err
+	})
+	return result, err
+}
+
+// ListComponents returns every Component whose stored ProjectID equals
+// projectID, ID order — the "GET /projects/{id}/components | catalog
+// component đã được repository onboarding/probe discover" query
+// (docs/design/01-system-design.md §6's own API sketch). A read-only
+// query, never a Command. Unlike GetRepository/GetComponent above, this
+// IS reached from a route already nested under /projects/{id}
+// (mirroring ListProjectRepositories above), so a caller already knows
+// projectID going in — no separate scope parameter is needed here either,
+// for the opposite reason: the caller already has it, the same shape
+// ListProjectRepositories/ListComponentPackAssignments already establish
+// for an unscoped list-by-foreign-key read.
+func ListComponents(ctx context.Context, uow ports.UnitOfWork, projectID string) ([]project.Component, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return nil, errors.New("catalog: ProjectID is required")
+	}
+	var result []project.Component
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		components, err := tx.Catalog().ListComponents(ctx, projectID)
+		result = components
+		return err
+	})
+	return result, err
+}
