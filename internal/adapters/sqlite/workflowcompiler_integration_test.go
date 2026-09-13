@@ -40,15 +40,15 @@ func TestWorkflowCompiler_ResolvesAgainstRealSQLite(t *testing.T) {
 	}
 	capabilityManifest := domainadapterbuild.CapabilityManifest{SupportsStart: true}
 
-	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterbuild.ProbeRequest{
+	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterBuildTestCommand("ProbeAdapterBuild", "probe-1", "operator-1"), adapterbuild.ProbeRequest{
 		ProviderKey: "claude", ExecutablePath: executablePath, ProtocolVersion: "v1",
 		CapabilityManifest: capabilityManifest, OS: "linux", Toolchain: "node-20", ConfigIdentity: "default",
 	})
 	if err != nil {
 		t.Fatalf("probe adapter build: %v", err)
 	}
-	registerResult, err := adapterbuild.RegisterAdapterBuild(ctx, uow, adapterbuild.RegisterRequest{
-		Token: token, CapabilityManifest: capabilityManifest, RegisteredBy: "operator-1",
+	registerResult, err := adapterbuild.RegisterAdapterBuild(ctx, uow, adapterBuildTestCommand("RegisterAdapterBuild", "register-1", "operator-1"), adapterbuild.RegisterRequest{
+		Token: token, CapabilityManifest: capabilityManifest,
 	})
 	if err != nil {
 		t.Fatalf("register adapter build: %v", err)

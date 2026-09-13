@@ -191,15 +191,25 @@ func TestDefinitionPlaneGate(t *testing.T) {
 		t.Fatalf("write fake provider executable: %v", err)
 	}
 	capabilityManifest := adapterbuild.CapabilityManifest{SupportsStart: true, SupportsResume: true, SupportsCancel: true}
-	probeToken, err := appadapterbuild.ProbeAdapterBuild(ctx, uow, appadapterbuild.ProbeRequest{
+	probeCmd := ports.Command{
+		ID: "probe-gate", IdempotencyKey: "probe-gate", Actor: "operator-gate",
+		CorrelationID: "probe-gate", Scope: ports.InstallationScope(), RequestedAt: now,
+		Type: "ProbeAdapterBuild", RequestHash: "hash-probe-gate",
+	}
+	probeToken, err := appadapterbuild.ProbeAdapterBuild(ctx, uow, probeCmd, appadapterbuild.ProbeRequest{
 		ProviderKey: "claude", ExecutablePath: executablePath, ProtocolVersion: "claude-stream-json/v1",
 		CapabilityManifest: capabilityManifest, OS: "linux", Toolchain: "node-20", ConfigIdentity: "default",
 	})
 	if err != nil {
 		t.Fatalf("ProbeAdapterBuild: %v", err)
 	}
-	registerResult, err := appadapterbuild.RegisterAdapterBuild(ctx, uow, appadapterbuild.RegisterRequest{
-		Token: probeToken, CapabilityManifest: capabilityManifest, RegisteredBy: "operator-gate",
+	registerCmd := ports.Command{
+		ID: "register-gate", IdempotencyKey: "register-gate", Actor: "operator-gate",
+		CorrelationID: "register-gate", Scope: ports.InstallationScope(), RequestedAt: now,
+		Type: "RegisterAdapterBuild", RequestHash: "hash-register-gate",
+	}
+	registerResult, err := appadapterbuild.RegisterAdapterBuild(ctx, uow, registerCmd, appadapterbuild.RegisterRequest{
+		Token: probeToken, CapabilityManifest: capabilityManifest,
 	})
 	if err != nil {
 		t.Fatalf("RegisterAdapterBuild: %v", err)
