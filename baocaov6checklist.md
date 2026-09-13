@@ -2217,3 +2217,299 @@ thật ngay lập tức (`in_progress` sau vài giây) và xanh trong vài phút
 thường lâu, kiểm tra `runner_id` qua API để phân biệt "đang chờ hàng đợi" với "kẹt hẳn không ai nhận"; nếu
 kẹt, đừng chỉ chờ — kiểm tra githubstatus.com để xác nhận nguyên nhân, và nếu sự cố phía GitHub đã resolve mà
 job vẫn kẹt, chủ động cancel+rerun thay vì tiếp tục chờ vô thời hạn.**
+
+## V6-06 — Run start và cancellation controls
+
+### Bối cảnh
+
+V6-06 nằm trong nhóm P2 ("application/HTTP slices sau V6-00 + V6-01A + V6-02 + V6-02A"), unblocked ngay khi
+cả 4 dependency đó đã merge — xác nhận bằng `git log --oneline -5 origin/master` lúc bắt đầu: `60a9f8f
+feat(v6-02): HTTP CommandEnvelope...` đã có sẵn, worktree branch ra đúng từ `3af0adf` (`git merge-base HEAD
+origin/master` = `git rev-parse origin/master`, xác nhận không cần rebase trước khi bắt đầu). Theo đúng cảnh
+báo trong system prompt, `baocaov6checklist.md` đang được 3 task khác ghi song song ngay lúc này (V6-03A,
+V6-04, V6-10B) — append-only, dự kiến conflict khi merge.
+
+Đây là task ĐẦU TIÊN thật sự mount một route nghiệp vụ vào `cmd/aw/serve.go`. Đọc file này trước khi viết bất
+cứ gì thì thấy nó đã tồn tại sẵn từ V6-01/V6-01A (không phải file tôi tạo mới) với đúng 3 route health/
+bootstrap, và một comment để sẵn chỗ nối (dòng 147-149 bản gốc): *"No further route fragments exist yet in
+this task; a later endpoint task's own composition-root wiring adds its own routes.Register call here without
+needing to touch this file's shared setup."* — xác nhận đúng convention: mỗi endpoint task tự thêm một lời gọi
+`routes.Register(...)` (hoặc ở đây, một hàm `RegisterRoutes` gói nhiều route) ngay tại điểm này, KHÔNG có task
+riêng nào "compose root router" trước V6-12 — điều mà lúc đầu đọc contract "Chỉ V6-12 compose HTTP router" dễ
+hiểu nhầm là "không được đụng `cmd/aw/serve.go`". Đọc trực tiếp code mới xác nhận đúng nghĩa "compose" ở V6-12
+là gì (đóng băng/generate OpenAPI + reverse-check toàn bộ fragment), không phải "chỉ V6-12 được thêm route
+handler thật vào server".
+
+### Nghiên cứu
+
+Đọc nguyên văn spec (`docs/design/08-v6-api-projections.md` dòng 240-249): *"Thực hiện: start pins manifest/
+version; cancel trả `CANCELLING`, không giả `CANCELLED`; handler chỉ dispatch."* / *"Verify: replay/pinned
+conflict/cancel twice/cancel race; accepted response không terminal tức thì."*
+
+Đọc kỹ 2 authority thật trước khi viết bất kỳ dòng handler nào — đúng yêu cầu review của chính task:
+
+- `internal/app/runtime/commands.go:116` — `func StartWorkflowRun(ctx, uow, ids, cmd ports.Command, req
+  StartWorkflowRunRequest) (StartWorkflowRunResult, error)`. Tự nó check receipt (`tx.Receipts().Load`) ngay
+  đầu transaction, đúng khuôn V1-06/V6-02 (giống hệt `catalog.CreateProject`).
+- `internal/app/runtime/cancel_run.go:113` — `func CancelRun(ctx, uow, ids, req CancelRunRequest)
+  (CancelRunResult, error)`. KHÔNG nhận `ports.Command`. `CancelRunRequest{RunID, Actor, Reason,
+  CorrelationID}` — không có `IdempotencyKey`, không có `ExpectedVersion`. Đây chính là điểm khác biệt task
+  yêu cầu phải hiểu rõ trước khi "map sang HTTP", không được lấp liếm.
+
+Đọc ADR-020 §22 (`docs/architecture/02-architecture-decisions.md` dòng 354, mục "Cancellation protocol", điểm
+1): *"`CancelRun` atomically ghi durable cancel intent, chuyển Run sang `CANCELLING`, append event và enqueue
+job; **command là idempotent theo run**."* — xác nhận đây là thiết kế có chủ đích của ADR-020 chứ không phải
+thiếu sót của V4-12B/V4-12C: idempotency của Cancel gắn với chính `RunID` (unique `run_cancellation_intents`),
+không gắn với một `Idempotency-Key` do client tự sinh. `cancel_run.go`'s own package doc comment (dòng 1-25) nói
+rõ hơn: "(1) records the one durable RunCancellationIntent a Run ever has (idempotent by RunID — a duplicate
+call is a harmless no-op, never a second intent)".
+
+Đọc ADR-022 (`docs/architecture/02-architecture-decisions.md` dòng 522, "AdapterBuildVersion là operational
+registry, không phải DefinitionKind") — ban đầu đoán nhầm đây là ADR về optimistic concurrency (vì V6-02 hay
+cite ADR-025/028 cho receipt), đọc hết mới thấy ADR-022 thực ra nói về nguyên tắc "pin đúng version bất biến,
+không tự động repin" cho `AdapterBuildVersion` (điểm 5, dòng 534: *"Run đang chạy không bao giờ được tự động
+repin sang build mới."*) — đây chính là nguyên tắc tổng quát mà `StartWorkflowRun`'s "pins manifest/version"
+áp dụng cho `WorkflowVersionID`/`ExecutionManifest` (khác đối tượng — AdapterBuildVersion vs WorkflowVersion —
+nhưng cùng một nguyên tắc "pin exact, never silent drift"), giải thích tại sao V6-06 cite đúng ADR này thay vì
+một ADR về idempotency-key.
+
+Đọc `docs/design/11-v6-00-ux-artifact.md` (V6-00's action inventory, đã merge trước đó) — tìm thấy operationId
+đã khoá cứng, không được tự đặt tên khác: `startWorkflowRun` (dòng 246, Screen 5 hàng 4; dòng 303, Screen 7
+hàng 3) và `cancelRun` (dòng 247, 304). Dòng 304 xác nhận chính xác ngôn ngữ HTTP-facing: *"`CancelRun` ...
+trả `CANCELLING`, hiển thị như tiến trình thật, không báo đã hủy xong ngay"* — khớp 100% với "Thực hiện" line
+của chính V6-06, và là bằng chứng rằng ngôn ngữ "quiesce, không giả CANCELLED" đã được sản phẩm hoá từ trước ở
+tầng UX, không phải diễn giải riêng của task này.
+
+Đọc toàn bộ hạ tầng `internal/delivery/httpapi` đã có trước khi viết: `route.go` (RouteDescriptor/
+RouteRegistry, dedupe theo cả `(Method,Path)` lẫn `OperationID`), `commandenvelope.go` (`RequireIdempotencyKey`,
+`CanonicalizeJSON`, `SemanticHash`), `receiptreplay.go` (`LookupReceipt`/`ReconcileReceipt`/`WriteReceiptReplay`/
+`EncodeResult`), `errors.go` (`WriteError`/`WriteResourceHidden`/`StatusForAppErrorCode`/`WriteAppError`),
+`principal.go` (`PrincipalFromContext`), `middleware.go` (`CorrelationIDFromContext`), `server.go` (cách
+`NewServer` compose `mux.HandleFunc(d.Method+" "+d.Path, d.Handler)` — xác nhận Go 1.22+ pattern `{name}` +
+`r.PathValue` dùng được, kiểm `go.mod`: `go 1.27.0`).
+
+Đọc `internal/archtest/boundary_test.go` (style AST-scan + `findModuleRoot` dùng chung cho cả package) và
+`command_envelope_test.go` (`TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt`) — xác nhận test này tự động
+`filepath.WalkDir` xuống MỌI package con của `internal/delivery/httpapi`, nghĩa là package `run` mới của task
+này tự động bị kiểm tra "không gọi `.Record(`/`.WithSerializedWrite(`" mà không cần sửa gì thêm.
+
+Đọc toàn bộ `internal/app/runtime/commands_test.go`, `commands_sqlite_test.go`, `cancel_run_test.go`,
+`cancel_run_race_test.go` trước khi viết fixture test của riêng mình — xác nhận `readyFixtureSQLite`/
+`publishTestWorkflowVersionSQLite`/`stubProvider`/`provisionJob` (trong `commands_sqlite_test.go`) là đúng
+fixture chuẩn cần mirror (không import được vì Go test helper không export chéo package — đúng discipline
+`mustCreateActiveRepository`'s own doc comment đã ghi).
+
+### Quyết định
+
+1. **Start theo đầy đủ flow CommandEnvelope của V6-02; Cancel thì KHÔNG** — quyết định quan trọng nhất, dựa
+   thẳng trên phát hiện ở phần Nghiên cứu (ADR-020 "idempotent theo run"), không phải suy đoán. `start.go`
+   dùng đủ `RequireIdempotencyKey` → `CanonicalizeJSON` → `SemanticHash` → `LookupReceipt` →
+   replay/conflict/dispatch, y hệt `receiptreplay_test.go`'s `buildCreateProjectCommand`. `cancel.go` KHÔNG
+   đòi `Idempotency-Key`, KHÔNG đòi `If-Match`: `CancelRunRequest` (runtime) không có field nào để nhét 2 thứ
+   đó vào, và bắt buộc một header rồi validate-nhưng-không-bao-giờ-dùng (`httpapi.LookupReceipt` sẽ luôn trả
+   "not found" vì `CancelRun` không bao giờ ghi receipt) là nói dối về contract thật — an toàn trước duplicate/
+   race đến từ chính `cancelRunTx`'s "idempotent theo run", không phải từ tầng HTTP. Ghi toàn bộ lý luận này
+   thành doc comment dài trong chính `cancel.go` (không chỉ trong file báo cáo này) để người đọc code sau
+   không tưởng đây là thiếu sót rồi "sửa" cho giống Start.
+2. **`WorkItemID` (path) PHẢI nằm trong semantic-hash payload của Start (`startRunHashPayload`), không chỉ
+   `workflowVersionId` (body).** Lý do: `SemanticHash` hash theo `(commandType, scope, payload, ...)` —
+   `scope` chỉ là cả PROJECT, không phải một WorkItem cụ thể. Nếu chỉ hash `{workflowVersionId}`, hai
+   `WorkItemID` khác nhau trong cùng project, dùng trùng `Idempotency-Key` (bug client) và cùng
+   `workflowVersionId`, sẽ hash giống hệt nhau → `ReconcileReceipt` coi là replay hợp lệ → trả nhầm `RunID`
+   của WorkItem A cho request thật sự nhắm vào WorkItem B. Viết test
+   `TestStartWorkflowRun_HTTP_SameIdempotencyKeyDifferentWorkItem_ConflictsRatherThanCrossReplays` để chứng
+   minh — xem phần Test bên dưới, chính test này lộ ra MỘT SAI LẦM THẬT trong kỳ vọng ban đầu của tôi.
+3. **Route path**: `POST /work-items/{workItemId}/runs` (start) và `POST /runs/{runId}/cancel` (cancel).
+   Mirror 2 tiền lệ path đã có trong chính design doc: V6-04A's "Phạm vi" line ghi rõ `POST
+   /work-items/{id}/mark-ready` (resource + action-suffix cho narrow command); V6-06B's "Thực hiện" line ghi
+   `GET /runs/{id}` (Run là resource cấp cao nhất). Start tạo Run mới từ một WorkItem đã tồn tại → nested
+   dưới `/work-items/{id}/runs` (REST "tạo sub-resource", đồng thời WorkItemID lấy thẳng từ path, không cần
+   field trùng lặp trong body). Cancel tác động lên một Run đã tồn tại → `/runs/{id}/cancel`, cùng họ với
+   `/mark-ready`.
+4. **`ProjectID` luôn tự reload phía server (`loadWorkItemProjectID`/`requireRunExists`), KHÔNG BAO GIỜ lấy
+   từ client** — đúng "Contract chung đã khóa" điểm 3: *"Mọi item route reload authoritative target để suy
+   Project/scope và authorize; không tin ID shape, payload hoặc projection."* `StartRunRequest`/
+   `CancelRunRequest` (2 struct HTTP body của package này) vì vậy KHÔNG có field `projectId` nào cả — loại
+   bỏ hẳn khả năng client tự khai sai project. Đọc kỹ `commands.go` xác nhận bản thân `StartWorkflowRun`
+   TIN `req.ProjectID` tuyệt đối (không tự cross-check với WorkItem) — nghĩa là chính handler HTTP này là nơi
+   giữ đúng lời hứa đó, không phải app layer.
+5. **Không `If-Match` cho cả hai route.** `StartWorkflowRunRequest` không có `ExpectedVersion`
+   (`StartWorkflowRun` tự load `item.Version` bên trong transaction rồi CAS bằng chính giá trị vừa load, ứng
+   viên thua race nhận `ErrWorkItemNotReady` chứ không phải conflict-vì-version-cũ). `CancelRunRequest` cũng
+   không có field version nào. Không có gì để client "match" trước.
+6. **`ValidActions` advisory có mặt trong cả 2 response, đúng "Phạm vi: ... mutation valid actions" của
+   chính V6-06** — Start trả `[{operationId: "cancelRun", scopeKind: PROJECT, targetVersion: 0}]` (một Run
+   vừa RUNNING luôn có thể cancel); Cancel trả mảng rỗng (không còn "hành động mutation mới" nào trong tập
+   đóng của task này một khi đã CANCELLING/CANCELLED — gọi cancel lần nữa vốn đã an toàn, không cần quảng
+   cáo). `TargetVersion: 0` là cố ý, không phải bug: `httpapi.ValidAction.TargetVersion` được thiết kế cho
+   action có `If-Match`/`ExpectedVersion` — `cancelRun` không có field đó (quyết định 5), nên 0 (zero value)
+   là giá trị trung thực, ghi rõ lý do trong chính doc comment của `StartRunResponse`.
+7. **`CancelRunResponse` tự định nghĩa lại field JSON, không serialize thẳng `runtime.CancelRunResult`.**
+   `runtime.CancelRunResult` (cancel_run.go dòng 66-73) không có json tag nào — serialize thẳng sẽ ra
+   `{"RunID":...,"AlreadyRequested":...}` (PascalCase), lệch hẳn convention camelCase của toàn bộ package
+   (`StartWorkflowRunResult` đã có tag `runId`/`projectId`/... sẵn nên dùng thẳng được, embed qua
+   `StartRunResponse`). Cân nhắc sửa thẳng `cancel_run.go` thêm json tag — quyết định KHÔNG làm, vì đó là
+   file dùng chung, có nguy cơ conflict với các PR song song khác đang chạy, và việc map tường minh ở tầng
+   delivery (đúng vai trò của nó) rủi ro thấp hơn nhiều so với sửa file application layer đã merge/test kỹ.
+8. **Phân loại lỗi (`errors.go`) tự viết riêng trong package `run`, KHÔNG sửa `internal/app/runtime` để bọc
+   `apperror.Error`.** Mọi sentinel (`ErrWorkItemNotReady`, `ErrWorkspaceNotReady`,
+   `ErrWorkflowVersionMismatch`, `ErrWorkItemCancellationPending`, `ErrRunAlreadyTerminal`, ...) đều là
+   `errors.New` trần — `httpapi.WriteAppError`'s `errors.As(err, &appErr)` sẽ không bao giờ khớp, rơi vào
+   nhánh mặc định 500 INTERNAL nếu không tự phân loại. Lẽ ra có thể bọc các sentinel này bằng `apperror.Wrap`
+   ngay trong `runtime` để dùng chung bảng `StatusForAppErrorCode`, nhưng đó là sửa file lõi đã test rất kỹ,
+   rủi ro cao hơn lợi ích cho một task chỉ có phạm vi "HTTP delivery" — giữ nguyên `internal/app/runtime`,
+   viết 2 hàm `writeStartWorkflowRunError`/`writeCancelRunError` cục bộ, message diễn giải lại an toàn (không
+   trả thẳng `err.Error()`, đúng tinh thần "safe, public-facing half" của `apperror.Error.Message`).
+9. **Status code**: 201 cho Start mới (tạo Run), 200 cho Start replay (theo đúng `WriteReceiptReplay`'s hard-
+   coded 200 có sẵn — không tự đặt lại), 202 luôn cho Cancel (cả fresh lẫn `AlreadyRequested=true`) — đúng
+   "accepted response không terminal tức thì" của chính Verify line, phân biệt qua field `alreadyRequested`
+   thay vì qua status code.
+10. **Architecture test riêng cho "không có scheduler/worker fast path"** — chọn cấm gọi selector tên
+    `Handle` (tên method dùng nhất quán cho MỌI job consumer trong codebase này —
+    `ExecuteNodeHandler.Handle`, `CancelRunCoordinatorHandler.Handle`, `workspaceprovision.Handler.Handle`,
+    xác nhận bằng grep 37 file khớp `\.Handle\(` toàn bộ đều là test application-layer, KHÔNG file nào trong
+    `internal/delivery/httpapi` từng gọi selector này) cộng `AdvanceRun`/`FinalizeExecutionAttempt` (2 hàm
+    scheduler cấp cao). Mirror y hệt `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt`'s kiểu AST-scan, tái
+    dùng `findModuleRoot` có sẵn trong `boundary_test.go` (cùng package `archtest`).
+11. **Test HTTP thật qua `httptest.Server` + `http.ServeMux` thật (`newTestServer`), không chỉ gọi hàm
+    handler trực tiếp qua `httptest.NewRecorder`.** Lý do: tự tay viết pattern `{workItemId}`/`{runId}` cho
+    `RouteDescriptor.Path` — muốn chứng minh chính `net/http.ServeMux` thật khớp đúng pattern đó và
+    `r.PathValue(...)` trả đúng giá trị, không chỉ tin "chắc nó đúng". Chỉ ghép thêm `httpapi.BindPrincipal`
+    (không ghép `HostOriginGuard`/`RequireSessionToken`/`Recover`/`MaxBytes` — đó là phạm vi đã test kỹ của
+    V6-01/V6-01A, ghép vào sẽ chỉ thêm boilerplate token/Host không liên quan tới logic route của task này).
+12. **Không thêm role-based authorization gate nào ngoài `LocalPrincipalSnapshot` đã bind sẵn.** Spec V6-06
+    không nhắc "enforce role" (khác hẳn V6-06A's "enforce role" rõ ràng cho approval) — tự bịa một role gate
+    không có căn cứ trong doc sẽ là scope creep. `requireRunExists`/`loadWorkItemProjectID` vẫn tồn tại và có
+    giá trị thật: chứng minh Run/WorkItem tồn tại thật trước khi dispatch (fail-closed 404 nhất quán), để sẵn
+    móc nối cho V6-13's "cross-project guessed Run/WorkItem" test sau này.
+13. **Không thêm gì cho graph/timeline/diagnostics/approval/WAIT** — đúng "Không làm" line, đây là việc của
+    V6-06B/V6-06C/V6-06A/V6-06D, không lấn sang.
+
+### Thực hiện
+
+- `internal/delivery/httpapi/run/run.go`: `Dependencies{UOW, IDs}`, `RegisterRoutes(routes, deps)` — đăng ký
+  đúng 2 route với `OperationID` khoá cứng từ V6-00 (`startWorkflowRun`, `cancelRun`).
+- `internal/delivery/httpapi/run/start.go`: `StartRunRequest`, `startRunHashPayload` (nội bộ),
+  `StartRunResponse`, `StartWorkflowRunHandler(deps) http.HandlerFunc`, `loadWorkItemProjectID`.
+- `internal/delivery/httpapi/run/cancel.go`: `CancelRunRequest`, `CancelRunResponse`,
+  `CancelRunHandler(deps) http.HandlerFunc`, `requireRunExists` — doc comment giải thích đầy đủ quyết định 1
+  ở trên ngay trong code, không chỉ ở báo cáo này.
+- `internal/delivery/httpapi/run/errors.go`: `writeStartWorkflowRunError`, `writeCancelRunError` — phân loại
+  từng sentinel thật của `internal/app/runtime` sang đúng status/code, message an toàn tự viết lại.
+- `internal/archtest/run_control_test.go`: `TestRunControlHTTPNeverReachesSchedulerOrWorker`.
+- `cmd/aw/serve.go`: thêm 1 import (`runhttp ".../httpapi/run"`) + 1 lời gọi `runhttp.RegisterRoutes(routes,
+  runhttp.Dependencies{UOW: uow, IDs: idsource.Random{}})` đúng tại điểm đã đánh dấu sẵn — không sửa gì khác
+  trong file (diff 10 dòng, xem `git diff origin/master -- cmd/aw/serve.go`).
+- Không migration mới (task này không cần schema mới — kiểm tra highest migration hiện tại vẫn `0037` trên
+  `origin/master`, không đụng tới).
+
+### Test
+
+Toàn bộ test dùng sqlite thật (`sqlite.Open` + `sqlite.NewUnitOfWork`), không mock/fake nào, và dispatch qua
+đúng `internal/app/runtime.StartWorkflowRun`/`CancelRun` thật — không có chỗ nào tự ghi thẳng DB để giả kết
+quả.
+
+- `internal/delivery/httpapi/run/fixture_test.go`: mirror `commands_sqlite_test.go` — `seedProject`/
+  `seedActiveRepository` (tách riêng, xem bug #1 dưới đây), `stubProvider`, `readyWorkItemFixture`/
+  `readyWorkItemFixtureInExistingProject`, `publishTestWorkflowVersion`.
+- `httptest_helper_test.go`: `newTestServer` — `http.ServeMux` thật ghép `RegisterRoutes`'s descriptor +
+  `httpapi.BindPrincipal`, bọc trong `httptest.Server` thật.
+- `start_test.go` (9 test): `..._Success_ReturnsCreatedRunningWithCancelValidAction`,
+  `..._MissingIdempotencyKey_ReturnsBadRequest`, `..._MissingWorkflowVersionId_ReturnsBadRequest`,
+  `..._UnknownWorkItem_ReturnsResourceHidden`, `..._Replay_SameKeySameBody_ReturnsIdenticalResult` (**replay**),
+  `..._SameKeyDifferentBody_ReturnsConflict`, `..._PinnedWorkflowVersionMismatch_ReturnsConflict` (**pinned
+  conflict** — mirror trực tiếp `commands_sqlite_test.go`'s
+  `TestStartWorkflowRun_SQLite_WorkflowVersionMismatch_RejectsPinnedWorkItem` qua HTTP),
+  `..._SameIdempotencyKeyDifferentWorkItem_ConflictsRatherThanCrossReplays`,
+  `..._ConcurrentSameIdempotencyKey_OnlyOneRunCreated` (goroutine thật, real sqlite).
+- `cancel_test.go` (6 test): `..._Success_ReturnsAcceptedCancelling`,
+  `..._CancelTwice_SecondIsAlreadyRequestedNoSecondJob` (**cancel twice**),
+  `..._UnknownRun_ReturnsResourceHidden`, `..._MissingReason_ReturnsBadRequest`,
+  `..._AlreadyTerminalRun_ReturnsConflict`,
+  `..._ConcurrentCancelRace_OnlyOneFreshRequestOneCoordinatorJob` (**cancel race** — goroutine thật, real
+  sqlite, mirror đúng phương pháp `internal/app/runtime/cancel_run_race_test.go` nhưng chạy qua HTTP handler
+  thật, không gọi thẳng `runtime.CancelRun`).
+
+**2 lỗi thật phát hiện trong lúc viết/chạy test (không phải giả định trước, mà lộ ra khi `go test` fail
+thật):**
+
+1. **Bug trong chính fixture của tôi**: `TestStartWorkflowRun_HTTP_SameIdempotencyKeyDifferentWorkItem_...`
+   ban đầu gọi `readyWorkItemFixture(t, uow, ids, "project-1", "repo-a")` rồi
+   `readyWorkItemFixture(t, uow, ids, "project-1", "repo-b")` — cả hai đều tự `CreateProject("project-1")` →
+   lần 2 vi phạm UNIQUE constraint thật, test fail với `"seed project project-1: INTERNAL: sqlite: unexpected
+   error"`. Sửa bằng cách tách `seedProject`/`seedActiveRepository` thành 2 hàm riêng (mirror đúng
+   `commands_test.go`'s `mustCreateProject`/`mustCreateActiveRepository` gốc mà lúc đầu tôi lỡ gộp lại), thêm
+   `readyWorkItemFixtureInExistingProject` cho trường hợp 2 WorkItem cùng project.
+2. **Kỳ vọng sai trong chính test tôi viết** (không phải bug trong code sản phẩm): lúc đầu tôi viết test kỳ
+   vọng CẢ HAI request (WorkItem A và B, cùng `Idempotency-Key`, cùng `workflowVersionId`) đều phải trả 201
+   với `RunID` khác nhau — chạy thật ra 409 CONFLICT cho request B. Suy nghĩ lại: đây MỚI ĐÚNG là hành vi cần
+   có — một `Idempotency-Key` là lời hứa "khoá này đại diện đúng MỘT request logic"; client dùng lại khoá đó
+   cho một WorkItem hoàn toàn khác là VI PHẠM lời hứa đó, và hệ thống phải xử lý y hệt case "same key khác
+   body" (đã có test riêng) — tức là CONFLICT, không phải âm thầm cho qua như hai request độc lập. Viết lại
+   test đúng tên `..._ConflictsRatherThanCrossReplays`, khẳng định 3 điều: (a) request B bị 409, (b) chỉ có
+   đúng 1 `workflow_runs` row sau đó (không tạo nhầm, không tạo sai), (c) dùng một khoá RIÊNG cho WorkItem B
+   thì thành công bình thường với `RunID` riêng — chứng minh 409 ở bước (a) đúng là do trùng khoá, không phải
+   do lỗi nào khác chặn WorkItem B.
+
+- `go build ./...`, `go vet ./...` sạch trên toàn bộ 82 package.
+- `go test ./internal/delivery/httpapi/run/... -v`: 15/15 PASS (5.66s).
+- `go test ./internal/archtest/... -v`: toàn bộ pass, gồm `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt`
+  (tự động phủ cả package `run` mới, không cần sửa gì) và `TestRunControlHTTPNeverReachesSchedulerOrWorker`
+  mới (0.03s).
+- `go test ./cmd/aw/... ./internal/delivery/httpapi/...`: pass (xác nhận wiring `serve.go` không phá gì).
+- Race detector (`-race`) không chạy được trên máy dev (Windows, `CGO_ENABLED=0` — pure-Go sqlite theo đúng
+  chủ trương repo, `-race` cần cgo) — để CI (Linux, có cgo) tự chạy race suite thật, đúng hard rule #7 (không
+  tự claim theo dõi CI).
+- Chạy thêm `go test ./...` toàn bộ 82 package một lần để soát regression ngoài phạm vi trực tiếp: 1 fail duy
+  nhất — `TestV5AcceptFullComposition_RealFourRoleGraphReachesSucceededAndSurvivesRestart`
+  (`internal/integration/v5accept`), lỗi *"run v5a-7 did not reach state VERIFYING within the deadline"*.
+  KHÔNG vội coi đây là "known flake" — đúng hard rule của chính task này, làm 2 bước xác minh thật trước khi
+  kết luận: (1) `git diff origin/master --stat -- internal/app/runtime internal/integration
+  internal/adapters/sqlite internal/app/work internal/app/workspaceprovision internal/domain` → rỗng, xác
+  nhận nhánh này không đụng một dòng nào trong toàn bộ chuỗi phụ thuộc của package đang fail; (2) chạy lại
+  `go test ./internal/integration/v5accept/... -v` một mình, không contention — cả 12 test pass sạch
+  (106.5s), gồm đúng test vừa fail (15.69s, so với 29.61s+timeout lúc chạy chung). Kết luận: đúng cùng một
+  triệu chứng CPU/IO contention từ `go test ./...` chạy nhiều package song song mà chính `## V6-03`'s own
+  narrative ở trên đã từng gặp và xác minh y hệt cách này (test khác tên, cùng package, cùng triệu chứng
+  "did not reach state VERIFYING within the deadline") — không phải regression thật từ thay đổi của V6-06.
+
+### Verify
+
+- **replay**: `..._Replay_SameKeySameBody_ReturnsIdenticalResult` — cùng key/body trả đúng `RunID` gốc qua
+  200 (`WriteReceiptReplay`), `CountWorkflowRuns` xác nhận đúng 1 row.
+- **pinned conflict**: `..._PinnedWorkflowVersionMismatch_ReturnsConflict` — WorkItem đã pin version A, gọi
+  start với version B → 409 CONFLICT, dùng đúng `store.SetWorkItemWorkflowVersionForTest` để đạt precondition
+  (không command thật nào pin được field này, đúng như chính doc comment gốc của
+  `TestStartWorkflowRun_SQLite_WorkflowVersionMismatch_RejectsPinnedWorkItem` đã giải thích).
+- **cancel twice**: `..._CancelTwice_SecondIsAlreadyRequestedNoSecondJob` — lần 2 vẫn 202,
+  `alreadyRequested=true`, đúng 1 `CANCEL_RUN_COORDINATOR` job (`CountDurableJobsByIdempotencyKey` với key
+  `"cancel-run-coordinator:"+runID`, đúng key thật `cancel_run.go` dùng).
+- **cancel race**: `..._ConcurrentCancelRace_OnlyOneFreshRequestOneCoordinatorJob` — 6 goroutine thật gọi
+  đồng thời qua `httptest.Server` + `http.Client` thật vào cùng 1 Run, đúng 1 response "fresh"
+  (`alreadyRequested=false`), đúng 1 coordinator job — race thật trên sqlite thật, không phải suy luận từ
+  code application layer đã có sẵn test riêng.
+- **accepted response không terminal tức thì**: Cancel LUÔN trả `state` đúng những gì `runtime.CancelRun`
+  quan sát được (CANCELLING lúc mới, hoặc state hiện tại khi đã `alreadyRequested`) — không handler nào tự ý
+  gán `CANCELLED`; `TestCancelRun_HTTP_Success_ReturnsAcceptedCancelling` assert rõ `State != "CANCELLED"`
+  (phải là `"CANCELLING"`).
+- **"Hoàn thành khi": Run control không có scheduler/worker fast path** —
+  `TestRunControlHTTPNeverReachesSchedulerOrWorker` (AST-scan thật, không phải đọc mắt) chứng minh
+  `internal/delivery/httpapi/run` không gọi `.Handle(`/`AdvanceRun`/`FinalizeExecutionAttempt` ở đâu cả;
+  `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt` (đã có từ V6-02, tự động phủ package mới) chứng minh
+  không ghi receipt trực tiếp.
+
+### Kết quả
+
+10 file thay đổi (`cmd/aw/serve.go` sửa 10 dòng; 9 file mới trong `internal/delivery/httpapi/run/` +
+`internal/archtest/run_control_test.go`), tổng +1615/-3 dòng. Package `run` mới: 4 file production
+(`run.go`/`start.go`/`cancel.go`/`errors.go`, ~515 dòng) + 5 file test (~1210 dòng, 15 test case). 1 test mới
+trong `internal/archtest`. `go build/vet ./...` sạch trên 82 package; toàn bộ test của package mới + archtest
++ `cmd/aw` + `internal/delivery/httpapi` (cha) pass 100%. Không migration mới, không sửa
+`internal/app/runtime`/`internal/app/ports` — toàn bộ thay đổi nằm gọn trong tầng delivery + 1 điểm nối
+additive vào composition root, đúng phạm vi "HTTP delivery only" của task.
+
+`POST /work-items/{workItemId}/runs` (operationId `startWorkflowRun`) và `POST /runs/{runId}/cancel`
+(operationId `cancelRun`) giờ là 2 route thật, chạy được qua `aw serve` thật (không chỉ unit test cô lập) —
+`V6-06 -> V6-06B` (Run detail/graph/timeline) chính thức unblock phần dependency của riêng nó (còn cần thêm
+`V6-00`, `V6-02A`, đều đã xong từ trước). `V6-06D` KHÔNG phụ thuộc `V6-06` (dependency riêng: `V6-00, V6-01A,
+V6-02, V6-02A, V4-12C, V5-08D`) nên không bị ảnh hưởng bởi thứ tự merge của task này.

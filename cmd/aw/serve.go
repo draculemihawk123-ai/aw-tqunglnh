@@ -19,6 +19,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 )
 
 // runServe is V6-01's own composition root entry point: it wires
@@ -143,9 +144,12 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
 	})
-	// No further route fragments exist yet in this task; a later endpoint
-	// task's own composition-root wiring adds its own routes.Register call
-	// here without needing to touch this file's shared setup.
+	// V6-06: Run start/cancel controls (internal/delivery/httpapi/run) — an
+	// additive routes.Register call only, no shared setup above touched.
+	// Every further endpoint task's own composition-root wiring adds its own
+	// call here the same way, without needing to touch this file's shared
+	// setup (contract point 8: "Parallel work không sửa registry chung").
+	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: uow, IDs: idsource.Random{}})
 	routesFinalized = true
 
 	server, err := httpapi.NewServer(httpapi.Config{
