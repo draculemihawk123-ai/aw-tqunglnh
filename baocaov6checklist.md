@@ -2217,3 +2217,316 @@ thật ngay lập tức (`in_progress` sau vài giây) và xanh trong vài phút
 thường lâu, kiểm tra `runner_id` qua API để phân biệt "đang chờ hàng đợi" với "kẹt hẳn không ai nhận"; nếu
 kẹt, đừng chỉ chờ — kiểm tra githubstatus.com để xác nhận nguyên nhân, và nếu sự cố phía GitHub đã resolve mà
 job vẫn kẹt, chủ động cancel+rerun thay vì tiếp tục chờ vô thời hạn.**
+
+## V6-04 — WorkItem, family, readiness và scope endpoints
+
+### Bối cảnh
+
+V6-04 nằm trong nhóm P2 "application/HTTP slices sau V6-00 + V6-01A + V6-02 + V6-02A" (trích đúng dependency
+graph mục 2 của `08-v6-api-projections.md`), cộng thêm phụ thuộc riêng V6-03. Cả 5 dependency đã merge:
+V6-00 (PR #29), V6-01A (PR #35), V6-02 (PR #39), V6-02A (PR #33), V6-03 (PR #34). Bốn task chạy song song
+ngay lúc task này bắt đầu — V6-03A, V6-04 (task này), V6-06, V6-10B — tất cả cùng ghi vào chính file
+`baocaov6checklist.md` này.
+
+Trích nguyên văn task spec (dòng 203-214, không diễn giải lại): "Mục tiêu: expose root/child WorkItem,
+family/readiness và toàn bộ scope-expansion lifecycle... Phạm vi: create/list/authoritative detail/child/
+readiness; scope request/approve/reject/withdraw... Không làm: không generic status/family/workspace
+setter; không dùng projected detail để authorize... Thực hiện: root-create atomic, child subset, readiness
+criteria explanation; `WithdrawScopeExpansion` thuộc task này, chỉ khi pending và không tạo grant/amendment.
+Authoritative detail phân biệt với projected card/detail của V6-10."
+
+Task này là task ĐẦU TIÊN trong repo thật sự triển khai một "business HTTP endpoint" hoàn chỉnh (route thật,
+handler thật, dispatch command thật) — tại thời điểm branch từ `3af0adf`, V6-03A (candidate gần nhất, cùng
+nhóm P2, cùng phụ thuộc) CHƯA có branch/PR nào tồn tại trên remote (`gh pr list`/`git branch -a` xác nhận
+rỗng). Nghĩa là không có sibling nào đã merge để copy convention — mọi quyết định thực dụng (subpackage
+layout, path-parameter routing, error-sentinel-to-httpapi mapping) phải tự rút ra từ việc đọc thẳng source
+V6-01/V6-01A/V6-02/V6-02A, không phải "làm giống PR trước".
+
+### Nghiên cứu
+
+Đọc toàn bộ `internal/delivery/httpapi` (14 file production của V6-01/V6-01A/V6-02/V6-02A) trước khi viết
+bất kỳ handler nào: `route.go` (`RouteDescriptor`/`RouteRegistry`, panic khi trùng `(Method,Path)` hoặc
+`OperationID`), `commandenvelope.go` + `receiptreplay.go` (toàn bộ flow: `RequireIdempotencyKey`/
+`RequireIfMatch` → `CanonicalizeJSON` → `SemanticHash` → `LookupReceipt` → `WriteReceiptReplay`/
+`ErrReceiptHashConflict` → dispatch → `EncodeResult`), `errors.go` (7-giá-trị `ErrorCode`, hàm funnel
+`WriteResourceHidden` cho leakage normalization, `StatusForAppErrorCode` bảng 22 `errorcode.Code` — CHỈ
+hiểu `*apperror.Error`), `principal.go`/`security.go` (`PrincipalFromContext`, session-token middleware —
+việc của composition root, không phải route task), `server.go` (`Config`/`NewServer`, middleware chain
+thật, `mux.HandleFunc(d.Method+" "+d.Path, d.Handler)` — xác nhận dùng thẳng `net/http.ServeMux` gốc, không
+router bên thứ ba).
+
+Đọc `internal/archtest/command_envelope_test.go` — xác nhận `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt`'s
+`filepath.WalkDir(root, ...)` đệ quy vào MỌI subdirectory của `internal/delivery/httpapi`, nên một subpackage
+mới tự động bị quét mà không cần sửa test đó — điểm này quyết định trực tiếp lựa chọn kiến trúc ở mục Quyết
+định #2.
+
+Đọc `internal/app/work/commands.go` (618 dòng) và `scope_expansion.go` (907 dòng) TOÀN BỘ trước khi viết
+dòng handler đầu tiên — xác nhận chính xác 6 hàm public cần wrap (`CreateRootWorkItem`, `CreateChildWorkItem`,
+`RequestScopeExpansion`, `ApproveScopeExpansion`, `RejectScopeExpansion`, `WithdrawScopeExpansion`) và liệt
+kê ĐẦY ĐỦ mọi sentinel error mỗi hàm có thể trả về bằng cách đọc source thật, không đoán:
+`ports.ErrPersistenceNotFound`, `ports.ErrCrossProjectReference`, `ports.ErrReceiptConflict`,
+`ports.ErrOptimisticConflict` (chỉ từ `ApproveScopeExpansion`'s `TransitionTaskFamilyScopeVersion` CAS),
+`ErrRepositoryNotActive`, `ErrScopeExpansionNotPending`, `ErrEffectiveScopeExceedsFamilyScope`,
+`ErrCrossFamilyReference`, cộng các `errors.New(...)` trần (không sentinel) ở đầu mỗi hàm cho field bắt buộc
+thiếu.
+
+Ba phát hiện quan trọng nhất của task này:
+
+1. **Contract field của WorkItem tồn tại trong schema nhưng chưa từng được đọc/ghi.** Migration
+   `0007_work_items_contract.sql` (comment gốc: "Nothing in this repository writes a work_items row with
+   any of these fields yet") thêm 6 cột nullable (`schema_version, behavior, acceptance_json,
+   verification_json, risk, exclusions_json`) vào `work_items`, nhưng `createWorkItemTx`/`getWorkItemTx`/
+   `scanWorkItemRow` (`internal/adapters/sqlite/work.go` dòng 37-131) chưa bao giờ đọc/ghi cả 6 cột đó —
+   xác nhận trực tiếp bằng cách đọc SQL string thật trong cả `INSERT` (chỉ 11 cột identity/lineage) lẫn
+   `SELECT` (chỉ thêm `workflow_version_id`), không suy diễn từ comment migration. Quyết định KHÔNG tự ý mở
+   rộng 2 hàm đó trong task này — xem Quyết định #1.
+2. **`readinesscheck.GetReadinessProfile`/`SetReadinessProfile` không phải cùng khái niệm với "readiness"
+   của task này.** Đọc `internal/app/readinesscheck/profile.go` toàn bộ: 2 hàm đó thao tác
+   `readiness.Profile` — setup/verification RECIPE ở mức REPOSITORY (đối chiếu
+   `internal/domain/readiness/readiness.go`) — hoàn toàn khác per-WorkItem readiness EXPLANATION mà task
+   này cần dựng. Xác nhận đúng như prompt đã cảnh báo trước, không phải đoán suông.
+3. **Không có bất kỳ public application-layer READ query nào cho WorkItem/TaskFamily/ScopeExpansionRequest
+   tồn tại trước task này.** `ls internal/app/work/` xác nhận không có file `queries.go` nào; chỉ có method
+   thô `ports.WorkRepository.GetWorkItem`/`GetTaskFamily`/`GetScopeExpansionRequest`, dùng NỘI BỘ bởi chính
+   các command, chưa từng expose ra ngoài. `internal/adapters/sqlite/work_queries.go` (204 dòng) toàn bộ là
+   `Count*` helper cho rollback test, không có `List` thật nào. Không có `ListWorkItemsByProject`/
+   `ListChildWorkItems` ở BẤT KỲ tầng nào — kể cả tầng port — phải tự thêm mới hoàn toàn.
+
+Đọc ADR-025 nguyên văn (`docs/architecture/02-architecture-decisions.md` dòng 604-639): bảng closed-set
+installation chỉ liệt kê `CreateProject`/safe-settings mutation/`ProbeAdapterBuild`/`RegisterAdapterBuild`
+(command) và health/doctor/`ListProjects`/safe-settings read/adapter-build list-detail (query) —
+WorkItem/TaskFamily/ScopeExpansionRequest hoàn toàn vắng mặt trong bảng đó, nên MỌI route/query của task
+này là project-scoped, không có ngoại lệ. Cùng đoạn ADR tự nhắc: "Route `/adapter-builds` do đó nằm ngoài
+cây `/projects/{id}`" — xác nhận URL convention `/projects/{projectId}/...` là cây đúng cho mọi resource
+project-scoped khác, không phải suy đoán riêng của task này.
+
+Đọc `internal/app/ports/fake/work.go` (773 dòng) TOÀN BỘ trước khi sửa — xác nhận
+`var _ ports.WorkRepository = (*WorkRepository)(nil)` là compile-time assertion bắt buộc phải cập nhật
+CÙNG LÚC với việc mở rộng interface, không có cách trì hoãn (toàn repo build sẽ gãy nếu quên).
+
+Đọc `internal/delivery/httpapi/server_test.go`'s `newTestServer` (dòng 25-41) và
+`TestServer_ServeHealthEndpoints_RealHTTPRoundTrip` — xác nhận đây là idiom "real TCP listener + real
+middleware chain đầy đủ" đã có sẵn, tốt hơn hẳn tự dựng `http.ServeMux` tay; dùng lại nguyên shape này cho
+test HTTP của task này thay vì phát minh lại.
+
+Xác nhận `go.mod`'s `go 1.27.0` — đủ mới cho `net/http.ServeMux`'s pattern `{name}` + `r.PathValue()` (Go
+1.22+) mà không cần router bên thứ ba. Grep toàn `internal/delivery/httpapi` tìm `PathValue`/`Path:.*{` ra
+0 kết quả TRƯỚC task này — xác nhận đây là task đầu tiên trong repo thật sự dùng path parameter trong HTTP
+layer, không có precedent nào để soi.
+
+Grep 14 file dùng `apperror.New`/`apperror.Wrap` trong toàn repo (`internal/app/config`,
+`internal/adapters/artifactstore`, `internal/adapters/sqlite`, `internal/app/runtime`,
+`internal/adapters/repoprobe`, `internal/app/repositoryprobe`, `internal/app/eventschema`, và test file) —
+không file nào trong `internal/app/work` hay `internal/app/catalog`. Xác nhận `httpapi.WriteAppError` (chỉ
+hiểu `*apperror.Error` qua `errors.As`) không dùng được cho bất kỳ lỗi nào từ `internal/app/work` — phải tự
+viết error-mapping riêng cho package này, enumerate từng sentinel bằng tay thay vì generic catch-all.
+
+Đọc `internal/domain/work/work.go` toàn bộ — xác nhận `ValidateReadinessGate` là pure validator (không cần
+sửa) và xác nhận chính xác 8 field thuộc "contract" của WorkItem (`SchemaVersion, Behavior,
+AcceptanceCriteria, VerificationSpec, RiskLevel, Exclusions, WorkflowVersionID, ApprovalException`) — trong
+đó `ApprovalException` không có cột DB nào cả (khác hẳn 6 cột migration 0007 đã thêm cho các field còn
+lại), củng cố thêm quyết định không tự ý wiring persistance cho khối field này trong task này.
+
+### Quyết định
+
+1. **Không wiring 6 cột contract field đã có sẵn trong `createWorkItemTx`/`getWorkItemTx` (Nghiên cứu #1).**
+   Dù về kỹ thuật đây là thay đổi additive, không cần migration mới, không phá vỡ caller nào hiện có — vẫn
+   quyết định để nguyên: không citation nào trong `08-v6-api-projections.md` giao việc đó cho V6-04 (Phạm
+   vi chỉ nói "readiness", không nói "contract persistence"), và sửa 2 hàm nền tảng đã merge ngay lúc 3
+   session khác đang chạy song song trên cùng codebase là rủi ro không cần thiết cho một lợi ích ngoài
+   phạm vi task. `internal/app/work.ExplainWorkItemReadiness` (mới) vẫn gọi `workdomain.ValidateReadinessGate`
+   THẬT trên WorkItem THẬT load qua `GetWorkItem` — kết quả hiện tại sẽ luôn báo cùng một tập "problems" cho
+   mọi WorkItem (đúng sự thật hệ thống ngày hôm nay, không phải giả lập), và sẽ tự động chính xác hơn ngay
+   khi một task tương lai wiring contract field mà không cần sửa gì ở đây.
+2. **Chọn subpackage riêng `internal/delivery/httpapi/workitem` thay vì file phẳng trong `httpapi`.** Đúng
+   Contract chung §1.8 "Mỗi endpoint/CLI task sở hữu subpackage" — khác V6-01A/V6-02A vốn là task NỀN TẢNG
+   (không phải "endpoint task"), và vì 3 session song song khác (V6-03A/V6-06/V6-10B) hoàn toàn có khả năng
+   đang ghi trực tiếp vào `internal/delivery/httpapi` ngay lúc này. Bonus xác nhận từ Nghiên cứu:
+   `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt`'s `filepath.WalkDir` tự động đệ quy vào subpackage mới
+   — archtest sẵn có của V6-02 tự động bao phủ toàn bộ code của task này mà không cần sửa file đó.
+3. **URL tree `/projects/{projectId}/...` cho toàn bộ 12 route.** Suy trực tiếp từ chính câu ADR-025 tự
+   nhắc "Route `/adapter-builds` do đó nằm ngoài cây `/projects/{id}`" — ngụ ý mọi resource project-scoped
+   khác SỐNG dưới cây đó, không phải quy ước tự đặt.
+4. **"list" (WorkItem) = toàn bộ WorkItem trong project (mọi Kind/Status), phẳng, không filter/sort/cursor.**
+   Quyết định KHÔNG dùng V6-02A's cursor pagination cho danh sách này: không citation nào của V6-04 đòi
+   filter/sort/cursor (khác hẳn V6-10 tự nêu rõ "stable filter/sort/cursor" cho projected Kanban), và mọi
+   `List*` tương tự khác đã có trong repo (`ListProjects`, `ListFamilyRepositoryScopes`,
+   `ListReleaseSetsForFamily`) đều phẳng, không cursor. "child" = trực tiếp children của một WorkItem
+   (`parent_id = ?`), KHÔNG đệ quy xuống cháu — `NewChildWorkItem` không giới hạn Kind của parent nên về lý
+   thuyết cháu là khả thi, nhưng không citation nào đòi truy vấn đệ quy, và test
+   `TestListChildWorkItems_ReturnsOnlyDirectChildren` xác nhận cháu không lọt vào danh sách children của
+   ông/bà.
+5. **Thêm 2 method mới vào `ports.WorkRepository`: `ListWorkItemsByProject`, `ListChildWorkItems`** — mirror
+   đúng cách V6-03 đã mở rộng `CatalogRepository.ListProjects` (thêm interface method + implement sqlite +
+   implement fake), không phải cách tiếp cận mới.
+6. **Query mới sống trong `internal/app/work/queries.go`** (không phải trong
+   `internal/delivery/httpapi/workitem`), trả thẳng HTTP-ready DTO có json tag (`WorkItemDetail`,
+   `TaskFamilyDetail`, `ScopeExpansionRequestDetail`, `WorkItemReadiness`) — mirror đúng convention "Result
+   struct có json tag sống cạnh command sinh ra nó" mà `CreateRootWorkItemResult`/`CreateChildWorkItemResult`
+   trong chính file `commands.go` đã thiết lập, áp dụng cho query thay vì command. `GetWorkItem` (tên hàm
+   mới) cố ý trùng tên với `WorkRepository.GetWorkItem` (method port có sẵn) — mirror chính xác precedent
+   `catalog.GetProject` (V6-03) trùng tên với `CatalogRepository.GetProject` đã có từ trước.
+7. **Authorization "reload authoritative target trước, không tin ID shape" thực hiện bằng sentinel
+   `ports.ErrScopeMismatch`** (đã có sẵn từ V6-03, KHÔNG phải `ErrPersistenceNotFound`) cho case "tồn tại
+   thật nhưng thuộc project khác" — mirror đúng precedent `GetProject`'s "Cả installation scope lẫn scope
+   của một Project KHÁC đều bị reject bằng cùng `ports.ErrScopeMismatch`". Tầng HTTP fold cả 2 sentinel
+   (`ErrPersistenceNotFound` và `ErrScopeMismatch`) vào cùng một `WriteResourceHidden` response — leakage
+   normalization đúng theo V6-02A, một ID đoán mò thuộc project khác và một ID không tồn tại hoàn toàn
+   không thể phân biệt được từ response.
+8. **Tự viết `writeCommandError`/`writeQueryError` riêng trong package `workitem`, không dùng
+   `httpapi.WriteAppError` sẵn có.** Vì `internal/app/work` KHÔNG BAO GIỜ trả `*apperror.Error` (xác nhận
+   qua grep Nghiên cứu ở trên) nên `WriteAppError` (chỉ hiểu `*apperror.Error`) sẽ luôn rơi vào nhánh 500
+   generic cho MỌI lỗi từ package này — vô dụng. `writeCommandError` enumerate tường minh từng sentinel
+   (đọc hết source, không đoán) map sang đúng status/code; lỗi không khớp bất kỳ sentinel nào rơi về 500
+   INTERNAL — đây được coi là dead-code trong request hợp lệ vì mọi guard "field trống" đã được validate
+   riêng ở tầng HTTP TRƯỚC khi build command envelope.
+9. **Thứ tự "reload target trước Idempotency-Key/If-Match" áp dụng cho MỌI route mutation, kể cả CREATE.**
+   Suy trực tiếp từ Contract chung §3 "Authorization chạy lại cả khi receipt replay" — nếu reload xảy ra
+   SAU bước replay-lookup, một replay hợp lệ về mặt receipt vẫn có thể trả lại kết quả cũ cho một caller đã
+   mất quyền truy cập target đó; do đó CreateRootWorkItem reload Project (`catalog.GetProject`),
+   CreateChildWorkItem reload parent WorkItem, RequestScopeExpansion reload TaskFamily, và
+   Approve/Reject/WithdrawScopeExpansion reload ScopeExpansionRequest — TẤT CẢ trước cả khi đọc
+   Idempotency-Key.
+10. **Approve/Reject/WithdrawScopeExpansion là update-shaped (bắt buộc If-Match theo V6-02) nhưng chính
+    domain command của chúng KHÔNG nhận field `ExpectedVersion` nào** (đọc hết `scope_expansion.go` xác
+    nhận: `ApproveScopeExpansionRequest{RequestID}`, không có version). Quyết định: tự thêm precondition
+    check ở tầng HTTP, dùng LẠI giá trị `Version` đã reload ở bước #9 (không reload lần 2), thực hiện SAU
+    bước `replayOrProceed` — đúng trích nguyên văn V6-02 "nếu absent mới kiểm current version". Domain
+    command vẫn tự re-check PENDING-status độc lập bên trong transaction của chính nó — đây chính là cơ chế
+    thật sự quyết định ai thắng khi 2 request đua nhau, không phải precondition check ở tầng HTTP (xem mục
+    Test — phát hiện thật khi chạy race test).
+11. **Omit ETag trên response thành công của Approve/Reject/Withdraw.** 3 Result struct đó không có field
+    `Version`; muốn version mới, client GET lại detail (route đó CÓ ETag). Tránh 1 lần reload thừa chỉ để
+    lấy ETag cho response của chính mutation.
+12. **Dùng `catalog.GetProject` (đã merge từ V6-03) làm existence-check cho CreateRootWorkItem.** Đây là
+    dependency hợp lệ đã khai trong task spec, không phải scope creep — gọi với
+    `scope=ProjectScope(projectID)` và `projectID` giống hệt tham số, nên nhánh `ErrScopeMismatch` của
+    `GetProject` về cấu trúc không bao giờ trigger qua đường gọi này; nhánh thực sự hữu ích là
+    `ErrPersistenceNotFound` khi project không tồn tại.
+13. **Request body DTO của mọi mutation KHÔNG có field `projectId`/`parentWorkItemId`/`familyId`/
+    `requestId`/`RequestID`(cho RequestScopeExpansion).** Những định danh đó luôn đến từ path hoặc do
+    application tự sinh (`work.RequestScopeExpansionRequest.RequestID`'s own doc comment: "A
+    public/UI-facing caller must never be allowed to choose its own RequestID") — loại bỏ khả năng client
+    tự khai ID/scope ngay từ tầng wire schema, không chỉ dựa vào việc handler "nhớ bỏ qua" giá trị đó.
+
+### Thực hiện
+
+- `internal/app/ports/work.go`: `WorkRepository` thêm `ListWorkItemsByProject(ctx, projectID)`,
+  `ListChildWorkItems(ctx, parentWorkItemID)`.
+- `internal/adapters/sqlite/work.go`: implement 2 method trên qua `listWorkItemsTx` dùng chung, tái sử dụng
+  đúng `scanWorkItemRow`/cột SELECT của `getWorkItemTx` để một row list và một row get luôn cùng shape.
+- `internal/app/ports/fake/work.go`: implement 2 method trên (linear scan + sort theo ID — fake không có
+  `CreatedAt` để sort theo thời gian như sqlite thật).
+- `internal/app/work/queries.go` (mới, 381 dòng): `WorkItemDetail`, `TaskFamilyDetail`,
+  `RequestedGrantView`, `ScopeExpansionRequestDetail`, `WorkItemReadiness` (DTO có json tag) +
+  `requireProjectScope`/`scopeMismatch` (helper dùng chung) + 6 hàm public: `GetWorkItem`, `ListWorkItems`,
+  `ListChildWorkItems`, `GetTaskFamily`, `GetScopeExpansionRequest`, `ExplainWorkItemReadiness`.
+- `internal/delivery/httpapi/workitem/` (package mới, 9 file production):
+  - `dependencies.go`: `Dependencies{UnitOfWork, IDs, Clock}`.
+  - `envelope.go`: `prepareCreateCommand`/`prepareUpdateCommand`/`replayOrProceed` — 3 helper dùng chung bởi
+    cả 6 handler mutation, thực thi đúng flow V6-02 đã tài liệu hoá.
+  - `errors.go`: `writeQueryError`/`writeCommandError`/`writeValidationError`/`writeReceiptHashConflict`/
+    `writePreconditionFailed`.
+  - `dto.go`: `scopeGrantBody` dùng chung + `validateScopeGrantBodies`.
+  - `workitem_commands.go`: `handleCreateRootWorkItem`, `handleCreateChildWorkItem`.
+  - `workitem_queries.go`: `handleGetWorkItem`, `handleListWorkItems`, `handleListChildWorkItems`,
+    `handleGetWorkItemReadiness`, `handleGetTaskFamily`.
+  - `scope_expansion_commands.go`: `handleRequestScopeExpansion`, `handleApproveScopeExpansion`,
+    `handleRejectScopeExpansion`, `handleWithdrawScopeExpansion`, `loadScopeExpansionRequestForUpdate`.
+  - `scope_expansion_queries.go`: `handleGetScopeExpansionRequest`.
+  - `routes.go`: `RegisterRoutes` — 12 `RouteDescriptor`, toàn bộ `ScopeKind: httpapi.ScopeProject`.
+- `internal/archtest/workitem_no_generic_setter_test.go` (mới): 2 test AST-scan mirror đúng idiom
+  `command_envelope_test.go` — `TestWorkItemPackageRequestBodiesNeverAcceptAStatusField` (không type nào
+  tên `...Body` có json field `status`/`targetStatus`/`state`/`family`/`workspace`),
+  `TestWorkItemPackageNeverImportsProjection` (không import path nào chứa "projection"/"kanban").
+
+### Test
+
+- `internal/app/work/queries_sqlite_test.go` (mới, 315 dòng, real sqlite — không mock): 15 test — mỗi 1
+  trong 6 query có ít nhất: matching-scope happy path, cross-project `ErrScopeMismatch`, và (khi áp dụng)
+  installation-scope `ErrScopeMismatch`/unknown-ID `ErrPersistenceNotFound`.
+  `TestListChildWorkItems_ReturnsOnlyDirectChildren` dựng cả cháu thật (child-của-child) để xác nhận không
+  lọt vào danh sách children của gốc.
+  `TestExplainWorkItemReadiness_FreshWorkItem_ReportsRealCompletenessGaps` đối chiếu kết quả với việc gọi
+  trực tiếp `workdomain.ValidateReadinessGate` — nếu `ExplainWorkItemReadiness` từng bị sửa thành trả một
+  danh sách problem đóng cứng, test này lộ ra ngay.
+- `internal/delivery/httpapi/workitem/workitem_test.go` (mới, ~800 dòng, real `httpapi.Server` — TCP
+  listener thật, middleware chain thật — cộng real sqlite, mirror đúng `server_test.go`'s `newTestServer`):
+  - `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet`: đối chiếu `reg.Descriptors()` với đúng 12
+    operationId, mọi route `ScopeKind=PROJECT` — chứng minh cơ học "không route thứ 13 nào".
+  - `TestFullJourney_...`: hành trình đầy đủ root create → detail → list → child create → list children →
+    readiness → family detail → request expansion → detail → approve → xác nhận cả request lẫn family phản
+    ánh quyết định.
+  - Replay/conflict: `TestCreateRootWorkItem_SameIdempotencyKey_ReplaysWithoutCreatingSecondWorkItem`
+    (replay luôn 200, không phải 201 lần 2 — đúng `WriteReceiptReplay`'s hardcoded status),
+    `TestCreateRootWorkItem_SameKeyDifferentBody_ConflictsBeforeSecondInsert` (409 trước khi chạm I/O).
+  - Leakage: `TestGetWorkItem_AnotherProject_ReturnsNotFound` — so sánh BYTE-FOR-BYTE response cross-project
+    với response ID-không-tồn-tại (không dùng so sánh struct vì `httpapi.ErrorResponse` chứa slice, không
+    comparable bằng `!=` — go vet tự bắt lỗi này khi thử, xem bên dưới).
+  - `TestApproveScopeExpansion_StaleIfMatch_PreconditionFailed`: If-Match sai → 412.
+  - `TestCreateChildWorkItem_EffectiveScopeExceedsFamilyScope_Returns400`: cả 2 nhánh — repo chưa từng được
+    grant, và escalate READ→WRITE trên repo đã có — đều 400.
+  - `TestRequestScopeExpansion_MissingReason_Returns400WithFieldDetail`: xác nhận `ErrorDetail.Field` chính
+    xác.
+  - `TestMutatingRoutes_RequireIdempotencyKey`.
+  - **2 test race dùng real goroutine + real sqlite**:
+    `TestConcurrentApproveAndReject_ExactlyOneDecisionWins` (Verify's "concurrent decisions") và
+    `TestConcurrentWithdrawAndApprove_ExactlyOneWins` (Verify's "withdrawal race" — đúng trách nhiệm riêng
+    của task này với `WithdrawScopeExpansion`).
+
+**Phát hiện thật khi chạy test race lần đầu (không phải bug, nhưng là một hiểu lầm ban đầu trong chính test
+của task này):** cả 2 test race ban đầu hardcode kỳ vọng loser luôn là `409`. Chạy thật ra `statuses=[412
+200]` — một trong hai lần thua với `412 Precondition Failed` thay vì `409 Conflict`. Điều tra: nếu goroutine
+thắng CHẠY XONG HOÀN TOÀN trước khi goroutine thua kịp tự `loadScopeExpansionRequestForUpdate` (bước reload
+riêng của chính nó, Quyết định #9-10), goroutine thua sẽ tự thấy `Version=2` (đã bump) trong khi header
+`If-Match` nó gửi vẫn hardcode `"1"` — precondition check TẦNG HTTP của chính nó tự bắt ra staleness và trả
+412, domain command KHÔNG BAO GIỜ được dispatch trong nhánh này. Ngược lại, nếu 2 request phỏng đoán chạm
+gần như đồng thời (cả 2 đọc Version=1 trước khi bên nào commit), cả 2 qua được precondition check của
+chính mình, và chính domain command's fresh PENDING-status check (bên trong transaction serialize của
+riêng nó) mới là nơi thực sự loại một bên — trả `409`. Cả 2 nhánh đều ĐÚNG, chỉ là 2 lớp phòng thủ khác
+nhau bắt cùng một race tại 2 thời điểm khác nhau, phụ thuộc lịch Go scheduler — không thể ép cứng nhánh nào
+sẽ xảy ra. Sửa assertion để chấp nhận tập `{409, 412}` cho loser (không đổi bất kỳ dòng implementation
+nào), chạy lại `go test ./internal/delivery/httpapi/workitem/... -count=8` — 8 lần lặp, 96 lượt test, 100%
+xanh, không flake.
+
+`go vet` tự bắt thêm 1 lỗi thật khi viết test: so sánh `httpapi.ErrorResponse != httpapi.ErrorResponse`
+bằng `!=` không compile được ("struct containing httpapi.ErrorBody cannot be compared") vì `ErrorBody`
+chứa slice `Details`. Sửa bằng so sánh byte-for-byte trên response body thô (`io.ReadAll` rồi so
+`string(...)`) — thực ra mạnh hơn so sánh struct (chứng minh cả field order/whitespace giống hệt, không chỉ
+giá trị).
+
+`go build ./...`, `go vet ./...` sạch trên toàn bộ repo. `go test ./...` (78 package, gồm cả
+`internal/integration/v5accept` 116s, `internal/adapters/sqlite` 170s) — 100% xanh, không có regression ở
+bất kỳ package nào khác dù đã sửa `ports.WorkRepository` (interface dùng bởi rất nhiều package khác qua
+`ports.Tx`).
+
+### Verify
+
+- **"multi-repo/subset/scope negative matrix"**: `TestCreateChildWorkItem_EffectiveScopeExceedsFamilyScope_Returns400`
+  (repo chưa grant + escalate READ→WRITE), `TestGetWorkItem_AnotherProject_ReturnsNotFound` (scope
+  negative), `queries_sqlite_test.go`'s 6×cross-project-scope-mismatch test (mỗi query một cái).
+- **"concurrent decisions"**: `TestConcurrentApproveAndReject_ExactlyOneDecisionWins`, real goroutine, real
+  sqlite, lặp 8× không flake.
+- **"withdrawal race"**: `TestConcurrentWithdrawAndApprove_ExactlyOneWins`, cùng discipline.
+- **"no direct DONE"**: không route/DTO nào trong package `workitem` chấp nhận field status/state từ
+  client — chứng minh cơ học bằng `internal/archtest/workitem_no_generic_setter_test.go`'s AST scan (không
+  chỉ đọc code bằng mắt), cộng `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet`'s đối chiếu tập
+  đóng 12 operationId (không route thứ 13 ẩn nào có thể lọt qua).
+- **"Hoàn thành khi: mọi WorkItem/scope control gọi named application command và client không set state"**:
+  cả 6 route mutation dispatch đúng 1 trong 6 hàm public có sẵn của `internal/app/work`
+  (`CreateRootWorkItem`/`CreateChildWorkItem`/`RequestScopeExpansion`/`ApproveScopeExpansion`/
+  `RejectScopeExpansion`/`WithdrawScopeExpansion`) — không route nào tự CAS trực tiếp qua `tx.Work()`; xác
+  nhận cơ học qua archtest cộng việc đọc lại toàn bộ handler.
+
+### Kết quả
+
+PR #43 (`feat/v6-04-workitem-family-readiness-scope`, branch từ `origin/master` tại `3af0adf`, không cần
+merge `origin/master` giữa chừng vì không sibling nào merge trong lúc làm). 16 file mới/sửa, +2855 dòng: 2
+method mới trên `ports.WorkRepository` (2 implementation: sqlite + fake), 1 file query application-layer
+mới (`internal/app/work/queries.go`, 6 hàm public + 4 DTO), 1 package HTTP hoàn toàn mới
+(`internal/delivery/httpapi/workitem`, 9 file production + 1 file test ~800 dòng, 12 route), 2 test
+archtest mới. Test mới: 15 (query layer, real sqlite) + 13 (HTTP layer, real server + real sqlite, gồm 2
+race test) + 2 (archtest) = 30 test function mới. `go build/vet/test ./...` xanh 100% trên toàn bộ 78
+package, không regression. Gap "V6-04 chưa có route" đã đóng — V6-04A (`MarkWorkItemReady`, phụ thuộc
+V6-04) và V6-12 (compose root router, phụ thuộc trong đó có V6-04) giờ có đủ điều kiện bắt đầu ngay khi
+dependency còn lại của mỗi task sẵn sàng.
