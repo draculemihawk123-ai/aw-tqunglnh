@@ -2203,4 +2203,17 @@ Package `internal/delivery/httpapi` có thêm 2 file production (`commandenvelop
 thật trong chính bàn giao trước đó của phiên này: P2 KHÔNG unblock ngay sau P1 như tưởng — V6-02 là điều kiện
 còn thiếu, giờ đã đóng. `{V6-02, V6-02A, V6-15A} -> V6-15B` giờ đủ cả 3 điều kiện; toàn bộ 11 task P2
 (`V6-03A, V6-04, V6-05, V6-06, V6-06A, V6-06D, V6-07, V6-07B, V6-10B, V6-10H, V6-10J`) chính thức unblock từ
-đây.
+đây. Merge PR #39 (`draculemihawk123-ai/aw-tqunglnh#39`, squash commit `60a9f8f`), xác nhận độc lập bằng
+`git log origin/master` (không dùng `merge-base --is-ancestor` với SHA nhánh gốc vì squash tạo commit mới,
+không giữ SHA cũ).
+
+**Sự cố CI ngoài code đáng ghi lại**: 3 job cuối (`Linux race and stability`, `spike acceptance` ubuntu/
+windows) bị kẹt ở trạng thái `queued`, không runner nào nhận, suốt hơn 7 tiếng (04:10 UTC → 11:11 UTC) —
+kiểm tra `gh api repos/.../actions/runs/{id}/jobs` thấy `runner_id`/`runner_name` đều `null`. Xác nhận qua
+githubstatus.com: GitHub có sự cố hạ tầng thật ("Incident with several GitHub Services", Actions degraded),
+nhưng đã **resolve lúc 10:44 UTC** — tức 27 phút TRƯỚC khi phát hiện job vẫn còn kẹt, nghĩa là run không tự
+phục hồi sau khi GitHub hết sự cố. Xử lý: `gh run cancel` rồi `gh run rerun --failed` — job mới nhận runner
+thật ngay lập tức (`in_progress` sau vài giây) và xanh trong vài phút. **Bài học: nếu job đứng `queued` bất
+thường lâu, kiểm tra `runner_id` qua API để phân biệt "đang chờ hàng đợi" với "kẹt hẳn không ai nhận"; nếu
+kẹt, đừng chỉ chờ — kiểm tra githubstatus.com để xác nhận nguyên nhân, và nếu sự cố phía GitHub đã resolve mà
+job vẫn kẹt, chủ động cancel+rerun thay vì tiếp tục chờ vô thời hạn.**
