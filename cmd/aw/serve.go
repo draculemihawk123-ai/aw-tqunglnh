@@ -19,6 +19,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 )
 
 // runServe is V6-01's own composition root entry point: it wires
@@ -143,6 +144,11 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
 	})
+	// V6-03A (docs/design/08-v6-api-projections.md): Project/repository/
+	// component catalog routes, owning its own subpackage/descriptors/tests
+	// (internal/delivery/httpapi/catalog) exactly as V6-01A's own comment
+	// above anticipated.
+	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: uow, IDs: idsource.Random{}})
 	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
 	// and release/reconcile request routes. Same uow/idsource.Random{} every
 	// other route registration in this process already uses — never a

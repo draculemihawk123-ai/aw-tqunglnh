@@ -450,6 +450,41 @@ SELECT project_id, repository_id, name, path, kind, version FROM components WHER
 	}, nil
 }
 
+// ListComponents implements ports.CatalogRepository (V6-03A): every
+// Component whose stored project_id column equals projectID, ID order —
+// mirroring listProjectRepositoriesTx's own plain filtered-scan shape
+// above.
+func (r catalogRepository) ListComponents(ctx context.Context, projectID string) ([]project.Component, error) {
+	return listComponentsTx(ctx, r.tx, projectID)
+}
+
+func listComponentsTx(ctx context.Context, tx *sql.Tx, projectID string) ([]project.Component, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT id, project_id, repository_id, name, path, kind, version
+FROM components WHERE project_id = ? ORDER BY id`, projectID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list project components: %w", err))
+	}
+	defer rows.Close()
+
+	var result []project.Component
+	for rows.Next() {
+		var id, scannedProjectID, repositoryID, name, path, kind string
+		var version uint64
+		if err := rows.Scan(&id, &scannedProjectID, &repositoryID, &name, &path, &kind, &version); err != nil {
+			return nil, MapSQLiteError(fmt.Errorf("scan component row: %w", err))
+		}
+		result = append(result, project.Component{
+			ID: project.ComponentID(id), ProjectID: project.ProjectID(scannedProjectID), RepositoryID: project.RepositoryID(repositoryID),
+			Name: name, Path: path, Kind: kind, Version: version,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("iterate project components: %w", err))
+	}
+	return result, nil
+}
+
 // --- ComponentPackAssignment ---
 
 // AssignComponentPack implements ports.CatalogRepository (V3-01): it
