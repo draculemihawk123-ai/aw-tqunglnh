@@ -1,0 +1,11 @@
+{
+  "managedWorkspaceRoot": "data/workspaces",
+  "managedArtifactRoot": "data/artifacts",
+  "evidenceRetentionSeconds": 604800,
+  "processOutputLimit": 1048576,
+  "providerExecutablePath": "C:/tools/claude/claude.exe",
+  "providerDefaultModel": "claude-sonnet-4-5",
+  "providerCredentialRef": "keychain:claude-api-key",
+  "version": 2,
+  "updatedBy": "actor-1"
+}

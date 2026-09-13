@@ -190,6 +190,37 @@ func CheckProviderExecutable(name, path string) CheckResult {
 	}
 }
 
+// CheckSafeSettings reads the persisted safe-settings desired document
+// (V6-10G, docs/design/08-v6-api-projections.md) through uow and reports
+// BLOCKED with a typed Detail/Remediation — never a panic, never a silent
+// fallback to the zero/default document — when it fails to decode
+// (ports.ErrSafeSettingsCorrupt), this task's own "corrupt persisted
+// settings fail ... Doctor typed" Verify line. This only ever reads: no
+// check in this package ever mutates safe settings or any other aggregate.
+func CheckSafeSettings(ctx context.Context, uow ports.UnitOfWork) CheckResult {
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		_, err := tx.SafeSettings().Get(ctx)
+		return err
+	})
+	if err != nil {
+		if errors.Is(err, ports.ErrSafeSettingsCorrupt) {
+			return CheckResult{
+				Name: "safe_settings", Category: CategoryReadiness, Status: StatusBlocked,
+				Detail:      "persisted safe settings desired document failed to decode",
+				Remediation: "the safe_settings row is corrupt (a bit-rotted or hand-edited value); restore it from backup or reset it via a fresh UpdateSafeSettings call",
+			}
+		}
+		return CheckResult{
+			Name: "safe_settings", Category: CategoryReadiness, Status: StatusBlocked,
+			Detail: "safe settings could not be read", Remediation: "check that the database is reachable and migrated",
+		}
+	}
+	return CheckResult{
+		Name: "safe_settings", Category: CategoryReadiness, Status: StatusHealthy,
+		Detail: "persisted safe settings desired document decodes cleanly",
+	}
+}
+
 func sha256File(path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {

@@ -79,6 +79,15 @@ type Options struct {
 	Store        ports.QueryStore
 	WorkerConfig workerpool.Config
 	CheckWorker  bool
+	// UnitOfWork is populated now (V6-10G,
+	// docs/design/08-v6-api-projections.md): optional (a nil value skips
+	// CheckSafeSettings, mirroring CheckWorker's own "opt in" pattern for a
+	// caller with no persisted safe-settings row to check yet, e.g. a
+	// pre-migration bootstrap path) — the read-only access CheckSafeSettings
+	// needs to prove the persisted safe-settings desired document decodes,
+	// this task's own "corrupt persisted settings fail ... Doctor typed"
+	// Verify line.
+	UnitOfWork ports.UnitOfWork
 }
 
 // Run executes every applicable check and aggregates them into a Report.
@@ -92,6 +101,9 @@ func Run(ctx context.Context, opts Options) Report {
 	}
 	if opts.CheckWorker {
 		checks = append(checks, CheckWorkerConfig(opts.WorkerConfig))
+	}
+	if opts.UnitOfWork != nil {
+		checks = append(checks, CheckSafeSettings(ctx, opts.UnitOfWork))
 	}
 
 	providerNames := make([]string, 0, len(opts.Config.ProviderExecutables))
