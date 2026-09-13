@@ -144,14 +144,19 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
 	})
-	// V6-03A (docs/design/08-v6-api-projections.md): the first endpoint
-	// task to land — Project/repository/component catalog routes, owning
-	// its own subpackage/descriptors/tests (internal/delivery/httpapi/catalog)
-	// exactly as V6-01A's own comment above anticipated. Later endpoint
-	// tasks (V6-04, V6-06, V6-10B, ...) add their own equivalent
-	// RegisterRoutes call here, each owning its own subpackage, without
-	// needing to touch this file's shared setup above.
+	// V6-03A (docs/design/08-v6-api-projections.md): Project/repository/
+	// component catalog routes, owning its own subpackage/descriptors/tests
+	// (internal/delivery/httpapi/catalog) exactly as V6-01A's own comment
+	// above anticipated.
 	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: uow, IDs: idsource.Random{}})
+	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
+	// and release/reconcile request routes. Same uow/idsource.Random{} every
+	// other route registration in this process already uses — never a
+	// fresh source per request.
+	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{})
+	// A later endpoint task's own composition-root wiring adds its own
+	// routes.Register call here without needing to touch this file's shared
+	// setup.
 	routesFinalized = true
 
 	server, err := httpapi.NewServer(httpapi.Config{
