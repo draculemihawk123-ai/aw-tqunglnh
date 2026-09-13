@@ -40,6 +40,8 @@ type WorkRepository struct {
 	blockers map[string]work.WorkItemBlocker
 	// releaseSets is keyed by ReleaseSet.ID (V5-10A).
 	releaseSets map[string]work.ReleaseSet
+	// releaseSetLocalCommits is keyed by ReleaseSetLocalCommit.ID (V6-10E).
+	releaseSetLocalCommits map[string]work.ReleaseSetLocalCommit
 }
 
 var _ ports.WorkRepository = (*WorkRepository)(nil)
@@ -86,11 +88,15 @@ func (w *WorkRepository) cloneWith(catalog *CatalogRepository) *WorkRepository {
 	for k, v := range w.releaseSets {
 		releaseSets[k] = v
 	}
+	releaseSetLocalCommits := make(map[string]work.ReleaseSetLocalCommit, len(w.releaseSetLocalCommits))
+	for k, v := range w.releaseSetLocalCommits {
+		releaseSetLocalCommits[k] = v
+	}
 	return &WorkRepository{
 		catalog: catalog, workItems: workItems, taskFamilies: taskFamilies,
 		workspaceSets: workspaceSets, repositoryScopes: repositoryScopes, effectiveScopes: effectiveScopes,
 		repositoryWorkspaces: repositoryWorkspaces, scopeExpansionRequests: scopeExpansionRequests, blockers: blockers,
-		releaseSets: releaseSets,
+		releaseSets: releaseSets, releaseSetLocalCommits: releaseSetLocalCommits,
 	}
 }
 
@@ -657,4 +663,110 @@ func (w *WorkRepository) TransitionReleaseSetState(_ context.Context, req ports.
 	releaseSet.Version++
 	w.releaseSets[req.ReleaseSetID] = releaseSet
 	return releaseSet, nil
+}
+
+// --- ReleaseSetLocalCommit (V6-10E) ---
+
+// CreateReleaseSetLocalCommit mirrors sqlite's createReleaseSetLocalCommitTx:
+// idempotent by ID, and a marker already used by a DIFFERENT id is rejected
+// with ports.ErrLocalCommitMarkerCollision rather than silently accepted.
+// This fake does not re-check ReleaseSetID/RepositoryWorkspaceID existence
+// (unlike the real adapter) — a fake test exercising that FK-style rejection
+// is testing the wrong layer, the same "deep edge cases are SQLite-only"
+// decision this file's own ValidateLocalCommitWriteLeaseFencing below
+// documents explicitly.
+func (w *WorkRepository) CreateReleaseSetLocalCommit(_ context.Context, intent work.ReleaseSetLocalCommit) (work.ReleaseSetLocalCommit, error) {
+	if existing, ok := w.releaseSetLocalCommits[string(intent.ID)]; ok {
+		return existing, nil
+	}
+	for _, other := range w.releaseSetLocalCommits {
+		if other.Marker == intent.Marker {
+			return work.ReleaseSetLocalCommit{}, fmt.Errorf("fake: %w: marker %s already used by operation %s", ports.ErrLocalCommitMarkerCollision, intent.Marker, other.ID)
+		}
+	}
+	if w.releaseSetLocalCommits == nil {
+		w.releaseSetLocalCommits = map[string]work.ReleaseSetLocalCommit{}
+	}
+	w.releaseSetLocalCommits[string(intent.ID)] = intent
+	return intent, nil
+}
+
+// GetReleaseSetLocalCommit mirrors sqlite's loadReleaseSetLocalCommitTx.
+func (w *WorkRepository) GetReleaseSetLocalCommit(_ context.Context, id string) (work.ReleaseSetLocalCommit, error) {
+	intent, ok := w.releaseSetLocalCommits[id]
+	if !ok {
+		return work.ReleaseSetLocalCommit{}, fmt.Errorf("fake: %w: release set local commit %s", ports.ErrPersistenceNotFound, id)
+	}
+	return intent, nil
+}
+
+// PinReleaseSetLocalCommitParent mirrors sqlite's own method: the identical
+// CAS discipline every other transition method in this fake already
+// performs, requiring State to still be REQUESTED.
+func (w *WorkRepository) PinReleaseSetLocalCommitParent(_ context.Context, req ports.PinReleaseSetLocalCommitParentRequest) (work.ReleaseSetLocalCommit, error) {
+	intent, ok := w.releaseSetLocalCommits[req.ReleaseSetLocalCommitID]
+	if !ok {
+		return work.ReleaseSetLocalCommit{}, fmt.Errorf("fake: %w: release set local commit %s", ports.ErrPersistenceNotFound, req.ReleaseSetLocalCommitID)
+	}
+	if intent.State != work.ReleaseSetLocalCommitRequested || intent.Version != req.ExpectedVersion {
+		return work.ReleaseSetLocalCommit{}, fmt.Errorf("fake: %w: release set local commit %s expected REQUESTED@%d",
+			ports.ErrOptimisticConflict, req.ReleaseSetLocalCommitID, req.ExpectedVersion)
+	}
+	intent.ParentVCSObjectID = req.ParentVCSObjectID
+	intent.Version++
+	w.releaseSetLocalCommits[req.ReleaseSetLocalCommitID] = intent
+	return intent, nil
+}
+
+// TransitionReleaseSetLocalCommitToCommitted mirrors sqlite's own method.
+func (w *WorkRepository) TransitionReleaseSetLocalCommitToCommitted(_ context.Context, req ports.TransitionReleaseSetLocalCommitToCommittedRequest) (work.ReleaseSetLocalCommit, error) {
+	intent, ok := w.releaseSetLocalCommits[req.ReleaseSetLocalCommitID]
+	if !ok {
+		return work.ReleaseSetLocalCommit{}, fmt.Errorf("fake: %w: release set local commit %s", ports.ErrPersistenceNotFound, req.ReleaseSetLocalCommitID)
+	}
+	if intent.State != work.ReleaseSetLocalCommitRequested || intent.Version != req.ExpectedVersion {
+		return work.ReleaseSetLocalCommit{}, fmt.Errorf("fake: %w: release set local commit %s expected REQUESTED@%d",
+			ports.ErrOptimisticConflict, req.ReleaseSetLocalCommitID, req.ExpectedVersion)
+	}
+	intent.State = work.ReleaseSetLocalCommitCommitted
+	intent.ParentVCSObjectID = req.ParentVCSObjectID
+	intent.ResultVCSObjectID = req.ResultVCSObjectID
+	occurredAt := req.OccurredAt
+	intent.CompletedAt = &occurredAt
+	intent.Version++
+	w.releaseSetLocalCommits[req.ReleaseSetLocalCommitID] = intent
+	return intent, nil
+}
+
+// TransitionReleaseSetLocalCommitToFailed mirrors sqlite's own method.
+func (w *WorkRepository) TransitionReleaseSetLocalCommitToFailed(_ context.Context, req ports.TransitionReleaseSetLocalCommitToFailedRequest) (work.ReleaseSetLocalCommit, error) {
+	if !req.FailureReason.IsValid() {
+		return work.ReleaseSetLocalCommit{}, fmt.Errorf("fake: release set local commit failure reason %q is not a recognized value", req.FailureReason)
+	}
+	intent, ok := w.releaseSetLocalCommits[req.ReleaseSetLocalCommitID]
+	if !ok {
+		return work.ReleaseSetLocalCommit{}, fmt.Errorf("fake: %w: release set local commit %s", ports.ErrPersistenceNotFound, req.ReleaseSetLocalCommitID)
+	}
+	if intent.State != work.ReleaseSetLocalCommitRequested || intent.Version != req.ExpectedVersion {
+		return work.ReleaseSetLocalCommit{}, fmt.Errorf("fake: %w: release set local commit %s expected REQUESTED@%d",
+			ports.ErrOptimisticConflict, req.ReleaseSetLocalCommitID, req.ExpectedVersion)
+	}
+	intent.State = work.ReleaseSetLocalCommitFailed
+	intent.FailureReason = req.FailureReason
+	occurredAt := req.OccurredAt
+	intent.CompletedAt = &occurredAt
+	intent.Version++
+	w.releaseSetLocalCommits[req.ReleaseSetLocalCommitID] = intent
+	return intent, nil
+}
+
+// ValidateLocalCommitWriteLeaseFencing is a trivial pass-through on this
+// fake (V6-10E): this fake never models local_commit_write_leases state at
+// all, and deep write-lease fencing edge cases (expired lease, wrong
+// owner/token/generation/fence) are SQLite-only per this codebase's own
+// established test-layering decision — see RuntimeRepository.
+// ValidateWriteLeaseFencing's identical fake (internal/app/ports/fake/runtime.go)
+// for the precedent this mirrors.
+func (w *WorkRepository) ValidateLocalCommitWriteLeaseFencing(_ context.Context, _ ports.JobLease, _ ports.LocalCommitWriteLeaseGrant) error {
+	return nil
 }

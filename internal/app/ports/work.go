@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -354,6 +355,91 @@ type WorkRepository interface {
 	// even begin — atomically. Returns false, nil for an empty
 	// repositoryWorkspaceIDs.
 	HasActiveWriteLease(ctx context.Context, repositoryWorkspaceIDs []string) (bool, error)
+
+	// CreateReleaseSetLocalCommit is populated now (V6-10E,
+	// docs/design/08-v6-api-projections.md V6-10E; ADR-014, GC-INV-26):
+	// inserts a new REQUESTED work.ReleaseSetLocalCommit row — the durable
+	// intent RequestReleaseSetLocalCommit (internal/app/releasesetcommit)
+	// writes atomically alongside its own job/event/receipt. Idempotent by
+	// ID, mirroring CreateReleaseSet. intent.Marker is UNIQUE
+	// (release_set_local_commits.marker): a second, genuinely distinct
+	// intent that happens to derive the identical deterministic operation
+	// marker (V6-10E's own "marker collision" Verify case) is rejected
+	// with ErrLocalCommitMarkerCollision rather than silently accepted —
+	// two different intents sharing one marker would make crash-recovery
+	// reconciliation ambiguous (see internal/app/releasesetcommit's own
+	// doc comment for what the marker is used for).
+	CreateReleaseSetLocalCommit(ctx context.Context, intent work.ReleaseSetLocalCommit) (work.ReleaseSetLocalCommit, error)
+	// GetReleaseSetLocalCommit returns the ReleaseSetLocalCommit with the
+	// given ID, or ErrPersistenceNotFound.
+	GetReleaseSetLocalCommit(ctx context.Context, id string) (work.ReleaseSetLocalCommit, error)
+	// PinReleaseSetLocalCommitParent durably records the exact parent
+	// commit a worker resolved (via a real, outside-transaction Inspect
+	// call) immediately BEFORE ever calling LocalCommitCreator — so a
+	// crash between that real Git call succeeding and this operation's own
+	// finalize transaction committing leaves a later retry something
+	// durable to reconcile the real HEAD commit's own parent against
+	// (V6-10E's own "drift" Verify case: a marker found at HEAD whose own
+	// parent does not match this pinned value is treated as an anomaly,
+	// never silently reused). Never itself a terminal transition — State
+	// stays REQUESTED; ExpectedVersion fences a stale caller the same as
+	// every other CAS in this codebase.
+	PinReleaseSetLocalCommitParent(ctx context.Context, req PinReleaseSetLocalCommitParentRequest) (work.ReleaseSetLocalCommit, error)
+	// TransitionReleaseSetLocalCommitToCommitted is the fenced CAS that
+	// closes this operation's own lifecycle as COMMITTED, recording the
+	// exact result commit a worker either created or reconciled (a marker
+	// already found at HEAD on a crash-after-Git-before-finalize retry).
+	TransitionReleaseSetLocalCommitToCommitted(ctx context.Context, req TransitionReleaseSetLocalCommitToCommittedRequest) (work.ReleaseSetLocalCommit, error)
+	// TransitionReleaseSetLocalCommitToFailed is the fenced CAS that closes
+	// this operation's own lifecycle as FAILED with a typed, closed
+	// FailureReason (work.ReleaseSetLocalCommitFailureReason) — never a
+	// free-form message.
+	TransitionReleaseSetLocalCommitToFailed(ctx context.Context, req TransitionReleaseSetLocalCommitToFailedRequest) (work.ReleaseSetLocalCommit, error)
+	// ValidateLocalCommitWriteLeaseFencing is populated now (V6-10E): a
+	// read-only, Tx-composable check that grant is still the exact,
+	// currently-active local-commit write lease for its own target
+	// (RepositoryWorkspaceID, Generation) — see
+	// ports.LocalCommitWriteLeaseManager's own doc comment for why this is
+	// a separate mechanism from RuntimeRepository.ValidateWriteLeaseFencing/
+	// write_leases (that one hard-requires a live execution_attempts row
+	// this CONTROL-class job has none of). Composed inside
+	// internal/app/releasesetcommit's own finalize transaction, mirroring
+	// FinalizeExecutionAttempt's identical "validate every WriteLease
+	// fencing proof" step (internal/app/runtime/finalize.go).
+	ValidateLocalCommitWriteLeaseFencing(ctx context.Context, lease JobLease, grant LocalCommitWriteLeaseGrant) error
+}
+
+// ErrLocalCommitMarkerCollision is returned by
+// WorkRepository.CreateReleaseSetLocalCommit when the intent's own
+// deterministic operation marker already names a DIFFERENT
+// ReleaseSetLocalCommit row — see that method's own doc comment.
+var ErrLocalCommitMarkerCollision = errors.New("ports: release set local commit marker already used by a different operation")
+
+// PinReleaseSetLocalCommitParentRequest is what a caller supplies to
+// WorkRepository.PinReleaseSetLocalCommitParent.
+type PinReleaseSetLocalCommitParentRequest struct {
+	ReleaseSetLocalCommitID string
+	ExpectedVersion         uint64
+	ParentVCSObjectID       string
+}
+
+// TransitionReleaseSetLocalCommitToCommittedRequest is what a caller
+// supplies to WorkRepository.TransitionReleaseSetLocalCommitToCommitted.
+type TransitionReleaseSetLocalCommitToCommittedRequest struct {
+	ReleaseSetLocalCommitID string
+	ExpectedVersion         uint64
+	ParentVCSObjectID       string
+	ResultVCSObjectID       string
+	OccurredAt              time.Time
+}
+
+// TransitionReleaseSetLocalCommitToFailedRequest is what a caller supplies
+// to WorkRepository.TransitionReleaseSetLocalCommitToFailed.
+type TransitionReleaseSetLocalCommitToFailedRequest struct {
+	ReleaseSetLocalCommitID string
+	ExpectedVersion         uint64
+	FailureReason           work.ReleaseSetLocalCommitFailureReason
+	OccurredAt              time.Time
 }
 
 // RepositoryWorkspaceRecord pairs a RepositoryWorkspace with the FamilyID

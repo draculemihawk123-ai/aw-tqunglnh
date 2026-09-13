@@ -101,8 +101,8 @@ func TestUnitOfWork_WithReadOnly_DoesNotPersistWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WithReadOnly: %v", err)
 	}
-	if migrationCount != 35 {
-		t.Fatalf("migrationCount = %d, want 35", migrationCount)
+	if migrationCount != 36 {
+		t.Fatalf("migrationCount = %d, want 36", migrationCount)
 	}
 }
 

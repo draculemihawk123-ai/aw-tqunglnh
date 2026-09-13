@@ -58,6 +58,29 @@ func SeedFixtureRepositoryWorkspace(
 	ctx context.Context, store *Store,
 	projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID string,
 ) error {
+	return seedFixtureRepositoryWorkspaceTx(ctx, store, projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, "opaque:"+repositoryID)
+}
+
+// SeedFixtureRepositoryWorkspaceWithLocator mirrors SeedFixtureRepositoryWorkspace
+// exactly, except the caller supplies the RepositoryWorkspace's own Locator
+// rather than a fixed, non-resolvable "opaque:<id>" placeholder — V6-10E's
+// own acceptance tests need this so sqlite's row and a real
+// gitworktree.Provider.Provision result name the SAME real, on-disk
+// workspace (a real Git commit only means anything against a real
+// filesystem locator, never the placeholder every other fixture caller
+// uses). See SeedFixtureOwners for why these exist only for cross-package
+// acceptance scenarios; production code must never call this.
+func SeedFixtureRepositoryWorkspaceWithLocator(
+	ctx context.Context, store *Store,
+	projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator string,
+) error {
+	return seedFixtureRepositoryWorkspaceTx(ctx, store, projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator)
+}
+
+func seedFixtureRepositoryWorkspaceTx(
+	ctx context.Context, store *Store,
+	projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator string,
+) error {
 	const timestamp = "2026-08-28T16:00:00Z"
 	if _, err := store.db.ExecContext(ctx, `
 INSERT INTO repositories(id, project_id, name, local_path, default_ref, status, version, created_at, updated_at)
@@ -79,7 +102,7 @@ INSERT INTO repository_workspaces(
   locator, branch_ref, base_revision, current_revision, state, version, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'base-rev', 'base-rev', 'READY', 1, ?, ?);`,
 		repositoryWorkspaceID, projectID, workspaceSetID, familyID, repositoryID,
-		"opaque:"+repositoryID, "agentkit/"+repositoryID, timestamp, timestamp,
+		locator, "agentkit/"+repositoryID, timestamp, timestamp,
 	); err != nil {
 		return fmt.Errorf("seed fixture repository workspace: %w", err)
 	}
