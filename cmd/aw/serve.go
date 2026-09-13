@@ -13,12 +13,15 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/logging"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
 )
 
 // runServe is V6-01's own composition root entry point: it wires
@@ -143,9 +146,18 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
 	})
-	// No further route fragments exist yet in this task; a later endpoint
-	// task's own composition-root wiring adds its own routes.Register call
-	// here without needing to touch this file's shared setup.
+	// V6-03A (docs/design/08-v6-api-projections.md): the first endpoint
+	// task to land — Project/repository/component catalog routes, owning
+	// its own subpackage/descriptors/tests (internal/delivery/httpapi/catalog)
+	// exactly as V6-01A's own comment above anticipated. Later endpoint
+	// tasks (V6-04, V6-06, V6-10B, ...) add their own equivalent
+	// RegisterRoutes call here, each owning its own subpackage, without
+	// needing to touch this file's shared setup above.
+	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: uow, IDs: idsource.Random{}})
+	// V6-04: WorkItem/family/readiness/scope-expansion routes
+	// (internal/delivery/httpapi/workitem) — an additive routes.Register
+	// call only, no shared setup above touched.
+	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
 	routesFinalized = true
 
 	server, err := httpapi.NewServer(httpapi.Config{
