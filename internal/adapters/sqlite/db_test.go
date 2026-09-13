@@ -21,8 +21,8 @@ func TestOpenMigratesAndEnablesForeignKeys(t *testing.T) {
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("query migrations: %v", err)
 	}
-	if migrationCount != 35 {
-		t.Fatalf("migration count = %d, want 35", migrationCount)
+	if migrationCount != 36 {
+		t.Fatalf("migration count = %d, want 36", migrationCount)
 	}
 
 	var foreignKeys int
@@ -57,8 +57,8 @@ func TestMigrationIsIdempotent(t *testing.T) {
 	if err := second.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("query migrations: %v", err)
 	}
-	if migrationCount != 35 {
-		t.Fatalf("migration count = %d, want 35", migrationCount)
+	if migrationCount != 36 {
+		t.Fatalf("migration count = %d, want 36", migrationCount)
 	}
 }
 
