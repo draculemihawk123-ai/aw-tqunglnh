@@ -229,6 +229,21 @@ type CatalogRepository interface {
 	// GetComponent returns the Component with the given ID, or
 	// ErrPersistenceNotFound.
 	GetComponent(ctx context.Context, id string) (project.Component, error)
+	// ListComponents is populated now (V6-03A,
+	// docs/design/08-v6-api-projections.md): every Component whose stored
+	// project_id column equals projectID, ID order — the persistence half
+	// of "GET /projects/{id}/components | catalog component đã được
+	// repository onboarding/probe discover" (docs/design/01-system-design.md
+	// §6's own API sketch). Filters strictly by the stored foreign-key
+	// column alone, mirroring ListProjectRepositories/
+	// ListComponentPackAssignments's own "never by name/path/slug"
+	// discipline above — there is still no CatalogRepository method to
+	// create a Component keyed by project alone (CreateComponent always
+	// resolves identity through its own RepositoryID first), so this is a
+	// pure read added for the first time a caller (V6-03A's own HTTP
+	// route) needs to list what onboarding has already discovered without
+	// already knowing individual Component IDs.
+	ListComponents(ctx context.Context, projectID string) ([]project.Component, error)
 
 	// AssignComponentPack appends a new ComponentPackAssignment row after
 	// verifying req.ComponentID names a Component that actually exists

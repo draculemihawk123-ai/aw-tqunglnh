@@ -2513,3 +2513,294 @@ additive vào composition root, đúng phạm vi "HTTP delivery only" của task
 `V6-06 -> V6-06B` (Run detail/graph/timeline) chính thức unblock phần dependency của riêng nó (còn cần thêm
 `V6-00`, `V6-02A`, đều đã xong từ trước). `V6-06D` KHÔNG phụ thuộc `V6-06` (dependency riêng: `V6-00, V6-01A,
 V6-02, V6-02A, V4-12C, V5-08D`) nên không bị ảnh hưởng bởi thứ tự merge của task này.
+
+## V6-03A — Project, repository và component HTTP endpoints
+
+### Bối cảnh
+
+V6-03A là task đầu tiên trong nhóm P2 ("application/HTTP slices sau V6-00 + V6-01A + V6-02 + V6-02A") thực sự
+được triển khai — 4 dependency của nó (`V6-00`, `V6-01A`, `V6-02`, `V6-02A`) cộng `V6-03` đều đã merge
+(`ac7f76b`, `bfa796d`, `36c5287`, `60a9f8f`). Trích nguyên văn spec từ `docs/design/08-v6-api-projections.md`
+dòng 190-201: "Mục tiêu: expose Project catalog, repository onboarding và discovered component/pack
+assignment"; "Phạm vi: project create/list/detail; repository register/list/detail/onboarding/probe-history/
+retry; component query và exact pack assignment"; "Không làm: không duplicate Doctor, expose helper
+`CreateComponent`, hoặc giả sync success trước probe"; "Thực hiện: register trả `REGISTERING`; retry chỉ map
+`RetryRepositoryProbe` khi `BLOCKED` và leaf/route canonical dùng `retry-probe`. Component chỉ đọc topology do
+probe discover; assignment pin exact version"; "Hoàn thành khi: catalog/onboarding có một route owner và
+repository ID là authority."
+
+Đây cũng là task HTTP endpoint ĐẦU TIÊN thực sự tồn tại trong toàn bộ V6 — V6-01/V6-01A/V6-02/V6-02A chỉ xây
+primitive dùng chung (route registry, security, DTO/cursor, command envelope), chưa route business nào. Nghĩa
+là task này vừa phải tự thiết kế route thật đầu tiên, vừa tự thiết lập convention "mỗi endpoint task sở hữu
+subpackage riêng" (§1.8 của design doc) mà 3 task song song khác (`V6-04`, `V6-06`, `V6-10B`) đang chạy đồng
+thời trong các worktree khác sẽ đi theo.
+
+### Nghiên cứu
+
+Đọc lại toàn bộ 8 file hạ tầng V6-01/V6-01A/V6-02/V6-02A trước khi viết route đầu tiên (không đoán API):
+`route.go` (`RouteDescriptor{Method,Path,OperationID,ScopeKind,RequestSchema,ResponseSchema,Handler}`,
+`RouteRegistry.Register` panic khi trùng `(Method,Path)` hoặc `OperationID`), `commandenvelope.go`
+(`RequireIdempotencyKey`/`RequireIfMatch`/`CanonicalizeJSON`/`SemanticHash`/`ETagFromVersion`/
+`VersionFromETag`), `receiptreplay.go` (`LookupReceipt`/`ReconcileReceipt`/`WriteReceiptReplay`/
+`EncodeResult`), `errors.go` (`WriteError`/`WriteResourceHidden`/`StatusForAppErrorCode`/`WriteAppError`),
+`principal.go` (`PrincipalFromContext`/`BindPrincipal` — actor/roles KHÔNG BAO GIỜ đọc từ request), `server.go`
+(`NewServer` compose `mux.HandleFunc(d.Method+" "+d.Path, d.Handler)` từ `Routes.Descriptors()`).
+
+Phát hiện quan trọng nhất nằm ngay trong `cmd/aw/serve.go` dòng 146-149 (bản gốc, trước khi sửa): một comment
+để lại từ chính V6-01A — "No further route fragments exist yet in this task; **a later endpoint task's own
+composition-root wiring adds its own routes.Register call here** without needing to touch this file's shared
+setup." Đây là bằng chứng trực tiếp, không phải suy diễn, rằng mỗi endpoint task PHẢI tự wire route thật vào
+composition root (`cmd/aw/serve.go`), không chỉ dừng ở việc xây subpackage rồi chờ một task compose sau này
+(`V6-12`'s own Phạm vi "root router wiring" là frozen OpenAPI/parity artifact tổng hợp SAU, không phải lần đầu
+tiên route được wire thật vào server).
+
+Đọc toàn bộ `internal/app/catalog/commands.go` (727 dòng, bản trước khi sửa) tìm đúng 8 hàm cần wrap qua HTTP:
+`CreateProject`/`RegisterRepository`/`RetryRepositoryProbe`/`AssignComponentPack` (command) và
+`ListProjects`/`GetProject`/`ListProjectRepositories`/`ListComponentPackAssignments`/
+`GetEffectiveComponentPackAssignment` (query). Phát hiện 3 lỗ hổng thật: không có `GetRepository`/
+`ListRepositoryProbeAttempts` (application-level) dù `ports.CatalogRepository` ĐÃ có cả hai ở tầng persistence
+(`unitofwork.go` dòng 213-218, comment tự khai "the 'probe history' evidence ... GET /repositories/{id}/
+onboarding"); không có `GetComponent`/`ListComponents` application-level nào — và `ports.CatalogRepository`
+thậm chí CHƯA CÓ method `ListComponents` ở tầng persistence nào cả (chỉ có `GetComponent` theo ID đơn lẻ).
+
+Đối chiếu `docs/design/01-system-design.md` dòng 557-564 (API sketch gốc, viết trước cả V6-00) để lấy đúng
+route path/mô tả thay vì tự nghĩ:
+```
+GET/POST /projects | list/create project (installation scope)
+GET /projects/{id} | project detail
+GET/POST /projects/{id}/repositories | list/register; POST trả repository REGISTERING + probe job
+GET /repositories/{id}/onboarding | trạng thái/error/probe history có thể hành động
+POST /repositories/{id}/retry-probe | dispatch RetryRepositoryProbe khi BLOCKED; không có generic probe mutation
+GET /projects/{id}/components | catalog component đã được repository onboarding/probe discover
+GET/POST /components/{id}/pack-assignments | list/assign exact Engineering Pack version
+```
+Sketch này chỉ có MỘT route `/repositories/{id}/onboarding` gộp cả "trạng thái/error" lẫn "probe history" —
+nhưng Phạm vi của chính V6-03A lại liệt kê "detail" TÁCH RIÊNG khỏi "onboarding"/"probe-history" (6 từ khác
+nhau: "register/list/detail/onboarding/probe-history/retry"). Quyết định cách xử lý mâu thuẫn này nằm ở mục
+Quyết định bên dưới.
+
+Đọc `internal/adapters/sqlite/txrunner.go` dòng 130-142 (`MapSQLiteError`) phát hiện: lỗi persistence CHỈ có 3
+dạng thật sự phân biệt được ở tầng HTTP — sentinel đã classify (`ports.ErrPersistenceNotFound`/
+`ErrOptimisticConflict`/`ErrCrossProjectReference`/`ErrScopeMismatch`/`ErrReceiptConflict`, luôn trả trực
+tiếp, KHÔNG BAO GIỜ qua `MapSQLiteError`), `*apperror.Error` thật (chỉ khi `MapSQLiteError` tự bọc — lock
+contention → `CodeUnavailable`, còn lại → `CodeInternal`), và lỗi validation trần trụi không có sentinel nào
+cả (`project.NewProject`/`NewRepository`/`NewComponentPackAssignment`'s own `errors.New(...)`, hoặc
+`catalog.CreateProject`'s own "Name is required"). KHÔNG có 1 bảng mapping có sẵn nào trong `errors.go` xử lý
+đúng 2 dạng sau (`WriteAppError` chỉ biết `*apperror.Error`) — đây là gap thật task này phải tự đóng bằng một
+hàm mapping riêng (`writeCatalogError`), không phải tái dùng nguyên xi.
+
+Đọc `internal/app/catalog/commands_test.go` dòng 524-565 (`moveRepositoryToBlocked`) làm mẫu chính xác cho
+"đưa một Repository vào trạng thái BLOCKED để test retry-probe mà không cần Git/filesystem thật" — gọi trực
+tiếp `tx.Catalog().TransitionRepositoryStatus` 2 lần (REGISTERING→PROBING→BLOCKED) qua chính production CAS
+method, KHÔNG PHẢI SQL tay hay mock — đúng production path V3-02's own repository-probe worker cũng gọi.
+
+### Quyết định
+
+1. **Subpackage `internal/delivery/httpapi/catalog`**, alias import `appcatalog` cho
+   `internal/app/catalog` (2 package cùng tên `catalog`, khác import path — Go compile sạch vì package hiện
+   tại luôn dùng identifier KHÔNG qualify, import luôn qualify bằng tên/alias; chọn alias tường minh thay vì
+   dựa vào rule ngầm này để người đọc sau không phải tự suy luận). Đây là subpackage HTTP endpoint ĐẦU TIÊN
+   tồn tại — tự thiết lập convention "mỗi endpoint task sở hữu subpackage/descriptor/test riêng" (§1.8) cho
+   3 task song song (`V6-04`/`V6-06`/`V6-10B`) đi theo, không phải áp dụng một convention có sẵn.
+2. **Giải mâu thuẫn "detail" vs "onboarding" (Nghiên cứu ở trên) bằng CẢ HAI route, không chọn một.**
+   `GET /repositories/{id}` (detail: identity đăng ký — name/remoteLocator/defaultRef/status/version) tách
+   khỏi `GET /repositories/{id}/onboarding` (status/error/version LẶP LẠI + toàn bộ probe-history evidence
+   log) — đọc đúng nghĩa đen Phạm vi's 6 từ, đồng thời khớp việc system-design sketch chỉ vẽ MỘT route gộp
+   "onboarding" với "probe-history" (không vẽ route probe-history riêng) bằng cách gộp 2 khái niệm đó vào
+   cùng 1 route thứ hai, không phải 3 route riêng biệt.
+3. **Không có route `GET /components/{id}` detail riêng.** Phạm vi dùng số ít "component query" (khác cách
+   dùng "register/list/detail" 3 từ riêng của repository) và system-design sketch cũng chỉ vẽ
+   `GET /projects/{id}/components` (list) + `GET/POST /components/{id}/pack-assignments` — không vẽ path
+   `/components/{id}` trần trụi. Component list (`componentView`) đã đủ field cho "query"; thêm route riêng
+   sẽ là phát minh ngoài trích dẫn.
+4. **4 query application-layer mới (`GetRepository`, `ListRepositoryProbeAttempts`, `GetComponent`,
+   `ListComponents`) KHÔNG nhận `ports.CommandScope`** — khác hẳn `GetProject` (bắt buộc
+   `scope.ProjectID() == projectID`). Lý do: `GetProject`'s caller LUÔN ĐÃ BIẾT project nào (route luôn nest
+   dưới `/projects/{id}`) và dùng scope để ASSERT lại claim đó. `GetRepository`/`GetComponent` phục vụ đúng
+   route `/repositories/{id}/...` và `/components/{id}/...` — không nest dưới project, Repository/Component
+   ID tự nó đã là identity toàn cục caller-opaque (V3-01's own "Repository identity là ID đã đăng ký"). Đây
+   chính là hàm đầu tiên cho handler "route reload authoritative target để suy Project/scope" (contract
+   chung §1.3) — trả ProjectID để handler tự dựng `ports.ProjectScope(...)` SAU, không phải nhận sẵn.
+5. **`writeCatalogError` (errors.go) map lỗi theo đúng 3 bucket thật đã xác nhận ở Nghiên cứu**, thứ tự: sentinel
+   `ports.Err*` đã classify (mỗi loại một status cụ thể) → `*apperror.Error` thật (dùng lại
+   `StatusForAppErrorCode`/`WriteAppError` có sẵn) → mặc định 400 `INVALID_REQUEST` (bucket còn lại chỉ có thể
+   là lỗi validation trần trụi, vì không hàm nào trong `internal/app/catalog` tự làm filesystem/process I/O có
+   thể fail theo cách thứ 4).
+6. **4 command mutating (`CreateProject`/`RegisterRepository`/`RetryRepositoryProbe`/`AssignComponentPack`)
+   encode response TRỰC TIẾP từ chính `*Result` struct của application layer, không bọc view riêng** — cả 4
+   Result struct (`CreateProjectResult`/`RegisterRepositoryResult`/`RetryRepositoryProbeResult`/
+   `AssignComponentPackResult`) ĐÃ có json tag camelCase đúng chuẩn sẵn (đọc lại `commands.go` xác nhận, không
+   giả định) — chỉ 5 route GET mới cần `views.go` riêng (domain struct `project.Project`/`Repository`/
+   `Component`/`ComponentPackAssignment` và `ports.RepositoryProbeAttempt` đều KHÔNG có json tag, vì chúng
+   không phải wire contract).
+7. **Status code:** 201 cho create/register/assign (tài nguyên tồn tại thật ngay khi response trả về, dù
+   trạng thái con của nó — REGISTERING — còn async); 202 cho retry-probe (không tạo tài nguyên mới, chỉ đẩy
+   trạng thái đang có sang PROBING không đồng bộ — mirror đúng V6-06's own "cancel trả CANCELLING ... accepted
+   response không terminal tức thì" precedent, cùng lý luận áp cho một hành động khác).
+8. **Thứ tự retry-probe: receipt lookup TRƯỚC, kiểm precondition BLOCKED SAU (chỉ khi receipt vắng mặt)** —
+   đọc đúng nghĩa đen "Flow ... replay/conflict → nếu absent mới kiểm current version/external prework/
+   dispatch" (contract chung §1.2). Nếu đảo ngược (kiểm BLOCKED trước khi tra receipt), một replay hợp lệ của
+   lần retry-probe THÀNH CÔNG trước đó (repository giờ đã là PROBING, không còn BLOCKED) sẽ bị reject sai —
+   đúng "Same-key committed replay thắng ETag/state drift" (contract §1.2). Test
+   `TestRetryRepositoryProbe_ReplaySameKey_WinsOverStateDrift` chứng minh trực tiếp quyết định này.
+9. **ETag của response retry-probe tính bằng `expectedVersion + 1`, không đọc lại row.** Dựa trên chính doc
+   comment của `transitionRepositoryStatusTx` (catalog.go): "On success, version increments by exactly one" —
+   guarantee có sẵn, đọc lại thêm 1 lần chỉ để lấy ETag là round-trip thừa.
+10. **Không có ETag trên response create/register/assign** — cả 3 Result struct tương ứng đều không mang field
+    Version (đối chiếu điểm 6), và cả 3 resource này (Project/mới-register-Repository/ComponentPackAssignment)
+    hiện chưa có route update nào cần `If-Match` để bảo vệ, nên phát minh một ETag không ai tiêu thụ là suy
+    đoán ngoài phạm vi.
+11. **Wiring thật vào `cmd/aw/serve.go`** (không chỉ dừng ở subpackage), đúng extension point comment V6-01A để
+    lại — 1 dòng `httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{...})`, không sửa phần setup
+    chung (readiness checker/token/principal) phía trên.
+
+### Thực hiện
+
+- `internal/app/ports/unitofwork.go`: `CatalogRepository` thêm method `ListComponents(ctx, projectID)
+  ([]project.Component, error)`.
+- `internal/adapters/sqlite/catalog.go`: `catalogRepository.ListComponents` + `listComponentsTx`
+  (`SELECT ... FROM components WHERE project_id = ? ORDER BY id`, mirror đúng `listProjectRepositoriesTx`).
+- `internal/app/ports/fake/unitofwork.go`: `CatalogRepository.ListComponents` (filter map theo ProjectID, sort
+  theo ID).
+- `internal/app/catalog/commands.go`: 4 query mới ở cuối file — `GetRepository`, `ListRepositoryProbeAttempts`,
+  `GetComponent`, `ListComponents` (chi tiết lý do không nhận scope: xem Quyết định #4).
+- `internal/delivery/httpapi/catalog/` (package mới, 7 file production):
+  - `catalog.go`: doc comment package, `Dependencies{UoW, IDs}`, `handler` struct, `RegisterRoutes` đăng ký
+    đúng 11 `RouteDescriptor` (3 project + 5 repository + 3 component).
+  - `command.go`: `beginMutation` — helper dùng chung cho cả 4 handler mutating (Idempotency-Key bắt buộc →
+    canonicalize+decode body → build `ports.Command` → `LookupReceipt`/`ReconcileReceipt`/`WriteReceiptReplay`
+    → trả `(cmd, ok)`); `expectedVersion` là tham số (0 cho create, version parse từ If-Match cho retry-probe)
+    thay vì tự parse If-Match bên trong (chỉ 1/4 route cần nó).
+  - `errors.go`: `writeCatalogError` (Quyết định #5).
+  - `views.go`: `projectView`/`repositoryView`/`componentView`/`packAssignmentView`/`probeAttemptView`/
+    `onboardingView` + list wrapper tương ứng + `retryProbeValidActions` (advisory `httpapi.ValidAction` khi
+    `Status == BLOCKED`, dùng chung bởi `repositoryView` và `onboardingView`).
+  - `project.go`: `createProject`/`listProjects`/`getProject`.
+  - `repository.go`: `registerRepository`/`listProjectRepositories`/`getRepository`/
+    `getRepositoryOnboarding`/`retryRepositoryProbe`.
+  - `component.go`: `listProjectComponents`/`listComponentPackAssignments`/`assignComponentPack`.
+- `internal/archtest/catalog_http_test.go`: `TestHTTPAPICatalogNeverCallsCreateComponent` — AST-scan y hệt
+  idiom của `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt` (parse source thật, cấm selector `.CreateComponent(`
+  bất kỳ đâu trong `internal/delivery/httpapi/catalog`), đúng yêu cầu "Không làm" line của chính task này.
+- `cmd/aw/serve.go`: import `httpcatalog`, 1 dòng `RegisterRoutes` tại đúng vị trí comment V6-01A để lại
+  (Quyết định #11) — không sửa gì khác trong file.
+
+### Test
+
+`internal/delivery/httpapi/catalog/` — 4 file test, 21 test mới, TOÀN BỘ chạy qua real sqlite (`sqlite.Open`
++ `sqlite.NewUnitOfWork`, mirror đúng `receiptreplay_test.go`'s own pattern), real `RegisterRoutes` vào
+`httpapi.NewRouteRegistry()` thật, mux dựng đúng cách `server.go`'s own `NewServer` dựng (chỉ bỏ
+Host/Origin/token/CorrelationID/Recover — đã được `security_test.go`/`server_test.go` chứng minh riêng, không
+phải phạm vi task này), không mock/fake DB nào:
+
+- `project_test.go` (7 test): create trả 201 + ProjectID sinh mới + không có ETag; thiếu Idempotency-Key →
+  400; **replay same-key qua thật 2 lần HTTP request** → đúng ProjectID gốc, `ListProjects` xác nhận đúng 1
+  row; same-key khác body → 409; list trả đúng N project đã tạo; get detail đúng; get ID không tồn tại → 404
+  với message generic (`"the requested resource was not found"`, đúng leakage-normalization policy).
+- `repository_test.go` (12 test, file quan trọng nhất): **`TestRegisterRepository_ReturnsRegisteringStatusNeverFakedActive`**
+  — cả response POST lẫn GET ngay sau đó đều REGISTERING, không bao giờ ACTIVE giả (đúng "Không làm: giả sync
+  success trước probe"), cộng ETag `"1"` đúng version mới tạo; register dưới project không tồn tại → 404 (qua
+  đúng lỗi thật từ `registerRepositoryTx`'s own project-exists check, không phải giả lập); list repositories;
+  get detail/onboarding (onboarding rỗng khi chưa probe lần nào); **`TestRetryRepositoryProbe_NotBlocked_Returns409AndNeverDispatches`**
+  — đây là "handler dispatch spy" Verify bullet, chứng minh bằng SIDE EFFECT THẬT (Version/Status của
+  repository không đổi sau lệnh gọi bị reject) thay vì mock — đúng tinh thần "không mock, real production
+  paths" của rule #1, không phải spy giả; thiếu If-Match → 400; retry khi thật sự BLOCKED (dựng qua
+  `moveRepositoryToBlocked`, mirror `commands_test.go`'s own helper, gọi thật `TransitionRepositoryStatus`)
+  → 202, PROBING, ETag `"4"` đúng `expectedVersion+1`; **`TestRetryRepositoryProbe_ReplaySameKey_WinsOverStateDrift`**
+  — chứng minh trực tiếp Quyết định #8: gọi retry-probe thành công 1 lần (BLOCKED→PROBING), gọi LẠI với CÙNG
+  key sau khi repository đã rời BLOCKED — phải replay (200, đúng ProbeJobID gốc, Version không đổi lần 2),
+  KHÔNG được 409 dù một attempt mới thật sự lúc này chắc chắn sẽ 409.
+- `component_test.go` (8 test): seed Component qua chính `appcatalog.CreateComponent` thật (đứng thay cho
+  V3-02's own onboarding-probe worker — route HTTP không bao giờ tự gọi hàm này, đã chứng minh riêng qua
+  archtest) rồi list qua route thật; list dưới project không tồn tại → 404; list pack-assignments của
+  component không tồn tại → 404; chưa assign gì → `effective: null`; **`TestAssignComponentPack_CreatesAssignmentAndBecomesEffective`**
+  — PackVersionID round-trip byte-for-byte qua cả POST response lẫn GET's `effective` field (đúng "assignment
+  pin exact version"); **`TestAssignComponentPack_FutureEffectiveAt_NotYetEffective`** — assignment với
+  `effectiveAt` tương lai (+48h) nằm trong history nhưng KHÔNG phải effective hiện tại, chứng minh
+  `GetEffectiveComponentPackAssignment` được tôn trọng đúng nghĩa, không bị âm thầm ép về "now"; thiếu
+  Idempotency-Key → 400.
+- `internal/archtest/catalog_http_test.go`: `TestHTTPAPICatalogNeverCallsCreateComponent` pass — không selector
+  `.CreateComponent(` nào trong subpackage; `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt` (V6-02, đã merge)
+  chạy lại VẪN pass dù giờ nó walk thêm cả subpackage con (`filepath.WalkDir` không `SkipDir` khi gặp thư mục
+  con) — xác nhận package mới không hề mở write transaction hay ghi receipt trực tiếp.
+- `cmd/aw` (`TestServe_*`, không sửa file test nào, chỉ chạy lại nguyên trạng sau khi wire route): toàn bộ pass
+  — quan trọng nhất là `TestServe_StartsServesHealthAndShutsDownGracefully`, vì nếu 11 `RouteDescriptor` mới
+  có bất kỳ trùng `(Method,Path)` hay `OperationID` nào, `RouteRegistry.Register` sẽ PANIC ngay lúc `serve()`
+  khởi động — test pass tức là chứng minh thật không có xung đột registry, không phải chỉ đọc code bằng mắt.
+
+**Một bug thật tự phát hiện qua chính test của mình** (không phải lỗi trong code V6-03A, nhưng lộ ra một gap
+thật ở tầng dưới): `TestListProjectRepositories_ReturnsRegistered` lúc đầu FAIL với `500 INTERNAL — "sqlite:
+unexpected error"` khi đăng ký 2 repository cùng tên "svc" dưới 1 project. Truy ngược: `repositories` có
+`UNIQUE (project_id, name)` (`migrations/0001_initial_schema.sql` dòng 21), nhưng `MapSQLiteError`
+(`txrunner.go` dòng 130-142) KHÔNG phân loại riêng lỗi UNIQUE constraint — mọi lỗi `tx.ExecContext` không phải
+"busy" đều rơi vào `CodeInternal` chung, nên một `POST /projects/{id}/repositories` trùng tên từ client thật
+SẼ trả 500 thay vì 409 đúng ngữ nghĩa "conflict". Đây là gap có thật, có từ V1-06/V3-01 (trước V6-03A rất xa),
+KHÔNG thuộc phạm vi task này (không route/query nào của V6-03A tự gây ra nó, và Verify line của task không
+yêu cầu chứng minh case "duplicate name"). Xử lý đúng phạm vi: sửa lại fixture test của chính mình
+(`registerTestRepository` dùng `name = repositoryID`, không hardcode "svc" nữa) thay vì sửa `MapSQLiteError`
+— việc phân loại UNIQUE constraint tốt hơn là một cải tiến cross-cutting ảnh hưởng mọi command khác
+(`CreateComponent`'s own `UNIQUE(repository_id, path)`, v.v.), xứng đáng một task riêng, không phải sửa chen
+vào task này.
+
+`go build ./...`, `go vet ./...` sạch trên toàn bộ module. `go test ./...` full suite (99 package): 1 fail duy
+nhất, `TestEndToEnd_Release_ReadyWorkspaceSet_ReleasesRepositoryAndSet`
+(`internal/app/workspacerelease/handler_sqlite_test.go:329`, "WORKSPACE_PROVISION job state = LEASED, want
+SUCCEEDED") — package này không liên quan gì đến thay đổi của task (không đụng catalog/project/repository/
+component/scheduling), và triệu chứng ("job state chưa kịp SUCCEEDED lúc assertion chạy") đúng dạng
+CPU/IO-contention flake đã ghi nhận ở chính V6-03's own Test section trước đây, không tin ngay là regression
+thật (đúng rule #7). Xác nhận bằng cách chạy lại riêng, không contention: `go test
+./internal/app/workspacerelease/... -run TestEndToEnd_Release_ReadyWorkspaceSet_ReleasesRepositoryAndSet -v`
+pass (4.39s), rồi chạy lại NGUYÊN CẢ PACKAGE (19 test, không chỉ 1 test) `go test
+./internal/app/workspacerelease/... -v` — pass sạch 100%, 10.093s, gồm cả 3 test `TestEndToEnd_Release_*`. Xác
+nhận đây là contention từ máy đang chạy `go test ./...` full suite đồng thời với việc khác trong phiên, không
+phải lỗi thật từ V6-03A.
+
+### Verify
+
+- "isolated route/schema goldens": mỗi route có test riêng qua real sqlite, tách biệt khỏi
+  Host/Origin/token/CorrelationID middleware (đã chứng minh ở nơi khác) — đúng nghĩa "isolated" của Verify
+  line.
+- "async state": `TestRegisterRepository_ReturnsRegisteringStatusNeverFakedActive` chứng minh cả response
+  lẫn GET ngay sau đều REGISTERING; `TestRetryRepositoryProbe_Blocked_...` chứng minh 202 + PROBING, không
+  giả ACTIVE tức thì.
+- "retry": `TestRetryRepositoryProbe_NotBlocked_Returns409AndNeverDispatches` (từ chối đúng khi không BLOCKED,
+  chứng minh bằng side-effect thật) + `TestRetryRepositoryProbe_Blocked_...` (chấp nhận đúng khi BLOCKED).
+- "replay": `TestCreateProject_ReplaySameKey_...`, `TestRetryRepositoryProbe_ReplaySameKey_WinsOverStateDrift`
+  — replay thắng state drift, đúng contract chung.
+- "scope": mọi route project-scoped dựng `ports.ProjectScope` đúng cách (từ path khi route đã nest dưới
+  project, từ reload authoritative target khi route chỉ có Repository/Component ID) — `GetProject`/
+  `RegisterRepository`/`RetryRepositoryProbe`/`AssignComponentPack` tự chính chúng vẫn re-enforce
+  `ports.ErrScopeMismatch`/`ErrCrossProjectReference` phía application layer, route không tắt qua được.
+- "redaction": `TestGetProject_UnknownID_Returns404Hidden` xác nhận message generic
+  (`"the requested resource was not found"`), không leak "project X does not exist" hay tương tự.
+- "handler dispatch spy": `TestRetryRepositoryProbe_NotBlocked_Returns409AndNeverDispatches` chứng minh bằng
+  side effect thật (Version/Status không đổi) rằng route KHÔNG dispatch command thật khi precondition sai —
+  đúng tinh thần "real production paths, không mock" hơn một spy nhân tạo.
+- "Không làm — không expose helper CreateComponent": `TestHTTPAPICatalogNeverCallsCreateComponent` (archtest,
+  AST-scan thật) + không route nào trong 11 route đăng ký gọi tới nó (đọc lại `catalog.go`'s own
+  `RegisterRoutes` xác nhận).
+- "Không làm — không giả sync success trước probe": mọi response REGISTERING/PROBING đều lấy trực tiếp từ
+  `result.Status` của application command (chưa bao giờ hardcode hay override thành ACTIVE) — xác nhận qua
+  `TestRegisterRepository_ReturnsRegisteringStatusNeverFakedActive`.
+- "Hoàn thành khi — catalog/onboarding có một route owner": đúng — `internal/delivery/httpapi/catalog` là
+  package DUY NHẤT đăng ký route `/projects`, `/repositories/*`, `/components/*/pack-assignments`
+  (`RouteRegistry.Register`'s own duplicate-path panic tự bảo đảm không route owner thứ hai nào có thể lọt
+  qua CI mà không panic ngay lúc khởi động).
+- "Hoàn thành khi — repository ID là authority": `getRepository`/`getRepositoryOnboarding`/
+  `retryRepositoryProbe` đều resolve trực tiếp từ RepositoryID (path `/repositories/{id}`, không nest project)
+  qua `appcatalog.GetRepository`, không route nào cần caller tự khai ProjectID để dùng 3 route này.
+
+### Kết quả
+
+Package mới `internal/delivery/httpapi/catalog` (7 file production, 4 file test, 21 test), 4 query mới trong
+`internal/app/catalog` (`GetRepository`/`ListRepositoryProbeAttempts`/`GetComponent`/`ListComponents`), 1
+method interface mới (`CatalogRepository.ListComponents`, 2 implementation thật — sqlite + fake), 1 architecture
+test mới (`internal/archtest/catalog_http_test.go`), 1 dòng wiring thật vào `cmd/aw/serve.go`. 11 route HTTP
+thật lần đầu tồn tại trong toàn bộ V6: `POST/GET /projects`, `GET /projects/{id}`, `POST/GET
+/projects/{id}/repositories`, `GET /repositories/{id}`, `GET /repositories/{id}/onboarding`, `POST
+/repositories/{id}/retry-probe`, `GET /projects/{id}/components`, `GET/POST
+/components/{id}/pack-assignments`. `go build/vet ./...` sạch; `go test ./...` full suite (99 package) xanh 100% sau khi xác nhận 1 fail ban đầu
+(`internal/app/workspacerelease`) là contention flake không liên quan (xem mục Test) — chạy lại riêng package
+đó sạch. Phát hiện và ghi lại 1 gap thật ở tầng persistence (UNIQUE constraint không được `MapSQLiteError`
+phân loại — xem mục Test), nằm ngoài phạm vi task này, được xử lý đúng mức bằng cách sửa fixture của chính
+mình thay vì lan sang sửa code đã merge trước đó.

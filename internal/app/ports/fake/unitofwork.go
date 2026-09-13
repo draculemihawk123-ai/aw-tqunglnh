@@ -743,6 +743,19 @@ func (c *CatalogRepository) GetComponent(_ context.Context, id string) (project.
 	return component, nil
 }
 
+// ListComponents mirrors sqlite's listComponentsTx: every Component whose
+// ProjectID equals projectID, ID order.
+func (c *CatalogRepository) ListComponents(_ context.Context, projectID string) ([]project.Component, error) {
+	var result []project.Component
+	for _, component := range c.components {
+		if string(component.ProjectID) == projectID {
+			result = append(result, component)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
 func (c *CatalogRepository) AssignComponentPack(_ context.Context, req ports.AssignComponentPackRequest) (project.ComponentPackAssignment, error) {
 	created, err := project.NewComponentPackAssignment(
 		project.ComponentPackAssignmentID(req.ID), project.ProjectID(req.ProjectID), project.ComponentID(req.ComponentID),

@@ -19,6 +19,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 )
 
@@ -144,6 +145,11 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
 	})
+	// V6-03A (docs/design/08-v6-api-projections.md): Project/repository/
+	// component catalog routes, owning its own subpackage/descriptors/tests
+	// (internal/delivery/httpapi/catalog) exactly as V6-01A's own comment
+	// above anticipated.
+	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: uow, IDs: idsource.Random{}})
 	// V6-06: Run start/cancel controls (internal/delivery/httpapi/run) — an
 	// additive routes.Register call only, no shared setup above touched.
 	// Every further endpoint task's own composition-root wiring adds its own
