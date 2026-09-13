@@ -1349,3 +1349,213 @@ trong `event_schema_test.go`. `go build/vet/test ./...` xanh 100% trên toàn b�
 không có public CreateProject" đã đóng — V6-03A (Project/repository/component HTTP endpoints) giờ có đủ
 dependency (`V6-00`, `V6-01A`, `V6-02`, `V6-02A`, `V6-03`) để bắt đầu ngay khi 4 dependency còn lại sẵn
 sàng.
+
+## V6-10E — ReleaseSet/local-commit application authority
+
+### Bối cảnh
+
+V6-10E là task phức tạp nhất trong 3 task chạy song song ngay sau V6-00A (`{V6-03, V6-10E, V6-10G, V6-10I}`),
+chạy trong worktree riêng — không đụng file chung với 2 session kia. Mục tiêu design doc: hoàn thiện
+list/get/create/seal/abandon cho ReleaseSet (V5-10A đã build create/seal/abandon, còn thiếu list/get công
+khai) và xây `RequestReleaseSetLocalCommit` — operation/worker job-backed, crash-safe, để thật sự MATERIALIZE
+kết quả một ReleaseSet entry thành một real local Git commit, không bao giờ push/fetch/PR/merge/rebase/
+force-push, không Git nào chạy trong command transaction, không implicit commit khi seal.
+
+### Nghiên cứu
+
+Đọc lại V5-10A's own narrative (đoạn "V5-10A — ReleaseSet và typed local Git operation" trong
+`baocaov5checklist.md`) trước khi code bất cứ gì — xác nhận: `internal/app/work/release_set.go` đã có
+`CreateReleaseSet`/`SealReleaseSet`/`AbandonReleaseSet` thật (không có List/Get public wrapper — chỉ có
+`ports.WorkRepository.GetReleaseSet`/`ListReleaseSetsForFamily` ở tầng persistence, gọi nội bộ từ
+`transitionReleaseSet`/`EligibilityAuthority`), và `ports.LocalCommitCreator`/
+`internal/adapters/gitworktree.Provider.CreateLocalCommit` đã có thật nhưng "chưa wiring vào bất kỳ command
+ReleaseSet nào" — đúng là job của task này.
+
+Đọc `internal/app/ports/scheduling.go` (`JobLease`, `WriteLeaseManager`) và
+`internal/adapters/sqlite/scheduling.go`/`workflow_store.go` (`validateActiveWriteLeaseInTx`) để tìm mẫu
+"worker lease + write lease" thật đã có — phát hiện then chốt: `WriteLeaseManager` (dùng bởi AGENT node
+execution, `internal/app/runtime/finalize.go`/`agent_node_executor_cancellation.go`) hard-require một
+`runtime.ExecutionAttemptID` sống — MỌI query của nó (`AcquireWriteLeases` validate + `HeartbeatWriteLeases`/
+`ValidateWriteLease` INNER JOIN `execution_attempts WHERE state='RUNNING'`) đều cần attempt thật. Job của
+task này (`RequestReleaseSetLocalCommit`) là CONTROL-class, không phải AGENT execution attempt — không có
+attempt nào để gắn vào. Tái dùng `WriteLeaseManager` nguyên bản nghĩa là phải fake một
+`execution_attempts` row (khái niệm domain không có thật) hoặc nới lỏng coupling attempt của cơ chế đó cho
+mọi caller AGENT hiện có — cả hai đều ngoài phạm vi và rủi ro thật cho code V5-15D/E đã merge. Quyết định:
+xây cơ chế lease MỚI, hẹp, chỉ cho holder-là-job (không cần attempt) — đúng tiền lệ "narrow port riêng cho
+capability mới, zero thay đổi implementer cũ" mà `ports.LocalCommitCreator`/`ports.WorkspaceInspectionReader`
+tự thiết lập.
+
+Đọc `internal/app/workspacerelease` (toàn bộ package: `commands.go` producer + `handler.go` consumer) làm mẫu
+chính xác cho "job-backed, outside-tx I/O, fenced finalize" — `RequestWorkspaceSetRelease` ghi
+intent+job+event+receipt atomic trong 1 `WithSerializedWrite`, `ExecuteWorkspaceSetRelease`/`Handler.Handle`
+thực thi I/O thật ngoài mọi transaction rồi tự CAS state trong transaction riêng. Đọc
+`internal/app/runtime/finalize.go` (`FinalizeExecutionAttempt`) để lấy đúng thứ tự 7 bước "validate job lease
+→ validate write lease → CAS → event → complete job (cùng 1 tx) → release lease SAU KHI COMMIT, ngoài tx,
+idempotent/tolerant `ErrWriteLeaseLost`" — thứ tự này lặp lại y hệt cho lease MỚI của task này.
+
+Đọc `internal/domain/workspace/workspace.go` phát hiện: `internal/domain/work` KHÔNG thể import
+`internal/domain/workspace` (cycle — `workspace.go` đã import `work` cho `WorkspaceSet.FamilyID`) — domain
+type mới (`ReleaseSetLocalCommit`) phải dùng `RepositoryWorkspaceID string` thay vì
+`workspace.RepositoryWorkspaceID`, giống hệt lý do `RepositoryRelease.RepositoryID` đã dùng `project.RepositoryID`
+(package không có cycle) thay vì type từ `workspace`.
+
+Đọc `internal/app/ports/work.go` (`RepositoryWorkspaceRecord`, `GetRepositoryWorkspaceByID`) phát hiện thêm
+một điều quan trọng: `repository_workspaces.generation` là cột BẤT BIẾN theo row — một RECREATE luôn tạo row
+MỚI (ID khác) ở generation+1, chứ không sửa generation của row cũ (row cũ chỉ chuyển state sang QUARANTINED
+trước khi RECREATE được phép chạy, theo doc comment của `RecreateRepositoryWorkspaceRequest`). Suy ra: nếu
+worker load lại ĐÚNG row đã pin theo ID, so sánh `Generation` với giá trị đã pin sẽ KHÔNG BAO GIỜ lệch (dead
+code nếu implement) — "stale" thật sự phải được chặn ở REQUEST time qua `ExpectedWorkspaceVersion`/
+`ExpectedReleaseSetVersion` (đúng mẫu `cmd.ExpectedVersion` mọi command khác đã dùng), còn ở WORKER time chỉ
+còn đúng 1 cách row có thể "hỏng" — bị QUARANTINED. Quyết định bỏ hẳn `FailureStaleGeneration` khỏi
+worker-side closed set, giữ lại đúng 1 lý do có thể tái hiện thật: `FailureWorkspaceQuarantined`.
+
+Phát hiện một constraint thật khi viết test đầu tiên: `gitworktree.Provider.CreateLocalCommit`'s own
+`validCommitField` từ chối MỌI `\r`/`\n` trong message — nghĩa là marker không thể nhúng như một trailer
+đa dòng theo convention Git thông thường ("blank line, rồi Key: value"); phải nhúng trên CÙNG MỘT DÒNG với
+message gốc (`message + " [Key: value]"`).
+
+### Quyết định
+
+1. **Marker xác định (deterministic operation marker) = sha256(ReleaseSetID | ReleaseSet.Version |
+   RepositoryWorkspaceID | Generation | Actor | MessageHash)**, KHÔNG có parent trong input — vì parent chỉ
+   biết được ở WORKER time (Inspect thật), còn marker phải tính được ở REQUEST time (thuần DB, không Git).
+   Nhúng vào commit message thật qua `ports.LocalCommitMarkerTrailerKey` ("Release-Set-Local-Commit-Marker"),
+   một dòng duy nhất.
+2. **Port mới `ports.LocalCommitMarkerReader`** (`internal/app/ports/releasesetlocalcommit.go`, file MỚI —
+   không sửa `localcommit.go` đã merge từ V5-10A): `FindLocalCommitByMarker` LUÔN trả về HEAD thật (revision +
+   parent) bất kể `found`, để worker không cần một lệnh `Inspect` riêng — `found=false` nghĩa là HEAD hiện tại
+   CHÍNH LÀ parent cần build commit mới lên trên; `found=true` nghĩa là HEAD chính là kết quả của một lần
+   chạy trước (crash-after-Git-before-finalize) — reuse thẳng, không gọi `CreateLocalCommit` lần 2. Chỉ cần
+   kiểm tra HEAD (không cần quét lịch sử): vì `CreateLocalCommit` là method Git-mutating DUY NHẤT toàn bộ
+   port trong repo (đã tự khẳng định từ doc comment gốc của `LocalCommitCreator`), và write-lease loại trừ
+   mọi ghi đồng thời khác — không gì khác có thể đã dịch chuyển HEAD giữa 2 lần gọi.
+3. **Port mới `ports.LocalCommitWriteLeaseManager`** (cùng file) — Acquire/Validate/Release, holder chỉ gồm
+   `JobLease` (JobID/Owner/Token), KHÔNG có AttemptID — bảng mới `local_commit_write_leases` (migration 0036)
+   mirror đúng shape `write_leases` (fence_token tăng dần, `ON CONFLICT ... WHERE lease_until <= now`) trừ
+   cột attempt. `ValidateLocalCommitWriteLeaseFencing` (Tx-composable, trên `WorkRepository`) mirror
+   `RuntimeRepository.ValidateWriteLeaseFencing`/`validateActiveWriteLeaseInTx` — gọi bên trong transaction
+   finalize, không phải qua port riêng.
+4. **Domain type mới `work.ReleaseSetLocalCommit`** (`internal/domain/work/release_set_local_commit.go`) —
+   3-state REQUESTED→{COMMITTED, FAILED}, mirror đúng shape `ReleaseSet`. `FailureReason` closed-set chỉ còn
+   2 giá trị thật: `WORKSPACE_QUARANTINED`, `MARKER_DRIFT` (xem Nghiên cứu #5 — "stale" không phải worker-side
+   failure). `ParentVCSObjectID` được ghi 2 lần trong đời một operation: `PinReleaseSetLocalCommitParent`
+   (trước khi gọi Git thật, vẫn REQUESTED) — đây chính là cơ chế cho phép reconciliation phát hiện "drift"
+   (so khớp parent đã pin với parent thật của commit tìm được ở HEAD) — rồi lần cuối cùng khi
+   `TransitionReleaseSetLocalCommitToCommitted`.
+5. **Package application mới `internal/app/releasesetcommit`** (không nhét vào `internal/app/work`, vốn tự
+   cam kết từ V5-10A "không có lý do gì import os/os/exec") — mirror đúng shape `workspacereconcile`/
+   `workspacerelease`: producer (`commands.go`: `RequestReleaseSetLocalCommit`) + consumer
+   (`execute.go`: `ExecuteReleaseSetLocalCommit`, `handler.go`: `Handler` implement `workerpool.Handler`)
+   sống chung 1 package vì cả hai đều cần port thật (`LocalCommitCreator`/`LocalCommitWriteLeaseManager`/
+   `WorkspaceLifecycle`), khác hẳn `internal/app/work` vốn cố tình "không I/O".
+6. **Drift → quarantine thật, không silent-reuse.** Khi `found=true` nhưng parent thật ở HEAD khác parent đã
+   pin, gọi thẳng `ports.WorkspaceLifecycle.QuarantineRepositoryWorkspace` (cơ chế Quarantine thật của
+   V5-15D) trước khi đóng operation `FAILED/MARKER_DRIFT` — không bao giờ coi đó là reuse hợp lệ.
+7. **Job hoàn tất bằng chính `tx.Jobs().CompleteJob` bên trong finalize transaction** (giống hệt
+   `FinalizeExecutionAttempt`'s own step 7) — không dựa vào `workerpool.Pool`'s own auto-`CompleteJob` sau khi
+   `Handle` trả về nil (dù pool có gọi lại lần 2, lỗi `ErrJobLeaseLost` bị bỏ qua vô hại, đúng comment sẵn có
+   của `pool.go`).
+
+### Thực hiện
+
+- Migration `0036_release_set_local_commits.sql` (2 bảng: `release_set_local_commits` intent+result,
+  `local_commit_write_leases`). Bump migration count 34→35 trong `db_test.go`/`unitofwork_test.go`.
+- `internal/domain/work/release_set_local_commit.go` (mới): `ReleaseSetLocalCommit`, `NewReleaseSetLocalCommit`,
+  `ReleaseSetLocalCommitState`/`ReleaseSetLocalCommitFailureReason`.
+- `internal/app/ports/work.go` (sửa): 5 method mới trên `WorkRepository`
+  (`CreateReleaseSetLocalCommit`/`GetReleaseSetLocalCommit`/`PinReleaseSetLocalCommitParent`/
+  `TransitionReleaseSetLocalCommitToCommitted`/`TransitionReleaseSetLocalCommitToFailed`/
+  `ValidateLocalCommitWriteLeaseFencing`) + `ErrLocalCommitMarkerCollision`.
+- `internal/app/ports/releasesetlocalcommit.go` (mới): `LocalCommitMarkerReader`, `LocalCommitWriteLeaseManager`
+  + type liên quan, `ports.LocalCommitMarkerTrailerKey`.
+- `internal/adapters/sqlite/release_set_local_commit.go` (mới): implement 6 method trên, marker-collision
+  check tường minh trước insert (giống repository-existence check của V5-10A).
+- `internal/adapters/sqlite/local_commit_write_lease.go` (mới): implement `LocalCommitWriteLeaseManager` trên
+  `*Store`, mirror `AcquireWriteLeases`/`ReleaseWriteLeases` nhưng bỏ attempt.
+- `internal/adapters/gitworktree/localcommit_marker.go` (mới): `Provider.FindLocalCommitByMarker` — 1 lệnh
+  `git log -1 --format=%H%x1f%P%x1f%B HEAD`, tách bằng `\x1f` (không thể xuất hiện trong object id/message
+  thường).
+- `internal/app/work/release_set_queries.go` (mới): `GetReleaseSet`/`ListReleaseSetsForFamily` — 2 public
+  query còn thiếu từ V5-10A, mirror shape `workspaceinspection.Queries` (mở `uow.WithReadOnly` riêng).
+- `internal/app/releasesetcommit/` (package mới): `commands.go` (`RequestReleaseSetLocalCommit`), `marker.go`
+  (`computeOperationMarker`/`computeMessageHash`/`commitMessageWithMarker`), `execute.go`
+  (`ExecuteReleaseSetLocalCommit` + `loadIntent`/`loadRepositoryWorkspace`/`pinParent`/`failTerminal`/
+  `quarantineWorkspace`), `handler.go` (`Handler`), `event_schema.go` (3 event:
+  `ReleaseSetLocalCommitRequested/Committed/Failed` v1).
+- `internal/adapters/sqlite/fixtures.go` (sửa): thêm `SeedFixtureRepositoryWorkspaceWithLocator` (nhận
+  Locator tuỳ chỉnh thay vì `"opaque:<id>"` cố định) — cần cho test thật nối sqlite row với workspace Git thật
+  trên đĩa qua `gitworktree.Provider.Provision`.
+- `internal/archtest/event_catalog_test.go` (sửa): thêm `releasesetcommit.RegisterEventSchemas(registry)` vào
+  inventory guard — 3 event mới nếu không đăng ký sẽ fail `TestEmittedDomainEventInventoryMatchesRegisteredInventory`.
+
+### Test
+
+- `internal/domain/work/release_set_local_commit_test.go`: constructor valid/invalid (6 case reject),
+  `FailureReason.IsValid`.
+- `internal/adapters/gitworktree/localcommit_marker_test.go`: not-found trả về HEAD/parent thật (base
+  revision không có parent → rỗng), found trả đúng revision + parent, marker khác nhau không match.
+- `internal/adapters/sqlite/local_commit_write_lease_test.go`: **hai worker thật** đua nhau
+  `AcquireLocalCommitWriteLease` cùng lúc qua goroutine (`TestAcquireLocalCommitWriteLease_TwoWorkers_OnlyOneSucceeds`)
+  — đúng đúng 1 thành công 1 conflict; steal sau khi TTL hết hạn → `ValidateLocalCommitWriteLease` trả
+  `ErrLocalCommitWriteLeaseLost`; release 2 lần → lần 2 `ErrLocalCommitWriteLeaseLost` (idempotent).
+- `internal/app/work/release_set_queries_test.go`: `GetReleaseSet` full detail + not-found,
+  `ListReleaseSetsForFamily` đúng thứ tự.
+- `internal/app/releasesetcommit/commands_test.go`: replay, receipt-conflict, stale ReleaseSet version, stale
+  workspace version, cross-project, **marker collision qua API thật** (2 command khác IdempotencyKey, cùng
+  target/actor/message → marker giống hệt → command thứ 2 bị `ErrLocalCommitMarkerCollision`), determinism
+  của `computeOperationMarker` (input giống → marker giống; đổi 1 field → marker khác, 6 biến thể).
+- `internal/app/releasesetcommit/execute_test.go` (real sqlite + real gitworktree, KHÔNG mock git nào) — mỗi
+  test tự dựng 1 repo Git thật + 1 workspace Git thật qua `gitworktree.Provider.Provision` với Locator share
+  giữa 2 hệ:
+  - Happy path: commit thật được tạo, message HEAD chứa marker trailer, job hoàn tất
+    (`CompleteJob` lần 2 → `ErrJobLeaseLost`), write lease đã release (probe worker acquire lại thành công),
+    `git remote` rỗng trước/sau.
+  - Replay: gọi `ExecuteReleaseSetLocalCommit` 2 lần với cùng job (đã COMMITTED) — spy
+    `LocalCommitCreator` xác nhận `calls == 1` cả trước lẫn sau lần gọi thứ 2.
+  - **Crash before Git**: worker A acquire write lease rồi "crash" (không gọi Git) — TTL hết hạn,
+    `RecoverExpiredJobs`, worker B claim lại — spy xác nhận đúng 1 lần gọi `CreateLocalCommit`, đúng 2 commit
+    trong lịch sử (base + 1).
+  - **Crash after Git, before finalize** (kịch bản an toàn quan trọng nhất): worker A tự tay lặp lại đúng các
+    bước `ExecuteReleaseSetLocalCommit` sẽ làm — acquire lease, `pinParent`, gọi THẬT
+    `provider.CreateLocalCommit` — rồi dừng lại (không finalize, không release lease). Sau khi TTL hết hạn và
+    job được reclaim, worker B gọi `ExecuteReleaseSetLocalCommit` thật — spy xác nhận `calls == 0` (không tạo
+    commit thứ 2), `ResultVCSObjectID` trùng khớp commit mà worker A đã tạo, tổng số commit vẫn đúng 2.
+  - **Marker drift → quarantine**: pin một parent SAI có chủ đích rồi tạo commit thật mang marker đúng nhưng
+    parent thật khác parent đã pin — `ExecuteReleaseSetLocalCommit` phát hiện lệch, gọi
+    `QuarantineRepositoryWorkspace` thật (assert `RepositoryWorkspace.State == QUARANTINED`), đóng operation
+    `FAILED/MARKER_DRIFT`, `spy.calls == 0`.
+  - **Lease loss**: worker A acquire write lease (TTL ngắn) + tạo commit thật, TTL hết hạn, worker C (job
+    khác) "cướp" write lease — worker A "tỉnh dậy" (job lease riêng vẫn còn hạn 10 phút) gọi lại
+    `ExecuteReleaseSetLocalCommit` → nhận `ErrLocalCommitWriteLeaseConflict`, intent vẫn REQUESTED (chưa bao
+    giờ finalize).
+- `internal/app/releasesetcommit/handler_test.go`: `Handler` implement `workerpool.Handler`, `Handle` tạo
+  commit thật end-to-end.
+
+### Verify
+
+- **Replay/concurrency/stale**: `commands_test.go` (fake ở receipt layer) + `execute_test.go` Replay test
+  (thật, spy call-count).
+- **Seal/abandon**: đã có coverage thật từ V5-10A (`release_set_test.go`), không lặp lại — phần thiếu (list/
+  get) đã đóng bởi `release_set_queries_test.go`.
+- **Crash before/after Git/finalize**: 2 test riêng biệt trong `execute_test.go`, mô tả ở Test phía trên —
+  "crash after Git before finalize" là bằng chứng trực tiếp nhất cho "Hoàn thành khi: replay cannot create
+  two local commits".
+- **Lease loss**: `TestExecuteReleaseSetLocalCommit_WriteLeaseStolen_DoesNotFinalize` (execute_test.go) +
+  `TestValidateLocalCommitWriteLease_Stolen_ReturnsLost` (adapter-level, deterministic).
+- **Drift**: `TestExecuteReleaseSetLocalCommit_MarkerDrift_QuarantinesAndFails` — quarantine thật, không
+  fabricate.
+- **Two workers**: `TestAcquireLocalCommitWriteLease_TwoWorkers_OnlyOneSucceeds` — goroutine thật, real race.
+- **Marker collision**: `TestRequestReleaseSetLocalCommit_MarkerCollision_DifferentIdempotencyKey_Rejected`
+  (qua API công khai thật, không bypass) + `TestComputeOperationMarker_Deterministic_DifferentInputsDifferentMarkers`.
+- **Remote-call spy zero**: 3 lớp bằng chứng độc lập — (1) structural: `TestDomainAppNeverImportAdapters`
+  (archtest có sẵn, tự động glob `internal/app/...` — `internal/app/releasesetcommit` không thể import bất kỳ
+  `internal/adapters/...` nào, nghĩa là không có adapter remote nào để gọi dù cố tình); (2) behavioral: spy
+  `LocalCommitCreator` trong mọi test `execute_test.go` đếm chính xác số lần gọi git thật; (3) real-repo: mọi
+  fixture repo trong `execute_test.go`/`localcommit_marker_test.go` không hề cấu hình remote — `git remote`
+  được assert rỗng cả trước/sau trong happy-path test, mirror đúng
+  `TestProvider_CreateLocalCommit_NeverTouchesRemote` của V5-10A.
+- `go build ./...`, `go vet ./...` sạch. `go run ./cmd/docs-coverage-check` debt = 0.
+
+### Kết quả
+
+(điền sau khi CI 6/6 xanh và merge xong)
