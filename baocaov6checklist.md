@@ -2514,6 +2514,293 @@ additive vào composition root, đúng phạm vi "HTTP delivery only" của task
 `V6-00`, `V6-02A`, đều đã xong từ trước). `V6-06D` KHÔNG phụ thuộc `V6-06` (dependency riêng: `V6-00, V6-01A,
 V6-02, V6-02A, V4-12C, V5-08D`) nên không bị ảnh hưởng bởi thứ tự merge của task này.
 
+## V6-10B — Workspace state, lease và reconcile endpoints
+
+### Bối cảnh
+
+V6-10B là 1 trong 3 task P2 chạy song song ngay sau V6-02 merge (cùng `{V6-03A, V6-04, V6-06}`, theo đúng
+worktree riêng của phiên này — 3 session khác chạm `baocaov6checklist.md`/có thể chạm `cmd/aw/serve.go` đồng
+thời, xem phần Kết quả về merge). Trích nguyên văn task spec từ `docs/design/08-v6-api-projections.md`
+(dòng 434-443): "Mục tiêu: expose WorkspaceSet/repository-workspace state, lease/fence/quarantine và request
+actions"; "Phạm vi: state queries, `RequestWorkspaceSetRelease`, `RequestWorkspaceReconciliation` routes";
+"Không làm: no internal Execute command, Git/filesystem direct call hoặc writer grant từ HTTP"; "Hoàn thành
+khi: recovery request possible without Git/DB surgery và delivery has no executor authority." Phụ thuộc
+`{V6-00, V6-01A, V6-02, V6-02A, V6-03}` — cả 5 đã merge (`3af0adf` là commit mới nhất trên `origin/master` khi
+bắt đầu), không có gì phải chờ thêm.
+
+Design doc's own dòng 419-421 xác nhận rõ shape song song: "V6-10A…V6-10J are independent contract suites
+after their own prerequisites... `{V6-10B, V6-10H, V6-10J}` can run in parallel; after B, `{V6-10D, V6-10F}`
+can run in parallel because C/E authorities are already complete" — nghĩa là V6-10D (map V6-10C's 3 query
+sang HTTP GET) và một phần khác của roadmap đang chờ đúng package `internal/delivery/httpapi` này ổn định
+trước khi bắt đầu.
+
+### Nghiên cứu
+
+Đọc toàn bộ hạ tầng V6-01/V6-01A/V6-02/V6-02A trước khi viết dòng nào: `route.go` (`RouteRegistry.Register`
+panic-on-duplicate, `ScopeKind` đóng INSTALLATION|PROJECT theo ADR-025), `server.go`/`bootstrap.go`
+(`NewServer` compose middleware chain thật: `HostOriginGuard → CorrelationID → Recover → RequireSessionToken
+→ MaxBytes → BindPrincipal`), `commandenvelope.go`/`receiptreplay.go` (V6-02's own flow: authenticate →
+`RequireIdempotencyKey`/`RequireIfMatch` → `CanonicalizeJSON` → `SemanticHash` → `LookupReceipt` → replay hoặc
+conflict hoặc dispatch thật → `EncodeResult`), `errors.go` (`WriteResourceHidden` leakage-normalization,
+`StatusForAppErrorCode`'s bảng đầy đủ — phát hiện `errorcode.CodeWorkspaceQuarantined` đã map sẵn tới 423
+Locked, đúng khớp "quarantine refusal" Verify line của chính task này, không phải trùng hợp), `action.go`
+(`ValidAction{OperationID, ScopeKind, TargetVersion}` advisory).
+
+Đọc kỹ 2 command thật task này bọc: `internal/app/workspacerelease/commands.go:209`
+(`RequestWorkspaceSetRelease(ctx, uow, ids, authority ports.ReleaseEligibilityAuthority, cmd, req{FamilyID,
+ProjectID})`) và `internal/app/workspacereconcile/commands.go:158`
+(`RequestWorkspaceReconciliation(ctx, uow, ids, cmd, req{RepositoryWorkspaceID, ProjectID})`) — cả hai đều
+là "producer ghi intent+job, KHÔNG bao giờ tự transition state hay chạm Git" (V3-11/V3-10's own split), cả
+hai đều yêu cầu `cmd.ExpectedVersion` làm fence, cả hai đều KHÔNG bao giờ tự bump version của chính aggregate
+mà chúng target — một phát hiện quan trọng ảnh hưởng trực tiếp cách viết test "stale generation" (xem Quyết
+định #7).
+
+Grep `ReleaseEligibilityAuthority`/`IsReleaseAuthorized` xác nhận: khác với doc comment gốc của
+`ports.ReleaseEligibilityAuthority` ("không có real implementation, chỉ V3's own fake"), một implementation
+THẬT đã tồn tại từ V5-10A — `internal/app/work/release_set.go:277`
+(`EligibilityAuthority{uow}`/`NewEligibilityAuthority`, `IsReleaseAuthorized` đọc `ListReleaseSetsForFamily`
+rồi check `IsCleanupEligible` trên ReleaseSet mới nhất). Không cần fake nào cho route thật — wiring thẳng
+`work.NewEligibilityAuthority(uow)`.
+
+Grep một query WorkspaceSet/RepositoryWorkspace state trên toàn bộ `internal/app` (đúng như hint của task):
+không có gì. `internal/app/workspaceinspection` (V6-10C) đọc nội dung Git qua adapter, hoàn toàn khác concern
+("state" ở đây là DB row, không phải blob/diff/log) — xác nhận đây thật sự là việc mới, không phải wrapper.
+Đọc `internal/app/ports/work.go` xác nhận 4 method đọc cần dùng đã có sẵn, thật, đã test qua chính
+`workspacerelease`/`workspacereconcile`'s eligibility check: `GetWorkspaceSetByFamilyID` (dòng 103, unique
+theo family_id — cách duy nhất load một WorkspaceSet), `ListWorkspaceSetRepositoryWorkspaces` (dòng 211),
+`GetRepositoryWorkspaceByID` (dòng 228, trả kèm FamilyID), `HasActiveWriteLease` (dòng 357, nhận
+`[]string` repositoryWorkspaceIDs — gọi với 1 phần tử để lấy đúng lease của MỘT workspace thay vì câu hỏi
+aggregate "cả set có lease nào không" mà `workspacerelease` tự hỏi). Đọc thẳng
+`internal/adapters/sqlite/work.go:1046` xác nhận SQL thật đằng sau (`julianday(lease_until) >
+julianday('now')`) — không phải "row tồn tại" mà "lease còn sống".
+
+Đọc `internal/adapters/sqlite/workspace_lifecycle.go` (367 dòng, theo đúng gợi ý của task) cho state machine
+thật: `QuarantineRepositoryWorkspace`/`ReleaseRepositoryWorkspace`/`RecreateRepositoryWorkspace`, cả 3 đều
+fenced CAS thật trên `(id, state, version)`. Xác nhận "fence" trong vocabulary V6-10B chính là
+`RepositoryWorkspace.Generation` — bất biến theo row (RECREATE luôn tạo row MỚI ở generation+1, không sửa
+generation của row cũ) — đúng research note V6-10E đã ghi lại trong chính file báo cáo này. "Quarantine" là
+`State == QUARANTINED`. "Lease" là `HasActiveWriteLease`.
+
+Đọc `internal/archtest/command_envelope_test.go` (AST-scan "parse source thật, walk go/ast, fail nếu gọi hàm
+cấm") và `internal/archtest/boundary_test.go`'s
+`TestRequestWorkspaceReconciliationNeverImportsWorkspaceIO`/`TestRequestWorkspaceSetReleaseNeverImportsWorkspaceIO`
+(forbidden import `"os"`/`"os/exec"`/`internal/adapters/...`) làm mẫu cho architecture test riêng của task
+này. Xác nhận `internal/app/workspacereconcile/handler.go:156`'s `ExecuteWorkspaceReconciliation` là hàm
+EXPORTED — nghĩa là chỉ cấm import adapter là chưa đủ, vì `httpapi` đã hợp pháp import chính package
+`workspacereconcile` (để lấy `RequestWorkspaceReconciliation`/`ErrWorkspaceNotReconcilable`) — phải quét
+thêm cả tên selector bị cấm, không chỉ import path.
+
+Đọc `internal/delivery/httpapi/receiptreplay_test.go` (mẫu bắt buộc theo hard rule #1) và
+`internal/app/workspacerelease/commands_test.go` (mẫu `mustSeedWorkspaceSet` dùng `fake.UnitOfWork` +
+domain constructor thật) và `internal/adapters/sqlite/fixtures.go` (`SeedFixtureOwners`,
+`SeedFixtureRepositoryWorkspace(WithLocator)`, `SeedFixtureWriteLease` — helper thật, "production code must
+never call this" nhưng chính là con đường sanctioned để seed test thật, đã dùng lại nguyên xi cho V6-10E).
+`fake.WorkRepository.HasActiveWriteLease` (`internal/app/ports/fake/work.go:406`) LUÔN trả `false, nil` —
+doc comment của chính nó nói rõ: fake không model `write_leases`, muốn chứng minh lease thật phải dùng sqlite
+thật (`commands_sqlite_test.go`) — áp dụng lại y hệt cho package mới của task này.
+
+### Quyết định
+
+1. **Query "state" là một package application mới, `internal/app/workspacestate`, không nhét vào
+   `httpapi` trực tiếp.** Mirror đúng shape V6-10C đã lập (`workspaceinspection`): named public query, bound
+   output, trước khi delivery serialize — dù ở đây không có Git/filesystem nào để bound, chỉ là 2 free
+   function (`GetWorkspaceSetState`, `GetRepositoryWorkspaceState`) nhận `ports.UnitOfWork` trực tiếp (không
+   phải struct `Queries` như `workspaceinspection` — vì package này chỉ có 1 dependency, giống hệt
+   `catalog.CreateProject(ctx, uow, ids, cmd, req)`/`work.GetReleaseSet(ctx, uow, id)`, không phải 2 như
+   `workspaceinspection.Queries{uow, reader}`).
+2. **Không có port mới nào.** 4 method đọc cần dùng (`GetWorkspaceSetByFamilyID`,
+   `ListWorkspaceSetRepositoryWorkspaces`, `GetRepositoryWorkspaceByID`, `HasActiveWriteLease`) đều đã thật,
+   đã test qua chính `workspacerelease`/`workspacereconcile`'s eligibility check — một read query trên đúng
+   những row đó không cần persistence surface mới, chỉ cần caller mới.
+3. **`workspacestate.ErrScopeMismatch` — sentinel riêng, cùng tên nhưng khác package với
+   `workspaceinspection.ErrScopeMismatch` và `ports.ErrScopeMismatch`.** Đúng tiền lệ V6-03's Quyết định #6
+   đã tự xác lập: "same name, different package, different concern" không phải va chạm cần tránh —
+   `workspaceinspection`'s là referential-integrity của chain Repository/WorkspaceSet, `ports`'s là
+   CommandScope authorization, cái này là referential-integrity riêng của 2 query mới. HTTP layer normalize
+   cả `ErrScopeMismatch` lẫn `ports.ErrPersistenceNotFound`/`ports.ErrCrossProjectReference` về CHUNG một 404
+   ẩn danh (`WriteResourceHidden`) — đúng "no path leak" policy V6-10C đã lập.
+4. **URL scheme tự thiết kế, vì chưa có route business nào khác từng tồn tại để theo.** `route.go`/
+   `server.go`/`serve.go` (đọc kỹ trước khi quyết) xác nhận: KHÔNG có subpackage `httpapi/workspace` nào —
+   toàn bộ V6-01/V6-01A/V6-02/V6-02A đều là file phẳng trong CHÍNH package `httpapi` (`route.go`,
+   `health.go`, ...), và `serve.go` dòng 146-148 tự mời "a later endpoint task's own composition-root wiring
+   adds its own routes.Register call here" — nghĩa là quy ước thật của repo là: mỗi task thêm file MỚI
+   (tên riêng, không đụng file người khác) vào CHÍNH `internal/delivery/httpapi`, cộng đúng 1 dòng
+   `RegisterXxxRoutes(...)` mới vào `serve.go`, không phải tạo subpackage. Theo đúng quy ước đó (không tự
+   nghĩ tiền lệ mới): `GET /projects/{projectId}/workspace-sets/{familyId}`,
+   `GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}`,
+   `POST .../workspace-sets/{familyId}/release`, `POST .../repository-workspaces/{repositoryWorkspaceId}/reconcile`
+   — khớp chính xác 2 khóa tự nhiên 2 command thật đã dùng (`GetWorkspaceSetByFamilyID` chỉ có đúng 1 cách
+   load: theo FamilyID; reconcile khóa theo RepositoryWorkspaceID). Go 1.27 (`go.mod`) xác nhận
+   `net/http.ServeMux`'s `{param}` wildcard + `r.PathValue(...)` dùng được thẳng, không cần router thứ 3.
+5. **POST release/reconcile là "update"-shaped theo đúng nghĩa V6-02: bắt buộc `If-Match`, không có field
+   nào trong JSON body.** `FamilyID`/`RepositoryWorkspaceID`/`ProjectID` đều từ path (chính resource route đã
+   đặt tên); `ExpectedVersion` LUÔN từ `VersionFromETag(If-Match)`, không bao giờ từ body — tránh 2 nguồn sự
+   thật cho cùng 1 giá trị. Body luôn là `{}` — vẫn chạy qua `CanonicalizeJSON`/`SemanticHash` đầy đủ (không
+   bỏ qua bước nào của flow chuẩn) để một client gửi payload lạ vẫn nhận 400 rõ ràng thay vì bị âm thầm bỏ
+   qua.
+6. **`writeWorkspaceCommandError` map sentinel thật sang `*apperror.Error` rồi giao cho `WriteAppError`/
+   `StatusForAppErrorCode` sẵn có, không tự viết bảng status thứ 2.** `ports.ErrOptimisticConflict` →
+   `CodePreconditionFailed` (412 — đúng ngữ nghĩa HTTP cho If-Match fail, cũng đúng "stale generation" Verify
+   line); `ports.ErrReceiptConflict` → `CodeIdempotencyConflict` (409); `workspacerelease.ErrWorkspaceSetHasQuarantinedRepository`
+   → `CodeWorkspaceQuarantined` (423 Locked — khớp sẵn có, không cần thêm code mới);
+   `ErrWorkspaceSetHasActiveWriteLease`/`ErrWorkspaceSetHasActiveJob` → `CodeConflict` (409, "writer refusal");
+   `ErrReleaseNotAuthorized` → `CodePolicyDenied` (403, GC-INV-26); `workspacereconcile.ErrWorkspaceNotReconcilable`
+   → `CodeConflict` (409). `ports.ErrWorkspaceQuarantined` (khác sentinel, từ `ReleaseRepositoryWorkspace` — 1
+   method cả 2 command của task này KHÔNG BAO GIỜ gọi) cố tình không có trong bảng — không map một lỗi
+   không thể xảy ra.
+7. **ValidAction cho release là heuristic CỐ Ý không đầy đủ, ghi rõ trong code comment tại sao.**
+   `releaseValidActions` chỉ tái dùng 2 điều kiện đã load sẵn trong chính response (quarantine, active lease)
+   cộng terminal-state check — không bao giờ tự query thêm `HasActiveJobForAggregateIDs` hay
+   `IsReleaseAuthorized` chỉ để tô điểm một gợi ý advisory, vì làm vậy nghĩa là một GET thuần đọc bắt đầu tự ý
+   chạm thêm bảng/authority ngoài — đúng "advisory, never authority" mà `ValidAction`'s own doc comment đã
+   cam kết: POST thật vẫn có thể trả `ErrWorkspaceSetHasActiveJob`/`ErrReleaseNotAuthorized` dù GET vừa gợi ý
+   action khả dụng, và đó KHÔNG phải bug. Ngược lại, `reconcileValidActions` là mirror CHÍNH XÁC (không phải
+   heuristic) vì `ErrWorkspaceNotReconcilable`'s check chỉ thuần dựa vào State, không có điều kiện phụ nào
+   khác.
+8. **Test "stale generation" cho reconcile dùng kịch bản THẬT (quarantine thật bump version 1→2, gửi lại
+   If-Match cũ "1"), còn release dùng version sai đơn giản.** Nghiên cứu #1 phát hiện: CẢ 2 command đều
+   không bao giờ tự bump version của chính aggregate chúng target — WorkspaceSet.Version chỉ có thể di
+   chuyển qua `TransitionWorkspaceSetState` (không có caller thật nào trong phạm vi task này để kích hoạt
+   hợp lý), còn RepositoryWorkspace.Version DI CHUYỂN THẬT qua quarantine (đã có sẵn trong test khác của
+   chính file này) — tận dụng lại đúng transition đó cho một kịch bản "stale" hoàn toàn thật thay vì chỉ gửi
+   một số phiên bản bịa ra, còn phía release chấp nhận bài test đơn giản hơn (version sai) vì không có
+   transition thật rẻ nào khác trong phạm vi task để tạo ra version thật đã di chuyển.
+
+### Thực hiện
+
+- `internal/app/workspacestate/queries.go` (mới): `ErrScopeMismatch`; `RepositoryWorkspaceState`,
+  `WorkspaceSetState`; `GetWorkspaceSetState(ctx, uow, GetWorkspaceSetStateRequest{ProjectID, FamilyID})`,
+  `GetRepositoryWorkspaceState(ctx, uow, GetRepositoryWorkspaceStateRequest{ProjectID, RepositoryWorkspaceID})`;
+  `loadRepositoryWorkspaceState` helper gọi `HasActiveWriteLease` cho từng row.
+- `internal/delivery/httpapi/workspaceroutes.go` (mới): `maxWorkspaceCommandBodyBytes`,
+  `RegisterWorkspaceRoutes(routes, uow, ids)` (đăng ký cả 4 route, tự dựng `work.NewEligibilityAuthority(uow)`
+  một lần), `newWorkspaceCommand` (mirror `cmd/aw/definition.go`'s `newDefinitionCommand`),
+  `writeWorkspaceCommandError`.
+- `internal/delivery/httpapi/workspacestate.go` (mới): DTO `workspaceSetStateResponse`/
+  `repositoryWorkspaceStateResponse` (wire shape riêng, không serialize thẳng type application — đúng V6-02A's
+  own convention), `releaseValidActions`/`reconcileValidActions`, 2 handler GET.
+- `internal/delivery/httpapi/workspacerelease.go` (mới): `requestWorkspaceSetReleaseHandler` — full flow
+  RequireIdempotencyKey → RequireIfMatch → VersionFromETag → CanonicalizeJSON → SemanticHash → LookupReceipt
+  → replay/conflict/dispatch → `workspacerelease.RequestWorkspaceSetRelease` → EncodeResult (etag="" — result
+  DTO không có field Version).
+- `internal/delivery/httpapi/workspacereconcile.go` (mới): `requestWorkspaceReconciliationHandler`, flow y
+  hệt, dispatch `workspacereconcile.RequestWorkspaceReconciliation`.
+- `internal/archtest/workspace_delivery_boundary_test.go` (mới): `TestDeliveryWorkspaceRoutesNeverReachWorkspaceIOOrExecutor`
+  — quét toàn bộ `internal/delivery/httpapi` (không chỉ file mới của task này, mirror đúng phạm vi
+  `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt`), cấm import `"os"`/`"os/exec"`/`internal/adapters/...`
+  VÀ cấm gọi `ExecuteWorkspaceReconciliation`/`ExecuteWorkspaceSetRelease`/`QuarantineRepositoryWorkspace`/
+  `ReleaseRepositoryWorkspace`/`RecreateRepositoryWorkspace`/`AcquireWriteLeases`.
+- `cmd/aw/serve.go` (sửa, đúng 1 khối nhỏ): thêm `httpapi.RegisterWorkspaceRoutes(routes, uow,
+  idsource.Random{})` ngay tại chỗ comment cũ đã tự mời, giữ nguyên toàn bộ phần còn lại của file.
+
+### Test
+
+- `internal/app/workspacestate/queries_test.go` (fake uow, mirror `mustSeedWorkspaceSet` từ
+  `workspacerelease/commands_test.go`): happy path 1 READY + 1 QUARANTINED workspace, unknown family
+  (`ErrPersistenceNotFound`), cross-project (`ErrScopeMismatch`), thiếu FamilyID/ProjectID, tương tự cho
+  repository-workspace-state (happy path, unknown ID, cross-project, thiếu field). 9 test.
+- `internal/app/workspacestate/queries_sqlite_test.go` (real sqlite, đúng lý do `fake.HasActiveWriteLease`
+  luôn false): `TestGetRepositoryWorkspaceState_ActiveWriteLease_ReflectsTrueAgainstRealSqlite` —
+  `SeedFixtureWriteLease` (đi qua EnqueueJob/ClaimJob/AcquireWriteLeases thật) rồi xác nhận cả query đơn lẻ
+  lẫn query theo cả set đều thấy `HasActiveWriteLease=true`; `TestGetRepositoryWorkspaceState_RealQuarantine_ReflectsQuarantinedState`
+  — `store.QuarantineRepositoryWorkspace` thật, xác nhận `State=QUARANTINED`, `Version=2`.
+- `internal/delivery/httpapi/workspace_test.go` (real sqlite + real `httpapi.NewServer` qua goroutine +
+  real `http.Client`, KHÔNG gọi handler trực tiếp — vì `r.PathValue` chỉ được điền khi request đi qua thật
+  một `http.ServeMux` đã đăng ký đúng pattern `{param}`, gọi hàm trực tiếp sẽ luôn rỗng): 17 test —
+  - GET: happy path (ETag đúng version, advisory action đúng cho cả set lẫn từng repo), unknown family 404,
+    cross-project 404 BYTE-FOR-BYTE giống unknown (đọc cả `error.code` lẫn `error.message`), repository-state
+    happy path phản ánh lease thật.
+  - POST release: thiếu Idempotency-Key/If-Match/If-Match sai định dạng → 400; không có ReleaseSet nào → 403;
+    quarantine thật (đã seal ReleaseSet trước, cô lập đúng lý do quarantine chứ không phải authorization) →
+    423; write lease thật → 409; version sai → 412; happy path (ReleaseSet thật sealed qua
+    `work.CreateReleaseSet`/`SealReleaseSet`) → 200 + xác nhận bằng `HasActiveJobForAggregateIDs` thật là có
+    job; replay cùng key → `releaseJobId` giống hệt lần đầu (dùng `idsource.Random{}` — nếu lỡ mint job thứ 2
+    ID gần như chắc chắn khác, mirror đúng kỹ thuật `TestCreateProject_SameKeySameBody_...` của
+    receiptreplay_test.go); cùng key khác If-Match → 409 (ExpectedVersion là 1 phần SemanticHash, đổi nó
+    đúng là "different body").
+  - POST reconcile: happy path + job thật; replay giống hệt; RELEASED thật (qua
+    `store.ReleaseRepositoryWorkspace`) → 409; stale THẬT (quarantine bump version 1→2, gửi lại If-Match cũ)
+    → 412, rồi gửi đúng If-Match hiện tại (2) → 200 (chứng minh 412 ở trên đúng là do stale, không phải do
+    reconcile tự chặn QUARANTINED); cross-project → 404.
+  - `TestRegisterWorkspaceRoutes_RegistersFourProjectScopedRoutes`: đúng 4 route, mọi `ScopeKind =
+    ScopeProject`, đúng 4 OperationID mong đợi.
+- `internal/archtest/workspace_delivery_boundary_test.go`: xác nhận test THẬT sự bắt được vi phạm — tạm thêm
+  1 file `.go` giả trong `internal/delivery/httpapi` import `"os/exec"`, chạy lại test thấy FAIL đúng dòng vi
+  phạm, xoá file, chạy lại thấy PASS — không tin một test archtest mới viết chỉ vì nó pass, phải tự chứng
+  minh nó cũng fail đúng lúc cần fail.
+- `go build ./...`, `go vet ./...` sạch. `go test ./internal/app/workspacestate/... ./internal/delivery/httpapi/... ./internal/archtest/...`
+  pass 100% (26 test mới cộng archtest). `go test ./cmd/...` pass (xác nhận wiring `serve.go` không vỡ gì).
+- `go test ./...` toàn module: phát hiện 4 test fail trong lần chạy full-suite đầu tiên
+  (`TestProjectWorkspaceGate` ở `internal/integration`; `TestV5AcceptCheckerWriteAttempt_...`,
+  `TestV5AcceptFalseCompletionOracle`, `TestV5AcceptFullComposition_...` ở `internal/integration/v5accept`),
+  tất cả cùng một triệu chứng "did not reach state ... within the deadline". Không tin ngay đây là flake quen
+  mặt — điều tra thật theo đúng kỷ luật đã ghi trong memory của phiên này: (1) xác nhận bằng code-path rằng
+  không file nào của task này (`workspacestate`, `httpapi/workspace*.go`, `serve.go`'s 6 dòng thêm) có thể
+  chạm được `internal/app/runtime`/`internal/app/workerpool`/gate evaluation — không có import nào nối 2 phía;
+  (2) `TestProjectWorkspaceGate` chạy lại cô lập (không contention) pass sạch 5.32s — đúng
+  `baocaov5checklist.md:2384` đã tự ghi nhận đây LÀ flake timing đã biết từ trước; (3) chạy lại riêng cả gói
+  `v5accept` (không cùng lúc với gói khác) — LẦN NÀY `TestV5AcceptCheckerWriteAttempt_...`/
+  `TestV5AcceptFalseCompletionOracle` pass sạch (xác nhận đúng là contention từ full-suite trước), nhưng
+  `TestV5AcceptFullComposition_...` fail LẦN 2 liên tiếp, luôn kẹt đúng 1 điểm (`gate_b` MACHINE_GATE vừa
+  scheduled, không tiến thêm) — không dừng lại ở "chắc lại do máy chậm", tra `baocaov5checklist.md:6032` xác
+  nhận test này ban đầu ổn định thật (14-18s/lần khi mới xây, không thuộc nhóm flake đã biết như
+  `TestSupervisorNormalExit_...`); (4) chạy lại LẦN 3, cô lập tuyệt đối (chỉ đúng 1 test) — PASS, 18.52s,
+  khớp chính xác baseline lịch sử "14-18s/lần" — xác nhận đây là timing-sensitivity thật dưới tải máy (phiên
+  này đã chạy liên tục nhiều test suite sqlite/git thật nặng ngay trước đó: `gitworktree` 115s,
+  `releasesetcommit` 131s, sqlite adapter 157s), không phải regression từ thay đổi của task này — không có
+  cách nào 4 file mới + 6 dòng thêm vào `serve.go` (chỉ gọi `RegisterWorkspaceRoutes`, không đụng bất kỳ
+  package runtime/scheduler nào) gây ảnh hưởng tới một pipeline AGENT→COMMAND→MACHINE_GATE→AGENT hoàn toàn
+  độc lập. Không rerun mù thêm — dừng lại ở 3 lần vì bằng chứng đã đủ nhất quán (2 fail đều kẹt cùng 1 điểm
+  giống timing chờ worker, 1 pass đúng baseline cũ), ghi lại đầy đủ ở đây cho phiên giám sát tự quyết định có
+  cần điều tra sâu hơn hay không.
+
+### Verify
+
+- "quarantine/writer refusal": `TestRequestWorkspaceSetRelease_QuarantinedRepository_Returns423` (423,
+  `store.QuarantineRepositoryWorkspace` thật) + `TestRequestWorkspaceSetRelease_ActiveWriteLease_Returns409`
+  (409, `SeedFixtureWriteLease` thật qua AcquireWriteLeases thật) — cả 2 đều seal ReleaseSet trước để cô lập
+  đúng lý do đang test, không lẫn với 403 authorization.
+- "replay/stale generation": `TestRequestWorkspaceSetRelease_Replay_ReturnsIdenticalJobID`/
+  `TestRequestWorkspaceReconciliation_Replay_ReturnsIdenticalJobID` (replay, ID giống hệt qua
+  `idsource.Random{}`) + `TestRequestWorkspaceSetRelease_StaleIfMatch_Returns412`/
+  `TestRequestWorkspaceReconciliation_StaleIfMatch_Returns412` (412 — bản reconcile dùng version đã di
+  chuyển THẬT qua quarantine, xem Quyết định #8).
+- "scope": `TestGetWorkspaceSetState_CrossProject_ReturnsIdenticalResourceHidden`/
+  `TestRequestWorkspaceReconciliation_CrossProject_ReturnsResourceHidden` (404 ẩn danh, byte-for-byte giống
+  unknown-resource) + `TestRegisterWorkspaceRoutes_RegistersFourProjectScopedRoutes` (mọi route đúng
+  `ScopeProject`, không route nào lỡ mang `ScopeInstallation`).
+- "architecture import/dispatch tests": `TestDeliveryWorkspaceRoutesNeverReachWorkspaceIOOrExecutor` — tự
+  chứng minh có bắt lỗi thật (thêm rồi xoá file vi phạm, xem Test phía trên), không chỉ đọc code bằng mắt.
+- "Hoàn thành khi": "recovery request possible without Git/DB surgery" — `TestRequestWorkspaceReconciliation_HappyPath_Returns200AndEnqueuesRealJob`
+  chứng minh một request HTTP thuần (không SQL, không thao tác Git tay) đủ để enqueue một
+  `WORKSPACE_RECONCILIATION` job thật, xác nhận bằng `HasActiveJobForAggregateIDs` thật, không phải suy diễn
+  từ response 200 một mình; "delivery has no executor authority" — cả `TestDeliveryWorkspaceRoutesNeverReachWorkspaceIOOrExecutor`
+  (structural) lẫn việc `internal/delivery/httpapi` không hề import `internal/adapters/gitworktree`/bất kỳ
+  adapter Git nào (xác nhận bằng chính archtest đó) đều đồng thuận: không route nào trong 4 route của task
+  này có khả năng tự thực thi Git/filesystem, kể cả nếu cố tình.
+
+### Kết quả
+
+Package `internal/app/workspacestate` mới hoàn toàn (2 file production, 2 file test, 15 test). Package
+`internal/delivery/httpapi` có thêm 4 file production (`workspaceroutes.go`, `workspacestate.go`,
+`workspacerelease.go`, `workspacereconcile.go`) + 1 file test (17 test). 1 architecture test mới trong
+`internal/archtest`. `cmd/aw/serve.go` thêm đúng 1 khối 4 dòng gọi `RegisterWorkspaceRoutes`. Tổng 32 test
+mới, tất cả pass. `go build/vet ./...` sạch trên toàn bộ module. 4 route HTTP thật lần đầu tiên tồn tại
+trong repo ngoài health/bootstrap — `GET/POST /projects/{projectId}/workspace-sets/{familyId}[/release]`,
+`GET/POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}[/reconcile]` — mọi mutation đi
+qua đúng flow CommandEnvelope/receipt-replay V6-02 đã định nghĩa, không route nào tự ghi receipt (đã có sẵn
+`TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt` của V6-02 phủ toàn bộ package, kể cả 4 file mới). V6-10D
+(map 3 query V6-10C sang HTTP GET) giờ có đủ dependency `{V6-00, V6-01A, V6-02A, V6-10B}` để bắt đầu ngay
+khi PR này merge.
+
+**Ghi chú cho phiên giám sát:** `internal/integration/v5accept`'s `TestV5AcceptFullComposition_RealFourRoleGraphReachesSucceededAndSurvivesRestart`
+fail 2/3 lần chạy cô lập trên máy phiên này (lần 3 pass đúng baseline lịch sử 18.52s) — kết luận sơ bộ là
+timing-sensitivity dưới tải máy cục bộ (xem Test phía trên), KHÔNG liên quan cấu trúc tới diff của PR này
+(0 file chồng lấp với runtime/workerpool/gate), nhưng chưa re-verify trên CI thật (runner sạch, không có
+tải tích luỹ từ hàng chục phút chạy test liên tục trước đó) — nếu CI của PR này cũng thấy đúng test này fail,
+đối chiếu lại với baseline "14-18s/lần" của chính test đó (`baocaov5checklist.md:6032`) trước khi kết luận là
+flake quen mặt hay regression thật.
+
 ## V6-03A — Project, repository và component HTTP endpoints
 
 ### Bối cảnh
