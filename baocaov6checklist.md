@@ -1046,7 +1046,9 @@ text) dùng golden byte-for-byte vì đó chính là điều cần đông cứng
 
 ### Kết quả
 
-PR #33 (branch `feat/v6-02a-shared-http-contract`), merge commit sẽ điền sau khi CI xanh và merge xong.
+PR #33 (branch `feat/v6-02a-shared-http-contract`), merged `36c5287`. CI 6/6 xanh sau khi tự phát hiện và sửa
+1 bug thật: golden fixture mới `sse_message_v1.txt` thiếu rule `.gitattributes` LF, gây fail trên
+windows-latest do CRLF — cùng nguyên nhân rule `*.json` đã có sẵn (tiền lệ V1-11), thêm `*.txt text eol=lf`.
 
 ## V6-15A — Composition root canonical `aw`
 
@@ -1819,7 +1821,19 @@ message gốc (`message + " [Key: value]"`).
 
 ### Kết quả
 
-(điền sau khi CI 6/6 xanh và merge xong)
+PR #38 (`feat/v6-10e-releaseset-local-commit-authority`), merged `0511f6a`. Subagent's own worktree/session
+kết thúc giữa chừng không kịp ship (implementation+test đã xong, chưa commit) — supervising session tìm thấy
+qua `git status` trong worktree, tự review kỹ phần logic an toàn nhất (dual-lease fencing, marker
+crash-recovery) trước khi ship, rồi phát hiện 2 bug thật qua CI thay vì merge mù: (1) migration `0036` trùng
+với V6-10G (đã merge trước) — git không thấy conflict (2 filename khác nhau) nhưng migration loader thật
+throw lỗi trùng version lúc runtime — đổi sang `0037`, cập nhật 2 test hardcode migration count (35→36); (2)
+3 test crash-recovery của chính task này dùng TTL 60ms quá chật cho CI thật (Windows, sqlite thuần Go không
+cgo, I/O đĩa thật) — fail với lỗi y hệt một flake đã biết khác (`TestRecoveryReaperHandler_...`) khiến suýt bị
+gộp nhầm là "cùng 1 flake", nhưng so TTL của test kia (30 giây, cùng cơ chế lease) mới lộ ra 60ms là hiệu
+chỉnh sai, không phải hạ tầng CI không ổn định — sửa TTL 60ms→600ms, sleep→1500ms, xác nhận 10/10 lần chạy
+local sạch. Cũng dính đúng flake `TestSupervisorNormalExit_...` đã biết 3 lần liên tiếp trên PR này (mỗi lần
+đều re-verify diff-scope + local repro trước khi rerun, không rerun mù) — lần rerun thứ 3 xanh. Flag thêm
+task nền `task_8d129e53` để sửa tận gốc flake đó sau, thay vì tiếp tục rerun vô thời hạn.
 
 ## V6-10I — Adapter-build command envelope và receipt hardening (PR #36, merged `4e44af1`)
 
@@ -2066,3 +2080,127 @@ không còn `--registered-by`. 12 test mới trong `commands_test.go` (fake) + 4
 registry HTTP endpoints) giờ có đủ điều kiện bắt đầu ngay khi các dependency còn lại (V6-00, V6-01A, V6-02,
 V6-02A) sẵn sàng — "provider upgrade flow usable without bypassing command contract" không còn là mục tiêu
 hoãn lại.
+
+## V6-02 — HTTP CommandEnvelope, idempotency và optimistic concurrency
+
+### Bối cảnh
+
+Sau khi cả 7 task nhóm P1 (V6-01A/V6-02A/V6-15A/V6-03/V6-10E/V6-10G/V6-10I) merge xong, chuẩn bị đọc lại
+dependency graph để xác định P2 — nhưng đọc kỹ lại chính §2 của design doc mới phát hiện: dòng "P2 —
+application/HTTP slices sau V6-00 + V6-01A + V6-02 + V6-02A" đòi hỏi **V6-02** (không phải chỉ V6-02A), và
+P1's own text có mũi tên riêng `V6-01A -> V6-02` (tách biệt khỏi nhóm ngoặc `{V6-01A, V6-02A, V6-15A}`) —
+nghĩa là V6-02 chính nó là một task P1 thứ 8, chưa từng được triển khai (chỉ V6-02A, phần DTO/schema tách
+riêng từ nó, đã xong), và nó khoá toàn bộ 11 task của P2 lại cho tới khi xong. Đây là một correction thật tự
+phát hiện khi double-check lại graph trước khi báo cáo "P2 sẵn sàng" cho user — nếu không kiểm tra kỹ sẽ báo
+sai. Quyết định tự làm trực tiếp (không giao subagent) vì V6-02 định nghĩa contract idempotency-key/semantic-
+hash/receipt-replay mà MỌI HTTP mutation tương lai phải dùng chung — mức độ quan trọng ngang V6-01/V6-01A.
+
+### Nghiên cứu
+
+Đọc lại nguyên văn spec từ `docs/design/08-v6-api-projections.md`: "Idempotency-Key bắt buộc; update bắt
+buộc strong If-Match. Semantic hash gồm command type, scope/target, normalized payload, exact content digest
+và expected version; loại JSON formatting, request/correlation ID, session token và transport metadata. Flow:
+authenticate/authorize → canonical decode → receipt lookup → replay/conflict → nếu absent mới kiểm current
+version/external prework/dispatch; command transaction recheck receipt. Same-key committed replay thắng
+ETag/state drift nhưng vẫn phải qua current authorization." — "Không làm: middleware không ghi/cache receipt
+hoặc chạy business validation."
+
+Tìm tiền lệ thật để mirror, không tự nghĩ mẫu mới:
+- `cmd/aw/definition.go`'s own `requestHash(parts ...string) string` — SHA-256, NUL-separated parts,
+  `"sha256:"` prefix — chính doc comment của nó tự khai "no production call site... computed a real
+  RequestHash before this file", xác nhận đây là convention gốc cần mirror cho phía HTTP.
+- `internal/app/ports/unitofwork.go`'s `ReceiptsRepository{Load, Record}` — `Load` (read-only, qua
+  `uow.WithReadOnly`) là chính xác cái middleware CẦN dùng cho fast-path replay check; `Record` là cái
+  middleware TUYỆT ĐỐI không được gọi (đúng "Không làm").
+- `internal/app/ports/command.go`'s `ports.Command{ExpectedVersion uint64, RequestHash string, ...}` và
+  `ports.Receipt{ResultJSON, ErrorCode}` — receipt lưu cả outcome LỖI (không chỉ thành công) để replay đúng
+  cả case lỗi, không chỉ case thành công.
+- `internal/app/catalog.CreateProject` (V6-03, vừa merge) — ví dụ THẬT gần nhất và sạch nhất của "command
+  receipt idempotency check → real work → domain event → receipt record" trong một `WithSerializedWrite` —
+  dùng trực tiếp làm target thật cho toàn bộ test tích hợp của task này, không cần dựng route/endpoint giả
+  (V6-03A mới là task xây route thật — V6-02 chỉ xây primitive dùng chung).
+- `internal/archtest/boundary_test.go`'s
+  `TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess` — mẫu AST-scan "parse source thật, fail
+  nếu gọi hàm cấm" — mirror y hệt cho architecture test riêng của task này.
+
+### Quyết định
+
+Xây V6-02 thành các primitive độc lập, tái sử dụng được (đúng phong cách V6-02A đã thiết lập — nhiều file nhỏ
+tập trung, không phải một dispatcher khổng lồ) thay vì một hàm "xử lý mọi thứ" duy nhất — vì CHƯA có business
+endpoint thật nào tồn tại để ép khuôn theo (V6-03A trở đi mới xây route), ép một shape cụ thể quá sớm sẽ phải
+sửa lại khi endpoint đầu tiên thật sự cần. Mỗi future endpoint task tự gọi đúng những primitive cần, theo
+đúng thứ tự flow spec đã mô tả.
+
+`SemanticHash` nhận thêm tham số `extraContentDigest` (rỗng cho command JSON thuần) — vì spec liệt kê
+"normalized payload" và "exact content digest" là 2 ingredient TÁCH BIỆT, dành cho tương lai một số command
+(vd V6-07A upload attachment) cần hash cả nội dung nhị phân không thể "normalize" như JSON — quyết định
+không tự đoán shape của attachment ngay bây giờ, chỉ để chỗ trống tham số.
+
+Chiều ngược "middleware không ghi/cache receipt" được biến thành một architecture test thật (không chỉ ghi
+trong comment): AST-scan toàn bộ `internal/delivery/httpapi` cấm gọi `.Record(` hoặc `.WithSerializedWrite(`
+— nếu ai đó (kể cả chính future endpoint task) lỡ thêm logic ghi receipt vào package này, CI fail ngay.
+
+"HTTP↔aw same-key result" (Verify bullet khó nhất để chứng minh vì `aw`'s own `requestHash` là hàm unexported
+trong package `main`) được chứng minh bằng cách dispatch `catalog.CreateProject` 2 lần với 2 `ports.Command`
+envelope có field giống hệt (chỉ khác `CorrelationID` nội bộ, mô phỏng "một request logic y hệt gửi qua 2
+transport khác nhau") — chứng minh đúng bản chất: `ports.Command`+receipt là ranh giới DUY NHẤT mọi transport
+phải đi qua, bản thân command function không hề biết ai gọi nó.
+
+### Thực hiện
+
+- `internal/delivery/httpapi/commandenvelope.go`: `IdempotencyKeyHeader`/`IfMatchHeader`/`ETagHeader` hằng
+  số; `RequireIdempotencyKey`/`RequireIfMatch` (400-shaped typed error nếu thiếu); `ETagFromVersion`/
+  `VersionFromETag` (strong ETag `"N"`, round-trip); `CanonicalizeJSON` (tái dùng `DecodeJSON` từ V6-01 để
+  strict-decode, rồi re-marshal lấy byte canonical — key order độc lập, whitespace độc lập); `SemanticHash`
+  (command type + `scope.Key()` + normalized payload + extraContentDigest + expected version, NUL-separated,
+  sha256, mirror đúng `requestHash` của `cmd/aw`).
+- `internal/delivery/httpapi/receiptreplay.go`: `LookupReceipt` (read-only qua `uow.WithReadOnly` +
+  `tx.Receipts().Load` — helper duy nhất package này được phép chạm receipt); `ErrReceiptHashConflict` +
+  `ReconcileReceipt` (so hash thuần, không I/O); `WriteReceiptReplay` (ghi lại verbatim outcome đã lưu — kể
+  cả case lỗi, map qua `StatusForAppErrorCode` của V6-02A); `EncodeResult` (JSON + ETag header cho response
+  mới, không phải replay).
+- `internal/archtest/command_envelope_test.go`: `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt` — AST-scan
+  thật, cấm `.Record(`/`.WithSerializedWrite(` bất kỳ đâu trong `internal/delivery/httpapi`.
+
+### Test
+
+- `commandenvelope_test.go`: **reordered JSON same hash** (`TestSemanticHash_ReorderedJSONProducesSameHash`
+  — 2 request body khác thứ tự key, hash giống hệt) + hash khác nhau cho command type/scope/expected-
+  version/extra-digest khác nhau (mỗi trường hợp một test riêng, không gộp); `TestCanonicalizeJSON_RejectsUnknownField`;
+  ETag round-trip + malformed rejection.
+- `receiptreplay_test.go` (real sqlite, real `catalog.CreateProject`, không fake DB nào):
+  - **same-key replay**: `TestCreateProject_SameKeySameBody_ReplaysExactSameProjectID` — dùng
+    `idsource.NewSequential` (không phải Random) để nếu code lỡ sinh ID mới ở nhánh replay sẽ lộ ra ngay
+    ("project-2" thay vì "project-1"), không phải một ID ngẫu nhiên trông có vẻ hợp lý.
+  - **same-key replay sau restart và crash-after-commit**: `TestCreateProject_SameKeyReplay_AfterSimulatedRestart`
+    — đóng thật file sqlite, mở lại (restart thật, không phải context mới trên cùng connection), xác nhận
+    receipt còn sống + replay đúng ProjectID gốc + `ListProjects` xác nhận đúng 1 row (không tạo trùng).
+  - **different body conflict trước I/O**: `TestReconcileReceipt_...` (thuần, không I/O) +
+    `TestCreateProject_SameKeyDifferentBody_ConflictsBeforeSecondInsert` (thật, qua command thật).
+  - **stale key mới**: `TestCreateProject_StaleKey_NewIdempotencyKeyAlwaysProceedsAsNew` — key mới không bao
+    giờ tình cờ trùng với receipt của key khác.
+  - **concurrent keys**: `TestCreateProject_ConcurrentKeys_BothSucceedIndependently` — 2 goroutine thật, 2
+    key khác nhau, cả 2 phải thành công độc lập, không cross-talk.
+  - **HTTP↔aw same-key result**: `TestHTTPAndCLI_SameKeyResult` — mô tả đầy đủ trong doc comment của chính
+    nó tại sao đây là bằng chứng đúng bản chất dù không gọi được hàm `requestHash` unexported của `aw`.
+- `go build ./...`, `go vet ./...` sạch. `go test ./...` toàn bộ module (79 package) pass 100%, chạy trên
+  master sạch không có subagent nào khác chạy đồng thời (loại trừ hẳn khả năng resource-contention false
+  alarm đã gặp trước đó trong phiên này).
+
+### Verify
+
+- `go test ./internal/delivery/httpapi/... ./internal/app/...` xanh — đúng lệnh Verify line của chính task.
+- "architecture test delivery không ghi receipt/repository transaction": `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt`
+  chứng minh thật bằng AST, không chỉ đọc code bằng mắt.
+- "Hoàn thành khi": "retry không duplicate aggregate/job/external operation và không có transport receipt
+  authority" — đúng: mọi test replay xác nhận `ListProjects` luôn đúng 1 row sau N lần retry, và receipt
+  authority duy nhất vẫn là application command's own transaction, package `httpapi` không hề ghi gì.
+
+### Kết quả
+
+Package `internal/delivery/httpapi` có thêm 2 file production (`commandenvelope.go`, `receiptreplay.go`) +
+2 file test (20 test mới) + 1 architecture test mới trong `internal/archtest`. Phát hiện và sửa một sai lệch
+thật trong chính bàn giao trước đó của phiên này: P2 KHÔNG unblock ngay sau P1 như tưởng — V6-02 là điều kiện
+còn thiếu, giờ đã đóng. `{V6-02, V6-02A, V6-15A} -> V6-15B` giờ đủ cả 3 điều kiện; toàn bộ 11 task P2
+(`V6-03A, V6-04, V6-05, V6-06, V6-06A, V6-06D, V6-07, V6-07B, V6-10B, V6-10H, V6-10J`) chính thức unblock từ
+đây.
