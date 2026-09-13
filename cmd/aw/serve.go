@@ -143,9 +143,14 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
 	})
-	// No further route fragments exist yet in this task; a later endpoint
-	// task's own composition-root wiring adds its own routes.Register call
-	// here without needing to touch this file's shared setup.
+	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
+	// and release/reconcile request routes. Same uow/idsource.Random{} every
+	// other route registration in this process already uses — never a
+	// fresh source per request.
+	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{})
+	// A later endpoint task's own composition-root wiring adds its own
+	// routes.Register call here without needing to touch this file's shared
+	// setup.
 	routesFinalized = true
 
 	server, err := httpapi.NewServer(httpapi.Config{
