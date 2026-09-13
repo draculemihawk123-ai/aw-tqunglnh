@@ -72,6 +72,9 @@ func (t *txAdapter) AgentEvents() ports.AgentEventsRepository { return agentEven
 func (t *txAdapter) Checkpoints() ports.CheckpointsRepository {
 	return checkpointsRepository{tx: t.tx}
 }
+func (t *txAdapter) SafeSettings() ports.SafeSettingsRepository {
+	return safeSettingsRepository{tx: t.tx}
+}
 
 // Each placeholder repository already carries the shared *sql.Tx so the
 // task that populates it with real methods (see ports.Tx's doc comment)

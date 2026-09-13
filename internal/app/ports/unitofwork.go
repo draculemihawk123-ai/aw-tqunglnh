@@ -108,6 +108,14 @@ type Tx interface {
 	// — agentevents.Sink's own mid-run checkpoints deliberately keep using
 	// the pre-existing legacy autocommit CheckpointStore instead, unchanged.
 	Checkpoints() CheckpointsRepository
+	// SafeSettings is populated now (V6-10G,
+	// docs/design/08-v6-api-projections.md): the same "gets a real
+	// interface from the start" treatment AdapterBuilds/Readiness/Wait/
+	// Approvals/Artifacts/Messages/ContextSnapshots/AgentEvents/Checkpoints
+	// above already established for a concern this task owns end to end —
+	// the versioned, CAS-updated safe-settings singleton row (see
+	// SafeSettingsRepository's own doc comment, internal/app/ports/safesettings.go).
+	SafeSettings() SafeSettingsRepository
 }
 
 // CatalogRepository is populated now (V3-01,

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 )
 
 func serveTestDB(t *testing.T) string {
@@ -187,6 +189,77 @@ func TestServe_ReadyFailsIfArtifactRootRemoved(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("checks = %+v, want artifact_root named as a failing check", body.Checks)
+	}
+}
+
+// TestServe_ReadyFailsIfSafeSettingsCorrupt is V6-10G's own "corrupt
+// persisted settings fail readiness ... typed" Verify scenario, exercised
+// against the real composition root: the safe_settings singleton row is
+// corrupted (via sqlite.CorruptSafeSettingsDesiredJSONForTest — no real
+// production code path ever writes malformed JSON there) BEFORE serve
+// starts, so /health/ready must report 503 naming "safe_settings" as a
+// failing check from the very first request, not merely after some later
+// mutation.
+func TestServe_ReadyFailsIfSafeSettingsCorrupt(t *testing.T) {
+	dbPath := serveTestDB(t)
+	artifactRoot := t.TempDir()
+
+	// Open once to create/migrate the database, corrupt the seeded
+	// singleton row, then close — serve's own sqlite.Open reopens the
+	// already-migrated file below.
+	setupStore, err := sqlite.Open(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("Open (setup): %v", err)
+	}
+	if err := sqlite.CorruptSafeSettingsDesiredJSONForTest(context.Background(), setupStore); err != nil {
+		t.Fatalf("CorruptSafeSettingsDesiredJSONForTest: %v", err)
+	}
+	if err := setupStore.Close(); err != nil {
+		t.Fatalf("Close (setup): %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var stdout syncBuffer
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- serve(ctx, []string{
+			"--db", dbPath,
+			"--artifact-root", artifactRoot,
+			"--host", "127.0.0.1",
+			"--port", "0",
+		}, &stdout)
+	}()
+	defer func() {
+		cancel()
+		<-serveDone
+	}()
+
+	addr := waitForServeAddress(t, &stdout)
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	resp, err := client.Get("http://" + addr + "/health/ready")
+	if err != nil {
+		t.Fatalf("GET /health/ready: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status with corrupt safe_settings row = %d, want 503", resp.StatusCode)
+	}
+	var body struct {
+		Checks []struct{ Check string } `json:"checks"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	found := false
+	for _, c := range body.Checks {
+		if c.Check == "safe_settings" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("checks = %+v, want safe_settings named as a failing check", body.Checks)
 	}
 }
 
