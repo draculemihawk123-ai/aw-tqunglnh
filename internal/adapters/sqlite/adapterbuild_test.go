@@ -5,8 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/adapterbuild"
+	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	domain "github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
 )
 
@@ -43,6 +45,20 @@ func adapterBuildProbeRequest(path string) adapterbuild.ProbeRequest {
 	}
 }
 
+// adapterBuildTestCommand builds a minimal, valid installation-scoped
+// ports.Command envelope for this file's Probe/Register call sites —
+// mirroring internal/app/adapterbuild's own commands_test.go testCommand
+// helper (this file is a different package, sqlite, so it needs its own
+// copy rather than importing a _test.go symbol across packages).
+func adapterBuildTestCommand(commandType, idempotencyKey, actor string) ports.Command {
+	id := commandType + "-" + idempotencyKey
+	return ports.Command{
+		ID: id, IdempotencyKey: idempotencyKey, Actor: actor,
+		CorrelationID: id, Scope: ports.InstallationScope(), RequestedAt: time.Now().UTC(),
+		Type: commandType, RequestHash: "hash-" + idempotencyKey,
+	}
+}
+
 // TestAdapterBuild_ProbeRegisterRoundTrip_RealSQLite exercises the full
 // Probe->Register flow against the real sqlite adapter (not the fake) —
 // the app-layer test suite (internal/app/adapterbuild) already covers
@@ -55,12 +71,12 @@ func TestAdapterBuild_ProbeRegisterRoundTrip_RealSQLite(t *testing.T) {
 	uow := NewUnitOfWork(store)
 	path := writeAdapterBuildExecutable(t, "binary-content-v1")
 
-	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterBuildProbeRequest(path))
+	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterBuildTestCommand("ProbeAdapterBuild", "probe-1", "operator-1"), adapterBuildProbeRequest(path))
 	if err != nil {
 		t.Fatalf("ProbeAdapterBuild: %v", err)
 	}
-	result, err := adapterbuild.RegisterAdapterBuild(ctx, uow, adapterbuild.RegisterRequest{
-		Token: token, CapabilityManifest: adapterBuildManifest(), RegisteredBy: "operator-1",
+	result, err := adapterbuild.RegisterAdapterBuild(ctx, uow, adapterBuildTestCommand("RegisterAdapterBuild", "register-1", "operator-1"), adapterbuild.RegisterRequest{
+		Token: token, CapabilityManifest: adapterBuildManifest(),
 	})
 	if err != nil {
 		t.Fatalf("RegisterAdapterBuild: %v", err)
@@ -96,7 +112,7 @@ func TestAdapterBuild_SigningKeySurvivesRestart(t *testing.T) {
 	uow := NewUnitOfWork(store)
 	path := writeAdapterBuildExecutable(t, "binary-content-v1")
 
-	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterBuildProbeRequest(path))
+	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterBuildTestCommand("ProbeAdapterBuild", "probe-1", "operator-1"), adapterBuildProbeRequest(path))
 	if err != nil {
 		t.Fatalf("ProbeAdapterBuild: %v", err)
 	}
@@ -111,8 +127,8 @@ func TestAdapterBuild_SigningKeySurvivesRestart(t *testing.T) {
 	t.Cleanup(func() { reopened.Close() })
 	reopenedUow := NewUnitOfWork(reopened)
 
-	result, err := adapterbuild.RegisterAdapterBuild(ctx, reopenedUow, adapterbuild.RegisterRequest{
-		Token: token, CapabilityManifest: adapterBuildManifest(), RegisteredBy: "operator-1",
+	result, err := adapterbuild.RegisterAdapterBuild(ctx, reopenedUow, adapterBuildTestCommand("RegisterAdapterBuild", "register-1", "operator-1"), adapterbuild.RegisterRequest{
+		Token: token, CapabilityManifest: adapterBuildManifest(),
 	})
 	if err != nil {
 		t.Fatalf("RegisterAdapterBuild after restart with a token signed before restart: %v", err)
@@ -164,12 +180,12 @@ func TestAdapterBuild_ListVisibleAcrossAnyCaller_NoProjectFiltering(t *testing.T
 	uow := NewUnitOfWork(store)
 	path := writeAdapterBuildExecutable(t, "binary-content-v1")
 
-	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterBuildProbeRequest(path))
+	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterBuildTestCommand("ProbeAdapterBuild", "probe-1", "operator-1"), adapterBuildProbeRequest(path))
 	if err != nil {
 		t.Fatalf("ProbeAdapterBuild: %v", err)
 	}
-	if _, err := adapterbuild.RegisterAdapterBuild(ctx, uow, adapterbuild.RegisterRequest{
-		Token: token, CapabilityManifest: adapterBuildManifest(), RegisteredBy: "operator-1",
+	if _, err := adapterbuild.RegisterAdapterBuild(ctx, uow, adapterBuildTestCommand("RegisterAdapterBuild", "register-1", "operator-1"), adapterbuild.RegisterRequest{
+		Token: token, CapabilityManifest: adapterBuildManifest(),
 	}); err != nil {
 		t.Fatalf("RegisterAdapterBuild: %v", err)
 	}
@@ -222,12 +238,12 @@ func TestAdapterBuild_RegisteringNewBuildNeverRepinsExistingWorkflowVersion(t *t
 
 	uow := NewUnitOfWork(store)
 	path := writeAdapterBuildExecutable(t, "binary-content-v1")
-	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterBuildProbeRequest(path))
+	token, err := adapterbuild.ProbeAdapterBuild(ctx, uow, adapterBuildTestCommand("ProbeAdapterBuild", "probe-1", "operator-1"), adapterBuildProbeRequest(path))
 	if err != nil {
 		t.Fatalf("ProbeAdapterBuild: %v", err)
 	}
-	if _, err := adapterbuild.RegisterAdapterBuild(ctx, uow, adapterbuild.RegisterRequest{
-		Token: token, CapabilityManifest: adapterBuildManifest(), RegisteredBy: "operator-1",
+	if _, err := adapterbuild.RegisterAdapterBuild(ctx, uow, adapterBuildTestCommand("RegisterAdapterBuild", "register-1", "operator-1"), adapterbuild.RegisterRequest{
+		Token: token, CapabilityManifest: adapterBuildManifest(),
 	}); err != nil {
 		t.Fatalf("RegisterAdapterBuild: %v", err)
 	}

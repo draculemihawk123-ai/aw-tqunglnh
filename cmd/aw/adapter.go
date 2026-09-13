@@ -63,6 +63,8 @@ func runAdapterProbe(arguments []string, stdout io.Writer) error {
 	providerKey := flags.String("provider", "", "provider key (claude|codex)")
 	executablePath := flags.String("executable", "", "path to the provider CLI executable to probe")
 	configIdentity := flags.String("config-identity", "default", "operator-assigned identity for this executable's configuration (permission mode, env profile, ...)")
+	actor := flags.String("actor", "operator", "operator identity issuing this probe command")
+	idempotencyKey := flags.String("idempotency-key", "", "idempotency key for this probe command (reuse the same value to safely retry/replay)")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
@@ -74,6 +76,9 @@ func runAdapterProbe(arguments []string, stdout io.Writer) error {
 	}
 	if strings.TrimSpace(*executablePath) == "" {
 		return usageError{errors.New("--executable is required")}
+	}
+	if strings.TrimSpace(*idempotencyKey) == "" {
+		return usageError{errors.New("--idempotency-key is required")}
 	}
 
 	executor, err := newAgentExecutor(*providerKey, *executablePath)
@@ -93,7 +98,10 @@ func runAdapterProbe(arguments []string, stdout io.Writer) error {
 	}
 	defer store.Close()
 
-	token, err := appadapterbuild.ProbeAdapterBuild(ctx, uow, appadapterbuild.ProbeRequest{
+	hash := requestHash("ProbeAdapterBuild", *providerKey, *executablePath, *configIdentity)
+	cmd := newDefinitionCommand("ProbeAdapterBuild", *idempotencyKey, *actor, ports.InstallationScope(), hash)
+
+	token, err := appadapterbuild.ProbeAdapterBuild(ctx, uow, cmd, appadapterbuild.ProbeRequest{
 		ProviderKey:        string(caps.Provider),
 		ExecutablePath:     *executablePath,
 		ProtocolVersion:    caps.ProtocolVersion,
@@ -103,7 +111,7 @@ func runAdapterProbe(arguments []string, stdout io.Writer) error {
 		ConfigIdentity:     *configIdentity,
 	})
 	if err != nil {
-		return err
+		return mapReceiptConflict(err)
 	}
 	return writeStableJSON(stdout, token)
 }
@@ -117,7 +125,8 @@ func runAdapterRegister(arguments []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("adapter register", flag.ContinueOnError)
 	dbPath := flags.String("db", "", "sqlite database path")
 	tokenPath := flags.String("token", "", "path to a candidate token JSON file printed by 'adapter probe', or '-' to read from stdin")
-	registeredBy := flags.String("registered-by", "", "operator identity confirming this registration")
+	actor := flags.String("actor", "operator", "operator identity confirming this registration (also recorded as RegisteredBy)")
+	idempotencyKey := flags.String("idempotency-key", "", "idempotency key for this register command (reuse the same value to safely retry/replay)")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
@@ -127,8 +136,8 @@ func runAdapterRegister(arguments []string, stdout io.Writer) error {
 	if strings.TrimSpace(*tokenPath) == "" {
 		return usageError{errors.New("--token is required")}
 	}
-	if strings.TrimSpace(*registeredBy) == "" {
-		return usageError{errors.New("--registered-by is required")}
+	if strings.TrimSpace(*idempotencyKey) == "" {
+		return usageError{errors.New("--idempotency-key is required")}
 	}
 
 	token, err := readCandidateToken(*tokenPath)
@@ -156,13 +165,15 @@ func runAdapterRegister(arguments []string, stdout io.Writer) error {
 	}
 	defer store.Close()
 
-	result, err := appadapterbuild.RegisterAdapterBuild(ctx, uow, appadapterbuild.RegisterRequest{
+	hash := requestHash("RegisterAdapterBuild", token.Tuple.ProviderKey, token.Tuple.ExecutablePath, token.Nonce)
+	cmd := newDefinitionCommand("RegisterAdapterBuild", *idempotencyKey, *actor, ports.InstallationScope(), hash)
+
+	result, err := appadapterbuild.RegisterAdapterBuild(ctx, uow, cmd, appadapterbuild.RegisterRequest{
 		Token:              token,
 		CapabilityManifest: capabilityManifestFromAgentCapabilities(caps),
-		RegisteredBy:       *registeredBy,
 	})
 	if err != nil {
-		return err
+		return mapReceiptConflict(err)
 	}
 	return writeStableJSON(stdout, newAdapterBuildRegisterResultView(result))
 }

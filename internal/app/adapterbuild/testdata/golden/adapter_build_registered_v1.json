@@ -1,0 +1,12 @@
+{
+  "buildId": "build-1",
+  "providerKey": "claude",
+  "executablePath": "/usr/local/bin/claude",
+  "executableContentHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "protocolVersion": "claude-stream-json/v1",
+  "os": "linux",
+  "toolchain": "node-20",
+  "configIdentity": "default",
+  "registeredBy": "operator-1",
+  "registeredAt": "2026-01-01T00:00:00Z"
+}

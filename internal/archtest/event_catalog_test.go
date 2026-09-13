@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
+	"github.com/taQuangLing/agent-workflow/internal/app/adapterbuild"
 	"github.com/taQuangLing/agent-workflow/internal/app/artifactsweep"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/definitions"
@@ -61,6 +62,7 @@ func TestEmittedDomainEventInventoryMatchesRegisteredInventory(t *testing.T) {
 
 	registry := eventschema.NewRegistry()
 	sqlite.RegisterEventSchemas(registry)
+	adapterbuild.RegisterEventSchemas(registry)
 	catalog.RegisterEventSchemas(registry)
 	definitions.RegisterEventSchemas(registry)
 	message.RegisterEventSchemas(registry)

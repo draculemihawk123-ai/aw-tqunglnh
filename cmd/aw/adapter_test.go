@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +19,33 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	domainadapterbuild "github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
 )
+
+// adapterTestIdempotencyCounter hands out a fresh idempotency key per CLI
+// invocation across this file's tests (V6-10I made --idempotency-key
+// required on both 'adapter probe' and 'adapter register'). Every test in
+// this file exercises the pre-existing content-hash (fingerprint) dedup,
+// drift, TOCTOU and signature/expiry behavior — not command-receipt
+// replay, which internal/app/adapterbuild's own commands_test.go and
+// commands_sqlite_test.go cover directly — so a fresh key per call keeps
+// these CLI tests exercising exactly the axis they always exercised,
+// never accidentally colliding into a replay.
+var adapterTestIdempotencyCounter atomic.Int64
+
+func freshIdempotencyKey(prefix string) string {
+	return fmt.Sprintf("%s-%d", prefix, adapterTestIdempotencyCounter.Add(1))
+}
+
+// registerAdapterBuild runs 'adapter register' via the CLI dispatcher
+// with a fresh --idempotency-key, standing in for the many call sites
+// this file used to spell out "--registered-by" directly before actor
+// became a distinct, always-required concept (V6-10I: RegisteredBy is
+// now derived from the command envelope's own Actor, never a
+// free-standing flag).
+func registerAdapterBuild(t *testing.T, dbPath, tokenPath, actor string) (stdout, stderr string, code exitCode) {
+	t.Helper()
+	return runCLI(t, "adapter", "register", "--db", dbPath, "--token", tokenPath,
+		"--actor", actor, "--idempotency-key", freshIdempotencyKey("register"))
+}
 
 // adapterTestFixtureVersion is what a copy of this test binary reports for
 // a "--version" invocation — see TestMain and writeAdapterExecutable.
@@ -120,7 +148,8 @@ func writeTokenFile(t *testing.T, token domainadapterbuild.CandidateToken) strin
 // returns the decoded CandidateToken it printed.
 func probeAndCaptureToken(t *testing.T, dbPath, provider, executablePath string) domainadapterbuild.CandidateToken {
 	t.Helper()
-	stdout, stderr, code := runCLI(t, "adapter", "probe", "--db", dbPath, "--provider", provider, "--executable", executablePath)
+	stdout, stderr, code := runCLI(t, "adapter", "probe", "--db", dbPath, "--provider", provider, "--executable", executablePath,
+		"--idempotency-key", freshIdempotencyKey("probe"))
 	if code != exitSuccess {
 		t.Fatalf("adapter probe: code=%d stderr=%q", code, stderr)
 	}
@@ -167,7 +196,7 @@ func TestAdapterProbeThenRegister_Succeeds(t *testing.T) {
 
 	tokenPath := writeTokenFile(t, probeAndCaptureToken(t, dbPath, "claude", executablePath))
 
-	stdout, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", tokenPath, "--registered-by", "operator-1")
+	stdout, stderr, code := registerAdapterBuild(t, dbPath, tokenPath, "operator-1")
 	if code != exitSuccess {
 		t.Fatalf("register: code=%d stderr=%q", code, stderr)
 	}
@@ -199,7 +228,7 @@ func TestAdapterRegister_DuplicateIsIdempotent(t *testing.T) {
 	executablePath := writeAdapterExecutable(t, "binary-v1")
 
 	firstTokenPath := writeTokenFile(t, probeAndCaptureToken(t, dbPath, "claude", executablePath))
-	firstOut, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", firstTokenPath, "--registered-by", "operator-1")
+	firstOut, stderr, code := registerAdapterBuild(t, dbPath, firstTokenPath, "operator-1")
 	if code != exitSuccess {
 		t.Fatalf("first register: code=%d stderr=%q", code, stderr)
 	}
@@ -209,7 +238,7 @@ func TestAdapterRegister_DuplicateIsIdempotent(t *testing.T) {
 	}
 
 	secondTokenPath := writeTokenFile(t, probeAndCaptureToken(t, dbPath, "claude", executablePath))
-	secondOut, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", secondTokenPath, "--registered-by", "operator-2")
+	secondOut, stderr, code := registerAdapterBuild(t, dbPath, secondTokenPath, "operator-2")
 	if code != exitSuccess {
 		t.Fatalf("second register: code=%d stderr=%q", code, stderr)
 	}
@@ -249,7 +278,7 @@ func TestAdapterRegister_DriftCreatesNewBuild(t *testing.T) {
 	executablePath := writeAdapterExecutable(t, "binary-v1")
 
 	firstTokenPath := writeTokenFile(t, probeAndCaptureToken(t, dbPath, "claude", executablePath))
-	firstOut, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", firstTokenPath, "--registered-by", "operator-1")
+	firstOut, stderr, code := registerAdapterBuild(t, dbPath, firstTokenPath, "operator-1")
 	if code != exitSuccess {
 		t.Fatalf("first register: code=%d stderr=%q", code, stderr)
 	}
@@ -262,7 +291,7 @@ func TestAdapterRegister_DriftCreatesNewBuild(t *testing.T) {
 		t.Fatalf("overwrite executable: %v", err)
 	}
 	secondTokenPath := writeTokenFile(t, probeAndCaptureToken(t, dbPath, "claude", executablePath))
-	secondOut, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", secondTokenPath, "--registered-by", "operator-2")
+	secondOut, stderr, code := registerAdapterBuild(t, dbPath, secondTokenPath, "operator-2")
 	if code != exitSuccess {
 		t.Fatalf("second register: code=%d stderr=%q", code, stderr)
 	}
@@ -304,7 +333,7 @@ func TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister(t *test
 		t.Fatalf("swap executable: %v", err)
 	}
 
-	stdout, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", staleTokenPath, "--registered-by", "operator-1")
+	stdout, stderr, code := registerAdapterBuild(t, dbPath, staleTokenPath, "operator-1")
 	if code != exitFailure {
 		t.Fatalf("register with a stale token after executable swap: code=%d, want exitFailure; stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -367,7 +396,7 @@ func TestAdapterRegister_RejectsExpiredToken(t *testing.T) {
 	}
 	tokenPath := writeTokenFile(t, expired)
 
-	stdout, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", tokenPath, "--registered-by", "operator-1")
+	stdout, stderr, code := registerAdapterBuild(t, dbPath, tokenPath, "operator-1")
 	if code != exitFailure {
 		t.Fatalf("register with an expired token: code=%d, want exitFailure; stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -392,7 +421,7 @@ func TestAdapterRegister_RejectsForgedSignature(t *testing.T) {
 	token.Signature = "forged" + token.Signature
 	tokenPath := writeTokenFile(t, token)
 
-	stdout, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", tokenPath, "--registered-by", "operator-1")
+	stdout, stderr, code := registerAdapterBuild(t, dbPath, tokenPath, "operator-1")
 	if code != exitFailure {
 		t.Fatalf("register with a forged signature: code=%d, want exitFailure; stdout=%q stderr=%q", code, stdout, stderr)
 	}
@@ -422,7 +451,7 @@ func TestAdapterCLI_TokenSurvivesSeparateProbeAndRegisterInvocations(t *testing.
 
 	tokenPath := writeTokenFile(t, probeAndCaptureToken(t, dbPath, "claude", executablePath))
 
-	stdout, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", tokenPath, "--registered-by", "operator-1")
+	stdout, stderr, code := registerAdapterBuild(t, dbPath, tokenPath, "operator-1")
 	if code != exitSuccess {
 		t.Fatalf("register (as a separate CLI invocation) with a token signed by an earlier invocation: code=%d stderr=%q", code, stderr)
 	}
@@ -502,7 +531,7 @@ func TestAdapterShow_ReturnsRegisteredBuild(t *testing.T) {
 	executablePath := writeAdapterExecutable(t, "binary-v1")
 	tokenPath := writeTokenFile(t, probeAndCaptureToken(t, dbPath, "claude", executablePath))
 
-	registerOut, stderr, code := runCLI(t, "adapter", "register", "--db", dbPath, "--token", tokenPath, "--registered-by", "operator-1")
+	registerOut, stderr, code := registerAdapterBuild(t, dbPath, tokenPath, "operator-1")
 	if code != exitSuccess {
 		t.Fatalf("register: code=%d stderr=%q", code, stderr)
 	}
@@ -560,8 +589,30 @@ func TestAdapter_MissingRequiredFlags(t *testing.T) {
 func TestAdapterProbe_UnknownProviderIsUsageError(t *testing.T) {
 	dbPath := adapterTestDB(t)
 	executablePath := writeAdapterExecutable(t, "binary-v1")
-	_, _, code := runCLI(t, "adapter", "probe", "--db", dbPath, "--provider", "not-a-real-provider", "--executable", executablePath)
+	_, _, code := runCLI(t, "adapter", "probe", "--db", dbPath, "--provider", "not-a-real-provider", "--executable", executablePath,
+		"--idempotency-key", freshIdempotencyKey("probe"))
 	if code != exitUsage {
 		t.Fatalf("probe with unknown provider: code=%d, want exitUsage", code)
+	}
+}
+
+// TestAdapter_MissingIdempotencyKeyIsUsageError proves V6-10I's own new
+// required --idempotency-key flag is enforced on both probe and register,
+// even when every other flag is otherwise valid and present — a distinct
+// gap from TestAdapter_MissingRequiredFlags above, which never supplies
+// enough other flags to isolate this one specifically.
+func TestAdapter_MissingIdempotencyKeyIsUsageError(t *testing.T) {
+	dbPath := adapterTestDB(t)
+	executablePath := writeAdapterExecutable(t, "binary-v1")
+
+	_, _, code := runCLI(t, "adapter", "probe", "--db", dbPath, "--provider", "claude", "--executable", executablePath)
+	if code != exitUsage {
+		t.Fatalf("probe without --idempotency-key: code=%d, want exitUsage", code)
+	}
+
+	tokenPath := writeTokenFile(t, probeAndCaptureToken(t, dbPath, "claude", executablePath))
+	_, _, code = runCLI(t, "adapter", "register", "--db", dbPath, "--token", tokenPath, "--actor", "operator-1")
+	if code != exitUsage {
+		t.Fatalf("register without --idempotency-key: code=%d, want exitUsage", code)
 	}
 }
