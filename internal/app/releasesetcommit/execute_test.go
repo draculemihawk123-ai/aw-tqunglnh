@@ -359,19 +359,19 @@ func TestExecuteReleaseSetLocalCommit_CrashBeforeGit_CleanRetryOneCommit(t *test
 
 	// Worker A claims the job and acquires the write lease, then "crashes"
 	// — it never calls LocalCommitCreator at all.
-	jobA := fx.claim(t, "worker-a", 60*time.Millisecond)
+	jobA := fx.claim(t, "worker-a", 600*time.Millisecond)
 	jobLeaseA := ports.JobLease{JobID: jobA.ID, Owner: jobA.LeaseOwner, Token: jobA.LeaseToken}
 	if _, err := fx.store.AcquireLocalCommitWriteLease(fx.ctx, ports.AcquireLocalCommitWriteLeaseRequest{
 		JobLease: jobLeaseA,
 		Target: ports.LocalCommitWriteLeaseTarget{
 			RepositoryID: intent.RepositoryID, RepositoryWorkspaceID: workspace.RepositoryWorkspaceID(intent.RepositoryWorkspaceID), Generation: intent.ExpectedGeneration,
 		},
-		TTL: 60 * time.Millisecond,
+		TTL: 600 * time.Millisecond,
 	}); err != nil {
 		t.Fatalf("acquire write lease (worker A): %v", err)
 	}
 
-	time.Sleep(150 * time.Millisecond) // let both the job lease and the write lease expire
+	time.Sleep(1500 * time.Millisecond) // let both the job lease and the write lease expire
 	if _, err := fx.store.RecoverExpiredJobs(fx.ctx); err != nil {
 		t.Fatalf("RecoverExpiredJobs: %v", err)
 	}
@@ -414,14 +414,14 @@ func TestExecuteReleaseSetLocalCommit_CrashAfterGitBeforeFinalize_ReusesExactCom
 	// the REAL, mutating Git call — exactly what ExecuteReleaseSetLocalCommit
 	// itself would do — then stop: simulate a crash right here, before
 	// ever reaching the finalize transaction.
-	jobA := fx.claim(t, "worker-a", 60*time.Millisecond)
+	jobA := fx.claim(t, "worker-a", 600*time.Millisecond)
 	jobLeaseA := ports.JobLease{JobID: jobA.ID, Owner: jobA.LeaseOwner, Token: jobA.LeaseToken}
 	if _, err := fx.store.AcquireLocalCommitWriteLease(fx.ctx, ports.AcquireLocalCommitWriteLeaseRequest{
 		JobLease: jobLeaseA,
 		Target: ports.LocalCommitWriteLeaseTarget{
 			RepositoryID: intent.RepositoryID, RepositoryWorkspaceID: workspace.RepositoryWorkspaceID(intent.RepositoryWorkspaceID), Generation: intent.ExpectedGeneration,
 		},
-		TTL: 60 * time.Millisecond,
+		TTL: 600 * time.Millisecond,
 	}); err != nil {
 		t.Fatalf("acquire write lease (worker A): %v", err)
 	}
@@ -442,7 +442,7 @@ func TestExecuteReleaseSetLocalCommit_CrashAfterGitBeforeFinalize_ReusesExactCom
 	}
 	// Crash here: never finalize, never release the write lease.
 
-	time.Sleep(150 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 	if _, err := fx.store.RecoverExpiredJobs(fx.ctx); err != nil {
 		t.Fatalf("RecoverExpiredJobs: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestExecuteReleaseSetLocalCommit_WriteLeaseStolen_DoesNotFinalize(t *testin
 		RepositoryID: intent.RepositoryID, RepositoryWorkspaceID: workspace.RepositoryWorkspaceID(intent.RepositoryWorkspaceID), Generation: intent.ExpectedGeneration,
 	}
 	if _, err := fx.store.AcquireLocalCommitWriteLease(fx.ctx, ports.AcquireLocalCommitWriteLeaseRequest{
-		JobLease: jobLeaseA, Target: target, TTL: 60 * time.Millisecond,
+		JobLease: jobLeaseA, Target: target, TTL: 600 * time.Millisecond,
 	}); err != nil {
 		t.Fatalf("acquire write lease (worker A): %v", err)
 	}
@@ -568,7 +568,7 @@ func TestExecuteReleaseSetLocalCommit_WriteLeaseStolen_DoesNotFinalize(t *testin
 
 	// Worker A's own write lease TTL lapses; a genuinely different worker
 	// (jobC) steals it before worker A ever reaches finalize.
-	time.Sleep(120 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 	if _, err := fx.store.EnqueueJob(fx.ctx, ports.EnqueueJobRequest{
 		ID: "job-c", ProjectID: "project-1", Kind: "PROBE", AggregateType: "Probe", AggregateID: "probe-c",
 		MaxClaims: 1, IdempotencyKey: "probe-c",
