@@ -21,6 +21,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
+	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
 )
 
@@ -155,6 +156,9 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// (internal/delivery/httpapi/workitem) — an additive routes.Register
 	// call only, no shared setup above touched.
 	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
+	// V6-06: Run start/cancel controls (internal/delivery/httpapi/run) — an
+	// additive routes.Register call only, no shared setup above touched.
+	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: uow, IDs: idsource.Random{}})
 	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
 	// and release/reconcile request routes. Same uow/idsource.Random{} every
 	// other route registration in this process already uses — never a
@@ -162,7 +166,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{})
 	// A later endpoint task's own composition-root wiring adds its own
 	// routes.Register call here without needing to touch this file's shared
-	// setup.
+	// setup (contract point 8: "Parallel work không sửa registry chung").
 	routesFinalized = true
 
 	server, err := httpapi.NewServer(httpapi.Config{
