@@ -3412,3 +3412,286 @@ thật lần đầu tồn tại trong toàn bộ V6: `POST/GET /projects`, `GET 
 đó sạch. Phát hiện và ghi lại 1 gap thật ở tầng persistence (UNIQUE constraint không được `MapSQLiteError`
 phân loại — xem mục Test), nằm ngoài phạm vi task này, được xử lý đúng mức bằng cách sửa fixture của chính
 mình thay vì lan sang sửa code đã merge trước đó.
+
+## V6-06A — Approval và typed WAIT decision endpoints
+
+### Bối cảnh
+
+V6-06A nằm trong cùng nhóm P2 với `V6-06` (`run`, `POST /work-items/{id}/runs` + `POST /runs/{id}/cancel`) —
+4 dependency (`V6-00`, `V6-01A`, `V6-02`, `V6-02A`) đều đã merge từ trước. `git log origin/master --oneline -3`
+lúc branch ra: `ab4ee48 feat(v6-04)...`, `36629f3 feat(v6-06)...`, `92ccac8 feat(v6-10b)...` — `V6-06` (task chị
+em gần nhất, cùng khu vực Run-scoped HTTP) đã merge làm `feat/v6-06-run-start-cancel`, dùng làm tiền lệ cấu
+trúc chính cho task này thay vì tự nghĩ lại từ đầu. Branch `feat/v6-06a-approval-wait-endpoints` tạo thẳng từ
+`origin/master` (`ab4ee48`) — `git merge-base HEAD origin/master` = `ab4ee48`, xác nhận không cần rebase.
+`baocaov6checklist.md` đang bị 3 task khác ghi song song cùng lúc (`V6-05`, `V6-06D`, `V6-07`) — append-only,
+dự kiến conflict khi mở PR, đúng cảnh báo trong system prompt, không phải lỗi của task này.
+
+### Nghiên cứu
+
+Đọc nguyên văn spec (`docs/design/08-v6-api-projections.md` dòng 251-260): *"Mục tiêu: expose approve/reject
+và typed WAIT signal tách khỏi free-text conversation."* / *"Phạm vi: approval decisions, WAIT signals và
+`DecisionArtifact` references."* / *"Không làm: không map message text thành control và không nhận actor/roles
+từ payload."* / *"Thực hiện: reload target/scope, enforce role, unique signal identity and expected version."*
+/ *"Verify: unauthorized role, spoof, concurrent decision, duplicate signal, stale/cross-project target."*
+
+Đọc `internal/app/runtime/approval.go` và `wait.go` toàn văn TRƯỚC khi viết handler, kể cả doc comment ở đầu
+file (đúng yêu cầu review của chính task):
+
+- `approval.go` dòng 19-28: package doc comment tự ghi rõ đây là thiết kế đã CHỐT với user từ trước (không
+  phải việc task này tự quyết): `ports.Command` có field `ActorRoles []string` — transport/API layer tự tạo từ
+  local session, KHÔNG BAO GIỜ decode từ request body, KHÔNG thuộc `RequestHash`. `ResolveApproval` check giao
+  chính xác/case-sensitive giữa `cmd.ActorRoles` và `ApprovalRequest.AuthorizedRoles`; rỗng → `apperror` với
+  `errorcode.CodePolicyDenied`, reject TRƯỚC KHI chạm state của request (kể cả khi đã DECIDED).
+- `wait.go` dòng 9-19: package doc comment ghi rõ thiết kế 2 lớp CỐ Ý tách biệt: `cmd.IdempotencyKey`/
+  `RequestHash` (bảo vệ một lần gọi HTTP/command) tách hẳn khỏi `SignalKey` (định danh sự kiện thật ngoài đời
+  do caller tự cấp — bảo vệ CÙNG một sự kiện thật báo qua HAI command invocation khác nhau). Không được gộp 2
+  khái niệm này lại.
+- `ResolveApprovalRequest{RunID, ApprovalRequestID, Outcome, Reason}` và `SignalWaitRequest{RunID,
+  WaitRegistrationID, SignalKey, Payload}` — CẢ HAI đều KHÔNG có field `ExpectedVersion` nào (khác hẳn giả định
+  ban đầu là "expected version" trong spec nghĩa là app command nhận version từ HTTP) — cả hai đều tự load
+  state bên trong transaction rồi CAS bằng version tự vừa đọc (`TransitionApprovalRequestRequest`/
+  `TransitionWaitRegistrationRequest`).
+
+Đọc `internal/domain/runtime/approval.go`/`wait.go` — `ApprovalRequest` có field `ProjectID`/`RunID`/
+`AuthorizedRoles`/`Version` sẵn, không có field `ExpectedVersion` để client match; `WaitRegistration` có
+`ProjectID`/`RunID`/`Version` nhưng **không có field role/AuthorizedRoles nào cả** — phát hiện quan trọng: WAIT
+không có khái niệm "role" để enforce, chỉ APPROVAL mới có.
+
+Đọc `docs/design/11-v6-00-ux-artifact.md` — tìm đúng 2 operationId đã khoá cứng: dòng 311, `resolveApproval`
+("`ResolveApproval`... field `Outcome` là vocabulary do node khai báo — không phải generic status — UI/CLI
+trình bày thành hai nút/leaf riêng cho cùng MỘT command với `Outcome` khác nhau, không phải hai authority");
+dòng 312, `submitWaitSignal` ("`SubmitWaitSignal` [CHƯA CÓ — tiền thân nội bộ: `RecordWaitSignal` +
+`NewWaitSignal` đã có, chưa có public command bọc ngoài]"). Dòng này của design doc hơi cũ (viết trước khi
+`internal/app/runtime/wait.go`'s `SignalWait` — chính public command đó — được hoàn thiện ở V4-08); đối chiếu
+trực tiếp source xác nhận `SignalWait` ĐÃ tồn tại đầy đủ, nên "submitWaitSignal" ở đây chỉ là operationId HTTP
+bọc `SignalWait` thật, không phải một command application-layer mới cần viết.
+
+Đọc lại `internal/delivery/httpapi/run` (task chị em gần nhất) làm khuôn cấu trúc: `run.go` (Dependencies +
+RegisterRoutes), `start.go`/`cancel.go` (2 handler khác cách wrap hẳn nhau, lý do ghi trong chính doc comment
+của `cancel.go`: `CancelRunRequest` không có `IdempotencyKey`/`ExpectedVersion` field nào — không đòi `If-Match`
+vì không có gì để so; `StartWorkflowRunHandler` theo đủ flow CommandEnvelope), `errors.go` (2 hàm
+`writeXxxError` phân loại sentinel thật).
+
+Đọc `internal/delivery/httpapi/workitem/{envelope.go, scope_expansion_commands.go}` (task `V6-04`, cũng đã
+merge) — tìm thấy MỘT tiền lệ khác hẳn `cancel.go`: `prepareUpdateCommand` đòi `Idempotency-Key` VÀ `If-Match`
+dù bản thân `ApproveScopeExpansion`/`RejectScopeExpansion`/`WithdrawScopeExpansion` (application layer) cũng
+KHÔNG nhận `ExpectedVersion` — precondition `detail.Version != expectedVersion` được so sánh Ở TẦNG HTTP, dựa
+trên MỘT lần reload sẵn có (`loadScopeExpansionRequestForUpdate`), độc lập với CAS nội bộ thật của command. Đây
+chính là mẫu áp dụng được cho `resolveApproval` (con người xem UI rồi quyết định — hợp lý để đòi `If-Match`).
+
+Đọc `internal/app/ports/command.go` dòng 69-95 — xác nhận `ports.Command` có field `ExpectedVersion uint64`
+CHUNG cho MỌI command trong repo (không riêng gì Approval/WAIT) — dùng để fold vào `SemanticHash` (chống replay
+sai), KHÔNG nhất thiết được chính application command đọc lại (giống hệt cách `workitem`'s
+`ApproveScopeExpansion` cũng bỏ qua nó).
+
+Tìm `DecisionArtifact` (`internal/domain/runtime/decision.go`, `RecordDecisionArtifact`/`GetDecisionArtifact`
+trên `Tx.Runtime()`) — grep toàn bộ `NewDecisionArtifact(` trong `internal/app/runtime`: CHỈ xuất hiện ở
+`recovery_reaper.go`, `admission.go`, `completion_policy.go`, `schedule.go`, `resolve_work_item_blocker.go` —
+**`approval.go` và `wait.go` KHÔNG BAO GIỜ gọi `RecordDecisionArtifact`**. Đọc lại `docs/design/06-v4-runtime-engine.md`
+dòng 335-336 (V4-09's own "Một câu hỏi chốt với user") xác nhận: yêu cầu audit của HE-08-M08 ("MUST ghi actor,
+cause, previous/new state, time") với APPROVAL được thoả mãn NGAY TRÊN chính row `ApprovalRequest`
+(`DecidedBy`/`DecidedRole`/`DecidedOutcome`/`Reason`/`DecidedAt`), không cần một `DecisionArtifact` row riêng.
+Kết luận: "DecisionArtifact references" trong Phạm vi của V6-06A là surface đúng cái đã có (ID/State của chính
+`ApprovalRequest`/`WaitRegistration`), KHÔNG phải tự thêm logic ghi `DecisionArtifact` mới vào application layer
+— việc đó sẽ vi phạm "handler chỉ dispatch" và lấn sang sửa file lõi đã merge/test kỹ ngoài phạm vi 1 task HTTP.
+
+### Quyết định
+
+1. **Một package `decision` bọc CẢ HAI endpoint**, không tách 2 package riêng — mirror đúng cách `V6-06`'s
+   `run` bọc chung `start`+`cancel` (2 route cùng một "Run control" chủ đề), ở đây là 2 route cùng chủ đề
+   "typed human decision tách khỏi chat". `RegisterRoutes` đăng ký đúng 2 descriptor với `OperationID` khoá
+   cứng từ design doc: `resolveApproval`, `submitWaitSignal`.
+2. **Route path**: `POST /runs/{runId}/approval-requests/{approvalRequestId}/resolve` và
+   `POST /runs/{runId}/wait-registrations/{waitRegistrationId}/signal` — nested dưới `/runs/{runId}` (mirror
+   `run`'s `/runs/{runId}/cancel`) vì cả `ResolveApprovalRequest`/`SignalWaitRequest` đều nhận `RunID` làm tham
+   số bắt buộc để cross-check "approval request/wait registration thật sự thuộc run này" (chính là "stale/
+   cross-project target" Verify bullet) — path phải mang cả 2 ID để handler tự reload đúng target trước khi
+   check bất cứ gì khác.
+3. **KHÔNG tách 2 route `/approve` + `/reject` riêng cho approval** (khác hẳn `workitem`'s 3 route
+   `approveScopeExpansion`/`rejectScopeExpansion`/`withdrawScopeExpansion`) — đúng ngôn ngữ chính xác của
+   design doc dòng 311: `Outcome` là "vocabulary do node khai báo — không phải generic status", "hai nút/leaf
+   riêng cho CÙNG MỘT command với Outcome khác nhau, KHÔNG PHẢI hai authority". Một node có thể khai nhiều hơn
+   2 outcome (approved/rejected/escalated trong chính `approvalDocument` test fixture) — chỉ MỘT route với
+   field `outcome` trong body mới đúng cho vocabulary mở, không phải enum đóng approve/reject.
+4. **`resolveApproval` ĐÒI `If-Match`; `submitWaitSignal` THÌ KHÔNG** — quyết định quan trọng nhất, và là một
+   phát hiện thật giữa chừng (xem mục Test, bug #1). Ban đầu áp `If-Match` đồng loạt cho cả 2 route theo đúng
+   "Thực hiện: ... expected version" của spec + tiền lệ `workitem`. Viết xong mới nhận ra: `submitWaitSignal`
+   đại diện một sự kiện NGOÀI ĐỜI (vd CI webhook) được báo qua, không phải người dùng vừa xem lại UI — một lần
+   gửi lại hợp lệ (retry của webhook) không có cách nào biết "version hiện tại" của `WaitRegistration` sau khi
+   lần gửi TRƯỚC đó đã (hoặc chưa) tiêu thụ nó, nên đòi `If-Match` đúng sẽ PHÁ chính cái idempotent-by-SignalKey
+   mà `SignalWait`'s doc comment tồn tại để đảm bảo (một duplicate hợp lệ sẽ bị 412 thay vì Won=false/200 êm
+   đẹp). `resolveApproval` thì khác: một operator xem UI rồi bấm nút chắc chắn vừa load version hiện tại — giữ
+   `If-Match` ở đây đúng tinh thần `workitem`'s `ApproveScopeExpansion`. Ghi toàn bộ lý luận này thành doc
+   comment dài trong `decision.go` (đối chiếu trực tiếp với đoạn `run/cancel.go` đã ghi lý do ngược lại), không
+   chỉ ở báo cáo này.
+5. **`loadApprovalRequestForUpdate`/`loadWaitRegistrationForRun`**: mỗi handler tự reload target (qua
+   `tx.Approvals().GetApprovalRequest`/`tx.Wait().GetWaitRegistration`) TRƯỚC KHI đọc Idempotency-Key/If-Match/
+   body — vừa suy ra `ProjectID` (scope) thật từ chính row đó (không tin client), vừa check `RunID` khớp path
+   hay không, fold cả "không tồn tại" lẫn "thuộc run khác" vào CÙNG một `httpapi.WriteResourceHidden` 404 —
+   đúng leakage-normalization policy V6-02A (mirror trực tiếp `workitem`'s `writeQueryError`/`writeCommandError`
+   đã fold `ErrPersistenceNotFound`/`ErrScopeMismatch` giống hệt vậy).
+6. **`ActorRoles` CHỈ lấy từ `httpapi.PrincipalFromContext`, KHÔNG BAO GIỜ có field actor/roles nào trong
+   `ResolveApprovalBody`/`SubmitWaitSignalBody`** — đúng "Không làm: không nhận actor/roles từ payload".
+   `httpapi.DecodeJSON`'s `DisallowUnknownFields()` (đã có sẵn từ V6-01) tự động biến một field lạ kiểu
+   `"actorRoles":[...]` trong body thành lỗi 400 thay vì bị âm thầm bỏ qua — đây chính là cơ chế chặn "spoof"
+   ở tầng transport, không cần tự viết thêm logic riêng.
+7. **`SubmitWaitSignalHandler` không enforce role nào** — vì `WaitRegistration` (domain) không có field
+   `AuthorizedRoles`, khác hẳn `ApprovalRequest`. `cmd.ActorRoles` vẫn được điền từ principal (nhất quán với
+   MỌI command khác trong repo) nhưng `SignalWait` tự nó không bao giờ đọc field đó — ghi rõ lý do trong doc
+   comment `wait.go`, không lặng lẽ bỏ qua khiến người đọc sau tưởng thiếu sót.
+8. **Hash payload fold thêm ID lấy từ path** (`resolveApprovalHashPayload{ApprovalRequestID,...}`,
+   `submitWaitSignalHashPayload{WaitRegistrationID,...}`) — mirror trực tiếp lý do `run/start.go`'s
+   `startRunHashPayload` đã ghi: `SemanticHash` hash theo `(commandType, scope, payload, expectedVersion)` —
+   `scope` chỉ là cả PROJECT; thiếu ID path thì 2 target khác nhau cùng project, trùng Idempotency-Key + cùng
+   outcome/signalKey, sẽ hash giống hệt nhau → cross-replay sai target.
+9. **`ErrNodeRunMismatch` (lỗi thật `ResolveApproval`/`SignalWait` có thể trả) được map vào `WriteResourceHidden`
+   giống hệt "not found"** — vì handler đã tự reload+check RunID TRƯỚC khi dispatch nên nhánh này trong
+   `errors.go` chỉ còn là phòng thủ cho race hiếm (giữa lần reload của handler và transaction thật của command);
+   giữ cùng shape leakage-normalized thay vì một status khác biệt.
+10. **`ResolveApprovalResponse`/`SubmitWaitSignalResponse` embed thẳng `runtime.ResolveApprovalResult`/
+    `SignalWaitResult`** (đã có sẵn json tag camelCase) + `ValidActions` rỗng — mirror `run`'s
+    `StartRunResponse` (embed thẳng vì có tag sẵn) chứ không tự map field như `run`'s `CancelRunResponse` (phải
+    tự map vì `CancelRunResult` không có tag). `ValidActions` luôn rỗng: một khi đã DECIDED/ESCALATED/CONSUMED/
+    TIMED_OUT/ELAPSED thì không còn action mutation nào trong tập đóng của task này để quảng cáo, và một quyết
+    định thua race (Won=false) không phải là action của CHÍNH caller đó để retry — nó đã có kết quả thật rồi.
+
+### Thực hiện
+
+- `internal/delivery/httpapi/decision/decision.go`: `Dependencies{UOW, IDs}`, `RegisterRoutes(routes, deps)` —
+  đăng ký 2 route `resolveApproval`/`submitWaitSignal`; doc comment dài giải thích toàn bộ quyết định 1-4 ở
+  trên ngay trong code.
+- `internal/delivery/httpapi/decision/approval.go`: `ResolveApprovalBody`, `resolveApprovalHashPayload` (nội
+  bộ), `ResolveApprovalResponse`, `ResolveApprovalHandler(deps) http.HandlerFunc`,
+  `loadApprovalRequestForUpdate` — đòi `Idempotency-Key` + `If-Match`.
+- `internal/delivery/httpapi/decision/wait.go`: `SubmitWaitSignalBody`, `submitWaitSignalHashPayload`,
+  `SubmitWaitSignalResponse`, `SubmitWaitSignalHandler(deps) http.HandlerFunc`, `loadWaitRegistrationForRun` —
+  chỉ đòi `Idempotency-Key`, KHÔNG đòi `If-Match` (quyết định 4).
+- `internal/delivery/httpapi/decision/errors.go`: `writeResolveApprovalError`, `writeSignalWaitError` — phân
+  loại sentinel thật (`runtime.ErrNodeRunMismatch`, `ports.ErrPersistenceNotFound`, `ports.ErrReceiptConflict`)
+  sang đúng status/code; mọi `*apperror.Error` khác (`CodePolicyDenied`, `CodeIdempotencyConflict`, ...) rơi
+  đúng vào `httpapi.WriteAppError`'s `StatusForAppErrorCode` có sẵn, không cần tự map lại.
+- `cmd/aw/serve.go`: thêm 1 import (`"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"`)
+  + 1 lời gọi `decision.RegisterRoutes(routes, decision.Dependencies{UOW: uow, IDs: idsource.Random{}})` ngay
+  sau điểm `run`'s wiring — diff `cmd/aw/serve.go` chỉ +5 dòng (xem `git diff origin/master -- cmd/aw/serve.go`).
+- Không migration mới — kiểm `git log origin/master --oneline -3` + `ls internal/adapters/sqlite/migrations`
+  ngay trước khi hoàn tất: highest hiện tại vẫn `0037_release_set_local_commits.sql`, không đụng tới (đúng dự
+  đoán ban đầu: `approval_requests`/`wait_registrations`/`wait_signals` schema đã có sẵn từ V4-08/V4-09).
+
+### Test
+
+Toàn bộ test dùng `sqlite.Open`/`sqlite.NewUnitOfWork` thật, dispatch qua đúng `runtime.StartWorkflowRun` +
+`runtime.AdvanceRun` + `runtime.ResolveApproval`/`SignalWait` thật để đưa một Run tới đúng node APPROVAL/WAIT
+rồi mới gọi HTTP handler — không có chỗ nào tự ghi thẳng DB để giả kết quả.
+
+- `fixture_test.go`: mirror `run/fixture_test.go` (`seedProject`/`seedActiveRepository`/`stubProvider`/
+  `readyWorkItemFixture`+`readyWorkItemFixtureInExistingProject`/`publishWorkflowVersionDocument`) cộng
+  `approvalDocument`/`waitSignalDocument` mirror ĐÚNG 2 fixture cùng tên trong `internal/app/runtime/{approval_test.go,
+  wait_test.go}` (start -> gate(APPROVAL, AuthorizedRoles=["reviewer"]) -> end_approved|end_rejected|
+  end_escalated; start -> pause(WAIT, SIGNAL, SignalName="ci-passed") -> end_resumed|end_expired), cộng
+  `approvalRequestFixture`/`waitRegistrationFixture` (+ 2 biến thể `...InProject`) tự lái Run thật từ START tới
+  đúng node qua `StartWorkflowRun` + `AdvanceRun` thật.
+- `httptest_helper_test.go`: `newTestServer(t, uow, ids, principal)` — khác `run`'s bản gốc ở chỗ nhận
+  `principal` làm tham số thay vì hardcode 1 principal cố định, vì package này cần CẢ 2 principal (`reviewer`
+  và `operator`) để test "unauthorized role"/"spoof".
+- `approval_test.go` (10 test): `..._Approve_Success_RoutesAndReturnsWon`,
+  `..._UnauthorizedRole_RejectsBeforeTouchingState` (**unauthorized role**),
+  `..._Spoof_UnknownActorFieldRejected400` (**spoof**), `..._StaleCrossRunTarget_404` (**stale/cross-project
+  target**), `..._UnknownApprovalRequestID_404`, `..._MissingIdempotencyKey_400`, `..._MissingIfMatch_400`,
+  `..._StaleIfMatch_PreconditionFailed`, `..._DuplicateIdempotencyKey_Replays`,
+  `..._ConcurrentDecisions_ExactlyOneWins` (**concurrent decision**).
+- `wait_test.go` (7 test): `..._Success_RoutesAndReturnsWon`,
+  `..._DuplicateSignalKey_IdempotentNoDoubleProcessing` (**duplicate signal**),
+  `..._SameSignalKeyDifferentPayload_IdempotencyConflict`, `..._StaleCrossRunTarget_404` (**stale/cross-project
+  target**), `..._MissingSignalKey_400`, `..._MissingIdempotencyKey_400`,
+  `..._ConcurrentDifferentSignals_ExactlyOneWins` (**concurrent decision**, áp cho WAIT).
+
+**2 phát hiện thật giữa chừng (không phải giả định trước, lộ ra khi thiết kế/chạy test thật):**
+
+1. **Thiết kế lại `submitWaitSignal` để KHÔNG đòi `If-Match`** (đã nêu ở Quyết định 4) — bắt nguồn từ chính lúc
+   thiết kế test "duplicate signal": nếu `submitWaitSignal` đòi `If-Match` như `resolveApproval`, thì để viết
+   một test "gửi lại đúng SignalKey lần 2, kỳ vọng Won=false/200" cần biết TRƯỚC version MỚI sau khi lần 1 đã
+   CONSUME registration — một client thật (webhook retry) không có cách nào biết trước con số đó, nghĩa là chính
+   thiết kế "đòi If-Match cho WAIT" sẽ làm test case chuẩn nhất của `SignalWait`'s own idempotent contract
+   KHÔNG THỂ xảy ra qua HTTP như mô tả. Đây là tín hiệu thiết kế sai thật (phát hiện qua việc thử viết test
+   trước khi implement handler, không phải suy luận trừu tượng), dẫn tới quyết định 4 ở trên — không phải một
+   lựa chọn tuỳ ý.
+2. **Test "concurrent decision" ban đầu định assert cứng status HTTP của TỪNG racer** (200 cho winner, 200 cho
+   loser) — chạy thử với `If-Match` cố định `"1"` cho cả 5 goroutine thì phát hiện: một racer có thể hợp lệ
+   nhận 412 (nếu chính lần reload/precondition-check CỦA RIÊNG racer đó tình cờ chạy SAU khi người thắng đã
+   commit, version đã nhảy 1→2) thay vì 200/Won=false — đây KHÔNG phải bug, mà đúng là hệ quả tự nhiên của
+   quyết định 4 (precondition kiểm ở tầng HTTP tách biệt CAS nội bộ thật của command, xem doc comment
+   `decision.go`). Sửa test để assert đúng bất biến thật sự quan trọng thay vì status cố định: mọi response
+   phải là 200/409/412 (không bao giờ 500), đúng 1 response có `Won=true`, và `ApprovalRequest` cuối cùng DECIDED
+   đúng 1 lần — chạy `-count=20` cả 2 test concurrency (approval lẫn wait) để xác nhận hết flaky sau khi sửa.
+
+- `go build ./...`, `go vet ./...` sạch trên toàn bộ repo (không giới hạn package thay đổi).
+- `go test ./internal/delivery/httpapi/decision/... -v`: 17/17 PASS (~5.9s); `-count=20` riêng 2 test
+  concurrency: ổn định 20/20 cả hai.
+- `go test ./internal/delivery/httpapi/... ./cmd/... -v`: toàn bộ pass, gồm cả `run`/`workitem`/`catalog`
+  (xác nhận wiring `serve.go` không phá route nào có sẵn) và `cmd/aw`'s `TestServe_*` (chứng minh server thật
+  build/serve được với route mới).
+- Race detector (`-race`) không chạy được trên máy dev (Windows, thiếu cgo — `modernc.org/sqlite` pure-Go nên
+  build/test thường không cần cgo, nhưng chính runtime `-race` instrumentation thì cần) — để CI (Linux) tự chạy,
+  đúng hard rule #7 (không tự claim theo dõi CI); rà lại thủ công mọi biến shared giữa goroutine trong 2 test
+  concurrency đều nằm sau `mu.Lock()`, kể cả lời gọi `t.Errorf` (an toàn gọi từ goroutine khác theo đúng tài
+  liệu `testing.T`, chỉ `FailNow`/`Fatal*` mới bắt buộc chạy trên goroutine test chính — 2 test này tránh hẳn
+  `Fatal*` bên trong goroutine, mirror đúng `run/start_test.go`'s `doStartRunRaw` pattern).
+- Chạy thêm `go test ./...` toàn bộ repo (99 package) một lần để soát regression ngoài phạm vi trực tiếp: 2
+  fail duy nhất, cùng package `internal/integration/v5accept`
+  (`TestV5AcceptConformanceMatrix`, `TestV5AcceptFullComposition_RealFourRoleGraphReachesSucceededAndSurvivesRestart`),
+  cùng một triệu chứng *"run v5a-7 did not reach state VERIFYING within the deadline"* — ĐÚNG hệt loại
+  contention flake mà `## V6-06`'s own narrative ở trên đã từng gặp và xác minh theo cách y hệt. Xác minh lại
+  bằng 2 bước: (1) `git diff origin/master --stat -- internal/app/runtime internal/integration
+  internal/adapters/sqlite internal/domain` rỗng — nhánh này không đụng một dòng nào trong chuỗi phụ thuộc của
+  package đang fail; (2) `go test ./internal/integration/v5accept/... -run
+  "TestV5AcceptConformanceMatrix|TestV5AcceptFullComposition..." -v` chạy riêng, không contention từ suite
+  `internal/adapters/sqlite` (289s) chạy song song — cả 2 test pass sạch (17.17s + 16.45s). Kết luận: contention
+  flake môi trường, không phải regression từ thay đổi của V6-06A. Không có test nào trong danh sách "known CI
+  flake" của brief (`TestSPK09...`, `TestSupervisorNormalExit...`, `TestProjectWorkspaceGate`,
+  `TestRecoveryReaperHandler_...`, `TestWriteLeaseRaceHasOneWinnerForSameRepository`) xuất hiện trong lần chạy
+  này.
+
+### Verify
+
+- **unauthorized role**: `TestResolveApproval_HTTP_UnauthorizedRole_RejectsBeforeTouchingState` — actor role
+  `operator` (không giao `AuthorizedRoles=["reviewer"]`) nhận 403 FORBIDDEN, `ApprovalRequest` sau đó vẫn
+  PENDING@version 1, không `DecidedBy` — đúng "reject TRƯỚC KHI chạm state" của chính `ResolveApproval`'s doc
+  comment.
+- **spoof**: `TestResolveApproval_HTTP_Spoof_UnknownActorFieldRejected400` — body cố nhét `"actorRoles":
+  ["reviewer"]` bị 400 INVALID_REQUEST (unknown field), không bao giờ chạm tới bước authorization — chứng minh
+  body cấu trúc không có chỗ nào để spoof actor/role, không phải chỉ "role check đúng" mà còn "không có field
+  nào để thử".
+- **concurrent decision**: `TestResolveApproval_HTTP_ConcurrentDecisions_ExactlyOneWins` (5 goroutine thật, real
+  sqlite, cùng `ApprovalRequestID`) và `TestSubmitWaitSignal_HTTP_ConcurrentDifferentSignals_ExactlyOneWins` (5
+  `SignalKey` khác nhau đua cùng 1 `WaitRegistration`) — cả 2 đều xác nhận đúng 1 `Won=true`, không bao giờ 500,
+  state cuối cùng DECIDED/CONSUMED đúng 1 lần; ổn định qua `-count=20`.
+- **duplicate signal**: `TestSubmitWaitSignal_HTTP_DuplicateSignalKey_IdempotentNoDoubleProcessing` — cùng
+  `SignalKey`, 2 `Idempotency-Key` KHÁC nhau (đúng kịch bản `SignalWait`'s doc comment: 2 command invocation
+  khác nhau báo cùng 1 sự kiện thật) — lần 2 vẫn 200 nhưng `Won=false`, không route lần 2.
+- **stale/cross-project target**: `TestResolveApproval_HTTP_StaleCrossRunTarget_404` và
+  `TestSubmitWaitSignal_HTTP_StaleCrossRunTarget_404` — ID thật nhưng thuộc Run KHÁC trong cùng project, path
+  đặt RunID của Run kia → 404 NOT_FOUND, y hệt shape "không tồn tại" (không phân biệt được, đúng leakage
+  policy).
+- **"Hoàn thành khi": mọi human decision có typed audited route độc lập với chat** — cả 2 route đều KHÔNG có
+  field message/text tự do nào trong body (`ResolveApprovalBody{Outcome, Reason}`,
+  `SubmitWaitSignalBody{SignalKey, Payload}` — `Payload` là JSON có cấu trúc caller tự định nghĩa, không phải
+  chat text được diễn giải thành quyết định); mỗi quyết định thành công đều để lại audit thật trên chính row
+  `ApprovalRequest` (`DecidedBy`/`DecidedRole`/`DecidedOutcome`/`Reason`/`DecidedAt`) hoặc `WaitRegistration`
+  (`ConsumedSignalID` trỏ tới `WaitSignal` bất biến) — chính là "DecisionArtifact reference" mà Phạm vi nhắc
+  tới, không cần một bảng `decision_artifacts` row mới.
+
+### Kết quả
+
+8 file mới trong `internal/delivery/httpapi/decision/` (4 production: `decision.go`/`approval.go`/`wait.go`/
+`errors.go`, ~624 dòng; 4 test: `fixture_test.go`/`httptest_helper_test.go`/`approval_test.go`/`wait_test.go`,
+~1064 dòng, 17 test case) + `cmd/aw/serve.go` sửa +5 dòng. `go build/vet ./...` sạch trên toàn bộ repo; toàn
+bộ test package mới + `cmd/aw` + `internal/delivery/httpapi` (cha) pass 100%; 2 fail duy nhất khi chạy
+`go test ./...` toàn repo đã xác minh là contention flake môi trường không liên quan (`internal/integration/
+v5accept`, pass sạch khi chạy riêng). Không migration mới, không sửa `internal/app/runtime`/`internal/app/ports`/
+`internal/domain/runtime` — toàn bộ thay đổi nằm gọn trong tầng delivery + 1 điểm nối additive vào composition
+root.
+
+`POST /runs/{runId}/approval-requests/{approvalRequestId}/resolve` (operationId `resolveApproval`) và
+`POST /runs/{runId}/wait-registrations/{waitRegistrationId}/signal` (operationId `submitWaitSignal`) giờ là 2
+route thật, chạy được qua `aw serve` thật — mọi quyết định APPROVAL/WAIT giờ có đường đi typed, audited, tách
+biệt hoàn toàn khỏi free-text conversation, và không thể bị giả mạo actor/role qua request body.
