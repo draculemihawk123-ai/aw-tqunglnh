@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
@@ -25,6 +26,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
+	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
@@ -119,11 +121,32 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		return fmt.Errorf("--artifact-root %q is not an existing directory", *artifactRoot)
 	}
 
+	// V6-07: the first real caller in this composition root that needs a
+	// ports.ArtifactStore (internal/app/message.AppendMessage's own
+	// content-addressed attach step) — rooted at the same --artifact-root
+	// every other artifact-producing command in this process will ever use,
+	// never a second, competing root.
+	artifactStore, err := artifactstore.New(*artifactRoot)
+	if err != nil {
+		return fmt.Errorf("open artifact store: %w", err)
+	}
+
 	// sessionToken is registered as a known secret with the shared redactor
 	// as defense-in-depth: ADR-016 forbids ever logging it, and this ensures
 	// that even a future logging call some other code path mistakenly adds
-	// still cannot emit it verbatim.
-	logger := logging.New(os.Stderr, logging.JSON, redact.NewMatcher(sessionToken))
+	// still cannot emit it verbatim. V6-07 reuses this identical matcher
+	// (never a second, differently-scoped one) as the ONE process-lifetime
+	// known-secrets matcher every AppendMessage call redacts against — see
+	// internal/delivery/httpapi/message.Dependencies' own Matcher doc
+	// comment for why an HTTP caller never gets to supply its own.
+	matcher := redact.NewMatcher(sessionToken)
+	logger := logging.New(os.Stderr, logging.JSON, matcher)
+
+	// V6-07: a fresh per-process secret for this server's own opaque
+	// ListMessages pagination cursor (httpapi.CursorCodec) — minted the
+	// identical way sessionToken above already is (idsource.Random{}.NewID(),
+	// never a fixed compiled-in value), never persisted or logged.
+	cursorCodec := httpapi.NewCursorCodec([]byte(idsource.Random{}.NewID()))
 
 	// V6-06D: build the real agent-provider registry
 	// internal/delivery/httpapi/recovery's own RetryBlockedActivation route
@@ -238,6 +261,13 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// Isolation/Agents are the real dependencies built just above.
 	recoveryhttp.RegisterRoutes(routes, recoveryhttp.Dependencies{
 		UOW: uow, IDs: idsource.Random{}, Isolation: isolationChecker, Agents: agentRegistry,
+	})
+	// V6-07: conversation message endpoints (append/list/context-snapshot,
+	// internal/delivery/httpapi/message) — an additive routes.Register call
+	// only, no shared setup above touched.
+	httpmessage.RegisterRoutes(routes, httpmessage.Dependencies{
+		UnitOfWork: uow, ArtifactStore: artifactStore, IDs: idsource.Random{}, Clock: clock.System{},
+		Matcher: matcher, Cursor: cursorCodec,
 	})
 	// A later endpoint task's own composition-root wiring adds its own
 	// routes.Register call here without needing to touch this file's shared

@@ -3742,3 +3742,254 @@ không cài 2 CLI ngoài đó, đồng thời cho operator triển khai thật m
 
 Một Attempt/WorkItem blocked giờ có named recovery action gọi được qua API thật — `V6-06C` (Run diagnostics,
 phụ thuộc `V6-06D`) chính thức unblock phần dependency riêng của nó.
+
+## V6-07 — Conversation message endpoints
+
+### Bối cảnh
+
+V6-07 nằm trong nhóm P2, phụ thuộc V6-00/V6-01A/V6-02/V6-02A — cả 4 đã merge (xác nhận qua
+`git log origin/master`: nhánh này branch từ `ab4ee48`, commit merge PR #43 của chính V6-04, đứng sau cả
+V6-06 (#42) và V6-10B (#41)). Trích nguyên văn spec (`docs/design/08-v6-api-projections.md` dòng 297-306,
+không diễn giải lại): "Mục tiêu: append/list canonical text messages và bounded context-used metadata...
+Phạm vi: text `AppendMessage`, list messages, `ContextSnapshot`/message reference metadata... Không làm:
+không binary upload, approval inference hoặc raw provider transcript... Thực hiện: reload project-owned
+conversation; trả bounded canonical refs và pagination... Verify: replay, scope, paging, context refs,
+redaction và free-text-control negative test... Hoàn thành khi: chat history là canonical platform state
+và không trở thành control plane." Nguồn: AK-ARCH-021, HE-11-M07.
+
+Theo doctrine của phiên giám sát, `baocaov6checklist.md` đang được 3 task song song khác ghi đồng thời
+(V6-05, V6-06A, V6-06D) — xung đột merge khi mở PR là bình thường, không phải bug.
+
+### Nghiên cứu
+
+Đọc toàn bộ `internal/app/message/commands.go` (283 dòng, kể cả doc comment đầu file) trước khi viết bất kỳ
+handler nào. Ba điểm quan trọng nhất:
+
+1. `AppendMessage` compose `internal/app/artifact.PrepareAttachment` (Put+Verify, NGOÀI transaction — I/O
+   thật cho content-addressed storage) với đúng MỘT `ports.UnitOfWork.WithSerializedWrite` (artifact row +
+   message row + domain event + receipt, atomic) — mirror chính xác shape idempotent-command
+   `internal/app/work.CreateRootWorkItem` đã thiết lập, kể cả 2 lớp `loadOrValidateReceipt`/
+   `loadOrValidateReceiptTx` (pre-check ngoài transaction rồi re-check y hệt bên trong, đóng TOCTOU race).
+2. `MaxContentSize = 1<<20` — content vượt trả `ErrContentTooLarge`, một `errors.New`-sentinel thường
+   (không phải `apperror.Error`), tầng HTTP phải tự map sang 4xx, không dùng được `httpapi.WriteAppError`.
+3. Canonical content LUÔN nhận `RetentionCanonicalContext` (ADR-017) — bake cứng trong chính command, không
+   phải field caller chọn được; xác nhận không thêm field nào cho việc này vào wire DTO.
+
+Đọc `internal/app/ports/contextsnapshot.go` toàn bộ — `ContextSnapshotRepository{CreateSnapshot, GetSnapshot,
+GetSnapshotByAttemptID}` là port RIÊNG (V5-04), không nằm trong package `message`, và doc comment của chính
+port này tự giải thích lý do tách khỏi `internal/domain/runtime.ContextSnapshot` cũ (spike-era, chỉ dùng cho
+crash-recovery, không liên quan scheduling/dispatch thật) — xác nhận không được lẫn 2 khái niệm, và route mới
+chỉ cần gọi `GetSnapshotByAttemptID` (đọc thuần, không viết gì mới lên port này).
+
+Đọc `internal/app/ports/message.go` — `MessageRepository` đã có sẵn `GetMessage(ctx, id)` (không chỉ
+`AppendMessage`/`ListMessagesForWorkItem` như prompt gốc liệt kê) — đây chính là method cho phép route
+context-snapshot load một Message bằng ID rồi tự cross-check `ProjectID`/`WorkItemID` mà không cần thêm bất
+kỳ method port nào mới.
+
+Đọc lại toàn bộ `internal/delivery/httpapi/workitem` (V6-04, đã merge PR #43) làm precedent kiến trúc gần
+nhất cùng shape "WorkItem-scoped": `dependencies.go`, `envelope.go` (`prepareCreateCommand`/
+`replayOrProceed`), `errors.go` (`writeQueryError`/`writeCommandError` tự enumerate sentinel, không dùng
+`WriteAppError` vì `internal/app/work`/`internal/app/message` không bao giờ trả `*apperror.Error`),
+`workitem_commands.go`'s `handleCreateChildWorkItem` (reload `workapp.GetWorkItem(ctx, uow, scope,
+workItemID)` TRƯỚC cả Idempotency-Key/body — pattern tái dùng nguyên vẹn cho route append/list/context-snapshot
+của task này để verify WorkItem thuộc đúng project trước khi chạm bất cứ thứ gì khác).
+
+Grep `CursorCodec|ResolveLimit|Fingerprint\(|httpapi\.Bind\(` trong toàn `internal/delivery/httpapi` chỉ ra
+đúng 4 file khớp: `page.go`, `page_test.go`, `cursor.go`, `cursor_test.go` — nghĩa là cơ chế cursor có chữ ký
+thật (`CursorCodec`/`CursorState`/`Bind`/`Fingerprint`) V6-02A đã xây từ trước đó CHƯA TỪNG được một route
+production nào thật sự dùng (kể cả V6-04's list WorkItem/children cũng cố tình không dùng cursor — đã tự ghi
+lại lý do trong chính section V6-04 ở trên). Task này là consumer PRODUCTION ĐẦU TIÊN của `CursorCodec`.
+
+Grep `redact.Matcher|redact.NewMatcher` trong `cmd/aw/serve.go` xác nhận composition root đã có sẵn đúng MỘT
+matcher process-lifetime: `redact.NewMatcher(sessionToken)`, hiện chỉ dùng cho `logging.New`. Không có bất kỳ
+route nào khác trong repo hiện tại cần một `redact.Matcher` ở tầng HTTP — quyết định tái dùng chính giá trị
+này thay vì phát minh field HTTP mới (xem mục Quyết định #3).
+
+Đọc `cmd/aw/serve.go` dòng 50-93 xác nhận đúng như prompt: `*artifactRoot` là flag `--artifact-root` đã bắt
+buộc và đã được validate tồn tại như một directory thật (dùng cho `readiness checker`), nhưng KHÔNG có bất kỳ
+`ports.ArtifactStore` nào được construct trong toàn bộ file — `internal/adapters/artifactstore.New(root)`
+(dòng 56, package đã có sẵn từ V1-08) chưa từng được gọi từ composition root thật. Đây chính là gap task này
+phải lấp, không phải thêm flag mới.
+
+Đọc `internal/app/message/attempt_linkage_test.go` — `seedFakeExecutionAttempt` là helper có sẵn dựng chuỗi
+WorkflowRun→NodeRun→ExecutionAttempt tối thiểu qua `tx.Runtime()` trực tiếp (không cần AgentProfile/Policy/
+scheduler), nhưng dùng `fake.UnitOfWork` — không phải sqlite thật. Copy sang test HTTP layer (sqlite thật) lộ
+ra ngay một gap: `fake.UnitOfWork` không enforce FK `workflow_runs.workflow_version_id REFERENCES
+workflow_versions(id)`, sqlite thật thì có — phải bổ sung một bước `tx.Definitions().PublishWorkflowVersion`
+thật (mirror đúng `internal/app/runtime/advance_test.go`'s `publishWorkflowVersionDocument`) trước khi tạo
+WorkflowRun, nếu không insert thất bại với lỗi generic "sqlite: unexpected error" (xem mục Test).
+
+### Quyết định
+
+1. **Subpackage riêng `internal/delivery/httpapi/message`**, đúng Contract chung §1.8 và mirror cấu trúc
+   `workitem` (V6-04): `dependencies.go`, `envelope.go`, `errors.go`, `dto.go`, `append.go`, `list.go`,
+   `context_snapshot.go`, `routes.go` — 8 file production, mỗi handler một file riêng theo route thay vì gộp
+   `*_commands.go`/`*_queries.go` như `workitem` (chỉ 3 route ở đây, không cần gộp).
+2. **`Content` trong `appendMessageBody` là JSON string thường, KHÔNG phải `[]byte`.** Go's `encoding/json`
+   tự động base64-encode một field kiểu `[]byte` — ép caller phải base64 hoá text thường là không cần thiết
+   và trái tinh thần "text `AppendMessage`" mà spec tự nêu. Chuyển `string(body.Content)` → `[]byte(...)`
+   ngay trước khi gọi `appmessage.AppendMessageRequest`. Hệ quả: `maxBodyBytes` (tầng route, trên
+   `httpapi.CanonicalizeJSON`) phải đặt GẤP ĐÔI `appmessage.MaxContentSize` (`2 * appmessage.MaxContentSize`,
+   không phải 1 MiB phẳng như `workitem/envelope.go`) — một message hợp lệ đúng bằng `MaxContentSize` phải
+   còn đủ chỗ để chạm được authoritative size-check thật của chính `AppendMessage` (và trả đúng
+   `ErrContentTooLarge`), thay vì bị transport-level `ErrBodyTooLarge` chặn sớm hơn vì JSON string-escaping
+   cộng các field nhỏ khác đẩy body vượt quá một giới hạn đặt quá sát.
+3. **`Dependencies.Matcher` là MỘT giá trị `redact.Matcher` do composition root cấp — không phải field HTTP
+   caller tự khai.** `redact.Matcher`'s own doc comment tự nói rõ: exact-value match trên một tập secret ĐÃ
+   BIẾT trước, không phải pattern/regex scan free text — "để client tự khai secret value cần redact" là một
+   request shape vô nghĩa dưới contract đó, vì secret "đã biết" của platform chỉ có thể là secret chính
+   process này tự mint/resolve, không phải bất cứ gì một request không tin cậy tự xưng. `cmd/aw/serve.go`
+   tách biến `matcher := redact.NewMatcher(sessionToken)` dùng CHUNG cho cả `logging.New` (đã có từ trước) lẫn
+   `message.Dependencies.Matcher` (mới) — không tạo matcher thứ hai. Trục redaction caller thật sự điều khiển
+   qua wire là `Sensitivity` (`PUBLIC`/`SENSITIVE`/`SECRET`, field tuỳ chọn, mặc định `PUBLIC` khi để trống).
+4. **Pagination `ListMessages` dùng ĐÚNG cơ chế `httpapi.CursorCodec`/`CursorState`/`Bind`/`Fingerprint` của
+   `cursor.go` (V6-02A) — không phải một cursor tự chế tối giản.** `appmessage.ListMessages` không tự phân
+   trang ở tầng SQL (trả trọn mảng đã sort theo `Sequence`) — quyết định giữ nguyên, không thêm method port
+   mới, dựa đúng framing doc comment của chính `commands.go`: "task chat is bounded, typed content" (khác
+   hẳn V5-05's raw process output cần streaming thật). Route tự cắt trang trong bộ nhớ trên mảng đã bounded
+   đó: `QueryFingerprint` chỉ hash `{WorkItemID}` (route này không có filter/sort nào khác); `Generation`
+   cố định 0 (đây là authoritative read trực tiếp trên bảng `messages`, không phải một projection có khái
+   niệm generation); `UpperWatermark` chốt ở `Sequence` lớn nhất TẠI THỜI ĐIỂM trang đầu tiên được phát hành
+   — đúng lời hứa doc comment của `CursorState`: "một row ghi sau khi walk bắt đầu không bao giờ lọt vào
+   giữa walk đó" (test `TestListMessages_PagesAndStaysStableAcrossConcurrentWrite` dựng đúng kịch bản: append
+   message thứ 3 GIỮA lúc lấy trang 1 và trang 2 của MỘT walk — trang 2 không thấy message thứ 3, một request
+   mới không mang cursor thì thấy đủ cả 3).
+5. **`getMessageContextSnapshot` trả 404 THƯỜNG (không phải `WriteResourceHidden` leakage-normalized) cho 2
+   case "message không có attempt" / "attempt chưa có snapshot".** Cả 2 case này caller ĐÃ được authorize
+   xem chính Message đó (đã qua scope-check WorkItem/Project) — tiết lộ "message này chưa có context" không
+   rò rỉ gì thêm, khác hẳn case "message thuộc project/work-item khác" (2 sentinel riêng
+   `errMessageHasNoAttempt`/`errContextSnapshotNotYetAvailable`, message lỗi khác nhau, giúp client phân biệt
+   được "sẽ không bao giờ có" và "chưa có nhưng có thể xuất hiện sau"). Chỉ "message không tồn tại/thuộc
+   project khác/thuộc work-item khác" mới fold vào `WriteResourceHidden` chung.
+6. **`contextSnapshotDetail` chỉ trả reference (ID/hash), không bao giờ trả nội dung resource/message thật.**
+   `messageRefView{MessageID}`, `resourceRefView{OwnerVersionID,ResourceKey,ContentHash}`,
+   `evidenceRefView{EvidenceID}`, `revisionView{RepositoryID,VCSObjectID,WorkspaceGeneration}` — mirror đúng
+   field domain type `contextsnapshot.Snapshot` đã có, không field nào chứa raw content — đúng "bounded,
+   read-only view" prompt yêu cầu, và đúng "Không làm: KHÔNG raw provider transcript" áp dụng luôn cho cả
+   metadata này, không chỉ cho message content.
+7. **Không route nào trong package này bao giờ suy luận state từ `Content`.** Route `appendMessage` chỉ nhận
+   `Content` như bytes mù (redact rồi lưu), không route nào của package `message` đọc lại `Content` để quyết
+   định bất cứ điều gì — đây là cách "Không làm: approval inference" được thoả mãn BẰNG CẤU TRÚC (không route
+   handler nào có logic rẽ nhánh theo nội dung message), kiểm chứng trực tiếp bằng
+   `TestAppendMessage_FreeTextLookingLikeApproval_NeverMutatesWorkItemState`.
+
+### Thực hiện
+
+- `internal/delivery/httpapi/message/` (package mới, 8 file production):
+  - `dependencies.go`: `Dependencies{UnitOfWork, ArtifactStore, IDs, Clock, Matcher, Cursor}`.
+  - `envelope.go`: `prepareCreateCommand`/`replayOrProceed` — mirror `workitem/envelope.go`, không có
+    `prepareUpdateCommand` (route trong package này không route nào update — Message immutable/append-only,
+    không route nào cần `If-Match`). `maxBodyBytes = 2 * appmessage.MaxContentSize` (Quyết định #2).
+  - `errors.go`: `writeQueryError`/`writeCommandError`/`writeValidationError`/`writeReceiptHashConflict` —
+    enumerate tường minh mọi sentinel `AppendMessage` thật sự trả (`ports.ErrPersistenceNotFound`,
+    `ErrScopeMismatch`, `ErrCrossProjectReference`, `ErrCrossWorkItemReference`, `ErrReceiptConflict`,
+    `appmessage.ErrContentTooLarge` → 413).
+  - `dto.go`: `sensitivityWire`/`parseSensitivity` (map `PUBLIC`/`SENSITIVE`/`SECRET` ↔ `redact.Sensitivity`,
+    trống mặc định `PUBLIC`), `messageRefDTO`/`messageToRefDTO`, `listMessagesResponse`,
+    `listQueryFingerprint`, `contextSnapshotDetail` + 4 view type + `contextSnapshotToDetail`.
+  - `append.go`: `handleAppendMessage` — reload `workapp.GetWorkItem` trước, validate `role`/`content`/
+    `contentType`/`sensitivity`, dispatch `appmessage.AppendMessage` với `deps.Matcher` cố định.
+  - `list.go`: `handleListMessages` — reload `GetWorkItem`, `httpapi.ResolveLimit`, gọi
+    `appmessage.ListMessages` (đọc trọn), cắt trang bằng `CursorCodec`/`Bind`/`Fingerprint` (Quyết định #4).
+  - `context_snapshot.go`: `handleGetMessageContextSnapshot` — reload `GetWorkItem`, load `Message` qua
+    `tx.Messages().GetMessage`, cross-check `ProjectID`/`WorkItemID` thủ công, resolve
+    `tx.ContextSnapshots().GetSnapshotByAttemptID` khi có `AttemptID`.
+  - `routes.go`: doc comment đầy đủ + `RegisterRoutes` — 3 `RouteDescriptor`
+    (`appendMessage`/`listMessages`/`getMessageContextSnapshot`), toàn bộ `ScopeKind: httpapi.ScopeProject`.
+- `cmd/aw/serve.go`: thêm import `internal/adapters/artifactstore` + `httpmessage
+  "internal/delivery/httpapi/message"`; construct `artifactStore, err := artifactstore.New(*artifactRoot)`
+  ngay sau bước validate directory có sẵn; tách biến `matcher := redact.NewMatcher(sessionToken)` dùng chung
+  cho `logging.New` (không đổi hành vi) và `message.Dependencies.Matcher` (mới); mint
+  `cursorCodec := httpapi.NewCursorCodec([]byte(idsource.Random{}.NewID()))` — cùng cách `sessionToken` đã
+  mint (per-process, không compiled-in) — rồi gọi `httpmessage.RegisterRoutes(routes,
+  httpmessage.Dependencies{UnitOfWork: uow, ArtifactStore: artifactStore, IDs: idsource.Random{}, Clock:
+  clock.System{}, Matcher: matcher, Cursor: cursorCodec})` ngay trước `routesFinalized = true`. Không flag
+  CLI mới nào được thêm.
+
+### Test
+
+`internal/delivery/httpapi/message/message_test.go` + `context_snapshot_test.go` (2 file, 22 test function,
+1 có 5 subtest — tổng 26 lượt chạy), toàn bộ real `httpapi.Server` (TCP listener thật, middleware chain
+thật) + real `*sqlite.Store` + real `internal/adapters/artifactstore.Store` — mirror đúng idiom
+`workitem_test.go`'s `newTestEnv`, mở rộng thêm `artifactStore`/`matcher`/`cursorCodec`:
+
+- **Replay**: `TestAppendMessage_Idempotent_ReplaysWithoutDuplicating` (key giống, body giống → 200, không
+  phải 201 lần 2, list vẫn đúng 1 message), `TestAppendMessage_DifferentBodySameIdempotencyKey_ReturnsConflict`
+  (409 trước khi tạo message thứ 2).
+- **Scope**: `TestAppendMessage_WorkItemBelongsToAnotherProject_ReturnsHiddenNotFound`,
+  `TestListMessages_WorkItemBelongsToAnotherProject_ReturnsHiddenNotFound`,
+  `TestGetMessageContextSnapshot_MessageBelongsToAnotherWorkItem_ReturnsHiddenNotFound` (Message thật, thuộc
+  work-item KHÁC trong CÙNG project — vẫn 404, chứng minh handler cross-check `WorkItemID` thật của Message
+  chứ không chỉ tin path), `TestGetMessageContextSnapshot_UnknownMessage_ReturnsHiddenNotFound`.
+- **Paging**: `TestListMessages_PagesAndStaysStableAcrossConcurrentWrite` (kịch bản concurrent-write đầy đủ,
+  xem Quyết định #4), `TestListMessages_EmptyConversation_ReturnsEmptyItemsNoCursor`,
+  `TestListMessages_InvalidCursor_Returns400`, `TestListMessages_CursorFromAnotherWorkItem_ResyncRequired`
+  (cursor hợp lệ, ký đúng, nhưng đổi work-item → 409 `RESYNC_REQUIRED`, chứng minh `Bind`'s
+  `QUERY_CHANGED` path thật sự reachable qua route, không chỉ test riêng của `cursor.go`).
+- **Context refs**: `TestGetMessageContextSnapshot_ResolvesWhenPresent` (dựng attempt thật + snapshot thật,
+  verify `SnapshotID`/`AttemptID`/`ManifestHash`/`MessageRefs`/`ResourceRefs` khớp), `..._MessageHasNoAttempt_
+  Returns404`, `..._AttemptWithoutSnapshotYet_Returns404` (attempt tồn tại thật nhưng chưa có snapshot).
+- **Redaction trên nội dung ĐÃ PERSIST thật** (đọc lại qua `tx.Artifacts().GetArtifact` +
+  `env.artifactStore.Open`, không phải absence-of-code check):
+  `TestAppendMessage_SensitivitySecret_RedactedInPersistedStorage` (Sensitivity=SECRET → `[REDACTED]`),
+  `TestAppendMessage_KnownProcessSecret_RedactedInPersistedStorage` (content = đúng `testSessionToken`, đã
+  đăng ký làm secret trong matcher của chính test server — redact dù Sensitivity để mặc định PUBLIC, chứng
+  minh exact-match Matcher thắng bất kể Sensitivity khai báo).
+- **Free-text-control negative test**: `TestAppendMessage_FreeTextLookingLikeApproval_NeverMutatesWorkItemState`
+  — append message content đúng chữ `"approve"`, so `workapp.GetWorkItem` trước/sau bằng `!=` (struct so sánh
+  trực tiếp, không field nào đổi).
+- Table test `TestAppendMessage_RejectsInvalidRequests` (5 case: role trống/role sai/content trống/
+  contentType trống/sensitivity sai → 400), `TestAppendMessage_ContentTooLarge_Returns413`,
+  `TestAppendMessage_MissingIdempotencyKey_Returns400`, `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet`
+  (đối chiếu đúng 3 operationId đóng, mirror `workitem_test.go`'s idiom).
+
+**Phát hiện thật khi viết fixture context-snapshot** (không phải bug trong code sản xuất, mà một khác biệt
+thật giữa `fake.UnitOfWork` và sqlite thật): copy nguyên `seedFakeExecutionAttempt` từ
+`internal/app/message/attempt_linkage_test.go` sang test dùng sqlite thật ban đầu fail với lỗi generic
+`INTERNAL: sqlite: unexpected error` — điều tra bằng cách đọc `internal/adapters/sqlite/start_workflow_run.go`
+xác nhận `workflow_runs.workflow_version_id` có FOREIGN KEY thật vào `workflow_versions(id)`, còn
+`fake.RuntimeRepository` không enforce FK gì cả nên helper gốc chưa từng cần publish version thật. Sửa bằng
+cách thêm đúng một bước `tx.Definitions().PublishWorkflowVersion(ctx, definition, version)` (mirror
+`internal/app/runtime/advance_test.go`'s `publishWorkflowVersionDocument`) trước khi tạo `WorkflowRun` — sau
+đó cả 2 test context-snapshot pass, không cần chạm bất kỳ code sản xuất nào.
+
+`go build ./...`, `go vet ./...` sạch trên toàn repo. `go test ./internal/delivery/httpapi/message/... -v`:
+26/26 xanh (~4-26s mỗi test, tổng ~26s — phần lớn thời gian nằm ở 2 test context-snapshot vì phải publish
+workflow version + workflow run + node run + attempt thật qua sqlite). `go test ./...` full suite chạy sau
+khi toàn bộ package `message` xanh, không regression ở bất kỳ package nào khác (không sửa bất kỳ interface/
+port có sẵn nào — chỉ thêm subpackage mới cộng 1 wiring bổ sung vào `cmd/aw/serve.go`).
+
+### Verify
+
+- **Replay**: xem mục Test — `AppendMessage` idempotent thật qua HTTP, conflict đúng 409 trước I/O thứ 2.
+- **Scope**: WorkItem/Message thuộc project hoặc work-item khác đều fold về đúng 1 response 404
+  leakage-normalized giống hệt ID không tồn tại — không route nào trong package tin path/body hơn state đã
+  reload thật.
+- **Paging**: cursor thật, ký thật, `UpperWatermark` chốt tại thời điểm trang đầu — message ghi giữa walk
+  không lọt vào walk đó nhưng lọt vào lần đọc mới không cursor; cursor sai work-item → resync thật (409), không
+  âm thầm trả sai kết quả.
+- **Context refs**: resolve đúng khi có `AttemptID` + snapshot thật; 404 rõ ràng (phân biệt 2 lý do) khi
+  không có `AttemptID` hoặc attempt chưa có snapshot — không case nào rơi vào 500 hay silent-empty.
+- **Redaction**: xác nhận trên bytes ĐÃ GHI THẬT xuống `ArtifactStore` (đọc lại qua `Open`, không suy diễn từ
+  absence of code) — cả `Sensitivity=SECRET` lẫn exact-match Matcher (secret của chính process) đều redact
+  đúng.
+- **Free-text-control negative test**: message nội dung y hệt một quyết định approval không hề đổi bất kỳ
+  field nào của WorkItem — proof trực tiếp "message không bao giờ là control signal", đúng cả 2 phía "Không
+  làm" của task này (approval inference) lẫn của V6-06A (map message text thành control) đã tự nêu độc lập.
+- **Hoàn thành khi — "chat history là canonical platform state và không trở thành control plane"**: đúng,
+  bằng cấu trúc (không route nào đọc lại `Content` để quyết định state) lẫn bằng test trực tiếp.
+
+### Kết quả
+
+Branch `feat/v6-07-conversation-message-endpoints` từ `origin/master` tại `ab4ee48` (sau PR #43/#42/#41).
+Package mới `internal/delivery/httpapi/message` (8 file production + 2 file test, ~/tổng cộng 26 test
+function/subtest, real HTTP + real sqlite + real ArtifactStore). 3 route HTTP thật lần đầu tồn tại: `POST/GET
+/projects/{projectId}/work-items/{workItemId}/messages`, `GET
+/projects/{projectId}/work-items/{workItemId}/messages/{messageId}/context-snapshot`. `cmd/aw/serve.go` được
+sửa để construct `ports.ArtifactStore` THẬT lần đầu tiên trong toàn bộ composition root (tái dùng flag
+`--artifact-root` đã có, không flag mới), tách matcher dùng chung cho logging lẫn redaction message, và mint
+`CursorCodec` per-process cho pagination — grep xác nhận `httpmessage.RegisterRoutes` thật sự có trong
+`cmd/aw/serve.go`, không chỉ tồn tại ở test package-level (đúng lo ngại doctrine đã nêu từ vụ V6-04 ban đầu).
+Không migration mới (xác nhận migration cao nhất trên `origin/master` vẫn là `0037`, schema `messages`/
+`artifacts`/`attempt_context_snapshots` đã đủ từ V5-01/V5-02/V5-04). `go build/vet/test ./...` sạch, không
+regression.
