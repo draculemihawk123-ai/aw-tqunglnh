@@ -334,6 +334,31 @@ func (d *DefinitionsRepository) LoadVersion(_ context.Context, versionID string)
 	return fields, nil
 }
 
+// GetDefinition mirrors sqlite's DefinitionsRepository.GetDefinition
+// (V6-05): reads back a definitionRecord/workflowDefinitions entry CreateDefinition
+// already wrote, routed by kind the same way CreateDefinition itself is —
+// a row stored under a different kind than asked for is indistinguishable
+// from "not found", matching the real repository's own (id, kind)-filtered
+// SQL.
+func (d *DefinitionsRepository) GetDefinition(_ context.Context, kind definition.Kind, id string) (definition.Fields, error) {
+	if kind == definition.KindWorkflow {
+		wfDefinition, ok := d.workflowDefinitions[id]
+		if !ok {
+			return definition.Fields{}, fmt.Errorf("fake: %w: workflow definition %s", ports.ErrPersistenceNotFound, id)
+		}
+		scope := definition.GlobalScope()
+		if wfDefinition.ProjectID != nil {
+			scope = definition.ProjectScope(*wfDefinition.ProjectID)
+		}
+		return definition.Fields{Kind: definition.KindWorkflow, Scope: scope, Name: wfDefinition.Name, Status: wfDefinition.Status, Version: wfDefinition.Version}, nil
+	}
+	record, ok := d.definitions[id]
+	if !ok || record.Kind != kind {
+		return definition.Fields{}, fmt.Errorf("fake: %w: definition %s (kind %s)", ports.ErrPersistenceNotFound, id, kind)
+	}
+	return definition.Fields{Kind: record.Kind, Scope: record.Scope, Name: record.Name, Status: record.Status, Version: 1}, nil
+}
+
 // Seed registers fields as resolvable by its own ID() — test setup
 // standing in for a real publish that already happened before the code
 // under test ever runs.

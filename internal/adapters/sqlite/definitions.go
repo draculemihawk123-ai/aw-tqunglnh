@@ -320,6 +320,63 @@ func (r definitionsRepository) CreateDefinition(ctx context.Context, id string, 
 	return createSharedDefinitionTx(ctx, r.tx, id, kind, scope, name, now)
 }
 
+// GetDefinition implements ports.DefinitionsRepository (V6-05): reads one
+// Definition row back — the read half CreateDefinition's own writer half
+// never had until now (see that interface method's own doc comment for
+// why). Routed by kind exactly like CreateDefinition/PublishVersion/
+// ListVersions: KindWorkflow reads workflow_definitions, every other kind
+// reads the shared definitions table filtered by (id, kind) so a row
+// stored under a different kind than asked for reads as
+// ports.ErrPersistenceNotFound, never a distinct "wrong kind" error.
+func (r definitionsRepository) GetDefinition(ctx context.Context, kind definition.Kind, id string) (definition.Fields, error) {
+	if kind == definition.KindWorkflow {
+		var name, status string
+		var projectID sql.NullString
+		var version uint64
+		err := r.tx.QueryRowContext(ctx,
+			`SELECT name, status, project_id, version FROM workflow_definitions WHERE id = ?`, id,
+		).Scan(&name, &status, &projectID, &version)
+		if errors.Is(err, sql.ErrNoRows) {
+			return definition.Fields{}, fmt.Errorf("%w: workflow definition %s", ports.ErrPersistenceNotFound, id)
+		}
+		if err != nil {
+			return definition.Fields{}, MapSQLiteError(fmt.Errorf("load workflow definition: %w", err))
+		}
+		return definition.Fields{
+			Kind: definition.KindWorkflow, Scope: scopeFromNullableProjectID(projectID),
+			Name: name, Status: definition.Status(status), Version: version,
+		}, nil
+	}
+
+	var name, status string
+	var projectID sql.NullString
+	var version uint64
+	err := r.tx.QueryRowContext(ctx,
+		`SELECT project_id, name, status, version FROM definitions WHERE id = ? AND kind = ?`, id, string(kind),
+	).Scan(&projectID, &name, &status, &version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return definition.Fields{}, fmt.Errorf("%w: definition %s (kind %s)", ports.ErrPersistenceNotFound, id, kind)
+	}
+	if err != nil {
+		return definition.Fields{}, MapSQLiteError(fmt.Errorf("load definition: %w", err))
+	}
+	return definition.Fields{
+		Kind: kind, Scope: scopeFromNullableProjectID(projectID),
+		Name: name, Status: definition.Status(status), Version: version,
+	}, nil
+}
+
+// scopeFromNullableProjectID converts the definitions/workflow_definitions
+// tables' own nullable project_id column into a definition.Scope — NULL
+// means global, mirroring createSharedDefinitionTx's own inverse
+// (scope.IsGlobal() -> a nil projectID bind parameter).
+func scopeFromNullableProjectID(projectID sql.NullString) definition.Scope {
+	if !projectID.Valid {
+		return definition.GlobalScope()
+	}
+	return definition.ProjectScope(project.ProjectID(projectID.String))
+}
+
 // PublishVersion implements ports.DefinitionsRepository (V2-10): the
 // Tx-composable equivalent of Store.PublishDefinitionVersion, for a
 // command handler (internal/app/definitions) that needs the version

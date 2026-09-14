@@ -3412,3 +3412,315 @@ thật lần đầu tồn tại trong toàn bộ V6: `POST/GET /projects`, `GET 
 đó sạch. Phát hiện và ghi lại 1 gap thật ở tầng persistence (UNIQUE constraint không được `MapSQLiteError`
 phân loại — xem mục Test), nằm ngoài phạm vi task này, được xử lý đúng mức bằng cách sửa fixture của chính
 mình thay vì lan sang sửa code đã merge trước đó.
+
+## V6-05 — Definition authoring endpoints
+
+### Bối cảnh
+
+V6-05 nằm trong nhóm P2 "application/HTTP slices sau V6-00 + V6-01A + V6-02 + V6-02A" — cả 4 dependency đã
+merge trước khi task này bắt đầu (V6-00 PR #29, V6-01A PR #35, V6-02 PR #39, V6-02A PR #33). Branch từ
+`origin/master` tại `ab4ee48` ("feat(v6-04): WorkItem, family, readiness and scope-expansion endpoints
+(#43)") — tại thời điểm đó `baocaov6checklist.md` đã có 3414+ dòng, V6-03A/V6-04/V6-06/V6-10B đều đã merge.
+Theo đúng brief của task, 3 sibling khác trong cùng batch (V6-06A, V6-06D, V6-07) đang chạy song song và
+cũng ghi vào chính file này — merge conflict khi mở PR là kỳ vọng bình thường, không phải lỗi.
+
+Trích nguyên văn spec (dòng 228-238 `docs/design/08-v6-api-projections.md`, không diễn giải lại): "Mục
+tiêu: create/validate/publish/list/detail/version/diff cho global và project definitions... Phạm vi: bounded
+text/file payload và exact immutable version queries... Không làm: không persist invalid draft thành runtime
+version hoặc tin scope từ payload... Thực hiện: route derives scope; item/version reload authoritative
+Definition; publish trả source/compiled hash và exact pins; diff operands phải cùng scope... Verify: isolated
+schemas, location diagnostics, replay, version/diff và global/project negative matrix... Hoàn thành khi:
+UI/CLI author→validate→publish→inspect không seed SQLite... Nguồn: AK-ARCH-001, ADR-028."
+
+Khác mọi endpoint task trước đó (V6-03A/V6-04/V6-06/V6-10B đều chỉ có scope PROJECT), V6-05 là task đầu tiên
+phải phục vụ CẢ HAI closed scope kind của ADR-025 (INSTALLATION lẫn PROJECT) cho cùng một tập resource —
+buộc phải tự thiết kế convention "route derives scope" từ đầu, không có route hai-scope nào trước đó để soi.
+
+### Nghiên cứu
+
+Đọc lại toàn bộ 10 file nền tảng `internal/delivery/httpapi` (route.go, errors.go, page.go, cursor.go,
+freshness.go, action.go, media.go, sse.go, commandenvelope.go, receiptreplay.go) — xác nhận lại đúng flow
+V6-04 đã tài liệu hoá: `RequireIdempotencyKey`/`RequireIfMatch` → `CanonicalizeJSON` → `SemanticHash` →
+`LookupReceipt` → `WriteReceiptReplay`/`ErrReceiptHashConflict` → dispatch → `EncodeResult`. Đọc
+`internal/delivery/httpapi/workitem` (9 file) và `.../catalog` (7 file) làm structural precedent — xác nhận
+`catalog.go`'s `createProject`/`listProjects` (dùng `ports.InstallationScope()`) là ví dụ DUY NHẤT trong repo
+của một route installation-scoped thật (mọi route khác của catalog và toàn bộ workitem đều project-scoped) —
+không có route nào trước đây từng phải chọn GIỮA 2 scope theo path prefix như V6-05 cần.
+
+Đọc `internal/app/definitions/commands.go` (472 dòng) TOÀN BỘ trước khi viết handler đầu tiên. Xác nhận
+chính xác 5 hàm public: `CreateDefinition` (nhận `Scope` trực tiếp từ caller, không tự suy), `ValidateDraft`
+(dry-run THUẦN — không nhận `ports.Command`, comment gốc: "a dry run has no side effect to make idempotent"),
+`PublishDefinitionVersion` (đọc kỹ doc comment riêng của hàm này — phân biệt 2 loại "duplicate": cùng
+IdempotencyKey+RequestHash → replay từ receipt, KHÔNG chạm `PublishVersion`; IdempotencyKey khác nhau nhưng
+nội dung compile giống hệt → vẫn dispatch `PublishVersion` nhưng `PublishVersion` tự dedupe theo
+`CompiledHash` và hàm này chỉ append event khi thực sự là version mới — 2 test riêng trong `commands_test.go`
+đã chứng minh cả hai nhánh), `ListVersions`, `LoadVersion`.
+
+Grep + đọc chữ ký `PublishRequest`/`Compile`/`CompileFrom`/`<Kind>Definition` của cả 8 package
+(`agentprofile`, `block`, `command`, `engineeringpack`, `gate`, `layer`, `policy`, `skill`) — xác nhận bằng
+lệnh grep thật (không đoán) rằng cả 8 kind PERFECTLY UNIFORM: `<Kind>Definition{ID <Kind>DefinitionID, Fields
+definition.Fields}`, `PublishRequest{VersionID, VersionNumber, SchemaVersion, Document, Dependencies,
+PublishedBy, PublishedAt}`, `CompileFrom(def, rawDocument []byte, format authoring.Format, req PublishRequest)
+(definition.VersionFields, error)`. Kind thứ 9 (WORKFLOW) khác cấu trúc: `workflowcompiler.CompileAndResolve`
+cần một `ports.UnitOfWork` thật để resolve dependency pin qua registry, nên được truyền như
+`WorkflowDefinition`/`WorkflowRequest` riêng thay vì một `Compile` closure.
+
+**Phát hiện quan trọng nhất: `cmd/aw/definition.go` (971 dòng, V2-11) đã là bản triển khai THAM CHIẾU chính
+xác cho toàn bộ dispatch 9-kind này** — đọc toàn bộ file trước khi viết bất kỳ dòng dispatch nào của chính
+mình. `compileClosureForKind` (9 case gần giống hệt nhau — cố ý, không dùng generic, để type an toàn từng
+kind không lẫn lộn), `buildValidateDraftRequest`/`buildPublishRequest`, `loadAnyVersion` (fallback thử shared-
+table trước, `store.LoadWorkflowVersion` sau — dùng khi Kind chưa biết trước), và cả `diff` subcommand
+(`versionSummaryView`/`diffLineView`/`versionDiffView`/`diffLines`/`prettyJSONLines`, thuật toán LCS chuẩn) —
+đúng shape V6-05 cần dựng lại cho HTTP, không phải phát minh từ đầu.
+
+**Phát hiện gap thật số 1 — không có "get one Definition" query ở BẤT KỲ tầng nào.**
+`ports.DefinitionsRepository` (đọc hết `internal/app/ports/unitofwork.go` dòng 267-329) chỉ có `LoadVersion`,
+`CreateDefinition`, `PublishVersion`, `PublishWorkflowVersion`, `ListVersions`, `GetWorkflowVersion` — không
+có cách nào reload lại `Kind`/`Scope`/`Name`/`Status`/generation hiện tại của một Definition đã tồn tại.
+`cmd/aw/definition.go`'s riêng `syntheticDraftFields` (dòng 593-607) tự thừa nhận nguyên văn: "This CLI has
+no 'get definition' query to load a real Definition's current Status from... StatusDraft is therefore not a
+guessed placeholder here; it is the only Status any real Definition row can currently have" — đúng vì không
+có `ActivateDefinition`/`ArchiveDefinition` command nào tồn tại. CLI né được gap này vì operator gõ
+`--project-id` trực tiếp, tự chịu trách nhiệm đúng scope. HTTP KHÔNG được phép né — task's "Không làm: ...
+tin scope từ payload" đòi hỏi chính route phải tự CHỨNG MINH DefinitionID thật sự thuộc scope route đó, không
+chỉ tin path/body. Đọc `internal/adapters/sqlite/definitions.go`'s `publishSharedDefinitionVersionTx` xác
+nhận thêm: hàm này tự load `status, project_id FROM definitions WHERE id=? AND kind=?` nhưng KHÔNG hề so
+sánh với `cmd.Scope` — nếu tầng HTTP không tự kiểm tra trước, một request gọi route
+`/projects/wrong-project/definitions/BLOCK/{id}/publish` cho một `{id}` thực chất thuộc project KHÁC (hoặc
+global) vẫn sẽ publish thành công, vi phạm thẳng "Không làm" của chính task này.
+
+**Phát hiện gap thật số 2 — không có `Diff` query nào tồn tại** (xác nhận đúng như prompt đã cảnh báo trước,
+verify bằng grep thật): `cmd/aw/definition.go`'s `diff` subcommand tự dựng toàn bộ so sánh cục bộ, không gọi
+một query application-layer nào — vì không có query nào để gọi.
+
+Đọc `ports.DefinitionsRepository.LoadVersion`'s doc comment xác nhận CHỈ resolve shared-kind Version (8
+kind), KHÔNG BAO GIỜ resolve WORKFLOW — WORKFLOW có bảng riêng (`workflow_definitions`/`workflow_versions`).
+`GetWorkflowVersion` (V4-02) đã tồn tại làm counterpart Tx-composable cho WORKFLOW. `cmd/aw/definition.go`'s
+`loadAnyVersion` (dòng 384-418) đã tự giải quyết đúng vấn đề "biết VersionID nhưng chưa biết Kind" bằng cách
+thử shared-table trước, fallback sang `store.LoadWorkflowVersion` khi lỗi CHÍNH XÁC là
+`ports.ErrDefinitionVersionNotFound` — không che lỗi khác.
+
+Đọc `internal/domain/authoring/diagnostic.go` toàn bộ — xác nhận `Diagnostic{Line, Column, Path, What, Why,
+Fix}` với `Line`/`Column` 1-based, `Path` dot-separated field path — đây chính xác là dữ liệu "location
+diagnostics" Verify bullet đòi hỏi, và `block.ValidateDocument`/`skill.ValidateDocument` (grep xác nhận cả 8
+kind) đều trả `authoring.Diagnostics` (implement `error` qua value receiver, nên `errors.As(err, &diags)` bắt
+được trực tiếp, không cần unwrap qua `fmt.Errorf("%w", ...)`). WORKFLOW không có path này: tài liệu WORKFLOW
+decode bằng `json.Decoder` trần (không qua `authoring.DecodeStrict`), lỗi cấu trúc là
+`*workflow.ValidationError{Problems []string}` (không Line/Column/Path) hoặc
+`*workflowcompiler.ResolutionError`/`*workflowcompiler.AgentRoleValidationError` cùng shape.
+
+Chạy thử thật (không phải đọc code suông) một publish BLOCK có khai `dependencies` (pin tới một
+`definitionId` chưa từng tồn tại) — ra `404`, không phải `400`. Điều tra: `publishSharedDefinitionVersionTx`
+tự resolve TỪNG pin khai trong `req.Dependencies.Pins` bằng `SELECT project_id FROM definitions WHERE id=?`
+thật — dù `block.Compile` (hàm pure, không I/O) không hề đụng registry, tầng REPOSITORY publish vẫn resolve
+pin thật. Đây là phát hiện thật sự trong lúc viết test (không phải đọc source suông), sửa fixture của chính
+test (seed một Definition `POLICY` thật trước khi publish pin trỏ tới nó) thay vì coi là bug.
+
+### Quyết định
+
+1. **14 route = 7 operation × 2 scope, KHÔNG dùng 9 segment path riêng cho từng Kind.** `{kind}` là một
+   `net/http.ServeMux` path wildcard (Go 1.22+, xác nhận `go.mod`'s `go 1.27.0` đủ mới), validate bằng
+   `definition.Kind.Valid()` ngay ở tầng route — mirror đúng convention `CreateDefinition`/`PublishVersion`/
+   `ListVersions` chính chúng đã dùng `kind` như một parameter runtime, không phải type riêng theo route.
+2. **2 route (get-one-version, diff) KHÔNG mang `{kind}`.** `VersionFields.Kind()` đã tự mang thông tin đó
+   sau khi resolve — mirror đúng `cmd/aw/definition.go`'s `loadAnyVersion`/diff (cả hai cũng không cần
+   `--kind` flag). Route path: `GET /definitions/versions/{versionId}` và
+   `GET /definitions/versions/diff?a=&b=` (cộng cặp project-scoped) — literal `"versions"` ở vị trí thứ 2 ưu
+   tiên hơn wildcard `{kind}` theo đúng quy tắc "literal thắng wildcard" của `net/http.ServeMux` (Go 1.22
+   release notes' chính ví dụ "/posts/latest" vs "/posts/{id}").
+3. **Thêm `GetDefinition(ctx, kind, id) (definition.Fields, error)` vào `ports.DefinitionsRepository`** —
+   đóng Gap thật #1. Implement cả sqlite (route theo kind giống `CreateDefinition`/`PublishVersion` —
+   WORKFLOW đọc `workflow_definitions`, 8 kind kia đọc `definitions` filter `(id, kind)`) lẫn fake (đọc lại
+   `definitionRecord`/`workflowDefinitions` map đã có sẵn từ `CreateDefinition`). Một row lưu dưới kind KHÁC
+   với kind caller hỏi đọc y hệt "không tồn tại" (`ports.ErrPersistenceNotFound`), không phải lỗi "sai kind"
+   riêng — đây chính là cơ chế cho phép Verify "isolated schemas" đúng nghĩa mà không cần logic riêng.
+4. **`GetDefinition` này là điểm DUY NHẤT mọi route mutation/query reload target trước khi làm bất cứ gì
+   khác** (`authoritative.go`'s `loadDefinitionInScope`/`loadVersionInScope`) — route tự derive scope từ path
+   (global prefix hoặc `{projectId}` thật), so với `fields.Scope` reload được; không khớp → cùng response
+   `WriteResourceHidden` (404) leakage-normalized, y hệt "does not exist" — không phân biệt được "không tồn
+   tại" với "tồn tại nhưng sai scope". Đây là cách đóng chính xác lỗ hổng đã tìm thấy ở Gap thật #1
+   (`publishSharedDefinitionVersionTx` tự nó không kiểm tra).
+5. **Thêm `LoadAnyVersion` vào `internal/app/definitions` (file mới `queries.go`), KHÔNG sửa
+   `cmd/aw/definition.go`'s bản riêng của nó.** Đóng Gap thật #1 phần "get version không cần biết Kind" ở
+   TẦNG APPLICATION (không phải CLI-local) để route get-version/diff có một hàm chung để gọi — mirror logic y
+   hệt `cmd/aw`'s `loadAnyVersion` (thử `LoadVersion` trước, fallback `tx.Definitions().GetWorkflowVersion`
+   khi lỗi chính xác là `ports.ErrDefinitionVersionNotFound`) nhưng là bản ADDITIVE, không refactor code CLI
+   đã có — giảm rủi ro diff, không đụng file `cmd/aw` nào ngoài `serve.go`'s dòng wiring.
+6. **`validate` KHÔNG bọc `ports.Command`, không đòi `Idempotency-Key`.** Đúng nguyên văn doc comment của
+   chính `ValidateDraft`: dry run không có side effect để cần idempotent. Test
+   `TestValidateDefinitionDraft_Block_HappyPath` tự xác nhận cơ học: gọi validate xong, list versions vẫn
+   rỗng — không route nào trong `validate.go` gọi bất kỳ hàm ghi nào (đóng đúng "Không làm: không persist
+   invalid draft thành runtime version" — mở rộng ra: validate không persist BẤT KỲ draft nào, hợp lệ hay
+   không).
+7. **`create` và `publish` đều CREATE-shaped (đòi `Idempotency-Key`, KHÔNG đòi `If-Match`).** Cả
+   `CreateDefinitionRequest` lẫn `PublishDefinitionVersionRequest` đều không có field `ExpectedVersion` —
+   publish một Version mới luôn APPEND, không bao giờ overwrite state hiện có, nên không có precondition nào
+   để `If-Match` bảo vệ — mirror đúng lý do `CreateChildWorkItem` (V6-04) đã dùng.
+8. **Dispatch 9-kind (`dispatch.go`, `document.go`) là bản COPY ĐỘC LẬP của `cmd/aw/definition.go`'s
+   `compileClosureForKind`/`buildValidateDraftRequest`/`buildPublishRequest`, không share code.** Đúng lý do
+   `internal/app/definitions/commands.go`'s riêng `workflowVersionToVersionFields` đã tự giải thích (đã bị
+   duplicate 3 lần trong repo trước task này: `commands.go`, `internal/adapters/sqlite/definitions.go`,
+   `cmd/aw/definition.go`): package này không được phép import `cmd/aw` (là `package main`, và ngược hướng
+   phụ thuộc dù có thể). Có MỘT cải tiến thật so với bản CLI: `fields` truyền vào mỗi case dispatch là
+   `definition.Fields` reload THẬT qua `GetDefinition` (Gap thật #1 vừa đóng), không phải
+   `syntheticDraftFields` — với WORKFLOW, `workflowRequestFrom` dùng thẳng `fields.Name`/`Status`/`Version`
+   reload thật thay vì để caller tự khai `--name` khớp tay như CLI phải làm.
+9. **`versionSummaryView`/`diffLineView`/`versionDiffView`/`diffLines`/`prettyJSONLines` (`diff.go`) là bản
+   COPY ĐỘC LẬP THỨ TƯ của cùng ý tưởng đó** — đóng Gap thật #2, giữ cục bộ trong package này thay vì promote
+   lên `internal/app/definitions` (đúng lý do commands.go đã cho: đây là response-shaping cho một caller cụ
+   thể, không phải query application-layer tái sử dụng được).
+10. **Error mapping (`errors.go`) enumerate tường minh từng sentinel thật đọc từ source** (không dùng
+    `httpapi.WriteAppError` làm catch-all, vì `internal/app/definitions` không tự trả `*apperror.Error`) —
+    `ports.ErrPersistenceNotFound`/`ErrDefinitionVersionNotFound` → `WriteResourceHidden`;
+    `ErrReceiptConflict`/`ErrPersistenceAlreadyExists` → 409; `ErrCrossProjectDependency` → 400;
+    `authoring.Diagnostics` → 400 với MỘT `ErrorDetail` mỗi `Diagnostic` (Field=`Path`, Message nhúng
+    `Line:Column` thật — đây chính là cách đóng Verify "location diagnostics" cụ thể, không chỉ nói suông);
+    `*workflow.ValidationError`/`*workflowcompiler.ResolutionError`/`*workflowcompiler.AgentRoleValidationError`
+    → 400 với `ErrorDetail` mỗi `Problem` (không Field, vì WORKFLOW không có source position).
+11. **Diff enforce "cùng scope" bằng cách check TỪNG operand độc lập với scope của CHÍNH route** (không phải
+    so A với B). Mạnh hơn so sánh cặp: nếu A hoặc B thuộc một scope thứ ba khác hẳn route lẫn operand còn
+    lại, vẫn bị từ chối — không chỉ khi A≠B. Thêm guard `a.Kind() != b.Kind()` → 400 (không phải leakage,
+    Kind không nhạy cảm) — không được spec đòi hỏi trực tiếp nhưng là invariant hợp lý (so sánh SourceHash
+    của một BLOCK với một SKILL vô nghĩa).
+12. **`maxBodyBytes = 1 MiB`** — giống hệt `workitem`/`catalog` đã chọn, đúng "Phạm vi: bounded text/file
+    payload".
+
+### Thực hiện
+
+- `internal/app/ports/unitofwork.go`: `DefinitionsRepository` thêm `GetDefinition(ctx, kind, id)
+  (definition.Fields, error)`.
+- `internal/adapters/sqlite/definitions.go`: implement `GetDefinition` (route theo kind, WORKFLOW đọc
+  `workflow_definitions`, 8 kind kia đọc `definitions` filter `(id,kind)`) + helper
+  `scopeFromNullableProjectID`.
+- `internal/app/ports/fake/unitofwork.go`: implement `GetDefinition` tương ứng (đọc map `definitions`/
+  `workflowDefinitions` đã có).
+- `internal/app/definitions/queries.go` (file mới): `GetDefinition` (wrap `tx.Definitions().GetDefinition`
+  qua `WithReadOnly`), `LoadAnyVersion` (fallback shared-table → `GetWorkflowVersion`).
+- `internal/delivery/httpapi/definitions/` (package mới, 14 file production):
+  - `dependencies.go`: `Dependencies{UnitOfWork, IDs, Clock}`.
+  - `routes.go`: doc comment đầy đủ + `RegisterRoutes` — 14 `RouteDescriptor`.
+  - `envelope.go`: `prepareCommand` (create-shaped, dùng chung cho cả create lẫn publish), `replayOrProceed`,
+    `pathKind` (parse+validate `{kind}`), `maxBodyBytes`.
+  - `authoritative.go`: `loadDefinitionInScope`, `loadVersionInScope` — điểm DUY NHẤT scope được kiểm tra.
+  - `dto.go`: `scopeView`, `definitionView`, `dependencyPinBody`, `versionFieldsView`, `versionListResponse`,
+    `emptyBody`, `definitionScopeFromProjectID`, `scopesMatch`.
+  - `dispatch.go`: `compileInputs`, `compileClosure` (8-way switch), `decodeWorkflowDocument`,
+    `workflowRequestFrom`.
+  - `document.go`: `authorDocumentBody`, `parseDocumentFormat`, `buildCandidate` (Kind-selected either/or
+    dùng chung bởi validate lẫn publish).
+  - `create.go`: `handleCreateDefinition`/`handleCreateProjectDefinition` + `createDefinitionCore`.
+  - `validate.go`: `handleValidateDefinitionDraft`/`handleValidateProjectDefinitionDraft` +
+    `validateDefinitionDraftCore`.
+  - `publish.go`: `handlePublishDefinitionVersion`/`handlePublishProjectDefinitionVersion` +
+    `publishDefinitionVersionCore` (tự tính `versionNumber` thật cho WORKFLOW qua `ListVersions`).
+  - `detail.go`: `handleGetDefinition`/`handleGetProjectDefinition`,
+    `handleListDefinitionVersions`/`handleListProjectDefinitionVersions`.
+  - `version.go`: `handleGetDefinitionVersion`/`handleGetProjectDefinitionVersion`.
+  - `diff.go`: `handleDiffDefinitionVersions`/`handleDiffProjectDefinitionVersions` + view/diff helper.
+  - `errors.go`: `writeQueryError`, `writeCommandError`, `writeDiagnostics`, `writeProblems`,
+    `writeValidationError`, `writeReceiptHashConflict`, `writeAppOrInternal`.
+- `cmd/aw/serve.go`: thêm import `httpdefinitions "internal/delivery/httpapi/definitions"` + 1 dòng
+  `httpdefinitions.RegisterRoutes(routes, httpdefinitions.Dependencies{UnitOfWork: uow, IDs:
+  idsource.Random{}, Clock: clock.System{}})`, ngay cạnh `httpapi.RegisterWorkspaceRoutes` đã có — xác nhận
+  bằng `grep -n httpdefinitions cmd/aw/serve.go` (2 dòng: import + gọi) NGAY khi vừa thêm, không đợi tới lúc
+  hoàn thành mới kiểm tra.
+
+### Test
+
+34 test function mới, real `httpapi.Server` (TCP listener thật, middleware chain thật) + real `*sqlite.Store`
+— không mock, mirror đúng `workitem_test.go`'s `newTestEnv` idiom — trải trên 5 file:
+
+- `definitions_test.go`: harness dùng chung (`testEnv`, `do`, `decodeInto`, `seedProject`) + 4 hằng số
+  document mẫu (`validBlockDocumentJSON`, `invalidBlockDocumentJSON`, `minimalWorkflowDocumentJSON` — START→
+  END thuần, không node AGENT/COMMAND nào nên `collectReferences` trả về rỗng, không cần seed registry fixture
+  nào để compile thành công — `invalidWorkflowDocumentJSON`).
+- `create_test.go` (7): global happy path, project happy path, thiếu Idempotency-Key, thiếu field, kind sai,
+  replay (cùng key → 200, không phải 201 lần 2 — đúng `WriteReceiptReplay`'s status hardcode, y hệt phát
+  hiện của V6-04), cùng key khác body → 409.
+- `validate_test.go` (11): BLOCK happy path (+ xác nhận KHÔNG version nào được persist), location diagnostics
+  (mỗi `ErrorDetail.Field` khác rỗng — chứng minh path thật, không phải message chung chung), definition
+  không tồn tại → 404, **isolated schemas** (id tạo dưới BLOCK, gọi validate qua path SKILL cùng id → 404),
+  WORKFLOW happy path, WORKFLOW structural problems có detail, WORKFLOW từ chối YAML (không có decode path),
+  **3 test negative matrix global/project**: project-scoped qua route global → 404, project A qua route
+  project B → 404, global qua route project → 404 (đủ 3 chiều lệch scope có thể xảy ra), thiếu `content` →
+  400.
+- `publish_test.go` (7): happy path (seed một Definition POLICY thật trước — phát hiện thật ghi ở mục Nghiên
+  cứu — rồi xác nhận CẢ 4: `sourceHash`/`compiledHash`/`canonicalSource`/`compiledSnapshot` không rỗng VÀ
+  pin khai đúng echo lại y hệt), replay same-key (không version thứ 2), **different-key same-content dedupe**
+  (AK-ARCH-005B — vẫn 201 nhưng cùng version id, cùng compiledHash, list versions vẫn chỉ có 1), same-key
+  different-body → 409, definition không tồn tại → 404, wrong-scope → 404 (VÀ xác nhận route project đúng
+  vẫn publish thành công — chứng minh không phải toàn bộ hệ thống hỏng, chỉ đúng route sai bị chặn), WORKFLOW
+  happy path (VersionNumber thật = 1, không phải placeholder).
+- `version_diff_test.go` (9): get-version kind-agnostic (không cần biết BLOCK hay gì), wrong-scope → 404,
+  version không tồn tại → 404, diff identical (2 definitionId khác nhau, cùng content → `identical=true`,
+  mọi diff line đều "equal"), diff different (đổi 1 field → `identical=false`, có ít nhất 1 dòng add/remove),
+  **diff cross-scope → 404** (một operand global, một project — đúng Verify "diff operands phải cùng scope"),
+  diff cross-kind → 400 (BLOCK vs SKILL), thiếu query param → 400, diff project-scoped happy path.
+
+`go test ./internal/delivery/httpapi/definitions/... -v` — 34/34 PASS, ~35s. Đã chạy lặp lần đầu ra 3 fail
+(2 do hiểu sai hành vi `WriteReceiptReplay` — status luôn 200 khi replay, đúng discipline chung của
+`httpapi`, không phải bug; 1 do test tự khai pin trỏ tới một Definition chưa từng seed — phát hiện thật, sửa
+fixture) — sau khi sửa test (không đụng implementation), chạy lại sạch 100%.
+
+`go build ./...`, `go vet ./...` sạch trên toàn repo. Chạy riêng mọi package bị đụng chạm bởi thay đổi
+interface `ports.DefinitionsRepository` (`internal/adapters/sqlite`, `internal/app/ports`,
+`internal/app/ports/fake`, `internal/app/definitions`, `internal/archtest`, `cmd/aw`) — xanh 100%, không
+regression. `go test ./...` toàn repo (99+ package, chạy nền song song lúc viết report này) — xem mục Kết
+quả cho kết quả cuối cùng.
+
+### Verify
+
+- **"isolated schemas"**: `TestValidateDefinitionDraft_IsolatedSchemas` — BLOCK id không thấy được qua path
+  SKILL, đúng cơ chế `GetDefinition`'s filter `(id, kind)`.
+- **"location diagnostics"**: `TestValidateDefinitionDraft_Block_LocationDiagnostics` — mỗi `ErrorDetail`
+  mang `Path` thật (`Field`) và `Line:Column` thật (nhúng trong `Message`) từ `authoring.Diagnostic`, không
+  phải một message chung chung duy nhất.
+- **"replay"**: `TestCreateDefinition_Replay_...`, `TestPublishDefinitionVersion_Replay_SameIdempotencyKey_NoNewVersion`
+  — cả 2 xác nhận replay không tạo bản ghi thứ hai.
+- **"version/diff"**: `TestGetDefinitionVersion_*` (3 test), `TestDiffDefinitionVersions_Identical`/`_Different`
+  — cả identical lẫn khác biệt đều đúng `CompiledHash`-based (AK-ARCH-005B), không phải so sánh
+  `SourceHash`.
+- **"global/project negative matrix"**: đủ 3 chiều trong `validate_test.go` (project-qua-global,
+  project-A-qua-project-B, global-qua-project) cộng `TestPublishDefinitionVersion_WrongScope_404`,
+  `TestGetDefinitionVersion_WrongScope_404`, `TestDiffDefinitionVersions_CrossScope_404` — mọi route
+  mutation/query đều có ít nhất 1 test wrong-scope.
+- **"route derives scope; không tin scope từ payload"**: `createDefinitionBody`/`authorDocumentBody` không
+  có field `scope`/`projectId` nào — scope luôn tới từ path qua `definitionScopeFromProjectID`/route handler
+  riêng (global vs project), chưa từng đọc từ JSON body; `loadDefinitionInScope`/`loadVersionInScope` là nơi
+  DUY NHẤT confirm scope trước khi dispatch bất kỳ mutation nào.
+- **"publish trả source/compiled hash và exact pins"**: `TestPublishDefinitionVersion_Block_HappyPath` assert
+  cả 4 field cộng pin echo chính xác.
+- **"diff operands phải cùng scope"**: `TestDiffDefinitionVersions_CrossScope_404`.
+- **"Hoàn thành khi: UI/CLI author→validate→publish→inspect không seed SQLite"**: mọi handler dispatch đúng 1
+  trong 5 hàm public có sẵn của `internal/app/definitions` (`CreateDefinition`/`ValidateDraft`/
+  `PublishDefinitionVersion`/`ListVersions`/`LoadVersion`) hoặc 2 hàm mới cùng tầng
+  (`GetDefinition`/`LoadAnyVersion`) — không route nào tự ghi `tx.Definitions()` trực tiếp;
+  `internal/archtest/command_envelope_test.go`'s `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt` tự động
+  quét đệ quy vào package mới này (đã xanh khi chạy `go test ./internal/archtest/...`), y hệt cách V6-04 đã
+  xác nhận archtest có sẵn tự bao phủ subpackage mới mà không cần sửa.
+
+`go test ./...` full suite (99+ package) chạy 1 lần: 2 fail — `TestPool_ShutdownGraceExceeded_ReturnsErrAndEscalatesCancellation`
+(`internal/app/workerpool`) và `TestV5AcceptFullComposition_RealFourRoleGraphReachesSucceededAndSurvivesRestart`
+(`internal/integration/v5accept`). Cả hai đều NẰM NGOÀI diff của task này (diff chỉ chạm
+`internal/app/ports`, `internal/adapters/sqlite/definitions.go`, `internal/app/ports/fake/unitofwork.go`,
+`internal/app/definitions/queries.go`, `internal/delivery/httpapi/definitions/`, `cmd/aw/serve.go` — không
+đụng `internal/app/workerpool` hay bất kỳ thứ gì thuộc scheduler/workflow-run engine). Chạy lại riêng từng
+test: `TestPool_ShutdownGraceExceeded_...` PASS 3/3 lần chạy độc lập (`-count=3`), 0.3s mỗi lần — timing/grace-
+period test dưới tải contention của việc chạy song song 99+ package, không phải regression thật.
+`TestV5AcceptFullComposition_...` PASS khi chạy riêng (9.4s) — deadline-based acceptance test (chờ Run đạt
+`VERIFYING` trong một khung thời gian cố định) cũng nhạy CPU contention khi chạy cùng lúc toàn bộ suite. Cả
+hai xác nhận là flake môi trường/timing, không liên quan tới thay đổi của task này — không sửa gì thêm.
+
+### Kết quả
+
+PR #44 (`feat/v6-05-definition-authoring-endpoints`, branch từ `origin/master` tại `ab4ee48`). 21 file mới/
+sửa: 1 method mới trên `ports.DefinitionsRepository` (`GetDefinition`, 2 implementation — sqlite + fake), 1
+file query application-layer mới (`internal/app/definitions/queries.go` — `GetDefinition` + `LoadAnyVersion`),
+1 package HTTP hoàn toàn mới (`internal/delivery/httpapi/definitions`, 14 file production + 5 file test), 1
+dòng wiring thật vào `cmd/aw/serve.go` (xác nhận bằng grep, không chỉ giả định). 14 route HTTP thật lần đầu
+tồn tại: create/validate/publish/detail/list-versions (×2 scope, mang `{kind}`) cộng get-version/diff (×2
+scope, kind-agnostic). Test mới: 34 test function (real `httpapi.Server` + real sqlite). `go build/vet ./...`
+sạch. `go test ./...` toàn repo: 2 fail, cả hai đã xác nhận bằng thực nghiệm (chạy lại riêng, PASS) là flake
+môi trường nằm ngoài diff — không phải regression từ task này. Gap "không có get-one-Definition query" và
+"không có Diff query" (cả hai xác nhận thật, không phải đoán) đã đóng bằng `GetDefinition`/`LoadAnyVersion` +
+`diff.go`'s view/thuật toán riêng.

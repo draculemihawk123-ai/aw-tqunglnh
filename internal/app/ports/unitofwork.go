@@ -287,6 +287,26 @@ type DefinitionsRepository interface {
 	// schema never lets a workflow node pin another Workflow).
 	LoadVersion(ctx context.Context, versionID string) (definition.VersionFields, error)
 
+	// GetDefinition is populated now (V6-05,
+	// docs/design/08-v6-api-projections.md): returns id's own Definition
+	// row — Kind/Scope/Name/Status/generation — or ErrPersistenceNotFound.
+	// Routed by kind the same way CreateDefinition/PublishVersion/
+	// ListVersions already are: KindWorkflow resolves from
+	// workflow_definitions, every other kind from the shared definitions
+	// table filtered by (id, kind) — a stored row under a DIFFERENT kind
+	// than the caller asked for is therefore indistinguishable from "does
+	// not exist" (ErrPersistenceNotFound), never a separate "kind
+	// mismatch" error. This closes a real gap V2-10 left open (see
+	// cmd/aw/definition.go's own syntheticDraftFields doc comment: no
+	// caller anywhere in this codebase could reload a real Definition's
+	// current Status/Scope/Name before this): V6-05's own HTTP layer needs
+	// this to (a) confirm a route's own derived scope (global vs a named
+	// project) actually matches a DefinitionID's real persisted scope
+	// before ever dispatching validate/publish against it — never trusting
+	// the caller's path/payload alone — and (b) serve an authoritative,
+	// non-projected "get one Definition" detail read.
+	GetDefinition(ctx context.Context, kind definition.Kind, id string) (definition.Fields, error)
+
 	// CreateDefinition creates a new Definition — DRAFT, generation 1,
 	// the same rule definition.Create expresses for every kind, Workflow
 	// included, even though Workflow's own row lives in a different
