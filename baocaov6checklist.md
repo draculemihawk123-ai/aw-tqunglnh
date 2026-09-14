@@ -3713,11 +3713,12 @@ hai xác nhận là flake môi trường/timing, không liên quan tới thay đ
 
 ### Kết quả
 
-PR #44 (`feat/v6-05-definition-authoring-endpoints`, branch từ `origin/master` tại `ab4ee48`). 21 file mới/
-sửa: 1 method mới trên `ports.DefinitionsRepository` (`GetDefinition`, 2 implementation — sqlite + fake), 1
-file query application-layer mới (`internal/app/definitions/queries.go` — `GetDefinition` + `LoadAnyVersion`),
-1 package HTTP hoàn toàn mới (`internal/delivery/httpapi/definitions`, 14 file production + 5 file test), 1
-dòng wiring thật vào `cmd/aw/serve.go` (xác nhận bằng grep, không chỉ giả định). 14 route HTTP thật lần đầu
+PR #46 (`feat/v6-05-definition-authoring-endpoints`, branch từ `origin/master` tại `ab4ee48`). 25 file mới/
+sửa (+2988 dòng): 1 method mới trên `ports.DefinitionsRepository` (`GetDefinition`, 2 implementation —
+sqlite + fake), 1 file query application-layer mới (`internal/app/definitions/queries.go` — `GetDefinition` +
+`LoadAnyVersion`), 1 package HTTP hoàn toàn mới (`internal/delivery/httpapi/definitions`, 14 file production
++ 5 file test), 1 dòng wiring thật vào `cmd/aw/serve.go` (xác nhận bằng grep, không chỉ giả định). 14 route
+HTTP thật lần đầu
 tồn tại: create/validate/publish/detail/list-versions (×2 scope, mang `{kind}`) cộng get-version/diff (×2
 scope, kind-agnostic). Test mới: 34 test function (real `httpapi.Server` + real sqlite). `go build/vet ./...`
 sạch. `go test ./...` toàn repo: 2 fail, cả hai đã xác nhận bằng thực nghiệm (chạy lại riêng, PASS) là flake
