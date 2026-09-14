@@ -60,6 +60,29 @@ type WorkRepository interface {
 	// ErrPersistenceNotFound.
 	GetWorkItem(ctx context.Context, id string) (work.WorkItem, error)
 
+	// ListWorkItemsByProject is populated now (V6-04,
+	// docs/design/08-v6-api-projections.md): every WorkItem (both ROOT and
+	// CHILD kind, every status) whose own ProjectID equals projectID,
+	// ordered by (CreatedAt, ID) for a stable, deterministic result a test
+	// can assert on exactly — the same ordering convention
+	// ListFamilyScopeExpansionRequests/ListReleaseSetsForFamily already
+	// establish for their own project/family-scoped lists. This is the
+	// authoritative (non-projected) list a caller already authorized for
+	// projectID reads directly; V6-10's own projected Kanban card list is a
+	// deliberately separate, later concern (filters/badges/freshness over a
+	// materialized read model), never this method's job.
+	ListWorkItemsByProject(ctx context.Context, projectID string) ([]work.WorkItem, error)
+	// ListChildWorkItems is populated now (V6-04): every WorkItem whose own
+	// ParentID equals parentWorkItemID — direct children only (a child's own
+	// child, if one is ever created, is not included; NewChildWorkItem places
+	// no restriction on Kind for its own parent argument, so a multi-level
+	// hierarchy is structurally possible, but this method deliberately
+	// returns one level at a time, mirroring ListWorkItemsByProject's own
+	// plain, unfiltered "every row matching one foreign key" shape rather
+	// than inventing a recursive-descendant query no citation in this task's
+	// own scope asks for), ordered by (CreatedAt, ID).
+	ListChildWorkItems(ctx context.Context, parentWorkItemID string) ([]work.WorkItem, error)
+
 	// TransitionWorkItemStatus is populated now (V4-02,
 	// docs/design/06-v4-runtime-engine.md): the first real caller of a
 	// WorkItemStatus CAS is StartWorkflowRun's own READY->ACTIVE transition

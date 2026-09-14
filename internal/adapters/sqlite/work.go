@@ -130,6 +130,48 @@ func scanWorkItemRow(row repositoryRowScanner) (work.WorkItem, error) {
 	return item, nil
 }
 
+// ListWorkItemsByProject implements ports.WorkRepository (V6-04): reuses
+// getWorkItemTx's own column list/scanWorkItemRow so a listed row and a
+// single Get'd row are always shaped identically, ordered by (created_at,
+// id) for a stable, deterministic result — the same "ORDER BY a column not
+// in the SELECT list" shape listFamilyScopeExpansionRequestsTx already uses
+// (that one orders by requested_at, itself selected; created_at here is not
+// selected because work.WorkItem carries no CreatedAt field, but ordering by
+// it needs no corresponding Go field to exist).
+func (r workRepository) ListWorkItemsByProject(ctx context.Context, projectID string) ([]work.WorkItem, error) {
+	return listWorkItemsTx(ctx, r.tx, "project_id = ?", projectID)
+}
+
+// ListChildWorkItems implements ports.WorkRepository (V6-04): direct
+// children only (WHERE parent_id = ?) — see that interface method's own doc
+// comment for why this deliberately does not recurse.
+func (r workRepository) ListChildWorkItems(ctx context.Context, parentWorkItemID string) ([]work.WorkItem, error) {
+	return listWorkItemsTx(ctx, r.tx, "parent_id = ?", parentWorkItemID)
+}
+
+func listWorkItemsTx(ctx context.Context, tx *sql.Tx, whereClause string, arg string) ([]work.WorkItem, error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id, workflow_version_id
+FROM work_items WHERE `+whereClause+` ORDER BY created_at, id`, arg)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list work items: %w", err))
+	}
+	defer rows.Close()
+
+	var result []work.WorkItem
+	for rows.Next() {
+		item, err := scanWorkItemRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("iterate work items: %w", err))
+	}
+	return result, nil
+}
+
 // TransitionWorkItemStatus implements ports.WorkRepository (V4-02).
 func (r workRepository) TransitionWorkItemStatus(ctx context.Context, req ports.TransitionWorkItemStatusRequest) (work.WorkItem, error) {
 	return transitionWorkItemStatusTx(ctx, r.tx, req)

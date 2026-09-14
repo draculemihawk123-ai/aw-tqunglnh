@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/logging"
@@ -21,6 +22,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
 )
 
 // runServe is V6-01's own composition root entry point: it wires
@@ -150,6 +152,10 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// (internal/delivery/httpapi/catalog) exactly as V6-01A's own comment
 	// above anticipated.
 	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: uow, IDs: idsource.Random{}})
+	// V6-04: WorkItem/family/readiness/scope-expansion routes
+	// (internal/delivery/httpapi/workitem) — an additive routes.Register
+	// call only, no shared setup above touched.
+	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
 	// V6-06: Run start/cancel controls (internal/delivery/httpapi/run) — an
 	// additive routes.Register call only, no shared setup above touched.
 	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: uow, IDs: idsource.Random{}})

@@ -125,6 +125,39 @@ func (w *WorkRepository) GetWorkItem(_ context.Context, id string) (work.WorkIte
 	return item, nil
 }
 
+// ListWorkItemsByProject mirrors sqlite's listWorkItemsTx(project_id = ?),
+// ordered by ID — this fake carries no CreatedAt field to sort by (the real
+// adapter's own ORDER BY created_at, id has no equivalent source here), so
+// ID is the fake's own stable substitute; a test asserting real
+// chronological order uses real sqlite instead (V6-04's own
+// queries_sqlite_test.go), the same "deep ordering guarantees are
+// SQLite-only" split ValidateLocalCommitWriteLeaseFencing's doc comment
+// below already documents for a different concern.
+func (w *WorkRepository) ListWorkItemsByProject(_ context.Context, projectID string) ([]work.WorkItem, error) {
+	var result []work.WorkItem
+	for _, item := range w.workItems {
+		if string(item.ProjectID) == projectID {
+			result = append(result, item)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
+// ListChildWorkItems mirrors sqlite's listWorkItemsTx(parent_id = ?) — see
+// ListWorkItemsByProject's own doc comment for this fake's ID-based ordering
+// substitute.
+func (w *WorkRepository) ListChildWorkItems(_ context.Context, parentWorkItemID string) ([]work.WorkItem, error) {
+	var result []work.WorkItem
+	for _, item := range w.workItems {
+		if item.ParentID != nil && string(*item.ParentID) == parentWorkItemID {
+			result = append(result, item)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
 // TransitionWorkItemStatus mirrors sqlite's transitionWorkItemStatusTx
 // (V4-02): a stale caller (wrong ExpectedStatus/ExpectedVersion) gets
 // ErrOptimisticConflict, never a silent overwrite.
