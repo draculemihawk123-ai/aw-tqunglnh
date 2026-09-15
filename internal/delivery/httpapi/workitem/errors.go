@@ -8,6 +8,7 @@ import (
 	workapp "github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
 // writeQueryError maps a query-side error from internal/app/work/queries.go
@@ -60,6 +61,19 @@ func writeQueryError(w http.ResponseWriter, err error) {
 //     workapp.ErrCrossFamilyReference: the request, exactly as given, cannot
 //     succeed against the family's own current approved scope/membership —
 //     a request-shape problem, not a race.
+//   - workapp.ErrWorkItemNotEligibleForReady (MarkWorkItemReady, V6-04A):
+//     the targeted WorkItem's own current Status is not BACKLOG — including
+//     the already-READY "READY conflict" this task's own spec names for a
+//     fresh Idempotency-Key arriving after an earlier call already
+//     succeeded. A real conflict, mapped the same way
+//     workapp.ErrScopeExpansionNotPending already is.
+//   - *workdomain.ReadinessError (MarkWorkItemReady, V6-04A): the WorkItem
+//     IS BACKLOG but fails workdomain.ValidateReadinessGate — checked and
+//     mapped FIRST, before the switch below, so its own Problems list
+//     (the SAME vocabulary GetWorkItemReadiness/ExplainWorkItemReadiness
+//     already report for the identical WorkItem) rides along as
+//     httpapi.ErrorDetail entries rather than being flattened into a single
+//     opaque message.
 //
 // Every unmatched error falls through to a plain 500 INTERNAL. In practice
 // this default is defense-in-depth only: the bare `errors.New(...)`
@@ -69,6 +83,15 @@ func writeQueryError(w http.ResponseWriter, err error) {
 // so a well-formed request that reaches a real command should never
 // actually trigger one of those guards.
 func writeCommandError(w http.ResponseWriter, err error) {
+	var readinessErr *workdomain.ReadinessError
+	if errors.As(err, &readinessErr) {
+		details := make([]httpapi.ErrorDetail, 0, len(readinessErr.Problems))
+		for _, problem := range readinessErr.Problems {
+			details = append(details, httpapi.ErrorDetail{Field: "readiness", Message: problem})
+		}
+		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, readinessErr.Error(), details)
+		return
+	}
 	switch {
 	case errors.Is(err, ports.ErrPersistenceNotFound),
 		errors.Is(err, ports.ErrScopeMismatch),
@@ -77,7 +100,8 @@ func writeCommandError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ports.ErrReceiptConflict),
 		errors.Is(err, ports.ErrOptimisticConflict),
 		errors.Is(err, workapp.ErrRepositoryNotActive),
-		errors.Is(err, workapp.ErrScopeExpansionNotPending):
+		errors.Is(err, workapp.ErrScopeExpansionNotPending),
+		errors.Is(err, workapp.ErrWorkItemNotEligibleForReady):
 		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
 	case errors.Is(err, workapp.ErrEffectiveScopeExceedsFamilyScope),
 		errors.Is(err, workapp.ErrCrossFamilyReference):

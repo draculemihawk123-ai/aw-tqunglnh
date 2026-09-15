@@ -5405,6 +5405,260 @@ Một regression tự gây ra (corrupt safe-settings row làm `aw serve` fail st
 là flake môi trường (Windows file-lock cleanup race dưới tải song song) không liên quan diff — pass ngay khi
 chạy lại riêng lẻ, package đó không nằm trong bất kỳ file nào task này sửa.
 
+## V6-04A — Public MarkWorkItemReady authority và route
+
+### Bối cảnh
+
+V6-04A đóng gap `BACKLOG → READY` mà chính `V6-04`'s own `ExplainWorkItemReadiness` (`internal/app/work/queries.go`)
+đã cố tình để ngỏ — doc comment của `WorkItemReadiness` nói thẳng: "that narrow, named MarkWorkItemReady
+command is explicitly V6-04A's own separate job, not this task's". Phụ thuộc khai trong spec: V6-04, V3-03,
+V1-06, V1-07A — cả bốn đã merge từ lâu (V6-04 là PR #43, đã review post-merge và vá lỗi unwired route như
+system prompt của task này nhắc lại). `baocaov6checklist.md` đang bị 3 task khác ghi song song đúng lúc này
+(V6-06B, V6-06C, V6-07A) — merge conflict khi mở PR là chuyện đã lường trước, không phải bug.
+
+Task tự nêu rõ gap thật: "`MarkWorkItemReady` does not exist as a command anywhere in this codebase yet" —
+`grep` xác nhận đúng, chỉ có đúng một forward-reference trong doc comment của `ExplainWorkItemReadiness`.
+Xây command đó, cùng route `POST /work-items/{id}/mark-ready`, là toàn bộ việc của task này.
+
+Sự cố môi trường giữa chừng: phiên làm việc bị rate-limit ngắt khi đang đọc `scope_expansion_commands.go`
+làm template; khi tiếp tục, worktree gốc (`agent-a95d1a7cdd242ec3d`) đã bị dọn khỏi máy (primary working
+directory đổi về repo gốc, không còn là worktree). `EnterWorktree` từ chối tạo worktree mới vì phiên này
+chạy dưới một subagent có cwd pin sẵn ("cannot create a worktree from a subagent with a cwd override") — xử
+lý bằng `git worktree add` thủ công qua Bash, branch `feat/v6-04a-mark-work-item-ready` từ `origin/master`
+tại `c8163d3` (đúng commit `gitStatus` ở đầu phiên đã ghi), thư mục
+`.claude/worktrees/v6-04a-mark-work-item-ready`. Toàn bộ nghiên cứu đã làm trước đó (đọc design doc, domain
+package, `queries.go`, `commands.go`, `scope_expansion.go`, HTTP package) được giữ nguyên trong ngữ cảnh và
+áp dụng lại vào worktree mới, không phải làm lại từ đầu.
+
+### Nghiên cứu
+
+Đọc nguyên văn spec (`docs/design/08-v6-api-projections.md` dòng 216-226): "Mục tiêu: đóng `BACKLOG → READY`
+bằng narrow command, không generic status setter... Phạm vi: application command, event/receipt và
+`POST /work-items/{id}/mark-ready` fragment... Không làm: request không có `targetStatus`; projection không
+quyết readiness... Thực hiện: reload WorkItem, chạy canonical validator rồi atomically CAS, append registered
+`WORK_ITEM_MARKED_READY` v1 và receipt. Same key replay stored success; key mới khi READY conflict... Verify:
+replay/concurrency/stale/readiness/cross-project/payload target-status/event golden... Hoàn thành khi: valid
+action duy nhất là `mark-ready`, không có public `set-status`."
+
+Đọc `ADR-028 §30` (`docs/architecture/02-architecture-decisions.md` dòng 746-752) — khóa cứng thêm: "Gap
+`BACKLOG → READY` được đóng bằng đúng một public command `MarkWorkItemReady`: server chạy lại
+readiness/contract validator và CAS đúng transition đó, append registered `WORK_ITEM_MARKED_READY` v1.
+Command không nhận target status." — xác nhận `WORK_ITEM_MARKED_READY` là chuỗi wire literal, SCREAMING_SNAKE
+đúng như trích, không phải gợi ý cần chuẩn hoá PascalCase theo convention riêng của `internal/app/work`. Đối
+chiếu với `internal/app/runtime/event_schema.go`/`blocker.go` thấy family `WORK_ITEM_*`
+(`WORK_ITEM_BLOCKED`, `WORK_ITEM_CANCELLED`, `WORK_ITEM_CANCELLATION_REQUESTED`) đã dùng đúng convention này ở
+một package khác — `WORK_ITEM_MARKED_READY` khớp đúng họ tên đó, không phải ngoại lệ đơn độc.
+
+Đọc trọn `ExplainWorkItemReadiness`/`WorkItemReadiness` (`internal/app/work/queries.go` dòng 324-381): validator
+thật là `workdomain.ValidateReadinessGate`, chạy read-only bên trong `uow.WithReadOnly`, không tự transition.
+Đọc `internal/domain/work/work.go` (`ValidateReadinessGate` dòng 362-474, `WorkItem` struct dòng 88-193,
+`WorkItemStatus` enum dòng 77-86): validator pure, không I/O, luôn trả `*ReadinessError{Problems []string}`
+liệt kê MỌI vi phạm một lần (không dừng ở lỗi đầu tiên); không tự check `item.Status` — việc quyết "đang
+BACKLOG hay không" là việc của caller (đúng khớp với việc `MarkWorkItemReady` phải tự check status TRƯỚC khi
+gọi validator).
+
+Đọc `internal/app/ports/work.go` — `TransitionWorkItemStatus` (dòng 86-105) đã tồn tại sẵn từ V4-02
+("StartWorkflowRun's own READY->ACTIVE transition"), CAS chung cho MỌI `WorkItemStatus`, không riêng
+READY->ACTIVE — xác nhận `MarkWorkItemReady` chỉ cần TÁI SỬ DỤNG method này với
+`ExpectedStatus=BACKLOG, NextStatus=READY`, không cần thêm method port mới.
+
+Đọc `internal/app/work/commands.go` (`CreateRootWorkItem`) và `scope_expansion.go` (`ApproveScopeExpansion`/
+`RejectScopeExpansion`/`WithdrawScopeExpansion`) làm template cấu trúc — `ApproveScopeExpansion` là template
+GẦN NHẤT vì nó cũng transition một entity ĐÃ TỒN TẠI (không tạo mới), và đặc biệt: nó tự mint aggregate
+identity riêng cho event quyết định (`AggregateType: "ScopeExpansionApproval", AggregateID: cmd.ID`) thay vì
+tái dùng `AggregateType: "ScopeExpansionRequest", AggregateID: req.RequestID` — lý do ghi rõ trong doc comment:
+"this is the SECOND event on that long-lived aggregate identity...Sequence=1 would collide with it". Đây
+chính là vấn đề `MarkWorkItemReady` cũng gặp: mọi WorkItem thật đã có sẵn một event `Sequence=1` trên
+`AggregateType="WorkItem"` từ lúc `RootWorkItemCreated`/`ChildWorkItemCreated` — `domain_events` có
+`UNIQUE(aggregate_type, aggregate_id, sequence)` (migration 0001/0003) nên append `WORK_ITEM_MARKED_READY`
+với cùng `("WorkItem", workItemID, 1)` sẽ va constraint. Giải pháp giống hệt: mint aggregate riêng
+`("WorkItemReadyMark", cmd.ID, 1)`.
+
+Đọc `internal/delivery/httpapi/workitem` (V6-04, đã merge) trọn vẹn — `dependencies.go`, `routes.go`
+(12 route, tất cả nest dưới `/projects/{projectId}/work-items/...`), `envelope.go`
+(`prepareCreateCommand`/`prepareUpdateCommand`/`replayOrProceed`), `errors.go`
+(`writeQueryError`/`writeCommandError`), `scope_expansion_commands.go` (Approve/Reject/Withdraw — route
+KHÔNG tạo resource mới, y hệt hình dạng `MarkWorkItemReady` cần).
+
+Phát hiện quan trọng về ROUTE PATH: task's spec + 3 nguồn khác (`docs/design/01-system-design.md` dòng 567,
+`docs/design/11-v6-00-ux-artifact.md` dòng 245, `ADR-028`) đều trích Y HỆT
+`POST /work-items/{id}/mark-ready` — KHÔNG có tiền tố `/projects/{projectId}`, khác hẳn 12 route đã có của
+chính package `workitem`. Đọc `internal/delivery/httpapi/run` (V6-06, đã merge SAU V6-04, PR riêng) thấy
+đúng tiền lệ cho hình dạng này: `POST /work-items/{workItemId}/runs` và `POST /runs/{runId}/cancel`, cả hai
+KHÔNG có `/projects/{projectId}`, `ProjectID` tự suy ra bằng cách reload thẳng WorkItem/Run
+(`loadWorkItemProjectID`, `run/start.go` dòng 176-187) thay vì tin path segment. Đọc chính
+`baocaov6checklist.md`'s V6-06 section (dòng ~2644-2650, do phiên trước ghi) xác nhận: V6-06 tự trích
+NGUYÊN VĂN dòng "Phạm vi" của V6-04A này ("`POST /work-items/{id}/mark-ready`") làm tiền lệ cho quyết định
+path của chính nó — nghĩa là cộng đồng task trước đã đọc đúng spec này giống hệt cách task này đọc, và đã
+xây sẵn cơ chế "no {projectId} path, derive scope from entity" mà task này chỉ cần tái sử dụng lại đúng
+pattern, không phải tự nghĩ ra.
+
+Phát hiện gap thật thứ hai, nghiêm trọng hơn: để `MarkWorkItemReady` transition thật một WorkItem THẬT sang
+READY, phải có ít nhất một WorkItem thật, lưu trong sqlite, PASS được `ValidateReadinessGate`. Đọc
+`internal/adapters/sqlite/work.go`'s `createWorkItemTx`/`getWorkItemTx`/`scanWorkItemRow` (trước khi sửa)
+xác nhận đúng lời cảnh báo trong doc comment của `queries.go`: migration `0007_work_items_contract.sql` đã
+thêm 6 cột (`schema_version, behavior, acceptance_json, verification_json, risk, exclusions_json` — cộng
+`workflow_version_id` từ trước) nhưng KHÔNG cột nào trong số đó từng được ghi bởi `createWorkItemTx` hay đọc
+bởi `getWorkItemTx`/`scanWorkItemRow`. Đồng thời không có bất kỳ application command nào (kể cả
+`CreateRootWorkItem`/`CreateChildWorkItem`) từng set các field này trên `work.WorkItem` domain value trước
+khi persist — `NewRootWorkItem`/`NewChildWorkItem` là "thin constructor", đúng như doc comment của chính
+`work.go` ghi: "a caller needing a fully-contracted WorkItem today sets the exported fields directly...and
+then calls ValidateReadinessGate itself". Hệ quả: MỌI WorkItem thật trong sqlite hôm nay LUÔN LUÔN fail
+readiness gate — không có cách nào viết một test "happy path" thật cho `MarkWorkItemReady` nếu không tự sửa
+gap persistence này trước. Đây không phải việc tự ý mở rộng phạm vi: không có nó, tính năng cốt lõi của
+chính task này (transition thật BACKLOG→READY) không bao giờ chạy được với dữ liệu thật, chỉ tồn tại trên
+giấy — đúng loại "test xanh nhưng chưa thật sự nối dây" mà doctrine của phiên này luôn cảnh giác (như phát
+hiện ở V6-04's own hậu-merge review). Migration comment của `0007` tự xác nhận việc mở rộng an toàn: "Every
+new column is nullable... Existing fixture rows...insert work_items by explicit column list without any of
+these fields and must keep working unmodified" — không cần migration mới, không phá bất kỳ caller nào đang
+chạy.
+
+### Quyết định
+
+1. **Route path KHÔNG có `/projects/{projectId}`, đúng verbatim `POST /work-items/{workItemId}/mark-ready`,
+   thêm ADDITIVE vào đúng `RegisterRoutes` đã có của package `workitem`** — không tạo package mới. `ScopeKind`
+   vẫn là `httpapi.ScopeProject` (ADR-025: WorkItem không bao giờ installation-scoped) dù path không mang
+   `{projectId}` — `run` package (V6-06) đã xác nhận `ScopeKind` là khái niệm logic, độc lập với việc path có
+   chứa segment đó hay không.
+2. **`ProjectID` suy ra DUY NHẤT bằng cách reload thẳng WorkItem qua `tx.Work().GetWorkItem` bên trong
+   `uow.WithReadOnly`** (`loadWorkItemForMarkReady`, mirror y hệt `run/start.go`'s `loadWorkItemProjectID`) —
+   không đi qua `workapp.GetWorkItem` (`queries.go`) vì hàm đó đòi một scope đã biết trước (`requireProjectScope`),
+   thứ route này không có từ path. Đây KHÔNG phải bỏ qua discipline "reload authoritative target" — vẫn đúng
+   discipline đó, chỉ khác nguồn suy scope (từ chính entity, không phải từ path claim).
+3. **`MarkWorkItemReadyRequest` chỉ có đúng một field `WorkItemID`** — không có field status/target nào khác
+   tồn tại để client có thể lợi dụng; thoả "Không làm: request không có `targetStatus`" bằng construction,
+   không phải bằng validation runtime.
+4. **Body HTTP tái dùng `emptyBody{}` đã có sẵn** (không tạo DTO thứ tư) — vì `httpapi.DecodeJSON` luôn gọi
+   `json.Decoder.DisallowUnknownFields()`, một `{"targetStatus":"DONE"}` bất kỳ bị 400 ngay ở bước decode,
+   trước khi handler chạy bất kỳ logic nào — chứng minh "Verify: payload target-status" bằng đúng cơ chế
+   chung toàn package, không phải field-by-field check riêng.
+5. **Hai loại lỗi từ chối tách biệt, map HTTP khác nhau:**
+   - `work.ErrWorkItemNotEligibleForReady` (status hiện tại KHÔNG phải BACKLOG — bao gồm case "đã READY",
+     đúng chữ "READY conflict" của spec) → `409 CONFLICT`, không có problem list (không có gì để giải thích,
+     đây là state conflict).
+   - `*workdomain.ReadinessError` (đang BACKLOG nhưng KHÔNG pass `ValidateReadinessGate`) → trả NGUYÊN VẸN
+     (không wrap, `errors.As` xuyên qua) để tầng HTTP tái dùng CHÍNH XÁC field `Problems` — mỗi problem thành
+     một `httpapi.ErrorDetail{Field:"readiness", Message:problem}` → cũng `409 CONFLICT` nhưng CÓ chi tiết,
+     đúng "reuse that exact logic/vocabulary, don't reinvent it".
+6. **Mở rộng `createWorkItemTx`/`getWorkItemTx`/`listWorkItemsTx`
+   (`internal/adapters/sqlite/work.go`) để round-trip 6/7 cột contract đã có sẵn từ migration 0007** —
+   quyết định khó nhất của task này, VƯỢT phạm vi hẹp "application command + route" nhưng LÀ TIỀN ĐỀ BẮT
+   BUỘC để tính năng thật sự chạy được với dữ liệu thật (xem Nghiên cứu). `ApprovalException` KHÔNG được
+   round-trip — migration 0007 chưa từng thêm cột cho nó, nên đây vẫn là gap y hệt như trước, không mở rộng
+   thêm. Không migration mới, không sửa `CreateRootWorkItem`/`CreateChildWorkItem` (hai command đó vẫn không
+   set field nào — WorkItem chúng tạo ra vẫn rỗng contract y hệt trước khi sửa), nên zero regression cho
+   caller hiện tại — test fixture cũ (`fixtures.go`, `crashworker_fixtures.go`) không chạm, cột mới luôn NULL
+   với chúng đúng như trước.
+7. **Test "happy path" tự xây WorkItem đủ điều kiện bằng cách gọi thẳng
+   `tx.Work().CreateTaskFamily`/`tx.Work().CreateWorkItem`** (repository method THẬT, không phải raw SQL) với
+   một `work.WorkItem` domain value set đủ field tay — đúng "escape hatch" mà chính doc comment của
+   `work.go` mô tả cho trường hợp "a caller needing a fully-contracted WorkItem". Không vi phạm "never fake
+   results by writing to the database directly" vì đường đi vẫn là repository method thật, không phải
+   `INSERT` tay.
+8. **ETag response DÙNG `httpapi.ETagFromVersion(result.Version)`** — khác Approve/Reject/Withdraw (luôn trả
+   `""` vì result của chúng không có field `Version`), `MarkWorkItemReadyResult` CÓ `Version` nên trả ETag
+   thật, hữu ích hơn cho client polling tiếp theo.
+
+### Thực hiện
+
+- `internal/app/work/mark_ready.go` (mới): `ErrWorkItemNotEligibleForReady`, `MarkWorkItemReadyRequest`,
+  `MarkWorkItemReadyResult`, hàm `MarkWorkItemReady` — theo đúng khuôn idempotent-command (receipt-check
+  đầu `WithSerializedWrite` → reload WorkItem thật → check status BACKLOG → chạy
+  `workdomain.ValidateReadinessGate` → `tx.Work().TransitionWorkItemStatus` CAS → append event
+  `WORK_ITEM_MARKED_READY` v1 tại aggregate riêng `("WorkItemReadyMark", cmd.ID, 1)` → record receipt).
+- `internal/app/work/event_schema.go`: thêm `WorkItemMarkedReadyEventType = "WORK_ITEM_MARKED_READY"`,
+  `WorkItemMarkedReadySchemaVersion = 1`, payload struct, decoder, đăng ký vào `RegisterEventSchemas` (xác
+  nhận `RegisterEventSchemas` của MỌI package trong repo — kể cả `runtime`, `catalog` — chưa từng được gọi
+  từ `cmd/aw/serve.go`, đây là registry test/tooling-only nhất quán toàn repo, không phải gap riêng của task
+  này cần vá).
+- `internal/app/work/testdata/golden/work_item_marked_ready_v1.json` (mới): golden fixture cho event.
+- `internal/app/work/queries.go`: sửa lại doc comment của `WorkItemDetail` cho khớp thực tế mới (6/7 field
+  giờ round-trip được ở tầng adapter, nhưng KHÔNG public command nào set chúng — kết luận cũ "mọi WorkItem
+  luôn fail readiness qua route công khai hôm nay" vẫn đúng, chỉ sửa lại LÝ DO cho chính xác).
+- `internal/adapters/sqlite/work.go`: `createWorkItemTx` thêm 7 cột vào INSERT (`workflow_version_id` +
+  6 cột contract); tách hằng `workItemColumns` dùng chung cho `getWorkItemTx`/`listWorkItemsTx`;
+  `scanWorkItemRow` scan thêm 6 cột contract, unmarshal JSON cho `acceptance_json`/`exclusions_json`.
+- `internal/delivery/httpapi/workitem/routes.go`: thêm route thứ 13 `markWorkItemReady`, doc comment giải
+  thích path không có `{projectId}`.
+- `internal/delivery/httpapi/workitem/mark_ready_command.go` (mới): `loadWorkItemForMarkReady`,
+  `handleMarkWorkItemReady`.
+- `internal/delivery/httpapi/workitem/errors.go`: thêm `workdomain` import, check
+  `*workdomain.ReadinessError` qua `errors.As` TRƯỚC switch chính (map sang 409 + `ErrorDetail` list), thêm
+  `workapp.ErrWorkItemNotEligibleForReady` vào nhánh 409 của switch.
+- `internal/delivery/httpapi/workitem/workitem_test.go`: cập nhật
+  `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` — 12 → 13 operationId, thêm
+  `"markWorkItemReady"`.
+- `cmd/aw/serve.go`: KHÔNG sửa — route mới nằm trong đúng `workitem.RegisterRoutes(...)` đã được gọi sẵn ở
+  dòng 302 (grep xác nhận trực tiếp trước khi kết luận), đúng dự đoán "additive to existing package" trong
+  system prompt của task.
+
+### Test
+
+- `internal/app/work/mark_ready_sqlite_test.go` (mới, real sqlite): `seedReadyEligibleRootSQLite` (helper
+  dùng repository method thật để seed WorkItem đủ điều kiện); 8 test function — round-trip contract, happy
+  path, replay same-key, same-key-different-hash conflict, đã-READY-key-mới-là-conflict-thật, readiness gate
+  reject đúng problem list của `ExplainWorkItemReadiness`, đua đồng thời same-key (1 transition + 1 replay),
+  đua đồng thời different-key (đúng 1 winner + 1 loser, không double-transition).
+- `internal/app/work/event_schema_test.go`: thêm `TestWorkItemMarkedReadyV1_GoldenFixtureDecodes`,
+  `TestWorkItemMarkedReadyV1_RealEventPayloadDecodes`.
+- `internal/delivery/httpapi/workitem/mark_ready_test.go` (mới, real HTTP + real sqlite): 9 test function —
+  happy path (200 + ETag đúng), replay, stale If-Match (412), đã-READY-key-mới-vẫn-conflict (409), WorkItem
+  không tồn tại (404, thay cho "cross-project" vì route này không có path scope để đoán sai), readiness gate
+  reject qua HTTP (409 kèm đúng `details` khớp từng problem của endpoint `readiness` đã có), payload
+  `targetStatus` bị từ chối (400, WorkItem không đổi), thiếu Idempotency-Key/If-Match (400).
+
+### Verify
+
+- **"replay"**: `TestMarkWorkItemReady_Replay_SameKeySameResultSQLite` (app layer) +
+  `TestMarkWorkItemReady_Replay_SameKeySameResult` (HTTP layer) — cùng key/hash trả nguyên kết quả cũ, không
+  transition lần hai.
+- **"concurrency"**: `TestMarkWorkItemReady_ConcurrentSameIdempotencyKey_OneTransitionsOtherReplaysSQLite` +
+  `TestMarkWorkItemReady_ConcurrentDifferentIdempotencyKeys_ExactlyOneTransitionsSQLite` — cả hai chạy
+  goroutine thật, sqlite thật, `_txlock=immediate` serialize hai transaction, kết quả xác định (không cần
+  chấp nhận tập nhiều status code như race Approve/Reject vì `MarkWorkItemReady` không có tầng
+  optimistic-If-Match ở app layer giống Approve — mọi lần thua đều là `ErrWorkItemNotEligibleForReady`, đơn
+  trị).
+- **"stale"**: `TestMarkWorkItemReady_StaleIfMatch_PreconditionFailed` (HTTP) — If-Match cũ sau khi version
+  đã bump → 412, y hệt cơ chế `TestApproveScopeExpansion_StaleIfMatch_PreconditionFailed` đã có.
+- **"readiness"**: `TestMarkWorkItemReady_ReadinessGateFailure_RejectedWithSameProblemsAsExplainSQLite` (app,
+  so sánh trực tiếp với `ExplainWorkItemReadiness` cùng WorkItem) +
+  `TestMarkWorkItemReady_ReadinessGateFailure_Returns409WithProblems` (HTTP, so `details` với endpoint
+  `readiness` sẵn có).
+- **"cross-project"**: route này không mang `{projectId}` nên không có khái niệm "client khai sai project" —
+  tương đương thực dụng là `TestMarkWorkItemReady_UnknownWorkItem_ReturnsNotFound` (404, không lộ thông tin
+  khác biệt giữa "không tồn tại" và "thuộc project khác"), giải thích rõ trong doc comment của chính test.
+- **"payload target-status"**: `TestMarkWorkItemReady_PayloadWithTargetStatusField_Rejected` (HTTP, 400,
+  WorkItem không đổi) + archtest `TestWorkItemPackageRequestBodiesNeverAcceptAStatusField` (đã có từ V6-04,
+  tự động quét file mới vì AST-scan toàn package — `emptyBody{}` không có field nào để vi phạm).
+- **"event golden"**: `TestWorkItemMarkedReadyV1_GoldenFixtureDecodes` — byte-verify đúng
+  `work_item_marked_ready_v1.json`.
+- **"Hoàn thành khi: valid action duy nhất là mark-ready, không có public set-status"**: xác nhận bằng
+  `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` (13 operationId đóng, không route thứ 14 ẩn)
+  cộng việc đọc lại toàn bộ `routes.go` — không route "set-status"/"transition" generic nào tồn tại.
+
+### Kết quả
+
+Branch `feat/v6-04a-mark-work-item-ready` từ `origin/master` tại `c8163d3`. 11 file mới/sửa: 1 command mới
+(`mark_ready.go`), 1 event type mới đăng ký đúng registry, 1 golden fixture, 1 doc-comment fix
+(`queries.go`), 3 file sqlite adapter sửa (gap persistence contract thật, không migration mới), 1 route mới
++ 1 handler file mới + 1 error-mapping sửa ở tầng HTTP, 2 file test hiện có cập nhật (operationId set,
+event golden). Test mới: 8 (app layer, real sqlite) + 2 (event golden) + 9 (HTTP layer, real server + real
+sqlite) = 19 test function mới.
+
+`go build ./...` và `go vet ./...` sạch. `go test ./internal/app/work/...`,
+`./internal/delivery/httpapi/...`, `./internal/archtest/...`, `./internal/adapters/sqlite/...` đều xanh
+100%. `go test ./...` toàn repo: 1 package fail
+(`internal/integration/v5accept`, 2 test:
+`TestV5AcceptFullComposition_RealFourRoleGraphReachesSucceededAndSurvivesRestart`,
+`TestV5AcceptScopeViolation_RealDiffRejectsOutOfScopeWrite` — cả hai kiểu "did not reach state within
+deadline"). Xác minh KHÔNG liên quan diff bằng cách tạo worktree riêng tại đúng `origin/master` (không có
+bất kỳ thay đổi nào của task này) và chạy lại: `TestV5AcceptScopeViolation...` pass ngay lần đầu;
+`TestV5AcceptFullComposition...` fail 1/3 lần chạy lặp lại NGAY TRÊN BASELINE SẠCH — xác nhận đây là flake
+timing-sensitive có sẵn từ trước (real 4-role workflow graph, real process executor, nhạy tải hệ thống),
+không phải regression của diff này. Không nằm trong danh sách known-flakes đã có của phiên trước, nhưng đã
+tự verify bằng baseline reproduction trước khi kết luận, đúng discipline "verify diff-scope-unrelated, đừng
+chỉ đoán theo tên".
+
 ## V6-10F — ReleaseSet và local Git endpoints
 
 ### Bối cảnh
