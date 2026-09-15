@@ -3413,6 +3413,336 @@ thật lần đầu tồn tại trong toàn bộ V6: `POST/GET /projects`, `GET 
 phân loại — xem mục Test), nằm ngoài phạm vi task này, được xử lý đúng mức bằng cách sửa fixture của chính
 mình thay vì lan sang sửa code đã merge trước đó.
 
+## V6-06D — Recovery command endpoints
+
+### Bối cảnh
+
+V6-06D nằm trong nhóm P2, phụ thuộc `V6-00, V6-01A, V6-02, V6-02A, V4-12C, V5-08D` — cả 6 đã merge trên
+`origin/master` (`ab4ee48 feat(v6-04)...`) lúc bắt đầu; `git merge-base --is-ancestor origin/master HEAD` xác
+nhận worktree này bắt đầu đúng từ tip, không cần rebase. `baocaov6checklist.md` đang bị 3 task song song khác
+ghi (`V6-05`, `V6-06A`, `V6-07`, theo đúng cảnh báo trong system prompt) — append-only, dự kiến conflict khi
+merge, không phải bug.
+
+Task này khác 2 task WorkItem/Run-mutation trước đó (`V6-04`, `V6-06`) ở một điểm quan trọng: cả ba command
+đích (`RetryBlockedActivation`, `CancelWorkItem`, `ResolveWorkItemBlocker`) đều **đã tồn tại sẵn** trong
+`internal/app/runtime` (V4-12C, V5-08D) — task này thuần tuý là bọc transport, không viết thêm business logic
+nào. Cái khó thật của task không nằm ở phần HTTP (lặp lại đúng khuôn `run`/`workitem` đã có), mà nằm ở 2 chỗ
+task tự nêu rõ ngay từ đầu: (1) `RetryBlockedActivationHandler` cần 2 dependency (`ports.IsolationEnforcementChecker`,
+`*agentregistry.Registry`) mà **chưa từng có** chỗ nào trong `cmd/aw/serve.go` construct thật — xác nhận bằng
+`grep -rn "NewRetryBlockedActivationHandler\|agentregistry.New\|process.NewIsolationChecker" internal/ cmd/`
+trước khi viết bất cứ gì: chỉ có `cmd/aw/adapter.go` (CLI `adapter probe/register`, dùng CLI flag
+`--executable` riêng cho từng lần gọi) và test fixture dùng 2 thứ này, chưa có `aw serve` nào; (2) không có
+sqlite-backed test fixture nào trong TOÀN BỘ codebase (kể cả ở `internal/app/runtime` chính chủ) từng dựng một
+NodeRun thật sự BLOCKED bởi admission — `internal/app/runtime`'s own admission tests (`admission_test.go`)
+100% chạy trên `*fake.UnitOfWork`, xác nhận bằng `grep -rln "sqlite.Open\|sqlite.NewUnitOfWork"
+internal/app/runtime/*_test.go` không khớp `admission_test.go`/`retry_blocked_activation.go`'s own test file
+nào (thực ra file test riêng cho `retry_blocked_activation.go` không tồn tại — coverage của nó nằm hết trong
+`admission_test.go`).
+
+### Nghiên cứu
+
+Đọc nguyên văn spec (`docs/design/08-v6-api-projections.md` dòng 285-295): *"Mục tiêu: transport cho
+`RetryBlockedActivation`, `CancelWorkItem`, `ResolveWorkItemBlocker`. Phạm vi: đúng ba command và route/
+descriptor riêng. Không làm: không gọi internal recovery worker hoặc tự sửa blocker/Run state. Thực hiện: mỗi
+route dispatch một public command; resolve open blocker hợp lệ, resolved/waived replay no-op theo core;
+cancellation active Run trả quiesce state. Verify: precondition matrix, resolution mode, replay/concurrency, no
+duplicate activation and import test."*
+
+Đọc kỹ cả 3 file command thật trước khi viết bất kỳ dòng handler nào:
+
+- `internal/app/runtime/retry_blocked_activation.go` — `RetryBlockedActivationHandler.Retry(ctx, req)
+  (RetryBlockedActivationResult, error)`, KHÁC 2 command còn lại: đây là **method trên struct**, không phải
+  free function, vì cần giữ 2 dependency thật (`isolation`, `agents`) xuyên suốt lifetime của handler chứ không
+  nhận qua tham số mỗi lần gọi. Đọc trọn package doc comment (dòng 1-37): thiết kế two-phase
+  preflight-rồi-serialized-write y hệt `admitOrClaimRunning` gốc (Phase 1 đọc + I/O thật ngoài transaction,
+  Phase 2 CAS trong `WithSerializedWrite`, re-verify lại từ đầu để đóng TOCTOU) — retry **re-probe đúng
+  AdapterBuildID đã pin, không bao giờ repin sang build mới** ("không repin Run" — dòng 28-37 giải thích rõ:
+  nếu build cũ vẫn drift thì retry thất bại mãi mãi, đúng chủ đích, không phải bug). Một revalidation thất bại
+  là `RetryBlockedActivationResult` với `FailureReason`/`FailureDetail` — KHÔNG BAO GIỜ là `error` Go. Không
+  nhận `ports.Command`/idempotency-key: idempotent theo chính `blocker.State` (giống hệt `CancelRun` — đọc
+  `cancel_run.go`'s doc comment do chính `V6-06` để lại để xác nhận đây là pattern lặp lại có chủ đích, không
+  phải thiếu sót).
+- `internal/app/runtime/cancel_work_item.go` — `CancelWorkItem(ctx, uow, ids, req) (CancelWorkItemResult,
+  error)`, free function, idempotent theo `WorkItemID` qua `WorkItemCancellationIntent` durable riêng (mirror
+  `CancelRun`'s `RunCancellationIntent`). Đọc trọn package doc comment: transaction của nó (1) ghi intent, (2)
+  lặp qua MỌI Run chưa terminal của WorkItem và gọi `cancelRunTx` (hàm nội bộ `cancel_run.go` export sẵn cho
+  đúng mục đích này — "extracted from that file specifically so this command can compose it inside its OWN
+  transaction"), (3) `reconcileWorkItemCancellationTx` đóng WorkItem về `CANCELLED` NGAY nếu không còn Run nào
+  đang quiescing — nghĩa là handler HTTP không được tự suy đoán `Status` cuối cùng, phải trả đúng field
+  `Status` mà `CancelWorkItem` tự quan sát.
+- `internal/app/runtime/resolve_work_item_blocker.go` — `ResolveWorkItemBlocker(ctx, uow, req)
+  (ResolveWorkItemBlockerResult, error)`, free function, KHÔNG nhận `ids idsource.Source` (BlockerID do caller
+  cung cấp, DecisionArtifact của nhánh WAIVED tự sinh ID xác định từ `blockerID+"-waiver"`, không mint ID mới).
+  Đọc trọn package doc comment: bảng đóng `BlockerType × ResolutionMode` — `SCOPE_EXPANSION_REQUIRED` từ chối
+  CẢ HAI mode vô điều kiện (`ErrBlockerNotResolvableViaCommand`); WAIVED chỉ hợp lệ cho `RUN_CANCELLED`/
+  `COMPLETION_POLICY_FAILED` (`ErrBlockerNotWaivable` cho mọi type khác); `Mode` KHÔNG có mặc định
+  (`ErrResolutionModeRequired`); WAIVED bắt buộc `PolicyGrantRef` (`ErrWaiveRequiresPolicyGrant`); 2
+  precondition riêng của chính command (không thuộc bảng type/mode): không Run nào của WorkItem còn non-terminal
+  (`ErrWorkItemHasNonTerminalRun`), không repository workspace nào trong family đang `QUARANTINED`
+  (`ErrWorkspaceQuarantined`).
+
+Đọc `internal/app/agentregistry/registry.go` (`Registry.Resolve` khoá theo `ports.ProviderKey` — CHỈ MỘT
+executor mỗi provider, `New` từ chối đăng ký trùng `ErrDuplicateProvider`) và `internal/adapters/process/
+isolation.go` (`IsolationChecker` — pure static, không I/O, chỉ chấp nhận `OPERATOR_TRUSTED_LOCAL`, luôn từ
+chối `ENFORCED_ISOLATED` — comment gốc: "OPERATOR_TRUSTED_LOCAL is the only tier this environment can run
+today... confirmed with the user"). Đọc `internal/app/runtime/admission.go`'s `runAdmissionProbePhase` (dòng
+100-155) thấy điểm mấu chốt: `agents.Resolve(provider, ...)` chỉ khớp theo `ProviderKey`, RỒI
+`adapterbuild.VerifyNoDrift(ctx, executor, pinnedBuild)` gọi thẳng `executor.Capabilities(ctx)` — nghĩa là
+executor đăng ký trong registry PHẢI được construct đúng `ExecutablePath` của build đã pin, KHÔNG có cơ chế nào
+tự động chọn đường dẫn theo từng build. Đọc `internal/adapters/providers/claude/claude.go`'s
+`Capabilities(ctx)` (dòng 86-112) xác nhận: hàm này **spawn thật** `<executable> --version` mỗi lần gọi (không
+cache, không giả lập) — và `agentregistry.New(ctx, executors...)` tự nó gọi `Capabilities(ctx)` MỘT LẦN cho mỗi
+executor ngay lúc construct để đo capability thật. Đây là phát hiện quan trọng nhất buộc phải quyết định kỹ
+composition-root: nếu `cmd/aw/serve.go` mặc định tự đăng ký cả `claude`/`codex` (kiểu path mặc định "claude"/
+"codex" trên PATH), `aw serve` sẽ **fail khởi động** trên bất kỳ máy nào không cài sẵn 2 CLI đó — gần như chắc
+chắn đúng với máy CI/dev bình thường không có 2 binary ngoài này.
+
+Đọc `cmd/aw/adapter.go`'s `newAgentExecutor(providerKey, executablePath)` (dòng 244-261) — xác nhận đây là
+CÁCH DUY NHẤT construct executor thật hiện có trong toàn repo (`claude.New(process.NewSupervisor(),
+claude.Config{Executable: path})` / `codex.New(...)` tương tự), luôn nhận `--executable` tường minh từ operator,
+không bao giờ mặc định ngầm.
+
+Đọc `docs/design/11-v6-00-ux-artifact.md` xác nhận operationId khoá cứng: `retryBlockedActivation` (dòng 359,
+CLI leaf `aw node-run retry-blocked`, "retry thất bại KHÔNG được sinh thêm blocked activation mới trong view —
+Verify V7-12"), `cancelWorkItem` (dòng 305, CLI leaf `aw work-item cancel`), và `ResolveWorkItemBlocker` (dòng
+306/361, không có operationId literal ghi sẵn nhưng xác nhận CÙNG MỘT authority dùng chung giữa Screen 7 (chỉ
+summary+link) và Screen 8 (invocation thật) — "hai bề mặt UI chia sẻ ĐÚNG MỘT command mỗi loại, không phải hai
+owner").
+
+Đọc `internal/archtest/run_control_test.go` (mẫu AST-scan `TestRunControlHTTPNeverReachesSchedulerOrWorker`)
+làm khuôn cho architecture test riêng của task này.
+
+Grep `internal/app/runtime/completion.go` xác nhận `RUN_CANCELLED` là loại `WorkItemBlocker` DUY NHẤT trong 7
+loại đã có sẵn producer thật (`openRunCancelledBlockerTx`, gọi từ `transitionRunToCancelledTx`) — mở khi một Run
+bị `CancelRun` (không phải `CancelWorkItem`) đưa tới CANCELLED thật. Đây chính là con đường rẻ nhất để dựng một
+`WorkItemBlocker` OPEN thật cho test `ResolveWorkItemBlocker` mà không cần đụng tới admission/AGENT node.
+
+### Quyết định
+
+1. **Route path**: `POST /node-runs/{nodeRunId}/retry-blocked-activation`, `POST /work-items/{workItemId}/cancel`,
+   `POST /work-item-blockers/{blockerId}/resolve` — flat, một-ID-một-resource, KHÔNG project-prefix. Lý do:
+   `V6-06` đã lập tiền lệ y hệt cho `startWorkflowRun`/`cancelRun` (`/work-items/{id}/runs`, `/runs/{id}/cancel`
+   — không `/projects/{id}/...` dù `workitem` package's CRUD routes CÓ prefix) — vì cả 5 command này (2 của
+   V6-06 + 3 của V6-06D) đều KHÔNG nhận `ProjectID` trong request struct của chính application layer, nên
+   không có gì để một path segment `{projectId}` xác nhận/dùng tới; mọi authorization vẫn tự reload target
+   thật bên trong chính command, không qua path.
+2. **KHÔNG dùng CommandEnvelope (V6-02) cho cả 3 route** — quyết định lặp lại lý do `V6-06`'s `cancel.go` đã
+   ghi cho `CancelRun`, áp dụng cho cả 3 command ở đây vì cả 3 đều idempotent theo chính domain state của nó
+   (blocker State / WorkItemCancellationIntent), không có `IdempotencyKey`/`ExpectedVersion` field nào trên
+   request struct application layer. Bắt buộc `Idempotency-Key` rồi validate-nhưng-không-dùng sẽ nói dối về
+   contract thật — giữ nguyên tinh thần "không giả, không rào cản thừa" của `V6-06`.
+3. **Isolation checker: `process.NewIsolationChecker()` unconditional, không cần flag** — nó pure/static/
+   I/O-free (đọc lại `internal/adapters/process/isolation.go` xác nhận), không có lý do gì để cấu hình được.
+4. **Agent registry: KHÔNG mặc định đăng ký `claude`/`codex`; thêm 2 flag mới `--claude-executable`/
+   `--codex-executable` (mặc định rỗng = KHÔNG đăng ký provider đó)** — đây là quyết định kiến trúc quan trọng
+   nhất của task, dựa thẳng trên phát hiện ở phần Nghiên cứu (`agentregistry.New` spawn thật để đo capability).
+   3 lựa chọn đã cân nhắc:
+   - (a) Mặc định đăng ký cả 2 executor với path mặc định "claude"/"codex" (PATH lookup) — **loại bỏ**: làm
+     `aw serve` tự sập trên mọi máy không cài sẵn 2 CLI đó, kể cả CI của chính repo này (chưa từng thấy binary
+     `claude`/`codex` nào được cài trong pipeline CI hiện tại) — vi phạm nguyên tắc cơ bản nhất của một
+     composition root: khởi động binary chính không được phụ thuộc silently vào phần mềm ngoài không khai báo.
+   - (b) Luôn dùng `agentregistry.Empty()`, không bao giờ cho operator đăng ký executor thật qua `aw serve` —
+     **loại bỏ**: khiến `RetryBlockedActivation` không BAO GIỜ retry thành công thật được trên bất kỳ triển
+     khai production nào (mọi lần retry một NodeRun pin `AGENT` node sẽ luôn `ErrUnknownProvider`) — vi phạm
+     thẳng "Hoàn thành khi: Attempt/WorkItem blocked có named recovery action GỌI ĐƯỢC qua API" của chính task.
+   - (c) **Chọn**: 2 flag optional mirror đúng `aw adapter probe/register`'s `--executable` discipline đã có
+     sẵn — operator tường minh khai đường dẫn thật cho từng provider mình thật sự có; mặc định rỗng → registry
+     rỗng (`agentregistry.Empty()`), đúng "documented-safe zero-executor default" mà `execute.go`'s own
+     `NewExecuteNodeHandler` doc comment đã tự xác nhận từ trước ("a caller with no real adapter builds ever
+     pinned can safely pass agentregistry.New(ctx) with zero executors registered"). `aw serve` không bao giờ
+     tự sập vì thiếu CLI ngoài; một `RetryBlockedActivation` gặp build pin provider chưa cấu hình thất bại
+     ĐÚNG với 503 (quyết định 8 dưới đây), một tín hiệu rõ ràng "cấu hình thiếu", khác hẳn 500 (bug) hay một
+     conflict/not-found giả tạo. `agentregistry.New(ctx, executors...)` tự nó là I/O thật (spawn `--version`)
+     nên nếu operator BẤT CẨN khai một executable path hỏng, `aw serve` fail khởi động NGAY LẬP TỨC (giống hệt
+     triết lý "fail closed at boot" mà `aw adapter probe/register` đã dùng cho chính construction pattern này)
+     — không âm thầm nhận request rồi mới lỗi mù mờ về sau.
+5. **Không tự validate lại `Mode`/`PolicyGrantRef`-khi-WAIVED ở tầng HTTP cho `ResolveWorkItemBlocker`** — cả
+   `ErrResolutionModeRequired` và `ErrWaiveRequiresPolicyGrant` đều là sentinel `error` EXPORT sẵn từ
+   `internal/app/runtime`, nên handler chỉ cần decode thẳng rồi map qua `errors.Is` — không lặp lại logic domain
+   ở tầng delivery, đúng "handler chỉ dispatch" (khác với field `Reason` — validate cục bộ ở cả 3 route vì lỗi
+   thiếu `Reason` bên trong application layer là `errors.New("runtime: Reason is required")` TRẦN, không phải
+   sentinel export được, nếu không tự chặn trước sẽ rơi vào nhánh 500 mặc định).
+6. **Status code**: `retryBlockedActivation` → 202 Accepted đồng nhất cho cả 3 outcome (`Retried`/
+   `AlreadyRetried`/còn `FailureReason`) — lý lẽ giống `CancelRun`'s "202 luôn": khi `Retried=true` một job
+   `ScheduleNodeRunJobKind` mới thật sự được enqueue bất đồng bộ (kết quả cuối cùng chưa biết ngay lúc response
+   được viết), nên cả 3 nhánh đều là "yêu cầu đã được xử lý và trả kết quả QUAN SÁT ĐƯỢC ngay bây giờ", không
+   phải một trạng thái cuối tự bịa. `cancelWorkItem` → 202 Accepted (mirror y hệt `cancelRun`, vì bên trong nó
+   chính là compose lại `cancelRunTx`). `resolveWorkItemBlocker` → 200 OK (khác 2 route kia: không bao giờ
+   enqueue thêm job nào, toàn bộ CAS blocker + WorkItem Status nằm gọn trong MỘT transaction — mirror
+   `approveScopeExpansion`/`rejectScopeExpansion` của `V6-04`, cùng lý do).
+7. **Response DTO tự định nghĩa field JSON riêng, không serialize thẳng `runtime.*Result`** — same lý do
+   `V6-06`'s quyết định 7 đã ghi (các struct `*Result` của `internal/app/runtime` không có json tag, serialize
+   thẳng ra PascalCase sai convention camelCase toàn hệ thống).
+8. **Phân loại lỗi (`errors.go`) tự viết riêng trong package, không sửa `internal/app/runtime`** — same lý do
+   `V6-06`'s quyết định 8. Thêm 1 case mới chưa từng có tiền lệ: `agentregistry.ErrUnknownProvider`/
+   `ErrMissingCapability` → 503 Service Unavailable (`ErrorCodeUnavailable`), không phải 409/500 — đây là điều
+   kiện triển khai/cấu hình (provider chưa được operator khai ở composition root), khác hẳn một business
+   conflict (409, trạng thái domain đã đổi) hay một lỗi thật không mong đợi (500) — client/operator cần biết
+   "retry sau khi server được cấu hình lại/khởi động lại", không phải "yêu cầu này vốn sai" hay "có bug".
+9. **`ErrWorkspaceQuarantined` route qua `httpapi.StatusForAppErrorCode(errorcode.CodeWorkspaceQuarantined)`
+   thay vì hardcode status/code riêng** — mirror đúng `workitem/errors.go`'s `writePreconditionFailed` pattern,
+   giữ nhất quán với bảng chung (423 Locked) nếu sau này bảng đó đổi.
+10. **Architecture test riêng, mở rộng danh sách selector cấm so với `TestRunControlHTTPNeverReachesSchedulerOrWorker`
+    gốc** — thêm `TransitionNodeRun`/`TransitionExecutionAttempt`/`TransitionWorkflowRunState`/
+    `TransitionWorkItemStatus` (các CAS primitive `ports.RuntimeRepository`/`ports.WorkRepository` — nếu package
+    này từng gọi thẳng bất kỳ selector nào trong số đó, nghĩa là nó đã tự resolve/tự sửa blocker/Run/WorkItem
+    state thay vì tin tưởng đúng MỘT command thật mỗi route — đúng nghĩa đen "Không làm: không tự sửa blocker/
+    Run state" của chính task).
+11. **Test HTTP thật qua `httptest.Server` + `http.ServeMux` thật**, cùng khuôn `newTestServer` của `run`/
+    `workitem`, có thêm biến thể `newTestServerWithDeps` để mỗi test tự kiểm soát chính xác `Isolation`/`Agents`
+    (2 dependency chỉ `RetryBlockedActivation` cần).
+
+### Thực hiện
+
+- `internal/delivery/httpapi/recovery/recovery.go`: package doc, `Dependencies{UOW, IDs, Isolation, Agents}`,
+  `RegisterRoutes(routes, deps)` — 3 descriptor với `OperationID` khoá cứng.
+- `internal/delivery/httpapi/recovery/retry.go`: `RetryBlockedActivationRequest{Reason}`,
+  `RetryBlockedActivationResponse`, `RetryBlockedActivationHTTPHandler(deps)` — construct
+  `runtime.NewRetryBlockedActivationHandler(deps.UOW, deps.IDs, deps.Isolation, deps.Agents)` MỘT LẦN lúc
+  `RegisterRoutes` chạy (không construct lại mỗi request).
+- `internal/delivery/httpapi/recovery/cancelworkitem.go`: `CancelWorkItemRequest{Reason}`,
+  `CancelWorkItemResponse`, `CancelWorkItemHTTPHandler(deps)`.
+- `internal/delivery/httpapi/recovery/resolveblocker.go`: `ResolveWorkItemBlockerRequest{Mode, Reason,
+  PolicyGrantRef}`, `ResolveWorkItemBlockerResponse`, `ResolveWorkItemBlockerHTTPHandler(deps)`.
+- `internal/delivery/httpapi/recovery/errors.go`: `writeRetryBlockedActivationError`,
+  `writeCancelWorkItemError`, `writeResolveWorkItemBlockerError` — map đúng từng sentinel thật đọc được ở
+  phần Nghiên cứu, message an toàn tự viết lại (không trả `err.Error()` trần).
+- `internal/archtest/recovery_http_test.go`:
+  `TestRecoveryHTTPNeverReachesSchedulerOrWorkerOrMutatesStateDirectly`.
+- `cmd/aw/serve.go` (75 dòng thêm, không sửa dòng nào có sẵn): 2 flag mới `--claude-executable`/
+  `--codex-executable`; construct `agentExecutors []ports.AgentExecutor` có điều kiện theo flag, gọi
+  `agentregistry.New(ctx, agentExecutors...)` (fail khởi động rõ ràng nếu lỗi); `isolationChecker :=
+  process.NewIsolationChecker()` unconditional; 1 lời gọi `recoveryhttp.RegisterRoutes(routes,
+  recoveryhttp.Dependencies{UOW: uow, IDs: idsource.Random{}, Isolation: isolationChecker, Agents:
+  agentRegistry})` đúng tại điểm đánh dấu sẵn từ `V6-10B`. Xác nhận bằng `grep -n "recoveryhttp\|RegisterRoutes(routes"
+  cmd/aw/serve.go` sau khi viết xong — đúng yêu cầu review bắt buộc của chính task, không chỉ tin `go build`
+  sạch (bài học `V6-04` để lại: 30 test xanh cho một package KHÔNG BAO GIỜ được gọi từ `aw serve` thật).
+- Không migration mới — `internal/adapters/sqlite/migrations/` cao nhất vẫn `0037_release_set_local_commits.sql`
+  trên `origin/master` lúc bắt đầu, task này không cần schema mới, xác nhận bằng `ls` trực tiếp trước khi kết
+  thúc.
+
+### Test
+
+Toàn bộ 23 test dùng sqlite thật, không mock/fake nào cho persistence, dispatch qua đúng
+`RetryBlockedActivationHandler.Retry`/`runtime.CancelWorkItem`/`runtime.ResolveWorkItemBlocker` thật.
+
+- `fixture_test.go`: mirror `run/fixture_test.go` (`readyWorkItemFixture`, `workflowDocumentV1`,
+  `publishTestWorkflowVersion`, `stubProvider`) + fixture riêng của package này: `startedRunFixture`
+  (`runtime.StartWorkflowRun` thật, không qua HTTP — package này không sở hữu route start),
+  `runCancelledBlockerFixture` (xem bug #1 dưới), `startSecondRunForWorkItem`, `claimJobOfKind` (generic, dùng
+  chung cho cả `CANCEL_RUN_COORDINATOR` lẫn `EXECUTE_NODE` job).
+- `admission_fixture_test.go`: mirror TOÀN BỘ chuỗi fixture AGENT-node của `internal/app/runtime`
+  (`schedule_test.go`'s `agentExecutableDocument`/`validAgentProfileDocument`/`attemptPolicyDocument`/
+  `permissionPolicyDocument`/`publishAgentProfileVersion(Only)`/`publishPolicyVersion`/
+  `fullyResolvablePolicyRefs`/`seedEffectiveScope`, `advance_test.go`'s `publishWorkflowVersionDocument`,
+  `admission_test.go`'s `writeAdmissionExecutable`/`admissionPinnedBuild`) — không import được (Go test helper
+  không export chéo package), duplicate đúng nguyên văn theo discipline đã lập từ `V6-06`. Thêm
+  `toggleIsolationChecker` (đếm số lần gọi, N lần đầu fail rồi pass mãi — chỉ trục ISOLATION trong 4 trục
+  admission là trục DUY NHẤT có thể lật từ fail sang pass hợp lệ giữa lần block gốc và lần retry, vì 3 trục
+  còn lại (drift/capability/multi-repo-write) đều chỉ phụ thuộc pin bất biến mà chính `RetryBlockedActivation`
+  cam kết "không repin" — xem phần Nghiên cứu) và `blockedAdmissionFixture` (dựng NodeRun BLOCKED thật qua
+  toàn bộ pipeline thật: `StartWorkflowRun` → `AdvanceRun` → `ScheduleExecutableNodeRun` → claim job
+  `EXECUTE_NODE` thật (`store.ClaimJob`) → `runtime.NewExecuteNodeHandler(...).Handle` thật).
+- `cancelworkitem_test.go` (6 test): zero-runs-immediately-cancelled, active-run-quiesces-rather-than-fakes,
+  twice-already-requested, unknown-work-item, missing-reason, concurrent-race-exactly-one-fresh (6 goroutine
+  thật).
+- `resolveblocker_test.go` (9 test): resolved-unblocks, waived-records-decision-artifact,
+  waived-without-policy-grant-400, missing-mode-400, missing-reason-400, unknown-blocker-404,
+  non-terminal-run-409, twice-already-resolved, concurrent-race-exactly-one-fresh (6 goroutine thật).
+- `retry_test.go` (8 test): unknown-node-run-404, missing-reason-400, node-run-not-blocked-409,
+  revalidation-still-fails-202-with-failure-reason (+ retry lần 2 vẫn y hệt, không sinh blocked activation
+  mới), success-reactivates-202 (+ retry lần 2 sau đó là `AlreadyRetried`), concurrent-race-no-duplicate-activation
+  (6 goroutine thật, đúng 1 `Retried=true`/1 `ReactivatedNodeRunID` duy nhất), run-not-retryable-409,
+  provider-not-configured-503 (dùng `agentregistry.Empty()` + `fake.IsolationEnforcementChecker{}` cho CHÍNH
+  server test, khác hẳn registry/isolation đã dùng lúc dựng fixture — chứng minh đúng gap composition-root).
+
+**3 phát hiện thật trong lúc viết/chạy test (không phải giả định trước):**
+
+1. **Kỳ vọng sai ban đầu của chính tôi khi viết `runCancelledBlockerFixture`**: gọi `runtime.CancelRun(...)`
+   trực tiếp rồi tưởng `ListWorkItemBlockersForWorkItem` sẽ thấy ngay 1 blocker `RUN_CANCELLED` — chạy thật ra
+   0 blocker. Đọc lại `cancel_run.go`'s doc comment (đã đọc ở `V6-06` cho task trước nhưng lúc đó không cần
+   soi kỹ phần này): `CancelRun` **chỉ** chuyển Run sang `CANCELLING` và enqueue job
+   `CANCEL_RUN_COORDINATOR` — chính job đó (qua `CancelRunCoordinatorHandler.Handle`, chạy async trong
+   production) mới thật sự gọi `transitionRunToCancelledTx` (nơi `openRunCancelledBlockerTx` mở blocker). Sửa
+   fixture: claim job đó thật (`claimJobOfKind(t, store, runtime.CancelRunCoordinatorJobKind, 5)`) rồi
+   `runtime.NewCancelRunCoordinatorHandler(uow, ids).Handle(ctx, job)` thật trước khi assert bất cứ gì — không
+   có blocker nào được "giả lập", chỉ là thiếu một bước xử lý job thật trong fixture.
+2. **`TestResolveWorkItemBlocker_HTTP_NonTerminalRun_ReturnsConflict` cần một WorkItem có 2 Run (1 CANCELLED, 1
+   còn active) cùng lúc** — nhưng sau `StartWorkflowRun` lần đầu, WorkItem đã chuyển `READY→ACTIVE` (chính
+   `StartWorkflowRun`'s doc comment tự xác nhận đây là caller ĐẦU TIÊN và DUY NHẤT của nửa transition đó), nên
+   không thể `StartWorkflowRun` lần 2 cho cùng WorkItem (`ErrWorkItemNotReady`). Không có command thật nào
+   trong codebase này đưa WorkItem trở lại READY sau khi Run của nó quiesce (V5-11's CompletionPolicy thật
+   chưa tồn tại) — viết `startSecondRunForWorkItem` tự poke `TransitionWorkItemStatus` thẳng về READY, đúng
+   discipline "poke the primitive a future command would otherwise reach" mà chính `readyWorkItemFixtureInExistingProject`
+   (từ `V6-06`) và `run`'s `TestCancelRun_HTTP_AlreadyTerminalRun_ReturnsConflict` (force SUCCEEDED thẳng) đã
+   lập tiền lệ — không đụng tới field nào của `WorkItemBlocker` đang test, chỉ dựng lại đúng precondition.
+3. **Không có sqlite fixture BLOCKED admission sẵn ở bất kỳ đâu** (xem mục Bối cảnh) — đầu tư dựng
+   `blockedAdmissionFixture` mới hoàn toàn (mirror `internal/app/runtime`'s fake-backed
+   `admissionFixture`/`scheduleFixture` + sqlite-backed `sqliteExecutionFixture`/`claimExecuteNodeJob`, ghép
+   lại thành một bản sqlite-thật cho đúng 1 trục ISOLATION). Cân nhắc bỏ qua test
+   `ErrNotAnAdmissionBlockerReason` (blocker BLOCKED nhưng vì `SCOPE_EXPANSION_REQUIRED` thay vì 1 trong 4 lý
+   do admission) — dựng fixture đó cần thêm một luồng khác hẳn (scope-expansion tự nhiên phát sinh từ một
+   COMMAND node đòi hỏi scope vượt quá EffectiveScope hiện có, chưa có fixture rẻ nào sẵn cho việc đó) — chi
+   phí không tương xứng với phạm vi task ("HTTP transport", không phải "chứng minh lại mọi nhánh của
+   `evaluateAdmission`" — nhánh đó đã được chứng minh đầy đủ ở tầng application layer của chính `V5-08D`).
+   Quyết định: KHÔNG dựng fixture riêng cho case này, giữ lại error mapping trong code (đã có, dùng đúng
+   sentinel `runtime.ErrNotAnAdmissionBlockerReason` export sẵn) nhưng không có test HTTP riêng phủ nó — ghi
+   rõ gap này ở đây thay vì giả vờ đã test đủ.
+
+- `go build ./...`, `go vet ./...` sạch trên toàn bộ package.
+- `go test ./internal/delivery/httpapi/recovery/... -v`: 23/23 PASS (~7-19s tuỳ máy, dao động do
+  `blockedAdmissionFixture` mở nhiều sqlite DB + claim job thật).
+- `go test ./internal/archtest/... -run TestRecoveryHTTP -v`: PASS.
+- `go test ./...` (toàn bộ 86 package): chạy 2 lần độc lập để chắc chắn — lần 1 qua `tee` (77 dòng `ok`, 0
+  dòng `FAIL`), lần 2 redirect thẳng ra file log riêng, `EXIT=0`, xác nhận lại đúng 77/0. Không gặp lại flake
+  contention nào từng thấy ở `V6-06`/`V6-03` (`internal/integration/v5accept` chạy sạch 76.2s trong cùng lượt
+  chạy chung, không tách riêng).
+
+### Verify
+
+- **precondition matrix**: mọi sentinel nêu trong phần Nghiên cứu đều có test map đúng status —
+  `ports.ErrPersistenceNotFound`→404 (cả 3 route), `ErrNodeRunNotBlocked`/`ErrNotAnAdmissionBlockerReason`
+  (mapping có, chưa có test riêng cho nhánh 2 — xem phát hiện #3)/`ErrRunNotRetryable`/
+  `ErrBlockerNotResolvableViaCommand`/`ErrBlockerNotWaivable`/`ErrWorkItemHasNonTerminalRun`/
+  `ErrWorkItemAlreadyTerminal`→409, `ErrResolutionModeRequired`/`ErrWaiveRequiresPolicyGrant`→400,
+  `ErrWorkspaceQuarantined`→423 (map qua bảng chung, chưa có test HTTP riêng — cùng lý do chi phí fixture như
+  phát hiện #3, cần thêm 1 repository workspace `QUARANTINED` thật), `agentregistry.ErrUnknownProvider`→503
+  (test riêng).
+- **resolution mode**: `TestResolveWorkItemBlocker_HTTP_Resolved_*`/`..._Waived_*` chứng minh cả 2 nhánh trên
+  cùng 1 blocker `RUN_CANCELLED` thật (Waivable+ResolvableViaCommand theo đúng bảng đóng).
+- **replay/concurrency**: cả 3 route có test "gọi 2 lần" (idempotent no-op, không lỗi) VÀ test "N goroutine
+  thật cùng lúc" (`ConcurrentCancelRace`/`ConcurrentResolveRace`/`ConcurrentRetryRace` — mỗi test 6 goroutine
+  thật qua `httptest.Server` + `http.Client` thật vào real sqlite, đúng 1 outcome "fresh" mỗi lần).
+- **no duplicate activation**: `TestRetryBlockedActivation_HTTP_ConcurrentRetryRace_NoDuplicateActivation` —
+  đúng 1 `Retried=true`/1 `ReactivatedNodeRunID` phân biệt trong số 6 racer, phần còn lại `AlreadyRetried=true`.
+- **import test**: `TestRecoveryHTTPNeverReachesSchedulerOrWorkerOrMutatesStateDirectly` (AST-scan thật) —
+  cấm `Handle`/`AdvanceRun`/`FinalizeExecutionAttempt`/4 selector Transition* — package `recovery` không gọi
+  bất kỳ selector nào trong danh sách đó.
+- **"Hoàn thành khi": Attempt/WorkItem blocked có named recovery action gọi được qua API thật** — xác nhận
+  bằng `grep` trực tiếp `cmd/aw/serve.go` (không chỉ tin `go build`), cộng
+  `TestRetryBlockedActivation_HTTP_Success_ReactivatesNodeRun` chạy end-to-end qua đúng `RegisterRoutes`
+  handler thật (không gọi thẳng `runtime.NewRetryBlockedActivationHandler` bỏ qua tầng HTTP).
+
+### Kết quả
+
+Package mới `internal/delivery/httpapi/recovery` (5 file production ~553 dòng: `recovery.go`/`retry.go`/
+`cancelworkitem.go`/`resolveblocker.go`/`errors.go`; 6 file test ~1689 dòng, 23 test case), 1 architecture test
+mới (`internal/archtest/recovery_http_test.go`), `cmd/aw/serve.go` +75 dòng (2 flag mới +
+agentregistry/isolation wiring + 1 `RegisterRoutes` call). `go build/vet ./...` sạch. 3 route HTTP thật lần
+đầu tồn tại: `POST /node-runs/{nodeRunId}/retry-blocked-activation`, `POST /work-items/{workItemId}/cancel`,
+`POST /work-item-blockers/{blockerId}/resolve` — chạy được qua `aw serve` thật, xác nhận bằng grep trực tiếp
+`cmd/aw/serve.go`, không chỉ tin test package cô lập (đúng bài học `V6-04` để lại).
+
+Quyết định composition-root quan trọng nhất: KHÔNG mặc định đăng ký `claude`/`codex` executor thật vào
+`agentregistry.Registry` của `aw serve` — thêm 2 flag `--claude-executable`/`--codex-executable` optional,
+mặc định để trống (registry rỗng, documented-safe theo chính `execute.go`), tránh `aw serve` tự sập khi máy
+không cài 2 CLI ngoài đó, đồng thời cho operator triển khai thật một đường mở thật để dùng
+`RetryBlockedActivation` cho AGENT node. Một retry gặp provider chưa cấu hình thất bại đúng 503 (không phải
+500/409 giả tạo).
+
+Một Attempt/WorkItem blocked giờ có named recovery action gọi được qua API thật — `V6-06C` (Run diagnostics,
+phụ thuộc `V6-06D`) chính thức unblock phần dependency riêng của nó.
+
 ## V6-07 — Conversation message endpoints
 
 ### Bối cảnh
