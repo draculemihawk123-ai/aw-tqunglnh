@@ -5405,6 +5405,305 @@ Một regression tự gây ra (corrupt safe-settings row làm `aw serve` fail st
 là flake môi trường (Windows file-lock cleanup race dưới tải song song) không liên quan diff — pass ngay khi
 chạy lại riêng lẻ, package đó không nằm trong bất kỳ file nào task này sửa.
 
+## V6-06B — Run detail, graph và timeline endpoints
+
+### Bối cảnh
+
+V6-06B phụ thuộc V6-00/V6-02A/V6-06 — cả 3 đã merge từ lâu, xác nhận qua `git log origin/master --oneline -3`
+tại thời điểm bắt đầu: HEAD `c8163d3` (PR #50, V6-07B), trước đó `43cf0ca` (PR #49, V6-10J), `2cf88db`
+(PR #48, V6-10H) — nhánh `feat/v6-06b-run-detail-graph-timeline` branch thẳng từ `c8163d3`. Trích nguyên văn
+spec (`docs/design/08-v6-api-projections.md` dòng 262-272, không diễn giải lại): "Mục tiêu: cung cấp
+authoritative Run detail và bounded graph/timeline cho V7... Phạm vi: `GET /runs/{id}`, `/graph`, `/timeline`
+và stable cursors... Không làm: không diagnostics/recovery mutation hoặc raw unbounded agent-event stream...
+Thực hiện: trả manifest revision, nodes/edges/activations, attempt/route/retry/checkpoint, correlation/
+causation, JournalPosition/freshness; cursor bind query and upper watermark... Verify: fork/join/rework
+fixtures, paging qua write, bounds and redaction... Hoàn thành khi: Graph/Timeline screen không cần đọc DB/
+event journal trực tiếp." Nguồn: ADR-018, AK-ARCH-025, HE-11-M02, HE-11-M03.
+
+Đây là task đầu tiên trong repo thật sự lắp ráp một Run's own detail/graph/timeline từ raw repository
+primitives — không có application-layer query nào có sẵn làm việc này trước đó (`internal/app/runtime/
+queries.go`, sản phẩm của V6-07B, chỉ phủ Evidence/Artifact/ContextSnapshot, không đụng Run/NodeRun assembly).
+Đây cũng là task ĐẦU TIÊN thật sự sử dụng `httpapi.CursorCodec`/`httpapi.Bind`/`httpapi.Freshness` (V6-02A) cho
+một route có phân trang thật — xác nhận bằng grep `Freshness{`/`AsOfJournalPosition` toàn repo trước khi viết
+code: chỉ xuất hiện trong `freshness_test.go` của chính `httpapi`, chưa route nào dùng thật.
+
+`baocaov6checklist.md` đang được 3 task song song khác ghi đồng thời (V6-04A, V6-06C, V6-07A theo brief) —
+xung đột merge khi mở PR là bình thường, không phải bug (và thực tế đã gặp: origin/master tiến thêm 1 commit
+mới, `e277d7c` PR #51 V6-10A Doctor endpoint, trong lúc task này đang được viết).
+
+Phiên làm việc này bị gián đoạn 2 lần bởi rate-limit reset của hệ thống — lần thứ hai môi trường chuyển từ một
+git worktree cô lập (`.claude/worktrees/agent-...`) sang thẳng checkout chính của repo (worktree đã bị dọn).
+Hệ quả thật quan sát được: checkout chính bị 1 session khác (V6-07A, "attachment ingest/replay/orphan
+recovery") dùng CHUNG, để lại working tree lẫn cả thay đổi CHƯA COMMIT của session đó (`internal/adapters/
+sqlite/unitofwork.go`, `internal/app/ports/fake/unitofwork.go`, `internal/app/ports/unitofwork.go`,
+`internal/delivery/httpapi/message/routes.go` bị modify; `internal/adapters/sqlite/attachment_claim_repository.go`,
+`internal/adapters/sqlite/migrations/0038_attachment_prepare_claims.sql`, `internal/app/message/attachment.go`,
+`internal/app/ports/attachmentclaim.go`, `internal/delivery/httpapi/message/attachment.go` chưa track) — và
+`git branch --show-current` xác nhận HEAD đã bị checkout sang `feat/v6-07a-attachment-ingest-replay-orphan-recovery`
+tại một thời điểm, không còn là branch của task này. Xử lý: `git checkout feat/v6-06b-run-detail-graph-timeline`
+lại (mọi thay đổi working-tree, kể cả của session khác, đi theo an toàn vì 2 branch cùng base commit, không
+conflict); từ đó về sau CHỈ `git add` đúng các file của task này khi commit — không đụng, không revert bất kỳ
+file nào của session khác. Ghi lại đây vì đây là quan sát thật ảnh hưởng trực tiếp tới 4 test fail khi chạy
+`go test ./...` (xem mục Test).
+
+### Nghiên cứu
+
+Đọc lại toàn bộ `ports.RuntimeRepository` (đúng 6 method brief chỉ tên: `GetWorkflowRun`,
+`ListNodeRunsForRun`, `ListExecutionAttemptsForRun`, `GetExecutionManifest`, `ListRunManifestAmendments`,
+`ListBranchTokensForRun`) cộng `runtime.WorkflowRun`/`NodeRun`/`ExecutionAttempt`/`ExecutionManifest`/
+`RunManifestAmendment`/`BranchToken`/`Checkpoint` struct thật trong `internal/domain/runtime` trước khi đặt
+bất kỳ DTO nào. 3 phát hiện thật quan trọng nhất định hình toàn bộ thiết kế:
+
+1. **`ports.EventsRepository` chỉ có `Append` (write-only), `ports.CheckpointsRepository` chỉ có
+   `InsertCheckpoint` (write-only)** — xác nhận bằng đọc `unitofwork.go` toàn bộ, không có method đọc nào cho
+   cả 2 interface. Nghĩa là "JournalPosition" đúng nghĩa gốc (global `domain_events.journal_position`) KHÔNG
+   có đường nào để `internal/app/runtime` package đọc lại qua `ports.Tx` — 2 method debug-only trả về
+   `journal_position` thật (`sqlite.Store.ListDomainEventsForProject`, `event_queries.go`) chỉ tồn tại trên
+   `*sqlite.Store` cụ thể, không phải `ports.Tx`, và tự doc comment nói rõ "never used by production code,
+   only by V4-14's own test diagnostics" — dùng nó ở đây sẽ vi phạm thẳng "Không làm: raw unbounded agent-
+   event stream" (đọc domain_events trực tiếp chính là kiểu "raw stream" đó). Kết luận: không có method mới
+   nào được thêm vào `EventsRepository`/`CheckpointsRepository` để lấy JournalPosition thật — xem Quyết định
+   #2 để biết field `Freshness.AsOfJournalPosition` cuối cùng mang giá trị gì thay vào đó.
+2. **`NodeRun.ActivationSequence` là bộ đếm tăng dần theo TOÀN Run (không theo từng NodeKey)** — xác nhận
+   bằng đọc `completion_policy.go`'s `maxActivationSequence` (dùng "highest ActivationSequence among nodeRuns
+   + 1" cho MỌI reactivation, kể cả rework) và `advance.go` dòng 528 (`nextSequence := current.ActivationSequence
+   + 1` cho hop bình thường). Ban đầu giả định đây là total order tuyệt đối — SAI, phát hiện thật qua test
+   fail đầu tiên (xem Test): `dispatchForkBranches` (advance.go dòng 991-1104) gán mỗi branch một
+   `ActivationSequence` TĂNG DẦN từ `forkRun.ActivationSequence` (branch đầu = fork+1, branch sau = fork+2,
+   …), NHƯNG NodeRun của JOIN (advance.go dòng 1398) lại pin CỐ ĐỊNH vào `forkRun.ActivationSequence+1` —
+   nghĩa là JOIN's own ActivationSequence có thể TRÙNG với một branch's own first step (branch đầu tiên trong
+   danh sách outcome đã sort), bất kể branch nào thực tế arrive JOIN trước. Đây không phải bug — JOIN's vị trí
+   cố định tương đối FORK (không phụ thuộc thứ tự hoàn thành branch nào) là đúng thiết kế HE-14-M09. Hệ quả
+   trực tiếp: `ActivationSequence` KHÔNG PHẢI khoá duy nhất toàn Run — mọi sort/cursor trong task này phải có
+   tie-break phụ (xem Quyết định #3).
+3. **`internal/adapters/sqlite` không có cột `block_reason` nào cho bảng `node_runs`** — xác nhận bằng grep
+   "block_reason"/"BlockReason" toàn `internal/adapters/sqlite`: 0 kết quả; đọc thẳng `CREATE TABLE node_runs`
+   (migration 0001, dòng 129-142) xác nhận cột thật chỉ có `id/run_id/node_key/activation_sequence/iteration/
+   state/selected_outcome/input_state_hash/version/created_at/updated_at` — không có trường free-text nào cho
+   lý do BLOCKED. Phát hiện qua chính test redaction của task này tự viết (xem Test) — dùng sqlite thật thì
+   `BlockReason` luôn rỗng bất kể set gì, chỉ `fake.UnitOfWork` (round-trip toàn bộ struct trong bộ nhớ) mới
+   quan sát được giá trị thật. Đây là gap có thật của tầng persistence, không phải bug của task này — ghi rõ
+   trong doc comment `NodeActivationView` (`run_detail_queries.go`) và mục Kết quả, không tự thêm migration để
+   sửa (đúng brief: "This task likely needs NO new migration").
+
+Đọc toàn bộ `internal/domain/workflow/workflow.go`: `Node{Key,Type,Outcomes,CyclePolicy,...}` và
+`Edge{Key,From,Outcome,To,Kind,ReworkPolicy}` đã có json tag sẵn (không như `runtime.NodeRun`/`ExecutionAttempt`
+không có tag nào) — nhưng `Node` còn mang `Agent/Command/MachineGate/Approval/Wait/Join` typed executor config
+đầy đủ; quyết định KHÔNG expose nguyên struct `Node`/`Edge` mà tự định nghĩa `GraphNodeView`/`GraphEdgeView`
+trimmed (chỉ Key/Type/Outcomes/CyclePolicy và Key/From/Outcome/To/Kind/ReworkPolicy) — route này là "graph
+shape" (structural), không phải một surface thứ hai cho definition-authoring detail mà V6-05 đã sở hữu.
+`EdgeKind`: `EdgeFlow`("")/`EdgeCompletionRework` — `PossibleEdges` trả CẢ HAI loại (Kind phân biệt), không tự
+lọc REWORK ra vì đó cũng là một "possible edge" thật của compiled document, chỉ khi tính `TakenEdges` mới loại
+`COMPLETION_REWORK` (một NodeRun không bao giờ "route theo" một REWORK edge — REWORK chỉ được resolve bởi
+`EvaluateCompletionCandidate`, không phải `AdvanceRun`'s `findEdge`).
+
+Đọc `docs/harness-engineering/11-lec-11-observability-noi-tai.md` cho đúng 2 nguồn HE-11-M02/M03 spec trích
+dẫn: "HE-11-M02 — Trace identity: mọi event MUST liên kết được tới WorkItem, WorkflowRun, NodeRun, Attempt và
+actor/runner phù hợp" và đặc biệt **"HE-11-M03 — Correlation/causation: transition, tool call, gate và retry
+MUST có correlation/causation IDs HOẶC SEQUENCE TƯƠNG ĐƯƠNG"** — cụm "hoặc sequence tương đương" (đọc kỹ, không
+bỏ sót) chính là căn cứ cho phép dùng `ActivationSequence` làm "correlation/causation ID equivalent" thay vì
+phải có field `CorrelationID`/`CausationID` thật trên `NodeRun`/`ExecutionAttempt` (2 struct này không có field
+nào như vậy — field `CorrelationID` duy nhất tồn tại trong domain runtime nằm ở `ContextMessage`, một khái
+niệm khác hẳn, không liên quan). Đọc `docs/architecture/03-system-architecture.md` dòng 639-640 cho AK-ARCH-025
+("Trace phân biệt được provider failure, workspace failure, verifier failure và infrastructure failure") —
+xác nhận `TerminationReason`/`FailureCode` (đã có sẵn trên `ExecutionAttempt`, đóng, không cần taxonomy mới)
+đã đủ cho yêu cầu "phân biệt loại failure", không cần route này tự phát minh thêm phân loại. Đọc
+`docs/architecture/02-architecture-decisions.md` ADR-018 ("UI Alpha: source/log có, interactive terminal chưa
+có") — xác nhận đây là căn cứ cho "Không làm: raw unbounded agent-event stream" (không terminal-style live
+stream), không phải một ràng buộc riêng cho route này ngoài việc củng cố lại quyết định đã có ở trên.
+
+Đọc `internal/delivery/httpapi/message/list.go` (V6-07, `handleListMessages`) toàn bộ — precedent DUY NHẤT
+trong repo thật sự dùng `httpapi.CursorCodec`/`httpapi.Bind`/`Fingerprint`/`UpperWatermark` cho một route phân
+trang: xác nhận nguyên tắc "app-layer trả FULL kết quả đã sort, HTTP layer tự cắt trang trong bộ nhớ, không
+thêm SQL query mới" — áp dụng y hệt cho task này (Quyết định #1). Đọc `internal/delivery/httpapi/run/cancel.go`
+(V6-06) xác nhận pattern route Run-scoped-bằng-RunID-only, không có `{projectId}` trên path, tự reload Run rồi
+suy ra ProjectID từ chính row đó thay vì tin path — áp dụng y hệt cho cả 3 route mới.
+
+Điều tra khả năng dựng fixture rework thật (không hand-seed, đúng yêu cầu Verify): đọc
+`internal/app/runtime/completion_policy_test.go`'s `documentWithReworkEdge`/`requiredEvidenceCompletionPolicy`/
+`completionCandidateFixture` — xác nhận `EvaluateCompletionCandidate` (production command thật) tạo một
+NodeRun REWORK activation THẬT (Iteration = priorMax+1, ActivationSequence = maxActivationSequence+1,
+KHÔNG set `ReactivationReason` — field đó chỉ dành cho SCOPE_EXPANDED, đọc thẳng `completion_policy.go` dòng
+471-482 xác nhận). `completionCandidateFixture` gốc dùng `fake.UnitOfWork` + `uow.Snapshot.Definitions().(*fake.
+DefinitionsRepository).Seed(...)` (cơ chế chỉ tồn tại trên fake) — task này cần chạy được trên SQLite thật, nên
+tự viết lại đúng chuỗi compile+publish bằng `definitions.PublishDefinitionVersion` (production command thật,
+đã có sẵn helper `publishPolicyVersion` dùng chung fake/sqlite trong `schedule_test.go`) thay vì `.Seed()`. Gặp
+1 lỗi thật khi thử lần đầu (bỏ qua bước gắn `DependencyManifest` pin khớp `CompletionPolicyRef`): resolveCompletionPolicy
+(completion_policy.go dòng 535-587) đối chiếu `document.CompletionPolicyRef` với đúng
+`manifest.DependencyManifest.Pins` (Kind/Key/Version/Hash phải khớp CHÍNH XÁC) TRƯỚC khi load policy thật — bỏ
+qua bước này cho lỗi `COMPLETION_POLICY_UNRESOLVABLE` thay vì REWORK; sửa bằng cách đọc lại `CompiledHash`
+thật qua `tx.Definitions().LoadVersion` rồi build `DependencyManifest.Pins` khớp tay trước khi
+`PublishWorkflowVersion` (không dùng `publishWorkflowVersionDocument` có sẵn — helper đó hard-code một pin
+"skill" không liên quan, không có chỗ cho policy pin thật).
+
+### Quyết định
+
+1. **Query app-layer trả FULL kết quả đã sort cho cả Run, KHÔNG tự phân trang trong `internal/app/runtime`** —
+   `GetRunDetail`/`GetRunGraph`/`GetRunTimeline` (file mới `run_detail_queries.go`, đặt cạnh `queries.go` của
+   V6-07B đúng chỉ dẫn brief) không nhận tham số `limit`/`cursor` nào, không import `internal/delivery/httpapi`
+   (tránh đảo ngược layering delivery→app). Toàn bộ cursor/Bind/Fingerprint/Freshness chỉ sống trong
+   `internal/delivery/httpapi/rundetail` — mirror y hệt `handleListMessages` (Nghiên cứu).
+2. **`Freshness.AsOfJournalPosition` KHÔNG mang global `journal_position` thật (không có đường lấy, xem Nghiên
+   cứu #1) — tái dùng đúng wire field đó để mang `ActivationSequence` cao nhất của Run tại thời điểm đọc.**
+   `Freshness.Status` LUÔN `LIVE` (route đọc thẳng bảng nguồn thật, không qua projection có độ trễ nào —
+   không có khái niệm DEGRADED/STALE ở đây), `Generation` LUÔN `0` (không có V6-08 projection-generation nào
+   áp dụng). Đây là tái sử dụng CÓ Ý THỨC một wire field đã định nghĩa cho một ngữ nghĩa hẹp hơn ngữ cảnh gốc
+   của nó (per-Run thay vì global) — ghi rõ lý do đầy đủ trong doc comment của cả `run_detail_queries.go` lẫn
+   `rundetail.go` để không ai đọc nhầm giá trị này là journal_position toàn hệ thống.
+3. **Cursor key là COMPOSITE, không phải `ActivationSequence` đơn** — do phát hiện tie thật (Nghiên cứu #2).
+   `/graph` dùng khoá 2 phần `"<activationSequence>:<nodeRunId>"` (`encodeActivationKey`/`afterActivation`,
+   `cursorkeys.go`), NodeRunID làm tie-break xác định (cùng thứ tự `sortedNodeRuns` đã dùng để sort). `/timeline`
+   cần khoá 3 phần `"<activationSequence>:<nodeRunId>:<subOrder>"` — `subOrder` = 0 cho entry NODE_RUN, =
+   `AttemptNumber` cho entry EXECUTION_ATTEMPT (AttemptNumber bắt đầu từ 1 nên NODE_RUN luôn đứng trước chính
+   attempt của nó). `CursorState.ProjectID` để trống ("") có chủ đích cho cả 2 route — route này không có
+   `{projectId}` trên path (Nghiên cứu, mirror `run/cancel.go`), và `QueryFingerprint` (đã băm RunID) một mình
+   đã đủ chặn replay cursor của Run A lên Run B (test `TestGetRunGraph_HTTP_CursorFromAnotherRun_ResyncRequired`
+   xác nhận thật, không chỉ suy luận).
+4. **Tách rõ Graph (structural) khỏi Timeline (chronological) — không gộp chung 1 shape.** `/graph` trả
+   `Nodes`/`PossibleEdges` (đầy đủ, không phân trang — bounded tự nhiên theo document đã compile) +
+   `Activations` (phân trang theo NodeRun) + `TakenEdges` (suy ra CHỈ từ đúng trang Activations hiện tại,
+   KHÔNG tính trong app-layer vì "trang nào" là khái niệm HTTP-layer, xem Quyết định #1) + `BranchTokens` (đầy
+   đủ, nhỏ tự nhiên theo độ rộng FORK). `/timeline` trả 1 feed phẳng, đã trộn 2 loại entry (`NODE_RUN`/
+   `EXECUTION_ATTEMPT`, tagged union `TimelineEntryKind`) theo đúng thứ tự thời gian — NODE_RUN mang nửa
+   "route" (SelectedOutcome, đúng cho cả ROUTER/FORK/JOIN không bao giờ có Attempt), EXECUTION_ATTEMPT mang
+   nửa "attempt/retry/checkpoint" (AttemptNumber/TerminationReason/FailureCode/LastCheckpointID/
+   ContextSnapshotID). Ánh xạ này khớp đúng cách brief tự chia field theo route: "manifest revision" →
+   `/runs/{id}`; "nodes/edges/activations" → `/graph`; "attempt/route/retry/checkpoint" → `/timeline`.
+5. **BlockReason redact qua `redact.Matcher.String` (exact-match, không phải scan substring) truyền vào TỪ app-
+   layer** (`GetRunGraph(ctx, uow, matcher, runID)`/`GetRunTimeline(...)`) — không redact ở tầng HTTP. Route
+   `getRunDetail` không cần `Matcher` vì `RunDetail` không mang field free-text nào (cố ý loại `SharedState`
+   khỏi response — xem điểm 6). Đây là field free-text DUY NHẤT `NodeRun` mang (mọi field khác là ID/enum/số).
+6. **`RunDetail` KHÔNG expose `WorkflowRun.SharedState`** — field JSON tự do do caller khai báo, không nằm
+   trong bất kỳ dòng "Thực hiện" nào của spec, và cần một chính sách redact riêng route này chưa có căn cứ
+   thật để thiết kế (không có caller thật nào cần) — loại bỏ bằng construction, mirror đúng "Locator never a
+   field" discipline `ArtifactSummary` (V6-07B) đã lập.
+7. **Không thêm migration nào.** Xác nhận migration cao nhất trên `origin/master` tại thời điểm branch
+   (`c8163d3`) là `0037` — mọi cột task này cần (kể cả cột KHÔNG có, như `block_reason` — Nghiên cứu #3) đã
+   tồn tại hoặc không tồn tại từ trước, không phải việc của task này thêm.
+
+### Thực hiện
+
+- `internal/app/runtime/run_detail_queries.go` (file mới, ~470 dòng): `ExecutionManifestDetail`/
+  `toExecutionManifestDetail`, `RunManifestAmendmentView`/`toRunManifestAmendmentView`, `RunDetail`/
+  `GetRunDetail`; `GraphNodeView`/`toGraphNodeViews`, `GraphEdgeView`/`toGraphEdgeViews`, `BranchTokenView`/
+  `toBranchTokenViews`, `NodeActivationView`/`toNodeActivationView`, `sortedNodeRuns` (tie-break NodeRunID —
+  Quyết định #3), `RunGraph`/`GetRunGraph`; `TimelineEntryKind`/`TimelineEntryView`/`nodeRunToTimelineEntry`/
+  `attemptToTimelineEntry`/`buildTimelineEntries`, `RunTimeline`/`GetRunTimeline`.
+- `internal/app/runtime/run_detail_queries_sqlite_test.go` (file mới, 6 test — real sqlite, reuse 100% fixture
+  có sẵn trong package `runtime_test`, không tự viết fixture mới nào cho fork/join/rework).
+- `internal/delivery/httpapi/rundetail/` (package HTTP mới, 6 file production):
+  - `rundetail.go`: doc comment đầy đủ (route inventory, lý do không `{projectId}`, lý do Freshness tái dùng)
+    + `Dependencies{UnitOfWork, Matcher, Cursor}` + `RegisterRoutes` (3 `RouteDescriptor`, `ScopeKind:
+    httpapi.ScopeProject`).
+  - `errors.go`: `writeQueryError`/`writeValidationError` (mirror y hệt `evidence`/`message`).
+  - `detail.go`: `handleGetRunDetail`.
+  - `graph.go`: `graphQueryFingerprint`, `takenEdgeView`/`deriveTakenEdges` (Quyết định #4), `runGraphResponse`,
+    `handleGetRunGraph`.
+  - `timeline.go`: `timelineQueryFingerprint`, `timelineSubOrder`, `runTimelineResponse`,
+    `handleGetRunTimeline`.
+  - `cursorkeys.go`: `encodeActivationKey`/`decodeActivationKey`/`afterActivation` (2 phần),
+    `encodeTimelineKey`/`decodeTimelineKey`/`afterTimelineKey` (3 phần) — Quyết định #3.
+- `cmd/aw/serve.go`: thêm import `httprundetail "internal/delivery/httpapi/rundetail"`; gọi
+  `httprundetail.RegisterRoutes(routes, httprundetail.Dependencies{UnitOfWork: uow, Matcher: matcher, Cursor:
+  cursorCodec})` ngay sau `runhttp.RegisterRoutes`, trước `decision.RegisterRoutes` — tái dùng ĐÚNG
+  `matcher`/`cursorCodec` V6-07 đã construct, không tạo instance thứ hai. Xác nhận bằng grep `rundetail` trong
+  chính file này thấy cả import lẫn lệnh gọi thật (không chỉ tồn tại ở test).
+
+### Test
+
+`internal/app/runtime/run_detail_queries_sqlite_test.go` (6 test, real sqlite):
+`TestGetRunDetail_SQLite_UnknownRun_NotFound` (cả 3 hàm query), `TestGetRunDetail_SQLite_ReturnsManifestAndCounts`,
+`TestGetRunGraph_SQLite_ForkJoin_ReturnsStructureAndActivations` (drive THẬT qua `StartWorkflowRun`→`AdvanceRun`
+(start→fork)→`ScheduleExecutableNodeRun`+`FinalizeExecutionAttempt` cho cả 2 branch — reuse 100%
+`joinPolicyDocument`/`publishJoinPolicyFixtures`/`seedRunningAndFinalizeSQLite` có sẵn từ `join_sqlite_test.go`,
+không hand-seed dòng nào), `TestGetRunTimeline_SQLite_ForkJoin_OrdersActivationsAndAttempts` (cùng fixture,
+assert thứ tự non-decreasing + mỗi EXECUTION_ATTEMPT luôn theo sau đúng NODE_RUN của chính nó),
+`TestGetRunGraph_SQLite_Rework_CreatesNewActivationOnReworkTarget` (drive THẬT qua
+`EvaluateCompletionCandidate` production command trên sqlite thật — xem Nghiên cứu cho lý do phải tự viết lại
+chuỗi publish; assert đúng 2 activation "implement", Iteration 0 và 1, ActivationSequence tăng, NodeRunID thứ 2
+khớp `result.ReworkNodeRunID`), `TestGetRunGraph_RedactsBlockReason` (1 test dùng `fake.UnitOfWork` có chủ đích
+— xem Nghiên cứu #3 — hand-seed ĐÚNG 1 NodeRun ngoài luồng fork/join/rework, mirror discipline
+`seedRunEvidence`/`seedPriorEndReach` có sẵn).
+
+`internal/delivery/httpapi/rundetail/` (5 file test, 14 test function — real `httptest.Server` +
+`httpapi.Chain(mux, BindPrincipal(...))`, mirror `internal/delivery/httpapi/run`'s `newTestServer`):
+`TestGetRunDetail_HTTP_NotFound`, `TestGetRunDetail_HTTP_ReturnsDetail`, `TestGetRunGraph_HTTP_NotFound`,
+`TestGetRunGraph_HTTP_ReturnsStructureAndFreshness`,
+`TestGetRunGraph_HTTP_PagesAndStaysStableAcrossConcurrentWrite` (drive THẬT qua `routerChainDocument`
+start→router1→router2→end — mirror chính xác `TestListMessages_PagesAndStaysStableAcrossConcurrentWrite`'s
+pattern: page1 limit=1, ghi router2 THẬT giữa 2 lần gọi, page2 vẫn đúng router1 và `NextCursor` rỗng, request
+mới không-cursor thấy đủ cả 3), `TestGetRunGraph_HTTP_InvalidCursor_Returns400`,
+`TestGetRunGraph_HTTP_CursorFromAnotherRun_ResyncRequired` (2 Run 2 project riêng, cursor Run A dùng lên Run B
+→ 409 RESYNC_REQUIRED thật), `TestGetRunTimeline_HTTP_NotFound`, `TestGetRunTimeline_HTTP_ReturnsOrderedEntries`,
+`TestGetRunTimeline_HTTP_PagesAndStaysStableAcrossConcurrentWrite`, `TestGetRunTimeline_HTTP_LimitBounds`
+(`limit=0`/`limit=-1` → 400 thật qua `httpapi.ResolveLimit`; `limit=100000` clamp về `MaxPageLimit`, không lỗi,
+không unbounded), `TestGetRunTimeline_HTTP_InvalidCursor_Returns400`,
+`TestGetRunGraphAndTimeline_HTTP_RedactBlockReason` (dùng `fake.New()` — lý do y hệt test app-layer tương ứng,
+Nghiên cứu #3 — assert cả 2 response route KHÔNG lộ secret verbatim, đúng `[REDACTED]`).
+
+`go build ./...`, `go vet ./...` sạch trên toàn repo. `go test ./internal/app/runtime/... -run
+"TestGetRunDetail|TestGetRunGraph|TestGetRunTimeline" -v`: 6/6 xanh; `go test ./internal/app/runtime/...` đầy
+đủ (không chỉ test mới): xanh, không regression trên bất kỳ test cũ nào (82.7s). `go test
+./internal/delivery/httpapi/rundetail/... -v`: 14/14 xanh. `go test ./cmd/aw/...`: xanh (composition root
+không panic khi register route mới — xác nhận không trùng `(Method,Path)` hay `OperationID` với route nào có
+sẵn). `go test ./...` full suite: 4 fail gặp phải, điều tra riêng từng cái, KHÔNG cái nào do task này:
+- `internal/adapters/sqlite`: `TestUnitOfWork_WithReadOnly_DoesNotPersistWrites`/`TestOpenMigratesAndEnablesForeignKeys`/
+  `TestMigrationIsIdempotent` — "migration count = 37, want 36". Xác nhận bằng `ls migrations/*.sql | wc -l`
+  = 37 thật (36 gốc + `0038_attachment_prepare_claims.sql` — file của session V6-07A khác, xem Bối cảnh), còn
+  test hardcode `36` chưa cập nhật — thuộc PR khác, không sửa file không phải của mình.
+- `internal/delivery/httpapi/message`: `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` — "len
+  (Descriptors()) = 4, want 3", cùng nguyên nhân (route attachment mới của session khác, `message/routes.go`
+  bị modify chưa commit).
+- `internal/integration/v5accept`: `TestV5AcceptArtifactTamper_RealVerifyDetectsRealCorruption` — timeout chờ
+  Run đạt VERIFYING trong lúc chạy suite đầy đủ (tải hệ thống cao do chạy song song với session khác trên cùng
+  máy). Chạy lại riêng lẻ (`-run` đúng tên test đó): PASS trong 3.3s — xác nhận là flake do tải môi trường,
+  không phải regression thật.
+
+### Verify
+
+- **Fork/join/rework fixtures**: cả 3 route đều được test qua Run thật drive bằng `StartWorkflowRun`/
+  `AdvanceRun`/`ScheduleExecutableNodeRun`/`FinalizeExecutionAttempt`/`EvaluateCompletionCandidate` — không
+  dòng NodeRun/BranchToken/Amendment nào bị hand-seed cho các test này (2 test hand-seed CHỈ tồn tại cho đúng 1
+  field-level assertion hẹp — redaction — nêu rõ lý do trong chính doc comment).
+- **Paging qua write**: chứng minh bằng test thật ghi một NodeRun MỚI giữa page 1 và page 2 của CÙNG một walk
+  — page 2 không bao giờ thấy activation mới đó, `NextCursor` của page cuối rỗng đúng, request mới không-cursor
+  THẤY được activation mới — cho cả `/graph` lẫn `/timeline`.
+- **Bounds**: `httpapi.ResolveLimit` (V6-02A có sẵn) enforce thật qua route — `limit` không hợp lệ là 400 typed,
+  `limit` quá lớn clamp về `MaxPageLimit` (200) chứ không bao giờ trả response không giới hạn; `Nodes`/
+  `PossibleEdges`/`BranchTokens` bounded tự nhiên theo kích thước document/độ rộng fork đã compile, không phải
+  theo độ dài lịch sử Run.
+- **Redaction**: `BlockReason` — field free-text duy nhất `NodeRun` mang — đi qua `redact.Matcher.String` thật
+  trước khi rời `internal/app/runtime`, chứng minh bằng test thật (không chỉ code review) ở cả 2 tầng app/HTTP.
+- **Hoàn thành khi — "Graph/Timeline screen không cần đọc DB/event journal trực tiếp"**: đúng bằng cấu trúc —
+  `internal/app/runtime/run_detail_queries.go` không import `internal/adapters/sqlite` hay bất kỳ package event
+  journal nào; mọi field trả về đến từ đúng `ports.RuntimeRepository`/`ports.DefinitionsRepository` đã scoped
+  sẵn theo Run.
+
+### Kết quả
+
+Branch `feat/v6-06b-run-detail-graph-timeline` từ `origin/master` tại `c8163d3` (sau PR #50/#49/#48/#46).
+Package app-layer mới `internal/app/runtime/run_detail_queries.go` (3 hàm query công khai `GetRunDetail`/
+`GetRunGraph`/`GetRunTimeline` + 1 file test riêng, 6 test). Package HTTP mới `internal/delivery/httpapi/
+rundetail` (6 file production + 5 file test, 14 test function). Không thêm method port mới, không thêm
+migration mới (migration cao nhất vẫn `0037`). 3 route HTTP thật lần đầu tồn tại: `GET /runs/{id}`,
+`GET /runs/{id}/graph`, `GET /runs/{id}/timeline` — grep xác nhận `httprundetail.RegisterRoutes` thật sự có
+trong `cmd/aw/serve.go`, không chỉ tồn tại ở test package-level.
+
+Phát hiện thật cần ghi lại (2 gap có thật của tầng dưới, không phải bug của task này):
+1. **`ports.EventsRepository`/`ports.CheckpointsRepository` không có method đọc nào** — "JournalPosition" thật
+   theo nghĩa gốc (global `domain_events.journal_position`) không có đường lấy qua `ports.Tx` cho bất kỳ
+   package app-layer nào, chỉ tồn tại trên `*sqlite.Store` debug-only. `Freshness.AsOfJournalPosition` của 3
+   route này vì vậy mang `ActivationSequence` cao nhất trong Run (Run-scoped), không phải global journal
+   position — ghi rõ lý do trong doc comment, không giả vờ đó là cùng giá trị.
+2. **`node_runs` không có cột `block_reason`** — route redact ĐÚNG field đó, nhưng trên sqlite thật giá trị
+   luôn rỗng vì tầng persistence chưa từng ghi nó (xác nhận bằng grep, không suy đoán). Field/redaction đã nối
+   dây đúng đầu-cuối và sẽ tự hoạt động đúng ngay khi một task tương lai thêm cột này — task này không tự thêm
+   (ngoài phạm vi, brief xác nhận "This task likely needs NO new migration").
+
+`go build/vet ./...` sạch. `go test ./internal/app/runtime/...` và `go test ./internal/delivery/httpapi/
+rundetail/...` 100% xanh (20/20 test mới). `go test ./...` toàn repo: 4 fail, cả 4 đã điều tra và xác nhận
+không liên quan diff của task này (3 do uncommitted work của session V6-07A khác đang chạy song song trên
+CÙNG checkout, 1 do tải hệ thống — pass khi chạy riêng lẻ).
 ## V6-10D — Bounded source, diff và repository-log endpoints
 
 ### Bối cảnh
@@ -5669,6 +5968,7 @@ package đó — xem mục Test), không phải regression thật của task nà
 lại với kết quả cô lập ở đây (`ok`, 94.8s, 0 test fail) trước khi kết luận là regression thật — CI runner sạch,
 không có tải tích luỹ từ hàng chục phút chạy `go test ./...` tuần tự ngay trước đó như môi trường phiên này,
 nên nhiều khả năng sẽ pass ngay trên CI.
+
 ## V6-06C — Run diagnostics endpoints
 
 ### Bối cảnh
