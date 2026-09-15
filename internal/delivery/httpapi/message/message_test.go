@@ -265,13 +265,17 @@ func appendBody(role, content, contentType, sensitivity, attemptID string) map[s
 }
 
 // TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet mirrors
-// workitem_test.go's own identical test: the closed set of three
-// operationIds below is EVERY route this package ever registers.
+// workitem_test.go's own identical test: the closed set of four
+// operationIds below is EVERY route this package ever registers —
+// appendConversationAttachment (V6-07A) joins the original V6-07 three.
 func TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet(t *testing.T) {
 	reg := httpapi.NewRouteRegistry()
 	message.RegisterRoutes(reg, message.Dependencies{IDs: idsource.Random{}, Clock: clock.System{}})
 
-	want := map[string]bool{"appendMessage": true, "listMessages": true, "getMessageContextSnapshot": true}
+	want := map[string]bool{
+		"appendMessage": true, "listMessages": true, "getMessageContextSnapshot": true,
+		"appendConversationAttachment": true,
+	}
 	got := reg.Descriptors()
 	if len(got) != len(want) {
 		t.Fatalf("len(Descriptors()) = %d, want %d", len(got), len(want))

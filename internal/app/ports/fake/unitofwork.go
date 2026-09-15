@@ -104,6 +104,7 @@ type Tx struct {
 	agentEvents      *AgentEventsRepository
 	checkpoints      *CheckpointsRepository
 	safeSettings     *SafeSettingsRepository
+	attachmentClaims *AttachmentClaimRepository
 }
 
 func newTx() Tx {
@@ -144,7 +145,8 @@ func newTx() Tx {
 		// 0036_safe_settings.sql's own seeded singleton row exactly, so a
 		// handler test sees the identical starting state against either
 		// implementation.
-		safeSettings: &SafeSettingsRepository{record: ports.SafeSettingsRecord{Version: 1}},
+		safeSettings:     &SafeSettingsRepository{record: ports.SafeSettingsRecord{Version: 1}},
+		attachmentClaims: &AttachmentClaimRepository{},
 	}
 }
 
@@ -169,6 +171,7 @@ func (t Tx) clone() Tx {
 	clone.agentEvents = t.agentEvents.clone()
 	clone.checkpoints = t.checkpoints.clone()
 	clone.safeSettings = t.safeSettings.clone()
+	clone.attachmentClaims = t.attachmentClaims.clone()
 	return clone
 }
 
@@ -191,6 +194,7 @@ func (t Tx) ContextSnapshots() ports.ContextSnapshotRepository { return t.contex
 func (t Tx) AgentEvents() ports.AgentEventsRepository          { return t.agentEvents }
 func (t Tx) Checkpoints() ports.CheckpointsRepository          { return t.checkpoints }
 func (t Tx) SafeSettings() ports.SafeSettingsRepository        { return t.safeSettings }
+func (t Tx) AttachmentClaims() ports.AttachmentClaimRepository { return t.attachmentClaims }
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the
@@ -1323,6 +1327,114 @@ func (a *ArtifactRepository) SetArtifactSweepDryRun(_ context.Context, req ports
 	a.sweepState.DryRun = req.DryRun
 	a.sweepState.Version++
 	return *a.sweepState, nil
+}
+
+// AttachmentClaimRepository is an in-memory ports.AttachmentClaimRepository
+// (V6-07A) — the same "gets real behavior from the start" treatment
+// AdapterBuildRepository/ArtifactRepository above already received, mirroring
+// sqlite's own attachmentClaimRepository field-for-field so a crash-safety
+// test exercises identical CAS/idempotent-insert semantics against either
+// implementation.
+type AttachmentClaimRepository struct {
+	claims map[string]ports.AttachmentPrepareClaim
+}
+
+var _ ports.AttachmentClaimRepository = (*AttachmentClaimRepository)(nil)
+
+func (a *AttachmentClaimRepository) clone() *AttachmentClaimRepository {
+	claims := make(map[string]ports.AttachmentPrepareClaim, len(a.claims))
+	for k, v := range a.claims {
+		claims[k] = v
+	}
+	return &AttachmentClaimRepository{claims: claims}
+}
+
+// ClaimAttachmentUpload mirrors sqlite's own idempotent insert-or-return-
+// existing.
+func (a *AttachmentClaimRepository) ClaimAttachmentUpload(_ context.Context, claim ports.AttachmentPrepareClaim) (ports.AttachmentPrepareClaim, bool, error) {
+	if existing, ok := a.claims[claim.UploadID]; ok {
+		return existing, false, nil
+	}
+	if a.claims == nil {
+		a.claims = map[string]ports.AttachmentPrepareClaim{}
+	}
+	claim.State = ports.AttachmentClaimSpooling
+	claim.Locator, claim.ActualSHA256, claim.Size = "", "", 0
+	claim.UpdatedAt = claim.ClaimedAt
+	claim.Version = 1
+	a.claims[claim.UploadID] = claim
+	return claim, true, nil
+}
+
+// GetAttachmentClaim mirrors sqlite's own lookup.
+func (a *AttachmentClaimRepository) GetAttachmentClaim(_ context.Context, uploadID string) (ports.AttachmentPrepareClaim, error) {
+	claim, ok := a.claims[uploadID]
+	if !ok {
+		return ports.AttachmentPrepareClaim{}, fmt.Errorf("fake: %w: attachment claim %s", ports.ErrPersistenceNotFound, uploadID)
+	}
+	return claim, nil
+}
+
+// RecordAttachmentBlobReady mirrors sqlite's own fenced CAS.
+func (a *AttachmentClaimRepository) RecordAttachmentBlobReady(_ context.Context, req ports.RecordAttachmentBlobReadyRequest) (ports.AttachmentPrepareClaim, error) {
+	claim, ok := a.claims[req.UploadID]
+	if !ok {
+		return ports.AttachmentPrepareClaim{}, fmt.Errorf("fake: %w: attachment claim %s", ports.ErrPersistenceNotFound, req.UploadID)
+	}
+	if claim.State != ports.AttachmentClaimSpooling || claim.Version != req.ExpectedVersion {
+		return ports.AttachmentPrepareClaim{}, fmt.Errorf("fake: %w: attachment claim %s expected version %d",
+			ports.ErrOptimisticConflict, req.UploadID, req.ExpectedVersion)
+	}
+	claim.State = ports.AttachmentClaimBlobReady
+	claim.Locator, claim.ActualSHA256, claim.Size = req.Locator, req.ActualSHA256, req.Size
+	claim.UpdatedAt = req.UpdatedAt
+	claim.Version++
+	a.claims[req.UploadID] = claim
+	return claim, nil
+}
+
+// TakeOverAttachmentClaim mirrors sqlite's own fenced CAS.
+func (a *AttachmentClaimRepository) TakeOverAttachmentClaim(_ context.Context, req ports.TakeOverAttachmentClaimRequest) (ports.AttachmentPrepareClaim, error) {
+	claim, ok := a.claims[req.UploadID]
+	if !ok {
+		return ports.AttachmentPrepareClaim{}, fmt.Errorf("fake: %w: attachment claim %s", ports.ErrPersistenceNotFound, req.UploadID)
+	}
+	if claim.Version != req.ExpectedVersion {
+		return ports.AttachmentPrepareClaim{}, fmt.Errorf("fake: %w: attachment claim %s expected version %d",
+			ports.ErrOptimisticConflict, req.UploadID, req.ExpectedVersion)
+	}
+	claim.ClaimOwner = req.NewClaimOwner
+	claim.ClaimedAt = req.ClaimedAt
+	claim.UpdatedAt = req.ClaimedAt
+	claim.Version++
+	a.claims[req.UploadID] = claim
+	return claim, nil
+}
+
+// ReleaseAttachmentClaim mirrors sqlite's own idempotent delete.
+func (a *AttachmentClaimRepository) ReleaseAttachmentClaim(_ context.Context, uploadID string) error {
+	delete(a.claims, uploadID)
+	return nil
+}
+
+// ListStaleAttachmentClaims mirrors sqlite's own query, ordered by
+// (ClaimedAt, UploadID) for a deterministic result either implementation
+// gives.
+func (a *AttachmentClaimRepository) ListStaleAttachmentClaims(_ context.Context, olderThan time.Time) ([]ports.AttachmentPrepareClaim, error) {
+	var result []ports.AttachmentPrepareClaim
+	for _, claim := range a.claims {
+		if claim.ClaimedAt.After(olderThan) {
+			continue
+		}
+		result = append(result, claim)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].ClaimedAt.Equal(result[j].ClaimedAt) {
+			return result[i].UploadID < result[j].UploadID
+		}
+		return result[i].ClaimedAt.Before(result[j].ClaimedAt)
+	})
+	return result, nil
 }
 
 // SafeSettingsRepository is an in-memory ports.SafeSettingsRepository
