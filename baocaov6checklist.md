@@ -5627,3 +5627,336 @@ document "no I/O", nên an toàn gọi trực tiếp mỗi request. Không sửa
 đóng, đã có golden test riêng) — mọi phần mở rộng nằm ở tầng HTTP. `go build/vet/test ./...` sạch trên toàn bộ
 module (~93 package), `go test ./... -count=1` chạy nền 0 FAIL — không có regression nào, không có flake nào
 cần viện dẫn lần này.
+
+## V6-07A — Attachment ingest, replay và orphan recovery
+
+### Bối cảnh
+
+V6-07A phụ thuộc V6-07 (đã merge, PR #47 — `internal/app/message.AppendMessage`/`internal/delivery/httpapi/message`
+đã tồn tại thật), V5-14 (đã merge từ trước — `internal/app/artifactsweep` + `ArtifactRepository`'s own
+Claim/Release-Locator-Purge) và V1-06 (command/receipt envelope). Trích nguyên văn spec
+(`docs/design/08-v6-api-projections.md` dòng 308-323, không diễn giải lại):
+
+> **Mục tiêu:** upload có exact replay và durable owner ở mọi crash point.
+> **Phạm vi:** `AppendConversationAttachment`, bounded spool/hash, content-addressed prepare claim và cleanup.
+> **Không làm:** không DB transaction trong stream/hash/store; không raw locator hoặc best-effort-only cleanup.
+> **Thực hiện:** require/verify declared digest; canonical hash gồm target, metadata, retention/sensitivity và
+> digest persisted bytes. Receipt precheck trước ArtifactStore put. Deterministic UploadID owns durable prepare
+> claim; same upload+digest reuses prepared blob, mismatch conflicts. Sau Put+Verify, serialized transaction
+> rechecks receipt then atomically creates Artifact metadata + Message ref + event + receipt; acknowledge claim
+> after commit. Sweeper resumes/cleans expired claim only after rechecking receipt, Artifact refs/holds and
+> shared content hash.
+> **Verify:** crash after spool/blob/claim/DB commit/before ack; same/different-key concurrency; shared blob;
+> tamper/oversize/media; restart and orphan cleanup. Assert each outcome committed, resumable or cleanup-able.
+> **Hoàn thành khi:** không crash point nào tạo duplicate message/artifact metadata hoặc ownerless permanent blob.
+> **Nguồn:** ADR-017, AK-ARCH-021, HE-11-M07.
+
+Đây là task khó nhất trong batch hiện tại theo đánh giá của phiên giám sát — một bài toán crash-safety thật, không
+phải HTTP wrapper. `baocaov6checklist.md` đang được 3 task song song khác ghi đồng thời (V6-04A, V6-06B, V6-06C) —
+xung đột merge khi mở PR là bình thường, không phải bug (đúng như đã xảy ra: PR #51 V6-10A và một commit
+`feat(v6-06b)` khác đã merge/chạy song song ngay trong lúc task này đang viết code, buộc phải `git fetch` +
+`git rebase origin/master` một lần trước khi mở PR — xem mục Kết quả).
+
+### Nghiên cứu
+
+Đọc toàn bộ `internal/app/message/commands.go` (đặc biệt doc comment đầu file) — tự nói rõ AppendMessage KHÔNG
+giải quyết bài toán này: content của nó luôn đến dưới dạng MỘT `[]byte` đã buffer sẵn trong bộ nhớ, nên compose
+`internal/app/artifact.PrepareAttachment` (Put+Verify NGOÀI transaction) với đúng MỘT transaction theo sau là đủ.
+Task này khác: bytes phải stream (không buffer hết một lần cho file lớn), digest caller khai phải verify được, và
+toàn bộ phải sống sót crash ở BẤT KỲ điểm nào.
+
+Đọc `internal/app/artifact/attach.go` toàn bộ — `PrepareAttachment` gọi `store.Put` rồi `store.Verify` lại (cả
+hai NGOÀI transaction), trả `artifact.Artifact` sẵn sàng `AttachState: Attached` — đây chính là building block tái
+dùng nguyên vẹn cho bước "bounded spool/hash", không cần viết lại logic Put/Verify.
+
+Đọc `internal/adapters/artifactstore/filesystem.go` toàn bộ — `Store.Put` đã TỰ atomic (spool vào temp file, hash
+song song bằng `io.MultiWriter`, chỉ `os.Rename` sang content-addressed path SAU KHI toàn bộ body đọc xong) và TỰ
+dedupe theo content hash (`if _, statErr := os.Stat(finalPath); statErr == nil { ... return ref, nil }`). Hệ quả
+quan trọng: "crash giữa spool và blob-put" không thể quan sát được từ bên ngoài `Put` (atomicity đã có sẵn từ
+V1-08) — một retry gọi lại `Put` với cùng bytes luôn an toàn, không bao giờ ghi trùng hay ghi dở.
+
+Đọc `internal/app/ports/artifactrecord.go` toàn bộ, đặc biệt doc comment của `ClaimArtifactLocatorForPurge`/
+`ReleaseArtifactLocatorClaim` (V5-14) — chính là "cùng dạng bài toán, hướng ngược lại" mà prompt gợi ý: một durable
+claim fence một Locator content-addressed cụ thể khỏi thao tác đồng thời/crash. `InsertArtifact` tự chối một
+insert mới nếu Locator đang có purge-claim mở — xác nhận cơ chế claim này đã có tiền lệ kiến trúc thật trong
+chính codebase, không phải phát minh mới hoàn toàn.
+
+Đọc toàn bộ `internal/app/artifactsweep/sweep.go` (443 dòng) làm precedent cho "sweeper thật trông như thế nào":
+job CONTROL tự lên lịch lại (`ArtifactSweepJobKind`, `artifact_sweep_state` singleton generation cursor), protocol
+3 pha reserve→delete(ngoài tx)→finalize, và đặc biệt: `ClaimArtifactLocatorForPurge` trả `ErrPersistenceAlreadyExists`
+được coi là "resume claim của chính mình" chứ không phải conflict — vì đây là job singleton (chỉ 1 worker giữ
+lease `ARTIFACT_SWEEP` tại một thời điểm).
+
+**Phát hiện quan trọng nhất khi grep composition root**: `grep -n "Startup" cmd/ internal/` xác nhận
+`StartupArtifactSweep` (V5-14) VÀ `StartupRecoveryScan` (V4-13) — cả hai job CONTROL tự lên lịch lại đã tồn tại
+thật trong `internal/app/artifactsweep`/`internal/app/runtime` — **CHƯA TỪNG được gọi từ `cmd/aw/serve.go` hay bất
+kỳ composition root nào khác trong toàn repo**. Cơ chế `workerpool`/durable-job dispatch cho CONTROL job hoàn toàn
+chưa được wiring vào `aw serve` (bản thân `aw serve` hiện chỉ là HTTP server thuần, không có worker loop nào chạy
+song song). Phát hiện này quyết định trực tiếp Quyết định #6 bên dưới.
+
+Đọc `internal/delivery/httpapi/commandenvelope.go`'s `SemanticHash` — doc comment của chính hàm này đã tự nêu
+đích danh: `extraContentDigest` param tồn tại "for a command carrying raw/binary content no JSON canonicalization
+applies to, e.g. **a future attachment upload** — pass "" when there is none". Đây là bằng chứng trực tiếp cho
+thấy composite hash của task này ĐÃ được thiết kế sẵn một chỗ để cắm vào từ V6-02 — không cần phát minh scheme
+hash mới, chỉ cần gọi đúng hàm có sẵn với tham số đúng.
+
+Đọc `internal/app/runtime/completion_policy.go` dòng 931-960 — quy ước deterministic-ID đã đóng của codebase:
+`sha256` trên các phần nối bằng `\x00`, hex-encode, cắt 16 byte đầu, prefix người đọc được
+(`deterministicCompletionDecisionID`/`deterministicJoinNodeRunID`) — tái dùng nguyên xi cho
+`DeterministicAttachmentUploadID`.
+
+Đọc `internal/app/ports/unitofwork.go`, `internal/adapters/sqlite/unitofwork.go`,
+`internal/app/ports/fake/unitofwork.go` — xác nhận `ports.Tx` là "concern-scoped accessor" pattern (một interface
+riêng mỗi concern, ví dụ `ArtifactRepository`) — quyết định thêm accessor mới `AttachmentClaims()` thay vì nhét
+method vào `ArtifactRepository` sẵn có, giữ ranh giới kiến trúc rõ ràng đúng tinh thần "mỗi concern một accessor".
+
+### Quyết định
+
+1. **Composite canonical hash = `cmd.RequestHash`, tính SẴN ở tầng HTTP qua `httpapi.SemanticHash` có sẵn —
+   không tính lại ở tầng app.** `prepareAttachmentCommand` (tầng HTTP) marshal một struct nhỏ
+   `attachmentMetadata{WorkItemID, AttemptID, Role, ContentType, Sensitivity}` (đúng "target"+"metadata"+
+   "retention/sensitivity" — RetentionClass CỐ ĐỊNH `RetentionCanonicalContext`, không phải field biến thiên,
+   nên không cần đưa vào hash) làm `normalizedPayload`, rồi gọi
+   `httpapi.SemanticHash("AppendConversationAttachment", scope, canonical, declaredSHA256, 0)` — `declaredSHA256`
+   chính là "digest persisted bytes" mà spec liệt kê là thành phần thứ 4. Đây là composite hash công khai (dùng
+   để phát hiện "Idempotency-Key dùng lại với request khác nhau" — `ports.ErrReceiptConflict`), tách biệt hoàn
+   toàn khỏi UploadID (Quyết định #2).
+2. **Deterministic `UploadID` = `sha256("attachment-upload", Actor, Scope.Key(), IdempotencyKey, CommandType)`
+   — CỐ Ý KHÔNG bao gồm digest hay metadata.** Đây là quyết định thiết kế quan trọng nhất của cả task, và ban
+   đầu đọc spec ("same target+content+metadata arrives at the same UploadID") dễ hiểu lầm là UploadID phải bao
+   gồm cả digest. Lý do loại digest ra: nếu UploadID = f(target, metadata, digest), câu spec "mismatch (same
+   UploadID's claim exists, but this attempt's digest differs) is a real conflict" trở thành BẤT KHẢ THI về mặt
+   cấu trúc — digest khác nhau tất yếu sinh UploadID khác nhau, không bao giờ va vào cùng một claim. Cách đọc
+   nhất quán duy nhất: UploadID dùng CHÍNH 4-tuple identity mà một command receipt đã dùng để tra cứu
+   (`ports.ReceiptsRepository.Load(Actor, Scope, IdempotencyKey, CommandType)`) — một RETRY thật (client gửi lại
+   đúng Idempotency-Key) luôn tính lại đúng cùng UploadID và tìm lại đúng claim cũ của chính nó; hai caller ĐỘC
+   LẬP (Idempotency-Key khác nhau) dù tình cờ trùng bytes/target/metadata vẫn luôn nhận 2 UploadID khác nhau —
+   đúng khớp test "different-key concurrency ... including two that happen to share content bytes" (2 Message
+   row độc lập, chỉ CHIA SẺ blob ở tầng ArtifactStore, một tầng thấp hơn hẳn command này). "Mismatch" trong spec
+   khi đó có nghĩa: CÙNG Idempotency-Key nhưng attempt sau khai digest KHÁC — `claimOrResumeAttachmentUpload` so
+   `claim.DeclaredSHA256` (đã ghi từ lần claim đầu) với digest của attempt hiện tại TRƯỚC bất kỳ I/O nào, trả
+   `ErrAttachmentUploadConflict` nếu khác — đây là "early echo" của đúng conflict mà tầng receipt (muộn hơn
+   nhiều, chỉ ghi sau khi Put+Verify xong) sẽ bắt được, cần thiết vì 2 request đồng thời với CÙNG Idempotency-Key
+   nhưng body khác nhau (race, trước khi bất kỳ ai ghi receipt) chỉ có tầng claim mới bắt kịp lúc.
+3. **Attachment LÀ một Message row mới, không phải một bảng liên kết attachment riêng.** Domain model hiện tại
+   (`internal/domain/message.Message`) chỉ có đúng MỘT field `ContentArtifactID`, và bảng `messages` là
+   append-only/immutable — không có khái niệm "nhiều attachment trên một message" ở schema hiện tại. Quyết định:
+   `AppendConversationAttachment` tái dùng NGUYÊN VẸN `tx.Messages().AppendMessage` (giống hệt shape
+   `AppendMessage` đã dùng), chỉ khác ContentArtifactID trỏ tới content NHỊ PHÂN thay vì text — không thêm bảng
+   mới, không thêm field mới vào `messages`, đúng 00-roadmap.md §3 ("không chia field/bảng khi chưa có contract
+   test cần").
+4. **Migration 0038 `attachment_prepare_claims`** (kiểm tra `git log origin/master --oneline -3` VÀ
+   `internal/adapters/sqlite/migrations/` NGAY TRƯỚC KHI hoàn thiện — xác nhận `0037_release_set_local_commits.sql`
+   vẫn là migration cao nhất trên fresh `origin/master`, kể cả sau khi rebase qua PR #51 V6-10A). Schema mirror
+   `artifact_locator_purge_claims` (V5-14) về mặt Ý NGHĨA (durable claim + claim_owner/claimed_at fence) nhưng
+   khác về SHAPE: khóa chính là `upload_id` (không phải locator — vì tại thời điểm claim được tạo, locator CHƯA
+   TỒN TẠI, đó chính là điều claim này đang chờ), có state 2 giá trị đóng `SPOOLING`/`BLOB_READY` (CHECK constraint
+   ép `locator`/`actual_sha256`/`size` chỉ khác NULL đồng thời với state), và lưu thêm `actor`/`idempotency_key`
+   — hai cột này KHÔNG dùng để ghi (sweeper không bao giờ tự mạo danh caller gốc để hoàn tất command), chỉ dùng để
+   ĐỌC receipt (`tx.Receipts().Load`) khi `ResumeOrCleanExpiredAttachmentClaims` cần biết "command gốc đã thật sự
+   hoàn tất chưa" mà không cần ngữ cảnh HTTP request gốc.
+5. **Chuỗi 2 pha, I/O thật LUÔN NGOÀI transaction** — đúng thứ tự spec liệt kê, implement tại
+   `internal/app/message/attachment.go`:
+   1. Validate request (rẻ, không I/O).
+   2. Receipt precheck NGOÀI transaction (`uow.WithReadOnly`) — y hệt `AppendMessage`'s `loadOrValidateReceipt`,
+      TRƯỚC bất kỳ I/O thật nào. Nếu replay: giải phóng claim (nếu còn) như một bước RIÊNG (write thật, không gộp
+      vào precheck read-only) rồi trả kết quả cũ — đây chính là cách "crash sau DB commit nhưng trước ack" được
+      dọn dẹp ở lần chạm kế tiếp.
+   3. `claimOrResumeAttachmentUpload` — MỘT `WithSerializedWrite` riêng, nhỏ: idempotent-insert-hoặc-tìm claim;
+      lấy-quyền-sở-hữu claim `SPOOLING` đã hết hạn thuê (`attachmentClaimLease = 2 phút`, tách biệt hẳn
+      `orphanGrace` 7 ngày của artifactsweep — đây là "chủ sở hữu 1 HTTP request đồng bộ còn sống không", câu hỏi
+      nhanh hơn hẳn "còn cần giữ evidence bao lâu").
+   4. Nếu claim đã `BLOB_READY`: `store.Verify` lại blob đã có (không bao giờ tin claim cũ một cách mù quáng),
+      dựng `artifact.Artifact` mới từ ref cũ — bỏ qua bước Put, đi thẳng bước 6 (resume).
+   5. Ngược lại: `appartifact.PrepareAttachment` (Put+Verify, NGOÀI transaction, `Body` bọc
+      `io.LimitReader(Body, MaxAttachmentSize+1)` — chính là "bounded spool/hash"), so `prepared.ContentHash` với
+      `"sha256:"+declaredSHA256` — khác nhau là `ErrAttachmentDigestMismatch` (tamper), KHÔNG đụng tới claim (để
+      một retry với digest ĐÚNG vẫn dùng lại được đúng claim `SPOOLING` cũ). Khớp thì
+      `recordAttachmentBlobReadyWithRetry` — CAS `RecordAttachmentBlobReady`, thua race (`ErrOptimisticConflict`)
+      thì đọc lại claim và NHẬN kết quả của người thắng thay vì coi là lỗi cứng (2 racer đã verify cùng digest
+      trước khi tới đây, nên kết quả người thắng luôn khớp).
+   6. MỘT `WithSerializedWrite` cuối: re-check receipt lần nữa (đóng TOCTOU với caller khác vừa hoàn tất trong
+      lúc mình làm I/O chậm ở bước 5) — nếu chưa, `InsertArtifact` (Attached thẳng, không qua Orphan-rồi-promote:
+      `PrepareAttachment` đã trả sẵn `AttachState: Attached`, giống hệt cách `AppendMessage` dùng) + `AppendMessage`
+      + domain event (tái dùng NGUYÊN `MessageAppendedEventType`/schema — một attachment vẫn LÀ một Message, không
+      cần event type riêng) + `Receipts().Record` — cùng một transaction, atomic.
+   7. CHỈ SAU KHI bước 6 commit: `releaseAttachmentClaimBestEffort` — một `WithSerializedWrite` RIÊNG, lỗi bị
+      nuốt có chủ đích (receipt bước 6 đã là bằng chứng vĩnh viễn command đã xong; claim còn sót lại chỉ chờ lần
+      chạm kế tiếp dọn, không bao giờ gây duplicate hay mất kết quả).
+6. **Sweeper là một hàm gọi trực tiếp được (`ResumeOrCleanExpiredAttachmentClaims`), KHÔNG phải một durable
+   CONTROL job tự lên lịch lại mới.** Đây là quyết định phạm vi có cân nhắc, ghi lại minh bạch: spec cho phép
+   "at minimum a resumable recovery path" (brief gốc). Bằng chứng quyết định: `StartupArtifactSweep`/
+   `StartupRecoveryScan` — 2 job CONTROL tự lên lịch lại DUY NHẤT đã tồn tại trong toàn repo — CHƯA TỪNG được gọi
+   từ bất kỳ composition root nào (xác nhận bằng grep, mục Nghiên cứu). Thêm một `durable_jobs.job_class` mới
+   (đòi một migration rebuild kiểu `0025`/`0034` — `PRAGMA foreign_keys=OFF`, copy-drop-rename bảng) cộng một
+   handler/wiring mới CHỈ để nó cũng nằm không dùng giống 2 job kia là scope creep không tương xứng với lợi ích
+   thật. `ResumeOrCleanExpiredAttachmentClaims` vẫn là hàm THẬT, có test THẬT, chỉ chưa có một `aw worker`/
+   scheduler nào gọi nó định kỳ — đúng vị trí "populated now, real behavior, chưa có caller lịch trình" mà nhiều
+   port khác trong codebase này (`AdapterBuildRepository` thời V2-07A, `SetArtifactHold` thời V5-01) đã từng ở.
+   Việc dây nó vào một job CONTROL thật sự cần một quyết định riêng, rộng hơn (áp dụng cho CẢ artifactsweep lẫn
+   recovery reaper hiện có), không phải quyết định của một mình task này.
+7. **`ResumeOrCleanExpiredAttachmentClaims` tái dùng NGUYÊN VẸN protocol purge 3 pha của V5-14** thay vì viết
+   lại logic xoá blob. Thứ tự re-check đúng spec: (1) receipt (`tx.Receipts().Load` bằng `actor`/`idempotency_key`
+   lưu trên claim) — có thì claim này chính là case "crash sau commit trước ack", chỉ release, không đụng gì
+   khác; (2) nếu `BLOB_READY` và KHÔNG có receipt: `tx.Artifacts().ListArtifactsByLocator` — còn row nào khác
+   tham chiếu Locator (một upload ĐỘC LẬP khác, tình cờ trùng bytes, đã hoàn tất) thì chỉ release claim, KHÔNG xoá
+   blob; (3) chỉ khi cả 2 đều trống mới thật sự `ClaimArtifactLocatorForPurge`→`store.Delete`→
+   `ReleaseArtifactLocatorClaim` — đúng "reserve/delete/finalize" `artifactsweep.purgeLocatorGroup` đã thiết lập,
+   kể cả cách đọc `ErrPersistenceAlreadyExists` là "resume claim của chính lần chạy này" (một claim `SPOOLING`
+   không có receipt thì không cần xoá gì — chỉ release claim, vì bước Put (nếu có) chưa từng thành `BLOB_READY`).
+8. **`MaxAttachmentSize = 25 MiB`**, ép bằng `io.LimitReader` ở tầng app VÀ `http.MaxBytesReader` ở tầng HTTP —
+   nhưng cả hai đều nằm SAU `httpapi.MaxBytes(cfg.MaxBodyBytes)` (middleware toàn server, mặc định 1 MiB qua flag
+   `--max-body-bytes` có sẵn từ V6-01) — một attachment > 1 MiB chỉ thật sự đi qua được nếu operator tự nâng flag
+   đó, đúng quan hệ `message/envelope.go`'s `maxBodyBytes` (2×`MaxContentSize`) đã lập tiền lệ cho chính package
+   này — không sửa default flag, đây là lựa chọn vận hành có chủ đích, ghi rõ trong doc comment.
+9. **Wire contract: raw body + metadata qua header** (`X-Attachment-Sha256`/`X-Attachment-Role`/
+   `X-Attachment-Sensitivity`/`X-Attachment-Attempt-Id`, `Content-Type` chuẩn HTTP chính là media type thật của
+   attachment) — route ĐẦU TIÊN trong toàn API mang raw bytes, đúng như chính doc comment `message/routes.go` (V6-07)
+   đã tự dự đoán ("a future V6-07A attachment route is the only place raw arbitrary bytes ever travel over this
+   API"). Không dùng multipart/form-data (sẽ tái tạo lại đúng vấn đề "buffer hết trước khi stream" mà
+   `io.LimitReader` đang tránh).
+
+### Thực hiện
+
+- `internal/adapters/sqlite/migrations/0038_attachment_prepare_claims.sql` — bảng mới (Quyết định #4).
+- `internal/app/ports/attachmentclaim.go` — `AttachmentPrepareClaim`, `AttachmentClaimRepository`
+  (`ClaimAttachmentUpload`/`GetAttachmentClaim`/`RecordAttachmentBlobReady`/`TakeOverAttachmentClaim`/
+  `ReleaseAttachmentClaim`/`ListStaleAttachmentClaims`); `ports.Tx` có thêm accessor `AttachmentClaims()`
+  (`internal/app/ports/unitofwork.go`).
+- `internal/adapters/sqlite/attachment_claim_repository.go` — implement thật, mirror
+  `artifact_repository.go`'s style (`xxxTx(ctx, tx *sql.Tx, ...)` + thin wrapper), CAS bằng
+  `UPDATE ... WHERE ... AND version = ?` + `RowsAffected`.
+- `internal/app/ports/fake/unitofwork.go` — `AttachmentClaimRepository` in-memory, mirror sqlite field-for-field
+  (dùng cho test tầng app không cần sqlite thật).
+- `internal/app/message/attachment.go` — `AppendConversationAttachment`, `DeterministicAttachmentUploadID`,
+  `AttachmentCommandType`, `MaxAttachmentSize`, `ResumeOrCleanExpiredAttachmentClaims` + toàn bộ helper 2 pha
+  (Quyết định #5/#6/#7).
+- `internal/delivery/httpapi/message/attachment.go` — `handleAppendConversationAttachment`,
+  `prepareAttachmentCommand` (raw-body counterpart của `prepareCreateCommand`), `writeAttachmentCommandError`.
+- `internal/delivery/httpapi/message/routes.go` — thêm `RouteDescriptor` thứ 4
+  (`POST /projects/{projectId}/work-items/{workItemId}/attachments`, operationId `appendConversationAttachment`).
+- Không sửa `cmd/aw/serve.go` về mặt wiring — route mới tự động reachable qua đúng lời gọi
+  `httpmessage.RegisterRoutes(routes, httpmessage.Dependencies{...})` đã có sẵn từ V6-07 (grep xác nhận, xem mục
+  Kết quả) — chỉ thêm 1 đoạn doc comment giải thích thêm (không đổi hành vi).
+
+### Test
+
+**Tầng app** (`internal/app/message`, fake UnitOfWork + real filesystem ArtifactStore, trừ 2 test concurrency):
+
+- `attachment_test.go` — 13 test: happy path (đọc lại bytes thật qua `store.Open`, xác nhận claim đã release),
+  replay đúng (cùng command → cùng result, không duplicate), tamper (`ErrAttachmentDigestMismatch`, claim vẫn
+  `SPOOLING` sau đó, retry với digest sai lần 2 vẫn lỗi y hệt — không "tự sửa"), oversize (25 MiB+1KB thật,
+  `ErrAttachmentTooLarge`), ContentType rỗng (required-media-type check), digest rỗng/sai định dạng
+  (`ErrAttachmentDigestRequired`/`ErrAttachmentDigestMalformed`), **crash after claim-record** (Put lỗi giả lập
+  qua `flakyStore`, claim còn `SPOOLING`, retry với store thật thành công đúng 1 Message), **crash after blob-put**
+  (`countingUOW` chặn write #2 — claim vẫn `SPOOLING` dù blob đã Put thật, retry re-Put an toàn nhờ dedupe, đúng 1
+  Message), **crash after DB commit trước ack** (`countingUOW` chặn write #4 — command vẫn trả thành công vì lỗi
+  release bị nuốt có chủ đích, claim còn sống, retry sau đó replay đúng kết quả CŨ và release claim), mismatch
+  cùng Idempotency-Key khác digest (`ErrAttachmentUploadConflict`), claim `SPOOLING` sống sót qua hết lease vẫn
+  resume được.
+- `attachment_test.go` (tiếp) — 3 test `ResumeOrCleanExpiredAttachmentClaims`: claim `BLOB_READY` bị bỏ rơi hoàn
+  toàn (không receipt, không Artifact row nào khác) → purge blob thật (`store.Verify` fail sau đó) + release;
+  claim đã commit thật nhưng chưa ack (giả lập crash write #4 rồi KHÔNG retry, gọi sweep thẳng) → chỉ release,
+  KHÔNG đụng blob (`store.Verify` vẫn pass); 2 upload chia sẻ bytes, một hoàn tất một bị bỏ rơi → sweep chỉ
+  release claim bị bỏ rơi, blob vẫn nguyên vì upload kia còn cần.
+- `attachment_sqlite_test.go` — 2 test concurrency THẬT (real sqlite, không fake): **same-key concurrency** (2
+  goroutine, CÙNG command, đua `sync.WaitGroup` — cả hai trả cùng kết quả, đúng 1 Message row) và
+  **different-key concurrency + shared blob** (2 goroutine, 2 Idempotency-Key khác nhau, CÙNG bytes — 2 Message
+  row độc lập, 2 Artifact row độc lập, nhưng CÙNG Locator — chứng minh dedupe ArtifactStore hoạt động đúng qua 2
+  claim độc lập).
+
+  **Phát hiện thật khi viết 2 test concurrency này**: viết lần đầu bằng `fake.UnitOfWork` (goroutine thật), cả
+  hai fail với lỗi khó hiểu ("persistent record was not found"). Điều tra `internal/app/ports/fake/unitofwork.go`'s
+  `run()` xác nhận: field `inTx` chỉ là một latch toàn cục ("có giao dịch nào đang mở không"), không phải hàng
+  đợi — hai `WithSerializedWrite`/`WithReadOnly` GỐI NHAU từ 2 goroutine khác nhau (không lồng nhau về logic) vẫn
+  bị coi là "nested" và bị `ErrNestedTransaction` chặn, khiến state 2 bên rơi vào tình huống không nhất quán khi
+  code không xử lý lỗi đó đặc biệt. Đối chiếu `internal/adapters/sqlite/scheduling_test.go`'s
+  `TestWriteLeaseRaceHasOneWinnerForSameRepository` xác nhận: MỌI test concurrency thật trong repo này đều chạy
+  trên sqlite thật (`BEGIN IMMEDIATE` xếp hàng writer thật, không chối bỏ) — không bao giờ trên fake. Sửa bằng
+  cách chuyển 2 test này sang `attachment_sqlite_test.go`, dựng fixture qua `sqlite.Open`+`sqlite.NewUnitOfWork`
+  (mirror `internal/app/artifactsweep/sweep_sqlite_test.go`'s "real stack end to end" pattern) — không sửa bất kỳ
+  code sản xuất nào, đây thuần là giới hạn của chính test double.
+
+**Tầng sqlite** (`internal/adapters/sqlite/attachment_claim_repository_test.go`) — 5 test trực tiếp lên
+`attachmentClaimRepository` qua sqlite thật: idempotent insert-hoặc-trả-về-cũ (không bao giờ ghi đè
+`DeclaredSHA256` của claim gốc), CAS `RecordAttachmentBlobReady` thành công + `ErrOptimisticConflict`, CAS
+`TakeOverAttachmentClaim` thành công + conflict, release idempotent (release 2 lần không lỗi), `ListStaleAttachmentClaims`
+đúng thứ tự `(claimed_at, upload_id)`.
+
+**Tầng HTTP** (`internal/delivery/httpapi/message/attachment_test.go`) — 6 test, real `httpapi.Server` (TCP
+listener thật) + real sqlite + real ArtifactStore, mirror `testEnv`/`newTestEnv` có sẵn từ `message_test.go`
+(V6-07), thêm `doAttachment` (raw-body POST với header tuỳ biến — `message_test.go`'s `do()` luôn JSON-encode nên
+không dùng lại được): happy path 201 (đọc lại bytes qua `assertStoredContent` có sẵn), replay 200 giống hệt kết
+quả cũ, thiếu Idempotency-Key → 400, thiếu digest → 400, tamper → 400 đúng `ErrorCodeInvalidRequest`, WorkItem
+không tồn tại → 404 (leakage-normalized, đúng `writeQueryError` có sẵn). Sửa thêm
+`TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` có sẵn từ V6-07 — tập operationId đóng giờ có 4 phần
+tử thay vì 3 (`appendConversationAttachment` mới), đúng route inventory thật.
+
+`go build ./...`, `go vet ./...` sạch trên toàn repo (kể cả `internal/delivery/httpapi/rundetail` — package của
+task song song V6-06B đang chạy đồng thời trong cùng thư mục dùng chung, không thuộc phạm vi task này). Toàn bộ
+`go test ./...` chạy sạch SAU KHI rebase lên `origin/master` mới nhất (`e277d7c`, PR #51 V6-10A) — 0 FAIL, kể cả
+2 test tích hợp `TestV5AcceptFalseCompletionOracle`/`TestV5AcceptConformanceMatrix` từng fail (timing-sensitive,
+worker-pool driven) trong một lần chạy trước đó dưới tải cao — xác nhận KHÔNG liên quan task này bằng cách chạy
+lại chính 2 test đó trên một `git worktree` sạch từ `origin/master` (không áp bất kỳ thay đổi nào của task này) —
+`TestV5AcceptFalseCompletionOracle` fail giống hệt (pre-existing flake, không phải regression), lần chạy lại của
+toàn bộ suite sau đó xanh hết.
+
+### Verify
+
+- **Crash after spool / crash after blob-put**: `Store.Put` tự atomic (V1-08, không quan sát được từ ngoài) —
+  test `CrashAfterClaimRecord_BeforePut` (Put lỗi giả lập) và `CrashAfterBlobPut_BeforeClaimRecorded` (write #2
+  claim bị chặn SAU KHI Put thật đã chạy) cùng chứng minh outcome **resumable**: claim còn `SPOOLING`, 0 Message
+  row, retry sau đó luôn ra đúng 1 Message — không bao giờ 2.
+- **Crash after claim-record**: `CrashAfterClaimRecord_BeforePut` — claim đã commit (`SPOOLING`), Put chưa từng
+  chạy thành công — **resumable**, retry chạy lại từ đầu an toàn.
+- **Crash after DB commit trước ack**: `CrashAfterDBCommit_BeforeAck_ReplayReleasesClaim` — **committed**: lệnh
+  gốc đã trả kết quả thành công thật (Artifact/Message/receipt đã ghi), retry sau đó replay đúng y hệt kết quả cũ
+  và dọn claim còn sót — không bao giờ tạo Message thứ 2.
+- **Same-key concurrency**: `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing`
+  (sqlite thật, 2 goroutine) — cả 2 trả cùng kết quả, đúng 1 Message row.
+- **Different-key concurrency + shared blob**:
+  `TestAppendConversationAttachment_DifferentKeyConcurrency_SharedContentBytes` (sqlite thật, 2 goroutine) — 2
+  Message/Artifact row độc lập, cùng Locator (dedupe đúng ở tầng ArtifactStore, không rò rỉ sang tầng command).
+- **Tamper**: `TamperedContent_DigestMismatch_NoRowsCreated_StaysResumable` — 0 row, claim vẫn `SPOOLING`, retry
+  với digest sai lặp lại lỗi y hệt (không silent-fix); test HTTP tầng ngoài cũng xác nhận 400.
+- **Oversize**: `Oversize_Rejected` — 25 MiB+1KB thật, `ErrAttachmentTooLarge`, 0 row.
+- **Wrong/unexpected media type**: `MissingContentType_Rejected` — ContentType rỗng bị chặn (400) ở cả tầng app
+  lẫn HTTP; không có allowlist media type (đúng chính sách `AppendMessage` đã lập từ V6-07, ghi rõ trong doc
+  comment `AppendConversationAttachmentRequest`).
+- **Restart-and-orphan-cleanup**: 3 test `TestResumeOrCleanExpiredAttachmentClaims_*` — claim bị bỏ rơi thật
+  (không receipt, không Artifact ref nào khác) → **cleanup-able** (purge blob thật + release); claim đã commit
+  nhưng chưa ack → **committed** (chỉ release, không đụng blob); claim bị bỏ rơi nhưng Locator còn được tham
+  chiếu bởi một Artifact khác → **cleanup-able một phần** (release claim, KHÔNG xoá blob — "shared content hash"
+  re-check đúng spec).
+- **Hoàn thành khi — "không crash point nào tạo duplicate message/artifact metadata hoặc ownerless permanent
+  blob"**: đúng, chứng minh trực tiếp bằng 4 test crash-point cộng 2 test concurrency cộng 3 test sweep ở trên —
+  không có tổ hợp nào trong 9 test đó cho ra 2 Message row cho cùng một logic upload, và mọi blob bị bỏ rơi thật
+  sự (không receipt, không reference) luôn bị `ResumeOrCleanExpiredAttachmentClaims` dọn tới cùng.
+
+### Kết quả
+
+Branch `feat/v6-07a-attachment-ingest-replay-orphan-recovery`, rebase lên `origin/master` tại `e277d7c` (PR #51
+V6-10A, merge trong lúc task đang chạy). 1 migration mới (`0038_attachment_prepare_claims`, xác nhận
+`0037` vẫn là số cao nhất trên fresh `origin/master` trước khi hoàn thiện). 1 route HTTP mới:
+`POST /projects/{projectId}/work-items/{workItemId}/attachments` — grep xác nhận
+`httpmessage.RegisterRoutes(routes, httpmessage.Dependencies{UnitOfWork: uow, ArtifactStore: artifactStore, ...})`
+thật sự có trong `cmd/aw/serve.go` (dòng ~338, đã tồn tại từ V6-07, route mới tự động reachable qua đúng lời gọi
+đó — không cần sửa wiring) — đúng lo ngại doctrine đã nêu từ vụ V6-04 ban đầu (30 test xanh nhưng route chưa từng
+gọi được từ `cmd/aw/serve.go` thật).
+
+Composite canonical hash tái dùng nguyên `httpapi.SemanticHash`'s `extraContentDigest` param — đúng chỗ V6-02 đã
+để sẵn cho "a future attachment upload". `DeterministicAttachmentUploadID` cố ý tách khỏi digest/metadata (chỉ
+dùng đúng 4-tuple identity của command receipt) để 2 upload trùng bytes nhưng khác Idempotency-Key không bao giờ
+va chạm nhau, còn 2 attempt CÙNG Idempotency-Key nhưng khác digest bị chặn sớm ở tầng claim thay vì chờ tới tầng
+receipt. Sweeper (`ResumeOrCleanExpiredAttachmentClaims`) là hàm thật, test thật, nhưng cố ý CHƯA gắn vào một
+durable CONTROL job mới — quyết định phạm vi có ghi lại lý do rõ ràng (Quyết định #6): 2 job CONTROL tự lên lịch
+lại duy nhất đã có trong repo (`ARTIFACT_SWEEP`, `RECOVERY_REAPER`) đều CHƯA từng được composition root nào gọi,
+nên thêm một job thứ 3 cùng cảnh ngộ không phải ưu tiên đúng của riêng task này.
+
+25 test mới (13 app-layer + 2 concurrency sqlite + 5 sqlite-repository + 6 HTTP, cộng 1 test route-inventory được
+sửa từ 3→4 operationId) đều xanh; `go build/vet/test ./...` sạch trên toàn repo sau rebase, không regression.
+Trong lúc làm việc, thư mục làm việc chính (dùng chung giữa nhiều phiên song song, không phải worktree riêng) bị
+một phiên khác (V6-06B) chuyển nhánh dưới chân một lần — toàn bộ thay đổi chưa commit của task này vẫn còn nguyên
+trong working tree (git xác nhận khi `checkout` lại đúng nhánh của task), không mất dữ liệu; xử lý bằng cách commit
++ push ngay lập tức lên remote để khoá lại an toàn trước khi tiếp tục, đúng khuyến nghị "commit thay vì để diff lớn
+nằm chưa commit trong thư mục dùng chung".
