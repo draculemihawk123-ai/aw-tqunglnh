@@ -26,6 +26,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/safesettings"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
@@ -336,6 +337,13 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// SAME artifactStore every other artifact-producing/consuming route in
 	// this process already uses, never a second one rooted elsewhere.
 	httpevidence.RegisterRoutes(routes, httpevidence.Dependencies{UnitOfWork: uow, ArtifactStore: artifactStore})
+	// V6-10J: adapter-build registry routes (list/detail/probe/register,
+	// internal/delivery/httpapi/adapterbuild) — an additive routes.Register
+	// call only, no shared setup above touched. Installation-scoped, over
+	// the same uow every other route registration in this process already
+	// uses; no idsource.Source needed (a Build's own ID is content-addressed,
+	// never minted).
+	httpadapterbuild.RegisterRoutes(routes, httpadapterbuild.Dependencies{UnitOfWork: uow, Clock: clock.System{}})
 	// V6-10H: GET/PUT /settings/safe (internal/delivery/httpapi/safesettings)
 	// — an additive routes.Register call only, no shared setup above
 	// touched. Matcher is the SAME process-lifetime redactor httpmessage

@@ -4881,6 +4881,300 @@ với dữ liệu thật hiện có, không phát minh thêm quan hệ domain ch
 
 `go build/vet ./...` sạch. `go test ./...` toàn repo (81 package): 100% `ok`, không `FAIL`, exit code 0.
 
+## V6-10J — Adapter-build registry endpoints
+
+### Bối cảnh
+
+V6-10J phụ thuộc `V6-00, V6-01A, V6-02, V6-02A, V6-10I` — cả 5 đã merge trên `origin/master` (`01fbd3c
+feat(v6-05)...` là tip lúc branch); `git merge-base --is-ancestor origin/master HEAD` xác nhận worktree này
+bắt đầu đúng từ tip, không cần rebase. `baocaov6checklist.md` đang bị 2 task song song khác ghi (`V6-07B`,
+`V6-10H`, đúng cảnh báo trong system prompt) — append-only, dự kiến conflict khi merge, không phải bug.
+
+Trích nguyên văn spec (`docs/design/08-v6-api-projections.md` dòng 541-550): *"Mục tiêu: expose
+list/detail/probe/register only after V6-10I hardening. Phụ thuộc: V6-00, V6-01A, V6-02, V6-02A, V6-10I. Phạm
+vi: installation `/adapter-builds` route/schema fragments. Không làm: no project mirror, direct
+prober/process or transport receipt. Thực hiện: GET public queries; POST dispatch hardened commands. Probe
+remains mutation because it creates replayable candidate receipt although registry state does not change.
+Verify: token/fingerprint/protocol/config/scope schemas and handler architecture spy. Hoàn thành khi: provider
+upgrade flow is usable without bypassing command contract. Nguồn: ADR-022, ADR-025, ADR-028."*
+
+Task này là task HTTP-transport thuần tuý thứ hai (sau `V6-06D`) bọc một bộ command **đã tồn tại sẵn và vừa
+được hardening xong bởi một task khác trong cùng chuỗi** (`V6-10I`, PR #36, `4e44af1`) — khác `V6-04`/`V6-06`/
+`V6-07` (những task tự viết mới cả application command lẫn HTTP layer). Điểm khác biệt quan trọng nhất so với
+mọi package HTTP-mutation trước đó trong repo (`workitem`, `run`, `decision`, `recovery`): 2 command mutating ở
+đây (`ProbeAdapterBuild`, `RegisterAdapterBuild`) đã tự có `ports.Command` envelope VÀ tự có receipt lookup
+nội bộ riêng của chính chúng (V6-10I mới thêm) — nghĩa là package HTTP task này viết ra là package MUTATION
+HTTP ĐẦU TIÊN trong repo mà tầng transport không được tự thêm bất kỳ pre-dispatch receipt-replay fast path nào
+(`httpapi.LookupReceipt`/`ReconcileReceipt`/`WriteReceiptReplay` — thứ `workitem`'s `replayOrProceed` VẪN làm)
+— vì spec tự nêu rõ "Không làm: ... transport receipt", một ràng buộc mạnh hơn hẳn optimisation thông thường.
+
+### Nghiên cứu
+
+Đọc trọn `internal/app/adapterbuild/commands.go` (521 dòng, cả 4 hàm + toàn bộ doc comment) trước khi viết bất
+kỳ dòng handler nào:
+
+- `ListAdapterBuilds(ctx, uow) ([]adapterbuild.Build, error)` (dòng 474) và `GetAdapterBuild(ctx, uow, id)
+  (adapterbuild.Build, error)` (dòng 486) — 2 plain read query qua `uow.WithReadOnly`, không nhận
+  `ports.Command`, không idempotency, `GetAdapterBuild` trả `ports.ErrAdapterBuildNotFound` cho id lạ. Không
+  có field filter/sort/cursor nào — plain unbounded list, giống hệt `ListProjects`/`ListWorkItems`.
+- `ProbeAdapterBuild(ctx, uow, cmd ports.Command, req ProbeRequest) (adapterbuild.CandidateToken, error)`
+  (dòng 138) — đọc kỹ đúng câu spec tự trích dẫn ở "Thực hiện": mặc dù không mutate registry (`adapterbuild.Build`
+  row), đây VẪN là command mutating thật vì tạo ra receipt bất biến chứa `CandidateToken` (chính V6-10I mới
+  làm), bắt buộc `Idempotency-Key` như mọi command khác. `ProbeRequest` có đúng 7 field:
+  `ProviderKey/ExecutablePath/ProtocolVersion/CapabilityManifest/OS/Toolchain/ConfigIdentity` — không field nào
+  khác, không có field `Hash` hay `Fingerprint` trần nào cho caller tự khai — `ExecutablePath` là đường dẫn
+  thật trên máy chạy `aw serve`, và bản thân `HashExecutableFile` (dòng 501, đọc file thật qua `os.Open` +
+  `sha256`) chạy Y HỆT bên trong `ProbeAdapterBuild`, KHÔNG BAO GIỜ ở tầng gọi nó — xác nhận trực tiếp
+  "Không làm: ... direct prober/process" của task này nghĩa là gì cụ thể: tầng HTTP chỉ forward
+  `ExecutablePath` (một chuỗi) y nguyên, không tự mở file, không tự spawn tiến trình nào.
+- `RegisterAdapterBuild(ctx, uow, cmd ports.Command, req RegisterRequest) (RegisterResult, error)` (dòng 352)
+  — mutation thật, tạo `adapterbuild.Build` row bất biến. `RegisterRequest` chỉ có đúng 2 field: `Token
+  adapterbuild.CandidateToken` (chính token `ProbeAdapterBuild` vừa trả, caller phải echo lại y nguyên) và
+  `CapabilityManifest` (đo lại lần 2, so khớp hash với token — TOCTOU-closing re-probe của ADR-022). KHÔNG có
+  field `RegisteredBy` nào cả (V6-10I đã bỏ hẳn) — `cmd.Actor` là nguồn DUY NHẤT, đọc dòng 356-358 xác nhận
+  `RegisterAdapterBuild` tự reject nếu `cmd.Actor` rỗng.
+- `HashExecutableFile(path string) (string, error)` (dòng 501) — export chỉ để `drift.go`'s `VerifyNoDrift`
+  tái dùng, xác nhận bằng đọc doc comment dòng 496-500 ("exported so VerifyNoDrift ... can reuse"); đọc
+  `drift.go` (103 dòng) xác nhận `VerifyNoDrift` là re-verification RUNTIME-side (dùng bởi
+  `RetryBlockedActivation`, V6-06D) — không liên quan gì tới scope task này, không đụng tới.
+
+Đọc `baocaov6checklist.md`'s section `V6-10I` (dòng 1838-2054, trước khi viết) để hiểu đúng bối cảnh hardening
+vừa xong: chữ ký `ProbeAdapterBuild`/`RegisterAdapterBuild` là breaking change có chủ đích (thêm `cmd
+ports.Command` bắt buộc), receipt lookup tách hẳn `WithReadOnly` riêng trước mọi I/O thật, `ports.ErrScopeMismatch`
+dùng lại (không tạo sentinel installation-scope riêng), 2 architecture test archtest riêng
+(`TestProbeAdapterBuildTransactionNeverCallsFilesystemOrProcess`/`TestRegisterAdapterBuildTransactionNeverCallsFilesystemOrProcess`)
+đã tự chứng minh 2 transaction ghi của tầng application không chạm filesystem/process — task này chỉ cần thêm
+MỘT lớp proof tương tự ở tầng HTTP một bậc phía trên.
+
+Đọc `internal/app/ports/command.go` xác nhận `ports.InstallationScope()`/`CommandScope.IsInstallation()` —
+công cụ có sẵn, không cần tạo gì mới; và `internal/app/ports/adapterbuild.go` xác nhận `ErrAdapterBuildNotFound`/
+`ErrNoSigningKey` là 2 sentinel export sẵn tầng ports.
+
+Đọc `internal/domain/adapterbuild/{adapterbuild.go,token.go}` xác nhận toàn bộ shape wire cần echo:
+`CandidateTuple` (8 field), `CapabilityManifest` (4 field, `ValidateCapabilityManifest` export sẵn — reject
+`SupportsStart=false` hoặc `CanonicalEventKinds` rỗng/trùng), `CandidateToken` (`Tuple/Nonce/ExpiresAt/Signature`,
+đã có json tag đầy đủ, có thể tái sử dụng thẳng trên wire không cần DTO riêng), `Build` (KHÔNG có field export
+nào — accessor-only, giống `definition.VersionFields`) và `VerifyToken`/`SignToken` (2 sentinel
+`ErrInvalidSignature`/`ErrTokenExpired`).
+
+Đọc `cmd/aw/adapter.go` (407 dòng) — CLI `aw adapter probe|register|list|show` là caller thật DUY NHẤT khác
+ngoài test trong toàn repo hiện gọi 4 hàm này. Xác nhận 2 điều quan trọng: (1) `adapterBuildView`
+(dòng 350-363) là kỹ thuật round-trip-qua-accessor chuẩn cho `Build` không có field export — package HTTP mới
+tái dùng nguyên technique này, không phát minh cách khác; (2) CLI tự đo `CapabilityManifest`/`ProtocolVersion`
+thật qua `newAgentExecutor`+`AgentExecutor.Capabilities(ctx)` (spawn tiến trình thật, tiện lợi riêng cho CLI) —
+đây CHÍNH LÀ con đường "direct prober/process" mà HTTP layer phải tuyệt đối không lặp lại: caller HTTP tự khai
+`ProtocolVersion`/`CapabilityManifest` thẳng trong request body, không có đường nào trong package HTTP mới gọi
+`AgentExecutor.Capabilities` hay construct `claude.New`/`codex.New`.
+
+Đọc `docs/design/01-system-design.md` dòng 597-600 và `docs/design/11-v6-00-ux-artifact.md` dòng 122-125 để
+khoá đúng 4 route/operationId (không đoán): `GET /adapter-builds` → `listAdapterBuilds`, `GET
+/adapter-builds/{id}` → `getAdapterBuild` (suy ra từ path pattern `{id}` chung — `01-system-design.md` chỉ ghi
+route, không ghi operationId riêng cho detail, nhưng pattern đặt tên `get<Noun>` đã nhất quán toàn bộ
+`workitem`/`catalog`/`definitions`), `POST /adapter-builds/probe` → `probeAdapterBuild`, **`POST
+/adapter-builds`** (không phải `/adapter-builds/register`) → `registerAdapterBuild` — 2 operationId
+`probeAdapterBuild`/`registerAdapterBuild` bị khoá cứng thêm lần nữa ở ADR-028 §30 (`02-architecture-decisions.md`
+dòng 712-736, "tên khóa cứng ở ADR-028 §30").
+
+Đọc `internal/delivery/httpapi/workitem/envelope.go` (`prepareCreateCommand`/`replayOrProceed`) và
+`internal/delivery/httpapi/receiptreplay.go` (`LookupReceipt`/`ReconcileReceipt`/`WriteReceiptReplay`) để hiểu
+CHÍNH XÁC cái gì bị bỏ đi: `replayOrProceed`'s own doc comment tự thừa nhận đây là "purely a latency/UX
+optimization ... never a correctness dependency" — nghĩa là bỏ nó không làm mất correctness gì, nhưng spec của
+CHÍNH task này (`V6-10J`) lại cấm rõ ràng hơn workitem's optional optimization: "no transport receipt" là một
+chỉ dẫn tường minh, không phải một lựa chọn kiến trúc để cân nhắc lại.
+
+Đọc `internal/archtest/recovery_http_test.go` (`TestRecoveryHTTPNeverReachesSchedulerOrWorkerOrMutatesStateDirectly`)
+và `internal/archtest/run_control_test.go` (`TestRunControlHTTPNeverReachesSchedulerOrWorker`) làm khuôn cho
+architecture test riêng của task này — cả 2 dùng đúng kỹ thuật "parse real source, walk go/ast, forbid named
+selector".
+
+### Quyết định
+
+1. **Route path đúng 4 cái, không có route thứ 5 nào** (khác biệt với suy nghĩ ban đầu là có thể cần
+   `/adapter-builds/{id}/probe` hay tương tự) — `01-system-design.md` đã tự khoá path phẳng
+   `POST /adapter-builds/probe` (không gắn `{id}`, vì probe chưa có id nào để gắn — candidate chưa tồn tại
+   trong registry) và `POST /adapter-builds` (không phải `/register`, theo đúng convention REST "POST vào
+   collection = tạo tài nguyên trong collection đó").
+2. **Dependencies chỉ có `UnitOfWork` + `Clock`, không có `IDs idsource.Source`** — khác mọi package HTTP
+   mutating trước đó (`workitem`, `run`, `decision`) đều cần idsource vì command họ bọc tự mint ID mới; cả
+   `ProbeAdapterBuild` lẫn `RegisterAdapterBuild` không nhận `ids` tham số nào (ID của `Build` là content-addressed,
+   tự tính từ `CandidateTuple.ID()`, không phải giá trị mint).
+3. **Không dùng `httpapi.LookupReceipt`/`ReconcileReceipt`/`WriteReceiptReplay` (`replayOrProceed`-style) trước
+   khi dispatch** — quyết định trung tâm của toàn bộ task, bám sát nguyên văn "Không làm: ... transport
+   receipt". `prepareCommand` (package mới) chỉ làm đúng phần chung "require Idempotency-Key, canonicalize
+   body, build `ports.Command`" rồi dispatch thẳng — không có bước lookup/replay riêng nào ở giữa. Lý do kỹ
+   thuật (không chỉ vì spec bảo vậy): cả `ProbeAdapterBuild` lẫn `RegisterAdapterBuild` đã tự có
+   `loadProbeReplay`/`loadRegisterReplay` riêng, chạy `WithReadOnly` TRƯỚC mọi I/O thật, đúng bên trong chính
+   command — thêm một lớp check y hệt ở tầng HTTP phía trên là kiểm tra CÙNG MỘT dòng receipt hai lần, không
+   mua thêm được sự an toàn nào, đúng nghĩa đen "double up" mà spec cấm.
+4. **`prepareCommand` là "create-shaped" thuần tuý (`ExpectedVersion` luôn 0, không `If-Match` cho route nào)**
+   — cả 2 mutation đều không precondition trên version của một resource đã tồn tại: Probe không tạo registry
+   row nào để có version, Register tạo row MỚI (target chưa tồn tại trước khi gọi).
+5. **Field validate() trần (`errors.New`, không sentinel) của `ProbeRequest.validate()` được lặp lại tường minh
+   ở tầng HTTP (`validateProbeBody`), còn `domainadapterbuild.ErrInvalidCapabilityManifest` (sentinel export)
+   được bắt bằng `errors.Is` ở CẢ 2 nơi (`validateProbeBody` gọi thẳng `domainadapterbuild.ValidateCapabilityManifest`
+   để có message field-level tốt hơn, VÀ `writeProbeError` vẫn giữ nhánh bắt sentinel này làm defense-in-depth)**
+   — lý do: `ProviderKey/ExecutablePath/ProtocolVersion/OS/Toolchain/ConfigIdentity` rỗng chỉ trả về
+   `errors.New` trần bên trong `ProbeRequest.validate()`, không có sentinel nào để `errors.Is` phân biệt — nếu
+   không tự chặn trước ở tầng HTTP, một request thiếu field sẽ rơi thẳng vào nhánh 500 mặc định của
+   `writeProbeError` thay vì 400 đúng nghĩa. `CapabilityManifest` thì khác: `ValidateCapabilityManifest` đã là
+   hàm export sẵn với sentinel `ErrInvalidCapabilityManifest` — gọi lại đúng hàm thật đó ở tầng HTTP (không tự
+   viết lại luật validate) vừa cho field-level error tốt, vừa không tạo hai bản luật có thể lệch nhau.
+6. **`RegisterRequest`/`RegisterAdapterBuild`'s error mới do register tự trả (`ErrInvalidSignature`,
+   `ErrTokenExpired`, `ports.ErrNoSigningKey`, `ErrExecutableDrift`, `ErrCapabilityManifestDrift`) map theo
+   đúng ngữ nghĩa HTTP riêng từng loại, không gộp chung**: `ErrInvalidSignature` → 400 (lỗi caller — token giả/
+   sai/khác installation, không phải race); `ErrTokenExpired` → 409 (trạng thái thật đã đổi theo thời gian,
+   caller phải probe lại — không phải request sai hình dạng); `ports.ErrNoSigningKey` → 409 (chưa từng probe
+   lần nào trên installation này — precondition chưa thoả, không phải bug); `ErrExecutableDrift`/
+   `ErrCapabilityManifestDrift` → route qua bảng chung `httpapi.StatusForAppErrorCode(errorcode.CodeAdapterBuildDrift)`
+   thay vì hardcode 409 riêng, giữ nhất quán với bảng chung nếu sau này đổi (mirror đúng `recovery/errors.go`'s
+   `writeResolveWorkItemBlockerError`'s cách route `ErrWorkspaceQuarantined` qua bảng chung).
+7. **Status code Register: 201 khi `!AlreadyExisted`, 200 khi `AlreadyExisted`** — khác các route create khác
+   trong repo (`createRootWorkItem` luôn 201 vô điều kiện) vì đây là trục fingerprint-dedup thật (V6-10I's own
+   "fingerprint dedupe is not command replay"): một registration content-trùng lặp KHÔNG tạo row mới, phản ánh
+   đúng bằng status 200 thay vì giả vờ 201 cho một thứ không hề được "tạo" lần này. Response body
+   (`registerAdapterBuildResponse{Build, AlreadyExisted}`) giống hệt cả 2 trường hợp — client tự đọc
+   `alreadyExisted` để phân biệt nếu cần, HTTP status chỉ là gợi ý bổ sung.
+8. **`adapterBuildView` (DTO response) round-trip qua accessor y hệt `cmd/aw/adapter.go`'s bản CLI, `RegisteredAt`
+   giữ nguyên `time.Time` (encoding mặc định RFC3339Nano của `encoding/json`)** — không phát minh format
+   timestamp riêng cho package này khi CLI đã có tiền lệ y hệt cho đúng field này.
+9. **`GET /adapter-builds/{id}` không tồn tại route mirror project-scoped nào** — implement đúng bằng cách
+   không có route thứ 5 nào cả (không phải một cờ "no-op" hay handler rỗng) — "Không làm: no project mirror"
+   là điều task này thoả mãn bằng CHÍNH VIỆC KHÔNG VIẾT, không phải một guard runtime.
+10. **Architecture test mới `TestAdapterBuildHTTPNeverReachesProcessOrFilesystemDirectly`, kết hợp 2 kỹ thuật**:
+    (a) cấm import `os/exec`, `internal/adapters/process`, `internal/adapters/providers/{claude,codex}` (kỹ
+    thuật `ImportsOnly` parse, mirror `TestRequestWorkspaceReconciliationNeverImportsWorkspaceIO`); (b) cấm gọi
+    selector `Capabilities` (method `AgentExecutor.Capabilities` — spawn tiến trình thật) và
+    `HashExecutableFile`/`hashExecutableFile` (cả 2 cách viết, mirror đúng 2 spelling
+    `TestProbeAdapterBuildTransactionNeverCallsFilesystemOrProcess` đã kiểm ở tầng application) — kết hợp cả
+    import-level lẫn call-level để không có đường lách nào (import riêng lẻ không gọi gì vẫn bị bắt; gọi qua
+    một import gián tiếp khác vẫn bị bắt ở tầng selector).
+
+### Thực hiện
+
+- `internal/delivery/httpapi/adapterbuild/adapterbuild.go` (file mới): package doc comment đầy đủ + `Dependencies{UnitOfWork,
+  Clock}` + `RegisterRoutes` (4 descriptor, tất cả `httpapi.ScopeInstallation`) + 2 hằng `commandTypeProbe =
+  "ProbeAdapterBuild"`/`commandTypeRegister = "RegisterAdapterBuild"` (khớp byte-for-byte chuỗi
+  `cmd/aw/adapter.go`'s `requestHash("ProbeAdapterBuild", ...)` đã dùng, để receipt/event ghi qua HTTP và qua
+  CLI cùng command-type).
+- `internal/delivery/httpapi/adapterbuild/dto.go` (file mới): `capabilityManifestBody` (+`toManifest`/
+  `capabilityManifestBodyFrom`), `probeAdapterBuildBody` (7 field khớp `ProbeRequest`), `registerAdapterBuildBody`
+  (`Token domainadapterbuild.CandidateToken` tái dùng thẳng + `CapabilityManifest`), `adapterBuildView` (12
+  field, round-trip qua accessor), `adapterBuildListResponse{Builds []adapterBuildView}`,
+  `registerAdapterBuildResponse{Build, AlreadyExisted}`.
+- `internal/delivery/httpapi/adapterbuild/queries.go` (file mới): `handleListAdapterBuilds`, `handleGetAdapterBuild`
+  (validate `id` path non-blank rồi dispatch, lỗi not-found qua `writeQueryError`).
+- `internal/delivery/httpapi/adapterbuild/commands.go` (file mới): `prepareCommand` (preamble chung, không
+  receipt-replay fast path — quyết định 3 ở trên), `validateProbeBody` (6 field trần + gọi
+  `ValidateCapabilityManifest` thật), `handleProbeAdapterBuild` (200 OK), `handleRegisterAdapterBuild` (201/200
+  theo `AlreadyExisted`).
+- `internal/delivery/httpapi/adapterbuild/errors.go` (file mới): `writeValidationError`, `writeQueryError`
+  (`ports.ErrAdapterBuildNotFound` → `WriteResourceHidden`), `writeProbeError` (`ErrInvalidCapabilityManifest`
+  → 400, `ports.ErrReceiptConflict` → 409, default 500), `writeRegisterError` (5 nhánh sentinel + default 500,
+  chi tiết ở Quyết định 6).
+- `internal/archtest/adapterbuild_http_test.go` (file mới): `TestAdapterBuildHTTPNeverReachesProcessOrFilesystemDirectly`
+  (import-check + selector-check kết hợp, chi tiết Quyết định 10).
+- `cmd/aw/serve.go`: +1 import (`httpadapterbuild`), +1 dòng `httpadapterbuild.RegisterRoutes(routes,
+  httpadapterbuild.Dependencies{UnitOfWork: uow, Clock: clock.System{}})` ngay trước `routesFinalized = true`
+  — không sửa gì khác trong file (không flag mới, không dependency mới nào cần construct, đúng tinh thần
+  "additive routes.Register call only" các task trước đã lập).
+
+### Test
+
+`internal/delivery/httpapi/adapterbuild/adapterbuild_test.go` (1 file, dùng khuôn `newTestEnv` thật của
+`workitem_test.go` — real `httpapi.Server` qua TCP loopback thật, real `*sqlite.Store`, không mock, không
+`httptest.Server`+mux giả):
+
+- `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` — đúng 4 operationId, tất cả
+  `ScopeKind == httpapi.ScopeInstallation` — proof cơ học cho "scope schema" và "no project mirror" cùng lúc.
+- `TestFullJourney_ProbeRegisterListGet` — probe thật (hash file thật qua `writeExecutable`) → register thật
+  (echo token, xác nhận `RegisteredBy` lấy từ principal chứ không phải request field) → list (đúng 1 phần tử)
+  → detail (khớp field). Đây là "Hoàn thành khi: provider upgrade flow ... usable" chạy thật end-to-end.
+- `TestRegister_DuplicateFingerprintReturns200AlreadyExisted` — 2 cặp probe+register ĐỘC LẬP (idempotency key
+  khác nhau hoàn toàn) trên cùng 1 executable — build ID giống hệt, status code 201 rồi 200.
+- `TestProbe_MissingIdempotencyKeyIsBadRequest`.
+- `TestProbe_MissingRequiredFieldIsBadRequest` — table-driven qua cả 6 field trần
+  (`providerKey/executablePath/protocolVersion/os/toolchain/configIdentity`), mỗi field xoá riêng, xác nhận
+  đúng 1 `ErrorDetail` trỏ đúng field đó — "protocol/config schema" của Verify bullet.
+- `TestProbe_InvalidCapabilityManifestIsBadRequest` (`supportsStart=false`).
+- `TestProbe_SameIdempotencyKeyDifferentBodyIsConflict` — chứng minh trực tiếp bỏ receipt-replay fast path
+  không làm mất correctness: `ProbeAdapterBuild`'s own internal receipt recheck vẫn bắt được race, dù package
+  HTTP không tự check gì trước.
+- `TestRegister_InvalidTokenSignatureIsBadRequest` — bootstrap key thật qua 1 probe, sửa `Signature` sai, xác
+  nhận 400. "Token schema" của Verify bullet.
+- `TestRegister_ExpiredTokenIsConflict` — load signing key THẬT trực tiếp qua `uow` (không hard-code), tự ký
+  một `CandidateToken` hết hạn bằng `domainadapterbuild.SignToken` thật (không giả lập bằng cách sửa response
+  JSON tay) — xác nhận 409.
+- `TestRegister_NoSigningKeyIsConflict` — register thẳng trên installation chưa từng probe lần nào.
+- `TestRegister_ExecutableDriftIsConflict` — probe rồi GHI ĐÈ nội dung file thật trước khi register — "fingerprint
+  schema" của Verify bullet, xác nhận re-hash thật (không phải so sánh giả).
+- `TestGetAdapterBuild_UnknownIdIsNotFound`, `TestListAdapterBuilds_EmptyRegistryReturnsEmptyList`.
+
+`internal/archtest/adapterbuild_http_test.go`: `TestAdapterBuildHTTPNeverReachesProcessOrFilesystemDirectly`
+(handler architecture spy của Verify bullet).
+
+`go build ./...`, `go vet ./...` sạch. `go test ./internal/delivery/httpapi/adapterbuild/... -count=1 -v` (15
+test/subtest) pass 100% trong 2.19s. `go test ./internal/archtest/... -run TestAdapterBuildHTTP -count=1 -v`
+pass. `go test ./... -count=1` (81 package, 0 dòng FAIL) pass 100%, không regression ở bất kỳ package nào
+khác — bao gồm `cmd/aw` (66.7s, giờ có route mới đi qua `aw serve` thật), `internal/app/adapterbuild` (2.5s,
+không đổi vì task này không sửa package đó), `internal/adapters/sqlite` (141s).
+
+### Verify
+
+- **"token schema"**: `TestRegister_InvalidTokenSignatureIsBadRequest`, `TestRegister_ExpiredTokenIsConflict` —
+  cả 2 dùng chữ ký/token thật, không giả lập.
+- **"fingerprint schema"**: `TestRegister_ExecutableDriftIsConflict` (re-hash thật sau khi ghi đè file),
+  `TestRegister_DuplicateFingerprintReturns200AlreadyExisted` (fingerprint dedup thật).
+- **"protocol schema"**: `TestProbe_MissingRequiredFieldIsBadRequest/protocolVersion` + round-trip field
+  `ProtocolVersion` trong `TestFullJourney_ProbeRegisterListGet`.
+- **"config schema"**: `TestProbe_MissingRequiredFieldIsBadRequest/configIdentity` + round-trip field
+  `ConfigIdentity` trong `TestFullJourney_ProbeRegisterListGet`.
+- **"scope schema"**: `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` — cả 4 route đều
+  `ScopeInstallation`, không route nào `ScopeProject`.
+- **"handler architecture spy"**: `TestAdapterBuildHTTPNeverReachesProcessOrFilesystemDirectly` — cấm cả
+  import (`os/exec`, `internal/adapters/process`, `internal/adapters/providers/{claude,codex}`) lẫn selector
+  (`Capabilities`, `HashExecutableFile`/`hashExecutableFile`).
+- **"Không làm: no project mirror"**: đúng 4 route, không route nào project-scoped, không handler nào nhận
+  `{projectId}` — `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` xác nhận cơ học.
+- **"Không làm: direct prober/process"**: `TestAdapterBuildHTTPNeverReachesProcessOrFilesystemDirectly` +
+  không import nào trong `internal/delivery/httpapi/adapterbuild/*.go` (không test) tới
+  `internal/adapters/process`/`internal/adapters/providers/*`.
+- **"Không làm: transport receipt"**: không có lời gọi `httpapi.LookupReceipt`/`ReconcileReceipt`/
+  `WriteReceiptReplay` nào trong toàn bộ package — xác nhận bằng đọc lại `commands.go`'s `prepareCommand`
+  (không có bước nào giữa build `cmd` và dispatch), cộng `TestProbe_SameIdempotencyKeyDifferentBodyIsConflict`
+  chứng minh gián tiếp: nếu package này có tự thêm receipt check riêng, test đó vẫn pass y hệt (double-check
+  vô hình) — nhưng đọc source xác nhận trực tiếp không hề có lớp thứ hai nào.
+- **"Hoàn thành khi: provider upgrade flow ... usable without bypassing command contract"**:
+  `TestFullJourney_ProbeRegisterListGet` chạy đúng luồng probe→review→register→list→detail hoàn toàn qua HTTP
+  thật, không có đường tắt nào bỏ qua `ports.Command`/`Idempotency-Key`.
+
+### Kết quả
+
+Package mới `internal/delivery/httpapi/adapterbuild` (5 file production ~380 dòng:
+`adapterbuild.go`/`dto.go`/`queries.go`/`commands.go`/`errors.go`; 1 file test ~360 dòng, 15 test
+function/subtest), 1 architecture test mới (`internal/archtest/adapterbuild_http_test.go`). `cmd/aw/serve.go`
++7 dòng (1 import, 1 `RegisterRoutes` call, không flag mới, không dependency composition-root mới nào cần
+construct — khác hẳn `V6-06D` phải thêm 2 flag executable mới). `go build/vet/test ./...` sạch, không
+regression trên cả 81 package.
+
+4 route HTTP thật lần đầu tồn tại: `GET /adapter-builds`, `GET /adapter-builds/{id}`, `POST
+/adapter-builds/probe`, `POST /adapter-builds` — chạy được qua `aw serve` thật, xác nhận bằng grep trực tiếp
+`cmd/aw/serve.go` (`httpadapterbuild.RegisterRoutes` xuất hiện đúng 1 lần), không chỉ tin test package cô lập
+(đúng bài học `V6-04` để lại từ đầu chuỗi V6).
+
+Không migration mới (xác nhận migration cao nhất trên `origin/master` vẫn là `0037` lúc branch; bảng
+`adapter_builds`/signing-key đã có sẵn từ V2-07A, V6-10I chỉ thêm cột receipt/event dùng chung, không đổi
+schema `adapter_builds` bản thân).
+
+Quyết định kiến trúc quan trọng nhất của task: package HTTP-mutation ĐẦU TIÊN trong repo hoàn toàn không có
+pre-dispatch receipt-replay fast path riêng (khác `workitem`'s `replayOrProceed`) — dispatch thẳng vào command
+đã tự có receipt lookup nội bộ, đúng nguyên văn "Không làm: ... transport receipt" của chính task, đồng thời
+chứng minh được bằng test rằng bỏ lớp đó không hề làm mất correctness (`ProbeAdapterBuild`'s own receipt check
+vẫn bắt đúng race qua HTTP y hệt qua CLI/test trực tiếp).
+
+Luồng "provider upgrade" (probe candidate mới → operator review → register xác nhận) giờ đã dùng được thật
+qua HTTP, không chỉ qua CLI `aw adapter probe|register` — 2 bề mặt (CLI, HTTP) cùng dispatch đúng một cặp
+command đã hardening, không bề mặt nào có logic riêng của chính nó.
+
 ## V6-10H — Safe settings endpoints
 
 ### Bối cảnh
