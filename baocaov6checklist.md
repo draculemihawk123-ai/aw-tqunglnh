@@ -5704,6 +5704,348 @@ Phát hiện thật cần ghi lại (2 gap có thật của tầng dưới, khô
 rundetail/...` 100% xanh (20/20 test mới). `go test ./...` toàn repo: 4 fail, cả 4 đã điều tra và xác nhận
 không liên quan diff của task này (3 do uncommitted work của session V6-07A khác đang chạy song song trên
 CÙNG checkout, 1 do tải hệ thống — pass khi chạy riêng lẻ).
+## V6-06C — Run diagnostics endpoints
+
+### Bối cảnh
+
+V6-06C nằm trong nhóm P2, phụ thuộc `V6-00, V6-02A, V6-06D` — cả ba đã merge trên `origin/master`
+(`c8163d3 feat(v6-07b)...`) lúc bắt đầu worktree này; `git log origin/master --oneline -3` xác nhận đúng tip,
+không cần rebase. `baocaov6checklist.md` đang bị 3 task song song khác ghi (`V6-04A`, `V6-06B`, `V6-07A`, theo
+đúng cảnh báo có sẵn) — append-only, dự kiến conflict khi merge, không phải bug.
+
+Phiên làm việc này bị gián đoạn giữa chừng bởi rate limit của session (worktree gốc
+`.claude/worktrees/agent-a8ab13a28e34d04d5` bị dọn trước khi việc implement thật sự bắt đầu — toàn bộ phần
+nghiên cứu ở trên vẫn giữ nguyên trong context, không mất). Khi tiếp tục, `git worktree list` xác nhận worktree
+cũ không còn tồn tại — dựng lại một worktree mới (`.claude/worktrees/v6-06c-run-diagnostics`, branch
+`feat/v6-06c-run-diagnostics-endpoints`) từ đúng `origin/master` (vẫn `c8163d3`, không có commit mới nào chen
+vào) rồi tiếp tục implement từ đầu — không có thay đổi thật nào bị mất vì phần trước đó thuần là đọc code.
+
+Task này khác V6-06D (dependency của chính nó) ở bản chất: V6-06D bọc 3 COMMAND thật đã tồn tại sẵn
+(`RetryBlockedActivation`/`CancelWorkItem`/`ResolveWorkItemBlocker`), còn V6-06C là một QUERY hoàn toàn mới —
+không có hàm nào trong `internal/app/runtime` từng tổng hợp state chẩn đoán across nhiều nguồn (blocker, job/
+lease, provider, workspace) cho một Run cụ thể. Cái khó thật không nằm ở việc gọi command có sẵn, mà ở việc tự
+thiết kế một response DTO an toàn từ đầu, đúng ranh giới "Không làm" task tự nêu (không PID/argv/cwd/secret,
+không internal execute-command capability), trong khi vẫn phải tái sử dụng đúng những nguồn dữ liệu thật đã có
+sẵn (V4-13's `ListOrphanedRunningExecutionAttempts`, V5-08's admission blocker taxonomy, V6-10B's
+`workspacestate`, V2-07A's `adapterbuild` registry).
+
+### Nghiên cứu
+
+Đọc nguyên văn spec (`docs/design/08-v6-api-projections.md` dòng 274-283): *"Mục tiêu: expose safe queue/job/
+lease/fence/provider/workspace diagnostics và recovery actions. Phạm vi: `GET /runs/{id}/diagnostics`
+authoritative query. Không làm: không PID, argv, cwd, secret, internal execute command hoặc installation Doctor
+data. Thực hiện: reload Run/project, return typed states/remediation and advisory valid actions with versions.
+Verify: blocked/lost/quarantined fixtures, role/project matrix, redaction and bounded output. Hoàn thành khi:
+operator chẩn đoán Run và chọn named recovery action không cần DB surgery."* Đọc thêm
+`docs/design/11-v6-00-ux-artifact.md` dòng 315-361 (Screen 8) và dòng 481-503 (Screen 13): operationId khoá
+cứng `getRunDiagnostics` (dòng 358), CLI leaf `aw run diagnostics`, application query tên `GetRunDiagnostics`
+[CHƯA CÓ] — Screen 13 (Settings) tái sử dụng ĐÚNG authority này khi drill-down từ một Run cụ thể, không định
+nghĩa một query aggregate "mọi Run cần chú ý" riêng (dòng 544-552 tự giải thích quyết định này, không phải gap
+của task).
+
+Đọc `internal/app/runtime/retry_blocked_activation.go` (đã đọc trọn trong phiên trước) và
+`baocaov6checklist.md`'s own V6-06D section — hai điểm mấu chốt cho thiết kế query này: (1) 4 admission
+blocker type (`ISOLATION_ENFORCEMENT_UNAVAILABLE`/`ADAPTER_BUILD_DRIFT`/`CAPABILITY_REQUIREMENT_UNSATISFIED`/
+`WRITE_CAPABILITY_OR_GRANT_MISSING`) là những blocker duy nhất `RetryBlockedActivation` có thẩm quyền; (2)
+`runAdmissionProbePhase` (admission.go) — hàm Phase-1 thật admission dùng để probe — gọi
+`adapterbuild.VerifyNoDrift` → `executor.Capabilities(ctx)`, một lời gọi spawn process THẬT. Đây là phát hiện
+quan trọng nhất quyết định kiến trúc: nếu diagnostics tái sử dụng `VerifyNoDrift` y hệt, một `GET` request sẽ
+tự spawn process như một side effect — vi phạm thẳng "không internal execute-command capability... never a way
+to trigger execution" của chính task. Đối chiếu `internal/app/ports/isolation.go`'s own doc comment
+(`IsolationEnforcementChecker.VerifyEnforceable` — "performs no I/O in this codebase's only implementation
+today") và `internal/adapters/process/isolation.go`'s own `IsolationChecker.VerifyEnforceable` (switch thuần,
+không I/O) xác nhận: đây là 1 trong 2 dependency admission cần real I/O, còn cái kia (isolation) thì KHÔNG —
+an toàn để gọi live từ một GET. Đọc `internal/app/agentregistry/registry.go`'s own `Resolve` xác nhận nó cũng
+chỉ là map lookup thuần (capability đã được đo MỘT LẦN lúc `agentregistry.New` construct, không phải mỗi lần
+`Resolve`) — an toàn tương tự.
+
+Đọc `internal/domain/work/blocker.go` trọn vẹn: `WorkItemBlocker.SourceRunID` được set bởi CẢ 4 producer thật
+trong codebase (`openRunCancelledBlockerTx`/`requestScopeExpansionTx`/`blockAdmission`/
+`applyCompletionPolicy`'s FAIL branch, xác nhận bằng grep từng call site `openWorkItemBlockerTx` trước khi viết
+bất cứ gì) — nghĩa là filter `blocker.SourceRunID == runID` là chính xác tuyệt đối, không phải heuristic, để
+scope blocker list đúng về một Run cụ thể (một WorkItem có thể có nhiều Run qua lịch sử, blocker của Run cũ
+không được lẫn vào response của Run hiện tại).
+
+Đọc `internal/app/workspacestate/queries.go` (V6-10B, đã có sẵn) trọn vẹn: `GetWorkspaceSetState` đã là chính
+xác "Fence/Lease/Quarantine" snapshot task này cần cho phần workspace — tái sử dụng thẳng, không viết lại.
+Đọc `internal/app/adapterbuild/commands.go`/`drift.go` xác nhận `GetAdapterBuild`/`ListAdapterBuilds` chỉ đọc
+DB (an toàn), còn `VerifyNoDrift` là hàm duy nhất trong package đó có I/O thật — quyết định KHÔNG gọi hàm đó
+(xem Quyết định #3).
+
+Đọc `internal/app/runtime/queries.go` (V6-07B, đã merge) trọn vẹn — đây là tiền lệ trực tiếp nhất cho việc đặt
+`GetRunDiagnostics` Ở ĐÂU: mọi read query V6-07B thêm (`GetContextSnapshot`/`ListEvidenceForWorkItem`) đều nằm
+NGAY TRONG package `runtime` (không phải một package con riêng), nhận `ports.CommandScope` tường minh, và tự
+verify `scope.ProjectID()` khớp `ProjectID` thật đã reload — same `requireProjectScope`/`scopeMismatch` helper
+dùng lại được trực tiếp (cùng package). Đọc `internal/delivery/httpapi/evidence/routes.go` xác nhận route
+pattern tương ứng luôn có prefix `/projects/{projectId}/...` — KHÁC hẳn V6-06/V6-06D's own flat mutation routes
+(`/runs/{id}/cancel`) vì lý do đã ghi rõ trong `run.go`'s own doc comment: `CancelRun`/`RetryBlockedActivation`/
+v.v. không nhận `ProjectID` trong request struct nên không có gì để `{projectId}` verify; NGƯỢC LẠI, mọi query
+V6-07B (giống `GetRunDiagnostics` ở đây) đều nhận `ports.CommandScope` tường minh — nên route PHẢI project-
+prefixed để path có cái để verify against. Quyết định route: `GET /projects/{projectId}/runs/{runId}/
+diagnostics`, không phải literal `/runs/{id}/diagnostics` bullet ngắn gọn trong design doc (bullet đó không
+tách chi tiết path prefix, y hệt cách nó không tách cho V6-07B's own routes).
+
+Đọc `internal/delivery/httpapi/workspacestate.go` (V6-10B) trọn vẹn: đây là khuôn mẫu chính xác cho
+"aggregated state query + advisory ValidActions tính Ở TẦNG HTTP, không phải tầng application" —
+`reconcileValidActions`/`releaseValidActions` đọc `workspacestate.WorkspaceSetState` (app-layer, không biết gì
+về `httpapi.ValidAction`) rồi tính advisory action ở delivery layer. Áp dụng y hệt cho task này: `internal/app/
+runtime.RunDiagnostics` (app layer) không import `internal/delivery/httpapi` (tránh đảo ngược dependency
+direction), còn `internal/delivery/httpapi/diagnostics` (delivery layer) tính `ValidActions` từ state đó.
+
+Đọc `internal/app/runtime/execute.go`'s own `resolvedExecutionProfileView` struct (dòng 142-172) xác nhận:
+field set của nó (`Executor.Kind/DefinitionID/VersionID/CompiledHash`, `AdapterBuild.BuildID`, `IsolationTier`,
+`AllowedCapabilities`, `Model`, `TimeoutSeconds`, `Role`) hoàn toàn an toàn — không có PID/argv/cwd/secret nào,
+xác nhận qua đọc `internal/domain/runtime/runtime.go`'s own `ExecutionAttempt` struct (không có field OS-
+process nào) và grep riêng cho `Argv`/`CwdRepositoryTarget`/`Pid`/`WorkingDirectory` toàn repo — những field đó
+CHỈ tồn tại ở `internal/domain/command` (COMMAND node pin) và `internal/adapters/process` (Supervisor thật) —
+không package nào trong số đó được import bởi file mới của task này.
+
+### Quyết định
+
+1. **Đặt `GetRunDiagnostics` trực tiếp trong package `internal/app/runtime`** (file mới `diagnostics.go`), không
+   phải một package con riêng như `workspacestate`. Lý do: query cần tái sử dụng trực tiếp nhiều helper
+   unexported của chính package đó — `loadExecutionProfile` (đọc `<nodeRunId>-execution-profile-v1` decision
+   artifact), `requireProjectScope`/`scopeMismatch` (queries.go, V6-07B) — một package riêng sẽ phải import
+   `internal/app/runtime` từ bên ngoài và không bao giờ gọi được các hàm unexported này, buộc phải viết lại
+   logic đọc execution profile lần hai (rủi ro phân kỳ với `RetryBlockedActivation`'s own read path). Tiền lệ
+   trực tiếp: V6-07B's own `GetContextSnapshot`/`ListEvidenceForWorkItem` cũng nằm ngay trong package này vì
+   cùng lý do.
+2. **KHÔNG bao giờ gọi `adapterbuild.VerifyNoDrift`** (real process spawn) — đây là quyết định kiến trúc quan
+   trọng nhất của task, dựa thẳng trên phát hiện ở phần Nghiên cứu. 3 lựa chọn đã cân nhắc:
+   - (a) Gọi y hệt `runAdmissionProbePhase` cho drift thật — **loại bỏ**: một GET request spawn process thật
+     là chính xác "internal execute-command capability" mà task tự cấm, kể cả khi hẹp (chỉ `--version`); cũng
+     biến một endpoint "safe, read-only" thành một vector DoS tiềm năng (mỗi GET spawn 1 process).
+   - (b) Không cross-reference provider gì cả, chỉ trả `AdapterBuildID` trần — **loại bỏ**: bỏ phí chính xác
+     phần "provider diagnostics" task yêu cầu ("cross-referenced against the real registry to report drift/
+     staleness").
+   - (c) **Chọn**: cross-reference THUẦN dữ liệu tĩnh + lookup an toàn — `agents.Resolve(providerKey, ...)`
+     (map lookup, không I/O) báo `ProviderConfigured` (registry hiện có live executor cho provider này hay
+     không), và `isolation.VerifyEnforceable(ctx, tier)` (pure/static, xác nhận qua đọc
+     `internal/adapters/process/isolation.go`'s own doc comment) báo `Enforceable` thật — cả hai chạy LIVE từ
+     GET vì cả hai đều an toàn, không I/O. `ProviderConfigured=false` khớp chính xác điều kiện 503
+     `agentregistry.ErrUnknownProvider` V6-06D đã map cho `RetryBlockedActivation` — advisory nhất quán với
+     command thật. Việc xác nhận DRIFT thật (không chỉ "có executor hay không") vẫn là thẩm quyền độc quyền
+     của `RetryBlockedActivation` — kết quả cấu trúc `FailureReason`/`FailureDetail` của nó là câu trả lời
+     authoritative, query này chỉ advisory hướng tới đó.
+3. **Phạm vi provider/isolation cross-reference: CHỈ NodeRun đứng sau một admission blocker đang OPEN**, không
+   phải mọi NodeRun RUNNING/historical của Run. Lý do: (1) bounded tự nhiên — số blocker OPEN luôn nhỏ, không
+   cần duyệt toàn bộ lịch sử NodeRun của một Run có thể rất dài; (2) đây chính xác là tập NodeRun mà
+   `retryBlockedActivation` sẽ nhắm tới — advisory action và provider/isolation diagnostic luôn đồng bộ với
+   nhau; (3) `loadExecutionProfile` chỉ tồn tại cho NodeRun đã qua `ScheduleExecutableNodeRun` — một NodeRun
+   BLOCKED vì admission luôn thoả điều kiện này (chính xác đối tượng `blockAdmission` tạo ra), không cần đoán.
+4. **`runDiagnosticsBase` dùng ĐÚNG MỘT `uow.WithReadOnly` transaction** cho phần Run/WorkItem/Blocker/
+   orphaned-attempt-evidence; các bước sau (`loadExecutionProfile`, `loadAdapterBuild`,
+   `loadRunRepositoryWorkspaces`) đều là transaction độc lập riêng, chạy TUẦN TỰ sau khi transaction đầu đã
+   đóng — không nesting. Lý do: `loadExecutionProfile` (execute.go) luôn được gọi NGOÀI mọi transaction bởi cả
+   2 caller thật hiện có (`ExecuteNodeHandler.Handle`'s own admission preflight,
+   `RetryBlockedActivationHandler.Retry`) — không có tiền lệ nào trong codebase này nest một
+   `uow.WithReadOnly` thứ hai bên trong một `ports.Tx` closure đã mở, và sqlite driver không được kiểm chứng an
+   toàn cho pattern đó. Đổi lại: response có thể đọc phải state hơi lệch nhau giữa các bước (read skew nhẹ) —
+   chấp nhận được vì toàn bộ response vốn đã "advisory only, never authoritative" (như mọi field khác của
+   response này).
+5. **Route: `GET /projects/{projectId}/runs/{runId}/diagnostics`, project-prefixed** — khác hẳn V6-06/V6-06D's
+   own flat routes, lý do đầy đủ ở phần Nghiên cứu (query nhận `ports.CommandScope` tường minh, cần path có
+   `{projectId}` để verify against — đúng tiền lệ V6-07B's own routes, không phải V6-06D's own).
+6. **ValidActions tính Ở TẦNG HTTP (`internal/delivery/httpapi/diagnostics/dto.go`), không phải app layer** —
+   mirror chính xác `workspacestate.go`'s own `reconcileValidActions`/`releaseValidActions` (xem Nghiên cứu).
+   `blockerValidActions` advisory `retryBlockedActivation` (target = NodeRun's own Version) cho blocker
+   admission-reason đang OPEN, `resolveWorkItemBlocker` (target = blocker's own Version) cho blocker OPEN khác
+   (trừ `SCOPE_EXPANSION_REQUIRED` — mirror `workdomain.BlockerType.ResolvableViaCommand()`'s own một ngoại lệ
+   duy nhất, so sánh bằng literal string vì `BlockerDiagnostic.Type` vốn đã là wire string, không import lại
+   `internal/domain/work` chỉ để dùng một constant). `runDiagnosticsValidActions` advisory `cancelRun`/
+   `cancelWorkItem` ở cấp response dựa trên `RunState`/`WorkItemStatus` hiện tại — advisory thuần, command thật
+   luôn tự re-derive precondition, đúng "advisory only, never authoritative" của `ValidAction` (action.go).
+7. **Response DTO tự định nghĩa field JSON riêng, không serialize thẳng `runtime.RunDiagnostics`** — cùng lý do
+   mọi task HTTP trước đã ghi (`internal/app/runtime`'s own struct không có json tag; đây cũng là điểm chốt
+   review cho chính prohibition PID/argv/cwd/secret — field allowlist tường minh, không phải "quên loại trừ").
+8. **`Dependencies{UOW, Isolation, Agents}` tái sử dụng ĐÚNG 2 dependency `cmd/aw/serve.go` đã construct sẵn
+   cho V6-06D** (`isolationChecker`, `agentRegistry`) — không thêm flag mới, không construct thêm gì ở
+   composition root. Task này không cần `IDs`/`Clock` (query không mint ID, không set timestamp mới).
+9. **Kiến trúc test riêng (`internal/archtest/diagnostics_http_test.go`)** mở rộng danh sách selector cấm so
+   với `TestRecoveryHTTPNeverReachesSchedulerOrWorkerOrMutatesStateDirectly` gốc — thêm `Capabilities` (chính
+   là lời gọi I/O thật `VerifyNoDrift` dùng, cấm tuyệt đối trong package này) và
+   `TransitionWorkItemBlockerState` (nếu package này từng tự resolve một blocker thay vì chỉ đọc, đó là bug
+   nghiêm trọng của một "safe, read-only" surface).
+
+### Thực hiện
+
+- `internal/app/runtime/diagnostics.go` (535 dòng): package doc giải thích trọn nguồn dữ liệu + ranh giới an
+  toàn; `RunDiagnostics`/`BlockerDiagnostic`/`OrphanedAttemptDiagnostic`/`ProviderDiagnostic`/
+  `IsolationDiagnostic`/`RepositoryWorkspaceDiagnostic` (DTO tự viết, allowlist tường minh);
+  `isAdmissionBlockerType` (4 admission `workdomain.BlockerType`, mirror `admission.go`'s own
+  `admissionPriority`/`isAdmissionBlockerReason` nhưng ở vocabulary `BlockerType` thay vì `TerminationReason`);
+  `runDiagnosticsBase` (1 transaction: Run+scope check, WorkItem, Blocker list filtered `SourceRunID==runID`,
+  orphaned-attempt evidence filtered theo NodeRun set của Run, mỗi list đều bounded `maxDiagnosticEntries=50`
+  với cờ `*Truncated` riêng); `GetRunDiagnostics` (entrypoint, gọi `runDiagnosticsBase` rồi
+  `collectAdmissionCrossReference`/`loadRunRepositoryWorkspaces` tuần tự, transaction độc lập); `loadAdapterBuild`
+  (đọc trực tiếp `tx.AdapterBuilds().Get`, không import `internal/app/adapterbuild` — cùng lý do
+  `admission.go`'s own `runAdmissionProbePhase` đã làm).
+- `internal/app/runtime/diagnostics_test.go` (332 dòng, `package runtime_test`, sqlite KHÔNG cần vì tái sử dụng
+  `*fake.UnitOfWork` — xem phần Test): 8 test case, tái sử dụng 100% helper có sẵn CÙNG PACKAGE
+  (`admissionFixture`/`claimableExecuteNodeJob` từ `admission_test.go`/`execute_test.go`,
+  `runCancelledBlockerFixture`/`quarantineExtraRepositoryWorkspace` từ `resolve_work_item_blocker_test.go`,
+  `cancelWorkItemFixture` từ `cancel_work_item_test.go`) — không duplicate một dòng nào vì cùng package
+  `runtime_test`.
+- `internal/delivery/httpapi/diagnostics/` (package mới, 5 file production ~403 dòng):
+  - `diagnostics.go`: package doc, `Dependencies{UOW, Isolation, Agents}`, `RegisterRoutes` — 1 descriptor duy
+    nhất.
+  - `dto.go`: `RunDiagnosticsResponse` + 6 sub-DTO, `blockerValidActions`/`runDiagnosticsValidActions` (tính
+    `httpapi.ValidAction` từ app-layer state).
+  - `handler.go`: `handleGetRunDiagnostics` — decode path, dispatch `runtime.GetRunDiagnostics`, encode kết
+    quả với `ETagFromVersion(diag.RunVersion)`.
+  - `errors.go`: `writeQueryError` — mirror `evidence/errors.go`'s own (not-found + scope-mismatch → cùng 404
+    leakage-normalized).
+  - `internal/archtest/diagnostics_http_test.go`: `TestDiagnosticsHTTPNeverReachesSchedulerOrWorkerOrMutatesStateDirectly`.
+- `cmd/aw/serve.go` (+10 dòng, không sửa dòng có sẵn): 1 import mới (`httpdiagnostics`), 1 lời gọi
+  `httpdiagnostics.RegisterRoutes(routes, httpdiagnostics.Dependencies{UOW: uow, Isolation: isolationChecker,
+  Agents: agentRegistry})` tái sử dụng đúng 2 biến V6-06D đã construct sẵn. Xác nhận bằng
+  `grep -n "httpdiagnostics\|RegisterRoutes(routes" cmd/aw/serve.go` sau khi viết xong — đúng yêu cầu review
+  bắt buộc của chính task (bài học `V6-04` để lại: 30 test xanh cho một package KHÔNG BAO GIỜ được gọi từ
+  `aw serve` thật).
+- Không migration mới — `internal/adapters/sqlite/migrations/` cao nhất vẫn `0037_release_set_local_commits.sql`
+  trên `origin/master` lúc bắt đầu (`ls internal/adapters/sqlite/migrations/ | tail -5` xác nhận trực tiếp
+  trước khi kết thúc), task này thuần đọc dữ liệu đã có, không cần schema mới.
+
+### Test
+
+Tổng 15 test case mới (8 app-layer + 7 HTTP-layer), không test nào hand-seed một RESULT giả — mọi fixture đi
+qua command/handler thật.
+
+- `internal/app/runtime/diagnostics_test.go` (8 test, `*fake.UnitOfWork` — chấp nhận được vì
+  `admission_test.go` chính package này cũng dùng fake cho đúng loại test này; sqlite thật dành cho tầng HTTP
+  bên dưới):
+  - `TestGetRunDiagnostics_AdmissionBlocked_ReportsBlockerProviderIsolation`: fixture "genuinely blocked
+    NodeRun" — `admissionFixture` + `ExecuteNodeHandler.Handle` thật với isolation checker fail thật (không
+    phải chuỗi bịa) → assert blocker/provider/isolation đúng.
+  - `TestGetRunDiagnostics_ProviderNotConfigured_ReportsFalse`: cùng blocker nhưng gọi `GetRunDiagnostics` với
+    MỘT registry khác (rỗng) so với registry đã dùng lúc admit — chứng minh `ProviderConfigured` phản ánh
+    registry LIVE của chính lời gọi, không phải registry lúc blocker mở.
+  - `TestGetRunDiagnostics_RunCancelledBlockerAndQuarantinedWorkspace`: fixture "blocked" (non-admission) +
+    "quarantined" cùng lúc — `runCancelledBlockerFixture` (RUN_CANCELLED thật qua CancelRun+coordinator) +
+    `quarantineExtraRepositoryWorkspace` (construct trực tiếp, cùng discipline
+    `resolve_work_item_blocker_test.go`'s own `ErrWorkspaceQuarantined` test đã lập tiền lệ — không có command
+    thật nào trong codebase quarantine một workspace từ trạng thái khoẻ mạnh).
+  - `TestGetRunDiagnostics_OrphanedAttempt_ReportsQueueJobLeaseEvidence`: fixture "lost" — poke
+    `TransitionExecutionAttempt` QUEUED/BLOCKED→RUNNING trực tiếp (KHÔNG claim job của nó), đúng discipline
+    "poke primitive real crash mới reach được" đã lập tiền lệ nhiều lần trong package này (`readyFixture`'s own
+    BACKLOG→READY, `startSecondRunForWorkItem`'s own ACTIVE→READY) — path thật (crash worker pool) đã có
+    coverage riêng, cực đắt (`crash_recovery_test.go`, ~15s), không hợp lý lặp lại cho unit test của tầng ĐỌC.
+  - 2 test scope (`UnknownRun`/`WrongProjectScope`/`InstallationScope` — 3 test thật): `ErrPersistenceNotFound`/
+    `ErrScopeMismatch` đúng sentinel.
+  - `TestGetRunDiagnostics_NeverExposesProcessOrSecretShapedFields`: reflect-scan tên field mọi type exported
+    trong `diagnostics.go`, cấm `pid/argv/cwd/workingdir/secret/credential/password/apikey` — tự động phủ field
+    mới thêm sau này, không cần cập nhật test thủ công mỗi lần.
+- `internal/delivery/httpapi/diagnostics/*_test.go` (7 test, TOÀN BỘ sqlite thật qua `httptest.Server` +
+  `http.Client` thật, không mock/fake nào cho persistence — cùng discipline V6-06D đã lập):
+  - `fixture_test.go`/`admission_fixture_test.go` (694 dòng, duplicate có chủ đích từ `recovery`'s own 2 file
+    cùng tên — Go test helper không export chéo package): thêm `quarantineExtraRepositoryWorkspace` (sqlite,
+    mirror app-layer). `blockedAdmissionFixture` ở đây dùng `process.NewIsolationChecker()` THẬT (không phải
+    toggle fake như `recovery`'s own bản) — vì package này không bao giờ retry, chỉ cần MỘT lần block thật, và
+    checker production đã tự reject `ENFORCED_ISOLATED` một cách trung thực (đọc doc comment xác nhận trước
+    khi dùng).
+  - `TestGetRunDiagnostics_HTTP_AdmissionBlocked_Success`: end-to-end thật qua route đã register, assert
+    JSON wire keys đúng camelCase, `blockerValidActions`/`runDiagnosticsValidActions` đúng.
+  - `TestGetRunDiagnostics_HTTP_UnknownRun_ReturnsResourceHidden` / `..._WrongProject_...`: role/project matrix
+    nửa "project" — leakage-normalized 404 cả hai trường hợp.
+  - `TestGetRunDiagnostics_HTTP_QuarantinedWorkspaceAndRunCancelledBlocker`: fixture kép qua HTTP thật.
+  - `TestGetRunDiagnostics_HTTP_OrphanedAttempt_RealSqliteEvidence`: khác bản app-layer ở chỗ dùng sqlite THẬT
+    nên `GetWriteLeaseRepositoryWorkspaceForAttempt`'s own real SQL chạy thật (fake package đó là stub luôn trả
+    `false`, đọc doc comment xác nhận) — job claim với lease NGẮN CHỦ ĐÍCH (`claimJobLeaseTTL=3s`, thay vì 1
+    phút mặc định mọi fixture khác dùng) để lease tự hết hạn thật theo wall-clock, rồi poll GET endpoint thật
+    (không sleep mù, đúng discipline `crash_recovery_test.go`'s own "polling the real query itself") tới khi
+    thấy orphaned attempt xuất hiện — thực tế bắt được trong ~3.3s, không cần đợi hết 15s deadline.
+  - `TestGetRunDiagnostics_HTTP_ArbitraryRoleStillReads`: role/project matrix nửa "role" — principal role hoàn
+    toàn không liên quan vẫn đọc được 200 OK, chứng minh trực tiếp quyết định "query này không role-gate" thay
+    vì chỉ giả định.
+  - `TestGetRunDiagnostics_HTTP_NeverExposesProcessOrSecretShapedFields`: quét RAW JSON body (không chỉ Go
+    struct field name như bản app-layer) tìm `"pid"`/`"argv"`/`"cwd"`/`"workingdirectory"`/`"secret"`/
+    `"credential"`/`"password"`/`"apikey"`/`"executablepath"` — bản HTTP-layer, độc lập với bản reflect ở
+    app-layer, phủ cả 2 lớp (Go field name và JSON wire key thật).
+
+**2 phát hiện thật trong lúc viết/chạy test (không phải giả định trước):**
+
+1. `validAgentProfileDocument`'s own `Compatibility.OS` ban đầu viết `{"linux", "windows", "darwin"}` (bản gốc
+   `recovery` chỉ có `"linux"`, tôi thêm quá tay) — `PublishDefinitionVersion` từ chối ngay với lỗi WHAT/WHY/FIX
+   rõ ràng: ADR-002 chỉ cho phép `windows`/`linux` ở Alpha. Sửa còn `{"linux", "windows"}` — không phải bug của
+   task, chỉ là lỗi gõ khi duplicate fixture.
+2. `TestGetRunDiagnostics_HTTP_OrphanedAttempt_RealSqliteEvidence` ban đầu FAIL (`len(OrphanedAttempts)=0`) vì
+   `claimJobOfKind` (duplicate từ `recovery`) giữ nguyên lease 1 PHÚT — sqlite's own real
+   `ListOrphanedRunningExecutionAttempts` (WHERE `dj.state != 'LEASED' OR dj.lease_until <= ?`) đúng đắn coi
+   job vẫn còn active lease trong 1 phút đó, bất kể Attempt đã bị poke sang RUNNING. Fake package's own
+   `ListOrphanedRunningExecutionAttempts` không bắt được lỗi này vì test app-layer không claim job trước khi
+   poke (job chưa từng LEASED → orphaned ngay). Sửa: rút `claimJobLeaseTTL` xuống 3 giây CHỈ trong package này
+   (không đụng `recovery`'s own bản, package khác, mục đích khác), test poll thật thay vì assert ngay — đúng
+   phát hiện thật về khác biệt hành vi fake vs. sqlite thật, không phải giả định trước khi viết.
+
+- `go build ./...`, `go vet ./...` sạch trên toàn bộ package.
+- `go test ./internal/app/runtime/... -run TestGetRunDiagnostics -v`: 8/8 PASS (~1.2s).
+- `go test ./internal/delivery/httpapi/diagnostics/... -v`: 7/7 PASS (~4.7s, phần lớn thời gian ở test
+  orphaned-attempt chờ lease thật hết hạn).
+- `go test ./internal/archtest/... -run TestDiagnosticsHTTP -v`: PASS.
+- `go test ./...` (toàn bộ ~90 package, chạy nền): 2 fail gặp phải, CẢ HAI đều nằm ngoài diff của task này —
+  `TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady` (`internal/app/workspaceprovision`, đã được
+  V6-10H's own section phía trên ghi nhận là flake môi trường Windows file-lock/parallel-load, KHÔNG phải lần
+  đầu gặp) và `TestEndToEnd_Release_ReadyWorkspaceSet_ReleasesRepositoryAndSet`
+  (`internal/app/workspacerelease`, cùng họ "EndToEnd" nhạy với tải song song). Cả hai package đều không nằm
+  trong diff (task này chỉ sửa `cmd/aw/serve.go` + thêm file mới ở `internal/app/runtime`,
+  `internal/delivery/httpapi/diagnostics`, `internal/archtest`) — chạy lại riêng lẻ cả hai đều PASS ngay
+  (`go test ./internal/app/workspaceprovision/... -run TestEndToEnd_Restart... -v` và
+  `go test ./internal/app/workspacerelease/... -run TestEndToEnd_Release... -v`, mỗi cái dưới 5s), xác nhận
+  đúng là race dưới tải song song của lần `go test ./...` đầy đủ, không phải regression từ diff này.
+
+### Verify
+
+- **blocked/lost/quarantined fixtures**: cả ba đều có fixture THẬT (không hand-seed) ở cả 2 tầng (app-layer
+  fake, HTTP-layer sqlite) — "blocked" phủ cả 2 dạng (admission-reason thật qua `ExecuteNodeHandler.Handle`,
+  và non-admission RUN_CANCELLED thật qua `CancelRun`+coordinator), "lost" qua poke-primitive có tài liệu đầy
+  đủ lý do (path thật quá đắt cho unit test tầng đọc), "quarantined" qua construct trực tiếp có tiền lệ đã
+  được chấp nhận trong chính codebase (`resolve_work_item_blocker_test.go`).
+- **role/project matrix**: "wrong project" → `TestGetRunDiagnostics_WrongProjectScope_ReturnsScopeMismatch`
+  (app-layer) + `TestGetRunDiagnostics_HTTP_WrongProject_ReturnsResourceHidden` (HTTP-layer, leakage-normalized
+  404 thật). "wrong role" → không áp dụng theo nghĩa "bị từ chối" (query này KHÔNG role-gate, quyết định có
+  chủ đích, ghi rõ trong package doc comment) — chứng minh bằng
+  `TestGetRunDiagnostics_HTTP_ArbitraryRoleStillReads` thay vì giả định im lặng.
+- **redaction**: 2 lớp độc lập — reflect-scan tên field Go (`diagnostics_test.go`, app-layer) + quét raw JSON
+  wire key (`diagnostics_test.go`, HTTP-layer) — cả hai PASS, không field nào tên PID/argv/cwd/secret-shaped
+  từng lọt qua.
+- **bounded output**: `maxDiagnosticEntries=50` áp dụng cho blocker list, orphaned-attempt list, repository-
+  workspace list, provider/isolation cross-reference loop — mỗi list bounded có `*Truncated` cờ riêng (chỉ
+  `OrphanedAttemptsTruncated` thật sự cần thiết publicly, 2 list còn lại hiếm khi vượt cap trong thực tế nhưng
+  vẫn bounded phòng thủ). GAP ghi nhận trung thực: không dựng test THẬT chạm ngưỡng 51 item (chi phí dựng 51
+  blocker/attempt thật qua pipeline production không tương xứng phạm vi task — "HTTP transport + aggregation",
+  không phải "chứng minh lại slicing logic cơ bản của Go"), logic capping đã review thủ công (so sánh
+  `len(...) >= maxDiagnosticEntries` trước mỗi `append`, đơn giản, rủi ro regression thấp).
+- **"Hoàn thành khi": operator chẩn đoán Run và chọn named recovery action không cần DB surgery** — xác nhận
+  bằng `grep` trực tiếp `cmd/aw/serve.go` (không chỉ tin `go build`), cộng
+  `TestGetRunDiagnostics_HTTP_AdmissionBlocked_Success` chạy end-to-end qua đúng `RegisterRoutes` handler thật,
+  trả về `retryBlockedActivation`/`cancelRun`/`cancelWorkItem` advisory action có `TargetVersion` — đủ để một
+  client gọi `POST /node-runs/{nodeRunId}/retry-blocked-activation` (V6-06D) ngay sau đó mà không cần biết gì
+  về schema DB.
+
+### Kết quả
+
+Package mới `internal/app/runtime/diagnostics.go` (535 dòng) + `internal/delivery/httpapi/diagnostics` (5 file
+production ~403 dòng; 4 file test ~1180 dòng, 7 test case) + `internal/app/runtime/diagnostics_test.go` (332
+dòng, 8 test case) + 1 architecture test mới (`internal/archtest/diagnostics_http_test.go`) + `cmd/aw/serve.go`
++10 dòng (1 import mới, 1 `RegisterRoutes` call tái sử dụng nguyên `isolationChecker`/`agentRegistry` V6-06D đã
+construct). 15 test case mới, tất cả PASS.
+
+1 route HTTP thật lần đầu tồn tại: `GET /projects/{projectId}/runs/{runId}/diagnostics` — chạy được qua
+`aw serve` thật, xác nhận bằng grep trực tiếp `cmd/aw/serve.go`, không chỉ tin test package cô lập.
+
+Quyết định kiến trúc quan trọng nhất: KHÔNG bao giờ gọi `adapterbuild.VerifyNoDrift` (real process spawn) từ
+truy vấn GET này, dù task's own instruction có gợi ý "mirror EXACT check RetryBlockedActivation dùng" — đọc kỹ
+lại "Không làm: ... never a way to trigger execution" và quyết định tách rõ: diagnostics chỉ báo cáo
+`ProviderConfigured` (registry có live executor hay không — pure lookup) và `Enforceable` (isolation tier có
+enforce được hay không — pure/static check), không bao giờ báo cáo DRIFT thật (cần I/O thật) — quyền đó vẫn
+thuộc độc quyền `RetryBlockedActivation`. Advisory `ValidActions` tính hoàn toàn ở tầng HTTP
+(`internal/delivery/httpapi/diagnostics/dto.go`), mirror đúng khuôn `workspacestate.go` đã lập, không lẫn vào
+app-layer query.
+
+Một operator giờ có thể `GET` một Run để thấy đầy đủ blocker/queue/lease/provider/isolation/workspace state
+kèm advisory recovery action có version, rồi gọi thẳng `RetryBlockedActivation`/`CancelWorkItem`/
+`ResolveWorkItemBlocker` (V6-06D) hoặc `CancelRun` (V6-06) — không cần DB surgery, đúng "Hoàn thành khi" của
+chính task.
 
 ## V6-04A — Public MarkWorkItemReady authority và route
 
@@ -6476,3 +6818,361 @@ document "no I/O", nên an toàn gọi trực tiếp mỗi request. Không sửa
 đóng, đã có golden test riêng) — mọi phần mở rộng nằm ở tầng HTTP. `go build/vet/test ./...` sạch trên toàn bộ
 module (~93 package), `go test ./... -count=1` chạy nền 0 FAIL — không có regression nào, không có flake nào
 cần viện dẫn lần này.
+
+## V6-07A — Attachment ingest, replay và orphan recovery
+
+### Bối cảnh
+
+V6-07A phụ thuộc V6-07 (đã merge, PR #47 — `internal/app/message.AppendMessage`/`internal/delivery/httpapi/message`
+đã tồn tại thật), V5-14 (đã merge từ trước — `internal/app/artifactsweep` + `ArtifactRepository`'s own
+Claim/Release-Locator-Purge) và V1-06 (command/receipt envelope). Trích nguyên văn spec
+(`docs/design/08-v6-api-projections.md` dòng 308-323, không diễn giải lại):
+
+> **Mục tiêu:** upload có exact replay và durable owner ở mọi crash point.
+> **Phạm vi:** `AppendConversationAttachment`, bounded spool/hash, content-addressed prepare claim và cleanup.
+> **Không làm:** không DB transaction trong stream/hash/store; không raw locator hoặc best-effort-only cleanup.
+> **Thực hiện:** require/verify declared digest; canonical hash gồm target, metadata, retention/sensitivity và
+> digest persisted bytes. Receipt precheck trước ArtifactStore put. Deterministic UploadID owns durable prepare
+> claim; same upload+digest reuses prepared blob, mismatch conflicts. Sau Put+Verify, serialized transaction
+> rechecks receipt then atomically creates Artifact metadata + Message ref + event + receipt; acknowledge claim
+> after commit. Sweeper resumes/cleans expired claim only after rechecking receipt, Artifact refs/holds and
+> shared content hash.
+> **Verify:** crash after spool/blob/claim/DB commit/before ack; same/different-key concurrency; shared blob;
+> tamper/oversize/media; restart and orphan cleanup. Assert each outcome committed, resumable or cleanup-able.
+> **Hoàn thành khi:** không crash point nào tạo duplicate message/artifact metadata hoặc ownerless permanent blob.
+> **Nguồn:** ADR-017, AK-ARCH-021, HE-11-M07.
+
+Đây là task khó nhất trong batch hiện tại theo đánh giá của phiên giám sát — một bài toán crash-safety thật, không
+phải HTTP wrapper. `baocaov6checklist.md` đang được 3 task song song khác ghi đồng thời (V6-04A, V6-06B, V6-06C) —
+xung đột merge khi mở PR là bình thường, không phải bug (đúng như đã xảy ra: PR #51 V6-10A và một commit
+`feat(v6-06b)` khác đã merge/chạy song song ngay trong lúc task này đang viết code, buộc phải `git fetch` +
+`git rebase origin/master` một lần trước khi mở PR — xem mục Kết quả).
+
+### Nghiên cứu
+
+Đọc toàn bộ `internal/app/message/commands.go` (đặc biệt doc comment đầu file) — tự nói rõ AppendMessage KHÔNG
+giải quyết bài toán này: content của nó luôn đến dưới dạng MỘT `[]byte` đã buffer sẵn trong bộ nhớ, nên compose
+`internal/app/artifact.PrepareAttachment` (Put+Verify NGOÀI transaction) với đúng MỘT transaction theo sau là đủ.
+Task này khác: bytes phải stream (không buffer hết một lần cho file lớn), digest caller khai phải verify được, và
+toàn bộ phải sống sót crash ở BẤT KỲ điểm nào.
+
+Đọc `internal/app/artifact/attach.go` toàn bộ — `PrepareAttachment` gọi `store.Put` rồi `store.Verify` lại (cả
+hai NGOÀI transaction), trả `artifact.Artifact` sẵn sàng `AttachState: Attached` — đây chính là building block tái
+dùng nguyên vẹn cho bước "bounded spool/hash", không cần viết lại logic Put/Verify.
+
+Đọc `internal/adapters/artifactstore/filesystem.go` toàn bộ — `Store.Put` đã TỰ atomic (spool vào temp file, hash
+song song bằng `io.MultiWriter`, chỉ `os.Rename` sang content-addressed path SAU KHI toàn bộ body đọc xong) và TỰ
+dedupe theo content hash (`if _, statErr := os.Stat(finalPath); statErr == nil { ... return ref, nil }`). Hệ quả
+quan trọng: "crash giữa spool và blob-put" không thể quan sát được từ bên ngoài `Put` (atomicity đã có sẵn từ
+V1-08) — một retry gọi lại `Put` với cùng bytes luôn an toàn, không bao giờ ghi trùng hay ghi dở.
+
+Đọc `internal/app/ports/artifactrecord.go` toàn bộ, đặc biệt doc comment của `ClaimArtifactLocatorForPurge`/
+`ReleaseArtifactLocatorClaim` (V5-14) — chính là "cùng dạng bài toán, hướng ngược lại" mà prompt gợi ý: một durable
+claim fence một Locator content-addressed cụ thể khỏi thao tác đồng thời/crash. `InsertArtifact` tự chối một
+insert mới nếu Locator đang có purge-claim mở — xác nhận cơ chế claim này đã có tiền lệ kiến trúc thật trong
+chính codebase, không phải phát minh mới hoàn toàn.
+
+Đọc toàn bộ `internal/app/artifactsweep/sweep.go` (443 dòng) làm precedent cho "sweeper thật trông như thế nào":
+job CONTROL tự lên lịch lại (`ArtifactSweepJobKind`, `artifact_sweep_state` singleton generation cursor), protocol
+3 pha reserve→delete(ngoài tx)→finalize, và đặc biệt: `ClaimArtifactLocatorForPurge` trả `ErrPersistenceAlreadyExists`
+được coi là "resume claim của chính mình" chứ không phải conflict — vì đây là job singleton (chỉ 1 worker giữ
+lease `ARTIFACT_SWEEP` tại một thời điểm).
+
+**Phát hiện quan trọng nhất khi grep composition root**: `grep -n "Startup" cmd/ internal/` xác nhận
+`StartupArtifactSweep` (V5-14) VÀ `StartupRecoveryScan` (V4-13) — cả hai job CONTROL tự lên lịch lại đã tồn tại
+thật trong `internal/app/artifactsweep`/`internal/app/runtime` — **CHƯA TỪNG được gọi từ `cmd/aw/serve.go` hay bất
+kỳ composition root nào khác trong toàn repo**. Cơ chế `workerpool`/durable-job dispatch cho CONTROL job hoàn toàn
+chưa được wiring vào `aw serve` (bản thân `aw serve` hiện chỉ là HTTP server thuần, không có worker loop nào chạy
+song song). Phát hiện này quyết định trực tiếp Quyết định #6 bên dưới.
+
+Đọc `internal/delivery/httpapi/commandenvelope.go`'s `SemanticHash` — doc comment của chính hàm này đã tự nêu
+đích danh: `extraContentDigest` param tồn tại "for a command carrying raw/binary content no JSON canonicalization
+applies to, e.g. **a future attachment upload** — pass "" when there is none". Đây là bằng chứng trực tiếp cho
+thấy composite hash của task này ĐÃ được thiết kế sẵn một chỗ để cắm vào từ V6-02 — không cần phát minh scheme
+hash mới, chỉ cần gọi đúng hàm có sẵn với tham số đúng.
+
+Đọc `internal/app/runtime/completion_policy.go` dòng 931-960 — quy ước deterministic-ID đã đóng của codebase:
+`sha256` trên các phần nối bằng `\x00`, hex-encode, cắt 16 byte đầu, prefix người đọc được
+(`deterministicCompletionDecisionID`/`deterministicJoinNodeRunID`) — tái dùng nguyên xi cho
+`DeterministicAttachmentUploadID`.
+
+Đọc `internal/app/ports/unitofwork.go`, `internal/adapters/sqlite/unitofwork.go`,
+`internal/app/ports/fake/unitofwork.go` — xác nhận `ports.Tx` là "concern-scoped accessor" pattern (một interface
+riêng mỗi concern, ví dụ `ArtifactRepository`) — quyết định thêm accessor mới `AttachmentClaims()` thay vì nhét
+method vào `ArtifactRepository` sẵn có, giữ ranh giới kiến trúc rõ ràng đúng tinh thần "mỗi concern một accessor".
+
+### Quyết định
+
+1. **Composite canonical hash = `cmd.RequestHash`, tính SẴN ở tầng HTTP qua `httpapi.SemanticHash` có sẵn —
+   không tính lại ở tầng app.** `prepareAttachmentCommand` (tầng HTTP) marshal một struct nhỏ
+   `attachmentMetadata{WorkItemID, AttemptID, Role, ContentType, Sensitivity}` (đúng "target"+"metadata"+
+   "retention/sensitivity" — RetentionClass CỐ ĐỊNH `RetentionCanonicalContext`, không phải field biến thiên,
+   nên không cần đưa vào hash) làm `normalizedPayload`, rồi gọi
+   `httpapi.SemanticHash("AppendConversationAttachment", scope, canonical, declaredSHA256, 0)` — `declaredSHA256`
+   chính là "digest persisted bytes" mà spec liệt kê là thành phần thứ 4. Đây là composite hash công khai (dùng
+   để phát hiện "Idempotency-Key dùng lại với request khác nhau" — `ports.ErrReceiptConflict`), tách biệt hoàn
+   toàn khỏi UploadID (Quyết định #2).
+2. **Deterministic `UploadID` = `sha256("attachment-upload", Actor, Scope.Key(), IdempotencyKey, CommandType)`
+   — CỐ Ý KHÔNG bao gồm digest hay metadata.** Đây là quyết định thiết kế quan trọng nhất của cả task, và ban
+   đầu đọc spec ("same target+content+metadata arrives at the same UploadID") dễ hiểu lầm là UploadID phải bao
+   gồm cả digest. Lý do loại digest ra: nếu UploadID = f(target, metadata, digest), câu spec "mismatch (same
+   UploadID's claim exists, but this attempt's digest differs) is a real conflict" trở thành BẤT KHẢ THI về mặt
+   cấu trúc — digest khác nhau tất yếu sinh UploadID khác nhau, không bao giờ va vào cùng một claim. Cách đọc
+   nhất quán duy nhất: UploadID dùng CHÍNH 4-tuple identity mà một command receipt đã dùng để tra cứu
+   (`ports.ReceiptsRepository.Load(Actor, Scope, IdempotencyKey, CommandType)`) — một RETRY thật (client gửi lại
+   đúng Idempotency-Key) luôn tính lại đúng cùng UploadID và tìm lại đúng claim cũ của chính nó; hai caller ĐỘC
+   LẬP (Idempotency-Key khác nhau) dù tình cờ trùng bytes/target/metadata vẫn luôn nhận 2 UploadID khác nhau —
+   đúng khớp test "different-key concurrency ... including two that happen to share content bytes" (2 Message
+   row độc lập, chỉ CHIA SẺ blob ở tầng ArtifactStore, một tầng thấp hơn hẳn command này). "Mismatch" trong spec
+   khi đó có nghĩa: CÙNG Idempotency-Key nhưng attempt sau khai digest KHÁC — `claimOrResumeAttachmentUpload` so
+   `claim.DeclaredSHA256` (đã ghi từ lần claim đầu) với digest của attempt hiện tại TRƯỚC bất kỳ I/O nào, trả
+   `ErrAttachmentUploadConflict` nếu khác — đây là "early echo" của đúng conflict mà tầng receipt (muộn hơn
+   nhiều, chỉ ghi sau khi Put+Verify xong) sẽ bắt được, cần thiết vì 2 request đồng thời với CÙNG Idempotency-Key
+   nhưng body khác nhau (race, trước khi bất kỳ ai ghi receipt) chỉ có tầng claim mới bắt kịp lúc.
+3. **Attachment LÀ một Message row mới, không phải một bảng liên kết attachment riêng.** Domain model hiện tại
+   (`internal/domain/message.Message`) chỉ có đúng MỘT field `ContentArtifactID`, và bảng `messages` là
+   append-only/immutable — không có khái niệm "nhiều attachment trên một message" ở schema hiện tại. Quyết định:
+   `AppendConversationAttachment` tái dùng NGUYÊN VẸN `tx.Messages().AppendMessage` (giống hệt shape
+   `AppendMessage` đã dùng), chỉ khác ContentArtifactID trỏ tới content NHỊ PHÂN thay vì text — không thêm bảng
+   mới, không thêm field mới vào `messages`, đúng 00-roadmap.md §3 ("không chia field/bảng khi chưa có contract
+   test cần").
+4. **Migration 0038 `attachment_prepare_claims`** (kiểm tra `git log origin/master --oneline -3` VÀ
+   `internal/adapters/sqlite/migrations/` NGAY TRƯỚC KHI hoàn thiện — xác nhận `0037_release_set_local_commits.sql`
+   vẫn là migration cao nhất trên fresh `origin/master`, kể cả sau khi rebase qua PR #51 V6-10A). Schema mirror
+   `artifact_locator_purge_claims` (V5-14) về mặt Ý NGHĨA (durable claim + claim_owner/claimed_at fence) nhưng
+   khác về SHAPE: khóa chính là `upload_id` (không phải locator — vì tại thời điểm claim được tạo, locator CHƯA
+   TỒN TẠI, đó chính là điều claim này đang chờ), có state 2 giá trị đóng `SPOOLING`/`BLOB_READY` (CHECK constraint
+   ép `locator`/`actual_sha256`/`size` chỉ khác NULL đồng thời với state), và lưu thêm `actor`/`idempotency_key`
+   — hai cột này KHÔNG dùng để ghi (sweeper không bao giờ tự mạo danh caller gốc để hoàn tất command), chỉ dùng để
+   ĐỌC receipt (`tx.Receipts().Load`) khi `ResumeOrCleanExpiredAttachmentClaims` cần biết "command gốc đã thật sự
+   hoàn tất chưa" mà không cần ngữ cảnh HTTP request gốc.
+5. **Chuỗi 2 pha, I/O thật LUÔN NGOÀI transaction** — đúng thứ tự spec liệt kê, implement tại
+   `internal/app/message/attachment.go`:
+   1. Validate request (rẻ, không I/O).
+   2. Receipt precheck NGOÀI transaction (`uow.WithReadOnly`) — y hệt `AppendMessage`'s `loadOrValidateReceipt`,
+      TRƯỚC bất kỳ I/O thật nào. Nếu replay: giải phóng claim (nếu còn) như một bước RIÊNG (write thật, không gộp
+      vào precheck read-only) rồi trả kết quả cũ — đây chính là cách "crash sau DB commit nhưng trước ack" được
+      dọn dẹp ở lần chạm kế tiếp.
+   3. `claimOrResumeAttachmentUpload` — MỘT `WithSerializedWrite` riêng, nhỏ: idempotent-insert-hoặc-tìm claim;
+      lấy-quyền-sở-hữu claim `SPOOLING` đã hết hạn thuê (`attachmentClaimLease = 2 phút`, tách biệt hẳn
+      `orphanGrace` 7 ngày của artifactsweep — đây là "chủ sở hữu 1 HTTP request đồng bộ còn sống không", câu hỏi
+      nhanh hơn hẳn "còn cần giữ evidence bao lâu").
+   4. Nếu claim đã `BLOB_READY`: `store.Verify` lại blob đã có (không bao giờ tin claim cũ một cách mù quáng),
+      dựng `artifact.Artifact` mới từ ref cũ — bỏ qua bước Put, đi thẳng bước 6 (resume).
+   5. Ngược lại: `appartifact.PrepareAttachment` (Put+Verify, NGOÀI transaction, `Body` bọc
+      `io.LimitReader(Body, MaxAttachmentSize+1)` — chính là "bounded spool/hash"), so `prepared.ContentHash` với
+      `"sha256:"+declaredSHA256` — khác nhau là `ErrAttachmentDigestMismatch` (tamper), KHÔNG đụng tới claim (để
+      một retry với digest ĐÚNG vẫn dùng lại được đúng claim `SPOOLING` cũ). Khớp thì
+      `recordAttachmentBlobReadyWithRetry` — CAS `RecordAttachmentBlobReady`, thua race (`ErrOptimisticConflict`)
+      thì đọc lại claim và NHẬN kết quả của người thắng thay vì coi là lỗi cứng (2 racer đã verify cùng digest
+      trước khi tới đây, nên kết quả người thắng luôn khớp).
+   6. MỘT `WithSerializedWrite` cuối: re-check receipt lần nữa (đóng TOCTOU với caller khác vừa hoàn tất trong
+      lúc mình làm I/O chậm ở bước 5) — nếu chưa, `InsertArtifact` (Attached thẳng, không qua Orphan-rồi-promote:
+      `PrepareAttachment` đã trả sẵn `AttachState: Attached`, giống hệt cách `AppendMessage` dùng) + `AppendMessage`
+      + domain event (tái dùng NGUYÊN `MessageAppendedEventType`/schema — một attachment vẫn LÀ một Message, không
+      cần event type riêng) + `Receipts().Record` — cùng một transaction, atomic.
+   7. CHỈ SAU KHI bước 6 commit: `releaseAttachmentClaimBestEffort` — một `WithSerializedWrite` RIÊNG, lỗi bị
+      nuốt có chủ đích (receipt bước 6 đã là bằng chứng vĩnh viễn command đã xong; claim còn sót lại chỉ chờ lần
+      chạm kế tiếp dọn, không bao giờ gây duplicate hay mất kết quả).
+6. **Sweeper là một hàm gọi trực tiếp được (`ResumeOrCleanExpiredAttachmentClaims`), KHÔNG phải một durable
+   CONTROL job tự lên lịch lại mới.** Đây là quyết định phạm vi có cân nhắc, ghi lại minh bạch: spec cho phép
+   "at minimum a resumable recovery path" (brief gốc). Bằng chứng quyết định: `StartupArtifactSweep`/
+   `StartupRecoveryScan` — 2 job CONTROL tự lên lịch lại DUY NHẤT đã tồn tại trong toàn repo — CHƯA TỪNG được gọi
+   từ bất kỳ composition root nào (xác nhận bằng grep, mục Nghiên cứu). Thêm một `durable_jobs.job_class` mới
+   (đòi một migration rebuild kiểu `0025`/`0034` — `PRAGMA foreign_keys=OFF`, copy-drop-rename bảng) cộng một
+   handler/wiring mới CHỈ để nó cũng nằm không dùng giống 2 job kia là scope creep không tương xứng với lợi ích
+   thật. `ResumeOrCleanExpiredAttachmentClaims` vẫn là hàm THẬT, có test THẬT, chỉ chưa có một `aw worker`/
+   scheduler nào gọi nó định kỳ — đúng vị trí "populated now, real behavior, chưa có caller lịch trình" mà nhiều
+   port khác trong codebase này (`AdapterBuildRepository` thời V2-07A, `SetArtifactHold` thời V5-01) đã từng ở.
+   Việc dây nó vào một job CONTROL thật sự cần một quyết định riêng, rộng hơn (áp dụng cho CẢ artifactsweep lẫn
+   recovery reaper hiện có), không phải quyết định của một mình task này.
+7. **`ResumeOrCleanExpiredAttachmentClaims` tái dùng NGUYÊN VẸN protocol purge 3 pha của V5-14** thay vì viết
+   lại logic xoá blob. Thứ tự re-check đúng spec: (1) receipt (`tx.Receipts().Load` bằng `actor`/`idempotency_key`
+   lưu trên claim) — có thì claim này chính là case "crash sau commit trước ack", chỉ release, không đụng gì
+   khác; (2) nếu `BLOB_READY` và KHÔNG có receipt: `tx.Artifacts().ListArtifactsByLocator` — còn row nào khác
+   tham chiếu Locator (một upload ĐỘC LẬP khác, tình cờ trùng bytes, đã hoàn tất) thì chỉ release claim, KHÔNG xoá
+   blob; (3) chỉ khi cả 2 đều trống mới thật sự `ClaimArtifactLocatorForPurge`→`store.Delete`→
+   `ReleaseArtifactLocatorClaim` — đúng "reserve/delete/finalize" `artifactsweep.purgeLocatorGroup` đã thiết lập,
+   kể cả cách đọc `ErrPersistenceAlreadyExists` là "resume claim của chính lần chạy này" (một claim `SPOOLING`
+   không có receipt thì không cần xoá gì — chỉ release claim, vì bước Put (nếu có) chưa từng thành `BLOB_READY`).
+8. **`MaxAttachmentSize = 25 MiB`**, ép bằng `io.LimitReader` ở tầng app VÀ `http.MaxBytesReader` ở tầng HTTP —
+   nhưng cả hai đều nằm SAU `httpapi.MaxBytes(cfg.MaxBodyBytes)` (middleware toàn server, mặc định 1 MiB qua flag
+   `--max-body-bytes` có sẵn từ V6-01) — một attachment > 1 MiB chỉ thật sự đi qua được nếu operator tự nâng flag
+   đó, đúng quan hệ `message/envelope.go`'s `maxBodyBytes` (2×`MaxContentSize`) đã lập tiền lệ cho chính package
+   này — không sửa default flag, đây là lựa chọn vận hành có chủ đích, ghi rõ trong doc comment.
+9. **Wire contract: raw body + metadata qua header** (`X-Attachment-Sha256`/`X-Attachment-Role`/
+   `X-Attachment-Sensitivity`/`X-Attachment-Attempt-Id`, `Content-Type` chuẩn HTTP chính là media type thật của
+   attachment) — route ĐẦU TIÊN trong toàn API mang raw bytes, đúng như chính doc comment `message/routes.go` (V6-07)
+   đã tự dự đoán ("a future V6-07A attachment route is the only place raw arbitrary bytes ever travel over this
+   API"). Không dùng multipart/form-data (sẽ tái tạo lại đúng vấn đề "buffer hết trước khi stream" mà
+   `io.LimitReader` đang tránh).
+
+### Thực hiện
+
+- `internal/adapters/sqlite/migrations/0038_attachment_prepare_claims.sql` — bảng mới (Quyết định #4).
+- `internal/app/ports/attachmentclaim.go` — `AttachmentPrepareClaim`, `AttachmentClaimRepository`
+  (`ClaimAttachmentUpload`/`GetAttachmentClaim`/`RecordAttachmentBlobReady`/`TakeOverAttachmentClaim`/
+  `ReleaseAttachmentClaim`/`ListStaleAttachmentClaims`); `ports.Tx` có thêm accessor `AttachmentClaims()`
+  (`internal/app/ports/unitofwork.go`).
+- `internal/adapters/sqlite/attachment_claim_repository.go` — implement thật, mirror
+  `artifact_repository.go`'s style (`xxxTx(ctx, tx *sql.Tx, ...)` + thin wrapper), CAS bằng
+  `UPDATE ... WHERE ... AND version = ?` + `RowsAffected`.
+- `internal/app/ports/fake/unitofwork.go` — `AttachmentClaimRepository` in-memory, mirror sqlite field-for-field
+  (dùng cho test tầng app không cần sqlite thật).
+- `internal/app/message/attachment.go` — `AppendConversationAttachment`, `DeterministicAttachmentUploadID`,
+  `AttachmentCommandType`, `MaxAttachmentSize`, `ResumeOrCleanExpiredAttachmentClaims` + toàn bộ helper 2 pha
+  (Quyết định #5/#6/#7).
+- `internal/delivery/httpapi/message/attachment.go` — `handleAppendConversationAttachment`,
+  `prepareAttachmentCommand` (raw-body counterpart của `prepareCreateCommand`), `writeAttachmentCommandError`.
+- `internal/delivery/httpapi/message/routes.go` — thêm `RouteDescriptor` thứ 4
+  (`POST /projects/{projectId}/work-items/{workItemId}/attachments`, operationId `appendConversationAttachment`).
+- Không sửa `cmd/aw/serve.go` về mặt wiring — route mới tự động reachable qua đúng lời gọi
+  `httpmessage.RegisterRoutes(routes, httpmessage.Dependencies{...})` đã có sẵn từ V6-07 (grep xác nhận, xem mục
+  Kết quả) — chỉ thêm 1 đoạn doc comment giải thích thêm (không đổi hành vi).
+
+### Test
+
+**Tầng app** (`internal/app/message`, fake UnitOfWork + real filesystem ArtifactStore, trừ 2 test concurrency):
+
+- `attachment_test.go` — 13 test: happy path (đọc lại bytes thật qua `store.Open`, xác nhận claim đã release),
+  replay đúng (cùng command → cùng result, không duplicate), tamper (`ErrAttachmentDigestMismatch`, claim vẫn
+  `SPOOLING` sau đó, retry với digest sai lần 2 vẫn lỗi y hệt — không "tự sửa"), oversize (25 MiB+1KB thật,
+  `ErrAttachmentTooLarge`), ContentType rỗng (required-media-type check), digest rỗng/sai định dạng
+  (`ErrAttachmentDigestRequired`/`ErrAttachmentDigestMalformed`), **crash after claim-record** (Put lỗi giả lập
+  qua `flakyStore`, claim còn `SPOOLING`, retry với store thật thành công đúng 1 Message), **crash after blob-put**
+  (`countingUOW` chặn write #2 — claim vẫn `SPOOLING` dù blob đã Put thật, retry re-Put an toàn nhờ dedupe, đúng 1
+  Message), **crash after DB commit trước ack** (`countingUOW` chặn write #4 — command vẫn trả thành công vì lỗi
+  release bị nuốt có chủ đích, claim còn sống, retry sau đó replay đúng kết quả CŨ và release claim), mismatch
+  cùng Idempotency-Key khác digest (`ErrAttachmentUploadConflict`), claim `SPOOLING` sống sót qua hết lease vẫn
+  resume được.
+- `attachment_test.go` (tiếp) — 3 test `ResumeOrCleanExpiredAttachmentClaims`: claim `BLOB_READY` bị bỏ rơi hoàn
+  toàn (không receipt, không Artifact row nào khác) → purge blob thật (`store.Verify` fail sau đó) + release;
+  claim đã commit thật nhưng chưa ack (giả lập crash write #4 rồi KHÔNG retry, gọi sweep thẳng) → chỉ release,
+  KHÔNG đụng blob (`store.Verify` vẫn pass); 2 upload chia sẻ bytes, một hoàn tất một bị bỏ rơi → sweep chỉ
+  release claim bị bỏ rơi, blob vẫn nguyên vì upload kia còn cần.
+- `attachment_sqlite_test.go` — 2 test concurrency THẬT (real sqlite, không fake): **same-key concurrency** (2
+  goroutine, CÙNG command, đua `sync.WaitGroup` — cả hai trả cùng kết quả, đúng 1 Message row) và
+  **different-key concurrency + shared blob** (2 goroutine, 2 Idempotency-Key khác nhau, CÙNG bytes — 2 Message
+  row độc lập, 2 Artifact row độc lập, nhưng CÙNG Locator — chứng minh dedupe ArtifactStore hoạt động đúng qua 2
+  claim độc lập).
+
+  **Phát hiện thật khi viết 2 test concurrency này**: viết lần đầu bằng `fake.UnitOfWork` (goroutine thật), cả
+  hai fail với lỗi khó hiểu ("persistent record was not found"). Điều tra `internal/app/ports/fake/unitofwork.go`'s
+  `run()` xác nhận: field `inTx` chỉ là một latch toàn cục ("có giao dịch nào đang mở không"), không phải hàng
+  đợi — hai `WithSerializedWrite`/`WithReadOnly` GỐI NHAU từ 2 goroutine khác nhau (không lồng nhau về logic) vẫn
+  bị coi là "nested" và bị `ErrNestedTransaction` chặn, khiến state 2 bên rơi vào tình huống không nhất quán khi
+  code không xử lý lỗi đó đặc biệt. Đối chiếu `internal/adapters/sqlite/scheduling_test.go`'s
+  `TestWriteLeaseRaceHasOneWinnerForSameRepository` xác nhận: MỌI test concurrency thật trong repo này đều chạy
+  trên sqlite thật (`BEGIN IMMEDIATE` xếp hàng writer thật, không chối bỏ) — không bao giờ trên fake. Sửa bằng
+  cách chuyển 2 test này sang `attachment_sqlite_test.go`, dựng fixture qua `sqlite.Open`+`sqlite.NewUnitOfWork`
+  (mirror `internal/app/artifactsweep/sweep_sqlite_test.go`'s "real stack end to end" pattern) — không sửa bất kỳ
+  code sản xuất nào, đây thuần là giới hạn của chính test double.
+
+**Tầng sqlite** (`internal/adapters/sqlite/attachment_claim_repository_test.go`) — 5 test trực tiếp lên
+`attachmentClaimRepository` qua sqlite thật: idempotent insert-hoặc-trả-về-cũ (không bao giờ ghi đè
+`DeclaredSHA256` của claim gốc), CAS `RecordAttachmentBlobReady` thành công + `ErrOptimisticConflict`, CAS
+`TakeOverAttachmentClaim` thành công + conflict, release idempotent (release 2 lần không lỗi), `ListStaleAttachmentClaims`
+đúng thứ tự `(claimed_at, upload_id)`.
+
+**Tầng HTTP** (`internal/delivery/httpapi/message/attachment_test.go`) — 6 test, real `httpapi.Server` (TCP
+listener thật) + real sqlite + real ArtifactStore, mirror `testEnv`/`newTestEnv` có sẵn từ `message_test.go`
+(V6-07), thêm `doAttachment` (raw-body POST với header tuỳ biến — `message_test.go`'s `do()` luôn JSON-encode nên
+không dùng lại được): happy path 201 (đọc lại bytes qua `assertStoredContent` có sẵn), replay 200 giống hệt kết
+quả cũ, thiếu Idempotency-Key → 400, thiếu digest → 400, tamper → 400 đúng `ErrorCodeInvalidRequest`, WorkItem
+không tồn tại → 404 (leakage-normalized, đúng `writeQueryError` có sẵn). Sửa thêm
+`TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` có sẵn từ V6-07 — tập operationId đóng giờ có 4 phần
+tử thay vì 3 (`appendConversationAttachment` mới), đúng route inventory thật.
+
+`go build ./...`, `go vet ./...` sạch trên toàn repo (kể cả `internal/delivery/httpapi/rundetail` — package của
+task song song V6-06B đang chạy đồng thời trong cùng thư mục dùng chung, không thuộc phạm vi task này). Toàn bộ
+`go test ./...` chạy sạch SAU KHI rebase lên `origin/master` mới nhất (`e277d7c`, PR #51 V6-10A) — 0 FAIL, kể cả
+2 test tích hợp `TestV5AcceptFalseCompletionOracle`/`TestV5AcceptConformanceMatrix` từng fail (timing-sensitive,
+worker-pool driven) trong một lần chạy trước đó dưới tải cao — xác nhận KHÔNG liên quan task này bằng cách chạy
+lại chính 2 test đó trên một `git worktree` sạch từ `origin/master` (không áp bất kỳ thay đổi nào của task này) —
+`TestV5AcceptFalseCompletionOracle` fail giống hệt (pre-existing flake, không phải regression), lần chạy lại của
+toàn bộ suite sau đó xanh hết.
+
+### Verify
+
+- **Crash after spool / crash after blob-put**: `Store.Put` tự atomic (V1-08, không quan sát được từ ngoài) —
+  test `CrashAfterClaimRecord_BeforePut` (Put lỗi giả lập) và `CrashAfterBlobPut_BeforeClaimRecorded` (write #2
+  claim bị chặn SAU KHI Put thật đã chạy) cùng chứng minh outcome **resumable**: claim còn `SPOOLING`, 0 Message
+  row, retry sau đó luôn ra đúng 1 Message — không bao giờ 2.
+- **Crash after claim-record**: `CrashAfterClaimRecord_BeforePut` — claim đã commit (`SPOOLING`), Put chưa từng
+  chạy thành công — **resumable**, retry chạy lại từ đầu an toàn.
+- **Crash after DB commit trước ack**: `CrashAfterDBCommit_BeforeAck_ReplayReleasesClaim` — **committed**: lệnh
+  gốc đã trả kết quả thành công thật (Artifact/Message/receipt đã ghi), retry sau đó replay đúng y hệt kết quả cũ
+  và dọn claim còn sót — không bao giờ tạo Message thứ 2.
+- **Same-key concurrency**: `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing`
+  (sqlite thật, 2 goroutine) — cả 2 trả cùng kết quả, đúng 1 Message row.
+- **Different-key concurrency + shared blob**:
+  `TestAppendConversationAttachment_DifferentKeyConcurrency_SharedContentBytes` (sqlite thật, 2 goroutine) — 2
+  Message/Artifact row độc lập, cùng Locator (dedupe đúng ở tầng ArtifactStore, không rò rỉ sang tầng command).
+- **Tamper**: `TamperedContent_DigestMismatch_NoRowsCreated_StaysResumable` — 0 row, claim vẫn `SPOOLING`, retry
+  với digest sai lặp lại lỗi y hệt (không silent-fix); test HTTP tầng ngoài cũng xác nhận 400.
+- **Oversize**: `Oversize_Rejected` — 25 MiB+1KB thật, `ErrAttachmentTooLarge`, 0 row.
+- **Wrong/unexpected media type**: `MissingContentType_Rejected` — ContentType rỗng bị chặn (400) ở cả tầng app
+  lẫn HTTP; không có allowlist media type (đúng chính sách `AppendMessage` đã lập từ V6-07, ghi rõ trong doc
+  comment `AppendConversationAttachmentRequest`).
+- **Restart-and-orphan-cleanup**: 3 test `TestResumeOrCleanExpiredAttachmentClaims_*` — claim bị bỏ rơi thật
+  (không receipt, không Artifact ref nào khác) → **cleanup-able** (purge blob thật + release); claim đã commit
+  nhưng chưa ack → **committed** (chỉ release, không đụng blob); claim bị bỏ rơi nhưng Locator còn được tham
+  chiếu bởi một Artifact khác → **cleanup-able một phần** (release claim, KHÔNG xoá blob — "shared content hash"
+  re-check đúng spec).
+- **Hoàn thành khi — "không crash point nào tạo duplicate message/artifact metadata hoặc ownerless permanent
+  blob"**: đúng, chứng minh trực tiếp bằng 4 test crash-point cộng 2 test concurrency cộng 3 test sweep ở trên —
+  không có tổ hợp nào trong 9 test đó cho ra 2 Message row cho cùng một logic upload, và mọi blob bị bỏ rơi thật
+  sự (không receipt, không reference) luôn bị `ResumeOrCleanExpiredAttachmentClaims` dọn tới cùng.
+
+### Kết quả
+
+Branch `feat/v6-07a-attachment-ingest-replay-orphan-recovery`, rebase lên `origin/master` tại `e277d7c` (PR #51
+V6-10A, merge trong lúc task đang chạy). 1 migration mới (`0038_attachment_prepare_claims`, xác nhận
+`0037` vẫn là số cao nhất trên fresh `origin/master` trước khi hoàn thiện). 1 route HTTP mới:
+`POST /projects/{projectId}/work-items/{workItemId}/attachments` — grep xác nhận
+`httpmessage.RegisterRoutes(routes, httpmessage.Dependencies{UnitOfWork: uow, ArtifactStore: artifactStore, ...})`
+thật sự có trong `cmd/aw/serve.go` (dòng ~338, đã tồn tại từ V6-07, route mới tự động reachable qua đúng lời gọi
+đó — không cần sửa wiring) — đúng lo ngại doctrine đã nêu từ vụ V6-04 ban đầu (30 test xanh nhưng route chưa từng
+gọi được từ `cmd/aw/serve.go` thật).
+
+Composite canonical hash tái dùng nguyên `httpapi.SemanticHash`'s `extraContentDigest` param — đúng chỗ V6-02 đã
+để sẵn cho "a future attachment upload". `DeterministicAttachmentUploadID` cố ý tách khỏi digest/metadata (chỉ
+dùng đúng 4-tuple identity của command receipt) để 2 upload trùng bytes nhưng khác Idempotency-Key không bao giờ
+va chạm nhau, còn 2 attempt CÙNG Idempotency-Key nhưng khác digest bị chặn sớm ở tầng claim thay vì chờ tới tầng
+receipt. Sweeper (`ResumeOrCleanExpiredAttachmentClaims`) là hàm thật, test thật, nhưng cố ý CHƯA gắn vào một
+durable CONTROL job mới — quyết định phạm vi có ghi lại lý do rõ ràng (Quyết định #6): 2 job CONTROL tự lên lịch
+lại duy nhất đã có trong repo (`ARTIFACT_SWEEP`, `RECOVERY_REAPER`) đều CHƯA từng được composition root nào gọi,
+nên thêm một job thứ 3 cùng cảnh ngộ không phải ưu tiên đúng của riêng task này.
+
+25 test mới (13 app-layer + 2 concurrency sqlite + 5 sqlite-repository + 6 HTTP, cộng 1 test route-inventory được
+sửa từ 3→4 operationId) đều xanh; `go build/vet/test ./...` sạch trên toàn repo sau rebase, không regression.
+Trong lúc làm việc, thư mục làm việc chính (dùng chung giữa nhiều phiên song song, không phải worktree riêng) bị
+một phiên khác (V6-06B) chuyển nhánh dưới chân một lần — toàn bộ thay đổi chưa commit của task này vẫn còn nguyên
+trong working tree (git xác nhận khi `checkout` lại đúng nhánh của task), không mất dữ liệu; xử lý bằng cách commit
++ push ngay lập tức lên remote để khoá lại an toàn trước khi tiếp tục, đúng khuyến nghị "commit thay vì để diff lớn
+nằm chưa commit trong thư mục dùng chung".
+
+**Bug thật CI bắt được sau khi mở PR #57** (không phải flake — phiên giám sát tự review crash-safety design rồi
+chỉ đích danh): CI job `contract` (ubuntu-latest) fail
+`TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` với lỗi
+`persistent record was not found: attachment claim attachment-upload-...`. Nguyên nhân thật:
+`recordAttachmentBlobReadyWithRetry`'s own CAS thua race (`ErrOptimisticConflict`) rồi đọc lại claim để "nhận kết
+quả của người thắng" — code cũ giả định claim row VẪN CÒN TỒN TẠI ở bước đọc lại đó. Nhưng nếu người thắng đã chạy
+xong TOÀN BỘ chuỗi còn lại — CAS thành công, transaction cuối commit (Artifact+Message+event+receipt), RỒI
+`releaseAttachmentClaimBestEffort` xoá claim — cả BA bước đó là 3 transaction TÁCH BIỆT đã commit xong, trước khi
+CAS của người thua kịp chạy — thì cả chính lệnh gọi CAS lẫn bước đọc lại sau đó đều gặp
+`ports.ErrPersistenceNotFound` (không phải `ErrOptimisticConflict`), và code cũ coi đây là lỗi cứng thay vì "ai đó
+đã xong rồi". Sửa: `recordAttachmentBlobReadyWithRetry` giờ coi `ErrPersistenceNotFound` (ở CẢ lần gọi CAS trực
+tiếp LẪN lần đọc lại sau một `ErrOptimisticConflict`) là tín hiệu an toàn "claim đã bị release vì command đã hoàn
+tất" — trả `nil` để luồng đi tiếp xuống transaction cuối, nơi `loadOrValidateReceiptTx` tự tìm thấy receipt người
+thắng đã ghi và replay đúng kết quả, không bao giờ tạo Message thứ 2. Đúng như doc comment mới của hàm này tự
+chứng minh: `command_receipts`'s own PRIMARY KEY `(actor, scope_key, idempotency_key, command_type)` mới là
+backstop idempotency THẬT SỰ — claim chỉ là fencing tối ưu cho pha I/O thật, không phải nguồn sự thật cho "command
+đã xong chưa". Thêm 1 test tái tạo đúng interleaving này một cách TẤT ĐỊNH (không cần goroutine/timing):
+`TestAppendConversationAttachment_ClaimReleasedBeforeOwnCAS_FallsThroughToReceiptReplay` dùng một
+`interceptOnceUOW` mới — chèn một lệnh gọi `AppendConversationAttachment` "người thắng" chạy THẬT, XONG HẲN, ngay
+trước khi lệnh `WithSerializedWrite` thứ 2 (chính là CAS của "người thua") được phép chạy — xác nhận: (1) test
+này FAIL với đúng lỗi CI đã thấy khi tạm bỏ đoạn `ErrPersistenceNotFound` mới (xác nhận test THẬT SỰ bắt được
+bug, không phải test vô nghĩa), (2) test PASS sau khi khôi phục fix. Chạy lại
+`TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` (chính test CI đã fail) 11 lần
+liên tiếp cộng test tất định mới 5 lần — không lần nào fail. `go build/vet/test ./...` sạch lại trên toàn repo.
