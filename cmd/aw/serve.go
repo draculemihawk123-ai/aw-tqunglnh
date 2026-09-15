@@ -25,6 +25,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
@@ -280,6 +281,13 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		UnitOfWork: uow, ArtifactStore: artifactStore, IDs: idsource.Random{}, Clock: clock.System{},
 		Matcher: matcher, Cursor: cursorCodec,
 	})
+	// V6-10J: adapter-build registry routes (list/detail/probe/register,
+	// internal/delivery/httpapi/adapterbuild) — an additive routes.Register
+	// call only, no shared setup above touched. Installation-scoped, over
+	// the same uow every other route registration in this process already
+	// uses; no idsource.Source needed (a Build's own ID is content-addressed,
+	// never minted).
+	httpadapterbuild.RegisterRoutes(routes, httpadapterbuild.Dependencies{UnitOfWork: uow, Clock: clock.System{}})
 	// A later endpoint task's own composition-root wiring adds its own
 	// routes.Register call here without needing to touch this file's shared
 	// setup (contract point 8: "Parallel work không sửa registry chung").
