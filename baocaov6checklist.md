@@ -5404,3 +5404,243 @@ Một regression tự gây ra (corrupt safe-settings row làm `aw serve` fail st
 (`TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady`, `internal/app/workspaceprovision`) xác nhận
 là flake môi trường (Windows file-lock cleanup race dưới tải song song) không liên quan diff — pass ngay khi
 chạy lại riêng lẻ, package đó không nằm trong bất kỳ file nào task này sửa.
+
+## V6-10D — Bounded source, diff và repository-log endpoints
+
+### Bối cảnh
+
+Trích nguyên văn spec (`docs/design/08-v6-api-projections.md` dòng 458-467, không diễn giải lại): "Mục tiêu:
+map V6-10C read-only queries to HTTP"; "Phụ thuộc: V6-00, V6-01A, V6-02A, V6-10B, V6-10C"; "Phạm vi:
+source/diff/repository-log GET routes and fragments"; "Không làm: handler no file open, Git spawn, revision
+resolution or terminal"; "Thực hiện: dispatch exact query; map bounds/binary/truncation/cursor/media contracts";
+"Verify: transport negative matrix plus architecture test no filesystem/process concrete import"; "Hoàn thành
+khi: no route can write, execute or arbitrary-read local paths"; "Nguồn: ADR-018". `git log origin/master
+--oneline -5` xác nhận cả 5 dependency đều đã merge tính tới `c8163d3` (V6-07B, PR #50, HEAD lúc bắt đầu):
+V6-10B (`workspaceroutes.go`), V6-10C (`internal/app/workspaceinspection`, PR #31) đều thấy thật trên cây
+nguồn — không có gì phải chờ thêm.
+
+Phiên này khởi động lại đúng 1 lần giữa chừng (worktree cũ bị dọn do rate-limit của phiên trước reset) —
+branch `feat/v6-10d-source-diff-repository-log-endpoints` được tạo lại từ đúng `origin/master` (`c8163d3`)
+trong một worktree mới, không có gì bị mất vì chưa có file nào được ghi trước thời điểm đó (toàn bộ công việc
+trước đó chỉ là đọc research). `baocaov6checklist.md` đang được ít nhất 2 task song song khác ghi đồng thời
+(V6-10A, V6-10F theo brief) — xung đột merge khi mở PR là bình thường, không phải bug.
+
+### Nghiên cứu
+
+Đọc lại toàn bộ hạ tầng chung trước khi viết route nào: `route.go` (`RouteDescriptor`/`RouteRegistry.Register`
+panic-on-duplicate, `ScopeKind`), `errors.go` (`WriteResourceHidden`/`WriteAppError`/`StatusForAppErrorCode`),
+`media.go` (`ApplyContentHeaders`/`ResolveMediaDisposition`/`ParseRange`), `receiptreplay.go`'s
+`EncodeResult(w, status, result, etag)`, `commandenvelope.go`'s `ETagFromVersion`, `page.go`/`cursor.go` (opaque
+`CursorCodec` — xem Quyết định #6 tại sao KHÔNG dùng cho route log), `principal.go` (không cần — cả 3 route
+đều read-only, không có mutation nào cần `PrincipalFromContext`).
+
+Đọc `internal/delivery/httpapi/evidence` (V6-07B, đã merge) làm precedent gần nhất cho "content-stream với
+Range/ETag/media-header/no-sniff": `artifact.go`'s `handleGetArtifactContent` xác nhận đúng convention
+`httpapi.ApplyContentHeaders(w, contentType, filename)` + `ETag` = content hash + `Content-Length` — dùng lại
+y hệt cho `getWorkspaceSource` (khác biệt duy nhất: `ports.SourceContent.Content` đã là `[]byte` bounded sẵn
+trong bộ nhớ, không phải `io.ReadCloser` cần `io.Copy`, nên không cần `Range`/`io.Seeker` — `ByteLimit` của
+chính `GetSource` đã là cơ chế bound riêng, thêm `Range` HTTP lên trên sẽ là 2 cơ chế cắt chồng lên nhau,
+không rõ ràng hơn — xem Quyết định #4). Đọc `evidence/dependencies.go`/`evidence/routes.go`/`evidence/errors.go`
+làm mẫu shape package con: `Dependencies` struct nhỏ do composition root tự dựng, `RegisterRoutes(reg, deps)`
+một hàm duy nhất, `writeQueryError` centralize toàn bộ error-mapping.
+
+Đọc `internal/delivery/httpapi/workspaceroutes.go`/`workspacestate.go` (V6-10B, đã merge) cho pattern route
+GET gắn trên đúng `RepositoryWorkspace` resource: xác nhận path `/projects/{projectId}/repository-workspaces/
+{repositoryWorkspaceId}` đã tồn tại thật (2 route GET/POST khác của V6-10B) — quyết định TÁI DÙNG đúng prefix
+này cho 3 route mới thay vì tự vẽ cây URL riêng (xem Quyết định #1). Đọc
+`internal/archtest/workspace_delivery_boundary_test.go` — brief của task gọi tên nó là
+"TestWorkspaceHTTPNeverReachesGitOrFilesystem" nhưng tên THẬT trong cây nguồn là
+`TestDeliveryWorkspaceRoutesNeverReachWorkspaceIOOrExecutor` (một sai lệch tên giữa brief và code thật, đã ghi
+nhận ở đây thay vì lặp lại tên sai) — xác nhận nó walk TOÀN BỘ `internal/delivery/httpapi` (kể cả subpackage,
+qua `filepath.WalkDir` đệ quy), cấm `"os"`/`"os/exec"`/`internal/adapters/...` — nghĩa là package con mới của
+task này ĐÃ được test đó phủ sẵn, một phát hiện quan trọng: viết thêm archtest riêng (yêu cầu của chính task)
+là restatement có chủ đích (tự-tài-liệu-hoá cho đúng 1 task), không phải lấp một lỗ hổng thật.
+
+Đọc toàn bộ `internal/app/workspaceinspection/queries.go` (252 dòng) và `internal/app/ports/workspaceinspection.go`
+(182 dòng) — 2 file này là "hợp đồng" chính xác task phải map. Xác nhận field-for-field:
+`GetSourceRequest{Scope WorkspaceScope, Revision workspace.Revision, Path, ByteLimit, LineLimit}`,
+`GetDiffRequest{Scope, BaseRevision, ResultRevision, ByteLimit, FileLimit}`,
+`GetRepositoryLogRequest{Scope, Anchor, Cursor, Limit, ByteLimit}`; `WorkspaceScope{ProjectID, RepositoryID,
+WorkspaceSetID, RepositoryWorkspaceID}` — CẢ 4 field đều bị `resolveScope` so khớp tuyệt đối với ownership
+chain thật, khác `workspacestate`'s 2-field check (V6-10B) — đọc `queries_test.go` xác nhận bằng 3 test riêng
+biệt (`TestGetSourceRejectsProjectMismatch`/`RejectsRepositoryMismatch`/`RejectsWorkspaceSetMismatch`), mỗi
+field sai một mình cũng đủ bị từ chối — đây là phát hiện quan trọng quyết định URL scheme (Quyết định #2).
+`ports.SourceContent{Path, Revision, Content []byte, ByteLimit, LineLimit, TotalBytes, LineCount, Truncated,
+Binary}`, `ports.DiffContent{BaseRevision, ResultRevision, Files []DiffFileChange, Patch []byte, ByteLimit,
+FileLimit, FilesTruncated, PatchTruncated}`, `ports.RepositoryLogPage{Anchor, Entries []RepositoryLogEntry,
+NextCursor, Limit, ByteLimit, Truncated}` — không field nào bịa thêm, không field nào bỏ sót khi dựng DTO wire
+(xem `dto.go`).
+
+Đọc `internal/adapters/gitworktree/inspection.go` (589 dòng) + `errors.go` để hiểu THẬT sự điều gì
+`Queries.GetSource/GetDiff/GetRepositoryLog` có thể trả lỗi: `authorizeRevision` (dòng 299-318) từ chối một
+revision không đúng `RepositoryID`/`WorkspaceGeneration` hoặc không phải hex object id hoặc không phải đúng
+Base/CurrentRevision — LUÔN qua `ErrInvalidSpec`; `resolveLogCursor` (dòng 235-271) từ chối cursor không phải
+ancestor thật qua `merge-base --is-ancestor` — cũng `ErrInvalidSpec`; `ReadSource` có thêm `ErrPathNotFound`/
+`ErrUnsupportedEntry` riêng. Phát hiện kiến trúc quan trọng nhất của cả task: package HTTP này KHÔNG ĐƯỢC PHÉP
+import `internal/adapters/gitworktree` (cả archtest sẵn có của V6-10B lẫn archtest riêng phải viết đều cấm) —
+nghĩa là KHÔNG có cách hợp lệ nào để `errors.Is` lên đúng `gitworktree.ErrInvalidSpec`/`ErrPathNotFound`/
+`ErrUnsupportedEntry` từ tầng delivery. Đây không phải một thiếu sót cần vá — nó là hệ quả trực tiếp, cố ý của
+chính ranh giới kiến trúc mà task này phải CHỨNG MINH bằng archtest, nên `writeQueryError` phải thiết kế lại
+theo đúng ràng buộc đó (xem Quyết định #5) thay vì cố map từng loại lỗi adapter.
+
+`grep -rln "gitworktree.New(" --include=*.go .` (loại `_test.go`) xác nhận: KHÔNG có call site production nào
+trong toàn repo, kể cả `cmd/aw/*.go` — mọi lần gọi `gitworktree.New` từng thấy trước giờ đều nằm trong file
+test. Nghĩa là task này là task ĐẦU TIÊN trong repo thật sự dựng một `internal/adapters/gitworktree.Provider`
+sống trong composition root — vượt ra ngoài khung "chỉ 1 dòng `RegisterRoutes` thêm vào `serve.go`" mà brief
+mô tả, vì `workspaceinspection.New(uow, reader)` cần một `ports.WorkspaceInspectionReader` THẬT, không thể để
+trống hay giả lập tại composition root. Grep tiếp `ManagedWorkspaceRoot` (safesettings) tìm xem có sẵn đường
+dẫn cấu hình nào tái dùng được — có, nhưng đọc kỹ `internal/app/safesettings/startup.go` xác nhận field này
+mặc định `""` (chưa từng có consumer thật nào, đúng doc comment "no prior task ever added that plumbing"), và
+là giá trị MUTABLE lúc runtime qua `PUT /settings/safe` — dùng nó để dựng một adapter I/O thật lúc boot sẽ sai
+với chính triết lý "immutable-per-process startup config" mà `--artifact-root` đã thiết lập cho `artifactStore`
+— quyết định KHÔNG tái dùng (xem Quyết định #7).
+
+### Quyết định
+
+1. **Tái dùng đúng path prefix `/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}` của
+   V6-10B, gắn thêm `/source`, `/diff`, `/repository-log`.** Không tự vẽ cây URL mới — một caller đã có
+   `RepositoryWorkspaceID` từ `getRepositoryWorkspaceState` (V6-10B) dùng lại được ngay, đúng tinh thần "mỗi
+   task thêm route mới, không phá vỡ route cũ" mà `serve.go` đã tự thiết lập từ V6-01.
+2. **`repositoryId`/`workspaceSetId` là query parameter BẮT BUỘC trên cả 3 route, không suy luận/reload lại từ
+   `repositoryWorkspaceId`.** `WorkspaceScope` của V6-10C đòi hỏi khớp tuyệt đối cả 4 field — một phòng thủ
+   sâu hơn cố ý so với V6-10B's 2-field check, đúng vì 3 route này stream NỘI DUNG repository thật, không chỉ
+   state. Bản thân handler HTTP không được phép tự đọc thêm DB để tự suy ra 2 field còn thiếu (đó sẽ là một
+   dispatch query thứ 2 tự chế, đi ngược "dispatch exact query, nothing more") — caller phải TỰ mang theo đủ 4
+   định danh, giống hệt cách một capability token hoạt động: không đoán được `repositoryId`/`workspaceSetId`
+   thật thì không đọc được gì, kể cả khi đoán đúng `repositoryWorkspaceId`.
+3. **Revision luôn là query param thô (`revision`+`generation`, `base`+`baseGeneration`,
+   `result`+`resultGeneration`, `anchor`+`anchorGeneration`), không bao giờ một symbolic ref.**
+   `workspace.Revision.RepositoryID` luôn gán lại từ đúng `repositoryId` query param (một RepositoryWorkspace
+   chỉ có thể có revision thuộc đúng 1 repository nó bind) — không có param "revision's own repository id" dư
+   thừa. Handler không tự resolve gì cả — `gitworktree.Provider.authorizeRevision` (1 lớp dưới `Queries`, 2
+   lớp dưới handler) là nơi DUY NHẤT chứng minh giá trị này thật sự là Base/CurrentRevision hợp lệ.
+4. **`getWorkspaceSource` stream raw bytes, KHÔNG bọc JSON — bounds/binary/truncation lên response header
+   (`X-Aw-Source-*`), không `Range` HTTP.** Mirror đúng `evidence/artifact.go`'s
+   `ApplyContentHeaders`/`ResolveMediaDisposition`/ETag-content-hash convention thay vì tự nghĩ lại. Không
+   thêm `Range`: `ports.SourceContent.Content` đã là kết quả ĐÃ bounded bởi `ByteLimit`/`LineLimit` (0 offset
+   cố định), thêm `Range` HTTP chồng lên sẽ là 2 cơ chế cắt độc lập cho cùng 1 khái niệm — kém rõ ràng hơn là
+   không có. `getWorkspaceDiff`/`getWorkspaceRepositoryLog` giữ nguyên JSON qua `EncodeResult` vì kết quả vốn
+   có cấu trúc (danh sách file, danh sách commit) chứ không phải một stream đơn.
+5. **`writeQueryError` chỉ đặt tên đúng 3 sentinel (`appinspection.ErrScopeMismatch`,
+   `appinspection.ErrWorkspaceNotReady`, `ports.ErrPersistenceNotFound`) — MỌI lỗi khác rơi vào ĐÚNG 1 bucket
+   400 chung, không đoán thêm.** Đây là hệ quả kiến trúc bắt buộc (xem Nghiên cứu): không thể `errors.Is` lên
+   `gitworktree.ErrInvalidSpec`/`ErrPathNotFound`/`ErrUnsupportedEntry` mà không import package bị cấm. Ghi rõ
+   lý do này trong chính doc comment của `errors.go` — để một người đọc sau không tưởng nhầm đây là code chưa
+   hoàn thiện. 400 (không phải 404/500) vì mọi điều kiện rơi vào bucket này đều là thuộc tính của QUERY
+   PARAMETER (`path`/`revision`/`cursor`), không phải của resource định danh trên PATH.
+6. **Cursor của `getWorkspaceRepositoryLog` truyền thẳng, KHÔNG bọc qua `httpapi.CursorCodec` (`cursor.go`).**
+   Khác các route list khác trong `httpapi` (dùng cursor cơ hội offset/sort-key cần chữ ký chống giả mạo),
+   cursor ở đây đã là một giá trị domain thật có ý nghĩa độc lập (chính xác một commit object id) và được
+   RE-VALIDATE lại hoàn toàn ở tầng adapter (`merge-base --is-ancestor` so với `anchor`) — bọc thêm một lớp mã
+   hoá cơ hội sẽ chỉ che giấu giá trị thật mà không thêm an toàn nào (adapter không tin bất kỳ cursor nào, kể
+   cả một cursor "đã ký hợp lệ" theo `CursorCodec`, nếu nó không phải tổ tiên thật của `anchor`).
+7. **Composition root tự thêm flag `--workspace-root` MỚI, KHÔNG tái dùng `safesettings.ManagedWorkspaceRoot`.**
+   Field kia là giá trị SQLite mutable-lúc-runtime, chưa có consumer thật nào (đọc kỹ `startup.go`'s doc
+   comment) — dùng nó để dựng một `gitworktree.Provider` (I/O thật) lúc boot sẽ sai với triết lý
+   "immutable-per-process startup config" mà `--artifact-root` (`artifactStore`) đã thiết lập trước đó.
+   `--workspace-root` là flag bắt buộc y hệt `--db`/`--artifact-root` (usage error nếu rỗng) — khác
+   `--artifact-root` ở chỗ KHÔNG cần pre-exist (`gitworktree.New` tự `os.MkdirAll`).
+8. **Gói package con đặt tên TRÙNG với package application layer (`workspaceinspection`), alias
+   `httpworkspaceinspection` khi import vào `serve.go`.** Đúng convention đã có sẵn cho `httpevidence`/
+   `httpdefinitions`/`httpsafesettings`/`httpadapterbuild` — không tự đặt tên khác biệt không cần thiết.
+9. **Viết archtest riêng cho đúng package này (`TestWorkspaceInspectionHTTPNeverImportsFilesystemOrProcess`),
+   dù test archtest sẵn có của V6-10B đã phủ nó.** Là restatement có chủ đích, tự-tài-liệu-hoá cho đúng 1
+   task theo yêu cầu tường minh của chính task này ("an architecture test proving NO filesystem/process
+   concrete import"), không phải phát hiện một lỗ hổng — cả 2 test đều pass cùng lúc, không loại trừ nhau.
+
+### Thực hiện
+
+- `internal/delivery/httpapi/workspaceinspection/routes.go` (132 dòng, mới): doc comment đầy đủ +
+  `Dependencies{Queries *appinspection.Queries}` + `RegisterRoutes` (3 route:
+  `getWorkspaceSource`/`getWorkspaceDiff`/`getWorkspaceRepositoryLog`, cả 3 `ScopeProject`).
+- `internal/delivery/httpapi/workspaceinspection/params.go` (86 dòng, mới): `requireQueryParam`/
+  `requireUint64QueryParam`/`optionalInt64QueryParam`/`optionalIntQueryParam`/`requirePathParam` — validation
+  400 field-level dùng chung cho cả 3 handler.
+- `internal/delivery/httpapi/workspaceinspection/errors.go` (75 dòng, mới): `writeQueryError` (xem Quyết định
+  #5), `writeValidationError`.
+- `internal/delivery/httpapi/workspaceinspection/dto.go` (102 dòng, mới): `revisionResponse`,
+  `diffFileChangeResponse`/`diffContentResponse`, `repositoryLogEntryResponse`/`repositoryLogPageResponse` +
+  `toXxxResponse` converter — field-for-field với `ports.DiffContent`/`ports.RepositoryLogPage`, `Patch []byte`
+  để `encoding/json` tự base64.
+- `internal/delivery/httpapi/workspaceinspection/source.go` (148 dòng, mới): `handleGetSource` + 8 header
+  `X-Aw-Source-*` (TotalBytes/LineCount/ByteLimit/LineLimit/Truncated/Binary/Revision/WorkspaceGeneration) +
+  `writeSourceContent` (ETag content-addressed = `revision:path`, `ApplyContentHeaders`, ghi thẳng
+  `result.Content`).
+- `internal/delivery/httpapi/workspaceinspection/diff.go` (86 dòng, mới): `handleGetDiff`.
+- `internal/delivery/httpapi/workspaceinspection/repositorylog.go` (82 dòng, mới): `handleGetRepositoryLog`.
+- `cmd/aw/serve.go` (sửa): thêm flag `--workspace-root` (bắt buộc, đúng vị trí sau check `--artifact-root`),
+  dựng `workspaceProvider, err := gitworktree.New(gitworktree.Config{Root: *workspaceRoot})` +
+  `workspaceInspectionQueries := appworkspaceinspection.New(uow, workspaceProvider)` ngay sau `artifactStore`,
+  cộng đúng 1 dòng `httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries:
+  workspaceInspectionQueries})` ngay sau `httpapi.RegisterWorkspaceRoutes(...)` (V6-10B) đã có sẵn.
+- `cmd/aw/serve_test.go` (sửa): thêm `--workspace-root` vào 4 call site `serve(...)` đã có sẵn (không đổi ý
+  nghĩa test nào), thêm 1 test mới `TestServe_RequiresWorkspaceRootFlag` mirror đúng
+  `TestServe_RequiresArtifactRootFlag`.
+- `cmd/aw/serve_principal_test.go` (sửa): thêm `--workspace-root` vào `startServeForTest`'s args (dùng chung
+  bởi 3 test) và vào `TestServe_RejectsInvalidPrincipalConfigAtStartup`.
+- `internal/archtest/workspace_inspection_http_test.go` (87 dòng, mới):
+  `TestWorkspaceInspectionHTTPNeverImportsFilesystemOrProcess`.
+
+### Test
+
+- `internal/delivery/httpapi/workspaceinspection/fixture_test.go` (331 dòng, mới): `newTestEnv` dựng REAL
+  `*sqlite.Store` + REAL `gitworktree.Provider` chạy trên REAL temp git repo (helper `createGitRepository`/
+  `runTestGit`/`commitWorkspaceChange` mirror đúng `queries_test.go` của V6-10C) + REAL `httpapi.Server` qua
+  goroutine + REAL `http.Client` — không mock, không fabricate row nào. `seedOwnershipChain` mirror đúng
+  helper cùng tên của `queries_test.go` nhưng đi qua `uow.WithSerializedWrite` + `tx.Catalog()`/`tx.Work()`
+  THẬT (sqlite adapter) thay vì `fake.UnitOfWork` — đúng hard rule #1 của doctrine phiên này (không fake trực
+  tiếp DB).
+- `internal/delivery/httpapi/workspaceinspection/routes_test.go` (346 dòng, mới, 15 test function):
+  - GetSource: happy path (body đúng bytes, `Content-Type: text/plain`, `X-Content-Type-Options: nosniff`,
+    `X-Aw-Source-Binary=false`, `X-Aw-Source-Truncated=false`, ETag non-empty), thiếu query param bắt buộc
+    (400), `generation` không phải số (400), `repositoryWorkspaceId` không tồn tại (404, ẩn danh), scope
+    mismatch qua sai `repositoryId` (404, ẩn danh), workspace QUARANTINED (409), path traversal `../outside.txt`
+    (400), revision tuỳ ý `"HEAD"` (400 — arbitrary ref bị từ chối), path không tồn tại tại revision (400,
+    đúng bucket đối ứng Quyết định #5).
+  - GetDiff: happy path (commit thật qua `commitWorkspaceChange`, xác nhận `files[0].path == "service.txt"`,
+    `patch` non-empty), revision không được authorize (400), thiếu query param bắt buộc (400).
+  - GetRepositoryLog: pagination 2 trang thật qua `cursor` (3 commit thật, `limit=2`, xác nhận trang 2 không
+    lặp lại entry đầu của trang 1), cursor giả mạo không phải commit thật (400), `repositoryWorkspaceId` không
+    tồn tại (404, ẩn danh).
+- `internal/archtest/workspace_inspection_http_test.go`: 1 test, walk AST thật xác nhận không file nào trong
+  package import `"os"`/`"os/exec"`/`internal/adapters/...`.
+- `go build ./...`, `go vet ./...` sạch. `go test ./internal/delivery/httpapi/workspaceinspection/... -v`
+  pass 15/15 (26.7s, real sqlite + real git mỗi test). `go test ./internal/archtest/...` pass (bao gồm cả test
+  mới lẫn `TestDeliveryWorkspaceRoutesNeverReachWorkspaceIOOrExecutor` sẵn có của V6-10B, xác nhận cả 2 đồng
+  thuận). `go test ./cmd/aw/...` pass sau khi sửa 6 call site cần `--workspace-root` (61s) — xác nhận
+  `--workspace-root` bắt buộc không làm vỡ bất kỳ test `serve()` nào đã có từ trước.
+
+### Verify
+
+- "transport negative matrix": liệt kê đầy đủ ở mục Test — thiếu param, malformed generation, unknown
+  repositoryWorkspaceId, scope mismatch, non-READY workspace, path traversal, arbitrary/unauthorized revision,
+  path-not-found, invalid cursor — mỗi trường hợp có đúng 1 test riêng, status code luôn một trong {400, 404,
+  409}, không bao giờ 500 cho input caller-controlled.
+- "architecture test no filesystem/process concrete import":
+  `TestWorkspaceInspectionHTTPNeverImportsFilesystemOrProcess` (mới, scoped đúng 1 package) cộng
+  `TestDeliveryWorkspaceRoutesNeverReachWorkspaceIOOrExecutor` (V6-10B, whole-package, đã tự phủ package con
+  này qua `filepath.WalkDir` đệ quy) — cả 2 cùng pass, cùng chứng minh 1 sự thật.
+- "Hoàn thành khi: no route can write, execute or arbitrary-read local paths": chứng minh CẤU TRÚC, không chỉ
+  đọc code bằng mắt — `internal/delivery/httpapi/workspaceinspection` KHÔNG THỂ import `internal/adapters/...`
+  (2 archtest), nên không route nào trong 3 route của task này có khả năng tự mở file/spawn git/chạm terminal
+  dù cố tình; mọi I/O thật xảy ra bên trong `*appinspection.Queries` — một giá trị duy nhất, được inject 1 lần
+  tại composition root, không route nào tự dựng thêm.
+- Wiring thật vào `cmd/aw/serve.go`: `grep -n "httpworkspaceinspection\." cmd/aw/serve.go` xác nhận
+  `httpworkspaceinspection.RegisterRoutes(...)` thật sự được gọi (dòng 357) — đúng lo ngại doctrine đã nêu từ
+  vụ V6-04 ban đầu (30 test xanh nhưng route chưa từng wire thật vào binary).
+- Không migration mới: `git log origin/master --oneline -3` + `ls internal/adapters/sqlite/migrations/` xác
+  nhận migration cao nhất trên `origin/master` vẫn là `0037_release_set_local_commits.sql` — task này không
+  thêm file migration nào, đúng như brief đã xác nhận trước ("thin HTTP wrapper over an already-complete
+  application query layer").
+
+### Kết quả
+
+Package mới hoàn toàn `internal/delivery/httpapi/workspaceinspection` (7 file production, 2 file test, 15 test
+function, real HTTP + real sqlite + real git). 1 architecture test mới trong `internal/archtest`. `cmd/aw/serve.go`
+thêm flag `--workspace-root` (lần đầu tiên composition root thật dựng `internal/adapters/gitworktree.Provider`
+sống — không chỉ 1 dòng `RegisterRoutes` như brief mô tả ban đầu) cộng đúng 1 khối wiring 3 dòng. 2 file test
+`cmd/aw` có sẵn được sửa để mang theo flag mới (6 call site + 1 test mới), không đổi ý nghĩa test nào đã có.
+3 route HTTP GET thật lần đầu tồn tại: `GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}
+/{source,diff,repository-log}` — mọi request đọc nội dung Git thật đều đi qua đúng 1 cổng
+`internal/app/workspaceinspection.Queries` (V6-10C), không có đường tắt nào khác, được chứng minh bằng cấu
+trúc (archtest) chứ không chỉ bằng lời hứa trong doc comment.

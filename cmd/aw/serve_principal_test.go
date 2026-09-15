@@ -39,6 +39,7 @@ func startServeForTest(t *testing.T, extraArgs ...string) (addr, dbPath string, 
 	args := append([]string{
 		"--db", dbPath,
 		"--artifact-root", artifactRoot,
+		"--workspace-root", t.TempDir(),
 		"--host", "127.0.0.1",
 		"--port", "0",
 	}, extraArgs...)
@@ -155,6 +156,7 @@ func TestServe_RejectsInvalidPrincipalConfigAtStartup(t *testing.T) {
 	err := serve(context.Background(), []string{
 		"--db", serveTestDB(t),
 		"--artifact-root", t.TempDir(),
+		"--workspace-root", t.TempDir(),
 		"--principal-config", principalPath,
 	}, &stdout)
 	if err == nil {
