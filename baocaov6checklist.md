@@ -4883,3 +4883,233 @@ vẫn bắt đúng race qua HTTP y hệt qua CLI/test trực tiếp).
 Luồng "provider upgrade" (probe candidate mới → operator review → register xác nhận) giờ đã dùng được thật
 qua HTTP, không chỉ qua CLI `aw adapter probe|register` — 2 bề mặt (CLI, HTTP) cùng dispatch đúng một cặp
 command đã hardening, không bề mặt nào có logic riêng của chính nó.
+
+## V6-10H — Safe settings endpoints
+
+### Bối cảnh
+
+V6-10H bọc HTTP lên trên V6-10G (đã đóng hoàn toàn — "endpoint implementation has no remaining storage/
+precedence/allowlist decision"): expose `GET/PUT /settings/safe` cho `internal/app/safesettings.GetSafeSettings`/
+`UpdateSafeSettings`. Task tự mô tả phạm vi rất hẹp — "exact allowlist schema and route fragment" — nhưng bản
+brief giao việc chỉ ra một khoảng trống thật: `GetSafeSettings` chỉ trả `Desired` (document đã persist), trong
+khi Thực hiện line của task đòi response phải có "desired/effective/restart/masking" — `Effective` (per-field
+startup-precedence resolution) là một hàm HOÀN TOÀN riêng, `internal/app/safesettings/startup.go`'s
+`ResolveEffective(defaults, file, sqlite, env, flags)`, cần 3 tầng file/env/flags chỉ tồn tại thật ở
+`aw serve`'s own process startup — và grep xác nhận **0 call site** gọi `ResolveEffective` ở bất kỳ đâu trong
+`cmd/aw` trước task này. Đây là phần khó nhất của task, phải tự quyết định wiring chứ không chỉ bọc route.
+Batch này chạy song song với V6-07B và V6-10J (baocaov6checklist.md là điểm giao chung, append-only — xử lý
+merge conflict khi finalize như mọi lần).
+
+### Nghiên cứu
+
+Đọc trước khi viết code:
+
+- `docs/design/08-v6-api-projections.md` dòng 516-524 (V6-10H) đọc trực tiếp, không suy diễn qua brief — xác
+  nhận đúng "Thực hiện: GET query; PUT installation command + If-Match; response desired/effective/restart/
+  masking" và "Không làm: handler no config/file/env/secret access and no extra setting" — HANDLER không được
+  đụng file/env, nhưng composition root (`cmd/aw/serve.go`) thì được, vì đó là nơi các tầng file/env/flags
+  thật sự tồn tại.
+- `internal/app/safesettings/commands.go`: `GetSafeSettings` (plain read, không CommandEnvelope, mirror
+  `adapterbuild.GetAdapterBuild`), `SafeSettingsResult.RestartRequired = !record.Desired.IsZero()` (static
+  fact, không so sánh với process đang chạy — Alpha không có hot-reload); `UpdateSafeSettings` đòi
+  `cmd.Scope.IsInstallation()`, replay/CAS/event/receipt trong 1 transaction; **quan trọng**: `UpdateSafeSettings`
+  chỉ ghi receipt ở nhánh THÀNH CÔNG — không có nhánh lỗi nào tự ghi `ErrorCode` receipt.
+- `internal/app/safesettings/startup.go`: `ResolveEffective` là hàm THUẦN, không tự đọc `os.Environ()`/
+  `os.Args` — nhận `StartupOverrides` đã resolve sẵn từ caller (giống `config.FromEnv` nhận `lookup func`).
+  `Effective`/`FieldSource`/`StringFieldEffective`/`DurationFieldEffective`/`IntFieldEffective` là type ở TẦNG
+  APP (`internal/app/safesettings`), không phải domain — nhầm lẫn ban đầu (import từ `internal/domain/
+  safesettings` thay vì app package) bị `go build` bắt ngay, sửa lại bằng alias `safesettingsapp`.
+- `internal/domain/safesettings/safesettings.go`: `UnmarshalJSON` tự có `json.Decoder.DisallowUnknownFields()`
+  — nghĩa là decode TRỰC TIẾP request body vào `safesettings.SafeSettings` (domain type) qua
+  `httpapi.CanonicalizeJSON` đã đủ strict, không cần một wire DTO riêng có thể trôi dần khỏi allowlist thật.
+  Doc comment của type này nhấn mạnh nhiều lần `ProviderCredentialRef` là REFERENCE id, "never the actual
+  secret value" — nhưng task's own Verify line vẫn đòi "a secret-valued field is never echoed back in
+  cleartext" cho field này, tức là một yêu cầu defense-in-depth ở tầng HTTP, không mâu thuẫn với domain's own
+  "it's just a reference" — chỉ là API boundary chọn mask nó dù domain không bắt buộc.
+- `internal/app/redact/redact.go`: `Matcher.Tagged(sensitivity, s)` — "the structural counterpart to String/
+  Value's content-based matching, for a caller that knows a field's role... before any real secret value is
+  known" — khớp chính xác nhu cầu "trường này LUÔN LUÔN là credential reference, mask vô điều kiện" chứ không
+  cần field đó có khớp một secret value đã biết trước. `internal/app/config/dump.go` (`config.Dump`) là
+  precedent gần nhất cho "route một value qua `redact.Matcher` trước khi expose ra ngoài", dù bản thân
+  `config.Dump` chưa có call site HTTP nào — không tái dùng trực tiếp được (Config khác SafeSettings hoàn
+  toàn) nhưng xác nhận đúng pattern.
+- `internal/delivery/httpapi/receiptreplay.go` (`WriteReceiptReplay`): ghi `receipt.ResultJSON` **verbatim**.
+  `ResultJSON` được `UpdateSafeSettings` tự `json.Marshal(result)` với `result` là `SafeSettingsResult` thuần —
+  KHÔNG có field `Effective`, và `ProviderCredentialRef` bên trong ở dạng CLEARTEXT (transaction ghi receipt
+  không biết gì về masking convention của tầng HTTP). Đây là một cạm bẫy thật: nếu handler PUT dùng
+  `WriteReceiptReplay` y hệt `internal/delivery/httpapi/workitem`'s `replayOrProceed`, một replay PUT sẽ (a)
+  lộ credential ref thật trong response và (b) trả về shape khác (thiếu `effective`) so với response tươi —
+  vi phạm cả "never echoed back in cleartext" lẫn "same result" cho true replay.
+- `internal/delivery/httpapi/workitem/{envelope,errors,routes,scope_expansion_commands}.go`: mẫu chuẩn cho 1
+  endpoint package — `prepareUpdateCommand` (Idempotency-Key + If-Match bắt buộc, `VersionFromETag`,
+  `SemanticHash`), `replayOrProceed` (lookup → reconcile → replay/conflict), tách 412 (stale If-Match, tự
+  reload rồi so version TRƯỚC dispatch) khỏi 409 (`ports.ErrOptimisticConflict`, race thật lọt qua pre-check) —
+  2 status code khác nhau cho 2 tình huống khác nhau, không gộp chung.
+- `cmd/aw/serve.go` (đọc toàn bộ trước khi sửa): xác nhận lại phát hiện của V6-10G — **grep `config.Load(` ra 0
+  kết quả trong `cmd/aw`** — `aw serve` không hề parse config file, không đọc env cho bất kỳ field nào trong 7
+  field allowlist, chỉ có 2 flag ad hoc `--db`/`--artifact-root`. Đã có sẵn
+  `checker.Register("safe_settings", func(ctx) error { return uow.WithReadOnly(...); tx.SafeSettings().Get(ctx) })`
+  từ V6-10G — nghĩa là 1 row corrupt phải fail READINESS (503), không phải fail STARTUP của `aw serve`.
+- `cmd/aw/serve_test.go` (`TestServe_ReadyFailsIfSafeSettingsCorrupt`): corrupt row TRƯỚC khi `serve()` chạy,
+  rồi assert server VẪN start (`waitForServeAddress` đọc được address trên stdout) và `/health/ready` trả 503
+  named `safe_settings` — đọc test này SAU KHI đã viết code mới bắt ngay một regression tự gây ra (xem Quyết
+  định #7).
+
+### Quyết định
+
+1. **PUT decode trực tiếp vào `safesettings.SafeSettings` (domain type) qua `httpapi.CanonicalizeJSON`**,
+   không tạo wire DTO riêng. `UnmarshalJSON` của chính type đó đã strict (`DisallowUnknownFields`) — tái dùng
+   một điểm decode duy nhất, đúng tinh thần V6-10G's own quyết định #2, tránh một struct wire thứ hai có thể
+   trôi khỏi allowlist 7 field theo thời gian.
+2. **Validate (`safesettings.Validate`) chạy PRE-DISPATCH ở handler**, trước khi build command envelope/hash —
+   không dựa vào `UpdateSafeSettings`'s own internal re-validate để trả lỗi cho client, vì lỗi đó là plain
+   `error` (không phải `*apperror.Error`) nên `httpapi.WriteAppError` sẽ rơi vào nhánh 500 mặc định. Validate
+   ở HTTP layer cho phép trả đúng 400 với message thật, và làm cho nhánh Validate lỗi bên trong
+   `UpdateSafeSettings` trở thành defense-in-depth thuần túy (không bao giờ thật sự kích hoạt qua request hợp
+   lệ) — mirror đúng "field-presence guards ... always re-validated by handler before dispatch" convention của
+   `workitem`.
+3. **`ProviderCredentialRef` luôn bị mask bằng `matcher.Tagged(redact.Secret, ref)` ở MỌI response** (desired
+   VÀ effective, GET/PUT/replay như nhau) — dù domain layer khẳng định đây "chỉ là reference, không phải
+   secret value". Đây là quyết định defense-in-depth có chủ đích ở API boundary, đọc theo đúng nghĩa đen câu
+   Verify "a secret-valued field is never echoed back in cleartext in any response" — field này là field DUY
+   NHẤT trong 7 field mang tính chất credential nên là ứng viên duy nhất hợp lý. Dùng `Tagged` (structural tag
+   theo VAI TRÒ field) chứ không phải `String`/content-match (không cần field đó trùng một secret value đã
+   biết trước mới bị mask) — một `redact.Matcher{}` rỗng vẫn mask field này hoàn toàn.
+4. **Một replay thành công KHÔNG gọi `httpapi.WriteReceiptReplay` trực tiếp** (khác mọi endpoint khác trong
+   repo) — thay vào đó decode `receipt.ResultJSON` ngược lại thành `SafeSettingsResult`, rồi render lại qua
+   CÙNG hàm `buildResponse` handler tươi dùng. Lý do (xem Nghiên cứu): `ResultJSON` gốc chứa credential ref
+   cleartext và thiếu `effective` — dùng thẳng sẽ vi phạm "never cleartext" và làm response shape trôi giữa
+   fresh/replay. Nhánh lỗi (`receipt.ErrorCode != ""`) vẫn dùng `WriteReceiptReplay` bình thường vì không
+   mang secret data — giữ nguyên uniform behavior ở nhánh không nhạy cảm.
+5. **Pre-dispatch version check** (reload `GetSafeSettings`, so `current.Version` với `expectedVersion` TRƯỚC
+   khi dispatch) → 412 nếu lệch — tách khỏi race thật lọt qua pre-check (`ports.ErrOptimisticConflict` từ CAS
+   thật bên trong `UpdateSafeSettings`) → 409. Mirror chính xác phân biệt 412-vs-409 của `workitem`'s
+   `ApproveScopeExpansion`: 412 là "client biết rõ mình cũ", 409 là "client đúng lúc check nhưng thua race
+   thật".
+6. **`Effective` được composition root (`cmd/aw/serve.go`) tính ĐÚNG MỘT LẦN lúc boot**, truyền vào
+   `httpsafesettings.Dependencies.Effective` như một giá trị tĩnh, KHÔNG bao giờ tính lại per-request. Vì
+   Nghiên cứu xác nhận `aw serve` hiện tại **không có** flag/file/env nào cho 7 field allowlist (0 call site
+   `config.Load`), `file`/`env`/`flags` truyền vào `ResolveEffective` đều là `StartupOverrides{}` rỗng trung
+   thực — chỉ tầng `defaults` và `sqlite` (đọc qua `GetSafeSettings` ngay lúc boot) là thật sự "live" trong
+   composition root hôm nay. Một task tương lai thêm flag/file/env parsing thật cho 7 field chỉ cần điền 2
+   `StartupOverrides{}` đó — shape của call này không đổi. Vì Alpha không có hot-reload, giá trị chụp một lần
+   lúc boot mô tả đúng "cái process đang chạy này thực sự dùng gì" suốt vòng đời — kể cả sau khi một PUT sau
+   đó đổi `Desired` sống, `Effective` vẫn giữ nguyên (đúng là điều `restartRequired` tồn tại để báo).
+7. **Regression tự phát hiện và sửa ngay trong task này**: bản đầu tiên viết `safeSettingsAtBoot, err :=
+   safesettings.GetSafeSettings(ctx, uow); if err != nil { return err }` — làm `aw serve` FAIL STARTUP hẳn nếu
+   row `safe_settings` bị corrupt, phá `TestServe_ReadyFailsIfSafeSettingsCorrupt` (test này đòi server VẪN
+   start, chỉ `/health/ready` báo 503). Sửa: bỏ qua lỗi (`safeSettingsAtBoot, _ := ...`) — an toàn vì
+   `GetSafeSettings`'s own source không bao giờ gán `result` trước khi return lỗi, nên `safeSettingsAtBoot`
+   đã tự động là `SafeSettingsResult{}` zero-value đúng lúc lỗi xảy ra, và `ResolveEffective` đã tự document
+   "khi sqlite là zero, tầng SQLite không đóng góp gì" — corruption vẫn được báo đúng qua readiness check đã
+   có sẵn từ V6-10G, `Effective` chỉ đơn giản fallback về defaults/file/env/flags như chưa từng có SQLite.
+8. `maxBodyBytes = 1 << 16` (64 KiB, nhỏ hơn `workitem`'s 1 MiB) — desired document chỉ có 7 field scalar,
+   không có list/array nào cần không gian lớn.
+9. Không migration mới — xác nhận `git log origin/master --oneline -3` và
+   `internal/adapters/sqlite/migrations/` ngay trước khi finalize: migration cao nhất vẫn là `0037`, bảng
+   `safe_settings` đã có từ V6-10G.
+
+### Thực hiện
+
+File mới (`internal/delivery/httpapi/safesettings`, package mới):
+
+- `dependencies.go`: `Dependencies{UnitOfWork, IDs, Clock, Matcher redact.Matcher, Effective
+  safesettingsapp.Effective}` — doc comment giải thích đầy đủ lý do `Effective` là giá trị tĩnh chụp lúc boot.
+- `dto.go`: `desiredWire`/`maskedDesiredWire` (mask `ProviderCredentialRef`), `stringFieldWire`/
+  `durationFieldWire`/`intFieldWire` (camelCase JSON mirror của `StringFieldEffective`/…, cố ý bỏ field
+  `Desired` bên trong để tránh lặp lại dữ liệu đã cleartext-safe ở `desiredWire`), `effectiveWire`,
+  `responseDTO`, `buildResponse`.
+- `queries.go`: `handleGetSafeSettings` — plain read, gắn `ETag` từ `Version`.
+- `commands.go`: `handleUpdateSafeSettings` (decode/validate/hash/replay/version-check/dispatch/encode) +
+  `replayOrProceed` (phiên bản riêng, không tái dùng `workitem`'s bản — xem Quyết định #4).
+- `errors.go`: `writeCommandError` (`ErrOptimisticConflict`→409, `ErrReceiptConflict`→409,
+  `ErrNotInstallationScoped`→500 defensive), `writeValidationError`, `writeReceiptHashConflict`,
+  `writePreconditionFailed`.
+- `routes.go`: `RegisterRoutes` — `GET/PUT /settings/safe`, cả hai `ScopeKind: httpapi.ScopeInstallation`.
+- `safesettings_test.go`: 12 test HTTP thật (xem Test).
+
+File sửa:
+
+- `cmd/aw/serve.go`: import `internal/app/safesettings` (bare) và
+  `httpsafesettings "internal/delivery/httpapi/safesettings"` (alias theo đúng convention `httpcatalog`/
+  `httpdefinitions`/`httpmessage` đã có — tránh đụng identifier `safesettings` dùng chung); tính
+  `safeSettingsEffective` đúng một lần ngay sau khối `checker.Register("safe_settings", ...)`; thêm
+  `httpsafesettings.RegisterRoutes(routes, httpsafesettings.Dependencies{UnitOfWork: uow, IDs:
+  idsource.Random{}, Clock: clock.System{}, Matcher: matcher, Effective: safeSettingsEffective})` cạnh các
+  `RegisterRoutes` khác — tái dùng ĐÚNG `matcher` process-lifetime đã có (không tạo matcher thứ hai), đúng
+  precedent `httpmessage` đã thiết lập.
+
+### Test
+
+- `go build ./...`, `go vet ./...`: sạch toàn bộ module.
+- `go test ./internal/delivery/httpapi/safesettings/... -v`: 12 test, tất cả PASS —
+  `TestRegisterRoutes_ExposesExactlyGetAndUpdate` (đúng 2 operationId, cả 2 `ScopeInstallation`),
+  `TestGetSafeSettings_FreshDatabase_HTTP` (version 1, restartRequired false, ETag `"1"`),
+  `TestUpdateSafeSettings_HappyPath_HTTP` (version 2, restartRequired true, credential ref đã mask, ETag
+  `"2"`), `TestUpdateSafeSettings_UnknownFieldRejected_HTTP` (field lạ `databasePath` → 400),
+  `TestUpdateSafeSettings_MalformedJSONRejected_HTTP` (JSON hỏng cú pháp → 400),
+  `TestUpdateSafeSettings_InvalidValueRejected_HTTP` (retention `"0s"` → 400, version không đổi),
+  `TestUpdateSafeSettings_MissingHeaders_HTTP` (thiếu Idempotency-Key hoặc If-Match → 400),
+  `TestUpdateSafeSettings_IfMatchMismatch_HTTP` (If-Match `"99"` trên version 1 → 412),
+  `TestUpdateSafeSettings_ReplaySameKeySameHash_HTTP` (retry y hệt → cùng version/restartRequired, vẫn mask,
+  raw bytes không chứa secret, version thật không tăng lần 2),
+  `TestUpdateSafeSettings_ReplayDifferentHashConflicts_HTTP` (cùng key khác body → 409),
+  `TestSafeSettings_EffectiveFrozenAtBoot_AndStartupSourceMasking_HTTP` (seed SQLite thật trước khi "boot",
+  env override 1 field → `source`/`maskedByStartupSource` đúng tên "environment", field không override → 
+  "sqlite"/rỗng; PUT thay đổi `Desired` sống sau đó → `Effective` giữ nguyên bit-for-bit, chứng minh "chụp một
+  lần lúc boot" là hành vi thật chứ không chỉ lời hứa trong doc comment),
+  `TestSafeSettings_ProviderCredentialRef_NeverInRawResponseBytes_HTTP` (scan RAW bytes, không chỉ field đã
+  decode, cho cả PUT tươi/GET/PUT replay — chính là con đường mà nếu tái dùng `WriteReceiptReplay` trực tiếp
+  sẽ bị lộ).
+- `go test ./cmd/aw/... -v`: toàn bộ suite pass, bao gồm `TestServe_ReadyFailsIfSafeSettingsCorrupt` — xác
+  nhận sửa Quyết định #7 đúng, server vẫn start bình thường khi row corrupt, chỉ readiness báo lỗi.
+- `go test ./internal/archtest/...`: pass — `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt` (walk đệ quy
+  `internal/delivery/httpapi`, tự động cover package mới, xác nhận package này không tự ghi receipt ở đâu).
+- `go test ./... -count=1`: 1 fail duy nhất, `TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady`
+  (`internal/app/workspaceprovision`) — lỗi `unlinkat ... process cannot access the file` (Windows file-lock
+  cleanup race) + "first WORKSPACE_PROVISION job was never completed" (timing). Xác nhận KHÔNG liên quan diff
+  này: `git diff --stat origin/master -- internal/app/workspaceprovision internal/app/workerpool` ra rỗng
+  (task này không đụng file nào trong 2 package đó), và chạy lại riêng lẻ
+  (`go test ./internal/app/workspaceprovision/... -run TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady -count=1`)
+  PASS ngay — xác nhận flake môi trường dưới tải song song, không phải regression thật.
+
+### Verify
+
+- "strict unknown-field rejection": `TestUpdateSafeSettings_UnknownFieldRejected_HTTP` — field
+  `databasePath` (1 trong 4 field bị cấm tường minh của V6-10G) bị `safesettings.SafeSettings.UnmarshalJSON`'s
+  `DisallowUnknownFields` chặn qua `httpapi.CanonicalizeJSON` → 400, đúng convention `DecodeJSON` mọi endpoint
+  V6-02A khác đã dùng.
+- "stale/replay": `TestUpdateSafeSettings_IfMatchMismatch_HTTP` (412), `TestUpdateSafeSettings_
+  ReplaySameKeySameHash_HTTP` (cùng key+hash → cùng version/shape, version thật không tăng lần 2),
+  `TestUpdateSafeSettings_ReplayDifferentHashConflicts_HTTP` (cùng key khác hash → 409).
+- "restart/mask": `TestUpdateSafeSettings_HappyPath_HTTP` (restartRequired true sau update thật) +
+  `TestSafeSettings_EffectiveFrozenAtBoot_AndStartupSourceMasking_HTTP` (env mask sqlite đúng tên source,
+  Effective đứng yên qua một PUT sống — cả hai nghĩa của "mask" trong task này đều có bằng chứng: mask theo
+  startup-source VÀ mask theo secret-field).
+- "secret/redaction goldens": `TestSafeSettings_ProviderCredentialRef_NeverInRawResponseBytes_HTTP` — scan
+  raw bytes (không chỉ field đã parse) trên cả 3 đường response (PUT tươi, GET, PUT replay) — đúng đường có
+  nguy cơ lộ thật nếu implementation ngây thơ tái dùng `WriteReceiptReplay`.
+- "Không làm — handler no config/file/env/secret access": grep `internal/delivery/httpapi/safesettings/*.go`
+  xác nhận không có import `os`, không đọc file, không đọc env — `Effective` chỉ là giá trị đã resolve sẵn
+  truyền vào qua `Dependencies`, không có logic resolve nào nằm trong package này.
+- "Hoàn thành khi — UI có thể sửa đúng field bị khoá và luôn biết có cần restart": response luôn có
+  `restartRequired` (forward từ `SafeSettingsResult`) và `effective` (per-field source/mask) cùng lúc, PUT
+  reject bất kỳ field nào ngoài 7-field allowlist bằng chính cơ chế decode, không có generic passthrough nào.
+- Wiring thật vào `cmd/aw/serve.go`: `grep -n "httpsafesettings\." cmd/aw/serve.go` xác nhận
+  `httpsafesettings.RegisterRoutes(...)` thật sự được gọi (dòng ~327), không chỉ tồn tại ở test package-level
+  — đúng lo ngại doctrine nêu từ vụ V6-04 ban đầu.
+
+### Kết quả
+
+Package mới `internal/delivery/httpapi/safesettings` (6 file production + 1 file test, 12 test function, real
+HTTP + real sqlite). 2 route HTTP thật lần đầu tồn tại: `GET/PUT /settings/safe`, cả hai installation-scoped.
+Phần khó nhất của task — `Effective` không có sẵn từ `GetSafeSettings` — giải quyết bằng cách để
+`cmd/aw/serve.go` tự tính `ResolveEffective` đúng một lần lúc boot (file/env/flags đều là `StartupOverrides{}`
+rỗng trung thực vì `aw serve` chưa từng có plumbing đó, một phát hiện xác nhận lại đúng gap V6-10G đã ghi
+nhận) và truyền xuống như giá trị tĩnh — không có logic resolve nào nằm trong HTTP handler, đúng "Không làm".
+Một regression tự gây ra (corrupt safe-settings row làm `aw serve` fail startup thay vì chỉ fail readiness) bị
+`TestServe_ReadyFailsIfSafeSettingsCorrupt` bắt ngay trong lúc chạy suite đầy đủ và được sửa trước khi mở PR.
+`go build/vet/test ./...` sạch trên toàn bộ ~90 package, 1 fail duy nhất gặp phải
+(`TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady`, `internal/app/workspaceprovision`) xác nhận
+là flake môi trường (Windows file-lock cleanup race dưới tải song song) không liên quan diff — pass ngay khi
+chạy lại riêng lẻ, package đó không nằm trong bất kỳ file nào task này sửa.
