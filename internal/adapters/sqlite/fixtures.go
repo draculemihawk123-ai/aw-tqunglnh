@@ -109,6 +109,47 @@ INSERT INTO repository_workspaces(
 	return nil
 }
 
+// SeedFixtureAdditionalRepositoryWorkspace inserts one more repository plus
+// a READY RepositoryWorkspace row into an ALREADY-EXISTING WorkspaceSet
+// (workspaceSetID/familyID — from an earlier SeedFixtureRepositoryWorkspace/
+// SeedFixtureRepositoryWorkspaceWithLocator call). workspace_sets.family_id
+// is unique — one WorkspaceSet per TaskFamily — so a second repository
+// belonging to the SAME family must be added into that SAME row, never a
+// second, fresh workspace_sets insert (which
+// SeedFixtureRepositoryWorkspace's own single combined insert always
+// performs, and would therefore violate that uniqueness on a second call
+// for the same family). Exists for the identical reason
+// SeedFixtureRepositoryWorkspace does — a cross-package acceptance test
+// (V6-10F's own releaseset HTTP tests need a ReleaseSet whose entries span
+// two repositories under the same family, to prove its own per-operation
+// local-commit status query reports a "some committed, some not" ReleaseSet
+// accurately) — see SeedFixtureOwners for the full reasoning; production
+// code must never call this.
+func SeedFixtureAdditionalRepositoryWorkspace(
+	ctx context.Context, store *Store,
+	projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator string,
+) error {
+	const timestamp = "2026-08-28T16:00:00Z"
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO repositories(id, project_id, name, local_path, default_ref, status, version, created_at, updated_at)
+VALUES (?, ?, ?, 'C:/fixture', 'main', 'ACTIVE', 1, ?, ?);`,
+		repositoryID, projectID, repositoryID, timestamp, timestamp,
+	); err != nil {
+		return fmt.Errorf("seed fixture additional repository: %w", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `
+INSERT INTO repository_workspaces(
+  id, project_id, workspace_set_id, family_id, repository_id, generation,
+  locator, branch_ref, base_revision, current_revision, state, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'base-rev', 'base-rev', 'READY', 1, ?, ?);`,
+		repositoryWorkspaceID, projectID, workspaceSetID, familyID, repositoryID,
+		locator, "agentkit/"+repositoryID, timestamp, timestamp,
+	); err != nil {
+		return fmt.Errorf("seed fixture additional repository workspace: %w", err)
+	}
+	return nil
+}
+
 func SeedFixtureNodeRunAndAttempt(
 	ctx context.Context,
 	store *Store,
