@@ -5659,6 +5659,301 @@ không phải regression của diff này. Không nằm trong danh sách known-fl
 tự verify bằng baseline reproduction trước khi kết luận, đúng discipline "verify diff-scope-unrelated, đừng
 chỉ đoán theo tên".
 
+## V6-10F — ReleaseSet và local Git endpoints
+
+### Bối cảnh
+
+Trích nguyên văn task spec từ `docs/design/08-v6-api-projections.md` (dòng 485-494): "Mục tiêu: expose V6-10E
+authorities and exact operation status"; "Phụ thuộc: V6-00, V6-01A, V6-02, V6-02A, V6-10B, V6-10E"; "Phạm vi:
+list/create/detail/seal/abandon, per-entry local-commit POST/status"; "Không làm: no Git adapter/worker call
+and no remote route"; "Thực hiện: dispatch public commands/queries; local commit returns accepted operation ID
+for wait"; "Verify: schemas/replay/stale/partial/dispatch architecture; route inventory excludes remote
+verbs"; "Hoàn thành khi: release/local commit usable from API without delivery Git authority"; "Nguồn:
+ADR-014, AK-ARCH-015C". Cả 6 phụ thuộc đều đã merge — `origin/master` tại `c8163d3` (V6-07B) khi bắt đầu, và
+V6-10E (ReleaseSet/local-commit application authority) là task ngay trước, cùng domain, đã ghi lại đầy đủ ở
+đoạn trên trong chính file này.
+
+Phiên này khởi động trong một worktree đã bị dọn dẹp giữa chừng (rate-limit reset khiến session phải tự tạo
+lại worktree mới `feat/v6-10f-releaseset-local-git-endpoints` từ `origin/master` — không mất tiến độ vì mọi
+file đã đọc trước đó đều ở cùng commit `c8163d3`, xác nhận lại bằng `git log --oneline -3` trước khi tiếp tục
+viết code).
+
+### Nghiên cứu
+
+Đọc toàn bộ hạ tầng HTTP chung trước khi viết dòng nào: `route.go` (`RouteRegistry.Register` panic khi trùng
+`(Method,Path)` hoặc trùng `OperationID`), `errors.go` (`WriteResourceHidden` leakage-normalization,
+`StatusForAppErrorCode` bảng chung, `WriteAppError`), `page.go`/`cursor.go`/`freshness.go`/`action.go` (không
+dùng trực tiếp trong task này — ReleaseSet list không cursor-phân trang, giống `ListWorkItems`/
+`ListReleaseSetsForFamily` đã là "plain, unbounded shape" từ trước), `commandenvelope.go`/`receiptreplay.go`
+(flow chuẩn: `RequireIdempotencyKey`/`RequireIfMatch` → `CanonicalizeJSON` → `SemanticHash` → `LookupReceipt`
+→ replay/conflict → dispatch → `EncodeResult`).
+
+Đọc `internal/delivery/httpapi/workitem` toàn bộ (V6-04) làm khuôn mẫu kết cấu — đây là tiền lệ GẦN NHẤT cho
+một package vừa có command vừa có query, và routes.go's own doc comment của chính nó giải thích lý do dùng
+subpackage riêng thay vì file phẳng trong `httpapi` (khác hẳn cách V6-10B làm trước đó — flat file — vì lúc
+V6-10B chạy chỉ có 1 session chạm `internal/delivery/httpapi`, còn từ V6-04 trở đi luôn có nhiều task chạy
+song song, mỗi task một subpackage tránh đụng file/định danh của nhau). Copy gần như nguyên xi 3 file hạ tầng
+riêng-package của `workitem` (`dependencies.go`, `envelope.go` với `prepareCreateCommand`/`prepareUpdateCommand`/
+`replayOrProceed`, `errors.go` với `writeQueryError`/`writeCommandError`/`writeValidationError`/
+`writeReceiptHashConflict`/`writePreconditionFailed`) — đây là quy ước lặp lại y hệt mọi subpackage (mỗi
+subpackage tự có bản sao riêng, không share code giữa 2 subpackage, đúng "Contract chung §1.8: mỗi endpoint
+task sở hữu subpackage/test riêng").
+
+Đọc toàn bộ `internal/app/work/release_set.go` và `release_set_queries.go`: `CreateReleaseSet(ctx, uow, ids,
+cmd, req{ProjectID, FamilyID, Repositories[]RepositoryReleaseRequest})`, `SealReleaseSet`/
+`AbandonReleaseSet(ctx, uow, cmd, req{ReleaseSetID})` (cả hai dùng `cmd.ExpectedVersion` làm fence, không có
+field version riêng trong request struct), `GetReleaseSet(ctx, uow, releaseSetID)` — PHÁT HIỆN quan trọng:
+hàm này KHÔNG nhận `scope`/`projectID` để tự kiểm tra — doc comment của chính file xác nhận đây là "public,
+read-only entry point a future HTTP/CLI layer (V6-10F) can call directly", nghĩa là chính task này phải TỰ
+làm phần kiểm scope (so `detail.ProjectID` với path `{projectId}`) trước khi trả về, không được tin hàm query
+đã làm sẵn. `ListReleaseSetsForFamily(ctx, uow, familyID)` cũng vậy — không tự check project, nhưng may mắn
+route của nó luôn đi kèm path `{familyId}`, nên authorize được qua `workapp.GetTaskFamily(scope, familyID)`
+(hàm này CÓ tự check scope, đã xác nhận từ `queries.go`) trước khi gọi.
+
+Đọc toàn bộ `internal/app/releasesetcommit/commands.go` kể cả doc comment package (rất dài, giải thích kỹ lý
+do package này TÁCH khỏi `internal/app/work`: "producer/consumer" sống chung 1 package vì cả 2 cần port I/O
+thật, khác `internal/app/work` tự cam kết "không có lý do gì import os/os/exec"). `RequestReleaseSetLocalCommit(ctx,
+uow, ids, cmd, req{ProjectID, ReleaseSetID, ExpectedReleaseSetVersion, RepositoryWorkspaceID,
+ExpectedWorkspaceVersion, Message, AuthorName, AuthorEmail})` trả về `RequestReleaseSetLocalCommitResult{
+ReleaseSetLocalCommitID, ReleaseSetID, RepositoryWorkspaceID, State, JobID, Marker}` — LUÔN `State=REQUESTED`
+(một accepted/pending result, không bao giờ đồng bộ "done"). Đọc kỹ phần "Không làm" của package: "no Git call
+inside this function's own transaction — real Git work happens later, in a worker, entirely outside this
+command" — xác nhận route POST của task này chỉ cần dispatch đúng hàm này, không có gì khác phải làm để tuân
+thủ "Không làm" của chính task.
+
+Grep xác nhận đúng như brief đã nêu: hoàn toàn KHÔNG có query nào đọc trạng thái MỘT operation
+`ReleaseSetLocalCommit` theo ID ở tầng application — chỉ có `tx.Work().GetReleaseSetLocalCommit(ctx, id)
+(work.ReleaseSetLocalCommit, error)` ở tầng Tx-level repository (`internal/app/ports/work.go` dòng ~396,
+implement ở cả sqlite lẫn fake), và MỌI caller thật của method này đều đã ở sẵn trong một closure
+`WithSerializedWrite`/`WithReadOnly` (`RequestReleaseSetLocalCommit`'s own receipt-replay reconstruction,
+`execute.go`'s `loadIntent`). Đây đúng là gap thật task's own brief đã chỉ ra — phải tự thêm.
+
+Đọc `internal/domain/work/release_set_local_commit.go` toàn bộ: 3-state `REQUESTED→{COMMITTED,FAILED}`,
+field đầy đủ (`ProjectID, ReleaseSetID, RepositoryWorkspaceID, RepositoryID, ExpectedGeneration,
+ExpectedWorkspaceVersion, Actor, Message, AuthorName, AuthorEmail, MessageHash, Marker, State,
+FailureReason, ParentVCSObjectID, ResultVCSObjectID, JobID, CreatedAt, CompletedAt, Version`) — đúng field
+set cần map sang DTO wire cho query status mới.
+
+Đọc `internal/domain/work/release_set.go` (`NewReleaseSet`) phát hiện: validate Verdict/field rỗng đều trả
+`errors.New(...)` THUẦN, không sentinel — nếu không tự validate ở tầng HTTP trước khi dispatch, một request
+sai (verdict rác, thiếu field) sẽ rơi vào nhánh mặc định 500 INTERNAL của `writeCommandError`, sai hẳn ngữ
+nghĩa HTTP. Áp dụng lại đúng bài học `workitem`'s `validateScopeGrantBodies` đã dạy: validate field-level ở
+DTO trước khi build command envelope.
+
+Đọc `internal/adapters/sqlite/release_set.go`'s `createReleaseSetTx` phát hiện: mỗi entry phải trỏ tới một
+row `repositories` CÓ THẬT (kiểm tường minh trước insert, không dựa FK opaque) — nhưng KHÔNG kiểm repository
+đó có thuộc đúng `family`'s WorkspaceSet hay không; ảnh hưởng trực tiếp cách dựng fixture cho test "partial"
+(xem Quyết định #6).
+
+Đọc `internal/adapters/sqlite/fixtures.go` toàn bộ (`SeedFixtureOwners`, `SeedFixtureRepositoryWorkspace(WithLocator)`)
+— helper thật, "production code must never call this", chính là con đường sanctioned để seed
+Project/TaskFamily/RepositoryWorkspace thật cho test HTTP không cần đi qua toàn bộ flow provisioning. Phát
+hiện: `workspace_sets.family_id` có UNIQUE constraint (1 WorkspaceSet/TaskFamily) — gọi
+`SeedFixtureRepositoryWorkspace` 2 lần cho CÙNG family sẽ vỡ constraint (gặp thật khi viết test đầu tiên,
+thấy `UNIQUE constraint failed: workspace_sets.family_id`) — cần một fixture helper mới cho trường hợp "thêm
+1 repository workspace vào 1 WorkspaceSet đã có sẵn" (xem Quyết định #6).
+
+Đọc `internal/app/releasesetcommit/execute_test.go` (toàn bộ `newExecuteFixture`) làm mẫu duy nhất trong repo
+đã dựng real Git repo + real `gitworktree.Provider.Provision` + real sqlite cho chính domain này — tái dùng
+lại kỹ thuật `createTestGitRepository`/`runTestGitCommand`/`writeTestFile` (viết lại cục bộ trong package test
+của task này, vì các hàm gốc là unexported của package khác) cho đúng 1 test "partial" cần chạy worker thật.
+
+Đọc `internal/archtest/workspace_delivery_boundary_test.go`'s
+`TestDeliveryWorkspaceRoutesNeverReachWorkspaceIOOrExecutor` làm mẫu bắt buộc cho architecture test riêng của
+task này — cấm import `"os"`/`"os/exec"`/`internal/adapters/...` VÀ cấm gọi tên selector cụ thể (không chỉ
+cấm import, vì package này hợp pháp import `internal/app/releasesetcommit` — package đó CŨNG export
+`ExecuteReleaseSetLocalCommit`, hàm worker thật). Đọc `internal/app/ports/localcommit.go` xác nhận
+`CreateLocalCommit` là "the only Git-mutating method this port — or any port in this codebase — declares" —
+đúng tên cần cấm thứ hai.
+
+Grep `cmd/aw/serve.go` xác nhận đúng quy ước mọi task endpoint gần đây: import subpackage với alias
+`httpXxx`, gọi đúng 1 dòng `RegisterRoutes(routes, Dependencies{...})` ngay trước `routesFinalized = true` —
+không có gì khác phải sửa trong file composition root.
+
+### Quyết định
+
+1. **URL scheme lồng theo TaskFamily cho create/list, lồng theo ReleaseSet cho mọi thứ còn lại** —
+   `POST/GET /projects/{projectId}/task-families/{familyId}/release-sets` (create/list),
+   `GET /projects/{projectId}/release-sets/{releaseSetId}` (detail),
+   `POST .../release-sets/{releaseSetId}/{seal,abandon}`,
+   `POST .../release-sets/{releaseSetId}/local-commits` (request),
+   `GET .../release-sets/{releaseSetId}/local-commits/{localCommitId}` (status). Lý do đặt `familyId` trên
+   path cho create/list (thay vì để `familyId` là field trong body, dù domain request struct có field đó):
+   `familyId` LÀ resource cha thật của một ReleaseSet (đúng data model — `ReleaseSet.FamilyID` cố định từ lúc
+   tạo), và đặt trên path cho phép áp dụng ĐÚNG discipline "reload route's real target from path before
+   Idempotency-Key/body are even read" mà `workitem`'s `handleRequestScopeExpansion` đã lập tiền lệ (reload
+   `workapp.GetTaskFamily(scope, familyId)` — hàm này tự check scope — TRƯỚC khi đọc body), thay vì phải tự
+   viết logic check `ErrCrossProjectReference` bằng tay như khi familyId nằm trong body.
+2. **`requestReleaseSetLocalCommitBody` mang `ExpectedReleaseSetVersion`/`ExpectedWorkspaceVersion` như field
+   JSON thường, KHÔNG qua `If-Match`.** Route request-local-commit là CREATE-shaped (tạo một
+   `ReleaseSetLocalCommit` operation MỚI, không có version cũ nào của chính resource này để precondition) —
+   `prepareCreateCommand` (không phải `prepareUpdateCommand`) áp dụng đúng discipline V6-02 "If-Match chỉ bắt
+   buộc cho update, không cho create". 2 field version đã LÀ 1 phần payload được hash vào `SemanticHash` —
+   một replay với version khác thật sự là "different body", đúng ngữ nghĩa "different body conflict trước
+   I/O" đã thiết lập.
+3. **Response local-commit POST = `202 Accepted`, không phải `201 Created`.** Đây là điểm khác biệt duy nhất
+   so với mọi route CREATE khác trong `workitem`/`httpcatalog` (đều 201) — vì resource được tạo
+   (`ReleaseSetLocalCommit`) chỉ mới ở trạng thái REQUESTED, việc "commit Git thật" chưa xảy ra — đúng nghĩa
+   HTTP 202 ("the request has been accepted for processing, but the processing has not been completed") và
+   đúng chữ "local commit returns accepted operation ID for wait" trong chính task spec.
+4. **`GetReleaseSetLocalCommitStatus` — query mới, đặt trong CHÍNH `internal/app/work/release_set_queries.go`
+   (không tạo file/package mới).** Domain type `work.ReleaseSetLocalCommit` và method Tx-level
+   `tx.Work().GetReleaseSetLocalCommit` đều đã sống trong `ports.WorkRepository`/package `work` từ trước (do
+   V6-10E build) — thêm một query đọc thuần (`uow.WithReadOnly`, giống hệt shape `GetReleaseSet` ngay phía
+   trên nó trong cùng file) không vi phạm biên giới "không I/O thật" mà package `work` tự cam kết, và đặt
+   đúng vị trí "future HTTP/CLI layer (V6-10F) can call directly" mà chính doc comment gốc của file đã tự dự
+   trù sẵn tên. Trả về DTO mới `ReleaseSetLocalCommitStatus` (không trả thẳng domain type
+   `work.ReleaseSetLocalCommit` — đúng "query trả DTO riêng, không serialize aggregate" mà `ReleaseSetDetail`
+   đã lập).
+5. **Query status KHÔNG tổng hợp (aggregate) nhiều operation của cùng 1 ReleaseSet thành 1 response.** Đọc kỹ
+   Verify line "partial: a ReleaseSet with some entries committed and some not — the status query must report
+   this accurately, not just an aggregate 'some/all'" — quyết định: giữ nguyên thiết kế thuần túy
+   per-operation (1 `localCommitId` = 1 response), KHÔNG viết thêm một endpoint "GET tổng trạng thái mọi
+   local-commit của 1 ReleaseSet" nào — vì bản thân thiết kế per-operation ĐÃ tự động "chính xác, không phải
+   aggregate" (mỗi entry của ReleaseSet, nếu có yêu cầu local commit, có ID riêng, trạng thái riêng, không
+   bao giờ bị gộp) — cách chứng minh Verify line này là viết TEST thật (2 repository trong 1 ReleaseSet, 1
+   COMMITTED thật + 1 REQUESTED), không phải thêm code sản xuất mới.
+6. **Fixture helper mới `sqlite.SeedFixtureAdditionalRepositoryWorkspace`** (`internal/adapters/sqlite/fixtures.go`,
+   additive, mirror gần như nguyên xi `seedFixtureRepositoryWorkspaceTx` nhưng bỏ hẳn bước insert
+   `workspace_sets` — chỉ thêm `repositories` + `repository_workspaces` vào một `workspace_set` ĐÃ CÓ SẴN)
+   — cách duy nhất để test "partial" (Quyết định #5) có được 2 repository CÙNG một family/WorkspaceSet mà
+   không vỡ UNIQUE constraint `workspace_sets.family_id` (xem Nghiên cứu). Đây là fixture-only, "production
+   code must never call this", đúng quy ước toàn bộ `fixtures.go`.
+7. **`writeCommandError` map `releasesetcommit.ErrReleaseSetEntryNotFound` → 400, `ErrWorkspaceNotReady`/
+   `workapp.ErrReleaseSetNotOpen`/`ports.ErrLocalCommitMarkerCollision` → 409, mọi `ErrPersistenceNotFound`/
+   `ErrScopeMismatch`/`ErrCrossProjectReference` → 404 ẩn danh.** Theo đúng nguyên tắc `workitem/errors.go` đã
+   lập: lỗi "request tự nó sai hình dạng, không do race" → 400; lỗi "trạng thái thật đã đổi, phát hiện qua
+   CAS/receipt/marker" → 409 (caller được xem, vì caller đã có quyền truy cập đúng scope); lỗi "tham chiếu
+   tới resource ngoài scope/không tồn tại" → 404 ẩn danh (leakage-normalized).
+8. **`handleGetReleaseSetLocalCommitStatus` tự kiểm CẢ `ProjectID` LẪN `ReleaseSetID`** sau khi load status
+   (không chỉ `ProjectID` như `handleGetReleaseSet`) — vì URL của route này lồng theo CẢ 2 cấp
+   (`{projectId}/release-sets/{releaseSetId}/local-commits/{localCommitId}`), một `localCommitId` có thật,
+   đúng project, nhưng gọi qua URL của một `releaseSetId` KHÁC (không phải release set nó thực sự thuộc về)
+   phải bị ẩn giống hệt một ID chưa từng tồn tại — mở rộng đúng nguyên tắc leakage-normalization sang cả
+   phần path-nesting, không chỉ phần scope.
+
+### Thực hiện
+
+- `internal/app/work/release_set_queries.go` (sửa, additive): thêm `ReleaseSetLocalCommitStatus` DTO,
+  `releaseSetLocalCommitStatus(intent)` converter, `GetReleaseSetLocalCommitStatus(ctx, uow,
+  releaseSetLocalCommitID)` — mở `uow.WithReadOnly`, gọi `tx.Work().GetReleaseSetLocalCommit`. Cập nhật doc
+  comment đầu file ghi rõ phần bổ sung của task này.
+- `internal/adapters/sqlite/fixtures.go` (sửa, additive): thêm `SeedFixtureAdditionalRepositoryWorkspace`.
+- `internal/delivery/httpapi/releaseset/` (package mới, 7 file production):
+  - `dependencies.go`: `Dependencies{UnitOfWork, IDs, Clock}`.
+  - `envelope.go`: `prepareCreateCommand`/`prepareUpdateCommand`/`replayOrProceed` (bản sao riêng của
+    package này, mirror `workitem`).
+  - `errors.go`: `writeQueryError`/`writeCommandError`/`writeValidationError`/`writeReceiptHashConflict`/
+    `writePreconditionFailed`.
+  - `dto.go`: `repositoryReleaseBody` + `validateRepositoryReleaseBodies` (kiểm field rỗng, verdict hợp lệ
+    qua `gate.Verdict.IsValid()`, trùng repositoryId trong cùng request), `emptyBody`.
+  - `release_set_commands.go`: `handleCreateReleaseSet`, `loadReleaseSetForUpdate` (helper dùng chung 4 route
+    khác), `handleSealReleaseSet`, `handleAbandonReleaseSet`.
+  - `release_set_queries.go`: `releaseSetListResponse`, `handleGetReleaseSet`, `handleListReleaseSetsForFamily`.
+  - `local_commit_commands.go`: `requestReleaseSetLocalCommitBody`, `handleRequestReleaseSetLocalCommit`
+    (202 Accepted).
+  - `local_commit_queries.go`: `handleGetReleaseSetLocalCommitStatus` (kiểm cả ProjectID lẫn ReleaseSetID).
+  - `routes.go`: doc comment đầy đủ (route inventory 7 route) + `RegisterRoutes` đăng ký cả 7.
+- `internal/archtest/releaseset_delivery_boundary_test.go` (mới):
+  `TestDeliveryReleaseSetRoutesNeverReachGitOrWorker` — quét `internal/delivery/httpapi/releaseset`, cấm
+  import `"os"`/`"os/exec"`/`internal/adapters/...`, cấm gọi `.ExecuteReleaseSetLocalCommit(`/
+  `.CreateLocalCommit(`.
+- `cmd/aw/serve.go` (sửa, đúng 1 khối nhỏ): import alias `httpreleaseset`, thêm
+  `httpreleaseset.RegisterRoutes(routes, httpreleaseset.Dependencies{UnitOfWork: uow, IDs: idsource.Random{},
+  Clock: clock.System{}})` ngay trước `routesFinalized = true`, giữ nguyên toàn bộ phần còn lại.
+
+### Test
+
+- `internal/delivery/httpapi/releaseset/releaseset_test.go` (real `httpapi.NewServer` qua goroutine + real
+  `http.Client`, real `*sqlite.Store`, seed qua `sqlite.SeedFixtureOwners`/`SeedFixtureRepositoryWorkspace` —
+  đúng hard rule #1, không fabricate row): 16 test —
+  `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` (đúng 7 operationId, mọi `ScopeKind=ScopeProject`);
+  `TestRegisterRoutes_ExcludesAnyRemoteGitVerb` (tách từ/word-boundary thật — bắt được false-positive "pr"
+  bên trong "projects" ngay lần chạy đầu, phải viết lại bằng tokenizer camelCase/non-letter thay vì substring
+  thô); `TestFullJourney_CreateGetListSealAndLocalCommitRequestStatus` (create→detail→list→seal→request local
+  commit→status, happy path đầy đủ); `TestAbandonReleaseSet_HappyPath`;
+  `TestCreateReleaseSet_SameIdempotencyKey_ReplaysWithoutCreatingSecondReleaseSet`/
+  `TestCreateReleaseSet_SameKeyDifferentBody_ConflictsBeforeSecondInsert`/
+  `TestRequestReleaseSetLocalCommit_SameIdempotencyKey_ReplaysWithoutSecondOperation` (replay + conflict);
+  `TestSealReleaseSet_StaleIfMatch_PreconditionFailed`/`TestRequestReleaseSetLocalCommit_StaleReleaseSetVersion_Conflict`
+  (stale); `TestSealReleaseSet_AlreadySealed_Conflict` (2 seal thật liên tiếp, key khác nhau, ETag mới sau
+  seal đầu — 409 từ `ErrReleaseSetNotOpen`, không phải từ precondition); `TestGetReleaseSet_AnotherProject_ReturnsNotFound`/
+  `TestGetReleaseSetLocalCommitStatus_WrongReleaseSetInPath_ReturnsNotFound` (leakage-normalization, byte-for-byte
+  giống response ID không tồn tại — bài test thứ 2 phát hiện `workspace_sets.family_id` UNIQUE constraint
+  ngay lần chạy đầu, phải sửa lại fixture dùng 1 family + 2 ReleaseSet cùng trỏ `repo-a` thay vì 2 family);
+  `TestCreateReleaseSet_EmptyRepositories_Returns400WithFieldDetail`/`TestCreateReleaseSet_InvalidVerdict_Returns400WithFieldDetail`/
+  `TestRequestReleaseSetLocalCommit_MissingMessage_Returns400WithFieldDetail` (schema validation, đúng
+  `ErrorDetail.Field` cụ thể); `TestMutatingRoutes_RequireIdempotencyKey`.
+- `internal/delivery/httpapi/releaseset/local_commit_partial_test.go` (mới, 1 test):
+  `TestLocalCommitStatus_PartialAcrossTwoRepositories_ReportsEachEntryAccurately` — real Git repo tạm +
+  real `gitworktree.Provider` + real sqlite: 1 ReleaseSet, 2 entry (`repo-a`, `repo-b`, cùng family qua
+  `SeedFixtureRepositoryWorkspaceWithLocator` + `SeedFixtureAdditionalRepositoryWorkspace` mới); request local
+  commit cho CẢ hai qua route HTTP thật (202 cả hai); chỉ chạy
+  `releasesetcommit.ExecuteReleaseSetLocalCommit` (worker thật, gọi trực tiếp trong test — không qua HTTP,
+  đúng vì package `releaseset` tự nó không bao giờ được gọi hàm này) cho operation của `repo-a`; xác nhận GET
+  status trả `COMMITTED` + `ResultVCSObjectID` thật khác base cho `repo-a`, còn `repo-b` vẫn `REQUESTED`,
+  `ResultVCSObjectID` rỗng, và 2 `ReleaseSetLocalCommitID` khác nhau — chứng minh trực tiếp Verify line
+  "partial ... report this accurately, not just an aggregate 'some/all'".
+- `internal/archtest/releaseset_delivery_boundary_test.go`: `TestDeliveryReleaseSetRoutesNeverReachGitOrWorker`
+  pass; chạy lại toàn bộ `internal/archtest` (18 test kể cả `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt`
+  vốn quét đệ quy toàn bộ `internal/delivery/httpapi` — tự động phủ luôn subpackage mới của task này) — pass
+  100%.
+- `go build ./...`, `go vet ./...` sạch trên toàn bộ module.
+- `go test` có mục tiêu (không chờ suite đầy đủ chạy xong trước khi mở PR, theo đúng quy ước phiên này —
+  CI là gate cuối cùng cho suite đầy đủ): `internal/app/work`, `internal/app/releasesetcommit`,
+  `internal/archtest` (18 test), `internal/delivery/httpapi` và mọi subpackage của nó (kể cả `releaseset`,
+  `workitem`, `catalog`, `run`, `decision`, `definitions`, `evidence`, `message`, `recovery`, `adapterbuild`,
+  `safesettings`), `cmd/aw` — toàn bộ pass sạch, không regression nào phát hiện được ở phạm vi trực tiếp phụ
+  thuộc/bị ảnh hưởng bởi diff của task này. Một lần chạy `go test ./...` toàn module (~90 package, bao gồm
+  cả integration/acceptance suite chậm) được khởi động song song trong lúc viết báo cáo này — CI của PR sẽ là
+  bằng chứng đầy đủ cuối cùng cho toàn bộ module.
+
+### Verify
+
+- "schemas": `TestCreateReleaseSet_EmptyRepositories_Returns400WithFieldDetail`/
+  `TestCreateReleaseSet_InvalidVerdict_Returns400WithFieldDetail`/
+  `TestRequestReleaseSetLocalCommit_MissingMessage_Returns400WithFieldDetail` — mỗi route mutating đều có ít
+  nhất 1 test field-level 400 trước khi build command envelope.
+- "replay": `TestCreateReleaseSet_SameIdempotencyKey_ReplaysWithoutCreatingSecondReleaseSet`/
+  `TestRequestReleaseSetLocalCommit_SameIdempotencyKey_ReplaysWithoutSecondOperation` (cùng key, cùng body →
+  200 + ID gốc, không tạo bản ghi thứ 2) + `TestCreateReleaseSet_SameKeyDifferentBody_ConflictsBeforeSecondInsert`
+  (cùng key, body khác → 409 trước mọi I/O thật).
+- "stale": `TestSealReleaseSet_StaleIfMatch_PreconditionFailed` (412, ETag sai) +
+  `TestRequestReleaseSetLocalCommit_StaleReleaseSetVersion_Conflict` (409,
+  `ExpectedReleaseSetVersion` sai — `ports.ErrOptimisticConflict` thật từ tầng command, không phải tầng
+  HTTP tự đoán).
+- "partial": `TestLocalCommitStatus_PartialAcrossTwoRepositories_ReportsEachEntryAccurately` — chứng minh
+  bằng dữ liệu THẬT (1 commit Git thật, không giả lập), không chỉ bằng thiết kế API.
+- "dispatch architecture": `TestDeliveryReleaseSetRoutesNeverReachGitOrWorker` (cấm import
+  `os`/`os/exec`/`internal/adapters/...`, cấm gọi `ExecuteReleaseSetLocalCommit`/`CreateLocalCommit`) +
+  `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt` (cấm `.Record(`/`.WithSerializedWrite(` — quét đệ quy,
+  tự động phủ package mới).
+- "route inventory excludes remote verbs": `TestRegisterRoutes_ExcludesAnyRemoteGitVerb` — enumerate toàn bộ
+  7 route đã đăng ký, tách từ theo word-boundary thật (không phải substring thô — đã tự bắt lỗi false-positive
+  của chính nó lúc viết, xem phần Test), xác nhận không route/operationId nào chứa
+  push/fetch/pull/pr/merge/rebase/remote/force.
+- "Hoàn thành khi — release/local commit usable from API without delivery Git authority": chứng minh kép —
+  (1) `TestFullJourney_CreateGetListSealAndLocalCommitRequestStatus` chạy toàn bộ vòng đời qua HTTP thuần
+  (không SQL tay, không thao tác Git tay) tới tận lúc có `JobID`/`Marker` thật; (2)
+  `TestDeliveryReleaseSetRoutesNeverReachGitOrWorker` xác nhận structural — package `releaseset` không có
+  khả năng tự chạm Git dù cố tình.
+
+### Kết quả
+
+Thêm 1 query application mới (`GetReleaseSetLocalCommitStatus`, additive trong
+`internal/app/work/release_set_queries.go` đã có sẵn — đúng gap task brief đã chỉ ra: trước task này, không
+có cách nào đọc trạng thái một operation `ReleaseSetLocalCommit` ngoài việc tự mở transaction gọi thẳng
+`tx.Work()`). Package mới hoàn toàn `internal/delivery/httpapi/releaseset` (7 file production, 2 file test,
+17 test function) — 7 route HTTP thật lần đầu tồn tại: `POST/GET .../task-families/{familyId}/release-sets`,
+`GET .../release-sets/{releaseSetId}`, `POST .../release-sets/{releaseSetId}/{seal,abandon}`,
+`POST .../release-sets/{releaseSetId}/local-commits`, `GET .../local-commits/{localCommitId}`. 1
+architecture test mới trong `internal/archtest`. 1 fixture helper mới, additive, trong
+`internal/adapters/sqlite/fixtures.go`. `cmd/aw/serve.go` thêm đúng 1 khối gọi `RegisterRoutes` — đã grep xác
+nhận trực tiếp, không suy đoán từ test pass (đúng bài học V6-04 để lại: 30 test xanh từng không cứu một
+package chưa từng được `serve.go` gọi tới). Không route nào tự ghi receipt hay chạm Git/worker thật — cả 2
+khẳng định đều có architecture test THẬT đứng sau, không chỉ doc comment. `go build/vet ./...` sạch toàn
+module.
+
 ## V6-10A — Doctor endpoint
 
 ### Bối cảnh
