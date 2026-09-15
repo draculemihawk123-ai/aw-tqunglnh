@@ -34,6 +34,7 @@ import (
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
+	httprundetail "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/rundetail"
 	httpsafesettings "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/safesettings"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
 )
@@ -303,6 +304,13 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// V6-06: Run start/cancel controls (internal/delivery/httpapi/run) — an
 	// additive routes.Register call only, no shared setup above touched.
 	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: uow, IDs: idsource.Random{}})
+	// V6-06B: Run detail/graph/timeline query routes
+	// (internal/delivery/httpapi/rundetail) — an additive routes.Register
+	// call only, no shared setup above touched. Reuses the SAME
+	// process-lifetime matcher/cursorCodec httpmessage already reuses
+	// (never a second, differently-scoped one — see rundetail.Dependencies'
+	// own Matcher/Cursor doc comment).
+	httprundetail.RegisterRoutes(routes, httprundetail.Dependencies{UnitOfWork: uow, Matcher: matcher, Cursor: cursorCodec})
 	// V6-06A: Approval decision and typed WAIT signal endpoints
 	// (internal/delivery/httpapi/decision) — an additive routes.Register
 	// call only, no shared setup above touched.
@@ -324,9 +332,14 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	recoveryhttp.RegisterRoutes(routes, recoveryhttp.Dependencies{
 		UOW: uow, IDs: idsource.Random{}, Isolation: isolationChecker, Agents: agentRegistry,
 	})
-	// V6-07: conversation message endpoints (append/list/context-snapshot,
-	// internal/delivery/httpapi/message) — an additive routes.Register call
-	// only, no shared setup above touched.
+	// V6-07/V6-07A: conversation message endpoints (append/list/
+	// context-snapshot, plus V6-07A's own binary attachment upload —
+	// appendConversationAttachment — internal/delivery/httpapi/message) —
+	// an additive routes.Register call only, no shared setup above touched.
+	// The SAME uow/artifactStore this composition root already built above
+	// (never a second instance) is what AppendConversationAttachment's own
+	// durable prepare-claim mechanism and real ArtifactStore.Put/Verify
+	// calls run against.
 	httpmessage.RegisterRoutes(routes, httpmessage.Dependencies{
 		UnitOfWork: uow, ArtifactStore: artifactStore, IDs: idsource.Random{}, Clock: clock.System{},
 		Matcher: matcher, Cursor: cursorCodec,
