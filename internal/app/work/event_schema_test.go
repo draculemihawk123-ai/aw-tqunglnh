@@ -299,3 +299,49 @@ func TestScopeExpansionWithdrawnV1_RealEventPayloadDecodes(t *testing.T) {
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestWorkItemMarkedReadyV1_GoldenFixtureDecodes is WORK_ITEM_MARKED_READY's
+// own golden-fixture, byte-verified proof (V6-04A's own explicit "event
+// golden" Verify-line requirement).
+func TestWorkItemMarkedReadyV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "work_item_marked_ready_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	got, err := registry.Decode(WorkItemMarkedReadyEventType, WorkItemMarkedReadySchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", WorkItemMarkedReadyEventType, WorkItemMarkedReadySchemaVersion, err)
+	}
+	want := workItemMarkedReadyEventPayload{
+		WorkItemID: "work-item-1", ProjectID: "project-1", FamilyID: "family-1", MarkedBy: "actor-1",
+	}
+	if got != want {
+		t.Fatalf("Decode(%s v%d) = %+v, want %+v", WorkItemMarkedReadyEventType, WorkItemMarkedReadySchemaVersion, got, want)
+	}
+}
+
+// TestWorkItemMarkedReadyV1_RealEventPayloadDecodes proves MarkWorkItemReady's
+// own actual marshaled WORK_ITEM_MARKED_READY payload round-trips through the
+// registered decoder.
+func TestWorkItemMarkedReadyV1_RealEventPayloadDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	produced := workItemMarkedReadyEventPayload{
+		WorkItemID: "work-item-9", ProjectID: "project-9", FamilyID: "family-9", MarkedBy: "actor-9",
+	}
+	payload, err := json.Marshal(produced)
+	if err != nil {
+		t.Fatalf("marshal produced payload: %v", err)
+	}
+	got, err := registry.Decode(WorkItemMarkedReadyEventType, WorkItemMarkedReadySchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got != produced {
+		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
+	}
+}
