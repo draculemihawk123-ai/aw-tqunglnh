@@ -35,6 +35,7 @@ import (
 	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
+	httpreleaseset "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 	httprundetail "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/rundetail"
 	httpsafesettings "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/safesettings"
@@ -410,6 +411,10 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{},
 		Matcher: matcher, Effective: safeSettingsEffective,
 	})
+	// V6-10F: ReleaseSet list/create/detail/seal/abandon and per-entry
+	// local-commit request/status routes (internal/delivery/httpapi/releaseset)
+	// — an additive routes.Register call only, no shared setup above touched.
+	httpreleaseset.RegisterRoutes(routes, httpreleaseset.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
 	// V6-10A: GET /doctor (internal/delivery/httpapi/doctor) — an additive
 	// routes.Register call only, no shared setup above touched. Store is
 	// wrapped as a ports.QueryStore the same way internal/app/doctor's own
