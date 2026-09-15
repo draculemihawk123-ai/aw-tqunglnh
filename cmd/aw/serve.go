@@ -30,6 +30,7 @@ import (
 	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
+	httpdiagnostics "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/diagnostics"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
 	httpdoctor "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/doctor"
 	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
@@ -368,6 +369,16 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// Isolation/Agents are the real dependencies built just above.
 	recoveryhttp.RegisterRoutes(routes, recoveryhttp.Dependencies{
 		UOW: uow, IDs: idsource.Random{}, Isolation: isolationChecker, Agents: agentRegistry,
+	})
+	// V6-06C: Run diagnostics query (internal/delivery/httpapi/diagnostics)
+	// — an additive routes.Register call only, no shared setup above
+	// touched. Reuses the SAME isolationChecker/agentRegistry V6-06D already
+	// built above (never a second, separately-configured pair): diagnostics
+	// only ever performs pure, I/O-free lookups against them (a live
+	// process re-probe stays RetryBlockedActivation's own exclusive
+	// authority — see that package's own diagnostics.go doc comment).
+	httpdiagnostics.RegisterRoutes(routes, httpdiagnostics.Dependencies{
+		UOW: uow, Isolation: isolationChecker, Agents: agentRegistry,
 	})
 	// V6-07: conversation message endpoints (append/list/context-snapshot,
 	// internal/delivery/httpapi/message) — an additive routes.Register call

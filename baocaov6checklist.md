@@ -5405,6 +5405,349 @@ Một regression tự gây ra (corrupt safe-settings row làm `aw serve` fail st
 là flake môi trường (Windows file-lock cleanup race dưới tải song song) không liên quan diff — pass ngay khi
 chạy lại riêng lẻ, package đó không nằm trong bất kỳ file nào task này sửa.
 
+## V6-06C — Run diagnostics endpoints
+
+### Bối cảnh
+
+V6-06C nằm trong nhóm P2, phụ thuộc `V6-00, V6-02A, V6-06D` — cả ba đã merge trên `origin/master`
+(`c8163d3 feat(v6-07b)...`) lúc bắt đầu worktree này; `git log origin/master --oneline -3` xác nhận đúng tip,
+không cần rebase. `baocaov6checklist.md` đang bị 3 task song song khác ghi (`V6-04A`, `V6-06B`, `V6-07A`, theo
+đúng cảnh báo có sẵn) — append-only, dự kiến conflict khi merge, không phải bug.
+
+Phiên làm việc này bị gián đoạn giữa chừng bởi rate limit của session (worktree gốc
+`.claude/worktrees/agent-a8ab13a28e34d04d5` bị dọn trước khi việc implement thật sự bắt đầu — toàn bộ phần
+nghiên cứu ở trên vẫn giữ nguyên trong context, không mất). Khi tiếp tục, `git worktree list` xác nhận worktree
+cũ không còn tồn tại — dựng lại một worktree mới (`.claude/worktrees/v6-06c-run-diagnostics`, branch
+`feat/v6-06c-run-diagnostics-endpoints`) từ đúng `origin/master` (vẫn `c8163d3`, không có commit mới nào chen
+vào) rồi tiếp tục implement từ đầu — không có thay đổi thật nào bị mất vì phần trước đó thuần là đọc code.
+
+Task này khác V6-06D (dependency của chính nó) ở bản chất: V6-06D bọc 3 COMMAND thật đã tồn tại sẵn
+(`RetryBlockedActivation`/`CancelWorkItem`/`ResolveWorkItemBlocker`), còn V6-06C là một QUERY hoàn toàn mới —
+không có hàm nào trong `internal/app/runtime` từng tổng hợp state chẩn đoán across nhiều nguồn (blocker, job/
+lease, provider, workspace) cho một Run cụ thể. Cái khó thật không nằm ở việc gọi command có sẵn, mà ở việc tự
+thiết kế một response DTO an toàn từ đầu, đúng ranh giới "Không làm" task tự nêu (không PID/argv/cwd/secret,
+không internal execute-command capability), trong khi vẫn phải tái sử dụng đúng những nguồn dữ liệu thật đã có
+sẵn (V4-13's `ListOrphanedRunningExecutionAttempts`, V5-08's admission blocker taxonomy, V6-10B's
+`workspacestate`, V2-07A's `adapterbuild` registry).
+
+### Nghiên cứu
+
+Đọc nguyên văn spec (`docs/design/08-v6-api-projections.md` dòng 274-283): *"Mục tiêu: expose safe queue/job/
+lease/fence/provider/workspace diagnostics và recovery actions. Phạm vi: `GET /runs/{id}/diagnostics`
+authoritative query. Không làm: không PID, argv, cwd, secret, internal execute command hoặc installation Doctor
+data. Thực hiện: reload Run/project, return typed states/remediation and advisory valid actions with versions.
+Verify: blocked/lost/quarantined fixtures, role/project matrix, redaction and bounded output. Hoàn thành khi:
+operator chẩn đoán Run và chọn named recovery action không cần DB surgery."* Đọc thêm
+`docs/design/11-v6-00-ux-artifact.md` dòng 315-361 (Screen 8) và dòng 481-503 (Screen 13): operationId khoá
+cứng `getRunDiagnostics` (dòng 358), CLI leaf `aw run diagnostics`, application query tên `GetRunDiagnostics`
+[CHƯA CÓ] — Screen 13 (Settings) tái sử dụng ĐÚNG authority này khi drill-down từ một Run cụ thể, không định
+nghĩa một query aggregate "mọi Run cần chú ý" riêng (dòng 544-552 tự giải thích quyết định này, không phải gap
+của task).
+
+Đọc `internal/app/runtime/retry_blocked_activation.go` (đã đọc trọn trong phiên trước) và
+`baocaov6checklist.md`'s own V6-06D section — hai điểm mấu chốt cho thiết kế query này: (1) 4 admission
+blocker type (`ISOLATION_ENFORCEMENT_UNAVAILABLE`/`ADAPTER_BUILD_DRIFT`/`CAPABILITY_REQUIREMENT_UNSATISFIED`/
+`WRITE_CAPABILITY_OR_GRANT_MISSING`) là những blocker duy nhất `RetryBlockedActivation` có thẩm quyền; (2)
+`runAdmissionProbePhase` (admission.go) — hàm Phase-1 thật admission dùng để probe — gọi
+`adapterbuild.VerifyNoDrift` → `executor.Capabilities(ctx)`, một lời gọi spawn process THẬT. Đây là phát hiện
+quan trọng nhất quyết định kiến trúc: nếu diagnostics tái sử dụng `VerifyNoDrift` y hệt, một `GET` request sẽ
+tự spawn process như một side effect — vi phạm thẳng "không internal execute-command capability... never a way
+to trigger execution" của chính task. Đối chiếu `internal/app/ports/isolation.go`'s own doc comment
+(`IsolationEnforcementChecker.VerifyEnforceable` — "performs no I/O in this codebase's only implementation
+today") và `internal/adapters/process/isolation.go`'s own `IsolationChecker.VerifyEnforceable` (switch thuần,
+không I/O) xác nhận: đây là 1 trong 2 dependency admission cần real I/O, còn cái kia (isolation) thì KHÔNG —
+an toàn để gọi live từ một GET. Đọc `internal/app/agentregistry/registry.go`'s own `Resolve` xác nhận nó cũng
+chỉ là map lookup thuần (capability đã được đo MỘT LẦN lúc `agentregistry.New` construct, không phải mỗi lần
+`Resolve`) — an toàn tương tự.
+
+Đọc `internal/domain/work/blocker.go` trọn vẹn: `WorkItemBlocker.SourceRunID` được set bởi CẢ 4 producer thật
+trong codebase (`openRunCancelledBlockerTx`/`requestScopeExpansionTx`/`blockAdmission`/
+`applyCompletionPolicy`'s FAIL branch, xác nhận bằng grep từng call site `openWorkItemBlockerTx` trước khi viết
+bất cứ gì) — nghĩa là filter `blocker.SourceRunID == runID` là chính xác tuyệt đối, không phải heuristic, để
+scope blocker list đúng về một Run cụ thể (một WorkItem có thể có nhiều Run qua lịch sử, blocker của Run cũ
+không được lẫn vào response của Run hiện tại).
+
+Đọc `internal/app/workspacestate/queries.go` (V6-10B, đã có sẵn) trọn vẹn: `GetWorkspaceSetState` đã là chính
+xác "Fence/Lease/Quarantine" snapshot task này cần cho phần workspace — tái sử dụng thẳng, không viết lại.
+Đọc `internal/app/adapterbuild/commands.go`/`drift.go` xác nhận `GetAdapterBuild`/`ListAdapterBuilds` chỉ đọc
+DB (an toàn), còn `VerifyNoDrift` là hàm duy nhất trong package đó có I/O thật — quyết định KHÔNG gọi hàm đó
+(xem Quyết định #3).
+
+Đọc `internal/app/runtime/queries.go` (V6-07B, đã merge) trọn vẹn — đây là tiền lệ trực tiếp nhất cho việc đặt
+`GetRunDiagnostics` Ở ĐÂU: mọi read query V6-07B thêm (`GetContextSnapshot`/`ListEvidenceForWorkItem`) đều nằm
+NGAY TRONG package `runtime` (không phải một package con riêng), nhận `ports.CommandScope` tường minh, và tự
+verify `scope.ProjectID()` khớp `ProjectID` thật đã reload — same `requireProjectScope`/`scopeMismatch` helper
+dùng lại được trực tiếp (cùng package). Đọc `internal/delivery/httpapi/evidence/routes.go` xác nhận route
+pattern tương ứng luôn có prefix `/projects/{projectId}/...` — KHÁC hẳn V6-06/V6-06D's own flat mutation routes
+(`/runs/{id}/cancel`) vì lý do đã ghi rõ trong `run.go`'s own doc comment: `CancelRun`/`RetryBlockedActivation`/
+v.v. không nhận `ProjectID` trong request struct nên không có gì để `{projectId}` verify; NGƯỢC LẠI, mọi query
+V6-07B (giống `GetRunDiagnostics` ở đây) đều nhận `ports.CommandScope` tường minh — nên route PHẢI project-
+prefixed để path có cái để verify against. Quyết định route: `GET /projects/{projectId}/runs/{runId}/
+diagnostics`, không phải literal `/runs/{id}/diagnostics` bullet ngắn gọn trong design doc (bullet đó không
+tách chi tiết path prefix, y hệt cách nó không tách cho V6-07B's own routes).
+
+Đọc `internal/delivery/httpapi/workspacestate.go` (V6-10B) trọn vẹn: đây là khuôn mẫu chính xác cho
+"aggregated state query + advisory ValidActions tính Ở TẦNG HTTP, không phải tầng application" —
+`reconcileValidActions`/`releaseValidActions` đọc `workspacestate.WorkspaceSetState` (app-layer, không biết gì
+về `httpapi.ValidAction`) rồi tính advisory action ở delivery layer. Áp dụng y hệt cho task này: `internal/app/
+runtime.RunDiagnostics` (app layer) không import `internal/delivery/httpapi` (tránh đảo ngược dependency
+direction), còn `internal/delivery/httpapi/diagnostics` (delivery layer) tính `ValidActions` từ state đó.
+
+Đọc `internal/app/runtime/execute.go`'s own `resolvedExecutionProfileView` struct (dòng 142-172) xác nhận:
+field set của nó (`Executor.Kind/DefinitionID/VersionID/CompiledHash`, `AdapterBuild.BuildID`, `IsolationTier`,
+`AllowedCapabilities`, `Model`, `TimeoutSeconds`, `Role`) hoàn toàn an toàn — không có PID/argv/cwd/secret nào,
+xác nhận qua đọc `internal/domain/runtime/runtime.go`'s own `ExecutionAttempt` struct (không có field OS-
+process nào) và grep riêng cho `Argv`/`CwdRepositoryTarget`/`Pid`/`WorkingDirectory` toàn repo — những field đó
+CHỈ tồn tại ở `internal/domain/command` (COMMAND node pin) và `internal/adapters/process` (Supervisor thật) —
+không package nào trong số đó được import bởi file mới của task này.
+
+### Quyết định
+
+1. **Đặt `GetRunDiagnostics` trực tiếp trong package `internal/app/runtime`** (file mới `diagnostics.go`), không
+   phải một package con riêng như `workspacestate`. Lý do: query cần tái sử dụng trực tiếp nhiều helper
+   unexported của chính package đó — `loadExecutionProfile` (đọc `<nodeRunId>-execution-profile-v1` decision
+   artifact), `requireProjectScope`/`scopeMismatch` (queries.go, V6-07B) — một package riêng sẽ phải import
+   `internal/app/runtime` từ bên ngoài và không bao giờ gọi được các hàm unexported này, buộc phải viết lại
+   logic đọc execution profile lần hai (rủi ro phân kỳ với `RetryBlockedActivation`'s own read path). Tiền lệ
+   trực tiếp: V6-07B's own `GetContextSnapshot`/`ListEvidenceForWorkItem` cũng nằm ngay trong package này vì
+   cùng lý do.
+2. **KHÔNG bao giờ gọi `adapterbuild.VerifyNoDrift`** (real process spawn) — đây là quyết định kiến trúc quan
+   trọng nhất của task, dựa thẳng trên phát hiện ở phần Nghiên cứu. 3 lựa chọn đã cân nhắc:
+   - (a) Gọi y hệt `runAdmissionProbePhase` cho drift thật — **loại bỏ**: một GET request spawn process thật
+     là chính xác "internal execute-command capability" mà task tự cấm, kể cả khi hẹp (chỉ `--version`); cũng
+     biến một endpoint "safe, read-only" thành một vector DoS tiềm năng (mỗi GET spawn 1 process).
+   - (b) Không cross-reference provider gì cả, chỉ trả `AdapterBuildID` trần — **loại bỏ**: bỏ phí chính xác
+     phần "provider diagnostics" task yêu cầu ("cross-referenced against the real registry to report drift/
+     staleness").
+   - (c) **Chọn**: cross-reference THUẦN dữ liệu tĩnh + lookup an toàn — `agents.Resolve(providerKey, ...)`
+     (map lookup, không I/O) báo `ProviderConfigured` (registry hiện có live executor cho provider này hay
+     không), và `isolation.VerifyEnforceable(ctx, tier)` (pure/static, xác nhận qua đọc
+     `internal/adapters/process/isolation.go`'s own doc comment) báo `Enforceable` thật — cả hai chạy LIVE từ
+     GET vì cả hai đều an toàn, không I/O. `ProviderConfigured=false` khớp chính xác điều kiện 503
+     `agentregistry.ErrUnknownProvider` V6-06D đã map cho `RetryBlockedActivation` — advisory nhất quán với
+     command thật. Việc xác nhận DRIFT thật (không chỉ "có executor hay không") vẫn là thẩm quyền độc quyền
+     của `RetryBlockedActivation` — kết quả cấu trúc `FailureReason`/`FailureDetail` của nó là câu trả lời
+     authoritative, query này chỉ advisory hướng tới đó.
+3. **Phạm vi provider/isolation cross-reference: CHỈ NodeRun đứng sau một admission blocker đang OPEN**, không
+   phải mọi NodeRun RUNNING/historical của Run. Lý do: (1) bounded tự nhiên — số blocker OPEN luôn nhỏ, không
+   cần duyệt toàn bộ lịch sử NodeRun của một Run có thể rất dài; (2) đây chính xác là tập NodeRun mà
+   `retryBlockedActivation` sẽ nhắm tới — advisory action và provider/isolation diagnostic luôn đồng bộ với
+   nhau; (3) `loadExecutionProfile` chỉ tồn tại cho NodeRun đã qua `ScheduleExecutableNodeRun` — một NodeRun
+   BLOCKED vì admission luôn thoả điều kiện này (chính xác đối tượng `blockAdmission` tạo ra), không cần đoán.
+4. **`runDiagnosticsBase` dùng ĐÚNG MỘT `uow.WithReadOnly` transaction** cho phần Run/WorkItem/Blocker/
+   orphaned-attempt-evidence; các bước sau (`loadExecutionProfile`, `loadAdapterBuild`,
+   `loadRunRepositoryWorkspaces`) đều là transaction độc lập riêng, chạy TUẦN TỰ sau khi transaction đầu đã
+   đóng — không nesting. Lý do: `loadExecutionProfile` (execute.go) luôn được gọi NGOÀI mọi transaction bởi cả
+   2 caller thật hiện có (`ExecuteNodeHandler.Handle`'s own admission preflight,
+   `RetryBlockedActivationHandler.Retry`) — không có tiền lệ nào trong codebase này nest một
+   `uow.WithReadOnly` thứ hai bên trong một `ports.Tx` closure đã mở, và sqlite driver không được kiểm chứng an
+   toàn cho pattern đó. Đổi lại: response có thể đọc phải state hơi lệch nhau giữa các bước (read skew nhẹ) —
+   chấp nhận được vì toàn bộ response vốn đã "advisory only, never authoritative" (như mọi field khác của
+   response này).
+5. **Route: `GET /projects/{projectId}/runs/{runId}/diagnostics`, project-prefixed** — khác hẳn V6-06/V6-06D's
+   own flat routes, lý do đầy đủ ở phần Nghiên cứu (query nhận `ports.CommandScope` tường minh, cần path có
+   `{projectId}` để verify against — đúng tiền lệ V6-07B's own routes, không phải V6-06D's own).
+6. **ValidActions tính Ở TẦNG HTTP (`internal/delivery/httpapi/diagnostics/dto.go`), không phải app layer** —
+   mirror chính xác `workspacestate.go`'s own `reconcileValidActions`/`releaseValidActions` (xem Nghiên cứu).
+   `blockerValidActions` advisory `retryBlockedActivation` (target = NodeRun's own Version) cho blocker
+   admission-reason đang OPEN, `resolveWorkItemBlocker` (target = blocker's own Version) cho blocker OPEN khác
+   (trừ `SCOPE_EXPANSION_REQUIRED` — mirror `workdomain.BlockerType.ResolvableViaCommand()`'s own một ngoại lệ
+   duy nhất, so sánh bằng literal string vì `BlockerDiagnostic.Type` vốn đã là wire string, không import lại
+   `internal/domain/work` chỉ để dùng một constant). `runDiagnosticsValidActions` advisory `cancelRun`/
+   `cancelWorkItem` ở cấp response dựa trên `RunState`/`WorkItemStatus` hiện tại — advisory thuần, command thật
+   luôn tự re-derive precondition, đúng "advisory only, never authoritative" của `ValidAction` (action.go).
+7. **Response DTO tự định nghĩa field JSON riêng, không serialize thẳng `runtime.RunDiagnostics`** — cùng lý do
+   mọi task HTTP trước đã ghi (`internal/app/runtime`'s own struct không có json tag; đây cũng là điểm chốt
+   review cho chính prohibition PID/argv/cwd/secret — field allowlist tường minh, không phải "quên loại trừ").
+8. **`Dependencies{UOW, Isolation, Agents}` tái sử dụng ĐÚNG 2 dependency `cmd/aw/serve.go` đã construct sẵn
+   cho V6-06D** (`isolationChecker`, `agentRegistry`) — không thêm flag mới, không construct thêm gì ở
+   composition root. Task này không cần `IDs`/`Clock` (query không mint ID, không set timestamp mới).
+9. **Kiến trúc test riêng (`internal/archtest/diagnostics_http_test.go`)** mở rộng danh sách selector cấm so
+   với `TestRecoveryHTTPNeverReachesSchedulerOrWorkerOrMutatesStateDirectly` gốc — thêm `Capabilities` (chính
+   là lời gọi I/O thật `VerifyNoDrift` dùng, cấm tuyệt đối trong package này) và
+   `TransitionWorkItemBlockerState` (nếu package này từng tự resolve một blocker thay vì chỉ đọc, đó là bug
+   nghiêm trọng của một "safe, read-only" surface).
+
+### Thực hiện
+
+- `internal/app/runtime/diagnostics.go` (535 dòng): package doc giải thích trọn nguồn dữ liệu + ranh giới an
+  toàn; `RunDiagnostics`/`BlockerDiagnostic`/`OrphanedAttemptDiagnostic`/`ProviderDiagnostic`/
+  `IsolationDiagnostic`/`RepositoryWorkspaceDiagnostic` (DTO tự viết, allowlist tường minh);
+  `isAdmissionBlockerType` (4 admission `workdomain.BlockerType`, mirror `admission.go`'s own
+  `admissionPriority`/`isAdmissionBlockerReason` nhưng ở vocabulary `BlockerType` thay vì `TerminationReason`);
+  `runDiagnosticsBase` (1 transaction: Run+scope check, WorkItem, Blocker list filtered `SourceRunID==runID`,
+  orphaned-attempt evidence filtered theo NodeRun set của Run, mỗi list đều bounded `maxDiagnosticEntries=50`
+  với cờ `*Truncated` riêng); `GetRunDiagnostics` (entrypoint, gọi `runDiagnosticsBase` rồi
+  `collectAdmissionCrossReference`/`loadRunRepositoryWorkspaces` tuần tự, transaction độc lập); `loadAdapterBuild`
+  (đọc trực tiếp `tx.AdapterBuilds().Get`, không import `internal/app/adapterbuild` — cùng lý do
+  `admission.go`'s own `runAdmissionProbePhase` đã làm).
+- `internal/app/runtime/diagnostics_test.go` (332 dòng, `package runtime_test`, sqlite KHÔNG cần vì tái sử dụng
+  `*fake.UnitOfWork` — xem phần Test): 8 test case, tái sử dụng 100% helper có sẵn CÙNG PACKAGE
+  (`admissionFixture`/`claimableExecuteNodeJob` từ `admission_test.go`/`execute_test.go`,
+  `runCancelledBlockerFixture`/`quarantineExtraRepositoryWorkspace` từ `resolve_work_item_blocker_test.go`,
+  `cancelWorkItemFixture` từ `cancel_work_item_test.go`) — không duplicate một dòng nào vì cùng package
+  `runtime_test`.
+- `internal/delivery/httpapi/diagnostics/` (package mới, 5 file production ~403 dòng):
+  - `diagnostics.go`: package doc, `Dependencies{UOW, Isolation, Agents}`, `RegisterRoutes` — 1 descriptor duy
+    nhất.
+  - `dto.go`: `RunDiagnosticsResponse` + 6 sub-DTO, `blockerValidActions`/`runDiagnosticsValidActions` (tính
+    `httpapi.ValidAction` từ app-layer state).
+  - `handler.go`: `handleGetRunDiagnostics` — decode path, dispatch `runtime.GetRunDiagnostics`, encode kết
+    quả với `ETagFromVersion(diag.RunVersion)`.
+  - `errors.go`: `writeQueryError` — mirror `evidence/errors.go`'s own (not-found + scope-mismatch → cùng 404
+    leakage-normalized).
+  - `internal/archtest/diagnostics_http_test.go`: `TestDiagnosticsHTTPNeverReachesSchedulerOrWorkerOrMutatesStateDirectly`.
+- `cmd/aw/serve.go` (+10 dòng, không sửa dòng có sẵn): 1 import mới (`httpdiagnostics`), 1 lời gọi
+  `httpdiagnostics.RegisterRoutes(routes, httpdiagnostics.Dependencies{UOW: uow, Isolation: isolationChecker,
+  Agents: agentRegistry})` tái sử dụng đúng 2 biến V6-06D đã construct sẵn. Xác nhận bằng
+  `grep -n "httpdiagnostics\|RegisterRoutes(routes" cmd/aw/serve.go` sau khi viết xong — đúng yêu cầu review
+  bắt buộc của chính task (bài học `V6-04` để lại: 30 test xanh cho một package KHÔNG BAO GIỜ được gọi từ
+  `aw serve` thật).
+- Không migration mới — `internal/adapters/sqlite/migrations/` cao nhất vẫn `0037_release_set_local_commits.sql`
+  trên `origin/master` lúc bắt đầu (`ls internal/adapters/sqlite/migrations/ | tail -5` xác nhận trực tiếp
+  trước khi kết thúc), task này thuần đọc dữ liệu đã có, không cần schema mới.
+
+### Test
+
+Tổng 15 test case mới (8 app-layer + 7 HTTP-layer), không test nào hand-seed một RESULT giả — mọi fixture đi
+qua command/handler thật.
+
+- `internal/app/runtime/diagnostics_test.go` (8 test, `*fake.UnitOfWork` — chấp nhận được vì
+  `admission_test.go` chính package này cũng dùng fake cho đúng loại test này; sqlite thật dành cho tầng HTTP
+  bên dưới):
+  - `TestGetRunDiagnostics_AdmissionBlocked_ReportsBlockerProviderIsolation`: fixture "genuinely blocked
+    NodeRun" — `admissionFixture` + `ExecuteNodeHandler.Handle` thật với isolation checker fail thật (không
+    phải chuỗi bịa) → assert blocker/provider/isolation đúng.
+  - `TestGetRunDiagnostics_ProviderNotConfigured_ReportsFalse`: cùng blocker nhưng gọi `GetRunDiagnostics` với
+    MỘT registry khác (rỗng) so với registry đã dùng lúc admit — chứng minh `ProviderConfigured` phản ánh
+    registry LIVE của chính lời gọi, không phải registry lúc blocker mở.
+  - `TestGetRunDiagnostics_RunCancelledBlockerAndQuarantinedWorkspace`: fixture "blocked" (non-admission) +
+    "quarantined" cùng lúc — `runCancelledBlockerFixture` (RUN_CANCELLED thật qua CancelRun+coordinator) +
+    `quarantineExtraRepositoryWorkspace` (construct trực tiếp, cùng discipline
+    `resolve_work_item_blocker_test.go`'s own `ErrWorkspaceQuarantined` test đã lập tiền lệ — không có command
+    thật nào trong codebase quarantine một workspace từ trạng thái khoẻ mạnh).
+  - `TestGetRunDiagnostics_OrphanedAttempt_ReportsQueueJobLeaseEvidence`: fixture "lost" — poke
+    `TransitionExecutionAttempt` QUEUED/BLOCKED→RUNNING trực tiếp (KHÔNG claim job của nó), đúng discipline
+    "poke primitive real crash mới reach được" đã lập tiền lệ nhiều lần trong package này (`readyFixture`'s own
+    BACKLOG→READY, `startSecondRunForWorkItem`'s own ACTIVE→READY) — path thật (crash worker pool) đã có
+    coverage riêng, cực đắt (`crash_recovery_test.go`, ~15s), không hợp lý lặp lại cho unit test của tầng ĐỌC.
+  - 2 test scope (`UnknownRun`/`WrongProjectScope`/`InstallationScope` — 3 test thật): `ErrPersistenceNotFound`/
+    `ErrScopeMismatch` đúng sentinel.
+  - `TestGetRunDiagnostics_NeverExposesProcessOrSecretShapedFields`: reflect-scan tên field mọi type exported
+    trong `diagnostics.go`, cấm `pid/argv/cwd/workingdir/secret/credential/password/apikey` — tự động phủ field
+    mới thêm sau này, không cần cập nhật test thủ công mỗi lần.
+- `internal/delivery/httpapi/diagnostics/*_test.go` (7 test, TOÀN BỘ sqlite thật qua `httptest.Server` +
+  `http.Client` thật, không mock/fake nào cho persistence — cùng discipline V6-06D đã lập):
+  - `fixture_test.go`/`admission_fixture_test.go` (694 dòng, duplicate có chủ đích từ `recovery`'s own 2 file
+    cùng tên — Go test helper không export chéo package): thêm `quarantineExtraRepositoryWorkspace` (sqlite,
+    mirror app-layer). `blockedAdmissionFixture` ở đây dùng `process.NewIsolationChecker()` THẬT (không phải
+    toggle fake như `recovery`'s own bản) — vì package này không bao giờ retry, chỉ cần MỘT lần block thật, và
+    checker production đã tự reject `ENFORCED_ISOLATED` một cách trung thực (đọc doc comment xác nhận trước
+    khi dùng).
+  - `TestGetRunDiagnostics_HTTP_AdmissionBlocked_Success`: end-to-end thật qua route đã register, assert
+    JSON wire keys đúng camelCase, `blockerValidActions`/`runDiagnosticsValidActions` đúng.
+  - `TestGetRunDiagnostics_HTTP_UnknownRun_ReturnsResourceHidden` / `..._WrongProject_...`: role/project matrix
+    nửa "project" — leakage-normalized 404 cả hai trường hợp.
+  - `TestGetRunDiagnostics_HTTP_QuarantinedWorkspaceAndRunCancelledBlocker`: fixture kép qua HTTP thật.
+  - `TestGetRunDiagnostics_HTTP_OrphanedAttempt_RealSqliteEvidence`: khác bản app-layer ở chỗ dùng sqlite THẬT
+    nên `GetWriteLeaseRepositoryWorkspaceForAttempt`'s own real SQL chạy thật (fake package đó là stub luôn trả
+    `false`, đọc doc comment xác nhận) — job claim với lease NGẮN CHỦ ĐÍCH (`claimJobLeaseTTL=3s`, thay vì 1
+    phút mặc định mọi fixture khác dùng) để lease tự hết hạn thật theo wall-clock, rồi poll GET endpoint thật
+    (không sleep mù, đúng discipline `crash_recovery_test.go`'s own "polling the real query itself") tới khi
+    thấy orphaned attempt xuất hiện — thực tế bắt được trong ~3.3s, không cần đợi hết 15s deadline.
+  - `TestGetRunDiagnostics_HTTP_ArbitraryRoleStillReads`: role/project matrix nửa "role" — principal role hoàn
+    toàn không liên quan vẫn đọc được 200 OK, chứng minh trực tiếp quyết định "query này không role-gate" thay
+    vì chỉ giả định.
+  - `TestGetRunDiagnostics_HTTP_NeverExposesProcessOrSecretShapedFields`: quét RAW JSON body (không chỉ Go
+    struct field name như bản app-layer) tìm `"pid"`/`"argv"`/`"cwd"`/`"workingdirectory"`/`"secret"`/
+    `"credential"`/`"password"`/`"apikey"`/`"executablepath"` — bản HTTP-layer, độc lập với bản reflect ở
+    app-layer, phủ cả 2 lớp (Go field name và JSON wire key thật).
+
+**2 phát hiện thật trong lúc viết/chạy test (không phải giả định trước):**
+
+1. `validAgentProfileDocument`'s own `Compatibility.OS` ban đầu viết `{"linux", "windows", "darwin"}` (bản gốc
+   `recovery` chỉ có `"linux"`, tôi thêm quá tay) — `PublishDefinitionVersion` từ chối ngay với lỗi WHAT/WHY/FIX
+   rõ ràng: ADR-002 chỉ cho phép `windows`/`linux` ở Alpha. Sửa còn `{"linux", "windows"}` — không phải bug của
+   task, chỉ là lỗi gõ khi duplicate fixture.
+2. `TestGetRunDiagnostics_HTTP_OrphanedAttempt_RealSqliteEvidence` ban đầu FAIL (`len(OrphanedAttempts)=0`) vì
+   `claimJobOfKind` (duplicate từ `recovery`) giữ nguyên lease 1 PHÚT — sqlite's own real
+   `ListOrphanedRunningExecutionAttempts` (WHERE `dj.state != 'LEASED' OR dj.lease_until <= ?`) đúng đắn coi
+   job vẫn còn active lease trong 1 phút đó, bất kể Attempt đã bị poke sang RUNNING. Fake package's own
+   `ListOrphanedRunningExecutionAttempts` không bắt được lỗi này vì test app-layer không claim job trước khi
+   poke (job chưa từng LEASED → orphaned ngay). Sửa: rút `claimJobLeaseTTL` xuống 3 giây CHỈ trong package này
+   (không đụng `recovery`'s own bản, package khác, mục đích khác), test poll thật thay vì assert ngay — đúng
+   phát hiện thật về khác biệt hành vi fake vs. sqlite thật, không phải giả định trước khi viết.
+
+- `go build ./...`, `go vet ./...` sạch trên toàn bộ package.
+- `go test ./internal/app/runtime/... -run TestGetRunDiagnostics -v`: 8/8 PASS (~1.2s).
+- `go test ./internal/delivery/httpapi/diagnostics/... -v`: 7/7 PASS (~4.7s, phần lớn thời gian ở test
+  orphaned-attempt chờ lease thật hết hạn).
+- `go test ./internal/archtest/... -run TestDiagnosticsHTTP -v`: PASS.
+- `go test ./...` (toàn bộ ~90 package, chạy nền): 2 fail gặp phải, CẢ HAI đều nằm ngoài diff của task này —
+  `TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady` (`internal/app/workspaceprovision`, đã được
+  V6-10H's own section phía trên ghi nhận là flake môi trường Windows file-lock/parallel-load, KHÔNG phải lần
+  đầu gặp) và `TestEndToEnd_Release_ReadyWorkspaceSet_ReleasesRepositoryAndSet`
+  (`internal/app/workspacerelease`, cùng họ "EndToEnd" nhạy với tải song song). Cả hai package đều không nằm
+  trong diff (task này chỉ sửa `cmd/aw/serve.go` + thêm file mới ở `internal/app/runtime`,
+  `internal/delivery/httpapi/diagnostics`, `internal/archtest`) — chạy lại riêng lẻ cả hai đều PASS ngay
+  (`go test ./internal/app/workspaceprovision/... -run TestEndToEnd_Restart... -v` và
+  `go test ./internal/app/workspacerelease/... -run TestEndToEnd_Release... -v`, mỗi cái dưới 5s), xác nhận
+  đúng là race dưới tải song song của lần `go test ./...` đầy đủ, không phải regression từ diff này.
+
+### Verify
+
+- **blocked/lost/quarantined fixtures**: cả ba đều có fixture THẬT (không hand-seed) ở cả 2 tầng (app-layer
+  fake, HTTP-layer sqlite) — "blocked" phủ cả 2 dạng (admission-reason thật qua `ExecuteNodeHandler.Handle`,
+  và non-admission RUN_CANCELLED thật qua `CancelRun`+coordinator), "lost" qua poke-primitive có tài liệu đầy
+  đủ lý do (path thật quá đắt cho unit test tầng đọc), "quarantined" qua construct trực tiếp có tiền lệ đã
+  được chấp nhận trong chính codebase (`resolve_work_item_blocker_test.go`).
+- **role/project matrix**: "wrong project" → `TestGetRunDiagnostics_WrongProjectScope_ReturnsScopeMismatch`
+  (app-layer) + `TestGetRunDiagnostics_HTTP_WrongProject_ReturnsResourceHidden` (HTTP-layer, leakage-normalized
+  404 thật). "wrong role" → không áp dụng theo nghĩa "bị từ chối" (query này KHÔNG role-gate, quyết định có
+  chủ đích, ghi rõ trong package doc comment) — chứng minh bằng
+  `TestGetRunDiagnostics_HTTP_ArbitraryRoleStillReads` thay vì giả định im lặng.
+- **redaction**: 2 lớp độc lập — reflect-scan tên field Go (`diagnostics_test.go`, app-layer) + quét raw JSON
+  wire key (`diagnostics_test.go`, HTTP-layer) — cả hai PASS, không field nào tên PID/argv/cwd/secret-shaped
+  từng lọt qua.
+- **bounded output**: `maxDiagnosticEntries=50` áp dụng cho blocker list, orphaned-attempt list, repository-
+  workspace list, provider/isolation cross-reference loop — mỗi list bounded có `*Truncated` cờ riêng (chỉ
+  `OrphanedAttemptsTruncated` thật sự cần thiết publicly, 2 list còn lại hiếm khi vượt cap trong thực tế nhưng
+  vẫn bounded phòng thủ). GAP ghi nhận trung thực: không dựng test THẬT chạm ngưỡng 51 item (chi phí dựng 51
+  blocker/attempt thật qua pipeline production không tương xứng phạm vi task — "HTTP transport + aggregation",
+  không phải "chứng minh lại slicing logic cơ bản của Go"), logic capping đã review thủ công (so sánh
+  `len(...) >= maxDiagnosticEntries` trước mỗi `append`, đơn giản, rủi ro regression thấp).
+- **"Hoàn thành khi": operator chẩn đoán Run và chọn named recovery action không cần DB surgery** — xác nhận
+  bằng `grep` trực tiếp `cmd/aw/serve.go` (không chỉ tin `go build`), cộng
+  `TestGetRunDiagnostics_HTTP_AdmissionBlocked_Success` chạy end-to-end qua đúng `RegisterRoutes` handler thật,
+  trả về `retryBlockedActivation`/`cancelRun`/`cancelWorkItem` advisory action có `TargetVersion` — đủ để một
+  client gọi `POST /node-runs/{nodeRunId}/retry-blocked-activation` (V6-06D) ngay sau đó mà không cần biết gì
+  về schema DB.
+
+### Kết quả
+
+Package mới `internal/app/runtime/diagnostics.go` (535 dòng) + `internal/delivery/httpapi/diagnostics` (5 file
+production ~403 dòng; 4 file test ~1180 dòng, 7 test case) + `internal/app/runtime/diagnostics_test.go` (332
+dòng, 8 test case) + 1 architecture test mới (`internal/archtest/diagnostics_http_test.go`) + `cmd/aw/serve.go`
++10 dòng (1 import mới, 1 `RegisterRoutes` call tái sử dụng nguyên `isolationChecker`/`agentRegistry` V6-06D đã
+construct). 15 test case mới, tất cả PASS.
+
+1 route HTTP thật lần đầu tồn tại: `GET /projects/{projectId}/runs/{runId}/diagnostics` — chạy được qua
+`aw serve` thật, xác nhận bằng grep trực tiếp `cmd/aw/serve.go`, không chỉ tin test package cô lập.
+
+Quyết định kiến trúc quan trọng nhất: KHÔNG bao giờ gọi `adapterbuild.VerifyNoDrift` (real process spawn) từ
+truy vấn GET này, dù task's own instruction có gợi ý "mirror EXACT check RetryBlockedActivation dùng" — đọc kỹ
+lại "Không làm: ... never a way to trigger execution" và quyết định tách rõ: diagnostics chỉ báo cáo
+`ProviderConfigured` (registry có live executor hay không — pure lookup) và `Enforceable` (isolation tier có
+enforce được hay không — pure/static check), không bao giờ báo cáo DRIFT thật (cần I/O thật) — quyền đó vẫn
+thuộc độc quyền `RetryBlockedActivation`. Advisory `ValidActions` tính hoàn toàn ở tầng HTTP
+(`internal/delivery/httpapi/diagnostics/dto.go`), mirror đúng khuôn `workspacestate.go` đã lập, không lẫn vào
+app-layer query.
+
+Một operator giờ có thể `GET` một Run để thấy đầy đủ blocker/queue/lease/provider/isolation/workspace state
+kèm advisory recovery action có version, rồi gọi thẳng `RetryBlockedActivation`/`CancelWorkItem`/
+`ResolveWorkItemBlocker` (V6-06D) hoặc `CancelRun` (V6-06) — không cần DB surgery, đúng "Hoàn thành khi" của
+chính task.
+
 ## V6-04A — Public MarkWorkItemReady authority và route
 
 ### Bối cảnh
