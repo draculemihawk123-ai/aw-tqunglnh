@@ -14,6 +14,10 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
+	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
@@ -24,6 +28,7 @@ import (
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
+	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
 )
@@ -55,6 +60,28 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	port := flags.Int("port", 0, "bind port (0 = OS-assigned ephemeral port)")
 	maxBodyBytes := flags.Int64("max-body-bytes", 1<<20, "maximum accepted request body size in bytes")
 	principalConfigPath := flags.String("principal-config", "", "path to a trusted JSON config file's localPrincipal.actor/localPrincipal.roles (ADR-028); omitted or missing means the local-operator/[operator] default — this is the only allowed way to select a principal, there is no --actor/--role flag")
+	// claudeExecutable/codexExecutable are V6-06D's own composition-root
+	// addition: RetryBlockedActivation (internal/delivery/httpapi/recovery)
+	// needs a real, live agentregistry.Registry to re-probe a pinned
+	// AdapterBuildVersion's own capabilities (the SAME dependency a
+	// production ExecuteNodeHandler already carries). Each flag names the
+	// executable for that provider EXACTLY the way `aw adapter probe/register
+	// --executable` already does (cmd/aw/adapter.go's own newAgentExecutor) —
+	// deliberately omitted (empty) by default, never defaulted to a bare
+	// "claude"/"codex" PATH lookup: agentregistry.New itself does real I/O
+	// (spawns the executable to measure its capabilities) for every executor
+	// it is given, so silently registering both by default would make `aw
+	// serve` itself fail to start on any machine that does not happen to
+	// have both CLIs installed (most CI/dev machines). Leaving both unset
+	// yields an empty Registry — the documented-safe zero-executor default
+	// (internal/app/runtime/execute.go's own NewExecuteNodeHandler doc
+	// comment) — under which RetryBlockedActivation still runs its
+	// isolation check for real, and only fails closed with a typed 503 if a
+	// retry actually needs to resolve a provider this server was never
+	// configured to run. See baocaov6checklist.md's V6-06D section for the
+	// full reasoning.
+	claudeExecutable := flags.String("claude-executable", "", "path to the Claude CLI executable to register as a live agent provider for RetryBlockedActivation's own admission re-checks (omitted = provider not registered, RetryBlockedActivation fails closed with 503 for a build pinned to it)")
+	codexExecutable := flags.String("codex-executable", "", "path to the Codex CLI executable to register as a live agent provider for RetryBlockedActivation's own admission re-checks (omitted = provider not registered, RetryBlockedActivation fails closed with 503 for a build pinned to it)")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
@@ -121,6 +148,47 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// identical way sessionToken above already is (idsource.Random{}.NewID(),
 	// never a fixed compiled-in value), never persisted or logged.
 	cursorCodec := httpapi.NewCursorCodec([]byte(idsource.Random{}.NewID()))
+
+	// V6-06D: build the real agent-provider registry
+	// internal/delivery/httpapi/recovery's own RetryBlockedActivation route
+	// needs — see --claude-executable/--codex-executable's own doc comment
+	// above for why each provider is only ever registered when the operator
+	// explicitly opts in, never defaulted. agentregistry.New does real I/O
+	// (spawns the executable once, synchronously, to measure its live
+	// capabilities) for every executor passed to it, so this fails the whole
+	// `aw serve` startup closed — the same "a provider the operator asked
+	// for but is actually broken should fail fast at boot, not silently
+	// accept requests that will later fail confusingly" choice `aw adapter
+	// probe/register` already makes for the identical construction.
+	var agentExecutors []ports.AgentExecutor
+	if executable := strings.TrimSpace(*claudeExecutable); executable != "" {
+		claudeExecutor, err := claude.New(process.NewSupervisor(), claude.Config{Executable: executable})
+		if err != nil {
+			return fmt.Errorf("construct claude agent executor: %w", err)
+		}
+		agentExecutors = append(agentExecutors, claudeExecutor)
+	}
+	if executable := strings.TrimSpace(*codexExecutable); executable != "" {
+		codexExecutor, err := codex.New(process.NewSupervisor(), codex.Config{Executable: executable})
+		if err != nil {
+			return fmt.Errorf("construct codex agent executor: %w", err)
+		}
+		agentExecutors = append(agentExecutors, codexExecutor)
+	}
+	// Zero executors (the default) is the documented-safe empty Registry
+	// (internal/app/runtime/execute.go's own NewExecuteNodeHandler doc
+	// comment: "a caller with no real adapter builds ever pinned can safely
+	// pass agentregistry.New(ctx) with zero executors registered") — never a
+	// nil *agentregistry.Registry, which RetryBlockedActivationHandler.Retry
+	// would otherwise have to guard against separately.
+	agentRegistry, err := agentregistry.New(ctx, agentExecutors...)
+	if err != nil {
+		return fmt.Errorf("build agent executor registry: %w", err)
+	}
+	// process.NewIsolationChecker is the one real ports.IsolationEnforcementChecker
+	// this codebase has (ADR-013/ADR-023) — static and I/O-free, so unlike
+	// the registry above this is unconditional, no flag needed.
+	isolationChecker := process.NewIsolationChecker()
 
 	routes := httpapi.NewRouteRegistry()
 	checker := httpapi.NewReadinessChecker()
@@ -193,6 +261,13 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// project-scoped definitions — an additive routes.Register call only,
 	// no shared setup above touched.
 	httpdefinitions.RegisterRoutes(routes, httpdefinitions.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
+	// V6-06D: RetryBlockedActivation/CancelWorkItem/ResolveWorkItemBlocker
+	// recovery command routes (internal/delivery/httpapi/recovery) — an
+	// additive routes.Register call only, no shared setup above touched.
+	// Isolation/Agents are the real dependencies built just above.
+	recoveryhttp.RegisterRoutes(routes, recoveryhttp.Dependencies{
+		UOW: uow, IDs: idsource.Random{}, Isolation: isolationChecker, Agents: agentRegistry,
+	})
 	// V6-07: conversation message endpoints (append/list/context-snapshot,
 	// internal/delivery/httpapi/message) — an additive routes.Register call
 	// only, no shared setup above touched.
