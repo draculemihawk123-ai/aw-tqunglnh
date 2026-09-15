@@ -98,6 +98,32 @@ FROM evidence WHERE attempt_id = ? ORDER BY kind`, attemptID)
 	return result, nil
 }
 
+// ListEvidenceForWorkItem implements ports.RuntimeRepository (V6-07B),
+// ordered by (created_at, kind) for a stable, deterministic result.
+func (r runtimeRepository) ListEvidenceForWorkItem(ctx context.Context, workItemID string) ([]runtime.Evidence, error) {
+	rows, err := r.tx.QueryContext(ctx, `
+SELECT id, project_id, work_item_id, run_id, node_run_id, attempt_id, kind, verdict,
+       artifact_manifest_json, revision_set_json, policy_version, created_at
+FROM evidence WHERE work_item_id = ? ORDER BY created_at, kind`, workItemID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list evidence for work item %s: %w", workItemID, err))
+	}
+	defer rows.Close()
+
+	var result []runtime.Evidence
+	for rows.Next() {
+		evidence, err := scanEvidenceRowFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, evidence)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate evidence rows for work item %s: %w", workItemID, err)
+	}
+	return result, nil
+}
+
 type evidenceRowScanner interface {
 	Scan(dest ...any) error
 }
