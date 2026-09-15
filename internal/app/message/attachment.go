@@ -520,6 +520,37 @@ func claimOrResumeAttachmentUpload(ctx context.Context, uow ports.UnitOfWork, ta
 // ActualSHA256 is expected to equal prepared.ContentHash exactly; anything
 // else is a genuine internal-consistency error, surfaced rather than
 // papered over.
+//
+// A THIRD outcome, beyond "I won" and "I lost but the claim is still here":
+// the winner may have already run its ENTIRE remaining sequence — its own
+// RecordAttachmentBlobReady, its own final Artifact+Message+event+receipt
+// transaction (step 6), AND its own post-commit releaseAttachmentClaimBestEffort
+// (step 7) — as three separate, already-committed transactions, all before
+// this goroutine's own CAS attempt (or its post-conflict re-read) ever runs.
+// In that case the claim row is simply GONE: either RecordAttachmentBlobReady
+// itself returns ports.ErrPersistenceNotFound directly (the row vanished
+// between this goroutine's own claimOrResumeAttachmentUpload read and this
+// CAS attempt), or the CAS loses with ErrOptimisticConflict and the
+// following re-read (GetAttachmentClaim) returns ErrPersistenceNotFound (the
+// row vanished between the failed CAS and the re-read). Both are the SAME
+// situation, not an error: releaseAttachmentClaimBestEffort is only ever
+// called AFTER the owning transaction that writes the receipt has already
+// committed (step 7's own doc comment), so "the claim is gone" always
+// implies "a receipt for this exact command already exists". This function
+// returns the zero AttachmentPrepareClaim with a nil error in that case —
+// safe because its own caller (AppendConversationAttachment) never reads
+// the claim this function returns; it only proceeds straight to the final
+// WithSerializedWrite transaction, which re-checks the receipt FIRST
+// (loadOrValidateReceiptTx) before touching anything else and will
+// correctly replay the winner's own result instead of attempting a second
+// InsertArtifact/AppendMessage. (If this reasoning ever turned out to be
+// wrong for some OTHER, not-yet-existing caller of ReleaseAttachmentClaim
+// that releases a claim with no receipt, the outcome would still be safe,
+// merely redundant: the final transaction's own receipt PRIMARY KEY
+// (actor, scope_key, idempotency_key, command_type) is command_receipts'
+// own ultimate, always-enforced idempotency backstop — the claim is only
+// ever a fencing optimization for the real-I/O phase, never itself the
+// source of truth for "has this command already completed".)
 func recordAttachmentBlobReadyWithRetry(ctx context.Context, uow ports.UnitOfWork, claim ports.AttachmentPrepareClaim, prepared artifact.Artifact, now time.Time) (ports.AttachmentPrepareClaim, error) {
 	var result ports.AttachmentPrepareClaim
 	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
@@ -531,10 +562,22 @@ func recordAttachmentBlobReadyWithRetry(ctx context.Context, uow ports.UnitOfWor
 			result = updated
 			return nil
 		}
+		if errors.Is(err, ports.ErrPersistenceNotFound) {
+			// The claim is already gone — the winner finished its entire
+			// sequence, receipt included, before this CAS ever ran. See
+			// this function's own doc comment above.
+			return nil
+		}
 		if !errors.Is(err, ports.ErrOptimisticConflict) {
 			return err
 		}
 		fresh, getErr := tx.AttachmentClaims().GetAttachmentClaim(ctx, claim.UploadID)
+		if errors.Is(getErr, ports.ErrPersistenceNotFound) {
+			// Same situation, just discovered one step later: the claim
+			// was released between this goroutine's own lost CAS and this
+			// re-read. See this function's own doc comment above.
+			return nil
+		}
 		if getErr != nil {
 			return getErr
 		}

@@ -5960,3 +5960,28 @@ một phiên khác (V6-06B) chuyển nhánh dưới chân một lần — toàn 
 trong working tree (git xác nhận khi `checkout` lại đúng nhánh của task), không mất dữ liệu; xử lý bằng cách commit
 + push ngay lập tức lên remote để khoá lại an toàn trước khi tiếp tục, đúng khuyến nghị "commit thay vì để diff lớn
 nằm chưa commit trong thư mục dùng chung".
+
+**Bug thật CI bắt được sau khi mở PR #57** (không phải flake — phiên giám sát tự review crash-safety design rồi
+chỉ đích danh): CI job `contract` (ubuntu-latest) fail
+`TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` với lỗi
+`persistent record was not found: attachment claim attachment-upload-...`. Nguyên nhân thật:
+`recordAttachmentBlobReadyWithRetry`'s own CAS thua race (`ErrOptimisticConflict`) rồi đọc lại claim để "nhận kết
+quả của người thắng" — code cũ giả định claim row VẪN CÒN TỒN TẠI ở bước đọc lại đó. Nhưng nếu người thắng đã chạy
+xong TOÀN BỘ chuỗi còn lại — CAS thành công, transaction cuối commit (Artifact+Message+event+receipt), RỒI
+`releaseAttachmentClaimBestEffort` xoá claim — cả BA bước đó là 3 transaction TÁCH BIỆT đã commit xong, trước khi
+CAS của người thua kịp chạy — thì cả chính lệnh gọi CAS lẫn bước đọc lại sau đó đều gặp
+`ports.ErrPersistenceNotFound` (không phải `ErrOptimisticConflict`), và code cũ coi đây là lỗi cứng thay vì "ai đó
+đã xong rồi". Sửa: `recordAttachmentBlobReadyWithRetry` giờ coi `ErrPersistenceNotFound` (ở CẢ lần gọi CAS trực
+tiếp LẪN lần đọc lại sau một `ErrOptimisticConflict`) là tín hiệu an toàn "claim đã bị release vì command đã hoàn
+tất" — trả `nil` để luồng đi tiếp xuống transaction cuối, nơi `loadOrValidateReceiptTx` tự tìm thấy receipt người
+thắng đã ghi và replay đúng kết quả, không bao giờ tạo Message thứ 2. Đúng như doc comment mới của hàm này tự
+chứng minh: `command_receipts`'s own PRIMARY KEY `(actor, scope_key, idempotency_key, command_type)` mới là
+backstop idempotency THẬT SỰ — claim chỉ là fencing tối ưu cho pha I/O thật, không phải nguồn sự thật cho "command
+đã xong chưa". Thêm 1 test tái tạo đúng interleaving này một cách TẤT ĐỊNH (không cần goroutine/timing):
+`TestAppendConversationAttachment_ClaimReleasedBeforeOwnCAS_FallsThroughToReceiptReplay` dùng một
+`interceptOnceUOW` mới — chèn một lệnh gọi `AppendConversationAttachment` "người thắng" chạy THẬT, XONG HẲN, ngay
+trước khi lệnh `WithSerializedWrite` thứ 2 (chính là CAS của "người thua") được phép chạy — xác nhận: (1) test
+này FAIL với đúng lỗi CI đã thấy khi tạm bỏ đoạn `ErrPersistenceNotFound` mới (xác nhận test THẬT SỰ bắt được
+bug, không phải test vô nghĩa), (2) test PASS sau khi khôi phục fix. Chạy lại
+`TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` (chính test CI đã fail) 11 lần
+liên tiếp cộng test tất định mới 5 lần — không lần nào fail. `go build/vet/test ./...` sạch lại trên toàn repo.

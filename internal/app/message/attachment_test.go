@@ -67,6 +67,33 @@ func (u *countingUOW) WithSerializedWrite(ctx context.Context, fn func(ports.Tx)
 	return u.UnitOfWork.WithSerializedWrite(ctx, fn)
 }
 
+// interceptOnceUOW wraps a real ports.UnitOfWork and, on the Nth
+// WithSerializedWrite call (1-indexed), runs before ONCE — BEFORE
+// delegating to the real underlying call — then proceeds normally. This is
+// this test file's own deterministic (no goroutines, no timing) way to
+// force one EXACT interleaving a real race could produce: "some other,
+// fully independent transaction commits in between two steps of MY OWN
+// call". Unlike countingUOW (which only ever simulates a crash — the
+// wrapped call never runs at all), this lets a real, different unit of
+// work complete FOR REAL at the exact point named, then lets the
+// intercepted call proceed against whatever state that left behind.
+type interceptOnceUOW struct {
+	ports.UnitOfWork
+	triggerAtWrite int
+	before         func()
+	writeCalls     int
+	triggered      bool
+}
+
+func (u *interceptOnceUOW) WithSerializedWrite(ctx context.Context, fn func(ports.Tx) error) error {
+	u.writeCalls++
+	if u.writeCalls == u.triggerAtWrite && !u.triggered {
+		u.triggered = true
+		u.before()
+	}
+	return u.UnitOfWork.WithSerializedWrite(ctx, fn)
+}
+
 var errSimulatedPutFailure = errors.New("simulated ArtifactStore.Put failure")
 
 // flakyStore wraps a real ports.ArtifactStore and fails every Put call
@@ -468,6 +495,88 @@ func TestAppendConversationAttachment_SameIdempotencyKeyDifferentDigest_Conflict
 		baseAttachmentRequest(workItemID, contentB, "text/plain", sha256Hex(contentB)))
 	if !errors.Is(err, appmessage.ErrAttachmentUploadConflict) {
 		t.Fatalf("err = %v, want ErrAttachmentUploadConflict", err)
+	}
+}
+
+// TestAppendConversationAttachment_ClaimReleasedBeforeOwnCAS_FallsThroughToReceiptReplay
+// is a DETERMINISTIC (no goroutines, no timing) reproduction of a real race
+// window CI caught (a genuinely concurrent run of
+// TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing
+// failed with "persistent record was not found: attachment claim ..."):
+// recordAttachmentBlobReadyWithRetry's own CAS attempt (its own
+// WithSerializedWrite call #2 in the sequence) can find the claim row
+// ALREADY GONE — not merely version-conflicted — when a fully independent,
+// identical attempt (same UploadID: same Actor/Scope/IdempotencyKey/
+// CommandType) has, in between THIS goroutine's own step 1 (claim) and step
+// 2 (record-blob-ready) calls, completely finished its ENTIRE remaining
+// sequence: its own successful CAS, its own final Artifact+Message+event+
+// receipt transaction, AND its own post-commit claim release — all three as
+// separate, already-committed transactions.
+//
+// interceptOnceUOW reproduces this exact interleaving deterministically:
+// right before this goroutine's own write #2 (the CAS) is allowed to run
+// for real, it drives a COMPLETE, real, independent AppendConversationAttachment
+// call (same cmd, same content) through to its own full completion —
+// claim(found, since THIS goroutine's own write #1 already created it),
+// Put(safe no-op, identical bytes), CAS(succeeds — nobody has touched the
+// claim yet), final tx(commits: receipt now exists), release(claim row
+// deleted) — all using the SAME underlying UnitOfWork, entirely for real,
+// before control ever returns to let this goroutine's own write #2 proceed
+// against a claims table where the row is simply gone.
+//
+// Before the fix (recordAttachmentBlobReadyWithRetry treating a direct
+// ports.ErrPersistenceNotFound from RecordAttachmentBlobReady as a hard
+// failure), this test reproduced the exact CI failure. After the fix, this
+// goroutine's own call falls through to its own final transaction, whose
+// own receipt recheck finds the receipt the "winner" already committed and
+// correctly replays that identical result — never a duplicate Message row.
+func TestAppendConversationAttachment_ClaimReleasedBeforeOwnCAS_FallsThroughToReceiptReplay(t *testing.T) {
+	baseUOW, store, ids, workItemID := setupFixture(t)
+	ctx := context.Background()
+	clk := clock.NewFixed(time.Now())
+	content := []byte("claim gets released by a full independent winner before my own CAS runs")
+	digest := sha256Hex(content)
+	cmd := attachmentCommand("idem-notfound-race", "hash-notfound-race")
+
+	var winnerResult appmessage.AppendMessageResult
+	intercepting := &interceptOnceUOW{
+		UnitOfWork:     baseUOW,
+		triggerAtWrite: 2,
+		before: func() {
+			var err error
+			winnerResult, err = appmessage.AppendConversationAttachment(ctx, baseUOW, store, ids, clk, cmd,
+				baseAttachmentRequest(workItemID, content, "text/plain", digest))
+			if err != nil {
+				t.Fatalf("independent winner completion: %v", err)
+			}
+			// Confirm the winner really did release the claim — the exact
+			// precondition this test needs before letting the loser's own
+			// CAS attempt run.
+			uploadID := appmessage.DeterministicAttachmentUploadID(cmd)
+			if _, found := getAttachmentClaim(t, baseUOW, uploadID); found {
+				t.Fatalf("setup: expected the winner to have released the claim already")
+			}
+		},
+	}
+
+	loserResult, err := appmessage.AppendConversationAttachment(ctx, intercepting, store, ids, clk, cmd,
+		baseAttachmentRequest(workItemID, content, "text/plain", digest))
+	if err != nil {
+		t.Fatalf("loser (CAS-race-loses-to-a-fully-completed-winner) call: %v", err)
+	}
+	if !intercepting.triggered {
+		t.Fatalf("setup: the interceptor never fired — this test would not have exercised the race at all")
+	}
+	if loserResult != winnerResult {
+		t.Fatalf("loser result %+v != winner result %+v", loserResult, winnerResult)
+	}
+
+	msgs, err := appmessage.ListMessages(ctx, baseUOW, workItemID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("len(msgs) = %d, want 1 (no duplicate from the claim-already-released race)", len(msgs))
 	}
 }
 
