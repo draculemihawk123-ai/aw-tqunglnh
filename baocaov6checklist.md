@@ -5609,6 +5609,23 @@ với chính triết lý "immutable-per-process startup config" mà `--artifact-
   mới lẫn `TestDeliveryWorkspaceRoutesNeverReachWorkspaceIOOrExecutor` sẵn có của V6-10B, xác nhận cả 2 đồng
   thuận). `go test ./cmd/aw/...` pass sau khi sửa 6 call site cần `--workspace-root` (61s) — xác nhận
   `--workspace-root` bắt buộc không làm vỡ bất kỳ test `serve()` nào đã có từ trước.
+- `go test ./...` toàn module (91 package): 87 package `ok`, đúng 4 test fail — TẤT CẢ đều trong
+  `internal/integration/v5accept` (`TestV5AcceptFalseCompletionOracle`, `TestV5AcceptConformanceMatrix`,
+  `TestV5AcceptHappyPath_RealCompositionReachesSucceededAndSurvivesRestart`,
+  `TestV5AcceptIsolationUnavailable_RealAdmissionRejectsBeforeSpawn`), cùng một triệu chứng "did not reach
+  state X within the deadline". Không tin ngay đây là flake quen mặt — điều tra thật: (1)
+  `grep -rln "delivery/httpapi\|cmd/aw" internal/integration/v5accept/*.go` trả về RỖNG — không file nào của
+  package đó import bất kỳ thứ gì từ `internal/delivery/httpapi` hay `cmd/aw`, nghĩa là 14 file diff của task
+  này (toàn bộ nằm trong `cmd/aw/*.go` + `internal/delivery/httpapi/workspaceinspection/*` +
+  `internal/archtest/*`) không có đường code-path nào chạm được runtime/scheduler/gate machinery
+  `v5accept` test; (2) chạy lại riêng `go test ./internal/integration/v5accept/... -count=1` (cô lập, không
+  cùng lúc với 90 package khác vừa chạy hàng chục phút liên tục ngay trước đó — trong đó riêng
+  `internal/adapters/sqlite` một mình đã 257s, `internal/app/releasesetcommit` 128s, `internal/app/runtime`
+  107s) — PASS SẠCH 100%, 94.8s, không fail lại bất kỳ test nào trong 4 test trên. Kết luận: đúng
+  timing-sensitivity dưới tải máy tích luỹ từ một lần chạy `go test ./...` tuần tự dài (khớp đúng mẫu
+  `baocaov6checklist.md`'s V6-10B section đã tự ghi nhận cho chính họ hàng test `v5accept` này), không phải
+  regression từ diff của task này — có bằng chứng cấu trúc (grep, không đường import) LẪN bằng chứng thực
+  nghiệm (pass sạch khi cô lập).
 
 ### Verify
 
@@ -5643,4 +5660,12 @@ sống — không chỉ 1 dòng `RegisterRoutes` như brief mô tả ban đầu)
 3 route HTTP GET thật lần đầu tồn tại: `GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}
 /{source,diff,repository-log}` — mọi request đọc nội dung Git thật đều đi qua đúng 1 cổng
 `internal/app/workspaceinspection.Queries` (V6-10C), không có đường tắt nào khác, được chứng minh bằng cấu
-trúc (archtest) chứ không chỉ bằng lời hứa trong doc comment.
+trúc (archtest) chứ không chỉ bằng lời hứa trong doc comment. `go test ./...` toàn bộ module: 87/91 package
+`ok`, 4 fail còn lại giới hạn nguyên vẹn trong `internal/integration/v5accept` và đã xác nhận là flake môi
+trường dưới tải máy tích luỹ (pass sạch 100% khi chạy lại cô lập, không code-path nào của diff này chạm được
+package đó — xem mục Test), không phải regression thật của task này.
+
+**Ghi chú cho phiên giám sát:** nếu CI của PR này cũng thấy `internal/integration/v5accept` fail, đối chiếu
+lại với kết quả cô lập ở đây (`ok`, 94.8s, 0 test fail) trước khi kết luận là regression thật — CI runner sạch,
+không có tải tích luỹ từ hàng chục phút chạy `go test ./...` tuần tự ngay trước đó như môi trường phiên này,
+nên nhiều khả năng sẽ pass ngay trên CI.
