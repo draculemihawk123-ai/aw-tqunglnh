@@ -26,6 +26,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
@@ -251,6 +252,10 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// V6-06: Run start/cancel controls (internal/delivery/httpapi/run) — an
 	// additive routes.Register call only, no shared setup above touched.
 	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: uow, IDs: idsource.Random{}})
+	// V6-06A: Approval decision and typed WAIT signal endpoints
+	// (internal/delivery/httpapi/decision) — an additive routes.Register
+	// call only, no shared setup above touched.
+	decision.RegisterRoutes(routes, decision.Dependencies{UOW: uow, IDs: idsource.Random{}})
 	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
 	// and release/reconcile request routes. Same uow/idsource.Random{} every
 	// other route registration in this process already uses — never a
