@@ -27,6 +27,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
+	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
@@ -260,6 +261,11 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// other route registration in this process already uses — never a
 	// fresh source per request.
 	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{})
+	// V6-05: Definition authoring routes (internal/delivery/httpapi/definitions)
+	// — create/validate/publish/list/detail/version/diff for global and
+	// project-scoped definitions — an additive routes.Register call only,
+	// no shared setup above touched.
+	httpdefinitions.RegisterRoutes(routes, httpdefinitions.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
 	// V6-06D: RetryBlockedActivation/CancelWorkItem/ResolveWorkItemBlocker
 	// recovery command routes (internal/delivery/httpapi/recovery) — an
 	// additive routes.Register call only, no shared setup above touched.
