@@ -30,6 +30,7 @@ import (
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
+	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
@@ -330,6 +331,12 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		UnitOfWork: uow, ArtifactStore: artifactStore, IDs: idsource.Random{}, Clock: clock.System{},
 		Matcher: matcher, Cursor: cursorCodec,
 	})
+	// V6-07B: Evidence, ContextSnapshot and artifact query/content-stream
+	// routes (internal/delivery/httpapi/evidence) — an additive
+	// routes.Register call only, no shared setup above touched. Reuses the
+	// SAME artifactStore every other artifact-producing/consuming route in
+	// this process already uses, never a second one rooted elsewhere.
+	httpevidence.RegisterRoutes(routes, httpevidence.Dependencies{UnitOfWork: uow, ArtifactStore: artifactStore})
 	// V6-10J: adapter-build registry routes (list/detail/probe/register,
 	// internal/delivery/httpapi/adapterbuild) — an additive routes.Register
 	// call only, no shared setup above touched. Installation-scoped, over

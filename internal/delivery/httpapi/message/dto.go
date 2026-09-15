@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	runtimeapp "github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	messagedomain "github.com/taQuangLing/agent-workflow/internal/domain/message"
 )
@@ -98,72 +99,22 @@ type listQueryFingerprint struct {
 
 // --- ContextSnapshot bounded detail ---
 
-// messageRefView/resourceRefView/evidenceRefView/revisionView mirror
-// contextsnapshot.MessageRef/ResourceRef/EvidenceRef/workspace.Revision's
-// own fields exactly, with json tags (the domain types carry none) — every
-// field here is itself a reference (an ID or a content hash), never
-// inlined resource/message content, the identical "reference, not content"
-// discipline messageRefDTO above already follows.
-type messageRefView struct {
-	MessageID string `json:"messageId"`
-}
-
-type resourceRefView struct {
-	OwnerVersionID string `json:"ownerVersionId,omitempty"`
-	ResourceKey    string `json:"resourceKey"`
-	ContentHash    string `json:"contentHash"`
-}
-
-type evidenceRefView struct {
-	EvidenceID string `json:"evidenceId"`
-}
-
-type revisionView struct {
-	RepositoryID        string `json:"repositoryId"`
-	VCSObjectID         string `json:"vcsObjectId"`
-	WorkspaceGeneration uint64 `json:"workspaceGeneration"`
-}
-
-// contextSnapshotDetail is the bounded, read-only view this package's own
-// getMessageContextSnapshot route exposes for a message's own bound V5-04
-// ContextSnapshot (internal/app/ports/contextsnapshot.go) — deliberately
-// NOT the legacy internal/domain/runtime.ContextSnapshot (see that port's
-// own doc comment for why the two are kept apart).
-type contextSnapshotDetail struct {
-	SnapshotID      string            `json:"snapshotId"`
-	ProjectID       string            `json:"projectId"`
-	WorkItemID      string            `json:"workItemId"`
-	AttemptID       string            `json:"attemptId"`
-	MessageRefs     []messageRefView  `json:"messageRefs,omitempty"`
-	ResourceRefs    []resourceRefView `json:"resourceRefs,omitempty"`
-	EvidenceRefs    []evidenceRefView `json:"evidenceRefs,omitempty"`
-	Revisions       []revisionView    `json:"revisions,omitempty"`
-	RevisionSetHash string            `json:"revisionSetHash"`
-	ManifestHash    string            `json:"manifestHash"`
-	CreatedAt       time.Time         `json:"createdAt"`
-}
+// contextSnapshotDetail/contextSnapshotToDetail are now a thin alias onto
+// internal/app/runtime's own exported ContextSnapshotDetail/
+// ContextSnapshotToDetail (V6-07B, docs/design/08-v6-api-projections.md
+// V6-07B): that package's own queries.go doc comment explains why the
+// conversion was moved there — V6-07B's own broader, message-independent
+// GetContextSnapshot route (internal/delivery/httpapi/evidence) needs the
+// IDENTICAL reload/redaction-free reference-only shape this route already
+// established, and docs/design/11-v6-00-ux-artifact.md's own Screen 12 row
+// 4 says so explicitly ("authority dùng chung với Screen 11 hàng 5 cho chi
+// tiết đầy đủ") — so both routes now share one conversion instead of
+// maintaining two byte-for-byte-identical copies. The wire shape (JSON
+// field names/omitempty) is UNCHANGED from V6-07's own original — this is
+// a pure "move, don't change" refactor, verified by this package's own
+// already-passing context_snapshot_test.go continuing to pass unmodified.
+type contextSnapshotDetail = runtimeapp.ContextSnapshotDetail
 
 func contextSnapshotToDetail(s contextsnapshot.Snapshot) contextSnapshotDetail {
-	detail := contextSnapshotDetail{
-		SnapshotID: string(s.ID), ProjectID: string(s.ProjectID), WorkItemID: string(s.WorkItemID),
-		AttemptID: string(s.AttemptID), ManifestHash: s.ManifestHash, RevisionSetHash: s.Revisions.ContentHash(),
-		CreatedAt: s.CreatedAt,
-	}
-	for _, ref := range s.MessageRefs {
-		detail.MessageRefs = append(detail.MessageRefs, messageRefView{MessageID: ref.MessageID})
-	}
-	for _, ref := range s.ResourceRefs {
-		detail.ResourceRefs = append(detail.ResourceRefs, resourceRefView{
-			OwnerVersionID: ref.OwnerVersionID, ResourceKey: ref.ResourceKey, ContentHash: ref.ContentHash,
-		})
-	}
-	for _, ref := range s.EvidenceRefs {
-		detail.EvidenceRefs = append(detail.EvidenceRefs, evidenceRefView{EvidenceID: ref.EvidenceID})
-	}
-	for _, rev := range s.Revisions.Entries() {
-		detail.Revisions = append(detail.Revisions, revisionView{
-			RepositoryID: string(rev.RepositoryID), VCSObjectID: rev.VCSObjectID, WorkspaceGeneration: rev.WorkspaceGeneration,
-		})
-	}
-	return detail
+	return runtimeapp.ContextSnapshotToDetail(s)
 }

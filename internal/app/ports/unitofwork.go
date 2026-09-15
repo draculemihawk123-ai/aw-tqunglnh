@@ -573,6 +573,20 @@ type RuntimeRepository interface {
 	// produced (one per MACHINE_GATE criterion, or the single COMMAND/AGENT
 	// execution row), ordered by Kind for a stable, deterministic result.
 	ListEvidenceForAttempt(ctx context.Context, attemptID string) ([]runtime.Evidence, error)
+	// ListEvidenceForWorkItem is populated now (V6-07B,
+	// docs/design/08-v6-api-projections.md V6-07B: "Danh sách evidence theo
+	// WorkItem/Run/criterion"): every Evidence row across every Run/NodeRun/
+	// Attempt this WorkItem has ever produced, ordered by (CreatedAt, Kind)
+	// for a stable, deterministic result. Deliberately unfiltered by
+	// RunID/Kind at the query layer — the same "classification is the
+	// caller's own job" discipline ListNodeRunsForRun/ListWorkflowRunsForWorkItem
+	// already establish; a caller wanting only one Run's own evidence or one
+	// criterion filters client-side. This is the query half V6-07B's own
+	// "no public application-layer query function wraps... evidence list by
+	// WorkItem/Run" gap needed: Evidence rows already carry ProjectID/
+	// WorkItemID/RunID/NodeRunID/AttemptID directly (evidence.go's own
+	// struct), so a real, direct column filter is possible without any join.
+	ListEvidenceForWorkItem(ctx context.Context, workItemID string) ([]runtime.Evidence, error)
 
 	// CreateExecutionManifest inserts the one immutable ExecutionManifest a
 	// WorkflowRun ever has (GC-INV-06). manifest.RunID must name a

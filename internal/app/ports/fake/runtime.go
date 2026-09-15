@@ -433,6 +433,24 @@ func (r *RuntimeRepository) ListEvidenceForAttempt(_ context.Context, attemptID 
 	return result, nil
 }
 
+// ListEvidenceForWorkItem mirrors sqlite's ListEvidenceForWorkItem (V6-07B),
+// ordered by (CreatedAt, Kind) for a stable, deterministic result.
+func (r *RuntimeRepository) ListEvidenceForWorkItem(_ context.Context, workItemID string) ([]runtime.Evidence, error) {
+	var result []runtime.Evidence
+	for _, evidence := range r.evidence {
+		if string(evidence.WorkItemID) == workItemID {
+			result = append(result, evidence)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if !result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		}
+		return result[i].Kind < result[j].Kind
+	})
+	return result, nil
+}
+
 func sameExecutionManifestContent(left, right runtime.ExecutionManifest) bool {
 	leftManifest, errLeft := json.Marshal(left.DependencyManifest)
 	rightManifest, errRight := json.Marshal(right.DependencyManifest)

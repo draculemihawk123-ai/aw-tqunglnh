@@ -4590,6 +4590,297 @@ Không migration mới (xác nhận migration cao nhất trên `origin/master` v
 `artifacts`/`attempt_context_snapshots` đã đủ từ V5-01/V5-02/V5-04). `go build/vet/test ./...` sạch, không
 regression.
 
+## V6-07B — Evidence, ContextSnapshot và artifact query endpoints
+
+### Bối cảnh
+
+V6-07B phụ thuộc V6-00/V6-01A/V6-02A — cả 3 đã merge từ lâu, xác nhận qua `git log origin/master --oneline -3`
+tại thời điểm bắt đầu: HEAD `01fbd3c` (PR #46, V6-05), trước đó `8549311` (PR #45, V6-06A), `de095c6`
+(PR #47, V6-06D) — nhánh này branch thẳng từ `01fbd3c`. Trích nguyên văn spec
+(`docs/design/08-v6-api-projections.md` dòng 325-334, không diễn giải lại): "Mục tiêu: list/inspect
+evidence/context/artifact và stream authorized content an toàn... Phạm vi: evidence list/detail/verify
+metadata, artifact inventory, `GetArtifactContent`, ContextSnapshot detail... Không làm: không expose
+locator, trusted HTML hoặc authorize từ projection/ID shape... Thực hiện: reload owning WorkItem/Run/
+Evidence/Message; range/size/media headers, content-hash ETag, no-sniff/download policy and sensitivity
+redaction... Verify: cross-project/guessed ID, traversal, tamper, range, large stream, HTML/SVG và secret
+fixtures... Hoàn thành khi: evidence/artifact verify được sau restart mà delivery không biết filesystem
+path." Nguồn: AK-ARCH-021, HE-11-M07, ADR-017.
+
+Đây là task cuối cùng trong nhóm "conversation/evidence" của V6-07 series (V6-07 đã merge #44, V6-07A chưa
+thấy branch tại thời điểm này) — 3 route đầu (evidence list/detail, artifact inventory) hoàn toàn mới,
+2 route sau (`GetArtifactContent`, `ContextSnapshot` detail) build trên chính `ports.ArtifactStore` và
+`ports.ContextSnapshotRepository` mà V6-07 đã composition-root-wire trước đó (`artifactStore`,
+`cmd/aw/serve.go`), không cần thêm dependency I/O mới nào ở tầng composition root.
+
+`baocaov6checklist.md` đang được 2 task song song khác ghi đồng thời (V6-10H, V6-10J theo brief) — xung đột
+merge khi mở PR là bình thường, không phải bug.
+
+### Nghiên cứu
+
+Đọc lại đúng 4 file hạ tầng chung trước khi viết bất kỳ route nào: `route.go` (`RouteDescriptor`/
+`RouteRegistry`), `errors.go` (`WriteResourceHidden`/`WriteAppError`/`StatusForAppErrorCode`), `media.go`
+(`ParseRange`/`ApplyPartialContentHeaders`/`WriteRangeNotSatisfiable`/`ApplyContentHeaders`/
+`ResolveMediaDisposition`) — xác nhận `media.go` đã có SẴN toàn bộ cơ chế range/no-sniff/inline-vs-attachment
+task này cần, viết từ trước (comment của chính `media.go` tự nói "V6-07B is the first real consumer") —
+không cần viết lại bất kỳ helper range/media nào, chỉ cần gọi đúng. Đọc `internal/delivery/httpapi/message/
+context_snapshot.go` (route hẹp `getMessageContextSnapshot` đã merge) làm precedent tường minh nhất: xác
+nhận route đó gọi THẲNG `tx.ContextSnapshots().GetSnapshotByAttemptID`/`tx.Messages().GetMessage` từ NGAY
+TRONG handler HTTP (không qua app-layer query nào) — khác với chỉ dẫn của brief task này ("HTTP layer should
+never touch ports.Tx/UnitOfWork internals directly"); quyết định KHÔNG lặp lại pattern đó cho task này (xem
+Quyết định #1), dù nó là precedent gần nhất.
+
+Đọc toàn bộ `internal/domain/runtime/evidence.go` (111 dòng): `Evidence` struct đã tự mang
+`ProjectID`/`WorkItemID`/`RunID`/`NodeRunID`/`AttemptID` làm cột trực tiếp (không cần join qua
+NodeRun/Attempt để biết scope) — nghĩa là "reload owning WorkItem/Run/Evidence" cho MỘT Evidence row chỉ
+cần load đúng 1 row rồi so 2 field, không cần chuỗi 3 lần load. `ArtifactReferences []string` bắt buộc
+non-empty (`NewEvidence` tự validate) — mọi Evidence row LUÔN trỏ tới ít nhất 1 Artifact thật.
+
+Đọc `internal/app/ports/unitofwork.go`'s `RuntimeRepository` toàn bộ đoạn Evidence (dòng 558-576):
+`GetEvidence(id)` và `ListEvidenceForAttempt(attemptID)` đã có sẵn — nhưng KHÔNG có method nào list theo
+WorkItem hay Run. Đọc `internal/adapters/sqlite/evidence.go` (150 dòng) xác nhận bảng `evidence` (migration
+0001) có cột `work_item_id`/`run_id` thật (không phải suy diễn) — filter theo cột đó là một SQL `WHERE` đơn
+giản, không cần join. Quyết định thêm đúng 1 method mới `ListEvidenceForWorkItem` (xem Quyết định #2), mirror
+đúng convention đặt tên `ListWorkflowRunsForWorkItem` (V4-12C) đã có sẵn trong CHÍNH interface này.
+
+Đọc toàn bộ `internal/domain/artifact/artifact.go` (243 dòng) — đây là phần điều tra bắt buộc quan trọng
+nhất của task này theo đúng brief. Xác nhận bằng cách đọc trực tiếp struct `Artifact`: field duy nhất liên
+quan "ownership" là `ProjectID` — KHÔNG có `WorkItemID`/`RunID`/`MessageID` nào cả. Đọc tiếp
+`internal/app/ports/artifactrecord.go` xác nhận `ArtifactRepository` chỉ có `GetArtifact(id)`,
+`ListOrphanedArtifacts`/`ListArtifactsByLocator` (2 method này tồn tại riêng cho V5-14 sweeper, filter theo
+`AttachState`/`Locator` share, không liên quan gì đến "artifact thuộc WorkItem nào"). Kết luận: không có
+QUAN HỆ nào trong domain model hiện tại nối trực tiếp Artifact → WorkItem/Run — liên kết THẬT DUY NHẤT một
+WorkItem-scoped caller có với một tập Artifact ID cụ thể là `Evidence.ArtifactReferences` (Message cũng có
+`ContentArtifactID` nhưng đó là liên kết của route Message khác, V6-07/V6-07A, không phải phạm vi task này).
+Quyết định "artifact inventory" = liệt kê Artifact theo MỘT Evidence row cụ thể, không phải theo WorkItem
+trực tiếp — xem Quyết định #3 để biết toàn bộ lý luận.
+
+Đọc `internal/app/ports/artifact.go` (71 dòng): `ArtifactStore.Open`/`Verify` nhận `ArtifactRef{Locator,
+SHA256, Size, ContentType, Sensitivity, Redacted}` — toàn bộ 6 field này đã có sẵn 1-1 trên chính
+`artifact.Artifact` row (`Locator`, `ContentHash`, `Size`, `MediaType`, `Sensitivity`, `Redacted`) — nghĩa
+là dựng lại một `ArtifactRef` hợp lệ từ Artifact row đã load không cần thêm bất kỳ field/method port nào
+mới. Đọc `internal/adapters/artifactstore/filesystem.go` toàn bộ: `Open` tự gọi `Verify` trước khi mở file
+("verify-open as one guarantee") và trả về đúng `*os.File` (implement `io.Seeker`) bọc trong `io.ReadCloser`
+— xác nhận Range request có thể `Seek` thật thay vì phải discard-copy, dù type ở interface level là
+`io.ReadCloser` (cần type-assert `io.Seeker` với fallback an toàn cho một `ports.ArtifactStore` implementation
+khác không hỗ trợ seek).
+
+Đọc `internal/app/message/commands.go` dòng 147-157 xác nhận thứ tự "Redact BEFORE Put" đã có sẵn từ V6-07:
+`AppendMessage` redact CONTENT rồi mới `Put` — nghĩa là với một Artifact `Sensitivity=SECRET`, bytes ĐÃ
+REDACT ngay từ lúc ghi, không phải một trách nhiệm route đọc phải tự làm lại. Xác nhận trực tiếp bằng
+`assertStoredContent` test có sẵn của `message_test.go` (đọc lại `[REDACTED]` từ đúng `ArtifactStore.Open`).
+Kết luận: `getArtifactContent` không cần bất kỳ logic redact-tại-đọc nào — chỉ cần serve đúng bytes đã
+persist, "sensitivity redaction" Verify bullet coi như đã thoả mãn bằng chính write-path có sẵn.
+
+Đọc `internal/domain/contextsnapshot/contextsnapshot.go` toàn bộ: `Snapshot` struct tự mang
+`ProjectID`/`WorkItemID` trực tiếp (giống hệt Evidence) — route detail độc lập chỉ cần load 1 row rồi so 2
+field, không cần chuỗi load Message trước như route hẹp `getMessageContextSnapshot` của V6-07 phải làm (route
+đó cần Message để tìm `AttemptID`; route NÀY nhận thẳng `snapshotId`, không qua Message nào cả).
+
+Đọc `docs/design/11-v6-00-ux-artifact.md` Screen 11 (dòng 423-448, "Evidence / artifact viewer") và Screen
+12 hàng 4 (dòng 469-476) — đây là nguồn khoá tên `operationId` CHÍNH XÁC, không tự đặt: `listEvidence`
+("Danh sách evidence theo WorkItem/Run/criterion"), `getEvidence` ("Chi tiết/verify metadata evidence
+(online)" — tách biệt tường minh khỏi `aw evidence verify` offline `CLI_LOCAL`/ADR-028, "hai leaf khác nhau
+cho hai nhu cầu khác nhau, không phải trùng authority"), `listArtifacts` ("Danh sách artifact"),
+`getArtifactContent` ("Nội dung artifact (stream/tải)", "tên khoá cứng ở Phạm vi V6-07B"), `getContextSnapshot`
+("Chi tiết ContextSnapshot"). Screen 12 hàng 4 tự nói field context-used của Message (V6-07) và
+`getContextSnapshot` detail đầy đủ (task này) "authority dùng chung" — xác nhận quyết định share code convert
+DTO giữa 2 route (Quyết định #1).
+
+### Quyết định
+
+1. **Toàn bộ 5 query đi qua app-layer function mới `internal/app/runtime/queries.go` — route HTTP không bao
+   giờ chạm `ports.Tx`/`ports.UnitOfWork` trực tiếp**, kể cả `getContextSnapshot` (dù precedent gần nhất,
+   `getMessageContextSnapshot` của V6-07, làm ngược lại — gọi thẳng `tx.ContextSnapshots()`/`tx.Messages()`
+   từ trong handler). Đặt trong `internal/app/runtime` (không phải package con mới) vì Evidence/Checkpoint/
+   ExecutionAttempt/NodeRun đều sống sẵn trong domain package này, và vì brief chỉ định rõ vị trí này. Đồng
+   thời **chuyển `contextSnapshotDetail`/`contextSnapshotToDetail` của `internal/delivery/httpapi/message/
+   dto.go` (V6-07) thành `runtime.ContextSnapshotDetail`/`runtime.ContextSnapshotToDetail` (export, chuyển vị
+   trí, GIỮ NGUYÊN wire shape byte-for-byte)** — `message/dto.go` giờ chỉ còn 1 type alias +
+   1 hàm gọi lại — đúng gợi ý của Screen 12 hàng 4 ("authority dùng chung") thay vì duy trì 2 bản sao logic
+   convert giống hệt nhau. Xác nhận KHÔNG regression: `go test ./internal/delivery/httpapi/message/...` chạy
+   lại đầy đủ (9 file test cũ, không sửa) sau refactor, xanh 100% — JSON field name/`omitempty` không đổi.
+2. **Thêm đúng 1 method port mới: `ports.RuntimeRepository.ListEvidenceForWorkItem(ctx, workItemID)`** (sqlite
+   thật + `fake.RuntimeRepository` — chỉ 2 nơi implement `ports.RuntimeRepository` toàn repo, xác nhận bằng
+   grep `_ ports.RuntimeRepository =`). Unfiltered ở tầng SQL (`ORDER BY created_at, kind`) — đúng discipline
+   "caller classifies" mà `ListNodeRunsForRun`/`ListWorkflowRunsForWorkItem` đã thiết lập sẵn trong CHÍNH
+   interface này; filter `runId`/`kind` (map field `Kind` — trục "criterion" spec nói tới) áp dụng ở tầng
+   `runtime.EvidenceFilter` trong Go, không thêm SQL filter riêng vì tập Evidence mỗi WorkItem luôn bounded
+   nhỏ (không giống hội thoại Message có thể dài vô hạn — V6-07 mới cần cursor pagination thật, task này thì
+   không, không có dòng nào trong "Phạm vi" của task này đòi hỏi).
+3. **"Artifact inventory" scope theo MỘT Evidence row (`ListArtifactsForEvidence`), KHÔNG theo WorkItem trực
+   tiếp — quyết định trọng tâm nhất của cả task, ghi lại đầy đủ lý luận ngay trong doc comment của
+   `queries.go`.** Lý do (đọc source thật, không đoán, xem mục Nghiên cứu): `artifact.Artifact` struct không
+   có cột `WorkItemID`/`RunID` nào — chỉ có `ProjectID`. Liên kết THẬT duy nhất một route WorkItem-scoped có
+   với một tập Artifact ID cụ thể là `Evidence.ArtifactReferences` — không phát minh thêm method
+   `ListArtifactsForWorkItem` mới trên `ArtifactRepository` khi domain model không thật sự hỗ trợ quan hệ đó
+   (đúng nguyên tắc `00-roadmap.md` §3: "không chia chỉ để tạo file/field nếu phần đó chưa có contract
+   test/behavior quan sát được"). Hệ quả trực tiếp: route `listArtifacts`/`getArtifactContent` đều nested
+   dưới `.../evidence/{evidenceId}/...`, không phải `.../work-items/{workItemId}/artifacts/...` — điều này
+   cũng khiến "reload owning Evidence trước khi trả artifact" (dòng Thực hiện của spec) đúng theo NGHĨA ĐEN
+   cho MỌI route artifact, không chỉ evidence.
+4. **`getArtifactContent` authorize bằng CHÍNH `Evidence.ArtifactReferences`, không phải chỉ check
+   `Artifact.ProjectID`.** `artifactId` phải là MỘT trong các reference của evidence trên path — một Artifact
+   ID THẬT, cùng project, nhưng KHÔNG nằm trong `ArtifactReferences` của evidence được path chỉ định, vẫn bị
+   404 (test `TestGetArtifactContent_ArtifactNotReferencedByThisEvidence_ReturnsHiddenNotFound`) — chặn chặt
+   hơn "cùng project là đủ", đúng tinh thần "không authorize theo ID shape" của spec. `ResolveEvidenceArtifactContent`
+   (queries.go) tự reload Evidence rồi confirm membership TRƯỚC KHI reload Artifact row, fold cả 2 trường hợp
+   "evidence sai scope" và "artifact không thuộc evidence này" vào cùng 1 `ports.ErrScopeMismatch`.
+5. **Streaming (`Verify`/`Open`/`io.Copy`) chỉ xảy ra Ở TẦNG HTTP (`internal/delivery/httpapi/evidence`),
+   KHÔNG BAO GIỜ trong `internal/app/runtime/queries.go`.** Package `queries.go` chỉ trả về
+   `ports.ArtifactRef` đã dựng từ Artifact row (I/O-free, chạy trong `WithReadOnly`); handler HTTP tự gọi
+   `ArtifactStore.Verify` rồi `Open` NGOÀI transaction — đúng go-core-spec §11.1 "không gọi filesystem
+   artifact store trong transaction" mà `internal/app/artifact.PrepareAttachment`'s doc comment đã nêu cho
+   write-path, áp dụng tương tự cho read-path ở đây.
+6. **ETag của `getArtifactContent` là content-hash thật (`"<sha256>"`), KHÔNG dùng `httpapi.ETagFromVersion`.**
+   `ETagFromVersion` là ETag phiên bản-số cho optimistic-concurrency/`If-Match` (mutable resource) —
+   Evidence/Artifact ở đây immutable, không có khái niệm "version" caller cần precondition; ETag đúng nghĩa
+   ở đây là "nội dung này có đúng byte như lần trước hay không", nên dùng thẳng `ArtifactRef.SHA256`.
+
+### Thực hiện
+
+- `internal/app/ports/unitofwork.go`: thêm `ListEvidenceForWorkItem(ctx, workItemID) ([]runtime.Evidence,
+  error)` vào `RuntimeRepository` (doc comment đầy đủ, mirror style các method Evidence có sẵn).
+- `internal/adapters/sqlite/evidence.go`: implement `ListEvidenceForWorkItem` — `SELECT ... WHERE
+  work_item_id = ? ORDER BY created_at, kind`.
+- `internal/app/ports/fake/runtime.go`: implement mirror y hệt cho `fake.RuntimeRepository` (dùng bởi các
+  test khác trong repo qua `fake.UnitOfWork`, không phải test của task này — vẫn bắt buộc để interface không
+  vỡ compile).
+- `internal/app/runtime/queries.go` (file mới, ~400 dòng): `requireProjectScope`/`scopeMismatch`/
+  `verifyWorkItemInScope` (mirror y hệt `internal/app/work/queries.go`'s helper cùng tên/cùng logic, không
+  export dùng chung — mỗi package app tự giữ bản riêng, đúng convention hiện có); `RevisionView` (dùng chung
+  cho cả Evidence lẫn ContextSnapshot); `EvidenceDetail`/`evidenceToDetail`/`EvidenceFilter`/
+  `ListEvidenceForWorkItem`/`GetEvidence`; `ArtifactSummary`/`toArtifactSummary`/`loadEvidenceInScope`/
+  `ListArtifactsForEvidence`/`ResolveEvidenceArtifactContent`; `MessageRefView`/`ResourceRefView`/
+  `EvidenceRefView`/`ContextSnapshotDetail`/`ContextSnapshotToDetail`/`GetContextSnapshot`.
+- `internal/delivery/httpapi/message/dto.go`: xoá `messageRefView`/`resourceRefView`/`evidenceRefView`/
+  `revisionView`/`contextSnapshotDetail`/`contextSnapshotToDetail` cũ, thay bằng `type contextSnapshotDetail
+  = runtimeapp.ContextSnapshotDetail` + hàm gọi lại `runtimeapp.ContextSnapshotToDetail`.
+- `internal/delivery/httpapi/evidence/` (package HTTP mới, 7 file production):
+  - `routes.go`: doc comment đầy đủ (route inventory, lý do nested artifact dưới evidence) + `RegisterRoutes`
+    — 5 `RouteDescriptor`, toàn bộ `ScopeKind: httpapi.ScopeProject`.
+  - `dependencies.go`: `Dependencies{UnitOfWork, ArtifactStore}` — không cần `IDs`/`Clock` (route thuần đọc).
+  - `dto.go`: `listEvidenceResponse`/`listArtifactsResponse` (wrap `items`, không cursor — Quyết định #2).
+  - `errors.go`: `writeQueryError` (fold `ErrPersistenceNotFound`/`ErrScopeMismatch` → `WriteResourceHidden`),
+    `writeContentError` (fold qua `httpapi.WriteAppError` — tận dụng `ArtifactStore.Verify` đã tự trả
+    `apperror.CodeNotFound` thật cho case "object đã bị xoá/purge"), `writeValidationError`.
+  - `evidence.go`: `handleListEvidence` (đọc query param `runId`/`kind`), `handleGetEvidence`.
+  - `artifact.go`: `handleListArtifacts`, `handleGetArtifactContent` (authorize → `Verify` → `Open` →
+    `ParseRange` → `ApplyContentHeaders`/ETag → ghi 200 toàn bộ hoặc 206 theo Range, `skipBytes` type-assert
+    `io.Seeker` với fallback discard-copy — Quyết định #5/#6).
+  - `context_snapshot.go`: `handleGetContextSnapshot`.
+- `cmd/aw/serve.go`: thêm import `httpevidence "internal/delivery/httpapi/evidence"`; gọi
+  `httpevidence.RegisterRoutes(routes, httpevidence.Dependencies{UnitOfWork: uow, ArtifactStore:
+  artifactStore})` ngay sau `httpmessage.RegisterRoutes`, trước `routesFinalized = true` — tái dùng ĐÚNG
+  `artifactStore` V6-07 đã construct, không tạo store thứ hai. Xác nhận bằng grep `httpevidence` trong chính
+  file này thấy cả import lẫn lệnh gọi thật (không chỉ tồn tại ở test).
+
+### Test
+
+`internal/delivery/httpapi/evidence/` (5 file test, 24 test function/subtest — real `httpapi.Server` + real
+`*sqlite.Store` + real `internal/adapters/artifactstore.Store`, mirror idiom `message_test.go`'s `newTestEnv`)
+cộng `internal/app/runtime/queries_sqlite_test.go` (file mới, 8 test — real sqlite, gọi thẳng hàm app-layer
+không qua HTTP, mirror `internal/app/work/queries_sqlite_test.go`'s pattern cho V6-04): tổng 32 test.
+
+- **Cross-project/guessed ID**: `TestGetEvidence_BelongsToAnotherWorkItem_ReturnsHiddenNotFound`,
+  `TestGetEvidence_WorkItemBelongsToAnotherProject_ReturnsHiddenNotFound`,
+  `TestListArtifacts_EvidenceBelongsToAnotherWorkItem_ReturnsHiddenNotFound`,
+  `TestGetContextSnapshot_BelongsToAnotherWorkItem_ReturnsHiddenNotFound` +
+  `..._WorkItemBelongsToAnotherProject_...`, cộng `TestGetEvidence_WrongWorkItem_ReturnsScopeMismatch`/
+  `TestGetContextSnapshot_WrongWorkItem_ReturnsScopeMismatch` (gọi thẳng app-layer, assert đúng
+  `ports.ErrScopeMismatch` chứ không chỉ status HTTP) — toàn bộ đều 404, không 403.
+- **Traversal**: `TestGetEvidence_UnknownEvidenceID_ReturnsHiddenNotFound` và
+  `TestGetArtifactContent_PathTraversalLookingArtifactID_ReturnsHiddenNotFound` gửi thẳng `../../../../etc/
+  passwd`/`..%2f..%2fsecret` làm `evidenceId`/`artifactId` — 404 giống hệt ID ngẫu nhiên, chứng minh bằng
+  test thật (không chỉ code review) rằng ID không bao giờ chạm filesystem.
+- **Tamper**: `TestGetArtifactContent_TamperedContent_Returns500NotServedSilently` — corrupt THẬT bytes trên
+  đĩa (`os.WriteFile` đè lên đúng object path tính từ `Locator`, mirror công thức
+  `internal/integration/v5accept/fixture_test.go`'s `artifactObjectPath`), xác nhận response KHÔNG BAO GIỜ
+  200 và body không leak nội dung đã corrupt.
+- **Range requests**: `TestGetArtifactContent_RangeRequest_PartialContent` (206, `Content-Range: bytes
+  2-5/10`, body đúng 4 byte giữa), `TestGetArtifactContent_RangeNotSatisfiable_Returns416`.
+- **Large stream**: `TestGetArtifactContent_LargeStream_StreamsCorrectly` — artifact thật 8 MiB, so byte-for-
+  byte toàn bộ response body với nội dung gốc, `Content-Length` đúng `8388608`.
+- **HTML/SVG fixtures**: `TestGetArtifactContent_HTMLAndSVG_ForceDownloadNeverInline` (2 subtest) — content
+  `text/html`/`image/svg+xml` chứa `<script>` thật vẫn được SERVE (không bị chặn), nhưng
+  `Content-Disposition` luôn `attachment`, không bao giờ `inline`.
+- **Secret fixtures**: `TestGetArtifactContent_SecretSensitivity_ServesRedactedPersistedBytes` — dựng
+  artifact qua đúng `internal/app/artifact.PrepareAttachment` với `Sensitivity=Secret`, xác nhận PERSISTED
+  bytes đã là `[REDACTED]` (qua `assertPersistedContent`, đọc lại từ `ArtifactStore.Open` thật, không suy
+  diễn) TRƯỚC KHI assert route trả đúng y hệt bytes đó.
+- **Verify metadata/evidence list/filter**: `TestGetEvidence_HappyPath_ReturnsVerifyMetadata` (đối chiếu đủ
+  `ArtifactReferences`/`RevisionSetHash`/`PolicyVersion`/lineage với Evidence row thật), `TestListEvidence_
+  FiltersByRunAndKind` (2 Evidence row 2 Run khác nhau, filter `runId` và `kind` đều đúng subset),
+  `TestListEvidence_EmptyWorkItem_ReturnsEmptyItems`, `TestListEvidence_UnknownWorkItem_ReturnsHiddenNotFound`.
+- **Locator never exposed**: `TestListArtifacts_HappyPath_NeverExposesLocator` — đọc RAW JSON bytes của
+  response (không qua struct decode trước), assert chuỗi `"locator"` không hề xuất hiện — kiểm tra ở mức
+  wire, không chỉ ở mức field Go không tồn tại.
+- **Defense-in-depth ở tầng app-layer** (không thể dựng qua HTTP vì cần fabricate một data-integrity edge
+  case thật production không bao giờ tạo ra):
+  `TestListArtifactsForEvidence_ReferencesForeignProjectArtifact_RejectsAsScopeMismatch` (Evidence row của
+  project A trỏ tới 1 Artifact thật của project B — reject, không silent-include/crash),
+  `TestResolveEvidenceArtifactContent_ArtifactNotInEvidenceReferences_ReturnsScopeMismatch`,
+  `TestResolveEvidenceArtifactContent_HappyPath_ReturnsRealRef`,
+  `TestListEvidenceForWorkItem_InstallationScope_RejectsAsScopeMismatch`,
+  `TestListEvidenceForWorkItem_UnknownWorkItem_ReturnsPersistenceNotFound`,
+  `TestListEvidenceForWorkItem_OrdersByCreatedAtThenKind`.
+- `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` (đối chiếu đúng 5 operationId đóng).
+
+`go build ./...`, `go vet ./...` sạch trên toàn repo. `go test ./internal/delivery/httpapi/evidence/... -v`:
+24/24 xanh. `go test ./internal/app/runtime/... -run "TestListEvidenceForWorkItem|TestGetEvidence|
+TestListArtifactsForEvidence|TestResolveEvidenceArtifactContent|TestGetContextSnapshot" -v`: 8/8 xanh.
+`go test ./internal/delivery/httpapi/message/...` (regression check sau refactor Quyết định #1): xanh, không
+sửa hành vi. `go test ./...` full suite (81 package): toàn bộ `ok`, 0 `FAIL`, exit code 0 — không regression
+ở bất kỳ package nào khác, không gặp lại bất kỳ flake đã biết nào của phiên này
+(`TestSPK09QuarantineRecreateFencesStaleGeneration`,
+`TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns`, ...).
+
+### Verify
+
+- **Cross-project/guessed ID**: mọi Evidence/Artifact/ContextSnapshot thuộc project/work-item khác hoặc
+  không tồn tại đều fold về đúng 1 response 404 leakage-normalized — không route nào trong package tin
+  path/ID shape hơn state đã reload thật (kể cả case "ID trông hợp lệ" như `sha256:deadbeef`).
+- **Traversal**: bất khả thi theo cấu trúc (artifactId/evidenceId chỉ bao giờ là khoá tra database, không
+  bao giờ là filesystem path) — chứng minh bằng test thật gửi payload traversal-shaped, không chỉ lý luận.
+- **Tamper**: `ArtifactStore.Verify` bắt được corruption thật trên đĩa TRƯỚC khi `Open` trả reader — response
+  là lỗi typed (500), không bao giờ 200 với bytes sai.
+- **Range**: `Range: bytes=2-5` trả đúng 206 + `Content-Range`/`Content-Length` + đúng 4 byte; range vượt
+  giới hạn trả 416 kèm `Content-Range: bytes */<size>`.
+- **Large stream**: 8 MiB round-trip đúng byte-for-byte qua đúng cơ chế `io.Copy` từ `*os.File` thẳng ra
+  `ResponseWriter` (không buffer nguyên khối trong bộ nhớ — xác nhận bằng cả code review `artifact.go`'s
+  `handleGetArtifactContent` lẫn test thật).
+- **HTML/SVG**: nội dung script-capable vẫn được serve (không bị cấm), nhưng `Content-Disposition:
+  attachment` bắt buộc download — không browser nào render inline như trang tin cậy của chính origin.
+- **Secret fixtures**: bytes đã redact TỪ LÚC GHI (write-path V6-07 có sẵn) — route content chỉ serve đúng
+  những gì đã persist, verify trên bytes THẬT, không phải absence-of-code.
+- **Hoàn thành khi — "evidence/artifact verify được sau restart mà delivery không biết filesystem path"**:
+  đúng bằng cấu trúc — không field `Locator` nào từng rời khỏi `internal/app/runtime/queries.go` hay chạm
+  tầng HTTP; mọi truy cập nội dung đi qua đúng chuỗi Artifact ID → `GetArtifact` → `ArtifactRef` dựng server-
+  side → `Verify`/`Open`, y hệt trước và sau một restart giả lập (test dùng `*sqlite.Store` thật trên đĩa,
+  không phải in-memory, nên state Evidence/Artifact/ContextSnapshot sống sót restart bằng chính cơ chế sẵn
+  có, không cần thêm gì).
+
+### Kết quả
+
+Branch `feat/v6-07b-evidence-context-artifact-endpoints` từ `origin/master` tại `01fbd3c` (sau PR #46/#45/
+#47/#44). Package HTTP mới `internal/delivery/httpapi/evidence` (7 file production + 4 file test, 24 test
+function/subtest). App-layer mới `internal/app/runtime/queries.go` (5 hàm query công khai + 1 file test
+riêng, 8 test). 1 method port mới `ports.RuntimeRepository.ListEvidenceForWorkItem` (sqlite + fake, không
+migration mới — xác nhận migration cao nhất trên `origin/master` vẫn `0037`, bảng `evidence`/`artifacts`/
+`attempt_context_snapshots` đã đủ từ migration 0001/0027/0029). Refactor không-đổi-hành-vi trên
+`internal/delivery/httpapi/message/dto.go` (chia sẻ `ContextSnapshotDetail` với V6-07, verify lại toàn bộ
+test cũ của package đó vẫn xanh). 5 route HTTP thật lần đầu tồn tại: `GET /projects/{projectId}/work-items/
+{workItemId}/evidence`, `GET .../evidence/{evidenceId}`, `GET .../evidence/{evidenceId}/artifacts`,
+`GET .../evidence/{evidenceId}/artifacts/{artifactId}/content`, `GET .../context-snapshots/{snapshotId}` —
+grep xác nhận `httpevidence.RegisterRoutes` thật sự có trong `cmd/aw/serve.go`, không chỉ tồn tại ở test
+package-level.
+
+Phát hiện thật cần ghi lại: domain model hiện tại của `artifact.Artifact` không có bất kỳ cột ownership nào
+ngoài `ProjectID` — "artifact inventory theo WorkItem" như tên gọi tự nhiên của UX doc thật ra không được
+domain model hỗ trợ trực tiếp; quyết định scope theo Evidence (Quyết định #3) là lựa chọn trung thực nhất
+với dữ liệu thật hiện có, không phát minh thêm quan hệ domain chưa có caller thật nào cần.
+
+`go build/vet ./...` sạch. `go test ./...` toàn repo (81 package): 100% `ok`, không `FAIL`, exit code 0.
+
 ## V6-10J — Adapter-build registry endpoints
 
 ### Bối cảnh
