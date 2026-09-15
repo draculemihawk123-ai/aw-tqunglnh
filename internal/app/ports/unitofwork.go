@@ -116,6 +116,14 @@ type Tx interface {
 	// the versioned, CAS-updated safe-settings singleton row (see
 	// SafeSettingsRepository's own doc comment, internal/app/ports/safesettings.go).
 	SafeSettings() SafeSettingsRepository
+	// AttachmentClaims is populated now (V6-07A,
+	// docs/design/08-v6-api-projections.md): the same "gets a real
+	// interface from the start" treatment every concern above already
+	// established — the durable upload-side prepare-claim row
+	// AppendConversationAttachment's own crash-safety contract needs (see
+	// AttachmentClaimRepository's own doc comment,
+	// internal/app/ports/attachmentclaim.go).
+	AttachmentClaims() AttachmentClaimRepository
 }
 
 // CatalogRepository is populated now (V3-01,

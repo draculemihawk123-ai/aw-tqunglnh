@@ -71,4 +71,13 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: contextSnapshotDetail{},
 		Handler: handleGetMessageContextSnapshot(deps),
 	})
+	// V6-07A (docs/design/08-v6-api-projections.md V6-07A): the binary-
+	// upload sibling of appendMessage above — see attachment.go's own doc
+	// comment for why its request body is raw bytes, never JSON, unlike
+	// every other route this package registers.
+	reg.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/projects/{projectId}/work-items/{workItemId}/attachments", OperationID: "appendConversationAttachment",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: attachmentMetadata{}, ResponseSchema: appmessage.AppendMessageResult{},
+		Handler: handleAppendConversationAttachment(deps),
+	})
 }
