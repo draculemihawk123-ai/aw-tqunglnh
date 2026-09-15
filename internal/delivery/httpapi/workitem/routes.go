@@ -46,6 +46,20 @@
 //	POST /projects/{projectId}/scope-expansions/{requestId}/approve            approveScopeExpansion
 //	POST /projects/{projectId}/scope-expansions/{requestId}/reject             rejectScopeExpansion
 //	POST /projects/{projectId}/scope-expansions/{requestId}/withdraw           withdrawScopeExpansion
+//	POST /work-items/{workItemId}/mark-ready                                   markWorkItemReady
+//
+// markWorkItemReady (V6-04A, docs/design/08-v6-api-projections.md V6-04A) is
+// this package's own thirteenth route, added after V6-04 itself merged — see
+// mark_ready_command.go's own doc comment for the full contract, including
+// why its path deliberately has NO {projectId} segment (unlike the twelve
+// routes above): the design doc's own route fragment is verbatim
+// `POST /work-items/{id}/mark-ready` (docs/design/01-system-design.md line
+// 567, repeated in 08-v6-api-projections.md V6-04A's own "Phạm vi" line),
+// and V6-06's own already-merged run package (internal/delivery/httpapi/run)
+// established the concrete precedent for this exact shape first — a
+// WorkItem-rooted action route with no project prefix, its own ProjectID
+// derived by reloading the WorkItem directly rather than trusted from a path
+// segment (contract point 3: "không tin ID shape, payload hoặc projection").
 //
 // This task's own "Không làm" line ("không generic status/family/workspace
 // setter; không dùng projected detail để authorize") is satisfied by
@@ -133,5 +147,10 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodPost, Path: "/projects/{projectId}/scope-expansions/{requestId}/withdraw", OperationID: "withdrawScopeExpansion",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: emptyBody{}, ResponseSchema: workapp.WithdrawScopeExpansionResult{},
 		Handler: handleWithdrawScopeExpansion(deps),
+	})
+	reg.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/work-items/{workItemId}/mark-ready", OperationID: "markWorkItemReady",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: emptyBody{}, ResponseSchema: workapp.MarkWorkItemReadyResult{},
+		Handler: handleMarkWorkItemReady(deps),
 	})
 }
