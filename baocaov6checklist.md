@@ -5704,3 +5704,226 @@ Phát hiện thật cần ghi lại (2 gap có thật của tầng dưới, khô
 rundetail/...` 100% xanh (20/20 test mới). `go test ./...` toàn repo: 4 fail, cả 4 đã điều tra và xác nhận
 không liên quan diff của task này (3 do uncommitted work của session V6-07A khác đang chạy song song trên
 CÙNG checkout, 1 do tải hệ thống — pass khi chạy riêng lẻ).
+
+## V6-10A — Doctor endpoint
+
+### Bối cảnh
+
+V6-10A bọc HTTP lên trên `internal/app/doctor.Run`/`Options` (V1-11, ADR-022) — package này đã tồn tại đầy đủ,
+đã có golden test HEALTHY/DEGRADED/BLOCKED riêng ở tầng application (`internal/app/doctor/report_golden_test.go`),
+và đã tự phân biệt rạch ròi 3 câu hỏi Liveness/Readiness/Capability trong chính doc comment của package. Việc
+của task này chỉ là: expose `GET /doctor`, cấu thành `doctor.Options` thật từ những gì `cmd/aw/serve.go` đã có
+trong scope lúc boot, và xử lý 2 khoảng trống brief giao việc tự nêu ra — (1) `aw serve` có tự dựng một
+`config.Config` value nào chưa (không — chỉ đọc `--db`/`--artifact-root` rời rạc), và (2) V6-10J (adapter-build
+registry, đã merge PR #49) nên được Doctor SURFACE bằng cách nào — nhúng dữ liệu registry lặp lại vào response,
+hay chỉ trả một "operation link". Batch này chạy song song với V6-10D/V6-10F (`baocaov6checklist.md` là điểm
+giao chung, append-only — xử lý merge conflict khi finalize như mọi lần trước).
+
+### Nghiên cứu
+
+Đọc trước khi viết code:
+
+- `docs/design/08-v6-api-projections.md` dòng 423-432 (V6-10A) đọc trực tiếp: "Thực hiện: installation-scoped
+  query combines typed component status and operation links; no credentials" — chữ "operation LINKS" (không
+  phải "operation DATA"/"registry snapshot") là tín hiệu rõ ràng: response trỏ TỚI route khác, không nhúng lại
+  dữ liệu route đó đã trả. "Không làm: không duplicate repository onboarding/history/retry routes owned by
+  V6-03A" — Doctor chỉ được SURFACE link, không bao giờ tự cài lại logic của route khác.
+- `internal/app/doctor/doctor.go`: đọc toàn bộ doc comment package — phân biệt tường minh Liveness/Readiness/
+  Capability, và dòng quan trọng nhất: "ADR-022 is explicit that Doctor at V1 MUST NOT claim registry
+  admission... every capability check here is only ever 'observed', never 'registered'" — viết từ lúc
+  AdapterBuildVersion registry CHƯA tồn tại. Hôm nay (sau V6-10J) registry đã tồn tại thật, nhưng tinh thần
+  "không tự nhận admission" vẫn đúng — cách tôn trọng nó tốt nhất là không bao giờ tự derive lại một phát biểu
+  thứ hai về registry state có thể trôi khỏi phát biểu gốc ở `GET /adapter-builds`, đúng khớp với đọc "operation
+  links" ở trên. `Options{Config, Store, WorkerConfig, CheckWorker, UnitOfWork}` — `UnitOfWork` optional (nil
+  bỏ qua `CheckSafeSettings`, pattern y hệt `CheckWorker` optional bỏ qua `CheckWorkerConfig`).
+- `internal/app/doctor/checks.go`: đọc từng hàm `Check*` — `CheckLiveness` (luôn HEALTHY), `CheckAppConfig`
+  (chạy `config.Validate(cfg)` NGUYÊN VẸN, không có cách nào tách riêng field liên quan tới worker pool),
+  `CheckDatabase` (chỉ `store.Ping`, không mở connection mới), `CheckRoot` (stat + probe write file tạm rồi tự
+  xoá), `CheckGit` (`git --version`), `CheckWorkerConfig` (gated bởi `CheckWorker`), `CheckProviderExecutable`
+  (chỉ sha256-hash file, KHÔNG BAO GIỜ execute — không path nào bị echo trong `Detail`, chỉ digest/size),
+  `CheckSafeSettings` (chỉ chứng minh document decode được, không echo field nào). Không có check nào cho
+  "isolation" — dòng Phạm vi của task này tự liệt kê "DB/roots/Git/provider/adapter/isolation readiness" nhưng
+  `doctor.Run` hôm nay chỉ cover 4/6 nhóm đó.
+- `cmd/aw/serve.go` (đọc toàn bộ trước khi sửa) — xác nhận phát hiện brief gợi ý: **grep `config.Config{`/
+  `config.Load(`/`config.Defaults(` ra 0 kết quả** trong toàn bộ `cmd/aw` trước task này. `serve()` chỉ có 2
+  flag ad hoc `--db`/`--artifact-root`, không hề dựng `config.Config` để đưa vào bất kỳ đâu. Điều này có nghĩa
+  nếu `CheckAppConfig` chạy với `config.Config{DatabasePath: *dbPath, ArtifactRoot: *artifactRoot}` (struct
+  literal rỗng ở mọi field khác), `config.Validate` sẽ LUÔN BLOCKED vĩnh viễn vì `WorkerID` rỗng (`config.
+  Validate`'s dòng đầu tiên: "database_path.../artifact_root.../worker_id: WHAT is empty") — `aw serve` chưa
+  bao giờ chạy worker pool nên chưa từng cần field đó, nhưng `config.Validate` không biết phân biệt "process
+  này có chạy worker hay không" (không giống `CheckWorker` tự gate `CheckWorkerConfig`). Đây là gap thật brief
+  đã dự đoán đúng.
+- `internal/app/config/config.go`/`validate.go`: `Defaults()` cho sẵn `WorkerConcurrency=4`, `LeaseTTL=30s`,
+  `LeaseHeartbeat=10s`, `ProcessOutputLimit=1MiB` — mọi field validate được NGAY, chỉ `WorkerID` cố ý để rỗng
+  ("there is no safe default identity for a worker process"). `Validate` không có concept "chỉ validate field
+  liên quan tới X" — chạy nguyên khối, không gate theo caller.
+- `internal/app/ports/isolation.go` + `internal/adapters/process/isolation.go`: `IsolationEnforcementChecker.
+  VerifyEnforceable(ctx, tier)` — doc comment tự khẳng định "performs no I/O in this codebase's only
+  implementation today" — pure, an toàn gọi trên mọi request không giống việc spawn process thật. Implementation
+  production duy nhất (`process.IsolationChecker`) luôn chấp nhận `OPERATOR_TRUSTED_LOCAL`, luôn từ chối
+  `ENFORCED_ISOLATED` (Alpha chưa có sandbox OS thật) — đây chính là "isolation readiness" Phạm vi nhắc tới,
+  và `cmd/aw/serve.go` ĐÃ tự dựng sẵn `isolationChecker := process.NewIsolationChecker()` cho
+  `recoveryhttp.RegisterRoutes` — tái dùng nguyên instance đó, không tạo cái thứ hai.
+- `internal/delivery/httpapi/adapterbuild/{adapterbuild,queries}.go` (V6-10J): `GET /adapter-builds` đã là một
+  plain query thật, không side-effect nào ngoài đọc DB — xác nhận link `"adapterBuilds": "/adapter-builds"` trỏ
+  tới một route THẬT đã tồn tại, không phải placeholder.
+- `internal/app/safesettings/commands.go`: `SafeSettingsResult.RestartRequired = !record.Desired.IsZero()` —
+  một bool ĐÃ tính sẵn, test sẵn (V6-10G/V6-10H), forward được nguyên vẹn mà không cần Doctor tự derive lại
+  semantic "cần restart" theo cách riêng — đúng tinh thần "restart states... mirroring V6-10H's own
+  restartRequired concept" của Verify line.
+- `internal/delivery/httpapi/safesettings/{routes,dependencies,queries,dto}.go` (V6-10H, đã merge PR #48) và
+  `internal/delivery/httpapi/adapterbuild/{adapterbuild,queries,dto,errors}.go` (V6-10J, PR #49) đọc làm mẫu
+  cấu trúc gần nhất: package riêng dưới `internal/delivery/httpapi/doctor`, `Dependencies` struct tường minh,
+  `dto.go` tự khai lại wire shape (không tái dùng trực tiếp type export của tầng app), `RegisterRoutes` chỉ
+  thêm đúng 1 descriptor.
+
+### Quyết định
+
+1. **Không sửa `internal/app/doctor/{doctor,checks}.go`** — mọi phần mở rộng (isolation, restartRequired,
+   links) nằm ở tầng HTTP (`internal/delivery/httpapi/doctor`), không đụng vào package domain đã đóng và đã có
+   golden test riêng. Lý do: 2 phần mở rộng đều KHÔNG phải "một Check nữa của cùng loại DB/root/git/provider" —
+   isolation dùng một dependency khác hẳn (`ports.IsolationEnforcementChecker`, không phải `ports.QueryStore`/
+   `ports.UnitOfWork`), và restartRequired tái dùng một field ĐÃ có sẵn từ package khác
+   (`safesettings.SafeSettingsResult`) chứ không phải một check mới cần viết. Gộp cả 2 vào `doctor.Run` sẽ đòi
+   sửa `Options` lần nữa (rủi ro conflict với chính các PR đang chạy song song đụng file khác trong batch này)
+   mà không mang lại lợi ích rõ ràng nào so với compose ở tầng HTTP — đúng "Thực hiện: installation-scoped
+   QUERY combines..." đọc theo nghĩa đen: COMBINE là việc của handler, không phải của `Run`.
+2. **"Adapter" trong Phạm vi = một operation LINK (`"adapterBuilds": "/adapter-builds"`), không phải dữ liệu
+   registry nhúng lại** — đọc thẳng theo chữ "operation links" của Thực hiện line (xem Nghiên cứu). Không gọi
+   `appadapterbuild.ListAdapterBuilds` ở đây, không tính drift, không mở thêm dependency mới vào `Dependencies`
+   cho việc này. Đây là quyết định tránh over-build được brief giao việc tự cảnh báo trước ("don't over-build")
+   — một field đếm số build đăng ký sẽ là dữ liệu thứ hai có thể trôi khỏi `GET /adapter-builds`'s own con số
+   thật theo thời gian, trong khi một link tĩnh không bao giờ trôi vì nó không MANG dữ liệu nào cả.
+3. **Isolation LÀ một CheckResult thật** (không chỉ một link) — khác quyết định #2, vì `ports.
+   IsolationEnforcementChecker.VerifyEnforceable` document rõ "no I/O", nên gọi nó không có rủi ro trôi dữ liệu
+   hay chi phí I/O nào — không giống registry data (vốn có thể đổi theo thời gian giữa lúc Doctor render và
+   lúc client đọc), fact "tier nào enforceable" là một fact TĨNH của binary/OS hiện tại, phù hợp để trả trực
+   tiếp. `OPERATOR_TRUSTED_LOCAL` lỗi → BLOCKED (môi trường hỏng thật); `ENFORCED_ISOLATED` lỗi một mình →
+   HEALTHY (đây là giới hạn Alpha đã biết trước, ADR-023 tự nói "không bao giờ auto-downgrade" — cái BẢO VỆ
+   thật là admission check fail-closed ở nơi khác, không phải Doctor báo lỗi vĩnh viễn không ai fix được).
+4. **`RestartRequired` forward NGUYÊN VẸN một bool duy nhất từ `safesettings.GetSafeSettings`, không forward
+   bất kỳ field nào khác của `SafeSettingsResult`** — đặc biệt không bao giờ chạm `Desired` (chứa
+   `ProviderCredentialRef`). Lỗi đọc (ví dụ DB unreachable) mặc định về `false` thay vì làm fail cả response —
+   mirror đúng "ignore lỗi, giá trị zero đã đúng" mà `cmd/aw/serve.go` đã làm cho `safeSettingsAtBoot` (V6-10H
+   Quyết định #7) — check "database"/"safe_settings" trong CÙNG response đã tự nêu đúng lỗi thật, bool này
+   không cần thêm một lỗi thứ hai chồng lên.
+5. **`aw serve` cần một flag `--worker-id` mới (default `"aw-serve"`), và `cmd/aw/serve.go` giờ tự dựng
+   `config.Defaults()` + override `DatabasePath`/`ArtifactRoot`/`WorkerID`/`ProviderExecutables`** — giải quyết
+   gap ở Nghiên cứu (nếu không, `CheckAppConfig` sẽ BLOCKED vĩnh viễn trên mọi installation vì `WorkerID` rỗng,
+   làm response HEALTHY thật không bao giờ đạt được được bằng composition root thật, trái "Hoàn thành khi:
+   authoritative source for is this installation healthy"). Chọn thêm 1 flag với default an toàn thay vì hard-
+   code một giá trị cố định trong code: operator vẫn override được nếu muốn, còn mặc định không cần cấu hình gì
+   thêm vẫn chạy HEALTHY — đây LÀ identity thật của tiến trình `aw serve` này (không phải giả mạo một giá trị
+   để "lừa" `Validate`), chỉ đơn giản chưa từng có field nào biểu diễn nó trước task này.
+6. **Status endpoint luôn trả HTTP 200**, severity nằm hoàn toàn trong body (`status`/`checks[].status`) — khác
+   `/health/ready` (503 khi không ready, một gate nhị phân cho load balancer). Doctor là một diagnostic report
+   để UI RENDER, không phải một gate máy móc — client luôn parse được JSON dù installation đang BLOCKED, đúng
+   "first-run UI never needs to read the filesystem/config directly" (không cần fallback logic khác nhau theo
+   HTTP status).
+7. `aggregateStatus` (worst-of-three BLOCKED > DEGRADED > HEALTHY) được viết LẠI ở tầng HTTP thay vì export từ
+   `internal/app/doctor` — vì response combine `report.Checks` (từ `Run`) VỚI `isolationCheck`'s own entry
+   (tầng HTTP tự thêm), nên phải aggregate lại trên danh sách ĐÃ GỘP; rule thì giống hệt `doctor.Run`'s own
+   unexported `aggregate`, không phải một policy khác.
+8. Không migration mới — xác nhận `git log origin/master --oneline -3` (HEAD thật `c8163d3`) và
+   `internal/adapters/sqlite/migrations/` ngay trước khi finalize: migration cao nhất vẫn `0037`, task này
+   không cần bảng mới.
+
+### Thực hiện
+
+File mới (`internal/delivery/httpapi/doctor`, package mới):
+
+- `doctor.go`: doc comment đầy đủ giải thích cả 2 quyết định khó (isolation là check thật, adapter là link) +
+  lý do "không credential nào có thể lọt qua, có cấu trúc chứ không phải quy ước"; `Dependencies{Config,
+  Store, UnitOfWork, Isolation}`; `RegisterRoutes` — đúng 1 descriptor `GET /doctor`, `ScopeKind: httpapi.
+  ScopeInstallation`.
+- `dto.go`: `checkResultWire` (tự khai lại field của `appdoctor.CheckResult`, đúng convention "mỗi route tự
+  khai wire DTO riêng" mọi package khác đã theo), `responseDTO{Status, Checks, RestartRequired, Links}`,
+  `operationLinks()` — map tĩnh 5 entry (`adapterBuilds`, `safeSettings`, `projects`, `healthLive`,
+  `healthReady`), cố ý KHÔNG có link project-scoped nào (Doctor không biết project id nào để điền vào).
+- `queries.go`: `handleDoctor` (gọi `appdoctor.Run` với `Config`/`Store`/`UnitOfWork`, gộp thêm
+  `isolationCheck`'s own entry, tính `aggregateStatus`/`restartRequired`, encode `responseDTO`, luôn 200),
+  `aggregateStatus` (worst-of-three, xem Quyết định #7), `isolationCheck` (gọi `VerifyEnforceable` 2 lần —
+  `OPERATOR_TRUSTED_LOCAL` rồi `ENFORCED_ISOLATED` — map thành đúng 3 outcome ở Quyết định #3),
+  `restartRequired` (forward bool từ `safesettings.GetSafeSettings`, default `false` khi lỗi hoặc `uow` nil).
+- `doctor_test.go`: 6 test HTTP thật, real `*sqlite.Store` + real `process.IsolationChecker` (xem Test).
+
+File sửa:
+
+- `cmd/aw/serve.go`: thêm flag `--worker-id` (default `"aw-serve"`, doc comment giải thích rõ đây không phải
+  lease-fence owner id của một worker pool thật); dựng `appConfig := config.Defaults()` rồi override
+  `DatabasePath`/`ArtifactRoot`/`WorkerID`/`ProviderExecutables` bằng đúng giá trị process đã có trong scope
+  (cùng `*dbPath`/`*artifactRoot`/`*claudeExecutable`/`*codexExecutable` các route khác đã dùng, không phải
+  bản sao thứ hai); import thêm `internal/adapters/sqlite` (để gọi `sqlite.NewQueryStore(store)`, đúng cách
+  `internal/app/doctor`'s own golden test bọc `*sqlite.Store` thành `ports.QueryStore`) và `httpdoctor
+  "internal/delivery/httpapi/doctor"`; thêm `httpdoctor.RegisterRoutes(routes, httpdoctor.Dependencies{Config:
+  appConfig, Store: sqlite.NewQueryStore(store), UnitOfWork: uow, Isolation: isolationChecker})` — tái dùng
+  ĐÚNG `uow`/`isolationChecker` mọi route khác trong file đã dùng, không tạo instance thứ hai của bất kỳ cái
+  nào.
+
+### Test
+
+- `go build ./...`, `go vet ./...`: sạch toàn bộ module.
+- `go test ./internal/delivery/httpapi/doctor/... -v`: 6 test, tất cả PASS —
+  `TestRegisterRoutes_ExposesExactlyDoctor` (đúng 1 route, `GET /doctor`, `ScopeInstallation`),
+  `TestDoctor_Healthy_HTTP` (config/db/artifact-root/provider-executable thật đều hợp lệ → `status="HEALTHY"`,
+  đủ 7 check gồm `isolation_enforcement` HEALTHY/CAPABILITY, `links` đúng 5 entry, `restartRequired=false`),
+  `TestDoctor_Degraded_MissingArtifactRoot_HTTP` (artifact root chưa tồn tại → `status="DEGRADED"`, check
+  `artifact_root` có `Remediation`), `TestDoctor_Blocked_DatabaseUnreachable_HTTP` (đóng `*sqlite.Store` thật
+  giữa lúc server đang chạy → `status="BLOCKED"`, check `database` BLOCKED có `Remediation`, HTTP status vẫn
+  200 đúng Quyết định #6, `restartRequired` tự fallback `false` an toàn dù `safe_settings` cũng lỗi theo),
+  `TestDoctor_RestartRequired_AfterSafeSettingsUpdate_HTTP` (GET trước `restartRequired=false` → PUT
+  `/settings/safe` thật → GET sau `restartRequired=true`, hai route đăng ký chung 1 registry/server/uow),
+  `TestDoctor_NeverLeaksDatabasePathOrCredential_HTTP` (PUT một `providerCredentialRef` thật riêng biệt trước,
+  rồi scan RAW response bytes — không chỉ field đã decode — chứng minh credential không lộ VÀ đường dẫn DB
+  không lộ, trong khi đường dẫn artifact-root [được chính `CheckRoot` document là "explicitly safe to show"]
+  THẬT SỰ xuất hiện, chứng minh đây là redaction có chủ đích/chọn lọc chứ không phải Doctor vô tình ẩn hết mọi
+  path). Bắt được 1 lỗi test tự viết ngay trong lúc chạy: so sánh raw bytes với path Windows (chứa `\`) phải
+  so với dạng ĐÃ JSON-escape (`\\`), không phải string gốc — sửa bằng helper `jsonEscaped` (`json.Marshal` rồi
+  trim quote) cho 2 assertion phủ định, và so trên field ĐÃ DECODE cho assertion khẳng định.
+- `go test ./cmd/aw/... -v`: toàn bộ suite pass (62s) — xác nhận flag `--worker-id` mới và `config.Config`
+  dựng mới trong `serve()` không phá bất kỳ test `serve`/`cli` nào đã có.
+- `go test ./internal/app/doctor/... -v`: pass (19.8s) — xác nhận không đụng gì vào package domain (đúng
+  Quyết định #1), 3 golden HEALTHY/DEGRADED/BLOCKED + `CheckSafeSettings` sqlite test vẫn y nguyên.
+- `go test ./internal/archtest/...`: pass — package mới không vi phạm rule domain/app-never-imports-adapters
+  (chỉ file `_test.go` mới import `internal/adapters/process`/`sqlite`, đúng ngoại lệ archtest đã document).
+- `go test ./... -count=1` (chạy nền, toàn bộ ~93 package): **0 FAIL**, không package nào lỗi — build sạch
+  hoàn toàn, không cần viện dẫn flake nào lần này.
+
+### Verify
+
+- "healthy/degraded/blocked goldens": `TestDoctor_Healthy_HTTP`/`_Degraded_MissingArtifactRoot_HTTP`/
+  `_Blocked_DatabaseUnreachable_HTTP` — driving thật (provider executable file thật, thư mục chưa tạo thật, DB
+  đóng thật), không mock trạng thái.
+- "restart states": `TestDoctor_RestartRequired_AfterSafeSettingsUpdate_HTTP` — PUT thật qua route V6-10H thật,
+  đọc lại qua GET /doctor thật.
+- "secret/path redaction": `TestDoctor_NeverLeaksDatabasePathOrCredential_HTTP` — scan raw bytes thật (không
+  chỉ field decode) cho credential VÀ database path, đồng thời chứng minh artifact-root path (được document là
+  an toàn) vẫn xuất hiện — phân biệt rõ "redact có chọn lọc" với "vô tình ẩn hết".
+- "Không làm — no duplicate repository onboarding/history/retry routes": `operationLinks()` chỉ có 5 entry
+  installation-scoped, không entry nào trỏ tới `/projects/{id}/repositories`/`/repositories/{id}/onboarding`/
+  `/repositories/{id}/retry-probe` (những route đó đòi project id Doctor không có).
+- "no credentials, ever": `TestDoctor_NeverLeaksDatabasePathOrCredential_HTTP` cộng với việc `doctor.go`'s own
+  doc comment chỉ ra CẤU TRÚC (không phải quy ước) khiến điều này đúng — `Options`/`Run` không chạm field
+  credential nào, `restartRequired` chỉ forward đúng 1 bool.
+- Wiring thật vào `cmd/aw/serve.go`: `grep -n "httpdoctor" cmd/aw/serve.go` xác nhận cả import (dòng 34) VÀ lời
+  gọi `httpdoctor.RegisterRoutes(...)` (dòng 406) đều thật sự tồn tại trong composition root, không chỉ ở
+  test package-level — đúng lo ngại doctrine nêu từ vụ V6-04 ban đầu (30 test xanh nhưng route chưa từng được
+  gọi từ `cmd/aw/serve.go` thật).
+- "Hoàn thành khi — first-run UI never needs to read the filesystem/config directly": response luôn có đủ
+  `status`/`checks[]` (DB/roots/Git/provider/safe-settings/isolation) VÀ `links` (adapter builds/safe
+  settings/projects/health) trong cùng 1 lần gọi, kể cả khi installation đang BLOCKED (HTTP vẫn 200, xem
+  Quyết định #6).
+
+### Kết quả
+
+Package mới `internal/delivery/httpapi/doctor` (3 file production + 1 file test, 6 test function, real HTTP +
+real sqlite + real `process.IsolationChecker`). 1 route HTTP mới: `GET /doctor`, installation-scoped, luôn 200.
+Gap lớn nhất task này tự phát hiện — `aw serve` chưa từng dựng `config.Config` — giải quyết bằng 1 flag mới
+(`--worker-id`, default an toàn) cộng `config.Defaults()` làm nền, để `CheckAppConfig` đạt HEALTHY thật qua
+composition root thật thay vì BLOCKED vĩnh viễn. Câu hỏi "adapter" trong Phạm vi được đọc theo đúng nghĩa đen
+"operation links" của design doc — chỉ 1 map tĩnh trỏ tới `GET /adapter-builds` đã tồn tại, không nhúng lại dữ
+liệu registry; "isolation" được xử lý ngược lại — 1 CheckResult thật (không phải link) vì dependency đó tự
+document "no I/O", nên an toàn gọi trực tiếp mỗi request. Không sửa `internal/app/doctor` (domain package đã
+đóng, đã có golden test riêng) — mọi phần mở rộng nằm ở tầng HTTP. `go build/vet/test ./...` sạch trên toàn bộ
+module (~93 package), `go test ./... -count=1` chạy nền 0 FAIL — không có regression nào, không có flake nào
+cần viện dẫn lần này.

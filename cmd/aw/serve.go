@@ -17,6 +17,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
@@ -30,6 +31,7 @@ import (
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
+	httpdoctor "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/doctor"
 	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
@@ -88,6 +90,23 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// full reasoning.
 	claudeExecutable := flags.String("claude-executable", "", "path to the Claude CLI executable to register as a live agent provider for RetryBlockedActivation's own admission re-checks (omitted = provider not registered, RetryBlockedActivation fails closed with 503 for a build pinned to it)")
 	codexExecutable := flags.String("codex-executable", "", "path to the Codex CLI executable to register as a live agent provider for RetryBlockedActivation's own admission re-checks (omitted = provider not registered, RetryBlockedActivation fails closed with 503 for a build pinned to it)")
+	// workerID is V6-10A's own composition-root addition
+	// (docs/design/08-v6-api-projections.md): the one flag needed to build a
+	// real, fully-valid internal/app/config.Config for GET /doctor's own
+	// CheckAppConfig (internal/app/doctor/checks.go) to run against — before
+	// this task, `aw serve` never constructed a config.Config value at all
+	// (only ad hoc --db/--artifact-root flags), so CheckAppConfig had
+	// nothing to check. `aw serve` itself never runs the lease/reaper worker
+	// pool (there is no --worker-concurrency/--lease-ttl/--lease-heartbeat
+	// flag here, and Doctor's own CheckWorker stays false, see
+	// internal/delivery/httpapi/doctor.Dependencies' own doc comment) — this
+	// is honestly this SERVE process' own identity string, not a lease-fence
+	// owner id a real worker pool would use; config.Validate requires it
+	// non-empty regardless (it has no way to know a given process opts out
+	// of running a worker), so it defaults to a stable, always-valid value
+	// rather than leaving Doctor permanently, un-actionably BLOCKED on every
+	// installation that never sets it.
+	workerID := flags.String("worker-id", "aw-serve", "identity string recorded in this process' own config.Config for GET /doctor's config-validity check; this process does not itself run the lease/reaper worker pool (see the future `aw worker` command's own --worker-id for that)")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
@@ -195,6 +214,31 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// this codebase has (ADR-013/ADR-023) — static and I/O-free, so unlike
 	// the registry above this is unconditional, no flag needed.
 	isolationChecker := process.NewIsolationChecker()
+
+	// V6-10A: this process' own real, fully-valid config.Config — built from
+	// config.Defaults() (which already supplies valid non-zero
+	// WorkerConcurrency/LeaseTTL/LeaseHeartbeat/ProcessOutputLimit; `aw
+	// serve` has no flag for any of those, and needs none, since it never
+	// runs the worker pool CheckWorker would gate) with DatabasePath/
+	// ArtifactRoot/WorkerID/ProviderExecutables overridden to the real
+	// values THIS process actually has in scope — the same dbPath/
+	// artifactRoot already used to open the database/artifact root above,
+	// and the same claudeExecutable/codexExecutable already used to build
+	// agentExecutors above, never a second, re-derived copy of any of them.
+	// Exists for GET /doctor's own CheckAppConfig
+	// (internal/delivery/httpapi/doctor, internal/app/doctor/checks.go) —
+	// no earlier task ever constructed a config.Config here at all.
+	appConfig := config.Defaults()
+	appConfig.DatabasePath = *dbPath
+	appConfig.ArtifactRoot = *artifactRoot
+	appConfig.WorkerID = *workerID
+	appConfig.ProviderExecutables = map[string]string{}
+	if executable := strings.TrimSpace(*claudeExecutable); executable != "" {
+		appConfig.ProviderExecutables["claude"] = executable
+	}
+	if executable := strings.TrimSpace(*codexExecutable); executable != "" {
+		appConfig.ProviderExecutables["codex"] = executable
+	}
 
 	routes := httpapi.NewRouteRegistry()
 	checker := httpapi.NewReadinessChecker()
@@ -365,6 +409,15 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	httpsafesettings.RegisterRoutes(routes, httpsafesettings.Dependencies{
 		UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{},
 		Matcher: matcher, Effective: safeSettingsEffective,
+	})
+	// V6-10A: GET /doctor (internal/delivery/httpapi/doctor) — an additive
+	// routes.Register call only, no shared setup above touched. Store is
+	// wrapped as a ports.QueryStore the same way internal/app/doctor's own
+	// golden tests do (sqlite.NewQueryStore(store), never a second
+	// connection); UnitOfWork/Isolation/Config are the SAME real instances
+	// every other route registration in this process already uses.
+	httpdoctor.RegisterRoutes(routes, httpdoctor.Dependencies{
+		Config: appConfig, Store: sqlite.NewQueryStore(store), UnitOfWork: uow, Isolation: isolationChecker,
 	})
 	// A later endpoint task's own composition-root wiring adds its own
 	// routes.Register call here without needing to touch this file's shared
