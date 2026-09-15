@@ -64,9 +64,25 @@ func TestServe_RejectsMissingArtifactRootDirectory(t *testing.T) {
 	err := serve(context.Background(), []string{
 		"--db", serveTestDB(t),
 		"--artifact-root", filepath.Join(t.TempDir(), "does-not-exist"),
+		"--workspace-root", t.TempDir(),
 	}, &stdout)
 	if err == nil {
 		t.Fatal("expected an error for a non-existent --artifact-root")
+	}
+}
+
+// TestServe_RequiresWorkspaceRootFlag mirrors
+// TestServe_RequiresArtifactRootFlag above for V6-10D's own --workspace-root
+// flag (cmd/aw/serve.go's own required-flag check, right after
+// --artifact-root's own).
+func TestServe_RequiresWorkspaceRootFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	err := serve(context.Background(), []string{
+		"--db", serveTestDB(t),
+		"--artifact-root", t.TempDir(),
+	}, &stdout)
+	if err == nil || !isUsageError(err) {
+		t.Fatalf("err = %v, want a usage error about --workspace-root", err)
 	}
 }
 
@@ -88,6 +104,7 @@ func TestServe_StartsServesHealthAndShutsDownGracefully(t *testing.T) {
 		serveDone <- serve(ctx, []string{
 			"--db", dbPath,
 			"--artifact-root", artifactRoot,
+			"--workspace-root", t.TempDir(),
 			"--host", "127.0.0.1",
 			"--port", "0",
 		}, &stdout)
@@ -141,6 +158,7 @@ func TestServe_ReadyFailsIfArtifactRootRemoved(t *testing.T) {
 		serveDone <- serve(ctx, []string{
 			"--db", dbPath,
 			"--artifact-root", artifactRoot,
+			"--workspace-root", t.TempDir(),
 			"--host", "127.0.0.1",
 			"--port", "0",
 		}, &stdout)
@@ -226,6 +244,7 @@ func TestServe_ReadyFailsIfSafeSettingsCorrupt(t *testing.T) {
 		serveDone <- serve(ctx, []string{
 			"--db", dbPath,
 			"--artifact-root", artifactRoot,
+			"--workspace-root", t.TempDir(),
 			"--host", "127.0.0.1",
 			"--port", "0",
 		}, &stdout)

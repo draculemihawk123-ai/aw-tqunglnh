@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
@@ -26,6 +27,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/safesettings"
+	appworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/app/workspaceinspection"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
@@ -40,6 +42,7 @@ import (
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 	httpsafesettings "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/safesettings"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
+	httpworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workspaceinspection"
 )
 
 // runServe is V6-01's own composition root entry point: it wires
@@ -65,6 +68,25 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	dbPath := flags.String("db", "", "sqlite database path")
 	artifactRoot := flags.String("artifact-root", "", "artifact storage root directory")
+	// workspaceRoot is V6-10D's own composition-root addition: the source/
+	// diff/repository-log routes (internal/delivery/httpapi/workspaceinspection)
+	// need a real ports.WorkspaceInspectionReader — a real
+	// internal/adapters/gitworktree.Provider, the first production composition
+	// root in this codebase to ever construct one (grep confirms every prior
+	// gitworktree.New call site is test-only). Required exactly like --db/
+	// --artifact-root above: gitworktree.New itself requires a non-empty Root
+	// (and creates it if missing, unlike --artifact-root's own
+	// must-already-exist check below). This is deliberately its own flag, not
+	// a reuse of safesettings' own ManagedWorkspaceRoot: that field is a
+	// mutable-at-runtime (PUT /settings/safe) SQLite-backed value with no live
+	// consumer anywhere in this codebase yet (its own doc comment: "no prior
+	// task ever added that plumbing"; V6-10H's response even carries a
+	// restartRequired field for exactly this reason) — constructing a real,
+	// I/O-performing adapter from a value that can change underneath the
+	// running process without ever being re-read would misrepresent both
+	// concepts. --workspace-root is instead an ordinary immutable-per-process
+	// startup flag, exactly like --artifact-root already is for artifactStore.
+	workspaceRoot := flags.String("workspace-root", "", "root directory for real Git worktree-backed workspace storage (internal/adapters/gitworktree.Provider) that the source/diff/repository-log inspection routes read through")
 	host := flags.String("host", "127.0.0.1", "loopback bind host")
 	port := flags.Int("port", 0, "bind port (0 = OS-assigned ephemeral port)")
 	maxBodyBytes := flags.Int64("max-body-bytes", 1<<20, "maximum accepted request body size in bytes")
@@ -117,6 +139,9 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	if strings.TrimSpace(*artifactRoot) == "" {
 		return usageError{errors.New("--artifact-root is required")}
 	}
+	if strings.TrimSpace(*workspaceRoot) == "" {
+		return usageError{errors.New("--workspace-root is required")}
+	}
 
 	// ADR-028: Actor/Roles are read only from trusted startup config, never
 	// from a per-command flag — resolved once, here, before anything else
@@ -157,6 +182,18 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("open artifact store: %w", err)
 	}
+
+	// V6-10D: the first real caller in this composition root that needs a
+	// ports.WorkspaceInspectionReader — a real gitworktree.Provider rooted at
+	// --workspace-root, feeding internal/delivery/httpapi/workspaceinspection's
+	// own source/diff/repository-log routes below. gitworktree.New itself
+	// creates --workspace-root if it does not already exist (unlike
+	// --artifact-root's own must-already-exist os.Stat check above).
+	workspaceProvider, err := gitworktree.New(gitworktree.Config{Root: *workspaceRoot})
+	if err != nil {
+		return fmt.Errorf("open git workspace provider: %w", err)
+	}
+	workspaceInspectionQueries := appworkspaceinspection.New(uow, workspaceProvider)
 
 	// sessionToken is registered as a known secret with the shared redactor
 	// as defense-in-depth: ADR-016 forbids ever logging it, and this ensures
@@ -358,6 +395,12 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// other route registration in this process already uses — never a
 	// fresh source per request.
 	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{})
+	// V6-10D: bounded source/diff/repository-log inspection routes
+	// (internal/delivery/httpapi/workspaceinspection) — an additive
+	// routes.Register call only, no shared setup above touched. Queries is
+	// the one real *appworkspaceinspection.Queries built just above, backed
+	// by the real gitworktree.Provider rooted at --workspace-root.
+	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: workspaceInspectionQueries})
 	// V6-05: Definition authoring routes (internal/delivery/httpapi/definitions)
 	// — create/validate/publish/list/detail/version/diff for global and
 	// project-scoped definitions — an additive routes.Register call only,
