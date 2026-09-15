@@ -24,6 +24,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/logging"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	"github.com/taQuangLing/agent-workflow/internal/app/safesettings"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
@@ -32,6 +33,7 @@ import (
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
+	httpsafesettings "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/safesettings"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
 )
 
@@ -217,6 +219,53 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		})
 	})
 
+	// V6-10H (docs/design/08-v6-api-projections.md): this process' own
+	// fixed, boot-time safe-settings Effective snapshot
+	// (internal/app/safesettings/startup.go's own ResolveEffective) —
+	// resolved EXACTLY ONCE, here, right after the database is open and
+	// before any route is registered, from whatever SafeSettingsRecord.
+	// Desired is persisted right now plus the file/env/flag
+	// StartupOverrides this process actually has in scope. `aw serve` does
+	// not parse a config file, and does not read any of the 7 safe-
+	// settings-allowlisted fields from the environment, today — no prior
+	// task ever added that plumbing (internal/app/config.Load exists but
+	// nothing in cmd/aw calls it; --db/--artifact-root above are this
+	// command's own ad hoc flags, never routed through config.Overrides at
+	// all) — so the file and env StartupOverrides below are both the
+	// honest empty value, and flags is likewise empty (this task adds no
+	// --managed-workspace-root-style flag of its own, per its own "Không
+	// làm: no extra setting"). Only the defaults and SQLite layers are
+	// live in this composition root today; a future task that adds real
+	// file/env/flag parsing for these 7 fields only has to populate the
+	// StartupOverrides values below — this call's own shape never changes.
+	//
+	// Captured once, never recomputed per-request: Alpha has no hot-reload
+	// path at all (V6-10G's own "no live mutation of immutable process
+	// config"), so this value accurately describes what THIS running
+	// process actually uses for its entire lifetime, even after a later
+	// PUT /settings/safe changes the live desired document underneath it —
+	// see internal/delivery/httpapi/safesettings.Dependencies' own
+	// Effective doc comment, and baocaov6checklist.md's V6-10H section, for
+	// the full reasoning.
+	//
+	// A corrupt persisted document (ports.ErrSafeSettingsCorrupt) must
+	// never prevent this process from starting — that failure surfaces
+	// via the "safe_settings" readiness check registered just above
+	// (TestServe_ReadyFailsIfSafeSettingsCorrupt proves this against the
+	// real composition root: /health/ready must report 503 naming
+	// "safe_settings", not `aw serve` itself refusing to boot). The error
+	// is intentionally ignored here rather than failing startup a second,
+	// harder way: GetSafeSettings' own source never assigns its result
+	// before an error return, so safeSettingsAtBoot.Desired is already the
+	// safe "never configured" zero document in that case — exactly the
+	// state ResolveEffective already documents as "SQLite contributes
+	// nothing to any field".
+	safeSettingsAtBoot, _ := safesettings.GetSafeSettings(ctx, uow)
+	safeSettingsEffective := safesettings.ResolveEffective(
+		safesettings.Defaults(), safesettings.StartupOverrides{}, safeSettingsAtBoot.Desired,
+		safesettings.StartupOverrides{}, safesettings.StartupOverrides{},
+	)
+
 	routesFinalized := false
 	checker.Register("routes", func(ctx context.Context) error {
 		if !routesFinalized {
@@ -287,6 +336,15 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// SAME artifactStore every other artifact-producing/consuming route in
 	// this process already uses, never a second one rooted elsewhere.
 	httpevidence.RegisterRoutes(routes, httpevidence.Dependencies{UnitOfWork: uow, ArtifactStore: artifactStore})
+	// V6-10H: GET/PUT /settings/safe (internal/delivery/httpapi/safesettings)
+	// — an additive routes.Register call only, no shared setup above
+	// touched. Matcher is the SAME process-lifetime redactor httpmessage
+	// already reuses (never a second, differently-scoped one); Effective is
+	// the fixed, boot-time snapshot resolved just above.
+	httpsafesettings.RegisterRoutes(routes, httpsafesettings.Dependencies{
+		UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{},
+		Matcher: matcher, Effective: safeSettingsEffective,
+	})
 	// A later endpoint task's own composition-root wiring adds its own
 	// routes.Register call here without needing to touch this file's shared
 	// setup (contract point 8: "Parallel work không sửa registry chung").
