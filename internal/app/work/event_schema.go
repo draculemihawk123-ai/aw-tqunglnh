@@ -35,6 +35,16 @@ const (
 
 	ScopeExpansionWithdrawnEventType     = "ScopeExpansionWithdrawn"
 	ScopeExpansionWithdrawnSchemaVersion = 1
+
+	// WorkItemMarkedReadyEventType is deliberately SCREAMING_SNAKE_CASE,
+	// unlike every other EventType constant in this file — ADR-028 §30 and
+	// go-core-spec §8's own command table both name the wire value verbatim,
+	// repeatedly, as "WORK_ITEM_MARKED_READY", the same vocabulary
+	// internal/app/runtime's own WORK_ITEM_BLOCKED/WORK_ITEM_CANCELLED event
+	// types already use for this exact "WORK_ITEM_*" family — not a
+	// typo/inconsistency to "fix" into PascalCase.
+	WorkItemMarkedReadyEventType     = "WORK_ITEM_MARKED_READY"
+	WorkItemMarkedReadySchemaVersion = 1
 )
 
 // rootWorkItemCreatedEventPayload is RootWorkItemCreated v1's own shape
@@ -98,6 +108,15 @@ type scopeExpansionWithdrawnEventPayload struct {
 	WithdrawnBy string `json:"withdrawnBy"`
 }
 
+// workItemMarkedReadyEventPayload is WORK_ITEM_MARKED_READY v1's own shape
+// (MarkWorkItemReady, mark_ready.go).
+type workItemMarkedReadyEventPayload struct {
+	WorkItemID string `json:"workItemId"`
+	ProjectID  string `json:"projectId"`
+	FamilyID   string `json:"familyId"`
+	MarkedBy   string `json:"markedBy"`
+}
+
 func DecodeRootWorkItemCreatedV1(payloadJSON string) (any, error) {
 	var payload rootWorkItemCreatedEventPayload
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
@@ -146,6 +165,14 @@ func DecodeScopeExpansionWithdrawnV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+func DecodeWorkItemMarkedReadyV1(payloadJSON string) (any, error) {
+	var payload workItemMarkedReadyEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry — mirrors internal/app/runtime/event_schema.go's own
 // RegisterEventSchemas exactly.
@@ -156,4 +183,5 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(ScopeExpansionApprovedEventType, ScopeExpansionApprovedSchemaVersion, DecodeScopeExpansionApprovedV1)
 	registry.Register(ScopeExpansionRejectedEventType, ScopeExpansionRejectedSchemaVersion, DecodeScopeExpansionRejectedV1)
 	registry.Register(ScopeExpansionWithdrawnEventType, ScopeExpansionWithdrawnSchemaVersion, DecodeScopeExpansionWithdrawnV1)
+	registry.Register(WorkItemMarkedReadyEventType, WorkItemMarkedReadySchemaVersion, DecodeWorkItemMarkedReadyV1)
 }

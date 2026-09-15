@@ -69,13 +69,70 @@ func createWorkItemTx(ctx context.Context, tx *sql.Tx, item work.WorkItem) (work
 	if item.SourceNodeRunID != nil {
 		sourceNodeRunID = string(*item.SourceNodeRunID)
 	}
+	var workflowVersionID any
+	if item.WorkflowVersionID != nil {
+		workflowVersionID = string(*item.WorkflowVersionID)
+	}
+
+	// V6-04A's own contract-persistence enabler: schema_version/behavior/
+	// acceptance_json/verification_json/risk/exclusions_json (migration 0007)
+	// exist for V3-03's own WorkItem.SchemaVersion..Exclusions fields but, per
+	// this file's own pre-V6-04A history (see queries.go's doc comment), were
+	// never round-tripped here — MarkWorkItemReady (V6-04A) is the first real
+	// caller that ever needs a genuinely-contracted WorkItem to actually reach
+	// READY, so wiring these already-existing nullable columns through is a
+	// necessary, minimal, backward-compatible prerequisite: no migration
+	// change, and neither CreateRootWorkItem nor CreateChildWorkItem's own
+	// domain constructors set any of these fields today, so every row either
+	// of those two commands creates is completely unaffected (still persists
+	// as NULL across the board, exactly as before). ApprovalException is
+	// deliberately NOT included here: migration 0007 never added a column for
+	// it at all (only the seven columns above), so it remains exactly the
+	// deferred gap it already was — a future task's job, not this one's.
+	var schemaVersion any
+	if item.SchemaVersion > 0 {
+		schemaVersion = item.SchemaVersion
+	}
+	var behavior any
+	if strings.TrimSpace(item.Behavior) != "" {
+		behavior = item.Behavior
+	}
+	var verificationSpec any
+	if strings.TrimSpace(item.VerificationSpec) != "" {
+		verificationSpec = item.VerificationSpec
+	}
+	var risk any
+	if strings.TrimSpace(string(item.RiskLevel)) != "" {
+		risk = string(item.RiskLevel)
+	}
+	var acceptanceJSON any
+	if len(item.AcceptanceCriteria) > 0 {
+		encoded, err := json.Marshal(item.AcceptanceCriteria)
+		if err != nil {
+			return work.WorkItem{}, fmt.Errorf("marshal work item acceptance criteria: %w", err)
+		}
+		acceptanceJSON = string(encoded)
+	}
+	var exclusionsJSON any
+	if len(item.Exclusions) > 0 {
+		encoded, err := json.Marshal(item.Exclusions)
+		if err != nil {
+			return work.WorkItem{}, fmt.Errorf("marshal work item exclusions: %w", err)
+		}
+		exclusionsJSON = string(encoded)
+	}
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO work_items (id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO work_items (
+	id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id,
+	workflow_version_id, schema_version, behavior, acceptance_json, verification_json, risk, exclusions_json,
+	created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(item.ID), string(item.ProjectID), string(item.Kind), parentID, string(item.FamilyID),
-		item.Title, string(item.Status), item.Version, parentJoinPolicy, sourceNodeRunID, now, now,
+		item.Title, string(item.Status), item.Version, parentJoinPolicy, sourceNodeRunID,
+		workflowVersionID, schemaVersion, behavior, acceptanceJSON, verificationSpec, risk, exclusionsJSON,
+		now, now,
 	); err != nil {
 		return work.WorkItem{}, MapSQLiteError(fmt.Errorf("create work item: %w", err))
 	}
@@ -87,10 +144,16 @@ func (r workRepository) GetWorkItem(ctx context.Context, id string) (work.WorkIt
 	return getWorkItemTx(ctx, r.tx, id)
 }
 
+// workItemColumns is the shared SELECT column list getWorkItemTx and
+// listWorkItemsTx both use, so a listed row and a single Get'd row are
+// always shaped identically and scanWorkItemRow's fixed Scan-destination
+// order stays correct at both call sites — V6-04A added the trailing six
+// contract columns (schema_version..exclusions_json) alongside the
+// already-present workflow_version_id.
+const workItemColumns = `id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id, workflow_version_id, schema_version, behavior, acceptance_json, verification_json, risk, exclusions_json`
+
 func getWorkItemTx(ctx context.Context, tx *sql.Tx, id string) (work.WorkItem, error) {
-	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id, workflow_version_id
-FROM work_items WHERE id = ?`, id)
+	row := tx.QueryRowContext(ctx, `SELECT `+workItemColumns+` FROM work_items WHERE id = ?`, id)
 	item, err := scanWorkItemRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return work.WorkItem{}, fmt.Errorf("%w: work item %s", ports.ErrPersistenceNotFound, id)
@@ -102,7 +165,12 @@ func scanWorkItemRow(row repositoryRowScanner) (work.WorkItem, error) {
 	var id, projectID, kind, familyID, title, status string
 	var parentID, parentJoinPolicy, sourceNodeRunID, workflowVersionID sql.NullString
 	var version uint64
-	if err := row.Scan(&id, &projectID, &kind, &parentID, &familyID, &title, &status, &version, &parentJoinPolicy, &sourceNodeRunID, &workflowVersionID); err != nil {
+	var schemaVersion sql.NullInt64
+	var behavior, acceptanceJSON, verificationSpec, risk, exclusionsJSON sql.NullString
+	if err := row.Scan(
+		&id, &projectID, &kind, &parentID, &familyID, &title, &status, &version, &parentJoinPolicy, &sourceNodeRunID,
+		&workflowVersionID, &schemaVersion, &behavior, &acceptanceJSON, &verificationSpec, &risk, &exclusionsJSON,
+	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return work.WorkItem{}, err
 		}
@@ -126,6 +194,32 @@ func scanWorkItemRow(row repositoryRowScanner) (work.WorkItem, error) {
 	if workflowVersionID.Valid {
 		versionID := workflow.WorkflowVersionID(workflowVersionID.String)
 		item.WorkflowVersionID = &versionID
+	}
+	if schemaVersion.Valid {
+		item.SchemaVersion = int(schemaVersion.Int64)
+	}
+	if behavior.Valid {
+		item.Behavior = behavior.String
+	}
+	if verificationSpec.Valid {
+		item.VerificationSpec = verificationSpec.String
+	}
+	if risk.Valid {
+		item.RiskLevel = work.RiskLevel(risk.String)
+	}
+	if acceptanceJSON.Valid && acceptanceJSON.String != "" {
+		var criteria []work.AcceptanceCriterion
+		if err := json.Unmarshal([]byte(acceptanceJSON.String), &criteria); err != nil {
+			return work.WorkItem{}, fmt.Errorf("unmarshal work item acceptance criteria: %w", err)
+		}
+		item.AcceptanceCriteria = criteria
+	}
+	if exclusionsJSON.Valid && exclusionsJSON.String != "" {
+		var exclusions []string
+		if err := json.Unmarshal([]byte(exclusionsJSON.String), &exclusions); err != nil {
+			return work.WorkItem{}, fmt.Errorf("unmarshal work item exclusions: %w", err)
+		}
+		item.Exclusions = exclusions
 	}
 	return item, nil
 }
@@ -151,7 +245,7 @@ func (r workRepository) ListChildWorkItems(ctx context.Context, parentWorkItemID
 
 func listWorkItemsTx(ctx context.Context, tx *sql.Tx, whereClause string, arg string) ([]work.WorkItem, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT id, project_id, kind, parent_id, family_id, title, status, version, parent_join_policy, source_node_run_id, workflow_version_id
+SELECT `+workItemColumns+`
 FROM work_items WHERE `+whereClause+` ORDER BY created_at, id`, arg)
 	if err != nil {
 		return nil, MapSQLiteError(fmt.Errorf("list work items: %w", err))
