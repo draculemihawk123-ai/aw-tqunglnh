@@ -10,12 +10,27 @@
 // file adds the two public, read-only entry points a future HTTP/CLI layer
 // (V6-10F) can call directly, mirroring internal/app/workspaceinspection's
 // own "public Queries type, opens its own uow.WithReadOnly" shape.
+//
+// GetReleaseSetLocalCommitStatus (bottom of file) is V6-10F's own addition:
+// the missing per-operation status query for a RequestReleaseSetLocalCommit
+// intent (internal/app/releasesetcommit.RequestReleaseSetLocalCommit,
+// internal/domain/work.ReleaseSetLocalCommit) — until now, the only way to
+// read one back was the raw Tx-level ports.WorkRepository.
+// GetReleaseSetLocalCommit method, and every existing caller of that method
+// is itself already inside a WithSerializedWrite/WithReadOnly closure
+// (RequestReleaseSetLocalCommit's own receipt-replay reconstruction,
+// execute.go's loadIntent). This mirrors GetReleaseSet immediately above it
+// exactly: a public, read-only entry point opening its own uow.WithReadOnly,
+// so V6-10F's own GET status route has something real to dispatch through
+// rather than reaching for tx.Work() directly (which would violate this
+// whole package's "commands/queries open their own uow" discipline).
 package work
 
 import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -98,4 +113,68 @@ func ListReleaseSetsForFamily(ctx context.Context, uow ports.UnitOfWork, familyI
 		return nil
 	})
 	return details, err
+}
+
+// ReleaseSetLocalCommitStatus is GetReleaseSetLocalCommitStatus's own
+// result shape — a plain, wire-friendly mirror of workdomain.
+// ReleaseSetLocalCommit (never the domain type itself, the same "query
+// returns its own DTO, not the aggregate" convention ReleaseSetDetail
+// already follows above). FailureReason/ParentVCSObjectID/ResultVCSObjectID/
+// CompletedAt are only ever populated once State has left REQUESTED — see
+// workdomain.ReleaseSetLocalCommit's own field-by-field doc comment for
+// exactly when each is set; this type does not narrow or re-derive that,
+// it just carries whatever the row currently holds.
+type ReleaseSetLocalCommitStatus struct {
+	ReleaseSetLocalCommitID string     `json:"releaseSetLocalCommitId"`
+	ProjectID               string     `json:"projectId"`
+	ReleaseSetID            string     `json:"releaseSetId"`
+	RepositoryWorkspaceID   string     `json:"repositoryWorkspaceId"`
+	RepositoryID            string     `json:"repositoryId"`
+	State                   string     `json:"state"`
+	FailureReason           string     `json:"failureReason,omitempty"`
+	ParentVCSObjectID       string     `json:"parentVcsObjectId,omitempty"`
+	ResultVCSObjectID       string     `json:"resultVcsObjectId,omitempty"`
+	JobID                   string     `json:"jobId"`
+	CreatedAt               time.Time  `json:"createdAt"`
+	CompletedAt             *time.Time `json:"completedAt,omitempty"`
+	Version                 uint64     `json:"version"`
+}
+
+func releaseSetLocalCommitStatus(intent workdomain.ReleaseSetLocalCommit) ReleaseSetLocalCommitStatus {
+	return ReleaseSetLocalCommitStatus{
+		ReleaseSetLocalCommitID: string(intent.ID), ProjectID: string(intent.ProjectID), ReleaseSetID: string(intent.ReleaseSetID),
+		RepositoryWorkspaceID: intent.RepositoryWorkspaceID, RepositoryID: string(intent.RepositoryID),
+		State: string(intent.State), FailureReason: string(intent.FailureReason),
+		ParentVCSObjectID: intent.ParentVCSObjectID, ResultVCSObjectID: intent.ResultVCSObjectID,
+		JobID: intent.JobID, CreatedAt: intent.CreatedAt, CompletedAt: intent.CompletedAt, Version: intent.Version,
+	}
+}
+
+// GetReleaseSetLocalCommitStatus returns releaseSetLocalCommitID's own
+// current status — REQUESTED, COMMITTED or FAILED, exactly as
+// internal/app/releasesetcommit's own producer (RequestReleaseSetLocalCommit)
+// and consumer (execute.go's ExecuteReleaseSetLocalCommit) last left the
+// row — or ports.ErrPersistenceNotFound. This is a plain, per-operation
+// read: it never aggregates across a ReleaseSet's own multiple local-commit
+// operations (one per repository entry a caller has requested a commit
+// for) into a single "some/all" summary — a caller that wants to know
+// where every repository in a ReleaseSet stands calls this once per
+// operation ID it already holds, and gets that one operation's own exact,
+// un-conflated state back every time (V6-10F's own "partial" Verify line:
+// "the status query must report this accurately, not just an aggregate
+// 'some/all'").
+func GetReleaseSetLocalCommitStatus(ctx context.Context, uow ports.UnitOfWork, releaseSetLocalCommitID string) (ReleaseSetLocalCommitStatus, error) {
+	if strings.TrimSpace(releaseSetLocalCommitID) == "" {
+		return ReleaseSetLocalCommitStatus{}, errors.New("work: ReleaseSetLocalCommitID is required")
+	}
+	var status ReleaseSetLocalCommitStatus
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		intent, err := tx.Work().GetReleaseSetLocalCommit(ctx, releaseSetLocalCommitID)
+		if err != nil {
+			return err
+		}
+		status = releaseSetLocalCommitStatus(intent)
+		return nil
+	})
+	return status, err
 }

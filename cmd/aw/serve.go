@@ -33,6 +33,7 @@ import (
 	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
+	httpreleaseset "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 	httpsafesettings "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/safesettings"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
@@ -353,6 +354,10 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{},
 		Matcher: matcher, Effective: safeSettingsEffective,
 	})
+	// V6-10F: ReleaseSet list/create/detail/seal/abandon and per-entry
+	// local-commit request/status routes (internal/delivery/httpapi/releaseset)
+	// — an additive routes.Register call only, no shared setup above touched.
+	httpreleaseset.RegisterRoutes(routes, httpreleaseset.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
 	// A later endpoint task's own composition-root wiring adds its own
 	// routes.Register call here without needing to touch this file's shared
 	// setup (contract point 8: "Parallel work không sửa registry chung").
