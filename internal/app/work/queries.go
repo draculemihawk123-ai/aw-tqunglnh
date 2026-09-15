@@ -35,31 +35,37 @@
 //
 // WorkItemDetail deliberately excludes the contract fields V3-03 added to
 // work.WorkItem (SchemaVersion, Behavior, AcceptanceCriteria,
-// VerificationSpec, RiskLevel, Exclusions, ApprovalException): migration
-// 0007 added their columns, but neither createWorkItemTx nor getWorkItemTx
-// (internal/adapters/sqlite/work.go) has ever read or written them — no
-// command in this codebase populates a WorkItem's contract today (this
-// package's own commands.go doc comment says so explicitly: "A root WorkItem
-// created via this command starts in BACKLOG with an empty contract; filling
-// in the contract ... is a separate, later step no V3 task in this
-// repository's own doc set builds yet"). Exposing those fields on the wire
-// here would therefore always read as empty for every real WorkItem,
-// unconditionally — not "often empty", ALWAYS, because the read path never
-// populates them — which would misrepresent "we don't wire this yet" as "this
-// WorkItem genuinely has no behavior/verification spec set" (a real business
-// fact a client could reasonably act on). Extending
-// createWorkItemTx/getWorkItemTx to round-trip those already-existing nullable
-// columns is a legitimate, low-risk future improvement (no migration needed,
-// backward compatible — no existing caller sets or reads those work.WorkItem
-// fields today), but it touches an already-merged foundational file outside
-// this task's own explicit "Phạm vi" line and no citation assigns it here, so
-// it is deliberately deferred, not silently done. ExplainWorkItemReadiness
-// below still runs the REAL workdomain.ValidateReadinessGate validator
-// against the REAL loaded WorkItem (never a fabricated result) — its answer
-// is honest about today's actual system state (every WorkItem currently
-// fails the same completeness checks), and will automatically become more
-// precise the moment a future task wires the contract fields end to end,
-// with no change needed here.
+// VerificationSpec, RiskLevel, Exclusions, ApprovalException). Migration
+// 0007 added six of their seven columns (every one but ApprovalException,
+// which has no column at all); createWorkItemTx/getWorkItemTx
+// (internal/adapters/sqlite/work.go) now round-trip those six (V6-04A's own
+// necessary, minimal prerequisite for MarkWorkItemReady to ever transition a
+// REAL sqlite-backed WorkItem to READY — see that function's own doc
+// comment), but no PUBLIC command in this codebase populates a WorkItem's
+// contract today: neither CreateRootWorkItem's nor CreateChildWorkItem's own
+// domain constructor (work.NewRootWorkItem/work.NewChildWorkItem) ever
+// touches these fields (this package's own commands.go doc comment says so
+// explicitly: "A root WorkItem created via this command starts in BACKLOG
+// with an empty contract; filling in the contract ... is a separate, later
+// step no V3 task in this repository's own doc set builds yet"), so every
+// WorkItem either of those two commands creates still persists (and reads
+// back) with an entirely empty contract, exactly as before. Exposing those
+// fields on the wire here would therefore still always read as empty for
+// every WorkItem any real HTTP/CLI caller can create today — which would
+// misrepresent "no public command sets this yet" as "this WorkItem genuinely
+// has no behavior/verification spec set" (a real business fact a client
+// could reasonably act on) — so this DTO still leaves them out. A future
+// task that adds a real contract-authoring command is what would first make
+// exposing them here honest; that command is still nobody's job yet in this
+// codebase's own doc set. ExplainWorkItemReadiness below still runs the REAL
+// workdomain.ValidateReadinessGate validator against the REAL loaded
+// WorkItem (never a fabricated result) — its answer is honest about today's
+// actual system state (every WorkItem any public command can create still
+// fails the same completeness checks, though a caller that builds a
+// work.WorkItem value directly — e.g. a test, per work.go's own "sets the
+// exported fields directly" escape hatch — and persists it via
+// tx.Work().CreateWorkItem now gets a row that genuinely round-trips and can
+// genuinely pass).
 package work
 
 import (
