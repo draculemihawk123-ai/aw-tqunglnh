@@ -7441,3 +7441,336 @@ này FAIL với đúng lỗi CI đã thấy khi tạm bỏ đoạn `ErrPersisten
 bug, không phải test vô nghĩa), (2) test PASS sau khi khôi phục fix. Chạy lại
 `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` (chính test CI đã fail) 11 lần
 liên tiếp cộng test tất định mới 5 lần — không lần nào fail. `go build/vet/test ./...` sạch lại trên toàn repo.
+
+## V6-15B — Shared CLI foundation
+
+### Bối cảnh
+
+Note (new standing instruction as of 2026-09-16): from this section onward, the body content of each new
+checklist section is written in English; only the section headings themselves keep the existing Vietnamese
+convention used throughout this file.
+
+V6-15B is the P4-CLI-phase foundation task: `docs/design/08-v6-api-projections.md` lines 653-668 name it as the
+task that "freezes grammar/envelope/output/wait/confirmation and leaf descriptor registration" before any real
+`aw <resource> <action>` leaf exists. Every future CLI leaf task (V6-15C through V6-15N, 12 tasks total, plus
+V6-15O composing the final parity inventory) builds on whatever this task ships, the same way V6-02's HTTP
+CommandEnvelope contract became the foundation every P2 HTTP endpoint task built on since. Dependencies
+(V6-01A, V6-02, V6-02A, V6-15A) were all confirmed already merged on `origin/master` before starting
+(`bfa796d` V6-01A, `60a9f8f` V6-02, `36c5287` V6-02A, `fdd95a8` V6-15A) — no need to re-verify by re-reading
+old PRs, per the task brief's own instruction.
+
+Scope is deliberately narrow: `internal/delivery/cli` — the framework package itself — plus a no-op/sample
+descriptor test proving the framework works end to end. Explicitly out of scope ("Không làm"): no real domain
+leaf (no `definition`/`doctor`/`work-item` subcommand), no SQLite/Git/provider adapter import, no internal
+worker import, no HTTP-client authority (this package must never itself act as an HTTP client dispatching to
+`aw serve` over the network), and no wiring into `cmd/aw` (that stays untouched — a future leaf task wires
+`cmd/aw`'s own dispatch into this framework once a real leaf exists).
+
+### Nghiên cứu
+
+Read every piece of prior art the task brief named, in full, before designing anything:
+
+- ADR-028 (`docs/architecture/02-architecture-decisions.md`, section 30, lines ~712-737): canonical binary
+  `aw`, grammar `aw <resource> <action> [flags]`; `aw serve/worker/doctor/version/help` stay top-level
+  utilities, not `<resource> <action>` shaped. Hard rule confirmed: "Actor và ActorRoles là authentication
+  context, không phải input tự khai" — no per-command `--actor`/`--role` flag is ever allowed. The eventual
+  four-column parity inventory (UI action/query <-> HTTP operationId <-> aw command <-> public application
+  command/query) is V6-15O's own job to compose, not this task's — this task's Descriptor type only needs to
+  carry the fields that inventory will eventually read.
+- `internal/app/config/local_principal.go` (122 lines, read in full): `LocalPrincipal{Actor, Roles}`,
+  `DefaultLocalPrincipal()` (`{Actor: "local-operator", Roles: []string{"operator"}}`),
+  `LoadLocalPrincipalFile(path)` (empty/missing path/file -> default; a file's own `localPrincipal.actor`/
+  `localPrincipal.roles` JSON keys override), `ValidateLocalPrincipal(lp)` (non-empty actor, non-empty unique
+  roles). `cmd/aw/serve.go` already uses exactly this via its own `--principal-config` flag (confirmed by
+  grepping `principalConfigPath` in that file) to build the HTTP server's own principal — this framework's own
+  shared principal flag follows the identical mechanism/flag name/default.
+- `internal/delivery/httpapi/commandenvelope.go` and `receiptreplay.go` (both read in full): `SemanticHash`
+  (the canonical NUL-separated, sha256-prefixed RequestHash computation over commandType/scope/normalized
+  payload/extraContentDigest/expectedVersion — deliberately excluding transport metadata), `LookupReceipt`
+  (read-only `uow.WithReadOnly` check keyed on actor/scope/idempotencyKey/commandType), `ReconcileReceipt`
+  (same-hash -> replay, different-hash -> `ErrReceiptHashConflict`). Both take `ports.UnitOfWork`, not
+  anything HTTP-specific — confirmed directly callable from `internal/delivery/cli` without needing to touch
+  `net/http` at all. `WriteReceiptReplay`/`EncodeResult` in the same file ARE `http.ResponseWriter`-specific,
+  so this task writes its own `io.Writer`-based equivalents rather than reusing those two directly.
+- `cmd/aw/cli.go` (existing pre-V6 CLI dispatch precedent, read for STYLE only, explicitly out of scope to
+  modify): `exitCode` type (0/1/2, matching Go's own `flag` package convention), `usageError` wrapper,
+  `subcommands` map[string]func dispatch table — this is exactly the "shared-file edit" pattern this task's
+  own registry design needs to avoid replicating for CLI descriptors (see Quyết định below).
+  `cmd/aw/adapter.go`'s `writeStableJSON` (json.MarshalIndent + trailing newline) is the existing "one JSON
+  document stdout" precedent this task's own `EncodeCommandResult`/`EncodeQueryResult` mirror exactly.
+  `cmd/aw/serve.go`'s `--max-body-bytes` flag defaults to `1<<20` (1 MiB) — reused as `DefaultMaxInputBytes`
+  for the same order-of-magnitude reason on the CLI side. Confirmed `cmd/aw/definition.go`'s own `requestHash`
+  helper predates `httpapi.SemanticHash` and does NOT use it — an acknowledged historical gap in an out-of-
+  scope file, not a pattern to copy; `cmd/aw/definition.go` and `cmd/aw/adapter.go` were not touched at all.
+- `internal/delivery/httpapi/workspaceroutes.go`'s own `newWorkspaceCommand` (found while reading how HTTP
+  handlers actually build a `ports.Command`, not named directly in the task brief but directly relevant):
+  `Command.ID`/`Command.CorrelationID` are derived deterministically as `"<CommandType>-<IdempotencyKey>"`,
+  never a fresh random draw — "stable and reproducible across a retry, never a fresh random value that would
+  defeat log correlation across retried attempts" (that function's own doc comment). `cmd/aw/definition.go`'s
+  own `newDefinitionCommand` does the identical thing. `BuildEnvelope` mirrors this exactly rather than minting
+  a second random ID per call.
+- `internal/app/ports/fake` (`fake.New()` returns a `*fake.UnitOfWork` implementing `ports.UnitOfWork` entirely
+  in-memory, `ports.Tx`'s real `Receipts()` behavior in particular) — used directly in every Dispatch test and
+  the sample end-to-end test, since "Không làm" forbids any SQLite import from this package but the framework
+  still needs to exercise the full receipt-replay flow against something real (never a hand-rolled test
+  double that skips the actual replay logic, per standing repo doctrine).
+- `internal/archtest/boundary_test.go` and `composition_root_test.go` (read for the AST-scan/`go list -json`
+  idiom this package's own new architecture-import test follows): `TestDomainAppNeverImportAdapters` and
+  `TestProviderAdaptersNeverImportAppOrchestrationOrPersistence` both check the FULL transitive `go list -json`
+  `"Deps"` closure — the technique this task's own boundary test started with.
+- `go.mod`: `github.com/mattn/go-isatty` is already present as an INDIRECT dependency (pulled in transitively
+  by `modernc.org/sqlite`), so a TTY check could have used it — decided against it (see Quyết định) in favor
+  of a stdlib-only `os.ModeCharDevice` check, avoiding promoting a new dependency to direct just for this.
+
+### Quyết định
+
+1. **Descriptor shape**: `Path []string`, `Scope ScopeKind` (`ScopeInstallation`/`ScopeProject`, a small typed
+   enum — deliberately NOT a real `ports.CommandScope` value, since a leaf's actual scope, e.g. which
+   project, is a per-invocation runtime value built from flags when the command actually runs, never
+   registration-time metadata), `AppOperation string`, `HTTPOperationID string` (either a real HTTP
+   operationId string or the typed sentinel `CLILocalOperation = "CLI_LOCAL"`, matching ADR-028's own small,
+   named, expected set of CLI-only leaves — `aw events watch` and the local-only
+   `{aw serve, aw worker, aw help, aw version, aw evidence verify}` set). The registry's own duplicate key is
+   `(Path, Scope)` together, never `Path` alone — ADR-028 itself names the exact case that needs this: a
+   definition-create leaf sharing one CLI path but two different scopes (`--scope global` vs
+   `--project-id <id>`) mapping to two different HTTP operationIds. `Descriptor.validate()` rejects an empty
+   Path, any blank path segment, an invalid Scope, and an empty AppOperation/HTTPOperationID — this is the
+   "missing metadata" half of the verify bullet; the "duplicate" half lives in `Registry.Register`'s own
+   `(Path, Scope)` key check.
+
+2. **Registration without shared-file edits**: `Registry` is a type (`NewRegistry()`), not only a bare global —
+   a table-driven test constructs its own throwaway instance so registrations from one test case never leak
+   into another, while `Default = NewRegistry()` plus package-level `Register`/`MustRegister`/`All` forwarders
+   give a real leaf package (once one exists) a single shared registry to register into from its own `init()`.
+   `MustRegister` panics on error (mirroring the Go standard library's own `regexp.MustCompile`/`sql.Register`
+   duplicate-panics idiom) so ordinary leaf `init()` code never needs its own registration error-handling
+   boilerplate. This directly satisfies the "Hoàn thành khi: independent leaf tasks can add packages/
+   descriptors without shared-file edits" line — mirroring how each HTTP endpoint package since V6-03A owns
+   its own `RegisterRoutes(routes, deps)` call rather than `cmd/aw/cli.go`'s own shared `subcommands` map
+   literal, which is exactly the pattern this avoids replicating for the CLI side.
+
+3. **Envelope/replay reuse, not reinvention**: `BuildEnvelope` calls `httpapi.SemanticHash` directly for
+   `RequestHash` — the exact same function, never a second CLI-only hashing scheme. `Dispatch` calls
+   `httpapi.LookupReceipt` and `httpapi.ReconcileReceipt` directly (both take `ports.UnitOfWork`, confirmed
+   signature-compatible with no HTTP dependency) — a receipt written by an HTTP call and a receipt written by
+   a CLI call for equivalent requests are checked against the exact same replay authority, never a parallel
+   scheme. `Dispatch` itself never writes a receipt (mirroring `LookupReceipt`/`ReconcileReceipt`'s own "never
+   writes" contract) — the `Execute` closure a leaf supplies must perform the real receipt write via
+   `WithSerializedWrite`, exactly like every real application command handler in this codebase already does.
+   `Command.ID`/`CorrelationID` are derived deterministically as `"<CommandType>-<IdempotencyKey>"` rather than
+   a second random draw, mirroring `newWorkspaceCommand`/`newDefinitionCommand` exactly (see Nghiên cứu) — only
+   the idempotency key itself needs an `idsource.Source` at all, and only when the caller omitted one.
+
+4. **"Generated key returned" contract**: `ResultEnvelope{IdempotencyKey, Replayed, Result}` is the ONE shape
+   `EncodeCommandResult` ever writes for a mutating command — `IdempotencyKey` is always present, whether
+   caller-supplied or freshly generated by `BuildEnvelope`, rather than a schema that only sometimes carries
+   the field. This directly and simply answers the verify bullet: an operator who omitted
+   `--idempotency-key` can always read the generated value back out of the same JSON response and reuse it
+   for a deliberate retry, with no special-casing needed at any call site.
+
+5. **Typed exits**: `ExitCode`/`UsageError`/`ExitCodeFor` are exported, promoted versions of `cmd/aw/cli.go`'s
+   own unexported `exitCode`/`usageError` — same three values (0/1/2), same Go `flag`-package convention —
+   rather than a fresh reinvention, since every future leaf needs the identical three-way classification a
+   composition-root dispatcher (wired in a later task, not this one) will eventually use.
+
+6. **`--wait` is a generic, reusable poll helper, not a per-leaf reimplementation**: `Wait(ctx, observe
+   ObserveFunc, opts WaitOptions)` takes a caller-supplied READ-ONLY `ObserveFunc` — its own type signature is
+   the enforcement mechanism for "never executes/cancels job": there is no other closure `Wait` could possibly
+   call. A `Sleeper` seam (`Sleep func(ctx, d) error`, defaulting to a real wall-clock `DefaultSleeper`) keeps
+   poll/timeout/interrupt behavior table-driven-testable in microseconds rather than real seconds — there is
+   no existing precedent for this kind of seam elsewhere in the codebase; it is this task's own design
+   decision, made specifically because the verify bullet demands table-driven wait/interrupt tests. Since no
+   real domain leaf exists yet, `sample_test.go`'s own synthetic observe function is what exercises this
+   helper, not any real long-running operation.
+
+7. **TTY detection**: `IsTerminal(f *os.File)` uses the standard, dependency-free `os.ModeCharDevice` check
+   (via `f.Stat()`) rather than promoting the already-indirect `github.com/mattn/go-isatty` dependency to
+   direct, or adding a new one. `ConfirmOptions.Interactive` is a plain `bool` field rather than something
+   `Confirm` resolves internally from `os.Stdin`/`os.Stdout` itself — this is the seam that makes the
+   confirmation matrix table-driven-testable (there is no portable way to fabricate a real TTY `*os.File` in a
+   unit test), matching the same design reasoning as decision 6's own `Sleeper` seam. `ConfirmOptions.Prompter`
+   is a separate `io.Writer` (documented as "always stderr in real use") from any JSON stdout stream, matching
+   the framework's own stdout/stderr separation rule everywhere else.
+
+8. **Bounded input**: `ReadBoundedInput(stdin, filePath, maxBytes)` reads via `io.LimitReader(reader,
+   maxBytes+1)` — enough to detect an oversized input without ever buffering an unbounded amount — returning
+   the typed sentinel `ErrInputTooLarge` rather than silently truncating. `DefaultMaxInputBytes = 1 << 20` (1
+   MiB) matches `cmd/aw/serve.go`'s own `--max-body-bytes` default exactly, for the identical concern on the
+   CLI side of the same boundary.
+
+9. **Architecture-import test split (found necessary while writing it, not planned upfront)**: initially wrote
+   one test checking the full transitive `go list -json` `"Deps"` closure for all four forbidden categories
+   (SQLite/Git/provider/worker), mirroring `TestDomainAppNeverImportAdapters`'s own technique exactly. Running
+   it failed on `internal/app/workerpool` — investigation (`go list -deps ./internal/delivery/httpapi | grep
+   workerpool`, then narrowing exactly which JSON field via line-range grep: `"Imports"` spans a short range,
+   `"Deps"` a much longer one, and the match was inside `"Deps"`, not `"Imports"`) confirmed
+   `internal/delivery/httpapi` ITSELF already transitively reaches `internal/app/workerpool` several hops deep
+   for its own pre-existing, unrelated doctor/diagnostics reporting — nothing this task's own code touches
+   directly. A transitive check for "worker" is therefore unsatisfiable together with the task brief's own
+   explicit instruction to reuse `httpapi.SemanticHash`/`LookupReceipt`/`ReconcileReceipt` directly. Confirmed
+   by the same technique that SQLite/Git/provider genuinely have zero transitive footprint through httpapi
+   (`go list -deps ./internal/delivery/httpapi | grep -E "adapters/sqlite|adapters/gitworktree|adapters/
+   providers"` — no matches), so those three stayed as transitive `"Deps"` checks
+   (`TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters`), while "worker" became a separate, narrower
+   DIRECT-import-only check against `"Imports"` (`TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage`)
+   — the meaningful, satisfiable invariant is "this package's own code never itself reaches for a worker
+   package," not "the entire transitive graph of everything this package legitimately reuses must be
+   worker-free."
+
+10. **`--yes`/`--json` flag ownership**: `BindYesFlag`/`BindJSONFlag` are separate binders (not folded into one
+    combined "shared flags" struct) so a query-only leaf (no confirmation prompt, ever) is not forced to bind
+    `--yes` it will never use — each binder is opt-in per leaf, composed from `flag.FlagSet` functions rather
+    than one monolithic struct every leaf must adopt wholesale.
+
+### Thực hiện
+
+New package `internal/delivery/cli` (10 files, no leaf of its own):
+
+- `doc.go` — package-level contract documentation.
+- `descriptor.go` — `ScopeKind`, `CLILocalOperation`, `Descriptor` (+ `validate()`), `Registry`
+  (`NewRegistry`/`Register`/`MustRegister`/`All`), package-level `Default`/`Register`/`MustRegister`/`All`.
+- `envelope.go` — `EnvelopeRequest`, `Envelope`, `BuildEnvelope` (calls `httpapi.SemanticHash`; derives
+  `Command.ID`/`CorrelationID` deterministically; generates `IdempotencyKey` via `idsource.Source` only when
+  the caller omitted one).
+- `dispatch.go` — `ErrReceiptHashConflict` (re-exported from httpapi), `CommandError`, `Execute`,
+  `DispatchResult`, `Dispatch` (calls `httpapi.LookupReceipt`/`ReconcileReceipt` directly; never writes a
+  receipt itself).
+- `output.go` — `ResultEnvelope`, `EncodeCommandResult`, `EncodeQueryResult` (both via a shared
+  `writeStableJSON` mirroring `cmd/aw/adapter.go`'s own helper), `Diagnosticf` (stderr-only).
+- `wait.go` — `ObserveFunc`, `Sleeper`, `DefaultSleeper`, `WaitOptions`, `ErrWaitTimeout`, `Wait`.
+- `confirm.go` — `IsTerminal`, `ErrConfirmationRequired`, `ConfirmOptions`, `Confirm`.
+- `input.go` — `DefaultMaxInputBytes`, `ErrInputTooLarge`, `ReadBoundedInput`.
+- `flags.go` — `BindPrincipalFlag`, `BindProjectFlag`, `BindExpectedVersionFlag`, `BindIdempotencyKeyFlag`,
+  `BindYesFlag`, `BindJSONFlag`, `BindWaitFlags`, `BindFileFlag` — no `--actor`/`--role` binder anywhere.
+- `exit.go` — `ExitCode`, `UsageError`, `IsUsageError`, `ExitCodeFor`.
+
+New architecture test file `internal/archtest/cli_boundary_test.go`: two tests (see Quyết định #9) —
+`TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters` (transitive `"Deps"`) and
+`TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage` (direct `"Imports"` only).
+
+No file outside `internal/delivery/cli/` and `internal/archtest/cli_boundary_test.go` was touched.
+`cmd/aw/main.go`/`cli.go`/`definition.go`/`adapter.go`/`serve.go` are completely untouched, per the task's own
+explicit "no domain leaf... import" scope boundary and "leave cmd/aw completely untouched" instruction.
+
+### Test
+
+9 test files in `internal/delivery/cli`, all table-driven where the verify bullet asks for it:
+
+- `descriptor_test.go` — `TestRegistryRegisterTableDriven` (9 cases: valid, empty path, blank segment,
+  invalid scope, missing AppOperation, missing HTTPOperationID, CLI_LOCAL sentinel accepted, duplicate
+  path+scope rejected, same path different scope allowed), plus deterministic-ordering, `MustRegister` panic
+  (duplicate and missing-metadata), and package-level `Default` forwarding tests.
+- `envelope_dispatch_test.go` — `BuildEnvelope`'s generated-vs-supplied idempotency key, the "spoof actor
+  absent" proof (`TestBuildEnvelopeNeverPopulatesActorFromAnythingButPrincipal`), deterministic ID/
+  CorrelationID, and `Dispatch`'s first-call-executes / second-call-replays / hash-conflict / replayed-failure
+  cases — all against a real `fake.UnitOfWork` and the real `httpapi` receipt-replay functions.
+- `output_test.go` — `TestEncodeCommandResultTableDriven` (4 cases: fresh/replayed/nil/no-domain-result-yet)
+  asserting stdout carries EXACTLY one JSON document (decode-then-EOF check) with a trailing newline and
+  stderr untouched; `EncodeQueryResult` never carries idempotency/replay fields; `Diagnosticf` writes only to
+  its own given writer.
+- `wait_test.go` — `TestWaitTableDriven` (already-terminal / terminal-after-N-polls / timeout, the last using
+  a real tiny `DefaultSleeper` elapse since an instant sleeper can never advance `time.Now()`), a dedicated
+  interrupt test (`TestWaitInterruptReturnsPromptlyWithoutFurtherObserve` — required a `started` channel fix
+  after a first run caught a real race: without it, `cancel()` could fire before the goroutine's first
+  `observe` call ever started, if the observe never actually gets called before returning early on
+  `ctx.Err()`), a zero-sleep-when-already-terminal test, and an observe-error-propagation test.
+- `confirm_test.go` — `TestConfirmTableDriven` (9 cases: `--yes` wins even noninteractive+json, noninteractive
+  refused, JSON refused even if interactive, y/YES/whitespace-padded-yes confirm, blank/no/garbage decline),
+  plus an assume-yes-never-prompts test and an `IsTerminal` false-for-regular-file-and-nil test.
+- `input_test.go` — `TestReadBoundedInputTableDriven` (6 cases: stdin, file overriding stdin, exactly-at-bound,
+  over-bound stdin, over-bound file, missing file), plus a default-max-bytes test and a no-source-error test.
+- `flags_test.go` — `TestBindSharedFlagsParsingTableDriven` (defaults vs every flag set), a `--file` flag test,
+  and `TestBindPrincipalFlagNeverDefinesActorOrRoleFlag` (walks every bound `flag.Flag` via `fs.VisitAll`
+  checking none is named `actor`/`role`/`roles`/`actor-roles` — the "spoof actor absent" rule proven at the
+  `flag.FlagSet` level, not just by code review).
+- `sample_test.go` — `TestSampleNoOpLeafEndToEnd`, the "no-op/sample descriptor test" the task's own Phạm vi
+  line names: registers a synthetic descriptor, builds an envelope with a generated key, dispatches it twice
+  (execute then replay) against a real `fake.UnitOfWork`, encodes the JSON result and confirms the generated
+  key round-trips through it, polls a synthetic `--wait` observer to a terminal state, and exercises `Confirm`
+  both ways (refused noninteractive, accepted with `--yes`).
+- `exit.go` has no dedicated test file — `ExitCode`/`UsageError`/`ExitCodeFor` are exercised implicitly
+  wherever a future leaf uses them; direct coverage is trivial enough (three constants, one `errors.As` wrap,
+  one three-way switch) that a dedicated table was judged unnecessary noise.
+
+A real bug was caught and fixed while writing the tests themselves, not left in: the first
+`TestWaitInterruptReturnsPromptlyWithoutFurtherObserve` (before the `started` channel synchronization was
+added) failed intermittently under `go test -count=N` with "observe called 0 times" — a genuine test race
+(the goroutine running `Wait` had not necessarily reached its first `observe` call before the main goroutine
+called `cancel()`), not a bug in `Wait` itself. Fixed by adding a `started` channel the observe closure closes
+immediately on entry, which the main goroutine waits on before calling `cancel()` — confirmed stable across 10
+repeated runs afterward (`go test -run TestWait -count=10`).
+
+A second real, unrelated flake was caught the same way: `TestPackageLevelRegisterUsesDefaultRegistry` failed
+under `go test -count=3` on its second and third invocations within the same process, since it registered a
+fixed path into the process-global `cli.Default` registry and Go does not reset package-level state between
+repeated invocations of the same test function in one process. Fixed by suffixing the test's own registration
+path with `time.Now().UnixNano()` so repeated invocations never collide with their own earlier leftover
+registration — this is a test-only concern, not a production behavior change (`cli.Default` itself is
+documented as legitimately shared, global, process-lifetime state; a real leaf registers into it exactly
+once, from its own `init()`, which only ever runs once per process).
+
+### Verify
+
+- **Table-driven parse/output/wait/interrupt/confirmation**: all five present as described above under Test.
+- **Generated key returned**: `TestBuildEnvelopeGeneratesIdempotencyKeyWhenOmitted` (envelope construction) +
+  `TestSampleNoOpLeafEndToEnd` (round-trips the generated key through `EncodeCommandResult`'s own JSON output,
+  confirming a caller can actually read it back, not merely that the field exists internally).
+- **Spoof actor absent**: `TestBuildEnvelopeNeverPopulatesActorFromAnythingButPrincipal` (no other
+  `EnvelopeRequest` field can influence `Command.Actor`/`ActorRoles`) +
+  `TestBindPrincipalFlagNeverDefinesActorOrRoleFlag` (no `--actor`/`--role`/`--roles`/`--actor-roles` flag
+  exists on any binder this package defines, checked via `flag.FlagSet.VisitAll`, not just code review).
+- **Architecture import test**: `TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters` (transitive) +
+  `TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage` (direct) — see Quyết định #9 for why the split
+  was necessary rather than one single transitive check.
+- **Descriptor duplicate/missing metadata**: `TestRegistryRegisterTableDriven`'s own 6 rejection cases (empty
+  path, blank segment, invalid scope, missing AppOperation, missing HTTPOperationID, duplicate path+scope) +
+  `TestRegistryMustRegisterPanicsOnDuplicate`/`TestRegistryMustRegisterPanicsOnMissingMetadata`.
+- **Hoàn thành khi — "independent leaf tasks can add packages/descriptors without shared-file edits"**: the
+  registry design itself (decision #2) is the proof — a leaf package's own `init()` calling
+  `cli.MustRegister(...)` is the only integration point, with no shared map literal or file any two leaf
+  packages would ever need to edit concurrently, mirroring the HTTP endpoint `RegisterRoutes` precedent this
+  codebase already established starting V6-03A.
+
+`go build ./...` and `go vet ./...` clean across the whole repo. `go test ./internal/delivery/cli/...
+./internal/archtest/... -count=5` clean (0 FAIL across 5 repeated full runs, after fixing the two real
+test-only races found above). `go test ./...` run repo-wide to check for any regression outside this task's
+own diff (this repo's own suite is large enough to exceed a single terminal command's default timeout; run in
+the background and reported on separately once it completes, per standing doctrine to never claim to wait on
+it silently).
+
+### Kết quả
+
+Branch `feat/v6-15b-cli-foundation`. New package `internal/delivery/cli` (10 source files + 9 test files, ~
+1300 lines including doc comments) and one new architecture test file
+`internal/archtest/cli_boundary_test.go` (2 tests). No existing file touched anywhere else in the repo —
+`cmd/aw` in particular stays completely untouched, exactly as the task's own scope requires (a future leaf
+task wires `cmd/aw`'s own dispatch into this framework once a real leaf exists).
+
+The framework reuses `internal/delivery/httpapi`'s own `SemanticHash`/`LookupReceipt`/`ReconcileReceipt`
+directly rather than reimplementing a parallel CLI-only idempotency/replay scheme — a receipt written by an
+HTTP call and a receipt written by a future CLI call for equivalent requests are checked against the exact
+same replay authority. `Command.ID`/`CorrelationID` are derived deterministically
+(`"<CommandType>-<IdempotencyKey>"`), matching the codebase's own existing `newWorkspaceCommand`/
+`newDefinitionCommand` convention rather than introducing a second scheme. The registry (`Descriptor`/
+`Registry`/`Register`/`MustRegister`/`All`) lets a future leaf package register itself from its own `init()`
+with no shared-file edit, mirroring the HTTP `RegisterRoutes` precedent. `Wait`/`Confirm` both took a small,
+deliberate design decision (an injectable `Sleeper` seam and a plain `Interactive bool` field respectively)
+specifically to keep their own poll/timeout/interrupt and TTY/JSON/yes behavior table-driven-testable without
+real wall-clock sleeps or a fabricated real TTY file — there was no existing precedent for either seam
+elsewhere in the codebase, so both are this task's own documented design decisions.
+
+Two genuine test-only races were found and fixed while writing the test suite itself (a `Wait` interrupt-test
+goroutine-scheduling race, and a global-registry-state collision across repeated `-count=N` invocations of the
+same test function) — both confirmed as test bugs, not framework bugs, and both confirmed fixed by running the
+affected tests repeatedly afterward (10x and 5x respectively) with zero failures.
+
+One design decision (Quyết định #9) emerged only while actually running the architecture-import test rather
+than being anticipated upfront: a single transitive-closure check for all four forbidden categories
+(SQLite/Git/provider/worker) is unsatisfiable together with the task brief's own explicit instruction to reuse
+`httpapi`'s functions directly, since `httpapi` itself already, legitimately, transitively reaches
+`internal/app/workerpool` several hops deep for unrelated doctor/diagnostics reporting. Resolved by splitting
+into a transitive check for the three categories confirmed to have zero transitive footprint through httpapi
+(SQLite/Git/provider) and a narrower direct-import-only check for the fourth (worker) — the correct level of
+enforcement for "this package's own code never reaches for X," which is what the task's "Không làm" line
+actually means once "reuse httpapi's functions" is taken as a given, non-negotiable constraint rather than
+something to relitigate.
