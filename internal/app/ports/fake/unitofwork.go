@@ -105,6 +105,7 @@ type Tx struct {
 	checkpoints      *CheckpointsRepository
 	safeSettings     *SafeSettingsRepository
 	attachmentClaims *AttachmentClaimRepository
+	projections      *ProjectionRepository
 }
 
 func newTx() Tx {
@@ -147,6 +148,7 @@ func newTx() Tx {
 		// implementation.
 		safeSettings:     &SafeSettingsRepository{record: ports.SafeSettingsRecord{Version: 1}},
 		attachmentClaims: &AttachmentClaimRepository{},
+		projections:      &ProjectionRepository{},
 	}
 }
 
@@ -172,6 +174,7 @@ func (t Tx) clone() Tx {
 	clone.checkpoints = t.checkpoints.clone()
 	clone.safeSettings = t.safeSettings.clone()
 	clone.attachmentClaims = t.attachmentClaims.clone()
+	clone.projections = t.projections.clone()
 	return clone
 }
 
@@ -195,6 +198,7 @@ func (t Tx) AgentEvents() ports.AgentEventsRepository          { return t.agentE
 func (t Tx) Checkpoints() ports.CheckpointsRepository          { return t.checkpoints }
 func (t Tx) SafeSettings() ports.SafeSettingsRepository        { return t.safeSettings }
 func (t Tx) AttachmentClaims() ports.AttachmentClaimRepository { return t.attachmentClaims }
+func (t Tx) Projections() ports.ProjectionRepository           { return t.projections }
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the
@@ -1434,6 +1438,165 @@ func (a *AttachmentClaimRepository) ListStaleAttachmentClaims(_ context.Context,
 		}
 		return result[i].ClaimedAt.Before(result[j].ClaimedAt)
 	})
+	return result, nil
+}
+
+// ProjectionRepository is an in-memory ports.ProjectionRepository (V6-08)
+// — the same "gets real behavior from the start" treatment
+// AttachmentClaimRepository above already received, mirroring sqlite's own
+// projectionRepository field-for-field so a reducer/golden test exercises
+// identical generation/CAS semantics against either implementation.
+type ProjectionRepository struct {
+	generations map[projectionScopeKey]uint64
+	rows        map[projectionRowKey]ports.ProjectionRow
+	checkpoints map[projectionGenerationKey]ports.ProjectionCheckpoint
+	poison      []ports.ProjectionPoisonRecord
+}
+
+type projectionScopeKey struct{ projectID, projectionName string }
+
+type projectionGenerationKey struct {
+	projectID, projectionName string
+	generation                uint64
+}
+
+type projectionRowKey struct {
+	projectID, projectionName string
+	generation                uint64
+	entityKey                 string
+}
+
+var _ ports.ProjectionRepository = (*ProjectionRepository)(nil)
+
+func (p *ProjectionRepository) clone() *ProjectionRepository {
+	generations := make(map[projectionScopeKey]uint64, len(p.generations))
+	for k, v := range p.generations {
+		generations[k] = v
+	}
+	rows := make(map[projectionRowKey]ports.ProjectionRow, len(p.rows))
+	for k, v := range p.rows {
+		rows[k] = v
+	}
+	checkpoints := make(map[projectionGenerationKey]ports.ProjectionCheckpoint, len(p.checkpoints))
+	for k, v := range p.checkpoints {
+		checkpoints[k] = v
+	}
+	poison := make([]ports.ProjectionPoisonRecord, len(p.poison))
+	copy(poison, p.poison)
+	return &ProjectionRepository{generations: generations, rows: rows, checkpoints: checkpoints, poison: poison}
+}
+
+// GetActiveGeneration mirrors sqlite's own lookup.
+func (p *ProjectionRepository) GetActiveGeneration(_ context.Context, projectID, projectionName string) (uint64, bool, error) {
+	generation, ok := p.generations[projectionScopeKey{projectID, projectionName}]
+	return generation, ok, nil
+}
+
+// EnsureGeneration mirrors sqlite's own idempotent first-create.
+func (p *ProjectionRepository) EnsureGeneration(_ context.Context, projectID, projectionName string, generation uint64, _ int, _ time.Time) error {
+	key := projectionScopeKey{projectID, projectionName}
+	if existing, ok := p.generations[key]; ok {
+		if existing == generation {
+			return nil
+		}
+		return fmt.Errorf("fake: %w: projection %s/%s active generation is %d, not %d",
+			ports.ErrOptimisticConflict, projectID, projectionName, existing, generation)
+	}
+	if p.generations == nil {
+		p.generations = map[projectionScopeKey]uint64{}
+	}
+	p.generations[key] = generation
+	return nil
+}
+
+// UpsertProjectionRow mirrors sqlite's own unconditional insert-or-replace.
+func (p *ProjectionRepository) UpsertProjectionRow(_ context.Context, row ports.ProjectionRow) error {
+	if p.rows == nil {
+		p.rows = map[projectionRowKey]ports.ProjectionRow{}
+	}
+	p.rows[projectionRowKey{row.ProjectID, row.ProjectionName, row.Generation, row.EntityKey}] = row
+	return nil
+}
+
+// GetProjectionRow mirrors sqlite's own lookup.
+func (p *ProjectionRepository) GetProjectionRow(_ context.Context, projectID, projectionName string, generation uint64, entityKey string) (ports.ProjectionRow, error) {
+	row, ok := p.rows[projectionRowKey{projectID, projectionName, generation, entityKey}]
+	if !ok {
+		return ports.ProjectionRow{}, fmt.Errorf("fake: %w: projection row %s/%s/%d/%s",
+			ports.ErrPersistenceNotFound, projectID, projectionName, generation, entityKey)
+	}
+	return row, nil
+}
+
+// ListProjectionRows mirrors sqlite's own query, EntityKey ascending.
+func (p *ProjectionRepository) ListProjectionRows(_ context.Context, projectID, projectionName string, generation uint64) ([]ports.ProjectionRow, error) {
+	var result []ports.ProjectionRow
+	for k, row := range p.rows {
+		if k.projectID == projectID && k.projectionName == projectionName && k.generation == generation {
+			result = append(result, row)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].EntityKey < result[j].EntityKey })
+	return result, nil
+}
+
+// GetProjectionCheckpoint mirrors sqlite's own lookup.
+func (p *ProjectionRepository) GetProjectionCheckpoint(_ context.Context, projectID, projectionName string, generation uint64) (ports.ProjectionCheckpoint, error) {
+	checkpoint, ok := p.checkpoints[projectionGenerationKey{projectID, projectionName, generation}]
+	if !ok {
+		return ports.ProjectionCheckpoint{}, fmt.Errorf("fake: %w: projection checkpoint %s/%s/%d",
+			ports.ErrPersistenceNotFound, projectID, projectionName, generation)
+	}
+	return checkpoint, nil
+}
+
+// UpsertProjectionCheckpoint mirrors sqlite's own fenced CAS (nil
+// ExpectedCursor = first insert, non-nil = fenced advance).
+func (p *ProjectionRepository) UpsertProjectionCheckpoint(_ context.Context, req ports.UpsertProjectionCheckpointRequest) error {
+	key := projectionGenerationKey{req.ProjectID, req.ProjectionName, req.Generation}
+	existing, ok := p.checkpoints[key]
+	if req.ExpectedCursor == nil {
+		if ok {
+			return fmt.Errorf("fake: %w: projection checkpoint %s/%s/%d already exists",
+				ports.ErrOptimisticConflict, req.ProjectID, req.ProjectionName, req.Generation)
+		}
+	} else {
+		if !ok || existing.Cursor != *req.ExpectedCursor {
+			return fmt.Errorf("fake: %w: projection checkpoint %s/%s/%d expected cursor %d",
+				ports.ErrOptimisticConflict, req.ProjectID, req.ProjectionName, req.Generation, *req.ExpectedCursor)
+		}
+	}
+	if p.checkpoints == nil {
+		p.checkpoints = map[projectionGenerationKey]ports.ProjectionCheckpoint{}
+	}
+	p.checkpoints[key] = ports.ProjectionCheckpoint{
+		ProjectID: req.ProjectID, ProjectionName: req.ProjectionName, Generation: req.Generation,
+		Cursor: req.NewCursor, Status: req.NewStatus, UpdatedAt: req.UpdatedAt,
+	}
+	return nil
+}
+
+// RecordProjectionPoison mirrors sqlite's own append-only insert.
+func (p *ProjectionRepository) RecordProjectionPoison(_ context.Context, record ports.ProjectionPoisonRecord) error {
+	for _, existing := range p.poison {
+		if existing.ID == record.ID {
+			return fmt.Errorf("fake: duplicate projection poison record id %q", record.ID)
+		}
+	}
+	p.poison = append(p.poison, record)
+	return nil
+}
+
+// ListProjectionPoison mirrors sqlite's own query, JournalPosition
+// ascending.
+func (p *ProjectionRepository) ListProjectionPoison(_ context.Context, projectID, projectionName string, generation uint64) ([]ports.ProjectionPoisonRecord, error) {
+	var result []ports.ProjectionPoisonRecord
+	for _, record := range p.poison {
+		if record.ProjectID == projectID && record.ProjectionName == projectionName && record.Generation == generation {
+			result = append(result, record)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].JournalPosition < result[j].JournalPosition })
 	return result, nil
 }
 
