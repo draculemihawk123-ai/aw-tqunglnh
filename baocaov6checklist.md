@@ -7789,3 +7789,179 @@ into a transitive check for the three categories confirmed to have zero transiti
 enforcement for "this package's own code never reaches for X," which is what the task's "Không làm" line
 actually means once "reuse httpapi's functions" is taken as a given, non-negotiable constraint rather than
 something to relitigate.
+## V6-08 — Projection schema and projector inventory
+
+### Bối cảnh
+
+All 18 P2 tasks (11 core + 7 follow-on) are merged; per the design doc's own dependency graph (§2),
+`{V6-00, V6-00A, V6-04A} -> V6-08`, and all three are already on master. This is the first P3 task, and per
+its own spec (`docs/design/08-v6-api-projections.md` lines 337-349): "Mục tiêu: freeze generation-aware
+Kanban/task-detail schema and exhaustive reducer classification"; "Phạm vi: migrations/repositories, active
+generation, checkpoint/freshness/poison records và projector catalog"; "Không làm: không live consume,
+rebuild hoặc dùng projection làm authority"; "Hoàn thành khi: live consumer/rebuild dùng cùng frozen schema
+and reducer set without new design choice." This task gates the rest of P3 (`V6-08 -> V6-08A -> {V6-09,
+V6-10, V6-11}`), so — matching this session's own standing doctrine of doing architecturally-critical
+shared-contract work personally rather than delegating (V6-01/V6-02's own precedent) — I implemented this
+one myself, in parallel with delegating V6-15B (the P4 CLI-phase's own equivalent foundation task) to a
+single subagent.
+
+### Nghiên cứu
+
+Dumped the full currently-registered event inventory via a throwaway test calling all 11 real
+`RegisterEventSchemas` functions and printing `registry.Keys()`: **47 distinct (EventType, SchemaVersion)
+keys**, not the 40 V6-00A originally closed — P1/P2 added 7 new real business events since then
+(ProjectCreated, WorkItem-family events, Run/recovery events, MessageAppended, ReleaseSetLocalCommit events,
+SafeSettingsUpdated, AdapterBuildRegistered), each individually registered by its own task per the
+already-established GC-DS-11 discipline. Deleted the throwaway test immediately after capturing the list.
+
+Read `docs/design/11-v6-00-ux-artifact.md`'s own Screen 5 (Kanban board) and Screen 7 (Task/WorkItem detail)
+sections in full. Two load-bearing findings:
+- Screen 5's own action table names `ListKanbanCards` as "projected read model, không phải authoritative
+  detail (phân biệt rõ với Screen 7)" with Owner Task ID **V6-10** (a P3 task, not any of the already-merged
+  V6-10A..V6-10J P1/P2 tasks — this doc reuses "V6-10" for two unrelated tasks in two different phases).
+  Cross-checked `docs/design/08-v6-api-projections.md` line 407: **V6-10 — "Kanban và projected WorkItem
+  detail endpoints"** confirms: ONE projection serves both the Kanban card list AND a lighter, non-
+  authoritative WorkItem detail (Screen 7's own detail stays a SEPARATE, always-authoritative live query
+  owned by V6-04, explicitly NOT this projection's job — Screen 7's own spec text: "detail này là
+  authoritative, không phải projection").
+- Screen 5's own text: "cột `BLOCKED`/`DONE`/`CANCELLED` chỉ là kết quả hiển thị của blocker/CompletionPolicy/
+  cancellation authority... board KHÔNG BAO GIỜ tự ghi các trạng thái này" — meaning this projection's own
+  Reducers apply the WorkItem/Run-level AUTHORITY events (WORK_ITEM_BLOCKED, RUN_FAILED,
+  WORKFLOW_RUN_FINALIZED, WORK_ITEM_CANCELLED) and never invent a status transition on their own.
+
+Read every relevant event payload struct directly (never guessed): `internal/app/work/event_schema.go` (7
+WorkItem/ScopeExpansion events), `internal/app/runtime/event_schema.go` plus `blocker.go`/`cancel_run.go`/
+`cancel_work_item.go`/`completion.go` (all Run/WorkItem-level runtime events), and
+`internal/adapters/sqlite/workflow_store.go`'s own `WORKFLOW_RUN_FINALIZED` emission (the durable job-lease
+finalize confirmation — its payload carries `RunID`/`TerminalState` but, critically, **no `WorkItemID`**,
+unlike every other Run event). Confirmed `internal/domain/work/work.go`'s own `WorkItemStatus` is a CLOSED
+six-value enum (BACKLOG/READY/ACTIVE/BLOCKED/DONE/CANCELLED) with no dedicated "FAILED" value — this became
+the deciding evidence for how `RUN_FAILED`/a non-COMPLETED `WORKFLOW_RUN_FINALIZED` map onto the Kanban
+column (BLOCKED, the only "needs attention" member of the closed set).
+
+### Quyết định
+
+**One named projection, not two.** `ProjectionName = "workitem"`, one row per WorkItem
+(`WorkItemCardRow`), serving both the Kanban card list and the projected WorkItem detail — matching V6-10's
+own spec text exactly, avoiding two separately-maintained read models of the same underlying entity.
+
+**Schema: four generic tables, no projection-specific migration ever needed again.** `projection_generations`
+(active-generation pointer per project+name), `projection_rows` (keyed `(project_id, projection_name,
+generation, entity_key)`, `payload_json` + a per-row `last_applied_journal_position` fence for duplicate
+suppression), `projection_checkpoints` (the projection-WIDE cursor/status per generation), `projection_poison`
+(append-only, one row per unresolvable event). Migration `0039_projection_schema.sql` (highest on master was
+0038; no collision). A future SECOND named projection reuses this exact same schema with no new migration —
+`ProjectionName` is the only thing that varies.
+
+**Reducer classification: 16 Apply, 31 Ignore, exhaustive.** Every Ignore has a real, specific reason (never
+a bare "not needed") — grouped into: node/attempt/graph-level detail (12 events, already served directly by
+V6-06B with zero projection dependency — Screen 8 is out of this projection's scope entirely), catalog/
+definition/conversation/release/workspace/settings/adapter administrative data (18 events, no Kanban card
+surface per V6-00's own screen spec), and one transient WorkItem-level cancellation-intent event (deferred,
+documented as reclassifiable later with zero schema change if a "cancelling" badge is ever specified).
+
+**Entity-key resolution: direct where the payload allows it, a documented deferred-scan strategy where it
+doesn't — never a new index table.** 11 of 16 Apply events carry `WorkItemID` directly. Two ScopeExpansion*
+events (Approved/Requested) carry an optional `ReferencedWorkItemID` — used when populated. Three events
+(ScopeExpansionRejected/Withdrawn, whose payload never names a WorkItem at all, and
+`WORKFLOW_RUN_FINALIZED`, whose payload only names `RunID`) always defer: documented as resolvable via a
+plain `ListProjectionRows(generation)` scan (filtering `FamilyID`+`IsRoot`, or `ActiveRunID`) — a query this
+schema already supports, so V6-08A needs no new capability, matching this task's own "Hoàn thành khi:
+...without new design choice." Modeled this as a `Classification.EntityKeyOf` function returning `ok=false`
+plus a non-empty `EntityKeyNote` explaining the strategy, rather than inventing an auxiliary index this
+task's own "Không làm: không live consume" scope has no business building yet.
+
+**RUN_FAILED and a non-COMPLETED `WORKFLOW_RUN_FINALIZED` both map to BLOCKED**, not a new status — the
+closed six-value `WorkItemStatus` enum has no FAILED member, so this is the same column a real blocker
+(`WORK_ITEM_BLOCKED`) already owns; `ActiveRunStatus` (this projection's own smaller vocabulary, not a
+domain wire value) is what still distinguishes "blocked by a real blocker" from "blocked because its Run
+failed" for the operator. **`WORKFLOW_RUN_FINALIZED` is the only event that ever reports a successful Run
+completion** — there is no standalone "RunCompleted" event anywhere in the 47 (`RUN_COMPLETION_REQUESTED` is
+only the two-phase intent) — confirmed by direct source reading, not assumed.
+
+**Every Reducer that could move `Status` guards against regressing a terminal card** (`isTerminal()`,
+DONE/CANCELLED) — since this codebase's own event application is at-least-once and not globally ordered
+across aggregates (per-row `LastAppliedJournalPosition` only fences a DUPLICATE of the SAME event, never
+protects relative ordering of two DIFFERENT events), a stale Run-level echo arriving after a WorkItem-level
+terminal event must never move a card back out of its own final column.
+
+**Reducers decode raw JSON payload strings directly, never a cross-package typed `any`.** Each source
+package's own event payload struct is unexported (e.g. `work.rootWorkItemCreatedEventPayload`) — Go gives no
+way to type-assert an unexported type from another package. Rather than adding an exported alias to those
+packages on this task's own behalf (out of scope, `internal/app/work`/`internal/app/runtime` are untouched),
+every Reducer here re-declares its own minimal local payload struct and decodes `payloadJSON` itself —
+mirroring an already-established idiom in this exact codebase (`cmd/aw/definition.go`'s own
+`workflowVersionFields` duplicates two OTHER packages' own unexported conversion logic for the identical
+reason, its own doc comment states outright) and matching `eventschema.Decoder`'s own
+`func(payloadJSON string) (any, error)` shape exactly.
+
+**Canonical row hash reuses `authoring.Canonicalize`** (this codebase's single existing "same content -> same
+bytes/hash regardless of field order" convention, ADR-012) rather than a second, package-local canonicalizer
+— zero new hashing code.
+
+### Thực hiện
+
+- `internal/adapters/sqlite/migrations/0039_projection_schema.sql` — the four tables above, extensively
+  commented with the generation/checkpoint/poison design rationale. Bumped the three hardcoded
+  `migrationCount != 37` assertions (`db_test.go` x2, `unitofwork_test.go`) to 38 (37 files, highest number
+  38, one historical gap in the numbering — unrelated to this task).
+- `internal/app/ports/projection.go` — new `ProjectionRepository` interface (pure CRUD/CAS: generation
+  create/read, row upsert/get/list, checkpoint CAS-advance, poison record/list), wired into `ports.Tx` as
+  `Projections()`.
+- `internal/adapters/sqlite/projection_repository.go` — the real implementation, `ON CONFLICT DO UPDATE`
+  for row upserts (this codebase's own established upsert idiom, not a raw `INSERT OR REPLACE`), fenced CAS
+  for checkpoint advance mirroring `attachment_claim_repository.go`'s own pattern exactly.
+- `internal/app/ports/fake/unitofwork.go` — the in-memory `ProjectionRepository`, field-for-field mirroring
+  the real one's semantics (same CAS/idempotent-insert behavior against either implementation).
+- `internal/app/projection` (new package) — `row.go` (`WorkItemCardRow`, `CanonicalJSON`/`CanonicalRowHash`,
+  `isTerminal`), `catalog.go` (`Outcome`/`Classification`/`Catalog`/`Reducer`/`EntityKeyFunc` mechanism,
+  generic `entityKeyFromField` helper), `catalog_registrations.go` (all 47 keys classified, 16 Apply + 31
+  Ignore, every Ignore's own reason spelled out), `reducers.go` (16 pure Reducer functions + their own local
+  payload structs).
+
+### Test
+
+- `internal/adapters/sqlite/projection_repository_test.go` (new): generation idempotent-create +
+  ErrOptimisticConflict on a mismatched generation; row upsert replaces wholesale (not merge) +
+  ErrPersistenceNotFound; row list EntityKey-ascending; checkpoint first-insert + fenced advance + stale-CAS
+  rejection; poison record + list JournalPosition-ascending + duplicate-ID rejection.
+- `internal/app/projection/catalog_test.go` (new): `TestCatalog_ClassifiesEveryRegisteredEventKey` — builds
+  the real combined `eventschema.Registry` from all 11 real `RegisterEventSchemas` call sites (same list
+  `internal/archtest/event_catalog_test.go` uses) and asserts EXACT set equality against this Catalog's own
+  keys (both directions fail: a registered-but-unclassified key, AND a classified-but-not-currently-
+  registered stale entry) — this is the V6-08 counterpart to V6-00A's own inventory guard.
+  `TestCatalog_EveryApplyEntryHasAReducerAndEveryIgnoreHasAReason` and
+  `TestCatalog_ApplyEntriesWithNilEntityKeyOfDocumentAResolutionNote` guard the Classification struct's own
+  internal consistency.
+- `internal/app/projection/reducers_test.go` (new): `TestReducers_DeterministicGolden`, table-driven, one
+  case per Apply event (plus terminal-guard and stale-RunID-no-op edge cases), each Reducer called 3 times
+  against the identical input asserting byte-identical output every call. `TestEntityKeyOf_...` covers both
+  the direct and the deferred (`ok=false`) resolution shapes. `TestCanonicalRowHash_...` proves determinism,
+  content-sensitivity, and field-order-independence (a struct literal built in a different field order still
+  hashes identically — the whole point of round-tripping through `authoring.Canonicalize`).
+- `internal/app/projection/row_test.go` (new): cross-checks this package's own hand-copied status wire
+  strings against the real `work.WorkItemStatus` constants, so the two can never silently drift apart.
+- `go build ./... && go vet ./...` clean repo-wide. `go test ./...` — **all packages `ok`, zero `FAIL`**
+  (verified on a clean worktree with no concurrent contention).
+
+### Verify
+
+- Migration old/new DB: `TestOpenMigratesAndEnablesForeignKeys` (fresh DB reaches 38) and
+  `TestMigrationIsIdempotent` (reopening an already-migrated — i.e. "old" — DB stays at 38, no re-apply
+  error) both pass — this codebase's own established idiom for this Verify category, no new test pattern
+  invented.
+- Inventory totality: `TestCatalog_ClassifiesEveryRegisteredEventKey` logs "47 registered key(s), 47
+  classified key(s)" — exact match, zero gap, zero stale entry.
+- Deterministic reducer/golden: all 16 Apply reducers covered, 3x-repeated-call byte-identical assertion on
+  every case.
+- Canonical snapshot hash: `CanonicalRowHash` proven deterministic, content-sensitive, and field-order-
+  independent.
+
+### Kết quả
+
+New package `internal/app/projection` (5 files) + new `internal/adapters/sqlite/projection_repository.go` +
+migration 0039 (4 tables) + `ports.ProjectionRepository` wired into both the real and fake `Tx`. 47/47 events
+classified (16 Apply with real deterministic Reducers, 31 Ignore each with a specific documented reason).
+Zero live consumer, zero rebuild worker, zero HTTP endpoint — exactly this task's own scope boundary. V6-08A
+(atomic projection event consumer) is now unblocked; its own live scanner can build directly on this frozen
+schema/catalog without any new design choice, per this task's own "Hoàn thành khi" bar.

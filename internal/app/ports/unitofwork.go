@@ -124,6 +124,13 @@ type Tx interface {
 	// AttachmentClaimRepository's own doc comment,
 	// internal/app/ports/attachmentclaim.go).
 	AttachmentClaims() AttachmentClaimRepository
+	// Projections is populated now (V6-08,
+	// docs/design/08-v6-api-projections.md): the same "gets a real
+	// interface from the start" treatment every concern above already
+	// established — the frozen, generation-aware Kanban/task-detail
+	// projection row/checkpoint/poison schema (see ProjectionRepository's
+	// own doc comment, internal/app/ports/projection.go).
+	Projections() ProjectionRepository
 }
 
 // CatalogRepository is populated now (V3-01,
