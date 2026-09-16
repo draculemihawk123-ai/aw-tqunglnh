@@ -91,3 +91,32 @@ VALUES (?, ?, ?, ?, 'AVAILABLE', ?, ?)`,
 	}
 	return nil
 }
+
+// ScanJournal implements ports.EventsRepository (V6-08A). journal_position
+// carries a UNIQUE constraint (migration 0003), so SQLite already
+// maintains an index over it — no new index needed for this range scan.
+func (r eventsRepository) ScanJournal(ctx context.Context, afterPosition uint64, limit int) ([]ports.JournalEvent, error) {
+	rows, err := r.tx.QueryContext(ctx, `
+SELECT journal_position, COALESCE(project_id, ''), event_type, schema_version, payload_json
+FROM domain_events
+WHERE journal_position > ?
+ORDER BY journal_position
+LIMIT ?`, afterPosition, limit)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("scan journal after %d: %w", afterPosition, err))
+	}
+	defer rows.Close()
+
+	var events []ports.JournalEvent
+	for rows.Next() {
+		var e ports.JournalEvent
+		if err := rows.Scan(&e.JournalPosition, &e.ProjectID, &e.EventType, &e.SchemaVersion, &e.PayloadJSON); err != nil {
+			return nil, fmt.Errorf("scan journal row: %w", err)
+		}
+		events = append(events, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate journal rows after %d: %w", afterPosition, err)
+	}
+	return events, nil
+}

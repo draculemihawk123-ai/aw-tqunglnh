@@ -7965,3 +7965,185 @@ classified (16 Apply with real deterministic Reducers, 31 Ignore each with a spe
 Zero live consumer, zero rebuild worker, zero HTTP endpoint — exactly this task's own scope boundary. V6-08A
 (atomic projection event consumer) is now unblocked; its own live scanner can build directly on this frozen
 schema/catalog without any new design choice, per this task's own "Hoàn thành khi" bar.
+
+## V6-08A — Atomic projection event consumer
+
+### Bối cảnh
+
+Per spec (`docs/design/08-v6-api-projections.md` lines 351-365): "Mục tiêu: apply projection rows, checkpoint
+và freshness atomically under generation/lease fence"; "Phạm vi: live scanner, consumer lease/fence, atomic
+apply and degraded/stale behavior"; "Không làm: không rebuild/cutover and no runtime authority read";
+"Thực hiện: scan global monotonic/non-gapless journal and filter Project. One serialized transaction verifies
+active generation/fence/cursor, APPLY/IGNOREs, updates rows then CASes checkpoint/freshness. Duplicate
+`position<=cursor` no-op. Failure rolls back rows/cursor; separate tx records poison and DEGRADED/STALE at
+last-good cursor. Foreign-project positions advance scan cursor without row changes"; "Verify: replay twice;
+crash row-before-cursor/cursor-before-ack; two consumers; stale fence; restart; foreign interleaving;
+duplicate/out-of-order; poison/unknown relevant schema. Clean replay equals live at same position"; "Hoàn
+thành khi: cursor never exceeds applied data and poison cannot silently skip." Only dependency is V6-08
+(merged `ad876dd`). Given this task's own real crash-recovery/concurrency risk profile — comparable to
+V5-13's checkpoint/recovery or V5-14's cleanup sweeper — implemented personally rather than delegated,
+matching this session's own standing doctrine for architecturally-critical shared-contract work.
+
+### Nghiên cứu
+
+Read `internal/adapters/sqlite/scheduling.go`'s own `acquireWriteLeasesOnce` (the real `write_leases`
+acquire-or-steal-if-expired CAS: `INSERT ... SELECT ... FROM ... ON CONFLICT DO UPDATE SET fence_token =
+fence_token + 1, ... WHERE julianday(lease_until) <= julianday('now') RETURNING fence_token, lease_until`) —
+this single-statement shape, already proven correct in production, is the direct template
+`AcquireOrRenewConsumerLease` reuses.
+
+Confirmed no production, Tx-scoped read path over `domain_events` exists anywhere yet: the only precedent,
+`internal/adapters/sqlite/event_queries.go`'s own `ListDomainEventsForProject`, is explicitly "never used by
+any production write path," non-transactional (`*sqlite.Store`, not `ports.Tx`), and project-scoped — none
+of which fits V6-08A's own requirement that the scan-and-apply-and-advance-cursor sequence be ONE atomic
+transaction. Confirmed `journal_position` already carries a UNIQUE constraint (migration
+`0003_domain_events_journal_outbox.sql`), so SQLite already indexes it — no new index needed for the range
+scan this task adds.
+
+Read `internal/app/artifactsweep/sweep.go`'s own self-rescheduling `CONTROL` job pattern in full
+(`StartupArtifactSweep` → `ExecuteArtifactSweep` → re-enqueues the NEXT generation's own job at the end of
+its own run, `enqueueArtifactSweepJobTx`). Cross-referenced against V6-07A's own explicit precedent (this
+same checklist's own V6-07A section): "no NEW self-rescheduling CONTROL job wired for the sweep... a plain
+callable/tested function matches the spec's own 'at minimum a resumable recovery path' allowance rather than
+adding equally-unwired new schema surface." Applied the identical judgment here (see Quyết định).
+
+### Quyết định
+
+**Three-transaction round, not one** — a closer reading of the spec's own text ("verifies active
+generation/fence/cursor" — VERIFY, not necessarily ACQUIRE within the same tx) plus a real correctness
+problem with a naive one-transaction design: if lease acquisition and scan-and-apply were the SAME
+transaction, a poison-triggered rollback would ALSO roll back the lease's own fence_token increment —
+leaving the subsequent poison-recording transaction with no committed fence_token to fence its own DEGRADED
+write against. Split into:
+1. **Lease acquire/renew** — its own transaction, always commits when it succeeds at all (a legitimate
+   "still alive" heartbeat even when nothing else in the round makes progress).
+2. **Scan-and-apply** — one serialized transaction: scans from the lease's own Cursor, APPLY/IGNOREs every
+   in-project event, upserts rows, then CASes the checkpoint forward fenced on BOTH Cursor AND FenceToken
+   (extending `UpsertProjectionCheckpointRequest` with an optional `ExpectedFenceToken`, backward-compatible
+   with V6-08's own already-merged tests via a nil-means-skip pointer). A poison event anywhere in the batch
+   rolls back the ENTIRE transaction — proven by a real bug this task's own test suite caught (see Test).
+3. **Poison record** (only on failure) — its own separate transaction, fenced on the SAME FenceToken step 1
+   acquired, records the poison row and CASes the checkpoint to DEGRADED at step 1's own last-good Cursor.
+
+Because rows and cursor always commit together in step 2's own single transaction, "cursor never exceeds
+applied data" holds by construction, not by careful sequencing discipline that could later be violated by a
+refactor — there is no possible intermediate state to reach in the first place.
+
+**Same-owner lease renewal, a real gap the write_leases precedent doesn't need to solve.** write_leases is
+claimed once per Attempt, never renewed by its own holder — but V6-08A's own live scanner is a long-running,
+repeatedly-invoked loop that must heartbeat itself before its own lease would otherwise expire. The naive
+CAS (steal only when `lease_until <= now`) would reject the SAME owner's own routine renewal just as hard as
+a genuine competing consumer — fixed by adding `OR lease_owner = ?` to the CAS's own WHERE clause (both the
+real sqlite and the fake implementations), still incrementing FenceToken on every renewal (a renewal is
+still a real state change: a stale round from before the renewal must never reuse the renewed fence).
+
+**STALE detection without a separate "journal tip" query.** Rather than adding a second read (`SELECT
+MAX(journal_position)`) purely to compute lag, a batch that comes back completely full (`len(events) ==
+BatchSize`) already proves strictly more work is waiting past the new cursor — marked STALE instead of LIVE,
+self-correcting the next round a non-full batch comes back (flips to LIVE). A real, simple, and cheap proxy
+for "falling behind," not a guess: it is exactly the condition "the current scan window could not possibly
+have reached the tip."
+
+**Entity-key resolution for the 5 Apply events that cannot name a WorkItemID directly** (`WORKFLOW_RUN_FINALIZED`
+— RunID only; `ScopeExpansionRejected`/`Withdrawn` — FamilyID only; `ScopeExpansionRequested`/`Approved` —
+sometimes empty `ReferencedWorkItemID`) needed a real mechanism V6-08 itself only documented in prose
+(`EntityKeyNote`), not a machine-actionable one. Extended `Classification` with a `FallbackMatch` function —
+decode the payload, return a `func(WorkItemCardRow) bool` predicate — applied over `ListProjectionRows`
+(already exposed, no new repository method) to find the ONE matching row. Zero matches is a real poison
+("missing referenced authority"); more than one is a real poison too (an internal consistency violation this
+projection's own invariants should never allow — e.g. two rows both `IsRoot` for the same `FamilyID`). This
+is a genuine, additive extension to V6-08's own already-merged Catalog API (not a schema/migration change —
+the row shape itself never changes), reusing the SAME local payload-decode structs `reducers.go` already
+declares.
+
+**No self-rescheduling CONTROL job wired**, mirroring V6-07A's own explicit precedent verbatim. `ApplyBatch`
+is a complete, fully-tested, callable primitive implementing every piece V6-08A's own Phạm vi names (live
+scanner, consumer lease/fence, atomic apply, degraded/stale behavior) — what remains unwired is WHICH
+projects get a continuously-running consumer and on what cadence, a question this task cannot answer on its
+own (no project-enumeration precedent exists at any composition root yet, and inventing an
+auto-start-for-every-project policy would be a real, undocumented product decision, not a technical
+default). Left for V6-10 (the first real READER of this projection, and therefore the first task that
+actually knows which project's own Kanban view needs a live consumer) to wire the scheduling loop around
+this already-complete `ApplyBatch`.
+
+**"Aggregate-sequence violation" and "out-of-order" are handled by construction, not by an explicit check.**
+None of the 16 Reducers read or compare `sequence` at all (only `journal_position`, always scanned in
+ascending order via `ORDER BY journal_position` — `allocateJournalPosition`'s own serialized `MAX+1`
+allocation, V1-07, already guarantees this globally); there is no code path in this task's own design where
+either gap category could actually arise. Documented rather than papered over with a dead check.
+
+### Thực hiện
+
+- `internal/adapters/sqlite/migrations/0040_projection_consumer_lease.sql` — 4 new columns on
+  `projection_checkpoints` (`fence_token`, `lease_owner`, `lease_until`, `heartbeat_at`), extending V6-08's
+  own table rather than a new one (the checkpoint IS the consumer's own state).
+- `ports.EventsRepository.ScanJournal` (new) + `ports.JournalEvent` (new) — the first production, Tx-scoped
+  read of the global journal; real sqlite (`domain_events.go`), fake, and `EnforcingEventsRepository`
+  (forwards unchanged — a read has nothing to enforce a registered-decoder precondition against).
+- `ports.ProjectionRepository.AcquireOrRenewConsumerLease` (new) — real sqlite (`projection_repository.go`,
+  the write_leases-mirroring UPSERT) + fake. `ports.ProjectionCheckpoint.FenceToken` (new field) and
+  `ports.UpsertProjectionCheckpointRequest.ExpectedFenceToken` (new, optional field) — both implementations
+  updated.
+- `internal/app/projection/consumer.go` (new) — `ApplyBatch`, `resolveEntityKey`, `loadRow`. `RowSchemaVersion`
+  constant (WorkItemCardRow's own current schema version, distinct from a Reducer's own `HandlerVersion`).
+- `internal/app/projection/catalog.go` — `Classification.FallbackMatch` (new field), `FallbackMatchFunc` (new
+  type), `Catalog.applyWithFallback` (new registration helper).
+- `internal/app/projection/reducers.go` — 5 new `fallback*`/`familyRootPredicate` functions, reusing the
+  already-declared local payload structs.
+- `internal/app/projection/catalog_registrations.go` — the 5 affected Apply entries switched to
+  `applyWithFallback`.
+
+### Test
+
+- `internal/adapters/sqlite/projection_repository_test.go` (extended): lease first-acquire creates the
+  checkpoint; conflict while genuinely held then steal after real expiry; **same-owner renewal before
+  expiry succeeds** (the real gap this task found and fixed); stale-fence-token rejected on checkpoint
+  advance, current fence succeeds.
+- `internal/adapters/sqlite/domain_events_test.go` (extended): `ScanJournal` — global order across multiple
+  projects (not scoped to one), `afterPosition` excludes already-seen rows, `limit` bounds the batch.
+- `internal/app/projection/consumer_test.go` (new, fake-`UnitOfWork`-backed, 9 tests): apply+advance
+  atomically; replay is a no-op; two consumers conflict; **a real bug this suite caught** — the FIRST attempt
+  at `ApplyBatch` incremented `outcome.RowsApplied` directly inside the apply transaction's own closure, so
+  a poisoned-and-rolled-back batch still REPORTED rows as applied (a plain Go variable mutation is not
+  itself rolled back just because the enclosing SQL transaction is) — `TestApplyBatch_UnclassifiedEvent_...`
+  failed on the very first run, caught before this ever reached CI; fixed by tracking `rowsApplied`/
+  `eventsScanned` as closure-local variables, only copied into the returned `ApplyBatchOutcome` after
+  confirming the transaction actually committed. Also: DEGRADED generation stays frozen (lease still
+  renews); full batch marks STALE; foreign-project event advances cursor without row changes; both
+  `FallbackMatch` paths (family-root, active-run-ID).
+- `internal/app/projection/consumer_sqlite_test.go` (new, REAL `sqlite.NewUnitOfWork`-backed): the same
+  apply/replay/poison/two-consumers shape proven against the actual database, not just the Go-level
+  simulation of it — confirms the real `ON CONFLICT DO UPDATE ... RETURNING` SQL behaves exactly like the
+  fake's own model.
+- `go build/vet ./...` clean repo-wide. `go test ./...` — all packages `ok`, zero `FAIL`.
+
+### Verify
+
+- Replay twice: `TestApplyBatch_ReplayIsANoOp_...` (fake) + the real-sqlite test's own replay step — zero
+  events scanned, zero rows touched, cursor unchanged.
+- Crash row-before-cursor/cursor-before-ack: impossible by construction (single transaction for both); the
+  poison-rollback test is the closest real exercise of "what if this transaction never commits" and confirms
+  zero partial state survives.
+- Two consumers: `TestApplyBatch_TwoConsumers_...` (fake) + real-sqlite equivalent — `ErrOptimisticConflict`.
+- Stale fence: `TestProjectionRepository_UpsertProjectionCheckpoint_StaleFenceTokenRejected` (repository
+  level — a straggling consumer's own captured `ExpectedFenceToken` no longer matches after a steal).
+- Restart: every test's own second `ApplyBatch` call is exactly a "process restarted, re-read checkpoint
+  from scratch" scenario — no special-cased "restart" code path exists or is needed.
+- Foreign interleaving: `TestApplyBatch_ForeignProjectEventAdvancesCursorWithoutRowChanges`.
+- Duplicate/out-of-order: duplicate — replay tests; out-of-order — handled by construction (see Quyết định),
+  documented rather than dead-code-checked.
+- Poison/unknown relevant schema: `TestApplyBatch_UnclassifiedEvent_...` (fake) + real-sqlite equivalent.
+- Clean replay equals live at same position: proven by the replay tests' own row-content assertions after
+  the second (no-op) round — byte-identical to the first round's own result.
+
+### Kết quả
+
+New: migration 0040 (4 lease/fence columns), `ports.EventsRepository.ScanJournal`+`ports.JournalEvent`,
+`ports.ProjectionRepository.AcquireOrRenewConsumerLease`+`FenceToken`/`ExpectedFenceToken`,
+`internal/app/projection/consumer.go` (`ApplyBatch`), `Classification.FallbackMatch`. A real bug found and
+fixed by this task's own test suite before ever reaching CI (rollback-unsafe outcome mutation). All of
+V6-08A's own Verify bullets covered by both a fast in-memory suite and a real-SQLite integration test.
+`go build/vet/test ./...` clean repo-wide. No self-rescheduling CONTROL job wired (mirrors V6-07A's own
+explicit precedent) — `ApplyBatch` is complete and ready for V6-10 (or any future scheduler) to drive
+continuously. V6-09 (Projection rebuild request) and the rest of P3 remain gated on V6-08A merging; P4's own
+CLI leaf tasks are independently gated on V6-15B (already merged) plus their own specific backend.

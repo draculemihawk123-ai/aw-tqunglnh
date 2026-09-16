@@ -30,18 +30,22 @@ func registerClassifications(c *Catalog) {
 	// FamilyID == this event's FamilyID && IsRoot == true — a query this
 	// schema already supports with no new repository method, matching this
 	// task's own "Hoàn thành khi: ... without new design choice."
-	c.apply("ScopeExpansionRequested", 1, 1, reduceScopeExpansionRequested,
+	c.applyWithFallback("ScopeExpansionRequested", 1, 1, reduceScopeExpansionRequested,
 		entityKeyFromField(decode[scopeExpansionRequestedPayload], func(p scopeExpansionRequestedPayload) string { return p.ReferencedWorkItemID }),
-		"empty ReferencedWorkItemID: resolve via ListProjectionRows(generation) where FamilyID matches and IsRoot")
-	c.apply("ScopeExpansionApproved", 1, 1, reduceScopeExpansionApproved,
+		"empty ReferencedWorkItemID: resolve via ListProjectionRows(generation) where FamilyID matches and IsRoot",
+		fallbackScopeExpansionRequested)
+	c.applyWithFallback("ScopeExpansionApproved", 1, 1, reduceScopeExpansionApproved,
 		entityKeyFromField(decode[scopeExpansionApprovedPayload], func(p scopeExpansionApprovedPayload) string { return p.ReferencedWorkItemID }),
-		"empty ReferencedWorkItemID: resolve via ListProjectionRows(generation) where FamilyID matches and IsRoot")
-	c.apply("ScopeExpansionRejected", 1, 1, reduceScopeExpansionRejected,
+		"empty ReferencedWorkItemID: resolve via ListProjectionRows(generation) where FamilyID matches and IsRoot",
+		fallbackScopeExpansionApproved)
+	c.applyWithFallback("ScopeExpansionRejected", 1, 1, reduceScopeExpansionRejected,
 		familyRootEntityKey(decode[scopeExpansionRejectedPayload]),
-		"resolve via ListProjectionRows(generation) where FamilyID matches and IsRoot (payload never names a specific WorkItem)")
-	c.apply("ScopeExpansionWithdrawn", 1, 1, reduceScopeExpansionWithdrawn,
+		"resolve via ListProjectionRows(generation) where FamilyID matches and IsRoot (payload never names a specific WorkItem)",
+		fallbackScopeExpansionRejected)
+	c.applyWithFallback("ScopeExpansionWithdrawn", 1, 1, reduceScopeExpansionWithdrawn,
 		familyRootEntityKey(decode[scopeExpansionWithdrawnPayload]),
-		"resolve via ListProjectionRows(generation) where FamilyID matches and IsRoot (payload never names a specific WorkItem)")
+		"resolve via ListProjectionRows(generation) where FamilyID matches and IsRoot (payload never names a specific WorkItem)",
+		fallbackScopeExpansionWithdrawn)
 
 	// --- Apply: Run lifecycle (internal/app/runtime) ---
 
@@ -58,8 +62,9 @@ func registerClassifications(c *Catalog) {
 	// WORKFLOW_RUN_FINALIZED's own payload (internal/adapters/sqlite's own
 	// workflow_store.go, the durable job-lease finalize confirmation) never
 	// carries WorkItemID, only RunID — EntityKeyOf always returns ok=false.
-	c.apply("WORKFLOW_RUN_FINALIZED", 1, 1, reduceWorkflowRunFinalized, nil,
-		"payload has no WorkItemID: resolve via ListProjectionRows(generation) where ActiveRunID equals the event's own RunID")
+	c.applyWithFallback("WORKFLOW_RUN_FINALIZED", 1, 1, reduceWorkflowRunFinalized, nil,
+		"payload has no WorkItemID: resolve via ListProjectionRows(generation) where ActiveRunID equals the event's own RunID",
+		fallbackWorkflowRunFinalized)
 	c.apply("WORK_ITEM_BLOCKED", 1, 1, reduceWorkItemBlocked,
 		entityKeyFromField(decode[workItemBlockedPayload], func(p workItemBlockedPayload) string { return p.WorkItemID }), "")
 	c.apply("WORK_ITEM_BLOCKER_RESOLVED", 1, 1, reduceWorkItemBlockerResolved,

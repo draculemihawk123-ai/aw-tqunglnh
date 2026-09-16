@@ -30,3 +30,12 @@ func (r EnforcingEventsRepository) Append(ctx context.Context, event ports.Domai
 	}
 	return r.Inner.Append(ctx, event)
 }
+
+// ScanJournal forwards to Inner unchanged — a read path has nothing to
+// enforce a registered-decoder precondition against (V6-08A's own live
+// consumer, the actual reader, already fails closed via this Catalog's own
+// exhaustiveness test plus a real poison record for anything it cannot
+// classify at read time).
+func (r EnforcingEventsRepository) ScanJournal(ctx context.Context, afterPosition uint64, limit int) ([]ports.JournalEvent, error) {
+	return r.Inner.ScanJournal(ctx, afterPosition, limit)
+}

@@ -22,6 +22,10 @@ func (r *recordingEventsRepository) Append(_ context.Context, event ports.Domain
 	return nil
 }
 
+func (r *recordingEventsRepository) ScanJournal(_ context.Context, _ uint64, _ int) ([]ports.JournalEvent, error) {
+	return nil, nil
+}
+
 func TestEnforcingEventsRepository_Append_UnregisteredRejectedWithoutReachingInner(t *testing.T) {
 	inner := &recordingEventsRepository{}
 	enforcing := eventschema.EnforcingEventsRepository{Inner: inner, Registry: eventschema.NewRegistry()}
