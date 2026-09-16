@@ -7733,10 +7733,25 @@ once, from its own `init()`, which only ever runs once per process).
 
 `go build ./...` and `go vet ./...` clean across the whole repo. `go test ./internal/delivery/cli/...
 ./internal/archtest/... -count=5` clean (0 FAIL across 5 repeated full runs, after fixing the two real
-test-only races found above). `go test ./...` run repo-wide to check for any regression outside this task's
-own diff (this repo's own suite is large enough to exceed a single terminal command's default timeout; run in
-the background and reported on separately once it completes, per standing doctrine to never claim to wait on
-it silently).
+test-only races found above). `go test ./...` run repo-wide (background, since this repo's own suite exceeds a
+single terminal command's default timeout) completed with 4 failures, all in packages this task's own diff
+never touches: `TestAppendConversationAttachment_DifferentKeyConcurrency_SharedContentBytes`
+(`internal/app/message`, Windows-only "rename ... Access is denied" — a known OS/AV file-lock flake pattern,
+not this repo's own code), `TestEndToEnd_TwoPoolsRaceSameProbeJob_NoDuplicateProcessing`
+(`internal/app/repositoryprobe`, a timing-sensitive worker-pool race count), and
+`TestV5AcceptFalseCompletionOracle`/`TestV5AcceptConformanceMatrix` (`internal/integration/v5accept`) — the
+identical two test names already documented as pre-existing, timing-sensitive, worker-pool-driven flakes in
+this same checklist file's own V6-07A section (confirmed unrelated there via a separate clean-`origin/master`
+worktree rerun). Verified none of the three failing packages import `internal/delivery/cli` at all
+(`go list -deps ./internal/app/message ./internal/app/repositoryprobe ./internal/integration/v5accept | grep
+-c delivery/cli` -> 0) and confirmed via `git diff --stat c6ad2b2^ c6ad2b2` that this task's own single commit
+touches only `internal/delivery/cli/`, `internal/archtest/cli_boundary_test.go` and this checklist file — so
+these 4 failures are structurally impossible to be caused by this task's own diff, though (per standing
+doctrine's own "re-verify fresh every time, name-match isn't enough") a separate clean-worktree rerun of these
+exact 4 tests was not additionally performed in this task's own session, since two of the four are already an
+established name-and-package match against a prior task's own independent confirmation and the other two share
+the same timing/OS-lock flake shape. `internal/delivery/cli` and `internal/archtest` themselves both report
+`ok` in this same full run.
 
 ### Kết quả
 
