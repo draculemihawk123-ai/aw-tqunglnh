@@ -383,3 +383,56 @@ func reduceWorkItemCancelled(prior WorkItemCardRow, payloadJSON string) (WorkIte
 	prior.ActiveRunStatus = ""
 	return prior, nil
 }
+
+// familyRootPredicate decodes payloadJSON's own familyId field and
+// returns a predicate matching the root WorkItemCardRow of that family —
+// the FallbackMatch strategy for every ScopeExpansion* event whose
+// EntityKeyOf returns ok=false (no specific ReferencedWorkItemID named).
+func familyRootPredicate(familyID string) func(WorkItemCardRow) bool {
+	return func(row WorkItemCardRow) bool { return row.FamilyID == familyID && row.IsRoot }
+}
+
+func fallbackScopeExpansionRequested(payloadJSON string) (func(WorkItemCardRow) bool, error) {
+	p, err := decode[scopeExpansionRequestedPayload](payloadJSON)
+	if err != nil {
+		return nil, err
+	}
+	return familyRootPredicate(p.FamilyID), nil
+}
+
+func fallbackScopeExpansionApproved(payloadJSON string) (func(WorkItemCardRow) bool, error) {
+	p, err := decode[scopeExpansionApprovedPayload](payloadJSON)
+	if err != nil {
+		return nil, err
+	}
+	return familyRootPredicate(p.FamilyID), nil
+}
+
+func fallbackScopeExpansionRejected(payloadJSON string) (func(WorkItemCardRow) bool, error) {
+	p, err := decode[scopeExpansionRejectedPayload](payloadJSON)
+	if err != nil {
+		return nil, err
+	}
+	return familyRootPredicate(p.FamilyID), nil
+}
+
+func fallbackScopeExpansionWithdrawn(payloadJSON string) (func(WorkItemCardRow) bool, error) {
+	p, err := decode[scopeExpansionWithdrawnPayload](payloadJSON)
+	if err != nil {
+		return nil, err
+	}
+	return familyRootPredicate(p.FamilyID), nil
+}
+
+// fallbackWorkflowRunFinalized decodes payloadJSON's own runId field and
+// returns a predicate matching whichever WorkItemCardRow currently has
+// that Run as its own ActiveRunID — WORKFLOW_RUN_FINALIZED's own
+// unconditional FallbackMatch strategy (its payload never names a
+// WorkItemID at all).
+func fallbackWorkflowRunFinalized(payloadJSON string) (func(WorkItemCardRow) bool, error) {
+	p, err := decode[workflowRunFinalizedPayload](payloadJSON)
+	if err != nil {
+		return nil, err
+	}
+	return func(row WorkItemCardRow) bool { return row.ActiveRunID == p.RunID }, nil
+}

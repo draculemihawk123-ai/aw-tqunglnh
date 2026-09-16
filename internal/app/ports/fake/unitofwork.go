@@ -229,6 +229,28 @@ func (e *EventsRepository) Append(_ context.Context, event ports.DomainEvent) er
 	return nil
 }
 
+// ScanJournal mirrors sqlite's own MAX(journal_position)+1 allocation:
+// this fake's own append-only e.items slice is already in append order, so
+// index+1 IS journal_position (1-based, matching the real adapter's own
+// starting value) — no separate counter needed.
+func (e *EventsRepository) ScanJournal(_ context.Context, afterPosition uint64, limit int) ([]ports.JournalEvent, error) {
+	var events []ports.JournalEvent
+	for i, item := range e.items {
+		position := uint64(i + 1)
+		if position <= afterPosition {
+			continue
+		}
+		events = append(events, ports.JournalEvent{
+			JournalPosition: position, ProjectID: item.ProjectID,
+			EventType: item.EventType, SchemaVersion: item.SchemaVersion, PayloadJSON: item.PayloadJSON,
+		})
+		if len(events) >= limit {
+			break
+		}
+	}
+	return events, nil
+}
+
 // Items returns a copy of every event appended so far, newest last — for
 // test assertions.
 func (e *EventsRepository) Items() []ports.DomainEvent {
@@ -1451,6 +1473,17 @@ type ProjectionRepository struct {
 	rows        map[projectionRowKey]ports.ProjectionRow
 	checkpoints map[projectionGenerationKey]ports.ProjectionCheckpoint
 	poison      []ports.ProjectionPoisonRecord
+	// leases holds lease_owner/lease_until — not part of the exported
+	// ports.ProjectionCheckpoint shape (a caller only ever learns these via
+	// AcquireOrRenewConsumerLease's own ConsumerLease result, mirroring
+	// sqlite's own column set that GetProjectionCheckpoint deliberately
+	// does not SELECT).
+	leases map[projectionGenerationKey]fakeConsumerLease
+}
+
+type fakeConsumerLease struct {
+	owner string
+	until time.Time
 }
 
 type projectionScopeKey struct{ projectID, projectionName string }
@@ -1483,7 +1516,11 @@ func (p *ProjectionRepository) clone() *ProjectionRepository {
 	}
 	poison := make([]ports.ProjectionPoisonRecord, len(p.poison))
 	copy(poison, p.poison)
-	return &ProjectionRepository{generations: generations, rows: rows, checkpoints: checkpoints, poison: poison}
+	leases := make(map[projectionGenerationKey]fakeConsumerLease, len(p.leases))
+	for k, v := range p.leases {
+		leases[k] = v
+	}
+	return &ProjectionRepository{generations: generations, rows: rows, checkpoints: checkpoints, poison: poison, leases: leases}
 }
 
 // GetActiveGeneration mirrors sqlite's own lookup.
@@ -1551,7 +1588,11 @@ func (p *ProjectionRepository) GetProjectionCheckpoint(_ context.Context, projec
 }
 
 // UpsertProjectionCheckpoint mirrors sqlite's own fenced CAS (nil
-// ExpectedCursor = first insert, non-nil = fenced advance).
+// ExpectedCursor = first insert, non-nil = fenced advance, an optional
+// ExpectedFenceToken additionally guards against a stolen lease). The
+// advance path never touches FenceToken itself (only
+// AcquireOrRenewConsumerLease does) — it is carried forward unchanged,
+// mirroring the real UPDATE statement's own column list.
 func (p *ProjectionRepository) UpsertProjectionCheckpoint(_ context.Context, req ports.UpsertProjectionCheckpointRequest) error {
 	key := projectionGenerationKey{req.ProjectID, req.ProjectionName, req.Generation}
 	existing, ok := p.checkpoints[key]
@@ -1565,13 +1606,17 @@ func (p *ProjectionRepository) UpsertProjectionCheckpoint(_ context.Context, req
 			return fmt.Errorf("fake: %w: projection checkpoint %s/%s/%d expected cursor %d",
 				ports.ErrOptimisticConflict, req.ProjectID, req.ProjectionName, req.Generation, *req.ExpectedCursor)
 		}
+		if req.ExpectedFenceToken != nil && existing.FenceToken != *req.ExpectedFenceToken {
+			return fmt.Errorf("fake: %w: projection checkpoint %s/%s/%d expected fence token %d",
+				ports.ErrOptimisticConflict, req.ProjectID, req.ProjectionName, req.Generation, *req.ExpectedFenceToken)
+		}
 	}
 	if p.checkpoints == nil {
 		p.checkpoints = map[projectionGenerationKey]ports.ProjectionCheckpoint{}
 	}
 	p.checkpoints[key] = ports.ProjectionCheckpoint{
 		ProjectID: req.ProjectID, ProjectionName: req.ProjectionName, Generation: req.Generation,
-		Cursor: req.NewCursor, Status: req.NewStatus, UpdatedAt: req.UpdatedAt,
+		Cursor: req.NewCursor, Status: req.NewStatus, FenceToken: existing.FenceToken, UpdatedAt: req.UpdatedAt,
 	}
 	return nil
 }
@@ -1598,6 +1643,46 @@ func (p *ProjectionRepository) ListProjectionPoison(_ context.Context, projectID
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].JournalPosition < result[j].JournalPosition })
 	return result, nil
+}
+
+// AcquireOrRenewConsumerLease mirrors sqlite's own single-statement
+// acquire-or-steal-if-expired CAS (see projection_repository.go's own doc
+// comment on the real implementation): creates the checkpoint (Cursor 0,
+// Status LIVE, FenceToken 1) if none exists yet; otherwise succeeds and
+// increments FenceToken when the currently held lease is unheld, already
+// expired, or already owned by THIS SAME owner (a renewal), else
+// ErrOptimisticConflict (a live lease held by a DIFFERENT owner).
+func (p *ProjectionRepository) AcquireOrRenewConsumerLease(_ context.Context, req ports.AcquireOrRenewConsumerLeaseRequest) (ports.ConsumerLease, error) {
+	checkpointKey := projectionGenerationKey{req.ProjectID, req.ProjectionName, req.Generation}
+	checkpoint, checkpointExists := p.checkpoints[checkpointKey]
+	lease, leaseExists := p.leases[checkpointKey]
+
+	if checkpointExists && leaseExists && lease.until.After(req.Now) && lease.owner != req.Owner {
+		return ports.ConsumerLease{}, fmt.Errorf("fake: %w: projection consumer lease %s/%s/%d already held",
+			ports.ErrOptimisticConflict, req.ProjectID, req.ProjectionName, req.Generation)
+	}
+
+	leaseUntil := req.Now.Add(req.TTL)
+	if !checkpointExists {
+		checkpoint = ports.ProjectionCheckpoint{
+			ProjectID: req.ProjectID, ProjectionName: req.ProjectionName, Generation: req.Generation,
+			Cursor: 0, Status: ports.ProjectionLive, FenceToken: 1, UpdatedAt: req.Now,
+		}
+	} else {
+		checkpoint.FenceToken++
+	}
+	if p.checkpoints == nil {
+		p.checkpoints = map[projectionGenerationKey]ports.ProjectionCheckpoint{}
+	}
+	p.checkpoints[checkpointKey] = checkpoint
+	if p.leases == nil {
+		p.leases = map[projectionGenerationKey]fakeConsumerLease{}
+	}
+	p.leases[checkpointKey] = fakeConsumerLease{owner: req.Owner, until: leaseUntil}
+
+	return ports.ConsumerLease{
+		FenceToken: checkpoint.FenceToken, Cursor: checkpoint.Cursor, Status: checkpoint.Status, LeaseUntil: leaseUntil,
+	}, nil
 }
 
 // SafeSettingsRepository is an in-memory ports.SafeSettingsRepository

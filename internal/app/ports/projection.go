@@ -66,7 +66,15 @@ type ProjectionCheckpoint struct {
 	Generation     uint64
 	Cursor         uint64
 	Status         ProjectionStatus
-	UpdatedAt      time.Time
+	// FenceToken is V6-08A's own consumer-lease fence (migration 0040) —
+	// it increments on every successful AcquireOrRenewConsumerLease call
+	// (including a steal of an expired lease) and never resets. A caller
+	// that re-validates FenceToken inside its own later apply transaction
+	// and finds it changed knows its lease was stolen and must abort
+	// without committing — see AcquireOrRenewConsumerLease's own doc
+	// comment for the full acquire-or-steal-if-expired mechanics.
+	FenceToken uint64
+	UpdatedAt  time.Time
 }
 
 // ProjectionPoisonRecord is one event the live consumer (V6-08A) could not
@@ -104,7 +112,39 @@ type UpsertProjectionCheckpointRequest struct {
 	ExpectedCursor *uint64
 	NewCursor      uint64
 	NewStatus      ProjectionStatus
-	UpdatedAt      time.Time
+	// ExpectedFenceToken, when non-nil, additionally requires the stored
+	// FenceToken to match before the advance succeeds — the "stale fence"
+	// check V6-08A's own apply transaction runs alongside the cursor CAS,
+	// so a consumer whose lease was stolen mid-batch (AcquireOrRenewConsumerLease
+	// incremented FenceToken for a new holder) can never commit a batch
+	// applied under its own now-invalid lease. nil skips the fence check
+	// entirely (a caller with no lease concept of its own, if one is ever
+	// added later, is unaffected).
+	ExpectedFenceToken *uint64
+	UpdatedAt          time.Time
+}
+
+// AcquireOrRenewConsumerLeaseRequest is the request for
+// ProjectionRepository.AcquireOrRenewConsumerLease.
+type AcquireOrRenewConsumerLeaseRequest struct {
+	ProjectID      string
+	ProjectionName string
+	Generation     uint64
+	Owner          string
+	TTL            time.Duration
+	Now            time.Time
+}
+
+// ConsumerLease is the result of a successful AcquireOrRenewConsumerLease
+// call — the exact checkpoint state (cursor/status/fence) the caller's own
+// scan-and-apply batch must build on top of, read back atomically in the
+// SAME statement that granted the lease (never a separate, potentially
+// stale, follow-up read).
+type ConsumerLease struct {
+	FenceToken uint64
+	Cursor     uint64
+	Status     ProjectionStatus
+	LeaseUntil time.Time
 }
 
 // ProjectionRepository is V6-08's own Tx accessor for the frozen,
@@ -173,4 +213,17 @@ type ProjectionRepository interface {
 	// ListProjectionPoison returns every poison record for (projectID,
 	// projectionName, generation), JournalPosition ascending.
 	ListProjectionPoison(ctx context.Context, projectID, projectionName string, generation uint64) ([]ProjectionPoisonRecord, error)
+	// AcquireOrRenewConsumerLease is V6-08A's own single-statement
+	// acquire-or-steal-if-expired CAS, mirroring write_leases' own
+	// acquireWriteLeasesOnce exactly (internal/adapters/sqlite/scheduling.go):
+	// if no checkpoint row exists yet for (ProjectID, ProjectionName,
+	// Generation), one is created (Cursor 0, Status LIVE, FenceToken 1,
+	// this call's own Owner/lease). If a row already exists, this call
+	// succeeds — incrementing FenceToken and replacing Owner/LeaseUntil —
+	// ONLY when the CURRENTLY stored lease_until is already <= Now (i.e.
+	// unheld, or held by an owner whose lease already expired); otherwise
+	// it fails with ErrOptimisticConflict (someone else holds a live
+	// lease — this is the "two consumers" case V6-08A's own Verify line
+	// names: only one can ever hold an unexpired lease at a time).
+	AcquireOrRenewConsumerLease(ctx context.Context, req AcquireOrRenewConsumerLeaseRequest) (ConsumerLease, error)
 }

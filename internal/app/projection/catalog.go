@@ -55,10 +55,27 @@ type Classification struct {
 	// event whose EntityKeyFunc can return ok=false — empty when
 	// EntityKeyOf always succeeds. Meaningful only when Outcome == Apply.
 	EntityKeyNote string
+	// FallbackMatch is set exactly when EntityKeyOf can return ok=false
+	// (see EntityKeyNote) — it decodes payloadJSON and returns a predicate
+	// a caller (V6-08A) applies over ListProjectionRows(generation)'s own
+	// result set to find the ONE row this event actually targets, per
+	// EntityKeyNote's own documented strategy (e.g. "FamilyID matches and
+	// IsRoot" or "ActiveRunID matches"). Zero matches is the "missing
+	// referenced authority" gap (V6-08's own exhaustive gap list); more
+	// than one match is an internal consistency violation (this
+	// projection's own invariant — e.g. two rows both IsRoot for the same
+	// FamilyID — broken); both are the caller's own poison case to record,
+	// never this function's to decide.
+	FallbackMatch FallbackMatchFunc
 	// Reason explains WHY this key is Ignore — always populated when
 	// Outcome == Ignore, always empty when Outcome == Apply.
 	Reason string
 }
+
+// FallbackMatchFunc decodes payloadJSON and returns a predicate for
+// locating the one WorkItemCardRow an EntityKeyOf ok=false event actually
+// targets — see Classification.FallbackMatch's own doc comment.
+type FallbackMatchFunc func(payloadJSON string) (predicate func(WorkItemCardRow) bool, err error)
 
 // Catalog is the full, frozen classification of every (EventType,
 // SchemaVersion) key this codebase's real eventschema registries currently
@@ -103,6 +120,16 @@ func (c *Catalog) apply(eventType string, schemaVersion, handlerVersion int, red
 	c.classify(eventType, schemaVersion, Classification{
 		Outcome: Apply, HandlerVersion: handlerVersion, Reducer: reducer,
 		EntityKeyOf: entityKeyOf, EntityKeyNote: entityKeyNote,
+	})
+}
+
+// applyWithFallback is apply plus a FallbackMatch — for an Apply event
+// whose EntityKeyOf can return ok=false (see EntityKeyNote/FallbackMatch's
+// own doc comments).
+func (c *Catalog) applyWithFallback(eventType string, schemaVersion, handlerVersion int, reducer Reducer, entityKeyOf EntityKeyFunc, entityKeyNote string, fallbackMatch FallbackMatchFunc) {
+	c.classify(eventType, schemaVersion, Classification{
+		Outcome: Apply, HandlerVersion: handlerVersion, Reducer: reducer,
+		EntityKeyOf: entityKeyOf, EntityKeyNote: entityKeyNote, FallbackMatch: fallbackMatch,
 	})
 }
 

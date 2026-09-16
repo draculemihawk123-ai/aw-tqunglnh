@@ -148,5 +148,8 @@ func TestCatalog_ApplyEntriesWithNilEntityKeyOfDocumentAResolutionNote(t *testin
 		if classification.EntityKeyOf == nil && classification.EntityKeyNote == "" {
 			t.Errorf("%s v%d: EntityKeyOf is nil but EntityKeyNote is empty", key.EventType, key.SchemaVersion)
 		}
+		if classification.EntityKeyNote != "" && classification.FallbackMatch == nil {
+			t.Errorf("%s v%d: EntityKeyNote documents a fallback strategy but FallbackMatch is nil — a live consumer would have no way to actually resolve this event's own EntityKey when EntityKeyOf returns ok=false", key.EventType, key.SchemaVersion)
+		}
 	}
 }

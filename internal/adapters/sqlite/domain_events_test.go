@@ -281,3 +281,76 @@ func TestEventsRepository_Append_ExplicitTopicOverridesEventTypeDefault(t *testi
 		t.Fatalf("topic = %q, want %q (explicit Topic must win over the EventType default)", topic, "project.lifecycle")
 	}
 }
+
+func TestEventsRepository_ScanJournal_OrderedGlobalAcrossProjectsAndRespectsLimit(t *testing.T) {
+	ctx := context.Background()
+	store := openReceiptsStore(t, "agentkit-events-scan-journal.db")
+
+	now := time.Now().UTC()
+	events := []ports.DomainEvent{
+		{ID: "evt-a", ProjectID: "proj-1", AggregateType: "Project", AggregateID: "proj-1", Sequence: 1, EventType: "ProjectCreated", SchemaVersion: 1, PayloadJSON: `{"n":1}`, CorrelationID: "c1", CreatedAt: now},
+		{ID: "evt-b", ProjectID: "proj-2", AggregateType: "Project", AggregateID: "proj-2", Sequence: 1, EventType: "ProjectCreated", SchemaVersion: 1, PayloadJSON: `{"n":2}`, CorrelationID: "c2", CreatedAt: now},
+		{ID: "evt-c", ProjectID: "", AggregateType: "Installation", AggregateID: "singleton", Sequence: 1, EventType: "SafeSettingsUpdated", SchemaVersion: 1, PayloadJSON: `{"n":3}`, CorrelationID: "c3", CreatedAt: now},
+	}
+	for _, event := range events {
+		if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+			return appendEvent(ctx, tx, event)
+		}); err != nil {
+			t.Fatalf("Append(%s): %v", event.ID, err)
+		}
+	}
+
+	var scanned []ports.JournalEvent
+	if err := store.RunReadOnly(ctx, func(tx *sql.Tx) error {
+		var err error
+		scanned, err = eventsRepository{tx: tx}.ScanJournal(ctx, 0, 10)
+		return err
+	}); err != nil {
+		t.Fatalf("ScanJournal: %v", err)
+	}
+	if len(scanned) != 3 {
+		t.Fatalf("len(scanned) = %d, want 3 (global scan sees every project, not just one)", len(scanned))
+	}
+	wantOrder := []string{"ProjectCreated", "ProjectCreated", "SafeSettingsUpdated"}
+	wantProjects := []string{"proj-1", "proj-2", ""}
+	for i, want := range wantOrder {
+		if scanned[i].EventType != want {
+			t.Fatalf("scanned[%d].EventType = %q, want %q (append order == journal_position order)", i, scanned[i].EventType, want)
+		}
+		if scanned[i].ProjectID != wantProjects[i] {
+			t.Fatalf("scanned[%d].ProjectID = %q, want %q (installation-scoped decodes to empty string, not NULL leaking through)", i, scanned[i].ProjectID, wantProjects[i])
+		}
+	}
+	if scanned[0].JournalPosition == 0 {
+		t.Fatal("scanned[0].JournalPosition should be a real, non-zero allocated position")
+	}
+
+	// afterPosition excludes already-seen rows — the exact mechanism that
+	// makes "Duplicate position<=cursor no-op" true by construction: a
+	// caller re-scanning from its own already-advanced cursor simply never
+	// sees a row it already applied.
+	var afterFirst []ports.JournalEvent
+	if err := store.RunReadOnly(ctx, func(tx *sql.Tx) error {
+		var err error
+		afterFirst, err = eventsRepository{tx: tx}.ScanJournal(ctx, scanned[0].JournalPosition, 10)
+		return err
+	}); err != nil {
+		t.Fatalf("ScanJournal(afterPosition=%d): %v", scanned[0].JournalPosition, err)
+	}
+	if len(afterFirst) != 2 {
+		t.Fatalf("len(afterFirst) = %d, want 2", len(afterFirst))
+	}
+
+	// limit bounds the batch size.
+	var limited []ports.JournalEvent
+	if err := store.RunReadOnly(ctx, func(tx *sql.Tx) error {
+		var err error
+		limited, err = eventsRepository{tx: tx}.ScanJournal(ctx, 0, 1)
+		return err
+	}); err != nil {
+		t.Fatalf("ScanJournal(limit=1): %v", err)
+	}
+	if len(limited) != 1 {
+		t.Fatalf("len(limited) = %d, want 1", len(limited))
+	}
+}

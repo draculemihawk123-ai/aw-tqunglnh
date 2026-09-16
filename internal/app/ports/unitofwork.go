@@ -1041,6 +1041,39 @@ type JobsRepository interface {
 // if the process crashes immediately after commit.
 type EventsRepository interface {
 	Append(ctx context.Context, event DomainEvent) error
+	// ScanJournal is V6-08A's own first-ever production, Tx-scoped read of
+	// the global domain_events journal (docs/design/08-v6-api-projections.md
+	// V6-08A) — "scan global monotonic/non-gapless journal." Returns up to
+	// limit rows with JournalPosition > afterPosition, ordered ascending —
+	// GLOBAL across every project (never scoped to one), since V6-08A's own
+	// spec text requires the live scanner to see every project's positions
+	// in the SAME total order they were appended in ("Foreign-project
+	// positions advance scan cursor without row changes" only makes sense
+	// against an unfiltered scan the caller itself filters after reading).
+	// Deliberately narrower than internal/adapters/sqlite's own pre-existing
+	// debug-only *Store.ListDomainEventsForProject (event_queries.go, V4-14
+	// test support): that method is project-scoped, non-transactional and
+	// reads every column; this one is transaction-scoped (so a live
+	// consumer's scan-and-apply-and-advance-cursor can be one atomic
+	// transaction, V6-08A's own "Hoàn thành khi: cursor never exceeds
+	// applied data") and returns only the columns a projector actually
+	// needs.
+	ScanJournal(ctx context.Context, afterPosition uint64, limit int) ([]JournalEvent, error)
+}
+
+// JournalEvent is one domain_events row as EventsRepository.ScanJournal
+// returns it — the minimal shape a projector (internal/app/projection)
+// needs: enough to classify (EventType, SchemaVersion), decide project
+// membership (ProjectID, empty for an installation-scoped event), and
+// apply a Reducer (PayloadJSON) or record a poison entry
+// (JournalPosition/EventType/SchemaVersion again, for
+// ProjectionPoisonRecord).
+type JournalEvent struct {
+	JournalPosition uint64
+	ProjectID       string
+	EventType       string
+	SchemaVersion   int
+	PayloadJSON     string
 }
 
 // DomainEvent is the event shape EventsRepository.Append persists to
