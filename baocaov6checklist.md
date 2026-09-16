@@ -8288,6 +8288,216 @@ this task's own scope boundary — routing real `os.Args` to this leaf is V6-15O
 clean repo-wide; `go test ./...` clean except four confirmed-unrelated pre-existing environmental flakes (see
 Test above). PR targets `master`.
 
+## V6-15H — Run and recovery CLI
+
+### Thực hiện
+
+Built the first two real leaves on top of V6-15B's shared `internal/delivery/cli` framework
+(`docs/design/08-v6-api-projections.md:723-731`): `aw run start|show|cancel|graph|timeline|diagnostics` in a new
+package `internal/delivery/cli/run`, and `aw node-run retry-blocked` in a new sibling package
+`internal/delivery/cli/noderun`. Both packages are entirely new directories — no existing file was touched
+(confirmed via `git status --short` before committing: only `internal/delivery/cli/noderun/` and
+`internal/delivery/cli/run/` are untracked/new), so `cmd/aw/main.go`/`cmd/aw/cli.go` stay exactly as V6-15B left
+them, per this task's own CRITICAL scope rule (real `os.Args` routing is deferred to V6-15O).
+
+Read `internal/delivery/cli/sample_test.go` fully first, plus every HTTP package this task's own command tree
+fans out across (`internal/delivery/httpapi/run`, `rundetail`, `diagnostics`, `recovery`) before writing any
+leaf code, per the task brief's own instruction.
+
+Each subcommand registers its own `cli.Descriptor` via its own package `init()` (6 in `run`, 1 in `noderun`, all
+`cli.ScopeProject`, `HTTPOperationID` matching the mirrored HTTP `operationId` exactly: `startWorkflowRun`,
+`cancelRun`, `getRunDetail`, `getRunGraph`, `getRunTimeline`, `getRunDiagnostics`, `retryBlockedActivation`).
+
+**The start/cancel CommandEnvelope asymmetry, implemented exactly as flagged in the task brief:**
+- `run start` (`start.go`) goes through the full `cli.BuildEnvelope`/`cli.Dispatch` flow — `--idempotency-key`
+  optional (generated + returned when omitted), `--wait`/`--wait-timeout` via `cli.BindWaitFlags`. The semantic
+  hash payload (`startRunHashPayload{WorkItemID, WorkflowVersionID}`) is byte-for-byte identical to
+  `internal/delivery/httpapi/run/start.go`'s own unexported `startRunHashPayload` (same field names/json tags),
+  so a receipt written by an HTTP call and a CLI call for an equivalent request hash identically — confirmed by
+  re-reading `BuildEnvelope`'s own doc comment before writing this. `ProjectID` is derived via the SAME
+  read-only "reload the WorkItem for its own authoritative ProjectID" discipline `start.go`'s own
+  `loadWorkItemProjectID` uses (`run/shared.go`), never trusted from a flag.
+- `run cancel` (`cancel.go`) calls `runtime.CancelRun` directly with a plain `CancelRunRequest{RunID, Actor,
+  Reason, CorrelationID}` — NO `cli.BuildEnvelope`/`cli.Dispatch`, NO `--idempotency-key`/`--expected-version`
+  flag bound anywhere on this subcommand. This mirrors `internal/delivery/httpapi/run/cancel.go`'s own
+  `CancelRunHandler` exactly, for the identical reason documented there at length (re-read in full before
+  writing `cancel.go`): `runtime.CancelRun` takes no `ports.Command` at all, is idempotent BY RunID (ADR-020
+  §22), and writes no command receipt `cli.Dispatch`'s own `httpapi.LookupReceipt` could ever find — binding
+  those flags would validate a header this command could never consume. `Cancel`/`RetryBlocked` both write via
+  `cli.EncodeQueryResult` rather than `cli.EncodeCommandResult`/`cli.ResultEnvelope` for the same reason:
+  `ResultEnvelope.IdempotencyKey` is always-present by contract, and neither command has one to report.
+
+**`--wait` (`start.go`)**: polls `runtime.GetRunDetail` — a pure read — via `cli.Wait`'s own `ObserveFunc`
+contract until the Run reaches SUCCEEDED/FAILED/CANCELLED, `--wait-timeout` elapses, or the context is
+cancelled. The `ObserveFunc` closure calls nothing but `runtime.GetRunDetail`, so a timed-out or interrupted
+`--wait` structurally cannot dispatch `runtime.CancelRun` or anything else — proved explicitly in
+`wait_test.go` (see Test below), not just asserted by inspection.
+
+**Paging (`run graph`/`run timeline`)**: `runtime.GetRunGraph`/`GetRunTimeline` return their FULL, unbounded
+result (that package's own doc comment: pagination is entirely the delivery layer's concern) — `graph.go`/
+`timeline.go` page it in-memory with the identical keyset-pagination algorithm
+`internal/delivery/httpapi/rundetail`'s own `graph.go`/`timeline.go` use (`upperWatermark` pins the walk on the
+first page; `(ActivationSequence, NodeRunID)` for Graph, `(ActivationSequence, NodeRunID, subOrder)` for
+Timeline). The cursor token itself is deliberately NOT `httpapi.CursorCodec`: that codec's own
+`NewCursorCodec` doc comment requires a composition root to mint one secret per process, which cannot survive
+across separate one-shot CLI invocations (an operator pasting a `--cursor` token from one process into a later,
+separate process would never have it verify), and there is no multi-tenant confidentiality boundary here for a
+signature to defend in the first place (a local CLI operator already has full local read access to whatever the
+cursor could encode). `cursor.go` implements its own small, unsigned, base64-JSON cursor bound to RunID alone —
+malformed input (`ErrCursorInvalid`) and a cursor minted for a different Run (`ErrCursorRunMismatch`) are both
+still rejected, just never HMAC-verified. This design decision, and the reasoning above, is documented in full
+in `cursor.go`'s own doc comment.
+
+**Diagnostics (`diagnostics.go`)**: `run diagnostics <runId> --project-id <id>` dispatches
+`runtime.GetRunDiagnostics(ctx, uow, isolation, agents, scope, runID)` — the same `Isolation`/`Agents`
+dependencies `internal/delivery/httpapi/diagnostics.Dependencies` and `internal/delivery/httpapi/recovery.Dependencies`
+already carry, threaded through this package's own `Dependencies` struct (`doc.go`). Every field is hand-mapped
+into this package's OWN DTO (`DiagnosticsResult` and 5 nested `*View` types), never a verbatim embed of
+`runtime.RunDiagnostics` — mirrors `internal/delivery/httpapi/diagnostics/dto.go`'s own explicit-allowlist
+discipline exactly, so a future field addition upstream can never silently reach CLI output without deliberate
+review against the PID/argv/cwd/secret prohibition.
+
+**Redaction (`Matcher redact.Matcher` on `run.Dependencies`)**: `GetRunGraph`/`GetRunTimeline` both take a
+`redact.Matcher`, exactly as the task brief flagged. `internal/delivery/httpapi/rundetail`'s own Matcher is
+built as `redact.NewMatcher(sessionToken)` — a per-process bootstrap secret `cmd/aw/serve.go` mints once, with
+no CLI equivalent (a one-shot `aw` process mints no comparable session secret). `doc.go` documents this
+explicitly: a future V6-15O composition root is expected to pass `redact.NewMatcher(...)` — the SAME
+constructor, with whatever known secrets it has (possibly none) — never a different, ad hoc redaction
+mechanism invented just for this package.
+
+### Test
+
+All tests are real, `*sqlite.Store`-backed (never a mock), duplicating the established
+`internal/delivery/httpapi/rundetail/fixture_test.go`-style fixture helpers into each package's own
+`fixture_test.go` (Go test helpers are unexported across packages — confirmed this is the established
+convention in this codebase before duplicating rather than importing). Confirmed
+`internal/archtest/cli_boundary_test.go`'s own `TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters`/
+`TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage` check `go list -json` WITHOUT `-test`, so sqlite
+imports inside `_test.go` fixtures never trip them — verified by reading `goList`'s own implementation before
+relying on this.
+
+`internal/delivery/cli/run` (23 tests, `fixture_test.go` + `start_test.go` + `cancel_test.go` + `show_test.go` +
+`graph_test.go` + `timeline_test.go` + `diagnostics_test.go` + `wait_test.go` + `descriptor_test.go`):
+- Start: fresh dispatch + identical-key replay reproduces the same RunID; generated idempotency key returned
+  on stdout when `--idempotency-key` omitted; missing `<workItemId>` argument is a usage error.
+- Pin conflict: `TestRunStart_PinConflict_ReturnsTypedError` — a WorkItem pinned (via the SAME
+  `store.SetWorkItemWorkflowVersionForTest` test-only helper `internal/delivery/httpapi/run/start_test.go`'s
+  own identical test uses — there is no application command that sets `WorkItem.WorkflowVersionID` today) to
+  one WorkflowVersionID rejects a `run start` naming a different one with `errors.Is(err,
+  runtime.ErrWorkflowVersionMismatch)`, and confirms NO partial stdout was written on the failed call.
+  `StartWorkflowRunRequest` carries no `ExpectedVersion` field at all (confirmed by reading `commands.go`), so
+  this is the real "pin conflict" the task brief's own parenthetical anticipated, not a `--expected-version`
+  flag this subcommand does not have.
+- Cancel: fresh dispatch returns CANCELLING + a real CoordinatorJobID; a REPEAT cancel for the same RunID
+  (no idempotency key involved at all) safely reports `AlreadyRequested=true` with an empty CoordinatorJobID
+  (no second coordinator job); missing `--reason` is a usage error.
+- Show/Graph/Timeline: basic single-page read-through; `TestRunGraph_PagesAndCursorContinues`/
+  `TestRunTimeline_PagesAndCursorContinues` drive a real multi-hop `routerChainDocument` via real
+  `runtime.AdvanceRun` calls, page with `--limit` smaller than the real activation/entry count, and confirm the
+  two pages together cover every activation/entry exactly once (no duplicate, no gap) plus a real `NextCursor`
+  when more remain; `TestRunGraph_CursorForDifferentRunIsRejected` mints a real cursor for one Run and confirms
+  reusing it against a different Run's `<runId>` returns `errors.Is(err, clirun.ErrCursorRunMismatch)`;
+  malformed `--cursor` returns `errors.Is(err, clirun.ErrCursorInvalid)` for both subcommands.
+- Diagnostics: `TestRunDiagnostics_ReturnsBlockerForThisRun` hand-seeds one OPEN
+  `workdomain.BlockerIsolationEnforcementUnavailable` blocker sourced from a real started Run and confirms it
+  round-trips through `GetRunDiagnostics` into this package's own DTO with `AdmissionReason=true`; missing
+  `--project-id` is a usage error (`GetRunDiagnostics` takes a `ports.CommandScope`, unlike Show/Graph/
+  Timeline). `TestRunDiagnostics_NeverExposesProcessOrSecretShapedFields` — a reflect-based field-name scan
+  across every exported DTO type in `diagnostics.go` for `pid`/`argv`/`cwd`/`secret`/`workingdirectory`/
+  `executablepath`/`command`/`env` fragments, mirroring `internal/app/runtime`'s own
+  `TestGetRunDiagnostics_NeverExposesProcessOrSecretShapedFields` precedent the package doc comment names —
+  this is the "fixture that would leak if redaction were missing", made mechanical against this package's OWN
+  second, hand-mapped DTO layer specifically (not just the already-safe-by-construction upstream
+  `runtime.RunDiagnostics`).
+- **Wait semantics (`wait_test.go`)** — the task brief's own explicit requirement, both real outcomes proven:
+  - `TestRunStart_WaitInterrupted_NeverCallsCancelRun`: a custom `cli.Sleeper` injected via
+    `Dependencies.Sleep` cancels the `context.Context` on its first invocation (simulating an operator's own
+    Ctrl-C landing between polls — the only deterministic seam `cli.Wait`'s own `ObserveFunc`/`Sleeper`
+    contract exposes) while the Run is deliberately left RUNNING (never advanced) for the whole test. Asserts:
+    `errors.Is(err, context.Canceled)`; `Sleep` was called exactly once (proving exactly one, read-only,
+    `GetRunDetail` observe happened, and nothing after); `StartResult.Wait == nil`; and — the decisive proof —
+    reloading the Run afterward via a fresh `runtime.GetRunDetail` shows `State == "RUNNING"` and
+    `Cancelling == false`, plus `tx.Runtime().GetRunCancellationIntent` returns `ports.ErrPersistenceNotFound`
+    (the one durable row only `runtime.CancelRun` ever writes) — i.e., nothing mutating ever ran.
+  - `TestRunStart_WaitTimeout_NeverCallsCancelRun`: mirrors the above for a real, short (`1ms`) wall-clock
+    `--wait-timeout` instead of an interrupt (a real `Sleep` that returns instantly, so the test itself never
+    blocks, while `cli.Wait`'s own real `time.Now()`-based deadline check still trips it): `errors.Is(err,
+    cli.ErrWaitTimeout)`, Run state reloaded afterward is still RUNNING and not Cancelling.
+- `TestRunStart_Wait_ObservesTerminalState` (the positive case): forces the Run straight to SUCCEEDED via a
+  direct repository CAS (`forceRunSucceeded`, `fixture_test.go`) — bypassing the full ADR-021
+  completion-policy/evidence/approval-gate pipeline (`runtime.EvaluateCompletionCandidate`), which is
+  unrelated to what this test means to prove about `--wait`'s own polling mechanics and would have made this
+  fixture disproportionately heavy for a CLI-layer test — then confirms `--wait` returns immediately with
+  `StartResult.Wait.State == "SUCCEEDED"` and the injected `Sleep` is never called (`cli.Wait`'s own "always
+  calls observe at least once before its first sleep" contract).
+- `descriptor_test.go`: all 6 descriptors present in `cli.Default` with the expected `AppOperation`/Scope.
+
+`internal/delivery/cli/noderun` (6 tests, `fixture_test.go` + `retryblocked_test.go` + `descriptor_test.go`):
+- `blockedAdmissionNodeRunFixture` hand-seeds one extra NodeRun + BLOCKED ExecutionAttempt (created QUEUED via
+  `CreateExecutionAttempt`, then CAS'd QUEUED→BLOCKED via `TransitionExecutionAttempt` with a real
+  `TerminationReason` — confirmed by reading `createExecutionAttemptTx`'s own sqlite INSERT that
+  `termination_reason` has no column there at all, so setting it only in-memory before `CreateExecutionAttempt`
+  silently never persisted, a real bug this test suite caught and fixed before finishing) + the durable
+  `"<nodeRunId>-execution-profile-v1"` DecisionArtifact + the deterministically-keyed
+  `"<attemptId>-admission-blocker"` WorkItemBlocker — a COMMAND-kind executor profile with no AdapterBuildID
+  pin, so no adapter build/agent registry entry is needed at all (`runAdmissionProbePhase`'s own
+  "COMMAND/MACHINE_GATE... no AdapterBuildVersion concept" branch), keeping this fixture minimal versus
+  `internal/app/runtime/admission_test.go`'s own full real-scheduled-AGENT-node scenario (unnecessary here —
+  this package only needs to prove correct DISPATCH to the already-exhaustively-tested
+  `RetryBlockedActivationHandler.Retry`, not re-prove admission's own four-check logic).
+- `TestNodeRunRetryBlocked_RevalidationPasses_ReactivatesNodeRun`: `fake.IsolationEnforcementChecker{}` (passes
+  any tier) → `Retried=true`, `ReactivatedNodeRunID` populated, `FailureReason` empty; a REPEAT call for the
+  same NodeRun reports `AlreadyRetried=true`, `Retried=false`, no second reactivation.
+- `TestNodeRunRetryBlocked_RevalidationStillFails_BlockerStaysOpen`:
+  `fake.IsolationEnforcementChecker{Err: ...}` → `Retried=false`, `AlreadyRetried=false`,
+  `FailureReason`/`FailureDetail` populated (a normal structured business outcome, never an error — confirmed
+  by reading `RetryBlockedActivationResult`'s own doc comment before writing the assertion); a follow-up call
+  against the still-broken environment reaches the identical still-failing outcome again, proving the blocker
+  was never silently resolved.
+- Missing `--reason` / unknown `<nodeRunId>` are usage/lookup errors.
+- `descriptor_test.go`: the one `{node-run, retry-blocked}` descriptor is present with the expected
+  AppOperation/Scope/HTTPOperationID.
+
+### Verify
+
+- **Start/cancel replay**: `TestRunStart_FreshThenReplay` (same idempotency key replays the identical RunID,
+  `Replayed=true`) + `TestRunCancel_FreshThenReplay` (a repeated `run cancel <id>` call is RunID-idempotent,
+  `AlreadyRequested` reflects the repeat, never a second `CoordinatorJobID`).
+- **Pin conflict**: `TestRunStart_PinConflict_ReturnsTypedError` — see Test above.
+- **Paging**: `TestRunGraph_PagesAndCursorContinues`/`TestRunTimeline_PagesAndCursorContinues` — a real
+  continuation cursor is exposed and consumed correctly across two pages with no truncation; cross-run cursor
+  reuse and malformed cursors are both rejected with typed errors.
+- **Diagnostics redaction**: `TestRunDiagnostics_NeverExposesProcessOrSecretShapedFields` — see Test above.
+- **Recovery**: `TestNodeRunRetryBlocked_RevalidationPasses_ReactivatesNodeRun` — a real blocked NodeRun is
+  genuinely unblocked (a fresh NodeRun activation created, the admission blocker RESOLVED) in a test scenario.
+- **Wait semantics**: `wait_test.go`'s two tests — see Test above; both an interrupted and a timed-out
+  `--wait` are proven, by direct post-hoc Run-state reload plus a `GetRunCancellationIntent` check, to never
+  call `runtime.CancelRun` or any other mutating function as a side effect.
+- `go build ./...`, `go vet ./...` clean repo-wide (confirmed with the full module, not just this task's own
+  new packages). `go test ./...` — every package `ok` except one pre-existing, unrelated flake:
+  `internal/app/message`'s `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing`
+  failed once under full-suite parallel load with a Windows file-locking error ("The process cannot access the
+  file because it is being used by another process") — re-ran in isolation 3x immediately after, passed every
+  time; this package was never touched by this task's own diff (confirmed via `git status --short`: only the
+  two new `internal/delivery/cli/{run,noderun}` directories are new/untracked).
+- `git status --short` before committing confirms `cmd/aw/main.go`/`cmd/aw/cli.go` and every other existing
+  file are untouched — only the two new package directories are added.
+
+### Kết quả
+
+Two new CLI leaf packages, `internal/delivery/cli/run` (7 descriptors: `run start|cancel|show|graph|timeline|
+diagnostics`) and `internal/delivery/cli/noderun` (1 descriptor: `node-run retry-blocked`), registering into the
+shared `internal/delivery/cli.Default` registry via their own `init()` functions — no shared-file edit, no
+`cmd/aw` wiring, exactly as V6-15B's own "independent leaf tasks can add packages/descriptors without shared-file
+edits" bar and this task's own CRITICAL scope rule both require. 29 new tests (23 + 6), all real-sqlite-backed,
+covering every Verify bullet the task brief named: start/cancel replay, pin conflict, paging with cursor
+continuation, diagnostics redaction, recovery (retry-blocked), and — most load-bearing — wait semantics: an
+interrupted or timed-out `--wait` is proven, not just asserted, to never dispatch a cancellation or any other
+mutation. `go build/vet/test ./...` clean repo-wide (one confirmed pre-existing, unrelated, non-reproducing
+Windows file-locking flake in `internal/app/message`, outside this task's own diff). Run lifecycle/recovery now
+needs no DB surgery from the CLI's own dispatch/query layer — the one piece intentionally left for a later task
+(V6-15O) is wiring real `os.Args` into these two packages' own exported command functions.
+
 ## V6-09 — Projection rebuild request and operation model
 
 ### Bối cảnh
