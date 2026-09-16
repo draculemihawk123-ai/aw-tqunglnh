@@ -8148,6 +8148,144 @@ explicit precedent) — `ApplyBatch` is complete and ready for V6-10 (or any fut
 continuously. V6-09 (Projection rebuild request) and the rest of P3 remain gated on V6-08A merging; P4's own
 CLI leaf tasks are independently gated on V6-15B (already merged) plus their own specific backend.
 
+## V6-15C — Bootstrap, Doctor and settings CLI
+
+### Thực hiện
+
+Branched off fresh `origin/master` (`55905e5`, confirmed via `git fetch` before starting) into
+`feat/v6-15c-bootstrap-doctor-settings-cli`, in an isolated worktree. Built the first three real leaves on
+top of V6-15B's `internal/delivery/cli` framework (read `sample_test.go`, `descriptor.go`, `dispatch.go`,
+`envelope.go`, `output.go`, `flags.go`, `input.go` in full first, per that task's own reference-template
+instruction): three new sibling packages, each registering its own `cli.Descriptor`(s) via its own `init()`
+into the shared `cli.Default` registry — never touching `cmd/aw/main.go`/`cmd/aw/cli.go` (V6-15O's own job,
+per `docs/design/08-v6-api-projections.md` §1 rule 8 — confirmed `cmd/aw/cli.go` still carries
+`"doctor": stub("doctor")` untouched).
+
+- `internal/delivery/cli/health` — `aw health live` (`healthLive`) and `aw health ready` (`healthReady`).
+  `NewReadinessChecker(Dependencies{UnitOfWork, ArtifactRoot})` registers the SAME
+  `"database"/"artifact_root"/"safe_settings"` checks `cmd/aw/serve.go`'s own composition root registers for
+  GET `/health/ready` (read that file's own `checker.Register` calls directly to confirm the exact closures),
+  deliberately omitting the HTTP-only `"routes"` check (no route-composition step exists for a one-shot CLI
+  invocation to finalize). `Live()`/`Ready(ctx, checker)` mirror `httpapi.LiveHandler`/`ReadyHandler`'s own
+  wire bodies (`{"status":"live"}`, `{"status":"ready"}` or `{"status":"not_ready","checks":[...]}`) as plain
+  values instead of HTTP responses. `RunReady` is the one command in this task that returns a non-nil,
+  non-`UsageError` error when the report is not ready — mirroring GET `/health/ready`'s own binary
+  load-balancer-style 503 gate — after already writing the report to stdout.
+- `internal/delivery/cli/doctor` — `aw doctor` (`doctor`). `BuildReport` composes
+  `internal/app/doctor.Run` with the same two extra facets GET `/doctor`'s own (unexported)
+  `handleDoctor`/`isolationCheck`/`restartRequired`/`operationLinks` add
+  (`internal/delivery/httpapi/doctor/queries.go`, `dto.go`) — restated here byte-for-byte rather than
+  imported, since that composition is unexported. `RunDoctor` always returns `nil` regardless of
+  `Report.Status` (HEALTHY/DEGRADED/BLOCKED) — severity lives entirely in the typed body, mirroring GET
+  `/doctor`'s own explicit "always 200" contract, the deliberate opposite of `aw health ready`'s own
+  fail-the-command behavior.
+- `internal/delivery/cli/settings` — `aw settings show` (`getSafeSettings`) and `aw settings update`
+  (`updateSafeSettings`). Wire types (`desiredWire`, `stringFieldWire`/`durationFieldWire`/`intFieldWire`,
+  `effectiveWire`, `responseDTO`) mirror `internal/delivery/httpapi/safesettings/dto.go`'s own unexported
+  types field-for-field, reusing the SAME `redact.Matcher.Tagged(redact.Secret, ...)` call for
+  `ProviderCredentialRef` masking (never a second, hand-rolled masking scheme). `RunUpdate` follows
+  `handleUpdateSafeSettings`'s own flow: strict decode via `safesettings.SafeSettings`' own
+  `UnmarshalJSON` (`DisallowUnknownFields` — the structural enforcement of this task's own "no
+  principal/security config mutation" scope line, since that closed 7-field allowlist has no such field to
+  begin with) → pre-dispatch `safesettings.Validate` → `json.Marshal` for a canonical payload (mirrors
+  `httpapi.CanonicalizeJSON`'s own technique) → `cli.BuildEnvelope` (calls the SAME `httpapi.SemanticHash`)
+  → `cli.Dispatch` (calls the SAME `httpapi.LookupReceipt`/`ReconcileReceipt`) → inside the `Execute`
+  closure only (so it never runs on a true replay), reload the current version and require it to still
+  match `--expected-version` (`ErrStaleExpectedVersion` otherwise) before calling
+  `safesettingsapp.UpdateSafeSettings` → re-render fresh-or-replayed result through the SAME
+  `buildResponse` `RunShow` uses. `--expected-version` is required (`ErrExpectedVersionRequired`, a
+  `UsageError`); `--idempotency-key` is optional (`cli.BuildEnvelope` generates one, always returned);
+  the desired document is read via `cli.ReadBoundedInput` from `--file` or stdin. `resolveEffective`
+  deliberately resolves `safesettingsapp.Effective` fresh on every invocation (empty file/env/flag
+  `StartupOverrides`, matching `cmd/aw/serve.go`'s own current boot-time call) rather than freezing a
+  snapshot once, since a one-shot CLI process has no "boot, then serve for a while" window to freeze
+  across — documented directly in that function's own comment as a deliberate, reasoned divergence from
+  the HTTP package's own boot-once `Dependencies.Effective` field.
+
+All three leaves implement V6-15B's own JSON/human dual-output contract by branching on `cli.BindJSONFlag`
+themselves (no shared human-formatting helper exists yet in the V6-15B foundation): `--json` writes through
+`cli.EncodeQueryResult`/`EncodeCommandResult`; otherwise each leaf writes its own plain-text summary.
+
+Confirmed via `go list -deps`/`go list -json` before writing any code that `internal/app/doctor`,
+`internal/app/safesettings`, the whole `internal/delivery/httpapi/...` tree and `internal/adapters/process`
+never import `adapters/sqlite`/`adapters/gitworktree`/`adapters/providers` transitively — so building these
+three leaves directly on top of those packages (plus the `ports.IsolationEnforcementChecker` INTERFACE only,
+never the concrete `internal/adapters/process` checker, in production code) cannot violate
+`internal/archtest.TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters`/
+`TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage` — both re-run explicitly below and pass.
+
+### Test
+
+New table/scenario-driven unit tests, all against `internal/app/ports/fake` (`fake.New()`,
+`fake.QueryStore{Unreachable}`, `fake.IsolationEnforcementChecker{}`) — no SQLite, no real HTTP server, per
+this task's own "your package's own tests prove Dispatch/query calls work end to end against a real (or
+fake) `ports.UnitOfWork`" instruction:
+
+- `internal/delivery/cli/health/health_test.go` (10 tests): both descriptors registered with the right
+  `HTTPOperationID`/`Scope`; `RunLive` JSON + human output (always nil error); `RunReady` healthy (nil
+  error, `status:"ready"`, zero checks) and blocked-by-missing-artifact-root (non-nil, non-`UsageError`
+  error; `status:"not_ready"` naming `artifact_root` with a reason, both JSON and human); unknown-flag
+  rejected as a `UsageError`.
+- `internal/delivery/cli/doctor/doctor_test.go` (7 tests): descriptor registered; healthy golden (all 5
+  expected checks present, `restartRequired=false`, exact `links` map matching GET `/doctor`'s own); degraded
+  golden (missing artifact root); blocked golden (unreachable query store); nil-`Isolation` defensive branch
+  (BLOCKED, no panic); `restartRequired` flips `false→true` after a real `safesettingsapp.UpdateSafeSettings`
+  call against the same fake `UnitOfWork` — mirrors `TestDoctor_RestartRequired_AfterSafeSettingsUpdate_HTTP`;
+  human output.
+- `internal/delivery/cli/settings/settings_test.go` (11 tests): both descriptors registered; `RunShow` on a
+  never-configured install (`version=1`, `restartRequired=false`); `RunUpdate` fresh success + credential
+  masking (raw secret never appears in stdout, `[REDACTED]` placeholder does, both JSON and human); generated
+  idempotency key returned when omitted; **true replay** (identical idempotency key + payload retried —
+  `Replayed=true`, masked output identical in shape to the fresh path — this is the one scenario that
+  actually exercises `cli.Dispatch`'s own receipt-lookup/replay path end to end for a real domain leaf, not
+  just V6-15B's own synthetic sample); missing `--expected-version` (`UsageError`); stale
+  `--expected-version` after a first real update moved the version on (non-`UsageError` failure); invalid
+  desired document (`safesettings.Validate` failure, `UsageError`); unknown field ("`databasePath`") rejected
+  at decode time (`UsageError` — the structural proof of "no principal/security config mutation"); human
+  output also masks the credential; unknown flag rejected.
+
+`go build ./...` clean. `go vet ./...` clean. `go test ./internal/delivery/cli/...` — all new and existing
+tests pass (28 new tests across the three leaves, plus every pre-existing V6-15B framework test still green).
+`go test ./internal/archtest/... -run CLI` — both boundary tests pass.
+
+`go test ./...` (full repo, run once from this worktree): two failures, both in packages this task never
+touched and both confirmed pre-existing/environmental on re-run in isolation —
+`internal/app/message.TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing`
+(Windows file-rename race under full-suite parallel filesystem contention — passed standalone in 0.27s) and
+`internal/integration/v5accept.TestV5AcceptFullComposition_RealFourRoleGraphReachesSucceededAndSurvivesRestart`
+(a timing-sensitive integration test that missed its deadline under full-suite CPU contention — passed
+standalone in 34s). Neither test imports, nor is reachable from, any file this task added or changed.
+
+### Verify
+
+- Healthy/degraded/blocked: `TestRunDoctor_Healthy`/`_Degraded`/`_Blocked` (doctor) and
+  `TestReady_Healthy`/`_Blocked_MissingArtifactRoot` (health) each drive a real status transition through
+  the actual check logic (missing dir, unreachable store), not a hand-set status field.
+- Stale/replay: `TestRunUpdate_StaleExpectedVersion` (stale) and `TestRunUpdate_Replay` (true replay via
+  `cli.Dispatch`) both against the same fake `UnitOfWork`'s own real CAS/receipt behavior.
+- Restart: `TestRunDoctor_RestartRequired_AfterSettingsUpdate` and `TestRunShow_HumanOutput_MasksCredential`
+  (which also asserts `restartRequired: true` in its human output) both flip a real persisted record.
+- Mask/redaction: every `settings` test that produces output asserts the raw `keychain:...` credential
+  string is ABSENT from stdout while `[REDACTED]`/`REDACTED` is present — checked in both JSON and human
+  output, and across fresh, replayed, and show paths.
+- JSON/human contract: every leaf has at least one JSON-mode test (decodes back into a typed struct) and one
+  human-mode test (plain-text assertions, plus an explicit "does NOT parse as JSON" check for `health live`
+  and `settings show`) exercising the identical underlying data.
+
+### Kết quả
+
+Three new leaf packages — `internal/delivery/cli/health`, `internal/delivery/cli/doctor`,
+`internal/delivery/cli/settings` — the first real leaves built on V6-15B's shared CLI framework, each
+registering its own descriptor(s) into `cli.Default` from its own `init()` with no shared-file edit, exactly
+as that foundation task's own "Hoàn thành khi" line promised. `cmd/aw/main.go`/`cmd/aw/cli.go` deliberately
+untouched — real `aw health/doctor/settings` shell invocations remain V6-15O's job. `go build/vet/test ./...`
+clean except for two confirmed pre-existing, unrelated, environmental flakes (re-verified passing in
+isolation, documented above with exact test names for the next session's own re-verification). Installation
+health/doctor/safe-settings diagnosis and mutation now work end to end (registration → envelope → dispatch →
+masked output) against a real `ports.UnitOfWork`, without a browser or an HTTP server, satisfying this task's
+own "Hoàn thành khi" line at the package level; the remaining P4 CLI leaf tasks (V6-15D onward) are
+independently gated on V6-15B (already merged) plus their own specific backend, same as before.
+
 ## V6-15D — Catalog CLI
 
 ### Thực hiện
