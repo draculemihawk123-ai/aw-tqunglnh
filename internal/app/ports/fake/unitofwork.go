@@ -87,25 +87,26 @@ func (u *UnitOfWork) run(fn func(ports.Tx) error, persistOnSuccess bool) error {
 // call; clone() deep-copies both before each attempt so a failed or
 // read-only attempt never mutates the committed Snapshot.
 type Tx struct {
-	catalog          *CatalogRepository
-	work             *WorkRepository
-	definitions      *DefinitionsRepository
-	runtime          *RuntimeRepository
-	jobs             *JobsRepository
-	events           *EventsRepository
-	receipts         *ReceiptsRepository
-	adapterBuilds    *AdapterBuildRepository
-	readiness        *ReadinessRepository
-	wait             *WaitRepository
-	approvals        *ApprovalRepository
-	artifacts        *ArtifactRepository
-	messages         *MessageRepository
-	contextSnapshots *ContextSnapshotRepository
-	agentEvents      *AgentEventsRepository
-	checkpoints      *CheckpointsRepository
-	safeSettings     *SafeSettingsRepository
-	attachmentClaims *AttachmentClaimRepository
-	projections      *ProjectionRepository
+	catalog            *CatalogRepository
+	work               *WorkRepository
+	definitions        *DefinitionsRepository
+	runtime            *RuntimeRepository
+	jobs               *JobsRepository
+	events             *EventsRepository
+	receipts           *ReceiptsRepository
+	adapterBuilds      *AdapterBuildRepository
+	readiness          *ReadinessRepository
+	wait               *WaitRepository
+	approvals          *ApprovalRepository
+	artifacts          *ArtifactRepository
+	messages           *MessageRepository
+	contextSnapshots   *ContextSnapshotRepository
+	agentEvents        *AgentEventsRepository
+	checkpoints        *CheckpointsRepository
+	safeSettings       *SafeSettingsRepository
+	attachmentClaims   *AttachmentClaimRepository
+	projections        *ProjectionRepository
+	projectionRebuilds *ProjectionRebuildRepository
 }
 
 func newTx() Tx {
@@ -146,9 +147,10 @@ func newTx() Tx {
 		// 0036_safe_settings.sql's own seeded singleton row exactly, so a
 		// handler test sees the identical starting state against either
 		// implementation.
-		safeSettings:     &SafeSettingsRepository{record: ports.SafeSettingsRecord{Version: 1}},
-		attachmentClaims: &AttachmentClaimRepository{},
-		projections:      &ProjectionRepository{},
+		safeSettings:       &SafeSettingsRepository{record: ports.SafeSettingsRecord{Version: 1}},
+		attachmentClaims:   &AttachmentClaimRepository{},
+		projections:        &ProjectionRepository{},
+		projectionRebuilds: &ProjectionRebuildRepository{},
 	}
 }
 
@@ -175,30 +177,32 @@ func (t Tx) clone() Tx {
 	clone.safeSettings = t.safeSettings.clone()
 	clone.attachmentClaims = t.attachmentClaims.clone()
 	clone.projections = t.projections.clone()
+	clone.projectionRebuilds = t.projectionRebuilds.clone()
 	return clone
 }
 
 var _ ports.Tx = Tx{}
 
-func (t Tx) Catalog() ports.CatalogRepository                  { return t.catalog }
-func (t Tx) Work() ports.WorkRepository                        { return t.work }
-func (t Tx) Definitions() ports.DefinitionsRepository          { return t.definitions }
-func (t Tx) Runtime() ports.RuntimeRepository                  { return t.runtime }
-func (t Tx) Jobs() ports.JobsRepository                        { return t.jobs }
-func (t Tx) Events() ports.EventsRepository                    { return t.events }
-func (t Tx) Receipts() ports.ReceiptsRepository                { return t.receipts }
-func (t Tx) AdapterBuilds() ports.AdapterBuildRepository       { return t.adapterBuilds }
-func (t Tx) Readiness() ports.ReadinessRepository              { return t.readiness }
-func (t Tx) Wait() ports.WaitRepository                        { return t.wait }
-func (t Tx) Approvals() ports.ApprovalRepository               { return t.approvals }
-func (t Tx) Artifacts() ports.ArtifactRepository               { return t.artifacts }
-func (t Tx) Messages() ports.MessageRepository                 { return t.messages }
-func (t Tx) ContextSnapshots() ports.ContextSnapshotRepository { return t.contextSnapshots }
-func (t Tx) AgentEvents() ports.AgentEventsRepository          { return t.agentEvents }
-func (t Tx) Checkpoints() ports.CheckpointsRepository          { return t.checkpoints }
-func (t Tx) SafeSettings() ports.SafeSettingsRepository        { return t.safeSettings }
-func (t Tx) AttachmentClaims() ports.AttachmentClaimRepository { return t.attachmentClaims }
-func (t Tx) Projections() ports.ProjectionRepository           { return t.projections }
+func (t Tx) Catalog() ports.CatalogRepository                      { return t.catalog }
+func (t Tx) Work() ports.WorkRepository                            { return t.work }
+func (t Tx) Definitions() ports.DefinitionsRepository              { return t.definitions }
+func (t Tx) Runtime() ports.RuntimeRepository                      { return t.runtime }
+func (t Tx) Jobs() ports.JobsRepository                            { return t.jobs }
+func (t Tx) Events() ports.EventsRepository                        { return t.events }
+func (t Tx) Receipts() ports.ReceiptsRepository                    { return t.receipts }
+func (t Tx) AdapterBuilds() ports.AdapterBuildRepository           { return t.adapterBuilds }
+func (t Tx) Readiness() ports.ReadinessRepository                  { return t.readiness }
+func (t Tx) Wait() ports.WaitRepository                            { return t.wait }
+func (t Tx) Approvals() ports.ApprovalRepository                   { return t.approvals }
+func (t Tx) Artifacts() ports.ArtifactRepository                   { return t.artifacts }
+func (t Tx) Messages() ports.MessageRepository                     { return t.messages }
+func (t Tx) ContextSnapshots() ports.ContextSnapshotRepository     { return t.contextSnapshots }
+func (t Tx) AgentEvents() ports.AgentEventsRepository              { return t.agentEvents }
+func (t Tx) Checkpoints() ports.CheckpointsRepository              { return t.checkpoints }
+func (t Tx) SafeSettings() ports.SafeSettingsRepository            { return t.safeSettings }
+func (t Tx) AttachmentClaims() ports.AttachmentClaimRepository     { return t.attachmentClaims }
+func (t Tx) Projections() ports.ProjectionRepository               { return t.projections }
+func (t Tx) ProjectionRebuilds() ports.ProjectionRebuildRepository { return t.projectionRebuilds }
 
 // EventsRepository is an in-memory ports.EventsRepository: Append rejects
 // a duplicate (aggregate_type, aggregate_id, sequence) the same way the
@@ -1683,6 +1687,67 @@ func (p *ProjectionRepository) AcquireOrRenewConsumerLease(_ context.Context, re
 	return ports.ConsumerLease{
 		FenceToken: checkpoint.FenceToken, Cursor: checkpoint.Cursor, Status: checkpoint.Status, LeaseUntil: leaseUntil,
 	}, nil
+}
+
+// ProjectionRebuildRepository is an in-memory
+// ports.ProjectionRebuildRepository (V6-09) — the same "gets real behavior
+// from the start" treatment ProjectionRepository above already received:
+// an application-layer test of RequestProjectionRebuild/
+// GetProjectionRebuildStatus never needs sqlite.
+type ProjectionRebuildRepository struct {
+	operations map[string]ports.ProjectionRebuildOperation // by ID
+}
+
+var _ ports.ProjectionRebuildRepository = (*ProjectionRebuildRepository)(nil)
+
+func (p *ProjectionRebuildRepository) clone() *ProjectionRebuildRepository {
+	operations := make(map[string]ports.ProjectionRebuildOperation, len(p.operations))
+	for k, v := range p.operations {
+		operations[k] = v
+	}
+	return &ProjectionRebuildRepository{operations: operations}
+}
+
+// CreateOperation mirrors sqlite's own createProjectionRebuildOperationTx:
+// idempotent by ID only — a duplicate insert of the identical ID returns
+// the already-stored row unchanged.
+func (p *ProjectionRebuildRepository) CreateOperation(_ context.Context, op ports.ProjectionRebuildOperation) (ports.ProjectionRebuildOperation, error) {
+	if existing, ok := p.operations[op.ID]; ok {
+		return existing, nil
+	}
+	if p.operations == nil {
+		p.operations = map[string]ports.ProjectionRebuildOperation{}
+	}
+	p.operations[op.ID] = op
+	return op, nil
+}
+
+// GetOperation mirrors sqlite's own lookup.
+func (p *ProjectionRebuildRepository) GetOperation(_ context.Context, id string) (ports.ProjectionRebuildOperation, error) {
+	op, ok := p.operations[id]
+	if !ok {
+		return ports.ProjectionRebuildOperation{}, fmt.Errorf("fake: %w: projection rebuild operation %s", ports.ErrPersistenceNotFound, id)
+	}
+	return op, nil
+}
+
+// GetActiveOperation mirrors sqlite's own nonterminal-phase scan (see
+// migration 0041's own idx_projection_rebuild_operations_active doc
+// comment for why at most one can ever exist per (projectID,
+// projectionName) against the real adapter — this fake enforces the
+// identical invariant by construction, since CreateOperation is this
+// fake's only writer and RequestProjectionRebuild's own eligibility check
+// is what actually prevents a second one from ever being created).
+func (p *ProjectionRebuildRepository) GetActiveOperation(_ context.Context, projectID, projectionName string) (ports.ProjectionRebuildOperation, bool, error) {
+	for _, op := range p.operations {
+		if op.ProjectID != projectID || op.ProjectionName != projectionName {
+			continue
+		}
+		if !op.Phase.IsTerminal() {
+			return op, true, nil
+		}
+	}
+	return ports.ProjectionRebuildOperation{}, false, nil
 }
 
 // SafeSettingsRepository is an in-memory ports.SafeSettingsRepository

@@ -79,6 +79,9 @@ func (t *txAdapter) AttachmentClaims() ports.AttachmentClaimRepository {
 	return attachmentClaimRepository{tx: t.tx}
 }
 func (t *txAdapter) Projections() ports.ProjectionRepository { return projectionRepository{tx: t.tx} }
+func (t *txAdapter) ProjectionRebuilds() ports.ProjectionRebuildRepository {
+	return projectionRebuildRepository{tx: t.tx}
+}
 
 // Each placeholder repository already carries the shared *sql.Tx so the
 // task that populates it with real methods (see ports.Tx's doc comment)
