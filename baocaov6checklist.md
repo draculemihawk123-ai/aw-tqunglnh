@@ -8497,3 +8497,236 @@ mutation. `go build/vet/test ./...` clean repo-wide (one confirmed pre-existing,
 Windows file-locking flake in `internal/app/message`, outside this task's own diff). Run lifecycle/recovery now
 needs no DB surgery from the CLI's own dispatch/query layer — the one piece intentionally left for a later task
 (V6-15O) is wiring real `os.Args` into these two packages' own exported command functions.
+
+## V6-09 — Projection rebuild request and operation model
+
+### Bối cảnh
+
+Per spec (`docs/design/08-v6-api-projections.md` lines 367-378): "Mục tiêu: create idempotent rebuild
+intent/job and exact-operation status"; "Phụ thuộc: V6-08A, V6-02" (both already merged — V6-08A at
+`55905e5`); "Phạm vi: public command/query, operation schema, receipt/event/job"; "Không làm: command does
+not clear rows, edit cursor, or invoke the worker inline"; "Thực hiện: atomically create a `REQUESTED`
+operation + job + registered domain event + receipt. Same idempotency key replays the same OperationID. A
+NEW key while the project's projection already has a nonterminal (in-flight) rebuild operation must return a
+typed conflict that carries the active operation's ID"; status query records phase, W0 (starting watermark),
+shadow generation/cursor, cutover cursor, and a safe (non-leaking) error field; "Verify: replay, concurrency,
+crash-after-intent, restart, job reclaim, exact operation lookup"; "Hoàn thành khi: request/status usable
+without exposing the rebuild executor" — this task is explicitly application-layer only: no rebuild worker
+(that is V6-09A, a separate future task) and no HTTP endpoint (V6-09B, also future). Branched off a freshly
+re-fetched `origin/master` (confirmed still `55905e5`, both at start and again right before finalizing —
+nothing else landed a migration in between, so `0041` stayed the correct next number throughout).
+
+### Nghiên cứu
+
+Read `internal/app/ports/projection.go` (V6-08's own `ProjectionRepository`/`ProjectionStatus`/
+`ProjectionCheckpoint`) in full first — confirmed it is deliberately pure CRUD/CAS over
+`projection_generations`/`projection_rows`/`projection_checkpoints`/`projection_poison` only, with no concept
+of a rebuild "operation" anywhere, and its own doc comment explicitly reserves cutover/rebuild-worker
+decisions for V6-09A. Repo-wide grep for `RebuildOperation|ProjectionOperation|rebuild_operation` confirmed
+zero existing hits — this task's own operation-tracking schema is genuinely new, not a gap in already-merged
+code.
+
+Read `internal/app/releasesetcommit/commands.go`'s `RequestReleaseSetLocalCommit` in full as the closest
+existing template: receipt-replay precheck → business eligibility checks → mint intent ID + domain object →
+`tx.Work().CreateReleaseSetLocalCommit` → `tx.Jobs().EnqueueJob` → `tx.Events().Append` →
+`tx.Receipts().Record`, all inside one `uow.WithSerializedWrite`. `RequestProjectionRebuild` follows this
+exact shape.
+
+Read `internal/adapters/sqlite/txrunner.go` in full to confirm the actual concurrency mechanism this task's
+own "one nonterminal operation per project/projection" invariant can rely on: every connection carries
+`_txlock=immediate`, so `RunSerializedWrite` already gives this whole `Store` a single, globally serialized
+writer (a second concurrent write transaction blocks/retries at `BEGIN` until the first commits) — the exact
+same mechanism `workspacerelease.RequestWorkspaceSetRelease`'s own `HasActiveJobForAggregateIDs`
+check-then-act eligibility check already relies on with no extra locking of its own. Confirmed this by
+reading that call site (`internal/app/workspacerelease/commands.go` ~line 318) end to end.
+
+Read `internal/app/apperror/apperror.go` in full plus every existing app-layer call site of
+`apperror.New`/`apperror.Wrap` (`grep -rn "apperror\." internal/app`) to decide the typed-conflict mechanism
+(see Quyết định below) — the one existing app-command-layer call site, `internal/app/runtime/approval.go`'s
+policy-denial `apperror.New(errorcode.CodePolicyDenied, ..., false)`, carries no `Details`; every OTHER
+bespoke command conflict in this codebase (`releasesetcommit.ErrReleaseSetEntryNotFound`,
+`workspacerelease.ErrWorkspaceSetHasActiveJob`) is a plain `errors.New` sentinel, human-readable text only.
+
+Read `internal/adapters/sqlite/release_set_local_commit.go`'s `createReleaseSetLocalCommitTx` (the
+marker-UNIQUE-plus-explicit-precheck pattern) and confirmed this codebase's own established convention: a
+business uniqueness invariant gets an explicit application-level precheck for the real, everyday-correctness
+case (backed by `RunSerializedWrite`'s own global serialization), PLUS a schema-level UNIQUE constraint as an
+unchecked backstop — no repository method anywhere in this codebase specially parses/detects a raw SQLite
+UNIQUE-constraint-violation error code. Followed this exact same two-layer shape rather than inventing
+special-case Go-level constraint-violation handling.
+
+Read `internal/app/releasesetcommit/execute_test.go`'s own
+`TestExecuteReleaseSetLocalCommit_CrashBeforeGit_CleanRetryOneCommit` for the established
+claim→sleep-past-TTL→`RecoverExpiredJobs`→reclaim-with-a-second-worker shape this task's own "job reclaim"
+Verify bullet reuses directly — the job `RequestProjectionRebuild` enqueues is an ordinary `durable_jobs`
+row, so it needed no new reclaim mechanism of its own.
+
+### Quyết định
+
+**Typed active-rebuild conflict: wraps `apperror.Error`, not a bespoke local error struct.** Both were
+legitimate options per this task's own brief. Chose `apperror.Error{Code: CodeConflict, Details:
+{"activeOperationId": ...}}` (exposed through a package-level helper,
+`ActiveProjectionRebuildOperationID(err) (string, bool)`, rather than making callers reach into `.Details`
+directly) because `apperror.Error`'s own `Details` field is THIS codebase's existing, general-purpose
+mechanism for exactly this — its own doc comment already promises "safe to log, return over the API, or show
+an operator" — even though no application-command caller had actually populated `Details` for a business
+conflict before this task (see Nghiên cứu). Inventing a second, parallel structured-data error type
+alongside a pre-existing one built for the identical purpose would just be two ways to do the same thing.
+`errors.As` still works transparently for a caller that only wants the `Code`; a caller that wants the active
+ID calls the exported helper. Documented on the constructor's own doc comment
+(`internal/app/projectionrebuild/commands.go`), not left implicit.
+
+**A brand-new `ports.ProjectionRebuildRepository`, not folded into `ports.ProjectionRepository`.** The latter
+interface's own doc comment already commits, in writing, to "pure CRUD/CAS — no method here decides
+WHAT/WHEN to apply" over V6-08's frozen row/checkpoint/poison schema. A rebuild OPERATION's own lifecycle
+(REQUESTED → ... → SUCCEEDED/FAILED) is a genuinely different concern with its own new table (migration
+0041) that never touches `projection_rows`/`projection_checkpoints`/`projection_generations`/
+`projection_poison` at all — folding it in would blur a boundary that interface deliberately drew. Named
+`ProjectionRebuilds()` on `ports.Tx`, sitting next to (never replacing) `Projections()`.
+
+**New package `internal/app/projectionrebuild`, not `internal/app/projection` or `internal/app/runtime`.**
+Matches this task's own brief and mirrors `releasesetcommit`'s own precedent as a sibling-but-distinct
+package next to `work`: a package boundary that exists specifically because the command+query pairing here
+(operation create + exact-status read) is its own coherent unit, reusing nothing from `internal/app/projection`
+(V6-08/V6-08A's live-consumer/classification concern) beyond the fact that both eventually feed the same
+projection tables — which this task's own command never touches directly anyway.
+
+**Phase enum invented from V6-09A's own design prose, not copied from an existing enum.** No ADR or existing
+code names rebuild-operation phases anywhere in this repo (`ADR-028` is the unrelated canonical-CLI ADR — the
+V6-09/V6-09A spec's own "Nguồn" line, checked directly). Derived `REQUESTED → SNAPSHOTTING → BUILDING →
+CUTTING_OVER → SUCCEEDED | FAILED` phase-by-phase from V6-09A's own Thực hiện prose ("capture ... snapshot +
+W0" → SNAPSHOTTING; "Build shadow, replay >W0" → BUILDING; "Acquire ... cutover lease ... CASes active
+generation/cursor" → CUTTING_OVER) so a future V6-09A worker has an unambiguous target to write into with no
+new schema/enum negotiation of its own. This task writes REQUESTED only, by construction (no other write path
+exists yet).
+
+**Partial unique index (`idx_projection_rebuild_operations_active`) as a schema-level backstop, kept
+alongside the application-level precheck rather than replacing it.** Correctness for the real "two racing
+requests" case already comes from `RunSerializedWrite`'s own global write serialization (see Nghiên cứu) —
+the SAME mechanism every other business-uniqueness check in this codebase already relies on with no special
+constraint-violation handling in Go. The index exists purely as an invariant the SCHEMA itself can never
+violate, matching `release_set_local_commits.marker`'s own identical UNIQUE-plus-precheck precedent, not
+because the precheck alone was judged insufficient.
+
+**`job_id` is `NOT NULL` on `projection_rebuild_operations`** (a deliberate difference from
+`release_set_local_commits.job_id`, which is nullable and, on inspection, never actually populated by that
+package at all): this task's own command mints the job ID itself (`ports.JobID(ids.NewID())`) before either
+insert, then writes the SAME ID onto both the operation row and the `EnqueueJob` call inside the one shared
+transaction — giving the operation row a real, always-populated trace to its own job from the moment it
+exists, which the "job reclaim"/"exact operation lookup" Verify bullets both benefit from directly.
+
+### Thực hiện
+
+- `internal/adapters/sqlite/migrations/0041_projection_rebuild_operations.sql` (new) — the
+  `projection_rebuild_operations` table (`id`, `project_id`, `projection_name`, `phase`, `w0`,
+  `shadow_generation`, `shadow_cursor`, `cutover_cursor`, `error_code`, `error_message`, `job_id NOT NULL`,
+  `requested_at`, `updated_at`, `version`), a scope index, and the partial unique index enforcing at most one
+  nonterminal operation per `(project_id, projection_name)` (see Quyết định).
+- `internal/app/ports/projectionrebuild.go` (new) — `ProjectionRebuildPhase` (+ `IsTerminal`,
+  `NonterminalProjectionRebuildPhases`), `ProjectionRebuildOperation`, `ProjectionRebuildRepository`
+  (`CreateOperation` idempotent-by-ID, `GetOperation`, `GetActiveOperation`).
+- `internal/app/ports/unitofwork.go` — `ports.Tx` gains `ProjectionRebuilds() ProjectionRebuildRepository`,
+  documented the same "gets a real interface from the start" way every other concern on `Tx` already is.
+- `internal/adapters/sqlite/projection_rebuild_repository.go` (new) — `projectionRebuildRepository`,
+  Tx-composable, mirroring `projection_repository.go`'s own one-`xxxTx`-function-per-operation shape.
+  `nullableUint64`/`uint64PtrFromNull` — nil stays a real SQL NULL for `W0`/`ShadowGeneration`/
+  `ShadowCursor`/`CutoverCursor` rather than a coerced `0` (`0` is itself a legitimate future watermark value
+  V6-09A's worker can write).
+- `internal/adapters/sqlite/unitofwork.go` — wired `projectionRebuildRepository{tx: t.tx}` into `txAdapter`.
+- `internal/app/ports/fake/unitofwork.go` — in-memory `ProjectionRebuildRepository` fake, wired into `fake.Tx`
+  (new field, `clone()`, accessor) mirroring the real adapter's own behavior including the
+  nonterminal-phase-only `GetActiveOperation` filter.
+- `internal/app/projectionrebuild/commands.go` (new) — `RequestProjectionRebuild` (command),
+  `GetProjectionRebuildStatus` (query), `newActiveProjectionRebuildConflictError`/
+  `ActiveProjectionRebuildOperationID` (the typed-conflict mechanism, see Quyết định).
+- `internal/app/projectionrebuild/event_schema.go` (new) — `ProjectionRebuildRequested` v1 event +
+  `RegisterEventSchemas`, following V6-00A's own catalog-closure convention from this package's first commit.
+- `internal/app/projection/catalog_registrations.go` — new `c.ignore("ProjectionRebuildRequested", 1, ...)`
+  entry (a rebuild operation's own status is not itself a Kanban/task-detail row this projection renders);
+  doc-comment key count updated (47→48: 16 Apply, 32 Ignore).
+- `internal/app/projection/catalog_test.go` + `internal/archtest/event_catalog_test.go` — both registered
+  `projectionrebuild.RegisterEventSchemas`, keeping `TestCatalog_ClassifiesEveryRegisteredEventKey` and
+  `TestEmittedDomainEventInventoryMatchesRegisteredInventory` exhaustive over the new event.
+
+### Test
+
+- `internal/adapters/sqlite/projection_rebuild_repository_test.go` (new, 4 tests, real sqlite):
+  `CreateOperation` idempotent-by-ID (a duplicate insert of the same ID, even with different field values,
+  returns the ORIGINAL stored row); `GetOperation` not-found; `GetActiveOperation` excludes a terminal-phase
+  row (simulated via a raw `UPDATE ... SET phase = 'SUCCEEDED'`, standing in for V6-09A's own not-yet-built
+  worker, since this repository deliberately has no phase-transition method yet) and correctly picks up a
+  brand-new nonterminal operation created afterward for the same `(project, projectionName)`; the partial
+  unique index itself rejects a second nonterminal row.
+- `internal/app/projectionrebuild/commands_test.go` (new, 10 tests, fake-`UnitOfWork`-backed): happy path
+  (operation+job+event all created, every V6-09A-only field left nil); replay (same key → same OperationID,
+  no second job/event); receipt conflict (same key, different hash); **the active-conflict typed error**,
+  proven by extracting the real active OperationID via `ActiveProjectionRebuildOperationID` and confirming no
+  partial second operation/job was created; conflict correctly scoped to `(ProjectID, ProjectionName)`
+  together (a different projection name in the same project is never blocked); ProjectID/ProjectionName
+  required; `GetProjectionRebuildStatus` exact lookup, not-found, and empty-ID validation.
+- `internal/app/projectionrebuild/commands_sqlite_test.go` (new, 6 tests, REAL `sqlite.NewUnitOfWork`-backed):
+  replay; **concurrency as a real goroutine race** (two goroutines, two genuinely different IdempotencyKeys,
+  racing `RequestProjectionRebuild` against the same live `Store` — exactly one wins, the loser's typed
+  conflict carries the real winner's OperationID, proven by inspecting actual results rather than only
+  asserting on the sequential fake-layer scenario); **crash-after-intent via an injected mid-transaction
+  failure** (pre-seeding a `durable_jobs` row under the exact idempotency key a deterministic
+  `idsource.Sequential`-predicted operation ID will independently derive, forcing the command's own
+  `EnqueueJob` call to fail from inside the same transaction `CreateOperation` already wrote to — confirms
+  the operation row does NOT survive the rollback, then confirms a subsequent retry recovers cleanly); restart
+  (close the `Store`, re-open the same database file as a fresh process, confirm the REQUESTED operation and
+  the active-conflict behavior both survive unchanged); job reclaim (claim → let the lease lapse →
+  `RecoverExpiredJobs` → a second worker reclaims the SAME job with `ClaimCount` 2 and a fresh, greater lease
+  token — mirroring `execute_test.go`'s own established shape, confirming the operation row itself is
+  untouched by any of it); exact operation lookup (two distinct operations for two different projection names
+  in one project, each looked up by its own ID, never the other's).
+- Bumped the three hardcoded `migrationCount != 39` assertions (`db_test.go` x2, `unitofwork_test.go`) to
+  `40` — the SAME "files, not highest number" nuance V6-08's own checklist entry already documented (one
+  historical gap in the numbering, migration `0013` missing, unrelated to this task): 39 files existed before
+  this task (highest number 40), this task's own new `0041` makes 40 files (highest number 41). First guessed
+  `41` (files == highest number), which real `go test` immediately caught as wrong (`migrationCount = 40,
+  want 41`) — corrected after actually counting files on disk rather than assuming no gap existed.
+- `go build ./...`, `go vet ./...` clean repo-wide. `gofmt -l` clean on every file this task touched (a
+  pre-existing, unrelated repo-wide CRLF/`core.autocrlf` checkout artifact affects `gofmt -l` output for
+  essentially every file in the tree — verified files this task didn't touch are flagged identically, and
+  confirmed with a CRLF-stripped diff that only files this task actually edited had REAL alignment issues,
+  fixed with `gofmt -w` scoped to just those files). `go test ./...` — all packages `ok`, zero `FAIL` in any
+  package this task touched (three pre-existing, unrelated flakes seen in one full run — `internal/app/message`
+  file-locking races on Windows, `internal/app/workspaceprovision` a worker-pool shutdown-grace timeout — both
+  re-ran green in isolation, confirmed environmental/pre-existing, not caused by this task).
+
+### Verify
+
+- **Replay**: `TestRequestProjectionRebuild_Replay_ReturnsSameOperationID` (fake) +
+  `TestRequestProjectionRebuild_SQLite_Replay` (real) — same IdempotencyKey+RequestHash returns the identical
+  `RequestProjectionRebuildResult`, no second job/event/operation row.
+- **Concurrency**: `TestRequestProjectionRebuild_ActiveOperationConflict_TypedErrorCarriesID` (fake,
+  sequential proof of the business rule) + `TestRequestProjectionRebuild_SQLite_Concurrency_OneWinner` (real,
+  genuine two-goroutine race against one live `Store`) — exactly one winner, the loser's typed conflict
+  carries the real winner's OperationID.
+- **Crash-after-intent**: `TestRequestProjectionRebuild_SQLite_CrashAfterIntent_NoPartialState` — an injected
+  mid-transaction failure (see Test) proves no partial operation/job state can survive a rollback, and that a
+  retry afterward succeeds cleanly.
+- **Restart**: `TestRequestProjectionRebuild_SQLite_Restart` — close the `Store`, re-open the same database
+  file, `GetProjectionRebuildStatus` on a fresh process still returns the exact REQUESTED operation, and the
+  active-conflict check still fires correctly against it.
+- **Job reclaim**: `TestRequestProjectionRebuild_SQLite_JobReclaim` — the enqueued job survives
+  claim/lease-expiry/`RecoverExpiredJobs`/reclaim exactly like every other job kind in this codebase, with no
+  new mechanism of this task's own; the operation row is untouched throughout.
+- **Exact operation lookup**: `TestGetProjectionRebuildStatus_ExactLookup_ReturnsOperation` (fake) +
+  `TestGetProjectionRebuildStatus_SQLite_ExactOperationLookup` (real, two distinct operations, each looked up
+  correctly by its own ID) + `TestProjectionRebuildRepository_GetOperation_NotFound`.
+
+### Kết quả
+
+New: migration `0041` (`projection_rebuild_operations` + its partial unique index),
+`ports.ProjectionRebuildRepository` (+ `ProjectionRebuildPhase`/`ProjectionRebuildOperation`), the sqlite
+adapter and in-memory fake for it, `internal/app/projectionrebuild` (`RequestProjectionRebuild` +
+`GetProjectionRebuildStatus` + the `apperror`-based typed active-rebuild conflict). All 6 of V6-09's own
+Verify bullets covered by both a fast fake-backed suite and a real-SQLite integration suite (20 new test
+functions total, plus the 4 repository-level sqlite tests). Routine housekeeping every migration-adding task
+does: bumped the three hardcoded `schema_migrations` row-count assertions from 39 to 40 (see Test — files,
+not highest number, per the same historical-gap nuance V6-08's own checklist entry already documented). No
+real pre-existing bugs found this task. `go build/vet/test ./...` clean repo-wide. This task deliberately
+stops at the application layer: no rebuild worker (V6-09A) and no HTTP endpoint (V6-09B) — both remain fully
+separate, future tasks, exactly
+as this task's own "Hoàn thành khi" line requires.
