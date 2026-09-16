@@ -8147,3 +8147,143 @@ V6-08A's own Verify bullets covered by both a fast in-memory suite and a real-SQ
 explicit precedent) — `ApplyBatch` is complete and ready for V6-10 (or any future scheduler) to drive
 continuously. V6-09 (Projection rebuild request) and the rest of P3 remain gated on V6-08A merging; P4's own
 CLI leaf tasks are independently gated on V6-15B (already merged) plus their own specific backend.
+
+## V6-15D — Catalog CLI
+
+### Thực hiện
+
+New package `internal/delivery/cli/catalog` (first real leaf built on the V6-15B shared CLI framework — no
+leaf existed before this task, confirmed by grepping `cli.MustRegister`/`cli.Register` outside `_test.go`
+files repo-wide before starting). Read `internal/delivery/cli/sample_test.go` in full first as the reference
+template, plus every V6-15B primitive (`descriptor.go`, `dispatch.go`, `envelope.go`, `output.go`, `flags.go`,
+`wait.go`, `confirm.go`, `input.go`, `exit.go`), and `internal/delivery/httpapi/catalog` in full (`catalog.go`'s
+`RegisterRoutes` route inventory, `project.go`/`repository.go`/`component.go`'s handler bodies, `views.go`'s
+wire-shape reasoning, `command.go`'s `beginMutation` preamble) as the composition shape to mirror for CLI.
+
+Ten `cli.Descriptor`s registered from this package's own `init()` into `cli.Default` — no shared-file edit,
+per the design doc's own §1 rule 8 ("Chỉ V6-15O compose CLI/parity registry"): `project list|create|show`,
+`repository list|register|onboarding|retry-probe`, `component list`, `pack-assignment list|assign`. Each
+`HTTPOperationID` matches `internal/delivery/httpapi/catalog`'s own `RegisterRoutes` `OperationID` for the
+same operation 1:1 (`projectsList`, `projectsCreate`, `projectsGet`, `projectRepositoriesList`,
+`projectRepositoriesRegister`, `repositoriesOnboarding`, `repositoriesRetryProbe`, `projectComponentsList`,
+`componentPackAssignmentsList`, `componentPackAssignmentsAssign`) — this leaf mirrors an existing HTTP
+surface exactly, so none of its ten leaves is a `CLI_LOCAL` exception. `AppOperation` for the four mutations
+is byte-for-byte identical to the `commandType` string literal `internal/delivery/httpapi/catalog`'s own
+handlers already pass to `beginMutation` (`CreateProject`, `RegisterRepository`, `RetryRepositoryProbe`,
+`AssignComponentPack`) — required, not cosmetic: `cli.Dispatch`/`cli.BuildEnvelope` reuse the exact same
+`httpapi.SemanticHash`/`LookupReceipt`/`ReconcileReceipt` replay authority HTTP uses, so an HTTP call and a
+CLI call for "the same command" must hash and key identically. `repository onboarding`'s own `AppOperation`
+("RepositoryOnboarding") names a composed operation (`appcatalog.GetRepository` +
+`appcatalog.ListRepositoryProbeAttempts`, exactly like `internal/delivery/httpapi/catalog/repository.go`'s
+own `getRepositoryOnboarding` composes for HTTP) since there is no single application function to name.
+
+Own JSON view types (`views.go`) mirror `internal/delivery/httpapi/catalog/views.go`'s own reasoning: none of
+`project.Project`/`Repository`/`Component`/`ComponentPackAssignment` or `ports.RepositoryProbeAttempt` carry
+JSON tags of their own, so this package defines its own small camelCase-tagged mapping end to end rather than
+serializing a domain struct directly. `pack-assignment list`'s own `packAssignmentListView` composes the full
+append-only history plus which one (if any) is effective right now, via
+`appcatalog.GetEffectiveComponentPackAssignment(ctx, uow, componentID, now)` — `Effective` is an explicit JSON
+`null`, never an omitted field, when nothing is effective yet.
+
+Argument convention: every command that identifies one existing resource by opaque ID takes it as a
+positional argument (`project show <id>`, `repository list <projectId>`, `repository onboarding <id>`,
+`repository retry-probe <id>`, `component list <projectId>`, `pack-assignment list|assign <componentId>`),
+matching the task brief's own `<...>` placeholders; `repository register` (which creates a brand-new child
+resource under an existing project, with no prior resource of its own to name by ID) uses `--project-id`
+(`cli.BindProjectFlag`) instead, the flag this framework's own `flags.go` specifically names for "a
+project-scoped leaf ... to build its own `ports.CommandScope(...)`". `repository register`/`project
+create`/`pack-assignment assign` read their JSON request body via `--file`/stdin
+(`cli.ReadBoundedInput`+`cli.BindFileFlag`), decode into a typed request struct first, then re-marshal that
+struct as `EnvelopeRequest.NormalizedPayload` — never hashing raw caller bytes directly, exactly like HTTP's
+own `CanonicalizeJSON` discipline. `repository retry-probe` uses `cli.BindExpectedVersionFlag` (the CLI
+equivalent of HTTP's `If-Match`) and reproduces
+`internal/delivery/httpapi/catalog/repository.go`'s own `retryRepositoryProbe` ordering exactly: `GetRepository`
+(to learn `ProjectID` for scope) runs before `cli.Dispatch`'s own receipt lookup, but the "is this Repository
+actually BLOCKED" precondition check lives INSIDE the `cli.Dispatch` execute closure — reached only on a
+genuinely fresh (non-replayed) attempt — as a plain error (not `cli.UsageError`; a state conflict, not a bad
+invocation), so a replay of an earlier successful retry always returns the original result regardless of what
+status the Repository has since moved to. `pack-assignment assign`'s `Actor` comes from the resolved
+principal (`config.LoadLocalPrincipalFile`+`config.ValidateLocalPrincipal`, the same mechanism `aw serve`'s
+own `--principal-config` flag uses), never a request-body field — ADR-028's "Actor và ActorRoles ... MUST NOT
+được phép override actor/roles".
+
+Component creation is deliberately NOT wrapped: `appcatalog.CreateComponent` exists but takes no
+`ports.Command` and is excluded from this leaf's own surface, per the task's own "Không làm: no generic
+probe/component creation" line — `component list`'s own doc comment states this explicitly. No DB seed of
+any kind. `cmd/aw/main.go`/`cmd/aw/cli.go` untouched — routing real `os.Args` to this leaf is deferred to
+V6-15O, confirmed by re-reading that composition-root scope boundary before starting and never touching
+either file.
+
+### Test
+
+New tests only, in `internal/delivery/cli/catalog` (`catalog_test.go`,
+`project_test.go`, `repository_test.go`, `component_test.go`, `packassignment_test.go`), all against
+`fake.UnitOfWork` (`internal/app/ports/fake`) with a deterministic `idsource.Sequential` and a fixed `Now`,
+mirroring `sample_test.go`'s own setup — a fresh, isolated `Dependencies` per test, never shared state.
+`TestDescriptorsRegisterAllTenCommandsWithConsistentMetadata` proves exactly the ten expected
+`(Path, Scope, HTTPOperationID)` triples are registered into `cli.Default`, no more, no less. Every mutating
+Run* function is exercised through a real first-call + a real same-key replay call, decoding the returned
+`cli.ResultEnvelope` JSON directly (never a mock). `moveRepositoryToBlocked` and
+`completeRepositoryProbeActive` (new helpers) drive a fake Repository through
+REGISTERING->PROBING->{BLOCKED|ACTIVE} via direct `tx.Catalog()` calls — standing in for V3-02's own
+REPOSITORY_PROBE worker, which is not wired into this leaf's own tests, mirroring
+`internal/delivery/httpapi/catalog/catalog_test.go`'s own `moveRepositoryToBlocked` precedent.
+
+One real bug found and fixed during test-writing: the Go stdlib `flag` package stops parsing flags at the
+first non-flag token, so an early draft of the retry-probe/pack-assignment-assign tests that put the
+positional ID argument BEFORE `--expected-version`/`--idempotency-key` silently swallowed the flags as extra
+positional arguments and failed with a wrong-arg-count usage error. Fixed in the tests (flags first,
+positional last — the correct, and only, stdlib-`flag`-compatible ordering); the Run* functions themselves
+were already correct since `fs.Args()` is read after `fs.Parse()` either way.
+
+`go build ./... && go vet ./... && go test ./...` run repo-wide. Both new package's own tests, and
+`internal/archtest`'s existing `TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters` +
+`TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage` (which walk all of `./internal/delivery/cli/...`,
+now including this new subpackage), pass clean. Four failures elsewhere in the full `go test ./...` run
+(`cmd/aw` `TestServe_BootstrapUsesCustomPrincipalFromConfigFile`, `internal/app/message`
+`TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing`, `internal/app/workspaceprovision`
+`TestEndToEnd_MultiRepoProvision_BothReachReadyWithBaseRevisionSet`, `internal/integration/v5accept`'s two
+`TestV5Accept*` deadline tests) are all in packages this task never touched (confirmed via `git status
+--short` showing only the new `internal/delivery/cli/catalog/` directory, and confirmed none of those four
+packages import `internal/delivery/cli` at all) — pre-existing, environmental (Windows file-rename "Access is
+denied", worker-pool shutdown grace period, integration deadline) flakes; the `message` one was re-run in
+isolation and passed on retry, confirming flakiness rather than a regression.
+
+### Verify
+
+- **Async onboarding**: `TestRunRepositoryOnboarding_NoProbeYet_ShowsInProgressWithEmptyAttempts` (status
+  REGISTERING, zero attempts right after registration, before any probe has run) and
+  `TestRunRepositoryOnboarding_ProbeCompleted_ShowsActiveWithAttemptEvidence` (same query, same repository,
+  after `completeRepositoryProbeActive` — status ACTIVE, one SUCCEEDED attempt with the right JobID/Result) —
+  proves the onboarding view reads live state on every call, never a cached snapshot from registration time.
+- **Replay**: `TestRunProjectCreate_ReplaySameIdempotencyKey_NeverCreatesASecondProject`,
+  `TestRunRepositoryRetryProbe_ReplaySameKey_WinsOverStateDrift`,
+  `TestRunPackAssignmentAssign_ReplaySameKey_NeverCreatesASecondRow` — same idempotency key on
+  create/retry-probe/assign returns the identical stored result (`Replayed: true`, identical inner IDs) and
+  never creates a second row, verified against `deps.UoW` directly, not just the returned JSON.
+- **Retry**: `TestRunRepositoryRetryProbe_Blocked_TransitionsToProbingAndEnqueuesNewJob` (BLOCKED->PROBING,
+  a fresh `ProbeJobID`, Version+1) and its negative twin
+  `TestRunRepositoryRetryProbe_NotBlocked_ReturnsErrorAndNeverDispatches` (a REGISTERING repository's own
+  Version/Status is byte-for-byte unchanged after a rejected retry — proof the real command was never
+  actually dispatched, and the returned error is NOT a `cli.UsageError`, i.e. correctly classified as a state
+  conflict rather than a bad invocation).
+- **Component discovery**: `TestRunComponentList_ReflectsComponentsDiscoveredByCompletedProbe` — empty before
+  a component is discovered (via the real, non-CLI `appcatalog.CreateComponent`, standing in for V3-02's own
+  probe worker, since this leaf itself exposes no create command), then reflects it by ID/repositoryId/name/
+  path immediately after.
+- **Exact pack pin**: `TestRunPackAssignmentList_EffectiveReflectsPointInTimeNotJustLatest` — two assignments
+  exist (pack-v1 effective now, pack-v2 explicitly effective one year in the future); `Effective` correctly
+  resolves to pack-v1, proving the composed view really calls
+  `GetEffectiveComponentPackAssignment(ctx, uow, componentID, at)` with `at` = the current moment rather than
+  simply "the most recently assigned row". `TestRunPackAssignmentList_NeverAssigned_EffectiveIsNilNotOmitted`
+  covers the companion "no assignment yet" branch (explicit JSON `null`, key present).
+
+### Kết quả
+
+New package `internal/delivery/cli/catalog` (`catalog.go`, `helpers.go`, `views.go`, `project.go`,
+`repository.go`, `component.go`, `packassignment.go` + five `_test.go` files) — the first real leaf built on
+the V6-15B CLI framework. Ten `cli.Descriptor`s registered via this package's own `init()`, one-to-one with
+`internal/delivery/httpapi/catalog`'s existing HTTP surface. `cmd/aw/main.go`/`cmd/aw/cli.go` untouched, per
+this task's own scope boundary — routing real `os.Args` to this leaf is V6-15O's job. `go build/vet ./...`
+clean repo-wide; `go test ./...` clean except four confirmed-unrelated pre-existing environmental flakes (see
+Test above). PR targets `master`.
