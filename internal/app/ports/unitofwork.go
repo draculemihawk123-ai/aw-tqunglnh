@@ -131,6 +131,21 @@ type Tx interface {
 	// projection row/checkpoint/poison schema (see ProjectionRepository's
 	// own doc comment, internal/app/ports/projection.go).
 	Projections() ProjectionRepository
+	// ProjectionRebuilds is populated now (V6-09,
+	// docs/design/08-v6-api-projections.md): the same "gets a real
+	// interface from the start" treatment every concern above already
+	// established — the idempotent rebuild intent/job/exact-operation
+	// status record RequestProjectionRebuild/GetProjectionRebuildStatus
+	// need (see ProjectionRebuildRepository's own doc comment,
+	// internal/app/ports/projectionrebuild.go). Deliberately its own
+	// accessor rather than folded into Projections() above: that
+	// interface's own doc comment already commits to "pure CRUD/CAS, no
+	// method here decides WHAT/WHEN" over V6-08's frozen row/checkpoint/
+	// poison schema — a rebuild OPERATION's own lifecycle is a different
+	// concern entirely (this task's own new migration 0041 table), never
+	// touching projection_rows/projection_checkpoints/projection_generations/
+	// projection_poison at all.
+	ProjectionRebuilds() ProjectionRebuildRepository
 }
 
 // CatalogRepository is populated now (V3-01,

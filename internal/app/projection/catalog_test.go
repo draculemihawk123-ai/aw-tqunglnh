@@ -11,6 +11,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/app/eventschema"
 	"github.com/taQuangLing/agent-workflow/internal/app/message"
+	"github.com/taQuangLing/agent-workflow/internal/app/projectionrebuild"
 	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/app/safesettings"
@@ -20,7 +21,7 @@ import (
 )
 
 // buildRealRegisteredKeys calls every real production RegisterEventSchemas
-// into one combined eventschema.Registry — the exact same 11 call sites
+// into one combined eventschema.Registry — the exact same 12 call sites
 // internal/archtest/event_catalog_test.go's own
 // TestEmittedDomainEventInventoryMatchesRegisteredInventory uses (a real
 // functional call, never a re-parse of those files, so this can never
@@ -43,6 +44,7 @@ func buildRealRegisteredKeys(t *testing.T) map[eventschema.EventKey]bool {
 	runtime.RegisterEventSchemas(registry)
 	artifactsweep.RegisterEventSchemas(registry)
 	safesettings.RegisterEventSchemas(registry)
+	projectionrebuild.RegisterEventSchemas(registry)
 
 	registered := map[eventschema.EventKey]bool{}
 	for _, key := range registry.Keys() {

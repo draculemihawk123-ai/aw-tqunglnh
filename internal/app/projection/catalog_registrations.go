@@ -8,8 +8,8 @@ package projection
 // gives) into this Catalog — V6-08's own "exhaustive reducer
 // classification," verified exhaustive by
 // TestCatalog_ClassifiesEveryRegisteredEventKey (catalog_test.go), which
-// fails closed on any key registered on master but missing here. 47 keys
-// as of this task: 16 Apply, 31 Ignore.
+// fails closed on any key registered on master but missing here. 48 keys
+// as of V6-09: 16 Apply, 32 Ignore.
 func registerClassifications(c *Catalog) {
 	// --- Apply: WorkItem lifecycle (internal/app/work) ---
 
@@ -122,6 +122,10 @@ func registerClassifications(c *Catalog) {
 	c.ignore("ReleaseSetLocalCommitRequested", 1, "ReleaseSet local-commit operation status (V6-10F's own screen), no Kanban card surface.")
 	c.ignore("ReleaseSetLocalCommitCommitted", 1, "ReleaseSet local-commit operation status — out of scope, see ReleaseSetLocalCommitRequested.")
 	c.ignore("ReleaseSetLocalCommitFailed", 1, "ReleaseSet local-commit operation status — out of scope, see ReleaseSetLocalCommitRequested.")
+
+	// --- Ignore: projection rebuild operation (internal/app/projectionrebuild) ---
+
+	c.ignore("ProjectionRebuildRequested", 1, "Projection rebuild operation status (V6-09's own exact-operation status query), not a Kanban/task-detail entity — a rebuild operation tracks THIS projection's own rebuild progress, it is never itself a row this same projection renders.")
 
 	// --- Ignore: installation-scoped administrative data ---
 
