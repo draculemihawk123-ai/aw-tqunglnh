@@ -32,11 +32,12 @@ import (
 	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
 	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
-	httpdiagnostics "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/diagnostics"
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
+	httpdiagnostics "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/diagnostics"
 	httpdoctor "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/doctor"
-	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/eventstream"
+	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
+	httpkanban "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/kanban"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
 	httpreleaseset "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
@@ -479,6 +480,14 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	httpdoctor.RegisterRoutes(routes, httpdoctor.Dependencies{
 		Config: appConfig, Store: sqlite.NewQueryStore(store), UnitOfWork: uow, Isolation: isolationChecker,
 	})
+	// V6-10: projected Kanban card list and WorkItem detail routes
+	// (internal/delivery/httpapi/kanban) — an additive routes.Register call
+	// only, no shared setup above touched. Reuses the SAME uow every other
+	// route registration in this process already uses, and the SAME
+	// process-lifetime cursorCodec httpmessage/httprundetail already reuse
+	// (never a second, differently-scoped one — this package's own
+	// Dependencies.Cursor doc comment).
+	httpkanban.RegisterRoutes(routes, httpkanban.Dependencies{UnitOfWork: uow, Cursor: cursorCodec})
 	// V6-11: the redacted project invalidation/runtime-summary SSE stream
 	// (internal/delivery/httpapi/eventstream) — an additive routes.Register
 	// call only, no shared setup above touched. Reuses the SAME
