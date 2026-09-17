@@ -9677,3 +9677,130 @@ across multiple timing-focused fixes (same empty-errors-but-no-progress symptom,
 each time), stop tuning timing constants and re-examine whether the assertion is even checking the right
 STATE, not just whether it's checking at the right TIME — a wrong assertion target produces the same symptom
 as a genuine race, and no amount of retry/margin tuning will ever fix it.
+
+## V6-15J — Conversation and attachment CLI
+
+### Thực hiện
+
+New package `internal/delivery/cli/message` (`docs/design/08-v6-api-projections.md:743-751`), the terminal-side
+mirror of `internal/delivery/httpapi/message` (V6-07, V6-07A), built directly on the already-merged
+`internal/app/message` application layer (`AppendMessage`, `AppendConversationAttachment`, `ListMessages`) and
+`internal/delivery/cli`'s own shared framework (V6-15B). Named `message` (singular), matching the HTTP package's
+own name exactly — both `internal/domain/message` and `internal/app/message` are imported aliased
+(`messagedomain`/`appmessage`), the same convention that HTTP package already uses, so neither import collides
+with this package's own name.
+
+Three commands, one `cli.Descriptor` each (all `cli.ScopeProject` — a Message/attachment command is always
+project-scoped, never installation-scoped, unlike `internal/delivery/cli/definitions`' own dual-scoped
+commands):
+
+- `aw message list <workItemId> --project-id <id>` — a plain read over `appmessage.ListMessages`, no
+  idempotency key or CommandEnvelope at all (mirrors `GET .../messages`). Deliberately unpaginated: this task's
+  own command surface names no `--cursor`/`--limit` flag, and `ListMessages` itself already returns the full,
+  Sequence-ordered slice for one WorkItem.
+- `aw message append <workItemId> --project-id <id> [--attempt-id <id>] [--role <role>] [--content-type <type>]
+  [--sensitivity <level>] [--file <path>]` — the full CommandEnvelope mutation flow over
+  `appmessage.AppendMessage`, content bounded at `appmessage.MaxContentSize` via `cli.ReadBoundedInput` (passed
+  explicitly, not the framework's own smaller `cli.DefaultMaxInputBytes`). `--role` defaults to `USER` when
+  omitted (this task's own command-surface line brackets it as optional); `--content-type` defaults to
+  `text/plain`. The canonical hashing payload (`appendMessageWire`) mirrors
+  `internal/delivery/httpapi/message/append.go`'s own `appendMessageBody` field for field/tag for tag, so an
+  HTTP call and a CLI call for the "same" `AppendMessage` request hash — and therefore replay — identically.
+- `aw message upload-attachment <workItemId> --project-id <id> --role <role> [--attempt-id <id>]
+  [--content-type <type>] [--sensitivity <level>] [--sha256 <digest>] [--file <path>]` — the same CommandEnvelope
+  flow over `appmessage.AppendConversationAttachment`, content bounded at `appmessage.MaxAttachmentSize` (25
+  MiB, explicitly passed — NOT the framework's smaller 1 MiB default, which would have silently rejected a
+  legitimate attachment well under the app layer's own real ceiling). `--role` is required (unlike `append`'s
+  own optional one), mirroring HTTP's required `X-Attachment-Role` header. `--content-type` defaults to
+  `application/octet-stream`. The canonical metadata (`attachmentWireMetadata`) mirrors
+  `internal/delivery/httpapi/message/attachment.go`'s own `attachmentMetadata` field for field, with the
+  RESOLVED (never raw) sensitivity wire value, exactly like that HTTP route.
+
+**Digest handling** (this task's own explicit design point): `appmessage.AppendConversationAttachment` only
+ever VERIFIES a declared digest — it never computes one. `upload-attachment` computes the SHA-256 hex digest of
+the bounded-read content itself (`crypto/sha256`) and uses that as `DeclaredSHA256` by default. An explicit
+`--sha256` flag OVERRIDES that local computation — the deliberate escape hatch for (a) a digest computed
+elsewhere (a different machine, before piping a file over) and (b) deliberately exercising
+`appmessage.ErrAttachmentDigestMismatch`'s own tamper-detection path with a digest that does NOT match the
+actual bytes. Both paths are supported side by side, as the task's own brief suggested was the more useful
+design than picking only one.
+
+**Shared preamble** (`dependencies.go`'s `reloadWorkItem`): every one of the three commands requires
+`--project-id` and reloads `workItemId`'s own authoritative detail via `internal/app/work.GetWorkItem` FIRST,
+unconditionally, before doing anything else — mirroring `internal/delivery/httpapi/message/routes.go`'s own
+package doc comment ("không tin ID shape, payload hoặc projection") and every one of its own handlers' identical
+first step. Both "no such WorkItem" and "it exists, but belongs to a different project" fold into one
+leakage-normalized `climessage.ErrWorkItemNotFound` sentinel, mirroring HTTP's own `WriteResourceHidden`
+discipline, translated to a plain Go error since a CLI response has no HTTP status code to normalize (the same
+translation `internal/delivery/cli/definitions`' own `ErrDefinitionNotFound` already establishes).
+
+**No locator output**: every view type (`views.go`'s `messageView`, and `AppendMessageResult` itself) carries
+only `ContentArtifactID` — a bounded, platform-minted ID, the exact same field HTTP already returns — never
+anything read from `ports.ArtifactStore`/`ports.ArtifactRef.Locator`, which this package never touches directly
+at all (confirmed by `TestRunMessageList_SurfacesContextMetadataInSequenceOrder`'s own explicit
+locator-shape check on `ContentArtifactID`).
+
+Per the shared doctrine's CRITICAL scope rule, this package never touches `cmd/aw/main.go`/`cmd/aw/cli.go` —
+only its own `init()` registers three `cli.Descriptor`s into the shared `internal/delivery/cli` registry;
+wiring real `os.Args` to these `Run*` functions is deferred to V6-15O.
+
+### Test
+
+19 test functions across `internal/delivery/cli/message` (`message_test.go`, `list_test.go`, `append_test.go`,
+`upload_attachment_test.go`, `upload_attachment_sqlite_test.go`), all passing:
+
+- **Replay**: `TestRunMessageAppend_Replay_NeverAppendsTwice` and
+  `TestRunMessageUploadAttachment_Replay_NeverAppendsTwice` resubmit the identical `--idempotency-key`+content
+  and assert `replayed:true` with the exact original `MessageID`/`ContentArtifactID`, then confirm via a direct
+  `ListMessages` call that exactly one row exists — never a second append.
+- **Crash**: `TestRunMessageUploadAttachment_CrashMidUpload_RetrySucceedsWithNoPartialState`
+  (`upload_attachment_sqlite_test.go`) runs against a REAL `sqlite`-backed `UnitOfWork` (mirroring
+  `internal/app/message/attachment_sqlite_test.go`'s own "exercise the real stack end to end" pattern) wrapped
+  around a `*flakyStore` that fails the first `ArtifactStore.Put` call (simulating the spool/blob-put step never
+  completing). The first, crashed attempt reports an error and leaves zero Message rows; a real retry through the
+  SAME CLI entrypoint, same idempotency key, same content, then succeeds cleanly, leaves exactly one Message and
+  one Artifact row, and the stored bytes round-trip exactly — proving this leaf's thin wrapper around
+  `appmessage.AppendConversationAttachment` (the same app function HTTP calls, the same way) never breaks that
+  command's own durable-claim crash-safety guarantee.
+- **Tamper**: `TestRunMessageUploadAttachment_TamperedSha256_IsRejected` supplies an explicit `--sha256` that
+  does not match the actual bytes and asserts `errors.Is(err, appmessage.ErrAttachmentDigestMismatch)`, zero
+  bytes written to stdout, and zero Message rows created.
+- **Size**: `TestRunMessageAppend_ExceedsMaxContentSize_IsRejectedCleanly` (1 MiB + 1 byte) and
+  `TestRunMessageUploadAttachment_ExceedsMaxAttachmentSize_IsRejectedCleanly` (25 MiB + 1 byte) both assert a
+  `cli.UsageError` wrapping `cli.ErrInputTooLarge` from the explicit-bound `cli.ReadBoundedInput` call, and zero
+  Message rows created — rejected cleanly, never silently truncated and stored.
+- **Context metadata**: `TestRunMessageList_SurfacesContextMetadataInSequenceOrder` appends two messages and
+  asserts `list`'s own JSON output carries Sequence-ascending order, correct Role/ProjectID/WorkItemID, and
+  non-empty MessageID/ContentArtifactID/CreatedAt/Actor for every item.
+- **Stdout/stderr separation**: `TestRunMessageAppend_StdoutStderrSeparation` and
+  `TestRunMessageUploadAttachment_StdoutStderrSeparation` decode stdout as exactly one JSON document (a second
+  `json.Decoder.Decode` call must hit EOF), assert `stderr` is non-empty (the `cli.Diagnosticf` progress line —
+  digest source and byte count for uploads, work-item/role/byte count for appends), and assert none of that
+  diagnostic text leaked into stdout.
+- Scope/usage coverage: `TestRunMessageList_WrongProject_ReturnsErrWorkItemNotFound` (leakage-normalized, exact
+  sentinel equality — never a distinguishable scope-mismatch error), missing `--project-id`/`<workItemId>`,
+  invalid `--role`, empty content, and `TestRunMessageAppend_DefaultRoleIsUser` (the USER default when `--role`
+  is omitted for `append`, contrasted with `upload-attachment`'s own required `--role`).
+
+### Verify
+
+- `go build ./...`, `go vet ./...` — clean, repo-wide.
+- `go test ./...` — clean, repo-wide, with ONE confirmed pre-existing, environmental flake unrelated to this
+  task: `internal/app/message`'s own `TestAppendConversationAttachment_DifferentKeyConcurrency_SharedContentBytes`
+  (a Windows `rename ... Access is denied` filesystem-contention error under heavy whole-repo parallel test
+  load) failed once in the full `go test ./...` run. Re-verified fresh per this repo's own doctrine: 5/5 passes
+  running that single test in isolation, then 3/3 clean full-package reruns of `internal/app/message` alone —
+  confirming it is a load-dependent environmental flake in an untouched file
+  (`internal/app/message/attachment_sqlite_test.go`, V6-07A, already merged before this task started), never
+  something this task's own changes touch or introduce.
+- `internal/delivery/cli/message` itself: 19/19 tests green on every run, including as part of the full
+  repo-wide `go test ./...` pass.
+
+### Kết quả
+
+Canonical chat and attachment upload now work from the terminal: `aw message list`, `aw message append`, `aw
+message upload-attachment`, each a thin, doctrine-compliant leaf over the already-merged V6-07/V6-07A
+application layer — no new domain logic, no second conversation concept, no raw locator ever printed. Digest
+handling supports both local-compute-by-default and an explicit `--sha256` override, satisfying both the common
+case and the deliberate-tamper-test case. `cmd/aw/main.go`/`cmd/aw/cli.go` untouched, per the CRITICAL scope
+rule — real CLI wiring is V6-15O's job.
