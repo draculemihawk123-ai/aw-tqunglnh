@@ -9271,3 +9271,43 @@ and `cmd/aw/definition.go` all untouched. `go build/vet/test ./...` clean repo-w
 pre-existing, environmental Windows flake in an untouched package (`internal/app/message`'s
 `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` — see Test above). PR targets
 `master`.
+
+## Post-merge fix — V6-09A `TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild` TTL
+
+### Bối cảnh
+
+After V6-09A merged, this test failed for real (not a shared-runner-load flake) on the very next PR's CI to
+rebase past it: `internal/app/projectionrebuildworker/fencing_sqlite_test.go`'s
+`TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild` asserts the live consumer's own checkpoint
+cursor keeps advancing (via 5 concurrent `ApplyBatch` rounds, 2ms apart) while a rebuild runs concurrently and
+cuts over — but the rebuild goroutine's own `Deps` came from the shared `workerFixture.deps()` helper, whose
+`ShadowLeaseTTL: 30 * time.Second` is production-scale, not test-scale. `Deps.ShadowLeaseTTL`'s own doc comment
+already says it should be "deliberately short... to bound the live consumer's own post-cutover handoff wait" —
+the test fixture's 30s value directly contradicted that. With a 30s TTL and only ~10ms of real time across all
+5 live rounds, if cutover happened early (likely for a 1-event test dataset), EVERY live round would
+deterministically hit the documented (and otherwise correctly handled) post-cutover `ErrOptimisticConflict`,
+making the test's own final "cursor made progress" assertion structurally unwinnable — a genuine test-timing
+design bug, not CI noise, confirmed by local reproduction independent of any CI load.
+
+### Thực hiện
+
+Gave this one test its own short-TTL `Deps` (`ShadowLeaseTTL: 10 * time.Millisecond`, built from `fx.deps()`
+then overridden — never touching the shared helper other tests in this package rely on) and widened the
+live-writer's own inter-round sleep from 2ms to 50ms (5x margin over the new TTL), mirroring this codebase's
+own established TTL-vs-sleep margin discipline (V6-10E's 60ms→600ms TTL fix, 1500ms sleep, from earlier this
+same V6 phase).
+
+### Test
+
+`go test ./internal/app/projectionrebuildworker/... -run TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild -count=20`
+— 20/20 clean locally (previously reproduced the real failure on the very first attempt before the fix).
+`go test ./internal/app/projectionrebuildworker/... -count=3` — full package stable across 3 repeated runs.
+`go build/vet/test ./...` clean repo-wide.
+
+### Kết quả
+
+A real, reproducible test-timing bug in already-merged V6-09A code, found by this session's own diff-scope
+investigation of a CI failure that looked at first like the familiar shared-runner-load pattern but turned out
+not to be (the failing test was newly-merged code exercised for the first time under real CI, not a
+long-standing flake) — fixed forward in a small, targeted follow-up rather than reflexively rerunning CI
+against an unwinnable assertion.

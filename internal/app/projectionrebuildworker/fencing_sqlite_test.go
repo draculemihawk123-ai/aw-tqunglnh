@@ -132,13 +132,26 @@ func TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild(t *testi
 	created := fx.requestRebuild(t, "req-1")
 	job, _ := fx.claimJob(t, "rebuild-worker", time.Hour)
 
+	// Deliberately short — see Deps.ShadowLeaseTTL's own doc comment
+	// ("deliberately short... to bound the live consumer's own
+	// post-cutover handoff wait"). fx.deps()'s own 30s default is
+	// production-scale, not test-scale: with it, the live-writer goroutine
+	// below (5 rounds, tens of ms of real time total) can NEVER outlast a
+	// post-cutover conflict, so "the live consumer eventually resumes"
+	// would never actually be exercised — every round would deterministically
+	// hit the documented ErrOptimisticConflict and the test's own final
+	// cursor-progress assertion would be unwinnable, independent of CI load
+	// (this is what caused a real, reproducible failure here, not a flake).
+	rebuildDeps := fx.deps()
+	rebuildDeps.ShadowLeaseTTL = 10 * time.Millisecond
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	var rebuildErr error
 	go func() {
 		defer wg.Done()
-		rebuildErr = projectionrebuildworker.ExecuteProjectionRebuild(fx.ctx, fx.deps(), job)
+		rebuildErr = projectionrebuildworker.ExecuteProjectionRebuild(fx.ctx, rebuildDeps, job)
 	}()
 
 	liveErrs := make([]error, 0, 5)
@@ -156,7 +169,13 @@ func TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild(t *testi
 				liveErrs = append(liveErrs, err)
 				liveErrsMu.Unlock()
 			}
-			time.Sleep(2 * time.Millisecond)
+			// 5x the rebuild's own ShadowLeaseTTL above, so at least the
+			// LAST couple of rounds reliably land after any post-cutover
+			// lease has naturally expired, regardless of CI scheduling
+			// jitter (mirrors this codebase's own established margin
+			// discipline for TTL-vs-sleep test timing, e.g. V6-10E's
+			// 60ms-TTL/1500ms-sleep fix).
+			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 
