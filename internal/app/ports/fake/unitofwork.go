@@ -1730,6 +1730,53 @@ func (p *ProjectionRepository) AcquireOrRenewConsumerLease(_ context.Context, re
 	}, nil
 }
 
+// CutoverProjectionGeneration mirrors sqlite's own CAS/bootstrap shape
+// (projection_repository.go's own CutoverProjectionGeneration doc
+// comment): ExpectedGeneration nil is a first-ever insert (idempotent if
+// NewGeneration is already what is stored), non-nil requires the
+// currently stored active generation to match exactly.
+func (p *ProjectionRepository) CutoverProjectionGeneration(_ context.Context, req ports.CutoverProjectionGenerationRequest) error {
+	key := projectionScopeKey{req.ProjectID, req.ProjectionName}
+	existing, ok := p.generations[key]
+	if req.ExpectedGeneration == nil {
+		if ok {
+			if existing == req.NewGeneration {
+				return nil
+			}
+			return fmt.Errorf("fake: %w: projection %s/%s active generation is %d, not %d (bootstrap)",
+				ports.ErrOptimisticConflict, req.ProjectID, req.ProjectionName, existing, req.NewGeneration)
+		}
+	} else {
+		if !ok || existing != *req.ExpectedGeneration {
+			return fmt.Errorf("fake: %w: projection generation %s/%s expected active generation %d",
+				ports.ErrOptimisticConflict, req.ProjectID, req.ProjectionName, *req.ExpectedGeneration)
+		}
+	}
+	if p.generations == nil {
+		p.generations = map[projectionScopeKey]uint64{}
+	}
+	p.generations[key] = req.NewGeneration
+	return nil
+}
+
+// DiscardGeneration mirrors sqlite's own "never the active generation"
+// safety contract — refuses (ErrCannotDiscardActiveGeneration) when
+// generation is still the currently stored active generation, checked
+// fresh against this same in-memory state.
+func (p *ProjectionRepository) DiscardGeneration(_ context.Context, projectID, projectionName string, generation uint64) error {
+	if active, ok := p.generations[projectionScopeKey{projectID, projectionName}]; ok && active == generation {
+		return fmt.Errorf("%w: projection %s/%s generation %d", ports.ErrCannotDiscardActiveGeneration, projectID, projectionName, generation)
+	}
+	for k := range p.rows {
+		if k.projectID == projectID && k.projectionName == projectionName && k.generation == generation {
+			delete(p.rows, k)
+		}
+	}
+	delete(p.checkpoints, projectionGenerationKey{projectID, projectionName, generation})
+	delete(p.leases, projectionGenerationKey{projectID, projectionName, generation})
+	return nil
+}
+
 // ProjectionRebuildRepository is an in-memory
 // ports.ProjectionRebuildRepository (V6-09) — the same "gets real behavior
 // from the start" treatment ProjectionRepository above already received:
@@ -1789,6 +1836,45 @@ func (p *ProjectionRebuildRepository) GetActiveOperation(_ context.Context, proj
 		}
 	}
 	return ports.ProjectionRebuildOperation{}, false, nil
+}
+
+// AdvanceOperation mirrors sqlite's own version-fenced CAS (see
+// projection_rebuild_repository.go's own AdvanceOperation doc comment for
+// the full "nil means unchanged" field convention).
+func (p *ProjectionRebuildRepository) AdvanceOperation(_ context.Context, req ports.AdvanceProjectionRebuildOperationRequest) (ports.ProjectionRebuildOperation, error) {
+	op, ok := p.operations[req.ID]
+	if !ok {
+		return ports.ProjectionRebuildOperation{}, fmt.Errorf("fake: %w: projection rebuild operation %s", ports.ErrPersistenceNotFound, req.ID)
+	}
+	if op.Version != req.ExpectedVersion {
+		return ports.ProjectionRebuildOperation{}, fmt.Errorf("fake: %w: projection rebuild operation %s expected version %d", ports.ErrOptimisticConflict, req.ID, req.ExpectedVersion)
+	}
+	op.Phase = req.NextPhase
+	if req.NextW0 != nil {
+		op.W0 = req.NextW0
+	}
+	if req.NextShadowGeneration != nil {
+		op.ShadowGeneration = req.NextShadowGeneration
+	}
+	if req.NextShadowCursor != nil {
+		op.ShadowCursor = req.NextShadowCursor
+	}
+	if req.NextCutoverCursor != nil {
+		op.CutoverCursor = req.NextCutoverCursor
+	}
+	if req.NextErrorCode != nil {
+		op.ErrorCode = *req.NextErrorCode
+	}
+	if req.NextErrorMessage != nil {
+		op.ErrorMessage = *req.NextErrorMessage
+	}
+	op.UpdatedAt = req.UpdatedAt
+	op.Version++
+	if p.operations == nil {
+		p.operations = map[string]ports.ProjectionRebuildOperation{}
+	}
+	p.operations[req.ID] = op
+	return op, nil
 }
 
 // SafeSettingsRepository is an in-memory ports.SafeSettingsRepository
