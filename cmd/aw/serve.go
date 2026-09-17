@@ -35,6 +35,7 @@ import (
 	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
 	httpdiagnostics "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/diagnostics"
 	httpdoctor "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/doctor"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/eventstream"
 	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
 	httpkanban "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/kanban"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
@@ -487,6 +488,20 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// (never a second, differently-scoped one — this package's own
 	// Dependencies.Cursor doc comment).
 	httpkanban.RegisterRoutes(routes, httpkanban.Dependencies{UnitOfWork: uow, Cursor: cursorCodec})
+	// V6-11: the redacted project invalidation/runtime-summary SSE stream
+	// (internal/delivery/httpapi/eventstream) — an additive routes.Register
+	// call only, no shared setup above touched. Reuses the SAME
+	// process-lifetime matcher every other redacting route in this
+	// composition root already reuses (never a second, differently-scoped
+	// one). Shutdown is the SAME ctx this function itself watches for
+	// SIGINT/SIGTERM (runServe's own signal.NotifyContext) — cancelled
+	// before server.Shutdown is ever called below, so every open stream
+	// observes it and closes itself instead of leaving a goroutine running
+	// past this process' own graceful-shutdown window (see
+	// eventstream.Dependencies' own Shutdown doc comment for exactly why
+	// plain net/http.Server.Shutdown alone cannot do this for a long-lived
+	// streaming handler).
+	eventstream.RegisterRoutes(routes, eventstream.Dependencies{UnitOfWork: uow, Matcher: matcher, Shutdown: ctx})
 	// A later endpoint task's own composition-root wiring adds its own
 	// routes.Register call here without needing to touch this file's shared
 	// setup (contract point 8: "Parallel work không sửa registry chung").
