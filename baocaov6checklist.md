@@ -9677,3 +9677,153 @@ across multiple timing-focused fixes (same empty-errors-but-no-progress symptom,
 each time), stop tuning timing constants and re-examine whether the assertion is even checking the right
 STATE, not just whether it's checking at the right TIME — a wrong assertion target produces the same symptom
 as a genuine race, and no amount of retry/margin tuning will ever fix it.
+
+## V6-09B — Projection rebuild HTTP endpoints
+
+### Thực hiện
+
+Per spec (`docs/design/08-v6-api-projections.md` lines 396-405): expose projection status, a rebuild
+request and exact rebuild-operation status over HTTP, dispatching V6-09's own already-merged
+`internal/app/projectionrebuild` command/queries only — never the worker/row store directly, and never an
+inferred "latest operation." Branched off a freshly fetched `origin/master` (`f815f69`, unchanged from the
+task brief).
+
+Read `internal/app/projectionrebuild/commands.go` in full first: `RequestProjectionRebuild` already performs
+its own receipt lookup/replay inside its own `WithSerializedWrite` transaction (same shape as
+`ProbeAdapterBuild`/`RegisterAdapterBuild`), so this package's own POST handler never runs a second,
+HTTP-layer-only `LookupReceipt`/`ReconcileReceipt` precheck — it only builds the `ports.Command` envelope
+(Idempotency-Key required) and dispatches straight through, mirroring
+`internal/delivery/httpapi/adapterbuild`'s own documented "thin dispatch only" shape rather than
+`releaseset`/`workitem`'s own `prepareCreateCommand`+`replayOrProceed` shape. Confirmed this reading against
+`RequestProjectionRebuild`'s own doc comment before writing any handler code, exactly as instructed.
+
+**Genuine gap 1 — no existing "projection status" query.** `ports.ProjectionRepository` only exposes raw
+`GetActiveGeneration`/`GetProjectionCheckpoint` CRUD/CAS primitives. Found one existing precedent for the
+EXACT freshness-derivation logic needed — `internal/delivery/httpapi/kanban/projection_state.go`'s own
+`resolveProjectionState` — but that helper lives in the HTTP layer and calls `tx.Projections()` directly,
+which V6-09B's own stricter, explicit "Không làm: handler không call ... row store" line forbids for this
+task's routes (kanban's own task had no such constraint). Built a new `GetProjectionStatus` app-layer query
+in `internal/app/projectionrebuild/status_query.go` — same GetActiveGeneration/GetProjectionCheckpoint
+sequence and the same "no generation yet" / "generation with no checkpoint yet" → STALE fallback logic as
+`resolveProjectionState`, promoted to a real, independently tested, `uow.WithReadOnly`-wrapped app-layer
+function. Placed in `internal/app/projectionrebuild` rather than a new sibling package or
+`internal/app/projection`: this task's HTTP package needs exactly three functions
+(`RequestProjectionRebuild`, `GetProjectionRebuildStatus`, `GetProjectionStatus`), and keeping all three in
+one app package lets the architecture dispatch-spy test assert one simple fact rather than a multi-package
+allowlist. `ProjectionCheckpoint.Status` (LIVE/DEGRADED/STALE) is reused verbatim as a plain `string` field
+(never re-derived), and the HTTP layer re-wraps it into the SHARED `httpapi.Freshness{Generation,
+AsOfJournalPosition, Status}` envelope (`freshness.go`, V6-02A) rather than inventing a new vocabulary.
+
+**Genuine gap 2 — no existing precedent for a structured-conflict HTTP response.** Confirmed by grep
+(`internal/delivery/httpapi/**`) that zero existing call sites read `apperror.Error.Details` on the HTTP
+side, and read `internal/delivery/httpapi/errors.go`'s full `ErrorDetail`/`ErrorBody`/`WriteError`/
+`WriteAppError` shape before deciding anything: `ErrorDetail{Field, Message string}` has no generic "extra
+structured payload" slot, and `WriteAppError` itself never forwards an `*apperror.Error`'s own `Details` map
+onto the wire at all (it passes a literal `nil`, unconditionally). Design decision: rather than extending the
+shared `ErrorBody`/`WriteAppError` contract every other endpoint package already depends on staying exactly
+as-is (V6-02A's own "endpoint task không phải tự quyết ... error convention" line locks that shape), this
+package's own `writeCommandError` (`internal/delivery/httpapi/projectionrebuild/errors.go`) special-cases
+`appprojectionrebuild.ActiveProjectionRebuildOperationID(err)` FIRST and, on a match, writes a 409 with one
+`ErrorDetail{Field: "activeOperationId", Message: <the active operation's own ID>}` — the exact same
+`{Field, Message}` mechanism `cursor.go`'s own `WriteResyncRequired` already uses to carry one specific
+structured value (a resync `Reason`) through this identical shared envelope, applied here to a different
+specific value. A caller that wants the ID programmatically reads `Details[0].Message` where
+`Details[0].Field == "activeOperationId"`; the envelope's own top-level `Message` stays human-readable prose,
+unchanged. This is genuinely a local, documented choice for this one conflict shape — not a change to the
+shared envelope contract itself.
+
+**Route surface** (own subpackage `internal/delivery/httpapi/projectionrebuild`, project-scoped, path
+spelling `{id}` reused from the design doc's own locked `GET /projects/{id}/projection` line rather than
+switching to `{projectId}` partway through one package):
+
+- `GET /projects/{id}/projection?name=<projectionName>` (`getProjectionStatus`) — reloads the Project via
+  `catalog.GetProject` first (this route's own authoritative target — no narrower aggregate exists),
+  dispatches `GetProjectionStatus`, returns 200 always (an unbuilt projection is a real STALE result, never
+  an error).
+- `POST /projects/{id}/projection/rebuild` (`requestProjectionRebuild`) — reloads the Project first, requires
+  `Idempotency-Key`, dispatches `RequestProjectionRebuild` straight through (no pre-dispatch replay check, see
+  above), returns 202 Accepted with `{operationId, projectId, projectionName, phase, jobId}` on success, 409
+  with the structured `activeOperationId` detail on the typed active-rebuild conflict.
+- `GET /projects/{id}/projection/rebuild-operations/{operationId}` (`getProjectionRebuildOperationStatus`) —
+  dispatches `GetProjectionRebuildStatus` (exact by-ID lookup, never "latest"), then checks the loaded
+  status's own `ProjectID` against `{id}` — mirrors `internal/delivery/httpapi/releaseset`'s own
+  `handleGetReleaseSetLocalCommitStatus` exactly: the by-ID record's own `ProjectID` field IS this route's
+  authoritative reload/authorize step, no separate `catalog.GetProject` call needed on top of it. A
+  cross-project `operationId` folds into the same leakage-normalized `WriteResourceHidden` response as a
+  genuinely unknown one.
+
+Every response DTO (`projectionStatusView`, `projectionRebuildResultView`,
+`projectionRebuildOperationStatusView`) is its own HTTP-layer struct, never `appprojectionrebuild.*` or a
+`ports.*` type returned on the wire directly.
+
+### Test
+
+- `internal/app/projectionrebuild/status_query_test.go` (new, 6 tests, fake-`UnitOfWork`-backed):
+  `GetProjectionStatus` — no generation yet → STALE/0/0; generation with no checkpoint yet → STALE with the
+  real generation number; a LIVE checkpoint passes through verbatim (generation/cursor/status); a DEGRADED
+  checkpoint passes through unchanged too (never narrowed to just LIVE/STALE); ProjectID/ProjectionName
+  required.
+- `internal/delivery/httpapi/projectionrebuild/projectionrebuild_test.go` (new, 13 tests, REAL
+  `httpapi.Server` + REAL `sqlite.Store`, mirroring `workitem_test.go`'s own `newTestEnv`/`seedProject`
+  idiom): route inventory (exactly 3 operationIds, all `ScopeProject`); unbuilt-projection STALE 200; unknown
+  project → 404 on both the GET status and the POST rebuild route; missing `name` query param / missing
+  `Idempotency-Key` / missing `projectionName` body field → 400; happy-path POST → 202 with a real
+  OperationID/Phase=REQUESTED/JobID, then read back byte-identical via the operation-status route (Version
+  1); replay (same Idempotency-Key → identical result struct, both calls 202); active-operation conflict
+  (new key while nonterminal → 409, `Details[0]` = `{activeOperationId, <the first OperationID>}`); unknown
+  operationId → 404; cross-project operationId (real op under `project-1`, looked up via `project-2`'s own
+  route) → 404; missing `{operationId}` path segment → not 200.
+- `internal/archtest/projectionrebuild_http_test.go` (new, 1 test): walks every non-test `.go` file under
+  `internal/delivery/httpapi/projectionrebuild`, fails on an import of `internal/app/projection`,
+  `internal/app/projectionrebuildworker` or `internal/adapters/sqlite`, or a call to any
+  `ProjectionRepository`/`ProjectionRebuildRepository` method name, `.Projections()`/`.ProjectionRebuilds()`,
+  or `.WithReadOnly(`/`.WithSerializedWrite(` — mirrors `adapterbuild_http_test.go`'s and
+  `recovery_http_test.go`'s own "parse real source, walk go/ast" idiom.
+- `cmd/aw/serve.go`: added the `httpprojectionrebuild` import and one additive
+  `httpprojectionrebuild.RegisterRoutes(routes, httpprojectionrebuild.Dependencies{UnitOfWork: uow, IDs:
+  idsource.Random{}, Clock: clock.System{}})` call, right after `eventstream.RegisterRoutes`, before
+  `routesFinalized = true` — no other line in this file touched.
+- `go build ./...`, `go vet ./...` clean repo-wide. `go test ./internal/app/projectionrebuild/...` and
+  `go test ./internal/delivery/httpapi/projectionrebuild/...` and
+  `go test ./internal/archtest/... -run ProjectionRebuild` all green in isolation. Full `go test ./...`
+  run: every package this task touched is `ok`; exactly two failures elsewhere, both pre-existing and both
+  already extensively documented in this same checklist file across many prior PRs —
+  `internal/app/message`'s `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing`
+  (Windows artifact-store file-locking contention) and `internal/integration/v5accept`'s
+  `TestV5AcceptFullComposition_RealFourRoleGraphReachesSucceededAndSurvivesRestart` (timing-deadline E2E,
+  the single most-repeated flake name in this file's own history). Re-verified fresh rather than trusting
+  the name match alone: `go list -deps ./internal/app/message/... ./internal/integration/v5accept/...
+  2>/dev/null | grep -i projectionrebuild` returns ZERO hits — neither failing package (nor any of their
+  transitive dependencies) imports anything this task added, so this task's diff cannot be the cause by
+  construction, not just by re-running in isolation.
+
+### Verify
+
+- **Isolated schemas**: every response DTO is this package's own struct (`projectionStatusView` embeds the
+  shared `httpapi.Freshness`; `projectionRebuildResultView`/`projectionRebuildOperationStatusView` mirror the
+  app-layer result fields, never returning `appprojectionrebuild.*`/`ports.*` types on the wire) — proved by
+  the HTTP test file decoding responses into its OWN independently declared structs, never the package's own
+  unexported view types.
+- **Scope**: `TestGetProjectionStatus_UnknownProject_IsNotFound`,
+  `TestRequestProjectionRebuild_UnknownProject_IsNotFound` (both reload via `catalog.GetProject` before
+  dispatch) and `TestGetProjectionRebuildOperationStatus_CrossProject_IsNotFound` (the by-ID record's own
+  `ProjectID` check) together cover every route's own reload-and-authorize step.
+- **Replay**: `TestRequestProjectionRebuild_Replay_ReturnsSameOperationID` — same Idempotency-Key returns the
+  byte-identical result twice, both 202, proving `RequestProjectionRebuild`'s own internal replay is
+  sufficient with no HTTP-layer precheck.
+- **Conflict**: `TestRequestProjectionRebuild_ActiveOperationConflict_Returns409WithActiveID` — a new key
+  while a nonterminal rebuild is active returns 409 with the active operation's own ID correctly surfaced as
+  a structured `ErrorDetail`.
+- **Architecture dispatch-spy**: `TestProjectionRebuildHTTPNeverReachesWorkerOrRowStoreDirectly` (see Test).
+
+### Kết quả
+
+New: `internal/app/projectionrebuild/status_query.go` (+ test) — the `GetProjectionStatus` query V6-09 never
+built; `internal/delivery/httpapi/projectionrebuild` (`projectionrebuild.go`, `status.go`, `commands.go`,
+`operation_status.go`, `errors.go` + test) — the full three-route HTTP surface; one new archtest. `cmd/aw/serve.go`
+updated with the new route registration (confirmed by diff, not assumed). The one real design decision this
+task had to make without a copyable precedent — how a typed application-layer conflict's structured data
+(`activeOperationId`) reaches the wire — is documented above and in `errors.go`'s own doc comment: reuse the
+existing `ErrorDetail{Field, Message}` mechanism (the same one `cursor.go`'s resync reason already uses) for
+this one conflict shape, rather than extending the shared error envelope contract itself. `go build/vet/test
+./...` clean repo-wide. PR targets `master`.
