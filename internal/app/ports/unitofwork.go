@@ -376,6 +376,40 @@ type DefinitionsRepository interface {
 	// already resolves for the spike-era caller, or
 	// ErrPersistenceNotFound.
 	GetWorkflowVersion(ctx context.Context, versionID string) (workflow.WorkflowVersion, error)
+
+	// ListDefinitions is populated now (V6-15E,
+	// docs/design/08-v6-api-projections.md): `aw definition list`'s own
+	// missing query — every prior caller (GetDefinition, ListVersions,
+	// LoadVersion/LoadAnyVersion) already needs to know a specific
+	// DefinitionID or VersionID before it can look anything up; nothing
+	// anywhere in this codebase could previously answer "which Definitions
+	// of this Kind exist in this Scope" without an operator already knowing
+	// every ID by heart or reading SQLite directly (exactly the "definitions
+	// bootstrap without a SQLite seed" bar V6-15E's own task brief names).
+	// Routed by kind the same way GetDefinition/CreateDefinition/
+	// ListVersions already are: KindWorkflow lists workflow_definitions,
+	// every other kind lists the shared definitions table filtered by kind
+	// — both further filtered to rows whose own project_id matches scope
+	// exactly (NULL/global for definition.GlobalScope(), the named project
+	// otherwise), mirroring GetDefinition's own scope-derivation convention.
+	// Returns an empty, non-nil slice (never ErrPersistenceNotFound) when no
+	// Definition of this Kind exists in this Scope yet — "no rows" is a
+	// completely ordinary state for a list query, unlike GetDefinition's own
+	// single-row lookup.
+	ListDefinitions(ctx context.Context, kind definition.Kind, scope definition.Scope) ([]DefinitionSummary, error)
+}
+
+// DefinitionSummary pairs one Definition's own caller-chosen ID with its
+// Fields (Kind/Scope/Name/Status/generation) — ListDefinitions' own return
+// shape. definition.Fields itself deliberately carries no ID field (every
+// other caller in this codebase already supplies the ID it wants Fields
+// for, e.g. GetDefinition(ctx, kind, id)), so a listing query — the one
+// caller that does NOT already know the ID — needs this thin wrapper
+// instead of a domain-type change that would ripple through every existing
+// GetDefinition call site.
+type DefinitionSummary struct {
+	ID     string
+	Fields definition.Fields
 }
 
 // RuntimeRepository is populated now (V4-01,

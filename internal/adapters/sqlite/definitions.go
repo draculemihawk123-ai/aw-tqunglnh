@@ -442,6 +442,77 @@ func (r definitionsRepository) ListVersions(ctx context.Context, kind definition
 	return listSharedDefinitionVersionsTx(ctx, r.tx, definitionID)
 }
 
+// ListDefinitions implements ports.DefinitionsRepository (V6-15E): every
+// Definition of kind that exists in scope — routed by kind exactly like
+// GetDefinition/CreateDefinition/ListVersions (KindWorkflow reads
+// workflow_definitions, every other kind reads the shared definitions
+// table filtered by kind), further filtered to rows whose own project_id
+// matches scope exactly (NULL for global, the named project otherwise).
+// Ordered by id for a stable, diffable listing — no created_at tiebreak is
+// needed since id is already the table's own primary key.
+func (r definitionsRepository) ListDefinitions(ctx context.Context, kind definition.Kind, scope definition.Scope) ([]ports.DefinitionSummary, error) {
+	var projectID any
+	if !scope.IsGlobal() {
+		projectID = string(*scope.ProjectID)
+	}
+
+	if kind == definition.KindWorkflow {
+		rows, err := r.tx.QueryContext(ctx,
+			`SELECT id, name, status, project_id, version FROM workflow_definitions WHERE project_id IS ? ORDER BY id`, projectID)
+		if err != nil {
+			return nil, MapSQLiteError(fmt.Errorf("list workflow definitions: %w", err))
+		}
+		defer rows.Close()
+		result := make([]ports.DefinitionSummary, 0)
+		for rows.Next() {
+			var id, name, status string
+			var rowProjectID sql.NullString
+			var version uint64
+			if err := rows.Scan(&id, &name, &status, &rowProjectID, &version); err != nil {
+				return nil, MapSQLiteError(fmt.Errorf("scan workflow definition row: %w", err))
+			}
+			result = append(result, ports.DefinitionSummary{
+				ID: id,
+				Fields: definition.Fields{
+					Kind: definition.KindWorkflow, Scope: scopeFromNullableProjectID(rowProjectID),
+					Name: name, Status: definition.Status(status), Version: version,
+				},
+			})
+		}
+		if err := rows.Err(); err != nil {
+			return nil, MapSQLiteError(fmt.Errorf("list workflow definitions: %w", err))
+		}
+		return result, nil
+	}
+
+	rows, err := r.tx.QueryContext(ctx,
+		`SELECT id, project_id, name, status, version FROM definitions WHERE kind = ? AND project_id IS ? ORDER BY id`, string(kind), projectID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list definitions: %w", err))
+	}
+	defer rows.Close()
+	result := make([]ports.DefinitionSummary, 0)
+	for rows.Next() {
+		var id, name, status string
+		var rowProjectID sql.NullString
+		var version uint64
+		if err := rows.Scan(&id, &rowProjectID, &name, &status, &version); err != nil {
+			return nil, MapSQLiteError(fmt.Errorf("scan definition row: %w", err))
+		}
+		result = append(result, ports.DefinitionSummary{
+			ID: id,
+			Fields: definition.Fields{
+				Kind: kind, Scope: scopeFromNullableProjectID(rowProjectID),
+				Name: name, Status: definition.Status(status), Version: version,
+			},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list definitions: %w", err))
+	}
+	return result, nil
+}
+
 func validatePublishVersionRequest(req ports.PublishVersionRequest) error {
 	if strings.TrimSpace(req.DefinitionID) == "" {
 		return errors.New("sqlite: PublishVersionRequest.DefinitionID is required")
