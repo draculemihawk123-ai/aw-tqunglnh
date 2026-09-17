@@ -277,6 +277,98 @@ RETURNING fence_token, cursor, status, lease_until`,
 	}, nil
 }
 
+// CutoverProjectionGeneration implements ports.ProjectionRepository — see
+// that method's own doc comment for the full CAS/bootstrap design and why
+// a plain `active_generation = ExpectedGeneration` compare-and-swap is
+// this table's own sufficient fence, with no new column.
+func (r projectionRepository) CutoverProjectionGeneration(ctx context.Context, req ports.CutoverProjectionGenerationRequest) error {
+	if req.ExpectedGeneration == nil {
+		_, err := r.tx.ExecContext(ctx, `
+INSERT INTO projection_generations (project_id, projection_name, active_generation, schema_version, updated_at)
+VALUES (?, ?, ?, ?, ?)`,
+			req.ProjectID, req.ProjectionName, req.NewGeneration, req.SchemaVersion, formatWorkflowTime(req.UpdatedAt),
+		)
+		if err == nil {
+			return nil
+		}
+		existing, ok, getErr := r.GetActiveGeneration(ctx, req.ProjectID, req.ProjectionName)
+		if getErr != nil {
+			return getErr
+		}
+		if ok && existing == req.NewGeneration {
+			return nil
+		}
+		if !ok {
+			// The INSERT failed for some OTHER reason than "a row already
+			// exists" (GetActiveGeneration itself found none) — a genuine,
+			// unexpected driver error, not a CAS loss.
+			return MapSQLiteError(fmt.Errorf("cutover projection generation %s/%s (bootstrap): %w", req.ProjectID, req.ProjectionName, err))
+		}
+		return fmt.Errorf("%w: projection %s/%s already has active generation %d, not the requested bootstrap generation %d",
+			ports.ErrOptimisticConflict, req.ProjectID, req.ProjectionName, existing, req.NewGeneration)
+	}
+
+	result, err := r.tx.ExecContext(ctx, `
+UPDATE projection_generations SET active_generation = ?, schema_version = ?, updated_at = ?
+WHERE project_id = ? AND projection_name = ? AND active_generation = ?`,
+		req.NewGeneration, req.SchemaVersion, formatWorkflowTime(req.UpdatedAt),
+		req.ProjectID, req.ProjectionName, *req.ExpectedGeneration,
+	)
+	if err != nil {
+		return MapSQLiteError(fmt.Errorf("cutover projection generation %s/%s: %w", req.ProjectID, req.ProjectionName, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read cutover projection generation CAS result: %w", err)
+	}
+	if affected == 1 {
+		return nil
+	}
+	return fmt.Errorf("%w: projection generation %s/%s expected active generation %d",
+		ports.ErrOptimisticConflict, req.ProjectID, req.ProjectionName, *req.ExpectedGeneration)
+}
+
+// DiscardGeneration implements ports.ProjectionRepository — see that
+// method's own doc comment for the full "never the active generation"
+// safety contract. The active-generation guard is checked fresh, inside
+// this SAME call (never trusting an earlier, separately-read value), by
+// simply omitting `generation` from the DELETE's own WHERE clause whenever
+// it equals the currently stored active_generation: a NOT EXISTS subquery
+// re-reads projection_generations at DELETE-execution time, inside
+// whatever transaction this call itself runs in, so there is no window
+// between "check" and "delete" for the active generation to have changed
+// out from under this call.
+func (r projectionRepository) DiscardGeneration(ctx context.Context, projectID, projectionName string, generation uint64) error {
+	active, ok, err := r.GetActiveGeneration(ctx, projectID, projectionName)
+	if err != nil {
+		return err
+	}
+	if ok && active == generation {
+		return fmt.Errorf("%w: projection %s/%s generation %d", ports.ErrCannotDiscardActiveGeneration, projectID, projectionName, generation)
+	}
+	if _, err := r.tx.ExecContext(ctx, `
+DELETE FROM projection_rows
+WHERE project_id = ? AND projection_name = ? AND generation = ?
+  AND NOT EXISTS (
+    SELECT 1 FROM projection_generations
+    WHERE project_id = projection_rows.project_id AND projection_name = projection_rows.projection_name
+      AND active_generation = projection_rows.generation
+  )`, projectID, projectionName, generation); err != nil {
+		return MapSQLiteError(fmt.Errorf("discard projection rows %s/%s/%d: %w", projectID, projectionName, generation, err))
+	}
+	if _, err := r.tx.ExecContext(ctx, `
+DELETE FROM projection_checkpoints
+WHERE project_id = ? AND projection_name = ? AND generation = ?
+  AND NOT EXISTS (
+    SELECT 1 FROM projection_generations
+    WHERE project_id = projection_checkpoints.project_id AND projection_name = projection_checkpoints.projection_name
+      AND active_generation = projection_checkpoints.generation
+  )`, projectID, projectionName, generation); err != nil {
+		return MapSQLiteError(fmt.Errorf("discard projection checkpoint %s/%s/%d: %w", projectID, projectionName, generation, err))
+	}
+	return nil
+}
+
 // RecordProjectionPoison implements ports.ProjectionRepository. Never
 // updates an existing row — a duplicate ID is the caller's own bug, not a
 // legitimate retry to absorb (see ProjectionRepository's own interface doc

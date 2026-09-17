@@ -424,3 +424,138 @@ func TestProjectionRepository_UpsertProjectionCheckpoint_StaleFenceTokenRejected
 		t.Fatalf("checkpoint.Cursor = %d, want 5 (consumer-b's own valid advance)", checkpoint.Cursor)
 	}
 }
+
+func TestProjectionRepository_CutoverProjectionGeneration_BootstrapAndCAS(t *testing.T) {
+	store := openCatalogTestStore(t, "projection-cutover-bootstrap.db")
+	ctx := context.Background()
+	if err := SeedFixtureOwners(ctx, store, "project-1", "family-1", "work-item-1"); err != nil {
+		t.Fatalf("SeedFixtureOwners: %v", err)
+	}
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+
+	// Bootstrap: no active generation exists yet, ExpectedGeneration nil
+	// is a plain first-ever insert.
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		return projectionRepository{tx: tx}.CutoverProjectionGeneration(ctx, ports.CutoverProjectionGenerationRequest{
+			ProjectID: "project-1", ProjectionName: "workitem", ExpectedGeneration: nil, NewGeneration: 1, SchemaVersion: 1, UpdatedAt: now,
+		})
+	})
+	// A second bootstrap call for the SAME already-stored generation is
+	// idempotent, mirroring EnsureGeneration's own convention.
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		return projectionRepository{tx: tx}.CutoverProjectionGeneration(ctx, ports.CutoverProjectionGenerationRequest{
+			ProjectID: "project-1", ProjectionName: "workitem", ExpectedGeneration: nil, NewGeneration: 1, SchemaVersion: 1, UpdatedAt: now,
+		})
+	})
+	// A bootstrap call for a DIFFERENT generation than what is already
+	// stored is ErrOptimisticConflict.
+	if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		return projectionRepository{tx: tx}.CutoverProjectionGeneration(ctx, ports.CutoverProjectionGenerationRequest{
+			ProjectID: "project-1", ProjectionName: "workitem", ExpectedGeneration: nil, NewGeneration: 2, SchemaVersion: 1, UpdatedAt: now,
+		})
+	}); !errors.Is(err, ports.ErrOptimisticConflict) {
+		t.Fatalf("bootstrap(2) after active=1: err = %v, want ErrOptimisticConflict", err)
+	}
+
+	// A real cutover: CAS from active=1 to a shadow generation 2 succeeds
+	// exactly once.
+	old := uint64(1)
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		return projectionRepository{tx: tx}.CutoverProjectionGeneration(ctx, ports.CutoverProjectionGenerationRequest{
+			ProjectID: "project-1", ProjectionName: "workitem", ExpectedGeneration: &old, NewGeneration: 2, SchemaVersion: 1, UpdatedAt: now,
+		})
+	})
+	var active uint64
+	var ok bool
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		var err error
+		active, ok, err = projectionRepository{tx: tx}.GetActiveGeneration(ctx, "project-1", "workitem")
+		return err
+	})
+	if !ok || active != 2 {
+		t.Fatalf("active generation after cutover = (%d, %v), want (2, true)", active, ok)
+	}
+
+	// A STALE worker's own cutover attempt — still presenting the OLD
+	// (now superseded) ExpectedGeneration=1 — fails closed: "a stale
+	// worker cannot swap" (V6-09A's own Thực hiện line), not a silent
+	// double-apply.
+	if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		return projectionRepository{tx: tx}.CutoverProjectionGeneration(ctx, ports.CutoverProjectionGenerationRequest{
+			ProjectID: "project-1", ProjectionName: "workitem", ExpectedGeneration: &old, NewGeneration: 2, SchemaVersion: 1, UpdatedAt: now,
+		})
+	}); !errors.Is(err, ports.ErrOptimisticConflict) {
+		t.Fatalf("stale cutover retry: err = %v, want ErrOptimisticConflict", err)
+	}
+}
+
+func TestProjectionRepository_DiscardGeneration_RefusesActiveDeletesOthers(t *testing.T) {
+	store := openCatalogTestStore(t, "projection-discard-generation.db")
+	ctx := context.Background()
+	if err := SeedFixtureOwners(ctx, store, "project-1", "family-1", "work-item-1"); err != nil {
+		t.Fatalf("SeedFixtureOwners: %v", err)
+	}
+	now := time.Date(2026, 9, 16, 12, 0, 0, 0, time.UTC)
+
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		repo := projectionRepository{tx: tx}
+		if err := repo.EnsureGeneration(ctx, "project-1", "workitem", 1, 1, now); err != nil {
+			return err
+		}
+		if err := repo.UpsertProjectionRow(ctx, ports.ProjectionRow{
+			ProjectID: "project-1", ProjectionName: "workitem", Generation: 1, EntityKey: "work-item-1",
+			PayloadJSON: `{"status":"BACKLOG"}`, LastAppliedJournalPosition: 1, UpdatedAt: now,
+		}); err != nil {
+			return err
+		}
+		// Generation 2 exists (e.g. an abandoned shadow build) but was
+		// never cut over — active_generation stays 1.
+		return repo.UpsertProjectionRow(ctx, ports.ProjectionRow{
+			ProjectID: "project-1", ProjectionName: "workitem", Generation: 2, EntityKey: "work-item-1",
+			PayloadJSON: `{"status":"BACKLOG"}`, LastAppliedJournalPosition: 1, UpdatedAt: now,
+		})
+	})
+
+	// Refuses to discard the currently ACTIVE generation — "never clear
+	// the active generation" (V6-09A's own Không làm line), enforced here
+	// as defense in depth beneath whatever eligibility check a caller
+	// already performed.
+	if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error {
+		return projectionRepository{tx: tx}.DiscardGeneration(ctx, "project-1", "workitem", 1)
+	}); !errors.Is(err, ports.ErrCannotDiscardActiveGeneration) {
+		t.Fatalf("DiscardGeneration(active=1): err = %v, want ErrCannotDiscardActiveGeneration", err)
+	}
+	// Generation 1's own row must still exist — refused, not partially
+	// applied.
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := projectionRepository{tx: tx}.GetProjectionRow(ctx, "project-1", "workitem", 1, "work-item-1")
+		if err != nil {
+			t.Fatalf("generation 1 row missing after a refused discard: %v", err)
+		}
+		return nil
+	})
+
+	// Discarding the NON-active generation 2 succeeds and removes its
+	// rows/checkpoint.
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		return projectionRepository{tx: tx}.DiscardGeneration(ctx, "project-1", "workitem", 2)
+	})
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		_, err := projectionRepository{tx: tx}.GetProjectionRow(ctx, "project-1", "workitem", 2, "work-item-1")
+		if !errors.Is(err, ports.ErrPersistenceNotFound) {
+			t.Fatalf("generation 2 row after discard: err = %v, want ErrPersistenceNotFound", err)
+		}
+		return nil
+	})
+	// Generation 1 (still active) is completely untouched by discarding 2.
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		row, err := projectionRepository{tx: tx}.GetProjectionRow(ctx, "project-1", "workitem", 1, "work-item-1")
+		if err != nil {
+			t.Fatalf("generation 1 row after discarding generation 2: %v", err)
+		}
+		if row.PayloadJSON != `{"status":"BACKLOG"}` {
+			t.Fatalf("generation 1 row payload changed: %q", row.PayloadJSON)
+		}
+		return nil
+	})
+}
