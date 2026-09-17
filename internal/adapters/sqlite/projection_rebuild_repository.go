@@ -123,6 +123,49 @@ func scanProjectionRebuildOperation(row *sql.Row, notFoundLabel string) (ports.P
 	return op, nil
 }
 
+// AdvanceOperation implements ports.ProjectionRebuildRepository — the
+// version-fenced CAS V6-09A's own worker uses for every phase transition
+// (see that method's own doc comment for the full "nil means unchanged"
+// field convention). COALESCE(?, column) is what makes a nil optional
+// field a true no-op: nullableUint64/nullableString already convert a nil
+// Go pointer into a real SQL NULL (see their own doc comments below), and
+// COALESCE(NULL, column) evaluates to the column's own current value —
+// this single UPDATE statement therefore never needs to branch per-field
+// in Go to build a dynamic SET clause.
+func (r projectionRebuildRepository) AdvanceOperation(ctx context.Context, req ports.AdvanceProjectionRebuildOperationRequest) (ports.ProjectionRebuildOperation, error) {
+	result, err := r.tx.ExecContext(ctx, `
+UPDATE projection_rebuild_operations SET
+    phase = ?,
+    w0 = COALESCE(?, w0),
+    shadow_generation = COALESCE(?, shadow_generation),
+    shadow_cursor = COALESCE(?, shadow_cursor),
+    cutover_cursor = COALESCE(?, cutover_cursor),
+    error_code = COALESCE(?, error_code),
+    error_message = COALESCE(?, error_message),
+    updated_at = ?,
+    version = version + 1
+WHERE id = ? AND version = ?`,
+		string(req.NextPhase),
+		nullableUint64(req.NextW0), nullableUint64(req.NextShadowGeneration), nullableUint64(req.NextShadowCursor), nullableUint64(req.NextCutoverCursor),
+		nullableStringPtr(req.NextErrorCode), nullableStringPtr(req.NextErrorMessage),
+		formatWorkflowTime(req.UpdatedAt), req.ID, req.ExpectedVersion,
+	)
+	if err != nil {
+		return ports.ProjectionRebuildOperation{}, MapSQLiteError(fmt.Errorf("advance projection rebuild operation %s: %w", req.ID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return ports.ProjectionRebuildOperation{}, fmt.Errorf("read advance projection rebuild operation CAS result: %w", err)
+	}
+	if affected != 1 {
+		if _, getErr := loadProjectionRebuildOperationTx(ctx, r.tx, req.ID); getErr != nil {
+			return ports.ProjectionRebuildOperation{}, getErr
+		}
+		return ports.ProjectionRebuildOperation{}, fmt.Errorf("%w: projection rebuild operation %s expected version %d", ports.ErrOptimisticConflict, req.ID, req.ExpectedVersion)
+	}
+	return loadProjectionRebuildOperationTx(ctx, r.tx, req.ID)
+}
+
 // nullableUint64 converts a possibly-nil *uint64 field
 // (ProjectionRebuildOperation.W0/ShadowGeneration/ShadowCursor/
 // CutoverCursor) into a driver value: nil stays a real SQL NULL rather

@@ -142,3 +142,104 @@ func TestApplyBatch_RealSQLite_AppliesReplaysAndPoisonsCorrectly(t *testing.T) {
 		t.Fatalf("consumer-b ApplyBatch while consumer-a holds a live lease: err = %v, want ErrOptimisticConflict", err)
 	}
 }
+
+// TestReplayGenerationBatch_RealSQLite_BuildsShadowGenerationIndependentlyOfActive
+// proves ReplayGenerationBatch (V6-09A's own shadow-build counterpart of
+// ApplyBatch, sharing applyLeasedBatch's identical core) can build a
+// SPECIFIC, explicit generation number that is never the currently active
+// one, without disturbing the active generation's own rows/checkpoint at
+// all — the foundation V6-09A's own rebuild worker
+// (internal/app/projectionrebuildworker) builds its shadow-generation
+// replay loop on top of.
+func TestReplayGenerationBatch_RealSQLite_BuildsShadowGenerationIndependentlyOfActive(t *testing.T) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agentkit-projection-replay-generation.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer store.Close()
+	uow := sqlite.NewUnitOfWork(store)
+
+	if err := sqlite.SeedFixtureOwners(ctx, store, "project-1", "family-1", "work-item-1"); err != nil {
+		t.Fatalf("SeedFixtureOwners: %v", err)
+	}
+
+	appendEvent := func(eventType string, schemaVersion int, payloadJSON string) {
+		t.Helper()
+		if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+			return tx.Events().Append(ctx, ports.DomainEvent{
+				ID: idsource.Random{}.NewID(), ProjectID: "project-1", AggregateType: "WorkItem",
+				AggregateID: idsource.Random{}.NewID(), Sequence: 1, EventType: eventType, SchemaVersion: schemaVersion,
+				PayloadJSON: payloadJSON, CorrelationID: idsource.Random{}.NewID(), CreatedAt: time.Now().UTC(),
+			})
+		}); err != nil {
+			t.Fatalf("append %s: %v", eventType, err)
+		}
+	}
+	appendEvent("RootWorkItemCreated", 1, `{"workItemId":"work-item-1","projectId":"project-1","familyId":"family-1","workspaceSetId":"ws-1","title":"Root"}`)
+
+	catalog := projection.NewCatalog()
+	now := time.Now().UTC()
+
+	// The live consumer builds active generation 1 as usual.
+	liveOutcome, err := projection.ApplyBatch(ctx, uow, catalog, projection.ApplyBatchRequest{
+		ProjectID: "project-1", ProjectionName: projection.ProjectionName, Owner: "live-consumer",
+		TTL: 30 * time.Second, BatchSize: 100, Now: now, IDs: idsource.Random{},
+	})
+	if err != nil {
+		t.Fatalf("live ApplyBatch: %v", err)
+	}
+	if liveOutcome.Generation != 1 {
+		t.Fatalf("liveOutcome.Generation = %d, want 1", liveOutcome.Generation)
+	}
+
+	// A rebuild worker replays the SAME events into an explicit shadow
+	// generation (2) — never resolved as "active", never touching
+	// generation 1's own rows/checkpoint.
+	const shadowGeneration = 2
+	shadowOutcome, err := projection.ReplayGenerationBatch(ctx, uow, catalog, projection.ReplayGenerationBatchRequest{
+		ProjectID: "project-1", ProjectionName: projection.ProjectionName, Generation: shadowGeneration,
+		Owner: "rebuild-worker", TTL: 30 * time.Second, BatchSize: 100, Now: now.Add(time.Second), IDs: idsource.Random{},
+	})
+	if err != nil {
+		t.Fatalf("ReplayGenerationBatch: %v", err)
+	}
+	if shadowOutcome.Generation != shadowGeneration || shadowOutcome.EventsScanned != 1 || shadowOutcome.RowsApplied != 1 {
+		t.Fatalf("shadowOutcome = %+v, want Generation=%d EventsScanned=1 RowsApplied=1", shadowOutcome, shadowGeneration)
+	}
+
+	// GetActiveGeneration still reports 1 — ReplayGenerationBatch never
+	// touches projection_generations at all.
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		active, ok, err := tx.Projections().GetActiveGeneration(ctx, "project-1", projection.ProjectionName)
+		if err != nil {
+			return err
+		}
+		if !ok || active != 1 {
+			t.Fatalf("active generation = (%d, %v), want (1, true) — unaffected by shadow replay", active, ok)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("GetActiveGeneration: %v", err)
+	}
+
+	// Both generations now hold their own independent, byte-identical row
+	// for work-item-1 (same events replayed through the exact same
+	// catalog/reducers, per generation).
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		liveRow, err := tx.Projections().GetProjectionRow(ctx, "project-1", projection.ProjectionName, 1, "work-item-1")
+		if err != nil {
+			return err
+		}
+		shadowRow, err := tx.Projections().GetProjectionRow(ctx, "project-1", projection.ProjectionName, shadowGeneration, "work-item-1")
+		if err != nil {
+			return err
+		}
+		if liveRow.PayloadJSON != shadowRow.PayloadJSON {
+			t.Fatalf("live row payload %q != shadow row payload %q, want byte-identical (same catalog/reducers)", liveRow.PayloadJSON, shadowRow.PayloadJSON)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("compare rows: %v", err)
+	}
+}

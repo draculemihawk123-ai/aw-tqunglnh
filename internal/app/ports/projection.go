@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -226,4 +227,80 @@ type ProjectionRepository interface {
 	// lease — this is the "two consumers" case V6-08A's own Verify line
 	// names: only one can ever hold an unexpired lease at a time).
 	AcquireOrRenewConsumerLease(ctx context.Context, req AcquireOrRenewConsumerLeaseRequest) (ConsumerLease, error)
+
+	// CutoverProjectionGeneration is V6-09A's own fenced generation swap —
+	// EnsureGeneration's own doc comment above already named this method
+	// ("swapping the active generation to a NEW number is
+	// CutoverProjectionGeneration's own job"). Design choice, documented
+	// here per V6-09A's own brief (confirmed against migration
+	// 0039_projection_schema.sql's own schema, which gives
+	// projection_generations no version/fence column of its own):
+	// req.ExpectedGeneration IS the fence — a plain
+	// `WHERE active_generation = ExpectedGeneration` compare-and-swap needs
+	// no new column, exactly mirroring EnsureGeneration's own
+	// already-established "second call with a different number is
+	// ErrOptimisticConflict" CAS shape one row over. This is safe under
+	// this Store's global BEGIN-IMMEDIATE write serialization
+	// (txrunner.go, the same guarantee migration 0041's own doc comment
+	// already leans on for projection_rebuild_operations): two concurrent
+	// cutover attempts can never interleave their own read-then-swap, so
+	// the FIRST commit to actually change active_generation away from
+	// ExpectedGeneration makes every OTHER (including a stale/losing
+	// worker's own) attempt targeting the SAME ExpectedGeneration affect
+	// zero rows and fail closed — "a stale worker cannot swap" (V6-09A's
+	// own Thực hiện line) holds by construction, not by a separate lock.
+	// req.ExpectedGeneration nil means "no active generation exists yet
+	// for this (ProjectID, ProjectionName)" — a plain first-ever insert
+	// (mirroring EnsureGeneration's own idempotent first-create), for a
+	// rebuild requested before the live consumer ever lazily created
+	// generation 1. ErrOptimisticConflict when a non-nil ExpectedGeneration
+	// no longer matches what is actually stored (someone else already cut
+	// over, or bootstrap raced against a live consumer's own first
+	// EnsureGeneration call).
+	CutoverProjectionGeneration(ctx context.Context, req CutoverProjectionGenerationRequest) error
+
+	// DiscardGeneration is V6-09A's own "shadow cleanup" primitive
+	// (docs/design/08-v6-api-projections.md V6-09A Phạm vi: "resume and
+	// shadow cleanup") — permanently deletes every projection_rows and
+	// projection_checkpoints row for one (ProjectID, ProjectionName,
+	// Generation), for a generation that a rebuild built into but never
+	// (or no longer) needs: a FAILED operation's own never-activated
+	// shadow, or an abandoned/orphaned shadow discarded only after a grace
+	// period (see internal/app/projectionrebuildworker's own cleanup
+	// step). This method itself refuses — ErrCannotDiscardActiveGeneration
+	// — to delete THE generation currently named by
+	// projection_generations.active_generation for this (ProjectID,
+	// ProjectionName), checked fresh inside this SAME call's own
+	// transaction: "never clear the active generation" (V6-09A's own
+	// Không làm line) is enforced here, at the lowest layer, as defense in
+	// depth beneath whatever eligibility check a caller already performed
+	// — a caller bug above this method can never actually delete live
+	// data. projection_poison rows for the discarded generation are
+	// deliberately left untouched (never deleted) — the same "permanent
+	// fact, never mutated or deleted" discipline
+	// ProjectionRepository.RecordProjectionPoison's own doc comment already
+	// establishes for the ACTIVE generation's poison history, kept
+	// identical here rather than carving out a special case for a
+	// generation that merely stopped being live.
+	DiscardGeneration(ctx context.Context, projectID, projectionName string, generation uint64) error
 }
+
+// CutoverProjectionGenerationRequest is the fenced CAS request for
+// ProjectionRepository.CutoverProjectionGeneration (V6-09A) — see that
+// method's own doc comment for the full CAS/bootstrap contract.
+type CutoverProjectionGenerationRequest struct {
+	ProjectID      string
+	ProjectionName string
+	// ExpectedGeneration is the OLD (currently active) generation this
+	// swap is fenced on — nil for the "no active generation exists yet"
+	// bootstrap case.
+	ExpectedGeneration *uint64
+	NewGeneration      uint64
+	SchemaVersion      int
+	UpdatedAt          time.Time
+}
+
+// ErrCannotDiscardActiveGeneration is returned by
+// ProjectionRepository.DiscardGeneration when the requested generation is
+// still the currently active one — see that method's own doc comment.
+var ErrCannotDiscardActiveGeneration = errors.New("projection: cannot discard the currently active generation")

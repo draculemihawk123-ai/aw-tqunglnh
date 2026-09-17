@@ -144,4 +144,45 @@ type ProjectionRebuildRepository interface {
 	// that operation's own ID (V6-09's own Thực hiện line), never let a
 	// second, concurrently racing rebuild get created.
 	GetActiveOperation(ctx context.Context, projectID, projectionName string) (ProjectionRebuildOperation, bool, error)
+
+	// AdvanceOperation is V6-09A's own fenced phase-advance CAS (this
+	// package's own doc comment above already anticipated it: "every later
+	// phase is written exclusively by V6-09A's own... rebuild worker").
+	// Version-fenced exactly like every other CAS in this codebase
+	// (WHERE id = ? AND version = ?): a stale caller (one whose own
+	// in-memory copy of the operation was already superseded by another
+	// worker's own advance — the "two workers racing" case V6-09A's own
+	// Verify line names) gets ErrOptimisticConflict, never a silent
+	// overwrite. On success, Version increments by exactly one.
+	//
+	// The four Next*Cursor/Next*Generation/NextErrorCode/NextErrorMessage
+	// fields follow TransitionScopeExpansionOriginRequest's own established
+	// "nil leaves the stored column unchanged, non-nil overwrites it"
+	// convention (ports/unitofwork.go) rather than a partial-update map:
+	// every one of W0/ShadowGeneration/ShadowCursor/CutoverCursor/ErrorCode/
+	// ErrorMessage is populated at most once (W0/ShadowGeneration together
+	// at SNAPSHOTTING, ShadowCursor repeatedly across BUILDING's own
+	// checkpointed rounds, CutoverCursor once at the terminal SUCCEEDED
+	// swap, ErrorCode/ErrorMessage once at a terminal FAILED) and every
+	// caller already knows exactly which of these this specific transition
+	// sets — nil for the rest is never ambiguous with "clear this field",
+	// since nothing in this operation's own lifecycle ever un-sets an
+	// already-populated field.
+	AdvanceOperation(ctx context.Context, req AdvanceProjectionRebuildOperationRequest) (ProjectionRebuildOperation, error)
+}
+
+// AdvanceProjectionRebuildOperationRequest is the fenced CAS request for
+// ProjectionRebuildRepository.AdvanceOperation (V6-09A) — see that method's
+// own doc comment for the full "nil means unchanged" field convention.
+type AdvanceProjectionRebuildOperationRequest struct {
+	ID                   string
+	ExpectedVersion      uint64
+	NextPhase            ProjectionRebuildPhase
+	NextW0               *uint64
+	NextShadowGeneration *uint64
+	NextShadowCursor     *uint64
+	NextCutoverCursor    *uint64
+	NextErrorCode        *string
+	NextErrorMessage     *string
+	UpdatedAt            time.Time
 }

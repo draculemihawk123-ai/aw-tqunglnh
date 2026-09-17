@@ -9022,6 +9022,220 @@ the single most load-bearing test in this task. All 5 of the spec's own Verify b
 additional tests (route-inventory closure, missing-row fallback, unknown-WorkItem leakage-normalization). 8/8
 new tests passing; `go build/vet/test ./...` clean across the entire repository.
 
+## V6-09A — Rebuild worker, fenced cutover and recovery
+
+### Thực hiện
+
+Built the not-yet-built worker V6-09's own doc comments already anticipated: a new package,
+`internal/app/projectionrebuildworker`, that drives a `ProjectionRebuildOperation` through every phase past
+`REQUESTED` (`SNAPSHOTTING` → `BUILDING` → `CUTTING_OVER` → `SUCCEEDED`/`FAILED`), plus a real, tested
+`CleanupOrphanedShadowGeneration` primitive and a `workerpool.Handler` wrapper — deliberately NOT wired into
+a production `aw worker`/`aw serve` composition root, matching the SAME scope precedent V6-07A/V6-08A already
+set (confirmed by grep: every `workerpool.Registry.Register` call anywhere in this repo today is in test code
+only).
+
+**No new migration.** Re-checked `origin/master` fresh before starting (highest migration still `0041`, no
+sibling task in this batch added one) and confirmed by reading migrations `0039`/`0040`/`0041` in full that
+every column this task needs already exists: `projection_rebuild_operations` already carries
+`w0`/`shadow_generation`/`shadow_cursor`/`cutover_cursor`/`error_code`/`error_message`/`version`;
+`projection_checkpoints` already carries `fence_token`/`lease_owner`/`lease_until`. Only new CODE was needed,
+exactly as the task brief predicted.
+
+**Port additions** (all implemented in both the real sqlite adapter and the in-memory fake, so every
+pre-existing fake-backed test elsewhere in the repo kept compiling and passing unchanged):
+- `ports.ProjectionRebuildRepository.AdvanceOperation` — the missing phase-advance CAS, version-fenced
+  (`WHERE id = ? AND version = ?`) exactly like every other CAS in this codebase. Six optional `Next*` fields
+  (`NextW0`/`NextShadowGeneration`/`NextShadowCursor`/`NextCutoverCursor`/`NextErrorCode`/`NextErrorMessage`)
+  follow `TransitionScopeExpansionOriginRequest`'s own established "nil leaves the column unchanged"
+  convention — implemented in sqlite as one `UPDATE ... SET x = COALESCE(?, x)` statement per field, reusing
+  the existing `nullableUint64`/`nullableStringPtr` helpers (a SQL NULL parameter is exactly what makes
+  `COALESCE` a no-op).
+- `ports.ProjectionRepository.CutoverProjectionGeneration` — the generation-swap CAS `EnsureGeneration`'s own
+  doc comment already named. **Design decision 1 (see below).**
+- `ports.ProjectionRepository.DiscardGeneration` — deletes a non-active generation's own rows/checkpoint,
+  refusing (`ErrCannotDiscardActiveGeneration`) if the generation is still active — checked FRESH inside the
+  same call via a `NOT EXISTS` subquery against `projection_generations`, never trusting an earlier read, as
+  defense in depth beneath whatever eligibility check a caller already performed. `projection_poison` rows for
+  a discarded generation are deliberately left untouched — the same "permanent fact, never deleted" discipline
+  `RecordProjectionPoison`'s own doc comment already establishes.
+
+**`internal/app/projection` package (V6-08A, already merged) — one deliberate, additive refactor.** `ApplyBatch`
+was hardcoded to resolve "whichever generation is currently active," which a rebuild's shadow generation must
+never be. Rather than duplicating its scan/classify/reduce/upsert/checkpoint-CAS loop into a second,
+independently-maintained copy (a real risk of silent divergence — exactly what the "canonical old/new diff"
+Verify bullet exists to catch), extracted the shared core into an unexported `applyLeasedBatch` both `ApplyBatch`
+(live, active-generation path) and a new exported `ReplayGenerationBatch` (explicit-generation path, this
+task's own primitive) call. Also exported two small internal helpers, `ResolveEntityKey`/`LoadRow` (a pure
+rename, same signatures/bodies) so both paths use the identical entity-resolution logic. Verified byte-for-byte
+behavior-preserving: every pre-existing `internal/app/projection` test (fake- and real-sqlite-backed) passed
+unchanged after the refactor, with no test edits needed.
+
+**The worker's own three phases** (`internal/app/projectionrebuildworker/execute.go`):
+1. **SNAPSHOTTING** (`snapshotStep`, one transaction): reads the CURRENTLY ACTIVE generation's own checkpoint
+   cursor as `W0`, copies its rows wholesale into a brand-new shadow generation number
+   (`oldGeneration + 1`, or `1` if no active generation exists yet — a rebuild requested before the live
+   consumer ever lazily created generation 1), seeds the shadow's own checkpoint AT `w0` (not the usual `0` a
+   fresh checkpoint defaults to), and persists `W0`/`ShadowGeneration` on the operation row. **Design
+   decision 2 (see below)** explains why this row-copy IS "capturing an authoritative snapshot," not a
+   shortcut around it.
+2. **BUILDING** (`buildRound`, phase=`BUILDING`): repeated, bounded `ReplayGenerationBatch` rounds — the
+   IDENTICAL scan/classify/reduce/upsert/checkpoint-CAS core the live consumer uses — replaying every event
+   `JournalPosition > W0` into the shadow generation, checkpointing `ShadowCursor` onto the operation row
+   after every round. Continues until a round returns fewer events than `BatchSize` (caught up).
+3. **CUTTING_OVER** (`buildRound` again, phase=`CUTTING_OVER`, then `cutover`): up to `Deps.MaxCutoverCatchUpRounds`
+   bounded additional catch-up rounds absorb whatever arrived while BUILDING was finishing, then ONE atomic
+   transaction (`cutover`) performs the real swap.
+
+**The cutover transaction — the crash-critical heart, read in full, every step fenced FRESH inside this ONE
+transaction (mirroring `internal/app/releasesetcommit/execute.go`'s own "Two leases, both revalidated, both
+required" discipline, with a third fence this operation additionally needs):**
+1. Reload the operation FRESH; stop if terminal (someone else already finished it) or not `CUTTING_OVER`.
+2. Revalidate the job's own `JobLease` (`tx.Jobs().ValidateActiveJob`) — proves this worker instance still
+   legitimately owns the job.
+3. Revalidate the shadow-generation consumer lease FRESH (`AcquireOrRenewConsumerLease` again, inside this
+   same transaction) — proves this worker instance still legitimately owns the shadow build. Its returned
+   cursor becomes `W1`, the exact cutover cursor.
+4. Read the CURRENT active generation fresh (inside this same transaction — cannot be stale, since nothing
+   else can write to `projection_generations` between this read and the next step under this Store's
+   BEGIN-IMMEDIATE write serialization) and CAS it to the shadow generation
+   (`CutoverProjectionGeneration`) — ONE `UPDATE` of ONE row, so a reader sees the OLD generation or the NEW
+   one, never a mix.
+5. CAS the operation to `SUCCEEDED` with `CutoverCursor = W1`, fenced on the SAME `Version` read in step 1.
+6. Complete the driving job, in the SAME transaction.
+
+If ANY step fails, the whole transaction rolls back — no partial state can exist by construction (the same
+"kill mid-transaction is impossible so verify no partial state can exist by construction" approach V6-09
+itself already used), which is exactly why every one of these six steps is inside ONE `uow.WithSerializedWrite`
+call and nothing inside it is ever a separate transaction.
+
+**A gap found and fixed during this task's own test-writing, not left as a hand-wave**: initially `buildRound`
+(both the `BUILDING` and `CUTTING_OVER`-phase invocations) did NOT revalidate the job lease before touching the
+shadow-generation consumer lease — the reasoning was "harmless internal work, gated by the shadow lease alone."
+A real sqlite test (simulating a worker whose job lease had already been reclaimed, attempting one more bounded
+`CUTTING_OVER` catch-up round) proved this reasoning wrong: an already-dead job claim could still successfully
+ACQUIRE the shadow lease (since nobody held it yet) before failing at the LATER `AdvanceOperation` call —
+durably blocking a legitimate successor for up to `Deps.ShadowLeaseTTL`. Fixed by adding a cheap,
+read-only `validateJobLease` check as `buildRound`'s own FIRST step, before the shadow lease is ever touched —
+closing the gap completely (an already-dead claim can now never even contest the shadow lease). Documented in
+both the package doc comment and inline at the call site.
+
+**Cleanup** (`internal/app/projectionrebuildworker/cleanup.go`, `CleanupOrphanedShadowGeneration`): a real,
+tested, standalone primitive (no JobLease — deliberately never touches job lifecycle, see its own doc comment
+for why that is sufficient and safe) that discards an orphaned shadow generation, checked fresh inside ONE
+transaction immediately before any deletion: a `FAILED` operation's own never-activated shadow is always safe
+to discard unconditionally; a `SUCCEEDED` operation's own shadow (now the active generation, or superseded by
+a later rebuild) is NEVER touched; a nonterminal operation is eligible only once
+`Now.Sub(operation.UpdatedAt) >= GracePeriod` — a real, evidence-based signal (every `BUILDING`/`CUTTING_OVER`
+round bumps `UpdatedAt` via its own `AdvanceOperation` checkpoint call, so a genuinely live worker's own
+operation row is never stale by more than roughly one round's duration) — and when eligible, FIRST fences the
+operation to `FAILED` (a version-CAS'd `AdvanceOperation` call — so a worker that turns out to still be alive
+loses the race and this cleanup call aborts cleanly) and ONLY THEN discards the generation, both in the SAME
+transaction.
+
+### Two design decisions (the ones this brief asked to document clearly)
+
+**1. Generation-swap CAS mechanism: plain `WHERE active_generation = <old value>`, no new column.**
+`projection_generations` has no version/fence column of its own. Chose option (a) from the brief — the old
+generation's own currently-stored value IS the fence — over adding a new column, because it needs nothing new
+and is provably sufficient under this Store's global BEGIN-IMMEDIATE write serialization
+(`internal/adapters/sqlite/txrunner.go`): two concurrent cutover attempts can never interleave their own
+read-then-swap (transactions are fully serialized, one commits before the other's `BEGIN IMMEDIATE` even
+acquires the write lock), so the FIRST commit to actually move `active_generation` away from the expected
+value makes every OTHER (including a stale worker's own) attempt targeting that SAME expected value affect
+zero rows and fail closed with `ErrOptimisticConflict` — "a stale worker cannot swap" holds by construction.
+Proven directly at the repository layer
+(`TestProjectionRepository_CutoverProjectionGeneration_BootstrapAndCAS`, two sequential attempts against the
+same expected generation) and at the worker layer
+(`TestExecuteProjectionRebuild_CrashBeforeSwap_StaleJobLease_...`, a genuinely reclaimed job).
+
+**2. Cutover-lease reuse: the SAME `AcquireOrRenewConsumerLease` mechanism, applied to the shadow generation's
+own checkpoint row — not a new lease table.** Re-read `internal/app/projection/consumer.go`'s own lease-acquire
+code before committing to this (as the brief asked): `AcquireOrRenewConsumerLease` is already keyed by
+`(ProjectID, ProjectionName, Generation)`, not "the active generation" specifically. The live consumer only
+ever calls it with the resolved-active generation; this worker only ever calls it with the shadow generation
+(an explicit, never-active number) — the two can never collide on the same row BY CONSTRUCTION, since a
+generation can never be both "active" and "a shadow being built" at once, while still sharing the IDENTICAL
+acquire-or-steal-if-expired mechanism and fencing guarantees. Confirmed sound; no reason found to deviate.
+One accepted, documented consequence: the live consumer's own FIRST post-cutover lease call against the
+newly-active generation can be briefly blocked until the rebuild worker's own last-round lease naturally
+expires (there is no separate "release" method for a projection consumer lease anywhere in this codebase, by
+design, even before this task) — bounded tightly by `Deps.ShadowLeaseTTL` (deliberately short), self-healing,
+and directly exercised by `TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild` (which tolerates
+exactly this one documented, retryable error from the live consumer's side and fails on anything else).
+
+### Test
+
+20 new test functions, ALL against a real `sqlite.Store` (`internal/app/projectionrebuildworker/*_sqlite_test.go`)
+per this task's own crash-recovery-heavy brief — no fakes used in this package at all (the fake package was
+only touched to keep it implementing the two extended port interfaces, verified via the existing
+fake-backed test suites elsewhere passing unchanged), plus 3 new real-sqlite tests for the two new
+`ProjectionRepository` methods and `AdvanceOperation` (`internal/adapters/sqlite/projection_repository_test.go`,
+`internal/adapters/sqlite/projection_rebuild_repository_test.go`), plus 1 new real-sqlite test for
+`ReplayGenerationBatch` (`internal/app/projection/consumer_sqlite_test.go`).
+
+Crash-recovery technique used throughout (`crash_recovery_sqlite_test.go`): since every phase transition is its
+own separate, atomic, fenced transaction (never spanning two phases), "killed right after phase X's own
+transaction committed" is precisely simulated by directly constructing — via the SAME public `ports.Tx`
+accessor methods `execute.go` itself calls — the exact durable state that transaction would have left behind,
+then handing a FRESH `ExecuteProjectionRebuild` call that state and confirming it resumes correctly. The same
+technique V6-09's own crash-after-intent test already used, applied per-phase here since this task's own design
+(unlike V6-09's single-transaction command) genuinely has multiple, independently-resumable commit points.
+
+### Verify
+
+- **Crash at snapshot**: `TestExecuteProjectionRebuild_ResumeAfterSnapshotting_ReachesSucceeded` — resumes in
+  `BUILDING` (never re-copies rows), also proving a LIVE write that arrived after the simulated crash (before
+  resume) is correctly picked up.
+- **Crash at build/replay**: `TestExecuteProjectionRebuild_ResumeAfterPartialBuilding_FinishesWithNoDoubleApply`
+  — resumes from the exact checkpointed cursor; final row hash matches a completely independent, from-scratch
+  fresh replay of the same events (no double-apply, no skip).
+- **Crash before swap**: `TestExecuteProjectionRebuild_ResumeAfterEnteringCuttingOver_ReachesSucceeded` (never
+  attempted the swap yet) and `TestExecuteProjectionRebuild_CrashBeforeSwap_StaleJobLease_...` (a worker WOULD
+  have attempted it, but its job lease is already gone — rejected before touching anything, a separate
+  legitimate worker then completes it).
+- **Crash during swap**: literally impossible to inject (one atomic transaction) — documented as such; proven
+  instead by construction (every step inside the one `WithSerializedWrite` call) plus the happy-path and
+  resume tests confirming the ONLY two observable outcomes (fully committed or fully rolled back) both leave a
+  consistent state.
+- **Crash after swap**: `TestExecuteProjectionRebuild_HappyPath_...` (post-cutover state) and
+  `TestExecuteProjectionRebuild_RedeliveredAfterSucceeded_IsANoOp` (a redelivered/duplicate job claim on an
+  already-`SUCCEEDED` operation is a safe no-op).
+- **Two workers racing**: `TestExecuteProjectionRebuild_TwoWorkersRacing_ShadowLeaseFencesSecondBuilder` (the
+  shadow-generation lease alone rejects a second builder, job leases both valid) and
+  `TestExecuteProjectionRebuild_CrashBeforeSwap_StaleJobLease_...` (the job-lease dimension, via a real
+  claim/expire/`RecoverExpiredJobs`/reclaim).
+- **Lease expiry**: `TestExecuteProjectionRebuild_ShadowLeaseExpiry_AllowsTakeoverAfterTTL` — a genuinely
+  expired prior holder never permanently blocks recovery.
+- **Live writes concurrently**: `TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild` — a real
+  goroutine race, the live consumer's own concurrent `ApplyBatch` rounds on generation 1 keep succeeding
+  (tolerating only the one documented post-cutover handoff conflict), the rebuild finishes cleanly.
+- **Poison**: `TestExecuteProjectionRebuild_Poison_DuringBuild_FailsSafelyAndLeavesOldGenerationActive` — safe
+  `ErrorCode`/`ErrorMessage`, old generation completely untouched (never had a reason to be touched).
+- **Reader paging**: `TestExecuteProjectionRebuild_ReaderPagingAcrossCutover_TypedResync` — proves the
+  PRE-EXISTING `httpapi.Bind`/`ResyncReasonGenerationChanged` mechanism (V6-02A) needs zero new code from this
+  task, only a real cutover to exercise it.
+- **Cleanup**: 5 tests in `cleanup_sqlite_test.go` — a `FAILED` operation's never-activated shadow always
+  discarded; a `SUCCEEDED` operation's own (active) generation never touched; a nonterminal operation within
+  the grace period never touched; a nonterminal operation past the grace period fenced to `FAILED` and
+  discarded; a version-CAS race against a "just made progress" operation correctly aborts, discarding nothing.
+- **Canonical old/new diff, no mixed generation**: `TestExecuteProjectionRebuild_CanonicalOldNewDiff_MatchesFreshFullReplay`
+  — the cutover-activated generation's own `CanonicalRowHash` matches an entirely independent, from-scratch
+  full replay of the same events, byte for byte.
+
+### Kết quả
+
+New package `internal/app/projectionrebuildworker` (`execute.go`, `cleanup.go`, `handler.go` + 6 real-sqlite
+test files, 20 test functions). Extended `ports.ProjectionRebuildRepository` (+1 method),
+`ports.ProjectionRepository` (+2 methods) and both their sqlite adapters/in-memory fakes. One additive,
+behavior-preserving refactor of the already-merged `internal/app/projection` package (`ApplyBatch` unchanged
+externally; new exported `ReplayGenerationBatch` shares its core). No new migration — every column this task
+needed already existed in `0041`/`0039`/`0040`, confirmed by re-reading them before writing any code, matching
+the brief's own prediction. Both open design questions resolved and documented (generation-swap CAS mechanism,
+cutover-lease reuse) — see above. One real gap found and fixed during this task's own test-writing (a stale
+job claim could contest the shadow lease before failing later, closed by validating the job lease first in
+every `buildRound`) — not left as a hand-wave. `go build ./... && go vet ./... && go test ./...` clean
+repo-wide (full details in the PR description).
+
 ## V6-15E — Definition CLI
 
 ### Thực hiện
