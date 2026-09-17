@@ -135,13 +135,7 @@ func TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild(t *testi
 	// Deliberately short — see Deps.ShadowLeaseTTL's own doc comment
 	// ("deliberately short... to bound the live consumer's own
 	// post-cutover handoff wait"). fx.deps()'s own 30s default is
-	// production-scale, not test-scale: with it, the live-writer goroutine
-	// below (5 rounds, tens of ms of real time total) can NEVER outlast a
-	// post-cutover conflict, so "the live consumer eventually resumes"
-	// would never actually be exercised — every round would deterministically
-	// hit the documented ErrOptimisticConflict and the test's own final
-	// cursor-progress assertion would be unwinnable, independent of CI load
-	// (this is what caused a real, reproducible failure here, not a flake).
+	// production-scale, not test-scale.
 	rebuildDeps := fx.deps()
 	rebuildDeps.ShadowLeaseTTL = 10 * time.Millisecond
 
@@ -154,28 +148,51 @@ func TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild(t *testi
 		rebuildErr = projectionrebuildworker.ExecuteProjectionRebuild(fx.ctx, rebuildDeps, job)
 	}()
 
+	// This goroutine's own single global `WithSerializedWrite` lock
+	// (this Store's BEGIN-IMMEDIATE write serialization, txrunner.go) means
+	// "concurrent" here is really a real-time-ordered INTERLEAVING of write
+	// transactions from both goroutines, not two independent wall clocks —
+	// under load (or even on a fast, unloaded CI runner with different
+	// scheduling/lock-grant behavior than this developer's own machine) the
+	// rebuild side can legitimately win every lock acquisition and reach
+	// CUTTING_OVER/cutover before the live side's very first attempt even
+	// runs, and once past cutover EVERY live attempt can keep landing inside
+	// the still-fresh post-cutover lease window if it is retried too eagerly
+	// relative to that lease's own TTL. A FIXED sleep between attempts is a
+	// probabilistic bet against exactly this ordering (which failed for real
+	// on CI once already — see this file's own git history) — retrying a
+	// conflicted round instead of moving on, until it definitively either
+	// succeeds or exhausts a generous deadline, directly proves the
+	// documented self-healing property deterministically rather than hoping
+	// wall-clock spacing happens to have cleared an arbitrary TTL by the
+	// time of the next attempt.
 	liveErrs := make([]error, 0, 5)
 	var liveErrsMu sync.Mutex
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 5; i++ {
 			fx.appendEvent(t, "ScopeExpansionRequested", 1, `{"requestId":"live-`+string(rune('a'+i))+`","familyId":"family-1","projectId":"project-1","referencedWorkItemId":"work-item-1","grantCount":1}`)
-			_, err := projection.ApplyBatch(fx.ctx, fx.uow, fx.catalog, projection.ApplyBatchRequest{
-				ProjectID: "project-1", ProjectionName: testProjectionName, Owner: "live-consumer",
-				TTL: 30 * time.Second, BatchSize: 100, Now: time.Now().UTC(), IDs: fx.ids,
-			})
-			if err != nil {
-				liveErrsMu.Lock()
-				liveErrs = append(liveErrs, err)
-				liveErrsMu.Unlock()
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				_, err := projection.ApplyBatch(fx.ctx, fx.uow, fx.catalog, projection.ApplyBatchRequest{
+					ProjectID: "project-1", ProjectionName: testProjectionName, Owner: "live-consumer",
+					TTL: 30 * time.Second, BatchSize: 100, Now: time.Now().UTC(), IDs: fx.ids,
+				})
+				if err == nil {
+					break
+				}
+				if !errors.Is(err, ports.ErrOptimisticConflict) || time.Now().After(deadline) {
+					liveErrsMu.Lock()
+					liveErrs = append(liveErrs, err)
+					liveErrsMu.Unlock()
+					break
+				}
+				// A conflict this soon can only be the documented,
+				// bounded post-cutover handoff gap (rebuildDeps.ShadowLeaseTTL
+				// above) — retry past it rather than treating one transient
+				// conflict as the round's own final outcome.
+				time.Sleep(5 * time.Millisecond)
 			}
-			// 5x the rebuild's own ShadowLeaseTTL above, so at least the
-			// LAST couple of rounds reliably land after any post-cutover
-			// lease has naturally expired, regardless of CI scheduling
-			// jitter (mirrors this codebase's own established margin
-			// discipline for TTL-vs-sleep test timing, e.g. V6-10E's
-			// 60ms-TTL/1500ms-sleep fix).
-			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 
@@ -184,17 +201,12 @@ func TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild(t *testi
 	if rebuildErr != nil {
 		t.Fatalf("concurrent ExecuteProjectionRebuild: %v", rebuildErr)
 	}
-	// A live round that lands in the SHORT window right after cutover —
-	// before the rebuild worker's own now-orphaned lease on the (now
-	// newly-active) generation naturally expires — gets the documented,
-	// retryable ErrOptimisticConflict (see this package's own doc
-	// comment, "Design decision: the cutover lease IS the projection
-	// consumer lease," on this exact, bounded, self-healing handoff gap).
-	// Only some OTHER, undocumented error would be a real bug.
+	// Only a live round that never recovered from the documented,
+	// retryable post-cutover handoff conflict within its own generous
+	// deadline (or one that hit some OTHER, undocumented error) reaches
+	// here — either is a real bug, never expected.
 	for _, err := range liveErrs {
-		if !errors.Is(err, ports.ErrOptimisticConflict) {
-			t.Fatalf("concurrent live ApplyBatch call errored with something other than the documented post-cutover handoff conflict: %v", err)
-		}
+		t.Fatalf("concurrent live ApplyBatch call never recovered: %v", err)
 	}
 
 	op := fx.getOperation(t, created.OperationID)

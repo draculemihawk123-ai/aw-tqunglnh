@@ -9291,23 +9291,43 @@ design bug, not CI noise, confirmed by local reproduction independent of any CI 
 
 ### Thực hiện
 
-Gave this one test its own short-TTL `Deps` (`ShadowLeaseTTL: 10 * time.Millisecond`, built from `fx.deps()`
-then overridden — never touching the shared helper other tests in this package rely on) and widened the
-live-writer's own inter-round sleep from 2ms to 50ms (5x margin over the new TTL), mirroring this codebase's
-own established TTL-vs-sleep margin discipline (V6-10E's 60ms→600ms TTL fix, 1500ms sleep, from earlier this
-same V6 phase).
+**First attempt** (did not fully hold): gave this one test its own short-TTL `Deps`
+(`ShadowLeaseTTL: 10 * time.Millisecond`, built from `fx.deps()` then overridden) and widened the live-writer's
+own inter-round sleep from 2ms to 50ms (5x margin over the new TTL), mirroring V6-10E's own earlier
+TTL-vs-sleep fix. Passed 20/20 locally (Windows) — but failed again on the VERY FIRST CI attempt, on
+`contract (ubuntu-latest)`, a fast/unloaded job, not even the heavily-contended V0-12 job. This proved the bug
+was not just "needs a bigger fixed margin": this Store's `WithSerializedWrite` is a single GLOBAL write lock
+(`txrunner.go`'s own BEGIN-IMMEDIATE serialization) across the WHOLE store, so "concurrent" here is really a
+real-time-ordered interleaving of write transactions resolved by whatever the OS/Go scheduler and lock-grant
+order happen to produce — under different scheduling behavior than this developer's own machine, the rebuild
+side can win every lock acquisition and reach cutover before the live side's very first attempt even runs, and
+a FIXED sleep is only ever a probabilistic bet against that ordering, not a guarantee.
+
+**Second, final fix**: replaced the fixed-cadence loop with an explicit retry-on-`ErrOptimisticConflict` loop
+(5ms backoff, 2s deadline per logical event) — a conflicted round is retried until it definitively succeeds or
+the deadline is exhausted, rather than moving on after exactly one attempt. This directly proves the documented
+self-healing property deterministically instead of hoping wall-clock spacing happens to have cleared an
+arbitrary TTL by the time of the next fixed-interval attempt — immune to scheduling/lock-grant-order variance
+by construction, not by a wider margin.
 
 ### Test
 
-`go test ./internal/app/projectionrebuildworker/... -run TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild -count=20`
-— 20/20 clean locally (previously reproduced the real failure on the very first attempt before the fix).
-`go test ./internal/app/projectionrebuildworker/... -count=3` — full package stable across 3 repeated runs.
-`go build/vet/test ./...` clean repo-wide.
+`go test ./internal/app/projectionrebuildworker/... -run TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild -count=50`
+— 50/50 clean, both default `GOMAXPROCS` and `GOMAXPROCS=1` (simulating a constrained CI scheduler — the
+leading theory for why the first fix's fixed-sleep assumption broke). `go test ./internal/app/projectionrebuildworker/... -count=5`
+— full package stable across 5 repeated runs. `go build/vet/test ./...` clean repo-wide, zero failures
+anywhere (not even the usual `internal/app/message` flake this run).
 
 ### Kết quả
 
 A real, reproducible test-timing bug in already-merged V6-09A code, found by this session's own diff-scope
 investigation of a CI failure that looked at first like the familiar shared-runner-load pattern but turned out
 not to be (the failing test was newly-merged code exercised for the first time under real CI, not a
-long-standing flake) — fixed forward in a small, targeted follow-up rather than reflexively rerunning CI
-against an unwinnable assertion.
+long-standing flake) — and the FIRST fix attempt (a wider fixed-margin sleep) was itself insufficient, caught
+by the same fix's own CI run rather than assumed correct from local-only passes. Fixed properly on the second
+attempt by making the test's own retry semantics match the production design's actual guarantee (eventual
+consistency after a bounded, retryable conflict) instead of a timing bet. **Lesson**: for a test whose
+correctness depends on "eventually" (a lease expiring, a retry succeeding), prefer an explicit retry-until-true
+loop with a generous deadline over a fixed sleep-based margin, even a wide one — a fixed margin is a
+probabilistic bet on scheduling/lock-ordering behavior that can differ between environments in ways no local
+testing on one platform will surface.
