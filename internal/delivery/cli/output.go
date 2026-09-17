@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 )
 
 // ResultEnvelope is the one finite JSON document a mutating command
@@ -60,4 +61,58 @@ func writeStableJSON(stdout io.Writer, value any) error {
 // JSON-consuming caller's stdout parse must never see this text mixed in.
 func Diagnosticf(w io.Writer, format string, args ...any) {
 	fmt.Fprintf(w, format+"\n", args...)
+}
+
+// WriteBinaryOutput streams content to outputPath — the real, raw-content
+// counterpart of EncodeQueryResult/EncodeCommandResult's JSON-document
+// writers above, for a leaf whose own result IS a byte stream (V6-15K's
+// own `aw artifact get --output <path|->`, and any future leaf with the
+// identical shape). outputPath == "-" streams directly to stdout (the same
+// io.Writer a leaf's other output goes to — a caller choosing "-" is
+// choosing to make stdout carry exactly, and only, these raw bytes, never
+// mixed with a JSON document); any other value is treated as a real file
+// path, freshly created (never appended to, never following a symlink into
+// an unexpected location — os.O_EXCL is deliberately NOT used, since a
+// second `aw artifact get` to the same path is an ordinary, expected
+// overwrite, not a hazard this framework needs to guard against).
+//
+// content is copied via io.Copy — never buffered whole into memory first —
+// so an arbitrarily large artifact never risks this process' own memory
+// budget, mirroring internal/delivery/httpapi/evidence's own
+// handleGetArtifactContent streaming discipline exactly. The CALLER is
+// responsible for ensuring content is only ever handed to this function
+// after any integrity check (e.g. ports.ArtifactStore.Verify) has already
+// succeeded — this function starts writing the moment it is called, so a
+// leaf that verifies-then-opens-then-calls-this-function (never opens
+// before verifying) gets the same "tamper caught before any byte streams
+// out" guarantee the HTTP route already has, for free. On a real file
+// target, a copy failure removes the partial file (best-effort) rather
+// than leaving a truncated, silently-wrong file behind.
+func WriteBinaryOutput(stdout io.Writer, outputPath string, content io.Reader) (int64, error) {
+	if outputPath == "" {
+		return 0, fmt.Errorf("cli: WriteBinaryOutput: outputPath must not be empty (use \"-\" for stdout)")
+	}
+	if outputPath == "-" {
+		n, err := io.Copy(stdout, content)
+		if err != nil {
+			return n, fmt.Errorf("cli: write output to stdout: %w", err)
+		}
+		return n, nil
+	}
+
+	f, err := os.OpenFile(outputPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return 0, fmt.Errorf("cli: create output file %s: %w", outputPath, err)
+	}
+	n, copyErr := io.Copy(f, content)
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(outputPath)
+		return n, fmt.Errorf("cli: write output file %s: %w", outputPath, copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(outputPath)
+		return n, fmt.Errorf("cli: close output file %s: %w", outputPath, closeErr)
+	}
+	return n, nil
 }
