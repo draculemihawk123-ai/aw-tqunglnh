@@ -8869,6 +8869,165 @@ stops at the application layer: no rebuild worker (V6-09A) and no HTTP endpoint 
 separate, future tasks, exactly
 as this task's own "Hoàn thành khi" line requires.
 
+## V6-11 — SSE project event stream
+
+### Thực hiện
+
+Per spec (`docs/design/08-v6-api-projections.md` lines 553-566): "Mục tiêu: redacted project
+invalidation/runtime summaries with lossless reconnect semantics"; "Phụ thuộc: V6-00, V6-01A, V6-02A, V6-08A"
+(all already merged); "Phạm vi: `WatchProjectEvents`, replay cursor, heartbeat, retention/resync and
+slow-client policy"; "Không làm: no artifact bodies/log bodies/secrets, no browser-side event-cache
+authority, no cross-project events." Branched off a freshly fetched `origin/master` (`49f7e37`, confirmed
+current at start).
+
+New package `internal/delivery/httpapi/eventstream`, one route: `GET /projects/{id}/events/watch`
+(operationId `watchProjectEvents`). Four files:
+
+- `eventstream.go` — package doc (the full cursor/retention/authorization design decisions live here),
+  `Dependencies` (with defaulted tuning knobs: `PollInterval`, `HeartbeatInterval`, `PollBatchLimit`,
+  `RetentionScanLimit`, `BufferSize`, `WriteTimeout`, plus a `Shutdown context.Context` — see below),
+  `ProjectEventSummary` (the one wire `data` shape: `{journalPosition, eventType, schemaVersion}` — no
+  payload body, per "Không làm: no artifact/log bodies/secrets"), and `RegisterRoutes`.
+- `handler.go` — the real HTTP handler: parses the required `cursor` query parameter, runs the
+  authorize+retention-probe (`probeProject`, one read-only transaction), and — only once both pass — writes
+  `httpapi.SSEHeaders`/200 and hands off to `streamLoop`. `httpEventSink` is the real `eventSink`
+  implementation, using `http.ResponseController.SetWriteDeadline` (best-effort) as write-timeout defense in
+  depth alongside the bounded-buffer mechanism below.
+- `stream.go` — `streamLoop`, the actual connection lifecycle, built from scratch (confirmed by grep: no
+  bounded-buffer/slow-client/poll-loop precedent exists anywhere else in `internal/delivery/httpapi`;
+  `sse.go` only provides the low-level per-message write/heartbeat primitives). Two goroutines: the caller's
+  own goroutine runs a `select` producer loop (poll `ScanJournal` on a ticker, re-authorize on EVERY tick,
+  heartbeat on a separate ticker, watch `ctx.Done()`/`Shutdown.Done()`); a second goroutine is the SOLE
+  writer (only place `sink.WriteEvent`/`WriteHeartbeat` is ever called, so a real `http.ResponseWriter` — not
+  safe for concurrent writes — is never touched from two goroutines at once). They communicate only through a
+  bounded channel (`BufferSize`, default 64): every enqueue is a non-blocking `select`/`default` — a full
+  channel means the writer has not kept up, which is this package's own definition of "slow client," and the
+  producer disconnects rather than blocking or growing memory unboundedly. On any stop (except
+  client-already-disconnected or writer-already-failed), a best-effort final `stream.disconnected` control
+  event reports `{reason, lastCursor}` before the connection closes.
+- `errors.go` — `probeProject` (the ONE place this package touches `ports.Tx`: reloads the Project fresh via
+  `tx.Catalog().GetProject` and requires `project.ProjectActive`, then `tx.Events().ScanJournal` in the SAME
+  transaction — reused identically at connect time and on every poll tick, so authorization can never be
+  cached or go stale), `parseCursor`, and the typed-resync/leakage-normalized error writers.
+
+**Cursor design** (documented in `eventstream.go`'s own doc comment): a plain, unsigned, base-10
+`JournalPosition` passed as a required `cursor` query parameter — deliberately NOT `httpapi.CursorCodec`'s
+opaque signed token. `CursorCodec` exists to stop a client hand-editing an opaque PAGING walk's own
+`ProjectID`/`Generation`/`LastKey` to see another project's rows or replay a stale generation; a
+`JournalPosition` is the exact same value every projection-backed read response already exposes verbatim as
+`Freshness.AsOfJournalPosition` (not a credential — nothing is gained by signing it), and every event is
+still re-filtered by `ProjectID` server-side on every tick regardless of what a client sends, so the one
+thing a signature would defend against here does not apply. `cursor` is required (never an implicit
+"start from now" default) precisely to close the query→subscribe race: a client is always expected to arrive
+holding a real `AsOfJournalPosition` from a prior fetch.
+
+**Retention policy**: `domain_events` is never pruned anywhere in this codebase (grep confirms no `DELETE
+FROM domain_events` exists), so "too old" is never a hard data-availability limit here, unlike a real
+log-retention window — it is a deliberate resource-bound policy instead. On every open/reopen, `handler.go`
+probes `ScanJournal(afterPosition=cursor, limit=RetentionScanLimit+1)` (default 1000) inside the SAME
+transaction as authorization; more than `RetentionScanLimit` pending events (global, across every project)
+returns a typed `RESYNC_REQUIRED` (409) response with this package's own message — never
+`httpapi.WriteResyncRequired` itself, whose fixed wording is `CursorCodec`-paging-specific — before the
+connection is ever upgraded to SSE.
+
+**Authorization**: every open/reopen AND every single poll tick of an already-open stream reloads the
+Project fresh (never cached) and requires `ACTIVE`; anything else (not found, or not authorized) writes the
+identical `httpapi.WriteResourceHidden` 404 the rest of the composition root already uses — a probing client
+can never distinguish "does not exist" from "exists but not authorized," and an already-open connection that
+loses authorization on a LATER poll tick stops delivering immediately, not merely refuses the next connection
+attempt. Honest caveat documented in code: no production command in this codebase can currently move a
+Project out of `ACTIVE` (no `ArchiveProject`/`TransitionProject` mutator exists anywhere — confirmed by
+grep), so this mechanism has no real trigger to exercise end-to-end today; it is built so a future task that
+adds one needs no change here, and this task's own tests exercise the mechanism directly via a wrapped
+`ports.CatalogRepository` (interface-embedding over the same underlying fake `UnitOfWork`, no change to the
+shared `internal/app/ports/fake` package) whose `GetProject` answer changes mid-test, standing in for that
+future capability.
+
+**Bounded shutdown**: `Dependencies.Shutdown` is a `context.Context` every open stream also selects on
+alongside the request's own `r.Context()`. Plain `net/http.Server.Shutdown` does NOT itself cancel an
+in-flight handler's `r.Context()` (it only stops accepting new connections and waits for active ones to
+finish on their own — confirmed against the stdlib doc/source) — a long-lived streaming handler that only
+ever watched `r.Context()` would make `Shutdown` hang until its own timeout gives up. `cmd/aw/serve.go` wires
+`Shutdown` to the SAME `ctx` `serve()` itself already watches for SIGINT/SIGTERM (cancelled before
+`server.Shutdown` is called), so every open stream now closes itself as part of the existing graceful-shutdown
+sequence with no other file needing to change.
+
+**Composition-root wiring** (`cmd/aw/serve.go`): added the `eventstream` import and one
+`eventstream.RegisterRoutes(routes, eventstream.Dependencies{UnitOfWork: uow, Matcher: matcher, Shutdown:
+ctx})` call right before `routesFinalized = true`, reusing the SAME `uow`/`matcher` every other route
+registration in this process already uses — no other line in that file touched.
+
+### Test
+
+19 new tests total, all in `internal/delivery/httpapi/eventstream`, run in ~1.3s (`-count=5` stable, no
+flakes observed):
+
+- `stream_internal_test.go` (package `eventstream`, white-box — deliberately NOT the pure
+  `eventstream_test` black-box convention every sibling httpapi package uses; documented in the file's own
+  doc comment why: the slow-client/shutdown/re-authorization scenarios need a deterministic, millisecond-fast
+  seam — `streamLoop`'s own `eventSink` interface plus the wrapped fake catalog — that real TCP backpressure
+  or an infinitely-blocked write cannot give without either flakiness or literally hanging the test, since
+  `streamLoop.stop()` unconditionally waits for its writer goroutine to actually return):
+  - `TestStreamLoop_SlowClientDisconnectsWithLastSafeCursor` — a fake sink that sleeps 20ms per write with
+    `BufferSize=2` against 200 pre-scanned events; proves the loop returns `reasonSlowClient` well before all
+    200 are delivered, and that `LastCursor` equals exactly the last event actually recorded by the sink (not
+    the one in flight when the buffer filled).
+  - `TestStreamLoop_AuthorizationRevokedMidStreamStopsDelivery` — flips the wrapped catalog's Project to
+    ARCHIVED ~20ms (several poll ticks) into an already-running stream; proves the loop stops with
+    `reasonUnauthorized` on its own, mid-stream, never merely at a next-connection-attempt.
+  - `TestStreamLoop_ShutdownSignalStopsPromptly` — poll/heartbeat intervals set to a full minute (so a
+    coincidental tick cannot explain a prompt return), cancels `Shutdown` 10ms in; proves the loop returns
+    within well under a second specifically because of the shutdown signal.
+  - `TestStreamLoop_HeartbeatNeverAdvancesCursor` — 5ms heartbeat interval, zero real events ever appended;
+    proves `LastCursor` stays byte-identical to the starting cursor after several heartbeats.
+- `httptest_helper_test.go` / `eventstream_test.go` (package `eventstream_test`, real `httptest.Server` + real
+  `*http.Client`, mirroring `internal/delivery/httpapi/rundetail`'s own convention exactly) — a hand-rolled
+  SSE frame reader (`readSSEFrame`/`sseReader`, no precedent existed for reading the wire format this
+  codebase's own `sse.go` only ever WRITES) plus 13 end-to-end tests: query→subscribe race, reconnect/no
+  duplicate-or-skip, foreign-project-never-leaks (interleaved live, not just pre-seeded), heartbeat wire
+  format (comment-only, no `id:` line), retention-exceeded typed resync (never upgraded to SSE — asserted via
+  `Content-Type`), unknown-project 404-hidden, archived-project 404-hidden (byte-identical body to the
+  unknown-project case), missing-cursor 400, shutdown-closes-an-open-real-connection, and a real-socket
+  slow-client test (client never reads the body at all; `WriteTimeout=200ms` + `BufferSize=2` together bound
+  the disconnect).
+
+### Verify
+
+- **Query→subscribe race**: `TestWatchProjectEvents_QuerySubscribeRace` — an event appended strictly between
+  the simulated fetch (cursor=1) and the subscribe call is still delivered, no gap.
+- **Reconnect/duplicate**: `TestWatchProjectEvents_ReconnectNeverDuplicatesOrSkips` — reconnecting with the
+  last-received ID as cursor delivers exactly the remaining events once each.
+- **Foreign interleaving**: `TestWatchProjectEvents_ForeignProjectEventsNeverLeak` — both a pre-seeded and a
+  live-interleaved foreign-project event are confirmed absent from the stream.
+- **Heartbeat**: `TestWatchProjectEvents_HeartbeatWireFormat` (wire: comment line, no `id:`) +
+  `TestStreamLoop_HeartbeatNeverAdvancesCursor` (server-side: cursor state itself never moves).
+- **Retained-minimum resync**: `TestWatchProjectEvents_RetentionExceededReturnsTypedResync` — 409
+  `RESYNC_REQUIRED`, `Content-Type: application/json` (never SSE).
+- **Role downgrade/restart**: `TestStreamLoop_AuthorizationRevokedMidStreamStopsDelivery` (mid-stream, the
+  actual "stops delivering" behavior) + `TestWatchProjectEvents_ArchivedProjectReturns404Hidden` (a
+  reconnect/restart-equivalent fresh connection against an already-revoked project is rejected identically to
+  one that never existed).
+- **Cross-project leak**: `TestWatchProjectEvents_UnknownProjectReturns404Hidden` — plain 404 JSON, never even
+  an SSE-upgraded connection that could itself confirm existence via a heartbeat.
+- **Slow client**: `TestStreamLoop_SlowClientDisconnectsWithLastSafeCursor` (deterministic, unit-level) +
+  `TestWatchProjectEvents_SlowClientDisconnected` (real socket, client never reads).
+- **Bounded shutdown**: `TestStreamLoop_ShutdownSignalStopsPromptly` (unit-level, proves it is the signal, not
+  a coincidental tick) + `TestWatchProjectEvents_ShutdownClosesOpenStream` (real connection observably closes).
+
+`go build ./... && go vet ./... && go test ./...` clean repo-wide (full repo run, not just this package).
+
+### Kết quả
+
+New: `internal/delivery/httpapi/eventstream` (`eventstream.go`, `handler.go`, `stream.go`, `errors.go`, 3 test
+files, 19 new tests) implementing `GET /projects/{id}/events/watch`. `cmd/aw/serve.go` updated with the
+route's composition-root wiring (import + one `RegisterRoutes` call + `Shutdown: ctx`) — confirmed touched.
+No existing file's behavior changed. Every one of this task's own Verify bullets has direct test coverage;
+"role downgrade" specifically is proven against a test-only wrapped catalog since this codebase has no real
+production mutator for it yet (documented above and in code) rather than silently skipped. Cursor design
+(plain uint64 JournalPosition, not `CursorCodec`) and retention policy (resource-bound backlog probe, not a
+time window — `domain_events` is never pruned) are both documented in `eventstream.go`'s own package doc
+comment per this task's own instruction to record the reasoning, not just the choice.
+
 ## V6-09A — Rebuild worker, fenced cutover and recovery
 
 ### Thực hiện
