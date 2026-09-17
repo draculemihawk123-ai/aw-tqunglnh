@@ -9027,3 +9027,192 @@ production mutator for it yet (documented above and in code) rather than silentl
 (plain uint64 JournalPosition, not `CursorCodec`) and retention policy (resource-bound backlog probe, not a
 time window — `domain_events` is never pruned) are both documented in `eventstream.go`'s own package doc
 comment per this task's own instruction to record the reasoning, not just the choice.
+
+## V6-15E — Definition CLI
+
+### Thực hiện
+
+New package `internal/delivery/cli/definitions` (named "definitions", plural, not "definition" — the
+package imports `internal/domain/definition` unaliased throughout, and a package cannot share its own name
+with an unaliased import; mirrors why `internal/delivery/httpapi/definitions` is plural too). Read
+`internal/delivery/cli/sample_test.go` (mechanics) and `internal/delivery/cli/catalog` in full (the closest
+already-merged sibling and this task's own explicit style reference: package-level `cli.Default` + `init()`
+registration, `Dependencies{UoW, IDs, Now}`, own small view types) before starting, plus the entire
+`internal/delivery/httpapi/definitions` package (routes.go's 14-route/7-operation inventory, dto.go,
+authoritative.go, dispatch.go, document.go, create/validate/publish/detail/version/diff.go) as the
+composition shape this CLI leaf mirrors. `cmd/aw/definition.go` (the legacy pre-framework, direct-SQLite
+V2-11 CLI) was read only to confirm what NOT to copy — never imported, never extended, per this task's own
+explicit instruction.
+
+Sixteen `cli.Descriptor`s registered from this package's own `init()` into `cli.Default`: eight commands
+(`definition list|create|show|versions|validate|publish`, `version show|diff`) each registered twice, once
+per `Scope` (`cli.ScopeInstallation`/`cli.ScopeProject`) — ADR-028's own "definition global và project có
+thể cùng path CLI nhưng lần lượt là `--scope global` và `--project-id <id>`, map tới hai operationId khác
+nhau" example, named directly in `descriptor.go`'s own doc comment. `HTTPOperationID` matches
+`internal/delivery/httpapi/definitions/routes.go`'s own matching scoped `OperationID` 1:1 for seven of the
+eight commands; `definition list` is registered with `cli.CLILocalOperation` at both scopes (see the
+"one genuine gap, doubled" paragraph below). One CLI invocation implements both scoped halves of a command
+(unlike catalog's separate handler-per-route split, which HTTP's separate URL paths force): `--project-id`
+present selects the project-scoped half, absent selects the global half — there is no separate `--scope`
+flag since the two are mutually exclusive by construction.
+
+Per-Kind document dispatch (`dispatch.go`'s `compileClosure`/`workflowRequestFrom`/`buildCandidate`) is this
+package's own THIRD independent copy of the nine-kind dispatch shape (`cmd/aw/definition.go`'s pre-framework
+`compileClosureForKind` is explicitly NOT the precedent per this task's brief;
+`internal/delivery/httpapi/definitions/dispatch.go`'s `compileClosure` — V6-05, post-framework — is), adapted
+to return plain `(..., error)` instead of writing an `http.ResponseWriter`. This package's own flag surface
+omits an HTTP-parity `--dependencies` flag for validate/publish (undocumented in this task's own "Command
+surface to build" list) — a deliberate, documented scope trim, not a bug: every candidate this package
+compiles gets an empty `definition.DependencyManifest`, the same zero-value HTTP itself produces when a
+request body omits `"dependencies"`.
+
+**Diff design decision — PROMOTED to the application layer (option b), not a local third copy (option a).**
+Read `internal/delivery/httpapi/definitions/diff.go` in full first: `versionSummaryView`/`diffLineView`/
+`versionDiffView`/`newVersionDiffView`/`prettyJSONLines`/`diffLines` are all pure, no-I/O functions over two
+already-loaded `definition.VersionFields` values — no `http.ResponseWriter`/`http.Request` dependency
+anywhere in them (only the enclosing `diffDefinitionVersionsCore` handler, which stays HTTP-specific, touches
+either). That file's own doc comment gives the reason it was kept local at the time: "response-shaping code
+for one specific caller, not a reusable application-layer query" — true when HTTP was the only caller; false
+now that `aw version diff` is a second, independent caller needing byte-identical behavior. Extraction was
+clean and required no behavior change, so per this task's own "Prefer (b) if the httpapi diff.go code is
+cleanly extractable without behavior changes — check this first" instruction, promoted the six functions/
+three types verbatim into a new `internal/app/definitions/diff.go` (`VersionSummary`, `DiffLine`,
+`VersionDiff`, `DiffVersions(a, b) VersionDiff`, `prettyJSONLines`, `diffLines`) with the exact same JSON
+tags (`a`/`b`/`identical`/`sourceDiff`, `id`/`definitionId`/`kind`/`versionNumber`/`sourceHash`/
+`compiledHash`/`publishedBy`, `op`/`text`) — zero wire-shape change. `internal/delivery/httpapi/definitions/
+diff.go` was rewritten to call `appdefinitions.DiffVersions(a, b)` instead of carrying its own copy;
+`routes.go`'s two `ResponseSchema: versionDiffView{}` entries became `ResponseSchema: appdefinitions.
+VersionDiff{}`. `version_diff_test.go` (real-HTTP-server tests, unmodified) still passes unchanged, proving
+the wire contract is byte-identical pre/post-promotion. `cmd/aw/definition.go`'s own independent fourth copy
+(`runDefinitionDiff` and siblings, lines ~855-971) was deliberately left untouched — not this task's
+precedent, not this task's file to extend.
+
+**The one genuine gap, doubled: `aw definition list` had no application-layer query either.** The task
+brief names version-diff as "the one genuine gap" but auditing its own "Foundation to build on" list against
+the actual command surface surfaced a second: no HTTP route (`routes.go`'s 7-operation/14-route inventory has
+no "list every Definition of this Kind in this Scope" entry) and no `ports.DefinitionsRepository` method
+answered "which Definitions exist" — every existing caller (`GetDefinition`, `ListVersions`, `LoadVersion`)
+already requires knowing a specific ID first. Closing this required touching shared files outside this
+package (weighed against "Không làm: no direct registry/store access" and the doctrine's "Parallel work
+không sửa registry chung" caution) — judged low-collision-risk since `ports.DefinitionsRepository` is
+definitions-domain-specific and no other parallel V6-15 CLI leaf plausibly touches it. Added, additively:
+`ports.DefinitionSummary{ID, Fields}` + `DefinitionsRepository.ListDefinitions(ctx, kind, scope)
+([]DefinitionSummary, error)` (`internal/app/ports/unitofwork.go`); a real SQL implementation routed by Kind
+exactly like `GetDefinition`/`CreateDefinition` (`kind IS ?`/`project_id IS ?` filtering, `ORDER BY id`) in
+`internal/adapters/sqlite/definitions.go`; an in-memory equivalent in `internal/app/ports/fake/unitofwork.go`;
+and `appdefinitions.ListDefinitions` (`internal/app/definitions/queries.go`) wrapping `WithReadOnly` — this
+package (the CLI leaf) itself still never touches `internal/adapters/sqlite` directly, satisfying "no direct
+registry/store access" literally. `RunDefinitionList`'s own `cli.Descriptor`s carry `cli.CLILocalOperation`
+(the same sentinel `aw evidence verify` already uses for a leaf with no HTTP counterpart) since there is
+genuinely no HTTP operationId to mirror — a real feature, not a stub: `--kind` required (same per-Kind
+routing convention as every sibling command), `--project-id` optional.
+
+`cmd/aw/main.go`/`cmd/aw/cli.go` untouched — confirmed via `git status --short` before every commit —
+composing real `os.Args` routing to this leaf is V6-15O's own future job, per this task's own CRITICAL scope
+rule.
+
+### Test
+
+New tests only, in `internal/delivery/cli/definitions` (`definitions_test.go`, `descriptor_test.go`,
+`create_test.go`, `show_test.go`, `list_test.go`, `versions_test.go`, `validate_test.go`, `publish_test.go`,
+`version_test.go`), all against `fake.UnitOfWork` with a deterministic `idsource.Sequential` and a fixed
+`Now`, mirroring `catalog`'s own `newTestDeps` idiom — a fresh, isolated `Dependencies` per test. Document
+fixtures reuse `internal/delivery/httpapi/definitions/definitions_test.go`'s own `validBlockDocumentJSON`/
+`invalidBlockDocumentJSON`/`altBlock` shapes and `version_diff_test.go`'s skill-document shape (with one real
+fix — see below).
+
+One real bug found and fixed during test-writing: `RunDefinitionPublish`'s execute closure originally
+returned `appdefinitions.PublishDefinitionVersion`'s raw `definition.VersionFields` result directly as the
+`cli.Dispatch` `Execute` return value. `definition.VersionFields` carries no exported fields at all (V2-01's
+immutability discipline), so `json.MarshalIndent` silently encoded a FRESH (non-replayed) publish result as
+`{}` — `TestRunDefinitionPublish_FreshPublish_ReturnsCompiledVersion` caught this immediately
+(`VersionNumber:0 CompiledHash:""`). Fixed by wrapping the closure's return value in `newVersionFieldsView(...)`
+before returning it, mirroring `internal/delivery/httpapi/definitions/publish.go`'s own identical wrap for
+the same reason; a REPLAYED result never reaches this code path at all (`cli.Dispatch`'s own receipt
+short-circuit returns `json.RawMessage` straight from storage, already in the byte-identical shape since
+`PublishDefinitionVersion`'s own receipt-write uses the same field/tag set). `RunDefinitionCreate` had no
+equivalent bug: `appdefinitions.CreateDefinitionResult` is already exported/JSON-tagged.
+
+A second, unrelated bug found in this task's own copied test fixture (not production code): the
+`validSkillDocumentJSON` constant copied from `internal/delivery/httpapi/definitions/version_diff_test.go`
+is missing `provenance.lastVerified`/`revision`, which the current `skill.ValidateDocument` schema requires
+(HE-03-M06/HE-04-M04) — that HTTP-side test still happens to pass (it asserts 400, which it gets, but for an
+unrelated reason: the SKILL publish itself already fails validation, so the diff call's own `b` query
+parameter ends up empty). This task's own copy was fixed (added `"lastVerified": "2026-01-01T00:00:00Z"`,
+matching `internal/domain/skill/validate_test.go`'s own `validDocument()` fixture) so
+`TestRunVersionDiff_CrossKind_UsageError` genuinely exercises cross-Kind rejection rather than accidentally
+passing via a missing-parameter path. The pre-existing HTTP-side fixture drift itself was left untouched —
+outside this task's own package, not a regression this task introduced.
+
+`ports.DefinitionsRepository.ListDefinitions`'s own real SQL had zero coverage anywhere in the repo until
+this task (the in-memory `fake` covers the same interface contract, but never the real SQL; `GetDefinition`
+before it has the same gap — no direct sqlite-level test, only indirect coverage via httpapi's real-server
+tests — but nothing outside this task's own CLI-only leaf calls `ListDefinitions` at all, so there is no
+indirect coverage to lean on). Added two new tests directly to `internal/adapters/sqlite/definitions_test.go`:
+`TestListDefinitions_FiltersByKindAndScope` (real `kind = ? AND project_id IS ?` filtering — a same-scope,
+different-Kind definition and a same-Kind, different-scope definition must both never leak into a listing)
+and `TestListDefinitions_RoutesWorkflowToWorkflowDefinitionsTable` (WORKFLOW reads `workflow_definitions`,
+never the shared `definitions` table, mirroring `GetDefinition`/`CreateDefinition`'s own routing) — both
+against a real `*Store`/`NewUnitOfWork`, not the fake.
+
+`go build ./... && go vet ./... && go test ./...` run repo-wide, clean (including
+`internal/archtest`'s `TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters` and
+`TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage`, which walk all of `./internal/delivery/cli/...`
+and now cover this new subpackage too — both pass, since this package only ever reaches
+`internal/delivery/httpapi`/`internal/app/definitions`/`internal/app/ports`, never SQLite/Git/provider/worker
+directly). One failure in the full repo-wide run, in a package this task never touched:
+`internal/app/message`'s `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing`
+(Windows file-rename "Access is denied" during artifact finalize) — the exact same test name and exact same
+failure signature already documented as a confirmed pre-existing, environmental Windows flake in V6-15D's own
+checklist entry; re-ran in isolation (`-run ... -count=1`) and it failed identically both times, consistent
+with an environmental Windows file-locking flake rather than a state leak from a prior test, and `go list
+-deps ./internal/app/message/...` confirms that package has zero dependency on `internal/delivery/cli`,
+`internal/delivery/httpapi/definitions`, `internal/app/definitions` or `internal/adapters/sqlite`'s
+definitions code (only a transitive, unrelated dependency on `internal/app/ports`, whose only change this
+task made — one new interface method + one new struct type — cannot affect artifact-store file renaming).
+
+### Verify
+
+- **Scope negative matrix**: `TestRunDefinitionShow_ScopeNegativeMatrix` — table-driven, all five
+  combinations: global shown at global (found), global shown at a project (hidden), a project's own
+  Definition shown at that same project (found), shown at global (hidden), shown at a DIFFERENT project
+  (hidden) — both "does not exist" and "exists in the wrong scope" collapse to the identical
+  `ErrDefinitionNotFound`, never distinguishable. Mirrored for versions (`TestRunDefinitionVersions_WrongScope_NotFound`),
+  validate (`TestRunDefinitionValidate_WrongScope_NotFound`), publish (`TestRunDefinitionPublish_WrongScope_NotFound`),
+  version show (`TestRunVersionShow_WrongScope_NotFound`) and version diff
+  (`TestRunVersionDiff_CrossScope_NotFound` — one operand global, one project-scoped, via the global route).
+  `TestRunDefinitionList_ScopeIsolation` proves the new `list` query itself never leaks across scope or Kind.
+- **Diagnostics**: `TestRunDefinitionValidate_InvalidDocument_ReturnsStructuredDiagnostics` — an empty `{}`
+  BLOCK document returns `valid:false` plus a non-empty, per-field `diagnostics` array on stdout (never a
+  bare error string), and still a non-nil Go error (so exit-code classification stays correct) that is NOT a
+  `cli.UsageError` (a document-content problem, not a bad invocation). `TestRunDefinitionValidate_ValidDocument_ReturnsCompiledVersionFields`
+  covers the positive twin (`valid:true`, real `compiledHash`, empty `diagnostics`) and also proves a dry run
+  never persists (`RunDefinitionVersions` afterward returns zero items).
+- **Replay**: `TestRunDefinitionCreate_ReplaySameIdempotencyKey_NeverCreatesTwice` and
+  `TestRunDefinitionPublish_ReplaySameIdempotencyKey_NeverCreatesTwice` — the identical `--idempotency-key`
+  resubmitted returns `Replayed:true` with the exact original result, and a direct follow-up query
+  (`RunDefinitionVersions`) confirms no second row was ever created.
+- **Diff/pin output**: `TestRunVersionDiff_Identical` (byte-identical content → `identical:true`, every line
+  `"equal"`) and `TestRunVersionDiff_Different` (genuinely different content → `identical:false`, at least
+  one `"add"` and one `"remove"` line) prove a real add/remove/change diff via the promoted
+  `appdefinitions.DiffVersions`. `TestRunVersionShow_PinsExactVersion_NeverLatest` publishes two distinct
+  Versions of the same Definition and proves `aw version show <id>` resolves each to its OWN distinct
+  `versionNumber`/`compiledHash` by its exact VersionID — never coalescing to "whichever is newest".
+
+### Kết quả
+
+New package `internal/delivery/cli/definitions` (`doc.go`, `dependencies.go`, `descriptor.go`, `helpers.go`,
+`views.go`, `dispatch.go`, `list.go`, `create.go`, `show.go`, `versions.go`, `validate.go`, `publish.go`,
+`version.go` + 9 `_test.go` files, 30 new test functions, one of them table-driven across 5 scope
+combinations). Sixteen `cli.Descriptor`s registered via this
+package's own `init()`. Diff logic promoted from `internal/delivery/httpapi/definitions/diff.go` to
+`internal/app/definitions/diff.go` (`DiffVersions`), now the single shared implementation both the HTTP diff
+route and `aw version diff` call — zero wire-shape change, `version_diff_test.go` unmodified and still
+passing. `ports.DefinitionsRepository.ListDefinitions` added (sqlite + fake, plus
+`appdefinitions.ListDefinitions`, plus two new real-SQLite tests in `internal/adapters/sqlite/definitions_test.go`)
+to close the `aw definition list` gap the task's own foundation section did not flag; `RunDefinitionList`
+registered as `cli.CLILocalOperation` since no HTTP route exists to mirror. `cmd/aw/main.go`/`cmd/aw/cli.go`
+and `cmd/aw/definition.go` all untouched. `go build/vet/test ./...` clean repo-wide except one confirmed
+pre-existing, environmental Windows flake in an untouched package (`internal/app/message`'s
+`TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` — see Test above). PR targets
+`master`.
