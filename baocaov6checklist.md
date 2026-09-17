@@ -9430,3 +9430,97 @@ and `cmd/aw/definition.go` all untouched. `go build/vet/test ./...` clean repo-w
 pre-existing, environmental Windows flake in an untouched package (`internal/app/message`'s
 `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` — see Test above). PR targets
 `master`.
+
+## Post-merge fix — V6-09A `TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild` (3 attempts, real root cause found on the 3rd)
+
+### Bối cảnh
+
+After V6-09A merged, this test failed for real (not a shared-runner-load flake) on the very next PR's CI to
+rebase past it: `internal/app/projectionrebuildworker/fencing_sqlite_test.go`'s
+`TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild` asserts the live consumer's own checkpoint
+cursor keeps advancing (via 5 concurrent `ApplyBatch` rounds, 2ms apart) while a rebuild runs concurrently and
+cuts over — but the rebuild goroutine's own `Deps` came from the shared `workerFixture.deps()` helper, whose
+`ShadowLeaseTTL: 30 * time.Second` is production-scale, not test-scale. `Deps.ShadowLeaseTTL`'s own doc comment
+already says it should be "deliberately short... to bound the live consumer's own post-cutover handoff wait" —
+the test fixture's 30s value directly contradicted that. With a 30s TTL and only ~10ms of real time across all
+5 live rounds, if cutover happened early (likely for a 1-event test dataset), EVERY live round would
+deterministically hit the documented (and otherwise correctly handled) post-cutover `ErrOptimisticConflict`,
+making the test's own final "cursor made progress" assertion structurally unwinnable — a genuine test-timing
+design bug, not CI noise, confirmed by local reproduction independent of any CI load.
+
+### Thực hiện
+
+**First attempt** (did not fully hold): gave this one test its own short-TTL `Deps`
+(`ShadowLeaseTTL: 10 * time.Millisecond`, built from `fx.deps()` then overridden) and widened the live-writer's
+own inter-round sleep from 2ms to 50ms (5x margin over the new TTL), mirroring V6-10E's own earlier
+TTL-vs-sleep fix. Passed 20/20 locally (Windows) — but failed again on the VERY FIRST CI attempt, on
+`contract (ubuntu-latest)`, a fast/unloaded job, not even the heavily-contended V0-12 job. This proved the bug
+was not just "needs a bigger fixed margin": this Store's `WithSerializedWrite` is a single GLOBAL write lock
+(`txrunner.go`'s own BEGIN-IMMEDIATE serialization) across the WHOLE store, so "concurrent" here is really a
+real-time-ordered interleaving of write transactions resolved by whatever the OS/Go scheduler and lock-grant
+order happen to produce — under different scheduling behavior than this developer's own machine, the rebuild
+side can win every lock acquisition and reach cutover before the live side's very first attempt even runs, and
+a FIXED sleep is only ever a probabilistic bet against that ordering, not a guarantee.
+
+**Second, final fix**: replaced the fixed-cadence loop with an explicit retry-on-`ErrOptimisticConflict` loop
+(5ms backoff, 2s deadline per logical event) — a conflicted round is retried until it definitively succeeds or
+the deadline is exhausted, rather than moving on after exactly one attempt. This directly proves the documented
+self-healing property deterministically instead of hoping wall-clock spacing happens to have cleared an
+arbitrary TTL by the time of the next fixed-interval attempt — immune to scheduling/lock-grant-order variance
+by construction, not by a wider margin.
+
+### Test
+
+`go test ./internal/app/projectionrebuildworker/... -run TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild -count=50`
+— 50/50 clean, both default `GOMAXPROCS` and `GOMAXPROCS=1` (simulating a constrained CI scheduler — the
+leading theory for why the first fix's fixed-sleep assumption broke). `go test ./internal/app/projectionrebuildworker/... -count=5`
+— full package stable across 5 repeated runs. `go build/vet/test ./...` clean repo-wide, zero failures
+anywhere (not even the usual `internal/app/message` flake this run).
+
+### Third attempt — the actual root cause (a wrong assertion target, not a timing problem at all)
+
+The SECOND fix (retry-on-conflict) ALSO failed on its own first real CI run (`Linux race and stability
+(V0-12)`), with the exact same symptom: `liveErrs` empty (no unexpected/unrecovered error — every live round
+DID eventually succeed) yet `after.Cursor <= before.Cursor`. This ruled out timing entirely and pointed at the
+assertion itself: the test hardcoded `fx.getCheckpoint(t, 1)` for BOTH `before` and `after`, but this rebuild
+(SNAPSHOTTING+BUILDING+CUTTING_OVER for a 1-event dataset) reliably cuts over near-instantly — almost certainly
+before the live-writer goroutine's very first `ApplyBatch` call, given each of the live writer's OWN rounds
+needs its own preceding `appendEvent` transaction too, one more `WithSerializedWrite` round-trip than the
+rebuild needs per step. Once cutover has happened, `ApplyBatch`'s own `GetActiveGeneration` call correctly
+routes EVERY subsequent live round into generation 2, never generation 1 — exactly the correct PRODUCTION
+behavior this whole test exists to prove doesn't corrupt or block the live consumer. Checking generation 1's
+own (now-frozen, superseded) checkpoint was simply the WRONG assertion target the instant cutover completed
+before any live round ran — no amount of TTL widening or retry logic could ever have fixed this, because it
+was never a timing bug.
+
+### Thực hiện (fix 3, final)
+
+Changed the final assertion to check `fx.getCheckpoint(t, *op.ShadowGeneration)` — the DYNAMIC, actually-active
+generation after a confirmed `SUCCEEDED` operation — instead of a hardcoded `1`. This is correct regardless of
+exactly when cutover happens relative to the live writer's 5 rounds: if cutover is late, the live writer's own
+rounds directly advance generation 1, and CUTTING_OVER's own bounded catch-up rounds independently replay the
+SAME events into generation 2 before cutover (so generation 2's cursor still advances); if cutover is early (the
+observed, apparently near-universal case for this tiny dataset), the live writer's rounds correctly follow the
+new active generation and advance it directly. Either way, `*op.ShadowGeneration`'s own cursor advancing past
+`before.Cursor` (still read from generation 1, i.e. W0) is the one invariant that holds in both orderings.
+
+### Test (fix 3)
+
+`go test ./internal/app/projectionrebuildworker/... -run TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild -count=100`
+— 100/100 clean under BOTH default `GOMAXPROCS` and `GOMAXPROCS=1`. `go test ./internal/app/projectionrebuildworker/... -count=5`
+— full package stable. `go build/vet/test ./...` clean repo-wide, zero failures anywhere.
+
+### Kết quả
+
+A real, reproducible bug in already-merged V6-09A test code, found by this session's own diff-scope
+investigation of a CI failure that initially looked like the familiar shared-runner-load pattern but wasn't
+(newly-merged code exercised for the first time under real CI, not a long-standing flake) — and BOTH of the
+first two fix attempts (wider fixed-margin sleep, then retry-on-conflict) were themselves insufficient, each
+caught by that very fix's own subsequent CI run rather than assumed correct from local-only passes alone. The
+real bug was never about timing margins at all: it was a hardcoded assertion target (generation 1) that stopped
+being the right thing to check the moment cutover — which happens near-instantly for a near-empty test dataset
+— made generation 2 the active one. **Lesson**: when a "concurrent" test keeps failing in the exact same way
+across multiple timing-focused fixes (same empty-errors-but-no-progress symptom, not a new/different failure
+each time), stop tuning timing constants and re-examine whether the assertion is even checking the right
+STATE, not just whether it's checking at the right TIME — a wrong assertion target produces the same symptom
+as a genuine race, and no amount of retry/margin tuning will ever fix it.

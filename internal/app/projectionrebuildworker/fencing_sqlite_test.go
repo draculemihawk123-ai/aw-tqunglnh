@@ -132,31 +132,67 @@ func TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild(t *testi
 	created := fx.requestRebuild(t, "req-1")
 	job, _ := fx.claimJob(t, "rebuild-worker", time.Hour)
 
+	// Deliberately short — see Deps.ShadowLeaseTTL's own doc comment
+	// ("deliberately short... to bound the live consumer's own
+	// post-cutover handoff wait"). fx.deps()'s own 30s default is
+	// production-scale, not test-scale.
+	rebuildDeps := fx.deps()
+	rebuildDeps.ShadowLeaseTTL = 10 * time.Millisecond
+
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	var rebuildErr error
 	go func() {
 		defer wg.Done()
-		rebuildErr = projectionrebuildworker.ExecuteProjectionRebuild(fx.ctx, fx.deps(), job)
+		rebuildErr = projectionrebuildworker.ExecuteProjectionRebuild(fx.ctx, rebuildDeps, job)
 	}()
 
+	// This goroutine's own single global `WithSerializedWrite` lock
+	// (this Store's BEGIN-IMMEDIATE write serialization, txrunner.go) means
+	// "concurrent" here is really a real-time-ordered INTERLEAVING of write
+	// transactions from both goroutines, not two independent wall clocks —
+	// under load (or even on a fast, unloaded CI runner with different
+	// scheduling/lock-grant behavior than this developer's own machine) the
+	// rebuild side can legitimately win every lock acquisition and reach
+	// CUTTING_OVER/cutover before the live side's very first attempt even
+	// runs, and once past cutover EVERY live attempt can keep landing inside
+	// the still-fresh post-cutover lease window if it is retried too eagerly
+	// relative to that lease's own TTL. A FIXED sleep between attempts is a
+	// probabilistic bet against exactly this ordering (which failed for real
+	// on CI once already — see this file's own git history) — retrying a
+	// conflicted round instead of moving on, until it definitively either
+	// succeeds or exhausts a generous deadline, directly proves the
+	// documented self-healing property deterministically rather than hoping
+	// wall-clock spacing happens to have cleared an arbitrary TTL by the
+	// time of the next attempt.
 	liveErrs := make([]error, 0, 5)
 	var liveErrsMu sync.Mutex
 	go func() {
 		defer wg.Done()
 		for i := 0; i < 5; i++ {
 			fx.appendEvent(t, "ScopeExpansionRequested", 1, `{"requestId":"live-`+string(rune('a'+i))+`","familyId":"family-1","projectId":"project-1","referencedWorkItemId":"work-item-1","grantCount":1}`)
-			_, err := projection.ApplyBatch(fx.ctx, fx.uow, fx.catalog, projection.ApplyBatchRequest{
-				ProjectID: "project-1", ProjectionName: testProjectionName, Owner: "live-consumer",
-				TTL: 30 * time.Second, BatchSize: 100, Now: time.Now().UTC(), IDs: fx.ids,
-			})
-			if err != nil {
-				liveErrsMu.Lock()
-				liveErrs = append(liveErrs, err)
-				liveErrsMu.Unlock()
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				_, err := projection.ApplyBatch(fx.ctx, fx.uow, fx.catalog, projection.ApplyBatchRequest{
+					ProjectID: "project-1", ProjectionName: testProjectionName, Owner: "live-consumer",
+					TTL: 30 * time.Second, BatchSize: 100, Now: time.Now().UTC(), IDs: fx.ids,
+				})
+				if err == nil {
+					break
+				}
+				if !errors.Is(err, ports.ErrOptimisticConflict) || time.Now().After(deadline) {
+					liveErrsMu.Lock()
+					liveErrs = append(liveErrs, err)
+					liveErrsMu.Unlock()
+					break
+				}
+				// A conflict this soon can only be the documented,
+				// bounded post-cutover handoff gap (rebuildDeps.ShadowLeaseTTL
+				// above) — retry past it rather than treating one transient
+				// conflict as the round's own final outcome.
+				time.Sleep(5 * time.Millisecond)
 			}
-			time.Sleep(2 * time.Millisecond)
 		}
 	}()
 
@@ -165,17 +201,12 @@ func TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild(t *testi
 	if rebuildErr != nil {
 		t.Fatalf("concurrent ExecuteProjectionRebuild: %v", rebuildErr)
 	}
-	// A live round that lands in the SHORT window right after cutover —
-	// before the rebuild worker's own now-orphaned lease on the (now
-	// newly-active) generation naturally expires — gets the documented,
-	// retryable ErrOptimisticConflict (see this package's own doc
-	// comment, "Design decision: the cutover lease IS the projection
-	// consumer lease," on this exact, bounded, self-healing handoff gap).
-	// Only some OTHER, undocumented error would be a real bug.
+	// Only a live round that never recovered from the documented,
+	// retryable post-cutover handoff conflict within its own generous
+	// deadline (or one that hit some OTHER, undocumented error) reaches
+	// here — either is a real bug, never expected.
 	for _, err := range liveErrs {
-		if !errors.Is(err, ports.ErrOptimisticConflict) {
-			t.Fatalf("concurrent live ApplyBatch call errored with something other than the documented post-cutover handoff conflict: %v", err)
-		}
+		t.Fatalf("concurrent live ApplyBatch call never recovered: %v", err)
 	}
 
 	op := fx.getOperation(t, created.OperationID)
@@ -183,11 +214,33 @@ func TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild(t *testi
 		t.Fatalf("op.Phase = %s, want SUCCEEDED", op.Phase)
 	}
 
-	// Generation 1's own checkpoint kept advancing throughout — the live
-	// consumer was never blocked, delayed-into-error, or corrupted by the
-	// concurrently-running shadow build.
-	after := fx.getCheckpoint(t, 1)
+	// Checked against whichever generation is ACTIVE now — NOT hardcoded
+	// generation 1. Since op.Phase is SUCCEEDED, cutover definitely
+	// happened, so the active generation is now *op.ShadowGeneration
+	// (always 2 in this fixture, generation 1 having started the test as
+	// the only one). Checking a hardcoded "1" here would be WRONG once
+	// cutover has happened: a live ApplyBatch call always follows
+	// whichever generation GetActiveGeneration reports (correct production
+	// behavior — see ApplyBatch's own doc comment), so any live round that
+	// lands AFTER cutover correctly writes into generation 2, not 1 — and
+	// this test's own rebuild reliably cuts over near-instantly for a
+	// 1-event dataset (SNAPSHOTTING+BUILDING+CUTTING_OVER all trivially
+	// caught-up), so in practice EVERY live round lands post-cutover.
+	// Checking the dynamic *op.ShadowGeneration's own checkpoint instead
+	// correctly proves progress regardless of exactly when cutover
+	// happened relative to the live writer's own 5 rounds: if cutover was
+	// early, the live writer's rounds directly advance it; if cutover was
+	// late, CUTTING_OVER's own bounded catch-up rounds independently
+	// replay the same events the live writer applied to generation 1,
+	// advancing generation 2's cursor identically either way — proving
+	// the live consumer was never blocked, delayed-into-error, or
+	// corrupted by the concurrently-running shadow build, without
+	// depending on which generation number ended up doing the work.
+	if op.ShadowGeneration == nil {
+		t.Fatal("op.ShadowGeneration = nil after SUCCEEDED, want the cutover generation")
+	}
+	after := fx.getCheckpoint(t, *op.ShadowGeneration)
 	if after.Cursor <= before.Cursor {
-		t.Fatalf("generation 1 checkpoint cursor = %d, want > %d (the live consumer's own concurrent rounds made real progress)", after.Cursor, before.Cursor)
+		t.Fatalf("active generation %d checkpoint cursor = %d, want > %d (the live consumer's own concurrent rounds made real progress)", *op.ShadowGeneration, after.Cursor, before.Cursor)
 	}
 }
