@@ -39,6 +39,7 @@ import (
 	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
 	httpkanban "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/kanban"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
+	httpprojectionrebuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/projectionrebuild"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
 	httpreleaseset "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
@@ -502,6 +503,11 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// plain net/http.Server.Shutdown alone cannot do this for a long-lived
 	// streaming handler).
 	eventstream.RegisterRoutes(routes, eventstream.Dependencies{UnitOfWork: uow, Matcher: matcher, Shutdown: ctx})
+	// V6-09B: projection status/rebuild-request/rebuild-operation-status
+	// routes (internal/delivery/httpapi/projectionrebuild) — an additive
+	// routes.Register call only, no shared setup above touched. Reuses the
+	// SAME uow every other route registration in this process already uses.
+	httpprojectionrebuild.RegisterRoutes(routes, httpprojectionrebuild.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
 	// A later endpoint task's own composition-root wiring adds its own
 	// routes.Register call here without needing to touch this file's shared
 	// setup (contract point 8: "Parallel work không sửa registry chung").
