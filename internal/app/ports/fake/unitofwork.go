@@ -593,6 +593,47 @@ func (d *DefinitionsRepository) GetWorkflowVersion(_ context.Context, versionID 
 	return workflow.WorkflowVersion{}, fmt.Errorf("fake: %w: workflow version %s", ports.ErrPersistenceNotFound, versionID)
 }
 
+// ListDefinitions mirrors sqlite's definitionsRepository.ListDefinitions
+// (V6-15E): every Definition of kind whose own Scope exactly matches scope
+// (sameDefinitionScope — global only matches global, a project only
+// matches that same project), ordered by ID for the same stable, diffable
+// listing the real repository's own `ORDER BY id` produces. Returns an
+// empty, non-nil slice when nothing matches, never
+// ports.ErrPersistenceNotFound — "no rows" is ordinary for a list query.
+func (d *DefinitionsRepository) ListDefinitions(_ context.Context, kind definition.Kind, scope definition.Scope) ([]ports.DefinitionSummary, error) {
+	result := make([]ports.DefinitionSummary, 0)
+	if kind == definition.KindWorkflow {
+		for id, wfDefinition := range d.workflowDefinitions {
+			defScope := definition.GlobalScope()
+			if wfDefinition.ProjectID != nil {
+				defScope = definition.ProjectScope(*wfDefinition.ProjectID)
+			}
+			if !sameDefinitionScope(defScope, scope) {
+				continue
+			}
+			result = append(result, ports.DefinitionSummary{
+				ID: id,
+				Fields: definition.Fields{
+					Kind: definition.KindWorkflow, Scope: defScope,
+					Name: wfDefinition.Name, Status: wfDefinition.Status, Version: wfDefinition.Version,
+				},
+			})
+		}
+	} else {
+		for id, record := range d.definitions {
+			if record.Kind != kind || !sameDefinitionScope(record.Scope, scope) {
+				continue
+			}
+			result = append(result, ports.DefinitionSummary{
+				ID:     id,
+				Fields: definition.Fields{Kind: record.Kind, Scope: record.Scope, Name: record.Name, Status: record.Status, Version: 1},
+			})
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
 func sameDefinitionScope(a, b definition.Scope) bool {
 	if a.IsGlobal() != b.IsGlobal() {
 		return false

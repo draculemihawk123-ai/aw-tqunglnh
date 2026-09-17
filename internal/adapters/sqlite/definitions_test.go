@@ -354,6 +354,118 @@ func TestMigration0004_WorkflowRunSurvivesPublishStartRestartFinalize(t *testing
 	}
 }
 
+// TestListDefinitions_FiltersByKindAndScope is V6-15E's own real-SQLite
+// coverage for definitionsRepository.ListDefinitions (added by that task —
+// no caller anywhere reached this SQL before it, and
+// internal/delivery/cli/definitions' own tests exercise the identical
+// ports.DefinitionsRepository contract only against the in-memory fake,
+// never real SQLite), proving the real `kind = ? AND project_id IS ?`
+// filtering and workflow_definitions routing actually work against a real
+// database: two BLOCK definitions in different scopes (global, project-a)
+// and one SKILL definition in project-a (a different Kind, same scope)
+// must never cross-contaminate a listing.
+func TestListDefinitions_FiltersByKindAndScope(t *testing.T) {
+	store := openDefinitionsTestStore(t, "agentkit-definitions-list-filter.db")
+	seedTwoProjects(t, store)
+	ctx := context.Background()
+	uow := NewUnitOfWork(store)
+
+	mustCreateDefinition := func(id string, kind definition.Kind, scope definition.Scope, name string) {
+		t.Helper()
+		err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+			return tx.Definitions().CreateDefinition(ctx, id, kind, scope, name, time.Now().UTC())
+		})
+		if err != nil {
+			t.Fatalf("CreateDefinition(%s): %v", id, err)
+		}
+	}
+	mustCreateDefinition("blk-global", definition.KindBlock, definition.GlobalScope(), "global block")
+	mustCreateDefinition("blk-proj-a", definition.KindBlock, definition.ProjectScope("project-a"), "proj-a block")
+	mustCreateDefinition("skl-proj-a", definition.KindSkill, definition.ProjectScope("project-a"), "proj-a skill")
+
+	list := func(kind definition.Kind, scope definition.Scope) []ports.DefinitionSummary {
+		t.Helper()
+		var result []ports.DefinitionSummary
+		err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+			summaries, err := tx.Definitions().ListDefinitions(ctx, kind, scope)
+			result = summaries
+			return err
+		})
+		if err != nil {
+			t.Fatalf("ListDefinitions(%s): %v", kind, err)
+		}
+		return result
+	}
+
+	globalBlocks := list(definition.KindBlock, definition.GlobalScope())
+	if len(globalBlocks) != 1 || globalBlocks[0].ID != "blk-global" {
+		t.Fatalf("ListDefinitions(BLOCK, global) = %+v, want exactly [blk-global]", globalBlocks)
+	}
+	if globalBlocks[0].Fields.Kind != definition.KindBlock || !globalBlocks[0].Fields.Scope.IsGlobal() {
+		t.Fatalf("global block Fields = %+v, want Kind=BLOCK Scope=global", globalBlocks[0].Fields)
+	}
+
+	projABlocks := list(definition.KindBlock, definition.ProjectScope("project-a"))
+	if len(projABlocks) != 1 || projABlocks[0].ID != "blk-proj-a" {
+		t.Fatalf("ListDefinitions(BLOCK, project-a) = %+v, want exactly [blk-proj-a]", projABlocks)
+	}
+
+	// A different Kind in the SAME scope must never leak into a BLOCK
+	// listing — proves the `kind = ?` filter, not just the scope filter.
+	projASkills := list(definition.KindSkill, definition.ProjectScope("project-a"))
+	if len(projASkills) != 1 || projASkills[0].ID != "skl-proj-a" {
+		t.Fatalf("ListDefinitions(SKILL, project-a) = %+v, want exactly [skl-proj-a]", projASkills)
+	}
+
+	// A different project (project-b, seeded but never used above) and an
+	// entirely unused Kind must both come back empty, not an error.
+	empty := list(definition.KindBlock, definition.ProjectScope("project-b"))
+	if len(empty) != 0 {
+		t.Fatalf("ListDefinitions(BLOCK, project-b) = %+v, want empty", empty)
+	}
+}
+
+// TestListDefinitions_RoutesWorkflowToWorkflowDefinitionsTable proves
+// KindWorkflow reads workflow_definitions (never the shared definitions
+// table), mirroring GetDefinition/CreateDefinition's own routing — a
+// WORKFLOW definition and a same-scope BLOCK definition must never appear
+// in each other's listing.
+func TestListDefinitions_RoutesWorkflowToWorkflowDefinitionsTable(t *testing.T) {
+	store := openDefinitionsTestStore(t, "agentkit-definitions-list-workflow.db")
+	ctx := context.Background()
+	uow := NewUnitOfWork(store)
+
+	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		if err := tx.Definitions().CreateDefinition(ctx, "wf-1", definition.KindWorkflow, definition.GlobalScope(), "a workflow", time.Now().UTC()); err != nil {
+			return err
+		}
+		return tx.Definitions().CreateDefinition(ctx, "blk-1", definition.KindBlock, definition.GlobalScope(), "a block", time.Now().UTC())
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	var workflows, blocks []ports.DefinitionSummary
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		workflows, err = tx.Definitions().ListDefinitions(ctx, definition.KindWorkflow, definition.GlobalScope())
+		if err != nil {
+			return err
+		}
+		blocks, err = tx.Definitions().ListDefinitions(ctx, definition.KindBlock, definition.GlobalScope())
+		return err
+	}); err != nil {
+		t.Fatalf("ListDefinitions: %v", err)
+	}
+
+	if len(workflows) != 1 || workflows[0].ID != "wf-1" || workflows[0].Fields.Kind != definition.KindWorkflow {
+		t.Fatalf("ListDefinitions(WORKFLOW) = %+v, want exactly [wf-1]", workflows)
+	}
+	if len(blocks) != 1 || blocks[0].ID != "blk-1" || blocks[0].Fields.Kind != definition.KindBlock {
+		t.Fatalf("ListDefinitions(BLOCK) = %+v, want exactly [blk-1]", blocks)
+	}
+}
+
 // TestMigration0004_WorkflowRunsForeignKeyUnchanged is V2-02's own "FK
 // workflow_runs.workflow_version_id không đổi" required test.
 func TestMigration0004_WorkflowRunsForeignKeyUnchanged(t *testing.T) {

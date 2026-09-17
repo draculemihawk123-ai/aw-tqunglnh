@@ -99,7 +99,7 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 	})
 	reg.Register(httpapi.RouteDescriptor{
 		Method: http.MethodGet, Path: "/definitions/versions/diff", OperationID: "diffDefinitionVersions",
-		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: versionDiffView{},
+		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: appdefinitions.VersionDiff{},
 		Handler: handleDiffDefinitionVersions(deps),
 	})
 
@@ -135,7 +135,7 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 	})
 	reg.Register(httpapi.RouteDescriptor{
 		Method: http.MethodGet, Path: "/projects/{projectId}/definitions/versions/diff", OperationID: "diffProjectDefinitionVersions",
-		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: versionDiffView{},
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: appdefinitions.VersionDiff{},
 		Handler: handleDiffProjectDefinitionVersions(deps),
 	})
 }
