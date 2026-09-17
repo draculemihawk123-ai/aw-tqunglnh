@@ -110,7 +110,6 @@ type ApplyBatchOutcome struct {
 // where rows were applied but the cursor was not advanced, or vice versa,
 // regardless of when a crash happens.
 func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req ApplyBatchRequest) (ApplyBatchOutcome, error) {
-	var outcome ApplyBatchOutcome
 	var generation uint64
 	var lease ports.ConsumerLease
 
@@ -135,15 +134,94 @@ func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req
 	if err != nil {
 		return ApplyBatchOutcome{}, err
 	}
-	outcome.Generation = generation
-	outcome.LeaseAcquired = true
-	outcome.NewCursor = lease.Cursor
+	return applyLeasedBatch(ctx, uow, catalog, generation, lease, req.ProjectID, req.ProjectionName, req.BatchSize, req.Now, req.IDs)
+}
+
+// ReplayGenerationBatchRequest configures one ReplayGenerationBatch round —
+// ApplyBatchRequest's own shadow-build counterpart (V6-09A,
+// docs/design/08-v6-api-projections.md V6-09A), differing only in that the
+// caller supplies Generation directly rather than this package resolving
+// "whichever generation is currently active".
+type ReplayGenerationBatchRequest struct {
+	ProjectID      string
+	ProjectionName string
+	// Generation is the shadow generation a rebuild worker
+	// (internal/app/projectionrebuildworker) is building into — always a
+	// DIFFERENT number than whatever ProjectionRepository.GetActiveGeneration
+	// currently reports for (ProjectID, ProjectionName), since this
+	// function never resolves or creates an active generation the way
+	// ApplyBatch does.
+	Generation uint64
+	// Owner/TTL/BatchSize/Now/IDs mirror ApplyBatchRequest's own identical
+	// fields exactly — see that type's own doc comments.
+	Owner     string
+	TTL       time.Duration
+	BatchSize int
+	Now       time.Time
+	IDs       idsource.Source
+}
+
+// ReplayGenerationBatch is V6-09A's own shadow-build replay round —
+// ApplyBatch's own byte-identical scan/classify/reduce/upsert/checkpoint-CAS
+// discipline (see ApplyBatch's own doc comment for the full three-
+// transaction contract both functions share via applyLeasedBatch below),
+// targeting an EXPLICIT, caller-supplied Generation rather than whichever
+// one ProjectionRepository.GetActiveGeneration currently reports. The
+// shadow generation a rebuild builds into is, by construction, never the
+// active one until a separate, later cutover — this function itself never
+// reads or writes projection_generations at all.
+//
+// Lease acquisition reuses the IDENTICAL AcquireOrRenewConsumerLease
+// mechanism ApplyBatch uses, keyed by (ProjectID, ProjectionName,
+// Generation) — Generation here is the shadow's own number, which can
+// never collide with whatever IS active, so this lease can never be
+// confused for the live consumer's own lease on the active generation.
+// This gives a rebuild worker's own replay loop the exact same
+// "stale/dead builder detection" and fence-token discipline ApplyBatch's
+// own doc comment describes for the live consumer, reused rather than
+// reinvented — see internal/app/projectionrebuildworker's own package doc
+// comment for how its Owner is derived so that two DIFFERENT claims of the
+// SAME rebuild job (a stale worker whose JobLease already expired,
+// concurrently with whoever reclaimed it) are treated as different lease
+// owners here too.
+func ReplayGenerationBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req ReplayGenerationBatchRequest) (ApplyBatchOutcome, error) {
+	var lease ports.ConsumerLease
+	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		var err error
+		lease, err = tx.Projections().AcquireOrRenewConsumerLease(ctx, ports.AcquireOrRenewConsumerLeaseRequest{
+			ProjectID: req.ProjectID, ProjectionName: req.ProjectionName, Generation: req.Generation,
+			Owner: req.Owner, TTL: req.TTL, Now: req.Now,
+		})
+		return err
+	})
+	if err != nil {
+		return ApplyBatchOutcome{}, err
+	}
+	return applyLeasedBatch(ctx, uow, catalog, req.Generation, lease, req.ProjectID, req.ProjectionName, req.BatchSize, req.Now, req.IDs)
+}
+
+// applyLeasedBatch is ApplyBatch's and ReplayGenerationBatch's own shared
+// scan-and-apply-and-checkpoint core, once a lease for `generation` is
+// already held. The two callers differ ONLY in how they resolve which
+// generation to target and how that generation's lease was acquired
+// (active-vs-explicit, see each caller's own doc comment); everything
+// after that point — poison handling, the checkpoint CAS, STALE detection —
+// must behave byte-identically for the live consumer and a rebuild's
+// shadow replay (V6-08's own "live consumer/rebuild dùng cùng frozen
+// schema and reducer set without new design choice"), which is exactly why
+// this is ONE function both call, never two separately-maintained copies
+// of the same loop that could silently drift apart from each other.
+func applyLeasedBatch(
+	ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, generation uint64, lease ports.ConsumerLease,
+	projectID, projectionName string, batchSize int, now time.Time, ids idsource.Source,
+) (ApplyBatchOutcome, error) {
+	outcome := ApplyBatchOutcome{Generation: generation, LeaseAcquired: true, NewCursor: lease.Cursor}
 
 	// A DEGRADED generation stays frozen until a rebuild (V6-09A) cuts
-	// over to a fresh one — the live consumer's own job here is simply to
-	// never silently resume past the poison, only to keep its own lease
-	// alive so a human/operator tool can still see who (if anyone) is
-	// watching this generation.
+	// over to a fresh one — the caller's own job here is simply to never
+	// silently resume past the poison, only to keep its own lease alive so
+	// a human/operator tool can still see who (if anyone) is watching this
+	// generation.
 	if lease.Status == ports.ProjectionDegraded {
 		return outcome, nil
 	}
@@ -161,7 +239,7 @@ func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req
 		// SQL transaction is; writing straight into outcome here would
 		// report rows as "applied" even for a batch that poisoned and
 		// rolled back every one of them.
-		events, err := tx.Events().ScanJournal(ctx, lease.Cursor, req.BatchSize)
+		events, err := tx.Events().ScanJournal(ctx, lease.Cursor, batchSize)
 		if err != nil {
 			return err
 		}
@@ -173,7 +251,7 @@ func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req
 		newCursor = lease.Cursor
 		for _, event := range events {
 			newCursor = event.JournalPosition
-			if event.ProjectID != req.ProjectID {
+			if event.ProjectID != projectID {
 				// Foreign project (or an installation-scoped event, empty
 				// ProjectID) — V6-08A's own "Foreign-project positions
 				// advance scan cursor without row changes."
@@ -194,13 +272,13 @@ func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req
 				continue
 			}
 
-			entityKey, resolveErr := resolveEntityKey(ctx, tx, req.ProjectID, req.ProjectionName, generation, classification, event.PayloadJSON)
+			entityKey, resolveErr := ResolveEntityKey(ctx, tx, projectID, projectionName, generation, classification, event.PayloadJSON)
 			if resolveErr != nil {
 				poisonEvent, poisonReason = event, resolveErr.Error()
 				return errPoison
 			}
 
-			prior, err := loadRow(ctx, tx, req.ProjectID, req.ProjectionName, generation, entityKey)
+			prior, err := LoadRow(ctx, tx, projectID, projectionName, generation, entityKey)
 			if err != nil {
 				return err
 			}
@@ -215,9 +293,9 @@ func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req
 				return fmt.Errorf("canonicalize projection row: %w", hashErr)
 			}
 			if err := tx.Projections().UpsertProjectionRow(ctx, ports.ProjectionRow{
-				ProjectID: req.ProjectID, ProjectionName: req.ProjectionName, Generation: generation,
+				ProjectID: projectID, ProjectionName: projectionName, Generation: generation,
 				EntityKey: entityKey, PayloadJSON: string(payloadJSON),
-				LastAppliedJournalPosition: event.JournalPosition, UpdatedAt: req.Now,
+				LastAppliedJournalPosition: event.JournalPosition, UpdatedAt: now,
 			}); err != nil {
 				return err
 			}
@@ -225,7 +303,7 @@ func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req
 		}
 
 		newStatus := ports.ProjectionLive
-		if len(events) == req.BatchSize {
+		if len(events) == batchSize {
 			// The batch came back completely full: strictly more work is
 			// already waiting past newCursor. See ApplyBatchRequest's own
 			// BatchSize doc comment for why this is STALE-detection's own
@@ -234,9 +312,9 @@ func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req
 		}
 		expectedCursor, expectedFence := lease.Cursor, lease.FenceToken
 		return tx.Projections().UpsertProjectionCheckpoint(ctx, ports.UpsertProjectionCheckpointRequest{
-			ProjectID: req.ProjectID, ProjectionName: req.ProjectionName, Generation: generation,
+			ProjectID: projectID, ProjectionName: projectionName, Generation: generation,
 			ExpectedCursor: &expectedCursor, ExpectedFenceToken: &expectedFence,
-			NewCursor: newCursor, NewStatus: newStatus, UpdatedAt: req.Now,
+			NewCursor: newCursor, NewStatus: newStatus, UpdatedAt: now,
 		})
 	})
 
@@ -260,16 +338,16 @@ func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req
 		expectedCursor, expectedFence := lease.Cursor, lease.FenceToken
 		poisonErr := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
 			if err := tx.Projections().RecordProjectionPoison(ctx, ports.ProjectionPoisonRecord{
-				ID: req.IDs.NewID(), ProjectID: req.ProjectID, ProjectionName: req.ProjectionName, Generation: generation,
+				ID: ids.NewID(), ProjectID: projectID, ProjectionName: projectionName, Generation: generation,
 				JournalPosition: poisonEvent.JournalPosition, EventType: poisonEvent.EventType,
-				SchemaVersion: poisonEvent.SchemaVersion, Reason: poisonReason, RecordedAt: req.Now,
+				SchemaVersion: poisonEvent.SchemaVersion, Reason: poisonReason, RecordedAt: now,
 			}); err != nil {
 				return err
 			}
 			return tx.Projections().UpsertProjectionCheckpoint(ctx, ports.UpsertProjectionCheckpointRequest{
-				ProjectID: req.ProjectID, ProjectionName: req.ProjectionName, Generation: generation,
+				ProjectID: projectID, ProjectionName: projectionName, Generation: generation,
 				ExpectedCursor: &expectedCursor, ExpectedFenceToken: &expectedFence,
-				NewCursor: lease.Cursor, NewStatus: ports.ProjectionDegraded, UpdatedAt: req.Now,
+				NewCursor: lease.Cursor, NewStatus: ports.ProjectionDegraded, UpdatedAt: now,
 			})
 		})
 		if poisonErr != nil {
@@ -283,14 +361,19 @@ func ApplyBatch(ctx context.Context, uow ports.UnitOfWork, catalog *Catalog, req
 	}
 }
 
-// resolveEntityKey resolves classification's own target WorkItemCardRow
+// ResolveEntityKey resolves classification's own target WorkItemCardRow
 // EntityKey for one event's payload — the direct EntityKeyOf path, or
 // (when that returns ok=false) FallbackMatch's own predicate applied over
 // every row in the current generation. Zero or more-than-one match is
 // itself a poison condition (missing referenced authority / an internal
 // consistency violation this projection's own invariants should never
-// allow), returned as an error for the caller to record.
-func resolveEntityKey(ctx context.Context, tx ports.Tx, projectID, projectionName string, generation uint64, classification Classification, payloadJSON string) (string, error) {
+// allow), returned as an error for the caller to record. Exported (V6-09A)
+// so a rebuild worker's own shadow-generation replay
+// (internal/app/projectionrebuildworker) resolves entity keys through this
+// EXACT same function the live consumer (applyLeasedBatch, below) uses —
+// never a second, independently-maintained copy that risks silently
+// diverging from it.
+func ResolveEntityKey(ctx context.Context, tx ports.Tx, projectID, projectionName string, generation uint64, classification Classification, payloadJSON string) (string, error) {
 	if classification.EntityKeyOf != nil {
 		key, ok, err := classification.EntityKeyOf(payloadJSON)
 		if err != nil {
@@ -331,11 +414,13 @@ func resolveEntityKey(ctx context.Context, tx ports.Tx, projectID, projectionNam
 	}
 }
 
-// loadRow returns entityKey's own current row decoded as a WorkItemCardRow
+// LoadRow returns entityKey's own current row decoded as a WorkItemCardRow
 // — the zero WorkItemCardRow{} (Exists() == false) if no row exists yet
 // for that key, never an error for that specific case (a legitimate,
 // expected state for the very first event ever applied to a new entity).
-func loadRow(ctx context.Context, tx ports.Tx, projectID, projectionName string, generation uint64, entityKey string) (WorkItemCardRow, error) {
+// Exported (V6-09A) for the identical reason ResolveEntityKey above is —
+// see that function's own doc comment.
+func LoadRow(ctx context.Context, tx ports.Tx, projectID, projectionName string, generation uint64, entityKey string) (WorkItemCardRow, error) {
 	existing, err := tx.Projections().GetProjectionRow(ctx, projectID, projectionName, generation, entityKey)
 	if errors.Is(err, ports.ErrPersistenceNotFound) {
 		return WorkItemCardRow{}, nil
