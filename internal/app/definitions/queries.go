@@ -16,6 +16,26 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 )
 
+// ListDefinitions returns every Definition of kind that exists in scope,
+// ordered by ID — V6-15E's own missing query (`aw definition list`): every
+// other caller in this file already needs to know a specific DefinitionID/
+// VersionID before it can look anything up, so nothing before this task
+// could answer "which Definitions of this Kind exist in this Scope"
+// without an operator already knowing every ID (or reading SQLite
+// directly — exactly what V6-15E's own "Không làm: no direct registry/
+// store access" line forbids a caller from doing itself). A read-only
+// query, never a Command; an empty scope with no matching Definitions
+// returns an empty, non-nil slice, never an error.
+func ListDefinitions(ctx context.Context, uow ports.UnitOfWork, kind definition.Kind, scope definition.Scope) ([]ports.DefinitionSummary, error) {
+	var result []ports.DefinitionSummary
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		summaries, err := tx.Definitions().ListDefinitions(ctx, kind, scope)
+		result = summaries
+		return err
+	})
+	return result, err
+}
+
 // GetDefinition returns id's own current Definition Fields (Kind/Scope/
 // Name/Status/generation), or ports.ErrPersistenceNotFound — a read-only
 // query, never a Command. The caller supplies kind (the same convention
