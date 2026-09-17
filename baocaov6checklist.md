@@ -10037,3 +10037,18 @@ name). No existing file touched — `cmd/aw/main.go`/`cmd/aw/cli.go` untouched p
 deferred to V6-15O. One real bug caught and fixed during this task's own test-writing (documented above under
 Test): `fake.UnitOfWork`'s concurrency-detection behavior is not safe for genuine goroutine races, so both
 concurrency proofs moved to real sqlite. `go build/vet/test ./...` clean repo-wide. PR targets `master`.
+
+### Post-open fix — `TestResolve_ConcurrentResolveRace_ExactlyOneFreshDecision` data race (caught by CI's own race detector)
+
+Moving the concurrency test to real sqlite (above) fixed the `fake.UnitOfWork` false-positive but left a
+second, genuine data race: `newSQLiteTestDeps`'s own default `IDs: idsource.NewSequential("id")` was shared
+across all 6 concurrent `Resolve()` goroutines. `idsource.Sequential`'s own doc comment states plainly: "Not
+safe for concurrent use — it is a single-threaded test helper, not a production allocator" (`s.next++` with no
+lock). CI's race detector caught this correctly — `go test` (no `-race`) never would have, since the raced
+field is only used for `CorrelationID` generation, not a correctness-affecting value the test's own assertions
+check. Fixed by overriding `deps.IDs = idsource.Random{}` (the real production source, no shared mutable
+state) for just this one test, leaving every OTHER test in the file on the shared helper's deterministic
+default. Verified 20/20 clean on `-run TestResolve_ConcurrentResolveRace -count=20`, full package 3/3 stable.
+**Lesson**: a concurrency test needs EVERY shared collaborator to be concurrency-safe, not just the
+`UnitOfWork` — an ID source, a clock, or any other injected dependency can just as easily be the actual
+unsafe one, and the race detector will find whichever one isn't, one at a time.

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	cliworkitemblocker "github.com/taQuangLing/agent-workflow/internal/delivery/cli/workitemblocker"
@@ -189,6 +190,14 @@ func TestResolve_AlreadyResolved_IdempotentReplay(t *testing.T) {
 func TestResolve_ConcurrentResolveRace_ExactlyOneFreshDecision(t *testing.T) {
 	store, deps := newSQLiteTestDeps(t, "resolve-blocker-race.db")
 	_, blocker := runCancelledBlockerFixtureSQLite(t, store, deps)
+	// idsource.Sequential (newSQLiteTestDeps's own default) is documented as
+	// "not safe for concurrent use — a single-threaded test helper" — every
+	// goroutine below calls Resolve concurrently, so it needs the real
+	// production ID source (idsource.Random, safe for concurrent use with no
+	// shared mutable state) for just this one race test, not the shared
+	// deterministic default every OTHER (non-concurrent) test in this file
+	// still uses.
+	deps.IDs = idsource.Random{}
 
 	const attempts = 6
 	var wg sync.WaitGroup
