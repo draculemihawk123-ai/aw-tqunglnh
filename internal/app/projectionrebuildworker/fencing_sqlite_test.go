@@ -214,11 +214,33 @@ func TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild(t *testi
 		t.Fatalf("op.Phase = %s, want SUCCEEDED", op.Phase)
 	}
 
-	// Generation 1's own checkpoint kept advancing throughout — the live
-	// consumer was never blocked, delayed-into-error, or corrupted by the
-	// concurrently-running shadow build.
-	after := fx.getCheckpoint(t, 1)
+	// Checked against whichever generation is ACTIVE now — NOT hardcoded
+	// generation 1. Since op.Phase is SUCCEEDED, cutover definitely
+	// happened, so the active generation is now *op.ShadowGeneration
+	// (always 2 in this fixture, generation 1 having started the test as
+	// the only one). Checking a hardcoded "1" here would be WRONG once
+	// cutover has happened: a live ApplyBatch call always follows
+	// whichever generation GetActiveGeneration reports (correct production
+	// behavior — see ApplyBatch's own doc comment), so any live round that
+	// lands AFTER cutover correctly writes into generation 2, not 1 — and
+	// this test's own rebuild reliably cuts over near-instantly for a
+	// 1-event dataset (SNAPSHOTTING+BUILDING+CUTTING_OVER all trivially
+	// caught-up), so in practice EVERY live round lands post-cutover.
+	// Checking the dynamic *op.ShadowGeneration's own checkpoint instead
+	// correctly proves progress regardless of exactly when cutover
+	// happened relative to the live writer's own 5 rounds: if cutover was
+	// early, the live writer's rounds directly advance it; if cutover was
+	// late, CUTTING_OVER's own bounded catch-up rounds independently
+	// replay the same events the live writer applied to generation 1,
+	// advancing generation 2's cursor identically either way — proving
+	// the live consumer was never blocked, delayed-into-error, or
+	// corrupted by the concurrently-running shadow build, without
+	// depending on which generation number ended up doing the work.
+	if op.ShadowGeneration == nil {
+		t.Fatal("op.ShadowGeneration = nil after SUCCEEDED, want the cutover generation")
+	}
+	after := fx.getCheckpoint(t, *op.ShadowGeneration)
 	if after.Cursor <= before.Cursor {
-		t.Fatalf("generation 1 checkpoint cursor = %d, want > %d (the live consumer's own concurrent rounds made real progress)", after.Cursor, before.Cursor)
+		t.Fatalf("active generation %d checkpoint cursor = %d, want > %d (the live consumer's own concurrent rounds made real progress)", *op.ShadowGeneration, after.Cursor, before.Cursor)
 	}
 }

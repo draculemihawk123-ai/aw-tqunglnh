@@ -9272,7 +9272,7 @@ pre-existing, environmental Windows flake in an untouched package (`internal/app
 `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` — see Test above). PR targets
 `master`.
 
-## Post-merge fix — V6-09A `TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild` TTL
+## Post-merge fix — V6-09A `TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild` (3 attempts, real root cause found on the 3rd)
 
 ### Bối cảnh
 
@@ -9318,16 +9318,50 @@ leading theory for why the first fix's fixed-sleep assumption broke). `go test .
 — full package stable across 5 repeated runs. `go build/vet/test ./...` clean repo-wide, zero failures
 anywhere (not even the usual `internal/app/message` flake this run).
 
+### Third attempt — the actual root cause (a wrong assertion target, not a timing problem at all)
+
+The SECOND fix (retry-on-conflict) ALSO failed on its own first real CI run (`Linux race and stability
+(V0-12)`), with the exact same symptom: `liveErrs` empty (no unexpected/unrecovered error — every live round
+DID eventually succeed) yet `after.Cursor <= before.Cursor`. This ruled out timing entirely and pointed at the
+assertion itself: the test hardcoded `fx.getCheckpoint(t, 1)` for BOTH `before` and `after`, but this rebuild
+(SNAPSHOTTING+BUILDING+CUTTING_OVER for a 1-event dataset) reliably cuts over near-instantly — almost certainly
+before the live-writer goroutine's very first `ApplyBatch` call, given each of the live writer's OWN rounds
+needs its own preceding `appendEvent` transaction too, one more `WithSerializedWrite` round-trip than the
+rebuild needs per step. Once cutover has happened, `ApplyBatch`'s own `GetActiveGeneration` call correctly
+routes EVERY subsequent live round into generation 2, never generation 1 — exactly the correct PRODUCTION
+behavior this whole test exists to prove doesn't corrupt or block the live consumer. Checking generation 1's
+own (now-frozen, superseded) checkpoint was simply the WRONG assertion target the instant cutover completed
+before any live round ran — no amount of TTL widening or retry logic could ever have fixed this, because it
+was never a timing bug.
+
+### Thực hiện (fix 3, final)
+
+Changed the final assertion to check `fx.getCheckpoint(t, *op.ShadowGeneration)` — the DYNAMIC, actually-active
+generation after a confirmed `SUCCEEDED` operation — instead of a hardcoded `1`. This is correct regardless of
+exactly when cutover happens relative to the live writer's 5 rounds: if cutover is late, the live writer's own
+rounds directly advance generation 1, and CUTTING_OVER's own bounded catch-up rounds independently replay the
+SAME events into generation 2 before cutover (so generation 2's cursor still advances); if cutover is early (the
+observed, apparently near-universal case for this tiny dataset), the live writer's rounds correctly follow the
+new active generation and advance it directly. Either way, `*op.ShadowGeneration`'s own cursor advancing past
+`before.Cursor` (still read from generation 1, i.e. W0) is the one invariant that holds in both orderings.
+
+### Test (fix 3)
+
+`go test ./internal/app/projectionrebuildworker/... -run TestExecuteProjectionRebuild_LiveWritesConcurrentDuringShadowBuild -count=100`
+— 100/100 clean under BOTH default `GOMAXPROCS` and `GOMAXPROCS=1`. `go test ./internal/app/projectionrebuildworker/... -count=5`
+— full package stable. `go build/vet/test ./...` clean repo-wide, zero failures anywhere.
+
 ### Kết quả
 
-A real, reproducible test-timing bug in already-merged V6-09A code, found by this session's own diff-scope
-investigation of a CI failure that looked at first like the familiar shared-runner-load pattern but turned out
-not to be (the failing test was newly-merged code exercised for the first time under real CI, not a
-long-standing flake) — and the FIRST fix attempt (a wider fixed-margin sleep) was itself insufficient, caught
-by the same fix's own CI run rather than assumed correct from local-only passes. Fixed properly on the second
-attempt by making the test's own retry semantics match the production design's actual guarantee (eventual
-consistency after a bounded, retryable conflict) instead of a timing bet. **Lesson**: for a test whose
-correctness depends on "eventually" (a lease expiring, a retry succeeding), prefer an explicit retry-until-true
-loop with a generous deadline over a fixed sleep-based margin, even a wide one — a fixed margin is a
-probabilistic bet on scheduling/lock-ordering behavior that can differ between environments in ways no local
-testing on one platform will surface.
+A real, reproducible bug in already-merged V6-09A test code, found by this session's own diff-scope
+investigation of a CI failure that initially looked like the familiar shared-runner-load pattern but wasn't
+(newly-merged code exercised for the first time under real CI, not a long-standing flake) — and BOTH of the
+first two fix attempts (wider fixed-margin sleep, then retry-on-conflict) were themselves insufficient, each
+caught by that very fix's own subsequent CI run rather than assumed correct from local-only passes alone. The
+real bug was never about timing margins at all: it was a hardcoded assertion target (generation 1) that stopped
+being the right thing to check the moment cutover — which happens near-instantly for a near-empty test dataset
+— made generation 2 the active one. **Lesson**: when a "concurrent" test keeps failing in the exact same way
+across multiple timing-focused fixes (same empty-errors-but-no-progress symptom, not a new/different failure
+each time), stop tuning timing constants and re-examine whether the assertion is even checking the right
+STATE, not just whether it's checking at the right TIME — a wrong assertion target produces the same symptom
+as a genuine race, and no amount of retry/margin tuning will ever fix it.
