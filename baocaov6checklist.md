@@ -8868,3 +8868,156 @@ real pre-existing bugs found this task. `go build/vet/test ./...` clean repo-wid
 stops at the application layer: no rebuild worker (V6-09A) and no HTTP endpoint (V6-09B) — both remain fully
 separate, future tasks, exactly
 as this task's own "Hoàn thành khi" line requires.
+
+## V6-10 — Kanban and projected WorkItem detail endpoints
+
+### Thực hiện
+
+New subpackage `internal/delivery/httpapi/kanban` (branch `feat/v6-10-kanban-detail`, off a freshly fetched
+`origin/master` at `49f7e37`), deliberately separate from `internal/delivery/httpapi/workitem` (V6-04/V6-04A's
+own AUTHORITATIVE routes) per this doc's own §1 rule 8 ("mỗi task sở hữu subpackage riêng"):
+
+- `routes.go` — package doc comment (dependencies, scope, the authoritative-decoration rule, route
+  inventory), `Dependencies{UnitOfWork, Cursor}`, `RegisterRoutes`. Two routes:
+  `GET /projects/{projectId}/work-items/kanban` (`listWorkItemKanban`) and
+  `GET /work-items/{workItemId}/detail` (`getWorkItemProjectedDetail`, no `{projectId}` segment — mirrors
+  `workitem`'s own `markWorkItemReady`/`rundetail`'s three routes: ProjectID is derived solely by reloading
+  the WorkItem's own real row, never trusted from a path segment).
+- `dto.go` — `KanbanCardDTO` (this package's own delivery-owned wire shape, not `projection.WorkItemCardRow`
+  reused verbatim, because `WorkspaceSetID` needs the root-row correction and `RepositoryBadges` is this
+  task's own addition), `RepositoryBadgeDTO`, `kanbanListResponse`, `workItemDetailResponse`, plus
+  `cardFromAuthoritative` (the honest fallback used when no projection row exists yet) and
+  `validActionsForReadiness` (the one advisory action this package ever offers — `markWorkItemReady`, and
+  only when the FRESH `WorkItemReadiness` says BACKLOG+Ready, never derived from the projected Status).
+- `badges.go` — `badgeLookup`, caching `tx.Work().ListWorkspaceSetRepositoryWorkspaces` results by
+  WorkspaceSetID within one request (a page routinely holds several cards sharing one family's WorkspaceSet),
+  deduping each RepositoryID down to its own highest-Generation state.
+- `projection_state.go` — `resolveProjectionState`: active generation + `httpapi.Freshness`, honestly
+  reporting STALE (never fabricating LIVE) both when no generation has ever been created yet
+  (`GetActiveGeneration` `ok=false`) and when a generation exists but no checkpoint has ever been written for
+  it (`GetProjectionCheckpoint` → `ErrPersistenceNotFound`). `ports.ProjectionStatus`'s own three values
+  (LIVE/DEGRADED/STALE) are the *identical* wire vocabulary `httpapi.FreshnessStatus` already freezes — a
+  direct string cast, no translation table.
+- `list.go` — `handleListKanban`: fetches the full `ListProjectionRows` set for the active generation (this
+  repository method applies no filter itself, by design — status/family filtering is this task's own
+  HTTP-layer concern, per that method's own doc comment), decodes every row once, builds a `FamilyID -> root
+  row` map for the cross-reference, then applies keyset pagination. The one real design decision this task
+  had to make and was not handed a template for: unlike `internal/delivery/httpapi/message`'s own
+  `handleListMessages` (the first cursor-pagination implementation in this codebase, whose numeric `Sequence`
+  conveniently serves as both sort key AND monotonic watermark in one field), a WorkItemID is a random UUID
+  with no relation to creation/update order. Sorting by it alone could let a WorkItem created *after* a walk
+  began land, by lexicographic luck, into a page not yet reached. Solved by binding
+  `CursorState.UpperWatermark` to each row's own `LastAppliedJournalPosition` (the real per-row "Cursor is
+  greatest scanned global JournalPosition" quantity V6-08 already tracks) instead of to the sort key itself:
+  the first page pins the watermark to the greatest `LastAppliedJournalPosition` currently observed, and
+  every later page of the same walk excludes any row created OR changed after that point — proven directly
+  by `TestListKanban_FiltersAndPagingStable`'s own concurrent-write case.
+- `detail.go` — `handleGetWorkItemDetail`: reloads the authoritative WorkItem directly
+  (`loadWorkItemForDetail`, mirroring `workitem`'s own `loadWorkItemForMarkReady`) to derive ProjectID, builds
+  the projected `Card` (with root-row cross-reference via a targeted `GetTaskFamily` + `GetProjectionRow`
+  lookup rather than a full scan, since a single-resource endpoint has no reason to pull every row) inside
+  ONE `uow.WithReadOnly` closure, then — only AFTER that closure returns — calls
+  `internal/app/work.ExplainWorkItemReadiness` fresh, in its own separate transaction, as the very last read
+  before responding. This ordering is the entire mechanism behind the "action race" Verify bullet: no matter
+  how stale the projected Card is, Readiness/ValidActions are always computed against whatever the real
+  WorkItem state is at response time.
+- `errors.go` — `writeQueryError`/`writeValidationError`, mirroring `workitem`'s/`message`'s identical
+  leakage-normalization idiom. No `writeCommandError` — this package dispatches no command at all (read-only
+  by construction; `internal/archtest`'s `TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt`, which already
+  walks `internal/delivery/httpapi` recursively, mechanically confirms no `.WithSerializedWrite`/`.Record`
+  call exists anywhere in this new package).
+
+**Composition-root wiring**: `cmd/aw/serve.go` — added the `httpkanban` import and one
+`httpkanban.RegisterRoutes(routes, httpkanban.Dependencies{UnitOfWork: uow, Cursor: cursorCodec})` call
+immediately before `routesFinalized = true`, reusing the exact same `uow`/`cursorCodec` every other route
+registration in that composition root already uses (never a second, differently-scoped `CursorCodec`
+instance) — the exact wiring step V6-04's own post-merge review found missing once before, called out
+explicitly in this task's own brief so it would not repeat.
+
+### Test
+
+New `internal/delivery/httpapi/kanban/{kanban_test.go,list_test.go,detail_test.go}` (package `kanban_test`,
+external), mirroring `internal/delivery/httpapi/workitem/workitem_test.go`'s own `newTestEnv` idiom exactly:
+a REAL `httpapi.Server` (real TCP loopback listener, real middleware chain) backed by a REAL `*sqlite.Store`
+— never a mock. `kanban_test.go` holds the shared fixtures: `seedProject`/`seedActiveRepository` (copied
+verbatim from `workitem_test.go`'s own helpers), `createRoot`/`createChild` (drive the REAL
+`workapp.CreateRootWorkItem`/`CreateChildWorkItem` public commands directly, not through HTTP, for speed),
+`seedRepositoryWorkspace` (direct `tx.Work().CreateRepositoryWorkspace` — stands in for V3-06's own
+provisioning worker, which this package's tests never actually run, exactly like `workitem_test.go`'s own
+`seedActiveRepository` stands in for V3-02's probe worker), and `seedProjectionRow`/`ensureGeneration`/
+`upsertCheckpoint` (direct `tx.Projections()` writes — this package's tests are the first in this codebase to
+exercise `ports.ProjectionRepository` from an HTTP handler's own test suite, since no live consumer, V6-08A,
+is wired into any pipeline these tests could run automatically; this mirrors the task brief's own framing
+that V6-08A is "the real data source every test in this package seeds directly").
+
+8 test functions, all passing:
+
+- `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` — closed 2-route inventory, both PROJECT-scoped.
+- `TestListKanban_MultiRepoCardAggregatesBadgesFromRootRow`
+- `TestListKanban_FiltersAndPagingStable`
+- `TestListKanban_GenerationResync` — see Verify below for why this one could not simply call
+  `EnsureGeneration` with a new number (that CAS explicitly refuses a swap — V6-09A's own future job, not
+  this port's).
+- `TestListKanban_FreshnessReflectsStaleAndDegradedCheckpoint`
+- `TestGetWorkItemDetail_ActionRace_UsesFreshReadinessNotStaleProjection` — the single most important test
+  in this task.
+- `TestGetWorkItemDetail_MissingProjectionRow_FallsBackToAuthoritative`
+- `TestGetWorkItemDetail_UnknownWorkItem_IsResourceHidden`
+
+`go build ./...` and `go vet ./...` clean repo-wide. `gofmt -l` initially flagged nearly the entire repo tree
+— confirmed this is a pre-existing, unrelated `core.autocrlf`/CRLF checkout artifact in this Windows worktree
+(files this task never touched are flagged identically); every file this task actually wrote or edited is
+gofmt-clean (`gofmt -l` returns nothing for `internal/delivery/httpapi/kanban/*.go` and `cmd/aw/serve.go`
+specifically). `go test ./...` — ran the full repository suite after implementation: every package reports
+`ok`, zero `FAIL`, including `cmd/aw` (composition-root wiring), `internal/archtest` (architecture boundary
+tests) and the new `internal/delivery/httpapi/kanban` package itself (8/8 passing, ~1s).
+
+### Verify
+
+- **Multi-repo card**: `TestListKanban_MultiRepoCardAggregatesBadgesFromRootRow` — a real root WorkItem
+  granted two repositories (`repo-a`, `repo-b`) via `CreateRootWorkItem`'s own `InitialScope`, with two
+  `RepositoryWorkspace` rows seeded under its real WorkspaceSetID (READY/PROVISIONING). The ROOT card's own
+  `RepositoryBadges` correctly lists both. A CHILD card — whose own projected row never carries
+  `WorkspaceSetID` at all (`row.go`'s own documented scope boundary) — correctly cross-references the root
+  row for the SAME FamilyID and ends up with the identical `WorkspaceSetID` and the identical two badges.
+- **Filters/paging**: `TestListKanban_FiltersAndPagingStable` — a fixed `status=BACKLOG` filter with
+  `limit=2` over 3 matching rows (plus one non-matching DONE row, proven never to leak through) produces a
+  stable, non-duplicating, non-omitting two-page walk; a row written AFTER page 1's cursor was minted (with a
+  WorkItemID that sorts lexicographically BEFORE the row page 2 is about to return) is proven to NOT appear
+  in page 2, exercising the `LastAppliedJournalPosition`-bound `UpperWatermark` mechanism described in Thực
+  hiện. The SAME cursor replayed against a DIFFERENT filter (`status=DONE`) is rejected 409
+  `RESYNC_REQUIRED`/`QUERY_CHANGED` (`httpapi.Fingerprint` mismatch caught by `Bind`).
+- **Generation resync**: `TestListKanban_GenerationResync` — since V6-09A (the only future worker that would
+  ever really swap a project's active generation) is not built yet, and
+  `ports.ProjectionRepository.EnsureGeneration` itself explicitly refuses to move an already-active
+  generation to a different number (its own doc comment: that is deliberately
+  `CutoverProjectionGeneration`'s future job), this test instead decodes a REAL, server-issued cursor with
+  the SAME secret the test's own composition root uses, mutates only its `Generation` field, and re-encodes
+  it — exercising the exact same `Bind` check a genuine cutover would trigger, without needing that worker to
+  exist. Confirms 409 `RESYNC_REQUIRED`/`GENERATION_CHANGED`.
+- **Stale/degraded**: `TestListKanban_FreshnessReflectsStaleAndDegradedCheckpoint` — no generation created
+  yet → `Freshness.Status` STALE (never fabricated LIVE); checkpoint status DEGRADED → reported DEGRADED with
+  the correct `AsOfJournalPosition`; checkpoint status STALE → reported STALE.
+- **Action race**: `TestGetWorkItemDetail_ActionRace_UsesFreshReadinessNotStaleProjection` — the projection
+  row is seeded to falsely claim `Status: "READY"` with zero blockers, while the real, authoritative WorkItem
+  is still BACKLOG and (per `queries.go`'s own doc comment: no public command populates a WorkItem's own
+  contract fields yet) genuinely fails `ValidateReadinessGate`. Confirms the response's `Card.Status` still
+  literally shows the stale projected `"READY"` (display-only, never authority) while `Readiness.Status` is
+  the fresh `"BACKLOG"`, `Readiness.Ready` is `false`, `Readiness.Problems` is non-empty, and — the sharpest
+  assertion — `ValidActions` is completely empty: `markWorkItemReady` is never advertised off the stale
+  projected claim. This is the concrete, tested meaning of this task's own "Hoàn thành khi: ... cannot create
+  false action authority."
+
+### Kết quả
+
+New `internal/delivery/httpapi/kanban` subpackage: two read-only routes
+(`GET /projects/{projectId}/work-items/kanban`, `GET /work-items/{workItemId}/detail`), wired into
+`cmd/aw/serve.go`'s composition root. Kanban reads projected data exclusively through
+`ports.ProjectionRepository` (`tx.Projections()`) and cross-references `tx.Work()` only for family/
+WorkspaceSet/RepositoryWorkspace badge data — never a runtime table directly, satisfying this task's own
+"Hoàn thành khi" bar's first half. The second half — "cannot create false action authority" — is enforced by
+construction (`ExplainWorkItemReadiness` called fresh, in its own transaction, strictly after the projected
+card is built, never fed anything the projection claims) and proven directly by the action-race test above,
+the single most load-bearing test in this task. All 5 of the spec's own Verify bullets covered, plus 3
+additional tests (route-inventory closure, missing-row fallback, unknown-WorkItem leakage-normalization). 8/8
+new tests passing; `go build/vet/test ./...` clean across the entire repository.
