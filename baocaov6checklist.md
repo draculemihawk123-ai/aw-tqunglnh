@@ -9678,6 +9678,236 @@ each time), stop tuning timing constants and re-examine whether the assertion is
 STATE, not just whether it's checking at the right TIME — a wrong assertion target produces the same symptom
 as a genuine race, and no amount of retry/margin tuning will ever fix it.
 
+## V6-15F — Adapter-build CLI
+
+### Thực hiện
+
+New package `internal/delivery/cli/adapterbuild`, the CLI leaf over V2-07A's immutable AdapterBuildVersion
+registry (`docs/design/08-v6-api-projections.md:703-711`): `aw adapter list|show|probe|register`, built on
+the already-hardened `internal/app/adapterbuild` application commands (`ListAdapterBuilds`/`GetAdapterBuild`/
+`ProbeAdapterBuild`/`RegisterAdapterBuild`, V6-10I) via the exact same `cli.BuildEnvelope`/`cli.Dispatch`
+flow every other mutating CLI leaf uses.
+
+Read fully before writing any code: `internal/delivery/cli/sample_test.go` (low-level framework mechanics),
+`internal/delivery/cli/settings/settings.go` (454 lines, the explicit "main template" — `RunShow`/`RunUpdate`'s
+envelope → dispatch → replay/fresh branching → `EncodeCommandResult`/human-output pattern), `internal/delivery/
+cli/descriptor.go` (confirmed `cli.ScopeInstallation` at line 22), `internal/delivery/cli/health/health.go` and
+`internal/delivery/cli/doctor/doctor.go` (the "installation-scoped, never `cli.BindProjectFlag`" precedent),
+`internal/app/adapterbuild/commands.go` (all four app-layer targets, `requireInstallationScope`'s own second
+enforcement layer), the full `internal/domain/adapterbuild` package (`Build`/`CandidateToken`/`CandidateTuple`/
+`CapabilityManifest` — confirmed no credential-shaped field anywhere), and the entire `internal/delivery/httpapi/
+adapterbuild` package (V6-10J, merged: `adapterbuild.go`'s route inventory + doc comment, `commands.go`'s
+`prepareCommand` preamble and "no HTTP-layer pre-check, dispatch straight through" doc comment, `dto.go`,
+`queries.go`, `errors.go`) as the shape this leaf mirrors. `cmd/aw/adapter.go` (the pre-CommandEnvelope V2-07B
+legacy CLI — `runAdapterProbe`/`runAdapterRegister` hand-build commands via `newDefinitionCommand`/`requestHash`
+and spawn a REAL provider executor to MEASURE the capability manifest) was read only to confirm what NOT to
+copy — this is exactly the "Không làm: no legacy no-envelope call" line; never imported, never called.
+
+Four `cli.Descriptor`s registered from this package's own `init()`, all `cli.ScopeInstallation` (AdapterBuildVersion
+is a machine-level resource, ADR-022/ADR-025's own closed list — no `--project-id`, `cli.BindProjectFlag` is
+never called anywhere in this package), `HTTPOperationID` matching `internal/delivery/httpapi/adapterbuild`'s
+own four real operationIds 1:1 (`listAdapterBuilds`/`getAdapterBuild`/`probeAdapterBuild`/`registerAdapterBuild`),
+`commandTypeProbe`/`commandTypeRegister` byte-for-byte identical to that package's own `commandTypeProbe`/
+`commandTypeRegister` constants (a hard requirement — `cli.Dispatch` reuses HTTP's own `SemanticHash`/
+`LookupReceipt`/`ReconcileReceipt` replay authority, keyed in part on this string).
+
+Command surface: `aw adapter list [--json]` and `aw adapter show <id> [--json]` are plain queries (no
+`CommandEnvelope`, no idempotency key). `aw adapter probe` takes every `ProbeRequest` field as an explicit
+flag (`--provider-key`/`--executable-path`/`--protocol-version`/`--os`/`--toolchain`/`--config-identity`
+plus `--supports-start`/`--supports-resume`/`--supports-cancel`/`--canonical-event-kinds`) — mirroring
+V6-10J's own documented choice (an HTTP caller supplies the manifest directly; this package never spawns a
+real provider process either, unlike the legacy CLI), never `cmd/aw/adapter.go`'s real-executor-measurement
+path. `aw adapter register` reads the candidate token as raw `CandidateToken` JSON from `--file`/stdin (the
+exact artifact `probe --json`'s own `.result` field hands the operator) and re-supplies the capability
+manifest via the SAME flags `probe` uses — never read back off the token — so `RegisterAdapterBuild`'s own
+TOCTOU-closing re-derivation has something independent to compare against. Both mutations build a canonical
+`probeRequestWire`/`registerRequestWire` struct (field-for-field mirrors of HTTP's own `probeAdapterBuildBody`/
+`registerAdapterBuildBody`) and `json.Marshal` it for `NormalizedPayload`, per `cli.EnvelopeRequest.NormalizedPayload`'s
+own "decode into a typed struct first, re-marshal" contract.
+
+One genuine wrinkle `RunRegister` has to handle that `RunProbe` doesn't: `adapterbuild.Build` has zero
+exported fields (structural immutability), so `RegisterAdapterBuild`'s own transaction writes its receipt as
+an unexported `registerReceiptPayload` shape (`Tuple`/`CapabilityManifest`/`RegisteredBy`/`RegisteredAt`/
+`AlreadyExisted`), never `RegisterResult` directly. A REPLAYED `cli.Dispatch` result is therefore that exact
+shape, not `appadapterbuild.RegisterResult` — `views.go`'s own `registerReplayPayload` restates it
+field-for-field (since the real type is unexported and unreachable from this package) and reconstructs a
+`Build` via `domainadapterbuild.NewBuild`, the identical technique the app layer's own `toResult()` uses
+internally. `ProbeAdapterBuild`'s own receipt, by contrast, stores a `CandidateToken` directly (every field
+already exported), so `RunProbe`'s replay branch decodes straight into one — no equivalent DTO needed.
+
+Redaction: confirmed by reading the domain package that neither `Build` nor `CandidateToken` carries any
+credential-shaped field — `ExecutablePath`/`ConfigIdentity` are operator identifiers, `Signature` is a
+one-way HMAC digest, and the one genuinely sensitive value (the per-installation candidate-token signing key,
+`ports.AdapterBuildRepository.LoadOrCreateSigningKey`/`LoadSigningKey`) is never returned by any of the four
+application commands this package wraps in the first place — documented in `doc.go` and proved mechanically
+in `redaction_test.go` rather than only asserted in prose.
+
+### Test
+
+New package tests only (`internal/delivery/cli/adapterbuild`, 16 files, ~1884 lines): `adapterbuild_test.go`
+(descriptor registration — all four commands, `cli.ScopeInstallation`, correct `HTTPOperationID`), `list_test.go`,
+`show_test.go` (found/unknown-id/positional-arg validation), `probe_test.go` (fresh success, generated
+idempotency key, **replay** — retry after deleting the executable so a real re-probe would fail loudly,
+**same-key-different-payload is `cli.ErrReceiptHashConflict`** — caught by `cli.Dispatch`'s own shared
+pre-check, not a second leaf-invented one, missing-required-flag matrix, invalid manifest, unknown flag, human
+output), `register_test.go` (fresh success, **duplicate fingerprint → `AlreadyExisted`**, **replay**,
+**expired token rejected** (`ExpiresAt` forced into the past without re-signing — VerifyToken catches it as
+an invalid signature or expiry either way), **executable drift rejected** (`errors.Is(err,
+appadapterbuild.ErrExecutableDrift)`, executable overwritten between probe and register), **capability
+manifest mismatch rejected** (`errors.Is(err, appadapterbuild.ErrCapabilityManifestDrift)`, `--supports-cancel`
+omitted at register time), missing/invalid token file, invalid manifest, reading the token from stdin),
+`concurrency_test.go` (real `sqlite.Open`/`sqlite.NewUnitOfWork` — the in-memory fake's own `WithSerializedWrite`
+unlocks before running its closure and so cannot exercise genuine writer contention, same reasoning
+`internal/app/adapterbuild/commands_sqlite_test.go` documents for its identical choice — 8 goroutines racing
+the SAME idempotency key must all observe the same build id/`AlreadyExisted` and leave exactly one row; a
+second test races 8 DISTINCT idempotency keys against the SAME executable fingerprint and proves exactly one
+racer gets `AlreadyExisted=false` while the registry still ends with exactly one row), `redaction_test.go`
+(probe/register/list/show exercised in both `--json` and human modes, fresh and replayed; combined stdout
+scanned for the real per-installation signing key loaded directly off the `UnitOfWork` via `LoadSigningKey` —
+not found — plus a quoted-JSON-field-name denylist for `signingKey`/`key`/`credential`/`password`; the
+denylist check matches `"fieldName":` specifically rather than a bare substring, since a bare substring check
+first false-failed on this test's own `t.TempDir()` path, which embeds the test function's own name
+`TestRedaction_SigningKeyNeverLeaksInAnyOutput` inside the (legitimate, non-secret) `ExecutablePath` value).
+
+`go test ./internal/delivery/cli/adapterbuild/... -v -count=1` — all tests pass (fixed one real bug along the
+way: two tests originally passed `[]string{id, "--json"}` to `RunShow`, which Go's `flag` package never
+parses past the first non-flag argument, so `--json` landed in the positional-arg slice and tripped the
+"usage: aw adapter show <id> [--json]" error — corrected to `[]string{"--json", id}`). `go build ./... && go
+vet ./... && go test ./...` clean repo-wide.
+
+### Verify
+
+Exact token replay/expiry: proved (`TestRunProbe_Replay`, `TestRunRegister_Replay`,
+`TestRunRegister_RejectsExpiredToken`). Drift/capability/config mismatch: proved
+(`TestRunRegister_RejectsExecutableDrift`, `TestRunRegister_RejectsCapabilityManifestMismatch`). Concurrency:
+proved on real SQLite, both the idempotency-key axis and the independent fingerprint-dedup axis
+(`TestRunRegister_ConcurrentSameIdempotencyKey_ExactlyOneBuild`,
+`TestRunRegister_ConcurrentDistinctKeysSameFingerprint_OneFreshInsert`). Redaction: proved mechanically
+(`TestRedaction_SigningKeyNeverLeaksInAnyOutput`). Scope: `TestDescriptorsRegistered` confirms all four
+commands are `cli.ScopeInstallation`; `cli.BindProjectFlag` is never imported or called anywhere in this
+package (confirmed by reading every file — no `--project-id` flag exists on any of the four commands).
+No wiring into `cmd/aw/main.go`/`cmd/aw/cli.go` (deferred to V6-15O per rule 8) — confirmed neither file was
+touched.
+
+### Kết quả
+
+`aw adapter list|show|probe|register` is usable entirely from the terminal for a full provider-executable
+upgrade flow (probe → review the printed candidate → register → list → show), on the same hardened
+`CommandEnvelope`/receipt-replay contract as HTTP, never the pre-framework legacy path in `cmd/aw/adapter.go`.
+PR opened against `master` from branch `feat/v6-15f-adapterbuild-cli`.
+
+## V6-15I — Scope, approval and WAIT CLI
+
+### Thực hiện
+
+Two new CLI leaf packages, mirroring `internal/delivery/httpapi/workitem`'s scope-expansion commands and
+`internal/delivery/httpapi/decision` (V6-06A) 1:1, each registering its own `cli.Descriptor`(s) from its own
+`init()` into the shared `internal/delivery/cli` registry. Neither touches `cmd/aw/main.go`/`cmd/aw/cli.go` —
+routing real `os.Args` to these leaves is explicitly deferred to V6-15O, per contract point 8.
+
+**`internal/delivery/cli/scopeexpansion`** — `aw scope-expansion request|approve|reject|withdraw`, over
+`internal/app/work`'s four commands (`RequestScopeExpansion`/`ApproveScopeExpansion`/`RejectScopeExpansion`/
+`WithdrawScopeExpansion`). `request` is CREATE-shaped (`--project-id`, `--file`/stdin JSON body with
+`requestedGrants`/`reason`/`referencedWorkItemId` mirroring `workitem`'s own `requestScopeExpansionBody`
+byte-for-byte, no `--expected-version`); `approve`/`reject`/`withdraw` are UPDATE-shaped
+(`--project-id --expected-version <n>`, `reject` also `--note`). Every command reloads its own authoritative
+target first — `workapp.GetTaskFamily`/`workapp.GetScopeExpansionRequest` — before Idempotency-Key/body are
+read, exactly like `scope_expansion_commands.go`'s own discipline. The `--expected-version` precondition
+check lives INSIDE the `cli.Dispatch` execute closure (reached only on a genuinely fresh, non-replayed
+dispatch), never before it — a real receipt replay must always win over an apparently-stale version, mirroring
+`ResolveApprovalHandler`'s own documented ordering and `internal/delivery/cli/catalog`'s own
+`RunRepositoryRetryProbe` precedent.
+
+**`internal/delivery/cli/decision`** — `aw approval resolve <runId> <approvalRequestId> --outcome <value>
+[--reason <text>] --expected-version <n>` and `aw wait signal <runId> <waitRegistrationId> --signal-key <key>
+[--payload <json>]`, over `internal/app/runtime.ResolveApproval`/`SignalWait`. Neither app-layer read query
+is scoped (`internal/app/runtime` has no `GetApprovalRequest`/`GetWaitRegistration` query function, confirmed
+by reading `queries.go` first), so both leaves reload their own target via a direct
+`uow.WithReadOnly` + `tx.Approvals()`/`tx.Wait()` read, translated from
+`internal/delivery/httpapi/decision`'s own `loadApprovalRequestForUpdate`/`loadWaitRegistrationForRun` (HTTP
+short-circuit → plain `(value, error)` return). `--outcome` is a required, non-empty string flag — never a
+closed enum: per this task's own correction, the actual outcome vocabulary is open, per-node, and validated
+deep inside `advanceRunTx`'s own GC-INV-11 allow-list check, never at this CLI's own input-parsing layer.
+`approval resolve` binds `--expected-version` (mirroring `resolveApprovalHashPayload`'s own
+`ApprovalRequestID`-folded hash exactly); `wait signal` deliberately does not (mirroring
+`submitWaitSignalHashPayload` and `SubmitWaitSignalHandler`'s own documented reasoning: an external
+webhook-style caller cannot know the registration's current version, and `SignalWait`'s own
+idempotent-duplicate-delivery contract must keep working regardless).
+
+**Naming-collision avoidance** (explicit task requirement): the WAIT-signal command is named `SignalWait` in
+package `decision` — qualified as `decision.SignalWait`, never a bare `Wait` in any package, so it is never
+confusable with `internal/delivery/cli`'s own pre-existing, unrelated `cli.Wait`/`cli.WaitOptions` generic
+`--wait`-flag polling primitive (V6-15B). Neither calls the other.
+
+Every mutation resolves its principal exclusively via `--principal-config` (`cli.BindPrincipalFlag`) — no
+`--actor`/`--role` flag anywhere in either package. Each command's flag binding is factored into its own small
+`bind*Flags` helper (e.g. `bindRequestFlags`, `bindResolveApprovalFlags`) specifically so a white-box test can
+scan the real, exact flag set each command binds without executing it.
+
+### Test
+
+New test files in both packages, real `*sqlite.Store` fixtures (not `fake.UnitOfWork` — that fake's own
+`WithSerializedWrite` rejects a genuinely concurrent second caller outright with `ErrNestedTransaction` rather
+than blocking and serializing it like real sqlite's `_txlock=immediate` connections do, so it cannot stand in
+for this package's own concurrency tests):
+
+- `scopeexpansion`: happy path + idempotency-key replay + missing `--project-id`/`--expected-version` usage
+  errors + unknown/cross-project family (leakage-normalized) for `request`; happy path + duplicate-approval
+  rejection + stale-`--expected-version` rejection for `approve`/`reject`; business-level idempotency
+  (`WithdrawScopeExpansion`'s own documented "idempotent even across actors/idempotency-keys once WITHDRAWN"
+  contract) for `withdraw`.
+- `decision`: happy path + missing-flag usage errors for both `approval resolve` and `wait signal`.
+
+Descriptor-registration tests (`TestScopeExpansionPackage_RegistersEveryDescriptorInDefault`,
+`TestDecisionPackage_RegistersEveryDescriptorInDefault`) prove every `init()` registration lands in
+`cli.Default`.
+
+Ran the whole suite twice (`go test ./... -count=1`): both new packages pass clean both times; two DIFFERENT,
+unrelated packages each flaked once (`internal/delivery/httpapi/eventstream`'s
+`TestStreamLoop_SlowClientDisconnectsWithLastSafeCursor` on the first run, `internal/app/message` on the
+second) — both pass 100% in isolation, confirming pre-existing, environmental, full-suite-load flakiness
+unrelated to this task's diff (neither package is touched by it).
+
+### Verify
+
+- **HTTP/CLI auth parity**: `TestResolveApproval_UnauthorizedActor_RejectedIdenticallyToHTTP` — an actor whose
+  `--principal-config` roles don't intersect the `ApprovalRequest`'s own `AuthorizedRoles` is rejected with the
+  identical `apperror.CodePolicyDenied`, proven by construction (this CLI leaf dispatches the exact same
+  `runtime.ResolveApproval` function `ResolveApprovalHandler` dispatches — never a second implementation of
+  the role check) and confirmed against the same assertion `internal/app/runtime/approval_test.go`'s own
+  `TestResolveApproval_UnauthorizedActor_Rejected` makes directly.
+- **Spoof**: `TestScopeExpansionCommandsNeverDefineActorOrRoleFlag` and
+  `TestDecisionCommandsNeverDefineActorOrRoleFlag` scan every command's own real bound `flag.FlagSet` (via
+  each command's own `bind*Flags` helper) for `--actor`/`--role`/`--roles`/`--actor-roles` — none exist,
+  mirroring V6-15B's own `TestBindPrincipalFlagNeverDefinesActorOrRoleFlag`.
+  `TestExpectedVersionFlag_OnlyOnApprovalResolve` additionally proves the documented asymmetry: `approval
+  resolve` binds `--expected-version`, `wait signal` does not.
+- **Concurrent decision/signal**: `TestApprove_Concurrent_SameRequest_OnlyOneWins` (scope-expansion),
+  `TestResolveApproval_Concurrent_SameRequest_OnlyOneWins`, and
+  `TestSignalWait_Concurrent_SameSignalKey_ExactlyOneWinner` (decision) each race 5 real, concurrent CLI
+  invocations (goroutines, distinct `--idempotency-key`s) against one real `sqlite.Store` for the same target.
+  Exactly one ever wins; every other outcome is a clean, typed conflict — either the underlying app command's
+  own graceful `Won=false` (the SAME race `runtime.ResolveApproval`'s/`SignalWait`'s own direct unit tests
+  prove), or, for `approval resolve` specifically, a late-scheduled goroutine's own reload legitimately
+  observing the winner's already-bumped `Version` and getting this CLI's own advisory `--expected-version`
+  precondition error (the CLI equivalent of HTTP 412 Precondition Failed) — never corruption, a panic, or a
+  hang. Stable across 5 repeated full runs of every concurrency test in both packages.
+- **Withdraw race**: `TestWithdrawRace_ConcurrentWithApprove_ResolvesSafely` races a real `scope-expansion
+  withdraw` against a real `scope-expansion approve` for the same PENDING request (both observing the same
+  initial `--expected-version=1`). Exactly one of the two wins (verified against the persisted
+  `ScopeExpansionRequest.Status` afterward: `APPROVED` xor `WITHDRAWN`, never both, never neither) — per
+  `WithdrawScopeExpansion`'s own documented idempotency being scoped strictly to an ALREADY-WITHDRAWN target,
+  never one that raced past it to `APPROVED`.
+
+### Kết quả
+
+`aw scope-expansion request|approve|reject|withdraw`, `aw approval resolve` and `aw wait signal` are real,
+tested CLI leaves dispatching the exact same application commands their HTTP counterparts do — every human
+decision named in this task (scope-expansion request/approve/reject/withdraw, approval outcome, WAIT signal)
+is now typed and audited from the terminal, with no free-text control and no per-command actor/role spoof
+surface anywhere. `go build ./... && go vet ./... && go test ./...` clean (two unrelated, non-reproducing,
+pre-existing environmental flakes noted above, confirmed unrelated by isolation re-run).
+
 ## V6-09B — Projection rebuild HTTP endpoints
 
 ### Thực hiện
@@ -10018,3 +10248,228 @@ symmetric counterpart of the pre-existing `BindFileFlag`, for future CLI leaves 
 content-streaming need). One real locator-leak bug was found by this task's own test suite and fixed
 (`storeerror.go`'s `sanitizeStoreError`) before this task was considered done. `go build/vet/test ./...` clean
 repo-wide, confirmed synchronously in the foreground. PR targets `master`.
+
+## V6-15G — WorkItem and blocker CLI
+
+### Thực hiện
+
+Built two new CLI leaf packages on top of V6-15B's shared `internal/delivery/cli` framework
+(`docs/design/08-v6-api-projections.md:713-721`): `aw work-item list|show|create|create-child|readiness|
+mark-ready|cancel` in a new package `internal/delivery/cli/workitem`, and `aw blocker resolve` in a new sibling
+package `internal/delivery/cli/workitemblocker` (the final package-naming choice — kept distinct from `workitem`
+and from any plain `blocker` name, mirroring `internal/delivery/cli/noderun`'s own precedent for a leaf grouped
+with a sibling by resource-name convention but wrapping a different HTTP package). Both packages are entirely
+new directories — no existing file was touched (confirmed via `git status --short` before committing: only the
+two new package directories are untracked), so `cmd/aw/main.go`/`cmd/aw/cli.go` stay untouched, per this task's
+own CRITICAL scope rule (real `os.Args` routing is deferred to V6-15O). Did not build `task-family show` or a
+`list-children` command: the spec's own "Command surface to build" section names exactly the seven `work-item`
+commands plus `blocker resolve`, and per that same section's own "your judgment, but don't over-scope" line,
+kept the diff to exactly what was named rather than adding a nice-to-have sibling with no explicit citation.
+
+Read `internal/app/work/commands.go`, `queries.go`, `mark_ready.go`,
+`internal/app/runtime/cancel_work_item.go`, `internal/app/runtime/resolve_work_item_blocker.go` (the last one's
+own dense 1-31 doc comment in full, twice) and both HTTP packages this task's own command tree fans out across
+(`internal/delivery/httpapi/workitem`, `internal/delivery/httpapi/recovery`) before writing any leaf code, per
+the task brief's own instruction.
+
+Each subcommand registers its own `cli.Descriptor` via its own package `init()` (7 in `workitem`, 1 in
+`workitemblocker`, all `cli.ScopeProject`, `HTTPOperationID` matching the mirrored HTTP `operationId` exactly:
+`listWorkItems`, `getWorkItem`, `createRootWorkItem`, `createChildWorkItem`, `getWorkItemReadiness`,
+`markWorkItemReady`, `cancelWorkItem`, `resolveWorkItemBlocker`).
+
+**Three deliberately different dispatch shapes, implemented exactly as flagged in the task brief:**
+- `work-item create`/`create-child`/`mark-ready` go through the full `cli.BuildEnvelope`/`cli.Dispatch`
+  CommandEnvelope flow. `create`/`create-child` mirror `RunRepositoryRegister`'s own template
+  (`--idempotency-key` optional, wire DTOs with proper `json` tags — `scopegrant.go`'s own `scopeGrantBody`
+  mirrors `internal/delivery/httpapi/workitem/dto.go`'s identically-named type field for field, since
+  `workapp.ScopeGrantRequest` itself carries no json tags). `mark-ready` mirrors `RunRepositoryRetryProbe`'s own
+  CAS template: `--expected-version` required, and the version comparison against the freshly reloaded WorkItem
+  lives INSIDE the `cli.Dispatch` execute closure (a fast-reject only — the real, authoritative CAS is still
+  `workapp.MarkWorkItemReady`'s own `TransitionWorkItemStatus` call one level deeper), so a replay of an earlier
+  successful mark-ready never re-checks a version the WorkItem has since moved past.
+- `work-item cancel` and `blocker resolve` are deliberately NOT `cli.BuildEnvelope`/`cli.Dispatch` — no
+  `--idempotency-key`, no `--expected-version` flag on either subcommand at all, mirroring
+  `internal/delivery/cli/run/cancel.go`'s own identical choice for the identical class of reason (re-read that
+  file's own doc comment before writing both of these, per the task brief's own explicit instruction):
+  `runtime.CancelWorkItem`/`runtime.ResolveWorkItemBlocker` both take a plain request struct — no
+  `ports.Command`, no `IdempotencyKey` field, no `ExpectedVersion` field, no `ProjectID` field anywhere on
+  either. `CancelWorkItem` is idempotent BY WorkItemID (its own durable `WorkItemCancellationIntent`);
+  `ResolveWorkItemBlocker` is idempotent BY BlockerID (a blocker already RESOLVED/WAIVED replays as
+  `AlreadyResolved`, never a second decision). Both write via `cli.EncodeQueryResult` rather than
+  `cli.EncodeCommandResult`/`cli.ResultEnvelope` for the same reason `run cancel` does: `ResultEnvelope.
+  IdempotencyKey` is always-present by contract, and neither command has one to report. Binding those flags
+  would validate a header these commands could never consume — the exact class of mistake the task brief calls
+  out as "a real correctness bug, not a style choice" against the `run cancel` precedent.
+- `work-item list`/`show`/`readiness` are pure reads — `list`/`show` take a required `--project-id` (mirroring
+  the `{projectId}` path segment `internal/delivery/httpapi/workitem`'s own routes carry), never derived by
+  guesswork.
+
+**No `--project-id` flag on `create-child`, `mark-ready`, `cancel`**: all three commands' own application-layer
+requests (`CreateChildWorkItemRequest`, `MarkWorkItemReadyRequest`, `CancelWorkItemRequest`) carry no `ProjectID`
+field at all — a project scope is always derived by reloading the real target row directly (`loadWorkItemProjectID`/
+`loadWorkItemRaw`, `workitem/helpers.go`, mirroring `internal/delivery/cli/run/start.go`'s own
+`loadWorkItemProjectID` and `internal/delivery/httpapi/workitem/mark_ready_command.go`'s own
+`loadWorkItemForMarkReady` respectively) rather than inventing a flag nothing downstream would even check against
+— the same "don't misrepresent the real contract" discipline the envelope-asymmetry bullet above already applies,
+extended here to scope derivation instead of idempotency/version flags.
+
+**Readiness is recompute-fresh by construction, not by extra code**: `work-item readiness` dispatches straight to
+`workapp.ExplainWorkItemReadiness`, which itself reloads the WorkItem's own real, current row and re-runs the
+real `workdomain.ValidateReadinessGate` validator every call — confirmed there is no projection table or cached
+status this leaf could read instead, so the "never trust a projection's own status for a decision" bar is
+satisfied automatically, exactly as the task brief predicted.
+
+**No `--actor`/`--role` flag anywhere** (ADR-028) — `TestWorkItemCommandsNeverDefineActorOrRoleFlag`/
+`TestBlockerCommandsNeverDefineActorOrRoleFlag` prove it mechanically for every subcommand's own flag set,
+mirroring `internal/delivery/cli/scopeexpansion`'s (V6-15I, read from its own not-yet-merged branch for this one
+precedent, per the task brief's own pointer) `TestScopeExpansionCommandsNeverDefineActorOrRoleFlag`.
+
+### Test
+
+All tests use `fake.UnitOfWork` (in-memory, mirroring `internal/delivery/cli/catalog`'s own test-layering choice
+and `internal/app/runtime`'s own `cancel_work_item_test.go`/`resolve_work_item_blocker_test.go` precedent for
+these exact two application packages), duplicating the established `commands_test.go`/`cancel_run_test.go`-style
+fixture helpers into each package's own `fixture_test.go` — EXCEPT the two genuine concurrent-goroutine race
+tests, which switched to a REAL `sqlite.Store` after a real flake was caught and fixed (see below).
+
+**A real bug this test suite caught before finishing**: `fake.UnitOfWork.WithSerializedWrite`/`WithReadOnly`
+(`internal/app/ports/fake/unitofwork.go`) only detects and rejects a genuinely-concurrent second caller with a
+synthetic `ErrNestedTransaction` (a boolean in-progress flag, not a real queue/lock) rather than serializing it —
+first-drafted concurrency tests for both `work-item mark-ready` and `blocker resolve` built on the fake flaked
+intermittently (`fake: nested UnitOfWork call...`) under a `-count=10`/`-count=20` repeat, confirmed by observing
+several real failures before any fix. Both tests were rebuilt against a real, temp-file `sqlite.Store`
+(`newSQLiteTestDeps` in each package's own `fixture_test.go`), the same choice
+`internal/delivery/httpapi/recovery/resolveblocker_test.go`'s own
+`TestResolveWorkItemBlocker_HTTP_ConcurrentResolveRace_ExactlyOneFreshDecision` already makes for the identical
+reason; re-ran each at `-count=20` afterward with zero failures. `internal/delivery/cli`'s own archtest guarantee
+(`TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters`) checks this package's own NON-TEST dependency closure
+only (confirmed by reading `goList`'s own implementation), so importing sqlite inside these `_test.go` fixtures
+never trips it.
+
+`internal/delivery/cli/workitem` (32 top-level tests across `fixture_test.go` + `workitem_test.go` +
+`list_test.go` + `show_test.go` + `readiness_test.go` + `create_test.go` + `createchild_test.go` +
+`markready_test.go` + `cancel_test.go`):
+- **List/show — subset**: `TestRunWorkItemList_ReturnsOnlyCallersProjectWorkItems` creates root WorkItems under
+  two different real projects in the SAME UnitOfWork and confirms `--project-id project-a` returns exactly the
+  one WorkItem genuinely stored there, never project-b's. `TestRunWorkItemShow_CrossProject_ReturnsError`/
+  `TestRunWorkItemReadiness_CrossProject_ReturnsError` confirm `errors.Is(err, ports.ErrScopeMismatch)` for a
+  real WorkItem ID queried under the wrong `--project-id`.
+- **Readiness — recompute fresh, both directions**:
+  `TestRunWorkItemReadiness_RecomputesFreshNeverTrustsStoredStatus` persists two WorkItems directly (the "caller
+  builds a `work.WorkItem` value directly...sets the exported fields directly" escape hatch
+  `internal/app/work/queries.go`'s own doc comment describes, since no public command populates a WorkItem's
+  contract yet) sharing one real family: one at `Status=ACTIVE` with a genuinely complete contract (a naive
+  status-based shortcut might read ACTIVE as "already passed readiness once" — this leaf instead correctly
+  reports `Ready=true` only because the real gate says so), and one at `Status=BACKLOG` (the ordinary "not yet
+  ready" case) with `Behavior` deliberately blank (correctly `Ready=false` with exactly `"behavior is required"`
+  named). Both go through the identical `work-item readiness` command path — the only thing that differs is each
+  WorkItem's own freshly-reloaded row.
+- **Create/create-child — replay + validation**: `TestRunWorkItemCreate_ReplaySameIdempotencyKey_
+  ReturnsIdenticalResult`/`TestRunWorkItemCreateChild_ReplaySameIdempotencyKey_ReturnsIdenticalResult` — a second
+  call with the identical `--idempotency-key` replays the exact original result and a direct
+  `ListWorkItemsByProject`/`ListChildWorkItems` count confirms no second row was ever created.
+  `TestRunWorkItemCreateChild_EffectiveScopeExceedsFamilyScope_Rejected` proves the reused
+  `ErrEffectiveScopeExceedsFamilyScope` (READ→WRITE escalation / ungranted repository) surfaces cleanly.
+  `TestRunWorkItemCreateChild_NoProjectIDFlagNeeded_DerivedFromParent` proves `--project-id` is not merely
+  ignored but genuinely unrecognized (a flag-parse failure) on this subcommand.
+- **Mark-ready — stale/replay/concurrency**: `TestRunWorkItemMarkReady_StaleExpectedVersion_Rejected` (a
+  genuinely fresh call naming a version the WorkItem has already moved past is rejected, never silently applied);
+  `TestRunWorkItemMarkReady_ReplaySameKey_WinsOverStateDrift` (mirrors
+  `TestRunRepositoryRetryProbe_ReplaySameKey_WinsOverStateDrift` — a replay of an already-succeeded mark-ready
+  never re-checks the version, even though the WorkItem has since moved past BACKLOG);
+  `TestRunWorkItemMarkReady_ConcurrentDoubleMarkReady_ExactlyOneWinner` (real sqlite, see the bug note above — 6
+  concurrent callers with distinct idempotency keys against the SAME WorkItem@version-1 converge on exactly one
+  real READY@2 transition); `TestRunWorkItemMarkReady_NotReady_ReturnsReadinessError` (`errors.As` against the
+  real `*workdomain.ReadinessError`, never a generic wrapper).
+- **Cancel — quiesce, not assumed terminal**: `TestRunWorkItemCancel_ZeroRuns_ImmediatelyCancelled` (closes out
+  the instant the call commits) vs. `TestRunWorkItemCancel_ActiveRun_QuiescesThenReportsRealNotAssumedState`
+  (the decisive proof: `result.Status` immediately after the call is still `ACTIVE`, not `CANCELLED` — the Run
+  has only moved to CANCELLING — and only reaches CANCELLED after a real `CancelRunCoordinatorHandler.Handle`
+  sweep closes the Run out, proving this leaf reports `runtime.CancelWorkItemResult.Status` verbatim, never an
+  assumed value). `TestRunWorkItemCancel_SecondCall_AlreadyRequested` (idempotent by WorkItemID, a different
+  reason on the second call never re-decides anything).
+- `workitem_test.go`: all 7 descriptors present with expected `AppOperation`/`HTTPOperationID`; no `--actor`/
+  `--role` flag on any of the 7 subcommands' own reconstructed `flag.FlagSet`.
+
+`internal/delivery/cli/workitemblocker` (15 top-level tests across `fixture_test.go` +
+`workitemblocker_test.go` + `resolve_test.go`):
+- **Baseline + waive**: `TestResolve_OpenRunCancelledBlocker_ResolvesAndUnblocksToReady` (RESOLVED against a
+  REAL, never-seeded RUN_CANCELLED blocker — driven end to end through `runtime.CancelRun` +
+  `CancelRunCoordinatorHandler.Handle`, the one real blocker producer in this codebase — unblocks the WorkItem
+  straight to READY); `TestResolve_Waived_RecordsDecisionArtifact`/
+  `TestResolve_WaivedWithoutPolicyGrant_Rejected` (`errors.Is(err, runtime.ErrWaiveRequiresPolicyGrant)`).
+- **No default, rejected client-side**: `TestResolve_MissingMode_RejectedClientSide`/
+  `TestResolve_InvalidMode_RejectedClientSide` (`--mode=APPROVED` is a `cli.UsageError`, never silently
+  defaulted or passed through) — this task's own explicit "reject client-side too" bar.
+- **Idempotent replay + concurrency**: `TestResolve_AlreadyResolved_IdempotentReplay` (a second call with a
+  totally different `--mode`/`--reason` against an already-RESOLVED blocker is a graceful no-op reporting the
+  FIRST call's own real outcome, never re-decided, never an error);
+  `TestResolve_ConcurrentResolveRace_ExactlyOneFreshDecision` (real sqlite, see the bug note above — 6
+  concurrent RESOLVED calls against the SAME blocker converge on exactly one fresh, `AlreadyResolved=false`
+  decision, mirroring `internal/delivery/httpapi/recovery/resolveblocker_test.go`'s own identical HTTP-level
+  race proof).
+- **The two extra preconditions**: `TestResolve_NonTerminalRun_Rejected` (`errors.Is(err,
+  runtime.ErrWorkItemHasNonTerminalRun)` — a seeded, unrelated blocker type coexisting with a real still-RUNNING
+  second Run); `TestResolve_QuarantinedWorkspace_Rejected` (`errors.Is(err, runtime.ErrWorkspaceQuarantined)` —
+  a second repository workspace hand-seeded QUARANTINED under the same family, the established
+  `internal/app/runtime/resolve_work_item_blocker_test.go` shortcut for reaching this fixture).
+- **Full resolution-mode × blocker-type matrix**: `TestResolve_ResolutionModeTypeMatrix` (11 subtests) locks in
+  ADR-020's own closed table through this CLI leaf — every one of the 7 `workdomain.BlockerType` values crossed
+  against RESOLVED/WAIVED as applicable, including `SCOPE_EXPANSION_REQUIRED` rejecting BOTH modes
+  unconditionally (`ErrBlockerNotResolvableViaCommand`) and every non-`RUN_CANCELLED`/`COMPLETION_POLICY_FAILED`
+  type rejecting WAIVED (`ErrBlockerNotWaivable`) — mirrors
+  `internal/app/runtime/resolve_work_item_blocker_test.go`'s own identical matrix test table row for row, proving
+  this leaf surfaces every branch cleanly rather than special-casing or working around any of them.
+- `workitemblocker_test.go`: the one `{blocker, resolve}` descriptor present with the expected
+  `AppOperation`/`HTTPOperationID`; no `--actor`/`--role` flag on its own reconstructed `flag.FlagSet`.
+
+`go build ./...`, `go vet ./...` clean repo-wide. `go test ./internal/delivery/cli/...` — every package `ok`
+(10 packages, including the two new ones). Full `go test ./...` run: every package `ok` except one
+pre-existing, unrelated flake — `internal/app/message`'s `TestAppendConversationAttachment_
+SameKeyConcurrency_TwoIdenticalRetriesRacing` (Windows artifact-store file-locking contention, "rename ...
+Access is denied" — the same flake already extensively documented elsewhere in this checklist file, e.g. the
+V6-09B entry above). Re-verified fresh rather than trusting the name match alone: `go list -deps
+./internal/app/message/... 2>/dev/null | grep -iE "workitem|delivery/cli"` returns ZERO hits — the failing
+package (and none of its transitive dependencies) imports anything this task added, so this task's diff
+cannot be the cause by construction.
+
+### Verify
+
+- **Subset/readiness**: see Test above (`TestRunWorkItemList_ReturnsOnlyCallersProjectWorkItems`,
+  `TestRunWorkItemReadiness_RecomputesFreshNeverTrustsStoredStatus`).
+- **Replay/concurrency/stale**: see Test above — `create`/`create-child`/`mark-ready` replay proofs, the two
+  real-sqlite concurrency races (mark-ready and blocker-resolve), `TestRunWorkItemMarkReady_
+  StaleExpectedVersion_Rejected`.
+- **Cancel quiesce**: `TestRunWorkItemCancel_ActiveRun_QuiescesThenReportsRealNotAssumedState` — see Test above.
+- **Resolution-mode matrix**: `TestResolve_ResolutionModeTypeMatrix` plus the dedicated
+  already-resolved/non-terminal-run/quarantine/missing-policy-grant tests — see Test above.
+- **No spoof surface**: `TestWorkItemCommandsNeverDefineActorOrRoleFlag`/
+  `TestBlockerCommandsNeverDefineActorOrRoleFlag` — see Test above.
+- `go build/vet/test ./...` clean repo-wide.
+
+### Kết quả
+
+New: `internal/delivery/cli/workitem` (`doc.go`, `workitem.go`, `helpers.go`, `scopegrant.go`, `list.go`,
+`show.go`, `readiness.go`, `create.go`, `createchild.go`, `markready.go`, `cancel.go` + 9 test files, 32 tests) —
+`aw work-item list|show|create|create-child|readiness|mark-ready|cancel`; `internal/delivery/cli/workitemblocker`
+(`doc.go`, `workitemblocker.go`, `resolve.go` + 3 test files, 15 tests) — `aw blocker resolve`, the final
+package-naming choice for the blocker-resolve leaf (kept distinct from `workitem` and from a plain `blocker`
+name). No existing file touched — `cmd/aw/main.go`/`cmd/aw/cli.go` untouched per the CRITICAL scope rule,
+deferred to V6-15O. One real bug caught and fixed during this task's own test-writing (documented above under
+Test): `fake.UnitOfWork`'s concurrency-detection behavior is not safe for genuine goroutine races, so both
+concurrency proofs moved to real sqlite. `go build/vet/test ./...` clean repo-wide. PR targets `master`.
+
+### Post-open fix — `TestResolve_ConcurrentResolveRace_ExactlyOneFreshDecision` data race (caught by CI's own race detector)
+
+Moving the concurrency test to real sqlite (above) fixed the `fake.UnitOfWork` false-positive but left a
+second, genuine data race: `newSQLiteTestDeps`'s own default `IDs: idsource.NewSequential("id")` was shared
+across all 6 concurrent `Resolve()` goroutines. `idsource.Sequential`'s own doc comment states plainly: "Not
+safe for concurrent use — it is a single-threaded test helper, not a production allocator" (`s.next++` with no
+lock). CI's race detector caught this correctly — `go test` (no `-race`) never would have, since the raced
+field is only used for `CorrelationID` generation, not a correctness-affecting value the test's own assertions
+check. Fixed by overriding `deps.IDs = idsource.Random{}` (the real production source, no shared mutable
+state) for just this one test, leaving every OTHER test in the file on the shared helper's deterministic
+default. Verified 20/20 clean on `-run TestResolve_ConcurrentResolveRace -count=20`, full package 3/3 stable.
+**Lesson**: a concurrency test needs EVERY shared collaborator to be concurrency-safe, not just the
+`UnitOfWork` — an ID source, a clock, or any other injected dependency can just as easily be the actual
+unsafe one, and the race detector will find whichever one isn't, one at a time.
