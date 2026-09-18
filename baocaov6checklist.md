@@ -10600,3 +10600,195 @@ default. Verified 20/20 clean on `-run TestResolve_ConcurrentResolveRace -count=
 **Lesson**: a concurrency test needs EVERY shared collaborator to be concurrency-safe, not just the
 `UnitOfWork` — an ID source, a clock, or any other injected dependency can just as easily be the actual
 unsafe one, and the race detector will find whichever one isn't, one at a time.
+
+## V6-15L — Workspace and bounded source CLI
+
+### Thực hiện
+
+New package `internal/delivery/cli/workspace` (`docs/design/08-v6-api-projections.md:763-771`): "inspect/recover
+workspace and bounded source/diff/log from the terminal" — `aw workspace-set show|release` and
+`aw repository-workspace source|diff|log|reconcile`. Six leaves, six files (one per subcommand), each
+registering its own `cli.Descriptor` via its own `init()` into the shared `internal/delivery/cli` registry:
+
+- `doc.go` — package doc plus `Dependencies{UOW, IDs, Authority, Reader, Now}`, the union of every dependency
+  `internal/delivery/httpapi/workspaceroutes.go` and `internal/delivery/httpapi/workspaceinspection` separately
+  need from composition-root wiring, gathered here since one command tree fans out across both HTTP packages'
+  worth of application functions.
+- `helpers.go` — `usageErrorf`/`parseFlags`/`requireProjectID`/`loadPrincipal` (the same small helpers every
+  sibling leaf package duplicates rather than shares, per `internal/delivery/cli/run/shared.go`'s own doc
+  comment); `revisionResult`/`toRevisionResult` (a delivery-owned wire DTO for `workspace.Revision`, duplicated
+  from `internal/delivery/httpapi/workspaceinspection/dto.go`'s own unexported `revisionResponse` rather than
+  imported, since two independent delivery packages each own their own wire vocabulary — V6-02A's own
+  convention); `requireScopeFlags` (the four WorkspaceScope identifiers — `repositoryId`/`workspaceSetId` are
+  always REQUIRED, never inferred from a bare `repositoryWorkspaceId`, mirroring
+  `internal/delivery/httpapi/workspaceinspection`'s own identical query-param discipline); and
+  `mapInspectionQueryError` — the CLI's own restatement of
+  `internal/delivery/httpapi/workspaceinspection/errors.go`'s own `writeQueryError`: only
+  `appinspection.ErrScopeMismatch`/`appinspection.ErrWorkspaceNotReady`/`ports.ErrPersistenceNotFound` are ever
+  named by their own sentinel; every other error (path traversal, unauthorized/stale revision, binary/
+  directory/symlink/submodule rejection, non-ancestor log cursor) collapses into one fresh, generic, opaque
+  message — never `err` itself re-wrapped, so no adapter-internal detail can leak through a future composition
+  root that prints a returned error's own `.Error()` text straight to stderr.
+- `show.go` — `aw workspace-set show <familyId> --project-id <id>`: a pure read over
+  `workspacestate.GetWorkspaceSetState`, own delivery-owned `workspaceSetStateResult`/
+  `repositoryWorkspaceStateResult` DTOs (workspacestate's own app-layer types carry no json tags at all) mirroring
+  the HTTP wire shape minus `ValidActions` (an HTTP-only advisory-action concept this CLI leaf does not
+  reproduce). Errors (`ports.ErrPersistenceNotFound`, `workspacestate.ErrScopeMismatch`) are returned verbatim —
+  this state query never touches Git/the filesystem, so it has nothing adapter-internal to hide, unlike
+  source/diff/log below.
+- `release.go` — `aw workspace-set release <familyId> --project-id <id> --expected-version <n>
+  [--idempotency-key <key>]`: the full `cli.BuildEnvelope`/`cli.Dispatch` CommandEnvelope flow over
+  `workspacerelease.RequestWorkspaceSetRelease`, mirroring `internal/delivery/httpapi/workspacerelease.go`'s own
+  handler exactly, including the identical `commandType = "RequestWorkspaceSetRelease"` literal (so an HTTP call
+  and a CLI call for an equivalent request hash and replay identically, `cli.BuildEnvelope`'s own doc-comment
+  guarantee). `deps.Authority` (a real `ports.ReleaseEligibilityAuthority`, `work.NewEligibilityAuthority(uow)`
+  constructed ONCE by a future composition root and threaded through) is passed straight to the app command —
+  this leaf never constructs its own.
+- `reconcile.go` — `aw repository-workspace reconcile <repositoryWorkspaceId> --project-id <id>
+  --expected-version <n> [--idempotency-key <key>]`: the identical envelope/dispatch shape over
+  `workspacereconcile.RequestWorkspaceReconciliation`, no `ReleaseEligibilityAuthority` needed (that command
+  depends on nothing beyond `ports.UnitOfWork`/`idsource.Source`).
+- `source.go` — `aw repository-workspace source <repositoryWorkspaceId> --project-id <id> --repository-id <id>
+  --workspace-set-id <id> --revision <rev> --revision-generation <n> --path <path> --output <path|-> [--byte-limit
+  <n>] [--line-limit <n>]`: this task's own "query with binary output" leaf, following
+  `internal/delivery/cli/evidence/artifact.go`'s own `RunArtifactGet` template exactly for the output-routing
+  split — real content bytes ALWAYS go to `--output` (`cli.WriteBinaryOutput`, raw, streamed via `bytes.NewReader`
+  never buffered a second time), bounded metadata (`sourceResult`: path/revision/byteLimit/lineLimit/totalBytes/
+  lineCount/truncated/binary, no `Content` field ever) goes to stderr (`--output -`, one `cli.Diagnosticf` line)
+  or stdout (a real file target, the one JSON document via `cli.EncodeQueryResult`) — never both, never mixed.
+  `--revision-generation` is a flag this task's own abbreviated command-surface list did not spell out
+  explicitly, but `workspace.Revision.WorkspaceGeneration` is a required part of revision identity the real
+  `ports.WorkspaceInspectionReader.ReadSource` independently re-validates (RepositoryID/WorkspaceGeneration match
+  plus VCSObjectID equals one of the workspace's own two known-good revisions) — added it (and its
+  `--base-revision-generation`/`--result-revision-generation`/`--anchor-generation` siblings on diff/log below)
+  to make every `workspace.Revision` field genuinely settable from the terminal, mirroring the HTTP route's own
+  `generation`/`baseGeneration`/`resultGeneration`/`anchorGeneration` required query parameters one for one.
+- `diff.go` — `aw repository-workspace diff <repositoryWorkspaceId> --project-id <id> --repository-id <id>
+  --workspace-set-id <id> --base-revision <rev> --base-revision-generation <n> --result-revision <rev>
+  --result-revision-generation <n> [--byte-limit <n>] [--file-limit <n>]`: a pure JSON read over
+  `appinspection.Queries.GetDiff`, own `diffResult`/`diffFileChangeResult` DTOs mirroring
+  `internal/delivery/httpapi/workspaceinspection/dto.go`'s own `diffContentResponse`/`diffFileChangeResponse`
+  field for field (`Patch []byte` stays `[]byte` so `encoding/json` base64-encodes it automatically — a real
+  patch can legitimately contain non-UTF8 bytes).
+- `log.go` — `aw repository-workspace log <repositoryWorkspaceId> --project-id <id> --repository-id <id>
+  --workspace-set-id <id> --anchor <rev> --anchor-generation <n> [--cursor <cursor>] [--limit <n>] [--byte-limit
+  <n>]`: a pure, paginated JSON read over `appinspection.Queries.GetRepositoryLog`. `--cursor` is passed straight
+  through to `GetRepositoryLogRequest.Cursor` completely unmodified — no local codec at all, unlike
+  `internal/delivery/cli/run/cursor.go`'s own signed pagination codec (built for `run graph`/`run timeline`'s own
+  SYNTHETIC cursor, which has no independent domain meaning) — this cursor is already a real, independently-
+  adapter-revalidated commit object id (`git merge-base --is-ancestor`, one layer below), per this task's own
+  explicit "simpler than you might expect" guidance. `--limit` is parsed via the already-existing
+  `httpapi.ResolveLimit` (reused, not reimplemented — the exact same reuse
+  `internal/delivery/cli/run/graph.go`/`timeline.go` already established for a sibling leaf), whose own
+  stricter 200-max clamp composes harmlessly underneath `appinspection`'s own separate 500-max clamp.
+
+`internal/archtest/cli_workspace_boundary_test.go` — a fresh AST-import walk scoped to exactly
+`internal/delivery/cli/workspace` (its own directory only, never the whole `internal/delivery/cli/...` tree,
+and never transitively): forbids `"os"`, `"os/exec"`, and any `internal/adapters/...` import. Deliberately NOT
+the transitive `go list -json` technique `internal/archtest/cli_boundary_test.go`'s own
+`TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters` already uses for the whole `internal/delivery/cli` tree
+(which already transitively forbids `adapters/gitworktree` etc. for this package too, as a bonus) — a
+transitive-or-whole-tree walk would false-positive on `"os"` specifically, since this package legitimately calls
+`cli.WriteBinaryOutput` (`internal/delivery/cli/output.go`), which itself legitimately imports `"os"` to open a
+real `--output` file. Mirrors `internal/archtest/workspace_inspection_http_test.go`'s identical "own package,
+own scoped walk" idiom for its own HTTP counterpart.
+
+No existing file touched — `cmd/aw/main.go`/`cmd/aw/cli.go` untouched per the CRITICAL scope rule, deferred to
+V6-15O.
+
+### Test
+
+31 new tests, all real, in-process, no mocks: `internal/delivery/cli/workspace/*_test.go` (30) plus
+`internal/archtest/cli_workspace_boundary_test.go` (1).
+
+- `descriptor_test.go` (1): `TestWorkspacePackage_RegistersEveryDescriptorInDefault` — all six descriptors
+  landed in `cli.Default` with the exact `AppOperation`/`HTTPOperationID` pairs.
+- `fixture_test.go` — `releaseTestEnv`: real `*sqlite.Store` + real `work.NewEligibilityAuthority(uow)`, reusing
+  `internal/adapters/sqlite/fixtures.go`'s own `SeedFixtureOwners`/`SeedFixtureRepositoryWorkspace`/
+  `SeedFixtureWriteLease` and `internal/app/work.CreateReleaseSet`/`SealReleaseSet` — the exact same fixture
+  helpers `internal/delivery/httpapi/workspace_test.go` already uses for the identical HTTP-level scenarios,
+  reused here rather than re-invented.
+- `show_test.go` (3): happy path (real write lease seeded, `hasActiveWriteLease=true`/`generation=1` come back
+  correctly); unknown family → `errors.Is(err, ports.ErrPersistenceNotFound)`; missing `--project-id` → usage
+  error.
+- `release_test.go` (7) — the **quarantine/lease/generation/replay** Verify bullet, release half: happy path
+  (real `WORKSPACE_SET_RELEASE` job enqueued, `HasActiveJobForAggregateIDs` proves it); replay (identical
+  `--idempotency-key` twice → byte-identical `releaseJobId`, `idsource.Random{}` makes a fresh mint statistically
+  certain to differ); quarantine blocks release (`errors.Is(err, workspacerelease.ErrWorkspaceSetHasQuarantinedRepository)`
+  after a REAL `store.QuarantineRepositoryWorkspace` transition); active write lease blocks release
+  (`errors.Is(err, workspacerelease.ErrWorkspaceSetHasActiveWriteLease)` after a REAL
+  `sqlite.SeedFixtureWriteLease`, which itself drives the real `EnqueueJob`/`ClaimJob`/`AcquireWriteLeases`
+  path); not-authorized (no sealed `ReleaseSet` → `errors.Is(err, workspacerelease.ErrReleaseNotAuthorized)`,
+  GC-INV-26); stale `--expected-version` → `errors.Is(err, ports.ErrOptimisticConflict)`; zero
+  `--expected-version` → `cli.IsUsageError(err)`.
+- `reconcile_test.go` (5) — the **generation/replay** Verify bullet, reconcile half: happy path (real
+  `WORKSPACE_RECONCILIATION` job enqueued); replay (identical key → identical `reconciliationJobId`); not
+  reconcilable (a REAL `store.ReleaseRepositoryWorkspace` transition to RELEASED →
+  `errors.Is(err, workspacereconcile.ErrWorkspaceNotReconcilable)`); GENUINELY stale `--expected-version` (a
+  REAL quarantine transition bumps version 1→2 for real, the pre-quarantine version 1 is rejected via
+  `ports.ErrOptimisticConflict`, then the CURRENT version 2 succeeds — proving the rejection was really about
+  staleness, not reconcile refusing QUARANTINED outright, since QUARANTINED is one of the two reconcilable
+  states); zero `--expected-version` → usage error.
+- `inspection_fixture_test.go` — `inspectionTestEnv`: real `gitworktree.Provider` against a real temporary Git
+  repository (`git init`/`commit` via real `exec.Command("git", ...)`, never mocked) plus real sqlite ownership-
+  chain seeding, mirroring `internal/delivery/httpapi/workspaceinspection/fixture_test.go`'s own `newTestEnv`
+  almost verbatim — this package drives the CLI leaf's own `Run*` functions directly instead of a real HTTP
+  round trip. `sourceArgs`/`diffArgs`/`logArgs` build correctly-ordered flag arguments (flags before the
+  positional `<repositoryWorkspaceId>` — a real, caught-in-this-task bug: Go's `flag.FlagSet` stops parsing at
+  the first non-flag token, so a positional ID placed BEFORE a flag makes that flag and everything after it look
+  like more positional arguments instead; every test in this task's own suite orders flags first, mirroring
+  `internal/delivery/cli/run/start_test.go`'s own established ordering).
+- `source_test.go` (7) — the **traversal/binary/truncation/stale revision** Verify bullet, source half: happy
+  path (`--output <file>`, exact byte-for-byte content, JSON metadata `binary=false`/`truncated=false`/
+  `totalBytes` correct); `--output -` (raw bytes ONLY on stdout, no JSON mixed in — bounded metadata instead on
+  stderr as one diagnostic line); `--line-limit` truncation (5-line fixture clamped to 2, `truncated=true`,
+  `lineCount=2`, file content is exactly the first 2 lines); BINARY content (`\x00`-bearing fixture,
+  `binary=true`, content streams through `--output` byte-for-byte uncorrupted — proving binary content is never
+  line-clamped the way text is, `ports.SourceContent`'s own real contract); path traversal (`../outside.txt`) →
+  the EXACT opaque message (`"workspace: the request names an invalid, unauthorized, or unreadable revision,
+  path, or cursor"`), asserted byte-for-byte, never a more specific "traversal detected" string; stale/
+  unauthorized revision (an all-zeros commit id, correct generation, still not one of the workspace's own two
+  known-good revisions) → the identical opaque message; missing `--repository-id` → usage error.
+- `diff_test.go` (3): happy path (real unified patch, one changed file); unauthorized base revision → the
+  identical opaque message; missing `--result-revision` → usage error.
+- `log_test.go` (4): pagination via pass-through `--cursor` (3 real commits, `--limit 2` → page 1 has exactly 2
+  entries plus a non-empty `nextCursor`; page 2's first entry differs from page 1's, proving the cursor actually
+  advanced — no local encode/decode involved anywhere in this leaf); invalid cursor (`"not-a-real-commit-object-
+  id"`) → the identical opaque message; invalid `--limit` (`-5`) → `httpapi.ResolveLimit`'s own `ErrInvalidLimit`
+  surfaces as a plain error; missing `--anchor` → usage error.
+- `cli_workspace_boundary_test.go` (1): `TestDeliveryCLIWorkspaceNeverImportsFilesystemOrProcess` passes clean.
+  **Fail-closed check performed**: temporarily added `"os"` + `var _ = os.Getenv` to `show.go`, re-ran the test —
+  it failed with the exact expected message naming the forbidden import and file; reverted immediately
+  afterward. Confirms the guard is a real, working AST walk, not a vacuously-passing no-op.
+
+`go build ./... && go vet ./... && go test ./...` clean repo-wide — every package `ok`, including
+`internal/delivery/cli/workspace` (89.13s, dominated by the real `git`-backed inspection fixtures) and
+`internal/archtest` (12.58s, includes the new boundary test). No pre-existing flake observed on this run.
+
+### Verify
+
+- **Quarantine/lease/generation/replay**: `release_test.go`/`reconcile_test.go` — see Test above; every one of
+  the four concerns has its own dedicated, real-transition-backed test (never a fabricated row).
+- **Traversal/binary/truncation/stale revision**: `source_test.go`/`diff_test.go`/`log_test.go` — see Test
+  above; every opaque-error assertion checks the EXACT message string, proving `mapInspectionQueryError`'s own
+  deliberate information-hiding boundary holds (never a more specific message for any of these four distinct
+  underlying conditions).
+- **Architecture**: `cli_workspace_boundary_test.go`, fail-closed-verified — see Test above.
+- No Git command spawned, no arbitrary path, no interactive terminal: enforced structurally by the archtest
+  (no `"os"`/`"os/exec"`/`internal/adapters/...` import in this package) plus the pre-existing whole-tree
+  `TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters`, which already covers this package transitively too.
+- `go build/vet/test ./...` clean repo-wide.
+
+### Kết quả
+
+New: `internal/delivery/cli/workspace` (`doc.go`, `helpers.go`, `show.go`, `release.go`, `reconcile.go`,
+`source.go`, `diff.go`, `log.go` + 9 test files, 30 tests) — `aw workspace-set show|release` and
+`aw repository-workspace source|diff|log|reconcile`; `internal/archtest/cli_workspace_boundary_test.go` (1
+test) — this task's own scoped architecture proof. No existing file touched — `cmd/aw/main.go`/`cmd/aw/cli.go`
+untouched per the CRITICAL scope rule, deferred to V6-15O. `GetRepositoryWorkspaceState` (a `workspacestate`
+query fully described in this task's own brief) was deliberately NOT wrapped as a standalone
+`repository-workspace show` leaf — the design doc's own V6-15L Thực hiện line
+(`docs/design/08-v6-api-projections.md:767`) names only `workspace-set show/release` and
+`repository-workspace source/diff/log/reconcile`, and `workspace-set show`'s own response already surfaces
+every RepositoryWorkspace's state as a child of the WorkspaceSet, so no read need is left unserved by omitting
+it. `go build/vet/test ./...` clean repo-wide. PR targets `master`.
