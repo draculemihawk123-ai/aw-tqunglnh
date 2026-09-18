@@ -55,6 +55,60 @@ func writeStableJSON(stdout io.Writer, value any) error {
 	return err
 }
 
+// flusher is satisfied by a buffered writer (e.g. *bufio.Writer) a caller
+// might wrap stdout in for a long-lived streaming command — EncodeNDJSONLine
+// opportunistically flushes through it when present. A plain os.Stdout
+// (unbuffered — each Write already reaches the OS) or a *bytes.Buffer (test)
+// does not implement this, and EncodeNDJSONLine works correctly with either.
+type flusher interface{ Flush() error }
+
+// EncodeNDJSONLine writes one compact (no indentation) JSON-encoded line to
+// w, terminated by "\n", and flushes immediately if w supports it — the
+// deliberate opposite shape of writeStableJSON/EncodeQueryResult/
+// EncodeCommandResult above (V6-15N's own task brief: "the OPPOSITE shape
+// of NDJSON... unbounded stream, flushed incrementally"), for a leaf whose
+// own result is a live, potentially-unbounded event stream rather than one
+// finite document (`aw events watch`, and any future leaf with the
+// identical shape).
+//
+// Design choice, documented here per this task's own brief (promote vs.
+// scope narrowly, mirroring V6-15K's own identical decision for
+// WriteBinaryOutput/BindOutputFlag): promoted to this shared package rather
+// than kept private to internal/delivery/cli/events, since NDJSON-per-line
+// output is a generic wire SHAPE ("compact JSON object, one per line,
+// flushed as produced") with no events-domain concept baked into it —
+// exactly the same reasoning that already promoted WriteBinaryOutput
+// (a generic "stream raw bytes" shape) to this package instead of scoping
+// it to internal/delivery/cli/evidence. Any future streaming leaf (a log
+// tail, a job-progress watch) wants the identical helper rather than
+// reinventing "marshal compact, append newline, write in one Write call,
+// flush" for itself.
+//
+// The encode+append+write happens in exactly ONE call to w.Write — never a
+// separate Write for the JSON bytes and a second for the trailing "\n" —
+// so a concurrent reader on the other end of a pipe/socket can never
+// observe a half-written line split across two underlying writes: this is
+// what makes "every line is independently, completely parseable" hold even
+// against a consumer reading faster than this producer than expected, or a
+// producer whose caller mixes NDJSON lines with nothing else on the same
+// writer.
+func EncodeNDJSONLine(w io.Writer, v any) error {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Errorf("cli: encode NDJSON line: %w", err)
+	}
+	encoded = append(encoded, '\n')
+	if _, err := w.Write(encoded); err != nil {
+		return fmt.Errorf("cli: write NDJSON line: %w", err)
+	}
+	if f, ok := w.(flusher); ok {
+		if err := f.Flush(); err != nil {
+			return fmt.Errorf("cli: flush NDJSON line: %w", err)
+		}
+	}
+	return nil
+}
+
 // Diagnosticf writes one human-readable diagnostic/progress line to w
 // (always the process' own stderr in real use, injected here for
 // testability) — V6-15B's own "diagnostics stderr" rule: a
