@@ -1,0 +1,3874 @@
+{
+  "version": "1",
+  "operations": [
+    {
+      "operationId": "abandonReleaseSet",
+      "method": "POST",
+      "path": "/projects/{projectId}/release-sets/{releaseSetId}/abandon",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "releaseset.emptyBody"
+      },
+      "responseSchema": {
+        "typeName": "work.ReleaseSetResult",
+        "fields": [
+          {
+            "name": "ReleaseSetID",
+            "jsonTag": "releaseSetId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "ContentHash",
+            "jsonTag": "contentHash",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "appendConversationAttachment",
+      "method": "POST",
+      "path": "/projects/{projectId}/work-items/{workItemId}/attachments",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "message.attachmentMetadata",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "AttemptID",
+            "jsonTag": "attemptId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Role",
+            "jsonTag": "role",
+            "type": "string"
+          },
+          {
+            "name": "ContentType",
+            "jsonTag": "contentType",
+            "type": "string"
+          },
+          {
+            "name": "Sensitivity",
+            "jsonTag": "sensitivity",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "message.AppendMessageResult",
+        "fields": [
+          {
+            "name": "MessageID",
+            "jsonTag": "messageId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "Sequence",
+            "jsonTag": "sequence",
+            "type": "uint64"
+          },
+          {
+            "name": "ContentArtifactID",
+            "jsonTag": "contentArtifactId",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "appendMessage",
+      "method": "POST",
+      "path": "/projects/{projectId}/work-items/{workItemId}/messages",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "message.appendMessageBody",
+        "fields": [
+          {
+            "name": "AttemptID",
+            "jsonTag": "attemptId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Role",
+            "jsonTag": "role",
+            "type": "string"
+          },
+          {
+            "name": "Content",
+            "jsonTag": "content",
+            "type": "string"
+          },
+          {
+            "name": "ContentType",
+            "jsonTag": "contentType",
+            "type": "string"
+          },
+          {
+            "name": "Sensitivity",
+            "jsonTag": "sensitivity,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "message.AppendMessageResult",
+        "fields": [
+          {
+            "name": "MessageID",
+            "jsonTag": "messageId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "Sequence",
+            "jsonTag": "sequence",
+            "type": "uint64"
+          },
+          {
+            "name": "ContentArtifactID",
+            "jsonTag": "contentArtifactId",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "approveScopeExpansion",
+      "method": "POST",
+      "path": "/projects/{projectId}/scope-expansions/{requestId}/approve",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "workitem.emptyBody"
+      },
+      "responseSchema": {
+        "typeName": "work.ApproveScopeExpansionResult",
+        "fields": [
+          {
+            "name": "RequestID",
+            "jsonTag": "requestId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "NewScopeVersion",
+            "jsonTag": "newScopeVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "ApprovedGrants",
+            "jsonTag": "approvedGrants",
+            "type": "[]work.ApprovedGrant"
+          },
+          {
+            "name": "ProvisionedRepositories",
+            "jsonTag": "provisionedRepositories",
+            "type": "[]work.ProvisionedRepository"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "bootstrap",
+      "method": "GET",
+      "path": "/",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "cancelRun",
+      "method": "POST",
+      "path": "/runs/{runId}/cancel",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "run.CancelRunRequest",
+        "fields": [
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "run.CancelRunResponse",
+        "fields": [
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "AlreadyRequested",
+            "jsonTag": "alreadyRequested",
+            "type": "bool"
+          },
+          {
+            "name": "CoordinatorJobID",
+            "jsonTag": "coordinatorJobId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "ValidActions",
+            "jsonTag": "validActions",
+            "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "cancelWorkItem",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/cancel",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "recovery.CancelWorkItemRequest",
+        "fields": [
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "recovery.CancelWorkItemResponse",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "AlreadyRequested",
+            "jsonTag": "alreadyRequested",
+            "type": "bool"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "componentPackAssignmentsAssign",
+      "method": "POST",
+      "path": "/components/{id}/pack-assignments",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "componentPackAssignmentsList",
+      "method": "GET",
+      "path": "/components/{id}/pack-assignments",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "createChildWorkItem",
+      "method": "POST",
+      "path": "/projects/{projectId}/work-items/{workItemId}/children",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "workitem.createChildWorkItemBody",
+        "fields": [
+          {
+            "name": "Title",
+            "jsonTag": "title",
+            "type": "string"
+          },
+          {
+            "name": "ParentJoinPolicy",
+            "jsonTag": "parentJoinPolicy",
+            "type": "string"
+          },
+          {
+            "name": "SourceNodeRunID",
+            "jsonTag": "sourceNodeRunId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "EffectiveScope",
+            "jsonTag": "effectiveScope",
+            "type": "[]workitem.scopeGrantBody"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "work.CreateChildWorkItemResult",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "ParentWorkItemID",
+            "jsonTag": "parentWorkItemId",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "EffectiveScope",
+            "jsonTag": "effectiveScope",
+            "type": "[]work.EffectiveScopeGrant"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "createDefinition",
+      "method": "POST",
+      "path": "/definitions/{kind}",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "definitions.createDefinitionBody",
+        "fields": [
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Name",
+            "jsonTag": "name",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "definitions.CreateDefinitionResult",
+        "fields": [
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "createProjectDefinition",
+      "method": "POST",
+      "path": "/projects/{projectId}/definitions/{kind}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "definitions.createDefinitionBody",
+        "fields": [
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Name",
+            "jsonTag": "name",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "definitions.CreateDefinitionResult",
+        "fields": [
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "createReleaseSet",
+      "method": "POST",
+      "path": "/projects/{projectId}/task-families/{familyId}/release-sets",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "releaseset.createReleaseSetBody",
+        "fields": [
+          {
+            "name": "Repositories",
+            "jsonTag": "repositories",
+            "type": "[]releaseset.repositoryReleaseBody"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "work.ReleaseSetResult",
+        "fields": [
+          {
+            "name": "ReleaseSetID",
+            "jsonTag": "releaseSetId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "ContentHash",
+            "jsonTag": "contentHash",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "createRootWorkItem",
+      "method": "POST",
+      "path": "/projects/{projectId}/work-items",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "workitem.createRootWorkItemBody",
+        "fields": [
+          {
+            "name": "Title",
+            "jsonTag": "title",
+            "type": "string"
+          },
+          {
+            "name": "InitialScope",
+            "jsonTag": "initialScope",
+            "type": "[]workitem.scopeGrantBody"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "work.CreateRootWorkItemResult",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "WorkspaceSetID",
+            "jsonTag": "workspaceSetId",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "ProvisionedRepositories",
+            "jsonTag": "provisionedRepositories",
+            "type": "[]work.ProvisionedRepository"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "diffDefinitionVersions",
+      "method": "GET",
+      "path": "/definitions/versions/diff",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.VersionDiff",
+        "fields": [
+          {
+            "name": "A",
+            "jsonTag": "a",
+            "type": "definitions.VersionSummary"
+          },
+          {
+            "name": "B",
+            "jsonTag": "b",
+            "type": "definitions.VersionSummary"
+          },
+          {
+            "name": "Identical",
+            "jsonTag": "identical",
+            "type": "bool"
+          },
+          {
+            "name": "SourceDiff",
+            "jsonTag": "sourceDiff",
+            "type": "[]definitions.DiffLine"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "diffProjectDefinitionVersions",
+      "method": "GET",
+      "path": "/projects/{projectId}/definitions/versions/diff",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.VersionDiff",
+        "fields": [
+          {
+            "name": "A",
+            "jsonTag": "a",
+            "type": "definitions.VersionSummary"
+          },
+          {
+            "name": "B",
+            "jsonTag": "b",
+            "type": "definitions.VersionSummary"
+          },
+          {
+            "name": "Identical",
+            "jsonTag": "identical",
+            "type": "bool"
+          },
+          {
+            "name": "SourceDiff",
+            "jsonTag": "sourceDiff",
+            "type": "[]definitions.DiffLine"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "doctor",
+      "method": "GET",
+      "path": "/doctor",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "doctor.responseDTO",
+        "fields": [
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "Checks",
+            "jsonTag": "checks",
+            "type": "[]doctor.checkResultWire"
+          },
+          {
+            "name": "RestartRequired",
+            "jsonTag": "restartRequired",
+            "type": "bool"
+          },
+          {
+            "name": "Links",
+            "jsonTag": "links",
+            "type": "map[string]string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getAdapterBuild",
+      "method": "GET",
+      "path": "/adapter-builds/{id}",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "adapterbuild.adapterBuildView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "ProviderKey",
+            "jsonTag": "providerKey",
+            "type": "string"
+          },
+          {
+            "name": "ExecutablePath",
+            "jsonTag": "executablePath",
+            "type": "string"
+          },
+          {
+            "name": "ExecutableContentHash",
+            "jsonTag": "executableContentHash",
+            "type": "string"
+          },
+          {
+            "name": "ProtocolVersion",
+            "jsonTag": "protocolVersion",
+            "type": "string"
+          },
+          {
+            "name": "CapabilityManifestHash",
+            "jsonTag": "capabilityManifestHash",
+            "type": "string"
+          },
+          {
+            "name": "OS",
+            "jsonTag": "os",
+            "type": "string"
+          },
+          {
+            "name": "Toolchain",
+            "jsonTag": "toolchain",
+            "type": "string"
+          },
+          {
+            "name": "ConfigIdentity",
+            "jsonTag": "configIdentity",
+            "type": "string"
+          },
+          {
+            "name": "CapabilityManifest",
+            "jsonTag": "capabilityManifest",
+            "type": "adapterbuild.capabilityManifestBody"
+          },
+          {
+            "name": "RegisteredBy",
+            "jsonTag": "registeredBy",
+            "type": "string"
+          },
+          {
+            "name": "RegisteredAt",
+            "jsonTag": "registeredAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getArtifactContent",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId}/artifacts/{artifactId}/content",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "getContextSnapshot",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/context-snapshots/{snapshotId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.ContextSnapshotDetail",
+        "fields": [
+          {
+            "name": "SnapshotID",
+            "jsonTag": "snapshotId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "AttemptID",
+            "jsonTag": "attemptId",
+            "type": "string"
+          },
+          {
+            "name": "MessageRefs",
+            "jsonTag": "messageRefs,omitempty",
+            "type": "[]runtime.MessageRefView"
+          },
+          {
+            "name": "ResourceRefs",
+            "jsonTag": "resourceRefs,omitempty",
+            "type": "[]runtime.ResourceRefView"
+          },
+          {
+            "name": "EvidenceRefs",
+            "jsonTag": "evidenceRefs,omitempty",
+            "type": "[]runtime.EvidenceRefView"
+          },
+          {
+            "name": "Revisions",
+            "jsonTag": "revisions,omitempty",
+            "type": "[]runtime.RevisionView"
+          },
+          {
+            "name": "RevisionSetHash",
+            "jsonTag": "revisionSetHash",
+            "type": "string"
+          },
+          {
+            "name": "ManifestHash",
+            "jsonTag": "manifestHash",
+            "type": "string"
+          },
+          {
+            "name": "CreatedAt",
+            "jsonTag": "createdAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getDefinition",
+      "method": "GET",
+      "path": "/definitions/{kind}/{id}",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.definitionView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          },
+          {
+            "name": "Scope",
+            "jsonTag": "scope",
+            "type": "definitions.scopeView"
+          },
+          {
+            "name": "Name",
+            "jsonTag": "name",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "definition.Status"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getDefinitionVersion",
+      "method": "GET",
+      "path": "/definitions/versions/{versionId}",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.versionFieldsView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          },
+          {
+            "name": "VersionNumber",
+            "jsonTag": "versionNumber",
+            "type": "uint64"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion",
+            "type": "int"
+          },
+          {
+            "name": "CanonicalSource",
+            "jsonTag": "canonicalSource",
+            "type": "string"
+          },
+          {
+            "name": "SourceHash",
+            "jsonTag": "sourceHash",
+            "type": "string"
+          },
+          {
+            "name": "CompiledSnapshot",
+            "jsonTag": "compiledSnapshot",
+            "type": "string"
+          },
+          {
+            "name": "CompiledHash",
+            "jsonTag": "compiledHash",
+            "type": "string"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies",
+            "type": "definition.DependencyManifest"
+          },
+          {
+            "name": "PublishedBy",
+            "jsonTag": "publishedBy",
+            "type": "string"
+          },
+          {
+            "name": "PublishedAt",
+            "jsonTag": "publishedAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getEvidence",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.EvidenceDetail",
+        "fields": [
+          {
+            "name": "EvidenceID",
+            "jsonTag": "evidenceId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "AttemptID",
+            "jsonTag": "attemptId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "string"
+          },
+          {
+            "name": "Verdict",
+            "jsonTag": "verdict",
+            "type": "string"
+          },
+          {
+            "name": "ArtifactReferences",
+            "jsonTag": "artifactReferences,omitempty",
+            "type": "[]string"
+          },
+          {
+            "name": "Revisions",
+            "jsonTag": "revisions,omitempty",
+            "type": "[]runtime.RevisionView"
+          },
+          {
+            "name": "RevisionSetHash",
+            "jsonTag": "revisionSetHash",
+            "type": "string"
+          },
+          {
+            "name": "PolicyVersion",
+            "jsonTag": "policyVersion",
+            "type": "string"
+          },
+          {
+            "name": "CreatedAt",
+            "jsonTag": "createdAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getMessageContextSnapshot",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/messages/{messageId}/context-snapshot",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.ContextSnapshotDetail",
+        "fields": [
+          {
+            "name": "SnapshotID",
+            "jsonTag": "snapshotId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "AttemptID",
+            "jsonTag": "attemptId",
+            "type": "string"
+          },
+          {
+            "name": "MessageRefs",
+            "jsonTag": "messageRefs,omitempty",
+            "type": "[]runtime.MessageRefView"
+          },
+          {
+            "name": "ResourceRefs",
+            "jsonTag": "resourceRefs,omitempty",
+            "type": "[]runtime.ResourceRefView"
+          },
+          {
+            "name": "EvidenceRefs",
+            "jsonTag": "evidenceRefs,omitempty",
+            "type": "[]runtime.EvidenceRefView"
+          },
+          {
+            "name": "Revisions",
+            "jsonTag": "revisions,omitempty",
+            "type": "[]runtime.RevisionView"
+          },
+          {
+            "name": "RevisionSetHash",
+            "jsonTag": "revisionSetHash",
+            "type": "string"
+          },
+          {
+            "name": "ManifestHash",
+            "jsonTag": "manifestHash",
+            "type": "string"
+          },
+          {
+            "name": "CreatedAt",
+            "jsonTag": "createdAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getProjectDefinition",
+      "method": "GET",
+      "path": "/projects/{projectId}/definitions/{kind}/{id}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.definitionView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          },
+          {
+            "name": "Scope",
+            "jsonTag": "scope",
+            "type": "definitions.scopeView"
+          },
+          {
+            "name": "Name",
+            "jsonTag": "name",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "definition.Status"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getProjectDefinitionVersion",
+      "method": "GET",
+      "path": "/projects/{projectId}/definitions/versions/{versionId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.versionFieldsView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          },
+          {
+            "name": "VersionNumber",
+            "jsonTag": "versionNumber",
+            "type": "uint64"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion",
+            "type": "int"
+          },
+          {
+            "name": "CanonicalSource",
+            "jsonTag": "canonicalSource",
+            "type": "string"
+          },
+          {
+            "name": "SourceHash",
+            "jsonTag": "sourceHash",
+            "type": "string"
+          },
+          {
+            "name": "CompiledSnapshot",
+            "jsonTag": "compiledSnapshot",
+            "type": "string"
+          },
+          {
+            "name": "CompiledHash",
+            "jsonTag": "compiledHash",
+            "type": "string"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies",
+            "type": "definition.DependencyManifest"
+          },
+          {
+            "name": "PublishedBy",
+            "jsonTag": "publishedBy",
+            "type": "string"
+          },
+          {
+            "name": "PublishedAt",
+            "jsonTag": "publishedAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getProjectionRebuildOperationStatus",
+      "method": "GET",
+      "path": "/projects/{id}/projection/rebuild-operations/{operationId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "projectionrebuild.projectionRebuildOperationStatusView",
+        "fields": [
+          {
+            "name": "OperationID",
+            "jsonTag": "operationId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectionName",
+            "jsonTag": "projectionName",
+            "type": "string"
+          },
+          {
+            "name": "Phase",
+            "jsonTag": "phase",
+            "type": "string"
+          },
+          {
+            "name": "W0",
+            "jsonTag": "w0,omitempty",
+            "type": "*uint64"
+          },
+          {
+            "name": "ShadowGeneration",
+            "jsonTag": "shadowGeneration,omitempty",
+            "type": "*uint64"
+          },
+          {
+            "name": "ShadowCursor",
+            "jsonTag": "shadowCursor,omitempty",
+            "type": "*uint64"
+          },
+          {
+            "name": "CutoverCursor",
+            "jsonTag": "cutoverCursor,omitempty",
+            "type": "*uint64"
+          },
+          {
+            "name": "ErrorCode",
+            "jsonTag": "errorCode,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "ErrorMessage",
+            "jsonTag": "errorMessage,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "JobID",
+            "jsonTag": "jobId",
+            "type": "string"
+          },
+          {
+            "name": "RequestedAt",
+            "jsonTag": "requestedAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "UpdatedAt",
+            "jsonTag": "updatedAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getProjectionStatus",
+      "method": "GET",
+      "path": "/projects/{id}/projection",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "projectionrebuild.projectionStatusView",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectionName",
+            "jsonTag": "projectionName",
+            "type": "string"
+          },
+          {
+            "name": "Freshness",
+            "jsonTag": "freshness",
+            "type": "httpapi.Freshness"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getReleaseSet",
+      "method": "GET",
+      "path": "/projects/{projectId}/release-sets/{releaseSetId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "work.ReleaseSetDetail",
+        "fields": [
+          {
+            "name": "ReleaseSetID",
+            "jsonTag": "releaseSetId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "ContentHash",
+            "jsonTag": "contentHash",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "Entries",
+            "jsonTag": "entries",
+            "type": "[]work.RepositoryReleaseDetail"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getReleaseSetLocalCommitStatus",
+      "method": "GET",
+      "path": "/projects/{projectId}/release-sets/{releaseSetId}/local-commits/{localCommitId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "work.ReleaseSetLocalCommitStatus",
+        "fields": [
+          {
+            "name": "ReleaseSetLocalCommitID",
+            "jsonTag": "releaseSetLocalCommitId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "ReleaseSetID",
+            "jsonTag": "releaseSetId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "FailureReason",
+            "jsonTag": "failureReason,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "ParentVCSObjectID",
+            "jsonTag": "parentVcsObjectId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "ResultVCSObjectID",
+            "jsonTag": "resultVcsObjectId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "JobID",
+            "jsonTag": "jobId",
+            "type": "string"
+          },
+          {
+            "name": "CreatedAt",
+            "jsonTag": "createdAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "CompletedAt",
+            "jsonTag": "completedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getRepositoryWorkspaceState",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "httpapi.repositoryWorkspaceStateResponse",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "WorkspaceSetID",
+            "jsonTag": "workspaceSetId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Generation",
+            "jsonTag": "generation",
+            "type": "uint64"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "BranchRef",
+            "jsonTag": "branchRef,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "CurrentRevision",
+            "jsonTag": "currentRevision,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "LastProvisionErrorCode",
+            "jsonTag": "lastProvisionErrorCode,omitempty",
+            "type": "*string"
+          },
+          {
+            "name": "HasActiveWriteLease",
+            "jsonTag": "hasActiveWriteLease",
+            "type": "bool"
+          },
+          {
+            "name": "ValidActions",
+            "jsonTag": "validActions",
+            "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getRunDetail",
+      "method": "GET",
+      "path": "/runs/{id}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.RunDetail",
+        "fields": [
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "ScopeVersion",
+            "jsonTag": "scopeVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "WorkflowVersionID",
+            "jsonTag": "workflowVersionId",
+            "type": "string"
+          },
+          {
+            "name": "WorkflowVersionHash",
+            "jsonTag": "workflowVersionHash",
+            "type": "string"
+          },
+          {
+            "name": "StartedAt",
+            "jsonTag": "startedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "FinishedAt",
+            "jsonTag": "finishedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "Cancelling",
+            "jsonTag": "cancelling",
+            "type": "bool"
+          },
+          {
+            "name": "Manifest",
+            "jsonTag": "manifest",
+            "type": "runtime.ExecutionManifestDetail"
+          },
+          {
+            "name": "Amendments",
+            "jsonTag": "amendments,omitempty",
+            "type": "[]runtime.RunManifestAmendmentView"
+          },
+          {
+            "name": "NodeRunCount",
+            "jsonTag": "nodeRunCount",
+            "type": "int"
+          },
+          {
+            "name": "ExecutionAttemptCount",
+            "jsonTag": "executionAttemptCount",
+            "type": "int"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getRunDiagnostics",
+      "method": "GET",
+      "path": "/projects/{projectId}/runs/{runId}/diagnostics",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "diagnostics.RunDiagnosticsResponse",
+        "fields": [
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemStatus",
+            "jsonTag": "workItemStatus",
+            "type": "string"
+          },
+          {
+            "name": "RunState",
+            "jsonTag": "runState",
+            "type": "string"
+          },
+          {
+            "name": "Blockers",
+            "jsonTag": "blockers",
+            "type": "[]diagnostics.blockerResponse"
+          },
+          {
+            "name": "OrphanedAttempts",
+            "jsonTag": "orphanedAttempts",
+            "type": "[]diagnostics.orphanedAttemptResponse"
+          },
+          {
+            "name": "OrphanedAttemptsTruncated",
+            "jsonTag": "orphanedAttemptsTruncated",
+            "type": "bool"
+          },
+          {
+            "name": "Providers",
+            "jsonTag": "providers",
+            "type": "[]diagnostics.providerResponse"
+          },
+          {
+            "name": "Isolation",
+            "jsonTag": "isolation",
+            "type": "[]diagnostics.isolationResponse"
+          },
+          {
+            "name": "RepositoryWorkspaces",
+            "jsonTag": "repositoryWorkspaces",
+            "type": "[]diagnostics.repositoryWorkspaceDiagResponse"
+          },
+          {
+            "name": "ValidActions",
+            "jsonTag": "validActions",
+            "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getRunGraph",
+      "method": "GET",
+      "path": "/runs/{id}/graph",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "rundetail.runGraphResponse",
+        "fields": [
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "ManifestRevision",
+            "jsonTag": "manifestRevision",
+            "type": "uint64"
+          },
+          {
+            "name": "Nodes",
+            "jsonTag": "nodes",
+            "type": "[]runtime.GraphNodeView"
+          },
+          {
+            "name": "PossibleEdges",
+            "jsonTag": "possibleEdges",
+            "type": "[]runtime.GraphEdgeView"
+          },
+          {
+            "name": "TakenEdges",
+            "jsonTag": "takenEdges,omitempty",
+            "type": "[]rundetail.takenEdgeView"
+          },
+          {
+            "name": "Activations",
+            "jsonTag": "activations",
+            "type": "[]runtime.NodeActivationView"
+          },
+          {
+            "name": "BranchTokens",
+            "jsonTag": "branchTokens,omitempty",
+            "type": "[]runtime.BranchTokenView"
+          },
+          {
+            "name": "Freshness",
+            "jsonTag": "freshness",
+            "type": "httpapi.Freshness"
+          },
+          {
+            "name": "NextCursor",
+            "jsonTag": "nextCursor,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getRunTimeline",
+      "method": "GET",
+      "path": "/runs/{id}/timeline",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "rundetail.runTimelineResponse",
+        "fields": [
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "Entries",
+            "jsonTag": "entries",
+            "type": "[]runtime.TimelineEntryView"
+          },
+          {
+            "name": "Freshness",
+            "jsonTag": "freshness",
+            "type": "httpapi.Freshness"
+          },
+          {
+            "name": "NextCursor",
+            "jsonTag": "nextCursor,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getSafeSettings",
+      "method": "GET",
+      "path": "/settings/safe",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "safesettings.responseDTO",
+        "fields": [
+          {
+            "name": "Desired",
+            "jsonTag": "desired",
+            "type": "safesettings.desiredWire"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "UpdatedAt",
+            "jsonTag": "updatedAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "UpdatedBy",
+            "jsonTag": "updatedBy",
+            "type": "string"
+          },
+          {
+            "name": "RestartRequired",
+            "jsonTag": "restartRequired",
+            "type": "bool"
+          },
+          {
+            "name": "Effective",
+            "jsonTag": "effective",
+            "type": "safesettings.effectiveWire"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getScopeExpansionRequest",
+      "method": "GET",
+      "path": "/projects/{projectId}/scope-expansions/{requestId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "work.ScopeExpansionRequestDetail",
+        "fields": [
+          {
+            "name": "RequestID",
+            "jsonTag": "requestId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "RequestedGrants",
+            "jsonTag": "requestedGrants",
+            "type": "[]work.RequestedGrantView"
+          },
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          },
+          {
+            "name": "ReferencedWorkItemID",
+            "jsonTag": "referencedWorkItemId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "RequestedBy",
+            "jsonTag": "requestedBy",
+            "type": "string"
+          },
+          {
+            "name": "RequestedAt",
+            "jsonTag": "requestedAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "DecidedBy",
+            "jsonTag": "decidedBy,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "DecidedAt",
+            "jsonTag": "decidedAt,omitempty",
+            "type": "*time.Time"
+          },
+          {
+            "name": "DecisionNote",
+            "jsonTag": "decisionNote,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "ApprovedScopeVersion",
+            "jsonTag": "approvedScopeVersion,omitempty",
+            "type": "*uint64"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getTaskFamily",
+      "method": "GET",
+      "path": "/projects/{projectId}/task-families/{familyId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "work.TaskFamilyDetail",
+        "fields": [
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "RootWorkItemID",
+            "jsonTag": "rootWorkItemId",
+            "type": "string"
+          },
+          {
+            "name": "ScopeVersion",
+            "jsonTag": "scopeVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getWorkItem",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "work.WorkItemDetail",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "string"
+          },
+          {
+            "name": "ParentWorkItemID",
+            "jsonTag": "parentWorkItemId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Title",
+            "jsonTag": "title",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "ParentJoinPolicy",
+            "jsonTag": "parentJoinPolicy,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "SourceNodeRunID",
+            "jsonTag": "sourceNodeRunId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "WorkflowVersionID",
+            "jsonTag": "workflowVersionId,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getWorkItemProjectedDetail",
+      "method": "GET",
+      "path": "/work-items/{workItemId}/detail",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "kanban.workItemDetailResponse",
+        "fields": [
+          {
+            "name": "Card",
+            "jsonTag": "card",
+            "type": "kanban.KanbanCardDTO"
+          },
+          {
+            "name": "Readiness",
+            "jsonTag": "readiness",
+            "type": "work.WorkItemReadiness"
+          },
+          {
+            "name": "Freshness",
+            "jsonTag": "freshness",
+            "type": "httpapi.Freshness"
+          },
+          {
+            "name": "ValidActions",
+            "jsonTag": "validActions",
+            "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getWorkItemReadiness",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/readiness",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "work.WorkItemReadiness",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "Ready",
+            "jsonTag": "ready",
+            "type": "bool"
+          },
+          {
+            "name": "Problems",
+            "jsonTag": "problems,omitempty",
+            "type": "[]string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getWorkspaceDiff",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/diff",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workspaceinspection.diffContentResponse",
+        "fields": [
+          {
+            "name": "BaseRevision",
+            "jsonTag": "baseRevision",
+            "type": "workspaceinspection.revisionResponse"
+          },
+          {
+            "name": "ResultRevision",
+            "jsonTag": "resultRevision",
+            "type": "workspaceinspection.revisionResponse"
+          },
+          {
+            "name": "Files",
+            "jsonTag": "files",
+            "type": "[]workspaceinspection.diffFileChangeResponse"
+          },
+          {
+            "name": "Patch",
+            "jsonTag": "patch",
+            "type": "[]uint8"
+          },
+          {
+            "name": "ByteLimit",
+            "jsonTag": "byteLimit",
+            "type": "int64"
+          },
+          {
+            "name": "FileLimit",
+            "jsonTag": "fileLimit",
+            "type": "int"
+          },
+          {
+            "name": "FilesTruncated",
+            "jsonTag": "filesTruncated",
+            "type": "bool"
+          },
+          {
+            "name": "PatchTruncated",
+            "jsonTag": "patchTruncated",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getWorkspaceRepositoryLog",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/repository-log",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workspaceinspection.repositoryLogPageResponse",
+        "fields": [
+          {
+            "name": "Anchor",
+            "jsonTag": "anchor",
+            "type": "workspaceinspection.revisionResponse"
+          },
+          {
+            "name": "Entries",
+            "jsonTag": "entries",
+            "type": "[]workspaceinspection.repositoryLogEntryResponse"
+          },
+          {
+            "name": "NextCursor",
+            "jsonTag": "nextCursor,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Limit",
+            "jsonTag": "limit",
+            "type": "int"
+          },
+          {
+            "name": "ByteLimit",
+            "jsonTag": "byteLimit",
+            "type": "int64"
+          },
+          {
+            "name": "Truncated",
+            "jsonTag": "truncated",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getWorkspaceSetState",
+      "method": "GET",
+      "path": "/projects/{projectId}/workspace-sets/{familyId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "httpapi.workspaceSetStateResponse",
+        "fields": [
+          {
+            "name": "WorkspaceSetID",
+            "jsonTag": "workspaceSetId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "HasBaseRevisionSet",
+            "jsonTag": "hasBaseRevisionSet",
+            "type": "bool"
+          },
+          {
+            "name": "RepositoryWorkspaces",
+            "jsonTag": "repositoryWorkspaces",
+            "type": "[]httpapi.repositoryWorkspaceStateResponse"
+          },
+          {
+            "name": "ValidActions",
+            "jsonTag": "validActions",
+            "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getWorkspaceSource",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/source",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "healthLive",
+      "method": "GET",
+      "path": "/health/live",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "healthReady",
+      "method": "GET",
+      "path": "/health/ready",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "listAdapterBuilds",
+      "method": "GET",
+      "path": "/adapter-builds",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "adapterbuild.adapterBuildListResponse",
+        "fields": [
+          {
+            "name": "Builds",
+            "jsonTag": "builds",
+            "type": "[]adapterbuild.adapterBuildView"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listArtifacts",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId}/artifacts",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "evidence.listArtifactsResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]runtime.ArtifactSummary"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listChildWorkItems",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/children",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workitem.workItemListResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]work.WorkItemDetail"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listDefinitionVersions",
+      "method": "GET",
+      "path": "/definitions/{kind}/{id}/versions",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.versionListResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]definitions.versionFieldsView"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listEvidence",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/evidence",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "evidence.listEvidenceResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]runtime.EvidenceDetail"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listMessages",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/messages",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "message.listMessagesResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]message.messageRefDTO"
+          },
+          {
+            "name": "NextCursor",
+            "jsonTag": "nextCursor,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listProjectDefinitionVersions",
+      "method": "GET",
+      "path": "/projects/{projectId}/definitions/{kind}/{id}/versions",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.versionListResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]definitions.versionFieldsView"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listReleaseSetsForFamily",
+      "method": "GET",
+      "path": "/projects/{projectId}/task-families/{familyId}/release-sets",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "releaseset.releaseSetListResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]work.ReleaseSetDetail"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listWorkItemKanban",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/kanban",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "kanban.kanbanListResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]kanban.KanbanCardDTO"
+          },
+          {
+            "name": "NextCursor",
+            "jsonTag": "nextCursor,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Freshness",
+            "jsonTag": "freshness",
+            "type": "httpapi.Freshness"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listWorkItems",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workitem.workItemListResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]work.WorkItemDetail"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "markWorkItemReady",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/mark-ready",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "workitem.emptyBody"
+      },
+      "responseSchema": {
+        "typeName": "work.MarkWorkItemReadyResult",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "probeAdapterBuild",
+      "method": "POST",
+      "path": "/adapter-builds/probe",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "adapterbuild.probeAdapterBuildBody",
+        "fields": [
+          {
+            "name": "ProviderKey",
+            "jsonTag": "providerKey",
+            "type": "string"
+          },
+          {
+            "name": "ExecutablePath",
+            "jsonTag": "executablePath",
+            "type": "string"
+          },
+          {
+            "name": "ProtocolVersion",
+            "jsonTag": "protocolVersion",
+            "type": "string"
+          },
+          {
+            "name": "CapabilityManifest",
+            "jsonTag": "capabilityManifest",
+            "type": "adapterbuild.capabilityManifestBody"
+          },
+          {
+            "name": "OS",
+            "jsonTag": "os",
+            "type": "string"
+          },
+          {
+            "name": "Toolchain",
+            "jsonTag": "toolchain",
+            "type": "string"
+          },
+          {
+            "name": "ConfigIdentity",
+            "jsonTag": "configIdentity",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "adapterbuild.CandidateToken",
+        "fields": [
+          {
+            "name": "Tuple",
+            "jsonTag": "tuple",
+            "type": "adapterbuild.CandidateTuple"
+          },
+          {
+            "name": "Nonce",
+            "jsonTag": "nonce",
+            "type": "string"
+          },
+          {
+            "name": "ExpiresAt",
+            "jsonTag": "expiresAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "Signature",
+            "jsonTag": "signature",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "projectComponentsList",
+      "method": "GET",
+      "path": "/projects/{id}/components",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "projectRepositoriesList",
+      "method": "GET",
+      "path": "/projects/{id}/repositories",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "projectRepositoriesRegister",
+      "method": "POST",
+      "path": "/projects/{id}/repositories",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "projectsCreate",
+      "method": "POST",
+      "path": "/projects",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "projectsGet",
+      "method": "GET",
+      "path": "/projects/{id}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "projectsList",
+      "method": "GET",
+      "path": "/projects",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "publishDefinitionVersion",
+      "method": "POST",
+      "path": "/definitions/{kind}/{id}/publish",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "definitions.authorDocumentBody",
+        "fields": [
+          {
+            "name": "Content",
+            "jsonTag": "content",
+            "type": "string"
+          },
+          {
+            "name": "Format",
+            "jsonTag": "format,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion,omitempty",
+            "type": "int"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies,omitempty",
+            "type": "[]definitions.dependencyPinBody"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "definitions.versionFieldsView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          },
+          {
+            "name": "VersionNumber",
+            "jsonTag": "versionNumber",
+            "type": "uint64"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion",
+            "type": "int"
+          },
+          {
+            "name": "CanonicalSource",
+            "jsonTag": "canonicalSource",
+            "type": "string"
+          },
+          {
+            "name": "SourceHash",
+            "jsonTag": "sourceHash",
+            "type": "string"
+          },
+          {
+            "name": "CompiledSnapshot",
+            "jsonTag": "compiledSnapshot",
+            "type": "string"
+          },
+          {
+            "name": "CompiledHash",
+            "jsonTag": "compiledHash",
+            "type": "string"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies",
+            "type": "definition.DependencyManifest"
+          },
+          {
+            "name": "PublishedBy",
+            "jsonTag": "publishedBy",
+            "type": "string"
+          },
+          {
+            "name": "PublishedAt",
+            "jsonTag": "publishedAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "publishProjectDefinitionVersion",
+      "method": "POST",
+      "path": "/projects/{projectId}/definitions/{kind}/{id}/publish",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "definitions.authorDocumentBody",
+        "fields": [
+          {
+            "name": "Content",
+            "jsonTag": "content",
+            "type": "string"
+          },
+          {
+            "name": "Format",
+            "jsonTag": "format,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion,omitempty",
+            "type": "int"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies,omitempty",
+            "type": "[]definitions.dependencyPinBody"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "definitions.versionFieldsView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          },
+          {
+            "name": "VersionNumber",
+            "jsonTag": "versionNumber",
+            "type": "uint64"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion",
+            "type": "int"
+          },
+          {
+            "name": "CanonicalSource",
+            "jsonTag": "canonicalSource",
+            "type": "string"
+          },
+          {
+            "name": "SourceHash",
+            "jsonTag": "sourceHash",
+            "type": "string"
+          },
+          {
+            "name": "CompiledSnapshot",
+            "jsonTag": "compiledSnapshot",
+            "type": "string"
+          },
+          {
+            "name": "CompiledHash",
+            "jsonTag": "compiledHash",
+            "type": "string"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies",
+            "type": "definition.DependencyManifest"
+          },
+          {
+            "name": "PublishedBy",
+            "jsonTag": "publishedBy",
+            "type": "string"
+          },
+          {
+            "name": "PublishedAt",
+            "jsonTag": "publishedAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "registerAdapterBuild",
+      "method": "POST",
+      "path": "/adapter-builds",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "adapterbuild.registerAdapterBuildBody",
+        "fields": [
+          {
+            "name": "Token",
+            "jsonTag": "token",
+            "type": "adapterbuild.CandidateToken"
+          },
+          {
+            "name": "CapabilityManifest",
+            "jsonTag": "capabilityManifest",
+            "type": "adapterbuild.capabilityManifestBody"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "adapterbuild.registerAdapterBuildResponse",
+        "fields": [
+          {
+            "name": "Build",
+            "jsonTag": "build",
+            "type": "adapterbuild.adapterBuildView"
+          },
+          {
+            "name": "AlreadyExisted",
+            "jsonTag": "alreadyExisted",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "rejectScopeExpansion",
+      "method": "POST",
+      "path": "/projects/{projectId}/scope-expansions/{requestId}/reject",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "workitem.rejectScopeExpansionBody",
+        "fields": [
+          {
+            "name": "DecisionNote",
+            "jsonTag": "decisionNote",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "work.RejectScopeExpansionResult",
+        "fields": [
+          {
+            "name": "RequestID",
+            "jsonTag": "requestId",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "repositoriesGet",
+      "method": "GET",
+      "path": "/repositories/{id}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "repositoriesOnboarding",
+      "method": "GET",
+      "path": "/repositories/{id}/onboarding",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "repositoriesRetryProbe",
+      "method": "POST",
+      "path": "/repositories/{id}/retry-probe",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
+      "operationId": "requestProjectionRebuild",
+      "method": "POST",
+      "path": "/projects/{id}/projection/rebuild",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "projectionrebuild.requestProjectionRebuildBody",
+        "fields": [
+          {
+            "name": "ProjectionName",
+            "jsonTag": "projectionName",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "projectionrebuild.projectionRebuildResultView",
+        "fields": [
+          {
+            "name": "OperationID",
+            "jsonTag": "operationId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectionName",
+            "jsonTag": "projectionName",
+            "type": "string"
+          },
+          {
+            "name": "Phase",
+            "jsonTag": "phase",
+            "type": "string"
+          },
+          {
+            "name": "JobID",
+            "jsonTag": "jobId",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "requestReleaseSetLocalCommit",
+      "method": "POST",
+      "path": "/projects/{projectId}/release-sets/{releaseSetId}/local-commits",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "releaseset.requestReleaseSetLocalCommitBody",
+        "fields": [
+          {
+            "name": "ExpectedReleaseSetVersion",
+            "jsonTag": "expectedReleaseSetVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "ExpectedWorkspaceVersion",
+            "jsonTag": "expectedWorkspaceVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "Message",
+            "jsonTag": "message",
+            "type": "string"
+          },
+          {
+            "name": "AuthorName",
+            "jsonTag": "authorName",
+            "type": "string"
+          },
+          {
+            "name": "AuthorEmail",
+            "jsonTag": "authorEmail",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "releasesetcommit.RequestReleaseSetLocalCommitResult",
+        "fields": [
+          {
+            "name": "ReleaseSetLocalCommitID",
+            "jsonTag": "releaseSetLocalCommitId",
+            "type": "string"
+          },
+          {
+            "name": "ReleaseSetID",
+            "jsonTag": "releaseSetId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "JobID",
+            "jsonTag": "jobId",
+            "type": "string"
+          },
+          {
+            "name": "Marker",
+            "jsonTag": "marker",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "requestScopeExpansion",
+      "method": "POST",
+      "path": "/projects/{projectId}/task-families/{familyId}/scope-expansions",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "workitem.requestScopeExpansionBody",
+        "fields": [
+          {
+            "name": "RequestedGrants",
+            "jsonTag": "requestedGrants",
+            "type": "[]workitem.scopeGrantBody"
+          },
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          },
+          {
+            "name": "ReferencedWorkItemID",
+            "jsonTag": "referencedWorkItemId,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "work.RequestScopeExpansionResult",
+        "fields": [
+          {
+            "name": "RequestID",
+            "jsonTag": "requestId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "requestWorkspaceReconciliation",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/reconcile",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workspacereconcile.RequestWorkspaceReconciliationResult",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "ReconciliationJobID",
+            "jsonTag": "reconciliationJobId",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "requestWorkspaceSetRelease",
+      "method": "POST",
+      "path": "/projects/{projectId}/workspace-sets/{familyId}/release",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workspacerelease.RequestWorkspaceSetReleaseResult",
+        "fields": [
+          {
+            "name": "WorkspaceSetID",
+            "jsonTag": "workspaceSetId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "ReleaseJobID",
+            "jsonTag": "releaseJobId",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "resolveApproval",
+      "method": "POST",
+      "path": "/runs/{runId}/approval-requests/{approvalRequestId}/resolve",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "decision.ResolveApprovalBody",
+        "fields": [
+          {
+            "name": "Outcome",
+            "jsonTag": "outcome",
+            "type": "string"
+          },
+          {
+            "name": "Reason",
+            "jsonTag": "reason,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "decision.ResolveApprovalResponse",
+        "fields": [
+          {
+            "name": "ResolveApprovalResult",
+            "type": "runtime.ResolveApprovalResult"
+          },
+          {
+            "name": "ValidActions",
+            "jsonTag": "validActions",
+            "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "resolveWorkItemBlocker",
+      "method": "POST",
+      "path": "/work-item-blockers/{blockerId}/resolve",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "recovery.ResolveWorkItemBlockerRequest",
+        "fields": [
+          {
+            "name": "Mode",
+            "jsonTag": "mode",
+            "type": "string"
+          },
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          },
+          {
+            "name": "PolicyGrantRef",
+            "jsonTag": "policyGrantRef,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "recovery.ResolveWorkItemBlockerResponse",
+        "fields": [
+          {
+            "name": "BlockerID",
+            "jsonTag": "blockerId",
+            "type": "string"
+          },
+          {
+            "name": "AlreadyResolved",
+            "jsonTag": "alreadyResolved",
+            "type": "bool"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemUnblocked",
+            "jsonTag": "workItemUnblocked",
+            "type": "bool"
+          },
+          {
+            "name": "WorkItemStatus",
+            "jsonTag": "workItemStatus",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "retryBlockedActivation",
+      "method": "POST",
+      "path": "/node-runs/{nodeRunId}/retry-blocked-activation",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "recovery.RetryBlockedActivationRequest",
+        "fields": [
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "recovery.RetryBlockedActivationResponse",
+        "fields": [
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "AlreadyRetried",
+            "jsonTag": "alreadyRetried",
+            "type": "bool"
+          },
+          {
+            "name": "Retried",
+            "jsonTag": "retried",
+            "type": "bool"
+          },
+          {
+            "name": "ReactivatedNodeRunID",
+            "jsonTag": "reactivatedNodeRunId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "FailureReason",
+            "jsonTag": "failureReason,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "FailureDetail",
+            "jsonTag": "failureDetail,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "sealReleaseSet",
+      "method": "POST",
+      "path": "/projects/{projectId}/release-sets/{releaseSetId}/seal",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "releaseset.emptyBody"
+      },
+      "responseSchema": {
+        "typeName": "work.ReleaseSetResult",
+        "fields": [
+          {
+            "name": "ReleaseSetID",
+            "jsonTag": "releaseSetId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "ContentHash",
+            "jsonTag": "contentHash",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "startWorkflowRun",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/runs",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "run.StartRunRequest",
+        "fields": [
+          {
+            "name": "WorkflowVersionID",
+            "jsonTag": "workflowVersionId",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "run.StartRunResponse",
+        "fields": [
+          {
+            "name": "StartWorkflowRunResult",
+            "type": "runtime.StartWorkflowRunResult"
+          },
+          {
+            "name": "ValidActions",
+            "jsonTag": "validActions",
+            "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "submitWaitSignal",
+      "method": "POST",
+      "path": "/runs/{runId}/wait-registrations/{waitRegistrationId}/signal",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "decision.SubmitWaitSignalBody",
+        "fields": [
+          {
+            "name": "SignalKey",
+            "jsonTag": "signalKey",
+            "type": "string"
+          },
+          {
+            "name": "Payload",
+            "jsonTag": "payload,omitempty",
+            "type": "jsontext.Value"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "decision.SubmitWaitSignalResponse",
+        "fields": [
+          {
+            "name": "SignalWaitResult",
+            "type": "runtime.SignalWaitResult"
+          },
+          {
+            "name": "ValidActions",
+            "jsonTag": "validActions",
+            "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "updateSafeSettings",
+      "method": "PUT",
+      "path": "/settings/safe",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "safesettings.SafeSettings",
+        "fields": [
+          {
+            "name": "ManagedWorkspaceRoot",
+            "type": "string"
+          },
+          {
+            "name": "ManagedArtifactRoot",
+            "type": "string"
+          },
+          {
+            "name": "EvidenceRetention",
+            "type": "time.Duration"
+          },
+          {
+            "name": "ProcessOutputLimit",
+            "type": "int"
+          },
+          {
+            "name": "ProviderExecutablePath",
+            "type": "string"
+          },
+          {
+            "name": "ProviderDefaultModel",
+            "type": "string"
+          },
+          {
+            "name": "ProviderCredentialRef",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "safesettings.responseDTO",
+        "fields": [
+          {
+            "name": "Desired",
+            "jsonTag": "desired",
+            "type": "safesettings.desiredWire"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "UpdatedAt",
+            "jsonTag": "updatedAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "UpdatedBy",
+            "jsonTag": "updatedBy",
+            "type": "string"
+          },
+          {
+            "name": "RestartRequired",
+            "jsonTag": "restartRequired",
+            "type": "bool"
+          },
+          {
+            "name": "Effective",
+            "jsonTag": "effective",
+            "type": "safesettings.effectiveWire"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "validateDefinitionDraft",
+      "method": "POST",
+      "path": "/definitions/{kind}/{id}/validate",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "definitions.authorDocumentBody",
+        "fields": [
+          {
+            "name": "Content",
+            "jsonTag": "content",
+            "type": "string"
+          },
+          {
+            "name": "Format",
+            "jsonTag": "format,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion,omitempty",
+            "type": "int"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies,omitempty",
+            "type": "[]definitions.dependencyPinBody"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "definitions.versionFieldsView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          },
+          {
+            "name": "VersionNumber",
+            "jsonTag": "versionNumber",
+            "type": "uint64"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion",
+            "type": "int"
+          },
+          {
+            "name": "CanonicalSource",
+            "jsonTag": "canonicalSource",
+            "type": "string"
+          },
+          {
+            "name": "SourceHash",
+            "jsonTag": "sourceHash",
+            "type": "string"
+          },
+          {
+            "name": "CompiledSnapshot",
+            "jsonTag": "compiledSnapshot",
+            "type": "string"
+          },
+          {
+            "name": "CompiledHash",
+            "jsonTag": "compiledHash",
+            "type": "string"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies",
+            "type": "definition.DependencyManifest"
+          },
+          {
+            "name": "PublishedBy",
+            "jsonTag": "publishedBy",
+            "type": "string"
+          },
+          {
+            "name": "PublishedAt",
+            "jsonTag": "publishedAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "validateProjectDefinitionDraft",
+      "method": "POST",
+      "path": "/projects/{projectId}/definitions/{kind}/{id}/validate",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "definitions.authorDocumentBody",
+        "fields": [
+          {
+            "name": "Content",
+            "jsonTag": "content",
+            "type": "string"
+          },
+          {
+            "name": "Format",
+            "jsonTag": "format,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion,omitempty",
+            "type": "int"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies,omitempty",
+            "type": "[]definitions.dependencyPinBody"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "definitions.versionFieldsView",
+        "fields": [
+          {
+            "name": "ID",
+            "jsonTag": "id",
+            "type": "string"
+          },
+          {
+            "name": "DefinitionID",
+            "jsonTag": "definitionId",
+            "type": "string"
+          },
+          {
+            "name": "Kind",
+            "jsonTag": "kind",
+            "type": "definition.Kind"
+          },
+          {
+            "name": "VersionNumber",
+            "jsonTag": "versionNumber",
+            "type": "uint64"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion",
+            "type": "int"
+          },
+          {
+            "name": "CanonicalSource",
+            "jsonTag": "canonicalSource",
+            "type": "string"
+          },
+          {
+            "name": "SourceHash",
+            "jsonTag": "sourceHash",
+            "type": "string"
+          },
+          {
+            "name": "CompiledSnapshot",
+            "jsonTag": "compiledSnapshot",
+            "type": "string"
+          },
+          {
+            "name": "CompiledHash",
+            "jsonTag": "compiledHash",
+            "type": "string"
+          },
+          {
+            "name": "Dependencies",
+            "jsonTag": "dependencies",
+            "type": "definition.DependencyManifest"
+          },
+          {
+            "name": "PublishedBy",
+            "jsonTag": "publishedBy",
+            "type": "string"
+          },
+          {
+            "name": "PublishedAt",
+            "jsonTag": "publishedAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "watchProjectEvents",
+      "method": "GET",
+      "path": "/projects/{id}/events/watch",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "eventstream.ProjectEventSummary",
+        "fields": [
+          {
+            "name": "JournalPosition",
+            "jsonTag": "journalPosition",
+            "type": "uint64"
+          },
+          {
+            "name": "EventType",
+            "jsonTag": "eventType",
+            "type": "string"
+          },
+          {
+            "name": "SchemaVersion",
+            "jsonTag": "schemaVersion",
+            "type": "int"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "withdrawScopeExpansion",
+      "method": "POST",
+      "path": "/projects/{projectId}/scope-expansions/{requestId}/withdraw",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "workitem.emptyBody"
+      },
+      "responseSchema": {
+        "typeName": "work.WithdrawScopeExpansionResult",
+        "fields": [
+          {
+            "name": "RequestID",
+            "jsonTag": "requestId",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          }
+        ]
+      }
+    }
+  ]
+}
