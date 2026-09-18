@@ -166,6 +166,38 @@ func ResolveApproval(ctx context.Context, uow ports.UnitOfWork, ids idsource.Sou
 
 	var result ResolveApprovalResult
 	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		// Target reload and ROLE AUTHORIZATION run before the receipt is
+		// ever consulted (V6-13). This ordering is the design doc's own §1
+		// contract point 3 as code — "Authorization chạy lại cả khi receipt
+		// replay, nên role bị thu hồi không thể dùng replay để đọc/mutate"
+		// — and what this function's own doc comment above has always
+		// claimed ("Authorization is checked BEFORE anything else").
+		// Previously the receipt lookup came first, so an actor whose
+		// authorizing role had since been revoked could still replay their
+		// own earlier decision's stored result by resending the same
+		// Idempotency-Key: the role check below was simply never reached on
+		// the replay path. Ordering the two this way costs one extra read
+		// on the replay path and closes that hole for every caller (HTTP
+		// and `aw`) at once. Proven by
+		// internal/delivery/httpapi/securitymatrix's own
+		// TestReceiptReplay_RevokedRoleCannotReplayItsOwnEarlierDecision.
+		request, err := tx.Approvals().GetApprovalRequest(ctx, req.ApprovalRequestID)
+		if err != nil {
+			return err
+		}
+		if string(request.RunID) != req.RunID {
+			return fmt.Errorf("%w: approval request %s belongs to run %s, not %s", ErrNodeRunMismatch, req.ApprovalRequestID, request.RunID, req.RunID)
+		}
+
+		matchedRole := MatchAuthorizedRole(cmd.ActorRoles, request.AuthorizedRoles)
+		if matchedRole == "" {
+			return apperror.New(
+				errorcode.CodePolicyDenied,
+				fmt.Sprintf("actor %q is not authorized to resolve approval request %s", cmd.Actor, req.ApprovalRequestID),
+				false,
+			)
+		}
+
 		existingReceipt, found, err := tx.Receipts().Load(ctx, cmd.Actor, cmd.Scope, cmd.IdempotencyKey, cmd.Type)
 		if err != nil {
 			return err
@@ -175,23 +207,6 @@ func ResolveApproval(ctx context.Context, uow ports.UnitOfWork, ids idsource.Sou
 				return ports.ErrReceiptConflict
 			}
 			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
-		}
-
-		request, err := tx.Approvals().GetApprovalRequest(ctx, req.ApprovalRequestID)
-		if err != nil {
-			return err
-		}
-		if string(request.RunID) != req.RunID {
-			return fmt.Errorf("%w: approval request %s belongs to run %s, not %s", ErrNodeRunMismatch, req.ApprovalRequestID, request.RunID, req.RunID)
-		}
-
-		matchedRole := matchAuthorizedRole(cmd.ActorRoles, request.AuthorizedRoles)
-		if matchedRole == "" {
-			return apperror.New(
-				errorcode.CodePolicyDenied,
-				fmt.Sprintf("actor %q is not authorized to resolve approval request %s", cmd.Actor, req.ApprovalRequestID),
-				false,
-			)
 		}
 
 		if request.State == runtimedomain.ApprovalRequestPending {
@@ -242,10 +257,18 @@ func ResolveApproval(ctx context.Context, uow ports.UnitOfWork, ids idsource.Sou
 	return result, err
 }
 
-// matchAuthorizedRole returns the first role in actorRoles that also
+// MatchAuthorizedRole returns the first role in actorRoles that also
 // appears in authorizedRoles (exact, case-sensitive match, confirmed with
 // the user before writing this task's code), or "" if none does.
-func matchAuthorizedRole(actorRoles, authorizedRoles []string) string {
+//
+// Exported (V6-13) so a delivery-layer handler that keeps its OWN read-only
+// receipt fast path — internal/delivery/httpapi/decision's own
+// resolveApproval handler, which can answer a replay without ever calling
+// ResolveApproval above — can apply the identical role check before it
+// replays, instead of reimplementing the matching rule and risking the two
+// drifting apart. It is a pure function over two string slices: no I/O, no
+// state, nothing a caller could misuse.
+func MatchAuthorizedRole(actorRoles, authorizedRoles []string) string {
 	authorized := make(map[string]bool, len(authorizedRoles))
 	for _, role := range authorizedRoles {
 		authorized[role] = true
