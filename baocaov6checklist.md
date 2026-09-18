@@ -10601,6 +10601,149 @@ default. Verified 20/20 clean on `-run TestResolve_ConcurrentResolveRace -count=
 `UnitOfWork` — an ID source, a clock, or any other injected dependency can just as easily be the actual
 unsafe one, and the race detector will find whichever one isn't, one at a time.
 
+## V6-15M — ReleaseSet and local-commit CLI
+
+### Thực hiện
+
+Built a new CLI leaf package `internal/delivery/cli/releaseset` on top of V6-15B's shared
+`internal/delivery/cli` framework (`docs/design/08-v6-api-projections.md:773-781`): `aw release-set
+list|create|show|seal|abandon|local-commit`, wrapping the already-real, already-tested application commands/
+queries in `internal/app/work` (`CreateReleaseSet`/`SealReleaseSet`/`AbandonReleaseSet`/`GetReleaseSet`/
+`ListReleaseSetsForFamily`/`GetReleaseSetLocalCommitStatus`) and `internal/app/releasesetcommit`
+(`RequestReleaseSetLocalCommit`) — never a second implementation of any of them. Read `release_set.go`,
+`release_set_queries.go`, `releasesetcommit/commands.go`/`execute.go`/`handler.go`, and the full HTTP precedent
+`internal/delivery/httpapi/releaseset` (all 11 files, including `routes.go`'s own 7-route inventory doc comment)
+before writing any leaf code. Entirely a new directory — `cmd/aw/main.go`/`cmd/aw/cli.go` untouched, per the
+CRITICAL scope rule (real `os.Args` routing deferred to V6-15O).
+
+**`create`'s own repeatable-entry design choice**: repositories are read as a JSON body via `--file`/stdin
+(`cli.ReadBoundedInput`), never a repeatable `--entry k=v,k=v` flag — mirrors
+`internal/delivery/cli/workitem`'s own `work-item create` and its identical repeatable `initialScope` list.
+A structured, 4-field-per-entry list validates far more cleanly as JSON (reusing `encoding/json`'s own array/
+object grammar) than as a bespoke inline flag grammar with its own escaping rules to invent and document, and
+it is this codebase's own only existing precedent for a CLI leaf accepting a caller-repeated structured entry
+list — reusing it keeps every multi-entry leaf in this framework consistent with one input mechanism rather
+than each leaf inventing its own. `entries.go`'s own `validateRepositoryReleaseBodies` mirrors
+`internal/delivery/httpapi/releaseset/dto.go`'s identically-named function field for field (non-blank, no
+duplicate `repositoryId`, verdict one of `PASS|FAIL|ERROR|NOT_RUN|NOT_APPLICABLE`), returning a `cli.UsageError`
+instead of writing an HTTP response.
+
+**Seal/abandon derive scope from the reloaded target, not a flag**: per this task's own command surface,
+neither `seal` nor `abandon` binds `--project-id` at all. `workapp.GetReleaseSet` takes no scope parameter of
+its own (unlike `workapp.GetScopeExpansionRequest`, which `scopeexpansion.Approve` reloads WITH an explicit
+`--project-id`-derived scope), so `transition.go`'s shared `runReleaseSetTransition` instead reloads the
+ReleaseSet by ID first and derives `ports.ProjectScope` from its own authoritative, already-persisted
+`ProjectID` — the same "server derives scope from the authoritative target, never trusts a caller-supplied
+value" discipline `internal/delivery/cli/workitem`'s own `loadWorkItemProjectID` already establishes for
+`work-item mark-ready`/`work-item cancel`. Staleness needed **no manual pre-check** at all (unlike
+`scopeexpansion.Approve`, whose own internal CAS is keyed on `ExpectedStatus` alone): `SealReleaseSet`/
+`AbandonReleaseSet`'s own internal `transitionReleaseSet` already fences directly on `cmd.ExpectedVersion` via
+`TransitionReleaseSetState`'s own CAS, so a stale `--expected-version` is rejected with a real
+`ports.ErrOptimisticConflict` from that one authoritative check — confirmed by reading
+`internal/app/ports/fake/work.go`'s own `TransitionReleaseSetState` before writing the leaf, not assumed.
+
+**`local-commit --wait` copied `run start --wait`'s wiring exactly**: `cli.BindWaitFlags`/`cli.Wait`/
+`cli.WaitOptions`, a `Dependencies.Sleep cli.Sleeper` seam for deterministic tests, `LocalCommitResult` embedding
+`releasesetcommit.RequestReleaseSetLocalCommitResult` plus an optional `Wait *workapp.ReleaseSetLocalCommitStatus`
+— read `internal/delivery/cli/run/start.go` in full (including its own doc comment on why a `--wait` timeout
+never suppresses the already-committed request's own stdout result) before writing `localcommit.go`. The hash
+payload (`requestLocalCommitHashPayload`) mirrors `internal/delivery/httpapi/releaseset/local_commit_commands.go`'s
+own `requestReleaseSetLocalCommitBody` byte-for-byte, excluding `ProjectID`/`ReleaseSetID` (both travel as
+`--project-id`/`--release-set-id` flags instead) so an HTTP call and an equivalent CLI call hash and replay
+identically. `localcommit.go`'s own doc comment is explicit this is NOT
+`internal/delivery/cli/decision.SignalWait` (a completely different WAIT-node external-signal command) — no
+naming or logic ever conflates the two.
+
+Confirmed via exhaustive grep (per this task's own brief) that there is no push/fetch/remote-mutating port
+anywhere in this codebase — `ports.LocalCommitCreator`'s own doc comment states `CreateLocalCommit` is the only
+Git-mutating method any port declares — so the "LOCAL only" guarantee is proven architecturally, not by a
+runtime spy: a new archtest `internal/archtest/releaseset_cli_boundary_test.go`
+(`TestDeliveryCLIReleaseSetNeverReachesGitOrWorker`) mirrors `releaseset_delivery_boundary_test.go`'s own
+identical HTTP-side proof, scoped to `internal/delivery/cli/releaseset` — forbids importing `"os"`, `"os/exec"`,
+or any `internal/adapters/...` package, and forbids any call expression named `ExecuteReleaseSetLocalCommit` or
+`CreateLocalCommit`. The two pre-existing `internal/archtest/cli_boundary_test.go` tests
+(`TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters`, `TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage`)
+already cover this new package too (they walk `./internal/delivery/cli/...` recursively) — confirmed both still
+pass with the new package present, no edit needed to either.
+
+### Test
+
+31 tests across 7 files in `internal/delivery/cli/releaseset` (`list_test.go`, `create_test.go`, `show_test.go`,
+`seal_test.go`, `abandon_test.go`, `localcommit_test.go`, plus `fixture_test.go`'s own shared helpers —
+duplicated, never imported, from `internal/delivery/cli/workitem/fixture_test.go`'s own `mustCreateProject`/
+`mustCreateActiveRepository`/`stubProvider`/`readyWorkItemFixture`, per that file's own "Go test helpers are not
+exported across packages" doc comment). `fake.UnitOfWork` throughout — no real sqlite/gitworktree stack needed:
+the "crash-after-Git" Verify bullet is proven by directly forcing the `ReleaseSetLocalCommit` row's own terminal
+state via `tx.Work().TransitionReleaseSetLocalCommitToFailed`/`ToCommitted` (the real worker's own crash-recovery
+logic is already proven in `internal/app/releasesetcommit/execute_test.go`; this package's own job is only to
+prove the CLI's `--wait` polling observes a real terminal row correctly) — the same "hand-seed a narrow, targeted
+state via a direct repository call" convention `internal/delivery/cli/run/start_test.go`'s own
+`forceRunSucceeded` already establishes for the identical concern.
+
+- **Replay** (create/seal/abandon/local-commit): `TestRunCreate_ReplaySameIdempotencyKey_ReturnsIdenticalResult`,
+  `TestRunSeal_ReplaySameIdempotencyKey_ReturnsIdenticalResult`,
+  `TestRunAbandon_ReplaySameIdempotencyKey_ReturnsIdenticalResult`,
+  `TestRunLocalCommit_ReplaySameIdempotencyKey_ReturnsIdenticalResult` — each asserts `Replayed` flips
+  false→true across two identical calls, the decoded result is byte-identical, and (create) exactly one row
+  exists afterward via a direct `ListReleaseSetsForFamily` re-query.
+- **Stale**: `TestRunSeal_StaleExpectedVersion_IsOptimisticConflict`,
+  `TestRunAbandon_StaleExpectedVersion_IsOptimisticConflict` (an unseen `--expected-version` on a still-CREATED
+  ReleaseSet), `TestRunLocalCommit_StaleExpectedReleaseSetVersion_IsOptimisticConflict`,
+  `TestRunLocalCommit_StaleExpectedWorkspaceVersion_IsOptimisticConflict` (both of local-commit's own two
+  exact-revision fences tested independently) — every one asserts `errors.Is(err, ports.ErrOptimisticConflict)`
+  and, for seal, that the ReleaseSet's own persisted State/Version are unchanged afterward.
+  `TestRunSeal_AlreadySealed_IsRejected` additionally proves a real (non-replay, fresh idempotency key) second
+  seal attempt against an already-SEALED ReleaseSet is rejected, never silently re-applied.
+- **Partial**: `TestRunCreate_DuplicateRepositoryEntry_IsUsageError`, `TestRunCreate_InvalidVerdict_IsUsageError`,
+  `TestRunCreate_EmptyRepositories_IsUsageError` — each asserts `cli.IsUsageError(err)` AND that zero
+  ReleaseSets exist for the family afterward (`ListReleaseSetsForFamily` re-query), proving the rejection
+  happens before any partial row is ever created.
+- **Crash-after-Git / `--wait` correctness**: `TestRunLocalCommit_Wait_ObservesFailedState` forces a real
+  `ReleaseSetLocalCommit` row to `FAILED`/`WORKSPACE_QUARANTINED`, then re-issues the identical idempotency key
+  with `--wait --wait-timeout 0s` and a `deps.Sleep` that fails the test if ever called (mirroring
+  `TestRunStart_Wait_ObservesTerminalState`'s exact technique) — proves the request itself replays
+  (`Replayed=true`, so the mutation is never re-dispatched) and the FIRST `--wait` observe already returns the
+  forced terminal state with zero delay. `TestRunLocalCommit_Wait_ObservesCommittedState` mirrors this for the
+  symmetric COMMITTED outcome.
+- **Remote-mutation spy (archtest)**: verified fail-closed by hand before considering the task done — temporarily
+  added `import "os/exec"` plus a call to `releasesetcommit.ExecuteReleaseSetLocalCommit(...)` inside `show.go`,
+  reran `TestDeliveryCLIReleaseSetNeverReachesGitOrWorker`, confirmed it failed with both the import-level and
+  call-level errors, then reverted `show.go` to its original content and reran the test to confirm it passes
+  clean again.
+- Every other leaf gets its own missing-required-flag/missing-argument/unknown-id coverage
+  (`TestRunList_MissingProjectID_IsUsageError`, `TestRunShow_MissingArgument_IsUsageError`,
+  `TestRunLocalCommit_MissingMessage_IsUsageError`, etc.) — 31 tests total, all passing, `go test -v` output
+  reviewed line by line.
+
+No concurrency test was written for this task (none of the six leaves have a "concurrent goroutines racing the
+same mutation" verify requirement the way V5-15G's own blocker-resolve did), so the `idsource.Sequential`
+concurrency-safety pitfall documented elsewhere in this checklist did not arise here — `newTestDeps` uses the
+shared deterministic `idsource.NewSequential("id")` throughout, same as every other single-threaded CLI leaf
+package's own fixture.
+
+### Verify
+
+- **Exact entry/revision**: `create`'s `RepositoryReleaseRequest` pins an exact base/result VCS object ID pair
+  per repository (never a floating ref); `local-commit`'s `ExpectedReleaseSetVersion`/`ExpectedWorkspaceVersion`
+  pin an exact ReleaseSet version and RepositoryWorkspace version/generation — both enforced by the app layer's
+  own fences, exercised directly by the stale tests above.
+- **`--wait` support**: see Test above — `TestRunLocalCommit_Wait_ObservesFailedState`/`_ObservesCommittedState`.
+- **Replay/stale/partial/crash-after-Git**: see Test above, one subsection each.
+- **Remote-mutation spy proving zero remote calls**: see Test above — `TestDeliveryCLIReleaseSetNeverReachesGitOrWorker`,
+  verified fail-closed.
+- No push/fetch/PR/merge/rebase/force-push anywhere in the new package — confirmed by the same archtest plus a
+  manual read of every one of the six leaf files: none imports `internal/adapters/...`, `os`, or `os/exec`.
+- `go build ./... && go vet ./... && go test ./...` clean repo-wide (full run, not just the new package).
+
+### Kết quả
+
+New: `internal/delivery/cli/releaseset` (`doc.go`, `helpers.go`, `entries.go`, `list.go`, `create.go`, `show.go`,
+`transition.go`, `seal.go`, `abandon.go`, `localcommit.go` + `fixture_test.go` and 6 test files, 31 tests) —
+`aw release-set list|create|show|seal|abandon|local-commit`. New: `internal/archtest/releaseset_cli_boundary_test.go`
+(`TestDeliveryCLIReleaseSetNeverReachesGitOrWorker`, verified fail-closed by hand). No existing file touched —
+`cmd/aw/main.go`/`cmd/aw/cli.go` untouched per the CRITICAL scope rule, deferred to V6-15O.
+`go build/vet/test ./...` clean repo-wide. PR targets `master`.
+
 ## V6-15L — Workspace and bounded source CLI
 
 ### Thực hiện
