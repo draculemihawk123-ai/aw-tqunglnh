@@ -9805,6 +9805,118 @@ handling supports both local-compute-by-default and an explicit `--sha256` overr
 case and the deliberate-tamper-test case. `cmd/aw/main.go`/`cmd/aw/cli.go` untouched, per the CRITICAL scope
 rule — real CLI wiring is V6-15O's job.
 
+## V6-15I — Scope, approval and WAIT CLI
+
+### Thực hiện
+
+Two new CLI leaf packages, mirroring `internal/delivery/httpapi/workitem`'s scope-expansion commands and
+`internal/delivery/httpapi/decision` (V6-06A) 1:1, each registering its own `cli.Descriptor`(s) from its own
+`init()` into the shared `internal/delivery/cli` registry. Neither touches `cmd/aw/main.go`/`cmd/aw/cli.go` —
+routing real `os.Args` to these leaves is explicitly deferred to V6-15O, per contract point 8.
+
+**`internal/delivery/cli/scopeexpansion`** — `aw scope-expansion request|approve|reject|withdraw`, over
+`internal/app/work`'s four commands (`RequestScopeExpansion`/`ApproveScopeExpansion`/`RejectScopeExpansion`/
+`WithdrawScopeExpansion`). `request` is CREATE-shaped (`--project-id`, `--file`/stdin JSON body with
+`requestedGrants`/`reason`/`referencedWorkItemId` mirroring `workitem`'s own `requestScopeExpansionBody`
+byte-for-byte, no `--expected-version`); `approve`/`reject`/`withdraw` are UPDATE-shaped
+(`--project-id --expected-version <n>`, `reject` also `--note`). Every command reloads its own authoritative
+target first — `workapp.GetTaskFamily`/`workapp.GetScopeExpansionRequest` — before Idempotency-Key/body are
+read, exactly like `scope_expansion_commands.go`'s own discipline. The `--expected-version` precondition
+check lives INSIDE the `cli.Dispatch` execute closure (reached only on a genuinely fresh, non-replayed
+dispatch), never before it — a real receipt replay must always win over an apparently-stale version, mirroring
+`ResolveApprovalHandler`'s own documented ordering and `internal/delivery/cli/catalog`'s own
+`RunRepositoryRetryProbe` precedent.
+
+**`internal/delivery/cli/decision`** — `aw approval resolve <runId> <approvalRequestId> --outcome <value>
+[--reason <text>] --expected-version <n>` and `aw wait signal <runId> <waitRegistrationId> --signal-key <key>
+[--payload <json>]`, over `internal/app/runtime.ResolveApproval`/`SignalWait`. Neither app-layer read query
+is scoped (`internal/app/runtime` has no `GetApprovalRequest`/`GetWaitRegistration` query function, confirmed
+by reading `queries.go` first), so both leaves reload their own target via a direct
+`uow.WithReadOnly` + `tx.Approvals()`/`tx.Wait()` read, translated from
+`internal/delivery/httpapi/decision`'s own `loadApprovalRequestForUpdate`/`loadWaitRegistrationForRun` (HTTP
+short-circuit → plain `(value, error)` return). `--outcome` is a required, non-empty string flag — never a
+closed enum: per this task's own correction, the actual outcome vocabulary is open, per-node, and validated
+deep inside `advanceRunTx`'s own GC-INV-11 allow-list check, never at this CLI's own input-parsing layer.
+`approval resolve` binds `--expected-version` (mirroring `resolveApprovalHashPayload`'s own
+`ApprovalRequestID`-folded hash exactly); `wait signal` deliberately does not (mirroring
+`submitWaitSignalHashPayload` and `SubmitWaitSignalHandler`'s own documented reasoning: an external
+webhook-style caller cannot know the registration's current version, and `SignalWait`'s own
+idempotent-duplicate-delivery contract must keep working regardless).
+
+**Naming-collision avoidance** (explicit task requirement): the WAIT-signal command is named `SignalWait` in
+package `decision` — qualified as `decision.SignalWait`, never a bare `Wait` in any package, so it is never
+confusable with `internal/delivery/cli`'s own pre-existing, unrelated `cli.Wait`/`cli.WaitOptions` generic
+`--wait`-flag polling primitive (V6-15B). Neither calls the other.
+
+Every mutation resolves its principal exclusively via `--principal-config` (`cli.BindPrincipalFlag`) — no
+`--actor`/`--role` flag anywhere in either package. Each command's flag binding is factored into its own small
+`bind*Flags` helper (e.g. `bindRequestFlags`, `bindResolveApprovalFlags`) specifically so a white-box test can
+scan the real, exact flag set each command binds without executing it.
+
+### Test
+
+New test files in both packages, real `*sqlite.Store` fixtures (not `fake.UnitOfWork` — that fake's own
+`WithSerializedWrite` rejects a genuinely concurrent second caller outright with `ErrNestedTransaction` rather
+than blocking and serializing it like real sqlite's `_txlock=immediate` connections do, so it cannot stand in
+for this package's own concurrency tests):
+
+- `scopeexpansion`: happy path + idempotency-key replay + missing `--project-id`/`--expected-version` usage
+  errors + unknown/cross-project family (leakage-normalized) for `request`; happy path + duplicate-approval
+  rejection + stale-`--expected-version` rejection for `approve`/`reject`; business-level idempotency
+  (`WithdrawScopeExpansion`'s own documented "idempotent even across actors/idempotency-keys once WITHDRAWN"
+  contract) for `withdraw`.
+- `decision`: happy path + missing-flag usage errors for both `approval resolve` and `wait signal`.
+
+Descriptor-registration tests (`TestScopeExpansionPackage_RegistersEveryDescriptorInDefault`,
+`TestDecisionPackage_RegistersEveryDescriptorInDefault`) prove every `init()` registration lands in
+`cli.Default`.
+
+Ran the whole suite twice (`go test ./... -count=1`): both new packages pass clean both times; two DIFFERENT,
+unrelated packages each flaked once (`internal/delivery/httpapi/eventstream`'s
+`TestStreamLoop_SlowClientDisconnectsWithLastSafeCursor` on the first run, `internal/app/message` on the
+second) — both pass 100% in isolation, confirming pre-existing, environmental, full-suite-load flakiness
+unrelated to this task's diff (neither package is touched by it).
+
+### Verify
+
+- **HTTP/CLI auth parity**: `TestResolveApproval_UnauthorizedActor_RejectedIdenticallyToHTTP` — an actor whose
+  `--principal-config` roles don't intersect the `ApprovalRequest`'s own `AuthorizedRoles` is rejected with the
+  identical `apperror.CodePolicyDenied`, proven by construction (this CLI leaf dispatches the exact same
+  `runtime.ResolveApproval` function `ResolveApprovalHandler` dispatches — never a second implementation of
+  the role check) and confirmed against the same assertion `internal/app/runtime/approval_test.go`'s own
+  `TestResolveApproval_UnauthorizedActor_Rejected` makes directly.
+- **Spoof**: `TestScopeExpansionCommandsNeverDefineActorOrRoleFlag` and
+  `TestDecisionCommandsNeverDefineActorOrRoleFlag` scan every command's own real bound `flag.FlagSet` (via
+  each command's own `bind*Flags` helper) for `--actor`/`--role`/`--roles`/`--actor-roles` — none exist,
+  mirroring V6-15B's own `TestBindPrincipalFlagNeverDefinesActorOrRoleFlag`.
+  `TestExpectedVersionFlag_OnlyOnApprovalResolve` additionally proves the documented asymmetry: `approval
+  resolve` binds `--expected-version`, `wait signal` does not.
+- **Concurrent decision/signal**: `TestApprove_Concurrent_SameRequest_OnlyOneWins` (scope-expansion),
+  `TestResolveApproval_Concurrent_SameRequest_OnlyOneWins`, and
+  `TestSignalWait_Concurrent_SameSignalKey_ExactlyOneWinner` (decision) each race 5 real, concurrent CLI
+  invocations (goroutines, distinct `--idempotency-key`s) against one real `sqlite.Store` for the same target.
+  Exactly one ever wins; every other outcome is a clean, typed conflict — either the underlying app command's
+  own graceful `Won=false` (the SAME race `runtime.ResolveApproval`'s/`SignalWait`'s own direct unit tests
+  prove), or, for `approval resolve` specifically, a late-scheduled goroutine's own reload legitimately
+  observing the winner's already-bumped `Version` and getting this CLI's own advisory `--expected-version`
+  precondition error (the CLI equivalent of HTTP 412 Precondition Failed) — never corruption, a panic, or a
+  hang. Stable across 5 repeated full runs of every concurrency test in both packages.
+- **Withdraw race**: `TestWithdrawRace_ConcurrentWithApprove_ResolvesSafely` races a real `scope-expansion
+  withdraw` against a real `scope-expansion approve` for the same PENDING request (both observing the same
+  initial `--expected-version=1`). Exactly one of the two wins (verified against the persisted
+  `ScopeExpansionRequest.Status` afterward: `APPROVED` xor `WITHDRAWN`, never both, never neither) — per
+  `WithdrawScopeExpansion`'s own documented idempotency being scoped strictly to an ALREADY-WITHDRAWN target,
+  never one that raced past it to `APPROVED`.
+
+### Kết quả
+
+`aw scope-expansion request|approve|reject|withdraw`, `aw approval resolve` and `aw wait signal` are real,
+tested CLI leaves dispatching the exact same application commands their HTTP counterparts do — every human
+decision named in this task (scope-expansion request/approve/reject/withdraw, approval outcome, WAIT signal)
+is now typed and audited from the terminal, with no free-text control and no per-command actor/role spoof
+surface anywhere. `go build ./... && go vet ./... && go test ./...` clean (two unrelated, non-reproducing,
+pre-existing environmental flakes noted above, confirmed unrelated by isolation re-run).
+
 ## V6-09B — Projection rebuild HTTP endpoints
 
 ### Thực hiện
