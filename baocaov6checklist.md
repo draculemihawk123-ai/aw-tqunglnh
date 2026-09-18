@@ -9678,6 +9678,124 @@ each time), stop tuning timing constants and re-examine whether the assertion is
 STATE, not just whether it's checking at the right TIME — a wrong assertion target produces the same symptom
 as a genuine race, and no amount of retry/margin tuning will ever fix it.
 
+## V6-15F — Adapter-build CLI
+
+### Thực hiện
+
+New package `internal/delivery/cli/adapterbuild`, the CLI leaf over V2-07A's immutable AdapterBuildVersion
+registry (`docs/design/08-v6-api-projections.md:703-711`): `aw adapter list|show|probe|register`, built on
+the already-hardened `internal/app/adapterbuild` application commands (`ListAdapterBuilds`/`GetAdapterBuild`/
+`ProbeAdapterBuild`/`RegisterAdapterBuild`, V6-10I) via the exact same `cli.BuildEnvelope`/`cli.Dispatch`
+flow every other mutating CLI leaf uses.
+
+Read fully before writing any code: `internal/delivery/cli/sample_test.go` (low-level framework mechanics),
+`internal/delivery/cli/settings/settings.go` (454 lines, the explicit "main template" — `RunShow`/`RunUpdate`'s
+envelope → dispatch → replay/fresh branching → `EncodeCommandResult`/human-output pattern), `internal/delivery/
+cli/descriptor.go` (confirmed `cli.ScopeInstallation` at line 22), `internal/delivery/cli/health/health.go` and
+`internal/delivery/cli/doctor/doctor.go` (the "installation-scoped, never `cli.BindProjectFlag`" precedent),
+`internal/app/adapterbuild/commands.go` (all four app-layer targets, `requireInstallationScope`'s own second
+enforcement layer), the full `internal/domain/adapterbuild` package (`Build`/`CandidateToken`/`CandidateTuple`/
+`CapabilityManifest` — confirmed no credential-shaped field anywhere), and the entire `internal/delivery/httpapi/
+adapterbuild` package (V6-10J, merged: `adapterbuild.go`'s route inventory + doc comment, `commands.go`'s
+`prepareCommand` preamble and "no HTTP-layer pre-check, dispatch straight through" doc comment, `dto.go`,
+`queries.go`, `errors.go`) as the shape this leaf mirrors. `cmd/aw/adapter.go` (the pre-CommandEnvelope V2-07B
+legacy CLI — `runAdapterProbe`/`runAdapterRegister` hand-build commands via `newDefinitionCommand`/`requestHash`
+and spawn a REAL provider executor to MEASURE the capability manifest) was read only to confirm what NOT to
+copy — this is exactly the "Không làm: no legacy no-envelope call" line; never imported, never called.
+
+Four `cli.Descriptor`s registered from this package's own `init()`, all `cli.ScopeInstallation` (AdapterBuildVersion
+is a machine-level resource, ADR-022/ADR-025's own closed list — no `--project-id`, `cli.BindProjectFlag` is
+never called anywhere in this package), `HTTPOperationID` matching `internal/delivery/httpapi/adapterbuild`'s
+own four real operationIds 1:1 (`listAdapterBuilds`/`getAdapterBuild`/`probeAdapterBuild`/`registerAdapterBuild`),
+`commandTypeProbe`/`commandTypeRegister` byte-for-byte identical to that package's own `commandTypeProbe`/
+`commandTypeRegister` constants (a hard requirement — `cli.Dispatch` reuses HTTP's own `SemanticHash`/
+`LookupReceipt`/`ReconcileReceipt` replay authority, keyed in part on this string).
+
+Command surface: `aw adapter list [--json]` and `aw adapter show <id> [--json]` are plain queries (no
+`CommandEnvelope`, no idempotency key). `aw adapter probe` takes every `ProbeRequest` field as an explicit
+flag (`--provider-key`/`--executable-path`/`--protocol-version`/`--os`/`--toolchain`/`--config-identity`
+plus `--supports-start`/`--supports-resume`/`--supports-cancel`/`--canonical-event-kinds`) — mirroring
+V6-10J's own documented choice (an HTTP caller supplies the manifest directly; this package never spawns a
+real provider process either, unlike the legacy CLI), never `cmd/aw/adapter.go`'s real-executor-measurement
+path. `aw adapter register` reads the candidate token as raw `CandidateToken` JSON from `--file`/stdin (the
+exact artifact `probe --json`'s own `.result` field hands the operator) and re-supplies the capability
+manifest via the SAME flags `probe` uses — never read back off the token — so `RegisterAdapterBuild`'s own
+TOCTOU-closing re-derivation has something independent to compare against. Both mutations build a canonical
+`probeRequestWire`/`registerRequestWire` struct (field-for-field mirrors of HTTP's own `probeAdapterBuildBody`/
+`registerAdapterBuildBody`) and `json.Marshal` it for `NormalizedPayload`, per `cli.EnvelopeRequest.NormalizedPayload`'s
+own "decode into a typed struct first, re-marshal" contract.
+
+One genuine wrinkle `RunRegister` has to handle that `RunProbe` doesn't: `adapterbuild.Build` has zero
+exported fields (structural immutability), so `RegisterAdapterBuild`'s own transaction writes its receipt as
+an unexported `registerReceiptPayload` shape (`Tuple`/`CapabilityManifest`/`RegisteredBy`/`RegisteredAt`/
+`AlreadyExisted`), never `RegisterResult` directly. A REPLAYED `cli.Dispatch` result is therefore that exact
+shape, not `appadapterbuild.RegisterResult` — `views.go`'s own `registerReplayPayload` restates it
+field-for-field (since the real type is unexported and unreachable from this package) and reconstructs a
+`Build` via `domainadapterbuild.NewBuild`, the identical technique the app layer's own `toResult()` uses
+internally. `ProbeAdapterBuild`'s own receipt, by contrast, stores a `CandidateToken` directly (every field
+already exported), so `RunProbe`'s replay branch decodes straight into one — no equivalent DTO needed.
+
+Redaction: confirmed by reading the domain package that neither `Build` nor `CandidateToken` carries any
+credential-shaped field — `ExecutablePath`/`ConfigIdentity` are operator identifiers, `Signature` is a
+one-way HMAC digest, and the one genuinely sensitive value (the per-installation candidate-token signing key,
+`ports.AdapterBuildRepository.LoadOrCreateSigningKey`/`LoadSigningKey`) is never returned by any of the four
+application commands this package wraps in the first place — documented in `doc.go` and proved mechanically
+in `redaction_test.go` rather than only asserted in prose.
+
+### Test
+
+New package tests only (`internal/delivery/cli/adapterbuild`, 16 files, ~1884 lines): `adapterbuild_test.go`
+(descriptor registration — all four commands, `cli.ScopeInstallation`, correct `HTTPOperationID`), `list_test.go`,
+`show_test.go` (found/unknown-id/positional-arg validation), `probe_test.go` (fresh success, generated
+idempotency key, **replay** — retry after deleting the executable so a real re-probe would fail loudly,
+**same-key-different-payload is `cli.ErrReceiptHashConflict`** — caught by `cli.Dispatch`'s own shared
+pre-check, not a second leaf-invented one, missing-required-flag matrix, invalid manifest, unknown flag, human
+output), `register_test.go` (fresh success, **duplicate fingerprint → `AlreadyExisted`**, **replay**,
+**expired token rejected** (`ExpiresAt` forced into the past without re-signing — VerifyToken catches it as
+an invalid signature or expiry either way), **executable drift rejected** (`errors.Is(err,
+appadapterbuild.ErrExecutableDrift)`, executable overwritten between probe and register), **capability
+manifest mismatch rejected** (`errors.Is(err, appadapterbuild.ErrCapabilityManifestDrift)`, `--supports-cancel`
+omitted at register time), missing/invalid token file, invalid manifest, reading the token from stdin),
+`concurrency_test.go` (real `sqlite.Open`/`sqlite.NewUnitOfWork` — the in-memory fake's own `WithSerializedWrite`
+unlocks before running its closure and so cannot exercise genuine writer contention, same reasoning
+`internal/app/adapterbuild/commands_sqlite_test.go` documents for its identical choice — 8 goroutines racing
+the SAME idempotency key must all observe the same build id/`AlreadyExisted` and leave exactly one row; a
+second test races 8 DISTINCT idempotency keys against the SAME executable fingerprint and proves exactly one
+racer gets `AlreadyExisted=false` while the registry still ends with exactly one row), `redaction_test.go`
+(probe/register/list/show exercised in both `--json` and human modes, fresh and replayed; combined stdout
+scanned for the real per-installation signing key loaded directly off the `UnitOfWork` via `LoadSigningKey` —
+not found — plus a quoted-JSON-field-name denylist for `signingKey`/`key`/`credential`/`password`; the
+denylist check matches `"fieldName":` specifically rather than a bare substring, since a bare substring check
+first false-failed on this test's own `t.TempDir()` path, which embeds the test function's own name
+`TestRedaction_SigningKeyNeverLeaksInAnyOutput` inside the (legitimate, non-secret) `ExecutablePath` value).
+
+`go test ./internal/delivery/cli/adapterbuild/... -v -count=1` — all tests pass (fixed one real bug along the
+way: two tests originally passed `[]string{id, "--json"}` to `RunShow`, which Go's `flag` package never
+parses past the first non-flag argument, so `--json` landed in the positional-arg slice and tripped the
+"usage: aw adapter show <id> [--json]" error — corrected to `[]string{"--json", id}`). `go build ./... && go
+vet ./... && go test ./...` clean repo-wide.
+
+### Verify
+
+Exact token replay/expiry: proved (`TestRunProbe_Replay`, `TestRunRegister_Replay`,
+`TestRunRegister_RejectsExpiredToken`). Drift/capability/config mismatch: proved
+(`TestRunRegister_RejectsExecutableDrift`, `TestRunRegister_RejectsCapabilityManifestMismatch`). Concurrency:
+proved on real SQLite, both the idempotency-key axis and the independent fingerprint-dedup axis
+(`TestRunRegister_ConcurrentSameIdempotencyKey_ExactlyOneBuild`,
+`TestRunRegister_ConcurrentDistinctKeysSameFingerprint_OneFreshInsert`). Redaction: proved mechanically
+(`TestRedaction_SigningKeyNeverLeaksInAnyOutput`). Scope: `TestDescriptorsRegistered` confirms all four
+commands are `cli.ScopeInstallation`; `cli.BindProjectFlag` is never imported or called anywhere in this
+package (confirmed by reading every file — no `--project-id` flag exists on any of the four commands).
+No wiring into `cmd/aw/main.go`/`cmd/aw/cli.go` (deferred to V6-15O per rule 8) — confirmed neither file was
+touched.
+
+### Kết quả
+
+`aw adapter list|show|probe|register` is usable entirely from the terminal for a full provider-executable
+upgrade flow (probe → review the printed candidate → register → list → show), on the same hardened
+`CommandEnvelope`/receipt-replay contract as HTTP, never the pre-framework legacy path in `cmd/aw/adapter.go`.
+PR opened against `master` from branch `feat/v6-15f-adapterbuild-cli`.
+
 ## V6-15I — Scope, approval and WAIT CLI
 
 ### Thực hiện
