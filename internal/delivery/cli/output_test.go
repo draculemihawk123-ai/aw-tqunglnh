@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
 )
@@ -191,6 +193,116 @@ func (r *erroringReader) Read(p []byte) (int, error) {
 		return n, nil
 	}
 	return 0, r.err
+}
+
+// TestEncodeNDJSONLine_CompactNoIndentation proves the encoded line is
+// compact JSON (no newline/indentation inside the object itself) followed
+// by exactly one trailing "\n" — the opposite shape of writeStableJSON's
+// own MarshalIndent.
+func TestEncodeNDJSONLine_CompactNoIndentation(t *testing.T) {
+	var buf bytes.Buffer
+	if err := cli.EncodeNDJSONLine(&buf, map[string]any{"a": 1, "b": "two"}); err != nil {
+		t.Fatalf("EncodeNDJSONLine() error = %v", err)
+	}
+	got := buf.String()
+	if strings.Count(got, "\n") != 1 {
+		t.Fatalf("output has %d newlines, want exactly 1: %q", strings.Count(got, "\n"), got)
+	}
+	if !strings.HasSuffix(got, "\n") {
+		t.Fatalf("output does not end with a trailing newline: %q", got)
+	}
+	if strings.Contains(strings.TrimSuffix(got, "\n"), "\n") || strings.Contains(got, "  ") {
+		t.Fatalf("output is not compact (contains indentation/extra whitespace): %q", got)
+	}
+}
+
+// TestEncodeNDJSONLine_MultipleCalls_ContinuousNDJSONParsing is this task's
+// own single most important test for the NDJSON half of this task: several
+// EncodeNDJSONLine calls against the SAME writer produce output where every
+// line decodes as a complete, independent JSON document via
+// bufio.Scanner+json.Unmarshal — never a partial line, never two objects
+// merged onto one line, never interleaved output.
+func TestEncodeNDJSONLine_MultipleCalls_ContinuousNDJSONParsing(t *testing.T) {
+	var buf bytes.Buffer
+	type line struct {
+		N int `json:"n"`
+	}
+	const count = 50
+	for i := 0; i < count; i++ {
+		if err := cli.EncodeNDJSONLine(&buf, line{N: i}); err != nil {
+			t.Fatalf("EncodeNDJSONLine(%d) error = %v", i, err)
+		}
+	}
+
+	scanner := bufio.NewScanner(&buf)
+	got := 0
+	for scanner.Scan() {
+		var decoded line
+		if err := json.Unmarshal(scanner.Bytes(), &decoded); err != nil {
+			t.Fatalf("line %d: not valid, complete JSON: %v (%q)", got, err, scanner.Text())
+		}
+		if decoded.N != got {
+			t.Fatalf("line %d decoded N = %d, want %d (lines out of order or corrupted)", got, decoded.N, got)
+		}
+		got++
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("scanner error: %v", err)
+	}
+	if got != count {
+		t.Fatalf("scanned %d lines, want %d", got, count)
+	}
+}
+
+// slowWriter sleeps briefly before every Write call — this task's own
+// "slow consumer" Verify bullet: EncodeNDJSONLine must neither corrupt
+// output nor deadlock when its sink is deliberately slow (a stand-in for a
+// slow downstream consumer such as `jq` reading a real OS pipe with natural
+// backpressure — see internal/delivery/cli/events's own doc comment for why
+// a real CLI never needs a bounded-channel/disconnect policy the way
+// internal/delivery/httpapi/eventstream's own HTTP server does).
+type slowWriter struct {
+	w     io.Writer
+	delay time.Duration
+}
+
+func (s *slowWriter) Write(p []byte) (int, error) {
+	time.Sleep(s.delay)
+	return s.w.Write(p)
+}
+
+func TestEncodeNDJSONLine_SlowConsumer_NeverCorruptsOrDeadlocks(t *testing.T) {
+	var buf bytes.Buffer
+	sink := &slowWriter{w: &buf, delay: 5 * time.Millisecond}
+	type line struct {
+		N int `json:"n"`
+	}
+	const count = 20
+	start := time.Now()
+	for i := 0; i < count; i++ {
+		if err := cli.EncodeNDJSONLine(sink, line{N: i}); err != nil {
+			t.Fatalf("EncodeNDJSONLine(%d) error = %v", i, err)
+		}
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("took %s for %d slow writes — looks deadlocked/hung rather than merely slow", elapsed, count)
+	}
+
+	scanner := bufio.NewScanner(&buf)
+	got := 0
+	for scanner.Scan() {
+		var decoded line
+		if err := json.Unmarshal(scanner.Bytes(), &decoded); err != nil {
+			t.Fatalf("line %d corrupted by a slow sink: %v (%q)", got, err, scanner.Text())
+		}
+		if decoded.N != got {
+			t.Fatalf("line %d = %d, want %d", got, decoded.N, got)
+		}
+		got++
+	}
+	if got != count {
+		t.Fatalf("scanned %d lines, want %d", got, count)
+	}
 }
 
 func TestDiagnosticfWritesOnlyToItsOwnWriterNeverStdout(t *testing.T) {

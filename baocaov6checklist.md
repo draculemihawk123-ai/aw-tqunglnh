@@ -10779,3 +10779,525 @@ could ever produce a wrong "acknowledged"/"unresolved" classification silently.
 
 `go build/vet/test ./...` clean repo-wide (one pre-existing, re-verified Windows flake, unrelated — see Test).
 PR targets `master`.
+
+## V6-15N — Projection and event-stream CLI
+
+### Thực hiện
+
+Built two new CLI leaf packages (`docs/design/08-v6-api-projections.md:783-791`): `internal/delivery/cli/projection`
+(`aw projection status|rebuild|rebuild-status`) and `internal/delivery/cli/events` (`aw events watch`, NDJSON
+output) — the last of the P4 CLI leaves. `cmd/aw/main.go`/`cmd/aw/cli.go` untouched, per the CRITICAL scope
+rule (real `os.Args` routing deferred to V6-15O); each package only registers its own `cli.Descriptor`s from
+its own `init()`.
+
+**Part 1 — `projection`**: a thin wrap over the already-hardened, already-tested `internal/app/projectionrebuild`
+application layer (`GetProjectionStatus`, `RequestProjectionRebuild`, `GetProjectionRebuildStatus` — V6-09,
+merged), mirroring `internal/delivery/cli/scopeexpansion/request.go`'s own `cli.BuildEnvelope`/`cli.Dispatch`
+shape for the one mutation (`rebuild`) and `internal/delivery/cli/workitem/show.go`'s own plain-passthrough
+shape for the two reads (`status`, `rebuild-status`) — no isolated HTTP-style view DTOs invented; the
+app-layer result types already carry the right json tags, and the later leaves in this phase (`workitem`,
+`scopeexpansion`) had already dropped the earlier `adapterbuild`-era `--json`-flag-plus-human-text convention
+in favor of always-JSON `cli.EncodeQueryResult`/`cli.EncodeCommandResult`, so this package follows that more
+recent, simpler convention rather than reintroducing the older one. `commandTypeRequestProjectionRebuild =
+"RequestProjectionRebuild"` matches `internal/delivery/httpapi/projectionrebuild`'s own literal exactly (shared
+`SemanticHash`/receipt-replay authority). `rebuild-status` binds no `--project-id` flag at all — the task's own
+command surface line names none, and `GetProjectionRebuildStatus`'s own doc comment is explicit it is a plain,
+exact, by-operationId lookup with no scope parameter; `Descriptor.Scope` is still registered `cli.ScopeProject`
+(matching `getProjectionRebuildOperationStatus`'s real HTTP `ScopeKind`, for ADR-028's eventual four-column
+parity inventory) even though the actual invocation carries no `--project-id` — documented in `doc.go`.
+
+New type `projection.ActiveRebuildConflictError{ActiveOperationID, Err}`: when `RequestProjectionRebuild`
+returns the typed active-rebuild conflict, `RunRebuild` extracts the already-active OperationID via the
+already-exported `appprojectionrebuild.ActiveProjectionRebuildOperationID` and re-wraps it in this small,
+exported, `Unwrap()`-forwarding type so a caller can read `ActiveOperationID` programmatically rather than
+scraping `Error()` text — mirrors `cli.CommandError`'s own identical "typed wrapper, `Unwrap` forwards" shape
+(`internal/delivery/cli/dispatch.go`).
+
+**Part 2 — `events` (the genuinely new architecture)**: `aw events watch --project-id <id> [--from-cursor <n>]
+[--poll-interval <duration>]`, a from-scratch, independent reimplementation against the one primitive
+`internal/delivery/httpapi/eventstream` (V6-11, merged) and this leaf actually share —
+`ports.EventsRepository.ScanJournal` (`internal/app/ports/unitofwork.go:1110`) — never a wrapper around
+`eventstream` itself: confirmed by direct inspection that `probeProject`/`streamLoop`/`eventSink` are all
+unexported and SSE-wire-coupled (`httpapi.SSEMessage`), and `docs/architecture/02-architecture-decisions.md:725-727`
+confirms this is intentional ("SSE được biểu diễn bằng `aw events watch`" — a terminal-native reimplementation,
+not an HTTP client calling itself). `watch.go`'s own `probeProjectEvents` is a deliberate, independently-written
+~15-line mirror of `eventstream/errors.go`'s own `probeProject` (read there first, per the task brief): reload
+the Project fresh via `tx.Catalog().GetProject`, require `project.ProjectActive`, scan the journal in the SAME
+read-only transaction. `ProjectEventSummary{JournalPosition, EventType, SchemaVersion}` is a deliberate,
+independent duplicate of `eventstream.ProjectEventSummary`'s own field set — never an import of that package,
+for the same "wrong architectural direction" reason above, even though that one struct happens to be exported.
+`EventType` is routed through the shared `redact.Matcher` (`Dependencies.Matcher`, the same process-lifetime
+instance every other redacting leaf in this composition root reuses, e.g. `internal/delivery/cli/run` and
+`internal/delivery/cli/message`) before being written — never the raw `PayloadJSON` body (matches V6-11's own
+"invalidation signal, never a content feed" scope line).
+
+Four explicit design choices, each documented at length in `events/doc.go`:
+
+1. **NDJSON encoder placement — promoted to the shared `internal/delivery/cli` package** (`output.go`'s new
+   `EncodeNDJSONLine(w io.Writer, v any) error`): compact (non-indented) JSON + one trailing `\n`, encoded and
+   written in a SINGLE `w.Write` call (never a separate write for the JSON bytes and the newline — this is what
+   keeps one line atomic against a concurrent reader on the other end of a pipe), opportunistically flushing
+   through an optional `interface{ Flush() error }` when the writer is buffered. Promoted rather than scoped to
+   `internal/delivery/cli/events`, mirroring V6-15K's own identical "promote vs. scope narrowly" decision for
+   `WriteBinaryOutput`: NDJSON-per-line is a generic wire SHAPE with no events-domain concept baked in, and any
+   future streaming leaf wants the identical helper.
+2. **No bounded-channel/slow-client-disconnect architecture, deliberately NOT ported from
+   `eventstream/stream.go`**: that package's two-goroutine/bounded-buffer/active-disconnect design exists
+   because an HTTP SERVER must defend itself from an external, untrusted, uncontrollable BROWSER client — a
+   concern this CLI does not have (it is a single process writing to its OWN stdout; a slow downstream
+   consumer's backpressure blocks the next `Write` call naturally and correctly). `RunWatch` is therefore a
+   single loop in the CALLER's own goroutine — no writer goroutine, no channel, nothing to leak by construction
+   (there is no second goroutine to leak in the first place).
+3. **No heartbeat**: `eventstream.HeartbeatInterval` exists to defeat an idle-connection timeout somewhere on
+   the SSE wire path (browser/proxy) — a concern a stdout pipe never has, and a heartbeat NDJSON line would
+   break "every line is a `ProjectEventSummary`" for zero benefit. Re-authorization instead piggybacks on the
+   SAME poll tick that scans for new events — no separate cadence.
+4. **`--from-cursor` default (0 when omitted) and resync/retention policy**: mirrors `eventstream.go`'s own
+   "Retention policy" doc comment adapted to a typed Go error (`ErrResyncRequired`) rather than an HTTP 409 — on
+   start, probes `ScanJournal(afterPosition=fromCursor, limit=RetentionScanLimit+1)`; more than
+   `RetentionScanLimit` (default 1000) pending returns `ErrResyncRequired` before ever polling/emitting.
+   Defaulting a bare `--from-cursor`-less invocation to 0 (full replay then follow) is DELIBERATELY DIFFERENT
+   from the HTTP route, which REQUIRES an explicit `cursor` (that route's own reasoning: a browser client always
+   already holds a prior fetch's own `AsOfJournalPosition`, so an implicit default would reintroduce a
+   query→subscribe race) — a bare terminal invocation has no such prior fetch step to protect, so 0
+   ("JournalPosition never starts below 1") is the least-surprising CLI default, not a correctness gap.
+
+Re-authorization: every probe — the first and every subsequent poll tick — re-checks `project.ProjectActive`,
+mirroring `eventstream.go`'s own "Authorization" doc comment (including its own admission that no production
+mutator can currently move a Project out of ACTIVE; the mechanism exists so a future one needs no change here).
+
+### Test
+
+**Part 1** (`internal/delivery/cli/projection`, `fake.UnitOfWork`, sequential — no goroutines needed, since
+"rebuild interruption" and "replay" are both sequential-call scenarios, not races):
+- `TestRunRebuild_Success` / `TestRunRebuild_ReplaySameIdempotencyKey_SameOperationID` — the replay Verify
+  bullet: a second call with the identical `--idempotency-key` (and payload) returns `Replayed=true` and the
+  SAME `OperationID`.
+- `TestRunRebuild_ActiveConflict_SurfacesActiveOperationID` — the rebuild-interruption Verify bullet: a second
+  `rebuild` call with a NEW idempotency key while the first operation is still REQUESTED (nonterminal) returns
+  `*projection.ActiveRebuildConflictError` whose `ActiveOperationID` equals the first call's own OperationID;
+  nothing written to stdout on the failed call.
+- `TestRunStatus_UnbuiltProjection_ReportsStale` — never a fabricated LIVE for a projection that has never been
+  built (Generation=0, Cursor=0, Status=STALE).
+- `TestRunRebuildStatus_ExactByIDLookup` / `TestRunRebuildStatus_UnknownID_NeverInfersLatest` (`errors.Is(err,
+  ports.ErrPersistenceNotFound)`, never a "latest operation" fallback) plus usage-error/positional-argument
+  coverage for all three subcommands and a descriptor-registration test (`projection_test.go`).
+
+**Part 2** (`internal/delivery/cli/events`, `fake.UnitOfWork`; the `archivableCatalog`/`archivableTx`/
+`archivableUOW` mid-test authorization-flip wrapper independently re-derived from
+`internal/delivery/httpapi/eventstream/stream_internal_test.go`'s own identically-purposed helper, since that
+file's own version is unexported and lives in a white-box `package eventstream` test this package cannot
+import — 14 top-level tests across `events_test.go`/`watch_test.go`, plus 3 new tests in the shared
+`internal/delivery/cli/output_test.go` for `EncodeNDJSONLine` itself):
+- **Continuous NDJSON parsing — the single most important test**:
+  `TestRunWatch_ContinuousNDJSONParsing` decodes `RunWatch`'s own stdout line by line via
+  `bufio.Scanner`+`json.Unmarshal`, proving every line is complete, valid, independently-parseable JSON in
+  strictly ascending `JournalPosition` order matching the fixture exactly. At the encoder level,
+  `TestEncodeNDJSONLine_MultipleCalls_ContinuousNDJSONParsing` proves the identical property directly against
+  `cli.EncodeNDJSONLine` (50 lines), and `TestEncodeNDJSONLine_CompactNoIndentation` proves the "opposite shape
+  of `writeStableJSON`" claim (exactly one `\n`, no internal indentation).
+- **Project filtering**: `TestRunWatch_FiltersForeignProjectEvents` — 5 events for project `p2` then 5 for `p1`
+  in the SAME journal; `--project-id=p1` emits exactly the 5 belonging to `p1` (JournalPosition 6-10), proving
+  the scan cursor advances past `p2`'s own rows without ever emitting them.
+  - **Duplicate/reconnect (the "duplicate" Verify bullet)**: `TestRunWatch_DuplicateAcrossRestart_FromCursor` —
+  runs `RunWatch` once over 10 pre-seeded events, captures the last emitted `JournalPosition`, appends 5 MORE
+  events, then restarts with `--from-cursor=<captured>`; the second run emits EXACTLY the 5 new events — no
+  duplicate of the first 10, no gap.
+- **Resync (the "resync" Verify bullet)**: `TestRunWatch_ResyncRequired_OldCursorOutsideRetention`
+  (`RetentionScanLimit=5`, 10 pending events, `--from-cursor=0` →
+  `errors.Is(err, events.ErrResyncRequired)`, stdout untouched — the check runs BEFORE any line is ever
+  written) and its negative case `TestRunWatch_ResyncNotTriggeredWithinRetentionWindow` (within the window,
+  streams normally).
+- **Slow consumer (the "slow consumer" Verify bullet)**: `TestEncodeNDJSONLine_SlowConsumer_NeverCorruptsOrDeadlocks`
+  at the encoder level (a `slowWriter` that sleeps per `Write` call) and `TestRunWatch_SlowConsumer_NeverCorruptsOrDeadlocks`
+  at the `RunWatch` level (15 events through a slow sink) — both prove no corruption/drop/duplication and a
+  bounded (non-hung) return, without needing real OS pipe backpressure.
+- **Shutdown (the "shutdown" Verify bullet)**: `TestRunWatch_ShutdownOnContextCancellation` — `RunWatch` spawns
+  no goroutine of its own (single loop in the caller's own goroutine, per design choice 2 above), so "no
+  goroutine leak" holds by construction rather than needing `goleak`; the test instead asserts a bounded
+  (<2s) return with a nil error after `context.WithCancel`'s own cancel fires mid-poll, mirroring
+  `eventstream/stream_internal_test.go`'s own `TestStreamLoop_ShutdownSignalStopsPromptly` shape.
+- **Re-authorization**: `TestRunWatch_ReauthorizationMidStream_StopsDelivery` (several poll ticks against a
+  still-ACTIVE project via the `archivableUOW` wrapper, then flip `archived.Store(true)` mid-stream — `RunWatch`
+  stops with `errors.Is(err, events.ErrProjectNotAuthorized)` on the very next tick, not merely on a later new
+  invocation) and `TestRunWatch_ProjectNotActiveAtStart`/`TestRunWatch_UnknownProject_AtStart` (both fail
+  synchronously, before ever entering the poll loop — no goroutine/timeout needed to observe either).
+- `TestRunWatch_PollIntervalFlagOverridesDependenciesDefault` — a per-invocation `--poll-interval` flag
+  overrides `Dependencies.PollInterval`; `TestDescriptorRegistered` — `events watch` → `watchProjectEvents`,
+  `cli.ScopeProject`.
+
+No `idsource.Random{}`-vs-`Sequential` concern applies to either package's own concurrency-flavored tests
+(rule 7 of this task's shared doctrine): `projection`'s two conflict/replay tests are sequential, single-
+goroutine calls, never racing goroutines; `events`'s tests that DO run `RunWatch` in a second goroutine
+(`runWatch` test helper, the slow-consumer test, the re-authorization test) mint no IDs at all — the only
+shared mutable state crossing the goroutine boundary is `archivableUOW`'s own `*atomic.Bool` (already
+concurrency-safe by construction) and each test's own `bytes.Buffer`/`slowStdout`, both written only by the
+`RunWatch` goroutine and read by the test's own goroutine strictly AFTER receiving from a `done` channel — a
+channel receive happens-after everything sent before the corresponding send, so this is race-free without
+needing `-race` to confirm it (this sandbox's Go toolchain has no cgo available, so `-race` itself could not be
+run locally here — reasoned through manually instead, and the repo's own `sqlite` dependency is the pure-Go
+`modernc.org/sqlite`, confirming the repo does not itself depend on cgo being available anywhere else either).
+
+`go build ./...`, `go vet ./...` clean repo-wide. Full `go test ./...`: every package `ok`, including
+`internal/archtest` (both `TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters` and
+`TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage` already glob-scan `./internal/delivery/cli/...`,
+so both new packages are covered automatically with no test file needing to change) and every existing
+`internal/delivery/cli/...`/`internal/delivery/httpapi/...` package unchanged and still green.
+
+### Verify
+
+- **Rebuild interruption/replay**: `TestRunRebuild_ActiveConflict_SurfacesActiveOperationID` /
+  `TestRunRebuild_ReplaySameIdempotencyKey_SameOperationID` — see Test above.
+- **Resync**: `TestRunWatch_ResyncRequired_OldCursorOutsideRetention` (+ its negative case) — see Test above.
+- **Duplicate/slow consumer/shutdown**: `TestRunWatch_DuplicateAcrossRestart_FromCursor`,
+  `TestRunWatch_SlowConsumer_NeverCorruptsOrDeadlocks` (+ the encoder-level slow-consumer test),
+  `TestRunWatch_ShutdownOnContextCancellation` — see Test above.
+- **Continuous NDJSON parsing**: `TestRunWatch_ContinuousNDJSONParsing` (+ the two encoder-level NDJSON tests)
+  — see Test above.
+- `go build/vet/test ./...` clean repo-wide.
+
+### Kết quả
+
+New: `internal/delivery/cli/projection` (`doc.go`, `projection.go`, `helpers.go`, `status.go`, `rebuild.go`,
+`rebuildstatus.go` + 5 test files, 11 tests) — `aw projection status|rebuild|rebuild-status`; new:
+`internal/delivery/cli/events` (`doc.go`, `events.go`, `helpers.go`, `watch.go` + 3 test files, 14 tests) —
+`aw events watch` (NDJSON). Shared framework extended: `internal/delivery/cli/output.go`'s new
+`EncodeNDJSONLine`, exercised by 3 new tests in `output_test.go`. No existing file's own logic changed —
+`cmd/aw/main.go`/`cmd/aw/cli.go` untouched per the CRITICAL scope rule, deferred to V6-15O, which is now the
+only remaining task in the V6 P4 CLI-leaves phase (all of V6-15C through V6-15N closed). `go build/vet/test
+./...` clean repo-wide. PR targets `master`.
+
+## V6-15M — ReleaseSet and local-commit CLI
+
+### Thực hiện
+
+Built a new CLI leaf package `internal/delivery/cli/releaseset` on top of V6-15B's shared
+`internal/delivery/cli` framework (`docs/design/08-v6-api-projections.md:773-781`): `aw release-set
+list|create|show|seal|abandon|local-commit`, wrapping the already-real, already-tested application commands/
+queries in `internal/app/work` (`CreateReleaseSet`/`SealReleaseSet`/`AbandonReleaseSet`/`GetReleaseSet`/
+`ListReleaseSetsForFamily`/`GetReleaseSetLocalCommitStatus`) and `internal/app/releasesetcommit`
+(`RequestReleaseSetLocalCommit`) — never a second implementation of any of them. Read `release_set.go`,
+`release_set_queries.go`, `releasesetcommit/commands.go`/`execute.go`/`handler.go`, and the full HTTP precedent
+`internal/delivery/httpapi/releaseset` (all 11 files, including `routes.go`'s own 7-route inventory doc comment)
+before writing any leaf code. Entirely a new directory — `cmd/aw/main.go`/`cmd/aw/cli.go` untouched, per the
+CRITICAL scope rule (real `os.Args` routing deferred to V6-15O).
+
+**`create`'s own repeatable-entry design choice**: repositories are read as a JSON body via `--file`/stdin
+(`cli.ReadBoundedInput`), never a repeatable `--entry k=v,k=v` flag — mirrors
+`internal/delivery/cli/workitem`'s own `work-item create` and its identical repeatable `initialScope` list.
+A structured, 4-field-per-entry list validates far more cleanly as JSON (reusing `encoding/json`'s own array/
+object grammar) than as a bespoke inline flag grammar with its own escaping rules to invent and document, and
+it is this codebase's own only existing precedent for a CLI leaf accepting a caller-repeated structured entry
+list — reusing it keeps every multi-entry leaf in this framework consistent with one input mechanism rather
+than each leaf inventing its own. `entries.go`'s own `validateRepositoryReleaseBodies` mirrors
+`internal/delivery/httpapi/releaseset/dto.go`'s identically-named function field for field (non-blank, no
+duplicate `repositoryId`, verdict one of `PASS|FAIL|ERROR|NOT_RUN|NOT_APPLICABLE`), returning a `cli.UsageError`
+instead of writing an HTTP response.
+
+**Seal/abandon derive scope from the reloaded target, not a flag**: per this task's own command surface,
+neither `seal` nor `abandon` binds `--project-id` at all. `workapp.GetReleaseSet` takes no scope parameter of
+its own (unlike `workapp.GetScopeExpansionRequest`, which `scopeexpansion.Approve` reloads WITH an explicit
+`--project-id`-derived scope), so `transition.go`'s shared `runReleaseSetTransition` instead reloads the
+ReleaseSet by ID first and derives `ports.ProjectScope` from its own authoritative, already-persisted
+`ProjectID` — the same "server derives scope from the authoritative target, never trusts a caller-supplied
+value" discipline `internal/delivery/cli/workitem`'s own `loadWorkItemProjectID` already establishes for
+`work-item mark-ready`/`work-item cancel`. Staleness needed **no manual pre-check** at all (unlike
+`scopeexpansion.Approve`, whose own internal CAS is keyed on `ExpectedStatus` alone): `SealReleaseSet`/
+`AbandonReleaseSet`'s own internal `transitionReleaseSet` already fences directly on `cmd.ExpectedVersion` via
+`TransitionReleaseSetState`'s own CAS, so a stale `--expected-version` is rejected with a real
+`ports.ErrOptimisticConflict` from that one authoritative check — confirmed by reading
+`internal/app/ports/fake/work.go`'s own `TransitionReleaseSetState` before writing the leaf, not assumed.
+
+**`local-commit --wait` copied `run start --wait`'s wiring exactly**: `cli.BindWaitFlags`/`cli.Wait`/
+`cli.WaitOptions`, a `Dependencies.Sleep cli.Sleeper` seam for deterministic tests, `LocalCommitResult` embedding
+`releasesetcommit.RequestReleaseSetLocalCommitResult` plus an optional `Wait *workapp.ReleaseSetLocalCommitStatus`
+— read `internal/delivery/cli/run/start.go` in full (including its own doc comment on why a `--wait` timeout
+never suppresses the already-committed request's own stdout result) before writing `localcommit.go`. The hash
+payload (`requestLocalCommitHashPayload`) mirrors `internal/delivery/httpapi/releaseset/local_commit_commands.go`'s
+own `requestReleaseSetLocalCommitBody` byte-for-byte, excluding `ProjectID`/`ReleaseSetID` (both travel as
+`--project-id`/`--release-set-id` flags instead) so an HTTP call and an equivalent CLI call hash and replay
+identically. `localcommit.go`'s own doc comment is explicit this is NOT
+`internal/delivery/cli/decision.SignalWait` (a completely different WAIT-node external-signal command) — no
+naming or logic ever conflates the two.
+
+Confirmed via exhaustive grep (per this task's own brief) that there is no push/fetch/remote-mutating port
+anywhere in this codebase — `ports.LocalCommitCreator`'s own doc comment states `CreateLocalCommit` is the only
+Git-mutating method any port declares — so the "LOCAL only" guarantee is proven architecturally, not by a
+runtime spy: a new archtest `internal/archtest/releaseset_cli_boundary_test.go`
+(`TestDeliveryCLIReleaseSetNeverReachesGitOrWorker`) mirrors `releaseset_delivery_boundary_test.go`'s own
+identical HTTP-side proof, scoped to `internal/delivery/cli/releaseset` — forbids importing `"os"`, `"os/exec"`,
+or any `internal/adapters/...` package, and forbids any call expression named `ExecuteReleaseSetLocalCommit` or
+`CreateLocalCommit`. The two pre-existing `internal/archtest/cli_boundary_test.go` tests
+(`TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters`, `TestDeliveryCLINeverDirectlyImportsAnInternalWorkerPackage`)
+already cover this new package too (they walk `./internal/delivery/cli/...` recursively) — confirmed both still
+pass with the new package present, no edit needed to either.
+
+### Test
+
+31 tests across 7 files in `internal/delivery/cli/releaseset` (`list_test.go`, `create_test.go`, `show_test.go`,
+`seal_test.go`, `abandon_test.go`, `localcommit_test.go`, plus `fixture_test.go`'s own shared helpers —
+duplicated, never imported, from `internal/delivery/cli/workitem/fixture_test.go`'s own `mustCreateProject`/
+`mustCreateActiveRepository`/`stubProvider`/`readyWorkItemFixture`, per that file's own "Go test helpers are not
+exported across packages" doc comment). `fake.UnitOfWork` throughout — no real sqlite/gitworktree stack needed:
+the "crash-after-Git" Verify bullet is proven by directly forcing the `ReleaseSetLocalCommit` row's own terminal
+state via `tx.Work().TransitionReleaseSetLocalCommitToFailed`/`ToCommitted` (the real worker's own crash-recovery
+logic is already proven in `internal/app/releasesetcommit/execute_test.go`; this package's own job is only to
+prove the CLI's `--wait` polling observes a real terminal row correctly) — the same "hand-seed a narrow, targeted
+state via a direct repository call" convention `internal/delivery/cli/run/start_test.go`'s own
+`forceRunSucceeded` already establishes for the identical concern.
+
+- **Replay** (create/seal/abandon/local-commit): `TestRunCreate_ReplaySameIdempotencyKey_ReturnsIdenticalResult`,
+  `TestRunSeal_ReplaySameIdempotencyKey_ReturnsIdenticalResult`,
+  `TestRunAbandon_ReplaySameIdempotencyKey_ReturnsIdenticalResult`,
+  `TestRunLocalCommit_ReplaySameIdempotencyKey_ReturnsIdenticalResult` — each asserts `Replayed` flips
+  false→true across two identical calls, the decoded result is byte-identical, and (create) exactly one row
+  exists afterward via a direct `ListReleaseSetsForFamily` re-query.
+- **Stale**: `TestRunSeal_StaleExpectedVersion_IsOptimisticConflict`,
+  `TestRunAbandon_StaleExpectedVersion_IsOptimisticConflict` (an unseen `--expected-version` on a still-CREATED
+  ReleaseSet), `TestRunLocalCommit_StaleExpectedReleaseSetVersion_IsOptimisticConflict`,
+  `TestRunLocalCommit_StaleExpectedWorkspaceVersion_IsOptimisticConflict` (both of local-commit's own two
+  exact-revision fences tested independently) — every one asserts `errors.Is(err, ports.ErrOptimisticConflict)`
+  and, for seal, that the ReleaseSet's own persisted State/Version are unchanged afterward.
+  `TestRunSeal_AlreadySealed_IsRejected` additionally proves a real (non-replay, fresh idempotency key) second
+  seal attempt against an already-SEALED ReleaseSet is rejected, never silently re-applied.
+- **Partial**: `TestRunCreate_DuplicateRepositoryEntry_IsUsageError`, `TestRunCreate_InvalidVerdict_IsUsageError`,
+  `TestRunCreate_EmptyRepositories_IsUsageError` — each asserts `cli.IsUsageError(err)` AND that zero
+  ReleaseSets exist for the family afterward (`ListReleaseSetsForFamily` re-query), proving the rejection
+  happens before any partial row is ever created.
+- **Crash-after-Git / `--wait` correctness**: `TestRunLocalCommit_Wait_ObservesFailedState` forces a real
+  `ReleaseSetLocalCommit` row to `FAILED`/`WORKSPACE_QUARANTINED`, then re-issues the identical idempotency key
+  with `--wait --wait-timeout 0s` and a `deps.Sleep` that fails the test if ever called (mirroring
+  `TestRunStart_Wait_ObservesTerminalState`'s exact technique) — proves the request itself replays
+  (`Replayed=true`, so the mutation is never re-dispatched) and the FIRST `--wait` observe already returns the
+  forced terminal state with zero delay. `TestRunLocalCommit_Wait_ObservesCommittedState` mirrors this for the
+  symmetric COMMITTED outcome.
+- **Remote-mutation spy (archtest)**: verified fail-closed by hand before considering the task done — temporarily
+  added `import "os/exec"` plus a call to `releasesetcommit.ExecuteReleaseSetLocalCommit(...)` inside `show.go`,
+  reran `TestDeliveryCLIReleaseSetNeverReachesGitOrWorker`, confirmed it failed with both the import-level and
+  call-level errors, then reverted `show.go` to its original content and reran the test to confirm it passes
+  clean again.
+- Every other leaf gets its own missing-required-flag/missing-argument/unknown-id coverage
+  (`TestRunList_MissingProjectID_IsUsageError`, `TestRunShow_MissingArgument_IsUsageError`,
+  `TestRunLocalCommit_MissingMessage_IsUsageError`, etc.) — 31 tests total, all passing, `go test -v` output
+  reviewed line by line.
+
+No concurrency test was written for this task (none of the six leaves have a "concurrent goroutines racing the
+same mutation" verify requirement the way V5-15G's own blocker-resolve did), so the `idsource.Sequential`
+concurrency-safety pitfall documented elsewhere in this checklist did not arise here — `newTestDeps` uses the
+shared deterministic `idsource.NewSequential("id")` throughout, same as every other single-threaded CLI leaf
+package's own fixture.
+
+### Verify
+
+- **Exact entry/revision**: `create`'s `RepositoryReleaseRequest` pins an exact base/result VCS object ID pair
+  per repository (never a floating ref); `local-commit`'s `ExpectedReleaseSetVersion`/`ExpectedWorkspaceVersion`
+  pin an exact ReleaseSet version and RepositoryWorkspace version/generation — both enforced by the app layer's
+  own fences, exercised directly by the stale tests above.
+- **`--wait` support**: see Test above — `TestRunLocalCommit_Wait_ObservesFailedState`/`_ObservesCommittedState`.
+- **Replay/stale/partial/crash-after-Git**: see Test above, one subsection each.
+- **Remote-mutation spy proving zero remote calls**: see Test above — `TestDeliveryCLIReleaseSetNeverReachesGitOrWorker`,
+  verified fail-closed.
+- No push/fetch/PR/merge/rebase/force-push anywhere in the new package — confirmed by the same archtest plus a
+  manual read of every one of the six leaf files: none imports `internal/adapters/...`, `os`, or `os/exec`.
+- `go build ./... && go vet ./... && go test ./...` clean repo-wide (full run, not just the new package).
+
+### Kết quả
+
+New: `internal/delivery/cli/releaseset` (`doc.go`, `helpers.go`, `entries.go`, `list.go`, `create.go`, `show.go`,
+`transition.go`, `seal.go`, `abandon.go`, `localcommit.go` + `fixture_test.go` and 6 test files, 31 tests) —
+`aw release-set list|create|show|seal|abandon|local-commit`. New: `internal/archtest/releaseset_cli_boundary_test.go`
+(`TestDeliveryCLIReleaseSetNeverReachesGitOrWorker`, verified fail-closed by hand). No existing file touched —
+`cmd/aw/main.go`/`cmd/aw/cli.go` untouched per the CRITICAL scope rule, deferred to V6-15O.
+`go build/vet/test ./...` clean repo-wide. PR targets `master`.
+
+## V6-15L — Workspace and bounded source CLI
+
+### Thực hiện
+
+New package `internal/delivery/cli/workspace` (`docs/design/08-v6-api-projections.md:763-771`): "inspect/recover
+workspace and bounded source/diff/log from the terminal" — `aw workspace-set show|release` and
+`aw repository-workspace source|diff|log|reconcile`. Six leaves, six files (one per subcommand), each
+registering its own `cli.Descriptor` via its own `init()` into the shared `internal/delivery/cli` registry:
+
+- `doc.go` — package doc plus `Dependencies{UOW, IDs, Authority, Reader, Now}`, the union of every dependency
+  `internal/delivery/httpapi/workspaceroutes.go` and `internal/delivery/httpapi/workspaceinspection` separately
+  need from composition-root wiring, gathered here since one command tree fans out across both HTTP packages'
+  worth of application functions.
+- `helpers.go` — `usageErrorf`/`parseFlags`/`requireProjectID`/`loadPrincipal` (the same small helpers every
+  sibling leaf package duplicates rather than shares, per `internal/delivery/cli/run/shared.go`'s own doc
+  comment); `revisionResult`/`toRevisionResult` (a delivery-owned wire DTO for `workspace.Revision`, duplicated
+  from `internal/delivery/httpapi/workspaceinspection/dto.go`'s own unexported `revisionResponse` rather than
+  imported, since two independent delivery packages each own their own wire vocabulary — V6-02A's own
+  convention); `requireScopeFlags` (the four WorkspaceScope identifiers — `repositoryId`/`workspaceSetId` are
+  always REQUIRED, never inferred from a bare `repositoryWorkspaceId`, mirroring
+  `internal/delivery/httpapi/workspaceinspection`'s own identical query-param discipline); and
+  `mapInspectionQueryError` — the CLI's own restatement of
+  `internal/delivery/httpapi/workspaceinspection/errors.go`'s own `writeQueryError`: only
+  `appinspection.ErrScopeMismatch`/`appinspection.ErrWorkspaceNotReady`/`ports.ErrPersistenceNotFound` are ever
+  named by their own sentinel; every other error (path traversal, unauthorized/stale revision, binary/
+  directory/symlink/submodule rejection, non-ancestor log cursor) collapses into one fresh, generic, opaque
+  message — never `err` itself re-wrapped, so no adapter-internal detail can leak through a future composition
+  root that prints a returned error's own `.Error()` text straight to stderr.
+- `show.go` — `aw workspace-set show <familyId> --project-id <id>`: a pure read over
+  `workspacestate.GetWorkspaceSetState`, own delivery-owned `workspaceSetStateResult`/
+  `repositoryWorkspaceStateResult` DTOs (workspacestate's own app-layer types carry no json tags at all) mirroring
+  the HTTP wire shape minus `ValidActions` (an HTTP-only advisory-action concept this CLI leaf does not
+  reproduce). Errors (`ports.ErrPersistenceNotFound`, `workspacestate.ErrScopeMismatch`) are returned verbatim —
+  this state query never touches Git/the filesystem, so it has nothing adapter-internal to hide, unlike
+  source/diff/log below.
+- `release.go` — `aw workspace-set release <familyId> --project-id <id> --expected-version <n>
+  [--idempotency-key <key>]`: the full `cli.BuildEnvelope`/`cli.Dispatch` CommandEnvelope flow over
+  `workspacerelease.RequestWorkspaceSetRelease`, mirroring `internal/delivery/httpapi/workspacerelease.go`'s own
+  handler exactly, including the identical `commandType = "RequestWorkspaceSetRelease"` literal (so an HTTP call
+  and a CLI call for an equivalent request hash and replay identically, `cli.BuildEnvelope`'s own doc-comment
+  guarantee). `deps.Authority` (a real `ports.ReleaseEligibilityAuthority`, `work.NewEligibilityAuthority(uow)`
+  constructed ONCE by a future composition root and threaded through) is passed straight to the app command —
+  this leaf never constructs its own.
+- `reconcile.go` — `aw repository-workspace reconcile <repositoryWorkspaceId> --project-id <id>
+  --expected-version <n> [--idempotency-key <key>]`: the identical envelope/dispatch shape over
+  `workspacereconcile.RequestWorkspaceReconciliation`, no `ReleaseEligibilityAuthority` needed (that command
+  depends on nothing beyond `ports.UnitOfWork`/`idsource.Source`).
+- `source.go` — `aw repository-workspace source <repositoryWorkspaceId> --project-id <id> --repository-id <id>
+  --workspace-set-id <id> --revision <rev> --revision-generation <n> --path <path> --output <path|-> [--byte-limit
+  <n>] [--line-limit <n>]`: this task's own "query with binary output" leaf, following
+  `internal/delivery/cli/evidence/artifact.go`'s own `RunArtifactGet` template exactly for the output-routing
+  split — real content bytes ALWAYS go to `--output` (`cli.WriteBinaryOutput`, raw, streamed via `bytes.NewReader`
+  never buffered a second time), bounded metadata (`sourceResult`: path/revision/byteLimit/lineLimit/totalBytes/
+  lineCount/truncated/binary, no `Content` field ever) goes to stderr (`--output -`, one `cli.Diagnosticf` line)
+  or stdout (a real file target, the one JSON document via `cli.EncodeQueryResult`) — never both, never mixed.
+  `--revision-generation` is a flag this task's own abbreviated command-surface list did not spell out
+  explicitly, but `workspace.Revision.WorkspaceGeneration` is a required part of revision identity the real
+  `ports.WorkspaceInspectionReader.ReadSource` independently re-validates (RepositoryID/WorkspaceGeneration match
+  plus VCSObjectID equals one of the workspace's own two known-good revisions) — added it (and its
+  `--base-revision-generation`/`--result-revision-generation`/`--anchor-generation` siblings on diff/log below)
+  to make every `workspace.Revision` field genuinely settable from the terminal, mirroring the HTTP route's own
+  `generation`/`baseGeneration`/`resultGeneration`/`anchorGeneration` required query parameters one for one.
+- `diff.go` — `aw repository-workspace diff <repositoryWorkspaceId> --project-id <id> --repository-id <id>
+  --workspace-set-id <id> --base-revision <rev> --base-revision-generation <n> --result-revision <rev>
+  --result-revision-generation <n> [--byte-limit <n>] [--file-limit <n>]`: a pure JSON read over
+  `appinspection.Queries.GetDiff`, own `diffResult`/`diffFileChangeResult` DTOs mirroring
+  `internal/delivery/httpapi/workspaceinspection/dto.go`'s own `diffContentResponse`/`diffFileChangeResponse`
+  field for field (`Patch []byte` stays `[]byte` so `encoding/json` base64-encodes it automatically — a real
+  patch can legitimately contain non-UTF8 bytes).
+- `log.go` — `aw repository-workspace log <repositoryWorkspaceId> --project-id <id> --repository-id <id>
+  --workspace-set-id <id> --anchor <rev> --anchor-generation <n> [--cursor <cursor>] [--limit <n>] [--byte-limit
+  <n>]`: a pure, paginated JSON read over `appinspection.Queries.GetRepositoryLog`. `--cursor` is passed straight
+  through to `GetRepositoryLogRequest.Cursor` completely unmodified — no local codec at all, unlike
+  `internal/delivery/cli/run/cursor.go`'s own signed pagination codec (built for `run graph`/`run timeline`'s own
+  SYNTHETIC cursor, which has no independent domain meaning) — this cursor is already a real, independently-
+  adapter-revalidated commit object id (`git merge-base --is-ancestor`, one layer below), per this task's own
+  explicit "simpler than you might expect" guidance. `--limit` is parsed via the already-existing
+  `httpapi.ResolveLimit` (reused, not reimplemented — the exact same reuse
+  `internal/delivery/cli/run/graph.go`/`timeline.go` already established for a sibling leaf), whose own
+  stricter 200-max clamp composes harmlessly underneath `appinspection`'s own separate 500-max clamp.
+
+`internal/archtest/cli_workspace_boundary_test.go` — a fresh AST-import walk scoped to exactly
+`internal/delivery/cli/workspace` (its own directory only, never the whole `internal/delivery/cli/...` tree,
+and never transitively): forbids `"os"`, `"os/exec"`, and any `internal/adapters/...` import. Deliberately NOT
+the transitive `go list -json` technique `internal/archtest/cli_boundary_test.go`'s own
+`TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters` already uses for the whole `internal/delivery/cli` tree
+(which already transitively forbids `adapters/gitworktree` etc. for this package too, as a bonus) — a
+transitive-or-whole-tree walk would false-positive on `"os"` specifically, since this package legitimately calls
+`cli.WriteBinaryOutput` (`internal/delivery/cli/output.go`), which itself legitimately imports `"os"` to open a
+real `--output` file. Mirrors `internal/archtest/workspace_inspection_http_test.go`'s identical "own package,
+own scoped walk" idiom for its own HTTP counterpart.
+
+No existing file touched — `cmd/aw/main.go`/`cmd/aw/cli.go` untouched per the CRITICAL scope rule, deferred to
+V6-15O.
+
+### Test
+
+31 new tests, all real, in-process, no mocks: `internal/delivery/cli/workspace/*_test.go` (30) plus
+`internal/archtest/cli_workspace_boundary_test.go` (1).
+
+- `descriptor_test.go` (1): `TestWorkspacePackage_RegistersEveryDescriptorInDefault` — all six descriptors
+  landed in `cli.Default` with the exact `AppOperation`/`HTTPOperationID` pairs.
+- `fixture_test.go` — `releaseTestEnv`: real `*sqlite.Store` + real `work.NewEligibilityAuthority(uow)`, reusing
+  `internal/adapters/sqlite/fixtures.go`'s own `SeedFixtureOwners`/`SeedFixtureRepositoryWorkspace`/
+  `SeedFixtureWriteLease` and `internal/app/work.CreateReleaseSet`/`SealReleaseSet` — the exact same fixture
+  helpers `internal/delivery/httpapi/workspace_test.go` already uses for the identical HTTP-level scenarios,
+  reused here rather than re-invented.
+- `show_test.go` (3): happy path (real write lease seeded, `hasActiveWriteLease=true`/`generation=1` come back
+  correctly); unknown family → `errors.Is(err, ports.ErrPersistenceNotFound)`; missing `--project-id` → usage
+  error.
+- `release_test.go` (7) — the **quarantine/lease/generation/replay** Verify bullet, release half: happy path
+  (real `WORKSPACE_SET_RELEASE` job enqueued, `HasActiveJobForAggregateIDs` proves it); replay (identical
+  `--idempotency-key` twice → byte-identical `releaseJobId`, `idsource.Random{}` makes a fresh mint statistically
+  certain to differ); quarantine blocks release (`errors.Is(err, workspacerelease.ErrWorkspaceSetHasQuarantinedRepository)`
+  after a REAL `store.QuarantineRepositoryWorkspace` transition); active write lease blocks release
+  (`errors.Is(err, workspacerelease.ErrWorkspaceSetHasActiveWriteLease)` after a REAL
+  `sqlite.SeedFixtureWriteLease`, which itself drives the real `EnqueueJob`/`ClaimJob`/`AcquireWriteLeases`
+  path); not-authorized (no sealed `ReleaseSet` → `errors.Is(err, workspacerelease.ErrReleaseNotAuthorized)`,
+  GC-INV-26); stale `--expected-version` → `errors.Is(err, ports.ErrOptimisticConflict)`; zero
+  `--expected-version` → `cli.IsUsageError(err)`.
+- `reconcile_test.go` (5) — the **generation/replay** Verify bullet, reconcile half: happy path (real
+  `WORKSPACE_RECONCILIATION` job enqueued); replay (identical key → identical `reconciliationJobId`); not
+  reconcilable (a REAL `store.ReleaseRepositoryWorkspace` transition to RELEASED →
+  `errors.Is(err, workspacereconcile.ErrWorkspaceNotReconcilable)`); GENUINELY stale `--expected-version` (a
+  REAL quarantine transition bumps version 1→2 for real, the pre-quarantine version 1 is rejected via
+  `ports.ErrOptimisticConflict`, then the CURRENT version 2 succeeds — proving the rejection was really about
+  staleness, not reconcile refusing QUARANTINED outright, since QUARANTINED is one of the two reconcilable
+  states); zero `--expected-version` → usage error.
+- `inspection_fixture_test.go` — `inspectionTestEnv`: real `gitworktree.Provider` against a real temporary Git
+  repository (`git init`/`commit` via real `exec.Command("git", ...)`, never mocked) plus real sqlite ownership-
+  chain seeding, mirroring `internal/delivery/httpapi/workspaceinspection/fixture_test.go`'s own `newTestEnv`
+  almost verbatim — this package drives the CLI leaf's own `Run*` functions directly instead of a real HTTP
+  round trip. `sourceArgs`/`diffArgs`/`logArgs` build correctly-ordered flag arguments (flags before the
+  positional `<repositoryWorkspaceId>` — a real, caught-in-this-task bug: Go's `flag.FlagSet` stops parsing at
+  the first non-flag token, so a positional ID placed BEFORE a flag makes that flag and everything after it look
+  like more positional arguments instead; every test in this task's own suite orders flags first, mirroring
+  `internal/delivery/cli/run/start_test.go`'s own established ordering).
+- `source_test.go` (7) — the **traversal/binary/truncation/stale revision** Verify bullet, source half: happy
+  path (`--output <file>`, exact byte-for-byte content, JSON metadata `binary=false`/`truncated=false`/
+  `totalBytes` correct); `--output -` (raw bytes ONLY on stdout, no JSON mixed in — bounded metadata instead on
+  stderr as one diagnostic line); `--line-limit` truncation (5-line fixture clamped to 2, `truncated=true`,
+  `lineCount=2`, file content is exactly the first 2 lines); BINARY content (`\x00`-bearing fixture,
+  `binary=true`, content streams through `--output` byte-for-byte uncorrupted — proving binary content is never
+  line-clamped the way text is, `ports.SourceContent`'s own real contract); path traversal (`../outside.txt`) →
+  the EXACT opaque message (`"workspace: the request names an invalid, unauthorized, or unreadable revision,
+  path, or cursor"`), asserted byte-for-byte, never a more specific "traversal detected" string; stale/
+  unauthorized revision (an all-zeros commit id, correct generation, still not one of the workspace's own two
+  known-good revisions) → the identical opaque message; missing `--repository-id` → usage error.
+- `diff_test.go` (3): happy path (real unified patch, one changed file); unauthorized base revision → the
+  identical opaque message; missing `--result-revision` → usage error.
+- `log_test.go` (4): pagination via pass-through `--cursor` (3 real commits, `--limit 2` → page 1 has exactly 2
+  entries plus a non-empty `nextCursor`; page 2's first entry differs from page 1's, proving the cursor actually
+  advanced — no local encode/decode involved anywhere in this leaf); invalid cursor (`"not-a-real-commit-object-
+  id"`) → the identical opaque message; invalid `--limit` (`-5`) → `httpapi.ResolveLimit`'s own `ErrInvalidLimit`
+  surfaces as a plain error; missing `--anchor` → usage error.
+- `cli_workspace_boundary_test.go` (1): `TestDeliveryCLIWorkspaceNeverImportsFilesystemOrProcess` passes clean.
+  **Fail-closed check performed**: temporarily added `"os"` + `var _ = os.Getenv` to `show.go`, re-ran the test —
+  it failed with the exact expected message naming the forbidden import and file; reverted immediately
+  afterward. Confirms the guard is a real, working AST walk, not a vacuously-passing no-op.
+
+`go build ./... && go vet ./... && go test ./...` clean repo-wide — every package `ok`, including
+`internal/delivery/cli/workspace` (89.13s, dominated by the real `git`-backed inspection fixtures) and
+`internal/archtest` (12.58s, includes the new boundary test). No pre-existing flake observed on this run.
+
+### Verify
+
+- **Quarantine/lease/generation/replay**: `release_test.go`/`reconcile_test.go` — see Test above; every one of
+  the four concerns has its own dedicated, real-transition-backed test (never a fabricated row).
+- **Traversal/binary/truncation/stale revision**: `source_test.go`/`diff_test.go`/`log_test.go` — see Test
+  above; every opaque-error assertion checks the EXACT message string, proving `mapInspectionQueryError`'s own
+  deliberate information-hiding boundary holds (never a more specific message for any of these four distinct
+  underlying conditions).
+- **Architecture**: `cli_workspace_boundary_test.go`, fail-closed-verified — see Test above.
+- No Git command spawned, no arbitrary path, no interactive terminal: enforced structurally by the archtest
+  (no `"os"`/`"os/exec"`/`internal/adapters/...` import in this package) plus the pre-existing whole-tree
+  `TestDeliveryCLINeverImportsSQLiteGitOrProviderAdapters`, which already covers this package transitively too.
+- `go build/vet/test ./...` clean repo-wide.
+
+### Kết quả
+
+New: `internal/delivery/cli/workspace` (`doc.go`, `helpers.go`, `show.go`, `release.go`, `reconcile.go`,
+`source.go`, `diff.go`, `log.go` + 9 test files, 30 tests) — `aw workspace-set show|release` and
+`aw repository-workspace source|diff|log|reconcile`; `internal/archtest/cli_workspace_boundary_test.go` (1
+test) — this task's own scoped architecture proof. No existing file touched — `cmd/aw/main.go`/`cmd/aw/cli.go`
+untouched per the CRITICAL scope rule, deferred to V6-15O. `GetRepositoryWorkspaceState` (a `workspacestate`
+query fully described in this task's own brief) was deliberately NOT wrapped as a standalone
+`repository-workspace show` leaf — the design doc's own V6-15L Thực hiện line
+(`docs/design/08-v6-api-projections.md:767`) names only `workspace-set show/release` and
+`repository-workspace source/diff/log/reconcile`, and `workspace-set show`'s own response already surfaces
+every RepositoryWorkspace's state as a child of the WorkspaceSet, so no read need is left unserved by omitting
+it. `go build/vet/test ./...` clean repo-wide. PR targets `master`.
