@@ -73,3 +73,15 @@ func BindWaitFlags(fs *flag.FlagSet) (*bool, *time.Duration) {
 func BindFileFlag(fs *flag.FlagSet) *string {
 	return fs.String("file", "", "read the request body from this file instead of stdin")
 }
+
+// BindOutputFlag registers --output, the INPUT-direction counterpart
+// BindFileFlag never covers: a leaf that streams real binary/raw content
+// back to the operator (an Artifact's own bytes, never a JSON-shaped
+// result) writes it to this path, or to the process' own stdout when the
+// value is exactly "-" (see WriteBinaryOutput). Deliberately no default:
+// an empty value is a usage error for any leaf that binds this — writing
+// arbitrary content to a location the operator never named would be a
+// silent surprise, never a convenience.
+func BindOutputFlag(fs *flag.FlagSet) *string {
+	return fs.String("output", "", "write raw content to this file path, or - for stdout (required)")
+}

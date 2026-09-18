@@ -86,6 +86,30 @@ func TestBindFileFlagParses(t *testing.T) {
 	}
 }
 
+func TestBindOutputFlagParses(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "default empty", args: nil, want: ""},
+		{name: "dash for stdout", args: []string{"--output=-"}, want: "-"},
+		{name: "real file path", args: []string{"--output=/tmp/artifact.bin"}, want: "/tmp/artifact.bin"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("test", flag.ContinueOnError)
+			output := cli.BindOutputFlag(fs)
+			if err := fs.Parse(tc.args); err != nil {
+				t.Fatalf("Parse() error = %v", err)
+			}
+			if *output != tc.want {
+				t.Fatalf("output = %q, want %q", *output, tc.want)
+			}
+		})
+	}
+}
+
 // TestBindPrincipalFlagNeverDefinesActorOrRoleFlag is the "spoof actor
 // absent" rule at the flag.FlagSet level: ADR-028's own hard rule (no
 // per-command --actor/--role flag, ever) proven for every binder this
@@ -94,6 +118,7 @@ func TestBindPrincipalFlagNeverDefinesActorOrRoleFlag(t *testing.T) {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	bindAll(fs)
 	cli.BindFileFlag(fs)
+	cli.BindOutputFlag(fs)
 
 	forbidden := map[string]bool{"actor": true, "role": true, "roles": true, "actor-roles": true}
 	fs.VisitAll(func(f *flag.Flag) {

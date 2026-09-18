@@ -3,7 +3,10 @@ package cli_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -78,6 +81,116 @@ func TestEncodeQueryResultNeverIncludesIdempotencyShape(t *testing.T) {
 	if _, ok := decoded["replayed"]; ok {
 		t.Fatal("EncodeQueryResult output carries a replayed field — queries have no replay concept")
 	}
+}
+
+// TestWriteBinaryOutput_Dash_StreamsRawBytesToStdout proves this task's own
+// "binary stdout" Verify bullet: genuinely binary, non-UTF8 content
+// round-trips byte-for-byte to the given stdout writer with no text-mode
+// corruption, and nothing else (no trailing JSON, no extra newline) is
+// appended.
+func TestWriteBinaryOutput_Dash_StreamsRawBytesToStdout(t *testing.T) {
+	binary := []byte{0x00, 0x01, 0xFF, 0xFE, 0x0A, 0x0D, 0x00, 'h', 'i', 0x80, 0x81}
+	var stdout bytes.Buffer
+	n, err := cli.WriteBinaryOutput(&stdout, "-", bytes.NewReader(binary))
+	if err != nil {
+		t.Fatalf("WriteBinaryOutput() error = %v", err)
+	}
+	if n != int64(len(binary)) {
+		t.Fatalf("n = %d, want %d", n, len(binary))
+	}
+	if !bytes.Equal(stdout.Bytes(), binary) {
+		t.Fatalf("stdout = %v, want exactly %v (byte-for-byte)", stdout.Bytes(), binary)
+	}
+}
+
+// TestWriteBinaryOutput_RealFile_WritesExactBytes proves a real file target
+// receives byte-identical content, never buffered/truncated/altered.
+func TestWriteBinaryOutput_RealFile_WritesExactBytes(t *testing.T) {
+	content := bytes.Repeat([]byte{0x00, 0x01, 0x02, 0xFF}, 1024)
+	path := filepath.Join(t.TempDir(), "out.bin")
+	var stdout bytes.Buffer
+	n, err := cli.WriteBinaryOutput(&stdout, path, bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("WriteBinaryOutput() error = %v", err)
+	}
+	if n != int64(len(content)) {
+		t.Fatalf("n = %d, want %d", n, len(content))
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout got written to when writing to a real file: %q", stdout.String())
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Fatal("file content does not match the original byte-for-byte")
+	}
+}
+
+// TestWriteBinaryOutput_RealFile_OverwritesExisting proves a second write to
+// the same path replaces the prior content entirely (O_TRUNC), rather than
+// appending or leaving stale trailing bytes from a longer previous write.
+func TestWriteBinaryOutput_RealFile_OverwritesExisting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out.bin")
+	var stdout bytes.Buffer
+	if _, err := cli.WriteBinaryOutput(&stdout, path, strings.NewReader("a much longer first write")); err != nil {
+		t.Fatalf("first WriteBinaryOutput() error = %v", err)
+	}
+	if _, err := cli.WriteBinaryOutput(&stdout, path, strings.NewReader("short")); err != nil {
+		t.Fatalf("second WriteBinaryOutput() error = %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read written file: %v", err)
+	}
+	if string(got) != "short" {
+		t.Fatalf("file content = %q, want %q (second write must fully overwrite the first)", got, "short")
+	}
+}
+
+// TestWriteBinaryOutput_CopyFailure_RemovesPartialFile proves a mid-copy
+// failure never leaves a truncated, silently-wrong file behind at a real
+// file target — the file is removed on a copy error rather than kept
+// half-written.
+func TestWriteBinaryOutput_CopyFailure_RemovesPartialFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "out.bin")
+	failingReader := &erroringReader{after: []byte("partial-bytes-"), err: errors.New("simulated read failure")}
+	var stdout bytes.Buffer
+	if _, err := cli.WriteBinaryOutput(&stdout, path, failingReader); err == nil {
+		t.Fatal("WriteBinaryOutput() error = nil, want the simulated read failure")
+	}
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Fatalf("partial file was left behind at %s after a copy failure", path)
+	}
+}
+
+// TestWriteBinaryOutput_RejectsEmptyPath proves an empty outputPath (a
+// leaf that forgot to require --output, or a caller that never validated
+// it) is a clean, typed error rather than a silent no-op or a write to an
+// unintended location.
+func TestWriteBinaryOutput_RejectsEmptyPath(t *testing.T) {
+	var stdout bytes.Buffer
+	if _, err := cli.WriteBinaryOutput(&stdout, "", strings.NewReader("x")); err == nil {
+		t.Fatal("WriteBinaryOutput() with empty outputPath error = nil, want an error")
+	}
+}
+
+// erroringReader returns `after` once, then always fails with err — used to
+// simulate a mid-stream I/O failure without needing real disk exhaustion.
+type erroringReader struct {
+	after []byte
+	err   error
+	sent  bool
+}
+
+func (r *erroringReader) Read(p []byte) (int, error) {
+	if !r.sent {
+		r.sent = true
+		n := copy(p, r.after)
+		return n, nil
+	}
+	return 0, r.err
 }
 
 func TestDiagnosticfWritesOnlyToItsOwnWriterNeverStdout(t *testing.T) {

@@ -10058,6 +10058,197 @@ existing `ErrorDetail{Field, Message}` mechanism (the same one `cursor.go`'s res
 this one conflict shape, rather than extending the shared error envelope contract itself. `go build/vet/test
 ./...` clean repo-wide. PR targets `master`.
 
+## V6-15K — Evidence and artifact CLI
+
+### Thực hiện
+
+Built `internal/delivery/cli/evidence` (docs/design/08-v6-api-projections.md:753-761): `aw evidence
+list|verify`, `aw context-snapshot show`, `aw artifact get --output <path|->`, entirely on top of V6-15B's
+shared framework and V6-07B's already-real, already-tested `internal/app/runtime/queries.go`
+(`ListEvidenceForWorkItem`/`GetEvidence`/`ResolveEvidenceArtifactContent`/`GetContextSnapshot`). Read
+`internal/delivery/httpapi/evidence` (`artifact.go`, `routes.go`, `dependencies.go`) fully first, per the task
+brief's own instruction — `handleGetArtifactContent`'s Resolve-then-Verify-then-Open ordering is mirrored
+exactly by `artifact get`. This is an entirely new directory (`git status --short` before committing showed
+only `internal/delivery/cli/evidence/` untracked plus the four shared-framework files below) — `cmd/aw/main.go`/
+`cmd/aw/cli.go` are untouched, per the CRITICAL scope rule (real `os.Args` routing deferred to V6-15O).
+
+Four `cli.Descriptor`s registered from four separate `init()`s (list.go/verify.go/contextsnapshot.go/
+artifact.go), all `cli.ScopeProject`: `evidence list` → `listEvidence`, `context-snapshot show` →
+`getContextSnapshot`, `artifact get` → `getArtifactContent` (the real HTTP operationIds from
+`internal/delivery/httpapi/evidence/routes.go`'s own inventory table) — and `evidence verify` →
+`cli.CLILocalOperation`, confirmed against `descriptor.go`'s own doc comment AND
+`docs/design/08-v6-api-projections.md`'s V6-15O line (`CLI_LOCAL closed set is serve/worker/help/version/evidence
+verify`) as the one leaf in this closed set this task builds. `evidence show` was deliberately NOT added: the
+task brief's own guidance was to lean against it unless `GetEvidence`'s richer detail isn't already covered by
+`list`'s own per-item output — `ListEvidenceForWorkItem` returns the identical `EvidenceDetail` per item, so a
+separate `show` would be a pure duplicate with no richer information.
+
+DTOs are reused VERBATIM from `internal/app/runtime` wherever that package already has the bounded, no-Locator
+shape this task needs (`EvidenceDetail`, `ArtifactSummary`, `ContextSnapshotDetail` — exactly the same "reuse
+this DTO verbatim" instruction the task brief gave for `ArtifactSummary`, applied consistently to its two
+siblings too, mirroring how `internal/delivery/httpapi/evidence/dto.go`'s own `listEvidenceResponse`/
+`listArtifactsResponse` already wrap them for HTTP rather than hand-mapping a second copy). Only `evidence
+verify`'s own genuinely new shape (`VerifyResult`/`ArtifactVerification`) is a new type this package declares.
+
+**Design choice 1 — where the "verify a whole Evidence row" orchestration loop lives** (the task brief's own
+"genuine gap 1", explicitly flagged as "your call, but document the choice"): `verifyEvidenceArtifacts`
+(`verify.go`) lives in THIS delivery package, not beside `internal/app/runtime/queries.go`. Reason: it composes
+`runtime.GetEvidence` + `runtime.ResolveEvidenceArtifactContent` (the centralized "artifactId must be one of
+THIS Evidence row's own `ArtifactReferences`" guard, never reimplemented) with `ports.ArtifactStore.Verify` —
+and `queries.go`'s own doc comment is explicit that it never touches `ArtifactStore` itself, because real store
+I/O must happen outside any database transaction (docs/architecture/04-go-core-spec.md §11.1). Moving the
+verify loop into `internal/app/runtime` would have broken that existing, deliberate boundary; keeping it here
+mirrors exactly where `internal/delivery/httpapi/evidence/artifact.go`'s own `handleGetArtifactContent` already
+calls `Verify`/`Open` — the delivery layer, never the query layer. A single failed Resolve/Verify never aborts
+the loop; every reference is attempted so a per-artifact pass/fail table is always complete.
+
+**Design choice 2 — where the `--output <path|->` writer primitive lives** (the task brief's own "genuine gap
+2", also flagged "your call"): promoted to the SHARED `internal/delivery/cli` framework
+(`BindOutputFlag` in `flags.go`, `WriteBinaryOutput` in `output.go`), not scoped to this package. Reasoning
+documented in both functions' own doc comments: `BindOutputFlag` is the direct, symmetric INPUT/OUTPUT
+counterpart of `flags.go`'s own pre-existing `BindFileFlag` ("a leaf that accepts a request body reads it from
+a path... or stdin" already lives there for input; "a leaf that streams raw content back... writes it to a path,
+or stdout" is the identical shape for output) — keeping the pair split across two packages would be a worse,
+harder-to-discover asymmetry than promoting it. `WriteBinaryOutput` mirrors `EncodeQueryResult`/
+`EncodeCommandResult`'s own placement reasoning: both are "the one JSON-or-binary result this leaf's own stdout
+carries" primitives, just for two different content shapes, and both are exactly the kind of framework
+machinery a FUTURE CLI leaf with the identical need (any other content-streaming leaf, e.g. a future
+workspace-source/diff CLI) would otherwise have to duplicate. Both new binders/writers are added to their
+existing test files (`flags_test.go`, `output_test.go`), never a new file, following that package's own
+established one-test-file-per-source-file convention.
+
+`WriteBinaryOutput` never buffers whole into memory (`io.Copy`, matching `handleGetArtifactContent`'s own
+streaming discipline), streams straight to stdout for `-`, or creates/truncates (`O_TRUNC`, a second `get` to
+the same path is an ordinary overwrite, never `O_EXCL`) a real file otherwise — and removes a partially-written
+file on a mid-copy failure rather than leaving truncated bytes behind.
+
+**Genuine bug found and fixed while writing `evidence verify`/`artifact get`**: naively forwarding
+`ports.ArtifactStore.Verify`/`Open`'s own returned error's `.Error()` text (either straight into
+`ArtifactVerification.Reason` or as this leaf's own returned error) would have LEAKED the real Locator —
+`internal/adapters/artifactstore/filesystem.go`'s own `Verify` embeds it directly
+(`fmt.Errorf("%w: locator=%s", ErrIntegrity, ref.Locator)`), and `Open`'s own `os.Open` failure path wraps a raw
+`*os.PathError` whose own `.Error()` names a real on-disk path — confirmed by a first draft of
+`TestRunEvidenceVerify_TamperedArtifact_ReportsFailedNotSilentPass` actually failing with the raw
+`locator=sha256:...` string present in the JSON output, mirroring exactly the "no raw locator ever printed" line
+this task's own brief is built around. Fixed with `storeerror.go`'s own `sanitizeStoreError`, which mirrors
+`internal/delivery/httpapi`'s own `WriteAppError` precedent exactly: an `*apperror.Error`'s own safe, public
+`.Message` field is surfaced verbatim (that package's own doc comment: "safe to log, return over the API, or
+show an operator"); any other error collapses to one fixed, generic, locator-free classification. Applied to
+BOTH `verifyEvidenceArtifacts`'s per-artifact `Reason` and `RunArtifactGet`'s own returned error (the latter
+because a future composition root prints a returned error's `.Error()` text to stderr, which is just as real a
+leak surface as the JSON body).
+
+`RunArtifactGet` (`artifact.go`) routes content two ways: `--output -` streams the artifact's raw bytes
+DIRECTLY to the same `stdout io.Writer` every other leaf uses for its JSON result — and ONLY those bytes reach
+it, since a mixed-in JSON document would corrupt an exact byte-for-byte stream (the task's own "binary stdout"
+bullet); the artifact's bounded metadata (`ArtifactSummary` — sensitivity/redacted/contentHash/size/mediaType,
+never a Locator) is instead written to stderr via `cli.Diagnosticf`, so an operator piping stdout to a file
+still sees it. `--output <path>` writes content to that real file first, THEN (stdout now free) writes the
+`ArtifactSummary` as the one JSON document via `cli.EncodeQueryResult` — the "dispatch via
+`cli.EncodeQueryResult`-style read-only flow" line from the task brief, for the non-stdout-content case.
+`evidence verify` (`verify.go`) always writes its full `VerifyResult` to stdout FIRST, then — if the aggregate
+`Verdict` is `TAMPERED` — returns a plain (non-`cli.UsageError`) error so `cli.ExitCodeFor` maps a future
+composition root's invocation to `cli.ExitFailure`, mirroring `internal/delivery/cli/health`'s own `RunReady`
+precedent exactly (report written before the failing exit code).
+
+### Test
+
+`internal/delivery/cli/evidence` (14 tests across `list_test.go`/`contextsnapshot_test.go`/`verify_test.go`/
+`artifact_test.go`/`descriptor_test.go`/`dto_scan_test.go`, plus `fixture_test.go` — a real `*sqlite.Store` +
+real filesystem `internal/adapters/artifactstore.Store` pair, duplicating
+`internal/delivery/httpapi/evidence/fixture_test.go`'s own fixture helpers minus the HTTP server, per that
+package's own "Go test helpers are unexported across packages" convention this codebase already establishes;
+confirmed `internal/archtest/cli_boundary_test.go` only checks non-`-test` `go list` imports, so the sqlite/
+artifactstore imports here never trip it):
+
+- **List**: happy path decodes real `EvidenceDetail` rows with no `locator` substring anywhere in the raw JSON
+  body; `--run-id`/`--kind` narrow correctly; missing `--project-id` and a WorkItem belonging to a different
+  project are both usage/scope errors.
+- **Context-snapshot show**: happy path (no locator substring, correct `ResourceRefs`); missing `--project-id`;
+  a Snapshot reached through the wrong WorkItem is rejected.
+- **Verify**: all-artifacts-verified passes cleanly with an empty `Reason` on every entry;
+  `TestRunEvidenceVerify_TamperedArtifact_ReportsFailedNotSilentPass` — a REAL on-disk byte corruption (never a
+  DB edit, via the same `artifactObjectPath` sha256-sharding helper `httpapi/evidence`'s own tamper test uses)
+  is caught by `ArtifactStore.Verify`, reported `Verified=false` with a non-empty, locator-free `Reason` for
+  the tampered artifact only (the untampered sibling still reports `Verified=true`), the command returns a
+  non-nil error, AND the full `VerifyResult` is still confirmed present on stdout despite that error (proving
+  the "write result, then fail" ordering); missing `--project-id` is a usage error. (A "zero
+  `ArtifactReferences`" vacuous-pass scenario was deliberately NOT added as a test:
+  `runtimedomain.NewEvidence` itself refuses to construct an Evidence row with zero references, so it is
+  domain-unreachable — confirmed by reading `evidence.go`'s own validation before attempting the fixture.)
+- **Artifact get**: `--output -` streams byte-identical text AND genuinely binary/non-UTF8 content
+  (`0x00`/`0xFF`/`0x0D`/`0x0A` bytes) to stdout with metadata routed to stderr instead; `--output <path>`
+  writes byte-identical content to a real file and emits a correct, locator-free `ArtifactSummary` JSON
+  summary on stdout; tamper is caught before ANY byte reaches either a real file (`os.Stat` confirms no
+  partial file exists) or stdout (both branches tested); an artifact real in the same project but NOT among
+  this Evidence row's own `ArtifactReferences` is rejected exactly like an unknown ID; a SECRET-sensitivity
+  artifact's `--output` file contains the real, already-redacted persisted bytes (`[REDACTED]`, never
+  `"classified"`) with the summary correctly reporting `Sensitivity=SECRET`/`Redacted=true`; missing
+  `--output`/`--project-id` are usage errors.
+- `descriptor_test.go`: all four descriptors present in `cli.Default` with the exact AppOperation and
+  HTTPOperationID (`cli.CLILocalOperation` for `evidence verify` only) named above.
+- `dto_scan_test.go`: a reflect-based field-name scan (`locator`/`path`/`secret`/`pid`/`argv`/`cwd`/
+  `workingdirectory`/`executablepath`) across this package's own new DTOs (`VerifyResult`/
+  `ArtifactVerification`) AND the reused-verbatim upstream DTOs (`EvidenceDetail`, `ArtifactSummary`,
+  `ContextSnapshotDetail` and their nested `*View` types) — mirroring
+  `internal/delivery/cli/run/diagnostics_test.go`'s own
+  `TestRunDiagnostics_NeverExposesProcessOrSecretShapedFields` pattern, extended per this task's own brief to
+  cover "path"/"locator" fragments specifically, not just the process/secret set that test already checks.
+
+Shared framework additions get their own tests in the EXISTING `flags_test.go`/`output_test.go` (never a new
+file): `TestBindOutputFlagParses` (default/`-`/a real path); `BindOutputFlag` added to
+`TestBindPrincipalFlagNeverDefinesActorOrRoleFlag`'s own scan. `TestWriteBinaryOutput_Dash_StreamsRawBytesToStdout`
+(genuinely binary content, exact byte match); `TestWriteBinaryOutput_RealFile_WritesExactBytesAndEmitsSummary`-
+equivalent (`_RealFile_WritesExactBytes`); `_RealFile_OverwritesExisting` (`O_TRUNC`, not append); `_CopyFailure_
+RemovesPartialFile` (an injected mid-stream `Read` failure via a small `erroringReader` test double — proves the
+partial-file cleanup without needing real disk exhaustion); `_RejectsEmptyPath`.
+
+`go build ./...`, `go vet ./...` clean repo-wide. `go test ./...` run TWICE — once via a background invocation
+during development, then a second time fully in the foreground per an explicit correction from the supervising
+session (background completion notifications are not reliable to wait on from inside a single continuous
+agent turn) — both clean, zero `FAIL`/`panic` anywhere in the full output, every package `ok` including the
+slow ones (`internal/integration/v5accept` ~67–110s, `internal/spikeacceptance` ~27–50s across the two runs).
+No pre-existing flake (the `internal/app/message` Windows file-locking one documented repeatedly elsewhere in
+this file) reproduced in either run.
+
+### Verify
+
+- **Exact bytes/hash**: `TestRunArtifactGet_Dash_ExactBytesToStdout`/`_RealFile_WritesExactBytesAndEmitsSummary`
+  — content round-trips byte-for-byte through both output targets; the emitted `ArtifactSummary.ContentHash`
+  matches the real stored `ContentHash`.
+- **Tamper**: `TestRunArtifactGet_TamperedContent_NoPartialFileNoBytesOnStdout` (both output targets) +
+  `TestRunEvidenceVerify_TamperedArtifact_ReportsFailedNotSilentPass` — see Test above; a tampered artifact is
+  caught before ANY byte streams out and never silently reported as passing.
+- **Refs**: `TestRunArtifactGet_ArtifactNotReferencedByThisEvidence_ReturnsError` — a real artifact in the same
+  project, real content, NOT one of this Evidence row's own `ArtifactReferences`, is rejected exactly like an
+  unknown ID (`ResolveEvidenceArtifactContent`'s own centralized guard, never reimplemented here).
+- **Binary stdout**: `TestRunArtifactGet_Dash_GenuineBinaryContent` + `TestWriteBinaryOutput_Dash_
+  StreamsRawBytesToStdout` — genuinely non-UTF8 bytes (`0x00`, `0xFF`, `0x0D`, `0x0A`, high-bit bytes) survive
+  `--output -` with no text-mode corruption.
+- **Secret redaction (read per the task brief's own careful framing — no re-redaction happens on read, this
+  proves the DTOs never leak a locator/path)**: `TestRunArtifactGet_SecretSensitivity_
+  SummarySurfacesSensitivityFlag` (real persisted `[REDACTED]` bytes served, `Sensitivity`/`Redacted` correctly
+  surfaced) + `dto_scan_test.go`'s reflect-based scan (see Test) + the `sanitizeStoreError` fix documented above
+  under Design choice 2 (a REAL locator leak this task's own test suite caught and fixed before finishing, not
+  a hypothetical).
+
+### Kết quả
+
+New: `internal/delivery/cli/evidence` (`doc.go`, `helpers.go`, `list.go`, `verify.go`, `contextsnapshot.go`,
+`artifact.go`, `storeerror.go` + 6 test files) — the full four-leaf command surface (`evidence list|verify`,
+`context-snapshot show`, `artifact get`). Shared framework extended, not a new file: `internal/delivery/cli/
+flags.go` (+`BindOutputFlag`) and `internal/delivery/cli/output.go` (+`WriteBinaryOutput`), both with tests
+added to their existing `_test.go` siblings. No existing file outside those two touched; `cmd/aw/main.go`/
+`cmd/aw/cli.go` untouched, per the CRITICAL scope rule. The two required design choices are documented above
+(Design choice 1: verify-orchestration loop stays in this delivery package, mirroring where `ArtifactStore.
+Verify`/`Open` are already called for `getArtifactContent`, never inside `internal/app/runtime/queries.go`,
+which deliberately never touches `ArtifactStore`; Design choice 2: the `--output` writer primitive was
+promoted to the shared `internal/delivery/cli` framework as `BindOutputFlag`/`WriteBinaryOutput`, the direct
+symmetric counterpart of the pre-existing `BindFileFlag`, for future CLI leaves with the identical
+content-streaming need). One real locator-leak bug was found by this task's own test suite and fixed
+(`storeerror.go`'s `sanitizeStoreError`) before this task was considered done. `go build/vet/test ./...` clean
+repo-wide, confirmed synchronously in the foreground. PR targets `master`.
+
 ## V6-15G — WorkItem and blocker CLI
 
 ### Thực hiện
