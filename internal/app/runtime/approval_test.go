@@ -255,6 +255,50 @@ func TestResolveApproval_DuplicateDecision_SecondAttemptWonFalse(t *testing.T) {
 	}
 }
 
+// --- ResolveApproval: receipt replay re-authorizes (V6-13) ---
+
+// TestResolveApproval_RevokedRoleCannotReplayItsOwnEarlierDecision pins
+// design doc §1 contract point 3 at the application layer, the path `aw`
+// takes directly (the HTTP handler has its own receipt fast path, proven
+// separately in internal/delivery/httpapi/securitymatrix): a stored receipt
+// must never answer for an actor whose authorizing role has since been
+// revoked, even with the identical Idempotency-Key and request hash.
+func TestResolveApproval_RevokedRoleCannotReplayItsOwnEarlierDecision(t *testing.T) {
+	ctx := context.Background()
+	uow, ids, runID, hop := approvalFixture(t, approvalDocument(600))
+	request := runtime.ResolveApprovalRequest{
+		RunID: runID, ApprovalRequestID: hop.NextApprovalRequestID, Outcome: "approved", Reason: "looks good",
+	}
+
+	first, err := runtime.ResolveApproval(ctx, uow, ids, reviewerCommand("idem-replay-1", "hash-replay-1"), request)
+	if err != nil || !first.Won {
+		t.Fatalf("first ResolveApproval = %+v, %v; want Won=true, nil", first, err)
+	}
+
+	// Same actor, same role: a genuine replay still returns the stored
+	// result — the reordering must not break idempotency.
+	replay, err := runtime.ResolveApproval(ctx, uow, ids, reviewerCommand("idem-replay-1", "hash-replay-1"), request)
+	if err != nil {
+		t.Fatalf("replay under the SAME role: %v", err)
+	}
+	if replay.Won != first.Won || replay.MatchedRole != first.MatchedRole || replay.NextNodeKey != first.NextNodeKey {
+		t.Fatalf("replay = %+v, want the stored result %+v", replay, first)
+	}
+
+	for name, roles := range map[string][]string{"downgraded to a role the request does not authorize": {"guest"}, "all roles revoked": nil} {
+		revoked := reviewerCommand("idem-replay-1", "hash-replay-1")
+		revoked.ActorRoles = roles
+		got, err := runtime.ResolveApproval(ctx, uow, ids, revoked, request)
+		var appErr *apperror.Error
+		if !errors.As(err, &appErr) || appErr.Code != errorcode.CodePolicyDenied {
+			t.Errorf("%s: err = %v (result %+v), want an *apperror.Error with CodePolicyDenied — a stored receipt must not answer for a revoked role", name, err, got)
+		}
+		if got.Won || got.MatchedRole != "" {
+			t.Errorf("%s: result = %+v, want the zero result (no stored decision may leak)", name, got)
+		}
+	}
+}
+
 // --- ApprovalTimeoutHandler ---
 
 func TestApprovalTimeoutHandler_RoutesViaEscalationOutcome(t *testing.T) {

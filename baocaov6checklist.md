@@ -11301,3 +11301,124 @@ query fully described in this task's own brief) was deliberately NOT wrapped as 
 `repository-workspace source/diff/log/reconcile`, and `workspace-set show`'s own response already surfaces
 every RepositoryWorkspace's state as a child of the WorkspaceSet, so no read need is left unserved by omitting
 it. `go build/vet/test ./...` clean repo-wide. PR targets `master`.
+
+## V6-13 — API security and authority-boundary test suite
+
+### Thực hiện
+
+V6-13 (`docs/design/08-v6-api-projections.md:582-593`) is a proof task: show that the composed HTTP API denies by
+default and offers no execution shortcut. It ships as one new test-only package and one new architecture test —
+and, because the proof found two real gaps, three small production edits.
+
+**`internal/delivery/httpapi/securitymatrix`** (new; `doc.go` plus 8 `_test.go` files, no production code). Every
+scenario drives the REAL route set (`httpcompose.ComposeRoutes`, V6-12) behind the real `httpapi.Server` over a real
+loopback listener, a real temporary SQLite database, a real artifact store and real application commands, across two
+seeded projects (alpha, beta) that each own a Run, WorkItem, blocker, workspace, ReleaseSet and artifact. The row set
+is `RouteRegistry.Descriptors()` — never hand-listed. `transport_test.go`: Host/Origin/token/CORS for every route.
+`scope_test.go`: unknown-identifier, cross-project and leakage-normalization matrices. `replay_test.go`: current role
+and target ownership on receipt replay, receipts keyed by the committing actor, principal not influenceable by the
+request. `injection_test.go`: loopback-only bind, path traversal over a raw TCP connection (a client would normalize
+`/a/../b` before it left the process), query-parameter path, artifact MIME, oversized body. `stream_test.go`: SSE
+foreign-event absence checked against the real journal, unknown project refused before a stream opens, client
+cancellation, server shutdown. `ownership_order_test.go`: the release-ordering regression below. `coverage_test.go`:
+the completion gate — recomputes which scenario classes cover each route, fails when a route has no proof, and pins
+the reviewed `noCrossProjectProof` list so a new route cannot silently join it. `fixture_test.go`: the shared
+real-infrastructure fixture.
+
+**Two real gaps found and fixed at their source.** Each is pinned by a regression test that was proven to FAIL with
+that fix reverted on its own, then restored.
+
+1. Release eligibility ran before project ownership — `internal/app/workspacerelease/commands.go`,
+   `RequestWorkspaceSetRelease`. `authority.IsReleaseAuthorized` takes a bare FamilyID with no project scoping, so a
+   foreign project's family whose ReleaseSet was SEALED fell through to the cross-project rejection (leakage-
+   normalized 404), while an unknown family — or a foreign family whose ReleaseSet was still unsealed — answered
+   `ErrReleaseNotAuthorized` (403). That is an existence/state oracle across projects, contradicting §1 contract
+   point 3 and V6-02A's leakage normalization. Fix: an advisory read-only ownership reload before the eligibility call
+   (the same shape as `internal/delivery/httpapi/run`'s `loadWorkItemProjectID`); the authoritative in-transaction
+   checks are unchanged. Test `TestRequestWorkspaceSetRelease_ForeignFamilyIsIndistinguishableRegardlessOfItsReleaseSetState`
+   — without the fix the foreign SEALED family answered 404 and the never-issued family 403.
+2. Approval receipt replay skipped the role check (§1 contract point 3: "Authorization chạy lại cả khi receipt
+   replay, nên role bị thu hồi không thể dùng replay để đọc/mutate"). Two sites. `runtime.ResolveApproval`
+   (`internal/app/runtime/approval.go`, the path `aw` uses directly) consulted the stored receipt before reloading the
+   target and intersecting `ActorRoles` with `AuthorizedRoles`. The HTTP handler
+   (`internal/delivery/httpapi/decision/approval.go`) answers a replay from its own read-only receipt fast path and
+   never calls the command at all. So an actor whose role had since been revoked could resend the same
+   Idempotency-Key and read their own stored decision back. Fix: `ResolveApproval` now reloads the target and checks
+   the role before the receipt; `matchAuthorizedRole` is exported as `MatchAuthorizedRole` so the handler applies the
+   identical rule before its fast path rather than a second copy that could drift. Tests:
+   `TestReceiptReplay_RevokedRoleCannotReplayItsOwnEarlierDecision` (HTTP — without the handler fix a revoked role got
+   HTTP 200 with the decision body) and `TestResolveApproval_RevokedRoleCannotReplayItsOwnEarlierDecision`
+   (`internal/app/runtime/approval_test.go` — without the app fix a revoked role got `Won:true MatchedRole:reviewer`
+   back). The two fixes were reverted independently to prove each test catches its own site.
+
+**`internal/archtest/httpapi_boundary_test.go`** (new) — the "handler dependency graph ends at public ports" bullet
+for the WHOLE `./internal/delivery/httpapi/...` + `./internal/delivery/httpcompose/...` tree, where every earlier HTTP
+archtest guarded a single leaf. `TestDeliveryHTTPAPINeverReachesAnyAdapterTransitively`: nothing under
+`internal/adapters` is reachable, even transitively. `TestDeliveryHTTPAPINeverDirectlyImportsProcessWorkerOrAdapterPackages`:
+no direct `os/exec`, `internal/app/worker*` or adapter import. `os/exec` and the worker packages are direct-only
+because httpapi reaches both several hops deep through the pre-existing doctor/diagnostics path (the same caveat
+`cli_boundary_test.go` records), so a transitive ban would be unsatisfiable. Fail-closed check: planted `os/exec` and
+`internal/adapters/sqlite` imports in `apicontract`; both guards named the package and the import; the plant was
+removed.
+
+**Deliberately not done.** No new middleware or security framework ("Không làm"). The "role" axis is stated honestly:
+ADR-028 binds ONE principal per process from trusted config, so a request cannot vary its role. The suite instead
+proves what makes that safe — a request cannot influence the principal, a receipt is keyed by the CURRENT actor, and a
+replay is reached only after target reload and authorization. Also unchanged: `GET /` is a `ServeMux` subtree
+pattern, so an unmatched GET legitimately falls through to the SPA shell (already recorded by V6-12's
+`TestRouteInventory_ServedEqualsDeclaredBothDirections`); the traversal test asserts that shell is all it can ever
+return.
+
+### Test
+
+- `securitymatrix`: 26 top-level tests, 343 passing subtests, over the 88 routes `ComposeRoutes` registers. Scenario
+  classes counted by `TestEveryRouteHasAnExplicitScopeProof`: transport 88, declared-scope-structure 88,
+  unknown-identifier 76, cross-project 30 (all 30 answered with the exact `httpapi.WriteResourceHidden` 404 envelope,
+  indistinguishable from a never-issued id), reviewed-empty-collection 2.
+- `internal/app/runtime`: `TestResolveApproval_RevokedRoleCannotReplayItsOwnEarlierDecision` (fake UnitOfWork, both a
+  downgraded role and no roles at all, plus the same-role replay still returning the stored result).
+- `internal/archtest`: the two `TestDeliveryHTTPAPINever...` guards above.
+- Consumers of the changed commands re-run and green: `internal/app/runtime`, `internal/app/workspacerelease`,
+  `internal/delivery/httpapi/decision`, `internal/delivery/cli/decision`, `internal/delivery/cli/scopeexpansion`,
+  `internal/delivery/cli/workspace`.
+
+### Verify
+
+- Loopback/Host/Origin/token/CORS: `TestLoopbackOnlyBind`, `TestTransportGuardMatrix_EveryRoute` (every route: three
+  wrong Hosts, three foreign Origins, missing and wrong session token on every mutating method, and no CORS allow
+  header on any response), `TestTransportGuard_ValidRequestIsNotRejectedByTheGuard` (positive control),
+  `TestTransportGuard_SameOriginRequestIsAccepted`, `TestCORSPreflightIsNeverAnswered`.
+- Reload target ownership before receipt/stream:
+  `TestReceiptReplay_TargetOwnershipIsReloadedBeforeTheReceiptIsConsulted`,
+  `TestSSE_UnknownProjectIsRefusedBeforeAnyStreamIsOpened`.
+- Current role on replay: the two revoked-role tests above, `TestReceiptReplay_IsScopedToTheCommittingActor`,
+  `TestPrincipalCannotBeInfluencedByTheRequest`.
+- Unauthorized/not-found leakage: `TestScopeMatrix_ExistsElsewhereIsIndistinguishableFromNeverExisted`,
+  `TestUnknownProjectCollectionsAreEmptyAndIdentical`, the ForeignFamily release test.
+- Path/content injection and MIME: `TestPathTraversalIsNeverServed`,
+  `TestQueryParameterPathIsNeverResolvedOutsideTheWorkspace`, `TestArtifactContentMediaHandling`,
+  `TestOversizedBodyIsRefusedBeforeAnyHandlerRuns`.
+- Cancellation: `TestSSE_ClientCancellationClosesTheStreamPromptly`, `TestSSE_ServerShutdownClosesOpenStreams`.
+- Cross-project guessed Run/WorkItem/blocker/workspace/ReleaseSet/artifact ids and SSE foreign-event absence:
+  `TestScopeMatrix_CrossProjectIdentifierIsNeverServed`, `TestScopeMatrix_UnknownIdentifierIsNeverServed`,
+  `TestSSE_ForeignProjectEventsNeverReachAnotherProjectsStream` (asserted against the real journal's own contents).
+- Every route has an explicit scope proof: `TestRowSetComesFromTheRealComposedContract`,
+  `TestEveryRouteHasAnExplicitScopeProof`, `TestEveryRegisteredRouteIsCoveredByTheMatrix`,
+  `TestInstallationScopedRoutesCarryNoProjectSegment`.
+- Handler dependency graph ends at public ports: the two `httpapi_boundary_test.go` guards, fail-closed-verified.
+
+### Kết quả
+
+New: `internal/delivery/httpapi/securitymatrix` (`doc.go` + 8 test files; 26 tests / 343 subtests over 88 routes),
+`internal/archtest/httpapi_boundary_test.go` (2 tests), and one new app-level test in
+`internal/app/runtime/approval_test.go`. Production changed in 3 files, all by reordering an existing check rather than
+adding a mechanism: `internal/app/workspacerelease/commands.go` (ownership before eligibility),
+`internal/app/runtime/approval.go` (target reload + role check before the receipt; `MatchAuthorizedRole` exported) and
+`internal/delivery/httpapi/decision/approval.go` (role check before the receipt fast path). Two real gaps closed, both
+proven by revert. `go build ./...` and `go vet ./...` clean; `go test ./...` passes in 113 packages. Two failures in
+the one full run were both outside this diff and both passed when re-run alone: `cmd/aw`
+`TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` (Windows "file used by another process" while
+rewriting a `.exe`; 3/3 clean alone — the same family as the `TestAdapterRegister_DriftCreatesNewBuild` failure seen
+earlier in this session) and `internal/app/workerpool` `TestPool_HeartbeatKeepsLongRunningJobAlive` (timing-sensitive
+heartbeat starved by the parallel full-suite load; 10/10 clean alone). PR targets `master`; the branch is based on
+V6-12's, so it opens once V6-12 has merged.
