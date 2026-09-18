@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -20,7 +19,6 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
-	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/logging"
@@ -29,24 +27,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/safesettings"
 	appworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/app/workspaceinspection"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
-	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
-	httpcatalog "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/catalog"
-	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
-	httpdefinitions "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/definitions"
-	httpdiagnostics "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/diagnostics"
-	httpdoctor "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/doctor"
-	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/eventstream"
-	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
-	httpkanban "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/kanban"
-	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
-	httpprojectionrebuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/projectionrebuild"
-	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
-	httpreleaseset "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
-	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
-	httprundetail "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/rundetail"
-	httpsafesettings "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/safesettings"
-	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workitem"
-	httpworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/workspaceinspection"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/httpcompose"
 )
 
 // runServe is V6-01's own composition root entry point: it wires
@@ -362,155 +343,38 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		return nil
 	})
 
-	routes.Register(httpapi.RouteDescriptor{
-		Method: http.MethodGet, Path: "/health/live", OperationID: "healthLive",
-		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
-		Handler: httpapi.LiveHandler(),
-	})
-	routes.Register(httpapi.RouteDescriptor{
-		Method: http.MethodGet, Path: "/health/ready", OperationID: "healthReady",
-		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
-		Handler: checker.ReadyHandler(),
-	})
 	principal := httpapi.LocalPrincipalSnapshot{Actor: localPrincipal.Actor, Roles: localPrincipal.Roles}
-	routes.Register(httpapi.RouteDescriptor{
-		Method: http.MethodGet, Path: "/", OperationID: "bootstrap",
-		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
-		Handler: httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
+	// V6-12 (docs/design/08-v6-api-projections.md): every route fragment
+	// this process serves — health/bootstrap plus each of the 19+ leaf
+	// packages' own RegisterRoutes call — is now composed by ONE shared,
+	// importable function (internal/delivery/httpcompose.ComposeRoutes)
+	// instead of an inline block duplicated here. This is the "compose
+	// fragments once" the design doc's own §1 rule 8 reserves for V6-12
+	// alone, and it is also what lets V6-12's own contract generator/
+	// golden test/route-inventory test call the IDENTICAL composition
+	// logic — never a second, hand-maintained copy that could silently
+	// drift from what this process actually serves — by building the same
+	// kind of real dependencies (temp SQLite DB, temp artifact/workspace
+	// root directories) cmd/aw/serve_test.go already builds for its own
+	// end-to-end tests, and calling httpcompose.ComposeRoutes directly, no
+	// real HTTP server required. See that package's own doc comment for the
+	// full reasoning.
+	httpcompose.ComposeRoutes(routes, httpcompose.Dependencies{
+		UnitOfWork:                 uow,
+		ArtifactStore:              artifactStore,
+		WorkspaceInspectionQueries: workspaceInspectionQueries,
+		Matcher:                    matcher,
+		Cursor:                     cursorCodec,
+		Isolation:                  isolationChecker,
+		Agents:                     agentRegistry,
+		AppConfig:                  appConfig,
+		Store:                      sqlite.NewQueryStore(store),
+		SafeSettingsEffective:      safeSettingsEffective,
+		Shutdown:                   ctx,
+		LiveHandler:                httpapi.LiveHandler(),
+		ReadyHandler:               checker.ReadyHandler(),
+		BootstrapHandler:           httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
 	})
-	// V6-03A (docs/design/08-v6-api-projections.md): Project/repository/
-	// component catalog routes, owning its own subpackage/descriptors/tests
-	// (internal/delivery/httpapi/catalog) exactly as V6-01A's own comment
-	// above anticipated.
-	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: uow, IDs: idsource.Random{}})
-	// V6-04: WorkItem/family/readiness/scope-expansion routes
-	// (internal/delivery/httpapi/workitem) — an additive routes.Register
-	// call only, no shared setup above touched.
-	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
-	// V6-06: Run start/cancel controls (internal/delivery/httpapi/run) — an
-	// additive routes.Register call only, no shared setup above touched.
-	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: uow, IDs: idsource.Random{}})
-	// V6-06B: Run detail/graph/timeline query routes
-	// (internal/delivery/httpapi/rundetail) — an additive routes.Register
-	// call only, no shared setup above touched. Reuses the SAME
-	// process-lifetime matcher/cursorCodec httpmessage already reuses
-	// (never a second, differently-scoped one — see rundetail.Dependencies'
-	// own Matcher/Cursor doc comment).
-	httprundetail.RegisterRoutes(routes, httprundetail.Dependencies{UnitOfWork: uow, Matcher: matcher, Cursor: cursorCodec})
-	// V6-06A: Approval decision and typed WAIT signal endpoints
-	// (internal/delivery/httpapi/decision) — an additive routes.Register
-	// call only, no shared setup above touched.
-	decision.RegisterRoutes(routes, decision.Dependencies{UOW: uow, IDs: idsource.Random{}})
-	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
-	// and release/reconcile request routes. Same uow/idsource.Random{} every
-	// other route registration in this process already uses — never a
-	// fresh source per request.
-	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{})
-	// V6-10D: bounded source/diff/repository-log inspection routes
-	// (internal/delivery/httpapi/workspaceinspection) — an additive
-	// routes.Register call only, no shared setup above touched. Queries is
-	// the one real *appworkspaceinspection.Queries built just above, backed
-	// by the real gitworktree.Provider rooted at --workspace-root.
-	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: workspaceInspectionQueries})
-	// V6-05: Definition authoring routes (internal/delivery/httpapi/definitions)
-	// — create/validate/publish/list/detail/version/diff for global and
-	// project-scoped definitions — an additive routes.Register call only,
-	// no shared setup above touched.
-	httpdefinitions.RegisterRoutes(routes, httpdefinitions.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
-	// V6-06D: RetryBlockedActivation/CancelWorkItem/ResolveWorkItemBlocker
-	// recovery command routes (internal/delivery/httpapi/recovery) — an
-	// additive routes.Register call only, no shared setup above touched.
-	// Isolation/Agents are the real dependencies built just above.
-	recoveryhttp.RegisterRoutes(routes, recoveryhttp.Dependencies{
-		UOW: uow, IDs: idsource.Random{}, Isolation: isolationChecker, Agents: agentRegistry,
-	})
-	// V6-06C: Run diagnostics query (internal/delivery/httpapi/diagnostics)
-	// — an additive routes.Register call only, no shared setup above
-	// touched. Reuses the SAME isolationChecker/agentRegistry V6-06D already
-	// built above (never a second, separately-configured pair): diagnostics
-	// only ever performs pure, I/O-free lookups against them (a live
-	// process re-probe stays RetryBlockedActivation's own exclusive
-	// authority — see that package's own diagnostics.go doc comment).
-	httpdiagnostics.RegisterRoutes(routes, httpdiagnostics.Dependencies{
-		UOW: uow, Isolation: isolationChecker, Agents: agentRegistry,
-	})
-	// V6-07/V6-07A: conversation message endpoints (append/list/
-	// context-snapshot, plus V6-07A's own binary attachment upload —
-	// appendConversationAttachment — internal/delivery/httpapi/message) —
-	// an additive routes.Register call only, no shared setup above touched.
-	// The SAME uow/artifactStore this composition root already built above
-	// (never a second instance) is what AppendConversationAttachment's own
-	// durable prepare-claim mechanism and real ArtifactStore.Put/Verify
-	// calls run against.
-	httpmessage.RegisterRoutes(routes, httpmessage.Dependencies{
-		UnitOfWork: uow, ArtifactStore: artifactStore, IDs: idsource.Random{}, Clock: clock.System{},
-		Matcher: matcher, Cursor: cursorCodec,
-	})
-	// V6-07B: Evidence, ContextSnapshot and artifact query/content-stream
-	// routes (internal/delivery/httpapi/evidence) — an additive
-	// routes.Register call only, no shared setup above touched. Reuses the
-	// SAME artifactStore every other artifact-producing/consuming route in
-	// this process already uses, never a second one rooted elsewhere.
-	httpevidence.RegisterRoutes(routes, httpevidence.Dependencies{UnitOfWork: uow, ArtifactStore: artifactStore})
-	// V6-10J: adapter-build registry routes (list/detail/probe/register,
-	// internal/delivery/httpapi/adapterbuild) — an additive routes.Register
-	// call only, no shared setup above touched. Installation-scoped, over
-	// the same uow every other route registration in this process already
-	// uses; no idsource.Source needed (a Build's own ID is content-addressed,
-	// never minted).
-	httpadapterbuild.RegisterRoutes(routes, httpadapterbuild.Dependencies{UnitOfWork: uow, Clock: clock.System{}})
-	// V6-10H: GET/PUT /settings/safe (internal/delivery/httpapi/safesettings)
-	// — an additive routes.Register call only, no shared setup above
-	// touched. Matcher is the SAME process-lifetime redactor httpmessage
-	// already reuses (never a second, differently-scoped one); Effective is
-	// the fixed, boot-time snapshot resolved just above.
-	httpsafesettings.RegisterRoutes(routes, httpsafesettings.Dependencies{
-		UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{},
-		Matcher: matcher, Effective: safeSettingsEffective,
-	})
-	// V6-10F: ReleaseSet list/create/detail/seal/abandon and per-entry
-	// local-commit request/status routes (internal/delivery/httpapi/releaseset)
-	// — an additive routes.Register call only, no shared setup above touched.
-	httpreleaseset.RegisterRoutes(routes, httpreleaseset.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
-	// V6-10A: GET /doctor (internal/delivery/httpapi/doctor) — an additive
-	// routes.Register call only, no shared setup above touched. Store is
-	// wrapped as a ports.QueryStore the same way internal/app/doctor's own
-	// golden tests do (sqlite.NewQueryStore(store), never a second
-	// connection); UnitOfWork/Isolation/Config are the SAME real instances
-	// every other route registration in this process already uses.
-	httpdoctor.RegisterRoutes(routes, httpdoctor.Dependencies{
-		Config: appConfig, Store: sqlite.NewQueryStore(store), UnitOfWork: uow, Isolation: isolationChecker,
-	})
-	// V6-10: projected Kanban card list and WorkItem detail routes
-	// (internal/delivery/httpapi/kanban) — an additive routes.Register call
-	// only, no shared setup above touched. Reuses the SAME uow every other
-	// route registration in this process already uses, and the SAME
-	// process-lifetime cursorCodec httpmessage/httprundetail already reuse
-	// (never a second, differently-scoped one — this package's own
-	// Dependencies.Cursor doc comment).
-	httpkanban.RegisterRoutes(routes, httpkanban.Dependencies{UnitOfWork: uow, Cursor: cursorCodec})
-	// V6-11: the redacted project invalidation/runtime-summary SSE stream
-	// (internal/delivery/httpapi/eventstream) — an additive routes.Register
-	// call only, no shared setup above touched. Reuses the SAME
-	// process-lifetime matcher every other redacting route in this
-	// composition root already reuses (never a second, differently-scoped
-	// one). Shutdown is the SAME ctx this function itself watches for
-	// SIGINT/SIGTERM (runServe's own signal.NotifyContext) — cancelled
-	// before server.Shutdown is ever called below, so every open stream
-	// observes it and closes itself instead of leaving a goroutine running
-	// past this process' own graceful-shutdown window (see
-	// eventstream.Dependencies' own Shutdown doc comment for exactly why
-	// plain net/http.Server.Shutdown alone cannot do this for a long-lived
-	// streaming handler).
-	eventstream.RegisterRoutes(routes, eventstream.Dependencies{UnitOfWork: uow, Matcher: matcher, Shutdown: ctx})
-	// V6-09B: projection status/rebuild-request/rebuild-operation-status
-	// routes (internal/delivery/httpapi/projectionrebuild) — an additive
-	// routes.Register call only, no shared setup above touched. Reuses the
-	// SAME uow every other route registration in this process already uses.
-	httpprojectionrebuild.RegisterRoutes(routes, httpprojectionrebuild.Dependencies{UnitOfWork: uow, IDs: idsource.Random{}, Clock: clock.System{}})
-	// A later endpoint task's own composition-root wiring adds its own
-	// routes.Register call here without needing to touch this file's shared
-	// setup (contract point 8: "Parallel work không sửa registry chung").
 	routesFinalized = true
 
 	server, err := httpapi.NewServer(httpapi.Config{

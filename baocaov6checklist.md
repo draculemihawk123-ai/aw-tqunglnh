@@ -10600,3 +10600,182 @@ default. Verified 20/20 clean on `-run TestResolve_ConcurrentResolveRace -count=
 **Lesson**: a concurrency test needs EVERY shared collaborator to be concurrency-safe, not just the
 `UnitOfWork` — an ID source, a clock, or any other injected dependency can just as easily be the actual
 unsafe one, and the race detector will find whichever one isn't, one at a time.
+
+## V6-12 — Machine-readable API contract and router composition
+
+### Thực hiện
+
+**Scope clarification followed.** Per the design doc's own §1 rule 8 ("Chỉ V6-12 compose HTTP router/OpenAPI;
+chỉ V6-15O compose CLI/parity registry") and the P5 dependency graph (`{V6-12, V6-15C…V6-15N} -> V6-15O`), this
+task's own "four-way inventory seed" is scoped to the HTTP side only: for each registered HTTP route, emit
+`{operationId, UX doc reference, owning concept}`. No `internal/delivery/cli` registry cross-referencing was
+built — that reconciliation is V6-15O's job, gated on V6-12 AND every CLI leaf.
+
+**1. Extracted route composition into an importable package.** `cmd/aw/serve.go` used to inline ~150 lines of
+`routes.Register`/`xxx.RegisterRoutes` calls (health/live, health/ready, bootstrap, plus 19 leaf packages) —
+`package main`, so nothing outside `cmd/aw` could ever call the identical logic. Moved that exact sequence,
+verbatim, into a new package `internal/delivery/httpcompose` (`compose.go`): `ComposeRoutes(routes
+*httpapi.RouteRegistry, deps Dependencies)`. `cmd/aw/serve.go` now builds its own real dependencies (unchanged)
+and calls `httpcompose.ComposeRoutes(routes, httpcompose.Dependencies{...})` once. `idsource.Random{}`/
+`clock.System{}` stayed inline literals inside `ComposeRoutes` (both are stateless zero-field structs — see
+`Dependencies`' own doc comment for why threading them through the struct would add no behavior). This is a
+pure relocation, not a rewrite: every existing `cmd/aw/serve_test.go` end-to-end test (health/live, health/ready,
+graceful shutdown, readiness-fails-on-missing-artifact-root, readiness-fails-on-corrupt-safe-settings) still
+passes unmodified against the refactored `serve()`, proving no behavior changed.
+
+**2. Machine-readable contract generator** (`internal/delivery/httpapi/apicontract/contract.go`). Chose a
+**custom JSON contract**, not full OpenAPI 3.x — documented at length in the package doc comment. Reasoning: a
+faithful OpenAPI 3.x document needs a real Go-struct-to-JSON-Schema reflector (`$ref`/`components/schemas`,
+correct `time.Time`/map/slice/pointer/embedded-field handling, a convention for opaque `struct{}{}` routes); no
+such reflector exists in this codebase, and a hand-rolled one that *looks* like OpenAPI but is subtly wrong in
+its schema section would be worse than an honest, narrower artifact. `Build(descriptors)` instead walks a fully
+composed `RouteRegistry.Descriptors()` and emits a `Contract{Version, Operations[]}`, sorted by `operationId`
+for determinism, where each `Operation` carries `operationId/method/path/scopeKind` plus a shallow, one-level
+reflected `SchemaRef` (Go type name, JSON tag, field type) for request/response. `describeSchema` detects the
+literal anonymous `struct{}{}` placeholder (zero fields **and** an empty `reflect.Type.Name()`) and marks it
+`opaque: true` rather than inventing fields — this correctly distinguishes it from a deliberately-named empty
+body type like `workitem.emptyBody{}` (zero fields, but a real name — NOT opaque, a legitimate "no request
+body" declaration).
+
+**Known, pre-existing opaque-schema gap (not V6-12's to fix):** confirmed via `grep` that exactly 13 already-
+merged routes register `RequestSchema: struct{}{}, ResponseSchema: struct{}{}` on both sides — all 11 routes in
+`internal/delivery/httpapi/catalog` (V6-03A) plus one each in `internal/delivery/httpapi/evidence` and
+`internal/delivery/httpapi/workspaceinspection`. The generator handles this gracefully (`opaque: true`, no
+crash, no fabricated schema) per this task's own "Không làm: no retrofitting metadata a leaf task should have
+already supplied."
+
+**3. Golden-file test** (`golden_test.go` + `testdata/golden/contract.json`, 88 operations, ~3900 lines):
+`TestContract_MatchesGoldenFixture` regenerates the contract from the real production composition
+(`httpcompose.ComposeRoutes` built with real temporary SQLite/artifact-store/gitworktree infrastructure — see
+`composetest_test.go`'s own `buildRealRegistry`, mirroring `cmd/aw/serve_test.go`'s own real-infrastructure
+pattern) and byte-compares it against the committed fixture. `TestContract_IsDeterministic` proves repeated
+`Build` calls against the same registry never flake on map/slice ordering.
+
+**4. Breaking-change diff gate** (`breaking.go` + `breaking_test.go`). Breaking is defined as, at minimum:
+`REMOVED_OPERATION` (operationId no longer registered), `METHOD_CHANGED`, `PATH_CHANGED`, and this package's own
+addition `SCOPE_CHANGED` (INSTALLATION↔PROJECT — silently changes what a client must do to call successfully,
+even though the operationId/method/path all still match). Field-level schema changes are explicitly **out of
+scope** for this gate (documented in `breaking.go`'s own doc comment) — `SchemaRef` is a best-effort shallow
+reflection, and flagging harmless Go-side refactors (field reordering, adding `omitempty`) as "breaking" would
+train reviewers to ignore the gate. **Acknowledgment mechanism chosen (the simpler of the two the task allows):**
+no version-marker field. The plain byte-for-byte golden test (#3) already fails on ANY contract change and
+forces a conscious `git diff`-reviewed fixture update; `TestBreakingChangeGate_RealContractHasNoBreakingChangesFromGolden`
+additionally decodes golden vs. fresh and fails **by name** (`REMOVED_OPERATION getRun: ...`) when the change is
+breaking, giving a reviewer a labeled signal instead of a raw JSON diff to interpret by hand.
+
+**5. UX gap-list checker** (`uxdoc.go` + `uxgap.go`). Built a narrow, targeted parser for
+`docs/design/11-v6-00-ux-artifact.md`'s own Actions/Queries table format — locates the `Proposed operationId`/
+`Owner Task ID`/`Public application command/query` columns **by header name** (never hardcoded position, since
+the Cross-cutting §15 table has a different column layout), tracks a per-table header state machine so each of
+the 13 screen sections plus §15 gets its own fresh header. **Real parsing bug found and fixed while building
+this**: one row (§12 Screen 11 row 4, `` `aw artifact get --output <path\|->` ``) uses a Markdown-escaped
+literal pipe inside a cell; a naive `strings.Split(line, "|")` split that ONE cell into two, shifting every
+column after it for that row (its Owner Task ID parsed as `` `GetArtifactContent` [CHƯA CÓ] — tên khóa cứng ở
+Phạm vi V6-07B `` instead of the real `V6-07B`). Fixed by placeholder-substituting `\|` before splitting and
+restoring it after (`escapedPipePlaceholder`); `TestParseUXDoc_RealDocument` pins this specific row's correct
+parse so the fix can never silently regress.
+
+### Test
+
+Ran the real cross-reference against the real, currently-merged codebase (`internal/delivery/httpapi/apicontract`,
+composed via the real `httpcompose.ComposeRoutes` — 88 registered operations; 72 UX-doc rows carry a real
+proposed operationId). **Findings** (`TestCheckUXGaps_NoUnresolvedGap`, `t.Logf` output): 46 gap findings total
+— **28 IMPLEMENTED_DOC_STALE** (proposed operationId now registered verbatim, doc marker never updated — the
+expected, common case per this task's own prompt, since V6-00 was authored when almost nothing was built),
+**17 IMPLEMENTED_RENAMED** (registered under a *different* final name — every one individually verified against
+the owning leaf package's real `Method+Path`, e.g. `getInstallationDoctorReport`→`doctor`, `listProjects`→
+`projectsList`, `getWorkspaceState`→ TWO ops `getWorkspaceSetState`+`getRepositoryWorkspaceState` since the doc's
+own row names both concepts in one line), **1 OPEN_GAP_ACKNOWLEDGED**, **0 OPEN_GAP_ACCEPTABLE**, **0
+OPEN_GAP_UNRESOLVED**. The renames are expected, not doc bugs: V6-00's own §1 states a "Proposed operationId"
+is non-binding ("KHÔNG phải giá trị đã freeze... V6-12 là nơi duy nhất compose/freeze operationId thật").
+
+**The one real, acknowledged gap:** `listDefinitions` (§4 Screen 3 row 1, "Danh sách definition (global +
+/projects/{id}/definitions)", owner V6-05, already merged). Grepped every operationId
+`internal/delivery/httpapi/definitions/routes.go` registers (create/validate/publish/get-one/list-versions/diff,
+global and project-scoped) — confirmed there is genuinely no `GET /definitions/{kind}` (or `GET /definitions`)
+list-of-a-kind route. This is a real, standalone gap in V6-05's own already-merged deliverable. Per this task's
+own "Không làm: no new endpoint", it is **not** implemented here — recorded in `knownUnimplementedGaps` with
+full reasoning and flagged as a follow-up via `spawn_task` (see below), not silently invented or silently
+ignored.
+
+`TestKnownRenamedProposalsAreActuallyRegistered` re-verifies every rename-map target against the real contract
+(so the map can never silently rot). `TestEveryOwnerTaskIDIsInTheKnownMergedSet` extracts every distinct
+`V6-NN[X]` token from every row's own Owner Task ID cell across the real doc and asserts each is a member of an
+explicit, reasoned `alreadyMergedTasks` set (derived from V6-12's own dependency list plus its transitive
+closure through V6-08/V6-08A/V6-09/V6-09A/V6-10C/V6-10E) — mechanically proving `knownOpenOwnerTasks` is allowed
+to be empty today, not just "nothing was found."
+
+`TestDetectBreakingChanges_DetectsEveryInjectedBreak` (this codebase's own "prove the guard actually works"
+discipline): a synthetic base `Contract`, four sub-tests each injecting exactly ONE breaking change (removed
+op, method change, path change, scope change) into a copy, asserting `DetectBreakingChanges` reports EXACTLY
+that one change; plus "additive is not breaking" and "identical contracts produce zero changes" sub-tests.
+Never touches the real, evolving production contract, so it can't accidentally start passing/failing for an
+unrelated reason.
+
+`TestRouteInventory_ServedEqualsDeclaredBothDirections` builds the real `net/http.ServeMux` the exact way
+`internal/delivery/httpapi.NewServer` does (`server.go`'s own one-loop construction, reproduced directly, no
+live listener/security middleware needed) and, for every one of the 88 descriptors, asks the real stdlib mux
+which pattern would serve a concrete request (`{param}` segments substituted with a literal) — asserting it
+matches the exact `"METHOD /path"` pattern the descriptor itself names. Direction 2 (nothing served that wasn't
+declared) is true by construction (the loop is the only place anything is ever registered), additionally proven
+operationally for 4 concrete method/path combinations that must not match anything — all deliberately non-GET,
+since `GET /` (bootstrap) is a real, registered `net/http.ServeMux` trailing-slash SUBTREE pattern that
+legitimately catches any GET path with no more specific match (stdlib's own documented behavior, not a bug;
+initially wrote this test with GET cases and had to fix it once real production behavior made two of them
+false-positive fail).
+
+A one-off `TestUndocumentedOperationsSnapshot` pins `CheckUndocumentedOperations`' own reviewed result (16
+operationIds with no literal string match to any UX doc row) as an explicit, sorted golden-style list —
+deliberately a coarser, non-hard-failing signal than the gap checker: manual review confirmed these are
+predominantly expected companion/sibling routes (project-scoped mirrors of global definition endpoints,
+detail-fetch GETs alongside already-documented list GETs) the doc never enumerated as separate rows, individually
+re-justifying all 16 would be exactly the "retrofitting metadata" over-scope this task's own "Không làm" line
+warns against.
+
+`go test ./internal/delivery/httpapi/apicontract/...` — 11 top-level tests (several with sub-tests), all pass.
+Full `go test ./...`: every package `ok` except one pre-existing, unrelated flake —
+`TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` (`cmd/aw`, Windows "process cannot access
+the file because it is being used by another process" on a temp `.exe` — a file-handle-release-timing issue).
+Re-verified fresh rather than trusting the name match: `git diff --stat origin/master -- cmd/aw/adapter_test.go
+cmd/aw/adapter.go` is empty (neither file touched by this branch), and re-running it in isolation 5× gave 4
+pass/1 fail — confirmed flaky and pre-existing, not caused by this task's diff.
+
+### Verify
+
+- **Golden-file schema validation**: `TestContract_MatchesGoldenFixture` + `TestContract_IsDeterministic` — see
+  Test above.
+- **Breaking-change diff gate**: `TestDetectBreakingChanges_DetectsEveryInjectedBreak` (synthetic, proves the
+  guard detects every injected break) + `TestBreakingChangeGate_RealContractHasNoBreakingChangesFromGolden`
+  (real golden vs. fresh) — see Test above.
+- **Exact route inventory**: `TestRouteInventory_ExactCount` (pinned count 88 + spot-checked sample spanning the
+  full `ComposeRoutes` sequence) + `TestRouteInventory_ServedEqualsDeclaredBothDirections` (real
+  `net/http.ServeMux` reverse-check, both directions) — see Test above. Uniqueness of `(Method,Path)` and of
+  `OperationID` is enforced structurally by `httpapi.RouteRegistry.Register` (panics on either duplicate) —
+  every test in this package calling `ComposeRoutes` without panicking is itself a live proof against this real,
+  88-route set.
+- **Dependency/reference checker**: `TestCheckUXGaps_NoUnresolvedGap` (hard gate, 0 unresolved, ACKNOWLEDGED set
+  pinned to exactly `knownUnimplementedGaps`) + `TestKnownRenamedProposalsAreActuallyRegistered` +
+  `TestEveryOwnerTaskIDIsInTheKnownMergedSet` + `TestParseUXDoc_RealDocument` (structural smoke test, catches
+  the escaped-pipe parsing bug) — see Test above.
+- `go build ./... && go vet ./... && go test ./...` clean repo-wide except the one pre-existing, re-verified
+  Windows flake named above.
+
+### Kết quả
+
+New package `internal/delivery/httpcompose` (`compose.go`) — the one place HTTP route composition now happens,
+callable from both `cmd/aw/serve.go` (production) and tests (no live server needed). New package
+`internal/delivery/httpapi/apicontract` (`contract.go`, `breaking.go`, `uxdoc.go`, `uxgap.go` + 5 test files +
+`testdata/golden/contract.json`) — the machine-readable contract generator, golden test, breaking-change gate,
+route-inventory reverse-check, and UX gap-list dependency/reference checker. `cmd/aw/serve.go` reduced by ~150
+lines (route registration moved out, composition-root wiring comments preserved/relocated), now calls
+`httpcompose.ComposeRoutes` once. No new endpoint/DTO/authority added (verified: `apicontract` only reads an
+already-composed `RouteRegistry`, never registers anything). No `internal/delivery/cli` registry touched
+(deferred to V6-15O per the scope clarification).
+
+One real, standalone gap discovered in an already-merged task (V6-05: no `listDefinitions`/`GET /definitions`
+route) — flagged via `spawn_task` for a follow-up, not fixed here (out of V6-12's own scope). One real parsing
+bug found and fixed in the UX-doc gap checker itself (Markdown-escaped pipe misaligning table columns) before it
+could ever produce a wrong "acknowledged"/"unresolved" classification silently.
+
+`go build/vet/test ./...` clean repo-wide (one pre-existing, re-verified Windows flake, unrelated — see Test).
+PR targets `master`.
