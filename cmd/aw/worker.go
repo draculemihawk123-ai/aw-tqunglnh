@@ -49,6 +49,7 @@ import (
 
 const (
 	defaultProjectionInterval  = 500 * time.Millisecond
+	defaultCompletionInterval  = time.Second
 	projectionBatchSize        = 200
 	projectionLeaseTTL         = 30 * time.Second
 	attachmentClaimSweepPeriod = time.Minute
@@ -75,6 +76,7 @@ type workerOptions struct {
 	leaseTTL, leaseHeartbeat            time.Duration
 	pollInterval, shutdownGrace         time.Duration
 	projectionInterval                  time.Duration
+	completionInterval                  time.Duration
 	envAllowlist                        []string
 }
 
@@ -83,9 +85,9 @@ type workerOptions struct {
 // workerpool.Handler (every Registry.Register call lived in a test), so a
 // real `aw serve` could enqueue durable jobs that nothing ever ran. worker
 // registers a handler for every durable job kind, runs the pool until ctx
-// is cancelled, and alongside it drives the two things that have no job of
-// their own: the live projection consumer and the expired-attachment-claim
-// sweep.
+// is cancelled, and alongside it drives the three things that have no job of
+// their own: the live projection consumer, the completion orchestrator and the
+// expired-attachment-claim sweep.
 func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("worker", flag.ContinueOnError)
 	defaults := config.Defaults()
@@ -101,6 +103,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	pollInterval := flags.Duration("poll-interval", pollIntervalDefault, "how long an idle worker waits before polling for a job again")
 	shutdownGrace := flags.Duration("shutdown-grace", defaultShutdownGrace, "how long in-flight jobs may finish after a shutdown signal before their context is cancelled")
 	projectionInterval := flags.Duration("projection-interval", defaultProjectionInterval, "how often the live projection consumer scans the event journal")
+	completionInterval := flags.Duration("completion-interval", defaultCompletionInterval, "how often the completion orchestrator looks for runs waiting in VERIFYING")
 	envAllowlist := flags.String("env-allowlist", "", "comma-separated names of parent environment variables a spawned provider/command process may inherit (default: none)")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
@@ -119,7 +122,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 		workerID: *workerID, concurrency: *concurrency,
 		leaseTTL: *leaseTTL, leaseHeartbeat: *leaseHeartbeat,
 		pollInterval: *pollInterval, shutdownGrace: *shutdownGrace,
-		projectionInterval: *projectionInterval, envAllowlist: splitCommaList(*envAllowlist),
+		projectionInterval: *projectionInterval, completionInterval: *completionInterval, envAllowlist: splitCommaList(*envAllowlist),
 	})
 	if err != nil {
 		return err
@@ -140,16 +143,17 @@ func splitCommaList(raw string) []string {
 
 // assembledWorker is a fully wired, not-yet-running worker process.
 type assembledWorker struct {
-	opts      workerOptions
-	store     *sqlite.Store
-	uow       ports.UnitOfWork
-	ids       idsource.Source
-	clk       clock.Clock
-	artifacts ports.ArtifactStore
-	registry  *workerpool.Registry
-	pool      *workerpool.Pool
-	catalog   *projection.Catalog
-	logger    *logging.Logger
+	opts       workerOptions
+	store      *sqlite.Store
+	uow        ports.UnitOfWork
+	ids        idsource.Source
+	clk        clock.Clock
+	artifacts  ports.ArtifactStore
+	registry   *workerpool.Registry
+	pool       *workerpool.Pool
+	catalog    *projection.Catalog
+	completion *runtime.CompletionOrchestrator
+	logger     *logging.Logger
 }
 
 func (w *assembledWorker) close() { _ = w.store.Close() }
@@ -189,6 +193,14 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	}
 	if opts.codexExecutable != "" {
 		cfg.ProviderExecutables["codex"] = opts.codexExecutable
+	}
+	for _, interval := range []struct {
+		name  string
+		value time.Duration
+	}{{"--projection-interval", opts.projectionInterval}, {"--completion-interval", opts.completionInterval}} {
+		if interval.value <= 0 {
+			return nil, usageError{fmt.Errorf("%s must be positive", interval.name)}
+		}
 	}
 	if err := config.Validate(cfg); err != nil {
 		// config.Validate keeps the per-field problems in Details; without
@@ -257,7 +269,8 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	return &assembledWorker{
 		opts: opts, store: store, uow: uow, ids: deps.ids, clk: deps.clk, artifacts: artifacts,
 		registry: registry, pool: pool, catalog: deps.catalog,
-		logger: logging.New(os.Stderr, logging.JSON, matcher),
+		completion: runtime.NewCompletionOrchestrator(uow, deps.ids, deps.clk),
+		logger:     logging.New(os.Stderr, logging.JSON, matcher),
 	}, nil
 }
 
@@ -345,9 +358,10 @@ func (w *assembledWorker) run(ctx context.Context, stdout io.Writer) error {
 
 	loopCtx, cancelLoops := context.WithCancel(ctx)
 	var loops sync.WaitGroup
-	loops.Add(2)
+	loops.Add(3)
 	go func() { defer loops.Done(); w.driveProjections(loopCtx) }()
 	go func() { defer loops.Done(); w.sweepAttachmentClaims(loopCtx) }()
+	go func() { defer loops.Done(); w.driveCompletion(loopCtx) }()
 
 	fmt.Fprintf(stdout, "{\"workerId\":%q}\n", w.opts.workerID)
 	err := w.pool.Run(ctx)
@@ -432,6 +446,36 @@ func (w *assembledWorker) sweepAttachmentClaims(ctx context.Context) {
 			_ = w.logger.Warn(w.identity(), "attachment claim sweep failed", map[string]any{"error": err.Error()})
 		case err == nil && (report.Released > 0 || report.Purged > 0):
 			_ = w.logger.Info(w.identity(), "attachment claim sweep", map[string]any{"released": report.Released, "purged": report.Purged})
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// driveCompletion is the completion orchestrator's production driver.
+// A WorkflowRun that reaches END waits in VERIFYING, and
+// runtime.EvaluateCompletionCandidate is the only thing that may move it on,
+// but no route, CLI verb or job ever called it, so no run could complete.
+// Each tick decides every VERIFYING run once; the decision is idempotent, so
+// two workers sweeping the same run cannot disagree.
+func (w *assembledWorker) driveCompletion(ctx context.Context) {
+	ticker := time.NewTicker(w.opts.completionInterval)
+	defer ticker.Stop()
+	for {
+		report, err := w.completion.Sweep(ctx)
+		if err != nil && ctx.Err() == nil {
+			_ = w.logger.Warn(w.identity(), "completion orchestrator: sweep failed", map[string]any{"error": err.Error()})
+		}
+		if report.Evaluated > 0 {
+			_ = w.logger.Info(w.identity(), "completion orchestrator: decided completion candidates",
+				map[string]any{"evaluated": report.Evaluated, "outcomes": report.Outcomes})
+		}
+		for _, nodeRunID := range report.ReworkNodeRunIDs {
+			_ = w.logger.Warn(w.identity(), "completion orchestrator: REWORK created a node run that nothing schedules yet (known V5-11 gap)",
+				map[string]any{"nodeRunId": nodeRunID})
 		}
 		select {
 		case <-ctx.Done():

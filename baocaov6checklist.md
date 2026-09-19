@@ -11321,7 +11321,7 @@ composition was the V5 test fixture (`internal/integration/v5accept/fixture_test
 **`cmd/aw/worker.go`** (new) replaces the stub. `aw worker --db --artifact-root --workspace-root` (the same three
 paths `aw serve` takes) plus `--claude-executable/--codex-executable`, `--worker-id` (default `aw-worker-<pid>`, a
 lease-owner identity that must be unique per process), `--worker-concurrency`, `--lease-ttl`, `--lease-heartbeat`,
-`--poll-interval`, `--shutdown-grace`, `--projection-interval` and `--env-allowlist`. It prints one JSON line
+`--poll-interval`, `--shutdown-grace`, `--projection-interval`, `--completion-interval` and `--env-allowlist`. It prints one JSON line
 `{"workerId":"..."}` when ready (the counterpart of `aw serve`'s `{"address":...}`).
 
 - `assembleWorker` opens the database and builds every adapter with the REAL implementation: `artifactstore`,
@@ -11337,10 +11337,10 @@ lease-owner identity that must be unique per process), `--worker-concurrency`, `
   BASELINE_EVIDENCE, WORKSPACE_PROVISION, WORKSPACE_RECONCILIATION, WORKSPACE_SET_RELEASE,
   RELEASE_SET_LOCAL_COMMIT, PROJECTION_REBUILD and ARTIFACT_SWEEP.
 - `run` enqueues the two self-rescheduling control jobs (`StartupRecoveryScan`, `StartupArtifactSweep`), starts the
-  two loops below, and blocks in `workerpool.Pool.Run` until SIGINT/SIGTERM, which stops claiming, waits up to
+  three loops below, and blocks in `workerpool.Pool.Run` until SIGINT/SIGTERM, which stops claiming, waits up to
   `--shutdown-grace` (default 30s) for in-flight jobs, then cancels the loops.
 
-Two pieces of work have no job of their own and previously had no caller anywhere:
+Three pieces of work have no job of their own and previously had no caller anywhere:
 1. **Live projection consumer.** `projection.ApplyBatch` (V6-08A) applies one atomic batch for one (project,
    projection), and its doc expects "a self-rescheduling CONTROL job" to drive it — but no such job kind was ever
    created, so nothing in production advanced a projection and the kanban/detail read models would have stayed
@@ -11351,6 +11351,14 @@ Two pieces of work have no job of their own and previously had no caller anywher
    means "someone else holds it" and is retried next tick. A poison event is logged as an error.
 2. **Expired attachment claims.** `message.ResumeOrCleanExpiredAttachmentClaims` (V6-07A) had no caller.
    `sweepAttachmentClaims` runs it at start and every minute, logging only when it released or purged something.
+3. **Completion candidates.** An END hop moves a WorkflowRun only to `VERIFYING`; ADR-011/ADR-021 reserve the
+   decisive `SUCCEEDED`/`BLOCKED`/`FAILED` transition for `runtime.EvaluateCompletionCandidate`. That application
+   command had no production caller, so every otherwise-successful Run remained in `VERIFYING` forever.
+   `runtime.CompletionOrchestrator` scans active WorkItems for `VERIFYING` runs and invokes that existing, fenced,
+   receipt-backed command with the observed Run version. `driveCompletion` runs it immediately and every
+   `--completion-interval` (default one second). A candidate moved by cancellation or another worker between scan
+   and decision is a harmless no-op; an immutable decision is replayed rather than duplicated. A REWORK decision is
+   logged explicitly because the pre-existing V5-11 rework activation is still deliberately unscheduled.
 
 `aw serve` does not host a worker; the two run as separate processes sharing one SQLite database, which is what
 V6-15P's "`aw serve` + `aw worker` background processes" describes. A config problem now prints its per-field
@@ -11373,6 +11381,11 @@ detail (`config.Validate` keeps it in `Details`, so the bare message was "1 conf
   message naming the problem).
 - `TestRun_StubCommandsReportNotYetImplemented` no longer lists `worker` (only `doctor` is still a stub).
 
+`internal/app/runtime/completion_orchestrator_test.go`, 8 tests: PASS/BLOCK/REWORK outcomes, no second decision on
+a later sweep, non-candidate exclusion, two concurrent sweepers, cancel between read and decision, and a real
+SQLite close/reopen proof. This also proves that the production driver's query chain agrees with SQLite rather than
+only with the fake repositories.
+
 ### Verify
 
 Proven here: a job enqueued through the real application command is run by the real `aw worker` code path, with
@@ -11383,7 +11396,8 @@ contention between `aw serve` and `aw worker`.
 
 ### Kết quả
 
-New: `cmd/aw/worker.go`, `cmd/aw/worker_test.go`. Changed: `cmd/aw/cli.go` (the `worker` entry now points at
+New: `cmd/aw/worker.go`, `cmd/aw/worker_test.go`, `internal/app/runtime/completion_orchestrator.go`,
+`internal/app/runtime/completion_orchestrator_test.go`. Changed: `cmd/aw/cli.go` (the `worker` entry now points at
 `runWorker`), `cmd/aw/cli_test.go` (one list), `cmd/aw/serve.go` (one help string). No migration, no new job kind,
 no change to any handler or adapter. First production composition of `workerpool` in the repository.
 `go build ./...` and `go vet ./...` clean; `go test ./...` passes in 113 packages. The only failures in the one full

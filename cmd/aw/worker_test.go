@@ -94,7 +94,7 @@ func (d workerDirs) options(workerID string) workerOptions {
 		dbPath: d.db, artifactRoot: d.artifacts, workspaceRoot: d.workspaces, workerID: workerID,
 		concurrency: 2, leaseTTL: 6 * time.Second, leaseHeartbeat: 2 * time.Second,
 		pollInterval: 20 * time.Millisecond, shutdownGrace: 5 * time.Second,
-		projectionInterval: 50 * time.Millisecond,
+		projectionInterval: 50 * time.Millisecond, completionInterval: 50 * time.Millisecond,
 	}
 }
 
@@ -103,7 +103,7 @@ func (d workerDirs) args(workerID string) []string {
 		"--db", d.db, "--artifact-root", d.artifacts, "--workspace-root", d.workspaces,
 		"--worker-id", workerID, "--worker-concurrency", "2",
 		"--lease-ttl", "6s", "--lease-heartbeat", "2s", "--poll-interval", "20ms",
-		"--shutdown-grace", "5s", "--projection-interval", "50ms",
+		"--shutdown-grace", "5s", "--projection-interval", "50ms", "--completion-interval", "50ms",
 	}
 }
 
@@ -303,6 +303,8 @@ func TestWorkerRejectsMissingOrInvalidFlags(t *testing.T) {
 		{"missing workspace root flag", []string{"--db", dirs.db, "--artifact-root", dirs.artifacts}, "--workspace-root is required"},
 		{"artifact root that does not exist", []string{"--db", dirs.db, "--artifact-root", filepath.Join(dirs.artifacts, "missing"), "--workspace-root", dirs.workspaces}, "is not an existing directory"},
 		{"heartbeat not shorter than lease", append(dirs.args("aw-worker-bad"), "--lease-heartbeat", "10m"), "lease_heartbeat"},
+		{"non-positive projection interval", append(dirs.args("aw-worker-bad"), "--projection-interval", "0s"), "--projection-interval must be positive"},
+		{"non-positive completion interval", append(dirs.args("aw-worker-bad"), "--completion-interval", "0s"), "--completion-interval must be positive"},
 		{"unknown flag", []string{"--not-a-real-flag"}, "not-a-real-flag"},
 	}
 	for _, tc := range cases {
