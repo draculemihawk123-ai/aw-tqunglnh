@@ -54,8 +54,9 @@ func TestRun_UnknownCommand(t *testing.T) {
 
 func TestRun_StubCommandsReportNotYetImplemented(t *testing.T) {
 	// "serve" is V6-01's own real implementation now (see serve.go/serve_test.go)
-	// — it no longer belongs in this stub-only list.
-	for _, name := range []string{"worker", "doctor"} {
+	// and "worker" is V6-14's (see worker.go/worker_test.go) — neither belongs
+	// in this stub-only list.
+	for _, name := range []string{"doctor"} {
 		var stdout, stderr bytes.Buffer
 		code := run([]string{name}, &stdout, &stderr)
 		if code != exitFailure {

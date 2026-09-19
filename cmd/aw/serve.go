@@ -114,7 +114,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// of running a worker), so it defaults to a stable, always-valid value
 	// rather than leaving Doctor permanently, un-actionably BLOCKED on every
 	// installation that never sets it.
-	workerID := flags.String("worker-id", "aw-serve", "identity string recorded in this process' own config.Config for GET /doctor's config-validity check; this process does not itself run the lease/reaper worker pool (see the future `aw worker` command's own --worker-id for that)")
+	workerID := flags.String("worker-id", "aw-serve", "identity string recorded in this process' own config.Config for GET /doctor's config-validity check; this process does not itself run the lease/reaper worker pool (run `aw worker` for that; it has its own --worker-id)")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
