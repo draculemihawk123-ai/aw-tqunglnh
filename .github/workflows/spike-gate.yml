@@ -87,7 +87,13 @@ jobs:
     name: Linux race and stability (V0-12)
     runs-on: ubuntu-latest
     needs: contract
-    timeout-minutes: 25
+    # This job intentionally runs the whole repository under -race and then
+    # ten clean offline-suite passes.  Twenty-five minutes is shorter than
+    # that required evidence on the current GitHub Linux runner, which
+    # turns a still-running gate into a CANCELLED check rather than a real
+    # pass/fail result.  The limit is a safety ceiling, not reserved runner
+    # time; billing still follows actual execution time.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
