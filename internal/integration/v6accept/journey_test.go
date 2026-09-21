@@ -261,7 +261,9 @@ func (j *journey) projectAndRepository(t *testing.T) {
 // of the published workflow.
 func (j *journey) workItemAndRun(t *testing.T) {
 	api := j.s.api
-	grant := []map[string]any{{"repositoryId": j.repositoryID, "access": "WRITE", "reason": "v6 acceptance"}}
+	// The grant is narrowed to src/ on purpose: the later scope-expansion stage
+	// then has something real to expand (docs/), decided by a human.
+	grant := []map[string]any{{"repositoryId": j.repositoryID, "access": "WRITE", "pathScopes": []string{"src/"}, "reason": "v6 acceptance"}}
 
 	root := api.post(t, "/projects/"+j.projectID+"/work-items", map[string]any{
 		"title": "acceptance-root", "initialScope": grant,
@@ -280,6 +282,17 @@ func (j *journey) workItemAndRun(t *testing.T) {
 
 	child := api.post(t, "/projects/"+j.projectID+"/work-items/"+j.rootWorkItemID+"/children", map[string]any{
 		"title": "acceptance-child", "parentJoinPolicy": "v6-acceptance-child", "effectiveScope": grant,
+		// The readiness contract travels with the create command (V6-04B):
+		// without it no WorkItem could ever be marked READY over HTTP.
+		"contract": map[string]any{
+			"schemaVersion":      1,
+			"behavior":           "the acceptance repository is verified by the machine gate",
+			"acceptanceCriteria": []map[string]any{{"description": "the gate reports PASS for the maker's output", "verificationRef": j.verification.workflow.definitionID}},
+			"verificationSpec":   "machine gate over the maker command's output",
+			"riskLevel":          "LOW",
+			"exclusions":         []string{"no network access"},
+			"workflowVersionId":  j.verification.workflow.versionID,
+		},
 	}).requireStatus(t, http.StatusCreated)
 	t.Logf("child work item: %s", tail(string(child.body), 800))
 	var childResult struct {
