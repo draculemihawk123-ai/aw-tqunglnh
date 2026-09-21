@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -52,7 +51,7 @@ func TestSPK03HardCrashJoinsCheckpointContextRecovery(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-crash-checkpoint.db")
+	databasePath := migratedDatabasePath(t, "agentkit-crash-checkpoint.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("open initial store: %v", err)

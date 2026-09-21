@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 
 func openSafeSettingsTestStore(t *testing.T, name string) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := Open(context.Background(), migratedDatabasePath(t, name))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -39,7 +38,9 @@ func validDesired() safesettings.SafeSettings {
 // has the singleton row at Version 1 with the zero-value desired document —
 // never ports.ErrPersistenceNotFound.
 func TestSafeSettingsRepository_Get_SeededByMigration(t *testing.T) {
-	store := openSafeSettingsTestStore(t, "safe-settings-seed.db")
+	// Seeded-by-migration test: keeps the real fresh-open/migrate path (see
+	// template_db_test.go) rather than the shared pre-migrated template.
+	store := openFreshStore(t, "safe-settings-seed.db")
 	uow := NewUnitOfWork(store)
 
 	var record ports.SafeSettingsRecord

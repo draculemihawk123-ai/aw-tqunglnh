@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -35,7 +34,7 @@ func TestSPK04FaultBeforeIntentJobCommitLeavesNothing(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-crash-before-intent.db")
+	databasePath := migratedDatabasePath(t, "agentkit-crash-before-intent.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("open initial store: %v", err)
@@ -124,7 +123,7 @@ func TestSPK04FaultAfterIntentJobCommitBeforeClaim(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-crash-after-intent.db")
+	databasePath := migratedDatabasePath(t, "agentkit-crash-after-intent.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("open initial store: %v", err)

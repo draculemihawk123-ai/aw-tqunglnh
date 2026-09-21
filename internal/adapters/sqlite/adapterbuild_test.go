@@ -14,7 +14,7 @@ import (
 
 func openAdapterBuildTestStore(t *testing.T, name string) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := Open(context.Background(), migratedDatabasePath(t, name))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestAdapterBuild_ProbeRegisterRoundTrip_RealSQLite(t *testing.T) {
 // (only an explicit rotation should do that).
 func TestAdapterBuild_SigningKeySurvivesRestart(t *testing.T) {
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-adapterbuild-restart.db")
+	databasePath := migratedDatabasePath(t, "agentkit-adapterbuild-restart.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -144,7 +144,9 @@ func TestAdapterBuild_SigningKeySurvivesRestart(t *testing.T) {
 // definitions/definition_versions — there is no project_id column at all
 // for any query to (correctly or incorrectly) filter on.
 func TestAdapterBuildVersionsTable_HasNoProjectIDColumn(t *testing.T) {
-	store := openAdapterBuildTestStore(t, "agentkit-adapterbuild-schema.db")
+	// Schema-shape test: keeps the real fresh-open/migrate path (see
+	// template_db_test.go) rather than the shared pre-migrated template.
+	store := openFreshStore(t, "agentkit-adapterbuild-schema.db")
 	rows, err := store.db.QueryContext(context.Background(), `PRAGMA table_info(adapter_build_versions)`)
 	if err != nil {
 		t.Fatalf("PRAGMA table_info: %v", err)
@@ -218,7 +220,7 @@ func TestAdapterBuild_ListVisibleAcrossAnyCaller_NoProjectFiltering(t *testing.T
 // currently wires the two together.
 func TestAdapterBuild_RegisteringNewBuildNeverRepinsExistingWorkflowVersion(t *testing.T) {
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-adapterbuild-norepin.db")
+	databasePath := migratedDatabasePath(t, "agentkit-adapterbuild-norepin.db")
 	store := openWorkflowTestStore(t, ctx, databasePath)
 	t.Cleanup(func() { store.Close() })
 	seedWorkflowRunOwners(t, ctx, store)
