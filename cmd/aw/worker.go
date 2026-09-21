@@ -366,10 +366,10 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 // until ctx is cancelled.
 func (w *assembledWorker) run(ctx context.Context, stdout io.Writer) error {
 	if err := runtime.StartupRecoveryScan(ctx, w.uow, w.ids); err != nil {
-		return fmt.Errorf("startup recovery scan: %w", err)
+		return cleanShutdown(ctx, fmt.Errorf("startup recovery scan: %w", err))
 	}
 	if err := artifactsweep.StartupArtifactSweep(ctx, w.uow, w.ids); err != nil {
-		return fmt.Errorf("startup artifact sweep: %w", err)
+		return cleanShutdown(ctx, fmt.Errorf("startup artifact sweep: %w", err))
 	}
 
 	loopCtx, cancelLoops := context.WithCancel(ctx)
@@ -383,6 +383,18 @@ func (w *assembledWorker) run(ctx context.Context, stdout io.Writer) error {
 	err := w.pool.Run(ctx)
 	cancelLoops()
 	loops.Wait()
+	return cleanShutdown(ctx, err)
+}
+
+// cleanShutdown reports an operator-requested shutdown as success. A signal
+// that lands while the pool is still in its own startup recovery scan makes
+// that scan fail with context.Canceled; that error IS the shutdown, not a fault,
+// and must not turn Ctrl+C into "aw: ... context canceled" and exit code 1. Any
+// other error, or a context.Canceled nobody asked for, is still returned.
+func cleanShutdown(ctx context.Context, err error) error {
+	if err != nil && ctx.Err() != nil && errors.Is(err, context.Canceled) {
+		return nil
+	}
 	return err
 }
 
