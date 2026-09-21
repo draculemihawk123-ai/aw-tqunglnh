@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/artifactsweep"
 	"github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -95,6 +96,7 @@ func (d workerDirs) options(workerID string) workerOptions {
 		concurrency: 2, leaseTTL: 6 * time.Second, leaseHeartbeat: 2 * time.Second,
 		pollInterval: 20 * time.Millisecond, shutdownGrace: 5 * time.Second,
 		projectionInterval: 50 * time.Millisecond, completionInterval: 50 * time.Millisecond,
+		reaperInterval: 50 * time.Millisecond, sweepInterval: 50 * time.Millisecond,
 	}
 }
 
@@ -288,6 +290,52 @@ func TestWorkerShutsDownCleanlyWhenIdle(t *testing.T) {
 	}
 	if elapsed := time.Since(begin); elapsed > 10*time.Second {
 		t.Errorf("idle worker took %s to shut down, want a prompt return", elapsed)
+	}
+}
+
+// TestWorkerDoesNotSpinItsSelfReschedulingControlJobsWhenIdle is the guard for
+// a production bug the first real `aw worker` exposed: RECOVERY_REAPER and
+// ARTIFACT_SWEEP re-enqueued their successor as claimable immediately, so an
+// idle worker ran the sweep ~200 times a second and appended one
+// ARTIFACT_SWEEP_COMPLETED journal event each time, without bound. With the
+// default intervals the startup sweep runs once and its successor is an hour
+// away, so an idle worker appends at most that one event.
+func TestWorkerDoesNotSpinItsSelfReschedulingControlJobsWhenIdle(t *testing.T) {
+	requireGit(t)
+	dirs := newWorkerDirs(t)
+	stdout, stop := startWorker(t, dirs, "aw-worker-no-spin")
+	waitUntil(t, "worker to announce readiness", 15*time.Second, func() bool {
+		return strings.Contains(stdout.String(), `"workerId":"aw-worker-no-spin"`)
+	})
+	time.Sleep(3 * time.Second)
+	if err := stop(); err != nil {
+		t.Fatalf("worker returned an error on shutdown: %v", err)
+	}
+
+	ctx := context.Background()
+	store, uow, err := openDefinitionDB(ctx, dirs.db)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer store.Close()
+	sweeps := 0
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		events, err := tx.Events().ScanJournal(ctx, 0, 100000)
+		if err != nil {
+			return err
+		}
+		for _, event := range events {
+			if event.EventType == artifactsweep.ArtifactSweepCompletedEventType {
+				sweeps++
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("scan journal: %v", err)
+	}
+	if sweeps > 1 {
+		t.Fatalf("an idle worker recorded %d %s events in ~3s, want at most 1 (the startup sweep): the control job is spinning",
+			sweeps, artifactsweep.ArtifactSweepCompletedEventType)
 	}
 }
 

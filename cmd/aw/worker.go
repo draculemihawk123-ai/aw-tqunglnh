@@ -50,6 +50,11 @@ import (
 const (
 	defaultProjectionInterval  = 500 * time.Millisecond
 	defaultCompletionInterval  = time.Second
+	// The two self-rescheduling CONTROL jobs must never be claimable again the
+	// instant they finish, or an idle worker re-runs them hundreds of times a
+	// second (each artifact sweep also appends a journal event).
+	defaultReaperInterval = runtime.DefaultRecoveryReaperInterval
+	defaultSweepInterval  = artifactsweep.DefaultInterval
 	projectionBatchSize        = 200
 	projectionLeaseTTL         = 30 * time.Second
 	attachmentClaimSweepPeriod = time.Minute
@@ -77,6 +82,7 @@ type workerOptions struct {
 	pollInterval, shutdownGrace         time.Duration
 	projectionInterval                  time.Duration
 	completionInterval                  time.Duration
+	reaperInterval, sweepInterval       time.Duration
 	envAllowlist                        []string
 }
 
@@ -104,6 +110,8 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	shutdownGrace := flags.Duration("shutdown-grace", defaultShutdownGrace, "how long in-flight jobs may finish after a shutdown signal before their context is cancelled")
 	projectionInterval := flags.Duration("projection-interval", defaultProjectionInterval, "how often the live projection consumer scans the event journal")
 	completionInterval := flags.Duration("completion-interval", defaultCompletionInterval, "how often the completion orchestrator looks for runs waiting in VERIFYING")
+	reaperInterval := flags.Duration("reaper-interval", defaultReaperInterval, "pause between two recovery-reaper passes (orphaned attempts, stranded cancellation intents)")
+	sweepInterval := flags.Duration("sweep-interval", defaultSweepInterval, "pause between two artifact retention sweeps")
 	envAllowlist := flags.String("env-allowlist", "", "comma-separated names of parent environment variables a spawned provider/command process may inherit (default: none)")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
@@ -122,7 +130,8 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 		workerID: *workerID, concurrency: *concurrency,
 		leaseTTL: *leaseTTL, leaseHeartbeat: *leaseHeartbeat,
 		pollInterval: *pollInterval, shutdownGrace: *shutdownGrace,
-		projectionInterval: *projectionInterval, completionInterval: *completionInterval, envAllowlist: splitCommaList(*envAllowlist),
+		projectionInterval: *projectionInterval, completionInterval: *completionInterval,
+		reaperInterval: *reaperInterval, sweepInterval: *sweepInterval, envAllowlist: splitCommaList(*envAllowlist),
 	})
 	if err != nil {
 		return err
@@ -175,6 +184,9 @@ type workerDeps struct {
 	events     *eventschema.Registry
 	prober     ports.RepositoryProber
 	catalog    *projection.Catalog
+	// reaperInterval/sweepInterval are the pauses the two self-rescheduling
+	// CONTROL jobs leave between passes.
+	reaperInterval, sweepInterval time.Duration
 }
 
 // assembleWorker opens the database and every adapter and wires the handler
@@ -197,7 +209,10 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	for _, interval := range []struct {
 		name  string
 		value time.Duration
-	}{{"--projection-interval", opts.projectionInterval}, {"--completion-interval", opts.completionInterval}} {
+	}{
+		{"--projection-interval", opts.projectionInterval}, {"--completion-interval", opts.completionInterval},
+		{"--reaper-interval", opts.reaperInterval}, {"--sweep-interval", opts.sweepInterval},
+	} {
 		if interval.value <= 0 {
 			return nil, usageError{fmt.Errorf("%s must be positive", interval.name)}
 		}
@@ -254,6 +269,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 		secrets: secretenv.NewResolver(), agents: agents, isolation: process.NewIsolationChecker(),
 		execConfig: process.NewRuntimeExecutionConfigProvider(cfg), matcher: matcher, events: events,
 		prober: prober, catalog: projection.NewCatalog(),
+		reaperInterval: opts.reaperInterval, sweepInterval: opts.sweepInterval,
 	}
 	registry := buildWorkerRegistry(deps)
 
@@ -325,7 +341,7 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(d.uow, d.ids))
 	registry.Register(appwork.ScopeExpansionReconcileJobKind, runtime.NewScopeExpansionReconcileHandler(d.uow, d.ids))
 	registry.Register(runtime.CancelRunCoordinatorJobKind, runtime.NewCancelRunCoordinatorHandler(d.uow, d.ids))
-	registry.Register(runtime.RecoveryReaperJobKind, runtime.NewRecoveryReaperHandler(d.uow, d.ids, d.clk, d.store, d.store, d.store))
+	registry.Register(runtime.RecoveryReaperJobKind, runtime.NewRecoveryReaperHandler(d.uow, d.ids, d.clk, d.store, d.store, d.store, runtime.WithRecoveryReaperInterval(d.reaperInterval)))
 	// Catalog and workspace.
 	registry.Register(catalog.RepositoryProbeJobKind, repositoryprobe.New(d.uow, d.ids, d.prober))
 	registry.Register(readinesscheck.BaselineEvidenceJobKind, readinesscheck.New(d.uow, d.ids, d.supervisor, d.provider))
@@ -341,7 +357,7 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 		UnitOfWork: d.uow, IDs: d.ids, Catalog: d.catalog,
 	}))
 	// Retention.
-	registry.Register(artifactsweep.ArtifactSweepJobKind, artifactsweep.NewHandler(d.uow, d.ids, d.clk, d.artifacts))
+	registry.Register(artifactsweep.ArtifactSweepJobKind, artifactsweep.NewHandler(d.uow, d.ids, d.clk, d.artifacts, artifactsweep.WithInterval(d.sweepInterval)))
 	return registry
 }
 

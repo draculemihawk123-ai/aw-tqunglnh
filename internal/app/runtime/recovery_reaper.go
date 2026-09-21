@@ -195,14 +195,41 @@ type RecoveryReaperHandler struct {
 	// expire is never mistaken for orphaned out from under it. Defaults to
 	// zero (no grace) via NewRecoveryReaperHandler.
 	leaseGrace time.Duration
+	// interval is how long the self-rescheduled successor job waits before a
+	// worker may claim it. Zero (the default) keeps the historical behaviour -
+	// the successor is claimable at once - which tests that drive the loop by
+	// hand rely on; a real worker composition must set it (see
+	// DefaultRecoveryReaperInterval), otherwise an idle worker re-runs the
+	// reaper hundreds of times per second.
+	interval time.Duration
+}
+
+// DefaultRecoveryReaperInterval is the pause a production worker leaves
+// between two reaper passes: short enough that a crashed worker's orphaned
+// attempts are recovered promptly (worker leases default to 30s), long enough
+// that an idle installation does not spin.
+const DefaultRecoveryReaperInterval = 5 * time.Second
+
+// RecoveryReaperOption customizes NewRecoveryReaperHandler.
+type RecoveryReaperOption func(*RecoveryReaperHandler)
+
+// WithRecoveryReaperInterval sets how long the next reaper pass waits after
+// this one.
+func WithRecoveryReaperInterval(interval time.Duration) RecoveryReaperOption {
+	return func(h *RecoveryReaperHandler) { h.interval = interval }
 }
 
 // NewRecoveryReaperHandler returns a ready-to-register RecoveryReaperHandler.
 func NewRecoveryReaperHandler(
 	uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock,
 	interruptions worker.InterruptionRecoveryStore, workspaces worker.WorkspaceReconciler, recovery worker.RecoveryStore,
+	options ...RecoveryReaperOption,
 ) *RecoveryReaperHandler {
-	return &RecoveryReaperHandler{uow: uow, ids: ids, clk: clk, interruptions: interruptions, workspaces: workspaces, recovery: recovery}
+	h := &RecoveryReaperHandler{uow: uow, ids: ids, clk: clk, interruptions: interruptions, workspaces: workspaces, recovery: recovery}
+	for _, option := range options {
+		option(h)
+	}
+	return h
 }
 
 var _ workerpool.Handler = (*RecoveryReaperHandler)(nil)
@@ -221,11 +248,14 @@ func StartupRecoveryScan(ctx context.Context, uow ports.UnitOfWork, ids idsource
 		if err != nil {
 			return err
 		}
-		return enqueueRecoveryReaperJobTx(ctx, tx, ids, state.Generation, "")
+		return enqueueRecoveryReaperJobTx(ctx, tx, ids, state.Generation, "", time.Time{})
 	})
 }
 
-func enqueueRecoveryReaperJobTx(ctx context.Context, tx ports.Tx, ids idsource.Source, generation uint64, correlationID string) error {
+// enqueueRecoveryReaperJobTx enqueues the RECOVERY_REAPER job for generation.
+// availableAt is the earliest time a worker may claim it; the zero time means
+// "immediately" (the very first job, at worker startup, and hand-driven tests).
+func enqueueRecoveryReaperJobTx(ctx context.Context, tx ports.Tx, ids idsource.Source, generation uint64, correlationID string, availableAt time.Time) error {
 	payload, err := json.Marshal(RecoveryReaperJobPayload{Generation: generation, CorrelationID: correlationID})
 	if err != nil {
 		return fmt.Errorf("marshal %s job payload: %w", RecoveryReaperJobKind, err)
@@ -233,7 +263,8 @@ func enqueueRecoveryReaperJobTx(ctx context.Context, tx ports.Tx, ids idsource.S
 	_, err = tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
 		ID: ports.JobID(ids.NewID()), Kind: RecoveryReaperJobKind,
 		AggregateType: "RecoveryReaper", AggregateID: "singleton", Payload: payload,
-		MaxClaims: defaultRecoveryReaperJobMaxClaims, IdempotencyKey: fmt.Sprintf("recovery-reaper:%d", generation),
+		AvailableAt: availableAt,
+		MaxClaims:   defaultRecoveryReaperJobMaxClaims, IdempotencyKey: fmt.Sprintf("recovery-reaper:%d", generation),
 	})
 	if errors.Is(err, ports.ErrPersistenceAlreadyExists) {
 		// Another coordinator already enqueued this exact generation's own
@@ -279,7 +310,11 @@ func (h *RecoveryReaperHandler) Handle(ctx context.Context, job ports.DurableJob
 		if err != nil {
 			return err
 		}
-		return enqueueRecoveryReaperJobTx(ctx, tx, h.ids, advanced.Generation, payload.CorrelationID)
+		var availableAt time.Time
+		if h.interval > 0 {
+			availableAt = h.clk.Now().Add(h.interval)
+		}
+		return enqueueRecoveryReaperJobTx(ctx, tx, h.ids, advanced.Generation, payload.CorrelationID, availableAt)
 	})
 }
 

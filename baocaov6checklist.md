@@ -11406,3 +11406,34 @@ run were `cmd/aw` `TestAdapterRegister_DriftCreatesNewBuild` and
 rewriting a `.exe`, under the parallel full-suite load). The same two failed in V6-13's full run, where `cmd/aw` was
 untouched; with the final code here the whole `./cmd/aw` package passed twice in a row and the two adapter tests
 passed 5/5 alone. PR targets `master`.
+
+### Post-open fix - both self-rescheduling CONTROL jobs were hot loops (found by the V6-14 black-box journey)
+
+Building the black-box journey (V6-14 part 2) against the real `aw serve` + `aw worker` processes showed that an
+**idle** worker never stopped working: over six seconds with nothing to do, the journal gained ~1200
+`ARTIFACT_SWEEP_COMPLETED` events and `durable_jobs` gained ~1200 `ARTIFACT_SWEEP` and ~590 `RECOVERY_REAPER`
+rows, all `SUCCEEDED`. Cause: `enqueueArtifactSweepJobTx` and `enqueueRecoveryReaperJobTx` (V5-14, V5-13) enqueue the
+successor generation with no `AvailableAt`, so it is claimable the instant its predecessor finishes. Nothing ever
+noticed because every earlier caller drove the handlers by hand; V6-14 part 1 is the first code that runs them in a
+loop. Consequences if shipped: unbounded journal and job-table growth (~100+ writes a second, forever), fsync-bound
+SQLite contention with real work, and - visible in the journey as an intermittent HTTP 409 - the SSE retention window
+(`defaultRetentionScanLimit` = 1000 rows after the cursor) being exceeded by noise, forcing clients into a full resync.
+
+Fix (no schema, event or job-kind change):
+- `ExecuteArtifactSweepDeps.Interval` / `artifactsweep.WithInterval` and `RecoveryReaperHandler.interval` /
+  `runtime.WithRecoveryReaperInterval`: the self-rescheduled successor is enqueued with `AvailableAt = now + interval`.
+  The very first job (`StartupArtifactSweep` / `StartupRecoveryScan`) still runs immediately. A zero interval keeps the
+  old claim-at-once behaviour, because the existing hand-driven tests (V5-13/V5-14/V5-15) rely on it and are unchanged.
+- Production defaults: reaper every 5s (`runtime.DefaultRecoveryReaperInterval`; worker leases default to 30s so
+  recovery stays prompt), sweep hourly (`artifactsweep.DefaultInterval`; the sweep is dry-run by default and only
+  considers Orphans older than 7 days). `aw worker` gains `--reaper-interval` and `--sweep-interval` (must be positive).
+
+Tests: `TestHandler_WithInterval_SuccessorIsNotClaimableUntilTheIntervalElapses` and
+`TestRecoveryReaperHandler_WithInterval_SuccessorIsNotClaimableUntilTheIntervalElapses` (real SQLite; a worker polling
+right after a pass gets `ErrNoJobAvailable`), their zero-interval counterparts documenting the legacy behaviour, and
+`TestWorkerDoesNotSpinItsSelfReschedulingControlJobsWhenIdle` (the real worker entry point idles three seconds and may
+append at most the one startup sweep event). Fail-closed check: with `defaultSweepInterval` forced to 1ns the worker
+test failed with "an idle worker recorded 737 ARTIFACT_SWEEP_COMPLETED events in ~3s"; restored. `go build ./...`,
+`go vet ./...`, and `go test` for `internal/app/runtime`, `internal/app/artifactsweep`, `cmd/aw`, `internal/integration/...`
+and `internal/app/workerpool` pass. **Lesson**: a self-rescheduling job needs a rescheduling *delay* as a first-class,
+tested part of its contract; "one job per generation" idempotency prevents duplicates but says nothing about cadence.
