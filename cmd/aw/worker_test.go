@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -336,6 +338,29 @@ func TestWorkerDoesNotSpinItsSelfReschedulingControlJobsWhenIdle(t *testing.T) {
 	if sweeps > 1 {
 		t.Fatalf("an idle worker recorded %d %s events in ~3s, want at most 1 (the startup sweep): the control job is spinning",
 			sweeps, artifactsweep.ArtifactSweepCompletedEventType)
+	}
+}
+
+// A shutdown signal that lands while the pool is still in its startup recovery
+// scan surfaces from workerpool as "startup recovery scan: ... context
+// canceled" (seen intermittently on Linux CI: the test above cancels right
+// after the readiness line). That is the shutdown, not a fault.
+func TestCleanShutdownTreatsRequestedCancellationAsSuccess(t *testing.T) {
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	wrapped := fmt.Errorf("workerpool: startup recovery scan: recover expired durable jobs: %w", context.Canceled)
+	if err := cleanShutdown(cancelled, wrapped); err != nil {
+		t.Fatalf("cleanShutdown(cancelled ctx, wrapped context.Canceled) = %v, want nil", err)
+	}
+	if err := cleanShutdown(context.Background(), wrapped); err == nil {
+		t.Fatal("a context.Canceled nobody asked for (live ctx) must still be reported")
+	}
+	other := errors.New("disk full")
+	if err := cleanShutdown(cancelled, other); !errors.Is(err, other) {
+		t.Fatalf("cleanShutdown must not swallow an unrelated error, got %v", err)
+	}
+	if err := cleanShutdown(cancelled, nil); err != nil {
+		t.Fatalf("cleanShutdown(nil) = %v", err)
 	}
 }
 
