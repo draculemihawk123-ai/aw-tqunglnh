@@ -130,11 +130,18 @@ func StartupArtifactSweep(ctx context.Context, uow ports.UnitOfWork, ids idsourc
 		if err != nil {
 			return err
 		}
-		return enqueueArtifactSweepJobTx(ctx, tx, ids, state.Generation, "")
+		return enqueueArtifactSweepJobTx(ctx, tx, ids, state.Generation, "", time.Time{})
 	})
 }
 
-func enqueueArtifactSweepJobTx(ctx context.Context, tx ports.Tx, ids idsource.Source, generation uint64, correlationID string) error {
+// enqueueArtifactSweepJobTx enqueues the ARTIFACT_SWEEP job for generation.
+// availableAt is the earliest time a worker may claim it; the zero time means
+// "immediately" (the very first job, at worker startup). Every self-rescheduled
+// successor passes now+Interval instead - without that delay a completed sweep
+// makes the next one claimable at once, and an idle worker re-runs the sweep
+// (and appends one ARTIFACT_SWEEP_COMPLETED event each time) hundreds of times
+// per second for as long as it is up.
+func enqueueArtifactSweepJobTx(ctx context.Context, tx ports.Tx, ids idsource.Source, generation uint64, correlationID string, availableAt time.Time) error {
 	payload, err := json.Marshal(ArtifactSweepJobPayload{Generation: generation, CorrelationID: correlationID})
 	if err != nil {
 		return fmt.Errorf("marshal %s job payload: %w", ArtifactSweepJobKind, err)
@@ -142,7 +149,8 @@ func enqueueArtifactSweepJobTx(ctx context.Context, tx ports.Tx, ids idsource.So
 	_, err = tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
 		ID: ports.JobID(ids.NewID()), Kind: ArtifactSweepJobKind,
 		AggregateType: "ArtifactSweep", AggregateID: "singleton", Payload: payload,
-		MaxClaims: defaultArtifactSweepJobMaxClaims, IdempotencyKey: fmt.Sprintf("artifact-sweep:%d", generation),
+		AvailableAt: availableAt,
+		MaxClaims:   defaultArtifactSweepJobMaxClaims, IdempotencyKey: fmt.Sprintf("artifact-sweep:%d", generation),
 	})
 	if errors.Is(err, ports.ErrPersistenceAlreadyExists) {
 		// Another coordinator already enqueued this exact generation's own
@@ -240,7 +248,18 @@ type ExecuteArtifactSweepDeps struct {
 	IDs        idsource.Source
 	Clock      clock.Clock
 	Store      ports.ArtifactStore
+	// Interval is how long the self-rescheduled successor job waits before a
+	// worker may claim it. Zero keeps the historical behaviour (claimable at
+	// once), which unit tests that drive the loop by hand rely on; a real worker
+	// composition must set it (see DefaultInterval).
+	Interval time.Duration
 }
+
+// DefaultInterval is the pause a production worker leaves between two
+// artifact sweeps. The sweep is dry-run by default and only ever considers
+// Orphan rows older than orphanGrace (7 days), so an hourly cadence loses
+// nothing while keeping the journal quiet.
+const DefaultInterval = time.Hour
 
 // ExecuteArtifactSweep is one full sweep pass: list Orphan candidates past
 // grace, classify each distinct shared-Locator group, act (real run) or
@@ -313,7 +332,11 @@ func ExecuteArtifactSweep(ctx context.Context, deps ExecuteArtifactSweepDeps, ge
 		if err != nil {
 			return err
 		}
-		return enqueueArtifactSweepJobTx(ctx, tx, deps.IDs, advanced.Generation, correlationID)
+		var availableAt time.Time
+		if deps.Interval > 0 {
+			availableAt = deps.Clock.Now().Add(deps.Interval)
+		}
+		return enqueueArtifactSweepJobTx(ctx, tx, deps.IDs, advanced.Generation, correlationID, availableAt)
 	})
 }
 
@@ -421,9 +444,22 @@ type Handler struct {
 	deps ExecuteArtifactSweepDeps
 }
 
+// HandlerOption customizes NewHandler.
+type HandlerOption func(*Handler)
+
+// WithInterval sets how long the next sweep waits after this one (see
+// ExecuteArtifactSweepDeps.Interval).
+func WithInterval(interval time.Duration) HandlerOption {
+	return func(h *Handler) { h.deps.Interval = interval }
+}
+
 // NewHandler returns a ready-to-register Handler.
-func NewHandler(uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, store ports.ArtifactStore) *Handler {
-	return &Handler{deps: ExecuteArtifactSweepDeps{UnitOfWork: uow, IDs: ids, Clock: clk, Store: store}}
+func NewHandler(uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, store ports.ArtifactStore, options ...HandlerOption) *Handler {
+	h := &Handler{deps: ExecuteArtifactSweepDeps{UnitOfWork: uow, IDs: ids, Clock: clk, Store: store}}
+	for _, option := range options {
+		option(h)
+	}
+	return h
 }
 
 var _ workerpool.Handler = (*Handler)(nil)
