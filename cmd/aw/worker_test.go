@@ -99,6 +99,7 @@ func (d workerDirs) options(workerID string) workerOptions {
 		pollInterval: 20 * time.Millisecond, shutdownGrace: 5 * time.Second,
 		projectionInterval: 50 * time.Millisecond, completionInterval: 50 * time.Millisecond,
 		reaperInterval: 50 * time.Millisecond, sweepInterval: 50 * time.Millisecond,
+		localCommitWriteLeaseTTL: localCommitWriteLeaseTTL,
 	}
 }
 

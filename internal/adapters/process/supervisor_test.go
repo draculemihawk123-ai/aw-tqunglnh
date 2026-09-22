@@ -156,6 +156,70 @@ func TestSupervisorCancelKillsDescendantProcess(t *testing.T) {
 	}
 }
 
+// TestSupervisorHardKillTerminatesTreeWithNoGracePeriod proves HardKill's
+// own defining difference from Cancel: it never waits out
+// spec.GracePeriod. The spec below sets a generous 3s GracePeriod — long
+// enough that a graceful-then-escalate path (Cancel) would measurably take
+// a large fraction of it before the forced kill ever fires — and asserts
+// HardKill still returns in well under a second, with the whole descendant
+// tree (not just the direct child) confirmed gone.
+func TestSupervisorHardKillTerminatesTreeWithNoGracePeriod(t *testing.T) {
+	t.Parallel()
+
+	marker := filepath.Join(t.TempDir(), "hardkill-descendant-alive")
+	supervisor := NewSupervisor()
+	ready := newNotifyingWriter("ready")
+	resultChannel := make(chan ports.ProcessResult, 1)
+	errorChannel := make(chan error, 1)
+
+	spec := helperSpec("descendant", 5*time.Second)
+	spec.GracePeriod = 3 * time.Second
+	spec.Environment["AGENTKIT_DESCENDANT_MARKER"] = marker
+
+	var started time.Time
+	go func() {
+		started = time.Now()
+		result, err := supervisor.Run(context.Background(), spec, ready, nil)
+		resultChannel <- result
+		errorChannel <- err
+	}()
+
+	select {
+	case <-ready.notified:
+	case <-time.After(2 * time.Second):
+		t.Fatal("helper did not become ready")
+	}
+	waitForFile(t, marker, 2*time.Second)
+
+	if err := supervisor.HardKill(context.Background(), spec.ID); err != nil {
+		t.Fatalf("hard kill active helper: %v", err)
+	}
+	result := <-resultChannel
+	elapsed := time.Since(started)
+	if err := <-errorChannel; err != nil {
+		t.Fatalf("hard-killed run returned infrastructure error: %v", err)
+	}
+	if !result.Cancelled {
+		t.Fatalf("unexpected hard-kill result: %+v", result)
+	}
+	if elapsed >= spec.GracePeriod {
+		t.Fatalf("HardKill took %s, at least as long as GracePeriod %s — it waited instead of killing immediately", elapsed, spec.GracePeriod)
+	}
+
+	lastMod := modTime(t, marker)
+	time.Sleep(300 * time.Millisecond)
+	if modTime(t, marker) != lastMod {
+		t.Fatal("descendant process kept writing its heartbeat after HardKill — it was not terminated")
+	}
+	if !result.TreeQuiesced {
+		t.Fatalf("TreeQuiesced = false after a hard-kill confirmed the whole tree gone, result: %+v", result)
+	}
+
+	if err := supervisor.HardKill(context.Background(), spec.ID); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("hard kill completed process error = %v, want ErrNotRunning", err)
+	}
+}
+
 // TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns is
 // V5-08B's own required test (the design decision's own "test bắt buộc có
 // child process tiếp tục ghi sau khi parent exit"): the direct child exits

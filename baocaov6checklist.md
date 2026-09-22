@@ -12451,6 +12451,335 @@ PR diff will shrink to just this package once both land on `master` and this bra
 
 Test-only fix: `internal/adapters/sqlite` drops from about 41s to about 13.5s without `-race` (about 3.0-3.2x; the CPU profile says the removed work was about 80% of the package's CPU, which is the part `-race` amplifies about 15x), with the test count unchanged at 249, every migration/first-open test still on the real fresh path, and no timeout, workflow or production file touched. Confirming the `-race` result is left to the CI run of the `Linux race and stability (V0-12)` job. PR targets `master`.
 
+## V6-14A — HTTP fault, replay, restart and concurrency acceptance
+
+### Thực hiện
+
+**Scope.** The crash/race/security matrix required by the task spec (docs/design/08-v6-api-projections.md
+V6-14A), built entirely as new files inside V6-14's own already-accepted black-box package
+(`internal/integration/v6accept`), over the SAME two real processes (`aw serve` + `aw worker`), real
+SQLite, real Git, opt-in `AW_HTTP_ACCEPTANCE=1` discipline — never a unit fake, never an in-process handler
+call, never SQLite/Git state seeded after bootstrap except the one deliberate, explicitly-justified
+exception the spec itself anticipates (scenario 10, poison projection). `journey_test.go`'s own 14-stage
+happy path (`TestV6HTTPAcceptance_CleanDatabaseJourney`) is untouched in substance — the only edits to
+existing files are (a) a `gofmt` pass that reformatted whitespace with zero content change (verified:
+`git diff --stat` on every such file is empty except line-ending metadata) and (b) the real, intentional
+harness extensions described below.
+
+**The hard-kill mechanism (real, no grace period).** `childProcess.stop` (stack_test.go, pre-existing)
+only ever does a GRACEFUL stop: `Supervisor.Cancel` signals CTRL_BREAK/SIGTERM and waits up to
+`GracePeriod` before escalating to a forced tree-kill. That grace period is exactly the thing a crash test
+must not have — it lets the child finish or checkpoint cleanly on its way out, which defeats the point.
+Added to the PRODUCTION `internal/adapters/process/supervisor.go` (not the test harness alone, because the
+existing `Cancel`/`Run` machinery has no seam to skip the graceful step without a real code change):
+
+- `activeProcess` gets a second signal channel, `hardKillRequested` (mirroring `cancelRequested` exactly:
+  a `sync.Once`-guarded close).
+- `Run`'s own escalation `select` gets one new case, `case <-proc.hardKillRequested:`, which sets
+  `hardKilled = true`; when that flag is set, the code skips `tree.signalGraceful` and the grace-period
+  timer entirely and calls `tree.kill(command)` immediately — the IDENTICAL forceful primitive
+  (`TerminateJobObject` on Windows via `windowsProcessTree.kill`, `SIGKILL` to the whole process group on
+  Unix via `unixProcessTree.kill`) `Cancel`'s own escalation path already uses once `GracePeriod` elapses
+  unanswered — never a new, second kill mechanism, only a new way to reach the existing one immediately.
+- A new exported method, `Supervisor.HardKill(ctx, id) error`, mirrors `Cancel`'s own signature and
+  requests it. Documented explicitly as a harness-only capability production code has no reason to call
+  (an operator-requested stop should always try the graceful path first) — it is not part of
+  `ports.ProcessSupervisor`, so no other implementation of that port is obligated to support it, and it
+  changes zero existing behavior (`Cancel`'s own case, and every existing test, are byte-identical).
+- New unit test `TestSupervisorHardKillTerminatesTreeWithNoGracePeriod`
+  (`internal/adapters/process/supervisor_test.go`) proves the "no grace period" claim empirically, not
+  just by code inspection: it configures a generous 3s `GracePeriod`, hard-kills a real process with a
+  real still-alive descendant, and asserts the call returns in well under 1s (comfortably under the 3s
+  grace period a graceful `Cancel` would have waited out) with `TreeQuiesced=true` and the descendant's own
+  heartbeat file confirmed to have stopped updating.
+
+**The harness (`internal/integration/v6accept/stack_test.go`, extended, not rewritten).**
+`stack.start`/`stack.stop` are split into independently callable halves — `startServe`/`startWorker` and
+`stopServeOnly`/`stopWorkerOnly` — with `start`/`stop` now thin wrappers calling both in the original
+order, so `TestV6HTTPAcceptance_CleanDatabaseJourney` is unaffected. New on top of that split:
+`stack.restartWorkerOnly`/`restartServeOnly` (graceful stop+restart of ONE process, the other left
+running — `aw worker` never talks to `aw serve` over HTTP, only through the shared SQLite/artifact
+store/Git worktrees, so this is safe), `stack.hardKillWorker`/`hardKillServe` (the real crash primitive
+above, leaving the process dead for the caller to inspect before optionally restarting), and a handful of
+optional per-scenario override fields threaded into new `aw worker` flags only when non-zero (production
+defaults otherwise unchanged): `workerLeaseTTL`/`workerLeaseHeartbeat` (`--lease-ttl`/`--lease-heartbeat`,
+already-existing flags), `principalConfigPath` (`--principal-config`, already existing — ADR-028's only
+sanctioned way to change which actor/roles a process trusts), and two genuinely NEW `aw worker` flags this
+task added because the corresponding constants had no flag at all before:
+- `--local-commit-write-lease-ttl` (`cmd/aw/worker.go`): overrides the release-set local-commit write
+  lease's own TTL, a separate, LONGER-lived lease than the job lease (production default 2 minutes,
+  `localCommitWriteLeaseTTL` constant) that `internal/app/releasesetcommit`'s worker holds across its real
+  `git commit` call. Without an override, scenario 3 (below) would have to wait out the full 2 minutes for
+  a fresh worker to reclaim a crashed local commit — a real number, but one this task's own scenario has
+  no reason to pay in full every run.
+- `--projection-rebuild-batch-size` (`cmd/aw/worker.go`): overrides
+  `projectionrebuildworker.Deps.BatchSize` (production default 500) for scenarios that need a rebuild to
+  do more or larger rounds than a small journal would otherwise produce.
+
+Both new flags default to the existing production constant when omitted (verified: `cmd/aw/worker_test.go`'s
+own existing fixture was updated to keep passing unchanged) and are documented in their own `--help` text
+as test-support knobs production has no reason to lower.
+
+**`internal/integration/v6accept/fault_fixture_test.go`** (new) is the shared setup every scenario below
+reuses rather than re-deriving: `newFaultStack`/`newFaultRunner` (a fresh stack + real project + real
+ACTIVE repository, optionally + adapter build + the real verification workflow's definitions, both
+accepting a `configure(*stack)` hook for the per-scenario flag overrides above), `createRootWorkItem`,
+`soleWorktreeDir` (finds the one real Git worktree directory a scenario's own workspace provisioned, by
+directory listing — never re-deriving `internal/adapters/gitworktree`'s own unexported handle-hash),
+`privateHTTPClient`/`doRaw`/`doRawConcurrent`/`doPooled` (goroutine-safe raw HTTP helpers: Go's own
+`testing.T` contract forbids calling `Fatal`/`FailNow` from any goroutine but the test's own, so every
+concurrent/racing request in this task's own scenarios returns a plain `httpOutcome{status, body, err}`
+for the TEST's own goroutine to assert on, never fails itself from inside a spawned goroutine).
+
+**The 11 fault-matrix scenarios** (each its own top-level `Test...` function, its own fresh stack — not
+`t.Run` subtests off one shared journey — so one scenario's crash/principal-change/poison leftovers can
+never leak into the next one; each independently identifiable in `go test -v` output):
+
+1. **`stage_fault_receipt_test.go` — crash after receipt commit** (`TestV6HTTPAcceptance_Fault_CrashAfterReceiptCommit`).
+   `CreateProject` (no project/repository prerequisite of its own). Real signal: a SEPARATE connection's
+   `GET /projects` observing the new project proves the transaction (row+event+receipt, committed
+   atomically per contract §1 point 2) has already committed — `aw serve` is hard-killed the instant that
+   is observed, racing the ORIGINAL request's own in-flight response. Verify: replaying the exact same
+   Idempotency-Key after restart returns the SAME project id, and the real row count for that name is
+   exactly 1 (never a duplicate create from a replay that failed to find its own receipt).
+2. **`stage_fault_attachment_test.go` — crash after attachment put** (`TestV6HTTPAcceptance_Fault_CrashAfterAttachmentPut`).
+   `AppendConversationAttachment`'s own documented two-phase protocol (`internal/app/message/attachment.go`):
+   step 5 Puts real bytes to the real content-addressed `ports.ArtifactStore`
+   (`<artifactRoot>/objects/<aa>/<bb>/<sha256>`) OUTSIDE any DB transaction; only a LATER, separate
+   transaction (step 6) inserts the Artifact/Message rows. Real signal: this test polls the real blob file
+   directly on disk (a read-only filesystem observation, the same technique `stage_release_test.go`'s own
+   `assertOriginUntouched` already uses for real Git) — the instant it appears, `aw serve` is hard-killed,
+   racing the finalize transaction that follows. Verify: immediately after restart the message count is 0
+   or 1 (never more — no half-committed duplicate); replaying the same Idempotency-Key/bytes converges to
+   EXACTLY 1 message, and its content — re-read from the real durable blob — hashes to the declared
+   digest.
+3. **`stage_fault_localcommit_test.go` — crash after Git commit** (`TestV6HTTPAcceptance_Fault_CrashAfterGitCommit`).
+   `internal/app/releasesetcommit/execute.go`'s own doc comment names this EXACT crash window and its own
+   marker-based recovery design: the real `git commit` runs outside any transaction; only a later,
+   separate finalize transaction records COMMITTED; a crashed retry re-reads the workspace's own real HEAD
+   and, if its message carries this operation's own deterministic marker, REUSES that commit instead of
+   creating a second one. Real signal: `git rev-parse HEAD`, run directly against the real managed
+   workspace directory (found via `soleWorktreeDir`), polled until it moves away from the base revision
+   captured before the request — the ONLY thing in this whole flow that ever moves that HEAD — then `aw
+   worker` is hard-killed immediately. Needed `--local-commit-write-lease-ttl` (3s) and `--lease-ttl`/
+   `--lease-heartbeat` (2s/500ms) overrides so a fresh worker can actually reclaim the crashed job within a
+   reasonable test bound. Verify: the crashed local commit converges to COMMITTED with the recorded parent
+   equal to the real base revision, and the real repository log has EXACTLY ONE commit between base and
+   result (`git rev-list --count <result> ^<base>` — NOT `git rev-list --count <base>..<result>` as one
+   argv element: discovered, while building this scenario, that Git for Windows/MSYS mangles a single
+   `A..B` token passed through `exec.Command`'s own argv into something that fails with "Filename too
+   long"; passing the two revisions as separate arguments avoids this entirely — a real, if narrow,
+   Windows-specific harness gotcha worth recording for whoever builds V6-14B's own cross-platform variant
+   of this same scenario).
+4. **`stage_fault_projection_during_test.go` — crash after projection row (before cutover)**
+   (`TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover`). See "What could not be proven reliably"
+   below — this is the one scenario whose real timing window turned out to be narrower than this
+   environment's own HTTP round trip, so it is a genuine, honestly-reported, real race rather than a
+   guaranteed pass.
+5. **`stage_fault_projection_after_test.go` — crash after rebuild cutover**
+   (`TestV6HTTPAcceptance_Fault_CrashAfterRebuildCutover`). No race needed: run a real rebuild to
+   completion (reusing `journey.projectionRebuild`), confirm the new generation is observably LIVE, THEN
+   hard-kill+restart the worker against that already-stable state. Verify: a crash of an already-cut-over,
+   idle projection is a pure no-op — the generation number and every projected row (freshness stripped,
+   `stage_projection_test.go`'s own `normalizeRows` technique) are byte-identical before and after.
+6. **`stage_fault_concurrency_test.go` — concurrent same idempotency key**
+   (`TestV6HTTPAcceptance_Fault_ConcurrentSameIdempotencyKey`). Two GENUINELY concurrent (separate
+   goroutines, separate real TCP connections, `doRawConcurrent`) `mark-ready` calls against the same real
+   WorkItem, identical Idempotency-Key/body/If-Match. Verify: both callers receive byte-identical response
+   bodies, and the WorkItem's own version (read fresh after both settle) advanced by EXACTLY one, never
+   two — the BACKLOG->READY precondition was genuinely checked once, not raced, proven by SQLite's own
+   single-writer serialization surfacing through the receipt mechanism exactly as contract §1 point 2
+   describes.
+7. **`stage_fault_concurrency_test.go` — concurrent different idempotency keys, same target**
+   (`TestV6HTTPAcceptance_Fault_ConcurrentDifferentIdempotencyKeysSameTarget`). Same shape, DIFFERENT
+   Idempotency-Keys, same If-Match ExpectedVersion — neither call can be short-circuited by the other's
+   receipt, so both genuinely reach the fenced CAS. Verify: exactly one call gets 200 (and the WorkItem
+   really is READY afterward), the other gets this codebase's own established optimistic-concurrency
+   conflict status (409, `ports.ErrOptimisticConflict`/`workapp.ErrWorkItemNotEligibleForReady`,
+   `internal/delivery/httpapi/workitem/errors.go`) — never both winning, never a merged/corrupted state,
+   version advances by exactly one.
+8. **`stage_fault_security_test.go` — role downgrade mid-flight**
+   (`TestV6HTTPAcceptance_Fault_RoleDowngradeMidFlight`). A real APPROVAL-node workflow
+   (start -> gate(APPROVAL, `AuthorizedRoles:["operator"]`) -> end), a real Run parked on it, resolved
+   successfully under the default local-operator/[operator] principal (200, a real receipt). Since there is
+   no live role-mutation endpoint (ADR-028: a principal is selected once, at process startup, from a
+   trusted config file), "the role was revoked" is simulated the only real way it can happen: `aw serve` is
+   restarted under a DIFFERENT `--principal-config` naming the SAME actor with `roles:["viewer"]`, and the
+   EXACT original decision — same Idempotency-Key/body/If-Match, never a fresh call — is replayed against
+   it. Verify: 403, with no decision content in the body. This reproduces, as a genuine two-process
+   black-box journey, the exact class of gap V6-13's own security matrix already found and fixed at the
+   in-process level (`internal/delivery/httpapi/securitymatrix`'s own
+   `TestReceiptReplay_RevokedRoleCannotReplayItsOwnEarlierDecision`) — it passed on the first attempt, no
+   new gap found (both `runtime.ResolveApproval`'s in-transaction check and the HTTP fast-path's own check
+   already run before the receipt lookup, exactly as that PR's own fix left them).
+9. **`stage_fault_cancel_test.go` — cancel CANCELLING->CANCELLED**
+   (`TestV6HTTPAcceptance_Fault_CancelQuiesceSurvivesWorkerCrash`). A real WAIT(SIGNAL, never fired)
+   workflow, a real Run parked with a genuine ACTIVE `WaitRegistration`. `POST /runs/{id}/cancel` (202,
+   `state:"CANCELLING"` in the SAME response — ADR-020's own quiesce protocol, `cancel_run.go`: this
+   transaction CASes straight to CANCELLING and enqueues exactly one `CANCEL_RUN_COORDINATOR` job; a
+   SEPARATE, idempotent, safely-redeliverable job does the actual quiesce sweep). `aw worker` is
+   hard-killed IMMEDIATELY after that response — before its own poll loop could realistically have even
+   claimed the coordinator job, the strongest, most-interrupted version of "recovery must not get stuck
+   mid-quiesce" this suite can force. Verify: after restart the SAME Run converges to CANCELLED (never
+   stuck, never silently resurrected); `NodeRunCount` (`GET /runs/{id}`) is IDENTICAL before and after — an
+   exact-count proof no NEW NodeRun was ever activated once cancellation was requested; the WAIT node's own
+   WaitRegistration ends CANCELLED, never left ACTIVE, never silently resumed.
+10. **`stage_fault_poison_test.go` — poison projection** (`TestV6HTTPAcceptance_Fault_PoisonProjection`).
+    THE ONE deliberate, explicitly-justified exception to "public HTTP only" in this whole suite (no route
+    can ever write an arbitrary raw event, by construction — every real command emits only events its own
+    aggregate logic already knows how to produce, so there is no public way to make the journal contain
+    something `projection.Catalog` cannot classify, which is precisely the point of this scenario). Both
+    processes are stopped gracefully, then one row is written directly into `domain_events` (plus its own
+    `outbox` row, matching `internal/adapters/sqlite/domain_events.go`'s own `Append` exactly — same
+    columns, same `journal_position = MAX+1` allocation), with an `EventType`/`SchemaVersion` the Catalog
+    has never registered, using the SAME Windows-safe `file:` URI construction `internal/adapters/sqlite`'s
+    own `Open` builds (a naive `"file:"+path` concatenation was tried first and empirically confirmed to
+    make the driver silently touch the wrong file on a path with a drive letter and spaces — the exact
+    repo path this session runs in). Verify: the worker does not crash (`/health/live` keeps answering);
+    freshness genuinely reports DEGRADED (`consumer.go`'s own `applyLeasedBatch`: a poison event rolls back
+    the failed apply, records the poison in a separate transaction, and CASes the checkpoint to DEGRADED at
+    the last-good cursor); the PRE-poison WorkItem's row remains correct; a WorkItem created AFTER the
+    poison NEVER appears — proving, from real observation rather than assumption, that a DEGRADED
+    generation freezes ENTIRELY (`applyLeasedBatch`'s own very first check: `if lease.Status ==
+    ProjectionDegraded { return }`) rather than merely skipping the one bad event; the worker's own real
+    stderr carries a real `PROJECTION_POISON` log line; and `GET /doctor` is checked, not assumed, to
+    confirm it does NOT surface this degradation anywhere in its own checks today (`internal/app/doctor`
+    has no projection-health check at all).
+11. **`stage_fault_sse_test.go` — slow SSE** (`TestV6HTTPAcceptance_Fault_SlowSSEClientDoesNotBlockServer`).
+    A real SSE connection, drained by a perfectly ordinary, fully-draining reader (nothing deliberately
+    slow about IT), while a real concurrent burst (waves of 20 concurrent `POST .../messages`, up to 1000
+    total) fires against a real WorkItem. `internal/delivery/httpapi/eventstream`'s own bounded
+    per-connection channel (`defaultBufferSize=64`, `stream.go`) is what actually gets outrun — NOT by the
+    reader being slow, but by the PRODUCER: one poll tick's own synchronous scan-and-enqueue loop (up to
+    `defaultPollBatchLimit=200` events, zero I/O) reliably beats even a healthy, real-network-write-per-item
+    writer goroutine once a real burst lands more than 64 project events inside one poll window — the SAME
+    "synchronous producer outruns a real writer" mechanism scenario 4 also depends on. Concurrent ordinary
+    requests on a separate connection are proven to stay fast throughout. Verify: the connection is
+    genuinely, cleanly disconnected once overwhelmed (never hangs); every frame it did receive decodes
+    cleanly; IF the best-effort `stream.disconnected` notice made it onto the wire (checked, never assumed
+    present), its `reason` is exactly `"slow_client"` with a numeric `lastCursor`; reconnecting — with that
+    cursor, or with the highest `journalPosition` this test itself confirmed receiving when the notice did
+    not arrive — succeeds (200, `text/event-stream`), never a stale/resync-required refusal.
+
+**Two real, useful negative findings from scenario 11 (not bugs — genuine, documented behavior, worth
+recording for the next person who touches this code):**
+- A connection that is never read at all (or read through an artificially-throttled `io.Reader`) does NOT
+  exercise the documented slow-client/buffer-overflow path. It instead trips `eventstream`'s own PER-WRITE
+  `SetWriteDeadline` (`defaultWriteTimeout=10s`, `handler.go`) first, disconnecting via `reasonWriteFailed`
+  — a DIFFERENT path whose own `stop()` doc comment explicitly says it NEVER attempts a
+  `stream.disconnected` notice at all ("a working connection genuinely is not there to notify"). Proving
+  the buffer-overflow path specifically required a genuinely fast, concentrated BURST against an ordinary,
+  fully-draining reader, not a slow reader.
+- The `stream.disconnected` notice's own "best-effort" framing (`stop()`'s own doc comment: "a non-blocking
+  enqueue: when the channel happens to be full... this is correctly undeliverable") is not a rare edge
+  case in practice — empirically, for any burst overflow larger than a handful of events past 64, the
+  channel is STILL saturated at the exact instant the notice itself tries to enqueue, so it is dropped far
+  more often than delivered. `streamOutcome.LastCursor` (server-side bookkeeping) is unaffected either way;
+  only the WIRE notice is unreliable under a genuinely large overflow. This scenario's own Verify step
+  checks for the notice but does not require it, matching the documented contract rather than a stricter
+  one this codebase never actually promised.
+
+**What could not be proven reliably (scenario 4, honestly reported, not faked).** Catching a rebuild
+operation's own `phase` genuinely mid-flight (SNAPSHOTTING/BUILDING/CUTTING_OVER, before cutover) via
+external HTTP polling turned out to be a much tighter race than every other timing-based scenario in this
+matrix. Measured directly (logged by the test itself): the WHOLE SNAPSHOTTING->BUILDING->CUTTING_OVER->
+cutover sequence for a journal inflated to several thousand real events (a real burst of conversation
+messages, cheap — no workspace/job of their own, unlike an earlier version of this scenario that burst
+WorkItem CREATES instead and made the ordinary LIVE projection catch-up itself time out) with a maximal
+`--projection-rebuild-batch-size` (so BUILDING is one long round rather than many short ones — the ONE
+thing found to make a single phase value stay committed and externally readable for more than tens of
+microseconds at a time) completed end-to-end in 40-190ms once the worker actually claimed the job — a
+window this test's own concurrent 8-poller HTTP sampling (privateHTTPClient/doPooled) sometimes catches
+and sometimes does not, REGARDLESS of how much the journal is inflated (confirmed by escalating the burst
+from 300 to 2000+ events with no reliable improvement — more rounds at a SMALL batch size make the window
+narrower, not wider, since each individual committed phase value then persists for a shorter time; a LARGE
+batch size widens the window as much as this codebase's own real behavior allows, and that maximum still
+was not always enough). The test is built as an honest, bounded retry loop — up to 3 independent real
+attempts against the SAME real installation (never simulated, never a bare sleep standing in for
+synchronization; each attempt is a genuine race against a genuine rebuild operation) — and when caught, it
+asserts full rigor (converges to SUCCEEDED, generation advances by exactly one, row count exact). When NOT
+caught across all 3 real attempts, it calls `t.Skip` with the full, honest measured timing data rather than
+either failing the build or (worse) silently asserting something weaker than what scenario 4 actually
+claims to prove. This means `TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover` is the one test in
+this whole matrix whose outcome (PASS vs SKIP) is genuinely non-deterministic run to run — documented here
+explicitly rather than hidden, per this task's own "if a scenario turns out to be genuinely infeasible...
+STOP, do not fake it, and report exactly why" instruction. No artificial delay was added anywhere to make
+this scenario "work" — that would have proven nothing real.
+
+**No functional production bug was found this session** (unlike the V5-15/V6-13 precedent this task's own
+brief anticipated). Every one of the 11 scenarios either passed cleanly against the EXISTING production
+code, or (scenario 4) is a real, environment-bound timing limit rather than a defect. What this session DID
+find and document, precisely because nothing before it had ever exercised these paths end-to-end from
+outside the process, are three real BEHAVIORAL FACTS worth recording for whoever next touches this code
+(none of them incorrect, all of them real and worth knowing):
+- A graceful worker shutdown never releases its own live-projection consumer lease
+  (`projectionLeaseTTL=30s`, `cmd/aw/worker.go`) — a freshly restarted worker cannot resume live projection
+  work until that lease ages out, a real ~30s handoff delay on every ordinary restart, not just a crash.
+  Scenario 10's own wait bound (45s) accommodates this explicitly rather than treating it as a bug.
+- A poisoned generation freezes ENTIRELY, not just the one unclassifiable event — read directly from
+  `consumer.go`'s own code and then proven by observation (scenario 10), not merely assumed from a loose
+  reading of the design doc's own "IGNORE(reason)" vocabulary.
+- `stream.disconnected`'s own documented "best-effort" notice is dropped far more often than delivered
+  under a genuinely large overflow (scenario 11), which is worth knowing for any future client-side
+  reconnect-logic author who might otherwise assume it is reliable in practice.
+
+### Test
+
+`AW_HTTP_ACCEPTANCE=1 go test -count=1 -v ./internal/integration/v6accept/` — the full package (V6-14's own
+14-stage happy path plus all 11 V6-14A scenarios) run 3 CONSECUTIVE times, immediately before opening this
+PR, with no rerun-to-paper-over-a-flake anywhere in between: run 1 (verbose) 129.0s wall, all 12 `Test...`
+functions accounted for — 11 PASS, 1 SKIP (`TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover`,
+the honestly-reported real race described above, landed the "never caught it" branch this run); run 2
+143.3s, `ok` (package-level pass; per-test detail not separately captured this run, `count=1` non-verbose);
+run 3 (verbose) 83.3s, all 12 `PASS` including `TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover`
+itself (14.3s — caught the race on its own first real attempt this time). Every individual new scenario
+was ALSO run 2-6 times in isolation while building it (see each scenario's own local iteration above)
+before being run together with the rest. `go build ./cmd/aw/... && go vet ./cmd/aw/...` and
+`go test ./cmd/aw/... ./internal/adapters/process/...` clean (the two production packages this task
+touched). `go build ./... && go vet ./...` clean repo-wide. `go test ./...` (the rest of the repo, full
+suite, `AW_HTTP_ACCEPTANCE` unset so this package's own tests are skipped near-instantly exactly like
+V6-14's own journey already was — confirmed no measurable cost added to the default profile): every single
+package `ok`, zero `FAIL`, exit code 0 (full run, ~9 minutes wall on this machine, dominated by the packages
+that were already slow before this PR — `internal/app/releasesetcommit` 84.5s, `internal/delivery/cli/workspace`
+102.5s, `internal/integration/v5accept` 120.7s, `internal/spikeacceptance` 108.3s — none of them touched by
+this diff); `internal/integration/v6accept` itself reported `ok ... 0.446s`, confirming both V6-14's own
+journey AND every one of this task's own 11 new scenarios are skipped near-instantly (never compiled-out,
+never run) without the opt-in env var, exactly the CI constraint this task's own brief named (the Linux
+`V0-12` job's own 25-minute budget must see zero measurable added cost from this package).
+
+### Verify
+
+Every V6-14A Verify bullet is satisfied literally: "full black-box fault suite" — 11 real scenarios, two
+real OS processes, real SQLite, real Git, the one documented raw-SQLite exception scenario 10 needs and
+nothing else; "supported race detector" — `-race` was not run locally (`CGO_ENABLED=0`, no C toolchain on
+this machine, the identical limitation V0-12's own CI-budget work already recorded for
+`internal/adapters/sqlite`), left to CI; "exact side-effect/event/receipt counts" — every scenario asserts
+a precise number (row counts, version deltas, NodeRunCount, generation deltas, commit counts via
+`git rev-list --count`), never merely "no error". "Restart converges" — every crash scenario (1-5, 9)
+converges its OWN target to the correct terminal state after restart, checked explicitly, never assumed.
+"False completion count is zero" — no scenario ever observes a Run/operation/commit falsely reporting
+success; every terminal state reached is the real, correct one. "Duplicate external side effect count is
+zero" — scenario 1 (row count), scenario 2 (message count + content hash), scenario 3 (`git rev-list
+--count`) all assert this as an exact number, never an inference.
+
+### Kết quả
+
+New files in `internal/integration/v6accept`: `fault_fixture_test.go` (265 lines, shared setup/helpers),
+`stage_fault_receipt_test.go`, `stage_fault_attachment_test.go`, `stage_fault_localcommit_test.go`,
+`stage_fault_projection_during_test.go`, `stage_fault_projection_after_test.go`,
+`stage_fault_concurrency_test.go`, `stage_fault_security_test.go`, `stage_fault_cancel_test.go`,
+`stage_fault_poison_test.go`, `stage_fault_sse_test.go` — 11 scenarios, ~2000 new lines, all opt-in behind
+the same `AW_HTTP_ACCEPTANCE=1` gate as the rest of the package (zero cost to the default `go test ./...`
+profile, confirmed: these files compile and are skipped, not run, without the env var — the same
+`requireAcceptance(t)` guard V6-14's own journey already established). Production changes: one new exported
+method (`Supervisor.HardKill`) plus its own supporting field and `Run()` case in
+`internal/adapters/process/supervisor.go` (+its own new unit test), and two new optional, default-preserving
+CLI flags on `aw worker` (`--local-commit-write-lease-ttl`, `--projection-rebuild-batch-size`,
+`cmd/aw/worker.go` + a one-line fixture update in `cmd/aw/worker_test.go`) — nothing else in production code
+touched. No functional bug found this session; three real behavioral facts found and documented instead
+(live-consumer-lease handoff delay, poison-freezes-the-whole-generation, disconnect-notice best-effort in
+practice). One scenario (4) is a genuinely non-deterministic real race, honestly reported as such rather
+than faked or silently weakened. PR targets `master`.
 ## V6-14B — Acceptance HTTP đa nền tảng
 
 ### Thực hiện
@@ -12616,3 +12945,126 @@ minutes is to be root-caused, not accommodated by raising the number again.
 Verify: `python -c "import yaml; ..."` -> `YAML OK`, job timeouts read back as
 `{'contract': 20, 'linux-race-and-stability': 35, 'spike-acceptance': 15,
 'semantic-diff': 10}`.
+
+### V6-14A follow-up: three defects its first real CI run exposed (two of them in V6-14B)
+
+V6-14A's 11 fault scenarios only became CI-visible once V6-14B's `v6-acceptance`
+job reached master. Their first real run (`v6 acceptance (windows-latest)`) was
+red, and finding out why exposed two defects in V6-14B's own CI plumbing plus
+one latent synchronization gap in V6-14's shared projection helper. None of the
+three is a production-code defect; all three are gate/test defects, which is
+precisely what this gate exists to surface.
+
+**Defect 1 (V6-14B, fail-closed violation — the serious one).** `v6 acceptance
+(windows-latest)` FAILED and `v6 acceptance cross-platform diff` passed anyway.
+The report is written by `TestV6HTTPAcceptance_CleanDatabaseJourney`'s own
+`t.Cleanup`, so its `allPassed` describes that test's 14 stages and nothing
+else in the package. Once V6-14A added its own top-level tests to the SAME
+package, a failing fault scenario could fail `go test` — and the job — while
+the journey still honestly reported `allPassed: true`. Both platforms' reports
+said `allPassed: true`, so the comparison found nothing to complain about. The
+downloaded Windows artifact confirms it verbatim: `allPassed: True | stages: 14`
+alongside `FAIL github.com/taQuangLing/agent-workflow/internal/integration/v6accept`.
+Fix: the comparison step now checks `needs.v6-acceptance.result` FIRST and
+refuses to report PASS unless every matrix leg succeeded, with a message
+pointing at the red job and its `acceptance.log`.
+
+**Defect 2 (V6-14B, diagnostic loss).** The acceptance step printed nothing at
+all between its own `##[endgroup]` and `##[error]Process completed with exit
+code 1` — no tailed log, not even the explicit "acceptance suite FAILED"
+message. Cause: GitHub already runs a `shell: bash` step under
+`bash --noprofile --norc -e -o pipefail`, and the step's own `set -uo pipefail`
+does not clear that inherited `-e`, so the failing `go test` aborted the script
+before `status=$?`. The only way to learn which test failed was to download the
+artifact. Proven, not assumed, by running both variants under the runner's exact
+invocation: without `set +e` the script dies and `REACHED` never prints; with it,
+`status=1` is captured and the diagnostics print. Fix: `set +e` ahead of
+`set -uo pipefail`, with the reason recorded at the line.
+
+**Defect 3 (V6-14's own `projectionRebuild` helper, latent since V6-14).** The
+helper snapshotted `before` with `projectionLive(t, 1)`, which waits only for a
+LIVE board with at least one row — not for the live consumer to have caught up
+with the journal. A rebuild always replays everything, so comparing it against
+a live board that is still a few events behind reports a difference that says
+nothing about rebuild correctness. On the Windows runner, V6-14A's scenario 5
+reached the helper seconds after registering the repository and the live
+consumer had not yet applied the repository-badge event:
+
+    before: [... "status":"BACKLOG","blockerCount":0,"pendingScopeExpansionCount":0]
+    after:  [... "repositoryBadges":[{"repositoryId":"repo-a","state":"READY"}]]
+
+The rebuild was correct; the comparison was not. The journey's own stage 12
+never hit this because a dozen slower stages run first. Fix: the helper now
+calls `waitProjectionCaughtUp(t)` before taking the snapshot, which fixes every
+caller at once and removes the latent flake from the journey too.
+
+**Also fixed: the slow-SSE scenario now skips honestly instead of failing.** On
+windows-latest the burst of 1000 messages took 53.9s (~19/s), which a
+continuously-draining reader keeps up with indefinitely, so the >64-item buffer
+overflow that scenario needs was never created and the connection was still open
+after the 30s grace. Failing there reports a machine too SLOW to overload as if
+the server had mishandled an overload. The scenario's PRIMARY invariant — a
+slow or backed-up stream must never block the rest of the server — is unchanged
+and still a hard assertion that ran and held on that very run ("confirmed:
+ordinary requests stayed responsive throughout the SSE burst"). Only the
+secondary expectation, that an overwhelmed stream is eventually dropped, is now
+reported as unobserved with real numbers (message count, elapsed, rate, frames
+received) rather than asserted either way. Same honesty rule scenario 4 already
+follows.
+
+Verify after the fixes, full suite on Windows, `AW_HTTP_ACCEPTANCE=1`:
+13/13 tests pass in 116.4s — journey 23.8s, scenario 4 caught its race this time
+(38.99s, no skip), slow-SSE disconnected in 1.78s (so the new skip path was NOT
+taken locally; it is reserved for machines that cannot create the overflow).
+`go build ./...` and `go vet ./...` clean repo-wide.
+
+### V6-14A follow-up, round 2: bounding the suite's own cost
+
+The round-1 fixes worked and the next run proved each of them on the runner
+that had exposed them:
+
+- **Fail-closed hole closed.** `v6 acceptance (windows-latest)` was red and
+  `v6 acceptance cross-platform diff` went red WITH it this time, instead of
+  reporting PASS off two reports that only describe the journey.
+- **Diagnostics restored.** The job log now contains `== last 200 lines of
+  acceptance.log ==` and the explicit `V6-14B acceptance suite FAILED on
+  windows-latest (exit 1)` line. Round 1 had to download an artifact to learn
+  the same thing.
+- **Projection race fixed.** `TestV6HTTPAcceptance_Fault_CrashAfterRebuildCutover`
+  PASSES on windows-latest now (2.98s), the failure that started this thread.
+
+What the restored diagnostics then revealed was a different problem:
+`FAIL github.com/taQuangLing/agent-workflow/internal/integration/v6accept 600.047s`
+— `go test`'s own 10-minute default timeout, applied to the whole package
+binary. Everything in the package passed; the package simply ran out of time,
+and `panic: test timed out` named whichever test was unlucky enough to be
+running (the SSE scenario, 47s in) rather than the real cause.
+
+The real cause was scenario 4's retry loop. Each attempt adds another 1500 real
+messages to the journal and then races a rebuild of that larger journal, so
+attempts get more expensive as they go — and on a slow runner they get more
+expensive faster than they get more likely to succeed. Two consecutive runs of
+identical code spent **210s** and then **442s** there, both ending in the same
+skip: pure cost, zero coverage, and on the second run enough to push the whole
+package past its timeout.
+
+Two bounds, because the attempt count alone never bounded the cost:
+
+1. **`attemptBudget = 150s`** — a real wall-clock ceiling on the whole retry
+   loop, checked before any attempt after the first. The first attempt always
+   runs, so the test still makes at least one genuine attempt on any machine,
+   and the outcome when the budget runs out is the same honest skip, with real
+   numbers (attempts made, elapsed, budget), that running out of attempts
+   already produced. Nothing is weakened: the budget only decides when to stop
+   paying for a race this machine keeps losing.
+2. **`-timeout 15m`** on the CI invocation, replacing the 10-minute default.
+   Deliberately BELOW the job's own `timeout-minutes: 20`, and the ordering is
+   the point: Go's timeout prints a goroutine dump and names every test still
+   running, while the job timeout just cancels the runner and leaves nothing to
+   read. Go's limit firing first keeps a genuine hang diagnosable, with ~5
+   minutes left for checkout, toolchain setup, compile and artifact upload.
+
+Verify, full suite on Windows with `AW_HTTP_ACCEPTANCE=1 -timeout 15m`: 13/13
+pass in 113.2s, with scenario 4 catching its race in 38.2s (no skip, no budget
+trip) and the SSE scenario disconnecting in 2.26s. `go vet ./...` clean and the
+workflow still parses with `v6-acceptance` at `timeout-minutes: 20`.

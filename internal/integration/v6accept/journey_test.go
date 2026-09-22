@@ -24,8 +24,8 @@ type journey struct {
 	projectID      string
 	repositoryID   string
 
-	verification    verificationWorkflow
-	attemptPolicy   publishedDefinition
+	verification     verificationWorkflow
+	attemptPolicy    publishedDefinition
 	permissionPolicy publishedDefinition
 	release          releaseWorkflow
 	releaseChildID   string
@@ -35,11 +35,11 @@ type journey struct {
 	localCommitID    string
 	baseRevision     string
 	resultRevision   string
-	rootWorkItemID  string
-	familyID        string
-	workspaceSetID  string
-	childWorkItemID string
-	runID           string
+	rootWorkItemID   string
+	familyID         string
+	workspaceSetID   string
+	childWorkItemID  string
+	runID            string
 
 	// extraSnapshotPaths are read-only queries later stages add so the
 	// restart comparison covers what they created.
