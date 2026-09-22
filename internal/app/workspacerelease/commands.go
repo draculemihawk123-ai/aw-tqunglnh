@@ -252,6 +252,44 @@ func RequestWorkspaceSetRelease(
 		return replay, nil
 	}
 
+	// Ownership BEFORE eligibility (V6-13). authority.IsReleaseAuthorized
+	// takes a bare FamilyID and answers from EVERY ReleaseSet that family
+	// owns, with no project scoping of its own — so consulting it before
+	// req.ProjectID has been checked against the WorkspaceSet's real owner
+	// made this command's OUTCOME depend on another project's state: a
+	// foreign family whose latest ReleaseSet was already SEALED passed the
+	// eligibility check and fell through to the cross-project rejection
+	// below (leakage-normalized 404 at the delivery layer), while an
+	// unknown family — and a foreign family whose ReleaseSet was still
+	// CREATED — was rejected as ErrReleaseNotAuthorized (403). That 403-vs-404
+	// difference let a caller enumerate real families in projects they may
+	// not see, contradicting contract point 3 ("Mọi item route reload
+	// authoritative target để suy Project/scope và authorize") and V6-02A's
+	// leakage-normalization policy.
+	//
+	// This read-only reload is deliberately ADVISORY, exactly like
+	// internal/delivery/httpapi/run's own loadWorkItemProjectID pre-check:
+	// the authoritative reload/cross-project/version checks inside
+	// WithSerializedWrite below are unchanged and still decide the outcome
+	// under a race. All this adds is the guarantee that nothing outside the
+	// caller's own project can influence the answer before ownership has
+	// been established. Proven by
+	// internal/delivery/httpapi/securitymatrix's own
+	// TestRequestWorkspaceSetRelease_ForeignFamilyIsIndistinguishableRegardlessOfItsReleaseSetState.
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		set, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, req.FamilyID)
+		if err != nil {
+			return err
+		}
+		if string(set.ProjectID) != req.ProjectID {
+			return fmt.Errorf("%w: workspace set for family %s belongs to project %s, not %s",
+				ports.ErrCrossProjectReference, req.FamilyID, set.ProjectID, req.ProjectID)
+		}
+		return nil
+	}); err != nil {
+		return RequestWorkspaceSetReleaseResult{}, err
+	}
+
 	authorized, reason, err := authority.IsReleaseAuthorized(ctx, req.FamilyID)
 	if err != nil {
 		return RequestWorkspaceSetReleaseResult{}, fmt.Errorf("workspacerelease: resolve release authorization for family %s: %w", req.FamilyID, err)
