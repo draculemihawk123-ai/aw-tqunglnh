@@ -11302,6 +11302,142 @@ query fully described in this task's own brief) was deliberately NOT wrapped as 
 every RepositoryWorkspace's state as a child of the WorkspaceSet, so no read need is left unserved by omitting
 it. `go build/vet/test ./...` clean repo-wide. PR targets `master`.
 
+## V6-14 part 1 — Production `aw worker` composition
+
+### Thực hiện
+
+V6-14 (`docs/design/08-v6-api-projections.md:595-605`) asks for a black-box journey where "the full happy path
+works only through public HTTP and workers". Scoping it turned up a prerequisite the design doc never assigns to
+anyone: **no production code ran a worker.** `aw worker` had been `stub("worker")` since V1-01 (V6-15A only
+renamed it, "moving legacy behavior without changing semantics"), and every `workerpool.Registry.Register` call in
+the repository was inside a test — V1-10, V5, V6-07A, V6-08A and V6-09A each recorded "no task owns
+worker-process wiring" and stopped short. So a real `aw serve` could enqueue durable jobs (probe a repository,
+schedule a node, commit a ReleaseSet, rebuild a projection) that nothing would ever claim. The doc is silent on
+ownership; V6-14 cannot pass without it and V6-15P also assumes a real `aw worker`, so it is built here as the
+first of two V6-14 PRs (this one: the composition; the next: the black-box acceptance journey). The only prior
+composition was the V5 test fixture (`internal/integration/v5accept/fixture_test.go`), which used
+`fake.NewRuntimeExecutionConfigProvider()` and `fake.IsolationEnforcementChecker{}`.
+
+**`cmd/aw/worker.go`** (new) replaces the stub. `aw worker --db --artifact-root --workspace-root` (the same three
+paths `aw serve` takes) plus `--claude-executable/--codex-executable`, `--worker-id` (default `aw-worker-<pid>`, a
+lease-owner identity that must be unique per process), `--worker-concurrency`, `--lease-ttl`, `--lease-heartbeat`,
+`--poll-interval`, `--shutdown-grace`, `--projection-interval`, `--completion-interval` and `--env-allowlist`. It prints one JSON line
+`{"workerId":"..."}` when ready (the counterpart of `aw serve`'s `{"address":...}`).
+
+- `assembleWorker` opens the database and builds every adapter with the REAL implementation: `artifactstore`,
+  `gitworktree.Provider` (workspace provider, directory resolver, local-commit creator and marker reader),
+  `repoprobe.Prober`, `process.Supervisor`, `process.IsolationChecker`, `process.RuntimeExecutionConfigProvider`
+  (built from a validated `config.Config`), `secretenv.Resolver` and an `agentregistry` built through the existing
+  `newAgentExecutor` (so it cannot drift from `aw adapter probe/register`). One `*sqlite.Store` supplies the job
+  queue, write leases, checkpoints, interruption/recovery stores and the workspace lifecycle. IDs come from
+  `idsource.Random{}` because the handlers run concurrently.
+- `buildWorkerRegistry` registers a handler for **all 17 durable job kinds**: ADVANCE_RUN, SCHEDULE_NODE_RUN,
+  EXECUTE_NODE (through `runtime.NodeExecutorRouter{Agent, Command, Gate}`), WAIT_TIMER, APPROVAL_TIMER,
+  REQUEST_SCOPE_EXPANSION, SCOPE_EXPANSION_RECONCILE, CANCEL_RUN_COORDINATOR, RECOVERY_REAPER, REPOSITORY_PROBE,
+  BASELINE_EVIDENCE, WORKSPACE_PROVISION, WORKSPACE_RECONCILIATION, WORKSPACE_SET_RELEASE,
+  RELEASE_SET_LOCAL_COMMIT, PROJECTION_REBUILD and ARTIFACT_SWEEP.
+- `run` enqueues the two self-rescheduling control jobs (`StartupRecoveryScan`, `StartupArtifactSweep`), starts the
+  three loops below, and blocks in `workerpool.Pool.Run` until SIGINT/SIGTERM, which stops claiming, waits up to
+  `--shutdown-grace` (default 30s) for in-flight jobs, then cancels the loops.
+
+Three pieces of work have no job of their own and previously had no caller anywhere:
+1. **Live projection consumer.** `projection.ApplyBatch` (V6-08A) applies one atomic batch for one (project,
+   projection), and its doc expects "a self-rescheduling CONTROL job" to drive it — but no such job kind was ever
+   created, so nothing in production advanced a projection and the kanban/detail read models would have stayed
+   empty. `driveProjections` ticks every `--projection-interval` (default 500ms), and for each ACTIVE project
+   drains `ApplyBatch` until a batch comes back short. It is an in-process loop, not a new job kind: a kind needs a
+   `durable_jobs.job_class` migration (the reason V6-07A declined the same trade), and the consumer's own lease and
+   fence token already make two consumers, or a consumer racing a rebuild, safe — `ErrOptimisticConflict` just
+   means "someone else holds it" and is retried next tick. A poison event is logged as an error.
+2. **Expired attachment claims.** `message.ResumeOrCleanExpiredAttachmentClaims` (V6-07A) had no caller.
+   `sweepAttachmentClaims` runs it at start and every minute, logging only when it released or purged something.
+3. **Completion candidates.** An END hop moves a WorkflowRun only to `VERIFYING`; ADR-011/ADR-021 reserve the
+   decisive `SUCCEEDED`/`BLOCKED`/`FAILED` transition for `runtime.EvaluateCompletionCandidate`. That application
+   command had no production caller, so every otherwise-successful Run remained in `VERIFYING` forever.
+   `runtime.CompletionOrchestrator` scans active WorkItems for `VERIFYING` runs and invokes that existing, fenced,
+   receipt-backed command with the observed Run version. `driveCompletion` runs it immediately and every
+   `--completion-interval` (default one second). A candidate moved by cancellation or another worker between scan
+   and decision is a harmless no-op; an immutable decision is replayed rather than duplicated. A REWORK decision is
+   logged explicitly because the pre-existing V5-11 rework activation is still deliberately unscheduled.
+
+`aw serve` does not host a worker; the two run as separate processes sharing one SQLite database, which is what
+V6-15P's "`aw serve` + `aw worker` background processes" describes. A config problem now prints its per-field
+detail (`config.Validate` keeps it in `Details`, so the bare message was "1 config problem(s) found"), and
+`aw serve`'s `--worker-id` help no longer says "the future `aw worker`".
+
+### Test
+
+`cmd/aw/worker_test.go`, 4 tests, real SQLite, real `git`, real adapters:
+- `TestWorkerRegistersAHandlerForEveryDurableJobKind` — the guard for this whole gap. It parses every non-test
+  file under `internal/app`, collects each `const ...JobKind = "KIND"`, and requires the registry the real worker
+  builds to have a handler for each. It refuses to pass if the scan finds fewer than the 17 known kinds, so a
+  broken scan cannot pass vacuously. Fail-closed check: removing the ARTIFACT_SWEEP registration made it fail
+  naming `ARTIFACT_SWEEP` and `internal/app/artifactsweep/sweep.go:ArtifactSweepJobKind`; restored.
+- `TestWorkerRunsARegisteredRepositoryProbeEndToEnd` — a real job through the real worker: the
+  `RegisterRepository` command enqueues a REPOSITORY_PROBE job against a real git repository, `worker` claims it,
+  the real prober runs, and the repository becomes ACTIVE; the same worker also creates the project's projection
+  checkpoint (LIVE, cursor advanced), which no production code did before; then a clean shutdown.
+- `TestWorkerShutsDownCleanlyWhenIdle`, `TestWorkerRejectsMissingOrInvalidFlags` (6 cases, all exit code 2 with a
+  message naming the problem).
+- `TestRun_StubCommandsReportNotYetImplemented` no longer lists `worker` (only `doctor` is still a stub).
+
+`internal/app/runtime/completion_orchestrator_test.go`, 8 tests: PASS/BLOCK/REWORK outcomes, no second decision on
+a later sweep, non-candidate exclusion, two concurrent sweepers, cancel between read and decision, and a real
+SQLite close/reopen proof. This also proves that the production driver's query chain agrees with SQLite rather than
+only with the fake repositories.
+
+### Verify
+
+Proven here: a job enqueued through the real application command is run by the real `aw worker` code path, with
+real adapters, and the read-model consumer runs. Not proven here — deliberately the next PR: the whole journey
+driven black-box through two real processes over HTTP; AGENT/COMMAND/GATE execution against a real provider CLI;
+the ReleaseSet local-commit and projection-rebuild workers running under a real worker process; and cross-process
+contention between `aw serve` and `aw worker`.
+
+### Kết quả
+
+New: `cmd/aw/worker.go`, `cmd/aw/worker_test.go`, `internal/app/runtime/completion_orchestrator.go`,
+`internal/app/runtime/completion_orchestrator_test.go`. Changed: `cmd/aw/cli.go` (the `worker` entry now points at
+`runWorker`), `cmd/aw/cli_test.go` (one list), `cmd/aw/serve.go` (one help string). No migration, no new job kind,
+no change to any handler or adapter. First production composition of `workerpool` in the repository.
+`go build ./...` and `go vet ./...` clean; `go test ./...` passes in 113 packages. The only failures in the one full
+run were `cmd/aw` `TestAdapterRegister_DriftCreatesNewBuild` and
+`TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` (Windows "file used by another process" while
+rewriting a `.exe`, under the parallel full-suite load). The same two failed in V6-13's full run, where `cmd/aw` was
+untouched; with the final code here the whole `./cmd/aw` package passed twice in a row and the two adapter tests
+passed 5/5 alone. PR targets `master`.
+
+### Post-open fix - both self-rescheduling CONTROL jobs were hot loops (found by the V6-14 black-box journey)
+
+Building the black-box journey (V6-14 part 2) against the real `aw serve` + `aw worker` processes showed that an
+**idle** worker never stopped working: over six seconds with nothing to do, the journal gained ~1200
+`ARTIFACT_SWEEP_COMPLETED` events and `durable_jobs` gained ~1200 `ARTIFACT_SWEEP` and ~590 `RECOVERY_REAPER`
+rows, all `SUCCEEDED`. Cause: `enqueueArtifactSweepJobTx` and `enqueueRecoveryReaperJobTx` (V5-14, V5-13) enqueue the
+successor generation with no `AvailableAt`, so it is claimable the instant its predecessor finishes. Nothing ever
+noticed because every earlier caller drove the handlers by hand; V6-14 part 1 is the first code that runs them in a
+loop. Consequences if shipped: unbounded journal and job-table growth (~100+ writes a second, forever), fsync-bound
+SQLite contention with real work, and - visible in the journey as an intermittent HTTP 409 - the SSE retention window
+(`defaultRetentionScanLimit` = 1000 rows after the cursor) being exceeded by noise, forcing clients into a full resync.
+
+Fix (no schema, event or job-kind change):
+- `ExecuteArtifactSweepDeps.Interval` / `artifactsweep.WithInterval` and `RecoveryReaperHandler.interval` /
+  `runtime.WithRecoveryReaperInterval`: the self-rescheduled successor is enqueued with `AvailableAt = now + interval`.
+  The very first job (`StartupArtifactSweep` / `StartupRecoveryScan`) still runs immediately. A zero interval keeps the
+  old claim-at-once behaviour, because the existing hand-driven tests (V5-13/V5-14/V5-15) rely on it and are unchanged.
+- Production defaults: reaper every 5s (`runtime.DefaultRecoveryReaperInterval`; worker leases default to 30s so
+  recovery stays prompt), sweep hourly (`artifactsweep.DefaultInterval`; the sweep is dry-run by default and only
+  considers Orphans older than 7 days). `aw worker` gains `--reaper-interval` and `--sweep-interval` (must be positive).
+
+Tests: `TestHandler_WithInterval_SuccessorIsNotClaimableUntilTheIntervalElapses` and
+`TestRecoveryReaperHandler_WithInterval_SuccessorIsNotClaimableUntilTheIntervalElapses` (real SQLite; a worker polling
+right after a pass gets `ErrNoJobAvailable`), their zero-interval counterparts documenting the legacy behaviour, and
+`TestWorkerDoesNotSpinItsSelfReschedulingControlJobsWhenIdle` (the real worker entry point idles three seconds and may
+append at most the one startup sweep event). Fail-closed check: with `defaultSweepInterval` forced to 1ns the worker
+test failed with "an idle worker recorded 737 ARTIFACT_SWEEP_COMPLETED events in ~3s"; restored. `go build ./...`,
+`go vet ./...`, and `go test` for `internal/app/runtime`, `internal/app/artifactsweep`, `cmd/aw`, `internal/integration/...`
+and `internal/app/workerpool` pass. **Lesson**: a self-rescheduling job needs a rescheduling *delay* as a first-class,
+tested part of its contract; "one job per generation" idempotency prevents duplicates but says nothing about cadence.
+
 ## V6-13 — API security and authority-boundary test suite
 
 ### Thực hiện

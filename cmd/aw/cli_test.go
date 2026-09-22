@@ -53,24 +53,12 @@ func TestRun_UnknownCommand(t *testing.T) {
 	}
 }
 
-func TestRun_StubCommandsReportNotYetImplemented(t *testing.T) {
-	// "serve" is V6-01's own real implementation now (see serve.go/serve_test.go)
-	// and "doctor" is the V6-15C leaf routed by V6-15O — neither belongs in
-	// this stub-only list.
-	for _, name := range []string{"worker"} {
-		var stdout, stderr bytes.Buffer
-		code := run([]string{name}, &stdout, &stderr)
-		if code != exitFailure {
-			t.Errorf("run(%q): exit code = %d, want %d (exitFailure)", name, code, exitFailure)
-		}
-		if !strings.Contains(stderr.String(), "not yet implemented") {
-			t.Errorf("run(%q): stderr should say not yet implemented, got %q", name, stderr.String())
-		}
-		if stdout.Len() != 0 {
-			t.Errorf("run(%q): stdout should be empty, got %q", name, stdout.String())
-		}
-	}
-}
+// TestRun_StubCommandsReportNotYetImplemented used to cover this file's own
+// stub-only process commands. There are none left: "serve" (V6-01) and
+// "worker" (V6-14) are both real implementations, "doctor" is the V6-15C
+// leaf routed by V6-15O's clicompose, and "version" (V6-15O) was always
+// real. The dead `stub` helper and `errNotYetImplemented` sentinel were
+// removed in the same merge that deleted this test.
 
 func TestRun_ServeRejectsUnknownFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer

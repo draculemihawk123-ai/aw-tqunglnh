@@ -32,13 +32,6 @@ const (
 	exitUsage   exitCode = 2
 )
 
-// errNotYetImplemented marks a subcommand skeleton that exists (it parses
-// its own flags and can be invoked) but has no real behavior yet — the
-// production logic lands in the later V1..V8 task that owns it. It is a
-// distinct sentinel, not a generic error, so run can map it to a stable
-// message instead of forcing every stub to hand-write one.
-var errNotYetImplemented = errors.New("not yet implemented")
-
 // usage is the `aw help` text: the process-level commands this file owns
 // plus every `aw <resource> <action>` command internal/delivery/clicompose
 // routes (generated from the routing table, so the help can never drift from
@@ -172,22 +165,8 @@ func isUsageError(err error) bool {
 // internal/delivery/clicompose instead (V6-15O).
 var subcommands = map[string]func(arguments []string, stdout io.Writer) error{
 	"serve":   runServe,
-	"worker":  stub("worker"),
+	"worker":  runWorker,
 	"version": runVersion,
-}
-
-// stub returns a handler for a subcommand skeleton that has not been
-// implemented yet: it still owns its own (currently empty) flag set, so
-// adding real flags in the task that implements it is a local change, not a
-// composition-root change.
-func stub(name string) func([]string, io.Writer) error {
-	return func(arguments []string, _ io.Writer) error {
-		flags := flag.NewFlagSet(name, flag.ContinueOnError)
-		if err := flags.Parse(arguments); err != nil {
-			return usageError{err}
-		}
-		return fmt.Errorf("%s: %w", name, errNotYetImplemented)
-	}
 }
 
 // runVersion prints `aw version`: the module/VCS identity of this binary,
