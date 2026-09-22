@@ -11423,6 +11423,235 @@ earlier in this session) and `internal/app/workerpool` `TestPool_HeartbeatKeepsL
 heartbeat starved by the parallel full-suite load; 10/10 clean alone). PR targets `master`; the branch is based on
 V6-12's, so it opens once V6-12 has merged.
 
+## V6-04B — WorkItem contract at creation (rework of V6-04, found by V6-14)
+
+### Thực hiện
+
+**The gap (verified by V6-14's black-box acceptance journey, not speculation).** Through the public surface
+there was no way to give a WorkItem its readiness contract (`schemaVersion`, `behavior`, `acceptanceCriteria`,
+`verificationSpec`, `riskLevel`, `exclusions`, optional `workflowVersionId`). So `POST /work-items/{id}/mark-ready`
+(V6-04A) always answered 409 ("schema version must be positive; behavior is required; verification spec is
+required; risk level is required; no executable acceptance criterion…"), and `runtime.StartWorkflowRun` requires
+status READY — net effect, no Run could ever start via public HTTP or `aw`. The evidence was in the code itself:
+`CreateRootWorkItemRequest` carried only `{ProjectID, Title, InitialScope}` under a doc comment calling the
+contract "a later step no V3 task builds yet"; `internal/adapters/sqlite/work.go` already persisted the contract
+columns (migration 0007, wired by V6-04A) and said neither create command's domain constructor set any of them;
+and V6-04A's own tests only reached READY by building a `work.WorkItem` value by hand and persisting it through
+the repository. `docs/design/11-v6-00-ux-artifact.md` Screen 6 (Create WorkItem) says the create form collects
+WHAT/DONE/scope/out-of-scope/workflow version for root **and** child, and V3-03/V3-04 always intended one public
+root-create — so the fix chosen (and not redesigned here) is to extend the two existing create commands, end to
+end, to accept an optional contract. No third "edit contract" command was added.
+
+**Wire shape (fixed — the V6-14 acceptance test is written against these exact names).** One optional
+`contract` object on both `POST /projects/{projectId}/work-items` and
+`POST /projects/{projectId}/work-items/{workItemId}/children`:
+
+```json
+"contract": {
+  "schemaVersion": 1, "behavior": "…",
+  "acceptanceCriteria": [{"description": "…", "verificationRef": "…"}],
+  "verificationSpec": "…", "riskLevel": "LOW", "exclusions": ["…"], "workflowVersionId": "…"
+}
+```
+
+Omitting `contract` is byte-for-byte the pre-V6-04B behaviour (BACKLOG, empty contract).
+
+**1. Application layer** (`internal/app/work/contract.go`, new; `commands.go`). `WorkItemContractRequest` and
+`AcceptanceCriterionRequest` (no json tags, like `ScopeGrantRequest`); `CreateRootWorkItemRequest.Contract` and
+`CreateChildWorkItemRequest.Contract` are `*WorkItemContractRequest`. `applyWorkItemContract` copies it onto the new
+WorkItem's exported contract fields right after `NewRootWorkItem`/`NewChildWorkItem` and before persistence, inside
+the command's own write transaction (so a failure rolls back the family/workspace-set/scope/jobs the root command
+wrote). `ValidateReadinessGate` is **not** called at create time: a WorkItem may legitimately be created BACKLOG
+with a partial contract, and readiness stays `MarkWorkItemReady`'s / `ExplainWorkItemReadiness`'s job. A child's
+contract is its own — never inherited from the parent.
+
+**2. Shape validation (kept minimal).** `WorkItemContractRequest.Validate()` rejects only shapes that can never
+become valid: negative `schemaVersion`, an acceptance criterion with a blank `description`, a blank `exclusions`
+entry, a whitespace-only `workflowVersionId`. It never rejects absence, and it accepts a criterion with an empty
+`verificationRef` (a descriptive-only criterion — exactly the case whose readiness answer is "no executable
+acceptance criterion"). The per-field rules mirror `ValidateReadinessGate`'s own (it too reports blank exclusion
+entries and a blank pinned workflow version), so a contract that passes can only fail readiness for a reason a
+complete contract would cure. It returns every problem at once as `*InvalidWorkItemContractError{Problems}`; the
+commands call it before opening the transaction, and the HTTP handler and CLI leaf call the same method first so
+there is one rule set, not three copies.
+
+**3. `workflowVersionId` existence check.** `work_items.workflow_version_id` is a foreign key; an unknown ID would
+otherwise reach the sqlite adapter's generic "unexpected error" and surface as an HTTP 500 for a plain caller
+mistake. `applyWorkItemContract` therefore resolves it via `tx.Definitions().GetWorkflowVersion` and returns
+`ErrUnknownWorkflowVersion` (HTTP 400 with a `contract.workflowVersionId` detail). Existence only, by ID: no
+per-project ownership check — `runtime.StartWorkflowRun`, the only consumer of the pin, compares IDs only and
+resolves it the same way, so this does not move that boundary.
+
+**4. Idempotency / receipts.** HTTP computes the semantic hash over `json.Marshal` of the decoded body struct
+(`CanonicalizeJSON`), so the contract participates automatically once it is a field of that struct. Two design points
+make that safe: `Contract` is `*workItemContractBody` with `omitempty`, so a body without it (or `"contract":null`)
+canonicalizes to exactly the bytes it always did — a receipt written by a pre-V6-04B binary still replays after an
+upgrade; and every field inside the contract is `omitempty`, so "given but zero" and "omitted" hash identically. The
+CLI struct mirrors the HTTP struct's field order and tags, so an HTTP call and `aw work-item create` for the same
+request stay replay-equivalent. Both delivery layers have tests that pin the canonical literal.
+
+**5. Persistence — no adapter change.** `createWorkItemTx`/`scanWorkItemRow` already round-trip
+`schema_version/behavior/acceptance_json/verification_json/risk/exclusions_json/workflow_version_id` (V6-04A). The
+new real-sqlite tests prove all seven for a root and for a child. `ApprovalException` stays out: migration 0007
+added no column for it, so accepting it would silently drop it (an `approvalException` key is a 400).
+
+**6. Events unchanged.** `RootWorkItemCreated`/`ChildWorkItemCreated` payloads carry only IDs, title and
+`scopeCount` — they do not embed the contract — so no event schema or version changed. The V6-00A event-inventory
+guard and golden fixtures pass unchanged.
+
+**7. Read side.** `GET …/readiness` already runs `ValidateReadinessGate` against the persisted columns and needed no
+change. The authoritative detail **could not** show what was stored (its own doc comment deliberately omitted the
+contract because no public command populated it), so `WorkItemDetail` gained one additive field,
+`contract` (`*WorkItemContractView`, `omitempty`, nil when nothing of the contract is stored), with the same JSON keys
+as the request object. `workflowVersionId` is repeated inside it so a contract reads back with the shape it was
+created with; the existing top-level `workflowVersionId` is untouched. A WorkItem without a contract serializes
+exactly as before (no `contract` key). Also updated `queries.go`'s doc comments that had said no command populates
+the contract.
+
+**8. HTTP** (`internal/delivery/httpapi/workitem`). `workItemContractBody`/`acceptanceCriterionBody` DTOs
+(`dto.go`) and a `Contract` field on both body types; `writeCommandError` maps `*InvalidWorkItemContractError` and
+`ErrUnknownWorkflowVersion` to 400 with `contract.<field>` details. The body stays decoded with
+`DisallowUnknownFields` (recursively), so an unknown key inside `contract` — a `status`/`targetStatus`/`family`/
+`workspace` smuggle, a typo, a key inside a criterion — is a 400. The DTO names (`…Body`) and JSON keys pass
+`internal/archtest`'s `TestWorkItemPackageRequestBodiesNeverAcceptAStatusField` legitimately; no forbidden
+field name is declared.
+
+**9. CLI** (`internal/delivery/cli/workitem`). **Deviation from the brief's example, deliberate:** the contract
+rides **inside the existing `--file`/stdin JSON body** (`{"title":…,"contract":{…}}`, the same document as the HTTP
+body) rather than behind a new `--contract-file` flag. Both leaves already read exactly that document through
+`cli.ReadBoundedInput`; a second bounded read could not share stdin with it, and a body-embedded contract keeps one
+document shape across HTTP and CLI. Same app command, no second path. The leaf's existing body decode is lenient
+about unknown top-level keys (unchanged since V6-15G), but a silently dropped typo inside the contract would leave a
+WorkItem half-specified with no way to fix it, so `workItemContractBody.UnmarshalJSON` decodes the contract object
+strictly (unknown key anywhere inside it → usage error) without changing top-level behaviour.
+
+**10. Golden.** `internal/delivery/httpapi/apicontract/testdata/golden/contract.json` changed because two request
+schemas and the shared `WorkItemDetail` response schema each gained one field: `+15` lines, three entries
+(`createChildWorkItem` request `Contract *workitem.workItemContractBody`, `createRootWorkItem` request the same,
+`getWorkItem` response `Contract *work.WorkItemContractView`). No operation, method, path or scope changed, so the
+breaking-change gate stays green; the route count is unchanged. That package has no update flag/env, so the file was
+regenerated by a temporary in-package test that called the package's own `generateContractJSON` and wrote the
+result (deleted before commit); `git diff` was reviewed and is purely additive.
+
+**Deliberately left out.** `ApprovalException` (no column). `VerificationRef` → CommandDefinition/GateDefinition
+resolution at create time (needs the definition registry; `ValidateReadinessGate` draws the same boundary).
+Per-project ownership of a pinned WorkflowVersion. **An update-contract command:** a WorkItem created with a partial
+or wrong contract cannot be corrected later through the public surface — worth a follow-up task; not built here
+because the brief fixed the design as "extend the existing create commands". Some older test fixtures
+(`mark_ready_sqlite_test.go`, the CLI `fixture_test.go`, `kanban/detail_test.go`) still carry comments saying no
+public command populates the contract; they remain accurate as fixture rationale (those fixtures build contracts
+directly on purpose) and were left untouched to avoid cross-task merge churn. The UX artifact's Screen 6 needs no
+edit — it already describes the create form as collecting the full contract.
+
+### Test
+
+New tests (29), all against real sqlite (app, HTTP) or the repo's standard `fake.UnitOfWork` (CLI, matching that
+package's existing layering); no test builds a contracted WorkItem by hand.
+
+- `internal/app/work/contract_test.go` (1 test, 11 cases) — `TestWorkItemContractRequest_Validate`: nil / empty /
+  partial / full / `schemaVersion` 0 / descriptive-only criterion are valid; negative `schemaVersion`, blank criterion
+  description, blank exclusion entry, whitespace `workflowVersionId` are each rejected with the exact field; every
+  problem is reported at once, in field order.
+- `internal/app/work/contract_sqlite_test.go` (6 tests) —
+  `…Root_WithContract_PersistsEveryFieldAndBecomesReadySQLite` (all seven fields, including `exclusions` and a real
+  published `workflowVersionId`, read back through the repository; authoritative detail `Contract` equals the view;
+  readiness Ready; `MarkWorkItemReady` → READY@2, no hand-built row anywhere);
+  `…Child_WithContract_PersistsEveryFieldIndependentOfParentSQLite` (child stores its own; a sibling created without
+  one does **not** inherit the parent's; the parent's contract is untouched by children);
+  `…WithoutContract_StaysExactlyAsBeforeSQLite` (omitted and empty-object contract both leave every column unset, the
+  detail JSON has no `"contract"` key, readiness reports the usual gaps);
+  `…ContractSameKeyReplaysAndStoresOnceSQLite` (replay → same WorkItemID, one row, contract intact; same key + different
+  hash → `ErrReceiptConflict`, contract untouched);
+  `…InvalidContract_RejectedBeforeAnyWriteSQLite` (root and child: typed error naming all four problems, zero new rows,
+  zero receipts);
+  `…UnknownWorkflowVersion_RolledBackSQLite` (root and child: `ErrUnknownWorkflowVersion`, zero
+  work_items/task_families/workspace_sets/scopes/WORKSPACE_PROVISION jobs/receipts).
+- `internal/delivery/httpapi/workitem/contract_test.go` (13 tests, real `httpapi.Server` over real sqlite) —
+  `TestCreateChildWithContract_JourneyToReady` is the sequence V6-14 said was impossible: create project + ACTIVE repo →
+  root (no contract) → child WITH contract (one criterion with a non-empty `verificationRef`) → `GET …/readiness` ready →
+  `POST /work-items/{child}/mark-ready` with `If-Match` → 200, READY@2, contract unchanged; the root stays unready and
+  its mark-ready is still 409. Also: `…RootWithContract_JourneyToReady`; `…ChildWithoutContract_MarkReadyStillConflicts`
+  (409, details equal the readiness problems, no `contract` key in the detail bytes);
+  `…NoExecutableAcceptanceCriterion_ReadinessSaysSo` (empty `verificationRef` → readiness has exactly the "no executable
+  acceptance criterion…" problem, mark-ready 409 with that one detail); `…PinsRealWorkflowVersion`;
+  `…UnknownWorkflowVersion_Returns400WithFieldDetail`; `…MalformedContract_Returns400WithFieldDetails`;
+  `…UnknownKeysRejected` (7 mutations × root and child — `status`, `targetStatus`, `family`, `workspace`,
+  `approvalException`, a typo'd key, an unknown key inside a criterion — all 400, nothing created);
+  `…RootWithContract_SameKeySameBody_ReplaysAndStoresOnce`;
+  `…SameKeyDifferentContract_Conflicts` (changed field / extra criterion / contract removed / contract added to a body first
+  sent without one / same contract new title → all 409 on root; changed and removed on child; the first contract
+  untouched; the identical child body replays 200);
+  `TestCreateRootWorkItem_RequestHashCanonicalForms` (the stored receipt hash equals `SemanticHash` over the literal
+  pre-V6-04B canonical bytes for a contract-less body and for `"contract":null`, and over a literal with-contract form;
+  contract/no-contract hashes differ; a differently ordered hand-written body hashes identically);
+  `TestContractOmittedAndZeroValuesCanonicalizeAlike`; `TestContractBodyDeclaresNoStateFields` (the detail's `contract`
+  has exactly the seven documented keys).
+- `internal/delivery/cli/workitem/contract_test.go` (9 tests) — create-child with contract → readiness Ready →
+  mark-ready READY@2; create with contract; create without contract stays empty; same key + different contract →
+  `cli.ErrReceiptHashConflict` and the identical body replays (`Replayed=true`, one WorkItem) for create and create-child;
+  the same canonical literals as the HTTP test (so HTTP and CLI hashes are provably identical); malformed contract →
+  `cli.UsageError` naming every field, nothing created; unknown keys inside the contract → usage error; unknown
+  workflow version → `ErrUnknownWorkflowVersion`.
+- Golden: `apicontract` `TestContract_MatchesGoldenFixture` / breaking-change gate / route-inventory pass against the
+  regenerated fixture.
+
+### Verify
+
+**Every new guard was shown to fail when the behaviour is broken**, then restored (backups in the scratchpad, `git
+diff` and a `MUTATION` grep confirmed clean afterwards):
+
+| Mutation | What failed |
+|---|---|
+| HTTP: contract erased from the canonical bytes (`MarshalJSON` → `null`) | `TestCreateWithContract_SameKeyDifferentContract_Conflicts` (changed behavior answered 200, not 409), `TestCreateRootWorkItem_RequestHashCanonicalForms` |
+| HTTP: `omitempty` removed from `createRootWorkItemBody.Contract` | `TestCreateRootWorkItem_RequestHashCanonicalForms` (contract-less hash no longer the pre-V6-04B one) |
+| CLI: contract dropped from `NormalizedPayload` | `…ContractSameKeyDifferentContract_ConflictsAndReplays` (err nil, not conflict), `…RequestHashCanonicalForms` |
+| sqlite: `exclusions_json` dropped from the INSERT | 3 app tests + 5 HTTP tests (`Exclusions = []`, want `[PDF export …]`) |
+| App: `VerificationSpec` not applied by the command | 3 app tests, HTTP + CLI journeys (readiness "verification spec is required") |
+| App: workflow-version existence check removed | app test (`INTERNAL: sqlite: unexpected error`), HTTP test (500, want 400), CLI test (nil error) |
+| App: `Validate()` accepts everything | app `Validate` + invalid-contract tests, HTTP malformed test, CLI malformed test |
+| HTTP: a `status` field added to the contract DTO | `TestCreateWithContract_UnknownKeysRejected` (201, want 400) **and** `TestWorkItemPackageRequestBodiesNeverAcceptAStatusField` |
+| CLI: strict `UnmarshalJSON` removed | `TestRunWorkItemCreate_ContractUnknownKeys_IsUsageError` |
+| Detail view never shows the stored contract | app persistence test, both HTTP journeys, `TestContractBodyDeclaresNoStateFields` |
+
+- **Events/inventory:** `internal/app/work` event-schema tests and the V6-00A inventory/golden fixtures pass with no
+  fixture change.
+- **Golden:** exactly one fixture changed, additively (see Thực hiện §10).
+- `go build ./... && go vet ./...` clean.
+- **Full suite** (`go build ./... && go vet ./... && go test ./...`): build and vet clean; 113 packages `ok`, 1
+  failure — `cmd/aw` `TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` ("swap executable: … The
+  process cannot access the file because it is being used by another process"), the known Windows-only flake. Not
+  dismissed on the name match alone: this diff touches nothing under `cmd/`; the test passes when re-run in isolation
+  (`go test ./cmd/aw -run …` → ok, 3.1s) and the whole `cmd/aw` package passes on a second run (ok, 13.2s); that
+  package also builds the real route composition, so it exercises this change indirectly. The touched packages
+  (`internal/app/work`, `internal/delivery/httpapi/workitem`, `internal/delivery/cli/workitem`,
+  `internal/delivery/httpapi/apicontract`, `internal/archtest`, `internal/app/eventschema`) were re-run once more
+  after the final comment edit — all `ok`.
+
+### Kết quả
+
+A WorkItem can now be given its readiness contract through the public surface, at creation, for root and child
+alike, and the sequence V6-14 proved impossible works over real HTTP and through the terminal: create project +
+ACTIVE repository → create root → create child **with** `contract` → `GET …/readiness` ready → `POST
+/work-items/{child}/mark-ready` with `If-Match` → 200, READY. A child created without a contract still answers 409
+(unchanged), and a contract whose only criterion has an empty `verificationRef` reports exactly the "no executable
+acceptance criterion" problem.
+
+New: `internal/app/work/contract.go` (+ `contract_test.go`, `contract_sqlite_test.go`),
+`internal/delivery/cli/workitem/contract.go` (+ `contract_test.go`),
+`internal/delivery/httpapi/workitem/contract_test.go` — 29 new tests. Changed: `internal/app/work/commands.go`
+(request `Contract` fields, validate + apply), `queries.go` (additive `WorkItemDetail.Contract`, doc comments),
+`internal/delivery/httpapi/workitem/{dto,errors,workitem_commands}.go`,
+`internal/delivery/cli/workitem/{create,createchild,doc}.go`, and the regenerated golden
+`internal/delivery/httpapi/apicontract/testdata/golden/contract.json` (+15 lines, additive only). Not changed:
+the sqlite adapter (already round-tripped the columns), any event payload/schema version, `cmd/aw/*`,
+`internal/delivery/cli/descriptor.go`, `docs/design/*.md`.
+
+Known limits, stated plainly: no `ApprovalException` (no column); no `VerificationRef` → definition resolution; the
+pinned `workflowVersionId` is checked for existence only; and there is still no command to edit a contract after
+creation, so a WorkItem created with a partial or wrong contract cannot be corrected through the public surface (a
+follow-up task, not built here). The CLI takes the contract inside its existing `--file`/stdin body rather than via
+the brief's example `--contract-file` flag (rationale in Thực hiện §9). PR targets `master`.
+
 ## CI — V0-12 sqlite -race budget (test-only fix)
 
 ### Thực hiện
