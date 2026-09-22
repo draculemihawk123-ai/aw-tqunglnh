@@ -1650,6 +1650,16 @@
             "name": "ExecutionAttemptCount",
             "jsonTag": "executionAttemptCount",
             "type": "int"
+          },
+          {
+            "name": "ApprovalRequests",
+            "jsonTag": "approvalRequests,omitempty",
+            "type": "[]runtime.ApprovalRequestView"
+          },
+          {
+            "name": "WaitRegistrations",
+            "jsonTag": "waitRegistrations,omitempty",
+            "type": "[]runtime.WaitRegistrationView"
           }
         ]
       }
