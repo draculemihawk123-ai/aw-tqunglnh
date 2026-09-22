@@ -338,3 +338,190 @@ jobs:
             spk13-evidence/
           if-no-files-found: error
           retention-days: 7
+
+  # v6-acceptance is V6-14B (docs/design/08-v6-api-projections.md V6-14B:
+  # "cùng một semantic suite pass trên Windows/Linux với lifecycle hữu
+  # hạn"): it runs the SAME V6-14 black-box journey
+  # (internal/integration/v6accept, TestV6HTTPAcceptance_CleanDatabaseJourney)
+  # on both platforms, real `aw serve` + `aw worker` processes end to end —
+  # health/doctor/settings, adapter probe/register, project/repository,
+  # workspace provisioning, a 4-role Run, ReleaseSet + a real local `git
+  # commit`, evidence/artifact download, SSE projection + rebuild, restart
+  # equality and graceful shutdown. It is budgeted separately from
+  # `contract`/V0-12: this suite spawns real OS processes and does real
+  # waits (workspace provisioning, run completion, projection rebuild,
+  # restart), so it legitimately costs more per run than the offline unit
+  # suite. Local measurement (see baocaov6checklist.md's own V6-14B section)
+  # was ~20-33s wall on a contended Windows dev machine for the whole `go
+  # test` invocation (build + all 14 stages); 20 minutes gives CI/Windows
+  # overhead — and V6-14A's own future crash/race scenarios landing in this
+  # same package — real headroom without matching `contract`'s tighter
+  # budget.
+  v6-acceptance:
+    name: v6 acceptance (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: contract
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      # The suite builds cmd/aw and cmd/fake-claude itself (build_test.go)
+      # and writes its own structured, OS-normalized result summary
+      # (internal/integration/v6accept/report_test.go) to AW_V6_REPORT_PATH
+      # — this is what v6-acceptance-diff below compares field-by-field
+      # instead of diffing raw logs (which would differ on absolute paths,
+      # ports, PIDs and timestamps even between two semantically identical
+      # runs). The job's own exit code stays real: a genuine `go test`
+      # failure exits this step non-zero and fails the job, even though the
+      # upload step below still runs (if: always()) to capture whatever
+      # evidence exists.
+      - name: Run V6-14 black-box HTTP acceptance journey (V6-14B multi-platform)
+        shell: bash
+        env:
+          AW_HTTP_ACCEPTANCE: '1'
+          AW_V6_REPORT_PATH: v6-report/report.json
+        run: |
+          set -uo pipefail
+          mkdir -p v6-report
+          go test -count=1 -v ./internal/integration/v6accept/... > v6-report/acceptance.log 2>&1
+          status=$?
+          echo "== last 200 lines of acceptance.log =="
+          tail -n 200 v6-report/acceptance.log
+          if [ ${status} -ne 0 ]; then
+            echo "V6-14B acceptance suite FAILED on ${{ matrix.os }} (exit ${status}) — see the v6-acceptance-report-${{ matrix.os }} artifact"
+            exit ${status}
+          fi
+          echo "V6-14B acceptance suite passed on ${{ matrix.os }}"
+
+      - name: Upload V6-14B acceptance report (${{ matrix.os }})
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v6-acceptance-report-${{ matrix.os }}
+          path: v6-report/
+          if-no-files-found: error
+          retention-days: 7
+
+  # v6-acceptance-diff is V6-14B's own cross-platform comparison: it never
+  # trusts a single platform's own green job conclusion, and it never treats
+  # a missing platform artifact as a pass. `if: always()` means this job
+  # still runs even when a v6-acceptance matrix leg failed or was cancelled
+  # (fail-fast: false above keeps the OTHER leg's own artifact uploading
+  # regardless), so a real "one platform's evidence is missing" situation is
+  # always loudly reported by THIS job, in this job's own log, rather than
+  # the whole workflow just showing one red matrix leg and a silently
+  # skipped comparison.
+  v6-acceptance-diff:
+    name: v6 acceptance cross-platform diff
+    runs-on: ubuntu-latest
+    needs: v6-acceptance
+    if: always()
+    timeout-minutes: 10
+    steps:
+      # continue-on-error: true on both downloads below is deliberate: the
+      # default download-artifact failure (a generic "artifact not found")
+      # would abort the job before the comparison step gets to print its own
+      # CHƯA ĐỦ EVIDENCE message. The comparison step itself checks for the
+      # files' real presence and is what actually fails the job.
+      - name: Download Windows v6 acceptance report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v6-acceptance-report-windows-latest
+          path: windows-report
+
+      - name: Download Linux v6 acceptance report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v6-acceptance-report-ubuntu-latest
+          path: linux-report
+
+      # Fail-closed, field-by-field comparison (docs/design/08-v6-api-projections.md
+      # V6-14B "Không làm: unavailable platform is not silently marked
+      # PASS" / "Verify: ... missing evidence = CHƯA ĐỦ EVIDENCE"):
+      #   1. Either report file missing -> CHƯA ĐỦ EVIDENCE, naming which
+      #      platform, non-zero exit. Never continue-on-error past this.
+      #   2. Either report's own allPassed=false -> a REAL recorded failure
+      #      (evidence present, just red), reported as such, non-zero exit.
+      #   3. contractVersion differs -> the two runs are not evidence for
+      #      the same suite/code version; reported field-by-field, non-zero
+      #      exit.
+      #   4. stages differ (normalized to name+passed only — durationMs is
+      #      real but expected to differ machine-to-machine, so it is not
+      #      part of the semantic comparison) -> non-zero exit, both sides
+      #      logged.
+      #   5. finalCounts differ -> non-zero exit, every differing key named
+      #      with both values.
+      #   6. Otherwise: one-line "both platforms agree on contract version
+      #      <X>" confirmation.
+      - name: Normalize and compare V6-14B platform reports (fail closed on missing evidence)
+        shell: bash
+        run: |
+          set -uo pipefail
+          windows_report="windows-report/report.json"
+          linux_report="linux-report/report.json"
+
+          missing=""
+          if [ ! -f "${windows_report}" ]; then missing="${missing}windows-latest "; fi
+          if [ ! -f "${linux_report}" ]; then missing="${missing}ubuntu-latest "; fi
+          if [ -n "${missing}" ]; then
+            echo "CHƯA ĐỦ EVIDENCE: missing V6-14B acceptance report(s) for: ${missing}(expected the v6-acceptance-report-<os> artifact from each platform's v6-acceptance job; an upstream job that never reached its upload-artifact step, or was skipped/cancelled, produces no artifact at all)"
+            exit 1
+          fi
+
+          echo "== windows-latest report =="
+          cat "${windows_report}"
+          echo "== ubuntu-latest report =="
+          cat "${linux_report}"
+
+          win_all_passed=$(jq -r '.allPassed' "${windows_report}")
+          linux_all_passed=$(jq -r '.allPassed' "${linux_report}")
+          if [ "${win_all_passed}" != "true" ]; then
+            echo "V6-14B FAILED: windows-latest report has allPassed=${win_all_passed} (a real recorded failure, not missing evidence — see the v6-acceptance-report-windows-latest artifact's acceptance.log)"
+            exit 1
+          fi
+          if [ "${linux_all_passed}" != "true" ]; then
+            echo "V6-14B FAILED: ubuntu-latest report has allPassed=${linux_all_passed} (a real recorded failure, not missing evidence — see the v6-acceptance-report-ubuntu-latest artifact's acceptance.log)"
+            exit 1
+          fi
+
+          win_contract=$(jq -r '.contractVersion' "${windows_report}")
+          linux_contract=$(jq -r '.contractVersion' "${linux_report}")
+          if [ "${win_contract}" != "${linux_contract}" ]; then
+            echo "V6-14B FAILED: field 'contractVersion' differs between platforms: windows-latest=${win_contract} ubuntu-latest=${linux_contract}"
+            exit 1
+          fi
+
+          win_stages=$(jq -c '[.stages[] | {name, passed}]' "${windows_report}")
+          linux_stages=$(jq -c '[.stages[] | {name, passed}]' "${linux_report}")
+          if [ "${win_stages}" != "${linux_stages}" ]; then
+            echo "V6-14B FAILED: field 'stages' (normalized to name+passed) differs between platforms"
+            echo "  windows-latest: ${win_stages}"
+            echo "  ubuntu-latest:  ${linux_stages}"
+            exit 1
+          fi
+
+          win_counts=$(jq -c '.finalCounts' "${windows_report}")
+          linux_counts=$(jq -c '.finalCounts' "${linux_report}")
+          if [ "${win_counts}" != "${linux_counts}" ]; then
+            echo "V6-14B FAILED: field 'finalCounts' differs between platforms"
+            for key in $(jq -r '.finalCounts | keys[]' "${windows_report}" "${linux_report}" | sort -u); do
+              wv=$(jq -r --arg k "${key}" '.finalCounts[$k] // "MISSING"' "${windows_report}")
+              lv=$(jq -r --arg k "${key}" '.finalCounts[$k] // "MISSING"' "${linux_report}")
+              if [ "${wv}" != "${lv}" ]; then
+                echo "  finalCounts.${key}: windows-latest=${wv} ubuntu-latest=${lv}"
+              fi
+            done
+            exit 1
+          fi
+
+          echo "both platforms agree on contract version ${win_contract} (V6-14B multi-platform acceptance PASS)"
