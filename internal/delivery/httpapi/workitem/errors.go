@@ -74,6 +74,22 @@ func writeQueryError(w http.ResponseWriter, err error) {
 //     already report for the identical WorkItem) rides along as
 //     httpapi.ErrorDetail entries rather than being flattened into a single
 //     opaque message.
+//   - *workapp.InvalidWorkItemContractError (CreateRootWorkItem/
+//     CreateChildWorkItem, V6-04B): the request's optional "contract" object
+//     has a shape that can never be valid (a negative schema version, a
+//     criterion with no description, a blank exclusion or workflow version ID)
+//     — mapped to a 400 with one "contract.<field>" ErrorDetail per problem,
+//     also checked before the switch. Handlers run the same Validate()
+//     themselves before dispatching, so this mapping is the command's own
+//     defense in depth reaching the wire consistently, never a second
+//     vocabulary.
+//   - workapp.ErrUnknownWorkflowVersion (same two commands): "contract.
+//     workflowVersionId" names no WorkflowVersion — a request-shape problem
+//     the caller can fix, so a 400 with a field detail rather than the 404
+//     an unknown repository gets above. The lookup is existence-only, by ID,
+//     with no per-project ownership check — the same boundary
+//     runtime.StartWorkflowRun's own lookup of that pin already has; this
+//     mapping does not move it.
 //
 // Every unmatched error falls through to a plain 500 INTERNAL. In practice
 // this default is defense-in-depth only: the bare `errors.New(...)`
@@ -92,6 +108,15 @@ func writeCommandError(w http.ResponseWriter, err error) {
 		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, readinessErr.Error(), details)
 		return
 	}
+	var contractErr *workapp.InvalidWorkItemContractError
+	if errors.As(err, &contractErr) {
+		details := make([]httpapi.ErrorDetail, 0, len(contractErr.Problems))
+		for _, problem := range contractErr.Problems {
+			details = append(details, httpapi.ErrorDetail{Field: "contract." + problem.Field, Message: problem.Message})
+		}
+		httpapi.WriteError(w, http.StatusBadRequest, httpapi.ErrorCodeInvalidRequest, "request validation failed", details)
+		return
+	}
 	switch {
 	case errors.Is(err, ports.ErrPersistenceNotFound),
 		errors.Is(err, ports.ErrScopeMismatch),
@@ -106,6 +131,9 @@ func writeCommandError(w http.ResponseWriter, err error) {
 	case errors.Is(err, workapp.ErrEffectiveScopeExceedsFamilyScope),
 		errors.Is(err, workapp.ErrCrossFamilyReference):
 		httpapi.WriteError(w, http.StatusBadRequest, httpapi.ErrorCodeInvalidRequest, err.Error(), nil)
+	case errors.Is(err, workapp.ErrUnknownWorkflowVersion):
+		httpapi.WriteError(w, http.StatusBadRequest, httpapi.ErrorCodeInvalidRequest, "request validation failed",
+			[]httpapi.ErrorDetail{{Field: "contract.workflowVersionId", Message: "does not name a published WorkflowVersion"}})
 	default:
 		httpapi.WriteError(w, http.StatusInternalServerError, httpapi.ErrorCodeInternal, "internal error", nil)
 	}
