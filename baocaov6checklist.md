@@ -12306,6 +12306,123 @@ creation, so a WorkItem created with a partial or wrong contract cannot be corre
 follow-up task, not built here). The CLI takes the contract inside its existing `--file`/stdin body rather than via
 the brief's example `--contract-file` flag (rationale in Thực hiện §9). PR targets `master`.
 
+## V6-14 part 2 - Black-box acceptance journey through real `aw serve` + `aw worker`
+
+### Thuc hien
+
+V6-14's own bar (`docs/design/08-v6-api-projections.md:595-605`) is "the full happy path works only through
+public HTTP and workers", proven by "a black-box process test, durable trace IDs/hashes and post-restart
+query equality". Part 1 (this PR's own parent branch) built the production `aw worker` composition that
+made a real worker process exist at all; this PR is the actual black-box journey - a new, opt-in test
+package, `internal/integration/v6accept` (2285 lines), that spawns the REAL compiled `aw` binary twice
+(`aw serve`, `aw worker`) as two real OS processes sharing one SQLite database and drives the entire
+core journey through nothing but their public HTTP surface. No handler is ever called in-process; no
+SQLite row is ever seeded directly.
+
+**Why opt-in** (`AW_HTTP_ACCEPTANCE=1`, `build_test.go`): the package compiles two binaries (`aw`,
+`fake-claude`) and spawns real processes with real SQLite/Git I/O - the wrong cost profile for the
+offline unit suite the V0-12 gate reruns 10 times inside a hard 25-minute job budget (see the "CI - V0-12
+sqlite -race budget" section elsewhere in this file for how tight that budget already is). A default
+`go test ./...` still compiles and vets the whole package (so it can never bit-rot silently) but every
+test calls `requireAcceptance(t)` first and skips with a clear reason. Wiring a CI job to actually run it
+is explicitly V6-14B's own scope ("platform CI jobs/artifacts and semantic comparison") - deferred there
+on purpose, not an oversight.
+
+**Harness** (`stack_test.go`, `client_test.go`): `childProcess` wraps the repo's own real
+`internal/adapters/process.Supervisor` (the same primitive `aw worker` uses for provider CLIs) so the
+harness inherits its platform-correct graceful-stop handling (CTRL_BREAK on Windows, SIGTERM elsewhere,
+whole-process-tree kill after a grace period) instead of re-deriving it. `stack.start` brings up `aw
+serve` first (creates/migrates the database), waits for its `{"address":...}` stdout announcement, then
+`aw worker` against the same three paths. `apiClient` is a plain `net/http` client that mints the session
+token the one legitimate way - parsing `window.__AW_BOOTSTRAP__` out of the real bootstrap HTML page - and
+sets `Idempotency-Key`/`If-Match`/`X-Aw-Session-Token` exactly as the documented wire contract requires,
+importing only the header-name constants from `internal/delivery/httpapi` (never a handler).
+
+**Journey** (`journey_test.go` + `stage_*.go`, 14 stages, one `TestV6HTTPAcceptance_CleanDatabaseJourney`):
+01 health/doctor/safe-settings (PUT requires the full desired document + `If-Match`; a bare PUT is
+refused) -> 02 adapter probe (response IS the bare signed token, no wrapper)/register, replay-proven -> 03
+project/repository (the WORKER, not the API process, probes the repository to ACTIVE) -> 04 nine
+definitions published over HTTP (policy/agent-profile/skill/command/gate/workflow) for a real
+START->AGENT(maker)->COMMAND->MACHINE_GATE->AGENT(checker)->END graph -> 05 root+child WorkItem
+(contract carried at creation, V6-04B), workspace-set provisioned READY by the worker, mark-ready,
+`StartWorkflowRun`, the WORKER drives all four executor roles to a real SUCCEEDED over HTTP alone -> 06
+conversation (message + attachment, both idempotency-replay and same-key/different-body-conflict proven,
+SHA-256-verified download) -> 07 scope expansion (request/approve, family scope version advances, a
+decided request cannot be decided twice) -> 08 a second Run (START->COMMAND->END) that writes a file
+inside the WorkItem's own WRITE-scoped `src/` path -> 09 ReleaseSet create/seal/local-commit (the WORKER
+makes the real `git commit`; replay proven; a second request with now-stale versions refused; the diff
+between the commit's parent/result over the bounded workspace-inspection routes shows exactly the one
+file; the operator's own original repository - `HEAD`, `main`, working tree, `git remote` - is asserted
+completely untouched, and the new commit is reachable only from the managed workspace branch, never
+`main`: the "no push/fetch/remote Git ever" contract proven from the outside) -> 10 evidence/artifact
+(every evidence row belongs to the real RunID; COMMAND_EXECUTION and the gate's own evidence kind are
+both present with verdict PASS; every referenced artifact downloads and hashes to what the API reported)
+-> 11 projection/SSE (the live consumer, running only inside the worker process, catches every WorkItem
+up without this test ever touching a projection row; the event stream read from cursor 0 over a real
+long-lived HTTP connection carries the whole lifecycle in strictly increasing JournalPosition order) ->
+12 projection rebuild (requested over HTTP, replay-proven, the worker runs the real shadow-build+fenced-
+cutover, generation advances by exactly one, the rebuilt board is byte-for-byte the same rows as the live
+one it replaced) -> 13 restart (both processes stopped gracefully then restarted on the SAME database: 21
+distinct authoritative/projected queries snapshot byte-identical before and after, except safe settings,
+whose own documented `restartRequired` semantics - "the next restart will use different settings" - are
+asserted explicitly instead: `effective` moves to match `desired` and its `source` becomes `sqlite`; the
+whole event journal read fresh from cursor 0 has an identical prefix) -> 14 graceful shutdown (both
+processes must exit 0 inside their own grace period).
+
+**Fixes made along the way, found only because this is the first code that ever runs the real worker in
+a loop** (both already pushed to the parent PR #81, `feat/v6-14-aw-worker-composition`, so this PR's own
+diff against that branch is limited to the harness+journey itself):
+- Both self-rescheduling CONTROL jobs (RECOVERY_REAPER, ARTIFACT_SWEEP) were re-enqueuing their successor
+  claimable immediately - an idle real worker ran ~200 sweeps and ~100 reaper passes a SECOND, appending
+  an `ARTIFACT_SWEEP_COMPLETED` event every time. Fixed with a real rescheduling delay
+  (`artifactsweep.WithInterval`/`runtime.WithRecoveryReaperInterval`, `--reaper-interval`/
+  `--sweep-interval` on `aw worker`, defaults 5s/1h) - see that PR's own commit for the full account.
+- A shutdown signal landing while `workerpool` was still inside its own startup recovery scan surfaced as
+  an error ("startup recovery scan: ... context canceled") instead of a clean exit - `cleanShutdown` maps
+  an operator-requested cancellation to success without swallowing any other error.
+
+**A real gap found and NOT fixed here (V6-04B, separate PR #83)**: `CreateRootWorkItem`/
+`CreateChildWorkItem` had no way to carry a readiness contract at all, so no WorkItem created through the
+public surface could ever reach READY and no Run could ever start - discovered by this journey's own
+stage 05 failing with `mark-ready` always 409. Delegated to its own task/PR rather than folded in here,
+since it is a real application-layer gap, not test harness work; this branch merges that PR's commit in
+so the journey can actually exercise the fix.
+
+### Test
+
+`AW_HTTP_ACCEPTANCE=1 go test -count=1 -run TestV6HTTPAcceptance -v ./internal/integration/v6accept/` -
+all 14 stages PASS, ~13-25s wall depending on machine load; repeated 3 consecutive full runs clean
+(no flake) before opening this PR. `go build ./...`, `go vet ./...` clean repo-wide. Full `go test
+./...`: every package `ok` except one isolated flake,
+`internal/app/workerpool.TestPool_TwoPoolsRaceRecovery_NoDuplicateProcessing` ("context canceled") -
+confirmed diff-unrelated (`git diff --stat origin/master...HEAD -- internal/app/workerpool` is empty) and
+passed 3/3 in isolation and on a full solo rerun of the package; consistent with this session's shared-
+runner-load pattern under full-suite parallel load (see the "Agent Kit CI known flakes" precedent
+elsewhere in this repo's own history), not a regression.
+
+### Verify
+
+Every V6-14 Verify bullet is satisfied literally, not approximately: "black-box process test" - two real
+OS processes, HTTP only, `internal/adapters/process.Supervisor`, no handler ever called directly;
+"durable trace IDs/hashes" - stage 09's SHA-256 verification of every downloaded artifact against the
+API's own reported hash, stage 11's strictly-increasing JournalPosition proof, stage 13's identical-
+journal-prefix-after-restart proof; "post-restart query equality" - stage 13's 21-query snapshot
+comparison. The "no push/fetch/remote Git" contract (ADR-014's own local-commit-only bar, already proven
+at the unit level by V6-10E) is additionally proven here from OUTSIDE the process boundary, against the
+operator's own real Git checkout.
+
+### Ket qua
+
+New package `internal/integration/v6accept` (`build_test.go`, `client_test.go`, `stack_test.go`,
+`fixture_test.go`, `journey_test.go`, `definitions_test.go`, `stage_conversation_test.go`,
+`stage_scope_test.go`, `stage_release_test.go`, `stage_evidence_test.go`, `stage_projection_test.go`,
+`stage_restart_test.go` - 2285 lines, opt-in, zero effect on the default `go test ./...` cost profile).
+No production code changed by this PR itself (the two real fixes above already landed on the parent
+branch/PR). `go build/vet/test ./...` clean repo-wide except the one confirmed-unrelated flake above. PR
+targets `feat/v6-14-aw-worker-composition` (PR #81, V6-14 part 1) and also depends on PR #83 (V6-04B) -
+both still open; this branch merges both in directly so the journey can be run and verified now, and the
+PR diff will shrink to just this package once both land on `master` and this branch is re-synced.
+
 ## CI — V0-12 sqlite -race budget (test-only fix)
 
 ### Thực hiện
