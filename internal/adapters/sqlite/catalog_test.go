@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,7 +15,7 @@ import (
 
 func openCatalogTestStore(t *testing.T, name string) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := Open(context.Background(), migratedDatabasePath(t, name))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

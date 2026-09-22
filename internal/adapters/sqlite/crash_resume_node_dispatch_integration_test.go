@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -38,7 +37,7 @@ func TestSPK04FaultAfterNodeCompleteBeforeNextDispatch(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-crash-node-dispatch.db")
+	databasePath := migratedDatabasePath(t, "agentkit-crash-node-dispatch.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("open initial store: %v", err)

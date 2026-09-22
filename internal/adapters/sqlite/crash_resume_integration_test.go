@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -75,7 +74,7 @@ func TestCrashRestartReclaimsLeasedJobAndPreservesPinnedWorkflow(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-crash.db")
+	databasePath := migratedDatabasePath(t, "agentkit-crash.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("open initial store: %v", err)
@@ -274,7 +273,7 @@ func TestCrashAfterAtomicFinalizationDoesNotDuplicateTerminalState(t *testing.T)
 		return
 	}
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-finalized-crash.db")
+	databasePath := migratedDatabasePath(t, "agentkit-finalized-crash.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatal(err)
