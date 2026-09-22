@@ -11,7 +11,7 @@ import (
 
 func TestUnitOfWork_WithSerializedWrite_CommitsOnSuccess(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(ctx, filepath.Join(t.TempDir(), "agentkit-uow-commit.db"))
+	store, err := Open(ctx, migratedDatabasePath(t, "agentkit-uow-commit.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestUnitOfWork_WithSerializedWrite_CommitsOnSuccess(t *testing.T) {
 
 func TestUnitOfWork_WithSerializedWrite_RollsBackOnFnError(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(ctx, filepath.Join(t.TempDir(), "agentkit-uow-rollback.db"))
+	store, err := Open(ctx, migratedDatabasePath(t, "agentkit-uow-rollback.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestUnitOfWork_WithReadOnly_DoesNotPersistWrites(t *testing.T) {
 
 func TestUnitOfWork_TxAccessorsReturnNonNil(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(ctx, filepath.Join(t.TempDir(), "agentkit-uow-accessors.db"))
+	store, err := Open(ctx, migratedDatabasePath(t, "agentkit-uow-accessors.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestUnitOfWork_TxAccessorsReturnNonNil(t *testing.T) {
 
 func TestQueryStore_Ping(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(ctx, filepath.Join(t.TempDir(), "agentkit-querystore.db"))
+	store, err := Open(ctx, migratedDatabasePath(t, "agentkit-querystore.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestQueryStore_Ping(t *testing.T) {
 
 func TestQueryStore_PingFailsAfterClose(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(ctx, filepath.Join(t.TempDir(), "agentkit-querystore-closed.db"))
+	store, err := Open(ctx, migratedDatabasePath(t, "agentkit-querystore-closed.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

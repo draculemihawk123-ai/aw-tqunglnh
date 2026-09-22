@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -14,7 +13,7 @@ import (
 
 func openReceiptsStore(t *testing.T, name string) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := Open(context.Background(), migratedDatabasePath(t, name))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -213,7 +212,7 @@ func TestReceiptsRepository_InstallationAndProjectScope_SameIdempotencyKey_DoNot
 // never a spurious error on the loser.
 func TestReceiptsRepository_ConcurrentDuplicateInstallationCommand_OnlyOneReceiptStored(t *testing.T) {
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-receipts-concurrent.db")
+	databasePath := migratedDatabasePath(t, "agentkit-receipts-concurrent.db")
 	storeA, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("Open (A): %v", err)
