@@ -61,6 +61,22 @@ type Descriptor struct {
 	// (V6-02A's own RouteDescriptor.OperationID convention), or the
 	// CLILocalOperation sentinel for a leaf with no HTTP equivalent.
 	HTTPOperationID string
+	// HighImpact marks the "command có impact cao" ADR-028 names ("chỉ
+	// prompt khi stdin là TTY và human mode; --json/non-interactive không
+	// prompt, phải có --yes hoặc trả typed PRECONDITION_FAILED với detail
+	// confirmation=required trước dispatch"): a destructive or privileged
+	// mutation whose UX inventory row (docs/design/11-v6-00-ux-artifact.md)
+	// puts a confirmation dialog in front of it. This field is the ONE place
+	// the CLI side records that fact (HE-04-M07: exactly one authoritative
+	// definition) and the composition root (internal/delivery/clicompose)
+	// enforces it uniformly, before dispatch, for every leaf that sets it —
+	// a leaf's own Run* function never re-implements the prompt. V6-15O's
+	// parity checker compares this flag against the public-operation
+	// registry's own HighImpact for the same operation, so a leaf that
+	// forgets to set it (or sets it on a command the UX inventory does not
+	// gate) is a machine-detected confirmation mismatch. Zero value false:
+	// every leaf registered before V6-15O keeps its behavior unchanged.
+	HighImpact bool
 }
 
 // key is the Registry's own de-duplication key: (Path, Scope) together,

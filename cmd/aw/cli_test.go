@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/evidence"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/clicompose"
 )
 
 func TestRun_NoArguments(t *testing.T) {
@@ -52,24 +53,12 @@ func TestRun_UnknownCommand(t *testing.T) {
 	}
 }
 
-func TestRun_StubCommandsReportNotYetImplemented(t *testing.T) {
-	// "serve" is V6-01's own real implementation now (see serve.go/serve_test.go)
-	// and "worker" is V6-14's (see worker.go/worker_test.go) — neither belongs
-	// in this stub-only list.
-	for _, name := range []string{"doctor"} {
-		var stdout, stderr bytes.Buffer
-		code := run([]string{name}, &stdout, &stderr)
-		if code != exitFailure {
-			t.Errorf("run(%q): exit code = %d, want %d (exitFailure)", name, code, exitFailure)
-		}
-		if !strings.Contains(stderr.String(), "not yet implemented") {
-			t.Errorf("run(%q): stderr should say not yet implemented, got %q", name, stderr.String())
-		}
-		if stdout.Len() != 0 {
-			t.Errorf("run(%q): stdout should be empty, got %q", name, stdout.String())
-		}
-	}
-}
+// TestRun_StubCommandsReportNotYetImplemented used to cover this file's own
+// stub-only process commands. There are none left: "serve" (V6-01) and
+// "worker" (V6-14) are both real implementations, "doctor" is the V6-15C
+// leaf routed by V6-15O's clicompose, and "version" (V6-15O) was always
+// real. The dead `stub` helper and `errNotYetImplemented` sentinel were
+// removed in the same merge that deleted this test.
 
 func TestRun_ServeRejectsUnknownFlag(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -150,9 +139,11 @@ func TestRun_EvidenceVerify_TamperedBundleFails(t *testing.T) {
 // TestRun_AllSubcommandsAreWiredAtCompositionRootOnly is a light structural
 // check on V1-01's own "wiring chỉ ở composition root" requirement: every
 // name the usage text advertises must have a real handler, and vice versa,
-// so the two can never drift apart silently.
+// so the two can never drift apart silently. Since V6-15O the handlers are
+// the process-level commands below plus every resource clicompose routes
+// (the usage text lists those straight from the routing table).
 func TestRun_AllSubcommandsAreWiredAtCompositionRootOnly(t *testing.T) {
-	want := []string{"serve", "worker", "doctor", "definition", "evidence", "adapter"}
+	want := []string{"serve", "worker", "version"}
 	if len(subcommands) != len(want) {
 		t.Fatalf("subcommands has %d entries, want %d: %v", len(subcommands), len(want), subcommands)
 	}
@@ -162,6 +153,14 @@ func TestRun_AllSubcommandsAreWiredAtCompositionRootOnly(t *testing.T) {
 		}
 		if !strings.Contains(usage, name) {
 			t.Errorf("handler %q is registered but usage text does not mention it", name)
+		}
+	}
+	for _, r := range clicompose.Routes() {
+		if !strings.Contains(usage, r.Path[0]) {
+			t.Errorf("routed resource %q is not mentioned in the usage text", r.Path[0])
+		}
+		if !clicompose.HasRoute(r.Path[0]) {
+			t.Errorf("clicompose.HasRoute(%q) = false for a routed resource", r.Path[0])
 		}
 	}
 }

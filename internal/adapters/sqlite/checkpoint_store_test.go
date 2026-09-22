@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -15,7 +14,7 @@ import (
 
 func TestCheckpointPersistsLatestRecoveryPointAcrossRestart(t *testing.T) {
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-checkpoint.db")
+	databasePath := migratedDatabasePath(t, "agentkit-checkpoint.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +56,7 @@ func TestCheckpointPersistsLatestRecoveryPointAcrossRestart(t *testing.T) {
 
 func TestRestartLoadsCheckpointedContextAndStartsFreshAgent(t *testing.T) {
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-fresh-recovery.db")
+	databasePath := migratedDatabasePath(t, "agentkit-fresh-recovery.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatal(err)

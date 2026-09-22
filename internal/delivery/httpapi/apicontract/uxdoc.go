@@ -37,6 +37,31 @@ type UXRow struct {
 	// own §1: an unimplemented-at-doc-authoring-time cell) — as opposed to
 	// "[ĐÃ CÓ...]" or no bracket marker at all.
 	ChuaCoGap bool
+
+	// The fields below were added by V6-15O (additively — nothing above
+	// changed shape) so the four-way parity checker can read the same
+	// parsed rows V6-12's gap checker already reads, instead of growing a
+	// second, drifting parser over the same document.
+
+	// Kind is the row's own "Kind" column verbatim ("query", "command",
+	// "*(client-local)*", ...), trimmed; empty for the §15 Cross-cutting
+	// table, which has no such column.
+	Kind string
+	// UIAction is the row's own "UI action/query" cell (§15: the "Concern"
+	// cell, since that table has no per-action column), verbatim.
+	UIAction string
+	// AwLeaves is every `aw ...` invocation shape the row's own "Proposed
+	// `aw` leaf" cell names, each reduced to its path segments — the words
+	// after "aw" up to the first flag (`--x`) or placeholder (`<x>`) — e.g.
+	// [["approval","approve"], ["approval","reject"]] for the §5 row 11
+	// cell "`aw approval approve` / `aw approval reject`". A cell that names
+	// no `aw` invocation at all ("*(dùng lại)*", "*(không áp dụng)*")
+	// yields nil. These are V6-00's own RESERVED invocation shapes
+	// (docs/design/11-v6-00-ux-artifact.md §1: "V6-15B…V6-15O có quyền điều
+	// chỉnh chữ, miễn giữ đúng invocation shape") — non-binding wording that
+	// the parity checker compares against the real registered CLI paths,
+	// with a reviewed rename table for every accepted drift.
+	AwLeaves [][]string
 }
 
 // operationIDCellPattern matches every backtick-quoted identifier in a
@@ -136,12 +161,72 @@ func parseUXDataRow(cells, header []string, section string) (UXRow, bool) {
 		ids = append(ids, m[1])
 	}
 
-	return UXRow{
+	row := UXRow{
 		Section:      section,
 		OperationIDs: ids,
 		OwnerTaskID:  strings.TrimSpace(cells[ownerIdx]),
 		ChuaCoGap:    chuaCoMarkerPattern.MatchString(cells[publicIdx]),
-	}, true
+	}
+	if i := columnIndex(header, "Kind"); i >= 0 && i < len(cells) {
+		row.Kind = strings.TrimSpace(cells[i])
+	}
+	uiIdx := columnIndex(header, "UI action/query")
+	if uiIdx < 0 {
+		uiIdx = columnIndex(header, "Concern")
+	}
+	if uiIdx >= 0 && uiIdx < len(cells) {
+		row.UIAction = strings.TrimSpace(cells[uiIdx])
+	}
+	if i := columnIndex(header, "Proposed `aw` leaf"); i >= 0 && i < len(cells) {
+		row.AwLeaves = parseAwLeaves(cells[i])
+	}
+	return row, true
+}
+
+// awLeafSpanPattern matches one backtick-quoted `aw ...` invocation inside a
+// "Proposed `aw` leaf" cell.
+var awLeafSpanPattern = regexp.MustCompile("`(aw(?:\\s[^`]*)?)`")
+
+// parseAwLeaves reduces every backtick-quoted `aw ...` invocation in a
+// "Proposed `aw` leaf" cell to its path segments (see UXRow.AwLeaves).
+func parseAwLeaves(cell string) [][]string {
+	var leaves [][]string
+	for _, m := range awLeafSpanPattern.FindAllStringSubmatch(cell, -1) {
+		fields := strings.Fields(m[1])
+		var path []string
+		for _, f := range fields[1:] { // fields[0] is the literal "aw"
+			if strings.HasPrefix(f, "-") || strings.HasPrefix(f, "<") {
+				break
+			}
+			path = append(path, f)
+		}
+		if len(path) > 0 {
+			leaves = append(leaves, path)
+		}
+	}
+	return leaves
+}
+
+// ResolveProposal maps one UX-doc "Proposed operationId" to the real,
+// currently-registered operationId(s) in contract that cover the same
+// concern — the exact resolution CheckUXGaps already performs (verbatim
+// registration first, then this package's own reviewed
+// knownRenamedProposals), exported so the V6-15O parity checker resolves a
+// proposal the one canonical way instead of re-deriving it (HE-04-M07).
+// It returns nil when the proposal is registered under no name (a genuine
+// UX-inventory gap).
+func ResolveProposal(proposed string, contract Contract) []string {
+	registered := make(map[string]bool, len(contract.Operations))
+	for _, op := range contract.Operations {
+		registered[op.OperationID] = true
+	}
+	if registered[proposed] {
+		return []string{proposed}
+	}
+	if renamed, ok := knownRenamedProposals[proposed]; ok && allRegistered(renamed, registered) {
+		return append([]string(nil), renamed...)
+	}
+	return nil
 }
 
 // columnIndex returns the index of the header cell that equals name

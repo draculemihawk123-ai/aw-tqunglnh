@@ -15,6 +15,7 @@ func init() {
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"run", "cancel"}, Scope: cli.ScopeProject,
 		AppOperation: "CancelRun", HTTPOperationID: "cancelRun",
+		HighImpact: true, // UX Screen 7: "cancel run/cancel task mở dialog confirm" (V6-15O confirmation parity)
 	})
 }
 

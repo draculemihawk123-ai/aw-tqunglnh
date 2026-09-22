@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -310,7 +309,7 @@ func TestFenceAndCancelRunJobs_LeasedJobStaysLeasedButNeverReclaimableAfterRecov
 // and durable_jobs.run_id/job_class/cancel_epoch all read back correctly.
 func TestCancelRunSchema_SurvivesRestart(t *testing.T) {
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "agentkit-cancel-run-restart.db")
+	dbPath := migratedDatabasePath(t, "agentkit-cancel-run-restart.db")
 	store, err := Open(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("Open: %v", err)

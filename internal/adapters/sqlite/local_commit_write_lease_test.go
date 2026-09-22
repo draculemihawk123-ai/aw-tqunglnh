@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -14,7 +13,7 @@ import (
 func newLocalCommitWriteLeaseFixture(t *testing.T) (*Store, ports.LocalCommitWriteLeaseTarget) {
 	t.Helper()
 	ctx := context.Background()
-	store, err := Open(ctx, filepath.Join(t.TempDir(), "local-commit-write-lease.db"))
+	store, err := Open(ctx, migratedDatabasePath(t, "local-commit-write-lease.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
