@@ -49,9 +49,19 @@ type journey struct {
 // stage runs one named step of the journey and stops the whole journey at
 // the first failure: a later stage that depends on an earlier one's output
 // must never run against missing state and report a misleading second error.
+//
+// It also records the stage's pass/fail and duration into report_test.go's
+// own package-level accumulator (V6-14B's structured result summary),
+// keyed by t.Name() — the TOP-LEVEL test's own name, since stage() is
+// always called with the outer *testing.T, never a subtest's — so this one
+// instrumentation point covers all 14 stages without any of them changing.
 func stage(t *testing.T, name string, fn func(t *testing.T)) {
 	t.Helper()
-	if !t.Run(name, fn) {
+	rootName := t.Name()
+	start := time.Now()
+	passed := t.Run(name, fn)
+	recordStage(rootName, name, passed, time.Since(start))
+	if !passed {
 		t.FailNow()
 	}
 }
@@ -70,6 +80,11 @@ func TestV6HTTPAcceptance_CleanDatabaseJourney(t *testing.T) {
 		j.s.serve.dumpOnFailure(t)
 		j.s.worker.dumpOnFailure(t)
 	})
+	// V6-14B: write the structured result summary no matter how this test
+	// ends (t.Cleanup runs even after a stage's t.FailNow()), so a real
+	// failure produces a real report (allPassed:false, whichever stages did
+	// complete) instead of no evidence at all.
+	t.Cleanup(func() { writeReport(t, t.Name()) })
 
 	stage(t, "01_health_doctor_settings", j.healthDoctorSettings)
 	stage(t, "02_adapter_probe_register", j.adapterProbeRegister)
@@ -89,6 +104,10 @@ func TestV6HTTPAcceptance_CleanDatabaseJourney(t *testing.T) {
 	})
 	stage(t, "12_projection_rebuild", j.projectionRebuild)
 	stage(t, "13_restart_equality", j.restartEquality)
+	// V6-14B: capture a handful of real end-of-journey counts while both
+	// processes are still up — a reporting-only observation, deliberately
+	// not itself a 15th stage (see captureFinalCounts's own doc comment).
+	j.captureFinalCounts(t)
 	stage(t, "14_graceful_shutdown", func(t *testing.T) {
 		serveGraceful, workerGraceful := j.s.stop(t)
 		if !serveGraceful || !workerGraceful {

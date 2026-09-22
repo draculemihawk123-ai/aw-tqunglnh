@@ -5,3 +5,6 @@ bin/
 UI draft/
 # Local tooling artifacts unrelated to this repo's own history.
 .codex-remote-attachments/
+# V6-14B acceptance report, when AW_V6_REPORT_PATH points inside the tree
+# (CI does; the local default writes to the temp directory instead).
+v6-report/
