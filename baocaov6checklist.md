@@ -12780,3 +12780,168 @@ touched. No functional bug found this session; three real behavioral facts found
 (live-consumer-lease handoff delay, poison-freezes-the-whole-generation, disconnect-notice best-effort in
 practice). One scenario (4) is a genuinely non-deterministic real race, honestly reported as such rather
 than faked or silently weakened. PR targets `master`.
+## V6-14B — Acceptance HTTP đa nền tảng
+
+### Thực hiện
+
+- **Two new CI jobs in `.github/workflows/spike-gate.yml`**, following the exact pinned-action pattern already used by `contract`/`spike-acceptance`/`semantic-diff` (same `actions/checkout@11d5960a...` # v4.4.0, `actions/setup-go@924ae3a1c...` # v6.5.0, `actions/upload-artifact@ea165f8d6...` # v4.6.2, `actions/download-artifact@d3f86a106...` # v4.3.0 SHAs, byte-for-byte copied):
+  - **`v6-acceptance` (`strategy.matrix.os: [windows-latest, ubuntu-latest]`, `needs: contract`, `timeout-minutes: 20`)** runs `AW_HTTP_ACCEPTANCE=1 go test -count=1 -v ./internal/integration/v6accept/...` (the SAME `TestV6HTTPAcceptance_CleanDatabaseJourney` V6-14 already built — no new journey content, per this task's own "Không làm"), capturing full output to `v6-report/acceptance.log`, with `AW_V6_REPORT_PATH=v6-report/report.json` (relative, so it is unaffected by `github.workspace`'s backslash form on the Windows runner) telling the suite's own report hook where to write the structured summary. The job's own exit code stays real (a genuine `go test` failure exits the step non-zero and fails the job); the artifact upload step is `if: always()` (mirroring the V0-12 job) so the log+report are captured even on a real failure, uploaded as `v6-acceptance-report-${{ matrix.os }}` (OS-distinguishing name), `if-no-files-found: error`, `retention-days: 7`.
+  - **Budget measured, not guessed.** Locally (this task's own dev machine, contended Windows i5-8265U), three consecutive full `AW_HTTP_ACCEPTANCE=1 go test -count=1 ...` runs (including the `go build` of `cmd/aw`+`cmd/fake-claude` inside `build_test.go`) took 32.8s / 20.1s / 21.4s wall, all 14 stages passing every time. 20 minutes gives real headroom over that for CI/Windows-runner overhead and for V6-14A's own future crash/race scenarios landing in the same package (a different, concurrently-developed branch) without needing this budget raised later.
+  - **`v6-acceptance-diff` (`runs-on: ubuntu-latest`, `needs: v6-acceptance`, `if: always()`, `timeout-minutes: 10`)** downloads both platform artifacts (each `download-artifact` step is `continue-on-error: true` so a missing artifact does not abort the job before the comparison step gets to print its own message) and runs a `bash`+`jq` normalized comparison (see below), styled after V0-12's own `set -uo pipefail` / per-step echo / non-zero exit on real failure discipline. `if: always()` is what makes this job actually run — and actually report `CHƯA ĐỦ EVIDENCE` by name — even when one `v6-acceptance` matrix leg failed or was cancelled; `fail-fast: false` on the `v6-acceptance` matrix (matching `spike-acceptance`'s own) keeps the OTHER leg's artifact uploading regardless of a sibling leg's outcome.
+- **Structured, OS-normalized result summary**, new `internal/integration/v6accept/report_test.go` (package `v6accept`, still `_test.go` — this package has no non-test files):
+  ```json
+  {
+    "goos": "windows",
+    "contractVersion": "1+64d49db8659feb80",
+    "stages": [
+      {"name": "01_health_doctor_settings", "passed": true, "durationMs": 46},
+      "... one entry per existing stage 01..14 ...",
+      {"name": "14_graceful_shutdown", "passed": true, "durationMs": 135}
+    ],
+    "finalCounts": {"domainEvents": 39, "evidence": 2, "runs": 2, "workItems": 3},
+    "allPassed": true
+  }
+  ```
+  (the block above is the literal, real output of a local run — see Test below for the untruncated JSON).
+  - `contractVersion` is `apicontract.ContractVersion` (contract.go's own exported artifact-format version constant, currently `"1"`) plus a `+`-joined 16-hex-char prefix of the SHA-256 of the COMMITTED `internal/delivery/httpapi/apicontract/testdata/golden/contract.json` bytes — the exact fixture `TestContract_MatchesGoldenFixture` (golden_test.go) proves equals a freshly-built `Contract` for the CURRENT real production route composition. Locally verified this is not invented: `sha256sum internal/delivery/httpapi/apicontract/testdata/golden/contract.json` = `64d49db8659feb802799482fae1e156ab581a2b69a464b65ebe702a5b6d6905c...`, whose first 16 hex chars (`64d49db8659feb80`) match the report's own `contractVersion` suffix exactly. Reading the checked-in fixture (rather than re-running `httpcompose.ComposeRoutes` a second time inside this black-box package, which would need a real temporary SQLite DB/artifact store/git-worktree provider just to compute a version string) keeps the package's own "never call a handler in-process" rule intact.
+  - **Hook, not restructure.** journey_test.go's own `stage()` helper (the one place all 14 stages already pass through) now also times each `t.Run` call and calls `recordStage(t.Name(), name, passed, duration)` — `t.Name()` at that point is always the TOP-LEVEL test's own name (stage() is called with the outer `*testing.T`), so the accumulator is keyed per root test and a second, independent top-level test in this package that also calls `stage()` (V6-14A's own fault-injection matrix, landing separately) accumulates into its own report without any coordination needed. `TestV6HTTPAcceptance_CleanDatabaseJourney` itself gained exactly two new lines: a `t.Cleanup(func() { writeReport(t, t.Name()) })` right after the existing `dumpOnFailure` cleanup registration (so the report is written even after a real failure's `t.FailNow()`), and one `j.captureFinalCounts(t)` call between stage 13 (`restart_equality`) and stage 14 (`graceful_shutdown`) — while both real processes are still up — deliberately NOT wrapped in `stage()` itself, so it is a reporting-only observation and never becomes a 15th named stage. None of the 14 stages' own bodies changed.
+  - `finalCounts` reuses real, already-reachable end-of-journey queries: `GET /projects/{id}/work-items` (`workItems`, expect 3: root + verification child + release child), the journey's own known `runID`/`releaseRunID` (`runs`, expect 2), `GET .../work-items/{childId}/evidence` (`evidence`, expect 2: `COMMAND_EXECUTION` + the machine-gate kind), and the already-proven `j.eventTrace(t)` helper's own event count (`domainEvents`, 39 on a clean journey) — no new counting logic invented, no new HTTP routes touched.
+  - `AW_V6_REPORT_PATH` env var controls the write location; unset (a bare local `go test`) defaults to `os.TempDir()/aw-v6-acceptance-report.json` — outside the repo tree, so a stray report file can never show up in `git status`.
+
+### Test
+
+- `AW_HTTP_ACCEPTANCE=1 go test -count=1 -run '^TestV6HTTPAcceptance_CleanDatabaseJourney$' -v ./internal/integration/v6accept/...` run three separate times on this Windows dev machine: **all 14 stages PASS every time**, wall time 32.8s / 20.1s / 21.4s (`ok ... 32.832s` / `20.103s` / `21.418s`). The report-emission hook did not break the existing journey in any of the three runs, and produced a real, sane report file each time (byte-identical `contractVersion` and `finalCounts` across all three: `"domainEvents": 39, "evidence": 2, "runs": 2, "workItems": 3`, `"allPassed": true`) — full example from the second run:
+  ```json
+  {
+    "goos": "windows",
+    "contractVersion": "1+64d49db8659feb80",
+    "stages": [
+      {"name": "01_health_doctor_settings", "passed": true, "durationMs": 48},
+      {"name": "02_adapter_probe_register", "passed": true, "durationMs": 44},
+      {"name": "03_project_and_repository", "passed": true, "durationMs": 207},
+      {"name": "04_definitions_and_workflow", "passed": true, "durationMs": 44},
+      {"name": "05_work_item_and_run", "passed": true, "durationMs": 4635},
+      {"name": "06_conversation", "passed": true, "durationMs": 21},
+      {"name": "07_scope_expansion", "passed": true, "durationMs": 5},
+      {"name": "08_release_run", "passed": true, "durationMs": 1025},
+      {"name": "09_release_set_and_local_commit", "passed": true, "durationMs": 1974},
+      {"name": "10_evidence_and_artifacts", "passed": true, "durationMs": 5},
+      {"name": "11_projection_and_event_stream", "passed": true, "durationMs": 1},
+      {"name": "12_projection_rebuild", "passed": true, "durationMs": 305},
+      {"name": "13_restart_equality", "passed": true, "durationMs": 4966},
+      {"name": "14_graceful_shutdown", "passed": true, "durationMs": 12}
+    ],
+    "finalCounts": {"domainEvents": 39, "evidence": 2, "runs": 2, "workItems": 3},
+    "allPassed": true
+  }
+  ```
+- `go build ./...` and `go vet ./...` clean repo-wide. `go run ./cmd/docs-coverage-check` (the same gate the `contract` CI job runs) still reports `debt = 0`. Full `go test -count=1 ./...`: 118 packages, every one `ok`, zero `FAIL` lines.
+
+### Verify
+
+- **Fail-closed missing-evidence path proven for real, not by inspection.** `jq` is not installed on this dev machine, so the exact `bash`+`jq` comparison logic that ships in `.github/workflows/spike-gate.yml`'s `v6-acceptance-diff` job was mirrored field-for-field in a scratch-only Python harness (`compare.py`, never committed — lived only under the session's own scratch directory outside the repo working tree, confirmed by `git status --short` showing no untracked scratch files before/after) that performs the identical sequence: missing-file check first, then `allPassed`, then `contractVersion`, then normalized `stages` (name+passed only), then `finalCounts`, each with the same message text and exit code the real script uses. Three scenarios run against real report JSON (one of the actual files from the Test section above, used unmodified as one side every time):
+  1. **Missing evidence** (only a windows-side file present, the linux side path pointed at a nonexistent file): printed exactly `CHƯA ĐỦ EVIDENCE: missing V6-14B acceptance report(s) for: ubuntu-latest (expected the v6-acceptance-report-<os> artifact from each platform's v6-acceptance job; an upstream job that never reached its upload-artifact step, or was skipped/cancelled, produces no artifact at all)`, exit code 1.
+  2. **Two identical real reports** (the same file on both sides): printed `both platforms agree on contract version 1+64d49db8659feb80 (V6-14B multi-platform acceptance PASS)`, exit code 0.
+  3. **Disagreement, two separate hand-edits of a real report copy**, both caught and named, each its own exit-code-1 run: (a) stage 05's `passed` flipped to `false` on one side (finalCounts also changed, to prove the stages check fires first and names the RIGHT field) → `V6-14B FAILED: field 'stages' (normalized to name+passed) differs between platforms`, both full normalized arrays printed showing `05_work_item_and_run` differing; (b) only `finalCounts.evidence` changed (2 → 99) on an otherwise-identical copy → `V6-14B FAILED: field 'finalCounts' differs between platforms` plus the exact line `finalCounts.evidence: windows-latest=2 ubuntu-latest=99`, naming the one differing key and both values as the design doc's own Verify bullet requires. All scratch fixtures (`compare.py`, the hand-edited JSON copies, `make_disagree*.py`) were scratch-directory-only and never touched the repo; discarded after the runs, nothing committed.
+- **"Same contract version" is a real check, not assumed**: both platforms' reports carry `contractVersion` computed from the same committed golden fixture (see Thực hiện above); the comparison step's own step 3 fails closed the moment the two differ, before either the `stages` or `finalCounts` comparison even runs — so a PR that changed the route set on one OS's checkout but not the other (impossible in this single-repo CI, but exactly what this field guards against structurally) would be caught here first.
+- **YAML syntax validated**: `python -c "import yaml; yaml.safe_load(open('.github/workflows/spike-gate.yml', encoding='utf-8'))"` → `YAML OK`.
+- **This PR's own new CI jobs ran on itself** — see Kết quả below for what was observed before stopping (per this task's own instruction, not waited on further).
+
+### Kết quả
+
+New file `internal/integration/v6accept/report_test.go` (structured report accumulator/writer + `captureFinalCounts`); two small, additive edits to the EXISTING `internal/integration/v6accept/journey_test.go` (`stage()` now also records duration/pass, `TestV6HTTPAcceptance_CleanDatabaseJourney` gained one `t.Cleanup` registration and one `j.captureFinalCounts(t)` call) — none of the 14 stages' own bodies touched, matching this task's own "Không làm: no new journey content" bar. Two new CI jobs appended to `.github/workflows/spike-gate.yml`: `v6-acceptance` (matrix `windows-latest`/`ubuntu-latest`, `timeout-minutes: 20`, uploads `v6-acceptance-report-<os>`) and `v6-acceptance-diff` (`ubuntu-latest`, `if: always()`, normalized `bash`+`jq` field-by-field comparison, fails closed with the literal `CHƯA ĐỦ EVIDENCE` phrase on any missing platform artifact, names the differing field/values on any semantic disagreement). No production (non-test, non-CI) file changed. `go build ./... && go vet ./...` clean repo-wide; full `go test ./...` 118 packages all `ok`; the V6-14 journey itself run 3x locally with the new report hook, 14/14 stages passing every time. PR targets `master`.
+
+### V6-14B follow-up: first CI run exposed a real report-path bug (fixed in this same PR)
+
+The first CI run of the two new jobs (run 35716861008) failed in a way that only
+a real multi-job CI run could expose, and the failure was genuine — not a flake:
+
+- `v6 acceptance (ubuntu-latest)` and `v6 acceptance (windows-latest)` both
+  **passed**, 14/14 stages, and both uploaded their artifact.
+- `v6 acceptance cross-platform diff` nevertheless printed
+  `CHƯA ĐỦ EVIDENCE: missing V6-14B acceptance report(s) for: windows-latest ubuntu-latest`
+  and exited 1 — even though both downloads reported
+  `Total of 1 artifact(s) downloaded ... successfully`.
+
+Root cause, from the job logs rather than guesswork: the upload step's own log
+line reads `With the provided path, there will be 1 file uploaded`. Only
+`acceptance.log` was in `v6-report/`. `go test` runs a test binary with the
+**package** directory as its working directory, so the relative
+`AW_V6_REPORT_PATH: v6-report/report.json` resolved to
+`internal/integration/v6accept/v6-report/report.json`, while the step's own
+`mkdir`/`tail`/`upload-artifact` paths are all repo-root-relative. The report
+was written, correctly, with `allPassed: true` (it is visible in the job log via
+`t.Logf`) — just into a directory nothing downstream looks at. So the
+comparison job's fail-closed behaviour was right; what it caught was this path
+bug rather than the missing-platform case it was written for.
+
+Three changes, all in this PR:
+
+1. `.github/workflows/spike-gate.yml` now passes an **absolute** path,
+   `AW_V6_REPORT_PATH: ${{ github.workspace }}/v6-report/report.json`.
+2. The same step now **fails at the point of production**: after a green
+   `go test` it asserts `v6-report/report.json` exists (and `cat`s it into the
+   log), so a future path/permission problem is reported in the job that caused
+   it instead of surfacing two jobs later as "missing evidence".
+3. `resolveReportPath` in `internal/integration/v6accept/report_test.go` now
+   anchors a **relative** `AW_V6_REPORT_PATH` at the module root, so the value
+   means what a CI author writing repo-root-relative shell commands intends.
+   Absolute values are used verbatim; an empty value still means the temp-dir
+   default. Guarded by `TestResolveReportPath_RelativeIsAnchoredAtModuleRoot`,
+   a pure unit test needing neither `AW_HTTP_ACCEPTANCE` nor any real process,
+   so it runs in the ordinary offline suite that guards the acceptance job.
+   `v6-report/` added to `.gitignore`.
+
+Local re-verification after the fix: from the repo root,
+`AW_HTTP_ACCEPTANCE=1 AW_V6_REPORT_PATH=v6-report/report.json go test -count=1 ./internal/integration/v6accept/...`
+→ `ok ... 26.488s`, and `v6-report/report.json` now exists **at the repo root**
+with `allPassed: true`, 14/14 stages, `finalCounts {"domainEvents": 39,
+"evidence": 2, "runs": 2, "workItems": 3}` — the same `finalCounts` and the same
+`contractVersion` the ubuntu CI leg recorded in its own passing run above, which
+is the cross-platform agreement the diff job is there to assert.
+### CI budget: V0-12 job timeout raised 25 -> 35 minutes
+
+Not a code change and not a new task — a correction to a CI budget that had
+started producing false red gates.
+
+Background: the earlier V0-12 failures were a REAL regression (an
+`internal/adapters/sqlite` per-package `-race` timeout above 600s), and the
+right response then was to root-cause it, which the template-database speedup
+did. Raising the timeout was explicitly rejected at that time, correctly — it
+would have hidden a real defect.
+
+What changed is the evidence. After that fix the job is healthy but its honest
+cost sits right against the old 25-minute cap. Measured on the real runner
+(2026-09-22, every `Linux race and stability (V0-12)` execution that day):
+
+| run | result | duration |
+| --- | --- | --- |
+| 35689894700 | success | 24m55s |
+| 35694219575 | success | 24m53s |
+| 35698895318 | success | 17m47s |
+| 35702529465 | success | 17m29s |
+| 35703724072 | success | 21m19s |
+| 35716861008 | success | 21m44s |
+| 35720884832 | **CANCELED at cap** | >25m |
+
+Natural spread 17-25 minutes against a 25-minute cap; two runs passed with 5
+and 7 seconds of headroom, and one crossed it. The job does one `-race` pass,
+ten full offline-suite runs and ten SPK-summary re-runs — it genuinely needs
+that time; it is not pathologically slow.
+
+The cost of leaving it: roughly one in five runs goes red for a reason
+unrelated to the diff, each costing a ~25-minute rerun, and it teaches the
+"retry until green" habit that this job's own comment forbids. Worse, a
+timeout and a real hang become indistinguishable at the gate.
+
+Change: `timeout-minutes: 35` on the `linux-race-and-stability` job only
+(`contract` 20, `spike-acceptance` 15, `semantic-diff` 10 untouched), with the
+measurement table recorded in the workflow comment next to the number so the
+value can be re-judged later against data rather than re-argued from memory.
+The comment states explicitly that this is a budget for work the job really
+does, not permission for the job to get slower: a future run approaching 35
+minutes is to be root-caused, not accommodated by raising the number again.
+
+Verify: `python -c "import yaml; ..."` -> `YAML OK`, job timeouts read back as
+`{'contract': 20, 'linux-race-and-stability': 35, 'spike-acceptance': 15,
+'semantic-diff': 10}`.
