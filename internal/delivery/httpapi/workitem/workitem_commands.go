@@ -18,6 +18,11 @@ import (
 type createRootWorkItemBody struct {
 	Title        string           `json:"title"`
 	InitialScope []scopeGrantBody `json:"initialScope"`
+	// Contract is the optional readiness contract (V6-04B); omitted means the
+	// WorkItem is created BACKLOG with an empty contract, exactly as before.
+	// It is a pointer with omitempty so a body without it canonicalizes to the
+	// same bytes — and therefore the same idempotency hash — it always did.
+	Contract *workItemContractBody `json:"contract,omitempty"`
 }
 
 // handleCreateRootWorkItem implements POST /projects/{projectId}/work-items
@@ -55,6 +60,11 @@ func handleCreateRootWorkItem(deps Dependencies) http.HandlerFunc {
 		if !validateScopeGrantBodies(w, "initialScope", body.InitialScope) {
 			return
 		}
+		contract := body.Contract.toRequest()
+		if err := contract.Validate(); err != nil {
+			writeCommandError(w, err)
+			return
+		}
 
 		if replayOrProceed(r.Context(), w, deps, cmd) {
 			return
@@ -62,6 +72,7 @@ func handleCreateRootWorkItem(deps Dependencies) http.HandlerFunc {
 
 		result, err := workapp.CreateRootWorkItem(r.Context(), deps.UnitOfWork, deps.IDs, cmd, workapp.CreateRootWorkItemRequest{
 			ProjectID: projectID, Title: body.Title, InitialScope: toScopeGrantRequests(body.InitialScope),
+			Contract: contract,
 		})
 		if err != nil {
 			writeCommandError(w, err)
@@ -82,6 +93,9 @@ type createChildWorkItemBody struct {
 	ParentJoinPolicy string           `json:"parentJoinPolicy"`
 	SourceNodeRunID  string           `json:"sourceNodeRunId,omitempty"`
 	EffectiveScope   []scopeGrantBody `json:"effectiveScope"`
+	// Contract is the child's own optional readiness contract (V6-04B), never
+	// inherited from the parent — see createRootWorkItemBody.Contract.
+	Contract *workItemContractBody `json:"contract,omitempty"`
 }
 
 // handleCreateChildWorkItem implements
@@ -127,6 +141,11 @@ func handleCreateChildWorkItem(deps Dependencies) http.HandlerFunc {
 		if !validateScopeGrantBodies(w, "effectiveScope", body.EffectiveScope) {
 			return
 		}
+		contract := body.Contract.toRequest()
+		if err := contract.Validate(); err != nil {
+			writeCommandError(w, err)
+			return
+		}
 
 		if replayOrProceed(r.Context(), w, deps, cmd) {
 			return
@@ -135,6 +154,7 @@ func handleCreateChildWorkItem(deps Dependencies) http.HandlerFunc {
 		result, err := workapp.CreateChildWorkItem(r.Context(), deps.UnitOfWork, deps.IDs, cmd, workapp.CreateChildWorkItemRequest{
 			ParentWorkItemID: parentWorkItemID, Title: body.Title, ParentJoinPolicy: body.ParentJoinPolicy,
 			SourceNodeRunID: body.SourceNodeRunID, EffectiveScope: toScopeGrantRequests(body.EffectiveScope),
+			Contract: contract,
 		})
 		if err != nil {
 			writeCommandError(w, err)

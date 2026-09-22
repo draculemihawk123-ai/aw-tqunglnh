@@ -24,6 +24,58 @@ type scopeGrantBody struct {
 	Reason       string   `json:"reason"`
 }
 
+// acceptanceCriterionBody is the wire shape of one acceptance criterion inside
+// workItemContractBody. An empty verificationRef is a legitimate,
+// descriptive-only criterion (it just does not count as executable for
+// readiness).
+type acceptanceCriterionBody struct {
+	Description     string `json:"description"`
+	VerificationRef string `json:"verificationRef,omitempty"`
+}
+
+// workItemContractBody is the wire shape of the optional "contract" object
+// POST /projects/{projectId}/work-items and
+// POST /projects/{projectId}/work-items/{workItemId}/children both accept
+// (V6-04B), mirroring workapp.WorkItemContractRequest exactly. Every field is
+// optional, and every one is omitempty so that "given but zero" and "omitted"
+// canonicalize to the same bytes (and therefore hash identically for
+// idempotency) — a zero value means "not given" throughout. Deliberately no
+// status/state/family/workspace-style field of any kind: a contract can only
+// ever describe what a WorkItem promises, never move it anywhere, and the
+// strict decode (DisallowUnknownFields, applied recursively) rejects any key
+// not listed here with a 400.
+type workItemContractBody struct {
+	SchemaVersion      int                       `json:"schemaVersion,omitempty"`
+	Behavior           string                    `json:"behavior,omitempty"`
+	AcceptanceCriteria []acceptanceCriterionBody `json:"acceptanceCriteria,omitempty"`
+	VerificationSpec   string                    `json:"verificationSpec,omitempty"`
+	RiskLevel          string                    `json:"riskLevel,omitempty"`
+	Exclusions         []string                  `json:"exclusions,omitempty"`
+	WorkflowVersionID  string                    `json:"workflowVersionId,omitempty"`
+}
+
+// toRequest converts b into the application-layer request; a nil b (no
+// "contract" key in the body) stays nil, which is exactly "create the WorkItem
+// with an empty contract, as before".
+func (b *workItemContractBody) toRequest() *workapp.WorkItemContractRequest {
+	if b == nil {
+		return nil
+	}
+	req := &workapp.WorkItemContractRequest{
+		SchemaVersion: b.SchemaVersion, Behavior: b.Behavior, VerificationSpec: b.VerificationSpec,
+		RiskLevel: b.RiskLevel, Exclusions: b.Exclusions, WorkflowVersionID: b.WorkflowVersionID,
+	}
+	if len(b.AcceptanceCriteria) > 0 {
+		req.AcceptanceCriteria = make([]workapp.AcceptanceCriterionRequest, 0, len(b.AcceptanceCriteria))
+		for _, criterion := range b.AcceptanceCriteria {
+			req.AcceptanceCriteria = append(req.AcceptanceCriteria, workapp.AcceptanceCriterionRequest{
+				Description: criterion.Description, VerificationRef: criterion.VerificationRef,
+			})
+		}
+	}
+	return req
+}
+
 func (g scopeGrantBody) toRequest() workapp.ScopeGrantRequest {
 	return workapp.ScopeGrantRequest{RepositoryID: g.RepositoryID, Access: g.Access, PathScopes: g.PathScopes, Reason: g.Reason}
 }

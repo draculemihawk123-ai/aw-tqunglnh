@@ -33,39 +33,25 @@
 // its own target fresh from tx.Work(), never from anything this file
 // returns).
 //
-// WorkItemDetail deliberately excludes the contract fields V3-03 added to
-// work.WorkItem (SchemaVersion, Behavior, AcceptanceCriteria,
-// VerificationSpec, RiskLevel, Exclusions, ApprovalException). Migration
-// 0007 added six of their seven columns (every one but ApprovalException,
-// which has no column at all); createWorkItemTx/getWorkItemTx
-// (internal/adapters/sqlite/work.go) now round-trip those six (V6-04A's own
-// necessary, minimal prerequisite for MarkWorkItemReady to ever transition a
-// REAL sqlite-backed WorkItem to READY — see that function's own doc
-// comment), but no PUBLIC command in this codebase populates a WorkItem's
-// contract today: neither CreateRootWorkItem's nor CreateChildWorkItem's own
-// domain constructor (work.NewRootWorkItem/work.NewChildWorkItem) ever
-// touches these fields (this package's own commands.go doc comment says so
-// explicitly: "A root WorkItem created via this command starts in BACKLOG
-// with an empty contract; filling in the contract ... is a separate, later
-// step no V3 task in this repository's own doc set builds yet"), so every
-// WorkItem either of those two commands creates still persists (and reads
-// back) with an entirely empty contract, exactly as before. Exposing those
-// fields on the wire here would therefore still always read as empty for
-// every WorkItem any real HTTP/CLI caller can create today — which would
-// misrepresent "no public command sets this yet" as "this WorkItem genuinely
-// has no behavior/verification spec set" (a real business fact a client
-// could reasonably act on) — so this DTO still leaves them out. A future
-// task that adds a real contract-authoring command is what would first make
-// exposing them here honest; that command is still nobody's job yet in this
-// codebase's own doc set. ExplainWorkItemReadiness below still runs the REAL
-// workdomain.ValidateReadinessGate validator against the REAL loaded
-// WorkItem (never a fabricated result) — its answer is honest about today's
-// actual system state (every WorkItem any public command can create still
-// fails the same completeness checks, though a caller that builds a
-// work.WorkItem value directly — e.g. a test, per work.go's own "sets the
-// exported fields directly" escape hatch — and persists it via
-// tx.Work().CreateWorkItem now gets a row that genuinely round-trips and can
-// genuinely pass).
+// WorkItemDetail's optional Contract (V6-04B) reports the contract fields
+// V3-03 added to work.WorkItem (SchemaVersion, Behavior, AcceptanceCriteria,
+// VerificationSpec, RiskLevel, Exclusions, WorkflowVersionID) exactly as
+// stored. Until V6-04B the detail deliberately left them out: migration 0007
+// gave six of their seven columns (every one but ApprovalException, which has
+// no column at all) and V6-04A made createWorkItemTx/getWorkItemTx round-trip
+// them, but no PUBLIC command populated a WorkItem's contract, so exposing the
+// fields would have always read as empty and misrepresented "no public command
+// sets this yet" as "this WorkItem genuinely has no behavior/verification
+// spec". CreateRootWorkItem/CreateChildWorkItem now accept a contract at
+// creation (contract.go), so a stored contract is a real fact a client can act
+// on and the detail can honestly show it. The change is additive: Contract is
+// a pointer with omitempty, absent for a WorkItem whose stored contract is
+// entirely empty (every WorkItem created before V6-04B, or created without
+// one), so those responses are byte-for-byte what they were. ApprovalException
+// is still not shown — there is nothing stored to show.
+// ExplainWorkItemReadiness below runs the REAL workdomain.ValidateReadinessGate
+// validator against the REAL loaded WorkItem (never a fabricated result), so
+// its answer always reflects whatever contract is actually stored.
 package work
 
 import (
@@ -102,7 +88,7 @@ func scopeMismatch(kind, id string) error {
 
 // WorkItemDetail is the authoritative WorkItem detail GetWorkItem/
 // ListWorkItems/ListChildWorkItems all return — see this file's own doc
-// comment for why the V3-03 contract fields are deliberately absent.
+// comment for what its optional Contract reports and why it is additive.
 type WorkItemDetail struct {
 	WorkItemID        string `json:"workItemId"`
 	ProjectID         string `json:"projectId"`
@@ -115,13 +101,67 @@ type WorkItemDetail struct {
 	ParentJoinPolicy  string `json:"parentJoinPolicy,omitempty"`
 	SourceNodeRunID   string `json:"sourceNodeRunId,omitempty"`
 	WorkflowVersionID string `json:"workflowVersionId,omitempty"`
+	// Contract is the stored readiness contract, nil (omitted) when nothing of
+	// it is stored. Its own workflowVersionId repeats the top-level field above
+	// on purpose, so a contract reads back with exactly the shape it was
+	// created with; the top-level field is unchanged for existing clients.
+	Contract *WorkItemContractView `json:"contract,omitempty"`
+}
+
+// AcceptanceCriterionView is one stored acceptance criterion — the response
+// counterpart of AcceptanceCriterionRequest.
+type AcceptanceCriterionView struct {
+	Description     string `json:"description"`
+	VerificationRef string `json:"verificationRef,omitempty"`
+}
+
+// WorkItemContractView is a WorkItem's stored readiness contract — the
+// response counterpart of WorkItemContractRequest, with the identical JSON
+// keys the create request's "contract" object uses.
+type WorkItemContractView struct {
+	SchemaVersion      int                       `json:"schemaVersion,omitempty"`
+	Behavior           string                    `json:"behavior,omitempty"`
+	AcceptanceCriteria []AcceptanceCriterionView `json:"acceptanceCriteria,omitempty"`
+	VerificationSpec   string                    `json:"verificationSpec,omitempty"`
+	RiskLevel          string                    `json:"riskLevel,omitempty"`
+	Exclusions         []string                  `json:"exclusions,omitempty"`
+	WorkflowVersionID  string                    `json:"workflowVersionId,omitempty"`
+}
+
+// workItemContractToView reports item's stored contract, or nil when none of
+// it is stored (so a WorkItem without a contract serializes exactly as it did
+// before V6-04B).
+func workItemContractToView(item workdomain.WorkItem) *WorkItemContractView {
+	view := WorkItemContractView{
+		SchemaVersion: item.SchemaVersion, Behavior: item.Behavior, VerificationSpec: item.VerificationSpec,
+		RiskLevel: string(item.RiskLevel),
+	}
+	if len(item.AcceptanceCriteria) > 0 {
+		view.AcceptanceCriteria = make([]AcceptanceCriterionView, 0, len(item.AcceptanceCriteria))
+		for _, criterion := range item.AcceptanceCriteria {
+			view.AcceptanceCriteria = append(view.AcceptanceCriteria, AcceptanceCriterionView{
+				Description: criterion.Description, VerificationRef: criterion.VerificationRef,
+			})
+		}
+	}
+	if len(item.Exclusions) > 0 {
+		view.Exclusions = append([]string(nil), item.Exclusions...)
+	}
+	if item.WorkflowVersionID != nil {
+		view.WorkflowVersionID = string(*item.WorkflowVersionID)
+	}
+	if view.SchemaVersion == 0 && view.Behavior == "" && len(view.AcceptanceCriteria) == 0 &&
+		view.VerificationSpec == "" && view.RiskLevel == "" && len(view.Exclusions) == 0 && view.WorkflowVersionID == "" {
+		return nil
+	}
+	return &view
 }
 
 func workItemToDetail(item workdomain.WorkItem) WorkItemDetail {
 	detail := WorkItemDetail{
 		WorkItemID: string(item.ID), ProjectID: string(item.ProjectID), FamilyID: string(item.FamilyID),
 		Kind: string(item.Kind), Title: item.Title, Status: string(item.Status), Version: item.Version,
-		ParentJoinPolicy: string(item.ParentJoinPolicy),
+		ParentJoinPolicy: string(item.ParentJoinPolicy), Contract: workItemContractToView(item),
 	}
 	if item.ParentID != nil {
 		detail.ParentWorkItemID = string(*item.ParentID)
@@ -346,11 +386,10 @@ type WorkItemReadiness struct {
 
 // ExplainWorkItemReadiness loads workItemID's own real, current WorkItem and
 // runs the real workdomain.ValidateReadinessGate validator against it — see
-// this file's own top-of-file doc comment for why every real WorkItem today
-// reports the identical set of problems (no command in this codebase yet
-// populates a WorkItem's own contract fields), and why that is this
-// function's own honest, correct answer rather than a bug to work around
-// here.
+// this file's own top-of-file doc comment. The answer always reflects
+// whatever contract is actually stored: a WorkItem created without a contract
+// (the only kind that existed before V6-04B) reports the full list of
+// completeness problems, one created with a complete contract reports Ready.
 func ExplainWorkItemReadiness(ctx context.Context, uow ports.UnitOfWork, scope ports.CommandScope, workItemID string) (WorkItemReadiness, error) {
 	projectID, err := requireProjectScope(scope)
 	if err != nil {
