@@ -12570,3 +12570,49 @@ with `allPassed: true`, 14/14 stages, `finalCounts {"domainEvents": 39,
 "evidence": 2, "runs": 2, "workItems": 3}` — the same `finalCounts` and the same
 `contractVersion` the ubuntu CI leg recorded in its own passing run above, which
 is the cross-platform agreement the diff job is there to assert.
+### CI budget: V0-12 job timeout raised 25 -> 35 minutes
+
+Not a code change and not a new task — a correction to a CI budget that had
+started producing false red gates.
+
+Background: the earlier V0-12 failures were a REAL regression (an
+`internal/adapters/sqlite` per-package `-race` timeout above 600s), and the
+right response then was to root-cause it, which the template-database speedup
+did. Raising the timeout was explicitly rejected at that time, correctly — it
+would have hidden a real defect.
+
+What changed is the evidence. After that fix the job is healthy but its honest
+cost sits right against the old 25-minute cap. Measured on the real runner
+(2026-09-22, every `Linux race and stability (V0-12)` execution that day):
+
+| run | result | duration |
+| --- | --- | --- |
+| 35689894700 | success | 24m55s |
+| 35694219575 | success | 24m53s |
+| 35698895318 | success | 17m47s |
+| 35702529465 | success | 17m29s |
+| 35703724072 | success | 21m19s |
+| 35716861008 | success | 21m44s |
+| 35720884832 | **CANCELED at cap** | >25m |
+
+Natural spread 17-25 minutes against a 25-minute cap; two runs passed with 5
+and 7 seconds of headroom, and one crossed it. The job does one `-race` pass,
+ten full offline-suite runs and ten SPK-summary re-runs — it genuinely needs
+that time; it is not pathologically slow.
+
+The cost of leaving it: roughly one in five runs goes red for a reason
+unrelated to the diff, each costing a ~25-minute rerun, and it teaches the
+"retry until green" habit that this job's own comment forbids. Worse, a
+timeout and a real hang become indistinguishable at the gate.
+
+Change: `timeout-minutes: 35` on the `linux-race-and-stability` job only
+(`contract` 20, `spike-acceptance` 15, `semantic-diff` 10 untouched), with the
+measurement table recorded in the workflow comment next to the number so the
+value can be re-judged later against data rather than re-argued from memory.
+The comment states explicitly that this is a budget for work the job really
+does, not permission for the job to get slower: a future run approaching 35
+minutes is to be root-caused, not accommodated by raising the number again.
+
+Verify: `python -c "import yaml; ..."` -> `YAML OK`, job timeouts read back as
+`{'contract': 20, 'linux-race-and-stability': 35, 'spike-acceptance': 15,
+'semantic-diff': 10}`.
