@@ -12,7 +12,10 @@
 // (this task's own HTTP package) wraps them into:
 //
 //   - GetRunDetail: the Run's own row plus its immutable ExecutionManifest
-//     pin and RunManifestAmendment history (GET /runs/{id}).
+//     pin and RunManifestAmendment history (GET /runs/{id}) — and, since
+//     V6-06E, the Run's own ApprovalRequests/WaitRegistrations, the only
+//     public read that carries the ids resolveApproval/submitWaitSignal act
+//     on.
 //   - GetRunGraph: the compiled WorkflowVersion's own declared nodes/edges
 //     (the "possible" graph) plus every real NodeRun activation and
 //     BranchToken this Run has ever produced (GET /runs/{id}/graph) — the
@@ -124,6 +127,155 @@ func toRunManifestAmendmentView(a runtimedomain.RunManifestAmendment) RunManifes
 	}
 }
 
+// ApprovalRequestView is the operator-facing, read-only view of one
+// runtime.ApprovalRequest of a Run (V6-06E, rework of V6-06A — found
+// empirically by the V6-14 black-box journey): the ONE public read that
+// hands a caller the approvalRequestId (and the version resolveApproval
+// demands as its If-Match precondition) it needs to call
+// POST /runs/{runId}/approval-requests/{approvalRequestId}/resolve.
+// approvalRequestId is a random UUID minted inside advanceRunTx, so before
+// this view existed no public read returned it.
+//
+// Every field here is either an identity, a closed enum, a timestamp, or the
+// node's own compiled configuration (AuthorizedRoles/RequestedEvidenceKinds/
+// EscalationOutcome, pinned onto the request when it was created — never
+// secret or authorization MATERIAL, only the role NAMES the node itself
+// declares). Deliberately NOT exposed: DecidedBy/DecidedRole/Reason/
+// DecidedAt — the decision's own audit trail, of which Reason is free text
+// that would need this package's redact.Matcher (GetRunDetail takes none,
+// exactly like it takes no SharedState) — ResolvedOutcome is enough for an
+// operator to see what was decided.
+//
+// State is the real runtimedomain.ApprovalRequestState string (PENDING is
+// the only ACTIONABLE state; DECIDED/ESCALATED/CANCELLED are history).
+// Version is the request's own CAS version — for a PENDING request always
+// 1 by construction (NewApprovalRequest; only TransitionApprovalRequest,
+// which moves it out of PENDING, ever changes it), but exposed anyway so a
+// client never has to hard-code that fact.
+type ApprovalRequestView struct {
+	ApprovalRequestID      string    `json:"approvalRequestId"`
+	NodeRunID              string    `json:"nodeRunId"`
+	NodeKey                string    `json:"nodeKey"`
+	State                  string    `json:"state"`
+	Version                uint64    `json:"version"`
+	AuthorizedRoles        []string  `json:"authorizedRoles,omitempty"`
+	RequestedEvidenceKinds []string  `json:"requestedEvidenceKinds,omitempty"`
+	DueAt                  time.Time `json:"dueAt"`
+	EscalationOutcome      string    `json:"escalationOutcome"`
+	// ResolvedOutcome is the ApprovalRequest's own DecidedOutcome — the
+	// declared node Outcome the deciding operator picked. Empty (omitted)
+	// until an operator decision lands; an ESCALATED request stays empty too
+	// (an escalation has no deciding actor and no chosen outcome — see
+	// EscalationOutcome for what the timer routed with).
+	ResolvedOutcome string `json:"resolvedOutcome,omitempty"`
+}
+
+// WaitRegistrationView is the operator-facing, read-only view of one
+// runtime.WaitRegistration of a Run (V6-06E): the ONE public read that hands
+// a caller the waitRegistrationId submitWaitSignal needs —
+// POST /runs/{runId}/wait-registrations/{waitRegistrationId}/signal. Like
+// ApprovalRequestView, deliberately identities/enums/timestamps only.
+//
+// Mode is DERIVED, never stored: runtime.WaitRegistration carries no mode
+// column, but the workflow compiler's own validateWaitConfig makes SignalName
+// non-empty exactly for SIGNAL mode and forbids it for DURATION mode, and
+// NewWaitRegistration copies the node's own SignalName verbatim — so
+// "SignalName != empty" IS the mode. SignalName is only ever the node's own
+// compiled signal name (a label the external system reports against), never
+// a signal payload. DueAt is nil exactly when the node has no deadline (a
+// SIGNAL wait with no TimeoutSeconds ceiling).
+type WaitRegistrationView struct {
+	WaitRegistrationID string     `json:"waitRegistrationId"`
+	NodeRunID          string     `json:"nodeRunId"`
+	NodeKey            string     `json:"nodeKey"`
+	State              string     `json:"state"`
+	Mode               string     `json:"mode"`
+	SignalName         string     `json:"signalName,omitempty"`
+	DueAt              *time.Time `json:"dueAt,omitempty"`
+}
+
+// activationOrder maps every NodeRun of a Run to its ActivationSequence —
+// the Run-scoped, strictly-increasing counter sortedNodeRuns already uses as
+// this package's own activation/creation order. ApprovalRequest and
+// WaitRegistration carry no creation timestamp of their own and their
+// repository List methods sort by a random UUID, so an operator-facing list
+// takes its order from the NodeRun activation each one belongs to instead
+// (exactly one request/registration exists per NodeRun, UNIQUE(node_run_id)).
+func activationOrder(nodeRuns []runtimedomain.NodeRun) map[runtimedomain.NodeRunID]uint64 {
+	order := make(map[runtimedomain.NodeRunID]uint64, len(nodeRuns))
+	for _, nr := range nodeRuns {
+		order[nr.ID] = nr.ActivationSequence
+	}
+	return order
+}
+
+// toApprovalRequestViews converts requests to their wire views in activation
+// order (owning NodeRun's ActivationSequence, then NodeRunID as the total-
+// order tiebreak — ActivationSequence can legitimately tie across fork
+// branches, see sortedNodeRuns). Returns nil (never an empty slice) for no
+// requests so the caller's omitempty tag drops the whole key.
+func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[runtimedomain.NodeRunID]uint64) []ApprovalRequestView {
+	if len(requests) == 0 {
+		return nil
+	}
+	sorted := append([]runtimedomain.ApprovalRequest(nil), requests...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if order[sorted[i].NodeRunID] != order[sorted[j].NodeRunID] {
+			return order[sorted[i].NodeRunID] < order[sorted[j].NodeRunID]
+		}
+		if sorted[i].NodeRunID != sorted[j].NodeRunID {
+			return sorted[i].NodeRunID < sorted[j].NodeRunID
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	views := make([]ApprovalRequestView, 0, len(sorted))
+	for _, r := range sorted {
+		views = append(views, ApprovalRequestView{
+			ApprovalRequestID: string(r.ID), NodeRunID: string(r.NodeRunID), NodeKey: r.NodeKey,
+			State: string(r.State), Version: r.Version,
+			AuthorizedRoles:        append([]string(nil), r.AuthorizedRoles...),
+			RequestedEvidenceKinds: append([]string(nil), r.RequestedEvidenceKinds...),
+			DueAt:                  r.DueAt, EscalationOutcome: r.EscalationOutcome, ResolvedOutcome: r.DecidedOutcome,
+		})
+	}
+	return views
+}
+
+// toWaitRegistrationViews converts registrations to their wire views in
+// activation order — see toApprovalRequestViews. Returns nil for none.
+func toWaitRegistrationViews(registrations []runtimedomain.WaitRegistration, order map[runtimedomain.NodeRunID]uint64) []WaitRegistrationView {
+	if len(registrations) == 0 {
+		return nil
+	}
+	sorted := append([]runtimedomain.WaitRegistration(nil), registrations...)
+	sort.Slice(sorted, func(i, j int) bool {
+		if order[sorted[i].NodeRunID] != order[sorted[j].NodeRunID] {
+			return order[sorted[i].NodeRunID] < order[sorted[j].NodeRunID]
+		}
+		if sorted[i].NodeRunID != sorted[j].NodeRunID {
+			return sorted[i].NodeRunID < sorted[j].NodeRunID
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	views := make([]WaitRegistrationView, 0, len(sorted))
+	for _, r := range sorted {
+		mode := workflow.WaitModeDuration
+		if r.SignalName != "" {
+			mode = workflow.WaitModeSignal
+		}
+		var dueAt *time.Time
+		if r.DueAt != nil {
+			due := *r.DueAt
+			dueAt = &due
+		}
+		views = append(views, WaitRegistrationView{
+			WaitRegistrationID: string(r.ID), NodeRunID: string(r.NodeRunID), NodeKey: r.NodeKey,
+			State: string(r.State), Mode: string(mode), SignalName: r.SignalName, DueAt: dueAt,
+		})
+	}
+	return views
+}
+
 // RunDetail is GetRunDetail's own authoritative, single-resource view of one
 // WorkflowRun: its own row plus its pinned ExecutionManifest and amendment
 // history, plus a cheap NodeRun/ExecutionAttempt count so a caller gets an
@@ -133,6 +285,13 @@ func toRunManifestAmendmentView(a runtimedomain.RunManifestAmendment) RunManifes
 // (queries.go): SharedState is arbitrary caller-declared JSON this task's
 // own citations never ask this route to expose, and doing so would need its
 // own redaction policy this task has no real caller to design against yet.
+//
+// ApprovalRequests/WaitRegistrations (V6-06E) are the Run's own decision
+// targets — EVERY request/registration it has ever had, pending AND decided,
+// in activation order, so an operator both finds the id to act on (State
+// says which is actionable) and sees the history. Both keys are omitted
+// entirely for a Run with none, so every pre-existing response stays
+// byte-identical.
 type RunDetail struct {
 	RunID               string     `json:"runId"`
 	ProjectID           string     `json:"projectId"`
@@ -154,6 +313,8 @@ type RunDetail struct {
 	Amendments            []RunManifestAmendmentView `json:"amendments,omitempty"`
 	NodeRunCount          int                        `json:"nodeRunCount"`
 	ExecutionAttemptCount int                        `json:"executionAttemptCount"`
+	ApprovalRequests      []ApprovalRequestView      `json:"approvalRequests,omitempty"`
+	WaitRegistrations     []WaitRegistrationView     `json:"waitRegistrations,omitempty"`
 }
 
 // GetRunDetail returns runID's own authoritative detail — ErrPersistenceNotFound
@@ -183,11 +344,20 @@ func GetRunDetail(ctx context.Context, uow ports.UnitOfWork, runID string) (RunD
 		if err != nil {
 			return err
 		}
+		approvalRequests, err := tx.Approvals().ListApprovalRequestsForRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		waitRegistrations, err := tx.Wait().ListWaitRegistrationsForRun(ctx, runID)
+		if err != nil {
+			return err
+		}
 
 		amendmentViews := make([]RunManifestAmendmentView, 0, len(amendments))
 		for _, a := range amendments {
 			amendmentViews = append(amendmentViews, toRunManifestAmendmentView(a))
 		}
+		order := activationOrder(nodeRuns)
 		detail = RunDetail{
 			RunID: string(run.ID), ProjectID: string(run.ProjectID), WorkItemID: string(run.WorkItemID),
 			FamilyID: string(run.FamilyID), State: string(run.State), Version: run.Version, ScopeVersion: run.ScopeVersion,
@@ -195,6 +365,8 @@ func GetRunDetail(ctx context.Context, uow ports.UnitOfWork, runID string) (RunD
 			StartedAt: run.StartedAt, FinishedAt: run.FinishedAt, Cancelling: run.CancelEpoch != nil,
 			Manifest: toExecutionManifestDetail(manifest), Amendments: amendmentViews,
 			NodeRunCount: len(nodeRuns), ExecutionAttemptCount: len(attempts),
+			ApprovalRequests:  toApprovalRequestViews(approvalRequests, order),
+			WaitRegistrations: toWaitRegistrationViews(waitRegistrations, order),
 		}
 		return nil
 	})

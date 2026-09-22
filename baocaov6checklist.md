@@ -11423,6 +11423,240 @@ earlier in this session) and `internal/app/workerpool` `TestPool_HeartbeatKeepsL
 heartbeat starved by the parallel full-suite load; 10/10 clean alone). PR targets `master`; the branch is based on
 V6-12's, so it opens once V6-12 has merged.
 
+## V6-06E — Discoverable approval requests and WAIT registrations (rework of V6-06A, found by V6-14)
+
+### Thực hiện
+
+**The empirical finding.** V6-06A (`internal/delivery/httpapi/decision`) shipped
+`POST /runs/{runId}/approval-requests/{approvalRequestId}/resolve` and
+`POST /runs/{runId}/wait-registrations/{waitRegistrationId}/signal`, both requiring the operator to already
+know the target's `approvalRequestId`/`waitRegistrationId`. Those ids are random UUIDs minted inside
+`advanceRunTx` (`internal/app/runtime/advance.go`: `requestID := ids.NewID()` at line 875,
+`registrationID := ids.NewID()` at line 832) and were never returned by any public read. The V6-14 black-box
+journey dumped every read a client has against a real Run parked WAITING on an APPROVAL node —
+`GET /runs/{id}` (detail), `GET /runs/{id}/graph`, `GET /runs/{id}/timeline`,
+`GET /projects/{p}/runs/{id}/diagnostics`, `GET /work-items/{id}/detail` (`validActions: []`) and
+`GET /projects/{p}/work-items/{id}` — and confirmed none of them carried the id. A human or `aw` operator
+therefore had no way to ever call `resolveApproval`/`submitWaitSignal`, and any Run with such a node could
+never finish over the public surface. Read `internal/app/ports/approval.go`/`wait.go` in full before writing
+any code: both `ApprovalRepository.ListApprovalRequestsForRun` and `WaitRepository.ListWaitRegistrationsForRun`
+already existed (added by V4-12B for the cancel-run-coordinator sweep) — this task adds a projection over them,
+no new port method, no new migration.
+
+**Where the projection lives.** Extended `runtime.RunDetail` (`internal/app/runtime/run_detail_queries.go`,
+the same file V6-06B's `GetRunDetail` already owns) with two new ADDITIVE, `omitempty` fields:
+`ApprovalRequests []ApprovalRequestView` and `WaitRegistrations []WaitRegistrationView`. `GetRunDetail` now
+also calls `tx.Approvals().ListApprovalRequestsForRun` and `tx.Wait().ListWaitRegistrationsForRun` inside the
+SAME `uow.WithReadOnly` closure the pre-existing manifest/amendment/nodeRun/attempt reads already use — no
+second transaction, no change to the function's existing not-found behavior (an unknown `runId` still fails on
+the very first `GetWorkflowRun` read, before the new calls ever execute).
+
+**Wire shape** (both arrays omitted entirely when empty, so every pre-existing `GET /runs/{id}` response stays
+byte-identical):
+```json
+"approvalRequests": [ {
+  "approvalRequestId": "…", "nodeRunId": "…", "nodeKey": "approval",
+  "state": "PENDING",                 // runtimedomain.ApprovalRequestState: PENDING|DECIDED|ESCALATED|CANCELLED
+  "version": 1,
+  "authorizedRoles": ["reviewer"], "requestedEvidenceKinds": ["test-plan"],   // omitted when empty
+  "dueAt": "2026-01-01T01:00:00Z", "escalationOutcome": "denied",
+  "resolvedOutcome": "approved"        // omitempty — only once DECIDED (ApprovalRequest.DecidedOutcome)
+} ],
+"waitRegistrations": [ {
+  "waitRegistrationId": "…", "nodeRunId": "…", "nodeKey": "wait_signal",
+  "state": "ACTIVE",                   // runtimedomain.WaitRegistrationState: ACTIVE|CONSUMED|ELAPSED|TIMED_OUT|CANCELLED
+  "mode": "SIGNAL",                    // "SIGNAL" | "DURATION" — DERIVED, see below
+  "signalName": "release-approved-externally",   // omitempty, SIGNAL only
+  "dueAt": "2026-01-01T00:30:00Z"      // omitempty — nil exactly when there is no deadline
+} ]
+```
+Both `ApprovalRequestView`/`WaitRegistrationView` map their domain source field-for-field, with two deliberate
+departures from the task brief's own sketch, both forced by what the real domain types actually carry (read in
+full before writing any DTO, per doctrine):
+- `WaitRegistration` (`internal/domain/runtime/wait.go`) has **no `Mode` column at all** — `Mode` is DERIVED:
+  `validateWaitConfig` (`internal/domain/workflow/validation.go`) makes `SignalName` non-empty exactly for
+  SIGNAL and forbidden for DURATION, and `NewWaitRegistration`/`advanceRunTx`'s own `isWaitNode` branch copies
+  the node's compiled `SignalName` verbatim onto the registration — so `SignalName != ""` IS SIGNAL mode,
+  confirmed by reading both files before adding the field. Never stored, never guessed.
+- `ApprovalRequestView`/`WaitRegistrationView` deliberately do **NOT** expose `DecidedBy`/`DecidedRole`/
+  `Reason`/`DecidedAt`/`ConsumedSignalID` — the decision's own audit trail. `Reason` is caller-supplied free
+  text and `GetRunDetail` has no `redact.Matcher` parameter (unlike `GetRunGraph`/`GetRunTimeline`, which redact
+  `BlockReason`) — adding a redaction dependency to `GetRunDetail` was out of this task's own scope, and
+  `resolvedOutcome` already gives an operator the one fact they need (what was decided), matching the task
+  brief's own field list. `AuthorizedRoles` is not secret material — it is the node's own compiled config
+  (`ApprovalNodeConfig.AuthorizedRoles`, pinned at creation, never mutated), the same content `resolveApproval`
+  already checks `cmd.ActorRoles` against.
+
+**Ordering.** Neither `ApprovalRequest` nor `WaitRegistration` carries a creation timestamp, and both
+repositories' own `ListXForRun` is `ORDER BY id` (a random UUID) — no usable order on its own. Since
+`UNIQUE(node_run_id)` guarantees at most one request/registration per `NodeRun`, order is derived from the
+owning `NodeRun`'s own `ActivationSequence` (the Run's own creation-order backbone, same counter
+`GetRunGraph`'s `Activations`/`GetRunTimeline`'s entries already sort by) via a new `activationOrder` helper
+that maps every `NodeRun` of the Run to its sequence, then `NodeRunID` then the request/registration's own `ID`
+as total-order tiebreaks. `toApprovalRequestViews`/`toWaitRegistrationViews` return `nil` (never an empty
+non-nil slice) for zero inputs, so the `omitempty` tag actually drops the key.
+
+**History, not just pending.** Both lists include every request/registration of the Run, decided or not —
+`state` tells an operator which is actionable, matching the "operator sees history" requirement.
+
+**Authorization.** Nothing new: `GetRunDetail` derives `ProjectID` from the authoritative `WorkflowRun` row
+exactly as before, and an unknown/cross-project `runId` fails at the pre-existing `GetWorkflowRun` read before
+the new approval/wait reads ever run — V6-13's `securitymatrix` route inventory is unaffected (no new route, no
+scope change).
+
+**HTTP/CLI layers.** `internal/delivery/httpapi/rundetail/detail.go`'s `handleGetRunDetail` needed **zero
+changes** — it already passes `runtimeapp.RunDetail` straight through `httpapi.EncodeResult`, so the two new
+fields reach the wire automatically; `rundetail.go`'s `RegisterRoutes` already declares
+`ResponseSchema: runtimeapp.RunDetail{}` for the SAME struct, so no schema-fragment change either. Same for
+`internal/delivery/cli/run/show.go`'s `Show` — it calls `runtime.GetRunDetail` directly and JSON-encodes the
+returned struct verbatim (`cli.EncodeQueryResult`), no second CLI-only DTO — confirmed with a new CLI test
+(see Test) rather than assumed. No route, no operationId, no method/path/scope change; `cmd/aw/*`,
+`internal/delivery/cli/descriptor.go` and everything V6-15O owns untouched, per the task's own explicit
+boundary.
+
+**Golden contract.** `internal/delivery/httpapi/apicontract/testdata/golden/contract.json` has no built-in
+update mechanism (confirmed by reading `golden_test.go` in full) — regenerated via a throwaway in-package test
+(`generateContractJSON` + `os.WriteFile(goldenContractPath, ...)`), run once, then deleted before committing
+(never left in the tree). Diff is exactly 10 lines added to `getRunDetail`'s own `responseSchema.fields`
+(nothing else in the 11k-line fixture changed):
+```json
+{ "name": "ApprovalRequests", "jsonTag": "approvalRequests,omitempty", "type": "[]runtime.ApprovalRequestView" },
+{ "name": "WaitRegistrations", "jsonTag": "waitRegistrations,omitempty", "type": "[]runtime.WaitRegistrationView" }
+```
+(the contract generator's own `describeSchema` is shallow-one-level by design — it does not expand
+`ApprovalRequestView`'s/`WaitRegistrationView`'s own fields, matching every other nested-struct field already
+in the fixture, e.g. `RunDetail.Manifest`). `TestBreakingChangeGate_RealContractHasNoBreakingChangesFromGolden`
+passes against the regenerated golden — additive-only, confirmed by the gate itself, not merely asserted.
+
+**Không làm:** no new migration, no new event, no event-schema change, no change to any command
+(`ResolveApproval`/`SignalWait` untouched), no new HTTP route/operationId, no `DecidedBy`/`Reason`/audit-trail
+exposure (see above), no CLI registry/descriptor change (V6-15O's own territory).
+
+### Test
+
+Real-SQLite/real-HTTP throughout — no hand-seeded `approval_requests`/`wait_registrations` row anywhere in this
+task's own tests; every fixture drives a genuine `StartWorkflowRun`/`AdvanceRun`/`ResolveApproval`/`SignalWait`
+sequence, reusing this repo's own `readyFixtureSQLite`/`publishWorkflowVersionDocument`/`testCommand` helpers
+(`internal/app/runtime/commands_sqlite_test.go`/`advance_test.go`) the way `approval_sqlite_test.go`/
+`wait_sqlite_test.go` already establish.
+
+- `internal/app/runtime/run_detail_decisions_sqlite_test.go` (new, 3 tests):
+  - `TestGetRunDetail_SQLite_ApprovalAndWait_DiscoverableThroughLifecycle` — start → APPROVAL → WAIT(SIGNAL,
+    no timeout ceiling) → END. Parked on APPROVAL: exactly one PENDING request with the right node/roles/
+    evidence-kinds/due/escalation, no WAIT registration yet. After a real `runtime.ResolveApproval`: the SAME
+    request shows DECIDED with `resolvedOutcome=approved`, and the newly-activated WAIT registration appears
+    (`mode=SIGNAL`, real `signalName`, no `dueAt`). After a real `runtime.SignalWait`: the registration shows
+    CONSUMED, both stay listed as history, and the Run itself reaches VERIFYING — proving the Run can finish
+    entirely off ids this exact query returned. A final assertion marshals the whole detail and greps for the
+    Reason text/actor/signal-payload strings the fixture used, proving none of that audit-trail material leaks
+    through the view.
+  - `TestGetRunDetail_SQLite_NoDecisionNodes_OmitsBothArrays` — a plain start→end Run: both fields decode `nil`
+    and neither JSON key is present at all.
+  - `TestGetRunDetail_SQLite_ApprovalsAndWaits_ListedInActivationOrder` — two APPROVAL nodes then two WAIT nodes
+    (one SIGNAL with a ceiling, one DURATION) chained in a fixed activation order, driven with a custom
+    `descendingIDs` id source whose ids sort the STRICT REVERSE of activation order. The test first asserts the
+    raw repository `ListXForRun` order really is reversed (so the test cannot silently stop discriminating),
+    THEN asserts `GetRunDetail` still returns `[first_gate, second_gate]`/`[wait_signal, wait_duration]` —
+    proof the ordering comes from `activationOrder`, not from repository/id luck. Also covers the DURATION mode
+    branch (no `signalName`, has a `dueAt`) and the omit-when-empty `requestedEvidenceKinds` (`second_gate`
+    declares none).
+- `internal/delivery/httpapi/rundetail/decisions_test.go` (new, 4 tests):
+  - `TestGetRunDetail_HTTP_ApprovalPending_ListsRequestNoWaitYet` — real `httptest.Server`, one PENDING request
+    over the wire, `waitRegistrations` absent from the raw body (string-search, not just decode).
+  - `TestGetRunDetail_HTTP_NoDecisionNodes_OmitsBothKeys` — the exact "Run with neither returns JSON WITHOUT the
+    keys" Test requirement: raw-body string search confirms neither `approvalRequests` nor `waitRegistrations`
+    appears at all.
+  - `TestGetRunDetail_HTTP_CrossProjectRun_StillHidden` — a real `ApprovalRequestID` (not a `RunID`) used as the
+    `{id}` path segment still 404s exactly like `TestGetRunDetail_HTTP_NotFound`'s wholly-synthetic id, proving
+    the new reads never execute for a Run the caller cannot see.
+  - `TestGetRunDetail_HTTP_ApprovalRequestID_ResolvableThroughDecisionEndpoint` — this task's own **round-trip
+    proof through the decision endpoints**: `combinedTestServer` composes `rundetail.RegisterRoutes` AND
+    `internal/delivery/httpapi/decision`'s own `RegisterRoutes` on ONE real `httptest.Server`/`*sqlite.Store`.
+    Extracts `approvalRequestId` and its `version` from a real `GET /runs/{id}` JSON body, calls the real
+    `POST .../resolve` with `If-Match` built from that exact version — 200/`Won=true`, routed to `wait_signal`.
+    Re-reads the detail: the SAME id is now DECIDED with `resolvedOutcome=approved`, and the newly-activated
+    WAIT registration is present. Extracts `waitRegistrationId` the identical way, calls the real
+    `POST .../signal` — 200/`Won=true`, routed to `end`; re-read shows CONSUMED and the Run VERIFYING. Every id
+    used past the initial fixture setup comes from a decoded HTTP response, never from the `AdvanceRunResult`
+    the fixture also has in hand — the one exception is one assertion cross-checking the discovered id against
+    it, to prove they are the SAME id.
+- `internal/delivery/cli/run/show_test.go` (+1 test): `TestRunShow_ApprovalRequests_ReachCLIOutput` — drives a
+  real Run to its APPROVAL node directly through `runtime.StartWorkflowRun`/`AdvanceRun`, then calls
+  `clirun.Show` (the actual `aw run show` entry point) and decodes its stdout — the discovered
+  `approvalRequestId` matches the real one, state is PENDING, and `waitRegistrations` is both `nil` and absent
+  from the raw stdout string — proving the CLI's `run show` needed no second code path and none was added.
+
+**Fail-closed guards, each broken then restored (temporary edits, never committed):**
+1. **Dropped `omitempty` off both tags** (`"approvalRequests"`/`"waitRegistrations"`, no `,omitempty`) —
+   `TestGetRunDetail_SQLite_NoDecisionNodes_OmitsBothArrays`, `TestGetRunDetail_HTTP_NoDecisionNodes_OmitsBothKeys`
+   and `TestRunShow_ApprovalRequests_ReachCLIOutput` all failed immediately (`approvalRequests":null` /
+   `waitRegistrations` key present where the test demands absence) — reverted, all three pass again.
+2. **Commented out both `sort.Slice` calls** inside `toApprovalRequestViews`/`toWaitRegistrationViews` —
+   `TestGetRunDetail_SQLite_ApprovalsAndWaits_ListedInActivationOrder` failed
+   (`[second_gate, first_gate]`, the exact reversed-by-repository order the test's own precondition assertion
+   already proved the raw rows carry) — reverted, passes again.
+3. **Broken the id mapping** (`ApprovalRequestID: string(r.NodeRunID)` instead of `string(r.ID)`) —
+   `TestGetRunDetail_HTTP_ApprovalRequestID_ResolvableThroughDecisionEndpoint` failed immediately
+   (`discovered approvalRequestId = id-11, want id-12`) before it even reached the decision endpoint —
+   reverted, passes again.
+
+`go build ./... && go vet ./... && go test ./...` clean repo-wide (`internal/app/runtime` 41.6s,
+`internal/delivery/httpapi/rundetail` 17.9s, `internal/delivery/httpapi/decision` 8.5s,
+`internal/delivery/cli/run` 12.1s, `internal/delivery/httpapi/apicontract` 3.2s, full suite ~1300s). One flake
+on the full run: `TestAdapterRegister_DriftCreatesNewBuild` (`cmd/aw`) — `overwrite executable: ... provider-cli.exe:
+The process cannot access the file because it is being used by another process`, the EXACT known Windows-only
+flake named in this task's own brief. `git diff --stat origin/master` confirms this branch never touches
+`cmd/aw`, `internal/app/adapterbuild`, `internal/delivery/httpapi/adapterbuild` or any file in that test's own
+dependency chain; re-ran `go test ./cmd/aw/... -run TestAdapterRegister_DriftCreatesNewBuild` in isolation (pass)
+and the full `go test ./cmd/aw/...` package again in isolation (pass, 7.7s) — confirms environmental contention
+during the parallel full-suite run, not a regression from this change.
+
+### Verify
+
+- **The empirical gap is closed:** an operator can now discover `approvalRequestId`/`waitRegistrationId`
+  through `GET /runs/{id}` (HTTP) or `aw run show` (CLI) and immediately call `resolveApproval`/
+  `submitWaitSignal` with it — proven end to end by
+  `TestGetRunDetail_HTTP_ApprovalRequestID_ResolvableThroughDecisionEndpoint`, which resolves BOTH an approval
+  and a WAIT signal using only ids read back off the wire.
+- **Additive-only wire contract:** `TestGetRunDetail_HTTP_NoDecisionNodes_OmitsBothKeys`/
+  `TestGetRunDetail_SQLite_NoDecisionNodes_OmitsBothArrays` prove every pre-existing response (no APPROVAL/WAIT
+  node) stays byte-identical (verified via raw-body string search, not just struct decode);
+  `TestBreakingChangeGate_RealContractHasNoBreakingChangesFromGolden` proves the same at the contract level.
+- **Deterministic order:** `TestGetRunDetail_SQLite_ApprovalsAndWaits_ListedInActivationOrder`, with a
+  precondition assertion proving the naive repository order is the exact reverse, so the ordering assertion can
+  only pass through `activationOrder`'s own logic.
+- **History, not just pending:** `TestGetRunDetail_SQLite_ApprovalAndWait_DiscoverableThroughLifecycle` shows
+  both a DECIDED `ApprovalRequest` and a CONSUMED `WaitRegistration` remain listed after resolution.
+- **No secret/audit leakage:** the same test marshals the full detail and asserts the Reason/actor/signal-payload
+  strings never appear.
+- **Authorization intact, no new surface:** `TestGetRunDetail_HTTP_CrossProjectRun_StillHidden` — a genuine
+  foreign id still 404s identically to an unknown one; no new route/operationId/scope registered (V6-13's
+  security matrix is unaffected by construction — no changes anywhere under
+  `internal/delivery/httpapi/securitymatrix`).
+- **CLI reaches the same query, no second code path:** `TestRunShow_ApprovalRequests_ReachCLIOutput`, plus
+  reading `show.go` itself confirms it dispatches `runtime.GetRunDetail` directly.
+- Every guard above shown to genuinely fail when broken, then restored (see Test) — never merely asserted.
+
+### Kết quả
+
+Changed: `internal/app/runtime/run_detail_queries.go` (+173/-1: `ApprovalRequestView`/`WaitRegistrationView`,
+`activationOrder`, `toApprovalRequestViews`/`toWaitRegistrationViews`, two new `RunDetail` fields, `GetRunDetail`
+wired to the two existing `ports.ApprovalRepository`/`ports.WaitRepository` list methods).
+`internal/delivery/httpapi/apicontract/testdata/golden/contract.json` (+10, additive-only, gate-verified). New:
+`internal/app/runtime/run_detail_decisions_sqlite_test.go` (3 tests), `internal/delivery/httpapi/rundetail/decisions_test.go`
+(4 tests, including the round-trip proof), `internal/delivery/cli/run/show_test.go` (+1 test). Zero changes to
+`internal/delivery/httpapi/rundetail/{detail.go,rundetail.go}`, `internal/delivery/cli/run/show.go`,
+`internal/app/runtime/{approval.go,wait.go}`, `internal/delivery/httpapi/decision/*`, any migration, any event
+schema, `cmd/aw/*`, or `internal/delivery/cli/descriptor.go` — the fix is entirely a read-side projection over
+data that already existed. `go build/vet/test ./...` clean repo-wide; the one full-suite failure
+(`TestAdapterRegister_DriftCreatesNewBuild`) is the named pre-existing Windows flake, verified unrelated by both
+diff-scope and isolated re-run. PR targets `master`.
+
+`GET /runs/{id}` (and `aw run show`) now list every APPROVAL request and WAIT registration of a Run — pending
+and decided — with the exact ids `resolveApproval`/`submitWaitSignal` accept, closing the gap the V6-14
+black-box journey found: a Run parked on an APPROVAL or WAIT node can now actually be advanced and finished
+over the public HTTP/CLI surface.
+
 ## V6-04B — WorkItem contract at creation (rework of V6-04, found by V6-14)
 
 ### Thực hiện
