@@ -83,7 +83,7 @@ INSERT INTO workflow_runs (
 func TestExecutionAttemptBlocked_PersistsAndReloadsAcrossRestart(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "agentkit.db")
+	dbPath := migratedDatabasePath(t, "agentkit.db")
 	store, err := Open(ctx, dbPath)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
@@ -136,7 +136,7 @@ WHERE id = 'blocked-attempt' AND state = 'RUNNING'`,
 func TestWorkflowRunCancelling_PersistsAndReloadsAcrossRestart(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "agentkit.db")
+	dbPath := migratedDatabasePath(t, "agentkit.db")
 	store := openWorkflowTestStore(t, ctx, dbPath)
 	seedWorkflowRunOwners(t, ctx, store)
 
@@ -196,7 +196,7 @@ type runtimeTestFixture struct {
 
 func newRuntimeTestFixture(t *testing.T, ctx context.Context) runtimeTestFixture {
 	t.Helper()
-	store := openWorkflowTestStore(t, ctx, filepath.Join(t.TempDir(), "agentkit.db"))
+	store := openWorkflowTestStore(t, ctx, migratedDatabasePath(t, "agentkit.db"))
 	t.Cleanup(func() { _ = store.Close() })
 	seedWorkflowRunOwners(t, ctx, store)
 	definition := testWorkflowDefinition()

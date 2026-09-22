@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ import (
 
 func TestContextSnapshotSurvivesRestartWithoutProviderSession(t *testing.T) {
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-context.db")
+	databasePath := migratedDatabasePath(t, "agentkit-context.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatal(err)
