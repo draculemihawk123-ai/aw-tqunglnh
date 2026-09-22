@@ -69,6 +69,16 @@ func (j *journey) publishDefinition(t *testing.T, scopePrefix string, kind defin
 	return publishedDefinition{definitionID: definitionID, versionID: version.ID, compiledHash: version.CompiledHash}
 }
 
+// publishCompletionPolicy publishes a completion policy that requires only the
+// evidence a COMMAND node produces (the release workflow has no gate).
+func (j *journey) publishCompletionPolicy(t *testing.T, id string) publishedDefinition {
+	t.Helper()
+	return j.publishDefinition(t, "", definition.KindPolicy, id, id, policy.PolicyDocument{
+		Category:   policy.CategoryCompletion,
+		Completion: &policy.CompletionRules{RequiredEvidenceKinds: []string{runtimedomain.EvidenceKindCommandExecution}},
+	})
+}
+
 // journeyScripts returns the two cross-platform scripts the COMMAND and
 // MACHINE_GATE nodes run. The marker they share lives OUTSIDE the repository
 // working tree on purpose: a MACHINE_GATE or CHECKER attempt requires the
@@ -120,6 +130,7 @@ func (j *journey) publishVerificationWorkflow(t *testing.T) verificationWorkflow
 			IsolationTier: policy.IsolationTierOperatorTrustedLocal, GrantedCapabilities: []string{"INTEGRATION_MULTI_REPOSITORY_WRITE"},
 		},
 	})
+	j.attemptPolicy, j.permissionPolicy = attemptPolicy, permissionPolicy
 
 	markerPath := filepath.Join(j.s.root, "maker-marker.txt")
 	makerKey, makerScript, gateKey, gateScript := journeyScripts(markerPath)

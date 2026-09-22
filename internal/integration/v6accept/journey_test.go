@@ -25,6 +25,16 @@ type journey struct {
 	repositoryID   string
 
 	verification    verificationWorkflow
+	attemptPolicy   publishedDefinition
+	permissionPolicy publishedDefinition
+	release          releaseWorkflow
+	releaseChildID   string
+	releaseRunID     string
+	releaseSetID     string
+	originHead       string
+	localCommitID    string
+	baseRevision     string
+	resultRevision   string
 	rootWorkItemID  string
 	familyID        string
 	workspaceSetID  string
@@ -54,6 +64,7 @@ func TestV6HTTPAcceptance_CleanDatabaseJourney(t *testing.T) {
 	requireAcceptance(t)
 	j := &journey{s: newStack(t)}
 	j.repoPath = createGitRepository(t, filepath.Join(j.s.root, "origin-repo"))
+	j.originHead = runGit(t, j.repoPath, "rev-parse", "HEAD")
 	j.s.start(t)
 	t.Cleanup(func() {
 		j.s.serve.dumpOnFailure(t)
@@ -65,6 +76,25 @@ func TestV6HTTPAcceptance_CleanDatabaseJourney(t *testing.T) {
 	stage(t, "03_project_and_repository", j.projectAndRepository)
 	stage(t, "04_definitions_and_workflow", func(t *testing.T) { j.verification = j.publishVerificationWorkflow(t) })
 	stage(t, "05_work_item_and_run", j.workItemAndRun)
+	stage(t, "06_conversation", j.conversation)
+	stage(t, "07_scope_expansion", j.scopeExpansion)
+	stage(t, "08_release_run", j.releaseRun)
+	stage(t, "09_release_set_and_local_commit", j.releaseChain)
+	stage(t, "10_evidence_and_artifacts", j.evidence)
+	stage(t, "11_projection_and_event_stream", func(t *testing.T) {
+		// Two runs, three WorkItems (root, verification child, release child).
+		j.projectionLive(t, 3)
+		j.eventStreamFromZero(t, "ProjectCreated", "RepositoryRegistered", "RootWorkItemCreated", "ChildWorkItemCreated",
+			"MessageAppended", "ScopeExpansionApproved")
+	})
+	stage(t, "12_projection_rebuild", j.projectionRebuild)
+	stage(t, "13_restart_equality", j.restartEquality)
+	stage(t, "14_graceful_shutdown", func(t *testing.T) {
+		serveGraceful, workerGraceful := j.s.stop(t)
+		if !serveGraceful || !workerGraceful {
+			t.Fatalf("shutdown was not graceful: serve=%v worker=%v (each must exit 0 inside its grace period)", serveGraceful, workerGraceful)
+		}
+	})
 }
 
 // healthDoctorSettings covers the installation-scoped operator surface that
@@ -256,19 +286,23 @@ func (j *journey) projectAndRepository(t *testing.T) {
 	})
 }
 
+// scopeGrant is the one grant every WorkItem here carries. It is narrowed to
+// src/ on purpose: the scope-expansion stage then has something real to
+// expand (docs/), decided by a human.
+func (j *journey) scopeGrant() []map[string]any {
+	return []map[string]any{{"repositoryId": j.repositoryID, "access": "WRITE", "pathScopes": []string{"src/"}, "reason": "v6 acceptance"}}
+}
+
 // workItemAndRun creates the WorkItem family, waits for the worker to
 // provision its workspace, marks the executable child ready and starts a Run
-// of the published workflow.
+// of the published verification workflow, then waits for the worker to finish
+// it.
 func (j *journey) workItemAndRun(t *testing.T) {
 	api := j.s.api
-	// The grant is narrowed to src/ on purpose: the later scope-expansion stage
-	// then has something real to expand (docs/), decided by a human.
-	grant := []map[string]any{{"repositoryId": j.repositoryID, "access": "WRITE", "pathScopes": []string{"src/"}, "reason": "v6 acceptance"}}
 
 	root := api.post(t, "/projects/"+j.projectID+"/work-items", map[string]any{
-		"title": "acceptance-root", "initialScope": grant,
+		"title": "acceptance-root", "initialScope": j.scopeGrant(),
 	}).requireStatus(t, http.StatusCreated)
-	t.Logf("root work item: %s", tail(string(root.body), 800))
 	var rootResult struct {
 		WorkItemID     string `json:"workItemId"`
 		FamilyID       string `json:"familyId"`
@@ -280,63 +314,96 @@ func (j *journey) workItemAndRun(t *testing.T) {
 		t.Fatalf("root work item result is missing ids: %s", root.body)
 	}
 
-	child := api.post(t, "/projects/"+j.projectID+"/work-items/"+j.rootWorkItemID+"/children", map[string]any{
-		"title": "acceptance-child", "parentJoinPolicy": "v6-acceptance-child", "effectiveScope": grant,
-		// The readiness contract travels with the create command (V6-04B):
-		// without it no WorkItem could ever be marked READY over HTTP.
+	j.childWorkItemID = j.createChild(t, "acceptance-child", "the acceptance repository is verified by the machine gate",
+		j.verification.workflow)
+	j.waitWorkspaceReady(t)
+	j.markReady(t, j.childWorkItemID)
+
+	j.runID = j.startRun(t, j.childWorkItemID, j.verification.workflow.versionID)
+	// The WORKER drives the run through all four executor roles; the test
+	// only observes the durable state over HTTP.
+	if state := j.waitRunSettled(t, j.runID); state != "SUCCEEDED" {
+		t.Fatalf("verification run settled in %s, want SUCCEEDED", state)
+	}
+}
+
+// createChild creates a child WorkItem carrying its readiness contract (V6-04B:
+// without it no WorkItem could ever be marked READY over HTTP) and returns its
+// id. verificationRef names the workflow definition that verifies it.
+func (j *journey) createChild(t *testing.T, title, behavior string, wf publishedDefinition) string {
+	t.Helper()
+	child := j.s.api.post(t, "/projects/"+j.projectID+"/work-items/"+j.rootWorkItemID+"/children", map[string]any{
+		"title": title, "parentJoinPolicy": "v6-acceptance-child", "effectiveScope": j.scopeGrant(),
 		"contract": map[string]any{
 			"schemaVersion":      1,
-			"behavior":           "the acceptance repository is verified by the machine gate",
-			"acceptanceCriteria": []map[string]any{{"description": "the gate reports PASS for the maker's output", "verificationRef": j.verification.workflow.definitionID}},
-			"verificationSpec":   "machine gate over the maker command's output",
+			"behavior":           behavior,
+			"acceptanceCriteria": []map[string]any{{"description": "the workflow's own verification passes", "verificationRef": wf.definitionID}},
+			"verificationSpec":   "see the referenced workflow",
 			"riskLevel":          "LOW",
 			"exclusions":         []string{"no network access"},
-			"workflowVersionId":  j.verification.workflow.versionID,
+			"workflowVersionId":  wf.versionID,
 		},
 	}).requireStatus(t, http.StatusCreated)
-	t.Logf("child work item: %s", tail(string(child.body), 800))
-	var childResult struct {
+	var result struct {
 		WorkItemID string `json:"workItemId"`
 	}
-	child.decode(t, &childResult)
-	j.childWorkItemID = childResult.WorkItemID
-	if j.childWorkItemID == "" {
+	child.decode(t, &result)
+	if result.WorkItemID == "" {
 		t.Fatalf("child work item result has no id: %s", child.body)
 	}
+	return result.WorkItemID
+}
 
-	j.waitWorkspaceReady(t)
+// markReady checks readiness (computed fresh by the server) and applies the
+// versioned mark-ready command.
+func (j *journey) markReady(t *testing.T, workItemID string) {
+	t.Helper()
+	api := j.s.api
+	var readiness struct {
+		Ready    bool     `json:"ready"`
+		Problems []string `json:"problems"`
+	}
+	api.get(t, "/projects/"+j.projectID+"/work-items/"+workItemID+"/readiness").requireStatus(t, http.StatusOK).decode(t, &readiness)
+	if !readiness.Ready {
+		t.Fatalf("work item %s is not ready: %v", workItemID, readiness.Problems)
+	}
+	view := api.get(t, "/projects/"+j.projectID+"/work-items/"+workItemID).requireStatus(t, http.StatusOK)
+	api.post(t, "/work-items/"+workItemID+"/mark-ready", map[string]any{}, withIfMatch(view.etag())).requireStatus(t, http.StatusOK)
+}
 
-	// Readiness is computed fresh by the server; mark-ready is versioned.
-	readiness := api.get(t, "/projects/"+j.projectID+"/work-items/"+j.childWorkItemID+"/readiness").requireStatus(t, http.StatusOK)
-	t.Logf("child readiness: %s", tail(string(readiness.body), 700))
-	childView := api.get(t, "/projects/"+j.projectID+"/work-items/"+j.childWorkItemID).requireStatus(t, http.StatusOK)
-	api.post(t, "/work-items/"+j.childWorkItemID+"/mark-ready", map[string]any{}, withIfMatch(childView.etag())).requireStatus(t, http.StatusOK)
-
-	started := api.post(t, "/work-items/"+j.childWorkItemID+"/runs", map[string]any{
-		"workflowVersionId": j.verification.workflow.versionID,
+// startRun starts a Run of the given workflow version on a READY WorkItem.
+func (j *journey) startRun(t *testing.T, workItemID, workflowVersionID string) string {
+	t.Helper()
+	started := j.s.api.post(t, "/work-items/"+workItemID+"/runs", map[string]any{
+		"workflowVersionId": workflowVersionID,
 	}).requireStatus(t, http.StatusOK, http.StatusCreated, http.StatusAccepted)
-	t.Logf("start run: %s", tail(string(started.body), 500))
 	var run struct {
 		RunID string `json:"runId"`
 	}
 	started.decode(t, &run)
-	j.runID = run.RunID
-	if j.runID == "" {
+	if run.RunID == "" {
 		t.Fatalf("start run returned no run id: %s", started.body)
 	}
+	return run.RunID
+}
 
-	// The WORKER drives the run through all four executor roles; the test
-	// only observes the durable state over HTTP.
+// waitRunSettled waits until the run reaches a terminal state and returns it.
+func (j *journey) waitRunSettled(t *testing.T, runID string) string {
+	t.Helper()
 	var last string
-	waitFor(t, "run to leave RUNNING (VERIFYING/SUCCEEDED/failed)", 4*time.Minute, 500*time.Millisecond, func() bool {
+	waitFor(t, "run "+runID+" to reach a terminal state", 4*time.Minute, 500*time.Millisecond, func() bool {
 		var view struct {
 			State string `json:"state"`
 		}
-		api.get(t, "/runs/"+j.runID).requireStatus(t, http.StatusOK).decode(t, &view)
+		j.s.api.get(t, "/runs/"+runID).requireStatus(t, http.StatusOK).decode(t, &view)
 		last = view.State
-		return view.State != "" && view.State != "RUNNING" && view.State != "PENDING" && view.State != "STARTING"
+		switch view.State {
+		case "SUCCEEDED", "FAILED", "CANCELLED", "BLOCKED":
+			return true
+		}
+		return false
 	})
-	t.Logf("run settled in state %s", last)
+	return last
 }
 
 // waitWorkspaceReady waits for the WORKER to provision the family's workspace

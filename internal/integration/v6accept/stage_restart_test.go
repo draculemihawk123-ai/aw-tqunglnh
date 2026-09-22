@@ -16,7 +16,6 @@ func (j *journey) snapshotPaths() []string {
 	project := "/projects/" + j.projectID
 	paths := []string{
 		"/adapter-builds",
-		"/settings/safe",
 		project,
 		project + "/repositories",
 		project + "/work-items",
@@ -83,12 +82,33 @@ func stripVolatile(value any) any {
 // same database, and proves every recorded query answers identically and the
 // event journal, read from cursor 0 through SSE, has the identical prefix.
 func (j *journey) restartEquality(t *testing.T) {
+	// Safe settings are the one read model that is SUPPOSED to change across a
+	// restart: the desired overlay written in stage 01 only takes effect on the
+	// next start ("restart required"), so it is checked explicitly below rather
+	// than compared for equality.
+	settingsBefore := j.safeSettings(t)
+	if !settingsBefore.RestartRequired || settingsBefore.Effective.EvidenceRetention.Effective == settingsBefore.Desired.EvidenceRetention {
+		t.Fatalf("before the restart the desired evidence retention %q must be pending (restartRequired=true, effective %q)",
+			settingsBefore.Desired.EvidenceRetention, settingsBefore.Effective.EvidenceRetention.Effective)
+	}
 	before := j.snapshot(t)
 	eventsBefore := j.eventTrace(t)
 	lastBefore := eventsBefore[len(eventsBefore)-1].JournalPosition
 
 	j.s.restart(t)
 
+	// After the restart the persisted desired overlay is what the process runs
+	// with: the effective value is the desired one and its source is the SQLite
+	// overlay. (`restartRequired` itself stays true by design - V6-10G documents
+	// it as "a static fact of the document having ever been set", not a diff
+	// against the live process - so the effective/source fields are the
+	// authoritative signal and are what is asserted.)
+	settingsAfter := j.safeSettings(t)
+	if settingsAfter.Effective.EvidenceRetention.Effective != settingsAfter.Desired.EvidenceRetention ||
+		settingsAfter.Effective.EvidenceRetention.Source != "sqlite" ||
+		settingsAfter.Version != settingsBefore.Version || settingsAfter.Desired != settingsBefore.Desired {
+		t.Fatalf("after the restart the desired settings must be in effect and unchanged:\nbefore: %+v\nafter:  %+v", settingsBefore, settingsAfter)
+	}
 	after := j.snapshot(t)
 	var differing []string
 	for path, want := range before {
@@ -119,4 +139,27 @@ func (j *journey) restartEquality(t *testing.T) {
 		}
 	}
 	t.Logf("restart preserved %d snapshot queries and a %d-event journal prefix", len(before), len(eventsBefore))
+}
+
+// safeSettingsView is the part of GET /settings/safe the restart check needs.
+type safeSettingsView struct {
+	Version         uint64 `json:"version"`
+	RestartRequired bool   `json:"restartRequired"`
+	Desired         struct {
+		EvidenceRetention  string `json:"evidenceRetention"`
+		ProcessOutputLimit int    `json:"processOutputLimit"`
+	} `json:"desired"`
+	Effective struct {
+		EvidenceRetention struct {
+			Effective string `json:"effective"`
+			Source    string `json:"source"`
+		} `json:"evidenceRetention"`
+	} `json:"effective"`
+}
+
+func (j *journey) safeSettings(t *testing.T) safeSettingsView {
+	t.Helper()
+	var view safeSettingsView
+	j.s.api.get(t, "/settings/safe").requireStatus(t, http.StatusOK).decode(t, &view)
+	return view
 }
