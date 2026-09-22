@@ -60,6 +60,17 @@
 //     command could never actually consume, misrepresenting the real
 //     contract rather than honoring it.
 //
+// create and create-child read their request body — the same JSON document
+// the matching HTTP route accepts — from --file or stdin. Since V6-04B that
+// body may carry one optional "contract" object (schemaVersion, behavior,
+// acceptanceCriteria[{description, verificationRef}], verificationSpec,
+// riskLevel, exclusions, workflowVersionId): the readiness contract that lets
+// the new WorkItem later pass `aw work-item readiness` and `aw work-item
+// mark-ready`. It is validated by the application layer's own rules and
+// dispatched through the same application command as every other field —
+// see contract.go. Omitting it creates the WorkItem BACKLOG with an empty
+// contract, exactly as before.
+//
 // No subcommand in this package binds --actor or --role: ADR-028 permits
 // exactly one mechanism to select the acting principal
 // (cli.BindPrincipalFlag's own --principal-config) — see workitem_test.go's
