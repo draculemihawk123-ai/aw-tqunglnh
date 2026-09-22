@@ -25,6 +25,9 @@ type createChildWorkItemBody struct {
 	ParentJoinPolicy string           `json:"parentJoinPolicy"`
 	SourceNodeRunID  string           `json:"sourceNodeRunId,omitempty"`
 	EffectiveScope   []scopeGrantBody `json:"effectiveScope"`
+	// Contract is the child's own optional readiness contract (V6-04B), never
+	// inherited from the parent — see contract.go.
+	Contract *workItemContractBody `json:"contract,omitempty"`
 }
 
 // RunWorkItemCreateChild implements `aw work-item create-child <parentWorkItemId>`
@@ -80,6 +83,9 @@ func RunWorkItemCreateChild(ctx context.Context, deps Dependencies, args []strin
 	if err := validateScopeGrantBodies("effectiveScope", body.EffectiveScope); err != nil {
 		return err
 	}
+	if err := validateContractBody(body.Contract); err != nil {
+		return err
+	}
 	normalized, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -105,6 +111,7 @@ func RunWorkItemCreateChild(ctx context.Context, deps Dependencies, args []strin
 		return workapp.CreateChildWorkItem(ctx, deps.UoW, deps.IDs, envelope.Command, workapp.CreateChildWorkItemRequest{
 			ParentWorkItemID: parentWorkItemID, Title: body.Title, ParentJoinPolicy: body.ParentJoinPolicy,
 			SourceNodeRunID: body.SourceNodeRunID, EffectiveScope: toScopeGrantRequests(body.EffectiveScope),
+			Contract: body.Contract.toRequest(),
 		})
 	})
 	if err != nil {

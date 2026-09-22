@@ -135,6 +135,28 @@ func ResolveApprovalHandler(deps Dependencies) http.HandlerFunc {
 
 		principal := httpapi.PrincipalFromContext(ctx)
 
+		// Role authorization BEFORE the receipt fast path (V6-13). The
+		// design doc's own §1 contract point 3 requires authorization to
+		// run again on a replay, "nên role bị thu hồi không thể dùng replay
+		// để đọc/mutate" — but this handler answers a replay entirely by
+		// itself (WriteReceiptReplay below), without ever calling
+		// runtime.ResolveApproval, so the command's own role check could
+		// not possibly protect this path. Without this check, an actor
+		// whose authorizing role had since been revoked could still read
+		// back their own earlier decision's stored result by resending the
+		// same Idempotency-Key. `request` is the ApprovalRequest
+		// loadApprovalRequestForUpdate already reloaded at the top of this
+		// handler, so this costs no extra I/O, and it uses the SAME
+		// matching rule the command itself applies
+		// (runtime.MatchAuthorizedRole) rather than a second copy that
+		// could drift. Proven by internal/delivery/httpapi/securitymatrix's
+		// own TestReceiptReplay_RevokedRoleCannotReplayItsOwnEarlierDecision.
+		if runtime.MatchAuthorizedRole(principal.Roles, request.AuthorizedRoles) == "" {
+			status, code := httpapi.StatusForAppErrorCode(errorcode.CodePolicyDenied)
+			httpapi.WriteError(w, status, code, "the current actor is not authorized to resolve this approval request", nil)
+			return
+		}
+
 		receipt, found, lookupErr := httpapi.LookupReceipt(ctx, deps.UOW, principal.Actor, scope, idempotencyKey, "ResolveApproval")
 		if lookupErr != nil {
 			httpapi.WriteError(w, http.StatusInternalServerError, httpapi.ErrorCodeInternal, "internal error", nil)

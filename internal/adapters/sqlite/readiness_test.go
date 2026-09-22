@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -16,7 +15,7 @@ import (
 
 func openReadinessTestStore(t *testing.T, name string) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := Open(context.Background(), migratedDatabasePath(t, name))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

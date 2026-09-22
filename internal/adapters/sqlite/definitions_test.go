@@ -17,7 +17,7 @@ import (
 
 func openDefinitionsTestStore(t *testing.T, name string) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), name))
+	store, err := Open(context.Background(), migratedDatabasePath(t, name))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -469,7 +469,9 @@ func TestListDefinitions_RoutesWorkflowToWorkflowDefinitionsTable(t *testing.T) 
 // TestMigration0004_WorkflowRunsForeignKeyUnchanged is V2-02's own "FK
 // workflow_runs.workflow_version_id không đổi" required test.
 func TestMigration0004_WorkflowRunsForeignKeyUnchanged(t *testing.T) {
-	store := openDefinitionsTestStore(t, "agentkit-migration-0004-fk.db")
+	// Schema-shape test: keeps the real fresh-open/migrate path (see
+	// template_db_test.go) rather than the shared pre-migrated template.
+	store := openFreshStore(t, "agentkit-migration-0004-fk.db")
 	rows, err := store.db.QueryContext(context.Background(), `PRAGMA foreign_key_list(workflow_runs)`)
 	if err != nil {
 		t.Fatalf("PRAGMA foreign_key_list: %v", err)

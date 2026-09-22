@@ -372,6 +372,11 @@
             "name": "EffectiveScope",
             "jsonTag": "effectiveScope",
             "type": "[]workitem.scopeGrantBody"
+          },
+          {
+            "name": "Contract",
+            "jsonTag": "contract,omitempty",
+            "type": "*workitem.workItemContractBody"
           }
         ]
       },
@@ -551,6 +556,11 @@
             "name": "InitialScope",
             "jsonTag": "initialScope",
             "type": "[]workitem.scopeGrantBody"
+          },
+          {
+            "name": "Contract",
+            "jsonTag": "contract,omitempty",
+            "type": "*workitem.workItemContractBody"
           }
         ]
       },
@@ -1650,6 +1660,16 @@
             "name": "ExecutionAttemptCount",
             "jsonTag": "executionAttemptCount",
             "type": "int"
+          },
+          {
+            "name": "ApprovalRequests",
+            "jsonTag": "approvalRequests,omitempty",
+            "type": "[]runtime.ApprovalRequestView"
+          },
+          {
+            "name": "WaitRegistrations",
+            "jsonTag": "waitRegistrations,omitempty",
+            "type": "[]runtime.WaitRegistrationView"
           }
         ]
       }
@@ -2065,6 +2085,11 @@
             "name": "WorkflowVersionID",
             "jsonTag": "workflowVersionId,omitempty",
             "type": "string"
+          },
+          {
+            "name": "Contract",
+            "jsonTag": "contract,omitempty",
+            "type": "*work.WorkItemContractView"
           }
         ]
       }

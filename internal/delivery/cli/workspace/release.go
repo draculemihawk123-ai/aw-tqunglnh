@@ -14,6 +14,7 @@ func init() {
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"workspace-set", "release"}, Scope: cli.ScopeProject,
 		AppOperation: "RequestWorkspaceSetRelease", HTTPOperationID: "requestWorkspaceSetRelease",
+		HighImpact: true, // UX Screen 9 row 2: confirm must state this is an async intent (V6-15O confirmation parity)
 	})
 }
 

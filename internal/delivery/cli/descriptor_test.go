@@ -118,6 +118,30 @@ func TestRegistryAllIsDeterministicallyOrdered(t *testing.T) {
 	}
 }
 
+// TestRegistryPreservesHighImpactMarker proves the V6-15O confirmation
+// marker survives registration untouched: HighImpact is the one place a
+// leaf records "this command needs a confirmation" (ADR-028), so All() must
+// return it exactly as registered, and a descriptor that never set it must
+// stay false (every pre-V6-15O leaf keeps its behavior).
+func TestRegistryPreservesHighImpactMarker(t *testing.T) {
+	reg := cli.NewRegistry()
+	gated := cli.Descriptor{Path: []string{"run", "cancel"}, Scope: cli.ScopeProject, AppOperation: "CancelRun", HTTPOperationID: "cancelRun", HighImpact: true}
+	plain := cli.Descriptor{Path: []string{"run", "show"}, Scope: cli.ScopeProject, AppOperation: "GetRunDetail", HTTPOperationID: "getRunDetail"}
+	reg.MustRegister(gated)
+	reg.MustRegister(plain)
+
+	byOp := map[string]cli.Descriptor{}
+	for _, d := range reg.All() {
+		byOp[d.AppOperation] = d
+	}
+	if !byOp["CancelRun"].HighImpact {
+		t.Error("CancelRun lost its HighImpact marker through registration")
+	}
+	if byOp["GetRunDetail"].HighImpact {
+		t.Error("GetRunDetail gained a HighImpact marker it never set")
+	}
+}
+
 func TestRegistryMustRegisterPanicsOnDuplicate(t *testing.T) {
 	reg := cli.NewRegistry()
 	d := cli.Descriptor{Path: []string{"doctor"}, Scope: cli.ScopeInstallation, AppOperation: "Doctor", HTTPOperationID: cli.CLILocalOperation}

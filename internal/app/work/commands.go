@@ -80,24 +80,22 @@
 // (pure, no I/O) static safety net.
 //
 // Contract fields (SchemaVersion, Behavior, AcceptanceCriteria,
-// VerificationSpec, RiskLevel, Exclusions, WorkflowVersionID,
-// ApprovalException — V3-03's own addition to WorkItem) are deliberately
-// NOT part of CreateRootWorkItemRequest: V3-03's own scope note says a
-// caller needing a fully-contracted WorkItem "sets the exported fields
-// directly ... and then calls ValidateReadinessGate itself", and this
-// task's own "Thực hiện" line never mentions readiness/contract/BACKLOG->READY
-// at all — only "normalized READ/WRITE/path scope, add-only version 1,
-// same-project/ACTIVE-repository validation, provision jobs/outbox/event/
-// receipt". A root WorkItem created via this command starts in BACKLOG
-// with an empty contract; filling in the contract (and ever attempting
-// BACKLOG->READY, which would call ValidateReadinessGate) is a separate,
-// later step no V3 task in this repository's own doc set builds yet.
-// ValidateReadinessGate is therefore never called from this file — there is
-// no citation in this task's own scope requiring it, and V3-03's own scope
-// note is explicit that persisting a WorkItem and validating its readiness
-// are two separable concerns ("Validator MAY chạy trước V3-04 nhưng không
-// persist WorkItem hoặc transition độc lập" describes V3-03's own validator
-// running standalone, not this command wiring it in).
+// VerificationSpec, RiskLevel, Exclusions, WorkflowVersionID — V3-03's own
+// addition to WorkItem; ApprovalException is the one field with no column and
+// no request field): V3-04 originally left them out of
+// CreateRootWorkItemRequest ("a later step no V3 task builds yet"), which
+// V6-14's black-box journey then showed leaves no public way to ever make a
+// WorkItem READY. V6-04B closes that gap: both CreateRootWorkItemRequest and
+// CreateChildWorkItemRequest now carry an optional Contract
+// (WorkItemContractRequest, contract.go), applied onto the new WorkItem's
+// exported fields right after its domain constructor and before persistence.
+// Omitting it is exactly the pre-V6-04B behaviour: BACKLOG with an empty
+// contract. ValidateReadinessGate is still never called from this file — a
+// WorkItem may legitimately be created BACKLOG with a partial contract, and
+// readiness remains MarkWorkItemReady's/ExplainWorkItemReadiness's job (V3-03's
+// own scope note: persisting a WorkItem and validating its readiness are two
+// separable concerns). contract.go's own doc comment lists what the contract
+// deliberately does not do.
 package work
 
 import (
@@ -167,6 +165,9 @@ type CreateRootWorkItemRequest struct {
 	ProjectID    string
 	Title        string
 	InitialScope []ScopeGrantRequest
+	// Contract is the optional readiness contract (V6-04B); nil creates the
+	// WorkItem BACKLOG with an empty contract, exactly as before.
+	Contract *WorkItemContractRequest
 }
 
 // ProvisionedRepository is one repository CreateRootWorkItem granted
@@ -206,6 +207,9 @@ func CreateRootWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 	if len(req.InitialScope) == 0 {
 		return CreateRootWorkItemResult{}, errors.New("work: at least one initial scope grant is required")
 	}
+	if err := req.Contract.Validate(); err != nil {
+		return CreateRootWorkItemResult{}, err
+	}
 
 	var result CreateRootWorkItemResult
 	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
@@ -228,6 +232,9 @@ func CreateRootWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 			workdomain.WorkItemID(workItemID), project.ProjectID(req.ProjectID), workdomain.TaskFamilyID(familyID), req.Title,
 		)
 		if err != nil {
+			return err
+		}
+		if err := applyWorkItemContract(ctx, tx, &root, req.Contract); err != nil {
 			return err
 		}
 		family, err := workdomain.NewTaskFamily(workdomain.TaskFamilyID(familyID), root)
@@ -425,6 +432,11 @@ type CreateChildWorkItemRequest struct {
 	// family only ever granted READ). Reuses ScopeGrantRequest, the exact
 	// same shape CreateRootWorkItemRequest.InitialScope already uses.
 	EffectiveScope []ScopeGrantRequest
+	// Contract is the child's own optional readiness contract (V6-04B) — never
+	// inherited from the parent: each WorkItem promises its own behavior and
+	// verification. nil creates the child BACKLOG with an empty contract,
+	// exactly as before.
+	Contract *WorkItemContractRequest
 }
 
 // CreateChildWorkItemResult is what CreateChildWorkItem returns (and what a
@@ -496,6 +508,9 @@ func CreateChildWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource
 	if len(req.EffectiveScope) == 0 {
 		return CreateChildWorkItemResult{}, errors.New("work: at least one effective scope entry is required")
 	}
+	if err := req.Contract.Validate(); err != nil {
+		return CreateChildWorkItemResult{}, err
+	}
 
 	var result CreateChildWorkItemResult
 	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
@@ -532,6 +547,9 @@ func CreateChildWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource
 			workdomain.JoinPolicy(req.ParentJoinPolicy), sourceNodeRunID,
 		)
 		if err != nil {
+			return err
+		}
+		if err := applyWorkItemContract(ctx, tx, &child, req.Contract); err != nil {
 			return err
 		}
 		if _, err := tx.Work().CreateWorkItem(ctx, child); err != nil {

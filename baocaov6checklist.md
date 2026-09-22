@@ -11437,3 +11437,899 @@ test failed with "an idle worker recorded 737 ARTIFACT_SWEEP_COMPLETED events in
 `go vet ./...`, and `go test` for `internal/app/runtime`, `internal/app/artifactsweep`, `cmd/aw`, `internal/integration/...`
 and `internal/app/workerpool` pass. **Lesson**: a self-rescheduling job needs a rescheduling *delay* as a first-class,
 tested part of its contract; "one job per generation" idempotency prevents duplicates but says nothing about cadence.
+
+## V6-13 — API security and authority-boundary test suite
+
+### Thực hiện
+
+V6-13 (`docs/design/08-v6-api-projections.md:582-593`) is a proof task: show that the composed HTTP API denies by
+default and offers no execution shortcut. It ships as one new test-only package and one new architecture test —
+and, because the proof found two real gaps, three small production edits.
+
+**`internal/delivery/httpapi/securitymatrix`** (new; `doc.go` plus 8 `_test.go` files, no production code). Every
+scenario drives the REAL route set (`httpcompose.ComposeRoutes`, V6-12) behind the real `httpapi.Server` over a real
+loopback listener, a real temporary SQLite database, a real artifact store and real application commands, across two
+seeded projects (alpha, beta) that each own a Run, WorkItem, blocker, workspace, ReleaseSet and artifact. The row set
+is `RouteRegistry.Descriptors()` — never hand-listed. `transport_test.go`: Host/Origin/token/CORS for every route.
+`scope_test.go`: unknown-identifier, cross-project and leakage-normalization matrices. `replay_test.go`: current role
+and target ownership on receipt replay, receipts keyed by the committing actor, principal not influenceable by the
+request. `injection_test.go`: loopback-only bind, path traversal over a raw TCP connection (a client would normalize
+`/a/../b` before it left the process), query-parameter path, artifact MIME, oversized body. `stream_test.go`: SSE
+foreign-event absence checked against the real journal, unknown project refused before a stream opens, client
+cancellation, server shutdown. `ownership_order_test.go`: the release-ordering regression below. `coverage_test.go`:
+the completion gate — recomputes which scenario classes cover each route, fails when a route has no proof, and pins
+the reviewed `noCrossProjectProof` list so a new route cannot silently join it. `fixture_test.go`: the shared
+real-infrastructure fixture.
+
+**Two real gaps found and fixed at their source.** Each is pinned by a regression test that was proven to FAIL with
+that fix reverted on its own, then restored.
+
+1. Release eligibility ran before project ownership — `internal/app/workspacerelease/commands.go`,
+   `RequestWorkspaceSetRelease`. `authority.IsReleaseAuthorized` takes a bare FamilyID with no project scoping, so a
+   foreign project's family whose ReleaseSet was SEALED fell through to the cross-project rejection (leakage-
+   normalized 404), while an unknown family — or a foreign family whose ReleaseSet was still unsealed — answered
+   `ErrReleaseNotAuthorized` (403). That is an existence/state oracle across projects, contradicting §1 contract
+   point 3 and V6-02A's leakage normalization. Fix: an advisory read-only ownership reload before the eligibility call
+   (the same shape as `internal/delivery/httpapi/run`'s `loadWorkItemProjectID`); the authoritative in-transaction
+   checks are unchanged. Test `TestRequestWorkspaceSetRelease_ForeignFamilyIsIndistinguishableRegardlessOfItsReleaseSetState`
+   — without the fix the foreign SEALED family answered 404 and the never-issued family 403.
+2. Approval receipt replay skipped the role check (§1 contract point 3: "Authorization chạy lại cả khi receipt
+   replay, nên role bị thu hồi không thể dùng replay để đọc/mutate"). Two sites. `runtime.ResolveApproval`
+   (`internal/app/runtime/approval.go`, the path `aw` uses directly) consulted the stored receipt before reloading the
+   target and intersecting `ActorRoles` with `AuthorizedRoles`. The HTTP handler
+   (`internal/delivery/httpapi/decision/approval.go`) answers a replay from its own read-only receipt fast path and
+   never calls the command at all. So an actor whose role had since been revoked could resend the same
+   Idempotency-Key and read their own stored decision back. Fix: `ResolveApproval` now reloads the target and checks
+   the role before the receipt; `matchAuthorizedRole` is exported as `MatchAuthorizedRole` so the handler applies the
+   identical rule before its fast path rather than a second copy that could drift. Tests:
+   `TestReceiptReplay_RevokedRoleCannotReplayItsOwnEarlierDecision` (HTTP — without the handler fix a revoked role got
+   HTTP 200 with the decision body) and `TestResolveApproval_RevokedRoleCannotReplayItsOwnEarlierDecision`
+   (`internal/app/runtime/approval_test.go` — without the app fix a revoked role got `Won:true MatchedRole:reviewer`
+   back). The two fixes were reverted independently to prove each test catches its own site.
+
+**`internal/archtest/httpapi_boundary_test.go`** (new) — the "handler dependency graph ends at public ports" bullet
+for the WHOLE `./internal/delivery/httpapi/...` + `./internal/delivery/httpcompose/...` tree, where every earlier HTTP
+archtest guarded a single leaf. `TestDeliveryHTTPAPINeverReachesAnyAdapterTransitively`: nothing under
+`internal/adapters` is reachable, even transitively. `TestDeliveryHTTPAPINeverDirectlyImportsProcessWorkerOrAdapterPackages`:
+no direct `os/exec`, `internal/app/worker*` or adapter import. `os/exec` and the worker packages are direct-only
+because httpapi reaches both several hops deep through the pre-existing doctor/diagnostics path (the same caveat
+`cli_boundary_test.go` records), so a transitive ban would be unsatisfiable. Fail-closed check: planted `os/exec` and
+`internal/adapters/sqlite` imports in `apicontract`; both guards named the package and the import; the plant was
+removed.
+
+**Deliberately not done.** No new middleware or security framework ("Không làm"). The "role" axis is stated honestly:
+ADR-028 binds ONE principal per process from trusted config, so a request cannot vary its role. The suite instead
+proves what makes that safe — a request cannot influence the principal, a receipt is keyed by the CURRENT actor, and a
+replay is reached only after target reload and authorization. Also unchanged: `GET /` is a `ServeMux` subtree
+pattern, so an unmatched GET legitimately falls through to the SPA shell (already recorded by V6-12's
+`TestRouteInventory_ServedEqualsDeclaredBothDirections`); the traversal test asserts that shell is all it can ever
+return.
+
+### Test
+
+- `securitymatrix`: 26 top-level tests, 343 passing subtests, over the 88 routes `ComposeRoutes` registers. Scenario
+  classes counted by `TestEveryRouteHasAnExplicitScopeProof`: transport 88, declared-scope-structure 88,
+  unknown-identifier 76, cross-project 30 (all 30 answered with the exact `httpapi.WriteResourceHidden` 404 envelope,
+  indistinguishable from a never-issued id), reviewed-empty-collection 2.
+- `internal/app/runtime`: `TestResolveApproval_RevokedRoleCannotReplayItsOwnEarlierDecision` (fake UnitOfWork, both a
+  downgraded role and no roles at all, plus the same-role replay still returning the stored result).
+- `internal/archtest`: the two `TestDeliveryHTTPAPINever...` guards above.
+- Consumers of the changed commands re-run and green: `internal/app/runtime`, `internal/app/workspacerelease`,
+  `internal/delivery/httpapi/decision`, `internal/delivery/cli/decision`, `internal/delivery/cli/scopeexpansion`,
+  `internal/delivery/cli/workspace`.
+
+### Verify
+
+- Loopback/Host/Origin/token/CORS: `TestLoopbackOnlyBind`, `TestTransportGuardMatrix_EveryRoute` (every route: three
+  wrong Hosts, three foreign Origins, missing and wrong session token on every mutating method, and no CORS allow
+  header on any response), `TestTransportGuard_ValidRequestIsNotRejectedByTheGuard` (positive control),
+  `TestTransportGuard_SameOriginRequestIsAccepted`, `TestCORSPreflightIsNeverAnswered`.
+- Reload target ownership before receipt/stream:
+  `TestReceiptReplay_TargetOwnershipIsReloadedBeforeTheReceiptIsConsulted`,
+  `TestSSE_UnknownProjectIsRefusedBeforeAnyStreamIsOpened`.
+- Current role on replay: the two revoked-role tests above, `TestReceiptReplay_IsScopedToTheCommittingActor`,
+  `TestPrincipalCannotBeInfluencedByTheRequest`.
+- Unauthorized/not-found leakage: `TestScopeMatrix_ExistsElsewhereIsIndistinguishableFromNeverExisted`,
+  `TestUnknownProjectCollectionsAreEmptyAndIdentical`, the ForeignFamily release test.
+- Path/content injection and MIME: `TestPathTraversalIsNeverServed`,
+  `TestQueryParameterPathIsNeverResolvedOutsideTheWorkspace`, `TestArtifactContentMediaHandling`,
+  `TestOversizedBodyIsRefusedBeforeAnyHandlerRuns`.
+- Cancellation: `TestSSE_ClientCancellationClosesTheStreamPromptly`, `TestSSE_ServerShutdownClosesOpenStreams`.
+- Cross-project guessed Run/WorkItem/blocker/workspace/ReleaseSet/artifact ids and SSE foreign-event absence:
+  `TestScopeMatrix_CrossProjectIdentifierIsNeverServed`, `TestScopeMatrix_UnknownIdentifierIsNeverServed`,
+  `TestSSE_ForeignProjectEventsNeverReachAnotherProjectsStream` (asserted against the real journal's own contents).
+- Every route has an explicit scope proof: `TestRowSetComesFromTheRealComposedContract`,
+  `TestEveryRouteHasAnExplicitScopeProof`, `TestEveryRegisteredRouteIsCoveredByTheMatrix`,
+  `TestInstallationScopedRoutesCarryNoProjectSegment`.
+- Handler dependency graph ends at public ports: the two `httpapi_boundary_test.go` guards, fail-closed-verified.
+
+### Kết quả
+
+New: `internal/delivery/httpapi/securitymatrix` (`doc.go` + 8 test files; 26 tests / 343 subtests over 88 routes),
+`internal/archtest/httpapi_boundary_test.go` (2 tests), and one new app-level test in
+`internal/app/runtime/approval_test.go`. Production changed in 3 files, all by reordering an existing check rather than
+adding a mechanism: `internal/app/workspacerelease/commands.go` (ownership before eligibility),
+`internal/app/runtime/approval.go` (target reload + role check before the receipt; `MatchAuthorizedRole` exported) and
+`internal/delivery/httpapi/decision/approval.go` (role check before the receipt fast path). Two real gaps closed, both
+proven by revert. `go build ./...` and `go vet ./...` clean; `go test ./...` passes in 113 packages. Two failures in
+the one full run were both outside this diff and both passed when re-run alone: `cmd/aw`
+`TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` (Windows "file used by another process" while
+rewriting a `.exe`; 3/3 clean alone — the same family as the `TestAdapterRegister_DriftCreatesNewBuild` failure seen
+earlier in this session) and `internal/app/workerpool` `TestPool_HeartbeatKeepsLongRunningJobAlive` (timing-sensitive
+heartbeat starved by the parallel full-suite load; 10/10 clean alone). PR targets `master`; the branch is based on
+V6-12's, so it opens once V6-12 has merged.
+
+## V6-15O — Checker parity UI/API/CLI/application
+
+### Thực hiện
+
+Branch `feat/v6-15o-cli-parity-checker` off `origin/master` (`6a96b70`, unchanged when the PR was opened). Two
+deliverables, per `docs/design/08-v6-api-projections.md` V6-15O ("compose CLI registry and four-way machine
+checker") and §1 rule 8 ("chỉ V6-15O compose CLI/parity registry"): the real `os.Args` routing every V6-15C..N
+leaf deferred to this task, and the checker. No new leaf command and no new HTTP route was added.
+
+**Harvest of deferred V6-15O obligations.** `grep -n "V6-15O" baocaov6checklist.md` returned 28 hits; every one
+was read in context. They reduce to these obligations:
+
+| Deferred by | Obligation | Status |
+|---|---|---|
+| V6-15B | wire `cmd/aw`'s dispatch into the framework once a leaf exists | met: `internal/delivery/clicompose` + `cmd/aw/cli.go`/`oneshot.go` |
+| V6-15C | replace `stub("doctor")`; real `aw health/doctor/settings` shell invocations | met: routed, `TestOneShot_HealthReadyDoctorAndSettings` |
+| V6-15D/E/F/G/H/I/J/K/L/M/N | route real `os.Args` to each leaf's exported `Run*` functions | met: `clicompose.Routes()` binds all 71 command paths; `TestRoutesCoverEveryDescriptorBothDirections`, `TestOneShot_EveryRoutedResourceIsReachableAndUsageErrorsDoNotTouchDisk`, `TestOneShot_EveryDependencyShapeBuildsFromRealAdapters` |
+| V6-15H, V6-15N | pass `redact.NewMatcher(...)` from the composition root (no per-process session secret exists for a one-shot process) | met: `cmd/aw/oneshot.go` passes `redact.NewMatcher()` (no known secrets) into `Deps.Matcher`, which reaches `run`, `events`, `message`, `settings` |
+| V6-15K | `evidence verify` is the typed `CLI_LOCAL` exception | met: closed set pinned by `TestCLILocalClosedSetIsExactlyTheDesignedOne` |
+| V6-12 | reconcile the UX / HTTP / CLI / application inventory (its "four-way inventory seed" was HTTP-side only) | met: `internal/delivery/parity` |
+| V6-15L, V6-15K, V6-15E, V6-15D, V6-15G, V6-15J, V6-15I, V6-15M | (implicit) leaves that deliberately omitted a read command or shipped `CLI_LOCAL` for lack of a route | surfaced as parity debt, see Kết quả |
+
+**1. `internal/delivery/clicompose` (the CLI twin of `httpcompose`).** `routes.go` binds every registered
+command path to its leaf's own `Run*` function through a per-leaf adapter (some leaves take stdin, `health live`
+takes no dependencies, `settings` takes no `stderr`); `compose.go` holds `Deps`, `Needs`, `Route`, the global
+composition options and `resolveRoute`; `execute.go` is the one-shot contract of ADR-028. It imports no concrete
+adapter (`TestDeliveryCLIComposeNeverImportsAdaptersOrWorkers`); `cmd/aw` builds the adapters and hands them in.
+
+- *Global composition options* `--db`, `--artifact-root`, `--workspace-root`, `--claude-executable`,
+  `--codex-executable` (env `AW_DB`, ...) select the installation, are stripped from anywhere in the argument list
+  (including before the resource name) and never collide with a leaf flag
+  (`TestGlobalOptionNamesNeverCollideWithLeafFlags` walks every leaf source file). The principal stays each leaf's
+  own `--principal-config`; no `--actor`/`--role` flag exists anywhere.
+- *`DepsFactory` is called only after routing, help handling and the confirmation gate*, and builds only what the
+  route's `Needs` asks for, so a usage error, `aw help`, `aw health live` or a refused high-impact command never
+  opens a database (proven: `TestOneShot_ResourceCommandsNeedAnInstallationAndFailBeforeAnyIO`,
+  `TestEveryHighImpactRouteRefusesWithoutYesBeforeAnyDependencyIsBuilt`).
+- *Typed failure envelope.* In `--json` mode a failure with nothing yet on stdout is exactly one
+  `httpapi.ErrorResponse` document (the same wire shape and code vocabulary HTTP failures use; an `*apperror.Error`
+  maps through `httpapi.StatusForAppErrorCode`; the confirmation refusal is the domain `PRECONDITION_FAILED` with
+  detail `confirmation=required`, as ADR-028 words it). A leaf that already wrote its own result document (e.g.
+  `aw health ready` writes its report and then fails) is never followed by a second one. Otherwise one
+  `aw: ...` line on stderr, exit 0/1/2 via `cli.ExitCodeFor`.
+
+**2. `cmd/aw` wiring.** `cli.go` keeps `serve` and `worker` (still `stub("worker")`; gofmt realigned the map when
+the entries around it left, so PR #81's one-line `runWorker` change to that entry conflicts textually — resolve by
+taking `runWorker`, and `stub` plus `TestRun_StubCommandsReportNotYetImplemented` then have no user left) and a new
+`version` in `subcommands`; the
+`doctor`/`definition`/`adapter` entries and `runEvidence` left the map. `evidence verify` is dispatched by its own
+flags: `--evidence-dir/--suite` selects the pre-V6 offline bundle verifier (kept byte-for-byte, existing
+`TestRun_EvidenceVerify_*` pass unchanged), anything else routes to the V6-15K runtime-evidence leaf — both are
+the one `CLI_LOCAL` `evidence verify` of ADR-028. `oneshot.go` is the factory (SQLite, artifact store, Git
+worktree provider, isolation checker, agent registry with zero executors unless the operator names them, exactly
+like `aw serve`). `usage` is generated from the routing table. `aw version` (module version + VCS revision) was
+missing although ADR-028 lists it in the closed local set; it is a process-level utility, not a leaf.
+
+**3. Legacy `aw definition` / `aw adapter` handlers retired** (`cmd/aw/definition.go`, `adapter.go` reduced to the
+one helper `aw worker` needs — `newAgentExecutor` — and `db.go` keeps `openDefinitionDB`; `definition_test.go`,
+`adapter_test.go` removed). They shared their command paths with the V6-15E/V6-15F leaves and carried `--actor`,
+which ADR-028 forbids, so both could not be routed; V6-15F's own scope line calls the legacy path "legacy
+no-envelope call". Nothing they asserted was dropped: every test is mapped to a leaf test or ported against the new
+routing below. `TestRun_StubCommandsReportNotYetImplemented` / `TestRun_AllSubcommandsAreWired...` in
+`cli_test.go` were adjusted for the new map (PR #81 edits the same two spots).
+
+**4. Confirmation.** ADR-028: high-impact commands prompt only on a TTY in human mode; `--json`/non-interactive
+need `--yes` or fail `PRECONDITION_FAILED confirmation=required` before dispatch. No leaf ever wired
+`cli.Confirm`, and neither the UX inventory nor HTTP carried a machine-readable marker. Decision (HE-04-M07, one
+authoritative definition): `cli.Descriptor` gained `HighImpact bool` (additive, zero value false), set on the 9
+descriptors of the 8 operations the UX document puts a confirmation dialog in front of — `definition publish` (both
+scopes, Screen 4 "dialog confirm publish"), `adapter register` (Screen 1 row 4), `run cancel` and `work-item
+cancel` (Screen 7), `workspace-set release` (Screen 9 row 2), `release-set seal|abandon|local-commit` (Screen 10) —
+and `clicompose` enforces it uniformly before dispatch, so no leaf re-implements the prompt and no existing leaf
+test needed a `--yes`. The public-operation registry carries the same marker with a citation of the UX sentence,
+verified against the real document (`TestHighImpactCitationsExistInTheUXDoc`). Operations the UX document does not
+gate (`resolveWorkItemBlocker`, approvals, scope decisions, projection rebuild) are deliberately not marked.
+
+**5. `internal/delivery/parity` — the four-way checker.**
+
+*Decision: what "the public operation registry" is.* It is not a pre-existing artifact. Application operations are
+plain exported functions under `internal/app/*`; the only machine-readable statements about them were the
+`AppOperation` strings CLI descriptors carry and the `commandType` strings HTTP handlers pass to the receipt store.
+`registry.go` is the independent, hand-declared statement of that layer (a generated one would agree with the
+descriptors by construction and prove nothing): per operation its `Name` (= `AppOperation` = receipt commandType),
+`Kind`, `Exposure` (PUBLIC / INTERNAL worker-only / LOCAL / HEALTH / STREAM / PROJECTION_READ), the HTTP
+operationIds it is served as with their scope, the real implementing `Symbol`, and `HighImpact` + UX citation. 89
+entries: 75 public operations, 2 health probes, 1 stream, 1 local, 2 projection-read operations and the 8 internal
+operations ADR-028 forbids exposing (`AdvanceRun`, `ExecuteWorkspaceReconciliation`, `ExecuteWorkspaceSetRelease`, `ExecuteReleaseSetLocalCommit`,
+`ExecuteProjectionRebuild`, `ExecuteArtifactSweep`, `ReconcileInterruptedAttempt`, `ReconcileMutatingAttempt`).
+`TestRegistrySymbolsExist` parses every non-test file under `internal/app` and proves each `Symbol` exists.
+Checker-side only: nothing in production reads it.
+
+*Inputs*: the UX rows `apicontract.ParseUXDoc` already extracts (extended additively with `Kind`, `UIAction`,
+`AwLeaves`; new exported `apicontract.ResolveProposal` so a proposal resolves the one canonical way), the
+`apicontract.Contract` of the real composed routes, the registry, every `cli.Descriptor`, and the router's path list.
+*Thirteen violation classes* (`AllClasses`): MISSING_CLI, MISSING_HTTP, MISSING_APP, DUPLICATE, SCOPE_MISMATCH,
+KIND_MISMATCH, APP_MISMATCH, INTERNAL_EXPOSED, REMOTE_GIT_EXPOSED, CLI_LOCAL_NOT_ALLOWED, CONFIRMATION_MISMATCH,
+UX_LEAF_MISMATCH, ROUTE_MISSING. `Check` never consults a ledger; `Ledger()` pins accepted debt by finding key with an
+owner and reason, and `Evaluate` splits findings into acknowledged / NEW / stale ledger entries (both directions, the
+V6-12 `knownUnimplementedGaps` discipline).
+
+Reviewed data the checker applies, each with its reason in the source: `CLI_LOCAL` closed set
+(serve/worker/help/version/evidence verify), the browser-bootstrap exemption, six UX proposal renames the V6-12
+resolver never evaluates (four `[ĐÃ CÓ]` Screen 2 rows, the two health rows, and `listRepositoryProbeHistory` ->
+`repositoriesOnboarding`, which V6-03A merged), and six UX-reserved `aw` shape renames (`attachment upload` ->
+`message upload-attachment`, `approval approve|reject` -> `approval resolve`, `repository probe-history` ->
+`repository onboarding`, `definition version show|diff` -> `version show|diff` per V6-15E's own spec line).
+
+**6. Equivalence tests** (`equivalence_test.go`, `harness_test.go`). A real `httpapi.Server` (full middleware chain,
+real loopback socket, session token, bound principal) and the real CLI through `clicompose.Execute` against real
+SQLite, same principal and same semantic input, normalized by replacing generated ids with first-appearance
+ordinals and timestamps with `<time>`.
+
+### Test
+
+New tests (all real SQLite; none uses a fake `UnitOfWork`):
+
+- `internal/delivery/clicompose/compose_test.go` (15 tests): route table == descriptor set in both directions;
+  global-option parsing table; option names never collide with a leaf flag; resolve errors are typed usage errors
+  that never build dependencies; `--json` failure is exactly one typed document; `-h` never builds dependencies;
+  for **every** real high-impact route: `--json`/non-interactive without `--yes` is `PRECONDITION_FAILED` before the
+  factory is called, `--yes`/`-yes`/`--yes=true` passes the gate, interactive `y`/`YES` proceeds and `n`/Enter/EOF
+  declines without dispatch, `--yes` on a non-gated command is a plain unknown flag, split verdicts fail closed, a
+  failure never adds a second document after a leaf's own result.
+- `cmd/aw/oneshot_test.go` (16) + `oneshot_legacy_port_test.go` (15): the composition through `runStreams`, the
+  entry point `main()` calls — version/help, no-installation failures touch no disk, `AW_DB`, leading global
+  options, project create/list/show with cross-process replay and conflict, the definition Block and Workflow
+  flows, adapter probe->register->list->show, health/doctor/settings, the gate on `run cancel`, typed JSON failure,
+  `evidence verify` runtime mode vs bundle mode, every resource reachable, one command per dependency shape.
+- `internal/delivery/parity`: `gate_test.go` (real-inventory gate, ledger ownership, safety classes never
+  ledgered, closed sets, registry consistency/symbols/citations/renames), `fixtures_test.go` (37 injected-debt
+  fixtures), `equivalence_test.go` (5 tests), plus `internal/archtest/clicompose_boundary_test.go`.
+
+**Old test -> new test map (retired `cmd/aw/definition_test.go`, `cmd/aw/adapter_test.go`).** Flag shapes changed by
+design (`--db/--actor/--definition-id/--version-id` handlers are gone; principal from `--principal-config`, ids
+positional); the asserted behavior is what is preserved. "leaf" = the leaf package's own test.
+
+| Retired test | Preserved by |
+|---|---|
+| `TestDefinitionCLI_BlockFullFlow_NeverTouchesSQLiteDirectly` | `TestOneShot_DefinitionBlockFlow` (create/validate/publish/replay/second version/versions/show/diff), `TestOneShot_VersionSelfDiffAndWorkflowVersionsResolve` (self-diff Identical); leaf `TestRunDefinitionCreate_*`, `_Publish_*`, `_Versions_*`, `TestRunVersionShow_*`, `TestRunVersionDiff_*`; `TestSameSemantic...OverHTTPAndCLI` (create/publish/versions/show identical to HTTP) |
+| `..._PublishDedupesIdenticalContentUnderFreshIdempotencyKey` | `TestOneShot_PublishDedupLeavesOneVersionAndAConflictIsExplained` (exactly one version) |
+| `..._PublishConflictingIdempotencyKey_IsCleanError` | same test (explained conflict, no stack); `TestHTTPAndCLIShareOneReplayAuthority` (conflict on both surfaces) |
+| `..._WorkflowFullFlow_ResolvesRealAgentProfile` | `TestOneShot_WorkflowFlowResolvesRealAgentProfilePin` + `TestOneShot_VersionSelfDiffAndWorkflowVersionsResolve` |
+| `..._WorkflowPublish_UnresolvablePinIsCleanError` | `TestOneShot_UnresolvablePinNamesTheProblem`, `TestOneShot_WorkflowUnresolvablePinIsACleanError` |
+| `..._SafeDiagnostics_MalformedInput` | `TestOneShot_MalformedDocumentsFailCleanly` (contract note: an invalid document now also prints one `valid:false` diagnostics document, V6-15E's design); leaf `TestRunDefinitionValidate_InvalidDocument_ReturnsStructuredDiagnostics` |
+| `..._UnknownKindIsUsageError`, `..._ShowNotFoundIsCleanError`, `..._DiffNotFoundIsCleanError`, `..._MissingRequiredFlags` | `TestOneShot_DefinitionUsageAndNotFoundContract` (exit-code/usage table incl. project-scope leakage); leaf `TestRunDefinitionShow_UnknownID_ReturnsNotFound`, `TestRunVersionDiff_CrossScope_NotFound`, `TestRun*_MissingKind_IsUsageError`, `..._WrongArgCount_IsUsageError` |
+| `TestAdapterProbe_DoesNotMutateRegistry` | `TestOneShot_AdapterProbeNeverMutatesTheRegistry_AndTokenSurvivesSeparateProcesses`; leaf `TestRunProbe_FreshSuccess`, `TestRunList_EmptyRegistry` |
+| `TestAdapterProbeThenRegister_Succeeds` | `TestOneShot_AdapterRegisterRecordsThePrincipalNotAFlag` (registeredBy = principal), `TestOneShot_AdapterProbeRegisterListShow`; leaf `TestRunRegister_FreshSuccess`; equivalence test (register result == HTTP's) |
+| `TestAdapterRegister_DuplicateIsIdempotent` | `TestOneShot_AdapterRegisterDuplicateFingerprintIsIdempotent` (original id and registeredBy kept, one row); leaf `TestRunRegister_DuplicateFingerprint_AlreadyExisted`, `..._ConcurrentDistinctKeysSameFingerprint_OneFreshInsert` |
+| `TestAdapterRegister_DriftCreatesNewBuild` | `TestOneShot_AdapterDriftedExecutableRegistersAsADistinctBuild` (no leaf equivalent existed) |
+| `TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` | `TestOneShot_AdapterRegisterRejectsAnExecutableSwappedAfterProbe`; leaf `TestRunRegister_RejectsExecutableDrift`. (The retired test copied the test binary as a fixture and was the Windows "used by another process" flake; the new fixture is a small file.) |
+| `TestAdapterRegister_RejectsExpiredToken` | `TestOneShot_AdapterRegisterRejectsAGenuinelySignedExpiredToken` (token signed with the installation's real key, so it is expiry, not signature); leaf `TestRunRegister_RejectsExpiredToken` |
+| `TestAdapterRegister_RejectsForgedSignature` | `TestOneShot_AdapterRegisterRejectsAForgedSignature` (no leaf equivalent existed) |
+| `TestAdapterCLI_TokenSurvivesSeparateProbeAndRegisterInvocations` | the two tests above (each `runStreams` call opens/closes its own database) |
+| `TestAdapterShow_NotFoundIsCleanError`, `TestAdapterShow_ReturnsRegisteredBuild` | `TestOneShot_AdapterShowNotFoundAndFound` (the message no longer echoes the id: `ports: adapter build version not found`); leaf `TestRunShow_UnknownID`, `TestRunShow_Found` |
+| `TestAdapter_MissingRequiredFlags` | `TestOneShot_AdapterUsageContract`; leaf `TestRunProbe_MissingRequiredFlag`, `TestRunRegister_MissingFile_UsageError`, `TestRunShow_RequiresExactlyOnePositionalArg` |
+| `TestAdapter_MissingIdempotencyKeyIsUsageError` | **superseded by ADR-028** (the key is optional, generated and always returned): `TestOneShot_AdapterUsageContract` asserts the generated key; leaf `TestRunProbe_GeneratedIdempotencyKeyReturned` |
+| `TestAdapterProbe_CapabilityManifestIsSystemMeasured_NotClientSuppliable` | **not portable — reversed before this task** by V6-10J/V6-15F (HTTP and the leaf take the manifest as caller-supplied fields; `internal/delivery/cli/adapterbuild/doc.go`). What still holds is asserted: `TestOneShot_AdapterRegisterRejectsAManifestDifferentFromTheProbedOne`; leaf `TestRunRegister_RejectsCapabilityManifestMismatch`. Flagged in the PR report. |
+| `TestAdapterProbe_UnknownProviderIsUsageError` | **behavior change, pinned not hidden**: the provider key is an open non-empty string since V6-10I (HTTP and CLI both accept an unknown one); `TestUnknownProviderKeyIsAcceptedIdenticallyOverHTTPAndCLI` fails the day either side starts validating. Flagged in the PR report. |
+
+The exit-code/usage contract of `cli_test.go` (`TestRun_NoArguments`, `_Help`, `_UnknownCommand`,
+`_ServeRejectsUnknownFlag`, `_EvidenceVerify_*`, `TestExitCodesAreDistinct`, `TestMain_DoesNotHangOnStartup`) is
+kept and passes unchanged except the two spots named above.
+
+### Verify
+
+Real gaps found and how each was handled:
+
+1. **Confirmation was declared by ADR-028 and V6-15B but implemented by no leaf and marked by no artifact.** Fixed
+   in place (descriptor marker + composition-root gate, above).
+2. **Parity debt is not zero: 17 findings, all pinned in `parity.Ledger()` with an owner** — see Kết quả. This task
+   may not add the leaves/route that close them.
+3. **Reviewed divergence, now pinned:** `settings show|update` report `effective` differently by design (HTTP: the
+   boot-time snapshot; the one-shot CLI resolves it fresh, V6-15C's documented decision). Desired document, version,
+   `updatedBy` and `restartRequired` are identical; the test pins the two `effective.*.source` values.
+4. `aw version` was missing from the closed local set; added (utility, not a leaf).
+5. `httpapi`'s kanban routes read `tx.Projections()` directly (no application operation) — reported as MISSING_APP.
+
+Fail-closed proof (planted, watched failing, restored):
+
+- Every one of the 13 classes has at least one fixture; `TestInjectedParityDebtIsDetectedFailClosed` requires for
+  each plant that the pristine inputs did not already report it, that `Check` reports the exact key, and that the
+  gate lists it as NEW; the pristine inputs are re-verified after all plants. `TestEveryViolationClassHasAFixture`
+  stops a class being added without a fixture.
+- Mutation testing of the checker itself: each rejection rule was neutered in turn and the suite watched failing —
+  confirmation comparison, CLI_LOCAL closed set, remote-Git tokens, internal-exposure (registry), scope
+  (descriptor-vs-route and descriptor-vs-registry), duplicate route, MISSING_CLI, ROUTE_MISSING, UX_LEAF_MISMATCH,
+  KIND. Two rules first survived (the fixtures were not isolating them: a single shared plant let either of two
+  redundant detectors be deleted); three fixtures were added that isolate them, and both mutations then failed.
+- Equivalence tests: planting `commandTypeCreateProject = "CreateProjectViaCLIOnly"` in the catalog leaf failed
+  `TestHTTPAndCLIShareOneReplayAuthority` (the CLI stopped replaying HTTP's receipt); renaming one JSON tag in the
+  definitions leaf failed the normalized comparison at publish/versions/show. Both restored.
+- Composition guards: an unrouted descriptor and a leaf source file defining `"db"` failed
+  `TestRoutesCoverEveryDescriptorBothDirections` and `TestGlobalOptionNamesNeverCollideWithLeafFlags`; a forbidden
+  `internal/adapters/sqlite` import in `clicompose` failed `TestDeliveryCLIComposeNeverImportsAdaptersOrWorkers`.
+
+Full-suite results are recorded under Kết quả.
+
+### Kết quả
+
+New: `internal/delivery/clicompose` (`compose.go`, `execute.go`, `routes.go` + `compose_test.go`, 15 tests) —
+V6-15O's own CLI composition root: every `aw <resource> <action>` command from V6-15C..N routed to its leaf's
+real `Run*` function, the global composition options, the high-impact confirmation gate and the typed failure
+envelope. New: `internal/delivery/parity` (`doc.go`, `registry.go`, `check.go`, `ledger.go` + `harness_test.go`,
+`realinputs_test.go`, `gate_test.go`, `fixtures_test.go`, `equivalence_test.go`, 37 top-level tests, 37 injected
+fixtures as subtests) — the four-way checker, the public operation registry (89 entries) and the pinned parity
+debt ledger. New: `internal/archtest/clicompose_boundary_test.go` (1 test) — the architecture guard for both new
+packages. `cmd/aw`: `cli.go` rewritten around `clicompose` (kept `serve`/`worker`, added `version`, routed
+`evidence verify`'s two modes), `oneshot.go` (the concrete-adapter factory), `db.go` (kept `openDefinitionDB`,
+the one helper `aw worker` still needs), `adapter.go` reduced to `newAgentExecutor` (the one helper both `aw
+worker` and the one-shot router need); `definition.go`/`definition_test.go`/`adapter_test.go` removed (retired,
+superseded — see the old-test → new-test map above). New tests: `cmd/aw/oneshot_test.go` (16 tests) +
+`cmd/aw/oneshot_legacy_port_test.go` (15 tests). `internal/delivery/cli/descriptor.go` gained `HighImpact bool`
+(additive) + one new test; 9 CLI descriptors across 6 leaf packages (`adapterbuild`, `definitions`, `releaseset`,
+`run`, `workitem`, `workspace`) marked `HighImpact: true` for the 8 confirmation-gated operations.
+`internal/delivery/httpapi/apicontract/uxdoc.go` extended additively (`Kind`, `UIAction`, `AwLeaves` fields,
+`ResolveProposal` export) — no existing field, test or golden fixture changed shape.
+
+**Deferred V6-15O obligations found and their status** — see the harvest table under Thực hiện; every one is
+met except the parity debt itself, which V6-15O's own scope forbids closing (ledgered, not swept under the rug).
+
+**The exact decision on "public operation registry"**: not a pre-existing artifact; an independently
+hand-declared, checker-side-only table (`internal/delivery/parity/registry.go`) naming every application
+operation's kind, exposure class, HTTP bindings, real implementing symbol (verified to exist against the parsed
+source tree) and UX-cited confirmation marker — see the Thực hiện section's own "Decision" paragraph for the
+full reasoning (a generated table would agree with the descriptors by construction and prove nothing).
+
+**The exact decision on routing wiring**: `internal/delivery/clicompose` is the CLI-side composition root,
+mirroring `internal/delivery/httpcompose`'s own shape — one function (`Routes()`) binding every leaf's `Run*`
+function to its command path, called from `cmd/aw`'s new `oneshot.go` factory (the one place a CLI leaf's
+dependency ever becomes a concrete adapter). `aw serve`, `aw worker` and `aw evidence verify` (both its offline
+bundle mode and its new runtime-evidence mode) all still work; `aw definition`/`aw adapter`'s pre-V6
+no-CommandEnvelope handlers were retired (superseded by the V6-15E/V6-15F leaves — see the map above for what
+covers every behavior they asserted).
+
+**Every rejection class proven fail-closed** — see Verify above (13/13 classes, each with a dedicated
+injected-debt fixture; mutation testing of the checker's own rejection rules; equivalence-test fixtures against
+two real leaves; composition-guard fixtures) — all planted, watched failing, and restored.
+
+**Full-suite results.** `go build ./...` and `go vet ./...` clean, repo-wide, with zero warnings. `go test
+./...` (full repo, two runs): first run 100% green. Second run (after the equivalence tests, the dependency-shape
+test and the architecture guard were added) had exactly one failure:
+`internal/app/message.TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` — a Windows
+`rename ... Access is denied` filesystem-contention error, the exact known flake pattern this task's own brief
+names (`TestAppendConversationAttachment_SameKeyConcurrency_...`). Verified fresh, not dismissed on name-match
+alone: `git diff --stat -- internal/app/message internal/adapters/artifactstore` is empty (this task's diff
+touches neither package), and the failing test passed 5/5 in isolation (`go test ./internal/app/message/ -run
+TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing -count=5`) plus a clean standalone
+run of the whole `internal/app/message` package. Every other of the 90 tested packages reports `ok`, including
+`internal/delivery/clicompose` (2.27s), `internal/delivery/parity` (24.2s), `internal/archtest` (21.1s, includes
+the new boundary test) and `cmd/aw` (37.2s).
+
+`internal/delivery/parity`'s own `TestRealInventoryParityGate` logs the current debt against the real tree:
+**17 parity findings, all pinned in `parity.Ledger()` with an owner Task ID and reason — zero NEW, zero stale.**
+Breakdown: 2 `CLI_LOCAL_NOT_ALLOWED` (`definition list` at both scopes — no `GET /definitions/{kind}` route
+exists; V6-12 already recorded this exact gap in its own `knownUnimplementedGaps["listDefinitions"]`), 2
+`MISSING_HTTP` (the same gap's application/UX sides), 10 `MISSING_CLI` (HTTP operations with no `aw` mirror:
+`getEvidence`, `listArtifacts`, `getMessageContextSnapshot`, `getReleaseSetLocalCommitStatus`,
+`getRepositoryWorkspaceState`, `getScopeExpansionRequest`, `getTaskFamily`, `listChildWorkItems`,
+`listWorkItemKanban`, `getWorkItemProjectedDetail`, `repositoriesGet` — each a leaf task's own reviewed choice to
+ship a narrower read surface than its full HTTP inventory, documented per-entry in `ledger.go`), 2 `MISSING_APP`
+(the kanban/detail routes read the projection port directly, with no public application operation behind them —
+a real, pre-existing gap `TestRegistryIsInternallyConsistent`/`checkHTTP` surfaced, owned by V6-10). Zero findings
+of every safety class (`SCOPE_MISMATCH`, `KIND_MISMATCH`, `CONFIRMATION_MISMATCH`, `DUPLICATE`,
+`INTERNAL_EXPOSED`, `REMOTE_GIT_EXPOSED`, `ROUTE_MISSING`, `APP_MISMATCH`, `UX_LEAF_MISMATCH`) — asserted
+independent of the ledger by `TestRealInventoryHasNoDebtOfTheSafetyClasses`, so a ledger edit could never hide
+one. Per V6-15O's own "Hoàn thành khi" line ("parity debt zero and every CLI leaf has a public authority or an
+allowed typed exception") and its own "Không làm" line ("no new leaf/route"): every one of these 17 rows is
+either a CLI leaf with an allowed typed exception (the two `CLI_LOCAL` rows, matching the closed set's own
+`evidence verify` precedent) or a gap this task is explicitly forbidden from closing by adding a route/leaf —
+so the ledger, not a raw zero, is this task's own honest "Hoàn thành khi" evidence; true zero is V6-15P's own
+gate to require and enforce.
+
+**What could not be finished / uncertain**: nothing left incomplete inside this task's own scope. The 17
+ledgered rows are real, standalone gaps in already-merged V6-05/V6-10/V6-15D/E/G/J/K/L/M tasks that this task's
+own "Không làm" line forbids it from closing — each is named with its owning task in `ledger.go` for that task
+(or a dedicated follow-up) to pick up before V6-15P's own zero-debt gate. `TestAdapterProbe_
+CapabilityManifestIsSystemMeasured_NotClientSuppliable`'s own assertion (no client-suppliable manifest flag) and
+`TestAdapterProbe_UnknownProviderIsUsageError` are both genuine, reviewed BEHAVIOR CHANGES from the retired
+legacy CLI (both already decided by V6-10J/V6-10I, before this task started) — pinned as intentional by
+`TestUnknownProviderKeyIsAcceptedIdenticallyOverHTTPAndCLI` and the manifest-mismatch equivalence test rather
+than silently dropped, and called out here per this task's own reporting obligation.
+
+PR targets `master`.
+
+## V6-06E — Discoverable approval requests and WAIT registrations (rework of V6-06A, found by V6-14)
+
+### Thực hiện
+
+**The empirical finding.** V6-06A (`internal/delivery/httpapi/decision`) shipped
+`POST /runs/{runId}/approval-requests/{approvalRequestId}/resolve` and
+`POST /runs/{runId}/wait-registrations/{waitRegistrationId}/signal`, both requiring the operator to already
+know the target's `approvalRequestId`/`waitRegistrationId`. Those ids are random UUIDs minted inside
+`advanceRunTx` (`internal/app/runtime/advance.go`: `requestID := ids.NewID()` at line 875,
+`registrationID := ids.NewID()` at line 832) and were never returned by any public read. The V6-14 black-box
+journey dumped every read a client has against a real Run parked WAITING on an APPROVAL node —
+`GET /runs/{id}` (detail), `GET /runs/{id}/graph`, `GET /runs/{id}/timeline`,
+`GET /projects/{p}/runs/{id}/diagnostics`, `GET /work-items/{id}/detail` (`validActions: []`) and
+`GET /projects/{p}/work-items/{id}` — and confirmed none of them carried the id. A human or `aw` operator
+therefore had no way to ever call `resolveApproval`/`submitWaitSignal`, and any Run with such a node could
+never finish over the public surface. Read `internal/app/ports/approval.go`/`wait.go` in full before writing
+any code: both `ApprovalRepository.ListApprovalRequestsForRun` and `WaitRepository.ListWaitRegistrationsForRun`
+already existed (added by V4-12B for the cancel-run-coordinator sweep) — this task adds a projection over them,
+no new port method, no new migration.
+
+**Where the projection lives.** Extended `runtime.RunDetail` (`internal/app/runtime/run_detail_queries.go`,
+the same file V6-06B's `GetRunDetail` already owns) with two new ADDITIVE, `omitempty` fields:
+`ApprovalRequests []ApprovalRequestView` and `WaitRegistrations []WaitRegistrationView`. `GetRunDetail` now
+also calls `tx.Approvals().ListApprovalRequestsForRun` and `tx.Wait().ListWaitRegistrationsForRun` inside the
+SAME `uow.WithReadOnly` closure the pre-existing manifest/amendment/nodeRun/attempt reads already use — no
+second transaction, no change to the function's existing not-found behavior (an unknown `runId` still fails on
+the very first `GetWorkflowRun` read, before the new calls ever execute).
+
+**Wire shape** (both arrays omitted entirely when empty, so every pre-existing `GET /runs/{id}` response stays
+byte-identical):
+```json
+"approvalRequests": [ {
+  "approvalRequestId": "…", "nodeRunId": "…", "nodeKey": "approval",
+  "state": "PENDING",                 // runtimedomain.ApprovalRequestState: PENDING|DECIDED|ESCALATED|CANCELLED
+  "version": 1,
+  "authorizedRoles": ["reviewer"], "requestedEvidenceKinds": ["test-plan"],   // omitted when empty
+  "dueAt": "2026-01-01T01:00:00Z", "escalationOutcome": "denied",
+  "resolvedOutcome": "approved"        // omitempty — only once DECIDED (ApprovalRequest.DecidedOutcome)
+} ],
+"waitRegistrations": [ {
+  "waitRegistrationId": "…", "nodeRunId": "…", "nodeKey": "wait_signal",
+  "state": "ACTIVE",                   // runtimedomain.WaitRegistrationState: ACTIVE|CONSUMED|ELAPSED|TIMED_OUT|CANCELLED
+  "mode": "SIGNAL",                    // "SIGNAL" | "DURATION" — DERIVED, see below
+  "signalName": "release-approved-externally",   // omitempty, SIGNAL only
+  "dueAt": "2026-01-01T00:30:00Z"      // omitempty — nil exactly when there is no deadline
+} ]
+```
+Both `ApprovalRequestView`/`WaitRegistrationView` map their domain source field-for-field, with two deliberate
+departures from the task brief's own sketch, both forced by what the real domain types actually carry (read in
+full before writing any DTO, per doctrine):
+- `WaitRegistration` (`internal/domain/runtime/wait.go`) has **no `Mode` column at all** — `Mode` is DERIVED:
+  `validateWaitConfig` (`internal/domain/workflow/validation.go`) makes `SignalName` non-empty exactly for
+  SIGNAL and forbidden for DURATION, and `NewWaitRegistration`/`advanceRunTx`'s own `isWaitNode` branch copies
+  the node's compiled `SignalName` verbatim onto the registration — so `SignalName != ""` IS SIGNAL mode,
+  confirmed by reading both files before adding the field. Never stored, never guessed.
+- `ApprovalRequestView`/`WaitRegistrationView` deliberately do **NOT** expose `DecidedBy`/`DecidedRole`/
+  `Reason`/`DecidedAt`/`ConsumedSignalID` — the decision's own audit trail. `Reason` is caller-supplied free
+  text and `GetRunDetail` has no `redact.Matcher` parameter (unlike `GetRunGraph`/`GetRunTimeline`, which redact
+  `BlockReason`) — adding a redaction dependency to `GetRunDetail` was out of this task's own scope, and
+  `resolvedOutcome` already gives an operator the one fact they need (what was decided), matching the task
+  brief's own field list. `AuthorizedRoles` is not secret material — it is the node's own compiled config
+  (`ApprovalNodeConfig.AuthorizedRoles`, pinned at creation, never mutated), the same content `resolveApproval`
+  already checks `cmd.ActorRoles` against.
+
+**Ordering.** Neither `ApprovalRequest` nor `WaitRegistration` carries a creation timestamp, and both
+repositories' own `ListXForRun` is `ORDER BY id` (a random UUID) — no usable order on its own. Since
+`UNIQUE(node_run_id)` guarantees at most one request/registration per `NodeRun`, order is derived from the
+owning `NodeRun`'s own `ActivationSequence` (the Run's own creation-order backbone, same counter
+`GetRunGraph`'s `Activations`/`GetRunTimeline`'s entries already sort by) via a new `activationOrder` helper
+that maps every `NodeRun` of the Run to its sequence, then `NodeRunID` then the request/registration's own `ID`
+as total-order tiebreaks. `toApprovalRequestViews`/`toWaitRegistrationViews` return `nil` (never an empty
+non-nil slice) for zero inputs, so the `omitempty` tag actually drops the key.
+
+**History, not just pending.** Both lists include every request/registration of the Run, decided or not —
+`state` tells an operator which is actionable, matching the "operator sees history" requirement.
+
+**Authorization.** Nothing new: `GetRunDetail` derives `ProjectID` from the authoritative `WorkflowRun` row
+exactly as before, and an unknown/cross-project `runId` fails at the pre-existing `GetWorkflowRun` read before
+the new approval/wait reads ever run — V6-13's `securitymatrix` route inventory is unaffected (no new route, no
+scope change).
+
+**HTTP/CLI layers.** `internal/delivery/httpapi/rundetail/detail.go`'s `handleGetRunDetail` needed **zero
+changes** — it already passes `runtimeapp.RunDetail` straight through `httpapi.EncodeResult`, so the two new
+fields reach the wire automatically; `rundetail.go`'s `RegisterRoutes` already declares
+`ResponseSchema: runtimeapp.RunDetail{}` for the SAME struct, so no schema-fragment change either. Same for
+`internal/delivery/cli/run/show.go`'s `Show` — it calls `runtime.GetRunDetail` directly and JSON-encodes the
+returned struct verbatim (`cli.EncodeQueryResult`), no second CLI-only DTO — confirmed with a new CLI test
+(see Test) rather than assumed. No route, no operationId, no method/path/scope change; `cmd/aw/*`,
+`internal/delivery/cli/descriptor.go` and everything V6-15O owns untouched, per the task's own explicit
+boundary.
+
+**Golden contract.** `internal/delivery/httpapi/apicontract/testdata/golden/contract.json` has no built-in
+update mechanism (confirmed by reading `golden_test.go` in full) — regenerated via a throwaway in-package test
+(`generateContractJSON` + `os.WriteFile(goldenContractPath, ...)`), run once, then deleted before committing
+(never left in the tree). Diff is exactly 10 lines added to `getRunDetail`'s own `responseSchema.fields`
+(nothing else in the 11k-line fixture changed):
+```json
+{ "name": "ApprovalRequests", "jsonTag": "approvalRequests,omitempty", "type": "[]runtime.ApprovalRequestView" },
+{ "name": "WaitRegistrations", "jsonTag": "waitRegistrations,omitempty", "type": "[]runtime.WaitRegistrationView" }
+```
+(the contract generator's own `describeSchema` is shallow-one-level by design — it does not expand
+`ApprovalRequestView`'s/`WaitRegistrationView`'s own fields, matching every other nested-struct field already
+in the fixture, e.g. `RunDetail.Manifest`). `TestBreakingChangeGate_RealContractHasNoBreakingChangesFromGolden`
+passes against the regenerated golden — additive-only, confirmed by the gate itself, not merely asserted.
+
+**Không làm:** no new migration, no new event, no event-schema change, no change to any command
+(`ResolveApproval`/`SignalWait` untouched), no new HTTP route/operationId, no `DecidedBy`/`Reason`/audit-trail
+exposure (see above), no CLI registry/descriptor change (V6-15O's own territory).
+
+### Test
+
+Real-SQLite/real-HTTP throughout — no hand-seeded `approval_requests`/`wait_registrations` row anywhere in this
+task's own tests; every fixture drives a genuine `StartWorkflowRun`/`AdvanceRun`/`ResolveApproval`/`SignalWait`
+sequence, reusing this repo's own `readyFixtureSQLite`/`publishWorkflowVersionDocument`/`testCommand` helpers
+(`internal/app/runtime/commands_sqlite_test.go`/`advance_test.go`) the way `approval_sqlite_test.go`/
+`wait_sqlite_test.go` already establish.
+
+- `internal/app/runtime/run_detail_decisions_sqlite_test.go` (new, 3 tests):
+  - `TestGetRunDetail_SQLite_ApprovalAndWait_DiscoverableThroughLifecycle` — start → APPROVAL → WAIT(SIGNAL,
+    no timeout ceiling) → END. Parked on APPROVAL: exactly one PENDING request with the right node/roles/
+    evidence-kinds/due/escalation, no WAIT registration yet. After a real `runtime.ResolveApproval`: the SAME
+    request shows DECIDED with `resolvedOutcome=approved`, and the newly-activated WAIT registration appears
+    (`mode=SIGNAL`, real `signalName`, no `dueAt`). After a real `runtime.SignalWait`: the registration shows
+    CONSUMED, both stay listed as history, and the Run itself reaches VERIFYING — proving the Run can finish
+    entirely off ids this exact query returned. A final assertion marshals the whole detail and greps for the
+    Reason text/actor/signal-payload strings the fixture used, proving none of that audit-trail material leaks
+    through the view.
+  - `TestGetRunDetail_SQLite_NoDecisionNodes_OmitsBothArrays` — a plain start→end Run: both fields decode `nil`
+    and neither JSON key is present at all.
+  - `TestGetRunDetail_SQLite_ApprovalsAndWaits_ListedInActivationOrder` — two APPROVAL nodes then two WAIT nodes
+    (one SIGNAL with a ceiling, one DURATION) chained in a fixed activation order, driven with a custom
+    `descendingIDs` id source whose ids sort the STRICT REVERSE of activation order. The test first asserts the
+    raw repository `ListXForRun` order really is reversed (so the test cannot silently stop discriminating),
+    THEN asserts `GetRunDetail` still returns `[first_gate, second_gate]`/`[wait_signal, wait_duration]` —
+    proof the ordering comes from `activationOrder`, not from repository/id luck. Also covers the DURATION mode
+    branch (no `signalName`, has a `dueAt`) and the omit-when-empty `requestedEvidenceKinds` (`second_gate`
+    declares none).
+- `internal/delivery/httpapi/rundetail/decisions_test.go` (new, 4 tests):
+  - `TestGetRunDetail_HTTP_ApprovalPending_ListsRequestNoWaitYet` — real `httptest.Server`, one PENDING request
+    over the wire, `waitRegistrations` absent from the raw body (string-search, not just decode).
+  - `TestGetRunDetail_HTTP_NoDecisionNodes_OmitsBothKeys` — the exact "Run with neither returns JSON WITHOUT the
+    keys" Test requirement: raw-body string search confirms neither `approvalRequests` nor `waitRegistrations`
+    appears at all.
+  - `TestGetRunDetail_HTTP_CrossProjectRun_StillHidden` — a real `ApprovalRequestID` (not a `RunID`) used as the
+    `{id}` path segment still 404s exactly like `TestGetRunDetail_HTTP_NotFound`'s wholly-synthetic id, proving
+    the new reads never execute for a Run the caller cannot see.
+  - `TestGetRunDetail_HTTP_ApprovalRequestID_ResolvableThroughDecisionEndpoint` — this task's own **round-trip
+    proof through the decision endpoints**: `combinedTestServer` composes `rundetail.RegisterRoutes` AND
+    `internal/delivery/httpapi/decision`'s own `RegisterRoutes` on ONE real `httptest.Server`/`*sqlite.Store`.
+    Extracts `approvalRequestId` and its `version` from a real `GET /runs/{id}` JSON body, calls the real
+    `POST .../resolve` with `If-Match` built from that exact version — 200/`Won=true`, routed to `wait_signal`.
+    Re-reads the detail: the SAME id is now DECIDED with `resolvedOutcome=approved`, and the newly-activated
+    WAIT registration is present. Extracts `waitRegistrationId` the identical way, calls the real
+    `POST .../signal` — 200/`Won=true`, routed to `end`; re-read shows CONSUMED and the Run VERIFYING. Every id
+    used past the initial fixture setup comes from a decoded HTTP response, never from the `AdvanceRunResult`
+    the fixture also has in hand — the one exception is one assertion cross-checking the discovered id against
+    it, to prove they are the SAME id.
+- `internal/delivery/cli/run/show_test.go` (+1 test): `TestRunShow_ApprovalRequests_ReachCLIOutput` — drives a
+  real Run to its APPROVAL node directly through `runtime.StartWorkflowRun`/`AdvanceRun`, then calls
+  `clirun.Show` (the actual `aw run show` entry point) and decodes its stdout — the discovered
+  `approvalRequestId` matches the real one, state is PENDING, and `waitRegistrations` is both `nil` and absent
+  from the raw stdout string — proving the CLI's `run show` needed no second code path and none was added.
+
+**Fail-closed guards, each broken then restored (temporary edits, never committed):**
+1. **Dropped `omitempty` off both tags** (`"approvalRequests"`/`"waitRegistrations"`, no `,omitempty`) —
+   `TestGetRunDetail_SQLite_NoDecisionNodes_OmitsBothArrays`, `TestGetRunDetail_HTTP_NoDecisionNodes_OmitsBothKeys`
+   and `TestRunShow_ApprovalRequests_ReachCLIOutput` all failed immediately (`approvalRequests":null` /
+   `waitRegistrations` key present where the test demands absence) — reverted, all three pass again.
+2. **Commented out both `sort.Slice` calls** inside `toApprovalRequestViews`/`toWaitRegistrationViews` —
+   `TestGetRunDetail_SQLite_ApprovalsAndWaits_ListedInActivationOrder` failed
+   (`[second_gate, first_gate]`, the exact reversed-by-repository order the test's own precondition assertion
+   already proved the raw rows carry) — reverted, passes again.
+3. **Broken the id mapping** (`ApprovalRequestID: string(r.NodeRunID)` instead of `string(r.ID)`) —
+   `TestGetRunDetail_HTTP_ApprovalRequestID_ResolvableThroughDecisionEndpoint` failed immediately
+   (`discovered approvalRequestId = id-11, want id-12`) before it even reached the decision endpoint —
+   reverted, passes again.
+
+`go build ./... && go vet ./... && go test ./...` clean repo-wide (`internal/app/runtime` 41.6s,
+`internal/delivery/httpapi/rundetail` 17.9s, `internal/delivery/httpapi/decision` 8.5s,
+`internal/delivery/cli/run` 12.1s, `internal/delivery/httpapi/apicontract` 3.2s, full suite ~1300s). One flake
+on the full run: `TestAdapterRegister_DriftCreatesNewBuild` (`cmd/aw`) — `overwrite executable: ... provider-cli.exe:
+The process cannot access the file because it is being used by another process`, the EXACT known Windows-only
+flake named in this task's own brief. `git diff --stat origin/master` confirms this branch never touches
+`cmd/aw`, `internal/app/adapterbuild`, `internal/delivery/httpapi/adapterbuild` or any file in that test's own
+dependency chain; re-ran `go test ./cmd/aw/... -run TestAdapterRegister_DriftCreatesNewBuild` in isolation (pass)
+and the full `go test ./cmd/aw/...` package again in isolation (pass, 7.7s) — confirms environmental contention
+during the parallel full-suite run, not a regression from this change.
+
+### Verify
+
+- **The empirical gap is closed:** an operator can now discover `approvalRequestId`/`waitRegistrationId`
+  through `GET /runs/{id}` (HTTP) or `aw run show` (CLI) and immediately call `resolveApproval`/
+  `submitWaitSignal` with it — proven end to end by
+  `TestGetRunDetail_HTTP_ApprovalRequestID_ResolvableThroughDecisionEndpoint`, which resolves BOTH an approval
+  and a WAIT signal using only ids read back off the wire.
+- **Additive-only wire contract:** `TestGetRunDetail_HTTP_NoDecisionNodes_OmitsBothKeys`/
+  `TestGetRunDetail_SQLite_NoDecisionNodes_OmitsBothArrays` prove every pre-existing response (no APPROVAL/WAIT
+  node) stays byte-identical (verified via raw-body string search, not just struct decode);
+  `TestBreakingChangeGate_RealContractHasNoBreakingChangesFromGolden` proves the same at the contract level.
+- **Deterministic order:** `TestGetRunDetail_SQLite_ApprovalsAndWaits_ListedInActivationOrder`, with a
+  precondition assertion proving the naive repository order is the exact reverse, so the ordering assertion can
+  only pass through `activationOrder`'s own logic.
+- **History, not just pending:** `TestGetRunDetail_SQLite_ApprovalAndWait_DiscoverableThroughLifecycle` shows
+  both a DECIDED `ApprovalRequest` and a CONSUMED `WaitRegistration` remain listed after resolution.
+- **No secret/audit leakage:** the same test marshals the full detail and asserts the Reason/actor/signal-payload
+  strings never appear.
+- **Authorization intact, no new surface:** `TestGetRunDetail_HTTP_CrossProjectRun_StillHidden` — a genuine
+  foreign id still 404s identically to an unknown one; no new route/operationId/scope registered (V6-13's
+  security matrix is unaffected by construction — no changes anywhere under
+  `internal/delivery/httpapi/securitymatrix`).
+- **CLI reaches the same query, no second code path:** `TestRunShow_ApprovalRequests_ReachCLIOutput`, plus
+  reading `show.go` itself confirms it dispatches `runtime.GetRunDetail` directly.
+- Every guard above shown to genuinely fail when broken, then restored (see Test) — never merely asserted.
+
+### Kết quả
+
+Changed: `internal/app/runtime/run_detail_queries.go` (+173/-1: `ApprovalRequestView`/`WaitRegistrationView`,
+`activationOrder`, `toApprovalRequestViews`/`toWaitRegistrationViews`, two new `RunDetail` fields, `GetRunDetail`
+wired to the two existing `ports.ApprovalRepository`/`ports.WaitRepository` list methods).
+`internal/delivery/httpapi/apicontract/testdata/golden/contract.json` (+10, additive-only, gate-verified). New:
+`internal/app/runtime/run_detail_decisions_sqlite_test.go` (3 tests), `internal/delivery/httpapi/rundetail/decisions_test.go`
+(4 tests, including the round-trip proof), `internal/delivery/cli/run/show_test.go` (+1 test). Zero changes to
+`internal/delivery/httpapi/rundetail/{detail.go,rundetail.go}`, `internal/delivery/cli/run/show.go`,
+`internal/app/runtime/{approval.go,wait.go}`, `internal/delivery/httpapi/decision/*`, any migration, any event
+schema, `cmd/aw/*`, or `internal/delivery/cli/descriptor.go` — the fix is entirely a read-side projection over
+data that already existed. `go build/vet/test ./...` clean repo-wide; the one full-suite failure
+(`TestAdapterRegister_DriftCreatesNewBuild`) is the named pre-existing Windows flake, verified unrelated by both
+diff-scope and isolated re-run. PR targets `master`.
+
+`GET /runs/{id}` (and `aw run show`) now list every APPROVAL request and WAIT registration of a Run — pending
+and decided — with the exact ids `resolveApproval`/`submitWaitSignal` accept, closing the gap the V6-14
+black-box journey found: a Run parked on an APPROVAL or WAIT node can now actually be advanced and finished
+over the public HTTP/CLI surface.
+
+## V6-04B — WorkItem contract at creation (rework of V6-04, found by V6-14)
+
+### Thực hiện
+
+**The gap (verified by V6-14's black-box acceptance journey, not speculation).** Through the public surface
+there was no way to give a WorkItem its readiness contract (`schemaVersion`, `behavior`, `acceptanceCriteria`,
+`verificationSpec`, `riskLevel`, `exclusions`, optional `workflowVersionId`). So `POST /work-items/{id}/mark-ready`
+(V6-04A) always answered 409 ("schema version must be positive; behavior is required; verification spec is
+required; risk level is required; no executable acceptance criterion…"), and `runtime.StartWorkflowRun` requires
+status READY — net effect, no Run could ever start via public HTTP or `aw`. The evidence was in the code itself:
+`CreateRootWorkItemRequest` carried only `{ProjectID, Title, InitialScope}` under a doc comment calling the
+contract "a later step no V3 task builds yet"; `internal/adapters/sqlite/work.go` already persisted the contract
+columns (migration 0007, wired by V6-04A) and said neither create command's domain constructor set any of them;
+and V6-04A's own tests only reached READY by building a `work.WorkItem` value by hand and persisting it through
+the repository. `docs/design/11-v6-00-ux-artifact.md` Screen 6 (Create WorkItem) says the create form collects
+WHAT/DONE/scope/out-of-scope/workflow version for root **and** child, and V3-03/V3-04 always intended one public
+root-create — so the fix chosen (and not redesigned here) is to extend the two existing create commands, end to
+end, to accept an optional contract. No third "edit contract" command was added.
+
+**Wire shape (fixed — the V6-14 acceptance test is written against these exact names).** One optional
+`contract` object on both `POST /projects/{projectId}/work-items` and
+`POST /projects/{projectId}/work-items/{workItemId}/children`:
+
+```json
+"contract": {
+  "schemaVersion": 1, "behavior": "…",
+  "acceptanceCriteria": [{"description": "…", "verificationRef": "…"}],
+  "verificationSpec": "…", "riskLevel": "LOW", "exclusions": ["…"], "workflowVersionId": "…"
+}
+```
+
+Omitting `contract` is byte-for-byte the pre-V6-04B behaviour (BACKLOG, empty contract).
+
+**1. Application layer** (`internal/app/work/contract.go`, new; `commands.go`). `WorkItemContractRequest` and
+`AcceptanceCriterionRequest` (no json tags, like `ScopeGrantRequest`); `CreateRootWorkItemRequest.Contract` and
+`CreateChildWorkItemRequest.Contract` are `*WorkItemContractRequest`. `applyWorkItemContract` copies it onto the new
+WorkItem's exported contract fields right after `NewRootWorkItem`/`NewChildWorkItem` and before persistence, inside
+the command's own write transaction (so a failure rolls back the family/workspace-set/scope/jobs the root command
+wrote). `ValidateReadinessGate` is **not** called at create time: a WorkItem may legitimately be created BACKLOG
+with a partial contract, and readiness stays `MarkWorkItemReady`'s / `ExplainWorkItemReadiness`'s job. A child's
+contract is its own — never inherited from the parent.
+
+**2. Shape validation (kept minimal).** `WorkItemContractRequest.Validate()` rejects only shapes that can never
+become valid: negative `schemaVersion`, an acceptance criterion with a blank `description`, a blank `exclusions`
+entry, a whitespace-only `workflowVersionId`. It never rejects absence, and it accepts a criterion with an empty
+`verificationRef` (a descriptive-only criterion — exactly the case whose readiness answer is "no executable
+acceptance criterion"). The per-field rules mirror `ValidateReadinessGate`'s own (it too reports blank exclusion
+entries and a blank pinned workflow version), so a contract that passes can only fail readiness for a reason a
+complete contract would cure. It returns every problem at once as `*InvalidWorkItemContractError{Problems}`; the
+commands call it before opening the transaction, and the HTTP handler and CLI leaf call the same method first so
+there is one rule set, not three copies.
+
+**3. `workflowVersionId` existence check.** `work_items.workflow_version_id` is a foreign key; an unknown ID would
+otherwise reach the sqlite adapter's generic "unexpected error" and surface as an HTTP 500 for a plain caller
+mistake. `applyWorkItemContract` therefore resolves it via `tx.Definitions().GetWorkflowVersion` and returns
+`ErrUnknownWorkflowVersion` (HTTP 400 with a `contract.workflowVersionId` detail). Existence only, by ID: no
+per-project ownership check — `runtime.StartWorkflowRun`, the only consumer of the pin, compares IDs only and
+resolves it the same way, so this does not move that boundary.
+
+**4. Idempotency / receipts.** HTTP computes the semantic hash over `json.Marshal` of the decoded body struct
+(`CanonicalizeJSON`), so the contract participates automatically once it is a field of that struct. Two design points
+make that safe: `Contract` is `*workItemContractBody` with `omitempty`, so a body without it (or `"contract":null`)
+canonicalizes to exactly the bytes it always did — a receipt written by a pre-V6-04B binary still replays after an
+upgrade; and every field inside the contract is `omitempty`, so "given but zero" and "omitted" hash identically. The
+CLI struct mirrors the HTTP struct's field order and tags, so an HTTP call and `aw work-item create` for the same
+request stay replay-equivalent. Both delivery layers have tests that pin the canonical literal.
+
+**5. Persistence — no adapter change.** `createWorkItemTx`/`scanWorkItemRow` already round-trip
+`schema_version/behavior/acceptance_json/verification_json/risk/exclusions_json/workflow_version_id` (V6-04A). The
+new real-sqlite tests prove all seven for a root and for a child. `ApprovalException` stays out: migration 0007
+added no column for it, so accepting it would silently drop it (an `approvalException` key is a 400).
+
+**6. Events unchanged.** `RootWorkItemCreated`/`ChildWorkItemCreated` payloads carry only IDs, title and
+`scopeCount` — they do not embed the contract — so no event schema or version changed. The V6-00A event-inventory
+guard and golden fixtures pass unchanged.
+
+**7. Read side.** `GET …/readiness` already runs `ValidateReadinessGate` against the persisted columns and needed no
+change. The authoritative detail **could not** show what was stored (its own doc comment deliberately omitted the
+contract because no public command populated it), so `WorkItemDetail` gained one additive field,
+`contract` (`*WorkItemContractView`, `omitempty`, nil when nothing of the contract is stored), with the same JSON keys
+as the request object. `workflowVersionId` is repeated inside it so a contract reads back with the shape it was
+created with; the existing top-level `workflowVersionId` is untouched. A WorkItem without a contract serializes
+exactly as before (no `contract` key). Also updated `queries.go`'s doc comments that had said no command populates
+the contract.
+
+**8. HTTP** (`internal/delivery/httpapi/workitem`). `workItemContractBody`/`acceptanceCriterionBody` DTOs
+(`dto.go`) and a `Contract` field on both body types; `writeCommandError` maps `*InvalidWorkItemContractError` and
+`ErrUnknownWorkflowVersion` to 400 with `contract.<field>` details. The body stays decoded with
+`DisallowUnknownFields` (recursively), so an unknown key inside `contract` — a `status`/`targetStatus`/`family`/
+`workspace` smuggle, a typo, a key inside a criterion — is a 400. The DTO names (`…Body`) and JSON keys pass
+`internal/archtest`'s `TestWorkItemPackageRequestBodiesNeverAcceptAStatusField` legitimately; no forbidden
+field name is declared.
+
+**9. CLI** (`internal/delivery/cli/workitem`). **Deviation from the brief's example, deliberate:** the contract
+rides **inside the existing `--file`/stdin JSON body** (`{"title":…,"contract":{…}}`, the same document as the HTTP
+body) rather than behind a new `--contract-file` flag. Both leaves already read exactly that document through
+`cli.ReadBoundedInput`; a second bounded read could not share stdin with it, and a body-embedded contract keeps one
+document shape across HTTP and CLI. Same app command, no second path. The leaf's existing body decode is lenient
+about unknown top-level keys (unchanged since V6-15G), but a silently dropped typo inside the contract would leave a
+WorkItem half-specified with no way to fix it, so `workItemContractBody.UnmarshalJSON` decodes the contract object
+strictly (unknown key anywhere inside it → usage error) without changing top-level behaviour.
+
+**10. Golden.** `internal/delivery/httpapi/apicontract/testdata/golden/contract.json` changed because two request
+schemas and the shared `WorkItemDetail` response schema each gained one field: `+15` lines, three entries
+(`createChildWorkItem` request `Contract *workitem.workItemContractBody`, `createRootWorkItem` request the same,
+`getWorkItem` response `Contract *work.WorkItemContractView`). No operation, method, path or scope changed, so the
+breaking-change gate stays green; the route count is unchanged. That package has no update flag/env, so the file was
+regenerated by a temporary in-package test that called the package's own `generateContractJSON` and wrote the
+result (deleted before commit); `git diff` was reviewed and is purely additive.
+
+**Deliberately left out.** `ApprovalException` (no column). `VerificationRef` → CommandDefinition/GateDefinition
+resolution at create time (needs the definition registry; `ValidateReadinessGate` draws the same boundary).
+Per-project ownership of a pinned WorkflowVersion. **An update-contract command:** a WorkItem created with a partial
+or wrong contract cannot be corrected later through the public surface — worth a follow-up task; not built here
+because the brief fixed the design as "extend the existing create commands". Some older test fixtures
+(`mark_ready_sqlite_test.go`, the CLI `fixture_test.go`, `kanban/detail_test.go`) still carry comments saying no
+public command populates the contract; they remain accurate as fixture rationale (those fixtures build contracts
+directly on purpose) and were left untouched to avoid cross-task merge churn. The UX artifact's Screen 6 needs no
+edit — it already describes the create form as collecting the full contract.
+
+### Test
+
+New tests (29), all against real sqlite (app, HTTP) or the repo's standard `fake.UnitOfWork` (CLI, matching that
+package's existing layering); no test builds a contracted WorkItem by hand.
+
+- `internal/app/work/contract_test.go` (1 test, 11 cases) — `TestWorkItemContractRequest_Validate`: nil / empty /
+  partial / full / `schemaVersion` 0 / descriptive-only criterion are valid; negative `schemaVersion`, blank criterion
+  description, blank exclusion entry, whitespace `workflowVersionId` are each rejected with the exact field; every
+  problem is reported at once, in field order.
+- `internal/app/work/contract_sqlite_test.go` (6 tests) —
+  `…Root_WithContract_PersistsEveryFieldAndBecomesReadySQLite` (all seven fields, including `exclusions` and a real
+  published `workflowVersionId`, read back through the repository; authoritative detail `Contract` equals the view;
+  readiness Ready; `MarkWorkItemReady` → READY@2, no hand-built row anywhere);
+  `…Child_WithContract_PersistsEveryFieldIndependentOfParentSQLite` (child stores its own; a sibling created without
+  one does **not** inherit the parent's; the parent's contract is untouched by children);
+  `…WithoutContract_StaysExactlyAsBeforeSQLite` (omitted and empty-object contract both leave every column unset, the
+  detail JSON has no `"contract"` key, readiness reports the usual gaps);
+  `…ContractSameKeyReplaysAndStoresOnceSQLite` (replay → same WorkItemID, one row, contract intact; same key + different
+  hash → `ErrReceiptConflict`, contract untouched);
+  `…InvalidContract_RejectedBeforeAnyWriteSQLite` (root and child: typed error naming all four problems, zero new rows,
+  zero receipts);
+  `…UnknownWorkflowVersion_RolledBackSQLite` (root and child: `ErrUnknownWorkflowVersion`, zero
+  work_items/task_families/workspace_sets/scopes/WORKSPACE_PROVISION jobs/receipts).
+- `internal/delivery/httpapi/workitem/contract_test.go` (13 tests, real `httpapi.Server` over real sqlite) —
+  `TestCreateChildWithContract_JourneyToReady` is the sequence V6-14 said was impossible: create project + ACTIVE repo →
+  root (no contract) → child WITH contract (one criterion with a non-empty `verificationRef`) → `GET …/readiness` ready →
+  `POST /work-items/{child}/mark-ready` with `If-Match` → 200, READY@2, contract unchanged; the root stays unready and
+  its mark-ready is still 409. Also: `…RootWithContract_JourneyToReady`; `…ChildWithoutContract_MarkReadyStillConflicts`
+  (409, details equal the readiness problems, no `contract` key in the detail bytes);
+  `…NoExecutableAcceptanceCriterion_ReadinessSaysSo` (empty `verificationRef` → readiness has exactly the "no executable
+  acceptance criterion…" problem, mark-ready 409 with that one detail); `…PinsRealWorkflowVersion`;
+  `…UnknownWorkflowVersion_Returns400WithFieldDetail`; `…MalformedContract_Returns400WithFieldDetails`;
+  `…UnknownKeysRejected` (7 mutations × root and child — `status`, `targetStatus`, `family`, `workspace`,
+  `approvalException`, a typo'd key, an unknown key inside a criterion — all 400, nothing created);
+  `…RootWithContract_SameKeySameBody_ReplaysAndStoresOnce`;
+  `…SameKeyDifferentContract_Conflicts` (changed field / extra criterion / contract removed / contract added to a body first
+  sent without one / same contract new title → all 409 on root; changed and removed on child; the first contract
+  untouched; the identical child body replays 200);
+  `TestCreateRootWorkItem_RequestHashCanonicalForms` (the stored receipt hash equals `SemanticHash` over the literal
+  pre-V6-04B canonical bytes for a contract-less body and for `"contract":null`, and over a literal with-contract form;
+  contract/no-contract hashes differ; a differently ordered hand-written body hashes identically);
+  `TestContractOmittedAndZeroValuesCanonicalizeAlike`; `TestContractBodyDeclaresNoStateFields` (the detail's `contract`
+  has exactly the seven documented keys).
+- `internal/delivery/cli/workitem/contract_test.go` (9 tests) — create-child with contract → readiness Ready →
+  mark-ready READY@2; create with contract; create without contract stays empty; same key + different contract →
+  `cli.ErrReceiptHashConflict` and the identical body replays (`Replayed=true`, one WorkItem) for create and create-child;
+  the same canonical literals as the HTTP test (so HTTP and CLI hashes are provably identical); malformed contract →
+  `cli.UsageError` naming every field, nothing created; unknown keys inside the contract → usage error; unknown
+  workflow version → `ErrUnknownWorkflowVersion`.
+- Golden: `apicontract` `TestContract_MatchesGoldenFixture` / breaking-change gate / route-inventory pass against the
+  regenerated fixture.
+
+### Verify
+
+**Every new guard was shown to fail when the behaviour is broken**, then restored (backups in the scratchpad, `git
+diff` and a `MUTATION` grep confirmed clean afterwards):
+
+| Mutation | What failed |
+|---|---|
+| HTTP: contract erased from the canonical bytes (`MarshalJSON` → `null`) | `TestCreateWithContract_SameKeyDifferentContract_Conflicts` (changed behavior answered 200, not 409), `TestCreateRootWorkItem_RequestHashCanonicalForms` |
+| HTTP: `omitempty` removed from `createRootWorkItemBody.Contract` | `TestCreateRootWorkItem_RequestHashCanonicalForms` (contract-less hash no longer the pre-V6-04B one) |
+| CLI: contract dropped from `NormalizedPayload` | `…ContractSameKeyDifferentContract_ConflictsAndReplays` (err nil, not conflict), `…RequestHashCanonicalForms` |
+| sqlite: `exclusions_json` dropped from the INSERT | 3 app tests + 5 HTTP tests (`Exclusions = []`, want `[PDF export …]`) |
+| App: `VerificationSpec` not applied by the command | 3 app tests, HTTP + CLI journeys (readiness "verification spec is required") |
+| App: workflow-version existence check removed | app test (`INTERNAL: sqlite: unexpected error`), HTTP test (500, want 400), CLI test (nil error) |
+| App: `Validate()` accepts everything | app `Validate` + invalid-contract tests, HTTP malformed test, CLI malformed test |
+| HTTP: a `status` field added to the contract DTO | `TestCreateWithContract_UnknownKeysRejected` (201, want 400) **and** `TestWorkItemPackageRequestBodiesNeverAcceptAStatusField` |
+| CLI: strict `UnmarshalJSON` removed | `TestRunWorkItemCreate_ContractUnknownKeys_IsUsageError` |
+| Detail view never shows the stored contract | app persistence test, both HTTP journeys, `TestContractBodyDeclaresNoStateFields` |
+
+- **Events/inventory:** `internal/app/work` event-schema tests and the V6-00A inventory/golden fixtures pass with no
+  fixture change.
+- **Golden:** exactly one fixture changed, additively (see Thực hiện §10).
+- `go build ./... && go vet ./...` clean.
+- **Full suite** (`go build ./... && go vet ./... && go test ./...`): build and vet clean; 113 packages `ok`, 1
+  failure — `cmd/aw` `TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` ("swap executable: … The
+  process cannot access the file because it is being used by another process"), the known Windows-only flake. Not
+  dismissed on the name match alone: this diff touches nothing under `cmd/`; the test passes when re-run in isolation
+  (`go test ./cmd/aw -run …` → ok, 3.1s) and the whole `cmd/aw` package passes on a second run (ok, 13.2s); that
+  package also builds the real route composition, so it exercises this change indirectly. The touched packages
+  (`internal/app/work`, `internal/delivery/httpapi/workitem`, `internal/delivery/cli/workitem`,
+  `internal/delivery/httpapi/apicontract`, `internal/archtest`, `internal/app/eventschema`) were re-run once more
+  after the final comment edit — all `ok`.
+
+### Kết quả
+
+A WorkItem can now be given its readiness contract through the public surface, at creation, for root and child
+alike, and the sequence V6-14 proved impossible works over real HTTP and through the terminal: create project +
+ACTIVE repository → create root → create child **with** `contract` → `GET …/readiness` ready → `POST
+/work-items/{child}/mark-ready` with `If-Match` → 200, READY. A child created without a contract still answers 409
+(unchanged), and a contract whose only criterion has an empty `verificationRef` reports exactly the "no executable
+acceptance criterion" problem.
+
+New: `internal/app/work/contract.go` (+ `contract_test.go`, `contract_sqlite_test.go`),
+`internal/delivery/cli/workitem/contract.go` (+ `contract_test.go`),
+`internal/delivery/httpapi/workitem/contract_test.go` — 29 new tests. Changed: `internal/app/work/commands.go`
+(request `Contract` fields, validate + apply), `queries.go` (additive `WorkItemDetail.Contract`, doc comments),
+`internal/delivery/httpapi/workitem/{dto,errors,workitem_commands}.go`,
+`internal/delivery/cli/workitem/{create,createchild,doc}.go`, and the regenerated golden
+`internal/delivery/httpapi/apicontract/testdata/golden/contract.json` (+15 lines, additive only). Not changed:
+the sqlite adapter (already round-tripped the columns), any event payload/schema version, `cmd/aw/*`,
+`internal/delivery/cli/descriptor.go`, `docs/design/*.md`.
+
+Known limits, stated plainly: no `ApprovalException` (no column); no `VerificationRef` → definition resolution; the
+pinned `workflowVersionId` is checked for existence only; and there is still no command to edit a contract after
+creation, so a WorkItem created with a partial or wrong contract cannot be corrected through the public surface (a
+follow-up task, not built here). The CLI takes the contract inside its existing `--file`/stdin body rather than via
+the brief's example `--contract-file` flag (rationale in Thực hiện §9). PR targets `master`.
+
+## CI — V0-12 sqlite -race budget (test-only fix)
+
+### Thực hiện
+
+- **Problem (measured on CI, not guessed).** The `Linux race and stability (V0-12)` job (`.github/workflows/spike-gate.yml`) runs `go test -race -count=1 ./...` and then ten more full offline-suite runs inside a 25-minute job limit. `internal/adapters/sqlite` under `-race` took about 587s on a good runner and more than 600s on others; Go's default per-package test timeout is 10 minutes, so three recent runs died with `test timed out after 10m0s` (600.02s, 600.02s, 600.05s), leaving the whole gate red on `master` and on every open PR. The margin had been roughly 13 seconds for days. The owner explicitly decided NOT to raise any timeout, so the fix has to make the package genuinely faster.
+- **Measurement before changing anything (local, no `-race`, Windows i5-8265U 4c/8t).** 249 tests, 41s wall on a quiet machine (57-73s when the machine was contended), sum of per-test durations 65.9s. CPU profile of the whole package: `Open` 44.7s of 56.1s samples (79.7%), of which `Migrate` 42.8s (76.2%), and inside that `FlushFileBuffers` (the per-migration fsync under `synchronous(FULL)`) 17.8s (31.8%) plus SQL parse/prepare of every `CREATE TABLE` 17.1s (30.6%). Micro-measure: a fresh `Open`+`Close` on a new path takes about 110-150ms (`BenchmarkOpenFresh` 110ms), a byte copy of the fully-migrated 820KB file takes 1.5ms and the real `Open` on that copy 6.5ms (`BenchmarkOpenFromMigratedTemplate` 6.9ms including copy). About 200 tests each paid the fresh-open cost only to test repositories, not migrations; `modernc.org/sqlite` is transpiled C, so `-race` multiplies exactly that cost (about 35s to 587s on CI).
+- **Change (test files only).** New `internal/adapters/sqlite/template_db_test.go`: the first caller builds ONE database through the real `Open` (real DSN, pragmas, every migration), asserts it is fully migrated (`schema_migrations` count equals the embedded migration count), runs `PRAGMA wal_checkpoint(TRUNCATE)` and `PRAGMA integrity_check`, closes it, asserts no non-empty `-wal` is left beside the main file, keeps the bytes in memory (a `sync.Once`), and deletes its temp directory. `migratedDatabasePath(t, name)` writes a private byte-for-byte copy to `t.TempDir()/name`; every converted test then calls the normal, real `Open` on it, which still runs the full production path (DSN, pragma verification, `Migrate` re-reading `schema_migrations` and re-verifying every checksum) and simply finds nothing to apply, exactly like a real restart. The template file itself is never opened or handed out, so tests are isolated by construction and `t.Parallel()`-safe.
+- **Converted (35 call sites):** the seven shared helpers `openCatalogTestStore`, `openReceiptsStore`, `openSchedulingTestStore`, `openDefinitionsTestStore`, `openReadinessTestStore`, `openSafeSettingsTestStore`, `openAdapterBuildTestStore` (about 160 test call sites between them), the 5 fresh-path call sites of `openWorkflowTestStore` (its restart reopen calls stay untouched: they reopen an existing file), and 23 direct `Open(...)` sites in restart, concurrency and crash/kill tests (`checkpoint_store`, `context_store`, `cancel_run`, `txrunner`, `unitofwork`, `runtime_manifest`, `local_commit_write_lease`, the five `crash_resume_*` files, ...) whose subject is persistence/recovery, not migration.
+- **Deliberately left on the real fresh-open/migrate path:** `db_test.go` (open/idempotent/pragma tests), all of `migrations_test.go`, `migration_0006/0007/0025/0032/0034_test.go` (including their `openWithoutMigrating` + hand-applied-migration tests), `TestMigration0016_NewTablesExistAndEnforceCheckConstraints`, `TestMigration0004_WorkflowRunSurvivesPublishStartRestartFinalize`, `TestUnitOfWork_WithReadOnly_DoesNotPersistWrites` (asserts exactly 40 recorded migrations), and four tests whose subject is migration OUTPUT and which now use the new `openFreshStore` helper: `TestMigration0004_WorkflowRunsForeignKeyUnchanged` (schema shape), `TestAdapterBuildVersionsTable_HasNoProjectIDColumn` (schema shape), `TestSafeSettingsRepository_Get_SeededByMigration` and `TestArtifactRepository_ArtifactSweepState_SeededDryRunThenAdvances` (rows seeded by a migration).
+- **Slow tests looked at and left alone.** `TestCrashRestartReclaimsLeasedJobAndPreservesPinnedWorkflow`, `TestSPK03HardCrashJoinsCheckpointContextRecovery` and `TestSPK04FaultAfterProcessExit*` (about 1.0-1.3s each) are bound by a real 900ms lease TTL that a killed child process must outlive, plus child-process start-up; there is no scenario-unrelated sleep to remove and no TTL was shortened.
+- **No timeout was changed or added.** `.github/workflows/*` is untouched, no `-timeout` flag was added anywhere, and no production (non-`_test.go`) file was changed.
+
+### Test
+
+- No test was added, removed, renamed or skipped: `go test -list '.*' ./internal/adapters/sqlite/ | grep -c ^Test` is 249 before and 249 after. Two `Benchmark` functions (`BenchmarkOpenFresh`, `BenchmarkOpenFromMigratedTemplate`) reproduce the measurement (`go test -run '^$' -bench 'BenchmarkOpen(Fresh|FromMigratedTemplate)$' ./internal/adapters/sqlite/`).
+- The template builder verifies its own result on first use and fails the first test that asked for it with the reason (migration count, WAL checkpoint completeness, `integrity_check`, empty WAL after close), so a broken template cannot hand out a database that only looks migrated.
+
+### Verify
+
+- **Wall time, `go test -count=1 ./internal/adapters/sqlite/`, before vs after.** Interleaved on the same machine and conditions (base test binary vs new test binary, three pairs): before 41.1s / 40.9s / 47.7s, after 13.5s / 13.7s / 14.7s (about 3.0-3.2x). Through the `go test` command itself: after 12.9s / 14.4s / 13.8s (reported package time, final tree; an earlier triple before the benchmarks were added was 13.7s / 13.3s / 13.2s); before, with the template disabled by a temporary toggle, 127.6s (machine contended) / 64.7s / 57.0s, and 71.4s / 71.8s / 59.0s on the untouched base earlier. Sum of per-test durations 65.9s to 24.0s; remaining CPU is dominated by the tests intentionally kept on the fresh path plus lease-TTL waits.
+- **Isolation.** `go test -count=3 -shuffle=on ./internal/adapters/sqlite/` passes. Deliberate break: making `migratedDatabasePath` hand every test the SAME file made 28 tests in a small subset (`TestCatalogRepository*`, `TestReceiptsRepository*`, `TestSafeSettingsRepository*`, `TestReadinessRepository*`) fail; the helper was then restored byte-for-byte (SHA-256 verified) and everything passes again.
+- `go vet ./internal/adapters/sqlite/`, `go build ./... && go vet ./...` clean. `go test ./...`: every package `ok` including `internal/adapters/sqlite`, except three Windows file-lock flakes in packages this diff does not touch (`cmd/aw`: `TestAdapterRegister_DriftCreatesNewBuild`, `TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` -- "file used by another process"; `internal/app/message`: `TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` -- "Access is denied" on rename). Each passed 3/3 in isolation and both whole packages passed on re-run; the diff only adds/edits `internal/adapters/sqlite/*_test.go`, which is never compiled into another package.
+- **Not verified locally:** `-race` itself. `go env CGO_ENABLED` is 0 and no C toolchain (`gcc`, `cc`, `clang`, `zig`) exists on this machine, so no race-mode number was measured; the race-mode speedup is inferred from the non-race profile (about 80% of package CPU was `Open`/`Migrate`) and must be confirmed by the CI run.
+
+### Kết quả
+
+Test-only fix: `internal/adapters/sqlite` drops from about 41s to about 13.5s without `-race` (about 3.0-3.2x; the CPU profile says the removed work was about 80% of the package's CPU, which is the part `-race` amplifies about 15x), with the test count unchanged at 249, every migration/first-open test still on the real fresh path, and no timeout, workflow or production file touched. Confirming the `-race` result is left to the CI run of the `Linux race and stability (V0-12)` job. PR targets `master`.

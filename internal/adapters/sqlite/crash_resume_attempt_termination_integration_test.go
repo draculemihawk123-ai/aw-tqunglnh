@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -53,7 +52,7 @@ func TestSPK04FaultAfterProcessExitMutatingAttemptBecomesIndeterminate(t *testin
 func runFaultAfterProcessExitScenario(t *testing.T, mutating bool) {
 	t.Helper()
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-crash-attempt-term.db")
+	databasePath := migratedDatabasePath(t, "agentkit-crash-attempt-term.db")
 	store, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("open initial store: %v", err)

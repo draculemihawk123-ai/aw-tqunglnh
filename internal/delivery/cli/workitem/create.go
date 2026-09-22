@@ -21,6 +21,9 @@ import (
 type createRootWorkItemBody struct {
 	Title        string           `json:"title"`
 	InitialScope []scopeGrantBody `json:"initialScope"`
+	// Contract is the optional readiness contract (V6-04B), the identical
+	// "contract" object the HTTP request body accepts — see contract.go.
+	Contract *workItemContractBody `json:"contract,omitempty"`
 }
 
 // RunWorkItemCreate implements
@@ -61,6 +64,9 @@ func RunWorkItemCreate(ctx context.Context, deps Dependencies, args []string, st
 	if err := validateScopeGrantBodies("initialScope", body.InitialScope); err != nil {
 		return err
 	}
+	if err := validateContractBody(body.Contract); err != nil {
+		return err
+	}
 	normalized, err := json.Marshal(body)
 	if err != nil {
 		return err
@@ -80,6 +86,7 @@ func RunWorkItemCreate(ctx context.Context, deps Dependencies, args []string, st
 	dispatched, err := cli.Dispatch(ctx, deps.UoW, envelope.Command, func(ctx context.Context) (any, error) {
 		return workapp.CreateRootWorkItem(ctx, deps.UoW, deps.IDs, envelope.Command, workapp.CreateRootWorkItemRequest{
 			ProjectID: *projectID, Title: body.Title, InitialScope: toScopeGrantRequests(body.InitialScope),
+			Contract: body.Contract.toRequest(),
 		})
 	})
 	if err != nil {

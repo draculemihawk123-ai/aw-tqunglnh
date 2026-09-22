@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"reflect"
 	"sync"
 	"testing"
@@ -19,7 +18,7 @@ import (
 
 func TestWorkflowVersionAndRunSurviveRestartWithPinnedSnapshot(t *testing.T) {
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit.db")
+	databasePath := migratedDatabasePath(t, "agentkit.db")
 	store := openWorkflowTestStore(t, ctx, databasePath)
 	seedWorkflowRunOwners(t, ctx, store)
 
@@ -157,7 +156,7 @@ func TestWorkflowVersionAndRunSurviveRestartWithPinnedSnapshot(t *testing.T) {
 
 func TestWorkflowRunCompareAndSwapAllowsExactlyOneConcurrentWinner(t *testing.T) {
 	ctx := context.Background()
-	store := openWorkflowTestStore(t, ctx, filepath.Join(t.TempDir(), "agentkit.db"))
+	store := openWorkflowTestStore(t, ctx, migratedDatabasePath(t, "agentkit.db"))
 	defer func() { _ = store.Close() }()
 	seedWorkflowRunOwners(t, ctx, store)
 

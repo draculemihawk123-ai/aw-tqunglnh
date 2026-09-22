@@ -81,10 +81,12 @@ func init() {
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"definition", "publish"}, Scope: cli.ScopeInstallation,
 		AppOperation: commandTypePublishDefinition, HTTPOperationID: "publishDefinitionVersion",
+		HighImpact: true, // UX Screen 4: "dialog confirm publish" (V6-15O confirmation parity)
 	})
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"definition", "publish"}, Scope: cli.ScopeProject,
 		AppOperation: commandTypePublishDefinition, HTTPOperationID: "publishProjectDefinitionVersion",
+		HighImpact: true,
 	})
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"version", "show"}, Scope: cli.ScopeInstallation,
