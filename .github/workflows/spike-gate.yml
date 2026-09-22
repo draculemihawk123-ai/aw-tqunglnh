@@ -419,6 +419,17 @@ jobs:
           # repo-root `mkdir`/`tail`/upload paths.
           AW_V6_REPORT_PATH: ${{ github.workspace }}/v6-report/report.json
         run: |
+          # `set +e` is deliberate and load-bearing. GitHub runs a `shell:
+          # bash` step with `-e` ALREADY SET (the runner's own
+          # `bash --noprofile --norc -e -o pipefail`), and `set -uo pipefail`
+          # does not clear it. Without this line the `go test` below aborts
+          # the whole step the instant it fails, so `status=$?` never runs,
+          # the acceptance log is never tailed, and the explicit failure
+          # message below is never printed — the step just reports a bare
+          # "exit code 1" and the only way to learn WHICH test failed is to
+          # download the artifact. That is exactly what happened on the
+          # windows-latest leg of V6-14A's first real run; this is the fix.
+          set +e
           set -uo pipefail
           mkdir -p v6-report
           go test -count=1 -v ./internal/integration/v6accept/... > v6-report/acceptance.log 2>&1
@@ -510,6 +521,30 @@ jobs:
           set -uo pipefail
           windows_report="windows-report/report.json"
           linux_report="linux-report/report.json"
+
+          # FIRST, before trusting any report's own contents: did the
+          # acceptance jobs that PRODUCED those reports actually succeed?
+          #
+          # The report is written by TestV6HTTPAcceptance_CleanDatabaseJourney's
+          # own t.Cleanup and its `allPassed` therefore describes that one
+          # test's 14 stages — nothing else in the package. Once V6-14A added
+          # its own top-level fault scenarios to the SAME package, a failing
+          # scenario could fail the `go test` invocation, and the job, while
+          # the journey itself passed and its report still said
+          # allPassed:true. That is exactly what happened on V6-14A's first
+          # real run: `v6 acceptance (windows-latest)` was RED and this
+          # comparison job went GREEN, because both reports honestly said
+          # allPassed:true about the journey.
+          #
+          # A gate whose whole purpose is to fail closed cannot be green while
+          # the thing it gates is red, so the upstream job result is checked
+          # here as evidence in its own right. For a matrix job, `result` is
+          # success only when EVERY leg succeeded.
+          upstream="${{ needs.v6-acceptance.result }}"
+          if [ "${upstream}" != "success" ]; then
+            echo "V6-14B FAILED: the v6-acceptance matrix did not succeed (result=${upstream}), so this comparison cannot report PASS no matter what the uploaded reports say — the report's own allPassed covers only the journey's 14 stages, not the other top-level tests in that package. Open the red v6-acceptance job, or its v6-acceptance-report-<os> artifact's acceptance.log, for the failing test."
+            exit 1
+          fi
 
           missing=""
           if [ ! -f "${windows_report}" ]; then missing="${missing}windows-latest "; fi

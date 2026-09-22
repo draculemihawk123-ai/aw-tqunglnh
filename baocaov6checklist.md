@@ -12945,3 +12945,75 @@ minutes is to be root-caused, not accommodated by raising the number again.
 Verify: `python -c "import yaml; ..."` -> `YAML OK`, job timeouts read back as
 `{'contract': 20, 'linux-race-and-stability': 35, 'spike-acceptance': 15,
 'semantic-diff': 10}`.
+
+### V6-14A follow-up: three defects its first real CI run exposed (two of them in V6-14B)
+
+V6-14A's 11 fault scenarios only became CI-visible once V6-14B's `v6-acceptance`
+job reached master. Their first real run (`v6 acceptance (windows-latest)`) was
+red, and finding out why exposed two defects in V6-14B's own CI plumbing plus
+one latent synchronization gap in V6-14's shared projection helper. None of the
+three is a production-code defect; all three are gate/test defects, which is
+precisely what this gate exists to surface.
+
+**Defect 1 (V6-14B, fail-closed violation — the serious one).** `v6 acceptance
+(windows-latest)` FAILED and `v6 acceptance cross-platform diff` passed anyway.
+The report is written by `TestV6HTTPAcceptance_CleanDatabaseJourney`'s own
+`t.Cleanup`, so its `allPassed` describes that test's 14 stages and nothing
+else in the package. Once V6-14A added its own top-level tests to the SAME
+package, a failing fault scenario could fail `go test` — and the job — while
+the journey still honestly reported `allPassed: true`. Both platforms' reports
+said `allPassed: true`, so the comparison found nothing to complain about. The
+downloaded Windows artifact confirms it verbatim: `allPassed: True | stages: 14`
+alongside `FAIL github.com/taQuangLing/agent-workflow/internal/integration/v6accept`.
+Fix: the comparison step now checks `needs.v6-acceptance.result` FIRST and
+refuses to report PASS unless every matrix leg succeeded, with a message
+pointing at the red job and its `acceptance.log`.
+
+**Defect 2 (V6-14B, diagnostic loss).** The acceptance step printed nothing at
+all between its own `##[endgroup]` and `##[error]Process completed with exit
+code 1` — no tailed log, not even the explicit "acceptance suite FAILED"
+message. Cause: GitHub already runs a `shell: bash` step under
+`bash --noprofile --norc -e -o pipefail`, and the step's own `set -uo pipefail`
+does not clear that inherited `-e`, so the failing `go test` aborted the script
+before `status=$?`. The only way to learn which test failed was to download the
+artifact. Proven, not assumed, by running both variants under the runner's exact
+invocation: without `set +e` the script dies and `REACHED` never prints; with it,
+`status=1` is captured and the diagnostics print. Fix: `set +e` ahead of
+`set -uo pipefail`, with the reason recorded at the line.
+
+**Defect 3 (V6-14's own `projectionRebuild` helper, latent since V6-14).** The
+helper snapshotted `before` with `projectionLive(t, 1)`, which waits only for a
+LIVE board with at least one row — not for the live consumer to have caught up
+with the journal. A rebuild always replays everything, so comparing it against
+a live board that is still a few events behind reports a difference that says
+nothing about rebuild correctness. On the Windows runner, V6-14A's scenario 5
+reached the helper seconds after registering the repository and the live
+consumer had not yet applied the repository-badge event:
+
+    before: [... "status":"BACKLOG","blockerCount":0,"pendingScopeExpansionCount":0]
+    after:  [... "repositoryBadges":[{"repositoryId":"repo-a","state":"READY"}]]
+
+The rebuild was correct; the comparison was not. The journey's own stage 12
+never hit this because a dozen slower stages run first. Fix: the helper now
+calls `waitProjectionCaughtUp(t)` before taking the snapshot, which fixes every
+caller at once and removes the latent flake from the journey too.
+
+**Also fixed: the slow-SSE scenario now skips honestly instead of failing.** On
+windows-latest the burst of 1000 messages took 53.9s (~19/s), which a
+continuously-draining reader keeps up with indefinitely, so the >64-item buffer
+overflow that scenario needs was never created and the connection was still open
+after the 30s grace. Failing there reports a machine too SLOW to overload as if
+the server had mishandled an overload. The scenario's PRIMARY invariant — a
+slow or backed-up stream must never block the rest of the server — is unchanged
+and still a hard assertion that ran and held on that very run ("confirmed:
+ordinary requests stayed responsive throughout the SSE burst"). Only the
+secondary expectation, that an overwhelmed stream is eventually dropped, is now
+reported as unobserved with real numbers (message count, elapsed, rate, frames
+received) rather than asserted either way. Same honesty rule scenario 4 already
+follows.
+
+Verify after the fixes, full suite on Windows, `AW_HTTP_ACCEPTANCE=1`:
+13/13 tests pass in 116.4s — journey 23.8s, scenario 4 caught its race this time
+(38.99s, no skip), slow-SSE disconnected in 1.78s (so the new skip path was NOT
+taken locally; it is reserved for machines that cannot create the overflow).
+`go build ./...` and `go vet ./...` clean repo-wide.

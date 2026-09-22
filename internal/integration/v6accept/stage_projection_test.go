@@ -155,6 +155,20 @@ func (j *journey) watchEventsQuiet(t *testing.T, cursor uint64, idle, max time.D
 // generation advanced.
 func (j *journey) projectionRebuild(t *testing.T) {
 	api := j.s.api
+	// The "before" snapshot must be a CAUGHT-UP live projection, not merely
+	// a LIVE one with at least one row. A rebuild replays the whole journal,
+	// so it always produces the fully-applied read model; comparing that
+	// against a live board that is still a few events behind reports a
+	// difference that says nothing about rebuild correctness.
+	//
+	// This is not hypothetical. V6-14A's scenario 5 reaches this helper
+	// seconds after registering the repository, and on a slow Windows runner
+	// the live consumer had not yet applied the repository-badge event when
+	// the snapshot was taken: "before" had no repositoryBadges, "after" had
+	// [{repo-a READY}], and the equality assertion below failed against a
+	// perfectly correct rebuild. The journey's own stage 12 never saw it only
+	// because a dozen slower stages run first and give the consumer time.
+	j.waitProjectionCaughtUp(t)
 	before := j.projectionLive(t, 1)
 
 	key := "acc-rebuild-1"
