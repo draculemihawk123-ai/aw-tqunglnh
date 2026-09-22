@@ -45,5 +45,6 @@ func init() {
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"adapter", "register"}, Scope: cli.ScopeInstallation,
 		AppOperation: commandTypeRegister, HTTPOperationID: "registerAdapterBuild",
+		HighImpact: true, // UX Screen 1 row 4: "Đăng ký (confirm) adapter build sau probe" (V6-15O confirmation parity)
 	})
 }

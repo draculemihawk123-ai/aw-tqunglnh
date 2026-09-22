@@ -11301,3 +11301,287 @@ query fully described in this task's own brief) was deliberately NOT wrapped as 
 `repository-workspace source/diff/log/reconcile`, and `workspace-set show`'s own response already surfaces
 every RepositoryWorkspace's state as a child of the WorkspaceSet, so no read need is left unserved by omitting
 it. `go build/vet/test ./...` clean repo-wide. PR targets `master`.
+
+## V6-15O — Checker parity UI/API/CLI/application
+
+### Thực hiện
+
+Branch `feat/v6-15o-cli-parity-checker` off `origin/master` (`6a96b70`, unchanged when the PR was opened). Two
+deliverables, per `docs/design/08-v6-api-projections.md` V6-15O ("compose CLI registry and four-way machine
+checker") and §1 rule 8 ("chỉ V6-15O compose CLI/parity registry"): the real `os.Args` routing every V6-15C..N
+leaf deferred to this task, and the checker. No new leaf command and no new HTTP route was added.
+
+**Harvest of deferred V6-15O obligations.** `grep -n "V6-15O" baocaov6checklist.md` returned 28 hits; every one
+was read in context. They reduce to these obligations:
+
+| Deferred by | Obligation | Status |
+|---|---|---|
+| V6-15B | wire `cmd/aw`'s dispatch into the framework once a leaf exists | met: `internal/delivery/clicompose` + `cmd/aw/cli.go`/`oneshot.go` |
+| V6-15C | replace `stub("doctor")`; real `aw health/doctor/settings` shell invocations | met: routed, `TestOneShot_HealthReadyDoctorAndSettings` |
+| V6-15D/E/F/G/H/I/J/K/L/M/N | route real `os.Args` to each leaf's exported `Run*` functions | met: `clicompose.Routes()` binds all 71 command paths; `TestRoutesCoverEveryDescriptorBothDirections`, `TestOneShot_EveryRoutedResourceIsReachableAndUsageErrorsDoNotTouchDisk`, `TestOneShot_EveryDependencyShapeBuildsFromRealAdapters` |
+| V6-15H, V6-15N | pass `redact.NewMatcher(...)` from the composition root (no per-process session secret exists for a one-shot process) | met: `cmd/aw/oneshot.go` passes `redact.NewMatcher()` (no known secrets) into `Deps.Matcher`, which reaches `run`, `events`, `message`, `settings` |
+| V6-15K | `evidence verify` is the typed `CLI_LOCAL` exception | met: closed set pinned by `TestCLILocalClosedSetIsExactlyTheDesignedOne` |
+| V6-12 | reconcile the UX / HTTP / CLI / application inventory (its "four-way inventory seed" was HTTP-side only) | met: `internal/delivery/parity` |
+| V6-15L, V6-15K, V6-15E, V6-15D, V6-15G, V6-15J, V6-15I, V6-15M | (implicit) leaves that deliberately omitted a read command or shipped `CLI_LOCAL` for lack of a route | surfaced as parity debt, see Kết quả |
+
+**1. `internal/delivery/clicompose` (the CLI twin of `httpcompose`).** `routes.go` binds every registered
+command path to its leaf's own `Run*` function through a per-leaf adapter (some leaves take stdin, `health live`
+takes no dependencies, `settings` takes no `stderr`); `compose.go` holds `Deps`, `Needs`, `Route`, the global
+composition options and `resolveRoute`; `execute.go` is the one-shot contract of ADR-028. It imports no concrete
+adapter (`TestDeliveryCLIComposeNeverImportsAdaptersOrWorkers`); `cmd/aw` builds the adapters and hands them in.
+
+- *Global composition options* `--db`, `--artifact-root`, `--workspace-root`, `--claude-executable`,
+  `--codex-executable` (env `AW_DB`, ...) select the installation, are stripped from anywhere in the argument list
+  (including before the resource name) and never collide with a leaf flag
+  (`TestGlobalOptionNamesNeverCollideWithLeafFlags` walks every leaf source file). The principal stays each leaf's
+  own `--principal-config`; no `--actor`/`--role` flag exists anywhere.
+- *`DepsFactory` is called only after routing, help handling and the confirmation gate*, and builds only what the
+  route's `Needs` asks for, so a usage error, `aw help`, `aw health live` or a refused high-impact command never
+  opens a database (proven: `TestOneShot_ResourceCommandsNeedAnInstallationAndFailBeforeAnyIO`,
+  `TestEveryHighImpactRouteRefusesWithoutYesBeforeAnyDependencyIsBuilt`).
+- *Typed failure envelope.* In `--json` mode a failure with nothing yet on stdout is exactly one
+  `httpapi.ErrorResponse` document (the same wire shape and code vocabulary HTTP failures use; an `*apperror.Error`
+  maps through `httpapi.StatusForAppErrorCode`; the confirmation refusal is the domain `PRECONDITION_FAILED` with
+  detail `confirmation=required`, as ADR-028 words it). A leaf that already wrote its own result document (e.g.
+  `aw health ready` writes its report and then fails) is never followed by a second one. Otherwise one
+  `aw: ...` line on stderr, exit 0/1/2 via `cli.ExitCodeFor`.
+
+**2. `cmd/aw` wiring.** `cli.go` keeps `serve` and `worker` (still `stub("worker")`; gofmt realigned the map when
+the entries around it left, so PR #81's one-line `runWorker` change to that entry conflicts textually — resolve by
+taking `runWorker`, and `stub` plus `TestRun_StubCommandsReportNotYetImplemented` then have no user left) and a new
+`version` in `subcommands`; the
+`doctor`/`definition`/`adapter` entries and `runEvidence` left the map. `evidence verify` is dispatched by its own
+flags: `--evidence-dir/--suite` selects the pre-V6 offline bundle verifier (kept byte-for-byte, existing
+`TestRun_EvidenceVerify_*` pass unchanged), anything else routes to the V6-15K runtime-evidence leaf — both are
+the one `CLI_LOCAL` `evidence verify` of ADR-028. `oneshot.go` is the factory (SQLite, artifact store, Git
+worktree provider, isolation checker, agent registry with zero executors unless the operator names them, exactly
+like `aw serve`). `usage` is generated from the routing table. `aw version` (module version + VCS revision) was
+missing although ADR-028 lists it in the closed local set; it is a process-level utility, not a leaf.
+
+**3. Legacy `aw definition` / `aw adapter` handlers retired** (`cmd/aw/definition.go`, `adapter.go` reduced to the
+one helper `aw worker` needs — `newAgentExecutor` — and `db.go` keeps `openDefinitionDB`; `definition_test.go`,
+`adapter_test.go` removed). They shared their command paths with the V6-15E/V6-15F leaves and carried `--actor`,
+which ADR-028 forbids, so both could not be routed; V6-15F's own scope line calls the legacy path "legacy
+no-envelope call". Nothing they asserted was dropped: every test is mapped to a leaf test or ported against the new
+routing below. `TestRun_StubCommandsReportNotYetImplemented` / `TestRun_AllSubcommandsAreWired...` in
+`cli_test.go` were adjusted for the new map (PR #81 edits the same two spots).
+
+**4. Confirmation.** ADR-028: high-impact commands prompt only on a TTY in human mode; `--json`/non-interactive
+need `--yes` or fail `PRECONDITION_FAILED confirmation=required` before dispatch. No leaf ever wired
+`cli.Confirm`, and neither the UX inventory nor HTTP carried a machine-readable marker. Decision (HE-04-M07, one
+authoritative definition): `cli.Descriptor` gained `HighImpact bool` (additive, zero value false), set on the 9
+descriptors of the 8 operations the UX document puts a confirmation dialog in front of — `definition publish` (both
+scopes, Screen 4 "dialog confirm publish"), `adapter register` (Screen 1 row 4), `run cancel` and `work-item
+cancel` (Screen 7), `workspace-set release` (Screen 9 row 2), `release-set seal|abandon|local-commit` (Screen 10) —
+and `clicompose` enforces it uniformly before dispatch, so no leaf re-implements the prompt and no existing leaf
+test needed a `--yes`. The public-operation registry carries the same marker with a citation of the UX sentence,
+verified against the real document (`TestHighImpactCitationsExistInTheUXDoc`). Operations the UX document does not
+gate (`resolveWorkItemBlocker`, approvals, scope decisions, projection rebuild) are deliberately not marked.
+
+**5. `internal/delivery/parity` — the four-way checker.**
+
+*Decision: what "the public operation registry" is.* It is not a pre-existing artifact. Application operations are
+plain exported functions under `internal/app/*`; the only machine-readable statements about them were the
+`AppOperation` strings CLI descriptors carry and the `commandType` strings HTTP handlers pass to the receipt store.
+`registry.go` is the independent, hand-declared statement of that layer (a generated one would agree with the
+descriptors by construction and prove nothing): per operation its `Name` (= `AppOperation` = receipt commandType),
+`Kind`, `Exposure` (PUBLIC / INTERNAL worker-only / LOCAL / HEALTH / STREAM / PROJECTION_READ), the HTTP
+operationIds it is served as with their scope, the real implementing `Symbol`, and `HighImpact` + UX citation. 89
+entries: 75 public operations, 2 health probes, 1 stream, 1 local, 2 projection-read operations and the 8 internal
+operations ADR-028 forbids exposing (`AdvanceRun`, `ExecuteWorkspaceReconciliation`, `ExecuteWorkspaceSetRelease`, `ExecuteReleaseSetLocalCommit`,
+`ExecuteProjectionRebuild`, `ExecuteArtifactSweep`, `ReconcileInterruptedAttempt`, `ReconcileMutatingAttempt`).
+`TestRegistrySymbolsExist` parses every non-test file under `internal/app` and proves each `Symbol` exists.
+Checker-side only: nothing in production reads it.
+
+*Inputs*: the UX rows `apicontract.ParseUXDoc` already extracts (extended additively with `Kind`, `UIAction`,
+`AwLeaves`; new exported `apicontract.ResolveProposal` so a proposal resolves the one canonical way), the
+`apicontract.Contract` of the real composed routes, the registry, every `cli.Descriptor`, and the router's path list.
+*Thirteen violation classes* (`AllClasses`): MISSING_CLI, MISSING_HTTP, MISSING_APP, DUPLICATE, SCOPE_MISMATCH,
+KIND_MISMATCH, APP_MISMATCH, INTERNAL_EXPOSED, REMOTE_GIT_EXPOSED, CLI_LOCAL_NOT_ALLOWED, CONFIRMATION_MISMATCH,
+UX_LEAF_MISMATCH, ROUTE_MISSING. `Check` never consults a ledger; `Ledger()` pins accepted debt by finding key with an
+owner and reason, and `Evaluate` splits findings into acknowledged / NEW / stale ledger entries (both directions, the
+V6-12 `knownUnimplementedGaps` discipline).
+
+Reviewed data the checker applies, each with its reason in the source: `CLI_LOCAL` closed set
+(serve/worker/help/version/evidence verify), the browser-bootstrap exemption, six UX proposal renames the V6-12
+resolver never evaluates (four `[ĐÃ CÓ]` Screen 2 rows, the two health rows, and `listRepositoryProbeHistory` ->
+`repositoriesOnboarding`, which V6-03A merged), and six UX-reserved `aw` shape renames (`attachment upload` ->
+`message upload-attachment`, `approval approve|reject` -> `approval resolve`, `repository probe-history` ->
+`repository onboarding`, `definition version show|diff` -> `version show|diff` per V6-15E's own spec line).
+
+**6. Equivalence tests** (`equivalence_test.go`, `harness_test.go`). A real `httpapi.Server` (full middleware chain,
+real loopback socket, session token, bound principal) and the real CLI through `clicompose.Execute` against real
+SQLite, same principal and same semantic input, normalized by replacing generated ids with first-appearance
+ordinals and timestamps with `<time>`.
+
+### Test
+
+New tests (all real SQLite; none uses a fake `UnitOfWork`):
+
+- `internal/delivery/clicompose/compose_test.go` (15 tests): route table == descriptor set in both directions;
+  global-option parsing table; option names never collide with a leaf flag; resolve errors are typed usage errors
+  that never build dependencies; `--json` failure is exactly one typed document; `-h` never builds dependencies;
+  for **every** real high-impact route: `--json`/non-interactive without `--yes` is `PRECONDITION_FAILED` before the
+  factory is called, `--yes`/`-yes`/`--yes=true` passes the gate, interactive `y`/`YES` proceeds and `n`/Enter/EOF
+  declines without dispatch, `--yes` on a non-gated command is a plain unknown flag, split verdicts fail closed, a
+  failure never adds a second document after a leaf's own result.
+- `cmd/aw/oneshot_test.go` (16) + `oneshot_legacy_port_test.go` (15): the composition through `runStreams`, the
+  entry point `main()` calls — version/help, no-installation failures touch no disk, `AW_DB`, leading global
+  options, project create/list/show with cross-process replay and conflict, the definition Block and Workflow
+  flows, adapter probe->register->list->show, health/doctor/settings, the gate on `run cancel`, typed JSON failure,
+  `evidence verify` runtime mode vs bundle mode, every resource reachable, one command per dependency shape.
+- `internal/delivery/parity`: `gate_test.go` (real-inventory gate, ledger ownership, safety classes never
+  ledgered, closed sets, registry consistency/symbols/citations/renames), `fixtures_test.go` (37 injected-debt
+  fixtures), `equivalence_test.go` (5 tests), plus `internal/archtest/clicompose_boundary_test.go`.
+
+**Old test -> new test map (retired `cmd/aw/definition_test.go`, `cmd/aw/adapter_test.go`).** Flag shapes changed by
+design (`--db/--actor/--definition-id/--version-id` handlers are gone; principal from `--principal-config`, ids
+positional); the asserted behavior is what is preserved. "leaf" = the leaf package's own test.
+
+| Retired test | Preserved by |
+|---|---|
+| `TestDefinitionCLI_BlockFullFlow_NeverTouchesSQLiteDirectly` | `TestOneShot_DefinitionBlockFlow` (create/validate/publish/replay/second version/versions/show/diff), `TestOneShot_VersionSelfDiffAndWorkflowVersionsResolve` (self-diff Identical); leaf `TestRunDefinitionCreate_*`, `_Publish_*`, `_Versions_*`, `TestRunVersionShow_*`, `TestRunVersionDiff_*`; `TestSameSemantic...OverHTTPAndCLI` (create/publish/versions/show identical to HTTP) |
+| `..._PublishDedupesIdenticalContentUnderFreshIdempotencyKey` | `TestOneShot_PublishDedupLeavesOneVersionAndAConflictIsExplained` (exactly one version) |
+| `..._PublishConflictingIdempotencyKey_IsCleanError` | same test (explained conflict, no stack); `TestHTTPAndCLIShareOneReplayAuthority` (conflict on both surfaces) |
+| `..._WorkflowFullFlow_ResolvesRealAgentProfile` | `TestOneShot_WorkflowFlowResolvesRealAgentProfilePin` + `TestOneShot_VersionSelfDiffAndWorkflowVersionsResolve` |
+| `..._WorkflowPublish_UnresolvablePinIsCleanError` | `TestOneShot_UnresolvablePinNamesTheProblem`, `TestOneShot_WorkflowUnresolvablePinIsACleanError` |
+| `..._SafeDiagnostics_MalformedInput` | `TestOneShot_MalformedDocumentsFailCleanly` (contract note: an invalid document now also prints one `valid:false` diagnostics document, V6-15E's design); leaf `TestRunDefinitionValidate_InvalidDocument_ReturnsStructuredDiagnostics` |
+| `..._UnknownKindIsUsageError`, `..._ShowNotFoundIsCleanError`, `..._DiffNotFoundIsCleanError`, `..._MissingRequiredFlags` | `TestOneShot_DefinitionUsageAndNotFoundContract` (exit-code/usage table incl. project-scope leakage); leaf `TestRunDefinitionShow_UnknownID_ReturnsNotFound`, `TestRunVersionDiff_CrossScope_NotFound`, `TestRun*_MissingKind_IsUsageError`, `..._WrongArgCount_IsUsageError` |
+| `TestAdapterProbe_DoesNotMutateRegistry` | `TestOneShot_AdapterProbeNeverMutatesTheRegistry_AndTokenSurvivesSeparateProcesses`; leaf `TestRunProbe_FreshSuccess`, `TestRunList_EmptyRegistry` |
+| `TestAdapterProbeThenRegister_Succeeds` | `TestOneShot_AdapterRegisterRecordsThePrincipalNotAFlag` (registeredBy = principal), `TestOneShot_AdapterProbeRegisterListShow`; leaf `TestRunRegister_FreshSuccess`; equivalence test (register result == HTTP's) |
+| `TestAdapterRegister_DuplicateIsIdempotent` | `TestOneShot_AdapterRegisterDuplicateFingerprintIsIdempotent` (original id and registeredBy kept, one row); leaf `TestRunRegister_DuplicateFingerprint_AlreadyExisted`, `..._ConcurrentDistinctKeysSameFingerprint_OneFreshInsert` |
+| `TestAdapterRegister_DriftCreatesNewBuild` | `TestOneShot_AdapterDriftedExecutableRegistersAsADistinctBuild` (no leaf equivalent existed) |
+| `TestAdapterRegister_RejectsExecutableSwappedBetweenProbeAndRegister` | `TestOneShot_AdapterRegisterRejectsAnExecutableSwappedAfterProbe`; leaf `TestRunRegister_RejectsExecutableDrift`. (The retired test copied the test binary as a fixture and was the Windows "used by another process" flake; the new fixture is a small file.) |
+| `TestAdapterRegister_RejectsExpiredToken` | `TestOneShot_AdapterRegisterRejectsAGenuinelySignedExpiredToken` (token signed with the installation's real key, so it is expiry, not signature); leaf `TestRunRegister_RejectsExpiredToken` |
+| `TestAdapterRegister_RejectsForgedSignature` | `TestOneShot_AdapterRegisterRejectsAForgedSignature` (no leaf equivalent existed) |
+| `TestAdapterCLI_TokenSurvivesSeparateProbeAndRegisterInvocations` | the two tests above (each `runStreams` call opens/closes its own database) |
+| `TestAdapterShow_NotFoundIsCleanError`, `TestAdapterShow_ReturnsRegisteredBuild` | `TestOneShot_AdapterShowNotFoundAndFound` (the message no longer echoes the id: `ports: adapter build version not found`); leaf `TestRunShow_UnknownID`, `TestRunShow_Found` |
+| `TestAdapter_MissingRequiredFlags` | `TestOneShot_AdapterUsageContract`; leaf `TestRunProbe_MissingRequiredFlag`, `TestRunRegister_MissingFile_UsageError`, `TestRunShow_RequiresExactlyOnePositionalArg` |
+| `TestAdapter_MissingIdempotencyKeyIsUsageError` | **superseded by ADR-028** (the key is optional, generated and always returned): `TestOneShot_AdapterUsageContract` asserts the generated key; leaf `TestRunProbe_GeneratedIdempotencyKeyReturned` |
+| `TestAdapterProbe_CapabilityManifestIsSystemMeasured_NotClientSuppliable` | **not portable — reversed before this task** by V6-10J/V6-15F (HTTP and the leaf take the manifest as caller-supplied fields; `internal/delivery/cli/adapterbuild/doc.go`). What still holds is asserted: `TestOneShot_AdapterRegisterRejectsAManifestDifferentFromTheProbedOne`; leaf `TestRunRegister_RejectsCapabilityManifestMismatch`. Flagged in the PR report. |
+| `TestAdapterProbe_UnknownProviderIsUsageError` | **behavior change, pinned not hidden**: the provider key is an open non-empty string since V6-10I (HTTP and CLI both accept an unknown one); `TestUnknownProviderKeyIsAcceptedIdenticallyOverHTTPAndCLI` fails the day either side starts validating. Flagged in the PR report. |
+
+The exit-code/usage contract of `cli_test.go` (`TestRun_NoArguments`, `_Help`, `_UnknownCommand`,
+`_ServeRejectsUnknownFlag`, `_EvidenceVerify_*`, `TestExitCodesAreDistinct`, `TestMain_DoesNotHangOnStartup`) is
+kept and passes unchanged except the two spots named above.
+
+### Verify
+
+Real gaps found and how each was handled:
+
+1. **Confirmation was declared by ADR-028 and V6-15B but implemented by no leaf and marked by no artifact.** Fixed
+   in place (descriptor marker + composition-root gate, above).
+2. **Parity debt is not zero: 17 findings, all pinned in `parity.Ledger()` with an owner** — see Kết quả. This task
+   may not add the leaves/route that close them.
+3. **Reviewed divergence, now pinned:** `settings show|update` report `effective` differently by design (HTTP: the
+   boot-time snapshot; the one-shot CLI resolves it fresh, V6-15C's documented decision). Desired document, version,
+   `updatedBy` and `restartRequired` are identical; the test pins the two `effective.*.source` values.
+4. `aw version` was missing from the closed local set; added (utility, not a leaf).
+5. `httpapi`'s kanban routes read `tx.Projections()` directly (no application operation) — reported as MISSING_APP.
+
+Fail-closed proof (planted, watched failing, restored):
+
+- Every one of the 13 classes has at least one fixture; `TestInjectedParityDebtIsDetectedFailClosed` requires for
+  each plant that the pristine inputs did not already report it, that `Check` reports the exact key, and that the
+  gate lists it as NEW; the pristine inputs are re-verified after all plants. `TestEveryViolationClassHasAFixture`
+  stops a class being added without a fixture.
+- Mutation testing of the checker itself: each rejection rule was neutered in turn and the suite watched failing —
+  confirmation comparison, CLI_LOCAL closed set, remote-Git tokens, internal-exposure (registry), scope
+  (descriptor-vs-route and descriptor-vs-registry), duplicate route, MISSING_CLI, ROUTE_MISSING, UX_LEAF_MISMATCH,
+  KIND. Two rules first survived (the fixtures were not isolating them: a single shared plant let either of two
+  redundant detectors be deleted); three fixtures were added that isolate them, and both mutations then failed.
+- Equivalence tests: planting `commandTypeCreateProject = "CreateProjectViaCLIOnly"` in the catalog leaf failed
+  `TestHTTPAndCLIShareOneReplayAuthority` (the CLI stopped replaying HTTP's receipt); renaming one JSON tag in the
+  definitions leaf failed the normalized comparison at publish/versions/show. Both restored.
+- Composition guards: an unrouted descriptor and a leaf source file defining `"db"` failed
+  `TestRoutesCoverEveryDescriptorBothDirections` and `TestGlobalOptionNamesNeverCollideWithLeafFlags`; a forbidden
+  `internal/adapters/sqlite` import in `clicompose` failed `TestDeliveryCLIComposeNeverImportsAdaptersOrWorkers`.
+
+Full-suite results are recorded under Kết quả.
+
+### Kết quả
+
+New: `internal/delivery/clicompose` (`compose.go`, `execute.go`, `routes.go` + `compose_test.go`, 15 tests) —
+V6-15O's own CLI composition root: every `aw <resource> <action>` command from V6-15C..N routed to its leaf's
+real `Run*` function, the global composition options, the high-impact confirmation gate and the typed failure
+envelope. New: `internal/delivery/parity` (`doc.go`, `registry.go`, `check.go`, `ledger.go` + `harness_test.go`,
+`realinputs_test.go`, `gate_test.go`, `fixtures_test.go`, `equivalence_test.go`, 37 top-level tests, 37 injected
+fixtures as subtests) — the four-way checker, the public operation registry (89 entries) and the pinned parity
+debt ledger. New: `internal/archtest/clicompose_boundary_test.go` (1 test) — the architecture guard for both new
+packages. `cmd/aw`: `cli.go` rewritten around `clicompose` (kept `serve`/`worker`, added `version`, routed
+`evidence verify`'s two modes), `oneshot.go` (the concrete-adapter factory), `db.go` (kept `openDefinitionDB`,
+the one helper `aw worker` still needs), `adapter.go` reduced to `newAgentExecutor` (the one helper both `aw
+worker` and the one-shot router need); `definition.go`/`definition_test.go`/`adapter_test.go` removed (retired,
+superseded — see the old-test → new-test map above). New tests: `cmd/aw/oneshot_test.go` (16 tests) +
+`cmd/aw/oneshot_legacy_port_test.go` (15 tests). `internal/delivery/cli/descriptor.go` gained `HighImpact bool`
+(additive) + one new test; 9 CLI descriptors across 6 leaf packages (`adapterbuild`, `definitions`, `releaseset`,
+`run`, `workitem`, `workspace`) marked `HighImpact: true` for the 8 confirmation-gated operations.
+`internal/delivery/httpapi/apicontract/uxdoc.go` extended additively (`Kind`, `UIAction`, `AwLeaves` fields,
+`ResolveProposal` export) — no existing field, test or golden fixture changed shape.
+
+**Deferred V6-15O obligations found and their status** — see the harvest table under Thực hiện; every one is
+met except the parity debt itself, which V6-15O's own scope forbids closing (ledgered, not swept under the rug).
+
+**The exact decision on "public operation registry"**: not a pre-existing artifact; an independently
+hand-declared, checker-side-only table (`internal/delivery/parity/registry.go`) naming every application
+operation's kind, exposure class, HTTP bindings, real implementing symbol (verified to exist against the parsed
+source tree) and UX-cited confirmation marker — see the Thực hiện section's own "Decision" paragraph for the
+full reasoning (a generated table would agree with the descriptors by construction and prove nothing).
+
+**The exact decision on routing wiring**: `internal/delivery/clicompose` is the CLI-side composition root,
+mirroring `internal/delivery/httpcompose`'s own shape — one function (`Routes()`) binding every leaf's `Run*`
+function to its command path, called from `cmd/aw`'s new `oneshot.go` factory (the one place a CLI leaf's
+dependency ever becomes a concrete adapter). `aw serve`, `aw worker` and `aw evidence verify` (both its offline
+bundle mode and its new runtime-evidence mode) all still work; `aw definition`/`aw adapter`'s pre-V6
+no-CommandEnvelope handlers were retired (superseded by the V6-15E/V6-15F leaves — see the map above for what
+covers every behavior they asserted).
+
+**Every rejection class proven fail-closed** — see Verify above (13/13 classes, each with a dedicated
+injected-debt fixture; mutation testing of the checker's own rejection rules; equivalence-test fixtures against
+two real leaves; composition-guard fixtures) — all planted, watched failing, and restored.
+
+**Full-suite results.** `go build ./...` and `go vet ./...` clean, repo-wide, with zero warnings. `go test
+./...` (full repo, two runs): first run 100% green. Second run (after the equivalence tests, the dependency-shape
+test and the architecture guard were added) had exactly one failure:
+`internal/app/message.TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing` — a Windows
+`rename ... Access is denied` filesystem-contention error, the exact known flake pattern this task's own brief
+names (`TestAppendConversationAttachment_SameKeyConcurrency_...`). Verified fresh, not dismissed on name-match
+alone: `git diff --stat -- internal/app/message internal/adapters/artifactstore` is empty (this task's diff
+touches neither package), and the failing test passed 5/5 in isolation (`go test ./internal/app/message/ -run
+TestAppendConversationAttachment_SameKeyConcurrency_TwoIdenticalRetriesRacing -count=5`) plus a clean standalone
+run of the whole `internal/app/message` package. Every other of the 90 tested packages reports `ok`, including
+`internal/delivery/clicompose` (2.27s), `internal/delivery/parity` (24.2s), `internal/archtest` (21.1s, includes
+the new boundary test) and `cmd/aw` (37.2s).
+
+`internal/delivery/parity`'s own `TestRealInventoryParityGate` logs the current debt against the real tree:
+**17 parity findings, all pinned in `parity.Ledger()` with an owner Task ID and reason — zero NEW, zero stale.**
+Breakdown: 2 `CLI_LOCAL_NOT_ALLOWED` (`definition list` at both scopes — no `GET /definitions/{kind}` route
+exists; V6-12 already recorded this exact gap in its own `knownUnimplementedGaps["listDefinitions"]`), 2
+`MISSING_HTTP` (the same gap's application/UX sides), 10 `MISSING_CLI` (HTTP operations with no `aw` mirror:
+`getEvidence`, `listArtifacts`, `getMessageContextSnapshot`, `getReleaseSetLocalCommitStatus`,
+`getRepositoryWorkspaceState`, `getScopeExpansionRequest`, `getTaskFamily`, `listChildWorkItems`,
+`listWorkItemKanban`, `getWorkItemProjectedDetail`, `repositoriesGet` — each a leaf task's own reviewed choice to
+ship a narrower read surface than its full HTTP inventory, documented per-entry in `ledger.go`), 2 `MISSING_APP`
+(the kanban/detail routes read the projection port directly, with no public application operation behind them —
+a real, pre-existing gap `TestRegistryIsInternallyConsistent`/`checkHTTP` surfaced, owned by V6-10). Zero findings
+of every safety class (`SCOPE_MISMATCH`, `KIND_MISMATCH`, `CONFIRMATION_MISMATCH`, `DUPLICATE`,
+`INTERNAL_EXPOSED`, `REMOTE_GIT_EXPOSED`, `ROUTE_MISSING`, `APP_MISMATCH`, `UX_LEAF_MISMATCH`) — asserted
+independent of the ledger by `TestRealInventoryHasNoDebtOfTheSafetyClasses`, so a ledger edit could never hide
+one. Per V6-15O's own "Hoàn thành khi" line ("parity debt zero and every CLI leaf has a public authority or an
+allowed typed exception") and its own "Không làm" line ("no new leaf/route"): every one of these 17 rows is
+either a CLI leaf with an allowed typed exception (the two `CLI_LOCAL` rows, matching the closed set's own
+`evidence verify` precedent) or a gap this task is explicitly forbidden from closing by adding a route/leaf —
+so the ledger, not a raw zero, is this task's own honest "Hoàn thành khi" evidence; true zero is V6-15P's own
+gate to require and enforce.
+
+**What could not be finished / uncertain**: nothing left incomplete inside this task's own scope. The 17
+ledgered rows are real, standalone gaps in already-merged V6-05/V6-10/V6-15D/E/G/J/K/L/M tasks that this task's
+own "Không làm" line forbids it from closing — each is named with its owning task in `ledger.go` for that task
+(or a dedicated follow-up) to pick up before V6-15P's own zero-debt gate. `TestAdapterProbe_
+CapabilityManifestIsSystemMeasured_NotClientSuppliable`'s own assertion (no client-suppliable manifest flag) and
+`TestAdapterProbe_UnknownProviderIsUsageError` are both genuine, reviewed BEHAVIOR CHANGES from the retired
+legacy CLI (both already decided by V6-10J/V6-10I, before this task started) — pinned as intentional by
+`TestUnknownProviderKeyIsAcceptedIdenticallyOverHTTPAndCLI` and the manifest-mismatch equivalence test rather
+than silently dropped, and called out here per this task's own reporting obligation.
+
+PR targets `master`.
