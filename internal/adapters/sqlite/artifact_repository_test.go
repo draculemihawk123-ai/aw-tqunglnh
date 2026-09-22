@@ -415,7 +415,9 @@ func TestArtifactRepository_InsertArtifact_ClaimedLocator_Rejected(t *testing.T)
 // by exactly one and rejects a stale caller, and that SetArtifactSweepDryRun
 // flips DryRun independent of Generation.
 func TestArtifactRepository_ArtifactSweepState_SeededDryRunThenAdvances(t *testing.T) {
-	store := openCatalogTestStore(t, "artifacts-sweep-state.db")
+	// Seeded-by-migration test: keeps the real fresh-open/migrate path (see
+	// template_db_test.go) rather than the shared pre-migrated template.
+	store := openFreshStore(t, "artifacts-sweep-state.db")
 	ctx := context.Background()
 
 	var seeded ports.ArtifactSweepState

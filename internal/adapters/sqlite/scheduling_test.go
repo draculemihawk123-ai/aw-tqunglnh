@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -741,7 +740,7 @@ func TestSortedWriteLeaseGrantsOrdersByRepositoryID(t *testing.T) {
 
 func openSchedulingTestStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "agentkit.db"))
+	store, err := Open(context.Background(), migratedDatabasePath(t, "agentkit.db"))
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
 	}

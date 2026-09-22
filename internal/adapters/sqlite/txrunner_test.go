@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -15,7 +14,7 @@ import (
 
 func TestRunSerializedWrite_CommitsOnSuccess(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(ctx, filepath.Join(t.TempDir(), "agentkit-txok.db"))
+	store, err := Open(ctx, migratedDatabasePath(t, "agentkit-txok.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -44,7 +43,7 @@ func TestRunSerializedWrite_CommitsOnSuccess(t *testing.T) {
 
 func TestRunSerializedWrite_RollsBackOnFnError(t *testing.T) {
 	ctx := context.Background()
-	store, err := Open(ctx, filepath.Join(t.TempDir(), "agentkit-txfail.db"))
+	store, err := Open(ctx, migratedDatabasePath(t, "agentkit-txfail.db"))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -81,7 +80,7 @@ func TestRunSerializedWrite_RollsBackOnFnError(t *testing.T) {
 // goroutines sharing one pool.
 func TestRunSerializedWrite_ConcurrentWritersSerializeAndBothSucceed(t *testing.T) {
 	ctx := context.Background()
-	databasePath := filepath.Join(t.TempDir(), "agentkit-contention.db")
+	databasePath := migratedDatabasePath(t, "agentkit-contention.db")
 	storeA, err := Open(ctx, databasePath)
 	if err != nil {
 		t.Fatalf("Open (A): %v", err)
