@@ -84,6 +84,14 @@ type workerOptions struct {
 	completionInterval                  time.Duration
 	reaperInterval, sweepInterval       time.Duration
 	envAllowlist                        []string
+	// localCommitWriteLeaseTTL overrides the package-level
+	// localCommitWriteLeaseTTL constant when positive — see
+	// --local-commit-write-lease-ttl's own flag doc comment.
+	localCommitWriteLeaseTTL time.Duration
+	// projectionRebuildBatchSize overrides
+	// projectionrebuildworker.Deps.BatchSize when positive — see
+	// --projection-rebuild-batch-size's own flag doc comment.
+	projectionRebuildBatchSize int
 }
 
 // worker is the production `aw worker` composition root. Until V6-14 this
@@ -113,6 +121,10 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	reaperInterval := flags.Duration("reaper-interval", defaultReaperInterval, "pause between two recovery-reaper passes (orphaned attempts, stranded cancellation intents)")
 	sweepInterval := flags.Duration("sweep-interval", defaultSweepInterval, "pause between two artifact retention sweeps")
 	envAllowlist := flags.String("env-allowlist", "", "comma-separated names of parent environment variables a spawned provider/command process may inherit (default: none)")
+	localCommitWriteLeaseTTLFlag := flags.Duration("local-commit-write-lease-ttl", localCommitWriteLeaseTTL,
+		"how long a release-set local-commit write lease (internal/app/releasesetcommit) is held without renewal — bounds how long a crashed worker's own in-flight local commit blocks a fresh worker from reclaiming and retrying it; production has no reason to lower this below the default, it exists so an acceptance test can prove reclaim genuinely happens without waiting out the full production TTL")
+	projectionRebuildBatchSize := flags.Int("projection-rebuild-batch-size", 0,
+		"how many journal rows one projection rebuild BUILDING/CUTTING_OVER round scans (internal/app/projectionrebuildworker.Deps.BatchSize); 0 keeps that package's own default (500). Production has no reason to lower this; it exists so an acceptance test can force a rebuild of a modest journal through several observable rounds instead of one that completes inside a single, unobservable job claim")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
@@ -132,6 +144,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 		pollInterval: *pollInterval, shutdownGrace: *shutdownGrace,
 		projectionInterval: *projectionInterval, completionInterval: *completionInterval,
 		reaperInterval: *reaperInterval, sweepInterval: *sweepInterval, envAllowlist: splitCommaList(*envAllowlist),
+		localCommitWriteLeaseTTL: *localCommitWriteLeaseTTLFlag, projectionRebuildBatchSize: *projectionRebuildBatchSize,
 	})
 	if err != nil {
 		return err
@@ -187,6 +200,14 @@ type workerDeps struct {
 	// reaperInterval/sweepInterval are the pauses the two self-rescheduling
 	// CONTROL jobs leave between passes.
 	reaperInterval, sweepInterval time.Duration
+	// localCommitWriteLeaseTTL is the effective TTL buildWorkerRegistry
+	// wires into releasesetcommit.NewHandler — see workerOptions' own
+	// identically-named field doc comment.
+	localCommitWriteLeaseTTL time.Duration
+	// projectionRebuildBatchSize is the effective batch size
+	// buildWorkerRegistry wires into projectionrebuildworker.Deps — see
+	// workerOptions' own identically-named field doc comment.
+	projectionRebuildBatchSize int
 }
 
 // assembleWorker opens the database and every adapter and wires the handler
@@ -212,6 +233,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	}{
 		{"--projection-interval", opts.projectionInterval}, {"--completion-interval", opts.completionInterval},
 		{"--reaper-interval", opts.reaperInterval}, {"--sweep-interval", opts.sweepInterval},
+		{"--local-commit-write-lease-ttl", opts.localCommitWriteLeaseTTL},
 	} {
 		if interval.value <= 0 {
 			return nil, usageError{fmt.Errorf("%s must be positive", interval.name)}
@@ -270,6 +292,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 		execConfig: process.NewRuntimeExecutionConfigProvider(cfg), matcher: matcher, events: events,
 		prober: prober, catalog: projection.NewCatalog(),
 		reaperInterval: opts.reaperInterval, sweepInterval: opts.sweepInterval,
+		localCommitWriteLeaseTTL: opts.localCommitWriteLeaseTTL, projectionRebuildBatchSize: opts.projectionRebuildBatchSize,
 	}
 	registry := buildWorkerRegistry(deps)
 
@@ -351,10 +374,10 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	// Release and projection.
 	registry.Register(releasesetcommit.ReleaseSetLocalCommitJobKind, releasesetcommit.NewHandler(releasesetcommit.ExecuteReleaseSetLocalCommitDeps{
 		UnitOfWork: d.uow, IDs: d.ids, WriteLeases: d.store, MarkerReader: d.provider, Creator: d.provider,
-		Lifecycle: d.store, WriteLeaseTTL: localCommitWriteLeaseTTL,
+		Lifecycle: d.store, WriteLeaseTTL: d.localCommitWriteLeaseTTL,
 	}))
 	registry.Register(projectionrebuild.ProjectionRebuildJobKind, projectionrebuildworker.NewHandler(projectionrebuildworker.Deps{
-		UnitOfWork: d.uow, IDs: d.ids, Catalog: d.catalog,
+		UnitOfWork: d.uow, IDs: d.ids, Catalog: d.catalog, BatchSize: d.projectionRebuildBatchSize,
 	}))
 	// Retention.
 	registry.Register(artifactsweep.ArtifactSweepJobKind, artifactsweep.NewHandler(d.uow, d.ids, d.clk, d.artifacts, artifactsweep.WithInterval(d.sweepInterval)))

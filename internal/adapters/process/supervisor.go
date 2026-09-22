@@ -40,18 +40,30 @@ type Supervisor struct {
 // activeProcess is what Run registers under spec.ID for the duration of one
 // spawn. cancelRequested is closed exactly once by Cancel to signal
 // "terminate the tree" — independent of, and racing against, the run's own
-// timeout deadline in Run's own select.
+// timeout deadline in Run's own select. hardKillRequested is the identical
+// shape for HardKill (see that method's own doc comment for why it exists
+// alongside Cancel).
 type activeProcess struct {
 	cancelRequested chan struct{}
 	cancelOnce      sync.Once
+
+	hardKillRequested chan struct{}
+	hardKillOnce      sync.Once
 }
 
 func newActiveProcess() *activeProcess {
-	return &activeProcess{cancelRequested: make(chan struct{})}
+	return &activeProcess{
+		cancelRequested:   make(chan struct{}),
+		hardKillRequested: make(chan struct{}),
+	}
 }
 
 func (p *activeProcess) requestCancel() {
 	p.cancelOnce.Do(func() { close(p.cancelRequested) })
+}
+
+func (p *activeProcess) requestHardKill() {
+	p.hardKillOnce.Do(func() { close(p.hardKillRequested) })
 }
 
 func NewSupervisor() *Supervisor {
@@ -128,6 +140,7 @@ func (s *Supervisor) Run(
 
 	var waitErr error
 	var terminationCause error
+	hardKilled := false
 	select {
 	case waitErr = <-waitDone:
 		// Finished on its own — nothing to escalate.
@@ -135,16 +148,28 @@ func (s *Supervisor) Run(
 		terminationCause = deadline.Err()
 	case <-proc.cancelRequested:
 		terminationCause = errExplicitCancel
+	case <-proc.hardKillRequested:
+		terminationCause = errExplicitCancel
+		hardKilled = true
 	}
 
 	if terminationCause != nil {
-		_ = tree.signalGraceful(command)
-		select {
-		case waitErr = <-waitDone:
-			// Exited on its own within the grace period.
-		case <-time.After(grace):
+		if hardKilled {
+			// No courtesy signal, no grace period: skip straight to the
+			// same forceful tree-kill the graceful path only reaches after
+			// GracePeriod elapses unanswered. See HardKill's own doc
+			// comment for why a caller legitimately wants this.
 			_ = tree.kill(command)
 			waitErr = <-waitDone
+		} else {
+			_ = tree.signalGraceful(command)
+			select {
+			case waitErr = <-waitDone:
+				// Exited on its own within the grace period.
+			case <-time.After(grace):
+				_ = tree.kill(command)
+				waitErr = <-waitDone
+			}
 		}
 	}
 
@@ -211,6 +236,31 @@ func (s *Supervisor) Cancel(_ context.Context, id ports.ProcessID) error {
 		return fmt.Errorf("%w: %s", ErrNotRunning, id)
 	}
 	proc.requestCancel()
+	return nil
+}
+
+// HardKill immediately terminates id's whole process tree with no courtesy
+// signal and no grace period — the closest real-world analogue to power
+// loss or `kill -9`, unlike Cancel (which asks nicely first via
+// signalGraceful and only escalates to a forced tree-kill after
+// spec.GracePeriod elapses unanswered). Production code never has a reason
+// to call this: an operator-requested stop should always try the graceful
+// path first. It exists for black-box crash/restart acceptance harnesses
+// (internal/integration/v6accept) that must prove a durable job/attempt
+// genuinely recovers from whatever was left on disk by an unannounced
+// process death, not from an orderly shutdown — Cancel's own grace period
+// would let the child finish or checkpoint cleanly, which defeats the
+// entire point of a crash test. Not part of ports.ProcessSupervisor: it is
+// an additional capability on the concrete adapter, not a new obligation
+// every implementation of that port must satisfy.
+func (s *Supervisor) HardKill(_ context.Context, id ports.ProcessID) error {
+	s.mu.Lock()
+	proc, ok := s.active[id]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrNotRunning, id)
+	}
+	proc.requestHardKill()
 	return nil
 }
 
