@@ -114,9 +114,30 @@ func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 	}
 	sendBurst(1500)
 
+	// Two independent bounds, because the attempt COUNT alone does not bound
+	// the cost. Each attempt grows the journal by another 1500 real messages
+	// and then races a rebuild of that larger journal, so attempts get more
+	// expensive as they go, and on a slow runner they get more expensive
+	// faster than they get more likely to succeed: on windows-latest this
+	// loop spent 210s across 3 attempts, then 442s on the very next run, and
+	// both ended in the same skip — pure cost for zero coverage, and enough
+	// to push the whole package past `go test`'s own timeout.
+	//
+	// attemptBudget is therefore a real wall-clock ceiling on the WHOLE
+	// retry loop, checked before starting any attempt after the first (the
+	// first always runs, so this test always makes at least one genuine
+	// attempt no matter how slow the machine). It does not weaken anything:
+	// the outcome when the budget runs out is the same honest skip, with the
+	// real numbers, that running out of attempts already produced.
 	const maxAttempts = 3
+	const attemptBudget = 150 * time.Second
+	loopStart := time.Now()
 	caught := false
 	for attempt := 1; !caught && attempt <= maxAttempts; attempt++ {
+		if elapsed := time.Since(loopStart); attempt > 1 && elapsed > attemptBudget {
+			t.Skipf("gave up after %d real attempt(s) in %s (budget %s): on this machine every rebuild completed before an HTTP poll could observe it in flight, and each further attempt costs more than the last because it races a bigger journal — see this test's own doc comment and baocaov6checklist.md's own V6-14A section",
+				attempt-1, elapsed.Round(time.Second), attemptBudget)
+		}
 		before := j.projectionLive(t, wantItems)
 		if before.Freshness.Status != "LIVE" {
 			t.Fatalf("attempt %d: freshness status before requesting the rebuild = %s, want LIVE", attempt, before.Freshness.Status)
@@ -233,7 +254,8 @@ func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 				// V6-14A section as the one scenario this suite could not
 				// build black-box with reasonable effort, per this task's
 				// own explicit "do not fake it" instruction.
-				t.Skipf("never observed a rebuild genuinely in flight (SNAPSHOTTING/BUILDING/CUTTING_OVER) across %d real attempts — this installation's own rebuild consistently completes faster than an HTTP round trip can reliably observe, even against a several-thousand-event journal; see this test's own doc comment and baocaov6checklist.md's own V6-14A section", maxAttempts)
+				t.Skipf("never observed a rebuild genuinely in flight (SNAPSHOTTING/BUILDING/CUTTING_OVER) across %d real attempts in %s — this installation's own rebuild consistently completes faster than an HTTP round trip can reliably observe, even against a several-thousand-event journal; see this test's own doc comment and baocaov6checklist.md's own V6-14A section",
+					maxAttempts, time.Since(loopStart).Round(time.Second))
 			}
 			// Grow the journal further before the next attempt, in case a
 			// bigger burst is what it takes.

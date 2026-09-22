@@ -13017,3 +13017,54 @@ Verify after the fixes, full suite on Windows, `AW_HTTP_ACCEPTANCE=1`:
 (38.99s, no skip), slow-SSE disconnected in 1.78s (so the new skip path was NOT
 taken locally; it is reserved for machines that cannot create the overflow).
 `go build ./...` and `go vet ./...` clean repo-wide.
+
+### V6-14A follow-up, round 2: bounding the suite's own cost
+
+The round-1 fixes worked and the next run proved each of them on the runner
+that had exposed them:
+
+- **Fail-closed hole closed.** `v6 acceptance (windows-latest)` was red and
+  `v6 acceptance cross-platform diff` went red WITH it this time, instead of
+  reporting PASS off two reports that only describe the journey.
+- **Diagnostics restored.** The job log now contains `== last 200 lines of
+  acceptance.log ==` and the explicit `V6-14B acceptance suite FAILED on
+  windows-latest (exit 1)` line. Round 1 had to download an artifact to learn
+  the same thing.
+- **Projection race fixed.** `TestV6HTTPAcceptance_Fault_CrashAfterRebuildCutover`
+  PASSES on windows-latest now (2.98s), the failure that started this thread.
+
+What the restored diagnostics then revealed was a different problem:
+`FAIL github.com/taQuangLing/agent-workflow/internal/integration/v6accept 600.047s`
+— `go test`'s own 10-minute default timeout, applied to the whole package
+binary. Everything in the package passed; the package simply ran out of time,
+and `panic: test timed out` named whichever test was unlucky enough to be
+running (the SSE scenario, 47s in) rather than the real cause.
+
+The real cause was scenario 4's retry loop. Each attempt adds another 1500 real
+messages to the journal and then races a rebuild of that larger journal, so
+attempts get more expensive as they go — and on a slow runner they get more
+expensive faster than they get more likely to succeed. Two consecutive runs of
+identical code spent **210s** and then **442s** there, both ending in the same
+skip: pure cost, zero coverage, and on the second run enough to push the whole
+package past its timeout.
+
+Two bounds, because the attempt count alone never bounded the cost:
+
+1. **`attemptBudget = 150s`** — a real wall-clock ceiling on the whole retry
+   loop, checked before any attempt after the first. The first attempt always
+   runs, so the test still makes at least one genuine attempt on any machine,
+   and the outcome when the budget runs out is the same honest skip, with real
+   numbers (attempts made, elapsed, budget), that running out of attempts
+   already produced. Nothing is weakened: the budget only decides when to stop
+   paying for a race this machine keeps losing.
+2. **`-timeout 15m`** on the CI invocation, replacing the 10-minute default.
+   Deliberately BELOW the job's own `timeout-minutes: 20`, and the ordering is
+   the point: Go's timeout prints a goroutine dump and names every test still
+   running, while the job timeout just cancels the runner and leaves nothing to
+   read. Go's limit firing first keeps a genuine hang diagnosable, with ~5
+   minutes left for checkout, toolchain setup, compile and artifact upload.
+
+Verify, full suite on Windows with `AW_HTTP_ACCEPTANCE=1 -timeout 15m`: 13/13
+pass in 113.2s, with scenario 4 catching its race in 38.2s (no skip, no budget
+trip) and the SSE scenario disconnecting in 2.26s. `go vet ./...` clean and the
+workflow still parses with `v6-acceptance` at `timeout-minutes: 20`.

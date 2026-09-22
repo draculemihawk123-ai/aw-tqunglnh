@@ -432,7 +432,23 @@ jobs:
           set +e
           set -uo pipefail
           mkdir -p v6-report
-          go test -count=1 -v ./internal/integration/v6accept/... > v6-report/acceptance.log 2>&1
+          # -timeout 15m, not `go test`'s own 10-minute default, which this
+          # package outgrew the moment V6-14A's scenarios joined V6-14B's
+          # journey in it. The default applies to the WHOLE package binary,
+          # and this one spawns real `aw serve`/`aw worker` processes and
+          # does real waits; on windows-latest the full set has taken 372s
+          # and then 600s+ on consecutive runs of identical code.
+          #
+          # 15m is deliberately BELOW this job's own timeout-minutes: 20,
+          # and the ordering matters. Whichever limit fires first decides
+          # what the evidence looks like: Go's own timeout prints `panic:
+          # test timed out` with the goroutine dump and names every test
+          # still running, while the job timeout just cancels the runner and
+          # leaves nothing to read. Keeping Go's limit first means a real
+          # hang is always diagnosable, with ~5 minutes left over for the
+          # checkout, toolchain setup, compile and artifact upload that sit
+          # outside this command.
+          go test -count=1 -v -timeout 15m ./internal/integration/v6accept/... > v6-report/acceptance.log 2>&1
           status=$?
           echo "== last 200 lines of acceptance.log =="
           tail -n 200 v6-report/acceptance.log
