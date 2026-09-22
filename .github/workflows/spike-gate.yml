@@ -83,11 +83,37 @@ jobs:
   # one of those 10 runs via TestDefaultScenariosFormAValidRegistryAndCleanRun.
   # A failure anywhere in this job is a real signal to root-cause, never a
   # reason to just retry until it goes green.
+  #
+  # timeout-minutes is 35, not 25, and that number is measured rather than
+  # guessed. This job's honest cost is one `-race` pass plus TEN full offline
+  # suite runs plus ten SPK-summary re-runs; on the real runner that has been
+  # 17-25 minutes across the sample below (all `Linux race and stability
+  # (V0-12)`, 2026-09-22, after the internal/adapters/sqlite template-database
+  # speedup that fixed the genuine >600s per-package -race regression):
+  #
+  #   run 35689894700  success  24m55s
+  #   run 35694219575  success  24m53s
+  #   run 35698895318  success  17m47s
+  #   run 35702529465  success  17m29s
+  #   run 35703724072  success  21m19s
+  #   run 35716861008  success  21m44s
+  #   run 35720884832  CANCELED at the 25m cap
+  #
+  # Two of those passed with five and seven SECONDS of headroom. A cap inside
+  # the job's own natural spread turns ordinary runner variance into a red
+  # gate on a PR that changed nothing relevant, which trains exactly the
+  # "retry until green" reflex the comment above forbids — and it hides the
+  # signal that matters, because a timeout and a real hang look identical.
+  # 35 minutes sits clear of the observed spread while still failing fast on
+  # a genuine deadlock. It is a budget for work this job really does; it is
+  # NOT permission to let the job get slower. If a future run approaches 35
+  # minutes, root-cause it (as the sqlite -race regression was root-caused)
+  # instead of raising this number again.
   linux-race-and-stability:
     name: Linux race and stability (V0-12)
     runs-on: ubuntu-latest
     needs: contract
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
