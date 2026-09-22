@@ -142,10 +142,7 @@ func writeReport(t *testing.T, rootName string) {
 	}
 	cp.AllPassed = allStagesPassed && !t.Failed()
 
-	path := os.Getenv(reportPathEnvVar)
-	if path == "" {
-		path = defaultReportPath()
-	}
+	path := resolveReportPath(t, os.Getenv(reportPathEnvVar))
 	data, err := json.MarshalIndent(cp, "", "  ")
 	if err != nil {
 		t.Errorf("marshal v6 acceptance report: %v", err)
@@ -163,6 +160,65 @@ func writeReport(t *testing.T, rootName string) {
 		return
 	}
 	t.Logf("wrote v6 acceptance report (allPassed=%v) to %s:\n%s", cp.AllPassed, path, string(data))
+}
+
+// resolveReportPath turns the raw reportPathEnvVar value into the absolute
+// file the report is actually written to.
+//
+// An empty value means the local default (a file outside the repository
+// tree). A RELATIVE value is resolved against the MODULE ROOT, not against
+// the process' working directory: `go test` runs a test binary with the
+// package's own directory as the working directory, so a caller that sets
+// AW_V6_REPORT_PATH=v6-report/report.json (the natural thing for a CI step
+// whose own shell commands run at the repository root) would otherwise
+// silently write the report to internal/integration/v6accept/v6-report/ —
+// a real file, in the wrong place, which a repo-root `upload-artifact`
+// step then cannot see. That exact mismatch shipped in V6-14B's first CI
+// run: both platforms' suites passed and uploaded an artifact containing
+// only acceptance.log, and the cross-platform diff job two jobs later
+// reported it as "CHƯA ĐỦ EVIDENCE". Resolving here makes a relative path
+// mean what the person writing the CI step meant; an absolute value (what
+// the workflow now passes) is used exactly as given.
+func resolveReportPath(t *testing.T, raw string) string {
+	t.Helper()
+	if raw == "" {
+		return defaultReportPath()
+	}
+	if filepath.IsAbs(raw) {
+		return raw
+	}
+	root, err := moduleRoot()
+	if err != nil {
+		t.Logf("report path: moduleRoot: %v (using %s relative to the test's own working directory)", err, raw)
+		return raw
+	}
+	return filepath.Join(root, raw)
+}
+
+// TestResolveReportPath_RelativeIsAnchoredAtModuleRoot is the cheap,
+// always-run guard on the mismatch described above: it needs no real
+// processes and no AW_HTTP_ACCEPTANCE, so it runs in the ordinary offline
+// suite rather than only in the acceptance job it protects.
+func TestResolveReportPath_RelativeIsAnchoredAtModuleRoot(t *testing.T) {
+	root, err := moduleRoot()
+	if err != nil {
+		t.Skipf("moduleRoot: %v", err)
+	}
+
+	got := resolveReportPath(t, filepath.Join("v6-report", "report.json"))
+	want := filepath.Join(root, "v6-report", "report.json")
+	if got != want {
+		t.Errorf("relative report path = %q, want %q (anchored at the module root, not the package directory `go test` runs in)", got, want)
+	}
+
+	absolute := filepath.Join(t.TempDir(), "report.json")
+	if got := resolveReportPath(t, absolute); got != absolute {
+		t.Errorf("absolute report path = %q, want it used verbatim (%q)", got, absolute)
+	}
+
+	if got := resolveReportPath(t, ""); got != defaultReportPath() {
+		t.Errorf("empty report path = %q, want the local default %q", got, defaultReportPath())
+	}
 }
 
 // realContractVersion returns the SAME contract version identity

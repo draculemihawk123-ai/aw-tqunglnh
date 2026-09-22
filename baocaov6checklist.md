@@ -12521,3 +12521,52 @@ Test-only fix: `internal/adapters/sqlite` drops from about 41s to about 13.5s wi
 ### Kết quả
 
 New file `internal/integration/v6accept/report_test.go` (structured report accumulator/writer + `captureFinalCounts`); two small, additive edits to the EXISTING `internal/integration/v6accept/journey_test.go` (`stage()` now also records duration/pass, `TestV6HTTPAcceptance_CleanDatabaseJourney` gained one `t.Cleanup` registration and one `j.captureFinalCounts(t)` call) — none of the 14 stages' own bodies touched, matching this task's own "Không làm: no new journey content" bar. Two new CI jobs appended to `.github/workflows/spike-gate.yml`: `v6-acceptance` (matrix `windows-latest`/`ubuntu-latest`, `timeout-minutes: 20`, uploads `v6-acceptance-report-<os>`) and `v6-acceptance-diff` (`ubuntu-latest`, `if: always()`, normalized `bash`+`jq` field-by-field comparison, fails closed with the literal `CHƯA ĐỦ EVIDENCE` phrase on any missing platform artifact, names the differing field/values on any semantic disagreement). No production (non-test, non-CI) file changed. `go build ./... && go vet ./...` clean repo-wide; full `go test ./...` 118 packages all `ok`; the V6-14 journey itself run 3x locally with the new report hook, 14/14 stages passing every time. PR targets `master`.
+
+### V6-14B follow-up: first CI run exposed a real report-path bug (fixed in this same PR)
+
+The first CI run of the two new jobs (run 35716861008) failed in a way that only
+a real multi-job CI run could expose, and the failure was genuine — not a flake:
+
+- `v6 acceptance (ubuntu-latest)` and `v6 acceptance (windows-latest)` both
+  **passed**, 14/14 stages, and both uploaded their artifact.
+- `v6 acceptance cross-platform diff` nevertheless printed
+  `CHƯA ĐỦ EVIDENCE: missing V6-14B acceptance report(s) for: windows-latest ubuntu-latest`
+  and exited 1 — even though both downloads reported
+  `Total of 1 artifact(s) downloaded ... successfully`.
+
+Root cause, from the job logs rather than guesswork: the upload step's own log
+line reads `With the provided path, there will be 1 file uploaded`. Only
+`acceptance.log` was in `v6-report/`. `go test` runs a test binary with the
+**package** directory as its working directory, so the relative
+`AW_V6_REPORT_PATH: v6-report/report.json` resolved to
+`internal/integration/v6accept/v6-report/report.json`, while the step's own
+`mkdir`/`tail`/`upload-artifact` paths are all repo-root-relative. The report
+was written, correctly, with `allPassed: true` (it is visible in the job log via
+`t.Logf`) — just into a directory nothing downstream looks at. So the
+comparison job's fail-closed behaviour was right; what it caught was this path
+bug rather than the missing-platform case it was written for.
+
+Three changes, all in this PR:
+
+1. `.github/workflows/spike-gate.yml` now passes an **absolute** path,
+   `AW_V6_REPORT_PATH: ${{ github.workspace }}/v6-report/report.json`.
+2. The same step now **fails at the point of production**: after a green
+   `go test` it asserts `v6-report/report.json` exists (and `cat`s it into the
+   log), so a future path/permission problem is reported in the job that caused
+   it instead of surfacing two jobs later as "missing evidence".
+3. `resolveReportPath` in `internal/integration/v6accept/report_test.go` now
+   anchors a **relative** `AW_V6_REPORT_PATH` at the module root, so the value
+   means what a CI author writing repo-root-relative shell commands intends.
+   Absolute values are used verbatim; an empty value still means the temp-dir
+   default. Guarded by `TestResolveReportPath_RelativeIsAnchoredAtModuleRoot`,
+   a pure unit test needing neither `AW_HTTP_ACCEPTANCE` nor any real process,
+   so it runs in the ordinary offline suite that guards the acceptance job.
+   `v6-report/` added to `.gitignore`.
+
+Local re-verification after the fix: from the repo root,
+`AW_HTTP_ACCEPTANCE=1 AW_V6_REPORT_PATH=v6-report/report.json go test -count=1 ./internal/integration/v6accept/...`
+→ `ok ... 26.488s`, and `v6-report/report.json` now exists **at the repo root**
+with `allPassed: true`, 14/14 stages, `finalCounts {"domainEvents": 39,
+"evidence": 2, "runs": 2, "workItems": 3}` — the same `finalCounts` and the same
+`contractVersion` the ubuntu CI leg recorded in its own passing run above, which
+is the cross-platform agreement the diff job is there to assert.

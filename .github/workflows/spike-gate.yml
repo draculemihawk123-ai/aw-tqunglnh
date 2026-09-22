@@ -387,7 +387,11 @@ jobs:
         shell: bash
         env:
           AW_HTTP_ACCEPTANCE: '1'
-          AW_V6_REPORT_PATH: v6-report/report.json
+          # Absolute on purpose: `go test` runs the test binary with the
+          # PACKAGE directory as its working directory, so a relative value
+          # here would not mean the same directory as this step's own
+          # repo-root `mkdir`/`tail`/upload paths.
+          AW_V6_REPORT_PATH: ${{ github.workspace }}/v6-report/report.json
         run: |
           set -uo pipefail
           mkdir -p v6-report
@@ -399,6 +403,17 @@ jobs:
             echo "V6-14B acceptance suite FAILED on ${{ matrix.os }} (exit ${status}) — see the v6-acceptance-report-${{ matrix.os }} artifact"
             exit ${status}
           fi
+          # Fail here, where the cause is visible, rather than letting a
+          # green suite upload an artifact with no report.json in it and
+          # having v6-acceptance-diff report "CHƯA ĐỦ EVIDENCE" two jobs
+          # later for what is really a path bug in THIS step.
+          if [ ! -f v6-report/report.json ]; then
+            echo "V6-14B FAILED: the suite passed on ${{ matrix.os }} but wrote no report.json to ${AW_V6_REPORT_PATH} (nothing for the cross-platform diff to compare)"
+            ls -la v6-report || true
+            exit 1
+          fi
+          echo "== report.json (${{ matrix.os }}) =="
+          cat v6-report/report.json
           echo "V6-14B acceptance suite passed on ${{ matrix.os }}"
 
       - name: Upload V6-14B acceptance report (${{ matrix.os }})
