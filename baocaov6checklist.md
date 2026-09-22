@@ -13068,3 +13068,106 @@ Verify, full suite on Windows with `AW_HTTP_ACCEPTANCE=1 -timeout 15m`: 13/13
 pass in 113.2s, with scenario 4 catching its race in 38.2s (no skip, no budget
 trip) and the SSE scenario disconnecting in 2.26s. `go vet ./...` clean and the
 workflow still parses with `v6-acceptance` at `timeout-minutes: 20`.
+
+## V6-14C — Gate cuối API/projection
+
+### Thực hiện
+
+One reproducible gate command over the artifacts the pipeline already
+produces: `go run ./cmd/v6-gate --evidence-dir <dir> --commit <sha>`. It runs
+no tests, starts no process and writes nothing into the repository — it reads
+V6-14B's per-platform acceptance evidence and V0-12's stability report, checks
+them against the checkout they claim to describe, prints the evidence index,
+writes `verdict.json`, and exits non-zero unless the verdict is PASS. Logic
+lives in `internal/v6gate`; `cmd/v6-gate/main.go` is the thin composition root,
+matching `cmd/docs-coverage-check`.
+
+**Three verdicts, deliberately not interchangeable.** `CHƯA ĐỦ EVIDENCE` means
+a required input is absent, unreadable, or describes another revision — nothing
+is known, so nothing may be claimed. `REWORK` means the evidence is present and
+says something failed. `PASS` means every required input is present, belongs to
+this revision, and reports success. Missing evidence outranks failure when both
+are present: an incomplete picture is the more honest headline. Every finding
+names the Task ID that owns it (V6-14, V6-14A, V6-14B, V0-12, V1-00C) so a
+reader is sent to the task that must fix it, not to the gate.
+
+**What it checks.** (1) Both platforms' artifacts exist and parse. (2) Every
+platform's evidence carries the SAME commit, and the one being gated — evidence
+from another revision describes different code. (3) Each platform's recorded
+`contractVersion` equals the value the gate RECOMPUTES from this checkout's
+golden fixture; accepting the number the evidence carries would only prove the
+evidence agrees with itself. (4) The happy-path journey reports `allPassed` with
+no failed stage. (5) The closed scenario list, below. (6) V0-12's race detector,
+ten-run stability and SPK-08 100-iteration minimum. (7) V1-00C debt = 0,
+computed from the repository in-process rather than trusted from an artifact.
+
+**The scenario list, and why it needed a second category.** Ten scenarios are
+REQUIRED and must pass on every platform. Two genuinely cannot be forced on
+every machine — one must win a real race (a rebuild observed mid-flight), the
+other must create a real overload (messages pushed faster than the server
+drains them) — and a slow runner loses either honestly; windows-latest has
+skipped both for exactly those reasons, with real numbers. Those two are
+CONDITIONAL: a skip on one platform is a recorded limitation, not a defect.
+
+But a conditional scenario that skipped on EVERY platform was never
+demonstrated anywhere, and calling that PASS is precisely the waiver V6-14C's
+own "Không làm: no waiver for failed/missing required scenario" forbids. So the
+rule is "must pass on at least one platform", and skipping everywhere is
+`CHƯA ĐỦ EVIDENCE`. A failure is never tolerated in either category. A skip is
+never a pass in the required category.
+
+**Per-scenario evidence had to be created; it did not exist.** `report.json`
+describes the journey test's own 14 stages and says nothing about the eleven
+fault scenarios beside it — the same gap that once let the comparison job go
+green while the acceptance job was red. The acceptance step now also emits
+`acceptance.jsonl` via `go tool test2json` (the exact converter `go test -json`
+uses internally, fed the log the run already produced, so it is a faithful
+re-encoding of that single run rather than a second run whose results could
+disagree) and `meta.json` carrying the commit.
+
+**The new `v6-gate` CI job uses `if: always()` by necessity, not convenience.**
+The most important thing this gate says is `CHƯA ĐỦ EVIDENCE`, and it can only
+say it if it still runs after an upstream job failed or was cancelled. Every
+artifact download is `continue-on-error: true` for the same reason: a missing
+artifact must reach the gate AS missing evidence, reported in the gate's own
+words with the owning Task ID, rather than aborting the job with a generic
+"artifact not found" before the gate ever runs.
+
+### Verify
+
+- `internal/v6gate` unit suite, 18 tests, all passing. Each starts from a
+  complete GREEN evidence tree and damages it in exactly ONE way, so a red test
+  names its own cause: missing platform, required scenario failed, required
+  scenario skipped, required scenario absent, conditional skipped on one
+  platform (still PASS, and the skip recorded as a note), conditional skipped
+  everywhere (`CHƯA ĐỦ EVIDENCE`), conditional failed (`REWORK`), evidence from
+  another commit, contract-version mismatch, journey regression, each of the
+  three V0-12 failures, missing stability report, documentation debt, and
+  missing-evidence-outranks-rework.
+- `TestParseTestEvents_IgnoresSubtestsAndCapturesSkipReasons` pins the two
+  parsing properties that matter: the journey's stages arrive in the same
+  stream as `Parent/01_stage` records and must NOT be counted as scenarios, and
+  a skip must carry its real reason rather than an empty string.
+- `TestScenarioListsMatchTheRealSuite` reads the acceptance package's own
+  sources and fails if the gate lists a scenario that no longer exists — the
+  gate cannot quietly guard a list that drifted from the suite.
+- **End-to-end against real output, not synthetic JSON**: the acceptance suite
+  was run for real (`go test -v` → `go tool test2json`, 217 JSON records, 28
+  pass/fail/skip actions), an evidence tree assembled from it, and the gate run
+  over that. Verdict `PASS`, all 12 scenarios indexed across both platforms.
+  Negative paths re-checked on the same real evidence: a wrong `--commit`
+  yields `CHƯA ĐỦ EVIDENCE [V6-14B] ... evidence was produced from commit
+  d7ec44f, not the fffffff being gated — it describes different code`, and
+  deleting a platform's directory yields `CHƯA ĐỦ EVIDENCE [V6-14B]
+  windows-latest: no readable acceptance report`.
+- `go build ./...`, `go vet ./...` clean repo-wide; `go run
+  ./cmd/docs-coverage-check` reports `debt = 0`; workflow parses with the new
+  `v6-gate` job wired `needs: [contract, linux-race-and-stability,
+  v6-acceptance, v6-acceptance-diff]`.
+
+### Kết quả
+
+New package `internal/v6gate` (+ its 18-test suite) and new command
+`cmd/v6-gate`; the acceptance CI step additionally emits `acceptance.jsonl` and
+`meta.json`; new `v6-gate` CI job publishing `v6-14c-verdict`. No production
+(non-gate) code changed. PR targets `master`.
