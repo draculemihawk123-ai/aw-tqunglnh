@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/evidence"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/clicompose"
 )
 
 func TestRun_NoArguments(t *testing.T) {
@@ -54,8 +55,9 @@ func TestRun_UnknownCommand(t *testing.T) {
 
 func TestRun_StubCommandsReportNotYetImplemented(t *testing.T) {
 	// "serve" is V6-01's own real implementation now (see serve.go/serve_test.go)
-	// — it no longer belongs in this stub-only list.
-	for _, name := range []string{"worker", "doctor"} {
+	// and "doctor" is the V6-15C leaf routed by V6-15O — neither belongs in
+	// this stub-only list.
+	for _, name := range []string{"worker"} {
 		var stdout, stderr bytes.Buffer
 		code := run([]string{name}, &stdout, &stderr)
 		if code != exitFailure {
@@ -149,9 +151,11 @@ func TestRun_EvidenceVerify_TamperedBundleFails(t *testing.T) {
 // TestRun_AllSubcommandsAreWiredAtCompositionRootOnly is a light structural
 // check on V1-01's own "wiring chỉ ở composition root" requirement: every
 // name the usage text advertises must have a real handler, and vice versa,
-// so the two can never drift apart silently.
+// so the two can never drift apart silently. Since V6-15O the handlers are
+// the process-level commands below plus every resource clicompose routes
+// (the usage text lists those straight from the routing table).
 func TestRun_AllSubcommandsAreWiredAtCompositionRootOnly(t *testing.T) {
-	want := []string{"serve", "worker", "doctor", "definition", "evidence", "adapter"}
+	want := []string{"serve", "worker", "version"}
 	if len(subcommands) != len(want) {
 		t.Fatalf("subcommands has %d entries, want %d: %v", len(subcommands), len(want), subcommands)
 	}
@@ -161,6 +165,14 @@ func TestRun_AllSubcommandsAreWiredAtCompositionRootOnly(t *testing.T) {
 		}
 		if !strings.Contains(usage, name) {
 			t.Errorf("handler %q is registered but usage text does not mention it", name)
+		}
+	}
+	for _, r := range clicompose.Routes() {
+		if !strings.Contains(usage, r.Path[0]) {
+			t.Errorf("routed resource %q is not mentioned in the usage text", r.Path[0])
+		}
+		if !clicompose.HasRoute(r.Path[0]) {
+			t.Errorf("clicompose.HasRoute(%q) = false for a routed resource", r.Path[0])
 		}
 	}
 }

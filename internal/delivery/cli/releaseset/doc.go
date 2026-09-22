@@ -130,13 +130,16 @@ func init() {
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"release-set", "seal"}, Scope: cli.ScopeProject,
 		AppOperation: commandTypeSealReleaseSet, HTTPOperationID: "sealReleaseSet",
+		HighImpact: true, // UX Screen 10: "Dialog confirm seal/abandon/local-commit" (V6-15O confirmation parity)
 	})
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"release-set", "abandon"}, Scope: cli.ScopeProject,
 		AppOperation: commandTypeAbandonReleaseSet, HTTPOperationID: "abandonReleaseSet",
+		HighImpact: true,
 	})
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"release-set", "local-commit"}, Scope: cli.ScopeProject,
 		AppOperation: commandTypeRequestReleaseSetLocalCommit, HTTPOperationID: "requestReleaseSetLocalCommit",
+		HighImpact: true,
 	})
 }
