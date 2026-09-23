@@ -37,12 +37,12 @@ func (j *journey) publishReleaseWorkflow(t *testing.T) releaseWorkflow {
 	skillDocument := skill.SkillDocument{Resources: []skill.Resource{
 		{Key: key, Instruction: script, Priority: definition.PriorityGuidance, Global: true, Provenance: provenance},
 	}}
-	scripts := j.publishDefinition(t, "", definition.KindSkill, "release-scripts", "release scripts", skillDocument)
+	scripts := j.publish(t, "", definition.KindSkill, "release-scripts", "release scripts", skillDocument)
 	identities, err := skill.ResourceIdentities(skill.SkillVersionID(scripts.versionID), skillDocument)
 	if err != nil || len(identities) != 1 {
 		t.Fatalf("skill.ResourceIdentities: %v (%d identities)", err, len(identities))
 	}
-	releaseCommand := j.publishDefinition(t, "", definition.KindCommand, "release-command", "release command", command.CommandDocument{
+	releaseCommand := j.publish(t, "", definition.KindCommand, "release-command", "release command", command.CommandDocument{
 		Executable:          command.ExecutableRef{OwnerVersionID: scripts.versionID, ResourceKey: key, ContentHash: identities[0].Identity.ContentHash},
 		Argv:                []command.ArgvElement{{Kind: command.ArgvLiteral, Value: "run"}},
 		CwdRepositoryTarget: j.repositoryID,
@@ -70,7 +70,7 @@ func (j *journey) publishReleaseWorkflow(t *testing.T) releaseWorkflow {
 			{Key: "release-end", From: "release_prep", Outcome: "passed", To: "end"},
 		},
 	}
-	wf := j.publishDefinition(t, "/projects/"+j.projectID, definition.KindWorkflow, "release-workflow", "release workflow", graph)
+	wf := j.publish(t, "/projects/"+j.projectID, definition.KindWorkflow, "release-workflow", "release workflow", graph)
 	return releaseWorkflow{workflow: wf}
 }
 

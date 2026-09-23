@@ -1,7 +1,19 @@
-// Package v6gate is V6-14C — "Gate cuối API/projection"
+// Package v6gate started as V6-14C — "Gate cuối API/projection"
 // (docs/design/08-v6-api-projections.md V6-14C: "phát một verdict từ evidence
 // happy/fault/platform đầy đủ trước gate terminal", verified by "one
-// reproducible gate command over all artifacts").
+// reproducible gate command over all artifacts") — and is now also V6-15P's
+// own final terminal gate: V6-15P depends on V6-14C by name, and rather than
+// building a second, near-duplicate gate command, its "Hoàn thành khi: final
+// verdict PASS" bar is satisfied by requiredScenarios below also naming
+// V6-15P's own terminal-acceptance journey
+// (TestV6TerminalAcceptance_CLIJourneyThenHTTPReplay,
+// internal/integration/v6accept/stage_terminal_test.go — the operator's core
+// journey/recovery driven entirely through `aw <resource> <action>` one-shot
+// processes, plus a fresh HTTP-driven cycle proving the same installation
+// still serves HTTP afterward). No new evidence artifact was needed for
+// this: that test runs inside the SAME package the existing `v6-acceptance`
+// CI job already executes wholesale, so it is already present in
+// acceptance.jsonl on both platforms.
 //
 // It is a pure reader. It never runs a test, never starts a process and never
 // writes to the repository: it consumes the artifacts CI already produces —
@@ -63,6 +75,16 @@ var requiredScenarios = []string{
 	"TestV6HTTPAcceptance_Fault_CrashAfterRebuildCutover",
 	"TestV6HTTPAcceptance_Fault_CrashAfterReceiptCommit",
 	"TestV6HTTPAcceptance_Fault_RoleDowngradeMidFlight",
+	// V6-15P's own terminal acceptance journey: the operator's core
+	// journey/recovery driven entirely through `aw <resource> <action>`
+	// one-shot processes, plus a fresh HTTP-driven cycle proving the same
+	// installation still serves HTTP afterward. This is what turns this
+	// gate into V6's own final terminal gate (V6-15P's own "Hoàn thành
+	// khi": this verdict, PASS) rather than stopping at V6-14C's
+	// happy/fault/platform evidence alone. Deterministic (3 consecutive
+	// local runs, both before and after being folded into the full
+	// package's own run) — required, not conditional.
+	"TestV6TerminalAcceptance_CLIJourneyThenHTTPReplay",
 }
 
 // conditionalScenarios genuinely cannot be forced on every machine: each one
@@ -510,10 +532,14 @@ func checkScenarios(evidence map[string]platformEvidence, index map[string]map[s
 
 // taskFor maps a scenario to the task that owns it.
 func taskFor(scenario string) string {
-	if strings.Contains(scenario, "_Fault_") {
+	switch {
+	case strings.Contains(scenario, "_Fault_"):
 		return "V6-14A"
+	case strings.HasPrefix(scenario, "TestV6TerminalAcceptance_"):
+		return "V6-15P"
+	default:
+		return "V6-14"
 	}
-	return "V6-14"
 }
 
 // checkStability covers V0-12's own race/stability evidence.
