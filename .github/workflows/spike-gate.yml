@@ -450,6 +450,26 @@ jobs:
           # outside this command.
           go test -count=1 -v -timeout 15m ./internal/integration/v6accept/... > v6-report/acceptance.log 2>&1
           status=$?
+
+          # The same single run, also in machine-readable form, for V6-14C's
+          # gate. `go tool test2json` is the exact converter `go test -json`
+          # uses internally, so this is a faithful re-encoding of the log
+          # above rather than a second, separately-scheduled test run whose
+          # results could disagree with it.
+          #
+          # V6-14C needs per-SCENARIO outcomes, which no other artifact
+          # carries: report.json describes the journey test's own 14 stages
+          # and says nothing about the eleven fault scenarios beside it —
+          # the same gap that once let this workflow's comparison job go
+          # green while this job was red.
+          go tool test2json -t < v6-report/acceptance.log > v6-report/acceptance.jsonl || true
+
+          # Which revision this evidence describes. Without it a gate cannot
+          # tell current evidence from a stale artifact that happens to be
+          # lying next to it.
+          printf '{"commit":"%s","goos":"%s","platform":"%s"}\n' \
+            "${{ github.sha }}" "$(go env GOOS)" "${{ matrix.os }}" > v6-report/meta.json
+
           echo "== last 200 lines of acceptance.log =="
           tail -n 200 v6-report/acceptance.log
           if [ ${status} -ne 0 ]; then
@@ -617,3 +637,72 @@ jobs:
           fi
 
           echo "both platforms agree on contract version ${win_contract} (V6-14B multi-platform acceptance PASS)"
+
+  # v6-gate is V6-14C (docs/design/08-v6-api-projections.md V6-14C: "phát một
+  # verdict từ evidence happy/fault/platform đầy đủ trước gate terminal",
+  # verified by "one reproducible gate command over all artifacts"). It runs
+  # no tests of its own: it downloads what the jobs above produced and reads
+  # it against this checkout.
+  #
+  # `if: always()` is required, not convenient. The single most important
+  # thing this gate says is "CHƯA ĐỦ EVIDENCE", and it can only say it when
+  # it still runs after an upstream job failed or was cancelled — a gate that
+  # is skipped whenever something upstream breaks reports nothing in exactly
+  # the situation that most needs reporting.
+  v6-gate:
+    name: V6-14C API/projection verdict
+    runs-on: ubuntu-latest
+    needs: [contract, linux-race-and-stability, v6-acceptance, v6-acceptance-diff]
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      # continue-on-error on every download, for the same reason the
+      # comparison job uses it: a missing artifact must reach the gate as
+      # missing EVIDENCE, reported by the gate in its own words with the Task
+      # ID that owns it, rather than aborting this job with a generic
+      # "artifact not found" before the gate ever runs.
+      - name: Download acceptance evidence (ubuntu-latest)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v6-acceptance-report-ubuntu-latest
+          path: evidence/v6-acceptance-report-ubuntu-latest
+
+      - name: Download acceptance evidence (windows-latest)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v6-acceptance-report-windows-latest
+          path: evidence/v6-acceptance-report-windows-latest
+
+      - name: Download V0-12 stability evidence
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v0-12-stability-report
+          path: evidence/v0-12-stability-report
+
+      - name: Emit the V6-14C verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          go run ./cmd/v6-gate \
+            --evidence-dir evidence \
+            --repo-root . \
+            --commit "${{ github.sha }}" \
+            --out verdict.json
+
+      - name: Upload the V6-14C verdict
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v6-14c-verdict
+          path: verdict.json
+          if-no-files-found: warn
+          retention-days: 7
