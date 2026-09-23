@@ -36,6 +36,27 @@ func (p publishedDefinition) pin(kind definition.Kind) definition.DependencyPin 
 	return definition.DependencyPin{Kind: kind, DefinitionID: p.definitionID, VersionID: p.versionID}
 }
 
+// publish is the one indirection every REUSABLE definition-graph builder
+// below (publishVerificationWorkflow, publishCompletionPolicy, and
+// stage_release_test.go's publishReleaseWorkflow) calls instead of
+// publishDefinition directly, so the exact same graph — same skill/command/
+// policy/gate/workflow document literals, same dependency pins — can be
+// authored through a DIFFERENT transport without copying any of that
+// business logic. publishOverride is nil for every existing caller (the
+// journey_test.go/fault_fixture_test.go constructors never set it), so
+// publish falls through to publishDefinition — today's HTTP behavior,
+// completely unchanged. V6-15P's own CLI-driven terminal journey is the one
+// caller that sets publishOverride (to publishDefinitionCLI), which is what
+// lets it reuse these same builders verbatim rather than re-deriving the
+// verification/release/approval workflow graphs a second time.
+func (j *journey) publish(t *testing.T, scopePrefix string, kind definition.Kind, definitionID, name string, document any) publishedDefinition {
+	t.Helper()
+	if j.publishOverride != nil {
+		return j.publishOverride(t, scopePrefix, kind, definitionID, name, document)
+	}
+	return j.publishDefinition(t, scopePrefix, kind, definitionID, name, document)
+}
+
 // publishDefinition authors one definition through the public HTTP flow the
 // product documents: create the Definition, validate the draft document, then
 // publish an immutable version. scopePrefix is "" for an installation
@@ -73,7 +94,7 @@ func (j *journey) publishDefinition(t *testing.T, scopePrefix string, kind defin
 // evidence a COMMAND node produces (the release workflow has no gate).
 func (j *journey) publishCompletionPolicy(t *testing.T, id string) publishedDefinition {
 	t.Helper()
-	return j.publishDefinition(t, "", definition.KindPolicy, id, id, policy.PolicyDocument{
+	return j.publish(t, "", definition.KindPolicy, id, id, policy.PolicyDocument{
 		Category:   policy.CategoryCompletion,
 		Completion: &policy.CompletionRules{RequiredEvidenceKinds: []string{runtimedomain.EvidenceKindCommandExecution}},
 	})
@@ -110,21 +131,21 @@ func (j *journey) publishVerificationWorkflow(t *testing.T) verificationWorkflow
 	osCompat := command.Compatibility{OS: []string{runtime.GOOS}}
 	projectPrefix := "/projects/" + j.projectID
 
-	contextPolicy := j.publishDefinition(t, "", definition.KindPolicy, "ctx-policy", "context policy", policy.PolicyDocument{
+	contextPolicy := j.publish(t, "", definition.KindPolicy, "ctx-policy", "context policy", policy.PolicyDocument{
 		Category: policy.CategoryContext,
 		Context:  &policy.ContextRules{Selector: []string{"v6accept-agent-context"}, Budget: policy.ContextBudget{MaxTokens: 4096}},
 	})
-	agentProfile := j.publishDefinition(t, "", definition.KindAgentProfile, "agent-profile", "agent profile", agentprofile.AgentProfileDocument{
+	agentProfile := j.publish(t, "", definition.KindAgentProfile, "agent-profile", "agent profile", agentprofile.AgentProfileDocument{
 		ProviderKey: string(ports.ProviderClaude), Model: "fake-model", ToolRefs: []string{"read_file"},
 		ContextPolicyRef: contextPolicy.pin(definition.KindPolicy),
 		Compatibility:    agentprofile.Compatibility{OS: []string{runtime.GOOS}},
 		Budget:           agentprofile.Budget{MaxTokens: 4096},
 	})
-	attemptPolicy := j.publishDefinition(t, "", definition.KindPolicy, "attempt-policy", "attempt policy", policy.PolicyDocument{
+	attemptPolicy := j.publish(t, "", definition.KindPolicy, "attempt-policy", "attempt policy", policy.PolicyDocument{
 		Category: policy.CategoryAttempt,
 		Attempt:  &policy.AttemptRules{MaxAttempts: 3, BackoffSeconds: 1, TimeoutSeconds: 60},
 	})
-	permissionPolicy := j.publishDefinition(t, "", definition.KindPolicy, "permission-policy", "permission policy", policy.PolicyDocument{
+	permissionPolicy := j.publish(t, "", definition.KindPolicy, "permission-policy", "permission policy", policy.PolicyDocument{
 		Category: policy.CategoryPermission,
 		Permission: &policy.PermissionRules{
 			IsolationTier: policy.IsolationTierOperatorTrustedLocal, GrantedCapabilities: []string{"INTEGRATION_MULTI_REPOSITORY_WRITE"},
@@ -139,7 +160,7 @@ func (j *journey) publishVerificationWorkflow(t *testing.T) verificationWorkflow
 		{Key: makerKey, Instruction: makerScript, Priority: definition.PriorityGuidance, Global: true, Provenance: provenance},
 		{Key: gateKey, Instruction: gateScript, Priority: definition.PriorityGuidance, Global: true, Provenance: provenance},
 	}}
-	scripts := j.publishDefinition(t, "", definition.KindSkill, "scripts", "acceptance scripts", skillDocument)
+	scripts := j.publish(t, "", definition.KindSkill, "scripts", "acceptance scripts", skillDocument)
 	identities, err := skill.ResourceIdentities(skill.SkillVersionID(scripts.versionID), skillDocument)
 	if err != nil {
 		t.Fatalf("skill.ResourceIdentities: %v", err)
@@ -165,13 +186,13 @@ func (j *journey) publishVerificationWorkflow(t *testing.T) verificationWorkflow
 			Output:              command.OutputContract{CaptureStdout: true, CaptureStderr: true, MaxOutputBytes: 1 << 16},
 		}
 	}
-	makerCommand := j.publishDefinition(t, "", definition.KindCommand, "maker-command", "maker command", commandDocument(makerKey))
-	gateCommand := j.publishDefinition(t, "", definition.KindCommand, "gate-command", "gate command", commandDocument(gateKey))
-	machineGate := j.publishDefinition(t, "", definition.KindGate, "machine-gate", "machine gate", gate.GateDocument{
+	makerCommand := j.publish(t, "", definition.KindCommand, "maker-command", "maker command", commandDocument(makerKey))
+	gateCommand := j.publish(t, "", definition.KindCommand, "gate-command", "gate command", commandDocument(gateKey))
+	machineGate := j.publish(t, "", definition.KindGate, "machine-gate", "machine gate", gate.GateDocument{
 		CommandRef: gateCommand.pin(definition.KindCommand),
 		Criteria:   []gate.Criterion{{Name: "output-verified", EvidenceKey: gateEvidenceKey}},
 	})
-	completionPolicy := j.publishDefinition(t, "", definition.KindPolicy, "completion-policy", "completion policy", policy.PolicyDocument{
+	completionPolicy := j.publish(t, "", definition.KindPolicy, "completion-policy", "completion policy", policy.PolicyDocument{
 		Category:   policy.CategoryCompletion,
 		Completion: &policy.CompletionRules{RequiredEvidenceKinds: []string{runtimedomain.EvidenceKindCommandExecution, gateEvidenceKey}},
 	})
@@ -208,7 +229,7 @@ func (j *journey) publishVerificationWorkflow(t *testing.T) verificationWorkflow
 			{Key: "checker-end", From: "checker", Outcome: "done", To: "end"},
 		},
 	}
-	wf := j.publishDefinition(t, projectPrefix, definition.KindWorkflow, "verify-workflow", "verification workflow", graph)
+	wf := j.publish(t, projectPrefix, definition.KindWorkflow, "verify-workflow", "verification workflow", graph)
 	_ = os.Stdout
 	return verificationWorkflow{workflow: wf}
 }

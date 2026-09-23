@@ -13171,3 +13171,132 @@ New package `internal/v6gate` (+ its 18-test suite) and new command
 `cmd/v6-gate`; the acceptance CI step additionally emits `acceptance.jsonl` and
 `meta.json`; new `v6-gate` CI job publishing `v6-14c-verdict`. No production
 (non-gate) code changed. PR targets `master`.
+
+## V6-15P — Gate acceptance cuối V6 bằng terminal
+
+### Thực hiện
+
+The operator's core journey/recovery driven entirely through `aw <resource>
+<action>` one-shot processes — never HTTP, never an in-process function call
+— against the SAME `--db`/`--artifact-root`/`--workspace-root` a real `aw
+serve`+`aw worker` pair already serves, then a fresh HTTP-driven cycle on
+that same root, proving the product is not "CLI-only, HTTP now broken".
+
+New top-level test `TestV6TerminalAcceptance_CLIJourneyThenHTTPReplay`
+(`internal/integration/v6accept/stage_terminal_test.go`), 17 stages, all
+green: doctor/settings (with the unversioned-update-refused check redone as
+`aw settings update` without `--expected-version` → exit 2), adapter
+probe/register, project/repository (polling `aw repository list` for the
+WORKER's own ACTIVE probe — the same "two processes cooperate through the
+shared database alone" proof V6-14 already makes, now reached from both
+sides via CLI), catalog (`aw component list`), the full
+maker→COMMAND→MACHINE_GATE→checker definition graph AND the work-item/run
+cycle, a REAL human decision (publish a START→APPROVAL→END workflow, observe
+the pending ApprovalRequest via `aw run show`, resolve it with `aw approval
+resolve` — the one write no earlier stage in this package, HTTP or CLI, had
+ever exercised end to end), conversation (`aw message append` +
+verify-by-read via `aw message list`, since AppendMessageResult carries only
+the id — content is stored content-addressed via an Artifact, never
+inlined), scope-expansion (`aw scope-expansion request`/`approve`), evidence
+(`aw evidence list`), workspace/source (`aw workspace-set show` +
+`aw repository-workspace source`, a real file read out of the managed Git
+worktree), ReleaseSet/local-commit/seal (`aw release-set create` →
+`aw release-set local-commit --wait` → `aw release-set seal`), projection
+(`aw projection rebuild` + `aw projection rebuild-status` polling the real
+operation id, then `aw projection status` for freshness), events (`aw
+events watch`, a bounded real NDJSON read), cancel (`aw run cancel` on a
+WAIT-only run, waiting for a real ACTIVE WaitRegistration first), recovery
+(hard-kill+restart the worker, then REPLAY stage 12's own local-commit
+request byte-for-byte — the only way to observe convergence, since no
+`release-set` CLI leaf reads one committed local commit back by id — proving
+`replayed:true` and the SAME `resultVcsObjectId`, not a second commit), the
+HTTP replay itself, and graceful shutdown.
+
+**Every reusable definition-graph builder now has two transports, not two
+implementations.** `journey.publish` (definitions_test.go) is the one
+indirection `publishVerificationWorkflow`/`publishCompletionPolicy`
+(definitions_test.go) and `publishReleaseWorkflow` (stage_release_test.go)
+call instead of `publishDefinition` directly; `publishOverride` is nil for
+every existing caller (unchanged HTTP behavior, proven by rerunning the full
+existing suite after this change — zero regressions), and this task's own
+`publishDefinitionCLI` (`aw definition create/validate/publish` subprocess
+calls, identical create→validate→publish flow and return shape) is the one
+new setter. This is what let the full verification/release definition
+graphs be authored through the CLI without re-deriving a single document
+literal.
+
+**Two real, non-obvious architectural discoveries, both worth recording for
+anyone extending this journey:**
+
+1. `repositories.id` and `definitions.id` are GLOBAL `TEXT PRIMARY KEY`s
+   (0001_initial_schema.sql, 0004_shared_definitions.sql) — client-supplied,
+   not server-generated, and NOT scoped per project even for
+   project-scoped definitions. Calling `publishVerificationWorkflow`
+   (whose own dependencies — ctx-policy, agent-profile, attempt-policy,
+   ... — are installation-scoped) a second time on the SAME database
+   collides on those ids. `terminalHTTPReplay` (stage 16) does not reuse
+   that builder for this reason: it authors a project-scoped
+   `approvalOnlyWorkflowDocument` instead (stage_fault_security_test.go,
+   reused verbatim), which needs no installation-scoped dependency at all,
+   so a fresh unique workflow id on a fresh project cannot collide with
+   anything the CLI journey already created. The first version of this
+   stage DID call the shared builder a second time and got a raw HTTP 500
+   `{"error":{"code":"INTERNAL","message":"sqlite: unexpected error"}}` —
+   a real rough edge in that error path (a SQLite constraint violation on
+   a client-supplied-id insert should map to 409, not leak as an opaque
+   500), flagged as its own follow-up task rather than fixed here (out of
+   this task's own scope).
+2. Go's `flag.FlagSet.Parse` (every leaf's own `parseFlags`) stops
+   consuming flags at the first non-flag argument — a positional id placed
+   BEFORE a flag silently turns that flag into more positional args
+   instead of being parsed, which the leaf then rejects as a usage error
+   (or, worse, silently keeps a flag at its zero value). Every call in
+   `cli_test.go`/`publish_cli_test.go`/`stage_terminal_test.go` puts every
+   flag before its command's own positional argument for this reason.
+
+### Verify
+
+- `TestV6TerminalAcceptance_CLIJourneyThenHTTPReplay` run 3x consecutively
+  on Windows: 23.45s / 24.26s / 24.23s, all 17/17 stages green every time —
+  no flake across real races (worker crash/restart, a real pending
+  ApprovalRequest, a real WaitRegistration, a real local-commit replay).
+- Full `internal/integration/v6accept` package (journey + all 11 V6-14A
+  fault scenarios + this new terminal journey, `AW_HTTP_ACCEPTANCE=1`):
+  `ok 130.683s`, zero failures — the new stage coexists cleanly with every
+  earlier one in the same run.
+- `go build ./...`, `go vet ./...` clean repo-wide; `go run
+  ./cmd/docs-coverage-check` reports `debt = 0`; full `go test ./...`:
+  every package `ok`, zero `FAIL` lines.
+- `internal/v6gate`'s own suite (now 18 tests, `TestScenarioListsMatchTheRealSuite`
+  included) still green after adding the new required scenario.
+- **End-to-end against real fresh evidence, not synthetic JSON**: the whole
+  acceptance package run for real (`go test -v` → `go tool test2json`),
+  `TestV6TerminalAcceptance_CLIJourneyThenHTTPReplay` appears 4 times (pass
+  action + 3 subtest-shaped output lines) in the resulting
+  `acceptance.jsonl`. Gate run over an evidence tree built from it →
+  `PASS`, with the new scenario indexed pass/pass across both simulated
+  platforms. Negative path on the SAME real evidence, with only the new
+  scenario's lines stripped out: `CHƯA ĐỦ EVIDENCE [V6-15P] ubuntu-latest:
+  required scenario TestV6TerminalAcceptance_CLIJourneyThenHTTPReplay did
+  not run` / the same for windows-latest — proving the gate's own verdict
+  now genuinely depends on this journey, not just on V6-14C's original
+  scenario set.
+
+### Kết quả
+
+No new CI job and no new evidence artifact: this test lives in
+`internal/integration/v6accept`, the SAME package the existing
+`v6-acceptance` CI job already runs wholesale, so it is automatically
+present in `acceptance.jsonl` on both platforms with zero workflow changes.
+`internal/v6gate`'s own `requiredScenarios` now names it, and `taskFor` maps
+it to `V6-15P` rather than the generic `V6-14` fallback — which is what
+actually turns the existing `v6-gate` CI job into V6's own final terminal
+gate (V6-15P's "Hoàn thành khi: final verdict PASS") rather than stopping at
+V6-14C's happy/fault/platform evidence alone. New files: `stage_terminal_test.go`,
+`cli_test.go`, `publish_cli_test.go`. Small, additive changes to
+`journey_test.go` (the `publish` indirection + its `publishOverride` field)
+and `definitions_test.go`/`stage_release_test.go` (their own builders now
+call `j.publish` instead of `j.publishDefinition`) — both proven behavior-
+identical by rerunning the full existing suite. `internal/v6gate/gate.go`:
+one new required scenario name, one `taskFor` case, doc comment updated.
+PR targets `master`.

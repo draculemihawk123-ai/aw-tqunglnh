@@ -11,6 +11,7 @@ import (
 
 	processadapter "github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
+	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 )
 
 // journey carries the identifiers each stage hands to the next. Every value
@@ -44,6 +45,13 @@ type journey struct {
 	// extraSnapshotPaths are read-only queries later stages add so the
 	// restart comparison covers what they created.
 	extraSnapshotPaths []string
+
+	// publishOverride, when set, is what publish() calls instead of the
+	// default publishDefinition (HTTP) — see publish's own doc comment
+	// (definitions_test.go). nil for every stage in THIS file and every
+	// V6-14A fault scenario; V6-15P's own CLI-driven journey is the only
+	// setter.
+	publishOverride func(t *testing.T, scopePrefix string, kind definition.Kind, definitionID, name string, document any) publishedDefinition
 }
 
 // stage runs one named step of the journey and stops the whole journey at
