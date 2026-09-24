@@ -13300,3 +13300,43 @@ call `j.publish` instead of `j.publishDefinition`) — both proven behavior-
 identical by rerunning the full existing suite. `internal/v6gate/gate.go`:
 one new required scenario name, one `taskFor` case, doc comment updated.
 PR targets `master`.
+
+## Post-close remediation (2026-09-24): V6-14A CrashDuringRebuildBeforeCutover retry budget
+
+V6 was already fully closed (V6-15P, PR #93) when this was found during V7-03A's own CI, unrelated to
+that PR's `web/`-only diff. `TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover`
+(`stage_fault_projection_during_test.go`) skipped on BOTH `windows-latest` AND `ubuntu-latest` in the
+same run, five consecutive times across five separate PR CI runs that day — the `V6-14C API/projection
+verdict` gate correctly tolerates a skip on one platform (evidence exists on the other) but not on both
+in the same run, and started failing PR after PR for a reason with zero relationship to any of their
+diffs.
+
+Reading the test's own doc comment first: this is a documented, honest, real race (never simulated) —
+"the one scenario this suite could not build black-box with reasonable effort" — with `maxAttempts = 3`
+and `attemptBudget = 150s` as its retry ceiling. Five independent local repro runs
+(`AW_HTTP_ACCEPTANCE=1 go test ... -count=1`, `-count=1` specifically to defeat Go's own test-result
+cache, which silently replayed an identical stale result across a first, uncontrolled attempt at
+reproducing this) needed attempt 2, 3, 4, 5 and 6 respectively to actually catch the rebuild in flight —
+the true distribution already reaches past 3 attempts under completely ordinary local conditions, this
+was never a CI-runner-specific problem.
+
+Tried widening `sendBurst` (1500 -> 15000 messages) first, on the theory that a bigger journal makes
+BUILDING durably observable for longer: measured NO meaningful change in single-rebuild duration
+(consistently ~85-110ms regardless of 1500 vs 15000 messages) — the fixed per-operation overhead
+dominates at this scale, not per-row replay cost. Abandoned that lever; it would only have added real
+wall-clock cost (sending 10x the messages) for no improvement in catch odds.
+
+The lever that actually works is more independent tries at the SAME race: raised `maxAttempts` 3 -> 5 and
+`attemptBudget` 150s -> 200s (not 6/300s, despite that combination measuring 5/5 local passes) because
+`.github/workflows/spike-gate.yml`'s own comment on this package's `-timeout 15m` records real observed
+costs of "372s and then 600s+ on consecutive runs" for the WHOLE `internal/integration/v6accept` package
+on `windows-latest` — headroom under that 900s ceiling is real but not large, so the budget grew by only
+50s, a deliberately conservative choice over the fully-solved-locally 300s option. Final verification: 3
+more local runs at the shipped 5/200s config — 2 PASS (attempt 1, attempt 5), 1 honest SKIP. Skip remains
+the correct, honest outcome on a run unlucky enough to exhaust the budget; this change only makes it
+meaningfully rarer, not impossible — consistent with this test's own explicit design philosophy of never
+faking synchronization to force a pass.
+
+`go build ./...` / `go vet ./...` clean repo-wide; full local `AW_HTTP_ACCEPTANCE=1 go test
+./internal/integration/v6accept/...` still green. Single-file change:
+`stage_fault_projection_during_test.go` (two constants + doc comment). PR targets `master`.
