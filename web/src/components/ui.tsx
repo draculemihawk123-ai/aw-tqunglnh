@@ -550,3 +550,161 @@ export function Checkbox({ label, checked, onChange }: { label: string; checked:
     </label>
   );
 }
+
+// ─── Table ────────────────────────────────────────────────────────────────────
+
+export interface TableColumn<T> {
+  key: string;
+  header: string;
+  align?: 'left' | 'right' | 'center';
+  /** Rendered as a visually-hidden column header for screen readers when
+   * the header itself has no useful text (e.g. a trailing actions column). */
+  headerLabel?: string;
+  render: (row: T) => React.ReactNode;
+}
+
+const ALIGN_CLASS: Record<'left' | 'right' | 'center', string> = {
+  left: 'text-left',
+  right: 'text-right',
+  center: 'text-center',
+};
+
+/**
+ * The one locked table pattern every screen with tabular data should
+ * converge on (V7-03's own "Thực hiện" line) — a real `<table>` with
+ * `<th scope="col">` on every header (screen readers announce which
+ * column a cell belongs to; the 4 screens' own raw hand-rolled `<table>`
+ * markup this replaces never set `scope`) and one `EmptyState` for the
+ * zero-rows case instead of every screen inventing its own empty table
+ * body.
+ *
+ * onRowClick is a MOUSE-ONLY convenience (a larger click target, exactly
+ * the existing "row + inner button both call the same handler" pattern
+ * already used in `Definitions.tsx`/`Settings.tsx`): it deliberately does
+ * NOT give `<tr>` a `role="button"` (that would misrepresent
+ * real table structure to assistive tech) — callers that need row
+ * activation to be keyboard-reachable put a real interactive element
+ * (e.g. a `<button>`) in at least one cell's own `render`, exactly like
+ * every existing screen already does.
+ */
+export function Table<T>({ columns, rows, getRowKey, onRowClick, isRowSelected, emptyState }: {
+  columns: TableColumn<T>[];
+  rows: T[];
+  getRowKey: (row: T) => string;
+  onRowClick?: (row: T) => void;
+  isRowSelected?: (row: T) => boolean;
+  emptyState?: React.ReactNode;
+}) {
+  if (rows.length === 0 && emptyState) {
+    return <>{emptyState}</>;
+  }
+  return (
+    <table className="w-full text-sm">
+      <thead>
+        <tr className="border-b border-[#ECEFF4] bg-[#F8FAFC]">
+          {columns.map(col => (
+            <th key={col.key} scope="col" className={`px-5 py-2.5 text-xs font-semibold text-[#5D697A] ${ALIGN_CLASS[col.align ?? 'left']}`}>
+              {col.headerLabel ? <span className="sr-only">{col.headerLabel}</span> : col.header}
+            </th>
+          ))}
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-[#ECEFF4]">
+        {rows.map(row => {
+          const selected = isRowSelected?.(row) ?? false;
+          return (
+            <tr
+              key={getRowKey(row)}
+              onClick={onRowClick ? () => onRowClick(row) : undefined}
+              className={`transition-colors ${onRowClick ? 'hover:bg-[#F8FAFC] cursor-pointer' : ''} ${selected ? 'bg-[#EEF2FF]' : ''}`}
+            >
+              {columns.map(col => (
+                <td key={col.key} className={`px-5 py-3 ${ALIGN_CLASS[col.align ?? 'left']}`}>{col.render(row)}</td>
+              ))}
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// ─── Toast ────────────────────────────────────────────────────────────────────
+
+export type ToastIntent = 'success' | 'danger' | 'warning' | 'info';
+
+export interface ToastItem {
+  id: string;
+  intent: ToastIntent;
+  message: string;
+  /** Auto-dismiss after this many ms. 0 disables auto-dismiss (the operator must close it). Default 5000. */
+  duration?: number;
+}
+
+const TOAST_STYLES: Record<ToastIntent, { classes: string; Icon: React.ComponentType<{ size?: number; className?: string; 'aria-hidden'?: boolean }> }> = {
+  success: { classes: 'bg-[#DCFCE7] border-[#86EFAC] text-[#166534]', Icon: CheckCircle2 },
+  danger:  { classes: 'bg-[#FEE2E2] border-[#FCA5A5] text-[#991B1B]', Icon: XCircle },
+  warning: { classes: 'bg-[#FEF3C7] border-[#FCD34D] text-[#92400E]', Icon: AlertTriangle },
+  info:    { classes: 'bg-[#DBEAFE] border-[#93C5FD] text-[#1E40AF]', Icon: Info },
+};
+
+const DEFAULT_TOAST_DURATION = 5000;
+
+/**
+ * useToasts is the one toast queue every screen shares — V7-03's own
+ * "toast" primitive, transient and dismissible (unlike `OperationNotice`,
+ * which is a persistent banner for an operation still in progress). A
+ * `danger` toast never auto-dismisses regardless of `duration`: an error
+ * the operator has not yet acknowledged must not silently disappear.
+ */
+export function useToasts() {
+  const [toasts, setToasts] = useState<ToastItem[]>([]);
+
+  const dismiss = useCallback((id: string) => {
+    setToasts(current => current.filter(t => t.id !== id));
+  }, []);
+
+  const show = useCallback((toast: Omit<ToastItem, 'id'> & { id?: string }) => {
+    const id = toast.id ?? `toast-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    setToasts(current => [...current, { ...toast, id }]);
+    return id;
+  }, []);
+
+  return { toasts, show, dismiss };
+}
+
+/** Renders the current toast stack — mount exactly one of these near the app root, fed by useToasts(). */
+export function ToastViewport({ toasts, onDismiss }: { toasts: ToastItem[]; onDismiss: (id: string) => void }) {
+  if (toasts.length === 0) return null;
+  return (
+    <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2 w-80" aria-label="Notifications">
+      {toasts.map(toast => <Toast key={toast.id} toast={toast} onDismiss={() => onDismiss(toast.id)} />)}
+    </div>
+  );
+}
+
+function Toast({ toast, onDismiss }: { toast: ToastItem; onDismiss: () => void }) {
+  const { classes, Icon } = TOAST_STYLES[toast.intent];
+  const duration = toast.duration ?? DEFAULT_TOAST_DURATION;
+
+  useEffect(() => {
+    if (toast.intent === 'danger' || duration <= 0) return;
+    const timer = window.setTimeout(onDismiss, duration);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [toast.id]);
+
+  return (
+    <div
+      role="status"
+      aria-live={toast.intent === 'danger' ? 'assertive' : 'polite'}
+      className={`flex items-start gap-2.5 rounded-[8px] border px-4 py-3 text-[13px] shadow-lg island-shadow ${classes}`}
+    >
+      <Icon size={15} aria-hidden className="flex-shrink-0 mt-0.5" />
+      <p className="flex-1 min-w-0">{toast.message}</p>
+      <button onClick={onDismiss} aria-label="Dismiss notification" className="flex-shrink-0 opacity-60 hover:opacity-100">
+        <X size={13} aria-hidden />
+      </button>
+    </div>
+  );
+}
