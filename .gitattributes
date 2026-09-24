@@ -24,3 +24,14 @@
 # scoped this broadly deliberately, matching the existing *.json rule's
 # own scope).
 *.txt text eol=lf
+
+# Same root cause, same fix, again: web/src/api/generated.ts is compared
+# byte-for-byte against apicontract.GenerateTypeScriptClient's own output
+# (internal/delivery/httpapi/apicontract/tsclient_golden_test.go), which
+# always emits LF only. *.tsx is included for the same reason preemptively
+# (the whole web/ source tree should not have platform-dependent line
+# endings once any tool — a future lint/format/snapshot check — starts
+# comparing its bytes), even though nothing golden-tests a *.tsx file's
+# exact bytes yet.
+*.ts text eol=lf
+*.tsx text eol=lf
