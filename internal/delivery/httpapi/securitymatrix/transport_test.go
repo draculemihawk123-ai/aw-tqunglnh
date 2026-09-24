@@ -234,7 +234,7 @@ func bodyForMethod(method string) string {
 // across packages, and the whole point of both is to force a conscious
 // review when the route set changes — a shared value that one task updates
 // for both would defeat exactly half of that.
-const wantRouteCount = 88
+const wantRouteCount = 89
 
 // TestEveryRegisteredRouteIsCoveredByTheMatrix is V6-13's own completion
 // gate: the matrix's row set IS RouteRegistry.Descriptors(), so coverage is

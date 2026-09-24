@@ -73,7 +73,7 @@ func newSecurityTestServer(t *testing.T, principal httpapi.LocalPrincipalSnapsho
 	routes.Register(httpapi.RouteDescriptor{
 		Method: http.MethodGet, Path: "/", OperationID: "bootstrap",
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
-		Handler: httpapi.BootstrapHandler(token, principal, idsource.Random{}),
+		Handler: httpapi.BootstrapHandler(token, principal, idsource.Random{}, nil),
 	})
 
 	server, err := httpapi.NewServer(httpapi.Config{

@@ -241,6 +241,7 @@ func newEnv(t *testing.T) *env {
 		LiveHandler:                healthPlaceholder,
 		ReadyHandler:               healthPlaceholder,
 		BootstrapHandler:           bootstrapPlaceholder,
+		StaticAssetHandler:         healthPlaceholder,
 	}
 	routes := httpapi.NewRouteRegistry()
 	httpcompose.ComposeRoutes(routes, deps)
