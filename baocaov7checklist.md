@@ -377,3 +377,58 @@ once rather than through every individual tab.
 - `pnpm run build`: unaffected, same output as before.
 - Sanity-checked `expectNoAxeViolations` against a deliberately broken `<img>` (no `alt`) — it correctly
   threw before being deleted (proof only, not a committed app-behavior test).
+
+## V7-03B — Table and Toast primitives; V7-03 closed
+
+### Context
+
+V7-03A's own checklist entry named the two primitives missing from the existing library that V7-03's
+"Thực hiện" line asks for: `table` (4 screens — `Definitions.tsx`, `Projects.tsx`, `RepairAudit.tsx`,
+`Settings.tsx` — each hand-roll raw `<table>` markup, no shared component) and `toast` (nothing
+dismissible/transient exists; `OperationNotice` is a persistent banner for an in-progress operation, a
+different concept). This task adds both as real, tested primitives to `web/src/components/ui.tsx`. It
+does NOT retrofit the 4 existing screens to use `Table` — those screens are still 100% fake-`useState`
+Figma Make prototype data (`App.tsx`'s own routing/state), due for real rewiring in V7-04 and each
+screen's own dedicated task; changing their markup now would be premature, redone work later.
+
+### Decision
+
+`Table<T>` is deliberately generic (`columns: TableColumn<T>[]`, `rows: T[]`, `getRowKey`) rather than
+one-shape-per-screen, and locks in one real accessibility fix none of the 4 existing raw tables have:
+`<th scope="col">` on every header (screen readers otherwise cannot reliably announce which column a
+cell belongs to) plus an optional `headerLabel` for a column with no visible header text (mirrors
+`Projects.tsx`'s own `<th aria-label="Actions" />` trailing-column pattern). `onRowClick` is documented
+and tested as a MOUSE-ONLY convenience, never a `role="button"` on `<tr>` (which would misrepresent real
+table structure to assistive tech) — exactly the existing "row onClick + a real `<button>` in one cell"
+pattern `Definitions.tsx`/`Settings.tsx` already use for keyboard reachability.
+
+Toast is a `useToasts()` queue hook + `ToastViewport` renderer, not a single static component: nothing in
+the app can trigger a toast without SOME state to hold the current queue, so a bare presentational
+component would not have been genuinely usable end-to-end. One deliberate safety rule, tested: a `danger`
+toast never auto-dismisses regardless of its `duration` — an error the operator has not yet acknowledged
+must not silently disappear. `aria-live` is `assertive` for `danger`, `polite` otherwise, matching the
+urgency convention `ProjectionBanner`/`ConnectionBanner` already established in this same file.
+
+### Execution
+
+- `web/src/components/ui.tsx`: `Table`, `TableColumn`, `useToasts`, `ToastItem`, `ToastIntent`,
+  `ToastViewport` (+ internal `Toast`).
+- `web/src/components/ui.table.test.tsx` (new, 7 tests): header `scope="col"`, row/cell rendering,
+  `headerLabel` accessible-name fallback, `emptyState`, mouse-only `onRowClick` (asserts no `role="button"`
+  leaked onto `<tr>`), `isRowSelected` highlighting, accessibility smoke.
+- `web/src/components/ui.toast.test.tsx` (new, 8 tests): `useToasts` add/dismiss via `renderHook`,
+  `ToastViewport` rendering/empty-state, icon+text (not color alone), `aria-live` per intent, dismiss
+  button, fake-timer-verified auto-dismiss timing, danger-never-auto-dismisses, accessibility smoke.
+
+### Verify
+
+- `npx vitest run`: 84/84 pass (69 from V7-03A + 15 new).
+- `npx tsc --noEmit`: clean.
+- `pnpm run build`: unaffected, same output as before.
+
+### V7-03 status: CLOSED
+
+Both sub-tasks (V7-03A test tooling + existing-primitive coverage, V7-03B Table/Toast) merged. V7-03's
+own completion bar ("status không chỉ truyền bằng màu và error liên kết field") was already satisfied by
+the existing primitive markup (V7-03A finding) and remains true for the two new ones. Next per
+`docs/design/09-v7-alpha-ui.md`: V7-04 (application shell, routing, SSE state).
