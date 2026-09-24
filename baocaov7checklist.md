@@ -168,3 +168,85 @@ one place, exactly the mechanism that map already existed for.
   the injected `window.__AW_BOOTSTRAP__=...` token script before `</body>` — and curled both asset URLs,
   getting `200` with the exact built file sizes (358417 / 25470 bytes) and correct
   `text/javascript`/`text/css` content types.
+
+## V7-02B — Generated TypeScript API client + the real `web/` workspace lands on master
+
+### Context
+
+V7-02's own scope line is "API client từ contract" plus "scaffold theo ADR với strict TypeScript/lint/
+unit/component/E2E commands." Starting the generator revealed a real dependency the task text does not
+spell out: `web/` had never been merged to `master` at all — it only ever existed on the stray
+`codex/ui-design-qa` branch (V7-01's own cleanup work). A generated `.ts` file with nowhere to be
+type-checked would be an orphan, not a real deliverable, so this task also brings that cleaned `web/`
+workspace itself onto `master` for the first time.
+
+### Decision
+
+The generator (`apicontract.GenerateTypeScriptClient`) lives IN the `apicontract` package itself, not a
+separate `cmd/` tool or subpackage — that package already owns "what a client of this contract looks
+like" (its own doc comment explicitly anticipates a future consumer walking the artifact), and staying
+in-package lets its golden test reuse `buildRealContract(t)`/`buildRealRegistry(t)` directly instead of
+duplicating the ~90-line real-infrastructure composition helper in a second binary. Output is committed
+to `web/src/api/generated.ts` and protected by a golden test
+(`TestGeneratedTypeScriptClient_MatchesGoldenFixture`) that regenerates from the SAME real production
+Contract every other test in this package already builds — this is the "breaking API schema làm UI CI
+fail" completion bar from the design doc, and it needs no change to the shared `.github/workflows/
+spike-gate.yml` at all: it is an ordinary `go test ./...` assertion, so it already runs inside every
+existing CI job that runs the Go suite.
+
+Two operations, `bootstrap` and `staticAsset`, are deliberately never given a callable client function
+(`browserOnlyOperations`) — the same ADR-028 exemption `internal/delivery/parity`'s `BrowserBootstrap`
+map already encodes for CLI/application parity, applied here to the client generator: neither is ever
+`fetch()`-called by application code (bootstrap is read from `window.__AW_BOOTSTRAP__`, static assets
+load via native `<script src>`/`<link href>`), so generating a function for either would be actively
+misleading.
+
+Field typing is intentionally honest about the contract's own one-level-deep limit (see apicontract's
+own "why a custom JSON contract, not full OpenAPI 3.x" doc comment): `Opaque` or zero-`Fields` schemas
+become `unknown`, never `any` and never a fabricated shape; a named struct/enum type the contract does
+not itself expand beyond its bare Go type string (e.g. `kanban.KanbanCardDTO`) also becomes `unknown`,
+for the same reason. `omitempty` in the raw Go `json:"..."` tag becomes an optional TS field (`field?:
+type`) rather than a required one — real behavior, not a simplification.
+
+A real correctness bug was caught by actually type-checking the output with `tsc --noEmit` (not just
+eyeballing it): `Field.JSONTag` carries the RAW, unsplit Go struct tag (e.g.
+`"parentJoinPolicy,omitempty"`, per contract.go's own `f.Tag.Get("json")`, never parsed further) — using
+it verbatim as a TS property key produced `parentJoinPolicy,omitempty: ...`, which `tsc` correctly
+rejected (`TS7008`/`TS2300`/`TS2717`, ~50 errors). Fixed with a dedicated `jsonWireKey` helper that
+splits on the first comma exactly like `encoding/json` itself does, extracting both the real wire key
+and whether `omitempty` was present.
+
+### Execution
+
+- `internal/delivery/httpapi/apicontract/tsclient.go` (new): `GenerateTypeScriptClient`, the Go-type→TS
+  mapping (`goFieldTypeToTS`), path-template generation, and `jsonWireKey`.
+- `internal/delivery/httpapi/apicontract/tsclient_golden_test.go` (new):
+  `TestGeneratedTypeScriptClient_MatchesGoldenFixture` (byte-for-byte golden compare, same pattern as
+  `golden_test.go`'s own contract.json test) and
+  `TestGeneratedTypeScriptClient_SkipsBrowserOnlyOperations`.
+- `web/` (new on `master`): the full cleaned scaffold from `codex/ui-design-qa` (React 19 + Vite 8 +
+  TypeScript 5 + Tailwind 4, per ADR-029) — `package.json`, `tsconfig.json`, `vite.config.ts`,
+  `index.html`, and every existing `src/` file (`App.tsx`, the app shell, all 9 screens).
+- `web/src/api/generated.ts` (new): the committed generator output — 1328 lines, one function per
+  non-browser-only operation.
+- Renamed the collided test-only `pathParamPattern` in `routeinventory_test.go` context to
+  `tsClientPathParamPattern` in the new file (both patterns coexist in the same package for different
+  purposes — the test-only one does bare substitution, this one needs a capture group for the real
+  parameter name).
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test ./...` (whole repo): all green except two isolated reruns confirmed unrelated —
+  `TestExecuteNodeHandler_PollerDetectsDurableCancellation_DefinitiveResultFinalizesCancelled`
+  (`internal/app/runtime`) and `TestPool_TwoPoolsRaceRecovery_NoDuplicateProcessing`
+  (`internal/app/workerpool`, an already-documented shared-load flake) — both pass cleanly run in
+  isolation immediately after; this diff touches only `internal/delivery/httpapi/apicontract` and
+  `web/`, zero overlap with either failing package, consistent with a full local `go test ./...` being a
+  heavy-parallel-load scenario (same mechanism as concurrent CI, not a regression).
+- `pnpm install` + `npx tsc --noEmit` in `web/` (the whole workspace, not just the new file): clean —
+  this IS the "client compatibility check" V7-02's own Verify line asks for, and it is what actually
+  caught the `jsonWireKey` bug above.
+- `pnpm run build`: unaffected (1849 modules, same output as before — Vite tree-shakes the not-yet-
+  imported `generated.ts`, so it adds nothing to the shipped bundle until a later task actually wires a
+  screen to call it).
