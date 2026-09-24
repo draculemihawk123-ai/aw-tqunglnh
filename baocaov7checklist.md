@@ -304,3 +304,76 @@ All three sub-tasks (V7-02A static serving, V7-02B generated client, V7-02C sess
 V7-02's own completion bar is met. Next per `docs/design/09-v7-alpha-ui.md`: V7-03 (design tokens and
 accessible primitives) or V7-04 (application shell, routing, SSE) — deliberately not started without a
 scoping decision, since either is a much larger, screen-touching task than any V7-02 sub-part.
+
+User chose V7-03.
+
+## V7-03A — Component test tooling; keyboard/accessibility coverage for the existing primitives
+
+### Context
+
+V7-03's own Verify line ("component tests, keyboard/focus và automated accessibility smoke") requires
+test infrastructure `web/` never had — no Vitest/Jest, no Testing Library, nothing. Before writing that
+infrastructure, actually reading `web/src/components/ui.tsx` (528 lines) turned up a real surprise: the
+Figma Make-generated prototype already implements almost everything V7-03's own "Thực hiện" line asks
+for (buttons/forms/dialog/tabs/badge/skeleton — 20 components total), including BOTH literal
+"Hoàn thành khi" bar items already, in the existing markup: `StatusBadge` always renders an icon AND a
+text label alongside color ("status không chỉ truyền bằng màu"), and `TextField` already wires
+`aria-describedby`/`aria-invalid` linking its error text to the input ("error liên kết field"). Missing
+from the "Thực hiện" list: a `table` primitive (4 screens hand-roll raw `<table>` markup with no shared
+component) and a `toast` primitive (nothing dismissible/transient exists — `OperationNotice` is a
+persistent banner, not a toast). This task scopes ONLY the test tooling + proving the EXISTING primitives
+actually meet the bar (including fixing one real gap it found); V7-03B is Table + Toast.
+
+### Decision
+
+Added to `web/`: `vitest` + `@vitest/ui` + `jsdom` (test runner/environment), `@testing-library/react` +
+`@testing-library/jest-dom` + `@testing-library/user-event` (component tests), `axe-core` directly (NOT
+the `vitest-axe` wrapper — see below). `vite.config.ts`'s `defineConfig` import switched from `'vite'` to
+`'vitest/config'` (the standard way to add a `test` block to one shared Vite+Vitest config file, no
+second config file). `test.globals: false` keeps `describe`/`it`/`expect` as explicit imports, matching
+this codebase's own no-ambient-globals style everywhere else — this means `@testing-library/react`'s own
+auto-cleanup-on-afterEach never activates, so `src/test/setup.ts` registers `afterEach(cleanup)` by hand.
+
+`vitest-axe` (the obvious "axe matcher for Vitest" package) was tried first and dropped: its own
+`toHaveNoViolations` type augmentation declares `interface Assertion<T = any>` (one type parameter),
+while this project's pinned Vitest 5 actual `Assertion<T, R>` has two — TypeScript interface merging
+silently fails to combine mismatched type-parameter lists, so the matcher worked at runtime but `tsc
+--noEmit` never recognized it (confirmed real: reverting to `vitest-axe` reproduces ~10 `TS2339` errors
+across every test file). Replaced with a small local `expectNoAxeViolations(container)` in
+`web/src/test/axe.ts` that calls `axe-core` directly and fails with a formatted violation list — no
+custom matcher, no cross-package type-augmentation contract to go stale again. Verified this genuinely
+catches a violation (not a silent no-op) with a throwaway `<img>` missing `alt` before deleting that
+proof.
+
+`color-contrast` is disabled in the axe config: jsdom has no real layout/paint engine
+(`HTMLCanvasElement#getContext` unimplemented), so that one rule can only ever warn or produce a
+meaningless pass in this environment — every other rule (labels, roles, aria-*, focus order) still runs
+for real.
+
+One real, non-test-infra fix came out of writing the keyboard tests: `Tabs` had `role="tablist"`/
+`role="tab"`/`aria-selected` but no keyboard navigation at all — a mouse-only tab control despite looking
+like a real ARIA tablist. Implemented the WAI-ARIA APG "Tabs" automatic-activation pattern:
+ArrowLeft/ArrowRight move (with wraparound) and select, Home/End jump to first/last, roving `tabindex`
+(only the active tab is `tabindex="0"`, every other is `-1`) so Tab key moves IN and OUT of the tablist
+once rather than through every individual tab.
+
+### Execution
+
+- `web/vite.config.ts`: `defineConfig` from `vitest/config`; new `test` block (`jsdom`, `globals: false`,
+  `setupFiles: ['./src/test/setup.ts']`).
+- `web/src/test/setup.ts` (new): jest-dom matchers, `afterEach(cleanup)`.
+- `web/src/test/axe.ts` (new): `expectNoAxeViolations`.
+- `web/src/components/ui.tsx`: `Tabs` gained real keyboard navigation (roving tabindex, arrow/Home/End).
+- `web/src/components/ui.{badge,button,tabs,form,dialog,feedback}.test.tsx` (new, 69 tests total):
+  component behavior, keyboard interaction (`Tabs` arrows/Home/End/focus-follows-selection, `Dialog`
+  focus-trap/Tab-wraparound/Escape/focus-restore-on-unmount, `Button` Enter/Space activation), and an
+  `expectNoAxeViolations` smoke test on a representative sample of components.
+- `web/package.json`: `test` (`vitest run`, what CI will call), `test:watch`, `test:ui` scripts.
+
+### Verify
+
+- `npx vitest run`: 69/69 pass.
+- `npx tsc --noEmit`: clean.
+- `pnpm run build`: unaffected, same output as before.
+- Sanity-checked `expectNoAxeViolations` against a deliberately broken `<img>` (no `alt`) — it correctly
+  threw before being deleted (proof only, not a committed app-behavior test).

@@ -1,4 +1,5 @@
-import { defineConfig, type HtmlTagDescriptor, type Plugin } from 'vite'
+import { defineConfig } from 'vitest/config'
+import type { HtmlTagDescriptor, Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
@@ -38,6 +39,17 @@ export default defineConfig(({ mode }) => {
     preview: {
       host: process.env.FIGMA_DEV_SERVER_HOST || '0.0.0.0',
       port: parseInt(process.env.PORT || '8443'),
+    },
+    // V7-03A: component/keyboard-focus/accessibility-smoke tests
+    // (docs/design/09-v7-alpha-ui.md V7-03's own Verify line). `environment:
+    // 'jsdom'` gives every test a real DOM for Testing Library's
+    // render()/fireEvent to work against; `globals: false` keeps
+    // describe/it/expect as ordinary imports rather than ambient globals,
+    // matching this file's own explicit-import style everywhere else.
+    test: {
+      environment: 'jsdom',
+      globals: false,
+      setupFiles: ['./src/test/setup.ts'],
     },
   }
 })
