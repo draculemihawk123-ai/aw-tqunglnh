@@ -7,8 +7,11 @@
 >
 > ADR-028 chốt ngày 2026-09-06 theo quyết định của product owner về operator CLI cuối V6.
 >
+> ADR-029 chốt ngày 2026-09-24, mở đầu V7 (UI Alpha) — quyết định framework/toolchain bằng evidence
+> theo yêu cầu V7-01.
+>
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -803,9 +806,60 @@ probe/re-probe/hash vẫn ở ngoài database transaction theo ADR-022.
 Public projection rebuild là operator operation typed, project-scoped và job-backed; HTTP/CLI chỉ ghi
 request rồi quan sát tiến trình. Nó không cho client sửa projection cursor/read-model row trực tiếp.
 
-## 31. Baseline sau review thiết kế
+## 31. ADR-029 — UI framework cho V7 Alpha: React 19 + Vite
 
-ADR-001…028 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** V7-01 yêu cầu chọn UI framework/toolchain bằng evidence trước khi scaffold V7-02 — so
+tốc độ, ecosystem, bundle, khả năng bảo trì team — không được chọn theo sở thích ngầm. Production UI
+build phải là static bundle được chính `aw serve` phục vụ qua static handler của V6-01 (không SSR,
+không server Node riêng, theo ADR-016).
+
+**Ứng viên và bằng chứng:**
+- **React 19 + Vite 8 + TypeScript + Tailwind 4:** đã có prototype QA-reviewed thật (nhánh
+  `codex/ui-design-qa`, thư mục `web/`), hiện thực đủ shell (`LeftNav`, `TopBar`) và 9 screen khớp
+  `docs/design/09a-v7-ui-component-spec.md` (Kanban, TaskDetail, Definitions, Doctor, Projects,
+  AdapterBuilds, RunDiagnostics, Settings, CreateWorkItem, RepairAudit). Build đã verify sạch —
+  `pnpm install` + `pnpm build`: 1849 module, 439ms, output 358.41 kB JS (gzip 98.73 kB) + 25.47 kB CSS
+  (gzip 5.91 kB), phù hợp một SPA static-served cho single-operator local tool.
+- **Angular:** router/forms/DI built-in đầy đủ nhưng runtime/CLI nặng hơn nhiều so với nhu cầu thực tế,
+  và không có prototype nào tận dụng được — chọn Angular đồng nghĩa viết lại toàn bộ 9 screen chỉ để có
+  lại tính năng ứng viên kia đã có sẵn.
+- **Solid.js:** bundle runtime nhỏ hơn (không virtual DOM), JSX gần giống React, nhưng ecosystem/tooling
+  test (Testing Library, DevTools) kém trưởng thành hơn; vẫn phải viết lại toàn bộ prototype hiện có.
+- **Vanilla/htmx:** không đủ cho state phức tạp V7 cần — SSE reconnect/backoff và stale/degraded
+  indicator (V7-04), drag/drop Kanban (V7-06), form schema validation nhiều screen — sẽ phải tự dựng lại
+  chính các pattern mà một framework cung cấp sẵn.
+
+**Quyết định:** chọn **React 19 + Vite 8 + TypeScript 5 + Tailwind CSS 4**, kiến trúc SPA thuần (không
+SSR, không meta-framework Next.js/Remix), giữ path alias `@` → `src`. Toàn bộ source UI chuyển từ
+`UI draft/` sang `web/` theo layout đã khóa ở `01-system-design.md` (`web/ — UI source sau UI quyết
+định`).
+
+**Ma trận quyết định:**
+
+| Tiêu chí | React+Vite | Angular | Solid.js | Vanilla/htmx |
+|---|---|---|---|---|
+| Bằng chứng thật (chạy được) | Có — 9 screen, build đo được | Không, phải viết lại | Không, phải viết lại | Không, phải viết lại |
+| Ecosystem (router/forms/test/SSE) | Trưởng thành: TanStack Query, RHF+Zod | Đầy đủ nhưng nặng hơn cần thiết | Nhỏ hơn, ít mature hơn | Thiếu, phải tự dựng |
+| Bundle đo được | 358 kB / 98 kB gzip | Chưa đo, thường lớn hơn | Chưa đo, ước tính nhỏ hơn | Nhỏ nhất nhưng không đủ tính năng |
+| Maintainability | Cao — code có sẵn, convention quen | Learning curve DI/RxJS mới | Learning curve mới, cộng đồng nhỏ | Không scale cho 9+ screen state phức tạp |
+
+**Hệ quả:**
+- V7-02 scaffold thêm trên nền này: router (`wouter` hoặc `react-router`), `@tanstack/react-query` cho
+  SSE reconnect/query invalidation, `react-hook-form` + `zod` cho form schema, Vitest + Testing Library
+  cho unit/component test, Playwright cho E2E — đúng yêu cầu "strict TypeScript/lint/unit/component/E2E"
+  của V7-02.
+- Prototype `web/` (nhánh `codex/ui-design-qa`) đã được dọn cruft riêng của nền tảng Figma Make (script
+  deploy/langserver, `AGENTS.md` mô tả môi trường hosted của họ) trước khi dùng làm nền V7-02;
+  `vite.config.ts` còn giữ hai plugin dev-only cần review lại lúc scaffold thật (`figmaMakeKitPlugin`
+  phục vụ preview riêng Figma, không cần cho `aw serve`).
+- Không xây song song prototype Angular/Solid để so trực tiếp: chi phí viết lại toàn bộ 9 screen chỉ để
+  lấy thêm số đo không tương xứng lợi ích. Quyết định dựa trên số đo thật của ứng viên đã chọn cộng đánh
+  giá định tính có căn cứ (ecosystem, learning curve, yêu cầu không-SSR) cho các ứng viên còn lại.
+- **Nguồn:** V7-01 (`docs/design/09-v7-alpha-ui.md`).
+
+## 32. Baseline sau review thiết kế
+
+ADR-001…029 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -831,5 +885,8 @@ dụng ma trận sau:
 - ADR-028 đổi executable sản phẩm canonical thành `aw`, khóa UI/API/CLI parity trên cùng public
   application authority ở gate cuối V6, thêm named readiness action thay generic status setter và
   refine scope của definition global/project; `agentkit-spike` vẫn là binary regression riêng của V0.
+- ADR-029 chọn framework/toolchain UI cho V7 Alpha (React 19 + Vite 8) bằng evidence từ prototype thật,
+  chưa được ADR cũ khóa — không đổi authority/contract nào đã chốt ở ADR-001…028, chỉ khóa lựa chọn kỹ
+  thuật phía client mở đầu V7.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.
