@@ -129,8 +129,27 @@ func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 	// attempt no matter how slow the machine). It does not weaken anything:
 	// the outcome when the budget runs out is the same honest skip, with the
 	// real numbers, that running out of attempts already produced.
-	const maxAttempts = 3
-	const attemptBudget = 150 * time.Second
+	//
+	// maxAttempts=3 was raised to 5 (attemptBudget 150s -> 200s) on
+	// 2026-09-24 after this scenario skipped on BOTH windows-latest AND
+	// ubuntu-latest in the same CI run five times in a row — with only 3
+	// tries, V6-14C's own gate (which tolerates a skip on ONE platform but
+	// not on both in the same run) started failing PR after PR for a reason
+	// with zero relationship to any of their diffs. Five independent local
+	// runs (`-count=1`, this file's baseline otherwise unchanged) needed
+	// attempt 2, 3, 4, 5 and 6 respectively to catch the race — i.e. the
+	// true distribution already reaches past 3 under completely ordinary
+	// conditions, not just on an unusually fast CI runner. 5 was chosen
+	// over 6 deliberately: `.github/workflows/spike-gate.yml`'s own
+	// `go test -timeout 15m ./internal/integration/v6accept/...` comment
+	// records this PACKAGE (not just this test) already costing "372s and
+	// then 600s+ on consecutive runs" on windows-latest — headroom under
+	// that 900s ceiling is real but not large, so the budget only grew by
+	// 50s, not 150s. This does not eliminate the skip outcome (it is still
+	// the correct, honest result on a run unlucky enough to exhaust it),
+	// it only makes it meaningfully rarer.
+	const maxAttempts = 5
+	const attemptBudget = 200 * time.Second
 	loopStart := time.Now()
 	caught := false
 	for attempt := 1; !caught && attempt <= maxAttempts; attempt++ {
