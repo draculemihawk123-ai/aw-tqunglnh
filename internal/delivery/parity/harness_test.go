@@ -95,7 +95,7 @@ func newLiveInstall(t *testing.T, principal httpapi.LocalPrincipalSnapshot) *liv
 		Matcher: redact.NewMatcher(), Cursor: httpapi.NewCursorCodec([]byte("parity-cursor-secret-value")),
 		Isolation: process.NewIsolationChecker(), Agents: agents, AppConfig: appConfig,
 		Store: sqlite.NewQueryStore(store), SafeSettingsEffective: effective, Shutdown: ctx,
-		LiveHandler: live, ReadyHandler: live, BootstrapHandler: live,
+		LiveHandler: live, ReadyHandler: live, BootstrapHandler: live, StaticAssetHandler: live,
 	})
 	srv, err := httpapi.NewServer(httpapi.Config{
 		Host: "127.0.0.1", Port: 0, Routes: routes, IDs: idsource.Random{}, MaxBodyBytes: 1 << 20,

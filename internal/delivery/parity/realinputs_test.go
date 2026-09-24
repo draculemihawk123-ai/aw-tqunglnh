@@ -87,7 +87,7 @@ func realRoutes(t *testing.T) *httpapi.RouteRegistry {
 		Cursor:                     httpapi.NewCursorCodec([]byte("parity-test-cursor-secret-value")),
 		Isolation:                  process.NewIsolationChecker(), Agents: agents, AppConfig: appConfig,
 		Store: sqlite.NewQueryStore(store), SafeSettingsEffective: effective, Shutdown: ctx,
-		LiveHandler: placeholder, ReadyHandler: placeholder, BootstrapHandler: placeholder,
+		LiveHandler: placeholder, ReadyHandler: placeholder, BootstrapHandler: placeholder, StaticAssetHandler: placeholder,
 	})
 	return routes
 }

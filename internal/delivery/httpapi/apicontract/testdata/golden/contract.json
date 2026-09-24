@@ -3541,6 +3541,20 @@
       }
     },
     {
+      "operationId": "staticAsset",
+      "method": "GET",
+      "path": "/assets/",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
       "operationId": "submitWaitSignal",
       "method": "POST",
       "path": "/runs/{runId}/wait-registrations/{waitRegistrationId}/signal",

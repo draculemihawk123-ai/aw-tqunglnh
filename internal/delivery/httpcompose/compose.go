@@ -129,19 +129,22 @@ type Dependencies struct {
 	// connection, may leave this unset.
 	Shutdown context.Context
 
-	// LiveHandler, ReadyHandler and BootstrapHandler are built by the
-	// caller: a real composition root builds them from its own
-	// httpapi.ReadinessChecker, per-start session token and trusted
-	// LocalPrincipalSnapshot (none of which ComposeRoutes has any business
-	// constructing itself — V6-01/V6-01A's own territory). A caller that
-	// only needs the registered route LIST — V6-12's own contract
-	// generator, golden test and route-inventory test — may pass any
-	// non-nil http.HandlerFunc placeholder: RouteDescriptor.Handler's own
-	// identity plays no role in the generated contract or any of V6-12's
-	// gates, only httpapi.RouteRegistry.Register's own non-nil check.
-	LiveHandler      http.HandlerFunc
-	ReadyHandler     http.HandlerFunc
-	BootstrapHandler http.HandlerFunc
+	// LiveHandler, ReadyHandler, BootstrapHandler and StaticAssetHandler are
+	// built by the caller: a real composition root builds them from its own
+	// httpapi.ReadinessChecker, per-start session token, trusted
+	// LocalPrincipalSnapshot and (V7-02A) `--ui-dist` build directory (none
+	// of which ComposeRoutes has any business constructing itself —
+	// V6-01/V6-01A's own territory, extended by V7-02A for the UI static
+	// asset route). A caller that only needs the registered route LIST —
+	// V6-12's own contract generator, golden test and route-inventory test —
+	// may pass any non-nil http.HandlerFunc placeholder:
+	// RouteDescriptor.Handler's own identity plays no role in the generated
+	// contract or any of V6-12's gates, only httpapi.RouteRegistry.Register's
+	// own non-nil check.
+	LiveHandler        http.HandlerFunc
+	ReadyHandler       http.HandlerFunc
+	BootstrapHandler   http.HandlerFunc
+	StaticAssetHandler http.HandlerFunc
 }
 
 // ComposeRoutes registers every HTTP route fragment this process serves
@@ -167,6 +170,17 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodGet, Path: "/", OperationID: "bootstrap",
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: deps.BootstrapHandler,
+	})
+	// V7-02A: the built UI's static assets (ADR-028's own "ngoại lệ duy
+	// nhất là bootstrap/static asset của browser" — exempt from the
+	// UI/CLI/application-command parity inventory, same as bootstrap
+	// above, but still a real registered route like any other so the
+	// contract/route-inventory gates see one deterministic route list
+	// regardless of whether this process was started with --ui-dist).
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/assets/", OperationID: "staticAsset",
+		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
+		Handler: deps.StaticAssetHandler,
 	})
 	// V6-03A: Project/repository/component catalog routes.
 	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: deps.UnitOfWork, IDs: idsource.Random{}})

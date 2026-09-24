@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -49,7 +50,18 @@ type bootstrapPayload struct {
 // nonces are meant to be visible; their unpredictability only prevents an
 // attacker from pre-guessing one to smuggle in a competing script tag), so
 // reusing the same generator that mints correlation IDs is fine.
-func BootstrapHandler(token string, principal LocalPrincipalSnapshot, ids idsource.Source) http.HandlerFunc {
+//
+// builtIndexHTML is V7-02A's own addition: the real UI's built index.html
+// (`web/dist/index.html`), read once by the composition root at startup
+// when `--ui-dist` is configured, or nil when it is not. Nil preserves the
+// exact pre-V7 minimal placeholder page byte-for-byte — every V6 test that
+// calls this constructor without a fifth argument keeps working unchanged.
+// When non-nil, the composition root has already validated it contains a
+// "</body>" close tag (see cmd/aw/serve.go's own loadBuiltUIIndex) — this
+// handler still fails closed with 500 rather than silently dropping the
+// token if that assumption is ever violated, exactly like the Marshal
+// error path below.
+func BootstrapHandler(token string, principal LocalPrincipalSnapshot, ids idsource.Source, builtIndexHTML []byte) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		nonce := ids.NewID()
 
@@ -66,21 +78,42 @@ func BootstrapHandler(token string, principal LocalPrincipalSnapshot, ids idsour
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
 			return
 		}
+		script := fmt.Appendf(nil, `<script nonce=%q>window.__AW_BOOTSTRAP__=%s;</script>`, nonce, data)
+
+		var page []byte
+		if builtIndexHTML == nil {
+			page = fmt.Appendf(nil, `<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>agent-workflow</title></head>
+<body>
+%s
+</body>
+</html>
+`, script)
+		} else {
+			const closeBody = "</body>"
+			idx := bytes.LastIndex(builtIndexHTML, []byte(closeBody))
+			if idx == -1 {
+				// The composition root already validated this at startup — a
+				// missing </body> here means that guarantee broke somewhere,
+				// not a per-request condition. Fail closed rather than ever
+				// serve the built page without the token it needs to work.
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal_error"})
+				return
+			}
+			page = make([]byte, 0, len(builtIndexHTML)+len(script))
+			page = append(page, builtIndexHTML[:idx]...)
+			page = append(page, script...)
+			page = append(page, builtIndexHTML[idx:]...)
+		}
 
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("Content-Security-Policy", fmt.Sprintf(
-			"default-src 'none'; script-src 'self' 'nonce-%s'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+			"default-src 'none'; script-src 'self' 'nonce-%s'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
 			nonce,
 		))
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>agent-workflow</title></head>
-<body>
-<script nonce=%q>window.__AW_BOOTSTRAP__=%s;</script>
-</body>
-</html>
-`, nonce, data)
+		w.Write(page)
 	}
 }

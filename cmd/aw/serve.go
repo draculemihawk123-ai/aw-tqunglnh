@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -115,6 +116,19 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// rather than leaving Doctor permanently, un-actionably BLOCKED on every
 	// installation that never sets it.
 	workerID := flags.String("worker-id", "aw-serve", "identity string recorded in this process' own config.Config for GET /doctor's config-validity check; this process does not itself run the lease/reaper worker pool (run `aw worker` for that; it has its own --worker-id)")
+	// uiDist is V7-02A's own composition-root addition: the directory a
+	// `pnpm build` of `web/` produced (docs/architecture/02-architecture-
+	// decisions.md ADR-029). Deliberately optional and NOT go:embed'ed into
+	// this binary — every other `aw serve` invocation in this codebase's own
+	// tests (cmd/aw/serve_test.go and every V6 acceptance/black-box journey)
+	// starts the process with no knowledge of `web/` at all, and must keep
+	// working completely unchanged; only V7's own new E2E journeys build
+	// `web/` first and pass this flag. Omitted (the default), `/` keeps
+	// serving the exact same pre-V7 minimal bootstrap-only page it always
+	// has, and `/assets/` returns a typed 404 (StaticAssetHandler's own
+	// "not configured" branch) instead of ever reading an arbitrary,
+	// potentially attacker-influenced directory.
+	uiDist := flags.String("ui-dist", "", "directory containing a built V7 UI (`pnpm build` output of web/, i.e. web/dist) to serve at / and /assets/; omitted = no UI, aw serve still works exactly as before V7")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
@@ -156,6 +170,16 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 
 	if info, statErr := os.Stat(*artifactRoot); statErr != nil || !info.IsDir() {
 		return fmt.Errorf("--artifact-root %q is not an existing directory", *artifactRoot)
+	}
+
+	// V7-02A: fail closed on a MISCONFIGURED --ui-dist (given but wrong),
+	// exactly like --artifact-root above — but an OMITTED --ui-dist is not
+	// an error at all, it just means uiIndexHTML/uiAssetsDir stay at their
+	// zero values and BootstrapHandler/StaticAssetHandler fall back to
+	// their pre-V7 behavior.
+	uiIndexHTML, uiAssetsDir, err := loadBuiltUIIndex(*uiDist)
+	if err != nil {
+		return err
 	}
 
 	// V6-07: the first real caller in this composition root that needs a
@@ -373,7 +397,8 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		Shutdown:                   ctx,
 		LiveHandler:                httpapi.LiveHandler(),
 		ReadyHandler:               checker.ReadyHandler(),
-		BootstrapHandler:           httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}),
+		BootstrapHandler:           httpapi.BootstrapHandler(sessionToken, principal, idsource.Random{}, uiIndexHTML),
+		StaticAssetHandler:         httpapi.StaticAssetHandler(uiAssetsDir),
 	})
 	routesFinalized = true
 
@@ -405,4 +430,35 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		}
 		return <-serveErr
 	}
+}
+
+// loadBuiltUIIndex resolves V7-02A's own optional --ui-dist flag into the
+// two values BootstrapHandler/StaticAssetHandler need. uiDist == "" (the
+// flag omitted) is not an error — it returns (nil, "", nil), the exact
+// "not configured" zero values both handlers already treat as "serve the
+// pre-V7 behavior". A non-empty uiDist that does not point at a real
+// `pnpm build` output IS an error — fail closed at startup, the same
+// "given but wrong" discipline --artifact-root/--workspace-root already
+// use above, rather than only discovering the misconfiguration on this
+// process' first real browser request.
+func loadBuiltUIIndex(uiDist string) (indexHTML []byte, assetsDir string, err error) {
+	if strings.TrimSpace(uiDist) == "" {
+		return nil, "", nil
+	}
+	if info, statErr := os.Stat(uiDist); statErr != nil || !info.IsDir() {
+		return nil, "", fmt.Errorf("--ui-dist %q is not an existing directory", uiDist)
+	}
+	indexPath := filepath.Join(uiDist, "index.html")
+	data, readErr := os.ReadFile(indexPath)
+	if readErr != nil {
+		return nil, "", fmt.Errorf("--ui-dist %q: read %s: %w", uiDist, indexPath, readErr)
+	}
+	if !strings.Contains(string(data), "</body>") {
+		return nil, "", fmt.Errorf("--ui-dist %q: %s has no </body> close tag — not a valid built UI index.html", uiDist, indexPath)
+	}
+	assetsDir = filepath.Join(uiDist, "assets")
+	if info, statErr := os.Stat(assetsDir); statErr != nil || !info.IsDir() {
+		return nil, "", fmt.Errorf("--ui-dist %q: %s is not an existing directory", uiDist, assetsDir)
+	}
+	return data, assetsDir, nil
 }

@@ -47,13 +47,14 @@ import (
 // ships" is true by construction, not by a second, hand-maintained
 // assertion that could quietly drift.
 //
-// LiveHandler/ReadyHandler/BootstrapHandler are simple non-nil
-// http.HandlerFunc placeholders (httpapi.RouteRegistry.Register only
-// requires Handler to be non-nil — see internal/delivery/httpcompose's own
-// Dependencies.LiveHandler doc comment for why a caller that only needs
+// LiveHandler/ReadyHandler/BootstrapHandler/StaticAssetHandler are simple
+// non-nil http.HandlerFunc placeholders (httpapi.RouteRegistry.Register
+// only requires Handler to be non-nil — see internal/delivery/httpcompose's
+// own Dependencies.LiveHandler doc comment for why a caller that only needs
 // the route LIST, never a live connection, is allowed to do this): this
 // package's own tests never issue a live HTTP round trip against
-// health/live, health/ready or bootstrap, they only inspect the
+// health/live, health/ready, bootstrap or the static asset route, they
+// only inspect the
 // registered RouteDescriptor list and (in routeinventory_test.go) the
 // real net/http.ServeMux's own pattern-matching behavior built from that
 // list.
@@ -120,6 +121,7 @@ func buildRealRegistry(t *testing.T) *httpapi.RouteRegistry {
 		LiveHandler:                placeholderHandler,
 		ReadyHandler:               placeholderHandler,
 		BootstrapHandler:           placeholderHandler,
+		StaticAssetHandler:         placeholderHandler,
 	})
 	return routes
 }
