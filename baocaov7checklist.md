@@ -250,3 +250,57 @@ and whether `omitempty` was present.
 - `pnpm run build`: unaffected (1849 modules, same output as before — Vite tree-shakes the not-yet-
   imported `generated.ts`, so it adds nothing to the shipped bundle until a later task actually wires a
   screen to call it).
+
+## V7-02C — Session token module; V7-02 formally closed
+
+### Context
+
+V7-02's "Thực hiện" bullet also names "đọc per-start token từ bootstrap rồi chỉ giữ trong memory và gửi
+header cho mutation" and "route shell." Its own "Hoàn thành khi" completion bar — "breaking API schema
+làm UI CI fail, và không journey nào của V7 phụ thuộc dev server" — was already fully satisfied by
+V7-02A (binary-served static UI) and V7-02B (golden-tested generated client), so this task's own scope
+is deliberately narrow: the one piece of "read the token, keep it in memory" that is real, unambiguous
+infrastructure no later task needs to redo.
+
+"Route shell" and actually wiring any of the 9 existing prototype screens (`App.tsx` currently drives
+100% fake, local `useState` data — `INITIAL_PROJECTS`, `INITIAL_CARDS`, a manual "Prototype state
+controls" panel to simulate connection states) to real data is explicitly `docs/design/09-v7-alpha-ui.md`
+V7-04's own scope ("Application shell, routing và SSE state") and each screen's own dedicated task
+(V7-05 Doctor, V7-06 Projects, V7-07 Definitions, ...) — attempting either here would be redoing work
+those tasks already own, not filling a real V7-02 gap.
+
+### Decision
+
+`web/src/api/session.ts`: reads `window.__AW_BOOTSTRAP__` exactly once into module-scoped memory, then
+`delete`s it off `window` (ADR-016 — no second live reference should outlive this module's own read),
+throwing a clear error from `getSessionToken()`/`getPrincipal()` if it was never present (this page must
+be served by `aw serve`, never the raw Vite dev server — consistent with V7-02's own completion bar).
+`withSessionToken(opts)` is the one call sites should use to attach the token to a generated-client
+`RequestOptions` value, so token-attachment logic lives in exactly one place.
+
+### Execution
+
+- `web/src/api/session.ts` (new): `BootstrapPayload`, `getSessionToken`, `getPrincipal`,
+  `withSessionToken`.
+
+### Verify
+
+- `npx tsc --noEmit` in `web/` (whole workspace): clean.
+- No automated test committed — `web/` has no unit-test runner yet (Vitest/Jest were never installed;
+  that is its own future scaffold task, matching ADR-029's own "Hệ quả" list). Verified manually instead
+  with two throwaway Node scripts (`node --experimental-strip-types`, `window` polyfilled via
+  `globalThis.window`), deleted after verifying, not committed:
+  - Missing `window.__AW_BOOTSTRAP__`: `getSessionToken()`/`getPrincipal()` both throw the documented
+    error.
+  - Present `window.__AW_BOOTSTRAP__ = {token, actor, roles}`: `getSessionToken()` returns the real
+    token; `window.__AW_BOOTSTRAP__` is `undefined` immediately after; `getPrincipal()` still returns
+    the correct value from the module's own cache (proving the delete does not break the "already read"
+    path); `withSessionToken({query: {...}})` merges the token in alongside existing options.
+- `pnpm run build`: unaffected, same output as before.
+
+### V7-02 status: CLOSED
+
+All three sub-tasks (V7-02A static serving, V7-02B generated client, V7-02C session token) merged.
+V7-02's own completion bar is met. Next per `docs/design/09-v7-alpha-ui.md`: V7-03 (design tokens and
+accessible primitives) or V7-04 (application shell, routing, SSE) — deliberately not started without a
+scoping decision, since either is a much larger, screen-touching task than any V7-02 sub-part.
