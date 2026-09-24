@@ -134,14 +134,38 @@ export function Tabs({ tabs, active, onChange }: {
   active: string;
   onChange: (id: string) => void;
 }) {
+  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+
+  // WAI-ARIA APG "Tabs" pattern, automatic activation: Left/Right move
+  // (and select, since content already switches with focus) with
+  // wraparound, Home/End jump to the first/last tab. Roving tabindex
+  // (only the active tab is in the Tab order) is what makes Home/End/
+  // arrow keys meaningful — a screen reader user tabs INTO the tablist
+  // once, then arrows between tabs, never Tabs past every single one.
+  const handleKeyDown = (e: React.KeyboardEvent, index: number) => {
+    let nextIndex: number | null = null;
+    if (e.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length;
+    else if (e.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length;
+    else if (e.key === 'Home') nextIndex = 0;
+    else if (e.key === 'End') nextIndex = tabs.length - 1;
+    if (nextIndex === null) return;
+    e.preventDefault();
+    const next = tabs[nextIndex];
+    onChange(next.id);
+    tabRefs.current[next.id]?.focus();
+  };
+
   return (
     <div role="tablist" className="flex border-b border-[#CDD5DF]">
-      {tabs.map(tab => (
+      {tabs.map((tab, index) => (
         <button
           key={tab.id}
+          ref={el => { tabRefs.current[tab.id] = el; }}
           role="tab"
           aria-selected={active === tab.id}
+          tabIndex={active === tab.id ? 0 : -1}
           onClick={() => onChange(tab.id)}
+          onKeyDown={e => handleKeyDown(e, index)}
           className={`px-4 py-2.5 text-[13px] font-medium border-b-2 -mb-px transition-colors ${
             active === tab.id
               ? 'border-[#3659E3] text-[#3659E3] bg-white'
