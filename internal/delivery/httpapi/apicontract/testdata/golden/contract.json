@@ -3590,6 +3590,20 @@
       }
     },
     {
+      "operationId": "uiShell",
+      "method": "GET",
+      "path": "/ui/{path...}",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
       "operationId": "updateSafeSettings",
       "method": "PUT",
       "path": "/settings/safe",

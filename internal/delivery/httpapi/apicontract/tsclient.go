@@ -12,12 +12,14 @@ import (
 // BrowserBootstrap map is the CLI/application-side twin of this same
 // exemption). "bootstrap" is read once from window.__AW_BOOTSTRAP__, never
 // fetched; "staticAsset" is loaded natively by the browser's own
-// <script src>/<link href>, never through application code. Generating a
-// client function for either would be actively misleading, not just
-// redundant.
+// <script src>/<link href>; "uiShell" (V7-05A) is the SPA client-side
+// router's own server-side fallback route — a direct browser navigation
+// hits it, application code never does. Generating a client function for
+// any of the three would be actively misleading, not just redundant.
 var browserOnlyOperations = map[string]bool{
 	"bootstrap":   true,
 	"staticAsset": true,
+	"uiShell":     true,
 }
 
 // tsClientPathParamPattern matches a Go 1.22 net/http.ServeMux wildcard

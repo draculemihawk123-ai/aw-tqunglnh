@@ -306,6 +306,16 @@ func TestScopeMatrix_UnknownIdentifierIsNeverServed(t *testing.T) {
 		if !hasParams(d.Path) {
 			continue
 		}
+		if d.OperationID == "uiShell" {
+			// GET /ui/{path...} is the SPA client-side router's own server-
+			// side fallback (httpcompose/compose.go's own doc comment) — its
+			// `{path...}` segment is not an identifier lookup at all, it is a
+			// wildcard that MUST answer 200 for literally any path (that is
+			// the whole point: any client-side route the browser navigates
+			// or refreshes to needs the same HTML shell). The "never serve an
+			// unknown identifier" rule this test proves has no meaning here.
+			continue
+		}
 		covered++
 		t.Run(d.OperationID, func(t *testing.T) {
 			query, headers := applyPrecondition(d.OperationID, fabricatedFixture(fabricatedID))

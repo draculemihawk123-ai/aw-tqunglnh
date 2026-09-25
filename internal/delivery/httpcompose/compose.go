@@ -182,6 +182,29 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: deps.StaticAssetHandler,
 	})
+	// V7-05A: the SPA client-side router's own fallback. Discovered as a
+	// real bug, not designed up front: `web/src/routes.ts`'s own paths
+	// (`/doctor`, `/projects`, `/projects/{id}`, `/projects/{id}/components`
+	// at the time this was found) collided with real REST API paths this
+	// same mux already serves — a browser tab that never leaves the SPA
+	// (client-side pushState) never round-trips these, but a direct
+	// deep-link or a refresh does, and net/http.ServeMux has no way to
+	// tell "the browser wants the HTML shell" from "the SPA's own fetch
+	// wants the JSON resource" for the identical GET verb+path. Every
+	// client-side route now lives under a `/ui/` prefix no REST resource
+	// in this codebase has ever used (every other top-level path here is a
+	// domain noun — projects/definitions/repositories/runs/work-items/
+	// adapter-builds/settings/health — never "ui"), which also means a
+	// direct browser hit on ANY of those paths still needs somewhere to
+	// land: this wildcard registers the SAME BootstrapHandler already
+	// serving exact `/` at every path under `/ui/`, so the client router
+	// (wouter) always has a real HTML shell to take over from, regardless
+	// of which screen's URL a bookmark or refresh names.
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/ui/{path...}", OperationID: "uiShell",
+		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
+		Handler: deps.BootstrapHandler,
+	})
 	// V6-03A: Project/repository/component catalog routes.
 	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: deps.UnitOfWork, IDs: idsource.Random{}})
 	// V6-04: WorkItem/family/readiness/scope-expansion routes.

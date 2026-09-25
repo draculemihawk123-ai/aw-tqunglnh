@@ -7,34 +7,34 @@ import { FIXTURE_TASK_ID, matchPath, pathFor } from './routes';
 /** A real wouter Parser — matchPath's own doc comment says to get one from useRouter().parser, so tests do exactly that rather than reaching into regexparam directly. */
 function useRealParser() {
   const { result } = renderHook(() => useRouter(), {
-    wrapper: ({ children }) => <Router hook={memoryLocation({ path: '/doctor' }).hook}>{children}</Router>,
+    wrapper: ({ children }) => <Router hook={memoryLocation({ path: '/ui/doctor' }).hook}>{children}</Router>,
   });
   return result.current.parser;
 }
 
 describe('pathFor', () => {
-  it('builds every non-scoped route as a fixed path', () => {
-    expect(pathFor('doctor')).toBe('/doctor');
-    expect(pathFor('projects')).toBe('/projects');
-    expect(pathFor('global-definitions')).toBe('/definitions');
-    expect(pathFor('system-adapters')).toBe('/system/adapters');
-    expect(pathFor('system-diagnostics')).toBe('/system/diagnostics');
-    expect(pathFor('system-settings')).toBe('/system/settings');
+  it('builds every non-scoped route as a fixed path under /ui', () => {
+    expect(pathFor('doctor')).toBe('/ui/doctor');
+    expect(pathFor('projects')).toBe('/ui/projects');
+    expect(pathFor('global-definitions')).toBe('/ui/definitions');
+    expect(pathFor('system-adapters')).toBe('/ui/system/adapters');
+    expect(pathFor('system-diagnostics')).toBe('/ui/system/diagnostics');
+    expect(pathFor('system-settings')).toBe('/ui/system/settings');
   });
 
   it('builds every project-scoped route with the given projectId', () => {
-    expect(pathFor('project-overview', { projectId: 'proj-1' })).toBe('/projects/proj-1');
-    expect(pathFor('project-board', { projectId: 'proj-1' })).toBe('/projects/proj-1/board');
-    expect(pathFor('project-components', { projectId: 'proj-1' })).toBe('/projects/proj-1/components');
-    expect(pathFor('project-definitions', { projectId: 'proj-1' })).toBe('/projects/proj-1/definitions');
+    expect(pathFor('project-overview', { projectId: 'proj-1' })).toBe('/ui/projects/proj-1');
+    expect(pathFor('project-board', { projectId: 'proj-1' })).toBe('/ui/projects/proj-1/board');
+    expect(pathFor('project-components', { projectId: 'proj-1' })).toBe('/ui/projects/proj-1/components');
+    expect(pathFor('project-definitions', { projectId: 'proj-1' })).toBe('/ui/projects/proj-1/definitions');
   });
 
   it('builds every task-scoped route with both projectId and taskId', () => {
-    expect(pathFor('task-overview', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/projects/proj-1/tasks/wi-1');
-    expect(pathFor('task-graph', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/projects/proj-1/tasks/wi-1/graph');
-    expect(pathFor('task-workspace', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/projects/proj-1/tasks/wi-1/workspace');
-    expect(pathFor('task-evidence', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/projects/proj-1/tasks/wi-1/evidence');
-    expect(pathFor('task-chat', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/projects/proj-1/tasks/wi-1/chat');
+    expect(pathFor('task-overview', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/ui/projects/proj-1/tasks/wi-1');
+    expect(pathFor('task-graph', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/ui/projects/proj-1/tasks/wi-1/graph');
+    expect(pathFor('task-workspace', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/ui/projects/proj-1/tasks/wi-1/workspace');
+    expect(pathFor('task-evidence', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/ui/projects/proj-1/tasks/wi-1/evidence');
+    expect(pathFor('task-chat', { projectId: 'proj-1', taskId: 'wi-1' })).toBe('/ui/projects/proj-1/tasks/wi-1/chat');
   });
 
   it('throws rather than silently building a broken URL when a required id is missing', () => {
@@ -65,17 +65,22 @@ describe('matchPath', () => {
 
   it('matches a task route before its own project route (more specific first)', () => {
     const parser = useRealParser();
-    // "/projects/proj-1/tasks/wi-1" must resolve to task-overview, never be
-    // mistaken for project-overview with a literal projectId of "tasks".
-    const match = matchPath(parser, '/projects/proj-1/tasks/wi-1');
+    // "/ui/projects/proj-1/tasks/wi-1" must resolve to task-overview, never
+    // be mistaken for project-overview with a literal projectId of "tasks".
+    const match = matchPath(parser, '/ui/projects/proj-1/tasks/wi-1');
     expect(match?.route).toBe('task-overview');
     expect(match?.projectId).toBe('proj-1');
     expect(match?.taskId).toBe('wi-1');
   });
 
-  it('returns null for a path with no matching route', () => {
+  it('returns null for a path with no matching route, including a bare API path this SPA does not own', () => {
     const parser = useRealParser();
     expect(matchPath(parser, '/nothing-here')).toBeNull();
     expect(matchPath(parser, '/')).toBeNull();
+    // The exact real bug this /ui prefix fixes: a bare "/doctor" (no /ui
+    // prefix) is the REST API path, not a client route — matchPath must
+    // never treat it as one.
+    expect(matchPath(parser, '/doctor')).toBeNull();
+    expect(matchPath(parser, '/projects')).toBeNull();
   });
 });
