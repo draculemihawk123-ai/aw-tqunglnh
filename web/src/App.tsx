@@ -53,15 +53,15 @@ export default function App() {
   useEffect(() => {
     if (auditOpen || !matched) return;
     if (PROJECT_SCOPED_ROUTES.has(matched.route) && !project) {
-      setLocation('/projects', { replace: true });
+      setLocation(pathFor('projects'), { replace: true });
     }
   }, [auditOpen, matched?.route, matched?.projectId, project, setLocation]);
 
   // An unmatched path (including "/") settles on a real URL rather than
   // rendering "doctor" while the address bar shows something else.
   useEffect(() => {
-    if (!auditOpen && !matched && location !== '/doctor') {
-      setLocation('/doctor', { replace: true });
+    if (!auditOpen && !matched && location !== pathFor('doctor')) {
+      setLocation(pathFor('doctor'), { replace: true });
     }
   }, [auditOpen, matched, location, setLocation]);
 

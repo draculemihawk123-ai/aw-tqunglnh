@@ -567,3 +567,127 @@ cursor, never a delay-based auto-retry of the same rejected one.
 - `npx tsc --noEmit`: clean.
 - `pnpm run build`: unaffected (module not yet imported by any screen, tree-shaken out — same as every
   prior not-yet-wired module this session).
+
+V7-04 status: CLOSED. Its own completion bar ("browser cache không tự quyết runtime state") was met by
+V7-04A; the SSE client is real, tested infrastructure ready for a real consumer. "Reconnect banner" and
+"query invalidation dùng API authority" cannot be honestly wired until at least one screen has real
+project-scoped data to invalidate — `GET /projects/{id}/events/watch` needs a project id Doctor (V7-05,
+installation-scoped, no project context) never has, so that wiring naturally lands on whichever task
+first gives a project-scoped screen real data (V7-06+), not invented speculatively here.
+
+## V7-05A — Real Doctor screen, and a critical routing bug this task's own testing found
+
+### Context
+
+First screen wired to a real backend call — `chỉ gọi Doctor API` per V7-05's own scope, deferring the
+ADR-022 probe→confirm→register adapter-build workflow (a real cryptographic candidate-token/nonce/
+signature flow, `ProbeAdapterBuildRequest`/`RegisterAdapterBuildRequest`) to V7-05B: too large and too
+security-sensitive to bundle into the first real-data screen. Reading `internal/app/doctor/checks.go`/
+`internal/delivery/httpapi/doctor/{dto,queries}.go` directly first (necessary: the generated client's
+own contract is one-level-shallow, so `DoctorResponse.checks` comes back as `unknown[]` — the real
+per-check shape had to be read from the Go source, not guessed from the existing FAKE prototype's own
+invented fixture data) also revealed the fake `DoctorScreen`'s entire displayed check set
+("PostgreSQL 16.2", `openai`/`anthropic` with specific fake version strings, `go-executor`/
+`python-executor` fake adapters) does not correspond to any real backend check at all — this was always
+going to be a full rewrite, never a data-source swap.
+
+Manually verifying the finished screen against a REAL running `aw serve` (not just `tsc`/`vitest`, which
+cannot catch this class of bug) surfaced two real, previously-undiscovered defects, both fixed in this
+same PR because shipping the Doctor screen without them would ship a screen broken on refresh:
+
+1. **A CSP violation silently breaking custom fonts.** `web/src/index.css`'s own `@import` of Google
+   Fonts (from the original Figma Make prototype) is blocked by V7-02A's own `style-src 'self'` CSP —
+   invisible via `pnpm dev` (no CSP there) or a bare `curl` (V7-02A's own verification method), only
+   visible via a real browser's console once BOTH pieces existed together. Rather than widening the CSP
+   to allow an external CDN, removed the external font dependency entirely: this is a local, loopback-
+   only tool (ADR-016's own posture), and silently calling out to Google's font CDN on every page load —
+   even before the CSP started blocking it — was already in tension with that. Falls back to
+   `system-ui`/`ui-monospace`, already declared as the second choice in both font stacks.
+
+2. **A real routing collision, found the same way.** `web/src/routes.ts`'s own client-side paths at the
+   time (`/doctor`, `/projects`, `/projects/{id}`, `/projects/{id}/components`) are IDENTICAL strings to
+   real REST API paths this same `aw serve` process also serves. A client-side `pushState` navigation
+   never round-trips to the server, so V7-04A's own manual QA (against `pnpm dev`, which has no real API
+   behind it at all) never could have caught this — only a direct browser hit on `/doctor` against a REAL
+   backend does, and it returned the raw JSON API response instead of the SPA shell. Worse, this exposed
+   a SECOND, more fundamental gap underneath it: `aw serve` had no SPA-fallback route at all — only the
+   exact path `/` ever served the bootstrap shell, so EVERY other client-side route (even a hypothetically
+   non-colliding one) already 404'd on a direct deep-link or refresh; V7-04A's own routing work was never
+   actually exercised against the real binary end-to-end before now.
+
+   Fixed both at once: every client-side route now lives under a `/ui/` prefix (`web/src/routes.ts`'s own
+   `UI_PREFIX` constant) — no REST resource in this codebase has ever used "ui" as a top-level segment
+   (every one is a domain noun) — and `httpcompose/compose.go` gained a new catch-all route,
+   `GET /ui/{path...}` (OperationID `uiShell`), registered with the SAME `BootstrapHandler` already
+   serving exact `/`, so ANY path under `/ui/` gets the SPA shell regardless of which screen's URL a
+   bookmark or refresh names. `uiShell` joins `bootstrap`/`staticAsset` in ADR-028's own browser-only
+   parity exemption (`internal/delivery/parity`) and the TypeScript client generator's own
+   `browserOnlyOperations` (no callable function generated for it — a UI action never fetches it, a
+   browser navigation does). One securitymatrix test needed a narrow, explicit exemption too:
+   `TestScopeMatrix_UnknownIdentifierIsNeverServed` treats any `{...}`-containing path as an "identifier
+   lookup that must never answer 2xx for an unknown id" — correct for every real resource route, but
+   `/ui/{path...}` is not a lookup at all, it is a wildcard that MUST answer 200 for any path by design;
+   excluded by OperationID with a doc comment explaining why, the same way `emptyCollectionOnUnknownProject`
+   already documents its own narrow exemptions in that same file.
+
+### Decision
+
+`web/src/screens/Doctor.tsx` is a full rewrite (not a data-source swap, per Context above): real checks
+grouped under the exact three categories `internal/app/doctor`'s own package doc comment names
+(Liveness/Readiness/Capability — never an invented taxonomy), generic per-check rendering (name/status/
+detail/remediation) with no hardcoded check-name table (the real check set is installation-dependent —
+one `provider:<name>` check per configured provider), a real overall HEALTHY/DEGRADED/BLOCKED summary
+banner, a real `restartRequired` banner, and "Re-run all checks" as a plain `refetch()` — Doctor's own
+checks are computed live on every GET, so no separate "probe" mutation is needed for this scope. Also
+renders the REAL registered-adapter-builds list (`listAdapterBuilds()`, read-only) so "hiển thị adapter
+build là registered hay unregistered" is partially real today; the interactive register flow (ADR-022)
+is V7-05B.
+
+The real per-check DTO shape (`DoctorCheck` in `Doctor.tsx`) is hand-declared, not generated — the same
+one-level-shallow-contract limitation `apicontract`'s own doc comment already names, hit again here for
+an array ELEMENT'S shape rather than a top-level response's.
+
+### Execution
+
+- `web/src/api/queryClient.ts` (new): the one shared `QueryClient` (`retry: false` — this app talks to
+  its own loopback `aw serve`, not a flaky remote API; a failed GET is a real error worth surfacing
+  immediately, and the SSE client already owns the "retry with backoff" story for the one thing that
+  needs it).
+- `web/src/main.tsx`: wraps `<App/>` in `<QueryClientProvider>`.
+- `web/src/screens/Doctor.tsx`: full rewrite, real data.
+- `web/src/index.css`: removed the external Google Fonts `@import`s and the 'Inter'/'JetBrains Mono'
+  family names from both font stacks (system-ui/ui-monospace fallbacks were already declared).
+- `web/src/routes.ts` / `web/src/App.tsx`: every path now lives under `/ui/`; `App.tsx`'s two literal
+  `/doctor`/`/projects` string comparisons replaced with `pathFor(...)` calls so this can never drift
+  again.
+- `internal/delivery/httpcompose/compose.go`: new `GET /ui/{path...}` route (OperationID `uiShell`),
+  reusing `deps.BootstrapHandler`.
+- `internal/delivery/parity/check.go`: `BrowserBootstrap["uiShell"] = true`.
+- `internal/delivery/httpapi/apicontract/tsclient.go`: `browserOnlyOperations["uiShell"] = true`.
+- `internal/delivery/httpapi/securitymatrix/scope_test.go`: `uiShell` excluded from
+  `TestScopeMatrix_UnknownIdentifierIsNeverServed`'s identifier-lookup assumption, with a doc comment.
+- Pinned-count/golden fallout (same mechanical pattern as V7-02A's own `staticAsset` addition):
+  `wantRouteCount` 89→90 in both `apicontract/routeinventory_test.go` and
+  `securitymatrix/transport_test.go`; `uiShell` added to `TestUndocumentedOperationsSnapshot`'s pinned
+  list; `testdata/golden/contract.json` regenerated (additive-only diff, reviewed).
+- `web/src/screens/Doctor.test.tsx` (new, 10 tests): loading state, category grouping, HEALTHY/DEGRADED/
+  BLOCKED summaries (status not by color alone), remediation text, restart-required banner, error state,
+  rerun refetches both queries, real adapter-build rendering, empty state, accessibility smoke.
+- `web/src/routes.test.tsx` / `web/src/App.routing.test.tsx`: updated to the `/ui`-prefixed paths;
+  `App.routing.test.tsx` now mocks `../api/generated` (Doctor is the default landing screen, so every
+  routing test renders it) and wraps with a fresh per-test `QueryClientProvider`; added a regression case
+  proving a bare `/doctor` (no `/ui` prefix — the exact collision this task fixed) is never matched as a
+  client route and settles on `/ui/doctor` instead.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`, full `go test ./...` (whole repo): clean.
+- `npx vitest run`: 123/123 pass (112 from V7-04B + 10 Doctor + fixed-up routing tests).
+- `npx tsc --noEmit`: clean.
+- `pnpm run build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` (not `pnpm dev`, not `curl` — a real
+  browser, the only way either bug above was ever going to surface): built `web/`, ran the real `aw`
+  binary with `--ui-dist`, confirmed zero console errors (font fix), confirmed `GET /doctor` (bare, the
+  REST API) still returns raw JSON directly while `GET /ui/doctor` and a DIFFERENT deep link
+  (`GET /ui/projects`) both correctly serve the real SPA shell with real rendered data — verified via the
+  actual network request log, not just visual inspection.

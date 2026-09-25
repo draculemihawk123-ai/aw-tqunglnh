@@ -105,9 +105,11 @@ type Rules struct {
 	CLILocalAllowed map[string]bool
 	// BrowserBootstrap lists HTTP operations exempt from having a CLI
 	// mirror OR a backing public application operation: ADR-028's "Ngoại lệ
-	// duy nhất là bootstrap/static asset của browser" — "bootstrap" (V6-01A)
-	// and "staticAsset" (V7-02A, docs/architecture/02-architecture-decisions.md
-	// ADR-029) are the two members this exception was always meant to hold.
+	// duy nhất là bootstrap/static asset của browser" — "bootstrap" (V6-01A),
+	// "staticAsset" (V7-02A) and "uiShell" (V7-05A, the SPA client-side
+	// router's own fallback route — same non-API, browser-only nature as
+	// the other two) are the members this exception was always meant to
+	// hold (docs/architecture/02-architecture-decisions.md ADR-029).
 	BrowserBootstrap map[string]bool
 	// UXProposalRenames maps a UX "Proposed operationId" the parser can find
 	// no route for to the real operationIds that cover it, for the rows V6-12
@@ -134,7 +136,7 @@ func DefaultRules() Rules {
 		CLILocalAllowed: map[string]bool{
 			"serve": true, "worker": true, "help": true, "version": true, "evidence verify": true,
 		},
-		BrowserBootstrap: map[string]bool{"bootstrap": true, "staticAsset": true},
+		BrowserBootstrap: map[string]bool{"bootstrap": true, "staticAsset": true, "uiShell": true},
 		UXProposalRenames: map[string][]string{
 			// The four Screen 2 rows V6-00 marked [ĐÃ CÓ] — catalog.go
 			// registered each under its own "<resource><Verb>" name.
