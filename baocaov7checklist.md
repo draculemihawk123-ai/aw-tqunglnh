@@ -432,3 +432,77 @@ Both sub-tasks (V7-03A test tooling + existing-primitive coverage, V7-03B Table/
 own completion bar ("status không chỉ truyền bằng màu và error liên kết field") was already satisfied by
 the existing primitive markup (V7-03A finding) and remains true for the two new ones. Next per
 `docs/design/09-v7-alpha-ui.md`: V7-04 (application shell, routing, SSE state).
+
+## V7-04A — Real routing (route guards by selected project)
+
+### Context
+
+V7-04's own scope is large enough (route guards, SSE reconnect/backoff, stale/degraded indicator, query
+invalidation) to need its own sub-tasks, mirroring V7-02/V7-03's own A/B/C split. This first piece closes
+the "route guards by selected project only" half and the literal completion bar — "browser cache không
+tự quyết runtime state" — by replacing `App.tsx`'s own in-memory `route`/`project`/`taskSelected`
+`useState` trio (V7-03 and earlier) with the URL itself as the one source of truth. SSE reconnect/backoff,
+the stale/degraded projection indicator wired to something real, and query invalidation are each their
+own remaining V7-04 sub-task.
+
+### Decision
+
+Chose `wouter` over `react-router` (both named as candidates in ADR-029's own "Hệ quả"): its hook-based
+API (`useLocation`, `useRouter().parser` + `matchRoute`) fits this app's existing "one big App.tsx
+computing what to render" shape without needing a `<Routes>`/`<Route>` JSX tree rewrite, and it stays
+consistent with ADR-029's own "keep it light" reasoning (nothing here needs react-router's nested-loader
+data APIs).
+
+`src/routes.ts` is the one place every `NavRoute` maps to and from a real path — project-scoped routes
+carry `:projectId`, task-scoped ones also `:taskId`. `App.tsx` no longer stores `route`/`project`/
+`taskSelected` as state: `route` and the raw `projectId`/`taskId` come from `matchPath(router.parser,
+location)` every render, and `project` is derived by resolving that `projectId` against the (still fake,
+still local-`useState`) `projects` list — a repository/component mutation now only touches `projects`
+once, instead of updating a parallel `project` copy by hand as the old code did (that dual-update was a
+real, if latent, place these two copies of the same project object could have drifted apart on a stale
+closure). The route guard is a `useEffect`: any `PROJECT_SCOPED_ROUTES` member whose `projectId` does not
+resolve to a real project redirects to `/projects` — a typed bookmark, a project since removed, or a
+hand-edited URL all land in the same place a normal user action already handles cleanly. A second
+`useEffect` settles any unmatched path (including bare `/`) onto `/doctor`, so the address bar always
+shows a real, matched route.
+
+`Kanban.tsx`'s own documented limitation — only card `wi-0018` has a real `TaskDetailScreen` fixture,
+every other card's open button is disabled with an explicit tooltip saying so — is left exactly as it
+is (not a bug to fix here): `routes.ts` exports `FIXTURE_TASK_ID = 'wi-0018'` and `App.tsx`'s
+`handleOpenTask`/`navigate` use it, so the URL is honest about there being exactly one real task fixture
+rather than inventing per-card task URLs a screen cannot yet render.
+
+### Execution
+
+- `web/src/routes.ts` (new): `RouteMatch`, `PROJECT_SCOPED_ROUTES`, `FIXTURE_TASK_ID`, `matchPath`,
+  `pathFor`.
+- `web/src/App.tsx`: `route`/`project`/`taskSelected` `useState` replaced by URL-derived values; two
+  `useEffect`s (project-scope guard, unmatched-path settle); `navigate` now takes an optional
+  `{projectId, taskId}` override (needed by `RepairAudit`'s own "jump to a project screen with no project
+  yet selected" case) and pushes a real URL via wouter's `useLocation()` setter instead of setting local
+  state.
+- `web/package.json` / `pnpm-lock.yaml`: added `wouter`.
+- `web/src/test/setup.ts`: added a minimal `window.matchMedia` polyfill — jsdom has never implemented it,
+  and `App.tsx`'s own responsive nav-collapse effect calls it unconditionally on mount, so any test
+  rendering `<App/>` threw without this.
+- `web/src/routes.test.tsx` (new, 7 tests): every `pathFor` shape, missing-required-id throws, and
+  `matchPath` round-tripping every route (including task-before-project specificity) using a real wouter
+  `Parser` obtained the same way `matchPath`'s own doc comment says to (`useRouter().parser` inside a
+  `<Router hook={memoryLocation(...).hook}>`).
+- `web/src/App.routing.test.tsx` (new, 6 tests): unmatched path settles on `/doctor`; deep-linking
+  straight to a project URL renders its real overview (no prior in-app navigation needed); the guard
+  redirects both a project-scoped and a task-scoped URL with an unknown project; clicking a left-nav item
+  pushes the real project-scoped URL; opening the one real task fixture pushes its task-scoped URL — each
+  assertion reads wouter's own recorded `history` array, not a screenshot or a guess.
+- Manually verified in a real browser (dev server, not part of any committed test): typed navigation,
+  refresh-preserves-selected-project (the actual bug this task fixes — the old code lost `project` on
+  every reload), an invalid project URL redirecting live, and browser back/forward working via native
+  history.
+
+### Verify
+
+- `npx vitest run`: 98/98 pass (84 from V7-03 + 7 + 6 new — some new coverage landed in existing files'
+  neighboring test counts too via the shared `matchMedia` setup fix).
+- `npx tsc --noEmit`: clean.
+- `pnpm run build`: unaffected in shape (bundle grew by wouter's own real, small size).
+- Manual browser QA (see above) — the exact behaviors this task's own "Hoàn thành khi" bar names.
