@@ -506,3 +506,64 @@ rather than inventing per-card task URLs a screen cannot yet render.
 - `npx tsc --noEmit`: clean.
 - `pnpm run build`: unaffected in shape (bundle grew by wouter's own real, small size).
 - Manual browser QA (see above) — the exact behaviors this task's own "Hoàn thành khi" bar names.
+
+## V7-04B — SSE reconnect/backoff/resync client
+
+### Context
+
+The second V7-04 sub-part: "SSE reconnect/backoff theo JournalPosition, typed full-resync khi cursor quá
+cũ." Reading `internal/delivery/httpapi/eventstream`'s own package doc comment first (it documents its
+own cursor/retention/authorization design in detail) ruled out the obvious approach: native `EventSource`
+cannot implement this contract at all. Reconnecting must send a `cursor` QUERY PARAMETER that changes
+every attempt (the last observed `journalPosition`) — `EventSource` only ever reconnects to the exact
+same URL, offering a `Last-Event-ID` HEADER this server never reads. Worse, `EventSource` gives calling
+code no access to a non-2xx response's status or body — but "cursor too old" is a real HTTP 409 with a
+typed `RESYNC_REQUIRED` JSON body (`eventstream/errors.go`'s own `writeRetentionResyncRequired`), and a
+client MUST tell that apart from an ordinary transient drop: the correct reaction is a full state
+refetch, never retrying the same stale cursor forever. Only a manual `fetch` with a streamed body can see
+that distinction before committing to stream mode.
+
+Same scoping choice as V7-02B's generated client and V7-02C's session module: this ships as a real,
+thoroughly-tested standalone module, not wired into any screen yet — no screen fetches real project data
+yet (all still `INITIAL_CARDS`/`INITIAL_PROJECTS` fixtures), so there is no real `Freshness.
+AsOfJournalPosition` anywhere to seed an honest initial cursor from. Wiring this into the app shell's
+connection indicator and a screen's real data is V7-04C's own job, once the query/data layer exists.
+
+### Decision
+
+`web/src/api/sse.ts` splits into two independently-testable pieces: `parseSSEBuffer` (pure — splits
+accumulated text on blank-line record boundaries, extracts `id`/`event`/`data`, ignores comment-only
+heartbeat lines, and returns whatever incomplete trailing text belongs to the next chunk) and
+`watchProjectEvents` (the actual reconnect/backoff state machine, built on `fetch` + a manual
+`ReadableStream` reader).
+
+Backoff is deterministic exponential (`baseDelayMs * 2^attempt`, capped at `maxDelayMs`), no jitter —
+this is a single local desktop tool talking to its own loopback `aw serve`, never many independent
+clients that could thundering-herd a shared server, so jitter's own reason to exist does not apply here.
+A successful open resets the attempt counter, so one clean connection does not leave a later, unrelated
+failure paying an inflated backoff from an earlier outage. A 409 `RESYNC_REQUIRED` response reports a
+distinct `'resync_required'` state and stops the automatic reconnect loop entirely — `resync(freshCursor)`
+is the one way to resume once the caller has actually refetched authoritative state and has a real fresh
+cursor, never a delay-based auto-retry of the same rejected one.
+
+### Execution
+
+- `web/src/api/sse.ts` (new): `ProjectEventSummary`, `StreamState`, `parseSSEBuffer`, `watchProjectEvents`,
+  `ProjectEventStreamHandle`.
+- `web/src/api/sse.parse.test.ts` (new, 6 tests): single/multiple records in one chunk, a record split
+  across two chunks reassembling correctly, comment-only heartbeat producing no id/event/data, multi-line
+  `data:` joined per the SSE spec.
+- `web/src/api/sse.reconnect.test.ts` (new, 8 tests, all using `vi.useFakeTimers()` +
+  `vi.advanceTimersByTimeAsync` and a `fetchImpl` injection point — no real network or timers): event
+  delivery advances the tracked cursor; heartbeats never call `onEvent`; a normal stream end reconnects
+  with the advanced cursor; exponential backoff across 4 consecutive failures matches the exact expected
+  delay sequence (1000/2000/4000/5000-capped ms); a successful connection resets the counter for the next
+  failure; a 409 stops auto-reconnect and never retries the stale cursor even after 60s; `resync()`
+  reconnects immediately with the new cursor; `close()` stops all future attempts.
+
+### Verify
+
+- `npx vitest run`: 112/112 pass (98 from V7-04A + 14 new).
+- `npx tsc --noEmit`: clean.
+- `pnpm run build`: unaffected (module not yet imported by any screen, tree-shaken out — same as every
+  prior not-yet-wired module this session).
