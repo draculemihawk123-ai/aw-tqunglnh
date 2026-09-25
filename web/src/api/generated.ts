@@ -19,6 +19,12 @@ export interface RequestOptions {
    * localStorage/sessionStorage (ADR-016).
    */
   token?: string;
+  /**
+   * Idempotency key for a mutation (ignored for a query). Omit to have one
+   * generated per call; pass one explicitly only to retry the exact same
+   * logical attempt rather than mint a new one.
+   */
+  idempotencyKey?: string;
   /** Extra raw query-string parameters this contract does not itself type. */
   query?: Record<string, string>;
   signal?: AbortSignal;
@@ -55,8 +61,16 @@ async function request<TResponse>(
 
   const headers: Record<string, string> = {};
   const isSafeMethod = method === "GET" || method === "HEAD";
-  if (!isSafeMethod && opts.token) {
-    headers["X-Aw-Session-Token"] = opts.token;
+  if (!isSafeMethod) {
+    if (opts.token) {
+      headers["X-Aw-Session-Token"] = opts.token;
+    }
+    // Every mutation requires an Idempotency-Key (httpapi.RequireIdempotencyKey
+    // on the server side); a fresh one per call is correct here for the same
+    // reason the aw CLI's own mutations generate one when --idempotency-key
+    // is omitted — a caller that wants to retry the SAME logical attempt
+    // (rather than mint a new one) passes its own key back via opts.idempotencyKey.
+    headers["Idempotency-Key"] = opts.idempotencyKey ?? crypto.randomUUID();
   }
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";

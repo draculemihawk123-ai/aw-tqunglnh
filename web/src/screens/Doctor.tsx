@@ -1,7 +1,9 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { doctor, listAdapterBuilds, type GetAdapterBuildResponse } from '../api/generated';
-import { Badge, Button, EmptyState, Skeleton, type BadgeIntent } from '../components/ui';
-import { RefreshCw } from '../components/icons';
+import { Badge, Button, EmptyState, Skeleton, ToastViewport, useToasts, type BadgeIntent } from '../components/ui';
+import { Plus, RefreshCw } from '../components/icons';
+import { AdapterProbeDialog } from './AdapterProbeDialog';
 
 /**
  * The real per-check wire shape GET /doctor's own `checks[]` carries
@@ -45,6 +47,8 @@ function formatCheckName(name: string): string {
 }
 
 export function DoctorScreen({ isOffline = false }: { isOffline?: boolean }) {
+  const [probeOpen, setProbeOpen] = useState(false);
+  const { toasts, show, dismiss } = useToasts();
   const doctorQuery = useQuery({
     queryKey: ['doctor'],
     queryFn: () => doctor(),
@@ -150,12 +154,17 @@ export function DoctorScreen({ isOffline = false }: { isOffline?: boolean }) {
         <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
           <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC] flex items-center justify-between">
             <h2 className="text-sm font-semibold text-[#172033]">Registered Adapter Builds</h2>
-            <span className="text-[12px] text-[#475569]">{builds.length} registered</span>
+            <div className="flex items-center gap-3">
+              <span className="text-[12px] text-[#475569]">{builds.length} registered</span>
+              <Button intent="secondary" size="compact" disabled={isOffline} icon={<Plus size={13} aria-hidden />} onClick={() => setProbeOpen(true)}>
+                Probe new build
+              </Button>
+            </div>
           </div>
           {builds.length === 0 ? (
             <EmptyState
               title="No adapter builds registered yet"
-              description="A configured provider's observed executable appears above under Capability once probed; registering it into this list is a separate, upcoming action."
+              description={'A configured provider\'s observed executable appears above under Capability. Use "Probe new build" to review its real fingerprint and register it (ADR-022).'}
             />
           ) : (
             <div className="divide-y divide-[#ECEFF4]">
@@ -176,6 +185,14 @@ export function DoctorScreen({ isOffline = false }: { isOffline?: boolean }) {
           )}
         </div>
       </div>
+
+      {probeOpen && (
+        <AdapterProbeDialog
+          onClose={() => setProbeOpen(false)}
+          onRegistered={toast => show(toast)}
+        />
+      )}
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }
