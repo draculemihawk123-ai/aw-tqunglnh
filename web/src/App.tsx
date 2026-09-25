@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useLocation, useRouter } from 'wouter';
 import { TopBar } from './components/shell/TopBar';
 import type { ConnectionState } from './components/shell/TopBar';
 import { LeftNav } from './components/shell/LeftNav';
@@ -17,21 +18,52 @@ import { AdapterBuildsScreen } from './screens/AdapterBuilds';
 import { Settings2 } from './components/icons';
 import { ControlTooltip } from './components/ControlTooltip';
 import { RepairAudit } from './screens/RepairAudit';
+import { FIXTURE_TASK_ID, PROJECT_SCOPED_ROUTES, matchPath, pathFor } from './routes';
 
 const TASK_ROUTES: NavRoute[] = ['task-overview', 'task-graph', 'task-workspace', 'task-evidence', 'task-chat'];
 
 export default function App() {
-  const [route, setRoute] = useState<NavRoute>('doctor');
+  const [location, setLocation] = useLocation();
+  const router = useRouter();
   const [projects, setProjects] = useState<ProjectSummary[]>(INITIAL_PROJECTS);
   const [boards, setBoards] = useState<Record<string, WorkItemCard[]>>({ 'proj-alpha-001': INITIAL_CARDS });
-  const [project, setProject] = useState<ProjectSummary | null>(null);
-  const [taskSelected, setTaskSelected] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>('Live');
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [protoOpen, setProtoOpen] = useState(false);
   const [freshness, setFreshness] = useState('just now');
   const [rebuildPending, setRebuildPending] = useState(false);
   const [auditOpen, setAuditOpen] = useState(false);
+
+  // The URL is the one source of truth for "which route/project/task" —
+  // V7-04's own "browser cache không tự quyết runtime state" completion
+  // bar. `project` is DERIVED by resolving the URL's projectId against the
+  // (still fake, still local-state) `projects` list, never stored
+  // separately — a repository/component mutation only ever needs to touch
+  // `projects` once, and the derived `project` reflects it automatically.
+  const matched = auditOpen ? null : matchPath(router.parser, location);
+  const route: NavRoute = matched?.route ?? 'doctor';
+  const project = matched?.projectId ? projects.find(p => p.id === matched.projectId) ?? null : null;
+  const taskSelected = TASK_ROUTES.includes(route);
+
+  // Route guard (V7-04's own "route guards by selected project only"): a
+  // project- or task-scoped URL whose projectId does not resolve to a real
+  // project — typed directly, a stale bookmark, a project since removed —
+  // redirects to the project list rather than rendering a screen with a
+  // null project it was never designed to handle.
+  useEffect(() => {
+    if (auditOpen || !matched) return;
+    if (PROJECT_SCOPED_ROUTES.has(matched.route) && !project) {
+      setLocation('/projects', { replace: true });
+    }
+  }, [auditOpen, matched?.route, matched?.projectId, project, setLocation]);
+
+  // An unmatched path (including "/") settles on a real URL rather than
+  // rendering "doctor" while the address bar shows something else.
+  useEffect(() => {
+    if (!auditOpen && !matched && location !== '/doctor') {
+      setLocation('/doctor', { replace: true });
+    }
+  }, [auditOpen, matched, location, setLocation]);
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 1024px)');
@@ -50,16 +82,15 @@ export default function App() {
 
   const isOffline = connection === 'Offline';
 
-  const navigate = (r: NavRoute) => {
+  const navigate = (r: NavRoute, ids: { projectId?: string; taskId?: string } = {}) => {
     setAuditOpen(false);
-    setRoute(r);
-    setTaskSelected(TASK_ROUTES.includes(r));
+    const projectId = ids.projectId ?? project?.id;
+    const taskId = ids.taskId ?? FIXTURE_TASK_ID;
+    setLocation(pathFor(r, { projectId, taskId }));
   };
 
   const handleSelectProject = (selectedProject: ProjectSummary) => {
-    setProject(selectedProject);
-    setTaskSelected(false);
-    setRoute('project-overview');
+    navigate('project-overview', { projectId: selectedProject.id });
   };
 
   const handleCreateProject = (name: string, _description: string) => {
@@ -77,7 +108,6 @@ export default function App() {
 
   const handleRegisterRepository = (projectId: string, repository: RepositorySummary) => {
     setProjects(current => current.map(item => item.id === projectId ? { ...item, repositories: [...item.repositories, repository], freshness: 'just now' } : item));
-    setProject(current => current?.id === projectId ? { ...current, repositories: [...current.repositories, repository], freshness: 'just now' } : current);
   };
 
   const handleSetRepositoryState = (projectId: string, repositoryId: string, state: RepositorySummary['state']) => {
@@ -87,12 +117,11 @@ export default function App() {
       repositories: item.repositories.map(repository => repository.id === repositoryId ? { ...repository, state, lastProbe: state === 'REGISTERING' ? 'pending' : 'now' } : repository),
     } : item;
     setProjects(current => current.map(updateProject));
-    setProject(current => current ? updateProject(current) : current);
   };
 
   const handleOpenTask = () => {
-    setTaskSelected(true);
-    setRoute('task-overview');
+    if (!project) return;
+    navigate('task-overview', { projectId: project.id, taskId: FIXTURE_TASK_ID });
   };
 
   const switchConnection = (state: ConnectionState) => {
@@ -105,7 +134,9 @@ export default function App() {
   };
 
   const renderContent = () => {
-    if (auditOpen) return <RepairAudit onOpen={r => { if (r.startsWith('project-') || r.startsWith('task-')) setProject(projects[0]); navigate(r); }} />;
+    if (auditOpen) {
+      return <RepairAudit onOpen={r => navigate(r, PROJECT_SCOPED_ROUTES.has(r) ? { projectId: projects[0]?.id } : {})} />;
+    }
     if (route === 'doctor') return <DoctorScreen isOffline={isOffline} />;
     const projectProps = { projects, project, onSelectProject: handleSelectProject, onCreateProject: handleCreateProject, onRegisterRepository: handleRegisterRepository, onSetRepositoryState: handleSetRepositoryState, isOffline };
     if (route === 'projects') return <ProjectsScreen view="list" {...projectProps} />;
@@ -143,7 +174,7 @@ export default function App() {
         project={project?.name ?? null}
         connectionState={connection}
         freshness={freshness}
-        onProjectSwitch={() => { setRoute('projects'); setProject(null); }}
+        onProjectSwitch={() => navigate('projects')}
       />
 
       {/* Persistent banners below top bar */}
