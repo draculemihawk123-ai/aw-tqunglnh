@@ -1,276 +1,197 @@
-import React, { useState } from 'react';
-import { Badge, Button, CopyableId, OperationNotice } from '../components/ui';
-import { CreateWorkItemDrawer } from './CreateWorkItem';
+import { useMemo, useState } from 'react';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { listWorkItemKanban, getWorkItemProjectedDetail, markWorkItemReady, ApiError } from '../api/generated';
+import { WORKITEM_STATUS_COLUMNS } from '../api/kanban';
+import type { KanbanCard, KanbanListResponse, WorkItemProjectedDetailResponse } from '../api/kanban';
+import { withSessionToken } from '../api/session';
+import {
+  Badge, Button, CopyableId, InlineError, ProjectionBanner, Skeleton, StatusBadge,
+  ToastViewport, useToasts,
+} from '../components/ui';
+import { AlertTriangle } from '../components/icons';
 import type { ProjectSummary } from './Projects';
-import { AlertTriangle, CheckCircle2, Cpu, MoreHorizontal } from '../components/icons';
-
-type KanbanState = 'BACKLOG' | 'READY' | 'ACTIVE' | 'BLOCKED' | 'DONE' | 'CANCELLED';
-
-export interface WorkItemCard {
-  id: string;
-  title: string;
-  state: KanbanState;
-  repos: string[];
-  component: string;
-  blockerCount: number;
-  agentClaim?: string;
-  verifiedDone: boolean;
-  freshness: string;
-  validActions: { label: string; targetState?: KanbanState }[];
-}
-
-export const INITIAL_CARDS: WorkItemCard[] = [
-  {
-    id: 'wi-0012', title: 'Migrate auth tokens to JWT RS256', state: 'BACKLOG',
-    repos: ['core-api'], component: 'src/api', blockerCount: 0,
-    verifiedDone: false, freshness: '4m',
-    validActions: [{ label: 'Mark Ready', targetState: 'READY' }],
-  },
-  {
-    id: 'wi-0015', title: 'Refactor worker queue to use Redis streams', state: 'READY',
-    repos: ['worker-service'], component: 'src/worker', blockerCount: 0,
-    verifiedDone: false, freshness: '1m',
-    validActions: [{ label: 'Start Run', targetState: 'ACTIVE' }],
-  },
-  {
-    id: 'wi-0018', title: 'Add distributed tracing to API gateway', state: 'ACTIVE',
-    repos: ['core-api', 'worker-service'], component: 'src/api', blockerCount: 0,
-    agentClaim: 'Agent: task complete (unverified)', verifiedDone: false, freshness: '30s',
-    validActions: [{ label: 'Cancel Run' }],
-  },
-  {
-    id: 'wi-0009', title: 'Fix race condition in session manager', state: 'BLOCKED',
-    repos: ['core-api'], component: 'src/api', blockerCount: 2,
-    verifiedDone: false, freshness: '12m',
-    validActions: [{ label: 'Resolve WorkItem Blocker' }, { label: 'Cancel WorkItem' }],
-  },
-  {
-    id: 'wi-0006', title: 'Add pagination to list endpoints', state: 'DONE',
-    repos: ['core-api'], component: 'src/api', blockerCount: 0,
-    verifiedDone: true, freshness: '2h',
-    validActions: [],
-  },
-  {
-    id: 'wi-0003', title: 'Update dependency: express 4→5', state: 'CANCELLED',
-    repos: ['core-api'], component: 'src/api', blockerCount: 0,
-    verifiedDone: false, freshness: '1d',
-    validActions: [],
-  },
-];
-
-const COLUMN_ORDER: KanbanState[] = ['BACKLOG', 'READY', 'ACTIVE', 'BLOCKED', 'DONE', 'CANCELLED'];
-
-const STATE_INTENT = {
-  BACKLOG: 'neutral', READY: 'info', ACTIVE: 'runtime', BLOCKED: 'warning', DONE: 'success', CANCELLED: 'neutral',
-} as const;
 
 interface Props {
   project: ProjectSummary;
-  cards: WorkItemCard[];
-  setCards: React.Dispatch<React.SetStateAction<WorkItemCard[]>>;
-  onOpenTask: () => void;
+  onOpenTask: (workItemId: string) => void;
   isOffline?: boolean;
 }
 
-export function KanbanScreen({ project, cards, setCards, onOpenTask, isOffline = false }: Props) {
-  const [dragItem, setDragItem] = useState<string | null>(null);
-  const [dragReject, setDragReject] = useState<string | null>(null);
-  const [filterRepo, setFilterRepo] = useState<string>('all');
-  const [filterState, setFilterState] = useState<string>('all');
-  const [actionMenu, setActionMenu] = useState<string | null>(null);
-  const [createOpen, setCreateOpen] = useState(false);
-  const [pendingOps, setPendingOps] = useState<Record<string, 'Requested' | 'Completed'>>({});
+function apiErrorMessage(err: unknown): { code: string; message: string } {
+  if (err instanceof ApiError) return { code: err.code, message: err.message };
+  return { code: 'UNKNOWN', message: err instanceof Error ? err.message : 'unexpected error' };
+}
 
-  const allRepos = project.repositories.map(repository => repository.name);
+/**
+ * KanbanScreen — V7-09's own real project-level WorkItem projection.
+ * docs/design/09-v7-alpha-ui.md's own line: "status columns, repository/
+ * component filter, pagination và server-provided named valid actions...
+ * Không tồn tại generic TransitionWorkItemStatus/set-status."
+ *
+ * There is no `component` field on the real projected card
+ * (`internal/delivery/httpapi/kanban/dto.go`'s own `KanbanCardDTO`) — only
+ * `repositoryBadges` — so only a repository filter is real; a "component"
+ * filter would have no real data behind it and is not built here.
+ *
+ * "Mark Ready" is the ONE real named action `internal/delivery/httpapi/
+ * kanban` itself ever advertises (`validActionsForReadiness`'s own doc
+ * comment), and only once a FRESH authoritative recheck
+ * (`GET /work-items/{id}/detail`) says so — the projected card's own
+ * `status === 'BACKLOG'` is display-only and may already be stale (this
+ * package's own "projection không decide readiness/ValidAction" rule), so
+ * clicking the button always re-fetches detail first and only then
+ * dispatches the mutation with that fresh `targetVersion` as `If-Match`.
+ * Every other status transition (start a run, cancel, resolve a blocker) is
+ * a DIFFERENT named command with its own real context this screen does not
+ * yet have a UI for (V7-11/V7-12) — never approximated here as a generic
+ * status change.
+ */
+export function KanbanScreen({ project, onOpenTask, isOffline = false }: Props) {
+  const [repoFilter, setRepoFilter] = useState<string>('ALL');
+  const [markingReady, setMarkingReady] = useState<string | null>(null);
+  const { toasts, show, dismiss } = useToasts();
+  const queryClient = useQueryClient();
 
-  const filtered = cards.filter(c => {
-    if (filterRepo !== 'all' && !c.repos.includes(filterRepo)) return false;
-    if (filterState !== 'all' && c.state !== filterState) return false;
-    return true;
+  const query = useInfiniteQuery({
+    queryKey: ['kanban', project.id],
+    queryFn: async ({ pageParam }) => {
+      const q: Record<string, string> = { limit: '200' };
+      if (pageParam) q.cursor = pageParam;
+      return (await listWorkItemKanban(project.id, { ...withSessionToken(), query: q })) as unknown as KanbanListResponse;
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: lastPage => lastPage.nextCursor,
+    enabled: !isOffline,
   });
 
-  const handleAction = (cardId: string, action: { label: string; targetState?: KanbanState }) => {
+  const cards = useMemo(() => query.data?.pages.flatMap(p => p.items) ?? [], [query.data]);
+  const latestFreshness = query.data?.pages.at(-1)?.freshness;
+
+  const allRepositoryIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const card of cards) for (const badge of card.repositoryBadges ?? []) ids.add(badge.repositoryId);
+    return [...ids].sort();
+  }, [cards]);
+
+  const filtered = repoFilter === 'ALL' ? cards : cards.filter(c => (c.repositoryBadges ?? []).some(b => b.repositoryId === repoFilter));
+
+  async function markReady(card: KanbanCard) {
     if (isOffline) return;
-    setActionMenu(null);
-    setPendingOps(prev => ({ ...prev, [cardId]: 'Requested' }));
-    window.setTimeout(() => {
-      if (action.targetState) setCards(prev => prev.map(c => {
-        if (c.id !== cardId) return c;
-        const nextActions = action.targetState === 'READY'
-          ? [{ label: 'Start Run', targetState: 'ACTIVE' as KanbanState }]
-          : action.targetState === 'ACTIVE'
-            ? [{ label: 'Cancel Run' }]
-            : c.validActions;
-        return { ...c, state: action.targetState!, validActions: nextActions };
-      }));
-      setPendingOps(prev => ({ ...prev, [cardId]: 'Completed' }));
-      window.setTimeout(() => setPendingOps(prev => { const next = { ...prev }; delete next[cardId]; return next; }), 900);
-    }, 900);
-  };
+    setMarkingReady(card.workItemId);
+    try {
+      const detail = (await getWorkItemProjectedDetail(card.workItemId, withSessionToken())) as unknown as WorkItemProjectedDetailResponse;
+      const action = detail.validActions.find(a => a.operationId === 'markWorkItemReady');
+      if (!action) {
+        const reason = detail.readiness.problems?.length ? detail.readiness.problems.join('; ') : `not eligible (status ${detail.readiness.status})`;
+        show({ intent: 'danger', message: `${card.title}: cannot mark ready — ${reason}`, duration: 0 });
+        return;
+      }
+      await markWorkItemReady(card.workItemId, {}, withSessionToken({ ifMatch: `"${action.targetVersion}"` }));
+      queryClient.invalidateQueries({ queryKey: ['kanban', project.id] });
+      show({ intent: 'success', message: `${card.title} marked ready.` });
+    } catch (err) {
+      show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 });
+    } finally {
+      setMarkingReady(null);
+    }
+  }
+
+  const freshnessState = latestFreshness?.status === 'DEGRADED' ? 'Degraded' : latestFreshness?.status === 'STALE' ? 'Stale' : 'Fresh';
 
   return (
     <div className="flex flex-col flex-1 overflow-hidden">
-      {/* Toolbar */}
       <div className="px-6 py-3 border-b border-[#CDD5DF] bg-white flex items-center gap-3 flex-wrap flex-shrink-0">
         <h1 className="text-sm font-semibold text-[#172033] mr-2">Board</h1>
         <span className="text-xs text-[#5D697A] mr-2">{project.name}</span>
         <div className="flex-1" />
-        {/* Filters */}
         <div className="flex items-center gap-2">
           <span className="text-xs text-[#5D697A]">Repository</span>
-          <select aria-label="Filter by repository" value={filterRepo} onChange={e => setFilterRepo(e.target.value)}
+          <select aria-label="Filter by repository" value={repoFilter} onChange={e => setRepoFilter(e.target.value)}
             className="h-7 px-2 rounded-[6px] border border-[#CDD5DF] bg-white text-xs focus:border-[#3659E3] outline-none">
-            <option value="all">All</option>
-            {allRepos.map(r => <option key={r} value={r}>{r}</option>)}
+            <option value="ALL">All</option>
+            {allRepositoryIds.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
-        <Button intent="primary" size="compact" disabled={isOffline} title={isOffline ? 'Reconnect to create a WorkItem' : undefined} onClick={() => setCreateOpen(true)}>Create WorkItem</Button>
       </div>
 
-      {/* Columns */}
-      <div className="flex-1 overflow-x-auto p-4" tabIndex={0} role="region" aria-label="Board columns, scroll horizontally for more states">
-        <div className="flex gap-3 h-full min-w-max">
-          {COLUMN_ORDER.map(col => {
-            const colCards = filtered.filter(c => c.state === col);
-            return (
-              <div
-                key={col}
-                className="flex flex-col w-64 rounded-[12px] bg-[#F3F5F8] border border-[#CDD5DF] island-shadow overflow-hidden"
-                onDragOver={e => e.preventDefault()}
-                onDrop={() => {
-                  if (!dragItem || isOffline) return;
-                  const card = cards.find(c => c.id === dragItem);
-                  if (!card) return;
-                  const validAction = card.validActions.find(a => a.targetState === col);
-                  if (validAction) {
-                    handleAction(dragItem, validAction);
-                  } else {
-                    setDragReject(dragItem);
-                    setTimeout(() => setDragReject(null), 1500);
-                  }
-                  setDragItem(null);
-                }}
-              >
-                {/* Column header */}
-                <div className="px-3 py-2.5 border-b border-[#CDD5DF] flex items-center gap-2">
-                  <Badge label={col} intent={STATE_INTENT[col] as any} />
-                  <span className="text-xs text-[#5D697A] font-medium">{colCards.length}</span>
-                </div>
+      {latestFreshness && (
+        <ProjectionBanner state={freshnessState} journalPosition={latestFreshness.asOfJournalPosition} onRefresh={() => query.refetch()} />
+      )}
 
-                {/* Cards */}
-                <div className="flex-1 overflow-y-auto p-2 space-y-2">
-                  {colCards.length === 0 ? (
-                    <div className="text-center py-8 text-xs text-[#5D697A]">No items</div>
-                  ) : colCards.map(card => (
-                    <div
-                      key={card.id}
-                      draggable={!isOffline}
-                      onDragStart={() => setDragItem(card.id)}
-                      onDragEnd={() => setDragItem(null)}
-                      className={`bg-white rounded-[8px] border p-3 cursor-pointer hover:border-[#AAB4C3] transition-all select-none ${
-                        dragReject === card.id ? 'border-[#FCA5A5] bg-[#FEE2E2] shake' : 'border-[#CDD5DF]'
-                      } ${dragItem === card.id ? 'opacity-50' : ''}`}
-                    >
-                      {/* Card header */}
-                      <div className="flex items-start justify-between gap-1">
-                        <button
-                          onClick={card.id === 'wi-0018' ? onOpenTask : undefined}
-                          disabled={card.id !== 'wi-0018'}
-                          title={card.id !== 'wi-0018' ? 'Detail fixture is available for wi-0018 only' : undefined}
-                          className="text-xs font-medium text-[#172033] text-left hover:text-[#3659E3] leading-snug line-clamp-2"
-                        >
+      {query.isPending ? (
+        <div className="flex-1 p-4 space-y-2" aria-hidden><Skeleton className="h-24 w-full" /><Skeleton className="h-24 w-full" /></div>
+      ) : query.isError ? (
+        <div className="p-4"><InlineError {...apiErrorMessage(query.error)} onRetry={() => query.refetch()} /></div>
+      ) : (
+        <div className="flex-1 overflow-x-auto p-4" tabIndex={0} role="region" aria-label="Board columns, scroll horizontally for more states">
+          <div className="flex gap-3 h-full min-w-max">
+            {WORKITEM_STATUS_COLUMNS.map(col => {
+              const colCards = filtered.filter(c => c.status === col);
+              return (
+                <div key={col} className="flex flex-col w-64 rounded-[12px] bg-[#F3F5F8] border border-[#CDD5DF] island-shadow overflow-hidden">
+                  <div className="px-3 py-2.5 border-b border-[#CDD5DF] flex items-center gap-2">
+                    <StatusBadge state={col} entity="workitem" />
+                    <span className="text-xs text-[#5D697A] font-medium">{colCards.length}</span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-2 space-y-2">
+                    {colCards.length === 0 ? (
+                      <div className="text-center py-8 text-xs text-[#5D697A]">No items</div>
+                    ) : colCards.map(card => (
+                      <div key={card.workItemId} className="bg-white rounded-[8px] border border-[#CDD5DF] p-3 hover:border-[#AAB4C3] transition-colors">
+                        <button onClick={() => onOpenTask(card.workItemId)} className="text-xs font-medium text-[#172033] text-left hover:text-[#3659E3] leading-snug line-clamp-2 block w-full">
                           {card.title}
                         </button>
-                        {card.validActions.length > 0 && (
-                          <div className="relative flex-shrink-0">
-                            <button
-                              onClick={() => setActionMenu(actionMenu === card.id ? null : card.id)}
-                              disabled={isOffline}
-                              title={isOffline ? 'Reconnect to perform this action' : `Actions for ${card.title}`}
-                              aria-label={`Actions for ${card.title}`}
-                              className="w-6 h-6 flex items-center justify-center rounded text-[#475569] hover:bg-[#F3F5F8]"
-                            ><MoreHorizontal size={14} aria-hidden /></button>
-                            {actionMenu === card.id && (
-                              <div className="absolute right-0 top-7 z-10 bg-white border border-[#CDD5DF] rounded-[8px] shadow-lg min-w-36 py-1" onClick={e => e.stopPropagation()}>
-                                {card.validActions.map(a => (
-                                  <button key={a.label} onClick={() => handleAction(card.id, a)} disabled={isOffline}
-                                    className="w-full text-left px-3 py-2 text-xs text-[#172033] hover:bg-[#EEF2FF] hover:text-[#3659E3]"
-                                  >{a.label}</button>
-                                ))}
-                              </div>
-                            )}
+
+                        {(card.repositoryBadges?.length ?? 0) > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {card.repositoryBadges!.map(b => (
+                              <span key={b.repositoryId} className="text-[12px] px-1.5 py-0.5 rounded-[4px] bg-[#F1F5F9] text-[#475569] border border-[#CBD5E1]">{b.repositoryId}</span>
+                            ))}
                           </div>
                         )}
-                      </div>
 
-                      {/* Repo badges */}
-                      <div className="flex flex-wrap gap-1 mt-2">
-                        {card.repos.map(r => (
-                          <span key={r} className="text-[12px] px-1.5 py-0.5 rounded-[4px] bg-[#F1F5F9] text-[#475569] border border-[#CBD5E1]">{r}</span>
-                        ))}
-                      </div>
-
-                      {/* Blockers */}
-                      {card.blockerCount > 0 && (
-                        <div className="flex items-center gap-1 mt-2">
-                          <AlertTriangle size={12} aria-hidden className="text-[#92400E]" />
-                          <span className="text-[12px] text-[#92400E]">{card.blockerCount} blocker{card.blockerCount > 1 ? 's' : ''}</span>
-                        </div>
-                      )}
-
-                      {/* Agent claim vs verified */}
-                      {card.agentClaim && (
-                        <div className="mt-2 space-y-1">
-                          <div className="flex items-center gap-1 text-[12px] text-[#5B21B6] bg-[#EDE9FE] rounded-[4px] px-1.5 py-0.5">
-                            <Cpu size={12} aria-hidden /> {card.agentClaim}
+                        {card.blockerCount > 0 && (
+                          <div className="flex items-center gap-1 mt-2">
+                            <AlertTriangle size={12} aria-hidden className="text-[#92400E]" />
+                            <span className="text-[12px] text-[#92400E]">{card.blockerCount} blocker{card.blockerCount > 1 ? 's' : ''}{card.topBlockerType ? ` (${card.topBlockerType})` : ''}</span>
                           </div>
-                          {!card.verifiedDone && (
-                            <div className="text-[12px] text-[#92400E] bg-[#FEF3C7] rounded-[4px] px-1.5 py-0.5">Completion not gate-verified</div>
+                        )}
+
+                        {card.pendingScopeExpansionCount > 0 && (
+                          <div className="mt-2 text-[12px] text-[#1E40AF] bg-[#DBEAFE] rounded-[4px] px-1.5 py-0.5">
+                            {card.pendingScopeExpansionCount} pending scope expansion{card.pendingScopeExpansionCount > 1 ? 's' : ''}
+                          </div>
+                        )}
+
+                        {card.activeRunStatus && (
+                          <div className="mt-2 flex items-center gap-1.5">
+                            <Badge label={card.activeRunStatus} intent={card.activeRunStatus === 'VERIFYING' ? 'warning' : 'runtime'} />
+                            {card.activeRunStatus === 'VERIFYING' && <span className="text-[11px] text-[#92400E]">completion not yet gate-verified</span>}
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between mt-2">
+                          <CopyableId value={card.workItemId} />
+                          {card.status === 'BACKLOG' && (
+                            <Button size="compact" intent="quiet" loading={markingReady === card.workItemId} disabled={isOffline} onClick={() => markReady(card)}>Mark Ready</Button>
                           )}
                         </div>
-                      )}
-                      {card.verifiedDone && (
-                        <div className="flex items-center gap-1 mt-2 text-[12px] text-[#166534] bg-[#DCFCE7] rounded-[4px] px-1.5 py-0.5">
-                          <CheckCircle2 size={12} aria-hidden /> Gate-verified complete
-                        </div>
-                      )}
-
-                      <div className="flex items-center justify-between mt-2">
-                        <CopyableId value={card.id} />
-                        <span className="text-[12px] text-[#475569]">{card.freshness}</span>
                       </div>
-                      {pendingOps[card.id] && <div className="mt-2"><OperationNotice state={pendingOps[card.id]} message={pendingOps[card.id] === 'Requested' ? 'Named action accepted; waiting for authoritative update.' : 'Authoritative state update received.'} ref={`op-${card.id}`} /></div>}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Load more */}
-                {col === 'BACKLOG' && colCards.length > 0 && (
-                  <div className="px-3 py-2 border-t border-[#ECEFF4]">
-                    <p className="text-center text-xs text-[#5D697A]">All cached items shown</p>
+                    ))}
                   </div>
-                )}
-              </div>
-            );
-          })}
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
-
-      {createOpen && (
-        <CreateWorkItemDrawer
-          project={project}
-          isOffline={isOffline}
-          onClose={() => setCreateOpen(false)}
-          onCreated={draft => {
-            setCards(prev => [...prev, {
-              id: `wi-local-${project.id}-${prev.length + 1}`, title: draft.title, state: 'BACKLOG',
-              repos: draft.repos, component: draft.component, blockerCount: 0,
-              verifiedDone: false, freshness: 'just now',
-              validActions: draft.ready ? [{ label: 'Mark Ready', targetState: 'READY' }] : [],
-            }]);
-          }}
-        />
       )}
+
+      {query.hasNextPage && (
+        <div className="px-4 py-2 border-t border-[#CDD5DF] bg-white flex justify-center flex-shrink-0">
+          <Button intent="secondary" size="compact" loading={query.isFetchingNextPage} onClick={() => query.fetchNextPage()}>Load more</Button>
+        </div>
+      )}
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }

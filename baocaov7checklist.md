@@ -1175,3 +1175,88 @@ reflect the new state without a manual reload.
   immediately reflected the new generation-2 DRAFT with the real published version's exact hashes — the
   full real round trip, not a mocked one.
 
+## V7-09A — Real Kanban board; a second shared-primitive bug fixed along the way
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md` V7-09's own line: "status columns, repository/component filter, pagination
+và server-provided named valid actions... Không tồn tại generic `TransitionWorkItemStatus`/`set-status`."
+`web/src/screens/Kanban.tsx` was still the Figma-Make prototype's entirely fake scaffold: hardcoded
+`INITIAL_CARDS`, an `agentClaim`/`verifiedDone` pair with no real backend field behind either, and
+drag-and-drop transitions that just called `setCards` locally with no server round trip at all.
+
+### Decision
+
+`internal/delivery/httpapi/kanban/dto.go`'s own `KanbanCardDTO` has no `component` field at all — only
+`repositoryBadges` — so, matching the same discipline `Definitions.tsx` already established for its own
+missing "compatible" boolean, only a real repository filter is built; a "component" filter would have no
+real data behind it.
+
+The fake `agentClaim`/`verifiedDone` pair is dropped entirely — its real equivalent already exists as
+`activeRunStatus === "VERIFYING"` (`internal/domain/runtime/runtime.go`'s own doc comment: "END's
+completion-candidate state" — the run reached END and claims completion, but has not yet passed the
+completion-policy gate). Rendered as a distinct badge with an explicit "completion not yet gate-verified"
+caption whenever it appears — the exact real state the design doc's own "hiển thị agent claim khác
+verified" line asks for, using data the backend actually has.
+
+"Mark Ready" is the only named action `internal/delivery/httpapi/kanban` itself ever advertises
+(`validActionsForReadiness`'s own doc comment). The package's own top-of-file doc comment is explicit that
+projected `Status`/`ActiveRunStatus`/etc. are display-only and may be stale — so clicking Mark Ready never
+trusts the projected card's own `status === 'BACKLOG'`; it always calls `GET /work-items/{id}/detail`
+FIRST for a fresh, authoritative `readiness`/`validActions` pair, and only dispatches the real mutation
+(with that fresh `targetVersion` as `If-Match`) if `markWorkItemReady` is actually present in the fresh
+response. When it is not, the real `readiness.problems` list is shown verbatim — never a generic "not
+ready" message — and the mutation is never called at all.
+
+**Found and fixed another shared-UI-primitive bug**, the same category as V7-05A's SPA-routing collision
+and V7-05B/V7-06A's missing Idempotency-Key/If-Match support: `web/src/components/ui.tsx`'s own
+`ProjectionBanner` hardcoded the literal string
+`"JournalPosition 1842"` regardless of what any caller passed — a leftover Figma-Make fabrication that
+happened to go unnoticed because no earlier screen had real Freshness data to feed it (App.tsx's own
+existing usage is a fake connection-state simulation that never claims a real journal position either).
+Fixed by adding an optional `journalPosition` prop rendered only when a caller actually has a real one —
+this screen is the banner's first real consumer, passing the real `Freshness.asOfJournalPosition` the
+Kanban list response already carries.
+
+Removed `web/src/screens/CreateWorkItem.tsx` entirely (the prototype's fake "Create WorkItem" drawer,
+only ever imported by the old fake Kanban) rather than leave it orphaned — V7-10 ("Create root/child
+WorkItem forms") builds a real one from scratch against `createRootWorkItem`, the same "delete the fake
+screen outright, never carry it forward" discipline V7-07B/V7-08A already established.
+
+### Execution
+
+New file `web/src/api/kanban.ts`: hand-declared `KanbanCard`/`RepositoryBadge`/`Freshness`/`ValidAction`/
+`WorkItemReadiness`/`WorkItemProjectedDetailResponse` — the same convention every sibling API-gap file this
+session already established. Full rewrite of `web/src/screens/Kanban.tsx`: real `useInfiniteQuery` over
+`listWorkItemKanban` (real cursor-based "Load more" pagination, `limit=200` per page), six real status
+columns (`StatusBadge` already covers every `WorkItemStatus`/`WorkflowRunState` value used here — no new
+color-mapping table needed), a client-side repository filter derived from the real fetched cards' own
+badges, and the fresh-recheck Mark Ready flow described above. `App.tsx` lost its `boards`/`INITIAL_CARDS`/
+`WorkItemCard` fake state entirely; `onOpenTask` now takes the real clicked `workItemId` instead of always
+navigating to one hardcoded fixture ID (the destination `TaskDetailScreen` itself remains its own separate,
+still-fake screen — V7-11's own scope — but the URL it is opened at now carries a real ID).
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 181/181 pass (173 prior + 8 new `Kanban.test.tsx` tests: loading skeleton, real cards
+  grouped into their real status columns with real repository badges/blocker-type/pending-scope-expansion
+  display, the repository filter narrowing correctly, clicking a card title opening the real clicked
+  workItemId — never a hardcoded fixture, a stale/degraded freshness banner showing the real server-
+  reported journal position, Mark Ready dispatching with the fresh target version as `If-Match` on a
+  genuinely-ready WorkItem, Mark Ready NEVER dispatching the mutation when a fresh recheck says otherwise —
+  showing the real problems list instead, accessibility smoke) + `App.routing.test.tsx`'s own
+  "opens the real task" case updated to mock `listWorkItemKanban` instead of relying on the old fixture
+  card that no longer exists.
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` AND `aw worker`: created a real
+  project, a real ACTIVE repository, and a real root WorkItem (via direct HTTP calls — no UI exists yet for
+  either creation flow, V7-06A/V7-10's own separate scopes) with a real scope grant, confirmed the Kanban
+  board showed the real projected card in the real BACKLOG column with a real repository badge, clicked
+  Mark Ready, and confirmed via the real network log that `GET /work-items/{id}/detail` ran but
+  `POST /work-items/{id}/mark-ready` was NEVER called — because this WorkItem was created with a minimal
+  contract, the fresh authoritative recheck correctly reported it not ready, and the UI surfaced the real
+  problem list ("schema version must be positive; behavior is required; verification spec is required;
+  risk level is required; no executable acceptance criterion is present...") instead of ever attempting
+  the mutation — proving the safety property end to end with real data, not just the happy path.
+

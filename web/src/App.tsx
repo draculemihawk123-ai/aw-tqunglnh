@@ -12,8 +12,7 @@ import type { ProjectSummary } from './screens/Projects';
 import type { ProjectView, RepositoryView } from './api/catalog';
 import { projectRepositoriesList, projectsList } from './api/generated';
 import { withSessionToken } from './api/session';
-import { KanbanScreen, INITIAL_CARDS } from './screens/Kanban';
-import type { WorkItemCard } from './screens/Kanban';
+import { KanbanScreen } from './screens/Kanban';
 import { TaskDetailScreen } from './screens/TaskDetail';
 import { DefinitionsScreen } from './screens/Definitions';
 import { RunDiagnosticsScreen } from './screens/RunDiagnostics';
@@ -29,7 +28,6 @@ const TASK_ROUTES: NavRoute[] = ['task-overview', 'task-graph', 'task-workspace'
 export default function App() {
   const [location, setLocation] = useLocation();
   const router = useRouter();
-  const [boards, setBoards] = useState<Record<string, WorkItemCard[]>>({ 'proj-alpha-001': INITIAL_CARDS });
   const [connection, setConnection] = useState<ConnectionState>('Live');
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [protoOpen, setProtoOpen] = useState(false);
@@ -121,9 +119,9 @@ export default function App() {
     navigate('project-overview', { projectId: selectedProjectId });
   };
 
-  const handleOpenTask = () => {
+  const handleOpenTask = (workItemId: string) => {
     if (!project) return;
-    navigate('task-overview', { projectId: project.id, taskId: FIXTURE_TASK_ID });
+    navigate('task-overview', { projectId: project.id, taskId: workItemId });
   };
 
   const switchConnection = (state: ConnectionState) => {
@@ -145,7 +143,7 @@ export default function App() {
     if (route === 'project-overview') return <ProjectsScreen view="overview" {...projectProps} onNavigate={navigate} />;
     if (route === 'project-components') return <ProjectsScreen view="components" {...projectProps} onNavigate={navigate} />;
     if (route === 'project-board') {
-      return projectSummary ? <KanbanScreen key={projectSummary.id} project={projectSummary} cards={boards[projectSummary.id] ?? []} setCards={update => setBoards(current => ({ ...current, [projectSummary.id]: typeof update === 'function' ? update(current[projectSummary.id] ?? []) : update }))} onOpenTask={handleOpenTask} isOffline={isOffline} /> : null;
+      return projectSummary ? <KanbanScreen key={projectSummary.id} project={projectSummary} onOpenTask={handleOpenTask} isOffline={isOffline} /> : null;
     }
     if (TASK_ROUTES.includes(route)) {
       return <TaskDetailScreen activeTab={route} onTabChange={navigate} isOffline={isOffline} />;

@@ -26,6 +26,13 @@ vi.mock('./api/generated', async () => {
     }),
     projectRepositoriesList: vi.fn().mockResolvedValue({ repositories: [] }),
     projectComponentsList: vi.fn().mockResolvedValue({ components: [] }),
+    listWorkItemKanban: vi.fn().mockResolvedValue({
+      items: [{
+        workItemId: 'wi-0018', projectId: 'proj-alpha-001', familyId: 'fam-1', title: 'Add distributed tracing to API gateway',
+        isRoot: true, status: 'ACTIVE', blockerCount: 0, pendingScopeExpansionCount: 0,
+      }],
+      freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' },
+    }),
   };
 });
 vi.mock('./api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));

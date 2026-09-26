@@ -213,10 +213,12 @@ export function InlineError({ code, message, field, correlation, onRetry }: {
 // ─── ProjectionBanner ─────────────────────────────────────────────────────────
 
 export function ProjectionBanner({
-  state, watermark, onRefresh, onRebuild, onDiagnostics,
+  state, watermark, journalPosition, onRefresh, onRebuild, onDiagnostics,
 }: {
   state: 'Fresh' | 'Stale' | 'Degraded' | 'Resync required';
   watermark?: string;
+  /** The real, server-reported AsOfJournalPosition this banner's own state was computed from (httpapi.Freshness) — never shown unless a caller has a real one; there is no installation-wide "the" journal position to invent when one is omitted. */
+  journalPosition?: number;
   onRefresh?: () => void;
   onRebuild?: () => void;
   onDiagnostics?: () => void;
@@ -232,7 +234,10 @@ export function ProjectionBanner({
       <AlertTriangle size={13} aria-hidden className="flex-shrink-0" />
       <span className="font-medium">Projection {state}</span>
       {watermark && <span className="text-[12px]">— last updated {watermark}</span>}
-      <span className="text-[12px]">JournalPosition 1842 · {state === 'Stale' ? 'Consumer lag; awaiting projection catch-up.' : 'Projection interrupted by poison event; cached data remains readable.'}</span>
+      <span className="text-[12px]">
+        {journalPosition !== undefined && <>JournalPosition {journalPosition} · </>}
+        {state === 'Stale' ? 'Consumer lag; awaiting projection catch-up.' : 'Projection interrupted by poison event; cached data remains readable.'}
+      </span>
       <div className="flex-1" />
       {onRefresh && <button onClick={onRefresh} className="text-[12px] underline font-medium">Refresh</button>}
       {onRebuild && <button onClick={onRebuild} className="text-[12px] underline font-medium ml-2">Rebuild Projection</button>}
