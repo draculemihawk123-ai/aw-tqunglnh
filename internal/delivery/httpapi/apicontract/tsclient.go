@@ -92,6 +92,16 @@ export interface RequestOptions {
    * logical attempt rather than mint a new one.
    */
   idempotencyKey?: string;
+  /**
+   * If-Match for an update-shaped mutation (ignored for a query or a
+   * create). The server's ETagFromVersion wraps a prior response's own
+   * version field in double quotes, so pass that same version wrapped in
+   * double quotes, e.g. version 3 becomes a 3-character string: a double
+   * quote, the digit 3, and a closing double quote. Required by any route
+   * whose handler calls httpapi.RequireIfMatch; omitting it there fails
+   * with ErrIfMatchRequired.
+   */
+  ifMatch?: string;
   /** Extra raw query-string parameters this contract does not itself type. */
   query?: Record<string, string>;
   signal?: AbortSignal;
@@ -138,6 +148,9 @@ async function request<TResponse>(
     // is omitted — a caller that wants to retry the SAME logical attempt
     // (rather than mint a new one) passes its own key back via opts.idempotencyKey.
     headers["Idempotency-Key"] = opts.idempotencyKey ?? crypto.randomUUID();
+    if (opts.ifMatch) {
+      headers["If-Match"] = opts.ifMatch;
+    }
   }
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";

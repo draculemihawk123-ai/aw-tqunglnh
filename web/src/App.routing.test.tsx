@@ -11,10 +11,24 @@ import App from './App';
 // default landing screen, so every test here renders it at least once and
 // would otherwise make a real, unmocked fetch('/doctor') that jsdom has
 // nothing to answer.
-vi.mock('./api/generated', () => ({
-  doctor: vi.fn().mockResolvedValue({ status: 'HEALTHY', checks: [], restartRequired: false, links: {} }),
-  listAdapterBuilds: vi.fn().mockResolvedValue({ builds: [] }),
-}));
+vi.mock('./api/generated', async () => {
+  const actual = await vi.importActual<typeof import('./api/generated')>('./api/generated');
+  return {
+    ...actual,
+    doctor: vi.fn().mockResolvedValue({ status: 'HEALTHY', checks: [], restartRequired: false, links: {} }),
+    listAdapterBuilds: vi.fn().mockResolvedValue({ builds: [] }),
+    projectsList: vi.fn().mockResolvedValue({
+      projects: [
+        { id: 'proj-alpha-001', name: 'platform-core', status: 'ACTIVE', version: 1 },
+        { id: 'proj-beta-002', name: 'data-pipeline', status: 'ACTIVE', version: 1 },
+        { id: 'proj-gamma-003', name: 'auth-service', status: 'ACTIVE', version: 1 },
+      ],
+    }),
+    projectRepositoriesList: vi.fn().mockResolvedValue({ repositories: [] }),
+    projectComponentsList: vi.fn().mockResolvedValue({ components: [] }),
+  };
+});
+vi.mock('./api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));
 
 /** Renders <App/> with a controlled in-memory location — real wouter navigation, no jsdom history/browser needed, and `history` lets tests assert on the exact URL sequence App.tsx produced (e.g. a guard redirect). A fresh QueryClient per render (retry: false) keeps one test's query state from leaking into the next. */
 function renderAppAt(path: string) {
