@@ -769,3 +769,116 @@ Changed files:
   `POST /adapter-builds/probe` and the register call returned `200 OK` — impossible before the
   Idempotency-Key fix, which is exactly the kind of gap only a real mutation attempt against a real
   backend surfaces (the same lesson V7-05A's routing bug already taught).
+
+## V7-06A — Project list/create and repository register/onboarding/retry-probe
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md` V7-06's own "Thực hiện" line: "create project, register/probe repo,
+view components/health ... canonical local locator input, state REGISTERING|PROBING|ACTIVE|BLOCKED|
+DISABLED, actionable retry, multi-repo project view và exact-version Engineering Pack assignment cho
+component." This is genuinely two natural halves: (A) project/repository onboarding — the state machine
+and the operator-facing forms — and (B) the Engineering Pack exact-version assignment UI, which needs its
+own investigation into where a Pack VERSION ID comes from (the definitions catalog) and is deliberately
+scoped to a separate task rather than bloating this one, per the repo's own "don't split by default,
+only when genuinely large" doctrine — this split mirrors the same natural feature boundary V7-04A/B and
+V7-05A/B already used.
+
+The existing `web/src/screens/Projects.tsx` was still the Figma-Make prototype's fully fake, in-memory
+`INITIAL_PROJECTS` scaffold (hardcoded array, `window.setTimeout` calls simulating state transitions) —
+this task replaces it entirely with real data, the same "read the existing prototype's own real backend
+before touching the screen" discipline every V7-0x task so far has followed.
+
+### Decision
+
+`internal/delivery/httpapi/catalog` (V6-03A) registers every one of its 9 routes with `RequestSchema:
+struct{}{}, ResponseSchema: struct{}{}` — a KNOWN, self-documented gap (apicontract's own package doc
+comment names catalog as one of three leaf packages that never supplied a real schema, and explicitly
+says fixing it is a later task's job, not V6-12's). Rather than retrofit that Go-side gap (out of scope,
+touches a different subsystem, and the same gap exists in 2 other packages this task does not need), this
+screen hand-declares its own TS interfaces mirroring `internal/delivery/httpapi/catalog/views.go`'s real
+view types field-for-field (`web/src/api/catalog.ts`) — the same "narrow `unknown` at the call site"
+convention `Doctor.tsx`'s own `DoctorCheck` already established.
+
+A Repository's own identity (`RepositoryID`) is caller-chosen, not minted by the server
+(`appcatalog.RegisterRepositoryRequest`'s own doc comment) — unlike a Project. The register-repository
+form therefore has an explicit, required "Repository ID" field, separate from Name and the local path,
+matching V7-06's own "không suy repo từ path/name" line: the UI never derives an identity by slugifying
+the path or name, the operator must state it.
+
+`RemoteLocator` is, despite its name, a canonical LOCAL filesystem path
+(`internal/app/repositoryprobe/handler.go`'s own `h.prober.Probe(ctx, repo.RemoteLocator, ...)`, and
+`docs/design/01-system-design.md`'s own "Repository locator được canonicalize và không nằm dưới managed
+workspace root") — the form labels it "Local repository path" with that exact constraint as helper text,
+never "Remote URL", to avoid misleading the operator about what this installation actually does with it.
+
+### Execution — a third real gap found the same way the first two were (missing If-Match support)
+
+`POST /repositories/{id}/retry-probe` is this task's first-ever call from any V7 screen to an
+update-shaped mutation (`httpapi.RequireIfMatch`) — every mutation up through V7-05B was create-shaped.
+The generated client had no way to send an `If-Match` header at all. Fixed the same way the V7-05B
+Idempotency-Key gap was fixed: `RequestOptions` gained an `ifMatch?: string` field
+(`internal/delivery/httpapi/apicontract/tsclient.go`'s `tsClientPreamble`), sent as the `If-Match` header
+on any non-safe request that supplies it. The caller builds the value itself from a response's own
+`version` field (`` `"${version}"` ``, matching `httpapi.ETagFromVersion`'s exact wire format) — no need
+for the client to ever read response headers, since every relevant view (`repositoryView`) already
+carries `version` in its JSON body.
+
+**A second real bug found only by testing the actual create-project-then-navigate flow in a real
+browser**: `CreateProjectDialog`'s success handler called `queryClient.invalidateQueries({queryKey:
+['projects']})` (schedules an async refetch) immediately followed by `onSelectProject(result.projectId)`
+(navigates to the new project's URL). App.tsx's own route guard — reading that SAME `['projects']` cache
+entry to check "does this URL's projectId exist" — ran on the very next render, before the invalidated
+query's refetch had resolved, saw the STALE (pre-create) list, concluded the brand-new project did not
+exist, and bounced straight back to `/ui/projects`. Manually walking through "create a project, watch it
+open" in the real browser caught this on the first attempt; no unit/component test happened to exercise
+this exact interleaving. Fixed by writing the create result directly into the query cache via
+`queryClient.setQueryData` (synchronous, and `CreateProjectResult` already carries everything a fresh
+`ProjectView` needs — id/name/status, version always starts at 1 per `project.NewProject`) instead of an
+async invalidate-and-hope-it-resolves-in-time.
+
+New files:
+- `web/src/api/catalog.ts`: hand-declared `ProjectView`/`RepositoryView`/`ProbeAttemptView`/
+  `OnboardingView`/`ComponentView`/`CreateProjectResult`/`RegisterRepositoryResult`.
+- `web/src/screens/Projects.test.tsx` (new, 12 tests).
+
+Changed files:
+- `internal/delivery/httpapi/apicontract/tsclient.go` / `web/src/api/generated.ts`: the If-Match fix.
+- `web/src/screens/Projects.tsx`: full rewrite onto real `projectsList`/`projectsCreate`/
+  `projectRepositoriesList`/`projectRepositoriesRegister`/`repositoriesRetryProbe`/`projectComponentsList`.
+  Retains a narrow `ProjectSummary` compatibility type (id/name/repositories with id/name/state) for the
+  two screens this task deliberately does not touch (Kanban's board filter chips, Definitions' scope
+  label) — both are still fake-data prototypes of their own, out of scope here (V7-09/V7-10).
+- `web/src/App.tsx`: removed all fake `projects`/`handleCreateProject`/`handleRegisterRepository`/
+  `handleSetRepositoryState` local state; `project` is now derived from a real `useQuery(['projects'])`
+  (shared cache with Projects.tsx's own identical query); the route guard now skips redirecting while
+  that query is still pending, never bounces a fresh deep link away just because the fetch has not
+  resolved yet; builds the `ProjectSummary` compatibility shim for Kanban/Definitions from a second real
+  `['projectRepositories', projectId]` query (sharing that cache key with Projects.tsx's own overview).
+- `web/src/App.routing.test.tsx`: updated mock to `importActual`-merge real exports (needed once real
+  `ApiError`/`projectsList`/etc. are reachable) plus fixture project data for the existing routing
+  assertions.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`, `go test ./internal/delivery/... ./internal/archtest/...` (`-count=1`):
+  clean.
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 144/144 pass (132 prior + 12 new `Projects.test.tsx` tests: loading/empty states, real
+  project rendering and selection, create-project validation and real API call, real repository rendering
+  with Retry Probe shown only on BLOCKED, retry sending the correct repository id and If-Match version,
+  register-repository validation and the exact field names the backend expects, real component rendering
+  and its own empty state).
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` AND a REAL running `aw worker` (the
+  durable job that actually executes a repository probe needs a worker process, not just the API server):
+  created a real local git repository on disk, created a project through the UI, registered that real
+  repository through the UI, and watched it transition REGISTERING → PROBING → BLOCKED for a genuine
+  reason (`main` did not resolve — the repo's real default branch was `master`; not a bug, a wrong test
+  fixture assumption caught by the real probe actually running real `git` commands), clicked Retry Probe
+  after fixing the branch, watched it reach ACTIVE. Registered a second repository pointing at a version
+  of that same path with a real `src/` subdirectory and confirmed the Components view showed a real
+  discovered `DIRECTORY` component linked to the correct repository ID. Also caught and fixed the
+  create-project navigation race described above — found only by actually clicking through the flow, not
+  by any automated test.
+
