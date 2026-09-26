@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getDefinition, listDefinitions, listProjectDefinitions,
   listDefinitionVersions, listProjectDefinitionVersions, getProjectDefinition,
@@ -7,9 +7,15 @@ import {
 import { DEFINITION_KINDS } from '../api/definitions';
 import type { DefinitionKind, DefinitionView, VersionFieldsView } from '../api/definitions';
 import { withSessionToken } from '../api/session';
-import { Badge, CopyableId, EmptyState, InlineError, Select, Skeleton, StatusBadge } from '../components/ui';
+import {
+  Badge, Button, CopyableId, EmptyState, InlineError, Select, Skeleton, StatusBadge,
+  ToastViewport, useToasts,
+} from '../components/ui';
 import type { BadgeIntent } from '../components/ui';
+import { Plus } from '../components/icons';
 import type { ProjectSummary } from './Projects';
+import { CreateDefinitionDialog } from './CreateDefinitionDialog';
+import { DefinitionEditorDialog } from './DefinitionEditorDialog';
 
 type DefScope = 'global' | 'project';
 
@@ -50,6 +56,10 @@ export function DefinitionsScreen({ project, initialScope, isOffline = false }: 
   const [kindFilter, setKindFilter] = useState<DefinitionKind | 'ALL'>('ALL');
   const [selected, setSelected] = useState<{ kind: DefinitionKind; id: string } | null>(null);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  const [createDialog, setCreateDialog] = useState(false);
+  const [editorDialog, setEditorDialog] = useState(false);
+  const { toasts, show, dismiss } = useToasts();
+  const queryClient = useQueryClient();
 
   useEffect(() => {
     setScope(initialScope);
@@ -128,6 +138,7 @@ export function DefinitionsScreen({ project, initialScope, isOffline = false }: 
               <h1 className="text-xl font-semibold text-[#172033]">Definitions</h1>
               <p className="text-[12px] text-[#475569] mt-0.5">{scope === 'project' ? `Project scope · ${project?.name ?? 'Select a project'} · ${project?.id ?? '—'}` : 'Global / Installation scope'}</p>
             </div>
+            <Button intent="primary" size="compact" onClick={() => setCreateDialog(true)} icon={<Plus size={13} aria-hidden />} disabled={isOffline || (scope === 'project' && !project)}>New Definition</Button>
           </div>
           <div className="flex items-center gap-3 mt-3">
             <div className="flex rounded-[6px] border border-[#CDD5DF] overflow-hidden">
@@ -204,6 +215,7 @@ export function DefinitionsScreen({ project, initialScope, isOffline = false }: 
               {detailQuery.data && <Badge label={detailQuery.data.status} intent={STATUS_INTENT[detailQuery.data.status]} />}
               <span className="text-[12px] text-[#475569]">generation {detailQuery.data?.version ?? '—'}</span>
             </div>
+            <Button intent="secondary" size="compact" className="mt-2 w-full" disabled={isOffline} onClick={() => setEditorDialog(true)}>Author new version…</Button>
           </div>
           <div className="p-5 space-y-5">
             {(detailQuery.isError || versionsQuery.isError) && (
@@ -268,6 +280,37 @@ export function DefinitionsScreen({ project, initialScope, isOffline = false }: 
           </div>
         </div>
       )}
+
+      {createDialog && (
+        <CreateDefinitionDialog
+          scope={scope}
+          projectId={projectId}
+          onClose={() => setCreateDialog(false)}
+          onCreated={(kind, id) => {
+            queryClient.invalidateQueries({ queryKey: ['definitionsOfKind', scope, projectId, kind] });
+            setCreateDialog(false);
+            setSelected({ kind, id });
+            show({ intent: 'success', message: `Definition "${id}" created as a draft.` });
+          }}
+        />
+      )}
+      {editorDialog && selected && detailQuery.data && (
+        <DefinitionEditorDialog
+          definition={detailQuery.data}
+          scope={scope}
+          projectId={projectId}
+          onClose={() => setEditorDialog(false)}
+          onPublished={version => {
+            queryClient.invalidateQueries({ queryKey: ['definitionVersions', scope, projectId, selected.kind, selected.id] });
+            queryClient.invalidateQueries({ queryKey: ['definitionDetail', scope, projectId, selected.kind, selected.id] });
+            queryClient.invalidateQueries({ queryKey: ['definitionsOfKind', scope, projectId, selected.kind] });
+            setEditorDialog(false);
+            setSelectedVersionId(version.id);
+            show({ intent: 'success', message: `Published v${version.versionNumber} of "${detailQuery.data?.name}".` });
+          }}
+        />
+      )}
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }

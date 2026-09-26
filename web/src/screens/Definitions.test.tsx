@@ -14,6 +14,7 @@ vi.mock('../api/generated', async () => {
     listDefinitions: vi.fn(), listProjectDefinitions: vi.fn(),
     listDefinitionVersions: vi.fn(), listProjectDefinitionVersions: vi.fn(),
     getDefinition: vi.fn(), getProjectDefinition: vi.fn(),
+    createDefinition: vi.fn(), createProjectDefinition: vi.fn(),
   };
 });
 vi.mock('../api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));
@@ -148,5 +149,42 @@ describe('DefinitionsScreen — version detail', () => {
     await userEvent.click(await screen.findByText('My Block'));
     await screen.findByText('sha256:aaa');
     await expectNoAxeViolations(container);
+  });
+});
+
+describe('DefinitionsScreen — create + author flow wiring', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('"New Definition" opens the real create dialog and selects the new definition on success', async () => {
+    mockEmptyCatalog();
+    vi.mocked(api.createDefinition).mockResolvedValue({ definitionId: 'blk-new', kind: 'BLOCK' } as never);
+    vi.mocked(api.getDefinition).mockResolvedValue({ id: 'blk-new', kind: 'BLOCK', scope: { global: true }, name: 'New Block', status: 'DRAFT', version: 1 } as never);
+    vi.mocked(api.listDefinitionVersions).mockResolvedValue({ items: [] } as never);
+    renderScreen();
+    await screen.findByText('No definitions');
+
+    await userEvent.click(screen.getByRole('button', { name: /New Definition/ }));
+    expect(await screen.findByRole('heading', { name: 'New Definition' })).toBeInTheDocument();
+    await userEvent.type(screen.getByLabelText(/Definition ID/), 'blk-new');
+    await userEvent.type(screen.getByLabelText(/^Name/), 'New Block');
+    await userEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(await screen.findByText(/created as a draft/)).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Author new version…' })).toBeInTheDocument();
+  });
+
+  it('"Author new version" opens the real editor dialog for the selected definition', async () => {
+    mockEmptyCatalog();
+    vi.mocked(api.listDefinitions).mockImplementation(async (kind: string) =>
+      (kind === 'BLOCK' ? { definitions: [BLOCK_ONE] } : { definitions: [] }) as never);
+    vi.mocked(api.getDefinition).mockResolvedValue(BLOCK_ONE as never);
+    vi.mocked(api.listDefinitionVersions).mockResolvedValue({ items: [] } as never);
+    renderScreen();
+
+    await userEvent.click(await screen.findByText('My Block'));
+    await screen.findByText('No published versions');
+    await userEvent.click(screen.getByRole('button', { name: 'Author new version…' }));
+
+    expect(await screen.findByRole('heading', { name: 'Edit My Block' })).toBeInTheDocument();
   });
 });
