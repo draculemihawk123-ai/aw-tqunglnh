@@ -1,66 +1,23 @@
-import React, { useEffect, useState } from 'react';
-import { Badge, Button, Dialog } from '../components/ui';
-import { AlertTriangle, CheckCircle2, X } from '../components/icons';
+import { useEffect, useMemo, useState } from 'react';
+import { useQueries, useQuery } from '@tanstack/react-query';
+import {
+  getDefinition, listDefinitions, listProjectDefinitions,
+  listDefinitionVersions, listProjectDefinitionVersions, getProjectDefinition,
+} from '../api/generated';
+import { DEFINITION_KINDS } from '../api/definitions';
+import type { DefinitionKind, DefinitionView, VersionFieldsView } from '../api/definitions';
+import { withSessionToken } from '../api/session';
+import { Badge, CopyableId, EmptyState, InlineError, Select, Skeleton, StatusBadge } from '../components/ui';
+import type { BadgeIntent } from '../components/ui';
 import type { ProjectSummary } from './Projects';
 
-type DefKind = 'all' | 'Skill' | 'Layer' | 'Pack' | 'Agent' | 'Executable';
 type DefScope = 'global' | 'project';
 
-interface DefinitionRecord {
-  id: string;
-  kind: Exclude<DefKind, 'all'>;
-  scope: DefScope;
-  name: string;
-  status: 'ACTIVE';
-  version: string;
-  dependencies: string[];
-  compatible: boolean;
-  hash: string;
-}
-
-const DEFINITIONS: DefinitionRecord[] = [
-  { id: 'def-001', kind: 'Skill', scope: 'global', name: 'code-review-skill', status: 'ACTIVE', version: '2.1.0', dependencies: ['security-layer@1.0.5', 'lint-rules@3.0.0', 'test-runner@3.0.0'], compatible: true, hash: 'sha256:7b2c4e6f' },
-  { id: 'def-002', kind: 'Pack', scope: 'global', name: 'backend-pack', status: 'ACTIVE', version: '2.4.1', dependencies: ['code-review-skill@2.1.0', 'security-layer@1.0.5', 'feature-agent@1.3.2', 'test-runner@3.0.0', 'lint-rules@3.0.0'], compatible: true, hash: 'sha256:a3f9e8b1' },
-  { id: 'def-003', kind: 'Agent', scope: 'project', name: 'feature-agent', status: 'ACTIVE', version: '1.3.2', dependencies: ['code-review-skill@2.1.0', 'security-layer@1.0.5'], compatible: true, hash: 'sha256:c8d12e4f' },
-  { id: 'def-004', kind: 'Layer', scope: 'global', name: 'security-layer', status: 'ACTIVE', version: '1.0.5', dependencies: ['policy-baseline@1.1.0'], compatible: false, hash: 'sha256:f1a2b3c4' },
-  { id: 'def-005', kind: 'Executable', scope: 'global', name: 'test-runner', status: 'ACTIVE', version: '3.0.0', dependencies: [], compatible: true, hash: 'sha256:9e8d7c6b' },
-];
-
-// Line 11 intentionally uses `context_token` to demonstrate the editor diagnostic.
-const YAML_CONTENT = `# feature-agent v1.3.2
-kind: Agent
-name: feature-agent
-version: 1.3.2
-
-dependencies:
-  - skill: code-review-skill@^2.0.0
-  - layer: security-layer@1.0.5
-
-resources:
-  context_token: 200000
-  max_attempts: 3
-
-adapter_pins:
-  - provider: anthropic
-    model: claude-sonnet-4-6
-    protocol: AK-Adapter/1.2
-
-workflow: feature-workflow@v3.1.0`;
-
-function yamlForDefinition(definition: DefinitionRecord) {
-  if (definition.name === 'feature-agent') return YAML_CONTENT;
-  const dependencyLines = definition.dependencies.length > 0
-    ? definition.dependencies.map(dependency => `  - ${dependency}`).join('\n')
-    : '  []';
-  return `kind: ${definition.kind}\nname: ${definition.name}\nversion: ${definition.version}\n\ndependencies:\n${dependencyLines}`;
-}
-
-function nextPatchVersion(version: string) {
-  const parts = version.split('.');
-  const patch = Number(parts[2]);
-  if (parts.length !== 3 || !Number.isInteger(patch)) return version;
-  return `${parts[0]}.${parts[1]}.${patch + 1}`;
-}
+const STATUS_INTENT: Record<DefinitionView['status'], BadgeIntent> = {
+  DRAFT: 'neutral',
+  ACTIVE: 'success',
+  ARCHIVED: 'warning',
+};
 
 interface DefinitionsScreenProps {
   project: ProjectSummary | null;
@@ -68,147 +25,102 @@ interface DefinitionsScreenProps {
   isOffline?: boolean;
 }
 
+/**
+ * V7-07B's own real catalog + version-detail screen — the read-only half
+ * of docs/design/09-v7-alpha-ui.md's own V7-07 line ("catalog filters,
+ * immutable version selector, SourceHash/CompiledSnapshotHash, dependency/
+ * resource/adapter pins và compatibility diagnostics"). Replaces the
+ * Figma-Make prototype's entirely fake DEFINITIONS array/YAML editor
+ * wholesale — the declarative editor + validate/publish flow this same
+ * file used to bolt on top of that fake data is V7-08's own separate scope
+ * ("Declarative editor, validate và publish"), deliberately not rebuilt
+ * here against real data: a real editor needs its own real design, not a
+ * fake one wearing real catalog data underneath it.
+ *
+ * There is no single "list every Definition of every Kind" endpoint
+ * (internal/delivery/httpapi/definitions only ever lists one Kind at a
+ * time, GET /definitions/{kind} — V7-07A's own new route) — this screen
+ * fires all nine Kind queries in parallel per scope and merges them
+ * client-side, which is exactly the "browse all definition kinds" V7-07's
+ * own goal describes, still a handful of local requests for a
+ * single-operator installation's own catalog.
+ */
 export function DefinitionsScreen({ project, initialScope, isOffline = false }: DefinitionsScreenProps) {
   const [scope, setScope] = useState<DefScope>(initialScope);
-  const [kindFilter, setKindFilter] = useState<DefKind>('all');
-  const [selectedDef, setSelectedDef] = useState(DEFINITIONS[2]);
-  const [editorMode, setEditorMode] = useState(false);
-  const [publishDialog, setPublishDialog] = useState(false);
-  const [draftYaml, setDraftYaml] = useState(YAML_CONTENT);
-  const [draftSaved, setDraftSaved] = useState(false);
+  const [kindFilter, setKindFilter] = useState<DefinitionKind | 'ALL'>('ALL');
+  const [selected, setSelected] = useState<{ kind: DefinitionKind; id: string } | null>(null);
+  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
 
   useEffect(() => {
-    setEditorMode(false);
     setScope(initialScope);
-    const firstInScope = DEFINITIONS.find(def => initialScope === 'global' ? def.scope === 'global' : def.scope === 'project');
-    if (firstInScope) {
-      setSelectedDef(firstInScope);
-      setDraftYaml(yamlForDefinition(firstInScope));
-      setDraftSaved(false);
-    }
+    setSelected(null);
   }, [initialScope, project?.id]);
+
+  const projectId = project?.id;
+  const catalogQueries = useQueries({
+    queries: DEFINITION_KINDS.map(kind => ({
+      queryKey: ['definitionsOfKind', scope, projectId, kind],
+      queryFn: async () => {
+        const result = scope === 'project' && projectId
+          ? await listProjectDefinitions(projectId, kind, withSessionToken())
+          : await listDefinitions(kind, withSessionToken());
+        return (result as unknown as { definitions: DefinitionView[] }).definitions;
+      },
+      enabled: !isOffline && (scope === 'global' || !!projectId),
+    })),
+  });
+
+  const isLoadingCatalog = catalogQueries.some(q => q.isPending);
+  const catalogError = catalogQueries.find(q => q.isError)?.error;
+  const definitions = useMemo(
+    () => catalogQueries.flatMap(q => q.data ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+    [catalogQueries],
+  );
+  const filtered = kindFilter === 'ALL' ? definitions : definitions.filter(d => d.kind === kindFilter);
+
+  const versionsQuery = useQuery({
+    queryKey: ['definitionVersions', scope, projectId, selected?.kind, selected?.id],
+    queryFn: async () => {
+      const result = scope === 'project' && projectId
+        ? await listProjectDefinitionVersions(projectId, selected!.kind, selected!.id, withSessionToken())
+        : await listDefinitionVersions(selected!.kind, selected!.id, withSessionToken());
+      return (result as unknown as { items: VersionFieldsView[] }).items;
+    },
+    enabled: !isOffline && !!selected,
+  });
+
+  const detailQuery = useQuery({
+    queryKey: ['definitionDetail', scope, projectId, selected?.kind, selected?.id],
+    queryFn: async () => {
+      const result = scope === 'project' && projectId
+        ? await getProjectDefinition(projectId, selected!.kind, selected!.id, withSessionToken())
+        : await getDefinition(selected!.kind, selected!.id, withSessionToken());
+      return result as unknown as DefinitionView;
+    },
+    enabled: !isOffline && !!selected,
+  });
+
+  const versions = versionsQuery.data ?? [];
+  useEffect(() => {
+    if (versions.length === 0) { setSelectedVersionId(null); return; }
+    if (!versions.some(v => v.id === selectedVersionId)) {
+      setSelectedVersionId(versions[versions.length - 1].id); // oldest-first order; last = latest
+    }
+  }, [versions, selectedVersionId]);
+  const selectedVersion = versions.find(v => v.id === selectedVersionId) ?? null;
 
   const changeScope = (nextScope: DefScope) => {
     setScope(nextScope);
-    const firstInScope = DEFINITIONS.find(def => nextScope === 'global' ? def.scope === 'global' : def.scope === 'project');
-    if (firstInScope) {
-      setSelectedDef(firstInScope);
-      setDraftYaml(yamlForDefinition(firstInScope));
-      setDraftSaved(false);
-    }
+    setSelected(null);
   };
 
-  const selectDefinition = (definition: DefinitionRecord) => {
-    setSelectedDef(definition);
-    setDraftYaml(yamlForDefinition(definition));
-    setDraftSaved(false);
+  const selectDefinition = (d: DefinitionView) => {
+    setSelected({ kind: d.kind, id: d.id });
+    setSelectedVersionId(null);
   };
-
-  const openEditor = () => {
-    setDraftYaml(yamlForDefinition(selectedDef));
-    setDraftSaved(false);
-    setEditorMode(true);
-  };
-
-  const hasContextTokenDiagnostic = /^\s*context_token\s*:/m.test(draftYaml);
-
-  const filtered = DEFINITIONS.filter(d => {
-    if (d.scope !== scope) return false;
-    if (scope === 'project' && project?.id !== 'proj-alpha-001') return false;
-    if (kindFilter !== 'all' && d.kind !== kindFilter) return false;
-    return true;
-  });
-
-  const kinds: DefKind[] = ['all', 'Skill', 'Layer', 'Pack', 'Agent', 'Executable'];
-
-  if (editorMode) {
-    return (
-      <div className="flex-1 flex flex-col overflow-hidden">
-        <div className="px-6 py-3 border-b border-[#CDD5DF] bg-white flex items-center gap-3">
-          <button onClick={() => setEditorMode(false)} className="text-xs text-[#5D697A] hover:text-[#3659E3]">← Definitions</button>
-          <span className="text-sm font-semibold text-[#172033]">{selectedDef.name}</span>
-          <Badge label="LOCAL DRAFT" intent="warning" />
-          <span className="text-[12px] text-[#475569]">{draftSaved ? 'saved locally · not published' : 'unsaved changes · not published'}</span>
-          <div className="flex-1" />
-          <Button intent="secondary" size="compact" onClick={() => setEditorMode(false)}>Discard</Button>
-          <Button intent="secondary" size="compact" onClick={() => setDraftSaved(true)}>Save Local Draft</Button>
-          <Button intent="primary" size="compact" disabled={isOffline || hasContextTokenDiagnostic}
-            title={isOffline ? 'Reconnect to publish' : hasContextTokenDiagnostic ? 'Resolve validation errors before publishing' : undefined}
-            onClick={() => setPublishDialog(true)}>Publish…</Button>
-        </div>
-        <div className="flex flex-1 overflow-hidden">
-          {/* Editor */}
-          <div className="flex-1 flex flex-col overflow-hidden">
-            <div className="px-4 py-2 border-b border-[#CDD5DF] bg-[#F8FAFC] flex items-center gap-2">
-              <span className="text-xs font-medium text-[#5D697A]">YAML</span>
-              <div className="h-4 w-px bg-[#CDD5DF]" />
-              <span className="text-[12px] text-[#475569]">{selectedDef.name}.yaml</span>
-            </div>
-            <textarea
-              value={draftYaml}
-              onChange={e => { setDraftYaml(e.target.value); setDraftSaved(false); }}
-              className={`flex-1 p-4 font-mono text-[12px] bg-[#FBFCFE] text-[#172033] resize-none outline-none leading-6 border-l-4 ${hasContextTokenDiagnostic ? 'border-l-[#FCA5A5]' : 'border-l-transparent'}`}
-              spellCheck={false}
-            />
-            {hasContextTokenDiagnostic && (
-              <div role="alert" className="px-4 py-2 border-t border-[#CDD5DF] bg-[#FEE2E2] text-[12px] text-[#991B1B] flex items-center gap-2">
-                <X size={12} aria-hidden className="flex-shrink-0" />
-                <span className="font-mono font-medium">line 11, col 3</span>
-                <span>Unknown field <span className="font-mono">context_token</span> — did you mean <span className="font-mono">context_tokens</span>?</span>
-              </div>
-            )}
-          </div>
-          {/* Graph preview */}
-          <div className="w-72 border-l border-[#CDD5DF] bg-[#F3F5F8] flex flex-col">
-            <div className="px-4 py-2.5 border-b border-[#CDD5DF]">
-              <span className="text-xs font-semibold text-[#5D697A]">Graph Preview (read-only)</span>
-            </div>
-            <div className="flex-1 flex items-center justify-center text-[12px] text-[#475569]">
-              Save draft to preview graph.
-            </div>
-          </div>
-        </div>
-
-        {publishDialog && (
-          <Dialog
-            title={`Publish ${selectedDef.name}`}
-            description="Publishing creates an immutable version. Review both hashes and dependency pins before confirming."
-            onClose={() => setPublishDialog(false)}
-            actions={
-              <>
-                <Button intent="secondary" onClick={() => setPublishDialog(false)}>Cancel</Button>
-                <Button intent="primary" disabled={isOffline} onClick={() => { setPublishDialog(false); setEditorMode(false); }}>Confirm Publish</Button>
-              </>
-            }
-          >
-            <div className="space-y-3 text-sm">
-              <div className="space-y-1.5">
-                <div className="flex gap-3"><span className="text-[#5D697A] w-40">Name</span><span className="font-medium">{selectedDef.name}</span></div>
-                <div className="flex gap-3"><span className="text-[#5D697A] w-40">Version</span><span className="font-mono text-xs">{nextPatchVersion(selectedDef.version)}</span></div>
-                <div className="flex gap-3"><span className="text-[#5D697A] w-40">SourceHash</span><span className="font-mono text-xs break-all">sha256:a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2</span></div>
-                <div className="flex gap-3"><span className="text-[#5D697A] w-40">CompiledSnapshotHash</span><span className="font-mono text-xs break-all">sha256:f6e5d4c3b2a1f6e5d4c3b2a1f6e5d4c3b2a1f6e5</span></div>
-              </div>
-              <div className="pt-2 border-t border-[#ECEFF4]">
-                <div className="text-xs font-medium text-[#172033] mb-1.5">Dependency Pins</div>
-                <div className="space-y-1 font-mono text-xs text-[#5D697A]">
-                  {selectedDef.dependencies.map(dependency => (
-                    <div key={dependency} className="flex items-center gap-1.5">
-                      <CheckCircle2 size={12} className="text-[#166534]" aria-hidden />
-                      <span>{dependency}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </Dialog>
-        )}
-      </div>
-    );
-  }
 
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* Catalog */}
       <div className="flex-1 flex flex-col overflow-hidden border-r border-[#CDD5DF]">
         <div className="px-6 py-4 border-b border-[#CDD5DF] bg-white">
           <div className="flex items-center justify-between">
@@ -221,13 +133,17 @@ export function DefinitionsScreen({ project, initialScope, isOffline = false }: 
             <div className="flex rounded-[6px] border border-[#CDD5DF] overflow-hidden">
               {(['global', 'project'] as const).map(s => (
                 <button key={s} onClick={() => changeScope(s)} aria-pressed={scope === s} disabled={s === 'project' && !project}
-                  className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors ${scope === s ? 'bg-[#3659E3] text-white' : 'bg-white text-[#5D697A] hover:bg-[#F3F5F8]'}`}>
+                  className={`px-3 py-1.5 text-xs font-medium capitalize transition-colors disabled:opacity-50 ${scope === s ? 'bg-[#3659E3] text-white' : 'bg-white text-[#5D697A] hover:bg-[#F3F5F8]'}`}>
                   {s === 'global' ? 'Global / Installation' : 'Project'}
                 </button>
               ))}
             </div>
-            <div className="flex gap-1">
-              {kinds.map(k => (
+            <div className="flex gap-1 flex-wrap">
+              <button onClick={() => setKindFilter('ALL')}
+                className={`px-2.5 py-1 text-xs rounded-[6px] border transition-colors ${kindFilter === 'ALL' ? 'bg-[#EEF2FF] text-[#3659E3] border-[#C7D2FE] font-medium' : 'bg-white text-[#5D697A] border-[#CDD5DF] hover:border-[#AAB4C3]'}`}>
+                all
+              </button>
+              {DEFINITION_KINDS.map(k => (
                 <button key={k} onClick={() => setKindFilter(k)}
                   className={`px-2.5 py-1 text-xs rounded-[6px] border transition-colors ${kindFilter === k ? 'bg-[#EEF2FF] text-[#3659E3] border-[#C7D2FE] font-medium' : 'bg-white text-[#5D697A] border-[#CDD5DF] hover:border-[#AAB4C3]'}`}>
                   {k}
@@ -237,97 +153,121 @@ export function DefinitionsScreen({ project, initialScope, isOffline = false }: 
           </div>
         </div>
         <div className="flex-1 overflow-y-auto bg-[#E9EDF3] p-4">
-          <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-[#ECEFF4] bg-[#F8FAFC]">
-                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#5D697A]">Name</th>
-                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#5D697A]">Kind</th>
-                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#5D697A]">Version</th>
-                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#5D697A]">Deps</th>
-                  <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#5D697A]">Compatible</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#ECEFF4]">
-                {filtered.map(def => (
-                  <tr key={def.id}
-                    onClick={() => selectDefinition(def)}
-                    className={`hover:bg-[#F8FAFC] cursor-pointer transition-colors ${selectedDef.id === def.id ? 'bg-[#EEF2FF]' : ''}`}>
-                    <td className="px-5 py-3">
-                      <button onClick={() => selectDefinition(def)} className="font-medium text-[#172033]">{def.name}</button>
-                    </td>
-                    <td className="px-5 py-3"><Badge label={def.kind} intent="neutral" /></td>
-                    <td className="px-5 py-3 font-mono text-xs">{def.version}</td>
-                    <td className="px-5 py-3 text-[#5D697A]">{def.dependencies.length}</td>
-                    <td className="px-5 py-3">
-                      {def.compatible
-                        ? <span className="inline-flex items-center gap-1 text-[#166534] text-xs"><CheckCircle2 size={12} aria-hidden /> Compatible</span>
-                        : <span className="inline-flex items-center gap-1 text-[#991B1B] text-xs"><AlertTriangle size={12} aria-hidden /> Incompatible pin</span>}
-                    </td>
+          {isLoadingCatalog ? (
+            <div className="space-y-2" aria-hidden><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /><Skeleton className="h-10 w-full" /></div>
+          ) : catalogError ? (
+            <InlineError code="UNKNOWN" message={catalogError instanceof Error ? catalogError.message : 'failed to load catalog'} />
+          ) : filtered.length === 0 ? (
+            <EmptyState title="No definitions" description={scope === 'project' ? 'No definitions have been created in this project scope yet.' : 'No definitions have been created at the global scope yet.'} />
+          ) : (
+            <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[#ECEFF4] bg-[#F8FAFC]">
+                    <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#5D697A]">Name / ID</th>
+                    <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#5D697A]">Kind</th>
+                    <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#5D697A]">Status</th>
+                    <th className="text-left px-5 py-2.5 text-xs font-semibold text-[#5D697A]">Generation</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-[#ECEFF4]">
+                  {filtered.map(def => (
+                    <tr key={`${def.kind}:${def.id}`}
+                      onClick={() => selectDefinition(def)}
+                      className={`hover:bg-[#F8FAFC] cursor-pointer transition-colors ${selected?.id === def.id && selected?.kind === def.kind ? 'bg-[#EEF2FF]' : ''}`}>
+                      <td className="px-5 py-3">
+                        <div className="font-medium text-[#172033]">{def.name}</div>
+                        <CopyableId value={def.id} />
+                      </td>
+                      <td className="px-5 py-3"><Badge label={def.kind} intent="neutral" /></td>
+                      <td className="px-5 py-3"><StatusBadge state={def.status} /></td>
+                      <td className="px-5 py-3 font-mono text-xs text-[#5D697A]">v{def.version}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Version detail */}
-      {filtered.some(def => def.id === selectedDef.id) ? <div className="w-80 xl:w-96 flex flex-col bg-[#F3F5F8] flex-shrink-0 overflow-y-auto">
-        <div className="px-5 py-4 border-b border-[#CDD5DF] bg-white">
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-semibold text-[#172033]">{selectedDef.name}</span>
-            <Badge label={selectedDef.kind} intent="neutral" />
+      {!selected ? (
+        <p className="p-5 text-[13px] text-[#475569] w-80 xl:w-96 flex-shrink-0">Select a definition to inspect its published versions.</p>
+      ) : (
+        <div className="w-80 xl:w-96 flex flex-col bg-[#F3F5F8] flex-shrink-0 overflow-y-auto">
+          <div className="px-5 py-4 border-b border-[#CDD5DF] bg-white">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-[#172033]">{detailQuery.data?.name ?? selected.id}</h2>
+              <Badge label={selected.kind} intent="neutral" />
+            </div>
+            <div className="flex items-center gap-2 mt-1">
+              {detailQuery.data && <Badge label={detailQuery.data.status} intent={STATUS_INTENT[detailQuery.data.status]} />}
+              <span className="text-[12px] text-[#475569]">generation {detailQuery.data?.version ?? '—'}</span>
+            </div>
           </div>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="font-mono text-xs text-[#5D697A]">v{selectedDef.version}</span>
-            <span className="text-[12px] text-[#475569]">·</span>
-            <span className="text-[12px] text-[#475569]">immutable</span>
+          <div className="p-5 space-y-5">
+            {(detailQuery.isError || versionsQuery.isError) && (
+              <InlineError code="UNKNOWN" message="failed to load definition detail" onRetry={() => { detailQuery.refetch(); versionsQuery.refetch(); }} />
+            )}
+
+            {versionsQuery.isPending ? (
+              <Skeleton className="h-8 w-full" />
+            ) : versions.length === 0 ? (
+              <EmptyState title="No published versions" description="This definition has never been published — it exists only as a draft." />
+            ) : (
+              <>
+                <div>
+                  <h3 className="text-xs font-semibold text-[#5D697A] mb-2">Version</h3>
+                  <Select
+                    label="Version"
+                    value={selectedVersionId ?? ''}
+                    onChange={setSelectedVersionId}
+                    options={[...versions].reverse().map(v => ({ value: v.id, label: `v${v.versionNumber} — immutable` }))}
+                  />
+                </div>
+                {selectedVersion && (
+                  <>
+                    <div>
+                      <h3 className="text-xs font-semibold text-[#5D697A] mb-2">Hashes</h3>
+                      <div className="space-y-2 bg-white rounded-[8px] border border-[#CDD5DF] p-3">
+                        <div>
+                          <div className="text-[12px] text-[#475569] mb-0.5">SourceHash</div>
+                          <div className="font-mono text-xs text-[#172033] break-all">{selectedVersion.sourceHash}</div>
+                        </div>
+                        <div className="h-px bg-[#ECEFF4]" />
+                        <div>
+                          <div className="text-[12px] text-[#475569] mb-0.5">CompiledSnapshotHash</div>
+                          <div className="font-mono text-xs text-[#172033] break-all">{selectedVersion.compiledHash}</div>
+                        </div>
+                      </div>
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-semibold text-[#5D697A] mb-2">Dependency Pins ({selectedVersion.dependencies.pins?.length ?? 0})</h3>
+                      <div className="space-y-1">
+                        {(selectedVersion.dependencies.pins?.length ?? 0) > 0 ? (
+                          selectedVersion.dependencies.pins!.map(pin => (
+                            <div key={`${pin.kind}:${pin.definitionId}:${pin.versionId}`} className="font-mono text-xs text-[#172033] bg-white rounded-[6px] border border-[#CDD5DF] px-3 py-2">
+                              {pin.kind}:{pin.definitionId}@{pin.versionId}
+                            </div>
+                          ))
+                        ) : <div className="text-[12px] text-[#475569]">No dependency pins.</div>}
+                      </div>
+                    </div>
+                    <div>
+                      <h3 className="text-xs font-semibold text-[#5D697A] mb-2">Compiled Snapshot</h3>
+                      <p className="text-[12px] text-[#475569] mb-1.5">Resource/adapter pins live inside this kind's own compiled document — shown raw rather than parsed for a specific kind's schema.</p>
+                      <pre className="font-mono text-[11px] text-[#172033] bg-white rounded-[6px] border border-[#CDD5DF] p-3 max-h-48 overflow-auto whitespace-pre-wrap break-all">{selectedVersion.compiledSnapshot}</pre>
+                    </div>
+                    <div className="text-[12px] text-[#475569]">
+                      Published by {selectedVersion.publishedBy} at {new Date(selectedVersion.publishedAt).toLocaleString()}
+                    </div>
+                  </>
+                )}
+              </>
+            )}
           </div>
         </div>
-        <div className="p-5 space-y-5">
-          {/* Hashes */}
-          <div>
-            <h3 className="text-xs font-semibold text-[#5D697A] mb-2">Hashes</h3>
-            <div className="space-y-2 bg-white rounded-[8px] border border-[#CDD5DF] p-3">
-              <div>
-                <div className="text-[12px] text-[#475569] mb-0.5">SourceHash</div>
-                <div className="font-mono text-xs text-[#172033] break-all">{selectedDef.hash}…a1b2c3d4</div>
-              </div>
-              <div className="h-px bg-[#ECEFF4]" />
-              <div>
-                <div className="text-[12px] text-[#475569] mb-0.5">CompiledSnapshotHash</div>
-                <div className="font-mono text-xs text-[#172033] break-all">sha256:9e8d7c6b…f5e4d3c2</div>
-              </div>
-            </div>
-          </div>
-          {/* Dependencies */}
-          <div>
-            <h3 className="text-xs font-semibold text-[#5D697A] mb-2">Dependencies ({selectedDef.dependencies.length})</h3>
-            <div className="space-y-1">
-              {selectedDef.dependencies.length > 0 ? (
-                selectedDef.dependencies.map(d => (
-                  <div key={d} className="font-mono text-xs text-[#172033] bg-white rounded-[6px] border border-[#CDD5DF] px-3 py-2">{d}</div>
-                ))
-              ) : <div className="text-[12px] text-[#475569]">No dependencies.</div>}
-            </div>
-          </div>
-          {/* Adapter pins */}
-          <div>
-            <h3 className="text-xs font-semibold text-[#5D697A] mb-2">Adapter Pins</h3>
-            <div className="font-mono text-xs text-[#172033] bg-white rounded-[6px] border border-[#CDD5DF] px-3 py-2">
-              {selectedDef.kind === 'Agent' || selectedDef.kind === 'Executable'
-                ? 'anthropic / claude-sonnet-4-6 / AK-Adapter/1.2'
-                : 'No direct adapter pin'}
-            </div>
-          </div>
-          {/* Actions */}
-          <div className="flex gap-2">
-            <Button intent="secondary" size="compact" onClick={openEditor}>Open Editor</Button>
-            <Button intent="quiet" size="compact">View Raw</Button>
-          </div>
-        </div>
-      </div> : <p className="p-5 text-[13px] text-[#475569]">No selected definition in this scope. Select an available definition to inspect it.</p>}
+      )}
     </div>
   );
 }
