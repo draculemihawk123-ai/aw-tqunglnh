@@ -13,7 +13,7 @@ vi.mock('../api/generated', async () => {
     ...actual,
     projectsList: vi.fn(), projectsCreate: vi.fn(),
     projectRepositoriesList: vi.fn(), projectRepositoriesRegister: vi.fn(), repositoriesRetryProbe: vi.fn(),
-    projectComponentsList: vi.fn(),
+    projectComponentsList: vi.fn(), componentPackAssignmentsList: vi.fn(), componentPackAssignmentsAssign: vi.fn(),
   };
 });
 vi.mock('../api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));
@@ -167,5 +167,19 @@ describe('ProjectsScreen — components', () => {
     vi.mocked(api.projectComponentsList).mockResolvedValue({ components: [] } as never);
     render(<ProjectsScreen view="components" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
     expect(await screen.findByText(/No components discovered yet/)).toBeInTheDocument();
+  });
+
+  it('"Assign Pack" opens the real assignment dialog for the exact component clicked', async () => {
+    vi.mocked(api.projectsList).mockResolvedValue(PROJECTS as never);
+    vi.mocked(api.projectComponentsList).mockResolvedValue({
+      components: [{ id: 'comp-1', projectId: 'proj-1', repositoryId: 'repo-1', name: 'api', path: 'src/api', kind: 'service', version: 1 }],
+    } as never);
+    vi.mocked(api.componentPackAssignmentsList).mockResolvedValue({ componentId: 'comp-1', projectId: 'proj-1', assignments: [], effective: null } as never);
+    render(<ProjectsScreen view="components" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    await screen.findByText('api');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Assign Pack' }));
+    expect(await screen.findByRole('heading', { name: 'Assign Engineering Pack' })).toBeInTheDocument();
+    expect(api.componentPackAssignmentsList).toHaveBeenCalledWith('comp-1', expect.anything());
   });
 });

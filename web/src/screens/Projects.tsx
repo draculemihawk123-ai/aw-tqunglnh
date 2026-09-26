@@ -13,6 +13,7 @@ import {
   ToastViewport, useToasts,
 } from '../components/ui';
 import { ArrowLeft, Boxes, ChevronRight, Columns3, FolderGit2, Plus } from '../components/icons';
+import { AssignPackDialog } from './AssignPackDialog';
 
 export type { ProjectView, RepositoryView, ComponentView };
 
@@ -183,6 +184,7 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
   const [createDialog, setCreateDialog] = useState(false);
   const [registerDialog, setRegisterDialog] = useState(false);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [assignPackTarget, setAssignPackTarget] = useState<ComponentView | null>(null);
   const { toasts, show, dismiss } = useToasts();
   const queryClient = useQueryClient();
 
@@ -316,19 +318,28 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
             ) : (
               <table className="w-full text-[13px]">
                 <thead className="bg-[#F8FAFC] border-b border-[#CDD5DF]"><tr>
-                  <th className="text-left px-5 py-3 text-[12px]">Component / ID</th><th className="text-left px-5 py-3 text-[12px]">Repository / path</th><th className="text-left px-5 py-3 text-[12px]">Kind</th>
+                  <th className="text-left px-5 py-3 text-[12px]">Component / ID</th><th className="text-left px-5 py-3 text-[12px]">Repository / path</th><th className="text-left px-5 py-3 text-[12px]">Kind</th><th aria-label="Actions" />
                 </tr></thead>
                 <tbody className="divide-y divide-[#ECEFF4]">{components.map(comp => (
                   <tr key={comp.id} className="hover:bg-[#FAFBFC]">
                     <td className="px-5 py-4"><div className="font-medium">{comp.name}</div><CopyableId value={comp.id} /></td>
                     <td className="px-5 py-4"><div className="font-mono text-[12px] text-[#475569]">{comp.path}</div><CopyableId value={comp.repositoryId} /></td>
                     <td className="px-5 py-4">{comp.kind}</td>
+                    <td className="px-5 py-4 text-right"><Button size="compact" intent="quiet" disabled={isOffline} onClick={() => setAssignPackTarget(comp)}>Assign Pack</Button></td>
                   </tr>
-                ))}{components.length === 0 && <tr><td colSpan={3} className="px-5 py-10 text-center text-[13px] text-[#475569]">No components discovered yet. Register and probe a repository first.</td></tr>}</tbody>
+                ))}{components.length === 0 && <tr><td colSpan={4} className="px-5 py-10 text-center text-[13px] text-[#475569]">No components discovered yet. Register and probe a repository first.</td></tr>}</tbody>
               </table>
             )}
           </div>
         </div>
+        {assignPackTarget && (
+          <AssignPackDialog
+            component={assignPackTarget}
+            onClose={() => setAssignPackTarget(null)}
+            onAssigned={message => show({ intent: 'success', message })}
+          />
+        )}
+        <ToastViewport toasts={toasts} onDismiss={dismiss} />
       </div>
     );
   }
