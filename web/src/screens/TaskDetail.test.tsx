@@ -16,6 +16,9 @@ vi.mock('../api/generated', async () => {
     cancelRun: vi.fn(), cancelWorkItem: vi.fn(), resolveWorkItemBlocker: vi.fn(),
     getRunGraph: vi.fn(), getRunTimeline: vi.fn(), retryBlockedActivation: vi.fn(),
     getWorkspaceSetState: vi.fn(), getWorkspaceDiff: vi.fn(), getWorkspaceRepositoryLog: vi.fn(), requestWorkspaceReconciliation: vi.fn(),
+    listReleaseSetsForFamily: vi.fn(), createReleaseSet: vi.fn(), sealReleaseSet: vi.fn(), abandonReleaseSet: vi.fn(),
+    requestReleaseSetLocalCommit: vi.fn(), getReleaseSetLocalCommitStatus: vi.fn(), getReleaseSet: vi.fn(),
+    getRepositoryWorkspaceState: vi.fn(), requestWorkspaceSetRelease: vi.fn(),
   };
 });
 vi.mock('../api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));
@@ -510,5 +513,199 @@ describe('WorkspaceTab (V7-13)', () => {
     const { container } = renderWorkspaceTab();
     await screen.findByRole('button', { name: /core-api revision/ });
     await expectNoAxeViolations(container);
+  });
+});
+
+function releaseSetFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    releaseSetId: 'rset-1', projectId: 'proj-1', familyId: 'fam-1', state: 'CREATED', contentHash: 'sha256:abcabcabc', version: 1,
+    entries: [
+      { repositoryId: 'core-api', baseVcsObjectId: 'aaaa1111aaaa', resultVcsObjectId: 'bbbb2222bbbb', verdict: 'PASS' },
+      { repositoryId: 'worker-service', baseVcsObjectId: 'cccc3333cccc', resultVcsObjectId: 'dddd4444dddd', verdict: 'FAIL' },
+    ],
+    ...overrides,
+  };
+}
+
+const REPO_WORKER = repoFixture({
+  repositoryWorkspaceId: 'rw-2', repositoryId: 'worker-service', version: 5,
+  baseRevision: 'cccc3333cccc', currentRevision: 'dddd4444dddd',
+});
+
+async function openReleaseSetPanel() {
+  await userEvent.click(await screen.findByRole('button', { name: 'ReleaseSet' }));
+  return screen.findByRole('button', { name: 'Hide ReleaseSet' });
+}
+
+describe('ReleaseSetPanel (V7-13A)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getTaskFamily).mockResolvedValue(FAMILY as never);
+    vi.mocked(api.getWorkItem).mockResolvedValue({
+      workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+      status: 'ACTIVE', version: 4, contract: null,
+    } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail() } as never);
+  });
+
+  it('creates a real ReleaseSet pre-filled from each repository\'s own real base/current revision', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture(), REPO_WORKER], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    vi.mocked(api.listReleaseSetsForFamily).mockResolvedValue({ items: [] } as never);
+    vi.mocked(api.createReleaseSet).mockResolvedValue({ releaseSetId: 'rset-1', projectId: 'proj-1', familyId: 'fam-1', state: 'CREATED', contentHash: 'sha256:x', version: 1 } as never);
+    renderWorkspaceTab();
+
+    await openReleaseSetPanel();
+    await userEvent.click(await screen.findByRole('button', { name: 'Create' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Create ReleaseSet' });
+    const baseFields = within(dialog).getAllByLabelText('Base revision') as HTMLInputElement[];
+    const resultFields = within(dialog).getAllByLabelText('Result revision') as HTMLInputElement[];
+    expect(baseFields.map(f => f.value)).toEqual(['aaaa1111aaaa', 'cccc3333cccc']);
+    expect(resultFields.map(f => f.value)).toEqual(['bbbb2222bbbb', 'dddd4444dddd']);
+
+    const verdictSelects = within(dialog).getAllByLabelText(/^Verdict/);
+    await userEvent.selectOptions(verdictSelects[0], 'PASS');
+    await userEvent.selectOptions(verdictSelects[1], 'FAIL');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(api.createReleaseSet).toHaveBeenCalledWith('proj-1', 'fam-1', {
+      repositories: [
+        { repositoryId: 'core-api', baseVcsObjectId: 'aaaa1111aaaa', resultVcsObjectId: 'bbbb2222bbbb', verdict: 'PASS' },
+        { repositoryId: 'worker-service', baseVcsObjectId: 'cccc3333cccc', resultVcsObjectId: 'dddd4444dddd', verdict: 'FAIL' },
+      ],
+    }, expect.objectContaining({ token: 'test-session-token' })));
+  });
+
+  it('partial release: a mixed-verdict ReleaseSet can be sealed with no all-PASS gate — the confirm dialog shows the real per-repository verdicts', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture(), REPO_WORKER], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    vi.mocked(api.listReleaseSetsForFamily).mockResolvedValue({ items: [releaseSetFixture()] } as never);
+    vi.mocked(api.sealReleaseSet).mockResolvedValue({ releaseSetId: 'rset-1', projectId: 'proj-1', familyId: 'fam-1', state: 'SEALED', contentHash: 'sha256:x', version: 2 } as never);
+    renderWorkspaceTab();
+
+    await openReleaseSetPanel();
+    await userEvent.click(await screen.findByRole('button', { name: 'Seal' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Seal ReleaseSet' });
+    expect(within(dialog).getByText('PASS', { selector: 'span[aria-hidden]' })).toBeInTheDocument();
+    expect(within(dialog).getByText('FAIL', { selector: 'span[aria-hidden]' })).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Seal' }));
+
+    await waitFor(() => expect(api.sealReleaseSet).toHaveBeenCalledWith('proj-1', 'rset-1', {}, expect.objectContaining({ ifMatch: '"1"' })));
+  });
+
+  it('duplicate seal: a real conflict from the server surfaces as a real error, not a crash', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture(), REPO_WORKER], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    vi.mocked(api.listReleaseSetsForFamily).mockResolvedValue({ items: [releaseSetFixture()] } as never);
+    const { ApiError } = await vi.importActual<typeof import('../api/generated')>('../api/generated');
+    vi.mocked(api.sealReleaseSet).mockRejectedValue(new ApiError(409, 'CONFLICT', 'release set is not open (already sealed or abandoned)'));
+    renderWorkspaceTab();
+
+    await openReleaseSetPanel();
+    await userEvent.click(await screen.findByRole('button', { name: 'Seal' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Seal ReleaseSet' });
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Seal' }));
+
+    expect(await within(dialog).findByText('release set is not open (already sealed or abandoned)')).toBeInTheDocument();
+  });
+
+  it('stale revision: local commit dispatches with freshly refetched release-set/workspace versions, never the stale ones already in cache', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture(), REPO_WORKER], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    const sealedReleaseSet = releaseSetFixture({ state: 'SEALED', version: 1 });
+    vi.mocked(api.listReleaseSetsForFamily).mockResolvedValue({ items: [sealedReleaseSet] } as never);
+    // Both queries report a NEWER version than what the initial page load already cached —
+    // the real state moved (e.g. another operation touched it) between page load and dispatch.
+    vi.mocked(api.getReleaseSet).mockResolvedValue({ ...sealedReleaseSet, version: 9 } as never);
+    vi.mocked(api.getRepositoryWorkspaceState).mockResolvedValue({ ...REPO_WORKER, version: 42 } as never);
+    vi.mocked(api.requestReleaseSetLocalCommit).mockResolvedValue({
+      releaseSetLocalCommitId: 'lc-1', releaseSetId: 'rset-1', repositoryWorkspaceId: 'rw-2', state: 'REQUESTED', jobId: 'job-1', marker: 'm-1',
+    } as never);
+    vi.mocked(api.getReleaseSetLocalCommitStatus).mockResolvedValue({ state: 'REQUESTED' } as never);
+    renderWorkspaceTab();
+
+    await openReleaseSetPanel();
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Local Commit' }))[1]);
+    const dialog = await screen.findByRole('dialog', { name: 'Create Local Commit' });
+    await userEvent.type(within(dialog).getByLabelText(/Message/), 'release commit');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create Local Commit' }));
+
+    await waitFor(() => expect(api.requestReleaseSetLocalCommit).toHaveBeenCalledWith('proj-1', 'rset-1', expect.objectContaining({
+      expectedReleaseSetVersion: 9, repositoryWorkspaceId: 'rw-2', expectedWorkspaceVersion: 42,
+    }), expect.objectContaining({ token: 'test-session-token' })));
+  });
+
+  it('a real requestWorkspaceSetRelease ValidAction offers Release Workspace, dispatching with a real If-Match and honest async wording', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'READY', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture(), REPO_WORKER],
+      validActions: [{ operationId: 'requestWorkspaceSetRelease', scopeKind: 'PROJECT', targetVersion: 2 }],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    vi.mocked(api.listReleaseSetsForFamily).mockResolvedValue({ items: [] } as never);
+    // The real requestWorkspaceSetRelease command never itself transitions the
+    // WorkspaceSet — it only enqueues an async job; result.state is the
+    // PRE-release state (confirmed by reading internal/app/workspacerelease's
+    // own command source), never the state the set is "entering". The toast
+    // must not claim otherwise.
+    vi.mocked(api.requestWorkspaceSetRelease).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'READY', releaseJobId: 'job-9',
+    } as never);
+    renderWorkspaceTab();
+
+    await openReleaseSetPanel();
+    await userEvent.click(await screen.findByRole('button', { name: 'Release Workspace' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Release Workspace' });
+    expect(within(dialog).getByText(/asynchronous/)).toBeInTheDocument();
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Request Release' }));
+
+    await waitFor(() => expect(api.requestWorkspaceSetRelease).toHaveBeenCalledWith('proj-1', 'fam-1', {}, expect.objectContaining({ ifMatch: '"2"' })));
+    expect(await screen.findByText(/job-9/)).toBeInTheDocument();
+    expect(screen.queryByText(/entering READY/)).not.toBeInTheDocument();
+  });
+
+  it('never renders any push/PR/merge/force-push action anywhere in the panel', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture(), REPO_WORKER],
+      validActions: [{ operationId: 'requestWorkspaceSetRelease', scopeKind: 'PROJECT', targetVersion: 2 }],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    vi.mocked(api.listReleaseSetsForFamily).mockResolvedValue({ items: [releaseSetFixture(), releaseSetFixture({ releaseSetId: 'rset-2', state: 'SEALED' })] } as never);
+    const { container } = renderWorkspaceTab();
+
+    await openReleaseSetPanel();
+    await screen.findByRole('button', { name: 'Seal' });
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/\bpush\b/i);
+    expect(text).not.toMatch(/\bpull request\b|\bPR\b/i);
+    expect(text).not.toMatch(/\bmerge\b/i);
+    expect(text).not.toMatch(/force[- ]push/i);
   });
 });

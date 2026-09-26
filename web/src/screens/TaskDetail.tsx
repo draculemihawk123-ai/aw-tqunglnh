@@ -11,9 +11,11 @@ import {
 } from '../components/icons';
 import type { NavRoute } from '../components/shell/LeftNav';
 import {
-  ApiError, cancelRun, cancelWorkItem, getRunDiagnostics, getRunGraph, getRunTimeline, getTaskFamily,
-  getWorkItem, getWorkItemProjectedDetail, getWorkspaceDiff, getWorkspaceRepositoryLog, getWorkspaceSetState,
-  requestWorkspaceReconciliation, resolveWorkItemBlocker, retryBlockedActivation,
+  abandonReleaseSet, ApiError, cancelRun, cancelWorkItem, createReleaseSet, getReleaseSet,
+  getReleaseSetLocalCommitStatus, getRepositoryWorkspaceState, getRunDiagnostics, getRunGraph, getRunTimeline,
+  getTaskFamily, getWorkItem, getWorkItemProjectedDetail, getWorkspaceDiff, getWorkspaceRepositoryLog,
+  getWorkspaceSetState, listReleaseSetsForFamily, requestReleaseSetLocalCommit, requestWorkspaceReconciliation,
+  requestWorkspaceSetRelease, resolveWorkItemBlocker, retryBlockedActivation, sealReleaseSet,
 } from '../api/generated';
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
@@ -23,6 +25,8 @@ import type { GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse
 import { withSessionToken } from '../api/session';
 import { decodeDiffPatch, fetchWorkspaceSource } from '../api/workspaceinspection';
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
+import { VERDICT_OPTIONS } from '../api/releaseset';
+import type { ReleaseSetDetail, RepositoryReleaseDetail, Verdict } from '../api/releaseset';
 
 function apiErrorMessage(err: unknown): { code: string; message: string } {
   if (err instanceof ApiError) return { code: err.code, message: err.message };
@@ -795,6 +799,7 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
   const [sourcePathDraft, setSourcePathDraft] = useState('');
   const [sourcePath, setSourcePath] = useState('');
   const [sourceRevisionSide, setSourceRevisionSide] = useState<'current' | 'base'>('current');
+  const [showReleaseSet, setShowReleaseSet] = useState(false);
   const { toasts, show, dismiss } = useToasts();
 
   const workspaceSetQuery = useQuery({
@@ -886,6 +891,10 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
             </button>
           );
         })}
+        <div className="flex-1" />
+        <Button size="compact" intent={showReleaseSet ? 'primary' : 'quiet'} onClick={() => setShowReleaseSet(!showReleaseSet)}>
+          {showReleaseSet ? 'Hide ReleaseSet' : 'ReleaseSet'}
+        </Button>
       </div>
 
       {activeRepo && activeRepo.state === 'QUARANTINED' && (
@@ -1045,7 +1054,348 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
             )}
           </div>
         </div>
+        {showReleaseSet && (
+          <ReleaseSetPanel
+            projectId={projectId} familyId={familyId} repos={repos}
+            workspaceSetVersion={workspaceSetQuery.data?.version} workspaceSetState={workspaceSetQuery.data?.state}
+            workspaceSetValidActions={workspaceSetQuery.data?.validActions ?? []}
+            isOffline={isOffline}
+            onWorkspaceSetChanged={() => workspaceSetQuery.refetch()}
+          />
+        )}
       </div>
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
+    </div>
+  );
+}
+
+// ─── ReleaseSet Panel (V7-13A) ─────────────────────────────────────────────────
+
+interface ReleaseSetPanelProps {
+  projectId: string;
+  familyId?: string;
+  repos: RepositoryWorkspaceState[];
+  workspaceSetVersion?: number;
+  workspaceSetState?: string;
+  workspaceSetValidActions: { operationId: string; scopeKind: string; targetVersion: number }[];
+  isOffline?: boolean;
+  onWorkspaceSetChanged: () => void;
+}
+
+/**
+ * ReleaseSetPanel — V7-13A's own real "local release có confirm rõ ràng và
+ * không có lối ra remote" (docs/design/09-v7-alpha-ui.md). Every label here
+ * is deliberately local-only vocabulary (Create/Seal/Abandon/Local
+ * Commit/Release Workspace) — never push/PR/merge/force-push, matching
+ * `internal/delivery/httpapi/releaseset`'s own architecture-tested "no
+ * remote route of any kind" guarantee
+ * (`TestRegisterRoutes_ExcludesAnyRemoteGitVerb`).
+ *
+ * `sealReleaseSet` has NO server-side "all repositories must PASS" gate at
+ * all (confirmed by reading `internal/domain/work/release_set.go` — sealing
+ * is a plain state transition, the verdict mix is never checked) — the old
+ * prototype's disabled "Seal ReleaseSet (requires all PASS)" primary button
+ * plus a separate "Seal Anyway (partial)" secondary button was pure
+ * fiction. There is only one real Seal action; the confirm dialog shows the
+ * real per-repository verdicts so the operator can see for themselves
+ * whether this is an all-PASS or a partial/mixed release before confirming.
+ *
+ * Local Commit's own `expectedWorkspaceVersion` fence is refetched fresh
+ * (`onWorkspaceSetChanged` → the parent's `workspaceSetQuery.refetch()`)
+ * immediately before every dispatch — the design doc's own "stale revision"
+ * Verify scenario is a real optimistic-concurrency conflict this command
+ * enforces server-side (`ports.ErrOptimisticConflict`), so this fresh
+ * recheck exists to make that conflict rare, never to replace the server's
+ * own real fence.
+ */
+function ReleaseSetPanel({
+  projectId, familyId, repos, workspaceSetVersion, workspaceSetState, workspaceSetValidActions, isOffline, onWorkspaceSetChanged,
+}: ReleaseSetPanelProps) {
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createEntries, setCreateEntries] = useState<Record<string, { base: string; result: string; verdict: Verdict }>>({});
+  const [sealing, setSealing] = useState<ReleaseSetDetail | null>(null);
+  const [abandoning, setAbandoning] = useState<ReleaseSetDetail | null>(null);
+  const [releaseConfirmOpen, setReleaseConfirmOpen] = useState(false);
+  const [committing, setCommitting] = useState<{ releaseSet: ReleaseSetDetail; entry: RepositoryReleaseDetail } | null>(null);
+  const [commitMessage, setCommitMessage] = useState('');
+  const [commitAuthorName, setCommitAuthorName] = useState('local-operator');
+  const [commitAuthorEmail, setCommitAuthorEmail] = useState('local-operator@localhost');
+  const [pollingLocalCommitId, setPollingLocalCommitId] = useState<string | null>(null);
+  const { toasts, show, dismiss } = useToasts();
+
+  const releaseSetsQuery = useQuery({
+    queryKey: ['releaseSetsForFamily', projectId, familyId],
+    queryFn: async () => (await listReleaseSetsForFamily(projectId, familyId!, withSessionToken())) as unknown as { items: ReleaseSetDetail[] },
+    enabled: !isOffline && !!familyId,
+  });
+
+  const localCommitStatusQuery = useQuery({
+    queryKey: ['releaseSetLocalCommit', projectId, pollingLocalCommitId],
+    queryFn: async () => (await getReleaseSetLocalCommitStatus(projectId, committing!.releaseSet.releaseSetId, pollingLocalCommitId!, withSessionToken())) as unknown as { state: string; failureReason?: string },
+    enabled: !!pollingLocalCommitId,
+    refetchInterval: q => (q.state.data?.state === 'REQUESTED' ? 1000 : false),
+  });
+
+  const openCreateDialog = () => {
+    const entries: Record<string, { base: string; result: string; verdict: Verdict }> = {};
+    for (const r of repos) entries[r.repositoryWorkspaceId] = { base: r.baseRevision ?? '', result: r.currentRevision ?? '', verdict: 'NOT_RUN' };
+    setCreateEntries(entries);
+    setCreateOpen(true);
+  };
+
+  const createMutation = useMutation({
+    mutationFn: () => createReleaseSet(projectId, familyId!, {
+      repositories: repos.map(r => ({
+        repositoryId: r.repositoryId,
+        baseVcsObjectId: createEntries[r.repositoryWorkspaceId]?.base ?? '',
+        resultVcsObjectId: createEntries[r.repositoryWorkspaceId]?.result ?? '',
+        verdict: createEntries[r.repositoryWorkspaceId]?.verdict ?? 'NOT_RUN',
+      })),
+    }, withSessionToken()),
+    onSuccess: result => {
+      setCreateOpen(false);
+      show({ intent: 'success', message: `ReleaseSet ${result.releaseSetId} created (${result.state}).` });
+      releaseSetsQuery.refetch();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const sealMutation = useMutation({
+    mutationFn: () => sealReleaseSet(projectId, sealing!.releaseSetId, {}, withSessionToken({ ifMatch: `"${sealing!.version}"` })),
+    onSuccess: result => {
+      setSealing(null);
+      show({ intent: 'success', message: `ReleaseSet ${result.releaseSetId} is now ${result.state}.` });
+      releaseSetsQuery.refetch();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const abandonMutation = useMutation({
+    mutationFn: () => abandonReleaseSet(projectId, abandoning!.releaseSetId, {}, withSessionToken({ ifMatch: `"${abandoning!.version}"` })),
+    onSuccess: result => {
+      setAbandoning(null);
+      show({ intent: 'info', message: `ReleaseSet ${result.releaseSetId} is now ${result.state}.` });
+      releaseSetsQuery.refetch();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const releaseMutation = useMutation({
+    mutationFn: () => requestWorkspaceSetRelease(projectId, familyId!, {}, withSessionToken({ ifMatch: `"${workspaceSetVersion}"` })),
+    onSuccess: result => {
+      setReleaseConfirmOpen(false);
+      show({ intent: 'info', message: `Release requested (job ${result.releaseJobId}) — this is an asynchronous job, not an immediate operation; the workspace set transitions once it completes.` });
+      onWorkspaceSetChanged();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const commitMutation = useMutation({
+    mutationFn: async () => {
+      const repo = repos.find(r => r.repositoryId === committing!.entry.repositoryId);
+      if (!repo) throw new Error('repository workspace no longer found');
+      // Fresh recheck: both ExpectedReleaseSetVersion and ExpectedWorkspaceVersion are
+      // real optimistic-concurrency fences the server enforces (ports.ErrOptimisticConflict)
+      // — refetched here immediately before dispatch, never trusted from a value that has
+      // been sitting in either query's own cache since this dialog first opened.
+      const [freshReleaseSet, freshWorkspace] = await Promise.all([
+        getReleaseSet(projectId, committing!.releaseSet.releaseSetId, withSessionToken()) as unknown as Promise<ReleaseSetDetail>,
+        getRepositoryWorkspaceState(projectId, repo.repositoryWorkspaceId, withSessionToken()) as unknown as Promise<RepositoryWorkspaceState>,
+      ]);
+      return requestReleaseSetLocalCommit(projectId, committing!.releaseSet.releaseSetId, {
+        expectedReleaseSetVersion: freshReleaseSet.version,
+        repositoryWorkspaceId: repo.repositoryWorkspaceId,
+        expectedWorkspaceVersion: freshWorkspace.version,
+        message: commitMessage.trim(), authorName: commitAuthorName.trim(), authorEmail: commitAuthorEmail.trim(),
+      }, withSessionToken());
+    },
+    onSuccess: result => {
+      show({ intent: 'info', message: `Local commit requested for ${committing!.entry.repositoryId} — entering ${result.state}.` });
+      setPollingLocalCommitId(result.releaseSetLocalCommitId);
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const canRelease = workspaceSetValidActions.some(a => a.operationId === 'requestWorkspaceSetRelease');
+  const releaseSets = releaseSetsQuery.data?.items ?? [];
+
+  return (
+    <div className="w-96 flex-shrink-0 border-l border-[#CDD5DF] bg-[#F3F5F8] overflow-y-auto flex flex-col">
+      <div className="px-4 py-3 border-b border-[#CDD5DF] flex items-center justify-between flex-shrink-0">
+        <span className="text-[13px] font-semibold text-[#172033]">ReleaseSet</span>
+        <Button size="compact" intent="primary" disabled={isOffline || repos.length === 0} onClick={openCreateDialog}>Create</Button>
+      </div>
+      <div className="flex-1 overflow-y-auto">
+        {canRelease && (
+          <div className="p-4 border-b border-[#CDD5DF] bg-white">
+            <p className="text-[12px] text-[#475569] mb-2">Workspace set is eligible for release{workspaceSetState ? ` (currently ${workspaceSetState})` : ''}.</p>
+            <Button intent="secondary" size="compact" className="w-full justify-center" disabled={isOffline} onClick={() => setReleaseConfirmOpen(true)}>Release Workspace</Button>
+          </div>
+        )}
+        {releaseSetsQuery.isPending && <div className="p-4" aria-hidden><Skeleton className="h-16 w-full" /></div>}
+        {releaseSetsQuery.isError && <div className="p-4"><InlineError {...apiErrorMessage(releaseSetsQuery.error)} onRetry={() => releaseSetsQuery.refetch()} /></div>}
+        {releaseSetsQuery.isSuccess && releaseSets.length === 0 && (
+          <p className="p-4 text-[12px] text-[#475569]">No ReleaseSets yet for this task family.</p>
+        )}
+        {releaseSets.map(rs => (
+          <div key={rs.releaseSetId} className="p-4 border-b border-[#ECEFF4] space-y-2">
+            <div className="flex items-center justify-between">
+              <CopyableId value={rs.releaseSetId} short={rs.releaseSetId.slice(0, 8)} />
+              <StatusBadge state={rs.state} entity="workitem" />
+            </div>
+            <div className="text-[12px] text-[#475569] font-mono truncate">{rs.contentHash}</div>
+            <div className="space-y-1.5">
+              {rs.entries.map(entry => (
+                <div key={entry.repositoryId} className="bg-white rounded-[6px] border border-[#CDD5DF] p-2 text-[12px] space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-medium text-[#172033]">{entry.repositoryId}</span>
+                    <VerdictBadge verdict={entry.verdict as 'PASS' | 'FAIL' | 'ERROR' | 'N/A' | 'NOT_RUN'} />
+                  </div>
+                  <div className="font-mono text-[12px] text-[#475569]">{shortRev(entry.baseVcsObjectId)} → {shortRev(entry.resultVcsObjectId)}</div>
+                  {rs.state === 'SEALED' && (
+                    <Button size="compact" intent="quiet" disabled={isOffline}
+                      onClick={() => { setCommitting({ releaseSet: rs, entry }); setCommitMessage(''); }}>Local Commit</Button>
+                  )}
+                </div>
+              ))}
+            </div>
+            {rs.state === 'CREATED' && (
+              <div className="flex gap-2 pt-1">
+                <Button intent="secondary" size="compact" className="flex-1 justify-center" disabled={isOffline} onClick={() => setSealing(rs)}>Seal</Button>
+                <Button intent="destructive" size="compact" className="flex-1 justify-center" disabled={isOffline} onClick={() => setAbandoning(rs)}>Abandon</Button>
+              </div>
+            )}
+            {rs.state === 'ABANDONED' && <p className="text-[12px] text-[#475569] italic">Abandoned. No further actions.</p>}
+          </div>
+        ))}
+      </div>
+
+      {createOpen && (
+        <Dialog
+          title="Create ReleaseSet"
+          description="Records one exact base→result revision and verdict per repository. This never runs a remote Git operation."
+          onClose={() => setCreateOpen(false)}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => setCreateOpen(false)} disabled={createMutation.isPending}>Cancel</Button>
+              <Button intent="primary" loading={createMutation.isPending}
+                disabled={isOffline || repos.some(r => !createEntries[r.repositoryWorkspaceId]?.base?.trim() || !createEntries[r.repositoryWorkspaceId]?.result?.trim())}
+                onClick={() => createMutation.mutate()}>Create</Button>
+            </>
+          }
+        >
+          <div className="space-y-3">
+            {repos.map(r => {
+              const entry = createEntries[r.repositoryWorkspaceId] ?? { base: '', result: '', verdict: 'NOT_RUN' as Verdict };
+              return (
+                <div key={r.repositoryWorkspaceId} className="bg-[#F8FAFC] border border-[#CDD5DF] rounded-[6px] p-2 space-y-2">
+                  <p className="text-[12px] font-medium text-[#172033]">{r.repositoryId}</p>
+                  <div className="flex gap-2">
+                    <TextField label="Base revision" id={`base-${r.repositoryWorkspaceId}`} mono value={entry.base}
+                      onChange={v => setCreateEntries(cur => ({ ...cur, [r.repositoryWorkspaceId]: { ...entry, base: v } }))} />
+                    <TextField label="Result revision" id={`result-${r.repositoryWorkspaceId}`} mono value={entry.result}
+                      onChange={v => setCreateEntries(cur => ({ ...cur, [r.repositoryWorkspaceId]: { ...entry, result: v } }))} />
+                  </div>
+                  <Select label="Verdict" id={`verdict-${r.repositoryWorkspaceId}`} value={entry.verdict}
+                    onChange={v => setCreateEntries(cur => ({ ...cur, [r.repositoryWorkspaceId]: { ...entry, verdict: v as Verdict } }))}
+                    options={VERDICT_OPTIONS.map(v => ({ value: v, label: v }))} required />
+                </div>
+              );
+            })}
+          </div>
+          {createMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(createMutation.error)} /></div>}
+        </Dialog>
+      )}
+
+      {sealing && (
+        <Dialog
+          title="Seal ReleaseSet"
+          description="Sealing locks this ReleaseSet's own entries and allows Local Commit. This never checks whether every repository passed — review the real per-repository verdicts below first."
+          onClose={() => setSealing(null)}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => setSealing(null)} disabled={sealMutation.isPending}>Cancel</Button>
+              <Button intent="primary" loading={sealMutation.isPending} disabled={isOffline} onClick={() => sealMutation.mutate()}>Seal</Button>
+            </>
+          }
+        >
+          <div className="space-y-1.5">
+            {sealing.entries.map(entry => (
+              <div key={entry.repositoryId} className="flex items-center justify-between text-[13px]">
+                <span>{entry.repositoryId}</span>
+                <VerdictBadge verdict={entry.verdict as 'PASS' | 'FAIL' | 'ERROR' | 'N/A' | 'NOT_RUN'} />
+              </div>
+            ))}
+          </div>
+          {sealMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(sealMutation.error)} /></div>}
+        </Dialog>
+      )}
+
+      {abandoning && (
+        <Dialog
+          title="Abandon ReleaseSet"
+          description="Abandoning this ReleaseSet is irreversible. A new ReleaseSet must be created for any subsequent release attempt."
+          onClose={() => setAbandoning(null)}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => setAbandoning(null)} disabled={abandonMutation.isPending}>Cancel</Button>
+              <Button intent="destructive" loading={abandonMutation.isPending} disabled={isOffline} onClick={() => abandonMutation.mutate()}>Abandon</Button>
+            </>
+          }
+        >
+          <p className="text-[13px] text-[#475569]">ReleaseSet <CopyableId value={abandoning.releaseSetId} /></p>
+          {abandonMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(abandonMutation.error)} /></div>}
+        </Dialog>
+      )}
+
+      {releaseConfirmOpen && (
+        <Dialog
+          title="Release Workspace"
+          description="This dispatches an asynchronous release job — the workspace set enters RELEASING and reaches a terminal state only once that job completes. It is not an immediate operation, and it never performs any remote Git operation."
+          onClose={() => setReleaseConfirmOpen(false)}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => setReleaseConfirmOpen(false)} disabled={releaseMutation.isPending}>Cancel</Button>
+              <Button intent="primary" loading={releaseMutation.isPending} disabled={isOffline} onClick={() => releaseMutation.mutate()}>Request Release</Button>
+            </>
+          }
+        >
+          {releaseMutation.isError && <InlineError {...apiErrorMessage(releaseMutation.error)} />}
+        </Dialog>
+      )}
+
+      {committing && (
+        <Dialog
+          title="Create Local Commit"
+          description="Creates a local commit in this repository's own workspace from the sealed ReleaseSet entry. This never performs a remote Git operation (no push, no PR)."
+          onClose={() => { setCommitting(null); setPollingLocalCommitId(null); }}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => { setCommitting(null); setPollingLocalCommitId(null); }} disabled={commitMutation.isPending}>Cancel</Button>
+              <Button intent="primary" loading={commitMutation.isPending}
+                disabled={isOffline || !commitMessage.trim() || !commitAuthorName.trim() || !commitAuthorEmail.trim() || !!pollingLocalCommitId}
+                onClick={() => commitMutation.mutate()}>Create Local Commit</Button>
+            </>
+          }
+        >
+          <p className="text-[13px] text-[#475569] mb-3">Target: <span className="font-mono text-[#172033]">{committing.entry.repositoryId}@{shortRev(committing.entry.resultVcsObjectId)}</span></p>
+          <div className="space-y-3">
+            <TextField label="Message" required value={commitMessage} onChange={setCommitMessage} placeholder="Release commit message" />
+            <TextField label="Author name" required value={commitAuthorName} onChange={setCommitAuthorName} />
+            <TextField label="Author email" required value={commitAuthorEmail} onChange={setCommitAuthorEmail} mono />
+          </div>
+          {commitMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(commitMutation.error)} /></div>}
+          {pollingLocalCommitId && (
+            <div className="mt-3">
+              <OperationNotice
+                state={localCommitStatusQuery.data?.state === 'COMMITTED' ? 'Completed' : localCommitStatusQuery.data?.state === 'FAILED' ? 'Failed' : 'Running'}
+                message={localCommitStatusQuery.data?.state === 'FAILED' ? localCommitStatusQuery.data?.failureReason : `Local commit ${localCommitStatusQuery.data?.state ?? 'REQUESTED'}`}
+                ref={pollingLocalCommitId}
+              />
+            </div>
+          )}
+        </Dialog>
+      )}
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
   );
