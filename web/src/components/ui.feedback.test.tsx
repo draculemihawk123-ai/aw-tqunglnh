@@ -92,13 +92,15 @@ describe('OperationNotice', () => {
 });
 
 describe('BlockerCard', () => {
-  it('is an alert exposing type, target and reason as visible text', () => {
-    render(<BlockerCard type="MISSING_APPROVAL" target="run-42" reason="Awaiting scope approval" opened="2h ago" actions={['Approve']} />);
+  it('is an alert exposing type, target and reason as visible text, and dispatches its own real actions', async () => {
+    const onResolve = vi.fn();
+    render(<BlockerCard type="MISSING_APPROVAL" target="run-42" reason="Awaiting scope approval" opened="2h ago" actions={[{ label: 'Resolve', onClick: onResolve }]} />);
     const alert = screen.getByRole('alert');
     expect(alert).toHaveTextContent('MISSING_APPROVAL');
     expect(alert).toHaveTextContent('run-42');
     expect(alert).toHaveTextContent('Awaiting scope approval');
-    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Resolve' }));
+    expect(onResolve).toHaveBeenCalledTimes(1);
   });
 });
 

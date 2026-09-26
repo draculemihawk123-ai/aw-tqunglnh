@@ -1334,3 +1334,105 @@ creation per `WorkItemContractRequest.Validate()`'s own doc comment).
   `ProjectionBanner`/`Freshness` already document for this screen; a manual refresh (or, in real usage, the
   existing SSE-driven cache invalidation from V7-04B) resolves it, so no code change was made for it.
 
+## V7-11 — Task detail overview and actions
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md`'s own Thực hiện line for this task: render server-provided valid
+actions/freshness with typed confirm dialogs and conflict refresh; never infer an action from status text
+or auto-transition a WorkItem to DONE. Cancel must show CANCELLING as a real in-progress state, never report
+"cancelled" the instant a request returns. Exactly three separate UI actions, never merged into one button:
+CancelRun, CancelWorkItem, ResolveWorkItemBlocker. Task Detail shows only a summary + deep link for a
+blocked activation (an admission-reason blocker) — the retry action itself belongs to V7-12, which has the
+node/attempt context this task does not.
+
+Every route this task needed already existed on the backend (`GET /projects/{projectId}/work-items/
+{workItemId}`, `GET /projects/{projectId}/task-families/{familyId}`, `GET /work-items/{workItemId}/detail`
+from V7-09A, `GET /projects/{projectId}/runs/{runId}/diagnostics`, `POST /runs/{runId}/cancel`, `POST
+/work-items/{workItemId}/cancel`, `POST /work-item-blockers/{blockerId}/resolve`) — this was a pure UI
+consumer task, no backend changes.
+
+### Decision
+
+The prototype's own `TaskDetail.tsx` was one ~1000-line file sharing a `TaskHeader` + 5 tabs (Overview,
+Graph & Timeline, Workspace, Evidence, Chat). Only the header and the Overview tab are this task's own real
+scope — Graph & Timeline/Workspace/Evidence/Chat stay the prototype's own fixture tabs, each a separate,
+not-yet-reached design-doc task (V7-12/V7-13/V7-14/V7-15). The fake "Approve Node" action/dialog pair in the
+old header is dropped entirely rather than left as a non-functional placeholder (the same "delete a fake
+capability wholesale, never leave a dead button" discipline V7-06A/V7-07B/V7-09A already established) —
+`internal/delivery/httpapi/workitem/routes.go`'s own Thực hiện line names exactly three actions for this
+task, and node-level approval (`resolveApproval`, scoped to `/runs/{runId}/approval-requests/{id}/resolve`)
+belongs to a graph-node context this task never has.
+
+`CancelRun`/`CancelWorkItem`/`ResolveWorkItemBlocker` all take no `If-Match`/`ExpectedVersion` at all
+(confirmed by reading `internal/delivery/httpapi/run/cancel.go` and `internal/delivery/httpapi/recovery/
+{cancelworkitem,resolveblocker}.go`'s own doc comments — each command is idempotent by its own ID, never
+CAS-guarded). "Conflict refresh" is therefore a UX-level courtesy, not a server-enforced precondition: each
+dialog's own confirm handler re-fetches `GET .../diagnostics` (or `GET .../work-items/{id}` when there is no
+active run at all) immediately before dispatching, and refuses with a real message if the fresh data no
+longer lists that action — the identical "fresh recheck before mutate" pattern V7-09A's own Mark Ready
+already established, just applied to three different actions with three different fresh sources.
+
+A WorkItem with no active Run at all (BACKLOG/READY, or a Run that already fully quiesced) can still be
+cancelled — `runtime.CancelWorkItem` takes only a WorkItemID, no RunID. Since `GetRunDiagnostics` requires a
+RunID to call at all, this one case has no server-computed `ValidAction` to render server-provided: a
+`cancelWorkItemEligibleFromStatus` helper mirrors `internal/delivery/httpapi/diagnostics/dto.go`'s own
+`runDiagnosticsValidActions` WorkItemStatus rule exactly (DONE/CANCELLED never advise it) against the
+WorkItem's own AUTHORITATIVE (never projected) status — the real command still re-validates its own
+precondition fresh regardless, so this can never let an already-invalid cancel through, only ever under- or
+correctly-offer the button.
+
+### Execution
+
+New file `web/src/api/diagnostics.ts`: hand-declared `BlockerDiagnostic`/`RunDiagnosticsResponse` mirroring
+`internal/delivery/httpapi/diagnostics/dto.go`'s own DTOs field-for-field (the generated client returns
+`unknown[]` for `blockers`/`validActions`, the same one-level-too-deep gap every sibling API file this
+session already narrows). Extended `BlockerCard` (`web/src/components/ui.tsx`) — its own `actions` prop was
+previously just an array of button LABELS with no click handler at all (a decorative fixture, its only
+caller being the old fake TaskDetail); changed to `{label, onClick, disabled?}[]`, matching `ValidActionBar`'s
+own established convention, since this task is the primitive's first real consumer.
+
+Rewrote `TaskHeader`+`OverviewTab` in `web/src/screens/TaskDetail.tsx` against real data fetched once at the
+new `TaskDetailScreen` root (`getWorkItem`, `getTaskFamily`, `getWorkItemProjectedDetail`, and — only when
+the projected card reports a real `activeRunId` — `getRunDiagnostics`) and passed down as props, rather than
+each sub-component independently re-fetching. Real breadcrumb/WorkItem+Family+Run status badges/workflow
+version/repository badges; real blocker banner rendering every OPEN blocker from `runDiagnostics.blockers`,
+each one's own action derived strictly from that blocker's own server-computed `validActions` (a "Resolve"
+button when `resolveWorkItemBlocker` is present, a "View in Graph & Timeline" deep link — never a retry
+button — when `retryBlockedActivation` is present, nothing for a blocker the server advises no action for,
+e.g. `SCOPE_EXPANSION_REQUIRED`). Real Cancel Run/Cancel WorkItem/Resolve Blocker confirm dialogs, each
+disabled until its own required Reason (and, for Resolve in WAIVED mode, its required Policy grant
+reference) is filled in, each toast reporting the REAL state/status the response actually returned (e.g.
+"run is entering CANCELLING", never "run cancelled"). `App.tsx` now resolves `matched?.taskId` from the real
+URL and threads `projectId`/`projectName`/`workItemId` down into `TaskDetailScreen` — the URL already
+carried the real WorkItem ID since V7-09A's own fix, but nothing downstream ever read it until now.
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 197/197 pass (190 prior + 1 `ui.feedback.test.tsx` case updated for `BlockerCard`'s new
+  real-action shape + 6 new `TaskDetail.test.tsx` cases covering the Verify line's own active/blocked/done
+  fixtures and an optimistic-conflict case: an active run offers Cancel Run/Cancel WorkItem with no blocker
+  banner; an open non-admission blocker shows a real Resolve action that dispatches with fresh confirmation;
+  an admission-reason blocker shows summary + a Graph & Timeline deep link only, never a resolve or retry
+  button; a terminal WorkItem+Run offers neither cancel action; a no-run BACKLOG WorkItem still offers Cancel
+  WorkItem derived from its own authoritative status, never calling `getRunDiagnostics` at all; a fresh
+  recheck immediately before dispatch refuses a Cancel Run whose state changed since the button rendered,
+  never calling the mutation).
+- `pnpm build`: clean. No Go files touched — every route this task consumes already existed.
+- Manual end-to-end verification against a REAL running `aw serve` AND `aw worker`: registered a real
+  project + local git repository through the UI (as V7-06A established), created two real root WorkItems
+  through V7-10's own dialog — one with no contract (BACKLOG, no run) and one with a full contract pinning a
+  real, freshly-published minimal `START→END` WorkflowVersion — then `aw work-item mark-ready` +
+  `aw run start`'d the second one for real. The real run genuinely reached `FAILED` with a real
+  `COMPLETION_POLICY_FAILED` blocker (`NO_COMPLETION_POLICY_PINNED` — an honest consequence of the
+  minimal fixture workflow, not a bug), giving a real, non-synthetic "blocked" fixture: confirmed the
+  browser showed the real blocker banner with a working "Resolve" button (no admission/retry scenario was
+  reachable without a live agent provider, so that path stayed unit-test-only), clicked Resolve, and
+  confirmed via the real network log that `POST /work-item-blockers/{id}/resolve` returned 200 and the
+  WorkItem genuinely reverted to READY with the blocker banner gone. Then clicked Cancel WorkItem and
+  confirmed `POST /work-items/{id}/cancel` returned 202 and the WorkItem genuinely became CANCELLED, with
+  both actions correctly disappearing afterward. Separately confirmed the first, no-run WorkItem rendered
+  "No active run for this WorkItem" and offered Cancel WorkItem from its own authoritative BACKLOG status
+  alone, never calling `getRunDiagnostics`. Zero console errors throughout.
+

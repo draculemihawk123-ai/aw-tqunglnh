@@ -1,43 +1,148 @@
 import React, { useState } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Badge, StatusBadge, Button, IconButton, ValidActionBar, BlockerCard,
-  CopyableId, VerdictBadge, OperationNotice, Dialog, Skeleton,
+  CopyableId, VerdictBadge, OperationNotice, Dialog, Skeleton, Select, TextField,
+  InlineError, ToastViewport, useToasts,
 } from '../components/ui';
 import {
   AlertTriangle, Maximize2, ZoomIn, ZoomOut, ListTree,
   CheckCircle2, ChevronDown, ChevronRight, FileDiff, FileText, ScrollText, Cpu, User,
 } from '../components/icons';
 import type { NavRoute } from '../components/shell/LeftNav';
+import {
+  ApiError, cancelRun, cancelWorkItem, getRunDiagnostics, getTaskFamily, getWorkItem,
+  getWorkItemProjectedDetail, resolveWorkItemBlocker,
+} from '../api/generated';
+import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
+import type { WorkItemContract } from '../api/work';
+import type { KanbanCard, WorkItemProjectedDetailResponse } from '../api/kanban';
+import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
+import { withSessionToken } from '../api/session';
 
-// ─── Shared fixture constants ─────────────────────────────────────────────────
+function apiErrorMessage(err: unknown): { code: string; message: string } {
+  if (err instanceof ApiError) return { code: err.code, message: err.message };
+  return { code: 'UNKNOWN', message: err instanceof Error ? err.message : 'unexpected error' };
+}
 
-const WI_ID = 'wi-0018';
-const RUN_ID = 'run-8f7a2c91';
-const WORKFLOW = 'feature-workflow@v3.1.0';
+/**
+ * cancelWorkItemEligibleFromStatus mirrors
+ * internal/delivery/httpapi/diagnostics/dto.go's own runDiagnosticsValidActions
+ * WorkItemStatus rule exactly (DONE/CANCELLED never advise cancelWorkItem) —
+ * used only when there is no active Run at all to fetch a real
+ * GetRunDiagnostics response from (a BACKLOG/READY WorkItem can still be
+ * cancelled pre-run). When a Run does exist, the real server-computed
+ * validActions from GetRunDiagnostics is used instead — this fallback never
+ * runs in that case.
+ */
+function cancelWorkItemEligibleFromStatus(status: string): boolean {
+  return status !== 'DONE' && status !== 'CANCELLED';
+}
 
 // ─── Persistent Header ────────────────────────────────────────────────────────
 
-type ApproveDialogState = null | 'open' | 'requested';
-
 interface TaskHeaderProps {
+  projectId: string;
+  projectName: string;
+  workItemId: string;
   activeTab: NavRoute;
-  onTabChange: (r: NavRoute) => void;
+  onTabChange: (r: NavRoute, ids?: { projectId?: string; taskId?: string }) => void;
   isOffline?: boolean;
+  workItem?: GetWorkItemResponse;
+  family?: GetTaskFamilyResponse;
+  card?: KanbanCard;
+  runDiagnostics?: RunDiagnosticsResponse;
+  onActionSettled: () => void;
 }
 
-function TaskHeader({ activeTab, onTabChange, isOffline }: TaskHeaderProps) {
-  const [approveDialog, setApproveDialog] = useState<ApproveDialogState>(null);
+function TaskHeader({
+  projectId, projectName, workItemId, activeTab, onTabChange, isOffline,
+  workItem, family, card, runDiagnostics, onActionSettled,
+}: TaskHeaderProps) {
   const [cancelRunDialog, setCancelRunDialog] = useState(false);
   const [cancelWiDialog, setCancelWiDialog] = useState(false);
-  const [operation, setOperation] = useState<null | { ref: string; message: string }>(null);
+  const [cancelReason, setCancelReason] = useState('');
+  const [resolvingBlocker, setResolvingBlocker] = useState<BlockerDiagnostic | null>(null);
+  const [resolveMode, setResolveMode] = useState<'RESOLVED' | 'WAIVED'>('RESOLVED');
+  const [resolveReason, setResolveReason] = useState('');
+  const [policyGrantRef, setPolicyGrantRef] = useState('');
+  const { toasts, show, dismiss } = useToasts();
 
-  const submitCancellation = (target: 'run' | 'workitem') => {
-    setCancelRunDialog(false);
-    setCancelWiDialog(false);
-    setOperation(target === 'run'
-      ? { ref: 'op-cancel-run-91d4', message: 'Cancel Run requested. Awaiting server acknowledgment before the run enters CANCELLING.' }
-      : { ref: 'op-cancel-wi-2ac8', message: 'Cancel WorkItem requested. Active runs must quiesce before a terminal state is confirmed.' });
-  };
+  const activeRunId = card?.activeRunId;
+
+  const cancelRunMutation = useMutation({
+    mutationFn: async () => {
+      if (!activeRunId) throw new Error('no active run');
+      const fresh = (await getRunDiagnostics(projectId, activeRunId, withSessionToken())) as unknown as RunDiagnosticsResponse;
+      if (!fresh.validActions.some(a => a.operationId === 'cancelRun')) {
+        throw new Error('This run can no longer be cancelled — its state changed. Refresh to see the current state.');
+      }
+      return cancelRun(activeRunId, { reason: cancelReason.trim() }, withSessionToken());
+    },
+    onSuccess: result => {
+      setCancelRunDialog(false);
+      setCancelReason('');
+      show({ intent: 'info', message: `Cancel Run requested — run is entering ${result.state}.` });
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const cancelWorkItemMutation = useMutation({
+    mutationFn: async () => {
+      if (activeRunId) {
+        const fresh = (await getRunDiagnostics(projectId, activeRunId, withSessionToken())) as unknown as RunDiagnosticsResponse;
+        if (!fresh.validActions.some(a => a.operationId === 'cancelWorkItem')) {
+          throw new Error('This work item can no longer be cancelled — its state changed. Refresh to see the current state.');
+        }
+      } else {
+        const fresh = (await getWorkItem(projectId, workItemId, withSessionToken())) as unknown as GetWorkItemResponse;
+        if (!cancelWorkItemEligibleFromStatus(fresh.status)) {
+          throw new Error('This work item has already reached a terminal status and cannot be cancelled.');
+        }
+      }
+      return cancelWorkItem(workItemId, { reason: cancelReason.trim() }, withSessionToken());
+    },
+    onSuccess: result => {
+      setCancelWiDialog(false);
+      setCancelReason('');
+      show({ intent: 'info', message: `Cancel WorkItem requested — work item status is ${result.status}.` });
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const resolveBlockerMutation = useMutation({
+    mutationFn: async () => {
+      if (!resolvingBlocker || !activeRunId) throw new Error('no blocker selected');
+      const fresh = (await getRunDiagnostics(projectId, activeRunId, withSessionToken())) as unknown as RunDiagnosticsResponse;
+      const freshBlocker = fresh.blockers.find(b => b.blockerId === resolvingBlocker.blockerId);
+      if (!freshBlocker || !freshBlocker.validActions.some(a => a.operationId === 'resolveWorkItemBlocker')) {
+        throw new Error('This blocker can no longer be resolved this way — its state changed. Refresh to see the current state.');
+      }
+      return resolveWorkItemBlocker(resolvingBlocker.blockerId, {
+        mode: resolveMode, reason: resolveReason.trim(),
+        policyGrantRef: resolveMode === 'WAIVED' ? policyGrantRef.trim() : undefined,
+      }, withSessionToken());
+    },
+    onSuccess: result => {
+      setResolvingBlocker(null);
+      setResolveReason('');
+      setPolicyGrantRef('');
+      setResolveMode('RESOLVED');
+      show({ intent: 'success', message: `Blocker ${result.state.toLowerCase()}${result.workItemUnblocked ? ' — work item has no remaining open blockers' : ''}.` });
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const runValidActions = runDiagnostics?.validActions ?? [];
+  const canCancelRun = !!activeRunId && runValidActions.some(a => a.operationId === 'cancelRun');
+  const canCancelWorkItem = activeRunId
+    ? runValidActions.some(a => a.operationId === 'cancelWorkItem')
+    : !!workItem && cancelWorkItemEligibleFromStatus(workItem.status);
+
+  const openBlockers = (runDiagnostics?.blockers ?? []).filter(b => b.state === 'OPEN');
 
   const tabs = [
     { id: 'task-overview' as NavRoute,   label: 'Overview' },
@@ -52,53 +157,83 @@ function TaskHeader({ activeTab, onTabChange, isOffline }: TaskHeaderProps) {
       {/* Identity row */}
       <div className="px-6 py-3 space-y-2">
         <nav aria-label="WorkItem breadcrumb" className="flex items-center gap-1.5 text-[12px] text-[#475569]">
-          <span>platform-core</span>
+          <span>{projectName}</span>
           <span aria-hidden>/</span>
-          <span className="text-[#172033] font-medium">Add distributed tracing to API gateway</span>
-          <CopyableId value={WI_ID} />
+          <span className="text-[#172033] font-medium">{workItem?.title ?? '…'}</span>
+          <CopyableId value={workItemId} />
         </nav>
         {/* State + actions row */}
         <div className="flex items-center gap-3 flex-wrap">
           <div className="flex items-center gap-1.5">
             <span className="text-[12px] text-[#475569]">WorkItem</span>
-            <StatusBadge state="ACTIVE" entity="workitem" />
+            {workItem ? <StatusBadge state={workItem.status} entity="workitem" /> : <Skeleton className="h-5 w-16" />}
           </div>
-          <div className="h-4 w-px bg-[#CDD5DF]" aria-hidden />
-          <div className="flex items-center gap-1.5">
-            <span className="text-[12px] text-[#475569]">Run</span>
-            <StatusBadge state="RUNNING" entity="workitem" />
-            <CopyableId value={RUN_ID} short="run-8f7a2c" />
-          </div>
-          <div className="h-4 w-px bg-[#CDD5DF]" aria-hidden />
-          <span className="text-[12px] text-[#475569]">
-            workflow: <span className="font-mono font-medium text-[#172033]">{WORKFLOW}</span>
-          </span>
-          <div className="h-4 w-px bg-[#CDD5DF]" aria-hidden />
-          <div className="flex gap-1.5" aria-label="Repository scope">
-            <span className="text-[12px] px-1.5 py-0.5 rounded-[4px] bg-[#F1F5F9] text-[#475569] border border-[#CBD5E1]">core-api</span>
-            <span className="text-[12px] px-1.5 py-0.5 rounded-[4px] bg-[#F1F5F9] text-[#475569] border border-[#CBD5E1]">worker-service</span>
-          </div>
-          <span className="text-[12px] text-[#475569]">updated 09:55:12</span>
+          {family && (
+            <>
+              <div className="h-4 w-px bg-[#CDD5DF]" aria-hidden />
+              <div className="flex items-center gap-1.5">
+                <span className="text-[12px] text-[#475569]">Family</span>
+                <StatusBadge state={family.status} entity="workitem" />
+              </div>
+            </>
+          )}
+          {activeRunId && (
+            <>
+              <div className="h-4 w-px bg-[#CDD5DF]" aria-hidden />
+              <div className="flex items-center gap-1.5">
+                <span className="text-[12px] text-[#475569]">Run</span>
+                {runDiagnostics ? <StatusBadge state={runDiagnostics.runState} entity="workitem" /> : <Skeleton className="h-5 w-16" />}
+                <CopyableId value={activeRunId} />
+              </div>
+            </>
+          )}
+          {workItem?.workflowVersionId && (
+            <>
+              <div className="h-4 w-px bg-[#CDD5DF]" aria-hidden />
+              <span className="text-[12px] text-[#475569]">
+                workflow: <span className="font-mono font-medium text-[#172033]">{workItem.workflowVersionId}</span>
+              </span>
+            </>
+          )}
+          {(card?.repositoryBadges?.length ?? 0) > 0 && (
+            <>
+              <div className="h-4 w-px bg-[#CDD5DF]" aria-hidden />
+              <div className="flex gap-1.5" aria-label="Repository scope">
+                {card!.repositoryBadges!.map(b => (
+                  <span key={b.repositoryId} className="text-[12px] px-1.5 py-0.5 rounded-[4px] bg-[#F1F5F9] text-[#475569] border border-[#CBD5E1]">{b.repositoryId}</span>
+                ))}
+              </div>
+            </>
+          )}
           <div className="flex-1" />
-          {/* Single ValidActionBar — server-provided named actions only */}
+          {/* Single ValidActionBar — only actions the real server-computed data currently advertises */}
           <ValidActionBar actions={[
-            { label: 'Approve Node', onClick: () => setApproveDialog('open'), disabled: isOffline },
-            { label: 'Cancel Run', intent: 'secondary', onClick: () => setCancelRunDialog(true), disabled: isOffline },
-            { label: 'Cancel WorkItem', intent: 'destructive', onClick: () => setCancelWiDialog(true), disabled: isOffline },
+            ...(canCancelRun ? [{ label: 'Cancel Run', intent: 'secondary' as const, onClick: () => setCancelRunDialog(true), disabled: isOffline }] : []),
+            ...(canCancelWorkItem ? [{ label: 'Cancel WorkItem', intent: 'destructive' as const, onClick: () => setCancelWiDialog(true), disabled: isOffline }] : []),
           ]} />
         </div>
-        {operation && <OperationNotice state="Requested" message={operation.message} ref={operation.ref} />}
       </div>
-      {/* Blocker banner */}
-      <div className="px-6 pb-2">
-        <BlockerCard
-          type="APPROVAL_REQUIRED"
-          target={`${RUN_ID} / node: APPROVAL_01`}
-          reason="Awaiting operator approval to continue with a partial ReleaseSet after worker-service verification failed."
-          opened="09:53:48"
-          actions={[]}
-        />
-      </div>
+      {/* Blocker banner(s) — real, server-reported open blockers only */}
+      {openBlockers.length > 0 && (
+        <div className="px-6 pb-2 space-y-2">
+          {openBlockers.map(b => (
+            <BlockerCard
+              key={b.blockerId}
+              type={b.type}
+              target={b.sourceNodeRunId ? `${activeRunId} / node run: ${b.sourceNodeRunId}` : activeRunId ?? ''}
+              reason={b.reason}
+              opened={new Date(b.openedAt).toLocaleString()}
+              actions={
+                b.validActions.some(a => a.operationId === 'resolveWorkItemBlocker')
+                  ? [{ label: 'Resolve', onClick: () => { setResolvingBlocker(b); setResolveMode('RESOLVED'); setResolveReason(''); setPolicyGrantRef(''); }, disabled: isOffline }]
+                  : b.validActions.some(a => a.operationId === 'retryBlockedActivation')
+                  ? [{ label: 'View in Graph & Timeline', onClick: () => onTabChange('task-graph', { projectId, taskId: workItemId }) }]
+                  : []
+              }
+            />
+          ))}
+        </div>
+      )}
       {/* Tabs */}
       <div className="px-6" role="tablist" aria-label="WorkItem detail sections">
         <div className="flex border-b border-transparent -mb-px gap-1">
@@ -110,13 +245,13 @@ function TaskHeader({ activeTab, onTabChange, isOffline }: TaskHeaderProps) {
               aria-controls="workitem-tab-panel"
               tabIndex={activeTab === tab.id ? 0 : -1}
               aria-selected={activeTab === tab.id}
-              onClick={() => onTabChange(tab.id)}
+              onClick={() => onTabChange(tab.id, { projectId, taskId: workItemId })}
               onKeyDown={event => {
                 const index = tabs.findIndex(item => item.id === tab.id);
                 const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
                 if (next < 0) return;
                 event.preventDefault();
-                onTabChange(tabs[next].id);
+                onTabChange(tabs[next].id, { projectId, taskId: workItemId });
                 document.getElementById(`tab-${tabs[next].id}`)?.focus();
               }}
               className={`px-4 py-2.5 text-[13px] font-medium border-b-2 transition-colors ${
@@ -129,60 +264,25 @@ function TaskHeader({ activeTab, onTabChange, isOffline }: TaskHeaderProps) {
         </div>
       </div>
 
-      {/* ── Approve Node dialog ────────────────────────────────────────── */}
-      {approveDialog === 'open' && (
-        <Dialog
-          title="Approve Node: APPROVAL_01"
-          description="Confirming approval allows the run to evaluate a partial ReleaseSet. It does not change the failed verdict or perform a remote Git operation."
-          onClose={() => setApproveDialog(null)}
-          actions={
-            <>
-              <Button intent="secondary" onClick={() => setApproveDialog(null)}>Cancel</Button>
-              <Button intent="primary" disabled={isOffline} title={isOffline ? 'Reconnect to perform this action' : undefined} onClick={() => setApproveDialog('requested')}>Confirm Approval</Button>
-            </>
-          }
-        >
-          <dl className="text-[13px] space-y-1.5">
-            <div className="flex gap-3"><dt className="text-[#475569] w-32">Project</dt><dd>platform-core</dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-32">WorkItem</dt><dd><CopyableId value={WI_ID} /></dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-32">Run</dt><dd><CopyableId value={RUN_ID} /></dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-32">Node</dt><dd className="font-mono">APPROVAL_01</dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-32 flex-shrink-0">Requested evidence</dt><dd>rset-f7a2b3c4 · core-api PASS, worker-service FAIL; test-results.json. Failed evidence remains failed.</dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-32">Scope impact</dt><dd>Continue with PASS repository only; worker-service remains quarantined</dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-32">Actor</dt><dd>local-operator</dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-32">Workflow version</dt><dd className="font-mono">{WORKFLOW}</dd></div>
-          </dl>
-        </Dialog>
-      )}
-      {approveDialog === 'requested' && (
-        <Dialog
-          title="Approval Submitted"
-          onClose={() => setApproveDialog(null)}
-          actions={<Button intent="primary" onClick={() => setApproveDialog(null)}>Close</Button>}
-        >
-          <OperationNotice state="Requested" message="Approval submitted. Waiting for server acknowledgment." ref="op-apr-7f2c" />
-          <p className="text-[12px] text-[#475569] mt-2">Node and run state will update when the server confirms via event stream. Do not assume terminal success.</p>
-        </Dialog>
-      )}
-
       {/* ── Cancel Run dialog ─────────────────────────────────────────── */}
       {cancelRunDialog && (
         <Dialog
           title="Cancel Run"
-          description="The run will enter CANCELLING and stop accepting new node activations. In-progress attempts may still complete gracefully."
+          description="The run will enter CANCELLING and stop accepting new node activations. In-progress attempts may still complete gracefully — this does not report the run as already cancelled."
           onClose={() => setCancelRunDialog(false)}
           actions={
             <>
-              <Button intent="secondary" onClick={() => setCancelRunDialog(false)}>Keep Run</Button>
-              <Button intent="destructive" disabled={isOffline} onClick={() => submitCancellation('run')}>Cancel Run</Button>
+              <Button intent="secondary" onClick={() => setCancelRunDialog(false)} disabled={cancelRunMutation.isPending}>Keep Run</Button>
+              <Button intent="destructive" loading={cancelRunMutation.isPending} disabled={isOffline || !cancelReason.trim()} onClick={() => cancelRunMutation.mutate()}>Cancel Run</Button>
             </>
           }
         >
-          <dl className="text-[13px] space-y-1.5">
-            <div className="flex gap-3"><dt className="text-[#475569] w-28">Run</dt><dd><CopyableId value={RUN_ID} /></dd></div>
+          <dl className="text-[13px] space-y-1.5 mb-3">
+            <div className="flex gap-3"><dt className="text-[#475569] w-28">Run</dt><dd><CopyableId value={activeRunId ?? ''} /></dd></div>
             <div className="flex gap-3"><dt className="text-[#475569] w-28">Enters state</dt><dd><Badge label="CANCELLING" intent="runtime" /></dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-28">Workflow</dt><dd className="font-mono text-[12px]">{WORKFLOW}</dd></div>
           </dl>
+          <TextField label="Reason" required value={cancelReason} onChange={setCancelReason} placeholder="Why this run is being cancelled" />
+          {cancelRunMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(cancelRunMutation.error)} /></div>}
         </Dialog>
       )}
 
@@ -190,77 +290,123 @@ function TaskHeader({ activeTab, onTabChange, isOffline }: TaskHeaderProps) {
       {cancelWiDialog && (
         <Dialog
           title="Cancel WorkItem"
-          description="Cancelling a WorkItem requests termination. Active runs must quiesce before the WorkItem becomes CANCELLED."
+          description="Cancelling a WorkItem requests termination. Active runs must quiesce before the WorkItem becomes CANCELLED — this does not report that outcome immediately."
           onClose={() => setCancelWiDialog(false)}
           actions={
             <>
-              <Button intent="secondary" onClick={() => setCancelWiDialog(false)}>Keep WorkItem</Button>
-              <Button intent="destructive" disabled={isOffline} onClick={() => submitCancellation('workitem')}>Cancel WorkItem</Button>
+              <Button intent="secondary" onClick={() => setCancelWiDialog(false)} disabled={cancelWorkItemMutation.isPending}>Keep WorkItem</Button>
+              <Button intent="destructive" loading={cancelWorkItemMutation.isPending} disabled={isOffline || !cancelReason.trim()} onClick={() => cancelWorkItemMutation.mutate()}>Cancel WorkItem</Button>
             </>
           }
         >
-          <dl className="text-[13px] space-y-1.5">
-            <div className="flex gap-3"><dt className="text-[#475569] w-28">WorkItem</dt><dd><CopyableId value={WI_ID} /></dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-28">Active run</dt><dd><CopyableId value={RUN_ID} /></dd></div>
-            <div className="flex gap-3 items-start"><dt className="text-[#475569] w-28 flex-shrink-0">Impact</dt>
-              <dd className="text-[#92400E] bg-[#FEF3C7] rounded-[4px] px-2 py-1 border border-[#FCD34D]">Active run will enter CANCELLING. WorkItem moves to CANCELLED only after the run reaches a terminal state.</dd>
-            </div>
+          <dl className="text-[13px] space-y-1.5 mb-3">
+            <div className="flex gap-3"><dt className="text-[#475569] w-28">WorkItem</dt><dd><CopyableId value={workItemId} /></dd></div>
+            {activeRunId && <div className="flex gap-3"><dt className="text-[#475569] w-28">Active run</dt><dd><CopyableId value={activeRunId} /></dd></div>}
           </dl>
+          <TextField label="Reason" required value={cancelReason} onChange={setCancelReason} placeholder="Why this work item is being cancelled" />
+          {cancelWorkItemMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(cancelWorkItemMutation.error)} /></div>}
         </Dialog>
       )}
+
+      {/* ── Resolve Blocker dialog ────────────────────────────────────── */}
+      {resolvingBlocker && (
+        <Dialog
+          title="Resolve Blocker"
+          description="Resolving marks this blocker closed; waiving records that it was intentionally bypassed. Neither retries the blocked node — that stays a separate action."
+          onClose={() => setResolvingBlocker(null)}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => setResolvingBlocker(null)} disabled={resolveBlockerMutation.isPending}>Cancel</Button>
+              <Button intent="primary" loading={resolveBlockerMutation.isPending}
+                disabled={isOffline || !resolveReason.trim() || (resolveMode === 'WAIVED' && !policyGrantRef.trim())}
+                onClick={() => resolveBlockerMutation.mutate()}>Confirm</Button>
+            </>
+          }
+        >
+          <dl className="text-[13px] space-y-1.5 mb-3">
+            <div className="flex gap-3"><dt className="text-[#475569] w-28">Blocker</dt><dd className="font-mono text-[12px]">{resolvingBlocker.type}</dd></div>
+            <div className="flex gap-3"><dt className="text-[#475569] w-28">Reason</dt><dd>{resolvingBlocker.reason}</dd></div>
+          </dl>
+          <div className="space-y-3">
+            <Select label="Mode" required value={resolveMode} onChange={v => setResolveMode(v as 'RESOLVED' | 'WAIVED')}
+              options={[{ value: 'RESOLVED', label: 'RESOLVED' }, { value: 'WAIVED', label: 'WAIVED' }]} />
+            <TextField label="Reason" required value={resolveReason} onChange={setResolveReason} placeholder="Why this blocker is being closed" />
+            {resolveMode === 'WAIVED' && (
+              <TextField label="Policy grant reference" required value={policyGrantRef} onChange={setPolicyGrantRef} placeholder="Required when waiving" />
+            )}
+          </div>
+          {resolveBlockerMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(resolveBlockerMutation.error)} /></div>}
+        </Dialog>
+      )}
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }
 
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab() {
+function OverviewTab({ workItem, runDiagnostics }: { workItem?: GetWorkItemResponse; runDiagnostics?: RunDiagnosticsResponse }) {
+  const contract = (workItem?.contract ?? null) as WorkItemContract | null;
+
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-[#E9EDF3]">
       <div className="max-w-4xl mx-auto space-y-4">
         <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow p-5">
           <h2 className="text-sm font-semibold text-[#172033] mb-4">Contract</h2>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-8 gap-y-3 text-sm">
-            <dt className="text-[#475569] font-medium">WHAT</dt>
-            <dd>Add distributed tracing instrumentation to the API gateway and worker service using OpenTelemetry. Export traces to the configured collector.</dd>
-            <dt className="text-[#475569] font-medium">Acceptance Criteria</dt>
-            <dd>
-              <ol className="space-y-1 list-decimal list-inside text-[#172033]">
-                <li className="text-[13px]">All HTTP routes emit spans with correct service.name and trace propagation headers.</li>
-                <li className="text-[13px]">Worker job processing emits child spans linked to originating HTTP span.</li>
-                <li className="text-[13px]">Unit tests cover trace context propagation.</li>
-                <li className="text-[13px]">No secret values or PII appear in span attributes.</li>
-              </ol>
-            </dd>
-            <dt className="text-[#475569] font-medium">Exclusions</dt>
-            <dd className="text-[#475569] text-[13px]">Database query traces, UI instrumentation, sampling rate configuration.</dd>
-            <dt className="text-[#475569] font-medium">Risk</dt>
-            <dd className="text-[13px] text-[#92400E] bg-[#FEF3C7] px-2 py-1 rounded-[4px] border border-[#FCD34D]">Performance overhead if trace export is synchronous. Exporter must use async/buffered mode.</dd>
-            <dt className="text-[#475569] font-medium">Scope</dt>
-            <dd>
-              <div className="space-y-1 font-mono text-[12px]">
-                <div className="flex gap-2"><span className="text-[#166534] bg-[#DCFCE7] px-1 rounded">WRITE</span><span>core-api / src/api</span></div>
-                <div className="flex gap-2"><span className="text-[#166534] bg-[#DCFCE7] px-1 rounded">WRITE</span><span>worker-service / src/worker</span></div>
-                <div className="flex gap-2"><span className="text-[#1E40AF] bg-[#DBEAFE] px-1 rounded">READ</span><span>core-api / config</span></div>
-              </div>
-            </dd>
-          </dl>
+          {!contract ? (
+            <p className="text-[13px] text-[#475569]">No readiness contract has been set on this WorkItem yet.</p>
+          ) : (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-8 gap-y-3 text-sm">
+              <dt className="text-[#475569] font-medium">WHAT</dt>
+              <dd>{contract.behavior || <span className="text-[#475569] text-[13px]">Not set</span>}</dd>
+              <dt className="text-[#475569] font-medium">Acceptance Criteria</dt>
+              <dd>
+                {contract.acceptanceCriteria && contract.acceptanceCriteria.length > 0 ? (
+                  <ol className="space-y-1 list-decimal list-inside text-[#172033]">
+                    {contract.acceptanceCriteria.map((c, i) => (
+                      <li key={i} className="text-[13px]">
+                        {c.description}
+                        {c.verificationRef && <span className="text-[#475569] font-mono text-[12px]"> — {c.verificationRef}</span>}
+                      </li>
+                    ))}
+                  </ol>
+                ) : <span className="text-[#475569] text-[13px]">None recorded</span>}
+              </dd>
+              <dt className="text-[#475569] font-medium">Verification spec</dt>
+              <dd className="text-[13px]">{contract.verificationSpec || <span className="text-[#475569]">Not set</span>}</dd>
+              <dt className="text-[#475569] font-medium">Exclusions</dt>
+              <dd className="text-[#475569] text-[13px]">{contract.exclusions && contract.exclusions.length > 0 ? contract.exclusions.join(', ') : 'None recorded'}</dd>
+              <dt className="text-[#475569] font-medium">Risk</dt>
+              <dd className="text-[13px]">
+                {contract.riskLevel
+                  ? <span className="text-[#92400E] bg-[#FEF3C7] px-2 py-1 rounded-[4px] border border-[#FCD34D]">{contract.riskLevel}</span>
+                  : <span className="text-[#475569]">Not set</span>}
+              </dd>
+              {contract.workflowVersionId && (
+                <>
+                  <dt className="text-[#475569] font-medium">Workflow version</dt>
+                  <dd className="font-mono text-[13px]">{contract.workflowVersionId}</dd>
+                </>
+              )}
+            </dl>
+          )}
         </div>
 
         <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow p-5">
           <h2 className="text-sm font-semibold text-[#172033] mb-3">Active Run</h2>
-          <div className="flex items-center gap-4 flex-wrap text-[13px]">
-            <div className="flex items-center gap-2">
-              <StatusBadge state="RUNNING" entity="workitem" />
-              <CopyableId value={RUN_ID} />
+          {!runDiagnostics ? (
+            <p className="text-[13px] text-[#475569]">No active run for this WorkItem.</p>
+          ) : (
+            <div className="flex items-center gap-4 flex-wrap text-[13px]">
+              <div className="flex items-center gap-2">
+                <StatusBadge state={runDiagnostics.runState} entity="workitem" />
+                <CopyableId value={runDiagnostics.runId} />
+              </div>
+              {runDiagnostics.blockers.filter(b => b.state === 'OPEN').length > 0 && (
+                <span className="text-[#92400E]">{runDiagnostics.blockers.filter(b => b.state === 'OPEN').length} open blocker(s)</span>
+              )}
             </div>
-            <span className="text-[#475569]">workflow: <span className="font-mono text-[12px]">{WORKFLOW}</span></span>
-            <span className="text-[#475569]">started 09:48:03 · 8 m 14 s elapsed</span>
-            <span className="text-[#475569]">provider: anthropic / claude-sonnet-4-6</span>
-          </div>
-          <div className="mt-3">
-            <OperationNotice state="Running" message="Awaiting operator approval at node APPROVAL_01" ref="op-ref-7f2c" />
-          </div>
+          )}
         </div>
       </div>
     </div>
@@ -994,17 +1140,71 @@ function ChatTab({ isOffline }: { isOffline?: boolean }) {
 // ─── Root export ──────────────────────────────────────────────────────────────
 
 interface TaskDetailProps {
+  projectId: string;
+  projectName: string;
+  workItemId: string;
   activeTab: NavRoute;
-  onTabChange: (r: NavRoute) => void;
+  onTabChange: (r: NavRoute, ids?: { projectId?: string; taskId?: string }) => void;
   isOffline?: boolean;
 }
 
-export function TaskDetailScreen({ activeTab, onTabChange, isOffline }: TaskDetailProps) {
+/**
+ * TaskDetailScreen — V7-11's own real "Task detail overview and actions"
+ * (docs/design/09-v7-alpha-ui.md V7-11's own Thực hiện line). Fetches once,
+ * at this root, and hands the already-fetched data down as props to
+ * TaskHeader/OverviewTab — a single source of truth for both, rather than
+ * each independently re-fetching. Only task-overview consumes real data in
+ * this task; task-graph/task-workspace/task-evidence/task-chat stay the
+ * prototype's own fixture tabs, each a separate not-yet-reached design-doc
+ * task (V7-12/V7-13/V7-14/V7-15) of its own.
+ */
+export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab, onTabChange, isOffline }: TaskDetailProps) {
+  const queryClient = useQueryClient();
+
+  const workItemQuery = useQuery({
+    queryKey: ['workItemAuthoritative', projectId, workItemId],
+    queryFn: async () => (await getWorkItem(projectId, workItemId, withSessionToken())) as unknown as GetWorkItemResponse,
+    enabled: !isOffline,
+  });
+
+  const familyId = workItemQuery.data?.familyId;
+  const familyQuery = useQuery({
+    queryKey: ['taskFamily', projectId, familyId],
+    queryFn: async () => (await getTaskFamily(projectId, familyId!, withSessionToken())) as unknown as GetTaskFamilyResponse,
+    enabled: !isOffline && !!familyId,
+  });
+
+  const cardQuery = useQuery({
+    queryKey: ['workItemProjectedDetail', workItemId],
+    queryFn: async () => (await getWorkItemProjectedDetail(workItemId, withSessionToken())) as unknown as WorkItemProjectedDetailResponse,
+    enabled: !isOffline,
+  });
+
+  const activeRunId = cardQuery.data?.card.activeRunId;
+  const runDiagnosticsQuery = useQuery({
+    queryKey: ['runDiagnostics', projectId, activeRunId],
+    queryFn: async () => (await getRunDiagnostics(projectId, activeRunId!, withSessionToken())) as unknown as RunDiagnosticsResponse,
+    enabled: !isOffline && !!activeRunId,
+  });
+
+  const onActionSettled = () => {
+    queryClient.invalidateQueries({ queryKey: ['workItemAuthoritative', projectId, workItemId] });
+    queryClient.invalidateQueries({ queryKey: ['taskFamily', projectId, familyId] });
+    queryClient.invalidateQueries({ queryKey: ['workItemProjectedDetail', workItemId] });
+    queryClient.invalidateQueries({ queryKey: ['runDiagnostics', projectId, activeRunId] });
+    queryClient.invalidateQueries({ queryKey: ['kanban', projectId] });
+  };
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <TaskHeader activeTab={activeTab} onTabChange={onTabChange} isOffline={isOffline} />
+      <TaskHeader
+        projectId={projectId} projectName={projectName} workItemId={workItemId}
+        activeTab={activeTab} onTabChange={onTabChange} isOffline={isOffline}
+        workItem={workItemQuery.data} family={familyQuery.data} card={cardQuery.data?.card}
+        runDiagnostics={runDiagnosticsQuery.data} onActionSettled={onActionSettled}
+      />
       <div id="workitem-tab-panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {activeTab === 'task-overview'   && <OverviewTab />}
+      {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} />}
       {activeTab === 'task-graph'      && <GraphTimelineTab />}
       {activeTab === 'task-workspace'  && <WorkspaceTab isOffline={isOffline} />}
       {activeTab === 'task-evidence'   && <EvidenceTab />}
