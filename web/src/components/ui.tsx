@@ -308,7 +308,8 @@ export function OperationNotice({ state, ref: opRef, message }: {
 // ─── BlockerCard ──────────────────────────────────────────────────────────────
 
 export function BlockerCard({ type, target, reason, opened, actions }: {
-  type: string; target: string; reason: string; opened: string; actions: string[];
+  type: string; target: string; reason: string; opened: string;
+  actions: { label: string; onClick: () => void; disabled?: boolean }[];
 }) {
   return (
     <div role="alert" className="rounded-[8px] bg-[#FEF3C7] border border-[#FCD34D] p-4">
@@ -324,7 +325,8 @@ export function BlockerCard({ type, target, reason, opened, actions }: {
           {actions.length > 0 && (
             <div className="flex gap-2 mt-3">
               {actions.map(a => (
-                <Button key={a} size="compact" intent="quiet" className="text-[#92400E] border-[#FCD34D] hover:bg-[#FDE68A]">{a}</Button>
+                <Button key={a.label} size="compact" intent="quiet" disabled={a.disabled} onClick={a.onClick}
+                  className="text-[#92400E] border-[#FCD34D] hover:bg-[#FDE68A]">{a.label}</Button>
               ))}
             </div>
           )}

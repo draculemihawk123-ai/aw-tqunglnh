@@ -146,7 +146,9 @@ export default function App() {
       return projectSummary ? <KanbanScreen key={projectSummary.id} project={projectSummary} onOpenTask={handleOpenTask} isOffline={isOffline} /> : null;
     }
     if (TASK_ROUTES.includes(route)) {
-      return <TaskDetailScreen activeTab={route} onTabChange={navigate} isOffline={isOffline} />;
+      return project && matched?.taskId
+        ? <TaskDetailScreen projectId={project.id} projectName={project.name} workItemId={matched.taskId} activeTab={route} onTabChange={navigate} isOffline={isOffline} />
+        : null;
     }
     if (route === 'project-definitions') return <DefinitionsScreen project={projectSummary} initialScope="project" isOffline={isOffline} />;
     if (route === 'global-definitions') return <DefinitionsScreen project={projectSummary} initialScope="global" isOffline={isOffline} />;
