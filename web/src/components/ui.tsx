@@ -496,11 +496,11 @@ export function Drawer({ title, onClose, children }: { title: string; onClose: (
 
 // ─── TextField ───────────────────────────────────────────────────────────────
 
-export function TextField({ label, value, onChange, placeholder, error, helper, mono, readOnly, required }: {
+export function TextField({ label, value, onChange, placeholder, error, helper, mono, readOnly, required, id: idOverride }: {
   label: string; value: string; onChange?: (v: string) => void;
-  placeholder?: string; error?: string; helper?: string; mono?: boolean; readOnly?: boolean; required?: boolean;
+  placeholder?: string; error?: string; helper?: string; mono?: boolean; readOnly?: boolean; required?: boolean; id?: string;
 }) {
-  const id = `field-${label.replace(/\s+/g, '-').toLowerCase()}`;
+  const id = idOverride ?? `field-${label.replace(/\s+/g, '-').toLowerCase()}`;
   const errId = `${id}-error`;
   const helpId = `${id}-helper`;
   return (
@@ -529,11 +529,11 @@ export function TextField({ label, value, onChange, placeholder, error, helper, 
 
 // ─── Select ───────────────────────────────────────────────────────────────────
 
-export function Select({ label, value, onChange, options, required }: {
+export function Select({ label, value, onChange, options, required, id: idOverride }: {
   label: string; value: string; onChange: (v: string) => void;
-  options: { value: string; label: string }[]; required?: boolean;
+  options: { value: string; label: string }[]; required?: boolean; id?: string;
 }) {
-  const id = `sel-${label.replace(/\s+/g, '-').toLowerCase()}`;
+  const id = idOverride ?? `sel-${label.replace(/\s+/g, '-').toLowerCase()}`;
   return (
     <div className="flex flex-col gap-1">
       <label htmlFor={id} className="text-[12px] font-medium text-[#172033]">

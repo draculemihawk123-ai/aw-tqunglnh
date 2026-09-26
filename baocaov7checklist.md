@@ -1623,3 +1623,116 @@ dedicated test asserts no such control is ever rendered.
   (`POST .../reconcile` → 200, toast reporting the real "entering READY" state). Zero console errors
   throughout.
 
+## V7-13A — ReleaseSet actions (Create/Seal/Abandon/Local Commit/Release Workspace)
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md`'s own Thực hiện line for this task: give the operator real ReleaseSet
+lifecycle actions (Create/Seal/Abandon/Local Commit) and the family's own Release Workspace action, backed
+entirely by V6-10F's already-closed `internal/delivery/httpapi/releaseset` routes (`createReleaseSet`/
+`listReleaseSetsForFamily`/`getReleaseSet`/`sealReleaseSet`/`abandonReleaseSet`/
+`requestReleaseSetLocalCommit`/`getReleaseSetLocalCommitStatus`) plus `workspacerelease`'s own
+`requestWorkspaceSetRelease` — never a remote Git operation of any kind (push/PR/merge/force-push), enforced
+mechanically by `internal/archtest.TestDeliveryReleaseSetRoutesNeverReachGitOrWorker` and
+`TestRegisterRoutes_ExcludesAnyRemoteGitVerb`. V7-13 (previous task) had deliberately dropped the OLD
+prototype's fake ReleaseSet panel wholesale rather than leave it as dead buttons, explicitly deferring a real
+one to this task.
+
+### Decision
+
+**Found a real domain gap before writing any UI**: read `internal/domain/work/release_set.go` end to end and
+confirmed `SealReleaseSet` has **no server-side "all repositories must PASS" eligibility gate at all** — no
+`AllPassed`/`Partial` logic exists anywhere in the aggregate. This invalidated the OLD prototype's own fake
+two-button design ("Seal (requires all PASS, disabled)" vs. "Seal Anyway (partial)") — there is only ONE real
+Seal action. The UI instead shows the real per-repository verdicts in the Seal confirm dialog, tells the
+operator honestly that sealing "never checks whether every repository passed", and lets them decide for
+themselves whether they are looking at a full or partial release.
+
+Also confirmed `ReleaseSetDetail`'s own query DTO (`internal/app/work/release_set_queries.go`) genuinely omits
+`CreatedAt`/`SealedAt`/`AbandonedAt`, even though the domain aggregate carries all three — a real but
+out-of-scope gap (no server-computed way to order ReleaseSets chronologically). Left as-is: the panel renders
+whatever order `listReleaseSetsForFamily` returns rather than inventing a fake client-side sort.
+
+New file `web/src/api/releaseset.ts`: hand-declared `Verdict`/`VERDICT_OPTIONS`/`RepositoryReleaseRequest`/
+`RepositoryReleaseDetail`/`ReleaseSetState`/`ReleaseSetLocalCommitState`/`ReleaseSetDetail`, the same
+"hand-declared wire types, narrow `unknown` at the call site" convention every sibling API-gap file in this
+codebase already establishes — `internal/delivery/httpapi/releaseset`'s own DTOs nest one level deeper than
+apicontract's shallow generator expands, so the generated client returns `unknown[]` for `entries`/`items`.
+
+### Execution
+
+Extended `WorkspaceTab` (`web/src/screens/TaskDetail.tsx`) with a `showReleaseSet` toggle button
+("ReleaseSet"/"Hide ReleaseSet") mounted as a slide-over side panel next to the existing viewer — the same
+location the OLD prototype's fake panel used to occupy. New `ReleaseSetPanel` component: 5 mutations
+(create/seal/abandon/release/local-commit), 2 queries (`listReleaseSetsForFamily`, plus a polling
+`getReleaseSetLocalCommitStatus` query that refetches every second while `REQUESTED`), and 5 confirm dialogs.
+Every action label uses only local-only vocabulary (Create/Seal/Abandon/Local Commit/Release Workspace) —
+never push/PR/merge/force-push — matching the design doc's own "assert UI không render bất kỳ action push/PR/
+merge/force-push nào" Verify requirement.
+
+**Fixed a real stale-closure bug found while writing the Local Commit dispatch**: an early draft called
+`onWorkspaceSetChanged()` (which only triggers the parent's own async `refetch()`) and then immediately read
+`repos` from the enclosing closure synchronously in the same `mutationFn` — never actually waiting for or
+using fresh data, defeating the entire point of "fresh recheck immediately before dispatch" this same pattern
+already established elsewhere in this file (V7-11's Cancel Run). Fixed by having `commitMutation`'s
+`mutationFn` directly `await Promise.all([getReleaseSet(...), getRepositoryWorkspaceState(...)])` and using
+THEIR freshly-returned `.version` values for `expectedReleaseSetVersion`/`expectedWorkspaceVersion`.
+
+**Fixed a real duplicate-DOM-id bug in the shared `TextField`/`Select` primitives**, found only when manually
+exercising the Create ReleaseSet dialog's own per-repository field list (`web/src/components/ui.tsx`): both
+components derived their `id` purely from the field's own `label` text (e.g. `field-base-revision`), with no
+per-instance scoping — rendering the same "Base revision"/"Result revision"/"Verdict" fields once per
+repository produced duplicate `id`s, so a browser's label-for association silently broke for every repository
+after the first (confirmed by a test: `getAllByLabelText('Base revision')` found only one of two real inputs).
+Fixed by adding an optional `id` override prop to both `TextField` and `Select` (falls back to the existing
+derived id when omitted, so every other call site in the app is unaffected) and passing a per-repository id
+(`` `base-${r.repositoryWorkspaceId}` `` etc.) from the Create ReleaseSet dialog.
+
+**Found and fixed a real misleading-toast bug via manual end-to-end verification** (not caught by any unit
+test, since the test's own mock had simply assumed the wrong semantics): read
+`internal/app/workspacerelease/commands.go`'s own `RequestWorkspaceSetRelease` source end to end and confirmed
+it **never itself transitions the WorkspaceSet's state** — it only enqueues an async `WORKSPACE_SET_RELEASE`
+job, and the response's own `state` field is `string(set.State)` captured **before** that job ever runs (the
+real transition to `RELEASING`/`RELEASED` happens later, inside V5-14's own already-existing async executor).
+The original toast text (`workspace set is entering ${result.state}`) therefore falsely claimed the set was
+"entering READY" when READY was the state it already was in, not one it was "entering" — confirmed live
+against a real running `aw serve`/`aw worker`: the toast said "entering READY" while the real workspace set
+had, moments later, correctly reached the real terminal `RELEASED` state. Fixed the toast to report the real
+`releaseJobId` instead of fabricating a transition target the response never actually provides, and updated
+the corresponding test's mock/assertion to match the real API contract.
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 215/215 pass (190 prior + 25 in the rewritten `TaskDetail.test.tsx`, including 6 new
+  `ReleaseSetPanel (V7-13A)` cases: Create pre-fills each repository's own real base/current revision and
+  dispatches the exact per-repository payload; a partial (mixed PASS/FAIL) ReleaseSet can be sealed with no
+  all-PASS gate, and the confirm dialog shows the real per-repository verdicts; a duplicate-seal conflict
+  (`ErrReleaseSetNotOpen`-mapped 409) surfaces as a real `InlineError`, not a crash; a stale-revision case
+  asserts Local Commit dispatches with FRESHLY refetched `getReleaseSet`/`getRepositoryWorkspaceState`
+  versions, never the ones already cached at page load; a real `requestWorkspaceSetRelease` ValidAction
+  dispatches with the correct `If-Match` and honest async wording, reporting the real `releaseJobId` rather
+  than a fabricated state transition; an assertion that no push/pull-request/merge/force-push text or control
+  ever renders anywhere in the panel).
+- `go build ./...`, `go vet ./...`: clean. No Go files needed changing for V7-13A itself — every route this
+  task consumes (V6-10F, `workspacerelease`) already existed; the misleading-toast fix above was a frontend-only
+  correction to how an existing, correct backend response was displayed.
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` AND `aw worker`: registered two real local
+  git repositories and created one real WorkItem scoped to both, reaching two real READY RepositoryWorkspaces.
+  Created a real ReleaseSet with real base/result revisions and a genuinely mixed PASS/FAIL verdict per
+  repository; sealed it for real and confirmed the confirm dialog showed the real mixed verdicts rather than
+  any fake all-PASS claim; made a real uncommitted file change in each repository's own real Git worktree and
+  dispatched a real Local Commit for each entry (including the FAIL-verdict one, proving there is no gate),
+  polling all the way to a real `COMMITTED` state with a real new `resultVcsObjectId` distinct from its real
+  `parentVcsObjectId` for both; dispatched a real `requestWorkspaceSetRelease` and confirmed, via the raw API,
+  that the real `WorkspaceSet` genuinely reached the terminal `RELEASED` state — this is exactly where the
+  misleading-toast bug above was caught, fixed, and re-verified via the updated unit test. Along the way, hit
+  and diagnosed a real Windows/Git environment issue unrelated to this task's own code: `git worktree add`
+  failed with `fatal: '$GIT_DIR' too big` when the scratch repositories lived under this session's own
+  unusually deep default temp path; moved the scratch environment to a short path (`C:\awtmp`) and provisioning
+  succeeded — documented here in case a future session's own manual verification hits the identical
+  environment-specific failure. Zero console errors throughout; all debug instrumentation added to
+  investigate the two real bugs above (`workspaceprovision`'s and `releasesetcommit`'s own handlers) was
+  reverted before committing — confirmed via `git diff` showing no residual changes to either file.
+
