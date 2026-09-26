@@ -19,12 +19,17 @@ vi.mock('../api/generated', async () => {
     listReleaseSetsForFamily: vi.fn(), createReleaseSet: vi.fn(), sealReleaseSet: vi.fn(), abandonReleaseSet: vi.fn(),
     requestReleaseSetLocalCommit: vi.fn(), getReleaseSetLocalCommitStatus: vi.fn(), getReleaseSet: vi.fn(),
     getRepositoryWorkspaceState: vi.fn(), requestWorkspaceSetRelease: vi.fn(),
+    listEvidence: vi.fn(), listArtifacts: vi.fn(),
   };
 });
 vi.mock('../api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));
 vi.mock('../api/workspaceinspection', async () => {
   const actual = await vi.importActual<typeof import('../api/workspaceinspection')>('../api/workspaceinspection');
   return { ...actual, fetchWorkspaceSource: vi.fn() };
+});
+vi.mock('../api/evidence', async () => {
+  const actual = await vi.importActual<typeof import('../api/evidence')>('../api/evidence');
+  return { ...actual, fetchArtifactContent: vi.fn() };
 });
 
 function render(ui: ReactElement) {
@@ -707,5 +712,165 @@ describe('ReleaseSetPanel (V7-13A)', () => {
     expect(text).not.toMatch(/\bpull request\b|\bPR\b/i);
     expect(text).not.toMatch(/\bmerge\b/i);
     expect(text).not.toMatch(/force[- ]push/i);
+  });
+});
+
+function renderEvidenceTab() {
+  return render(<TaskDetailScreen projectId="proj-1" projectName="platform-core" workItemId="wi-1" activeTab="task-evidence" onTabChange={vi.fn()} />);
+}
+
+function evidenceFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    evidenceId: 'ev-1', projectId: 'proj-1', workItemId: 'wi-1', runId: 'run-1', nodeRunId: 'nr-1', attemptId: 'att-1',
+    kind: 'VERIFY', verdict: 'PASS', artifactReferences: ['art-1'],
+    revisions: [{ repositoryId: 'core-api', vcsObjectId: 'a3f9e8babcdef012', workspaceGeneration: 1 }],
+    revisionSetHash: 'sha256:rset-abcdef0123456789', policyVersion: 'policy-v1', createdAt: '2026-09-26T09:00:00Z',
+    ...overrides,
+  };
+}
+
+function artifactFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    artifactId: 'art-1', projectId: 'proj-1', contentHash: 'sha256:contenthashabcdef0123456789',
+    size: 128, mediaType: 'application/json', sensitivity: 'PUBLIC', redacted: false,
+    retentionClass: 'RAW_OUTPUT_TEMP', attachState: 'ATTACHED', hold: false,
+    createdAt: '2026-09-26T09:00:00Z', version: 1,
+    ...overrides,
+  };
+}
+
+describe('EvidenceTab (V7-14)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getTaskFamily).mockResolvedValue(FAMILY as never);
+    vi.mocked(api.getWorkItem).mockResolvedValue({
+      workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+      status: 'ACTIVE', version: 4, contract: null,
+    } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail() } as never);
+    // jsdom has no real createObjectURL implementation.
+    globalThis.URL.createObjectURL = vi.fn(() => 'blob:mock-url');
+    globalThis.URL.revokeObjectURL = vi.fn();
+  });
+
+  it('shows a real empty state when the WorkItem has no evidence yet', async () => {
+    vi.mocked(api.listEvidence).mockResolvedValue({ items: [] } as never);
+    renderEvidenceTab();
+
+    expect(await screen.findByText('No evidence recorded yet for this WorkItem.')).toBeInTheDocument();
+    expect(api.listArtifacts).not.toHaveBeenCalled();
+  });
+
+  it('renders real Evidence rows and only fetches artifacts lazily once a row is expanded', async () => {
+    vi.mocked(api.listEvidence).mockResolvedValue({ items: [evidenceFixture()] } as never);
+    vi.mocked(api.listArtifacts).mockResolvedValue({ items: [artifactFixture()] } as never);
+    renderEvidenceTab();
+
+    const row = await screen.findByRole('button', { name: /VERIFY/ });
+    expect(within(row).getByText('PASS')).toBeInTheDocument();
+    expect(screen.getByText(/core-api@a3f9e8babc/)).toBeInTheDocument();
+    expect(api.listArtifacts).not.toHaveBeenCalled();
+
+    await userEvent.click(row);
+    await waitFor(() => expect(api.listArtifacts).toHaveBeenCalledWith('proj-1', 'wi-1', 'ev-1', expect.objectContaining({ token: 'test-session-token' })));
+    expect(await screen.findByText('art-1')).toBeInTheDocument();
+  });
+
+  it('a redacted, on-hold, sensitive, expired artifact shows the real badges honestly', async () => {
+    vi.mocked(api.listEvidence).mockResolvedValue({ items: [evidenceFixture()] } as never);
+    vi.mocked(api.listArtifacts).mockResolvedValue({
+      items: [artifactFixture({ sensitivity: 'SECRET', redacted: true, hold: true, expiresAt: '2020-01-01T00:00:00Z' })],
+    } as never);
+    renderEvidenceTab();
+
+    await userEvent.click(await screen.findByRole('button', { name: /VERIFY/ }));
+    await screen.findByText('art-1');
+    expect(screen.getByText('SECRET')).toBeInTheDocument();
+    expect(screen.getByText('REDACTED')).toBeInTheDocument();
+    expect(screen.getByText('HOLD')).toBeInTheDocument();
+    expect(screen.getByText('EXPIRED')).toBeInTheDocument();
+    // Still not purged — a real Download action remains available.
+    expect(screen.getByRole('link', { name: 'Download' })).toBeInTheDocument();
+  });
+
+  it('a purged artifact offers neither Preview nor Download — there is nothing left to fetch', async () => {
+    vi.mocked(api.listEvidence).mockResolvedValue({ items: [evidenceFixture()] } as never);
+    vi.mocked(api.listArtifacts).mockResolvedValue({ items: [artifactFixture({ attachState: 'PURGED' })] } as never);
+    renderEvidenceTab();
+
+    await userEvent.click(await screen.findByRole('button', { name: /VERIFY/ }));
+    await screen.findByText('art-1');
+    expect(screen.getByText('PURGED')).toBeInTheDocument();
+    expect(screen.getByText(/Content purged by retention/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Preview' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Download' })).not.toBeInTheDocument();
+  });
+
+  it('a large safe-media artifact shows a truncation indicator instead of a Preview action, but Download stays available', async () => {
+    vi.mocked(api.listEvidence).mockResolvedValue({ items: [evidenceFixture()] } as never);
+    vi.mocked(api.listArtifacts).mockResolvedValue({
+      items: [artifactFixture({ mediaType: 'text/plain', size: 5_000_000 })],
+    } as never);
+    renderEvidenceTab();
+
+    await userEvent.click(await screen.findByRole('button', { name: /VERIFY/ }));
+    await screen.findByText('art-1');
+    expect(screen.getByText(/Too large to preview/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Preview' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Download' })).toBeInTheDocument();
+  });
+
+  it('never offers a Preview action for a non-inline-safe media type (e.g. text/html) — only Download, which the server itself forces to save rather than render', async () => {
+    vi.mocked(api.listEvidence).mockResolvedValue({ items: [evidenceFixture()] } as never);
+    vi.mocked(api.listArtifacts).mockResolvedValue({
+      items: [artifactFixture({ mediaType: 'text/html', size: 200 })],
+    } as never);
+    renderEvidenceTab();
+
+    await userEvent.click(await screen.findByRole('button', { name: /VERIFY/ }));
+    await screen.findByText('art-1');
+    expect(screen.queryByRole('button', { name: 'Preview' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Download' })).toBeInTheDocument();
+  });
+
+  it('previews real JSON/text content as escaped text — a raw script payload is shown as literal text, never executed', async () => {
+    vi.mocked(api.listEvidence).mockResolvedValue({ items: [evidenceFixture()] } as never);
+    vi.mocked(api.listArtifacts).mockResolvedValue({ items: [artifactFixture()] } as never);
+    const { fetchArtifactContent } = await import('../api/evidence');
+    const payload = '{"note":"<script>window.__pwned = true;</script>"}';
+    vi.mocked(fetchArtifactContent).mockResolvedValue({
+      contentType: 'application/json', blob: new Blob([payload], { type: 'application/json' }),
+    });
+    renderEvidenceTab();
+
+    await userEvent.click(await screen.findByRole('button', { name: /VERIFY/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+
+    expect(await screen.findByText(payload)).toBeInTheDocument();
+    expect(document.querySelector('script[data-injected]')).toBeNull();
+    expect((globalThis as { __pwned?: boolean }).__pwned).toBeUndefined();
+  });
+
+  it('a tampered/purged content fetch surfaces as a real InlineError inside the preview dialog, never served silently', async () => {
+    vi.mocked(api.listEvidence).mockResolvedValue({ items: [evidenceFixture()] } as never);
+    vi.mocked(api.listArtifacts).mockResolvedValue({ items: [artifactFixture()] } as never);
+    const { fetchArtifactContent, ApiError: EvidenceApiError } = await import('../api/evidence').then(async m => ({
+      ...m, ApiError: (await import('../api/generated')).ApiError,
+    }));
+    vi.mocked(fetchArtifactContent).mockRejectedValue(new EvidenceApiError(500, 'INTERNAL', 'internal error'));
+    renderEvidenceTab();
+
+    await userEvent.click(await screen.findByRole('button', { name: /VERIFY/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Preview' }));
+
+    expect(await screen.findByText('internal error')).toBeInTheDocument();
+  });
+
+  it('has no automated accessibility violations once loaded', async () => {
+    vi.mocked(api.listEvidence).mockResolvedValue({ items: [evidenceFixture()] } as never);
+    vi.mocked(api.listArtifacts).mockResolvedValue({ items: [artifactFixture()] } as never);
+    const { container } = renderEvidenceTab();
+    await screen.findByRole('button', { name: /VERIFY/ });
+    await expectNoAxeViolations(container);
   });
 });
