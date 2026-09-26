@@ -1065,6 +1065,20 @@
       }
     },
     {
+      "operationId": "getMessageContent",
+      "method": "GET",
+      "path": "/projects/{projectId}/work-items/{workItemId}/messages/{messageId}/content",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      }
+    },
+    {
       "operationId": "getMessageContextSnapshot",
       "method": "GET",
       "path": "/projects/{projectId}/work-items/{workItemId}/messages/{messageId}/context-snapshot",

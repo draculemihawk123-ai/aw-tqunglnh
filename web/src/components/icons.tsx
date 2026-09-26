@@ -71,4 +71,5 @@ export {
   Search,
   Filter,
   Tag,
+  Paperclip,
 } from 'lucide-react';

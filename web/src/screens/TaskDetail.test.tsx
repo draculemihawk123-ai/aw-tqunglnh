@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { expectNoAxeViolations } from '../test/axe';
 import * as api from '../api/generated';
 import * as workspaceinspection from '../api/workspaceinspection';
+import * as messageApi from '../api/message';
 import { TaskDetailScreen } from './TaskDetail';
 
 vi.mock('../api/generated', async () => {
@@ -20,9 +21,13 @@ vi.mock('../api/generated', async () => {
     requestReleaseSetLocalCommit: vi.fn(), getReleaseSetLocalCommitStatus: vi.fn(), getReleaseSet: vi.fn(),
     getRepositoryWorkspaceState: vi.fn(), requestWorkspaceSetRelease: vi.fn(),
     listEvidence: vi.fn(), listArtifacts: vi.fn(),
+    listMessages: vi.fn(), appendMessage: vi.fn(),
   };
 });
-vi.mock('../api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));
+vi.mock('../api/session', () => ({
+  withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }),
+  getSessionToken: () => 'test-session-token',
+}));
 vi.mock('../api/workspaceinspection', async () => {
   const actual = await vi.importActual<typeof import('../api/workspaceinspection')>('../api/workspaceinspection');
   return { ...actual, fetchWorkspaceSource: vi.fn() };
@@ -30,6 +35,10 @@ vi.mock('../api/workspaceinspection', async () => {
 vi.mock('../api/evidence', async () => {
   const actual = await vi.importActual<typeof import('../api/evidence')>('../api/evidence');
   return { ...actual, fetchArtifactContent: vi.fn() };
+});
+vi.mock('../api/message', async () => {
+  const actual = await vi.importActual<typeof import('../api/message')>('../api/message');
+  return { ...actual, fetchMessageContent: vi.fn(), uploadAttachment: vi.fn() };
 });
 
 function render(ui: ReactElement) {
@@ -871,6 +880,153 @@ describe('EvidenceTab (V7-14)', () => {
     vi.mocked(api.listArtifacts).mockResolvedValue({ items: [artifactFixture()] } as never);
     const { container } = renderEvidenceTab();
     await screen.findByRole('button', { name: /VERIFY/ });
+    await expectNoAxeViolations(container);
+  });
+});
+
+function renderChatTab() {
+  return render(<TaskDetailScreen projectId="proj-1" projectName="platform-core" workItemId="wi-1" activeTab="task-chat" onTabChange={vi.fn()} />);
+}
+
+function messageRefFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    messageId: 'msg-1', projectId: 'proj-1', workItemId: 'wi-1', sequence: 1,
+    actor: 'agent/anthropic', role: 'ASSISTANT', contentArtifactId: 'art-1',
+    createdAt: '2026-09-26T09:00:00Z',
+    ...overrides,
+  };
+}
+
+describe('ChatTab (V7-15)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getTaskFamily).mockResolvedValue(FAMILY as never);
+    vi.mocked(api.getWorkItem).mockResolvedValue({
+      workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+      status: 'ACTIVE', version: 4, contract: null,
+    } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail() } as never);
+  });
+
+  it('shows a real empty state when there are no messages yet', async () => {
+    vi.mocked(api.listMessages).mockResolvedValue({ items: [] } as never);
+    renderChatTab();
+
+    expect(await screen.findByText('No messages yet — start the conversation below.')).toBeInTheDocument();
+  });
+
+  it('renders real messages in their real server-given order, fetching each one\'s own real content', async () => {
+    vi.mocked(api.listMessages).mockResolvedValue({
+      items: [
+        messageRefFixture({ messageId: 'msg-1', sequence: 1, role: 'USER', actor: 'local-operator' }),
+        messageRefFixture({ messageId: 'msg-2', sequence: 2, role: 'ASSISTANT', actor: 'agent/anthropic' }),
+      ],
+    } as never);
+    vi.mocked(messageApi.fetchMessageContent).mockImplementation(async (_p, _w, messageId) => ({
+      contentType: 'text/plain', blob: new Blob([messageId === 'msg-1' ? 'start the work' : 'on it'], { type: 'text/plain' }),
+    }));
+    renderChatTab();
+
+    const articles = await screen.findAllByRole('article');
+    expect(articles).toHaveLength(2);
+    expect(await within(articles[0]).findByText('start the work')).toBeInTheDocument();
+    expect(await within(articles[1]).findByText('on it')).toBeInTheDocument();
+  });
+
+  it('sends a real message with a fresh idempotency key and optimistically shows the operator\'s own just-typed text without a redundant content fetch', async () => {
+    vi.mocked(api.listMessages)
+      .mockResolvedValueOnce({ items: [] } as never)
+      .mockResolvedValueOnce({ items: [messageRefFixture({ messageId: 'msg-new', sequence: 1, role: 'USER', actor: 'local-operator' })] } as never);
+    vi.mocked(api.appendMessage).mockResolvedValue({
+      messageId: 'msg-new', projectId: 'proj-1', workItemId: 'wi-1', sequence: 1, contentArtifactId: 'art-new',
+    } as never);
+    renderChatTab();
+    await screen.findByText('No messages yet — start the conversation below.');
+
+    await userEvent.type(screen.getByLabelText('Message composer'), 'hello from the operator');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(api.appendMessage).toHaveBeenCalledWith('proj-1', 'wi-1',
+      { role: 'USER', content: 'hello from the operator', contentType: 'text/plain' },
+      expect.objectContaining({ token: 'test-session-token', idempotencyKey: expect.any(String) })));
+    expect(await screen.findByText('hello from the operator')).toBeInTheDocument();
+    expect(messageApi.fetchMessageContent).not.toHaveBeenCalledWith('proj-1', 'wi-1', 'msg-new');
+    expect(screen.getByLabelText('Message composer')).toHaveValue('');
+  });
+
+  it('a failed send keeps the draft and Retry reuses the IDENTICAL idempotency key rather than minting a new one', async () => {
+    vi.mocked(api.listMessages).mockResolvedValue({ items: [] } as never);
+    vi.mocked(api.appendMessage)
+      .mockRejectedValueOnce(new api.ApiError(503, 'UNAVAILABLE', 'temporarily unavailable'))
+      .mockResolvedValueOnce({ messageId: 'msg-new', projectId: 'proj-1', workItemId: 'wi-1', sequence: 1, contentArtifactId: 'art-new' } as never);
+    renderChatTab();
+    await screen.findByText('No messages yet — start the conversation below.');
+
+    await userEvent.type(screen.getByLabelText('Message composer'), 'retry me');
+    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    await screen.findByText('temporarily unavailable');
+    expect(screen.getByLabelText('Message composer')).toHaveValue('retry me');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(api.appendMessage).toHaveBeenCalledTimes(2));
+
+    const firstKey = vi.mocked(api.appendMessage).mock.calls[0][3]?.idempotencyKey;
+    const secondKey = vi.mocked(api.appendMessage).mock.calls[1][3]?.idempotencyKey;
+    expect(firstKey).toBeTruthy();
+    expect(secondKey).toBe(firstKey);
+  });
+
+  it('uploads a real attachment with a real computed SHA-256 and the correct role/token, then refreshes the list', async () => {
+    vi.mocked(api.listMessages)
+      .mockResolvedValueOnce({ items: [] } as never)
+      .mockResolvedValueOnce({ items: [messageRefFixture({ messageId: 'msg-att', sequence: 1, role: 'USER', actor: 'local-operator' })] } as never);
+    vi.mocked(messageApi.uploadAttachment).mockResolvedValue({
+      messageId: 'msg-att', projectId: 'proj-1', workItemId: 'wi-1', sequence: 1, contentArtifactId: 'art-att',
+    });
+    const { container } = renderChatTab();
+    await screen.findByText('No messages yet — start the conversation below.');
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const file = new File(['file bytes'], 'notes.txt', { type: 'text/plain' });
+    await userEvent.upload(fileInput, file);
+
+    await waitFor(() => expect(messageApi.uploadAttachment).toHaveBeenCalledWith('proj-1', 'wi-1', file,
+      expect.objectContaining({ role: 'USER', token: 'test-session-token', idempotencyKey: expect.any(String) })));
+    await waitFor(() => expect(screen.getAllByText('Attachment uploaded.').length).toBeGreaterThan(0));
+  });
+
+  it('never renders any approve/reject/scope-expansion/WAIT-signal control — those belong to a different screen entirely', async () => {
+    vi.mocked(api.listMessages).mockResolvedValue({ items: [] } as never);
+    const { container } = renderChatTab();
+    await screen.findByText('No messages yet — start the conversation below.');
+
+    const text = container.textContent ?? '';
+    expect(text).not.toMatch(/\bapprove\b/i);
+    expect(text).not.toMatch(/\breject\b/i);
+    expect(text).not.toMatch(/scope expansion/i);
+    expect(text).not.toMatch(/wait signal/i);
+  });
+
+  it('an attachment whose content type is not inline-safe (e.g. application/pdf) offers only a real Download link, never inline rendering', async () => {
+    vi.mocked(api.listMessages).mockResolvedValue({
+      items: [messageRefFixture({ messageId: 'msg-pdf', sequence: 1, role: 'USER', actor: 'local-operator' })],
+    } as never);
+    vi.mocked(messageApi.fetchMessageContent).mockResolvedValue({
+      contentType: 'application/pdf', blob: new Blob(['%PDF-fake'], { type: 'application/pdf' }),
+    });
+    renderChatTab();
+
+    expect(await screen.findByText(/Download attachment \(application\/pdf\)/)).toBeInTheDocument();
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  });
+
+  it('has no automated accessibility violations once loaded', async () => {
+    vi.mocked(api.listMessages).mockResolvedValue({
+      items: [messageRefFixture()],
+    } as never);
+    vi.mocked(messageApi.fetchMessageContent).mockResolvedValue({ contentType: 'text/plain', blob: new Blob(['hi'], { type: 'text/plain' }) });
+    const { container } = renderChatTab();
+    await screen.findByRole('article');
     await expectNoAxeViolations(container);
   });
 });

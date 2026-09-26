@@ -79,6 +79,26 @@ func TestGeneratedTypeScriptClient_SkipsRawContentOperations(t *testing.T) {
 	}
 }
 
+// TestGeneratedTypeScriptClient_SkipsRawUploadOperations mirrors
+// TestGeneratedTypeScriptClient_SkipsRawContentOperations exactly, for the
+// write-side twin: a route whose real REQUEST body is raw bytes, never
+// JSON (tsclient.go's own rawUploadOperations doc comment) — a generated
+// function would JSON-marshal the wrong body and the real handler would
+// reject every call.
+func TestGeneratedTypeScriptClient_SkipsRawUploadOperations(t *testing.T) {
+	contract := buildRealContract(t)
+	got := string(GenerateTypeScriptClient(contract))
+
+	for op := range rawUploadOperations {
+		if !hasOperationID(contract, op) {
+			t.Fatalf("test fixture assumption broken: contract no longer has operationId %q", op)
+		}
+		if strings.Contains(got, "export function "+op+"(") {
+			t.Fatalf("generated client emitted a callable function for raw-upload operation %q", op)
+		}
+	}
+}
+
 func hasOperationID(c Contract, id string) bool {
 	for _, op := range c.Operations {
 		if op.OperationID == id {

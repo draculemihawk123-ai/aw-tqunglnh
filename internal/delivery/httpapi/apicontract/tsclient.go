@@ -25,25 +25,46 @@ var browserOnlyOperations = map[string]bool{
 // rawContentOperations are the OperationIDs whose real response is a raw
 // byte stream (Content-Type/Content-Disposition/ETag plus a handful of
 // custom X-Aw-* headers — see internal/delivery/httpapi/workspaceinspection/
-// source.go's and internal/delivery/httpapi/evidence/artifact.go's own
-// writeSourceContent/getArtifactContent doc comments), never a JSON
+// source.go's, internal/delivery/httpapi/evidence/artifact.go's, and
+// internal/delivery/httpapi/message/content.go's own writeSourceContent/
+// getArtifactContent/getMessageContent doc comments), never a JSON
 // envelope, even though this registry declares ResponseSchema: struct{}{}
-// for both the same way several ordinary (JSON, just undeclared) catalog
-// routes also do — the RouteDescriptor itself carries no field
-// distinguishing the two, so this generator names the two real exceptions
+// for all three the same way several ordinary (JSON, just undeclared)
+// catalog routes also do — the RouteDescriptor itself carries no field
+// distinguishing the two, so this generator names the three real exceptions
 // explicitly, mirroring browserOnlyOperations' own precedent one line above.
 // request()'s own shared helper unconditionally awaits res.json() on
-// success; generating a normal callable function for either of these two
+// success; generating a normal callable function for any of these three
 // operations would be actively misleading (V7-13's own "found the generated
 // client can never call getWorkspaceSource without throwing a JSON parse
 // error on real byte content" — the first-ever real caller of this class of
-// route). A caller that needs one of these two responses does its own plain
+// route; getMessageContent, V7-15, is the same class of gap found again). A
+// caller that needs one of these three responses does its own plain
 // fetch() against the real path this registry names, reading the real
 // headers/body directly — see web/src/api/workspaceinspection.ts's own doc
-// comment for the one hand-written example this task added.
+// comment for the one hand-written example V7-13 added.
 var rawContentOperations = map[string]bool{
 	"getWorkspaceSource": true,
 	"getArtifactContent": true,
+	"getMessageContent":  true,
+}
+
+// rawUploadOperations are the OperationIDs whose real REQUEST body is raw
+// bytes, never JSON — the write-side mirror of rawContentOperations above,
+// found while V7-15 became the first-ever real UI caller of
+// appendConversationAttachment: its own RequestSchema (attachmentMetadata{})
+// looks like an ordinary JSON body to this generator (identical shape to
+// any other command), but internal/delivery/httpapi/message/attachment.go's
+// own doc comment is explicit that the wire body is the attachment's raw
+// content bytes — the metadata instead travels via X-Attachment-* headers.
+// A generated function that JSON-marshals attachmentMetadata as the POST
+// body (request()'s own shared behavior for every other command) would
+// send a completely wrong request the real handler would never accept.
+// Skipped here for the identical reason rawContentOperations skips its own
+// three read-side exceptions; web/src/api/message.ts's own hand-written
+// uploadAttachment is the real caller in its place.
+var rawUploadOperations = map[string]bool{
+	"appendConversationAttachment": true,
 }
 
 // tsClientPathParamPattern matches a Go 1.22 net/http.ServeMux wildcard
@@ -80,7 +101,7 @@ func GenerateTypeScriptClient(c Contract) []byte {
 	b.WriteString(tsClientPreamble)
 
 	for _, op := range c.Operations {
-		if browserOnlyOperations[op.OperationID] || rawContentOperations[op.OperationID] {
+		if browserOnlyOperations[op.OperationID] || rawContentOperations[op.OperationID] || rawUploadOperations[op.OperationID] {
 			continue
 		}
 		writeOperation(&b, op)
