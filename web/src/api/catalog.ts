@@ -74,3 +74,18 @@ export interface RegisterRepositoryResult {
   status: string;
   probeJobId: string;
 }
+
+export interface PackAssignmentView {
+  id: string;
+  componentId: string;
+  packVersionId: string;
+  effectiveAt: string;
+  actor: string;
+}
+
+export interface PackAssignmentListView {
+  componentId: string;
+  projectId: string;
+  assignments: PackAssignmentView[];
+  effective: PackAssignmentView | null;
+}

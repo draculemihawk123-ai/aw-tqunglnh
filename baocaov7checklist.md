@@ -882,3 +882,56 @@ Changed files:
   create-project navigation race described above — found only by actually clicking through the flow, not
   by any automated test.
 
+## V7-06B — Engineering Pack exact-version assignment for a component; V7-06 closed
+
+### Context
+
+The other half of V7-06's own scope, deliberately deferred from V7-06A: "exact-version Engineering Pack
+assignment cho component" (`docs/design/09-v7-alpha-ui.md`). Backend surface
+(`GET/POST /components/{id}/pack-assignments`, `internal/app/catalog.AssignComponentPack`) was already
+built and tested in V6-03A; this task is a pure UI consumer.
+
+### Decision
+
+`internal/domain/project/component.go`'s own `PackVersionID` doc comment states plainly: assigning a pack
+version "never resolves or validates that the pack version actually exists ... a later task ... owns that
+check if one is ever needed" — the exact same behavior `aw pack-assignment assign`
+(`internal/delivery/cli/catalog/packassignment.go`) already has today (a raw string, no catalog
+cross-reference). A browsable picker of published Engineering Pack versions is explicitly `docs/design/
+09-v7-alpha-ui.md`'s own V7-07 ("Definition catalog và version detail"), a separate, not-yet-started task —
+building one here would either duplicate that later work or invent a listing capability this leaf was
+never given. `AssignPackDialog` therefore takes a single required, plain text "Pack version ID" field,
+honestly labeled as not yet validated against the definitions catalog, exactly matching what the CLI and
+the backend actually do today.
+
+### Execution
+
+New file `web/src/screens/AssignPackDialog.tsx`: shows the component's identity, its currently-effective
+assignment (or "No pack assigned yet"), the full append-only assignment history when more than one
+assignment exists, and the assign form. Wired into `Projects.tsx`'s components-view table as a new
+"Assign Pack" button per row (disabled while offline, same convention as every other mutating action this
+screen already has), reusing the same `useToasts()`/`ToastViewport` this screen's overview already
+mounts.
+
+Added `PackAssignmentView`/`PackAssignmentListView` to `web/src/api/catalog.ts` — the same hand-declared,
+`views.go`-mirroring convention V7-06A already established for this package's known opaque-schema gap.
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 151/151 pass (144 prior + 6 new `AssignPackDialog.test.tsx` tests — no-assignment
+  empty state, real effective assignment plus history rendering, required-field validation before any API
+  call, assigning the exact operator-typed version string and reporting success, an API error surfaced
+  inline, accessibility smoke — + 1 new `Projects.test.tsx` case wiring "Assign Pack" through the real
+  components table).
+- `pnpm build`: clean. No Go files touched by this task.
+- Manual end-to-end verification against a REAL running `aw serve` and `aw worker`: created a project,
+  registered a real local git repository with a `src/` subdirectory (this time with its real default
+  branch actually named `main`, learning from V7-06A's fixture mistake), watched it reach ACTIVE and the
+  `src` component get discovered, opened Assign Pack and confirmed "No pack assigned yet", assigned
+  `engpack-backend@2.4.2`, confirmed via the real network log the call returned `201 Created`, and
+  reopened the dialog to confirm "Currently effective" now shows that exact version with a real
+  timestamp — the full real round trip, not a mocked one.
+
+**V7-06 is now fully closed** (V7-06A + V7-06B, PR #105 and this task's own PR).
+
