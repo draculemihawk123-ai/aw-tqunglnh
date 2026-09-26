@@ -23,17 +23,6 @@ func Ledger() []LedgerEntry {
 		noRoute = "V6-15O forbids adding an HTTP route (design §V6-15O \"Không làm: no new leaf/route\"); the owning endpoint task must add the route"
 	)
 	return []LedgerEntry{
-		// ---- definition list: a CLI_LOCAL leaf with no route ---------------
-		// V6-15E added ListDefinitions to the application layer and registered
-		// `aw definition list` as CLI_LOCAL because no `GET /definitions/{kind}`
-		// exists; V6-12 already recorded the missing route as
-		// knownUnimplementedGaps["listDefinitions"]. UX Screen 3 row 1 requires
-		// the query (proposed operationId listDefinitions, `aw definition list`).
-		{ClassCLILocalNotAllowed, "cli:definition list@INSTALLATION", "V6-05 (route) + V6-15E (leaf descriptor)", noRoute + "; the leaf must then register listDefinitions instead of CLI_LOCAL"},
-		{ClassCLILocalNotAllowed, "cli:definition list@PROJECT", "V6-05 (route) + V6-15E (leaf descriptor)", noRoute + "; the leaf must then register listProjectDefinitions instead of CLI_LOCAL"},
-		{ClassMissingHTTP, "app:ListDefinitions", "V6-05", "public operation ListDefinitions has no HTTP route; " + noRoute},
-		{ClassMissingHTTP, "ux:listDefinitions", "V6-05", "UX Screen 3 row 1 has no route; " + noRoute},
-
 		// ---- HTTP operations with no `aw` mirror ---------------------------
 		{ClassMissingCLI, "http:getEvidence", "V6-15K", "UX Screen 11 row 2 reserves `aw evidence show`; V6-15K chose not to add it; " + noLeaf},
 		{ClassMissingCLI, "http:listArtifacts", "V6-15K", "UX Screen 11 row 3 reserves `aw artifact list`; " + noLeaf},

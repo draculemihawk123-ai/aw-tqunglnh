@@ -143,7 +143,7 @@ func PublicOperations() []PublicOperation {
 
 		// ---- definitions (global + project variants) ---------------------
 		{Name: "CreateDefinition", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{installation("createDefinition"), project("createProjectDefinition")}, Symbol: definitions + ".CreateDefinition"},
-		{Name: "ListDefinitions", Kind: KindQuery, Exposure: ExposurePublic, Symbol: definitions + ".ListDefinitions"}, // no HTTP route exists (V6-05 gap) — reported, see Ledger
+		{Name: "ListDefinitions", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{installation("listDefinitions"), project("listProjectDefinitions")}, Symbol: definitions + ".ListDefinitions"},
 		{Name: "GetDefinition", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{installation("getDefinition"), project("getProjectDefinition")}, Symbol: definitions + ".GetDefinition"},
 		{Name: "ListVersions", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{installation("listDefinitionVersions"), project("listProjectDefinitionVersions")}, Symbol: definitions + ".ListVersions"},
 		{Name: "ValidateDraft", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{installation("validateDefinitionDraft"), project("validateProjectDefinitionDraft")}, Symbol: definitions + ".ValidateDraft"},

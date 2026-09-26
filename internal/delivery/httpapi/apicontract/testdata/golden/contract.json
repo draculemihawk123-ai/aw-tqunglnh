@@ -2447,6 +2447,26 @@
       }
     },
     {
+      "operationId": "listDefinitions",
+      "method": "GET",
+      "path": "/definitions/{kind}",
+      "scopeKind": "INSTALLATION",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.definitionListView",
+        "fields": [
+          {
+            "name": "Definitions",
+            "jsonTag": "definitions",
+            "type": "[]definitions.definitionView"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "listEvidence",
       "method": "GET",
       "path": "/projects/{projectId}/work-items/{workItemId}/evidence",
@@ -2507,6 +2527,26 @@
             "name": "Items",
             "jsonTag": "items",
             "type": "[]definitions.versionFieldsView"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listProjectDefinitions",
+      "method": "GET",
+      "path": "/projects/{projectId}/definitions/{kind}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "definitions.definitionListView",
+        "fields": [
+          {
+            "name": "Definitions",
+            "jsonTag": "definitions",
+            "type": "[]definitions.definitionView"
           }
         ]
       }

@@ -49,6 +49,51 @@ func getDefinitionCore(w http.ResponseWriter, r *http.Request, deps Dependencies
 	_ = httpapi.EncodeResult(w, http.StatusOK, newDefinitionView(id, fields), httpapi.ETagFromVersion(fields.Version))
 }
 
+// handleListDefinitions implements GET /definitions/{kind} (operationId
+// listDefinitions): every Definition of that Kind in the global scope,
+// closing the parity ledger gap internal/delivery/parity/ledger.go's own
+// "definition list: a CLI_LOCAL leaf with no route" entries name
+// (internal/app/definitions.ListDefinitions existed since V6-15E with no
+// HTTP route ever calling it). No prior lookup is needed — ListDefinitions
+// itself never errors for an empty/nonexistent scope, only ever returns an
+// empty, non-nil slice (that function's own doc comment).
+func handleListDefinitions(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		listDefinitionsCore(w, r, deps, definition.GlobalScope())
+	}
+}
+
+// handleListProjectDefinitions implements
+// GET /projects/{projectId}/definitions/{kind} (operationId
+// listProjectDefinitions): the project-scoped half.
+func handleListProjectDefinitions(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := r.PathValue("projectId")
+		if strings.TrimSpace(projectID) == "" {
+			writeValidationError(w, "projectId", "is required")
+			return
+		}
+		listDefinitionsCore(w, r, deps, definitionScopeFromProjectID(projectID))
+	}
+}
+
+func listDefinitionsCore(w http.ResponseWriter, r *http.Request, deps Dependencies, routeScope definition.Scope) {
+	kind, ok := pathKind(w, r)
+	if !ok {
+		return
+	}
+	summaries, err := appdefinitions.ListDefinitions(r.Context(), deps.UnitOfWork, kind, routeScope)
+	if err != nil {
+		writeQueryError(w, err)
+		return
+	}
+	views := make([]definitionView, 0, len(summaries))
+	for _, s := range summaries {
+		views = append(views, newDefinitionView(s.ID, s.Fields))
+	}
+	_ = httpapi.EncodeResult(w, http.StatusOK, definitionListView{Definitions: views}, "")
+}
+
 // handleListDefinitionVersions implements
 // GET /definitions/{kind}/{id}/versions (operationId
 // listDefinitionVersions): every Version this Definition has published,

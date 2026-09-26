@@ -177,26 +177,18 @@ var knownRenamedProposals = map[string][]string{
 // map's own key set — proving no OTHER, undiscovered gap is hiding behind
 // this mechanism, and forcing a conscious edit here (with a fresh review)
 // the day a follow-up task finally closes one of these.
-var knownUnimplementedGaps = map[string]string{
-	// Screen 3 — Definition catalog: docs/design/11-v6-00-ux-artifact.md
-	// §4 row 1 proposes `listDefinitions` ("Danh sách definition (global +
-	// /projects/{id}/definitions)"), Owner Task ID V6-05. Grepping every
-	// OperationID internal/delivery/httpapi/definitions/routes.go
-	// registers (createDefinition, validateDefinitionDraft,
-	// publishDefinitionVersion, getDefinition, listDefinitionVersions,
-	// getDefinitionVersion, diffDefinitionVersions, and their
-	// project-scoped mirrors) confirms there is no
-	// GET /definitions/{kind} (or GET /definitions) route at all — V6-05
-	// implemented create/validate/publish/get-one/list-versions/diff, but
-	// never "list every definition of a kind". This is a real, standalone
-	// gap in V6-05's own already-merged deliverable, not a V6-12 scope
-	// item; flagged here for a follow-up task rather than silently
-	// invented by this generator.
-	"listDefinitions": "internal/delivery/httpapi/definitions has no GET /definitions/{kind} " +
-		"(or GET /definitions) list route — V6-05 implemented create/validate/publish/get-one/" +
-		"list-versions/diff but never a definitions-of-a-kind list query. Needs a follow-up task; " +
-		"V6-12 does not add it (no new endpoint is in this task's own scope).",
-}
+// var knownUnimplementedGaps is empty as of V7-07A: `listDefinitions` (the
+// last entry it ever held — Screen 3 row 1's "Danh sách definition") was
+// closed by adding GET /definitions/{kind} / GET /projects/{projectId}/
+// definitions/{kind} to internal/delivery/httpapi/definitions, exactly the
+// forcing function TestCheckUXGaps_NoUnresolvedGap's own doc comment
+// predicted ("if a future leaf task closes listDefinitions, this test
+// starts failing... as the forcing function to go delete that now-stale
+// entry"). Kept as a real, typed empty map (not deleted) so uxgap_test.go's
+// own "ACKNOWLEDGED set matches this exact map's own key set" assertion
+// still has something to compare zero findings against, and so the next
+// genuinely-acknowledged gap has an obvious place to land.
+var knownUnimplementedGaps = map[string]string{}
 
 // CheckUXGaps cross-references every UXRow in rows against contract's own
 // registered operationIds, and reports a GapStatus finding for each
