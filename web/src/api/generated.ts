@@ -125,27 +125,6 @@ export function abandonReleaseSet(projectId: string, releaseSetId: string, body:
   return request<AbandonReleaseSetResponse>("POST", `/projects/${projectId}/release-sets/${releaseSetId}/abandon`, body, opts);
 }
 
-export interface AppendConversationAttachmentRequest {
-  workItemId: string;
-  attemptId?: string;
-  role: string;
-  contentType: string;
-  sensitivity: string;
-}
-
-export interface AppendConversationAttachmentResponse {
-  messageId: string;
-  projectId: string;
-  workItemId: string;
-  sequence: number;
-  contentArtifactId: string;
-}
-
-// POST /projects/{projectId}/work-items/{workItemId}/attachments (scope: PROJECT)
-export function appendConversationAttachment(projectId: string, workItemId: string, body: AppendConversationAttachmentRequest, opts: RequestOptions = {}): Promise<AppendConversationAttachmentResponse> {
-  return request<AppendConversationAttachmentResponse>("POST", `/projects/${projectId}/work-items/${workItemId}/attachments`, body, opts);
-}
-
 export interface AppendMessageRequest {
   attemptId?: string;
   role: string;
