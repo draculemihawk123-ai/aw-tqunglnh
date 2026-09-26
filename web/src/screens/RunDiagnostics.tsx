@@ -1,188 +1,180 @@
-import React, { useState } from 'react';
-import { Badge, StatusBadge, Button, CopyableId, OperationNotice, Dialog } from '../components/ui';
-import { AlertTriangle, CheckCircle2, ChevronDown, ChevronRight } from '../components/icons';
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Badge, CopyableId, InlineError, Skeleton, StatusBadge, TextField, Button } from '../components/ui';
+import { AlertTriangle } from '../components/icons';
+import { ApiError, getRunDiagnostics } from '../api/generated';
+import { withSessionToken } from '../api/session';
+import type { RunDiagnosticsResponse } from '../api/diagnostics';
 
-const LAYERS = [
-  {
-    id: 'queue', name: 'Queue', status: 'healthy',
-    detail: 'Job enqueued at 09:48:03. No queue contention.',
-    items: [{ label: 'Job ID', value: 'job-f7a2b3c4', mono: true }, { label: 'Queue depth', value: '0' }],
-  },
-  {
-    id: 'job', name: 'Job', status: 'healthy',
-    detail: 'Job acquired by worker at 09:48:05.',
-    items: [{ label: 'Worker', value: 'worker-01', mono: true }, { label: 'Attempts', value: '1/3' }],
-  },
-  {
-    id: 'lease', name: 'Workspace Lease', status: 'degraded',
-    detail: 'Lease for repo-c3d4 (worker-service) was interrupted. Quarantine triggered at 09:53:12.',
-    items: [{ label: 'Lease ID', value: 'lease-9e8d7c6b', mono: true }, { label: 'State', value: 'INTERRUPTED' }],
-  },
-  {
-    id: 'fence', name: 'Concurrency Fence', status: 'healthy',
-    detail: 'No concurrent runs on overlapping scope.',
-    items: [{ label: 'Fence key', value: 'proj-alpha-001/wi-0018', mono: true }],
-  },
-  {
-    id: 'provider', name: 'Provider', status: 'healthy',
-    detail: 'anthropic/claude-sonnet-4-6 responding. Rate limit: 72% used.',
-    items: [{ label: 'Provider', value: 'anthropic' }, { label: 'Model', value: 'claude-sonnet-4-6' }],
-  },
-  {
-    id: 'workspace', name: 'Workspace', status: 'degraded',
-    detail: 'worker-service scope is quarantined. Reconciliation required before writes can resume.',
-    items: [{ label: 'WorkspaceSet', value: 'ws-a1b2c3d4', mono: true }, { label: 'Generation', value: '3' }],
-  },
-];
+function apiErrorMessage(err: unknown): { code: string; message: string } {
+  if (err instanceof ApiError) return { code: err.code, message: err.message };
+  return { code: 'UNKNOWN', message: err instanceof Error ? err.message : 'unexpected error' };
+}
 
-const CORR_ROWS = [
-  { label: 'Run ID', value: 'run-8f7a2c91' },
-  { label: 'Job ID', value: 'job-f7a2b3c4' },
-  { label: 'Lease ID', value: 'lease-9e8d7c6b' },
-  { label: 'Trace ID', value: 'trace-d4e5f6a7b8c9d0e1' },
-  { label: 'Correlation', value: 'corr-x9y2z3w4-a1b2c3d4' },
-];
+/**
+ * RunDiagnosticsScreen — V7-16's own real "Run diagnostics" (Screen 13 row
+ * 3, docs/design/09-v7-alpha-ui.md V7-16). The design doc is explicit this
+ * screen "reuses Screen 8 row 4's own authority (GetRunDiagnostics) —
+ * shared, never a new aggregate query" and that there is deliberately no
+ * "list every Run needing attention" query anywhere in this system (§6.2).
+ * The old prototype's fake per-run "Execution Layers"/queue/job/lease/
+ * fence/provider/workspace breakdown with its own fake Rebuild/Refresh/
+ * Reconcile actions was invented wholesale — dropped entirely, along with
+ * the unrelated generic projection-freshness banner it borrowed (that is a
+ * cross-cutting V7-04 shell concern, never owned by this screen).
+ *
+ * This screen is reached from a global, project-less nav item (no route
+ * param carries a projectId/runId here — confirmed by reading every real
+ * caller of `onDiagnostics`/`system-diagnostics` in App.tsx/LeftNav.tsx),
+ * so a real operator supplies both IDs directly (the same "you already
+ * have the ID from an alert/support conversation" shape the design doc's
+ * own missing-aggregate note implies) and looks up the exact same real
+ * GetRunDiagnostics data TaskDetail's own OverviewTab/GraphTimelineTab
+ * already fetch — this time also rendering the real OrphanedAttempts/
+ * Providers/Isolation/RepositoryWorkspaces fields (V7-16's own real "job/
+ * lease/recovery diagnostics" line), never rendered by any earlier V7 task,
+ * which were `unknown[]` gaps in web/src/api/diagnostics.ts until this task
+ * hand-declared their real shape.
+ */
+export function RunDiagnosticsScreen({ isOffline = false }: { isOffline?: boolean }) {
+  const [projectId, setProjectId] = useState('');
+  const [runId, setRunId] = useState('');
+  const [lookup, setLookup] = useState<{ projectId: string; runId: string } | null>(null);
 
-type ProjectionState = 'Fresh' | 'Stale' | 'Degraded';
-
-export function RunDiagnosticsScreen({
-  isOffline = false,
-  projectionState = 'Fresh',
-  freshness = 'just now',
-}: {
-  isOffline?: boolean;
-  projectionState?: ProjectionState;
-  freshness?: string;
-}) {
-  const [expanded, setExpanded] = useState<string | null>('lease');
-  const [action, setAction] = useState<'rebuild' | 'refresh' | 'reconcile' | null>(null);
-  const [operation, setOperation] = useState<string | null>(null);
+  const diagQuery = useQuery({
+    queryKey: ['runDiagnosticsLookup', lookup?.projectId, lookup?.runId],
+    queryFn: async () => (await getRunDiagnostics(lookup!.projectId, lookup!.runId, withSessionToken())) as unknown as RunDiagnosticsResponse,
+    enabled: !!lookup && !isOffline,
+  });
 
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-[#E9EDF3]">
       <div className="max-w-4xl mx-auto space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-xl font-semibold text-[#172033]">Run Diagnostics</h1>
-            <p className="text-sm text-[#5D697A] mt-0.5">
-              <span className="font-mono">run-8f7a2c91</span> · platform-core / wi-0018
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <StatusBadge state="RUNNING" entity="workitem" />
-            <span className="text-xs text-[#5D697A]">started 09:48:03</span>
-          </div>
+        <div>
+          <h1 className="text-xl font-semibold text-[#172033]">Run Diagnostics</h1>
+          <p className="text-sm text-[#5D697A] mt-0.5">Look up a specific Run's own real diagnostics by ID — there is no "runs needing attention" list; this reuses the identical authority the Task Detail screen's own Graph &amp; Timeline tab already uses.</p>
         </div>
 
-        {operation && <OperationNotice state="Requested" message="Operation accepted; waiting for the authoritative projection update." ref={operation} />}
-
-        {/* Projection health is driven by the same shell state as the global banner. */}
-        <div className={`flex items-center gap-3 p-3 rounded-[8px] border ${projectionState === 'Fresh' ? 'bg-[#DCFCE7] border-[#86EFAC]' : 'bg-[#FEF3C7] border-[#FCD34D]'}`}>
-          {projectionState === 'Fresh'
-            ? <CheckCircle2 size={16} aria-hidden className="text-[#166534]" />
-            : <AlertTriangle size={16} aria-hidden className="text-[#92400E]" />}
-          <div className="flex-1 min-w-0">
-            <span className={`text-sm font-medium ${projectionState === 'Fresh' ? 'text-[#166534]' : 'text-[#92400E]'}`}>Projection {projectionState}</span>
-            <p className={`text-xs mt-0.5 ${projectionState === 'Fresh' ? 'text-[#166534]' : 'text-[#92400E]'}`}>
-              {projectionState === 'Fresh'
-                ? `Read model is current; last updated ${freshness}.`
-                : projectionState === 'Stale'
-                  ? `Cached read model last updated ${freshness}. Refresh before relying on recent events.`
-                  : 'Projection cursor was interrupted. Some timeline events may be missing.'}
-            </p>
-          </div>
-          {projectionState !== 'Fresh' && (
-            <Button size="compact" intent="quiet" className="text-[#92400E] border-[#FCD34D] flex-shrink-0" disabled={isOffline}
-              onClick={() => setAction(projectionState === 'Degraded' ? 'rebuild' : 'refresh')}>
-              {projectionState === 'Degraded' ? 'Rebuild Projection' : 'Refresh Projection'}
-            </Button>
-          )}
+        <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow p-5 flex items-end gap-3">
+          <div className="flex-1"><TextField label="Project ID" mono value={projectId} onChange={setProjectId} /></div>
+          <div className="flex-1"><TextField label="Run ID" mono value={runId} onChange={setRunId} /></div>
+          <Button intent="primary" disabled={isOffline || !projectId.trim() || !runId.trim()}
+            onClick={() => setLookup({ projectId: projectId.trim(), runId: runId.trim() })}>Look Up</Button>
         </div>
 
-        {/* Layer cards */}
-        <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
-          <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]">
-            <h2 className="text-sm font-semibold text-[#172033]">Execution Layers</h2>
-          </div>
-          <div className="divide-y divide-[#ECEFF4]">
-            {LAYERS.map(layer => (
-              <div key={layer.id}>
-                <button
-                  onClick={() => setExpanded(expanded === layer.id ? null : layer.id)}
-                  className="w-full flex items-center gap-4 px-5 py-4 text-left hover:bg-[#FAFBFC] transition-colors"
-                >
-                  {layer.status === 'healthy' ? <CheckCircle2 size={14} aria-hidden className="text-[#166534]" /> : <AlertTriangle size={14} aria-hidden className="text-[#92400E]" />}
-                  <span className="text-sm font-medium text-[#172033] w-36">{layer.name}</span>
-                  <Badge label={layer.status === 'healthy' ? 'HEALTHY' : 'WARNING'} intent={layer.status === 'healthy' ? 'success' : 'warning'} />
-                  <span className="text-sm text-[#5D697A] flex-1 truncate">{layer.detail}</span>
-                  {expanded === layer.id ? <ChevronDown size={14} aria-hidden className="text-[#475569]" /> : <ChevronRight size={14} aria-hidden className="text-[#475569]" />}
-                </button>
-                {expanded === layer.id && (
-                  <div className="px-5 pb-4 bg-[#FAFBFC] border-t border-[#ECEFF4]">
-                    <div className="grid grid-cols-2 gap-x-8 gap-y-2 mt-3 text-sm">
-                      {layer.items.map(item => (
-                        <div key={item.label}>
-                          <div className="text-xs text-[#5D697A]">{item.label}</div>
-                          {item.mono
-                            ? <CopyableId value={item.value} />
-                            : <div className="text-sm font-medium text-[#172033]">{item.value}</div>}
-                        </div>
-                      ))}
-                    </div>
-                    {layer.status === 'degraded' && (
-                      <div className="mt-3 p-3 rounded-[6px] bg-[#FEF3C7] border border-[#FCD34D] text-xs text-[#92400E]">
-                        <div className="font-medium">WORKSPACE_QUARANTINE</div>
-                        <div className="mt-0.5">{layer.detail}</div>
-                        <div className="mt-2 flex gap-2">
-                          <Button size="compact" intent="quiet" className="text-[#92400E] border-[#FCD34D]" disabled={isOffline} onClick={() => setAction('reconcile')}>Request Reconcile</Button>
-                        </div>
+        {lookup && diagQuery.isPending && (
+          <div aria-hidden><Skeleton className="h-24 w-full" /></div>
+        )}
+        {lookup && diagQuery.isError && (
+          <InlineError {...apiErrorMessage(diagQuery.error)} onRetry={() => diagQuery.refetch()} />
+        )}
+        {diagQuery.data && (
+          <>
+            <div className="flex items-center justify-between">
+              <div>
+                <CopyableId value={diagQuery.data.runId} />
+                <p className="text-[12px] text-[#5D697A] mt-1">{diagQuery.data.projectId} / {diagQuery.data.workItemId}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <StatusBadge state={diagQuery.data.runState} entity="run" />
+                <StatusBadge state={diagQuery.data.workItemStatus} entity="workitem" />
+              </div>
+            </div>
+
+            {diagQuery.data.blockers.length > 0 && (
+              <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
+                <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]"><h2 className="text-sm font-semibold text-[#172033]">Blockers</h2></div>
+                <div className="divide-y divide-[#ECEFF4]">
+                  {diagQuery.data.blockers.map(b => (
+                    <div key={b.blockerId} className="px-5 py-3 flex items-start gap-3">
+                      <AlertTriangle size={14} className="text-[#92400E] flex-shrink-0 mt-0.5" aria-hidden />
+                      <div className="min-w-0">
+                        <span className="font-mono text-[12px] text-[#92400E]">{b.type}</span>
+                        <span className="text-[12px] text-[#475569] ml-2">{b.state}</span>
+                        <p className="text-[13px] text-[#172033] mt-0.5">{b.reason}</p>
                       </div>
-                    )}
-                  </div>
-                )}
+                    </div>
+                  ))}
+                </div>
               </div>
-            ))}
-          </div>
-        </div>
+            )}
 
-        {/* Correlation IDs */}
-        <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
-          <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]">
-            <h2 className="text-sm font-semibold text-[#172033]">Correlation References</h2>
-            <p className="text-xs text-[#5D697A] mt-0.5">Safe identifiers only. No PID, argv, cwd, or secret values.</p>
-          </div>
-          <div className="divide-y divide-[#ECEFF4]">
-            {CORR_ROWS.map(row => (
-              <div key={row.label} className="flex items-center gap-4 px-5 py-3">
-                <span className="text-sm text-[#5D697A] w-32">{row.label}</span>
-                <CopyableId value={row.value} />
+            <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
+              <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]">
+                <h2 className="text-sm font-semibold text-[#172033]">Orphaned Attempts</h2>
+                <p className="text-[12px] text-[#5D697A] mt-0.5">Attempts whose owning job/lease was interrupted — recovery-reaper candidates.</p>
               </div>
-            ))}
-          </div>
-        </div>
+              {diagQuery.data.orphanedAttempts.length === 0 ? (
+                <p className="px-5 py-4 text-[13px] text-[#475569]">No orphaned attempts.</p>
+              ) : (
+                <div className="divide-y divide-[#ECEFF4]">
+                  {diagQuery.data.orphanedAttempts.map(a => (
+                    <div key={a.attemptId} className="px-5 py-3 flex items-center gap-4 flex-wrap text-[12px]">
+                      <CopyableId value={a.attemptId} />
+                      <span className="text-[#475569]">node: <span className="font-mono">{a.nodeRunId}</span></span>
+                      <span className="text-[#475569]">attempt #{a.attemptNumber}</span>
+                      {a.providerKey && <span className="text-[#475569]">provider: <span className="font-mono">{a.providerKey}</span></span>}
+                      {a.hasWriteLease && <Badge label="HOLDS WRITE LEASE" intent="warning" />}
+                    </div>
+                  ))}
+                  {diagQuery.data.orphanedAttemptsTruncated && <p className="px-5 py-2 text-[12px] text-[#475569] italic">Truncated at this response's own limit.</p>}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
+              <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]"><h2 className="text-sm font-semibold text-[#172033]">Providers</h2></div>
+              {diagQuery.data.providers.length === 0 ? (
+                <p className="px-5 py-4 text-[13px] text-[#475569]">No provider diagnostics recorded.</p>
+              ) : (
+                <div className="divide-y divide-[#ECEFF4]">
+                  {diagQuery.data.providers.map(p => (
+                    <div key={p.adapterBuildId} className="px-5 py-3 flex items-center gap-4 flex-wrap text-[12px]">
+                      <span className="font-mono">{p.providerKey}</span>
+                      <CopyableId value={p.adapterBuildId} />
+                      <Badge label={p.providerConfigured ? 'CONFIGURED' : 'NOT CONFIGURED'} intent={p.providerConfigured ? 'success' : 'danger'} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
+              <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]"><h2 className="text-sm font-semibold text-[#172033]">Isolation</h2></div>
+              {diagQuery.data.isolation.length === 0 ? (
+                <p className="px-5 py-4 text-[13px] text-[#475569]">No isolation diagnostics recorded.</p>
+              ) : (
+                <div className="divide-y divide-[#ECEFF4]">
+                  {diagQuery.data.isolation.map((iso, i) => (
+                    <div key={i} className="px-5 py-3 flex items-center gap-4 text-[12px]">
+                      <span className="font-mono">{iso.tier}</span>
+                      <Badge label={iso.enforceable ? 'ENFORCEABLE' : 'NOT ENFORCEABLE'} intent={iso.enforceable ? 'success' : 'danger'} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
+              <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]"><h2 className="text-sm font-semibold text-[#172033]">Repository Workspaces</h2></div>
+              {diagQuery.data.repositoryWorkspaces.length === 0 ? (
+                <p className="px-5 py-4 text-[13px] text-[#475569]">No repository workspaces scoped to this run.</p>
+              ) : (
+                <div className="divide-y divide-[#ECEFF4]">
+                  {diagQuery.data.repositoryWorkspaces.map(rw => (
+                    <div key={rw.repositoryWorkspaceId} className="px-5 py-3 flex items-center gap-4 flex-wrap text-[12px]">
+                      <span className="font-mono">{rw.repositoryId}</span>
+                      <StatusBadge state={rw.state} entity="repository" />
+                      <span className="text-[#475569]">generation <span className="font-mono">{rw.generation}</span></span>
+                      <span className={rw.hasActiveWriteLease ? 'text-[#92400E]' : 'text-[#475569]'}>write lease: {rw.hasActiveWriteLease ? 'active' : 'none'}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
       </div>
-
-      {action && (
-        <Dialog
-          title={action === 'rebuild' ? 'Rebuild Projection' : action === 'refresh' ? 'Refresh Projection' : 'Request Workspace Reconcile'}
-          description={action === 'rebuild'
-            ? 'Rebuild the run projection from its durable journal position.'
-            : action === 'refresh'
-              ? 'Request a fresh projection read from the current durable watermark.'
-              : 'Request reconciliation for the quarantined worker-service workspace.'}
-          onClose={() => setAction(null)}
-          actions={<><Button intent="secondary" onClick={() => setAction(null)}>Cancel</Button><Button intent="primary" onClick={() => {
-            setOperation(action === 'rebuild' ? 'op-projection-4d2a' : action === 'refresh' ? 'op-refresh-6a9e' : 'op-reconcile-7b1c');
-            setAction(null);
-          }}>{action === 'rebuild' ? 'Request rebuild' : action === 'refresh' ? 'Request refresh' : 'Request reconcile'}</Button></>}
-        >
-          <dl className="space-y-2 text-[13px]">
-            <div className="flex gap-3"><dt className="w-32 text-[#475569]">Run</dt><dd><CopyableId value="run-8f7a2c91" /></dd></div>
-            <div className="flex gap-3"><dt className="w-32 text-[#475569]">Target</dt><dd>{action === 'reconcile' ? 'repo-c3d4 / worker-service' : 'projection / journal watermark'}</dd></div>
-            <div className="flex gap-3"><dt className="w-32 text-[#475569]">Current version</dt><dd className="font-mono">3</dd></div>
-          </dl>
-        </Dialog>
-      )}
     </div>
   );
 }

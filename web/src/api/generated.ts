@@ -1242,30 +1242,6 @@ export function submitWaitSignal(runId: string, waitRegistrationId: string, body
   return request<SubmitWaitSignalResponse>("POST", `/runs/${runId}/wait-registrations/${waitRegistrationId}/signal`, body, opts);
 }
 
-export interface UpdateSafeSettingsRequest {
-  ManagedWorkspaceRoot: string;
-  ManagedArtifactRoot: string;
-  EvidenceRetention: number;
-  ProcessOutputLimit: number;
-  ProviderExecutablePath: string;
-  ProviderDefaultModel: string;
-  ProviderCredentialRef: string;
-}
-
-export interface UpdateSafeSettingsResponse {
-  desired: unknown;
-  version: number;
-  updatedAt: string;
-  updatedBy: string;
-  restartRequired: boolean;
-  effective: unknown;
-}
-
-// PUT /settings/safe (scope: INSTALLATION)
-export function updateSafeSettings(body: UpdateSafeSettingsRequest, opts: RequestOptions = {}): Promise<UpdateSafeSettingsResponse> {
-  return request<UpdateSafeSettingsResponse>("PUT", "/settings/safe", body, opts);
-}
-
 export interface ValidateDefinitionDraftRequest {
   content: string;
   format?: string;

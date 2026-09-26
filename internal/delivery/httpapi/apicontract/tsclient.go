@@ -67,6 +67,29 @@ var rawUploadOperations = map[string]bool{
 	"appendConversationAttachment": true,
 }
 
+// customJSONShapeOperations are the OperationIDs whose real request body
+// IS JSON, but not the JSON this generator would produce from Go
+// reflection alone — found while V7-16 became the first-ever real UI
+// caller of updateSafeSettings: its own RequestSchema is registered as
+// `safesettings.SafeSettings{}` (internal/delivery/httpapi/safesettings/
+// routes.go), the real exported domain type, but that type's own fields
+// carry NO json tags at all — its real wire shape comes entirely from a
+// custom MarshalJSON/UnmarshalJSON pair (internal/domain/safesettings/
+// safesettings.go's own private jsonSafeSettings helper: camelCase field
+// names, EvidenceRetention as a Go-syntax duration STRING, never the
+// default opaque nanosecond integer time.Duration itself reflects as).
+// This generator has no way to see through a custom Marshaler — it would
+// emit PascalCase field names with EvidenceRetention typed as a raw
+// number, which the real server's own strict decoder would either reject
+// outright or silently fail to populate at all. Skipped here for the
+// identical reason the two sibling exclusions above are skipped;
+// web/src/api/settings.ts's own hand-written updateSafeSettings is the
+// real caller in its place, using the actual camelCase/duration-string
+// wire contract read directly from the server's own source.
+var customJSONShapeOperations = map[string]bool{
+	"updateSafeSettings": true,
+}
+
 // tsClientPathParamPattern matches a Go 1.22 net/http.ServeMux wildcard
 // segment ("{id}", "{projectId}") the way every path-parameterized route in
 // this registry names one — see route.go's own RouteDescriptor.Path doc
@@ -101,7 +124,8 @@ func GenerateTypeScriptClient(c Contract) []byte {
 	b.WriteString(tsClientPreamble)
 
 	for _, op := range c.Operations {
-		if browserOnlyOperations[op.OperationID] || rawContentOperations[op.OperationID] || rawUploadOperations[op.OperationID] {
+		if browserOnlyOperations[op.OperationID] || rawContentOperations[op.OperationID] ||
+			rawUploadOperations[op.OperationID] || customJSONShapeOperations[op.OperationID] {
 			continue
 		}
 		writeOperation(&b, op)

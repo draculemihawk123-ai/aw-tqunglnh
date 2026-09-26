@@ -1957,3 +1957,102 @@ via a real `aria-live` region.
   dispatch in the page (not a source-code shortcut — the exact same DOM event a real file picker would fire)
   rather than a true native picker interaction.
 
+## V7-16 — Settings and run diagnostics
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md`'s own Thực hiện line: provider/config/retention view via the allow-listed
+safe settings API (or restart-required guidance), plus job/lease/recovery diagnostics — never a live mutation
+of immutable process config. Depends on V7-05 (Doctor, already closed) and V7-12 (Graph & Timeline, already
+closed). Completion bar: a secret value must never round-trip to the browser.
+
+### Decision
+
+**Read the UX design doc's own Screen 13 row table before writing any UI, and found the old prototype's
+`RunDiagnostics.tsx` was almost entirely fabricated.** The design doc's own 3-row Actions/Queries table is
+explicit: row 1/2 are `getSafeSettings`/`updateSafeSettings`; row 3 ("Run diagnostics") literally says
+"*(dùng lại Screen 8 hàng 4)*" — reuses Screen 8's own `GetRunDiagnostics` authority verbatim, "screen này chỉ
+cung cấp bối cảnh cài đặt/provider/retention xung quanh, không định nghĩa một query aggregate riêng" (this
+screen only provides surrounding settings/provider/retention CONTEXT, never a separate aggregate query), and
+§6.2 explicitly states there is **no** "list every Run needing attention" query anywhere in this system by
+design. The old prototype's own fake per-run "Execution Layers" (queue/job/lease/fence/provider/workspace)
+with fake Rebuild/Refresh/Reconcile actions and a borrowed generic projection-freshness banner was invented
+wholesale — confirmed by reading `App.tsx`'s own routing that `system-diagnostics` is a global, project-less
+nav item with no runId ever flowing into it. Dropped the whole fake layer breakdown and its actions entirely;
+"projection rebuild" is explicitly a cross-cutting V7-04 shell concern per the design doc's own §15, never
+owned by this screen.
+
+**Found a real, previously-broken generator bug before writing the Settings screen**: `updateSafeSettings`'s
+own `RequestSchema` is registered as the real `safesettings.SafeSettings` domain type
+(`internal/delivery/httpapi/safesettings/routes.go`), but that type's fields carry **no json tags at all** —
+its real wire shape comes entirely from a custom `MarshalJSON`/`UnmarshalJSON` pair
+(`internal/domain/safesettings/safesettings.go`'s own private `jsonSafeSettings` helper: camelCase field
+names, `EvidenceRetention` as a Go-syntax duration STRING). Go-reflection-based generation cannot see through
+a custom Marshaler — the generated function would have sent PascalCase field names with a raw nanosecond
+number, which the server's own strict decoder would never correctly populate. Added a new
+`customJSONShapeOperations` exclusion set in `tsclient.go` (a third, distinctly-documented sibling to V7-13's
+`rawContentOperations` and V7-15's `rawUploadOperations` — this one is neither raw bytes nor a raw upload,
+but JSON whose real shape Go reflection alone cannot describe) with its own
+`TestGeneratedTypeScriptClient_SkipsCustomJSONShapeOperations` test; `web/src/api/settings.ts`'s own
+hand-written `updateSafeSettings` — using the real camelCase/duration-string wire contract read directly from
+the server's own source — is the real caller in the generated one's place. Also hand-declared the real
+`OrphanedAttemptDiagnostic`/`ProviderDiagnostic`/`IsolationDiagnostic`/`RepositoryWorkspaceDiagnostic` types in
+the already-existing `web/src/api/diagnostics.ts` (widening `RunDiagnosticsResponse`'s own `unknown[]` fields
+that no earlier V7 task ever needed to expand — V7-16's own real "job/lease/recovery diagnostics" line is
+exactly these previously-unrendered fields).
+
+### Execution
+
+Rewrote `SettingsScreen` (`web/src/screens/Settings.tsx`) against real data: real `getSafeSettings`, a real
+Save gated behind a freshly-re-checked `If-Match` (the same "never trust a version read at page-load time"
+discipline every other mutation in this app follows), a real 409-conflict InlineError with Retry (never
+silently retried), and a real "restart required" banner (Alpha has no live-reload path — every non-zero save
+sets it). **Found a real bug live, via manual verification, not caught by any unit test whose own mock had
+simply assumed the wrong behavior**: the draft was pre-filled with `desired.providerCredentialRef` verbatim,
+including the server's own ALWAYS-redacted marker (`matcher.Tagged(redact.Secret, ...)`, real even when the
+underlying reference is empty) — resubmitting that marker unchanged always fails real server validation (it
+contains a disallowed character, being not a valid reference shape either). Fixed with `blankCredentialRef`:
+this one field is never pre-filled into editable draft state, with an explicit on-screen note that
+`UpdateSafeSettings`'s own "always replace the full document" contract means leaving it blank for real does
+clear any currently-configured reference — the operator must always retype the real reference to keep it,
+stated plainly rather than silently.
+
+Rewrote `RunDiagnosticsScreen` (`web/src/screens/RunDiagnostics.tsx`) against real data: a real Project ID +
+Run ID lookup (there is no other way to reach a specific Run's diagnostics, confirmed above), dispatching the
+identical real `getRunDiagnostics` Task Detail's own Graph & Timeline tab already uses, rendering real
+Blockers plus the newly-typed OrphanedAttempts/Providers/Isolation/RepositoryWorkspaces sections — no action
+buttons anywhere on this screen (real actionable recovery already lives on Task Detail; this screen is
+read-only context, per the design doc's own scope).
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 244/244 pass (232 prior + 7 new `SettingsScreen (V7-16)` cases: offline shows a real
+  message without ever fetching; real desired/effective values render, never fabricated; the credential
+  reference is never pre-filled with a real or masked secret value in the editable field even though the
+  read-only audit line still shows the real masked marker; Save uses a freshly re-checked If-Match version,
+  not the one loaded at page-open time; a successful save with `restartRequired: true` announces it; a real
+  409 conflict surfaces as a real InlineError; accessibility smoke — plus 5 new `RunDiagnosticsScreen (V7-16)`
+  cases: no fetch happens until both a real Project ID and Run ID are supplied; a real lookup dispatches the
+  identical `getRunDiagnostics` authority; real orphaned-attempts/providers/isolation data renders; no fake
+  rebuild/refresh/reconcile action ever renders; accessibility smoke).
+- `go build ./...`, `go vet ./...`, `go test ./...`: clean, including
+  `TestGeneratedTypeScriptClient_SkipsCustomJSONShapeOperations` and the regenerated `generated.ts` golden
+  fixture (no route/schema/parity/security-matrix changes were needed — `updateSafeSettings` already existed
+  as a real route; only its generated-client exclusion changed).
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` (no `aw worker` needed — both routes this
+  task consumes are synchronous, no durable job involved): loaded real, never-configured DEFAULT settings;
+  attempted a real Save with an incomplete document and confirmed a real, correctly-field-named 400
+  (`"managedWorkspaceRoot: must not be empty"` — proving the wire shape itself round-tripped correctly, not
+  just that SOME error occurred) — this is exactly where the credential-reference pre-fill bug above was
+  caught live (`"providerCredentialRef: contains disallowed character '['"`), fixed, and re-verified; filled
+  in a real, complete, valid document (discovering live, via a further real 400, that the three provider
+  fields are a real interdependent group — configuring the executable path and model makes the credential
+  reference newly required too) and got a genuine successful save: version incremented 1→2 for real, real
+  `updatedBy: local-operator`, real "restart required" banner, and confirmed the "effective next restart"
+  values correctly stayed unchanged (a real boot-time-only snapshot, never live-reloaded, exactly as
+  documented). Also verified Run Diagnostics dispatches the real route and surfaces a real 404 for a
+  nonexistent Run ID via a real InlineError. Zero unexpected console errors throughout (the only console
+  errors were this session's own deliberate invalid-request/not-found test attempts).
+

@@ -152,7 +152,7 @@ export default function App() {
     }
     if (route === 'project-definitions') return <DefinitionsScreen project={projectSummary} initialScope="project" isOffline={isOffline} />;
     if (route === 'global-definitions') return <DefinitionsScreen project={projectSummary} initialScope="global" isOffline={isOffline} />;
-    if (route === 'system-diagnostics') return <RunDiagnosticsScreen isOffline={isOffline} projectionState={projectionState} freshness={freshness} />;
+    if (route === 'system-diagnostics') return <RunDiagnosticsScreen isOffline={isOffline} />;
     if (route === 'system-settings') return <SettingsScreen isOffline={isOffline} />;
     if (route === 'system-adapters') return <AdapterBuildsScreen isOffline={isOffline} />;
     return (
