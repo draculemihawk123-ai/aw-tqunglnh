@@ -1436,3 +1436,94 @@ carried the real WorkItem ID since V7-09A's own fix, but nothing downstream ever
   "No active run for this WorkItem" and offered Cancel WorkItem from its own authoritative BACKLOG status
   alone, never calling `getRunDiagnostics`. Zero console errors throughout.
 
+## V7-12 — Runtime graph and timeline
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md`'s own Thực hiện line: a read-only graph renderer overlaying the pinned
+WorkflowVersion's own compiled structure (`GET /runs/{id}/graph`) with real NodeRun/Attempt state, an
+accessible list fallback, a timeline with correlation/filter/failure detail (`GET /runs/{id}/timeline`), and
+a `RetryBlockedActivation` action on a blocked activation — showing the real `TerminationReason`, and
+presenting `CancelRun` as the alternative when adapter build drift can never be retried away.
+
+### Decision
+
+`RetryBlockedActivation` has no CancelRun of its own to render inline: `CancelRun` already lives in
+`TaskHeader`'s persistent `ValidActionBar`, visible above every tab including Graph & Timeline. So "trình
+bày CancelRun là valid action thay thế" needed no new UI at all — only an honest message pointing the
+operator at the button that is already right there, rather than duplicating cancel-dispatch logic in a
+second place. Root-caused via `internal/delivery/httpapi/recovery/retry.go` and
+`internal/domain/runtime/termination.go`: `RetryBlockedActivationResponse.failureReason` is a plain string
+from the same closed `TerminationReason` vocabulary; `"ADAPTER_BUILD_DRIFT"` is the one value this task's own
+Thực hiện line names.
+
+Neither `RetryBlockedActivation` nor its own admission blocker's presence needs a client-side "conflict
+refresh" the way Cancel Run/Cancel WorkItem/Resolve Blocker did in V7-11: retrying IS the fresh admission
+re-check (the whole point of the command), and eligibility (`retryBlockedActivation` in a blocker's own
+server-computed `validActions`, from `runDiagnostics` already fetched at the `TaskDetailScreen` root) is
+rendered exactly as server-provided, never re-derived from a node's own displayed state text.
+
+No general graph-layout engine was built. `computeLayout` ranks each node by its longest FLOW-only path
+from a source node (COMPLETION_REWORK edges excluded from ranking, drawn separately as curved dashed
+back-edges) — the smallest rule that places a FORK's own branches side by side at the same rank without a
+rework back-edge ever turning the ranking into a cycle. `nodes`/`possibleEdges` are always the full
+structural set (never paginated, per `run_detail_queries.go`'s own doc comment); `activations`/`takenEdges`
+and timeline `entries` use real `useInfiniteQuery` pagination, accumulated across pages for a correct full
+state overlay on the graph.
+
+### Execution
+
+New file `web/src/api/rundetail.ts`: hand-declared `GraphNodeView`/`GraphEdgeView`/`NodeActivationView`/
+`BranchTokenView`/`TakenEdgeView`/`RunGraphResponse`/`TimelineEntryView`/`RunTimelineResponse` mirroring
+`internal/app/runtime/run_detail_queries.go`'s own view types field-for-field — the same convention every
+sibling API-gap file this session already established.
+
+Rewrote `GraphTimelineTab` in `web/src/screens/TaskDetail.tsx` against real data: an SVG canvas (node color
+by its own most-recent activation's real `state`; possible edges faint, taken edges highlighted, rework
+edges dashed amber) plus a real accessible list toggle, both driven by the same `computeLayout`/state-lookup
+logic. Clicking a node (canvas, mouse-only convenience — see below — or the accessible list's own real
+`<button>` row) filters the Timeline panel to that node's own entries, satisfying "correlation/filter"
+together. Each timeline entry expands to real `TerminationReason`/`FailureCode`/`ProviderKey`/checkpoint/
+timestamp detail when present. A `Retry` button appears only on a node/entry whose current activation is
+named by an OPEN blocker whose own `validActions` include `retryBlockedActivation`; its dialog dispatches
+`retryBlockedActivation(nodeRunId, {reason})` and reports exactly one of its three real outcomes (Retried,
+AlreadyRetried, or a still-failing FailureReason — with the ADAPTER_BUILD_DRIFT case pointing at the header's
+own Cancel Run). Wired into `TaskDetailScreen`'s root: `projectId`/`runId`/`runDiagnostics`/`onActionSettled`
+passed down, `onActionSettled` now also invalidates `runGraph`/`runTimeline`.
+
+**Found and fixed a real accessibility bug via the automated axe smoke test**, not manual browser testing
+this time: giving each SVG node's own `<g>` a real `role="button"`/`tabIndex` (mirroring the OLD prototype's
+own markup) put an interactive control INSIDE an `<svg role="img">` — ARIA treats `img` as one atomic
+picture, so a nested interactive descendant is invalid, and axe flagged both `aria-required-children` and
+`nested-interactive`. Fixed by mirroring `web/src/components/ui.tsx`'s own already-established `Table.
+onRowClick` convention exactly: the canvas's own node click is a MOUSE-ONLY convenience (`aria-hidden`, no
+role, no tabIndex), and the real keyboard-reachable equivalent lives entirely in the Accessible List's own
+real `<button>` rows — never inventing a second, non-standard "this SVG is secretly also a widget" pattern.
+Also fixed a second, identical-shaped violation: the Timeline panel's own `role="list"` container rendered a
+plain `<p>` "No timeline entries yet" as a direct child when empty — moved that message outside the
+`role="list"` element entirely (a `role="list"` may contain only `role="listitem"` children).
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 201/201 pass (197 prior + 4 new `TaskDetail.test.tsx` `GraphTimelineTab` cases: a no-run
+  WorkItem shows a real empty state without ever calling `getRunGraph`; a real fork/join/rework graph renders
+  correctly in both canvas and accessible-list modes with per-node state correctly derived from real
+  activations (an unreached node honestly shows "not yet reached", never a fabricated status); an
+  admission-blocked node offers a real Retry action whose dialog dispatches the real request, and a FAILED
+  retry (`ADAPTER_BUILD_DRIFT`) surfaces the real guidance to use Cancel Run instead — asserted the view
+  still shows exactly one BLOCKED node afterward, never a second fabricated one; accessibility smoke).
+- `pnpm build`: clean. No Go files touched — every route this task consumes already existed.
+- Manual end-to-end verification against a REAL running `aw serve` AND `aw worker`: published and pinned a
+  minimal `START→END` WorkflowVersion (the same one V7-11's own manual verification already used), started a
+  real run, and confirmed the Graph & Timeline tab rendered the real 2-node/1-edge graph with both nodes
+  correctly shown SUCCEEDED and the taken edge highlighted; toggled to the Accessible List and confirmed the
+  same real data rendered there too; expanded a real timeline entry and saw its real `Outcome: next` detail;
+  clicked the `start` node in the accessible list and confirmed the Timeline panel filtered to "Timeline —
+  start" showing only that node's own entry, with a working "Clear filter" control — the real correlation/
+  filter behavior working end to end. A genuine fork/join/rework run and a genuine admission-blocked
+  RetryBlockedActivation scenario both need node kinds (COMMAND with a published command definition, a real
+  registered+drifted AdapterBuild) well beyond a from-scratch manual smoke test's reasonable scope — both
+  stay unit-test-verified only, the same honest scoping boundary V7-11's own manual verification already
+  drew for its own hardest-to-reach path. Zero console errors throughout the reachable path.
+

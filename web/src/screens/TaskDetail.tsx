@@ -1,23 +1,24 @@
 import React, { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Badge, StatusBadge, Button, IconButton, ValidActionBar, BlockerCard,
   CopyableId, VerdictBadge, OperationNotice, Dialog, Skeleton, Select, TextField,
   InlineError, ToastViewport, useToasts,
 } from '../components/ui';
 import {
-  AlertTriangle, Maximize2, ZoomIn, ZoomOut, ListTree,
+  AlertTriangle, ListTree,
   CheckCircle2, ChevronDown, ChevronRight, FileDiff, FileText, ScrollText, Cpu, User,
 } from '../components/icons';
 import type { NavRoute } from '../components/shell/LeftNav';
 import {
-  ApiError, cancelRun, cancelWorkItem, getRunDiagnostics, getTaskFamily, getWorkItem,
-  getWorkItemProjectedDetail, resolveWorkItemBlocker,
+  ApiError, cancelRun, cancelWorkItem, getRunDiagnostics, getRunGraph, getRunTimeline, getTaskFamily,
+  getWorkItem, getWorkItemProjectedDetail, resolveWorkItemBlocker, retryBlockedActivation,
 } from '../api/generated';
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
 import type { KanbanCard, WorkItemProjectedDetailResponse } from '../api/kanban';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
+import type { GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView } from '../api/rundetail';
 import { withSessionToken } from '../api/session';
 
 function apiErrorMessage(err: unknown): { code: string; message: string } {
@@ -415,54 +416,168 @@ function OverviewTab({ workItem, runDiagnostics }: { workItem?: GetWorkItemRespo
 
 // ─── Graph & Timeline Tab ─────────────────────────────────────────────────────
 
-type GNodeState = 'DONE' | 'RUNNING' | 'WAITING' | 'PENDING' | 'FAILED' | 'BLOCKED';
-interface GNode { id: string; kind: string; label: string; state: GNodeState; x: number; y: number }
-interface GEdge { from: string; to: string; kind?: 'normal' | 'rework'; label?: string }
+/**
+ * computeLayout ranks each node by its longest FLOW-only path from a
+ * source (in-degree 0) node — COMPLETION_REWORK edges are excluded from
+ * ranking (V7-12's own "graph renderer read-only" scope never asks for a
+ * general graph-layout engine; this is the smallest rule that places a
+ * FORK's own branches side by side at the same rank and never lets a
+ * rework back-edge turn the ranking into a cycle). A node FLOW edges never
+ * reach (should not happen for a real compiled WorkflowVersion) falls back
+ * to one rank past the deepest real one rather than crashing.
+ */
+function computeLayout(nodes: GraphNodeView[], edges: GraphEdgeView[]): Record<string, { x: number; y: number }> {
+  const flowEdges = edges.filter(e => e.kind !== 'COMPLETION_REWORK');
+  const outAdj = new Map<string, string[]>();
+  const inDegree = new Map<string, number>();
+  for (const n of nodes) { outAdj.set(n.key, []); inDegree.set(n.key, 0); }
+  for (const e of flowEdges) {
+    outAdj.get(e.from)?.push(e.to);
+    inDegree.set(e.to, (inDegree.get(e.to) ?? 0) + 1);
+  }
+  const rank = new Map<string, number>();
+  const remaining = new Map(inDegree);
+  const queue: string[] = [];
+  for (const n of nodes) if ((inDegree.get(n.key) ?? 0) === 0) { rank.set(n.key, 0); queue.push(n.key); }
+  for (let i = 0; i < queue.length; i++) {
+    const key = queue[i];
+    for (const to of outAdj.get(key) ?? []) {
+      rank.set(to, Math.max(rank.get(to) ?? 0, (rank.get(key) ?? 0) + 1));
+      const d = (remaining.get(to) ?? 0) - 1;
+      remaining.set(to, d);
+      if (d === 0) queue.push(to);
+    }
+  }
+  const maxRank = Math.max(0, ...[...rank.values()]);
+  for (const n of nodes) if (!rank.has(n.key)) rank.set(n.key, maxRank + 1);
 
-const GRAPH_NODES: GNode[] = [
-  { id: 'START',       kind: 'START',        label: 'Start',         state: 'DONE',    x: 95,  y: 30  },
-  { id: 'AGENT_01',    kind: 'AGENT',        label: 'Plan Changes',  state: 'DONE',    x: 65,  y: 110 },
-  { id: 'FORK_01',     kind: 'FORK',         label: 'Fork',          state: 'DONE',    x: 95,  y: 195 },
-  { id: 'AGENT_02a',   kind: 'AGENT',        label: 'Impl: core-api',state: 'DONE',    x: 15,  y: 275 },
-  { id: 'AGENT_02b',   kind: 'AGENT',        label: 'Impl: worker',  state: 'DONE',    x: 120, y: 275 },
-  { id: 'JOIN_01',     kind: 'JOIN',         label: 'Join',          state: 'DONE',    x: 95,  y: 360 },
-  { id: 'MGATE',       kind: 'MACHINE_GATE', label: 'Verify Tests',  state: 'FAILED',  x: 65,  y: 440 },
-  { id: 'APPROVAL_01', kind: 'APPROVAL',     label: 'Approval',      state: 'WAITING', x: 65,  y: 525 },
-  { id: 'END',         kind: 'END',          label: 'End',           state: 'PENDING', x: 95,  y: 610 },
-];
+  const byRank = new Map<number, string[]>();
+  for (const n of nodes) {
+    const r = rank.get(n.key)!;
+    if (!byRank.has(r)) byRank.set(r, []);
+    byRank.get(r)!.push(n.key);
+  }
+  const positions: Record<string, { x: number; y: number }> = {};
+  const rowHeight = 90, colWidth = 140;
+  for (const [r, keys] of byRank) {
+    keys.forEach((key, i) => { positions[key] = { x: i * colWidth + 60, y: r * rowHeight + 30 }; });
+  }
+  return positions;
+}
 
-const GRAPH_EDGES: GEdge[] = [
-  { from: 'START',    to: 'AGENT_01' },
-  { from: 'AGENT_01', to: 'FORK_01' },
-  { from: 'FORK_01',  to: 'AGENT_02a' },
-  { from: 'FORK_01',  to: 'AGENT_02b' },
-  { from: 'AGENT_02a',to: 'JOIN_01' },
-  { from: 'AGENT_02b',to: 'JOIN_01' },
-  { from: 'JOIN_01',  to: 'MGATE' },
-  { from: 'MGATE',    to: 'APPROVAL_01', label: 'REVIEW' },
-  { from: 'MGATE',    to: 'AGENT_01', kind: 'rework', label: 'REWORK' },
-  { from: 'APPROVAL_01', to: 'END' },
-];
+const STRUCTURAL_KINDS = new Set(['START', 'END', 'FORK', 'JOIN']);
 
-const NODE_BG:   Record<GNodeState, string> = { DONE: '#DCFCE7', RUNNING: '#EDE9FE', WAITING: '#FEF3C7', PENDING: '#F1F5F9', FAILED: '#FEE2E2', BLOCKED: '#FEE2E2' };
-const NODE_BD:   Record<GNodeState, string> = { DONE: '#86EFAC', RUNNING: '#C4B5FD', WAITING: '#FCD34D', PENDING: '#CBD5E1', FAILED: '#FCA5A5', BLOCKED: '#FCA5A5' };
-const NODE_TEXT: Record<GNodeState, string> = { DONE: '#166534', RUNNING: '#5B21B6', WAITING: '#92400E', PENDING: '#475569', FAILED: '#991B1B', BLOCKED: '#991B1B' };
+const NODE_STYLE: Record<string, { bg: string; bd: string; fc: string }> = {
+  '':          { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#475569' }, // not yet reached
+  PENDING:     { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#475569' },
+  READY:       { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#475569' },
+  QUEUED:      { bg: '#DBEAFE', bd: '#93C5FD', fc: '#1E40AF' },
+  RUNNING:     { bg: '#EDE9FE', bd: '#C4B5FD', fc: '#5B21B6' },
+  WAITING:     { bg: '#FEF3C7', bd: '#FCD34D', fc: '#92400E' },
+  BLOCKED:     { bg: '#FEE2E2', bd: '#FCA5A5', fc: '#991B1B' },
+  SUCCEEDED:   { bg: '#DCFCE7', bd: '#86EFAC', fc: '#166534' },
+  FAILED:      { bg: '#FEE2E2', bd: '#FCA5A5', fc: '#991B1B' },
+  SKIPPED:     { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#5D697A' },
+  CANCELLED:   { bg: '#F1F5F9', bd: '#CBD5E1', fc: '#5D697A' },
+};
 
-const TIMELINE_EVENTS = [
-  { id: 'e1', time: '09:48:03', type: 'RUN_STARTED',         node: null,          actor: 'local-operator', detail: 'Run created; workspace provisioning started.' },
-  { id: 'e2', time: '09:48:07', type: 'NODE_STARTED',        node: 'START',       actor: 'runtime',        detail: 'Start node activated.' },
-  { id: 'e3', time: '09:49:19', type: 'NODE_COMPLETED',      node: 'AGENT_01',    actor: 'anthropic',      detail: 'Plan Changes completed in 1 m 12 s.' },
-  { id: 'e4', time: '09:49:21', type: 'FORK_ACTIVATED',      node: 'FORK_01',     actor: 'runtime',        detail: 'Parallel branches AGENT_02a and AGENT_02b started.' },
-  { id: 'e5', time: '09:52:08', type: 'NODE_COMPLETED',      node: 'JOIN_01',     actor: 'runtime',        detail: 'Join: both branches completed.' },
-  { id: 'e6', time: '09:53:44', type: 'MACHINE_GATE_FAILED', node: 'MGATE',       actor: 'runtime',        detail: 'Verification completed: 47 PASS, 1 FAIL in worker-service.' },
-  { id: 'e7', time: '09:53:48', type: 'APPROVAL_WAITING',    node: 'APPROVAL_01', actor: 'runtime',        detail: 'Waiting for operator decision on partial ReleaseSet recovery.' },
-];
+interface GraphTimelineTabProps {
+  projectId: string;
+  runId?: string;
+  runDiagnostics?: RunDiagnosticsResponse;
+  isOffline?: boolean;
+  onActionSettled: () => void;
+}
 
-function GraphTimelineTab() {
-  const [selectedNode, setSelectedNode] = useState('APPROVAL_01');
+function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActionSettled }: GraphTimelineTabProps) {
+  const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
-  const [expandedEvent, setExpandedEvent] = useState<string | null>(null);
-  const W = 245, H = 670;
+  const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
+  const [retrying, setRetrying] = useState<{ nodeRunId: string; nodeKey: string } | null>(null);
+  const [retryReason, setRetryReason] = useState('');
+  const { toasts, show, dismiss } = useToasts();
+
+  const graphQuery = useInfiniteQuery({
+    queryKey: ['runGraph', projectId, runId],
+    queryFn: async ({ pageParam }) => {
+      const q: Record<string, string> = { limit: '200' };
+      if (pageParam) q.cursor = pageParam;
+      return (await getRunGraph(runId!, { ...withSessionToken(), query: q })) as unknown as RunGraphResponse;
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: last => last.nextCursor,
+    enabled: !isOffline && !!runId,
+  });
+
+  const timelineQuery = useInfiniteQuery({
+    queryKey: ['runTimeline', projectId, runId],
+    queryFn: async ({ pageParam }) => {
+      const q: Record<string, string> = { limit: '200' };
+      if (pageParam) q.cursor = pageParam;
+      return (await getRunTimeline(runId!, { ...withSessionToken(), query: q })) as unknown as RunTimelineResponse;
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: last => last.nextCursor,
+    enabled: !isOffline && !!runId,
+  });
+
+  const retryMutation = useMutation({
+    mutationFn: () => retryBlockedActivation(retrying!.nodeRunId, { reason: retryReason.trim() }, withSessionToken()),
+    onSuccess: result => {
+      setRetrying(null);
+      setRetryReason('');
+      if (result.retried) {
+        show({ intent: 'success', message: `Retry accepted — a fresh activation (${result.reactivatedNodeRunId}) was scheduled.` });
+      } else if (result.alreadyRetried) {
+        show({ intent: 'info', message: 'This activation was already retried by an earlier call.' });
+      } else if (result.failureReason === 'ADAPTER_BUILD_DRIFT') {
+        show({ intent: 'danger', message: 'Retry cannot recover this adapter build drift. Use Cancel Run in the header above instead.', duration: 0 });
+      } else {
+        show({ intent: 'danger', message: `Retry still fails: ${result.failureReason}${result.failureDetail ? ' — ' + result.failureDetail : ''}`, duration: 0 });
+      }
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  if (!runId) {
+    return <div className="flex-1 flex items-center justify-center bg-[#E9EDF3]"><p className="text-[13px] text-[#475569]">No run to graph — this WorkItem has never started one.</p></div>;
+  }
+  if (graphQuery.isPending || timelineQuery.isPending) {
+    return <div className="flex-1 p-4 space-y-2" aria-hidden><Skeleton className="h-24 w-full" /><Skeleton className="h-24 w-full" /></div>;
+  }
+  if (graphQuery.isError) {
+    return <div className="p-4"><InlineError {...apiErrorMessage(graphQuery.error)} onRetry={() => graphQuery.refetch()} /></div>;
+  }
+
+  const nodes = graphQuery.data!.pages[0].nodes;
+  const possibleEdges = graphQuery.data!.pages[0].possibleEdges;
+  const activations = graphQuery.data!.pages.flatMap(p => p.activations);
+  const entries = timelineQuery.data?.pages.flatMap(p => p.entries) ?? [];
+  const positions = computeLayout(nodes, possibleEdges);
+
+  const latestActivationByNode = new Map<string, NodeActivationView>();
+  for (const a of activations) {
+    const current = latestActivationByNode.get(a.nodeKey);
+    if (!current || a.activationSequence > current.activationSequence) latestActivationByNode.set(a.nodeKey, a);
+  }
+
+  // The one admission blocker (if any) RetryBlockedActivation may act on —
+  // server-provided (blocker.validActions), never inferred from a node's
+  // own displayed state text (the design doc's own "không suy action từ
+  // status text" line, applied here exactly as V7-11's TaskHeader already
+  // applies it to CancelRun/CancelWorkItem).
+  const retryableByNodeRunId = new Map<string, BlockerDiagnostic>();
+  for (const b of runDiagnostics?.blockers ?? []) {
+    if (b.state === 'OPEN' && b.sourceNodeRunId && b.validActions.some(a => a.operationId === 'retryBlockedActivation')) {
+      retryableByNodeRunId.set(b.sourceNodeRunId, b);
+    }
+  }
+
+  const maxX = Math.max(160, ...Object.values(positions).map(p => p.x)) + 100;
+  const maxY = Math.max(90, ...Object.values(positions).map(p => p.y)) + 60;
+
+  const timelineEntries = selectedNodeKey ? entries.filter(e => e.nodeKey === selectedNodeKey) : entries;
 
   return (
     <div className="flex-1 flex overflow-hidden">
@@ -471,9 +586,7 @@ function GraphTimelineTab() {
         <div className="flex items-center justify-between px-4 py-2 border-b border-[#CDD5DF] bg-[#F3F5F8]">
           <span className="text-[12px] font-semibold text-[#475569]">Workflow Graph</span>
           <div className="flex gap-1">
-            <IconButton label="Zoom in"><ZoomIn size={14} aria-hidden /></IconButton>
-            <IconButton label="Zoom out"><ZoomOut size={14} aria-hidden /></IconButton>
-            <IconButton label="Fit to view"><Maximize2 size={14} aria-hidden /></IconButton>
+            {selectedNodeKey && <Button size="compact" intent="quiet" onClick={() => setSelectedNodeKey(null)}>Clear filter ({selectedNodeKey})</Button>}
             <Button size="compact" intent={showList ? 'primary' : 'quiet'} onClick={() => setShowList(!showList)}>
               <ListTree size={13} aria-hidden /> {showList ? 'Canvas' : 'Accessible List'}
             </Button>
@@ -482,27 +595,37 @@ function GraphTimelineTab() {
         {showList ? (
           <div className="flex-1 overflow-y-auto p-4" aria-label="Accessible workflow graph list">
             <ol className="space-y-2">
-              {GRAPH_NODES.map(node => (
-                <li key={node.id}>
-                <button type="button" aria-pressed={selectedNode === node.id}
-                  onClick={() => setSelectedNode(node.id)}
-                  className={`w-full text-left p-3 rounded-[8px] border cursor-pointer transition-colors ${selectedNode === node.id ? 'bg-[#EEF2FF] border-[#C7D2FE]' : 'bg-white border-[#CDD5DF] hover:border-[#AAB4C3]'}`}>
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono text-[12px] text-[#475569]">{node.kind}</span>
-                    <span className="text-[13px] font-medium text-[#172033]">{node.label}</span>
-                    <StatusBadge state={node.state} entity="workitem" />
-                  </div>
-                  <div className="text-[12px] text-[#475569] mt-1">
-                    {GRAPH_EDGES.filter(e => e.to === node.id).map(e => `← ${e.from}${e.label ? ` (${e.label})` : ''}`).join(' · ')}
-                    {GRAPH_EDGES.filter(e => e.from === node.id).map(e => ` → ${e.to}${e.label ? ` (${e.label})` : ''}`).join(' · ')}
-                  </div>
-                </button></li>
-              ))}
+              {nodes.map(node => {
+                const activation = latestActivationByNode.get(node.key);
+                const retryable = activation ? retryableByNodeRunId.get(activation.nodeRunId) : undefined;
+                return (
+                  <li key={node.key}>
+                    <button type="button" aria-pressed={selectedNodeKey === node.key}
+                      onClick={() => setSelectedNodeKey(selectedNodeKey === node.key ? null : node.key)}
+                      className={`w-full text-left p-3 rounded-[8px] border cursor-pointer transition-colors ${selectedNodeKey === node.key ? 'bg-[#EEF2FF] border-[#C7D2FE]' : 'bg-white border-[#CDD5DF] hover:border-[#AAB4C3]'}`}>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-mono text-[12px] text-[#475569]">{node.type}</span>
+                        <span className="text-[13px] font-medium text-[#172033]">{node.key}</span>
+                        {activation && <StatusBadge state={activation.state} entity="workitem" />}
+                        {!activation && <span className="text-[12px] text-[#475569]">not yet reached</span>}
+                      </div>
+                      <div className="text-[12px] text-[#475569] mt-1">
+                        {possibleEdges.filter(e => e.to === node.key).map(e => `← ${e.from}${e.outcome ? ` (${e.outcome})` : ''}`).join(' · ')}
+                        {possibleEdges.filter(e => e.from === node.key).map(e => ` → ${e.to} (${e.outcome})`).join(' · ')}
+                      </div>
+                    </button>
+                    {retryable && activation && (
+                      <Button size="compact" intent="secondary" className="mt-1.5" disabled={isOffline}
+                        onClick={() => { setRetrying({ nodeRunId: activation.nodeRunId, nodeKey: node.key }); setRetryReason(''); }}>Retry</Button>
+                    )}
+                  </li>
+                );
+              })}
             </ol>
           </div>
         ) : (
           <div className="flex-1 overflow-auto bg-[#FAFBFC]">
-            <svg width={W} height={H} className="mx-auto mt-4" role="img" aria-label="Workflow graph for run run-8f7a2c91">
+            <svg width={maxX} height={maxY} className="mx-auto mt-4" role="img" aria-label={`Workflow graph for run ${runId}`}>
               <defs>
                 <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                   <path d="M 0 0 L 10 5 L 0 10 z" fill="#AAB4C3" />
@@ -510,37 +633,52 @@ function GraphTimelineTab() {
                 <marker id="arr-rw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
                   <path d="M 0 0 L 10 5 L 0 10 z" fill="#FCD34D" />
                 </marker>
+                <marker id="arr-taken" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#3659E3" />
+                </marker>
               </defs>
-              {GRAPH_EDGES.map((e, i) => {
-                const f = GRAPH_NODES.find(n => n.id === e.from)!;
-                const t = GRAPH_NODES.find(n => n.id === e.to)!;
-                const rw = e.kind === 'rework';
+              {possibleEdges.map((e, i) => {
+                const f = positions[e.from], t = positions[e.to];
+                if (!f || !t) return null;
+                const rw = e.kind === 'COMPLETION_REWORK';
+                const taken = (graphQuery.data?.pages.flatMap(p => p.takenEdges ?? []) ?? []).some(te => te.edgeKey === e.key || (te.fromNodeKey === e.from && te.outcome === e.outcome));
                 const x1 = f.x + 55, y1 = f.y + 24, x2 = t.x + 55, y2 = t.y;
                 const path = rw
                   ? `M ${x1} ${y1} C ${x1 - 70} ${y1 + 50}, ${x2 - 70} ${y2 - 50}, ${x2} ${y2}`
                   : `M ${x1} ${y1} L ${x2} ${y2}`;
+                const stroke = rw ? '#FCD34D' : taken ? '#3659E3' : '#CDD5DF';
                 return (
-                  <g key={i}>
-                    <path d={path} stroke={rw ? '#FCD34D' : '#CDD5DF'} strokeWidth={1.5}
+                  <g key={e.key || i}>
+                    <path d={path} stroke={stroke} strokeWidth={taken ? 2 : 1.5}
                       strokeDasharray={rw ? '5,3' : undefined} fill="none"
-                      markerEnd={`url(#${rw ? 'arr-rw' : 'arr'})`} />
-                    {e.label && <text x={(x1 + x2) / 2 + (rw ? -60 : 4)} y={(y1 + y2) / 2}
-                      fontSize="12" fill={rw ? '#92400E' : '#5D697A'} fontFamily="JetBrains Mono, monospace">{e.label}</text>}
+                      markerEnd={`url(#${rw ? 'arr-rw' : taken ? 'arr-taken' : 'arr'})`} />
+                    <text x={(x1 + x2) / 2 + (rw ? -60 : 4)} y={(y1 + y2) / 2}
+                      fontSize="12" fill={rw ? '#92400E' : '#5D697A'} fontFamily="JetBrains Mono, monospace">{e.outcome}</text>
                   </g>
                 );
               })}
-              {GRAPH_NODES.map(node => {
-                const sel = selectedNode === node.id;
-                const round = ['START', 'END', 'FORK', 'JOIN'].includes(node.kind);
-                const bg = NODE_BG[node.state], bd = NODE_BD[node.state], fc = NODE_TEXT[node.state];
+              {nodes.map(node => {
+                const pos = positions[node.key];
+                if (!pos) return null;
+                const activation = latestActivationByNode.get(node.key);
+                const sel = selectedNodeKey === node.key;
+                const round = STRUCTURAL_KINDS.has(node.type);
+                const style = NODE_STYLE[activation?.state ?? ''] ?? NODE_STYLE[''];
                 return (
-                  <g key={node.id} onClick={() => setSelectedNode(node.id)} style={{ cursor: 'pointer' }} role="button" aria-label={`${node.kind} ${node.label} — ${node.state}`} tabIndex={0} onKeyDown={e => e.key === 'Enter' && setSelectedNode(node.id)}>
+                  // Mouse-only convenience, the same documented pattern ui.tsx's own
+                  // Table.onRowClick uses: never role="button"/tabIndex here, since
+                  // the outer <svg role="img"> is a single read-only picture and
+                  // ARIA forbids nesting an interactive control inside it. The real,
+                  // keyboard-reachable equivalent (select a node to filter the
+                  // timeline) lives in the Accessible List's own real <button> rows.
+                  <g key={node.key} onClick={() => setSelectedNodeKey(sel ? null : node.key)} style={{ cursor: 'pointer' }}
+                    aria-hidden>
                     {round
-                      ? <circle cx={node.x + 55} cy={node.y + 12} r={22} fill={bg} stroke={sel ? '#3659E3' : bd} strokeWidth={sel ? 2.5 : 1.5} />
-                      : <rect x={node.x} y={node.y} width={110} height={46} rx="8" fill={bg} stroke={sel ? '#3659E3' : bd} strokeWidth={sel ? 2.5 : 1.5} />
+                      ? <circle cx={pos.x + 55} cy={pos.y + 12} r={22} fill={style.bg} stroke={sel ? '#3659E3' : style.bd} strokeWidth={sel ? 2.5 : 1.5} />
+                      : <rect x={pos.x} y={pos.y} width={110} height={46} rx="8" fill={style.bg} stroke={sel ? '#3659E3' : style.bd} strokeWidth={sel ? 2.5 : 1.5} />
                     }
-                    <text x={node.x + 55} y={node.y + (round ? 8 : 17)} textAnchor="middle" fontSize="12" fontWeight="500" fill={fc} fontFamily="Inter, sans-serif">{node.kind}</text>
-                    <text x={node.x + 55} y={node.y + (round ? 22 : 33)} textAnchor="middle" fontSize="12" fill={fc} fontFamily="Inter, sans-serif">{node.label}</text>
+                    <text x={pos.x + 55} y={pos.y + (round ? 8 : 17)} textAnchor="middle" fontSize="12" fontWeight="500" fill={style.fc} fontFamily="Inter, sans-serif">{node.type}</text>
+                    <text x={pos.x + 55} y={pos.y + (round ? 22 : 33)} textAnchor="middle" fontSize="12" fill={style.fc} fontFamily="Inter, sans-serif">{node.key}</text>
                   </g>
                 );
               })}
@@ -552,31 +690,69 @@ function GraphTimelineTab() {
       <div className="w-1 bg-[#E9EDF3] border-x border-[#CDD5DF] cursor-col-resize flex-shrink-0" aria-hidden title="Resize panels" />
       {/* Timeline panel — 42% */}
       <div className="flex flex-col overflow-hidden" style={{ flex: '0 0 42%', minWidth: 0 }}>
-        <div className="px-4 py-2 border-b border-[#CDD5DF] bg-[#F3F5F8]">
-          <span className="text-[12px] font-semibold text-[#475569]">Timeline</span>
+        <div className="px-4 py-2 border-b border-[#CDD5DF] bg-[#F3F5F8] flex items-center justify-between">
+          <span className="text-[12px] font-semibold text-[#475569]">Timeline{selectedNodeKey ? ` — ${selectedNodeKey}` : ''}</span>
         </div>
+        {timelineEntries.length === 0 && <p className="text-[12px] text-[#475569] p-3">No timeline entries yet.</p>}
         <div className="flex-1 overflow-y-auto p-3 space-y-1" role="list" aria-label="Run timeline">
-          {TIMELINE_EVENTS.map(ev => (
-            <div key={ev.id} role="listitem">
-              <button
-                onClick={() => setExpandedEvent(expandedEvent === ev.id ? null : ev.id)}
-                className="w-full flex items-center gap-3 px-3 py-2.5 text-left rounded-[6px] border border-[#ECEFF4] bg-white hover:border-[#CDD5DF] transition-colors"
-              >
-                <span className="font-mono text-[12px] text-[#475569] flex-shrink-0 w-16">{ev.time}</span>
-                <span className="font-mono text-[12px] text-[#475569] flex-shrink-0 truncate">{ev.type}</span>
-                {ev.node && <span className="text-[12px] px-1.5 py-0.5 bg-[#EEF2FF] text-[#3659E3] rounded-[4px] flex-shrink-0">{ev.node}</span>}
-                <span className="text-[12px] text-[#172033] truncate flex-1 text-right">{ev.detail}</span>
-              </button>
-              {expandedEvent === ev.id && (
-                <div className="mx-3 border-x border-b border-[#ECEFF4] rounded-b-[6px] px-3 py-2 bg-[#FAFBFC] text-[12px] text-[#475569]">
-                  <div>Actor: <span className="font-mono text-[#172033]">{ev.actor}</span></div>
-                  <div className="mt-1">Causation: <span className="font-mono text-[#475569]">corr-{ev.id}-f7a2b3c4</span></div>
-                </div>
-              )}
-            </div>
-          ))}
+          {timelineEntries.map((ev, i) => {
+            const retryable = ev.kind === 'NODE_RUN' ? retryableByNodeRunId.get(ev.nodeRunId) : undefined;
+            const failed = ev.attemptState && ['FAILED', 'TIMED_OUT', 'LOST', 'INDETERMINATE'].includes(ev.attemptState);
+            return (
+              <div key={i} role="listitem">
+                <button
+                  onClick={() => setExpandedEntry(expandedEntry === i ? null : i)}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 text-left rounded-[6px] border border-[#ECEFF4] bg-white hover:border-[#CDD5DF] transition-colors"
+                >
+                  <span className="font-mono text-[12px] text-[#475569] flex-shrink-0 w-10">#{ev.activationSequence}</span>
+                  <span className="font-mono text-[12px] text-[#475569] flex-shrink-0 truncate">{ev.kind}{ev.attemptNumber ? ` #${ev.attemptNumber}` : ''}</span>
+                  <span className="text-[12px] px-1.5 py-0.5 bg-[#EEF2FF] text-[#3659E3] rounded-[4px] flex-shrink-0">{ev.nodeKey}</span>
+                  <span className={`text-[12px] truncate flex-1 text-right ${failed ? 'text-[#991B1B]' : 'text-[#172033]'}`}>{ev.kind === 'NODE_RUN' ? ev.nodeState : ev.attemptState}</span>
+                </button>
+                {expandedEntry === i && (
+                  <div className="mx-3 border-x border-b border-[#ECEFF4] rounded-b-[6px] px-3 py-2 bg-[#FAFBFC] text-[12px] text-[#475569] space-y-1">
+                    {ev.selectedOutcome && <div>Outcome: <span className="font-mono text-[#172033]">{ev.selectedOutcome}</span></div>}
+                    {ev.blockReason && <div>Block reason: <span className="text-[#991B1B]">{ev.blockReason}</span></div>}
+                    {ev.reactivationReason && <div>Reactivation: <span className="font-mono text-[#172033]">{ev.reactivationReason}</span></div>}
+                    {ev.providerKey && <div>Provider: <span className="font-mono text-[#172033]">{ev.providerKey}</span></div>}
+                    {ev.terminationReason && <div>Termination reason: <span className="font-mono text-[#991B1B]">{ev.terminationReason}</span></div>}
+                    {ev.failureCode && <div>Failure code: <span className="font-mono text-[#991B1B]">{ev.failureCode}</span></div>}
+                    {ev.lastCheckpointId && <div>Last checkpoint: <span className="font-mono text-[#172033]">{ev.lastCheckpointId}</span></div>}
+                    {ev.startedAt && <div>Started: {new Date(ev.startedAt).toLocaleString()}</div>}
+                    {ev.finishedAt && <div>Finished: {new Date(ev.finishedAt).toLocaleString()}</div>}
+                    {retryable && ev.kind === 'NODE_RUN' && (
+                      <Button size="compact" intent="secondary" disabled={isOffline}
+                        onClick={() => { setRetrying({ nodeRunId: ev.nodeRunId, nodeKey: ev.nodeKey }); setRetryReason(''); }}>Retry</Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
+
+      {retrying && (
+        <Dialog
+          title="Retry Blocked Activation"
+          description="Retrying re-checks admission fresh — it never assumes the blocker's own cause has been fixed. A still-failing retry leaves the existing blocker open, unresolved."
+          onClose={() => setRetrying(null)}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => setRetrying(null)} disabled={retryMutation.isPending}>Cancel</Button>
+              <Button intent="primary" loading={retryMutation.isPending} disabled={isOffline || !retryReason.trim()} onClick={() => retryMutation.mutate()}>Retry</Button>
+            </>
+          }
+        >
+          <dl className="text-[13px] space-y-1.5 mb-3">
+            <div className="flex gap-3"><dt className="text-[#475569] w-24">Node</dt><dd className="font-mono text-[12px]">{retrying.nodeKey}</dd></div>
+            <div className="flex gap-3"><dt className="text-[#475569] w-24">NodeRun</dt><dd><CopyableId value={retrying.nodeRunId} /></dd></div>
+          </dl>
+          <TextField label="Reason" required value={retryReason} onChange={setRetryReason} placeholder="Why this activation is being retried" />
+          {retryMutation.isError && <div className="mt-2"><InlineError {...apiErrorMessage(retryMutation.error)} /></div>}
+        </Dialog>
+      )}
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }
@@ -1192,6 +1368,8 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
     queryClient.invalidateQueries({ queryKey: ['taskFamily', projectId, familyId] });
     queryClient.invalidateQueries({ queryKey: ['workItemProjectedDetail', workItemId] });
     queryClient.invalidateQueries({ queryKey: ['runDiagnostics', projectId, activeRunId] });
+    queryClient.invalidateQueries({ queryKey: ['runGraph', projectId, activeRunId] });
+    queryClient.invalidateQueries({ queryKey: ['runTimeline', projectId, activeRunId] });
     queryClient.invalidateQueries({ queryKey: ['kanban', projectId] });
   };
 
@@ -1205,7 +1383,9 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       />
       <div id="workitem-tab-panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} />}
-      {activeTab === 'task-graph'      && <GraphTimelineTab />}
+      {activeTab === 'task-graph'      && (
+        <GraphTimelineTab projectId={projectId} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled} />
+      )}
       {activeTab === 'task-workspace'  && <WorkspaceTab isOffline={isOffline} />}
       {activeTab === 'task-evidence'   && <EvidenceTab />}
       {activeTab === 'task-chat'       && <ChatTab isOffline={isOffline} />}
