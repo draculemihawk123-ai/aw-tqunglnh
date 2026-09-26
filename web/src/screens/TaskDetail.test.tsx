@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { expectNoAxeViolations } from '../test/axe';
 import * as api from '../api/generated';
+import * as workspaceinspection from '../api/workspaceinspection';
 import { TaskDetailScreen } from './TaskDetail';
 
 vi.mock('../api/generated', async () => {
@@ -14,9 +15,14 @@ vi.mock('../api/generated', async () => {
     getWorkItem: vi.fn(), getTaskFamily: vi.fn(), getWorkItemProjectedDetail: vi.fn(), getRunDiagnostics: vi.fn(),
     cancelRun: vi.fn(), cancelWorkItem: vi.fn(), resolveWorkItemBlocker: vi.fn(),
     getRunGraph: vi.fn(), getRunTimeline: vi.fn(), retryBlockedActivation: vi.fn(),
+    getWorkspaceSetState: vi.fn(), getWorkspaceDiff: vi.fn(), getWorkspaceRepositoryLog: vi.fn(), requestWorkspaceReconciliation: vi.fn(),
   };
 });
 vi.mock('../api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));
+vi.mock('../api/workspaceinspection', async () => {
+  const actual = await vi.importActual<typeof import('../api/workspaceinspection')>('../api/workspaceinspection');
+  return { ...actual, fetchWorkspaceSource: vi.fn() };
+});
 
 function render(ui: ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
@@ -325,6 +331,184 @@ describe('GraphTimelineTab (V7-12)', () => {
     vi.mocked(api.getRunTimeline).mockResolvedValue({ runId: 'run-1', entries: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' } } as never);
     const { container } = renderGraphTab();
     await screen.findByRole('img', { name: /Workflow graph/ });
+    await expectNoAxeViolations(container);
+  });
+});
+
+function renderWorkspaceTab() {
+  return render(<TaskDetailScreen projectId="proj-1" projectName="platform-core" workItemId="wi-1" activeTab="task-workspace" onTabChange={vi.fn()} />);
+}
+
+function repoFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    repositoryWorkspaceId: 'rw-1', workspaceSetId: 'ws-1', repositoryId: 'core-api', generation: 3,
+    state: 'READY', version: 5, branchRef: 'main', baseRevision: 'aaaa1111aaaa', currentRevision: 'bbbb2222bbbb',
+    hasActiveWriteLease: false, validActions: [{ operationId: 'requestWorkspaceReconciliation', scopeKind: 'PROJECT', targetVersion: 5 }],
+    ...overrides,
+  };
+}
+
+const REPO_B_QUARANTINED = repoFixture({
+  repositoryWorkspaceId: 'rw-2', repositoryId: 'worker-service', generation: 2, state: 'QUARANTINED', version: 7,
+  baseRevision: 'cccc3333cccc', currentRevision: 'dddd4444dddd', lastProvisionErrorCode: 'SCOPE_VIOLATION',
+  validActions: [{ operationId: 'requestWorkspaceReconciliation', scopeKind: 'PROJECT', targetVersion: 7 }],
+});
+
+const REPO_C_NO_REVISION = repoFixture({
+  repositoryWorkspaceId: 'rw-3', repositoryId: 'stale-repo', generation: 1, state: 'PROVISIONING', version: 1,
+  baseRevision: undefined, currentRevision: undefined, validActions: [],
+});
+
+describe('WorkspaceTab (V7-13)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getTaskFamily).mockResolvedValue(FAMILY as never);
+    vi.mocked(api.getWorkItem).mockResolvedValue({
+      workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+      status: 'ACTIVE', version: 4, contract: null,
+    } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail() } as never);
+  });
+
+  it('multi-repo: renders every real repository workspace as its own tab, and switching tabs never dispatches a mutation', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture(), REPO_B_QUARANTINED], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    renderWorkspaceTab();
+
+    expect(await screen.findByRole('button', { name: /core-api revision bbbb2222bb/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /worker-service revision dddd4444dd, quarantined/ })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: /worker-service revision/ }));
+    expect(await screen.findByText('SCOPE_VIOLATION')).toBeInTheDocument();
+    expect(api.requestWorkspaceReconciliation).not.toHaveBeenCalled();
+    expect(api.cancelWorkItem).not.toHaveBeenCalled();
+  });
+
+  it('binary/large output: a binary diff file shows "binary" instead of a +/- count, and a binary source fetch never renders decoded content', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture()], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: true, patchTruncated: false,
+      files: [
+        { path: 'src/renamed-module.ts', additions: 3, deletions: 1, binary: false },
+        { path: 'assets/logo.png', additions: 0, deletions: 0, binary: true },
+      ],
+    } as never);
+    vi.mocked(workspaceinspection.fetchWorkspaceSource).mockResolvedValue({
+      content: '', totalBytes: 2_000_000, lineCount: 0, byteLimit: 262144, lineLimit: 2000, truncated: false, binary: true,
+      revision: 'bbbb2222bbbb', workspaceGeneration: 3,
+    } as never);
+    renderWorkspaceTab();
+
+    expect(await screen.findByText('src/renamed-module.ts')).toBeInTheDocument();
+    expect(screen.getByText('FILES TRUNCATED', { selector: 'span[aria-hidden]' })).toBeInTheDocument();
+    const binaryRow = screen.getByText('assets/logo.png').closest('div')!;
+    expect(within(binaryRow).getByText('binary')).toBeInTheDocument();
+
+    await userEvent.click(within(screen.getByText('src/renamed-module.ts').closest('div')!).getByRole('button', { name: 'View Source' }));
+    await waitFor(() => expect(workspaceinspection.fetchWorkspaceSource).toHaveBeenCalledWith('proj-1', 'rw-1', expect.objectContaining({ path: 'src/renamed-module.ts', revision: 'bbbb2222bbbb' })));
+    expect(await screen.findByText(/Binary file \(2000000 bytes\)/)).toBeInTheDocument();
+  });
+
+  it('stale/no-revision: a repository workspace with no recorded revision shows an honest message and never calls diff or log', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'REQUESTED', version: 1, hasBaseRevisionSet: false,
+      repositoryWorkspaces: [REPO_C_NO_REVISION], validActions: [],
+    } as never);
+    renderWorkspaceTab();
+
+    expect(await screen.findByText('This repository workspace has no revision recorded yet.')).toBeInTheDocument();
+    expect(api.getWorkspaceDiff).not.toHaveBeenCalled();
+    expect(api.getWorkspaceRepositoryLog).not.toHaveBeenCalled();
+  });
+
+  it('scope violation: a real ErrScopeMismatch-mapped error surfaces as a real InlineError, never a crash', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture()], validActions: [],
+    } as never);
+    const { ApiError } = await vi.importActual<typeof import('../api/generated')>('../api/generated');
+    vi.mocked(api.getWorkspaceDiff).mockRejectedValue(new ApiError(404, 'RESOURCE_HIDDEN', 'not found'));
+    renderWorkspaceTab();
+
+    expect(await screen.findByText('not found')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+
+  it('a real quarantined repository with the reconcile action offers Request Reconcile, and dispatches it for real', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [REPO_B_QUARANTINED], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    vi.mocked(api.requestWorkspaceReconciliation).mockResolvedValue({
+      repositoryWorkspaceId: 'rw-2', projectId: 'proj-1', state: 'RECONCILING', reconciliationJobId: 'job-1',
+    } as never);
+    renderWorkspaceTab();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Request Reconcile' }));
+    await waitFor(() => expect(api.requestWorkspaceReconciliation).toHaveBeenCalledWith('proj-1', 'rw-2', {}, expect.objectContaining({ ifMatch: '"7"' })));
+  });
+
+  it('log: paginates real repository-log entries via Load more', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture()], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    vi.mocked(api.getWorkspaceRepositoryLog)
+      .mockResolvedValueOnce({
+        anchor: {}, limit: 1, byteLimit: 1000, truncated: false, nextCursor: 'cursor-2',
+        entries: [{ commitId: 'commit-one-long-hash', parentIds: [], authorName: 'Ada', authorEmail: 'ada@example.invalid', authoredAt: '2026-09-26T00:00:00Z', subject: 'First commit', subjectTruncated: false }],
+      } as never)
+      .mockResolvedValueOnce({
+        anchor: {}, limit: 1, byteLimit: 1000, truncated: false,
+        entries: [{ commitId: 'commit-two-long-hash', parentIds: ['commit-one-long-hash'], authorName: 'Ada', authorEmail: 'ada@example.invalid', authoredAt: '2026-09-26T01:00:00Z', subject: 'Second commit', subjectTruncated: false }],
+      } as never);
+    renderWorkspaceTab();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Log' }));
+    expect(await screen.findByText('First commit')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('Second commit')).toBeInTheDocument();
+  });
+
+  it('never renders any control that could execute a command in the workspace', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture()], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    renderWorkspaceTab();
+    await screen.findByRole('button', { name: /core-api revision/ });
+
+    expect(screen.queryByRole('textbox', { name: /command/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /run|execute|terminal|shell/i })).not.toBeInTheDocument();
+  });
+
+  it('has no automated accessibility violations once loaded', async () => {
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture()], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+    const { container } = renderWorkspaceTab();
+    await screen.findByRole('button', { name: /core-api revision/ });
     await expectNoAxeViolations(container);
   });
 });

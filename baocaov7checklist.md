@@ -1527,3 +1527,99 @@ plain `<p>` "No timeline entries yet" as a direct child when empty — moved tha
   stay unit-test-verified only, the same honest scoping boundary V7-11's own manual verification already
   drew for its own hardest-to-reach path. Zero console errors throughout the reachable path.
 
+## V7-13 — Workspace and source/diff/log viewers
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md`'s own Thực hiện line: repository tabs with a safe, bounded read-only
+source/diff/log viewer, per-repository revision/scope/lease/quarantine status, and a reconcile link — no
+browser terminal in Alpha. Backend routes were V6-10B (`getWorkspaceSetState`/`getRepositoryWorkspaceState`/
+`requestWorkspaceReconciliation`) and V6-10D (`getWorkspaceSource`/`getWorkspaceDiff`/
+`getWorkspaceRepositoryLog`, `internal/delivery/httpapi/workspaceinspection`) — both already closed, so this
+was expected to be a pure UI consumer task.
+
+### Decision
+
+**Found a real, provable backend gap before writing any UI**, not by reading the parity ledger (this gap was
+never pinned there) but by reading `internal/adapters/gitworktree.Provider.authorizeRevision`'s own source:
+`GET .../diff` can only ever authorize a request against a workspace's own two known-good revisions —
+`BaseRevision` or `CurrentRevision` — never an arbitrary third commit. `workspacestate.RepositoryWorkspaceState`
+(V6-10B's own read model) exposed `CurrentRevision` but never `BaseRevision` at all — a caller had no way to
+ever request the one meaningful diff this workspace can produce ("what changed since provisioning"). Fixed
+with the smallest possible additive change: added `BaseRevision string` to `RepositoryWorkspaceState`
+(`internal/app/workspacestate/queries.go`, sourced from the domain aggregate's own already-real
+`RepositoryWorkspace.BaseRevision` field — no new persistence, no new query) and to
+`repositoryWorkspaceStateResponse` (`internal/delivery/httpapi/workspacestate.go`). Regenerated both golden
+fixtures (`testdata/golden/contract.json`, `web/src/api/generated.ts`) via the documented recipe.
+
+**Found a second real bug in the generated TypeScript client itself**, this task being the first-ever real
+caller of `getWorkspaceSource`: its real response is a raw byte stream (`Content-Type`/
+`Content-Disposition`/`ETag` plus custom `X-Aw-Source-*` headers —
+`internal/delivery/httpapi/workspaceinspection/source.go`'s own `writeSourceContent`), never a JSON envelope
+— but `request()`'s shared helper unconditionally `await`s `res.json()` on success, and the generator had no
+way to know `ResponseSchema: struct{}{}` meant "genuinely raw bytes" here versus "JSON, just an undeclared
+schema" the way several `catalog` routes already (knowingly) use the identical schema value. Every real
+caller of the generated `getWorkspaceSource()` function would always throw a JSON-parse error on real
+content. Fixed in `internal/delivery/httpapi/apicontract/tsclient.go`: a new `rawContentOperations` set
+(mirroring `browserOnlyOperations`'s own established precedent one line above it) now makes the generator
+skip emitting a function for `getWorkspaceSource` and evidence's identically-shaped `getArtifactContent`
+(V6-07B, no real UI caller yet — fixed proactively so V7-14 never rediscovers the identical trap) — a caller
+hand-writes its own real `fetch()` instead. `web/src/api/workspaceinspection.ts`'s own `fetchWorkspaceSource`
+is that one hand-written real fetch, parsing the real response headers into a typed `SourceContentResult`.
+
+ReleaseSet actions (Seal/Abandon/Local Commit/Release) are the prototype's own fake UI in the old
+`WorkspaceTab` — dropped wholesale rather than left as dead buttons, since they are V7-13A's own separate,
+not-yet-reached scope (its own dependency line: "Phụ thuộc: V7-13, V6-10F").
+
+### Execution
+
+New file `web/src/api/workspaceinspection.ts`: hand-declared `WorkspaceSetState`/`RepositoryWorkspaceState`/
+`DiffContent`/`DiffFileChange`/`RepositoryLogPage`/`RepositoryLogEntry` mirroring
+`internal/delivery/httpapi/workspacestate.go`'s and `.../workspaceinspection/dto.go`'s own DTOs
+field-for-field (the usual "narrow `unknown` at the call site" gap), plus `decodeDiffPatch` (the diff
+response's own `patch` field is base64, Go's standard `[]byte` JSON encoding) and `fetchWorkspaceSource`
+described above.
+
+Rewrote `WorkspaceTab` in `web/src/screens/TaskDetail.tsx` against real data: real per-repository tabs from
+`getWorkspaceSetState`'s own `repositoryWorkspaces` (switching tabs only ever sets local component state,
+never dispatches anything — the design doc's own "focus repo không thay runtime scope" bar, verified by a
+dedicated test asserting no mutation function is ever called on tab switch); real per-repository status
+(State/Generation/BranchRef/BaseRevision/CurrentRevision/HasActiveWriteLease) with a real "Reconcile" button
+shown only when the server's own `validActions` include `requestWorkspaceReconciliation`; a real Diff viewer
+(file list with real additions/deletions/binary flags, "View Source" jumping straight into the Source tab
+pre-filled with that path, the decoded patch text with real +/-/@@ highlighting, real
+`filesTruncated`/`patchTruncated` badges); a real Source viewer (operator types a path — no directory-listing
+query exists on the backend, so there is honestly no file-tree browser — or arrives via "View Source"; a real
+Base/Current revision selector; binary content shown as a byte count, never decoded as text); a real Log
+viewer with real `useInfiniteQuery` "Load more" pagination. No command-execution control exists anywhere in
+this tab, satisfying "không browser terminal trong Alpha" by construction, not by omission alone — a
+dedicated test asserts no such control is ever rendered.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`, `go test ./internal/app/workspacestate/... ./internal/delivery/... ./internal/archtest/...`: clean, including two new/updated `queries_test.go` assertions that `BaseRevision`
+  round-trips distinct from `CurrentRevision`, and two new `tsclient_golden_test.go` cases
+  (`TestGeneratedTypeScriptClient_SkipsRawContentOperations` mirroring the existing browser-only-operations
+  test).
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 209/209 pass (201 prior + 8 new `WorkspaceTab` cases covering the Verify line's own
+  fixtures: multi-repo tab rendering with no mutation dispatched on switch; a binary diff file showing
+  "binary" instead of a +/- count, and a binary source fetch never rendering decoded content; a
+  no-revision-yet repository workspace showing an honest message without ever calling diff/log; a real
+  `ErrScopeMismatch`-shaped error surfacing as a real `InlineError` instead of crashing; a real Reconcile
+  dispatch with the correct `If-Match`; real log pagination via Load more; an assertion that no
+  command-execution control is ever rendered; accessibility smoke — the accessibility test itself caught a
+  real `aria-selected`-on-a-plain-`<button>` violation, fixed to `aria-pressed`).
+- `pnpm build`: clean, no dynamic-import warning (an early draft's dynamic `import('./generated')` for the
+  error path was replaced with a plain static import once `pnpm build` flagged it as pointless).
+- Manual end-to-end verification against a REAL running `aw serve` AND `aw worker`: registered two real local
+  git repositories (one with two real commits) and created one real WorkItem scoped to both, giving two real
+  provisioned RepositoryWorkspaces. Confirmed the real `baseRevision` field is genuinely present in the live
+  `GET .../workspace-sets/{familyId}` response (proving the backend fix), switched between both real repo
+  tabs (only GET requests fired, no mutation), loaded a real file's real content in the Source viewer
+  (`export const a = 2;`, confirming `fetchWorkspaceSource`'s own hand-written fetch works against real raw
+  bytes — the exact path the generated client could never have handled), viewed the real two-commit
+  repository log with real author/timestamp/subject data, and dispatched a real Reconcile
+  (`POST .../reconcile` → 200, toast reporting the real "entering READY" state). Zero console errors
+  throughout.
+

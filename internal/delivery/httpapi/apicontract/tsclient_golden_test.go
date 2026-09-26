@@ -60,6 +60,25 @@ func TestGeneratedTypeScriptClient_SkipsBrowserOnlyOperations(t *testing.T) {
 	}
 }
 
+// TestGeneratedTypeScriptClient_SkipsRawContentOperations mirrors
+// TestGeneratedTypeScriptClient_SkipsBrowserOnlyOperations exactly, for the
+// other reason a generated function would be actively misleading: a route
+// whose real response is raw bytes, never JSON (tsclient.go's own
+// rawContentOperations doc comment).
+func TestGeneratedTypeScriptClient_SkipsRawContentOperations(t *testing.T) {
+	contract := buildRealContract(t)
+	got := string(GenerateTypeScriptClient(contract))
+
+	for op := range rawContentOperations {
+		if !hasOperationID(contract, op) {
+			t.Fatalf("test fixture assumption broken: contract no longer has operationId %q", op)
+		}
+		if strings.Contains(got, "export function "+op+"(") {
+			t.Fatalf("generated client emitted a callable function for raw-content operation %q", op)
+		}
+	}
+}
+
 func hasOperationID(c Contract, id string) bool {
 	for _, op := range c.Operations {
 		if op.OperationID == id {

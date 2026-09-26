@@ -84,7 +84,7 @@ func mustSeedWorkspaceSet(t *testing.T, uow ports.UnitOfWork, projectID, familyI
 				return err
 			}
 			rw.State = spec.State
-			rw.CurrentRevision = "base-sha"
+			rw.CurrentRevision = "current-sha"
 			persisted, err := tx.Work().CreateRepositoryWorkspace(ctx, rw)
 			if err != nil {
 				return err
@@ -133,6 +133,12 @@ func TestGetWorkspaceSetState_HappyPath_ReturnsSetAndEveryRepositoryWorkspace(t 
 	for _, rw := range state.RepositoryWorkspaces {
 		if rw.HasActiveWriteLease {
 			t.Fatalf("repository workspace %s: HasActiveWriteLease = true, want false (fake.WorkRepository never models write_leases — see its own doc comment)", rw.RepositoryWorkspaceID)
+		}
+		if rw.BaseRevision != "base-sha" {
+			t.Fatalf("repository workspace %s: BaseRevision = %q, want %q (the workspace's own immutable provisioning revision, distinct from CurrentRevision)", rw.RepositoryWorkspaceID, rw.BaseRevision, "base-sha")
+		}
+		if rw.CurrentRevision != "current-sha" {
+			t.Fatalf("repository workspace %s: CurrentRevision = %q, want %q", rw.RepositoryWorkspaceID, rw.CurrentRevision, "current-sha")
 		}
 		switch rw.State {
 		case workspace.RepositoryWorkspaceReady:
@@ -199,6 +205,12 @@ func TestGetRepositoryWorkspaceState_HappyPath_ReturnsExactRow(t *testing.T) {
 	}
 	if state.State != workspace.RepositoryWorkspaceReady {
 		t.Fatalf("State = %q, want READY", state.State)
+	}
+	if state.BaseRevision != "base-sha" {
+		t.Fatalf("BaseRevision = %q, want base-sha", state.BaseRevision)
+	}
+	if state.CurrentRevision != "current-sha" {
+		t.Fatalf("CurrentRevision = %q, want current-sha", state.CurrentRevision)
 	}
 	if state.HasActiveWriteLease {
 		t.Fatal("HasActiveWriteLease = true, want false")
