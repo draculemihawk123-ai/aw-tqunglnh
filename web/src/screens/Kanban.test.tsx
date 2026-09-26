@@ -13,6 +13,7 @@ vi.mock('../api/generated', async () => {
   return {
     ...actual,
     listWorkItemKanban: vi.fn(), getWorkItemProjectedDetail: vi.fn(), markWorkItemReady: vi.fn(),
+    createRootWorkItem: vi.fn(), projectRepositoriesList: vi.fn().mockResolvedValue({ repositories: [] }),
   };
 });
 vi.mock('../api/session', () => ({ withSessionToken: (opts: object = {}) => ({ ...opts, token: 'test-session-token' }) }));
@@ -123,6 +124,23 @@ describe('KanbanScreen', () => {
 
     expect(await screen.findByText(/missing acceptance criteria/)).toBeInTheDocument();
     expect(api.markWorkItemReady).not.toHaveBeenCalled();
+  });
+
+  it('the New WorkItem button opens the real create dialog', async () => {
+    vi.mocked(api.listWorkItemKanban).mockResolvedValue({ items: [BACKLOG_CARD], freshness: freshness() } as never);
+    render(<KanbanScreen project={PROJECT} onOpenTask={vi.fn()} />);
+    await screen.findByText('Migrate auth tokens to JWT RS256');
+
+    await userEvent.click(screen.getByRole('button', { name: 'New WorkItem' }));
+
+    expect(screen.getByRole('dialog', { name: 'Create WorkItem' })).toBeInTheDocument();
+    expect(await screen.findByLabelText(/Title/)).toBeInTheDocument();
+  });
+
+  it('the New WorkItem button is disabled while offline', () => {
+    vi.mocked(api.listWorkItemKanban).mockResolvedValue({ items: [], freshness: freshness() } as never);
+    render(<KanbanScreen project={PROJECT} onOpenTask={vi.fn()} isOffline />);
+    expect(screen.getByRole('button', { name: 'New WorkItem' })).toBeDisabled();
   });
 
   it('has no automated accessibility violations once loaded', async () => {

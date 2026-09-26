@@ -1260,3 +1260,77 @@ still-fake screen — V7-11's own scope — but the URL it is opened at now carr
   risk level is required; no executable acceptance criterion is present...") instead of ever attempting
   the mutation — proving the safety property end to end with real data, not just the happy path.
 
+## V7-10 — Create root WorkItem form
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md`'s own line for this task: a Create WorkItem form that collects "WHAT/DONE/
+scope/out-of-scope/workflow version" for a root (and child) WorkItem, backed by the real
+`internal/app/work.CreateRootWorkItem`/`CreateChildWorkItem` commands V6-04B already built (see
+`internal/app/work/contract.go`'s own doc comment — the contract is carried at creation time but never
+judged for completeness there; that stays `MarkWorkItemReady`'s job, exactly as V7-09A's Kanban screen
+already established).
+
+### Decision
+
+Scoped to root-WorkItem creation only this task. Child-WorkItem creation
+(`createChildWorkItem`, whose own "effective scope must be a subset of the parent's" constraint needs a
+real parent task's own already-loaded scope to build a meaningful "subset" picker against) is deliberately
+deferred to V7-11, where a real Task Detail screen will actually have that context — the same "defer a
+sub-feature until its own screen exists" pattern V7-06A already used for pack assignment.
+
+The generated TS client's `CreateRootWorkItemRequest.initialScope`/`.contract` come back as `unknown`/
+`unknown[]` (workitem's own DTOs nest one level deeper than `apicontract`'s shallow generator expands) — a
+new hand-declared `web/src/api/work.ts` mirrors `dto.go`'s `scopeGrantBody`/`acceptanceCriterionBody`/
+`workItemContractBody` field-for-field, the same "narrow `unknown` at the call site" convention every
+sibling API-gap file this session already established. `RiskLevel` is a plain required text field, not a
+picker — `internal/domain/work/work.go`'s own doc comment says the domain never validates it against a
+fixed vocabulary.
+
+### Execution
+
+New file `web/src/screens/CreateWorkItemDialog.tsx`: Title (required), a repeatable Initial Scope
+grant-row editor (Repository selected from the project's real ACTIVE repositories via the already-existing
+`projectRepositoriesList` query, Access READ/WRITE, optional comma-separated Path scopes, required Reason —
+at least one grant required before Create is enabled), and an optional "Add a readiness contract now"
+section (Schema version, Behavior, a repeatable Acceptance Criteria editor, Verification spec, Risk level,
+comma-separated Exclusions, Workflow version ID) calling `createRootWorkItem(projectId, body,
+withSessionToken())`. Real per-field diagnostics render from `ApiError.details` exactly like
+`DefinitionEditorDialog`'s own established pattern. Wired into `Kanban.tsx` as a new "New WorkItem" button
+next to the repository filter; a successful create invalidates the `['kanban', project.id]` query and shows
+a toast with the real created `workItemId`.
+
+**Found a real form-completeness gap via manual testing**, not caught by any automated test: the domain's
+`ValidateReadinessGate` requires `SchemaVersion` be a positive integer (`internal/domain/work/work.go:422`),
+but the form as first written had no field for it at all — a WorkItem created through this dialog, even
+with every other contract field genuinely filled in (Behavior, an executable Acceptance Criterion with a
+VerificationRef, Verification spec, Risk level), could *never* pass Mark Ready's fresh recheck, permanently
+blocked on "schema version must be positive" with no way to cure it from the UI. Fixed by adding a "Schema
+version" field (a plain positive-integer text input defaulting to `"1"`, parsed and omitted from the
+request — not sent as `0` or `NaN` — when blank or non-positive, since a partial contract is legitimate at
+creation per `WorkItemContractRequest.Validate()`'s own doc comment).
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 190/190 pass (181 prior + 7 new `CreateWorkItemDialog.test.tsx` tests — ACTIVE-only
+  repository picker, required-field validation blocking submission before any API call, a real
+  `CreateRootWorkItemRequest` shape with no contract, a real contract carrying WHAT/DONE/out-of-scope/
+  workflow-version/schema-version fields, an invalid schema version omitted rather than sent as garbage,
+  real per-field `ApiError.details` diagnostics, accessibility smoke — + 2 new `Kanban.test.tsx` cases: the
+  New WorkItem button opens the real dialog, and it is disabled while offline).
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` AND `aw worker`: created a real project
+  and a real local git repository entirely through the existing UI (probed straight to ACTIVE), then used
+  this task's own new dialog to create three real root WorkItems through the browser — no contract at all
+  (confirmed Mark Ready correctly refused it with the real problem list, unchanged from V7-09A's own
+  established behavior), a contract missing only SchemaVersion (this task's own bug, described above,
+  caught live before the fix), and a fully-specified contract with schema version 1 and an executable
+  acceptance criterion — confirmed via the real network log that `mark-ready` actually returned success and
+  the card genuinely moved BACKLOG → READY on the board. Also observed (not a bug): a newly-created
+  WorkItem does not appear on the board for roughly one to two seconds after the create dialog closes,
+  because the projection consumer that turns the just-appended journal event into a queryable kanban row
+  runs asynchronously (`--projection-interval`, default 500 ms) — the same eventual-consistency model
+  `ProjectionBanner`/`Freshness` already document for this screen; a manual refresh (or, in real usage, the
+  existing SSE-driven cache invalidation from V7-04B) resolves it, so no code change was made for it.
+

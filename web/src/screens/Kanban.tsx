@@ -8,8 +8,9 @@ import {
   Badge, Button, CopyableId, InlineError, ProjectionBanner, Skeleton, StatusBadge,
   ToastViewport, useToasts,
 } from '../components/ui';
-import { AlertTriangle } from '../components/icons';
+import { AlertTriangle, Plus } from '../components/icons';
 import type { ProjectSummary } from './Projects';
+import { CreateWorkItemDialog } from './CreateWorkItemDialog';
 
 interface Props {
   project: ProjectSummary;
@@ -49,6 +50,7 @@ function apiErrorMessage(err: unknown): { code: string; message: string } {
 export function KanbanScreen({ project, onOpenTask, isOffline = false }: Props) {
   const [repoFilter, setRepoFilter] = useState<string>('ALL');
   const [markingReady, setMarkingReady] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
   const { toasts, show, dismiss } = useToasts();
   const queryClient = useQueryClient();
 
@@ -112,7 +114,20 @@ export function KanbanScreen({ project, onOpenTask, isOffline = false }: Props) 
             {allRepositoryIds.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
+        <Button size="compact" intent="primary" icon={<Plus size={13} aria-hidden />} disabled={isOffline} onClick={() => setCreating(true)}>New WorkItem</Button>
       </div>
+
+      {creating && (
+        <CreateWorkItemDialog
+          projectId={project.id}
+          onClose={() => setCreating(false)}
+          onCreated={result => {
+            setCreating(false);
+            queryClient.invalidateQueries({ queryKey: ['kanban', project.id] });
+            show({ intent: 'success', message: `${result.workItemId} created.` });
+          }}
+        />
+      )}
 
       {latestFreshness && (
         <ProjectionBanner state={freshnessState} journalPosition={latestFreshness.asOfJournalPosition} onRefresh={() => query.refetch()} />
