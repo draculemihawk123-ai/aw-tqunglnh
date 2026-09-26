@@ -691,3 +691,81 @@ an array ELEMENT'S shape rather than a top-level response's.
   REST API) still returns raw JSON directly while `GET /ui/doctor` and a DIFFERENT deep link
   (`GET /ui/projects`) both correctly serve the real SPA shell with real rendered data — verified via the
   actual network request log, not just visual inspection.
+
+## V7-05B — Adapter build probe → confirm → register (ADR-022)
+
+### Context
+
+V7-05A shipped the Doctor screen's read-only half (checks, registered-builds list) and explicitly
+deferred the mutating half: `docs/design/09-v7-alpha-ui.md` V7-05's own line requires "cung cấp action
+probe → xác nhận → đăng ký theo ADR-022" — Doctor must let the operator run the whole ADR-022 registration
+flow from the browser, not just view its outcome. The backend side of this (`internal/app/adapterbuild`,
+`internal/delivery/httpapi/adapterbuild`, `internal/delivery/cli/adapterbuild`) was already fully built
+and tested in V6 (V6-10I/V6-10J) — this task is a pure UI consumer of an existing, hardened surface.
+
+### Decision
+
+Mirror `aw adapter probe`/`aw adapter register`'s own real flag set (read directly from
+`internal/delivery/cli/adapterbuild/probe.go`/`register.go`) as a two-step dialog rather than a single
+combined form: the underlying protocol is genuinely two separate commands with a real operator decision
+in between (ADR-022 point 2: "Hiển thị candidate fingerprint... Operator xác nhận"). Step 1 collects every
+field `ProbeRequest` needs and calls `POST /adapter-builds/probe`; step 2 shows the SERVER-MEASURED
+candidate token (never a client-side guess) read-only, and "Confirm & register" calls `POST
+/adapter-builds` with the token echoed back byte-for-byte plus the SAME capability-manifest object step 1
+already built — never re-typed, since `RegisterAdapterBuild` re-hashes and rejects on any mismatch
+(`ErrCapabilityManifestDrift`), so a second editable copy would only invite an accidental rejection.
+
+### Execution — a second real, previously-undiscovered gap (same category as V7-05A's routing bug)
+
+Before writing any UI, traced how a mutation actually reaches the wire: `web/src/api/generated.ts`'s
+generated `request()` helper (`internal/delivery/httpapi/apicontract/tsclient.go`) attached
+`X-Aw-Session-Token` for a mutation but **never attached `Idempotency-Key` at all** —
+`httpapi.RequireIdempotencyKey` (`internal/delivery/httpapi/commandenvelope.go`) rejects any mutation
+missing that header with 400. Every V7 screen shipped through V7-05A only ever called GET endpoints
+(`doctor`, `listAdapterBuilds`), so this was invisible until now: V7-05B is the first screen to call a
+real mutation from the browser, and it would have 400'd on its very first submit. Fixed at the generator
+(`tsclient.go`'s `tsClientPreamble`): a non-safe request now sends `Idempotency-Key:
+crypto.randomUUID()` unless the caller passes `opts.idempotencyKey` explicitly (mirrors `aw`'s own CLI
+mutations, which generate one when `--idempotency-key` is omitted — same default behavior, two
+transports). Regenerated `web/src/api/generated.ts` via the documented golden-fixture recipe (temporary
+`zzregen_test.go`, deleted after use) — an additive-only diff (new `idempotencyKey` field on
+`RequestOptions`, new header line in `request()`).
+
+New files:
+- `web/src/screens/AdapterProbeDialog.tsx`: the two-step dialog described above. Client-side validation
+  (required fields, `supportsStart` must be checked) blocks the API call entirely rather than letting the
+  server's own 400 be the only feedback — mirrors `TextField`'s existing `required`/`error` convention.
+  Register errors (expired token, drift, no signing key yet) surface via the existing `InlineError`
+  primitive with a "Retry" action that goes back to step 1 with the form state intact, never silently
+  discarding what the operator typed.
+
+Changed files:
+- `internal/delivery/httpapi/apicontract/tsclient.go` / `web/src/api/generated.ts`: the Idempotency-Key
+  fix described above.
+- `web/src/screens/Doctor.tsx`: added a "Probe new build" button (disabled while offline, same as
+  "Re-run all checks") in the Registered Adapter Builds section header, opening `AdapterProbeDialog`;
+  wired `useToasts()`/`ToastViewport` (V7-03B's own primitive, never previously mounted by any real
+  screen) to show a success toast and invalidate the `['adapterBuilds']` query on registration.
+
+### Verify
+
+- `go test ./internal/delivery/... ./internal/archtest/...` (whole tree, `-count=1`): clean, including
+  `TestGeneratedTypeScriptClient_MatchesGoldenFixture`/`_SkipsBrowserOnlyOperations`.
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 132/132 pass (123 prior + 8 new `AdapterProbeDialog` tests: empty-form validation,
+  `supportsStart`-unchecked rejection client-side before any API call, probe→candidate-review transition
+  with the server-measured hashes shown verbatim, register success reporting and closing, a probe API
+  error surfaced inline without ever reaching the candidate view, a register error (expired token)
+  round-tripping back to step 1 with form state preserved, and accessibility smoke on both steps + 1 new
+  `Doctor.test.tsx` case wiring the whole dialog through the real screen).
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve --ui-dist` (not mocks, not `pnpm dev`):
+  opened `/ui/doctor` in a real browser, clicked "Probe new build", filled every field with a real local
+  executable path (the just-built `aw.exe` binary itself), clicked Probe — the candidate review step
+  showed a REAL server-computed `sha256:...` content hash (proving `ProbeAdapterBuild` actually read and
+  hashed the file, not an echo of client input), clicked "Confirm & register" — the dialog closed, a
+  success toast appeared, and the Registered Adapter Builds list immediately showed the new entry with
+  `REGISTERED` and the same hash. Confirmed via the real network request log that both
+  `POST /adapter-builds/probe` and the register call returned `200 OK` — impossible before the
+  Idempotency-Key fix, which is exactly the kind of gap only a real mutation attempt against a real
+  backend surfaces (the same lesson V7-05A's routing bug already taught).

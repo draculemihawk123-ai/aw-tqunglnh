@@ -6,10 +6,11 @@ import * as api from '../api/generated';
 import { expectNoAxeViolations } from '../test/axe';
 import { DoctorScreen } from './Doctor';
 
-vi.mock('../api/generated', () => ({
-  doctor: vi.fn(),
-  listAdapterBuilds: vi.fn(),
-}));
+vi.mock('../api/generated', async () => {
+  const actual = await vi.importActual<typeof import('../api/generated')>('../api/generated');
+  return { ...actual, doctor: vi.fn(), listAdapterBuilds: vi.fn(), probeAdapterBuild: vi.fn(), registerAdapterBuild: vi.fn() };
+});
+vi.mock('../api/session', () => ({ withSessionToken: () => ({ token: 'test-session-token' }) }));
 
 function renderDoctor() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -127,6 +128,42 @@ describe('DoctorScreen', () => {
     vi.mocked(api.listAdapterBuilds).mockResolvedValue({ builds: [] } as never);
     renderDoctor();
     expect(await screen.findByText('No adapter builds registered yet')).toBeInTheDocument();
+  });
+
+  it('"Probe new build" opens the ADR-022 probe/confirm/register dialog, and a successful registration refreshes the list and shows a toast', async () => {
+    vi.mocked(api.doctor).mockResolvedValue(HEALTHY_REPORT as never);
+    vi.mocked(api.listAdapterBuilds)
+      .mockResolvedValueOnce({ builds: [] } as never)
+      .mockResolvedValueOnce({ builds: [{ id: 'b1', providerKey: 'claude', executableContentHash: 'sha256:abc', os: 'linux/amd64', protocolVersion: 'AK-Adapter/1.2' }] } as never);
+    vi.mocked(api.probeAdapterBuild).mockResolvedValue({
+      tuple: {
+        providerKey: 'claude', executablePath: '/usr/local/bin/claude', executableContentHash: 'sha256:abc',
+        protocolVersion: 'AK-Adapter/1.2', capabilityManifestHash: 'sha256:def', os: 'linux/amd64', toolchain: 'node-20.11', configIdentity: 'isolated-default',
+      },
+      nonce: 'n1', expiresAt: new Date(Date.now() + 300_000).toISOString(), signature: 'sig',
+    } as never);
+    vi.mocked(api.registerAdapterBuild).mockResolvedValue({ build: { id: 'b1' }, alreadyExisted: false } as never);
+
+    renderDoctor();
+    await screen.findByText('No adapter builds registered yet');
+
+    await userEvent.click(screen.getByRole('button', { name: /Probe new build/ }));
+    expect(await screen.findByRole('heading', { name: 'Probe adapter build' })).toBeInTheDocument();
+
+    await userEvent.type(screen.getByLabelText(/^Provider key/), 'claude');
+    await userEvent.type(screen.getByLabelText(/^Executable path/), '/usr/local/bin/claude');
+    await userEvent.type(screen.getByLabelText(/^Protocol version/), 'AK-Adapter/1.2');
+    await userEvent.type(screen.getByLabelText(/^OS/), 'linux/amd64');
+    await userEvent.type(screen.getByLabelText(/^Toolchain/), 'node-20.11');
+    await userEvent.type(screen.getByLabelText(/^Config identity/), 'isolated-default');
+    await userEvent.click(screen.getByRole('button', { name: 'Probe' }));
+
+    await screen.findByRole('heading', { name: 'Confirm adapter build candidate' });
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm & register' }));
+
+    expect(await screen.findByText('Adapter build for "claude" registered.')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Confirm adapter build candidate' })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('claude')).toBeInTheDocument());
   });
 
   it('has no automated accessibility violations once loaded', async () => {
