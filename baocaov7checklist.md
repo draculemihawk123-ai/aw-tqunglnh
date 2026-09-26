@@ -1034,3 +1034,74 @@ isolation test actually proves (a WHERE-clause bug, not an ID collision).
   `TestDescriptorsRegisterAllSixteenCommandsWithConsistentMetadata`.
 - No web files touched by this task; V7-07B (the actual catalog-browsing UI, now unblocked) is next.
 
+## V7-07B — Real definition catalog + immutable version detail; V7-07 closed
+
+### Context
+
+The read-only UI half of V7-07 (`docs/design/09-v7-alpha-ui.md`: "catalog filters, immutable version
+selector, SourceHash/CompiledSnapshotHash, dependency/resource/adapter pins và compatibility
+diagnostics"), now unblocked by V7-07A's new `listDefinitions`/`listProjectDefinitions` routes.
+`web/src/screens/Definitions.tsx` was still the Figma-Make prototype's entirely fake scaffold — a
+hardcoded `DEFINITIONS` array with invented `Kind` values (Skill/Layer/Pack/Agent/Executable — none of
+them the real nine-kind enum) and a fabricated `compatible: true/false` boolean with no backend behind it
+at all — bundled together with a fake YAML editor/publish-dialog flow that is actually V7-08's own
+separate scope ("Declarative editor, validate và publish"), not this task's.
+
+### Decision
+
+There is still no single "list every Definition across every Kind" endpoint — `GET /definitions/{kind}`
+only ever answers for one Kind at a time (V7-07A's own design). This screen fires all nine real Kind
+queries (`WORKFLOW, BLOCK, SKILL, LAYER, ENGINEERING_PACK, AGENT_PROFILE, COMMAND, GATE, POLICY`) in
+parallel via `useQueries` and merges them client-side — a handful of local loopback requests for a
+single-operator installation's own catalog, and the only way to actually deliver "browse all definition
+kinds" against the real API surface as it exists today.
+
+Dropped the fake `compatible` boolean entirely rather than inventing a client-side "compatibility"
+computation the backend has no equivalent for anywhere (`DiffVersions` compares two versions' fields; it
+never produces a pass/fail verdict). "Compatibility diagnostics" is interpreted honestly as *showing* the
+real dependency pins and the real raw `CompiledSnapshot` — resource/adapter pins are kind-specific
+document internals with no generic parsed representation at the `VersionFieldsView` level, so rather than
+half-implement per-kind parsers for a browse screen, the raw compiled JSON is shown directly, labeled as
+such, so an operator can actually see them without this screen fabricating a shape for them.
+
+The old file's editor/publish UI (bolted onto the fake catalog data) is removed wholesale, not carried
+forward or disabled — V7-08 will build a real editor against real validate/publish endpoints from
+scratch; leaving a fake editor sitting on top of newly-real catalog data would be more misleading than no
+editor at all.
+
+### Execution
+
+New file `web/src/api/definitions.ts`: hand-declared `DefinitionKind`/`DefinitionStatus`/`DefinitionScope`/
+`DefinitionView`/`DependencyPin`/`DependencyManifest`/`VersionFieldsView` — the same "narrow `unknown` at
+the call site" convention `web/src/api/catalog.ts` already established for the sibling catalog package
+(definitions' own response DTOs nest named Go types the shallow contract generator can't expand one level
+further). Full rewrite of `web/src/screens/Definitions.tsx`: real scope toggle (global/project, disabled
+correctly with no project selected), real Kind filter chips (the real nine-value enum), a real catalog
+table, and a version-detail panel with a real immutable-version `<Select>` (oldest-first from the API,
+reversed for display so the latest version is first and selected by default) showing real SourceHash/
+CompiledSnapshotHash/dependency pins/raw compiled snapshot/publishedBy/publishedAt for whichever version
+is selected.
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 160/160 pass (151 prior + 9 new `Definitions.test.tsx` tests: loading skeleton, merging
+  multiple real Kinds into one catalog sorted by name, an empty-scope empty state, the Kind filter chips
+  narrowing the list, the project-scope toggle disabled with no project selected, selecting a definition
+  showing its real latest-version hashes/dependency pins, the version selector switching to an earlier
+  immutable version's real hashes, an honest "no published versions" empty state for a draft-only
+  definition — never a fabricated hash — and accessibility smoke). Caught and fixed one real a11y
+  regression during test-writing: the detail panel's own definition-name label was a bare `<span>` with no
+  heading at all, so the section `<h3>`s beneath it skipped straight from the page's own `<h1>` — fixed by
+  making it a real `<h2>`.
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` (no `aw worker` needed — nothing here
+  is job-driven): used the real `aw definition create`/`aw definition publish` CLI commands (not the API
+  directly) to create and publish a real BLOCK definition with a real dependency-free document, confirmed
+  via the real network log that the browser fired all nine real `GET /definitions/{kind}` requests in
+  parallel, clicked the resulting real "Demo Block" catalog row, and confirmed the version-detail panel
+  showed the exact real `sourceHash`/`compiledHash`/raw `compiledSnapshot` the CLI's own publish response
+  had just printed — the full real round trip, CLI-write to browser-read, not a mocked one.
+
+**V7-07 is now fully closed** (V7-07A backend + V7-07B UI).
+
