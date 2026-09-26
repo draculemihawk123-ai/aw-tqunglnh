@@ -99,6 +99,25 @@ func TestGeneratedTypeScriptClient_SkipsRawUploadOperations(t *testing.T) {
 	}
 }
 
+// TestGeneratedTypeScriptClient_SkipsCustomJSONShapeOperations mirrors the
+// two sibling skip tests above, for tsclient.go's own third exclusion set:
+// a route whose real request body IS JSON but not the shape Go reflection
+// alone can describe (a custom MarshalJSON/UnmarshalJSON the generator
+// cannot see through).
+func TestGeneratedTypeScriptClient_SkipsCustomJSONShapeOperations(t *testing.T) {
+	contract := buildRealContract(t)
+	got := string(GenerateTypeScriptClient(contract))
+
+	for op := range customJSONShapeOperations {
+		if !hasOperationID(contract, op) {
+			t.Fatalf("test fixture assumption broken: contract no longer has operationId %q", op)
+		}
+		if strings.Contains(got, "export function "+op+"(") {
+			t.Fatalf("generated client emitted a callable function for custom-JSON-shape operation %q", op)
+		}
+	}
+}
+
 func hasOperationID(c Contract, id string) bool {
 	for _, op := range c.Operations {
 		if op.OperationID == id {
