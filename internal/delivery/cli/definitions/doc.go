@@ -70,15 +70,17 @@
 // import internal/delivery/httpapi/definitions (a sibling delivery
 // package, not a shared dependency) to reuse its unexported dispatch.
 //
-// aw definition list (RunDefinitionList) is this package's own genuine
-// addition below the CLI layer: no HTTP route or application query
-// answered "which Definitions of this Kind exist in this Scope" before
-// this task (confirmed by reading internal/delivery/httpapi/definitions/
+// aw definition list (RunDefinitionList) was originally V6-15E's own
+// genuine addition below the CLI layer: at the time, no HTTP route or
+// application query answered "which Definitions of this Kind exist in this
+// Scope" (confirmed by reading internal/delivery/httpapi/definitions/
 // routes.go's own 14-route inventory and internal/app/ports.
 // DefinitionsRepository's full method set) — every existing caller already
-// needs to know a specific ID first. queries.go's own ListDefinitions doc
-// comment has the full reasoning; its Descriptor here is registered with
-// cli.CLILocalOperation (no HTTP operationId exists to mirror), the same
-// sentinel `aw evidence verify` already uses for a leaf with no HTTP
-// counterpart.
+// needed to know a specific ID first. queries.go's own ListDefinitions doc
+// comment has the full reasoning. Its Descriptor was registered with
+// cli.CLILocalOperation (no HTTP operationId to mirror), tracked as
+// accepted debt in internal/delivery/parity/ledger.go until V7-07A added
+// GET /definitions/{kind} / GET /projects/{projectId}/definitions/{kind}
+// (operationIds listDefinitions/listProjectDefinitions) — the Descriptor
+// now mirrors those like every other command in this package.
 package definitions

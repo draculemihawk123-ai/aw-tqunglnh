@@ -935,3 +935,102 @@ Added `PackAssignmentView`/`PackAssignmentListView` to `web/src/api/catalog.ts` 
 
 **V7-06 is now fully closed** (V7-06A + V7-06B, PR #105 and this task's own PR).
 
+## V7-07A — Backend: expose `listDefinitions`/`listProjectDefinitions` over HTTP, closing a real V6 parity gap
+
+### Context
+
+Starting V7-07 ("Definition catalog và version detail", `docs/design/09-v7-alpha-ui.md`) by researching the
+real backend surface (the same discipline every V7-0x task has followed) surfaced something that made
+building the UI directly impossible: `internal/delivery/httpapi/definitions` (V6-05) exposes create/
+validate/publish/get-one/list-versions/diff for a Definition, but **no route at all can enumerate "every
+Definition of Kind X in scope Y"** — every existing route needs the caller to already know a specific
+DefinitionID first. There is no way for a browser to "browse the catalog" without this.
+
+This is not a newly-discovered bug — it is a REAL, ALREADY-DOCUMENTED, ALREADY-PINNED gap the repo's own
+V6-15O parity gate found and intentionally left open, tracked verbatim in
+`internal/delivery/parity/ledger.go`:
+
+> `{ClassCLILocalNotAllowed, "cli:definition list@INSTALLATION", "V6-05 (route) + V6-15E (leaf descriptor)",
+> noRoute + "; the leaf must then register listDefinitions instead of CLI_LOCAL"}`
+
+`internal/app/definitions.ListDefinitions` (the real query) has existed since V6-15E; `aw definition list`
+(a real, working CLI command) has called it since the same task — but its own CLI descriptor was
+registered with `cli.CLILocalOperation` (no HTTP twin) specifically because V6-15O's own "Không làm: no
+new leaf/route" line forbade the parity-gate task itself from adding the missing route, and no later task
+had needed `listDefinitions` from a delivery adapter other than the CLI until now. `internal/delivery/
+httpapi/apicontract/uxgap.go`'s own `knownUnimplementedGaps` map independently tracked the identical gap
+for the UX-doc-cross-reference checker, with an almost prophetic comment on the gate test itself
+(`uxgap_test.go`'s `TestCheckUXGaps_NoUnresolvedGap`): "if a future leaf task closes `listDefinitions`,
+this test starts failing — not because anything is wrong, but as the forcing function to go delete that
+now-stale entry."
+
+### Decision
+
+Add exactly the two routes the ledger's own remediation text names — `GET /definitions/{kind}`
+(`listDefinitions`, installation scope) and `GET /projects/{projectId}/definitions/{kind}`
+(`listProjectDefinitions`, project scope) — as a thin HTTP wrapper over the already-existing, already-
+tested `appdefinitions.ListDefinitions`, mirroring every sibling route in the same package exactly
+(`pathKind` for `{kind}` validation, `writeQueryError` for error mapping, a `definitionListView` DTO
+wrapping the collection the same way `versionListResponse` already does). Then flip the CLI descriptor
+from `cli.CLILocalOperation` to the two new real operationIds, and delete the now-resolved entries from
+both the parity ledger and `knownUnimplementedGaps` — exactly the remediation the codebase had already
+written down for whoever picked this up.
+
+Deliberately scoped as its own task (V7-07A) rather than folded into the UI work (V7-07B, next): this
+touches already-closed V6 code across four different subsystems (HTTP routes, CLI descriptors, the parity
+gate, the API contract generator) and is a real, independent, mechanically-verifiable unit of work with
+its own clear "done" condition (`internal/delivery/parity`'s own gate tests all pass, debt count drops)
+before any UI work depends on it.
+
+### Execution
+
+New route handlers `handleListDefinitions`/`handleListProjectDefinitions`/`listDefinitionsCore` in
+`internal/delivery/httpapi/definitions/detail.go`; new `definitionListView` DTO in `dto.go`; two new
+`RouteDescriptor` registrations in `routes.go` (doc comment's own route-inventory table and "8 operations
+× 2 scopes = 16 routes" count updated to match). `internal/delivery/cli/definitions/descriptor.go`'s two
+`definition list` descriptors now carry `HTTPOperationID: "listDefinitions"`/`"listProjectDefinitions"`
+instead of `cli.CLILocalOperation` — `doc.go`'s own historical explanation updated to describe what
+actually happened rather than leaving a stale "no HTTP route exists" claim in a comment. `internal/
+delivery/parity/registry.go`'s `ListDefinitions` entry gained real `HTTP: []HTTPBinding{...}` bindings
+(previously commented "no HTTP route exists (V6-05 gap)"); `ledger.go` lost its four now-resolved entries
+(the exact ones the ledger's own doc comment said this exact remediation would let disappear).
+`apicontract/uxgap.go`'s `knownUnimplementedGaps` map is now empty (kept as a real, typed empty map, not
+deleted, so the gate's own "ACKNOWLEDGED set matches this map's key set" assertion still has something to
+compare against).
+
+New test file `internal/delivery/httpapi/definitions/list_test.go` (4 tests, real HTTP round-trips against
+a real `*sqlite.Store` — the same `newTestEnv` harness every sibling test file in this package already
+uses, never a mock): kind+scope filtering never leaks a wrong-kind or wrong-scope Definition into the
+list, an empty/unknown scope returns a present empty array rather than an error or 404 (matching
+`ListDefinitions`' own documented contract), and an invalid `{kind}` path segment is a 400. Discovered
+along the way and fixed in the test fixtures themselves (not application code): the `definitions` table's
+own real schema (`internal/adapters/sqlite/migrations/0004_shared_definitions.sql`) makes `id` (the
+caller-supplied DefinitionID) a single-column PRIMARY KEY with no scope component at all — a DefinitionID
+is globally unique across every scope, not just unique-per-scope as an initial draft of these tests
+wrongly assumed (reusing the same ID across a global and a project-scoped fixture 500'd on the second
+create) — corrected by giving every fixture its own distinct ID and re-describing what the project-scope
+isolation test actually proves (a WHERE-clause bug, not an ID collision).
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test ./internal/delivery/... ./internal/app/... ./internal/archtest/...` (`-count=1`): clean (one
+  unrelated, previously-documented flake — `TestPool_TwoPoolsRaceRecovery_NoDuplicateProcessing`,
+  confirmed diff-unrelated and did not reproduce on a second run).
+- `go test ./internal/delivery/parity/...`: clean, including `TestRealInventoryParityGate` (debt dropped
+  from 17 to 13 — the exact four ledger entries this task closes) and `TestCLILocalClosedSetIsExactlyThe
+  DesignedOne`/`TestEveryRealCLILocalDescriptorIsInTheClosedSetOrLedgered` (the `definition list`
+  descriptors no longer need either exemption at all, having a real HTTP twin now).
+- `go test ./internal/delivery/httpapi/apicontract/...`: clean, including `TestCheckUXGaps_NoUnresolvedGap`
+  (the exact forcing-function failure its own doc comment predicted, now resolved by clearing
+  `knownUnimplementedGaps`) and the regenerated `testdata/golden/contract.json`/`web/src/api/generated.ts`
+  (additive-only diff: two new operations, `listDefinitions`/`listProjectDefinitions`).
+- `go test ./internal/delivery/httpapi/securitymatrix/...`: clean (route count 90→92; `listProjectDefinitions`
+  added to the reviewed `noCrossProjectProof` list under the same category its sibling
+  `getProjectDefinition`/`listProjectDefinitionVersions` routes already document — a `{kind}` path segment
+  is a closed-vocabulary type discriminator, never a per-instance identifier a cross-project leak proof
+  could meaningfully swap).
+- `go test ./internal/delivery/cli/definitions/...`: clean, including the updated
+  `TestDescriptorsRegisterAllSixteenCommandsWithConsistentMetadata`.
+- No web files touched by this task; V7-07B (the actual catalog-browsing UI, now unblocked) is next.
+

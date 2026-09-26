@@ -17,17 +17,18 @@ import (
 // scopes (installation and project — V6-15E's own "for exact global/
 // project scopes" line), each with the HTTPOperationID
 // internal/delivery/httpapi/definitions/routes.go's own matching scoped
-// route actually uses, except `definition list` (cli.CLILocalOperation at
-// both scopes — no HTTP route exists to mirror, see doc.go's own top
-// comment).
+// route actually uses. `definition list` used to be the one exception
+// (cli.CLILocalOperation at both scopes) until V7-07A added
+// GET /definitions/{kind} / GET /projects/{projectId}/definitions/{kind} —
+// see doc.go's own top comment for the full history.
 func TestDescriptorsRegisterAllSixteenCommandsWithConsistentMetadata(t *testing.T) {
 	type key struct {
 		path  string
 		scope string
 	}
 	want := map[key]string{
-		{"definition list", "INSTALLATION"}: cli.CLILocalOperation,
-		{"definition list", "PROJECT"}:      cli.CLILocalOperation,
+		{"definition list", "INSTALLATION"}: "listDefinitions",
+		{"definition list", "PROJECT"}:      "listProjectDefinitions",
 
 		{"definition create", "INSTALLATION"}: "createDefinition",
 		{"definition create", "PROJECT"}:      "createProjectDefinition",

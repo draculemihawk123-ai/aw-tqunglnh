@@ -66,6 +66,14 @@ func toDependencyManifest(pins []dependencyPinBody) definition.DependencyManifes
 	return definition.DependencyManifest{Pins: out}
 }
 
+// definitionListView is GET .../definitions/{kind}'s own response shape —
+// every Definition of that Kind in the route's own scope, ordered by ID
+// (internal/app/definitions.ListDefinitions' own order). Mirrors
+// versionListResponse's own "wrap the collection in an object" convention.
+type definitionListView struct {
+	Definitions []definitionView `json:"definitions"`
+}
+
 // versionFieldsView is this package's own stable, exported-field JSON view
 // of a definition.VersionFields (whose own fields are all unexported —
 // V2-01's immutability discipline) — mirrors

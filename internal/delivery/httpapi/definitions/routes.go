@@ -26,13 +26,13 @@
 // internal/archtest.TestDeliveryHTTPAPINeverWritesOrRecordsAReceipt, which
 // already walks internal/delivery/httpapi recursively.
 //
-// Route inventory (7 operations × 2 scopes = 14 routes). Six of the seven
-// carry a {kind} path segment (create/validate/publish/detail/list-
+// Route inventory (8 operations × 2 scopes = 16 routes). Seven of the eight
+// carry a {kind} path segment (create/list/validate/publish/detail/list-
 // versions are all routed by Kind, the same convention
 // internal/app/definitions.CreateDefinition/PublishDefinitionVersion/
-// ListVersions themselves already use to pick between the shared
-// definitions table and Workflow's own dedicated tables); the remaining
-// two (get one version, diff) deliberately do NOT — a VersionID is already
+// ListVersions/ListDefinitions themselves already use to pick between the
+// shared definitions table and Workflow's own dedicated tables); the
+// remaining two (get one version, diff) deliberately do NOT — a VersionID is already
 // globally unique and carries its own Kind (definition.VersionFields.Kind()),
 // so appdefinitions.LoadAnyVersion resolves it without the caller having to
 // already know which of the nine kinds it belongs to, the identical
@@ -40,6 +40,7 @@
 // for the same reason (that file's own loadAnyVersion doc comment).
 //
 //	POST /definitions/{kind}                                          createDefinition
+//	GET  /definitions/{kind}                                          listDefinitions
 //	POST /definitions/{kind}/{id}/validate                            validateDefinitionDraft
 //	POST /definitions/{kind}/{id}/publish                             publishDefinitionVersion
 //	GET  /definitions/{kind}/{id}                                     getDefinition
@@ -48,12 +49,21 @@
 //	GET  /definitions/versions/diff?a=&b=                             diffDefinitionVersions
 //
 //	POST /projects/{projectId}/definitions/{kind}                     createProjectDefinition
+//	GET  /projects/{projectId}/definitions/{kind}                     listProjectDefinitions
 //	POST /projects/{projectId}/definitions/{kind}/{id}/validate       validateProjectDefinitionDraft
 //	POST /projects/{projectId}/definitions/{kind}/{id}/publish        publishProjectDefinitionVersion
 //	GET  /projects/{projectId}/definitions/{kind}/{id}                getProjectDefinition
 //	GET  /projects/{projectId}/definitions/{kind}/{id}/versions       listProjectDefinitionVersions
 //	GET  /projects/{projectId}/definitions/versions/{versionId}       getProjectDefinitionVersion
 //	GET  /projects/{projectId}/definitions/versions/diff?a=&b=        diffProjectDefinitionVersions
+//
+// listDefinitions/listProjectDefinitions (added after V6 closed, this task)
+// close a gap V6-15O's own parity gate found and pinned as accepted debt
+// (internal/delivery/parity/ledger.go: "definition list: a CLI_LOCAL leaf
+// with no route") — internal/app/definitions.ListDefinitions existed since
+// V6-15E but no HTTP route ever called it, so `aw definition list` (a real
+// CLI command) had no browser-reachable equivalent at all. See ledger.go's
+// own removed entries in the commit that added these two routes.
 package definitions
 
 import (
@@ -71,6 +81,11 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodPost, Path: "/definitions/{kind}", OperationID: "createDefinition",
 		ScopeKind: httpapi.ScopeInstallation, RequestSchema: createDefinitionBody{}, ResponseSchema: appdefinitions.CreateDefinitionResult{},
 		Handler: handleCreateDefinition(deps),
+	})
+	reg.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/definitions/{kind}", OperationID: "listDefinitions",
+		ScopeKind: httpapi.ScopeInstallation, RequestSchema: struct{}{}, ResponseSchema: definitionListView{},
+		Handler: handleListDefinitions(deps),
 	})
 	reg.Register(httpapi.RouteDescriptor{
 		Method: http.MethodPost, Path: "/definitions/{kind}/{id}/validate", OperationID: "validateDefinitionDraft",
@@ -107,6 +122,11 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodPost, Path: "/projects/{projectId}/definitions/{kind}", OperationID: "createProjectDefinition",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: createDefinitionBody{}, ResponseSchema: appdefinitions.CreateDefinitionResult{},
 		Handler: handleCreateProjectDefinition(deps),
+	})
+	reg.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{projectId}/definitions/{kind}", OperationID: "listProjectDefinitions",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: definitionListView{},
+		Handler: handleListProjectDefinitions(deps),
 	})
 	reg.Register(httpapi.RouteDescriptor{
 		Method: http.MethodPost, Path: "/projects/{projectId}/definitions/{kind}/{id}/validate", OperationID: "validateProjectDefinitionDraft",

@@ -32,19 +32,21 @@ const (
 // --project-id <id>, map tới hai operationId khác nhau" example, named
 // directly) — one CLI Path registered twice, once per Scope, each with the
 // HTTPOperationID its own scoped half of internal/delivery/httpapi/
-// definitions/routes.go actually uses — except `definition list`, whose
-// HTTPOperationID is cli.CLILocalOperation at both scopes: no HTTP route
-// answers "list every Definition of this Kind in this Scope" (see doc.go's
-// own top comment and queries.go's own ListDefinitions doc comment for the
-// full reasoning), so there is no operationId to mirror.
+// definitions/routes.go actually uses. `definition list` used to be the one
+// exception (HTTPOperationID cli.CLILocalOperation at both scopes, tracked
+// as accepted debt in internal/delivery/parity/ledger.go's own "definition
+// list: a CLI_LOCAL leaf with no route" entries) until V7-07A added
+// GET /definitions/{kind} / GET /projects/{projectId}/definitions/{kind} —
+// it now mirrors listDefinitions/listProjectDefinitions exactly like every
+// other command in this file.
 func init() {
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"definition", "list"}, Scope: cli.ScopeInstallation,
-		AppOperation: appOpListDefinitions, HTTPOperationID: cli.CLILocalOperation,
+		AppOperation: appOpListDefinitions, HTTPOperationID: "listDefinitions",
 	})
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"definition", "list"}, Scope: cli.ScopeProject,
-		AppOperation: appOpListDefinitions, HTTPOperationID: cli.CLILocalOperation,
+		AppOperation: appOpListDefinitions, HTTPOperationID: "listProjectDefinitions",
 	})
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"definition", "create"}, Scope: cli.ScopeInstallation,

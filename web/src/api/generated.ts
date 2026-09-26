@@ -856,6 +856,15 @@ export function listDefinitionVersions(kind: string, id: string, opts: RequestOp
   return request<ListDefinitionVersionsResponse>("GET", `/definitions/${kind}/${id}/versions`, undefined, opts);
 }
 
+export interface ListDefinitionsResponse {
+  definitions: unknown[];
+}
+
+// GET /definitions/{kind} (scope: INSTALLATION)
+export function listDefinitions(kind: string, opts: RequestOptions = {}): Promise<ListDefinitionsResponse> {
+  return request<ListDefinitionsResponse>("GET", `/definitions/${kind}`, undefined, opts);
+}
+
 export interface ListEvidenceResponse {
   items: unknown[];
 }
@@ -882,6 +891,15 @@ export interface ListProjectDefinitionVersionsResponse {
 // GET /projects/{projectId}/definitions/{kind}/{id}/versions (scope: PROJECT)
 export function listProjectDefinitionVersions(projectId: string, kind: string, id: string, opts: RequestOptions = {}): Promise<ListProjectDefinitionVersionsResponse> {
   return request<ListProjectDefinitionVersionsResponse>("GET", `/projects/${projectId}/definitions/${kind}/${id}/versions`, undefined, opts);
+}
+
+export interface ListProjectDefinitionsResponse {
+  definitions: unknown[];
+}
+
+// GET /projects/{projectId}/definitions/{kind} (scope: PROJECT)
+export function listProjectDefinitions(projectId: string, kind: string, opts: RequestOptions = {}): Promise<ListProjectDefinitionsResponse> {
+  return request<ListProjectDefinitionsResponse>("GET", `/projects/${projectId}/definitions/${kind}`, undefined, opts);
 }
 
 export interface ListReleaseSetsForFamilyResponse {

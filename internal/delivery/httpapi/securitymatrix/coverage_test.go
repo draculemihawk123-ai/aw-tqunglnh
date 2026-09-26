@@ -82,6 +82,7 @@ var noCrossProjectProof = []string{
 	"getScopeExpansionRequest",
 	"getWorkItemProjectedDetail",
 	"listProjectDefinitionVersions",
+	"listProjectDefinitions",
 	"listWorkItemKanban",
 	"listWorkItems",
 	"markWorkItemReady",
