@@ -73,13 +73,27 @@ var ErrScopeMismatch = errors.New("workspacestate: resolved workspace does not b
 // RepositoryWorkspaceState is one RepositoryWorkspace's own bounded, typed
 // state/lease/fence/quarantine snapshot.
 type RepositoryWorkspaceState struct {
-	RepositoryWorkspaceID  string
-	WorkspaceSetID         string
-	RepositoryID           string
-	Generation             uint64
-	State                  workspace.RepositoryWorkspaceState
-	Version                uint64
-	BranchRef              string
+	RepositoryWorkspaceID string
+	WorkspaceSetID        string
+	RepositoryID          string
+	Generation            uint64
+	State                 workspace.RepositoryWorkspaceState
+	Version               uint64
+	BranchRef             string
+	// BaseRevision is the exact commit this RepositoryWorkspace was
+	// provisioned at (workspace.RepositoryWorkspace's own immutable field,
+	// set once by NewRepositoryWorkspace and never mutated in place — a
+	// RECREATE always inserts a brand new row at generation+1 instead, per
+	// this package's own doc comment on "Fence"). Added for V7-13
+	// (docs/design/09-v7-alpha-ui.md): a bounded diff viewer can only ever
+	// authorize a request against a workspace's own two known-good
+	// revisions (gitworktree.Provider.authorizeRevision's own closed
+	// BaseRevision-or-CurrentRevision check) — a caller that does not
+	// already know BaseRevision has no way to ever request the one
+	// meaningful diff this workspace can produce ("what changed since
+	// provisioning"). Never confused with WorkspaceSetState.HasBaseRevisionSet
+	// below, which is a different, set-level aggregate field.
+	BaseRevision           string
 	CurrentRevision        string
 	LastProvisionErrorCode *string
 	HasActiveWriteLease    bool
@@ -221,6 +235,7 @@ func loadRepositoryWorkspaceState(ctx context.Context, tx ports.Tx, rw workspace
 	return RepositoryWorkspaceState{
 		RepositoryWorkspaceID: string(rw.ID), WorkspaceSetID: string(rw.WorkspaceSetID), RepositoryID: string(rw.RepositoryID),
 		Generation: rw.Generation, State: rw.State, Version: rw.Version, BranchRef: rw.BranchRef,
-		CurrentRevision: rw.CurrentRevision, LastProvisionErrorCode: rw.LastProvisionErrorCode, HasActiveWriteLease: hasLease,
+		BaseRevision: rw.BaseRevision, CurrentRevision: rw.CurrentRevision,
+		LastProvisionErrorCode: rw.LastProvisionErrorCode, HasActiveWriteLease: hasLease,
 	}, nil
 }

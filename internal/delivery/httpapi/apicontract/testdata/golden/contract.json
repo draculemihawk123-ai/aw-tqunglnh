@@ -1547,6 +1547,11 @@
             "type": "string"
           },
           {
+            "name": "BaseRevision",
+            "jsonTag": "baseRevision,omitempty",
+            "type": "string"
+          },
+          {
             "name": "CurrentRevision",
             "jsonTag": "currentRevision,omitempty",
             "type": "string"

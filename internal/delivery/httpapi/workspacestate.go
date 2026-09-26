@@ -24,6 +24,7 @@ type repositoryWorkspaceStateResponse struct {
 	State                  string        `json:"state"`
 	Version                uint64        `json:"version"`
 	BranchRef              string        `json:"branchRef,omitempty"`
+	BaseRevision           string        `json:"baseRevision,omitempty"`
 	CurrentRevision        string        `json:"currentRevision,omitempty"`
 	LastProvisionErrorCode *string       `json:"lastProvisionErrorCode,omitempty"`
 	HasActiveWriteLease    bool          `json:"hasActiveWriteLease"`
@@ -67,7 +68,8 @@ func toRepositoryWorkspaceStateResponse(rw workspacestate.RepositoryWorkspaceSta
 	return repositoryWorkspaceStateResponse{
 		RepositoryWorkspaceID: rw.RepositoryWorkspaceID, WorkspaceSetID: rw.WorkspaceSetID, RepositoryID: rw.RepositoryID,
 		Generation: rw.Generation, State: string(rw.State), Version: rw.Version, BranchRef: rw.BranchRef,
-		CurrentRevision: rw.CurrentRevision, LastProvisionErrorCode: rw.LastProvisionErrorCode, HasActiveWriteLease: rw.HasActiveWriteLease,
+		BaseRevision: rw.BaseRevision, CurrentRevision: rw.CurrentRevision,
+		LastProvisionErrorCode: rw.LastProvisionErrorCode, HasActiveWriteLease: rw.HasActiveWriteLease,
 		ValidActions: reconcileValidActions(rw),
 	}
 }

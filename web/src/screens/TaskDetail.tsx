@@ -12,7 +12,8 @@ import {
 import type { NavRoute } from '../components/shell/LeftNav';
 import {
   ApiError, cancelRun, cancelWorkItem, getRunDiagnostics, getRunGraph, getRunTimeline, getTaskFamily,
-  getWorkItem, getWorkItemProjectedDetail, resolveWorkItemBlocker, retryBlockedActivation,
+  getWorkItem, getWorkItemProjectedDetail, getWorkspaceDiff, getWorkspaceRepositoryLog, getWorkspaceSetState,
+  requestWorkspaceReconciliation, resolveWorkItemBlocker, retryBlockedActivation,
 } from '../api/generated';
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
@@ -20,6 +21,8 @@ import type { KanbanCard, WorkItemProjectedDetailResponse } from '../api/kanban'
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
 import type { GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView } from '../api/rundetail';
 import { withSessionToken } from '../api/session';
+import { decodeDiffPatch, fetchWorkspaceSource } from '../api/workspaceinspection';
+import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
 
 function apiErrorMessage(err: unknown): { code: string; message: string } {
   if (err instanceof ApiError) return { code: err.code, message: err.message };
@@ -759,169 +762,163 @@ function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActio
 
 // ─── Workspace Tab ────────────────────────────────────────────────────────────
 
-// Per-repository fixture data — paths and content are repo-specific
-const REPO_FIXTURES = {
-  'core-api': {
-    revision: 'a3f9e8b',
-    quarantined: false,
-    lease: 'active',
-    baseRevision: '3c1f2d0',
-    diffPath: 'src/api/middleware/tracing.ts',
-    diffContent: [
-      '--- a/src/api/middleware/tracing.ts',
-      '+++ b/src/api/middleware/tracing.ts',
-      '@@ -0,0 +1,18 @@',
-      "+import { NodeSDK } from '@opentelemetry/sdk-node';",
-      "+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';",
-      "+import { Resource } from '@opentelemetry/resources';",
-      '+',
-      '+const exporter = new OTLPTraceExporter({',
-      "+  url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT,",
-      '+});',
-      '+',
-      '+export const sdk = new NodeSDK({',
-      "+  resource: new Resource({ 'service.name': 'core-api' }),",
-      '+  traceExporter: exporter,',
-      '+});',
-    ],
-    logLines: [
-      '09:48:07  [INFO]  Lease acquired: repo-a1b2 / core-api @ 3c1f2d0',
-      '09:48:09  [INFO]  AGENT_01 start — Plan Changes',
-      '09:49:19  [INFO]  AGENT_01 complete in 70 s',
-      '09:49:21  [INFO]  AGENT_02a start — Impl: core-api',
-      '09:52:05  [INFO]  AGENT_02a complete; 2 files modified',
-      '09:53:44  [INFO]  Tests passed: 47/47',
-    ],
-  },
-  'worker-service': {
-    revision: 'b7c2f1d',
-    quarantined: true,
-    lease: 'interrupted',
-    baseRevision: '9e2a1b4',
-    diffPath: 'src/worker/telemetry.ts',
-    diffContent: [
-      '--- a/src/worker/telemetry.ts',
-      '+++ b/src/worker/telemetry.ts',
-      '@@ -1,8 +1,22 @@',
-      " import { Job } from 'bullmq';",
-      '+import { context, propagation, trace } from \'@opentelemetry/api\';',
-      '+',
-      ' export async function processJob(job: Job) {',
-      "-  return runJobLogic(job);",
-      '+  // Extract trace context from job headers',
-      '+  const carrier = job.data._traceContext ?? {};',
-      '+  const ctx = propagation.extract(context.active(), carrier);',
-      '+  const tracer = trace.getTracer(\'worker-service\');',
-      '+  return context.with(ctx, () =>',
-      "+    tracer.startActiveSpan('processJob', span => {",
-      '+      span.setAttribute(\'job.id\', job.id);',
-      '+      return runJobLogic(job).finally(() => span.end());',
-      '+    })',
-      '+  );',
-      ' }',
-    ],
-    logLines: [
-      '09:48:08  [INFO]  Lease acquired: repo-c3d4 / worker-service @ 9e2a1b4',
-      '09:49:21  [INFO]  AGENT_02b start — Impl: worker-service',
-      '09:51:58  [INFO]  AGENT_02b complete; 1 file modified',
-      '09:53:12  [WARN]  Quarantine triggered: unexpected file modification outside declared scope path',
-      '09:53:14  [WARN]  Lease interrupted; workspace writes suspended',
-    ],
-  },
-} as const;
+function shortRev(rev?: string): string {
+  return rev ? rev.slice(0, 10) : '';
+}
 
-type RepoKey = keyof typeof REPO_FIXTURES;
+interface WorkspaceTabProps {
+  projectId: string;
+  familyId?: string;
+  isOffline?: boolean;
+}
 
-function WorkspaceTab({ isOffline }: { isOffline?: boolean }) {
-  const [activeRepo, setActiveRepo] = useState<RepoKey>('core-api');
-  const [viewMode, setViewMode] = useState<'source' | 'diff' | 'log'>('diff');
-  const [showReleaseSet, setShowReleaseSet] = useState(false);
-  const [rsState, setRsState] = useState<'DRAFT' | 'SEALED' | 'ABANDONED'>('DRAFT');
-  const [sealDialog, setSealDialog] = useState(false);
-  const [abandonDialog, setAbandonDialog] = useState(false);
-  const [commitDialog, setCommitDialog] = useState(false);
-  const [releaseDialog, setReleaseDialog] = useState(false);
-  const [operation, setOperation] = useState<null | { state: 'Requested' | 'Completed'; ref: string; message: string }>(null);
+/**
+ * WorkspaceTab — V7-13's own real "repository tabs with source/diff/log
+ * read-only, revision/scope/lease/quarantine status" (docs/design/
+ * 09-v7-alpha-ui.md V7-13's own Thực hiện line). ReleaseSet actions (Seal/
+ * Abandon/Local Commit/Release) are the prototype's own fake UI here, but
+ * they are V7-13A's own separate scope (its own dependency line: "Phụ
+ * thuộc: V7-13, V6-10F") — dropped wholesale rather than left as dead
+ * buttons, the same "delete the fake capability outright" discipline every
+ * other V7 task this session already established.
+ *
+ * "không browser terminal trong Alpha" — there is deliberately no command-
+ * execution UI anywhere in this tab, only three bounded read queries
+ * (source/diff/repository-log) plus one real async intent
+ * (requestWorkspaceReconciliation). "focus repo không thay runtime scope" —
+ * switching the active repository tab only ever changes local component
+ * state; it never dispatches a mutation of any kind.
+ */
+function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
+  const [activeRepositoryWorkspaceId, setActiveRepositoryWorkspaceId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<'diff' | 'source' | 'log'>('diff');
+  const [sourcePathDraft, setSourcePathDraft] = useState('');
+  const [sourcePath, setSourcePath] = useState('');
+  const [sourceRevisionSide, setSourceRevisionSide] = useState<'current' | 'base'>('current');
+  const { toasts, show, dismiss } = useToasts();
 
-  const requestWorkspaceAction = (
-    ref: string,
-    requestedMessage: string,
-    completedMessage: string,
-    onCompleted?: () => void,
-  ) => {
-    setOperation({ state: 'Requested', ref, message: requestedMessage });
-    window.setTimeout(() => {
-      onCompleted?.();
-      setOperation({ state: 'Completed', ref, message: completedMessage });
-    }, 900);
-  };
+  const workspaceSetQuery = useQuery({
+    queryKey: ['workspaceSetState', projectId, familyId],
+    queryFn: async () => (await getWorkspaceSetState(projectId, familyId!, withSessionToken())) as unknown as WorkspaceSetState,
+    enabled: !isOffline && !!familyId,
+  });
 
-  const repos = (['core-api', 'worker-service'] as const);
-  const fix = REPO_FIXTURES[activeRepo];
+  const repos = workspaceSetQuery.data?.repositoryWorkspaces ?? [];
+  const activeRepo: RepositoryWorkspaceState | undefined = repos.find(r => r.repositoryWorkspaceId === activeRepositoryWorkspaceId) ?? repos[0];
 
-  const diffLines = fix.diffContent.map((line, i) => ({
-    line,
-    color: line.startsWith('+') && !line.startsWith('+++')
-      ? 'bg-[#DCFCE7] text-[#166534]'
-      : line.startsWith('-') && !line.startsWith('---')
-      ? 'bg-[#FEE2E2] text-[#991B1B]'
-      : line.startsWith('@@')
-      ? 'bg-[#EEF2FF] text-[#3659E3]'
-      : 'text-[#172033]',
-  }));
+  const diffQuery = useQuery({
+    queryKey: ['workspaceDiff', projectId, activeRepo?.repositoryWorkspaceId, activeRepo?.generation],
+    queryFn: async () => (await getWorkspaceDiff(projectId, activeRepo!.repositoryWorkspaceId, {
+      ...withSessionToken(),
+      query: {
+        repositoryId: activeRepo!.repositoryId, workspaceSetId: activeRepo!.workspaceSetId,
+        base: activeRepo!.baseRevision ?? '', baseGeneration: String(activeRepo!.generation),
+        result: activeRepo!.currentRevision ?? '', resultGeneration: String(activeRepo!.generation),
+      },
+    })) as unknown as DiffContent,
+    enabled: !isOffline && !!activeRepo?.baseRevision && !!activeRepo?.currentRevision,
+  });
+
+  const logQuery = useInfiniteQuery({
+    queryKey: ['workspaceRepositoryLog', projectId, activeRepo?.repositoryWorkspaceId],
+    queryFn: async ({ pageParam }) => {
+      const query: Record<string, string> = {
+        repositoryId: activeRepo!.repositoryId, workspaceSetId: activeRepo!.workspaceSetId,
+        anchor: activeRepo!.currentRevision ?? '', anchorGeneration: String(activeRepo!.generation),
+      };
+      if (pageParam) query.cursor = pageParam;
+      return (await getWorkspaceRepositoryLog(projectId, activeRepo!.repositoryWorkspaceId, { ...withSessionToken(), query })) as unknown as RepositoryLogPage;
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: last => last.nextCursor,
+    enabled: !isOffline && viewMode === 'log' && !!activeRepo?.currentRevision,
+  });
+
+  const sourceQuery = useQuery({
+    queryKey: ['workspaceSource', projectId, activeRepo?.repositoryWorkspaceId, sourcePath, sourceRevisionSide, activeRepo?.generation],
+    queryFn: () => fetchWorkspaceSource(projectId, activeRepo!.repositoryWorkspaceId, {
+      repositoryId: activeRepo!.repositoryId, workspaceSetId: activeRepo!.workspaceSetId, path: sourcePath,
+      revision: (sourceRevisionSide === 'base' ? activeRepo!.baseRevision : activeRepo!.currentRevision) ?? '',
+      generation: activeRepo!.generation,
+    }),
+    enabled: !isOffline && viewMode === 'source' && !!activeRepo && !!sourcePath.trim(),
+  });
+
+  const reconcileMutation = useMutation({
+    mutationFn: () => requestWorkspaceReconciliation(projectId, activeRepo!.repositoryWorkspaceId, {}, withSessionToken({ ifMatch: `"${activeRepo!.version}"` })),
+    onSuccess: result => {
+      show({ intent: 'info', message: `Reconcile requested — repository workspace is entering ${result.state}.` });
+      workspaceSetQuery.refetch();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  if (workspaceSetQuery.isPending) {
+    return <div className="flex-1 p-4 space-y-2" aria-hidden><Skeleton className="h-24 w-full" /></div>;
+  }
+  if (workspaceSetQuery.isError) {
+    return <div className="p-4"><InlineError {...apiErrorMessage(workspaceSetQuery.error)} onRetry={() => workspaceSetQuery.refetch()} /></div>;
+  }
+  if (repos.length === 0) {
+    return <div className="flex-1 flex items-center justify-center bg-[#E9EDF3]"><p className="text-[13px] text-[#475569]">No repository workspaces provisioned for this task family.</p></div>;
+  }
+
+  const canReconcile = activeRepo?.validActions.some(a => a.operationId === 'requestWorkspaceReconciliation') ?? false;
+  const diffFiles = diffQuery.data?.files ?? [];
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Repo tabs */}
-      <div className="flex border-b border-[#CDD5DF] bg-white px-4 gap-1 flex-shrink-0 items-center">
+      {/* Repo tabs — switching here only ever sets local state, never dispatches anything */}
+      <div className="flex border-b border-[#CDD5DF] bg-white px-4 gap-1 flex-shrink-0 items-center overflow-x-auto">
         {repos.map(r => {
-          const f = REPO_FIXTURES[r];
-          const isActive = activeRepo === r;
+          const isActive = activeRepo?.repositoryWorkspaceId === r.repositoryWorkspaceId;
           return (
-            <button key={r} onClick={() => { setActiveRepo(r); setViewMode('diff'); }}
-              aria-selected={isActive}
-              aria-label={`${r} revision ${f.revision}${f.quarantined ? ', quarantined' : ''}`}
-              className={`flex items-center gap-2 px-3 py-2.5 text-[13px] border-b-2 transition-colors ${isActive ? 'border-[#3659E3] text-[#3659E3] font-semibold' : 'border-transparent text-[#475569] hover:text-[#172033]'}`}>
-              {r}
-              <span className={`font-mono text-[12px] ${isActive ? 'text-[#3659E3]' : 'text-[#475569]'}`}>{f.revision}</span>
-              {f.quarantined && (
-                <span className="w-2 h-2 rounded-full bg-[#FCD34D] flex-shrink-0" title="Quarantined — lease interrupted" aria-label="Quarantined" />
+            <button key={r.repositoryWorkspaceId}
+              onClick={() => { setActiveRepositoryWorkspaceId(r.repositoryWorkspaceId); setViewMode('diff'); setSourcePath(''); setSourcePathDraft(''); }}
+              aria-pressed={isActive}
+              aria-label={`${r.repositoryId} revision ${shortRev(r.currentRevision)}${r.state === 'QUARANTINED' ? ', quarantined' : ''}`}
+              className={`flex items-center gap-2 px-3 py-2.5 text-[13px] border-b-2 transition-colors flex-shrink-0 ${isActive ? 'border-[#3659E3] text-[#3659E3] font-semibold' : 'border-transparent text-[#475569] hover:text-[#172033]'}`}>
+              {r.repositoryId}
+              <span className={`font-mono text-[12px] ${isActive ? 'text-[#3659E3]' : 'text-[#475569]'}`}>{shortRev(r.currentRevision)}</span>
+              {r.state === 'QUARANTINED' && (
+                <span className="w-2 h-2 rounded-full bg-[#FCD34D] flex-shrink-0" title="Quarantined" aria-label="Quarantined" />
               )}
             </button>
           );
         })}
-        <div className="flex-1" />
-        <Button size="compact" intent={showReleaseSet ? 'primary' : 'quiet'} onClick={() => setShowReleaseSet(!showReleaseSet)}>
-          {showReleaseSet ? 'Hide ReleaseSet' : 'ReleaseSet'}
-        </Button>
       </div>
 
-      {/* Quarantine warning */}
-      {fix.quarantined && (
+      {activeRepo && activeRepo.state === 'QUARANTINED' && (
         <div role="alert" className="px-4 py-2 bg-[#FEF3C7] border-b border-[#FCD34D] flex items-center gap-2 flex-shrink-0">
           <AlertTriangle size={13} className="text-[#92400E] flex-shrink-0" aria-hidden />
-          <span className="text-[12px] text-[#92400E] font-medium">{activeRepo} quarantined</span>
-          <span className="text-[12px] text-[#92400E] opacity-75">— lease interrupted at 09:53:12; workspace writes suspended.</span>
+          <span className="text-[12px] text-[#92400E] font-medium">{activeRepo.repositoryId} quarantined</span>
+          {activeRepo.lastProvisionErrorCode && <span className="text-[12px] text-[#92400E] opacity-75 font-mono">{activeRepo.lastProvisionErrorCode}</span>}
           <div className="flex-1" />
-          <Button size="compact" intent="quiet" className="text-[#92400E] border-[#FCD34D]" disabled={isOffline}
-            onClick={() => requestWorkspaceAction('op-reconcile-73a1', 'Reconcile requested for worker-service.', 'Reconcile request accepted; awaiting a fresh workspace projection.')}>Request Reconcile</Button>
+          {canReconcile && (
+            <Button size="compact" intent="quiet" className="text-[#92400E] border-[#FCD34D]" disabled={isOffline} loading={reconcileMutation.isPending}
+              onClick={() => reconcileMutation.mutate()}>Request Reconcile</Button>
+          )}
         </div>
       )}
 
-      {/* WorkspaceSet status */}
-      <div className="px-4 py-2 bg-[#F8FAFC] border-b border-[#ECEFF4] flex items-center gap-4 text-[12px] flex-shrink-0">
-        <span className="text-[#475569]">WorkspaceSet <span className="font-mono text-[#172033]">ws-a1b2c3d4</span></span>
-        <Badge label="RUNNING" intent="runtime" />
-        <span className="text-[#475569]">generation <span className="font-mono text-[#172033]">3</span></span>
-        <span className="text-[#475569]">base <span className="font-mono text-[#172033]">{fix.baseRevision}</span></span>
-        <span className="text-[#475569]">current <span className="font-mono text-[#172033]">{fix.revision}</span></span>
-        <span className={`${fix.quarantined ? 'text-[#92400E]' : 'text-[#475569]'}`}>
-          lease: <span className="font-mono text-[#172033]">{fix.lease}</span>
-        </span>
-      </div>
+      {/* Per-repository status */}
+      {activeRepo && (
+        <div className="px-4 py-2 bg-[#F8FAFC] border-b border-[#ECEFF4] flex items-center gap-4 text-[12px] flex-shrink-0 flex-wrap">
+          <StatusBadge state={activeRepo.state} entity="repository" />
+          <span className="text-[#475569]">generation <span className="font-mono text-[#172033]">{activeRepo.generation}</span></span>
+          {activeRepo.branchRef && <span className="text-[#475569]">branch <span className="font-mono text-[#172033]">{activeRepo.branchRef}</span></span>}
+          <span className="text-[#475569]">base <span className="font-mono text-[#172033]">{shortRev(activeRepo.baseRevision)}</span></span>
+          <span className="text-[#475569]">current <span className="font-mono text-[#172033]">{shortRev(activeRepo.currentRevision)}</span></span>
+          <span className={activeRepo.hasActiveWriteLease ? 'text-[#92400E]' : 'text-[#475569]'}>
+            write lease: <span className="font-mono">{activeRepo.hasActiveWriteLease ? 'active' : 'none'}</span>
+          </span>
+          {canReconcile && activeRepo.state !== 'QUARANTINED' && (
+            <Button size="compact" intent="quiet" disabled={isOffline} loading={reconcileMutation.isPending} onClick={() => reconcileMutation.mutate()}>Reconcile</Button>
+          )}
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Viewer area */}
         <div className="flex-1 flex flex-col overflow-hidden">
           {/* Viewer tabs */}
           <div className="flex border-b border-[#CDD5DF] bg-[#F8FAFC] px-4 gap-1 flex-shrink-0 items-center">
@@ -936,187 +933,120 @@ function WorkspaceTab({ isOffline }: { isOffline?: boolean }) {
               </button>
             ))}
             <div className="flex-1" />
-            <span className="text-[12px] text-[#475569] self-center pr-2">Read-only · {fix.diffPath}</span>
+            <span className="text-[12px] text-[#475569] self-center pr-2">Read-only</span>
           </div>
 
-          {/* Light-theme viewer */}
           <div className="flex-1 overflow-auto bg-white border-r border-[#ECEFF4]">
             {viewMode === 'diff' && (
-              <div className="font-mono text-[12px] leading-6 p-4 select-text">
-                <div className="text-[12px] text-[#475569] mb-3 pb-2 border-b border-[#ECEFF4]">
-                  {fix.diffPath} · {activeRepo}@{fix.revision} ← {fix.baseRevision}
-                </div>
-                {diffLines.map(({ line, color }, i) => (
-                  <div key={i} className={`px-2 -mx-2 ${color}`}>{line || ' '}</div>
-                ))}
-              </div>
-            )}
-            {viewMode === 'source' && (
-              <div role="region" aria-label={`${activeRepo} source ${fix.diffPath} at ${fix.revision}`} className="p-4 text-[12px] text-[#172033]">
-                <p className="mb-3 text-[#475569]">{fix.diffPath} · {activeRepo}@{fix.revision} · read-only fixture excerpt</p>
-                <pre className="font-mono whitespace-pre-wrap break-words">{fix.diffContent.filter(line => !line.startsWith('---') && !line.startsWith('+++') && !line.startsWith('@@') && !line.startsWith('-')).map(line => line.slice(1)).join('\n')}</pre>
-              </div>
-            )}
-            {viewMode === 'log' && (
-              <div className="font-mono text-[12px] leading-6 p-4 space-y-0.5">
-                {fix.logLines.map((line, i) => {
-                  const isWarn = line.includes('[WARN]');
-                  return (
-                    <div key={i} className={isWarn ? 'text-[#92400E] bg-[#FEF3C7] -mx-4 px-4' : 'text-[#172033]'}>
-                      {line}
+              !activeRepo?.baseRevision || !activeRepo?.currentRevision ? (
+                <p className="p-4 text-[13px] text-[#475569]">This repository workspace has no revision recorded yet.</p>
+              ) : diffQuery.isPending ? (
+                <div className="p-4" aria-hidden><Skeleton className="h-24 w-full" /></div>
+              ) : diffQuery.isError ? (
+                <div className="p-4"><InlineError {...apiErrorMessage(diffQuery.error)} onRetry={() => diffQuery.refetch()} /></div>
+              ) : (
+                <div className="text-[12px]">
+                  <div className="px-4 py-2 border-b border-[#ECEFF4] text-[#475569] flex items-center gap-2 flex-wrap">
+                    <span className="font-mono">{shortRev(activeRepo.baseRevision)}</span> → <span className="font-mono">{shortRev(activeRepo.currentRevision)}</span>
+                    <span>· {diffFiles.length} file{diffFiles.length === 1 ? '' : 's'} changed</span>
+                    {diffQuery.data?.filesTruncated && <Badge label="FILES TRUNCATED" intent="warning" />}
+                    {diffQuery.data?.patchTruncated && <Badge label="PATCH TRUNCATED" intent="warning" />}
+                  </div>
+                  {diffFiles.length === 0 ? (
+                    <p className="p-4 text-[#475569]">No changes between the base and current revision.</p>
+                  ) : (
+                    <div className="divide-y divide-[#ECEFF4]">
+                      {diffFiles.map(f => (
+                        <div key={f.path} className="flex items-center gap-3 px-4 py-2">
+                          <span className="font-mono text-[#172033] flex-1 min-w-0 truncate">{f.path}</span>
+                          {f.binary
+                            ? <span className="text-[#475569]">binary</span>
+                            : <span className="text-[#166534]">+{f.additions}</span>}
+                          {!f.binary && <span className="text-[#991B1B]">-{f.deletions}</span>}
+                          <Button size="compact" intent="quiet" onClick={() => { setSourcePath(f.path); setSourcePathDraft(f.path); setSourceRevisionSide('current'); setViewMode('source'); }}>View Source</Button>
+                        </div>
+                      ))}
                     </div>
-                  );
-                })}
-                <div className="text-[#475569] italic mt-2">— log truncated —</div>
+                  )}
+                  {diffQuery.data?.patch && (
+                    <pre className="font-mono text-[12px] leading-6 p-4 whitespace-pre-wrap break-words border-t border-[#ECEFF4]">
+                      {decodeDiffPatch(diffQuery.data.patch).split('\n').map((line, i) => (
+                        <div key={i} className={
+                          line.startsWith('+') && !line.startsWith('+++') ? 'bg-[#DCFCE7] text-[#166534] px-2 -mx-2'
+                          : line.startsWith('-') && !line.startsWith('---') ? 'bg-[#FEE2E2] text-[#991B1B] px-2 -mx-2'
+                          : line.startsWith('@@') ? 'bg-[#EEF2FF] text-[#3659E3] px-2 -mx-2'
+                          : 'text-[#172033]'
+                        }>{line || ' '}</div>
+                      ))}
+                    </pre>
+                  )}
+                </div>
+              )
+            )}
+
+            {viewMode === 'source' && (
+              <div role="region" aria-label={activeRepo ? `${activeRepo.repositoryId} source` : 'source'} className="p-4 text-[12px] text-[#172033]">
+                <div className="flex items-end gap-2 mb-3">
+                  <div className="flex-1">
+                    <TextField label="Path" value={sourcePathDraft} onChange={setSourcePathDraft} placeholder="src/api/index.ts" mono />
+                  </div>
+                  <Select label="Revision" value={sourceRevisionSide} onChange={v => setSourceRevisionSide(v as 'base' | 'current')}
+                    options={[{ value: 'current', label: 'Current' }, { value: 'base', label: 'Base' }]} />
+                  <Button intent="primary" size="compact" onClick={() => setSourcePath(sourcePathDraft.trim())} disabled={!sourcePathDraft.trim()}>Load</Button>
+                </div>
+                {!sourcePath ? (
+                  <p className="text-[#475569]">Enter a path (or click "View Source" from a changed file in the Diff tab).</p>
+                ) : sourceQuery.isPending ? (
+                  <Skeleton className="h-24 w-full" />
+                ) : sourceQuery.isError ? (
+                  <InlineError {...apiErrorMessage(sourceQuery.error)} onRetry={() => sourceQuery.refetch()} />
+                ) : sourceQuery.data?.binary ? (
+                  <p className="text-[#475569]">Binary file ({sourceQuery.data.totalBytes} bytes) — not previewable.</p>
+                ) : (
+                  <>
+                    <p className="mb-2 text-[#475569]">
+                      {sourcePath} · {sourceRevisionSide} @ <span className="font-mono">{shortRev(sourceQuery.data?.revision)}</span>
+                      {sourceQuery.data?.truncated && <span className="ml-2"><Badge label="TRUNCATED" intent="warning" /></span>}
+                    </p>
+                    <pre className="font-mono whitespace-pre-wrap break-words">{sourceQuery.data?.content}</pre>
+                  </>
+                )}
               </div>
+            )}
+
+            {viewMode === 'log' && (
+              !activeRepo?.currentRevision ? (
+                <p className="p-4 text-[13px] text-[#475569]">This repository workspace has no revision recorded yet.</p>
+              ) : logQuery.isPending ? (
+                <div className="p-4" aria-hidden><Skeleton className="h-24 w-full" /></div>
+              ) : logQuery.isError ? (
+                <div className="p-4"><InlineError {...apiErrorMessage(logQuery.error)} onRetry={() => logQuery.refetch()} /></div>
+              ) : (
+                <div className="divide-y divide-[#ECEFF4]">
+                  {(logQuery.data?.pages.flatMap(p => p.entries) ?? []).map(entry => (
+                    <div key={entry.commitId} className="px-4 py-2.5 text-[12px]">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[#475569]">{entry.commitId.slice(0, 10)}</span>
+                        <span className="text-[#172033] truncate">{entry.subject}{entry.subjectTruncated ? '…' : ''}</span>
+                      </div>
+                      <div className="text-[#475569] mt-0.5">{entry.authorName} &lt;{entry.authorEmail}&gt; · {new Date(entry.authoredAt).toLocaleString()}</div>
+                    </div>
+                  ))}
+                  {logQuery.data?.pages.at(-1)?.truncated && (
+                    <p className="px-4 py-2 text-[12px] text-[#475569] italic">Log output truncated at this page's own byte limit.</p>
+                  )}
+                  {logQuery.hasNextPage && (
+                    <div className="px-4 py-2 flex justify-center">
+                      <Button intent="secondary" size="compact" loading={logQuery.isFetchingNextPage} onClick={() => logQuery.fetchNextPage()}>Load more</Button>
+                    </div>
+                  )}
+                </div>
+              )
             )}
           </div>
         </div>
-
-        {/* ReleaseSet panel */}
-        {showReleaseSet && (
-          <div className="w-80 flex-shrink-0 border-l border-[#CDD5DF] bg-[#F3F5F8] overflow-y-auto">
-            <div className="px-4 py-3 border-b border-[#CDD5DF] flex items-center justify-between">
-              <span className="text-[13px] font-semibold text-[#172033]">ReleaseSet</span>
-              <StatusBadge state={rsState} entity="workitem" />
-            </div>
-            <div className="p-4 space-y-4">
-              <div className="space-y-1.5 text-[12px]">
-                <div className="flex gap-2"><span className="text-[#475569] w-28">Manifest rev</span><span className="font-mono">rset-f7a2b3c4</span></div>
-                <div className="flex gap-2"><span className="text-[#475569] w-28">Content hash</span><span className="font-mono truncate">sha256:9e8d…c012</span></div>
-                <div className="flex gap-2"><span className="text-[#475569] w-28">Created</span><span>09:52:10</span></div>
-              </div>
-              {/* Per-repo verdicts */}
-              <div>
-                <h3 className="text-[12px] font-semibold text-[#475569] uppercase tracking-wider mb-2">Per-repository</h3>
-                <div className="space-y-2">
-                  {[
-                    { repo: 'core-api',       base: '3c1f2d0', result: 'a3f9e8b', verdict: 'PASS' as const  },
-                    { repo: 'worker-service', base: '9e2a1b4', result: 'b7c2f1d', verdict: 'FAIL' as const  },
-                  ].map(row => (
-                    <div key={row.repo} className="bg-white rounded-[6px] border border-[#CDD5DF] p-3 text-[12px] space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-[#172033]">{row.repo}</span>
-                        <VerdictBadge verdict={row.verdict} />
-                      </div>
-                      <div className="font-mono text-[12px] text-[#475569]">
-                        {row.base} → {row.result}
-                      </div>
-                      {row.verdict === 'FAIL' && (
-                        <div className="text-[12px] text-[#991B1B]">Lease interrupted; workspace quarantined.</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-              {/* ReleaseSet actions */}
-              <div className="space-y-2 pt-2">
-                {rsState === 'DRAFT' && (
-                  <>
-                    <Button intent="primary" size="compact" className="w-full justify-center" disabled={true}>
-                      Seal ReleaseSet <span className="opacity-70 ml-1 text-[12px]">(requires all PASS)</span>
-                    </Button>
-                    <Button intent="secondary" size="compact" className="w-full justify-center" disabled={isOffline}
-                      onClick={() => setSealDialog(true)}>
-                      Seal Anyway (partial)
-                    </Button>
-                    <Button intent="destructive" size="compact" className="w-full justify-center" disabled={isOffline}
-                      onClick={() => setAbandonDialog(true)}>
-                      Abandon
-                    </Button>
-                  </>
-                )}
-                {rsState === 'SEALED' && (
-                  <>
-                    <Button intent="primary" size="compact" className="w-full justify-center" disabled={isOffline} onClick={() => setCommitDialog(true)}>Local Commit</Button>
-                    <Button intent="secondary" size="compact" className="w-full justify-center" disabled={isOffline} onClick={() => setReleaseDialog(true)}>Release Workspace</Button>
-                  </>
-                )}
-                {rsState === 'ABANDONED' && (
-                  <div className="text-[12px] text-[#475569] italic">ReleaseSet abandoned. No further actions.</div>
-                )}
-              </div>
-              {operation && <OperationNotice state={operation.state} message={operation.message} ref={operation.ref} />}
-            </div>
-          </div>
-        )}
       </div>
-
-      {sealDialog && (
-        <Dialog
-          title="Seal ReleaseSet (partial)"
-          description="worker-service verdict is FAIL. Sealing with a partial result; Local Commit will include only PASS repositories."
-          onClose={() => setSealDialog(false)}
-          actions={
-            <>
-              <Button intent="secondary" onClick={() => setSealDialog(false)}>Cancel</Button>
-              <Button intent="primary" disabled={isOffline} onClick={() => {
-                setSealDialog(false);
-                requestWorkspaceAction('op-seal-f71b', 'Partial ReleaseSet seal requested.', 'ReleaseSet sealed with the PASS repository only.', () => setRsState('SEALED'));
-              }}>Seal Partial ReleaseSet</Button>
-            </>
-          }
-        >
-          <dl className="text-[13px] space-y-1.5">
-            <div className="flex gap-3"><dt className="text-[#475569] w-28">ReleaseSet</dt><dd className="font-mono">rset-f7a2b3c4</dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-28">PASS repos</dt><dd>core-api</dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-28">FAIL repos</dt><dd className="text-[#991B1B]">worker-service (quarantined)</dd></div>
-          </dl>
-        </Dialog>
-      )}
-      {abandonDialog && (
-        <Dialog
-          title="Abandon ReleaseSet"
-          description="Abandoning this ReleaseSet is irreversible. A new ReleaseSet must be created for any subsequent release attempt."
-          onClose={() => setAbandonDialog(false)}
-          actions={
-            <>
-              <Button intent="secondary" onClick={() => setAbandonDialog(false)}>Cancel</Button>
-              <Button intent="destructive" disabled={isOffline} onClick={() => {
-                setAbandonDialog(false);
-                requestWorkspaceAction('op-abandon-8c20', 'ReleaseSet abandonment requested.', 'ReleaseSet abandonment confirmed.', () => setRsState('ABANDONED'));
-              }}>Abandon ReleaseSet</Button>
-            </>
-          }
-        >
-          <dl className="text-[13px] space-y-1.5">
-            <div className="flex gap-3"><dt className="text-[#475569] w-28">ReleaseSet</dt><dd className="font-mono">rset-f7a2b3c4</dd></div>
-            <div className="flex gap-3"><dt className="text-[#475569] w-28">Current state</dt><dd><Badge label="DRAFT" intent="neutral" /></dd></div>
-          </dl>
-        </Dialog>
-      )}
-      {commitDialog && (
-        <Dialog
-          title="Create Local Commit"
-          description="Create a local commit from the sealed PASS repository only. No remote Git operation will run."
-          onClose={() => setCommitDialog(false)}
-          actions={<>
-            <Button intent="secondary" onClick={() => setCommitDialog(false)}>Cancel</Button>
-            <Button intent="primary" disabled={isOffline} onClick={() => {
-              setCommitDialog(false);
-              requestWorkspaceAction('op-commit-64b2', 'Local commit requested for core-api.', 'Local commit created. No remote push was performed.');
-            }}>Create Local Commit</Button>
-          </>}
-        >
-          <p className="text-[13px] text-[#475569]">Target: <span className="font-mono text-[#172033]">core-api@a3f9e8b</span></p>
-        </Dialog>
-      )}
-      {releaseDialog && (
-        <Dialog
-          title="Release Workspace Lease"
-          description="Release the active workspace lease after local artifacts have been retained. This does not push or merge code."
-          onClose={() => setReleaseDialog(false)}
-          actions={<>
-            <Button intent="secondary" onClick={() => setReleaseDialog(false)}>Keep Lease</Button>
-            <Button intent="destructive" disabled={isOffline} onClick={() => {
-              setReleaseDialog(false);
-              requestWorkspaceAction('op-release-a921', 'Workspace lease release requested.', 'Workspace lease released; retained artifacts remain readable.');
-            }}>Release Workspace</Button>
-          </>}
-        >
-          <p className="text-[13px] text-[#475569]">WorkspaceSet: <span className="font-mono text-[#172033]">ws-a1b2c3d4</span></p>
-        </Dialog>
-      )}
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }
@@ -1386,7 +1316,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       {activeTab === 'task-graph'      && (
         <GraphTimelineTab projectId={projectId} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled} />
       )}
-      {activeTab === 'task-workspace'  && <WorkspaceTab isOffline={isOffline} />}
+      {activeTab === 'task-workspace'  && <WorkspaceTab projectId={projectId} familyId={familyId} isOffline={isOffline} />}
       {activeTab === 'task-evidence'   && <EvidenceTab />}
       {activeTab === 'task-chat'       && <ChatTab isOffline={isOffline} />}
       </div>

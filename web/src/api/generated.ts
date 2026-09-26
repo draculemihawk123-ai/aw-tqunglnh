@@ -369,11 +369,6 @@ export function getAdapterBuild(id: string, opts: RequestOptions = {}): Promise<
   return request<GetAdapterBuildResponse>("GET", `/adapter-builds/${id}`, undefined, opts);
 }
 
-// GET /projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId}/artifacts/{artifactId}/content (scope: PROJECT)
-export function getArtifactContent(projectId: string, workItemId: string, evidenceId: string, artifactId: string, opts: RequestOptions = {}): Promise<unknown> {
-  return request<unknown>("GET", `/projects/${projectId}/work-items/${workItemId}/evidence/${evidenceId}/artifacts/${artifactId}/content`, undefined, opts);
-}
-
 export interface GetContextSnapshotResponse {
   snapshotId: string;
   projectId: string;
@@ -578,6 +573,7 @@ export interface GetRepositoryWorkspaceStateResponse {
   state: string;
   version: number;
   branchRef?: string;
+  baseRevision?: string;
   currentRevision?: string;
   lastProvisionErrorCode?: string | null;
   hasActiveWriteLease: boolean;
@@ -803,11 +799,6 @@ export interface GetWorkspaceSetStateResponse {
 // GET /projects/{projectId}/workspace-sets/{familyId} (scope: PROJECT)
 export function getWorkspaceSetState(projectId: string, familyId: string, opts: RequestOptions = {}): Promise<GetWorkspaceSetStateResponse> {
   return request<GetWorkspaceSetStateResponse>("GET", `/projects/${projectId}/workspace-sets/${familyId}`, undefined, opts);
-}
-
-// GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/source (scope: PROJECT)
-export function getWorkspaceSource(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<unknown> {
-  return request<unknown>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/source`, undefined, opts);
 }
 
 // GET /health/live (scope: INSTALLATION)
