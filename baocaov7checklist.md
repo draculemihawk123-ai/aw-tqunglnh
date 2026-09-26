@@ -1840,3 +1840,120 @@ otherwise) surfaces as a real `InlineError` inside the dialog, never served sile
   likely V7-17's own full-journey gate, which already plans a real COMMAND/AGENT run) is the first to
   naturally produce real Evidence data end-to-end.
 
+## V7-15 — Task chat and typed controls
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md`'s own Thực hiện line: append messages/attachments, attempt linkage, a
+context-used indicator, and separate control buttons/dialogs — "canonical message UI không lẫn approve/
+cancel/scope với free text." Depends on V7-11 (already closed). Backend: V6-07's `listMessages`/
+`appendMessage`/`appendConversationAttachment`/`getMessageContextSnapshot`.
+
+### Decision
+
+**Found a real, previously-missing backend route before writing any UI**: `messageRefDTO`
+(`internal/delivery/httpapi/message/dto.go`) carries only a bounded `ContentArtifactID` reference, by
+design — its own doc comment says "a caller that needs the actual bytes fetches them by ContentArtifactID
+through a future V6-07B GetArtifactContent route." That route never actually materialized for messages:
+`evidence.getArtifactContent` exists, but it authorizes ONLY against an Evidence row's own
+`ArtifactReferences`, which a chat Message can never satisfy. Without a real route, an ASSISTANT/SYSTEM/
+TOOL-authored message's own real text would be permanently unreadable by any caller — the operator's own
+USER-authored messages are the one case that never needed this (the caller already holds the text it just
+sent), but a real chat log has to render every role's own message. Added a real, previously-missing route:
+`GET /projects/{projectId}/work-items/{workItemId}/messages/{messageId}/content` (operationId
+`getMessageContent`), mirroring `evidence.handleGetArtifactContent`'s own Verify-before-Open/Range/
+ApplyContentHeaders/ETag streaming discipline exactly, but authorized against a Message's own
+`ContentArtifactID` via a new, real, exported `internal/app/message.ResolveMessageContent` (registered for
+real in `internal/delivery/parity/registry.go` with a real Symbol — ADR-028 wants every public query on a
+real public APPLICATION operation, not one inlined only in the HTTP handler). Acknowledged the resulting
+`MISSING_CLI` parity debt in `internal/delivery/parity/ledger.go` (V7 is a UI-only phase that never touches
+`internal/delivery/cli`) and updated `routeinventory_test.go`'s pinned route count/undocumented-operations
+snapshot and `securitymatrix/transport_test.go`'s own duplicate pinned count.
+
+**Found a second real backend/generator gap, this time on the WRITE side**: V7-15 is also the first-ever
+real UI caller of `appendConversationAttachment` — its `RequestSchema` (`attachmentMetadata{}`) looks like an
+ordinary JSON body to `apicontract`'s generator, but `internal/delivery/httpapi/message/attachment.go`'s own
+doc comment is explicit that the real wire body is the attachment's raw content bytes, with metadata
+traveling via `X-Attachment-*` headers instead — a generated function would JSON-marshal the wrong body and
+the real handler would reject every call. Fixed with a new `rawUploadOperations` set in
+`internal/delivery/httpapi/apicontract/tsclient.go` (the write-side mirror of V7-13's own
+`rawContentOperations`), with its own `TestGeneratedTypeScriptClient_SkipsRawUploadOperations` test. Both
+`getMessageContent` and `appendConversationAttachment` are now excluded from the generated client;
+`web/src/api/message.ts`'s own hand-written `fetchMessageContent`/`uploadAttachment` are the real callers in
+their place — the latter computing a real SHA-256 digest via `crypto.subtle.digest` over the file's own real
+bytes, never trusting a browser-reported one, since the server's own digest-mismatch check needs something
+real to verify against.
+
+Dropped the old prototype's fake "Task Action Panel" rail (fake Approve/Scope-Expansion/Wait-Signal buttons)
+entirely, not real-ified — the design doc is explicit that approve/reject/scope/WAIT controls belong to a
+different screen ("Screen 7") and must never appear here at all ("không map message text thành control").
+V7-15's own job is simply to never render them on this screen, which a real Chat screen with no such rail
+satisfies by construction.
+
+**Scoping decision on live updates**: `web/src/api/sse.ts`'s own `watchProjectEvents` (V7-04B) has a fully
+built and unit-tested reconnect/backoff/resync client, but has no real caller ANYWHERE in this app yet — no
+shared app-shell provider or reconnect banner was ever wired up despite the design doc's own assumption that
+this is "đã là mối quan tâm của app shell, dùng chung." Wiring a whole new shared, cross-cutting SSE
+provider from scratch is out of this single screen's own reasonable scope (the same class of boundary V7-11/
+V7-12/V7-14 already drew for their own out-of-reach pieces). Chat instead uses a real, working, honest interim:
+`refetchInterval: 4000` on the messages list query — not a regression, since nothing in this codebase
+currently keeps chat live any other way either.
+
+### Execution
+
+New file `web/src/api/message.ts`: hand-declared `MessageRef` (the same "narrow `unknown` at the call site"
+gap `listMessages`'s own `items` has), `fetchMessageContent` (returns the real `Blob` + `Content-Type`,
+mirroring `evidence.ts`'s own `fetchArtifactContent` — a Message's own `ContentType` is caller-declared at
+append/attach time, so unlike Evidence's fixed allow-list this can be arbitrary), and `uploadAttachment`.
+
+Rewrote `ChatTab` in `web/src/screens/TaskDetail.tsx` against real data: `useInfiniteQuery` over
+`listMessages` (real cursor pagination, "Load more"), each row's own `MessageBody` fetching real content and
+rendering it by real `Content-Type` — text/plain/csv/json decodes as escaped plain text (`MessageText`), a
+small inline-safe image renders inline (`MessageImage`, reusing `evidence.ts`'s own
+`isInlineSafeMediaType`/`PREVIEW_SIZE_LIMIT_BYTES`), anything else is a real Download link only, never
+rendered — the server's own Content-Disposition allow-list is what actually prevents a raw HTML/script
+message body from ever executing, exactly like V7-14's own Evidence preview. **Found and fixed a real
+caching bug while testing**: `MessageBody`'s own `useQuery` had no `staleTime`, so TanStack Query's default
+`staleTime: 0` triggered an immediate redundant background refetch even for content this component had just
+optimistically seeded into the cache (the composer's own `onSuccess` — the operator already holds the exact
+text just sent, so it seeds `queryClient.setQueryData` directly rather than round-tripping a real fetch for
+content it already has). Fixed with `staleTime: Infinity` — a Message row is immutable/append-only by
+domain contract, so treating a cache hit as permanently fresh is a real correctness improvement, not a
+workaround. The composer keeps one idempotency key fixed for the lifetime of a single compose attempt,
+reusing the IDENTICAL key on Retry (design doc's own "dùng lại đúng idempotency key, không tạo message
+mới") and minting a fresh one only once an attempt actually succeeds. Attachment upload is a real hidden
+`<input type="file">` triggered by a real, keyboard-reachable "Attach" button, with upload status announced
+via a real `aria-live` region.
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 232/232 pass (224 prior + 8 new `ChatTab (V7-15)` cases: a real empty state; real
+  messages render in their real server-given order with each one's own real content fetched; sending a real
+  message dispatches with a fresh idempotency key and shows the operator's own just-typed text immediately
+  with NO redundant content fetch; a failed send keeps the draft and Retry reuses the IDENTICAL idempotency
+  key rather than minting a new one; a real attachment upload computes a real SHA-256 and dispatches with the
+  correct role/token, then refreshes the list; no approve/reject/scope-expansion/wait-signal control ever
+  renders anywhere; a non-inline-safe content type (`application/pdf`) offers only a real Download link,
+  never inline rendering; accessibility smoke).
+- `go build ./...`, `go vet ./...`, `go test ./...`: clean, including `internal/delivery/httpapi/message`'s
+  own new `content_test.go` (real HTTP round-trip: real stored bytes returned with the correct real
+  Content-Type/Content-Disposition/ETag; a real cross-WorkItem request leakage-normalized to 404; an unknown
+  messageId 404), `internal/delivery/httpapi/apicontract`'s updated route-count/undocumented-operations
+  pinned snapshots and new `TestGeneratedTypeScriptClient_SkipsRawUploadOperations`,
+  `internal/delivery/parity`'s updated registry/ledger (debt count unchanged in spirit — one new
+  consciously-acknowledged `MISSING_CLI` entry, zero unacknowledged), and `securitymatrix`'s updated pinned
+  route count.
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` AND `aw worker`: registered a real local
+  git repository, created a real project/WorkItem, sent a real USER message (`POST .../messages` → 201),
+  confirmed it rendered immediately with zero `GET .../content` calls for it (the optimistic-cache-seed fix,
+  proven live, not just in the mocked test), uploaded a real attachment (`POST .../attachments` → 201) whose
+  real content was then fetched for real (`GET .../messages/{id}/content` → 200) and rendered correctly as
+  escaped text. Confirmed the real empty state and confirmed, by inspecting the full rendered page text, that
+  no approve/reject/scope-expansion/wait-signal control renders anywhere on this screen. Zero console errors
+  throughout. The browser-automation tool available to this session cannot drive a native OS file picker, so
+  the attachment upload's own file-select step was triggered via a real `File`/`DataTransfer`/`change`-event
+  dispatch in the page (not a source-code shortcut — the exact same DOM event a real file picker would fire)
+  rather than a true native picker interaction.
+

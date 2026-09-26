@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Badge, StatusBadge, Button, IconButton, ValidActionBar, BlockerCard,
@@ -7,29 +7,31 @@ import {
 } from '../components/ui';
 import {
   AlertTriangle, ListTree,
-  CheckCircle2, ChevronDown, ChevronRight, FileDiff, FileText, ScrollText, Cpu, User,
+  CheckCircle2, ChevronDown, ChevronRight, FileDiff, FileText, ScrollText, Cpu, User, Paperclip,
 } from '../components/icons';
 import type { NavRoute } from '../components/shell/LeftNav';
 import {
-  abandonReleaseSet, ApiError, cancelRun, cancelWorkItem, createReleaseSet, getReleaseSet,
+  abandonReleaseSet, appendMessage, ApiError, cancelRun, cancelWorkItem, createReleaseSet, getReleaseSet,
   getReleaseSetLocalCommitStatus, getRepositoryWorkspaceState, getRunDiagnostics, getRunGraph, getRunTimeline,
   getTaskFamily, getWorkItem, getWorkItemProjectedDetail, getWorkspaceDiff, getWorkspaceRepositoryLog,
-  getWorkspaceSetState, listArtifacts, listEvidence, listReleaseSetsForFamily, requestReleaseSetLocalCommit,
-  requestWorkspaceReconciliation, requestWorkspaceSetRelease, resolveWorkItemBlocker, retryBlockedActivation,
-  sealReleaseSet,
+  getWorkspaceSetState, listArtifacts, listEvidence, listMessages, listReleaseSetsForFamily,
+  requestReleaseSetLocalCommit, requestWorkspaceReconciliation, requestWorkspaceSetRelease, resolveWorkItemBlocker,
+  retryBlockedActivation, sealReleaseSet,
 } from '../api/generated';
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
 import type { KanbanCard, WorkItemProjectedDetailResponse } from '../api/kanban';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
 import type { GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView } from '../api/rundetail';
-import { withSessionToken } from '../api/session';
+import { getSessionToken, withSessionToken } from '../api/session';
 import { decodeDiffPatch, fetchWorkspaceSource } from '../api/workspaceinspection';
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
 import { VERDICT_OPTIONS } from '../api/releaseset';
 import type { ReleaseSetDetail, RepositoryReleaseDetail, Verdict } from '../api/releaseset';
 import { artifactContentUrl, fetchArtifactContent, isInlineSafeMediaType, PREVIEW_SIZE_LIMIT_BYTES } from '../api/evidence';
 import type { ArtifactSummary, EvidenceDetail } from '../api/evidence';
+import { fetchMessageContent, messageContentUrl, uploadAttachment } from '../api/message';
+import type { MessageRef } from '../api/message';
 
 function apiErrorMessage(err: unknown): { code: string; message: string } {
   if (err instanceof ApiError) return { code: err.code, message: err.message };
@@ -1637,94 +1639,209 @@ function EvidenceTab({ projectId, workItemId, isOffline }: { projectId: string; 
 
 // ─── Chat Tab ─────────────────────────────────────────────────────────────────
 
-const MESSAGES = [
-  { id: 'm1', author: 'local-operator', time: '09:48:01', body: 'Start the tracing implementation. Scope is core-api and worker-service only. No remote Git operations.', attachment: null, attempt: null },
-  { id: 'm2', author: 'agent / anthropic', time: '09:48:09', body: 'Understood. I will implement OpenTelemetry instrumentation in both services. Starting with core-api middleware setup.', attachment: null, attempt: 'attempt-01' },
-  { id: 'm3', author: 'agent / anthropic', time: '09:53:46', body: 'Implementation complete in core-api (47/47 tests pass). Worker-service span linkage test has a failure — parent span context is not propagated across the queue boundary.', attachment: 'test-results.json', attempt: 'attempt-02' },
-  { id: 'm4', author: 'local-operator', time: '09:55:12', body: 'Check the worker enqueue path — context may not be extracted from message headers.', attachment: null, attempt: null },
-];
+/**
+ * MessageText decodes blob as text and renders it as plain, React-escaped
+ * children inside a <pre> — never innerHTML — so a raw HTML/script message
+ * body can never execute even though the server's own Content-Disposition
+ * header already guarantees it would never be served inline in a real
+ * browser tab either way.
+ */
+function MessageText({ blob }: { blob: Blob }) {
+  const [text, setText] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    blob.text().then(t => { if (!cancelled) setText(t); });
+    return () => { cancelled = true; };
+  }, [blob]);
+  if (text === null) return null;
+  return <p className="whitespace-pre-wrap break-words">{text}</p>;
+}
 
-function ChatTab({ isOffline }: { isOffline?: boolean }) {
+function MessageImage({ blob, alt }: { blob: Blob; alt: string }) {
+  const url = useMemo(() => URL.createObjectURL(blob), [blob]);
+  useEffect(() => () => URL.revokeObjectURL(url), [url]);
+  return <img src={url} alt={alt} className="max-w-xs rounded-[6px] border border-[#CDD5DF]" />;
+}
+
+/**
+ * MessageBody fetches a Message's own real content (fetchMessageContent,
+ * web/src/api/message.ts — the hand-written fetch V7-15 adds for the
+ * getMessageContent route it also adds, since no other route could ever
+ * read a Message's own real text) and renders it according to its real
+ * Content-Type: a chat-typed text message (text/plain/csv/json) decodes as
+ * plain escaped text; a small image attachment renders inline; anything
+ * else (including any non-inline-safe type — reusing evidence.ts's own
+ * isInlineSafeMediaType, the same closed allow-list
+ * internal/delivery/httpapi/media.go enforces server-side) is offered only
+ * as a real Download link, never rendered.
+ */
+function MessageBody({ projectId, workItemId, message }: { projectId: string; workItemId: string; message: MessageRef }) {
+  const contentQuery = useQuery({
+    queryKey: ['messageContent', projectId, workItemId, message.messageId],
+    queryFn: () => fetchMessageContent(projectId, workItemId, message.messageId),
+    // A Message row is immutable/append-only (internal/app/message/commands.go's
+    // own doc comment) — its own content never changes once created, so
+    // treating a cache hit as permanently fresh is correct, not a shortcut:
+    // without this, TanStack Query's own default staleTime:0 would trigger
+    // an immediate redundant background refetch even for the operator's own
+    // just-sent message, whose content this component already optimistically
+    // seeded into the cache (see the composer's own onSuccess below).
+    staleTime: Infinity,
+  });
+  if (contentQuery.isPending) {
+    return <div aria-hidden><Skeleton className="h-4 w-32" /></div>;
+  }
+  if (contentQuery.isError) {
+    return <InlineError {...apiErrorMessage(contentQuery.error)} onRetry={() => contentQuery.refetch()} />;
+  }
+  const { contentType, blob } = contentQuery.data;
+  const base = contentType.split(';')[0]?.trim().toLowerCase() ?? '';
+  if (base === 'text/plain' || base === 'text/csv' || base === 'application/json') {
+    return <MessageText blob={blob} />;
+  }
+  if (isInlineSafeMediaType(contentType) && base.startsWith('image/') && blob.size <= PREVIEW_SIZE_LIMIT_BYTES) {
+    return <MessageImage blob={blob} alt={message.messageId} />;
+  }
+  return (
+    <a href={messageContentUrl(projectId, workItemId, message.messageId)} download
+      className="inline-flex items-center gap-2 px-2 py-1 bg-white border border-[#CDD5DF] rounded-[6px] text-[12px] text-[#3659E3] hover:underline">
+      <FileText size={12} aria-hidden />
+      <span>Download attachment ({contentType})</span>
+    </a>
+  );
+}
+
+function ChatTab({ projectId, workItemId, isOffline }: { projectId: string; workItemId: string; isOffline?: boolean }) {
+  const queryClient = useQueryClient();
+  const { toasts, show, dismiss } = useToasts();
   const [draft, setDraft] = useState('');
+  // Fixed for the lifetime of one compose attempt — a Retry after a failed
+  // send reuses this SAME key so the server's own receipt-replay returns
+  // the SAME Message rather than creating a duplicate (design doc's own
+  // "dùng lại đúng idempotency key, không tạo message mới"); a fresh key is
+  // minted only once THIS attempt actually succeeds.
+  const [composeKey, setComposeKey] = useState(() => crypto.randomUUID());
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const messagesQuery = useInfiniteQuery({
+    queryKey: ['messages', projectId, workItemId],
+    queryFn: async ({ pageParam }) => (await listMessages(projectId, workItemId,
+      withSessionToken({ query: pageParam ? { cursor: pageParam as string } : {} }))) as unknown as { items: MessageRef[]; nextCursor?: string },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: last => last.nextCursor,
+    enabled: !isOffline,
+    // No shared app-shell SSE/journal-cursor wiring exists yet for this
+    // screen to key a real push-based resync off of (web/src/api/sse.ts's
+    // own watchProjectEvents has no real caller anywhere in this app yet —
+    // V7-04B built and unit-tested it, but no screen's own Freshness field
+    // gives Chat a real initial journal cursor to open a stream from).
+    // Polling is the honest interim: real, working, and doesn't guess at an
+    // integration this task did not build.
+    refetchInterval: isOffline ? false : 4000,
+  });
+  const messages = messagesQuery.data?.pages.flatMap(p => p.items) ?? [];
+
+  const sendMutation = useMutation({
+    mutationFn: () => appendMessage(projectId, workItemId, {
+      role: 'USER', content: draft, contentType: 'text/plain',
+    }, withSessionToken({ idempotencyKey: composeKey })),
+    onSuccess: result => {
+      // The operator already holds the exact text just sent — seed the
+      // content cache directly rather than round-tripping a real fetch for
+      // content this client already has (the message package's own doc
+      // comment: "the operator's own USER-authored messages are the one
+      // case that never needs this").
+      queryClient.setQueryData(['messageContent', projectId, workItemId, result.messageId], {
+        contentType: 'text/plain', blob: new Blob([draft], { type: 'text/plain' }),
+      });
+      setDraft('');
+      setComposeKey(crypto.randomUUID());
+      messagesQuery.refetch();
+    },
+    onError: () => { /* draft + composeKey both stay — Retry reuses the identical attempt */ },
+  });
+
+  const attachMutation = useMutation({
+    mutationFn: (file: File) => uploadAttachment(projectId, workItemId, file, {
+      role: 'USER', token: getSessionToken(), idempotencyKey: crypto.randomUUID(),
+    }),
+    onSuccess: () => {
+      show({ intent: 'success', message: 'Attachment uploaded.' });
+      messagesQuery.refetch();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
   return (
     <div className="flex-1 flex overflow-hidden">
-      {/* Message list + composer */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <div className="flex-1 overflow-y-auto p-5 space-y-4" role="log" aria-label="Conversation messages" aria-live="polite">
-          {MESSAGES.map(msg => {
-            const isAgent = msg.author.startsWith('agent');
-            return (
-              <article key={msg.id} className={`flex gap-3 ${isAgent ? '' : 'flex-row-reverse'}`} aria-label={`Message from ${msg.author} at ${msg.time}`}>
-                <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 border ${isAgent ? 'bg-[#EDE9FE] text-[#5B21B6] border-[#C4B5FD]' : 'bg-[#EEF2FF] text-[#3659E3] border-[#C7D2FE]'}`} aria-hidden>
-                  {isAgent ? <Cpu size={14} /> : <User size={14} />}
-                </div>
-                <div className={`max-w-lg ${isAgent ? '' : 'items-end flex flex-col'}`}>
-                  <div className={`flex items-center gap-2 mb-1 ${isAgent ? '' : 'flex-row-reverse'}`}>
-                    <span className="text-[12px] font-medium text-[#172033]">{msg.author}</span>
-                    <span className="text-[12px] text-[#475569]">{msg.time}</span>
-                    {msg.attempt && <span className="font-mono text-[12px] px-1.5 py-0.5 bg-[#EDE9FE] text-[#5B21B6] rounded-[4px]">{msg.attempt}</span>}
+          {messagesQuery.isPending ? (
+            <div aria-hidden><Skeleton className="h-24 w-full" /></div>
+          ) : messagesQuery.isError ? (
+            <InlineError {...apiErrorMessage(messagesQuery.error)} onRetry={() => messagesQuery.refetch()} />
+          ) : messages.length === 0 ? (
+            <p className="text-[13px] text-[#475569]">No messages yet — start the conversation below.</p>
+          ) : (
+            messages.map(msg => {
+              const isUser = msg.role === 'USER';
+              return (
+                <article key={msg.messageId} className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}
+                  aria-label={`Message from ${msg.actor} (${msg.role}) at ${new Date(msg.createdAt).toLocaleString()}`}>
+                  <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 border ${isUser ? 'bg-[#EEF2FF] text-[#3659E3] border-[#C7D2FE]' : 'bg-[#EDE9FE] text-[#5B21B6] border-[#C4B5FD]'}`} aria-hidden>
+                    {isUser ? <User size={14} /> : <Cpu size={14} />}
                   </div>
-                  <div className={`rounded-[8px] px-3.5 py-2.5 text-[13px] text-[#172033] ${isAgent ? 'bg-[#F3F5F8] border border-[#CDD5DF]' : 'bg-[#EEF2FF] border border-[#C7D2FE]'}`}>
-                    {msg.body}
-                  </div>
-                  {msg.attachment && (
-                    <div className="flex items-center gap-2 mt-1.5 px-2 py-1 bg-white border border-[#CDD5DF] rounded-[6px] text-[12px] text-[#475569]">
-                      <FileText size={12} aria-hidden />
-                      <span className="font-mono">{msg.attachment}</span>
+                  <div className={`max-w-lg ${isUser ? 'items-end flex flex-col' : ''}`}>
+                    <div className={`flex items-center gap-2 mb-1 ${isUser ? 'flex-row-reverse' : ''}`}>
+                      <span className="text-[12px] font-medium text-[#172033]">{msg.actor}</span>
+                      <span className="font-mono text-[12px] px-1.5 py-0.5 bg-[#F3F5F8] text-[#475569] rounded-[4px]">{msg.role}</span>
+                      <span className="text-[12px] text-[#475569]">{new Date(msg.createdAt).toLocaleTimeString()}</span>
+                      {msg.attemptId && <span className="font-mono text-[12px] px-1.5 py-0.5 bg-[#EDE9FE] text-[#5B21B6] rounded-[4px]">{msg.attemptId}</span>}
                     </div>
-                  )}
-                </div>
-              </article>
-            );
-          })}
+                    <div className={`rounded-[8px] px-3.5 py-2.5 text-[13px] text-[#172033] ${isUser ? 'bg-[#EEF2FF] border border-[#C7D2FE]' : 'bg-[#F3F5F8] border border-[#CDD5DF]'}`}>
+                      <MessageBody projectId={projectId} workItemId={workItemId} message={msg} />
+                    </div>
+                  </div>
+                </article>
+              );
+            })
+          )}
+          {messagesQuery.hasNextPage && (
+            <div className="flex justify-center">
+              <Button intent="secondary" size="compact" loading={messagesQuery.isFetchingNextPage} onClick={() => messagesQuery.fetchNextPage()}>Load more</Button>
+            </div>
+          )}
         </div>
 
         <div className="border-t border-[#CDD5DF] p-4 bg-white flex-shrink-0">
+          {sendMutation.isError && (
+            <div className="mb-2">
+              <InlineError {...apiErrorMessage(sendMutation.error)} onRetry={() => sendMutation.mutate()} />
+            </div>
+          )}
           <div className="flex gap-2">
             <textarea
               value={draft}
               onChange={e => setDraft(e.target.value)}
               placeholder="Add a platform message…"
               aria-label="Message composer"
+              disabled={isOffline}
               className="flex-1 h-20 px-3 py-2 rounded-[6px] border border-[#CDD5DF] text-[13px] bg-white focus:border-[#3659E3] outline-none resize-none"
             />
             <div className="flex flex-col gap-2">
-              <Button intent="primary" size="compact" disabled={isOffline || !draft.trim()} onClick={() => setDraft('')}>Send</Button>
-              <Button intent="secondary" size="compact" disabled={isOffline} icon={<FileText size={13} aria-hidden />}>Attach</Button>
+              <Button intent="primary" size="compact" disabled={isOffline || !draft.trim()} loading={sendMutation.isPending} onClick={() => sendMutation.mutate()}>Send</Button>
+              <input ref={fileInputRef} type="file" className="hidden" aria-hidden
+                onChange={e => { const f = e.target.files?.[0]; if (f) attachMutation.mutate(f); e.target.value = ''; }} />
+              <Button intent="secondary" size="compact" disabled={isOffline} loading={attachMutation.isPending}
+                icon={<Paperclip size={13} aria-hidden />} onClick={() => fileInputRef.current?.click()}>Attach</Button>
             </div>
           </div>
+          <p aria-live="polite" className="sr-only">
+            {attachMutation.isPending ? 'Uploading attachment…' : attachMutation.isSuccess ? 'Attachment uploaded.' : ''}
+          </p>
         </div>
       </div>
-
-      {/* Typed control rail — clearly NOT the message composer */}
-      <div className="w-64 border-l border-[#CDD5DF] bg-[#F3F5F8] flex flex-col flex-shrink-0" role="complementary" aria-label="Typed action controls">
-        <div className="px-4 py-3 border-b border-[#CDD5DF]">
-          <p className="text-[12px] font-semibold text-[#475569]">Task Action Panel</p>
-          <p className="text-[12px] text-[#475569] mt-0.5">These controls are separate from the message composer. See task header for Approve / Cancel.</p>
-        </div>
-        <div className="p-4 space-y-4">
-          <div className="p-3 bg-[#EEF2FF] border border-[#C7D2FE] rounded-[8px] text-[12px] text-[#1E40AF]">
-            <p className="font-medium">Partial recovery approval waiting at APPROVAL_01</p>
-            <p className="mt-1 opacity-75">Use <strong>Approve Node</strong> in the task header above to submit approval.</p>
-          </div>
-          <div className="space-y-1.5">
-            <p className="text-[12px] font-medium text-[#172033]">Scope Decision</p>
-            <Button intent="secondary" size="compact" className="w-full justify-center" disabled={isOffline}>Request Scope Expansion</Button>
-          </div>
-          <div className="h-px bg-[#CDD5DF]" />
-          <div className="space-y-1.5">
-            <p className="text-[12px] font-medium text-[#172033]">Wait Signal</p>
-            <Button intent="secondary" size="compact" className="w-full justify-center" disabled={isOffline}>Send Wait Signal</Button>
-          </div>
-          <div className="h-px bg-[#CDD5DF]" />
-          <div className="space-y-1.5">
-            <p className="text-[12px] font-medium text-[#172033]">Context Snapshot</p>
-            <div className="p-2 rounded-[6px] bg-white border border-[#CDD5DF] text-[12px] text-[#475569]">
-              <span className="font-mono">ctx-f7a2</span> · 4 messages, 3 artifacts
-            </div>
-          </div>
-        </div>
-      </div>
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
   );
 }
@@ -1746,9 +1863,8 @@ interface TaskDetailProps {
  * at this root, and hands the already-fetched data down as props to
  * TaskHeader/OverviewTab — a single source of truth for both, rather than
  * each independently re-fetching. task-overview (V7-11), task-graph
- * (V7-12), task-workspace (V7-13/V7-13A) and task-evidence (V7-14) all
- * consume real data now; task-chat stays the prototype's own fixture tab,
- * V7-15's own not-yet-reached scope.
+ * (V7-12), task-workspace (V7-13/V7-13A), task-evidence (V7-14) and
+ * task-chat (V7-15) all consume real data now.
  */
 export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab, onTabChange, isOffline }: TaskDetailProps) {
   const queryClient = useQueryClient();
@@ -1804,7 +1920,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       )}
       {activeTab === 'task-workspace'  && <WorkspaceTab projectId={projectId} familyId={familyId} isOffline={isOffline} />}
       {activeTab === 'task-evidence'   && <EvidenceTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} />}
-      {activeTab === 'task-chat'       && <ChatTab isOffline={isOffline} />}
+      {activeTab === 'task-chat'       && <ChatTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} />}
       </div>
     </div>
   );

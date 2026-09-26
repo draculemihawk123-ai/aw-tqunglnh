@@ -26,6 +26,7 @@ func Ledger() []LedgerEntry {
 		// ---- HTTP operations with no `aw` mirror ---------------------------
 		{ClassMissingCLI, "http:getEvidence", "V6-15K", "UX Screen 11 row 2 reserves `aw evidence show`; V6-15K chose not to add it; " + noLeaf},
 		{ClassMissingCLI, "http:listArtifacts", "V6-15K", "UX Screen 11 row 3 reserves `aw artifact list`; " + noLeaf},
+		{ClassMissingCLI, "http:getMessageContent", "V7-15", "route GET .../messages/{messageId}/content is a real, previously-missing route V7-15 added (docs/design/11-v6-00-ux-artifact.md's own Screen 12 action table never enumerated it as its own row at all — without it, no caller could ever read an ASSISTANT/SYSTEM/TOOL-authored message's own real text); V7 is a UI-only phase that never touches internal/delivery/cli, so no `aw` mirror exists; " + noLeaf},
 		{ClassMissingCLI, "http:getMessageContextSnapshot", "V6-15J", "route GET .../messages/{messageId}/context-snapshot has no `aw` command (UX Screen 12 row 4 bundles it with `aw message list`); " + noLeaf},
 		{ClassMissingCLI, "http:getReleaseSetLocalCommitStatus", "V6-15M", "UX Screen 10 row 7 reserves `aw release-set local-commit status`; `--wait` observes it internally but no command exposes it; " + noLeaf},
 		{ClassMissingCLI, "http:getRepositoryWorkspaceState", "V6-15L", "UX Screen 9 row 1 names repository-workspace state next to workspace-set state; V6-15L wrapped only `workspace-set show`; " + noLeaf},

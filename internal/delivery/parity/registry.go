@@ -197,6 +197,7 @@ func PublicOperations() []PublicOperation {
 		{Name: "ListMessages", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("listMessages")}, Symbol: message + ".ListMessages"},
 		{Name: "AppendMessage", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("appendMessage")}, Symbol: message + ".AppendMessage"},
 		{Name: "AppendConversationAttachment", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("appendConversationAttachment")}, Symbol: message + ".AppendConversationAttachment"},
+		{Name: "ResolveMessageContent", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getMessageContent")}, Symbol: message + ".ResolveMessageContent"},
 		{Name: "ListEvidenceForWorkItem", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("listEvidence")}, Symbol: runtimeApp + ".ListEvidenceForWorkItem"},
 		{Name: "GetEvidence", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getEvidence")}, Symbol: runtimeApp + ".GetEvidence"},
 		{Name: "ListArtifactsForEvidence", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("listArtifacts")}, Symbol: runtimeApp + ".ListArtifactsForEvidence"},

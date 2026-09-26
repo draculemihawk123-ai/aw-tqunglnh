@@ -25,22 +25,29 @@
 // test that already walks internal/delivery/httpapi recursively covers
 // this subpackage too.
 //
-// Route inventory (all three project-scoped, WorkItem-scoped):
+// Route inventory (all four project-scoped, WorkItem-scoped):
 //
 //	POST /projects/{projectId}/work-items/{workItemId}/messages                                    appendMessage
 //	GET  /projects/{projectId}/work-items/{workItemId}/messages                                     listMessages
 //	GET  /projects/{projectId}/work-items/{workItemId}/messages/{messageId}/context-snapshot         getMessageContextSnapshot
+//	GET  /projects/{projectId}/work-items/{workItemId}/messages/{messageId}/content                  getMessageContent
+//
+// getMessageContent (content.go, added by V7-15 — see that handler's own
+// doc comment) is the one route that streams raw bytes rather than a JSON
+// DTO, mirroring internal/delivery/httpapi/evidence's own identical
+// getArtifactContent shape but authorized against a Message's own
+// ContentArtifactID instead of an Evidence row's ArtifactReferences.
 //
 // This task's own "Không làm" line (KHÔNG binary upload; KHÔNG approval
 // inference from message content; KHÔNG raw provider transcript) is
 // satisfied by construction: appendMessageBody (append.go) carries only a
 // plain JSON string Content field, never a base64/multipart upload field;
-// no handler in this package ever reads a Message's own Content bytes at
-// all (ContentArtifactID is returned/listed as a bounded reference only —
-// see dto.go's own messageRefDTO doc comment) let alone interprets them as
-// a control signal against any Run/WorkItem state; and listMessages/
-// getMessageContextSnapshot only ever return this platform's own canonical
-// Message/ContextSnapshot rows, never a provider's own session transcript.
+// no handler in this package ever INTERPRETS a Message's own Content bytes
+// as a control signal against any Run/WorkItem state (getMessageContent
+// only ever streams them back, verbatim, to an already-authorized reader);
+// and listMessages/getMessageContextSnapshot only ever return this
+// platform's own canonical Message/ContextSnapshot rows, never a provider's
+// own session transcript.
 package message
 
 import (
@@ -70,6 +77,14 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodGet, Path: "/projects/{projectId}/work-items/{workItemId}/messages/{messageId}/context-snapshot", OperationID: "getMessageContextSnapshot",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: contextSnapshotDetail{},
 		Handler: handleGetMessageContextSnapshot(deps),
+	})
+	// getMessageContent (content.go): a real, previously-missing route —
+	// see that handler's own doc comment for why no route anywhere in this
+	// codebase could otherwise ever read a Message's own actual text.
+	reg.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{projectId}/work-items/{workItemId}/messages/{messageId}/content", OperationID: "getMessageContent",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
+		Handler: handleGetMessageContent(deps),
 	})
 	// V6-07A (docs/design/08-v6-api-projections.md V6-07A): the binary-
 	// upload sibling of appendMessage above — see attachment.go's own doc

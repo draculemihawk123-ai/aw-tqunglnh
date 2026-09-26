@@ -68,6 +68,17 @@ func writeCommandError(w http.ResponseWriter, err error) {
 	}
 }
 
+// writeContentError maps an error from ports.ArtifactStore.Verify/Open
+// (handleGetMessageContent's own read path, after authorization has already
+// succeeded via writeQueryError's identical sibling checks above) — mirrors
+// internal/delivery/httpapi/evidence/errors.go's own identical
+// writeContentError exactly: a tampered artifact (bytes no longer matching
+// their own recorded hash) is a typed error either way, never silently
+// served.
+func writeContentError(w http.ResponseWriter, err error) {
+	httpapi.WriteAppError(w, err)
+}
+
 // writeValidationError writes a single field-level 400 — this package's
 // own pre-dispatch body validation, done before ever building a command
 // envelope.
