@@ -1736,3 +1736,107 @@ the corresponding test's mock/assertion to match the real API contract.
   investigate the two real bugs above (`workspaceprovision`'s and `releasesetcommit`'s own handlers) was
   reverted before committing — confirmed via `git diff` showing no residual changes to either file.
 
+## V7-14 — Evidence/artifact view
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md`'s own Thực hiện line: criteria-level verdict, exact RevisionSet, output/
+hash/tamper state; safe media/text preview, download, a truncation indicator, and a real PASS/FAIL/ERROR/N-A
+distinction — backed entirely by V6-07B's already-closed `internal/delivery/httpapi/evidence` routes
+(`listEvidence`/`getEvidence`/`listArtifacts`/`getArtifactContent`), no backend changes expected. Depends on
+V7-11 (Task Detail header/tabs), already closed. Completion bar: "raw HTML/script artifact không execute."
+
+### Decision
+
+The old prototype's `EvidenceTab` was entirely fake fixture data (`CRITERIA` — invented `phase`/`evaluator`/
+fields that don't exist anywhere on the real `EvidenceDetail` DTO) paired with a second, unrelated fake
+"Artifacts" list. Dropped both wholesale rather than adapted — `internal/app/runtime/queries.go`'s own real
+`EvidenceDetail` (Kind/Verdict/ArtifactReferences/Revisions/RevisionSetHash/PolicyVersion/CreatedAt) has no
+notion of an "acceptance criterion" at all; that framing was invented, not real. The real UI instead lists
+real Evidence rows directly, each expandable to its own real Artifacts (`listArtifacts` is Evidence-scoped,
+never WorkItem-scoped — `ArtifactSummary` carries no WorkItem/Run column of its own, per that file's own
+top-of-file doc comment).
+
+**Read `internal/delivery/httpapi/media.go`'s own `inlineSafeContentTypes`/`ApplyContentHeaders` before
+writing any Preview UI**: the server's own closed allow-list (`text/plain`/`text/csv`/`application/json`/
+`image/png`/`image/jpeg`/`image/gif`/`application/pdf`) is what actually forces a Content-Disposition of
+`attachment` for anything else — including `text/html` and `image/svg+xml`, both script-capable — never
+`inline`. This is the ENTIRE enforcement of "raw HTML/script artifact không execute": the frontend's own
+media-type gate (`isInlineSafeMediaType` in the new `web/src/api/evidence.ts`) is a UX convenience that
+decides whether to offer a Preview button at all, never a second security boundary, and text content is
+always rendered via React's own escaped `{text}` children inside a `<pre>`, never `dangerouslySetInnerHTML`.
+
+**Read `internal/domain/artifact/artifact.go`'s own `AttachState`/`RetentionClass` closed enums** before
+designing the per-artifact row: `PURGED` means the retention sweeper has already deleted the underlying
+bytes — the row's own metadata is kept for audit, but there is nothing left to fetch, so the UI disables both
+Preview and Download for a purged artifact rather than offering an action that would always 404. `ExpiresAt`
+is informational only (a real "EXPIRED" badge when the client's own clock says it has passed) — never a hard
+gate, since the server's own `AttachState` is the actual authority on whether content still exists, not a
+client-side clock guess.
+
+A tampered artifact (bytes no longer matching their own recorded hash) surfaces from
+`ports.ArtifactStore.Verify` as a plain 500 INTERNAL error (`internal/delivery/httpapi/evidence/errors.go`'s
+own `writeContentError` — no distinct "tampered" error code exists), never distinguishable from a generic
+content-fetch failure by error code alone; the UI shows whatever real message the server returns via a real
+`InlineError`, honestly, rather than inventing a "TAMPERED" label the API can't actually back.
+
+New file `web/src/api/evidence.ts`: hand-declared `RevisionView`/`EvidenceDetail`/`ArtifactSummary` (reusing
+`releaseset.ts`'s own already-hand-declared `Verdict` type rather than duplicating it — `EvidenceDetail`'s
+own verdict is the identical `gate.Verdict` 5-value set), `isInlineSafeMediaType`/`PREVIEW_SIZE_LIMIT_BYTES`
+(256 KiB, matching the Source viewer's own `SourceContentResult` byte-limit convention rather than inventing
+a second limit), and `fetchArtifactContent` — `getArtifactContent` was already excluded from the generated
+client entirely by V7-13's own proactive `rawContentOperations` fix (added specifically anticipating this
+exact route), so this hand-written fetch mirrors `workspaceinspection.ts`'s own `fetchWorkspaceSource`
+pattern rather than needing a second generator fix.
+
+Also widened the shared `VerdictBadge` component's own prop type (`web/src/components/ui.tsx`) to include
+the real `NOT_APPLICABLE` value alongside its existing `N/A`/`NOT_RUN` — a small, additive, backward-compatible
+fix noticed while reusing this component for real Evidence verdicts (V7-13A's own ReleaseSet entries already
+cast their verdict through an inaccurate `as` union that silently dropped `NOT_APPLICABLE`; this widening
+makes that cast honest without touching those call sites).
+
+### Execution
+
+Rewrote `EvidenceTab` in `web/src/screens/TaskDetail.tsx` against real data: `listEvidence` renders one real
+row per Evidence entry (Kind/VerdictBadge/RevisionSetHash/PolicyVersion/CreatedAt/real per-repository
+Revisions), expandable to lazily fetch that row's own real Artifacts via `listArtifacts` (never fetched
+until expanded — no N+1 fetch storm for a WorkItem with many Evidence rows). Each `ArtifactRow` shows real
+ContentHash/Size/MediaType plus Sensitivity/Redacted/Hold/Expired/Purged badges, a real Download link
+(a plain `<a href=... download>` — the server's own Content-Disposition header does the actual work, inline
+or attachment, regardless of what this link claims), and a Preview button offered only when the artifact is
+both an inline-safe media type AND under the size limit — otherwise a real "Too large to preview" indicator.
+`ArtifactPreviewDialog` fetches real content on open: images render via `<img src={objectURL}>`, PDF via
+`<embed>`, text/JSON/CSV via `blob.text()` into an escaped `<pre>`; any fetch failure (tamper, purge, or
+otherwise) surfaces as a real `InlineError` inside the dialog, never served silently.
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 224/224 pass (215 prior + 9 new `EvidenceTab (V7-14)` cases: a real empty state without
+  ever calling `listArtifacts`; real Evidence rows with artifacts fetched lazily only once expanded; a real
+  redacted/on-hold/sensitive/expired artifact shows all four real badges honestly; a purged artifact offers
+  neither Preview nor Download; a large safe-media artifact shows the truncation indicator instead of Preview
+  while Download stays available; a non-inline-safe media type (`text/html`) never offers Preview, only
+  Download; a real JSON payload containing a literal `<script>` string previews as escaped plain text — the
+  test asserts no `<script>` element is ever injected into the document and the payload's own embedded
+  `window.__pwned` assignment never actually executes; a tampered/failed content fetch surfaces as a real
+  `InlineError` inside the dialog; accessibility smoke).
+- `go build ./...`, `go vet ./...`: clean — no Go files needed changing; every route this task consumes
+  already existed.
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` AND `aw worker`: registered a real local
+  git repository, created a real project/WorkItem, and confirmed the real empty state end-to-end — a real
+  `GET .../work-items/{id}/evidence` network call returning a real empty `items` array, rendering the honest
+  "No evidence recorded yet for this WorkItem." message, zero console errors. **Scoping boundary, matching
+  V7-11's and V7-12's own already-established precedent for equivalently-complex setups**: producing a real
+  non-empty Evidence row requires a real COMMAND (or AGENT) node execution — confirmed by reading
+  `internal/app/runtime/command_node_executor.go`, a COMMAND node's own real attempt finalization does
+  produce a genuine `EvidenceKindCommandExecution` Evidence row with a real captured-output Artifact, no fake
+  provider needed — but assembling a full published COMMAND definition + WorkflowVersion + real run from
+  scratch for this one task is the same class of setup V7-12's own manual verification explicitly declined
+  for its fork/join/admission-blocked paths. The full Preview/tamper/purge/redact/truncation rendering
+  therefore stays unit-test-verified only for this task, with the exact real code path
+  (`buildEvidence`/`validateAndAttachFinalizationEvidenceTx`) identified above for whichever later task (most
+  likely V7-17's own full-journey gate, which already plans a real COMMAND/AGENT run) is the first to
+  naturally produce real Evidence data end-to-end.
+

@@ -70,8 +70,8 @@ export function StatusBadge({ state, entity = 'workitem' }: { state: string; ent
   return <Badge label={state} intent={intent} />;
 }
 
-export function VerdictBadge({ verdict }: { verdict: 'PASS' | 'FAIL' | 'ERROR' | 'N/A' | 'NOT_RUN' }) {
-  const map: Record<string, BadgeIntent> = { PASS: 'success', FAIL: 'danger', ERROR: 'danger', 'N/A': 'neutral', NOT_RUN: 'neutral' };
+export function VerdictBadge({ verdict }: { verdict: 'PASS' | 'FAIL' | 'ERROR' | 'N/A' | 'NOT_RUN' | 'NOT_APPLICABLE' | string }) {
+  const map: Record<string, BadgeIntent> = { PASS: 'success', FAIL: 'danger', ERROR: 'danger', 'N/A': 'neutral', NOT_RUN: 'neutral', NOT_APPLICABLE: 'neutral' };
   return <Badge label={verdict} intent={map[verdict] ?? 'neutral'} />;
 }
 

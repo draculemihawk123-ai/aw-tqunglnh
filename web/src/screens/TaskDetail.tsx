@@ -14,8 +14,9 @@ import {
   abandonReleaseSet, ApiError, cancelRun, cancelWorkItem, createReleaseSet, getReleaseSet,
   getReleaseSetLocalCommitStatus, getRepositoryWorkspaceState, getRunDiagnostics, getRunGraph, getRunTimeline,
   getTaskFamily, getWorkItem, getWorkItemProjectedDetail, getWorkspaceDiff, getWorkspaceRepositoryLog,
-  getWorkspaceSetState, listReleaseSetsForFamily, requestReleaseSetLocalCommit, requestWorkspaceReconciliation,
-  requestWorkspaceSetRelease, resolveWorkItemBlocker, retryBlockedActivation, sealReleaseSet,
+  getWorkspaceSetState, listArtifacts, listEvidence, listReleaseSetsForFamily, requestReleaseSetLocalCommit,
+  requestWorkspaceReconciliation, requestWorkspaceSetRelease, resolveWorkItemBlocker, retryBlockedActivation,
+  sealReleaseSet,
 } from '../api/generated';
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
@@ -27,6 +28,8 @@ import { decodeDiffPatch, fetchWorkspaceSource } from '../api/workspaceinspectio
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
 import { VERDICT_OPTIONS } from '../api/releaseset';
 import type { ReleaseSetDetail, RepositoryReleaseDetail, Verdict } from '../api/releaseset';
+import { artifactContentUrl, fetchArtifactContent, isInlineSafeMediaType, PREVIEW_SIZE_LIMIT_BYTES } from '../api/evidence';
+import type { ArtifactSummary, EvidenceDetail } from '../api/evidence';
 
 function apiErrorMessage(err: unknown): { code: string; message: string } {
   if (err instanceof ApiError) return { code: err.code, message: err.message };
@@ -1403,98 +1406,231 @@ function ReleaseSetPanel({
 
 // ─── Evidence Tab ─────────────────────────────────────────────────────────────
 
-const CRITERIA = [
-  { id: 'ac-1', text: 'All HTTP routes emit spans with correct service.name and trace propagation headers.', phase: 'VERIFY', verdict: 'PASS' as const,   evaluator: 'runtime/test-runner',  revision: 'a3f9e8b' },
-  { id: 'ac-2', text: 'Worker job processing emits child spans linked to originating HTTP span.',             phase: 'VERIFY', verdict: 'FAIL' as const,   evaluator: 'runtime/test-runner',  revision: 'b7c2f1d' },
-  { id: 'ac-3', text: 'Unit tests cover trace context propagation.',                                          phase: 'VERIFY', verdict: 'PASS' as const,   evaluator: 'runtime/test-runner',  revision: 'a3f9e8b' },
-  { id: 'ac-4', text: 'No secret values or PII appear in span attributes.',                                   phase: 'VERIFY', verdict: 'ERROR' as const,  evaluator: 'runtime/security-gate',revision: 'a3f9e8b' },
-];
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
-function EvidenceTab() {
-  const [expanded, setExpanded] = useState<string | null>(null);
+function shortHash(hash: string): string {
+  return hash.length > 14 ? `${hash.slice(0, 14)}…` : hash;
+}
+
+interface ArtifactRowProps {
+  projectId: string; workItemId: string; evidenceId: string; artifact: ArtifactSummary;
+  onPreview: (artifact: ArtifactSummary) => void;
+}
+
+/**
+ * ArtifactRow — real per-artifact metadata (never a locator, per
+ * internal/app/runtime/queries.go's own "Không làm: KHÔNG expose locator"
+ * line) plus real Preview/Download actions. Preview is offered only for the
+ * server's own closed inline-safe media-type allow-list
+ * (internal/delivery/httpapi/media.go's own inlineSafeContentTypes) and only
+ * under PREVIEW_SIZE_LIMIT_BYTES — this is a UX convenience, never a second
+ * security boundary: the server's own Content-Disposition header is what
+ * actually forces an unsafe type (text/html, image/svg+xml, ...) to
+ * download rather than render, so a real raw HTML/script artifact can never
+ * execute even if this client-side gate were somehow bypassed. A PURGED
+ * artifact (its own real, durable AttachState — the retention sweeper has
+ * already deleted its underlying bytes) offers neither action: there is
+ * nothing left to fetch.
+ */
+function ArtifactRow({ projectId, workItemId, evidenceId, artifact, onPreview }: ArtifactRowProps) {
+  const purged = artifact.attachState === 'PURGED';
+  const expired = !!artifact.expiresAt && new Date(artifact.expiresAt).getTime() < Date.now();
+  const previewEligible = !purged && isInlineSafeMediaType(artifact.mediaType) && artifact.size <= PREVIEW_SIZE_LIMIT_BYTES;
+  const tooLargeToPreview = !purged && isInlineSafeMediaType(artifact.mediaType) && artifact.size > PREVIEW_SIZE_LIMIT_BYTES;
+
+  return (
+    <div className="flex items-center gap-3 px-5 py-3 flex-wrap" role="listitem">
+      <span className="font-mono text-[12px] text-[#172033]">{artifact.artifactId}</span>
+      <span className="text-[12px] text-[#475569]">{artifact.mediaType}</span>
+      <span className="text-[12px] text-[#475569]">{formatBytes(artifact.size)}</span>
+      <span className="font-mono text-[12px] text-[#475569]" title={artifact.contentHash}>{shortHash(artifact.contentHash)}</span>
+      {artifact.sensitivity !== 'PUBLIC' && <Badge label={String(artifact.sensitivity)} intent="warning" />}
+      {artifact.redacted && <Badge label="REDACTED" intent="warning" />}
+      {artifact.hold && <Badge label="HOLD" intent="info" />}
+      {purged && <Badge label="PURGED" intent="danger" />}
+      {!purged && expired && <Badge label="EXPIRED" intent="warning" />}
+      <div className="flex-1" />
+      {purged ? (
+        <span className="text-[12px] text-[#475569]">Content purged by retention — metadata kept for audit only.</span>
+      ) : (
+        <>
+          {previewEligible && <Button size="compact" intent="quiet" onClick={() => onPreview(artifact)}>Preview</Button>}
+          {tooLargeToPreview && <span className="text-[12px] text-[#475569]">Too large to preview ({formatBytes(artifact.size)})</span>}
+          <a href={artifactContentUrl(projectId, workItemId, evidenceId, artifact.artifactId)} download
+            className="inline-flex items-center gap-1 text-[12px] text-[#3659E3] hover:underline px-2 py-1">Download</a>
+        </>
+      )}
+    </div>
+  );
+}
+
+interface EvidenceRowProps {
+  projectId: string; workItemId: string; evidence: EvidenceDetail; isOffline?: boolean;
+  onPreview: (evidenceId: string, artifact: ArtifactSummary) => void;
+}
+
+function EvidenceRow({ projectId, workItemId, evidence, isOffline, onPreview }: EvidenceRowProps) {
+  const [expanded, setExpanded] = useState(false);
+  const artifactsQuery = useQuery({
+    queryKey: ['evidenceArtifacts', projectId, workItemId, evidence.evidenceId],
+    queryFn: async () => (await listArtifacts(projectId, workItemId, evidence.evidenceId, withSessionToken())) as unknown as { items: ArtifactSummary[] },
+    enabled: expanded && !isOffline,
+  });
+
+  return (
+    <div role="listitem">
+      <button
+        onClick={() => setExpanded(v => !v)}
+        className="w-full flex items-start gap-4 px-5 py-4 text-left hover:bg-[#FAFBFC] transition-colors"
+        aria-expanded={expanded}
+      >
+        <VerdictBadge verdict={evidence.verdict} />
+        <div className="flex-1 min-w-0">
+          <p className="text-[13px] text-[#172033] font-mono">{evidence.kind}</p>
+          <div className="flex items-center gap-3 mt-1 flex-wrap text-[12px] text-[#475569]">
+            <span>revisionSet: <span className="font-mono">{shortHash(evidence.revisionSetHash)}</span></span>
+            <span>policy: <span className="font-mono">{evidence.policyVersion}</span></span>
+            <span>{new Date(evidence.createdAt).toLocaleString()}</span>
+          </div>
+          {!!evidence.revisions?.length && (
+            <div className="flex items-center gap-2 mt-1 flex-wrap text-[12px] text-[#475569]">
+              {evidence.revisions.map(r => (
+                <span key={r.repositoryId} className="font-mono">{r.repositoryId}@{r.vcsObjectId.slice(0, 10)}</span>
+              ))}
+            </div>
+          )}
+        </div>
+        {expanded
+          ? <ChevronDown size={14} className="text-[#475569] flex-shrink-0" aria-hidden />
+          : <ChevronRight size={14} className="text-[#475569] flex-shrink-0" aria-hidden />}
+      </button>
+      {expanded && (
+        <div className="bg-[#FAFBFC] border-t border-[#ECEFF4]">
+          {artifactsQuery.isPending ? (
+            <div className="p-4" aria-hidden><Skeleton className="h-12 w-full" /></div>
+          ) : artifactsQuery.isError ? (
+            <div className="p-4"><InlineError {...apiErrorMessage(artifactsQuery.error)} onRetry={() => artifactsQuery.refetch()} /></div>
+          ) : (artifactsQuery.data?.items.length ?? 0) === 0 ? (
+            <p className="px-5 py-3 text-[12px] text-[#475569]">No artifacts referenced by this evidence row.</p>
+          ) : (
+            <div className="divide-y divide-[#ECEFF4]" role="list">
+              {artifactsQuery.data!.items.map(a => (
+                <ArtifactRow key={a.artifactId} projectId={projectId} workItemId={workItemId} evidenceId={evidence.evidenceId}
+                  artifact={a} onPreview={artifact => onPreview(evidence.evidenceId, artifact)} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface ArtifactPreviewDialogProps {
+  projectId: string; workItemId: string; evidenceId: string; artifact: ArtifactSummary; onClose: () => void;
+}
+
+/**
+ * ArtifactPreviewDialog fetches real content on open. A tampered artifact
+ * (bytes no longer matching their own recorded hash — internal/adapters/
+ * artifactstore's own Verify) or a since-purged one both surface here as a
+ * real InlineError, never a silently-served response — this task's own
+ * "tampered/expired/redacted/large artifact E2E" Verify bullet. Text content
+ * is always rendered as plain, React-escaped text (never innerHTML) even
+ * though the server's own inline-safe allow-list already guarantees this
+ * dialog is never reached for text/html or image/svg+xml in the first
+ * place — a raw HTML/script artifact can never execute either way.
+ */
+function ArtifactPreviewDialog({ projectId, workItemId, evidenceId, artifact, onClose }: ArtifactPreviewDialogProps) {
+  const contentQuery = useQuery({
+    queryKey: ['artifactContent', projectId, workItemId, evidenceId, artifact.artifactId],
+    queryFn: () => fetchArtifactContent(projectId, workItemId, evidenceId, artifact.artifactId),
+    retry: false,
+  });
+
+  const objectUrl = React.useMemo(() => {
+    if (!contentQuery.data) return null;
+    return URL.createObjectURL(contentQuery.data.blob);
+  }, [contentQuery.data]);
+  React.useEffect(() => () => { if (objectUrl) URL.revokeObjectURL(objectUrl); }, [objectUrl]);
+
+  const [text, setText] = useState<string | null>(null);
+  React.useEffect(() => {
+    if (!contentQuery.data) return;
+    const base = contentQuery.data.contentType.split(';')[0]?.trim().toLowerCase();
+    if (base === 'text/plain' || base === 'text/csv' || base === 'application/json') {
+      contentQuery.data.blob.text().then(setText);
+    } else {
+      setText(null);
+    }
+  }, [contentQuery.data]);
+
+  const base = contentQuery.data?.contentType.split(';')[0]?.trim().toLowerCase();
+
+  return (
+    <Dialog title={`Preview — ${artifact.artifactId}`} description={artifact.mediaType} onClose={onClose}
+      actions={<Button intent="secondary" onClick={onClose}>Close</Button>}>
+      {contentQuery.isPending ? (
+        <div aria-hidden><Skeleton className="h-40 w-full" /></div>
+      ) : contentQuery.isError ? (
+        <InlineError {...apiErrorMessage(contentQuery.error)} onRetry={() => contentQuery.refetch()} />
+      ) : base?.startsWith('image/') && objectUrl ? (
+        <img src={objectUrl} alt={artifact.artifactId} className="max-w-full max-h-[60vh] mx-auto" />
+      ) : base === 'application/pdf' && objectUrl ? (
+        <embed src={objectUrl} type="application/pdf" className="w-full h-[60vh]" />
+      ) : text !== null ? (
+        <pre className="font-mono text-[12px] whitespace-pre-wrap break-words max-h-[60vh] overflow-auto p-3 bg-white border border-[#ECEFF4] rounded-[6px]">{text}</pre>
+      ) : (
+        <p className="text-[13px] text-[#475569]">This content type cannot be previewed.</p>
+      )}
+    </Dialog>
+  );
+}
+
+function EvidenceTab({ projectId, workItemId, isOffline }: { projectId: string; workItemId: string; isOffline?: boolean }) {
+  const [previewing, setPreviewing] = useState<{ evidenceId: string; artifact: ArtifactSummary } | null>(null);
+
+  const evidenceQuery = useQuery({
+    queryKey: ['evidenceList', projectId, workItemId],
+    queryFn: async () => (await listEvidence(projectId, workItemId, withSessionToken())) as unknown as { items: EvidenceDetail[] },
+    enabled: !isOffline,
+  });
+
+  if (evidenceQuery.isPending) {
+    return <div className="flex-1 p-6" aria-hidden><Skeleton className="h-24 w-full" /></div>;
+  }
+  if (evidenceQuery.isError) {
+    return <div className="flex-1 p-6"><InlineError {...apiErrorMessage(evidenceQuery.error)} onRetry={() => evidenceQuery.refetch()} /></div>;
+  }
+  const items = evidenceQuery.data?.items ?? [];
+
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-[#E9EDF3]">
       <div className="max-w-4xl mx-auto space-y-4">
         <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
           <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]">
-            <h2 className="text-sm font-semibold text-[#172033]">Acceptance Criteria Verdicts</h2>
-            <p className="text-[12px] text-[#475569] mt-0.5">RevisionSet <span className="font-mono">rset-f7a2b3c4</span> · core-api@a3f9e8b, worker-service@b7c2f1d</p>
+            <h2 className="text-sm font-semibold text-[#172033]">Evidence</h2>
           </div>
-          <div className="divide-y divide-[#ECEFF4]" role="list">
-            {CRITERIA.map(c => (
-              <div key={c.id} role="listitem">
-                <button
-                  onClick={() => setExpanded(expanded === c.id ? null : c.id)}
-                  className="w-full flex items-start gap-4 px-5 py-4 text-left hover:bg-[#FAFBFC] transition-colors"
-                  aria-expanded={expanded === c.id}
-                >
-                  <VerdictBadge verdict={c.verdict} />
-                  <div className="flex-1 min-w-0">
-                    <p className="text-[13px] text-[#172033]">{c.text}</p>
-                    <div className="flex items-center gap-3 mt-1 flex-wrap text-[12px] text-[#475569]">
-                      <span>phase: <span className="font-mono">{c.phase}</span></span>
-                      <span>evaluator: <span className="font-mono">{c.evaluator}</span></span>
-                      <span>revision: <span className="font-mono">{c.revision}</span></span>
-                    </div>
-                  </div>
-                  {expanded === c.id
-                    ? <ChevronDown size={14} className="text-[#475569] flex-shrink-0" aria-hidden />
-                    : <ChevronRight size={14} className="text-[#475569] flex-shrink-0" aria-hidden />}
-                </button>
-                {expanded === c.id && (
-                  <div className="px-5 pb-4 bg-[#FAFBFC] border-t border-[#ECEFF4]">
-                    {c.verdict === 'ERROR' && (
-                      <div className="mt-3 p-3 rounded-[6px] bg-[#FEE2E2] border border-[#FCA5A5] text-[12px] text-[#991B1B]">
-                        <div className="font-medium">SECURITY_GATE_TIMEOUT</div>
-                        <div className="mt-0.5">Security evaluator timed out after 30 s. Evidence is incomplete — this criterion is ERROR, not PASS. Missing evidence is never PASS.</div>
-                        <div className="font-mono mt-1 opacity-60">correlation: corr-ac4-x9y2z3w4</div>
-                      </div>
-                    )}
-                    {c.verdict === 'FAIL' && (
-                      <div className="mt-3 p-3 rounded-[6px] bg-[#FEE2E2] border border-[#FCA5A5] text-[12px] text-[#991B1B]">
-                        <div className="font-mono">worker.tracing.spec.ts:42</div>
-                        <div>expected span with parentId but got undefined.</div>
-                        <Button size="compact" intent="quiet" className="mt-2 text-[#991B1B] border-[#FCA5A5]">Download Artifact</Button>
-                      </div>
-                    )}
-                    {c.verdict === 'PASS' && (
-                      <div className="mt-3 text-[12px] text-[#475569]">
-                        Evidence: <span className="font-mono text-[#172033]">artifact-{c.id}-pass.json</span> · 4.2 KB · <span className="inline-flex items-center gap-1 text-[#166534]"><CheckCircle2 size={12} aria-hidden /> verified, not tampered</span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
-          <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]">
-            <h2 className="text-sm font-semibold text-[#172033]">Artifacts</h2>
-          </div>
-          <div className="divide-y divide-[#ECEFF4]" role="list">
-            {[
-              { name: 'test-results.json',   size: '12.4 KB', hash: 'sha256:7b2c…', state: 'ok',       hold: false },
-              { name: 'security-scan.json',  size: '2.1 KB',  hash: 'sha256:a3f9…', state: 'tampered', hold: true  },
-              { name: 'trace-sample.json',   size: '84.6 KB', hash: 'sha256:c8d1…', state: 'truncated',hold: false },
-            ].map(artifact => (
-              <div key={artifact.name} className="flex items-center gap-4 px-5 py-3" role="listitem">
-                <span className="font-mono text-[12px] text-[#172033]">{artifact.name}</span>
-                <span className="text-[12px] text-[#475569]">{artifact.size}</span>
-                <span className="font-mono text-[12px] text-[#475569]">{artifact.hash}</span>
-                {artifact.state === 'tampered'  && <Badge label="TAMPERED"  intent="danger"  />}
-                {artifact.state === 'truncated' && <Badge label="TRUNCATED" intent="warning" />}
-                {artifact.hold && <Badge label="HOLD" intent="info" />}
-                <div className="flex-1" />
-                {artifact.state !== 'tampered'
-                  ? <Button size="compact" intent="quiet">Preview</Button>
-                  : <span className="text-[12px] text-[#991B1B]">Preview disabled (tampered)</span>}
-              </div>
-            ))}
-          </div>
+          {items.length === 0 ? (
+            <p className="px-5 py-4 text-[13px] text-[#475569]">No evidence recorded yet for this WorkItem.</p>
+          ) : (
+            <div className="divide-y divide-[#ECEFF4]" role="list">
+              {items.map(e => (
+                <EvidenceRow key={e.evidenceId} projectId={projectId} workItemId={workItemId} evidence={e} isOffline={isOffline}
+                  onPreview={(evidenceId, artifact) => setPreviewing({ evidenceId, artifact })} />
+              ))}
+            </div>
+          )}
         </div>
       </div>
+      {previewing && (
+        <ArtifactPreviewDialog projectId={projectId} workItemId={workItemId} evidenceId={previewing.evidenceId}
+          artifact={previewing.artifact} onClose={() => setPreviewing(null)} />
+      )}
     </div>
   );
 }
@@ -1609,10 +1745,10 @@ interface TaskDetailProps {
  * (docs/design/09-v7-alpha-ui.md V7-11's own Thực hiện line). Fetches once,
  * at this root, and hands the already-fetched data down as props to
  * TaskHeader/OverviewTab — a single source of truth for both, rather than
- * each independently re-fetching. Only task-overview consumes real data in
- * this task; task-graph/task-workspace/task-evidence/task-chat stay the
- * prototype's own fixture tabs, each a separate not-yet-reached design-doc
- * task (V7-12/V7-13/V7-14/V7-15) of its own.
+ * each independently re-fetching. task-overview (V7-11), task-graph
+ * (V7-12), task-workspace (V7-13/V7-13A) and task-evidence (V7-14) all
+ * consume real data now; task-chat stays the prototype's own fixture tab,
+ * V7-15's own not-yet-reached scope.
  */
 export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab, onTabChange, isOffline }: TaskDetailProps) {
   const queryClient = useQueryClient();
@@ -1667,7 +1803,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
         <GraphTimelineTab projectId={projectId} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled} />
       )}
       {activeTab === 'task-workspace'  && <WorkspaceTab projectId={projectId} familyId={familyId} isOffline={isOffline} />}
-      {activeTab === 'task-evidence'   && <EvidenceTab />}
+      {activeTab === 'task-evidence'   && <EvidenceTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} />}
       {activeTab === 'task-chat'       && <ChatTab isOffline={isOffline} />}
       </div>
     </div>
