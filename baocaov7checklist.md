@@ -1105,3 +1105,73 @@ is selected.
 
 **V7-07 is now fully closed** (V7-07A backend + V7-07B UI).
 
+## V7-08A — Declarative editor: create, author, validate, publish confirm
+
+### Context
+
+`docs/design/09-v7-alpha-ui.md` V7-08's own line: "author YAML/JSON, xem diagnostics/diff và publish
+confirm ... bounded editor, format-preserving draft local-only, validate locations, dependency pins,
+confirm SourceHash + CompiledSnapshotHash/dependency pins; không visual graph editing." V7-07B's own
+`Definitions.tsx` rewrite deliberately removed the prototype's fake editor/publish UI wholesale rather
+than carry it forward on top of real catalog data — this task builds a real one from scratch, against the
+real `createDefinition`/`validateDefinitionDraft`/`publishDefinitionVersion` routes (all already built and
+tested in V6-05).
+
+### Decision
+
+Two dialogs, each doing exactly one real command:
+- `CreateDefinitionDialog` — Kind + Definition ID + Name → `POST /definitions/{kind}` (or the
+  project-scoped mirror). A Definition always starts empty (always DRAFT, always generation 1 —
+  `internal/domain/definition/lifecycle.go`'s own `Create` doc comment) — authoring its actual content is
+  a genuinely separate later step, not bundled into one action.
+- `DefinitionEditorDialog` — the bounded text editor (a plain `<textarea>`, never a visual graph editor,
+  per the task's own explicit "Không làm" line) plus a dependency-pins row editor (hidden for WORKFLOW,
+  whose own dependency manifest is always resolved automatically from the document itself — never
+  author-declared, per `document.go`'s own doc comment) plus a two-step Validate → Publish flow mirroring
+  the same probe→confirm pattern `AdapterProbeDialog` already established in V7-05B: Validate is a
+  read-only dry-run compile (`internal/app/definitions.ValidateDraft`'s own doc comment: "a dry run has no
+  side effect to make idempotent" — genuinely no Idempotency-Key on that one route, confirmed by reading
+  `validate.go`), and its real response (`SourceHash`/`CompiledSnapshotHash`/dependency pins) is shown
+  as the actual publish-confirmation content — never a client-side guess. A `requestSignature()` helper
+  tracks the exact content/format/pins that were last successfully validated; editing the draft afterward
+  immediately disables Publish again until re-validated, so the confirm step can never show hashes for
+  content that was silently edited out from under it.
+
+Validation failures surface through `ApiError.details` directly — no new hand-declared diagnostics type
+was needed: `httpapi.ErrorDetail{field, message}` (already `ApiErrorDetail` in the generated client's own
+preamble) already carries exactly `internal/delivery/httpapi/definitions/errors.go`'s own
+`writeDiagnostics` output, line/column embedded in the message string.
+
+### Execution
+
+New files `web/src/screens/CreateDefinitionDialog.tsx`, `web/src/screens/DefinitionEditorDialog.tsx`.
+Wired into `Definitions.tsx`: a "New Definition" button in the catalog header (disabled offline or with no
+project selected in project scope) opens the create dialog and selects the new definition on success; an
+"Author new version…" button in the detail panel (always visible once a definition is selected, even one
+with zero published versions) opens the editor. Both reuse the `useToasts()`/`ToastViewport` convention
+this screen's sibling `Projects.tsx` already established, and invalidate the real `definitionVersions`/
+`definitionDetail`/`definitionsOfKind` query keys on success so the catalog and version-detail panel
+reflect the new state without a manual reload.
+
+### Verify
+
+- `npx tsc --noEmit`: clean.
+- `npx vitest run`: 173/173 pass (160 prior + 4 new `CreateDefinitionDialog.test.tsx` + 7 new
+  `DefinitionEditorDialog.test.tsx` + 2 new `Definitions.test.tsx` wiring cases: required-field validation
+  before any API call, creating global vs. project-scoped definitions through the correct endpoint,
+  Publish disabled until a successful Validate and re-disabled the instant the draft is edited afterward,
+  real per-field diagnostics shown on a validation failure — never a fabricated hash, the confirm step
+  showing the exact validated hashes and publishing the exact same body, WORKFLOW kinds never sending a
+  format/dependencies field and hiding the pin editor, and accessibility smoke on both dialogs).
+- `pnpm build`: clean.
+- Manual end-to-end verification against a REAL running `aw serve` (no `aw worker` needed — nothing here
+  is job-driven): created a real SKILL definition through the UI, opened its editor, submitted an
+  intentionally empty `{}` document and confirmed a REAL structured WHAT/WHY/FIX diagnostic rendered
+  ("no resources declared... add at least one resource") — not a fabricated one. Created a second real
+  BLOCK definition, submitted a genuinely valid document, watched Validate return a real SourceHash and
+  enable Publish, confirmed the publish-confirmation dialog showed that exact hash, clicked Confirm
+  Publish, and confirmed via the real network log the full sequence
+  (`POST .../validate` → 200, `POST .../publish` → 201) and that the catalog/version-detail panel
+  immediately reflected the new generation-2 DRAFT with the real published version's exact hashes — the
+  full real round trip, not a mocked one.
+
