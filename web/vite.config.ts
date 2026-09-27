@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config'
+import { defineConfig, configDefaults } from 'vitest/config'
 import type { HtmlTagDescriptor, Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
@@ -50,6 +50,12 @@ export default defineConfig(({ mode }) => {
       environment: 'jsdom',
       globals: false,
       setupFiles: ['./src/test/setup.ts'],
+      // e2e/ holds Playwright specs (a separate runner, its own config in
+      // playwright.config.ts) — vitest's own default include glob
+      // (**/*.spec.ts) would otherwise pick them up and fail them with
+      // "Playwright Test did not expect test.describe.configure() to be
+      // called here" (found live once e2e/full-journey.spec.ts existed).
+      exclude: [...configDefaults.exclude, 'e2e/**'],
     },
   }
 })

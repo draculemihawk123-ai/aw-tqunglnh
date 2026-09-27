@@ -12,3 +12,6 @@ logs/
 *.log
 .claude-replay.*
 .tmp-*
+test-results/
+playwright-report/
+e2e/support/.stack-handoff.json
