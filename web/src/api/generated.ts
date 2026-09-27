@@ -1162,7 +1162,13 @@ export interface ResolveApprovalRequest {
 }
 
 export interface ResolveApprovalResponse {
-  ResolveApprovalResult: unknown;
+  approvalRequestId: string;
+  state: string;
+  won: boolean;
+  matchedRole?: string;
+  advanced: boolean;
+  nextNodeRunId?: string;
+  nextNodeKey?: string;
   validActions: unknown[];
 }
 
@@ -1227,7 +1233,13 @@ export interface StartWorkflowRunRequest {
 }
 
 export interface StartWorkflowRunResponse {
-  StartWorkflowRunResult: unknown;
+  runId: string;
+  projectId: string;
+  workItemId: string;
+  familyId: string;
+  state: string;
+  nodeRunId: string;
+  jobId: string;
   validActions: unknown[];
 }
 
@@ -1242,7 +1254,12 @@ export interface SubmitWaitSignalRequest {
 }
 
 export interface SubmitWaitSignalResponse {
-  SignalWaitResult: unknown;
+  waitRegistrationId: string;
+  state: string;
+  won: boolean;
+  advanced: boolean;
+  nextNodeRunId?: string;
+  nextNodeKey?: string;
   validActions: unknown[];
 }
 

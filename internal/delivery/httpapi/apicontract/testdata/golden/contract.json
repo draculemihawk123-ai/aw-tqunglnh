@@ -3427,8 +3427,39 @@
         "typeName": "decision.ResolveApprovalResponse",
         "fields": [
           {
-            "name": "ResolveApprovalResult",
-            "type": "runtime.ResolveApprovalResult"
+            "name": "ApprovalRequestID",
+            "jsonTag": "approvalRequestId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Won",
+            "jsonTag": "won",
+            "type": "bool"
+          },
+          {
+            "name": "MatchedRole",
+            "jsonTag": "matchedRole,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Advanced",
+            "jsonTag": "advanced",
+            "type": "bool"
+          },
+          {
+            "name": "NextNodeRunID",
+            "jsonTag": "nextNodeRunId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "NextNodeKey",
+            "jsonTag": "nextNodeKey,omitempty",
+            "type": "string"
           },
           {
             "name": "ValidActions",
@@ -3608,8 +3639,39 @@
         "typeName": "run.StartRunResponse",
         "fields": [
           {
-            "name": "StartWorkflowRunResult",
-            "type": "runtime.StartWorkflowRunResult"
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "JobID",
+            "jsonTag": "jobId",
+            "type": "string"
           },
           {
             "name": "ValidActions",
@@ -3657,8 +3719,34 @@
         "typeName": "decision.SubmitWaitSignalResponse",
         "fields": [
           {
-            "name": "SignalWaitResult",
-            "type": "runtime.SignalWaitResult"
+            "name": "WaitRegistrationID",
+            "jsonTag": "waitRegistrationId",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Won",
+            "jsonTag": "won",
+            "type": "bool"
+          },
+          {
+            "name": "Advanced",
+            "jsonTag": "advanced",
+            "type": "bool"
+          },
+          {
+            "name": "NextNodeRunID",
+            "jsonTag": "nextNodeRunId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "NextNodeKey",
+            "jsonTag": "nextNodeKey,omitempty",
+            "type": "string"
           },
           {
             "name": "ValidActions",

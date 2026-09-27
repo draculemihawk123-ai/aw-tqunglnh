@@ -108,3 +108,29 @@ export interface RunTimelineResponse {
   freshness: Freshness;
   nextCursor?: string;
 }
+
+/**
+ * ApprovalRequestView (V7-17B) — GET /runs/{id}'s own `approvalRequests`
+ * nests one level deeper than apicontract's shallow generator expands, same
+ * limit as this file's other types. Mirrors internal/app/runtime/
+ * run_detail_queries.go's own ApprovalRequestView field-for-field. State
+ * is the real runtimedomain.ApprovalRequestState string — 'PENDING' is the
+ * only actionable state; every other value is history. The node's own
+ * declared outcome vocabulary a caller may resolve a PENDING request to is
+ * deliberately NOT carried here (an open vocabulary the node itself
+ * declares, per this type's own Go doc comment) — cross-reference
+ * GraphNodeView.outcomes for the matching nodeKey instead, exactly as
+ * GraphTimelineTab already does for every other node-keyed decision.
+ */
+export interface ApprovalRequestView {
+  approvalRequestId: string;
+  nodeRunId: string;
+  nodeKey: string;
+  state: 'PENDING' | 'DECIDED' | 'ESCALATED' | 'CANCELLED' | string;
+  version: number;
+  authorizedRoles?: string[];
+  requestedEvidenceKinds?: string[];
+  dueAt: string;
+  escalationOutcome: string;
+  resolvedOutcome?: string;
+}
