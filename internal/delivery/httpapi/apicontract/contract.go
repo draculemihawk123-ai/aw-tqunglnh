@@ -181,16 +181,61 @@ func describeSchema(v any) SchemaRef {
 		ref.Opaque = true
 		return ref
 	}
+	ref.Fields = appendStructFields(nil, structType)
+	return ref
+}
+
+// appendStructFields reflects structType's own exported fields onto fields,
+// in declaration order, and returns the extended slice.
+//
+// A field that is itself an ANONYMOUS (embedded) struct or pointer-to-struct
+// with NO json tag is not appended as a single field named after its own
+// type — encoding/json's real, documented behavior for exactly this shape
+// is to PROMOTE the embedded value's own fields to the surrounding struct's
+// top level on the wire, never to nest them under a key named after the
+// embedded type. internal/delivery/httpapi/run's own StartRunResponse
+// (embedding runtime.StartWorkflowRunResult) is the case that surfaced
+// this: before this fix, describeSchema reported a single field literally
+// named "StartWorkflowRunResult" with an empty JSON tag — jsonWireKey's own
+// "empty tag falls back to the Go field name" rule then made
+// tsclient.go generate a client whose declared response type nests under a
+// "StartWorkflowRunResult" key that does not exist anywhere on the real
+// wire (the real response is flat: runId/projectId/.../validActions
+// side-by-side). internal/delivery/httpapi/decision's own
+// ResolveApprovalResult/SignalWaitResult embeds share the identical shape
+// and were equally wrong. Recursing here (rather than a per-operation
+// hand-declared-type exclusion, this package's own established escape
+// hatch for a wire shape reflection truly cannot see — V7-13's
+// rawContentOperations, V7-15's rawUploadOperations, V7-16's
+// customJSONShapeOperations) is the honest fix: this IS an ordinary,
+// fully-reflectable flat JSON object, and the bug was in this generator's
+// own field-walk, not a fundamental reflection limit.
+//
+// An anonymous field that DOES carry a json tag (including a bare rename
+// or `json:"-"`) is a deliberate, explicit wire decision by the struct's
+// own author, not encoding/json's default promotion — left as an ordinary
+// named field below, matching real encoding/json semantics.
+func appendStructFields(fields []Field, structType reflect.Type) []Field {
 	for i := 0; i < structType.NumField(); i++ {
 		f := structType.Field(i)
 		if f.PkgPath != "" {
 			continue // unexported field — never part of the wire schema
 		}
-		ref.Fields = append(ref.Fields, Field{
+		if f.Anonymous && f.Tag.Get("json") == "" {
+			embeddedType := f.Type
+			if embeddedType.Kind() == reflect.Ptr {
+				embeddedType = embeddedType.Elem()
+			}
+			if embeddedType.Kind() == reflect.Struct {
+				fields = appendStructFields(fields, embeddedType)
+				continue
+			}
+		}
+		fields = append(fields, Field{
 			Name:    f.Name,
 			JSONTag: f.Tag.Get("json"),
 			Type:    f.Type.String(),
 		})
 	}
-	return ref
+	return fields
 }

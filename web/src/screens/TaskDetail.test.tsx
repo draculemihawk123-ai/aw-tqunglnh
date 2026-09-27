@@ -24,6 +24,7 @@ vi.mock('../api/generated', async () => {
     listMessages: vi.fn(), appendMessage: vi.fn(),
     listFamilyScopeExpansionRequests: vi.fn(), getScopeExpansionRequest: vi.fn(),
     approveScopeExpansion: vi.fn(), rejectScopeExpansion: vi.fn(),
+    startWorkflowRun: vi.fn(), getRunDetail: vi.fn(), resolveApproval: vi.fn(),
   };
 });
 vi.mock('../api/session', () => ({
@@ -181,6 +182,59 @@ describe('TaskDetailScreen (V7-11)', () => {
     expect(api.getRunDiagnostics).not.toHaveBeenCalled();
   });
 
+  it('V7-17B: a READY WorkItem with a pinned workflow version offers Start Run, and dispatches it for real with a freshly re-checked status', async () => {
+    vi.mocked(api.getWorkItem)
+      .mockResolvedValueOnce({
+        workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+        status: 'READY', version: 3, workflowVersionId: 'wfv-1', contract: null,
+      } as never)
+      .mockResolvedValueOnce({
+        workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+        status: 'READY', version: 3, workflowVersionId: 'wfv-1', contract: null,
+      } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ status: 'READY' } as never) } as never);
+    vi.mocked(api.startWorkflowRun).mockResolvedValue({
+      runId: 'run-new', projectId: 'proj-1', workItemId: 'wi-1', familyId: 'fam-1', state: 'RUNNING', nodeRunId: 'nr-1', jobId: 'job-1', validActions: [],
+    } as never);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Start Run' }));
+    await waitFor(() => expect(api.startWorkflowRun).toHaveBeenCalledWith(
+      'wi-1', { workflowVersionId: 'wfv-1' }, expect.objectContaining({ token: 'test-session-token' }),
+    ));
+    expect(await screen.findByText(/Run started \(run-new\)/)).toBeInTheDocument();
+  });
+
+  it('V7-17B: a READY WorkItem with no workflow version pinned never offers Start Run', async () => {
+    vi.mocked(api.getWorkItem).mockResolvedValue({
+      workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+      status: 'READY', version: 3, contract: null,
+    } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ status: 'READY' } as never) } as never);
+    renderScreen();
+
+    await screen.findByRole('button', { name: 'Cancel WorkItem' });
+    expect(screen.queryByRole('button', { name: 'Start Run' })).not.toBeInTheDocument();
+  });
+
+  it('V7-17B: optimistic conflict on Start Run — a fresh recheck refuses a WorkItem that is no longer READY, and never calls the mutation', async () => {
+    vi.mocked(api.getWorkItem)
+      .mockResolvedValueOnce({
+        workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+        status: 'READY', version: 3, workflowVersionId: 'wfv-1', contract: null,
+      } as never)
+      .mockResolvedValueOnce({
+        workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+        status: 'ACTIVE', version: 4, workflowVersionId: 'wfv-1', contract: null,
+      } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ status: 'READY' } as never) } as never);
+    renderScreen();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Start Run' }));
+    expect(await screen.findByText(/no longer READY/)).toBeInTheDocument();
+    expect(api.startWorkflowRun).not.toHaveBeenCalled();
+  });
+
   it('optimistic conflict: a fresh recheck immediately before dispatch refuses a Cancel Run that is no longer valid, and never calls the mutation', async () => {
     vi.mocked(api.getWorkItem).mockResolvedValue({
       workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
@@ -258,6 +312,8 @@ describe('GraphTimelineTab (V7-12)', () => {
       workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
       status: 'ACTIVE', version: 4, contract: null,
     } as never);
+    // No pending approvals by default — individual V7-17B cases below override this.
+    vi.mocked(api.getRunDetail).mockResolvedValue({ approvalRequests: [] } as never);
   });
 
   it('shows a real empty state when the WorkItem has never started a run, without ever calling getRunGraph', async () => {
@@ -351,6 +407,91 @@ describe('GraphTimelineTab (V7-12)', () => {
     const { container } = renderGraphTab();
     await screen.findByRole('img', { name: /Workflow graph/ });
     await expectNoAxeViolations(container);
+  });
+
+  const APPROVAL_NODES = [
+    { key: 'start', type: 'START', outcomes: ['go'] },
+    { key: 'review', type: 'APPROVAL', outcomes: ['approved', 'rejected'] },
+    { key: 'end', type: 'END' },
+  ];
+  const APPROVAL_EDGES = [
+    { key: 'e1', from: 'start', outcome: 'go', to: 'review' },
+    { key: 'e2', from: 'review', outcome: 'approved', to: 'end' },
+  ];
+  function pendingApprovalFixture(overrides: Record<string, unknown> = {}) {
+    return {
+      approvalRequestId: 'appr-1', nodeRunId: 'nr-review', nodeKey: 'review', state: 'PENDING', version: 1,
+      authorizedRoles: ['operator'], dueAt: '2026-09-27T00:00:00Z', escalationOutcome: 'rejected',
+      ...overrides,
+    };
+  }
+
+  it('V7-17B: a PENDING approval on a running run offers a button per the node\'s own declared outcomes, and resolving dispatches with a freshly re-checked If-Match', async () => {
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1' } as never) } as never);
+    vi.mocked(api.getRunDiagnostics).mockResolvedValue({
+      runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'ACTIVE', runState: 'WAITING',
+      blockers: [], orphanedAttempts: [], orphanedAttemptsTruncated: false, providers: [], isolation: [], repositoryWorkspaces: [],
+      validActions: [],
+    } as never);
+    vi.mocked(api.getRunGraph).mockResolvedValue({
+      runId: 'run-1', manifestRevision: 1, nodes: APPROVAL_NODES, possibleEdges: APPROVAL_EDGES,
+      activations: [fixtureActivation({ nodeRunId: 'nr-review', nodeKey: 'review', activationSequence: 1, state: 'WAITING' })],
+      freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' },
+    } as never);
+    vi.mocked(api.getRunTimeline).mockResolvedValue({ runId: 'run-1', entries: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' } } as never);
+    // A plain call-counter (rather than chained mockResolvedValueOnce) so this
+    // test's own sequencing never depends on exactly how many times React
+    // Query happens to call the queryFn before the assertions below run.
+    let getRunDetailCalls = 0;
+    vi.mocked(api.getRunDetail).mockImplementation(async () => {
+      getRunDetailCalls += 1;
+      return { approvalRequests: [pendingApprovalFixture({ version: getRunDetailCalls === 1 ? 1 : 3 })] } as never;
+    });
+    vi.mocked(api.resolveApproval).mockResolvedValue({
+      approvalRequestId: 'appr-1', state: 'DECIDED', won: true, advanced: true, nextNodeKey: 'end', validActions: [],
+    } as never);
+    renderGraphTab();
+
+    expect(await screen.findByText(/Approval pending on/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'approved' }));
+
+    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith(
+      'run-1', 'appr-1', { outcome: 'approved' }, expect.objectContaining({ ifMatch: '"3"' }),
+    ));
+    expect(await screen.findByText(/advanced to end/)).toBeInTheDocument();
+  });
+
+  it('V7-17B: an approval already decided elsewhere by resolve time surfaces an honest error, never a stale If-Match call', async () => {
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1' } as never) } as never);
+    vi.mocked(api.getRunDiagnostics).mockResolvedValue({
+      runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'ACTIVE', runState: 'WAITING',
+      blockers: [], orphanedAttempts: [], orphanedAttemptsTruncated: false, providers: [], isolation: [], repositoryWorkspaces: [],
+      validActions: [],
+    } as never);
+    vi.mocked(api.getRunGraph).mockResolvedValue({
+      runId: 'run-1', manifestRevision: 1, nodes: APPROVAL_NODES, possibleEdges: APPROVAL_EDGES,
+      activations: [fixtureActivation({ nodeRunId: 'nr-review', nodeKey: 'review', activationSequence: 1, state: 'WAITING' })],
+      freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' },
+    } as never);
+    vi.mocked(api.getRunTimeline).mockResolvedValue({ runId: 'run-1', entries: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' } } as never);
+    // The FIRST fetch (initial render) reports PENDING so the buttons render
+    // at all; every fetch AFTER the operator clicks reports DECIDED — a
+    // plain call-counter, not a fixed-length mockResolvedValueOnce chain, so
+    // this never depends on exactly how many renders happen before the click.
+    let getRunDetailCalls = 0;
+    vi.mocked(api.getRunDetail).mockImplementation(async () => {
+      getRunDetailCalls += 1;
+      return {
+        approvalRequests: [getRunDetailCalls === 1
+          ? pendingApprovalFixture()
+          : pendingApprovalFixture({ state: 'DECIDED', resolvedOutcome: 'rejected' })],
+      } as never;
+    });
+    renderGraphTab();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'rejected' }));
+    expect(await screen.findByText(/no longer pending/)).toBeInTheDocument();
+    expect(api.resolveApproval).not.toHaveBeenCalled();
   });
 });
 

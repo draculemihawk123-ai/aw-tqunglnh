@@ -2153,3 +2153,103 @@ Reject requires a non-empty decision note, matching the server's own `rejectScop
   Request" button was genuinely disabled until a decision note was typed, then dispatching showed the request
   as `REJECTED` with its real decision note quoted back. Zero console errors throughout.
 
+## V7-17B — Run lifecycle actions: Start Run + Approval resolution (second half of V7-17)
+
+### Context
+
+Continuing V7-17's own pre-E2E-harness audit (started in V7-17A): the design doc's own journey line names
+"task→**run**→**approval**→evidence" as things the browser-driven journey must cover. Auditing
+`startWorkflowRun` and `resolveApproval` (both fully implemented, HTTP-routed, ADR-028-registered) found
+**zero real callers anywhere in the app** — exactly the same "implemented but never wired up" shape V7-17A
+found for scope expansion. `GetRunDetail`'s own `approvalRequests` field (V6-06E, its own doc comment says
+it was "found empirically by the V6-14 black-box journey") already carries everything a caller needs
+(`approvalRequestId`/`version`) — no new backend query was needed here, only real UI wiring, unlike V7-17A.
+
+**A real, previously-undiscovered generator bug was found while reading the wire shape before writing any
+UI**: `internal/delivery/httpapi/run.StartRunResponse`, `.../decision.ResolveApprovalResponse`, and
+`.../decision`'s own `SignalWaitResponse` all embed their own `runtime.XxxResult` type ANONYMOUSLY
+(`runtime.StartWorkflowRunResult` with no `json:"..."` tag) — real Go `encoding/json` PROMOTES an untagged
+anonymous struct field's own fields to the top level on the wire. `apicontract.describeSchema`'s reflection
+never special-cased this: it recorded the embedded field under its own bare Go type name
+("StartWorkflowRunResult") with an empty JSON tag, and `tsclient.go`'s own `jsonWireKey` then fell back to
+that Go name as the wire key — producing a generated TS client whose declared response type nests under a
+key (`StartWorkflowRunResult: unknown`) that **does not exist anywhere on the real wire** (the real response
+is flat: `runId`/`projectId`/.../`validActions` side-by-side). `startWorkflowRun`/`resolveApproval`/
+`submitWaitSignal` were the three operations affected — not a coincidence: exactly the three with no real
+caller yet, so nobody had ever hit this against real traffic.
+
+### Decision
+
+Fixed the generator itself (`internal/delivery/httpapi/apicontract/contract.go`'s own `describeSchema`,
+factored into a new `appendStructFields` helper) rather than adding a fourth per-operation hand-declared-type
+exclusion set (this package's own established escape hatch — V7-13's `rawContentOperations`, V7-15's
+`rawUploadOperations`, V7-16's `customJSONShapeOperations` — for a wire shape reflection truly cannot see).
+This case is different: the wire IS ordinary, fully-reflectable flat JSON: the bug was in this generator's
+own field-walk (never checking `f.Anonymous`), not a fundamental reflection limit, so the honest fix is
+recursive flattening that mirrors real `encoding/json` semantics exactly — an anonymous struct/pointer-
+to-struct field with NO json tag has its own fields promoted; an anonymous field that DOES carry a tag
+(including `json:"-"`) is left as an ordinary named field, matching encoding/json's own documented behavior.
+Regenerated both goldens (`contract.json`, `generated.ts`) — clean diff showing exactly the flattened fields
+for the three affected operations, nothing else changed.
+
+`Start Run` is a plain `ValidActionBar` entry in `TaskHeader` (not `HighImpact` per the parity registry, so
+no confirm dialog, matching `Mark Ready`'s own precedent) gated on `workItem.status === 'READY' &&
+!activeRunId && workItem.workflowVersionId` — a real client-observable signal (no server-computed
+`validActions` entry exists for this action yet, since nothing ever called it to need one), with the
+established "fresh recheck immediately before dispatch" discipline: re-fetch `getWorkItem` right before
+calling `startWorkflowRun`, failing honestly if status changed underneath.
+
+Approval resolution lives in `GraphTimelineTab` (node-level decisions belong beside the graph, the same
+place `RetryBlockedActivation` already lives) as a banner above the graph/timeline row, listing every
+PENDING `ApprovalRequest` with one button per the node's own declared `outcomes` — cross-referenced from the
+already-fetched `RunGraph`'s own `GraphNodeView.outcomes` (an open, node-declared vocabulary; `resolveApproval`
+never validates against a hardcoded approved/rejected enum, per that handler's own doc comment) rather than
+guessing a closed set. Resolving re-fetches `getRunDetail` fresh immediately before dispatch, matching
+`ScopeExpansionPanel`'s identical discipline, and fails honestly if the request was already decided elsewhere.
+
+### Execution
+
+- `internal/delivery/httpapi/apicontract/contract.go`: new `appendStructFields`, recursing on an untagged
+  anonymous struct/pointer-to-struct field.
+- `internal/delivery/httpapi/apicontract/contract_test.go` (new): `TestDescribeSchema_
+  FlattensUntaggedAnonymousStructField` and `TestDescribeSchema_LeavesATaggedAnonymousFieldAsOrdinaryNamedField`
+  — synthetic fixture types (not the real `runtime` package) so the generator's own behavior is unit-tested
+  in isolation from any one real operation's shape.
+- `internal/delivery/httpapi/apicontract/testdata/golden/contract.json`, `web/src/api/generated.ts`:
+  regenerated (same throwaway-test recipe as V7-17A).
+- `web/src/api/rundetail.ts`: new `ApprovalRequestView` (V6-06E's own wire shape, hand-declared for the same
+  one-level-deep generator limit every sibling API-gap file documents).
+- `web/src/screens/TaskDetail.tsx`: `startRunMutation` + `canStartRun` + `Start Run` action in `TaskHeader`;
+  `runDetailQuery` + `pendingApprovals` + `resolveApprovalMutation` + the approval banner in
+  `GraphTimelineTab`.
+- `web/src/screens/TaskDetail.test.tsx`: 3 new `TaskDetailScreen (V7-11)` cases (Start Run offered and
+  dispatches with a fresh re-check; never offered without a pinned workflow version; optimistic-conflict
+  refusal) and 2 new `GraphTimelineTab (V7-12)` cases (outcome buttons from the real graph node, dispatch
+  with a freshly re-checked If-Match; an approval already decided elsewhere surfaces an honest error, never
+  a stale If-Match call) — the latter two use a call-counter `mockImplementation` rather than chained
+  `mockResolvedValueOnce`, after a real cross-test mock-queue-leakage flake was caught and fixed during this
+  task (`vi.clearAllMocks()` does not clear a `mockResolvedValueOnce` queue that a prior test left
+  unconsumed).
+
+### Verify
+
+- `go build ./...`, `go vet ./...`, `go test -count=1 ./...`: clean.
+- `npx tsc --noEmit` (web/): clean.
+- `npx vitest run` (web/): 254/254 pass (249 prior + 5 new).
+- Manual end-to-end verification against a REAL running `aw serve` + `aw worker` (fake Claude executable):
+  published a real installation-scoped `POLICY` (category COMPLETION, `requiredAssurance: [{level: "HUMAN",
+  requiredApprovals: [{authorizedRoles: ["operator"]}]}]` — the real, correct way to gate completion on a
+  human decision with no COMMAND node at all, found via reading `policy.go`'s own `AssuranceRequirement`/
+  `ApprovalRequirement` doc comments) and a real project-scoped `WORKFLOW` (START → APPROVAL(operator) →
+  END) via the public HTTP definitions API (create → validate → publish), then created a real WorkItem
+  through the browser's own Create WorkItem dialog with a complete readiness contract (found live that an
+  acceptance criterion needs a real `verificationRef` to count as "executable" per
+  `internal/domain/work/work.go`'s own `hasExecutableAcceptance` — not just a description) pinning that
+  WorkflowVersion. Marked it READY, clicked the real **Start Run** button — real `201 Created`, WorkItem
+  transitioned to real `ACTIVE`, Run genuinely `RUNNING`. On Graph & Timeline: a real "Approval pending on
+  review (operator)" banner rendered with real `approved`/`rejected` buttons sourced from the real graph
+  node's own declared outcomes. Clicked **approved** — real dispatch, run advanced through `VERIFYING` to
+  real terminal `SUCCEEDED` (confirmed via the raw API), toast correctly reported "advanced to end." Zero
+  new console errors (two pre-existing, unrelated clipboard-permission errors from a `Copy ID` button in a
+  sandboxed browser, nothing to do with this task's own changes).
+

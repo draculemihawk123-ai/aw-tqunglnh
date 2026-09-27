@@ -12,18 +12,18 @@ import {
 import type { NavRoute } from '../components/shell/LeftNav';
 import {
   abandonReleaseSet, appendMessage, ApiError, approveScopeExpansion, cancelRun, cancelWorkItem, createReleaseSet,
-  getReleaseSet, getReleaseSetLocalCommitStatus, getRepositoryWorkspaceState, getRunDiagnostics, getRunGraph,
-  getRunTimeline, getScopeExpansionRequest, getTaskFamily, getWorkItem, getWorkItemProjectedDetail,
+  getReleaseSet, getReleaseSetLocalCommitStatus, getRepositoryWorkspaceState, getRunDetail, getRunDiagnostics,
+  getRunGraph, getRunTimeline, getScopeExpansionRequest, getTaskFamily, getWorkItem, getWorkItemProjectedDetail,
   getWorkspaceDiff, getWorkspaceRepositoryLog, getWorkspaceSetState, listArtifacts, listEvidence,
-  listFamilyScopeExpansionRequests, listMessages, listReleaseSetsForFamily, rejectScopeExpansion,
+  listFamilyScopeExpansionRequests, listMessages, listReleaseSetsForFamily, rejectScopeExpansion, resolveApproval,
   requestReleaseSetLocalCommit, requestWorkspaceReconciliation, requestWorkspaceSetRelease, resolveWorkItemBlocker,
-  retryBlockedActivation, sealReleaseSet,
+  retryBlockedActivation, sealReleaseSet, startWorkflowRun,
 } from '../api/generated';
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
 import type { KanbanCard, WorkItemProjectedDetailResponse } from '../api/kanban';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
-import type { GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView } from '../api/rundetail';
+import type { ApprovalRequestView, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView } from '../api/rundetail';
 import { getSessionToken, withSessionToken } from '../api/session';
 import { decodeDiffPatch, fetchWorkspaceSource } from '../api/workspaceinspection';
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
@@ -103,6 +103,24 @@ function TaskHeader({
     onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
   });
 
+  const startRunMutation = useMutation({
+    mutationFn: async () => {
+      const fresh = (await getWorkItem(projectId, workItemId, withSessionToken())) as unknown as GetWorkItemResponse;
+      if (fresh.status !== 'READY') {
+        throw new Error('This work item is no longer READY — its status changed. Refresh to see the current state.');
+      }
+      if (!fresh.workflowVersionId) {
+        throw new Error('This work item has no workflow version pinned in its contract — nothing to run.');
+      }
+      return startWorkflowRun(workItemId, { workflowVersionId: fresh.workflowVersionId }, withSessionToken({ idempotencyKey: crypto.randomUUID() }));
+    },
+    onSuccess: result => {
+      show({ intent: 'success', message: `Run started (${result.runId}) — entering ${result.state}.` });
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
+  });
+
   const cancelWorkItemMutation = useMutation({
     mutationFn: async () => {
       if (activeRunId) {
@@ -151,6 +169,7 @@ function TaskHeader({
     onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
   });
 
+  const canStartRun = !activeRunId && workItem?.status === 'READY' && !!workItem?.workflowVersionId;
   const runValidActions = runDiagnostics?.validActions ?? [];
   const canCancelRun = !!activeRunId && runValidActions.some(a => a.operationId === 'cancelRun');
   const canCancelWorkItem = activeRunId
@@ -223,6 +242,7 @@ function TaskHeader({
           <div className="flex-1" />
           {/* Single ValidActionBar — only actions the real server-computed data currently advertises */}
           <ValidActionBar actions={[
+            ...(canStartRun ? [{ label: 'Start Run', intent: 'primary' as const, onClick: () => startRunMutation.mutate(), disabled: isOffline || startRunMutation.isPending }] : []),
             ...(canCancelRun ? [{ label: 'Cancel Run', intent: 'secondary' as const, onClick: () => setCancelRunDialog(true), disabled: isOffline }] : []),
             ...(canCancelWorkItem ? [{ label: 'Cancel WorkItem', intent: 'destructive' as const, onClick: () => setCancelWiDialog(true), disabled: isOffline }] : []),
           ]} />
@@ -523,6 +543,17 @@ function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActio
     enabled: !isOffline && !!runId,
   });
 
+  // V7-17B: getRunDetail's own approvalRequests is the ONE public read that
+  // hands a caller a PENDING ApprovalRequest's own id/version — see
+  // web/src/api/rundetail.ts's own ApprovalRequestView doc comment for why
+  // resolveApproval had no real caller anywhere in this app until this task.
+  const runDetailQuery = useQuery({
+    queryKey: ['runDetail', projectId, runId],
+    queryFn: async () => (await getRunDetail(runId!, withSessionToken())) as unknown as { approvalRequests?: ApprovalRequestView[] },
+    enabled: !isOffline && !!runId,
+  });
+  const pendingApprovals = (runDetailQuery.data?.approvalRequests ?? []).filter(a => a.state === 'PENDING');
+
   const timelineQuery = useInfiniteQuery({
     queryKey: ['runTimeline', projectId, runId],
     queryFn: async ({ pageParam }) => {
@@ -552,6 +583,28 @@ function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActio
       onActionSettled();
     },
     onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  // Fresh recheck immediately before dispatch — the same discipline every
+  // other mutation in this app follows (TaskHeader's own cancelRun/
+  // resolveBlocker, ScopeExpansionPanel's own approve/reject): re-fetch the
+  // real current version right before submitting, never trust the version
+  // this tab loaded whenever it first fetched the run.
+  const resolveApprovalMutation = useMutation({
+    mutationFn: async ({ approval, outcome }: { approval: ApprovalRequestView; outcome: string }) => {
+      const fresh = (await getRunDetail(runId!, withSessionToken())) as unknown as { approvalRequests?: ApprovalRequestView[] };
+      const freshApproval = (fresh.approvalRequests ?? []).find(a => a.approvalRequestId === approval.approvalRequestId);
+      if (!freshApproval || freshApproval.state !== 'PENDING') {
+        throw new Error('This approval is no longer pending — it may have already been decided elsewhere. Refresh to see the current state.');
+      }
+      return resolveApproval(runId!, approval.approvalRequestId, { outcome }, withSessionToken({ ifMatch: `"${freshApproval.version}"` }));
+    },
+    onSuccess: result => {
+      show({ intent: 'success', message: `Approval resolved — ${result.advanced ? `advanced to ${result.nextNodeKey ?? 'the next step'}` : 'recorded'}.` });
+      runDetailQuery.refetch();
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
   });
 
   if (!runId) {
@@ -594,7 +647,35 @@ function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActio
   const timelineEntries = selectedNodeKey ? entries.filter(e => e.nodeKey === selectedNodeKey) : entries;
 
   return (
-    <div className="flex-1 flex overflow-hidden">
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {pendingApprovals.length > 0 && (
+        <div className="px-4 py-2 bg-[#EEF2FF] border-b border-[#C7D2FE] space-y-2 flex-shrink-0">
+          {pendingApprovals.map(approval => {
+            const node = nodes.find(n => n.key === approval.nodeKey);
+            const outcomes = node?.outcomes ?? [];
+            return (
+              <div key={approval.approvalRequestId} className="flex items-center gap-2 flex-wrap">
+                <AlertTriangle size={13} className="text-[#3730A3] flex-shrink-0" aria-hidden />
+                <span className="text-[12px] text-[#3730A3]">
+                  Approval pending on <span className="font-mono font-medium">{approval.nodeKey}</span>
+                  {approval.authorizedRoles?.length ? ` (${approval.authorizedRoles.join(', ')})` : ''}
+                </span>
+                <div className="flex-1" />
+                {outcomes.length === 0 ? (
+                  <span className="text-[12px] text-[#3730A3] italic">no declared outcomes on this node</span>
+                ) : outcomes.map(outcome => (
+                  <Button key={outcome} size="compact" intent="primary" disabled={isOffline}
+                    loading={resolveApprovalMutation.isPending && resolveApprovalMutation.variables?.approval.approvalRequestId === approval.approvalRequestId && resolveApprovalMutation.variables?.outcome === outcome}
+                    onClick={() => resolveApprovalMutation.mutate({ approval, outcome })}>
+                    {outcome}
+                  </Button>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div className="flex-1 flex overflow-hidden">
       {/* Graph panel — 58% */}
       <div className="flex flex-col overflow-hidden" style={{ flex: '0 0 58%', minWidth: 0 }}>
         <div className="flex items-center justify-between px-4 py-2 border-b border-[#CDD5DF] bg-[#F3F5F8]">
@@ -744,6 +825,7 @@ function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActio
             );
           })}
         </div>
+      </div>
       </div>
 
       {retrying && (
