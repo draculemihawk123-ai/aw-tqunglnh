@@ -30,7 +30,7 @@
 // walks internal/delivery/httpapi recursively and therefore already covers
 // this subpackage too.
 //
-// Route inventory (all twelve project-scoped — WorkItem/TaskFamily/
+// Route inventory (all thirteen project-scoped — WorkItem/TaskFamily/
 // ScopeExpansionRequest are not in ADR-025's closed installation-scope
 // table):
 //
@@ -42,6 +42,7 @@
 //	GET  /projects/{projectId}/work-items/{workItemId}/readiness               getWorkItemReadiness
 //	GET  /projects/{projectId}/task-families/{familyId}                        getTaskFamily
 //	POST /projects/{projectId}/task-families/{familyId}/scope-expansions       requestScopeExpansion
+//	GET  /projects/{projectId}/task-families/{familyId}/scope-expansions       listFamilyScopeExpansionRequests
 //	GET  /projects/{projectId}/scope-expansions/{requestId}                    getScopeExpansionRequest
 //	POST /projects/{projectId}/scope-expansions/{requestId}/approve            approveScopeExpansion
 //	POST /projects/{projectId}/scope-expansions/{requestId}/reject             rejectScopeExpansion
@@ -49,9 +50,9 @@
 //	POST /work-items/{workItemId}/mark-ready                                   markWorkItemReady
 //
 // markWorkItemReady (V6-04A, docs/design/08-v6-api-projections.md V6-04A) is
-// this package's own thirteenth route, added after V6-04 itself merged — see
+// this package's own fourteenth route, added after V6-04 itself merged — see
 // mark_ready_command.go's own doc comment for the full contract, including
-// why its path deliberately has NO {projectId} segment (unlike the twelve
+// why its path deliberately has NO {projectId} segment (unlike the thirteen
 // routes above): the design doc's own route fragment is verbatim
 // `POST /work-items/{id}/mark-ready` (docs/design/01-system-design.md line
 // 567, repeated in 08-v6-api-projections.md V6-04A's own "Phạm vi" line),
@@ -127,6 +128,11 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodPost, Path: "/projects/{projectId}/task-families/{familyId}/scope-expansions", OperationID: "requestScopeExpansion",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: requestScopeExpansionBody{}, ResponseSchema: workapp.RequestScopeExpansionResult{},
 		Handler: handleRequestScopeExpansion(deps),
+	})
+	reg.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{projectId}/task-families/{familyId}/scope-expansions", OperationID: "listFamilyScopeExpansionRequests",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: scopeExpansionRequestListResponse{},
+		Handler: handleListFamilyScopeExpansionRequests(deps),
 	})
 	reg.Register(httpapi.RouteDescriptor{
 		Method: http.MethodGet, Path: "/projects/{projectId}/scope-expansions/{requestId}", OperationID: "getScopeExpansionRequest",

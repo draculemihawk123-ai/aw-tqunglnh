@@ -22,6 +22,8 @@ vi.mock('../api/generated', async () => {
     getRepositoryWorkspaceState: vi.fn(), requestWorkspaceSetRelease: vi.fn(),
     listEvidence: vi.fn(), listArtifacts: vi.fn(),
     listMessages: vi.fn(), appendMessage: vi.fn(),
+    listFamilyScopeExpansionRequests: vi.fn(), getScopeExpansionRequest: vi.fn(),
+    approveScopeExpansion: vi.fn(), rejectScopeExpansion: vi.fn(),
   };
 });
 vi.mock('../api/session', () => ({
@@ -550,6 +552,106 @@ async function openReleaseSetPanel() {
   await userEvent.click(await screen.findByRole('button', { name: 'ReleaseSet' }));
   return screen.findByRole('button', { name: 'Hide ReleaseSet' });
 }
+
+function scopeExpansionFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    requestId: 'req-1', familyId: 'fam-1', projectId: 'proj-1',
+    requestedGrants: [{ repositoryId: 'worker-service', access: 'READ_WRITE', reason: 'needs to edit shared config' }],
+    reason: 'AGENT node needs to touch worker-service to finish this task', status: 'PENDING',
+    requestedBy: 'agent:node-3', requestedAt: '2026-09-27T00:00:00Z', version: 1,
+    ...overrides,
+  };
+}
+
+async function openScopeExpansionPanel() {
+  await userEvent.click(await screen.findByRole('button', { name: /Scope Requests/ }));
+  return screen.findByRole('button', { name: 'Hide Scope Requests' });
+}
+
+describe('ScopeExpansionPanel (V7-17)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.getTaskFamily).mockResolvedValue(FAMILY as never);
+    vi.mocked(api.getWorkItem).mockResolvedValue({
+      workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
+      status: 'ACTIVE', version: 4, contract: null,
+    } as never);
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail() } as never);
+    vi.mocked(api.getWorkspaceSetState).mockResolvedValue({
+      workspaceSetId: 'ws-1', familyId: 'fam-1', projectId: 'proj-1', state: 'RUNNING', version: 2, hasBaseRevisionSet: true,
+      repositoryWorkspaces: [repoFixture()], validActions: [],
+    } as never);
+    vi.mocked(api.getWorkspaceDiff).mockResolvedValue({
+      baseRevision: {}, resultRevision: {}, files: [], patch: '', byteLimit: 1000, fileLimit: 100, filesTruncated: false, patchTruncated: false,
+    } as never);
+  });
+
+  it('shows the real pending count on the toggle button and lists every real requested grant', async () => {
+    vi.mocked(api.listFamilyScopeExpansionRequests).mockResolvedValue({ items: [scopeExpansionFixture()] } as never);
+    renderWorkspaceTab();
+
+    expect(await screen.findByRole('button', { name: 'Scope Requests (1)' })).toBeInTheDocument();
+    await openScopeExpansionPanel();
+
+    expect(screen.getByText('AGENT node needs to touch worker-service to finish this task')).toBeInTheDocument();
+    expect(screen.getByText(/worker-service · READ_WRITE/)).toBeInTheDocument();
+  });
+
+  it('approves for real with a freshly re-checked If-Match version, not the one loaded at panel-open time', async () => {
+    vi.mocked(api.listFamilyScopeExpansionRequests).mockResolvedValue({ items: [scopeExpansionFixture()] } as never);
+    vi.mocked(api.getScopeExpansionRequest).mockResolvedValue(scopeExpansionFixture({ version: 4 }) as never);
+    vi.mocked(api.approveScopeExpansion).mockResolvedValue({
+      requestId: 'req-1', familyId: 'fam-1', projectId: 'proj-1', newScopeVersion: 2, approvedGrants: [], provisionedRepositories: [],
+    } as never);
+    renderWorkspaceTab();
+    await openScopeExpansionPanel();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    await waitFor(() => expect(api.approveScopeExpansion).toHaveBeenCalledWith('proj-1', 'req-1', {}, expect.objectContaining({ ifMatch: '"4"' })));
+    expect(await screen.findByText(/Scope expansion approved/)).toBeInTheDocument();
+  });
+
+  it('rejects for real only once a decision note is entered, and refuses an empty one', async () => {
+    vi.mocked(api.listFamilyScopeExpansionRequests).mockResolvedValue({ items: [scopeExpansionFixture()] } as never);
+    vi.mocked(api.getScopeExpansionRequest).mockResolvedValue(scopeExpansionFixture({ version: 1 }) as never);
+    vi.mocked(api.rejectScopeExpansion).mockResolvedValue({ requestId: 'req-1', status: 'REJECTED' } as never);
+    renderWorkspaceTab();
+    await openScopeExpansionPanel();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Reject' }));
+    const rejectButton = await screen.findByRole('button', { name: 'Reject Request' });
+    expect(rejectButton).toBeDisabled();
+
+    await userEvent.type(screen.getByLabelText(/Decision note/), 'not needed for this task');
+    await userEvent.click(rejectButton);
+    await waitFor(() => expect(api.rejectScopeExpansion).toHaveBeenCalledWith(
+      'proj-1', 'req-1', { decisionNote: 'not needed for this task' }, expect.objectContaining({ ifMatch: '"1"' }),
+    ));
+  });
+
+  it('a request already decided elsewhere by the time of approval surfaces an honest error, never a stale If-Match call', async () => {
+    vi.mocked(api.listFamilyScopeExpansionRequests).mockResolvedValue({ items: [scopeExpansionFixture()] } as never);
+    vi.mocked(api.getScopeExpansionRequest).mockResolvedValue(scopeExpansionFixture({ status: 'APPROVED', version: 2 }) as never);
+    renderWorkspaceTab();
+    await openScopeExpansionPanel();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Approve' }));
+    expect(await screen.findByText(/no longer pending/)).toBeInTheDocument();
+    expect(api.approveScopeExpansion).not.toHaveBeenCalled();
+  });
+
+  it('shows already-decided requests with their real decision note, but no Approve/Reject control', async () => {
+    vi.mocked(api.listFamilyScopeExpansionRequests).mockResolvedValue({
+      items: [scopeExpansionFixture({ status: 'REJECTED', decisionNote: 'scope too broad for this task' })],
+    } as never);
+    renderWorkspaceTab();
+    await openScopeExpansionPanel();
+
+    expect(screen.getByText('REJECTED')).toBeInTheDocument();
+    expect(screen.getByText('"scope too broad for this task"')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+  });
+});
 
 describe('ReleaseSetPanel (V7-13A)', () => {
   beforeEach(() => {

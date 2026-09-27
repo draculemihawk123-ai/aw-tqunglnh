@@ -2056,3 +2056,100 @@ read-only context, per the design doc's own scope).
   nonexistent Run ID via a real InlineError. Zero unexpected console errors throughout (the only console
   errors were this session's own deliberate invalid-request/not-found test attempts).
 
+## V7-17A — Scope expansion review UI (first half of V7-17)
+
+### Context
+
+V7-17 ("UI full-journey gate", the final V7 task, depends on V7-02…V7-16 and V7-13A) requires a deterministic
+browser-driven journey covering project→definition→task→run→approval→evidence→ReleaseSet→DONE with fake
+providers, explicitly naming "scope amendment" as one of the flows it must cover end-to-end through the UI.
+Auditing what the journey would actually need to drive (before writing any E2E test) found that
+`approveScopeExpansion`/`rejectScopeExpansion`/`requestScopeExpansion`/`withdrawScopeExpansion`/
+`getScopeExpansionRequest` were all fully implemented, HTTP-routed, and already registered as
+`ExposurePublic` in the ADR-028 parity registry (V3-08/V6-15I) — but had **no caller anywhere in the app**.
+`Kanban.tsx`'s own `pendingScopeExpansionCount` badge is a count only; the SSE stream
+(`web/src/api/sse.ts`'s own `watchProjectEvents`) carries an invalidation signal (`eventType`/
+`journalPosition`), never a payload, so it cannot hand a caller a PENDING request's own RequestID either.
+There was no query anywhere — HTTP, CLI, or application-level — that could list a TaskFamily's own pending
+ScopeExpansionRequests. Without one, neither this task's own E2E test nor a real operator could ever discover
+which RequestID to approve or reject. `internal/app/ports/work.go`'s own `WorkRepository` interface already
+declared `ListFamilyScopeExpansionRequests(ctx, familyID)` (V3-08, already implemented in the sqlite adapter)
+— the repository capability existed; nothing above it did.
+
+This is the same "found a real gap before writing UI/E2E" pattern this session established across V7-14/15/16
+(`getMessageContent`, `rawUploadOperations`, `customJSONShapeOperations`) — split out as its own PR (V7-17A)
+because it is a real, independently testable, independently mergeable production feature, distinct from
+V7-17's own E2E-harness-and-CI half (V7-17B), matching the V5-15/V6-00A precedent for splitting a task when
+the diff is genuinely large rather than doing so by default.
+
+### Decision
+
+Added exactly one new query, `ListFamilyScopeExpansionRequests` (`internal/app/work/queries.go`), mirroring
+`ListChildWorkItems`'s own "reload the parent (here: TaskFamily) first, scope-check it, then list" shape —
+never trusting a caller-supplied `familyId` that might belong to another project. Wired it as
+`GET /projects/{projectId}/task-families/{familyId}/scope-expansions` (operationId
+`listFamilyScopeExpansionRequests`) in `internal/delivery/httpapi/workitem`, registered it in the ADR-028
+parity registry as `ExposurePublic`/`KindQuery`, and added a new **ledgered, acknowledged** debt entry in
+`internal/delivery/parity/ledger.go` (`ClassMissingCLI`, owner V7-17) rather than also adding an `aw
+scope-expansion list` CLI command — the exact same precedent `getScopeExpansionRequest`'s own ledger entry
+(V6-15I) already established for this package: V7 is a UI-only phase that never touches
+`internal/delivery/cli`, and the browser is the one real caller.
+
+The new UI lives inside `TaskDetail.tsx`'s existing `WorkspaceTab` (task-family-scoped concerns already live
+there — repository tabs, ReleaseSet), as a toggleable `ScopeExpansionPanel` beside the existing `ReleaseSet`
+toggle button, with a live pending-count badge (`Scope Requests (N)`) fetched once at the `WorkspaceTab`
+level and passed down — the same "fetch once, hand down as props" convention `TaskDetailScreen`'s own doc
+comment establishes. Approve/Reject both re-fetch the target request's own authoritative detail immediately
+before dispatch (the same "never trust a version read at page-load time" discipline `TaskHeader`'s own
+cancelRun/resolveBlocker mutations and `Settings.tsx`'s own save mutation already established) and fail with
+an honest, actionable message — never a stale If-Match call — if the request was already decided elsewhere.
+Reject requires a non-empty decision note, matching the server's own `rejectScopeExpansionBody` validation.
+
+### Execution
+
+- `internal/app/work/queries.go`: new `ListFamilyScopeExpansionRequests`.
+- `internal/delivery/httpapi/workitem/{routes.go,scope_expansion_queries.go,workitem_test.go}`: new route
+  registration, `handleListFamilyScopeExpansionRequests` + `scopeExpansionRequestListResponse`, updated route
+  inventory doc comment (twelve→thirteen project-scoped routes) and the pinned
+  `TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet` operation set.
+- `internal/delivery/parity/{registry.go,ledger.go}`: new `PublicOperation` entry; new `ClassMissingCLI`
+  ledger entry, owner V7-17.
+- `internal/delivery/httpapi/apicontract/testdata/golden/contract.json`, `web/src/api/generated.ts`:
+  regenerated (recipe from `tsclient_golden_test.go`'s own doc comment — a throwaway test writing both
+  goldens, run once, deleted). `wantRouteCount` 93→94 in both `apicontract/routeinventory_test.go` and
+  `securitymatrix/transport_test.go`; `listFamilyScopeExpansionRequests` added to
+  `TestUndocumentedOperationsSnapshot`'s pinned list (a real, new-but-undocumented-in-the-UX-doc operation,
+  the same status `getScopeExpansionRequest`/`getTaskFamily`/`listWorkItems` already hold there — this is
+  `CheckUndocumentedOperations`'s own coarser soft signal, not `CheckUXGaps`'s hard gate, since nothing in the
+  UX doc ever proposed this operationId in the first place).
+- `web/src/api/scopeExpansion.ts` (new): hand-declared `RequestedGrant`/`ScopeExpansionRequestDetail` —
+  `listFamilyScopeExpansionRequests`'s own `items` nests one level deeper than apicontract's shallow generator
+  expands, the same limitation every sibling API-gap file in this session already documents.
+- `web/src/screens/TaskDetail.tsx`: new `ScopeExpansionPanel` component, `showScopeExpansions` state and
+  toggle button in `WorkspaceTab`, `scopeExpansionsQuery` fetched once at the `WorkspaceTab` level.
+- `web/src/screens/TaskDetail.test.tsx`: new `describe('ScopeExpansionPanel (V7-17)', ...)` — 5 cases (real
+  pending count + real requested grants render; approve dispatches with a freshly re-checked If-Match; reject
+  is disabled until a decision note is entered, then dispatches with the note and a freshly re-checked
+  If-Match; a request already decided elsewhere by approval time surfaces an honest error and never sends a
+  stale If-Match; already-decided requests show their real status/decision note with no Approve/Reject
+  control).
+
+### Verify
+
+- `go build ./...`, `go vet ./...`, `go test -count=1 ./...`: clean.
+- `npx tsc --noEmit -p tsconfig.json` (web/): clean.
+- `npx vitest run` (web/): 249/249 pass (244 prior + 5 new `ScopeExpansionPanel (V7-17)` cases).
+- Manual end-to-end verification against a REAL running `aw serve` + `aw worker` (fake Claude executable,
+  `--ui-dist web/dist`): created a real project via the browser, registered two real local git repositories
+  (`repo-alpha`, `repo-beta`, both reaching real `ACTIVE` state), created a real root WorkItem scoped only to
+  `repo-alpha` via the browser's own Create WorkItem dialog. Used `aw scope-expansion request` (CLI, since no
+  UI creates a request — only an AGENT node or an operator via CLI does; this task's own scope is
+  approve/reject) to submit two real PENDING requests against the family. In the browser: the `Scope Requests
+  (1)` badge showed the real live count; opening the panel rendered the real reason, real requested grant
+  (`repo-beta · READ`), and real requestedBy/requestedAt. Clicking **Approve** dispatched the real command —
+  the request flipped to `APPROVED`, `repo-beta` was for-real auto-provisioned and appeared as its own new
+  repository tab with a real revision, and the WorkItem header's own repository-scope badges grew from
+  `repo-alpha` to `repo-alpha repo-beta`. Requested a second expansion and clicked **Reject**: the "Reject
+  Request" button was genuinely disabled until a decision note was typed, then dispatching showed the request
+  as `REJECTED` with its real decision note quoted back. Zero console errors throughout.
+

@@ -11,10 +11,11 @@ import {
 } from '../components/icons';
 import type { NavRoute } from '../components/shell/LeftNav';
 import {
-  abandonReleaseSet, appendMessage, ApiError, cancelRun, cancelWorkItem, createReleaseSet, getReleaseSet,
-  getReleaseSetLocalCommitStatus, getRepositoryWorkspaceState, getRunDiagnostics, getRunGraph, getRunTimeline,
-  getTaskFamily, getWorkItem, getWorkItemProjectedDetail, getWorkspaceDiff, getWorkspaceRepositoryLog,
-  getWorkspaceSetState, listArtifacts, listEvidence, listMessages, listReleaseSetsForFamily,
+  abandonReleaseSet, appendMessage, ApiError, approveScopeExpansion, cancelRun, cancelWorkItem, createReleaseSet,
+  getReleaseSet, getReleaseSetLocalCommitStatus, getRepositoryWorkspaceState, getRunDiagnostics, getRunGraph,
+  getRunTimeline, getScopeExpansionRequest, getTaskFamily, getWorkItem, getWorkItemProjectedDetail,
+  getWorkspaceDiff, getWorkspaceRepositoryLog, getWorkspaceSetState, listArtifacts, listEvidence,
+  listFamilyScopeExpansionRequests, listMessages, listReleaseSetsForFamily, rejectScopeExpansion,
   requestReleaseSetLocalCommit, requestWorkspaceReconciliation, requestWorkspaceSetRelease, resolveWorkItemBlocker,
   retryBlockedActivation, sealReleaseSet,
 } from '../api/generated';
@@ -32,6 +33,7 @@ import { artifactContentUrl, fetchArtifactContent, isInlineSafeMediaType, PREVIE
 import type { ArtifactSummary, EvidenceDetail } from '../api/evidence';
 import { fetchMessageContent, messageContentUrl, uploadAttachment } from '../api/message';
 import type { MessageRef } from '../api/message';
+import type { ScopeExpansionRequestDetail } from '../api/scopeExpansion';
 
 function apiErrorMessage(err: unknown): { code: string; message: string } {
   if (err instanceof ApiError) return { code: err.code, message: err.message };
@@ -805,6 +807,7 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
   const [sourcePath, setSourcePath] = useState('');
   const [sourceRevisionSide, setSourceRevisionSide] = useState<'current' | 'base'>('current');
   const [showReleaseSet, setShowReleaseSet] = useState(false);
+  const [showScopeExpansions, setShowScopeExpansions] = useState(false);
   const { toasts, show, dismiss } = useToasts();
 
   const workspaceSetQuery = useQuery({
@@ -815,6 +818,14 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
 
   const repos = workspaceSetQuery.data?.repositoryWorkspaces ?? [];
   const activeRepo: RepositoryWorkspaceState | undefined = repos.find(r => r.repositoryWorkspaceId === activeRepositoryWorkspaceId) ?? repos[0];
+
+  const scopeExpansionsQuery = useQuery({
+    queryKey: ['scopeExpansionsForFamily', projectId, familyId],
+    queryFn: async () => (await listFamilyScopeExpansionRequests(projectId, familyId!, withSessionToken())) as unknown as { items: ScopeExpansionRequestDetail[] },
+    enabled: !isOffline && !!familyId,
+  });
+  const scopeExpansionRequests = scopeExpansionsQuery.data?.items ?? [];
+  const pendingScopeExpansionCount = scopeExpansionRequests.filter(r => r.status === 'PENDING').length;
 
   const diffQuery = useQuery({
     queryKey: ['workspaceDiff', projectId, activeRepo?.repositoryWorkspaceId, activeRepo?.generation],
@@ -897,6 +908,9 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
           );
         })}
         <div className="flex-1" />
+        <Button size="compact" intent={showScopeExpansions ? 'primary' : 'quiet'} onClick={() => setShowScopeExpansions(!showScopeExpansions)}>
+          {showScopeExpansions ? 'Hide Scope Requests' : `Scope Requests${pendingScopeExpansionCount > 0 ? ` (${pendingScopeExpansionCount})` : ''}`}
+        </Button>
         <Button size="compact" intent={showReleaseSet ? 'primary' : 'quiet'} onClick={() => setShowReleaseSet(!showReleaseSet)}>
           {showReleaseSet ? 'Hide ReleaseSet' : 'ReleaseSet'}
         </Button>
@@ -1059,6 +1073,12 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
             )}
           </div>
         </div>
+        {showScopeExpansions && (
+          <ScopeExpansionPanel
+            projectId={projectId} requests={scopeExpansionRequests} isOffline={isOffline}
+            onChanged={() => scopeExpansionsQuery.refetch()}
+          />
+        )}
         {showReleaseSet && (
           <ReleaseSetPanel
             projectId={projectId} familyId={familyId} repos={repos}
@@ -1069,6 +1089,150 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
           />
         )}
       </div>
+      <ToastViewport toasts={toasts} onDismiss={dismiss} />
+    </div>
+  );
+}
+
+// ─── Scope Expansion Panel (V7-17) ─────────────────────────────────────────────
+
+interface ScopeExpansionPanelProps {
+  projectId: string;
+  requests: ScopeExpansionRequestDetail[];
+  isOffline?: boolean;
+  onChanged: () => void;
+}
+
+/**
+ * ScopeExpansionPanel — V7-17's own real "scope amendment" review UI
+ * (docs/design/09-v7-alpha-ui.md V7-17's own Thực hiện line). Until this
+ * task, `approveScopeExpansion`/`rejectScopeExpansion` were fully
+ * implemented and parity-registered but had no caller anywhere in this app:
+ * `Kanban.tsx`'s own `pendingScopeExpansionCount` badge is a count only, and
+ * neither the SSE stream (`ProjectEventSummary` carries no payload, only an
+ * `eventType`/`journalPosition` invalidation signal — see `web/src/api/
+ * sse.ts`'s own doc comment) nor any other query exposed a PENDING request's
+ * own RequestID. `listFamilyScopeExpansionRequests`
+ * (`internal/app/work/queries.go`) is the real, previously-missing query
+ * this task added specifically to close that gap.
+ *
+ * Approve/Reject both re-fetch this one request's own authoritative detail
+ * immediately before dispatch (the same "never trust a version read at
+ * page-load time" discipline `TaskHeader`'s own cancelRun/resolveBlocker
+ * mutations and `Settings.tsx`'s own save mutation already established),
+ * and fail with an honest, actionable message if the request was already
+ * decided elsewhere in the meantime rather than blindly sending a stale
+ * If-Match.
+ */
+function ScopeExpansionPanel({ projectId, requests, isOffline, onChanged }: ScopeExpansionPanelProps) {
+  const [rejecting, setRejecting] = useState<ScopeExpansionRequestDetail | null>(null);
+  const [decisionNote, setDecisionNote] = useState('');
+  const { toasts, show, dismiss } = useToasts();
+
+  const pending = requests.filter(r => r.status === 'PENDING');
+  const decided = requests.filter(r => r.status !== 'PENDING');
+
+  const approveMutation = useMutation({
+    mutationFn: async (request: ScopeExpansionRequestDetail) => {
+      const fresh = (await getScopeExpansionRequest(projectId, request.requestId, withSessionToken())) as unknown as ScopeExpansionRequestDetail;
+      if (fresh.status !== 'PENDING') {
+        throw new Error('This request is no longer pending — it may have already been decided elsewhere. Refresh to see the current state.');
+      }
+      return approveScopeExpansion(projectId, request.requestId, {}, withSessionToken({ ifMatch: `"${fresh.version}"` }));
+    },
+    onSuccess: result => {
+      show({ intent: 'success', message: `Scope expansion approved — task family scope is now version ${result.newScopeVersion}.` });
+      onChanged();
+    },
+    onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  const rejectMutation = useMutation({
+    mutationFn: async () => {
+      if (!rejecting) throw new Error('no request selected');
+      const fresh = (await getScopeExpansionRequest(projectId, rejecting.requestId, withSessionToken())) as unknown as ScopeExpansionRequestDetail;
+      if (fresh.status !== 'PENDING') {
+        throw new Error('This request is no longer pending — it may have already been decided elsewhere. Refresh to see the current state.');
+      }
+      return rejectScopeExpansion(projectId, rejecting.requestId, { decisionNote: decisionNote.trim() }, withSessionToken({ ifMatch: `"${fresh.version}"` }));
+    },
+    onSuccess: () => {
+      setRejecting(null);
+      setDecisionNote('');
+      show({ intent: 'info', message: 'Scope expansion rejected.' });
+      onChanged();
+    },
+    onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
+  });
+
+  return (
+    <div className="w-96 flex-shrink-0 border-l border-[#CDD5DF] bg-white overflow-y-auto">
+      <div className="px-4 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]">
+        <h2 className="text-sm font-semibold text-[#172033]">Scope Expansion Requests</h2>
+        <p className="text-[12px] text-[#5D697A] mt-0.5">Requests to grant this task family access beyond its current repository scope.</p>
+      </div>
+
+      {pending.length === 0 && decided.length === 0 && (
+        <p className="p-4 text-[13px] text-[#475569]">No scope expansion requests for this task family.</p>
+      )}
+
+      {pending.length > 0 && (
+        <div className="divide-y divide-[#ECEFF4]">
+          {pending.map(request => (
+            <div key={request.requestId} className="px-4 py-3 space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge label="PENDING" intent="warning" />
+                <CopyableId value={request.requestId} short={request.requestId.slice(0, 8)} />
+              </div>
+              <p className="text-[13px] text-[#172033]">{request.reason}</p>
+              <div className="space-y-1">
+                {request.requestedGrants.map((grant, i) => (
+                  <div key={i} className="text-[12px] font-mono bg-[#F8FAFC] border border-[#ECEFF4] rounded-[4px] px-2 py-1">
+                    {grant.repositoryId} · {grant.access}{grant.pathScopes?.length ? ` · ${grant.pathScopes.join(', ')}` : ''}
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] text-[#5D697A]">Requested by {request.requestedBy} · {new Date(request.requestedAt).toLocaleString()}</p>
+              <div className="flex gap-2 pt-1">
+                <Button size="compact" intent="primary" disabled={isOffline} loading={approveMutation.isPending && approveMutation.variables?.requestId === request.requestId}
+                  onClick={() => approveMutation.mutate(request)}>Approve</Button>
+                <Button size="compact" intent="secondary" disabled={isOffline} onClick={() => setRejecting(request)}>Reject</Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {decided.length > 0 && (
+        <div className="divide-y divide-[#ECEFF4]">
+          {decided.map(request => (
+            <div key={request.requestId} className="px-4 py-3 space-y-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <Badge label={request.status} intent={request.status === 'APPROVED' ? 'success' : 'neutral'} />
+                <CopyableId value={request.requestId} short={request.requestId.slice(0, 8)} />
+              </div>
+              <p className="text-[12px] text-[#5D697A]">{request.reason}</p>
+              {request.decisionNote && <p className="text-[12px] text-[#5D697A] italic">"{request.decisionNote}"</p>}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {rejecting && (
+        <Dialog
+          title="Reject Scope Expansion"
+          description="A reason is required — it is shown to whoever requested this expansion."
+          onClose={() => { setRejecting(null); setDecisionNote(''); }}
+          actions={
+            <>
+              <Button intent="secondary" onClick={() => { setRejecting(null); setDecisionNote(''); }} disabled={rejectMutation.isPending}>Keep Pending</Button>
+              <Button intent="destructive" onClick={() => rejectMutation.mutate()} loading={rejectMutation.isPending} disabled={isOffline || !decisionNote.trim()}>Reject Request</Button>
+            </>
+          }
+        >
+          <TextField label="Decision note" required value={decisionNote} onChange={setDecisionNote} placeholder="Why this expansion is being rejected" />
+        </Dialog>
+      )}
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </div>
   );

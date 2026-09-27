@@ -844,6 +844,15 @@ export function listEvidence(projectId: string, workItemId: string, opts: Reques
   return request<ListEvidenceResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/evidence`, undefined, opts);
 }
 
+export interface ListFamilyScopeExpansionRequestsResponse {
+  items: unknown[];
+}
+
+// GET /projects/{projectId}/task-families/{familyId}/scope-expansions (scope: PROJECT)
+export function listFamilyScopeExpansionRequests(projectId: string, familyId: string, opts: RequestOptions = {}): Promise<ListFamilyScopeExpansionRequestsResponse> {
+  return request<ListFamilyScopeExpansionRequestsResponse>("GET", `/projects/${projectId}/task-families/${familyId}/scope-expansions`, undefined, opts);
+}
+
 export interface ListMessagesResponse {
   items: unknown[];
   nextCursor?: string;

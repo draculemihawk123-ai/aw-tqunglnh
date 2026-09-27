@@ -18,7 +18,7 @@ import (
 // composition-root regression — forcing a developer to consciously update
 // this constant (and, ideally, extend mustContainSample below) rather than
 // silently letting the registered route set drift unnoticed.
-const wantRouteCount = 93
+const wantRouteCount = 94
 
 // mustContainSample spot-checks a representative sample of descriptors
 // spanning the full ComposeRoutes call sequence: the three inline
@@ -204,6 +204,7 @@ func TestUndocumentedOperationsSnapshot(t *testing.T) {
 		"getScopeExpansionRequest",
 		"getTaskFamily",
 		"getWorkItemProjectedDetail",
+		"listFamilyScopeExpansionRequests",
 		"listProjectDefinitionVersions",
 		"listProjectDefinitions",
 		"listWorkItems",
