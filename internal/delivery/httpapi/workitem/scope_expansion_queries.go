@@ -9,6 +9,41 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 )
 
+// scopeExpansionRequestListResponse wraps a ScopeExpansionRequestDetail
+// collection in an object, matching workItemListResponse's own "leave room
+// for a future cursor/count field beside items" rationale (workitem_queries.go).
+type scopeExpansionRequestListResponse struct {
+	Items []workapp.ScopeExpansionRequestDetail `json:"items"`
+}
+
+// handleListFamilyScopeExpansionRequests implements
+// GET /projects/{projectId}/task-families/{familyId}/scope-expansions
+// (operationId listFamilyScopeExpansionRequests): every ScopeExpansionRequest
+// belonging to familyId, every Status — see workapp.
+// ListFamilyScopeExpansionRequests' own doc comment for why this query is
+// necessary alongside handleGetScopeExpansionRequest below (a caller cannot
+// discover a PENDING request's own RequestID any other way).
+func handleListFamilyScopeExpansionRequests(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := r.PathValue("projectId")
+		familyID := r.PathValue("familyId")
+		if strings.TrimSpace(projectID) == "" {
+			writeValidationError(w, "projectId", "is required")
+			return
+		}
+		if strings.TrimSpace(familyID) == "" {
+			writeValidationError(w, "familyId", "is required")
+			return
+		}
+		requests, err := workapp.ListFamilyScopeExpansionRequests(r.Context(), deps.UnitOfWork, ports.ProjectScope(projectID), familyID)
+		if err != nil {
+			writeQueryError(w, err)
+			return
+		}
+		_ = httpapi.EncodeResult(w, http.StatusOK, scopeExpansionRequestListResponse{Items: requests}, "")
+	}
+}
+
 // handleGetScopeExpansionRequest implements
 // GET /projects/{projectId}/scope-expansions/{requestId} (operationId
 // getScopeExpansionRequest): the authoritative ScopeExpansionRequest detail

@@ -173,6 +173,7 @@ func PublicOperations() []PublicOperation {
 		{Name: "ResolveWorkItemBlocker", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("resolveWorkItemBlocker")}, Symbol: runtimeApp + ".ResolveWorkItemBlocker"},
 		{Name: "RequestScopeExpansion", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("requestScopeExpansion")}, Symbol: work + ".RequestScopeExpansion"},
 		{Name: "GetScopeExpansionRequest", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getScopeExpansionRequest")}, Symbol: work + ".GetScopeExpansionRequest"},
+		{Name: "ListFamilyScopeExpansionRequests", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("listFamilyScopeExpansionRequests")}, Symbol: work + ".ListFamilyScopeExpansionRequests"},
 		{Name: "ApproveScopeExpansion", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("approveScopeExpansion")}, Symbol: work + ".ApproveScopeExpansion"},
 		{Name: "RejectScopeExpansion", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("rejectScopeExpansion")}, Symbol: work + ".RejectScopeExpansion"},
 		{Name: "WithdrawScopeExpansion", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("withdrawScopeExpansion")}, Symbol: work + ".WithdrawScopeExpansion"},

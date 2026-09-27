@@ -367,6 +367,45 @@ func GetScopeExpansionRequest(ctx context.Context, uow ports.UnitOfWork, scope p
 	return detail, err
 }
 
+// ListFamilyScopeExpansionRequests returns every ScopeExpansionRequest
+// (every Status — PENDING, APPROVED, REJECTED, WITHDRAWN) belonging to
+// familyID, ordered by (RequestedAt, ID) — WorkRepository.
+// ListFamilyScopeExpansionRequests' own established ordering, mirroring
+// ListChildWorkItems' own "reload the parent first, scope-check it, then
+// list" shape: the TaskFamily is reloaded and scope-checked before its
+// requests are ever listed, never trusting a caller-supplied familyId that
+// might belong to another project. Until this query existed, an operator
+// had no way to discover a PENDING request's own RequestID (the one thing
+// ApproveScopeExpansion/RejectScopeExpansion both require) other than
+// already knowing it in advance — GetScopeExpansionRequest alone cannot
+// answer "what is pending for this family right now".
+func ListFamilyScopeExpansionRequests(ctx context.Context, uow ports.UnitOfWork, scope ports.CommandScope, familyID string) ([]ScopeExpansionRequestDetail, error) {
+	projectID, err := requireProjectScope(scope)
+	if err != nil {
+		return nil, err
+	}
+	var result []ScopeExpansionRequestDetail
+	err = uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		family, err := tx.Work().GetTaskFamily(ctx, familyID)
+		if err != nil {
+			return err
+		}
+		if string(family.ProjectID) != projectID {
+			return scopeMismatch("task family", familyID)
+		}
+		requests, err := tx.Work().ListFamilyScopeExpansionRequests(ctx, familyID)
+		if err != nil {
+			return err
+		}
+		result = make([]ScopeExpansionRequestDetail, 0, len(requests))
+		for _, req := range requests {
+			result = append(result, scopeExpansionRequestToDetail(req))
+		}
+		return nil
+	})
+	return result, err
+}
+
 // --- Readiness ---
 
 // WorkItemReadiness is ExplainWorkItemReadiness's own result: whether

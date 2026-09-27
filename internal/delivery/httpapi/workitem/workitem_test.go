@@ -181,11 +181,12 @@ func scopeGrantJSON(repositoryID, access, reason string) map[string]any {
 // TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet proves this
 // task's own "Hoàn thành khi: mọi WorkItem/scope control gọi named
 // application command và client không set state" from the router side: the
-// closed set of thirteen operationIds below is EVERY route this package
+// closed set of fourteen operationIds below is EVERY route this package
 // ever registers — no generic status/family/workspace setter route exists,
-// mechanically, not merely by omission. markWorkItemReady (V6-04A) is the
-// one addition since V6-04 itself merged; the twelve names above it are
-// unchanged.
+// mechanically, not merely by omission. markWorkItemReady (V6-04A) and
+// listFamilyScopeExpansionRequests (V7-17, see scope_expansion_queries.go's
+// own doc comment) are the two additions since V6-04 itself merged; the
+// twelve names above them are unchanged.
 func TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet(t *testing.T) {
 	reg := httpapi.NewRouteRegistry()
 	workitem.RegisterRoutes(reg, workitem.Dependencies{UnitOfWork: nil, IDs: idsource.Random{}, Clock: clock.System{}})
@@ -193,7 +194,8 @@ func TestRegisterRoutes_ExposesExactlyTheDocumentedOperationSet(t *testing.T) {
 	want := map[string]bool{
 		"createRootWorkItem": true, "listWorkItems": true, "getWorkItem": true,
 		"createChildWorkItem": true, "listChildWorkItems": true, "getWorkItemReadiness": true,
-		"getTaskFamily": true, "requestScopeExpansion": true, "getScopeExpansionRequest": true,
+		"getTaskFamily": true, "requestScopeExpansion": true, "listFamilyScopeExpansionRequests": true,
+		"getScopeExpansionRequest": true,
 		"approveScopeExpansion": true, "rejectScopeExpansion": true, "withdrawScopeExpansion": true,
 		"markWorkItemReady": true,
 	}

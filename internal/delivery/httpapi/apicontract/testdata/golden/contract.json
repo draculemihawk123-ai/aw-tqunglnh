@@ -2506,6 +2506,26 @@
       }
     },
     {
+      "operationId": "listFamilyScopeExpansionRequests",
+      "method": "GET",
+      "path": "/projects/{projectId}/task-families/{familyId}/scope-expansions",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workitem.scopeExpansionRequestListResponse",
+        "fields": [
+          {
+            "name": "Items",
+            "jsonTag": "items",
+            "type": "[]work.ScopeExpansionRequestDetail"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "listMessages",
       "method": "GET",
       "path": "/projects/{projectId}/work-items/{workItemId}/messages",
