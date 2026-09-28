@@ -241,6 +241,14 @@ type stack struct {
 	// being claimed and worked. Zero keeps this stack's own 100ms
 	// default.
 	workerPollInterval time.Duration
+	// codexExecutable (V8-01) registers a second, real, distinct provider
+	// on every FUTURE startServe/startWorker call when non-empty — every
+	// existing caller in this package leaves it "" and gets today's
+	// claude-only registration, completely unchanged. V8-01's own golden
+	// workload is the first caller to set it, to a real `fake-codex`
+	// binary, so its own AGENT nodes can genuinely exercise a second
+	// provider rather than reusing claude twice under a different name.
+	codexExecutable string
 }
 
 // newStack lays out a clean installation directory. It starts nothing.
@@ -308,6 +316,9 @@ func (s *stack) startServe(t *testing.T) {
 	suffix := s.nextSuffix()
 	serveArgs := append([]string{"serve"}, s.commonPathFlags()...)
 	serveArgs = append(serveArgs, "--host", "127.0.0.1", "--port", "0", "--claude-executable", s.bin.fakeClaude)
+	if s.codexExecutable != "" {
+		serveArgs = append(serveArgs, "--codex-executable", s.codexExecutable)
+	}
 	if s.principalConfigPath != "" {
 		serveArgs = append(serveArgs, "--principal-config", s.principalConfigPath)
 	}
@@ -342,6 +353,9 @@ func (s *stack) startWorker(t *testing.T) {
 		"--completion-interval", "300ms",
 		"--env-allowlist", "AGENTKIT_HELPER_MODE,AGENTKIT_HELPER_OUTCOME",
 	)
+	if s.codexExecutable != "" {
+		workerArgs = append(workerArgs, "--codex-executable", s.codexExecutable)
+	}
 	if s.workerLeaseTTL > 0 {
 		workerArgs = append(workerArgs, "--lease-ttl", s.workerLeaseTTL.String())
 	}
