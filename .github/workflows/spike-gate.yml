@@ -498,6 +498,62 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # v8-fault-matrix is V8-02 (docs/design/10-v8-alpha-hardening.md V8-02,
+  # GC-ACC-16): SPK-04's own six standard crash-transaction boundaries
+  # (docs/spikes/01-go-core-spike-plan.md §9), already proven at the spike
+  # level (this same workflow's own `spike acceptance` job), re-run here
+  # against a REAL `aw worker` process's own reaper/scheduler loop — proving
+  # the production binary itself, not just the underlying SQLite
+  # transactions SPK-04 already covers, genuinely reclaims a crashed job at
+  # every one of the six boundaries with no lost job and no duplicated
+  # authoritative outcome. Self-contained like `spike-acceptance`/
+  # `v6-acceptance` above: internal/integration/v8fault's own build_test.go
+  # builds cmd/aw + cmd/spike-worker itself, so this job only needs Go and
+  # the AW_HTTP_ACCEPTANCE=1 opt-in every real-process suite in this repo
+  # already uses.
+  v8-fault-matrix:
+    name: v8 fault matrix (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: contract
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      - name: Run V8-02 fault-injection matrix (six crash boundaries, real aw worker recovery)
+        shell: bash
+        env:
+          AW_HTTP_ACCEPTANCE: '1'
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p v8fault-report
+          go test -count=1 -v -timeout 10m ./internal/integration/v8fault/... > v8fault-report/fault-matrix.log 2>&1
+          status=$?
+          echo "== last 300 lines of fault-matrix.log =="
+          tail -n 300 v8fault-report/fault-matrix.log
+          if [ ${status} -ne 0 ]; then
+            echo "V8-02 fault-injection matrix FAILED on ${{ matrix.os }} (exit ${status}) — see the v8-fault-matrix-report-${{ matrix.os }} artifact"
+            exit ${status}
+          fi
+          echo "V8-02 fault-injection matrix passed on ${{ matrix.os }}"
+
+      - name: Upload V8-02 fault-matrix report (${{ matrix.os }})
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v8-fault-matrix-report-${{ matrix.os }}
+          path: v8fault-report/
+          if-no-files-found: error
+          retention-days: 7
+
   # v6-acceptance-diff is V6-14B's own cross-platform comparison: it never
   # trusts a single platform's own green job conclusion, and it never treats
   # a missing platform artifact as a pass. `if: always()` means this job
