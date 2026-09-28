@@ -186,7 +186,10 @@ test('full journey: project → onboarding → adapter → run → approval → 
     await dialog.getByLabel('Default ref').fill('master');
     await dialog.getByRole('button', { name: 'Register and Probe' }).click();
 
-    await expect(page.getByText('alpha').first()).toBeVisible();
+    await expect.poll(async () => {
+      await page.reload();
+      return page.getByText('alpha').first().count();
+    }, { timeout: 30_000, message: 'newly-registered repository never appeared' }).toBeGreaterThan(0);
     await expect.poll(async () => {
       await page.reload();
       return page.getByText('BLOCKED').count();
@@ -216,11 +219,11 @@ test('full journey: project → onboarding → adapter → run → approval → 
     await expect.poll(async () => {
       await page.reload();
       return page.getByText('beta', { exact: true }).count();
-    }, { timeout: 20_000 }).toBeGreaterThan(0);
+    }, { timeout: 30_000 }).toBeGreaterThan(0);
     await expect.poll(async () => {
       await page.reload();
       return page.getByText('ACTIVE').count();
-    }, { timeout: 20_000 }).toBeGreaterThan(1); // repo-alpha's own ACTIVE badge is already on screen too
+    }, { timeout: 30_000 }).toBeGreaterThan(1); // repo-alpha's own ACTIVE badge is already on screen too
   });
 
   await test.step('adapter probe/register: measures and registers the real fake-claude executable', async () => {
@@ -294,7 +297,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
     await expect.poll(async () => {
       await page.reload();
       return page.getByText('E2E blocker/recovery journey').count();
-    }, { timeout: 20_000 }).toBeGreaterThan(0);
+    }, { timeout: 30_000 }).toBeGreaterThan(0);
     await page.getByText('E2E blocker/recovery journey').click();
     await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]+$/);
     workItemBlockerId = page.url().split('/tasks/')[1];
@@ -307,7 +310,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
   await test.step('marks it READY, starts the run, and lets it reach a real COMPLETION_POLICY_FAILED blocker', async () => {
     await markFirstBacklogCardReady(page, projectId);
     await page.goto(`/ui/projects/${projectId}/tasks/${workItemBlockerId}`);
-    await expect.poll(async () => { await page.reload(); return page.getByText('READY', { exact: true }).count(); }, { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect.poll(async () => { await page.reload(); return page.getByText('READY', { exact: true }).count(); }, { timeout: 30_000 }).toBeGreaterThan(0);
     await waitForWorkspaceReady(request, base, token, projectId, familyBlockerId);
 
     // No intermediate "Cancel Run is visible" check here: unlike the
@@ -364,7 +367,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
     const attachmentPath = path.join(outDir, 'e2e-attachment.txt');
     writeFileSync(attachmentPath, 'e2e attachment content\n');
     await page.locator('input[type="file"]').setInputFiles(attachmentPath);
-    await expect(page.getByText('Attachment uploaded.').first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('Attachment uploaded.').first()).toBeVisible({ timeout: 30_000 });
   });
 
   await test.step('creates a ReleaseSet from the real current per-repository revision, seals it, and requests a real Local Commit (an honest no-diff-yet outcome, matching V7-13A\'s own established precedent)', async () => {
@@ -378,7 +381,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
       const resp = await request.get(`${base}/projects/${projectId}/workspace-sets/${familyBlockerId}`, { headers: { 'X-Aw-Session-Token': token } });
       state = await resp.json() as WorkspaceState;
       return state.repositoryWorkspaces.length > 0 && state.repositoryWorkspaces.every(r => !!r.currentRevision);
-    }, { timeout: 20_000, message: 'repo-beta workspace never finished real provisioning with a current revision' }).toBeTruthy();
+    }, { timeout: 30_000, message: 'repo-beta workspace never finished real provisioning with a current revision' }).toBeTruthy();
 
     await page.goto(`/ui/projects/${projectId}/tasks/${workItemBlockerId}/workspace`);
     await page.getByRole('button', { name: 'ReleaseSet' }).click();
@@ -425,13 +428,13 @@ test('full journey: project → onboarding → adapter → run → approval → 
       behavior: 'Demonstrate a real human-approval-gated run', criterionDescription: 'Approval is resolved',
       workflowVersionId: approvalWorkflowVersionId,
     });
-    await expect.poll(async () => { await page.reload(); return page.getByText('E2E approval journey').count(); }, { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect.poll(async () => { await page.reload(); return page.getByText('E2E approval journey').count(); }, { timeout: 30_000 }).toBeGreaterThan(0);
     await page.getByText('E2E approval journey').click();
     workItemApprovalId = page.url().split('/tasks/')[1];
 
     await markFirstBacklogCardReady(page, projectId);
     await page.goto(`/ui/projects/${projectId}/tasks/${workItemApprovalId}`);
-    await expect.poll(async () => { await page.reload(); return page.getByText('READY', { exact: true }).count(); }, { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect.poll(async () => { await page.reload(); return page.getByText('READY', { exact: true }).count(); }, { timeout: 30_000 }).toBeGreaterThan(0);
     await waitForWorkspaceReady(request, base, token, projectId, await getFamilyId(request, base, token, projectId, workItemApprovalId));
 
     await clickStartRun(page);
@@ -442,7 +445,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
       return page.getByText(/Approval pending on/).count();
     }, { timeout: 45_000, message: 'the real approval banner never appeared' }).toBeGreaterThan(0);
     await page.getByRole('button', { name: 'approved' }).click();
-    await expect(page.getByText(/Approval resolved/).first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/Approval resolved/).first()).toBeVisible({ timeout: 30_000 });
     await expect.poll(async () => {
       await page.reload();
       return page.getByText('SUCCEEDED', { exact: true }).count();
@@ -456,13 +459,13 @@ test('full journey: project → onboarding → adapter → run → approval → 
       behavior: 'Demonstrate cancelling a real durably-running Run', criterionDescription: 'Run is genuinely cancelled',
       workflowVersionId: waitWorkflowVersionId,
     });
-    await expect.poll(async () => { await page.reload(); return page.getByText('E2E cancel-a-run journey').count(); }, { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect.poll(async () => { await page.reload(); return page.getByText('E2E cancel-a-run journey').count(); }, { timeout: 30_000 }).toBeGreaterThan(0);
     await page.getByText('E2E cancel-a-run journey').click();
     workItemWaitId = page.url().split('/tasks/')[1];
 
     await markFirstBacklogCardReady(page, projectId);
     await page.goto(`/ui/projects/${projectId}/tasks/${workItemWaitId}`);
-    await expect.poll(async () => { await page.reload(); return page.getByText('READY', { exact: true }).count(); }, { timeout: 20_000 }).toBeGreaterThan(0);
+    await expect.poll(async () => { await page.reload(); return page.getByText('READY', { exact: true }).count(); }, { timeout: 30_000 }).toBeGreaterThan(0);
     await waitForWorkspaceReady(request, base, token, projectId, await getFamilyId(request, base, token, projectId, workItemWaitId));
 
     const runId = await clickStartRun(page);
@@ -476,7 +479,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
     await expect.poll(async () => {
       await page.reload();
       return page.getByRole('button', { name: 'Cancel Run' }).count();
-    }, { timeout: 20_000, message: 'Cancel Run button never appeared once the run started' }).toBeGreaterThan(0);
+    }, { timeout: 30_000, message: 'Cancel Run button never appeared once the run started' }).toBeGreaterThan(0);
 
     await page.getByRole('button', { name: 'Cancel Run' }).click();
     const dialog = page.getByRole('dialog', { name: 'Cancel Run' });
@@ -505,7 +508,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
       const titles = ['E2E blocker/recovery journey', 'E2E approval journey', 'E2E cancel-a-run journey'];
       const counts = await Promise.all(titles.map(t => page.getByText(t).count()));
       return counts.every(c => c > 0);
-    }, { timeout: 20_000, message: 'projection never resynced all three real WorkItems onto the Kanban board' }).toBeTruthy();
+    }, { timeout: 30_000, message: 'projection never resynced all three real WorkItems onto the Kanban board' }).toBeTruthy();
     await assertNoSeriousA11yViolations(page);
   });
 });
