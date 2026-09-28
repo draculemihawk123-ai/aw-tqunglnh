@@ -229,6 +229,148 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # v8-concurrency-soak is V8-03 (docs/design/10-v8-alpha-hardening.md V8-03,
+  # AK-ARCH-009/GC-ACC-09): TestV8ConcurrencySoak_MultiFamilyRaceInvariants
+  # (internal/integration/v6accept/concurrency_soak_test.go) repeated 10
+  # times, no retry-until-green — mirrors `linux-race-and-stability` (V0-12)
+  # above's own established "10x + race detector, aggregated report"
+  # convention, applied to this task's own real multi-family concurrency
+  # scenario instead of the whole offline suite. `-race` only on
+  # ubuntu-latest, matching V0-12's own platform choice (this repo has never
+  # run `-race` on windows-latest); windows-latest still gets its own 10x
+  # repeat without `-race` for the leak/flake half of V8-03's own Verify
+  # line ("leak/flake report Windows/Linux"), plus every job below already
+  # exercises the SAME real-process topology.
+  v8-concurrency-soak-race:
+    name: v8 concurrency soak + race (ubuntu-latest)
+    runs-on: ubuntu-latest
+    needs: contract
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      - name: 10x concurrency soak with race detector, aggregated report
+        shell: bash
+        env:
+          AW_HTTP_ACCEPTANCE: '1'
+        run: |
+          set -uo pipefail
+          mkdir -p soak-report
+          runs_json="[]"
+          all_stable=true
+          for i in $(seq 1 10); do
+            echo "-- concurrency soak run ${i}/10 (race) --"
+            run_start=$(date +%s)
+            if go test -race -count=1 -v -run '^TestV8ConcurrencySoak_MultiFamilyRaceInvariants$' -timeout 5m \
+              ./internal/integration/v6accept/... > "soak-report/run-${i}.log" 2>&1; then
+              run_passed=true
+            else
+              run_passed=false
+              all_stable=false
+              echo "run ${i} FAILED, see soak-report/run-${i}.log"
+              tail -n 100 "soak-report/run-${i}.log"
+            fi
+            run_end=$(date +%s)
+            duration=$((run_end - run_start))
+            echo "run ${i}/10 passed=${run_passed} duration=${duration}s"
+            runs_json=$(echo "${runs_json}" | jq --argjson run "${i}" --argjson passed "${run_passed}" --argjson duration "${duration}" \
+              '. + [{"run": $run, "passed": $passed, "durationSeconds": $duration}]')
+          done
+
+          jq -n \
+            --argjson runs "${runs_json}" \
+            --argjson allTenRunsStable "${all_stable}" \
+            --arg goos "$(go env GOOS)" \
+            --arg raceEnabled "true" \
+            --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{goos: $goos, raceEnabled: $raceEnabled, generatedAt: $generatedAt, runs: $runs, allTenRunsStable: $allTenRunsStable}' \
+            > soak-report/v8-03-soak-report.json
+          echo "== aggregated soak report =="
+          cat soak-report/v8-03-soak-report.json
+
+          if [ "${all_stable}" != "true" ]; then
+            echo "V8-03 concurrency soak FAILED — see the v8-concurrency-soak-report-ubuntu-latest artifact for per-run logs"
+            exit 1
+          fi
+
+      - name: Upload V8-03 concurrency soak report (ubuntu-latest)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v8-concurrency-soak-report-ubuntu-latest
+          path: soak-report/
+          if-no-files-found: error
+          retention-days: 7
+
+  v8-concurrency-soak-windows:
+    name: v8 concurrency soak (windows-latest)
+    runs-on: windows-latest
+    needs: contract
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      - name: 10x concurrency soak (no race — leak/flake check), aggregated report
+        shell: bash
+        env:
+          AW_HTTP_ACCEPTANCE: '1'
+        run: |
+          set -uo pipefail
+          mkdir -p soak-report
+          runs_json="[]"
+          all_stable=true
+          for i in $(seq 1 10); do
+            echo "-- concurrency soak run ${i}/10 --"
+            run_start=$(date +%s)
+            if go test -count=1 -v -run '^TestV8ConcurrencySoak_MultiFamilyRaceInvariants$' -timeout 5m \
+              ./internal/integration/v6accept/... > "soak-report/run-${i}.log" 2>&1; then
+              run_passed=true
+            else
+              run_passed=false
+              all_stable=false
+              echo "run ${i} FAILED, see soak-report/run-${i}.log"
+              tail -n 100 "soak-report/run-${i}.log"
+            fi
+            run_end=$(date +%s)
+            duration=$((run_end - run_start))
+            echo "run ${i}/10 passed=${run_passed} duration=${duration}s"
+            runs_json=$(echo "${runs_json}" | jq --argjson run "${i}" --argjson passed "${run_passed}" --argjson duration "${duration}" \
+              '. + [{"run": $run, "passed": $passed, "durationSeconds": $duration}]')
+          done
+
+          jq -n \
+            --argjson runs "${runs_json}" \
+            --argjson allTenRunsStable "${all_stable}" \
+            --arg goos "$(go env GOOS)" \
+            --arg raceEnabled "false" \
+            --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{goos: $goos, raceEnabled: $raceEnabled, generatedAt: $generatedAt, runs: $runs, allTenRunsStable: $allTenRunsStable}' \
+            > soak-report/v8-03-soak-report.json
+          echo "== aggregated soak report =="
+          cat soak-report/v8-03-soak-report.json
+
+          if [ "${all_stable}" != "true" ]; then
+            echo "V8-03 concurrency soak FAILED on windows-latest — see the v8-concurrency-soak-report-windows-latest artifact for per-run logs"
+            exit 1
+          fi
+
+      - name: Upload V8-03 concurrency soak report (windows-latest)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v8-concurrency-soak-report-windows-latest
+          path: soak-report/
+          if-no-files-found: error
+          retention-days: 7
+
   # spike-acceptance runs the real SPK-01..SPK-14 registry through the
   # standalone agentkit-spike binary (docs/spikes/01-go-core-spike-plan.md
   # §9, docs/design/02-v0-spike-verdict.md V0-10A..V0-10C) — never `go test`
