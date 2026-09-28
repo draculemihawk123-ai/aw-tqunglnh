@@ -238,3 +238,82 @@ follow-up — not silently declared "done" here.
   AfterJobClaimBeforeProcessSpawn`, `_Boundary4_AfterCheckpointBeforeProcessExit`, `_Boundary5_
   AfterProcessExitBeforeOutcomeCommit_ReadOnly`, `_Boundary5_..._Mutating`, `_Boundary6_
   AfterOutcomeCommitBeforeNextDispatch`.
+
+## V8-03 — Concurrency/race/stability soak
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-03 asks for multiple root families/workers running
+concurrently while the lease/workspace/projection invariant (AK-ARCH-009: "an old lease/fencing token
+cannot commit after expiry or reassignment") stays correct — a bounded parallel workload, same/different
+repository, duplicate commands/events, 10 runs, `go test -race`, and "stale fence success == 0."
+
+The existing concurrency coverage in this repo is real but narrower than this: `internal/integration/
+v6accept/stage_fault_concurrency_test.go` proves idempotent dedup for ONE family's own duplicate command
+(sequentially replayed, not truly racing), and `internal/spikeacceptance`'s own SPK-08 proves the
+write-lease race invariant with 100 real concurrent iterations — but at the isolated spike/adapter level,
+never against multiple real, independently-running root WorkItem families sharing a real `aw serve`+`aw
+worker` topology the way V8-01/V8-02 both established as this phase's own standard.
+
+### Decision
+
+New test in `internal/integration/v6accept` (same package as V8-01/V8-02's own real-process harness,
+reusing `newStack`/`apiClient`/`registerGoldenRepository`/`publishGolden` verbatim):
+`TestV8ConcurrencySoak_MultiFamilyRaceInvariants` drives FOUR real root WorkItem families concurrently —
+two (`family-a`/`family-b`) scoped to the SAME repository (`soak-repo-shared`, real contention for that
+repository's own write lease) and two (`family-c`/`family-d`) each on their OWN distinct repository (free
+to run independently) — and for EACH family, `soakDuplicateSubmissions` (5) goroutines fire the real
+`POST .../runs` start-run command with the IDENTICAL Idempotency-Key simultaneously (the "duplicate
+commands/events" half of V8-03's own Thực hiện line, genuinely racing rather than sequentially replayed).
+
+AK-ARCH-009's own two halves are checked as two separate, decisive assertions: (1) all
+`soakDuplicateSubmissions` concurrent identically-keyed calls must resolve to the SAME `runId` — real
+idempotent dedup under genuine concurrent load; (2) after every family's run settles, its own real timeline
+(`GET /runs/{id}/timeline`) must show EXACTLY one `NODE_RUN` and one `EXECUTION_ATTEMPT` reaching terminal
+`SUCCEEDED` for its single node — never two, which is what a stale/fenced token being allowed to also
+commit would look like. This is "stale fence success == 0" made concrete and checkable, not a vague
+aspiration.
+
+**A real graph-design finding, made twice while building this**: the soak's own workflow graph needed to be
+usable, UNMODIFIED, across all four families despite them spanning three DIFFERENT repositories — ruling
+out an AGENT or COMMAND node (`CwdRepositoryTarget`/a real provider profile would each need to be pinned to
+ONE specific repository at publish time, per V8-01's own established finding). A single `START ->
+MACHINE_GATE -> END` graph solves this cleanly: `GateNodeExecutor` always runs its own command against a
+fresh SCRATCH directory, never a real repository workspace mount, so the SAME published workflow version
+genuinely works regardless of which repository a given family happens to be scoped to. The first draft also
+omitted a `CompletionPolicyRef` entirely (assuming a graph with no evidence requirement needed none) and
+every run settled `FAILED` — `resolveCompletionPolicy`'s own nil-ref case resolves to
+`ReasonNoCompletionPolicyPinned`/FAIL (the same finding V7-17C already made for a different reason). An
+EMPTY `CompletionRules{}` was tried next and rejected AT PUBLISH TIME ("neither requiredEvidenceKinds nor
+requiredAssurance is declared... a completion policy that requires nothing can never distinguish NOT_RUN
+from a real pass," GC-INV-12/13) — a completion policy must declare at least one real requirement. Fixed by
+giving the MACHINE_GATE its own always-PASS gate script (mirroring `definitions_test.go`'s own proven gate
+pattern) and requiring exactly that one evidence kind.
+
+### Execution
+
+- `internal/integration/v6accept/concurrency_soak_test.go` (new):
+  `TestV8ConcurrencySoak_MultiFamilyRaceInvariants`, `driveSoakFamily` (per-family end-to-end: root+child
+  creation, mark-ready, the duplicate-command race, wait-terminal), `verifySoakNoStaleFenceSuccess` (the
+  real-timeline check described above), `publishSoakWorkflow`/`soakGateScript` (the single reusable
+  MACHINE_GATE-only graph).
+- `.github/workflows/spike-gate.yml`: two new jobs — `v8-concurrency-soak-race` (ubuntu-latest only,
+  matching `linux-race-and-stability` (V0-12)'s own established platform choice for `-race`: 10 repeats of
+  this one test with the race detector, aggregated JSON report) and `v8-concurrency-soak-windows`
+  (windows-latest, the same 10 repeats without `-race`, for the leak/flake half of V8-03's own Verify line
+  — "leak/flake report Windows/Linux").
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test -count=1 ./...` (full offline suite, no acceptance opt-in): clean.
+- `AW_HTTP_ACCEPTANCE=1 go test -count=1 -run '^TestV8ConcurrencySoak_MultiFamilyRaceInvariants$'
+  ./internal/integration/v6accept/...`: passes cleanly and repeatably — 5 consecutive fresh local runs
+  (14-17s each), zero stale-fence-success across every run.
+- `AW_HTTP_ACCEPTANCE=1 go test -count=1 -run '^TestV6HTTPAcceptance_CleanDatabaseJourney$'
+  ./internal/integration/v6accept/...` and the whole package with the acceptance opt-in
+  (`AW_HTTP_ACCEPTANCE=1 go test -count=1 ./internal/integration/v6accept/...`, 268s): both clean — confirms
+  the new soak test coexists correctly with V6-14's own journey and V8-01/V8-02's own tests in the same
+  package.
+- `-race` could not be exercised locally (this dev machine has no C compiler for CGO); left to the new
+  `v8-concurrency-soak-race` CI job, matching this repo's own established `-race`-on-Linux-only convention.
