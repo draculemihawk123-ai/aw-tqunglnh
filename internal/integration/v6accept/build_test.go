@@ -34,11 +34,17 @@ func requireAcceptance(t *testing.T) {
 	}
 }
 
-// binaries are the three executables the journey needs, built once per test
-// binary run from the current working tree.
+// binaries are the executables the journeys in this package need, built once
+// per test binary run from the current working tree. fakeCodex is built
+// unconditionally alongside fakeClaude (V8-01's own golden workload is the
+// first caller to need it, for a real second, distinct provider) rather than
+// gated behind its own flag — one more small `go build` is cheap next to the
+// real process/HTTP journeys this package already runs, and every existing
+// caller that never references built.fakeCodex is completely unaffected.
 type binaries struct {
 	aw         string // the final production composition root
 	fakeClaude string // the repository's own Claude wire-protocol stand-in
+	fakeCodex  string // the repository's own Codex wire-protocol stand-in
 }
 
 var (
@@ -76,6 +82,7 @@ func builtBinaries(t *testing.T) binaries {
 		}{
 			{"aw", "./cmd/aw", &built.aw},
 			{"fake-claude", "./cmd/fake-claude", &built.fakeClaude},
+			{"fake-codex", "./cmd/fake-codex", &built.fakeCodex},
 		} {
 			out := filepath.Join(dir, target.name+suffix)
 			command := exec.Command("go", "build", "-o", out, target.pkg)
