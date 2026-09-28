@@ -2253,3 +2253,130 @@ guessing a closed set. Resolving re-fetches `getRunDetail` fresh immediately bef
   new console errors (two pre-existing, unrelated clipboard-permission errors from a `Copy ID` button in a
   sandboxed browser, nothing to do with this task's own changes).
 
+## V7-17C — Full-journey E2E harness + CI (final part of V7-17, closes V7)
+
+### Context
+
+V7-17's own last deliverable (docs/design/09-v7-alpha-ui.md V7-17): a real, browser-driven, end-to-end journey
+exercising the whole UI-only phase against a REAL `aw serve --ui-dist web/dist` + `aw worker` pair — never a
+mocked backend — plus wiring that journey into CI. `internal/integration/v6accept`'s own Go acceptance harness
+(`stack_test.go`, `journey_test.go`) is the direct model: build the real product, run the real product,
+exercise it through its own real public surface only. Playwright was the natural fit since `web/`
+(`"type": "module"`) already had Vitest/Testing Library for component-level tests but nothing that drives a
+real browser against a real backend.
+
+### Decision
+
+A dedicated `web/e2e/` Playwright suite, config, and support harness, kept structurally separate from the
+Vitest component suite (`web/src/**/*.test.tsx`) rather than unified under one runner — different concerns
+(one drives jsdom against mocked API calls, the other drives a real Chromium against a real HTTP server) with
+different lifecycles (`globalSetup`/`globalTeardown` spin up and tear down a real OS-process pair once for the
+whole file). `web/e2e/support/stack.ts` mirrors `v6accept`'s own `stack_test.go` nearly line-for-line: build
+`cmd/aw`+`cmd/fake-claude` from source, lay out a fresh throwaway installation (sqlite db, artifact root,
+workspace root, a real one-commit git fixture repo), start `serve` then `worker`, wait for each to announce
+real readiness. A fixed port (`127.0.0.1:18765`, not `--port 0`) is required specifically because
+`playwright.config.ts`'s own `use.baseURL` is read before `globalSetup` ever runs — there is no way to feed it
+an OS-assigned ephemeral port after the fact. State that must survive from `globalSetup` to `globalTeardown`
+(baseURL, real PIDs, repo paths) goes through a JSON handoff file, not a module-level variable, since
+Playwright's own two-file convention gives no guarantee they share process memory the way a single `go test`
+process and its `t.Cleanup` do.
+
+The suite is ONE long, serial (`test.describe.configure({ mode: 'serial' })`) journey rather than many small
+independent tests, deliberately mirroring `v6accept`'s own single sequential acceptance test: onboarding
+(including a real BLOCKED→retry detour for a repository that doesn't exist yet at probe time) → adapter
+probe/register → a WorkItem that reaches a real `COMPLETION_POLICY_FAILED` blocker and recovers → scope
+amendment (request → approve → auto-provisioning) → chat message + file attachment → ReleaseSet
+create/seal/Local-Commit → Evidence tab → a second WorkItem exercising Start Run + real human Approval →
+cancelling a third WorkItem's real durably-running Run → a final Kanban-board projection-resync check. Every
+stage seeds through the REAL public HTTP surface (workflow/policy definitions via create→validate→publish,
+exactly like `v6accept`'s own `publishDefinition` helper) — never direct sqlite/git manipulation.
+
+Several genuine product-level facts had to be discovered empirically before the journey could pass, not
+assumed:
+- **Adapter-build drift admission re-measures the FULL live capability manifest**, not just the executable
+  hash: `internal/app/adapterbuild.VerifyNoDrift` re-derives `ProtocolVersion`/`SupportsStart|Resume|Cancel`/
+  `CanonicalEventKinds` from the real adapter's own `Capabilities()` (9 canonical event kinds, not 6 — the
+  registration form the first draft submitted was simply incomplete) and `Toolchain`/`OS` from the WORKER
+  process's own live `runtime.Version()`/`runtime.GOOS` — an operator-submitted registration that doesn't
+  exactly match what the worker will independently observe at the very first real AGENT-node admission check
+  fails closed with a real `ADAPTER_BUILD_DRIFT`, discovered live only by running the journey against it.
+- **`CompletionOutcomeBlock` deliberately opens no `WorkItemBlocker`** — only `CompletionOutcomeFail` does,
+  confirmed via `completion_policy.go`'s own source comment. The simplest real trigger for a resolvable
+  `work.BlockerCompletionPolicyFailed` is a workflow with NO `completionPolicyRef` at all (`nil` resolves to a
+  real FAIL), not a completion policy whose requirements merely go unmet.
+- **`window.__AW_BOOTSTRAP__` is deleted after its first real read** (`web/src/api/session.ts`'s own
+  one-time-read security discipline) — an E2E harness must capture it via `page.addInitScript()` installing a
+  property-descriptor shadow BEFORE any page script runs, not read it after navigation.
+- **Cancelling a Run's own terminal state is not visible anywhere in the WorkItem-level UI**: cancelling opens
+  a real `BlockerRunCancelled` WorkItemBlocker (confirmed via `internal/domain/work/blocker.go`'s own doc
+  comment), transitioning the WorkItem to BLOCKED — but the blocker banner itself never renders, because the
+  query supplying it (`runDiagnosticsQuery`) is gated on `!!activeRunId`, and `activeRunId` becomes null the
+  moment the Run reaches any terminal state. The only honest, reliable signal is the Run's own state via the
+  real API (`GET /runs/{runId}`), not UI text-scanning.
+- **Every state transition this journey checks is read through the same async projection worth every other
+  V6/V7 acceptance test already budgets for** (worker poll/projection/completion intervals of 150-200ms in
+  this harness, matching `v6accept`'s own tuning) — a single TanStack Query invalidate-refetch immediately
+  after a mutating click can genuinely race ahead of that projection and see stale data with nothing left to
+  trigger a second attempt. Every check in this suite therefore polls with a fresh `page.reload()` on each
+  attempt (`expect.poll(async () => { await page.reload(); ... })`), never a bare one-shot
+  `expect(locator).toBeVisible()`, after one such one-shot assertion (the Cancel Run button becoming visible)
+  was caught flaking live during this task's own iteration.
+- This dev machine's own real, observed latency for a handful of these poll cycles is wide enough that even a
+  20-30s per-step budget occasionally isn't — three DIFFERENT steps (the approval banner, the SUCCEEDED
+  terminal check, the scope-expansion-request button) each flaked once across repeated local runs, and in
+  every case the error-context snapshot captured moments after the timeout already showed the expected state
+  present. This is genuine environmental variance under local process/CPU contention, not a product bug in any
+  of those three cases — mitigated with a wider timeout budget per step (20-45s, still comfortably inside the
+  overall `test.setTimeout(300_000)`) plus CI's own already-configured `retries: 1` (`playwright.config.ts`)
+  as the backstop for whatever residual variance remains, matching this repo's own established doctrine of
+  accepting a documented, evidenced environmental flake rather than chasing every last millisecond of margin.
+
+CI wiring added two new jobs to `.github/workflows/spike-gate.yml`, matching its existing job-matrix
+conventions exactly (pinned action SHAs, `fail-fast: false`, `windows-latest`+`ubuntu-latest` matrix): `web`
+(pnpm install → typecheck → Vitest → `vite build`, independent of `contract` since it never touches Go) and
+`e2e` (`needs: contract` since `web/e2e/support/stack.ts`'s own `globalSetup` builds `cmd/aw`+`cmd/fake-claude`
+from this same checkout — no reason to spend this job's time on a Go tree `contract` already rejected;
+installs Playwright's Chromium with real OS deps on Linux, builds `web/dist`, runs the suite, uploads the
+Playwright HTML report + traces always for diagnosability).
+
+### Execution
+
+- `web/package.json`: `@playwright/test`, `@axe-core/playwright` devDependencies; `packageManager: "pnpm@
+  12.3.4"` (pins CI's pnpm version to the one the lockfile was generated with); new `typecheck`/`test:e2e`
+  scripts.
+- `web/tsconfig.json`: includes `e2e` and `playwright.config.ts`.
+- `web/vite.config.ts`: Vitest `test.exclude` now also excludes `e2e/**` — without it, Vitest's own default
+  `*.spec.ts` glob picked up the Playwright spec and failed it with "Playwright Test did not expect
+  test.describe.configure() to be called here" (found live the first time both suites coexisted).
+- `web/playwright.config.ts` (new): serial single-worker config, `globalSetup`/`globalTeardown`, CI-only HTML
+  reporter + 1 retry, trace/screenshot/video retained on failure.
+- `web/e2e/support/stack.ts` (new): `startStack`/`stopStack`/`killByPid`/`initRealGitRepo`, builds real
+  `aw`/`fake-claude` binaries, starts real `serve`+`worker` against a fresh throwaway installation.
+- `web/e2e/support/global-setup.ts`, `global-teardown.ts` (new): JSON-file handoff; teardown tree-kills both
+  processes (`taskkill /T /F` on Windows) then removes the throwaway installation directory with
+  `maxRetries`/`retryDelay` + try/catch for a real transient Windows post-kill file-lock race.
+- `web/e2e/support/definitions.ts` (new): `publishDefinition`/`publishWaitWorkflow`/`publishApprovalWorkflow`/
+  `publishBlockerWorkflow` — real create→validate→publish seeding through the public HTTP API.
+- `web/e2e/full-journey.spec.ts` (new): the full serial journey described above; `clickStartRun()` helper
+  deterministically waits for the real `POST /work-items/{id}/runs` network response (via
+  `Promise.all([page.waitForResponse(...), click()])`) rather than racing a same-page DOM assertion against an
+  unconfirmed dispatch, and now returns the real `runId` so the cancel-a-run step can poll the authoritative
+  `GET /runs/{runId}` API instead of scanning for UI text that never actually renders.
+- `.github/workflows/spike-gate.yml`: new `web` and `e2e` jobs (see Decision).
+
+### Verify
+
+- `npx tsc --noEmit -p tsconfig.json` (web/): clean.
+- `npx vitest run` (web/): 254/254 pass, unaffected by the new E2E suite once excluded from its own glob.
+- `npx playwright test` (web/, against a real locally-built `aw serve`+`aw worker`): the full serial journey
+  passes end-to-end — onboarding (including the real BLOCKED→retry detour), adapter probe/register, a real
+  `COMPLETION_POLICY_FAILED` blocker + recovery, scope amendment with real auto-provisioning, chat + file
+  attachment, ReleaseSet create/seal/Local-Commit, Evidence tab, Start Run + real human Approval to real
+  terminal `SUCCEEDED`, cancelling a real durably-running Run to real terminal `CANCELLED` (verified via the
+  API), and final Kanban projection resync — confirmed clean across multiple consecutive local runs after the
+  timeout-budget fixes above (a few earlier runs hit the three environmental poll-boundary flakes described in
+  Decision; none reproduced a real product defect on inspection).
+- `.github/workflows/spike-gate.yml` YAML validated with `js-yaml` (parses cleanly); the new jobs' commands
+  (`pnpm install`, `pnpm run typecheck`, `pnpm test`, `pnpm run build`, `pnpm exec playwright test`) all run
+  clean locally under the same working directory (`web/`) the CI steps use.
+
