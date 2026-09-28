@@ -131,3 +131,110 @@ the same real child-creation call before marking ready/starting the run.
   `SUCCEEDED` across a real 5-node graph spanning 2 repositories and 2 distinct real providers; trace
   completeness report shows `evidenceRowsChecked: 2` (COMMAND_EXECUTION + the gate's own evidence kind),
   `artifactsVerified: 2`, `domainEventsChecked: 23`, `aggregatesChecked: 17`, `violations: null`.
+
+## V8-02 — Full fault-injection matrix Alpha
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-02 asks for the six standard crash-transaction boundaries
+(GC-ACC-16, `docs/spikes/01-go-core-spike-plan.md` §9: `before_intent_job_commit`,
+`after_job_commit_before_claim`, `after_job_claim_before_process_spawn`,
+`after_checkpoint_before_process_exit`, `after_process_exit_before_outcome_commit`,
+`after_outcome_commit_before_next_dispatch`) repeated "with the real serve/worker topology," plus artifact
+failure, projection poison/interruption, periodic lease expiry and workspace corruption.
+
+These six boundaries are NOT a new invention: `internal/spikeacceptance`'s own SPK-04 scenario
+(`spk04_scenario.go`) already proves every one of them, using a real, standalone `cmd/spike-worker`
+process (hard-killed at each exact fault point via `internal/adapters/sqlite/crashworker.go` — shared,
+non-test production code, deliberately exported so a caller outside that package's own tests can seed and
+recognize the identical fixtures) and real, exported seed helpers
+(`SeedCrashResumeOwners`/`SeedCrashCheckpointNodeRunAndAttempt`/etc. in
+`internal/adapters/sqlite/crashworker_fixtures.go`). What SPK-04 does NOT prove: whether the PRODUCTION
+`aw worker` binary's own real, continuously-polling reaper/scheduler loop actually discovers and reclaims
+each crashed job on its own — SPK-04's own recovery half manually calls `store.RecoverExpiredJobs`/
+`store.ClaimJob` directly, never starting a real `aw worker` process at all.
+
+### Decision
+
+New package `internal/integration/v8fault` (not folded into `v6accept`, since it shares none of that
+package's HTTP/apiClient/journey machinery — its own dependency is `internal/adapters/sqlite`'s exported
+crash fixtures plus a real `aw`/`cmd/spike-worker` binary pair): for each of the six boundaries (seven
+tests — boundary 5 has a read-only and a mutating variant, matching SPK-04's own split), arrange/seed is
+copied structurally from `spk04_scenario.go` (same fixture IDs, same seed calls — that sequence is already
+proven correct, nothing new to invent there), the crash injection reuses the exact same
+`spawnAndHardKillSpikeWorker` mechanism (copied rather than imported: SPK-04's own scenario functions are
+unexported), and then — the actual new value — a real `aw worker` process is started against the crashed
+database and left to reclaim the stale job through its own real polling loop, verified either by watching
+`durable_jobs.claim_count` increase past what the crashed worker itself set (via the debug-only
+`Store.DebugListJobsByKind` projection) or, for boundary 1 (nothing was ever committed) and boundary 6
+(the outcome was already durably committed before the crash), by confirming the real worker caused no
+change/no duplicate. The worker is deliberately started with no `--claude-executable`/`--codex-executable`
+— every crash fixture pins a fake AgentProfile that never resolves to a real published definition (SPK-04's
+own established convention), so this test only ever needs the job-lease reaper layer, never real dispatch.
+
+**A real, initially-wrong assumption about the real worker's own timing was found and fixed**: the first
+version of boundaries 3/4/5 all timed out after 15s waiting for a reclaim that never happened, while
+boundaries 1/2 (which never need a stale-lease RECOVERY, only a first claim) passed immediately. Reading
+`internal/app/workerpool/pool.go` found the real cause: `Pool.Run`'s periodic `RecoverExpiredJobs` scan
+(the ONLY thing that turns a stale `LEASED` job back to `AVAILABLE` — a startup scan plus a periodic one) has
+its own interval, `workerpool.Config.RecoveryInterval`, with NO dedicated CLI flag of its own;
+`cmd/aw/worker.go`'s own composition never sets it, so `workerpool.Config.Validate` silently defaults it to
+`LeaseTTL` itself — the production default is far above a 15s test budget. `--reaper-interval` (which the
+first draft had set to a short value, expecting it to control this) is a COMPLETELY different reaper
+(`runtime.RecoveryReaperJobKind`, orphaned attempts/stranded cancellation intents) that never touches
+`durable_jobs` lease recovery at all. Fixed by passing a short `--lease-ttl` (1s) to the real worker
+(with `--lease-heartbeat` lowered to 300ms alongside it, since `workerpool.Config.Validate` rejects a
+heartbeat that does not stay below the lease TTL) — this only governs the REAL worker's own periodic
+recovery-scan cadence and its own future claims, entirely independent of the crashed worker's own short,
+separately-configured lease TTL (`faultCrashedWorkerTTL`, still 900ms, matching SPK-04's own
+`spk04CrashedWorkerTTL`) that made the job reclaimable in the first place.
+
+**A second, smaller issue was found in boundary 6's own verification**: it originally called
+`store.ClaimJob` itself to confirm the downstream job existed post-recovery — racing the real worker this
+test had just started, which is itself genuinely polling and eligible to claim that exact job. Fixed to
+read the job's own row via `DebugListJobsByKind` instead (asserting it appears exactly once), which proves
+"never duplicated" without competing with the very process under test for the same claim.
+
+**Scoping decision, stated explicitly rather than silently under-delivered**: this task closes V8-02's own
+primary, concretely-specified deliverable (GC-ACC-16's "all six crash boundaries," now proven against the
+real worker topology). The other four named categories are NOT built fresh here, since real, evidenced
+coverage already exists elsewhere and re-deriving it would be pure duplication: projection poison
+(`internal/integration/v6accept/stage_fault_poison_test.go`, `TestV6HTTPAcceptance_Fault_PoisonProjection`)
+and projection interruption (`stage_fault_projection_during_test.go`/`stage_fault_projection_after_test.go`)
+are already proven against the real serve/worker topology by V6-14A; artifact failure has a real crash
+scenario in `stage_fault_attachment_test.go`
+(`TestV6HTTPAcceptance_Fault_CrashAfterAttachmentPut`) though not yet a genuinely corrupted/missing-artifact
+scenario; workspace corruption has real spike-level evidence (SPK-09's own quarantine/recreate proof) but
+not yet against the real HTTP-visible topology; periodic lease expiry (a natural, no-crash-involved
+expiry/reclaim, as opposed to every scenario above which is crash-triggered) has no dedicated real-topology
+test yet. These three gaps (artifact corruption, workspace corruption at the real-topology level, and
+genuine periodic lease expiry with no crash) are real, acknowledged, and worth a fast, narrowly-scoped
+follow-up — not silently declared "done" here.
+
+### Execution
+
+- `internal/integration/v8fault/build_test.go` (new): builds `cmd/aw` + `cmd/spike-worker` once per test
+  binary run, gated behind the same `AW_HTTP_ACCEPTANCE=1` opt-in every real-process suite in this repo
+  already uses.
+- `internal/integration/v8fault/harness_test.go` (new): `spawnAndHardKillSpikeWorker` (copied from
+  `spk04_scenario.go`, same real crash-injection mechanism), `startRealWorker`/`realWorker.stop` (a real
+  `aw worker` child process with a short `--lease-ttl`/`--lease-heartbeat` for a fast real recovery-scan
+  cadence), `waitFor` (mirrors `v6accept`'s own helper of the same name).
+- `internal/integration/v8fault/fault_matrix_test.go` (new): `arrangeFault`/`faultFixture` (seeding copied
+  structurally from `spk04_scenario.go`'s own `spk04Arrange`), `waitForRealWorkerReclaim`, and the seven
+  boundary tests (`TestV8Fault_Boundary1..6`, boundary 5 split read-only/mutating).
+- `.github/workflows/spike-gate.yml`: new `v8-fault-matrix` job (`needs: contract`, both platforms,
+  self-contained like `spike-acceptance`/`v6-acceptance` — the package builds its own binaries, the job
+  just sets `AW_HTTP_ACCEPTANCE=1` and runs `go test`).
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test -count=1 ./...` (full offline suite, no acceptance opt-in): clean, zero failures — `v8fault`
+  itself skips (opt-in) in 0.6s.
+- `AW_HTTP_ACCEPTANCE=1 go test -count=1 -v ./internal/integration/v8fault/...`: all seven boundary tests
+  pass, confirmed stable across 4 consecutive fresh local runs (~13s each): `TestV8Fault_Boundary1_
+  BeforeIntentJobCommit`, `_Boundary2_AfterJobCommitBeforeClaim`, `_Boundary3_
+  AfterJobClaimBeforeProcessSpawn`, `_Boundary4_AfterCheckpointBeforeProcessExit`, `_Boundary5_
+  AfterProcessExitBeforeOutcomeCommit_ReadOnly`, `_Boundary5_..._Mutating`, `_Boundary6_
+  AfterOutcomeCommitBeforeNextDispatch`.
