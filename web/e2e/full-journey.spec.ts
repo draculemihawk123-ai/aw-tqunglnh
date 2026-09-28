@@ -329,12 +329,30 @@ test('full journey: project → onboarding → adapter → run → approval → 
     // against the fake provider fast enough that it can already be
     // terminal well before this test's own next poll — a real, correct
     // outcome, not a bug this suite should race against.
-    await clickStartRun(page);
+    const blockerRunId = await clickStartRun(page);
 
+    // Poll the real backend diagnostics endpoint directly rather than
+    // reload-scraping the UI for "COMPLETION_POLICY_FAILED" text — the same
+    // reload-per-poll fragility already fixed for the approval-wait and
+    // post-approval SUCCEEDED checks below (each reload pays a full page
+    // navigation plus a query waterfall, which can outrun a 30s budget
+    // under CI-runner load even for this journey's very first async
+    // worker-driven transition, found live on a CI run where this was the
+    // only WorkItem to have started yet).
+    await expect.poll(async () => {
+      const resp = await request.get(`${base}/projects/${projectId}/runs/${blockerRunId}/diagnostics`, { headers: { 'X-Aw-Session-Token': token } });
+      if (!resp.ok()) return 0;
+      const body = await resp.json() as { blockers?: { type: string; state: string }[] };
+      return (body.blockers ?? []).filter(b => b.type === 'COMPLETION_POLICY_FAILED' && b.state === 'OPEN').length;
+    }, { timeout: 30_000, message: 'run never produced the expected real COMPLETION_POLICY_FAILED blocker' }).toBeGreaterThan(0);
+
+    // Same poll+reload resilience as the approval banner below: the backend
+    // already confirmed the real blocker above, this only waits for the
+    // frontend's own reload/hydration to catch up.
     await expect.poll(async () => {
       await page.reload();
       return page.getByText('COMPLETION_POLICY_FAILED').count();
-    }, { timeout: 30_000, message: 'run never produced the expected real COMPLETION_POLICY_FAILED blocker' }).toBeGreaterThan(0);
+    }, { timeout: 30_000, message: 'COMPLETION_POLICY_FAILED never rendered despite a real OPEN blocker' }).toBeGreaterThan(0);
   });
 
   await test.step('recovery action: resolves the real open blocker, returning the WorkItem to READY', async () => {
@@ -468,9 +486,17 @@ test('full journey: project → onboarding → adapter → run → approval → 
       return (body.approvalRequests ?? []).filter(a => a.state === 'PENDING').length;
     }, { timeout: 60_000, message: 'the real pending ApprovalRequest never appeared' }).toBeGreaterThan(0);
 
-    await page.reload();
-    await page.getByRole('tab', { name: 'Graph & Timeline' }).click();
-    await expect(page.getByText(/Approval pending on/).first()).toBeVisible({ timeout: 15_000 });
+    // The backend already confirmed a real PENDING ApprovalRequest above —
+    // this is purely waiting for the frontend's own page load/hydration/
+    // query-waterfall after a reload, which a single fixed-timeout check
+    // occasionally lost the race against (found live); poll+reload like
+    // every other UI-catch-up check in this journey, for the same
+    // resilience.
+    await expect.poll(async () => {
+      await page.reload();
+      await page.getByRole('tab', { name: 'Graph & Timeline' }).click();
+      return page.getByText(/Approval pending on/).count();
+    }, { timeout: 30_000, message: 'the approval banner never rendered despite a real PENDING ApprovalRequest' }).toBeGreaterThan(0);
     await page.getByRole('button', { name: 'approved' }).click();
     await expect(page.getByText(/Approval resolved/).first()).toBeVisible({ timeout: 30_000 });
     // Same real-backend-first reasoning as the pending-ApprovalRequest poll
