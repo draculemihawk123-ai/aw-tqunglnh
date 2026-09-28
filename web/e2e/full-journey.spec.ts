@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { initRealGitRepo } from './support/stack';
 import { publishApprovalWorkflow, publishBlockerWorkflow, publishWaitWorkflow } from './support/definitions';
@@ -138,8 +139,18 @@ test.describe.configure({ mode: 'serial' });
 test('full journey: project → onboarding → adapter → run → approval → scope amendment → attachment → cancel → ReleaseSet → DONE', async ({ page, request, baseURL }) => {
   test.setTimeout(300_000);
   const base = baseURL!;
-  const outDir = test.info().project.outputDir;
-  mkdirSync(outDir, { recursive: true });
+  // A fresh OS tmpdir, NOT testInfo.project.outputDir (the shared, static
+  // project-level base directory — the same path on every attempt AND
+  // every retry, which meant a retry's own repoAlphaPath below collided
+  // with stale state a prior failed attempt had already turned into a
+  // real git repo) and NOT testInfo.outputDir either (unique per attempt,
+  // but bakes this test's own title — including its "→" characters — into
+  // a long nested path; the real `git worktree` provisioning the worker
+  // does against that path genuinely failed with PROVISION_FAILED on it,
+  // found live once a fresh, non-ASCII-laden path was actually exercised).
+  // mkdtempSync gives a short, ASCII-only, guaranteed-unique-per-invocation
+  // directory with none of either problem.
+  const outDir = mkdtempSync(path.join(tmpdir(), 'aw-e2e-scratch-'));
   let token = '';
   let projectId = '';
   let adapterBuildId = '';
@@ -437,19 +448,41 @@ test('full journey: project → onboarding → adapter → run → approval → 
     await expect.poll(async () => { await page.reload(); return page.getByText('READY', { exact: true }).count(); }, { timeout: 30_000 }).toBeGreaterThan(0);
     await waitForWorkspaceReady(request, base, token, projectId, await getFamilyId(request, base, token, projectId, workItemApprovalId));
 
-    await clickStartRun(page);
-    await page.getByRole('tab', { name: 'Graph & Timeline' }).click();
-
+    const approvalRunId = await clickStartRun(page);
+    // Poll the real backend directly (cheap HTTP GETs), not the UI via
+    // repeated page.reload() cycles: each reload pays a full page
+    // navigation + a sequential WorkItem->Card->RunDiagnostics query
+    // waterfall before the DOM shows anything, and a worker already
+    // carrying several prior WorkItems' state machines in this same
+    // single-threaded polling loop can genuinely take tens of seconds of
+    // real wall time to advance this run to WAITING — found live, this
+    // reload-per-poll approach flaked repeatedly even at a 60s budget,
+    // while the backend state itself was always genuinely reachable well
+    // within that time once checked directly (matching waitForWorkspaceReady's
+    // already-proven pattern above). One reload, once the backend confirms
+    // readiness, is all the UI needs.
     await expect.poll(async () => {
-      await page.reload();
-      return page.getByText(/Approval pending on/).count();
-    }, { timeout: 45_000, message: 'the real approval banner never appeared' }).toBeGreaterThan(0);
+      const resp = await request.get(`${base}/runs/${approvalRunId}`, { headers: { 'X-Aw-Session-Token': token } });
+      if (!resp.ok()) return 0;
+      const body = await resp.json() as { approvalRequests?: { state: string }[] };
+      return (body.approvalRequests ?? []).filter(a => a.state === 'PENDING').length;
+    }, { timeout: 60_000, message: 'the real pending ApprovalRequest never appeared' }).toBeGreaterThan(0);
+
+    await page.reload();
+    await page.getByRole('tab', { name: 'Graph & Timeline' }).click();
+    await expect(page.getByText(/Approval pending on/).first()).toBeVisible({ timeout: 15_000 });
     await page.getByRole('button', { name: 'approved' }).click();
     await expect(page.getByText(/Approval resolved/).first()).toBeVisible({ timeout: 30_000 });
+    // Same real-backend-first reasoning as the pending-ApprovalRequest poll
+    // above: check the run's own authoritative state directly rather than
+    // reload-scraping the UI for "SUCCEEDED" text (found live to flake the
+    // same way, for the same worker-backlog reason).
     await expect.poll(async () => {
-      await page.reload();
-      return page.getByText('SUCCEEDED', { exact: true }).count();
-    }, { timeout: 30_000, message: 'run never reached real terminal SUCCEEDED after the approval' }).toBeGreaterThan(0);
+      const resp = await request.get(`${base}/runs/${approvalRunId}`, { headers: { 'X-Aw-Session-Token': token } });
+      if (!resp.ok()) return 'unknown';
+      const body = await resp.json() as { state: string };
+      return body.state;
+    }, { timeout: 30_000, message: 'run never reached real terminal SUCCEEDED after the approval' }).toBe('SUCCEEDED');
   });
 
   await test.step('cancel a run: creates a THIRD WorkItem on a durably-waiting workflow and cancels its real run', async () => {
