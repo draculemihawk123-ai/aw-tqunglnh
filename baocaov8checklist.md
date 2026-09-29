@@ -698,3 +698,105 @@ this case concrete rather than asserted from an error string alone.
 - `go test ./internal/integration/v5accept/... -timeout 5m` (whole package): clean — confirms the new test
   coexists correctly with every existing V5-15 scenario in the same package, including the two it reuses
   fixture machinery from (isolation-unavailable, adapter-drift).
+
+## V8-04E — Security aggregate gate
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-04E (ADR-013, ADR-016, ADR-017, ADR-023) asks for a single verdict
+over the four V8-04A..D suites: "chạy toàn bộ suite, tổng hợp kết quả theo criterion và ghi evidence" (run the
+whole suite, aggregate the result by criterion, write evidence) — completion bar: "deny-by-default failures
+có safe diagnostic/evidence và không suite nào bị bỏ qua" (every deny-by-default rejection has a safe
+diagnostic/evidence, and no suite is silently skipped), verified by "aggregate report; một suite fail làm
+gate fail."
+
+V8-04A/B/C/D's own checklists already established that most of each design-doc scope was already-closed,
+pre-existing production code — each task's own real, new contribution is a SMALL, named set of tests (or, for
+V8-04C, a representative subset of pre-existing V6-13 tests), not a whole dedicated package. This repo
+already has an exact structural precedent for exactly this shape of gate: `internal/v6gate`/`cmd/v6-gate`
+(V6-14C, `docs/design/08-v6-api-projections.md`) — a pure reader over already-produced `go test -json` CI
+artifacts, checking a CLOSED list of named scenarios (never "did the package pass," since a shared package
+passing trivially would not prove a specific new test ever ran), mapping every finding to the Task ID that
+owns it, and collapsing to one of three verdicts (PASS / REWORK / CHƯA ĐỦ EVIDENCE, missing evidence always
+dominating a mere failure).
+
+Checking which of A/B/C/D's own real load-bearing tests already have a structured `-json` evidence artifact
+in CI found a split:
+- V8-04A's two `internal/integration/v6accept`-hosted tests
+  (`TestV8PathAbuse_RepositoryNestedUnderWorkspaceRoot_Rejected`,
+  `TestV8PathAbuse_SymlinkDisguisedNestedRepository_Rejected`) already ride the EXISTING `v6-acceptance`
+  job's own `acceptance.jsonl` for free — that job already runs
+  `go test -count=1 -v -timeout 15m ./internal/integration/v6accept/...` (the WHOLE package, not just one
+  test) and converts the log to `-json` via `go tool test2json`, on both platforms, today. No new CI needed
+  for these two.
+- Every other named test — V8-04A's own `TestProviderRelease_BystanderSiblingUnderManagedRootSurvives`
+  (`internal/adapters/gitworktree`), V8-04B's three `internal/integration/v5accept` tests, V8-04C's seven
+  representative `internal/delivery/httpapi`/`securitymatrix` tests, and V8-04D's own
+  `TestV5AcceptRetainedDataSecretScan_RealSecretNeverPersistedUnredacted` (also `v5accept`) — passes today
+  only as part of the `contract` job's plain `go test -count=1 ./...`, which produces no structured per-test
+  evidence at all. This is the one genuine new-CI gap this task closes.
+
+### Decision
+
+New package `internal/v8gate` (mirroring `internal/v6gate`'s exact shape deliberately, generalized to read
+from TWO different artifact families instead of one) plus `cmd/v8-security-gate` (mirroring `cmd/v6-gate`).
+A closed list of 14 named scenarios, each tagged with its owning suite (V8-04A/B/C/D) and which artifact
+family it lives in — 2 read from the existing `v6-acceptance-report-<os>` artifact, 12 from a NEW
+`v8-04e-evidence-<os>` artifact. `TestV8PathAbuse_SymlinkDisguisedNestedRepository_Rejected` is the one
+scenario with a per-platform `SkipAllowedOn` exception (Windows only) — a real, deterministic
+Developer-Mode privilege gap already established as this repo's own accepted convention
+(`internal/adapters/repoprobe/prober_test.go`), never a blanket "skip anywhere" the way V6-14C's own
+race-timing `conditionalScenarios` are allowed.
+
+CI wiring: a new "Security suite evidence (V8-04E)" step in the existing `contract` job (both platforms,
+`if: always()` so it still runs and reports real failures by name even if something unrelated already failed
+the main offline suite) re-runs `go test -count=1 -json` over exactly the three package trees
+(`internal/adapters/gitworktree`, `internal/integration/v5accept`, `internal/delivery/httpapi/...`) that
+carry V8-04E's own genuinely new evidence — the identical "standalone, redundant, structured report on top of
+an already-enforcing suite" precedent `V0-13`'s own Boundary/dependency report step already established for
+this exact job, generalized from `-v` (a log) to `-json` (per-test outcomes) because that is what this gate
+needs to read. A new `v8-04e-gate` job (`needs: [contract, v6-acceptance]`, `if: always()`) downloads both
+artifact families for both platforms and runs `cmd/v8-security-gate`, uploading its own `v8-04e-verdict`
+artifact and exiting non-zero unless every scenario is PASS.
+
+### Execution
+
+- `internal/v8gate/gate.go` (new): `Verdict`, `scenario`/`scenarios` (the closed 14-entry list),
+  `Finding`, `ScenarioOutcome`, `Report`, `Inputs`, `Run` (reads both artifact families, checks every named
+  scenario on every platform, collapses to one verdict) — a close structural port of `internal/v6gate`'s own
+  `Run`/`readPlatform`/`parseTestEvents`/`verdictFor`, generalized to a caller-chosen artifact-name prefix per
+  scenario's own `Source` field.
+- `internal/v8gate/gate_test.go` (new): 9 tests mirroring `internal/v6gate/gate_test.go`'s own fixture-mutate
+  pattern — complete green pass, a missing platform artifact, a required-scenario failure, a required-scenario
+  skip (not tolerated), a required-scenario absence, the one per-platform-tolerated skip (both the tolerated
+  and the NOT-tolerated platform), a cross-commit evidence mismatch, and "one suite failing fails the whole
+  gate."
+- `cmd/v8-security-gate/main.go` (new): CLI wrapper mirroring `cmd/v6-gate/main.go` exactly (`--evidence-dir`,
+  `--commit`, `--out`; prints notes/findings; exits 1 unless PASS).
+- `.github/workflows/spike-gate.yml`: new "Security suite evidence (V8-04E)" + "Upload V8-04E security suite
+  evidence" steps inside the existing `contract` job (both platforms); new `v8-04e-gate` job.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test -count=1 ./...` (full offline suite): clean, including `internal/v8gate`'s own 9 new tests.
+- `go test ./internal/v8gate/... -v`: all 9 tests pass.
+- Ran the EXACT new CI command locally (`go test -count=1 -json ./internal/adapters/gitworktree/...
+  ./internal/integration/v5accept/... ./internal/delivery/httpapi/...`): exit 0, 4473 JSON lines, all 12
+  `v8-04e-evidence`-sourced named scenarios individually confirmed present with a real `pass` action (grepped
+  by exact test name).
+- Ran the real `v6-acceptance`-style command locally
+  (`AW_HTTP_ACCEPTANCE=1 go test -count=1 -v -timeout 5m -run 'TestV8PathAbuse'
+  ./internal/integration/v6accept/...` + `go tool test2json`): both named scenarios present;
+  `TestV8PathAbuse_RepositoryNestedUnderWorkspaceRoot_Rejected` pass, `..._Symlink..._Rejected` skip (this dev
+  machine has no Developer Mode — the same already-established, accepted local-environment limitation).
+- Assembled a real two-platform evidence directory from the above (both simulated platforms fed from this
+  one Windows machine's own log, so the symlink test's real local skip appears on BOTH simulated platforms)
+  and ran the real `go run ./cmd/v8-security-gate` binary end to end: correctly reported 13/14 scenarios PASS
+  on both platforms, correctly tolerated the skip on the simulated "windows-latest" leg (a note, not a
+  finding), and correctly flagged the same skip as `CHƯA ĐỦ EVIDENCE` on the simulated "ubuntu-latest" leg
+  (since `SkipAllowedOn` only names Windows) — exactly the intended behavior; a REAL ubuntu-latest CI leg
+  would genuinely PASS this scenario (`os.Symlink` works unprivileged on real Linux), so this one "failure" is
+  purely an artifact of simulating two platforms from a single machine's log, not a defect in the gate logic.
+- CI wiring itself (the new `contract`-job step and the new `v8-04e-gate` job) could not be exercised locally
+  (no local GitHub Actions runner) — left to the real PR's own CI run.
