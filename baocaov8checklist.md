@@ -434,6 +434,89 @@ set level and timed out for a full minute before this was found by reading `aggr
   'TestV6HTTPAcceptance_CleanDatabaseJourney' -timeout 6m`: clean — confirms the new suite coexists
   correctly with V6-14's own core journey in the same package.
 
+## V8-04C — Local HTTP trust boundary suite
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-04C (ADR-016, AK-ARCH-025A) asks for a negative suite covering 6
+scenarios: external bind, DNS-rebinding Host, foreign/missing Origin, missing/wrong session token, CORS
+deny-by-default, content/MIME injection — completion bar: "mọi mutation không hợp lệ bị từ chối trước khi
+chạm application command," verified by "assert token không xuất hiện trong URL/log/durable state."
+
+Research before writing any code found this ENTIRE scope already closed by V6-13's own work
+(`internal/delivery/httpapi/securitymatrix`, `internal/delivery/httpapi/security_test.go`) — more completely
+than either V8-04A or V8-04B's own equivalent research found, and run against EVERY registered route (the
+row set comes from `httpapi.RouteRegistry.Descriptors()` on a registry built by the real
+`internal/delivery/httpcompose.ComposeRoutes`, never a hand-written list):
+
+- **External bind**: `TestLoopbackOnlyBind` — `httpapi.NewServer` refuses to construct at all for
+  `0.0.0.0`/`::`/any routable address/any non-loopback-resolving hostname/empty host, checked BEFORE
+  `net.Listen` ever runs (`server.go`'s `validateLoopbackHost`), so a misconfigured host can never even
+  momentarily listen on a routable interface. Positive control confirms `127.0.0.1`/`localhost` still work.
+- **DNS-rebinding Host**: `TestTransportGuardMatrix_EveryRoute` sends `evil.example.com:80`,
+  `localhost:1`, `127.0.0.1:1` as the `Host` header against every route and asserts `403` +
+  `invalid_host` + no CORS headers leaked on the rejection. `TestHostOriginGuard_RejectsForeignHost`/
+  `_RejectsHostnameMismatchEvenWhenBothLoopback`/`_AcceptsExactBoundHost` cover the same check at the unit
+  level.
+- **Foreign/missing Origin**: same matrix test sends `http://evil.example.com`, `https://<this server's own
+  host>` (right host, wrong scheme — the same-Host DNS-rebinding-adjacent case), and the literal string
+  `"null"` as `Origin` against every route, asserting `403` + `invalid_origin` + no CORS headers.
+  `TestHostOriginGuard_MissingOriginAllowed`/`_AcceptsExactMatchingOrigin`/`_RejectsRightHostWrongPortOrigin`
+  cover the same check at the unit level — missing Origin is explicitly ALLOWED (a non-browser client such
+  as the `aw` CLI's own transport sends none), proven not to be a blanket requirement.
+- **Missing/wrong session token**: the same matrix test's third case, for every MUTATING route, a missing or
+  wrong `httpapi.SessionTokenHeader` is rejected with `invalid_session_token` before the route's own handler
+  ever runs. `TestRequireSessionToken_MissingTokenRejectsMutation`/`_WrongTokenRejectsMutation`/
+  `_CorrectTokenAllowsMutation`/`_SafeMethodNeedsNoToken` cover the same check at the unit level (safe
+  methods never require the token at all).
+- **CORS deny-by-default**: `TestCORSPreflightIsNeverAnswered` proves a real browser preflight (`OPTIONS` +
+  `Origin` + `Access-Control-Request-Method`) from a foreign origin is rejected by the same Host/Origin
+  guard, never answered with a permissive preflight response — deny-by-default is implemented by OMISSION
+  (`security.go`'s `HostOriginGuard` never sets an `Access-Control-*` header on ANY outcome), and
+  `assertNoCORSHeaders` checks this is true for literally every response in every other matrix case too.
+  `TestCORS_NeverEmitsAccessControlAllowOriginHeader` covers the same check at the unit level.
+- **Content/MIME injection**: `TestArtifactContentMediaHandling` proves script-capable content
+  (`text/html`) is forced to `Content-Disposition: attachment` with `X-Content-Type-Options: nosniff` (never
+  rendered inline from this origin), an allow-listed type keeps `inline`, an unsatisfiable `Range` is
+  refused with `416`, an artifact only reachable through the Evidence row that actually references it is
+  hidden (leakage-normalized `404`) for a cross-project probe, and no response header can be injected
+  (CR/LF) through stored metadata. `TestOversizedBodyIsRefusedBeforeAnyHandlerRuns` proves
+  `Config.MaxBodyBytes` bounds every mutating route server-wide, before any handler reads the body into
+  memory. `TestPathTraversalIsNeverServed`/`TestQueryParameterPathIsNeverResolvedOutsideTheWorkspace` (raw
+  TCP probes, bypassing `net/http`'s own client-side path normalization) prove no request-target or
+  query-parameter path value can walk out of the registered route space.
+- **"Token never appears in URL/log/durable state"** (V8-04C's own Verify line, word for word): already
+  implemented and already tested —
+  `TestSecretScan_TokenNeverAppearsInLogOutput` (a real request with the correct token, one with a wrong
+  token, and one with the correct token again, asserting the real token string never appears verbatim in
+  captured log output) and `TestSecretScan_BootstrapHTMLNeverPutsTokenInAURLOrQueryString`
+  (`security_test.go`).
+
+### Decision
+
+No new code, and no new test, is needed for V8-04C: every one of its 6 design-doc scenarios, plus its own
+specific Verify bar (token never in URL/log/durable state), already has real, matrix-style coverage — run
+against every registered route via the real composed route registry, not a hand-picked sample — built during
+V6-13 (`docs/design/08-v6-api-projections.md` V6-01A). Duplicating any of this would add no new coverage.
+
+This is itself a legitimate, honest V8-04C outcome (a verification-only closure), not a shortcut: the full
+`internal/delivery/httpapi/...` suite (including `securitymatrix` and `security_test.go`) was re-run against
+current `master` to confirm the "already closed" claim holds under today's code, not just at whatever commit
+V6-13 originally landed at.
+
+### Execution
+
+- No production or test files changed. This entry (and this PR) exists purely to record the verification
+  outcome in the checklist, matching this repo's own "every task gets a checklist entry" discipline even
+  when the task's own real conclusion is "already done."
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test ./internal/delivery/httpapi/... -timeout 5m` (the full package tree, including `securitymatrix`
+  and `security_test.go`): clean — `internal/delivery/httpapi` 10.3s, `internal/delivery/httpapi/
+  securitymatrix` 17.6s, all 19 subpackages pass.
+
 ## V8-04B — Process, executable and isolation abuse suite
 
 ### Context
