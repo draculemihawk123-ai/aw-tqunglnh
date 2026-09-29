@@ -1112,12 +1112,13 @@ convention) rather than one new mega-package duplicating fixtures V6/V8 already 
    are added to the same project. Threshold: ratio < 3x for a 10x growth in unrelated rows (measured locally:
    0.98x — confirms detail.go's own "never scan the whole project" claim holds under real, growing scale).
 4. **Scheduler latency** (`internal/app/workerpool/performance_budget_test.go`,
-   `TestV8PerformanceBudget_ClaimLatencyStaysBoundedAsHistoricalJobsAccumulate`) — claims+completes 100 then
-   5000 real jobs to build up historical SUCCEEDED rows, then measures a FRESH job's own `ClaimJob` latency at
-   each historical volume. Threshold: ratio < 5x for a 50x historical row-count increase (measured locally:
-   0.97x — confirms the `state='AVAILABLE'` partial index keeps claim latency independent of table history,
-   the real risk an audit-trail-forever (`ADR-017`) durable-jobs table could otherwise pose over an
-   installation's lifetime).
+   `TestV8PerformanceBudget_ClaimLatencyStaysBoundedAsHistoricalJobsAccumulate`) — claims+completes 10 then
+   100 real jobs to build up historical SUCCEEDED rows, then measures a FRESH job's own `ClaimJob` latency at
+   each historical volume. Threshold: ratio < 5x for a 10x historical row-count increase (measured locally:
+   ~1.0-2.0x across repeated runs — confirms the `state='AVAILABLE'` partial index keeps claim latency
+   independent of table history, the real risk an audit-trail-forever (`ADR-017`) durable-jobs table could
+   otherwise pose over an installation's lifetime). **Originally seeded 100/5000 (50x) — see "CI feedback"
+   below for why this was cut down after opening the PR.**
 5. **Projection rebuild** (`internal/app/projectionrebuildworker/performance_budget_test.go`,
    `TestV8PerformanceBudget_FullRebuildLatencyScalesBoundedWithEventCount`) — a real end-to-end rebuild
    (bootstrap path, W0=0, so `BUILDING` replays the WHOLE seeded event journal — the real worst case for a
@@ -1155,10 +1156,25 @@ the gap, spawn a scoped follow-up, close what IS real now).
 - Each new test run individually with `-v`, confirming real measured numbers (all logged via `t.Logf` as this
   task's own "reproducible benchmark report" — rerunnable any time, not a one-off captured document):
   cold-start 916ms (threshold 20s); Kanban list ratio 9.12x/10x (threshold 30x); WorkItem detail ratio
-  0.98x/10x (threshold 3x); ClaimJob ratio 0.97x/50x (threshold 5x); projection rebuild ratio 9.74x/10x
-  (threshold 30x) — every one comfortably inside its own frozen threshold, and every ratio close to (Kanban,
-  rebuild) or well below (detail, claim) what pure linear scaling would predict, positively confirming no
-  worse-than-linear path in any of the five measured areas.
+  0.98x/10x (threshold 3x); ClaimJob ratio ~1.0-2.0x/10x (threshold 5x, after the CI-driven scale-down below);
+  projection rebuild ratio 9.74x/10x (threshold 30x) — every one comfortably inside its own frozen threshold,
+  and every ratio close to (Kanban, rebuild) or well below (detail, claim) what pure linear scaling would
+  predict, positively confirming no worse-than-linear path in any of the five measured areas.
+- **CI feedback (post-PR, real regression caught and fixed, not a flake)**: PR #132's own first CI run
+  timed out `internal/app/workerpool` past Go's default 10-minute test-binary deadline inside `Linux race and
+  stability (V0-12)` (`-race` mode) — the panic trace named
+  `TestV8PerformanceBudget_ClaimLatencyStaysBoundedAsHistoricalJobsAccumulate` as the still-running test, stuck
+  inside `drainAndCompleteJobs`'s own `ClaimJob` call. Root cause: `modernc.org/sqlite` is a pure-Go transpiled
+  C engine, so `-race`'s own per-memory-access instrumentation lands on every SQLite VM bytecode step, not
+  just this package's own Go code — the original 100+5000=5100 serialized claim/complete round trips (a real
+  ~43s locally WITHOUT `-race`) blew past 600s under it. Fixed by cutting the seeded scale down to 10/100 (110
+  total round trips, still a 10x historical-row-count multiplier — plenty to distinguish the expected ~1x
+  ratio from a real regression's ~10x) rather than skipping the test under `-race` or trying to guess a safe
+  number with no local way to re-measure under `-race` (this dev machine has no C compiler, so `go test -race`
+  cannot even run locally here — the cut was made conservatively, over 45x fewer round trips than the version
+  that timed out, rather than tuned to a number only proven safe without race instrumentation). Verified the
+  fix locally (non-race): 0.78-1.03s per run across 3 consecutive runs, ratio 1.00-2.00x, well inside the
+  frozen 5x threshold.
 - `go test -count=1 ./...` (full repo): clean except two isolated, non-reproducible local flakes in packages
   this task never touches — `TestSPK04FaultAfterProcessExitMutatingAttemptBecomesIndeterminate`
   (`internal/adapters/sqlite`, real error string "durable job lease is no longer authoritative" — already a

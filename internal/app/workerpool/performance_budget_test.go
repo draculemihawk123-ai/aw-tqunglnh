@@ -82,19 +82,37 @@ func measureFreshClaimLatency(t *testing.T, store *sqlite.Store, idPrefix string
 // a FRESH job must stay just as fast whether the durable_jobs table already
 // holds a handful of historical SUCCEEDED rows or thousands of them.
 //
-// Frozen threshold: ratio < 5x for a 50x growth in historical row count.
+// Frozen threshold: ratio < 5x for a 10x growth in historical row count.
 // Owner: V8-07 task (this session, 2026-09-29). Reason: the partial index
 // on state='AVAILABLE' this file's own package doc comment cites means
 // ClaimJob's real cost should not depend on historical row count AT ALL
 // (ratio near 1x expected); 5x leaves generous headroom for per-call noise
 // on a contended CI runner while still catching a real regression (e.g. an
 // index being dropped or the query's own WHERE clause changing) which
-// would show a ratio much closer to the full 50x row-count growth itself.
+// would show a ratio much closer to the full 10x row-count growth itself.
+//
+// Scale note: kept deliberately small (10/100, not 100/5000 as first
+// written) after this exact test timed out the whole package past Go's
+// default 10-minute test binary deadline under `go test -race` in CI
+// (`Linux race and stability (V0-12)`) — modernc.org/sqlite is a pure-Go
+// transpiled C engine, so the race detector's own per-memory-access
+// instrumentation lands on every SQLite VM bytecode step, not just this
+// package's own Go code, making ~5100 serialized claim/complete round
+// trips (the original small+large total) far more expensive under `-race`
+// than the ~43s this test measured locally without it — a build without
+// cgo (this environment's own local Windows setup) cannot run `-race` at
+// all to directly re-measure the corrected cost, so this cut is
+// deliberately conservative (~111 total round trips, over 45x fewer than
+// the version that timed out) rather than tuned to a number only proven
+// safe without race instrumentation. A 10x historical-row-count multiplier
+// is still a clear, meaningful test of this threshold: a real regression
+// would push the ratio toward that same 10x, sharply distinguishable from
+// the ~1x this partial index predicts.
 func TestV8PerformanceBudget_ClaimLatencyStaysBoundedAsHistoricalJobsAccumulate(t *testing.T) {
 	store := openTestQueue(t, "agentkit-pool-perf-budget.db")
 
-	const small = 100
-	const large = 5000
+	const small = 10
+	const large = 100
 
 	enqueueJob(t, store, "seed-noop", "noop")
 	drainAndCompleteJobs(t, store, 1) // warm up: pay any one-time cost (page cache, JIT) before measuring.
