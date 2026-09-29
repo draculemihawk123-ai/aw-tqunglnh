@@ -800,3 +800,105 @@ artifact and exiting non-zero unless every scenario is PASS.
   purely an artifact of simulating two platforms from a single machine's log, not a defect in the gate logic.
 - CI wiring itself (the new `contract`-job step and the new `v8-04e-gate` job) could not be exercised locally
   (no local GitHub Actions runner) — left to the real PR's own CI run.
+
+## V8-05 — Retention-class, cleanup and disk-pressure behavior
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-05 (AK-ARCH-025B) asks for: "TTL 7 ngày của raw output/evidence
+tạm không lan sang canonical conversation/context, không phá recovery evidence và báo disk full rõ" (a 7-day
+TTL on raw temp output/evidence must never leak into canonical conversation/context, must never break
+recovery evidence, and disk-full must be reported clearly) — Thực hiện: fake clock aging by class,
+holds/references/orphans, canonical Message/context/audit preservation, low-disk simulation, cleanup
+recovery/idempotency. Completion bar: cleanup only ever deletes owned eligible payload; conversation,
+referenced context, holds, and metadata audit all remain intact.
+
+Research before writing any code found `internal/app/artifactsweep` (V5-14) already implements and
+exhaustively unit-tests almost this entire scope:
+- `artifact.RetentionClass` (`internal/domain/artifact/artifact.go`) is already a real, closed two-value
+  domain type: `RAW_OUTPUT_TEMP` (always a non-nil `ExpiresAt`, `ComputeExpiresAt` computing `createdAt+7d`)
+  and `CANONICAL_CONTEXT` (always `nil` `ExpiresAt` — structurally can never age out) — already unit-tested
+  (`artifact_test.go`).
+- `classifyLocatorGroup`'s own decision table (`sweep_test.go`,
+  `TestClassifyLocatorGroup_DecisionTable`) already exhaustively covers every branch this task's own scope
+  names: a single row past grace purges; ANY row in a locator group being Attached, Held, or not yet past
+  grace blocks the WHOLE group; a content-hash or size mismatch across a shared locator is flagged corrupt.
+  Pure, no I/O, already proven.
+- `ExecuteArtifactSweep` (`sweep_sqlite_test.go`) already proves, against a REAL sqlite database and a REAL
+  filesystem `ArtifactStore`: dry-run-by-default reports without touching anything, a real run genuinely
+  deletes content and marks `Purged` (never actually removing the row, per ADR-017's own audit bar), an
+  Attached sibling sharing a Locator blocks the whole group for real, and — the "cleanup recovery/
+  idempotency" half of this task's own scope — a crashed claim (a `ClaimArtifactLocatorForPurge` left behind
+  by an earlier, interrupted attempt of this exact singleton job) resumes correctly rather than being treated
+  as a foreign conflict. All of this is **already closed**; nothing here needed duplicating.
+- **A real, load-bearing finding**: NO real production code path in this entire codebase ever constructs a
+  `RetentionRawOutputTemp` artifact today. Grepping every real (non-test) `artifact.NewArtifact`/
+  `artifact.Retention*` call site in the app layer found `internal/app/message`
+  (`AppendMessage`/`AppendConversationAttachment`) and all three of `internal/app/runtime`'s node executors
+  (`command_node_executor.go`, `gate_node_executor.go`, `agent_node_executor_resources.go`) hardcode
+  `RetentionCanonicalContext` — every real artifact this product ever produces today is immortal
+  (`ExpiresAt: nil`). The domain type, its TTL math, and the sweeper's own full decision table are real and
+  already well-tested; there is simply no real PRODUCER wired to the temp class yet. This means the
+  "TTL doesn't leak into canonical" property can only be exercised end to end today by seeding synthetic
+  raw-temp fixtures alongside a REAL canonical artifact — the same technique
+  `sweep_sqlite_test.go`'s own `putAndInsertOrphan` already establishes at the unit level, generalized here
+  to run against a REAL canonical conversation Message in the SAME real stores.
+- **A second real gap**: "báo disk full rõ" (report disk-full clearly) has NO existing implementation
+  anywhere — `internal/adapters/artifactstore/filesystem.go`'s own `Put` wraps every write-path I/O error
+  with the SAME generic `fmt.Errorf("artifactstore: <op>: %w", err)`, indistinguishable from any other
+  failure. This is the one genuinely new-code gap this task closes.
+
+### Decision
+
+1. **Real end-to-end retention test**, `internal/integration/v5accept/retention_sweep_real_topology_test.go`
+   (reusing `v5AcceptFixture` — same real sqlite/artifact-store composition V8-04B/D's own additions already
+   established in this package): a REAL canonical conversation Message (via the real
+   `message.AppendConversationAttachment` application command, against a real root WorkItem) sits in the SAME
+   real database and real filesystem `ArtifactStore` as three seeded raw-temp artifacts — an eligible orphan
+   (past the real 7-day grace, no hold, no reference), a held orphan (past grace but `Hold: true`), and an
+   orphan sharing its real content-addressed Locator with a live `Attached` sibling (a reference) — then runs
+   the real `ExecuteArtifactSweep` (real run, not dry-run) with a fixed clock. Before/after assertions (V8-05's
+   own "before/after manifest" Verify bar, made concrete): the canonical Message artifact is
+   byte-for-byte unchanged and still Attached; the held and referenced orphans both survive, `Orphan` state
+   and content intact; the eligible orphan alone is genuinely `Purged`, its content genuinely gone; and the
+   real `Manifest.Groups` reports exactly 1 `PURGED` + 2 `BLOCKED` groups, never silently omitting either
+   outcome.
+2. **Disk-full clear diagnostic**: a new `classifyWriteError` helper in
+   `internal/adapters/artifactstore/filesystem.go`, wired into every write-path error `Put` can return
+   (`CreateTemp`, `io.Copy`, `Sync`, `Close`, `MkdirAll`, `Rename`). `errors.Is(err, syscall.ENOSPC)` —
+   confirmed a real, portable errno value on windows-latest too, not POSIX-only — classifies into
+   `apperror.Wrap(apperror.CodeUnavailable, "...disk full...", retryable: true, cause)`, never a NEW top-level
+   error code (`go-core-spec` §18's own 22-value enum is explicitly closed;
+   `internal/domain/errorcode/errorcode.go`'s own doc comment says so). `CodeUnavailable` already means "a
+   transient condition a bounded retry may resolve on its own" — exactly what freeing disk space and retrying
+   the identical `Put` is. Every other real I/O error keeps the original generic wrap unchanged (a pure
+   addition, not a behavior change for anything already passing). Tested against the classifier directly with
+   a synthetic wrapped `syscall.ENOSPC`, not by actually filling a real disk — neither portable nor safe to
+   attempt in CI on either OS, and Go's own `os`/`io` calls already return a real wrapped `syscall.Errno` on a
+   genuine ENOSPC on every GOOS this repo targets, so the classifier sees the identical shape either way.
+
+### Execution
+
+- `internal/integration/v5accept/retention_sweep_real_topology_test.go` (new):
+  `seedRawTempArtifact`/`reloadArtifactByID` (fixture helpers), `requireArtifactBytesUnchanged`, and
+  `TestV5AcceptRetentionSweep_CanonicalConversationHeldAndReferencedSurviveRealEligibleOrphanPurge`.
+- `internal/adapters/artifactstore/filesystem.go`: new `classifyWriteError` function; `Put`'s own six
+  write-path error returns now call it instead of a bare `fmt.Errorf`.
+- `internal/adapters/artifactstore/filesystem_test.go`: two new tests,
+  `TestClassifyWriteError_DiskFull_ReturnsSafeRetryableUnavailable` and
+  `TestClassifyWriteError_OtherError_KeepsTheOriginalGenericWrap`.
+- No CI wiring needed: both additions land inside packages the existing `contract` job (`go test ./...`)
+  already runs in full.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test -count=1 ./...` (full offline suite): clean, including all 4 new tests.
+- `go test ./internal/adapters/artifactstore/... -run TestClassifyWriteError -v`: both new tests pass.
+- `go test ./internal/adapters/artifactstore/... -v`: full package, all existing tests still pass unchanged
+  (the disk-full classification is additive; every non-ENOSPC error keeps its original wrap text).
+- `go test ./internal/integration/v5accept/... -run
+  'TestV5AcceptRetentionSweep_CanonicalConversationHeldAndReferencedSurviveRealEligibleOrphanPurge' -count=3
+  -timeout 2m`: clean across 3 consecutive fresh local runs (~1.3-1.5s each).
+- `go test ./internal/integration/v5accept/... -timeout 5m` (whole package): clean, 79.6s — confirms the new
+  test coexists correctly with every existing V5-15/V8-04B/V8-04D scenario in the same package.
