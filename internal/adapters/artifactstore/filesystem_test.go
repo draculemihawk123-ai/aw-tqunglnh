@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/apperror"
@@ -404,5 +406,65 @@ func TestObjectPath_UsesPortablePathConstruction(t *testing.T) {
 	wantPath := filepath.Join(store.root, "objects", digest[0:2], digest[2:4], digest)
 	if _, err := os.Stat(wantPath); err != nil {
 		t.Fatalf("expected artifact at %s: %v", wantPath, err)
+	}
+}
+
+// TestClassifyWriteError_DiskFull_ReturnsSafeRetryableUnavailable is V8-05's
+// own "báo disk full rõ" bar (docs/design/10-v8-alpha-hardening.md,
+// AK-ARCH-025B) made concrete: a real syscall.ENOSPC anywhere in Put's own
+// write path must classify as a distinguishable, retryable diagnostic —
+// never the same generic "artifactstore: <op>: <raw error>" wrap every
+// other I/O failure gets. Tested against the classifier directly (not by
+// actually filling a real disk, which is neither portable nor safe to do in
+// CI on either OS) — os.CreateTemp/io.Copy/os.Rename all return *PathError/
+// *LinkError wrapping a real syscall.Errno on both POSIX and Windows (Go's
+// syscall package exposes ENOSPC as a portable value on every GOOS this
+// repo targets), so wrapping the same sentinel here is a faithful stand-in
+// for what a genuinely full disk would hand this function.
+func TestClassifyWriteError_DiskFull_ReturnsSafeRetryableUnavailable(t *testing.T) {
+	raw := fmt.Errorf("write %s: %w", "/some/real/path", syscall.ENOSPC)
+	err := classifyWriteError("write artifact content", raw)
+
+	var appErr *apperror.Error
+	if !errors.As(err, &appErr) {
+		t.Fatalf("classifyWriteError(disk full) = %v (%T), want an *apperror.Error", err, err)
+	}
+	if appErr.Code != apperror.CodeUnavailable {
+		t.Fatalf("Code = %q, want %q", appErr.Code, apperror.CodeUnavailable)
+	}
+	if !appErr.Retryable {
+		t.Fatal("a disk-full write error must be Retryable — freeing space and retrying the exact same Put can succeed")
+	}
+	if !strings.Contains(appErr.Message, "disk full") {
+		t.Errorf("Message = %q, want it to clearly say disk full", appErr.Message)
+	}
+	if !errors.Is(err, syscall.ENOSPC) {
+		t.Error("errors.Is(err, syscall.ENOSPC) = false — the real cause must still be reachable for diagnostics, even though Error() itself never prints it")
+	}
+	// Error() itself (what a bare fmt.Println/%v would show) must never leak
+	// the raw underlying path/errno text — only the safe Code+Message.
+	if strings.Contains(err.Error(), "/some/real/path") {
+		t.Errorf("Error() leaked the raw underlying error text: %q", err.Error())
+	}
+}
+
+// TestClassifyWriteError_OtherError_KeepsTheOriginalGenericWrap proves the
+// disk-full classification is additive, not a regression: every other real
+// I/O failure (permission denied, path too long, ...) still gets the exact
+// same generic "artifactstore: <op>: <cause>" wrap every other already-
+// passing test in this file already depends on.
+func TestClassifyWriteError_OtherError_KeepsTheOriginalGenericWrap(t *testing.T) {
+	raw := errors.New("permission denied")
+	err := classifyWriteError("create temp file", raw)
+
+	var appErr *apperror.Error
+	if errors.As(err, &appErr) {
+		t.Fatalf("classifyWriteError(non-disk-full) = %v, want the plain generic wrap, not an *apperror.Error with Code %q", err, appErr.Code)
+	}
+	if !errors.Is(err, raw) {
+		t.Error("errors.Is(err, raw) = false — the generic wrap must still chain to the real cause")
+	}
+	if !strings.Contains(err.Error(), "create temp file") || !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("Error() = %q, want it to name both the op and the raw cause", err.Error())
 	}
 }

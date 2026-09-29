@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/apperror"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -26,6 +27,31 @@ import (
 // ErrIntegrity is returned by Verify/Open when stored content no longer
 // hashes to its own recorded locator.
 var ErrIntegrity = errors.New("artifactstore: content does not match its recorded hash")
+
+// classifyWriteError turns a raw filesystem write-path error into a real,
+// safe diagnostic (V8-05, AK-ARCH-025B's own "báo disk full rõ" bar) rather
+// than a generic wrap indistinguishable from any other I/O failure. Go's
+// syscall.ENOSPC is a portable errno value on every GOOS this repo targets
+// (confirmed: errors.Is(fmt.Errorf("%w", syscall.ENOSPC), syscall.ENOSPC)
+// is true on windows-latest too, not just POSIX) — the real cause never
+// leaks past the returned *apperror.Error's own safe Message (its own
+// Error() method only ever prints Code+Message, never the wrapped cause;
+// see that package's own doc comment). CodeUnavailable, not a new code:
+// go-core-spec §18's own 22-value enum is closed, and "a transient
+// condition a bounded retry may resolve on its own" is exactly what
+// running out of disk space is — the same category
+// CodeProviderUnavailable/CodeIsolationEnforcementUnavailable already use
+// for "the environment cannot do this right now."
+func classifyWriteError(op string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, syscall.ENOSPC) {
+		return apperror.Wrap(apperror.CodeUnavailable,
+			"artifactstore: disk full — no space left to "+op+"; free disk space and retry", true, err)
+	}
+	return fmt.Errorf("artifactstore: %s: %w", op, err)
+}
 
 // locatorPattern is the only shape a Locator this store issues (or
 // accepts back) may ever take: "sha256:" plus exactly 64 lowercase hex
@@ -91,7 +117,7 @@ func (s *Store) Put(ctx context.Context, meta ports.ArtifactMetadata, body io.Re
 
 	tmpFile, err := os.CreateTemp(filepath.Join(s.root, "tmp"), "artifact-*")
 	if err != nil {
-		return ports.ArtifactRef{}, fmt.Errorf("artifactstore: create temp file: %w", err)
+		return ports.ArtifactRef{}, classifyWriteError("create temp file", err)
 	}
 	tmpPath := tmpFile.Name()
 	finalized := false
@@ -105,16 +131,16 @@ func (s *Store) Put(ctx context.Context, meta ports.ArtifactMetadata, body io.Re
 	hash := sha256.New()
 	size, err := io.Copy(io.MultiWriter(tmpFile, hash), body)
 	if err != nil {
-		return ports.ArtifactRef{}, fmt.Errorf("artifactstore: write artifact content: %w", err)
+		return ports.ArtifactRef{}, classifyWriteError("write artifact content", err)
 	}
 	if err := ctx.Err(); err != nil {
 		return ports.ArtifactRef{}, err
 	}
 	if err := tmpFile.Sync(); err != nil {
-		return ports.ArtifactRef{}, fmt.Errorf("artifactstore: sync artifact content: %w", err)
+		return ports.ArtifactRef{}, classifyWriteError("sync artifact content", err)
 	}
 	if err := tmpFile.Close(); err != nil {
-		return ports.ArtifactRef{}, fmt.Errorf("artifactstore: close artifact content: %w", err)
+		return ports.ArtifactRef{}, classifyWriteError("close artifact content", err)
 	}
 
 	digest := hex.EncodeToString(hash.Sum(nil))
@@ -134,10 +160,10 @@ func (s *Store) Put(ctx context.Context, meta ports.ArtifactMetadata, body io.Re
 	}
 
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
-		return ports.ArtifactRef{}, fmt.Errorf("artifactstore: create artifact shard directory: %w", err)
+		return ports.ArtifactRef{}, classifyWriteError("create artifact shard directory", err)
 	}
 	if err := os.Rename(tmpPath, finalPath); err != nil {
-		return ports.ArtifactRef{}, fmt.Errorf("artifactstore: finalize artifact: %w", err)
+		return ports.ArtifactRef{}, classifyWriteError("finalize artifact", err)
 	}
 	finalized = true
 	return ref, nil
