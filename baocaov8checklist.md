@@ -587,3 +587,114 @@ needs neither isolation enforcement nor any special capability.
   3 consecutive fresh local runs (2.1-2.2s each).
 - `go test ./internal/integration/v5accept/... -timeout 5m` (whole package): clean — confirms the new test
   coexists correctly with every existing V5-15 scenario in the same package.
+
+## V8-04B — Process, executable and isolation abuse suite
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-04B (ADR-013, ADR-023, AK-ARCH-015B, AK-ARCH-020A) asks for a
+negative suite covering 7 scenarios: argv/env injection, oversized output, adapter build drift, multi-repo
+write missing capability, checker source-write, remote Git, and isolation-profile lie (auto-downgrade +
+`ISOLATION_ENFORCEMENT_UNAVAILABLE`) — completion bar: "không có đường nào thực thi vượt policy đã publish,"
+verified by "spawn count bằng 0 cho case isolation; remote mutation call count bằng 0."
+
+Research before writing any code found this task's scope is almost entirely ALREADY real, existing,
+already-tested production code — more so than V8-04A's own equivalent research found:
+- **Isolation-profile lie**: `internal/integration/v5accept/isolation_unavailable_test.go`
+  (`TestV5AcceptIsolationUnavailable_RealAdmissionRejectsBeforeSpawn`) already proves, end to end, that a
+  real COMMAND node pinned to `IsolationTierEnforcedIsolated` is rejected by real admission BEFORE
+  `ProcessSupervisor.Run` is ever called (`process.IsolationChecker{}`, the REAL non-fake checker,
+  structurally always returns `ErrIsolationEnforcementUnavailable` — ADR-013/ADR-023's own "không bao giờ
+  auto-downgrade": there is no silent downgrade path to prove absent, because none exists), proven not by an
+  error string but by the real maker script's own marker file never existing on disk. **Already fully DONE at
+  the real end-to-end level. Nothing to add.**
+- **Adapter build drift**: `internal/integration/v5accept/adapter_drift_test.go`
+  (`TestV5AcceptAdapterDrift_RealAdmissionRejectsMismatchedPin`) already proves a real AGENT node pinned to an
+  `AdapterBuild` whose `ExecutableContentHash` was deliberately perturbed after being derived from the real
+  `fake-claude` binary is rejected when a real, live re-probe of that SAME untouched binary can only ever
+  re-derive its true hash. **Already fully DONE at the real end-to-end level. Nothing to add.**
+- **Checker source-write**: `assemble_execution_request.go` (V5-12 contract 3, 2026-09-10) already forces
+  EVERY mount of a CHECKER-role AGENT node to `ports.WorkspaceReadOnly`, unconditionally, regardless of what
+  the WorkItem's own `EffectiveScope` grants — `forceReadOnlyMounts`, the identical mechanism
+  `GateNodeExecutor` already relies on for "a Gate never mutates anything." This is real, not merely
+  declarative: `resolveExecutionResources` only ever calls `AcquireWriteLeases` for a WRITE-access mount, so
+  forcing every mount READ_ONLY here structurally means a checker attempt never acquires one — already
+  unit-tested (`TestAssembleAgentExecutionRequest_CheckerRole_MountsForcedReadOnly`,
+  `agent_node_executor_test.go`'s own "write lease count == 0" assertion). **Already DONE; the guarantee is
+  "never acquires a write lease," not an OS-level filesystem permission — the real system never claims the
+  latter, so there is no further real-topology gap to close.**
+- **Multi-repo write missing capability**: `checkMultiRepositoryWriteGrant` (`admission.go`, GC-INV-24) is
+  real production code, already unit-tested
+  (`TestAdmission_MultiRepositoryWriteWithoutGrant_BlocksBeforeSpawn`) — but ONLY against hand-built
+  `evaluateAdmission` inputs, never through the real production path (`CreateRootWorkItem`/
+  `CreateChildWorkItem` -> real `WORKSPACE_PROVISION` jobs -> real `ExecuteNodeHandler`) the way isolation and
+  adapter-drift already are. **The one genuine real-topology gap this task closes.**
+- **Argv/env injection, oversized output**: `internal/adapters/process/supervisor_test.go`
+  (`TestSupervisorRunsExecutableWithoutShell`, `TestSupervisorBoundsOversizedOutput`) already prove these
+  against the REAL `ProcessSupervisor` with a REAL spawned OS process — not a fake. `command.CommandDocument`
+  itself structurally prevents shell interpolation (`Argv []ArgvElement`, never a free-form string; an
+  unknown `PLACEHOLDER` name is a publish-time rejection,
+  `TestValidateDocument_RejectsUnknownPlaceholder`/`TestCommandNodeExecutor_UnknownArgvPlaceholder_
+  FailsClosedWithoutSpawning`). **Already proven with a real process at the adapter layer — the missing piece
+  would only be threading this through a full workflow run, which would exercise the identical
+  `ProcessSupervisor` code path already proven, for no new coverage.**
+- **Remote Git**: confirmed by reading every non-test `.go` file in `internal/adapters/gitworktree` — the
+  package NEVER calls `git push`, `git fetch`, or `git clone` anywhere. Every git operation it performs
+  (`worktree add`, `worktree remove`, `rev-parse`, diff/log reads) is local-only, against a repository already
+  present on disk. "Remote mutation call count == 0" is therefore not a runtime check to test — it is a
+  structural fact about this codebase today: there is no code path that could ever attempt one. `NetworkAccess`
+  (`command.CommandDocument`) is a real, already-enforced, already-tested policy-grant check
+  (`TestCommandNodeExecutor_NetworkAccessAllowedWithoutGrant_FailsClosedWithoutSpawning`) for a COMMAND's own
+  spawned process reaching the network — a completely separate concern from git remote operations, which
+  simply do not exist in this codebase.
+
+### Decision
+
+Given six of seven scenarios are already closed — two with existing real end-to-end proof
+(isolation-profile lie, adapter build drift), one structurally impossible to violate (remote Git), and three
+with solid coverage at the adapter/unit level that a full-workflow-run test would not meaningfully strengthen
+(checker source-write, argv/env injection, oversized output) — this task's real, new value is the ONE
+scenario identified above that was never proven past hand-built `evaluateAdmission` inputs: multi-repository
+write without the `INTEGRATION_MULTI_REPOSITORY_WRITE` grant, driven through the real production path.
+
+New test in `internal/integration/v5accept` (same package V5-15C's own isolation-unavailable/adapter-drift
+scenarios live in, reusing `v5AcceptFixture` exactly as they do — never
+`internal/integration/v6accept`'s own real-HTTP-surface harness, since this scenario needs no HTTP layer at
+all, only the real `CreateRootWorkItem`/`CreateChildWorkItem`/`StartWorkflowRun` application commands
+V5-15C's own scenarios already call directly):
+`TestV5AcceptMultiRepositoryWriteWithoutGrant_RealAdmissionRejectsBeforeSpawn` registers a SECOND real git
+repository (`repo-b`, alongside the fixture's own default `repo-a`), grants WRITE on BOTH through a real
+root+child WorkItem pair (so both really provision — two real `WORKSPACE_PROVISION` jobs), pins a permission
+policy at `OperatorTrustedLocal` (never `EnforcedIsolated` — `admissionPriority` checks isolation before
+multi-repository-write, and this scenario is about the write-grant check specifically, not isolation) with NO
+granted capabilities, and confirms the real Attempt is BLOCKED with
+`TerminationReasonWriteCapabilityOrGrantMissing`/`BlockerWriteCapabilityOrGrantMissing` — using the identical
+"real maker script's own marker file never exists on disk" proof technique
+`isolation_unavailable_test.go`/`adapter_drift_test.go` already established, making "spawn count == 0" for
+this case concrete rather than asserted from an error string alone.
+
+### Execution
+
+- `internal/integration/v5accept/multi_repository_write_grant_test.go` (new):
+  `registerSecondV5AcceptRepository` (a second real git repository, driven to ACTIVE exactly like
+  `seedActiveProjectAndRepository` does for the fixture's own default one),
+  `v5AcceptMultiRepoNoGrantPermissionPolicyDocument`, `v5AcceptMultiRepoDocument` (the same
+  single-real-COMMAND-node shape `v5AcceptIsolationUnavailableDocument` uses), and the test itself.
+- No CI wiring needed: the new test lands inside `internal/integration/v5accept`, a package the existing
+  `contract` job (`go test ./...`) already runs in full — matching V8-01's own "no new CI job" precedent.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test -count=1 ./...` (full offline suite): clean on a second run. The FIRST full-suite run showed one
+  unrelated failure — `TestEndToEnd_MultiRepoProvision_BothReachReadyWithBaseRevisionSet`
+  (`internal/app/workspaceprovision`, a package this task never touches) — reproduced 3/3 clean in isolation
+  immediately after, confirming a load-induced flake under full-parallel `go test ./...` (this session's own
+  established "Windows CI runner contention" pattern, [[agent-kit-ci-known-flakes]]), not a regression from
+  this change.
+- `go test ./internal/integration/v5accept/... -run
+  'TestV5AcceptMultiRepositoryWriteWithoutGrant_RealAdmissionRejectsBeforeSpawn' -count=1 -timeout 3m`: clean
+  across 3 consecutive fresh local runs (4.8-6.9s each).
+- `go test ./internal/integration/v5accept/... -timeout 5m` (whole package): clean — confirms the new test
+  coexists correctly with every existing V5-15 scenario in the same package, including the two it reuses
+  fixture machinery from (isolation-unavailable, adapter-drift).
