@@ -101,6 +101,15 @@ type ArtifactRepository interface {
 	// purge-eligible. Ordered by (id) for a stable, deterministic result a
 	// test can assert on exactly.
 	ListArtifactsByLocator(ctx context.Context, locator string) ([]artifact.Artifact, error)
+	// ListAllArtifacts returns EVERY Artifact row in the installation,
+	// across every project and every AttachState/RetentionClass — V8-06's
+	// own "artifact inventory/hash" bar (docs/design/10-v8-alpha-hardening.md):
+	// a backup's own manifest must account for every retained artifact this
+	// installation knows about, not a filtered subset the way
+	// ListOrphanedArtifacts/ListArtifactsByLocator deliberately are. Ordered
+	// by (created_at, id) for a stable, deterministic result a test can
+	// assert on exactly, matching ListOrphanedArtifacts' own convention.
+	ListAllArtifacts(ctx context.Context) ([]artifact.Artifact, error)
 	// ClaimArtifactLocatorForPurge atomically inserts a durable deletion
 	// intent for locator — the fence that closes the TOCTOU gap between
 	// "confirmed every row sharing this Locator is purge-eligible" and

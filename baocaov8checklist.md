@@ -902,3 +902,129 @@ exhaustively unit-tests almost this entire scope:
   -timeout 2m`: clean across 3 consecutive fresh local runs (~1.3-1.5s each).
 - `go test ./internal/integration/v5accept/... -timeout 5m` (whole package): clean, 79.6s — confirms the new
   test coexists correctly with every existing V5-15/V8-04B/V8-04D scenario in the same package.
+
+## V8-06 — SQLite backup/restore and corruption diagnostics
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-06 (ROADMAP-§7) asks for: "local operator sao lưu/khôi phục
+consistent DB + artifact manifest, không hứa sync/merge hai installs" (a local operator backs up and restores
+a consistent database plus an artifact inventory manifest, never promising to sync or merge two separate
+installations). Completion bar: a real backup opens cleanly, a real restore into a fresh location verifies
+clean, and missing/corrupt artifacts are reported, not silently ignored.
+
+Research before writing any code found there is currently **no backup/restore feature at all** anywhere in
+this codebase — no port, no adapter method, no CLI surface. Two real building blocks needed identifying
+first:
+
+- **SQLite's own `VACUUM INTO` statement** is SQLite's documented safe, consistent, online-backup mechanism —
+  confirmed via a direct throwaway smoke test that it works with `modernc.org/sqlite` (this repo's own
+  driver) and that the resulting file reopens cleanly through the real `sqlite.Open` path. It only ever takes
+  the same SHARED read lock an ordinary read transaction would, so it is safe to run while a real `aw
+  serve`/`aw worker` process is actively reading and writing the same database in WAL mode — no new
+  "pause writes for a backup window" mechanism was needed anywhere in the application layer.
+- **`ports.ArtifactRepository` has no existing "list every artifact" method** — only `ListOrphanedArtifacts`
+  (filtered by age) and `ListArtifactsByLocator` (filtered by locator). A backup's own manifest needs every
+  retained row regardless of `AttachState`/`RetentionClass`, so this is a genuine new interface method, not
+  a reuse of an existing one.
+- **`cmd/aw`'s own `CLI_LOCAL` dispatch set is a closed list** — found via
+  `docs/design/08-v6-api-projections.md:799`: "**Không làm:** no new leaf/route. `CLI_LOCAL` closed set is
+  serve/worker/help/version/evidence verify." This is a real, documented architectural constraint from an
+  earlier V6 task that forbids adding a new process-level subcommand to `cmd/aw/cli.go`'s own `subcommands`
+  map. A backup/restore tool also has no natural HTTP-parity counterpart to route through the resource-command
+  registry (it operates on files the running process isn't even using). `cmd/v6-gate`, `cmd/v8-security-gate`,
+  and `cmd/docs-coverage-check` already establish the precedent this repo uses for exactly this situation: a
+  brand-new, standalone `cmd/` binary with its own composition root, confirmed compatible with
+  `internal/archtest`'s own `TestCompositionRootIsCmdAwNotCmdAgentkit` check.
+
+### Decision
+
+1. **New minimal port**, `ports.DatabaseBackup` (`internal/app/ports/databasebackup.go`) — one method,
+   `BackupTo(ctx, destPath)` — kept as its own port rather than growing `UnitOfWork`, since it is the one
+   durable-store operation that is NOT a transaction: it operates on the store as a whole, at a single
+   consistent point in time, never inside a caller-managed `Tx`. `internal/adapters/sqlite/backup.go`
+   implements it on `*Store` via `VACUUM INTO`, refusing to overwrite an existing destination file — the same
+   "never silently clobber" discipline this codebase's other adapters already follow — and confirmed via a
+   compile-time assertion (`var _ ports.DatabaseBackup = (*Store)(nil)`) that this stays clear of the
+   domain/app-never-imports-adapters archtest rule (the new `internal/app/maintenance` package depends only on
+   the port, never on `internal/adapters/sqlite` directly).
+2. **New `ports.ArtifactRepository.ListAllArtifacts(ctx)` method**, implemented in both real implementers
+   found via `grep -rln "ports.ArtifactRepository\b"`: the real sqlite adapter
+   (`internal/adapters/sqlite/artifact_repository.go`, mirroring `ListOrphanedArtifacts`'s own two-phase
+   collect-IDs-then-load pattern, ordered by `(created_at, id)` for a deterministic result) and the fake
+   (`internal/app/ports/fake/unitofwork.go`, same ordering via `sort.Slice`).
+3. **New `internal/app/maintenance` package** — the real application logic, composed from ports only:
+   - `Backup` (`backup.go`): reads the full artifact inventory first, then calls `BackupTo` (in that order —
+     a manifest describing a moment strictly later than the DB snapshot it accompanies is always the safe
+     direction for a restore-time cross-check), then writes a versioned JSON `Manifest`
+     (`ManifestSchemaVersion = 1`) recording only durable metadata per artifact (ID, ProjectID, Locator,
+     ContentHash, Size, MediaType, RetentionClass, AttachState) — never artifact bytes, since those live in
+     the DB snapshot's own `artifacts` table already. Refuses to overwrite an existing manifest destination.
+     Deliberately does NOT copy the artifact-store's own real content files: an operator's own separate
+     filesystem-level backup of the artifact-store root is assumed; this package only ever proves whether
+     that separately-backed-up content still matches what the manifest says should be there.
+   - `VerifyRestoredArtifacts` (`restore.go`): checks every manifest entry against a real
+     `ports.ArtifactStore.Verify` call, classifying each into `OK` / `MISSING` (a `CodeNotFound` from
+     `Verify`) / `CORRUPT` (any other verify failure — hash or size mismatch), collected into a
+     `RestoreVerificationReport` with a single `.Clean()` bool a CLI can branch on. A `Purged` manifest entry
+     is deliberately skipped — its real content was legitimately, durably deleted by a real V5-14 sweep before
+     the backup was even taken, so having no real content at its Locator is expected, not evidence of
+     corruption.
+4. **New standalone binary `cmd/aw-maintenance`** (`backup`/`restore` subcommands, its own composition root
+   wiring the real sqlite/artifactstore adapters directly) rather than touching `cmd/aw` — per the `CLI_LOCAL`
+   finding above. `restore` materializes the backup's DB snapshot into a caller-specified FRESH temp root
+   (refusing if a `restored.db` already exists there — never overwrite a live installation or a previous
+   restore attempt silently), confirms it genuinely opens through the real production `sqlite.Open` path
+   (migrations included — a failure here means the backup is not usable), then cross-checks the manifest
+   against an operator-supplied, separately-restored artifact-store root and prints/returns the verification
+   report, exiting non-zero if anything is missing or corrupt.
+
+### Execution
+
+- `internal/app/ports/artifactrecord.go`: new `ListAllArtifacts(ctx) ([]artifact.Artifact, error)` method on
+  `ArtifactRepository`.
+- `internal/adapters/sqlite/artifact_repository.go`: `ListAllArtifacts` implementation.
+- `internal/app/ports/fake/unitofwork.go`: `ListAllArtifacts` fake implementation.
+- `internal/app/ports/databasebackup.go` (new): `DatabaseBackup` port.
+- `internal/adapters/sqlite/backup.go` (new): `Store.BackupTo` via `VACUUM INTO`.
+- `internal/app/maintenance/backup.go` (new): `ManifestSchemaVersion`, `ManifestEntry`, `Manifest`,
+  `BackupDeps`, `BackupRequest`, `BackupResult`, `Backup`, `ReadManifest`.
+- `internal/app/maintenance/restore.go` (new): `ArtifactRestoreStatus`, `ArtifactRestoreFinding`,
+  `RestoreVerificationReport` + `.Clean()`, `VerifyRestoredArtifacts`.
+- `internal/app/maintenance/maintenance_sqlite_test.go` (new): real sqlite + real filesystem
+  `ArtifactStore` fixture (`backupFixture`, mirroring `artifactsweep/sweep_sqlite_test.go`'s own "real stack,
+  not fakes" discipline for this job family) — `TestBackup_ProducesOpenableConsistentSnapshotAndAccurateManifest`,
+  `TestBackup_RefusesToOverwriteAnExistingManifest`,
+  `TestVerifyRestoredArtifacts_MissingAndCorruptAreDistinguished` (the last one genuinely corrupts one real
+  on-disk object file's bytes and confirms MISSING and CORRUPT are told apart, never collapsed into one
+  generic bucket).
+- `cmd/aw-maintenance/main.go` (new): `backup`/`restore` subcommands, each its own `flag.FlagSet`.
+- `cmd/aw-maintenance/main_test.go` (new): calls the real `runBackup`/`runRestore` entrypoints directly
+  (the same functions the compiled binary's own `main()` calls) —
+  `TestBackupThenRestore_RealBinaryEntrypoints_RoundTrips` (full real round trip: seed a real project row,
+  back it up, restore it into a fresh temp root, independently re-read the real row back out of the restored
+  database), `TestRunBackup_MissingFlags_ReturnsUsageError`, `TestRunRestore_MissingFlags_ReturnsUsageError`,
+  `TestRunRestore_RefusesAnAlreadyMaterializedTempRoot`.
+- No CI wiring needed: `cmd/aw-maintenance` and `internal/app/maintenance` are both plain Go packages the
+  existing `contract` job's `go test ./...` already covers in full.
+
+### Verify
+
+- Real, manual end-to-end run of the actual compiled binary (stronger than `go test` alone): built
+  `aw-maintenance`, seeded a real project row into a real sqlite database via a throwaway in-module scratch
+  program, ran `aw-maintenance backup` against it, then ran `aw-maintenance restore` against that backup's own
+  output into a fresh temp root, then independently re-opened the restored database and read the row back out
+  — real output confirmed: `real project found in restored DB: {ID:p1 Name:p1 Status:ACTIVE Version:1}`. The
+  scratch program and all its temp artifacts were deleted immediately after.
+- `go build ./...`, `go vet ./...`: clean across the whole repo.
+- `go test ./internal/app/maintenance/... -v` and `-count=3`: all 3 tests pass, stable across 3 consecutive
+  runs.
+- `go test ./cmd/aw-maintenance/... -v`: all 4 tests pass, including the real backup→restore round trip
+  through the actual production entrypoints.
+- `internal/archtest` full suite (including `TestCompositionRootIsCmdAwNotCmdAgentkit` and
+  `TestDomainAppNeverImportAdapters`): clean — confirms the new standalone binary and the new
+  port-based `internal/app/maintenance` package both stay architecturally sound.
+- `go test -count=1 ./...` (full repo, every package): clean except one isolated, non-reproducible local
+  flake, `TestPool_TwoPoolsRaceRecovery_NoDuplicateProcessing` in `internal/app/workerpool` — a package this
+  task never touches. Reran that single test 5x in isolation immediately after: 5/5 pass, confirming it was
+  local timing contention from the long full-suite run, not a real regression.

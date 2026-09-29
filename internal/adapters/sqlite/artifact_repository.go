@@ -232,6 +232,40 @@ func (r artifactRepository) ListOrphanedArtifacts(ctx context.Context, olderThan
 	return artifacts, nil
 }
 
+// ListAllArtifacts implements ports.ArtifactRepository, ordered by
+// (created_at, id) for a stable, deterministic result a test can assert on
+// exactly, matching ListOrphanedArtifacts' own convention.
+func (r artifactRepository) ListAllArtifacts(ctx context.Context) ([]artifact.Artifact, error) {
+	rows, err := r.tx.QueryContext(ctx, `SELECT id FROM artifacts ORDER BY created_at, id`)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list all artifacts: %w", err))
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan artifact id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate artifact ids: %w", err)
+	}
+	rows.Close()
+
+	artifacts := make([]artifact.Artifact, 0, len(ids))
+	for _, id := range ids {
+		a, err := loadArtifactTx(ctx, r.tx, id)
+		if err != nil {
+			return nil, err
+		}
+		artifacts = append(artifacts, a)
+	}
+	return artifacts, nil
+}
+
 // ListArtifactsByLocator implements ports.ArtifactRepository.
 func (r artifactRepository) ListArtifactsByLocator(ctx context.Context, locator string) ([]artifact.Artifact, error) {
 	rows, err := r.tx.QueryContext(ctx, `SELECT id FROM artifacts WHERE locator = ? ORDER BY id`, locator)
