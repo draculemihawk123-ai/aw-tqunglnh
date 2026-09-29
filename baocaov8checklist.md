@@ -318,6 +318,122 @@ pattern) and requiring exactly that one evidence kind.
 - `-race` could not be exercised locally (this dev machine has no C compiler for CGO); left to the new
   `v8-concurrency-soak-race` CI job, matching this repo's own established `-race`-on-Linux-only convention.
 
+## V8-04A — Filesystem and path abuse suite
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-04A (Nguồn: AK-ARCH-027) asks for a filesystem/path-boundary
+negative suite on both OS covering 5 scenarios: (1) traversal, (2) symlink/reparse escape, (3) a repository
+registered UNDER the workspace root, (4) artifact/workspace-root containment, (5) a cleanup/sweep operation
+only ever touching paths it owns — completion bar: "mọi từ chối có safe diagnostic và evidence."
+
+Research before writing any code found that MOST of the underlying containment is already real, existing
+production code, already unit-tested at the package level:
+- `internal/adapters/gitworktree/provider.go`: `ensureLexicallyWithin`/`isWithin` (lexical containment via
+  `filepath.Rel`), `canonicalExistingDirectory`/`canonicalExistingPath` (real cross-platform symlink/reparse
+  resolution — `filepath.EvalSymlinks` non-Windows, a real open-handle `GetFinalPathNameByHandle` call on
+  Windows), `validateManagedDirectory` (symlink rejection + canonical containment for the workspace side),
+  `validateLocalRepository` (the scenario-3 bidirectional `isWithin(root, repo) || isWithin(repo, root)`
+  check, `ErrUnsafePath`).
+- `TestProviderRejectsRepositoryInsideManagedRoot` (`internal/adapters/gitworktree/provider_test.go`) already
+  unit-tests scenario 3 directly against `Provider.Provision`.
+- `internal/adapters/artifactstore/filesystem.go`'s `locatorPattern` (`^sha256:[0-9a-f]{64}$`) validates
+  `ref.Locator` before ever building a filesystem path — a well-formed hex digest structurally cannot contain
+  `..`, `/`, `\`, or a NUL byte, so this is airtight by construction, not merely tested; already unit-tested
+  twice (`TestPut/Open/Delete_MalformedLocator_RejectedBeforeTouchingFilesystem`).
+- `internal/app/artifactsweep/sweep.go` never builds or touches a filesystem path itself — its own delete
+  step (line 391) calls `deps.Store.Delete(ctx, ref)`, the SAME `ports.ArtifactStore` port whose filesystem
+  implementation enforces the `locatorPattern` check above. Scenario 5's artifact half is therefore already
+  structurally guaranteed by scenario 4's own containment, with no separate code path to test.
+- `Provider.Release` (provider.go) never calls a raw `os.RemoveAll` on caller-influenced input either: it
+  resolves its own target via `p.workspacePath` (itself validated through
+  `ensureLexicallyWithin(p.worktreesRoot, ...)`), then removes content only via a real `git worktree remove`.
+
+### Decision
+
+Given this existing coverage, duplicating it at the unit level would add nothing. Following V8-01/V8-02/
+V8-03's own established precedent this session (real `aw serve`+`aw worker` topology via
+`internal/integration/v6accept`'s own harness, not just isolated package tests), V8-04A's real, new value is
+proving the SAME containment surfaces correctly through the full real public HTTP surface end to end — with
+a safe, non-path-leaking diagnostic as real evidence — for the two scenarios where a genuinely new attack
+surface exists at that layer:
+
+- **Scenario 3 (repo nested under workspace root)**: `RegisterRepository`
+  (`internal/app/catalog/commands.go`) does ZERO path validation at registration time — confirmed by reading
+  it directly. The exact string an operator supplies as `remoteLocator` flows straight through, unvalidated,
+  into `ports.ProvisionSpec.LocalRepository` only later, when a child WorkItem's own `effectiveScope` first
+  triggers real workspace `Provision` (confirmed via `LocalRepository: repo.RemoteLocator` at
+  `internal/app/workspaceprovision/handler.go:195`). `repoprobe.Prober` has no `--workspace-root` awareness
+  at all (identity/dedup only), so a malicious path probes ACTIVE exactly like any other real repository —
+  the real end-to-end attack surface is registration-time-unvalidated, provision-time-rejected.
+- **Scenario 2 (symlink/reparse escape), the strictly stronger real-topology case**: a repository path whose
+  raw, LEXICAL string is completely unrelated to `--workspace-root` (so a naive `strings.HasPrefix` check
+  would wave it through) but is a real symlink resolving, canonically, to a location INSIDE the workspace
+  root — proving `validateLocalRepository`'s own containment check runs against the CANONICAL path end to
+  end, not the caller-supplied one, through the real HTTP surface.
+- **Scenario 5 (cleanup only touches owned paths)**: NOT an HTTP-level test — releasing a WorkspaceSet
+  through the real public API requires a real, sealed-or-abandoned ReleaseSet first
+  (`ports.ReleaseEligibilityAuthority`, GC-INV-26), confirmed live when this suite's own first attempt at an
+  HTTP-level release test was correctly rejected with `403 FORBIDDEN` ("release is not authorized until this
+  family's release set is sealed or abandoned"). Reproducing journey_test.go's own full release-set-seal
+  chain just to reach a releasable WorkspaceSet would dwarf this suite's own scope for no added containment
+  coverage. Instead: a direct, real-fixture test against `gitworktree.Provider` itself (real git, real
+  filesystem, the exact same Provision/Release code the two HTTP-level tests above already exercise) —
+  planting a bystander directory as a sibling of a real provisioned worktree, inside the SAME managed
+  `worktreesRoot`, and confirming Release leaves it byte-for-byte untouched.
+- Scenario 1 (plain `..` traversal) and scenario 4 (artifact-root containment) are deliberately NOT
+  duplicated: both are already airtight (`ensureLexicallyWithin`'s `filepath.Rel`-based rejection;
+  `locatorPattern`'s structural regex) and already unit-tested; there is no real-topology surface that would
+  exercise either one differently — an artifact `Locator` is never caller-supplied free text in the real
+  product, always the digest the store itself computed on `Put`.
+
+### Execution
+
+- `internal/integration/v6accept/filesystem_path_abuse_test.go` (new): `pathAbuseFixture` (a minimal project
+  + one repository, registered through the real HTTP surface — this suite never needs a workflow, run, or
+  command/agent definition at all, since real `Provision` runs as soon as a child WorkItem's own
+  `effectiveScope` names the repository, well before any run could start), `registerRepositoryAt`,
+  `createFamilyScopedTo`, `requireSafeProvisionFailure` (asserts the real WorkspaceSet is BLOCKED, the one
+  abusive RepositoryWorkspace is FAILED with the real, short, typed `PROVISION_FAILED`
+  `LastProvisionErrorCode`, and the raw attacker-controlled filesystem path never appears anywhere in the
+  response body — the "safe diagnostic" bar made concrete).
+  - `TestV8PathAbuse_RepositoryNestedUnderWorkspaceRoot_Rejected` (scenario 3).
+  - `TestV8PathAbuse_SymlinkDisguisedNestedRepository_Rejected` (scenario 2) — follows this repo's own
+    established convention (`internal/adapters/repoprobe/prober_test.go`'s identical symlink test) of
+    treating "`os.Symlink` unavailable outside Developer Mode/admin" as a Windows environment limitation to
+    skip past, not a product bug.
+- `internal/adapters/gitworktree/provider_test.go` (extended):
+  `TestProviderRelease_BystanderSiblingUnderManagedRootSurvives` (scenario 5) — real `Provision`+`Release`
+  against a real git repository, with a bystander directory/file planted directly inside
+  `provider.worktreesRoot` before release.
+- No CI wiring needed: both new tests land inside packages the existing `contract` (`go test ./...`, covers
+  `internal/adapters/gitworktree`) and `v6-acceptance` (`AW_HTTP_ACCEPTANCE=1`, covers
+  `internal/integration/v6accept`) jobs already run in full — the same "no new CI job" precedent V8-01 set.
+
+**A real finding, useful for any future WorkspaceSet-provisioning-failure fixture**: a WorkspaceSet whose
+required repository fails to provision moves to set-level state `BLOCKED`, never `"FAILED"` — there is no
+`WorkspaceSetFailed` transition in the real code path (`internal/app/workspaceprovision/handler.go`'s own
+`aggregateWorkspaceSet`); `workspace.WorkspaceSetFailed` exists as a domain constant but this handler never
+produces it for a provisioning failure. Only the individual `RepositoryWorkspace` row itself reaches state
+`"FAILED"` (with `LastProvisionErrorCode` set). The first draft of this suite waited for `"FAILED"` at the
+set level and timed out for a full minute before this was found by reading `aggregateWorkspaceSet` directly.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test -count=1 ./...` (full offline suite, no acceptance opt-in): clean, all packages pass.
+- `go test ./internal/adapters/gitworktree/... -timeout 5m`: clean (full package, including the new
+  bystander test 3x in isolation beforehand — 1.6-1.9s each, all pass).
+- `AW_HTTP_ACCEPTANCE=1 go test ./internal/integration/v6accept/... -run 'TestV8PathAbuse' -count=1 -timeout
+  6m`: clean across 3 consecutive fresh local runs (~8-9s each) —
+  `TestV8PathAbuse_RepositoryNestedUnderWorkspaceRoot_Rejected` PASS every run;
+  `TestV8PathAbuse_SymlinkDisguisedNestedRepository_Rejected` SKIP every run on this dev machine
+  (`os.Symlink` needs Developer Mode/admin here — the established, accepted convention for this exact
+  situation), so its real pass/fail is left to CI's own windows-latest/ubuntu-latest legs.
+- `AW_HTTP_ACCEPTANCE=1 go test ./internal/integration/v6accept/... -run
+  'TestV6HTTPAcceptance_CleanDatabaseJourney' -timeout 6m`: clean — confirms the new suite coexists
+  correctly with V6-14's own core journey in the same package.
+
 ## V8-04D — Content, redaction and secret-scan suite
 
 ### Context
