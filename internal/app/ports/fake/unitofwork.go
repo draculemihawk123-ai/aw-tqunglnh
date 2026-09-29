@@ -1326,6 +1326,22 @@ func (a *ArtifactRepository) ListOrphanedArtifacts(_ context.Context, olderThan 
 	return result, nil
 }
 
+// ListAllArtifacts mirrors sqlite's own query, ordered by (CreatedAt, ID)
+// for a deterministic result either implementation gives.
+func (a *ArtifactRepository) ListAllArtifacts(_ context.Context) ([]artifact.Artifact, error) {
+	result := make([]artifact.Artifact, 0, len(a.artifacts))
+	for _, rec := range a.artifacts {
+		result = append(result, rec)
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].CreatedAt.Equal(result[j].CreatedAt) {
+			return result[i].ID < result[j].ID
+		}
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+	return result, nil
+}
+
 // ListArtifactsByLocator mirrors sqlite's own query, ordered by ID for a
 // deterministic result either implementation gives.
 func (a *ArtifactRepository) ListArtifactsByLocator(_ context.Context, locator string) ([]artifact.Artifact, error) {
