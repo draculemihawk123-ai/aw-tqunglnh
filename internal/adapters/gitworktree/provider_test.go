@@ -335,6 +335,75 @@ func TestProviderRejectsRepositoryInsideManagedRoot(t *testing.T) {
 	}
 }
 
+// TestProviderRelease_BystanderSiblingUnderManagedRootSurvives is V8-04A
+// scenario 5 (docs/design/10-v8-alpha-hardening.md, "cleanup chỉ chạm owned
+// path", AK-ARCH-027): releasing a real, provisioned workspace must remove
+// exactly its own worktree directory and nothing else, even when an
+// unrelated bystander directory sits directly beside it inside the SAME
+// managed worktreesRoot — never named by any handle this Provider ever
+// issued. Release (provider.go) only ever removes content via `git worktree
+// remove <workspacePath>`, where workspacePath itself comes from
+// p.workspacePath (validated through
+// ensureLexicallyWithin(p.worktreesRoot, ...)); it never calls a raw
+// os.RemoveAll over caller- or attacker-influenced input, so this bystander
+// is expected to survive rather than merely hoped to.
+func TestProviderRelease_BystanderSiblingUnderManagedRootSurvives(t *testing.T) {
+	t.Parallel()
+
+	fixtureRoot := t.TempDir()
+	repositoryPath, baseRevision := createGitRepository(t, filepath.Join(fixtureRoot, "sources", "bystander service"), "base\n")
+	provider := newTestProvider(t, filepath.Join(fixtureRoot, "managed"))
+	ctx := context.Background()
+
+	bystanderDir := filepath.Join(provider.worktreesRoot, "bystander-not-owned-by-any-handle")
+	bystanderFile := filepath.Join(bystanderDir, "do-not-touch.txt")
+	if err := os.MkdirAll(bystanderDir, 0o755); err != nil {
+		t.Fatalf("mkdir bystander: %v", err)
+	}
+	bystanderContent := []byte("this file must survive Release untouched\n")
+	if err := os.WriteFile(bystanderFile, bystanderContent, 0o644); err != nil {
+		t.Fatalf("write bystander file: %v", err)
+	}
+
+	spec := ports.ProvisionSpec{
+		RepositoryID:    project.RepositoryID("repo-bystander"),
+		LocalRepository: repositoryPath,
+		BaseRef:         baseRevision,
+		FamilyID:        work.TaskFamilyID("family-bystander"),
+		WorkspaceSetID:  workspace.WorkspaceSetID("set-bystander"),
+		Generation:      1,
+	}
+	handle, err := provider.Provision(ctx, spec)
+	if err != nil {
+		t.Fatalf("provision workspace: %v", err)
+	}
+	workspacePath, err := provider.workspacePath(handle)
+	if err != nil {
+		t.Fatalf("resolve workspace path: %v", err)
+	}
+	if _, err := os.Stat(workspacePath); err != nil {
+		t.Fatalf("provisioned workspace does not exist: %v", err)
+	}
+
+	if err := provider.Release(ctx, handle); err != nil {
+		t.Fatalf("release workspace: %v", err)
+	}
+	if _, err := os.Stat(workspacePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("released workspace still exists or has unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(bystanderFile)
+	if err != nil {
+		t.Fatalf("bystander file %s must survive release untouched, but reading it failed: %v", bystanderFile, err)
+	}
+	if string(got) != string(bystanderContent) {
+		t.Fatalf("bystander file content changed by release: got %q, want %q", got, bystanderContent)
+	}
+	if _, err := os.Stat(repositoryPath); err != nil {
+		t.Fatalf("release damaged source repository: %v", err)
+	}
+}
+
 func newTestProvider(t *testing.T, root string) *Provider {
 	t.Helper()
 	provider, err := New(Config{Root: root})
