@@ -516,3 +516,74 @@ V6-13 originally landed at.
 - `go test ./internal/delivery/httpapi/... -timeout 5m` (the full package tree, including `securitymatrix`
   and `security_test.go`): clean — `internal/delivery/httpapi` 10.3s, `internal/delivery/httpapi/
   securitymatrix` 17.6s, all 19 subpackages pass.
+
+## V8-04D — Content, redaction and secret-scan suite
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-04D (ADR-017, AK-ARCH-024) asks for: malicious artifact/YAML
+handling, a redaction corpus, and a "retained-data secret scan trên DB/event/log/artifact" — completion bar:
+"không có sink nào bỏ qua redactor dùng chung" (no sink bypasses the shared redactor), verified by "secret
+fixture search bằng 0; artifact không execute như trusted HTML."
+
+Research before writing any code found:
+- **Malicious artifact / "artifact không execute như trusted HTML"**: already fully closed by V6-13's own
+  `TestArtifactContentMediaHandling` (`internal/delivery/httpapi/securitymatrix/injection_test.go`, also the
+  closing evidence for V8-04C above) — script-capable content is forced to `Content-Disposition: attachment`
+  with `X-Content-Type-Options: nosniff`, never rendered inline. **Nothing to add.**
+- **Redaction corpus**: `internal/app/redact/redact_test.go` already has an extensive unit corpus (23 test
+  functions) covering exact-match, false-positive allowlisting, tagged sensitivity, nested maps/slices/
+  structs/pointers, Argv/Env-shaped values, max-depth, non-mutation, and free-text embedding. **Nothing to
+  add.**
+- **Log sink**: `internal/app/logging/logger_test.go` already has its own real, dedicated "zero occurrences"
+  suite (`TestLogger_JSON_SecretField_ZeroOccurrences`, `TestLogger_Text_SecretField_ZeroOccurrences`,
+  `TestLogger_SecretNestedInFieldValue_ZeroOccurrences`) against the actual production
+  `internal/app/logging.Logger`. **Nothing to add.**
+- **Artifact/DB/event sink, at the real end-to-end level**: `internal/app/runtime/truncation_redaction_test.go`
+  already proves a resolved secret is scrubbed out of ONE persisted command-output artifact — but only
+  against a fake, in-memory `*fake.UnitOfWork`, never a real sqlite database or a real filesystem
+  `ArtifactStore`, and never as a whole-corpus scan (only the one artifact the test already knows the ID of).
+  This is the one genuine real-topology gap, in the same shape V8-04B's own research found for
+  multi-repository-write: a real mechanism, well unit-tested in isolation, never proven against the real
+  retained stores this codebase actually persists to.
+
+### Decision
+
+New test in `internal/integration/v5accept` (same package/fixture V8-04B's own addition reused, and the
+same real sqlite/git/artifact-store/ProcessSupervisor composition V5-15's own scenarios already established):
+`TestV5AcceptRetainedDataSecretScan_RealSecretNeverPersistedUnredacted` sets a real secret value on the TEST
+process's own environment (`t.Setenv`, exactly what `secretenv.Resolver`'s own doc comment names as Alpha's
+"trust the local machine" secret store), runs a real, minimal COMMAND-only graph (`START -> echo_secret ->
+END`, no gate needed — a COMMAND node's own successful execution already produces
+`runtimedomain.EvidenceKindCommandExecution` evidence, which is all a `CompletionPolicy` naming only that one
+`RequiredEvidenceKind` ever needs) whose real script genuinely echoes the resolved secret to stdout, then:
+1. Reads the one legitimate command-output artifact back through the real `ArtifactStore` — the positive
+   control: it must NOT contain the raw secret, and MUST contain the redactor's own `[REDACTED]` marker,
+   proving redaction genuinely ran rather than merely being absent because nothing happened.
+2. Walks EVERY real object under the real filesystem `ArtifactStore`'s own root directory on disk — not just
+   the one artifact already known — searching each for the raw secret value.
+3. Closes the real store and reads the raw bytes of the real, on-disk sqlite database FILE itself, searching
+   for the raw secret value — this covers "DB" and "event" from V8-04D's own scope in one sweep, since every
+   `domain_events` row this run ever logged lives in that same file.
+
+`v5AcceptDriftPermissionPolicyDocument` (adapter_drift_test.go, `OperatorTrustedLocal`, no granted
+capabilities) is reused directly rather than adding a new permission-policy fixture, since this scenario
+needs neither isolation enforcement nor any special capability.
+
+### Execution
+
+- `internal/integration/v5accept/retained_data_secret_scan_test.go` (new): `v8d04dEchoSecretScript` (a real,
+  OS-appropriate script echoing the resolved secret), `v8d04dDocument` (the minimal COMMAND-only graph), and
+  the test itself.
+- No CI wiring needed: the new test lands inside `internal/integration/v5accept`, a package the existing
+  `contract` job (`go test ./...`) already runs in full.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go test -count=1 ./...` (full offline suite): clean.
+- `go test ./internal/integration/v5accept/... -run
+  'TestV5AcceptRetainedDataSecretScan_RealSecretNeverPersistedUnredacted' -count=1 -timeout 3m`: clean across
+  3 consecutive fresh local runs (2.1-2.2s each).
+- `go test ./internal/integration/v5accept/... -timeout 5m` (whole package): clean — confirms the new test
+  coexists correctly with every existing V5-15 scenario in the same package.
