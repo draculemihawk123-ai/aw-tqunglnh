@@ -29,6 +29,47 @@ jobs:
         run: go run ./cmd/docs-coverage-check
       - name: Offline contract suite
         run: go test -count=1 ./...
+
+      # V8-04E's own evidence step: internal/adapters/gitworktree,
+      # internal/integration/v5accept and internal/delivery/httpapi (which
+      # includes internal/delivery/httpapi/securitymatrix) already pass as
+      # part of "Offline contract suite" above — this re-runs ONLY those
+      # three package trees, on both platforms, with `-json` so the specific
+      # named security tests V8-04A/B/C/D's own checklist entries cite as
+      # their real, load-bearing evidence get a structured, per-test
+      # artifact the v8-04e-gate job below can read — the identical
+      # "standalone, human-readable/structured report on top of an already-
+      # enforcing suite" precedent V0-13's own Boundary/dependency report
+      # step (below) already established, generalized to `-json` instead of
+      # `-v` because this one needs per-test outcomes, not just a log.
+      # `if: always()` so this still runs (and reports real failures by
+      # name) even if something unrelated already failed the suite above.
+      - name: Security suite evidence (V8-04E)
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          set -uo pipefail
+          mkdir -p security-evidence
+          go test -count=1 -json ./internal/adapters/gitworktree/... ./internal/integration/v5accept/... ./internal/delivery/httpapi/... > security-evidence/security-evidence.jsonl 2> security-evidence/stderr.log
+          status=$?
+          printf '{"commit":"%s","goos":"%s"}\n' "${{ github.sha }}" "$(go env GOOS)" > security-evidence/meta.json
+          echo "== last 100 lines of stderr (build errors, if any) =="
+          tail -n 100 security-evidence/stderr.log || true
+          if [ ${status} -ne 0 ]; then
+            echo "V8-04E security suite evidence FAILED on ${{ matrix.os }} (exit ${status}) — see the v8-04e-evidence-${{ matrix.os }} artifact; the v8-04e-gate job reports which specific named test failed"
+          fi
+          exit ${status}
+
+      - name: Upload V8-04E security suite evidence (${{ matrix.os }})
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v8-04e-evidence-${{ matrix.os }}
+          path: security-evidence/
+          if-no-files-found: warn
+          retention-days: 7
+
       # V0-11A diagnostic: the only place these timing-sensitive failures
       # (docs/design/02-v0-spike-verdict.md V0-11A) were ever observed is the
       # real windows-latest runner — neither reproduced locally. Repeat
@@ -901,6 +942,79 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: v6-14c-verdict
+          path: verdict.json
+          if-no-files-found: warn
+          retention-days: 7
+
+  # V8-04E — "Security aggregate gate" (docs/design/10-v8-alpha-hardening.md
+  # V8-04E: "một verdict duy nhất trên bốn suite" — one verdict over the four
+  # V8-04A..D security suites). Mirrors v6-gate's own structure exactly: a
+  # pure reader over already-produced CI artifacts, never a test run of its
+  # own. needs both `contract` (the new v8-04e-evidence-<os> artifact) and
+  # `v6-acceptance` (the pre-existing v6-acceptance-report-<os> artifact,
+  # which V8-04A's own two v6accept-hosted tests ride for free) — `if:
+  # always()` so a real failure in either still reaches this gate as a named
+  # finding rather than the gate itself being skipped as collateral damage.
+  v8-04e-gate:
+    name: V8-04E security aggregate gate
+    runs-on: ubuntu-latest
+    needs: [contract, v6-acceptance]
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      # continue-on-error on every download, for the same reason v6-gate's
+      # own downloads use it: a missing artifact must reach the gate as
+      # missing EVIDENCE, reported by the gate in its own words with the
+      # Task ID that owns it, rather than aborting this job before the gate
+      # ever runs.
+      - name: Download v6-acceptance evidence (ubuntu-latest)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v6-acceptance-report-ubuntu-latest
+          path: evidence/v6-acceptance-report-ubuntu-latest
+
+      - name: Download v6-acceptance evidence (windows-latest)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v6-acceptance-report-windows-latest
+          path: evidence/v6-acceptance-report-windows-latest
+
+      - name: Download V8-04E security suite evidence (ubuntu-latest)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v8-04e-evidence-ubuntu-latest
+          path: evidence/v8-04e-evidence-ubuntu-latest
+
+      - name: Download V8-04E security suite evidence (windows-latest)
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v8-04e-evidence-windows-latest
+          path: evidence/v8-04e-evidence-windows-latest
+
+      - name: Emit the V8-04E verdict
+        shell: bash
+        run: |
+          set -uo pipefail
+          go run ./cmd/v8-security-gate \
+            --evidence-dir evidence \
+            --commit "${{ github.sha }}" \
+            --out verdict.json
+
+      - name: Upload the V8-04E verdict
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v8-04e-verdict
           path: verdict.json
           if-no-files-found: warn
           retention-days: 7
