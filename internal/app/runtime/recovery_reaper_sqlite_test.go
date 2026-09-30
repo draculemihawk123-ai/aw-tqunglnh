@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
@@ -281,7 +282,10 @@ func TestRecoveryReaperHandler_OrphanedMutatingAttempt_RunCancelling_ClosesRunOu
 	ctx := context.Background()
 	uow, store, ids, runID, nodeRunID, attemptID := sqliteExecutionFixture(t)
 
-	_, lease := claimExecuteNodeJob(t, ctx, store, 50*time.Millisecond)
+	// A long lease, expired explicitly below: a tiny TTL here raced the
+	// AcquireWriteLeases that has to happen inside it (see
+	// sqlite.ExpireJobLeaseForTest).
+	claimedJob, lease := claimExecuteNodeJob(t, ctx, store, 30*time.Second)
 
 	var repositoryWorkspaceID string
 	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
@@ -328,9 +332,12 @@ func TestRecoveryReaperHandler_OrphanedMutatingAttempt_RunCancelling_ClosesRunOu
 		t.Fatalf("CancelRun: %v", err)
 	}
 
-	// The driving job's own lease genuinely expires (the SAME real
-	// wall-clock technique every sibling test in this file already uses).
-	time.Sleep(150 * time.Millisecond)
+	// The driving job's own lease genuinely expires: its lease_until is moved
+	// into the past (the siblings sleep past a tiny TTL instead, which is fine
+	// for a test that never acquires a write lease inside that TTL).
+	if err := sqlite.ExpireJobLeaseForTest(ctx, store, string(claimedJob.ID)); err != nil {
+		t.Fatalf("expire the driving job lease: %v", err)
+	}
 
 	handler := runtime.NewRecoveryReaperHandler(uow, ids, clock.System{}, store, store, store)
 	if err := runtime.StartupRecoveryScan(ctx, uow, ids); err != nil {

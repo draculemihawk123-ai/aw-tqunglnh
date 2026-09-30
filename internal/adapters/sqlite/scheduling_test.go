@@ -211,10 +211,9 @@ func TestWriteLeaseRequiresItsOriginalActiveJobFence(t *testing.T) {
 	seedSchedulingFixture(t, store)
 	enqueueSchedulingTestJob(t, store, "job-linked-fence", "job-linked-fence-key", 3)
 
-	// This test needs a deterministic baseline period before testing expiry. A
-	// 5ms lease can expire while a busy Windows test runner schedules the first
-	// validation, turning a fencing assertion into a timing race.
-	_, firstJobLease, err := store.ClaimJob(context.Background(), "same-worker-name", 300*time.Millisecond)
+	// A long lease, expired explicitly below (see expireLeasesNow): any short
+	// TTL here is a wall-clock race against a slow runner's own commits.
+	_, firstJobLease, err := store.ClaimJob(context.Background(), "same-worker-name", 5*time.Second)
 	if err != nil {
 		t.Fatalf("first ClaimJob() error = %v", err)
 	}
@@ -235,6 +234,7 @@ func TestWriteLeaseRequiresItsOriginalActiveJobFence(t *testing.T) {
 		t.Fatalf("baseline ValidateWriteLease() error = %v", err)
 	}
 
+	expireLeasesNow(t, store, "job-linked-fence")
 	waitForRecoveredJob(t, store)
 	_, replacementJobLease, err := store.ClaimJob(context.Background(), "same-worker-name", 2*time.Second)
 	if err != nil {
@@ -443,7 +443,7 @@ func TestWriteLeaseHeartbeatRejectsStaleJobLease(t *testing.T) {
 	seedSchedulingFixture(t, store)
 	enqueueSchedulingTestJob(t, store, "job-hb-stale", "job-hb-stale-key", 3)
 
-	_, firstJobLease, err := store.ClaimJob(context.Background(), "same-worker-name", 300*time.Millisecond)
+	_, firstJobLease, err := store.ClaimJob(context.Background(), "same-worker-name", 5*time.Second)
 	if err != nil {
 		t.Fatalf("first ClaimJob() error = %v", err)
 	}
@@ -458,6 +458,9 @@ func TestWriteLeaseHeartbeatRejectsStaleJobLease(t *testing.T) {
 		t.Fatalf("AcquireWriteLeases() error = %v", err)
 	}
 
+	// Only the JOB lease is expired here; the write lease keeps its own 5s TTL,
+	// because this test is about the job lease alone having been reassigned.
+	expireJobLeaseOnly(t, store, "job-hb-stale")
 	waitForRecoveredJob(t, store)
 	_, replacementJobLease, err := store.ClaimJob(context.Background(), "same-worker-name", 2*time.Second)
 	if err != nil {
@@ -834,6 +837,38 @@ func TestEnqueueJob_RejectsNonexistentProjectID(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatal("a job referencing a nonexistent project was persisted despite the rejection")
+	}
+}
+
+// expireLeasesNow makes a job lease, and every write lease held under that job,
+// expire immediately by moving their own lease_until into the past in the
+// database, instead of claiming with a tiny TTL and sleeping past it.
+//
+// The tiny-TTL pattern (claim with 300ms, then acquire a write lease "within"
+// that TTL) is a wall-clock race: on a slow Windows runner the gap between the
+// claim and the next SQLite commit (synchronous=FULL, an fsync each) can exceed
+// the TTL, and the acquire then fails with "durable job lease is no longer
+// authoritative". That was the recurring CI failure of
+// TestSPK09QuarantineRecreateFencesStaleGeneration (and the same message in
+// other lease tests). Claiming with a long TTL and expiring it explicitly keeps
+// every assertion about what happens AFTER expiry while removing every
+// dependence on how fast the machine is BEFORE it.
+func expireLeasesNow(t *testing.T, store *Store, jobID string) {
+	t.Helper()
+	expireJobLeaseOnly(t, store, jobID)
+	if _, err := store.db.ExecContext(context.Background(),
+		`UPDATE write_leases SET lease_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 seconds') WHERE holder_job_id = ?`, jobID); err != nil {
+		t.Fatalf("expire write leases held by %s: %v", jobID, err)
+	}
+}
+
+// expireJobLeaseOnly expires just the job lease of jobID (see expireLeasesNow
+// for why), leaving any write lease held under it untouched.
+func expireJobLeaseOnly(t *testing.T, store *Store, jobID string) {
+	t.Helper()
+	if _, err := store.db.ExecContext(context.Background(),
+		`UPDATE durable_jobs SET lease_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 seconds') WHERE id = ? AND lease_until IS NOT NULL`, jobID); err != nil {
+		t.Fatalf("expire job lease of %s: %v", jobID, err)
 	}
 }
 

@@ -1809,3 +1809,24 @@ in release-build were the first). bash waits for the command and honours its exi
 only the Windows legs change. **Expect the Windows legs to now do real work, and to be able to fail for real**
 (web tests, the Playwright journey on Windows); any such failure is a finding, not a regression of this PR. The
 `Verify the UI build produced web/dist` step stays as a guard.
+
+### Follow-up 6 — "durable job lease is no longer authoritative": a wall-clock race in four lease tests, now deterministic
+
+`TestSPK09QuarantineRecreateFencesStaleGeneration` failed this PR's `contract (windows-latest)` with
+`W1 AcquireWriteLeases() error = durable job lease is no longer authoritative`. The same message is the recurring
+`TestRecoveryReaperHandler_OrphanedMutatingAttempt_RunCancelling_ClosesRunOutReally` failure (10+ hits recorded
+across many PRs as "runner load"), and SPK-09 has been in the pre-existing-flake list for weeks. One mechanism:
+
+- Both tests claim a job with a tiny TTL (300ms / 50ms) and then acquire a write lease "within" it. Between the two
+  calls sits a SQLite commit (`synchronous=FULL`, an fsync each); on a slow Windows runner that gap can exceed the TTL,
+  the job lease has already expired, and the acquire is correctly refused. The production code is right; the test
+  depended on the machine being faster than a constant.
+- Fix (test-side, no production change): claim with a long lease and expire it explicitly by moving `lease_until`
+  into the past — `expireLeasesNow`/`expireJobLeaseOnly` in `internal/adapters/sqlite` tests and the exported
+  fixture `sqlite.ExpireJobLeaseForTest` for the test that lives in `internal/app/runtime`. Every assertion about
+  what happens AFTER expiry is unchanged; nothing depends on how fast the machine is BEFORE it. Applied to the four
+  tests with the claim-then-acquire shape: SPK-09 quarantine/recreate, `WriteLeaseRequiresItsOriginalActiveJobFence`,
+  `WriteLeaseHeartbeatRejectsStaleJobLease`, and the recovery-reaper cancelling-mutating test. Side benefit: they no
+  longer sleep (SPK-09 went from about 2s to 0.05s); 30 consecutive runs of the sqlite trio and 20 of the reaper test pass.
+- Not changed: `WriteLeaseHeartbeatExtendsLeaseAndBlocksConflictingAcquire` uses a 300ms WRITE lease and needs real
+  elapsed time by design (it proves the heartbeat pushes the expiry past the original TTL); left alone.
