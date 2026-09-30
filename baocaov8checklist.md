@@ -1325,3 +1325,43 @@ Research found two real, concrete gaps, not just polish:
   the new job's own real CI execution (build UI, build twice, compare checksums/manifests, release smoke on
   both OSes) could only be verified once this PR's own CI actually runs it — flagged for close attention on
   the first real CI round.
+
+### V8 follow-up — fix the recurring `e2e (ubuntu-latest)` flake at its real root cause (a race in the spec, not runner slowness)
+
+**Context**: `e2e (ubuntu-latest)` failed on almost every CI round of PRs #132–#135 with the same symptom
+(`newly-registered repository never appeared`, or a `READY` poll timing out) while `e2e (windows-latest)`
+passed. It had been recorded repeatedly as "CI runner load" and a hardening task (poll the backend API instead
+of reload-scraping) had been queued since V8-01. Reading the real failure artifacts instead of the assertion
+text showed it was not load:
+- The Playwright `error-context.md` page snapshot showed a healthy UI (`Connection: Live`, `Updated just now`)
+  that still said "0 repositories · No repositories registered yet" — and, on the other attempt, a WorkItem
+  still `BACKLOG` after its test had "marked it READY".
+- The trace's network log showed why: the `POST /projects/{id}/repositories` was sent at 10:36:44.112 and the
+  page navigation (`GET /ui/projects/{id}`) began at 10:36:44.121 — **9ms later** — with the POST recorded as
+  status `-1` (aborted), while every other POST on the same server completed in 1–10ms. `GET .../repositories`
+  then returned an empty list for the entire 30s poll, because the server never received the command.
+
+**Root cause**: every UI mutation in the journey is followed by `expect.poll(async () => { await
+page.reload(); ... })` (or a `page.goto`). A navigation cancels fetches the page still has in flight, so a bare
+`.click()` followed directly by a reload races the request itself. When the reload wins, the browser aborts the
+POST before the server processes it, the state the poll waits for is never created, and the poll reloads for
+its full budget against a server that never got the command. Windows dispatches the reload slightly later, so
+the POST usually finishes first; Ubuntu intermittently loses the race. The spec already contained the correct
+pattern for one site (`clickStartRun`, whose comment says "waiting on the real POST response is the one signal
+that is never racy") but it had not been applied to the others.
+
+**Fix** (`web/e2e/full-journey.spec.ts` only): a generic `awaitMutation(page, trigger, pathPattern)` helper that
+runs the click and waits for that request's own response (failing loudly with the status and body if it is not
+2xx), applied to every click that is followed by a reload/goto: register repository (x2), Retry Probe, create
+WorkItem (`fillCreateWorkItemDialog`, 3 call sites) and Mark Ready (`markFirstBacklogCardReady`, 3 call sites).
+Clicks followed by `expect(...).toBeVisible()` (Resolve, Approve, Seal, ...) needed no change: they never
+navigate.
+
+**Verify**: `pnpm run typecheck` clean; full `playwright test` passed 3/3 independent fresh-stack runs locally
+(Windows). Local Windows cannot reproduce the race (that is exactly why it only showed on Ubuntu), so the real
+proof is this PR's own `e2e (ubuntu-latest)` job, which runs the fixed spec.
+
+**Side finding, not fixed here**: asserting the response status surfaced that registering a repository whose
+`repositoryId` already exists (in another project) returns `500 INTERNAL` ("sqlite: unexpected error") rather
+than a typed CONFLICT — a unique-constraint violation that is not being mapped to a domain error. Unrelated to
+this flake; worth its own task.
