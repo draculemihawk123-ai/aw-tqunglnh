@@ -1708,3 +1708,24 @@ make every unrelated PR unmergeable under this repository's "never merge red" ru
 - The 29 ADR headings include ADR-029 (the design text says 001..028); six ADRs have no owner task.
 - Tooling: the shell tool used in this session halves backslashes in heredoc-fed scripts — Go source containing
   backslash escapes must be written with the Write/Edit tools, not a Python-in-heredoc patch.
+
+### Follow-up found by V8-11's own CI — a real production race behind a "known flake"
+
+`TestStreamLoop_SlowClientDisconnectsWithLastSafeCursor` (`internal/delivery/httpapi/eventstream`) failed on
+`contract (windows-latest)` for the 4th time across 3 PRs (#88, #123 twice, then this PR), each time rerun and
+filed as "timing-sensitive, diff-unrelated". Applying the rule "the same test keeps failing => fix it, do not
+rerun it" turned up a real bug in `streamLoop`, not a test artifact:
+
+- The writer goroutine did `lastWritten = item.cursor` for every non-heartbeat item. The final
+  `stream.disconnected` control notice is written through the same `WriteEvent` but has cursor 0.
+- Whenever the writer drained that queued notice before noticing `stopWriter` (a coin flip at each `select`
+  when both are ready; more likely on a slow runner), `lastWritten` was overwritten with 0 and the returned
+  `LastCursor` rewound to "nothing delivered" although real events had been delivered. `LastCursor` is what lets a
+  client resume exactly from where it stopped, so a wrong value is a correctness bug in production code.
+- Fix: only a larger journal position advances `lastWritten` (positions only increase; control items carry none).
+- New deterministic regression `TestStreamLoop_DisconnectNoticeNeverRewindsLastCursor`: holds the first write
+  open, triggers a server-shutdown stop so the notice is enqueued with room, releases the writer, 300
+  iterations. **Negative control:** without the fix it fails on iteration 2 (`LastCursor = 0` after event 2 was
+  written); with it, 30 consecutive runs of both tests pass.
+- The original test's second assertion compared `LastCursor` with the last item written, which can legitimately
+  be the control notice (no ID); it now looks at the last REAL event.

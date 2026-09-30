@@ -45,9 +45,22 @@ type fakeSink struct {
 	writeDelay time.Duration
 	events     []httpapi.SSEMessage
 	heartbeats int
+
+	// firstWriteGate, when non-nil, holds the FIRST WriteEvent open until it
+	// is closed; inFirstWrite is closed the moment that first write starts —
+	// together they let a test freeze the writer goroutine mid-write.
+	firstWriteGate <-chan struct{}
+	inFirstWrite   chan struct{}
+	firstWriteOnce sync.Once
 }
 
 func (s *fakeSink) WriteEvent(msg httpapi.SSEMessage) error {
+	if s.firstWriteGate != nil {
+		s.firstWriteOnce.Do(func() {
+			close(s.inFirstWrite)
+			<-s.firstWriteGate
+		})
+	}
 	if s.writeDelay > 0 {
 		time.Sleep(s.writeDelay)
 	}
@@ -189,10 +202,84 @@ func TestStreamLoop_SlowClientDisconnectsWithLastSafeCursor(t *testing.T) {
 	if outcome.LastCursor == 0 && len(written) > 0 {
 		t.Fatal("LastCursor is 0 but at least one event was actually written — LastCursor must reflect the last successful write")
 	}
-	if len(written) > 0 {
-		lastWrittenID := written[len(written)-1].ID
+	// The last item written may be the stream.disconnected control notice
+	// (no ID); LastCursor is about the last REAL event.
+	if lastWrittenID, found := lastRealEvent(written); found {
 		if lastWrittenID != fmt.Sprint(outcome.LastCursor) {
 			t.Fatalf("outcome.LastCursor = %d, want the last actually-written event's own ID %q", outcome.LastCursor, lastWrittenID)
+		}
+	}
+}
+
+// lastRealEvent returns the ID and journal position of the last REAL event
+// (project.invalidated) the sink recorded, skipping the final
+// stream.disconnected control notice, which carries no journal position.
+func lastRealEvent(events []httpapi.SSEMessage) (id string, found bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Event == eventNameProjectInvalidated {
+			return events[i].ID, true
+		}
+	}
+	return "", false
+}
+
+// TestStreamLoop_DisconnectNoticeNeverRewindsLastCursor is the deterministic
+// regression for a real race found through the recurring CI flake this
+// package's slow-client test produced (4 hits across 3 PRs): the final
+// stream.disconnected control item has no journal position (cursor 0), and
+// the writer goroutine used to do lastWritten = item.cursor for every
+// non-heartbeat item — so whenever the writer happened to drain that notice
+// before noticing stopWriter, it overwrote the last real event's cursor with
+// 0 and the returned LastCursor rewound to "nothing delivered" even though
+// events had been delivered. LastCursor is what lets a client resume exactly
+// from where it stopped, so a wrong value is a correctness bug, not a test
+// artifact.
+//
+// The interleaving is forced as far as it can be: the first WriteEvent is
+// held open, a server-shutdown stop() then enqueues its notice while the
+// buffer has room, and the writer is released — it then races stopWriter
+// against two queued items. Whether it drains them is a coin flip per
+// iteration, so the loop runs enough iterations that the pre-fix code
+// essentially always trips it.
+func TestStreamLoop_DisconnectNoticeNeverRewindsLastCursor(t *testing.T) {
+	uow := newFakeProject(t, "p1")
+	appendTestEvents(t, uow, "p1", 2)
+	initial, err := probeProject(context.Background(), uow, "p1", 0, 1000)
+	if err != nil {
+		t.Fatalf("probeProject: %v", err)
+	}
+	if len(initial) != 2 {
+		t.Fatalf("initial = %d events, want 2", len(initial))
+	}
+
+	for i := 0; i < 300; i++ {
+		shutdown, cancel := context.WithCancel(context.Background())
+		gate := make(chan struct{})
+		sink := &fakeSink{firstWriteGate: gate, inFirstWrite: make(chan struct{})}
+		deps := Dependencies{UnitOfWork: uow, Matcher: redact.NewMatcher(), BufferSize: 4, Shutdown: shutdown, PollInterval: time.Minute, HeartbeatInterval: time.Minute}
+
+		done := make(chan streamOutcome, 1)
+		go func() { done <- streamLoop(context.Background(), deps, "p1", 0, initial, sink) }()
+
+		<-sink.inFirstWrite // the writer is inside WriteEvent for event 1; event 2 is queued
+		cancel()            // server shutdown: stop() enqueues the disconnect notice (there is room)
+		time.Sleep(time.Millisecond)
+		close(gate)
+
+		var outcome streamOutcome
+		select {
+		case outcome = <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("streamLoop did not return after shutdown")
+		}
+		written, _ := sink.snapshot()
+		lastID, found := lastRealEvent(written)
+		if !found {
+			t.Fatalf("iteration %d: no real event was written", i)
+		}
+		if lastID != fmt.Sprint(outcome.LastCursor) {
+			t.Fatalf("iteration %d: LastCursor = %d but the last real event written was %s (written %d items) — the disconnect notice must never rewind the cursor",
+				i, outcome.LastCursor, lastID, len(written))
 		}
 	}
 }

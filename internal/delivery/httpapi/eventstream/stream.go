@@ -107,7 +107,17 @@ func streamLoop(ctx context.Context, deps Dependencies, projectID string, cursor
 				if err := sink.WriteEvent(item.msg); err != nil {
 					return
 				}
-				lastWritten = item.cursor
+				// Only a REAL event carries a journal position. The final
+				// stream.disconnected control notice has cursor 0 and is also
+				// written through WriteEvent; letting it assign lastWritten
+				// would rewind LastCursor to "nothing delivered" whenever the
+				// writer drained that notice before noticing stopWriter — and
+				// LastCursor is what lets a client resume exactly where it
+				// stopped. Positions only ever increase, so only a larger one
+				// advances it.
+				if item.cursor > lastWritten {
+					lastWritten = item.cursor
+				}
 			case <-stopWriter:
 				return
 			}
