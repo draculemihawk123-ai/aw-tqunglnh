@@ -77,6 +77,12 @@ type Store struct {
 
 var _ ports.ArtifactStore = (*Store)(nil)
 
+// renameFile is the one call that makes a finished temp file visible at its
+// content-addressed path. It is os.Rename in production; it is a variable only
+// so a test can make it fail the way Windows does when a concurrent Put of
+// identical bytes has already finalized the same object.
+var renameFile = os.Rename
+
 // New returns a Store rooted at root, creating it (and its objects/tmp
 // subdirectories) if it doesn't already exist.
 func New(root string) (*Store, error) {
@@ -162,7 +168,20 @@ func (s *Store) Put(ctx context.Context, meta ports.ArtifactMetadata, body io.Re
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
 		return ports.ArtifactRef{}, classifyWriteError("create artifact shard directory", err)
 	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
+	if err := renameFile(tmpPath, finalPath); err != nil {
+		// Two concurrent Puts of identical bytes both pass the Stat above (the
+		// object did not exist yet), and both then rename onto the same
+		// content-addressed path. The loser's rename can fail — on Windows with
+		// "Access is denied" because the winner's freshly finalized file is
+		// already in use — even though the object it was trying to create now
+		// exists. A path named by its own SHA-256 holds exactly these bytes, and
+		// only a fully written, synced temp file is ever renamed into place, so
+		// an object that is present now is complete and identical: the Put has
+		// succeeded. Anything else (the object is still absent) is a real
+		// failure. The deferred cleanup removes this call's own temp file.
+		if _, statErr := os.Stat(finalPath); statErr == nil {
+			return ref, nil
+		}
 		return ports.ArtifactRef{}, classifyWriteError("finalize artifact", err)
 	}
 	finalized = true

@@ -1729,3 +1729,24 @@ rerun it" turned up a real bug in `streamLoop`, not a test artifact:
   written); with it, 30 consecutive runs of both tests pass.
 - The original test's second assertion compared `LastCursor` with the last item written, which can legitimately
   be the control notice (no ID); it now looks at the last REAL event.
+
+### Follow-up 2 — the "Windows rename lock" flake was a real `ArtifactStore.Put` race (7+ hits, 6+ PRs)
+
+`TestAppendConversationAttachment_*Concurrency_*` (`internal/app/message`) failed again on this PR's
+`contract (windows-latest)`: `artifactstore: finalize artifact: rename ...tmp\artifact-N ...objects\..\<hash>:
+Access is denied`. It had been filed as "environmental Windows file-rename lock" on PRs #58, #83, #124 (3x), #128,
+#132 and now #139; applying "the same family keeps failing => read it for a real bug" found one:
+
+- `Store.Put` does `Stat(final)` -> not found -> `Rename(tmp, final)`. Two concurrent Puts of identical bytes both
+  pass the Stat, then both rename onto the same content-addressed path. On Windows the loser's rename fails with
+  "Access is denied" (the winner's fresh file is in use) even though the object it wanted now exists — so a
+  concurrent duplicate upload that should be a no-op returned an error to the caller.
+- Fix: if the rename fails but the content-addressed object now exists, the Put succeeded (a path named by its
+  own SHA-256 holds exactly these bytes, and only fully written, synced temp files are ever renamed in); if the
+  object is still absent it is a real failure and is reported as before. The rename is now a package seam
+  (`renameFile`, `os.Rename` in production) so the interleaving can be forced on every OS.
+- Tests: `TestPut_RenameFailsButObjectNowExists_IsASuccessAndLeavesNoTempFile` (**negative control:** without the
+  fix it fails with the exact "Access is denied" error), `TestPut_RenameFailsAndObjectStillAbsent_IsAnError`,
+  and a 16-goroutine `TestPut_ConcurrentIdenticalContent_AllSucceed` with the real rename.
+- The sibling symptom noted in the flake log ("hash stored artifact ... used by another process") came from a
+  reader hitting the same finalize window; this removes the writer-side failure, not a separate reader fix.
