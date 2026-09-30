@@ -68,32 +68,35 @@ func (e *testEnv) seedManyFlatCards(t *testing.T, projectID string, startIndex, 
 	}
 }
 
-// measureKanbanListLatency issues one real GET and returns its real wall-
-// clock latency — the minimum of 7 samples (minimum, not mean, filters
-// transient scheduler/GC noise far better than an average for a single-
-// shot latency measurement, the same choice this repo's own CI
-// investigations have repeatedly needed this session). 7, not 3: a real CI
-// run caught this at 3 samples producing a false failure on the flat-
-// scaling detail-route test below (284µs vs 934µs, a 3.28x swing driven
-// entirely by scheduler noise at a sub-millisecond baseline, not a real
-// behavior change) — more samples narrows the minimum toward the real
-// floor cost on both sides of a ratio comparison.
+// measureKanbanListLatency issues 20 real GETs, times the WHOLE batch in one
+// time.Now()/time.Since() pair, and returns the per-request average.
+//
+// This replaced an earlier min-of-7-individually-timed-samples design after
+// a real CI run (PR #133, then again on the docs-only PR #134 — see
+// baocaov8checklist.md's own V8-07 follow-up section) caught it returning an
+// exact `0s` measurement: on a fast/quiet Windows runner, time.Since()
+// around ONE very-fast in-process HTTP round trip can truncate to exactly
+// zero due to timer-resolution granularity, and taking the minimum of
+// several individually-timed samples makes hitting that zero MORE likely,
+// not less (one lucky near-zero sample poisons the whole minimum) — it hit
+// three separate real CI runs across two different PRs. Timing the entire
+// batch in one pair and dividing by the count makes an exact-zero TOTAL
+// virtually impossible even under coarse timer resolution (summing 20 real
+// round trips is reliably measurable), while still averaging out ordinary
+// per-request scheduler/GC noise well enough for this file's own frozen
+// ratio thresholds (30x and 6x), which already carry wide margins.
 func measureKanbanListLatency(t *testing.T, e *testEnv, path string) time.Duration {
 	t.Helper()
-	best := time.Duration(1<<63 - 1)
-	for i := 0; i < 7; i++ {
-		start := time.Now()
+	const samples = 20
+	start := time.Now()
+	for i := 0; i < samples; i++ {
 		resp := e.get(t, path)
-		elapsed := time.Since(start)
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET %s: status = %d", path, resp.StatusCode)
 		}
 		resp.Body.Close()
-		if elapsed < best {
-			best = elapsed
-		}
 	}
-	return best
+	return time.Since(start) / samples
 }
 
 // TestV8PerformanceBudget_KanbanListLatencyScalesBoundedWithProjectSize is
