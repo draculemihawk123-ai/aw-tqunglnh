@@ -1365,3 +1365,27 @@ proof is this PR's own `e2e (ubuntu-latest)` job, which runs the fixed spec.
 `repositoryId` already exists (in another project) returns `500 INTERNAL` ("sqlite: unexpected error") rather
 than a typed CONFLICT — a unique-constraint violation that is not being mapped to a domain error. Unrelated to
 this flake; worth its own task.
+
+### V8 follow-up — fix the `TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns` cleanup race that made `Linux race and stability (V0-12)` fail almost every time
+
+**Context**: this test had been recorded as a "known flake" 12+ times across V8 (`TempDir RemoveAll cleanup:
+unlinkat .../001: directory not empty`, in `internal/adapters/process`). On PRs #135/#136 V0-12 failed on
+EVERY attempt, and on one attempt the same test failed in TWO of the ten stability runs. That is not bad luck:
+at ~20% per run, the chance that all 10 runs of the stability job pass is roughly 0.8^10 ≈ 10%, so each ~27
+minute rerun was close to a coin flip weighted against us. Rerunning was the wrong response; the test needed fixing.
+
+**Root cause**: the test deliberately leaves an orphaned descendant alive after `Run` returns (TreeQuiesced
+must be false — that is the behavior under test). The helper (`descendant-child`) rewrites the `marker` file
+every 20ms for up to 10 seconds. Nothing stopped it before `t.TempDir()`'s cleanup ran `RemoveAll`, so the orphan
+could recreate `marker` between `RemoveAll` emptying the directory and removing it → `directory not empty`. It is
+a bug in the test's own cleanup, not in `Supervisor`, and it only shows on Linux (0/25 locally on Windows).
+
+**Fix** (`internal/adapters/process/supervisor_test.go` only): the test now registers a cleanup (after
+`t.TempDir()`, so it runs before that directory's own cleanup — LIFO) that creates a stop file and waits until
+`marker` has been quiet for 150ms (the helper writes every 20ms, so that means it really stopped). The helper
+reads an optional `AGENTKIT_DESCENDANT_STOP` env var and exits its write loop when that file appears; the other
+tests that use `descendant-child` do not set it and are unchanged.
+
+**Verify**: `go vet` clean on both `GOOS=windows` and `GOOS=linux`; the test passes 25/25 and the whole package 3/3
+locally. The local Windows machine cannot reproduce the race (and Docker was unavailable for a Linux run), so the
+real proof is V0-12 on this PR, which runs the test 10 times on Linux.
