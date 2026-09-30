@@ -58,7 +58,7 @@ func TestSPK09QuarantineRecreateFencesStaleGeneration(t *testing.T) {
 		Targets: []ports.WorkspaceLeaseTarget{{
 			RepositoryID: "repo-user", RepositoryWorkspaceID: "rw-user", Generation: 1,
 		}},
-		TTL: 5 * time.Second,
+		TTL: 10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("W1 AcquireWriteLeases() error = %v", err)
@@ -73,7 +73,7 @@ func TestSPK09QuarantineRecreateFencesStaleGeneration(t *testing.T) {
 	waitForRecoveredJob(t, store)
 
 	// W2 takes over the same durable job: T2 > T1.
-	_, w2JobLease, err := store.ClaimJob(ctx, "worker-2", 5*time.Second)
+	_, w2JobLease, err := store.ClaimJob(ctx, "worker-2", 10*time.Minute)
 	if err != nil {
 		t.Fatalf("W2 ClaimJob() error = %v", err)
 	}
@@ -93,7 +93,7 @@ func TestSPK09QuarantineRecreateFencesStaleGeneration(t *testing.T) {
 		Targets: []ports.WorkspaceLeaseTarget{{
 			RepositoryID: "repo-user", RepositoryWorkspaceID: "rw-user", Generation: 1,
 		}},
-		TTL: 5 * time.Second,
+		TTL: 10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("W2 AcquireWriteLeases() error = %v", err)
@@ -141,7 +141,7 @@ func TestSPK09QuarantineRecreateFencesStaleGeneration(t *testing.T) {
 		Targets: []ports.WorkspaceLeaseTarget{{
 			RepositoryID: "repo-user", RepositoryWorkspaceID: "rw-user", Generation: 1,
 		}},
-		TTL: 5 * time.Second,
+		TTL: 10 * time.Minute,
 	}); !errors.Is(err, ports.ErrWriteLeaseConflict) {
 		t.Fatalf("AcquireWriteLeases() on quarantined workspace error = %v, want ErrWriteLeaseConflict", err)
 	}
@@ -192,7 +192,7 @@ func TestSPK09QuarantineRecreateFencesStaleGeneration(t *testing.T) {
 		Targets: []ports.WorkspaceLeaseTarget{{
 			RepositoryID: "repo-user", RepositoryWorkspaceID: "rw-user-gen2", Generation: 2,
 		}},
-		TTL: 5 * time.Second,
+		TTL: 10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("AcquireWriteLeases() on recreated generation error = %v", err)

@@ -1830,3 +1830,27 @@ across many PRs as "runner load"), and SPK-09 has been in the pre-existing-flake
   longer sleep (SPK-09 went from about 2s to 0.05s); 30 consecutive runs of the sqlite trio and 20 of the reaper test pass.
 - Not changed: `WriteLeaseHeartbeatExtendsLeaseAndBlocksConflictingAcquire` uses a 300ms WRITE lease and needs real
   elapsed time by design (it proves the heartbeat pushes the expiry past the original TTL); left alone.
+
+### Follow-up 7 — the first REAL Windows run of e2e and spike acceptance: two more genuine defects
+
+With the Windows pnpm steps fixed, `e2e (windows-latest)` executed for real for the first time and failed, and
+`spike acceptance (windows-latest)` failed too. Both are real, both fixed at the cause.
+
+- **`spike acceptance (windows)`** — `agentkit-spike acceptance --full`: `run scenario SPK-09: acquire write lease on
+  recreated generation: durable job lease is no longer authoritative`. Same family as follow-up 6, but this is the
+  SPK-09 SCENARIO (non-test harness code in `internal/spikeacceptance/spk09_scenario.go`), and the failing acquire is
+  W2's, not W1's: W2 claims its job with a 5s lease and then performs several SQLite commits (quarantine, release,
+  blocked acquire, recreate, stale finalize) before its last acquire; on a slow runner that sequence outlasts 5s. Fix:
+  W1's leases are long and expired explicitly (`sqlite.ExpireJobLeaseForTest` + new `ExpireWriteLeasesForTest`), W2's
+  job lease and write leases are 10 minutes (nothing in the scenario waits for them to expire). Same change in the
+  matching unit test. The scenario's own assertions are unchanged.
+- **`e2e (windows)`** — `COMPLETION_POLICY_FAILED never rendered despite a real OPEN blocker` (full-journey spec), with
+  the failure page snapshot showing the blocker alert ("COMPLETION_POLICY_FAILED on <run> ... NO_COMPLETION_POLICY_PINNED")
+  plainly rendered. The 16 `expect.poll(async () => { await page.reload(); return X.count(); })` sites count the
+  instant the `load` event fires, before the SPA has fetched or rendered anything; the next poll reloads again, so the
+  count is taken before hydration every time. Fast machines hide it. Fix: a `settledCount` helper (up to 5s of 100ms
+  re-counts after each reload, with an `atLeast` for the `> 1` case) used at every such site; the reload stays
+  (recovering from a stale page is the point of those polls). Typecheck clean and the full journey passes locally on
+  Windows (52.9s). The retry that follows a first failure (Playwright `retries`) re-registers the same fixed repository
+  ids in the same DB and fails with a 500 — the already-known duplicate-repositoryId-returns-500 finding
+  (spawned task_c204ac8e), which also hides the first failure's cause behind a second, unrelated one.

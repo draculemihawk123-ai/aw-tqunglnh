@@ -411,3 +411,16 @@ func ExpireJobLeaseForTest(ctx context.Context, store *Store, jobID string) erro
 	}
 	return nil
 }
+
+// ExpireWriteLeasesForTest moves lease_until of every write lease held under
+// jobID into the past, so each is expired from this instant on. The companion
+// of ExpireJobLeaseForTest (see its comment for why a fixture expires leases
+// explicitly instead of claiming with a tiny TTL and sleeping past it). Production
+// code must never call this.
+func ExpireWriteLeasesForTest(ctx context.Context, store *Store, jobID string) error {
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE write_leases SET lease_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 seconds') WHERE holder_job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("expire fixture write leases of %s: %w", jobID, err)
+	}
+	return nil
+}
