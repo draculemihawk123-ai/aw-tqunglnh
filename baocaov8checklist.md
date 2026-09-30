@@ -1518,3 +1518,92 @@ covers end to end.
   fixed forward (new definition versions, never edited in place) and are now the documentation's own first two
   troubleshooting entries.
 
+
+## V8-10 — Upgrade and rollback rehearsal
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-10 (ROADMAP-§7; depends on V8-06 and V8-08, both closed): upgrade
+DB/config/artifact from a previous release candidate without editing old migrations — previous-version
+fixture, upgrade, restart, inspect; roll the binary back only when the schema is compatible, otherwise fail
+pointing at restoring a backup. Verify: an upgrade matrix and failure-rollback evidence. Completion bar:
+**an unsupported downgrade must not corrupt the DB silently.**
+
+Research (reading `internal/adapters/sqlite/migrations.go` and `db.go`) found the bar was NOT met: `Migrate`
+only ever looped over the migrations THIS binary embeds, verified each against its recorded checksum, and
+silently ignored any higher-numbered row in `schema_migrations`. An older binary therefore opened a
+newer-schema database without a word and ran its older SQL against a schema it did not understand. Also found:
+migration numbers are not contiguous (there is no 0013 — 40 files, highest version 41), so anything that
+slices the embedded set by index is wrong; and `aw-maintenance backup` opens the live database through the
+same `sqlite.Open` as `aw` itself, i.e. it MIGRATES the database before backing it up.
+
+### Decision
+
+1. **Real bug fix — a downgrade guard.** `Migrate` now refuses (before applying anything, reading only) when
+   the database records any migration version the binary does not embed, returning a typed
+   `*sqlite.SchemaNewerThanBinaryError` (database version, binary version, unknown versions) whose message
+   tells the operator to run the newer binary or restore a pre-upgrade backup. The rule is deliberately
+   strict: migrations are additive-and-checksummed, not reversible, and no release marks itself compatible
+   with older binaries, so "schema compatible" means exactly "the binary knows every applied migration" —
+   rolling a binary back is fine iff no new migration was applied since. `Open` inherits it, so `aw serve`/
+   `worker`/`doctor`/one-shots and `aw-maintenance` are all covered by one check. A migration-history gap
+   (recorded version below the binary's highest that it does not carry — another lineage) is refused with its
+   own wording.
+2. **Previous-version fixtures are built, not committed.** A database at schema K is exactly the first K
+   embedded migrations applied in order — not an approximation: migrations are immutable and checksummed (an
+   edited shipped migration is rejected on open), so those K migrations ARE what a build whose highest
+   migration was K produced. An "older binary" is `migrateWith(all-migrations-through-K)`. No committed
+   binary fixture; and there is no real earlier release to build a binary from (Alpha), which is why the
+   real-`aw`-binary proof is of the refusal, not of an old-binary run.
+3. **`Migrate` was split** into `Migrate` (full embedded set) and `migrateWith(ctx, set)` purely so tests can
+   stand in for an older binary; production only ever passes the full set.
+4. **Honest limit, documented rather than hidden:** the refusal lives in the binary that performs it, so a
+   binary built before this change still opens a newer database silently. It protects every binary from V8-10
+   onward; for older ones the pre-upgrade backup is the only protection (operator doc says so).
+5. **`aw-maintenance restore`** now names the real cause when the backup was taken by a newer release (the
+   backup is intact; the tool is too old) instead of the generic "backup is not usable" wrapper.
+6. **Operator docs:** new `docs/operator/10-upgrade-and-rollback.md` (upgrade procedure, backup with the
+   CURRENT release's `aw-maintenance` — a new build's tool would migrate first — rollback table, the limit
+   above), linked from start-here, the backup page and troubleshooting. `aw version --json`'s existing
+   `schemaVersion` is the documented way to compare a binary to a database.
+
+### Execution
+
+- `internal/adapters/sqlite/migrations.go`: `SchemaNewerThanBinaryError`, `rejectUnknownAppliedMigrations`,
+  `migrateWith`.
+- `internal/adapters/sqlite/upgrade_rollback_test.go`:
+  - `TestUpgradeMatrix_PreviousReleaseToCurrent` — from schema 1, 10, 24, 31, 33, 38, 40 (24/31/33 sit right
+    before the three FK-off table-rebuild migrations 25/32/34; ≥24 also seeds `durable_jobs` plus the three
+    tables that hold a live FK into it): every old migration's record (checksum AND `applied_at`)
+    untouched, every newer one recorded with the embedded checksum, no row lost in any pre-existing table,
+    `integrity_check` ok, `foreign_key_check` clean, seeded project readable, restart changes nothing.
+  - `TestDowngradeGuard_*` — older binaries (knowing up to 40/20/1) refuse a head database and leave a full
+    schema+migration-record+row-count fingerprint unchanged; real `Open` refuses an unknown migration 9999;
+    history-gap variant; same-version rollback (positive control) opens.
+  - `TestRollbackRehearsal_RestoreBackupTakenBeforeUpgrade` — previous release DB → backup (`BackupTo`) →
+    upgrade → new-release write → old binary refused with DB untouched → restore backup → old binary opens it
+    with original row counts and WITHOUT the new write → upgrade retried from the restored copy.
+- `internal/integration/v6accept/upgrade_rollback_test.go`: the REAL compiled `aw` — `aw doctor` migrates a
+  fresh database and is healthy, then a recorded migration 9999 makes the same binary exit non-zero with the
+  newer-than-binary / restore-a-backup / 9999 message while a fingerprint of the file (read by a separate
+  plain connection) is unchanged. Runs inside the existing `v6 acceptance` CI job (same opt-in).
+- `cmd/aw-maintenance`: newer-release message on restore + `TestRunRestore_BackupFromANewerRelease_...`.
+
+### Verify
+
+- **Negative control:** with the guard call removed, `TestDowngradeGuard_*` and `TestRollbackRehearsal_*` fail
+  (an older binary opened the newer database silently — the bug is real); restored, all pass.
+- Local: `go build ./... && go vet ./...` clean; `internal/adapters/sqlite`, `cmd/...`,
+  `internal/app/maintenance`, `internal/app/doctor` pass; the real-binary test passes with
+  `AW_HTTP_ACCEPTANCE=1`; `docs-coverage-check` debt 0.
+- Cost check (memory: sqlite loops under `-race`): the new tests total ~3s on this Windows machine; the
+  `internal/adapters/sqlite` package takes ~9s under `-race` on the Linux V0-12 job, so the added cost is
+  small there.
+- **Config and artifacts (read, not changed):** persisted safe settings live INSIDE the database, so they
+  move with it through upgrade/backup/restore (`aw doctor` already checks the persisted document decodes). The
+  optional JSON config file (`internal/app/config/sources.go` `FromFile`) is operator-owned and unversioned,
+  and unknown keys are silently ignored (plain `json.Unmarshal`) — so after a rollback, a key only the newer
+  release understood is silently not applied; documented in the operator page rather than changed here.
+  Artifact bytes are untouched by schema upgrades and covered by V8-06's manifest verification.
+- **Not done:** making `aw-maintenance backup` itself non-migrating would need a schema-agnostic artifact
+  listing; left as a documented operator rule (take the backup with the running release's tool).

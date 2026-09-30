@@ -146,6 +146,12 @@ func runRestore(args []string) error {
 	ctx := context.Background()
 	restoredStore, err := sqlite.Open(ctx, restoredDBPath)
 	if err != nil {
+		var newer *sqlite.SchemaNewerThanBinaryError
+		if errors.As(err, &newer) {
+			// V8-10: not a damaged backup — a backup a NEWER release took,
+			// being restored by an older aw-maintenance.
+			return fmt.Errorf("this backup was taken by a newer release than this aw-maintenance supports — restore it with the aw-maintenance of the release that took it (the backup itself is intact): %w", err)
+		}
 		return fmt.Errorf("open restored database (this is the real production Open path, including migrations — a genuine failure here means the backup is not usable): %w", err)
 	}
 	defer restoredStore.Close()
