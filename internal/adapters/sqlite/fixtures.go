@@ -389,3 +389,38 @@ func CorruptSafeSettingsDesiredJSONForTest(ctx context.Context, store *Store) er
 	}
 	return nil
 }
+
+// ExpireJobLeaseForTest moves one durable job's lease_until into the past, so
+// the lease is expired from this instant on. A test in another package (whose
+// recovery-reaper scenarios need "the driving job lease genuinely expired")
+// calls it instead of claiming with a tiny TTL and sleeping past it: a tiny TTL
+// is a wall-clock race against the test's own next commit (synchronous=FULL,
+// an fsync each), and on a slow runner the lease expired BEFORE the write-lease
+// acquire that was supposed to happen inside it ("durable job lease is no
+// longer authoritative" — the recurring CI failure of
+// TestRecoveryReaperHandler_OrphanedMutatingAttempt_RunCancelling_...).
+// Production code must never call this.
+func ExpireJobLeaseForTest(ctx context.Context, store *Store, jobID string) error {
+	result, err := store.db.ExecContext(ctx,
+		`UPDATE durable_jobs SET lease_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 seconds') WHERE id = ? AND lease_until IS NOT NULL`, jobID)
+	if err != nil {
+		return fmt.Errorf("expire fixture job lease: %w", err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("expire fixture job lease of %s: %d row(s) affected (err %v), want 1 leased job", jobID, n, err)
+	}
+	return nil
+}
+
+// ExpireWriteLeasesForTest moves lease_until of every write lease held under
+// jobID into the past, so each is expired from this instant on. The companion
+// of ExpireJobLeaseForTest (see its comment for why a fixture expires leases
+// explicitly instead of claiming with a tiny TTL and sleeping past it). Production
+// code must never call this.
+func ExpireWriteLeasesForTest(ctx context.Context, store *Store, jobID string) error {
+	if _, err := store.db.ExecContext(ctx,
+		`UPDATE write_leases SET lease_until = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 seconds') WHERE holder_job_id = ?`, jobID); err != nil {
+		return fmt.Errorf("expire fixture write leases of %s: %w", jobID, err)
+	}
+	return nil
+}

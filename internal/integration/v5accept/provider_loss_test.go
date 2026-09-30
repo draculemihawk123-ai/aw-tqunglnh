@@ -123,7 +123,7 @@ func TestV5AcceptProviderLoss_RealDispatchFailsClosedUntilJobDies(t *testing.T) 
 	// Resolve the real ExecutionAttempt's own ID so this test can find
 	// ITS OWN durable EXECUTE_NODE job below, among any others.
 	var attemptID string
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(pollDeadline)
 	for time.Now().Before(deadline) {
 		var attempts []runtimedomain.ExecutionAttempt
 		if err := f.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
@@ -159,7 +159,7 @@ func TestV5AcceptProviderLoss_RealDispatchFailsClosedUntilJobDies(t *testing.T) 
 	// RecoverExpiredJobs marks it DEAD — a real, observable "gave up
 	// retrying a permanently-unavailable provider," never a silent hang
 	// or a false success.
-	jobDeadline := time.Now().Add(20 * time.Second)
+	jobDeadline := time.Now().Add(pollDeadline)
 	var lastState string
 	var lastClaimCount int
 	for time.Now().Before(jobDeadline) {

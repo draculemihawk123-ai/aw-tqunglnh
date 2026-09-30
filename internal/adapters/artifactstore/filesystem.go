@@ -68,14 +68,44 @@ var locatorPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 // (git-style two-level sharding, so no single directory ever has to hold
 // every artifact the store has seen); in-flight writes land under
 // <root>/tmp first and are only ever made visible at their final,
-// content-addressed path via os.Rename — which both POSIX and Windows
-// (via MoveFileEx with MOVEFILE_REPLACE_EXISTING, what Go's os.Rename
-// uses) guarantee is atomic within the same volume.
+// content-addressed path by publishObject — a hard link that never
+// replaces an existing object, atomic within one volume, with a rename
+// fallback for filesystems that cannot hard-link.
 type Store struct {
 	root string
 }
 
 var _ ports.ArtifactStore = (*Store)(nil)
+
+// publishObject is the one call that makes a finished temp file visible at its
+// content-addressed path, and it NEVER replaces an object that already exists:
+// it hard-links the temp file to the final name, which fails with
+// os.ErrExist instead of overwriting. Replacing is what os.Rename does (on
+// Windows MoveFileEx with MOVEFILE_REPLACE_EXISTING), and a replace of a file
+// another goroutine is about to hash, or has open, is exactly what fails on
+// Windows — "Access is denied" for the replacer, "being used by another
+// process" for the reader (internal/app/message's attachment concurrency
+// tests, flaky for weeks, were this). Concurrent Puts of identical bytes are
+// the normal case for a content-addressed store, so the loser must simply find
+// the winner's object in place and leave it alone.
+//
+// A filesystem without hard-link support (the link fails with anything but
+// "exists") falls back to a rename, which Put then treats leniently (see the
+// call site). A test replaces this variable to force either outcome on every OS.
+var publishObject = func(tmpPath, finalPath string) error {
+	err := os.Link(tmpPath, finalPath)
+	switch {
+	case err == nil:
+		// The object now has its final name; drop the temp name. A failure to
+		// remove it is harmless (Put's cleanup and the next sweep retry it).
+		_ = os.Remove(tmpPath)
+		return nil
+	case errors.Is(err, os.ErrExist):
+		return os.ErrExist
+	default:
+		return os.Rename(tmpPath, finalPath)
+	}
+}
 
 // New returns a Store rooted at root, creating it (and its objects/tmp
 // subdirectories) if it doesn't already exist.
@@ -162,7 +192,20 @@ func (s *Store) Put(ctx context.Context, meta ports.ArtifactMetadata, body io.Re
 	if err := os.MkdirAll(filepath.Dir(finalPath), 0o700); err != nil {
 		return ports.ArtifactRef{}, classifyWriteError("create artifact shard directory", err)
 	}
-	if err := os.Rename(tmpPath, finalPath); err != nil {
+	if err := publishObject(tmpPath, finalPath); err != nil {
+		// Two concurrent Puts of identical bytes both pass the Stat above (the
+		// object did not exist yet) and both then publish to the same
+		// content-addressed path. The loser's publish fails — with os.ErrExist,
+		// or on the rename fallback with a platform error such as Windows'
+		// "Access is denied" — even though the object it was trying to create
+		// now exists. A path named by its own SHA-256 holds exactly these
+		// bytes, and only a fully written, synced temp file is ever published,
+		// so an object that is present now is complete and identical: the Put
+		// has succeeded. Anything else (the object is still absent) is a real
+		// failure. The deferred cleanup removes this call's own temp file.
+		if _, statErr := os.Stat(finalPath); statErr == nil {
+			return ref, nil
+		}
 		return ports.ArtifactRef{}, classifyWriteError("finalize artifact", err)
 	}
 	finalized = true

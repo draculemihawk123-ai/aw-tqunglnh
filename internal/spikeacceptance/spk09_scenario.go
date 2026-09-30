@@ -111,33 +111,39 @@ func runSPK09Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 		return SPKResult{}, fmt.Errorf("spk09: enqueue finalize job: %w", err)
 	}
 
-	_, w1JobLease, err := store.ClaimJob(ctx, "worker-1", 300*time.Millisecond)
+	// Long leases, expired explicitly below: any short TTL here is a wall-clock
+	// race against the machine's own SQLite commits (synchronous=FULL, an fsync
+	// each) — on a slow Windows runner the claim-to-acquire gap exceeded 300ms
+	// and the acquire was (correctly) refused as "durable job lease is no longer
+	// authoritative". W2's leases are long for the same reason: several commits
+	// (quarantine, release, recreate, stale finalize) sit between its claim and
+	// its last acquire, and that total, not a constant, is what must fit.
+	_, w1JobLease, err := store.ClaimJob(ctx, "worker-1", 10*time.Minute)
 	if err != nil {
 		return SPKResult{}, fmt.Errorf("spk09: W1 claim job: %w", err)
 	}
 	w1Grants, err := store.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
 		JobLease: w1JobLease, AttemptID: attempt1,
 		Targets: []ports.WorkspaceLeaseTarget{{RepositoryID: repositoryID, RepositoryWorkspaceID: repositoryWorkspaceID, Generation: 1}},
-		TTL:     300 * time.Millisecond,
+		TTL:     10 * time.Minute,
 	})
 	if err != nil {
 		return SPKResult{}, fmt.Errorf("spk09: W1 acquire write lease: %w", err)
 	}
 
-	// The job lease and the write lease are two independent expiry instants
-	// (the write lease's clock started a few milliseconds after the job
-	// lease's, from the same TTL): waiting only for job-lease recovery can
-	// still race a write lease that is technically still live for a few
-	// milliseconds (a real Windows-CI failure, never reproduced locally —
-	// docs/design/02-v0-spike-verdict.md V0-11A's follow-up finding).
+	// Both of W1's leases expire now, explicitly (they are independent
+	// instants, so each is expired), then the expired job is recovered.
+	if err := sqlite.ExpireJobLeaseForTest(ctx, store, "spk09-job-run1"); err != nil {
+		return SPKResult{}, fmt.Errorf("spk09: %w", err)
+	}
+	if err := sqlite.ExpireWriteLeasesForTest(ctx, store, "spk09-job-run1"); err != nil {
+		return SPKResult{}, fmt.Errorf("spk09: %w", err)
+	}
 	if err := waitForExpiredJobRecovery(ctx, store); err != nil {
 		return SPKResult{}, fmt.Errorf("spk09: %w", err)
 	}
-	if err := waitPastWriteLeaseUntil(ctx, w1Grants[0].LeaseUntil); err != nil {
-		return SPKResult{}, fmt.Errorf("spk09: %w", err)
-	}
 
-	_, w2JobLease, err := store.ClaimJob(ctx, "worker-2", 5*time.Second)
+	_, w2JobLease, err := store.ClaimJob(ctx, "worker-2", 10*time.Minute)
 	if err != nil {
 		return SPKResult{}, fmt.Errorf("spk09: W2 claim job: %w", err)
 	}
@@ -150,7 +156,7 @@ func runSPK09Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 	w2Grants, err := store.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
 		JobLease: w2JobLease, AttemptID: attempt2,
 		Targets: []ports.WorkspaceLeaseTarget{{RepositoryID: repositoryID, RepositoryWorkspaceID: repositoryWorkspaceID, Generation: 1}},
-		TTL:     5 * time.Second,
+		TTL:     10 * time.Minute,
 	})
 	if err != nil {
 		return SPKResult{}, fmt.Errorf("spk09: W2 acquire write lease: %w", err)
@@ -178,7 +184,7 @@ func runSPK09Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 	_, blockedAcquireErr := store.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
 		JobLease: w2JobLease, AttemptID: attempt2,
 		Targets: []ports.WorkspaceLeaseTarget{{RepositoryID: repositoryID, RepositoryWorkspaceID: repositoryWorkspaceID, Generation: 1}},
-		TTL:     5 * time.Second,
+		TTL:     10 * time.Minute,
 	})
 	record("new writer is blocked while quarantined", errors.Is(blockedAcquireErr, ports.ErrWriteLeaseConflict), fmt.Sprintf("error=%v", blockedAcquireErr))
 
@@ -214,7 +220,7 @@ func runSPK09Scenario(ctx context.Context, sc ScenarioContext) (SPKResult, error
 	currentGrants, err := store.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
 		JobLease: w2JobLease, AttemptID: attempt2,
 		Targets: []ports.WorkspaceLeaseTarget{{RepositoryID: repositoryID, RepositoryWorkspaceID: recreated.ID, Generation: 2}},
-		TTL:     5 * time.Second,
+		TTL:     10 * time.Minute,
 	})
 	if err != nil {
 		return SPKResult{}, fmt.Errorf("spk09: acquire write lease on recreated generation: %w", err)

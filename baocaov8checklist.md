@@ -1607,3 +1607,298 @@ same `sqlite.Open` as `aw` itself, i.e. it MIGRATES the database before backing 
   Artifact bytes are untouched by schema upgrades and covered by V8-06's manifest verification.
 - **Not done:** making `aw-maintenance backup` itself non-migrating would need a schema-agnostic artifact
   listing; left as a documented operator rule (take the backup with the running release's tool).
+
+
+## V8-11 — Alpha release acceptance
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-11 (ADR-024; depends on V8-01..V8-10): always produce a full
+assessment of every system journey and every Alpha MUST criterion — even when the suites have failures —
+by rolling evidence up onto the coverage map V1-00A..C built, as test / evidence / failure / phase label.
+V8 must not reclassify criteria and must not use `deferred` for an `ALPHA_MUST`. Mandatory last gates:
+cancel-vs-claim in both commit orders; route inventory equals OpenAPI in both directions; every recovery
+command has core/API/UI/CLI owners; the UI <-> operationId <-> `aw` <-> application-operation parity inventory
+has no debt; SourceRef debt 0; `git diff --check`, `go test ./...`, `go vet ./...`. Completion bar: a
+complete matrix and a computed machine-readable `gatePass` (every `ALPHA_MUST` PASS; missing environment is
+`CHƯA ĐỦ EVIDENCE`; a Beta-labeled criterion is reported as outside Alpha scope, not as a failure).
+00-roadmap.md §3: V8-11 "chỉ tổng hợp evidence cuối, không khám phá ownership lần đầu", and a verdict task may
+run when the gate fails ("Task đánh giá đã chạy xong khác với gate đã PASS").
+
+Research found: ownership is already machine-checked (`internal/docscoverage`: every ALPHA_MUST has an owner
+Task ID or SPK, debt 0) but NOTHING mapped criteria, journeys or gates to evidence; there was no
+journey -> test record at all (the 23 journeys of `docs/design/01-system-design.md` §13 were written first and
+V5/V6 built suites around them); only ~47 of the 209 Alpha-gated criteria are named by any test source; and
+the parity gate (`TestRealInventoryParityGate`) deliberately allows a pinned debt ledger.
+
+### Decision
+
+1. **New `internal/alphagate` + `cmd/v8-alpha-gate`, a pure reader** in the `v6gate`/`v8gate` family. Inputs: the
+   coverage inventory (new `docscoverage.LoadInventory`, which exposes the labels and owners the existing
+   checker already resolves — labels are read, never decided), what the repository's test sources say
+   (`ScanRepository`), CI's per-suite results (GitHub's `needs.<job>.result`), and the `go test -json` of a
+   small targeted final-gate run. Output: `alpha-assessment.json` (+ Markdown for the step summary) with
+   one row per criterion, ADR, journey, version gate, final gate and suite, a `summary`, `blockers`,
+   `gatePass` and a `verdictHint` for V8-12.
+2. **Evidence model, stated honestly.** A criterion's required suites are the union of its owner tasks'
+   version gates (base suites for every version: contract, race/stability, SPK scenarios, semantic diff; V6
+   adds the acceptance/diff/verdict suites, V7 web+e2e, V8 fault/soak/security/release-build) plus the suite of
+   every test that cites it. `evidenceLevel` is `TEST` when at least one test names the criterion and `SUITE`
+   otherwise, and the summary counts both — the matrix does not pretend to finer proof than exists. Test
+   files of `internal/alphagate` and `internal/docscoverage` are excluded from citations (they name IDs as
+   fixtures; counting them would make a criterion look tested because the checker's own test mentions it).
+3. **Status rules.** ALPHA_MUST and CROSS_PHASE_GUARD (Alpha half: the architecture tests in
+   `internal/archtest`) are gated; `BETA_*` -> `OUT_OF_ALPHA_SCOPE`; `NOT_APPLICABLE` keeps its authority
+   reason; ADRs are decision sources, not criteria, so they are reported (`NO_OWNER_TASK` for the six no task
+   cites: ADR-001/002/003/004/007/029) but never gate. A known failure dominates missing evidence on the same
+   row (REWORK hint over `CHƯA ĐỦ EVIDENCE`); a skipped/cancelled/absent suite or a skipped final-gate test is
+   never a pass; a package that failed to build reports no per-test lines and is a failure, not "absent".
+4. **Journey table** (`journeys.go`): all 23 journeys of §13 (1-22 and 15A), each mapped to named tests that
+   assert the stated behaviour, or to a whole suite where no single Go test can (browser run, semantic diff,
+   security matrix). The first draft missed journey 22; `TestJourneyTableMatchesTheDesignDocument` caught it.
+   Guards: every named test must exist in the repo; journeys in the design doc and in the table must be equal.
+5. **Final gates** (`tables.go`): four are tests run by the gate job itself with `AW_ALPHA_GATE=1`
+   (cancel-vs-claim both orders — existing `TestCancelRun_ClaimVsCancel_CommitOrder` subtests; route inventory
+   both directions — existing; recovery owners — NEW `TestRecoveryCommandsHaveCoreAPIUICLIOwners`;
+   parity — existing `TestRealInventoryParityGate` plus NEW opt-in `TestParityLedgerIsEmpty`), SourceRef debt
+   and `git diff --check` are computed, and `go test`/`go vet` are the `contract` job (which runs vet,
+   the docs-coverage gate and the full offline suite on both OSes).
+6. **CI job `v8-alpha-gate`** (`needs` every suite, `if: always()`). **It runs with `--enforce=false`**: it
+   always reports `gatePass` in its summary/artifact but does not fail the check on `gatePass=false`. Reason
+   in the next section; V8-12's verdict is where the gate flips to enforcing. Tests keep the job ids, the
+   `needs` list and the final-gate run in step with the tables.
+
+### Execution
+
+- `internal/docscoverage/inventory.go` (`LoadInventory`, `Criterion`, `Decision`).
+- `internal/alphagate/{gate,tables,journeys,scan,testrun,render,run}.go` + `gate_test.go`; `cmd/v8-alpha-gate`.
+- `internal/delivery/parity/alpha_gate_test.go` (recovery-owner test, opt-in ledger-empty test).
+- `.github/workflows/spike-gate.yml`: job `v8-alpha-gate`.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`, `git diff --check` clean; `internal/alphagate`, `internal/docscoverage`,
+  `internal/delivery/parity`, `cmd/...` tests pass.
+- Ran the real tool against this repository with every CI suite synthetically green and the real final-gate
+  test run: **212 criteria assessed** (208 ALPHA_MUST, 1 CROSS_PHASE_GUARD, 2 Beta, 1 NOT_APPLICABLE), all 209
+  gated criteria PASS at that assumption, **23/23 journeys PASS, 9/9 version gates PASS, final gates 6/7**.
+  With no CI evidence at all the same run gives `gatePass=false`, hint `CHƯA ĐỦ EVIDENCE`.
+- `TestRealRepositoryMatrixIsCompleteUnderFullyGreenEvidence`: under fully green evidence the matrix has no
+  blocker of its own (every criterion/ADR/journey/final gate has exactly one row).
+
+### Real finding — the gate is honestly RED: parity debt is not zero
+
+`TestParityLedgerIsEmpty` fails: `internal/delivery/parity/ledger.go` still pins **15 entries** — 13
+`MISSING_CLI` (HTTP read operations with no `aw` mirror: `getEvidence`, `listArtifacts`, `getMessageContent`,
+`getMessageContextSnapshot`, `getReleaseSetLocalCommitStatus`, `getRepositoryWorkspaceState`,
+`getScopeExpansionRequest`, `listFamilyScopeExpansionRequests`, `getTaskFamily`, `listChildWorkItems`,
+`listWorkItemKanban`, `getWorkItemProjectedDetail`, `repositoriesGet`) and 2 `MISSING_APP` (the two projection
+reads the delivery layer answers straight from the projection port). They were acknowledged, not closed, because
+V6-15O's own "Không làm: no new leaf/route" forbade closing them while its "Hoàn thành khi" says "parity debt
+zero"; V6-15P's "parity debt ... zero" was not revisited. V8-11's mandatory gate says no debt, so
+`gatePass=false` with verdict hint `REWORK` until the ledger is empty. **Not closed in this task**: V8-11
+aggregates evidence; closing it means 13 new `aw` leaves plus two application operations — a narrow rework task
+for V8-12's verdict to name. That is also why the CI job is non-enforcing for now: an always-red check would
+make every unrelated PR unmergeable under this repository's "never merge red" rule.
+
+### Findings worth remembering
+
+- Only 47 of 209 Alpha-gated criteria are named by a test; 162 are covered at suite level only. V8-12's known
+  limitations must say so rather than imply test-per-criterion traceability.
+- The 29 ADR headings include ADR-029 (the design text says 001..028); six ADRs have no owner task.
+- Tooling: the shell tool used in this session halves backslashes in heredoc-fed scripts — Go source containing
+  backslash escapes must be written with the Write/Edit tools, not a Python-in-heredoc patch.
+
+### Follow-up found by V8-11's own CI — a real production race behind a "known flake"
+
+`TestStreamLoop_SlowClientDisconnectsWithLastSafeCursor` (`internal/delivery/httpapi/eventstream`) failed on
+`contract (windows-latest)` for the 4th time across 3 PRs (#88, #123 twice, then this PR), each time rerun and
+filed as "timing-sensitive, diff-unrelated". Applying the rule "the same test keeps failing => fix it, do not
+rerun it" turned up a real bug in `streamLoop`, not a test artifact:
+
+- The writer goroutine did `lastWritten = item.cursor` for every non-heartbeat item. The final
+  `stream.disconnected` control notice is written through the same `WriteEvent` but has cursor 0.
+- Whenever the writer drained that queued notice before noticing `stopWriter` (a coin flip at each `select`
+  when both are ready; more likely on a slow runner), `lastWritten` was overwritten with 0 and the returned
+  `LastCursor` rewound to "nothing delivered" although real events had been delivered. `LastCursor` is what lets a
+  client resume exactly from where it stopped, so a wrong value is a correctness bug in production code.
+- Fix: only a larger journal position advances `lastWritten` (positions only increase; control items carry none).
+- New deterministic regression `TestStreamLoop_DisconnectNoticeNeverRewindsLastCursor`: holds the first write
+  open, triggers a server-shutdown stop so the notice is enqueued with room, releases the writer, 300
+  iterations. **Negative control:** without the fix it fails on iteration 2 (`LastCursor = 0` after event 2 was
+  written); with it, 30 consecutive runs of both tests pass.
+- The original test's second assertion compared `LastCursor` with the last item written, which can legitimately
+  be the control notice (no ID); it now looks at the last REAL event.
+
+### Follow-up 2 — the "Windows rename lock" flake was a real `ArtifactStore.Put` race (7+ hits, 6+ PRs)
+
+`TestAppendConversationAttachment_*Concurrency_*` (`internal/app/message`) failed again on this PR's
+`contract (windows-latest)`: `artifactstore: finalize artifact: rename ...tmp\artifact-N ...objects\..\<hash>:
+Access is denied`. It had been filed as "environmental Windows file-rename lock" on PRs #58, #83, #124 (3x), #128,
+#132 and now #139; applying "the same family keeps failing => read it for a real bug" found one:
+
+- `Store.Put` does `Stat(final)` -> not found -> `Rename(tmp, final)`. Two concurrent Puts of identical bytes both
+  pass the Stat, then both rename onto the same content-addressed path. On Windows the loser's rename fails with
+  "Access is denied" (the winner's fresh file is in use) even though the object it wanted now exists — so a
+  concurrent duplicate upload that should be a no-op returned an error to the caller.
+- Fix: if the rename fails but the content-addressed object now exists, the Put succeeded (a path named by its
+  own SHA-256 holds exactly these bytes, and only fully written, synced temp files are ever renamed in); if the
+  object is still absent it is a real failure and is reported as before. The rename is now a package seam
+  (`renameFile`, `os.Rename` in production) so the interleaving can be forced on every OS.
+- Tests: `TestPut_RenameFailsButObjectNowExists_IsASuccessAndLeavesNoTempFile` (**negative control:** without the
+  fix it fails with the exact "Access is denied" error), `TestPut_RenameFailsAndObjectStillAbsent_IsAnError`,
+  and a 16-goroutine `TestPut_ConcurrentIdenticalContent_AllSucceed` with the real rename.
+- The sibling symptom noted in the flake log ("hash stored artifact ... used by another process") came from a
+  reader hitting the same finalize window; this removes the writer-side failure, not a separate reader fix.
+
+### Follow-up 3 — two more CI failures on this PR, handled at the cause
+
+- `TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover` FAILED (not skipped) on `v6 acceptance
+  (windows-latest)` with `burst message 1167: transport error: ... Client.Timeout exceeded while awaiting headers`
+  after 168s. Third PR showing a burst transport-error variant of this scenario (#118 socket exhaustion, #126 and #139
+  client timeout). The load generator (25-wide, 1500 messages) is what gets overwhelmed while the rebuild runs with
+  large batches; the system under test is not misbehaving. Instead of a fourth rerun the burst now retries TRANSPORT
+  errors (4 attempts, 750ms x attempt backoff) via `doRawRetryingTransport`; a response with any status is returned
+  as it came, so a real non-201 still fails the test. Message POSTs are safe to repeat in a burst. No new evidence
+  is waived: the scenario's own skip-when-the-race-is-not-observed rule is unchanged.
+- `release build (windows-latest)` failed with `embed UI build: GetFileAttributesEx web/dist: cannot find the file`:
+  the UI build produced no `web/dist` (the pnpm steps print nothing in the log even on passing runs, so the cause is
+  undetermined). First occurrence, so not "fixed", but it is now diagnosable: a `Verify the UI build produced
+  web/dist` step fails at the step that is actually wrong and lists `web/`.
+
+### Follow-up 4 — the artifact-store fix was only half; the other half is "never replace an existing object"
+
+The first fix (a lost rename with the object present counts as success) did not end the failures: the next run
+failed the same attempt-concurrency test with the OTHER symptom already recorded in the flake log, this time in the
+reader: `verify content before attach: artifactstore: hash stored artifact: open ...\objects\2c\34\2c34...:
+The process cannot access the file because it is being used by another process`. Both symptoms are one cause:
+`os.Rename` REPLACES an existing file (on Windows `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`), so the losing
+Put's publish replaces the winner's object while the winner is hashing it (reader: "used by another process") or
+collides with it (replacer: "Access is denied"). Fixing only the writer left the reader exposed.
+
+- Real fix: `publishObject` hard-links the temp file to the final name, which fails with `os.ErrExist` instead of
+  replacing, then drops the temp name. An existing object is never touched, so a concurrent reader can never
+  collide with a replace. A filesystem without hard links falls back to the rename (still with the lenient "object
+  now exists" handling).
+- Tests (`finalize_race_test.go`, rewritten): `ObjectAppearsBeforePublish_IsLeftUntouchedAndIsASuccess` — a marker
+  object appears between Put's Stat and its publish and must survive byte-for-byte (**negative control:** with the
+  old `os.Rename` default it fails with "publish replaced an existing object"); publish failing with a platform
+  error but the object present is a success; publish failing with the object absent is an error; 16 goroutines Put
+  identical bytes and each `Verify`s the object, as the attachment flow does.
+- Lesson recorded for the flake log: a fix that removes one symptom of a recurring failure is not done until the
+  sibling symptoms listed next to it are explained by the same cause.
+
+### Follow-up 5 — the Windows legs of `web`, `e2e` and `release-build` never waited for pnpm (CI integrity defect since V7-17C)
+
+`release build (windows-latest)` failed twice on this PR with `web/dist` missing, and adding a verification step made
+the cause visible: the `ls` showed no `web/dist`, and job cleanup printed `Terminate orphan process ... (pnpm)`.
+Every `pnpm` step ran under windows-latest's default shell (pwsh), returned in about a second with NO output, and
+left the real pnpm/node processes running — the step ended before the work did.
+
+Evidence that the affected jobs were validating nothing on Windows:
+- `web (windows-latest)` (PR #138 run): install + typecheck + test + build steps each returned in 0.6-1.1s and the
+  whole job took 54s including setup; cleanup terminated orphan `pnpm` and `node` processes.
+- `e2e (windows-latest)`: the `pnpm exec playwright test` step started at 16:17:15 and the job ended at 16:17:25 —
+  10 seconds for a full-journey suite that takes minutes on ubuntu (`e2e (ubuntu-latest)` ran 1m48s).
+- `release build (windows-latest)` passed when the background build happened to finish before `go run` needed
+  `web/dist` (about 60s later, during setup-go) and failed when it did not.
+
+So the Windows legs of the UI checks have been passing vacuously, which also means any Windows-specific UI
+failure was invisible. Fix: `shell: bash` on every `run: pnpm ...` step of all three jobs (9 steps added; the two
+in release-build were the first). bash waits for the command and honours its exit code; ubuntu already used bash, so
+only the Windows legs change. **Expect the Windows legs to now do real work, and to be able to fail for real**
+(web tests, the Playwright journey on Windows); any such failure is a finding, not a regression of this PR. The
+`Verify the UI build produced web/dist` step stays as a guard.
+
+### Follow-up 6 — "durable job lease is no longer authoritative": a wall-clock race in four lease tests, now deterministic
+
+`TestSPK09QuarantineRecreateFencesStaleGeneration` failed this PR's `contract (windows-latest)` with
+`W1 AcquireWriteLeases() error = durable job lease is no longer authoritative`. The same message is the recurring
+`TestRecoveryReaperHandler_OrphanedMutatingAttempt_RunCancelling_ClosesRunOutReally` failure (10+ hits recorded
+across many PRs as "runner load"), and SPK-09 has been in the pre-existing-flake list for weeks. One mechanism:
+
+- Both tests claim a job with a tiny TTL (300ms / 50ms) and then acquire a write lease "within" it. Between the two
+  calls sits a SQLite commit (`synchronous=FULL`, an fsync each); on a slow Windows runner that gap can exceed the TTL,
+  the job lease has already expired, and the acquire is correctly refused. The production code is right; the test
+  depended on the machine being faster than a constant.
+- Fix (test-side, no production change): claim with a long lease and expire it explicitly by moving `lease_until`
+  into the past — `expireLeasesNow`/`expireJobLeaseOnly` in `internal/adapters/sqlite` tests and the exported
+  fixture `sqlite.ExpireJobLeaseForTest` for the test that lives in `internal/app/runtime`. Every assertion about
+  what happens AFTER expiry is unchanged; nothing depends on how fast the machine is BEFORE it. Applied to the four
+  tests with the claim-then-acquire shape: SPK-09 quarantine/recreate, `WriteLeaseRequiresItsOriginalActiveJobFence`,
+  `WriteLeaseHeartbeatRejectsStaleJobLease`, and the recovery-reaper cancelling-mutating test. Side benefit: they no
+  longer sleep (SPK-09 went from about 2s to 0.05s); 30 consecutive runs of the sqlite trio and 20 of the reaper test pass.
+- Not changed: `WriteLeaseHeartbeatExtendsLeaseAndBlocksConflictingAcquire` uses a 300ms WRITE lease and needs real
+  elapsed time by design (it proves the heartbeat pushes the expiry past the original TTL); left alone.
+
+### Follow-up 7 — the first REAL Windows run of e2e and spike acceptance: two more genuine defects
+
+With the Windows pnpm steps fixed, `e2e (windows-latest)` executed for real for the first time and failed, and
+`spike acceptance (windows-latest)` failed too. Both are real, both fixed at the cause.
+
+- **`spike acceptance (windows)`** — `agentkit-spike acceptance --full`: `run scenario SPK-09: acquire write lease on
+  recreated generation: durable job lease is no longer authoritative`. Same family as follow-up 6, but this is the
+  SPK-09 SCENARIO (non-test harness code in `internal/spikeacceptance/spk09_scenario.go`), and the failing acquire is
+  W2's, not W1's: W2 claims its job with a 5s lease and then performs several SQLite commits (quarantine, release,
+  blocked acquire, recreate, stale finalize) before its last acquire; on a slow runner that sequence outlasts 5s. Fix:
+  W1's leases are long and expired explicitly (`sqlite.ExpireJobLeaseForTest` + new `ExpireWriteLeasesForTest`), W2's
+  job lease and write leases are 10 minutes (nothing in the scenario waits for them to expire). Same change in the
+  matching unit test. The scenario's own assertions are unchanged.
+- **`e2e (windows)`** — `COMPLETION_POLICY_FAILED never rendered despite a real OPEN blocker` (full-journey spec), with
+  the failure page snapshot showing the blocker alert ("COMPLETION_POLICY_FAILED on <run> ... NO_COMPLETION_POLICY_PINNED")
+  plainly rendered. The 16 `expect.poll(async () => { await page.reload(); return X.count(); })` sites count the
+  instant the `load` event fires, before the SPA has fetched or rendered anything; the next poll reloads again, so the
+  count is taken before hydration every time. Fast machines hide it. Fix: a `settledCount` helper (up to 5s of 100ms
+  re-counts after each reload, with an `atLeast` for the `> 1` case) used at every such site; the reload stays
+  (recovering from a stale page is the point of those polls). Typecheck clean and the full journey passes locally on
+  Windows (52.9s). The retry that follows a first failure (Playwright `retries`) re-registers the same fixed repository
+  ids in the same DB and fails with a 500 — the already-known duplicate-repositoryId-returns-500 finding
+  (spawned task_c204ac8e), which also hides the first failure's cause behind a second, unrelated one.
+
+### Follow-up 8 — `v5a-N did not reach state SUCCEEDED within the deadline; last observed = LEASED`: 8-second wall-clock budgets
+
+`TestV5AcceptAdapterDrift_RealAdmissionRejectsMismatchedPin` failed this PR's `contract (windows-latest)` with
+`durable job v5a-5 did not reach state SUCCEEDED within the deadline; last observed = LEASED`. The same message has
+been recorded against `TestV5AcceptFalseCompletionOracle`, `TestV5AcceptCheckerWriteAttempt_...` and others across many PRs
+(the flake log's own note: "the whole v5accept package's durable-job-polling tests appear to share this same
+deadline-sensitivity under load"). The cause is in the shared helper, not in any scenario:
+
+- `waitForJobState` and `waitForNodeRunState` polled with a hard 8s deadline and `waitForRunState` with 20s (and
+  `provider_loss_test.go` two more). A polled wait returns the instant its condition holds, so the budget is pure
+  downside when the system works; it was sized for a fast machine. A job that is still `LEASED` when the deadline hits is
+  a job that is still RUNNING (the drift scenario re-probes `fake-claude --version`, then spawns the task), not a stuck
+  one — a genuinely stuck job stays `LEASED` past any deadline and still fails, only later.
+- Fix: one `pollDeadline = 90 * time.Second` constant used by every wait in the package. Costs nothing on success; a real
+  hang now reports 90s later instead of 8s later. Package still passes locally (68s).
+
+### Follow-up 9 — the last red on this PR was V6-14C, and its cause is structural: a race the test could only lose
+
+Everything else finally went green in run 36773212109; the only failing check was `V6-14C API/projection verdict`
+= `CHƯA ĐỦ EVIDENCE [V6-14A] conditional scenario TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover was never
+demonstrated on ANY platform (skipped on all of them)`. That scenario has been filed as "timing-luck, keep rerunning" for
+weeks and has cost many reruns. It is not luck, it is the test's design:
+
+- To prove "a worker killed mid-rebuild, before cutover, converges after restart" the test must observe the rebuild in an
+  intermediate phase through HTTP and kill the worker there. A rebuild of the test's journey completes in well under
+  150ms while one HTTP poll costs milliseconds, so the observation was a coin flip the test repeated a bounded number of
+  times and then honestly skipped. On a slow runner it lost every time (ubuntu skipped after 27s, windows after 287s).
+- Fix, following the precedent of the existing test-only `--projection-rebuild-batch-size`: a test-only
+  `aw worker --projection-rebuild-round-delay` / `projectionrebuildworker.Deps.RoundDelay` that pauses between the
+  committed steps of one rebuild (zero = never, the production default). The scenario sets 400ms, so every committed phase
+  (SNAPSHOTTING, BUILDING, CUTTING_OVER) is readable for a known, generous window instead of tens of microseconds.
+- Result: it now passes on the FIRST attempt, observing `SNAPSHOTTING` before the crash, 3 of 3 local runs (about 20s
+  each); the projectionrebuildworker and cmd/aw packages still pass (RoundDelay defaults to 0).
+- The scenario stays in V6-14C's `conditionalScenarios` for now (the skip path still exists and costs nothing);
+  promoting it to `requiredScenarios` is a one-line follow-up once CI confirms it no longer skips.
+- Also fixed a slip from follow-up 3: the burst-retry helper had been inserted between the test's doc comment and the
+  test function; it now sits above the doc comment.
+
+### Follow-up 10 — `TestPool_HeartbeatKeepsLongRunningJobAlive`: a 500ms lease with only 5 renewals of margin
+
+`contract (windows-latest)` failed with `handler invocation count = 2, want exactly 1 (heartbeat must prevent premature
+reclaim/reprocessing)`. Same family again: the test configured `LeaseTTL=500ms` with a 100ms heartbeat, i.e. five
+renewals of margin, and each renewal is a SQLite commit (`synchronous=FULL`, an fsync). A stall of more than 400ms
+between two commits on a slow Windows runner let the lease lapse, the recovery loop reclaimed the job and the handler
+ran a second time although the heartbeat was working. Fix (test-side): this test now uses a 2s lease (20 renewals of
+margin) and its handler runs 5s — still 2.5x the lease, so only real heartbeats keep the job from being reclaimed;
+the assertion is unchanged. `waitForConditionWithin` gives the longer wait. Cost: about 4s more per run of this test.

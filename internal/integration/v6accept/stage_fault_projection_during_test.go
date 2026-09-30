@@ -10,6 +10,24 @@ import (
 	"time"
 )
 
+// doRawRetryingTransport runs do up to attempts times, sleeping backoff*attempt
+// between tries, and returns the first outcome without a transport error (or
+// the last outcome if every attempt had one). Only transport errors are
+// retried: any HTTP response, whatever its status, is returned as it came.
+func doRawRetryingTransport(attempts int, backoff time.Duration, do func() httpOutcome) httpOutcome {
+	var outcome httpOutcome
+	for attempt := 1; attempt <= attempts; attempt++ {
+		outcome = do()
+		if outcome.err == nil {
+			return outcome
+		}
+		if attempt < attempts {
+			time.Sleep(backoff * time.Duration(attempt))
+		}
+	}
+	return outcome
+}
+
 // TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover is V6-14A
 // scenario 4: "crash after projection row (before cutover)".
 // internal/app/projectionrebuildworker's own package doc comment names the
@@ -71,6 +89,12 @@ func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 		// batch means FEWER, individually SLOWER rounds, each genuinely
 		// observable for longer.
 		s.projectionRebuildBatchSize = 20000
+		// Hold every committed rebuild phase for 400ms. Without this the whole
+		// rebuild finished in under 150ms and observing an intermediate phase
+		// by HTTP polling was a coin flip — the scenario skipped on every
+		// platform in run after run, which is what kept V6-14C at CHƯA ĐỦ
+		// EVIDENCE. With it each phase is readable for a known, generous window.
+		s.projectionRebuildRoundDelay = 400 * time.Millisecond
 		s.workerPollInterval = 20 * time.Millisecond
 	})
 	const wantItems = 5
@@ -97,8 +121,19 @@ func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 			outcomes := doRawConcurrent(batch, func(i int) httpOutcome {
 				index := start + i
 				target := workItemIDs[index%len(workItemIDs)]
-				return doRaw(j.s.api, http.MethodPost, "/projects/"+j.projectID+"/work-items/"+target+"/messages",
-					map[string]string{"role": "USER", "content": fmt.Sprintf("fault-projection-during burst message %06d", index), "contentType": "text/plain"})
+				// A transport error here (client timeout while the server is
+				// busy with the rebuild's large batches, or Windows socket/
+				// ephemeral-port exhaustion) is the LOAD GENERATOR being
+				// overwhelmed, not the behaviour under test; it is the symptom
+				// behind this scenario's recurring CI failures (PR #118 socket
+				// exhaustion, PR #126 and PR #139 client timeout). A message
+				// POST is safe to repeat in a burst, so retry transport errors a
+				// few times with a backoff before calling it a failure. A non-201
+				// status is never retried.
+				return doRawRetryingTransport(4, 750*time.Millisecond, func() httpOutcome {
+					return doRaw(j.s.api, http.MethodPost, "/projects/"+j.projectID+"/work-items/"+target+"/messages",
+						map[string]string{"role": "USER", "content": fmt.Sprintf("fault-projection-during burst message %06d", index), "contentType": "text/plain"})
+				})
 			})
 			for i, outcome := range outcomes {
 				if outcome.err != nil {
