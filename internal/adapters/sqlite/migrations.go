@@ -38,6 +38,25 @@ type migration struct {
 
 var migrationFilenamePattern = regexp.MustCompile(`^(\d{4})_(.+)\.sql$`)
 
+// CurrentSchemaVersion returns the highest embedded migration version this
+// build carries — V8-08's own "schema ... manifest" bar
+// (docs/design/10-v8-alpha-hardening.md V8-08, HE-02-M04's "toolchain
+// version, dependency lock, repo revision ... MUST have provenance"): a
+// release manifest needs to report which schema this exact binary expects
+// without opening a real database connection. Deliberately reads the SAME
+// embedded migrationFiles the real Migrate path applies — never a second,
+// separately-maintained source of truth for "the current schema version."
+func CurrentSchemaVersion() (int, error) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		return 0, err
+	}
+	if len(migrations) == 0 {
+		return 0, fmt.Errorf("no embedded migrations found")
+	}
+	return migrations[len(migrations)-1].Version, nil
+}
+
 // loadMigrations reads every embedded migrations/*.sql file and returns
 // them in version order. It fails loudly on a filename that does not
 // match the NNNN_name.sql convention or on a duplicate version rather

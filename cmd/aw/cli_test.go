@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +41,44 @@ func TestRun_Help(t *testing.T) {
 		if stderr.Len() != 0 {
 			t.Errorf("run(%q): stderr should be empty, got %q", flag, stderr.String())
 		}
+	}
+}
+
+// TestRun_VersionJSON_ReportsARealReleaseManifest is V8-08's own
+// "version/schema/adapter manifest" Verify bullet
+// (docs/design/10-v8-alpha-hardening.md V8-08): `aw version --json` must
+// report real, checkable provenance, not placeholder/zero values.
+func TestRun_VersionJSON_ReportsARealReleaseManifest(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"version", "--json"}, &stdout, &stderr)
+	if code != exitSuccess {
+		t.Fatalf("exit code = %d, want %d, stderr=%s", code, exitSuccess, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr should be empty, got %q", stderr.String())
+	}
+
+	var manifest releaseManifest
+	if err := json.Unmarshal(stdout.Bytes(), &manifest); err != nil {
+		t.Fatalf("decode manifest JSON: %v\nstdout=%s", err, stdout.String())
+	}
+	if manifest.GoVersion == "" {
+		t.Errorf("manifest.GoVersion is empty")
+	}
+	if manifest.OS != runtime.GOOS || manifest.Arch != runtime.GOARCH {
+		t.Errorf("manifest.OS/Arch = %s/%s, want %s/%s", manifest.OS, manifest.Arch, runtime.GOOS, runtime.GOARCH)
+	}
+	if manifest.SchemaVersion <= 0 {
+		t.Errorf("manifest.SchemaVersion = %d, want a real positive migration version", manifest.SchemaVersion)
+	}
+	if manifest.UIEmbedded {
+		t.Errorf("manifest.UIEmbedded = true, want false — this test binary was never built by cmd/aw-release-build")
+	}
+	if len(manifest.SupportedProviders) == 0 {
+		t.Errorf("manifest.SupportedProviders is empty")
+	}
+	if _, err := time.Parse(time.RFC3339, manifest.GeneratedAt); err != nil {
+		t.Errorf("manifest.GeneratedAt = %q is not a valid RFC3339 timestamp: %v", manifest.GeneratedAt, err)
 	}
 }
 

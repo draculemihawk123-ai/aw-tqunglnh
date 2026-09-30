@@ -1065,6 +1065,109 @@ jobs:
         working-directory: web
         run: pnpm run build
 
+  # release-build is V8-08 (docs/design/10-v8-alpha-hardening.md V8-08,
+  # "Reproducible cross-platform build"): builds a real `pnpm build` UI
+  # output, embeds it into a real `aw`/`aw.exe` binary via
+  # cmd/aw-release-build (internal/adapters/embeddedui), builds it a SECOND
+  # time from the identical checkout, and proves the two builds are
+  # reproducible — byte-identical binaries, and identical release manifests
+  # except the one field (generatedAt) this task's own manifest doc comment
+  # names as legitimately expected to differ between two runs. Then smoke-
+  # tests the actual produced binary on this OS: doctor reports HEALTHY,
+  # serve comes up and genuinely serves the embedded UI over real HTTP —
+  # V8-08's own "Hoàn thành khi: binary chạy doctor/serve và UI journey tối
+  # thiểu trên cả OS" bar. runs-on native per-OS (never cross-compiled),
+  # matching every other matrix job in this workflow.
+  release-build:
+    name: release build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: contract
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.18.0'
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Install UI dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+      - name: Build UI
+        working-directory: web
+        run: pnpm run build
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      - name: Build release binary (round 1)
+        shell: bash
+        run: go run ./cmd/aw-release-build --repo-root . --ui-dist web/dist --out build1/aw
+
+      - name: Restore embeddedui/dist between the two rounds
+        shell: bash
+        run: git checkout -- internal/adapters/embeddedui/dist
+
+      - name: Build release binary (round 2, for the reproducibility check below)
+        shell: bash
+        run: go run ./cmd/aw-release-build --repo-root . --ui-dist web/dist --out build2/aw
+
+      - name: Compare the two builds for reproducibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN1=$(awk '{print $1}' build1/*.sha256)
+          BIN2=$(awk '{print $1}' build2/*.sha256)
+          echo "round 1 binary sha256: $BIN1"
+          echo "round 2 binary sha256: $BIN2"
+          if [ "$BIN1" != "$BIN2" ]; then
+            echo "::error::binary checksum mismatch across two identical builds — this build is not reproducible"
+            exit 1
+          fi
+          # generatedAt is the one manifest field this task's own doc
+          # comment (cmd/aw/cli.go's releaseManifest) names as legitimately
+          # expected to differ between two runs; every other field must
+          # match exactly, or an unknown/unexpected difference fails.
+          jq 'del(.generatedAt)' build1/aw.manifest.json > build1/aw.manifest.filtered.json
+          jq 'del(.generatedAt)' build2/aw.manifest.json > build2/aw.manifest.filtered.json
+          if ! diff -u build1/aw.manifest.filtered.json build2/aw.manifest.filtered.json; then
+            echo "::error::release manifest differs across two identical builds outside the allowlisted generatedAt field"
+            exit 1
+          fi
+          echo "release manifests match (outside the allowlisted generatedAt field)"
+
+      - name: Restore embeddedui/dist after both rounds
+        shell: bash
+        run: git checkout -- internal/adapters/embeddedui/dist
+
+      - name: Release smoke — doctor and serve genuinely serve the embedded UI
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=$(dirname build1/*.sha256)/$(awk '{print $2}' build1/*.sha256)
+          mkdir -p smoke/artifacts smoke/workspaces
+          "$BIN" doctor --db smoke/aw.db --artifact-root smoke/artifacts --workspace-root smoke/workspaces
+          "$BIN" serve --db smoke/aw.db --artifact-root smoke/artifacts --workspace-root smoke/workspaces \
+            --host 127.0.0.1 --port 18765 > smoke/serve.log 2>&1 &
+          SERVE_PID=$!
+          trap 'kill $SERVE_PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 50); do
+            if grep -q '"address"' smoke/serve.log 2>/dev/null; then break; fi
+            sleep 0.2
+          done
+          cat smoke/serve.log
+          INDEX=$(curl -sf http://127.0.0.1:18765/)
+          echo "$INDEX" | grep -q 'window.__AW_BOOTSTRAP__=' || { echo "::error::/ did not serve the embedded UI's own bootstrap script"; exit 1; }
+          echo "release smoke passed: doctor HEALTHY, serve genuinely served the embedded UI"
+
   # e2e is V7-17C's own real full-journey acceptance
   # (docs/design/09-v7-alpha-ui.md V7-17): it drives web/dist through a real
   # browser against real `aw serve --ui-dist web/dist` + `aw worker`

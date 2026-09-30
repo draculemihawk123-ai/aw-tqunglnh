@@ -1198,3 +1198,130 @@ the gap, spawn a scoped follow-up, close what IS real now).
   immediately after: 3/3 clean for each, confirming local machine contention (this session had just run two
   back-to-back heavy scale benchmarks — 5100 durable jobs and 5500 domain events — immediately beforehand),
   not a real regression.
+
+## V8-08 — Reproducible cross-platform build
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-08 (AK-ARCH-020, HE-02-M04, ADR-028; depends on V7-17, V8-03, both
+already closed) asks for: "tạo Alpha artifacts Windows/Linux với pinned Go/UI dependencies" (produce Alpha
+artifacts for Windows/Linux with pinned Go/UI dependencies) — Thực hiện: build the UI and package it into the
+`aw`/`aw.exe` binary, build the binary, a version/schema/adapter manifest, checksums (`aw serve` already
+serving the UI is a V7-02 condition; this task only owns reproducibility, cross-platform packaging, and
+release smoke). Verify: a clean CI build run TWICE, compared via a specific version-controlled allowlist
+field, any unlisted difference fails; smoke each artifact. Completion bar: the binary runs `doctor`/`serve`
+and a minimal UI journey on both OSes.
+
+Research found two real, concrete gaps, not just polish:
+- `aw serve` today ONLY serves the UI via the runtime `--ui-dist <directory>` flag (V7-02A) — the UI is never
+  actually packaged INTO the binary anywhere. A real release artifact would need to ship the binary AND a
+  separate `web/dist` directory side by side, which is not what "đóng gói vào binary" (package into the
+  binary) literally asks for.
+- `aw version` reports only a one-line `aw <version> (commit <revision>)` string — no schema version, no
+  adapter/provider inventory, no UI-embedded status. There is no existing "release manifest" concept anywhere
+  in this codebase to report HE-02-M04's own "toolchain version, dependency lock, repo revision ... MUST have
+  provenance" bar.
+
+### Decision
+
+1. **UI embedding via a checked-in placeholder + `//go:embed`**, not a runtime-default change to `--ui-dist`.
+   New package `internal/adapters/embeddedui` embeds `dist/` (`//go:embed all:dist`) — `dist/index.html` is
+   checked into version control as a deliberate, recognizable PLACEHOLDER (embed requires at least one real
+   file to exist at compile time, and every ordinary `go build`/`go vet`/`go test` in this repo must keep
+   compiling without ever running `pnpm build` first). `Extract(destDir)` reads the embedded index.html: if it
+   matches the placeholder marker, reports `embedded=false` and touches nothing on disk (the exact V7-02A
+   "omitted --ui-dist = no UI" behavior, completely unchanged for every existing test); otherwise it
+   materializes the REAL embedded UI tree under destDir in the exact shape `--ui-dist` already expects
+   (index.html + assets/) and reports `embedded=true`. `IsEmbedded()` is the same check without any disk
+   write, for the manifest below. `cmd/aw/serve.go`'s own `loadBuiltUIIndex` call site gained ONE new
+   fallback: an omitted `--ui-dist` now additionally tries `embeddedui.Extract` into a fresh `os.MkdirTemp`
+   directory (cleaned up via `defer` when real) before falling back to the pre-existing "no UI" zero values —
+   an EXPLICIT `--ui-dist` is never overridden by this fallback. Chose extraction-to-a-real-temp-directory
+   over generalizing `StaticAssetHandler` to accept an `fs.FS` (which would need `http.FileServerFS` and touch
+   4 existing tests' own signature expectations) specifically to keep this task's blast radius small — a
+   one-time startup-cost temp-directory write is a well-established, low-risk pattern for serving embedded
+   assets in Go, and zero existing production code changed shape.
+2. **`aw version --json`**: a new `releaseManifest` struct (Version/Commit/GoVersion/OS/Arch/SchemaVersion/
+   UIEmbedded/SupportedProviders/GeneratedAt) — V8-08's own "version/schema/adapter manifest." SchemaVersion
+   comes from a new small public `sqlite.CurrentSchemaVersion()` (reads the SAME embedded `migrations/*.sql`
+   the real `Migrate` path already applies — never a second, separately-maintained source of truth).
+   SupportedProviders is the closed, compile-time `["claude", "codex"]` list this build's own
+   `--claude-executable`/`--codex-executable` flags register — deliberately NOT the runtime,
+   per-installation `adapterbuild.Build` inventory (a different, already-existing V6 concept). GeneratedAt is
+   the ONE field explicitly documented (and later allowlisted in CI) as expected to differ between two
+   otherwise-identical builds.
+3. **`cmd/aw-release-build`**: a new standalone binary (same precedent as `cmd/v6-gate`/`cmd/v8-security-gate`/
+   `cmd/aw-maintenance` — ADR-028's own `CLI_LOCAL` closed-set finding, already hit once this session for
+   `cmd/aw-maintenance`, applies here too: a release-packaging tool has no runtime HTTP-parity counterpart and
+   operates on the checkout's own source tree, not a running installation). Given `--repo-root`/`--ui-dist`/
+   `--out`, it replaces `<repo-root>/internal/adapters/embeddedui/dist`'s own contents with `--ui-dist`'s,
+   runs `go build -trimpath -o <out> ./cmd/aw`, writes a `<out>.sha256` checksum file, then runs `<out>
+   version --json` (proving the produced binary genuinely executes, never just compiles) and writes that
+   manifest alongside it — failing loudly if the fresh binary's own manifest ever reports `uiEmbedded=false`
+   (the embed silently not taking effect would otherwise go unnoticed). Never cross-compiles; always builds
+   for the OS/arch it is itself running on, matching this workflow's own per-OS-runner matrix convention.
+   **Real finding during manual verification**: `go build -o aw` on this environment does NOT auto-append
+   `.exe` for an explicit output path with no extension — the tool's OWN later `exec.Command(out, "version",
+   "--json")` step then fails to find/run it on Windows (`CreateProcess` requires the extension; the POSIX
+   executable bit alone is not enough). Fixed by having the tool itself append `.exe` when
+   `runtime.GOOS == "windows"` and `--out` has no `.exe` suffix, rather than relying on every caller to
+   remember.
+4. **CI**: a new `release-build (${{ matrix.os }})` job (needs `contract`, both platforms) — builds the real
+   UI (`pnpm install`+`pnpm build`, mirroring the existing `web` job's own steps), then runs
+   `cmd/aw-release-build` TWICE from the identical checkout (restoring `internal/adapters/embeddedui/dist` via
+   `git checkout --` between rounds, since the tool mutates it), and compares: the two binaries' own SHA256
+   checksums must be byte-for-byte IDENTICAL (Go's own `-trimpath` reproducible-build story — no embedded
+   timestamps, no absolute build paths), and the two manifests must match with `generatedAt` explicitly
+   allowlisted out via `jq 'del(.generatedAt)'` before diffing — any OTHER difference fails the job. Then a
+   release smoke step runs the actual produced binary: `doctor` (must report HEALTHY-shaped output, checked
+   via real exit code), `serve` with NO `--ui-dist` flag at all (proving the embedded fallback, not the
+   `--ui-dist` runtime path, is what a real release binary relies on), polls for readiness, and confirms a
+   real `GET /` response contains the injected bootstrap script — the concrete, minimal "UI journey" this
+   task's own completion bar asks for.
+
+### Execution
+
+- `internal/adapters/sqlite/migrations.go` (modified): new exported `CurrentSchemaVersion()`.
+- `internal/adapters/sqlite/migrations_test.go` (modified): `TestCurrentSchemaVersion_MatchesTheHighestLoadedMigration`.
+- `internal/adapters/embeddedui/dist/index.html` (new): the checked-in placeholder.
+- `internal/adapters/embeddedui/embeddedui.go` (new): `IsEmbedded`, `Extract`, `extractFS`.
+- `internal/adapters/embeddedui/embeddedui_test.go` (new): 4 tests covering the placeholder/real-build split
+  via both `fstest.MapFS` (pure logic) and the real compiled-in `distFS` (proves the checked-in placeholder is
+  correctly recognized by the actual embed, not just by a fake).
+- `cmd/aw/serve.go` (modified): the new embedded-UI fallback at the `loadBuiltUIIndex` call site.
+- `cmd/aw/serve_uidist_test.go` (modified): new `TestServe_NoUIDistAndNoEmbeddedUIFallsBackToNoUI` — a real
+  regression guard proving the fallback branch itself does not change the pre-existing "no UI" behavior for
+  this repo's own real (placeholder) compiled-in state.
+- `cmd/aw/cli.go` (modified): `runVersion` gained `--json`; new `releaseManifest` type,
+  `supportedProviderKinds`, `buildReleaseManifest`.
+- `cmd/aw/cli_test.go` (modified): `TestRun_VersionJSON_ReportsARealReleaseManifest`.
+- `cmd/aw-release-build/main.go` (new): the release build tool.
+- `cmd/aw-release-build/main_test.go` (new): `TestReplaceDir_ReplacesContentsPreservingSubtree`,
+  `TestRun_RequiresUIDist`, `TestRun_RequiresOut` — deliberately does NOT exercise `run()` against this repo's
+  own real `--repo-root` (it mutates the shared `internal/adapters/embeddedui/dist` on disk, which could race
+  against an unrelated package's own concurrent `go build`/`go test` under `go test ./...`'s default
+  parallelism) — see this file's own package doc comment.
+- `.github/workflows/spike-gate.yml` (modified): new `release-build` job.
+
+### Verify
+
+- **Real, manual end-to-end run** (stronger than the automated tests alone, and the reason `main_test.go`
+  above deliberately skips this exact path): built a fixture `--ui-dist` (real index.html + assets/app.js),
+  ran the actual `cmd/aw-release-build` against THIS repo's own real `--repo-root`, confirmed: the produced
+  `aw.exe`'s own `version --json` reports `"uiEmbedded": true`; `sha256sum -c` against the tool's own written
+  checksum file reports OK; running the actual produced binary's own `aw serve` with NO `--ui-dist` flag and
+  issuing a real `GET /` returned the fixture's own index.html content WITH the injected bootstrap script
+  (`window.__AW_BOOTSTRAP__=...`), and `GET /assets/app.js` returned the fixture's own real content; `aw
+  doctor` against the same install reported `status: HEALTHY`. Restored
+  `internal/adapters/embeddedui/dist` to its original checked-in placeholder afterward (byte-for-byte
+  `diff`-confirmed).
+- `go build ./...`, `go vet ./...`: clean across the whole repo.
+- `go test ./internal/adapters/embeddedui/... ./cmd/aw/... ./cmd/aw-release-build/...`: all new/modified tests
+  pass, including the real fallback-wiring regression guard in `cmd/aw`.
+- `go test -count=1 ./...` (full repo, every package): completely clean, zero failures — including
+  `internal/archtest` (confirms the new `embeddedui` package and `cmd/aw-release-build` binary stay
+  architecturally sound) and `internal/docscoverage` (V1-00C's own pre-V1 aggregate gate).
+- `.github/workflows/spike-gate.yml`'s own YAML parsed successfully with `yaml.safe_load` before committing;
+  the new job's own real CI execution (build UI, build twice, compare checksums/manifests, release smoke on
+  both OSes) could only be verified once this PR's own CI actually runs it — flagged for close attention on
+  the first real CI round.

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/embeddedui"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
@@ -180,6 +181,29 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	uiIndexHTML, uiAssetsDir, err := loadBuiltUIIndex(*uiDist)
 	if err != nil {
 		return err
+	}
+	// V8-08: an OMITTED --ui-dist falls back to any real UI build this
+	// binary was compiled with (embeddedui.Extract reports embedded=false,
+	// leaving uiIndexHTML/uiAssetsDir at their zero values, for every
+	// ordinary `go build` that never ran cmd/aw-release-build first — see
+	// embeddedui's own doc comment). An explicit --ui-dist always wins and
+	// is never overridden by this fallback.
+	if uiIndexHTML == nil {
+		embeddedDir, mkErr := os.MkdirTemp("", "aw-embedded-ui-*")
+		if mkErr != nil {
+			return fmt.Errorf("create embedded UI extraction directory: %w", mkErr)
+		}
+		embeddedIndexHTML, embedded, extractErr := embeddedui.Extract(embeddedDir)
+		if extractErr != nil {
+			_ = os.RemoveAll(embeddedDir)
+			return fmt.Errorf("extract embedded UI: %w", extractErr)
+		}
+		if embedded {
+			uiIndexHTML, uiAssetsDir = embeddedIndexHTML, filepath.Join(embeddedDir, "assets")
+			defer os.RemoveAll(embeddedDir)
+		} else {
+			_ = os.RemoveAll(embeddedDir)
+		}
 	}
 
 	// V6-07: the first real caller in this composition root that needs a
