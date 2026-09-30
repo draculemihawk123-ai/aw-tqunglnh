@@ -1199,6 +1199,30 @@ the gap, spawn a scoped follow-up, close what IS real now).
   back-to-back heavy scale benchmarks — 5100 durable jobs and 5500 domain events — immediately beforehand),
   not a real regression.
 
+### V8-07 follow-up — fix the zero-duration measurement bug in `measureKanbanListLatency`
+
+**Context**: `TestV8PerformanceBudget_WorkItemDetailLatencyStaysFlatAsProjectGrows` failed real CI on THREE
+separate runs across TWO unrelated later PRs (#133 — V8-08, and #134 — a pure docs-only PR, proving the bug
+lived in this already-merged V8-07 code, not either PR's own diff): `project size 200: 0s, ... want smallLatency
+> 0`. Root cause: `measureKanbanListLatency` took the MINIMUM of 7 individually-`time.Since()`-timed single
+HTTP round trips; on a fast/quiet Windows CI runner, timing one very-fast round trip can return exactly `0` due
+to timer-resolution granularity, and MINIMUM-of-N makes hitting that zero MORE likely, not less (one lucky
+near-zero sample poisons the whole minimum). This exact edge case had already been silently observed during
+V8-07's own original local verification (logged then as "2000: 0s (ratio 0.00x)") but didn't trip the
+`smallLatency <= 0` guard until it landed on the SMALL side in real CI.
+
+**Decision**: replaced the min-of-7-individually-timed-samples design with timing an entire batch of 20 real
+requests in ONE `time.Now()`/`time.Since()` pair, then dividing by 20 for a per-request average. Summing 20
+real round trips before dividing makes an exact-zero TOTAL measurement virtually impossible even under coarse
+timer resolution, while still averaging out ordinary per-request scheduler/GC noise well enough for this
+file's own already-generous frozen ratio thresholds (30x for the Kanban list route, 6x for the WorkItem
+detail route) — neither threshold needed changing.
+
+**Verify**: `go test ./internal/delivery/httpapi/kanban/... -run TestV8PerformanceBudget -v -count=10`: 10/10
+clean, zero zero-duration readings, Kanban list ratio ranged 5.29x-8.02x (well inside 30x), WorkItem detail
+ratio ranged 0.79x-1.00x (well inside 6x) — confirms both thresholds still hold real, comfortable margin under
+the new measurement method. `go build ./...`, `go vet ./...`, `go test -count=1 ./...` (full repo): all clean.
+
 ## V8-08 — Reproducible cross-platform build
 
 ### Context
@@ -1326,6 +1350,70 @@ Research found two real, concrete gaps, not just polish:
   both OSes) could only be verified once this PR's own CI actually runs it — flagged for close attention on
   the first real CI round.
 
+### V8 follow-up — fix the recurring `e2e (ubuntu-latest)` flake at its real root cause (a race in the spec, not runner slowness)
+
+**Context**: `e2e (ubuntu-latest)` failed on almost every CI round of PRs #132–#135 with the same symptom
+(`newly-registered repository never appeared`, or a `READY` poll timing out) while `e2e (windows-latest)`
+passed. It had been recorded repeatedly as "CI runner load" and a hardening task (poll the backend API instead
+of reload-scraping) had been queued since V8-01. Reading the real failure artifacts instead of the assertion
+text showed it was not load:
+- The Playwright `error-context.md` page snapshot showed a healthy UI (`Connection: Live`, `Updated just now`)
+  that still said "0 repositories · No repositories registered yet" — and, on the other attempt, a WorkItem
+  still `BACKLOG` after its test had "marked it READY".
+- The trace's network log showed why: the `POST /projects/{id}/repositories` was sent at 10:36:44.112 and the
+  page navigation (`GET /ui/projects/{id}`) began at 10:36:44.121 — **9ms later** — with the POST recorded as
+  status `-1` (aborted), while every other POST on the same server completed in 1–10ms. `GET .../repositories`
+  then returned an empty list for the entire 30s poll, because the server never received the command.
+
+**Root cause**: every UI mutation in the journey is followed by `expect.poll(async () => { await
+page.reload(); ... })` (or a `page.goto`). A navigation cancels fetches the page still has in flight, so a bare
+`.click()` followed directly by a reload races the request itself. When the reload wins, the browser aborts the
+POST before the server processes it, the state the poll waits for is never created, and the poll reloads for
+its full budget against a server that never got the command. Windows dispatches the reload slightly later, so
+the POST usually finishes first; Ubuntu intermittently loses the race. The spec already contained the correct
+pattern for one site (`clickStartRun`, whose comment says "waiting on the real POST response is the one signal
+that is never racy") but it had not been applied to the others.
+
+**Fix** (`web/e2e/full-journey.spec.ts` only): a generic `awaitMutation(page, trigger, pathPattern)` helper that
+runs the click and waits for that request's own response (failing loudly with the status and body if it is not
+2xx), applied to every click that is followed by a reload/goto: register repository (x2), Retry Probe, create
+WorkItem (`fillCreateWorkItemDialog`, 3 call sites) and Mark Ready (`markFirstBacklogCardReady`, 3 call sites).
+Clicks followed by `expect(...).toBeVisible()` (Resolve, Approve, Seal, ...) needed no change: they never
+navigate.
+
+**Verify**: `pnpm run typecheck` clean; full `playwright test` passed 3/3 independent fresh-stack runs locally
+(Windows). Local Windows cannot reproduce the race (that is exactly why it only showed on Ubuntu), so the real
+proof is this PR's own `e2e (ubuntu-latest)` job, which runs the fixed spec.
+
+**Side finding, not fixed here**: asserting the response status surfaced that registering a repository whose
+`repositoryId` already exists (in another project) returns `500 INTERNAL` ("sqlite: unexpected error") rather
+than a typed CONFLICT — a unique-constraint violation that is not being mapped to a domain error. Unrelated to
+this flake; worth its own task.
+
+### V8 follow-up — fix the `TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns` cleanup race that made `Linux race and stability (V0-12)` fail almost every time
+
+**Context**: this test had been recorded as a "known flake" 12+ times across V8 (`TempDir RemoveAll cleanup:
+unlinkat .../001: directory not empty`, in `internal/adapters/process`). On PRs #135/#136 V0-12 failed on
+EVERY attempt, and on one attempt the same test failed in TWO of the ten stability runs. That is not bad luck:
+at ~20% per run, the chance that all 10 runs of the stability job pass is roughly 0.8^10 ≈ 10%, so each ~27
+minute rerun was close to a coin flip weighted against us. Rerunning was the wrong response; the test needed fixing.
+
+**Root cause**: the test deliberately leaves an orphaned descendant alive after `Run` returns (TreeQuiesced
+must be false — that is the behavior under test). The helper (`descendant-child`) rewrites the `marker` file
+every 20ms for up to 10 seconds. Nothing stopped it before `t.TempDir()`'s cleanup ran `RemoveAll`, so the orphan
+could recreate `marker` between `RemoveAll` emptying the directory and removing it → `directory not empty`. It is
+a bug in the test's own cleanup, not in `Supervisor`, and it only shows on Linux (0/25 locally on Windows).
+
+**Fix** (`internal/adapters/process/supervisor_test.go` only): the test now registers a cleanup (after
+`t.TempDir()`, so it runs before that directory's own cleanup — LIFO) that creates a stop file and waits until
+`marker` has been quiet for 150ms (the helper writes every 20ms, so that means it really stopped). The helper
+reads an optional `AGENTKIT_DESCENDANT_STOP` env var and exits its write loop when that file appears; the other
+tests that use `descendant-child` do not set it and are unchanged.
+
+**Verify**: `go vet` clean on both `GOOS=windows` and `GOOS=linux`; the test passes 25/25 and the whole package 3/3
+locally. The local Windows machine cannot reproduce the race (and Docker was unavailable for a Linux run), so the
+real proof is V0-12 on this PR, which runs the test 10 times on Linux.
+
 ## V8-09 — First-run/operator documentation
 
 ### Context
@@ -1429,3 +1517,4 @@ covers end to end.
   `HEALTHY`. Both real mistakes hit during this process (Windows path resolution, `.sh` vs `.bat` script) were
   fixed forward (new definition versions, never edited in place) and are now the documentation's own first two
   troubleshooting entries.
+

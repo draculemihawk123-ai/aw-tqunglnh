@@ -86,6 +86,40 @@ async function assertNoSeriousA11yViolations(page: Page) {
   expect(serious, JSON.stringify(serious, null, 2)).toEqual([]);
 }
 
+/**
+ * Runs a UI action that fires a mutating request and waits for THAT request's
+ * own response (asserting it succeeded) before returning.
+ *
+ * Every mutation this journey triggers through the UI is followed by a
+ * `page.reload()`/`page.goto()` poll to let the async projection catch up. A
+ * reload cancels any fetch the page still has in flight, so a bare `.click()`
+ * followed directly by a reload races the request itself: on a fast runner
+ * the reload can win, the browser aborts the POST before the server ever
+ * processes it, and the state the poll is waiting for is never created — the
+ * poll then reloads for its whole 30s budget against a server that genuinely
+ * never received the command. Real CI traces showed exactly this: the
+ * `POST /projects/{id}/repositories` was sent 9ms before the reload began and
+ * recorded as aborted (status -1) while every other POST on the same server
+ * completed in 1-10ms, and the repository list stayed empty for the full 30s.
+ * It passed reliably on Windows (slower to dispatch the reload) and failed
+ * intermittently on Ubuntu, which is why it looked like runner slowness.
+ * Waiting for the real response is the one signal that is never racy.
+ */
+async function awaitMutation(page: Page, trigger: () => Promise<unknown>, pathPattern: RegExp): Promise<void> {
+  const [response] = await Promise.all([
+    page.waitForResponse(resp => resp.request().method() === 'POST' && pathPattern.test(new URL(resp.url()).pathname)),
+    trigger(),
+  ]);
+  if (!response.ok()) {
+    throw new Error(`POST ${new URL(response.url()).pathname} failed: ${response.status()} ${await response.text()}`);
+  }
+}
+
+const REGISTER_REPOSITORY = /\/projects\/[^/]+\/repositories$/;
+const RETRY_PROBE = /\/repositories\/[^/]+\/retry-probe$/;
+const CREATE_WORK_ITEM = /\/projects\/[^/]+\/work-items$/;
+const MARK_READY = /\/work-items\/[^/]+\/mark-ready$/;
+
 async function fillCreateWorkItemDialog(page: Page, opts: {
   title: string; repoLabel: string; scopeReason: string; behavior: string;
   criterionDescription: string; workflowVersionId: string;
@@ -104,12 +138,12 @@ async function fillCreateWorkItemDialog(page: Page, opts: {
   await dialog.getByLabel('Verification spec').fill('Operator observes the real terminal state');
   await dialog.getByLabel('Risk level').fill('low');
   await dialog.getByLabel('Workflow version ID').fill(opts.workflowVersionId);
-  await dialog.getByRole('button', { name: 'Create' }).click();
+  await awaitMutation(page, () => dialog.getByRole('button', { name: 'Create' }).click(), CREATE_WORK_ITEM);
 }
 
 async function markFirstBacklogCardReady(page: Page, projectId: string) {
   await page.goto(`/ui/projects/${projectId}/board`);
-  await page.locator('button', { hasText: 'Mark Ready' }).first().click();
+  await awaitMutation(page, () => page.locator('button', { hasText: 'Mark Ready' }).first().click(), MARK_READY);
 }
 
 /**
@@ -195,7 +229,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
     await dialog.getByLabel('Name').fill('alpha');
     await dialog.getByLabel('Local repository path').fill(repoAlphaPath);
     await dialog.getByLabel('Default ref').fill('master');
-    await dialog.getByRole('button', { name: 'Register and Probe' }).click();
+    await awaitMutation(page, () => dialog.getByRole('button', { name: 'Register and Probe' }).click(), REGISTER_REPOSITORY);
 
     await expect.poll(async () => {
       await page.reload();
@@ -211,7 +245,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
     // between registering and retrying — never a manual DB/status edit.
     initRealGitRepo(repoAlphaPath);
 
-    await page.getByRole('button', { name: 'Retry Probe' }).click();
+    await awaitMutation(page, () => page.getByRole('button', { name: 'Retry Probe' }).click(), RETRY_PROBE);
     await expect.poll(async () => {
       await page.reload();
       return page.getByText('ACTIVE').count();
@@ -225,7 +259,7 @@ test('full journey: project → onboarding → adapter → run → approval → 
     await dialog.getByLabel('Name').fill('beta');
     await dialog.getByLabel('Local repository path').fill(process.env.AW_E2E_REPO_READY!);
     await dialog.getByLabel('Default ref').fill('master');
-    await dialog.getByRole('button', { name: 'Register and Probe' }).click();
+    await awaitMutation(page, () => dialog.getByRole('button', { name: 'Register and Probe' }).click(), REGISTER_REPOSITORY);
 
     await expect.poll(async () => {
       await page.reload();
