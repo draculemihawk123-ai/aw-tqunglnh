@@ -1787,3 +1787,25 @@ collides with it (replacer: "Access is denied"). Fixing only the writer left the
   identical bytes and each `Verify`s the object, as the attachment flow does.
 - Lesson recorded for the flake log: a fix that removes one symptom of a recurring failure is not done until the
   sibling symptoms listed next to it are explained by the same cause.
+
+### Follow-up 5 — the Windows legs of `web`, `e2e` and `release-build` never waited for pnpm (CI integrity defect since V7-17C)
+
+`release build (windows-latest)` failed twice on this PR with `web/dist` missing, and adding a verification step made
+the cause visible: the `ls` showed no `web/dist`, and job cleanup printed `Terminate orphan process ... (pnpm)`.
+Every `pnpm` step ran under windows-latest's default shell (pwsh), returned in about a second with NO output, and
+left the real pnpm/node processes running — the step ended before the work did.
+
+Evidence that the affected jobs were validating nothing on Windows:
+- `web (windows-latest)` (PR #138 run): install + typecheck + test + build steps each returned in 0.6-1.1s and the
+  whole job took 54s including setup; cleanup terminated orphan `pnpm` and `node` processes.
+- `e2e (windows-latest)`: the `pnpm exec playwright test` step started at 16:17:15 and the job ended at 16:17:25 —
+  10 seconds for a full-journey suite that takes minutes on ubuntu (`e2e (ubuntu-latest)` ran 1m48s).
+- `release build (windows-latest)` passed when the background build happened to finish before `go run` needed
+  `web/dist` (about 60s later, during setup-go) and failed when it did not.
+
+So the Windows legs of the UI checks have been passing vacuously, which also means any Windows-specific UI
+failure was invisible. Fix: `shell: bash` on every `run: pnpm ...` step of all three jobs (9 steps added; the two
+in release-build were the first). bash waits for the command and honours its exit code; ubuntu already used bash, so
+only the Windows legs change. **Expect the Windows legs to now do real work, and to be able to fail for real**
+(web tests, the Playwright journey on Windows); any such failure is a finding, not a regression of this PR. The
+`Verify the UI build produced web/dist` step stays as a guard.

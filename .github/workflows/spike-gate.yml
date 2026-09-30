@@ -1051,18 +1051,22 @@ jobs:
 
       - name: Install dependencies
         working-directory: web
+        shell: bash
         run: pnpm install --frozen-lockfile
 
       - name: Typecheck
         working-directory: web
+        shell: bash
         run: pnpm run typecheck
 
       - name: Unit + component tests
         working-directory: web
+        shell: bash
         run: pnpm test
 
       - name: Build
         working-directory: web
+        shell: bash
         run: pnpm run build
 
   # release-build is V8-08 (docs/design/10-v8-alpha-hardening.md V8-08,
@@ -1097,16 +1101,23 @@ jobs:
           node-version: '24.18.0'
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
+      # shell: bash on BOTH pnpm steps, deliberately. Under windows-latest's
+      # default shell (pwsh) these two steps returned in about a second with no
+      # output at all and left a pnpm process running at job cleanup
+      # ("Terminate orphan process ... (pnpm)"): the step ended before the UI
+      # build did, so web/dist was sometimes not there yet when the next step
+      # needed it (run 36755529800 and 36762075634 failed this way; passing runs
+      # only won the race). bash waits for the command and honours its exit code.
       - name: Install UI dependencies
         working-directory: web
+        shell: bash
         run: pnpm install --frozen-lockfile
       - name: Build UI
         working-directory: web
+        shell: bash
         run: pnpm run build
-      # The two pnpm steps above run under the platform's default shell and
-      # print nothing in the log, so on windows-latest a UI build that produced
-      # no web/dist once surfaced only later, as aw-release-build's "cannot find
-      # web/dist". Fail here instead, at the step that is actually wrong.
+      # A guard for the same failure mode: if the UI build produced nothing, fail
+      # here, at the step that is actually wrong, and list web/.
       - name: Verify the UI build produced web/dist
         shell: bash
         run: |
@@ -1217,6 +1228,7 @@ jobs:
 
       - name: Install dependencies
         working-directory: web
+        shell: bash
         run: pnpm install --frozen-lockfile
 
       # --with-deps installs the real OS package dependencies Chromium needs
@@ -1226,11 +1238,13 @@ jobs:
       - name: Install Playwright Chromium (Linux, with OS deps)
         if: matrix.os == 'ubuntu-latest'
         working-directory: web
+        shell: bash
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Install Playwright Chromium (Windows)
         if: matrix.os == 'windows-latest'
         working-directory: web
+        shell: bash
         run: pnpm exec playwright install chromium
 
       # web/e2e/support/stack.ts requires web/dist to already exist (it
@@ -1238,10 +1252,12 @@ jobs:
       # `v6-acceptance` above already uses for its own Go binaries.
       - name: Build web/dist
         working-directory: web
+        shell: bash
         run: pnpm run build
 
       - name: Run the full-journey E2E suite
         working-directory: web
+        shell: bash
         run: pnpm exec playwright test
 
       - name: Upload Playwright report + traces
