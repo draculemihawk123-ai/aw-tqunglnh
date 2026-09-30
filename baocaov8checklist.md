@@ -1892,3 +1892,13 @@ weeks and has cost many reruns. It is not luck, it is the test's design:
   promoting it to `requiredScenarios` is a one-line follow-up once CI confirms it no longer skips.
 - Also fixed a slip from follow-up 3: the burst-retry helper had been inserted between the test's doc comment and the
   test function; it now sits above the doc comment.
+
+### Follow-up 10 — `TestPool_HeartbeatKeepsLongRunningJobAlive`: a 500ms lease with only 5 renewals of margin
+
+`contract (windows-latest)` failed with `handler invocation count = 2, want exactly 1 (heartbeat must prevent premature
+reclaim/reprocessing)`. Same family again: the test configured `LeaseTTL=500ms` with a 100ms heartbeat, i.e. five
+renewals of margin, and each renewal is a SQLite commit (`synchronous=FULL`, an fsync). A stall of more than 400ms
+between two commits on a slow Windows runner let the lease lapse, the recovery loop reclaimed the job and the handler
+ran a second time although the heartbeat was working. Fix (test-side): this test now uses a 2s lease (20 renewals of
+margin) and its handler runs 5s — still 2.5x the lease, so only real heartbeats keep the job from being reclaimed;
+the assertion is unchanged. `waitForConditionWithin` gives the longer wait. Cost: about 4s more per run of this test.

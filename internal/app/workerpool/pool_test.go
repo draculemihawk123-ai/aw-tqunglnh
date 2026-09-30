@@ -147,7 +147,7 @@ func TestPool_HeartbeatKeepsLongRunningJobAlive(t *testing.T) {
 	registry.Register("slow", workerpool.HandlerFunc(func(ctx context.Context, _ ports.DurableJob) error {
 		invocations.Add(1)
 		select {
-		case <-time.After(1200 * time.Millisecond): // well past the 500ms LeaseTTL
+		case <-time.After(5 * time.Second): // well past the 2s LeaseTTL set below
 			completed.Store(true)
 			return nil
 		case <-ctx.Done():
@@ -155,17 +155,26 @@ func TestPool_HeartbeatKeepsLongRunningJobAlive(t *testing.T) {
 		}
 	}))
 
+	// A 2s lease with a 100ms heartbeat (20 renewals per lease) instead of
+	// baseConfig's 500ms / 100ms (5 per lease). Each renewal is a SQLite commit
+	// (synchronous=FULL, an fsync), and on a slow Windows runner a stall of
+	// more than 400ms between two of them let the 500ms lease lapse, so the
+	// recovery loop reclaimed the job and the handler ran twice — "handler
+	// invocation count = 2" — although the heartbeat was working. The test
+	// still proves what it is for, because the handler runs for 5s, 2.5x the
+	// lease: only real heartbeats keep the job from being reclaimed.
 	config := baseConfig("w")
+	config.LeaseTTL = 2 * time.Second
 	pool, err := workerpool.New(store, registry, config)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	runErr := make(chan error, 1)
 	go func() { runErr <- pool.Run(ctx) }()
 
-	waitForCondition(t, func() bool { return completed.Load() })
+	waitForConditionWithin(t, 20*time.Second, func() bool { return completed.Load() })
 	cancel()
 	if err := <-runErr; err != nil {
 		t.Fatalf("Run: %v", err)
@@ -358,7 +367,13 @@ func TestPool_ShutdownGraceExceeded_ReturnsErrAndEscalatesCancellation(t *testin
 
 func waitForCondition(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(4 * time.Second)
+	waitForConditionWithin(t, 4*time.Second, cond)
+}
+
+// waitForConditionWithin polls cond every 10ms until it holds or d elapses.
+func waitForConditionWithin(t *testing.T, d time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(d)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return
