@@ -234,6 +234,12 @@ type stack struct {
 	// finishing inside a single, externally-unobservable job claim. Zero
 	// keeps the production default (500).
 	projectionRebuildBatchSize int
+	// projectionRebuildRoundDelay overrides `aw worker
+	// --projection-rebuild-round-delay` on every FUTURE startWorker call when
+	// non-zero: each committed rebuild phase is held that long, so a test that
+	// must kill the worker mid-rebuild has a window of a known width instead
+	// of racing a sub-150ms rebuild with millisecond HTTP polls.
+	projectionRebuildRoundDelay time.Duration
 	// workerPollInterval (V6-14A, scenario 4) overrides `aw worker
 	// --poll-interval` on every FUTURE startWorker call when non-zero —
 	// the 100ms this stack otherwise always passes is real wasted-poll
@@ -367,6 +373,9 @@ func (s *stack) startWorker(t *testing.T) {
 	}
 	if s.projectionRebuildBatchSize > 0 {
 		workerArgs = append(workerArgs, "--projection-rebuild-batch-size", fmt.Sprintf("%d", s.projectionRebuildBatchSize))
+	}
+	if s.projectionRebuildRoundDelay > 0 {
+		workerArgs = append(workerArgs, "--projection-rebuild-round-delay", s.projectionRebuildRoundDelay.String())
 	}
 	workerEnv := map[string]string{
 		"AGENTKIT_HELPER_MODE":    "outcome-success",

@@ -10,6 +10,24 @@ import (
 	"time"
 )
 
+// doRawRetryingTransport runs do up to attempts times, sleeping backoff*attempt
+// between tries, and returns the first outcome without a transport error (or
+// the last outcome if every attempt had one). Only transport errors are
+// retried: any HTTP response, whatever its status, is returned as it came.
+func doRawRetryingTransport(attempts int, backoff time.Duration, do func() httpOutcome) httpOutcome {
+	var outcome httpOutcome
+	for attempt := 1; attempt <= attempts; attempt++ {
+		outcome = do()
+		if outcome.err == nil {
+			return outcome
+		}
+		if attempt < attempts {
+			time.Sleep(backoff * time.Duration(attempt))
+		}
+	}
+	return outcome
+}
+
 // TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover is V6-14A
 // scenario 4: "crash after projection row (before cutover)".
 // internal/app/projectionrebuildworker's own package doc comment names the
@@ -57,24 +75,6 @@ import (
 // and never double-applied (checked by asserting the rebuilt row COUNT
 // for the project equals the exact number of WorkItems this scenario
 // created, unaffected by the message burst).
-// doRawRetryingTransport runs do up to attempts times, sleeping backoff*attempt
-// between tries, and returns the first outcome without a transport error (or
-// the last outcome if every attempt had one). Only transport errors are
-// retried: any HTTP response, whatever its status, is returned as it came.
-func doRawRetryingTransport(attempts int, backoff time.Duration, do func() httpOutcome) httpOutcome {
-	var outcome httpOutcome
-	for attempt := 1; attempt <= attempts; attempt++ {
-		outcome = do()
-		if outcome.err == nil {
-			return outcome
-		}
-		if attempt < attempts {
-			time.Sleep(backoff * time.Duration(attempt))
-		}
-	}
-	return outcome
-}
-
 func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 	requireAcceptance(t)
 	j := newFaultStack(t, func(s *stack) {
@@ -89,6 +89,12 @@ func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 		// batch means FEWER, individually SLOWER rounds, each genuinely
 		// observable for longer.
 		s.projectionRebuildBatchSize = 20000
+		// Hold every committed rebuild phase for 400ms. Without this the whole
+		// rebuild finished in under 150ms and observing an intermediate phase
+		// by HTTP polling was a coin flip — the scenario skipped on every
+		// platform in run after run, which is what kept V6-14C at CHƯA ĐỦ
+		// EVIDENCE. With it each phase is readable for a known, generous window.
+		s.projectionRebuildRoundDelay = 400 * time.Millisecond
 		s.workerPollInterval = 20 * time.Millisecond
 	})
 	const wantItems = 5

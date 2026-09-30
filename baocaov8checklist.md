@@ -1870,3 +1870,25 @@ deadline-sensitivity under load"). The cause is in the shared helper, not in any
   one — a genuinely stuck job stays `LEASED` past any deadline and still fails, only later.
 - Fix: one `pollDeadline = 90 * time.Second` constant used by every wait in the package. Costs nothing on success; a real
   hang now reports 90s later instead of 8s later. Package still passes locally (68s).
+
+### Follow-up 9 — the last red on this PR was V6-14C, and its cause is structural: a race the test could only lose
+
+Everything else finally went green in run 36773212109; the only failing check was `V6-14C API/projection verdict`
+= `CHƯA ĐỦ EVIDENCE [V6-14A] conditional scenario TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover was never
+demonstrated on ANY platform (skipped on all of them)`. That scenario has been filed as "timing-luck, keep rerunning" for
+weeks and has cost many reruns. It is not luck, it is the test's design:
+
+- To prove "a worker killed mid-rebuild, before cutover, converges after restart" the test must observe the rebuild in an
+  intermediate phase through HTTP and kill the worker there. A rebuild of the test's journey completes in well under
+  150ms while one HTTP poll costs milliseconds, so the observation was a coin flip the test repeated a bounded number of
+  times and then honestly skipped. On a slow runner it lost every time (ubuntu skipped after 27s, windows after 287s).
+- Fix, following the precedent of the existing test-only `--projection-rebuild-batch-size`: a test-only
+  `aw worker --projection-rebuild-round-delay` / `projectionrebuildworker.Deps.RoundDelay` that pauses between the
+  committed steps of one rebuild (zero = never, the production default). The scenario sets 400ms, so every committed phase
+  (SNAPSHOTTING, BUILDING, CUTTING_OVER) is readable for a known, generous window instead of tens of microseconds.
+- Result: it now passes on the FIRST attempt, observing `SNAPSHOTTING` before the crash, 3 of 3 local runs (about 20s
+  each); the projectionrebuildworker and cmd/aw packages still pass (RoundDelay defaults to 0).
+- The scenario stays in V6-14C's `conditionalScenarios` for now (the skip path still exists and costs nothing);
+  promoting it to `requiredScenarios` is a one-line follow-up once CI confirms it no longer skips.
+- Also fixed a slip from follow-up 3: the burst-retry helper had been inserted between the test's doc comment and the
+  test function; it now sits above the doc comment.

@@ -261,6 +261,34 @@ type Deps struct {
 	// W1 is simply picked up normally by the live consumer once cutover
 	// completes.
 	MaxCutoverCatchUpRounds int
+	// RoundDelay, when positive, makes ExecuteProjectionRebuild pause that long
+	// between steps — after every committed phase change and every committed
+	// build round — before starting the next one. Zero (production) never
+	// pauses. It exists for one reason: an acceptance test that must kill the
+	// worker while a rebuild is genuinely mid-flight. A rebuild of a modest
+	// journal finishes in well under 150ms, while a single HTTP poll of the
+	// operation costs milliseconds, so observing an intermediate phase by
+	// polling is a coin flip (the V6-14A "crash before cutover" scenario
+	// skipped on every platform in run after run and kept V6-14C at CHƯA ĐỦ
+	// EVIDENCE). Holding each committed phase for RoundDelay turns that race
+	// into a window of a known width. Production has no reason to set it.
+	RoundDelay time.Duration
+}
+
+// pauseBetweenSteps waits d (or until ctx ends, returning its error). d <= 0
+// is a no-op.
+func pauseBetweenSteps(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (d Deps) validate() (Deps, error) {
@@ -322,7 +350,15 @@ func ExecuteProjectionRebuild(ctx context.Context, deps Deps, job ports.DurableJ
 	}
 
 	cutoverRounds := 0
+	firstStep := true
 	for {
+		// Hold the phase the previous step just committed (see Deps.RoundDelay).
+		if !firstStep {
+			if err := pauseBetweenSteps(ctx, deps.RoundDelay); err != nil {
+				return err
+			}
+		}
+		firstStep = false
 		if op.Phase.IsTerminal() {
 			// Already SUCCEEDED or FAILED — a redelivered/duplicate job
 			// claim (replay), or another worker finished it first. Nothing

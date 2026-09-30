@@ -92,6 +92,9 @@ type workerOptions struct {
 	// projectionrebuildworker.Deps.BatchSize when positive — see
 	// --projection-rebuild-batch-size's own flag doc comment.
 	projectionRebuildBatchSize int
+	// projectionRebuildRoundDelay sets projectionrebuildworker.Deps.RoundDelay
+	// — see --projection-rebuild-round-delay's own flag doc comment.
+	projectionRebuildRoundDelay time.Duration
 }
 
 // worker is the production `aw worker` composition root. Until V6-14 this
@@ -125,6 +128,8 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 		"how long a release-set local-commit write lease (internal/app/releasesetcommit) is held without renewal — bounds how long a crashed worker's own in-flight local commit blocks a fresh worker from reclaiming and retrying it; production has no reason to lower this below the default, it exists so an acceptance test can prove reclaim genuinely happens without waiting out the full production TTL")
 	projectionRebuildBatchSize := flags.Int("projection-rebuild-batch-size", 0,
 		"how many journal rows one projection rebuild BUILDING/CUTTING_OVER round scans (internal/app/projectionrebuildworker.Deps.BatchSize); 0 keeps that package's own default (500). Production has no reason to lower this; it exists so an acceptance test can force a rebuild of a modest journal through several observable rounds instead of one that completes inside a single, unobservable job claim")
+	projectionRebuildRoundDelay := flags.Duration("projection-rebuild-round-delay", 0,
+		"pause between the committed steps of one projection rebuild (internal/app/projectionrebuildworker.Deps.RoundDelay); 0 never pauses. Production has no reason to set this; it exists so an acceptance test can hold a rebuild in a committed intermediate phase long enough to kill the worker there")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
@@ -145,6 +150,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 		projectionInterval: *projectionInterval, completionInterval: *completionInterval,
 		reaperInterval: *reaperInterval, sweepInterval: *sweepInterval, envAllowlist: splitCommaList(*envAllowlist),
 		localCommitWriteLeaseTTL: *localCommitWriteLeaseTTLFlag, projectionRebuildBatchSize: *projectionRebuildBatchSize,
+		projectionRebuildRoundDelay: *projectionRebuildRoundDelay,
 	})
 	if err != nil {
 		return err
@@ -208,6 +214,10 @@ type workerDeps struct {
 	// buildWorkerRegistry wires into projectionrebuildworker.Deps — see
 	// workerOptions' own identically-named field doc comment.
 	projectionRebuildBatchSize int
+	// projectionRebuildRoundDelay is the effective RoundDelay
+	// buildWorkerRegistry wires into projectionrebuildworker.Deps — see
+	// workerOptions' own identically-named field doc comment.
+	projectionRebuildRoundDelay time.Duration
 }
 
 // assembleWorker opens the database and every adapter and wires the handler
@@ -293,6 +303,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 		prober: prober, catalog: projection.NewCatalog(),
 		reaperInterval: opts.reaperInterval, sweepInterval: opts.sweepInterval,
 		localCommitWriteLeaseTTL: opts.localCommitWriteLeaseTTL, projectionRebuildBatchSize: opts.projectionRebuildBatchSize,
+		projectionRebuildRoundDelay: opts.projectionRebuildRoundDelay,
 	}
 	registry := buildWorkerRegistry(deps)
 
@@ -377,7 +388,7 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 		Lifecycle: d.store, WriteLeaseTTL: d.localCommitWriteLeaseTTL,
 	}))
 	registry.Register(projectionrebuild.ProjectionRebuildJobKind, projectionrebuildworker.NewHandler(projectionrebuildworker.Deps{
-		UnitOfWork: d.uow, IDs: d.ids, Catalog: d.catalog, BatchSize: d.projectionRebuildBatchSize,
+		UnitOfWork: d.uow, IDs: d.ids, Catalog: d.catalog, BatchSize: d.projectionRebuildBatchSize, RoundDelay: d.projectionRebuildRoundDelay,
 	}))
 	// Retention.
 	registry.Register(artifactsweep.ArtifactSweepJobKind, artifactsweep.NewHandler(d.uow, d.ids, d.clk, d.artifacts, artifactsweep.WithInterval(d.sweepInterval)))
