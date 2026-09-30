@@ -26,6 +26,7 @@ evidence. It is not a multi-tenant SaaS product — one `aw` installation serves
 | Understand ReleaseSet, local-only Git commits, and source/diff/log viewing | [06-source-control-and-releases.md](06-source-control-and-releases.md) |
 | Understand evidence, artifact retention, and what gets cleaned up when | [07-evidence-and-retention.md](07-evidence-and-retention.md) |
 | Back up or restore an installation | [08-backup-and-restore.md](08-backup-and-restore.md) |
+| Upgrade to a new release, or roll back one | [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md) |
 | Diagnose a failure | [09-troubleshooting.md](09-troubleshooting.md) |
 
 ## Out of scope (explicitly, so you stop looking here for it)

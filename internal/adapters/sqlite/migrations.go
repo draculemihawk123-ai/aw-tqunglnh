@@ -170,7 +170,57 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load migrations: %w", err)
 	}
+	return s.migrateWith(ctx, migrations)
+}
 
+// SchemaNewerThanBinaryError is returned by Migrate (and so by Open) when
+// the database's own schema_migrations history records a migration this
+// binary does not carry — the signature of opening a database a NEWER
+// release already migrated with an OLDER binary (an unsupported downgrade),
+// or of a database from a different migration lineage altogether. V8-10
+// (docs/design/10-v8-alpha-hardening.md): "unsupported downgrade không làm
+// hỏng DB im lặng." Before this guard existed Migrate only ever looped over
+// the migrations THIS binary embeds, verified each against its recorded
+// checksum, and silently ignored any higher-numbered row — so an older
+// binary opened a newer database without a word and then ran its older SQL
+// against a schema it did not understand. Migrate now refuses up front,
+// before applying or writing anything beyond the no-op bootstrap
+// CREATE TABLE IF NOT EXISTS, and tells the operator how to recover.
+//
+// Migrations are additive-and-checksummed, not reversible, and this repo has
+// no per-migration "older binaries stay compatible" marker, so the rule is
+// deliberately strict: a binary runs only against a database whose applied
+// migration set it fully knows. Rolling a binary back is therefore safe
+// exactly when no new migration was applied since (same schema version);
+// otherwise the supported path is restoring the backup taken before the
+// upgrade.
+type SchemaNewerThanBinaryError struct {
+	// DatabaseVersion is the highest migration version recorded in the
+	// database's schema_migrations table.
+	DatabaseVersion int
+	// BinaryVersion is the highest migration version this binary embeds.
+	BinaryVersion int
+	// UnknownVersions lists every recorded migration version this binary
+	// does not embed, ascending.
+	UnknownVersions []int
+}
+
+func (e *SchemaNewerThanBinaryError) Error() string {
+	if e.DatabaseVersion > e.BinaryVersion {
+		return fmt.Sprintf("database schema version %d is newer than this binary supports (highest migration it knows: %d; unknown applied migration(s): %v) — the database was migrated by a newer release and this binary has NOT modified it; run that release's (or a newer) binary, or restore a backup taken before the upgrade (docs/operator/10-upgrade-and-rollback.md)",
+			e.DatabaseVersion, e.BinaryVersion, e.UnknownVersions)
+	}
+	return fmt.Sprintf("database records migration(s) %v this binary does not carry (its highest known migration: %d, the database's highest: %d) — the migration history does not match this build and this binary has NOT modified the database; use the build that created it, or restore a backup (docs/operator/10-upgrade-and-rollback.md)",
+		e.UnknownVersions, e.BinaryVersion, e.DatabaseVersion)
+}
+
+// migrateWith is Migrate over an explicit migration set. Production only
+// ever passes the full embedded set (Migrate above); it exists so a test
+// can stand in for an OLDER binary — a binary's migration set is exactly
+// "every migration up to its own highest version", immutable and
+// checksummed, so a truncated set is byte-for-byte what that older build
+// would have applied — and prove the downgrade guard end to end.
+func (s *Store) migrateWith(ctx context.Context, migrations []migration) error {
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire migration connection: %w", err)
@@ -181,12 +231,58 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("bootstrap migrations: %w", err)
 	}
 
+	if err := rejectUnknownAppliedMigrations(ctx, conn, migrations); err != nil {
+		return err
+	}
+
 	for _, m := range migrations {
 		if err := applyOneMigration(ctx, conn, m); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// rejectUnknownAppliedMigrations returns a *SchemaNewerThanBinaryError if the
+// database records any migration version that known does not contain (see
+// that type's doc comment). It only reads.
+func rejectUnknownAppliedMigrations(ctx context.Context, conn *sql.Conn, known []migration) error {
+	knownVersions := make(map[int]bool, len(known))
+	binaryHighest := 0
+	for _, m := range known {
+		knownVersions[m.Version] = true
+		if m.Version > binaryHighest {
+			binaryHighest = m.Version
+		}
+	}
+
+	rows, err := conn.QueryContext(ctx, `SELECT version FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		return fmt.Errorf("read applied migrations: %w", err)
+	}
+	defer rows.Close()
+
+	var unknown []int
+	databaseHighest := 0
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return fmt.Errorf("scan applied migration version: %w", err)
+		}
+		if version > databaseHighest {
+			databaseHighest = version
+		}
+		if !knownVersions[version] {
+			unknown = append(unknown, version)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate applied migrations: %w", err)
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	return &SchemaNewerThanBinaryError{DatabaseVersion: databaseHighest, BinaryVersion: binaryHighest, UnknownVersions: unknown}
 }
 
 // applyOneMigration applies migration m if it has not been applied yet

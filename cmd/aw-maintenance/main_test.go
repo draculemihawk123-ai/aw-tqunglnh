@@ -7,8 +7,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
@@ -104,5 +106,43 @@ func TestRunRestore_RefusesAnAlreadyMaterializedTempRoot(t *testing.T) {
 	// overwrite a previously restored database.
 	if err := runRestore([]string{"--backup", backupDir, "--into", restoreRoot, "--artifact-root", artifactRoot}); err == nil {
 		t.Fatal("second runRestore into the same --into root succeeded, want a refusal")
+	}
+}
+
+// TestRunRestore_BackupFromANewerRelease_NamesTheRealCauseNotACorruptBackup
+// is V8-10's restore-side downgrade case: a snapshot that records a
+// migration this aw-maintenance does not carry is refused with the newer-
+// release explanation (the backup is fine; the tool is too old), never the
+// generic "the backup is not usable" message, and nothing is materialized
+// as a usable installation.
+func TestRunRestore_BackupFromANewerRelease_NamesTheRealCauseNotACorruptBackup(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "aw.db")
+	seedRealDB(t, dbPath)
+	backupDir := filepath.Join(root, "backup")
+	if err := runBackup([]string{"--db", dbPath, "--out", backupDir}); err != nil {
+		t.Fatalf("runBackup: %v", err)
+	}
+
+	snapshot, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(backupDir, "snapshot.db")))
+	if err != nil {
+		t.Fatalf("open snapshot: %v", err)
+	}
+	if _, err := snapshot.Exec(`INSERT INTO schema_migrations(version, checksum, applied_at) VALUES(9999, 'newer', '2099-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("record a newer release's migration in the snapshot: %v", err)
+	}
+	snapshot.Close()
+
+	err = runRestore([]string{"--backup", backupDir, "--into", filepath.Join(root, "restore"), "--artifact-root", filepath.Join(root, "artifacts")})
+	if err == nil {
+		t.Fatal("runRestore accepted a backup taken by a newer release")
+	}
+	for _, want := range []string{"newer release", "the backup itself is intact", "9999"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error %q does not mention %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "backup is not usable") {
+		t.Fatalf("error %q blames the backup instead of the too-old tool", err)
 	}
 }

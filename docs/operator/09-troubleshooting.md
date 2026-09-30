@@ -27,6 +27,17 @@ checks:
 true` means a `aw settings update` changed the desired config since this process started — restart to apply
 it (see [02-configuration.md](02-configuration.md)).
 
+## `database schema version N is newer than this binary supports`
+
+```
+aw: open database: database schema version 42 is newer than this binary supports (highest migration it knows: 41; ...) — the database was migrated by a newer release and this binary has NOT modified it; ...
+```
+
+You started an older `aw` (or `aw-maintenance`) against a database a newer release already migrated. Nothing
+was changed. Run the newer binary, or restore the backup taken before the upgrade and use the older binary
+on that — see [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md). `aw version --json` shows which
+schema a binary expects (`schemaVersion`).
+
 ## Repository stuck in `BLOCKED`
 
 ```bash

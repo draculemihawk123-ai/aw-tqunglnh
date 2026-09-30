@@ -14,6 +14,9 @@ same way as `cmd/v6-gate`/`cmd/v8-security-gate`/`cmd/aw-release-build`.
 installation to a different machine, `backup` + `restore` there is the supported path; there is no concept of
 two installations staying in sync.
 
+> Taking a backup **before an upgrade**? Use the currently-running release's `aw-maintenance`, not the new
+> one — see [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md).
+
 ## Backup
 
 ```
