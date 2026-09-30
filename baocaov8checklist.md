@@ -1607,3 +1607,104 @@ same `sqlite.Open` as `aw` itself, i.e. it MIGRATES the database before backing 
   Artifact bytes are untouched by schema upgrades and covered by V8-06's manifest verification.
 - **Not done:** making `aw-maintenance backup` itself non-migrating would need a schema-agnostic artifact
   listing; left as a documented operator rule (take the backup with the running release's tool).
+
+
+## V8-11 — Alpha release acceptance
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-11 (ADR-024; depends on V8-01..V8-10): always produce a full
+assessment of every system journey and every Alpha MUST criterion — even when the suites have failures —
+by rolling evidence up onto the coverage map V1-00A..C built, as test / evidence / failure / phase label.
+V8 must not reclassify criteria and must not use `deferred` for an `ALPHA_MUST`. Mandatory last gates:
+cancel-vs-claim in both commit orders; route inventory equals OpenAPI in both directions; every recovery
+command has core/API/UI/CLI owners; the UI <-> operationId <-> `aw` <-> application-operation parity inventory
+has no debt; SourceRef debt 0; `git diff --check`, `go test ./...`, `go vet ./...`. Completion bar: a
+complete matrix and a computed machine-readable `gatePass` (every `ALPHA_MUST` PASS; missing environment is
+`CHƯA ĐỦ EVIDENCE`; a Beta-labeled criterion is reported as outside Alpha scope, not as a failure).
+00-roadmap.md §3: V8-11 "chỉ tổng hợp evidence cuối, không khám phá ownership lần đầu", and a verdict task may
+run when the gate fails ("Task đánh giá đã chạy xong khác với gate đã PASS").
+
+Research found: ownership is already machine-checked (`internal/docscoverage`: every ALPHA_MUST has an owner
+Task ID or SPK, debt 0) but NOTHING mapped criteria, journeys or gates to evidence; there was no
+journey -> test record at all (the 23 journeys of `docs/design/01-system-design.md` §13 were written first and
+V5/V6 built suites around them); only ~47 of the 209 Alpha-gated criteria are named by any test source; and
+the parity gate (`TestRealInventoryParityGate`) deliberately allows a pinned debt ledger.
+
+### Decision
+
+1. **New `internal/alphagate` + `cmd/v8-alpha-gate`, a pure reader** in the `v6gate`/`v8gate` family. Inputs: the
+   coverage inventory (new `docscoverage.LoadInventory`, which exposes the labels and owners the existing
+   checker already resolves — labels are read, never decided), what the repository's test sources say
+   (`ScanRepository`), CI's per-suite results (GitHub's `needs.<job>.result`), and the `go test -json` of a
+   small targeted final-gate run. Output: `alpha-assessment.json` (+ Markdown for the step summary) with
+   one row per criterion, ADR, journey, version gate, final gate and suite, a `summary`, `blockers`,
+   `gatePass` and a `verdictHint` for V8-12.
+2. **Evidence model, stated honestly.** A criterion's required suites are the union of its owner tasks'
+   version gates (base suites for every version: contract, race/stability, SPK scenarios, semantic diff; V6
+   adds the acceptance/diff/verdict suites, V7 web+e2e, V8 fault/soak/security/release-build) plus the suite of
+   every test that cites it. `evidenceLevel` is `TEST` when at least one test names the criterion and `SUITE`
+   otherwise, and the summary counts both — the matrix does not pretend to finer proof than exists. Test
+   files of `internal/alphagate` and `internal/docscoverage` are excluded from citations (they name IDs as
+   fixtures; counting them would make a criterion look tested because the checker's own test mentions it).
+3. **Status rules.** ALPHA_MUST and CROSS_PHASE_GUARD (Alpha half: the architecture tests in
+   `internal/archtest`) are gated; `BETA_*` -> `OUT_OF_ALPHA_SCOPE`; `NOT_APPLICABLE` keeps its authority
+   reason; ADRs are decision sources, not criteria, so they are reported (`NO_OWNER_TASK` for the six no task
+   cites: ADR-001/002/003/004/007/029) but never gate. A known failure dominates missing evidence on the same
+   row (REWORK hint over `CHƯA ĐỦ EVIDENCE`); a skipped/cancelled/absent suite or a skipped final-gate test is
+   never a pass; a package that failed to build reports no per-test lines and is a failure, not "absent".
+4. **Journey table** (`journeys.go`): all 23 journeys of §13 (1-22 and 15A), each mapped to named tests that
+   assert the stated behaviour, or to a whole suite where no single Go test can (browser run, semantic diff,
+   security matrix). The first draft missed journey 22; `TestJourneyTableMatchesTheDesignDocument` caught it.
+   Guards: every named test must exist in the repo; journeys in the design doc and in the table must be equal.
+5. **Final gates** (`tables.go`): four are tests run by the gate job itself with `AW_ALPHA_GATE=1`
+   (cancel-vs-claim both orders — existing `TestCancelRun_ClaimVsCancel_CommitOrder` subtests; route inventory
+   both directions — existing; recovery owners — NEW `TestRecoveryCommandsHaveCoreAPIUICLIOwners`;
+   parity — existing `TestRealInventoryParityGate` plus NEW opt-in `TestParityLedgerIsEmpty`), SourceRef debt
+   and `git diff --check` are computed, and `go test`/`go vet` are the `contract` job (which runs vet,
+   the docs-coverage gate and the full offline suite on both OSes).
+6. **CI job `v8-alpha-gate`** (`needs` every suite, `if: always()`). **It runs with `--enforce=false`**: it
+   always reports `gatePass` in its summary/artifact but does not fail the check on `gatePass=false`. Reason
+   in the next section; V8-12's verdict is where the gate flips to enforcing. Tests keep the job ids, the
+   `needs` list and the final-gate run in step with the tables.
+
+### Execution
+
+- `internal/docscoverage/inventory.go` (`LoadInventory`, `Criterion`, `Decision`).
+- `internal/alphagate/{gate,tables,journeys,scan,testrun,render,run}.go` + `gate_test.go`; `cmd/v8-alpha-gate`.
+- `internal/delivery/parity/alpha_gate_test.go` (recovery-owner test, opt-in ledger-empty test).
+- `.github/workflows/spike-gate.yml`: job `v8-alpha-gate`.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`, `git diff --check` clean; `internal/alphagate`, `internal/docscoverage`,
+  `internal/delivery/parity`, `cmd/...` tests pass.
+- Ran the real tool against this repository with every CI suite synthetically green and the real final-gate
+  test run: **212 criteria assessed** (208 ALPHA_MUST, 1 CROSS_PHASE_GUARD, 2 Beta, 1 NOT_APPLICABLE), all 209
+  gated criteria PASS at that assumption, **23/23 journeys PASS, 9/9 version gates PASS, final gates 6/7**.
+  With no CI evidence at all the same run gives `gatePass=false`, hint `CHƯA ĐỦ EVIDENCE`.
+- `TestRealRepositoryMatrixIsCompleteUnderFullyGreenEvidence`: under fully green evidence the matrix has no
+  blocker of its own (every criterion/ADR/journey/final gate has exactly one row).
+
+### Real finding — the gate is honestly RED: parity debt is not zero
+
+`TestParityLedgerIsEmpty` fails: `internal/delivery/parity/ledger.go` still pins **15 entries** — 13
+`MISSING_CLI` (HTTP read operations with no `aw` mirror: `getEvidence`, `listArtifacts`, `getMessageContent`,
+`getMessageContextSnapshot`, `getReleaseSetLocalCommitStatus`, `getRepositoryWorkspaceState`,
+`getScopeExpansionRequest`, `listFamilyScopeExpansionRequests`, `getTaskFamily`, `listChildWorkItems`,
+`listWorkItemKanban`, `getWorkItemProjectedDetail`, `repositoriesGet`) and 2 `MISSING_APP` (the two projection
+reads the delivery layer answers straight from the projection port). They were acknowledged, not closed, because
+V6-15O's own "Không làm: no new leaf/route" forbade closing them while its "Hoàn thành khi" says "parity debt
+zero"; V6-15P's "parity debt ... zero" was not revisited. V8-11's mandatory gate says no debt, so
+`gatePass=false` with verdict hint `REWORK` until the ledger is empty. **Not closed in this task**: V8-11
+aggregates evidence; closing it means 13 new `aw` leaves plus two application operations — a narrow rework task
+for V8-12's verdict to name. That is also why the CI job is non-enforcing for now: an always-red check would
+make every unrelated PR unmergeable under this repository's "never merge red" rule.
+
+### Findings worth remembering
+
+- Only 47 of 209 Alpha-gated criteria are named by a test; 162 are covered at suite level only. V8-12's known
+  limitations must say so rather than imply test-per-criterion traceability.
+- The 29 ADR headings include ADR-029 (the design text says 001..028); six ADRs have no owner task.
+- Tooling: the shell tool used in this session halves backslashes in heredoc-fed scripts — Go source containing
+  backslash escapes must be written with the Write/Edit tools, not a Python-in-heredoc patch.

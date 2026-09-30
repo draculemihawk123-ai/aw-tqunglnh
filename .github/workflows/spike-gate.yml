@@ -1242,3 +1242,88 @@ jobs:
             web/test-results/
           if-no-files-found: warn
           retention-days: 7
+
+  # v8-alpha-gate is V8-11's Alpha release acceptance assessment
+  # (docs/design/10-v8-alpha-hardening.md V8-11): it aggregates every suite
+  # above onto the V1-00A..C coverage map and computes one machine-readable
+  # `gatePass`. `if: always()` and the whole-suite `needs` list are the point:
+  # the assessment must exist even when a suite fails or is skipped
+  # (00-roadmap.md §3 - a verdict task may run when its gate fails), with a
+  # failing suite reported as FAIL and a skipped/absent one as
+  # CHƯA ĐỦ EVIDENCE. internal/alphagate's tests keep this `needs` list, the
+  # job ids and the final-gate test run below in step with the gate's tables.
+  #
+  # --enforce=false: this job always reports gatePass in its summary and
+  # artifact but does not itself fail the check on gatePass=false. At the time
+  # of V8-11 the parity ledger still pins known debt (internal/delivery/
+  # parity/ledger.go) so gatePass is honestly false, and an always-red check
+  # would make every unrelated PR unmergeable under this repository's "never
+  # merge red" rule. V8-12's verdict is where the gate flips to enforcing.
+  v8-alpha-gate:
+    name: V8-11 Alpha release acceptance
+    runs-on: ubuntu-latest
+    needs: [contract, linux-race-and-stability, v8-concurrency-soak-race, v8-concurrency-soak-windows, spike-acceptance, semantic-diff, v6-acceptance, v6-acceptance-diff, v6-gate, v8-04e-gate, v8-fault-matrix, web, release-build, e2e]
+    if: always()
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      # For a pull request the checked-out commit is the merge of the PR into
+      # its base, so HEAD^1 is the base tip and this checks exactly the change;
+      # for a push it checks the pushed commit against its parent.
+      - name: git diff --check
+        id: diffcheck
+        continue-on-error: true
+        shell: bash
+        run: git diff --check HEAD^1 HEAD
+
+      # Test failures here are data for the assessment, never a reason to stop
+      # before it is written; AW_ALPHA_GATE=1 switches on the one opt-in check
+      # (the parity ledger must be empty) that is skipped in every other run.
+      - name: Final-gate tests
+        shell: bash
+        run: |
+          set +e
+          AW_ALPHA_GATE=1 go test -count=1 -json \
+            ./internal/app/runtime ./internal/delivery/httpapi/apicontract ./internal/delivery/parity \
+            -run '^(TestCancelRun_ClaimVsCancel_CommitOrder|TestRouteInventory_ServedEqualsDeclaredBothDirections|TestRecoveryCommandsHaveCoreAPIUICLIOwners|TestRealInventoryParityGate|TestParityLedgerIsEmpty)$' \
+            > final-gates.jsonl
+          exit 0
+
+      - name: Record the needs context
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: printf '%s' "$NEEDS_JSON" > needs.json
+
+      - name: Assess
+        shell: bash
+        run: |
+          set -uo pipefail
+          go run ./cmd/v8-alpha-gate --repo-root . --commit "${{ github.sha }}" \
+            --needs-json needs.json --final-gate-tests final-gates.jsonl \
+            --git-diff-check "${{ steps.diffcheck.outcome }}" \
+            --out alpha-assessment.json --markdown-out alpha-assessment.md \
+            --enforce=false
+          status=$?
+          if [ -f alpha-assessment.md ]; then cat alpha-assessment.md >> "$GITHUB_STEP_SUMMARY"; fi
+          exit ${status}
+
+      - name: Upload the assessment
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v8-alpha-assessment
+          path: |
+            alpha-assessment.json
+            alpha-assessment.md
+            final-gates.jsonl
+            needs.json
+          if-no-files-found: warn
+          retention-days: 14
