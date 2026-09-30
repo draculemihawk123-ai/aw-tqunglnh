@@ -1,0 +1,19 @@
+<!--
+AGENT-WORKFLOW-EMBEDDED-UI-PLACEHOLDER
+
+This file is checked into version control on purpose: internal/adapters/
+embeddedui's own `//go:embed all:dist` directive requires at least one real
+file under this directory to compile at all, and every ordinary `go build`/
+`go vet`/`go test` in this repo (which never runs `pnpm build` first) must
+keep working unchanged.
+
+A V8-08 release build (docs/design/10-v8-alpha-hardening.md V8-08) replaces
+this ENTIRE directory's contents with a real `pnpm build` output of web/
+(index.html + assets/) before compiling the release `aw`/`aw.exe` binary —
+see cmd/aw-release-build. embeddedui.Extract recognizes this exact
+placeholder marker string and reports "no UI embedded" for any binary that
+was NOT built that way, falling back to aw serve's pre-existing --ui-dist-
+only behavior (V7-02A) exactly as before this package existed.
+-->
+<!doctype html>
+<html><head><title>agent-workflow (no UI embedded)</title></head><body></body></html>

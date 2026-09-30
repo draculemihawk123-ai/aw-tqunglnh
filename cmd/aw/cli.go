@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,11 +10,15 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/adapters/embeddedui"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/evidence"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/clicompose"
 )
@@ -175,13 +180,26 @@ var subcommands = map[string]func(arguments []string, stdout io.Writer) error{
 // {serve, worker, help, version, evidence verify}.
 func runVersion(arguments []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("version", flag.ContinueOnError)
+	jsonOutput := flags.Bool("json", false, "print the full release manifest (schema/adapter/UI-embedded provenance) as JSON instead of the one-line human summary")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
 	}
 	if flags.NArg() != 0 {
 		return usageError{errors.New("version takes no arguments")}
 	}
-	fmt.Fprintln(stdout, versionLine())
+	if !*jsonOutput {
+		fmt.Fprintln(stdout, versionLine())
+		return nil
+	}
+	manifest, err := buildReleaseManifest()
+	if err != nil {
+		return err
+	}
+	encoded, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode release manifest: %w", err)
+	}
+	fmt.Fprintln(stdout, string(encoded))
 	return nil
 }
 
@@ -198,6 +216,63 @@ func versionLine() string {
 		}
 	}
 	return fmt.Sprintf("aw %s (commit %s)", version, revision)
+}
+
+// releaseManifest is V8-08's own "version/schema/adapter manifest"
+// (docs/design/10-v8-alpha-hardening.md V8-08, HE-02-M04's "toolchain
+// version, dependency lock, repo revision ... MUST have provenance"): every
+// field a release artifact must be able to answer about itself without an
+// operator needing to separately inspect the binary or the source tree it
+// came from. GeneratedAt is deliberately the ONE field V8-08's own
+// reproducible-build verify step allowlists as expected to differ between
+// two otherwise-identical builds — see cmd/aw-release-build's own doc
+// comment for that comparison.
+type releaseManifest struct {
+	Version            string   `json:"version"`
+	Commit             string   `json:"commit"`
+	GoVersion          string   `json:"goVersion"`
+	OS                 string   `json:"os"`
+	Arch               string   `json:"arch"`
+	SchemaVersion      int      `json:"schemaVersion"`
+	UIEmbedded         bool     `json:"uiEmbedded"`
+	SupportedProviders []string `json:"supportedProviders"`
+	GeneratedAt        string   `json:"generatedAt"`
+}
+
+// supportedProviderKinds is the closed, compile-time list of agent provider
+// kinds this build's own --claude-executable/--codex-executable flags
+// (cmd/aw/serve.go, cmd/aw/worker.go) ever register — never the runtime
+// adapterbuild.Build inventory (a per-installation, per-repository-tuple
+// concept V6 already owns), just which PROVIDER FAMILIES this compiled
+// binary itself knows how to talk to at all.
+var supportedProviderKinds = []string{"claude", "codex"}
+
+func buildReleaseManifest() (releaseManifest, error) {
+	version, revision := "devel", "unknown"
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			version = info.Main.Version
+		}
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" && setting.Value != "" {
+				revision = setting.Value
+			}
+		}
+	}
+	schemaVersion, err := sqlite.CurrentSchemaVersion()
+	if err != nil {
+		return releaseManifest{}, fmt.Errorf("determine schema version: %w", err)
+	}
+	uiEmbedded, err := embeddedui.IsEmbedded()
+	if err != nil {
+		return releaseManifest{}, fmt.Errorf("determine UI-embedded status: %w", err)
+	}
+	return releaseManifest{
+		Version: version, Commit: revision, GoVersion: runtime.Version(),
+		OS: runtime.GOOS, Arch: runtime.GOARCH, SchemaVersion: schemaVersion,
+		UIEmbedded: uiEmbedded, SupportedProviders: supportedProviderKinds,
+		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
+	}, nil
 }
 
 // isLegacyBundleVerify reports whether the arguments after `evidence` select

@@ -244,6 +244,22 @@ func TestLoadMigrations_SortedByVersionAndChecksumSet(t *testing.T) {
 	}
 }
 
+func TestCurrentSchemaVersion_MatchesTheHighestLoadedMigration(t *testing.T) {
+	migrations, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	want := migrations[len(migrations)-1].Version
+
+	got, err := CurrentSchemaVersion()
+	if err != nil {
+		t.Fatalf("CurrentSchemaVersion: %v", err)
+	}
+	if got != want {
+		t.Fatalf("CurrentSchemaVersion() = %d, want %d (the highest embedded migration version)", got, want)
+	}
+}
+
 // openWithoutMigrating mirrors Open's connection setup exactly but skips
 // the store.Migrate(ctx) call, so a test can prepare conflicting state
 // before migration runs.
