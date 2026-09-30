@@ -1199,6 +1199,30 @@ the gap, spawn a scoped follow-up, close what IS real now).
   back-to-back heavy scale benchmarks — 5100 durable jobs and 5500 domain events — immediately beforehand),
   not a real regression.
 
+### V8-07 follow-up — fix the zero-duration measurement bug in `measureKanbanListLatency`
+
+**Context**: `TestV8PerformanceBudget_WorkItemDetailLatencyStaysFlatAsProjectGrows` failed real CI on THREE
+separate runs across TWO unrelated later PRs (#133 — V8-08, and #134 — a pure docs-only PR, proving the bug
+lived in this already-merged V8-07 code, not either PR's own diff): `project size 200: 0s, ... want smallLatency
+> 0`. Root cause: `measureKanbanListLatency` took the MINIMUM of 7 individually-`time.Since()`-timed single
+HTTP round trips; on a fast/quiet Windows CI runner, timing one very-fast round trip can return exactly `0` due
+to timer-resolution granularity, and MINIMUM-of-N makes hitting that zero MORE likely, not less (one lucky
+near-zero sample poisons the whole minimum). This exact edge case had already been silently observed during
+V8-07's own original local verification (logged then as "2000: 0s (ratio 0.00x)") but didn't trip the
+`smallLatency <= 0` guard until it landed on the SMALL side in real CI.
+
+**Decision**: replaced the min-of-7-individually-timed-samples design with timing an entire batch of 20 real
+requests in ONE `time.Now()`/`time.Since()` pair, then dividing by 20 for a per-request average. Summing 20
+real round trips before dividing makes an exact-zero TOTAL measurement virtually impossible even under coarse
+timer resolution, while still averaging out ordinary per-request scheduler/GC noise well enough for this
+file's own already-generous frozen ratio thresholds (30x for the Kanban list route, 6x for the WorkItem
+detail route) — neither threshold needed changing.
+
+**Verify**: `go test ./internal/delivery/httpapi/kanban/... -run TestV8PerformanceBudget -v -count=10`: 10/10
+clean, zero zero-duration readings, Kanban list ratio ranged 5.29x-8.02x (well inside 30x), WorkItem detail
+ratio ranged 0.79x-1.00x (well inside 6x) — confirms both thresholds still hold real, comfortable margin under
+the new measurement method. `go build ./...`, `go vet ./...`, `go test -count=1 ./...` (full repo): all clean.
+
 ## V8-08 — Reproducible cross-platform build
 
 ### Context
