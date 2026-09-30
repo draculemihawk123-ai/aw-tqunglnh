@@ -3,7 +3,8 @@
 > Đọc tài liệu này đầu tiên khi bắt đầu một session mới. Nó là điểm vào cho mục tiêu, các quyết định
 > đã chốt, trạng thái thực thi và ranh giới công việc hiện tại.
 >
-> Cập nhật: 2026-09-06 (mục 19-23, ADR-026…ADR-028). Nếu tài liệu này khác ADR, ADR là authority về
+> Cập nhật: 2026-10-01 (mục 4A: trạng thái Alpha sau V8; trước đó 2026-09-06, mục 19-23, ADR-026…ADR-028).
+> Nếu tài liệu này khác ADR, ADR là authority về
 > quyết định kiến trúc; cần sửa tài liệu này trong cùng thay đổi, không tự suy diễn.
 
 ## 1. Mục tiêu sản phẩm
@@ -116,14 +117,30 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
 | 2. Quyết định kiến trúc | ACCEPTED | ADR-001…028 là baseline hiện hành; ADR-028 khóa executable `aw` và UI/API/CLI parity cuối V6. |
 | 3. Go core architecture/spec | Hoàn tất specification baseline | Code phải bám spec hoặc tạo ADR superseding. |
 | 4. Go spike | **GO** (2026-09-01, V0-14) | SPK-01…SPK-14 đều pass thật trên Windows và Linux (CI), evidence verify được, 10/10 suite runs không flaky đúng semantics, `-race` pass trên CI. Chi tiết: [spike report](spikes/02-go-core-spike-report.md). |
-| 5. Alpha UI/runtime | **ĐƯỢC PHÉP BẮT ĐẦU** | Verdict `GO` đã ghi; bắt đầu theo đúng dependency/gate trong `docs/design/00-roadmap.md`, mỗi session một Task ID. |
-| 6. Thiết kế chi tiết version/subtask | **BASELINE ĐÃ QUYẾT ĐỊNH** | Roadmap Alpha và task theo session nằm tại `docs/design/`; đã cập nhật theo ADR-020…028. V1 được phép thực thi từ verdict `GO` (mục 4), vẫn phải tuân dependency/gate trong roadmap. |
+| 5. Alpha UI/runtime | **ĐÃ TRIỂN KHAI V1…V8 — verdict Alpha `REWORK`** | Toàn bộ task V1…V8 đã đóng; verdict Alpha hiện là `REWORK` vì một final gate chưa đạt (mục 4A). Chi tiết: [báo cáo release Alpha](release/alpha-release-report.md). |
+| 6. Thiết kế chi tiết version/subtask | **BASELINE ĐÃ QUYẾT ĐỊNH, ĐÃ THỰC THI** | Roadmap Alpha và task theo session nằm tại `docs/design/` (đã cập nhật theo ADR-020…028); V1…V8 đã thực thi theo đúng dependency/gate trong roadmap. Việc tiếp theo là task rework hẹp ở mục 4A. |
 
 Spike đã đạt gate: SPK-01…SPK-14 đều có evidence PASS thật (13/14 trực tiếp trên mỗi platform, SPK-13
 qua job `semantic-diff` cross-platform riêng — không thể/không được kết luận từ một platform đơn lẻ).
 Race detector sạch, 10 lần chạy full suite liên tiếp không flaky, mỗi lần có bằng chứng tường minh
 (không suy từ exit code). Xem [spike report](spikes/02-go-core-spike-report.md) mục 3 để có đầy đủ CI
 run ID/evidence ID.
+
+## 4A. Trạng thái Alpha hiện tại (sau V8)
+
+**Verdict Alpha: `REWORK` — `gatePass = false`** (commit `6d3bab4`, CI run `36786340396`). Bản ghi máy đọc được:
+[`release/alpha-verdict.json`](release/alpha-verdict.json); bản đọc được: [báo cáo release
+Alpha](release/alpha-release-report.md). Một test giữ ba nơi (JSON, báo cáo, mục này) không lệch nhau.
+
+- **Đạt:** 208/208 tiêu chí `ALPHA_MUST`, 23/23 system journey, 9/9 version gate, 6/7 final gate.
+- **Blocker duy nhất:** final gate `parity-inventory-has-zero-debt` — `internal/delivery/parity/ledger.go` còn 15 mục
+  nợ (13 lệnh `aw` đọc chưa có, 2 query projection chưa có application operation).
+- **Việc tiếp theo (hẹp):** `V8-12R-01` — đóng ledger đó rồi chạy lại gate Alpha; khi `gatePass = true` ghi verdict mới
+  cho commit đó. `ALPHA_READY` chỉ được ghi khi `gatePass = true`. Không làm Beta.
+- **Giới hạn đã biết** (LIM-01…LIM-11, gồm: bằng chứng mức suite cho 162/209 tiêu chí, không có sandbox OS thật,
+  chưa kiểm với Claude/Codex CLI thật, binary cũ hơn V8-10 mở DB mới mà không báo): xem báo cáo release.
+- **Tài liệu vận hành** (cài, cấu hình, workflow, backup/restore, nâng cấp/rollback, xử lý sự cố):
+  [operator/00-start-here.md](operator/00-start-here.md).
 
 ## 5. Đọc theo thứ tự này
 
@@ -197,7 +214,8 @@ spike report mục 6, finding #10.
 ## 8. Quy tắc cập nhật tài liệu
 
 - Quyết định semantics: cập nhật ADR và tài liệu này.
-- Thay đổi tiến độ/evidence/gate: cập nhật spike report và tài liệu này nếu milestone đổi.
+- Thay đổi tiến độ/evidence/gate: cập nhật spike report và tài liệu này nếu milestone đổi. Verdict Alpha: cập nhật
+  `release/alpha-verdict.json`, báo cáo release và mục 4A trong cùng thay đổi.
 - Thêm thuật ngữ: cập nhật glossary ở đây trước khi dùng lẫn lộn ở docs khác.
 - Không commit/push nếu user chưa yêu cầu. Thiết kế mục 6 đã được user cho phép; execution vẫn phải
   tuân dependency/gate trong `docs/design/00-roadmap.md` và mỗi session chỉ làm đúng một Task ID.
