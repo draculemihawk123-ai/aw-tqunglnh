@@ -246,9 +246,21 @@ func TestSupervisorHardKillTerminatesTreeWithNoGracePeriod(t *testing.T) {
 func TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns(t *testing.T) {
 	t.Parallel()
 
-	marker := filepath.Join(t.TempDir(), "orphan-descendant-alive")
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "orphan-descendant-alive")
+	stop := filepath.Join(dir, "stop-orphan-descendant")
+	// This test deliberately leaves an orphaned descendant alive after Run
+	// returns (that is the behavior under test), and that descendant rewrites
+	// marker every 20ms. Without stopping it first, t.TempDir's RemoveAll
+	// races it: the descendant can recreate marker between RemoveAll emptying
+	// the directory and removing it, failing the test's cleanup with
+	// "directory not empty" (seen on roughly 1 in 5 Linux runs, enough to fail
+	// the 10x stability job almost every time). Registered AFTER t.TempDir so
+	// it runs BEFORE that directory's own cleanup (LIFO).
+	t.Cleanup(func() { stopOrphanedDescendant(t, marker, stop) })
 	spec := helperSpec("orphan", 5*time.Second)
 	spec.Environment["AGENTKIT_DESCENDANT_MARKER"] = marker
+	spec.Environment["AGENTKIT_DESCENDANT_STOP"] = stop
 
 	start := time.Now()
 	result, err := NewSupervisor().Run(context.Background(), spec, nil, nil)
@@ -268,6 +280,28 @@ func TestSupervisorNormalExit_TreeQuiescedFalseWhileDescendantStillRuns(t *testi
 	if _, err := os.Stat(marker); err != nil {
 		t.Fatalf("descendant marker file: %v (the orphaned descendant never even started writing)", err)
 	}
+}
+
+// stopOrphanedDescendant tells a descendant-child helper (see the
+// "descendant-child" case in TestProcessHelper) to stop via stopFile, then
+// waits until marker has gone quiet. The helper rewrites marker every 20ms, so
+// 150ms without a modification means it has really stopped writing and the
+// directory is safe to remove.
+func stopOrphanedDescendant(t *testing.T, marker, stopFile string) {
+	t.Helper()
+	if err := os.WriteFile(stopFile, []byte("stop"), 0o600); err != nil {
+		t.Errorf("write orphan stop file: %v", err)
+		return
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		info, err := os.Stat(marker)
+		if err != nil || time.Since(info.ModTime()) > 150*time.Millisecond {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Errorf("orphaned descendant kept writing %s for 5s after being told to stop", marker)
 }
 
 func TestSupervisorBoundsOversizedOutput(t *testing.T) {
@@ -413,8 +447,17 @@ func TestProcessHelper(t *testing.T) {
 			os.Exit(5)
 		}
 		marker := arguments[1]
+		// Optional: a test that deliberately leaves this process orphaned
+		// sets AGENTKIT_DESCENDANT_STOP so it can stop the writes before
+		// its own temp directory is removed (see stopOrphanedDescendant).
+		stop := os.Getenv("AGENTKIT_DESCENDANT_STOP")
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
+			if stop != "" {
+				if _, err := os.Stat(stop); err == nil {
+					break
+				}
+			}
 			_ = os.WriteFile(marker, []byte(time.Now().String()), 0o600)
 			time.Sleep(20 * time.Millisecond)
 		}
