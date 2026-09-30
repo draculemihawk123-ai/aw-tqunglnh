@@ -1750,3 +1750,18 @@ Access is denied`. It had been filed as "environmental Windows file-rename lock"
   and a 16-goroutine `TestPut_ConcurrentIdenticalContent_AllSucceed` with the real rename.
 - The sibling symptom noted in the flake log ("hash stored artifact ... used by another process") came from a
   reader hitting the same finalize window; this removes the writer-side failure, not a separate reader fix.
+
+### Follow-up 3 — two more CI failures on this PR, handled at the cause
+
+- `TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover` FAILED (not skipped) on `v6 acceptance
+  (windows-latest)` with `burst message 1167: transport error: ... Client.Timeout exceeded while awaiting headers`
+  after 168s. Third PR showing a burst transport-error variant of this scenario (#118 socket exhaustion, #126 and #139
+  client timeout). The load generator (25-wide, 1500 messages) is what gets overwhelmed while the rebuild runs with
+  large batches; the system under test is not misbehaving. Instead of a fourth rerun the burst now retries TRANSPORT
+  errors (4 attempts, 750ms x attempt backoff) via `doRawRetryingTransport`; a response with any status is returned
+  as it came, so a real non-201 still fails the test. Message POSTs are safe to repeat in a burst. No new evidence
+  is waived: the scenario's own skip-when-the-race-is-not-observed rule is unchanged.
+- `release build (windows-latest)` failed with `embed UI build: GetFileAttributesEx web/dist: cannot find the file`:
+  the UI build produced no `web/dist` (the pnpm steps print nothing in the log even on passing runs, so the cause is
+  undetermined). First occurrence, so not "fixed", but it is now diagnosable: a `Verify the UI build produced
+  web/dist` step fails at the step that is actually wrong and lists `web/`.

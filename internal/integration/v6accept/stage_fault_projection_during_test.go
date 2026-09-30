@@ -57,6 +57,24 @@ import (
 // and never double-applied (checked by asserting the rebuilt row COUNT
 // for the project equals the exact number of WorkItems this scenario
 // created, unaffected by the message burst).
+// doRawRetryingTransport runs do up to attempts times, sleeping backoff*attempt
+// between tries, and returns the first outcome without a transport error (or
+// the last outcome if every attempt had one). Only transport errors are
+// retried: any HTTP response, whatever its status, is returned as it came.
+func doRawRetryingTransport(attempts int, backoff time.Duration, do func() httpOutcome) httpOutcome {
+	var outcome httpOutcome
+	for attempt := 1; attempt <= attempts; attempt++ {
+		outcome = do()
+		if outcome.err == nil {
+			return outcome
+		}
+		if attempt < attempts {
+			time.Sleep(backoff * time.Duration(attempt))
+		}
+	}
+	return outcome
+}
+
 func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 	requireAcceptance(t)
 	j := newFaultStack(t, func(s *stack) {
@@ -97,8 +115,19 @@ func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 			outcomes := doRawConcurrent(batch, func(i int) httpOutcome {
 				index := start + i
 				target := workItemIDs[index%len(workItemIDs)]
-				return doRaw(j.s.api, http.MethodPost, "/projects/"+j.projectID+"/work-items/"+target+"/messages",
-					map[string]string{"role": "USER", "content": fmt.Sprintf("fault-projection-during burst message %06d", index), "contentType": "text/plain"})
+				// A transport error here (client timeout while the server is
+				// busy with the rebuild's large batches, or Windows socket/
+				// ephemeral-port exhaustion) is the LOAD GENERATOR being
+				// overwhelmed, not the behaviour under test; it is the symptom
+				// behind this scenario's recurring CI failures (PR #118 socket
+				// exhaustion, PR #126 and PR #139 client timeout). A message
+				// POST is safe to repeat in a burst, so retry transport errors a
+				// few times with a backoff before calling it a failure. A non-201
+				// status is never retried.
+				return doRawRetryingTransport(4, 750*time.Millisecond, func() httpOutcome {
+					return doRaw(j.s.api, http.MethodPost, "/projects/"+j.projectID+"/work-items/"+target+"/messages",
+						map[string]string{"role": "USER", "content": fmt.Sprintf("fault-projection-during burst message %06d", index), "contentType": "text/plain"})
+				})
 			})
 			for i, outcome := range outcomes {
 				if outcome.err != nil {
