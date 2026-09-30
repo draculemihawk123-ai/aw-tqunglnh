@@ -1765,3 +1765,25 @@ Access is denied`. It had been filed as "environmental Windows file-rename lock"
   the UI build produced no `web/dist` (the pnpm steps print nothing in the log even on passing runs, so the cause is
   undetermined). First occurrence, so not "fixed", but it is now diagnosable: a `Verify the UI build produced
   web/dist` step fails at the step that is actually wrong and lists `web/`.
+
+### Follow-up 4 — the artifact-store fix was only half; the other half is "never replace an existing object"
+
+The first fix (a lost rename with the object present counts as success) did not end the failures: the next run
+failed the same attempt-concurrency test with the OTHER symptom already recorded in the flake log, this time in the
+reader: `verify content before attach: artifactstore: hash stored artifact: open ...\objects\2c\34\2c34...:
+The process cannot access the file because it is being used by another process`. Both symptoms are one cause:
+`os.Rename` REPLACES an existing file (on Windows `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`), so the losing
+Put's publish replaces the winner's object while the winner is hashing it (reader: "used by another process") or
+collides with it (replacer: "Access is denied"). Fixing only the writer left the reader exposed.
+
+- Real fix: `publishObject` hard-links the temp file to the final name, which fails with `os.ErrExist` instead of
+  replacing, then drops the temp name. An existing object is never touched, so a concurrent reader can never
+  collide with a replace. A filesystem without hard links falls back to the rename (still with the lenient "object
+  now exists" handling).
+- Tests (`finalize_race_test.go`, rewritten): `ObjectAppearsBeforePublish_IsLeftUntouchedAndIsASuccess` — a marker
+  object appears between Put's Stat and its publish and must survive byte-for-byte (**negative control:** with the
+  old `os.Rename` default it fails with "publish replaced an existing object"); publish failing with a platform
+  error but the object present is a success; publish failing with the object absent is an error; 16 goroutines Put
+  identical bytes and each `Verify`s the object, as the attachment flow does.
+- Lesson recorded for the flake log: a fix that removes one symptom of a recurring failure is not done until the
+  sibling symptoms listed next to it are explained by the same cause.
