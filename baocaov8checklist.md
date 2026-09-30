@@ -1325,3 +1325,107 @@ Research found two real, concrete gaps, not just polish:
   the new job's own real CI execution (build UI, build twice, compare checksums/manifests, release smoke on
   both OSes) could only be verified once this PR's own CI actually runs it — flagged for close attention on
   the first real CI round.
+
+## V8-09 — First-run/operator documentation
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-09 (HE-03-M05, HE-06-S05, HE-03-M03, HE-04-M01, ADR-028; depends on
+V8-08, already closed) asks for: "người dùng cài, cấu hình, đăng ký repo, publish workflow, chạy task và
+recover failure" (the user can install, configure, register a repo, publish a workflow, run a task, and
+recover from failure) — Thực hiện: quickstart, config reference, authoring schema examples, provider/
+isolation setup, a full `aw` command/flag/JSON/exit-code reference, ReleaseSet/local-only Git,
+source/diff/log (no interactive browser terminal), evidence/retention classes, backup/restore,
+troubleshooting; only document VERIFIED capability. Verify: a fresh-session test answers WHAT/WHERE/HOW/DONE/
+out-of-scope using the docs as source. Completion bar: a clean-machine path needs no verbal explanation
+outside the docs.
+
+Research found `docs/` has no existing operator/end-user documentation category at all — every existing
+directory (`docs/design`, `docs/architecture`, `docs/harness-engineering`, `docs/spikes`) is INTERNAL
+documentation for people implementing this repo, not for someone installing and using the finished `aw`
+binary. `cmd/docs-coverage-check` (V1-00C) is a completely different, unrelated gate (design-doc
+criterion/SourceRef bookkeeping for the roadmap's own spec compliance) — confirmed it does not scan or
+constrain a new `docs/operator/` directory before adding one.
+
+### Decision
+
+**Every real command and JSON shape in this documentation was actually run against a real, freshly-built `aw`
+binary while writing it** — this is the literal meaning of V8-09's own "chỉ ghi capability đã verify." Rather
+than transcribing CLI flags from source by hand (drift-prone — a future flag rename would silently make the
+docs wrong), the CLI reference page documents the shared CONVENTIONS every resource command follows and
+explicitly defers per-command flag detail to `aw <resource> <action> -h`, which is generated from the same
+code the command parses and can never drift — a deliberate design choice, not a gap.
+
+The quickstart's own worked example is the single highest-value piece of this task: a complete, real,
+end-to-end walkthrough — install, start `serve`+`worker`, create a project, register a real local Git
+repository, author and publish a minimal `START -> MACHINE_GATE -> END` workflow (chosen because, per V8-03's
+own research finding, it is the one node type that runs without needing a real Claude/Codex provider), create
+a WorkItem with a real readiness contract, mark it ready, and start a run that reaches `SUCCEEDED` with real
+evidence (`verdict: PASS`) and a `doctor` reporting `HEALTHY`. JSON example documents were generated from the
+REAL Go domain types (`policy.PolicyDocument`, `skill.SkillDocument`, `command.CommandDocument`,
+`gate.GateDocument`, `workflow.WorkflowDocument`) via a throwaway scratch program reproducing
+`internal/integration/v6accept/concurrency_soak_test.go`'s own already-proven `publishSoakWorkflow` fixture
+literals, then marshaled to JSON — guaranteed schema-accurate, never hand-transcribed and risking a typo.
+
+**Two real mistakes were made and fixed while verifying this exact quickstart, both now documented as the
+FIRST two troubleshooting entries (not hypothetical placeholders):**
+1. Registering a repository with an MSYS/Git-Bash-style `/tmp/...` path on Windows — the native `aw worker`
+   process (not running under the POSIX layer) can't resolve it, and the repository settles `BLOCKED` with
+   `NOT_FOUND`. Fixed by re-registering with the real Windows-native absolute path.
+2. Publishing the gate's own Skill resource as a `.sh` script — a `MACHINE_GATE`'s command has no shell
+   interpreter on native Windows, and the run failed with a real `"gate evaluator could not be spawned ...
+   %1 is not a valid Win32 application"` error, captured verbatim via `aw artifact get`. Fixed by publishing a
+   new Skill version with a real `.bat` script, then a new Command version, Gate version, and Workflow version
+   pointing forward through that chain (Definitions are immutable per version — there is no "edit and retry").
+   This directly demonstrates, and now documents, the correct "always publish forward" recovery pattern.
+
+Other pages (config precedence, isolation tiers, retention classes, evidence chain, redaction) summarize
+already-established, already-tested real behavior from `docs/design/01-system-design.md` §12 and this
+session's own prior V8-05/V8-06/V8-08 research — cited explicitly rather than re-derived, since that behavior
+was already verified when those tasks were built. The one explicitly acknowledged gap: `BLOCK`/`LAYER`/
+`ENGINEERING_PACK` definition kinds and the `AGENT`/`COMMAND` node JSON shapes are documented from this
+repo's own real, CI-passing `v6accept` fixtures (a genuine, proven source) but were NOT independently
+re-executed while writing this documentation — flagged honestly in
+[04-authoring-workflows.md](../../docs/operator/04-authoring-workflows.md) as "not verified in this pass"
+rather than silently presented with the same confidence as the MACHINE_GATE path this task's own real run
+covers end to end.
+
+### Execution
+
+- `docs/operator/00-start-here.md` (new): entry point, file index, out-of-scope list, the fresh-run self-test
+  (WHAT/WHERE/HOW/DONE/out-of-scope) this task's own Verify line asks for.
+- `docs/operator/01-quickstart.md` (new): the full real, verified install → run walkthrough.
+- `docs/operator/02-configuration.md` (new): config precedence (cited from `01-system-design.md` §12), every
+  real `serve`/`worker` flag, global options, `--principal-config`.
+- `docs/operator/03-cli-reference.md` (new): the real `aw help` transcript, shared conventions
+  (`--idempotency-key`/`--expected-version`/`--yes`/`--wait`/`--json`/exit codes/positional-argument ordering),
+  deliberately deferring per-command flags to `-h`.
+- `docs/operator/04-authoring-workflows.md` (new): the 9 definition kinds, real verified JSON shapes for
+  POLICY/SKILL/COMMAND/GATE/WORKFLOW, AGENT_PROFILE/AGENT-node/COMMAND-node shapes from proven fixtures
+  (flagged as not independently re-verified), BLOCK/LAYER/ENGINEERING_PACK flagged as a pointer only.
+- `docs/operator/05-providers-and-isolation.md` (new): provider registration, isolation tiers (real `doctor`
+  output quoted), granted capabilities, env allowlist.
+- `docs/operator/06-source-control-and-releases.md` (new): local-only Git constraint, ReleaseSet lifecycle,
+  RepositoryWorkspace lifecycle, source/diff/log commands.
+- `docs/operator/07-evidence-and-retention.md` (new): real evidence shape, retention classes (including the
+  V8-05 "no real RAW_OUTPUT_TEMP producer exists yet" finding), the sweep, redaction.
+- `docs/operator/08-backup-and-restore.md` (new): `cmd/aw-maintenance` (V8-06), why it's a separate binary,
+  real backup/restore flag reference and behavior.
+- `docs/operator/09-troubleshooting.md` (new): `doctor` output, the two real mistakes above as the first two
+  entries, common CLI usage errors, where to look next.
+- No code changes, no CI wiring needed (pure documentation).
+
+### Verify
+
+- `go build ./...`, `go vet ./...`: clean.
+- `go run ./cmd/docs-coverage-check`: debt = 0, confirming the new `docs/operator/` directory does not
+  interact with or break the unrelated V1-00C design-doc coverage gate.
+- `go test -count=1 ./...` (full repo): completely clean, zero failures.
+- Real, manual, end-to-end verification of the ENTIRE quickstart against a freshly-built `aw` binary (Windows):
+  project created, repository registered and reached `ACTIVE`, 7 definitions created+published (attempt-policy,
+  permission-policy, completion-policy, scripts skill, gate-command, machine-gate, quickstart-workflow), a
+  child WorkItem created with a real contract and marked READY, a run started and reaching `SUCCEEDED`, real
+  evidence with `verdict: PASS` fetched via `aw evidence list`/`aw artifact get`, and `aw doctor` reporting
+  `HEALTHY`. Both real mistakes hit during this process (Windows path resolution, `.sh` vs `.bat` script) were
+  fixed forward (new definition versions, never edited in place) and are now the documentation's own first two
+  troubleshooting entries.
