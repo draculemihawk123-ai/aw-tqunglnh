@@ -526,10 +526,23 @@ func (f *v5AcceptFixture) startPoolWithConfig(t *testing.T, registry *workerpool
 
 // --- polling ---
 
+// pollDeadline bounds every wait in this package: a polled wait returns the
+// instant its condition holds, so a generous deadline costs nothing when the
+// system works and only delays the failure report when it does not. The
+// previous 8s (job and node waits) and 20s (run waits) were wall-clock budgets
+// sized for a fast machine; on windows-latest one real-process scenario
+// (admission re-probes `fake-claude --version`, then spawns the task) routinely
+// needs more, and the recurring "durable job v5a-N did not reach state
+// SUCCEEDED within the deadline; last observed = LEASED" failure was a job that
+// was still running when the deadline hit, not a job that was stuck (a stuck
+// job stays LEASED past any deadline and still fails, only later).
+const pollDeadline = 90 * time.Second
+
+
 func (f *v5AcceptFixture) waitForJobState(t *testing.T, jobID string, want ports.JobState) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(pollDeadline)
 	var last ports.JobState
 	for time.Now().Before(deadline) {
 		state, err := f.store.LoadDurableJobState(ctx, ports.JobID(jobID))
@@ -547,7 +560,7 @@ func (f *v5AcceptFixture) waitForJobState(t *testing.T, jobID string, want ports
 func (f *v5AcceptFixture) waitForNodeRunState(t *testing.T, runID, nodeKey string, want runtimedomain.NodeRunState) runtimedomain.NodeRun {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(pollDeadline)
 	var last runtimedomain.NodeRun
 	var found bool
 	for time.Now().Before(deadline) {
@@ -582,12 +595,10 @@ func (f *v5AcceptFixture) waitForNodeRunState(t *testing.T, runID, nodeKey strin
 func (f *v5AcceptFixture) waitForRunState(t *testing.T, runID string, want runtimedomain.WorkflowRunState) runtimedomain.WorkflowRun {
 	t.Helper()
 	ctx := context.Background()
-	// 20s, not 8s like the other two waitFor* helpers below: a real AGENT
-	// scenario's own admission phase re-probes a real process
-	// (adapterbuild.VerifyNoDrift spawning `fake-claude --version` again)
-	// on top of the real task spawn itself, needing more real wall-clock
-	// headroom than a COMMAND/MACHINE_GATE-only scenario ever does.
-	deadline := time.Now().Add(20 * time.Second)
+	// pollDeadline (see its comment): a real AGENT scenario's own admission
+	// phase re-probes a real process (adapterbuild.VerifyNoDrift spawning
+	// `fake-claude --version` again) on top of the real task spawn itself.
+	deadline := time.Now().Add(pollDeadline)
 	var last runtimedomain.WorkflowRun
 	for time.Now().Before(deadline) {
 		var run runtimedomain.WorkflowRun

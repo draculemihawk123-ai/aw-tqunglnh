@@ -1854,3 +1854,19 @@ With the Windows pnpm steps fixed, `e2e (windows-latest)` executed for real for 
   Windows (52.9s). The retry that follows a first failure (Playwright `retries`) re-registers the same fixed repository
   ids in the same DB and fails with a 500 — the already-known duplicate-repositoryId-returns-500 finding
   (spawned task_c204ac8e), which also hides the first failure's cause behind a second, unrelated one.
+
+### Follow-up 8 — `v5a-N did not reach state SUCCEEDED within the deadline; last observed = LEASED`: 8-second wall-clock budgets
+
+`TestV5AcceptAdapterDrift_RealAdmissionRejectsMismatchedPin` failed this PR's `contract (windows-latest)` with
+`durable job v5a-5 did not reach state SUCCEEDED within the deadline; last observed = LEASED`. The same message has
+been recorded against `TestV5AcceptFalseCompletionOracle`, `TestV5AcceptCheckerWriteAttempt_...` and others across many PRs
+(the flake log's own note: "the whole v5accept package's durable-job-polling tests appear to share this same
+deadline-sensitivity under load"). The cause is in the shared helper, not in any scenario:
+
+- `waitForJobState` and `waitForNodeRunState` polled with a hard 8s deadline and `waitForRunState` with 20s (and
+  `provider_loss_test.go` two more). A polled wait returns the instant its condition holds, so the budget is pure
+  downside when the system works; it was sized for a fast machine. A job that is still `LEASED` when the deadline hits is
+  a job that is still RUNNING (the drift scenario re-probes `fake-claude --version`, then spawns the task), not a stuck
+  one — a genuinely stuck job stays `LEASED` past any deadline and still fails, only later.
+- Fix: one `pollDeadline = 90 * time.Second` constant used by every wait in the package. Costs nothing on success; a real
+  hang now reports 90s later instead of 8s later. Package still passes locally (68s).
