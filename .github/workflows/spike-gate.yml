@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  # timeout-minutes is 40, not 20, measured the same way
+  # timeout-minutes is 50, not 20, measured the same way
   # linux-race-and-stability's own budget below was. The Windows leg runs the
   # offline suite, then the V8-04E security re-run, then the V0-11A stress
   # step; the Ubuntu leg finishes in about 4 minutes and is not the constraint.
@@ -19,19 +19,24 @@ jobs:
   #   run 36845073826  CANCELED at the 20m cap  (offline 11m16s, security 4m29s, stress cut off)
   #   run 36849822663  CANCELED at the 20m cap  (offline 12m35s, security 4m43s, stress cut off)
   #   run 36849669890  CANCELED at the 20m cap  (offline 15m21s, security cut off) — master itself
+  #   run 36856814170  success    23m02s
+  #   run 36862100032  FAILED in the stress step at 33m (offline ~18m, security 5m43s,
+  #                    spikeacceptance -count=5 hit its own 300s -timeout at ~65s per pass)
   #
-  # The same commit range ran the offline suite anywhere from 7m22s to 15m21s,
-  # a 2.1x runner-speed spread with no code change; scaling the green run's
-  # 14m31s by that spread gives about 30 minutes, so a 30m cap would sit right
-  # on the edge again. 40 minutes clears that spread, and a genuine hang still
-  # fails sooner, inside go test's own 10-minute per-package default. As with
-  # the race job: this is a budget for work the job really does, not
-  # permission to let it get slower — if a run approaches 40 minutes,
-  # root-cause it instead of raising this number again.
+  # The same commits ran the offline suite anywhere from 7m22s to ~18m, a
+  # ~2.5x runner-speed spread with no code change; the green run's 14m31s
+  # scaled by that spread is about 36 minutes (the stress step's own
+  # per-command -timeout values below are scaled the same way). 50 minutes
+  # clears that spread, and a genuine hang still fails sooner, inside go
+  # test's own 10-minute per-package default. This is a budget for work the
+  # job really does, not permission to let it get slower. The one real lever
+  # left is the V8-04E step re-running gitworktree/v5accept/httpapi that the
+  # offline suite has just run (5m43s on a slow runner): if a run approaches
+  # 50 minutes, take that duplicate run out instead of raising this again.
   contract:
     name: contract (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -98,13 +103,21 @@ jobs:
       # waitPastLeaseUntil/waitPastWriteLeaseUntil wait in
       # spk09_workspace_quarantine_test.go and spk09_scenario.go) rather than
       # trusting one lucky green run.
+      #
+      # Each -timeout is a hang detector for the whole repeated run, sized
+      # from real windows-latest runs: on 2026-10-01 (run 36862100032) the
+      # two sqlite repeats took 74.6s and 45.4s against 120s, and the five
+      # spikeacceptance passes ran ~65s each (git process spawns dominate on
+      # a slow runner) against 300s, so the fifth pass hit the deadline while
+      # still making progress. Doubled to 240s/240s/600s: a real hang still
+      # fails, ordinary runner variance no longer does.
       - name: Stress write-lease race path (Windows, V0-11A diagnostic)
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
-          go test -run '^TestWriteLeaseRaceHasOneWinnerForSameRepository$' -count=20 -timeout 120s ./internal/adapters/sqlite/...
-          go test -run '^TestSPK09QuarantineRecreateFencesStaleGeneration$' -count=30 -timeout 120s ./internal/adapters/sqlite/...
-          go test -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=5 -timeout 300s ./internal/spikeacceptance/...
+          go test -run '^TestWriteLeaseRaceHasOneWinnerForSameRepository$' -count=20 -timeout 240s ./internal/adapters/sqlite/...
+          go test -run '^TestSPK09QuarantineRecreateFencesStaleGeneration$' -count=30 -timeout 240s ./internal/adapters/sqlite/...
+          go test -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=5 -timeout 600s ./internal/spikeacceptance/...
 
       # V0-12 (docs/design/02-v0-spike-verdict.md): internal/archtest enforces
       # domain/app never depends on adapter/OS/provider specifics — a
