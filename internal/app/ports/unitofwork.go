@@ -591,6 +591,21 @@ type RuntimeRepository interface {
 	// AttemptID.
 	GetExecutionAttempt(ctx context.Context, id string) (runtime.ExecutionAttempt, error)
 
+	// RecordAttemptInputTrees is populated now (V9-01, ADR-030): records the
+	// per-repository InputTree (RepositoryID -> tree object ID) a read-only
+	// attempt started from, onto that attempt's own row, SET-ONCE — a
+	// compare-and-set on "no input trees recorded yet". applied is true when
+	// this call recorded them and false when the attempt already had input
+	// trees (nothing is overwritten; the caller re-reads the attempt with
+	// GetExecutionAttempt to learn the authoritative value). It does not
+	// bump the attempt's Version (recording annotates the input, it is not a
+	// state transition) and performs no fencing itself: the executor
+	// composes it with Jobs().ValidateActiveJob in the same short
+	// transaction, so a worker that lost its job lease cannot record.
+	// ErrPersistenceNotFound for an unknown attempt; an empty trees map is
+	// an error.
+	RecordAttemptInputTrees(ctx context.Context, attemptID string, trees map[project.RepositoryID]string) (applied bool, err error)
+
 	// TransitionExecutionAttempt is populated now (V4-05): the CAS that
 	// moves an ExecutionAttempt from one State/Version to a NextState —
 	// QUEUED->RUNNING (ExecuteNodeHandler's own unfenced claim-time

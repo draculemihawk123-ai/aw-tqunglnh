@@ -180,15 +180,28 @@ func createExecutionAttemptTx(ctx context.Context, tx *sql.Tx, attempt runtime.E
 	if attempt.LastCheckpointID != nil {
 		lastCheckpointID = string(*attempt.LastCheckpointID)
 	}
+	// inputTreesJSON is populated now (V9-01, ADR-030): only a successor
+	// attempt of the SAME NodeRun (technical retry, crash recovery) is
+	// created with InputTrees already set — copied from its predecessor in
+	// this same transaction. Every first attempt, and every attempt that is
+	// not read-only, gets NULL ("never recorded").
+	var inputTreesJSON any
+	if len(attempt.InputTrees) > 0 {
+		encodedTrees, err := json.Marshal(attempt.InputTrees)
+		if err != nil {
+			return runtime.ExecutionAttempt{}, fmt.Errorf("marshal execution attempt input trees: %w", err)
+		}
+		inputTreesJSON = string(encodedTrees)
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO execution_attempts (
     id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
-    context_snapshot_id, input_revision_set_json, last_checkpoint_id, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    context_snapshot_id, input_revision_set_json, input_trees_json, last_checkpoint_id, version, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(attempt.ID), string(attempt.NodeRunID), attempt.AttemptNumber, string(attempt.State),
-		providerKey, attempt.ExecutionProfileHash, contextSnapshotID, string(revisionSetJSON), lastCheckpointID, attempt.Version, now, now,
+		providerKey, attempt.ExecutionProfileHash, contextSnapshotID, string(revisionSetJSON), inputTreesJSON, lastCheckpointID, attempt.Version, now, now,
 	); err != nil {
 		var existing int
 		lookupErr := tx.QueryRowContext(ctx, `SELECT 1 FROM execution_attempts WHERE id = ?`, attempt.ID).Scan(&existing)

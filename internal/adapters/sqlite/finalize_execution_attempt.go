@@ -11,6 +11,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
@@ -22,15 +23,17 @@ func (r runtimeRepository) GetExecutionAttempt(ctx context.Context, id string) (
 
 func loadExecutionAttemptByID(ctx context.Context, tx *sql.Tx, id runtime.ExecutionAttemptID) (runtime.ExecutionAttempt, error) {
 	var attempt runtime.ExecutionAttempt
-	var providerKey, terminationReason, failureCode, contextSnapshotID, lastCheckpointID sql.NullString
+	var providerKey, terminationReason, failureCode, contextSnapshotID, lastCheckpointID, inputTreesJSON sql.NullString
 	var inputRevisionSetJSON string
 	err := tx.QueryRowContext(ctx, `
 SELECT id, node_run_id, attempt_no, state, provider_key, execution_profile_hash,
-       context_snapshot_id, input_revision_set_json, termination_reason, failure_code, last_checkpoint_id, version
+       context_snapshot_id, input_revision_set_json, termination_reason, failure_code, last_checkpoint_id, version,
+       input_trees_json
 FROM execution_attempts WHERE id = ?`, id,
 	).Scan(
 		&attempt.ID, &attempt.NodeRunID, &attempt.AttemptNumber, &attempt.State, &providerKey,
 		&attempt.ExecutionProfileHash, &contextSnapshotID, &inputRevisionSetJSON, &terminationReason, &failureCode, &lastCheckpointID, &attempt.Version,
+		&inputTreesJSON,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return runtime.ExecutionAttempt{}, fmt.Errorf("%w: execution attempt %s", ports.ErrPersistenceNotFound, id)
@@ -68,7 +71,62 @@ FROM execution_attempts WHERE id = ?`, id,
 		}
 		attempt.InputRevisionSet = &revisionSet
 	}
+	if inputTreesJSON.Valid && inputTreesJSON.String != "" {
+		if err := json.Unmarshal([]byte(inputTreesJSON.String), &attempt.InputTrees); err != nil {
+			return runtime.ExecutionAttempt{}, fmt.Errorf("decode execution attempt %s input trees: %w", id, err)
+		}
+	}
 	return attempt, nil
+}
+
+// RecordAttemptInputTrees implements ports.RuntimeRepository (V9-01,
+// ADR-030): the set-once write of an attempt's InputTrees. The single UPDATE
+// is a compare-and-set on `input_trees_json IS NULL`, so of two writers
+// racing for the same attempt exactly one applies and the other gets
+// applied=false — a recorded tree is never overwritten. It deliberately does
+// not touch execution_attempts.version (see migration 0042): recording
+// annotates the attempt's input and must not invalidate the version the
+// executor's later terminal CAS expects.
+func (r runtimeRepository) RecordAttemptInputTrees(ctx context.Context, attemptID string, trees map[project.RepositoryID]string) (bool, error) {
+	if attemptID == "" {
+		return false, errors.New("execution attempt id is required")
+	}
+	if len(trees) == 0 {
+		return false, errors.New("at least one input tree is required")
+	}
+	for repositoryID, treeID := range trees {
+		if repositoryID == "" || treeID == "" {
+			return false, errors.New("input trees need a non-empty repository id and tree id")
+		}
+	}
+	encoded, err := json.Marshal(trees)
+	if err != nil {
+		return false, fmt.Errorf("encode execution attempt %s input trees: %w", attemptID, err)
+	}
+	result, err := r.tx.ExecContext(ctx, `
+UPDATE execution_attempts SET input_trees_json = ?, updated_at = ?
+WHERE id = ? AND input_trees_json IS NULL`,
+		string(encoded), formatWorkflowTime(time.Now().UTC()), attemptID,
+	)
+	if err != nil {
+		return false, MapSQLiteError(fmt.Errorf("record input trees for execution attempt %s: %w", attemptID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read input trees record result: %w", err)
+	}
+	if affected == 1 {
+		return true, nil
+	}
+	var exists int
+	lookupErr := r.tx.QueryRowContext(ctx, `SELECT 1 FROM execution_attempts WHERE id = ?`, attemptID).Scan(&exists)
+	if errors.Is(lookupErr, sql.ErrNoRows) {
+		return false, fmt.Errorf("%w: execution attempt %s", ports.ErrPersistenceNotFound, attemptID)
+	}
+	if lookupErr != nil {
+		return false, MapSQLiteError(fmt.Errorf("check execution attempt %s for input trees: %w", attemptID, lookupErr))
+	}
+	return false, nil
 }
 
 // TransitionExecutionAttempt implements ports.RuntimeRepository (V4-05): the

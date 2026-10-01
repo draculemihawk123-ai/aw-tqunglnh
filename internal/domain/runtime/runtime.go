@@ -244,6 +244,26 @@ type ExecutionAttempt struct {
 	// unaffected, since NewExecutionAttempt's own signature is unchanged.
 	ContextSnapshotID *contextsnapshot.ID
 	InputRevisionSet  *workspace.RevisionSet
+	// InputTrees is the per-repository content snapshot of the working tree
+	// a read-only attempt (a CHECKER-role AGENT or a MACHINE_GATE) started
+	// from (ADR-030, V9-01): RepositoryID -> tree object ID. The strict
+	// read-only check ("this attempt changed nothing") compares the tree
+	// after the attempt against this one, so changes an EARLIER node of the
+	// same run left uncommitted in the worktree (ADR-014) are not charged to
+	// this attempt. nil means "never recorded": every attempt scheduled
+	// before V9-01, every non-read-only attempt, and a read-only attempt
+	// that has not reached its snapshot step yet — consumers then fall back
+	// to the stricter pre-V9-01 rule (the diff against the pinned commit
+	// must be empty).
+	//
+	// Deliberately NOT part of InputRevisionSet / workspace.Revision:
+	// Revision.VCSObjectID is always a commit, and this is a tree.
+	//
+	// Written at most once per attempt (ports.RuntimeRepository.
+	// RecordAttemptInputTrees, a CAS on NULL) by the executor, and copied
+	// verbatim onto the NEXT attempt of the same NodeRun by whoever creates
+	// it (technical retry, crash recovery) — see InheritedInputTrees.
+	InputTrees        map[project.RepositoryID]string
 	LastCheckpointID  *CheckpointID
 	StartedAt         *time.Time
 	FinishedAt        *time.Time
@@ -260,6 +280,24 @@ type ExecutionAttempt struct {
 	// or are already fail-closed by construction.
 	FailureCode errorcode.Code
 	Version     uint64
+}
+
+// InheritedInputTrees returns an independent copy of a's InputTrees for the
+// attempt that replaces a within the SAME NodeRun (technical retry or crash
+// recovery, ADR-030): the successor must measure "did I change anything"
+// against what a started from, so whatever a left behind before failing or
+// crashing is never promoted to the successor's input. nil when a recorded
+// nothing. A NEW NodeRun (e.g. a fresh loop activation) must not call this —
+// it snapshots afresh.
+func (a ExecutionAttempt) InheritedInputTrees() map[project.RepositoryID]string {
+	if len(a.InputTrees) == 0 {
+		return nil
+	}
+	copyOfTrees := make(map[project.RepositoryID]string, len(a.InputTrees))
+	for repositoryID, treeID := range a.InputTrees {
+		copyOfTrees[repositoryID] = treeID
+	}
+	return copyOfTrees
 }
 
 func NewExecutionAttempt(
