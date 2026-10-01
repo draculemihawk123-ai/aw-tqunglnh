@@ -79,6 +79,24 @@ are masked); the same field is in `GET /runs/{id}/timeline`. Either widen the Wo
 expansion, or fix the agent/skill so it stays inside the paths it was granted. An attempt that failed this way
 before the field existed has the failure code but no `failureDetail`.
 
+## A COMMAND or gate failed — where is the reason?
+
+```bash
+aw evidence list --project-id <id> <workItemId> --kind COMMAND_EXECUTION
+# "verdict": "FAILED", "artifactReferences": ["<artifactId>"]
+aw artifact get <workItemId> <evidenceId> <artifactId> --project-id <id> --output -
+# {"exitCode":1,"argv":[...],"cwd":"...","durationMillis":812,"truncated":false,"stderr":"FAIL: TestAdd ..."}
+```
+
+Since V9-02 a `COMMAND` that exited on its own leaves a `COMMAND_EXECUTION` evidence row even when the exit code was
+not 0 (verdict `FAILED`): the artifact has the exit code, argv, working directory, duration, whether the output was
+cut (`truncated`) and the redacted stdout/stderr the command's `output` contract captures — no need to re-run the
+test in a fresh worktree to learn what failed. A gate's non-`PASS` verdict has always left one row per criterion.
+A timeout, a kill or a spawn failure leaves no such row — those are technical errors; the timeline's
+`failureCode` / `failureDetail` is where to look. If the node declares `failureOutcome` (see
+[04-authoring-workflows.md](04-authoring-workflows.md)) a failure of the check is a `SUCCEEDED` NodeRun with that
+outcome, so look at the NodeRun's `selectedOutcome` rather than at a failed attempt.
+
 ## Local commit `FAILED` with `NO_CHANGES`
 
 ```bash

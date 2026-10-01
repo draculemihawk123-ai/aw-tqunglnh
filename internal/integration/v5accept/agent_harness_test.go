@@ -133,9 +133,12 @@ func (f *v5AcceptFixture) newClaudeAdapter(t *testing.T) *claude.Adapter {
 		// caller of this today. AGENTKIT_HELPER_WRITE_IN_CWD and
 		// AGENTKIT_HELPER_APPEND_PATH (V9-01) let a maker-then-checker
 		// workflow steer its writes per node.
+		// AGENTKIT_CAPTURE_PATH (V9-02): the fake CLI writes what it was
+		// invoked with — including the prompt on stdin — to that file, so a
+		// scenario can prove what the REAL spawned process was told.
 		InheritedEnvironment: []string{
 			"AGENTKIT_HELPER_MODE", "AGENTKIT_HELPER_OUTCOME", "AGENTKIT_HELPER_WRITE_PATH",
-			"AGENTKIT_HELPER_WRITE_IN_CWD", "AGENTKIT_HELPER_APPEND_PATH",
+			"AGENTKIT_HELPER_WRITE_IN_CWD", "AGENTKIT_HELPER_APPEND_PATH", "AGENTKIT_CAPTURE_PATH",
 		},
 	})
 	if err != nil {

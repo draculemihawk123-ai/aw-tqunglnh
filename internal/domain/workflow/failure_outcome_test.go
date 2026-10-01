@@ -300,22 +300,6 @@ func TestFailureOutcome_LoopFollowsTheExistingBoundedCycleRule(t *testing.T) {
 	})
 }
 
-func TestCheckSuccessOutcome(t *testing.T) {
-	t.Parallel()
-	document := failureLoopDocument()
-	check := *findNode(&document, "check")
-	got, ok := check.CheckSuccessOutcome()
-	if !ok || got != "passed" {
-		t.Fatalf("CheckSuccessOutcome() = %q, %v, want passed, true (the escalation outcome is not a candidate)", got, ok)
-	}
-	cloned := check.Command.clone()
-	cloned.FailureOutcome = ""
-	check.Command = cloned
-	if got, ok := check.CheckSuccessOutcome(); ok {
-		t.Fatalf("CheckSuccessOutcome() = %q, true for a node with no failureOutcome", got)
-	}
-}
-
 func setFailureOutcome(n *Node, outcome string) {
 	switch n.Type {
 	case NodeCommand:

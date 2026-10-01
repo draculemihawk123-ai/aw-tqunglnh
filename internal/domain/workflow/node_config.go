@@ -208,37 +208,6 @@ func (n Node) CheckFailureOutcome() string {
 	}
 }
 
-// CheckSuccessOutcome returns, for a COMMAND or MACHINE_GATE node that
-// declares a failureOutcome, the one outcome a successful check selects: the
-// only outcome the check itself can select (every declared outcome except its
-// own CyclePolicy.EscalationOutcome) that is not the failureOutcome. ok is
-// false when the node declares no failureOutcome or its outcomes do not have
-// the exactly-two shape validateFailureOutcome requires at publish time (a
-// WorkflowVersion built some other way), in which case the caller must not
-// guess.
-func (n Node) CheckSuccessOutcome() (outcome string, ok bool) {
-	failure := n.CheckFailureOutcome()
-	if failure == "" {
-		return "", false
-	}
-	var candidates []string
-	for _, declared := range n.Outcomes {
-		if n.CyclePolicy != nil && declared == n.CyclePolicy.EscalationOutcome {
-			continue
-		}
-		candidates = append(candidates, declared)
-	}
-	if len(candidates) != 2 {
-		return "", false
-	}
-	for _, candidate := range candidates {
-		if candidate != failure {
-			return candidate, true
-		}
-	}
-	return "", false
-}
-
 // ApprovalNodeConfig is an APPROVAL node's (HE-14's HUMAN_TASK/APPROVAL)
 // typed config. An approval is never backed by a published executable
 // definition — there is nothing to pin a definition.DependencyPin at —
