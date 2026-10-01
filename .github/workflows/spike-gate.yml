@@ -1301,12 +1301,16 @@ jobs:
   # CHƯA ĐỦ EVIDENCE. internal/alphagate's tests keep this `needs` list, the
   # job ids and the final-gate test run below in step with the gate's tables.
   #
-  # --enforce=false: this job always reports gatePass in its summary and
-  # artifact but does not itself fail the check on gatePass=false. At the time
-  # of V8-11 the parity ledger still pins known debt (internal/delivery/
-  # parity/ledger.go) so gatePass is honestly false, and an always-red check
-  # would make every unrelated PR unmergeable under this repository's "never
-  # merge red" rule. V8-12's verdict is where the gate flips to enforcing.
+  # --enforce=true (switched on by V8-12R-02): the job always writes the
+  # assessment and reports gatePass in its summary and artifact, and now also
+  # fails the check when gatePass is false. V8-11 shipped it non-enforcing
+  # because the parity ledger still pinned known debt, so gatePass was honestly
+  # false and an always-red check would have made every unrelated PR
+  # unmergeable under this repository's "never merge red" rule. V8-12R-01
+  # emptied the ledger, the gate reported gatePass=true on master 0b144f1, and
+  # V8-12R-02 recorded that verdict; from here a regression of any Alpha
+  # criterion, journey, version gate or final gate is a red check.
+  # internal/alphagate's enforce_test.go ties this flag to the recorded verdict.
   v8-alpha-gate:
     name: V8-11 Alpha release acceptance
     runs-on: ubuntu-latest
@@ -1358,7 +1362,7 @@ jobs:
             --needs-json needs.json --final-gate-tests final-gates.jsonl \
             --git-diff-check "${{ steps.diffcheck.outcome }}" \
             --out alpha-assessment.json --markdown-out alpha-assessment.md \
-            --enforce=false
+            --enforce=true
           status=$?
           if [ -f alpha-assessment.md ]; then cat alpha-assessment.md >> "$GITHUB_STEP_SUMMARY"; fi
           exit ${status}

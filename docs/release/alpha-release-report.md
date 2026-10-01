@@ -1,6 +1,6 @@
 # Alpha release report
 
-**Verdict: `CHƯA ĐỦ EVIDENCE`** — `gatePass = false`.
+**Verdict: `ALPHA_READY`** — `gatePass = true`.
 
 The machine-readable record of this verdict is [`alpha-verdict.json`](alpha-verdict.json); this page is its
 readable form, and a test keeps the two (and [`../00-start-here.md`](../00-start-here.md)) from disagreeing.
@@ -9,16 +9,16 @@ readable form, and a test keeps the two (and [`../00-start-here.md`](../00-start
 
 | | |
 |---|---|
-| Commit | `6d3bab4f2568005186fc7edf5ed6655859096083` (master after V8-11) |
-| Assessment | CI run [36786340396](https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/36786340396), artifact `v8-alpha-assessment` |
+| Commit | `0b144f12b61e8f3aab0900d1cc9b2845650cb523` (master after V8-12R-01, PR #141) |
+| Assessment | CI run [36803384120](https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/36803384120), artifact `v8-alpha-assessment` |
 | Tool | `cmd/v8-alpha-gate` (`internal/alphagate`), V8-11 |
-| Since | V8-12R-01 closed the one failing final gate in code (the parity ledger, 15 entries to 0). No assessment of a commit containing it exists yet, so the figures below are those of the commit above |
 | Rule | `ALPHA_READY` only when `gatePass = true`; any other verdict names its blocker and the next narrow task (`docs/design/10-v8-alpha-hardening.md`, V8-12) |
+| History | The first assessment (commit `6d3bab4`, run 36786340396) was `REWORK`: 6 of 7 final gates, the failing one being `parity-inventory-has-zero-debt` (15 ledger entries). V8-12R-01 closed it; an interim record (`CHƯA ĐỦ EVIDENCE`) said so honestly until a gate run of the fixed commit existed, and this verdict is that run's. |
 
 The assessment reads the V1-00 coverage map (ADR-024 phase labels, never reclassified), what the repository's tests
 cite, every CI suite's result, and the final-gate test run. It is produced even when suites fail.
 
-## Result (of the assessed commit)
+## Result
 
 | Area | Result |
 |---|---|
@@ -27,32 +27,20 @@ cite, every CI suite's result, and the final-gate test run. It is produced even 
 | Not applicable | 1 (authority reason recorded) |
 | System acceptance journeys | **23 / 23 PASS** |
 | Version gates V0–V8 | **9 / 9 PASS** |
-| Final gates | **6 / 7** — cancel-vs-claim in both commit orders, route inventory = OpenAPI both directions, recovery-command owners (core/API/UI/CLI), SourceRef debt 0, `git diff --check`, `go test`/`go vet` on both platforms all pass |
+| Final gates | **7 / 7 PASS** — cancel-vs-claim in both commit orders, route inventory = OpenAPI both directions, recovery-command owners (core/API/UI/CLI), the parity inventory (UI, `operationId`, `aw` command and application operation) with zero debt, SourceRef debt 0, `git diff --check`, `go test`/`go vet` on both platforms |
 
-## The blocker
+## What `ALPHA_READY` says, and what it does not
 
-**`alpha-gate-not-rerun-after-parity-closure` — missing evidence, not missing code.** The last real assessment (above)
-failed exactly one final gate, `parity-inventory-has-zero-debt`: `internal/delivery/parity/ledger.go` pinned 15 debt
-entries — 13 HTTP read operations with no `aw` mirror, two of which (`listWorkItemKanban`,
-`getWorkItemProjectedDetail`) also had no application operation behind them.
+It says every Alpha criterion has passing evidence at the granularity recorded for it, and every journey, version gate
+and final gate passed on both platforms for the assessed commit. It does **not** say:
 
-V8-12R-01 closed all of it: the 13 `aw` read leaves exist (`evidence show`, `artifact list`, `message content`,
-`message context-snapshot`, `release-set local-commit status`, `repository-workspace show`, `scope-expansion show` /
-`list`, `task-family show`, `work-item children`, `work-item kanban`, `work-item detail`, `repository show`), the two
-projection reads are application operations (`internal/app/kanban`, which the HTTP handlers and the CLI both call), and
-`Ledger()` is empty with `TestParityLedgerIsEmpty` green.
+- that each criterion has its own test — only 47 of 209 do (LIM-01);
+- that the product works with a real Claude or Codex CLI — compatibility is `UNVERIFIED` (below);
+- that process isolation is enforced by the operating system (LIM-02);
+- anything about Beta (PostgreSQL, login/RBAC, server workers), which is out of scope.
 
-What does not exist yet is a gate run on a commit that contains that change. The recorded summary, assessed commit, run
-and checksums are those of the last real assessment and are deliberately not rewritten by hand: `ALPHA_READY` is
-recorded from the gate's own output (`gatePass = true`), never inferred from a green unit test.
-
-## Next narrow task
-
-**V8-12R-02 — record the Alpha verdict from the gate run of the V8-12R-01 commit.** Take the `v8-alpha-assessment`
-artifact of the `v8-alpha-gate` job on the merged V8-12R-01 commit and record its assessed commit, run and
-`aw-release-build` checksums here, in `alpha-verdict.json` and in start-here section 4A. Record `ALPHA_READY` only if
-that assessment reports `gatePass = true`; otherwise record the verdict it supports and its blocker. When
-`gatePass = true`, switch the gate job to enforcing. No Beta work is part of it.
+From this verdict on the gate job is enforcing (`--enforce=true`): a regression of any Alpha criterion, journey, version
+gate or final gate turns its check red, and a test ties that flag to this record so the two cannot drift.
 
 ## Known limitations
 
@@ -108,13 +96,14 @@ serving the embedded UI from a fresh directory. For the assessed commit:
 
 | Platform | File | SHA-256 | Built twice, identical |
 |---|---|---|---|
-| Windows | `aw.exe` | `dbce424dae5ba30c53fee3c8118915a267ef2538afdcf79efa239c48262d8130` | yes |
-| Linux | `aw` | `3b71b34e5e9c02092dbdb683e57edbf2b4197b9924a2623ce1929ce4258b2e72` | yes |
+| Windows | `aw.exe` | `961c11289554cd7fd0564be713444292191ca70e8a59750af6908127d6bb05e8` | yes |
+| Linux | `aw` | `f1269112587740207128ab682d34bc3aa2fa05823b9802fb2a868c1940f5b053` | yes |
 
-Source: CI run 36786340396, jobs `release build (windows-latest)` and `release build (ubuntu-latest)`. Checksums are
-per commit (the binary records its build revision), so a later commit has different ones. The job did not upload the
-binaries for this commit; from the next push to master it uploads them as the `aw-release-windows-latest` and
-`aw-release-ubuntu-latest` artifacts together with their `.sha256` file and manifest.
+Source: CI run 36803384120, jobs `release build (windows-latest)` and `release build (ubuntu-latest)` — each built the
+binary twice with identical checksums. The same run uploaded the binaries as the `aw-release-windows-latest` and
+`aw-release-ubuntu-latest` artifacts (binary, `.sha256` and manifest, kept 90 days); both were downloaded and
+re-hashed and match the table. Checksums are per commit (the binary records its build revision), so a later commit has
+different ones.
 
 ## Fresh-install smoke
 
@@ -128,7 +117,7 @@ publish a workflow, run it to `SUCCEEDED`) was verified by hand against a real b
 ## Where to go next
 
 - Operator documentation: [`../operator/00-start-here.md`](../operator/00-start-here.md).
-- How the verdict is computed and the evidence behind it: `baocaov8checklist.md` (V8-11, V8-12) and
-  `docs/design/10-v8-alpha-hardening.md`.
+- How the verdict is computed and the evidence behind it: `baocaov8checklist.md` (V8-11, V8-12, V8-12R-01, V8-12R-02)
+  and `docs/design/10-v8-alpha-hardening.md`.
 - Re-running the assessment locally: `go run ./cmd/v8-alpha-gate --repo-root . --out alpha-assessment.json` (CI supplies
   the suite results; without them every suite reads as missing evidence).
