@@ -873,12 +873,16 @@ HE-05-M06, HE-14-M08 không đạt được trong một workflow.
 
 **Quyết định:**
 
-1. Trước khi dispatch một attempt read-only (AGENT role `CHECKER`, `MACHINE_GATE`), engine chụp `InputTree` cho từng
-   RepositoryWorkspace được mount. `InputTree` là tree object nội dung của working tree: mọi file tracked và mọi file
-   untracked không bị ignore. Nó được tạo bằng một index tạm riêng (`GIT_INDEX_FILE`), nên không chạm index của
-   worktree, và không tạo commit, ref hay branch nào.
-2. `InputTree` được ghi vào bản ghi đầu vào bất biến của attempt, trong cùng transaction lên lịch attempt và trước khi
-   dispatch. `InputTree` **không** được ghi vào `workspace.Revision`, vì `Revision.VCSObjectID` luôn là commit.
+1. Trước khi spawn process của một attempt read-only (AGENT role `CHECKER`, `MACHINE_GATE`), engine chụp `InputTree`
+   cho từng RepositoryWorkspace được mount. `InputTree` là tree object nội dung của working tree: mọi file tracked và
+   mọi file untracked không bị ignore. Nó được tạo bằng một index tạm riêng (`GIT_INDEX_FILE`), nên không chạm index
+   của worktree, và không tạo commit, ref hay branch nào.
+2. Việc chụp là I/O git nên chạy ngoài mọi transaction. Kết quả được ghi **một lần** (set-once, kiểm fencing theo job
+   lease) vào bản ghi đầu vào của attempt trong một transaction ngắn, trước khi spawn. Nếu attempt đã có `InputTree`
+   thì dùng lại, không chụp lại. Attempt retry hoặc attempt do recovery tạo cho **cùng NodeRun** thừa kế `InputTree`
+   của attempt trước ngay trong transaction tạo attempt. Nhờ vậy, thay đổi mà một attempt read-only để lại trước khi
+   crash không thành input của attempt sau. `InputTree` **không** được ghi vào `workspace.Revision`, vì
+   `Revision.VCSObjectID` luôn là commit.
 3. Sau khi xác nhận quiescence, engine chụp `OutputTree` theo cùng cách. Attempt read-only đạt khi
    `OutputTree == InputTree` trên mọi mount. Nếu khác, kết quả vẫn là `SCOPE_VIOLATION` như hiện nay, nhưng kèm danh
    sách path khác nhau giữa hai tree.
@@ -892,8 +896,9 @@ HE-05-M06, HE-14-M08 không đạt được trong một workflow.
 
 - Workflow `maker → checker` và `maker → machine gate` chạy được trong một run; read-only vẫn fail-closed.
 - Tree object không có ref nên có thể bị `git gc` dọn sau thời hạn prune. Điều này chấp nhận được vì tree chỉ được
-  dùng trong vòng đời một attempt. Nếu recovery không tìm thấy `InputTree`, attempt mới được `Start` lại và chụp
-  `InputTree` mới, không đoán.
+  dùng trong vòng đời một NodeRun. Nếu tree object của `InputTree` không còn, attempt fail kỹ thuật với mã lỗi rõ ràng
+  rồi đi retry/`FAILED` như lỗi kỹ thuật khác. Engine không chụp lại và không đoán; người vận hành chạy lại theo
+  ADR-033.
 - Tương thích ngược: trên worktree sạch, `InputTree` bằng tree của `HEAD`, nên kết quả trùng với cách kiểm cũ.
 
 ## 33. ADR-031 — Outcome cho kết quả fail chức năng của COMMAND và MACHINE_GATE
@@ -909,16 +914,21 @@ không để lại gì cho maker đọc (HE-09-M03, HE-09-M08). Đây là G2 tro
 **Quyết định:**
 
 1. `CommandNodeConfig` và `MachineGateNodeConfig` có thêm trường tùy chọn `failureOutcome`.
-2. Khi khai `failureOutcome`, node phải khai **đúng hai** outcome: `failureOutcome` và một outcome thành công. Publish
-   từ chối nếu khác. Edge từ `failureOutcome` tuân theo quy tắc vòng lặp hiện có, tức vòng phải có `cyclePolicy`.
+2. Khi khai `failureOutcome`, các outcome mà kết quả kiểm tra chọn được, tức mọi outcome đã khai trừ
+   `escalationOutcome` của `cyclePolicy` trên chính node nếu có, phải là **đúng hai**: `failureOutcome` và một outcome
+   thành công. Publish từ chối nếu khác. Quy tắc này giống cách AGENT loại `escalationOutcome` khỏi outcome do agent
+   chọn. Edge từ `failureOutcome` tuân theo quy tắc vòng lặp hiện có: vòng phải có `cyclePolicy` trên một node bất kỳ
+   trong vòng, với edge `escalationOutcome` dẫn ra ngoài vòng.
 3. Kết quả của node kiểm tra được phân ba loại, và không loại nào được map sang loại khác:
    - **Thành công:** COMMAND thoát mã 0 và output không bị cắt; MACHINE_GATE verdict `PASS`. Node chọn outcome thành
      công, như hiện nay.
-   - **Fail chức năng:** COMMAND kết thúc bình thường với mã khác 0; MACHINE_GATE `OverallVerdict = FAIL`.
+   - **Fail chức năng:** COMMAND tự kết thúc (không timeout, không bị kill) với mã khác 0, kể cả khi output bị cắt;
+     khi đó evidence mang cờ "đã cắt". MACHINE_GATE `OverallVerdict = FAIL`.
      - Có `failureOutcome`: Attempt `SUCCEEDED`, NodeRun `SUCCEEDED` với outcome `failureOutcome`, evidence verdict
        `FAILED`/`FAIL`. Không retry theo ATTEMPT policy, vì đây là kết quả xác định.
      - Không có `failureOutcome`: giữ hành vi hiện nay (Attempt `FAILED` → retry → NodeRun `FAILED`).
-   - **Lỗi kỹ thuật:** timeout, tiến trình bị kill, không spawn được, output bị cắt, vi phạm scope, mất lease,
+   - **Lỗi kỹ thuật:** timeout, tiến trình bị kill, không spawn được, thoát mã 0 nhưng output bị cắt (không tin được
+     là thành công), vi phạm scope, mất lease,
      MACHINE_GATE `ERROR`/`NOT_RUN`. Giữ nguyên hành vi hiện nay (retry, `FAILED` hoặc `INDETERMINATE`); **không bao
      giờ** map sang `failureOutcome`.
 4. COMMAND **luôn** persist evidence `COMMAND_EXECUTION` khi tiến trình kết thúc, kể cả khi mã thoát khác 0. Evidence
