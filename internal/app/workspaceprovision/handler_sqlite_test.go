@@ -74,10 +74,24 @@ func openProvisionTestStore(t *testing.T, name string) *sqlite.Store {
 	return store
 }
 
+// provisionPoolConfig's lease is deliberately long: none of the tests using
+// it exercise lease expiry (TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady
+// expires its own first pool's lease with a separate, short config and an
+// explicit wait). With the old 500ms lease and 100ms heartbeat, one >400ms
+// stall between two heartbeat commits on a slow Windows runner let the lease
+// lapse while the handler was still running; workerpool's heartbeat loop then
+// just stops, the recovery reaper re-queued the job, and the second worker slot
+// ran Provision for the same repository concurrently, so one of the two
+// recorded PROVISION_FAILED and repo-a ended FAILED instead of READY (the
+// recurring TestEndToEnd_PartialFailure_OneReadyOneFailed_SetBlockedRowsKept CI
+// failure). This is the same failure mode
+// TestPool_HeartbeatKeepsLongRunningJobAlive (internal/app/workerpool) already
+// hit and fixed with a longer lease. 10s with a 500ms heartbeat keeps its 20
+// renewals of margin and tolerates a single 9.5s stall.
 func provisionPoolConfig(owner string) workerpool.Config {
 	return workerpool.Config{
-		Concurrency: 2, Owner: owner, LeaseTTL: 500 * time.Millisecond,
-		HeartbeatEvery: 100 * time.Millisecond, PollInterval: 20 * time.Millisecond,
+		Concurrency: 2, Owner: owner, LeaseTTL: 10 * time.Second,
+		HeartbeatEvery: 500 * time.Millisecond, PollInterval: 20 * time.Millisecond,
 		ShutdownGrace: 2 * time.Second, RecoveryInterval: 200 * time.Millisecond,
 	}
 }
@@ -547,7 +561,12 @@ func TestEndToEnd_PartialFailure_OneReadyOneFailed_SetBlockedRowsKept(t *testing
 		t.Fatalf("read repository workspaces: %v", err)
 	}
 	if rwA.State != workspace.RepositoryWorkspaceReady {
-		t.Fatalf("repo-a RepositoryWorkspace.State = %q, want READY (kept despite repo-bad's own failure)", rwA.State)
+		errorCode := "<nil>"
+		if rwA.LastProvisionErrorCode != nil {
+			errorCode = *rwA.LastProvisionErrorCode
+		}
+		t.Fatalf("repo-a RepositoryWorkspace.State = %q (LastProvisionErrorCode = %s), want READY (kept despite repo-bad's own failure)",
+			rwA.State, errorCode)
 	}
 	if rwA.Locator == "" || rwA.BaseRevision == "" {
 		t.Fatal("repo-a's own RepositoryWorkspace is missing its real locator/base revision")

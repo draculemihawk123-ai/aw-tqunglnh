@@ -9,10 +9,29 @@ permissions:
   contents: read
 
 jobs:
+  # timeout-minutes is 40, not 20, measured the same way
+  # linux-race-and-stability's own budget below was. The Windows leg runs the
+  # offline suite, then the V8-04E security re-run, then the V0-11A stress
+  # step; the Ubuntu leg finishes in about 4 minutes and is not the constraint.
+  # contract (windows-latest), 2026-10-01:
+  #
+  #   run 36813114429  success    14m31s  (offline 7m22s, security 3m25s, stress 2m21s)
+  #   run 36845073826  CANCELED at the 20m cap  (offline 11m16s, security 4m29s, stress cut off)
+  #   run 36849822663  CANCELED at the 20m cap  (offline 12m35s, security 4m43s, stress cut off)
+  #   run 36849669890  CANCELED at the 20m cap  (offline 15m21s, security cut off) — master itself
+  #
+  # The same commit range ran the offline suite anywhere from 7m22s to 15m21s,
+  # a 2.1x runner-speed spread with no code change; scaling the green run's
+  # 14m31s by that spread gives about 30 minutes, so a 30m cap would sit right
+  # on the edge again. 40 minutes clears that spread, and a genuine hang still
+  # fails sooner, inside go test's own 10-minute per-package default. As with
+  # the race job: this is a budget for work the job really does, not
+  # permission to let it get slower — if a run approaches 40 minutes,
+  # root-cause it instead of raising this number again.
   contract:
     name: contract (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
