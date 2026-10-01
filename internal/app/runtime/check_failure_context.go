@@ -16,11 +16,12 @@
 // (persistCommandOutputArtifact, persistGateResultArtifact).
 //
 // Deliberately minimal: a labelled section, not a priority or ordering scheme.
-// Where the section sits relative to the task contract, messages and resources
-// is V9-03's instruction-artifact v2 to decide (ADR-032); until then it sits
-// right after the task contract, and a prompt without a failing check has no
-// such key at all (omitempty), so every other prompt is byte-for-byte what it
-// was.
+// It sits right after the task contract in both instruction schemas: in v1
+// (before the messages) and in v2 (V9-03, instruction_artifact.go: after the
+// task contract, before resources, messages and the closing checklist — the
+// most specific instruction a maker sent back by a check has must not be buried
+// under reference material). A prompt without a failing check has no such key
+// at all (omitempty), so every other prompt is unchanged.
 package runtime
 
 import (

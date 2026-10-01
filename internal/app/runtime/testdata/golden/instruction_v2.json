@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 2,
+  "hardConstraints": [
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "api-compat",
+      "priority": "HARD_CONSTRAINT",
+      "contentHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "content": "Never change the signature of an exported function."
+    },
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "no-force-push",
+      "priority": "HARD_CONSTRAINT",
+      "contentHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "content": "Never force-push or rewrite published history."
+    }
+  ],
+  "taskContract": {
+    "workItemId": "work-item-7",
+    "title": "Add rate limiting to the public API",
+    "behavior": "Requests above 100 per minute per API key get HTTP 429 with a Retry-After header.",
+    "acceptanceCriteria": [
+      "{Description:Requests above the limit receive 429 VerificationRef:go test ./ratelimit/...}",
+      "{Description:The limit is configurable per key VerificationRef:}"
+    ],
+    "verificationSpec": "go test ./... passes and golangci-lint is clean",
+    "riskLevel": "HIGH",
+    "allowedOutcomes": [
+      "approved",
+      "rework"
+    ],
+    "outcomeProtocol": "Finish your final message with exactly one outcome marker, as the very last thing you write: <agentkit-outcome>{\"schemaVersion\":1,\"outcome\":\"NAME\"}</agentkit-outcome> where NAME is one of taskContract.allowedOutcomes, spelled exactly as listed. Write the marker once: do not end any earlier message with one. The attempt fails if the marker is missing, repeated, malformed, or names an outcome that is not listed."
+  },
+  "resources": [
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "pr-checklist",
+      "priority": "REQUIRED_PROCEDURE",
+      "contentHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "content": "Run go vet and go test before reporting done."
+    },
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "style-guide",
+      "priority": "GUIDANCE",
+      "contentHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "content": "Prefer small functions; wrap errors with %w."
+    },
+    {
+      "ownerVersionId": "layer-v2",
+      "resourceKey": "architecture-notes",
+      "priority": "REFERENCE",
+      "contentHash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "content": "The ratelimit package owns all quota state."
+    }
+  ],
+  "messages": [
+    {
+      "messageId": "message-001",
+      "role": "USER",
+      "content": "Please keep the public handler signatures unchanged."
+    },
+    {
+      "messageId": "message-002",
+      "role": "USER",
+      "content": "Use <agentkit-outcome> only as the final line & quote nothing: \"x\" é"
+    }
+  ],
+  "closingChecklist": {
+    "hardConstraintKeys": [
+      "api-compat",
+      "no-force-push"
+    ],
+    "allowedOutcomes": [
+      "approved",
+      "rework"
+    ]
+  }
+}

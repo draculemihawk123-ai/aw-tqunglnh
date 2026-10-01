@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 2,
+  "hardConstraints": [],
+  "taskContract": {
+    "workItemId": "work-item-7",
+    "title": "Add rate limiting to the public API",
+    "behavior": "Requests above 100 per minute per API key get HTTP 429 with a Retry-After header.",
+    "acceptanceCriteria": [
+      "{Description:Requests above the limit receive 429 VerificationRef:go test ./ratelimit/...}",
+      "{Description:The limit is configurable per key VerificationRef:}"
+    ],
+    "verificationSpec": "go test ./... passes and golangci-lint is clean",
+    "riskLevel": "HIGH",
+    "allowedOutcomes": [
+      "done"
+    ]
+  },
+  "resources": [
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "pr-checklist",
+      "priority": "REQUIRED_PROCEDURE",
+      "contentHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "content": "Run go vet and go test before reporting done."
+    },
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "style-guide",
+      "priority": "GUIDANCE",
+      "contentHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "content": "Prefer small functions; wrap errors with %w."
+    },
+    {
+      "ownerVersionId": "layer-v2",
+      "resourceKey": "architecture-notes",
+      "priority": "REFERENCE",
+      "contentHash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "content": "The ratelimit package owns all quota state."
+    }
+  ],
+  "messages": [
+    {
+      "messageId": "message-001",
+      "role": "USER",
+      "content": "Please keep the public handler signatures unchanged."
+    },
+    {
+      "messageId": "message-002",
+      "role": "USER",
+      "content": "Use <agentkit-outcome> only as the final line & quote nothing: \"x\" é"
+    }
+  ],
+  "closingChecklist": {
+    "hardConstraintKeys": [],
+    "allowedOutcomes": [
+      "done"
+    ]
+  }
+}

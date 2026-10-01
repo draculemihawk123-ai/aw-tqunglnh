@@ -48,9 +48,12 @@ type AssembleAgentExecutionRequestRequest struct {
 }
 
 // instructionArtifactContent is the exact deterministic shape
-// AssembleAgentExecutionRequest materializes into the InstructionArtifact —
-// task contract, then messages, then resources, each in the snapshot's own
-// pinned order. encoding/json.Marshal of a fixed Go value is itself
+// AssembleAgentExecutionRequest materializes into the InstructionArtifact for
+// a snapshot that records no instruction schema version (schema v1) — task
+// contract, then messages, then resources, each in the snapshot's own pinned
+// order. Schema v2 (V9-03, ADR-032) is instructionArtifactV2 in
+// instruction_artifact.go; THIS shape and its encoding must never change, so a
+// v1 snapshot keeps rendering the same bytes. encoding/json.Marshal of a fixed Go value is itself
 // deterministic (stable field order from the struct definition), so the
 // same snapshot always produces byte-identical content and therefore the
 // identical ArtifactRef.SHA256/hash — this is what "cùng snapshot tạo cùng
@@ -111,35 +114,45 @@ func AssembleAgentExecutionRequest(
 	}
 
 	// Phase 2: real I/O, entirely outside the transaction above.
-	content := instructionArtifactContent{Messages: []instructionMessage{}, Resources: []instructionResource{}}
-	content.TaskContract.WorkItemID = gathered.workItemID
-	content.TaskContract.Title = gathered.workItemTitle
-	content.TaskContract.Behavior = gathered.workItemBehavior
-	content.TaskContract.VerificationSpec = gathered.workItemVerificationSpec
-	content.TaskContract.AcceptanceCriteria = gathered.workItemAcceptanceCriteria
+	input := instructionRenderInput{
+		workItemID: gathered.workItemID, title: gathered.workItemTitle, behavior: gathered.workItemBehavior,
+		acceptanceCriteria: gathered.workItemAcceptanceCriteria, verificationSpec: gathered.workItemVerificationSpec,
+		riskLevel: gathered.workItemRiskLevel, allowedOutcomes: gathered.allowedOutcomes,
+	}
 	for _, m := range gathered.messages {
 		body, err := readArtifact(ctx, store, m.ref)
 		if err != nil {
 			return ports.AgentExecutionRequest{}, fmt.Errorf("runtime: open message %s content artifact: %w", m.messageID, err)
 		}
-		content.Messages = append(content.Messages, instructionMessage{MessageID: m.messageID, Role: m.role, Content: body})
+		input.messages = append(input.messages, instructionMessage{MessageID: m.messageID, Role: m.role, Content: body})
 	}
 	if len(gathered.checkFailures) > 0 {
-		content.CheckFailures, err = renderCheckFailures(ctx, store, gathered.checkFailures)
+		input.checkFailures, err = renderCheckFailures(ctx, store, gathered.checkFailures)
 		if err != nil {
 			return ports.AgentExecutionRequest{}, err
 		}
 	}
 	for _, r := range gathered.resources {
-		content.Resources = append(content.Resources, instructionResource{
-			OwnerVersionID: r.Identity.OwnerVersionID, ResourceKey: r.Identity.ResourceKey,
-			ContentHash: r.Identity.ContentHash, Content: string(r.Payload),
+		input.resources = append(input.resources, instructionResourceInput{
+			ownerVersionID: r.Identity.OwnerVersionID, resourceKey: r.Identity.ResourceKey, contentHash: r.Identity.ContentHash,
+			priority: r.Priority, content: string(r.Payload),
 		})
 	}
 
-	contentJSON, err := json.Marshal(content)
+	// V9-03 (ADR-032 decision 2): the snapshot, not this build, says which
+	// schema renders it. A snapshot that recorded none is v1 and renders
+	// exactly as it always has.
+	var contentJSON []byte
+	switch gathered.instructionSchema {
+	case contextsnapshot.InstructionSchemaV1:
+		contentJSON, err = renderInstructionV1(input)
+	case contextsnapshot.InstructionSchemaV2:
+		contentJSON, err = renderInstructionV2(input)
+	default:
+		err = fmt.Errorf("runtime: snapshot %s records instruction schema version %d, which this build cannot render", gathered.snapshotID, gathered.instructionSchema)
+	}
 	if err != nil {
-		return ports.AgentExecutionRequest{}, fmt.Errorf("runtime: marshal instruction artifact content: %w", err)
+		return ports.AgentExecutionRequest{}, err
 	}
 	instructionRef, err := store.Put(ctx, ports.ArtifactMetadata{ContentType: "application/json", Sensitivity: redact.Sensitive}, strings.NewReader(string(contentJSON)))
 	if err != nil {
@@ -245,6 +258,10 @@ type assembledRequestInputs struct {
 	adapterBuildID       string
 	snapshotID           contextsnapshot.ID
 	snapshotManifestHash string
+	// instructionSchema is the instruction-artifact schema the snapshot
+	// renders with (contextsnapshot.Snapshot.InstructionSchema): 1 for a
+	// snapshot that recorded none.
+	instructionSchema    int
 	effectiveScope       []workdomain.RepositoryScope
 	executionProfileHash string
 	// timeoutSeconds/model are the pinned AGENT execution profile's own
@@ -286,6 +303,7 @@ type assembledRequestInputs struct {
 	workItemTitle              string
 	workItemBehavior           string
 	workItemVerificationSpec   string
+	workItemRiskLevel          string
 	workItemAcceptanceCriteria []string
 }
 
@@ -447,13 +465,13 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 
 	return assembledRequestInputs{
 		providerKey: attempt.ProviderKey, adapterBuildID: profile.AdapterBuild.BuildID,
-		snapshotID: snapshot.ID, snapshotManifestHash: snapshot.ManifestHash,
+		snapshotID: snapshot.ID, snapshotManifestHash: snapshot.ManifestHash, instructionSchema: snapshot.InstructionSchema(),
 		effectiveScope: nodeRun.EffectiveScope, executionProfileHash: attempt.ExecutionProfileHash,
 		timeoutSeconds: profile.TimeoutSeconds, model: profile.Model,
 		isolationTier: profile.IsolationTier, allowedCapabilities: profile.AllowedCapabilities,
 		workspaceMounts: mounts, messages: messages, checkFailures: checkFailures, resources: resources, allowedOutcomes: allowedOutcomes,
 		workItemID: string(workItem.ID), workItemTitle: workItem.Title, workItemBehavior: workItem.Behavior,
-		workItemVerificationSpec: workItem.VerificationSpec, workItemAcceptanceCriteria: acceptance,
+		workItemVerificationSpec: workItem.VerificationSpec, workItemRiskLevel: string(workItem.RiskLevel), workItemAcceptanceCriteria: acceptance,
 		recoveryCheckpointID: recoveryCheckpointID,
 	}, nil
 }
