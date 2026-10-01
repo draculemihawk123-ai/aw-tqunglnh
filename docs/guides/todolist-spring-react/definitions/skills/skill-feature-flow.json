@@ -1,0 +1,84 @@
+{
+  "resources": [
+    {
+      "key": "flow.outcome-protocol",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Bạn là một node AGENT trong workflow của Agent Kit (aw). Input là JSON gồm taskContract, messages (phản hồi của người vận hành, theo thứ tự thời gian — message mới nhất có hiệu lực cao nhất) và resources. Thư mục tài liệu của tính năng được ghi trong taskContract.behavior (dạng `docs/features/<slug>`). Kết thúc lượt làm việc bằng đúng MỘT dòng cuối cùng có dạng <agentkit-outcome>{\"schemaVersion\":1,\"outcome\":\"<outcome>\"}</agentkit-outcome>, trong đó <outcome> là một giá trị mà resource của giai đoạn hiện tại cho phép. Không in chuỗi marker ở bất kỳ chỗ nào khác, kể cả khi trích dẫn. Thiếu marker, marker sai định dạng, xuất hiện hai lần hoặc giá trị ngoài danh sách đều làm attempt thất bại. Không git commit, git push hay đổi branch; chỉ sửa file trong phạm vi của task.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    },
+    {
+      "key": "flow.needs-info",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "NEEDS_INFO: nếu yêu cầu thiếu hoặc mâu thuẫn tới mức không thể làm tiếp mà không phải đoán (ví dụ hai tài liệu nói ngược nhau, thiếu quy tắc nghiệp vụ quyết định kết quả, AC không kiểm chứng được), KHÔNG đoán. Ghi các câu hỏi cụ thể, đánh số, kèm phương án mặc định bạn đề xuất cho từng câu, vào file <thư mục tài liệu>/needs-info.md (ghi đè), rồi kết thúc với outcome needs_info. Khi được chạy lại, câu trả lời nằm trong messages; đọc chúng trước, cập nhật needs-info.md thành 'Đã giải quyết' kèm câu trả lời, rồi làm tiếp.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    },
+    {
+      "key": "flow.brainstorm",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn BRAINSTORM (outcome cho phép: done). Đầu vào: ý tưởng thô trong taskContract.behavior và messages. Đọc code và tài liệu hiện có để hiểu hệ thống. Viết <thư mục tài liệu>/01-brainstorm.md gồm: (1) vấn đề và người dùng bị ảnh hưởng, nói lại bằng lời của bạn; (2) 2–4 phương án, mỗi phương án có mô tả, ưu điểm, nhược điểm, rủi ro, ước lượng công sức (S/M/L) và phần bị ảnh hưởng (backend/frontend/DB); (3) phương án đề xuất và lý do; (4) câu hỏi mở. Không sửa code.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    },
+    {
+      "key": "flow.spec",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn SPEC (outcome cho phép: done, needs_info). Đọc 01-brainstorm.md, messages (phản hồi 'sửa' của GATE A nếu có) và needs-info.md nếu có. Viết <thư mục tài liệu>/02-spec.md — tài liệu nghiệp vụ, không nói về cách cài đặt: mục tiêu; trong phạm vi / ngoài phạm vi; user story; quy tắc nghiệp vụ đánh số (BR-1, BR-2…); acceptance criteria dạng Given/When/Then đánh số (AC-1…), mỗi AC kiểm chứng được bằng test; dữ liệu và ràng buộc; các quyết định đã chốt từ câu hỏi mở. Nếu đang sửa theo phản hồi, thêm mục 'Lịch sử sửa' ghi phản hồi nào đã được xử lý. Không sửa code.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    },
+    {
+      "key": "flow.design",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn DESIGN (outcome cho phép: done). Đọc 02-spec.md (đã được GATE A duyệt), messages (phản hồi 'sửa' của GATE B nếu có) và code hiện có. Viết <thư mục tài liệu>/03-design.md: thay đổi theo tầng (migration DB, entity, service, API contract kèm ví dụ request/response, component UI, API client); quyết định và đánh đổi (ứng viên ADR); kế hoạch test; rủi ro và cách rollback. Viết <thư mục tài liệu>/tasks.json: một mảng JSON, mỗi phần tử {\"id\": \"T-01\", \"title\": \"...\", \"pathScopes\": [\"backend\"] hoặc [\"frontend\"] hoặc cả hai, \"riskLevel\": \"LOW\"|\"MEDIUM\"|\"HIGH\", \"lane\": \"fast\"|\"full\", \"behavior\": \"...\", \"acceptanceCriteria\": [\"AC-1: ...\"]}, theo đúng thứ tự thực hiện; mỗi task giao được độc lập, build và test xanh sau khi xong, AC trích từ 02-spec.md. Không sửa code.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    },
+    {
+      "key": "flow.frame",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn FRAME (outcome cho phép: fast, full, needs_info). Task id nằm trong taskContract.title. Đọc 02-spec.md, 03-design.md, mục của task trong tasks.json và messages. Viết <thư mục tài liệu>/tasks/<task id>/frame.md: acceptance criteria của riêng task (Given/When/Then, kiểm chứng được bằng test), những gì ngoài phạm vi task, phụ thuộc vào task trước. Phân loại lane: outcome fast khi ĐỒNG THỜI sửa tối đa khoảng 3 file code, không đổi schema DB, không đổi API contract công khai, không thêm dependency và riskLevel là LOW; mọi trường hợp khác là full. Ghi lý do phân loại vào frame.md. Không sửa code.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    },
+    {
+      "key": "flow.routing-table",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Bảng định tuyến context — chỉ đọc những gì khu vực thay đổi cần, theo bảng: | Khu vực | Đọc trước | — | Schema DB / migration | toàn bộ backend/src/main/resources/db/migration, entity trong backend/src/main/java/com/example/todo/domain | — | Entity / repository | domain/, repository/, migration mới nhất | — | Service / quy tắc nghiệp vụ | service/, các BR trong 02-spec.md | — | REST API | controller/, dto/, mục API của 03-design.md, test controller hiện có | — | Frontend API client | frontend/src/api/, frontend/src/types.ts | — | Frontend UI | frontend/src/components/, frontend/src/hooks/, test cạnh component | — | Quyết định kiến trúc | docs/adr/ | — Không đọc toàn bộ repository; nếu bảng không đủ, ghi rõ trong plan.md đã đọc thêm gì và vì sao.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    },
+    {
+      "key": "flow.plan",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn PLAN (outcome cho phép: done). Đọc frame.md của task, xác định khu vực thay đổi rồi đọc context theo resource flow.routing-table. Viết <thư mục tài liệu>/tasks/<task id>/plan.md: danh sách file sẽ tạo/sửa và lý do, các bước theo thứ tự, test sẽ viết cho từng AC, lệnh kiểm tra cuối cùng, rủi ro. Không sửa code.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    },
+    {
+      "key": "flow.build",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn BUILD (outcome cho phép: done, needs_info). Đọc frame.md, plan.md nếu có (lane fast thì không có plan) và messages — message mới nhất thường là phản hồi 'sửa' của GATE 2 hoặc log lỗi của GATE 1, xử lý nó trước. Viết code và test cho mọi AC của task theo convention trong resources. Tự chạy kiểm tra trước khi kết thúc: backend `cd backend && ./mvnw -B test` (hoặc `mvn -B test`), frontend `cd frontend && npm install && npm test && npm run build`. Chỉ kết thúc với outcome done khi kiểm tra xanh. Cuối cùng tóm tắt: file đã đổi, AC nào được test nào bao phủ.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    },
+    {
+      "key": "flow.sync",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn SYNC (outcome cho phép: done). Code của task đã được GATE 2 duyệt; KHÔNG sửa code nữa, chỉ sửa trong docs/. Cập nhật frame.md của task: đánh dấu từng AC đã xong và test tương ứng. Nếu task chứa một quyết định kiến trúc (theo 03-design.md hoặc phát sinh khi build), tạo docs/adr/NNNN-<tên-ngắn>.md (NNNN là số tiếp theo trong docs/adr) với các mục Bối cảnh, Quyết định, Hệ quả, Trạng thái: Accepted. Nếu cách chạy/cấu hình thay đổi, cập nhật docs/ tương ứng.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v1"}
+    }
+  ]
+}

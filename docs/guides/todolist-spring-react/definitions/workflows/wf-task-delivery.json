@@ -1,0 +1,322 @@
+{
+  "schemaVersion": "1",
+  "nodes": [
+    {
+      "key": "start",
+      "type": "START",
+      "outcomes": [
+        "next"
+      ]
+    },
+    {
+      "key": "frame",
+      "type": "AGENT",
+      "outcomes": [
+        "fast",
+        "full",
+        "needs_info"
+      ],
+      "agent": {
+        "profileRef": {
+          "kind": "AGENT_PROFILE",
+          "definitionId": "agent-flow-frame",
+          "versionId": "{{AGENT_FLOW_FRAME}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ],
+        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "role": "MAKER"
+      }
+    },
+    {
+      "key": "plan",
+      "type": "AGENT",
+      "outcomes": [
+        "done"
+      ],
+      "agent": {
+        "profileRef": {
+          "kind": "AGENT_PROFILE",
+          "definitionId": "agent-flow-plan",
+          "versionId": "{{AGENT_FLOW_PLAN}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ],
+        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "role": "MAKER"
+      }
+    },
+    {
+      "key": "build",
+      "type": "AGENT",
+      "outcomes": [
+        "done",
+        "needs_info"
+      ],
+      "agent": {
+        "profileRef": {
+          "kind": "AGENT_PROFILE",
+          "definitionId": "agent-flow-build",
+          "versionId": "{{AGENT_FLOW_BUILD}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ],
+        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "role": "MAKER"
+      }
+    },
+    {
+      "key": "gate1",
+      "type": "COMMAND",
+      "outcomes": [
+        "passed"
+      ],
+      "command": {
+        "commandRef": {
+          "kind": "COMMAND",
+          "definitionId": "cmd-gate1",
+          "versionId": "{{CMD_GATE1}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ]
+      }
+    },
+    {
+      "key": "gate2",
+      "type": "APPROVAL",
+      "outcomes": [
+        "approved",
+        "revise",
+        "rejected"
+      ],
+      "approval": {
+        "authorizedRoles": [
+          "operator"
+        ],
+        "timeoutSeconds": 604800,
+        "escalationOutcome": "rejected",
+        "requestedEvidenceKinds": [
+          "COMMAND_EXECUTION"
+        ]
+      },
+      "cyclePolicy": {
+        "maxIterations": 3,
+        "escalationOutcome": "rejected"
+      }
+    },
+    {
+      "key": "needs-info",
+      "type": "APPROVAL",
+      "outcomes": [
+        "provided",
+        "abandon"
+      ],
+      "approval": {
+        "authorizedRoles": [
+          "operator"
+        ],
+        "timeoutSeconds": 604800,
+        "escalationOutcome": "abandon"
+      },
+      "cyclePolicy": {
+        "maxIterations": 3,
+        "escalationOutcome": "abandon"
+      }
+    },
+    {
+      "key": "sync",
+      "type": "AGENT",
+      "outcomes": [
+        "done"
+      ],
+      "agent": {
+        "profileRef": {
+          "kind": "AGENT_PROFILE",
+          "definitionId": "agent-flow-sync",
+          "versionId": "{{AGENT_FLOW_SYNC}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ],
+        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "role": "MAKER"
+      }
+    },
+    {
+      "key": "reject",
+      "type": "COMMAND",
+      "outcomes": [
+        "done"
+      ],
+      "command": {
+        "commandRef": {
+          "kind": "COMMAND",
+          "definitionId": "cmd-reject",
+          "versionId": "{{CMD_REJECT}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ]
+      }
+    },
+    {
+      "key": "end",
+      "type": "END"
+    }
+  ],
+  "edges": [
+    {
+      "key": "start--next--frame",
+      "from": "start",
+      "outcome": "next",
+      "to": "frame"
+    },
+    {
+      "key": "frame--fast--build",
+      "from": "frame",
+      "outcome": "fast",
+      "to": "build"
+    },
+    {
+      "key": "frame--full--plan",
+      "from": "frame",
+      "outcome": "full",
+      "to": "plan"
+    },
+    {
+      "key": "frame--needs_info--needs-info",
+      "from": "frame",
+      "outcome": "needs_info",
+      "to": "needs-info"
+    },
+    {
+      "key": "plan--done--build",
+      "from": "plan",
+      "outcome": "done",
+      "to": "build"
+    },
+    {
+      "key": "build--done--gate1",
+      "from": "build",
+      "outcome": "done",
+      "to": "gate1"
+    },
+    {
+      "key": "build--needs_info--needs-info",
+      "from": "build",
+      "outcome": "needs_info",
+      "to": "needs-info"
+    },
+    {
+      "key": "gate1--passed--gate2",
+      "from": "gate1",
+      "outcome": "passed",
+      "to": "gate2"
+    },
+    {
+      "key": "gate2--approved--sync",
+      "from": "gate2",
+      "outcome": "approved",
+      "to": "sync"
+    },
+    {
+      "key": "gate2--revise--build",
+      "from": "gate2",
+      "outcome": "revise",
+      "to": "build"
+    },
+    {
+      "key": "gate2--rejected--reject",
+      "from": "gate2",
+      "outcome": "rejected",
+      "to": "reject"
+    },
+    {
+      "key": "needs-info--provided--frame",
+      "from": "needs-info",
+      "outcome": "provided",
+      "to": "frame"
+    },
+    {
+      "key": "needs-info--abandon--reject",
+      "from": "needs-info",
+      "outcome": "abandon",
+      "to": "reject"
+    },
+    {
+      "key": "sync--done--end",
+      "from": "sync",
+      "outcome": "done",
+      "to": "end"
+    },
+    {
+      "key": "reject--done--end",
+      "from": "reject",
+      "outcome": "done",
+      "to": "end"
+    }
+  ],
+  "completionPolicyRef": {
+    "kind": "POLICY",
+    "definitionId": "policy-completion-reviewed",
+    "versionId": "{{POL_COMPLETION_REVIEWED}}"
+  }
+}

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Quyết định node APPROVAL "review" của một run đang chờ duyệt.
-# Cách dùng: review-task.sh <runId> <approved|rework|rejected> ["phản hồi cho agent"]
-#   rework  : phản hồi được append thành message USER của WorkItem; lần chạy lại của node
-#             implement nhận toàn bộ message trong prompt (taskContract + messages + resources).
-#   rejected: run đi tới node reject (COMMAND thoát mã 1) và kết thúc FAILED.
+# Quyết định node APPROVAL đang chờ của một run (review, gate-a, gate-b, gate2, needs-info…).
+# Cách dùng: review-task.sh <runId> <outcome> ["phản hồi cho agent"]
+#   outcome là một outcome khai báo của node đó (run-task.sh in sẵn danh sách), ví dụ
+#   approved | rework/revise | rejected | provided | abandon.
+#   Phản hồi được append thành message USER của WorkItem; mọi lần chạy sau của các node AGENT
+#   nhận toàn bộ message trong prompt (taskContract + messages + resources).
 set -euo pipefail
 AW=${AW:-aw}
 OUT_ENV=${OUT_ENV:-./aw-ids.env}
@@ -40,5 +41,8 @@ echo "Run: $run_id  state: $state"
 "$AW" run timeline "$run_id" \
   | jq -r '.entries[] | select(.kind == "NODE_RUN") | "  #\(.activationSequence) \(.nodeKey) (vòng \(.iteration)): \(.nodeState) \(.selectedOutcome // "")"'
 if [ "$pending" != 0 ]; then
-  echo "  CHỜ DUYỆT lại: review-task.sh $run_id <approved|rework|rejected> [\"phản hồi\"]"
+  graph=$("$AW" run graph "$run_id")
+  "$AW" run show "$run_id" | jq -r --arg run "$run_id" --argjson graph "$graph" '.approvalRequests[]? | select(.state == "PENDING")
+    | .nodeKey as $k | ([$graph.nodes[] | select(.key == $k)][0].outcomes | join("|")) as $o
+    | "  CHỜ DUYỆT node \($k): review-task.sh \($run) <\($o)> [\"phản hồi\"]"'
 fi

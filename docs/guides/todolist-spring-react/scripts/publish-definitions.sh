@@ -33,42 +33,8 @@ DEFS="$HERE/../definitions"
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-sha() { sha256sum | cut -c1-16; }
-
-# create_def KIND ID NAME [project]  — tạo vỏ definition; bỏ qua nếu đã tồn tại.
-# (Alpha: tạo trùng definitionId trả về lỗi chung "sqlite: unexpected error" thay vì CONFLICT,
-#  nên kiểm tra tồn tại trước bằng `definition show`.)
-create_def() {
-  local kind=$1 id=$2 name=$3 project=${4:-}
-  local scope=()
-  [ -n "$project" ] && scope=(--project-id "$project")
-  if "$AW" definition show --kind "$kind" "${scope[@]}" "$id" >/dev/null 2>&1; then return 0; fi
-  jq -n --arg id "$id" --arg name "$name" '{definitionId: $id, name: $name}' \
-    | "$AW" definition create --kind "$kind" "${scope[@]}" --idempotency-key "create-$id" >/dev/null
-}
-
-# publish_def KIND ID FILE [project] — publish một version, in ra version id.
-publish_def() {
-  local kind=$1 id=$2 file=$3 project=${4:-}
-  local scope=()
-  [ -n "$project" ] && scope=(--project-id "$project")
-  local key="pub-$id-$(sha < "$file")"
-  "$AW" definition publish --kind "$kind" "${scope[@]}" --idempotency-key "$key" --yes --file "$file" "$id" \
-    | jq -er '.result.id'
-}
-
-# resource_hash FILE KEY — content hash (ADR-012) của một resource trong document SKILL/LAYER.
-resource_hash() {
-  python3 "$HERE/aw-resource-hashes.py" "$1" | awk -v k="$2" '$1 == k { print $2 }'
-}
-
-# resource_refs VERSION_ID FILE — mảng resourceRefs cho mọi resource của một document.
-resource_refs() {
-  python3 "$HERE/aw-resource-hashes.py" "$2" \
-    | jq -R --arg v "$1" 'split(" ") | {ownerVersionId: $v, resourceKey: .[0], contentHash: .[1]}' | jq -s .
-}
-
-pin() { jq -n --arg k "$1" --arg d "$2" --arg v "$3" '{kind: $k, definitionId: $d, versionId: $v}'; }
+# shellcheck source=lib.sh
+. "$HERE/lib.sh"
 
 echo "== Layer"
 create_def LAYER layer-java-spring-boot "Layer: Java 21 + Spring Boot 3.5"
@@ -84,11 +50,7 @@ SKILL_DEV=$(publish_def SKILL skill-todolist-dev "$DEFS/skills/skill-todolist-de
 
 echo "== Skill (script thực thi cho COMMAND node)"
 # Mỗi file script thành một resource; Command tham chiếu resource theo key + content hash.
-jq -n --rawfile be "$HERE/backend-test.sh" --rawfile fe "$HERE/frontend-test.sh" --rawfile rj "$HERE/reject.sh" '
-  [["backend-test.sh", $be], ["frontend-test.sh", $fe], ["reject.sh", $rj]]
-  | {resources: map({key: .[0], instruction: .[1], priority: "REQUIRED_PROCEDURE", global: true, selector: {},
-      provenance: {owner: "team-platform", source: "docs/guides/todolist-spring-react/scripts", revision: "v1"}})}' \
-  > "$WORK/scripts-todolist.json"
+scripts_skill_doc "$HERE/backend-test.sh" "$HERE/frontend-test.sh" "$HERE/reject.sh" > "$WORK/scripts-todolist.json"
 create_def SKILL scripts-todolist "Script build/test của todolist"
 SKILL_SCRIPTS=$(publish_def SKILL scripts-todolist "$WORK/scripts-todolist.json")
 
@@ -135,11 +97,6 @@ POL_COMPLETION=$(publish_def POLICY policy-completion "$DEFS/policies/policy-com
 POL_COMPLETION_REVIEWED=$(publish_def POLICY policy-completion-reviewed "$DEFS/policies/policy-completion-reviewed.json")
 
 echo "== Agent profile"
-agent_profile() {
-  jq -n --arg model "$CLAUDE_MODEL" --arg os "$AW_OS" --argjson ctx "$(pin POLICY "$1" "$2")" '{
-    providerKey: "claude", model: $model, toolRefs: ["Read", "Edit", "Write", "Bash"],
-    contextPolicyRef: $ctx, compatibility: {os: [$os]}, budget: {maxTokens: 200000}}'
-}
 agent_profile ctx-todolist-backend "$CTX_BACKEND" > "$WORK/agent-backend.json"
 agent_profile ctx-todolist-frontend "$CTX_FRONTEND" > "$WORK/agent-frontend.json"
 agent_profile ctx-todolist-fullstack "$CTX_FULLSTACK" > "$WORK/agent-fullstack.json"
@@ -151,22 +108,9 @@ AGENT_FRONTEND=$(publish_def AGENT_PROFILE agent-frontend-dev "$WORK/agent-front
 AGENT_FULLSTACK=$(publish_def AGENT_PROFILE agent-fullstack-dev "$WORK/agent-fullstack.json")
 
 echo "== Command"
-# command_doc SCRIPT_KEY NETWORK(ALLOWED|NONE)
-# networkAccess ALLOWED chỉ chạy được khi chính Command pin một PERMISSION policy cấp NETWORK_ACCESS.
-command_doc() {
-  local policies='[]'
-  [ "$2" = ALLOWED ] && policies="[$(pin POLICY policy-permission-network "$POL_NETWORK")]"
-  jq -n --arg owner "$SKILL_SCRIPTS" --arg key "$1" --arg hash "$(resource_hash "$WORK/scripts-todolist.json" "$1")" \
-    --arg repo "$REPO_ID" --arg os "$AW_OS" --arg network "$2" --argjson policies "$policies" '{
-    executable: {ownerVersionId: $owner, resourceKey: $key, contentHash: $hash},
-    argv: [{kind: "LITERAL", value: "run"}], cwdRepositoryTarget: $repo, compatibility: {os: [$os]},
-    envAllowlist: ["PATH", "HOME", "JAVA_HOME", "MAVEN_OPTS", "JAVA_TOOL_OPTIONS", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"],
-    networkAccess: $network, policyRefs: $policies, timeoutSeconds: 1800,
-    output: {captureStdout: true, captureStderr: true, maxOutputBytes: 4194304}}'
-}
-command_doc backend-test.sh ALLOWED > "$WORK/cmd-backend.json"
-command_doc frontend-test.sh ALLOWED > "$WORK/cmd-frontend.json"
-command_doc reject.sh NONE > "$WORK/cmd-reject.json"
+command_doc "$SKILL_SCRIPTS" "$WORK/scripts-todolist.json" backend-test.sh ALLOWED > "$WORK/cmd-backend.json"
+command_doc "$SKILL_SCRIPTS" "$WORK/scripts-todolist.json" frontend-test.sh ALLOWED > "$WORK/cmd-frontend.json"
+command_doc "$SKILL_SCRIPTS" "$WORK/scripts-todolist.json" reject.sh NONE > "$WORK/cmd-reject.json"
 create_def COMMAND cmd-backend-test "Command: backend test"
 create_def COMMAND cmd-frontend-test "Command: frontend test + build"
 create_def COMMAND cmd-reject "Command: kết thúc run khi người duyệt từ chối"

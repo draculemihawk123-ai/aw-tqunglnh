@@ -27,6 +27,7 @@ task và **tùy biến workflow** (Phần 6).
 - [6. Tùy biến workflow](#6-tùy-biến-workflow)
 - [7. Xử lý sự cố (đã gặp thật)](#7-xử-lý-sự-cố-đã-gặp-thật)
 - [8. Giới hạn của Alpha cần biết](#8-giới-hạn-của-alpha-cần-biết)
+- [Quy trình hai tầng TÍNH NĂNG → TASK (tài liệu riêng)](feature-task-flow.md)
 - [Phụ lục: các file trong thư mục này](#phụ-lục-các-file-trong-thư-mục-này)
 
 ---
@@ -121,7 +122,8 @@ go build -o ~/bin/aw ./cmd/aw
 ### 1.3 Tạo repository todolist
 
 Thư mục `repo-template/` chứa khung đã kiểm chứng: backend Spring Boot 3.5 + SQLite + Flyway (`mvn test` pass),
-`.gitignore`, và `.claude/settings.json` (quyền cho Claude CLI, xem 1.4).
+`.gitignore`, `.claude/settings.json` (quyền cho Claude CLI, xem 1.4) và `.claude/hooks/stop-gate.sh` (Stop hook chạy
+build/test trước khi agent được phép kết thúc, xem [feature-task-flow.md, mục 3.2](feature-task-flow.md#32-gate-1-không-có-cạnh-fail--build-trong-engine)).
 
 ```bash
 GUIDE=/path/to/aw-tqunglnh/docs/guides/todolist-spring-react
@@ -163,7 +165,9 @@ mkdir -p ~/aw && cp "$GUIDE/scripts/claude-for-aw.sh" ~/aw/claude-for-aw.sh
 Wrapper đặt `HOME`/`PATH`, giữ nguyên lời gọi `--version` (aw dùng nó để probe), và thêm
 `--permission-mode acceptEdits`. Quyền chạy lệnh Bash nằm trong `.claude/settings.json` của repository (đã có trong
 `repo-template/`): cho phép `./mvnw`, `mvn`, `npm`, `npx`, `node`…; **cấm** `git commit/push/checkout/reset`,
-`rm -rf` và đọc `.env`, vì commit là việc của `aw` sau khi người duyệt đồng ý.
+`rm -rf` và đọc `.env`, vì commit là việc của `aw` sau khi người duyệt đồng ý. File này cũng đăng ký Stop hook
+`.claude/hooks/stop-gate.sh`: khi `backend/`/`frontend/` có thay đổi, agent chỉ được kết thúc khi test của phần đó xanh
+(chặn tối đa 3 lần). Bỏ khóa `hooks` nếu không muốn dùng.
 
 > Alpha chỉ có isolation `OPERATOR_TRUSTED_LOCAL`: agent chạy dưới chính user của bạn, không có sandbox. Danh sách
 > allow/deny ở trên là hàng rào chính, hãy giữ nó chặt.
@@ -487,7 +491,7 @@ Vì sao chỉ có AGENT → COMMAND mà không có MACHINE_GATE hay agent CHECKE
 ### 5.1 WorkItem gốc
 
 ```bash
-"$GUIDE/scripts/create-root.sh"        # ghi ROOT_ID, FAMILY_ID vào aw-ids.env
+"$GUIDE/scripts/create-root.sh"        # ghi ROOT_ID, FAMILY_ID vào aw-ids.env; có thể truyền tiêu đề: create-root.sh "Tên đợt"
 ```
 
 WorkItem gốc ([`work-items/root.json`](work-items/root.json)) tạo một TaskFamily với một Git worktree riêng trên
@@ -714,7 +718,7 @@ Run: 28a9fe20-…  state: RUNNING
   implement #1: SUCCEEDED COMPLETED
   backend-test #1: SUCCEEDED COMPLETED
   frontend-test #1: SUCCEEDED COMPLETED
-  CHỜ DUYỆT node review: review-task.sh 28a9fe20-… <approved|rework|rejected> ["phản hồi"]
+  CHỜ DUYỆT node review: review-task.sh 28a9fe20-… <approved|rejected|rework> ["phản hồi"]
 ```
 
 Review diff như 5.4, rồi quyết định bằng [`review-task.sh`](scripts/review-task.sh). Script gửi phản hồi thành message
@@ -763,7 +767,14 @@ MACHINE_GATE chỉ phù hợp cho kiểm tra **không đọc thay đổi của m
 trong một thư mục scratch tạm, stdout phải là JSON `{"<evidenceKey>": {"verdict": "PASS"|"FAIL"|"ERROR"}}`. Xem
 [quickstart](../../operator/01-quickstart.md).
 
-### 6.5 So sánh và theo dõi version
+### 6.5 Quy trình nhiều tầng (tính năng → task)
+
+Một quy trình đầy đủ hơn — INTAKE → BRAINSTORM → SPEC → GATE A → DESIGN → GATE B → chia task, rồi mỗi task FRAME →
+(fast lane) → PLAN → BUILD → GATE 1 → GATE 2 → SYNC, có nhánh NEEDS_INFO — được dựng và kiểm chứng trong tài liệu riêng:
+[feature-task-flow.md](feature-task-flow.md). Tài liệu đó giải thích chỗ nào ánh xạ thẳng vào `aw`, chỗ nào phải điều
+chỉnh (fast lane bằng marker outcome, GATE 1 fail-closed + Stop hook, chia task bằng script) và vì sao.
+
+### 6.6 So sánh và theo dõi version
 
 ```bash
 aw definition versions --kind WORKFLOW --project-id "$PROJECT_ID" wf-backend-feature    # các version + id
@@ -797,6 +808,7 @@ Definitions trên UI.
 | `run start`: `work item is not READY … is ACTIVE` | WorkItem đã có run fail | hủy và tạo WorkItem mới (5.6) |
 | `flag provided but not defined: -yes` | lệnh không cần xác nhận | bỏ `--yes` (ví dụ `work-item mark-ready`, `definition create`, `pack-assignment assign`, `release-set create`, `message append`) |
 | `high-impact command requires confirmation` | lệnh cần xác nhận | thêm `--yes` (ví dụ `definition publish`, `adapter register`, `release-set seal`, `release-set local-commit`, `run cancel`, `work-item cancel`) |
+| Node COMMAND `FAILED / EXECUTION_FAILED`, `aw evidence list` rỗng | Alpha không lưu evidence/output khi script thoát mã khác 0 | tự chạy lại lệnh trong worktree (`cd "$(worktree-path.sh)/backend" && ./mvnw test`) để xem lỗi; chạy lại task với `MESSAGE="log lỗi"` |
 | Board hiện `COMPLETING` trong khi chi tiết task là `DONE` | projection của Kanban cập nhật chậm hơn | xem chi tiết task hoặc `aw work-item show` |
 
 Lệnh chẩn đoán chung: `aw run timeline <runId>`, `aw run diagnostics --project-id "$PROJECT_ID" <runId>`,
@@ -816,7 +828,7 @@ Lệnh chẩn đoán chung: `aw run timeline <runId>`, `aw run diagnostics --pro
 - **Pack assignment chỉ để ghi nhận**; context policy mới quyết định prompt (0.2).
 - **Selector**: chỉ `taskKinds`/`riskClasses` có hiệu lực lúc chạy.
 - **`budget.maxTokens` tính bằng byte.**
-- **`aw version diff/show` không gọi được** từ CLI; dùng HTTP/UI (6.5).
+- **`aw version diff/show` không gọi được** từ CLI; dùng HTTP/UI (6.6).
 - Không có push/PR: kết quả là commit cục bộ trên branch `agentkit/w-…`; bạn tự merge.
 
 ---
@@ -828,13 +840,18 @@ todolist-spring-react/
 ├── README.md                         # tài liệu này
 ├── definitions/
 │   ├── layers/                       # 3 Layer (Spring Boot, SQLite, React/Vite)
-│   ├── skills/skill-todolist-dev.json
-│   ├── policies/                     # attempt, permission, permission-network, completion, completion-reviewed
-│   └── workflows/                    # template: wf-backend-feature, wf-frontend-feature, wf-fullstack-review
-├── work-items/                       # root + BE-01, FE-01, FE-02, FS-01
+│   ├── skills/                       # skill-todolist-dev, skill-feature-flow
+│   ├── policies/                     # attempt, permission(-network), completion, completion-reviewed, completion-feature
+│   └── workflows/                    # template: wf-backend-feature, wf-frontend-feature, wf-fullstack-review,
+│                                     #           wf-feature-definition, wf-task-delivery
+├── feature-task-flow.md              # quy trình hai tầng tính năng → task
+├── work-items/                       # root + BE-01, FE-01, FE-02, FS-01, feature-due-date (INTAKE)
 ├── scripts/
 │   ├── publish-definitions.sh        # publish toàn bộ definition + adapter build + gán pack
+│   ├── publish-feature-flow.sh       # publish quy trình tính năng → task (feature-task-flow.md)
+│   ├── lib.sh                        # hàm dùng chung của hai script publish
 │   ├── publish-workflow.sh           # publish một workflow từ template {{BIEN}}
+│   ├── split-tasks.sh                # tasks.json của DESIGN → các WorkItem task
 │   ├── create-root.sh                # WorkItem gốc (family/worktree)
 │   ├── run-task.sh                   # tạo WorkItem con + chạy
 │   ├── review-task.sh                # quyết định node APPROVAL (approved/rework/rejected)
@@ -842,8 +859,8 @@ todolist-spring-react/
 │   ├── worktree-path.sh              # đường dẫn worktree của family
 │   ├── aw-resource-hashes.py         # content hash của resource Layer/Skill
 │   ├── claude-for-aw.sh              # wrapper Claude CLI (sửa HOME/PATH/CLAUDE_BIN)
-│   └── backend-test.sh, frontend-test.sh, reject.sh   # script của các Command
-├── repo-template/                    # khung repo todolist: backend đã chạy được, .claude/settings.json, gitignore
+│   └── backend-test.sh, frontend-test.sh, reject.sh, gate1.sh, check-feature-docs.sh   # script của các Command
+├── repo-template/                    # khung repo todolist: backend đã chạy được, .claude/ (settings + Stop hook), gitignore
 └── images/                           # ảnh chụp UI
 ```
 

@@ -1,0 +1,312 @@
+{
+  "schemaVersion": "1",
+  "nodes": [
+    {
+      "key": "start",
+      "type": "START",
+      "outcomes": [
+        "next"
+      ]
+    },
+    {
+      "key": "brainstorm",
+      "type": "AGENT",
+      "outcomes": [
+        "done"
+      ],
+      "agent": {
+        "profileRef": {
+          "kind": "AGENT_PROFILE",
+          "definitionId": "agent-flow-brainstorm",
+          "versionId": "{{AGENT_FLOW_BRAINSTORM}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ],
+        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "role": "MAKER"
+      }
+    },
+    {
+      "key": "spec",
+      "type": "AGENT",
+      "outcomes": [
+        "done",
+        "needs_info"
+      ],
+      "agent": {
+        "profileRef": {
+          "kind": "AGENT_PROFILE",
+          "definitionId": "agent-flow-spec",
+          "versionId": "{{AGENT_FLOW_SPEC}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ],
+        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "role": "MAKER"
+      }
+    },
+    {
+      "key": "needs-info",
+      "type": "APPROVAL",
+      "outcomes": [
+        "provided",
+        "abandon"
+      ],
+      "approval": {
+        "authorizedRoles": [
+          "operator"
+        ],
+        "timeoutSeconds": 604800,
+        "escalationOutcome": "abandon"
+      },
+      "cyclePolicy": {
+        "maxIterations": 3,
+        "escalationOutcome": "abandon"
+      }
+    },
+    {
+      "key": "gate-a",
+      "type": "APPROVAL",
+      "outcomes": [
+        "approved",
+        "revise",
+        "rejected"
+      ],
+      "approval": {
+        "authorizedRoles": [
+          "operator"
+        ],
+        "timeoutSeconds": 604800,
+        "escalationOutcome": "rejected"
+      },
+      "cyclePolicy": {
+        "maxIterations": 3,
+        "escalationOutcome": "rejected"
+      }
+    },
+    {
+      "key": "design",
+      "type": "AGENT",
+      "outcomes": [
+        "done"
+      ],
+      "agent": {
+        "profileRef": {
+          "kind": "AGENT_PROFILE",
+          "definitionId": "agent-flow-design",
+          "versionId": "{{AGENT_FLOW_DESIGN}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ],
+        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "role": "MAKER"
+      }
+    },
+    {
+      "key": "check-docs",
+      "type": "COMMAND",
+      "outcomes": [
+        "passed"
+      ],
+      "command": {
+        "commandRef": {
+          "kind": "COMMAND",
+          "definitionId": "cmd-check-feature-docs",
+          "versionId": "{{CMD_CHECK_FEATURE_DOCS}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ]
+      }
+    },
+    {
+      "key": "gate-b",
+      "type": "APPROVAL",
+      "outcomes": [
+        "approved",
+        "revise",
+        "rejected"
+      ],
+      "approval": {
+        "authorizedRoles": [
+          "operator"
+        ],
+        "timeoutSeconds": 604800,
+        "escalationOutcome": "rejected",
+        "requestedEvidenceKinds": [
+          "COMMAND_EXECUTION"
+        ]
+      },
+      "cyclePolicy": {
+        "maxIterations": 3,
+        "escalationOutcome": "rejected"
+      }
+    },
+    {
+      "key": "reject",
+      "type": "COMMAND",
+      "outcomes": [
+        "done"
+      ],
+      "command": {
+        "commandRef": {
+          "kind": "COMMAND",
+          "definitionId": "cmd-reject",
+          "versionId": "{{CMD_REJECT}}"
+        },
+        "policyRefs": [
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-attempt",
+            "versionId": "{{POL_ATTEMPT}}"
+          },
+          {
+            "kind": "POLICY",
+            "definitionId": "policy-permission",
+            "versionId": "{{POL_PERMISSION}}"
+          }
+        ]
+      }
+    },
+    {
+      "key": "end",
+      "type": "END"
+    }
+  ],
+  "edges": [
+    {
+      "key": "start--next--brainstorm",
+      "from": "start",
+      "outcome": "next",
+      "to": "brainstorm"
+    },
+    {
+      "key": "brainstorm--done--spec",
+      "from": "brainstorm",
+      "outcome": "done",
+      "to": "spec"
+    },
+    {
+      "key": "spec--done--gate-a",
+      "from": "spec",
+      "outcome": "done",
+      "to": "gate-a"
+    },
+    {
+      "key": "spec--needs_info--needs-info",
+      "from": "spec",
+      "outcome": "needs_info",
+      "to": "needs-info"
+    },
+    {
+      "key": "needs-info--provided--spec",
+      "from": "needs-info",
+      "outcome": "provided",
+      "to": "spec"
+    },
+    {
+      "key": "needs-info--abandon--reject",
+      "from": "needs-info",
+      "outcome": "abandon",
+      "to": "reject"
+    },
+    {
+      "key": "gate-a--approved--design",
+      "from": "gate-a",
+      "outcome": "approved",
+      "to": "design"
+    },
+    {
+      "key": "gate-a--revise--spec",
+      "from": "gate-a",
+      "outcome": "revise",
+      "to": "spec"
+    },
+    {
+      "key": "gate-a--rejected--reject",
+      "from": "gate-a",
+      "outcome": "rejected",
+      "to": "reject"
+    },
+    {
+      "key": "design--done--check-docs",
+      "from": "design",
+      "outcome": "done",
+      "to": "check-docs"
+    },
+    {
+      "key": "check-docs--passed--gate-b",
+      "from": "check-docs",
+      "outcome": "passed",
+      "to": "gate-b"
+    },
+    {
+      "key": "gate-b--approved--end",
+      "from": "gate-b",
+      "outcome": "approved",
+      "to": "end"
+    },
+    {
+      "key": "gate-b--revise--design",
+      "from": "gate-b",
+      "outcome": "revise",
+      "to": "design"
+    },
+    {
+      "key": "gate-b--rejected--reject",
+      "from": "gate-b",
+      "outcome": "rejected",
+      "to": "reject"
+    },
+    {
+      "key": "reject--done--end",
+      "from": "reject",
+      "outcome": "done",
+      "to": "end"
+    }
+  ],
+  "completionPolicyRef": {
+    "kind": "POLICY",
+    "definitionId": "policy-completion-feature",
+    "versionId": "{{POL_COMPLETION_FEATURE}}"
+  }
+}

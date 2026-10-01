@@ -26,5 +26,18 @@
       "Bash(rm -rf:*)",
       "Read(./**/.env)"
     ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-gate.sh",
+            "timeout": 1800
+          }
+        ]
+      }
+    ]
   }
 }
