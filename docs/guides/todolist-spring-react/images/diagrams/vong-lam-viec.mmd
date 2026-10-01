@@ -1,6 +1,0 @@
-flowchart LR
-  contract["Viết contract<br>cho WorkItem con"] --> run["run-task.sh<br>agent làm, cổng kiểm tra"]
-  run --> review["Duyệt<br>review-task.sh, git diff"]
-  review --> commit["commit-task.sh<br>ReleaseSet, local commit"]
-  commit --> contract
-  commit --> merge["Cuối đợt<br>merge branch agentkit vào main"]

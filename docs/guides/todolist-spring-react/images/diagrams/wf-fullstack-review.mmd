@@ -1,9 +1,0 @@
-flowchart LR
-  start(("START")) -->|"next"| implement["AGENT implement<br>agent-fullstack-dev"]
-  implement -->|"done"| bt["COMMAND backend-test"]
-  bt -->|"passed"| ft["COMMAND frontend-test"]
-  ft -->|"passed"| review{"APPROVAL review<br>role operator"}
-  review -->|"approved"| finish(("END"))
-  review -->|"rework"| implement
-  review -->|"rejected, quá 2 vòng, hết hạn"| reject["COMMAND reject<br>exit 1"]
-  reject -->|"done"| finish

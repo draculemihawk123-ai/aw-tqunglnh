@@ -45,7 +45,7 @@ project khác, bạn copy `scripts/` rồi viết `aw-project.json` của riêng
 - [6. Giới hạn của Alpha cần biết](#6-giới-hạn-của-alpha-cần-biết)
 - [Chạy thử quy trình hai tầng tính năng → task (tài liệu riêng)](feature-task-flow.md)
 - [Phụ lục A: các file trong thư mục này](#phụ-lục-a-các-file-trong-thư-mục-này)
-- [Phụ lục B: sửa và vẽ lại sơ đồ](#phụ-lục-b-sửa-và-vẽ-lại-sơ-đồ)
+- [Phụ lục B: quy ước viết sơ đồ Mermaid](#phụ-lục-b-quy-ước-viết-sơ-đồ-mermaid)
 
 ---
 
@@ -53,7 +53,29 @@ project khác, bạn copy `scripts/` rồi viết `aw-project.json` của riêng
 
 ### 1.1 Quy trình 8 bước
 
-![Quy trình 8 bước từ nghiệp vụ tới workflow](images/diagrams/quy-trinh-tong-quat.png)
+```mermaid
+flowchart LR
+    subgraph O["Làm một lần cho mỗi project"]
+        S1["Bước 1<br/>Chuẩn bị môi trường, repo"]
+    end
+
+    subgraph D["Định nghĩa workflow — Phần 3"]
+        direction LR
+        S2["Bước 2<br/>Mô tả nghiệp vụ"] --> S3["Bước 3<br/>Ánh xạ sang node"]
+        S3 --> S4["Bước 4<br/>Tri thức: Layer, Skill, agent"]
+        S4 --> S5["Bước 5<br/>Thực thi: script, Command, Policy"]
+        S5 --> S6["Bước 6<br/>Khai báo và publish"]
+    end
+
+    subgraph H["Làm hằng ngày"]
+        direction LR
+        S7["Bước 7<br/>Viết task và chạy"] --> S8["Bước 8<br/>Vận hành"]
+    end
+
+    S1 --> S2
+    S6 --> S7
+    S8 -.->|"quy trình đổi"| S2
+```
 
 | Bước | Trả lời câu hỏi | Đầu ra | Trong ví dụ todolist |
 |---|---|---|---|
@@ -96,7 +118,21 @@ Mọi `definitionId` thật đều có tiền tố của project (`todo-`), ví 
 Mọi thiết kế ở Phần 3 đều xuất phát từ những gì một attempt AGENT nhận được. Các điểm dưới đây đã kiểm chứng bằng
 cách cho agent giả lập ghi lại prompt.
 
-![Layer/Skill đi tới agent qua CONTEXT policy](images/diagrams/dinh-tuyen-context.png)
+```mermaid
+flowchart LR
+    LY["LAYER<br/>convention theo stack"] --> CX
+    SK["SKILL<br/>hướng dẫn theo loại việc"] --> CX
+    CX["CONTEXT policy<br/>resourceRefs + budget"] -->|"contextPolicyRef"| AP["AGENT_PROFILE<br/>provider + model"]
+    AP -->|"profileRef"| ND["Node AGENT<br/>trong WORKFLOW"]
+    ND --> SN["ContextSnapshot<br/>của attempt"]
+    SN --> PR["Prompt gửi agent<br/>taskContract + messages + resources"]
+    LY -.-> PK["ENGINEERING_PACK"]
+    SK -.-> PK
+    PK -.->|"chỉ ghi nhận, hiển thị"| CO["Component"]
+
+    classDef stop fill:#EDEDED,stroke:#666,color:#222;
+    class PK,CO stop;
+```
 
 1. **Prompt là một JSON gồm `taskContract`, `messages` và `resources`.**
    - `taskContract`: contract của WorkItem.
@@ -303,25 +339,66 @@ Mẫu bảng:
 |---|---|---|---|---|---|---|---|
 | 1 | | AI / máy / người | | | | quay lại #…, tối đa … lần / dừng / hỏi … | |
 
-**Ví dụ todolist.** Quy trình của team cho một tính năng:
+**Ví dụ todolist.** Quy trình của team cho một tính năng. Nhánh nét đứt NEEDS_INFO là "thiếu hoặc mâu thuẫn
+thông tin thì dừng lại hỏi", áp dụng ở SPEC, FRAME và BUILD:
 
-![Quy trình nghiệp vụ của todolist](images/diagrams/nghiep-vu-todolist.png)
+```mermaid
+flowchart TB
+    subgraph L1["TẦNG TÍNH NĂNG — một lần cho mỗi tính năng"]
+        direction LR
+        IN["INTAKE<br/>Ý tưởng thô"] --> BR["BRAINSTORM<br/>Bày phương án<br/>+ đánh đổi"]
+        BR --> SP["SPEC<br/>Tài liệu nghiệp vụ"]
+        SP --> GA{{"GATE A<br/>Người duyệt SPEC"}}
+        GA -->|"sửa"| SP
+        GA -->|"duyệt"| DS["DESIGN<br/>Thiết kế chi tiết"]
+        DS --> GB{{"GATE B<br/>Người duyệt DESIGN"}}
+        GB -->|"sửa"| DS
+    end
+
+    GB -->|"duyệt"| SPL["Chia thành N task"]
+
+    subgraph L2["TẦNG TASK — lặp cho từng task"]
+        direction LR
+        FR["FRAME<br/>AC của riêng task"] --> TR{"Fast lane?"}
+        TR -->|"nhỏ"| BU
+        TR -->|"còn lại"| PL["PLAN<br/>Đọc context<br/>theo bảng định tuyến"]
+        PL --> BU["BUILD<br/>Code + test"]
+        BU --> G1{{"GATE 1<br/>build + test<br/>hook/CI"}}
+        G1 -->|"fail"| BU
+        G1 -->|"pass"| G2{{"GATE 2<br/>Review người"}}
+        G2 -->|"sửa"| BU
+        G2 -->|"duyệt"| SY["SYNC<br/>Doc / ADR"]
+        SY --> DN(["DONE"])
+    end
+
+    SPL --> FR
+
+    SP -.->|"thiếu / mâu thuẫn"| NI["NEEDS_INFO"]
+    FR -.-> NI
+    BU -.-> NI
+    NI -.->|"đã bổ sung"| FR
+
+    classDef gate fill:#FFE3E3,stroke:#C45A5A,color:#222;
+    classDef stop fill:#EDEDED,stroke:#666,color:#222;
+    class G1,G2,GA,GB gate;
+    class NI stop;
+```
 
 | # | Bước | Ai làm | Đầu ra | Xong khi | Không đạt / thiếu thông tin | Tri thức cần |
 |---|---|---|---|---|---|---|
-| 1 | Tiếp nhận yêu cầu | PO | Mô tả ý tưởng, thư mục `docs/features/<slug>` | — | — | — |
-| 2 | Phân tích phương án | AI | `01-brainstorm.md` | Có 2–4 phương án và một đề xuất | — | Cách viết phân tích |
-| 3 | Viết spec | AI | `02-spec.md` (BR, AC Given/When/Then) | Mỗi AC kiểm chứng được bằng test | Thiếu thông tin → hỏi PO, chờ trả lời | Cách viết spec, cách hỏi |
-| 4 | Duyệt spec | PO | Quyết định | Duyệt | Sửa → #3, tối đa 3 lần; từ chối → dừng | — |
-| 5 | Thiết kế, chia task | AI | `03-design.md`, `tasks.json` | Đủ file, `tasks.json` đúng schema | — | Convention Spring/SQLite/React |
-| 6 | Duyệt thiết kế | Tech lead | Quyết định | Duyệt | Sửa → #5, tối đa 3 lần; từ chối → dừng | — |
-| 7 | Làm rõ task, phân loại nhỏ/lớn | AI | `tasks/<id>/frame.md` | AC riêng của task rõ ràng | Thiếu thông tin → hỏi | Tiêu chí task nhỏ |
-| 8 | Lập kế hoạch (chỉ task lớn) | AI | `tasks/<id>/plan.md` | — | — | Bảng "khu vực → cần đọc gì" |
-| 9 | Code và test | AI | Code, test | Test xanh trên máy | Thiếu thông tin → hỏi | Convention, Definition of Done |
-| 10 | Build và test tự động | Máy | Kết quả test | Mã thoát 0 | Đỏ → #9 | — |
-| 11 | Review code | Reviewer | Quyết định | Duyệt | Sửa → #9, tối đa 3 lần; từ chối → dừng | — |
-| 12 | Cập nhật tài liệu, ADR | AI | `docs/`, `docs/adr/` | — | — | Cách viết ADR |
-| 13 | Commit, merge | Người | Commit, merge vào `main` | — | — | — |
+| 1 | Tiếp nhận yêu cầu (INTAKE) | PO | Mô tả ý tưởng, thư mục `docs/features/<slug>` | — | — | — |
+| 2 | Phân tích phương án (BRAINSTORM) | AI | `01-brainstorm.md` | Có 2–4 phương án và một đề xuất | — | Cách viết phân tích |
+| 3 | Viết spec (SPEC) | AI | `02-spec.md` (BR, AC Given/When/Then) | Mỗi AC kiểm chứng được bằng test | Thiếu thông tin → hỏi PO, chờ trả lời | Cách viết spec, cách hỏi |
+| 4 | Duyệt spec (GATE A) | PO | Quyết định | Duyệt | Sửa → #3, tối đa 3 lần; từ chối → dừng | — |
+| 5 | Thiết kế, chia task (DESIGN) | AI | `03-design.md`, `tasks.json` | Đủ file, `tasks.json` đúng schema | — | Convention Spring/SQLite/React |
+| 6 | Duyệt thiết kế (GATE B) | Tech lead | Quyết định | Duyệt | Sửa → #5, tối đa 3 lần; từ chối → dừng | — |
+| 7 | Làm rõ task, phân loại nhỏ/lớn (FRAME, Fast lane?) | AI | `tasks/<id>/frame.md` | AC riêng của task rõ ràng | Thiếu thông tin → hỏi | Tiêu chí task nhỏ |
+| 8 | Lập kế hoạch, chỉ task lớn (PLAN) | AI | `tasks/<id>/plan.md` | — | — | Bảng "khu vực → cần đọc gì" |
+| 9 | Code và test (BUILD) | AI | Code, test | Test xanh trên máy | Thiếu thông tin → hỏi | Convention, Definition of Done |
+| 10 | Build và test tự động (GATE 1) | Máy | Kết quả test | Mã thoát 0 | Đỏ → #9 | — |
+| 11 | Review code (GATE 2) | Reviewer | Quyết định | Duyệt | Sửa → #9, tối đa 3 lần; từ chối → dừng | — |
+| 12 | Cập nhật tài liệu, ADR (SYNC) | AI | `docs/`, `docs/adr/` | — | — | Cách viết ADR |
+| 13 | Commit, merge (DONE) | Người | Commit, merge vào `main` | — | — | — |
 
 Từ câu hỏi 1: số task chỉ biết sau #5, và mỗi task có scope riêng (`backend`, `frontend`). Vì vậy quy trình có **hai
 tầng**:
@@ -410,12 +487,60 @@ Kết quả là hai workflow, mỗi tầng một workflow.
 Tầng tính năng: [`wf-feature-definition.json`](definitions/workflows/wf-feature-definition.json). Completion:
 `STATIC` (evidence của `check-docs`) cộng `HUMAN`.
 
-![Workflow tầng tính năng](images/diagrams/wf-feature-definition.png)
+```mermaid
+flowchart LR
+    ST(["START"]) -->|"next"| BR["AGENT brainstorm"]
+    BR -->|"done"| SP["AGENT spec"]
+    SP -->|"done"| GA{{"APPROVAL gate-a"}}
+    SP -->|"needs_info"| NI{{"APPROVAL needs-info"}}
+    NI -->|"provided"| SP
+    GA -->|"revise"| SP
+    GA -->|"approved"| DS["AGENT design"]
+    DS -->|"done"| CD["COMMAND check-docs"]
+    CD -->|"passed"| GB{{"APPROVAL gate-b"}}
+    GB -->|"revise"| DS
+    GB -->|"approved"| EN(["END"])
+    GA -->|"rejected"| RJ["COMMAND reject<br/>exit 1"]
+    GB -->|"rejected"| RJ
+    NI -->|"abandon"| RJ
+    RJ -->|"done"| EN
+
+    classDef gate fill:#FFE3E3,stroke:#C45A5A,color:#222;
+    classDef cmd fill:#E3F0FF,stroke:#4A78B5,color:#222;
+    classDef stop fill:#EDEDED,stroke:#666,color:#222;
+    class GA,GB,NI gate;
+    class CD cmd;
+    class RJ stop;
+```
 
 Tầng task: [`wf-task-delivery.json`](definitions/workflows/wf-task-delivery.json). Completion: `UNIT` (evidence của
 `gate1`) cộng `HUMAN`.
 
-![Workflow tầng task](images/diagrams/wf-task-delivery.png)
+```mermaid
+flowchart LR
+    ST(["START"]) -->|"next"| FR["AGENT frame"]
+    FR -->|"fast"| BU["AGENT build"]
+    FR -->|"full"| PL["AGENT plan"]
+    PL -->|"done"| BU
+    FR -->|"needs_info"| NI{{"APPROVAL needs-info"}}
+    BU -->|"needs_info"| NI
+    NI -->|"provided"| FR
+    BU -->|"done"| G1["COMMAND gate1<br/>build và test"]
+    G1 -->|"passed"| G2{{"APPROVAL gate2"}}
+    G2 -->|"revise"| BU
+    G2 -->|"approved"| SY["AGENT sync"]
+    SY -->|"done"| EN(["END"])
+    G2 -->|"rejected"| RJ["COMMAND reject<br/>exit 1"]
+    NI -->|"abandon"| RJ
+    RJ -->|"done"| EN
+
+    classDef gate fill:#FFE3E3,stroke:#C45A5A,color:#222;
+    classDef cmd fill:#E3F0FF,stroke:#4A78B5,color:#222;
+    classDef stop fill:#EDEDED,stroke:#666,color:#222;
+    class G2,NI gate;
+    class G1 cmd;
+    class RJ stop;
+```
 
 Quy trình rút gọn cho việc nhỏ có ba workflow:
 
@@ -424,9 +549,34 @@ Quy trình rút gọn cho việc nhỏ có ba workflow:
 - [`wf-fullstack-review`](definitions/workflows/wf-fullstack-review.json): thêm cổng duyệt, có vòng `rework`
   tối đa 2 lần.
 
-![Workflow backend/frontend](images/diagrams/wf-backend-feature.png)
+```mermaid
+flowchart LR
+    ST(["START"]) -->|"next"| IM["AGENT implement<br/>role MAKER"]
+    IM -->|"done"| VE["COMMAND verify<br/>backend-test.sh hoặc frontend-test.sh"]
+    VE -->|"passed"| EN(["END"])
 
-![Workflow fullstack có người duyệt](images/diagrams/wf-fullstack-review.png)
+    classDef cmd fill:#E3F0FF,stroke:#4A78B5,color:#222;
+    class VE cmd;
+```
+
+```mermaid
+flowchart LR
+    ST(["START"]) -->|"next"| IM["AGENT implement<br/>agent-fullstack-dev"]
+    IM -->|"done"| BT["COMMAND backend-test"]
+    BT -->|"passed"| FT["COMMAND frontend-test"]
+    FT -->|"passed"| RV{{"APPROVAL review<br/>role operator"}}
+    RV -->|"approved"| EN(["END"])
+    RV -->|"rework"| IM
+    RV -->|"rejected, quá 2 vòng, hết hạn"| RJ["COMMAND reject<br/>exit 1"]
+    RJ -->|"done"| EN
+
+    classDef gate fill:#FFE3E3,stroke:#C45A5A,color:#222;
+    classDef cmd fill:#E3F0FF,stroke:#4A78B5,color:#222;
+    classDef stop fill:#EDEDED,stroke:#666,color:#222;
+    class RV gate;
+    class BT,FT cmd;
+    class RJ stop;
+```
 
 Giải thích chi tiết những chỗ phải thiết kế khác sơ đồ nghiệp vụ nằm trong [feature-task-flow.md](feature-task-flow.md),
 mục 2. Các chỗ đó là: lane fast/full do agent chọn, GATE 1 hai lớp, NEEDS_INFO, và chia task.
@@ -780,7 +930,17 @@ Các trường trong ví dụ:
 
 ## 4. Bước 7 — Viết task và chạy
 
-![Vòng làm việc hằng ngày](images/diagrams/vong-lam-viec.png)
+```mermaid
+flowchart LR
+    CT["Viết contract<br/>cho WorkItem con"] --> RT["run-task.sh<br/>agent làm, cổng kiểm tra"]
+    RT --> RV{{"Duyệt<br/>review-task.sh, git diff"}}
+    RV --> CM["commit-task.sh<br/>ReleaseSet, local commit"]
+    CM --> CT
+    CM --> MG(["Cuối đợt<br/>merge branch agentkit vào main"])
+
+    classDef gate fill:#FFE3E3,stroke:#C45A5A,color:#222;
+    class RV gate;
+```
 
 ### 4.1 WorkItem gốc
 
@@ -1132,7 +1292,7 @@ todolist-spring-react/
 │   └── split-tasks.sh                # tasks.json → các file WorkItem
 ├── work-items/                       # BE-01, FE-01, FE-02, FS-01, F-00 (feature-due-date)
 ├── repo-template/                    # khung repo todolist: backend chạy được, .claude/ (settings + Stop hook), gitignore
-└── images/                           # ảnh chụp UI; diagrams/ chứa sơ đồ (.mmd nguồn + .png)
+└── images/                           # ảnh chụp UI
 ```
 
 Biến môi trường dùng chung cho các script:
@@ -1148,19 +1308,17 @@ Biến môi trường dùng chung cho các script:
 
 Tài liệu vận hành chung: [docs/operator](../../operator/00-start-here.md).
 
-## Phụ lục B: sửa và vẽ lại sơ đồ
+## Phụ lục B: quy ước viết sơ đồ Mermaid
 
-Sơ đồ trong tài liệu là ảnh PNG, render từ nguồn Mermaid đặt cạnh ảnh trong
-[`images/diagrams/`](images/diagrams/) (file `.mmd`). Lý do không nhúng Mermaid trực tiếp: GitHub báo
-"Unable to render rich display" với một số khối Mermaid của bản trước, nên ảnh PNG cho kết quả ổn định ở mọi nơi xem.
-Sau khi sửa file `.mmd`, render lại bằng
-[mermaid-cli](https://github.com/mermaid-js/mermaid-cli):
+Sơ đồ trong tài liệu là khối code `mermaid` để GitHub tự vẽ. Bản đầu dùng cú pháp rút gọn (nhãn không có dấu nháy,
+cạnh dạng `-- next -->`, id `end_`) và GitHub báo "Unable to render rich display". Các sơ đồ hiện tại theo cùng một
+quy ước, và đã được kiểm tra vẽ được trên Mermaid 9.4, 10.0, 10.6, 10.9 và 11.17:
 
-```bash
-cd docs/guides/todolist-spring-react/images/diagrams
-for f in *.mmd; do npx -y @mermaid-js/mermaid-cli@12.0.0 -i "$f" -o "${f%.mmd}.png" -b white -s 2; done
-```
-
-Ảnh hiện tại được render bằng mermaid-cli 12.0.0. Nếu puppeteer không tải được Chrome, thêm `-p puppeteer.json` với
-nội dung `{"executablePath": "<đường dẫn Chrome hoặc Chromium>"}`. Khi sửa `.mmd`, nên đặt nhãn trong dấu nháy kép
-(`A["nhãn"]`, `-->|"outcome"|`) và không dùng `end` làm id node, vì đó là từ khóa của Mermaid.
+- Nhãn node luôn nằm trong dấu nháy kép, xuống dòng bằng `<br/>`: `BU["BUILD<br/>Code + test"]`.
+- Nhãn cạnh dạng `-->|"done"|`, nét đứt dạng `-.->|"đã bổ sung"|`.
+- Id node viết hoa, ngắn (`ST`, `BU`, `G1`); không dùng `end` hay `start` làm id. Node bắt đầu/kết thúc dùng
+  `ST(["START"])`, `EN(["END"])`.
+- Một cạnh mỗi dòng. Không bắt đầu nhãn bằng "số + dấu chấm" (ví dụ `"1. Chuẩn bị"`), vì một số bản Mermaid hiểu đó
+  là danh sách Markdown.
+- Hình dạng: `["..."]` cho AGENT/COMMAND, `{{"..."}}` cho cổng (APPROVAL, người duyệt), `{"..."}` cho điểm rẽ nhánh.
+  Màu đặt bằng `classDef` + `class` ở cuối khối.

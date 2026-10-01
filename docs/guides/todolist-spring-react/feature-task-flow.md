@@ -49,14 +49,62 @@ Một tính năng là một **WorkItem gốc**: một TaskFamily, một worktree
 
 ### 1.1 Tầng tính năng — [`wf-feature-definition.json`](definitions/workflows/wf-feature-definition.json)
 
-![Workflow tầng tính năng](images/diagrams/wf-feature-definition.png)
+```mermaid
+flowchart LR
+    ST(["START"]) -->|"next"| BR["AGENT brainstorm"]
+    BR -->|"done"| SP["AGENT spec"]
+    SP -->|"done"| GA{{"APPROVAL gate-a"}}
+    SP -->|"needs_info"| NI{{"APPROVAL needs-info"}}
+    NI -->|"provided"| SP
+    GA -->|"revise"| SP
+    GA -->|"approved"| DS["AGENT design"]
+    DS -->|"done"| CD["COMMAND check-docs"]
+    CD -->|"passed"| GB{{"APPROVAL gate-b"}}
+    GB -->|"revise"| DS
+    GB -->|"approved"| EN(["END"])
+    GA -->|"rejected"| RJ["COMMAND reject<br/>exit 1"]
+    GB -->|"rejected"| RJ
+    NI -->|"abandon"| RJ
+    RJ -->|"done"| EN
+
+    classDef gate fill:#FFE3E3,stroke:#C45A5A,color:#222;
+    classDef cmd fill:#E3F0FF,stroke:#4A78B5,color:#222;
+    classDef stop fill:#EDEDED,stroke:#666,color:#222;
+    class GA,GB,NI gate;
+    class CD cmd;
+    class RJ stop;
+```
 
 Completion: [`policy-completion-feature`](definitions/policies/policy-completion-feature.json). Policy này cần
 `STATIC` (evidence `COMMAND_EXECUTION` của `check-docs`) và `HUMAN` (người có role `operator` đã quyết định).
 
 ### 1.2 Tầng task — [`wf-task-delivery.json`](definitions/workflows/wf-task-delivery.json)
 
-![Workflow tầng task](images/diagrams/wf-task-delivery.png)
+```mermaid
+flowchart LR
+    ST(["START"]) -->|"next"| FR["AGENT frame"]
+    FR -->|"fast"| BU["AGENT build"]
+    FR -->|"full"| PL["AGENT plan"]
+    PL -->|"done"| BU
+    FR -->|"needs_info"| NI{{"APPROVAL needs-info"}}
+    BU -->|"needs_info"| NI
+    NI -->|"provided"| FR
+    BU -->|"done"| G1["COMMAND gate1<br/>build và test"]
+    G1 -->|"passed"| G2{{"APPROVAL gate2"}}
+    G2 -->|"revise"| BU
+    G2 -->|"approved"| SY["AGENT sync"]
+    SY -->|"done"| EN(["END"])
+    G2 -->|"rejected"| RJ["COMMAND reject<br/>exit 1"]
+    NI -->|"abandon"| RJ
+    RJ -->|"done"| EN
+
+    classDef gate fill:#FFE3E3,stroke:#C45A5A,color:#222;
+    classDef cmd fill:#E3F0FF,stroke:#4A78B5,color:#222;
+    classDef stop fill:#EDEDED,stroke:#666,color:#222;
+    class G2,NI gate;
+    class G1 cmd;
+    class RJ stop;
+```
 
 Completion: [`policy-completion-reviewed`](definitions/policies/policy-completion-reviewed.json). Policy này cần
 `UNIT` (evidence `COMMAND_EXECUTION` của `gate1`) và `HUMAN`.
