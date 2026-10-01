@@ -279,13 +279,65 @@ func TestAgentExecutorTerminalOutcomeMarker(t *testing.T) {
 	}
 }
 
+// assertRejectedOutcomeMarker: every wrong marker (outcome outside the allowed
+// set, duplicate, malformed) is a provider protocol error (errors.Is the
+// adapter's ErrProtocol still holds) AND wraps ports.ErrOutcomeMarkerRejected
+// (V9-03), which the bridge maps to OUTCOME_REJECTED — a wrong answer from
+// the agent, not an unreachable provider.
 func assertRejectedOutcomeMarker(t *testing.T, testCase providerCase, result ports.AgentExecutionResult, err error) {
 	t.Helper()
 	if err == nil || !testCase.isProtocolError(err) {
 		t.Fatalf("outcome marker error = %v, want provider protocol error", err)
 	}
+	if !errors.Is(err, ports.ErrOutcomeMarkerRejected) {
+		t.Fatalf("outcome marker error = %v, want it to wrap ports.ErrOutcomeMarkerRejected", err)
+	}
 	if result.Status != ports.AgentExecutionFailed || result.TerminationReason != "outcome_marker_invalid" || result.ProposedOutcome != nil {
 		t.Fatalf("rejected outcome marker result = %+v", result)
+	}
+}
+
+// TestAgentExecutorProtocolFailuresThatAreNotTheAgentsOutcomeMarker is the
+// contrast to TestAgentExecutorTerminalOutcomeMarker (V9-03): a stream that
+// never delivers its terminal event, or is not even valid JSONL, is a genuine
+// protocol failure of the provider side. It stays a plain ErrProtocol and must
+// NOT carry ports.ErrOutcomeMarkerRejected, or the bridge would call a broken
+// provider an agent's wrong answer.
+func TestAgentExecutorProtocolFailuresThatAreNotTheAgentsOutcomeMarker(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range providerCases() {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			executor := testCase.newExecutor(t, processadapter.NewSupervisor())
+			for _, mode := range []struct{ name, helperMode, wantReason string }{
+				{"missing terminal event", "no-terminal", "protocol_incomplete"},
+				{"malformed JSONL", "malformed", "protocol_error"},
+			} {
+				mode := mode
+				t.Run(mode.name, func(t *testing.T) {
+					t.Parallel()
+					// Several outcomes are allowed: the absence of a marker is
+					// not what is being tested here.
+					request := helperRequestWithOutcome(
+						"not-marker-"+mode.helperMode+"-"+testCase.name, t.TempDir(), filepath.Join(t.TempDir(), "capture.json"),
+						mode.helperMode, "pass", []string{"pass", "rework"},
+					)
+					request.Sandbox = testCase.startSandbox
+					result, err := executor.Start(context.Background(), request, &eventCollector{})
+					if err == nil || !testCase.isProtocolError(err) {
+						t.Fatalf("error = %v, want a provider protocol error", err)
+					}
+					if errors.Is(err, ports.ErrOutcomeMarkerRejected) {
+						t.Fatalf("error = %v: a broken stream must not be reported as a rejected outcome marker", err)
+					}
+					if result.Status != ports.AgentExecutionFailed || result.TerminationReason != mode.wantReason {
+						t.Fatalf("result = %+v, want FAILED with termination reason %q", result, mode.wantReason)
+					}
+				})
+			}
+		})
 	}
 }
 

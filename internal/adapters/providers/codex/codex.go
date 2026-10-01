@@ -476,12 +476,12 @@ func (n *normalizer) resolveProposedOutcome(allowedOutcomes []string) (*ports.Ag
 	case n.outcomeOccurrences == 0:
 		return nil, nil
 	case n.outcomeOccurrences > 1:
-		return nil, fmt.Errorf("%w: terminal outcome marker appeared more than once", ErrProtocol)
+		return nil, fmt.Errorf("%w: %w: terminal outcome marker appeared more than once", ErrProtocol, ports.ErrOutcomeMarkerRejected)
 	case !n.outcomeValid:
-		return nil, fmt.Errorf("%w: terminal outcome marker is malformed", ErrProtocol)
+		return nil, fmt.Errorf("%w: %w: terminal outcome marker is malformed", ErrProtocol, ports.ErrOutcomeMarkerRejected)
 	}
 	if !containsOutcome(allowedOutcomes, n.outcomeValue) {
-		return nil, fmt.Errorf("%w: terminal outcome marker names outcome %q, which is not in the allowed set", ErrProtocol, n.outcomeValue)
+		return nil, fmt.Errorf("%w: %w: terminal outcome marker names outcome %q, which is not in the allowed set", ErrProtocol, ports.ErrOutcomeMarkerRejected, n.outcomeValue)
 	}
 	return &ports.AgentProposedOutcome{
 		Value: n.outcomeValue, Source: ports.AgentOutcomeReportedByProvider, SchemaVersion: outcomeMarkerSchemaVersion,

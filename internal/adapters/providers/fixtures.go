@@ -42,8 +42,9 @@ func FakeCLIVersion(provider string) string {
 //     prefix by the caller.
 //   - mode selects the fixture behavior: "success" (normal completed turn),
 //     "malformed" (invalid JSONL, to prove the adapter surfaces a protocol
-//     error), "cancel" (emit a start event, then hang until killed), or
-//     "invalid-session" (fail only if arguments look like a resume — see
+//     error), "cancel" (emit a start event, then hang until killed),
+//     "no-terminal" (emit the start events, then exit 0 without a terminal
+//     event), "invalid-session" (fail only if arguments look like a resume — see
 //     IsResumeInvocation — so SPK-12 can prove Resume was never called: a
 //     Start invocation on the same fake CLI still succeeds normally), or one
 //     of the terminal-outcome modes "outcome-success", "outcome-malformed",
@@ -135,6 +136,12 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 	}
 	if mode == "cancel" {
 		time.Sleep(30 * time.Second)
+		return 0
+	}
+	if mode == "no-terminal" {
+		// V9-03: a stream that starts and then simply ends with exit code 0 —
+		// no terminal event. A genuine protocol failure of the provider side,
+		// the contrast to an agent's wrong outcome marker.
 		return 0
 	}
 	// V5-08B (confirmed with the user 2026-09-09): outcome-marker fixture

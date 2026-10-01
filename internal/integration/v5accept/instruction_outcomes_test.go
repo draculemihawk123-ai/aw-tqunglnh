@@ -15,11 +15,13 @@
 //
 //   - the agent picks the first listed outcome -> the run follows that edge;
 //   - the agent picks the last listed outcome  -> the run follows the other edge;
-//   - the agent reports an outcome that is not in the list -> the attempt is
-//     rejected and the run never follows any edge (the provider adapter treats
-//     a marker naming an unlisted outcome as a protocol error, so the attempt
-//     ends EXECUTION_FAILED / PROVIDER_UNAVAILABLE — unchanged by V9-03);
-//   - the agent reports nothing on a node with a choice -> OUTCOME_REJECTED.
+//   - the agent reports an outcome that is not in the list -> OUTCOME_REJECTED
+//     and the run never follows any edge (the provider adapter reports it as a
+//     rejected outcome marker, ports.ErrOutcomeMarkerRejected, which the bridge
+//     answers exactly like a missing marker — not as an unavailable provider,
+//     which is what it ended as before the V9-03 follow-up);
+//   - the agent reports nothing on a node with a choice -> OUTCOME_REJECTED,
+//     the same termination reason and failure code.
 package v5accept
 
 import (
@@ -181,14 +183,15 @@ func TestV9AcceptInstructionV2_AgentSelectsAnOutcomeListedInThePrompt(t *testing
 
 // TestV9AcceptInstructionV2_OutcomeNotInTheListIsStillRejected: the list in
 // the prompt is advice to the agent, not the check — an outcome outside it is
-// refused exactly as before V9-03, and the run follows no edge.
+// refused with OUTCOME_REJECTED (design doc V9-03 Verify), the same verdict a
+// missing marker gets, and the run follows no edge.
 func TestV9AcceptInstructionV2_OutcomeNotInTheListIsStillRejected(t *testing.T) {
 	run, invocation, _ := runV9OutcomeScenario(t, "not-listed", runtimedomain.WorkflowRunFailed)
 	requireV2PromptOffersTheChoice(t, invocation)
 
 	attempt := requireAttemptState(t, run, "decide", runtimedomain.ExecutionAttemptFailed)
-	if attempt.TerminationReason != runtimedomain.TerminationReasonExecutionFailed || attempt.FailureCode != errorcode.CodeProviderUnavailable {
-		t.Fatalf("attempt = %s / %s, want EXECUTION_FAILED / PROVIDER_UNAVAILABLE (the adapter's protocol error, as before V9-03)", attempt.TerminationReason, attempt.FailureCode)
+	if attempt.TerminationReason != runtimedomain.TerminationReasonOutcomeRejected || attempt.FailureCode != errorcode.CodeValidationFailed {
+		t.Fatalf("attempt = %s / %s, want OUTCOME_REJECTED / VALIDATION_FAILED (it ended EXECUTION_FAILED / PROVIDER_UNAVAILABLE while the adapter's marker error was classified as a provider failure)", attempt.TerminationReason, attempt.FailureCode)
 	}
 	if decide := run.nodeRuns["decide"]; decide.SelectedOutcome != "" || decide.State == runtimedomain.NodeRunSucceeded {
 		t.Fatalf("decide = %s / %q, want no outcome selected and not SUCCEEDED", decide.State, decide.SelectedOutcome)
@@ -207,8 +210,8 @@ func TestV9AcceptInstructionV2_MissingMarkerOnANodeWithAChoiceIsOutcomeRejected(
 	requireV2PromptOffersTheChoice(t, invocation)
 
 	attempt := requireAttemptState(t, run, "decide", runtimedomain.ExecutionAttemptFailed)
-	if attempt.TerminationReason != runtimedomain.TerminationReasonOutcomeRejected {
-		t.Fatalf("attempt termination reason = %s, want OUTCOME_REJECTED", attempt.TerminationReason)
+	if attempt.TerminationReason != runtimedomain.TerminationReasonOutcomeRejected || attempt.FailureCode != errorcode.CodeValidationFailed {
+		t.Fatalf("attempt = %s / %s, want OUTCOME_REJECTED / VALIDATION_FAILED", attempt.TerminationReason, attempt.FailureCode)
 	}
 	for _, key := range []string{"end", "rework_end"} {
 		if _, ok := run.nodeRuns[key]; ok {

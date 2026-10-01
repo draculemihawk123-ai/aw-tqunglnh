@@ -491,18 +491,22 @@ func (n *normalizer) trackOutcomeMarker(text string) string {
 // is fine here (nil, nil) — the caller (the bridge) decides whether that is
 // itself an error, since only it knows whether AllowedOutcomes actually
 // offered a real choice; every other case (duplicate, malformed, or a
-// value outside allowedOutcomes) is unconditionally a protocol error.
+// value outside allowedOutcomes) is unconditionally a protocol error — and,
+// since V9-03, one that also wraps ports.ErrOutcomeMarkerRejected, so the
+// bridge can tell "the agent gave a wrong answer" (OUTCOME_REJECTED) from
+// "the stream itself was broken" (a plain ErrProtocol, e.g. no terminal
+// event). errors.Is(err, ErrProtocol) still holds for all of them.
 func (n *normalizer) resolveProposedOutcome(allowedOutcomes []string) (*ports.AgentProposedOutcome, error) {
 	switch {
 	case n.outcomeOccurrences == 0:
 		return nil, nil
 	case n.outcomeOccurrences > 1:
-		return nil, fmt.Errorf("%w: terminal outcome marker appeared more than once", ErrProtocol)
+		return nil, fmt.Errorf("%w: %w: terminal outcome marker appeared more than once", ErrProtocol, ports.ErrOutcomeMarkerRejected)
 	case !n.outcomeValid:
-		return nil, fmt.Errorf("%w: terminal outcome marker is malformed", ErrProtocol)
+		return nil, fmt.Errorf("%w: %w: terminal outcome marker is malformed", ErrProtocol, ports.ErrOutcomeMarkerRejected)
 	}
 	if !containsOutcome(allowedOutcomes, n.outcomeValue) {
-		return nil, fmt.Errorf("%w: terminal outcome marker names outcome %q, which is not in the allowed set", ErrProtocol, n.outcomeValue)
+		return nil, fmt.Errorf("%w: %w: terminal outcome marker names outcome %q, which is not in the allowed set", ErrProtocol, ports.ErrOutcomeMarkerRejected, n.outcomeValue)
 	}
 	return &ports.AgentProposedOutcome{
 		Value: n.outcomeValue, Source: ports.AgentOutcomeReportedByProvider, SchemaVersion: outcomeMarkerSchemaVersion,
