@@ -54,7 +54,7 @@ flowchart LR
     ST(["START"]) -->|"next"| BR["AGENT brainstorm"]
     BR -->|"done"| SP["AGENT spec"]
     SP -->|"done"| GA{{"APPROVAL gate-a"}}
-    SP -->|"needs_info"| NI{{"APPROVAL needs-info"}}
+    SP -->|"needs#95;info"| NI{{"APPROVAL needs-info"}}
     NI -->|"provided"| SP
     GA -->|"revise"| SP
     GA -->|"approved"| DS["AGENT design"]
@@ -86,8 +86,8 @@ flowchart LR
     FR -->|"fast"| BU["AGENT build"]
     FR -->|"full"| PL["AGENT plan"]
     PL -->|"done"| BU
-    FR -->|"needs_info"| NI{{"APPROVAL needs-info"}}
-    BU -->|"needs_info"| NI
+    FR -->|"needs#95;info"| NI{{"APPROVAL needs-info"}}
+    BU -->|"needs#95;info"| NI
     NI -->|"provided"| FR
     BU -->|"done"| G1["COMMAND gate1<br/>build và test"]
     G1 -->|"passed"| G2{{"APPROVAL gate2"}}

@@ -56,14 +56,14 @@ project khác, bạn copy `scripts/` rồi viết `aw-project.json` của riêng
 ```mermaid
 flowchart LR
     subgraph O["Làm một lần cho mỗi project"]
-        S1["Bước 1<br/>Chuẩn bị môi trường, repo"]
+        S1["Bước 1<br/>Chuẩn bị môi trường và repo"]
     end
 
     subgraph D["Định nghĩa workflow — Phần 3"]
         direction LR
         S2["Bước 2<br/>Mô tả nghiệp vụ"] --> S3["Bước 3<br/>Ánh xạ sang node"]
-        S3 --> S4["Bước 4<br/>Tri thức: Layer, Skill, agent"]
-        S4 --> S5["Bước 5<br/>Thực thi: script, Command, Policy"]
+        S3 --> S4["Bước 4<br/>Tri thức<br/>Layer / Skill / agent"]
+        S4 --> S5["Bước 5<br/>Thực thi<br/>script / Command / Policy"]
         S5 --> S6["Bước 6<br/>Khai báo và publish"]
     end
 
@@ -122,13 +122,13 @@ cách cho agent giả lập ghi lại prompt.
 flowchart LR
     LY["LAYER<br/>convention theo stack"] --> CX
     SK["SKILL<br/>hướng dẫn theo loại việc"] --> CX
-    CX["CONTEXT policy<br/>resourceRefs + budget"] -->|"contextPolicyRef"| AP["AGENT_PROFILE<br/>provider + model"]
+    CX["CONTEXT policy<br/>resourceRefs + budget"] -->|"contextPolicyRef"| AP["AGENT#95;PROFILE<br/>provider + model"]
     AP -->|"profileRef"| ND["Node AGENT<br/>trong WORKFLOW"]
     ND --> SN["ContextSnapshot<br/>của attempt"]
     SN --> PR["Prompt gửi agent<br/>taskContract + messages + resources"]
-    LY -.-> PK["ENGINEERING_PACK"]
+    LY -.-> PK["ENGINEERING#95;PACK"]
     SK -.-> PK
-    PK -.->|"chỉ ghi nhận, hiển thị"| CO["Component"]
+    PK -.->|"chỉ ghi nhận và hiển thị"| CO["Component"]
 
     classDef stop fill:#EDEDED,stroke:#666,color:#222;
     class PK,CO stop;
@@ -373,7 +373,7 @@ flowchart TB
 
     SPL --> FR
 
-    SP -.->|"thiếu / mâu thuẫn"| NI["NEEDS_INFO"]
+    SP -.->|"thiếu / mâu thuẫn"| NI["NEEDS#95;INFO"]
     FR -.-> NI
     BU -.-> NI
     NI -.->|"đã bổ sung"| FR
@@ -492,7 +492,7 @@ flowchart LR
     ST(["START"]) -->|"next"| BR["AGENT brainstorm"]
     BR -->|"done"| SP["AGENT spec"]
     SP -->|"done"| GA{{"APPROVAL gate-a"}}
-    SP -->|"needs_info"| NI{{"APPROVAL needs-info"}}
+    SP -->|"needs#95;info"| NI{{"APPROVAL needs-info"}}
     NI -->|"provided"| SP
     GA -->|"revise"| SP
     GA -->|"approved"| DS["AGENT design"]
@@ -522,8 +522,8 @@ flowchart LR
     FR -->|"fast"| BU["AGENT build"]
     FR -->|"full"| PL["AGENT plan"]
     PL -->|"done"| BU
-    FR -->|"needs_info"| NI{{"APPROVAL needs-info"}}
-    BU -->|"needs_info"| NI
+    FR -->|"needs#95;info"| NI{{"APPROVAL needs-info"}}
+    BU -->|"needs#95;info"| NI
     NI -->|"provided"| FR
     BU -->|"done"| G1["COMMAND gate1<br/>build và test"]
     G1 -->|"passed"| G2{{"APPROVAL gate2"}}
@@ -567,7 +567,7 @@ flowchart LR
     FT -->|"passed"| RV{{"APPROVAL review<br/>role operator"}}
     RV -->|"approved"| EN(["END"])
     RV -->|"rework"| IM
-    RV -->|"rejected, quá 2 vòng, hết hạn"| RJ["COMMAND reject<br/>exit 1"]
+    RV -->|"rejected / quá 2 vòng / hết hạn"| RJ["COMMAND reject<br/>exit 1"]
     RJ -->|"done"| EN
 
     classDef gate fill:#FFE3E3,stroke:#C45A5A,color:#222;
@@ -932,9 +932,9 @@ Các trường trong ví dụ:
 
 ```mermaid
 flowchart LR
-    CT["Viết contract<br/>cho WorkItem con"] --> RT["run-task.sh<br/>agent làm, cổng kiểm tra"]
-    RT --> RV{{"Duyệt<br/>review-task.sh, git diff"}}
-    RV --> CM["commit-task.sh<br/>ReleaseSet, local commit"]
+    CT["Viết contract<br/>cho WorkItem con"] --> RT["run-task.sh<br/>agent làm và qua cổng kiểm tra"]
+    RT --> RV{{"Duyệt<br/>review-task.sh và git diff"}}
+    RV --> CM["commit-task.sh<br/>ReleaseSet rồi local commit"]
     CM --> CT
     CM --> MG(["Cuối đợt<br/>merge branch agentkit vào main"])
 
@@ -1316,6 +1316,9 @@ quy ước, và đã được kiểm tra vẽ được trên Mermaid 9.4, 10.0, 
 
 - Nhãn node luôn nằm trong dấu nháy kép, xuống dòng bằng `<br/>`: `BU["BUILD<br/>Code + test"]`.
 - Nhãn cạnh dạng `-->|"done"|`, nét đứt dạng `-.->|"đã bổ sung"|`.
+- Trong nhãn không dùng dấu phẩy, dấu hai chấm hay dấu chấm phẩy; thay bằng `/`, "và", hoặc xuống dòng `<br/>`.
+- Trong nhãn không viết dấu gạch dưới trực tiếp; dùng mã thực thể `#95;` của Mermaid. Ví dụ outcome `needs_info`
+  được viết là `-->|"needs#95;info"|` và vẫn hiển thị là `needs_info`.
 - Id node viết hoa, ngắn (`ST`, `BU`, `G1`); không dùng `end` hay `start` làm id. Node bắt đầu/kết thúc dùng
   `ST(["START"])`, `EN(["END"])`.
 - Một cạnh mỗi dòng. Không bắt đầu nhãn bằng "số + dấu chấm" (ví dụ `"1. Chuẩn bị"`), vì một số bản Mermaid hiểu đó
