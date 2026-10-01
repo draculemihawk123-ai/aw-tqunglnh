@@ -287,6 +287,13 @@ const (
 	// declaration rather than asking the provider to self-report a choice
 	// that was never actually a choice.
 	AgentOutcomeDerivedSingleAllowed AgentOutcomeSource = "DERIVED_SINGLE_ALLOWED"
+	// AgentOutcomeDerivedCheckVerdict (V9-02, ADR-031) means the executing
+	// node is a COMMAND or MACHINE_GATE that declares a failureOutcome: it
+	// has two selectable outcomes, but never asks anyone to choose between
+	// them — its own deterministic result (exit code, gate verdict) decides,
+	// and the executor derives Value from that result and the workflow's own
+	// pinned declaration.
+	AgentOutcomeDerivedCheckVerdict AgentOutcomeSource = "DERIVED_CHECK_VERDICT"
 )
 
 // AgentProposedOutcome is a PROPOSAL, never trusted as-is — exactly like

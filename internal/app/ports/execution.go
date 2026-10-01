@@ -75,9 +75,15 @@ type NodeExecutionResult struct {
 	// and, since the V5-09/V5-10 acceptance-gap remediation PR2
 	// (2026-09-10), also when State == ExecutionAttemptFailed for a
 	// MACHINE_GATE's own non-PASS verdict specifically (a FAILED Gate needs
-	// its own criteria-level Evidence just as much as a PASS one). Nil for
-	// every other FAILED/TIMED_OUT caller — a generic AGENT/COMMAND failure
-	// is never required to carry criteria Evidence. See
+	// its own criteria-level Evidence just as much as a PASS one) and, since
+	// V9-02 (ADR-031 decision 4), for a COMMAND whose process finished on its
+	// own without succeeding (its COMMAND_EXECUTION record, verdict FAILED).
+	// Nil for every other FAILED/TIMED_OUT caller — an AGENT failure, a
+	// timeout, a kill or a spawn failure is never required to carry Evidence.
+	// A routed functional failure (V9-02: a COMMAND or MACHINE_GATE that
+	// declares a failureOutcome) is not a FAILED result at all: it is
+	// SUCCEEDED with SelectedOutcome == failureOutcome, this Evidence
+	// attached, and a ProposedOutcome naming that same outcome. See
 	// AttemptFinalizationEvidence's own doc comment for the full contract;
 	// EvidenceEntries is what actually varies by outcome (ProposedOutcome/
 	// CompletionCheckpointID/DiffManifestArtifacts stay meaningful the same

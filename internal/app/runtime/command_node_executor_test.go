@@ -102,6 +102,12 @@ type commandFixtureOptions struct {
 	compatibility *command.Compatibility
 	networkAccess command.NetworkAccess
 	policyRefs    []definition.DependencyPin
+	// failureOutcome (V9-02) makes the node declare a failureOutcome of that
+	// name (withCheckFailureOutcome): "" keeps the node exactly as before.
+	failureOutcome string
+	// output (V9-02) overrides the default output contract (both streams
+	// captured, 64 KiB) when non-nil.
+	output *command.OutputContract
 }
 
 // commandFixture builds one fully-admitted, RUNNING-eligible ExecutionAttempt
@@ -120,7 +126,11 @@ func commandFixture(t *testing.T, opts commandFixtureOptions) (
 	ctx := context.Background()
 	store = artifactstoreForTest(t)
 
-	u, seq, rID, nrID := scheduleFixture(t, commandExecutableDocument("command-def-1", "command-v1", fullyResolvablePolicyRefs()))
+	document := commandExecutableDocument("command-def-1", "command-v1", fullyResolvablePolicyRefs())
+	if opts.failureOutcome != "" {
+		document = withCheckFailureOutcome(document, opts.failureOutcome)
+	}
+	u, seq, rID, nrID := scheduleFixture(t, document)
 
 	skillDoc := oneResourceSkillDocument("cmd-script", "#!/bin/sh\necho hello\n", skill.Selector{}, true)
 	publishSkillVersion(t, u, "cmd-skill-def-1", "cmd-skill-v1", skillDoc)
@@ -155,6 +165,10 @@ func commandFixture(t *testing.T, opts commandFixtureOptions) (
 		networkAccess = command.NetworkAccessNone
 	}
 
+	output := command.OutputContract{CaptureStdout: true, CaptureStderr: true, MaxOutputBytes: 65536}
+	if opts.output != nil {
+		output = *opts.output
+	}
 	publishCommandVersion(t, u, "command-def-1", "command-v1", command.CommandDocument{
 		Executable:           command.ExecutableRef{OwnerVersionID: "cmd-skill-v1", ResourceKey: "cmd-script", ContentHash: hash},
 		Argv:                 argv,
@@ -165,7 +179,7 @@ func commandFixture(t *testing.T, opts commandFixtureOptions) (
 		NetworkAccess:        networkAccess,
 		SecretRefs:           opts.secretRefs,
 		TimeoutSeconds:       timeoutSeconds,
-		Output:               command.OutputContract{CaptureStdout: true, CaptureStderr: true, MaxOutputBytes: 65536},
+		Output:               output,
 		PolicyRefs:           opts.policyRefs,
 	})
 	publishPolicyVersion(t, u, "attempt-policy-def", "attempt-policy-v1", attemptPolicyDocument(600))

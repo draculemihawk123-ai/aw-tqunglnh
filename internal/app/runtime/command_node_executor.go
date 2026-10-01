@@ -206,11 +206,26 @@ func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecuti
 	})
 	flushErr := sink.Flush(ctx)
 
-	classified, err := e.classify(ctx, req, request, resolved, inputs.doc, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), stderr.Bytes(), env)
+	classified, err := e.classify(
+		ctx, req, request, resolved, commandExecution{doc: inputs.doc, argv: argv, cwd: cwd, failureOutcome: inputs.failureOutcome},
+		result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), stderr.Bytes(), env,
+	)
 	if err == nil {
 		classified.WriteLeaseGrants = resolved.writeLeaseGrants
 	}
 	return classified, err
+}
+
+// commandExecution is what classify needs to know about the process it is
+// classifying beyond the ports.ProcessResult itself: the Command document (its
+// output contract), the argv/cwd that were really used (recorded in the
+// evidence), and the node's V9-02 failureOutcome.
+type commandExecution struct {
+	doc  command.CommandDocument
+	argv []string
+	cwd  string
+	// failureOutcome is "" for a node that declares none.
+	failureOutcome string
 }
 
 // classify maps one completed ProcessSupervisor.Run call into either a
@@ -218,9 +233,32 @@ func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecuti
 // finalize" — the COMMAND-side counterpart of AgentNodeExecutor's own
 // classify (agent_node_executor.go), same ordering, same reused
 // cancellation path, but exit-code-driven rather than marker-driven.
+//
+// V9-02 (ADR-031 decision 3) sorts what is left once cancellation and timeout
+// are out of the way into three classes that are never mapped into each other:
+//
+//   - success: exit 0 and the output was not cut. The node selects its success
+//     outcome, with COMMAND_EXECUTION evidence verdict SUCCEEDED.
+//   - functional failure: the process exited on its own with a non-zero code,
+//     even if its output was cut (the evidence then carries the truncated
+//     flag). A node that declares a failureOutcome finishes SUCCEEDED with that
+//     outcome and evidence verdict FAILED — a deterministic result, so no
+//     ATTEMPT-policy retry. A node that declares none keeps the pre-V9-02
+//     transition (FAILED, retry, NodeRun FAILED).
+//   - technical error: spawn failure, timeout, cancellation, a signal this
+//     engine did not send, exit 0 with cut output (not trustworthy as success),
+//     a lost lease, a scope violation. Always the pre-V9-02 transition, and
+//     never the failureOutcome.
+//
+// COMMAND_EXECUTION evidence (ADR-031 decision 4) is written whenever the
+// process finished on its own — success or not, failureOutcome or not — and
+// only adds data: when a failure does not route (no failureOutcome, or a
+// technical class), building the evidence is best effort and can never change
+// the transition the attempt already had, because a command that failed must
+// fail the same way it always did even if its record could not be stored.
 func (e *CommandNodeExecutor) classify(
 	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources,
-	doc command.CommandDocument, result ports.ProcessResult, runErr error, syncErr error, stdout, stderr []byte, secretValues map[string]string,
+	run commandExecution, result ports.ProcessResult, runErr error, syncErr error, stdout, stderr []byte, secretValues map[string]string,
 ) (ports.NodeExecutionResult, error) {
 	if errors.Is(syncErr, ports.ErrJobLeaseLost) || errors.Is(syncErr, ports.ErrWriteLeaseLost) {
 		return ports.NodeExecutionResult{}, fmt.Errorf("%w: job/write lease lost mid-execution: %v", ErrIndeterminateExecution, syncErr)
@@ -256,94 +294,160 @@ func (e *CommandNodeExecutor) classify(
 			ErrorCode: errorcode.CodeTimeout,
 		}, nil
 	}
-	if result.ExitCode != 0 {
-		return ports.NodeExecutionResult{
-			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
-			ErrorCode: errorcode.CodeExecutionFailed,
-		}, nil
-	}
+
+	// The pre-V9-02 answer for everything that is not a success.
 	// V5-09 acceptance-gap remediation (2026-09-10 post-merge review):
-	// ports.ProcessResult.OutputTruncated's own doc comment already says
-	// "the caller must never treat a truncated capture as a complete one
-	// for evidence purposes" — never wired up until now. A truncated
-	// capture means bytes beyond OutputLimitBytes were silently discarded;
-	// an exit code of 0 alongside that tells us nothing about what the
-	// discarded bytes would have shown, so this can never be trusted as a
-	// clean success. Reuses CodeExecutionFailed rather than a new code:
-	// go-core-spec §18's own error model is a closed, spec-enumerated set
-	// (internal/domain/errorcode's own doc comment) — adding a value there
-	// is a spec change, not something this remediation invents unilaterally.
-	if result.OutputTruncated {
-		return ports.NodeExecutionResult{
-			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
-			ErrorCode: errorcode.CodeExecutionFailed,
-		}, nil
+	// ports.ProcessResult.OutputTruncated's own doc comment already says "the
+	// caller must never treat a truncated capture as a complete one for
+	// evidence purposes" — a truncated capture means bytes beyond
+	// OutputLimitBytes were silently discarded; an exit code of 0 alongside
+	// that tells us nothing about what the discarded bytes would have shown, so
+	// it can never be trusted as a clean success. Reuses CodeExecutionFailed
+	// rather than a new code: go-core-spec §18's own error model is a closed,
+	// spec-enumerated set (internal/domain/errorcode's own doc comment).
+	executionFailed := ports.NodeExecutionResult{
+		State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
+		ErrorCode: errorcode.CodeExecutionFailed,
 	}
+	// A negative exit code is what the OS reports for a process a signal ended
+	// that this engine did not send (os.ProcessState.ExitCode): it did not
+	// "exit on its own with a code", so it is a kill — a technical error, no
+	// functional verdict to record.
+	if result.ExitCode < 0 {
+		return executionFailed, nil
+	}
+	succeeded := result.ExitCode == 0 && !result.OutputTruncated
 	if syncErr != nil {
-		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: flush command event sink after a successful execution: %w", syncErr)
+		if succeeded {
+			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: flush command event sink after a successful execution: %w", syncErr)
+		}
+		// The terminal event the evidence must name may not be durable, so no
+		// evidence can be validated, and a failure is only routed to a
+		// failureOutcome WITH its evidence: stay on the pre-V9-02 transition.
+		return executionFailed, nil
 	}
 
-	// A COMMAND node never proposes an outcome itself (no marker protocol
-	// exists for it) — proposed is always nil, so this only ever succeeds
-	// when exactly one outcome is selectable, the identical restriction
-	// AgentNodeExecutor's own single-outcome derivation already enforces.
-	selectedOutcome, proposedOutcome, err := resolveSelectedOutcome(nil, request.AllowedOutcomes)
-	if err != nil {
-		return ports.NodeExecutionResult{
-			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonOutcomeRejected,
-			ErrorCode: errorcode.CodeValidationFailed,
-		}, nil
-	}
-
-	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, false)
-	if err != nil {
-		if errors.Is(err, scopeguard.ErrScopeViolation) {
+	switch {
+	case succeeded:
+		// A COMMAND node never proposes an outcome itself (no marker protocol
+		// exists for it) — it is derived: the single selectable outcome, or,
+		// for a node with a failureOutcome, the one that is not the
+		// failureOutcome.
+		selectedOutcome, proposedOutcome, err := resolveCheckSuccessOutcome(request.AllowedOutcomes, run.failureOutcome)
+		if err != nil {
 			return ports.NodeExecutionResult{
-				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
-				ErrorCode: errorcode.CodeScopeViolation,
+				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonOutcomeRejected,
+				ErrorCode: errorcode.CodeValidationFailed,
 			}, nil
 		}
-		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build command finalization evidence: %w", err)
-	}
-
-	if doc.Output.CaptureStdout || doc.Output.CaptureStderr {
-		outputArtifactID, err := e.persistCommandOutputArtifact(ctx, req, resolved.projectID, doc, stdout, stderr, secretValues)
+		evidence, err := e.buildCommandEvidence(ctx, req, request, resolved, run, result, stdout, stderr, secretValues, proposedOutcome, runtimedomain.EvidenceVerdictSucceeded)
 		if err != nil {
-			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: persist command output artifact: %w", err)
+			if errors.Is(err, scopeguard.ErrScopeViolation) {
+				return ports.NodeExecutionResult{
+					State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
+					ErrorCode: errorcode.CodeScopeViolation,
+				}, nil
+			}
+			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build command finalization evidence: %w", err)
 		}
-		evidence.OutputArtifactRefs = append(evidence.OutputArtifactRefs, outputArtifactID)
-		// V5-09 acceptance-gap remediation (2026-09-10 post-merge review):
-		// one Evidence row for this execution — skipped entirely when
-		// output capture is off (nothing to reference; runtime.NewEvidence
-		// itself requires at least one artifact reference, the same
-		// invariant Checkpoint already enforces).
-		evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
-			Kind: runtimedomain.EvidenceKindCommandExecution, Verdict: runtimedomain.EvidenceVerdictSucceeded,
-			ArtifactReferences: []string{outputArtifactID}, PolicyVersion: request.ExecutionProfileHash,
-		})
-	}
+		return ports.NodeExecutionResult{
+			State: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
+			SelectedOutcome: selectedOutcome, Evidence: evidence,
+		}, nil
 
-	return ports.NodeExecutionResult{
-		State: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
-		SelectedOutcome: selectedOutcome, Evidence: evidence,
-	}, nil
+	case result.ExitCode != 0 && run.failureOutcome != "":
+		// Functional failure, routed (ADR-031): the attempt SUCCEEDED in
+		// producing a verdict, and the verdict is "the check failed".
+		evidence, err := e.buildCommandEvidence(ctx, req, request, resolved, run, result, stdout, stderr, secretValues, checkFailureProposal(run.failureOutcome), runtimedomain.EvidenceVerdictFailed)
+		if err != nil {
+			if errors.Is(err, scopeguard.ErrScopeViolation) {
+				// A technical error: the command wrote outside what it may
+				// write, so its verdict is not something to route on.
+				return ports.NodeExecutionResult{
+					State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
+					ErrorCode: errorcode.CodeScopeViolation,
+				}, nil
+			}
+			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build command failure evidence: %w", err)
+		}
+		return ports.NodeExecutionResult{
+			State: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
+			SelectedOutcome: run.failureOutcome, Evidence: evidence,
+		}, nil
+
+	default:
+		// A functional failure of a node with no failureOutcome, or exit 0 with
+		// cut output: FAILED exactly as before V9-02, now with the record of the
+		// run attached when it can be built (see this function's doc comment).
+		if evidence, err := e.buildCommandEvidence(ctx, req, request, resolved, run, result, stdout, stderr, secretValues, nil, runtimedomain.EvidenceVerdictFailed); err == nil {
+			executionFailed.Evidence = evidence
+		}
+		return executionFailed, nil
+	}
+}
+
+// buildCommandEvidence stages the evidence of one finished COMMAND execution
+// (ADR-031 decision 4): the post-quiescence diff manifests buildEvidence
+// always produces, plus ONE COMMAND_EXECUTION Evidence row whose artifact is
+// the execution record (persistCommandOutputArtifact) — written for every
+// finished process, whatever the exit code and whether or not the output
+// contract asks to capture a stream, because the row is what lets anyone find
+// out afterwards what ran and how it ended. verdict is SUCCEEDED or FAILED.
+func (e *CommandNodeExecutor) buildCommandEvidence(
+	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources,
+	run commandExecution, result ports.ProcessResult, stdout, stderr []byte, secretValues map[string]string,
+	proposedOutcome *ports.AgentProposedOutcome, verdict string,
+) (*ports.AttemptFinalizationEvidence, error) {
+	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, false)
+	if err != nil {
+		return nil, err
+	}
+	outputArtifactID, err := e.persistCommandOutputArtifact(ctx, req, resolved.projectID, run, result, stdout, stderr, secretValues)
+	if err != nil {
+		return nil, fmt.Errorf("persist command output artifact: %w", err)
+	}
+	evidence.OutputArtifactRefs = append(evidence.OutputArtifactRefs, outputArtifactID)
+	// V5-09 acceptance-gap remediation (2026-09-10 post-merge review): one
+	// Evidence row for this execution. Since V9-02 it is written even when the
+	// output contract captures no stream (the record still holds the exit code,
+	// argv and duration) and also for a non-zero exit (verdict FAILED).
+	evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
+		Kind: runtimedomain.EvidenceKindCommandExecution, Verdict: verdict,
+		ArtifactReferences: []string{outputArtifactID}, PolicyVersion: request.ExecutionProfileHash,
+	})
+	return evidence, nil
 }
 
 // commandOutputArtifactContent is the exact JSON shape
-// persistCommandOutputArtifact stores — only the streams doc.Output
-// actually asked to capture are non-empty, matching the declared
+// persistCommandOutputArtifact stores — the execution record ADR-031
+// decision 4 names: what ran (argv, cwd), how it ended (exit code, duration,
+// whether its output was cut) and the redacted output. Only the streams
+// doc.Output actually asked to capture are non-empty, matching the declared
 // CaptureStdout/CaptureStderr contract precisely rather than always
-// persisting both regardless of what was authorized.
+// persisting both regardless of what was authorized. The revision the run was
+// measured against is on the Evidence row itself (Evidence.Revisions), not
+// repeated here.
+//
+// Truncated is always written (false included): "was the output cut" is a
+// fact about every run, and a reader should not have to infer it from absence.
+// DurationMillis is wall-clock time between process start and end as the
+// supervisor measured it (0 when the supervisor did not report either
+// timestamp).
 type commandOutputArtifactContent struct {
-	ExitCode int    `json:"exitCode"`
-	Stdout   string `json:"stdout,omitempty"`
-	Stderr   string `json:"stderr,omitempty"`
+	ExitCode            int      `json:"exitCode"`
+	Argv                []string `json:"argv,omitempty"`
+	CwdRepositoryTarget string   `json:"cwdRepositoryTarget,omitempty"`
+	Cwd                 string   `json:"cwd,omitempty"`
+	DurationMillis      int64    `json:"durationMillis"`
+	Truncated           bool     `json:"truncated"`
+	Stdout              string   `json:"stdout,omitempty"`
+	Stderr              string   `json:"stderr,omitempty"`
 }
 
 const commandOutputArtifactMediaType = "application/vnd.agentkit.command-output+json"
 
-// persistCommandOutputArtifact persists this attempt's own captured
-// output as a durable artifact, staged ORPHAN — V5-09 acceptance-gap
+// persistCommandOutputArtifact persists this attempt's own execution record
+// as a durable artifact, staged ORPHAN — V5-09 acceptance-gap
 // remediation (2026-09-10 post-merge review): this used to insert directly
 // ATTACHED, in its own unfenced transaction, before finalize.go's own
 // evidence re-validation had any promotion step that would ever reach it.
@@ -353,7 +457,7 @@ const commandOutputArtifactMediaType = "application/vnd.agentkit.command-output+
 // no transaction) + Phase 2 (insert ORPHAN, one short transaction) split
 // exactly.
 func (e *CommandNodeExecutor) persistCommandOutputArtifact(
-	ctx context.Context, req ports.NodeExecutionRequest, projectID project.ProjectID, doc command.CommandDocument,
+	ctx context.Context, req ports.NodeExecutionRequest, projectID project.ProjectID, run commandExecution, result ports.ProcessResult,
 	stdout, stderr []byte, secretValues map[string]string,
 ) (string, error) {
 	// V5-09 acceptance-gap remediation (2026-09-10 post-merge review): a
@@ -362,7 +466,8 @@ func (e *CommandNodeExecutor) persistCommandOutputArtifact(
 	// folded into e.matcher itself, which every other caller still shares)
 	// and scrub both streams before they are ever marshaled, exactly the
 	// "redact BEFORE Put" ordering internal/app/message's own AppendMessage
-	// already establishes.
+	// already establishes. V9-02: the same matcher scrubs argv and cwd, which
+	// are recorded now too.
 	scopedMatcher := e.matcher
 	if len(secretValues) > 0 {
 		values := make([]string, 0, len(secretValues))
@@ -371,14 +476,25 @@ func (e *CommandNodeExecutor) persistCommandOutputArtifact(
 		}
 		scopedMatcher = e.matcher.WithSecrets(values...)
 	}
-	content := commandOutputArtifactContent{}
-	if doc.Output.CaptureStdout {
-		redactedStdout, _ := scopedMatcher.Redact(stdout)
-		content.Stdout = string(redactedStdout)
+	redactString := func(value string) string {
+		redacted, _ := scopedMatcher.Redact([]byte(value))
+		return string(redacted)
 	}
-	if doc.Output.CaptureStderr {
-		redactedStderr, _ := scopedMatcher.Redact(stderr)
-		content.Stderr = string(redactedStderr)
+	content := commandOutputArtifactContent{
+		ExitCode: result.ExitCode, CwdRepositoryTarget: run.doc.CwdRepositoryTarget, Cwd: redactString(run.cwd),
+		Truncated: result.OutputTruncated,
+	}
+	for _, element := range run.argv {
+		content.Argv = append(content.Argv, redactString(element))
+	}
+	if !result.StartedAt.IsZero() && !result.FinishedAt.IsZero() && result.FinishedAt.After(result.StartedAt) {
+		content.DurationMillis = result.FinishedAt.Sub(result.StartedAt).Milliseconds()
+	}
+	if run.doc.Output.CaptureStdout {
+		content.Stdout = redactString(string(stdout))
+	}
+	if run.doc.Output.CaptureStderr {
+		content.Stderr = redactString(string(stderr))
 	}
 	body, err := json.Marshal(content)
 	if err != nil {
@@ -540,12 +656,16 @@ func materializeExecutable(payload []byte, resourceKey string) (path string, cle
 // commandExecutionInputs is gatherCommandExecutionInputs's own output —
 // plain data only, gathered inside one read-only transaction.
 type commandExecutionInputs struct {
-	doc                  command.CommandDocument
-	scriptPayload        []byte
-	effectiveScope       []workdomain.RepositoryScope
-	workspaceMounts      []ports.AgentWorkspaceMount
-	timeout              time.Duration
-	allowedOutcomes      []string
+	doc             command.CommandDocument
+	scriptPayload   []byte
+	effectiveScope  []workdomain.RepositoryScope
+	workspaceMounts []ports.AgentWorkspaceMount
+	timeout         time.Duration
+	allowedOutcomes []string
+	// failureOutcome is the node's V9-02 failureOutcome ("" when it declares
+	// none): the outcome a functional failure (the process exited on its own
+	// with a non-zero code) routes to instead of failing the attempt.
+	failureOutcome       string
 	snapshotID           string
 	executionProfileHash string
 }
@@ -692,6 +812,10 @@ func gatherCommandExecutionInputs(ctx context.Context, uow ports.UnitOfWork, req
 		if len(allowedOutcomes) == 0 {
 			return fmt.Errorf("runtime: node %s has no selectable outcome (every declared outcome is its own CyclePolicy escalation outcome) — cannot execute it", nodeRun.NodeKey)
 		}
+		failureOutcome, err := checkFailureOutcomeOf(node, allowedOutcomes)
+		if err != nil {
+			return err
+		}
 
 		decision, err := tx.Runtime().GetDecisionArtifact(ctx, req.NodeRunID+"-execution-profile-v1")
 		if err != nil {
@@ -744,7 +868,7 @@ func gatherCommandExecutionInputs(ctx context.Context, uow ports.UnitOfWork, req
 		inputs = commandExecutionInputs{
 			doc: doc, scriptPayload: scriptCandidate.Payload, effectiveScope: nodeRun.EffectiveScope,
 			workspaceMounts: assembleWorkspaceMounts(nodeRun.EffectiveScope, snapshot.Revisions.Entries()),
-			timeout:         timeout, allowedOutcomes: allowedOutcomes, snapshotID: string(snapshot.ID),
+			timeout:         timeout, allowedOutcomes: allowedOutcomes, failureOutcome: failureOutcome, snapshotID: string(snapshot.ID),
 			executionProfileHash: attempt.ExecutionProfileHash,
 		}
 		return nil

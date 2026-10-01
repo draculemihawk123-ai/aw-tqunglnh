@@ -298,7 +298,7 @@ func (e *GateNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionR
 	})
 	flushErr := sink.Flush(ctx)
 
-	classified, err := e.classify(ctx, req, request, resolved, inputs.criteria, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), env)
+	classified, err := e.classify(ctx, req, request, resolved, inputs.criteria, inputs.failureOutcome, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), env)
 	if err == nil {
 		// Always empty in practice (see this method's own "No writeLeases
 		// dependency" comment above) — attached anyway so all three
@@ -315,9 +315,20 @@ func (e *GateNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionR
 // classify, same ordering, same reused cancellation path, but deriving a
 // full GateResult from the evaluator's own structured output rather than
 // a single exit-code check.
+//
+// V9-02 (ADR-031 decision 3): the gate's OverallVerdict sorts the outcome into
+// the same three classes COMMAND uses, never mapped into each other. PASS is
+// success. FAIL is the functional failure — a trusted verdict that the thing
+// under check does not meet a criterion — and, for a node that declares a
+// failureOutcome, finishes SUCCEEDED with that outcome (the evidence rows
+// already carry the FAIL verdicts); without one it stays FAILED as before.
+// ERROR (the evaluator itself could not be trusted: it was killed, timed out,
+// exited non-zero, printed nothing parseable, or a scope check tripped) and
+// NOT_RUN (it did not evaluate a criterion) are technical: always the
+// pre-V9-02 FAILED, never the failureOutcome.
 func (e *GateNodeExecutor) classify(
 	ctx context.Context, req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources,
-	criteria []gate.Criterion, result ports.ProcessResult, runErr error, syncErr error, stdout []byte, secretValues map[string]string,
+	criteria []gate.Criterion, failureOutcome string, result ports.ProcessResult, runErr error, syncErr error, stdout []byte, secretValues map[string]string,
 ) (ports.NodeExecutionResult, error) {
 	if errors.Is(syncErr, ports.ErrJobLeaseLost) || errors.Is(syncErr, ports.ErrWriteLeaseLost) {
 		return ports.NodeExecutionResult{}, fmt.Errorf("%w: job/write lease lost mid-execution: %v", ErrIndeterminateExecution, syncErr)
@@ -357,7 +368,18 @@ func (e *GateNodeExecutor) classify(
 		// list is what an earlier node of the run left uncommitted (V9-01,
 		// ADR-030), never a change the Gate made: buildEvidence's strict
 		// check has already proven the Gate itself changed nothing.
-		evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, nil, true)
+		//
+		// V9-02: a FAIL verdict of a node that declares a failureOutcome is
+		// routed rather than failed — only when the event sink flushed, so the
+		// terminal event the evidence names is durable (a failure is routed
+		// WITH its evidence or not at all). The proposal then names the
+		// failureOutcome, which finalize requires to match SelectedOutcome.
+		routeFailure := gateResult.OverallVerdict == gate.VerdictFail && failureOutcome != "" && syncErr == nil
+		var failureProposal *ports.AgentProposedOutcome
+		if routeFailure {
+			failureProposal = checkFailureProposal(failureOutcome)
+		}
+		evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, failureProposal, true)
 		if err != nil {
 			if errors.Is(err, scopeguard.ErrScopeViolation) {
 				return scopeViolationNodeResult(ctx, e.uow, e.ids, e.clk, e.matcher, req, resolved, err), nil
@@ -378,13 +400,19 @@ func (e *GateNodeExecutor) classify(
 				ArtifactReferences: []string{resultArtifactID}, PolicyVersion: request.ExecutionProfileHash,
 			})
 		}
+		if routeFailure {
+			return ports.NodeExecutionResult{
+				State: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
+				SelectedOutcome: failureOutcome, Evidence: evidence,
+			}, nil
+		}
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 			ErrorCode: errorcode.CodeExecutionFailed, Evidence: evidence,
 		}, nil
 	}
 
-	selectedOutcome, proposedOutcome, err := resolveSelectedOutcome(nil, request.AllowedOutcomes)
+	selectedOutcome, proposedOutcome, err := resolveCheckSuccessOutcome(request.AllowedOutcomes, failureOutcome)
 	if err != nil {
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonOutcomeRejected,
@@ -416,10 +444,9 @@ func (e *GateNodeExecutor) classify(
 	// criteria-level Evidence (docs/design/07-v5-execution-evidence.md's
 	// own review finding). Every criterion shares the SAME GateResult
 	// artifact (it covers all of them at once); Kind is that criterion's
-	// own EvidenceKey, Verdict its own resolved gate.Verdict — always PASS
-	// here (a non-PASS OverallVerdict returns FAILED above, before this
-	// point is ever reached; a future remediation PR is what extends
-	// Evidence to the FAILED branch).
+	// own EvidenceKey, Verdict its own resolved gate.Verdict — PASS or
+	// NOT_APPLICABLE here (a non-PASS OverallVerdict returned above, before
+	// this point is ever reached, with its own Evidence).
 	for _, criterion := range gateResult.Criteria {
 		evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
 			Kind: criterion.EvidenceKey, Verdict: string(criterion.Verdict),
@@ -655,13 +682,17 @@ func (e *GateNodeExecutor) persistGateResultArtifact(
 // gateExecutionInputs is gatherGateExecutionInputs's own output — plain
 // data only, gathered inside one read-only transaction.
 type gateExecutionInputs struct {
-	commandDoc           command.CommandDocument
-	criteria             []gate.Criterion
-	scriptPayload        []byte
-	effectiveScope       []workdomain.RepositoryScope
-	workspaceMounts      []ports.AgentWorkspaceMount
-	timeout              time.Duration
-	allowedOutcomes      []string
+	commandDoc      command.CommandDocument
+	criteria        []gate.Criterion
+	scriptPayload   []byte
+	effectiveScope  []workdomain.RepositoryScope
+	workspaceMounts []ports.AgentWorkspaceMount
+	timeout         time.Duration
+	allowedOutcomes []string
+	// failureOutcome is the node's V9-02 failureOutcome ("" when it declares
+	// none): the outcome an OverallVerdict of FAIL routes to instead of
+	// failing the attempt.
+	failureOutcome       string
 	snapshotID           string
 	executionProfileHash string
 }
@@ -729,6 +760,10 @@ func gatherGateExecutionInputs(ctx context.Context, uow ports.UnitOfWork, req po
 		if len(allowedOutcomes) == 0 {
 			return fmt.Errorf("runtime: node %s has no selectable outcome (every declared outcome is its own CyclePolicy escalation outcome) — cannot execute it", nodeRun.NodeKey)
 		}
+		failureOutcome, err := checkFailureOutcomeOf(node, allowedOutcomes)
+		if err != nil {
+			return err
+		}
 
 		decision, err := tx.Runtime().GetDecisionArtifact(ctx, req.NodeRunID+"-execution-profile-v1")
 		if err != nil {
@@ -788,7 +823,7 @@ func gatherGateExecutionInputs(ctx context.Context, uow ports.UnitOfWork, req po
 		inputs = gateExecutionInputs{
 			commandDoc: commandDoc, criteria: gateDoc.Criteria, scriptPayload: scriptCandidate.Payload,
 			effectiveScope: nodeRun.EffectiveScope, workspaceMounts: forceReadOnlyMounts(assembleWorkspaceMounts(nodeRun.EffectiveScope, snapshot.Revisions.Entries())),
-			timeout: timeout, allowedOutcomes: allowedOutcomes, snapshotID: string(snapshot.ID),
+			timeout: timeout, allowedOutcomes: allowedOutcomes, failureOutcome: failureOutcome, snapshotID: string(snapshot.ID),
 			executionProfileHash: attempt.ExecutionProfileHash,
 		}
 		return nil

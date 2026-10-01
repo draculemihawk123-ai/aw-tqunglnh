@@ -91,6 +91,9 @@ type gateFixtureOptions struct {
 	// a test proving Gate redacts an echoed secret in Detail/Reason needs
 	// the evaluator to actually resolve one.
 	commandSecretRefs []string
+	// failureOutcome (V9-02) makes the node declare a failureOutcome of that
+	// name (withCheckFailureOutcome): "" keeps the node exactly as before.
+	failureOutcome string
 }
 
 // gateFixture builds one fully-admitted, RUNNING-eligible ExecutionAttempt
@@ -104,7 +107,11 @@ func gateFixture(t *testing.T, opts gateFixtureOptions) (
 	ctx := context.Background()
 	store = artifactstoreForTest(t)
 
-	u, seq, rID, nrID := scheduleFixture(t, gateExecutableDocument("gate-def-1", "gate-v1", fullyResolvablePolicyRefs()))
+	document := gateExecutableDocument("gate-def-1", "gate-v1", fullyResolvablePolicyRefs())
+	if opts.failureOutcome != "" {
+		document = withCheckFailureOutcome(document, opts.failureOutcome)
+	}
+	u, seq, rID, nrID := scheduleFixture(t, document)
 
 	skillDoc := oneResourceSkillDocument("gate-evaluator", "#!/bin/sh\necho '{}'\n", skill.Selector{}, true)
 	publishSkillVersion(t, u, "gate-skill-def-1", "gate-skill-v1", skillDoc)
