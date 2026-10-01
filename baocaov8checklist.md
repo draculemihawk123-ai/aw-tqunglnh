@@ -1965,3 +1965,85 @@ stand-ins), and the release-build job printed checksums in its log but uploaded 
 - **Negative control:** flipping the record to `ALPHA_READY` while `gatePass` stays false fails the verdict-rule test, the
   report/start-here agreement test and the parity-ledger tie; restored, all pass.
 - Not done, by design: no Beta backlog; the parity closure itself (V8-12R-01); a run against a real provider CLI.
+
+## V8-12R-01 — Close the parity ledger
+
+### Context
+
+The one blocker of V8-12's `REWORK` verdict: V8-11's mandatory final gate `parity-inventory-has-zero-debt` failed because
+`internal/delivery/parity/ledger.go` pinned 15 debt entries — 13 HTTP read operations with no `aw` mirror
+(`getEvidence`, `listArtifacts`, `getMessageContent`, `getMessageContextSnapshot`, `getReleaseSetLocalCommitStatus`,
+`getRepositoryWorkspaceState`, `getScopeExpansionRequest`, `listFamilyScopeExpansionRequests`, `getTaskFamily`,
+`listChildWorkItems`, `listWorkItemKanban`, `getWorkItemProjectedDetail`, `repositoriesGet`), two of which
+(`listWorkItemKanban`, `getWorkItemProjectedDetail`) also had no application operation because
+`internal/delivery/httpapi/kanban` read `tx.Projections()` itself. V6-15O pinned them and forbade closing them ("no new
+leaf/route"); V8-12 deliberately did not fold the closure into a verdict-recording task.
+
+### Decision
+
+1. **Every leaf is a thin shell over the SAME application query its HTTP twin calls** (no CLI-local reinterpretation), has its
+   own descriptor (`AppOperation`/`HTTPOperationID` matching the registry), a route in `clicompose`, tests against the app
+   layer's real behaviour, and usage-error coverage. Scope-hiding is preserved: another project's id reports the same failure
+   as an unknown one and writes nothing to stdout.
+2. **`message context-snapshot` needed an application home too.** Its HTTP handler held the lookup (message → attempt →
+   snapshot) itself; it moved to `runtimeapp.GetContextSnapshotForMessage` with the two "not found" sentinels, and the handler
+   now maps them to the exact same 404 wording as before.
+3. **The board reads got a real application package, `internal/app/kanban`** (`ListWorkItemKanban`,
+   `GetWorkItemProjectedDetail`), moved — not rewritten — out of the HTTP package: keyset pagination bounded by a pinned
+   journal watermark, badge aggregation, freshness fallbacks (no generation / no checkpoint = STALE, never LIVE). Pagination
+   state is a plain `ResumePoint`; the HTTP handler keeps what is HTTP (limit parsing, the signed cursor, the wire DTOs and
+   the OpenAPI schema, so the contract does not move) and checks the cursor in `httpapi.Bind`'s documented order — project and
+   query in the handler, generation inside the read, reported as `kanban.ErrGenerationChanged`. The projected detail keeps its
+   ordering guarantee: the card first, readiness LAST in its own transaction, so a stale projected status can never leak
+   into readiness.
+4. **`aw work-item kanban` does not paginate** (like `message list`, a considered narrowing): one bounded project view in one
+   transaction, narrowed by repeatable `--status` and `--family-id`; a signed cursor would mean nothing across CLI processes.
+   `aw work-item detail` takes `--project-id` and checks it against the row's own project (`DetailRequest.ProjectID`), the HTTP
+   route having none by design.
+5. **Three UX rows are honored under reviewed renames, not by bending existing commands.** `work-item list` stays the
+   authoritative list (the UX had reserved it for the projected board → `work-item kanban`); `work-item show` stays the
+   authoritative single read (the UX said "embed the family" → `work-item children`); `workspace-set show` keeps the set and
+   `repository-workspace show` is the single workspace. The third needs one checker change: `UXLeafRenames` now ACCEPTS the
+   renamed path in addition to the reserved one instead of replacing it, because a UX row naming two operations
+   (`getWorkspaceState`) needs the reserved wording to stay valid for the one that still uses it.
+6. **Real bugs found on the way.** `resolveRoute` only understood two-word paths, so the three-word
+   `release-set local-commit status` the UX inventory reserves was unroutable (now tried first, falling back to the two-word
+   route so `release-set local-commit <positional>` keeps working); and `aw help` silently omitted any three-word route
+   (`clicompose.Usage` only listed two-word ones) — a command nobody could discover. Both have tests.
+7. **The verdict is not rewritten by hand.** With the ledger empty, `TestAlphaVerdictRecordMatchesTheParityLedger` correctly
+   refuses a record that still blames parity, but the V8-11 gate has not run on a commit containing this change, so there is no
+   assessment saying `gatePass=true`. The record moves from `REWORK` to **`CHƯA ĐỦ EVIDENCE`** with one blocker
+   (`alpha-gate-not-rerun-after-parity-closure`) and one next task, **V8-12R-02 — record the verdict from the gate run of the
+   merged V8-12R-01 commit** (copy its assessed commit, run and release checksums; `ALPHA_READY` only if that run says
+   `gatePass=true`; then flip the job to `--enforce=true`). The summary, commit, run and checksums stay those of the last real
+   assessment. `--enforce` is left `false` for the same reason: it is switched on from the evidence, not before it.
+
+### Execution
+
+- New leaves: `evidence show`, `artifact list` (`internal/delivery/cli/evidence`), `message content`, `message
+  context-snapshot` (`.../message`), `release-set local-commit status` (`.../releaseset`), `repository-workspace show`
+  (`.../workspace`), `scope-expansion show`/`list` (`.../scopeexpansion`), `task-family show`, `work-item children`,
+  `work-item kanban`, `work-item detail` (`.../workitem`), `repository show` (`.../catalog`); routes in
+  `internal/delivery/clicompose/routes.go`.
+- `internal/app/kanban/` (new), `internal/app/runtime/message_context_snapshot.go` (new); `internal/delivery/httpapi/kanban/*`
+  and `.../httpapi/message/context_snapshot.go` now delegate.
+- `internal/delivery/parity`: registry entries for the two reads are `ExposurePublic` with a real `Symbol`; `Ledger()` returns
+  nil; `UXLeafRenames` (+3, accept-either semantics).
+- `clicompose`: three-word route resolution, help lists three-word routes, `TestResolveRoute_*`, `TestUsage_*`.
+- Docs: `docs/operator/03-cli-reference.md` (real `aw help`, a "Reading state" table), `docs/release/alpha-verdict.json`,
+  `alpha-release-report.md`, `docs/00-start-here.md` §4A.
+
+### Verify
+
+- `go build ./...`, `go vet ./...` clean; `gofmt` clean on every changed file; the whole `go test ./...` suite passes.
+- `AW_ALPHA_GATE=1 go test ./internal/delivery/parity -run TestParityLedgerIsEmpty` passes; `TestRealInventoryParityGate` reports
+  debt 0; the verdict-record tests in `internal/alphagate` and `internal/delivery/parity` pass.
+- The existing HTTP tests of `internal/delivery/httpapi/kanban` (list, detail, performance budget) pass unchanged against the
+  delegating handlers.
+- **Negative controls** (each mutation made, observed failing, then restored): dropping the journal-watermark bound in
+  `ListWorkItemKanban` fails `TestListWorkItemKanban_ACardChangedAfterTheWalkBeganIsExcludedFromIt`; disabling the generation
+  check fails `TestListWorkItemKanban_ResumeAcrossAGenerationSwapIsTypedNotSilent`.
+- Smoke through the real built binary: `aw repository show`, `aw work-item kanban`, `aw release-set local-commit status`
+  (three words), the usage error of `aw scope-expansion list`, and `aw help` listing `local-commit status`.
+- Not done, by design: re-running the Alpha gate and recording its verdict (V8-12R-02 — needs a CI run of the merged commit);
+  flipping `--enforce`; promoting `CrashDuringRebuildBeforeCutover` (LIM-09); no Beta work.

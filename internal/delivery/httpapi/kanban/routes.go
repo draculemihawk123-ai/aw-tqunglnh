@@ -12,19 +12,19 @@
 //
 // # What this package reads
 //
-// Every GET here is backed by internal/app/projection's own frozen
-// WorkItemCardRow schema (V6-08, internal/app/projection/row.go) via
-// ports.ProjectionRepository (tx.Projections()) — never a runtime table
-// directly (this task's own "Hoàn thành khi: Kanban reads no runtime tables
-// directly"). ListProjectionRows returns the FULL row set for one
-// (ProjectID, ProjectionName, Generation); this package is the one that
-// applies status/family filtering, keyset pagination and multi-repo badge
-// aggregation over that already-fetched set in memory — see list.go's own
-// doc comment for the exact keyset/watermark mechanics, mirroring
-// internal/delivery/httpapi/message's own handleListMessages idiom (the
-// first package in this codebase to actually assemble httpapi.CursorCodec/
-// httpapi.Bind/httpapi.Freshness into a real paginated route) adapted to a
-// string EntityKey (WorkItemID) instead of a numeric Sequence.
+// Both routes are thin HTTP shells over internal/app/kanban's own public
+// application queries (ListWorkItemKanban, GetWorkItemProjectedDetail — the
+// very operations `aw work-item kanban` and `aw work-item detail` run), which
+// read internal/app/projection's own frozen WorkItemCardRow schema (V6-08,
+// internal/app/projection/row.go) via ports.ProjectionRepository — never a
+// runtime table directly (this task's own "Hoàn thành khi: Kanban reads no
+// runtime tables directly"). Before V8-12R-01 this package held that read
+// itself, which left both operations without an application home (the parity
+// registry's MISSING_APP). What stays here is what is HTTP: the query
+// parameters, the signed opaque pagination cursor
+// (httpapi.CursorCodec/httpapi.Bind/httpapi.Freshness — mirroring
+// internal/delivery/httpapi/message's own handleListMessages idiom, adapted to
+// a string EntityKey) and the wire DTOs.
 //
 // # Authoritative decoration — the "projection không là authority" rule
 //
@@ -37,8 +37,8 @@
 // valid-action authority in this codebase (there is no separate
 // "ValidAction function") — fresh, server-side, AFTER the projected card is
 // already built, against the CURRENTLY loaded authoritative WorkItem, never
-// against anything the projection claims. detail.go's own doc comment
-// explains exactly why this ordering is what makes the "action race" Verify
+// against anything the projection claims. internal/app/kanban/detail.go's own
+// doc comment explains exactly why this ordering is what makes the "action race" Verify
 // bullet (a projected row that has gone stale between read and response
 // must still report a FRESH authoritative readiness, never a cached one)
 // hold true by construction rather than by convention.
@@ -53,8 +53,8 @@
 // mirroring internal/delivery/httpapi/workitem's own markWorkItemReady and
 // internal/delivery/httpapi/rundetail's own three routes: ProjectID is
 // derived SOLELY by reloading the WorkItem's own real, stored row directly
-// (detail.go's own loadWorkItemForDetail), never trusted from a client-
-// supplied path segment (contract point 3: "không tin ID shape, payload
+// (internal/app/kanban's own GetWorkItemProjectedDetail), never trusted from a
+// client-supplied path segment (contract point 3: "không tin ID shape, payload
 // hoặc projection"). listWorkItemKanban DOES carry {projectId}: it is a
 // project-wide list, not a single-resource lookup, so the path segment IS
 // the primary scope, the same way GET /projects/{projectId}/work-items

@@ -165,7 +165,7 @@ func isUsageError(err error) bool {
 	return cli.IsUsageError(err)
 }
 
-// TestDescriptorsRegisterAllTenCommandsWithConsistentMetadata is this
+// TestDescriptorsRegisterEveryCommandWithConsistentMetadata is this
 // task's own descriptor coverage proof: every command this task's brief
 // lists under "Command surface to build" must be registered into
 // cli.Default (via this package's own init()), each with a non-CLI_LOCAL
@@ -176,7 +176,7 @@ func isUsageError(err error) bool {
 // repository/component/pack-assignment resources — including project
 // itself once it names a specific one — are always project-scoped except
 // the two ADR-025 installation-scoped exceptions, project list/create).
-func TestDescriptorsRegisterAllTenCommandsWithConsistentMetadata(t *testing.T) {
+func TestDescriptorsRegisterEveryCommandWithConsistentMetadata(t *testing.T) {
 	want := map[string]struct {
 		scope           string
 		httpOperationID string
@@ -187,6 +187,7 @@ func TestDescriptorsRegisterAllTenCommandsWithConsistentMetadata(t *testing.T) {
 		"repository list":        {"PROJECT", "projectRepositoriesList"},
 		"repository register":    {"PROJECT", "projectRepositoriesRegister"},
 		"repository onboarding":  {"PROJECT", "repositoriesOnboarding"},
+		"repository show":        {"PROJECT", "repositoriesGet"},
 		"repository retry-probe": {"PROJECT", "repositoriesRetryProbe"},
 		"component list":         {"PROJECT", "projectComponentsList"},
 		"pack-assignment list":   {"PROJECT", "componentPackAssignmentsList"},

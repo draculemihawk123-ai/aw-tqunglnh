@@ -37,8 +37,8 @@ func TestRoutesCoverEveryDescriptorBothDirections(t *testing.T) {
 		if r.Run == nil {
 			t.Errorf("route %q has no Run func", name)
 		}
-		if len(r.Path) == 0 || len(r.Path) > 2 {
-			t.Errorf("route %q has %d path segments, want 1 or 2 (aw <resource> <action>)", name, len(r.Path))
+		if len(r.Path) == 0 || len(r.Path) > 3 {
+			t.Errorf("route %q has %d path segments, want 1 to 3 (aw <resource> <action> [<sub-action>])", name, len(r.Path))
 		}
 	}
 

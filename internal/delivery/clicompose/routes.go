@@ -123,6 +123,9 @@ func catalogRoutes() []Route {
 			return catalog.RunRepositoryOnboarding(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "onboarding"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryShow(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryRetryProbe(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "retry-probe"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
@@ -222,6 +225,18 @@ func workItemRoutes() []Route {
 			return workitem.RunWorkItemCancel(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "cancel"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workitem.RunWorkItemChildren(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "children"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workitem.RunTaskFamilyShow(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "task-family", "show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workitem.RunWorkItemKanban(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "kanban"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workitem.RunWorkItemDetail(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "detail"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workitemblocker.Resolve(ctx, workitemblocker.Dependencies{UoW: d.UoW, IDs: d.ids()}, a, s.Stdout, s.Stderr)
 		}, "blocker", "resolve"),
 	}
@@ -287,6 +302,12 @@ func decisionRoutes() []Route {
 			return scopeexpansion.Withdraw(ctx, scopeDeps(d), a, s.Stdout, s.Stderr)
 		}, "scope-expansion", "withdraw"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return scopeexpansion.Show(ctx, scopeDeps(d), a, s.Stdout, s.Stderr)
+		}, "scope-expansion", "show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return scopeexpansion.List(ctx, scopeDeps(d), a, s.Stdout, s.Stderr)
+		}, "scope-expansion", "list"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return decision.ResolveApproval(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
 		}, "approval", "resolve"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
@@ -309,6 +330,12 @@ func messageRoutes() []Route {
 			return message.RunMessageList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "message", "list"),
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return message.RunMessageContent(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "message", "content"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return message.RunMessageContextSnapshot(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "message", "context-snapshot"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return message.RunMessageAppend(ctx, deps(d), a, s.Stdin, s.Stdout, s.Stderr)
 		}, "message", "append"),
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
@@ -329,11 +356,17 @@ func evidenceRoutes() []Route {
 			return evidence.RunEvidenceList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "evidence", "list"),
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return evidence.RunEvidenceShow(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "evidence", "show"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return evidence.RunEvidenceVerify(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "evidence", "verify"),
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return evidence.RunContextSnapshotShow(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "context-snapshot", "show"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return evidence.RunArtifactList(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "artifact", "list"),
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return evidence.RunArtifactGet(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "artifact", "get"),
@@ -360,6 +393,9 @@ func workspaceRoutes() []Route {
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceSource(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "source"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceShow(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "show"),
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceDiff(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "diff"),
@@ -397,6 +433,9 @@ func releaseSetRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return releaseset.RunLocalCommit(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "release-set", "local-commit"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return releaseset.RunLocalCommitStatus(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "release-set", "local-commit", "status"),
 	}
 }
 
