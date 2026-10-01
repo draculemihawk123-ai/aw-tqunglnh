@@ -286,7 +286,11 @@ func TestServe_ReadyFailsIfSafeSettingsCorrupt(t *testing.T) {
 // writes right after it starts listening, and returns the address.
 func waitForServeAddress(t *testing.T, stdout *syncBuffer) string {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// Polls and returns as soon as serve prints its address; the bound only
+	// matters if serve never starts. 5s was too little on loaded Windows CI
+	// runners (2026-10-01: TestServe_BootstrapUsesDefaultPrincipalWhenNoConfigFlag
+	// failed there with no defect while the suite ran packages in parallel).
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		line := strings.TrimSpace(stdout.String())
 		if line != "" {
