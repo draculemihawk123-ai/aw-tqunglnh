@@ -960,16 +960,23 @@ HE-14-M07). Đây là G3. V5-08B0 khóa rằng cùng một snapshot phải cho c
    2. `hardConstraints[]`: các resource HARD_CONSTRAINT;
    3. `taskContract`: `workItemId`, `title`, `behavior`, `acceptanceCriteria`, `verificationSpec`, `riskLevel`,
       `allowedOutcomes[]`, và `outcomeProtocol` khi node có hơn một outcome;
-   4. `resources[]`: các resource còn lại theo thứ tự REQUIRED_PROCEDURE → GUIDANCE → REFERENCE, mỗi phần tử có
+   4. `checkFailures[]`: chỉ có khi maker được gửi lại qua `failureOutcome` của một node kiểm tra (ADR-031 quyết
+      định 6); mỗi phần tử gồm node kiểm tra, evidence id và `what`/`why`/`fix`. Bỏ hẳn key khi rỗng. Đặt ngay sau
+      `taskContract` vì đây là thông tin maker cần hành động trước tiên ở vòng sửa;
+   5. `resources[]`: các resource còn lại theo thứ tự REQUIRED_PROCEDURE → GUIDANCE → REFERENCE, mỗi phần tử có
       `priority`;
-   5. `messages[]`;
-   6. `closingChecklist`: `resourceKey` của mọi HARD_CONSTRAINT và `allowedOutcomes`.
+   6. `messages[]`;
+   7. `closingChecklist`: `resourceKey` của mọi HARD_CONSTRAINT và `allowedOutcomes`.
 2. Schema được chọn theo ContextSnapshot. Snapshot tạo sau thay đổi này ghi `instructionSchemaVersion = 2` (migration
    mới). Snapshot không có trường đó được lắp theo v1 y như trước. Cùng một snapshot luôn cho cùng artifact và cùng
-   hash.
+   hash. Version là một phần của `ManifestHash` của snapshot (bỏ qua khi không có, nên hash của snapshot v1 không
+   đổi), và snapshot clone cho attempt retry/recovery giữ nguyên version của snapshot gốc.
 3. `priority` lấy từ resource đã pin, vốn đã nằm trong content hash; `ResourceRef` không thêm trường.
-4. `outcomeProtocol` là văn bản cố định do engine sở hữu, mô tả marker `<agentkit-outcome>`; parser marker không đổi.
-5. Provider adapter không đổi: vẫn đưa JSON qua stdin.
+4. `outcomeProtocol` là văn bản cố định do engine sở hữu, mô tả marker `<agentkit-outcome>`; cú pháp và parser marker
+   không đổi. Marker sai (outcome ngoài `allowedOutcomes`, lặp, hoặc hỏng) là câu trả lời sai của agent, nên attempt
+   kết thúc `OUTCOME_REJECTED` (mã `VALIDATION_FAILED`) giống trường hợp thiếu marker, không phải
+   `PROVIDER_UNAVAILABLE`.
+5. Provider adapter vẫn đưa JSON qua stdin; adapter chỉ gắn thêm lỗi có kiểu cho marker sai để engine phân loại đúng.
 
 **Không làm:** chưa thêm mô tả tùy biến cho từng outcome; chưa đổi cú pháp marker. Hai việc này cần ADR riêng nếu có
 nhu cầu.
