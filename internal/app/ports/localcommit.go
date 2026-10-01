@@ -2,9 +2,22 @@ package ports
 
 import (
 	"context"
+	"errors"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
+
+// ErrNothingToCommit is what a LocalCommitCreator returns (wrapped or bare;
+// callers use errors.Is) when the workspace it was asked to commit has no
+// staged, unstaged or untracked change at all (V9-09): a determinate,
+// permanent answer about the workspace's current state, never a transient
+// fault. internal/app/releasesetcommit.ExecuteReleaseSetLocalCommit maps it
+// to a terminal FAILED/NO_CHANGES outcome instead of leaving the job to
+// retry — retrying cannot make a clean worktree dirty. It lives here (not in
+// the adapter) because the application layer must be able to name it without
+// importing internal/adapters/gitworktree, which aliases it as its own
+// ErrNothingToCommit.
+var ErrNothingToCommit = errors.New("workspace has no change to commit")
 
 // LocalCommitCreator creates a typed, audited local Git commit inside a
 // workspace this WorkspaceProvider issued the handle for (V5-10A,

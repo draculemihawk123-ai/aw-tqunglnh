@@ -1,6 +1,10 @@
 package gitworktree
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+)
 
 var (
 	ErrInvalidConfig     = errors.New("invalid git workspace provider configuration")
@@ -16,8 +20,10 @@ var (
 	// workspace has no staged, unstaged, or untracked change at all —
 	// distinct from ErrWorkspaceDirty above (Release's own "refuses to
 	// discard a real change" case): here, an empty `git status` means
-	// there is nothing for a commit to record.
-	ErrNothingToCommit = errors.New("workspace has no change to commit")
+	// there is nothing for a commit to record. It is an alias of
+	// ports.ErrNothingToCommit (V9-09) so the application layer can match it
+	// with errors.Is without importing this adapter package.
+	ErrNothingToCommit = ports.ErrNothingToCommit
 	// ErrUnsupportedEntry is returned by ReadSource (V6-10C) when the
 	// requested path resolves to a tree entry ReadSource refuses to serve
 	// as file content: a directory (mode 040000), a symlink (mode 120000 —

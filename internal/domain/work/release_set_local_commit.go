@@ -68,12 +68,23 @@ const (
 	// paper over. The workspace is quarantined when this fires (see
 	// internal/app/releasesetcommit's own doc comment).
 	FailureMarkerDrift ReleaseSetLocalCommitFailureReason = "MARKER_DRIFT"
+	// FailureNoChanges (V9-09): the target RepositoryWorkspace's worktree has
+	// no staged, unstaged or untracked change, so there is nothing for a
+	// commit to record and ports.LocalCommitCreator answered
+	// ports.ErrNothingToCommit. A determinate fact about the worktree's
+	// current state — retrying the very same job cannot change it — so the
+	// operation closes FAILED immediately (the operator edits the worktree
+	// and requests a new local commit) instead of leaving the job to be
+	// re-claimed until it goes DEAD with the intent stuck REQUESTED. It is a
+	// machine-readable failure REASON on the operation, deliberately not a
+	// new errorcode.Code: that enum is closed (go-core-spec §18).
+	FailureNoChanges ReleaseSetLocalCommitFailureReason = "NO_CHANGES"
 )
 
 // IsValid reports whether reason is one of this type's own closed set.
 func (r ReleaseSetLocalCommitFailureReason) IsValid() bool {
 	switch r {
-	case FailureWorkspaceQuarantined, FailureMarkerDrift:
+	case FailureWorkspaceQuarantined, FailureMarkerDrift, FailureNoChanges:
 		return true
 	default:
 		return false

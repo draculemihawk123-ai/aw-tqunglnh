@@ -73,7 +73,7 @@ func TestNewReleaseSetLocalCommit_RejectsMissingOrInvalidFields(t *testing.T) {
 }
 
 func TestReleaseSetLocalCommitFailureReason_IsValid(t *testing.T) {
-	valid := []work.ReleaseSetLocalCommitFailureReason{work.FailureWorkspaceQuarantined, work.FailureMarkerDrift}
+	valid := []work.ReleaseSetLocalCommitFailureReason{work.FailureWorkspaceQuarantined, work.FailureMarkerDrift, work.FailureNoChanges}
 	for _, reason := range valid {
 		if !reason.IsValid() {
 			t.Fatalf("%q.IsValid() = false, want true", reason)
