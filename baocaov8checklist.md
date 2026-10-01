@@ -2047,3 +2047,49 @@ leaf/route"); V8-12 deliberately did not fold the closure into a verdict-recordi
   (three words), the usage error of `aw scope-expansion list`, and `aw help` listing `local-commit status`.
 - Not done, by design: re-running the Alpha gate and recording its verdict (V8-12R-02 — needs a CI run of the merged commit);
   flipping `--enforce`; promoting `CrashDuringRebuildBeforeCutover` (LIM-09); no Beta work.
+
+## V8-12R-02 — Record the Alpha verdict from the gate run of the V8-12R-01 commit
+
+### Context
+
+V8-12R-01 (PR #141, master `0b144f1`) closed the one failing final gate, but the verdict record had to move from `REWORK` to
+`CHƯA ĐỦ EVIDENCE` because no gate run of a commit containing the fix existed. That run is the push run of the merge commit
+itself: CI run 36803384120, 22 of 22 jobs green, including `V8-11 Alpha release acceptance`.
+
+### Decision
+
+1. **Evidence, not inference.** The `v8-alpha-assessment` artifact of that run is the source: commit
+   `0b144f12b61e8f3aab0900d1cc9b2845650cb523`, `gatePass=true`, hint PASS, no blockers; 208/208 `ALPHA_MUST` (209/209 with the
+   cross-phase guard), 23/23 journeys, 9/9 version gates, **7/7 final gates** — including `parity-inventory-has-zero-debt`, the
+   only one that failed in the first assessment. The same assessment on the PR's own run (a merge ref, not the final commit)
+   had already said `gatePass=true`; the record uses the push run of the merged commit because that is the commit a reader
+   can check out.
+2. **Verdict: `ALPHA_READY`**, the only thing `gatePass=true` permits. Blockers and next tasks are empty; no Beta backlog.
+   The report states what the verdict does and does not say (47 of 209 criteria have their own test — LIM-01; live provider
+   compatibility `UNVERIFIED`; no OS-enforced isolation; nothing about Beta) so a reader cannot take it for more than it is.
+3. **Checksums are the run's real ones**, taken from the release-build job logs (round 1 == round 2 on both platforms) and
+   cross-checked by downloading the `aw-release-windows-latest` / `aw-release-ubuntu-latest` artifacts this run uploaded and
+   hashing them (`aw.exe` `961c1128...`, `aw` `f1269112...`; both manifests carry the assessed commit and schema 41). The
+   previous record could only quote a log line; these are downloadable.
+4. **The gate flips to enforcing in the same change** (`--enforce=true`), as V8-12 promised: the `v8-alpha-gate` job fails when
+   `gatePass` is false, so a regression of any Alpha criterion, journey, version gate or final gate is now a red check rather
+   than a number in a summary. It could not be switched earlier without making every unrelated PR red.
+5. **The flag and the record cannot drift.** New `internal/alphagate/enforce_test.go`: the job's `--enforce` is `true`
+   exactly when the recorded verdict is `ALPHA_READY` — so ALPHA_READY cannot be recorded while the job would let a failing
+   gate through, and the job cannot be made enforcing while the record says the gate does not pass.
+
+### Execution
+
+- `docs/release/alpha-verdict.json`, `docs/release/alpha-release-report.md`, `docs/00-start-here.md` (status rows, section 4A).
+- `.github/workflows/spike-gate.yml`: `v8-alpha-gate` runs `--enforce=true`; its explanatory comment updated.
+- `internal/alphagate/enforce_test.go` (new).
+
+### Verify
+
+- `internal/alphagate` and `internal/delivery/parity` suites pass: the verdict-rule, summary-arithmetic, report/start-here
+  agreement, checksum-format, relative-link and parity-ledger-tie tests all accept the new record.
+- **Negative controls** (each made, observed failing, restored): setting the job back to `--enforce=false` while the record
+  says `ALPHA_READY` fails the new test; setting the record to `REWORK` while the job is `--enforce=true` fails it too.
+- The record's numbers were read from the downloaded assessment JSON, not retyped from the summary.
+- Not done, by design: no change to `CrashDuringRebuildBeforeCutover`'s conditional status (LIM-09 stays disclosed); no Beta work;
+  no run against a real provider CLI.
