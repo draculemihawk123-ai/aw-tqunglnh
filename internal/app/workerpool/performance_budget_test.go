@@ -44,37 +44,53 @@ func drainAndCompleteJobs(t *testing.T, store *sqlite.Store, count int) {
 	}
 }
 
-// measureFreshClaimLatency enqueues exactly one fresh AVAILABLE job and
-// returns the real wall-clock latency to claim it — the minimum of 3
-// samples (see internal/delivery/httpapi/kanban's own identical choice and
-// reasoning for why minimum, not mean, is this session's established way
-// to measure a single operation's real latency against CI noise).
-func measureFreshClaimLatency(t *testing.T, store *sqlite.Store, idPrefix string) time.Duration {
+// claimOneFresh enqueues exactly one fresh AVAILABLE job, claims it and
+// returns the real wall-clock latency of that single ClaimJob call.
+func claimOneFresh(t *testing.T, store *sqlite.Store, id string) time.Duration {
 	t.Helper()
 	ctx := context.Background()
-	best := time.Duration(1<<63 - 1)
-	for i := 0; i < 3; i++ {
-		id := fmt.Sprintf("%s-%d", idPrefix, i)
-		if _, err := store.EnqueueJob(ctx, ports.EnqueueJobRequest{
-			ID: ports.JobID(id), ProjectID: "proj-1", Kind: "noop",
-			AggregateType: "Test", AggregateID: id, MaxClaims: 5, IdempotencyKey: id + "-key",
-		}); err != nil {
-			t.Fatalf("EnqueueJob(%s): %v", id, err)
+	if _, err := store.EnqueueJob(ctx, ports.EnqueueJobRequest{
+		ID: ports.JobID(id), ProjectID: "proj-1", Kind: "noop",
+		AggregateType: "Test", AggregateID: id, MaxClaims: 5, IdempotencyKey: id + "-key",
+	}); err != nil {
+		t.Fatalf("EnqueueJob(%s): %v", id, err)
+	}
+	start := time.Now()
+	_, lease, err := store.ClaimJob(ctx, "measure-owner", time.Minute)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("ClaimJob(%s): %v", id, err)
+	}
+	if err := store.CompleteJob(ctx, lease); err != nil {
+		t.Fatalf("CompleteJob(%s): %v", id, err)
+	}
+	return elapsed
+}
+
+// measureInterleavedClaimLatency returns the minimum fresh-claim latency of
+// each store over rounds alternating samples (small, large, small, large,
+// ...). Minimum, not mean, follows internal/delivery/httpapi/kanban's own
+// reasoning for a single operation's real latency against CI noise.
+// Alternating is what makes the two minimums comparable: ClaimJob's cost
+// here is dominated by its commit's fsync, and on a contended runner (every
+// other package of `go test ./...` doing SQLite I/O at the same time) that
+// cost moves in bursts. Measuring all small-table samples first and all
+// large-table samples afterwards let one burst land on only one side — on
+// windows-latest CI (2026-10-01) that produced 3.4ms vs 17.7ms, a 5.2x
+// "ratio" with no change to the query. Interleaved, a burst lands on both.
+func measureInterleavedClaimLatency(t *testing.T, small, large *sqlite.Store, rounds int) (time.Duration, time.Duration) {
+	t.Helper()
+	bestSmall := time.Duration(1<<63 - 1)
+	bestLarge := bestSmall
+	for i := 0; i < rounds; i++ {
+		if d := claimOneFresh(t, small, fmt.Sprintf("target-small-%d", i)); d < bestSmall {
+			bestSmall = d
 		}
-		start := time.Now()
-		_, lease, err := store.ClaimJob(ctx, "measure-owner", time.Minute)
-		elapsed := time.Since(start)
-		if err != nil {
-			t.Fatalf("ClaimJob(%s): %v", id, err)
-		}
-		if err := store.CompleteJob(ctx, lease); err != nil {
-			t.Fatalf("CompleteJob(%s): %v", id, err)
-		}
-		if elapsed < best {
-			best = elapsed
+		if d := claimOneFresh(t, large, fmt.Sprintf("target-large-%d", i)); d < bestLarge {
+			bestLarge = d
 		}
 	}
-	return best
+	return bestSmall, bestLarge
 }
 
 // TestV8PerformanceBudget_ClaimLatencyStaysBoundedAsHistoricalJobsAccumulate
@@ -102,32 +118,32 @@ func measureFreshClaimLatency(t *testing.T, store *sqlite.Store, idPrefix string
 // than the ~43s this test measured locally without it — a build without
 // cgo (this environment's own local Windows setup) cannot run `-race` at
 // all to directly re-measure the corrected cost, so this cut is
-// deliberately conservative (~111 total round trips, over 45x fewer than
-// the version that timed out) rather than tuned to a number only proven
-// safe without race instrumentation. A 10x historical-row-count multiplier
+// deliberately conservative (~126 total round trips with the interleaved
+// measurement, about 40x fewer than the version that timed out) rather than
+// tuned to a number only proven safe without race instrumentation. A 10x historical-row-count multiplier
 // is still a clear, meaningful test of this threshold: a real regression
 // would push the ratio toward that same 10x, sharply distinguishable from
 // the ~1x this partial index predicts.
 func TestV8PerformanceBudget_ClaimLatencyStaysBoundedAsHistoricalJobsAccumulate(t *testing.T) {
-	store := openTestQueue(t, "agentkit-pool-perf-budget.db")
-
 	const small = 10
 	const large = 100
 
-	enqueueJob(t, store, "seed-noop", "noop")
-	drainAndCompleteJobs(t, store, 1) // warm up: pay any one-time cost (page cache, JIT) before measuring.
-
-	for i := 0; i < small; i++ {
-		enqueueJob(t, store, fmt.Sprintf("hist-small-%d", i), "noop")
+	// Two stores, one per historical row count, so the fresh-claim samples
+	// can alternate between them (see measureInterleavedClaimLatency).
+	smallStore := openTestQueue(t, "agentkit-pool-perf-budget-small.db")
+	largeStore := openTestQueue(t, "agentkit-pool-perf-budget-large.db")
+	for _, seeded := range []struct {
+		store *sqlite.Store
+		rows  int
+	}{{smallStore, small}, {largeStore, large}} {
+		enqueueJob(t, seeded.store, "seed-noop", "noop")
+		drainAndCompleteJobs(t, seeded.store, 1) // warm up: pay any one-time cost (page cache, JIT) before measuring.
+		for i := 0; i < seeded.rows; i++ {
+			enqueueJob(t, seeded.store, fmt.Sprintf("hist-%d", i), "noop")
+		}
+		drainAndCompleteJobs(t, seeded.store, seeded.rows)
 	}
-	drainAndCompleteJobs(t, store, small)
-	smallLatency := measureFreshClaimLatency(t, store, "target-small")
-
-	for i := 0; i < large-small; i++ {
-		enqueueJob(t, store, fmt.Sprintf("hist-large-%d", i), "noop")
-	}
-	drainAndCompleteJobs(t, store, large-small)
-	largeLatency := measureFreshClaimLatency(t, store, "target-large")
+	smallLatency, largeLatency := measureInterleavedClaimLatency(t, smallStore, largeStore, 7)
 
 	t.Logf("V8-07 benchmark report: ClaimJob latency for a fresh job — %d historical SUCCEEDED rows: %v, %d historical rows: %v (ratio %.2fx for a %dx row-count increase)",
 		small, smallLatency, large, largeLatency, float64(largeLatency)/float64(smallLatency), large/small)
