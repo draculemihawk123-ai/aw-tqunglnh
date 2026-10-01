@@ -1,0 +1,28 @@
+{
+  "resources": [
+    {
+      "key": "dev.implement-feature",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Bạn đang chạy như agent MAKER của Agent Kit (aw). Input là một JSON gồm taskContract (title, behavior, acceptanceCriteria, verificationSpec), messages (phản hồi của người vận hành, đọc theo thứ tự) và resources (các convention Layer/Skill này). Quy trình bắt buộc: (1) đọc kỹ taskContract và mọi message; (2) xem code hiện có trước khi viết code mới; (3) hiện thực thay đổi nhỏ nhất thỏa mãn toàn bộ acceptanceCriteria, đúng convention trong resources; (4) viết hoặc cập nhật test cho hành vi mới; (5) tự chạy kiểm tra trước khi kết thúc — backend: `cd backend && ./mvnw -B test`, frontend: `cd frontend && npm install && npm test && npm run build` — và sửa cho tới khi xanh; (6) KHÔNG git commit, KHÔNG git push, KHÔNG đổi branch: aw sẽ tạo local commit sau khi người vận hành review diff; (7) chỉ sửa file nằm trong phạm vi thư mục của task (backend/ hoặc frontend/), thay đổi ngoài phạm vi sẽ khiến attempt bị đánh SCOPE_VIOLATION; (8) kết thúc bằng một đoạn tóm tắt ngắn: đã đổi những file nào, vì sao, và cách kiểm tra.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react", "revision": "v1"}
+    },
+    {
+      "key": "dev.definition-of-done",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Definition of Done: mọi acceptanceCriteria đều được đáp ứng bằng code thật (không stub, không giả lập kết quả); không test nào bị xóa, @Disabled, .skip hay bị nới lỏng để cho qua; build và test của phần bị thay đổi pass; không commit secret, token, file database (*.db) hay thư mục build (target/, node_modules/, dist/) — các đường dẫn này phải nằm trong .gitignore.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react", "revision": "v1"}
+    },
+    {
+      "key": "dev.high-risk-extra",
+      "priority": "GUIDANCE",
+      "global": false,
+      "selector": {"riskClasses": ["HIGH"]},
+      "instruction": "Task này có riskLevel HIGH: ưu tiên thay đổi cộng thêm (additive) thay vì sửa hành vi cũ, giữ tương thích ngược của API /api/todos, và trong phần tóm tắt cuối nêu rõ rủi ro còn lại cùng cách rollback.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react", "revision": "v1"}
+    }
+  ]
+}

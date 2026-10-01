@@ -1,0 +1,7 @@
+{
+  "projectId": "PROJECT_ID",
+  "title": "Todolist MVP",
+  "initialScope": [
+    {"repositoryId": "todolist", "access": "WRITE", "reason": "Xây dựng ứng dụng todolist (backend/ + frontend/)"}
+  ]
+}

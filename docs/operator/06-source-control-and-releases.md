@@ -11,18 +11,35 @@ commit cục bộ thật nằm trong chính lịch sử repository của bạn �
 ## Vòng đời ReleaseSet
 
 ```bash
-echo '{"familyId":"<taskFamilyId>"}' | aw release-set create --project-id <id> --idempotency-key rs-1
+echo '{"repositories":[{"repositoryId":"<repoId>","baseVcsObjectId":"<commit>","resultVcsObjectId":"<commit>","verdict":"PASS"}]}' \
+  | aw release-set create --project-id <id> --family-id <taskFamilyId> --idempotency-key rs-1
+aw release-set seal --expected-version 1 --idempotency-key seal-1 --yes <releaseSetId>
 ```
 
 Một ReleaseSet gom một hoặc nhiều commit cục bộ thật mà một task family tạo ra trước khi chúng được coi là
-"xong". Sau khi đã tạo:
+"xong". Sau khi đã tạo (và seal):
 
 ```bash
-echo '{"authorName":"you","authorEmail":"you@example.com","message":"my commit",
-       "releaseSetId":"<id>","repositoryWorkspaceId":"<id>",
-       "expectedReleaseSetVersion":1,"expectedWorkspaceVersion":1}' \
-  | aw release-set local-commit --project-id <id> --idempotency-key commit-1 --wait --wait-timeout 30s
+aw release-set local-commit --project-id <id> --release-set-id <releaseSetId> \
+  --repository-workspace-id <repositoryWorkspaceId> --expected-release-set-version 2 --expected-workspace-version 1 \
+  --author-name you --author-email you@example.com --message "my commit" \
+  --idempotency-key commit-1 --yes --wait --wait-timeout 30s
 ```
+
+> **Ghi chú khi dịch (kiểm chứng lại trên binary build từ commit `7d0fb4c`, 2026-10-01):** hai ví dụ ở trên đã được
+> sửa so với bản gốc tiếng Anh cho khớp binary hiện tại:
+> - `release-set create` nhận family qua flag `--family-id` và body bắt buộc có `repositories` (mỗi mục:
+>   `repositoryId`, `baseVcsObjectId`, `resultVcsObjectId`, `verdict`); body `{"familyId": ...}` bị từ chối với
+>   `repositories: at least one entry is required`.
+> - `release-set local-commit` nhận mọi tham số qua **flag** (không đọc body JSON) và cần `--yes`. Luồng đã chạy thật
+>   là `create` → `seal` → `local-commit` (giống acceptance test `internal/integration/v6accept/stage_release_test.go`);
+>   `repositoryWorkspaceId`, version và `currentRevision` lấy từ `aw workspace-set show --project-id <id> <familyId>`.
+> - `release-set abandon` chỉ dùng được khi ReleaseSet còn mở; ReleaseSet đã seal báo
+>   `release set is not open (already sealed or abandoned)`.
+> - Local commit trên worktree không có thay đổi không kết thúc bằng lỗi có kiểu: job retry tới `DEAD` và local commit
+>   kẹt ở `REQUESTED`, nên `--wait` hết hạn. Hãy kiểm tra `git status` của worktree trước khi commit.
+>
+> Ví dụ đầy đủ, có script: [hướng dẫn todolist](../guides/todolist-spring-react/README.md#55-commit--sau-mỗi-task-trước-task-tiếp-theo).
 
 Đây là một lệnh `git commit` THẬT trên repository workspace thật, được rào bởi CẢ version optimistic-concurrency
 của ReleaseSet LẪN version của RepositoryWorkspace — hai worker tranh nhau commit vào cùng một workspace thì bên
@@ -30,8 +47,8 @@ thua nhận một `CONFLICT` thật, có kiểu, không bao giờ là một lị
 khi job commit đạt trạng thái terminal.
 
 ```bash
-aw release-set seal --expected-version <n> --idempotency-key seal-1 <releaseSetId>   # không cho commit thêm nữa
-aw release-set abandon --expected-version <n> --idempotency-key abandon-1 <releaseSetId>  # bỏ đi, không bao giờ được áp dụng
+aw release-set seal --expected-version <n> --idempotency-key seal-1 --yes <releaseSetId>   # chốt danh sách repository của ReleaseSet
+aw release-set abandon --expected-version <n> --idempotency-key abandon-1 --yes <releaseSetId>  # bỏ đi, không bao giờ được áp dụng (chỉ khi còn mở)
 aw release-set show <releaseSetId>
 aw release-set list --project-id <id>
 ```

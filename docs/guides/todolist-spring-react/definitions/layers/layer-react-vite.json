@@ -1,0 +1,28 @@
+{
+  "resources": [
+    {
+      "key": "react.project-structure",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "convention": "Frontend nằm trọn trong thư mục frontend/ của repository: React 18+ với TypeScript, tạo bằng Vite (template react-ts), quản lý package bằng npm và commit package-lock.json. Cấu trúc: src/api (client gọi backend), src/components (component hiển thị, thuần props), src/hooks (state + gọi API, ví dụ useTodos), src/types.ts (kiểu Todo dùng chung). Function component + hooks, không dùng class component. TypeScript strict, không dùng any. Không sửa file nào nằm ngoài frontend/.",
+      "provenance": {"owner": "team-frontend", "source": "docs/guides/todolist-spring-react", "revision": "v1"}
+    },
+    {
+      "key": "react.api-client",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "convention": "Mọi lời gọi backend đi qua một module duy nhất src/api/todos.ts dùng fetch, với đường dẫn tương đối /api/todos (không hard-code http://localhost:8080). vite.config.ts cấu hình server.proxy '/api' -> 'http://localhost:8080' cho môi trường dev. Kiểu dữ liệu Todo khớp đúng hợp đồng backend: { id: number; title: string; completed: boolean; createdAt: string; updatedAt: string }. Response lỗi (ProblemDetail) được hiển thị cho người dùng bằng một thông báo dễ hiểu, không nuốt lỗi.",
+      "provenance": {"owner": "team-frontend", "source": "docs/guides/todolist-spring-react", "revision": "v1"}
+    },
+    {
+      "key": "react.testing",
+      "priority": "GUIDANCE",
+      "global": true,
+      "selector": {},
+      "convention": "Test bằng Vitest + @testing-library/react + jsdom; script `npm test` trong package.json phải là `vitest run` (chạy một lần rồi thoát, không watch). Mock fetch trong test, không gọi backend thật. Mỗi component tương tác (thêm, đánh dấu hoàn thành, xóa, lọc) có ít nhất một test hành vi. `npm run build` (tsc + vite build) phải pass.",
+      "provenance": {"owner": "team-frontend", "source": "docs/guides/todolist-spring-react", "revision": "v1"}
+    }
+  ]
+}

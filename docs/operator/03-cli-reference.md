@@ -113,9 +113,16 @@ POLICY --yes` thì không (các flag bị đảo vị trí sẽ bị đọc như
 # Query: không có body, bắt buộc --project-id cho resource có scope project
 aw work-item show --project-id <projectId> <workItemId>
 
-# Mutation: body qua stdin, bắt buộc --expected-version (đây là update), --yes vì không tương tác
-echo '{}' | aw work-item mark-ready --expected-version 1 --idempotency-key my-key --yes <workItemId>
+# Mutation: body qua stdin, bắt buộc --expected-version (đây là update)
+echo '{}' | aw work-item mark-ready --expected-version 1 --idempotency-key my-key <workItemId>
 ```
+
+> **Ghi chú khi dịch (kiểm chứng lại trên binary build từ commit `7d0fb4c`, 2026-10-01):** bản gốc tiếng Anh có thêm
+> `--yes` trong ví dụ `mark-ready` ở trên, nhưng `work-item mark-ready` không phải lệnh high-impact và từ chối `--yes`
+> (`flag provided but not defined: -yes`), nên ví dụ đã được sửa. Các lệnh đã xác nhận **cần** `--yes` khi chạy không
+> tương tác: `definition publish`, `adapter register`, `release-set seal`, `release-set local-commit`, `run cancel`,
+> `work-item cancel`. Các lệnh **không** nhận `--yes`: `definition create`, `work-item mark-ready`,
+> `pack-assignment assign`, `release-set create`, `message append`.
 
 Xem [01-quickstart.md](01-quickstart.md) để có một walkthrough đầy đủ, thật, nhiều lệnh từ một bản cài mới cho
 tới một run hoàn tất, và [08-backup-and-restore.md](08-backup-and-restore.md) cho binary `aw-maintenance` riêng

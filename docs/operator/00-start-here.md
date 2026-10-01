@@ -28,6 +28,10 @@ multi-tenant — một bản cài `aw` chỉ phục vụ máy của chính một
 | Sao lưu hoặc khôi phục một bản cài | [08-backup-and-restore.md](08-backup-and-restore.md) |
 | Nâng cấp lên bản phát hành mới, hoặc rollback | [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md) |
 | Chẩn đoán một lỗi | [09-troubleshooting.md](09-troubleshooting.md) |
+| Xem một ví dụ đầy đủ: Layer/Skill/Engineering Pack, agent Claude, workflow tùy biến cho project Spring Boot + SQLite + React | [../guides/todolist-spring-react/README.md](../guides/todolist-spring-react/README.md) |
+
+> **Ghi chú khi dịch:** bản dịch giữ nguyên nội dung gốc; những chỗ binary hiện tại (commit `7d0fb4c`) khác với bản
+> gốc được đánh dấu bằng khối "Ghi chú khi dịch" ngay tại chỗ (03, 04, 05, 06).
 
 ## Ngoài phạm vi (nói rõ ra, để bạn khỏi phải tìm ở đây)
 

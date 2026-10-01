@@ -63,6 +63,11 @@ nội dung script đó dưới một số version mới sẽ dùng lại đúng 
  "output": {"captureStdout": true, "captureStderr": true, "maxOutputBytes": 65536}}
 ```
 
+> **Ghi chú khi dịch (kiểm chứng lại 2026-10-01):** `argv` không được rỗng; và một Command khai
+> `"networkAccess": "ALLOWED"` thì **chính Command document** phải có `policyRefs` trỏ tới một PERMISSION policy với
+> `"grantedCapabilities": ["NETWORK_ACCESS"]`, nếu không node COMMAND fail ngay với `VALIDATION_FAILED`.
+> `envAllowlist` của Command quyết định biến môi trường nào (ví dụ `PATH`, `HOME`) được truyền cho script.
+
 `cwdRepositoryTarget` phải là một repository ID thật **đối với một COMMAND node** (được resolve theo effective
 scope của chính node run đó tại thời điểm thực thi — một repository không nằm trong scope sẽ fail admission);
 đối với command của một **MACHINE_GATE**, trường này bắt buộc theo schema nhưng không bao giờ thực sự được
@@ -142,6 +147,23 @@ hãy tham khảo `docs/design/04-v2-definition-plane.md` và `internal/domain/{b
 schema chính xác trước khi soạn, và coi mục này là một con trỏ, không phải tham chiếu đã kiểm chứng, cho tới khi
 một lượt kiểm chứng sau chạy chúng từ đầu tới cuối.
 
+> **Ghi chú khi dịch (2026-10-01):** LAYER, ENGINEERING_PACK, CONTEXT policy có `resourceRefs`, AGENT_PROFILE, node
+> AGENT/COMMAND/APPROVAL và vòng lặp có `cyclePolicy` đã được chạy từ đầu tới cuối trong
+> [hướng dẫn todolist Spring Boot + SQLite + React](../guides/todolist-spring-react/README.md) (Phần 2 và Phần 6),
+> kèm file JSON và script publish dùng lại được. Tóm tắt dạng document:
+>
+> ```json
+> {"resources": [{"key": "spring.rest-api", "convention": "...", "priority": "HARD_CONSTRAINT", "global": true,
+>   "selector": {}, "provenance": {"owner": "team", "source": "docs", "revision": "v1"}}]}
+> {"dependencies": [{"kind": "LAYER", "definitionId": "...", "versionId": "..."}, {"kind": "SKILL", "definitionId": "...", "versionId": "..."}]}
+> {"category": "CONTEXT", "context": {"selector": ["..."], "budget": {"maxTokens": 65536},
+>   "resourceRefs": [{"ownerVersionId": "<layer/skill version>", "resourceKey": "...", "contentHash": "sha256:..."}]}}
+> ```
+>
+> (lần lượt: LAYER — SKILL giống hệt nhưng dùng `instruction` thay cho `convention`; ENGINEERING_PACK; CONTEXT policy.)
+> Runtime Alpha chọn resource cho agent **chỉ** từ `resourceRefs` của CONTEXT policy mà agent profile trỏ tới;
+> pack-assignment (`aw pack-assignment assign`) được lưu và hiển thị nhưng không ảnh hưởng prompt.
+
 ## `aw definition list` / `show` / `versions` / `version show` / `version diff`
 
 Các query chỉ-đọc trên mọi thứ đã publish cho tới nay:
@@ -153,3 +175,11 @@ aw definition versions <definitionId>                     # mọi version đã p
 aw definition version show <definitionId> <versionNumber> # document đã compile đầy đủ của một version
 aw definition version diff <definitionId> <v1> <v2>        # diff theo từng trường giữa hai version
 ```
+
+> **Ghi chú khi dịch (kiểm chứng lại 2026-10-01):** với binary hiện tại, `definition show` và `definition versions`
+> bắt buộc `--kind` (`aw definition versions --kind WORKFLOW --project-id <id> <definitionId>`). Không có action
+> `definition version`; lệnh tương ứng là `aw version show <versionId>` / `aw version diff <versionIdA> <versionIdB>`
+> nhưng từ `version` bị lệnh tiến trình `aw version` chiếm trước nên luôn báo `version takes no arguments`. Để so sánh
+> hai version, dùng HTTP của `aw serve`:
+> `curl -s "http://127.0.0.1:<port>/projects/<projectId>/definitions/versions/diff?a=<versionIdA>&b=<versionIdB>"`
+> (bỏ `/projects/<projectId>` với definition scope installation), hoặc trang Definitions trên UI.

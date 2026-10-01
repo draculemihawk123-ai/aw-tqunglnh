@@ -22,6 +22,16 @@ subcommand để có flag chính xác; đây là một khái niệm thực sự 
 `--claude-executable`/`--codex-executable` ở trên (các flag đó đăng ký provider NÓI CHUNG; adapter build là
 snapshot capability cụ thể, có version, mà một workflow pin vào).
 
+> **Ghi chú khi dịch (kiểm chứng lại 2026-10-01 với provider giả lập `cmd/fake-claude`):**
+> - Mỗi lần admit một node AGENT, worker đo lại adapter build và so với build đã pin; lệch là blocker
+>   `ADAPTER_BUILD_DRIFT` (run đứng ở `RUNNING`, WorkItem `BLOCKED`). Worker dùng **`os` và `goVersion` của chính
+>   binary `aw`** (`aw version --json`), SHA-256 của file executable, `protocolVersion` (`claude-stream-json/v1` cho
+>   Claude) và capability manifest. Vì vậy `aw adapter probe --toolchain` phải là `goVersion` của `aw`, không phải
+>   phiên bản của Claude CLI; và `aw adapter register` cần `--yes`.
+> - Tiến trình agent được spawn với **environment rỗng**; `aw worker --env-allowlist` chỉ áp dụng cho command, không
+>   áp dụng cho agent. Claude CLI thật cần `HOME`/`PATH`, nên hãy trỏ `--claude-executable` tới một wrapper tự đặt các
+>   biến này. Ví dụ đầy đủ: [hướng dẫn todolist, mục 1.4 và 3.3](../guides/todolist-spring-react/README.md#14-wrapper-cho-claude-cli-bắt-buộc).
+
 ## Các isolation tier
 
 Hai giá trị (`internal/domain/policy/policy.go`):
