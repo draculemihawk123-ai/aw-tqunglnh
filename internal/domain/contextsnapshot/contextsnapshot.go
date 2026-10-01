@@ -112,12 +112,14 @@ type Snapshot struct {
 	MessageRefs  []MessageRef
 	ResourceRefs []ResourceRef
 	// EvidenceRefs is V5-12's own checker input allowlist addition
-	// (2026-09-10) — empty for every MAKER/COMMAND/MACHINE_GATE Attempt
-	// (unchanged behavior), populated only for a CHECKER-role AGENT
-	// Attempt, whose caller (internal/app/runtime/schedule.go) gathers it
-	// instead of MessageRefs. Unlike MessageRefs/ResourceRefs, order
-	// carries no meaning here (this is not a rendered transcript), so
-	// NewSnapshot sorts it for canonicalization.
+	// (2026-09-10) — empty for every COMMAND/MACHINE_GATE Attempt (unchanged
+	// behavior), populated for a CHECKER-role AGENT Attempt, whose caller
+	// (internal/app/runtime/schedule.go) gathers it instead of MessageRefs,
+	// and, since V9-02 (ADR-031 decision 6), for a MAKER AGENT Attempt that a
+	// check's failureOutcome edge sent back (the failing check's own
+	// evidence, next to the MessageRefs it always had). Unlike
+	// MessageRefs/ResourceRefs, order carries no meaning here (this is not a
+	// rendered transcript), so NewSnapshot sorts it for canonicalization.
 	EvidenceRefs []EvidenceRef
 	Revisions    workspace.RevisionSet
 	ManifestHash string

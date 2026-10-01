@@ -339,6 +339,18 @@ func ScheduleExecutableNodeRun(
 			for i, m := range messages {
 				messageRefs[i] = contextsnapshot.MessageRef{MessageID: string(m.ID)}
 			}
+			// V9-02 (ADR-031 decision 6): a MAKER activated through the edge
+			// leaving a check's failureOutcome gets the failing check's
+			// Evidence rows in its snapshot, next to the messages it always
+			// had — AssembleAgentExecutionRequest renders them into its prompt.
+			// nil for every other activation, so those snapshots (and their
+			// manifest hashes) are unchanged.
+			if node.Type == workflow.NodeAgent {
+				evidenceRefs, err = gatherCheckFailureEvidenceRefs(ctx, tx, run, document, nodeRun)
+				if err != nil {
+					return err
+				}
+			}
 		}
 
 		// V5-08B0: ResourceRefs is gathered for real — resolve node's own

@@ -63,8 +63,13 @@ type instructionArtifactContent struct {
 		AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
 		VerificationSpec   string   `json:"verificationSpec"`
 	} `json:"taskContract"`
-	Messages  []instructionMessage  `json:"messages"`
-	Resources []instructionResource `json:"resources"`
+	// CheckFailures (V9-02, ADR-031 decision 6) is present only for a MAKER
+	// activated through a check's failureOutcome edge: the failing check's
+	// WHAT/WHY/FIX (check_failure_context.go). omitempty keeps every other
+	// prompt byte-for-byte what it was.
+	CheckFailures []instructionCheckFailure `json:"checkFailures,omitempty"`
+	Messages      []instructionMessage      `json:"messages"`
+	Resources     []instructionResource     `json:"resources"`
 }
 
 type instructionMessage struct {
@@ -118,6 +123,12 @@ func AssembleAgentExecutionRequest(
 			return ports.AgentExecutionRequest{}, fmt.Errorf("runtime: open message %s content artifact: %w", m.messageID, err)
 		}
 		content.Messages = append(content.Messages, instructionMessage{MessageID: m.messageID, Role: m.role, Content: body})
+	}
+	if len(gathered.checkFailures) > 0 {
+		content.CheckFailures, err = renderCheckFailures(ctx, store, gathered.checkFailures)
+		if err != nil {
+			return ports.AgentExecutionRequest{}, err
+		}
 	}
 	for _, r := range gathered.resources {
 		content.Resources = append(content.Resources, instructionResource{
@@ -253,6 +264,7 @@ type assembledRequestInputs struct {
 	allowedCapabilities []string
 	workspaceMounts     []ports.AgentWorkspaceMount
 	messages            []assembledMessageInput
+	checkFailures       []assembledCheckFailureInput
 	resources           []contextassembler.Candidate
 	allowedOutcomes     []string
 	// recoveryCheckpointID is V5-13's own recovery marker (2026-09-11):
@@ -394,6 +406,20 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		resources = append(resources, candidate)
 	}
 
+	// V9-02 (ADR-031 decision 6): the Evidence a MAKER's snapshot pins is the
+	// failing check that sent it back here (schedule.go,
+	// gatherCheckFailureEvidenceRefs) — resolved now, rendered in Phase 2. A
+	// CHECKER's snapshot also carries EvidenceRefs (its predecessors'), but
+	// those are V5-12's input allowlist for a different reader and are left
+	// exactly as they were.
+	var checkFailures []assembledCheckFailureInput
+	if profile.Role != workflow.AgentRoleChecker && len(snapshot.EvidenceRefs) > 0 {
+		checkFailures, err = gatherCheckFailureInputs(ctx, tx, snapshot.EvidenceRefs)
+		if err != nil {
+			return assembledRequestInputs{}, err
+		}
+	}
+
 	mounts := assembleWorkspaceMounts(nodeRun.EffectiveScope, snapshot.Revisions.Entries())
 	// V5-12 contract 3 (2026-09-10): a CHECKER-role AGENT node's own
 	// mounts are ALWAYS forced read-only, regardless of what
@@ -425,7 +451,7 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		effectiveScope: nodeRun.EffectiveScope, executionProfileHash: attempt.ExecutionProfileHash,
 		timeoutSeconds: profile.TimeoutSeconds, model: profile.Model,
 		isolationTier: profile.IsolationTier, allowedCapabilities: profile.AllowedCapabilities,
-		workspaceMounts: mounts, messages: messages, resources: resources, allowedOutcomes: allowedOutcomes,
+		workspaceMounts: mounts, messages: messages, checkFailures: checkFailures, resources: resources, allowedOutcomes: allowedOutcomes,
 		workItemID: string(workItem.ID), workItemTitle: workItem.Title, workItemBehavior: workItem.Behavior,
 		workItemVerificationSpec: workItem.VerificationSpec, workItemAcceptanceCriteria: acceptance,
 		recoveryCheckpointID: recoveryCheckpointID,
