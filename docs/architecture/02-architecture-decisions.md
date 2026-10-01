@@ -10,8 +10,11 @@
 > ADR-029 chốt ngày 2026-09-24, mở đầu V7 (UI Alpha) — quyết định framework/toolchain bằng evidence
 > theo yêu cầu V7-01.
 >
+> ADR-030…033 chốt ngày 2026-10-01 cho V9 (`docs/design/12-v9-harness-alignment.md`, task V9-00): orchestrator
+> viết và chốt theo ủy quyền của product owner; product owner duyệt ở PR của V9-00.
+>
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -857,9 +860,139 @@ SSR, không meta-framework Next.js/Remix), giữ path alias `@` → `src`. Toàn
   giá định tính có căn cứ (ecosystem, learning curve, yêu cầu không-SSR) cho các ứng viên còn lại.
 - **Nguồn:** V7-01 (`docs/design/09-v7-alpha-ui.md`).
 
-## 32. Baseline sau review thiết kế
+## 32. ADR-030 — Read-only của attempt đo so với trạng thái worktree lúc attempt bắt đầu
 
-ADR-001…029 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** V5-12 khóa rằng checker nhận "requirement/diff/evidence" của maker và chạy với context riêng. Nhưng
+read-only của CHECKER và MACHINE_GATE hiện được kiểm bằng `validateStrictlyReadOnlyDiffs`
+(`internal/app/runtime/agent_node_executor_resources.go`). Hàm này coi attempt vi phạm scope khi
+`WorkspaceDiff.Files` khác rỗng. `Files` lấy từ `git status` so với `HEAD` (`internal/adapters/gitworktree/provider.go`,
+`Diff`), còn thay đổi của maker chỉ được commit ở bước ReleaseSet/local commit (ADR-014). Hệ quả: đặt CHECKER hoặc
+MACHINE_GATE sau một MAKER trong cùng run thì attempt read-only **luôn** bị `SCOPE_VIOLATION`, dù checker không sửa
+gì. Điều này đã tái hiện khi chạy thật (G1 trong `docs/harness-engineering/15-doi-chieu-v9.md`), và làm HE-09-M04,
+HE-05-M06, HE-14-M08 không đạt được trong một workflow.
+
+**Quyết định:**
+
+1. Trước khi dispatch một attempt read-only (AGENT role `CHECKER`, `MACHINE_GATE`), engine chụp `InputTree` cho từng
+   RepositoryWorkspace được mount. `InputTree` là tree object nội dung của working tree: mọi file tracked và mọi file
+   untracked không bị ignore. Nó được tạo bằng một index tạm riêng (`GIT_INDEX_FILE`), nên không chạm index của
+   worktree, và không tạo commit, ref hay branch nào.
+2. `InputTree` được ghi vào bản ghi đầu vào bất biến của attempt, trong cùng transaction lên lịch attempt và trước khi
+   dispatch. `InputTree` **không** được ghi vào `workspace.Revision`, vì `Revision.VCSObjectID` luôn là commit.
+3. Sau khi xác nhận quiescence, engine chụp `OutputTree` theo cùng cách. Attempt read-only đạt khi
+   `OutputTree == InputTree` trên mọi mount. Nếu khác, kết quả vẫn là `SCOPE_VIOLATION` như hiện nay, nhưng kèm danh
+   sách path khác nhau giữa hai tree.
+4. Diff mà checker hoặc gate nhận làm evidence là diff giữa base revision đã commit của run và `InputTree`, tức đúng
+   phần thay đổi chưa commit mà các node trước để lại.
+5. Kiểm tra scope của MAKER không đổi: vẫn đo so với revision đã commit, theo `pathScopes`.
+6. Port workspace thêm hai thao tác: `SnapshotTree(handle) → treeID` và `DiffTrees(handle, a, b) → []path`. Adapter
+   `gitworktree` hiện thực bằng plumbing: `add -A` vào index tạm, `write-tree`, `diff-tree`.
+
+**Hệ quả:**
+
+- Workflow `maker → checker` và `maker → machine gate` chạy được trong một run; read-only vẫn fail-closed.
+- Tree object không có ref nên có thể bị `git gc` dọn sau thời hạn prune. Điều này chấp nhận được vì tree chỉ được
+  dùng trong vòng đời một attempt. Nếu recovery không tìm thấy `InputTree`, attempt mới được `Start` lại và chụp
+  `InputTree` mới, không đoán.
+- Tương thích ngược: trên worktree sạch, `InputTree` bằng tree của `HEAD`, nên kết quả trùng với cách kiểm cũ.
+
+## 33. ADR-031 — Outcome cho kết quả fail chức năng của COMMAND và MACHINE_GATE
+
+**Bối cảnh:** COMMAND thoát mã khác 0 trả Attempt `FAILED` với `CodeExecutionFailed` và **không** persist evidence
+(`internal/app/runtime/command_node_executor.go`). MACHINE_GATE có verdict khác PASS thì persist evidence, nhưng
+Attempt cũng `FAILED` (`gate_node_executor.go`). Sau khi hết lượt retry, NodeRun `FAILED` làm cả run `FAILED`.
+Outcome của COMMAND/MACHINE_GATE hiện chỉ được suy ra khi node có đúng một outcome (`resolveSelectedOutcome`). Vì
+vậy không có cách khai báo cạnh "kiểm tra fail → quay lại maker" có giới hạn (HE-09-M07, HE-14-M03), và lần fail
+không để lại gì cho maker đọc (HE-09-M03, HE-09-M08). Đây là G2 trong `15-doi-chieu-v9.md`. ADR-026 chỉ giới hạn
+`ROUTER`, không nói gì về node kiểm tra.
+
+**Quyết định:**
+
+1. `CommandNodeConfig` và `MachineGateNodeConfig` có thêm trường tùy chọn `failureOutcome`.
+2. Khi khai `failureOutcome`, node phải khai **đúng hai** outcome: `failureOutcome` và một outcome thành công. Publish
+   từ chối nếu khác. Edge từ `failureOutcome` tuân theo quy tắc vòng lặp hiện có, tức vòng phải có `cyclePolicy`.
+3. Kết quả của node kiểm tra được phân ba loại, và không loại nào được map sang loại khác:
+   - **Thành công:** COMMAND thoát mã 0 và output không bị cắt; MACHINE_GATE verdict `PASS`. Node chọn outcome thành
+     công, như hiện nay.
+   - **Fail chức năng:** COMMAND kết thúc bình thường với mã khác 0; MACHINE_GATE `OverallVerdict = FAIL`.
+     - Có `failureOutcome`: Attempt `SUCCEEDED`, NodeRun `SUCCEEDED` với outcome `failureOutcome`, evidence verdict
+       `FAILED`/`FAIL`. Không retry theo ATTEMPT policy, vì đây là kết quả xác định.
+     - Không có `failureOutcome`: giữ hành vi hiện nay (Attempt `FAILED` → retry → NodeRun `FAILED`).
+   - **Lỗi kỹ thuật:** timeout, tiến trình bị kill, không spawn được, output bị cắt, vi phạm scope, mất lease,
+     MACHINE_GATE `ERROR`/`NOT_RUN`. Giữ nguyên hành vi hiện nay (retry, `FAILED` hoặc `INDETERMINATE`); **không bao
+     giờ** map sang `failureOutcome`.
+4. COMMAND **luôn** persist evidence `COMMAND_EXECUTION` khi tiến trình kết thúc, kể cả khi mã thoát khác 0. Evidence
+   gồm argv, cwd/target, exit code, thời gian, revision, và artifact stdout/stderr đã redact, giới hạn theo
+   `maxOutputBytes` và có cờ "đã cắt". Exit khác 0 có verdict `FAILED` (thêm hằng `EvidenceVerdictFailed`). Quy tắc
+   này áp dụng cả khi node không khai `failureOutcome`, vì nó chỉ thêm dữ liệu, không đổi transition.
+5. Completion giữ nguyên: chỉ xét evidence của lần kích hoạt mới nhất của mỗi node
+   (`gatherCompletionCandidateEvidence`), và chỉ verdict `SUCCEEDED`/`PASS`/`NOT_APPLICABLE` thỏa yêu cầu. Vòng
+   "fail → sửa → pass" vì vậy hoàn thành bình thường; một node kết thúc bằng fail sẽ không thỏa completion.
+6. ADR-026 không đổi: `ROUTER` vẫn một outcome. Định tuyến theo kết quả kiểm tra đi qua chính node kiểm tra.
+
+**Hệ quả:** workflow vẽ được `build → test --failed--> build` với `cyclePolicy`. Maker ở vòng sau nhận evidence của
+lần fail. Workflow đã publish không khai `failureOutcome` giữ nguyên transition.
+
+## 34. ADR-032 — Instruction artifact schema v2: ưu tiên, outcome hợp lệ và thứ tự
+
+**Bối cảnh:** instruction gửi agent hiện có dạng `{taskContract, messages, resources}`
+(`internal/app/runtime/assemble_execution_request.go`). Mỗi resource chỉ có
+`ownerVersionId/resourceKey/contentHash/content`, không có priority. Resource HARD_CONSTRAINT đứng sau toàn bộ
+message, cuối prompt là REFERENCE, và prompt không nói outcome nào hợp lệ dù node nhiều outcome bắt buộc marker. Agent
+vì vậy không phân biệt được luật bắt buộc với gợi ý (HE-04-M03 ở phía agent), luật quan trọng nằm giữa prompt
+("lost in the middle" của lecture 04), và người vận hành phải tự chép danh sách outcome vào Skill (HE-14-M02,
+HE-14-M07). Đây là G3. V5-08B0 khóa rằng cùng một snapshot phải cho cùng instruction và cùng hash.
+
+**Quyết định:**
+
+1. Thêm schema v2 cho instruction artifact, với thứ tự trường cố định:
+   1. `schemaVersion: 2`;
+   2. `hardConstraints[]`: các resource HARD_CONSTRAINT;
+   3. `taskContract`: `workItemId`, `title`, `behavior`, `acceptanceCriteria`, `verificationSpec`, `riskLevel`,
+      `allowedOutcomes[]`, và `outcomeProtocol` khi node có hơn một outcome;
+   4. `resources[]`: các resource còn lại theo thứ tự REQUIRED_PROCEDURE → GUIDANCE → REFERENCE, mỗi phần tử có
+      `priority`;
+   5. `messages[]`;
+   6. `closingChecklist`: `resourceKey` của mọi HARD_CONSTRAINT và `allowedOutcomes`.
+2. Schema được chọn theo ContextSnapshot. Snapshot tạo sau thay đổi này ghi `instructionSchemaVersion = 2` (migration
+   mới). Snapshot không có trường đó được lắp theo v1 y như trước. Cùng một snapshot luôn cho cùng artifact và cùng
+   hash.
+3. `priority` lấy từ resource đã pin, vốn đã nằm trong content hash; `ResourceRef` không thêm trường.
+4. `outcomeProtocol` là văn bản cố định do engine sở hữu, mô tả marker `<agentkit-outcome>`; parser marker không đổi.
+5. Provider adapter không đổi: vẫn đưa JSON qua stdin.
+
+**Không làm:** chưa thêm mô tả tùy biến cho từng outcome; chưa đổi cú pháp marker. Hai việc này cần ADR riêng nếu có
+nhu cầu.
+
+## 35. ADR-033 — Run thất bại mở blocker `RUN_FAILED` để chạy lại trên cùng WorkItem
+
+**Bối cảnh:** `transitionRunToFailedTx` (`internal/app/runtime/completion.go`) chuyển run sang `FAILED` và phát
+`RUN_FAILED` nhưng **không mở blocker**. WorkItem ở lại `ACTIVE`, trong khi `StartWorkflowRun` đòi `READY`
+(`commands.go`). Đường duy nhất còn lại là hủy WorkItem rồi tạo WorkItem mới với contract gần như y hệt; lịch sử của
+cùng một việc vì vậy bị tách ra nhiều WorkItem (HE-08-M02, HE-08-M05; G6). Ngược lại, run bị hủy đã mở blocker
+`RUN_CANCELLED`, và `ResolveWorkItemBlocker` với mode `RESOLVED` đưa WorkItem về `READY`
+(`resolve_work_item_blocker.go`), nên chạy lại được trên cùng WorkItem.
+
+**Quyết định:**
+
+1. Thêm `BlockerType` `RUN_FAILED`. `transitionRunToFailedTx` mở blocker này trong cùng transaction, trừ khi run thuộc
+   một WorkItem đang bị hủy (cùng quy tắc với `openRunCancelledBlockerTx`). Mở blocker chuyển WorkItem
+   `ACTIVE → BLOCKED` như mọi blocker khác.
+2. `RUN_FAILED` resolve được qua command (`RESOLVED`) nhưng **không** waivable. Muốn bỏ việc thì dùng `CancelWorkItem`.
+3. Resolve dùng đúng `ResolveWorkItemBlocker` hiện có, với các precondition giữ nguyên: không có run non-terminal và
+   không có workspace `QUARANTINED`. Sau đó WorkItem về `READY`.
+4. Run mới dùng đúng `workflowVersionId` đã pin trong contract. Không repin, cùng nguyên tắc với
+   `RetryBlockedActivation`. Đổi workflow version hoặc contract vẫn phải tạo WorkItem mới.
+5. Message và evidence của run trước giữ nguyên trên WorkItem. Message tiếp tục đi vào context của run mới, theo giới
+   hạn của V9-07 nếu policy khai. Completion chỉ xét evidence của run hiện tại.
+6. Worktree giữ nguyên trạng thái mà run trước để lại; người vận hành có thể hoàn tác trước khi resolve.
+
+**Hệ quả:** vòng làm việc khi fail là `aw blocker resolve <id> --mode RESOLVED --reason …` rồi `aw run start`, trên
+cùng WorkItem. Kanban hiện WorkItem ở cột BLOCKED thay vì kẹt ở ACTIVE. Không cần trạng thái WorkItem mới.
+
+## 36. Baseline sau review thiết kế
+
+ADR-001…033 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -888,5 +1021,14 @@ dụng ma trận sau:
 - ADR-029 chọn framework/toolchain UI cho V7 Alpha (React 19 + Vite 8) bằng evidence từ prototype thật,
   chưa được ADR cũ khóa — không đổi authority/contract nào đã chốt ở ADR-001…028, chỉ khóa lựa chọn kỹ
   thuật phía client mở đầu V7.
+
+- ADR-030 refine read-only của CHECKER/MACHINE_GATE (V5-12): đo so với `InputTree` lúc attempt bắt đầu thay vì
+  revision đã commit, để checker/gate đặt được sau maker trong cùng run; scope của MAKER không đổi.
+- ADR-031 bổ sung outcome `failureOutcome` cho fail chức năng của COMMAND/MACHINE_GATE và evidence bắt buộc khi
+  COMMAND thoát mã khác 0; không đổi ADR-026 (`ROUTER` vẫn một outcome) và không đổi completion.
+- ADR-032 thêm instruction artifact schema v2 (priority, outcome hợp lệ, thứ tự đầu/cuối), chọn theo
+  ContextSnapshot nên snapshot cũ vẫn lắp ra đúng artifact/hash cũ.
+- ADR-033 thêm blocker `RUN_FAILED` để run thất bại đi qua đúng đường `ResolveWorkItemBlocker` sẵn có và chạy lại
+  trên cùng WorkItem, không repin.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

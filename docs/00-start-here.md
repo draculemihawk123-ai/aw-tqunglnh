@@ -114,7 +114,7 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
 | Mục | Trạng thái | Quy tắc |
 |---|---|---|
 | 1. Domain Project/Repository/TaskFamily/WorkspaceSet | Hoàn tất tài liệu baseline | Không đổi semantics nếu không có ADR mới. |
-| 2. Quyết định kiến trúc | ACCEPTED | ADR-001…028 là baseline hiện hành; ADR-028 khóa executable `aw` và UI/API/CLI parity cuối V6. |
+| 2. Quyết định kiến trúc | ACCEPTED | ADR-001…033 là baseline hiện hành; ADR-028 khóa executable `aw` và UI/API/CLI parity cuối V6; ADR-030…033 là quyết định của V9. |
 | 3. Go core architecture/spec | Hoàn tất specification baseline | Code phải bám spec hoặc tạo ADR superseding. |
 | 4. Go spike | **GO** (2026-09-01, V0-14) | SPK-01…SPK-14 đều pass thật trên Windows và Linux (CI), evidence verify được, 10/10 suite runs không flaky đúng semantics, `-race` pass trên CI. Chi tiết: [spike report](spikes/02-go-core-spike-report.md). |
 | 5. Alpha UI/runtime | **ĐÃ TRIỂN KHAI V1…V8 — verdict Alpha `ALPHA_READY`** | Toàn bộ task V1…V8 đã đóng và gate Alpha đạt `gatePass = true` trên commit `0b144f1` (mục 4A). Chi tiết: [báo cáo release Alpha](release/alpha-release-report.md). |
@@ -151,7 +151,7 @@ Alpha](release/alpha-release-report.md). Một test giữ ba nơi (JSON, báo c�
 2. [Kinh nghiệm từ claude-workflow](danh-gia-claude-workflow.md).
 3. [Tổng quan harness engineering](harness-engineering/00-tong-quan.md) và lecture liên quan.
 4. [Mô hình Project–Repository–WorkspaceSet](architecture/01-project-repository-workspace-model.md).
-5. [Architecture decisions](architecture/02-architecture-decisions.md), gồm ADR-001…028.
+5. [Architecture decisions](architecture/02-architecture-decisions.md), gồm ADR-001…033.
 6. [System architecture](architecture/03-system-architecture.md) và [Go core spec](architecture/04-go-core-spec.md).
 7. [Roadmap Alpha](design/00-roadmap.md) và [thiết kế hệ thống Alpha](design/01-system-design.md).
 8. [Go spike plan](spikes/01-go-core-spike-plan.md), rồi [spike report](spikes/02-go-core-spike-report.md).

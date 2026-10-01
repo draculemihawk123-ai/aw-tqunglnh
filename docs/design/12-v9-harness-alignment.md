@@ -1,7 +1,7 @@
 # V9 — Harness alignment sau Alpha
 
-> Trạng thái: **ĐỀ XUẤT — chờ product owner duyệt.** Chưa task nào được bắt đầu. Tài liệu chỉ được merge vào
-> `master` sau khi được duyệt; khi đó V9-00 là task đầu tiên.
+> Trạng thái: **ĐÃ DUYỆT — đang thực thi.** Product owner duyệt kế hoạch khi merge PR #143 (2026-10-01). Mỗi task
+> một PR riêng, chỉ merge khi CI xanh và product owner duyệt. ADR-030…033 đã ghi ở V9-00.
 >
 > Entry: verdict Alpha `ALPHA_READY` (`f6fd6f6`).
 >
