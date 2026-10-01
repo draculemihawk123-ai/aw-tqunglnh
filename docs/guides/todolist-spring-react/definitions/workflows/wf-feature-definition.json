@@ -16,23 +16,19 @@
       ],
       "agent": {
         "profileRef": {
-          "kind": "AGENT_PROFILE",
-          "definitionId": "agent-flow-brainstorm",
-          "versionId": "{{AGENT_FLOW_BRAINSTORM}}"
+          "$ref": "agent:agent-flow-brainstorm"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ],
-        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "adapterBuildId": {
+          "$ref": "adapter"
+        },
         "role": "MAKER"
       }
     },
@@ -45,23 +41,19 @@
       ],
       "agent": {
         "profileRef": {
-          "kind": "AGENT_PROFILE",
-          "definitionId": "agent-flow-spec",
-          "versionId": "{{AGENT_FLOW_SPEC}}"
+          "$ref": "agent:agent-flow-spec"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ],
-        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "adapterBuildId": {
+          "$ref": "adapter"
+        },
         "role": "MAKER"
       }
     },
@@ -112,23 +104,19 @@
       ],
       "agent": {
         "profileRef": {
-          "kind": "AGENT_PROFILE",
-          "definitionId": "agent-flow-design",
-          "versionId": "{{AGENT_FLOW_DESIGN}}"
+          "$ref": "agent:agent-flow-design"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ],
-        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "adapterBuildId": {
+          "$ref": "adapter"
+        },
         "role": "MAKER"
       }
     },
@@ -140,20 +128,14 @@
       ],
       "command": {
         "commandRef": {
-          "kind": "COMMAND",
-          "definitionId": "cmd-check-feature-docs",
-          "versionId": "{{CMD_CHECK_FEATURE_DOCS}}"
+          "$ref": "command:cmd-check-feature-docs"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ]
       }
@@ -189,20 +171,14 @@
       ],
       "command": {
         "commandRef": {
-          "kind": "COMMAND",
-          "definitionId": "cmd-reject",
-          "versionId": "{{CMD_REJECT}}"
+          "$ref": "command:cmd-reject"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ]
       }
@@ -305,8 +281,6 @@
     }
   ],
   "completionPolicyRef": {
-    "kind": "POLICY",
-    "definitionId": "policy-completion-feature",
-    "versionId": "{{POL_COMPLETION_FEATURE}}"
+    "$ref": "policy:policy-completion-feature"
   }
 }

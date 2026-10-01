@@ -1,0 +1,9 @@
+flowchart LR
+  req["Yêu cầu<br>tính năng"] --> ana["Phân tích<br>phương án"] --> spec["Viết spec<br>BR, AC"] --> pa{"PO duyệt<br>spec"}
+  pa -->|"duyệt"| des["Thiết kế<br>chia task"] --> pb{"Tech lead<br>duyệt thiết kế"}
+  pa -->|"sửa"| spec
+  pb -->|"sửa"| des
+  pb -->|"duyệt"| task["Mỗi task:<br>làm rõ, lập kế hoạch,<br>code + test"]
+  task --> ci["Build + test<br>tự động"] --> cr{"Review<br>code"}
+  cr -->|"sửa"| task
+  cr -->|"duyệt"| doc["Cập nhật<br>tài liệu, ADR"] --> commit["Commit"]

@@ -7,7 +7,7 @@
 # cần HOME để đọc thông tin đăng nhập (~/.claude) và PATH để chạy git/java/mvn/node/npm.
 #
 # Lưu ý: mỗi lần sửa file này (hoặc thay CLAUDE_BIN) phải đăng ký lại adapter build
-# (chạy lại scripts/publish-definitions.sh), nếu không AGENT node sẽ bị ADAPTER_BUILD_DRIFT.
+# (chạy lại scripts/aw-publish.py), nếu không AGENT node sẽ bị ADAPTER_BUILD_DRIFT.
 # aw chỉ băm file wrapper này, nên nâng cấp Claude CLI phía sau KHÔNG bị phát hiện là drift.
 
 # --- SỬA cho máy của bạn ---------------------------------------------------------

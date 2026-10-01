@@ -1,0 +1,86 @@
+{
+  "prefix": "todo-",
+  "repository": "todolist",
+  "provider": {"key": "claude", "model": "sonnet", "configIdentity": "todo-claude"},
+  "contextBudgetBytes": 65536,
+
+  "layers": [
+    {"id": "layer-java-spring-boot", "name": "Layer: Java 21 + Spring Boot 3.5", "file": "definitions/layers/layer-java-spring-boot.json"},
+    {"id": "layer-sqlite", "name": "Layer: SQLite + Flyway", "file": "definitions/layers/layer-sqlite.json"},
+    {"id": "layer-react-vite", "name": "Layer: React + TypeScript + Vite", "file": "definitions/layers/layer-react-vite.json"}
+  ],
+
+  "skills": [
+    {"id": "skill-todolist-dev", "name": "Skill: quy trình làm task todolist", "file": "definitions/skills/skill-todolist-dev.json"},
+    {"id": "skill-feature-flow", "name": "Skill: quy trình tính năng → task", "file": "definitions/skills/skill-feature-flow.json"}
+  ],
+
+  "scriptSkills": [
+    {"id": "scripts", "name": "Script cho các Command", "owner": "team-platform",
+     "files": ["commands/backend-test.sh", "commands/frontend-test.sh", "commands/gate1.sh",
+               "commands/check-feature-docs.sh", "commands/reject.sh"]}
+  ],
+
+  "packs": [
+    {"id": "pack-backend", "name": "Pack: backend (Spring Boot + SQLite)",
+     "include": ["layer-java-spring-boot", "layer-sqlite", "skill-todolist-dev"], "assignTo": ["backend"]},
+    {"id": "pack-frontend", "name": "Pack: frontend (React + Vite)",
+     "include": ["layer-react-vite", "skill-todolist-dev"], "assignTo": ["frontend"]}
+  ],
+
+  "policies": [
+    {"id": "policy-attempt", "name": "Attempt: 2 lần, timeout 30 phút", "file": "definitions/policies/policy-attempt.json"},
+    {"id": "policy-permission", "name": "Permission: OPERATOR_TRUSTED_LOCAL", "file": "definitions/policies/policy-permission.json"},
+    {"id": "policy-permission-network", "name": "Permission: cho phép mạng", "file": "definitions/policies/policy-permission-network.json"},
+    {"id": "policy-completion", "name": "Completion: test PASS", "file": "definitions/policies/policy-completion.json"},
+    {"id": "policy-completion-reviewed", "name": "Completion: test PASS + người duyệt", "file": "definitions/policies/policy-completion-reviewed.json"},
+    {"id": "policy-completion-feature", "name": "Completion: kiểm tra tài liệu + người duyệt", "file": "definitions/policies/policy-completion-feature.json"}
+  ],
+
+  "agents": [
+    {"id": "agent-backend-dev", "name": "Agent: backend developer",
+     "resources": ["layer-java-spring-boot", "layer-sqlite", "skill-todolist-dev"]},
+    {"id": "agent-frontend-dev", "name": "Agent: frontend developer",
+     "resources": ["layer-react-vite", "skill-todolist-dev"]},
+    {"id": "agent-fullstack-dev", "name": "Agent: fullstack developer",
+     "resources": ["layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev"]},
+
+    {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM",
+     "resources": ["skill-feature-flow#flow.outcome-protocol", "skill-feature-flow#flow.brainstorm"]},
+    {"id": "agent-flow-spec", "name": "Agent: SPEC",
+     "resources": ["skill-feature-flow#flow.outcome-protocol", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec"]},
+    {"id": "agent-flow-design", "name": "Agent: DESIGN",
+     "resources": ["skill-feature-flow#flow.outcome-protocol", "skill-feature-flow#flow.design",
+                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite"]},
+    {"id": "agent-flow-frame", "name": "Agent: FRAME",
+     "resources": ["skill-feature-flow#flow.outcome-protocol", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame"]},
+    {"id": "agent-flow-plan", "name": "Agent: PLAN",
+     "resources": ["skill-feature-flow#flow.outcome-protocol", "skill-feature-flow#flow.routing-table", "skill-feature-flow#flow.plan",
+                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite"]},
+    {"id": "agent-flow-build", "name": "Agent: BUILD",
+     "resources": ["skill-feature-flow#flow.outcome-protocol", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.build",
+                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite",
+                   "skill-todolist-dev#dev.definition-of-done", "skill-todolist-dev#dev.high-risk-extra"]},
+    {"id": "agent-flow-sync", "name": "Agent: SYNC",
+     "resources": ["skill-feature-flow#flow.outcome-protocol", "skill-feature-flow#flow.sync"]}
+  ],
+
+  "commands": [
+    {"id": "cmd-backend-test", "name": "Command: backend test", "script": "scripts#backend-test.sh",
+     "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-frontend-test", "name": "Command: frontend test + build", "script": "scripts#frontend-test.sh",
+     "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-gate1", "name": "Command: GATE 1 build + test", "script": "scripts#gate1.sh",
+     "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-check-feature-docs", "name": "Command: kiểm tra tài liệu tính năng", "script": "scripts#check-feature-docs.sh"},
+    {"id": "cmd-reject", "name": "Command: kết thúc run khi bị từ chối", "script": "scripts#reject.sh"}
+  ],
+
+  "workflows": [
+    {"id": "wf-backend-feature", "name": "Workflow: task backend", "template": "definitions/workflows/wf-backend-feature.json"},
+    {"id": "wf-frontend-feature", "name": "Workflow: task frontend", "template": "definitions/workflows/wf-frontend-feature.json"},
+    {"id": "wf-fullstack-review", "name": "Workflow: fullstack + người duyệt", "template": "definitions/workflows/wf-fullstack-review.json"},
+    {"id": "wf-feature-definition", "name": "Workflow: định nghĩa tính năng", "template": "definitions/workflows/wf-feature-definition.json"},
+    {"id": "wf-task-delivery", "name": "Workflow: giao một task", "template": "definitions/workflows/wf-task-delivery.json"}
+  ]
+}

@@ -30,6 +30,7 @@ def content_hash(resource):
         content["global"] = True
     return "sha256:" + hashlib.sha256(go_json(content).encode("utf-8")).hexdigest()
 
-doc = json.load(open(sys.argv[1], encoding="utf-8"))
-for resource in doc["resources"]:
-    print(resource["key"], content_hash(resource))
+if __name__ == "__main__":
+    doc = json.load(open(sys.argv[1], encoding="utf-8"))
+    for resource in doc["resources"]:
+        print(resource["key"], content_hash(resource))

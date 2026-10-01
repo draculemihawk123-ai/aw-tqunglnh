@@ -18,23 +18,19 @@
       ],
       "agent": {
         "profileRef": {
-          "kind": "AGENT_PROFILE",
-          "definitionId": "agent-flow-frame",
-          "versionId": "{{AGENT_FLOW_FRAME}}"
+          "$ref": "agent:agent-flow-frame"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ],
-        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "adapterBuildId": {
+          "$ref": "adapter"
+        },
         "role": "MAKER"
       }
     },
@@ -46,23 +42,19 @@
       ],
       "agent": {
         "profileRef": {
-          "kind": "AGENT_PROFILE",
-          "definitionId": "agent-flow-plan",
-          "versionId": "{{AGENT_FLOW_PLAN}}"
+          "$ref": "agent:agent-flow-plan"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ],
-        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "adapterBuildId": {
+          "$ref": "adapter"
+        },
         "role": "MAKER"
       }
     },
@@ -75,23 +67,19 @@
       ],
       "agent": {
         "profileRef": {
-          "kind": "AGENT_PROFILE",
-          "definitionId": "agent-flow-build",
-          "versionId": "{{AGENT_FLOW_BUILD}}"
+          "$ref": "agent:agent-flow-build"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ],
-        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "adapterBuildId": {
+          "$ref": "adapter"
+        },
         "role": "MAKER"
       }
     },
@@ -103,20 +91,14 @@
       ],
       "command": {
         "commandRef": {
-          "kind": "COMMAND",
-          "definitionId": "cmd-gate1",
-          "versionId": "{{CMD_GATE1}}"
+          "$ref": "command:cmd-gate1"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ]
       }
@@ -171,23 +153,19 @@
       ],
       "agent": {
         "profileRef": {
-          "kind": "AGENT_PROFILE",
-          "definitionId": "agent-flow-sync",
-          "versionId": "{{AGENT_FLOW_SYNC}}"
+          "$ref": "agent:agent-flow-sync"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ],
-        "adapterBuildId": "{{ADAPTER_BUILD}}",
+        "adapterBuildId": {
+          "$ref": "adapter"
+        },
         "role": "MAKER"
       }
     },
@@ -199,20 +177,14 @@
       ],
       "command": {
         "commandRef": {
-          "kind": "COMMAND",
-          "definitionId": "cmd-reject",
-          "versionId": "{{CMD_REJECT}}"
+          "$ref": "command:cmd-reject"
         },
         "policyRefs": [
           {
-            "kind": "POLICY",
-            "definitionId": "policy-attempt",
-            "versionId": "{{POL_ATTEMPT}}"
+            "$ref": "policy:policy-attempt"
           },
           {
-            "kind": "POLICY",
-            "definitionId": "policy-permission",
-            "versionId": "{{POL_PERMISSION}}"
+            "$ref": "policy:policy-permission"
           }
         ]
       }
@@ -315,8 +287,6 @@
     }
   ],
   "completionPolicyRef": {
-    "kind": "POLICY",
-    "definitionId": "policy-completion-reviewed",
-    "versionId": "{{POL_COMPLETION_REVIEWED}}"
+    "$ref": "policy:policy-completion-reviewed"
   }
 }

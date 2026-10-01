@@ -39,7 +39,7 @@ aw release-set local-commit --project-id <id> --release-set-id <releaseSetId> \
 > - Local commit trên worktree không có thay đổi không kết thúc bằng lỗi có kiểu: job retry tới `DEAD` và local commit
 >   kẹt ở `REQUESTED`, nên `--wait` hết hạn. Hãy kiểm tra `git status` của worktree trước khi commit.
 >
-> Ví dụ đầy đủ, có script: [hướng dẫn todolist](../guides/todolist-spring-react/README.md#55-commit--sau-mỗi-task-trước-task-tiếp-theo).
+> Ví dụ đầy đủ, có script: [hướng dẫn todolist](../guides/todolist-spring-react/README.md#46-commit--sau-mỗi-task-trước-task-tiếp-theo).
 
 Đây là một lệnh `git commit` THẬT trên repository workspace thật, được rào bởi CẢ version optimistic-concurrency
 của ReleaseSet LẪN version của RepositoryWorkspace — hai worker tranh nhau commit vào cùng một workspace thì bên

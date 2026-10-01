@@ -149,8 +149,9 @@ một lượt kiểm chứng sau chạy chúng từ đầu tới cuối.
 
 > **Ghi chú khi dịch (2026-10-01):** LAYER, ENGINEERING_PACK, CONTEXT policy có `resourceRefs`, AGENT_PROFILE, node
 > AGENT/COMMAND/APPROVAL và vòng lặp có `cyclePolicy` đã được chạy từ đầu tới cuối trong
-> [hướng dẫn todolist Spring Boot + SQLite + React](../guides/todolist-spring-react/README.md) (Phần 2 và Phần 6),
-> kèm file JSON và script publish dùng lại được. Tóm tắt dạng document:
+> [hướng dẫn todolist Spring Boot + SQLite + React](../guides/todolist-spring-react/README.md), kèm file JSON và
+> script publish dùng lại được. Mục [Cách định nghĩa workflow cho project bất kỳ](../guides/todolist-spring-react/README.md#3-cách-định-nghĩa-workflow-cho-project-bất-kỳ)
+> có bảng chọn loại node, quy tắc graph và trạng thái kiểm chứng của từng loại node. Tóm tắt dạng document:
 >
 > ```json
 > {"resources": [{"key": "spring.rest-api", "convention": "...", "priority": "HARD_CONSTRAINT", "global": true,

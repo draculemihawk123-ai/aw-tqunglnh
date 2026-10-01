@@ -1,60 +1,176 @@
 {
   "schemaVersion": "1",
   "nodes": [
-    {"key": "start", "type": "START", "outcomes": ["next"]},
-    {"key": "implement", "type": "AGENT", "outcomes": ["done"],
-     "agent": {
-       "profileRef": {"kind": "AGENT_PROFILE", "definitionId": "agent-fullstack-dev", "versionId": "{{AGENT_FULLSTACK}}"},
-       "policyRefs": [
-         {"kind": "POLICY", "definitionId": "policy-attempt", "versionId": "{{POL_ATTEMPT}}"},
-         {"kind": "POLICY", "definitionId": "policy-permission", "versionId": "{{POL_PERMISSION}}"}
-       ],
-       "adapterBuildId": "{{ADAPTER_BUILD}}",
-       "role": "MAKER"
-     }},
-    {"key": "backend-test", "type": "COMMAND", "outcomes": ["passed"],
-     "command": {
-       "commandRef": {"kind": "COMMAND", "definitionId": "cmd-backend-test", "versionId": "{{CMD_BACKEND}}"},
-       "policyRefs": [
-         {"kind": "POLICY", "definitionId": "policy-attempt", "versionId": "{{POL_ATTEMPT}}"},
-         {"kind": "POLICY", "definitionId": "policy-permission", "versionId": "{{POL_PERMISSION}}"}
-       ]
-     }},
-    {"key": "frontend-test", "type": "COMMAND", "outcomes": ["passed"],
-     "command": {
-       "commandRef": {"kind": "COMMAND", "definitionId": "cmd-frontend-test", "versionId": "{{CMD_FRONTEND}}"},
-       "policyRefs": [
-         {"kind": "POLICY", "definitionId": "policy-attempt", "versionId": "{{POL_ATTEMPT}}"},
-         {"kind": "POLICY", "definitionId": "policy-permission", "versionId": "{{POL_PERMISSION}}"}
-       ]
-     }},
-    {"key": "review", "type": "APPROVAL", "outcomes": ["approved", "rework", "rejected"],
-     "approval": {
-       "authorizedRoles": ["operator"],
-       "timeoutSeconds": 604800,
-       "escalationOutcome": "rejected",
-       "requestedEvidenceKinds": ["COMMAND_EXECUTION"]
-     },
-     "cyclePolicy": {"maxIterations": 2, "escalationOutcome": "rejected"}},
-    {"key": "reject", "type": "COMMAND", "outcomes": ["done"],
-     "command": {
-       "commandRef": {"kind": "COMMAND", "definitionId": "cmd-reject", "versionId": "{{CMD_REJECT}}"},
-       "policyRefs": [
-         {"kind": "POLICY", "definitionId": "policy-attempt", "versionId": "{{POL_ATTEMPT}}"},
-         {"kind": "POLICY", "definitionId": "policy-permission", "versionId": "{{POL_PERMISSION}}"}
-       ]
-     }},
-    {"key": "end", "type": "END"}
+    {
+      "key": "start",
+      "type": "START",
+      "outcomes": [
+        "next"
+      ]
+    },
+    {
+      "key": "implement",
+      "type": "AGENT",
+      "outcomes": [
+        "done"
+      ],
+      "agent": {
+        "profileRef": {
+          "$ref": "agent:agent-fullstack-dev"
+        },
+        "policyRefs": [
+          {
+            "$ref": "policy:policy-attempt"
+          },
+          {
+            "$ref": "policy:policy-permission"
+          }
+        ],
+        "adapterBuildId": {
+          "$ref": "adapter"
+        },
+        "role": "MAKER"
+      }
+    },
+    {
+      "key": "backend-test",
+      "type": "COMMAND",
+      "outcomes": [
+        "passed"
+      ],
+      "command": {
+        "commandRef": {
+          "$ref": "command:cmd-backend-test"
+        },
+        "policyRefs": [
+          {
+            "$ref": "policy:policy-attempt"
+          },
+          {
+            "$ref": "policy:policy-permission"
+          }
+        ]
+      }
+    },
+    {
+      "key": "frontend-test",
+      "type": "COMMAND",
+      "outcomes": [
+        "passed"
+      ],
+      "command": {
+        "commandRef": {
+          "$ref": "command:cmd-frontend-test"
+        },
+        "policyRefs": [
+          {
+            "$ref": "policy:policy-attempt"
+          },
+          {
+            "$ref": "policy:policy-permission"
+          }
+        ]
+      }
+    },
+    {
+      "key": "review",
+      "type": "APPROVAL",
+      "outcomes": [
+        "approved",
+        "rework",
+        "rejected"
+      ],
+      "approval": {
+        "authorizedRoles": [
+          "operator"
+        ],
+        "timeoutSeconds": 604800,
+        "escalationOutcome": "rejected",
+        "requestedEvidenceKinds": [
+          "COMMAND_EXECUTION"
+        ]
+      },
+      "cyclePolicy": {
+        "maxIterations": 2,
+        "escalationOutcome": "rejected"
+      }
+    },
+    {
+      "key": "reject",
+      "type": "COMMAND",
+      "outcomes": [
+        "done"
+      ],
+      "command": {
+        "commandRef": {
+          "$ref": "command:cmd-reject"
+        },
+        "policyRefs": [
+          {
+            "$ref": "policy:policy-attempt"
+          },
+          {
+            "$ref": "policy:policy-permission"
+          }
+        ]
+      }
+    },
+    {
+      "key": "end",
+      "type": "END"
+    }
   ],
   "edges": [
-    {"key": "start-implement", "from": "start", "outcome": "next", "to": "implement"},
-    {"key": "implement-backend-test", "from": "implement", "outcome": "done", "to": "backend-test"},
-    {"key": "backend-test-frontend-test", "from": "backend-test", "outcome": "passed", "to": "frontend-test"},
-    {"key": "frontend-test-review", "from": "frontend-test", "outcome": "passed", "to": "review"},
-    {"key": "review-approved", "from": "review", "outcome": "approved", "to": "end"},
-    {"key": "review-rework", "from": "review", "outcome": "rework", "to": "implement"},
-    {"key": "review-rejected", "from": "review", "outcome": "rejected", "to": "reject"},
-    {"key": "reject-end", "from": "reject", "outcome": "done", "to": "end"}
+    {
+      "key": "start-implement",
+      "from": "start",
+      "outcome": "next",
+      "to": "implement"
+    },
+    {
+      "key": "implement-backend-test",
+      "from": "implement",
+      "outcome": "done",
+      "to": "backend-test"
+    },
+    {
+      "key": "backend-test-frontend-test",
+      "from": "backend-test",
+      "outcome": "passed",
+      "to": "frontend-test"
+    },
+    {
+      "key": "frontend-test-review",
+      "from": "frontend-test",
+      "outcome": "passed",
+      "to": "review"
+    },
+    {
+      "key": "review-approved",
+      "from": "review",
+      "outcome": "approved",
+      "to": "end"
+    },
+    {
+      "key": "review-rework",
+      "from": "review",
+      "outcome": "rework",
+      "to": "implement"
+    },
+    {
+      "key": "review-rejected",
+      "from": "review",
+      "outcome": "rejected",
+      "to": "reject"
+    },
+    {
+      "key": "reject-end",
+      "from": "reject",
+      "outcome": "done",
+      "to": "end"
+    }
   ],
-  "completionPolicyRef": {"kind": "POLICY", "definitionId": "policy-completion-reviewed", "versionId": "{{POL_COMPLETION_REVIEWED}}"}
+  "completionPolicyRef": {
+    "$ref": "policy:policy-completion-reviewed"
+  }
 }

@@ -30,7 +30,7 @@ snapshot capability cụ thể, có version, mà một workflow pin vào).
 >   phiên bản của Claude CLI; và `aw adapter register` cần `--yes`.
 > - Tiến trình agent được spawn với **environment rỗng**; `aw worker --env-allowlist` chỉ áp dụng cho command, không
 >   áp dụng cho agent. Claude CLI thật cần `HOME`/`PATH`, nên hãy trỏ `--claude-executable` tới một wrapper tự đặt các
->   biến này. Ví dụ đầy đủ: [hướng dẫn todolist, mục 1.4 và 3.3](../guides/todolist-spring-react/README.md#14-wrapper-cho-claude-cli-bắt-buộc).
+>   biến này. Ví dụ đầy đủ: [hướng dẫn todolist, mục 2.4 và 3.4](../guides/todolist-spring-react/README.md#24-wrapper-cho-claude-cli-bắt-buộc).
 
 ## Các isolation tier
 

@@ -1,24 +1,19 @@
 #!/usr/bin/env bash
-# Tạo WorkItem gốc (TaskFamily + WorkspaceSet/worktree riêng, branch agentkit/w-…) và ghi ROOT_ID,
-# FAMILY_ID vào file id (mặc định ./aw-ids.env do publish-definitions.sh tạo ra).
-# Cách dùng: create-root.sh ["Tiêu đề"]   (mặc định "Todolist MVP"; mỗi tính năng nên có gốc riêng)
+# Tạo WorkItem gốc: một TaskFamily với worktree + branch agentkit/w-… riêng, tách từ commit hiện tại của
+# defaultRef. Mỗi đợt việc / mỗi tính năng nên có một gốc riêng. Ghi root vào aw-state.json.
+# Cách dùng: create-root.sh "<tiêu đề>" [repositoryId READ bổ sung…]
 set -euo pipefail
 AW=${AW:-aw}
-OUT_ENV=${OUT_ENV:-./aw-ids.env}
-HERE=$(cd "$(dirname "$0")" && pwd)
-# shellcheck disable=SC1090
-. "$OUT_ENV"
-: "${PROJECT_ID:?}"
-title=${1:-}
-key="root-$PROJECT_ID"
-[ -n "$title" ] && key="root-$(printf '%s|%s' "$PROJECT_ID" "$title" | sha256sum | cut -c1-16)"
-result=$(jq --arg p "$PROJECT_ID" --arg t "$title" '.projectId = $p | if $t != "" then .title = $t else . end' \
-    "$HERE/../work-items/root.json" \
-  | "$AW" work-item create --project-id "$PROJECT_ID" --idempotency-key "$key")
-ROOT_ID=$(jq -er '.result.workItemId' <<<"$result")
-FAMILY_ID=$(jq -er '.result.familyId' <<<"$result")
-grep -v '^\(ROOT_ID\|FAMILY_ID\)=' "$OUT_ENV" > "$OUT_ENV.tmp" || true
-printf 'ROOT_ID=%s\nFAMILY_ID=%s\n' "$ROOT_ID" "$FAMILY_ID" >> "$OUT_ENV.tmp"
-mv "$OUT_ENV.tmp" "$OUT_ENV"
-echo "ROOT_ID=$ROOT_ID"
-echo "FAMILY_ID=$FAMILY_ID"
+AW_STATE=${AW_STATE:-./aw-state.json}
+title=$1
+shift
+project_id=$(jq -er '.projectId' "$AW_STATE")
+repo=$(jq -er '.repository' "$AW_STATE")
+key=$(printf '%s|%s' "$project_id" "$title" | sha256sum | cut -c1-16)
+result=$(jq -n --arg p "$project_id" --arg t "$title" --arg r "$repo" --args '{projectId: $p, title: $t,
+    initialScope: ([{repositoryId: $r, access: "WRITE", reason: $t}]
+                   + [$ARGS.positional[] | {repositoryId: ., access: "READ", reason: $t}])}' "$@" \
+  | "$AW" work-item create --project-id "$project_id" --idempotency-key "root-$key")
+jq --argjson r "$(jq '.result | {workItemId, familyId, title: $t}' --arg t "$title" <<<"$result")" '.root = $r' \
+  "$AW_STATE" > "$AW_STATE.tmp" && mv "$AW_STATE.tmp" "$AW_STATE"
+jq -r '.root | "root \(.workItemId)\nfamily \(.familyId)"' "$AW_STATE"

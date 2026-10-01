@@ -1,31 +1,83 @@
 {
   "schemaVersion": "1",
   "nodes": [
-    {"key": "start", "type": "START", "outcomes": ["next"]},
-    {"key": "implement", "type": "AGENT", "outcomes": ["done"],
-     "agent": {
-       "profileRef": {"kind": "AGENT_PROFILE", "definitionId": "agent-backend-dev", "versionId": "{{AGENT_BACKEND}}"},
-       "policyRefs": [
-         {"kind": "POLICY", "definitionId": "policy-attempt", "versionId": "{{POL_ATTEMPT}}"},
-         {"kind": "POLICY", "definitionId": "policy-permission", "versionId": "{{POL_PERMISSION}}"}
-       ],
-       "adapterBuildId": "{{ADAPTER_BUILD}}",
-       "role": "MAKER"
-     }},
-    {"key": "verify", "type": "COMMAND", "outcomes": ["passed"],
-     "command": {
-       "commandRef": {"kind": "COMMAND", "definitionId": "cmd-backend-test", "versionId": "{{CMD_BACKEND}}"},
-       "policyRefs": [
-         {"kind": "POLICY", "definitionId": "policy-attempt", "versionId": "{{POL_ATTEMPT}}"},
-         {"kind": "POLICY", "definitionId": "policy-permission", "versionId": "{{POL_PERMISSION}}"}
-       ]
-     }},
-    {"key": "end", "type": "END"}
+    {
+      "key": "start",
+      "type": "START",
+      "outcomes": [
+        "next"
+      ]
+    },
+    {
+      "key": "implement",
+      "type": "AGENT",
+      "outcomes": [
+        "done"
+      ],
+      "agent": {
+        "profileRef": {
+          "$ref": "agent:agent-backend-dev"
+        },
+        "policyRefs": [
+          {
+            "$ref": "policy:policy-attempt"
+          },
+          {
+            "$ref": "policy:policy-permission"
+          }
+        ],
+        "adapterBuildId": {
+          "$ref": "adapter"
+        },
+        "role": "MAKER"
+      }
+    },
+    {
+      "key": "verify",
+      "type": "COMMAND",
+      "outcomes": [
+        "passed"
+      ],
+      "command": {
+        "commandRef": {
+          "$ref": "command:cmd-backend-test"
+        },
+        "policyRefs": [
+          {
+            "$ref": "policy:policy-attempt"
+          },
+          {
+            "$ref": "policy:policy-permission"
+          }
+        ]
+      }
+    },
+    {
+      "key": "end",
+      "type": "END"
+    }
   ],
   "edges": [
-    {"key": "start-implement", "from": "start", "outcome": "next", "to": "implement"},
-    {"key": "implement-verify", "from": "implement", "outcome": "done", "to": "verify"},
-    {"key": "verify-end", "from": "verify", "outcome": "passed", "to": "end"}
+    {
+      "key": "start-implement",
+      "from": "start",
+      "outcome": "next",
+      "to": "implement"
+    },
+    {
+      "key": "implement-verify",
+      "from": "implement",
+      "outcome": "done",
+      "to": "verify"
+    },
+    {
+      "key": "verify-end",
+      "from": "verify",
+      "outcome": "passed",
+      "to": "end"
+    }
   ],
-  "completionPolicyRef": {"kind": "POLICY", "definitionId": "policy-completion", "versionId": "{{POL_COMPLETION}}"}
+  "completionPolicyRef": {
+    "$ref": "policy:policy-completion"
+  }
 }
