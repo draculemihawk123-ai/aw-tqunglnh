@@ -49,7 +49,11 @@ The `remoteLocator` path you registered doesn't resolve from the `aw worker` pro
 commonly a relative path, or a shell-specific path (an MSYS/Git-Bash `/tmp/...`-style path on Windows is NOT
 the same path the native Go process sees). Register a NEW repository ID with the corrected ABSOLUTE,
 OS-native path — there is no "edit repository" command, so fixing this always means registering again with a
-new ID.
+new ID. An ID is never reused: `aw repository register` with an ID (or a name, within the project) that already
+exists fails with a typed `CONFLICT` — `persistent record already exists: repository <id>` (HTTP 409, exit code 1) —
+and registers nothing; the same is true of `aw definition create` with a `definitionId` that already names a
+Definition of any kind (`persistent record already exists: definition <id>`). Replaying the SAME
+`--idempotency-key` is the only way to get the original result back.
 
 ## Gate/command "could not be spawned" / "not a valid Win32 application" / permission denied
 
@@ -59,6 +63,33 @@ Linux/macOS. Fix by publishing a NEW skill version with the OS-correct script, t
 pointing at it, then a new gate/workflow version pointing forward through that chain — Definitions are
 immutable per version, so there is never an "edit and retry" for a published document; always publish forward.
 See [01-quickstart.md](01-quickstart.md)'s own real walkthrough of hitting and fixing exactly this.
+
+## Attempt `FAILED` with `SCOPE_VIOLATION`
+
+```bash
+aw run timeline <runId>
+# an EXECUTION_ATTEMPT entry: "failureCode": "SCOPE_VIOLATION",
+#   "failureDetail": "2 path(s) outside the granted scope: repo-a:leaked.txt; repo-a:docs/x.md"
+```
+
+The agent changed something its WorkItem's `pathScopes` (or, for a CHECKER/gate, its read-only mount) does not
+allow. This is a verdict about what the attempt WROTE — not a provider outage (`PROVIDER_UNAVAILABLE`), and not
+retryable. `failureDetail` names the violating paths (at most 20, then `and N more`; known secrets inside a path
+are masked); the same field is in `GET /runs/{id}/timeline`. Either widen the WorkItem's scope with a scope
+expansion, or fix the agent/skill so it stays inside the paths it was granted. An attempt that failed this way
+before the field existed has the failure code but no `failureDetail`.
+
+## Local commit `FAILED` with `NO_CHANGES`
+
+```bash
+aw release-set local-commit status --project-id <id> <releaseSetId> <localCommitId>
+# "state": "FAILED", "failureReason": "NO_CHANGES"
+```
+
+The repository workspace's worktree had nothing to commit, so no commit was created and the job did not retry.
+Make the change in the worktree, then run `aw release-set local-commit` again with the same fields and a NEW
+`--idempotency-key` — a `NO_CHANGES` failure never blocks the retry, and it works on a sealed ReleaseSet as well
+(a sealed ReleaseSet cannot be abandoned: `SEALED` and `ABANDONED` are both final).
 
 ## Work item won't reach READY
 

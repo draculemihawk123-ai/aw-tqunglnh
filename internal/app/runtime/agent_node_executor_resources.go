@@ -377,13 +377,18 @@ func buildEvidence(
 // this new check too, with no separate error-classification branch needed
 // anywhere.
 func validateStrictlyReadOnlyDiffs(diffs []ports.WorkspaceDiff) error {
+	// V9-09: a *scopeguard.ViolationsError (still errors.Is ErrScopeViolation)
+	// naming each changed path, so the operator-visible failureDetail lists
+	// WHAT the read-only attempt touched, not only how many files.
+	var violations []scopeguard.Violation
 	for _, diff := range diffs {
-		if len(diff.Files) > 0 {
-			return fmt.Errorf("%w: mount %s changed %d file(s) despite being read-only by design",
-				scopeguard.ErrScopeViolation, diff.RepositoryID, len(diff.Files))
+		for _, file := range diff.Files {
+			violations = append(violations, scopeguard.Violation{
+				RepositoryID: diff.RepositoryID, Path: file.Path, Reason: "changed despite the mount being read-only by design",
+			})
 		}
 	}
-	return nil
+	return scopeguard.NewViolationsError(violations)
 }
 
 // e.buildEvidence re-loads this Attempt's own pinned Role from its

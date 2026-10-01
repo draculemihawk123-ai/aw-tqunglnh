@@ -24,6 +24,48 @@ func (v Violation) Error() string {
 	return fmt.Sprintf("%s:%s: %s", v.RepositoryID, v.Path, v.Reason)
 }
 
+// ViolationsError is the typed form of ErrScopeViolation (V9-09): it carries
+// the individual Violations behind the "workspace diff exceeds effective
+// write scope" failure, so a caller can report WHICH paths breached the
+// scope (bounded, on an operator-visible surface) without parsing the
+// message text. errors.Is(err, ErrScopeViolation) holds for it, and Error()
+// is byte-for-byte the message ValidateDiffs has always produced, so every
+// existing errors.Is branch and message check is unaffected. Every producer
+// of a scope violation — ValidateDiffs here, a strict read-only check in the
+// runtime — should build one with NewViolationsError so the list reaches the
+// operator no matter which check fired.
+type ViolationsError struct {
+	// Violations is sorted by (RepositoryID, Path) and never empty.
+	Violations []Violation
+}
+
+// NewViolationsError sorts violations by (RepositoryID, Path) and wraps them
+// in a ViolationsError. It returns nil for an empty list.
+func NewViolationsError(violations []Violation) error {
+	if len(violations) == 0 {
+		return nil
+	}
+	sorted := append([]Violation(nil), violations...)
+	sort.Slice(sorted, func(left, right int) bool {
+		if sorted[left].RepositoryID != sorted[right].RepositoryID {
+			return sorted[left].RepositoryID < sorted[right].RepositoryID
+		}
+		return sorted[left].Path < sorted[right].Path
+	})
+	return &ViolationsError{Violations: sorted}
+}
+
+func (e *ViolationsError) Error() string {
+	parts := make([]string, 0, len(e.Violations))
+	for _, violation := range e.Violations {
+		parts = append(parts, violation.Error())
+	}
+	return fmt.Sprintf("%s: %s", ErrScopeViolation, strings.Join(parts, "; "))
+}
+
+// Unwrap makes errors.Is(err, ErrScopeViolation) true.
+func (e *ViolationsError) Unwrap() error { return ErrScopeViolation }
+
 // ValidateDiffs is a post-execution guard. OS mounts may enforce access where
 // available, but a diff must still be checked before a worker result can be
 // accepted: a read-only or out-of-path change is never a successful outcome.
@@ -50,20 +92,7 @@ func ValidateDiffs(scopes []work.RepositoryScope, diffs []ports.WorkspaceDiff) e
 			}
 		}
 	}
-	if len(violations) == 0 {
-		return nil
-	}
-	sort.Slice(violations, func(left, right int) bool {
-		if violations[left].RepositoryID != violations[right].RepositoryID {
-			return violations[left].RepositoryID < violations[right].RepositoryID
-		}
-		return violations[left].Path < violations[right].Path
-	})
-	parts := make([]string, 0, len(violations))
-	for _, violation := range violations {
-		parts = append(parts, violation.Error())
-	}
-	return fmt.Errorf("%w: %s", ErrScopeViolation, strings.Join(parts, "; "))
+	return NewViolationsError(violations)
 }
 
 func changedPaths(file ports.FileStatus) []string {

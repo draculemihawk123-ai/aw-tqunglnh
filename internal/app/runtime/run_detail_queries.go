@@ -52,7 +52,12 @@
 // task's own "Không làm: raw unbounded agent-event stream" line is enforced
 // by construction here: every field returned by this file comes from a real
 // ports.RuntimeRepository/DefinitionsRepository accessor already scoped to
-// one Run, never from domain_events/agent_events. "Correlation/causation"
+// one Run, never from domain_events/agent_events — with ONE bounded
+// exception (V9-09): TimelineEntryView.FailureDetail for an attempt that
+// FAILED with SCOPE_VIOLATION reads that attempt's own agent_events stream
+// and returns only the single violation-list line the executor stored there
+// (agentevents.ScopeViolationDetailFromRecords), never the stream itself.
+// "Correlation/causation"
 // (HE-11-M03) is satisfied by NodeRun's own ActivationSequence — a
 // Run-scoped, strictly-increasing counter (completion_policy.go's own
 // maxActivationSequence: every new activation is "highest ActivationSequence
@@ -72,8 +77,10 @@ import (
 	"sort"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
@@ -645,8 +652,16 @@ type TimelineEntryView struct {
 	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
 	TerminationReason string     `json:"terminationReason,omitempty"`
 	FailureCode       string     `json:"failureCode,omitempty"`
-	LastCheckpointID  string     `json:"lastCheckpointId,omitempty"`
-	ContextSnapshotID string     `json:"contextSnapshotId,omitempty"`
+	// FailureDetail (V9-09) names WHAT broke the scope for an attempt that
+	// FAILED with SCOPE_VIOLATION: a bounded, redacted line listing the
+	// violating paths (at most agentevents.MaxReportedViolations, then "and N
+	// more"), read back from the SCOPE_VIOLATION DIAGNOSTIC event the executor
+	// wrote into the attempt's agent_events stream. Empty — and omitted — for
+	// every other attempt, and for a SCOPE_VIOLATION attempt recorded before
+	// V9-09, whose paths were never stored.
+	FailureDetail     string `json:"failureDetail,omitempty"`
+	LastCheckpointID  string `json:"lastCheckpointId,omitempty"`
+	ContextSnapshotID string `json:"contextSnapshotId,omitempty"`
 }
 
 func nodeRunToTimelineEntry(nr runtimedomain.NodeRun, matcher redact.Matcher) TimelineEntryView {
@@ -727,6 +742,20 @@ func GetRunTimeline(ctx context.Context, uow ports.UnitOfWork, matcher redact.Ma
 			return err
 		}
 		timeline = RunTimeline{RunID: runID, Entries: buildTimelineEntries(nodeRuns, attempts, matcher)}
+		// V9-09: only an attempt that FAILED with SCOPE_VIOLATION has a
+		// violation list to show, so only those pay for reading their
+		// agent_events stream.
+		for i := range timeline.Entries {
+			entry := &timeline.Entries[i]
+			if entry.Kind != TimelineEntryExecutionAttempt || entry.FailureCode != string(errorcode.CodeScopeViolation) {
+				continue
+			}
+			records, err := tx.AgentEvents().ListByAttempt(ctx, entry.AttemptID)
+			if err != nil {
+				return err
+			}
+			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.ScopeViolationDetailFromRecords(records))
+		}
 		return nil
 	})
 	return timeline, err
