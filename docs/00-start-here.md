@@ -117,8 +117,8 @@ tri thức và convention theo technology stack; runtime giữ scope, worktree, 
 | 2. Quyết định kiến trúc | ACCEPTED | ADR-001…028 là baseline hiện hành; ADR-028 khóa executable `aw` và UI/API/CLI parity cuối V6. |
 | 3. Go core architecture/spec | Hoàn tất specification baseline | Code phải bám spec hoặc tạo ADR superseding. |
 | 4. Go spike | **GO** (2026-09-01, V0-14) | SPK-01…SPK-14 đều pass thật trên Windows và Linux (CI), evidence verify được, 10/10 suite runs không flaky đúng semantics, `-race` pass trên CI. Chi tiết: [spike report](spikes/02-go-core-spike-report.md). |
-| 5. Alpha UI/runtime | **ĐÃ TRIỂN KHAI V1…V8 — verdict Alpha `CHƯA ĐỦ EVIDENCE`** | Toàn bộ task V1…V8 đã đóng; final gate duy nhất từng đỏ (parity) đã được đóng trong code, nhưng gate Alpha chưa chạy lại trên commit chứa thay đổi đó (mục 4A). Chi tiết: [báo cáo release Alpha](release/alpha-release-report.md). |
-| 6. Thiết kế chi tiết version/subtask | **BASELINE ĐÃ QUYẾT ĐỊNH, ĐÃ THỰC THI** | Roadmap Alpha và task theo session nằm tại `docs/design/` (đã cập nhật theo ADR-020…028); V1…V8 đã thực thi theo đúng dependency/gate trong roadmap. Việc tiếp theo là task ghi evidence hẹp ở mục 4A. |
+| 5. Alpha UI/runtime | **ĐÃ TRIỂN KHAI V1…V8 — verdict Alpha `ALPHA_READY`** | Toàn bộ task V1…V8 đã đóng và gate Alpha đạt `gatePass = true` trên commit `0b144f1` (mục 4A). Chi tiết: [báo cáo release Alpha](release/alpha-release-report.md). |
+| 6. Thiết kế chi tiết version/subtask | **BASELINE ĐÃ QUYẾT ĐỊNH, ĐÃ THỰC THI** | Roadmap Alpha và task theo session nằm tại `docs/design/` (đã cập nhật theo ADR-020…028); V1…V8 đã thực thi theo đúng dependency/gate trong roadmap. Chuỗi V0…V8 đã đi hết; không còn task Alpha nào mở (Beta nằm ngoài phạm vi, mục 4A). |
 
 Spike đã đạt gate: SPK-01…SPK-14 đều có evidence PASS thật (13/14 trực tiếp trên mỗi platform, SPK-13
 qua job `semantic-diff` cross-platform riêng — không thể/không được kết luận từ một platform đơn lẻ).
@@ -128,18 +128,18 @@ run ID/evidence ID.
 
 ## 4A. Trạng thái Alpha hiện tại (sau V8)
 
-**Verdict Alpha: `CHƯA ĐỦ EVIDENCE` — `gatePass = false`** (lần đánh giá thật gần nhất: commit `6d3bab4`, CI run
-`36786340396`). Bản ghi máy đọc được: [`release/alpha-verdict.json`](release/alpha-verdict.json); bản đọc được: [báo cáo
-release Alpha](release/alpha-release-report.md). Một test giữ ba nơi (JSON, báo cáo, mục này) không lệch nhau.
+**Verdict Alpha: `ALPHA_READY` — `gatePass = true`** (commit `0b144f1`, CI run `36803384120`). Bản ghi máy đọc được:
+[`release/alpha-verdict.json`](release/alpha-verdict.json); bản đọc được: [báo cáo release
+Alpha](release/alpha-release-report.md). Một test giữ ba nơi (JSON, báo cáo, mục này) không lệch nhau.
 
-- **Đạt (theo lần đánh giá đó):** 208/208 tiêu chí `ALPHA_MUST`, 23/23 system journey, 9/9 version gate, 6/7 final gate.
-- **Đã làm sau đó:** `V8-12R-01` đóng ledger parity (15 mục nợ xuống 0): thêm các lệnh `aw` đọc còn thiếu và application
-  operation `internal/app/kanban` cho hai query projection; `TestParityLedgerIsEmpty` đạt. Gate Alpha chưa được chạy lại
-  trên một commit chứa thay đổi này nên chưa có bản đánh giá nào cho `gatePass = true`.
-- **Blocker duy nhất:** `alpha-gate-not-rerun-after-parity-closure` — thiếu evidence, không thiếu code.
-- **Việc tiếp theo (hẹp):** `V8-12R-02` — lấy kết quả job `v8-alpha-gate` của commit merge `V8-12R-01`, ghi verdict mới
-  (commit, run, checksum thật) vào JSON, báo cáo và mục này; `ALPHA_READY` chỉ được ghi khi `gatePass = true`, rồi chuyển
-  job sang `--enforce=true`. Không làm Beta.
+- **Đạt:** 208/208 tiêu chí `ALPHA_MUST`, 23/23 system journey, 9/9 version gate, 7/7 final gate.
+- **Lịch sử:** lần đánh giá đầu (`6d3bab4`) là `REWORK` vì ledger parity còn 15 mục nợ; `V8-12R-01` đóng ledger đó và
+  `V8-12R-02` ghi verdict này từ chính lần chạy gate của commit đã merge (không suy ra từ unit test).
+- **Gate đang enforcing** (`--enforce=true`): hồi quy ở bất kỳ tiêu chí, journey, version gate hay final gate nào làm job
+  `v8-alpha-gate` đỏ; một test buộc cờ này khớp với verdict đã ghi.
+- **`ALPHA_READY` không có nghĩa là:** mỗi tiêu chí có test riêng, đã kiểm với Claude/Codex CLI thật, isolation do hệ điều
+  hành cưỡng chế, hay có bất kỳ thứ gì của Beta. Không có blocker mở và không có task Alpha nào tiếp theo; không tạo
+  backlog Beta.
 - **Giới hạn đã biết** (LIM-01…LIM-11, gồm: bằng chứng mức suite cho 162/209 tiêu chí, không có sandbox OS thật,
   chưa kiểm với Claude/Codex CLI thật, binary cũ hơn V8-10 mở DB mới mà không báo): xem báo cáo release.
 - **Tài liệu vận hành** (cài, cấu hình, workflow, backup/restore, nâng cấp/rollback, xử lý sự cố):

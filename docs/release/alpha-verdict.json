@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "verdict": "CHƯA ĐỦ EVIDENCE",
-  "gatePass": false,
-  "assessedCommit": "6d3bab4f2568005186fc7edf5ed6655859096083",
+  "verdict": "ALPHA_READY",
+  "gatePass": true,
+  "assessedCommit": "0b144f12b61e8f3aab0900d1cc9b2845650cb523",
   "assessmentRun": {
-    "id": 36786340396,
-    "url": "https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/36786340396",
+    "id": 36803384120,
+    "url": "https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/36803384120",
     "artifact": "v8-alpha-assessment",
     "job": "V8-11 Alpha release acceptance"
   },
@@ -16,23 +16,10 @@
     "criteriaWithSuiteEvidenceOnly": 162,
     "journeys": { "total": 23, "pass": 23 },
     "versionGates": { "total": 9, "pass": 9 },
-    "finalGates": { "total": 7, "pass": 6, "fail": 1 }
+    "finalGates": { "total": 7, "pass": 7, "fail": 0 }
   },
-  "blockers": [
-    {
-      "id": "alpha-gate-not-rerun-after-parity-closure",
-      "kind": "EVIDENCE",
-      "detail": "V8-12R-01 emptied internal/delivery/parity/ledger.go (the one failing final gate of the last real assessment, commit 6d3bab4: 15 debt entries -> 0, with TestParityLedgerIsEmpty green), but the V8-11 Alpha gate has not yet been run on a commit that contains that change, so no assessment says gatePass=true. The summary, assessed commit, run and checksums recorded here are those of the last real assessment and are deliberately not rewritten by hand.",
-      "nextTask": "V8-12R-02"
-    }
-  ],
-  "nextTasks": [
-    {
-      "id": "V8-12R-02",
-      "title": "Record the Alpha verdict from the gate run of the V8-12R-01 commit",
-      "scope": "Take the `v8-alpha-assessment` artifact of the `v8-alpha-gate` job on the merged V8-12R-01 commit and record its assessed commit, run and the `aw-release-build` checksums in this file, the release report and start-here section 4A. Record ALPHA_READY only if that assessment reports gatePass=true; otherwise record the verdict it supports and its blocker. When gatePass=true, switch the job to --enforce=true. Nothing else is required for ALPHA_READY."
-    }
-  ],
+  "blockers": [],
+  "nextTasks": [],
   "knownLimitations": ["LIM-01", "LIM-02", "LIM-03", "LIM-04", "LIM-05", "LIM-06", "LIM-07", "LIM-08", "LIM-09", "LIM-10", "LIM-11"],
   "liveProviderCompatibility": {
     "status": "UNVERIFIED",
@@ -42,16 +29,16 @@
     {
       "os": "windows",
       "file": "aw.exe",
-      "sha256": "dbce424dae5ba30c53fee3c8118915a267ef2538afdcf79efa239c48262d8130",
+      "sha256": "961c11289554cd7fd0564be713444292191ca70e8a59750af6908127d6bb05e8",
       "reproducedTwice": true,
-      "source": "CI run 36786340396, job `release build (windows-latest)`, `aw-release-build` round 1 == round 2"
+      "source": "CI run 36803384120, job `release build (windows-latest)`, `aw-release-build` round 1 == round 2; uploaded as artifact `aw-release-windows-latest`"
     },
     {
       "os": "linux",
       "file": "aw",
-      "sha256": "3b71b34e5e9c02092dbdb683e57edbf2b4197b9924a2623ce1929ce4258b2e72",
+      "sha256": "f1269112587740207128ab682d34bc3aa2fa05823b9802fb2a868c1940f5b053",
       "reproducedTwice": true,
-      "source": "CI run 36786340396, job `release build (ubuntu-latest)`, `aw-release-build` round 1 == round 2"
+      "source": "CI run 36803384120, job `release build (ubuntu-latest)`, `aw-release-build` round 1 == round 2; uploaded as artifact `aw-release-ubuntu-latest`"
     }
   ]
 }
