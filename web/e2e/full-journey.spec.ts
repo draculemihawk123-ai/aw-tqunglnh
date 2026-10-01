@@ -143,6 +143,7 @@ const REGISTER_REPOSITORY = /\/projects\/[^/]+\/repositories$/;
 const RETRY_PROBE = /\/repositories\/[^/]+\/retry-probe$/;
 const CREATE_WORK_ITEM = /\/projects\/[^/]+\/work-items$/;
 const MARK_READY = /\/work-items\/[^/]+\/mark-ready$/;
+const REGISTER_ADAPTER_BUILD = /\/adapter-builds$/;
 
 async function fillCreateWorkItemDialog(page: Page, opts: {
   title: string; repoLabel: string; scopeReason: string; behavior: string;
@@ -330,8 +331,13 @@ test('full journey: project → onboarding → adapter → run → approval → 
     await dialog.getByRole('button', { name: 'Probe' }).click();
 
     await expect(page.getByRole('dialog', { name: 'Confirm adapter build candidate' })).toBeVisible();
-    await page.getByRole('button', { name: 'Confirm & register' }).click();
-    await expect(page.getByText('REGISTERED').first()).toBeVisible();
+    // Wait for the register POST itself: the GET below reads the build back
+    // straight away. The previous `getByText('REGISTERED')` wait was no wait
+    // at all — Playwright's default text match is a case-insensitive
+    // substring, and the page's own "Registered Adapter Builds" heading
+    // satisfies it before anything is registered, so on a slow Windows runner
+    // the GET ran before the POST committed and found no 'claude' build.
+    await awaitMutation(page, () => page.getByRole('button', { name: 'Confirm & register' }).click(), REGISTER_ADAPTER_BUILD);
 
     const buildsResp = await request.get(`${base}/adapter-builds`, { headers: { 'X-Aw-Session-Token': token } });
     const builds = await buildsResp.json() as { builds: { id: string; providerKey: string }[] };
