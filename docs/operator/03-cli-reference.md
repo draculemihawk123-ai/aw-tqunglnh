@@ -1,15 +1,15 @@
-# CLI reference
+# Tham chiếu CLI
 
-## Why this page doesn't list every flag by hand
+## Vì sao trang này không liệt kê từng flag bằng tay
 
-`aw help` and `aw <resource> <action> -h` are themselves the authoritative, always-in-sync source for exactly
-which flags a command takes — they are generated from the same flag definitions the command actually parses,
-so they can never drift from real behavior the way a hand-copied static table could. This page documents the
-STRUCTURE and CONVENTIONS every command shares (verified against the real binary below), then tells you where
-to get the definitive per-command detail. This is a deliberate choice, not a gap: a copy of hundreds of flags
-transcribed by hand into this file would go stale the next time a command's flags change, while `-h` never can.
+`aw help` và `aw <resource> <action> -h` tự chúng là nguồn có thẩm quyền, luôn đồng bộ, cho biết chính xác một
+lệnh nhận những flag nào — chúng được sinh từ chính các định nghĩa flag mà lệnh thực sự parse, nên không bao
+giờ lệch khỏi hành vi thật như một bảng tĩnh chép tay có thể bị lệch. Trang này mô tả CẤU TRÚC và các QUY ƯỚC
+mà mọi lệnh dùng chung (đã kiểm chứng trên binary thật ở bên dưới), rồi chỉ cho bạn nơi lấy chi tiết chính xác
+cho từng lệnh. Đây là lựa chọn có chủ đích, không phải lỗ hổng: một bản sao hàng trăm flag chép tay vào file
+này sẽ lỗi thời ngay lần tới flag của một lệnh thay đổi, còn `-h` thì không bao giờ.
 
-## The real, complete command surface
+## Toàn bộ bề mặt lệnh thật
 
 ```
 $ aw help
@@ -64,59 +64,59 @@ selects the trusted principal file.
 Run 'aw <command> -h' for command-specific flags.
 ```
 
-This IS `CLI_LOCAL`'s own closed process-command set (`serve`/`worker`/`help`/`version` — every other
-top-level word is a "resource" routed through a shared resource-command layer, V6-15O). `evidence verify` also
-runs the pre-V6 offline bundle verifier when invoked with `--evidence-dir`/`--suite` flags instead of a
-`--project-id` — see `cmd/aw/cli.go`'s own `isLegacyBundleVerify`.
+Đây CHÍNH LÀ tập process-command đóng của `CLI_LOCAL` (`serve`/`worker`/`help`/`version` — mọi từ cấp cao
+nhất khác là một "resource" được định tuyến qua một lớp resource-command dùng chung, V6-15O). `evidence verify`
+cũng chạy bộ verify bundle offline có từ trước V6 khi được gọi với flag `--evidence-dir`/`--suite` thay vì
+`--project-id` — xem `isLegacyBundleVerify` trong `cmd/aw/cli.go`.
 
-## Shared conventions across every resource command
+## Các quy ước dùng chung cho mọi lệnh resource
 
-- **Body input**: every mutation reads a JSON request body from stdin (pipe it in) or `--file <path>` — never
-  as inline flags. A query command (`list`/`show`/etc.) takes no body.
-- **`--idempotency-key`**: every mutation accepts one; omit it and the command mints one for you and returns
-  it in the response's own `idempotencyKey` field. Replaying the SAME key with the SAME request returns
-  `"replayed": true` and the ORIGINAL result — never re-executes.
-- **`--expected-version`**: every update-shaped command (never a create) requires this — the CLI equivalent of
-  HTTP's `If-Match`. A stale version is a real, typed `CONFLICT`, never silently overwritten.
-- **`--project-id`**: required for anything project-scoped; omitted for genuinely installation-scoped commands
-  (`project create`, `definition create --kind POLICY` with no project, etc.) — see
-  [04-authoring-workflows.md](04-authoring-workflows.md) for which definition kinds are project- vs
-  installation-scoped.
-- **`--principal-config`**: selects the trusted actor/roles file; never a `--actor`/`--role` flag (ADR-028).
-- **`--yes`**: required for a "high-impact" mutation whenever stdin is not an interactive terminal OR `--json`
-  is set (i.e., every scripted/piped invocation) — an interactive terminal session gets a real confirmation
-  prompt instead. `--yes` is a flag `clicompose` strips before the command's own flag parsing runs, so it can
-  appear anywhere in the argument list; a NON-high-impact command (e.g. `definition create`) does not
-  recognize `--yes` at all and rejects it as an unknown flag if you pass it anyway — try without it first if
-  you hit `flag provided but not defined: -yes`.
-- **`--wait`/`--wait-timeout`**: on commands that kick off asynchronous work (`run start`, `release-set
-  local-commit`), blocks and polls until the affected job/run reaches a terminal state. Purely observational —
-  it never itself executes, retries, or cancels anything; omitting it returns immediately with the initial
-  (non-terminal) state.
-- **`--json`**: machine-readable single-document output on every command, success or failure — a failure is
-  one typed error document (`{"error": {"code": ..., "message": ...}}`), never a bare stack trace or a
-  human-formatted message mixed into stdout.
-- **Exit codes**: `0` success, `1` failure (a real, typed application error — check the JSON error body's own
-  `code`), `2` usage error (bad flags, missing required arguments — the command never even attempted the
-  operation).
+- **Body đầu vào**: mọi mutation đọc một request body JSON từ stdin (pipe vào) hoặc `--file <path>` — không bao
+  giờ dưới dạng flag inline. Một lệnh query (`list`/`show`/v.v.) không nhận body.
+- **`--idempotency-key`**: mọi mutation đều nhận flag này; bỏ trống thì lệnh tự sinh một key và trả về trong
+  trường `idempotencyKey` của response. Phát lại CÙNG key với CÙNG request sẽ trả về `"replayed": true` và
+  kết quả GỐC — không bao giờ thực thi lại.
+- **`--expected-version`**: mọi lệnh dạng update (không bao giờ là create) đều bắt buộc flag này — tương
+  đương `If-Match` của HTTP trên CLI. Một version cũ (stale) là một `CONFLICT` thật, có kiểu, không bao giờ bị
+  ghi đè âm thầm.
+- **`--project-id`**: bắt buộc cho mọi thứ có scope project; bỏ qua cho các lệnh thực sự có scope installation
+  (`project create`, `definition create --kind POLICY` không có project, v.v.) — xem
+  [04-authoring-workflows.md](04-authoring-workflows.md) để biết loại definition nào có scope project, loại
+  nào có scope installation.
+- **`--principal-config`**: chọn file actor/roles tin cậy; không bao giờ là flag `--actor`/`--role` (ADR-028).
+- **`--yes`**: bắt buộc cho một mutation "high-impact" bất cứ khi nào stdin không phải terminal tương tác HOẶC
+  có `--json` (tức là mọi lần gọi bằng script/pipe) — một session terminal tương tác sẽ nhận một lời nhắc xác
+  nhận thật thay vào đó. `--yes` là flag mà `clicompose` gỡ ra trước khi phần parse flag riêng của lệnh chạy,
+  nên nó có thể xuất hiện ở bất kỳ vị trí nào trong danh sách tham số; một lệnh KHÔNG high-impact (ví dụ
+  `definition create`) hoàn toàn không nhận `--yes` và sẽ từ chối nó như một flag không xác định nếu bạn vẫn
+  truyền vào — hãy thử bỏ nó đi trước nếu bạn gặp `flag provided but not defined: -yes`.
+- **`--wait`/`--wait-timeout`**: trên các lệnh khởi động công việc bất đồng bộ (`run start`, `release-set
+  local-commit`), block và poll cho tới khi job/run bị ảnh hưởng đạt trạng thái terminal. Thuần túy quan sát —
+  nó không bao giờ tự thực thi, retry hay hủy bất cứ thứ gì; bỏ nó đi thì lệnh trả về ngay với trạng thái ban
+  đầu (chưa terminal).
+- **`--json`**: output một document duy nhất, máy đọc được, trên mọi lệnh, dù thành công hay thất bại — một
+  lỗi là một error document có kiểu (`{"error": {"code": ..., "message": ...}}`), không bao giờ là stack trace
+  trần hay một thông điệp định dạng cho người đọc trộn vào stdout.
+- **Exit code**: `0` thành công, `1` thất bại (một lỗi ứng dụng thật, có kiểu — kiểm tra `code` trong JSON error
+  body), `2` lỗi cách dùng (flag sai, thiếu tham số bắt buộc — lệnh thậm chí chưa thử thực hiện thao tác).
 
-## Positional arguments come after flags
+## Tham số vị trí đứng sau flag
 
-Every resource command that takes a positional argument (an ID) expects flags FIRST, then the positional
-argument last — standard Go `flag` package behavior (it stops recognizing flags at the first non-flag
-argument). `aw definition publish --kind POLICY --yes my-policy-id` works; `aw definition publish my-policy-id
---kind POLICY --yes` does not (the reordered flags are read as extra positional arguments and rejected).
+Mọi lệnh resource nhận tham số vị trí (một ID) đều yêu cầu flag ĐỨNG TRƯỚC, tham số vị trí đứng cuối — đúng
+hành vi chuẩn của package `flag` trong Go (nó ngừng nhận diện flag ở tham số không-phải-flag đầu tiên).
+`aw definition publish --kind POLICY --yes my-policy-id` chạy được; `aw definition publish my-policy-id --kind
+POLICY --yes` thì không (các flag bị đảo vị trí sẽ bị đọc như các tham số vị trí thừa và bị từ chối).
 
-## Two worked examples (real, verified)
+## Hai ví dụ thực tế (thật, đã kiểm chứng)
 
 ```bash
-# Query: no body, --project-id required for a project-scoped resource
+# Query: không có body, bắt buộc --project-id cho resource có scope project
 aw work-item show --project-id <projectId> <workItemId>
 
-# Mutation: body via stdin, --expected-version required (this is an update), --yes since it's non-interactive
+# Mutation: body qua stdin, bắt buộc --expected-version (đây là update), --yes vì không tương tác
 echo '{}' | aw work-item mark-ready --expected-version 1 --idempotency-key my-key --yes <workItemId>
 ```
 
-See [01-quickstart.md](01-quickstart.md) for a complete, real, multi-command walkthrough from a fresh
-installation through a completed run, and [08-backup-and-restore.md](08-backup-and-restore.md) for the
-separate `aw-maintenance` binary (backup/restore is NOT a resource command — see that page for why).
+Xem [01-quickstart.md](01-quickstart.md) để có một walkthrough đầy đủ, thật, nhiều lệnh từ một bản cài mới cho
+tới một run hoàn tất, và [08-backup-and-restore.md](08-backup-and-restore.md) cho binary `aw-maintenance` riêng
+biệt (backup/restore KHÔNG phải là một lệnh resource — xem trang đó để biết lý do).

@@ -1,93 +1,91 @@
-# Upgrade and rollback
+# Nâng cấp và rollback
 
-Every statement here is backed by a real test (V8-10): the upgrade matrix and backup-restore rehearsal in
-`internal/adapters/sqlite/upgrade_rollback_test.go`, and the real-binary refusal test in
+Mọi khẳng định ở đây đều được bảo chứng bởi một test thật (V8-10): ma trận nâng cấp và buổi diễn tập
+backup-restore trong `internal/adapters/sqlite/upgrade_rollback_test.go`, và test từ chối trên binary thật trong
 `internal/integration/v6accept/upgrade_rollback_test.go`.
 
-## What "upgrade" means for this installation
+## "Nâng cấp" có nghĩa là gì với bản cài này
 
-Your installation's durable state is the SQLite database plus your `--artifact-root` directory. A new `aw`
-build carries a numbered list of schema migrations; **opening the database with a new build applies whatever
-migrations that database has not seen yet, automatically, exactly once each.** There is no separate "migrate"
-command.
+Trạng thái bền vững của bản cài là database SQLite cộng với thư mục `--artifact-root` của bạn. Một build `aw` mới
+mang theo một danh sách migration schema được đánh số; **mở database bằng một build mới sẽ tự động áp dụng những
+migration mà database đó chưa từng thấy, mỗi migration đúng một lần.** Không có lệnh "migrate" riêng.
 
-- Migrations are immutable once shipped. Each one's checksum is recorded in the database (`schema_migrations`),
-  and opening a database whose recorded checksum no longer matches the binary's copy fails — a shipped
-  migration is never edited, only followed by a new one.
-- Each migration commits in its own transaction. Migrations that have to rebuild a table other tables point
-  at additionally run a foreign-key check before they are recorded, and roll back if a single reference would
-  break.
-- Your artifact files are not touched by a schema upgrade.
+- Migration là bất biến sau khi đã phát hành. Checksum của từng migration được ghi trong database
+  (`schema_migrations`), và mở một database có checksum đã ghi không còn khớp với bản sao trong binary sẽ thất bại
+  — một migration đã phát hành không bao giờ bị sửa, chỉ được nối tiếp bằng một migration mới.
+- Mỗi migration commit trong transaction riêng của nó. Những migration phải dựng lại một bảng mà các bảng khác trỏ
+  tới còn chạy thêm một bước kiểm tra foreign-key trước khi được ghi nhận, và sẽ rollback nếu dù chỉ một tham chiếu
+  bị hỏng.
+- File artifact của bạn không bị chạm vào khi nâng cấp schema.
 
-Find out which schema a binary expects, without opening any database:
-
-```bash
-aw version --json    # "schemaVersion" is the highest migration this binary carries
-```
-
-Configuration: the safe settings you changed with `aw settings update` are stored in the database and move
-with it. The optional JSON config file is yours and is not versioned; keys a binary does not know are ignored
-without a warning, so after a rollback check the effective values with `aw settings show`.
-
-## Before you upgrade: take a backup with the CURRENT release
-
-The upgrade is one-way (see below), so the backup is your only way back. Take it **before** the new binary
-ever touches the database:
+Tìm hiểu một binary yêu cầu schema nào, mà không cần mở bất kỳ database nào:
 
 ```bash
-aw-maintenance backup --db ./aw-install/aw.db --out ./pre-upgrade-backup    # run the OLD release's tool
+aw version --json    # "schemaVersion" là migration cao nhất mà binary này mang theo
 ```
 
-Run the **old** release's `aw-maintenance`, not the new one. `aw-maintenance` opens the database through the
-same startup path as `aw` itself, so a new build's `aw-maintenance backup` would migrate the live database
-first and then back up the already-upgraded copy — not a pre-upgrade backup. If you no longer have the old
-tool, stop `aw serve`/`aw worker` and copy `aw.db` together with any `aw.db-wal` and `aw.db-shm` files
-beside it instead.
+Cấu hình: các safe setting bạn đã thay đổi bằng `aw settings update` được lưu trong database và đi cùng nó. File
+cấu hình JSON tùy chọn là của bạn và không được quản lý version; các key mà một binary không biết sẽ bị bỏ qua mà
+không có cảnh báo, nên sau một lần rollback hãy kiểm tra các giá trị hiệu lực bằng `aw settings show`.
 
-Back up your `--artifact-root` directory too (see [08-backup-and-restore.md](08-backup-and-restore.md)).
+## Trước khi nâng cấp: tạo backup bằng bản phát hành HIỆN TẠI
 
-## Upgrading
+Nâng cấp là một chiều (xem bên dưới), nên bản backup là con đường duy nhất để quay lại. Hãy tạo nó **trước khi**
+binary mới chạm vào database:
 
-1. Stop `aw serve` and `aw worker`.
-2. Take the backup above.
-3. Replace the binaries.
-4. Start `aw serve` / `aw worker` (or run `aw doctor`). The first open applies the pending migrations.
-5. Run `aw doctor` and confirm `status: HEALTHY`; your projects, runs and evidence are read back from the
-   same database as before.
+```bash
+aw-maintenance backup --db ./aw-install/aw.db --out ./pre-upgrade-backup    # chạy công cụ của bản phát hành CŨ
+```
 
-Restarting after an upgrade is a no-op: a second open applies nothing and changes nothing.
+Chạy `aw-maintenance` của bản phát hành **cũ**, không phải bản mới. `aw-maintenance` mở database qua cùng đường
+khởi động như chính `aw`, nên `aw-maintenance backup` của một build mới sẽ migrate database đang chạy trước rồi
+mới backup bản sao đã được nâng cấp — không phải một bản backup trước nâng cấp. Nếu bạn không còn công cụ cũ, hãy
+dừng `aw serve`/`aw worker` và copy `aw.db` cùng với các file `aw.db-wal` và `aw.db-shm` nằm bên cạnh nó (nếu có).
+
+Sao lưu cả thư mục `--artifact-root` của bạn (xem [08-backup-and-restore.md](08-backup-and-restore.md)).
+
+## Nâng cấp
+
+1. Dừng `aw serve` và `aw worker`.
+2. Tạo bản backup như ở trên.
+3. Thay các binary.
+4. Khởi động `aw serve` / `aw worker` (hoặc chạy `aw doctor`). Lần mở đầu tiên sẽ áp dụng các migration đang chờ.
+5. Chạy `aw doctor` và xác nhận `status: HEALTHY`; project, run và evidence của bạn được đọc lại từ chính database
+   như trước.
+
+Khởi động lại sau khi nâng cấp là một no-op: lần mở thứ hai không áp dụng gì và không thay đổi gì.
 
 ## Rollback
 
-**A binary older than your database refuses to open it.** If a newer release already migrated the database,
-the older binary stops at startup and leaves the database exactly as it found it:
+**Một binary cũ hơn database của bạn sẽ từ chối mở nó.** Nếu một bản phát hành mới hơn đã migrate database, binary
+cũ sẽ dừng ngay lúc khởi động và để nguyên database đúng như nó đã tìm thấy:
 
 ```
 aw: open database: database schema version 42 is newer than this binary supports (highest migration it knows: 41; unknown applied migration(s): [42]) — the database was migrated by a newer release and this binary has NOT modified it; run that release's (or a newer) binary, or restore a backup taken before the upgrade (docs/operator/10-upgrade-and-rollback.md)
 ```
 
-Migrations are not reversible and no release marks itself compatible with an older binary, so the rule is
-strict: a binary only runs against a database whose applied migrations it fully knows.
+Migration không đảo ngược được và không bản phát hành nào tự đánh dấu là tương thích với một binary cũ hơn, nên
+quy tắc rất chặt: một binary chỉ chạy trên một database mà nó biết đầy đủ mọi migration đã áp dụng.
 
-| Situation | What works |
+| Tình huống | Cách xử lý |
 |---|---|
-| Rolled back the binary, but no new migration was applied yet (`schemaVersion` of both builds is equal) | Start the old binary — it opens the database normally. |
-| Rolled back after the new build migrated the database | The old binary refuses. Restore the pre-upgrade backup (below), then start the old binary. |
-| Want the new release again after a rollback | Open the restored database with the new binary; the upgrade is simply retried from the restored copy. |
+| Đã rollback binary, nhưng chưa có migration mới nào được áp dụng (`schemaVersion` của hai build bằng nhau) | Khởi động binary cũ — nó mở database bình thường. |
+| Rollback sau khi build mới đã migrate database | Binary cũ từ chối. Khôi phục bản backup trước nâng cấp (bên dưới), rồi khởi động binary cũ. |
+| Muốn dùng lại bản phát hành mới sau khi đã rollback | Mở database đã khôi phục bằng binary mới; việc nâng cấp đơn giản được thử lại từ bản sao đã khôi phục. |
 
-### Restoring the pre-upgrade backup
+### Khôi phục bản backup trước nâng cấp
 
 ```bash
 aw-maintenance restore --backup ./pre-upgrade-backup --into ./restored --artifact-root ./restored-artifacts
 ```
 
-Then point the old binary's `--db` at `./restored/restored.db`. **Anything the new release wrote after the
-backup was taken is not in the backup** — a rollback is a return to the moment of the backup, not a
-downgrade of the newer database.
+Sau đó trỏ `--db` của binary cũ tới `./restored/restored.db`. **Mọi thứ bản phát hành mới đã ghi sau thời điểm tạo
+backup đều không có trong backup** — rollback là quay về đúng thời điểm của bản backup, không phải hạ cấp database
+mới hơn.
 
-### One limit you cannot fix from here
+### Một giới hạn bạn không thể sửa từ đây
 
-The refusal lives in the binary that performs it. A binary built **before** V8-10 has no such check and will
-open a newer database without complaint and run older SQL against a schema it does not understand. The
-refusal protects every binary built from V8-10 onward; for anything older, the backup in the previous section
-is the only protection. This is why taking the backup first is not optional.
+Cơ chế từ chối nằm trong chính binary thực hiện nó. Một binary được build **trước** V8-10 không có kiểm tra này
+và sẽ mở một database mới hơn mà không hề phàn nàn, rồi chạy SQL cũ trên một schema mà nó không hiểu. Cơ chế từ
+chối bảo vệ mọi binary được build từ V8-10 trở đi; với bất cứ binary nào cũ hơn, bản backup ở mục trước là sự bảo
+vệ duy nhất. Đây là lý do việc tạo backup trước không phải là tùy chọn.

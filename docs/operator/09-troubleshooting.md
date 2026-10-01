@@ -1,13 +1,16 @@
-# Troubleshooting
+# Xử lý sự cố
 
-## Start here: `aw doctor`
+> Các thông báo lỗi trong tiêu đề và khối code được giữ nguyên văn tiếng Anh (đúng như binary in ra) để bạn có
+> thể tìm kiếm trực tiếp.
+
+## Bắt đầu từ đây: `aw doctor`
 
 ```bash
-aw doctor          # human-readable
-aw doctor --json   # machine-readable
+aw doctor          # dạng cho người đọc
+aw doctor --json   # dạng máy đọc được
 ```
 
-Real output from a healthy installation (verified in [01-quickstart.md](01-quickstart.md)):
+Output thật từ một bản cài khỏe mạnh (đã kiểm chứng trong [01-quickstart.md](01-quickstart.md)):
 
 ```
 status: HEALTHY
@@ -22,10 +25,10 @@ checks:
   - isolation_enforcement [CAPABILITY] HEALTHY: OPERATOR_TRUSTED_LOCAL isolation is enforceable; ...
 ```
 
-`status` is `HEALTHY` only when every `LIVENESS`/`READINESS` check is healthy (a `CAPABILITY` check like
-`isolation_enforcement` describes what's AVAILABLE, not a hard requirement for healthy). `restartRequired:
-true` means a `aw settings update` changed the desired config since this process started — restart to apply
-it (see [02-configuration.md](02-configuration.md)).
+`status` chỉ là `HEALTHY` khi mọi check `LIVENESS`/`READINESS` đều khỏe (một check `CAPABILITY` như
+`isolation_enforcement` mô tả cái gì KHẢ DỤNG, không phải một yêu cầu cứng để được coi là khỏe). `restartRequired:
+true` nghĩa là một lệnh `aw settings update` đã thay đổi cấu hình desired kể từ khi tiến trình này khởi động —
+restart để áp dụng (xem [02-configuration.md](02-configuration.md)).
 
 ## `database schema version N is newer than this binary supports`
 
@@ -33,84 +36,84 @@ it (see [02-configuration.md](02-configuration.md)).
 aw: open database: database schema version 42 is newer than this binary supports (highest migration it knows: 41; ...) — the database was migrated by a newer release and this binary has NOT modified it; ...
 ```
 
-You started an older `aw` (or `aw-maintenance`) against a database a newer release already migrated. Nothing
-was changed. Run the newer binary, or restore the backup taken before the upgrade and use the older binary
-on that — see [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md). `aw version --json` shows which
-schema a binary expects (`schemaVersion`).
+Bạn đã khởi động một `aw` (hoặc `aw-maintenance`) cũ hơn trên một database mà một bản phát hành mới hơn đã migrate.
+Không có gì bị thay đổi. Hãy chạy binary mới hơn, hoặc khôi phục bản backup được tạo trước lần nâng cấp và dùng
+binary cũ trên bản đó — xem [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md). `aw version --json` cho biết
+một binary yêu cầu schema nào (`schemaVersion`).
 
-## Repository stuck in `BLOCKED`
+## Repository kẹt ở `BLOCKED`
 
 ```bash
 aw repository list <projectId>
 # "status": "BLOCKED", "lastProbeErrorCode": "NOT_FOUND"
 ```
 
-The `remoteLocator` path you registered doesn't resolve from the `aw worker` process's own perspective —
-commonly a relative path, or a shell-specific path (an MSYS/Git-Bash `/tmp/...`-style path on Windows is NOT
-the same path the native Go process sees). Register a NEW repository ID with the corrected ABSOLUTE,
-OS-native path — there is no "edit repository" command, so fixing this always means registering again with a
-new ID.
+Đường dẫn `remoteLocator` bạn đã đăng ký không resolve được từ góc nhìn của tiến trình `aw worker` — thường là một
+đường dẫn tương đối, hoặc một đường dẫn đặc thù của shell (một đường dẫn kiểu MSYS/Git-Bash `/tmp/...` trên
+Windows KHÔNG phải là cùng đường dẫn mà tiến trình Go native nhìn thấy). Đăng ký một repository ID MỚI với đường
+dẫn TUYỆT ĐỐI, theo đúng định dạng của OS — không có lệnh "edit repository", nên sửa lỗi này luôn có nghĩa là đăng
+ký lại với một ID mới.
 
 ## Gate/command "could not be spawned" / "not a valid Win32 application" / permission denied
 
-Your Command document's referenced script doesn't match the OS the worker process actually runs on — a `.sh`
-script with a shebang line has no interpreter on native Windows; a script missing its executable bit fails on
-Linux/macOS. Fix by publishing a NEW skill version with the OS-correct script, then a new command version
-pointing at it, then a new gate/workflow version pointing forward through that chain — Definitions are
-immutable per version, so there is never an "edit and retry" for a published document; always publish forward.
-See [01-quickstart.md](01-quickstart.md)'s own real walkthrough of hitting and fixing exactly this.
+Script mà Command document của bạn tham chiếu không khớp với OS mà tiến trình worker thực sự chạy trên đó — một
+script `.sh` có dòng shebang không có interpreter trên Windows native; một script thiếu bit thực thi sẽ fail trên
+Linux/macOS. Sửa bằng cách publish một version skill MỚI với script đúng OS, rồi một version command mới trỏ tới
+nó, rồi version gate/workflow mới trỏ tiếp qua chuỗi đó — Definition là bất biến theo từng version, nên không bao
+giờ có chuyện "sửa rồi thử lại" với một document đã publish; luôn publish tiến lên. Xem walkthrough thật trong
+[01-quickstart.md](01-quickstart.md) về việc gặp và sửa đúng lỗi này.
 
-## Work item won't reach READY
+## Work item không đạt READY
 
 ```bash
 aw work-item readiness --project-id <id> <workItemId>
 # "ready": false, "problems": ["behavior is required", "verification spec is required", ...]
 ```
 
-The WorkItem has no real readiness contract. Supply one at creation time (`"contract": {"schemaVersion": 1,
+WorkItem không có readiness contract thật. Hãy cung cấp nó lúc tạo (`"contract": {"schemaVersion": 1,
 "behavior": "...", "verificationSpec": "...", "riskLevel": "LOW"|"MEDIUM"|"HIGH",
-"acceptanceCriteria": [{"description": "...", "verificationRef": "..."}]}`) — there is no separate
-"set contract" command; a WorkItem's contract is supplied once, at creation, in the SAME request body as
+"acceptanceCriteria": [{"description": "...", "verificationRef": "..."}]}`) — không có lệnh "set contract"
+riêng; contract của một WorkItem được cung cấp một lần, lúc tạo, trong CÙNG request body với
 `title`/`effectiveScope`.
 
-## `run start` fails with "work item is not READY"
+## `run start` fail với "work item is not READY"
 
-Call `aw work-item mark-ready --expected-version <n> <workItemId>` first — `readiness: true` from `aw
-work-item readiness` only means the WorkItem's OWN contract is complete enough to become ready; it doesn't
-itself transition the status. `--expected-version` must match the WorkItem's real current version (from
-`work-item show`/the previous mutation's own response) — a stale version is a real `CONFLICT`.
+Gọi `aw work-item mark-ready --expected-version <n> <workItemId>` trước — `readiness: true` từ `aw work-item
+readiness` chỉ có nghĩa là contract của chính WorkItem đã đủ đầy để có thể chuyển sang ready; nó không tự chuyển
+trạng thái. `--expected-version` phải khớp với version hiện tại thật của WorkItem (lấy từ `work-item show`/response
+của mutation trước đó) — một version cũ là một `CONFLICT` thật.
 
-## `RESYNC_REQUIRED` on a paginated list
+## `RESYNC_REQUIRED` trên một list có phân trang
 
-A cursor from an earlier page was replayed against a DIFFERENT filter/sort than the one it was minted under
-(or the underlying data generation changed underneath it). This is a deliberate, typed signal — never a
-silently wrong page — start the walk over from an unfiltered/first-page request.
+Một cursor của trang trước đã bị phát lại với một filter/sort KHÁC với filter/sort mà nó được tạo ra (hoặc
+generation dữ liệu bên dưới đã thay đổi). Đây là một tín hiệu có chủ đích, có kiểu — không bao giờ là một trang sai
+âm thầm — hãy bắt đầu lại từ request không filter/trang đầu tiên.
 
 ## "high-impact command requires confirmation" / "flag provided but not defined: -yes"
 
-- If you got the FIRST message: add `--yes` (you're running non-interactively — piped stdin or `--json`).
-- If you got the SECOND message: you added `--yes` to a command that isn't gated behind confirmation at all —
-  remove it. See [03-cli-reference.md](03-cli-reference.md)'s own `--yes` convention section.
+- Nếu bạn nhận thông báo THỨ NHẤT: thêm `--yes` (bạn đang chạy không tương tác — stdin là pipe hoặc có `--json`).
+- Nếu bạn nhận thông báo THỨ HAI: bạn đã thêm `--yes` vào một lệnh hoàn toàn không cần xác nhận — hãy bỏ nó đi.
+  Xem mục quy ước `--yes` trong [03-cli-reference.md](03-cli-reference.md).
 
-## `flag provided but not defined` for a flag you know exists
+## `flag provided but not defined` cho một flag mà bạn biết là có tồn tại
 
-Flags must come BEFORE the positional argument, never after (`aw definition publish --kind POLICY --yes
-my-id`, not `aw definition publish my-id --kind POLICY --yes`) — see
-[03-cli-reference.md](03-cli-reference.md)'s own "positional arguments come after flags" section.
+Flag phải đứng TRƯỚC tham số vị trí, không bao giờ sau (`aw definition publish --kind POLICY --yes my-id`, không
+phải `aw definition publish my-id --kind POLICY --yes`) — xem mục "tham số vị trí đứng sau flag" trong
+[03-cli-reference.md](03-cli-reference.md).
 
-## Nothing happens after `repository register` / a mutation that should trigger async work
+## Không có gì xảy ra sau `repository register` / sau một mutation lẽ ra phải kích hoạt công việc bất đồng bộ
 
-Confirm `aw worker` is actually running against the SAME `--db`/`--artifact-root`/`--workspace-root` as `aw
-serve` — `aw serve` alone never probes repositories, executes workflow nodes, or updates projections; it only
-serves the HTTP/CLI surface and accepts commands. See [01-quickstart.md](01-quickstart.md) step 2.
+Xác nhận `aw worker` thực sự đang chạy với CÙNG `--db`/`--artifact-root`/`--workspace-root` như `aw serve` —
+riêng `aw serve` không bao giờ probe repository, thực thi node workflow hay cập nhật projection; nó chỉ phục vụ bề
+mặt HTTP/CLI và tiếp nhận lệnh. Xem bước 2 của [01-quickstart.md](01-quickstart.md).
 
-## Where to look next
+## Xem tiếp ở đâu
 
-- A specific command's exact flags/body shape: `aw <resource> <action> -h`, or
+- Flag/dạng body chính xác của một lệnh cụ thể: `aw <resource> <action> -h`, hoặc
   [03-cli-reference.md](03-cli-reference.md).
-- Why a run reached a given terminal state: `aw run diagnostics --project-id <id> <runId>` (blockers, orphaned
-  attempts, repository workspace states) and `aw evidence list --project-id <id> <workItemId>` (the real
-  verdict + artifact for every node that ran).
-- Everything this installation's database/artifacts actually contain, independent of any in-flight run: `aw
-  work-item show`, `aw run show`, `aw project list`, `aw repository list` — all real, live queries, never a
-  cached or stale summary.
+- Vì sao một run đạt tới một trạng thái terminal nhất định: `aw run diagnostics --project-id <id> <runId>` (blocker,
+  attempt mồ côi, trạng thái repository workspace) và `aw evidence list --project-id <id> <workItemId>` (verdict +
+  artifact thật cho mọi node đã chạy).
+- Mọi thứ mà database/artifact của bản cài này thực sự chứa, độc lập với bất kỳ run nào đang chạy: `aw work-item
+  show`, `aw run show`, `aw project list`, `aw repository list` — tất cả đều là query thật, trực tiếp, không bao
+  giờ là bản tóm tắt cache hay lỗi thời.

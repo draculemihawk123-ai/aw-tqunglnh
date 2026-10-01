@@ -1,45 +1,45 @@
-# Providers and isolation
+# Provider và isolation
 
-## Registering a provider
+## Đăng ký một provider
 
-`aw serve` and `aw worker` each independently accept `--claude-executable <path>` / `--codex-executable
-<path>` — the only two provider kinds this build knows about (`aw version --json`'s own `supportedProviders`
-field, V8-08). Omitting one means: any `AGENT` node pinned to that provider fails closed (503 on
-`RetryBlockedActivation`'s own admission re-check for `aw serve`; the worker simply can't execute a node
-pinned to an unregistered provider). There is no runtime "register a provider" command — it is a process
-startup flag on BOTH `serve` and `worker` (they must agree, since either process may need to reason about a
-given provider).
+`aw serve` và `aw worker` đều nhận độc lập `--claude-executable <path>` / `--codex-executable <path>` — hai loại
+provider duy nhất mà bản build này biết (trường `supportedProviders` trong `aw version --json`, V8-08). Bỏ
+một flag nghĩa là: mọi node `AGENT` được pin vào provider đó sẽ fail closed (503 ở bước admission re-check của
+`RetryBlockedActivation` đối với `aw serve`; worker đơn giản là không thể thực thi một node được pin vào một
+provider chưa đăng ký). Không có lệnh runtime "đăng ký provider" nào — đó là một flag lúc khởi động tiến trình
+trên CẢ `serve` lẫn `worker` (hai bên phải khớp nhau, vì tiến trình nào cũng có thể cần suy luận về một provider
+cụ thể).
 
 ```bash
 aw serve  ... --claude-executable /path/to/claude
 aw worker ... --claude-executable /path/to/claude
 ```
 
-`aw adapter register`/`aw adapter probe`/`aw adapter list`/`aw adapter show` manage the separate, per-
-installation `AdapterBuild` inventory — a real capability manifest for one specific (provider, executable,
-version) tuple, checked at run-start time against what an `AGENT_PROFILE`/`WORKFLOW` pins. See `aw adapter -h`
-and each subcommand's own `-h` for the exact flags; this is a genuinely different concept from the
-`--claude-executable`/`--codex-executable` process flags above (those register the provider AT ALL; adapter
-builds are the specific, versioned capability snapshot a workflow pins to).
+`aw adapter register`/`aw adapter probe`/`aw adapter list`/`aw adapter show` quản lý kho `AdapterBuild` riêng,
+theo từng bản cài — một capability manifest thật cho một bộ (provider, executable, version) cụ thể, được kiểm
+tra lúc bắt đầu run so với những gì một `AGENT_PROFILE`/`WORKFLOW` đã pin. Xem `aw adapter -h` và `-h` của từng
+subcommand để có flag chính xác; đây là một khái niệm thực sự khác với các flag tiến trình
+`--claude-executable`/`--codex-executable` ở trên (các flag đó đăng ký provider NÓI CHUNG; adapter build là
+snapshot capability cụ thể, có version, mà một workflow pin vào).
 
-## Isolation tiers
+## Các isolation tier
 
-Two values (`internal/domain/policy/policy.go`):
+Hai giá trị (`internal/domain/policy/policy.go`):
 
-- **`OPERATOR_TRUSTED_LOCAL`** — the only tier actually usable in Alpha. A node runs as a real local OS
-  process with no additional sandboxing beyond this repo's own process-level containment (argv/env
-  allowlisting, output limits, network-access declarations on Command documents). This is the tier
-  [01-quickstart.md](01-quickstart.md)'s own real permission-policy example uses.
-- **`ENFORCED_ISOLATED`** — a real OS-level sandbox (container, VM, or similar). **Not available in Alpha** —
-  `aw doctor`'s own `isolation_enforcement` check reports this explicitly: *"ENFORCED_ISOLATED is not
+- **`OPERATOR_TRUSTED_LOCAL`** — tier duy nhất thực sự dùng được trong Alpha. Một node chạy như một tiến trình OS
+  cục bộ thật, không có sandbox bổ sung nào ngoài cơ chế kiểm soát ở mức tiến trình của chính repo này
+  (allowlist argv/env, giới hạn output, khai báo quyền truy cập mạng trên Command document). Đây là tier mà ví dụ
+  permission policy thật trong [01-quickstart.md](01-quickstart.md) sử dụng.
+- **`ENFORCED_ISOLATED`** — một sandbox cấp OS thật (container, VM, hoặc tương tự). **Không có trong Alpha** —
+  check `isolation_enforcement` của `aw doctor` báo điều này một cách tường minh: *"ENFORCED_ISOLATED is not
   available in this environment (no real OS-level sandbox yet) and any node pinned to it fails closed rather
-  than silently downgrading."* A permission policy that pins `ENFORCED_ISOLATED` publishes successfully (it is
-  a valid document) but any run that reaches a node requiring it fails closed at admission — this is a
-  deliberate design choice (never silently run an isolation-required node unsandboxed), not a missing feature
-  you need to work around.
+  than silently downgrading."* Một permission policy pin `ENFORCED_ISOLATED` vẫn publish thành công (nó là một
+  document hợp lệ) nhưng bất kỳ run nào chạm tới một node yêu cầu tier này sẽ fail closed ở bước admission —
+  đây là một lựa chọn thiết kế có chủ đích (không bao giờ âm thầm chạy một node cần isolation mà không có
+  sandbox), không phải một tính năng còn thiếu mà bạn cần tìm cách lách.
 
-Check which tier is actually available on your machine with `aw doctor` — the real output this documentation
-was verified against:
+Kiểm tra tier nào thực sự khả dụng trên máy của bạn bằng `aw doctor` — output thật mà tài liệu này đã được kiểm
+chứng:
 
 ```
 - isolation_enforcement [CAPABILITY] HEALTHY: OPERATOR_TRUSTED_LOCAL isolation is enforceable;
@@ -49,15 +49,15 @@ was verified against:
 
 ## Granted capabilities
 
-A `PERMISSION` policy's own `grantedCapabilities` list names specific capability strings a node may need
-beyond baseline isolation — e.g. `INTEGRATION_MULTI_REPOSITORY_WRITE` (a node touching more than one
-repository's own write scope in a single attempt). Omit it entirely for a node that needs no capability beyond
-its own declared repository scope (verified: [01-quickstart.md](01-quickstart.md)'s own permission-policy
-document omits it and the run still succeeds, since the MACHINE_GATE example never touches a repository at
-all).
+Danh sách `grantedCapabilities` của một policy `PERMISSION` đặt tên các chuỗi capability cụ thể mà một node có
+thể cần ngoài isolation cơ bản — ví dụ `INTEGRATION_MULTI_REPOSITORY_WRITE` (một node chạm vào write scope của
+nhiều hơn một repository trong cùng một attempt). Bỏ hẳn trường này với một node không cần capability nào ngoài
+repository scope đã khai báo của nó (đã kiểm chứng: permission-policy document trong
+[01-quickstart.md](01-quickstart.md) bỏ trường này và run vẫn thành công, vì ví dụ MACHINE_GATE không hề chạm
+vào repository nào).
 
 ## Env allowlist
 
-A spawned provider or command process inherits NOTHING from the worker's own process environment by default.
-`aw worker --env-allowlist NAME1,NAME2` is the only way to let specific named variables through — see
+Mặc định, một tiến trình provider hoặc command được spawn KHÔNG kế thừa gì từ environment của tiến trình worker.
+`aw worker --env-allowlist NAME1,NAME2` là cách duy nhất để cho phép những biến có tên cụ thể đi qua — xem
 [02-configuration.md](02-configuration.md).

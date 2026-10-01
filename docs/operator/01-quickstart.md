@@ -1,22 +1,22 @@
 # Quickstart
 
-Every command and every ID on this page was actually run against a real, freshly-built `aw` binary while
-writing this document (Windows; the same flow works identically on Linux with `aw` instead of `aw.exe` and
-POSIX-style paths). It ends with a real workflow run reaching `SUCCEEDED`, real evidence recorded with verdict
-`PASS`, and a real `doctor` reporting `HEALTHY`. IDs below are copy-pasted from that real run — running this
-yourself will mint different IDs; substitute your own at each step.
+Mọi lệnh và mọi ID trên trang này đều đã thực sự được chạy trên một binary `aw` thật, vừa build xong, trong lúc
+viết tài liệu (trên Windows; luồng này chạy y hệt trên Linux, chỉ cần dùng `aw` thay cho `aw.exe` và đường dẫn
+kiểu POSIX). Nó kết thúc bằng một lần chạy workflow thật đạt `SUCCEEDED`, evidence thật được ghi với verdict
+`PASS`, và một lệnh `doctor` thật báo `HEALTHY`. Các ID bên dưới được copy nguyên từ lần chạy thật đó — khi bạn
+tự chạy sẽ sinh ra các ID khác; hãy thay bằng ID của bạn ở từng bước.
 
-## 1. Install
+## 1. Cài đặt
 
-There is no separate installer: `aw`/`aw.exe` is a single, self-contained binary (V8-08 embeds the built UI
-into it — see `docs/design/10-v8-alpha-hardening.md` V8-08). Put it on your `PATH`, or reference it by full
-path as this quickstart does.
+Không có trình cài đặt riêng: `aw`/`aw.exe` là một binary duy nhất, tự chứa (V8-08 nhúng UI đã build vào
+trong nó — xem `docs/design/10-v8-alpha-hardening.md` V8-08). Đặt nó vào `PATH`, hoặc gọi bằng đường dẫn đầy
+đủ như quickstart này làm.
 
-## 2. Start the installation
+## 2. Khởi động bản cài
 
-Every `aw serve`/`aw worker` process needs three real directories: a SQLite database file, an artifact
-storage root, and a workspace root (real Git worktree storage). `aw serve` creates and migrates the database
-on first start; `--artifact-root` must already exist.
+Mỗi tiến trình `aw serve`/`aw worker` cần ba thư mục thật: một file database SQLite, một thư mục gốc lưu
+artifact, và một thư mục gốc workspace (nơi lưu Git worktree thật). `aw serve` tự tạo và migrate database ở
+lần khởi động đầu tiên; `--artifact-root` phải tồn tại sẵn.
 
 ```bash
 mkdir -p ./aw-install/artifacts ./aw-install/workspaces
@@ -24,24 +24,24 @@ aw serve --db ./aw-install/aw.db --artifact-root ./aw-install/artifacts --worksp
   --host 127.0.0.1 --port 18080
 ```
 
-`serve` prints one JSON line on stdout once it is ready: `{"address":"127.0.0.1:18080"}`. It never binds
-anything but loopback (ADR-028) — there is no way to expose this over the network.
+Khi đã sẵn sàng, `serve` in một dòng JSON ra stdout: `{"address":"127.0.0.1:18080"}`. Nó không bao giờ bind
+vào thứ gì khác ngoài loopback (ADR-028) — không có cách nào để expose nó ra mạng.
 
-In a second terminal, start the worker against the SAME `--db`/`--artifact-root`/`--workspace-root` — nothing
-actually executes (repository probes, workflow nodes, projection updates) without it:
+Ở terminal thứ hai, khởi động worker với CÙNG `--db`/`--artifact-root`/`--workspace-root` — sẽ không có gì
+thực sự được thực thi (probe repository, node của workflow, cập nhật projection) nếu thiếu nó:
 
 ```bash
 aw worker --db ./aw-install/aw.db --artifact-root ./aw-install/artifacts --workspace-root ./aw-install/workspaces
 ```
 
-It prints `{"workerId":"aw-worker-<pid>"}` once ready. See [02-configuration.md](02-configuration.md) for
-every other flag both processes accept.
+Khi sẵn sàng nó in `{"workerId":"aw-worker-<pid>"}`. Xem [02-configuration.md](02-configuration.md) để biết mọi
+flag khác mà cả hai tiến trình chấp nhận.
 
-Every resource command below (`aw <resource> <action>`) needs the SAME `--db`/`--artifact-root`
-`--workspace-root` flags repeated (or set once via `AW_DB`/`AW_ARTIFACT_ROOT`/`AW_WORKSPACE_ROOT` environment
-variables — see [02-configuration.md](02-configuration.md)); they are omitted below for readability.
+Mọi lệnh resource bên dưới (`aw <resource> <action>`) đều cần lặp lại CÙNG các flag `--db`/`--artifact-root`
+`--workspace-root` (hoặc đặt một lần qua biến môi trường `AW_DB`/`AW_ARTIFACT_ROOT`/`AW_WORKSPACE_ROOT` — xem
+[02-configuration.md](02-configuration.md)); chúng được lược bỏ bên dưới cho dễ đọc.
 
-## 3. Create a project and register a repository
+## 3. Tạo project và đăng ký repository
 
 ```bash
 echo '{"name":"quickstart"}' | aw project create --idempotency-key proj-1
@@ -53,58 +53,58 @@ echo '{"name":"quickstart"}' | aw project create --idempotency-key proj-1
 }}
 ```
 
-Register a real, already-existing local Git repository (an absolute filesystem path — never a remote URL;
-see [06-source-control-and-releases.md](06-source-control-and-releases.md) for why):
+Đăng ký một Git repository cục bộ thật, đã tồn tại sẵn (một đường dẫn filesystem tuyệt đối — không bao giờ là
+URL remote; xem [06-source-control-and-releases.md](06-source-control-and-releases.md) để biết lý do):
 
 ```bash
 echo '{"repositoryId":"repo-a","name":"repo-a","remoteLocator":"/absolute/path/to/your/repo","defaultRef":"main"}' \
   | aw repository register --project-id e3b7544b-1b6a-4189-930b-c699bc492430 --idempotency-key repo-1
 ```
 
-This returns immediately with `"status": "REGISTERING"` and a `probeJobId` — the real `aw worker` process
-probes it asynchronously (a few seconds). Poll until it settles:
+Lệnh này trả về ngay lập tức với `"status": "REGISTERING"` và một `probeJobId` — tiến trình `aw worker` thật
+sẽ probe repository một cách bất đồng bộ (vài giây). Poll cho tới khi trạng thái ổn định:
 
 ```bash
 aw repository list e3b7544b-1b6a-4189-930b-c699bc492430
 ```
 
-A correct, existing local path settles to `"status": "ACTIVE"`. **A wrong path settles to `"status":
-"BLOCKED"` with `"lastProbeErrorCode": "NOT_FOUND"`** — this is the single most common quickstart mistake (a
-relative or shell-specific path the worker process, running with its own working directory, can't resolve);
-register a NEW repository ID with the corrected absolute path rather than trying to fix the blocked one (there
-is no "edit repository" command).
+Một đường dẫn cục bộ đúng, tồn tại thật sẽ ổn định ở `"status": "ACTIVE"`. **Một đường dẫn sai sẽ ổn định ở
+`"status": "BLOCKED"` với `"lastProbeErrorCode": "NOT_FOUND"`** — đây là lỗi quickstart phổ biến nhất (một
+đường dẫn tương đối hoặc đặc thù của shell mà tiến trình worker, chạy với working directory riêng của nó,
+không resolve được); hãy đăng ký một repository ID MỚI với đường dẫn tuyệt đối đã sửa thay vì cố sửa cái đang
+bị blocked (không có lệnh "edit repository").
 
-## 4. Author and publish a minimal workflow
+## 4. Soạn và publish một workflow tối thiểu
 
-A published Definition is a two-step process: `create` the definition shell (once), then `publish` a version
-(as many times as you like — each publish is a new, immutable version). See
-[04-authoring-workflows.md](04-authoring-workflows.md) for the full schema of every document kind; this
-section publishes the smallest REAL graph that runs without needing a Claude/Codex provider at all: a single
-`MACHINE_GATE` node (`START -> MACHINE_GATE -> END`) running a script you supply, with a completion policy
-requiring the gate's own evidence.
+Một Definition được publish qua hai bước: `create` vỏ definition (một lần), rồi `publish` một version (bao
+nhiêu lần tùy ý — mỗi lần publish là một version mới, bất biến). Xem
+[04-authoring-workflows.md](04-authoring-workflows.md) để có schema đầy đủ của mọi loại document; mục này
+publish graph THẬT nhỏ nhất có thể chạy mà không cần provider Claude/Codex nào: một node `MACHINE_GATE` duy
+nhất (`START -> MACHINE_GATE -> END`) chạy một script do bạn cung cấp, cùng một completion policy yêu cầu
+chính evidence của gate đó.
 
 ```bash
-# Attempt policy (retry/timeout behavior for every node)
+# Attempt policy (hành vi retry/timeout cho mọi node)
 echo '{"definitionId":"attempt-policy","name":"attempt policy"}' | aw definition create --kind POLICY --idempotency-key create-attempt
 echo '{"category":"ATTEMPT","attempt":{"maxAttempts":3,"backoffSeconds":1,"timeoutSeconds":60}}' \
   | aw definition publish --kind POLICY --idempotency-key pub-attempt --yes attempt-policy
 
-# Permission policy (isolation tier — see 05-providers-and-isolation.md)
+# Permission policy (isolation tier — xem 05-providers-and-isolation.md)
 echo '{"definitionId":"permission-policy","name":"permission policy"}' | aw definition create --kind POLICY --idempotency-key create-perm
 echo '{"category":"PERMISSION","permission":{"isolationTier":"OPERATOR_TRUSTED_LOCAL"}}' \
   | aw definition publish --kind POLICY --idempotency-key pub-perm --yes permission-policy
 
-# Completion policy (what evidence a run must produce to count as done)
+# Completion policy (một run phải tạo ra evidence gì thì mới được tính là xong)
 echo '{"definitionId":"completion-policy","name":"completion policy"}' | aw definition create --kind POLICY --idempotency-key create-comp
 echo '{"category":"COMPLETION","completion":{"requiredEvidenceKinds":["QUICKSTART_OUTPUT_VERIFIED"]}}' \
   | aw definition publish --kind POLICY --idempotency-key pub-comp --yes completion-policy
 ```
 
-The gate's own script lives in a Skill document (**OS matters here** — a `MACHINE_GATE` runs its command as a
-real OS process with no shell interpreter unless the script itself is a real executable for this OS; use a
-`.sh` with a shebang on Linux/macOS, a real `.bat`/`.cmd` on Windows — mixing this up is the second most common
-quickstart mistake, and produces a real `"gate evaluator could not be spawned ... %1 is not a valid Win32
-application"` failure on Windows if you use a `.sh` script there):
+Script của gate nằm trong một Skill document (**hệ điều hành rất quan trọng ở đây** — một `MACHINE_GATE`
+chạy command của nó như một tiến trình OS thật, không có shell interpreter trừ khi bản thân script là một file
+thực thi thật cho OS đó; dùng `.sh` có shebang trên Linux/macOS, dùng `.bat`/`.cmd` thật trên Windows — nhầm
+lẫn chỗ này là lỗi quickstart phổ biến thứ hai, và trên Windows sẽ gây ra lỗi thật `"gate evaluator could not
+be spawned ... %1 is not a valid Win32 application"` nếu bạn dùng script `.sh` ở đó):
 
 ```bash
 # Linux/macOS:
@@ -118,12 +118,12 @@ echo '{"resources":[{"key":"quickstart-gate.bat","instruction":"@echo off\r\nech
   | aw definition publish --kind SKILL --idempotency-key pub-skill --yes scripts
 ```
 
-(`aw definition create --kind SKILL` with `{"definitionId":"scripts","name":"quickstart scripts"}` first, same
-as every other kind above.) The publish response's own `id` field is this skill VERSION's id — call it
-`$SKILL_VID`. The gate script's own content hash is deterministic (SHA-256 of the resource's instruction/
-priority/global/selector, independent of which version owns it); the real hash for the Windows `.bat` body
-above is `sha256:92984c5081c73046648d0d681f3ad752bd5d71602b453d34a80610fa966b323c` — compute your own with
-`aw definition validate` against a Skill document if your script content differs even by one byte.
+(Chạy `aw definition create --kind SKILL` với `{"definitionId":"scripts","name":"quickstart scripts"}` trước,
+giống như mọi loại khác ở trên.) Trường `id` trong response của lệnh publish là id của VERSION skill này — gọi
+nó là `$SKILL_VID`. Content hash của script gate là xác định (SHA-256 của instruction/priority/global/selector
+của resource, không phụ thuộc version nào sở hữu nó); hash thật của nội dung `.bat` trên Windows ở trên là
+`sha256:92984c5081c73046648d0d681f3ad752bd5d71602b453d34a80610fa966b323c` — hãy tự tính hash của bạn bằng
+`aw definition validate` trên một Skill document nếu nội dung script của bạn khác dù chỉ một byte.
 
 ```bash
 echo '{"definitionId":"gate-command","name":"gate command"}' | aw definition create --kind COMMAND --idempotency-key create-cmd
@@ -131,9 +131,9 @@ echo '{"executable":{"ownerVersionId":"'"$SKILL_VID"'","resourceKey":"quickstart
   | aw definition publish --kind COMMAND --idempotency-key pub-cmd --yes gate-command
 ```
 
-`cwdRepositoryTarget` is a required field on every Command document, but a `MACHINE_GATE`'s own command is
-never actually run inside a repository checkout (it always gets a fresh scratch directory) — any placeholder
-string satisfies the schema. Call the publish response's `id` field `$CMD_VID`.
+`cwdRepositoryTarget` là trường bắt buộc trên mọi Command document, nhưng command của một `MACHINE_GATE` không
+bao giờ thực sự được chạy bên trong một checkout của repository (nó luôn nhận một thư mục scratch mới) — bất kỳ
+chuỗi placeholder nào cũng thỏa mãn schema. Gọi trường `id` trong response của lệnh publish là `$CMD_VID`.
 
 ```bash
 echo '{"definitionId":"machine-gate","name":"machine gate"}' | aw definition create --kind GATE --idempotency-key create-gate
@@ -141,9 +141,9 @@ echo '{"commandRef":{"kind":"COMMAND","definitionId":"gate-command","versionId":
   | aw definition publish --kind GATE --idempotency-key pub-gate --yes machine-gate
 ```
 
-Call the gate publish response's `id` field `$GATE_VID`. Finally, the workflow itself — the only document in
-this whole chain that is PROJECT-scoped (every Policy/Skill/Command/Gate above is installation-scoped and
-reusable across every project):
+Gọi trường `id` trong response publish gate là `$GATE_VID`. Cuối cùng là chính workflow — document duy nhất
+trong cả chuỗi này có scope là PROJECT (mọi Policy/Skill/Command/Gate ở trên đều có scope là installation và
+dùng lại được cho mọi project):
 
 ```bash
 echo '{"schemaVersion":"1","nodes":[{"key":"start","type":"START","outcomes":["next"]},{"key":"gate","type":"MACHINE_GATE","outcomes":["passed"],"machineGate":{"gateRef":{"kind":"GATE","definitionId":"machine-gate","versionId":"'"$GATE_VID"'"},"policyRefs":[{"kind":"POLICY","definitionId":"attempt-policy","versionId":"<attempt-policy-version-id>"},{"kind":"POLICY","definitionId":"permission-policy","versionId":"<permission-policy-version-id>"}]}},{"key":"end","type":"END"}],"edges":[{"key":"start-gate","from":"start","outcome":"next","to":"gate"},{"key":"gate-end","from":"gate","outcome":"passed","to":"end"}],"completionPolicyRef":{"kind":"POLICY","definitionId":"completion-policy","versionId":"<completion-policy-version-id>"}}' \
@@ -151,13 +151,14 @@ echo '{"schemaVersion":"1","nodes":[{"key":"start","type":"START","outcomes":["n
   && aw definition publish --kind WORKFLOW --project-id e3b7544b-1b6a-4189-930b-c699bc492430 --idempotency-key pub-wf --yes quickstart-workflow
 ```
 
-(Substitute the real `versionId`s each policy publish returned.) The response's own `id` field is
-`$WORKFLOW_VID` — the run needs this exact value.
+(Thay bằng các `versionId` thật mà mỗi lần publish policy trả về.) Trường `id` trong response là
+`$WORKFLOW_VID` — lần chạy cần đúng giá trị này.
 
-## 5. Create a task and run it
+## 5. Tạo task và chạy nó
 
-Every real run needs a CHILD WorkItem (a workflow never runs directly on a root WorkItem) with a real
-readiness CONTRACT — an empty contract genuinely fails readiness with problems like `"behavior is required"`:
+Mỗi lần chạy thật cần một WorkItem CON (một workflow không bao giờ chạy trực tiếp trên WorkItem gốc) với một
+CONTRACT readiness thật — một contract rỗng sẽ thực sự fail readiness với các lỗi như `"behavior is
+required"`:
 
 ```bash
 echo '{"projectId":"e3b7544b-1b6a-4189-930b-c699bc492430","title":"quickstart root task","initialScope":[{"repositoryId":"repo-a","access":"READ","reason":"quickstart"}]}' \
@@ -169,7 +170,8 @@ echo '{"title":"quickstart child task","parentJoinPolicy":"ALL_CHILDREN_DONE","e
   | aw work-item create-child --idempotency-key create-child <root-work-item-id>
 ```
 
-Confirm it is really ready before marking it (an honest pre-flight, not required, but cheap):
+Xác nhận nó thực sự đã sẵn sàng trước khi đánh dấu (một bước kiểm tra trước trung thực, không bắt buộc nhưng
+rẻ):
 
 ```bash
 aw work-item readiness --project-id e3b7544b-1b6a-4189-930b-c699bc492430 <child-work-item-id>
@@ -178,46 +180,46 @@ aw work-item readiness --project-id e3b7544b-1b6a-4189-930b-c699bc492430 <child-
 aw work-item mark-ready --expected-version 1 --idempotency-key mark-ready <child-work-item-id>
 ```
 
-Start the run — `--wait` blocks until it reaches a terminal state, which for a single-gate graph like this is
-typically under two seconds:
+Bắt đầu run — `--wait` sẽ block cho tới khi run đạt trạng thái terminal; với một graph một-gate như thế này
+thường mất chưa tới hai giây:
 
 ```bash
 aw run start --workflow-version-id <workflow-version-id> --idempotency-key start-run --wait --wait-timeout 30s <child-work-item-id>
 ```
 
-A real successful run's own response embeds a `"wait"` object with `"state": "SUCCEEDED"`. The real run this
-quickstart was verified against returned exactly this shape.
+Response của một run thành công thật có nhúng một object `"wait"` với `"state": "SUCCEEDED"`. Lần chạy thật mà
+quickstart này được kiểm chứng đã trả về đúng dạng này.
 
-## 6. Confirm it actually worked
+## 6. Xác nhận nó thực sự đã chạy đúng
 
 ```bash
 aw evidence list --project-id e3b7544b-1b6a-4189-930b-c699bc492430 <child-work-item-id>
 ```
 
-A real, successful run's evidence entry has `"verdict": "PASS"` and an `artifactReferences` entry — fetch the
-raw gate output with `aw artifact get <workItemId> <evidenceId> <artifactId> --project-id <id> --output -` (see
+Một mục evidence của run thành công thật có `"verdict": "PASS"` và một mục `artifactReferences` — lấy output
+thô của gate bằng `aw artifact get <workItemId> <evidenceId> <artifactId> --project-id <id> --output -` (xem
 [03-cli-reference.md](03-cli-reference.md)).
 
 ```bash
 aw doctor
 ```
 
-A healthy installation reports `status: HEALTHY` with every check (`process_liveness`, `app_config`,
-`database`, `artifact_root`, `git`, `safe_settings`, `isolation_enforcement`) also HEALTHY.
+Một bản cài khỏe mạnh báo `status: HEALTHY` và mọi check (`process_liveness`, `app_config`, `database`,
+`artifact_root`, `git`, `safe_settings`, `isolation_enforcement`) cũng đều HEALTHY.
 
-## Recovering from the two real mistakes this walkthrough hit
+## Khôi phục sau hai lỗi thật mà walkthrough này đã gặp
 
-Both of the following were genuinely hit and fixed while verifying this exact quickstart — they are the most
-likely first mistakes, not hypothetical:
+Cả hai lỗi sau đều đã thực sự xảy ra và được sửa trong lúc kiểm chứng chính quickstart này — chúng là những
+lỗi đầu tiên có khả năng gặp nhất, không phải giả định:
 
-1. **Repository stuck BLOCKED / `NOT_FOUND`**: your `remoteLocator` path was wrong (often a shell-specific or
-   relative path the worker process can't resolve the same way your shell does). Register a new repository ID
-   with the corrected absolute path — see step 3 above.
-2. **Gate evaluator "not a valid Win32 application" (Windows) or "permission denied" (Linux/macOS)**: your
-   gate script doesn't match the OS the worker process actually runs on. Publish a NEW skill version with the
-   correct script for your OS, then a new command version pointing at it, a new gate version pointing at that
-   command, and a new workflow version pointing at that gate — Definitions are immutable per version, so
-   fixing a mistake always means publishing forward, never editing in place. See
-   [09-troubleshooting.md](09-troubleshooting.md) for the general pattern.
+1. **Repository kẹt ở BLOCKED / `NOT_FOUND`**: đường dẫn `remoteLocator` của bạn sai (thường là đường dẫn đặc
+   thù của shell hoặc đường dẫn tương đối mà tiến trình worker không resolve giống như shell của bạn). Đăng ký
+   một repository ID mới với đường dẫn tuyệt đối đã sửa — xem bước 3 ở trên.
+2. **Gate evaluator báo "not a valid Win32 application" (Windows) hoặc "permission denied" (Linux/macOS)**:
+   script gate của bạn không khớp với OS mà tiến trình worker thực sự chạy trên đó. Publish một version skill
+   MỚI với script đúng cho OS của bạn, rồi một version command mới trỏ tới nó, một version gate mới trỏ tới
+   command đó, và một version workflow mới trỏ tới gate đó — Definition là bất biến theo từng version, nên sửa
+   lỗi luôn có nghĩa là publish tiến lên, không bao giờ sửa tại chỗ. Xem
+   [09-troubleshooting.md](09-troubleshooting.md) để biết mẫu xử lý chung.
 
-For everything else, see [09-troubleshooting.md](09-troubleshooting.md).
+Với mọi thứ khác, xem [09-troubleshooting.md](09-troubleshooting.md).

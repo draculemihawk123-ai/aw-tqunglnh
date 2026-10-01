@@ -1,29 +1,32 @@
-# Configuration reference
+# Tham chiếu cấu hình
 
-## Config precedence (from `docs/design/01-system-design.md` §12, the authoritative source)
+> Các khối `aw serve -h`/`aw worker -h`/global options bên dưới là output thật của binary nên được giữ nguyên
+> văn tiếng Anh; phần giải thích xung quanh đã được dịch.
 
-- Startup resolves `DatabasePath` as `safe defaults < config file < environment < CLI flags`, then
-  opens/migrates SQLite.
-- For every field on the **safe-settings allowlist** (below), startup merges as `safe defaults < config file
-  < SQLite desired settings < environment < CLI flags`. An environment/flag override that masks a
-  persisted SQLite desired setting is reported via `maskedByStartupSource` in `GET /settings/safe` /
-  `aw settings show`.
-- The effective config is immutable for the lifetime of one process. `aw settings update` (`PUT
-  /settings/safe`) only changes the *desired* version and reports `restartRequired: true` — a restart is what
-  actually applies it.
-- **Never mutable via safe-settings**: `LocalPrincipal`, the session/signing key, `DatabasePath`, `WorkerID`,
-  and any raw secret value. These are process-startup-only (CLI flag / config file / environment), by design —
-  see [05-providers-and-isolation.md](05-providers-and-isolation.md) for why the principal in particular is
-  never a runtime-mutable value.
-- The safe-settings surface covers: SQLite path, artifact/workspace roots, worker concurrency, lease
-  TTL/heartbeat, provider executable/argv/model, process/output limits, retention, and log level.
+## Thứ tự ưu tiên cấu hình (theo `docs/design/01-system-design.md` §12, nguồn có thẩm quyền)
+
+- Khi khởi động, `DatabasePath` được resolve theo thứ tự `safe defaults < config file < environment < CLI
+  flags`, sau đó mới mở/migrate SQLite.
+- Với mọi trường nằm trong **allowlist safe-settings** (bên dưới), lúc khởi động sẽ merge theo thứ tự `safe
+  defaults < config file < SQLite desired settings < environment < CLI flags`. Một giá trị override từ
+  environment/flag che mất một desired setting đã lưu trong SQLite sẽ được báo qua `maskedByStartupSource`
+  trong `GET /settings/safe` / `aw settings show`.
+- Cấu hình hiệu lực là bất biến trong suốt vòng đời của một tiến trình. `aw settings update` (`PUT
+  /settings/safe`) chỉ thay đổi version *desired* và báo `restartRequired: true` — phải restart thì thay đổi
+  mới thực sự được áp dụng.
+- **Không bao giờ thay đổi được qua safe-settings**: `LocalPrincipal`, session/signing key, `DatabasePath`,
+  `WorkerID`, và mọi giá trị secret thô. Những thứ này chỉ được đặt lúc khởi động tiến trình (CLI flag /
+  config file / environment), theo thiết kế — xem [05-providers-and-isolation.md](05-providers-and-isolation.md)
+  để biết vì sao riêng principal không bao giờ là một giá trị có thể đổi lúc runtime.
+- Bề mặt safe-settings bao gồm: đường dẫn SQLite, thư mục gốc artifact/workspace, concurrency của worker,
+  lease TTL/heartbeat, executable/argv/model của provider, giới hạn tiến trình/output, retention, và log level.
 
 ```bash
-aw settings show                                    # current effective + desired config, and any masking
-echo '{...}' | aw settings update --expected-version 1  # change desired config; restart to apply
+aw settings show                                    # cấu hình hiệu lực + desired hiện tại, và mọi chỗ bị che (masking)
+echo '{...}' | aw settings update --expected-version 1  # đổi cấu hình desired; restart để áp dụng
 ```
 
-## `aw serve` — every real flag
+## `aw serve` — mọi flag thật
 
 ```
 $ aw serve -h
@@ -52,15 +55,15 @@ Usage of serve:
         root directory for real Git worktree-backed workspace storage (internal/adapters/gitworktree.Provider) that the source/diff/repository-log inspection routes read through
 ```
 
-`--db`/`--artifact-root`/`--workspace-root` are required (missing = a real startup error, not a silent
-default). `--ui-dist` is genuinely optional — since V8-08, a release binary built with `cmd/aw-release-build`
-serves its own embedded UI even with `--ui-dist` omitted; a plain `go build ./cmd/aw` (no embedded UI) falls
-back to "no UI" exactly as before V8-08.
+`--db`/`--artifact-root`/`--workspace-root` là bắt buộc (thiếu = lỗi khởi động thật, không có giá trị mặc
+định âm thầm). `--ui-dist` thực sự là tùy chọn — từ V8-08, một binary phát hành được build bằng
+`cmd/aw-release-build` tự phục vụ UI nhúng sẵn của nó ngay cả khi bỏ `--ui-dist`; một lệnh `go build ./cmd/aw`
+thông thường (không nhúng UI) sẽ quay về trạng thái "không có UI" giống hệt trước V8-08.
 
-`--host`/`--port` only ever bind loopback — an external bind is refused at startup, never merely a config
-recommendation (`docs/design/01-system-design.md`'s own "external bind bị từ chối").
+`--host`/`--port` chỉ bind vào loopback — bind ra ngoài bị từ chối ngay lúc khởi động, chứ không chỉ là một
+khuyến nghị cấu hình (đúng như câu "external bind bị từ chối" trong `docs/design/01-system-design.md`).
 
-## `aw worker` — every real flag
+## `aw worker` — mọi flag thật
 
 ```
 $ aw worker -h
@@ -103,15 +106,15 @@ Usage of worker:
         root directory for Git worktree-backed workspaces (the same root aw serve uses)
 ```
 
-`--db`/`--artifact-root`/`--workspace-root` MUST point at the same three locations the `aw serve` process for
-this installation uses — `aw worker` never creates its own separate database. Running more than one `aw
-worker` process against the same `--db` is supported (each needs its own `--worker-id`) — real-lease fencing
-(`--lease-ttl`/`--lease-heartbeat`) is what keeps two workers from double-processing the same job.
+`--db`/`--artifact-root`/`--workspace-root` PHẢI trỏ tới đúng ba vị trí mà tiến trình `aw serve` của bản cài
+này đang dùng — `aw worker` không bao giờ tạo database riêng. Chạy nhiều hơn một tiến trình `aw worker` trên
+cùng một `--db` được hỗ trợ (mỗi tiến trình cần `--worker-id` riêng) — cơ chế fencing bằng lease thật
+(`--lease-ttl`/`--lease-heartbeat`) là thứ giữ cho hai worker không xử lý trùng cùng một job.
 
-Env allowlist (`--env-allowlist`) is empty by default — a spawned provider/command process inherits NOTHING
-from the worker's own environment unless a variable name is explicitly listed here.
+Env allowlist (`--env-allowlist`) mặc định rỗng — một tiến trình provider/command được spawn KHÔNG kế thừa gì
+từ environment của worker, trừ khi tên biến được liệt kê tường minh ở đây.
 
-## Global options (every `aw <resource> <action>` command)
+## Global options (mọi lệnh `aw <resource> <action>`)
 
 ```
 Global options (any resource command; env AW_DB, AW_ARTIFACT_ROOT, ...):
@@ -122,20 +125,20 @@ Global options (any resource command; env AW_DB, AW_ARTIFACT_ROOT, ...):
   --codex-executable <path>   register the Codex CLI as a live provider
 ```
 
-Each has an environment-variable fallback (`AW_DB`, `AW_ARTIFACT_ROOT`, `AW_WORKSPACE_ROOT`,
-`AW_CLAUDE_EXECUTABLE`, `AW_CODEX_EXECUTABLE`) so a long-running shell session doesn't need to repeat them on
-every invocation:
+Mỗi option có một biến môi trường dự phòng (`AW_DB`, `AW_ARTIFACT_ROOT`, `AW_WORKSPACE_ROOT`,
+`AW_CLAUDE_EXECUTABLE`, `AW_CODEX_EXECUTABLE`) để một session shell chạy lâu không cần lặp lại chúng ở mỗi lần
+gọi:
 
 ```bash
 export AW_DB=./aw-install/aw.db AW_ARTIFACT_ROOT=./aw-install/artifacts AW_WORKSPACE_ROOT=./aw-install/workspaces
-aw project list   # no --db/--artifact-root/--workspace-root needed now
+aw project list   # giờ không cần --db/--artifact-root/--workspace-root nữa
 ```
 
-CLI flags always win over the environment variable of the same name.
+CLI flag luôn thắng biến môi trường cùng tên.
 
 ## `--principal-config`
 
-The ONLY way to select which local principal (actor + roles) a process runs as — there is deliberately no
-`--actor`/`--role` flag anywhere (ADR-028: "không có per-command impersonation flag"). Omitted or missing means
-the `local-operator`/`[operator]` default. Points at a trusted JSON file with `localPrincipal.actor`/
-`localPrincipal.roles`.
+Đây là cách DUY NHẤT để chọn local principal (actor + roles) mà một tiến trình chạy dưới danh nghĩa — cố ý
+không có flag `--actor`/`--role` ở bất kỳ đâu (ADR-028: "không có per-command impersonation flag"). Bỏ trống
+hoặc file không tồn tại nghĩa là dùng mặc định `local-operator`/`[operator]`. Flag này trỏ tới một file JSON
+tin cậy có `localPrincipal.actor`/`localPrincipal.roles`.

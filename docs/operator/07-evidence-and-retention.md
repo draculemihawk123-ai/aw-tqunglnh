@@ -1,16 +1,16 @@
-# Evidence and retention
+# Evidence và retention
 
-## Evidence — what it is, real shape
+## Evidence — nó là gì, dạng thật
 
-Every gate/command/agent execution this installation runs produces one or more Evidence rows — a durable,
-queryable record of what happened, chained to the exact repository revision(s) involved:
+Mỗi lần thực thi gate/command/agent mà bản cài này chạy đều tạo ra một hoặc nhiều dòng Evidence — một bản ghi bền
+vững, truy vấn được về những gì đã xảy ra, được xâu chuỗi tới chính xác (các) revision repository liên quan:
 
 ```bash
 aw evidence list --project-id <id> <workItemId> [--run-id <id>] [--kind <evidenceKind>]
 aw artifact get <workItemId> <evidenceId> <artifactId> --project-id <id> --output <path|->
 ```
 
-A real evidence entry (verified in [01-quickstart.md](01-quickstart.md)'s own successful run):
+Một mục evidence thật (đã kiểm chứng trong run thành công của [01-quickstart.md](01-quickstart.md)):
 
 ```json
 {"evidenceId": "<attemptId>:<evidenceKind>", "projectId": "...", "workItemId": "...", "runId": "...",
@@ -20,43 +20,44 @@ A real evidence entry (verified in [01-quickstart.md](01-quickstart.md)'s own su
  "revisionSetHash": "sha256:...", "policyVersion": "sha256:...", "createdAt": "..."}
 ```
 
-Every evidence row's `revisions` field names the EXACT repository commit(s) the evidence was produced against
-— the chain AK-ARCH-021 requires (WorkItem → Run → NodeRun → Attempt → invocation → artifact → exact
-repository revision) is real, queryable, and end to end: nothing in this chain is ever a "trust me" summary.
+Trường `revisions` của mỗi dòng evidence nêu CHÍNH XÁC (các) commit của repository mà evidence được tạo ra trên
+đó — chuỗi mà AK-ARCH-021 yêu cầu (WorkItem → Run → NodeRun → Attempt → invocation → artifact → revision
+repository chính xác) là thật, truy vấn được, và đầu-cuối: không mắt xích nào trong chuỗi này là một bản tóm tắt
+kiểu "cứ tin tôi đi".
 
-A `MACHINE_GATE`'s own real output artifact is a `application/vnd.agentkit.gate-result+json` document — the
-real content this quickstart fetched was `{"overallVerdict":"PASS","criteria":[{"name":"...", "evidenceKey":
-"...", "verdict":"PASS"}]}` (or `"ERROR"` with a real `"detail"` string explaining what went wrong, e.g. the
-"%1 is not a valid Win32 application" error the quickstart's own troubleshooting section walks through).
+Artifact output thật của một `MACHINE_GATE` là một document `application/vnd.agentkit.gate-result+json` — nội
+dung thật mà quickstart này lấy về là `{"overallVerdict":"PASS","criteria":[{"name":"...", "evidenceKey":
+"...", "verdict":"PASS"}]}` (hoặc `"ERROR"` kèm một chuỗi `"detail"` thật giải thích chuyện gì đã sai, ví dụ lỗi
+"%1 is not a valid Win32 application" mà mục troubleshooting của quickstart đã đi qua).
 
-## Retention classes
+## Các retention class
 
-Two, closed (`internal/domain/artifact/artifact.go`):
+Hai class, tập đóng (`internal/domain/artifact/artifact.go`):
 
-- **`CANONICAL_CONTEXT`** — never expires. Canonical conversation/context artifacts, and (as of Alpha) every
-  artifact this codebase's real producers (`internal/app/message`, every `internal/app/runtime` node executor)
-  actually create.
-- **`RAW_OUTPUT_TEMP`** — a 7-day TTL from creation. Raw provider/command output not meant to live forever.
-  **As of this Alpha, no real code path in this codebase actually constructs one of these** — the retention
-  class, its 7-day TTL math, and the sweep worker that would clean it up are all real and exhaustively tested,
-  but there is currently no real producer wired to it. Don't be surprised if you never see one in a real
-  installation yet.
+- **`CANONICAL_CONTEXT`** — không bao giờ hết hạn. Các artifact hội thoại/ngữ cảnh canonical, và (tính tới
+  Alpha) mọi artifact mà các producer thật của codebase này (`internal/app/message`, mọi node executor của
+  `internal/app/runtime`) thực sự tạo ra.
+- **`RAW_OUTPUT_TEMP`** — TTL 7 ngày tính từ lúc tạo. Output thô của provider/command không nhằm sống mãi mãi.
+  **Tính tới bản Alpha này, không có đường code thật nào trong codebase thực sự tạo ra loại này** — retention
+  class, phép tính TTL 7 ngày, và worker sweep sẽ dọn nó đều là thật và được test kỹ, nhưng hiện chưa có producer
+  thật nào được nối vào. Đừng ngạc nhiên nếu bạn chưa thấy một artifact loại này trong một bản cài thật.
 
-## The retention sweep
+## Retention sweep
 
-A periodic worker job (`aw worker --sweep-interval`, default 1 hour) that purges eligible `RAW_OUTPUT_TEMP`
-artifacts — an artifact is eligible only when past its 7-day grace AND not `Attached` AND not `Hold`ed AND not
-sharing its content-addressed locator with any artifact that IS attached/held. A sweep never touches
-`CANONICAL_CONTEXT`, never deletes a referenced or held artifact, and never removes the DATABASE ROW even for a
-purged artifact — only its real bytes (an audit trail is kept forever; `ADR-017`).
+Một job worker định kỳ (`aw worker --sweep-interval`, mặc định 1 giờ) xóa các artifact `RAW_OUTPUT_TEMP` đủ điều
+kiện — một artifact chỉ đủ điều kiện khi đã quá hạn ân hạn 7 ngày VÀ không ở trạng thái `Attached` VÀ không bị
+`Hold` VÀ không dùng chung locator content-addressed với bất kỳ artifact nào ĐANG được attach/hold. Một lần sweep
+không bao giờ chạm vào `CANONICAL_CONTEXT`, không bao giờ xóa một artifact đang được tham chiếu hoặc bị hold, và
+không bao giờ xóa DÒNG DATABASE ngay cả với artifact đã bị purge — chỉ xóa phần byte thật của nó (một audit trail
+được giữ mãi mãi; `ADR-017`).
 
 ```bash
-aw settings update ...   # --sweep-interval is a serve/worker startup flag, not a runtime-mutable safe-setting field
+aw settings update ...   # --sweep-interval là flag khởi động của serve/worker, không phải trường safe-setting thay đổi được lúc runtime
 ```
 
 ## Redaction
 
-A secret value that ever passes through a real command/agent's own output (stdout/stderr, or a stored
-artifact) is redacted before it is ever persisted — verified by this repo's own real end-to-end secret-scan
-test (`internal/integration/v5accept`): a real secret is walked for across every real artifact-store object AND
-the raw on-disk SQLite file itself, confirming zero unredacted occurrences anywhere durable.
+Một giá trị secret từng đi qua output của một command/agent thật (stdout/stderr, hoặc một artifact được lưu) sẽ
+được redact trước khi được persist — đã được kiểm chứng bởi test quét secret đầu-cuối thật của repo này
+(`internal/integration/v5accept`): một secret thật được dò tìm trên mọi object thật trong artifact store VÀ trên
+chính file SQLite thô trên đĩa, xác nhận không có lần xuất hiện nào chưa bị redact ở bất cứ đâu được lưu bền vững.

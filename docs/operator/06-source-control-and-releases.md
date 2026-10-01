@@ -1,21 +1,21 @@
-# Source control and releases
+# Quản lý mã nguồn và release
 
-## Local-only Git — the core constraint
+## Git chỉ-cục-bộ — ràng buộc cốt lõi
 
-Every repository `aw` touches is a real, local Git repository at the absolute filesystem path you registered
-(`remoteLocator` — see [01-quickstart.md](01-quickstart.md)). `aw` never pushes, fetches, or clones from a
-remote — `internal/adapters/gitworktree.Provider` (the ONE real Git adapter this codebase has) never calls any
-of those operations anywhere in its own implementation. A "release" in Agent Kit is a real, local commit
-landing in your own repository's own history — nothing more, nothing networked.
+Mọi repository mà `aw` chạm vào là một Git repository cục bộ thật, nằm ở đường dẫn filesystem tuyệt đối mà bạn
+đã đăng ký (`remoteLocator` — xem [01-quickstart.md](01-quickstart.md)). `aw` không bao giờ push, fetch hay
+clone từ remote — `internal/adapters/gitworktree.Provider` (Git adapter thật DUY NHẤT trong codebase này) không
+hề gọi bất kỳ thao tác nào trong số đó ở đâu trong phần cài đặt của nó. Một "release" trong Agent Kit là một
+commit cục bộ thật nằm trong chính lịch sử repository của bạn — không hơn, không có gì đi qua mạng.
 
-## ReleaseSet lifecycle
+## Vòng đời ReleaseSet
 
 ```bash
 echo '{"familyId":"<taskFamilyId>"}' | aw release-set create --project-id <id> --idempotency-key rs-1
 ```
 
-A ReleaseSet groups one or more real local commits a task family produces before they are considered "done."
-Once created:
+Một ReleaseSet gom một hoặc nhiều commit cục bộ thật mà một task family tạo ra trước khi chúng được coi là
+"xong". Sau khi đã tạo:
 
 ```bash
 echo '{"authorName":"you","authorEmail":"you@example.com","message":"my commit",
@@ -24,52 +24,52 @@ echo '{"authorName":"you","authorEmail":"you@example.com","message":"my commit",
   | aw release-set local-commit --project-id <id> --idempotency-key commit-1 --wait --wait-timeout 30s
 ```
 
-This is a REAL `git commit` against the real repository workspace, fenced by BOTH the ReleaseSet's own
-optimistic-concurrency version AND the RepositoryWorkspace's own version — two workers racing to commit into
-the same workspace get a real, typed `CONFLICT` on the loser, never a silently corrupted history. `--wait`
-blocks until the commit job reaches a terminal state.
+Đây là một lệnh `git commit` THẬT trên repository workspace thật, được rào bởi CẢ version optimistic-concurrency
+của ReleaseSet LẪN version của RepositoryWorkspace — hai worker tranh nhau commit vào cùng một workspace thì bên
+thua nhận một `CONFLICT` thật, có kiểu, không bao giờ là một lịch sử bị hỏng âm thầm. `--wait` block cho tới
+khi job commit đạt trạng thái terminal.
 
 ```bash
-aw release-set seal --expected-version <n> --idempotency-key seal-1 <releaseSetId>   # no more commits allowed
-aw release-set abandon --expected-version <n> --idempotency-key abandon-1 <releaseSetId>  # discard, never applied
+aw release-set seal --expected-version <n> --idempotency-key seal-1 <releaseSetId>   # không cho commit thêm nữa
+aw release-set abandon --expected-version <n> --idempotency-key abandon-1 <releaseSetId>  # bỏ đi, không bao giờ được áp dụng
 aw release-set show <releaseSetId>
 aw release-set list --project-id <id>
 ```
 
-## Repository workspace lifecycle
+## Vòng đời repository workspace
 
-A `RepositoryWorkspace` is the real, provisioned Git worktree a WorkItem's own `WorkspaceSet` holds for one
-repository — created automatically when a root WorkItem's `initialScope` names that repository (see
-[01-quickstart.md](01-quickstart.md)'s own `provisionedRepositories` response field). Two commands manage its
-own lifecycle directly:
+Một `RepositoryWorkspace` là Git worktree thật đã được cấp phát mà `WorkspaceSet` của một WorkItem giữ cho một
+repository — được tạo tự động khi `initialScope` của một WorkItem gốc nêu tên repository đó (xem trường
+`provisionedRepositories` trong response ở [01-quickstart.md](01-quickstart.md)). Hai lệnh quản lý trực tiếp
+vòng đời của nó:
 
 ```bash
 aw repository-workspace reconcile --project-id <id> --expected-version <n> --idempotency-key r-1 <id>
 aw workspace-set release --project-id <id> --expected-version <n> --idempotency-key rel-1 <workspaceSetId>
 ```
 
-## Read-only source/diff/log — never an interactive terminal
+## Source/diff/log chỉ-đọc — không bao giờ là terminal tương tác
 
-Three commands give paginated, read-only views over a real repository workspace's own Git object store — this
-is the ENTIRE "browse the code" surface; there is deliberately no shell/terminal into a running workspace:
+Ba lệnh cung cấp các view chỉ-đọc, có phân trang, trên Git object store của một repository workspace thật — đây
+là TOÀN BỘ bề mặt "duyệt code"; cố ý không có shell/terminal nào vào một workspace đang chạy:
 
 ```bash
-# Read one file's real content at an exact revision
+# Đọc nội dung thật của một file tại một revision chính xác
 aw repository-workspace source --project-id <id> --repository-id <repoId> --workspace-set-id <wsId> \
   --revision <commitId> --revision-generation <gen> --path path/to/file.go --output -
 
-# A real unified diff between two revisions
+# Một unified diff thật giữa hai revision
 aw repository-workspace diff --project-id <id> --repository-id <repoId> --workspace-set-id <wsId> \
   --base-revision <commitA> --base-revision-generation <genA> \
   --result-revision <commitB> --result-revision-generation <genB>
 
-# Paginated commit history, anchored at a real commit
+# Lịch sử commit có phân trang, neo tại một commit thật
 aw repository-workspace log --project-id <id> --repository-id <repoId> --workspace-set-id <wsId> \
   --anchor <commitId> --anchor-generation <gen> [--cursor <commitId>] [--limit <n>]
 ```
 
-Every one of these three takes `--byte-limit`/`--file-limit`/`--line-limit` (server-default if omitted) — a
-genuinely huge diff or file is truncated, never silently loaded in full into memory or into your terminal.
-`--workspace-set-id`/`--repository-id`/a revision + its own generation number are all required — a revision is
-always named relative to the specific workspace generation it belongs to, since a workspace can be
-provisioned, released, and re-provisioned (a new generation) over its own lifetime.
+Cả ba lệnh đều nhận `--byte-limit`/`--file-limit`/`--line-limit` (dùng mặc định của server nếu bỏ trống) — một
+diff hoặc file thực sự rất lớn sẽ bị cắt ngắn, không bao giờ âm thầm nạp toàn bộ vào bộ nhớ hay vào terminal
+của bạn. `--workspace-set-id`/`--repository-id`/một revision + số generation của nó đều bắt buộc — một revision
+luôn được gọi tên tương đối với generation workspace cụ thể mà nó thuộc về, vì trong suốt vòng đời của mình một
+workspace có thể được cấp phát, giải phóng, rồi cấp phát lại (một generation mới).
