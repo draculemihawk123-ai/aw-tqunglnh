@@ -141,6 +141,10 @@ Task tổng hợp verdict được phép chạy khi execution gate trước đó
 | V6 — API, projections & operator CLI | `08-v6-api-projections.md` | Local HTTP API/SSE, read models và `aw` operator CLI đầy đủ | API/projection + terminal parity gate pass |
 | V7 — Alpha UI | `09-v7-alpha-ui.md` | Người dùng vận hành toàn bộ core từ local web UI | UI journeys + accessibility smoke pass |
 | V8 — Alpha hardening | `10-v8-alpha-hardening.md` | Recovery/security/packaging/docs đạt release gate | Alpha verdict |
+| V9 — Harness alignment (**ĐỀ XUẤT**) | `12-v9-harness-alignment.md` | Checker sau maker, kiểm tra fail quay lại maker, prompt có ưu tiên/outcome, selector theo path, môi trường agent khai báo | Verdict V9; `v8-alpha-gate` vẫn xanh |
+
+V9 là đề xuất sau verdict `ALPHA_READY`, không thuộc định nghĩa Alpha ở mục 2; nó chỉ có hiệu lực khi product
+owner duyệt `12-v9-harness-alignment.md`. Đầu vào và bằng chứng: `docs/harness-engineering/15-doi-chieu-v9.md`.
 
 Không chạy song song hai version có dependency nối tiếp. Bên trong một version, mặc định vẫn làm theo
 thứ tự Task ID. Hai task chỉ được chạy song song khi file version ghi rõ `Có thể song song` và chúng
