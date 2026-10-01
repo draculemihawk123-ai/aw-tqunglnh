@@ -264,11 +264,18 @@ func TestPool_TwoPoolsRaceRecovery_NoDuplicateProcessing(t *testing.T) {
 	waitForCondition(t, func() bool { return processed.Load() >= 1 })
 	time.Sleep(150 * time.Millisecond) // give a would-be duplicate a real chance to also fire
 	cancel()
-	if err := <-errA; err != nil {
-		t.Fatalf("Run (A): %v", err)
-	}
-	if err := <-errB; err != nil {
-		t.Fatalf("Run (B): %v", err)
+	// The pool that lost the race can still be inside its own startup
+	// recovery scan, waiting on SQLite's write lock while the winner claims
+	// and completes the job; cancel() then surfaces from that scan as
+	// "startup recovery scan: ... context canceled" (seen on windows-latest
+	// CI). That error is the shutdown this test asked for, not a fault — the
+	// same rule cmd/aw's cleanShutdown applies to workerpool.Run. Any other
+	// error still fails the test, and the exactly-once assertion below is
+	// unchanged.
+	for name, errCh := range map[string]chan error{"A": errA, "B": errB} {
+		if err := <-errCh; err != nil && !(ctx.Err() != nil && errors.Is(err, context.Canceled)) {
+			t.Fatalf("Run (%s): %v", name, err)
+		}
 	}
 	if got := processed.Load(); got != 1 {
 		t.Fatalf("processed count = %d, want exactly 1 (two pools racing must never both process the same job)", got)
