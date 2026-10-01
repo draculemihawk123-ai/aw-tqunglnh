@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "verdict": "REWORK",
+  "verdict": "CHƯA ĐỦ EVIDENCE",
   "gatePass": false,
   "assessedCommit": "6d3bab4f2568005186fc7edf5ed6655859096083",
   "assessmentRun": {
@@ -20,17 +20,17 @@
   },
   "blockers": [
     {
-      "id": "parity-inventory-has-zero-debt",
-      "kind": "FINAL_GATE",
-      "detail": "internal/delivery/parity/ledger.go still pins 15 debt entries: 13 HTTP read operations with no `aw` mirror and 2 projection reads (two of the 13) with no application operation. The mandatory V8-11 gate requires the UI <-> operationId <-> `aw` <-> application-operation inventory to have no debt.",
-      "nextTask": "V8-12R-01"
+      "id": "alpha-gate-not-rerun-after-parity-closure",
+      "kind": "EVIDENCE",
+      "detail": "V8-12R-01 emptied internal/delivery/parity/ledger.go (the one failing final gate of the last real assessment, commit 6d3bab4: 15 debt entries -> 0, with TestParityLedgerIsEmpty green), but the V8-11 Alpha gate has not yet been run on a commit that contains that change, so no assessment says gatePass=true. The summary, assessed commit, run and checksums recorded here are those of the last real assessment and are deliberately not rewritten by hand.",
+      "nextTask": "V8-12R-02"
     }
   ],
   "nextTasks": [
     {
-      "id": "V8-12R-01",
-      "title": "Close the parity ledger and re-run the Alpha gate",
-      "scope": "Add the 13 missing `aw` read leaves and give the 2 projection reads an application operation so Ledger() is empty; TestParityLedgerIsEmpty and the v8-alpha-gate job then report gatePass=true on a fresh commit; record a new verdict for that commit. Nothing else is required for ALPHA_READY."
+      "id": "V8-12R-02",
+      "title": "Record the Alpha verdict from the gate run of the V8-12R-01 commit",
+      "scope": "Take the `v8-alpha-assessment` artifact of the `v8-alpha-gate` job on the merged V8-12R-01 commit and record its assessed commit, run and the `aw-release-build` checksums in this file, the release report and start-here section 4A. Record ALPHA_READY only if that assessment reports gatePass=true; otherwise record the verdict it supports and its blocker. When gatePass=true, switch the job to --enforce=true. Nothing else is required for ALPHA_READY."
     }
   ],
   "knownLimitations": ["LIM-01", "LIM-02", "LIM-03", "LIM-04", "LIM-05", "LIM-06", "LIM-07", "LIM-08", "LIM-09", "LIM-10", "LIM-11"],

@@ -1,6 +1,6 @@
 # Alpha release report
 
-**Verdict: `REWORK`** — `gatePass = false`.
+**Verdict: `CHƯA ĐỦ EVIDENCE`** — `gatePass = false`.
 
 The machine-readable record of this verdict is [`alpha-verdict.json`](alpha-verdict.json); this page is its
 readable form, and a test keeps the two (and [`../00-start-here.md`](../00-start-here.md)) from disagreeing.
@@ -12,12 +12,13 @@ readable form, and a test keeps the two (and [`../00-start-here.md`](../00-start
 | Commit | `6d3bab4f2568005186fc7edf5ed6655859096083` (master after V8-11) |
 | Assessment | CI run [36786340396](https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/36786340396), artifact `v8-alpha-assessment` |
 | Tool | `cmd/v8-alpha-gate` (`internal/alphagate`), V8-11 |
+| Since | V8-12R-01 closed the one failing final gate in code (the parity ledger, 15 entries to 0). No assessment of a commit containing it exists yet, so the figures below are those of the commit above |
 | Rule | `ALPHA_READY` only when `gatePass = true`; any other verdict names its blocker and the next narrow task (`docs/design/10-v8-alpha-hardening.md`, V8-12) |
 
 The assessment reads the V1-00 coverage map (ADR-024 phase labels, never reclassified), what the repository's tests
 cite, every CI suite's result, and the final-gate test run. It is produced even when suites fail.
 
-## Result
+## Result (of the assessed commit)
 
 | Area | Result |
 |---|---|
@@ -30,26 +31,28 @@ cite, every CI suite's result, and the final-gate test run. It is produced even 
 
 ## The blocker
 
-**`parity-inventory-has-zero-debt` fails.** `internal/delivery/parity/ledger.go` still pins 15 debt entries that
-V6-15O acknowledged but its own "no new leaf/route" rule forbade closing:
+**`alpha-gate-not-rerun-after-parity-closure` — missing evidence, not missing code.** The last real assessment (above)
+failed exactly one final gate, `parity-inventory-has-zero-debt`: `internal/delivery/parity/ledger.go` pinned 15 debt
+entries — 13 HTTP read operations with no `aw` mirror, two of which (`listWorkItemKanban`,
+`getWorkItemProjectedDetail`) also had no application operation behind them.
 
-- 13 HTTP read operations with no `aw` mirror: `getEvidence`, `listArtifacts`, `getMessageContent`,
-  `getMessageContextSnapshot`, `getReleaseSetLocalCommitStatus`, `getRepositoryWorkspaceState`,
-  `getScopeExpansionRequest`, `listFamilyScopeExpansionRequests`, `getTaskFamily`, `listChildWorkItems`,
-  `listWorkItemKanban`, `getWorkItemProjectedDetail`, `repositoriesGet`.
-- 2 projection reads (`listWorkItemKanban`, `getWorkItemProjectedDetail` — two of the 13 above, so 13 distinct
-  operations need work) that the HTTP layer answers straight from the projection port with no public application
-  operation behind them (ADR-028 wants one).
+V8-12R-01 closed all of it: the 13 `aw` read leaves exist (`evidence show`, `artifact list`, `message content`,
+`message context-snapshot`, `release-set local-commit status`, `repository-workspace show`, `scope-expansion show` /
+`list`, `task-family show`, `work-item children`, `work-item kanban`, `work-item detail`, `repository show`), the two
+projection reads are application operations (`internal/app/kanban`, which the HTTP handlers and the CLI both call), and
+`Ledger()` is empty with `TestParityLedgerIsEmpty` green.
 
-Nothing in the product misbehaves because of this; it is a parity-completeness gap the Alpha gate explicitly requires
-closed.
+What does not exist yet is a gate run on a commit that contains that change. The recorded summary, assessed commit, run
+and checksums are those of the last real assessment and are deliberately not rewritten by hand: `ALPHA_READY` is
+recorded from the gate's own output (`gatePass = true`), never inferred from a green unit test.
 
 ## Next narrow task
 
-**V8-12R-01 — close the parity ledger and re-run the Alpha gate.** Add the 13 `aw` read leaves, give the 2 projection
-reads an application operation, empty `Ledger()`. `TestParityLedgerIsEmpty` and the `v8-alpha-gate` job then report
-`gatePass = true` on a fresh commit, a new verdict record is written for that commit, and (only then) the gate job is
-switched to enforcing. No Beta work is part of it.
+**V8-12R-02 — record the Alpha verdict from the gate run of the V8-12R-01 commit.** Take the `v8-alpha-assessment`
+artifact of the `v8-alpha-gate` job on the merged V8-12R-01 commit and record its assessed commit, run and
+`aw-release-build` checksums here, in `alpha-verdict.json` and in start-here section 4A. Record `ALPHA_READY` only if
+that assessment reports `gatePass = true`; otherwise record the verdict it supports and its blocker. When
+`gatePass = true`, switch the gate job to enforcing. No Beta work is part of it.
 
 ## Known limitations
 

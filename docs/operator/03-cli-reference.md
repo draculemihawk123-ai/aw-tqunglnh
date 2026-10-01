@@ -24,29 +24,30 @@ Process commands:
 Resource commands (aw <resource> <action> [flags]):
   adapter                list|probe|register|show
   approval               resolve
-  artifact               get
+  artifact               get|list
   blocker                resolve
   component              list
   context-snapshot       show
   definition             create|list|publish|show|validate|versions
   doctor
   events                 watch
-  evidence               list|verify
+  evidence               list|show|verify
   health                 live|ready
-  message                append|list|upload-attachment
+  message                append|content|context-snapshot|list|upload-attachment
   node-run               retry-blocked
   pack-assignment        assign|list
   project                create|list|show
   projection             rebuild|rebuild-status|status
-  release-set            abandon|create|list|local-commit|seal|show
-  repository             list|onboarding|register|retry-probe
-  repository-workspace   diff|log|reconcile|source
+  release-set            abandon|create|list|local-commit|local-commit status|seal|show
+  repository             list|onboarding|register|retry-probe|show
+  repository-workspace   diff|log|reconcile|show|source
   run                    cancel|diagnostics|graph|show|start|timeline
-  scope-expansion        approve|reject|request|withdraw
+  scope-expansion        approve|list|reject|request|show|withdraw
   settings               show|update
+  task-family            show
   version                diff|show
   wait                   signal
-  work-item              cancel|create|create-child|list|mark-ready|readiness|show
+  work-item              cancel|children|create|create-child|detail|kanban|list|mark-ready|readiness|show
   workspace-set          release|show
 
 Global options (any resource command; env AW_DB, AW_ARTIFACT_ROOT, ...):
@@ -99,6 +100,30 @@ runs the pre-V6 offline bundle verifier when invoked with `--evidence-dir`/`--su
 - **Exit codes**: `0` success, `1` failure (a real, typed application error — check the JSON error body's own
   `code`), `2` usage error (bad flags, missing required arguments — the command never even attempted the
   operation).
+
+## Reading state: the query commands
+
+Every HTTP read operation has an `aw` command that reads through the same application query, so what you see in the
+UI you can script. Most are `show`/`list`; the ones whose name or arguments are not obvious:
+
+| Command | Reads |
+|---|---|
+| `aw work-item kanban --project-id <p> [--status <S>]... [--family-id <f>]` | The board: **projected** cards (status, blocker count, active run, repository badges) plus `freshness`. A `STALE` board is a real answer, not an error. `--status` repeats. |
+| `aw work-item detail --project-id <p> <workItemId>` | One card (projected, possibly stale) next to its **freshly recomputed** readiness. Act on `readiness`, never on `card`. |
+| `aw work-item list` / `aw work-item show` | The **authoritative** list / detail, straight from the work-item rows. |
+| `aw work-item children --project-id <p> <workItemId>` | The work item's direct children (not grandchildren). |
+| `aw task-family show --project-id <p> <familyId>` | A task family's status and `scopeVersion`. |
+| `aw scope-expansion list --project-id <p> <familyId>` | Every scope-expansion request of a family, any status — how you find a pending request's id. |
+| `aw scope-expansion show --project-id <p> <requestId>` | One request, including the `version` that `approve`/`reject`/`withdraw` take as `--expected-version`. |
+| `aw repository show <repositoryId>` | One repository's status and `version` (what `repository retry-probe --expected-version` takes). Like `repository onboarding`, it takes no `--project-id`: the project is read from the repository. |
+| `aw repository-workspace show --project-id <p> <repositoryWorkspaceId>` | One repository workspace's state, lease and quarantine; `workspace-set show` lists every workspace of a family. |
+| `aw release-set local-commit status --project-id <p> <releaseSetId> <localCommitId>` | A local-commit operation's state (the one `local-commit --wait` observes). |
+| `aw evidence show --project-id <p> <workItemId> <evidenceId>` | One evidence record; `aw artifact list --project-id <p> <workItemId> <evidenceId>` lists the artifacts it references. |
+| `aw message content --project-id <p> --output <path\|-> <workItemId> <messageId>` | A message's own text or attachment bytes, streamed to a file or stdout after the store verifies them. |
+| `aw message context-snapshot --project-id <p> <workItemId> <messageId>` | The context snapshot of the attempt a message started. |
+
+`work-item kanban` reads the whole board in one transaction and does not paginate (the HTTP route does, with a
+signed cursor that would mean nothing across CLI processes); narrow it with `--status` / `--family-id`.
 
 ## Positional arguments come after flags
 

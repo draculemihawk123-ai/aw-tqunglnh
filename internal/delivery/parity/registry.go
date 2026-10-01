@@ -119,6 +119,7 @@ func PublicOperations() []PublicOperation {
 		wsReconcile = "internal/app/workspacereconcile"
 		wsInspect   = "internal/app/workspaceinspection"
 		rsCommit    = "internal/app/releasesetcommit"
+		kanbanApp   = "internal/app/kanban"
 	)
 	return []PublicOperation{
 		// ---- installation health and configuration -----------------------
@@ -178,9 +179,9 @@ func PublicOperations() []PublicOperation {
 		{Name: "RejectScopeExpansion", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("rejectScopeExpansion")}, Symbol: work + ".RejectScopeExpansion"},
 		{Name: "WithdrawScopeExpansion", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("withdrawScopeExpansion")}, Symbol: work + ".WithdrawScopeExpansion"},
 
-		// ---- projected read model (delivery reads the projection port) ---
-		{Name: "ListWorkItemKanban", Kind: KindQuery, Exposure: ExposureProjectionRead, HTTP: []HTTPBinding{project("listWorkItemKanban")}},
-		{Name: "GetWorkItemProjectedDetail", Kind: KindQuery, Exposure: ExposureProjectionRead, HTTP: []HTTPBinding{project("getWorkItemProjectedDetail")}},
+		// ---- projected read model (V8-12R-01: now public application queries) ---
+		{Name: "ListWorkItemKanban", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("listWorkItemKanban")}, Symbol: kanbanApp + ".ListWorkItemKanban"},
+		{Name: "GetWorkItemProjectedDetail", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkItemProjectedDetail")}, Symbol: kanbanApp + ".GetWorkItemProjectedDetail"},
 
 		// ---- runs, human decisions, recovery -----------------------------
 		{Name: "StartWorkflowRun", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("startWorkflowRun")}, Symbol: runtimeApp + ".StartWorkflowRun"},

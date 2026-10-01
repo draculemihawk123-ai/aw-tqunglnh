@@ -9,12 +9,13 @@ import (
 	_ "github.com/taQuangLing/agent-workflow/internal/delivery/cli/workitem"
 )
 
-// TestWorkItemPackage_RegistersAllSevenDescriptors proves this package's own
-// seven init() registrations (list.go, show.go, create.go, createchild.go,
-// readiness.go, markready.go, cancel.go) all landed in the shared
+// TestWorkItemPackage_RegistersEveryDescriptor proves this package's own
+// init() registrations (list.go, show.go, create.go, createchild.go,
+// readiness.go, markready.go, cancel.go and familyread.go's two reads and projected.go's two) all
+// landed in the shared
 // internal/delivery/cli.Default registry — mirrors
 // internal/delivery/cli/run/descriptor_test.go's own identical proof.
-func TestWorkItemPackage_RegistersAllSevenDescriptors(t *testing.T) {
+func TestWorkItemPackage_RegistersEveryDescriptor(t *testing.T) {
 	want := map[string]struct {
 		scope           string
 		httpOperationID string
@@ -26,12 +27,16 @@ func TestWorkItemPackage_RegistersAllSevenDescriptors(t *testing.T) {
 		"work-item readiness|PROJECT":    {"PROJECT", "getWorkItemReadiness"},
 		"work-item mark-ready|PROJECT":   {"PROJECT", "markWorkItemReady"},
 		"work-item cancel|PROJECT":       {"PROJECT", "cancelWorkItem"},
+		"work-item children|PROJECT":     {"PROJECT", "listChildWorkItems"},
+		"task-family show|PROJECT":       {"PROJECT", "getTaskFamily"},
+		"work-item kanban|PROJECT":       {"PROJECT", "listWorkItemKanban"},
+		"work-item detail|PROJECT":       {"PROJECT", "getWorkItemProjectedDetail"},
 	}
 
 	got := map[string]bool{}
 	for _, d := range cli.All() {
 		path := strings.Join(d.Path, " ")
-		if !strings.HasPrefix(path, "work-item ") {
+		if !strings.HasPrefix(path, "work-item ") && !strings.HasPrefix(path, "task-family ") {
 			continue
 		}
 		key := path + "|" + string(d.Scope)

@@ -279,6 +279,14 @@ func resolveRoute(routes []Route, args []string) (Route, []string, error) {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return Route{}, nil, cli.UsageError{Err: errors.New("expected a command (run 'aw help')")}
 	}
+	// A three-word path (`aw release-set local-commit status`, the shape the UX
+	// inventory reserves) is tried first, so it may share its first two words
+	// with a two-word route (`aw release-set local-commit`) without ambiguity.
+	if len(args) >= 3 && !strings.HasPrefix(args[1], "-") && !strings.HasPrefix(args[2], "-") {
+		if r, ok := Lookup(routes, args[:3]); ok {
+			return r, args[3:], nil
+		}
+	}
 	if len(args) >= 2 && !strings.HasPrefix(args[1], "-") {
 		if r, ok := Lookup(routes, args[:2]); ok {
 			return r, args[2:], nil
@@ -325,8 +333,10 @@ func Usage() string {
 		if _, seen := byResource[res]; !seen {
 			resources = append(resources, res)
 		}
-		if len(r.Path) == 2 {
-			byResource[res] = append(byResource[res], r.Path[1])
+		if len(r.Path) >= 2 {
+			// A three-word path (`release-set local-commit status`) lists as
+			// `local-commit status`, so help shows every dispatchable command.
+			byResource[res] = append(byResource[res], strings.Join(r.Path[1:], " "))
 		} else {
 			byResource[res] = append(byResource[res], "")
 		}

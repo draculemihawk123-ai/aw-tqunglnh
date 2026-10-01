@@ -116,9 +116,12 @@ type Rules struct {
 	// classified "[ĐÃ CÓ]" (so its own rename map never evaluates them).
 	UXProposalRenames map[string][]string
 	// UXLeafRenames maps a UX-reserved `aw` shape (space-joined path) to the
-	// registered CLI path that honors it under a reviewed wording change
+	// registered CLI path that ALSO honors it under a reviewed wording change
 	// (V6-00 §1: "V6-15B…V6-15O có quyền điều chỉnh chữ, miễn giữ đúng
-	// invocation shape").
+	// invocation shape"). A descriptor at either the reserved path or the
+	// renamed one honors the row: a UX row that names several operations
+	// (`getWorkspaceState` covers a set and a single workspace) needs the
+	// reserved wording to stay valid for the operation that still uses it.
 	UXLeafRenames map[string]string
 	// RemoteGitTokens are the lower-case tokens that, appearing in a CLI
 	// path, operation name, route path or operationId, mark a remote Git
@@ -175,6 +178,25 @@ func DefaultRules() Rules {
 			// the UX inventory had drafted `aw definition version ...`.
 			"definition version show": "version show",
 			"definition version diff": "version diff",
+			// V8-12R-01 closed the last parity ledger rows with leaves whose
+			// wording differs from the UX draft, each for one reason:
+			//
+			// UX Screen 5 row 1 reserved `aw work-item list` for the PROJECTED
+			// board, but V6-15G had already shipped `work-item list` as the
+			// AUTHORITATIVE list (listWorkItems) — the one operators script
+			// against. The projected read is `work-item kanban`, the name the
+			// HTTP route and the UI both use.
+			"work-item list": "work-item kanban",
+			// UX Screen 7 row 2 reserved `aw work-item show` with the family
+			// "embedded", but `work-item show` is the authoritative single read
+			// whose shape V6-15G froze; embedding an unbounded child list in it
+			// would change that shape. The children are their own leaf.
+			"work-item show": "work-item children",
+			// UX Screen 9 row 1 reserved `aw workspace-set show` for
+			// "workspace/repository-workspace state"; the set state keeps that
+			// leaf and the single repository-workspace state is its own, so
+			// the row is honored by either (see UXLeafRenames).
+			"workspace-set show": "repository-workspace show",
 		},
 		RemoteGitTokens: tokenSet("push", "fetch", "pull", "merge", "rebase", "pr", "remote", "clone", "upstream", "origin"),
 		InternalTokens:  tokenSet("advance", "execute", "claim", "reap", "heartbeat", "lease", "sweep", "reconcileinterrupted"),
@@ -511,11 +533,12 @@ func (c *checker) resolve(proposed string) []string {
 func (c *checker) leafHonored(reserved [][]string, descriptors []cli.Descriptor) bool {
 	for _, want := range reserved {
 		wantPath := strings.Join(want, " ")
+		renamedPath := ""
 		if renamed, ok := c.rules.UXLeafRenames[wantPath]; ok {
-			wantPath = renamed
+			renamedPath = renamed
 		}
 		for _, d := range descriptors {
-			if pathOf(d) == wantPath {
+			if pathOf(d) == wantPath || (renamedPath != "" && pathOf(d) == renamedPath) {
 				return true
 			}
 			// A reserved `aw <resource> <action> <more>` (e.g. `release-set
