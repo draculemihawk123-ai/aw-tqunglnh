@@ -97,7 +97,7 @@ A timeout, a kill or a spawn failure leaves no such row — those are technical 
 [04-authoring-workflows.md](04-authoring-workflows.md)) a failure of the check is a `SUCCEEDED` NodeRun with that
 outcome, so look at the NodeRun's `selectedOutcome` rather than at a failed attempt.
 
-## Agent attempt `FAILED` with `OUTCOME_REJECTED` (or after reporting an unknown outcome)
+## Agent attempt `FAILED` with `OUTCOME_REJECTED`
 
 ```bash
 aw run timeline <runId>
@@ -108,11 +108,15 @@ A node with more than one outcome needs the agent to end its last message with e
 `<agentkit-outcome>…</agentkit-outcome>` marker naming one of the node's outcomes. The agent's prompt lists the
 allowed outcomes (`taskContract.allowedOutcomes`) and, for a node with a choice, the marker syntax
 (`taskContract.outcomeProtocol`) — see [04-authoring-workflows.md](04-authoring-workflows.md). `OUTCOME_REJECTED`
-means no marker was reported at all; a marker that was repeated, malformed, or named an outcome outside that list is
-a provider protocol error instead (`EXECUTION_FAILED` with failure code `PROVIDER_UNAVAILABLE`). Either way the attempt
-is `FAILED` and the run does not follow any edge. An attempt scheduled
-before the instruction-schema upgrade still has the old prompt (no list), so a multi-outcome agent from before the
-upgrade may need the outcomes in its Skill until it is re-run.
+(failure code `VALIDATION_FAILED`) means the agent's answer was wrong, in any of four ways: no marker was reported on
+a node with a choice, the marker was repeated (a second one in an earlier message), the marker was malformed, or it
+named an outcome outside that list. The attempt is `FAILED` and the run does not follow any edge. It is **not** a
+provider outage: before this was changed the last three were reported as `EXECUTION_FAILED` with failure code
+`PROVIDER_UNAVAILABLE`, which an attempt policy listing `PROVIDER_UNAVAILABLE` as retryable would retry. Now it
+retries only if the policy's `retryableErrorCodes` lists `VALIDATION_FAILED`. A stream that never delivers its
+terminal event, or is not valid JSONL, is still a provider failure (`PROVIDER_UNAVAILABLE`), not `OUTCOME_REJECTED`.
+An attempt scheduled before the instruction-schema upgrade still has the old prompt (no list), so a multi-outcome
+agent from before the upgrade may need the outcomes in its Skill until it is re-run.
 
 ## Local commit `FAILED` with `NO_CHANGES`
 

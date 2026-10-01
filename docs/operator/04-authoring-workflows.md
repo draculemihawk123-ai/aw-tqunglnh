@@ -207,9 +207,10 @@ V9-03 it has this shape (**schema v2**, keys in exactly this order):
 - **`outcomeProtocol`** is present only when the node has **more than one** allowed outcome; with exactly one, the
   engine derives the outcome and asks for no marker. It is the same engine-owned text for every node: end the final
   message with exactly one `<agentkit-outcome>{"schemaVersion":1,"outcome":"NAME"}</agentkit-outcome>` as the very
-  last thing written, `NAME` spelled as listed. The engine enforces it as before: a missing marker (when there is a
+  last thing written, `NAME` spelled as listed. The engine enforces it: a missing marker (when there is a
   choice), a second marker in an earlier message, a malformed one, or an outcome outside the list fails the attempt
-  (a missing marker is `OUTCOME_REJECTED`). There are no per-outcome descriptions yet; the list is the names only.
+  (all four are `OUTCOME_REJECTED`; see [09-troubleshooting.md](09-troubleshooting.md)). There are no per-outcome
+  descriptions yet; the list is the names only.
 - **`checkFailures`** is only present for a maker sent back by a failing check (see the section above), right after
   the task contract.
 
