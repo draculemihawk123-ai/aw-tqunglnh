@@ -178,14 +178,22 @@ func mustCreateRootWorkItemSQLite(t *testing.T, uow ports.UnitOfWork, ids idsour
 	return result
 }
 
+// e2eWaitDeadline bounds every wait for real provisioning work in this
+// file. Each wait polls and returns as soon as its condition holds, so the
+// bound only matters when something is genuinely stuck: CI runners
+// (Windows above all) were measured 2-2.5x slower than a developer machine
+// on 2026-10-01, and a fixed 5s/8s/10s budget for real git worktree +
+// SQLite work there made these tests fail without any defect.
+const e2eWaitDeadline = 90 * time.Second
+
 // waitForWorkspaceSetState polls store through the same
 // sqlite.NewUnitOfWork(store) read path every other caller in this file
-// uses, until familyID's own WorkspaceSet reaches want or an 8s deadline
+// uses, until familyID's own WorkspaceSet reaches want or e2eWaitDeadline
 // elapses.
 func waitForWorkspaceSetState(t *testing.T, store *sqlite.Store, familyID string, want workspace.WorkspaceSetState) workspace.WorkspaceSet {
 	t.Helper()
 	uow := sqlite.NewUnitOfWork(store)
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(e2eWaitDeadline)
 	var last workspace.WorkspaceSet
 	for time.Now().Before(deadline) {
 		err := uow.WithReadOnly(context.Background(), func(tx ports.Tx) error {
@@ -204,7 +212,7 @@ func waitForWorkspaceSetState(t *testing.T, store *sqlite.Store, familyID string
 
 // waitForRepositoryWorkspaceTerminal polls until (workspaceSetID,
 // repositoryID)'s own generation-1 RepositoryWorkspace reaches READY or
-// FAILED, or an 8s deadline elapses. A WorkspaceSet can already flip to
+// FAILED, or e2eWaitDeadline elapses. A WorkspaceSet can already flip to
 // BLOCKED the moment one required repository's own job finishes FAILED,
 // even while a sibling repository's own job is still in flight (this
 // package's own aggregateWorkspaceSet only requires anyFailed, never every
@@ -216,7 +224,7 @@ func waitForWorkspaceSetState(t *testing.T, store *sqlite.Store, familyID string
 func waitForRepositoryWorkspaceTerminal(t *testing.T, store *sqlite.Store, workspaceSetID, repositoryID string) workspace.RepositoryWorkspace {
 	t.Helper()
 	uow := sqlite.NewUnitOfWork(store)
-	deadline := time.Now().Add(8 * time.Second)
+	deadline := time.Now().Add(e2eWaitDeadline)
 	var last workspace.RepositoryWorkspace
 	for time.Now().Before(deadline) {
 		var rw workspace.RepositoryWorkspace
@@ -281,7 +289,7 @@ func TestEndToEnd_MultiRepoProvision_BothReachReadyWithBaseRevisionSet(t *testin
 	mustSeedActiveRepositorySQLite(t, uow, ids, "project-1", "repo-b", repoBPath, "main")
 	root := mustCreateRootWorkItemSQLite(t, uow, ids, "project-1", "repo-a", "repo-b")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eWaitDeadline)
 	defer cancel()
 	runErr := make(chan error, 1)
 	go func() { runErr <- pool.Run(ctx) }()
@@ -396,7 +404,7 @@ func TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady(t *testing.T) 
 
 	select {
 	case <-firstDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(e2eWaitDeadline):
 		t.Fatal("first WORKSPACE_PROVISION job was never completed by pool1")
 	}
 	// Give the second job's own claim a real chance to actually happen
@@ -463,7 +471,7 @@ func TestEndToEnd_Restart_RemainingJobCompletesAndSetReachesReady(t *testing.T) 
 	if err != nil {
 		t.Fatalf("workerpool.New (pool2): %v", err)
 	}
-	pool2Ctx, cancelPool2 := context.WithTimeout(context.Background(), 10*time.Second)
+	pool2Ctx, cancelPool2 := context.WithTimeout(context.Background(), e2eWaitDeadline)
 	defer cancelPool2()
 	pool2Done := make(chan error, 1)
 	go func() { pool2Done <- pool2.Run(pool2Ctx) }()
@@ -525,7 +533,7 @@ func TestEndToEnd_PartialFailure_OneReadyOneFailed_SetBlockedRowsKept(t *testing
 	mustSeedActiveRepositorySQLite(t, uow, ids, "project-1", "repo-bad", notARepoPath, "main")
 	root := mustCreateRootWorkItemSQLite(t, uow, ids, "project-1", "repo-a", "repo-bad")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), e2eWaitDeadline)
 	defer cancel()
 	runErr := make(chan error, 1)
 	go func() { runErr <- pool.Run(ctx) }()
