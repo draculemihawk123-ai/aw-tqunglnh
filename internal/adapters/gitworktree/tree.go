@@ -110,7 +110,10 @@ func (p *Provider) DiffTrees(ctx context.Context, handle ports.WorkspaceHandle, 
 			return nil, fmt.Errorf("%w: git cat-file exited with code %d", ErrGit, exitCode)
 		}
 	}
-	output, err := p.runGit(ctx, workspacePath, "diff-tree", "-r", "--name-only", "-z", "--no-renames", a, b)
+	// The trailing "--" (as in Diff's `git diff ... base --`) stops git from
+	// also stat-ing each tree id as a file name, which Git for Windows can
+	// reject as "Filename too long" under a deep workspace path.
+	output, err := p.runGit(ctx, workspacePath, "diff-tree", "-r", "--name-only", "-z", "--no-renames", a, b, "--")
 	if err != nil {
 		return nil, err
 	}

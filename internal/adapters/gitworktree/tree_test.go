@@ -103,7 +103,10 @@ func TestSnapshotTree_IncludesTrackedChangesAndUntrackedExcludesIgnored(t *testi
 	if !reflect.DeepEqual(listing, want) {
 		t.Fatalf("snapshot tree entries = %v, want %v (tracked + untracked non-ignored, deleted file gone, ignored files excluded)", listing, want)
 	}
-	if content := f.git(t, "show", treeID+":service.txt"); content != "modified by an earlier node\n" {
+	// `cat-file -p`, not `show`: without `--`, `git show <tree>:<path>` also
+	// stats its argument as a file name, which Git for Windows rejects as
+	// "Filename too long" under a deep test temp directory.
+	if content := f.git(t, "cat-file", "-p", treeID+":service.txt"); content != "modified by an earlier node\n" {
 		t.Fatalf("snapshot content of service.txt = %q, want the modified working-tree content", content)
 	}
 }
@@ -199,7 +202,7 @@ func TestSnapshotTree_IgnoresInheritedGitIndexFile(t *testing.T) {
 	if treeID == want {
 		t.Fatalf("snapshot %s equals the stale index tree — the dirty working tree was not captured", treeID)
 	}
-	if content := f.git(t, "show", treeID+":service.txt"); content != "dirty\n" {
+	if content := f.git(t, "cat-file", "-p", treeID+":service.txt"); content != "dirty\n" {
 		t.Fatalf("snapshot content = %q, want the working-tree content", content)
 	}
 	if _, statErr := os.Stat(decoy); !errors.Is(statErr, os.ErrNotExist) {

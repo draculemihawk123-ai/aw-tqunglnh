@@ -328,7 +328,7 @@ func TestV9AcceptCheckerAfterMaker_CompletesAndCheckerSeesMakerDiff(t *testing.T
 
 	// The maker really changed the file inside the real worktree and left it
 	// uncommitted — the situation that used to fail the checker.
-	if content := runV5AcceptGit(t, run.workDir, "show", ":"+v9MakerWrittenFile); strings.Contains(content, v9MakerContentMarker) {
+	if content := runV5AcceptGit(t, run.workDir, "cat-file", "-p", ":"+v9MakerWrittenFile); strings.Contains(content, v9MakerContentMarker) {
 		t.Fatalf("test setup: the maker's change must stay uncommitted/unstaged, but the index holds %q", content)
 	}
 	if status := runV5AcceptGit(t, run.workDir, "status", "--porcelain=v1"); !strings.Contains(status, v9MakerWrittenFile) {
@@ -344,7 +344,7 @@ func TestV9AcceptCheckerAfterMaker_CompletesAndCheckerSeesMakerDiff(t *testing.T
 	if inputTree == "" {
 		t.Fatalf("checker attempt InputTrees = %v, want a tree for %s", checker.InputTrees, v5AcceptRepositoryID)
 	}
-	if content := runV5AcceptGit(t, run.workDir, "show", inputTree+":"+v9MakerWrittenFile); !strings.Contains(content, v9MakerContentMarker) {
+	if content := runV5AcceptGit(t, run.workDir, "cat-file", "-p", inputTree+":"+v9MakerWrittenFile); !strings.Contains(content, v9MakerContentMarker) {
 		t.Fatalf("checker InputTree holds %s = %q, want the maker's uncommitted content", v9MakerWrittenFile, content)
 	}
 
