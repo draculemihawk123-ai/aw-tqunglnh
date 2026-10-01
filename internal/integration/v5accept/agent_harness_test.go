@@ -136,8 +136,10 @@ func (f *v5AcceptFixture) newClaudeAdapter(t *testing.T) *claude.Adapter {
 		// AGENTKIT_CAPTURE_PATH (V9-02): the fake CLI writes what it was
 		// invoked with — including the prompt on stdin — to that file, so a
 		// scenario can prove what the REAL spawned process was told.
+		// AGENTKIT_HELPER_OUTCOME_PICK (V9-03): steers the "outcome-from-prompt"
+		// mode, in which the process chooses its outcome from the prompt.
 		InheritedEnvironment: []string{
-			"AGENTKIT_HELPER_MODE", "AGENTKIT_HELPER_OUTCOME", "AGENTKIT_HELPER_WRITE_PATH",
+			"AGENTKIT_HELPER_MODE", "AGENTKIT_HELPER_OUTCOME", "AGENTKIT_HELPER_OUTCOME_PICK", "AGENTKIT_HELPER_WRITE_PATH",
 			"AGENTKIT_HELPER_WRITE_IN_CWD", "AGENTKIT_HELPER_APPEND_PATH", "AGENTKIT_CAPTURE_PATH",
 		},
 	})

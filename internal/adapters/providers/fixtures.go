@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -44,7 +45,12 @@ func FakeCLIVersion(provider string) string {
 //     error), "cancel" (emit a start event, then hang until killed), or
 //     "invalid-session" (fail only if arguments look like a resume — see
 //     IsResumeInvocation — so SPK-12 can prove Resume was never called: a
-//     Start invocation on the same fake CLI still succeeds normally).
+//     Start invocation on the same fake CLI still succeeds normally), or one
+//     of the terminal-outcome modes "outcome-success", "outcome-malformed",
+//     "outcome-duplicate" (V5-08B; the outcome comes from
+//     AGENTKIT_HELPER_OUTCOME) and "outcome-from-prompt" (V9-03; the outcome
+//     is chosen from the prompt's own taskContract.allowedOutcomes, steered by
+//     AGENTKIT_HELPER_OUTCOME_PICK — see outcomePickedFromPrompt).
 //   - capturePath, if non-empty, receives a FakeCLIInvocation as JSON.
 //
 // A "--version" invocation (V5-06's own capability/version probe) is
@@ -151,11 +157,76 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 			return 4
 		}
 		return 0
+	case "outcome-from-prompt":
+		// V9-03: an agent that works out which outcomes it may report from the
+		// prompt it was handed, like a real one following the instruction
+		// artifact (schema v2, taskContract.allowedOutcomes), instead of being
+		// told by the test through AGENTKIT_HELPER_OUTCOME.
+		outcome, report, err := outcomePickedFromPrompt(input, os.Getenv("AGENTKIT_HELPER_OUTCOME_PICK"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 5
+		}
+		text := "done"
+		if report {
+			text += OutcomeMarker(outcome)
+		}
+		if !writeProviderSuccessWithFinalText(stdout, provider, text) {
+			return 4
+		}
+		return 0
 	}
 	if !writeProviderSuccess(stdout, provider) {
 		return 4
 	}
 	return 0
+}
+
+// OutcomeNotListed is the outcome "outcome-from-prompt" reports for the pick
+// "not-listed": a well-formed marker naming something no node declares.
+const OutcomeNotListed = "outcome-not-in-the-allowed-list"
+
+// outcomePickedFromPrompt implements the "outcome-from-prompt" mode (V9-03):
+// it reads taskContract.allowedOutcomes from the instruction artifact the
+// adapter wrote to stdin and chooses by pick (AGENTKIT_HELPER_OUTCOME_PICK):
+//
+//   - "first" (also the default), "last", or a zero-based decimal index into
+//     the list: that listed outcome, reported in a marker;
+//   - "not-listed": OutcomeNotListed, reported in a marker, so the allow-list
+//     check can be seen to refuse an outcome the prompt never offered;
+//   - "none": no marker at all.
+//
+// A prompt without taskContract.allowedOutcomes (instruction schema v1) is an
+// error: the point of the mode is that the prompt tells the agent its choices,
+// and silently guessing would hide a prompt that does not.
+func outcomePickedFromPrompt(prompt []byte, pick string) (outcome string, report bool, err error) {
+	var decoded struct {
+		TaskContract struct {
+			AllowedOutcomes []string `json:"allowedOutcomes"`
+		} `json:"taskContract"`
+	}
+	if err := json.Unmarshal(prompt, &decoded); err != nil {
+		return "", false, fmt.Errorf("outcome-from-prompt: the prompt is not an instruction artifact: %w", err)
+	}
+	listed := decoded.TaskContract.AllowedOutcomes
+	if len(listed) == 0 {
+		return "", false, fmt.Errorf("outcome-from-prompt: the prompt lists no taskContract.allowedOutcomes")
+	}
+	switch pick {
+	case "none":
+		return "", false, nil
+	case "not-listed":
+		return OutcomeNotListed, true, nil
+	case "", "first":
+		return listed[0], true, nil
+	case "last":
+		return listed[len(listed)-1], true, nil
+	}
+	index, convErr := strconv.Atoi(pick)
+	if convErr != nil || index < 0 || index >= len(listed) {
+		return "", false, fmt.Errorf("outcome-from-prompt: pick %q is not first, last, none, not-listed or an index below %d", pick, len(listed))
+	}
+	return listed[index], true, nil
 }
 
 // OutcomeMarker builds the exact terminal marker text claude.go/codex.go's
