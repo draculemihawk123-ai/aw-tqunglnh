@@ -42,6 +42,16 @@
 // structurally never fire for a Gate; only its simple read-only branch
 // (CANCELLED) ever does.
 //
+// "Read-only" is measured against the moment THIS Gate starts, not against
+// the pinned commit (V9-01, ADR-030): a MAKER earlier in the same run leaves
+// its changes uncommitted in the worktree until ReleaseSet/local commit
+// (ADR-014), so a Gate placed after it would otherwise always "see" a
+// non-empty diff it did not cause. Before spawning the evaluator, Execute
+// snapshots each mount's working tree (ensureInputTrees, input_tree.go) and
+// buildEvidence later requires the post-quiescence tree to be identical —
+// the maker's change is the Gate's input, anything the Gate itself changes is
+// still SCOPE_VIOLATION.
+//
 // "Scratch output nằm ngoài source workspace": unlike CommandNodeExecutor,
 // this executor never spawns the evaluator with a real repository mount
 // as its own working directory — cwd is always a fresh, empty scratch
@@ -218,6 +228,21 @@ func (e *GateNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionR
 		}, nil
 	}
 
+	// V9-01 (ADR-030): a Gate is read-only relative to the moment IT starts —
+	// snapshot (or reuse the recorded) InputTree of every mount now, after
+	// resources are resolved and the pinned commit is confirmed fresh, before
+	// the evaluator is spawned, and outside every transaction. This is what
+	// lets a MACHINE_GATE follow a MAKER in the same run: the maker's
+	// still-uncommitted changes are part of the Gate's input, not something
+	// the Gate did.
+	resolved.inputTrees, err = ensureInputTrees(ctx, e.uow, e.workspaces, req, resolved.mounts)
+	if err != nil {
+		if errors.Is(err, ErrInputTreeMissing) {
+			return inputTreeUnavailableResult(), nil
+		}
+		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: input tree of gate attempt %s: %w", req.AttemptID, err)
+	}
+
 	argv, env, err := resolveArgvAndSecrets(ctx, inputs.commandDoc, mountsByRepositoryID(resolved.mounts), e.secrets)
 	if err != nil {
 		return ports.NodeExecutionResult{
@@ -328,8 +353,10 @@ func (e *GateNodeExecutor) classify(
 		// outcome: EXECUTION_STARTED/FINISHED are emitted unconditionally
 		// before classify ever runs (Execute, above), so a real terminal
 		// event always exists, and a Gate's own mounts are always
-		// read-only (forceReadOnlyMounts) — its diff-manifest set is
-		// always structurally empty, never a real mutation to report.
+		// read-only (forceReadOnlyMounts) — whatever its diff manifests
+		// list is what an earlier node of the run left uncommitted (V9-01,
+		// ADR-030), never a change the Gate made: buildEvidence's strict
+		// check has already proven the Gate itself changed nothing.
 		evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, nil, true)
 		if err != nil {
 			if errors.Is(err, scopeguard.ErrScopeViolation) {
@@ -337,6 +364,9 @@ func (e *GateNodeExecutor) classify(
 					State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
 					ErrorCode: errorcode.CodeScopeViolation,
 				}, nil
+			}
+			if errors.Is(err, ErrInputTreeMissing) {
+				return inputTreeUnavailableResult(), nil
 			}
 			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build gate finalization evidence for non-PASS verdict: %w", err)
 		}
@@ -375,6 +405,9 @@ func (e *GateNodeExecutor) classify(
 				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
 				ErrorCode: errorcode.CodeScopeViolation,
 			}, nil
+		}
+		if errors.Is(err, ErrInputTreeMissing) {
+			return inputTreeUnavailableResult(), nil
 		}
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build gate finalization evidence: %w", err)
 	}

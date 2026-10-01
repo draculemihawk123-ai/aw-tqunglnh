@@ -20,6 +20,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/scopeguard"
 	"github.com/taQuangLing/agent-workflow/internal/domain/artifact"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
+	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
@@ -34,6 +35,14 @@ type resolvedExecutionResources struct {
 	writeLeaseGrants []ports.WriteLeaseGrant
 	hasWriteMount    bool
 	projectID        project.ProjectID
+	// inputTrees is the per-repository InputTree (ADR-030, V9-01) a
+	// read-only attempt — a CHECKER-role AGENT or a MACHINE_GATE — started
+	// from, filled in by ensureInputTrees after the mounts are resolved and
+	// before the process is spawned, and consumed by buildEvidence's strict
+	// check. nil/empty for every other attempt, and for a strict attempt
+	// whose provider has no tree support: buildEvidence then falls back to
+	// the pre-V9-01 rule (the diff against the pinned commit must be empty).
+	inputTrees map[project.RepositoryID]string
 	// writeMounts carries exactly what V5-08C's own cancellation-reconciliation
 	// path needs per WRITE mount (handleMutatingCancellation,
 	// agent_node_executor_cancellation.go) — the real RepositoryWorkspaceID/
@@ -237,12 +246,21 @@ func resolveAgentWorkingDirectory(mounts []ports.AgentWorkspaceMount) (path stri
 // owning WorkItem's own write scope — it would silently accept a Gate or
 // CHECKER writing into a repository some OTHER node in the SAME WorkItem
 // legitimately holds WRITE access to, even though THIS attempt itself was
-// never granted any. strictReadOnly=true additionally requires every one
-// of this attempt's own mounts to have a COMPLETELY EMPTY diff — the same
-// "scratch stays outside source workspace mounts entirely" invariant
-// GC-INV-25 already requires of a Gate's own evaluator, so a real,
-// correctly-behaving Gate or CHECKER never has a legitimate reason to
-// change anything inside any of them.
+// never granted any. strictReadOnly=true additionally requires that this
+// attempt changed NOTHING inside any of its own mounts — the same "scratch
+// stays outside source workspace mounts entirely" invariant GC-INV-25
+// already requires of a Gate's own evaluator, so a real, correctly-behaving
+// Gate or CHECKER never has a legitimate reason to change anything inside
+// any of them. "Nothing" is measured against the moment THIS attempt
+// started (ADR-030, V9-01): resolved.inputTrees holds the content tree of
+// each mount's working tree as snapshotted before spawn, and the attempt
+// passes only if the tree measured now, after quiescence, is identical
+// (validateStrictlyReadOnlyTrees) — so a MAKER's earlier, still-uncommitted
+// changes in the same worktree do not fail a later CHECKER or Gate. When no
+// InputTree exists (an attempt created before V9-01, or a provider without
+// tree support) the stricter pre-V9-01 rule applies instead
+// (validateStrictlyReadOnlyDiffs: the diff against the pinned commit must be
+// empty).
 func buildEvidence(
 	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, store ports.ArtifactStore, workspaces ports.WorkspaceProvider,
 	req ports.NodeExecutionRequest, request ports.AgentExecutionRequest, resolved resolvedExecutionResources, proposedOutcome *ports.AgentProposedOutcome,
@@ -271,7 +289,17 @@ func buildEvidence(
 		return nil, err
 	}
 	if strictReadOnly {
-		if err := validateStrictlyReadOnlyDiffs(diffs); err != nil {
+		// ADR-030 (V9-01): with an InputTree recorded before spawn, "read-only"
+		// means the working tree is byte-for-byte what THIS attempt started
+		// from — changes an earlier MAKER of the same run left uncommitted
+		// are not this attempt's doing. Without one (an attempt created
+		// before V9-01, or a provider without tree support) the old, stricter
+		// rule applies: the diff against the pinned commit must be empty.
+		if snapshotter := treeSnapshotterOf(workspaces); snapshotter != nil && len(resolved.inputTrees) > 0 {
+			if err := validateStrictlyReadOnlyTrees(ctx, snapshotter, request.WorkspaceMounts, resolved.inputTrees); err != nil {
+				return nil, err
+			}
+		} else if err := validateStrictlyReadOnlyDiffs(diffs); err != nil {
 			return nil, err
 		}
 	}
@@ -338,10 +366,12 @@ func buildEvidence(
 
 // validateStrictlyReadOnlyDiffs is buildEvidence's own strictReadOnly=true
 // check (GateNodeExecutor, and V5-12's own CHECKER-role AGENT — see that
-// parameter's own doc comment) — every real diff across every one of this
-// attempt's own mounts must be completely empty, not merely "within the
-// owning WorkItem's own write scope" (scopeguard.ValidateDiffs' own, more
-// permissive bar, still checked first either way). Wraps
+// parameter's own doc comment) in its pre-V9-01 form, kept as the fallback
+// for a strict attempt that has no InputTree (see validateStrictlyReadOnlyTrees
+// in input_tree.go for the ADR-030 form): every real diff across every one
+// of this attempt's own mounts must be completely empty, not merely "within
+// the owning WorkItem's own write scope" (scopeguard.ValidateDiffs' own,
+// more permissive bar, still checked first either way). Wraps
 // scopeguard.ErrScopeViolation so every caller's own existing
 // `errors.Is(err, scopeguard.ErrScopeViolation)` handling already covers
 // this new check too, with no separate error-classification branch needed
@@ -381,7 +411,28 @@ func (e *AgentNodeExecutor) buildEvidence(
 		return nil, fmt.Errorf("runtime: load execution profile for node run %s: %w", req.NodeRunID, err)
 	}
 	strictReadOnly := profile.Role == workflow.AgentRoleChecker
-	return buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, strictReadOnly)
+	evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, proposedOutcome, strictReadOnly)
+	if err != nil {
+		return nil, err
+	}
+	// V9-01 (V5-12 "requirement, diff và evidence"): an AGENT attempt now
+	// leaves one Evidence row whose artifact references are its own diff
+	// manifests. Without a row there is nothing for a later CHECKER's
+	// ContextSnapshot to point at — gatherCheckerEvidenceRefs only follows
+	// Evidence rows — so the checker never learned what the maker changed.
+	// The row's verdict is RECORDED (EvidenceVerdictRecorded): a record of
+	// the agent's output, never a verdict completion would accept.
+	if len(evidence.DiffManifestArtifacts) > 0 {
+		references := make([]string, 0, len(evidence.DiffManifestArtifacts))
+		for _, ref := range evidence.DiffManifestArtifacts {
+			references = append(references, ref.ArtifactID)
+		}
+		evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
+			Kind: runtimedomain.EvidenceKindAgentExecution, Verdict: runtimedomain.EvidenceVerdictRecorded,
+			ArtifactReferences: references, PolicyVersion: request.ExecutionProfileHash,
+		})
+	}
+	return evidence, nil
 }
 
 // terminalEventSequence returns the highest agent_events.Sequence durably

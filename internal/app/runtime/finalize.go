@@ -512,15 +512,25 @@ func validateAndAttachEvidenceArtifactsTx(
 	// remediation) — idempotent by deterministic ID (AttemptID+Kind, see
 	// runtime.Evidence's own doc comment), so a redelivered finalize never
 	// creates a duplicate. Every entry's own ArtifactReferences must
-	// already be named in OutputArtifactRefs — never a fresh, unlisted
-	// artifact this function has not itself just promoted above.
+	// already be named in OutputArtifactRefs — or, since V9-01, in
+	// DiffManifestArtifacts — never a fresh, unlisted artifact this
+	// function has not itself just promoted above. The second list exists
+	// for an AGENT execution's Evidence row (EvidenceKindAgentExecution),
+	// which references the attempt's own diff manifests: those were
+	// promoted above through DiffManifestArtifacts rather than
+	// OutputArtifactRefs, are as valid a reference as an output artifact,
+	// and must not be promoted a second time.
+	promotedDiffManifests := make(map[string]bool, len(evidence.DiffManifestArtifacts))
+	for _, ref := range evidence.DiffManifestArtifacts {
+		promotedDiffManifests[ref.ArtifactID] = true
+	}
 	for _, entry := range evidence.EvidenceEntries {
 		if len(entry.ArtifactReferences) == 0 {
 			return fmt.Errorf("runtime: evidence entry %q names no artifact reference", entry.Kind)
 		}
 		for _, artifactID := range entry.ArtifactReferences {
-			if !promotedOutputArtifacts[artifactID] {
-				return fmt.Errorf("runtime: evidence entry %q names artifact %s, which is not in OutputArtifactRefs", entry.Kind, artifactID)
+			if !promotedOutputArtifacts[artifactID] && !promotedDiffManifests[artifactID] {
+				return fmt.Errorf("runtime: evidence entry %q names artifact %s, which is not in OutputArtifactRefs or DiffManifestArtifacts", entry.Kind, artifactID)
 			}
 		}
 		evidenceRow, err := runtimedomain.NewEvidence(
@@ -730,6 +740,13 @@ func decideRetryOrExhaustion(
 			attempt.ExecutionProfileHash, attempt.ProviderKey, attempt.InputRevisionSet,
 		)
 		if err != nil {
+			return err
+		}
+		// V9-01 (ADR-030): a retry of the SAME NodeRun starts from the
+		// InputTrees its predecessor recorded, copied here inside the
+		// creating transaction (no I/O), so whatever the failed attempt left
+		// behind in the worktree is never promoted to its successor's input.
+		if err := inheritInputTreesTx(ctx, tx, string(attempt.ID), &nextAttempt); err != nil {
 			return err
 		}
 

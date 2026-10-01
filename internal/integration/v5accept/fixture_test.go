@@ -538,7 +538,6 @@ func (f *v5AcceptFixture) startPoolWithConfig(t *testing.T, registry *workerpool
 // job stays LEASED past any deadline and still fails, only later).
 const pollDeadline = 90 * time.Second
 
-
 func (f *v5AcceptFixture) waitForJobState(t *testing.T, jobID string, want ports.JobState) {
 	t.Helper()
 	ctx := context.Background()
@@ -855,6 +854,14 @@ func resourceContentHash(t *testing.T, ownerVersionID, resourceKey string, doc s
 // while repo-a's own working tree stays genuinely untouched throughout
 // the Run, satisfying GateNodeExecutor's own hard invariant for real
 // rather than working around it.
+//
+// (V9-01 / ADR-030 later removed the constraint described above: a read-only
+// attempt is now measured against the working tree as it was when THAT
+// attempt started, so a maker's uncommitted change inside a repository no
+// longer fails a later gate or checker — see checker_after_maker_test.go.
+// These scripts keep their marker outside the repository because that is
+// still the simplest shape for the V5-15A scenario, not because it is
+// required.)
 func v5AcceptScripts(markerPath string) (makerKey, makerScript, gateKey, gateScript string) {
 	if stdruntime.GOOS == "windows" {
 		return "maker.bat", "@echo off\r\necho marker> \"" + markerPath + "\"\r\nexit /b 0\r\n",

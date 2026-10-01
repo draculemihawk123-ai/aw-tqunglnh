@@ -41,6 +41,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/worker"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
 // ErrIndeterminateExecution signals execute.go's own Handle to leave the
@@ -143,6 +144,26 @@ func (e *AgentNodeExecutor) Execute(ctx context.Context, req ports.NodeExecution
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: resolve agent execution resources: %w", err)
 	}
 	request.WorkspaceMounts = resolved.mounts
+
+	// V9-01 (ADR-030): a CHECKER-role attempt is read-only relative to the
+	// moment IT starts, so snapshot (or reuse the recorded) InputTree of
+	// every mount now — after resources are resolved, before anything is
+	// spawned, and outside every transaction. A MAKER (or Role-less)
+	// attempt records nothing: its scope check is unchanged.
+	profile, err := loadExecutionProfile(ctx, e.uow, req.NodeRunID)
+	if err != nil {
+		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: load execution profile for node run %s: %w", req.NodeRunID, err)
+	}
+	if profile.Role == workflow.AgentRoleChecker {
+		resolved.inputTrees, err = ensureInputTrees(ctx, e.uow, e.workspaces, req, resolved.mounts)
+		if err != nil {
+			if errors.Is(err, ErrInputTreeMissing) {
+				return inputTreeUnavailableResult(), nil
+			}
+			return ports.NodeExecutionResult{}, fmt.Errorf("runtime: input tree of checker attempt %s: %w", req.AttemptID, err)
+		}
+	}
+
 	workingDirectory, cleanupWorkingDirectory, err := resolveAgentWorkingDirectory(resolved.mounts)
 	if err != nil {
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: resolve agent working directory: %w", err)
@@ -274,6 +295,12 @@ func (e *AgentNodeExecutor) classify(
 				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
 				ErrorCode: errorcode.CodeScopeViolation,
 			}, nil
+		}
+		if errors.Is(err, ErrInputTreeMissing) {
+			// ADR-030: the recorded InputTree vanished (pruned) between the
+			// pre-spawn check and now — a technical failure of this attempt,
+			// not a verdict on what the process did.
+			return inputTreeUnavailableResult(), nil
 		}
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: build finalization evidence: %w", err)
 	}
