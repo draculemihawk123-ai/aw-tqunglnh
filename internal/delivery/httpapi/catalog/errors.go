@@ -13,7 +13,8 @@ import (
 // functions can return onto the canonical httpapi error envelope. Every
 // one of those functions returns a PLAIN, unwrapped sentinel
 // (ports.ErrPersistenceNotFound/ErrOptimisticConflict/
-// ErrCrossProjectReference/ErrScopeMismatch/ErrReceiptConflict) for every
+// ErrCrossProjectReference/ErrScopeMismatch/ErrReceiptConflict/
+// ErrPersistenceAlreadyExists) for every
 // condition it itself classifies, and a plain errors.New(...) (e.g.
 // project.NewProject/NewRepository/NewComponentPackAssignment's own
 // validation, or catalog.CreateProject's own "Name is required") for a
@@ -45,6 +46,12 @@ func writeCatalogError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ports.ErrCrossProjectReference):
 		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
 	case errors.Is(err, ports.ErrReceiptConflict):
+		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
+	case errors.Is(err, ports.ErrPersistenceAlreadyExists):
+		// V9-09 (LIM-06): registering a repository whose id (or per-project
+		// name) is already taken. A real, visible business conflict — the
+		// caller already has this project's own access — so 409 CONFLICT,
+		// never the 500 the raw constraint failure used to become.
 		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
 	case errors.Is(err, ports.ErrScopeMismatch):
 		httpapi.WriteError(w, http.StatusForbidden, httpapi.ErrorCodeForbidden, err.Error(), nil)
