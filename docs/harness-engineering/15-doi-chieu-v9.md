@@ -1,6 +1,6 @@
 # Đối chiếu 14 lecture với Agent Kit sau Alpha (đầu vào cho V9)
 
-> Trạng thái: **ĐỀ XUẤT — chờ product owner duyệt.** Tài liệu này không đổi nhãn phase hay owner của bất kỳ
+> Trạng thái: **ĐÃ DUYỆT** (PR #143, 2026-10-01). Tài liệu này không đổi nhãn phase hay owner của bất kỳ
 > `HE-NN-Mxx` nào; nó ghi lại những chỗ mà tiêu chí đã có owner nhưng **chạy thật chưa đạt**, làm đầu vào cho
 > [V9](../design/12-v9-harness-alignment.md).
 >
