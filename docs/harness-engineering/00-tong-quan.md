@@ -258,6 +258,9 @@ Không dùng số dòng code hoặc số token sinh ra làm chỉ số thành c�
 13. [Lec 13 — Vòng lặp tự động](13-lec-13-vong-lap-tu-dong.md)
 14. [Lec 14 — Đồ thị điều phối](14-lec-14-do-thi-dieu-phoi.md)
 
+Đối chiếu sau Alpha (đọc lại 14 lecture ở `38ddcd2`, đối chiếu với code và lần chạy thật; đầu vào cho V9):
+[15-doi-chieu-v9.md](15-doi-chieu-v9.md).
+
 ## 14. Phase classification
 
 Theo ADR-024 (`docs/architecture/02-architecture-decisions.md` §26), mỗi tiêu chí bắt buộc `HE-NN-Mxx`
