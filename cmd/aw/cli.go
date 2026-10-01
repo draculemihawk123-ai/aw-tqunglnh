@@ -102,8 +102,10 @@ func runStreams(ctx context.Context, arguments []string, stdin io.Reader, intera
 		return exitSuccess
 	}
 
-	// Process-level commands own their own flags and lifecycle.
-	if handler, ok := subcommands[name]; ok {
+	// Process-level commands own their own flags and lifecycle — unless the
+	// arguments are a routed resource command that merely shares the word
+	// (`aw version show|diff`, V9-09): those fall through to the router below.
+	if handler, ok := subcommands[name]; ok && !isRoutedResourceCommand(name, rest) {
 		return finish(handler(rest, stdout), stderr)
 	}
 
@@ -127,6 +129,30 @@ func runStreams(ctx context.Context, arguments []string, stdin io.Reader, intera
 
 	fmt.Fprintf(stderr, "aw: unknown command %q\n\n%s", name, usage)
 	return exitUsage
+}
+
+// isRoutedResourceCommand reports whether `aw <name> <rest...>` is a resource
+// command the clicompose router owns even though <name> is also a process
+// command (V9-09). The one such word today is `version`: `aw version` prints
+// this binary's build identity (CLI_LOCAL, ADR-028), while `aw version show`
+// and `aw version diff` are the definition-version resource commands (they
+// have HTTP twins and sit in the parity ledger as ordinary resource routes).
+// The process-command table used to win unconditionally, so the resource
+// commands were unreachable by name.
+//
+// The decision is made from the router's own table, not a second hardcoded
+// list: the first argument after <name> that is not a global composition
+// option must complete a registered two-word path. Anything else — no
+// argument, `--json`, a typo, an extra word — stays with the process
+// command, whose output and usage errors are therefore byte-for-byte what
+// they were before.
+func isRoutedResourceCommand(name string, rest []string) bool {
+	_, residual, err := clicompose.ParseGlobalOptions(rest, nil)
+	if err != nil || len(residual) == 0 {
+		return false
+	}
+	_, routed := clicompose.Lookup(clicompose.Routes(), []string{name, residual[0]})
+	return routed
 }
 
 // routedCommandName is the first argument that is not a global composition
