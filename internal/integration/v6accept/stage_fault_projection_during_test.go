@@ -75,6 +75,20 @@ func doRawRetryingTransport(attempts int, backoff time.Duration, do func() httpO
 // and never double-applied (checked by asserting the rebuilt row COUNT
 // for the project equals the exact number of WorkItems this scenario
 // created, unaffected by the message burst).
+// rebuildConvergeWithin bounds both polled waits for a rebuild to reach a
+// terminal phase. A polled wait returns the moment the phase is terminal, so
+// the bound is only paid when something is genuinely slow or stuck; it is the
+// same reasoning that moved internal/integration/v5accept's own waits to one
+// generous 90s pollDeadline (#139). The restarted worker has to let the
+// crashed job's 2s lease lapse, reclaim the job and re-run a rebuild whose
+// every committed phase is held for 400ms over a several-thousand-event
+// journal; on the ~2.5x-slower windows-latest runners of 2026-10-01 (the same
+// run's 1000-message SSE burst took 1m30s) that overran a 30s bound
+// (run 36866108418) although the scenario passed on the same platform an
+// hour earlier. The package runs under `go test -timeout 15m` (v6-acceptance
+// job), which this stays well inside.
+const rebuildConvergeWithin = 90 * time.Second
+
 func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 	requireAcceptance(t)
 	j := newFaultStack(t, func(s *stack) {
@@ -290,7 +304,7 @@ func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 			// Let it converge normally so the installation is clean for the
 			// next attempt (or for this test's own final assertions if this
 			// was the last attempt).
-			waitFor(t, fmt.Sprintf("attempt %d's own rebuild to converge normally", attempt), 30*time.Second, 100*time.Millisecond, func() bool {
+			waitFor(t, fmt.Sprintf("attempt %d's own rebuild to converge normally", attempt), rebuildConvergeWithin, 100*time.Millisecond, func() bool {
 				var status struct{ Phase string }
 				j.s.api.get(t, statusPath).requireStatus(t, http.StatusOK).decode(t, &status)
 				return status.Phase == "SUCCEEDED" || status.Phase == "FAILED"
@@ -325,7 +339,7 @@ func TestV6HTTPAcceptance_Fault_CrashDuringRebuildBeforeCutover(t *testing.T) {
 		j.s.startWorker(t)
 
 		var finalPhase string
-		waitFor(t, "the restarted worker to converge the crashed rebuild to a terminal phase", 30*time.Second, 200*time.Millisecond, func() bool {
+		waitFor(t, "the restarted worker to converge the crashed rebuild to a terminal phase", rebuildConvergeWithin, 200*time.Millisecond, func() bool {
 			var status struct {
 				Phase string `json:"phase"`
 			}
