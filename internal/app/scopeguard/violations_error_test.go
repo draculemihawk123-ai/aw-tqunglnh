@@ -47,3 +47,23 @@ func TestNewViolationsError_EmptyListIsNil(t *testing.T) {
 		t.Fatalf("NewViolationsError(nil) = %v, want nil", err)
 	}
 }
+
+// A producer with its own bounded message (the strict read-only check) keeps
+// that message and still hands the typed list on.
+func TestNewViolationsErrorWithSummary_KeepsTheSummaryAndTheTypedList(t *testing.T) {
+	err := NewViolationsErrorWithSummary([]Violation{{RepositoryID: "repo-1", Path: "b.txt"}, {RepositoryID: "repo-1", Path: "a.txt"}},
+		`mount repo-1 changed 2 path(s): "a.txt", "b.txt"`)
+	if !errors.Is(err, ErrScopeViolation) {
+		t.Fatalf("err = %v, want ErrScopeViolation", err)
+	}
+	if want := ErrScopeViolation.Error() + `: mount repo-1 changed 2 path(s): "a.txt", "b.txt"`; err.Error() != want {
+		t.Fatalf("message = %q, want %q", err.Error(), want)
+	}
+	var typed *ViolationsError
+	if !errors.As(err, &typed) || len(typed.Violations) != 2 || typed.Violations[0].Path != "a.txt" {
+		t.Fatalf("err = %v, want the sorted typed list", err)
+	}
+	if NewViolationsErrorWithSummary(nil, "x") != nil {
+		t.Fatal("an empty list must stay nil whatever the summary")
+	}
+}

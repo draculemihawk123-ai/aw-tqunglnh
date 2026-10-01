@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
+	"github.com/taQuangLing/agent-workflow/internal/app/clock"
+	"github.com/taQuangLing/agent-workflow/internal/app/eventschema"
+	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
@@ -16,6 +19,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	domainruntime "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
 // V9-09 / B3 at the classify level: the Sink's mid-run checkpoint rejection
@@ -158,6 +162,88 @@ func TestAgentNodeExecutor_CheckerReadOnlyViolation_NamesTheTouchedPath(t *testi
 	detail := agentevents.ScopeViolationDetailFromRecords(agentEventsOf(t, uow, req.AttemptID))
 	if !strings.Contains(detail, "repo-1:**/src/main.go") {
 		t.Fatalf("detail = %q, want the touched path repo-1:**/src/main.go", detail)
+	}
+}
+
+// V9-01 integration: a CHECKER that changes the worktree after its InputTree
+// was taken is rejected by validateStrictlyReadOnlyTrees. That error is the
+// typed *scopeguard.ViolationsError, so the changed paths reach the run
+// timeline's failureDetail — the same operator-visible channel as every other
+// scope violation — once the attempt is finalized.
+func TestAgentNodeExecutor_CheckerTreeViolation_SurfacesThePathInTheTimelineFailureDetail(t *testing.T) {
+	c := newCheckerFixture(t, workflow.AgentRoleChecker, func(w *treeFakeWorkspaces) {
+		w.setFile("src/main.go", "tampered by the checker")
+		w.setFile("notes/untracked.txt", "new")
+	})
+
+	result := c.execute(t)
+	requireScopeViolation(t, result, "the checker changed the worktree after its InputTree was taken")
+
+	// The error the executor classified is the typed one: it names the paths,
+	// and the recorded diagnostic carries them.
+	detail := agentevents.ScopeViolationDetailFromRecords(agentEventsOf(t, c.uow, c.req.AttemptID))
+	for _, want := range []string{"2 path(s) outside the granted scope", "repo-1:notes/untracked.txt", "repo-1:src/main.go"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("recorded detail = %q, want it to contain %q", detail, want)
+		}
+	}
+
+	// ...and the operator reads it from the run timeline once the attempt is
+	// finalized FAILED/SCOPE_VIOLATION.
+	version := loadAttemptVersion(t, c.uow, c.req.AttemptID)
+	if _, err := runtime.FinalizeExecutionAttempt(context.Background(), c.uow, idsource.NewSequential("fin"), clock.System{}, nil, runtime.FinalizeExecutionAttemptRequest{
+		RunID: c.req.RunID, NodeRunID: c.req.NodeRunID, AttemptID: c.req.AttemptID, ExpectedVersion: version,
+		NextState: result.State, TerminationReason: result.TerminationReason, FailureCode: result.ErrorCode,
+		JobLease: c.req.JobLease, CorrelationID: "corr-1",
+	}); err != nil {
+		t.Fatalf("FinalizeExecutionAttempt: %v", err)
+	}
+	timeline, err := runtime.GetRunTimeline(context.Background(), c.uow, redact.NewMatcher(), c.req.RunID)
+	if err != nil {
+		t.Fatalf("GetRunTimeline: %v", err)
+	}
+	var fromTimeline string
+	for _, entry := range timeline.Entries {
+		if entry.Kind == runtime.TimelineEntryExecutionAttempt && entry.AttemptID == c.req.AttemptID {
+			fromTimeline = entry.FailureDetail
+		}
+	}
+	if fromTimeline != detail || !strings.Contains(fromTimeline, "repo-1:src/main.go") {
+		t.Fatalf("timeline failureDetail = %q, want the recorded detail %q", fromTimeline, detail)
+	}
+}
+
+// A MACHINE_GATE whose evaluator changed a read-only mount ends in the same
+// FAILED/SCOPE_VIOLATION and records the same operator-visible diagnostic.
+func TestGateNodeExecutor_ReadOnlyViolation_RecordsTheTouchedPath(t *testing.T) {
+	uow, ids, store, runID, nodeRunID, attemptID, jobLease := gateFixture(t, gateFixtureOptions{})
+	supervisor := &fake.ProcessSupervisor{
+		Result: ports.ProcessResult{ExitCode: 0, TreeQuiesced: true},
+		Stdout: string(gateStdout(t, map[string]map[string]string{"lint": {"verdict": "PASS"}})),
+	}
+	registry := eventschema.NewRegistry()
+	agentevents.RegisterEventSchemas(registry)
+	workspaces := &bridgeFakeWorkspaceProvider{
+		diff:            defaultInScopeDiff(),
+		captureRevision: workspace.Revision{RepositoryID: "repo-1", VCSObjectID: fixtureRepo1PinnedRevision, WorkspaceGeneration: 1},
+	}
+	executor := runtime.NewGateNodeExecutor(
+		uow, ids, store, workspaces, supervisor, fake.SecretResolver{}, registry, redact.NewMatcher(), bridgeFakeCheckpointStore{}, clock.System{},
+		&bridgeFakeInterruptionStore{uow: uow}, &bridgeFakeWorkspaceReconciler{},
+	)
+
+	result, err := executor.Execute(context.Background(), ports.NodeExecutionRequest{
+		AttemptID: attemptID, NodeRunID: nodeRunID, RunID: runID, JobLease: jobLease,
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.State != domainruntime.ExecutionAttemptFailed || result.ErrorCode != errorcode.CodeScopeViolation {
+		t.Fatalf("result = %+v, want FAILED/SCOPE_VIOLATION", result)
+	}
+	detail := agentevents.ScopeViolationDetailFromRecords(agentEventsOf(t, uow, attemptID))
+	if !strings.Contains(detail, "repo-1:**/src/main.go") {
+		t.Fatalf("recorded detail = %q, want the path the gate's evaluator touched", detail)
 	}
 }
 

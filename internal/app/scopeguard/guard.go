@@ -37,6 +37,11 @@ func (v Violation) Error() string {
 type ViolationsError struct {
 	// Violations is sorted by (RepositoryID, Path) and never empty.
 	Violations []Violation
+	// Summary, when non-empty, is what Error() reports after the
+	// ErrScopeViolation prefix instead of the per-violation list — for a
+	// producer (the strict read-only check) that already renders its own
+	// bounded message but still wants to hand the full, typed path list on.
+	Summary string
 }
 
 // NewViolationsError sorts violations by (RepositoryID, Path) and wraps them
@@ -55,7 +60,20 @@ func NewViolationsError(violations []Violation) error {
 	return &ViolationsError{Violations: sorted}
 }
 
+// NewViolationsErrorWithSummary is NewViolationsError for a producer that
+// supplies its own already-bounded message (see ViolationsError.Summary).
+func NewViolationsErrorWithSummary(violations []Violation, summary string) error {
+	err := NewViolationsError(violations)
+	if typed, ok := err.(*ViolationsError); ok {
+		typed.Summary = summary
+	}
+	return err
+}
+
 func (e *ViolationsError) Error() string {
+	if e.Summary != "" {
+		return fmt.Sprintf("%s: %s", ErrScopeViolation, e.Summary)
+	}
 	parts := make([]string, 0, len(e.Violations))
 	for _, violation := range e.Violations {
 		parts = append(parts, violation.Error())

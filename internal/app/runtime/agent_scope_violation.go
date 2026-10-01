@@ -4,7 +4,10 @@ import (
 	"context"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentevents"
+	"github.com/taQuangLing/agent-workflow/internal/app/clock"
+	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
@@ -30,9 +33,20 @@ import (
 func (e *AgentNodeExecutor) scopeViolationResult(
 	ctx context.Context, req ports.NodeExecutionRequest, resolved resolvedExecutionResources, cause error,
 ) ports.NodeExecutionResult {
+	return scopeViolationNodeResult(ctx, e.uow, e.ids, e.clk, e.matcher, req, resolved, cause)
+}
+
+// scopeViolationNodeResult is scopeViolationResult for any executor that
+// holds the same collaborators — GateNodeExecutor's strict read-only check
+// ends in the identical FAILED/SCOPE_VIOLATION answer and records the same
+// operator-visible diagnostic.
+func scopeViolationNodeResult(
+	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, matcher redact.Matcher,
+	req ports.NodeExecutionRequest, resolved resolvedExecutionResources, cause error,
+) ports.NodeExecutionResult {
 	_ = agentevents.RecordScopeViolation(ctx, agentevents.ScopeViolationRecord{
 		AttemptID: req.AttemptID, JobLease: req.JobLease, WriteLeases: resolved.writeLeaseGrants,
-		UOW: e.uow, IDs: e.ids, Clock: e.clk, Matcher: e.matcher,
+		UOW: uow, IDs: ids, Clock: clk, Matcher: matcher,
 	}, cause)
 	return ports.NodeExecutionResult{
 		State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
