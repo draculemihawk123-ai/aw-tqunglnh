@@ -122,8 +122,70 @@ type Snapshot struct {
 	// rendered transcript), so NewSnapshot sorts it for canonicalization.
 	EvidenceRefs []EvidenceRef
 	Revisions    workspace.RevisionSet
-	ManifestHash string
-	CreatedAt    time.Time
+	// InstructionSchemaVersion (V9-03, ADR-032 decision 2) names the
+	// instruction-artifact schema this Snapshot is rendered with when its
+	// Attempt's request is assembled
+	// (internal/app/runtime/assemble_execution_request.go). Zero means the
+	// Snapshot recorded none — every Snapshot written before V9-03 — and such
+	// a Snapshot is rendered with schema v1 EXACTLY as before, byte for byte.
+	// A Snapshot created by the scheduler after V9-03 records
+	// InstructionSchemaV2. Because the same manifest renders to a different
+	// instruction under a different schema, the version is part of the
+	// manifest ManifestHash is computed over (canonicalManifest), omitted
+	// while zero so a v1 Snapshot's hash is unchanged.
+	InstructionSchemaVersion int
+	ManifestHash             string
+	CreatedAt                time.Time
+}
+
+const (
+	// InstructionSchemaV1 is the schema every Snapshot without a recorded
+	// version is rendered with. It is never stored: a Snapshot that records
+	// nothing IS a v1 Snapshot (InstructionSchemaVersion == 0).
+	InstructionSchemaV1 = 1
+	// InstructionSchemaV2 is the schema of ADR-032: hard constraints first,
+	// a task contract with risk level and allowed outcomes, priority-ordered
+	// resources, and a closing checklist.
+	InstructionSchemaV2 = 2
+)
+
+// InstructionSchema returns the instruction-artifact schema version s is
+// rendered with: InstructionSchemaV1 while none is recorded.
+func (s Snapshot) InstructionSchema() int {
+	if s.InstructionSchemaVersion == 0 {
+		return InstructionSchemaV1
+	}
+	return s.InstructionSchemaVersion
+}
+
+// Option adjusts a Snapshot NewSnapshot is building. Options exist so that
+// the many callers that build a plain (v1) Snapshot stay as they are.
+type Option func(*Snapshot)
+
+// WithInstructionSchemaVersion records version as the Snapshot's
+// InstructionSchemaVersion. 0 records nothing (a v1 Snapshot) — the value a
+// clone of a Snapshot that recorded none passes, and the value a row without
+// the column loads as. NewSnapshot rejects any version other than 0 and
+// InstructionSchemaV2.
+func WithInstructionSchemaVersion(version int) Option {
+	return func(s *Snapshot) { s.InstructionSchemaVersion = version }
+}
+
+// CloneForAttempt returns a Snapshot with s's message, resource and evidence
+// refs, revision set and instruction schema version, but a new identity: id,
+// bound to attemptID and created at createdAt. A technical retry
+// (decideRetryOrExhaustion) and the recovery paths (recovery_reaper.go) give
+// the NEW Attempt its own Snapshot this way, never a shared one (each
+// Snapshot row has exactly one owning attempt). Carrying the instruction
+// schema version is the point of doing it here rather than at each call site:
+// an old v1 Attempt's retry stays v1, a v2 Attempt's retry stays v2, and a
+// future field added to Snapshot is copied in this one place.
+func (s Snapshot) CloneForAttempt(id ID, attemptID AttemptID, createdAt time.Time) (Snapshot, error) {
+	return NewSnapshot(
+		id, s.ProjectID, s.WorkItemID, attemptID,
+		s.MessageRefs, s.ResourceRefs, s.EvidenceRefs, s.Revisions, createdAt,
+		WithInstructionSchemaVersion(s.InstructionSchemaVersion),
+	)
 }
 
 // NewSnapshot validates fields and computes ManifestHash itself — the same
@@ -144,6 +206,7 @@ func NewSnapshot(
 	evidenceRefs []EvidenceRef,
 	revisions workspace.RevisionSet,
 	createdAt time.Time,
+	options ...Option,
 ) (Snapshot, error) {
 	if strings.TrimSpace(string(id)) == "" {
 		return Snapshot{}, errors.New("contextsnapshot: ID is required")
@@ -185,7 +248,17 @@ func NewSnapshot(
 		return Snapshot{}, err
 	}
 
-	manifestHash, err := computeManifestHash(messageRefsCopy, resourceRefsCopy, evidenceRefsCopy, revisionsCopy)
+	var recorded Snapshot
+	for _, option := range options {
+		option(&recorded)
+	}
+	switch recorded.InstructionSchemaVersion {
+	case 0, InstructionSchemaV2:
+	default:
+		return Snapshot{}, fmt.Errorf("contextsnapshot: unsupported InstructionSchemaVersion %d (want 0 for none, or %d)", recorded.InstructionSchemaVersion, InstructionSchemaV2)
+	}
+
+	manifestHash, err := computeManifestHash(messageRefsCopy, resourceRefsCopy, evidenceRefsCopy, revisionsCopy, recorded.InstructionSchemaVersion)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -193,7 +266,8 @@ func NewSnapshot(
 	return Snapshot{
 		ID: id, ProjectID: projectID, WorkItemID: workItemID, AttemptID: attemptID,
 		MessageRefs: messageRefsCopy, ResourceRefs: resourceRefsCopy, EvidenceRefs: evidenceRefsCopy, Revisions: revisionsCopy,
-		ManifestHash: manifestHash, CreatedAt: createdAt.UTC(),
+		InstructionSchemaVersion: recorded.InstructionSchemaVersion,
+		ManifestHash:             manifestHash, CreatedAt: createdAt.UTC(),
 	}, nil
 }
 
@@ -219,11 +293,20 @@ type canonicalManifest struct {
 	// the key changes nothing observable.
 	EvidenceRefs    []EvidenceRef `json:"evidenceRefs,omitempty"`
 	RevisionSetHash string        `json:"revisionSetHash"`
+	// InstructionSchemaVersion (V9-03, ADR-032) is tagged omitempty for the
+	// same reason: a Snapshot written before it existed has no such key in
+	// what was hashed, and stays hashing exactly as before while the version
+	// is zero. A v2 Snapshot carries it, so flipping a stored row's version
+	// (which would silently change the instruction the same refs render to)
+	// is caught by loadSnapshotTx's tamper check instead of going unnoticed.
+	// It is the LAST key so a zero value changes no byte of the earlier ones.
+	InstructionSchemaVersion int `json:"instructionSchemaVersion,omitempty"`
 }
 
-func computeManifestHash(messageRefs []MessageRef, resourceRefs []ResourceRef, evidenceRefs []EvidenceRef, revisions workspace.RevisionSet) (string, error) {
+func computeManifestHash(messageRefs []MessageRef, resourceRefs []ResourceRef, evidenceRefs []EvidenceRef, revisions workspace.RevisionSet, instructionSchemaVersion int) (string, error) {
 	data, err := json.Marshal(canonicalManifest{
 		MessageRefs: messageRefs, ResourceRefs: resourceRefs, EvidenceRefs: evidenceRefs, RevisionSetHash: revisions.ContentHash(),
+		InstructionSchemaVersion: instructionSchemaVersion,
 	})
 	if err != nil {
 		return "", fmt.Errorf("contextsnapshot: marshal canonical manifest: %w", err)

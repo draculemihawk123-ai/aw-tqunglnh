@@ -774,10 +774,9 @@ func decideRetryOrExhaustion(
 		}
 		if err == nil {
 			nextSnapshotID := contextsnapshot.ID(ids.NewID())
-			clonedSnapshot, err = contextsnapshot.NewSnapshot(
-				nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshot.AttemptID(nextAttemptID),
-				previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.EvidenceRefs, previousSnapshot.Revisions, clk.Now(),
-			)
+			// V9-03 (ADR-032): CloneForAttempt carries the instruction schema
+			// version too, so a retry of a v1 attempt stays v1.
+			clonedSnapshot, err = previousSnapshot.CloneForAttempt(nextSnapshotID, contextsnapshot.AttemptID(nextAttemptID), clk.Now())
 			if err != nil {
 				return err
 			}
