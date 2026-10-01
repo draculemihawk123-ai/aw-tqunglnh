@@ -9,10 +9,34 @@ permissions:
   contents: read
 
 jobs:
+  # timeout-minutes is 50, not 20, measured the same way
+  # linux-race-and-stability's own budget below was. The Windows leg runs the
+  # offline suite, then the V8-04E security re-run, then the V0-11A stress
+  # step; the Ubuntu leg finishes in about 4 minutes and is not the constraint.
+  # contract (windows-latest), 2026-10-01:
+  #
+  #   run 36813114429  success    14m31s  (offline 7m22s, security 3m25s, stress 2m21s)
+  #   run 36845073826  CANCELED at the 20m cap  (offline 11m16s, security 4m29s, stress cut off)
+  #   run 36849822663  CANCELED at the 20m cap  (offline 12m35s, security 4m43s, stress cut off)
+  #   run 36849669890  CANCELED at the 20m cap  (offline 15m21s, security cut off) — master itself
+  #   run 36856814170  success    23m02s
+  #   run 36862100032  FAILED in the stress step at 33m (offline ~18m, security 5m43s,
+  #                    spikeacceptance -count=5 hit its own 300s -timeout at ~65s per pass)
+  #
+  # The same commits ran the offline suite anywhere from 7m22s to ~18m, a
+  # ~2.5x runner-speed spread with no code change; the green run's 14m31s
+  # scaled by that spread is about 36 minutes (the stress step's own
+  # per-command -timeout values below are scaled the same way). 50 minutes
+  # clears that spread, and a genuine hang still fails sooner, inside go
+  # test's own 10-minute per-package default. This is a budget for work the
+  # job really does, not permission to let it get slower. The one real lever
+  # left is the V8-04E step re-running gitworktree/v5accept/httpapi that the
+  # offline suite has just run (5m43s on a slow runner): if a run approaches
+  # 50 minutes, take that duplicate run out instead of raising this again.
   contract:
     name: contract (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -79,13 +103,21 @@ jobs:
       # waitPastLeaseUntil/waitPastWriteLeaseUntil wait in
       # spk09_workspace_quarantine_test.go and spk09_scenario.go) rather than
       # trusting one lucky green run.
+      #
+      # Each -timeout is a hang detector for the whole repeated run, sized
+      # from real windows-latest runs: on 2026-10-01 (run 36862100032) the
+      # two sqlite repeats took 74.6s and 45.4s against 120s, and the five
+      # spikeacceptance passes ran ~65s each (git process spawns dominate on
+      # a slow runner) against 300s, so the fifth pass hit the deadline while
+      # still making progress. Doubled to 240s/240s/600s: a real hang still
+      # fails, ordinary runner variance no longer does.
       - name: Stress write-lease race path (Windows, V0-11A diagnostic)
         if: matrix.os == 'windows-latest'
         shell: bash
         run: |
-          go test -run '^TestWriteLeaseRaceHasOneWinnerForSameRepository$' -count=20 -timeout 120s ./internal/adapters/sqlite/...
-          go test -run '^TestSPK09QuarantineRecreateFencesStaleGeneration$' -count=30 -timeout 120s ./internal/adapters/sqlite/...
-          go test -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=5 -timeout 300s ./internal/spikeacceptance/...
+          go test -run '^TestWriteLeaseRaceHasOneWinnerForSameRepository$' -count=20 -timeout 240s ./internal/adapters/sqlite/...
+          go test -run '^TestSPK09QuarantineRecreateFencesStaleGeneration$' -count=30 -timeout 240s ./internal/adapters/sqlite/...
+          go test -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=5 -timeout 600s ./internal/spikeacceptance/...
 
       # V0-12 (docs/design/02-v0-spike-verdict.md): internal/archtest enforces
       # domain/app never depends on adapter/OS/provider specifics — a
@@ -150,8 +182,21 @@ jobs:
   # NOT permission to let the job get slower. If a future run approaches 35
   # minutes, root-cause it (as the sqlite -race regression was root-caused)
   # instead of raising this number again.
-  linux-race-and-stability:
-    name: Linux race and stability (V0-12)
+  # V0-12 runs as two parallel part jobs (linux-race-detector,
+  # linux-offline-stability) plus the linux-race-and-stability aggregate
+  # below, not as one serial job (2026-10-01). The serial job's honest cost
+  # was the -race pass PLUS ten offline-suite runs, summed into one budget:
+  # on master f6fd6f6 (run 36813114429) 831s + 10 x ~71s = 27m36s, already
+  # 79% of the 35m cap, and on the same day's ~2x-slower runners the -race
+  # pass alone took 1649s and suite runs 127-181s (run 36856883977, CANCELED
+  # at the cap after 2 of 10 runs, so no report reached v6-gate at all).
+  # Nothing regressed — every test was slower by the same factor. Each half
+  # now gets that same 35m budget on its own (race: ~14m normal / ~28m slow;
+  # 10x suite: ~13m normal / ~24m slow), the work is unchanged, and the
+  # aggregate writes the identical v0-12-stability-report.json from both
+  # parts, failing closed (no report) if either part produced none.
+  linux-race-detector:
+    name: Linux race detector (V0-12 part)
     runs-on: ubuntu-latest
     needs: contract
     timeout-minutes: 35
@@ -162,21 +207,21 @@ jobs:
           go-version: '1.27.0'
           check-latest: true
 
-      - name: Race detector and 10x offline-suite stability, aggregated report
+      - name: Race detector and SPK-08 iteration check
         shell: bash
         run: |
           set -uo pipefail
-          mkdir -p stability-report
+          mkdir -p race-part
 
           echo "== race detector (go test -race -count=1 ./...) =="
           race_start=$(date +%s)
-          if go test -race -count=1 ./... > stability-report/race-detector.log 2>&1; then
+          if go test -race -count=1 ./... > race-part/race-detector.log 2>&1; then
             race_passed=true
           else
             race_passed=false
           fi
           race_end=$(date +%s)
-          cat stability-report/race-detector.log
+          cat race-part/race-detector.log
           echo "race detector passed=${race_passed} duration=$((race_end - race_start))s"
 
           echo "== SPK-08 write-lease race iteration count (static check) =="
@@ -185,9 +230,56 @@ jobs:
             echo "SPK-08 iteration count check FAILED: found '${spk08_iterations}', want >= 100"
             spk08_ok=false
           else
-            echo "SPK-08 iteration count = ${spk08_iterations} (>= 100, required in every one of the 10 runs below via TestDefaultScenariosFormAValidRegistryAndCleanRun)"
+            echo "SPK-08 iteration count = ${spk08_iterations} (>= 100, required in every one of the 10 runs of linux-offline-stability via TestDefaultScenariosFormAValidRegistryAndCleanRun)"
             spk08_ok=true
           fi
+
+          jq -n \
+            --argjson racePassed "${race_passed}" \
+            --argjson raceDurationSeconds "$((race_end - race_start))" \
+            --argjson spk08IterationCount "${spk08_iterations:-0}" \
+            --argjson spk08Ok "${spk08_ok}" \
+            --arg goos "$(go env GOOS)" \
+            --arg goVersion "$(go version)" \
+            '{
+              goos: $goos,
+              goVersion: $goVersion,
+              raceDetector: {passed: $racePassed, durationSeconds: $raceDurationSeconds},
+              spk08WriteLeaseRace: {iterationCount: $spk08IterationCount, meetsMinimum100: $spk08Ok}
+            }' > race-part/race-part.json
+          cat race-part/race-part.json
+
+          if [ "${race_passed}" != "true" ] || [ "${spk08_ok}" != "true" ]; then
+            echo "V0-12 race part FAILED — see the v0-12-race-part artifact"
+            exit 1
+          fi
+
+      - name: Upload V0-12 race part
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-12-race-part
+          path: race-part/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-offline-stability:
+    name: Linux 10x offline-suite stability (V0-12 part)
+    runs-on: ubuntu-latest
+    needs: contract
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: '1.27.0'
+          check-latest: true
+
+      - name: 10x full offline suite, no retry-until-green
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p stability-part
 
           echo "== 10x full offline suite, no retry-until-green =="
           runs_json="[]"
@@ -195,13 +287,13 @@ jobs:
           for i in $(seq 1 10); do
             echo "-- offline suite run ${i}/10 --"
             run_start=$(date +%s)
-            if go test -count=1 ./... > "stability-report/suite-run-${i}.log" 2>&1; then
+            if go test -count=1 ./... > "stability-part/suite-run-${i}.log" 2>&1; then
               run_passed=true
             else
               run_passed=false
               all_stable=false
-              echo "run ${i} FAILED, see stability-report/suite-run-${i}.log"
-              tail -n 60 "stability-report/suite-run-${i}.log"
+              echo "run ${i} FAILED, see stability-part/suite-run-${i}.log"
+              tail -n 60 "stability-part/suite-run-${i}.log"
             fi
             run_end=$(date +%s)
             duration=$((run_end - run_start))
@@ -220,11 +312,11 @@ jobs:
             # this run's "13 PASS + 1 PENDING" evidence is missing, not just
             # unreadable.
             if ! go test -v -run '^TestDefaultScenariosFormAValidRegistryAndCleanRun$' -count=1 ./internal/spikeacceptance/... \
-              > "stability-report/spk-summary-run-${i}.log" 2>&1; then
+              > "stability-part/spk-summary-run-${i}.log" 2>&1; then
               run_passed=false
               all_stable=false
-              echo "run ${i} SPK-summary re-run FAILED, see stability-report/spk-summary-run-${i}.log"
-            elif ! grep -q "clean run:" "stability-report/spk-summary-run-${i}.log"; then
+              echo "run ${i} SPK-summary re-run FAILED, see stability-part/spk-summary-run-${i}.log"
+            elif ! grep -q "clean run:" "stability-part/spk-summary-run-${i}.log"; then
               run_passed=false
               all_stable=false
               echo "run ${i} SPK-summary log missing the expected \"clean run:\" confirmation"
@@ -233,30 +325,82 @@ jobs:
               '. + [{"run": $run, "passed": $passed, "durationSeconds": $duration}]')
           done
 
+
           jq -n \
-            --argjson racePassed "${race_passed}" \
-            --argjson raceDurationSeconds "$((race_end - race_start))" \
-            --argjson spk08IterationCount "${spk08_iterations:-0}" \
-            --argjson spk08Ok "${spk08_ok}" \
             --argjson runs "${runs_json}" \
             --argjson allTenRunsStable "${all_stable}" \
-            --arg goos "$(go env GOOS)" \
-            --arg goVersion "$(go version)" \
+            '{fullSuiteRuns: $runs, allTenRunsStable: $allTenRunsStable}' > stability-part/stability-part.json
+          cat stability-part/stability-part.json
+
+          if [ "${all_stable}" != "true" ]; then
+            echo "V0-12 stability part FAILED — see the v0-12-stability-part artifact"
+            exit 1
+          fi
+
+      - name: Upload V0-12 stability part
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: v0-12-stability-part
+          path: stability-part/
+          if-no-files-found: error
+          retention-days: 7
+
+  linux-race-and-stability:
+    name: Linux race and stability (V0-12)
+    runs-on: ubuntu-latest
+    needs: [linux-race-detector, linux-offline-stability]
+    # always(): a failed part still produced its evidence (each part uploads
+    # with if: always()), and the aggregate must still publish the report
+    # that says so — exactly as the serial job did when race or a run failed.
+    if: always()
+    timeout-minutes: 10
+    steps:
+      - name: Download V0-12 race part
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v0-12-race-part
+          path: parts/race
+
+      - name: Download V0-12 stability part
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: v0-12-stability-part
+          path: parts/stability
+
+      - name: Aggregate the V0-12 stability report
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p stability-report
+          cp -R parts/race/. stability-report/ 2>/dev/null || true
+          cp -R parts/stability/. stability-report/ 2>/dev/null || true
+
+          if [ ! -f parts/race/race-part.json ] || [ ! -f parts/stability/stability-part.json ]; then
+            echo "V0-12 FAILED: a part produced no result (linux-race-detector: ${{ needs.linux-race-detector.result }}, linux-offline-stability: ${{ needs.linux-offline-stability.result }}); no aggregated report is written, so no gate reads a partial one as complete"
+            exit 1
+          fi
+
+          jq -n \
+            --slurpfile race parts/race/race-part.json \
+            --slurpfile stability parts/stability/stability-part.json \
             --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{
-              goos: $goos,
-              goVersion: $goVersion,
+              goos: $race[0].goos,
+              goVersion: $race[0].goVersion,
               generatedAt: $generatedAt,
-              raceDetector: {passed: $racePassed, durationSeconds: $raceDurationSeconds},
-              spk08WriteLeaseRace: {iterationCount: $spk08IterationCount, meetsMinimum100: $spk08Ok},
-              fullSuiteRuns: $runs,
-              allTenRunsStable: $allTenRunsStable
+              raceDetector: $race[0].raceDetector,
+              spk08WriteLeaseRace: $race[0].spk08WriteLeaseRace,
+              fullSuiteRuns: $stability[0].fullSuiteRuns,
+              allTenRunsStable: $stability[0].allTenRunsStable
             }' > stability-report/v0-12-stability-report.json
 
           echo "== aggregated stability report =="
           cat stability-report/v0-12-stability-report.json
 
-          if [ "${race_passed}" != "true" ] || [ "${spk08_ok}" != "true" ] || [ "${all_stable}" != "true" ]; then
+          if [ "$(jq -r '.raceDetector.passed and .spk08WriteLeaseRace.meetsMinimum100 and .allTenRunsStable' stability-report/v0-12-stability-report.json)" != "true" ]; then
             echo "V0-12 stability gate FAILED — see stability-report/ artifact for the full report and per-run logs"
             exit 1
           fi
