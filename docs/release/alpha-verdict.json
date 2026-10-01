@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "verdict": "REWORK",
+  "gatePass": false,
+  "assessedCommit": "6d3bab4f2568005186fc7edf5ed6655859096083",
+  "assessmentRun": {
+    "id": 36786340396,
+    "url": "https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/36786340396",
+    "artifact": "v8-alpha-assessment",
+    "job": "V8-11 Alpha release acceptance"
+  },
+  "summary": {
+    "criteria": { "assessed": 212, "alphaMust": 208, "crossPhaseGuard": 1, "outOfAlphaScope": 2, "notApplicable": 1 },
+    "alphaGatedCriteria": { "total": 209, "pass": 209, "fail": 0, "insufficient": 0 },
+    "criteriaWithTestEvidence": 47,
+    "criteriaWithSuiteEvidenceOnly": 162,
+    "journeys": { "total": 23, "pass": 23 },
+    "versionGates": { "total": 9, "pass": 9 },
+    "finalGates": { "total": 7, "pass": 6, "fail": 1 }
+  },
+  "blockers": [
+    {
+      "id": "parity-inventory-has-zero-debt",
+      "kind": "FINAL_GATE",
+      "detail": "internal/delivery/parity/ledger.go still pins 15 debt entries: 13 HTTP read operations with no `aw` mirror and 2 projection reads (two of the 13) with no application operation. The mandatory V8-11 gate requires the UI <-> operationId <-> `aw` <-> application-operation inventory to have no debt.",
+      "nextTask": "V8-12R-01"
+    }
+  ],
+  "nextTasks": [
+    {
+      "id": "V8-12R-01",
+      "title": "Close the parity ledger and re-run the Alpha gate",
+      "scope": "Add the 13 missing `aw` read leaves and give the 2 projection reads an application operation so Ledger() is empty; TestParityLedgerIsEmpty and the v8-alpha-gate job then report gatePass=true on a fresh commit; record a new verdict for that commit. Nothing else is required for ALPHA_READY."
+    }
+  ],
+  "knownLimitations": ["LIM-01", "LIM-02", "LIM-03", "LIM-04", "LIM-05", "LIM-06", "LIM-07", "LIM-08", "LIM-09", "LIM-10", "LIM-11"],
+  "liveProviderCompatibility": {
+    "status": "UNVERIFIED",
+    "detail": "Every provider test runs against the repository's own fake-claude / fake-codex wire-protocol stand-ins. No run against a real Claude or Codex CLI exists, so compatibility with any real CLI build is not claimed."
+  },
+  "installArtifacts": [
+    {
+      "os": "windows",
+      "file": "aw.exe",
+      "sha256": "dbce424dae5ba30c53fee3c8118915a267ef2538afdcf79efa239c48262d8130",
+      "reproducedTwice": true,
+      "source": "CI run 36786340396, job `release build (windows-latest)`, `aw-release-build` round 1 == round 2"
+    },
+    {
+      "os": "linux",
+      "file": "aw",
+      "sha256": "3b71b34e5e9c02092dbdb683e57edbf2b4197b9924a2623ce1929ce4258b2e72",
+      "reproducedTwice": true,
+      "source": "CI run 36786340396, job `release build (ubuntu-latest)`, `aw-release-build` round 1 == round 2"
+    }
+  ]
+}

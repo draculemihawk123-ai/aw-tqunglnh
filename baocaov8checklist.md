@@ -1902,3 +1902,66 @@ between two commits on a slow Windows runner let the lease lapse, the recovery l
 ran a second time although the heartbeat was working. Fix (test-side): this test now uses a 2s lease (20 renewals of
 margin) and its handler runs 5s — still 2.5x the lease, so only real heartbeats keep the job from being reclaimed;
 the assertion is unchanged. `waitForConditionWithin` gives the longer wait. Cost: about 4s more per run of this test.
+
+
+## V8-12 — Alpha verdict and handoff
+
+### Context
+
+`docs/design/10-v8-alpha-hardening.md` V8-12 (ADR-024, ROADMAP-§3; depends on V8-11's assessment, and explicitly does
+NOT require `gatePass=true` to run): publish `ALPHA_READY | REWORK | STOP | CHƯA ĐỦ EVIDENCE` honestly and update the
+entrypoint. Deliverables: release report, known limitations, live provider compatibility, checksums, install
+artifacts, `docs/00-start-here.md`; no detailed Beta backlog. Verify: links, evidence and checksums exist, docs and status
+agree, fresh-install smoke. Completion bar: `ALPHA_READY` only when `gatePass=true`; any other verdict records its blocker
+and the next narrow rework/evidence task.
+
+Research: the authoritative assessment is the push run on master after V8-11 (`6d3bab4`, CI run 36786340396): 208/208
+ALPHA_MUST, 23/23 journeys, 9/9 version gates, final gates 6/7 — only `parity-inventory-has-zero-debt` fails (15 ledger
+entries), so `gatePass=false`. `docs/00-start-here.md` had not been updated since 2026-09-06 and still described the V0
+`GO` state as current. There is NO test of any provider against a real Claude or Codex CLI (only the fake wire-protocol
+stand-ins), and the release-build job printed checksums in its log but uploaded no artifact.
+
+### Decision
+
+1. **Verdict: `REWORK`.** The rule leaves no room: `gatePass=false` cannot be `ALPHA_READY`. The blocker is named, with one
+   next narrow task, **V8-12R-01 — close the parity ledger (13 `aw` read leaves + an application operation for the 2
+   projection reads) and re-run the gate**. Closing it was deliberately NOT folded into this task: V8-12 records a verdict, it
+   does not manufacture the evidence for a better one.
+2. **Three artifacts, one truth.** `docs/release/alpha-verdict.json` (machine-readable record: verdict, gatePass, assessed
+   commit and run, summary counts, blockers, next tasks, limitation ids, live-provider status, install checksums),
+   `docs/release/alpha-release-report.md` (the readable form) and a new section 4A of `docs/00-start-here.md`, whose stale
+   status table rows were corrected. Tests keep them from diverging (below).
+3. **Known limitations are disclosed, not smoothed over** (LIM-01..LIM-11): evidence granularity (47 of 209 cited by a test,
+   162 at suite level), no real-OS sandbox, the Windows UI legs being newly real since PR #139, older binaries opening newer
+   databases silently, `aw-maintenance backup` migrating first, duplicate repository id returning 500, unmeasured large-graph UI
+   performance, partly-covered fault categories, one conditional fault scenario, six ADRs without an owner task, test-only flags.
+4. **Live provider compatibility: `UNVERIFIED`**, stated as such. Nothing has run against a real Claude/Codex CLI, so
+   compatibility with any real build is not claimed; what exists is the safety net (probe at registration, re-probe at
+   admission, refusal on drift).
+5. **Install artifacts.** The report records the reproducible checksums CI printed for the assessed commit (Windows
+   `aw.exe`, Linux `aw`, each built twice identically). Because a log line is a weak artifact, the `release-build` job now
+   uploads `aw-release-<os>` (binary, `.sha256`, manifest, 90 days) on every push to master, and its smoke step also
+   checks `aw version --json` reports the embedded UI and a schema version — that smoke (fresh DB/roots, `doctor` HEALTHY,
+   `serve` serving the embedded UI) is the fresh-install smoke; the full operator walkthrough was verified by hand in V8-09.
+6. **The record cannot go stale.** `internal/alphagate/verdict_test.go` enforces the verdict rule (ALPHA_READY iff gatePass,
+   non-ALPHA_READY names blockers and next tasks that exist), the summary's arithmetic and its agreement with gatePass, that
+   the report and start-here state the same verdict, commit, blockers, next tasks and limitation ids (both directions for
+   limitations), that every checksum is 64 hex and both platforms are present, and that every relative link in the release
+   docs, the operator docs and start-here resolves. `internal/delivery/parity/verdict_record_test.go` ties the record to the
+   real ledger: the record lists the parity gate as a blocker exactly while `Ledger()` pins debt, and ALPHA_READY is
+   impossible while it does — so emptying the ledger fails a test until a new verdict is recorded.
+
+### Execution
+
+- `docs/release/alpha-verdict.json`, `docs/release/alpha-release-report.md`, `docs/00-start-here.md` (section 4A, status rows,
+  update rule).
+- `.github/workflows/spike-gate.yml`: `release-build` smoke checks `aw version --json`; uploads `aw-release-<os>` on push to master.
+- `internal/alphagate/verdict_test.go`, `internal/delivery/parity/verdict_record_test.go`.
+
+### Verify
+
+- `go build ./...`, `go vet ./...`, `git diff --check` clean; the new tests pass; every relative link in 11 operator docs, the
+  release docs and start-here resolves (the link test found no broken link).
+- **Negative control:** flipping the record to `ALPHA_READY` while `gatePass` stays false fails the verdict-rule test, the
+  report/start-here agreement test and the parity-ledger tie; restored, all pass.
+- Not done, by design: no Beta backlog; the parity closure itself (V8-12R-01); a run against a real provider CLI.

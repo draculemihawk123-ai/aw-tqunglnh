@@ -1189,7 +1189,27 @@ jobs:
           cat smoke/serve.log
           INDEX=$(curl -sf http://127.0.0.1:18765/)
           echo "$INDEX" | grep -q 'window.__AW_BOOTSTRAP__=' || { echo "::error::/ did not serve the embedded UI's own bootstrap script"; exit 1; }
-          echo "release smoke passed: doctor HEALTHY, serve genuinely served the embedded UI"
+          # The release manifest the binary reports about itself (V8-12's
+          # fresh-install smoke): it must say the UI is embedded and carry a
+          # schema version, or this is not the artifact we meant to ship.
+          "$BIN" version --json > smoke/version.json
+          cat smoke/version.json
+          jq -e '.uiEmbedded == true and (.schemaVersion | type == "number")' smoke/version.json > /dev/null \
+            || { echo "::error::aw version --json does not report the embedded UI and a schema version"; exit 1; }
+          echo "release smoke passed: doctor HEALTHY, serve genuinely served the embedded UI, version --json reports it"
+
+      # Install artifacts (V8-12): the built binary, its .sha256 and the release
+      # manifest, kept for every push to master so a verdict can point at real
+      # files and not only at a checksum printed in a log. Not uploaded for pull
+      # requests (a ~30MB binary per PR run is cost without a reader).
+      - name: Upload the install artifacts
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: aw-release-${{ matrix.os }}
+          path: build1/
+          if-no-files-found: error
+          retention-days: 90
 
   # e2e is V7-17C's own real full-journey acceptance
   # (docs/design/09-v7-alpha-ui.md V7-17): it drives web/dist through a real
