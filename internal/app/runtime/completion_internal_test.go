@@ -65,6 +65,11 @@ func TestReconcileRunTerminalityTx_NoLiveBlockedEndOrFailure_TerminalPathInvalid
 
 	var run runtimedomain.WorkflowRun
 	if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		// V9-06: a failed Run now opens a RUN_FAILED blocker on its WorkItem,
+		// so the WorkItem (ACTIVE, as StartWorkflowRun leaves it) must exist.
+		if err := seedActiveWorkItemForInternalTest(ctx, tx, "project-1", "family-1", "work-item-1"); err != nil {
+			return err
+		}
 		r, err := runtimedomain.NewWorkflowRun(
 			"run-1", project.ProjectID("project-1"), work.WorkItemID("work-item-1"),
 			version, work.TaskFamilyID("family-1"), 1, nil,
@@ -120,6 +125,43 @@ func TestReconcileRunTerminalityTx_NoLiveBlockedEndOrFailure_TerminalPathInvalid
 	if !found {
 		t.Fatalf("no %s event found for run %s among %+v", RunFailedEventType, run.ID, events)
 	}
+
+	// V9-06 / ADR-033: the TERMINAL_PATH_INVALID failure opens the same
+	// RUN_FAILED blocker an ordinary node failure does, and carries the
+	// failure reason in the blocker's own reason text.
+	blockers, err := uow.Snapshot.Work().ListWorkItemBlockersForWorkItem(ctx, "work-item-1")
+	if err != nil {
+		t.Fatalf("ListWorkItemBlockersForWorkItem: %v", err)
+	}
+	if len(blockers) != 1 || blockers[0].Type != work.BlockerRunFailed || blockers[0].ID != "run-1-run-failed-blocker" ||
+		blockers[0].SourceRunID != "run-1" || blockers[0].State != work.BlockerOpen ||
+		!strings.Contains(blockers[0].Reason, RunFailureReasonTerminalPathInvalid) {
+		t.Fatalf("blockers = %+v, want exactly one OPEN RUN_FAILED run-1-run-failed-blocker naming %s", blockers, RunFailureReasonTerminalPathInvalid)
+	}
+}
+
+// seedActiveWorkItemForInternalTest creates the project, family and ACTIVE
+// root WorkItem a white-box test needs behind a hand-built WorkflowRun, the
+// state StartWorkflowRun leaves a WorkItem in (V9-06: a Run failing opens a
+// blocker on its WorkItem, so the WorkItem must exist).
+func seedActiveWorkItemForInternalTest(ctx context.Context, tx ports.Tx, projectID, familyID, workItemID string) error {
+	if _, err := tx.Catalog().CreateProject(ctx, ports.CreateProjectRequest{ID: projectID, Name: "project " + projectID}); err != nil {
+		return err
+	}
+	item, err := work.NewRootWorkItem(work.WorkItemID(workItemID), project.ProjectID(projectID), work.TaskFamilyID(familyID), "stub work item")
+	if err != nil {
+		return err
+	}
+	item.Status = work.WorkItemActive
+	family, err := work.NewTaskFamily(work.TaskFamilyID(familyID), item)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Work().CreateTaskFamily(ctx, family); err != nil {
+		return err
+	}
+	_, err = tx.Work().CreateWorkItem(ctx, item)
+	return err
 }
 
 // TestReconcileRunTerminalityTx_AlreadyDecided_NeverRefires proves the

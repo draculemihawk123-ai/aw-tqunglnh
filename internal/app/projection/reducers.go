@@ -200,7 +200,11 @@ func decrementPendingScopeExpansion(row WorkItemCardRow) WorkItemCardRow {
 }
 
 // reduceWorkflowRunStarted is WorkflowRunStarted v1's own Reducer
-// (handlerVersion 1): READY/BACKLOG -> ACTIVE, records the new active Run.
+// (handlerVersion 2): READY/BACKLOG -> ACTIVE, records the new active Run and
+// counts it (V9-06, ADR-033: handlerVersion 2 adds RunCount). A second
+// WorkflowRunStarted for the same WorkItem — the rerun after a failed Run was
+// resolved — simply replaces the active Run with the new one: the card
+// follows the new run.
 func reduceWorkflowRunStarted(prior WorkItemCardRow, payloadJSON string) (WorkItemCardRow, error) {
 	p, err := decode[workflowRunStartedPayload](payloadJSON)
 	if err != nil {
@@ -211,6 +215,7 @@ func reduceWorkflowRunStarted(prior WorkItemCardRow, payloadJSON string) (WorkIt
 	}
 	prior.ActiveRunID = p.RunID
 	prior.ActiveRunStatus = runStatusActive
+	prior.RunCount++
 	return prior, nil
 }
 
@@ -345,13 +350,22 @@ func reduceWorkItemBlocked(prior WorkItemCardRow, payloadJSON string) (WorkItemC
 }
 
 // reduceWorkItemBlockerResolved is WORK_ITEM_BLOCKER_RESOLVED v1's own
-// Reducer (handlerVersion 1). Trusts the event's own NewWorkItemStatus
+// Reducer (handlerVersion 2). Trusts the event's own NewWorkItemStatus
 // when WorkItemUnblocked is true — the authoritative blocker-resolution
 // handler (internal/app/runtime/blocker.go) has already computed the
 // correct post-unblock status with full context this projection does not
 // have (e.g. whether a Run is still active); re-deriving it here from
 // BlockerCount alone would risk disagreeing with that authority, exactly
 // what contract rule 5 ("Projection không là authority") forbids.
+//
+// handlerVersion 2 (V9-06, ADR-033): a WorkItem unblocked to READY has no
+// Run in flight by construction (StartWorkflowRun is what takes it back to
+// ACTIVE), so the card drops ActiveRunID — a failed Run's id stayed on the
+// card through the BLOCKED column (reduceRunFailed) so the operator could open
+// its diagnostics and resolve the RUN_FAILED blocker, but once resolved it
+// would otherwise keep a READY card looking like it still has a live Run and
+// hide the "start the next Run" action. ActiveRunStatus is left as the last
+// Run's outcome badge, the same shape reduceRunCancelled leaves behind.
 func reduceWorkItemBlockerResolved(prior WorkItemCardRow, payloadJSON string) (WorkItemCardRow, error) {
 	p, err := decode[workItemBlockerResolvedPayload](payloadJSON)
 	if err != nil {
@@ -365,6 +379,9 @@ func reduceWorkItemBlockerResolved(prior WorkItemCardRow, payloadJSON string) (W
 	}
 	if p.WorkItemUnblocked && p.NewWorkItemStatus != "" && !prior.isTerminal() {
 		prior.Status = p.NewWorkItemStatus
+		if p.NewWorkItemStatus == statusReady {
+			prior.ActiveRunID = ""
+		}
 	}
 	return prior, nil
 }

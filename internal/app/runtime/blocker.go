@@ -5,7 +5,9 @@
 // SCOPE_EXPANSION_REQUIRED) — the two real blocker producers this task
 // wires up (confirmed with the user before writing this file: the four
 // admission reasons and COMPLETION_POLICY_FAILED stay type-only, no real
-// producer exists yet, V5-08/V5-11's own future scope).
+// producer exists yet, V5-08/V5-11's own future scope). V9-06 / ADR-033 adds
+// a producer: transitionRunToFailedTx (completion.go) opens a RUN_FAILED
+// blocker for an ordinary failed Run.
 // closeWorkItemBlockerTx is called by ResolveWorkItemBlocker
 // (resolve_work_item_blocker.go, the public command), reactivateBlockedNodeRunTx
 // (scope_expansion.go, the SCOPE_EXPANSION_RECONCILE flow's own automatic

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/projection"
@@ -22,12 +23,34 @@ type DetailRequest struct {
 	ProjectID string
 }
 
+// RunSummary is one WorkflowRun of a WorkItem, as the authoritative Runs list
+// of Detail reports it (V9-06, ADR-033, gap G6). A WorkItem keeps ONE history
+// across failed Runs — fail -> resolve the RUN_FAILED blocker -> start again —
+// so the detail shows every Run it has had, oldest first; RunNumber is the
+// Run's 1-based position in that order (the "attempt" an operator means by
+// "the second run"), not an ExecutionAttempt number. Every Run of a WorkItem
+// pins the same workflow version (ADR-033 decision 4), which each entry
+// repeats so that stays visible rather than assumed.
+type RunSummary struct {
+	RunID             string     `json:"runId"`
+	RunNumber         int        `json:"runNumber"`
+	State             string     `json:"state"`
+	WorkflowVersionID string     `json:"workflowVersionId"`
+	StartedAt         *time.Time `json:"startedAt,omitempty"`
+	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
+}
+
 // Detail is a WorkItem's projected Card next to its FRESH authoritative
 // Readiness. Card.Status/badges are projected and possibly stale (Freshness
-// says how stale); Readiness is never derived from them.
+// says how stale); Readiness is never derived from them. Runs is authoritative
+// like Readiness: read live from the WorkItem's own Run rows, after the card
+// is built, so it is exact even while the projected Card.RunCount lags (or, on
+// a generation built before RunCount existed, reads zero until `aw projection
+// rebuild`).
 type Detail struct {
 	Card      Card                      `json:"card"`
 	Readiness workapp.WorkItemReadiness `json:"readiness"`
+	Runs      []RunSummary              `json:"runs"`
 	Freshness Freshness                 `json:"freshness"`
 }
 
@@ -105,7 +128,35 @@ func GetWorkItemProjectedDetail(ctx context.Context, uow ports.UnitOfWork, req D
 	if err != nil {
 		return Detail{}, err
 	}
+	detail.Runs, err = listRunSummaries(ctx, uow, workItemID)
+	if err != nil {
+		return Detail{}, err
+	}
 	return detail, nil
+}
+
+// listRunSummaries reads workItemID's Runs from the authoritative Run rows, in
+// start order, in a read-only transaction of its own (V9-06). The slice is
+// never nil, so an unrun WorkItem serializes as [] rather than null.
+func listRunSummaries(ctx context.Context, uow ports.UnitOfWork, workItemID string) ([]RunSummary, error) {
+	summaries := []RunSummary{}
+	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, workItemID)
+		if err != nil {
+			return err
+		}
+		for i, run := range runs {
+			summaries = append(summaries, RunSummary{
+				RunID: string(run.ID), RunNumber: i + 1, State: string(run.State),
+				WorkflowVersionID: string(run.WorkflowVersionID), StartedAt: run.StartedAt, FinishedAt: run.FinishedAt,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return summaries, nil
 }
 
 // resolveWorkspaceSetIDForDetail returns card's effective WorkspaceSetID for
@@ -142,7 +193,7 @@ func resolveWorkspaceSetIDForDetail(ctx context.Context, tx ports.Tx, projectID 
 // cardFromAuthoritative builds a fallback Card straight from the REAL
 // WorkItem row, used only when no projection row exists yet. Every field it
 // cannot know (ActiveRun*/BlockerCount/TopBlockerType/
-// PendingScopeExpansionCount/WorkspaceSetID/RepositoryBadges) stays at its
+// PendingScopeExpansionCount/RunCount/WorkspaceSetID/RepositoryBadges) stays at its
 // honest zero value rather than a fabricated guess. Still display-only, like a
 // real projected card, never fed into readiness authority.
 func cardFromAuthoritative(item workdomain.WorkItem) Card {

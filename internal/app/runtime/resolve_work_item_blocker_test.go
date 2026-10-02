@@ -233,6 +233,10 @@ func TestResolveWorkItemBlocker_ResolutionModeTypeMatrix(t *testing.T) {
 	}{
 		{"RunCancelled_Resolved_OK", workdomain.BlockerRunCancelled, runtime.ResolutionModeResolved, nil},
 		{"RunCancelled_Waived_OK", workdomain.BlockerRunCancelled, runtime.ResolutionModeWaived, nil},
+		// V9-06 / ADR-033: a failed Run is resolved (the next Run starts on the
+		// same WorkItem), never waived.
+		{"RunFailed_Resolved_OK", workdomain.BlockerRunFailed, runtime.ResolutionModeResolved, nil},
+		{"RunFailed_Waived_Rejected", workdomain.BlockerRunFailed, runtime.ResolutionModeWaived, runtime.ErrBlockerNotWaivable},
 		{"CompletionPolicyFailed_Waived_OK", workdomain.BlockerCompletionPolicyFailed, runtime.ResolutionModeWaived, nil},
 		{"CompletionPolicyFailed_Resolved_OK", workdomain.BlockerCompletionPolicyFailed, runtime.ResolutionModeResolved, nil},
 		{"ScopeExpansionRequired_Resolved_Rejected", workdomain.BlockerScopeExpansionRequired, runtime.ResolutionModeResolved, runtime.ErrBlockerNotResolvableViaCommand},

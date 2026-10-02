@@ -2136,6 +2136,11 @@
             "type": "work.WorkItemReadiness"
           },
           {
+            "name": "Runs",
+            "jsonTag": "runs",
+            "type": "[]kanban.WorkItemRunDTO"
+          },
+          {
             "name": "Freshness",
             "jsonTag": "freshness",
             "type": "httpapi.Freshness"

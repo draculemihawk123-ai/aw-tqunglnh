@@ -1,6 +1,8 @@
 package kanban
 
 import (
+	"time"
+
 	kanbanapp "github.com/taQuangLing/agent-workflow/internal/app/kanban"
 	workapp "github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
@@ -28,10 +30,12 @@ type RepositoryBadgeDTO struct {
 //
 // Every field below is copied verbatim from the application Card — whose
 // Status/ActiveRunStatus/BlockerCount/TopBlockerType/
-// PendingScopeExpansionCount are always the PROJECTED (possibly stale — see
-// the sibling Freshness envelope) values, never re-derived or authorized by
-// this package (this task's own "Không làm: projection không decide
-// readiness/ValidAction").
+// PendingScopeExpansionCount/RunCount are always the PROJECTED (possibly stale
+// — see the sibling Freshness envelope) values, never re-derived or authorized
+// by this package (this task's own "Không làm: projection không decide
+// readiness/ValidAction"). RunCount (V9-06, ADR-033) is how many Runs the
+// WorkItem has started: after a failed Run is resolved the same WorkItem runs
+// again, so one card can stand for several Runs.
 type KanbanCardDTO struct {
 	WorkItemID                 string               `json:"workItemId"`
 	ProjectID                  string               `json:"projectId"`
@@ -46,6 +50,7 @@ type KanbanCardDTO struct {
 	BlockerCount               int                  `json:"blockerCount"`
 	TopBlockerType             string               `json:"topBlockerType,omitempty"`
 	PendingScopeExpansionCount int                  `json:"pendingScopeExpansionCount"`
+	RunCount                   int                  `json:"runCount"`
 	RepositoryBadges           []RepositoryBadgeDTO `json:"repositoryBadges,omitempty"`
 }
 
@@ -63,8 +68,37 @@ func cardToDTO(card kanbanapp.Card) KanbanCardDTO {
 		ParentWorkItemID: card.ParentWorkItemID, IsRoot: card.IsRoot, WorkspaceSetID: card.WorkspaceSetID,
 		Status: card.Status, ActiveRunID: card.ActiveRunID, ActiveRunStatus: card.ActiveRunStatus,
 		BlockerCount: card.BlockerCount, TopBlockerType: card.TopBlockerType,
-		PendingScopeExpansionCount: card.PendingScopeExpansionCount, RepositoryBadges: badges,
+		PendingScopeExpansionCount: card.PendingScopeExpansionCount, RunCount: card.RunCount, RepositoryBadges: badges,
 	}
+}
+
+// WorkItemRunDTO is this package's own delivery-owned wire shape for one
+// internal/app/kanban.RunSummary — one entry of getWorkItemProjectedDetail's
+// authoritative `runs` list (V9-06, ADR-033): every Run the WorkItem has had,
+// oldest first, read live from the Run rows (not from the projection), so the
+// list is exact while the card's projected runCount may lag. RunNumber is the
+// 1-based position in that order. WorkflowVersionID is the same on every entry:
+// a rerun never repins.
+type WorkItemRunDTO struct {
+	RunID             string     `json:"runId"`
+	RunNumber         int        `json:"runNumber"`
+	State             string     `json:"state"`
+	WorkflowVersionID string     `json:"workflowVersionId"`
+	StartedAt         *time.Time `json:"startedAt,omitempty"`
+	FinishedAt        *time.Time `json:"finishedAt,omitempty"`
+}
+
+// runsToDTOs converts the application's Run summaries, always returning a
+// non-nil slice so a WorkItem that never ran serializes as [] rather than null.
+func runsToDTOs(runs []kanbanapp.RunSummary) []WorkItemRunDTO {
+	items := make([]WorkItemRunDTO, 0, len(runs))
+	for _, r := range runs {
+		items = append(items, WorkItemRunDTO{
+			RunID: r.RunID, RunNumber: r.RunNumber, State: r.State, WorkflowVersionID: r.WorkflowVersionID,
+			StartedAt: r.StartedAt, FinishedAt: r.FinishedAt,
+		})
+	}
+	return items
 }
 
 // cardsToDTOs converts a page of application Cards, always returning a
@@ -106,10 +140,13 @@ type kanbanListResponse struct {
 // valid actions with target version before response" line asks for — never
 // derived from Card's own (possibly stale) Status, always from Readiness.
 type workItemDetailResponse struct {
-	Card         KanbanCardDTO             `json:"card"`
-	Readiness    workapp.WorkItemReadiness `json:"readiness"`
-	Freshness    httpapi.Freshness         `json:"freshness"`
-	ValidActions []httpapi.ValidAction     `json:"validActions"`
+	Card      KanbanCardDTO             `json:"card"`
+	Readiness workapp.WorkItemReadiness `json:"readiness"`
+	// Runs is the WorkItem's authoritative Run history, oldest first (V9-06,
+	// ADR-033): fresh like Readiness, never taken from the projected Card.
+	Runs         []WorkItemRunDTO      `json:"runs"`
+	Freshness    httpapi.Freshness     `json:"freshness"`
+	ValidActions []httpapi.ValidAction `json:"validActions"`
 }
 
 // validActionsForReadiness returns the advisory ValidAction list a client

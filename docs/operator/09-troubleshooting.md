@@ -159,12 +159,62 @@ The WorkItem has no real readiness contract. Supply one at creation time (`"cont
 "set contract" command; a WorkItem's contract is supplied once, at creation, in the SAME request body as
 `title`/`effectiveScope`.
 
+## A run ended `FAILED`: the WorkItem is `BLOCKED` by a `RUN_FAILED` blocker (V9-06, ADR-033)
+
+```bash
+aw run diagnostics --project-id <id> <runId>
+# "runState": "FAILED", "blockers": [{"blockerId": "<runId>-run-failed-blocker", "type": "RUN_FAILED", "state": "OPEN", ...}]
+aw work-item detail --project-id <id> <workItemId>
+# card.status "BLOCKED", card.topBlockerType "RUN_FAILED", card.runCount 1, runs: [{"runNumber": 1, "state": "FAILED", ...}]
+```
+
+A run that ends `FAILED` no longer leaves its WorkItem `ACTIVE` (where `run start` refused to run again and the only
+way out was to cancel the WorkItem and create a new one). It opens one `RUN_FAILED` blocker in the same transaction,
+which moves the WorkItem to `BLOCKED` — the board's `BLOCKED` column — and you try again on the **same** WorkItem,
+so its messages, evidence and history stay in one place:
+
+1. **Find out why it failed**: `aw run timeline <runId>` (which node, which attempt, the failure code),
+   `aw evidence list --project-id <id> <workItemId>` and `aw artifact get ...` (a `COMMAND` that exited on its own
+   leaves a `COMMAND_EXECUTION` record with the exit code and stderr, see below).
+2. **Decide what to do with the worktree.** Nothing resets it: the next run starts from whatever the failed run left
+   in the repository worktree (`aw repository-workspace diff`, `aw repository-workspace log`). Undo what the next run
+   must not see, before the next step.
+3. **Resolve the blocker**: `aw blocker resolve --mode RESOLVED --reason "<why it is fine to run again>" <blockerId>`.
+   The WorkItem becomes `READY`. The preconditions are the ones every blocker has: no run of the WorkItem still in
+   progress and no `QUARANTINED` repository workspace in its family (`aw repository-workspace show`).
+4. **Start the next run**: `aw run start --workflow-version-id <the same workflow version> --idempotency-key <new key> <workItemId>`.
+
+What does not change:
+
+- **`RUN_FAILED` can be resolved but never waived.** `--mode WAIVED` is refused with `this blocker type can never be
+  waived` (HTTP 409). To give up on the work, cancel the WorkItem instead: `aw work-item cancel`.
+- **The workflow version stays the one pinned in the WorkItem's contract.** `aw run start` with a different
+  `--workflow-version-id` is refused (`requested workflow version does not match the work item's pinned version`) even
+  though the WorkItem is `READY`; there is no option to repin. To run a different workflow version, or under a
+  different contract, create a new WorkItem.
+- **Completion only counts the current run's evidence.** The `FAILED` evidence of the earlier run neither blocks nor
+  helps the new one: a required evidence kind must be produced again by the new run. The earlier run's messages stay
+  on the WorkItem and keep flowing into the new run's context.
+- While the blocker is open, `aw run start` returns the usual `work item is not READY`.
+- A run that fails while its WorkItem is already being cancelled opens no blocker: the cancellation closes the
+  WorkItem out to `CANCELLED`.
+- A run that fails the completion policy (`COMPLETION_POLICY_FAILED`) or is cancelled (`RUN_CANCELLED`) has its own
+  blocker, resolved with the same command (those two can also be waived).
+
+`aw work-item detail` and the web task page list every run of the WorkItem, oldest first (`runs`), and the board card
+and the task header show the run count (`runCount`). The count on the board is projected like the rest of the card:
+after an upgrade from a build older than V9-06, run `aw projection rebuild --project-id <id> --projection-name workitem` once so the cards of WorkItems that
+already ran show their count (see [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md)); `runs` is always exact.
+
 ## `run start` fails with "work item is not READY"
 
 Call `aw work-item mark-ready --expected-version <n> <workItemId>` first — `readiness: true` from `aw
 work-item readiness` only means the WorkItem's OWN contract is complete enough to become ready; it doesn't
 itself transition the status. `--expected-version` must match the WorkItem's real current version (from
 `work-item show`/the previous mutation's own response) — a stale version is a real `CONFLICT`.
+
+If the WorkItem is `BLOCKED` instead of `BACKLOG`, an earlier run left a blocker open — most often a `RUN_FAILED`
+one after a failed run: resolve it first (the previous section), then `aw run start` works again.
 
 ## `RESYNC_REQUIRED` on a paginated list
 

@@ -85,6 +85,15 @@ type WorkItemCardRow struct {
 	// requests not yet Approved/Rejected/Withdrawn for this WorkItem's own
 	// FamilyID — a coarse "has an open scope-expansion request" badge.
 	PendingScopeExpansionCount int `json:"pendingScopeExpansionCount"`
+	// RunCount is how many Runs this WorkItem has ever started — the number of
+	// WorkflowRunStarted events applied to this row (V9-06, ADR-033, gap G6).
+	// Since a failed Run no longer forces a new WorkItem, one WorkItem can
+	// carry several Runs (fail -> resolve -> start again) and the Kanban card
+	// and the task detail show the count. Counted by the reducer (never read
+	// from a runtime table: this projection reads none), so a rebuild from the
+	// journal reproduces it exactly. omitempty keeps a row that never ran
+	// byte-identical to a row written before this field existed.
+	RunCount int `json:"runCount,omitempty"`
 }
 
 // Exists reports whether row represents a real, already-created WorkItem

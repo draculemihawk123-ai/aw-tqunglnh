@@ -188,6 +188,10 @@ aw run start --workflow-version-id <workflow-version-id> --idempotency-key start
 A real successful run's own response embeds a `"wait"` object with `"state": "SUCCEEDED"`. The real run this
 quickstart was verified against returned exactly this shape.
 
+If it ends `"state": "FAILED"` instead, the work item is not lost: it is `BLOCKED` by a `RUN_FAILED` blocker. Find out
+why (`aw run timeline <runId>`), `aw blocker resolve --mode RESOLVED --reason "..." <blockerId>`, then `aw run start`
+again on the same work item — see [09-troubleshooting.md](09-troubleshooting.md).
+
 ## 6. Confirm it actually worked
 
 ```bash

@@ -12,12 +12,24 @@ import type { ValidAction } from './kanban';
 
 export type BlockerType =
   | 'RUN_CANCELLED'
+  | 'RUN_FAILED'
   | 'COMPLETION_POLICY_FAILED'
   | 'SCOPE_EXPANSION_REQUIRED'
   | 'ISOLATION_ENFORCEMENT_UNAVAILABLE'
   | 'ADAPTER_BUILD_DRIFT'
   | 'CAPABILITY_REQUIREMENT_UNSATISFIED'
   | 'WRITE_CAPABILITY_OR_GRANT_MISSING';
+
+/**
+ * isWaivableBlockerType mirrors workdomain.BlockerType.Waivable: only
+ * RUN_CANCELLED and COMPLETION_POLICY_FAILED can be WAIVED. RUN_FAILED (V9-06,
+ * ADR-033) is resolved so the next Run starts on the same WorkItem — a failed
+ * Run is never waived; the server rejects a waive with a typed conflict either
+ * way, this only keeps the Resolve dialog from offering it.
+ */
+export function isWaivableBlockerType(type: string): boolean {
+  return type === 'RUN_CANCELLED' || type === 'COMPLETION_POLICY_FAILED';
+}
 
 export interface BlockerDiagnostic {
   blockerId: string;

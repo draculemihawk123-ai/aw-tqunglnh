@@ -36,8 +36,8 @@ func handleGetWorkItemDetail(deps Dependencies) http.HandlerFunc {
 		}
 
 		response := workItemDetailResponse{
-			Card: cardToDTO(detail.Card), Readiness: detail.Readiness, Freshness: freshnessToHTTP(detail.Freshness),
-			ValidActions: validActionsForReadiness(detail.Readiness),
+			Card: cardToDTO(detail.Card), Readiness: detail.Readiness, Runs: runsToDTOs(detail.Runs),
+			Freshness: freshnessToHTTP(detail.Freshness), ValidActions: validActionsForReadiness(detail.Readiness),
 		}
 		_ = httpapi.EncodeResult(w, http.StatusOK, response, httpapi.ETagFromVersion(detail.Readiness.Version))
 	}

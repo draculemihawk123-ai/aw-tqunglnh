@@ -49,7 +49,7 @@ func registerClassifications(c *Catalog) {
 
 	// --- Apply: Run lifecycle (internal/app/runtime) ---
 
-	c.apply("WorkflowRunStarted", 1, 1, reduceWorkflowRunStarted,
+	c.apply("WorkflowRunStarted", 1, 2, reduceWorkflowRunStarted,
 		entityKeyFromField(decode[workflowRunStartedPayload], func(p workflowRunStartedPayload) string { return p.WorkItemID }), "")
 	c.apply("RUN_CANCELLATION_REQUESTED", 1, 1, reduceRunCancellationRequested,
 		entityKeyFromField(decode[runCancellationRequestedPayload], func(p runCancellationRequestedPayload) string { return p.WorkItemID }), "")
@@ -67,7 +67,7 @@ func registerClassifications(c *Catalog) {
 		fallbackWorkflowRunFinalized)
 	c.apply("WORK_ITEM_BLOCKED", 1, 1, reduceWorkItemBlocked,
 		entityKeyFromField(decode[workItemBlockedPayload], func(p workItemBlockedPayload) string { return p.WorkItemID }), "")
-	c.apply("WORK_ITEM_BLOCKER_RESOLVED", 1, 1, reduceWorkItemBlockerResolved,
+	c.apply("WORK_ITEM_BLOCKER_RESOLVED", 1, 2, reduceWorkItemBlockerResolved,
 		entityKeyFromField(decode[workItemBlockerResolvedPayload], func(p workItemBlockerResolvedPayload) string { return p.WorkItemID }), "")
 	c.apply("WORK_ITEM_CANCELLED", 1, 1, reduceWorkItemCancelled,
 		entityKeyFromField(decode[workItemCancelledPayload], func(p workItemCancelledPayload) string { return p.WorkItemID }), "")

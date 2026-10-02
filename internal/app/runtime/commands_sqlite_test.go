@@ -79,8 +79,21 @@ func seedActiveRepositorySQLite(t *testing.T, uow ports.UnitOfWork, ids idsource
 // (internal/adapters/sqlite/start_workflow_run.go) actually runs under.
 func readyFixtureSQLite(t *testing.T, uow ports.UnitOfWork, ids idsource.Source, projectID, repositoryID string) work.CreateRootWorkItemResult {
 	t.Helper()
-	ctx := context.Background()
 	seedActiveRepositorySQLite(t, uow, ids, projectID, repositoryID)
+	return readyRootWorkItemSQLite(t, uow, ids, projectID, repositoryID, nil)
+}
+
+// readyRootWorkItemSQLite is readyFixtureSQLite's second half — the real
+// CreateRootWorkItem -> workspaceprovision.Handler -> forced READY sequence
+// against a project/repository seedActiveRepositorySQLite already created —
+// split out (V9-06) so a test that must publish a workflow version BEFORE the
+// WorkItem exists can create the WorkItem with that version pinned in its
+// contract (contract != nil), the way a real operator does.
+func readyRootWorkItemSQLite(
+	t *testing.T, uow ports.UnitOfWork, ids idsource.Source, projectID, repositoryID string, contract *work.WorkItemContractRequest,
+) work.CreateRootWorkItemResult {
+	t.Helper()
+	ctx := context.Background()
 
 	cmd := ports.Command{
 		ID: "cmd-root-" + repositoryID, IdempotencyKey: "idem-root-" + repositoryID, Actor: "actor-1",
@@ -93,6 +106,7 @@ func readyFixtureSQLite(t *testing.T, uow ports.UnitOfWork, ids idsource.Source,
 			RepositoryID: repositoryID, Access: string(workdomain.RepositoryWrite),
 			PathScopes: []string{"**"}, Reason: "root task",
 		}},
+		Contract: contract,
 	})
 	if err != nil {
 		t.Fatalf("CreateRootWorkItem: %v", err)

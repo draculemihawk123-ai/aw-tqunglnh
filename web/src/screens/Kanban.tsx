@@ -185,6 +185,12 @@ export function KanbanScreen({ project, onOpenTask, isOffline = false }: Props) 
                           </div>
                         )}
 
+                        {(card.runCount ?? 0) > 0 && (
+                          <div className="mt-2 text-[12px] text-[#475569]" data-testid={`run-count-${card.workItemId}`}>
+                            {card.runCount} {card.runCount === 1 ? 'run' : 'runs'}
+                          </div>
+                        )}
+
                         <div className="flex items-center justify-between mt-2">
                           <CopyableId value={card.workItemId} />
                           {card.status === 'BACKLOG' && (

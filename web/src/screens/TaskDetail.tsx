@@ -21,7 +21,8 @@ import {
 } from '../api/generated';
 import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generated';
 import type { WorkItemContract } from '../api/work';
-import type { KanbanCard, WorkItemProjectedDetailResponse } from '../api/kanban';
+import type { KanbanCard, WorkItemProjectedDetailResponse, WorkItemRun } from '../api/kanban';
+import { isWaivableBlockerType } from '../api/diagnostics';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
 import type { ApprovalRequestView, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView } from '../api/rundetail';
 import { getSessionToken, withSessionToken } from '../api/session';
@@ -66,13 +67,15 @@ interface TaskHeaderProps {
   workItem?: GetWorkItemResponse;
   family?: GetTaskFamilyResponse;
   card?: KanbanCard;
+  /** The WorkItem's authoritative Run history, oldest first (V9-06, ADR-033). */
+  runs?: WorkItemRun[];
   runDiagnostics?: RunDiagnosticsResponse;
   onActionSettled: () => void;
 }
 
 function TaskHeader({
   projectId, projectName, workItemId, activeTab, onTabChange, isOffline,
-  workItem, family, card, runDiagnostics, onActionSettled,
+  workItem, family, card, runs, runDiagnostics, onActionSettled,
 }: TaskHeaderProps) {
   const [cancelRunDialog, setCancelRunDialog] = useState(false);
   const [cancelWiDialog, setCancelWiDialog] = useState(false);
@@ -169,7 +172,16 @@ function TaskHeader({
     onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
   });
 
-  const canStartRun = !activeRunId && workItem?.status === 'READY' && !!workItem?.workflowVersionId;
+  // A FAILED run stays on the card (activeRunId) while its RUN_FAILED blocker is
+  // open, so the operator can open its diagnostics and resolve it; it is not a
+  // live run. The authoritative READY status of the WorkItem is what gates
+  // "Start Run" — after the blocker is resolved the same WorkItem runs again with
+  // its pinned workflow version (V9-06, ADR-033).
+  const hasLiveRun = !!activeRunId && card?.activeRunStatus !== 'FAILED';
+  const canStartRun = !hasLiveRun && workItem?.status === 'READY' && !!workItem?.workflowVersionId;
+  // The number of Runs this WorkItem has had: the authoritative list when the
+  // detail response carries it, else the projected count.
+  const runCount = runs?.length ?? card?.runCount ?? 0;
   const runValidActions = runDiagnostics?.validActions ?? [];
   const canCancelRun = !!activeRunId && runValidActions.some(a => a.operationId === 'cancelRun');
   const canCancelWorkItem = activeRunId
@@ -226,6 +238,14 @@ function TaskHeader({
               <div className="h-4 w-px bg-[#CDD5DF]" aria-hidden />
               <span className="text-[12px] text-[#475569]">
                 workflow: <span className="font-mono font-medium text-[#172033]">{workItem.workflowVersionId}</span>
+              </span>
+            </>
+          )}
+          {runCount > 0 && (
+            <>
+              <div className="h-4 w-px bg-[#CDD5DF]" aria-hidden />
+              <span className="text-[12px] text-[#475569]" data-testid="run-count">
+                {runCount} {runCount === 1 ? 'run' : 'runs'}
               </span>
             </>
           )}
@@ -364,7 +384,16 @@ function TaskHeader({
           </dl>
           <div className="space-y-3">
             <Select label="Mode" required value={resolveMode} onChange={v => setResolveMode(v as 'RESOLVED' | 'WAIVED')}
-              options={[{ value: 'RESOLVED', label: 'RESOLVED' }, { value: 'WAIVED', label: 'WAIVED' }]} />
+              options={isWaivableBlockerType(resolvingBlocker.type)
+                ? [{ value: 'RESOLVED', label: 'RESOLVED' }, { value: 'WAIVED', label: 'WAIVED' }]
+                : [{ value: 'RESOLVED', label: 'RESOLVED' }]} />
+            {resolvingBlocker.type === 'RUN_FAILED' && (
+              <p className="text-[12px] text-[#475569]">
+                Resolving returns the WorkItem to READY so the next Run can start on it with the same pinned workflow version.
+                Whatever the failed Run left in the worktree stays as it is — undo it first if the next Run should not see it.
+                A failed Run cannot be waived; to give up on the work, cancel the WorkItem instead.
+              </p>
+            )}
             <TextField label="Reason" required value={resolveReason} onChange={setResolveReason} placeholder="Why this blocker is being closed" />
             {resolveMode === 'WAIVED' && (
               <TextField label="Policy grant reference" required value={policyGrantRef} onChange={setPolicyGrantRef} placeholder="Required when waiving" />
@@ -380,7 +409,7 @@ function TaskHeader({
 
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab({ workItem, runDiagnostics }: { workItem?: GetWorkItemResponse; runDiagnostics?: RunDiagnosticsResponse }) {
+function OverviewTab({ workItem, runDiagnostics, runs }: { workItem?: GetWorkItemResponse; runDiagnostics?: RunDiagnosticsResponse; runs?: WorkItemRun[] }) {
   const contract = (workItem?.contract ?? null) as WorkItemContract | null;
 
   return (
@@ -441,6 +470,26 @@ function OverviewTab({ workItem, runDiagnostics }: { workItem?: GetWorkItemRespo
                 <span className="text-[#92400E]">{runDiagnostics.blockers.filter(b => b.state === 'OPEN').length} open blocker(s)</span>
               )}
             </div>
+          )}
+        </div>
+
+        {/* V9-06 / ADR-033: one WorkItem, one history — every Run it has had, oldest first. */}
+        <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow p-5">
+          <h2 className="text-sm font-semibold text-[#172033] mb-3">Runs{runs && runs.length > 0 ? ` (${runs.length})` : ''}</h2>
+          {!runs || runs.length === 0 ? (
+            <p className="text-[13px] text-[#475569]">This WorkItem has not been run yet.</p>
+          ) : (
+            <ol className="space-y-2" aria-label="Runs of this WorkItem">
+              {runs.map(run => (
+                <li key={run.runId} className="flex items-center gap-3 flex-wrap text-[13px]">
+                  <span className="text-[#475569] w-14">Run {run.runNumber}</span>
+                  <StatusBadge state={run.state} entity="workitem" />
+                  <CopyableId value={run.runId} />
+                  {run.startedAt && <span className="text-[12px] text-[#475569]">started {new Date(run.startedAt).toLocaleString()}</span>}
+                  {run.finishedAt && <span className="text-[12px] text-[#475569]">finished {new Date(run.finishedAt).toLocaleString()}</span>}
+                </li>
+              ))}
+            </ol>
           )}
         </div>
       </div>
@@ -2156,11 +2205,11 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       <TaskHeader
         projectId={projectId} projectName={projectName} workItemId={workItemId}
         activeTab={activeTab} onTabChange={onTabChange} isOffline={isOffline}
-        workItem={workItemQuery.data} family={familyQuery.data} card={cardQuery.data?.card}
+        workItem={workItemQuery.data} family={familyQuery.data} card={cardQuery.data?.card} runs={cardQuery.data?.runs}
         runDiagnostics={runDiagnosticsQuery.data} onActionSettled={onActionSettled}
       />
       <div id="workitem-tab-panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} />}
+      {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} />}
       {activeTab === 'task-graph'      && (
         <GraphTimelineTab projectId={projectId} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled} />
       )}
