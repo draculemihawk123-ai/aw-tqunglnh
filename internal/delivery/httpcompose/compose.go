@@ -41,6 +41,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
+	appdoctor "github.com/taQuangLing/agent-workflow/internal/app/doctor"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
@@ -111,6 +112,10 @@ type Dependencies struct {
 	// AppConfig is this process' own resolved, real internal/app/config.Config
 	// — GET /doctor's own CheckAppConfig reads it directly.
 	AppConfig config.Config
+	// ProviderProbe (V9-05, gap G5) is how GET /doctor runs a configured
+	// provider executable's version probe in the environment
+	// AppConfig.EnvAllowlist names. Optional; nil skips that one check.
+	ProviderProbe appdoctor.ProviderProbe
 	// Store is the real ports.QueryStore GET /doctor's own CheckDatabase
 	// pings — wraps the SAME database handle UnitOfWork already uses,
 	// never a second connection.
@@ -263,7 +268,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// V6-10A: GET /doctor. Store/UnitOfWork/Isolation/Config are the SAME
 	// real instances every other route registration in this process uses.
 	httpdoctor.RegisterRoutes(routes, httpdoctor.Dependencies{
-		Config: deps.AppConfig, Store: deps.Store, UnitOfWork: deps.UnitOfWork, Isolation: deps.Isolation,
+		Config: deps.AppConfig, Store: deps.Store, UnitOfWork: deps.UnitOfWork, Isolation: deps.Isolation, ProviderProbe: deps.ProviderProbe,
 	})
 	// V6-10: projected Kanban card list and WorkItem detail routes. Reuses
 	// the SAME process-lifetime cursor httpmessage/httprundetail already

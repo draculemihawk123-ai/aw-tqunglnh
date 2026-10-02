@@ -7,11 +7,14 @@
 package providers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -23,6 +26,28 @@ type FakeCLIInvocation struct {
 	Argv             []string `json:"argv"`
 	Stdin            string   `json:"stdin"`
 	WorkingDirectory string   `json:"workingDirectory"`
+	// EnvironmentSeen (V9-05) is what the process saw of the variables named
+	// by AGENTKIT_HELPER_REPORT_ENV: for each one that was set, its name and
+	// the SHA-256 of its value ("sha256:<hex>") — never the value itself, so a
+	// capture file never holds what a test then scans the database for. A
+	// name that is not in the map was not set in the process' environment.
+	// Empty (and omitted) when AGENTKIT_HELPER_REPORT_ENV is not set.
+	EnvironmentSeen map[string]string `json:"environmentSeen,omitempty"`
+}
+
+// FakeCLIMissingEnvExitCode is the exit code RunFakeProviderCLI returns when a
+// variable named by AGENTKIT_HELPER_REQUIRE_ENV is not set in its environment.
+// Distinctive on purpose: no other path of the fake CLI uses it, so a test can
+// tell "the process lacked an inherited variable" from any other failure.
+const FakeCLIMissingEnvExitCode = 17
+
+// EnvironmentDigest is how the fake CLI reports a variable's value
+// (FakeCLIInvocation.EnvironmentSeen): the SHA-256 of the value, so a test
+// can confirm the process received exactly the value it set in the worker
+// without that value ever being written to a file.
+func EnvironmentDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // FakeCLIVersion is what RunFakeProviderCLI reports for a "--version"
@@ -59,6 +84,24 @@ func FakeCLIVersion(provider string) string {
 // version query the same way regardless of task state, and this fixture
 // must too.
 func RunFakeProviderCLI(provider string, arguments []string, mode string, capturePath string, stdin io.Reader, stdout io.Writer) int {
+	// AGENTKIT_HELPER_REQUIRE_ENV (V9-05, gap G5): a comma-separated list of
+	// variable NAMES this process cannot run without — like a real provider
+	// CLI that needs PATH to find its runtime or HOME for its configuration.
+	// If any is missing it exits FakeCLIMissingEnvExitCode, naming the
+	// variable on stderr (the name only). Checked before everything else,
+	// including "--version", because that is the point: the capability probe
+	// and the task run both depend on what the process inherited, so a test
+	// can show that a name left out of the allow-list makes the very same
+	// executable fail, and that putting it in makes it run. Opt-in: unset (the
+	// default) the fake CLI needs nothing and every existing scenario is
+	// untouched.
+	for _, name := range envNames(os.Getenv("AGENTKIT_HELPER_REQUIRE_ENV")) {
+		if _, ok := os.LookupEnv(name); !ok {
+			fmt.Fprintf(os.Stderr, "fake %s CLI: required environment variable %s is not set\n", provider, name)
+			return FakeCLIMissingEnvExitCode
+		}
+	}
+
 	if len(arguments) == 1 && arguments[0] == "--version" {
 		fmt.Fprintln(stdout, FakeCLIVersion(provider))
 		return 0
@@ -106,6 +149,17 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 	}
 	if capturePath != "" {
 		capture := FakeCLIInvocation{Provider: provider, Argv: arguments, Stdin: string(input), WorkingDirectory: workingDirectory}
+		// AGENTKIT_HELPER_REPORT_ENV (V9-05): record, for each listed
+		// variable name that is set, the SHA-256 of its value — see
+		// FakeCLIInvocation.EnvironmentSeen.
+		for _, name := range envNames(os.Getenv("AGENTKIT_HELPER_REPORT_ENV")) {
+			if value, ok := os.LookupEnv(name); ok {
+				if capture.EnvironmentSeen == nil {
+					capture.EnvironmentSeen = map[string]string{}
+				}
+				capture.EnvironmentSeen[name] = EnvironmentDigest(value)
+			}
+		}
 		captureContent, err := json.Marshal(capture)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -187,6 +241,19 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 		return 4
 	}
 	return 0
+}
+
+// envNames splits a comma-separated list of environment variable names (the
+// shape of AGENTKIT_HELPER_REQUIRE_ENV / AGENTKIT_HELPER_REPORT_ENV),
+// dropping blanks.
+func envNames(list string) []string {
+	var names []string
+	for _, name := range strings.Split(list, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
 }
 
 // OutcomeNotListed is the outcome "outcome-from-prompt" reports for the pick

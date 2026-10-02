@@ -24,6 +24,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
+	appdoctor "github.com/taQuangLing/agent-workflow/internal/app/doctor"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/logging"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -78,6 +79,13 @@ type testEnv struct {
 // through one real httpapi.Server.
 func newTestEnv(t *testing.T, cfg config.Config, isolation ports.IsolationEnforcementChecker, withSafeSettings bool) *testEnv {
 	t.Helper()
+	return newTestEnvWithProbe(t, cfg, isolation, withSafeSettings, nil)
+}
+
+// newTestEnvWithProbe is newTestEnv with the V9-05 ProviderProbe wired in (nil
+// leaves it out, which is what newTestEnv does).
+func newTestEnvWithProbe(t *testing.T, cfg config.Config, isolation ports.IsolationEnforcementChecker, withSafeSettings bool, probe appdoctor.ProviderProbe) *testEnv {
+	t.Helper()
 	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "doctor-http.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
@@ -87,7 +95,7 @@ func newTestEnv(t *testing.T, cfg config.Config, isolation ports.IsolationEnforc
 
 	reg := httpapi.NewRouteRegistry()
 	httpdoctor.RegisterRoutes(reg, httpdoctor.Dependencies{
-		Config: cfg, Store: sqlite.NewQueryStore(store), UnitOfWork: uow, Isolation: isolation,
+		Config: cfg, Store: sqlite.NewQueryStore(store), UnitOfWork: uow, Isolation: isolation, ProviderProbe: probe,
 	})
 	if withSafeSettings {
 		httpsafesettings.RegisterRoutes(reg, httpsafesettings.Dependencies{

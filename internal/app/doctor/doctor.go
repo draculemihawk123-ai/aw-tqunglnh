@@ -20,7 +20,13 @@
 // and removes itself to probe writability, and no check ever echoes a
 // raw OS/driver error string or environment dump into its output — only
 // the specific, deliberately-chosen Detail/Remediation text this package
-// writes.
+// writes. (V9-05's provider-environment check is the one that spawns a
+// process; it reports environment variable NAMES only, never a value.)
+//
+// A result that needs to be machine-readable states its code at the very
+// start of Detail ("PROVIDER_ENV_INSUFFICIENT: ..."): CheckResult is mirrored
+// by the CLI and HTTP wire shapes, which have no separate code field, and a
+// prefix survives both without changing either contract.
 package doctor
 
 import (
@@ -88,6 +94,16 @@ type Options struct {
 	// this task's own "corrupt persisted settings fail ... Doctor typed"
 	// Verify line.
 	UnitOfWork ports.UnitOfWork
+	// ProviderProbe (V9-05, gap G5) lets Run check that every configured
+	// provider executable can actually RUN in the environment an agent would
+	// get from the worker — see CheckProviderEnvironment. Optional, in the
+	// same opt-in spirit as UnitOfWork: a nil value skips that check (and a
+	// report is then exactly what it was before V9-05), because running it
+	// spawns the executable and only a composition root that holds the real
+	// provider adapters can do that (this package may not import them).
+	// Options.Config.EnvAllowlist is the variable-name list the probe is run
+	// with.
+	ProviderProbe ProviderProbe
 }
 
 // Run executes every applicable check and aggregates them into a Report.
@@ -113,6 +129,9 @@ func Run(ctx context.Context, opts Options) Report {
 	sort.Strings(providerNames)
 	for _, name := range providerNames {
 		checks = append(checks, CheckProviderExecutable(name, opts.Config.ProviderExecutables[name]))
+		if result, ok := CheckProviderEnvironment(ctx, name, opts.Config.ProviderExecutables[name], opts.Config.EnvAllowlist, opts.ProviderProbe); ok {
+			checks = append(checks, result)
+		}
 	}
 
 	return Report{Status: aggregate(checks), Checks: checks}

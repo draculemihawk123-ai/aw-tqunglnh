@@ -110,7 +110,10 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 			if strings.TrimSpace(provider.path) == "" {
 				continue
 			}
-			executor, err := newAgentExecutor(provider.key, provider.path)
+			// V9-05: the capability probe inherits --env-allowlist (the
+			// worker's list), so a CLI that needs HOME/PATH to print its
+			// version needs no wrapper here either.
+			executor, err := newAgentExecutor(provider.key, provider.path, splitCommaList(opts.EnvAllowlist))
 			if err != nil {
 				return fail(fmt.Errorf("construct %s agent executor: %w", provider.key, err))
 			}
@@ -138,7 +141,14 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 		if path := strings.TrimSpace(opts.CodexExecutable); path != "" {
 			appConfig.ProviderExecutables["codex"] = path
 		}
+		// V9-05: Doctor's provider-environment check runs the version probe
+		// with exactly these names, read from the config.
+		appConfig.EnvAllowlist = splitCommaList(opts.EnvAllowlist)
 		deps.Config = appConfig
+	}
+
+	if needs&clicompose.NeedProviderProbe != 0 {
+		deps.ProviderProbe = probeProviderExecutable
 	}
 
 	return deps, cleanup, nil

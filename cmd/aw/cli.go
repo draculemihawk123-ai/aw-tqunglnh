@@ -57,6 +57,9 @@ Global options (any resource command; env AW_DB, AW_ARTIFACT_ROOT, ...):
   --workspace-root <dir>      Git worktree storage root (workspace/source commands)
   --claude-executable <path>  register the Claude CLI as a live provider
   --codex-executable <path>   register the Codex CLI as a live provider
+  --env-allowlist <names>     comma-separated variable names a provider's version probe may inherit
+                              (give it the same list as 'aw worker --env-allowlist'; 'aw doctor' reports
+                              whether the provider can run in that environment)
 
 Machine-readable output: add --json (one JSON document on stdout; a failure is
 one typed error document). High-impact commands require --yes when stdin is not

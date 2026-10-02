@@ -48,13 +48,13 @@ import (
 )
 
 const (
-	defaultProjectionInterval  = 500 * time.Millisecond
-	defaultCompletionInterval  = time.Second
+	defaultProjectionInterval = 500 * time.Millisecond
+	defaultCompletionInterval = time.Second
 	// The two self-rescheduling CONTROL jobs must never be claimable again the
 	// instant they finish, or an idle worker re-runs them hundreds of times a
 	// second (each artifact sweep also appends a journal event).
-	defaultReaperInterval = runtime.DefaultRecoveryReaperInterval
-	defaultSweepInterval  = artifactsweep.DefaultInterval
+	defaultReaperInterval      = runtime.DefaultRecoveryReaperInterval
+	defaultSweepInterval       = artifactsweep.DefaultInterval
 	projectionBatchSize        = 200
 	projectionLeaseTTL         = 30 * time.Second
 	attachmentClaimSweepPeriod = time.Minute
@@ -123,7 +123,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	completionInterval := flags.Duration("completion-interval", defaultCompletionInterval, "how often the completion orchestrator looks for runs waiting in VERIFYING")
 	reaperInterval := flags.Duration("reaper-interval", defaultReaperInterval, "pause between two recovery-reaper passes (orphaned attempts, stranded cancellation intents)")
 	sweepInterval := flags.Duration("sweep-interval", defaultSweepInterval, "pause between two artifact retention sweeps")
-	envAllowlist := flags.String("env-allowlist", "", "comma-separated names of parent environment variables a spawned provider/command process may inherit (default: none)")
+	envAllowlist := flags.String("env-allowlist", "", "comma-separated names of parent environment variables a spawned provider/command process may inherit (default: none); an AGENT process inherits only the names an AgentProfile's envAllowlist also lists, and the provider's version probe inherits all of them")
 	localCommitWriteLeaseTTLFlag := flags.Duration("local-commit-write-lease-ttl", localCommitWriteLeaseTTL,
 		"how long a release-set local-commit write lease (internal/app/releasesetcommit) is held without renewal — bounds how long a crashed worker's own in-flight local commit blocks a fresh worker from reclaiming and retrying it; production has no reason to lower this below the default, it exists so an acceptance test can prove reclaim genuinely happens without waiting out the full production TTL")
 	projectionRebuildBatchSize := flags.Int("projection-rebuild-batch-size", 0,
@@ -286,7 +286,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	if err != nil {
 		return nil, fmt.Errorf("construct repository prober: %w", err)
 	}
-	agents, err := newWorkerAgentRegistry(ctx, opts.claudeExecutable, opts.codexExecutable)
+	agents, err := newWorkerAgentRegistry(ctx, opts.claudeExecutable, opts.codexExecutable, cfg.EnvAllowlist)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +328,16 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 // way `aw serve` does (see serve.go): a provider is registered only when the
 // operator names its executable, and zero executors is the documented-safe
 // empty registry.
-func newWorkerAgentRegistry(ctx context.Context, claudeExecutable, codexExecutable string) (*agentregistry.Registry, error) {
+//
+// probeEnvironment (V9-05, gap G5) is the worker's own --env-allowlist: the
+// startup capability probe agentregistry.New runs, and the drift check every
+// admission re-runs against these same executors, inherit exactly those
+// variable names. A provider CLI that needs HOME or PATH even to print its
+// version therefore no longer needs a wrapper script that hard-codes them —
+// the operator allows them once, here, for the probe and (through the
+// profile's envAllowlist) for the task. Names only; nil leaves the probe's
+// environment empty as before.
+func newWorkerAgentRegistry(ctx context.Context, claudeExecutable, codexExecutable string, probeEnvironment []string) (*agentregistry.Registry, error) {
 	var executors []ports.AgentExecutor
 	for _, entry := range []struct{ provider, executable string }{
 		{string(ports.ProviderClaude), claudeExecutable},
@@ -337,7 +346,7 @@ func newWorkerAgentRegistry(ctx context.Context, claudeExecutable, codexExecutab
 		if strings.TrimSpace(entry.executable) == "" {
 			continue
 		}
-		executor, err := newAgentExecutor(entry.provider, entry.executable)
+		executor, err := newAgentExecutor(entry.provider, entry.executable, probeEnvironment)
 		if err != nil {
 			return nil, fmt.Errorf("construct %s agent executor: %w", entry.provider, err)
 		}
@@ -350,6 +359,27 @@ func newWorkerAgentRegistry(ctx context.Context, claudeExecutable, codexExecutab
 	return registry, nil
 }
 
+// newWorkerAgentNodeExecutor builds the worker's AGENT node executor.
+//
+// V9-05 (gap G5): it is given the same runtime execution config provider
+// NodeSchedulingHandler pins execution profiles with, as the CEILING for the
+// environment an agent process may inherit. The names an agent receives are
+// the AgentProfile's envAllowlist intersected with this worker's
+// --env-allowlist when the NodeRun is scheduled (pinned in its execution
+// profile), and the executor cuts that pinned list by this worker's list again
+// when it spawns, because a different worker — or this one after a restart with
+// other flags — may be the one that executes the attempt. The result is never
+// wider than what this worker's operator allowed, and an agent whose profile
+// declares nothing, or a worker started without --env-allowlist, gets an empty
+// environment exactly as before. A wrapper script that hard-codes HOME/PATH
+// is therefore no longer needed: allow them in --env-allowlist and in the
+// profile.
+func newWorkerAgentNodeExecutor(d workerDeps) *runtime.AgentNodeExecutor {
+	return runtime.NewAgentNodeExecutor(
+		d.uow, d.ids, d.artifacts, d.provider, d.store, d.agents, d.events, d.matcher, d.store, d.clk, d.store, d.store,
+		runtime.WithAgentEnvironmentCeiling(d.execConfig))
+}
+
 // buildWorkerRegistry registers one handler for every durable job kind.
 // worker_test.go asserts the registered set equals the set of every
 // `...JobKind` constant declared under internal/app, so a job kind added
@@ -357,8 +387,7 @@ func newWorkerAgentRegistry(ctx context.Context, claudeExecutable, codexExecutab
 // running.
 func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	router := &runtime.NodeExecutorRouter{
-		Agent: runtime.NewAgentNodeExecutor(
-			d.uow, d.ids, d.artifacts, d.provider, d.store, d.agents, d.events, d.matcher, d.store, d.clk, d.store, d.store),
+		Agent: newWorkerAgentNodeExecutor(d),
 		Command: runtime.NewCommandNodeExecutor(
 			d.uow, d.ids, d.artifacts, d.provider, d.store, d.supervisor, d.secrets, d.events, d.matcher, d.store, d.clk, d.store, d.store),
 		Gate: runtime.NewGateNodeExecutor(

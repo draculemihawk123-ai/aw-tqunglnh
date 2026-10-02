@@ -58,6 +58,7 @@ import (
 	"net/http"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
+	appdoctor "github.com/taQuangLing/agent-workflow/internal/app/doctor"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 )
@@ -92,6 +93,14 @@ type Dependencies struct {
 	// isolationCheck below, never a second, differently-configured
 	// instance.
 	Isolation ports.IsolationEnforcementChecker
+	// ProviderProbe (V9-05, gap G5) is the composition root's way of running
+	// a configured provider executable's version probe in the environment
+	// Config.EnvAllowlist names (appdoctor.Options.ProviderProbe). Optional:
+	// nil skips the provider-environment check, and the response is then what
+	// it was before V9-05. The probe spawns the executable for its bounded
+	// `--version` on each request that reaches it, like the executable
+	// fingerprint check already reads the file.
+	ProviderProbe appdoctor.ProviderProbe
 }
 
 // RegisterRoutes registers this package's own one route onto routes — a

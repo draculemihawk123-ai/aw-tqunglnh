@@ -383,6 +383,58 @@ type AgentExecutor interface {
 	Cancel(context.Context, ExecutionAttemptID) error
 }
 
+// CapabilityProbeReason says, in a closed set, why an AgentExecutor's
+// Capabilities probe (a short `--version`-style spawn of the configured
+// provider executable) failed.
+type CapabilityProbeReason string
+
+const (
+	// CapabilityProbeStartFailed: the executable could not be started at all
+	// (not found, not executable, refused by the operating system).
+	CapabilityProbeStartFailed CapabilityProbeReason = "START_FAILED"
+	// CapabilityProbeNonZeroExit: the executable started and exited with a
+	// non-zero code (CapabilityProbeError.ExitCode).
+	CapabilityProbeNonZeroExit CapabilityProbeReason = "NON_ZERO_EXIT"
+	// CapabilityProbeTimedOut: the bounded probe timeout elapsed.
+	CapabilityProbeTimedOut CapabilityProbeReason = "TIMED_OUT"
+	// CapabilityProbeCancelled: the probe's context was cancelled.
+	CapabilityProbeCancelled CapabilityProbeReason = "CANCELLED"
+	// CapabilityProbeEmptyOutput: the executable exited zero but printed no
+	// version, which is not evidence of a working CLI.
+	CapabilityProbeEmptyOutput CapabilityProbeReason = "EMPTY_OUTPUT"
+)
+
+// CapabilityProbeError is the typed failure of AgentExecutor.Capabilities
+// when its live probe of the provider executable fails (V9-05, gap G5). The
+// adapters wrap it with their own context, so a caller finds it with
+// errors.As and reads Reason (and ExitCode for CapabilityProbeNonZeroExit)
+// instead of matching error text.
+//
+// It exists so that `aw doctor` can report, with a stable machine-readable
+// code, that a provider executable cannot run in the environment an agent
+// would be given by its worker — without ever printing a raw operating-system
+// error string or an environment dump. It therefore carries no environment
+// information of its own: Err is the underlying cause kept for logs and
+// errors.Is (it may name the executable path, never a variable value), and
+// a caller that renders a diagnostic to an operator renders Reason, not Err.
+type CapabilityProbeError struct {
+	Reason CapabilityProbeReason
+	// ExitCode is the process exit code; meaningful only for
+	// CapabilityProbeNonZeroExit.
+	ExitCode int
+	// Err is the underlying cause. May be nil.
+	Err error
+}
+
+func (e *CapabilityProbeError) Error() string {
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return "agent capability probe failed: " + string(e.Reason)
+}
+
+func (e *CapabilityProbeError) Unwrap() error { return e.Err }
+
 type ProcessID string
 
 // ProcessSpec is intentionally argv-based. It has no command-string or shell

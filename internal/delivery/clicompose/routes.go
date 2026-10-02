@@ -77,9 +77,9 @@ func healthRoutes() []Route {
 
 func doctorRoutes() []Route {
 	return []Route{
-		route(NeedUoW|NeedStore|NeedIsolation|NeedConfig, func(ctx context.Context, d *Deps, a []string, s IO) error {
+		route(NeedUoW|NeedStore|NeedIsolation|NeedConfig|NeedProviderProbe, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return doctor.RunDoctor(ctx, doctor.Dependencies{
-				Config: d.Config, Store: d.Store, UnitOfWork: d.UoW, Isolation: d.Isolation,
+				Config: d.Config, Store: d.Store, UnitOfWork: d.UoW, Isolation: d.Isolation, ProviderProbe: d.ProviderProbe,
 			}, a, s.Stdout)
 		}, "doctor"),
 	}
