@@ -57,6 +57,17 @@ Back up your `--artifact-root` directory too (see [08-backup-and-restore.md](08-
 
 Restarting after an upgrade is a no-op: a second open applies nothing and changes nothing.
 
+**Upgrading to the build that adds the `RUN_FAILED` blocker (V9-06)** applies one migration (it rebuilds the
+`blockers` table to allow the new type; existing rows are copied unchanged). Two things to know:
+
+- A WorkItem whose run **already** ended `FAILED` before the upgrade is still `ACTIVE` — no blocker is opened
+  retroactively. Cancel it as before (`aw work-item cancel`) and create a new WorkItem, or leave it; only runs that
+  fail after the upgrade open a `RUN_FAILED` blocker and can be rerun on the same WorkItem (see
+  [09-troubleshooting.md](09-troubleshooting.md)).
+- The board cards of WorkItems that ran before the upgrade show no run count (`runCount` is counted from the
+  journal as it is projected). Run `aw projection rebuild --project-id <id> --projection-name workitem` once per project to build a fresh projection generation from the whole
+  journal; `aw work-item detail` lists the exact runs (`runs`) regardless.
+
 ## Rollback
 
 **A binary older than your database refuses to open it.** If a newer release already migrated the database,

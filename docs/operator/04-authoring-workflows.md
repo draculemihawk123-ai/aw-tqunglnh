@@ -172,6 +172,12 @@ contract captures, bounded by `maxOutputBytes`), so set `captureStderr` on a che
 able to read. A check whose **latest** activation failed does not satisfy a completion policy (`FAILED` is not a
 passing verdict), so `fail → fix → pass` completes and a run that ends on a failed check does not.
 
+A run can still end `FAILED` — a check without a `failureOutcome`, a technical error, an exhausted retry budget. The
+WorkItem is then `BLOCKED` by a `RUN_FAILED` blocker rather than stuck `ACTIVE`: after you resolve it
+(`aw blocker resolve --mode RESOLVED`, never `WAIVED`) the **same** WorkItem runs again with the same pinned workflow
+version, and only the new run's evidence counts toward completion — see
+[09-troubleshooting.md](09-troubleshooting.md#a-run-ended-failed-the-workitem-is-blocked-by-a-run_failed-blocker-v9-06-adr-033).
+
 When the maker runs again through that edge, its context snapshot carries the evidence of the failing attempt and its
 prompt gets a `checkFailures` section: `what` failed, `why` (the tail of stderr, or stdout if stderr was empty, for a
 command; the criteria that did not pass for a gate — bounded to 4 KiB) and `fix`. Only the latest failure is shown.

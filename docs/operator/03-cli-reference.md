@@ -117,8 +117,8 @@ UI you can script. Most are `show`/`list`; the ones whose name or arguments are 
 
 | Command | Reads |
 |---|---|
-| `aw work-item kanban --project-id <p> [--status <S>]... [--family-id <f>]` | The board: **projected** cards (status, blocker count, active run, repository badges) plus `freshness`. A `STALE` board is a real answer, not an error. `--status` repeats. |
-| `aw work-item detail --project-id <p> <workItemId>` | One card (projected, possibly stale) next to its **freshly recomputed** readiness. Act on `readiness`, never on `card`. |
+| `aw work-item kanban --project-id <p> [--status <S>]... [--family-id <f>]` | The board: **projected** cards (status, blocker count, active run, run count, repository badges) plus `freshness`. A `STALE` board is a real answer, not an error. `--status` repeats. |
+| `aw work-item detail --project-id <p> <workItemId>` | One card (projected, possibly stale) next to its **freshly recomputed** readiness and the **authoritative** `runs` list — every run the work item has had, oldest first. Act on `readiness`, never on `card`. |
 | `aw work-item list` / `aw work-item show` | The **authoritative** list / detail, straight from the work-item rows. |
 | `aw work-item children --project-id <p> <workItemId>` | The work item's direct children (not grandchildren). |
 | `aw task-family show --project-id <p> <familyId>` | A task family's status and `scopeVersion`. |
@@ -133,6 +133,27 @@ UI you can script. Most are `show`/`list`; the ones whose name or arguments are 
 
 `work-item kanban` reads the whole board in one transaction and does not paginate (the HTTP route does, with a
 signed cursor that would mean nothing across CLI processes); narrow it with `--status` / `--family-id`.
+
+## Resolving a blocker — `aw blocker resolve`
+
+```bash
+aw blocker resolve --mode RESOLVED --reason "reviewed the failed run" <blockerId>
+aw blocker resolve --mode WAIVED --reason "accepted" --policy-grant-ref <ref> <blockerId>   # only where the table allows it
+```
+
+`--mode` has no default. The command is idempotent by blocker id (an already resolved or waived blocker is a no-op).
+It refuses while the work item still has a run in progress or a `QUARANTINED` repository workspace. When the last open
+blocker of a work item is resolved the work item becomes `READY`, so `aw run start` works again.
+
+| Blocker type | `RESOLVED` | `WAIVED` |
+|---|---|---|
+| `RUN_FAILED` (a run ended `FAILED`; V9-06) | yes | **no** — `this blocker type can never be waived`; cancel the work item to give up |
+| `RUN_CANCELLED`, `COMPLETION_POLICY_FAILED` | yes | yes, with `--policy-grant-ref` |
+| the four admission reasons (`ISOLATION_ENFORCEMENT_UNAVAILABLE`, `ADAPTER_BUILD_DRIFT`, `CAPABILITY_REQUIREMENT_UNSATISFIED`, `WRITE_CAPABILITY_OR_GRANT_MISSING`) | yes | no |
+| `SCOPE_EXPANSION_REQUIRED` | no — only its own approval flow (`aw scope-expansion`) clears it | no |
+
+The failure loop for `RUN_FAILED` — resolve, then `aw run start` again on the same work item — is in
+[09-troubleshooting.md](09-troubleshooting.md).
 
 ## Positional arguments come after flags
 
