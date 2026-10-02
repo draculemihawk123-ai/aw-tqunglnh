@@ -22,7 +22,7 @@ func handleDoctor(deps Dependencies) http.HandlerFunc {
 		ctx := r.Context()
 
 		report := appdoctor.Run(ctx, appdoctor.Options{
-			Config: deps.Config, Store: deps.Store, UnitOfWork: deps.UnitOfWork,
+			Config: deps.Config, Store: deps.Store, UnitOfWork: deps.UnitOfWork, ProviderProbe: deps.ProviderProbe,
 		})
 		checks := append([]appdoctor.CheckResult{}, report.Checks...)
 		checks = append(checks, isolationCheck(ctx, deps.Isolation))

@@ -309,6 +309,29 @@ missing, compare its selector with this input first. `aw context-snapshot show <
  "compatibility": {"os": ["linux"]}, "budget": {"maxTokens": 4096}}
 ```
 
+### `envAllowlist` — which environment variables the agent process asks for (V9-05)
+
+An optional list of variable **names** (never values) the agent's provider process asks to inherit from its
+worker. Without it the agent starts with an empty environment, as before:
+
+```json
+{"providerKey": "claude", "model": "your-model-name", "envAllowlist": ["HOME", "PATH"],
+ "contextPolicyRef": {"kind": "POLICY", "definitionId": "...", "versionId": "..."},
+ "compatibility": {"os": ["linux"]}, "budget": {"maxTokens": 4096}}
+```
+
+It is a **request, not a grant**: the agent inherits only the names that are in this list AND in the
+operator's `aw worker --env-allowlist`, matched exactly and case-sensitively (write `PATH`, not `Path`, on
+Windows too). A name the operator did not allow is silently not passed; the node's execution profile
+(`agentInheritedEnvironment`) shows what was. This is what replaces a wrapper script that hard-coded `HOME`/`PATH` around the provider
+CLI — see [05-providers-and-isolation.md](05-providers-and-isolation.md#env-allowlist) and
+[02-configuration.md](02-configuration.md).
+
+Publish rules: each entry must be non-empty, contain no `=` (a `NAME=value` pair would put a value into a
+definition), no NUL character and no whitespace, and appear once; the list is a set, so order does not matter
+(it is stored sorted) and changing it publishes a new version with a new hash. A profile that omits the field,
+or lists none, keeps the exact hash it had before the field existed.
+
 ## BLOCK, LAYER, ENGINEERING_PACK
 
 These compose already-published definitions into reusable authoring units (a Block groups nodes/policies a

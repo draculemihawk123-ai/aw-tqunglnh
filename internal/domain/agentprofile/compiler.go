@@ -12,13 +12,17 @@ import (
 // documentSetPaths marks every AgentProfileDocument field whose array
 // value is semantically a set (order never carries meaning) rather than
 // an ordered list, matching authoring.Canonicalize's own SetPaths
-// convention. toolRefs, compatibility.os, compatibility.toolchain and
-// requiredCapabilities are all sets by this package's own doc comments.
+// convention. toolRefs, compatibility.os, compatibility.toolchain,
+// requiredCapabilities and (V9-05) envAllowlist are all sets by this
+// package's own doc comments. Duplicates in a set are rejected by
+// ValidateDocument before this ever runs, so sorting is all the canonical
+// form has to do for them.
 var documentSetPaths = map[string]bool{
 	"toolRefs":                true,
 	"compatibility.os":        true,
 	"compatibility.toolchain": true,
 	"requiredCapabilities":    true,
+	"envAllowlist":            true,
 }
 
 // compiledAgentProfileSnapshot is the resolved runtime payload ADR-012's
@@ -39,6 +43,7 @@ var compiledSetPaths = map[string]bool{
 	"document.compatibility.os":        true,
 	"document.compatibility.toolchain": true,
 	"document.requiredCapabilities":    true,
+	"document.envAllowlist":            true,
 	"dependencies":                     true,
 }
 

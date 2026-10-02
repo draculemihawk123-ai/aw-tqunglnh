@@ -143,6 +143,28 @@ type ResolvedExecutionProfileV1 struct {
 	// when an already-resolved domain enum's closed set is exactly what
 	// this profile needs, with no narrowing required, it is reused as-is.
 	Role workflow.AgentRole `json:"role,omitempty"`
+	// AgentInheritedEnvironment (V9-05, gap G5) names — names only, never
+	// values — the parent-environment variables the AGENT process spawned
+	// for this NodeRun inherits from its worker: the exact, case-sensitive
+	// intersection of the pinned AgentProfileVersion's own envAllowlist and
+	// the EnvAllowlist of the RuntimeExecutionConfigSnapshotV1 whose hash
+	// RuntimeExecutionConfigHash pins (the operator's `aw worker
+	// --env-allowlist`, the ceiling a profile can never widen). It is
+	// computed once, when the NodeRun is scheduled (IntersectEnvironmentNames,
+	// schedule.go's resolveExecutionProfile), so it lands in
+	// ExecutionProfileHash and in the "<nodeRunId>-execution-profile-v1"
+	// DecisionArtifact — the record of what environment an agent was given
+	// that the run-level ExecutionManifest cannot hold (it is run-level and
+	// immutable; this is node-level, like Role and AdapterBuild).
+	//
+	// Sorted and deduplicated by NewResolvedExecutionProfileV1. Only
+	// meaningful for Executor.Kind == AGENT: COMMAND and MACHINE_GATE take
+	// the names their own Command definition declares and do not use this
+	// field, so it must be empty for them (enforced like the other AGENT-only
+	// fields). omitempty keeps the canonical JSON — and therefore the hash —
+	// of every profile whose set is empty byte-for-byte what it was before
+	// this field existed, which includes every NodeRun scheduled earlier.
+	AgentInheritedEnvironment []string `json:"agentInheritedEnvironment,omitempty"`
 	// AdapterBuild pins the exact provider build/protocol this execution
 	// must run — only ever meaningful for Executor.Kind == AGENT (the
 	// authoring schema's own AgentNodeConfig.AdapterBuildID is the only
@@ -236,6 +258,11 @@ func NewResolvedExecutionProfileV1(profile ResolvedExecutionProfileV1) (Resolved
 		if profile.Role != workflow.AgentRoleMaker && profile.Role != workflow.AgentRoleChecker {
 			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile: AGENT executor requires a valid Role (%q or %q), got %q", workflow.AgentRoleMaker, workflow.AgentRoleChecker, profile.Role)
 		}
+		for i, name := range profile.AgentInheritedEnvironment {
+			if !validEnvironmentName(name) {
+				return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile: AgentInheritedEnvironment[%d] is not a valid environment variable name (it must be non-empty and contain no \"=\", NUL or whitespace)", i)
+			}
+		}
 	case ExecutorKindCommand, ExecutorKindMachineGate:
 		if agentFieldsPopulated {
 			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile: %s executor must not populate ProviderKey/Model/ToolRefs/MaxTokens", profile.Executor.Kind)
@@ -243,11 +270,15 @@ func NewResolvedExecutionProfileV1(profile ResolvedExecutionProfileV1) (Resolved
 		if profile.Role != "" {
 			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile: %s executor must not populate Role", profile.Executor.Kind)
 		}
+		if len(profile.AgentInheritedEnvironment) > 0 {
+			return ResolvedExecutionProfileV1{}, "", fmt.Errorf("resolved execution profile: %s executor must not populate AgentInheritedEnvironment (V9-05: it is the AGENT process's environment; a Command takes the names its own definition declares)", profile.Executor.Kind)
+		}
 	}
 
 	normalized := profile
 	normalized.Policies = dedupeAndSortPolicies(profile.Policies)
 	normalized.ToolRefs = sortedUniqueStrings(profile.ToolRefs)
+	normalized.AgentInheritedEnvironment = sortedUniqueStrings(profile.AgentInheritedEnvironment)
 	normalized.AllowedCapabilities = sortedUniqueStrings(profile.AllowedCapabilities)
 	if profile.AdapterBuild != nil {
 		adapterBuild := *profile.AdapterBuild

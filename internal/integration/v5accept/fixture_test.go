@@ -90,6 +90,13 @@ type v5AcceptFixture struct {
 	artifacts  ports.ArtifactStore
 	supervisor ports.ProcessSupervisor
 	secrets    ports.SecretResolver
+
+	// runtimeConfig (V9-05) is the runtime execution config provider the
+	// scheduling handler resolves — the worker's --env-allowlist among other
+	// things. nil (every scenario but the V9-05 one) keeps the permissive
+	// fake's default snapshot, byte for byte what registerHandlersWithIsolation
+	// always wired.
+	runtimeConfig ports.RuntimeExecutionConfigProvider
 }
 
 // newV5AcceptFixture builds one real git fixture repository, a real
@@ -434,7 +441,11 @@ func (f *v5AcceptFixture) registerHandlersWithIsolation(executor ports.NodeExecu
 	handlerIDs := idsource.NewSequential(idPrefix)
 	registry := workerpool.NewRegistry()
 	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(f.uow, handlerIDs))
-	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandler(f.uow, handlerIDs, fake.NewRuntimeExecutionConfigProvider()))
+	var runtimeConfig ports.RuntimeExecutionConfigProvider = fake.NewRuntimeExecutionConfigProvider()
+	if f.runtimeConfig != nil {
+		runtimeConfig = f.runtimeConfig
+	}
+	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandler(f.uow, handlerIDs, runtimeConfig))
 	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(f.uow, handlerIDs, executor, clock.System{}, isolation, agents, f.store))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(f.uow, handlerIDs))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(f.uow, handlerIDs))

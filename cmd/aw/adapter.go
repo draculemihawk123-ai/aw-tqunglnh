@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
@@ -20,13 +21,39 @@ import (
 // construction pattern claude.New/codex.New already establish. `aw worker`
 // and the one-shot resource router both build their live provider registry
 // from it, so a provider is constructed in exactly one place.
-func newAgentExecutor(providerKey, executablePath string) (ports.AgentExecutor, error) {
+//
+// probeEnvironment (V9-05, gap G5) is the list of parent-environment variable
+// NAMES the executable's capability probe — the `--version` spawn that
+// agentregistry.New and every admission's drift check run — inherits: the
+// process' own `--env-allowlist`. nil (what every caller passed before V9-05)
+// keeps the probe's environment empty. It never affects what a task run
+// inherits; that is formed per attempt from the pinned execution profile
+// (internal/app/runtime AgentNodeExecutor).
+func newAgentExecutor(providerKey, executablePath string, probeEnvironment []string) (ports.AgentExecutor, error) {
 	switch ports.ProviderKey(providerKey) {
 	case ports.ProviderClaude:
-		return claude.New(process.NewSupervisor(), claude.Config{Executable: executablePath})
+		return claude.New(process.NewSupervisor(), claude.Config{Executable: executablePath, VersionInheritedEnvironment: probeEnvironment})
 	case ports.ProviderCodex:
-		return codex.New(process.NewSupervisor(), codex.Config{Executable: executablePath})
+		return codex.New(process.NewSupervisor(), codex.Config{Executable: executablePath, VersionInheritedEnvironment: probeEnvironment})
 	default:
 		return nil, fmt.Errorf("adapter: unknown provider %q (want %q or %q)", providerKey, ports.ProviderClaude, ports.ProviderCodex)
 	}
+}
+
+// probeProviderExecutable is `aw doctor`'s ProviderProbe (V9-05, gap G5): it
+// runs the provider adapter's own capability probe — the same `--version`
+// spawn with the same bounded timeout the worker runs at startup and at every
+// admission — against executablePath, with exactly the variables named in
+// inherited as the probe's inherited environment, and reports only whether it
+// worked. A fresh adapter per call: nothing is registered, cached or pinned,
+// and nothing but names goes in; a failure is the adapter's typed
+// *ports.CapabilityProbeError, which the doctor turns into a stable code
+// without printing any variable value or raw operating-system error.
+func probeProviderExecutable(ctx context.Context, providerKey, executablePath string, inherited []string) error {
+	executor, err := newAgentExecutor(providerKey, executablePath, inherited)
+	if err != nil {
+		return err
+	}
+	_, err = executor.Capabilities(ctx)
+	return err
 }

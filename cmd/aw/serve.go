@@ -117,6 +117,16 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// rather than leaving Doctor permanently, un-actionably BLOCKED on every
 	// installation that never sets it.
 	workerID := flags.String("worker-id", "aw-serve", "identity string recorded in this process' own config.Config for GET /doctor's config-validity check; this process does not itself run the lease/reaper worker pool (run `aw worker` for that; it has its own --worker-id)")
+	// envAllowlist is V9-05's (gap G5) composition-root addition, the `aw
+	// serve` twin of `aw worker --env-allowlist`: the comma-separated NAMES of
+	// parent-environment variables a provider executable's version probe
+	// inherits. `aw serve` spawns no agent, but it runs that probe at startup
+	// (agentregistry.New), at every RetryBlockedActivation admission re-check
+	// and, through GET /doctor, to tell the operator whether the executable can
+	// run in the environment an agent would get from the worker — so it must be
+	// given the worker's list for all three to describe the same environment.
+	// Omitted (the default) the probe inherits nothing, as before V9-05.
+	envAllowlist := flags.String("env-allowlist", "", "comma-separated names of parent environment variables the provider executables' version probe may inherit; give it the same list as the worker's own --env-allowlist (default: none)")
 	// uiDist is V7-02A's own composition-root addition: the directory a
 	// `pnpm build` of `web/` produced (docs/architecture/02-architecture-
 	// decisions.md ADR-029). Deliberately optional and NOT go:embed'ed into
@@ -256,16 +266,17 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// for but is actually broken should fail fast at boot, not silently
 	// accept requests that will later fail confusingly" choice `aw adapter
 	// probe/register` already makes for the identical construction.
+	probeEnvironment := splitCommaList(*envAllowlist)
 	var agentExecutors []ports.AgentExecutor
 	if executable := strings.TrimSpace(*claudeExecutable); executable != "" {
-		claudeExecutor, err := claude.New(process.NewSupervisor(), claude.Config{Executable: executable})
+		claudeExecutor, err := claude.New(process.NewSupervisor(), claude.Config{Executable: executable, VersionInheritedEnvironment: probeEnvironment})
 		if err != nil {
 			return fmt.Errorf("construct claude agent executor: %w", err)
 		}
 		agentExecutors = append(agentExecutors, claudeExecutor)
 	}
 	if executable := strings.TrimSpace(*codexExecutable); executable != "" {
-		codexExecutor, err := codex.New(process.NewSupervisor(), codex.Config{Executable: executable})
+		codexExecutor, err := codex.New(process.NewSupervisor(), codex.Config{Executable: executable, VersionInheritedEnvironment: probeEnvironment})
 		if err != nil {
 			return fmt.Errorf("construct codex agent executor: %w", err)
 		}
@@ -310,6 +321,9 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	if executable := strings.TrimSpace(*codexExecutable); executable != "" {
 		appConfig.ProviderExecutables["codex"] = executable
 	}
+	// V9-05: GET /doctor's provider-environment check runs the version probe
+	// with exactly these names (appdoctor.Options reads them from the config).
+	appConfig.EnvAllowlist = probeEnvironment
 
 	routes := httpapi.NewRouteRegistry()
 	checker := httpapi.NewReadinessChecker()
@@ -416,6 +430,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		Isolation:                  isolationChecker,
 		Agents:                     agentRegistry,
 		AppConfig:                  appConfig,
+		ProviderProbe:              probeProviderExecutable,
 		Store:                      sqlite.NewQueryStore(store),
 		SafeSettingsEffective:      safeSettingsEffective,
 		Shutdown:                   ctx,

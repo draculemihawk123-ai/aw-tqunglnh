@@ -3,6 +3,7 @@ package agentprofile
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/authoring"
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
@@ -36,6 +37,7 @@ func ValidateDocument(doc AgentProfileDocument) authoring.Diagnostics {
 	diags = append(diags, validateContextPolicyRef(doc.ContextPolicyRef)...)
 	diags = append(diags, validateCompatibility(doc.Compatibility)...)
 	diags = append(diags, validateRequiredCapabilities(doc.RequiredCapabilities)...)
+	diags = append(diags, validateEnvAllowlist(doc.EnvAllowlist)...)
 
 	if doc.Budget.MaxTokens == 0 {
 		diags = append(diags, authoring.Diagnostic{
@@ -197,6 +199,77 @@ func validateRequiredCapabilities(capabilities []string) authoring.Diagnostics {
 			})
 		}
 		seen[trimmed] = true
+	}
+	return diags
+}
+
+// validateEnvAllowlist is V9-05's rule for AgentProfileDocument.EnvAllowlist
+// (gap G5): every entry must be a plausible environment variable NAME, and
+// the list a set. A name is rejected when it is empty, contains a NUL byte,
+// contains "=" or contains any whitespace — the first three are exactly what
+// the process supervisor refuses to put in a child environment
+// (internal/adapters/process buildEnvironment), the last one catches the
+// padding and stray spaces that would make a name silently never match the
+// operator's own `--env-allowlist` entry (matching is exact and
+// case-sensitive, and the worker flag trims its entries, so a name that
+// carries whitespace could never be equal to one). Names are NOT trimmed
+// here: " PATH" is an error, not PATH, because the published document must
+// say what it means. Duplicates (exact, case-sensitive) are rejected like
+// every other set-like list of this document. This document holds names
+// only: a NAME=value entry is refused precisely so a value can never be
+// written into a definition.
+//
+// A local rule rather than a call into the worker's own list validation:
+// internal/app/config.Validate only rejects blank entries, and a domain
+// package may not import app anyway.
+func validateEnvAllowlist(names []string) authoring.Diagnostics {
+	var diags authoring.Diagnostics
+	seen := make(map[string]bool, len(names))
+	for i, name := range names {
+		path := fmt.Sprintf("envAllowlist[%d]", i)
+		switch {
+		case name == "":
+			diags = append(diags, authoring.Diagnostic{
+				Path: path,
+				What: "environment variable name is empty",
+				Why:  "an empty name can never match a variable of the worker's environment",
+				Fix:  "remove the empty entry or name the variable it should have been",
+			})
+			continue
+		case strings.IndexByte(name, 0) >= 0:
+			diags = append(diags, authoring.Diagnostic{
+				Path: path,
+				What: "environment variable name contains a NUL character",
+				Why:  "an operating system cannot hold such a name, and the process supervisor refuses to spawn with one",
+				Fix:  "remove the NUL character",
+			})
+			continue
+		case strings.Contains(name, "="):
+			diags = append(diags, authoring.Diagnostic{
+				Path: path,
+				What: "environment variable name contains \"=\"",
+				Why:  "this list holds variable NAMES only, never NAME=value pairs; a value would be a secret that must never be written into a definition",
+				Fix:  "list the bare name; the value is read from the worker's own environment when the process is spawned",
+			})
+			continue
+		case strings.IndexFunc(name, unicode.IsSpace) >= 0:
+			diags = append(diags, authoring.Diagnostic{
+				Path: path,
+				What: fmt.Sprintf("environment variable name %q contains whitespace", name),
+				Why:  "names are matched exactly against the operator's --env-allowlist, so a name with whitespace can never match",
+				Fix:  "remove the whitespace so the entry is the exact variable name",
+			})
+			continue
+		}
+		if seen[name] {
+			diags = append(diags, authoring.Diagnostic{
+				Path: path,
+				What: fmt.Sprintf("duplicate environment variable name %q", name),
+				Why:  "listing the same name twice can never mean anything more than listing it once",
+				Fix:  "remove the duplicate entry",
+			})
+		}
+		seen[name] = true
 	}
 	return diags
 }

@@ -45,6 +45,14 @@ type Config struct {
 	// re-invoked test binary itself is recognized the same way execute's
 	// own Start/Resume spawns already are (helperRequest's own contract).
 	VersionEnvironment map[string]string
+	// VersionInheritedEnvironment (V9-05, gap G5) is the explicit allow-list
+	// of parent-environment variable NAMES the capability probe's process
+	// inherits — and only the probe's: Start/Resume take theirs from
+	// InheritedEnvironment above and, per attempt, from
+	// ports.AgentExecutionRequest.InheritedEnvironment. nil (the default)
+	// keeps the probe's environment empty, as it always was. See
+	// claude.Config.VersionInheritedEnvironment for who sets it and why.
+	VersionInheritedEnvironment []string
 }
 
 type Adapter struct {
@@ -72,6 +80,7 @@ func New(process ports.ProcessSupervisor, config Config) (*Adapter, error) {
 		config.VersionArgs = append([]string(nil), config.VersionArgs...)
 	}
 	config.VersionEnvironment = cloneEnvironment(config.VersionEnvironment)
+	config.VersionInheritedEnvironment = append([]string(nil), config.VersionInheritedEnvironment...)
 	return &Adapter{process: process, config: config}, nil
 }
 
@@ -83,7 +92,7 @@ func New(process ports.ProcessSupervisor, config Config) (*Adapter, error) {
 // or guessed TestedCLIVersion.
 func (a *Adapter) Capabilities(ctx context.Context) (ports.AgentCapabilities, error) {
 	argv := append(append([]string(nil), a.config.PrefixArgs...), a.config.VersionArgs...)
-	observedVersion, err := versionprobe.Probe(ctx, a.process, capabilityProbeProcessID(), a.config.Executable, argv, a.config.VersionEnvironment, defaultVersionProbeTimeout)
+	observedVersion, err := versionprobe.Probe(ctx, a.process, capabilityProbeProcessID(), a.config.Executable, argv, a.config.VersionEnvironment, a.config.VersionInheritedEnvironment, defaultVersionProbeTimeout)
 	if err != nil {
 		return ports.AgentCapabilities{}, fmt.Errorf("codex: capability probe: %w", err)
 	}

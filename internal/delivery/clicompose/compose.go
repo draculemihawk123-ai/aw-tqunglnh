@@ -41,6 +41,14 @@
 // flags of `aw serve`. They may appear anywhere in the argument list and are
 // stripped before the leaf parses its own flags; no leaf defines a flag of
 // the same name (TestGlobalOptionNamesNeverCollideWithLeafFlags).
+//
+// --env-allowlist (V9-05, gap G5; env fallback AW_ENV_ALLOWLIST) is the
+// sixth: the same comma-separated list of parent-environment variable NAMES
+// `aw worker --env-allowlist` takes. A one-shot invocation spawns no agent,
+// but it does run the provider executable's `--version` probe (`aw doctor`,
+// and the registry of the commands that re-check admission), and it must
+// run it in the environment an agent would at most get from the worker —
+// so give it the worker's list.
 package clicompose
 
 import (
@@ -55,6 +63,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
+	appdoctor "github.com/taQuangLing/agent-workflow/internal/app/doctor"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
@@ -88,6 +97,11 @@ const (
 	NeedAgents
 	// NeedConfig: a fully-built config.Config for `aw doctor`.
 	NeedConfig
+	// NeedProviderProbe (V9-05): the appdoctor.ProviderProbe `aw doctor`
+	// runs a configured provider executable's version probe with, in the
+	// environment --env-allowlist names. Optional for a leaf: a nil probe
+	// simply skips that one check.
+	NeedProviderProbe
 )
 
 // Deps is the union of every dependency any leaf's own Dependencies struct
@@ -102,6 +116,9 @@ type Deps struct {
 	Isolation       ports.IsolationEnforcementChecker
 	Agents          *agentregistry.Registry
 	Config          config.Config
+	// ProviderProbe is what `aw doctor` runs the provider executable's
+	// version probe through (V9-05, NeedProviderProbe); nil skips that check.
+	ProviderProbe appdoctor.ProviderProbe
 	// Matcher is the process-lifetime known-secrets redactor every
 	// redacting leaf reuses. A one-shot process mints no per-process
 	// session token (cmd/aw/serve.go's own sessionToken has no CLI
@@ -170,6 +187,10 @@ type Options struct {
 	WorkspaceRoot    string
 	ClaudeExecutable string
 	CodexExecutable  string
+	// EnvAllowlist (V9-05) is the raw, comma-separated --env-allowlist /
+	// AW_ENV_ALLOWLIST value, unparsed — a string so Options stays comparable;
+	// the composition root splits it.
+	EnvAllowlist string
 }
 
 // globalOptionNames is the closed list of composition options, each with
@@ -180,6 +201,7 @@ var globalOptionNames = []struct{ Flag, Env string }{
 	{"workspace-root", "AW_WORKSPACE_ROOT"},
 	{"claude-executable", "AW_CLAUDE_EXECUTABLE"},
 	{"codex-executable", "AW_CODEX_EXECUTABLE"},
+	{"env-allowlist", "AW_ENV_ALLOWLIST"},
 }
 
 // GlobalOptionFlags returns the global composition option flag names (no
@@ -226,6 +248,7 @@ func ParseGlobalOptions(args []string, getenv func(string) string) (Options, []s
 		WorkspaceRoot:    pick(values, "workspace-root", getenv, "AW_WORKSPACE_ROOT"),
 		ClaudeExecutable: pick(values, "claude-executable", getenv, "AW_CLAUDE_EXECUTABLE"),
 		CodexExecutable:  pick(values, "codex-executable", getenv, "AW_CODEX_EXECUTABLE"),
+		EnvAllowlist:     pick(values, "env-allowlist", getenv, "AW_ENV_ALLOWLIST"),
 	}
 	return opts, rest, nil
 }

@@ -78,6 +78,11 @@ func TestParseGlobalOptions(t *testing.T) {
 		{"single dash", []string{"-workspace-root", "ws", "doctor"}, Options{DB: "env.db", ArtifactRoot: "env-artifacts", WorkspaceRoot: "ws"}, []string{"doctor"}, false},
 		{"all five", []string{"--db", "a", "--artifact-root", "b", "--workspace-root", "c", "--claude-executable", "d", "--codex-executable", "e", "x"},
 			Options{DB: "a", ArtifactRoot: "b", WorkspaceRoot: "c", ClaudeExecutable: "d", CodexExecutable: "e"}, []string{"x"}, false},
+		// V9-05: the sixth option — the worker's variable-name list, raw.
+		{"env allowlist, space form", []string{"doctor", "--env-allowlist", "PATH,HOME"}, Options{DB: "env.db", ArtifactRoot: "env-artifacts", EnvAllowlist: "PATH,HOME"}, []string{"doctor"}, false},
+		{"env allowlist, equals form before the command", []string{"--env-allowlist=PATH", "doctor", "--json"}, Options{DB: "env.db", ArtifactRoot: "env-artifacts", EnvAllowlist: "PATH"}, []string{"doctor", "--json"}, false},
+		{"env allowlist, single dash", []string{"doctor", "-env-allowlist", "A,B"}, Options{DB: "env.db", ArtifactRoot: "env-artifacts", EnvAllowlist: "A,B"}, []string{"doctor"}, false},
+		{"env allowlist missing value", []string{"doctor", "--env-allowlist"}, Options{}, nil, true},
 		{"terminator keeps later tokens verbatim", []string{"run", "--", "--db", "not-an-option"}, Options{DB: "env.db", ArtifactRoot: "env-artifacts"}, []string{"run", "--", "--db", "not-an-option"}, false},
 		{"missing value", []string{"project", "list", "--db"}, Options{}, nil, true},
 		{"three dashes is not an option", []string{"---db", "x"}, Options{DB: "env.db", ArtifactRoot: "env-artifacts"}, []string{"---db", "x"}, false},
@@ -102,6 +107,27 @@ func TestParseGlobalOptions(t *testing.T) {
 				t.Errorf("rest = %q, want %q", rest, tc.wantRest)
 			}
 		})
+	}
+}
+
+// TestParseGlobalOptions_EnvAllowlistFallsBackToTheEnvironmentAndFlagBeatsIt
+// (V9-05): AW_ENV_ALLOWLIST is the environment fallback of --env-allowlist,
+// and the flag wins when both are given — the rule every other global option
+// follows.
+func TestParseGlobalOptions_EnvAllowlistFallsBackToTheEnvironmentAndFlagBeatsIt(t *testing.T) {
+	getenv := func(k string) string {
+		if k == "AW_ENV_ALLOWLIST" {
+			return "FROM_ENV"
+		}
+		return ""
+	}
+	got, _, err := ParseGlobalOptions([]string{"doctor"}, getenv)
+	if err != nil || got.EnvAllowlist != "FROM_ENV" {
+		t.Fatalf("ParseGlobalOptions(env only) = %+v, %v, want EnvAllowlist FROM_ENV", got, err)
+	}
+	got, _, err = ParseGlobalOptions([]string{"doctor", "--env-allowlist", "FROM_FLAG"}, getenv)
+	if err != nil || got.EnvAllowlist != "FROM_FLAG" {
+		t.Fatalf("ParseGlobalOptions(flag and env) = %+v, %v, want EnvAllowlist FROM_FLAG", got, err)
 	}
 }
 

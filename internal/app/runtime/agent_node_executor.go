@@ -89,6 +89,46 @@ type AgentNodeExecutor struct {
 	clk           clock.Clock
 	interruptions worker.InterruptionRecoveryStore
 	reconciler    worker.WorkspaceReconciler
+	// environmentCeiling (V9-05, gap G5) resolves the EXECUTING worker's own
+	// runtime execution config — its --env-allowlist — at spawn time. See
+	// WithAgentEnvironmentCeiling. nil means no ceiling is known.
+	environmentCeiling ports.RuntimeExecutionConfigProvider
+}
+
+// AgentNodeExecutorOption customizes NewAgentNodeExecutor. A variadic option
+// rather than another positional parameter so that every existing caller
+// (tests included) keeps compiling and keeps its behavior unchanged.
+type AgentNodeExecutorOption func(*AgentNodeExecutor)
+
+// WithAgentEnvironmentCeiling hands the executor the EXECUTING worker's own
+// ports.RuntimeExecutionConfigProvider (the one `aw worker` also gives
+// NodeSchedulingHandler) so that the environment an agent process inherits is
+// never wider than that worker's current --env-allowlist (V9-05, gap G5).
+//
+// Why execution needs its own ceiling. The names an agent inherits are pinned
+// per NodeRun, at scheduling time, as the intersection of the profile's
+// envAllowlist and the scheduling worker's allowlist
+// (ResolvedExecutionProfileV1.AgentInheritedEnvironment). Nothing between
+// scheduling and spawn checks that the worker which EXECUTES the attempt runs
+// with the same runtime config: admission (admission.go) verifies isolation,
+// adapter-build drift and granted capabilities but never compares
+// RuntimeExecutionConfigHash, and the pinned hash is not even decoded on the
+// execute path. Several workers with different --env-allowlist values may
+// share one database, and a worker may be restarted with other flags between
+// scheduling and a retry. So the executor intersects the pinned list with the
+// allowlist the worker in front of it holds NOW: when the config is unchanged
+// that changes nothing (the pinned list is already a subset), when it has
+// narrowed the agent receives less, and a worker can never be made to pass a
+// name its own operator did not allow. Retry and recovery attempts of the same
+// NodeRun start from the same pinned list and are cut by the same rule.
+//
+// Without this option the executor inherits nothing, which is exactly what AGENT
+// processes got before V9-05: the safe direction. If the provider cannot say what
+// the worker's list is, Execute fails closed (ErrRuntimeExecutionConfigUnavailable)
+// without spawning anything. Names only — values are read by the process
+// supervisor at spawn.
+func WithAgentEnvironmentCeiling(provider ports.RuntimeExecutionConfigProvider) AgentNodeExecutorOption {
+	return func(e *AgentNodeExecutor) { e.environmentCeiling = provider }
 }
 
 // NewAgentNodeExecutor returns a ready-to-register AgentNodeExecutor.
@@ -109,12 +149,17 @@ func NewAgentNodeExecutor(
 	writeLeases ports.WriteLeaseManager, agents *agentregistry.Registry, registry *eventschema.Registry,
 	matcher redact.Matcher, checkpoints agentevents.CheckpointStore, clk clock.Clock,
 	interruptions worker.InterruptionRecoveryStore, reconciler worker.WorkspaceReconciler,
+	opts ...AgentNodeExecutorOption,
 ) *AgentNodeExecutor {
-	return &AgentNodeExecutor{
+	executor := &AgentNodeExecutor{
 		uow: uow, ids: ids, store: store, workspaces: workspaces, writeLeases: writeLeases,
 		agents: agents, registry: registry, matcher: matcher, checkpoints: checkpoints, clk: clk,
 		interruptions: interruptions, reconciler: reconciler,
 	}
+	for _, opt := range opts {
+		opt(executor)
+	}
+	return executor
 }
 
 var _ ports.NodeExecutor = (*AgentNodeExecutor)(nil)
@@ -127,6 +172,16 @@ func (e *AgentNodeExecutor) Execute(ctx context.Context, req ports.NodeExecution
 	})
 	if err != nil {
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: assemble agent execution request: %w", err)
+	}
+
+	// V9-05 (gap G5): the request carries the PINNED environment names (the
+	// profile's envAllowlist ∩ the scheduling worker's allowlist). Cut them
+	// down to what THIS worker's allowlist allows right now before anything is
+	// spawned — see WithAgentEnvironmentCeiling for why execution cannot just
+	// trust the pin.
+	request.InheritedEnvironment, err = e.EffectiveInheritedEnvironment(ctx, request.InheritedEnvironment)
+	if err != nil {
+		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: resolve the agent process environment: %w", err)
 	}
 
 	resolved, err := e.resolveExecutionResources(ctx, req, request)
@@ -204,6 +259,30 @@ func (e *AgentNodeExecutor) Execute(ctx context.Context, req ports.NodeExecution
 		nodeResult.WriteLeaseGrants = resolved.writeLeaseGrants
 	}
 	return nodeResult, classifyErr
+}
+
+// EffectiveInheritedEnvironment returns pinned ∩ (the executing worker's own
+// --env-allowlist), sorted — never a name the worker's operator did not allow,
+// never a name the pinned profile did not list. An empty pinned list needs no
+// lookup and inherits nothing; so does an executor with no ceiling option.
+// Execute applies it to the request it assembles; it is exported so that a
+// composition root (and its tests) can ask a built executor exactly what it
+// would let a given pinned list through, without running a process.
+func (e *AgentNodeExecutor) EffectiveInheritedEnvironment(ctx context.Context, pinned []string) ([]string, error) {
+	if len(pinned) == 0 || e.environmentCeiling == nil {
+		return nil, nil
+	}
+	input, err := e.environmentCeiling.Resolve(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRuntimeExecutionConfigUnavailable, err)
+	}
+	// The same normalization (and validation) scheduling applies, so the
+	// ceiling compared against here is exactly what the worker would pin today.
+	snapshot, _, err := runtimedomain.NewRuntimeExecutionConfigSnapshotV1(input)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrRuntimeExecutionConfigUnavailable, err)
+	}
+	return runtimedomain.IntersectEnvironmentNames(pinned, snapshot.EnvAllowlist), nil
 }
 
 // classify maps one completed AgentExecutor.Start call into either a

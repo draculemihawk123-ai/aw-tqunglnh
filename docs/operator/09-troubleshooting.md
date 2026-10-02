@@ -27,6 +27,22 @@ checks:
 true` means a `aw settings update` changed the desired config since this process started — restart to apply
 it (see [02-configuration.md](02-configuration.md)).
 
+## `PROVIDER_ENV_INSUFFICIENT` in `aw doctor` / an agent that cannot start its CLI
+
+When a provider executable is configured (`--claude-executable` / `--codex-executable`), `aw doctor` runs the
+CLI's `--version` probe with exactly the variables in `--env-allowlist` and, if that fails, reports
+`provider_environment:<provider> [CAPABILITY] DEGRADED: PROVIDER_ENV_INSUFFICIENT: ...` with the reason (for
+example `it exited with code 1`) and the variable names it was run with. An agent process gets no environment
+except the names that BOTH the AgentProfile's `envAllowlist` and `aw worker --env-allowlist` contain, so the
+usual fix is to allow what the CLI needs — typically `PATH` and `HOME` (on Windows also `USERPROFILE` and
+`SystemRoot`) — in the worker's `--env-allowlist`, list the same names, spelled identically (matching is
+case-sensitive), in the profile's `envAllowlist` (publish a new profile version and a workflow version pinning
+it), and give `aw doctor` the same list (`--env-allowlist` or `AW_ENV_ALLOWLIST`) so it checks what the worker
+does. No wrapper script is needed. Details: [05-providers-and-isolation.md](05-providers-and-isolation.md#env-allowlist).
+If the doctor check is healthy yet an agent still cannot use a variable, compare the profile's list with the
+worker's: a name listed in only one of them is not passed (the node's `agentInheritedEnvironment` in its
+execution-profile decision artifact shows what was).
+
 ## `database schema version N is newer than this binary supports`
 
 ```

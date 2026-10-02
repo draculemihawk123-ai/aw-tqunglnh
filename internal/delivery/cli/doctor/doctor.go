@@ -67,6 +67,12 @@ type Dependencies struct {
 	// isolationCheck below, never a second, differently-configured
 	// instance.
 	Isolation ports.IsolationEnforcementChecker
+	// ProviderProbe (V9-05, gap G5) is the composition root's way of running
+	// a configured provider executable's version probe in the environment
+	// Config.EnvAllowlist names (appdoctor.Options.ProviderProbe). Optional:
+	// nil skips the provider-environment check, and the report is then what
+	// it was before V9-05.
+	ProviderProbe appdoctor.ProviderProbe
 }
 
 // CheckResult mirrors appdoctor.CheckResult's own wire shape — restated as
@@ -107,7 +113,9 @@ type Report struct {
 // that unexported HTTP-side composition is restated here rather than
 // imported.
 func BuildReport(ctx context.Context, deps Dependencies) Report {
-	report := appdoctor.Run(ctx, appdoctor.Options{Config: deps.Config, Store: deps.Store, UnitOfWork: deps.UnitOfWork})
+	report := appdoctor.Run(ctx, appdoctor.Options{
+		Config: deps.Config, Store: deps.Store, UnitOfWork: deps.UnitOfWork, ProviderProbe: deps.ProviderProbe,
+	})
 	checks := append([]appdoctor.CheckResult{}, report.Checks...)
 	checks = append(checks, isolationCheck(ctx, deps.Isolation))
 

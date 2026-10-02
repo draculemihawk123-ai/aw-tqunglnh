@@ -190,7 +190,12 @@ func ScheduleExecutableNodeRun(
 	if err != nil {
 		return ScheduleExecutableNodeRunResult{}, fmt.Errorf("%w: %v", ErrRuntimeExecutionConfigUnavailable, err)
 	}
-	_, runtimeExecutionConfigHash, err := runtimedomain.NewRuntimeExecutionConfigSnapshotV1(snapshotInput)
+	// The normalized snapshot is kept (V9-05, gap G5), not just its hash: its
+	// EnvAllowlist is the operator's ceiling resolveExecutionProfile cuts an
+	// AGENT profile's own envAllowlist down to — taken from the very snapshot
+	// whose hash is pinned in the profile, so the hash and the names that
+	// were derived from it can never describe two different configurations.
+	runtimeExecutionConfig, runtimeExecutionConfigHash, err := runtimedomain.NewRuntimeExecutionConfigSnapshotV1(snapshotInput)
 	if err != nil {
 		return ScheduleExecutableNodeRunResult{}, fmt.Errorf("%w: %v", ErrRuntimeExecutionConfigUnavailable, err)
 	}
@@ -230,7 +235,7 @@ func ScheduleExecutableNodeRun(
 			return fmt.Errorf("%w: node %s is type %s", ErrNodeNotExecutable, node.Key, node.Type)
 		}
 
-		profile, contextPolicyRef, err := resolveExecutionProfile(ctx, tx, node, runtimeExecutionConfigHash)
+		profile, contextPolicyRef, err := resolveExecutionProfile(ctx, tx, node, runtimeExecutionConfigHash, runtimeExecutionConfig.EnvAllowlist)
 		if err != nil {
 			return err
 		}
@@ -501,8 +506,23 @@ func ScheduleExecutableNodeRun(
 // (ScheduleExecutableNodeRun, V5-08B0) uses it once, in the same
 // transaction, to gather real context candidates — it is never persisted
 // on its own.
+//
+// envCeiling (V9-05, gap G5) is the EnvAllowlist of the normalized
+// RuntimeExecutionConfigSnapshotV1 whose hash is runtimeExecutionConfigHash —
+// the operator's `aw worker --env-allowlist` at scheduling time. For an AGENT
+// node the profile's AgentInheritedEnvironment becomes the exact,
+// case-sensitive intersection of the pinned AgentProfileVersion's own
+// envAllowlist and this ceiling (runtimedomain.IntersectEnvironmentNames), so
+// the names an agent process will be given are decided here, once, and land
+// in ExecutionProfileHash and the "<nodeRunId>-execution-profile-v1"
+// DecisionArtifact. A profile can never widen the ceiling, and an empty
+// profile list or an empty ceiling leaves the set empty — which hashes
+// exactly as a profile did before the field existed. COMMAND and
+// MACHINE_GATE ignore the ceiling here: they keep passing the environment
+// names their own Command definition declares (V9-05 changes nothing for
+// them).
 func resolveExecutionProfile(
-	ctx context.Context, tx ports.Tx, node workflow.Node, runtimeExecutionConfigHash string,
+	ctx context.Context, tx ports.Tx, node workflow.Node, runtimeExecutionConfigHash string, envCeiling []string,
 ) (runtimedomain.ResolvedExecutionProfileV1, definition.DependencyPin, error) {
 	profile := runtimedomain.ResolvedExecutionProfileV1{
 		SchemaVersion: 1, RuntimeExecutionConfigHash: runtimeExecutionConfigHash,
@@ -531,6 +551,9 @@ func resolveExecutionProfile(
 		profile.Model = agentDoc.Model
 		profile.ToolRefs = append([]string(nil), agentDoc.ToolRefs...)
 		profile.MaxTokens = agentDoc.Budget.MaxTokens
+		// V9-05: names only — the intersection of what this pinned profile
+		// asks for and what the operator's runtime config allows.
+		profile.AgentInheritedEnvironment = runtimedomain.IntersectEnvironmentNames(agentDoc.EnvAllowlist, envCeiling)
 		// Role (V5-12) is read only from this node's own pinned
 		// workflow.AgentNodeConfig — never inferred from agentDoc (the
 		// AgentProfile carries no Role of its own, by design), the node's
