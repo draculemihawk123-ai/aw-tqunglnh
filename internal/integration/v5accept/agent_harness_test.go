@@ -138,9 +138,16 @@ func (f *v5AcceptFixture) newClaudeAdapter(t *testing.T) *claude.Adapter {
 		// scenario can prove what the REAL spawned process was told.
 		// AGENTKIT_HELPER_OUTCOME_PICK (V9-03): steers the "outcome-from-prompt"
 		// mode, in which the process chooses its outcome from the prompt.
+		// AGENTKIT_HELPER_REPORT_ENV / AGENTKIT_HELPER_REQUIRE_ENV (V9-05):
+		// the fake CLI records which of the listed variables it was handed
+		// (as digests, never values) / refuses to run without them. These are
+		// the adapter's OWN test-harness configuration; the variables a test
+		// then proves reach (or do not reach) the process are never listed
+		// here — they arrive only through the pinned execution profile.
 		InheritedEnvironment: []string{
 			"AGENTKIT_HELPER_MODE", "AGENTKIT_HELPER_OUTCOME", "AGENTKIT_HELPER_OUTCOME_PICK", "AGENTKIT_HELPER_WRITE_PATH",
 			"AGENTKIT_HELPER_WRITE_IN_CWD", "AGENTKIT_HELPER_APPEND_PATH", "AGENTKIT_CAPTURE_PATH",
+			"AGENTKIT_HELPER_REPORT_ENV", "AGENTKIT_HELPER_REQUIRE_ENV",
 		},
 	})
 	if err != nil {
@@ -152,10 +159,11 @@ func (f *v5AcceptFixture) newClaudeAdapter(t *testing.T) *claude.Adapter {
 // newAgentExecutor wraps adapter in a real agentregistry.Registry (a real
 // Capabilities() probe — a real `fake-claude --version` spawn) and a real
 // runtime.AgentNodeExecutor.
-func (f *v5AcceptFixture) newAgentExecutor(registry *agentregistry.Registry) *runtime.AgentNodeExecutor {
+func (f *v5AcceptFixture) newAgentExecutor(registry *agentregistry.Registry, options ...runtime.AgentNodeExecutorOption) *runtime.AgentNodeExecutor {
 	return runtime.NewAgentNodeExecutor(
 		f.uow, f.ids, f.artifacts, f.provider, f.store, registry,
 		v5AcceptEventRegistry(), redact.NewMatcher(), f.store, clock.System{}, f.store, f.store,
+		options...,
 	)
 }
 
@@ -241,6 +249,18 @@ func v5AcceptContextPolicyDocument() policy.PolicyDocument {
 // claude.Adapter reports.
 func publishAgentProfileVersion(t *testing.T, uow ports.UnitOfWork, definitionID, versionID, contextPolicyDefID, contextPolicyVersionID string) {
 	t.Helper()
+	publishAgentProfileDocument(t, uow, definitionID, versionID, agentprofile.AgentProfileDocument{
+		ProviderKey: string(ports.ProviderClaude), Model: "fake-model", ToolRefs: []string{"read_file"},
+		ContextPolicyRef: definition.DependencyPin{Kind: definition.KindPolicy, DefinitionID: contextPolicyDefID, VersionID: contextPolicyVersionID},
+		Compatibility:    agentprofile.Compatibility{OS: []string{stdruntime.GOOS}},
+		Budget:           agentprofile.Budget{MaxTokens: 4096},
+	})
+}
+
+// publishAgentProfileDocument is publishAgentProfileVersion with the whole
+// document the caller's own (V9-05: a profile that declares an envAllowlist).
+func publishAgentProfileDocument(t *testing.T, uow ports.UnitOfWork, definitionID, versionID string, document agentprofile.AgentProfileDocument) {
+	t.Helper()
 	ctx := context.Background()
 	if _, err := definitions.CreateDefinition(ctx, uow, testCmd("v5a-def-"+definitionID, ports.InstallationScope(), "CreateDefinition"), definitions.CreateDefinitionRequest{
 		DefinitionID: definitionID, Kind: definition.KindAgentProfile, Scope: definition.GlobalScope(), Name: "agent profile " + definitionID,
@@ -256,12 +276,7 @@ func publishAgentProfileVersion(t *testing.T, uow ports.UnitOfWork, definitionID
 				}},
 				agentprofile.PublishRequest{
 					VersionID: agentprofile.AgentProfileVersionID(versionID), VersionNumber: 1, SchemaVersion: 1,
-					Document: agentprofile.AgentProfileDocument{
-						ProviderKey: string(ports.ProviderClaude), Model: "fake-model", ToolRefs: []string{"read_file"},
-						ContextPolicyRef: definition.DependencyPin{Kind: definition.KindPolicy, DefinitionID: contextPolicyDefID, VersionID: contextPolicyVersionID},
-						Compatibility:    agentprofile.Compatibility{OS: []string{stdruntime.GOOS}},
-						Budget:           agentprofile.Budget{MaxTokens: 4096},
-					},
+					Document:    document,
 					PublishedBy: "operator-1", PublishedAt: time.Now().UTC(),
 				},
 			)
