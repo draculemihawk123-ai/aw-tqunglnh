@@ -209,6 +209,19 @@ func AssembleAgentExecutionRequest(
 		// user: "Do not... read current profile values at dispatch time").
 		Timeout: time.Duration(gathered.timeoutSeconds) * time.Second,
 		Model:   gathered.model,
+		// V9-05 (gap G5): the environment NAMES pinned for this NodeRun — the
+		// intersection of the AgentProfileVersion's envAllowlist and the
+		// operator's --env-allowlist at scheduling time — read from the same
+		// pinned decision, never from the profile's or the worker's current
+		// configuration. This is the pinned maximum: AgentNodeExecutor.Execute
+		// narrows it by the executing worker's own allowlist before spawning,
+		// because nothing at admission or execution compares that worker's
+		// runtime config hash with the pinned one. Every attempt of the
+		// NodeRun, retries and recovery replacements included, reads the same
+		// decision and so starts from the same list. Values are not here: the
+		// process supervisor reads them from the worker's environment at spawn
+		// time.
+		InheritedEnvironment: gathered.inheritedEnvironment,
 	}, nil
 }
 
@@ -298,6 +311,10 @@ type assembledRequestInputs struct {
 	// which checkpoint it recovers from," not re-delivering context a
 	// second time through a different channel.
 	recoveryCheckpointID string
+
+	// inheritedEnvironment is the pinned execution profile's
+	// AgentInheritedEnvironment (V9-05): names only, a copy.
+	inheritedEnvironment []string
 
 	workItemID                 string
 	workItemTitle              string
@@ -473,6 +490,7 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		workItemID: string(workItem.ID), workItemTitle: workItem.Title, workItemBehavior: workItem.Behavior,
 		workItemVerificationSpec: workItem.VerificationSpec, workItemRiskLevel: string(workItem.RiskLevel), workItemAcceptanceCriteria: acceptance,
 		recoveryCheckpointID: recoveryCheckpointID,
+		inheritedEnvironment: append([]string(nil), profile.AgentInheritedEnvironment...),
 	}, nil
 }
 

@@ -15,7 +15,9 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports/fake"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/agentprofile"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
+	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	domainruntime "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -123,6 +125,10 @@ type bridgeFakeAgentExecutor struct {
 	// worktree". starts, if non-nil, counts Start calls (a spawn).
 	onStart func()
 	starts  *int
+	// onRequest (V9-05) receives a copy of every request Start is handed — what
+	// the provider adapter would really be told to spawn, so a test can read
+	// the InheritedEnvironment the executor decided on.
+	onRequest func(ports.AgentExecutionRequest)
 }
 
 func (f *bridgeFakeAgentExecutor) Capabilities(context.Context) (ports.AgentCapabilities, error) {
@@ -132,6 +138,9 @@ func (f *bridgeFakeAgentExecutor) Capabilities(context.Context) (ports.AgentCapa
 func (f *bridgeFakeAgentExecutor) Start(ctx context.Context, request ports.AgentExecutionRequest, sink ports.AgentEventSink) (ports.AgentExecutionResult, error) {
 	if f.starts != nil {
 		*f.starts++
+	}
+	if f.onRequest != nil {
+		f.onRequest(request)
 	}
 	if f.onStart != nil {
 		f.onStart()
@@ -242,6 +251,18 @@ type bridgeFixtureOptions struct {
 	// AgentExecutor — see bridgeFakeAgentExecutor.
 	onAgentStart func()
 	agentStarts  *int
+	// V9-05: profileDocument replaces the published AgentProfile document
+	// (nil keeps validAgentProfileDocument); scheduleConfig replaces the
+	// runtime execution config provider the NodeRun is SCHEDULED with (nil
+	// keeps the fake's default); onAgentRequest receives every request the
+	// provider adapter is handed; executorOptions are forwarded to
+	// NewAgentNodeExecutor (the EXECUTING worker's side, e.g.
+	// WithAgentEnvironmentCeiling).
+	profileDocument *agentprofile.AgentProfileDocument
+	scheduleConfig  ports.RuntimeExecutionConfigProvider
+	attemptPolicy   *policy.PolicyDocument
+	onAgentRequest  func(ports.AgentExecutionRequest)
+	executorOptions []runtime.AgentNodeExecutorOption
 }
 
 // bridgeFixture builds one fully-admitted, RUNNING ExecutionAttempt (reusing
@@ -256,7 +277,30 @@ func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (
 ) {
 	t.Helper()
 	ctx := context.Background()
-	u, ids, store, runID, nodeRunID, attemptID := assembleRequestFixtureWithRole(t, opts.role)
+	var u *fake.UnitOfWork
+	var store ports.ArtifactStore
+	var runID, nodeRunID, attemptID string
+	if opts.profileDocument == nil && opts.scheduleConfig == nil && opts.attemptPolicy == nil {
+		u, ids, store, runID, nodeRunID, attemptID = assembleRequestFixtureWithRole(t, opts.role)
+	} else {
+		profileDocument := validAgentProfileDocument()
+		if opts.profileDocument != nil {
+			profileDocument = *opts.profileDocument
+		}
+		var scheduleConfig ports.RuntimeExecutionConfigProvider = fake.NewRuntimeExecutionConfigProvider()
+		if opts.scheduleConfig != nil {
+			scheduleConfig = opts.scheduleConfig
+		}
+		role := opts.role
+		if role == "" {
+			role = workflow.AgentRoleMaker
+		}
+		attemptPolicy := attemptPolicyDocument(600)
+		if opts.attemptPolicy != nil {
+			attemptPolicy = *opts.attemptPolicy
+		}
+		u, ids, store, runID, nodeRunID, attemptID = assembleRequestFixtureWith(t, role, profileDocument, scheduleConfig, attemptPolicy)
+	}
 	markAttemptRunning(t, u, runID, nodeRunID, attemptID)
 
 	jobID := ports.JobID("job-" + attemptID)
@@ -276,6 +320,7 @@ func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (
 	agentevents.RegisterEventSchemas(registry)
 	agents, err := agentregistry.New(ctx, &bridgeFakeAgentExecutor{
 		result: opts.agentResult, err: opts.agentErr, events: opts.agentEvents, onStart: opts.onAgentStart, starts: opts.agentStarts,
+		onRequest: opts.onAgentRequest,
 	})
 	if err != nil {
 		t.Fatalf("agentregistry.New: %v", err)
@@ -291,7 +336,7 @@ func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (
 	executor = runtime.NewAgentNodeExecutor(
 		u, ids, store, workspaces, writeLeases,
 		agents, registry, redact.NewMatcher(), bridgeFakeCheckpointStore{}, clock.System{},
-		interruptions, reconciler,
+		interruptions, reconciler, opts.executorOptions...,
 	)
 	req = ports.NodeExecutionRequest{AttemptID: attemptID, NodeRunID: nodeRunID, RunID: runID, JobLease: lease}
 	return executor, req, u, ids, interruptions, reconciler, writeLeases

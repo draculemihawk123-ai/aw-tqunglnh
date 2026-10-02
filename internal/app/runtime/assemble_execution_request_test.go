@@ -13,6 +13,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	domainadapterbuild "github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
+	"github.com/taQuangLing/agent-workflow/internal/domain/agentprofile"
 	contextsnapshotpkg "github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	domainmessage "github.com/taQuangLing/agent-workflow/internal/domain/message"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
@@ -64,6 +65,19 @@ func assembleRequestFixture(t *testing.T) (uow *fake.UnitOfWork, ids idsource.So
 // many callers needing a new parameter.
 func assembleRequestFixtureWithRole(t *testing.T, role workflow.AgentRole) (uow *fake.UnitOfWork, ids idsource.Source, store ports.ArtifactStore, runID, nodeRunID, attemptID string) {
 	t.Helper()
+	return assembleRequestFixtureWith(t, role, validAgentProfileDocument(), fake.NewRuntimeExecutionConfigProvider(), attemptPolicyDocument(600))
+}
+
+// assembleRequestFixtureWith is the fixture's own general form (V9-05): the
+// AgentProfile document that gets published, the runtime execution config
+// provider the NodeRun is scheduled with and the pinned ATTEMPT policy are
+// parameters, so a test can give the profile an envAllowlist, the scheduling
+// worker an --env-allowlist and the node a retryable attempt policy.
+func assembleRequestFixtureWith(
+	t *testing.T, role workflow.AgentRole, profileDocument agentprofile.AgentProfileDocument,
+	configProvider ports.RuntimeExecutionConfigProvider, attemptPolicy policy.PolicyDocument,
+) (uow *fake.UnitOfWork, ids idsource.Source, store ports.ArtifactStore, runID, nodeRunID, attemptID string) {
+	t.Helper()
 	ctx := context.Background()
 	build := assembleFixtureBuild(t)
 	buildID := build.ID()
@@ -100,11 +114,11 @@ func assembleRequestFixtureWithRole(t *testing.T, role workflow.AgentRole) (uow 
 			ResourceRefs: []policy.ResourceRef{{OwnerVersionID: "skill-v1", ResourceKey: "golden-rule", ContentHash: hash}},
 		},
 	})
-	publishAgentProfileVersionOnly(t, u, "agent-profile-def", "agent-profile-v1", validAgentProfileDocument())
-	publishPolicyVersion(t, u, "attempt-policy-def", "attempt-policy-v1", attemptPolicyDocument(600))
+	publishAgentProfileVersionOnly(t, u, "agent-profile-def", "agent-profile-v1", profileDocument)
+	publishPolicyVersion(t, u, "attempt-policy-def", "attempt-policy-v1", attemptPolicy)
 	publishPolicyVersion(t, u, "permission-policy-def", "permission-policy-v1", permissionPolicyDocument())
 
-	result, err := runtime.ScheduleExecutableNodeRun(ctx, u, seq, fake.NewRuntimeExecutionConfigProvider(), runtime.ScheduleExecutableNodeRunRequest{
+	result, err := runtime.ScheduleExecutableNodeRun(ctx, u, seq, configProvider, runtime.ScheduleExecutableNodeRunRequest{
 		RunID: rID, NodeRunID: nrID, CorrelationID: "corr-1",
 	})
 	if err != nil {

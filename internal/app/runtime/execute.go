@@ -177,6 +177,16 @@ type resolvedExecutionProfileView struct {
 	// read-only (CHECKER) or left as EffectiveScope already resolved them
 	// (everything else, unchanged).
 	Role workflow.AgentRole `json:"role,omitempty"`
+	// AgentInheritedEnvironment is V9-05's (gap G5) pinned set of
+	// parent-environment variable NAMES the AGENT process for this NodeRun
+	// inherits: the intersection of the AgentProfileVersion's envAllowlist and
+	// the operator's --env-allowlist as they stood when the NodeRun was
+	// scheduled (resolveExecutionProfile, schedule.go). Names only. Empty —
+	// and absent from the JSON — for every NodeRun scheduled before V9-05 and
+	// for every one whose profile or worker list was empty, which is exactly
+	// the "inherit nothing" behavior those always had. Read by
+	// AssembleAgentExecutionRequest; ExecuteNodeHandler itself does not use it.
+	AgentInheritedEnvironment []string `json:"agentInheritedEnvironment,omitempty"`
 }
 
 // Handle implements workerpool.Handler for ExecuteNodeJobKind. See this
