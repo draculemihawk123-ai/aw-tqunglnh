@@ -293,6 +293,14 @@ jobs:
               run_passed=false
               all_stable=false
               echo "run ${i} FAILED, see stability-part/suite-run-${i}.log"
+              # The tail of a full-suite log is mostly other packages' "ok"
+              # lines, so print the failure itself: from each failing test
+              # or panic (a test timeout included) through its package's
+              # FAIL line. go test prints each package's output in one
+              # block, so the job log names the failing test and its output
+              # even when the artifact cannot be read.
+              awk '/^(--- FAIL|panic:)/ { p = 1 } p { print NR ": " $0 } /^(FAIL|ok)[[:space:]]/ { p = 0 }' \
+                "stability-part/suite-run-${i}.log" | head -n 400 || true
               tail -n 60 "stability-part/suite-run-${i}.log"
             fi
             run_end=$(date +%s)
