@@ -36,6 +36,8 @@ Usage of serve:
         path to the Codex CLI executable to register as a live agent provider for RetryBlockedActivation's own admission re-checks (omitted = provider not registered, RetryBlockedActivation fails closed with 503 for a build pinned to it)
   -db string
         sqlite database path
+  -env-allowlist string
+        comma-separated names of parent environment variables the provider executables' version probe may inherit; give it the same list as the worker's own --env-allowlist (default: none)
   -host string
         loopback bind host (default "127.0.0.1")
   -max-body-bytes int
@@ -76,7 +78,7 @@ Usage of worker:
   -db aw serve
         sqlite database path (the same file aw serve uses)
   -env-allowlist string
-        comma-separated names of parent environment variables a spawned provider/command process may inherit (default: none)
+        comma-separated names of parent environment variables a spawned provider/command process may inherit (default: none); an AGENT process inherits only the names an AgentProfile's envAllowlist also lists, and the provider's version probe inherits all of them
   -lease-heartbeat duration
         how often an in-flight job's lease is renewed; must be shorter than --lease-ttl (default 10s)
   -lease-ttl duration
@@ -108,8 +110,59 @@ this installation uses — `aw worker` never creates its own separate database. 
 worker` process against the same `--db` is supported (each needs its own `--worker-id`) — real-lease fencing
 (`--lease-ttl`/`--lease-heartbeat`) is what keeps two workers from double-processing the same job.
 
-Env allowlist (`--env-allowlist`) is empty by default — a spawned provider/command process inherits NOTHING
-from the worker's own environment unless a variable name is explicitly listed here.
+## The agent's environment — `--env-allowlist` and the profile's `envAllowlist`
+
+Every process `aw` spawns starts from an EMPTY environment. The only variables it gets from the worker's own
+environment are ones whose NAME is allowed explicitly. For agents, `--env-allowlist` (empty by default) is the
+operator's list of what may ever be passed on:
+
+```bash
+aw worker ... --claude-executable /usr/local/bin/claude --env-allowlist PATH,HOME
+```
+
+For an `AGENT` node (since V9-05) the provider process — the Claude or Codex CLI — inherits exactly the
+**intersection** of two lists of variable names:
+
+- the `envAllowlist` of the AgentProfile version the node pins (the author's request, see
+  [04-authoring-workflows.md](04-authoring-workflows.md)), and
+- the `--env-allowlist` of the `aw worker` that executes the attempt (the operator's ceiling).
+
+So a profile can never widen what the operator allowed; a profile that declares nothing, or a worker started
+without `--env-allowlist`, gives the agent an empty environment exactly as before. Rules worth knowing:
+
+- **Names are matched exactly and are case-sensitive.** Write each name identically in both lists. On Windows
+  write `PATH`, not `Path`, in both.
+- **Only names are ever recorded.** The names the agent receives are fixed when the node is scheduled and
+  written into its execution profile (`agentInheritedEnvironment` in the `<nodeRunId>-execution-profile-v1`
+  decision artifact, and therefore into the execution profile hash). The values are read from the worker's
+  environment at the moment the process is spawned and `aw` never stores, logs, hashes or puts them in evidence.
+  (If the agent itself prints a value, for example by running `env`, that text is recorded as ordinary agent
+  output — allow only variables you are content for the agent to read.)
+- **The worker that executes the attempt applies its own list again.** A node scheduled by one worker may be
+  executed by another (or by the same worker after a restart with different flags); the agent gets the pinned
+  names that THIS worker also allows, never more. A retry or a recovery attempt of the same node starts from
+  the same pinned list.
+- **No wrapper script is needed any more.** Operators used to wrap the provider CLI in a script that
+  hard-coded `HOME` and `PATH` — environment recorded nowhere. Allow `PATH` and `HOME` (on Windows also
+  `USERPROFILE` and `SystemRoot`) in `--env-allowlist`, list them in the profile's `envAllowlist`, and point
+  `--claude-executable` at the real CLI.
+- **`COMMAND` and `MACHINE_GATE` nodes are unchanged:** they inherit the names their own Command definition
+  lists in its `envAllowlist`.
+
+`--env-allowlist` also governs the provider executable's own `--version` probe. `aw worker` runs it at startup
+and again at every admission of an AGENT attempt (to detect a changed executable), `aw serve` runs it at
+startup, and the one-shot commands that need the provider run it too; all of them inherit the names in the list
+they were given, so a CLI that needs `HOME` or `PATH` even to print its version works without a wrapper. Give
+`aw serve` and the one-shot commands (the global option below, or `AW_ENV_ALLOWLIST`) the same list as the
+worker.
+
+`aw doctor` checks the result. For every configured provider executable it runs that probe with exactly the
+`--env-allowlist` it was given — the widest environment any profile can ever receive — and reports a
+`provider_environment:<provider>` check. When the executable cannot run in that environment the check is
+`DEGRADED` and its detail starts with the stable code `PROVIDER_ENV_INSUFFICIENT:`, followed by the reason
+(for example `it exited with code 1`) and the variable NAMES it was run with; the remediation says which
+allowlists to extend. It never prints a variable value. See
+[05-providers-and-isolation.md](05-providers-and-isolation.md#env-allowlist).
 
 ## Global options (every `aw <resource> <action>` command)
 
@@ -120,11 +173,14 @@ Global options (any resource command; env AW_DB, AW_ARTIFACT_ROOT, ...):
   --workspace-root <dir>      Git worktree storage root (workspace/source commands)
   --claude-executable <path>  register the Claude CLI as a live provider
   --codex-executable <path>   register the Codex CLI as a live provider
+  --env-allowlist <names>     comma-separated variable names a provider's version probe may inherit
+                              (give it the same list as 'aw worker --env-allowlist'; 'aw doctor' reports
+                              whether the provider can run in that environment)
 ```
 
 Each has an environment-variable fallback (`AW_DB`, `AW_ARTIFACT_ROOT`, `AW_WORKSPACE_ROOT`,
-`AW_CLAUDE_EXECUTABLE`, `AW_CODEX_EXECUTABLE`) so a long-running shell session doesn't need to repeat them on
-every invocation:
+`AW_CLAUDE_EXECUTABLE`, `AW_CODEX_EXECUTABLE`, `AW_ENV_ALLOWLIST`) so a long-running shell session doesn't need
+to repeat them on every invocation:
 
 ```bash
 export AW_DB=./aw-install/aw.db AW_ARTIFACT_ROOT=./aw-install/artifacts AW_WORKSPACE_ROOT=./aw-install/workspaces
