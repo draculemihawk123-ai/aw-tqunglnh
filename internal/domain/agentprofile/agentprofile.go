@@ -115,4 +115,31 @@ type AgentProfileDocument struct {
 	RequiredCapabilities []string `json:"requiredCapabilities,omitempty" yaml:"requiredCapabilities,omitempty"`
 	// Budget is this profile's own declared token ceiling.
 	Budget Budget `json:"budget" yaml:"budget"`
+	// EnvAllowlist (V9-05, gap G5 in docs/harness-engineering/15-doi-chieu-v9.md)
+	// is the set of parent-environment variable NAMES — never values — an
+	// agent process spawned under this profile asks to inherit from its
+	// worker. The agent process used to be spawned with an empty environment
+	// and a profile could not say otherwise, so operators wrapped the
+	// provider CLI in a script that hard-coded HOME/PATH: environment that
+	// no aw version, hash or manifest recorded.
+	//
+	// This list is a REQUEST, not a grant. The environment an agent process
+	// actually inherits is the exact, case-sensitive intersection of this
+	// list and the operator's own `aw worker --env-allowlist` (the ceiling):
+	// a profile can never widen what the operator allowed, and an empty list
+	// on either side inherits nothing — exactly what happened before this
+	// field existed. Because matching is exact, write each name identically
+	// in both lists (on Windows write PATH, not Path). The intersection is
+	// computed when a NodeRun is scheduled and its names are pinned in the
+	// ResolvedExecutionProfileV1 (see AgentInheritedEnvironment there);
+	// values are read from the worker's environment at spawn time and are
+	// never persisted, logged or hashed.
+	//
+	// Optional. omitempty keeps a profile that never declares the field
+	// encoding, compiling and hashing byte-for-byte as it always did; an
+	// explicitly empty list is the same as an absent one. It is a set:
+	// order carries no meaning (the canonical form sorts it) and duplicates
+	// are rejected at publish time. See ValidateDocument for what a name may
+	// contain.
+	EnvAllowlist []string `json:"envAllowlist,omitempty" yaml:"envAllowlist,omitempty"`
 }
