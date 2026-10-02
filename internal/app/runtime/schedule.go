@@ -366,10 +366,25 @@ func ScheduleExecutableNodeRun(
 		if err != nil {
 			return err
 		}
-		resolution, err := gatherContextResourceRefs(ctx, tx, contextPolicyRef, contextassembler.ResolutionContext{
-			TaskKind:  string(workItem.Kind),
-			RiskClass: string(workItem.RiskLevel),
-		})
+		// V9-04 (gap G4): the context also carries what this node touches —
+		// the Components and path scopes of effectiveScope (the same list just
+		// pinned on the NodeRun, read in this transaction) and the node's
+		// MAKER/CHECKER role — so a resource declaring componentTags,
+		// pathTags or blockKinds can finally be selected. See
+		// context_selector.go for the rules. effectiveScope is read now, at
+		// scheduling time, so a NodeRun scheduled after a scope expansion
+		// resolves against the expanded scope (intended); an existing
+		// snapshot is never re-resolved. Only a node that pinned a context
+		// route resolves anything, so only such a node pays for the
+		// Component read.
+		var resolutionCtx contextassembler.ResolutionContext
+		if contextPolicyRef.VersionID != "" {
+			resolutionCtx, err = buildContextResolutionContext(ctx, tx, run.ProjectID, workItem, node, effectiveScope)
+			if err != nil {
+				return err
+			}
+		}
+		resolution, err := gatherContextResourceRefs(ctx, tx, contextPolicyRef, resolutionCtx)
 		if err != nil {
 			return err
 		}
@@ -390,7 +405,7 @@ func ScheduleExecutableNodeRun(
 		// AGENT profile with no ContextPolicyRef, since there is no
 		// resolution to audit in that case.
 		if contextPolicyRef.VersionID != "" {
-			if err := recordContextResolutionDecision(ctx, tx, req.NodeRunID, run.ProjectID, resolution); err != nil {
+			if err := recordContextResolutionDecision(ctx, tx, req.NodeRunID, run.ProjectID, resolutionCtx, resolution); err != nil {
 				return err
 			}
 		}
@@ -867,12 +882,28 @@ func gatherCheckerEvidenceRefs(
 // replays — the check-first guard exists purely so a future caller that
 // DOES retry this path never hits a duplicate-insert error instead of a
 // clean no-op.
-func recordContextResolutionDecision(ctx context.Context, tx ports.Tx, nodeRunID string, projectID project.ProjectID, resolution contextassembler.Resolution) error {
+//
+// V9-04: the artifact's input is the ResolutionContext the candidates were
+// resolved against (contextResolutionInput: componentTags, pathTags,
+// wholeRepositoryScope, blockKind, taskKind, riskClass), so a reader can see
+// not only that a resource was excluded as NOT_APPLICABLE but what it was not
+// applicable to. It was the empty object before; nothing parses it (the
+// artifact has no reader besides the persisted-decision tests), and the kind
+// and policy version stay CONTEXT_RESOLUTION_V1 / v1 because the result, the
+// ID scheme and the meaning of the artifact are unchanged.
+func recordContextResolutionDecision(
+	ctx context.Context, tx ports.Tx, nodeRunID string, projectID project.ProjectID,
+	resolutionCtx contextassembler.ResolutionContext, resolution contextassembler.Resolution,
+) error {
 	id := nodeRunID + "-context-resolution-v1"
 	if _, err := tx.Runtime().GetDecisionArtifact(ctx, id); err == nil {
 		return nil
 	} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
 		return fmt.Errorf("runtime: check existing context resolution decision for node run %s: %w", nodeRunID, err)
+	}
+	inputJSON, err := json.Marshal(newContextResolutionInput(resolutionCtx))
+	if err != nil {
+		return fmt.Errorf("runtime: marshal context resolution input for node run %s: %w", nodeRunID, err)
 	}
 	resultJSON, err := json.Marshal(resolution)
 	if err != nil {
@@ -880,7 +911,7 @@ func recordContextResolutionDecision(ctx context.Context, tx ports.Tx, nodeRunID
 	}
 	decision, err := runtimedomain.NewDecisionArtifact(
 		runtimedomain.DecisionArtifactID(id), projectID, "CONTEXT_RESOLUTION_V1", "v1",
-		json.RawMessage(`{}`), resultJSON, time.Now().UTC(),
+		inputJSON, resultJSON, time.Now().UTC(),
 	)
 	if err != nil {
 		return err

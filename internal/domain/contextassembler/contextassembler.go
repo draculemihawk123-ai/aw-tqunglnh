@@ -22,7 +22,9 @@ package contextassembler
 
 import (
 	"fmt"
+	"path"
 	"sort"
+	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 )
@@ -40,6 +42,10 @@ import (
 // same "Global" resource semantic skill.Resource/layer.Resource already
 // express with their own explicit Global bool, expressed here structurally
 // instead (see MatchesContext).
+//
+// PathTags are relative directory paths and are matched by path overlap with
+// the work's path scopes (V9-04), not by string equality; every other
+// dimension is matched by equality — see MatchesContext.
 type Selector struct {
 	ComponentTags []string
 	PathTags      []string
@@ -55,12 +61,35 @@ type Selector struct {
 // are sets (an attempt's own component/path context can genuinely satisfy
 // more than one tag at once); TaskKind/BlockKind/RiskClass are singular —
 // an attempt has exactly one of each at a time.
+//
+// V9-04 (gap G4, docs/design/12-v9-harness-alignment.md): until V9-04 the
+// scheduler (internal/app/runtime/schedule.go) filled in only TaskKind and
+// RiskClass, so a resource declaring componentTags/pathTags/blockKinds was
+// ALWAYS excluded as NOT_APPLICABLE (AND across declared dimensions, see
+// MatchesContext) and the only way to route area-specific knowledge was a
+// separate agent profile per code area. The scheduler now projects the
+// WorkItem's effective scope and the executing node onto the fields below
+// (internal/app/runtime/context_selector.go); this package stays free of
+// that projection — it only defines what each field MEANS when matched:
+//
+//   - ComponentTags: the names of the project's Components that the work
+//     touches (an exact-match dimension, like TaskKind).
+//   - PathTags: the normalized relative path scopes of every effective scope
+//     entry of the work. Unlike the other set dimension this one is matched
+//     by path overlap, not equality (see MatchesContext and PathsOverlap).
+//   - WholeRepositoryScope: true when at least one effective scope entry has
+//     no path scopes at all, i.e. the work may touch a whole repository.
+//     Every valid declared path tag then applies, because "the whole
+//     repository" contains every path a tag can name.
+//   - BlockKind: the executing node's role (MAKER or CHECKER for an AGENT
+//     node — the only node type that resolves a context route).
 type ResolutionContext struct {
-	ComponentTags []string
-	PathTags      []string
-	TaskKind      string
-	BlockKind     string
-	RiskClass     string
+	ComponentTags        []string
+	PathTags             []string
+	WholeRepositoryScope bool
+	TaskKind             string
+	BlockKind            string
+	RiskClass            string
 }
 
 // MatchesContext reports whether s applies to ctx.
@@ -83,12 +112,112 @@ type ResolutionContext struct {
 // điều kiện áp dụng nên mọi resource đều được nạp" — a route with no real
 // applicability condition, so every resource gets loaded — as exactly the
 // failure this exists to prevent).
+//
+// "In common" means exact equality for ComponentTags, TaskKinds, BlockKinds
+// and RiskClasses, and PATH OVERLAP for PathTags (V9-04): a declared path tag
+// T is a relative directory path, normalized the way a work scope's path
+// scopes are (backslash to slash, path.Clean, no trailing slash), and it
+// matches when
+//
+//   - ctx.WholeRepositoryScope is set (the work covers a whole repository,
+//     which contains T), or
+//   - T overlaps at least one of ctx.PathTags: T equals the path, T is under
+//     it, or it is under T (PathsOverlap). Knowledge tagged "backend"
+//     therefore applies to work scoped to "backend/src/db", and work scoped
+//     to "backend" — which may touch "backend/src/db" — receives knowledge
+//     tagged "backend/src/db". The overlap is by whole path segments:
+//     "services/api" and "services/apix" do not overlap.
+//
+// A path tag that is absolute, contains a ".." segment, or normalizes to "."
+// or empty can never match — not even under WholeRepositoryScope — because
+// it names no path inside a repository. A path tag is a directory prefix,
+// not a glob: "backend/**" matches only a scope that literally contains such
+// a path, exactly as scope guarding treats path scopes. pathTags do not name
+// a repository; with work spanning several repositories a tag applies when
+// it overlaps a path of ANY of them (a documented limitation of the Selector
+// shape, which has no repository dimension).
 func (s Selector) MatchesContext(ctx ResolutionContext) bool {
 	return matchSet(s.ComponentTags, ctx.ComponentTags) &&
-		matchSet(s.PathTags, ctx.PathTags) &&
+		matchPathTags(s.PathTags, ctx) &&
 		matchSingle(s.TaskKinds, ctx.TaskKind) &&
 		matchSingle(s.BlockKinds, ctx.BlockKind) &&
 		matchSingle(s.RiskClasses, ctx.RiskClass)
+}
+
+// matchPathTags is the PathTags dimension of MatchesContext: a declared tag
+// matches by path overlap with the context's paths, or unconditionally (if it
+// is a valid path) when the context covers a whole repository. See
+// MatchesContext for the rule and its rationale.
+func matchPathTags(declared []string, ctx ResolutionContext) bool {
+	if len(declared) == 0 {
+		return true
+	}
+	for _, d := range declared {
+		tag, ok := normalizeRelativePath(d)
+		if !ok {
+			continue
+		}
+		if ctx.WholeRepositoryScope {
+			return true
+		}
+		for _, actual := range ctx.PathTags {
+			if scope, ok := normalizeRelativePath(actual); ok && normalizedPathsOverlap(tag, scope) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// PathsOverlap reports whether two relative paths overlap (V9-04): after
+// normalization (see MatchesContext) they are equal, or one is a directory
+// ancestor of the other, compared by whole path segments. A path that cannot
+// be normalized (absolute, contains "..", empty or ".") overlaps nothing.
+//
+// The scheduler uses the same rule to decide which Components a work touches
+// (a Component's path against the path scopes of the work's repository scope
+// entries), so the two ways a path can route knowledge never disagree.
+func PathsOverlap(a, b string) bool {
+	left, ok := normalizeRelativePath(a)
+	if !ok {
+		return false
+	}
+	right, ok := normalizeRelativePath(b)
+	if !ok {
+		return false
+	}
+	return normalizedPathsOverlap(left, right)
+}
+
+func normalizedPathsOverlap(a, b string) bool {
+	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+}
+
+// normalizeRelativePath applies this codebase's established relative-path
+// rules (internal/domain/work's normalizePathScopes, internal/domain/project's
+// normalizeComponentPath and internal/app/scopeguard's normalizePath, each of
+// which keeps its own small copy rather than importing another layer): a
+// backslash is a slash, a leading "/" or a drive letter makes the path
+// absolute, a ".." segment is a traversal, and path.Clean must not leave "."
+// or nothing. ok is false for any path those rules reject.
+func normalizeRelativePath(raw string) (string, bool) {
+	if raw == "" {
+		return "", false
+	}
+	normalized := strings.ReplaceAll(raw, "\\", "/")
+	if strings.HasPrefix(normalized, "/") || (len(normalized) >= 2 && normalized[1] == ':') {
+		return "", false
+	}
+	for _, segment := range strings.Split(normalized, "/") {
+		if segment == ".." {
+			return "", false
+		}
+	}
+	normalized = path.Clean(normalized)
+	if normalized == "." || normalized == "" {
+		return "", false
+	}
+	return normalized, true
 }
 
 func matchSet(declared, actual []string) bool {
