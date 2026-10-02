@@ -333,6 +333,18 @@ type runFailedEventPayload struct {
 	JobID string `json:"jobId,omitempty"`
 }
 
+// transitionRunToFailedTx is reconcileRunTerminalityTx's own FAILED closing
+// step: CAS the Run to FAILED, append RUN_FAILED and — V9-06 / ADR-033, gap G6
+// — open the RUN_FAILED WorkItemBlocker (openRunFailedBlockerTx below) in this
+// SAME transaction, so "Run FAILED" and "WorkItem BLOCKED with a RUN_FAILED
+// blocker" always commit or roll back together. Before V9-06 the WorkItem
+// stayed ACTIVE after a failed Run, which StartWorkflowRun refuses (it needs
+// READY), leaving "cancel the WorkItem and recreate it" as the only way to
+// try again; with the blocker the operator resolves it
+// (ResolveWorkItemBlocker, mode RESOLVED) and starts the next Run on the SAME
+// WorkItem. The Run failing under a still-REQUESTED or already-COMPLETED
+// WorkItem cancellation opens no blocker, exactly like the RUN_CANCELLED
+// twin (openRunCancelledBlockerTx).
 func transitionRunToFailedTx(
 	ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, reason, correlationID, jobID string,
 ) error {
@@ -358,6 +370,13 @@ func transitionRunToFailedTx(
 		return err
 	}
 
+	// V9-06 / ADR-033: the WorkItem-authority half of a failed Run — the
+	// RUN_FAILED blocker that moves the WorkItem ACTIVE -> BLOCKED (a no-op
+	// when a WorkItem cancellation is in flight, see openRunFailedBlockerTx).
+	if err := openRunFailedBlockerTx(ctx, tx, run, reason, correlationID, jobID); err != nil {
+		return err
+	}
+
 	// V4-12C: an ordinary technical failure (unrelated to any cancellation)
 	// may still be the WorkItem's own last non-terminal Run if a
 	// CancelWorkItem call is racing concurrently against it — check whether
@@ -365,6 +384,67 @@ func transitionRunToFailedTx(
 	// (a no-op in the overwhelmingly common case: no WorkItemCancellationIntent
 	// exists at all).
 	return reconcileWorkItemCancellationTx(ctx, tx, string(run.WorkItemID), correlationID, jobID)
+}
+
+// runFailedBlockerID is the deterministic ID of the one RUN_FAILED blocker a
+// Run ever opens — minted from the Run's own ID (never ids.NewID()), the same
+// discipline "<runId>-run-cancelled-blocker" follows, so a duplicate delivery
+// of the same underlying FAILED transition can only ever be the identical
+// insert-or-return-existing blocker, never a second one (V9-06 / ADR-033).
+func runFailedBlockerID(runID runtimedomain.WorkflowRunID) string {
+	return string(runID) + "-run-failed-blocker"
+}
+
+// openRunFailedBlockerTx is transitionRunToFailedTx's own WorkItem-authority
+// closing step (V9-06, ADR-033 decision 1): open a RUN_FAILED WorkItemBlocker
+// carrying SourceRunID, which — like every blocker (openWorkItemBlockerTx) —
+// moves an ACTIVE WorkItem to BLOCKED, so the Kanban column, the diagnostics
+// and `aw blocker resolve` all see "this WorkItem needs an operator decision"
+// instead of a WorkItem silently stuck ACTIVE. It opens nothing when the Run
+// belongs to a WorkItem being cancelled (workItemCancellationIntentExists —
+// the SAME rule openRunCancelledBlockerTx applies): a WorkItem already on its
+// way to CANCELLED must never be shoved into BLOCKED by the very Run closing
+// it out; reconcileWorkItemCancellationTx, called right after this by
+// transitionRunToFailedTx, is what terminalizes it.
+//
+// The blocker is RESOLVED-only (workdomain.BlockerType.Waivable is false for
+// it): the operator may inspect or undo what the failed Run left in the
+// worktree first (ADR-033 decision 6, no automatic reset), then
+// ResolveWorkItemBlocker returns the WorkItem to READY and the next
+// StartWorkflowRun runs the SAME pinned workflow version (decision 4).
+func openRunFailedBlockerTx(ctx context.Context, tx ports.Tx, run runtimedomain.WorkflowRun, reason, correlationID, jobID string) error {
+	cancelling, err := workItemCancellationIntentExists(ctx, tx, string(run.WorkItemID))
+	if err != nil {
+		return err
+	}
+	if cancelling {
+		return nil
+	}
+
+	_, err = openWorkItemBlockerTx(
+		ctx, tx, run.ProjectID, string(run.WorkItemID), runFailedBlockerID(run.ID), workdomain.BlockerRunFailed,
+		string(run.ID), "", "", "workflow run "+string(run.ID)+" failed ("+reason+")", correlationID, jobID,
+	)
+	return err
+}
+
+// workItemCancellationIntentExists reports whether workItemID has ANY
+// WorkItemCancellationIntent at all — REQUESTED (still quiescing) or already
+// COMPLETED (an earlier CancelWorkItem finished quiescing every OTHER Run
+// before this Run got here). That names "this Run's own terminal transition
+// is WorkItem-driven or racing a WorkItem cancellation" unambiguously, unlike
+// workItemCancellationPending's REQUESTED-only check for "is there still
+// WorkItem-level work left to close out". Shared by openRunCancelledBlockerTx
+// and openRunFailedBlockerTx.
+func workItemCancellationIntentExists(ctx context.Context, tx ports.Tx, workItemID string) (bool, error) {
+	switch _, err := tx.Runtime().GetWorkItemCancellationIntent(ctx, workItemID); {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ports.ErrPersistenceNotFound):
+		return false, nil
+	default:
+		return false, err
+	}
 }
 
 // RunCancelledEventType/RunCancelledSchemaVersion identify
@@ -448,16 +528,18 @@ func openRunCancelledBlockerTx(ctx context.Context, tx ports.Tx, run runtimedoma
 	// OTHER Run before this one got here) — names "this Run's own
 	// cancellation was WorkItem-driven", unlike reconcileWorkItemCancellationTx's
 	// own REQUESTED-only check for "is there still WorkItem-level work left
-	// to close out".
-	switch _, err := tx.Runtime().GetWorkItemCancellationIntent(ctx, string(run.WorkItemID)); {
-	case err == nil:
-		return nil
-	case !errors.Is(err, ports.ErrPersistenceNotFound):
+	// to close out" (workItemCancellationIntentExists, shared since V9-06
+	// with openRunFailedBlockerTx).
+	cancelling, err := workItemCancellationIntentExists(ctx, tx, string(run.WorkItemID))
+	if err != nil {
 		return err
+	}
+	if cancelling {
+		return nil
 	}
 
 	blockerID := string(run.ID) + "-run-cancelled-blocker"
-	_, err := openWorkItemBlockerTx(
+	_, err = openWorkItemBlockerTx(
 		ctx, tx, run.ProjectID, string(run.WorkItemID), blockerID, workdomain.BlockerRunCancelled,
 		string(run.ID), "", "", "workflow run "+string(run.ID)+" was cancelled", correlationID, jobID,
 	)

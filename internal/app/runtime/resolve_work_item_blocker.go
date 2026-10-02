@@ -22,8 +22,10 @@
 //     DecisionArtifact"). WAIVED is only ever valid for a Waivable blocker
 //     type (workdomain.BlockerType.Waivable) — RUN_CANCELLED and
 //     COMPLETION_POLICY_FAILED, ADR-020's own closed table; every other
-//     type, including all four admission reasons and
-//     SCOPE_EXPANSION_REQUIRED, rejects WAIVED outright.
+//     type, including all four admission reasons,
+//     SCOPE_EXPANSION_REQUIRED and RUN_FAILED (V9-06 / ADR-033: a failed
+//     Run is resolved so the next Run can start on the same WorkItem, never
+//     waived), rejects WAIVED outright with ErrBlockerNotWaivable.
 //
 // SCOPE_EXPANSION_REQUIRED rejects BOTH modes unconditionally
 // (workdomain.BlockerType.ResolvableViaCommand) — see that method's own doc

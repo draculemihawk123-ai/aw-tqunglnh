@@ -37,7 +37,8 @@ type BlockerID string
 // enforcement for the four admission reasons, V5-11 CompletionPolicy for
 // COMPLETION_POLICY_FAILED) — the same "pin the whole reference enum up
 // front" treatment runtime.TerminationReason's own doc comment already
-// describes for itself.
+// describes for itself. RUN_FAILED (V9-06, ADR-033) is the one value added
+// after ADR-020's table, together with its producer.
 type BlockerType string
 
 const (
@@ -45,6 +46,18 @@ const (
 	// own Run to CANCELLED (V4-12C's own real producer,
 	// internal/app/runtime/completion.go's transitionRunToCancelledTx).
 	BlockerRunCancelled BlockerType = "RUN_CANCELLED"
+	// BlockerRunFailed: a WorkflowRun of this WorkItem reached FAILED through
+	// the ordinary failure path (V9-06, ADR-033, gap G6;
+	// internal/app/runtime/completion.go's transitionRunToFailedTx — a Run the
+	// CompletionPolicy FAIL branch fails carries COMPLETION_POLICY_FAILED
+	// instead). It is what moves the WorkItem ACTIVE -> BLOCKED after a failed
+	// Run, so the operator can resolve it (RESOLVED only: a failed Run is never
+	// something to waive, see Waivable) and start the next Run on the SAME
+	// WorkItem — before it a failed Run left the WorkItem ACTIVE, which
+	// StartWorkflowRun refuses, and the only way out was to cancel the WorkItem
+	// and recreate it. Not a runtime.TerminationReason value: it names a Run's
+	// outcome, not why an Attempt left RUNNING.
+	BlockerRunFailed BlockerType = "RUN_FAILED"
 	// BlockerCompletionPolicyFailed: CompletionPolicy returned FAIL
 	// (ADR-021 §23's own outcome table) — no real producer exists yet
 	// (V5-11's own scope); declared now so the resolution-mode matrix
@@ -72,6 +85,7 @@ const (
 
 var knownBlockerTypes = map[BlockerType]struct{}{
 	BlockerRunCancelled:                     {},
+	BlockerRunFailed:                        {},
 	BlockerCompletionPolicyFailed:           {},
 	BlockerScopeExpansionRequired:           {},
 	BlockerIsolationEnforcementUnavailable:  {},
@@ -95,7 +109,10 @@ func (t BlockerType) IsValid() bool {
 // fixing the underlying condition (admission reasons — a future
 // RetryBlockedActivation, ADR-020's own §22 "RetryBlockedActivation") or
 // letting the real approval/reconcile flow resolve it (scope expansion, see
-// ResolvableViaCommand below).
+// ResolvableViaCommand below). RUN_FAILED (V9-06, ADR-033) can never be waived
+// either: a Run that failed is a fact to act on, not a verdict an operator may
+// bypass with a policy grant — the exits are RESOLVED (the next Run starts on
+// the same WorkItem) or CancelWorkItem ("Muốn bỏ việc thì dùng CancelWorkItem").
 func (t BlockerType) Waivable() bool {
 	return t == BlockerRunCancelled || t == BlockerCompletionPolicyFailed
 }
@@ -107,9 +124,9 @@ func (t BlockerType) Waivable() bool {
 // operator decision — only the real approval/reconcile flow (ADR-011,
 // internal/app/runtime's own reactivateBlockedNodeRunTx, V4-12A/V4-12C) may
 // ever transition it OPEN->RESOLVED, the moment a reactivated NodeRun
-// activation is actually created. Every other type (including the four
-// admission reasons, which have no real producer yet) accepts a plain
-// RESOLVED via this command; only Waivable above further restricts WAIVED.
+// activation is actually created. Every other type (the four admission
+// reasons and RUN_FAILED included) accepts a plain RESOLVED via this
+// command; only Waivable above further restricts WAIVED.
 func (t BlockerType) ResolvableViaCommand() bool {
 	return t != BlockerScopeExpansionRequired
 }
@@ -127,11 +144,12 @@ const (
 // (ADR-020: "Admission blocker được lưu thành một row `blockers` với type
 // bằng chính TerminationReason"). SourceRunID/SourceNodeRunID/SourceAttemptID
 // are optional — populated when a real runtime origin caused this blocker
-// (RUN_CANCELLED always carries SourceRunID; SCOPE_EXPANSION_REQUIRED always
-// carries all three), left empty for a blocker a future task creates from a
-// context with no such origin. DecisionArtifactID is populated only for a
-// WAIVED resolution (ResolveWorkItemBlocker's own required, immutable
-// evidence record for that decision).
+// (RUN_CANCELLED and RUN_FAILED always carry SourceRunID;
+// SCOPE_EXPANSION_REQUIRED always carries all three), left empty for a
+// blocker a future task creates from a context with no such origin.
+// DecisionArtifactID is populated only for a WAIVED resolution
+// (ResolveWorkItemBlocker's own required, immutable evidence record for that
+// decision).
 type WorkItemBlocker struct {
 	ID                 BlockerID
 	ProjectID          project.ProjectID

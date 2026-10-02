@@ -95,7 +95,11 @@ type RepositoryBadge struct {
 // Card is one projected WorkItem card. WorkspaceSetID is the CORRECTED value
 // (a child row never carries it itself; it is cross-referenced from the
 // family's root row), and RepositoryBadges is this package's own addition to
-// the frozen projection.WorkItemCardRow schema.
+// the frozen projection.WorkItemCardRow schema. RunCount (V9-06, ADR-033) is
+// how many Runs the WorkItem has ever started — projected like every other
+// count here (the projection's own reducer counts WorkflowRunStarted events;
+// this package reads no runtime table for the board), so
+// GetWorkItemProjectedDetail's authoritative Runs list is the exact figure.
 type Card struct {
 	WorkItemID                 string            `json:"workItemId"`
 	ProjectID                  string            `json:"projectId"`
@@ -110,6 +114,7 @@ type Card struct {
 	BlockerCount               int               `json:"blockerCount"`
 	TopBlockerType             string            `json:"topBlockerType,omitempty"`
 	PendingScopeExpansionCount int               `json:"pendingScopeExpansionCount"`
+	RunCount                   int               `json:"runCount"`
 	RepositoryBadges           []RepositoryBadge `json:"repositoryBadges,omitempty"`
 }
 
@@ -304,7 +309,7 @@ func newCard(workItemID, projectID string, card projection.WorkItemCardRow, work
 		ParentWorkItemID: card.ParentWorkItemID, IsRoot: card.IsRoot, WorkspaceSetID: workspaceSetID,
 		Status: card.Status, ActiveRunID: card.ActiveRunID, ActiveRunStatus: card.ActiveRunStatus,
 		BlockerCount: card.BlockerCount, TopBlockerType: card.TopBlockerType,
-		PendingScopeExpansionCount: card.PendingScopeExpansionCount, RepositoryBadges: badges,
+		PendingScopeExpansionCount: card.PendingScopeExpansionCount, RunCount: card.RunCount, RepositoryBadges: badges,
 	}
 }
 

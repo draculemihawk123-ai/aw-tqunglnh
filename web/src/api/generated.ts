@@ -712,6 +712,7 @@ export function getWorkItem(projectId: string, workItemId: string, opts: Request
 export interface GetWorkItemProjectedDetailResponse {
   card: unknown;
   readiness: unknown;
+  runs: unknown[];
   freshness: unknown;
   validActions: unknown[];
 }

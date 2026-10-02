@@ -19,7 +19,13 @@ import (
 // HandlerVersion (Catalog, catalog.go): HandlerVersion tracks a single
 // event's own apply LOGIC changing; RowSchemaVersion tracks the RESULT
 // shape every Reducer collectively produces changing.
-const RowSchemaVersion = 1
+//
+// Version 2 (V9-06, ADR-033): WorkItemCardRow gains RunCount, counted from
+// WorkflowRunStarted events. A generation built before it carries no count
+// for the Runs it already folded in — `aw projection rebuild` builds a fresh
+// generation from the whole journal and so reproduces it (docs/operator/
+// 10-upgrade-and-rollback.md).
+const RowSchemaVersion = 2
 
 // errNoProgress is ApplyBatch's own internal sentinel for "the scan found
 // nothing past the current cursor" — not a real failure, just nothing to

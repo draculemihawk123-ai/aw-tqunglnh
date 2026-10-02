@@ -42,6 +42,14 @@ export interface KanbanCard {
   blockerCount: number;
   topBlockerType?: string;
   pendingScopeExpansionCount: number;
+  /**
+   * How many Runs the WorkItem has ever started (V9-06, ADR-033): after a failed
+   * Run is resolved the same WorkItem runs again, so one card can stand for
+   * several Runs. Projected like the other counts — `runs` on the detail
+   * response is the authoritative list. Absent on a response from a server
+   * that predates V9-06.
+   */
+  runCount?: number;
   repositoryBadges?: RepositoryBadge[];
 }
 
@@ -65,9 +73,24 @@ export interface WorkItemReadiness {
   problems?: string[];
 }
 
+/**
+ * One Run of a WorkItem — an entry of getWorkItemProjectedDetail's authoritative
+ * `runs` list (V9-06, ADR-033): oldest first, `runNumber` is the 1-based position
+ * ("the second run"). Every Run of a WorkItem pins the same workflow version.
+ */
+export interface WorkItemRun {
+  runId: string;
+  runNumber: number;
+  state: string;
+  workflowVersionId: string;
+  startedAt?: string;
+  finishedAt?: string;
+}
+
 export interface WorkItemProjectedDetailResponse {
   card: KanbanCard;
   readiness: WorkItemReadiness;
+  runs?: WorkItemRun[];
   freshness: Freshness;
   validActions: ValidAction[];
 }
