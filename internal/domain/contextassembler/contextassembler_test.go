@@ -2,6 +2,7 @@ package contextassembler
 
 import (
 	"errors"
+	"sort"
 	"testing"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
@@ -48,6 +49,41 @@ func TestMatchesContext_SelectorMatrix(t *testing.T) {
 		{"BlockKinds mismatch", Selector{BlockKinds: []string{"AGENT"}}, ResolutionContext{BlockKind: "COMMAND"}, false},
 		{"RiskClasses match", Selector{RiskClasses: []string{"high"}}, ResolutionContext{RiskClass: "high"}, true},
 		{"RiskClasses mismatch", Selector{RiskClasses: []string{"high"}}, ResolutionContext{RiskClass: "low"}, false},
+
+		// V9-04 (gap G4): PathTags are matched by path overlap, not equality,
+		// and the context can say "the whole repository".
+		{"PathTags equal", Selector{PathTags: []string{"backend"}}, ResolutionContext{PathTags: []string{"backend"}}, true},
+		{"PathTags: declared tag is an ancestor of the scope", Selector{PathTags: []string{"backend"}}, ResolutionContext{PathTags: []string{"backend/src/db"}}, true},
+		{"PathTags: declared tag is a descendant of the scope", Selector{PathTags: []string{"backend/src/db"}}, ResolutionContext{PathTags: []string{"backend"}}, true},
+		{"PathTags: sibling directories", Selector{PathTags: []string{"frontend"}}, ResolutionContext{PathTags: []string{"backend"}}, false},
+		{"PathTags: a common string prefix is not an ancestor (tag shorter)", Selector{PathTags: []string{"services/api"}}, ResolutionContext{PathTags: []string{"services/apix"}}, false},
+		{"PathTags: a common string prefix is not an ancestor (tag longer)", Selector{PathTags: []string{"services/apix"}}, ResolutionContext{PathTags: []string{"services/api"}}, false},
+		{"PathTags: any one of several scope paths is enough", Selector{PathTags: []string{"frontend"}}, ResolutionContext{PathTags: []string{"backend", "frontend/app"}}, true},
+		{"PathTags: any one of several declared tags is enough", Selector{PathTags: []string{"frontend", "backend"}}, ResolutionContext{PathTags: []string{"backend/src"}}, true},
+		{"PathTags: no path context excludes a path-tagged resource", Selector{PathTags: []string{"backend"}}, ResolutionContext{}, false},
+		{"PathTags: whole-repository scope applies every valid tag", Selector{PathTags: []string{"backend"}}, ResolutionContext{WholeRepositoryScope: true}, true},
+		{"PathTags: whole-repository scope applies a tag unrelated to the other scope paths", Selector{PathTags: []string{"frontend"}}, ResolutionContext{PathTags: []string{"backend"}, WholeRepositoryScope: true}, true},
+		{"PathTags: unnormalized tag ./backend/", Selector{PathTags: []string{"./backend/"}}, ResolutionContext{PathTags: []string{"backend/src"}}, true},
+		{"PathTags: backslash tag", Selector{PathTags: []string{`backend\src`}}, ResolutionContext{PathTags: []string{"backend/src/db"}}, true},
+		{"PathTags: unnormalized scope path", Selector{PathTags: []string{"backend"}}, ResolutionContext{PathTags: []string{"./backend//src/"}}, true},
+		{"PathTags: an unnormalized tag does not become a sibling match", Selector{PathTags: []string{"./frontend/"}}, ResolutionContext{PathTags: []string{"backend"}}, false},
+		{"PathTags: absolute tag never matches", Selector{PathTags: []string{"/backend"}}, ResolutionContext{PathTags: []string{"backend"}}, false},
+		{"PathTags: windows drive tag never matches", Selector{PathTags: []string{`C:\backend`}}, ResolutionContext{PathTags: []string{"backend"}}, false},
+		{"PathTags: tag with parent traversal never matches", Selector{PathTags: []string{"backend/../frontend"}}, ResolutionContext{PathTags: []string{"frontend"}}, false},
+		{"PathTags: tag that cleans to dot never matches", Selector{PathTags: []string{"./"}}, ResolutionContext{PathTags: []string{"backend"}}, false},
+		{"PathTags: an invalid tag does not match even under a whole-repository scope", Selector{PathTags: []string{"../backend"}}, ResolutionContext{WholeRepositoryScope: true}, false},
+		{"PathTags: an invalid tag next to a valid one leaves the valid one working", Selector{PathTags: []string{"../backend", "frontend"}}, ResolutionContext{PathTags: []string{"frontend"}}, true},
+		{"PathTags: an empty tag never matches", Selector{PathTags: []string{""}}, ResolutionContext{PathTags: []string{"backend"}, WholeRepositoryScope: true}, false},
+		{"PathTags: a tag is a directory prefix, not a glob", Selector{PathTags: []string{"backend/**"}}, ResolutionContext{PathTags: []string{"backend/src"}}, false},
+		{"PathTags: an invalid scope path is ignored", Selector{PathTags: []string{"backend"}}, ResolutionContext{PathTags: []string{"../backend"}}, false},
+
+		// V9-04: ComponentTags stay exact, BlockKinds carry the node role.
+		{"ComponentTags are exact, not prefixes", Selector{ComponentTags: []string{"backend"}}, ResolutionContext{ComponentTags: []string{"backend-api"}}, false},
+		{"BlockKinds CHECKER matches a checker", Selector{BlockKinds: []string{"CHECKER"}}, ResolutionContext{BlockKind: "CHECKER"}, true},
+		{"BlockKinds CHECKER does not match a maker", Selector{BlockKinds: []string{"CHECKER"}}, ResolutionContext{BlockKind: "MAKER"}, false},
+		{"BlockKinds MAKER does not match a checker", Selector{BlockKinds: []string{"MAKER"}}, ResolutionContext{BlockKind: "CHECKER"}, false},
+		{"BlockKinds MAKER,CHECKER match either role", Selector{BlockKinds: []string{"MAKER", "CHECKER"}}, ResolutionContext{BlockKind: "CHECKER"}, true},
+		{"BlockKinds are not matched by the whole-repository flag", Selector{BlockKinds: []string{"CHECKER"}}, ResolutionContext{WholeRepositoryScope: true}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -75,6 +111,61 @@ func TestMatchesContext_MultipleDimensions_AreANDedTogether(t *testing.T) {
 	}
 }
 
+// V9-04: a path tag is still ANDed with every other declared dimension — path
+// overlap (or the whole-repository flag) never makes the other dimensions
+// optional.
+func TestMatchesContext_PathTagsAreStillANDedWithOtherDimensions(t *testing.T) {
+	s := Selector{PathTags: []string{"backend"}, BlockKinds: []string{"CHECKER"}}
+
+	if s.MatchesContext(ResolutionContext{PathTags: []string{"backend/src"}, BlockKind: "MAKER"}) {
+		t.Fatal("path overlaps but the block kind does not — should not match under AND semantics")
+	}
+	if s.MatchesContext(ResolutionContext{PathTags: []string{"frontend"}, BlockKind: "CHECKER"}) {
+		t.Fatal("block kind matches but the path does not overlap — should not match under AND semantics")
+	}
+	if s.MatchesContext(ResolutionContext{WholeRepositoryScope: true, BlockKind: "MAKER"}) {
+		t.Fatal("the whole-repository flag satisfies only the path dimension, not the block kind")
+	}
+	if !s.MatchesContext(ResolutionContext{PathTags: []string{"backend/src"}, BlockKind: "CHECKER"}) {
+		t.Fatal("path overlaps and block kind matches — should match")
+	}
+	if !s.MatchesContext(ResolutionContext{WholeRepositoryScope: true, BlockKind: "CHECKER"}) {
+		t.Fatal("whole-repository scope and matching block kind — should match")
+	}
+}
+
+func TestPathsOverlap(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"backend", "backend", true},
+		{"backend", "backend/src", true},
+		{"backend/src", "backend", true},
+		{"backend/src/db", "backend/src", true},
+		{"services/api", "services/apix", false},
+		{"services/apix", "services/api", false},
+		{"backend", "frontend", false},
+		{"backend", "back", false},
+		{"./backend/", "backend/src", true},
+		{`backend\src`, "backend/src/db", true},
+		{"backend", "", false},
+		{"", "", false},
+		{"backend", ".", false},
+		{"backend", "/backend", false},
+		{"backend", "../backend", false},
+		{"backend/../backend", "backend", false},
+	}
+	for _, tc := range cases {
+		if got := PathsOverlap(tc.a, tc.b); got != tc.want {
+			t.Errorf("PathsOverlap(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+		if got := PathsOverlap(tc.b, tc.a); got != tc.want {
+			t.Errorf("PathsOverlap(%q, %q) = %v, want %v (it must be symmetric)", tc.b, tc.a, got, tc.want)
+		}
+	}
+}
+
 // --- Basic resolution: applicability, ordering ---
 
 func TestResolve_OnlyApplicableCandidatesAreSelected(t *testing.T) {
@@ -91,6 +182,65 @@ func TestResolve_OnlyApplicableCandidatesAreSelected(t *testing.T) {
 	if len(result.Excluded) != 1 || result.Excluded[0].Reason != ReasonNotApplicable {
 		t.Fatalf("Excluded = %+v, want exactly k2 with ReasonNotApplicable", result.Excluded)
 	}
+}
+
+// V9-04 (gap G4): Resolve with a context carrying the work's path scopes
+// selects the resource tagged for that area and excludes, as NOT_APPLICABLE,
+// the one tagged for another area. Before V9-04 neither carried anything and
+// BOTH were excluded.
+func TestResolve_PathTaggedCandidates_FollowTheContextPaths(t *testing.T) {
+	backend := candidate("backend-rule", "v1", "h-backend", definition.PriorityGuidance, Selector{PathTags: []string{"backend"}}, 10)
+	frontend := candidate("frontend-rule", "v1", "h-frontend", definition.PriorityGuidance, Selector{PathTags: []string{"frontend"}}, 10)
+	global := candidate("global-rule", "v1", "h-global", definition.PriorityGuidance, Selector{}, 10)
+
+	for _, tc := range []struct {
+		name         string
+		ctx          ResolutionContext
+		wantSelected []string
+		wantExcluded []string
+	}{
+		{"scope backend/src", ResolutionContext{PathTags: []string{"backend/src"}}, []string{"backend-rule", "global-rule"}, []string{"frontend-rule"}},
+		{"scope frontend", ResolutionContext{PathTags: []string{"frontend"}}, []string{"frontend-rule", "global-rule"}, []string{"backend-rule"}},
+		{"whole repository", ResolutionContext{WholeRepositoryScope: true}, []string{"backend-rule", "frontend-rule", "global-rule"}, nil},
+		{"no path context at all", ResolutionContext{}, []string{"global-rule"}, []string{"backend-rule", "frontend-rule"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := Resolve([]Candidate{backend, frontend, global}, tc.ctx, bigBudget(), ByteCostEstimator{})
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			var selected, excluded []string
+			for _, r := range result.Selected {
+				selected = append(selected, r.Identity.ResourceKey)
+				if r.Reason != ReasonSelected {
+					t.Fatalf("%s reason = %s, want SELECTED", r.Identity.ResourceKey, r.Reason)
+				}
+			}
+			for _, r := range result.Excluded {
+				excluded = append(excluded, r.Identity.ResourceKey)
+				if r.Reason != ReasonNotApplicable {
+					t.Fatalf("%s reason = %s, want NOT_APPLICABLE", r.Identity.ResourceKey, r.Reason)
+				}
+			}
+			sort.Strings(selected)
+			sort.Strings(excluded)
+			if !equalStrings(selected, tc.wantSelected) || !equalStrings(excluded, tc.wantExcluded) {
+				t.Fatalf("selected = %v, excluded = %v; want selected %v, excluded %v", selected, excluded, tc.wantSelected, tc.wantExcluded)
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestResolve_OrdersHardConstraintFirstThenByPriority(t *testing.T) {
