@@ -38,11 +38,31 @@ type EvidenceID string
 // EvidenceKey).
 const EvidenceKindCommandExecution = "COMMAND_EXECUTION"
 
+// EvidenceKindAgentExecution is the fixed Kind an AGENT node's own single
+// Evidence row uses (V9-01): its artifact references are the attempt's diff
+// manifests, so a CHECKER scheduled after this node finds — via the
+// EvidenceRefs of its ContextSnapshot (gatherCheckerEvidenceRefs) — the
+// uncommitted change this node left, "requirement, diff và evidence" as
+// V5-12 intended. Like COMMAND_EXECUTION it is a single row per execution,
+// not a per-criterion breakdown.
+const EvidenceKindAgentExecution = "AGENT_EXECUTION"
+
+// EvidenceVerdictRecorded is the fixed Verdict an AGENT execution's Evidence
+// row carries: the row RECORDS what the agent produced (its diff manifests),
+// it does not VERIFY it. It is deliberately not one of the verdicts
+// completion accepts (SUCCEEDED, PASS, NOT_APPLICABLE — isPassingVerdict), so
+// an agent's own claim can never satisfy a CompletionPolicy's
+// RequiredEvidenceKinds on its own; only an independent check (a
+// MACHINE_GATE, a COMMAND, an approval) can, exactly as before this row
+// existed.
+const EvidenceVerdictRecorded = "RECORDED"
+
 // EvidenceVerdictSucceeded is the fixed Verdict a COMMAND execution's own
 // Evidence row uses — Command has no gate.Verdict-shaped vocabulary of its
 // own (PASS/FAIL/ERROR/NOT_RUN/NOT_APPLICABLE); reaching this Evidence row
 // at all already means the execution SUCCEEDED (a FAILED Command never
-// proposes Evidence in this remediation's own PR1 scope).
+// proposes Evidence in this remediation's own PR1 scope). An AGENT
+// execution's row uses EvidenceVerdictRecorded instead.
 const EvidenceVerdictSucceeded = "SUCCEEDED"
 
 // Evidence is one terminal ExecutionAttempt's own durable, full-lineage

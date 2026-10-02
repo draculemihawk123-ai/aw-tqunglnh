@@ -118,6 +118,11 @@ type bridgeFakeAgentExecutor struct {
 	result ports.AgentExecutionResult
 	err    error
 	events []ports.AgentEventKind
+	// onStart (V9-01) runs inside Start, before the scripted result is
+	// returned — the stand-in for "what the spawned process did to the
+	// worktree". starts, if non-nil, counts Start calls (a spawn).
+	onStart func()
+	starts  *int
 }
 
 func (f *bridgeFakeAgentExecutor) Capabilities(context.Context) (ports.AgentCapabilities, error) {
@@ -125,6 +130,12 @@ func (f *bridgeFakeAgentExecutor) Capabilities(context.Context) (ports.AgentCapa
 }
 
 func (f *bridgeFakeAgentExecutor) Start(ctx context.Context, request ports.AgentExecutionRequest, sink ports.AgentEventSink) (ports.AgentExecutionResult, error) {
+	if f.starts != nil {
+		*f.starts++
+	}
+	if f.onStart != nil {
+		f.onStart()
+	}
 	var sequence uint64
 	for _, kind := range f.events {
 		sequence++
@@ -223,6 +234,14 @@ type bridgeFixtureOptions struct {
 	// V5-12 test's own unchanged behavior. Only the new CHECKER-role tests
 	// below set this to workflow.AgentRoleChecker.
 	role workflow.AgentRole
+	// workspaces, if non-nil, replaces the default scripted
+	// bridgeFakeWorkspaceProvider (V9-01: a tree-aware double); diff and
+	// captureRevision are then ignored.
+	workspaces ports.WorkspaceProvider
+	// onAgentStart/agentStarts (V9-01) are forwarded to the scripted
+	// AgentExecutor — see bridgeFakeAgentExecutor.
+	onAgentStart func()
+	agentStarts  *int
 }
 
 // bridgeFixture builds one fully-admitted, RUNNING ExecutionAttempt (reusing
@@ -255,7 +274,9 @@ func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (
 
 	registry := eventschema.NewRegistry()
 	agentevents.RegisterEventSchemas(registry)
-	agents, err := agentregistry.New(ctx, &bridgeFakeAgentExecutor{result: opts.agentResult, err: opts.agentErr, events: opts.agentEvents})
+	agents, err := agentregistry.New(ctx, &bridgeFakeAgentExecutor{
+		result: opts.agentResult, err: opts.agentErr, events: opts.agentEvents, onStart: opts.onAgentStart, starts: opts.agentStarts,
+	})
 	if err != nil {
 		t.Fatalf("agentregistry.New: %v", err)
 	}
@@ -263,8 +284,12 @@ func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (
 	interruptions = &bridgeFakeInterruptionStore{uow: u}
 	reconciler = &bridgeFakeWorkspaceReconciler{}
 	writeLeases = &bridgeFakeWriteLeaseManager{}
+	var workspaces ports.WorkspaceProvider = &bridgeFakeWorkspaceProvider{diff: opts.diff, captureRevision: opts.captureRevision}
+	if opts.workspaces != nil {
+		workspaces = opts.workspaces
+	}
 	executor = runtime.NewAgentNodeExecutor(
-		u, ids, store, &bridgeFakeWorkspaceProvider{diff: opts.diff, captureRevision: opts.captureRevision}, writeLeases,
+		u, ids, store, workspaces, writeLeases,
 		agents, registry, redact.NewMatcher(), bridgeFakeCheckpointStore{}, clock.System{},
 		interruptions, reconciler,
 	)

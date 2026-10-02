@@ -37,6 +37,10 @@ type Provider struct {
 
 var _ ports.WorkspaceProvider = (*Provider)(nil)
 
+// Provider also satisfies ports.WorkspaceTreeSnapshotter (V9-01, ADR-030) —
+// see tree.go.
+var _ ports.WorkspaceTreeSnapshotter = (*Provider)(nil)
+
 // Provider also satisfies ports.WorkspaceDirectoryResolver (V3-07,
 // internal/app/ports/readiness.go's own doc comment): WorkingDirectory
 // below is already exactly that one method — this assertion is a
@@ -605,9 +609,23 @@ func (p *Provider) runGitWithExitCode(
 	directory string,
 	arguments ...string,
 ) ([]byte, int, error) {
+	return p.runGitWithEnv(ctx, directory, nil, arguments...)
+}
+
+// runGitWithEnv is runGitWithExitCode with extra KEY=VALUE environment
+// entries appended after the inherited environment (V9-01: SnapshotTree
+// points GIT_INDEX_FILE at a private temporary index). For a duplicated key
+// the last entry wins (os/exec's documented behavior), so an inherited
+// GIT_INDEX_FILE can never leak into a snapshot.
+func (p *Provider) runGitWithEnv(
+	ctx context.Context,
+	directory string,
+	extraEnv []string,
+	arguments ...string,
+) ([]byte, int, error) {
 	commandArguments := append([]string{"-C", directory}, arguments...)
 	command := exec.CommandContext(ctx, p.gitExecutable, commandArguments...)
-	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	command.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), extraEnv...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout

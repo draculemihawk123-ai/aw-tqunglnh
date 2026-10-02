@@ -18,13 +18,13 @@
 // fake" layer this task's own contract allows) to really claim "done" via
 // a real, correctly-parsed outcome marker — and confirms, empirically,
 // that this claim ALONE:
-//   - never produces any Evidence row at all (confirmed by reading the
-//     code: AgentNodeExecutor.buildEvidence reuses the exact same shared
-//     buildEvidence free function COMMAND/GATE use, and never appends any
-//     EvidenceEntries the way each of their own classify methods
-//     explicitly does — an AGENT's own successful Attempt evidence is
-//     purely a diff manifest + its own ProposedOutcome, nothing a
-//     CompletionPolicy's own RequiredEvidenceKinds could ever match), so
+//   - never produces any PASSING Evidence (confirmed by reading the code:
+//     an AGENT's own successful Attempt evidence is a diff manifest + its
+//     own ProposedOutcome, plus — since V9-01 — a single AGENT_EXECUTION
+//     row whose verdict is RECORDED, a record of what the agent produced
+//     that completion's isPassingVerdict never accepts; nothing a
+//     CompletionPolicy's own RequiredEvidenceKinds could ever be satisfied
+//     by), so
 //   - a CompletionPolicy requiring ANY evidence kind can only ever be
 //     satisfied by a real, independent, downstream check (here, a real
 //     MACHINE_GATE) — never by the maker's own claim, no matter how

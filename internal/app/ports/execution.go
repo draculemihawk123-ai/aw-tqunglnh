@@ -161,11 +161,14 @@ type AttemptFinalizationEvidence struct {
 	// remediation, 2026-09-10 post-merge review) exactly when the proposing
 	// executor is CommandNodeExecutor (exactly one entry, the whole
 	// execution) or GateNodeExecutor (one entry per MACHINE_GATE criterion)
-	// — nil/empty for AGENT and the pre-existing fake NodeExecutor, whose
-	// own diff-manifest evidence above is already sufficient. Each entry's
-	// own ArtifactReferences must be a subset of OutputArtifactRefs — never
-	// a fresh, unlisted artifact ID — so promotion only ever happens once,
-	// via OutputArtifactRefs, and Evidence rows merely reference the result.
+	// — and, since V9-01, AgentNodeExecutor (exactly one entry, RECORDED,
+	// whose references are the attempt's own diff manifests so a later
+	// CHECKER can find them); nil/empty for the pre-existing fake
+	// NodeExecutor, whose own diff-manifest evidence above is already
+	// sufficient. Each entry's own ArtifactReferences must be a subset of
+	// OutputArtifactRefs or DiffManifestArtifacts — never a fresh, unlisted
+	// artifact ID — so promotion only ever happens once (via whichever list
+	// names the artifact), and Evidence rows merely reference the result.
 	EvidenceEntries []EvidenceProposal
 }
 
@@ -182,7 +185,8 @@ type EvidenceProposal struct {
 	// or runtime.EvidenceVerdictSucceeded for a COMMAND execution (which has
 	// no PASS/FAIL/ERROR/NOT_RUN/NOT_APPLICABLE vocabulary of its own).
 	Verdict string
-	// ArtifactReferences must be a non-empty subset of OutputArtifactRefs.
+	// ArtifactReferences must be a non-empty subset of OutputArtifactRefs
+	// and DiffManifestArtifacts' artifact IDs combined.
 	ArtifactReferences []string
 	// PolicyVersion is the exact, pinned policy this Evidence row's own
 	// verdict was decided under (e.g. the GateVersion/CommandVersion's own

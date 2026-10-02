@@ -3,11 +3,13 @@ package fake
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
@@ -337,6 +339,9 @@ func (r *RuntimeRepository) CreateExecutionAttempt(_ context.Context, attempt ru
 	if r.attempts == nil {
 		r.attempts = map[string]runtime.ExecutionAttempt{}
 	}
+	// Own the InputTrees map (sqlite round-trips it through JSON, so a
+	// caller mutating its map afterwards can never reach the stored row).
+	attempt.InputTrees = attempt.InheritedInputTrees()
 	r.attempts[key] = attempt
 	return attempt, nil
 }
@@ -358,7 +363,29 @@ func (r *RuntimeRepository) GetExecutionAttempt(_ context.Context, id string) (r
 	if !ok {
 		return runtime.ExecutionAttempt{}, fmt.Errorf("fake: %w: execution attempt %s", ports.ErrPersistenceNotFound, id)
 	}
+	attempt.InputTrees = attempt.InheritedInputTrees()
 	return attempt, nil
+}
+
+// RecordAttemptInputTrees mirrors sqlite's RecordAttemptInputTrees (V9-01,
+// ADR-030): set-once, never bumps Version.
+func (r *RuntimeRepository) RecordAttemptInputTrees(_ context.Context, attemptID string, trees map[project.RepositoryID]string) (bool, error) {
+	attempt, ok := r.attempts[attemptID]
+	if !ok {
+		return false, fmt.Errorf("fake: %w: execution attempt %s", ports.ErrPersistenceNotFound, attemptID)
+	}
+	if len(trees) == 0 {
+		return false, errors.New("fake: at least one input tree is required")
+	}
+	if len(attempt.InputTrees) > 0 {
+		return false, nil
+	}
+	attempt.InputTrees = make(map[project.RepositoryID]string, len(trees))
+	for repositoryID, treeID := range trees {
+		attempt.InputTrees[repositoryID] = treeID
+	}
+	r.attempts[attemptID] = attempt
+	return true, nil
 }
 
 // TransitionExecutionAttempt mirrors sqlite's transitionExecutionAttemptTx

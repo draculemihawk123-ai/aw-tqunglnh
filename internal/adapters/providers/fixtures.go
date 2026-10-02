@@ -74,6 +74,29 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 	if writePath := os.Getenv("AGENTKIT_HELPER_WRITE_PATH"); writePath != "" {
 		_ = os.WriteFile(writePath, []byte("mutated by fake CLI\n"), 0o600)
 	}
+	// AGENTKIT_HELPER_WRITE_IN_CWD (V9-01): a relative file name this process
+	// (over)writes inside ITS OWN working directory. Unlike
+	// AGENTKIT_HELPER_WRITE_PATH — one absolute path, hit by EVERY fake CLI
+	// process that inherits the variable — this steers the write per node:
+	// the engine spawns a MAKER in its repository mount's working directory
+	// (a real change in the repository) and a CHECKER in an empty scratch
+	// directory (a harmless write outside every mount), so one workflow can
+	// have a maker that really changes a file and a checker that really
+	// changes nothing in the repository.
+	if name := os.Getenv("AGENTKIT_HELPER_WRITE_IN_CWD"); name != "" {
+		_ = os.WriteFile(name, []byte("written by fake CLI in its working directory\n"), 0o600)
+	}
+	// AGENTKIT_HELPER_APPEND_PATH (V9-01): an absolute path this process
+	// APPENDS one line to, so every invocation changes the file again (a
+	// fixed-content write such as AGENTKIT_HELPER_WRITE_PATH's would leave a
+	// second writer's output identical to the first's). It lets a test make
+	// both a maker and a later checker touch the same repository file.
+	if appendPath := os.Getenv("AGENTKIT_HELPER_APPEND_PATH"); appendPath != "" {
+		if file, err := os.OpenFile(appendPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			_, _ = fmt.Fprintf(file, "appended by fake CLI process %d\n", os.Getpid())
+			_ = file.Close()
+		}
+	}
 	if capturePath != "" {
 		capture := FakeCLIInvocation{Provider: provider, Argv: arguments, Stdin: string(input), WorkingDirectory: workingDirectory}
 		captureContent, err := json.Marshal(capture)

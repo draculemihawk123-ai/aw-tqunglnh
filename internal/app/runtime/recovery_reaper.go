@@ -688,6 +688,14 @@ func (h *RecoveryReaperHandler) retryAttempt(ctx context.Context, attempt runtim
 		if err != nil {
 			return err
 		}
+		// V9-01 (ADR-030): mirrors decideRetryOrExhaustion — a recovery
+		// attempt of the SAME NodeRun inherits the interrupted attempt's
+		// InputTrees in this creating transaction, so a crashed read-only
+		// attempt's own partial writes can never become the next attempt's
+		// baseline.
+		if err := inheritInputTreesTx(ctx, tx, string(attempt.ID), &nextAttempt); err != nil {
+			return err
+		}
 
 		// V5-04: mirrors decideRetryOrExhaustion's own clone-on-retry
 		// (finalize.go) — a recovery-driven retry attempt needs its own
@@ -912,6 +920,10 @@ func (h *RecoveryReaperHandler) consumeFreshStart(
 		}
 		checkpointID := checkpoint.ID
 		nextAttempt.LastCheckpointID = &checkpointID
+		// V9-01 (ADR-030): same inheritance as retryAttempt above.
+		if err := inheritInputTreesTx(ctx, tx, string(attempt.ID), &nextAttempt); err != nil {
+			return err
+		}
 
 		nextSnapshotID := contextsnapshot.ID(deterministicRecoverySnapshotID(attempt.ID, payload.Generation))
 		clonedSnapshot, err := contextsnapshot.NewSnapshot(

@@ -1,0 +1,38 @@
+-- execution_attempts.input_trees_json: V9-01's per-attempt "InputTree"
+-- record (docs/design/12-v9-harness-alignment.md V9-01; ADR-030 in
+-- docs/architecture/02-architecture-decisions.md).
+--
+-- A read-only attempt (a CHECKER-role AGENT, or a MACHINE_GATE) must prove
+-- it changed nothing relative to the moment IT started, not relative to the
+-- pinned commit: changes an earlier MAKER of the same run left uncommitted
+-- in the worktree (ADR-014 keeps them uncommitted until ReleaseSet/local
+-- commit) would otherwise be charged to the checker as SCOPE_VIOLATION,
+-- every time. Before spawning such an attempt the executor snapshots each
+-- mounted repository's working tree (tracked + untracked-not-ignored files)
+-- into a git tree object and records the tree IDs here, as a JSON object
+-- RepositoryID -> tree object ID. After quiescence the executor snapshots
+-- again and the attempt passes only if the trees are equal.
+--
+-- NULL means "never recorded": every attempt created before this migration,
+-- every attempt that is not read-only, and a read-only attempt that has not
+-- reached its snapshot step yet. Consumers fall back to the stricter
+-- pre-V9-01 rule (the diff against the pinned commit must be empty) for a
+-- strict attempt whose column is NULL, so this migration needs no backfill.
+--
+-- Set-once: the only writer is
+--   UPDATE execution_attempts SET input_trees_json = ? WHERE id = ? AND input_trees_json IS NULL
+-- (RuntimeRepository.RecordAttemptInputTrees), so a second writer can never
+-- overwrite a recorded tree. The writer does NOT bump execution_attempts.version:
+-- recording is an annotation of the attempt's input, not a state transition,
+-- and a bumped version would make the executor's own later
+-- RUNNING->terminal CAS (expected version read before recording) fail.
+--
+-- The attempt that replaces this one inside the SAME NodeRun (technical retry,
+-- crash recovery) is created with this column copied in the creating
+-- transaction, so whatever a crashed read-only attempt left behind never
+-- becomes its successor's input. A new NodeRun starts with NULL.
+--
+-- Plain ADD COLUMN, no rebuild: execution_attempts has real rows, and a
+-- nullable column with no CHECK needs none (the same shape as migration
+-- 0018's failure_code).
+ALTER TABLE execution_attempts ADD COLUMN input_trees_json TEXT;
