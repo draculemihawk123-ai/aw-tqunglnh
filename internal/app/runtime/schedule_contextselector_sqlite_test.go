@@ -76,13 +76,14 @@ type selectorScenario struct {
 	name   string
 	scopes []selectorScope
 	role   workflow.AgentRole
-	// wantSelected/wantExcluded are resource keys (the test sorts them). Every excluded
-	// resource must carry the reason NOT_APPLICABLE (the budget is large).
+	// wantSelected/wantExcluded are resource keys (the test sorts them).
+	// Every excluded resource must carry the reason NOT_APPLICABLE (the
+	// budget is large).
 	wantSelected []string
 	wantExcluded []string
-	// wantInput is the persisted decision input without the two fields that
-	// come from the WorkItem row (taskKind, riskClass), which the test
-	// appends from the stored WorkItem.
+	// The want* fields below are the persisted decision input without the
+	// two fields that come from the WorkItem row (taskKind, riskClass), which
+	// the test appends from the stored WorkItem. The tag sets are JSON.
 	wantComponentTags        string
 	wantPathTags             string
 	wantWholeRepositoryScope bool
