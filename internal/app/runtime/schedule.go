@@ -396,9 +396,15 @@ func ScheduleExecutableNodeRun(
 		}
 
 		snapshotID := contextsnapshot.ID(ids.NewID())
+		// V9-03 (ADR-032 decision 2): every Snapshot created from here on
+		// records instruction schema v2, so the request assembled for its
+		// Attempt renders hard constraints first, the allowed outcomes and a
+		// closing checklist. Snapshots written before this change record
+		// nothing and keep rendering as v1.
 		snapshot, err := contextsnapshot.NewSnapshot(
 			snapshotID, run.ProjectID, run.WorkItemID, contextsnapshot.AttemptID(attemptID),
 			messageRefs, resourceRefs, evidenceRefs, baseRevisionSet, time.Now().UTC(),
+			contextsnapshot.WithInstructionSchemaVersion(contextsnapshot.InstructionSchemaV2),
 		)
 		if err != nil {
 			return err

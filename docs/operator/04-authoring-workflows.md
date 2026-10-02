@@ -49,6 +49,12 @@ Each resource's own content hash (needed by any Command that references it) is a
 `instruction`/`priority`/`global`/`selector` — independent of which SkillVersion owns it, so republishing the
 identical script content under a new version number reuses the identical hash.
 
+For an agent, `priority` (`HARD_CONSTRAINT`, `REQUIRED_PROCEDURE`, `GUIDANCE`, `REFERENCE`) decides where the resource
+appears in its prompt and how it is labelled — see
+[What an agent receives](#what-an-agent-receives--the-instruction-artifact-v9-03-adr-032). Write the rules that must
+hold as `HARD_CONSTRAINT`; the agent reads them first and again at the very end. A Skill does **not** need to list the
+outcomes an agent may report (see the same section).
+
 ## COMMAND — real, verified shape
 
 ```json
@@ -168,6 +174,52 @@ passing verdict), so `fail → fix → pass` completes and a run that ends on a 
 When the maker runs again through that edge, its context snapshot carries the evidence of the failing attempt and its
 prompt gets a `checkFailures` section: `what` failed, `why` (the tail of stderr, or stdout if stderr was empty, for a
 command; the criteria that did not pass for a gate — bounded to 4 KiB) and `fix`. Only the latest failure is shown.
+
+## What an agent receives — the instruction artifact (V9-03, ADR-032)
+
+An `AGENT` node's prompt is one JSON document, written to the provider's stdin and pinned as the attempt's
+instruction artifact (the same bytes, so the same context snapshot always gives the same artifact and hash). Since
+V9-03 it has this shape (**schema v2**, keys in exactly this order):
+
+```json
+{"schemaVersion": 2,
+ "hardConstraints": [{"ownerVersionId": "...", "resourceKey": "...", "priority": "HARD_CONSTRAINT", "contentHash": "...", "content": "..."}],
+ "taskContract": {"workItemId": "...", "title": "...", "behavior": "...", "acceptanceCriteria": ["..."],
+                  "verificationSpec": "...", "riskLevel": "HIGH",
+                  "allowedOutcomes": ["approved", "rework"], "outcomeProtocol": "..."},
+ "checkFailures": [{"checkNode": "...", "evidenceIds": ["..."], "what": "...", "why": "...", "fix": "..."}],
+ "resources": [{"ownerVersionId": "...", "resourceKey": "...", "priority": "GUIDANCE", "contentHash": "...", "content": "..."}],
+ "messages": [{"messageId": "...", "role": "USER", "content": "..."}],
+ "closingChecklist": {"hardConstraintKeys": ["..."], "allowedOutcomes": ["approved", "rework"]}}
+```
+
+- **`hardConstraints`** are the resources whose `priority` is `HARD_CONSTRAINT`, first in the document, and
+  **`closingChecklist.hardConstraintKeys`** repeats their `resourceKey`s last, together with the allowed outcomes — the
+  start and the end of a long prompt are what an agent attends to. Within the list they keep the order the context
+  resolver pinned them in (by `resourceKey`, then owner version, then content hash).
+- **`resources`** holds every other resource, each with its `priority`: `REQUIRED_PROCEDURE` first, then `GUIDANCE`,
+  then `REFERENCE`, in the pinned order inside each priority. The priority comes from the Skill/Layer resource itself;
+  nothing else to configure.
+- **`riskLevel`** is the WorkItem contract's `riskLevel`, verbatim.
+- **`allowedOutcomes`** are the outcomes the node declares **except** its `cyclePolicy.escalationOutcome` (the engine
+  assigns that one itself when the loop budget is spent; an agent never selects it), in the order the workflow
+  declares them. You no longer copy this list into a Skill.
+- **`outcomeProtocol`** is present only when the node has **more than one** allowed outcome; with exactly one, the
+  engine derives the outcome and asks for no marker. It is the same engine-owned text for every node: end the final
+  message with exactly one `<agentkit-outcome>{"schemaVersion":1,"outcome":"NAME"}</agentkit-outcome>` as the very
+  last thing written, `NAME` spelled as listed. The engine enforces it: a missing marker (when there is a
+  choice), a second marker in an earlier message, a malformed one, or an outcome outside the list fails the attempt
+  (all four are `OUTCOME_REJECTED`; see [09-troubleshooting.md](09-troubleshooting.md)). There are no per-outcome
+  descriptions yet; the list is the names only.
+- **`checkFailures`** is only present for a maker sent back by a failing check (see the section above), right after
+  the task contract.
+
+**Which schema an attempt gets** is recorded on its context snapshot (`instructionSchemaVersion`, set when the
+attempt is scheduled), not decided by the binary that happens to assemble it. Attempts scheduled before the upgrade
+that introduced this have no recorded version and keep the **v1** shape (`taskContract`, `checkFailures` when
+present, `messages`, `resources` — no priorities, no outcomes) byte for byte, and so do their retries and recovery
+attempts, which clone the snapshot with its version. Every attempt scheduled afterwards gets v2. Schema v2 is encoded
+without HTML escaping, so `<` and `&` appear as written, not as `<` / `&`.
 
 ## AGENT_PROFILE — real shape (from the same proven fixture)
 

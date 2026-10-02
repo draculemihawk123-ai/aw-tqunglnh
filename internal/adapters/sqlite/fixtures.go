@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -423,4 +424,40 @@ func ExpireWriteLeasesForTest(ctx context.Context, store *Store, jobID string) e
 		return fmt.Errorf("expire fixture write leases of %s: %w", jobID, err)
 	}
 	return nil
+}
+
+// RewriteSnapshotAsPreV903ForTest turns one attempt_context_snapshots row into
+// exactly the row a build from before V9-03 would have written for it: the
+// instruction_schema_version column NULL and manifest_hash recomputed without
+// it (contextsnapshot.canonicalManifest omits a zero version, so this is the
+// pre-V9-03 hash). A scheduler that records instruction schema v2 can no
+// longer produce such a snapshot, yet a database upgraded in place is full of
+// them, and a test of "an old v1 snapshot still assembles as v1" or "its retry
+// stays v1" needs one on a real database. Production code must never call this.
+func RewriteSnapshotAsPreV903ForTest(ctx context.Context, store *Store, snapshotID string) error {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("rewrite fixture snapshot %s: begin: %w", snapshotID, err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	current, err := loadSnapshotTx(ctx, tx, `id = ?`, snapshotID)
+	if err != nil {
+		return fmt.Errorf("rewrite fixture snapshot %s: load: %w", snapshotID, err)
+	}
+	legacy, err := contextsnapshot.NewSnapshot(
+		current.ID, current.ProjectID, current.WorkItemID, current.AttemptID,
+		current.MessageRefs, current.ResourceRefs, current.EvidenceRefs, current.Revisions, current.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("rewrite fixture snapshot %s: rebuild: %w", snapshotID, err)
+	}
+	result, err := tx.ExecContext(ctx,
+		`UPDATE attempt_context_snapshots SET instruction_schema_version = NULL, manifest_hash = ? WHERE id = ?`, legacy.ManifestHash, snapshotID)
+	if err != nil {
+		return fmt.Errorf("rewrite fixture snapshot %s: update: %w", snapshotID, err)
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("rewrite fixture snapshot %s: %d row(s) affected (err %v), want 1", snapshotID, n, err)
+	}
+	return tx.Commit()
 }

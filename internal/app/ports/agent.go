@@ -3,6 +3,7 @@ package ports
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"time"
 
@@ -324,6 +325,24 @@ type AgentProposedOutcome struct {
 	Source        AgentOutcomeSource
 	SchemaVersion int
 }
+
+// ErrOutcomeMarkerRejected is what an AgentExecutor's Start returns (wrapped,
+// together with the adapter's own ErrProtocol) when the agent's terminal
+// outcome marker is itself the problem: it names an outcome outside
+// AgentExecutionRequest.AllowedOutcomes, it appears more than once across the
+// execution, or its body is malformed. Each is a wrong answer from the agent —
+// the provider was reachable and finished its turn — so a caller maps it to
+// OUTCOME_REJECTED (agent_node_executor.go classify), the same verdict a
+// MISSING marker on a node with a choice already gets, and not to
+// PROVIDER_UNAVAILABLE (V9-03, ADR-032; the same misclassification family as
+// V9-09's scope violation reported as an unavailable provider).
+//
+// It is deliberately NOT set for a stream that never delivered its terminal
+// event or its init event: those are genuine protocol failures of the
+// provider side, and stay a plain ErrProtocol. Adapters keep wrapping their
+// own ErrProtocol as well, so errors.Is(err, adapter.ErrProtocol) still holds
+// for every marker error.
+var ErrOutcomeMarkerRejected = errors.New("agent outcome marker rejected")
 
 type AgentExecutionResult struct {
 	AttemptID         ExecutionAttemptID

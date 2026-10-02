@@ -1,0 +1,56 @@
+{
+  "taskContract": {
+    "workItemId": "work-item-7",
+    "title": "Add rate limiting to the public API",
+    "behavior": "Requests above 100 per minute per API key get HTTP 429 with a Retry-After header.",
+    "acceptanceCriteria": [
+      "{Description:Requests above the limit receive 429 VerificationRef:go test ./ratelimit/...}",
+      "{Description:The limit is configurable per key VerificationRef:}"
+    ],
+    "verificationSpec": "go test ./... passes and golangci-lint is clean"
+  },
+  "messages": [
+    {
+      "messageId": "message-001",
+      "role": "USER",
+      "content": "Please keep the public handler signatures unchanged."
+    },
+    {
+      "messageId": "message-002",
+      "role": "USER",
+      "content": "Use \u003cagentkit-outcome\u003e only as the final line \u0026 quote nothing: \"x\" é"
+    }
+  ],
+  "resources": [
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "api-compat",
+      "contentHash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "content": "Never change the signature of an exported function."
+    },
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "no-force-push",
+      "contentHash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "content": "Never force-push or rewrite published history."
+    },
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "pr-checklist",
+      "contentHash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "content": "Run go vet and go test before reporting done."
+    },
+    {
+      "ownerVersionId": "skill-v3",
+      "resourceKey": "style-guide",
+      "contentHash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+      "content": "Prefer small functions; wrap errors with %w."
+    },
+    {
+      "ownerVersionId": "layer-v2",
+      "resourceKey": "architecture-notes",
+      "contentHash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "content": "The ratelimit package owns all quota state."
+    }
+  ]
+}

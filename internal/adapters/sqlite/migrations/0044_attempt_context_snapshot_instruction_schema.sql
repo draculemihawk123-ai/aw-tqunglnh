@@ -1,0 +1,32 @@
+-- attempt_context_snapshots.instruction_schema_version: V9-03's per-snapshot
+-- choice of instruction-artifact schema (docs/design/12-v9-harness-alignment.md
+-- V9-03; ADR-032 in docs/architecture/02-architecture-decisions.md).
+--
+-- The instruction a provider receives is rendered from a ContextSnapshot at
+-- request-assembly time (internal/app/runtime/assemble_execution_request.go).
+-- V9-03 adds a second rendering (schema v2: hard constraints first, task
+-- contract with risk level and allowed outcomes, priority-ordered resources,
+-- closing checklist). V5-08B0's lock is that the SAME snapshot always yields
+-- the SAME instruction and hash, so which schema applies has to be a fact
+-- recorded on the snapshot itself, not a build-time switch: an Attempt that
+-- was scheduled before this migration (or before its binary was deployed)
+-- and is assembled afterwards must still get exactly the bytes it always
+-- would have.
+--
+-- NULL means "never recorded": every snapshot written before this migration.
+-- Such a row loads as schema v1 and renders byte-for-byte as before, so this
+-- migration needs no backfill. Snapshots created by the scheduler after it
+-- record 2. A retry or recovery clone copies the value of the snapshot it
+-- clones (contextsnapshot.Snapshot.CloneForAttempt), so an old v1 attempt's
+-- retry stays v1.
+--
+-- The CHECK admits NULL and 2 only: 1 is never stored (NULL IS v1, one
+-- canonical representation), and a future schema widens the CHECK in its own
+-- migration. The value also participates in the snapshot's manifest_hash
+-- (contextsnapshot.canonicalManifest), omitted while NULL, so the existing
+-- tamper check on load covers it and a v1 row's recomputed hash is unchanged.
+--
+-- Plain ADD COLUMN, no rebuild: attempt_context_snapshots has real rows, and a
+-- nullable column needs none (the same shape as migrations 0018 and 0042).
+ALTER TABLE attempt_context_snapshots ADD COLUMN instruction_schema_version INTEGER
+    CHECK (instruction_schema_version IS NULL OR instruction_schema_version = 2);
