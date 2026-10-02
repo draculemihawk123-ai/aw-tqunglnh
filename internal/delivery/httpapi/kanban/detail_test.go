@@ -1,6 +1,8 @@
 package kanban_test
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"testing"
 
@@ -18,6 +20,7 @@ import (
 type detailResponse struct {
 	Card         kanban.KanbanCardDTO      `json:"card"`
 	Readiness    workapp.WorkItemReadiness `json:"readiness"`
+	Runs         []kanban.WorkItemRunDTO   `json:"runs"`
 	Freshness    httpapi.Freshness         `json:"freshness"`
 	ValidActions []httpapi.ValidAction     `json:"validActions"`
 }
@@ -117,5 +120,51 @@ func TestGetWorkItemDetail_UnknownWorkItem_IsResourceHidden(t *testing.T) {
 	decodeInto(t, resp, &errBody)
 	if errBody.Error.Code != httpapi.ErrorCodeNotFound {
 		t.Errorf("error.code = %q, want NOT_FOUND", errBody.Error.Code)
+	}
+}
+
+// TestGetWorkItemDetail_ReportsRunCountAndAlwaysAnArrayOfRuns pins the V9-06
+// wire shape (ADR-033, gap G6): the card carries the projected runCount, and
+// `runs` is the authoritative Run list — a JSON array even for a WorkItem that
+// never ran (never null, never absent), so a client can render "no runs yet"
+// without a nil check. (A WorkItem with real runs is covered end to end by
+// internal/app/runtime's rerun tests and the v5accept rerun scenario.)
+func TestGetWorkItemDetail_ReportsRunCountAndAlwaysAnArrayOfRuns(t *testing.T) {
+	env := newTestEnv(t)
+	env.seedProject(t, "project-1")
+	env.seedActiveRepository(t, "project-1", "repo-a")
+	root := env.createRoot(t, "project-1", "Root task", grant("repo-a"))
+
+	env.ensureGeneration(t, "project-1", 1)
+	env.upsertCheckpoint(t, "project-1", 1, 20, ports.ProjectionLive)
+	env.seedProjectionRow(t, "project-1", 1, projection.WorkItemCardRow{
+		WorkItemID: root.WorkItemID, ProjectID: "project-1", FamilyID: root.FamilyID, Title: "Root task",
+		IsRoot: true, WorkspaceSetID: root.WorkspaceSetID, Status: "BLOCKED", BlockerCount: 1, TopBlockerType: "RUN_FAILED", RunCount: 2,
+	}, 15)
+
+	resp := env.get(t, "/work-items/"+root.WorkItemID+"/detail")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET detail: status = %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	var generic struct {
+		Card map[string]json.RawMessage `json:"card"`
+		Runs json.RawMessage            `json:"runs"`
+	}
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		t.Fatalf("decode %s: %v", raw, err)
+	}
+	if string(generic.Card["runCount"]) != "2" {
+		t.Errorf("card.runCount = %s, want 2 (the projected count)", generic.Card["runCount"])
+	}
+	if string(generic.Runs) != "[]" {
+		t.Errorf("runs = %s, want [] for a WorkItem with no run rows", generic.Runs)
+	}
+	if string(generic.Card["topBlockerType"]) != `"RUN_FAILED"` {
+		t.Errorf("card.topBlockerType = %s, want RUN_FAILED", generic.Card["topBlockerType"])
 	}
 }

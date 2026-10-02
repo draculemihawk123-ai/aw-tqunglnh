@@ -295,6 +295,10 @@ func TestResolve_ResolutionModeTypeMatrix(t *testing.T) {
 	}{
 		{"RunCancelled_Resolved_OK", workdomain.BlockerRunCancelled, "RESOLVED", nil},
 		{"RunCancelled_Waived_OK", workdomain.BlockerRunCancelled, "WAIVED", nil},
+		// V9-06 / ADR-033: `aw blocker resolve --mode RESOLVED` is the way out of
+		// a failed Run; WAIVED is a typed rejection.
+		{"RunFailed_Resolved_OK", workdomain.BlockerRunFailed, "RESOLVED", nil},
+		{"RunFailed_Waived_Rejected", workdomain.BlockerRunFailed, "WAIVED", runtime.ErrBlockerNotWaivable},
 		{"CompletionPolicyFailed_Waived_OK", workdomain.BlockerCompletionPolicyFailed, "WAIVED", nil},
 		{"CompletionPolicyFailed_Resolved_OK", workdomain.BlockerCompletionPolicyFailed, "RESOLVED", nil},
 		{"ScopeExpansionRequired_Resolved_Rejected", workdomain.BlockerScopeExpansionRequired, "RESOLVED", runtime.ErrBlockerNotResolvableViaCommand},

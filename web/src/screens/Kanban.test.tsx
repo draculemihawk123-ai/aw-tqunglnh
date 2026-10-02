@@ -67,6 +67,22 @@ describe('KanbanScreen', () => {
     expect(screen.getByText('completion not yet gate-verified')).toBeInTheDocument();
   });
 
+  it('V9-06: a card shows how many runs its WorkItem has had, and a never-run card shows none', async () => {
+    const RERUN_CARD = {
+      workItemId: 'wi-4', projectId: 'proj-1', familyId: 'fam-4', title: 'Flaky integration test',
+      isRoot: true, status: 'BLOCKED', blockerCount: 1, topBlockerType: 'RUN_FAILED', pendingScopeExpansionCount: 0, runCount: 2,
+    };
+    const FIRST_RUN_CARD = { ...ACTIVE_CARD, workItemId: 'wi-5', title: 'First attempt', runCount: 1 };
+    vi.mocked(api.listWorkItemKanban).mockResolvedValue({ items: [BACKLOG_CARD, RERUN_CARD, FIRST_RUN_CARD], freshness: freshness() } as never);
+    render(<KanbanScreen project={PROJECT} onOpenTask={vi.fn()} />);
+
+    await screen.findByText('Flaky integration test');
+    expect(screen.getByTestId('run-count-wi-4')).toHaveTextContent('2 runs');
+    expect(screen.getByTestId('run-count-wi-5')).toHaveTextContent('1 run');
+    expect(screen.getByText(/1 blocker \(RUN_FAILED\)/)).toBeInTheDocument();
+    expect(screen.queryByTestId('run-count-wi-1')).not.toBeInTheDocument();
+  });
+
   it('the repository filter narrows the board to only cards touching that repository', async () => {
     vi.mocked(api.listWorkItemKanban).mockResolvedValue({ items: [BACKLOG_CARD, ACTIVE_CARD, BLOCKED_CARD], freshness: freshness() } as never);
     render(<KanbanScreen project={PROJECT} onOpenTask={vi.fn()} />);
