@@ -29,6 +29,13 @@ optimistic-concurrency version AND the RepositoryWorkspace's own version — two
 the same workspace get a real, typed `CONFLICT` on the loser, never a silently corrupted history. `--wait`
 blocks until the commit job reaches a terminal state.
 
+If the repository workspace's worktree has nothing to commit (no staged, unstaged or untracked change), the
+commit does not retry: the operation ends immediately in state `FAILED` with `failureReason: "NO_CHANGES"` (visible
+in the `--wait` result, in `aw release-set local-commit status`, and in the `ReleaseSetLocalCommitFailed` event),
+and no commit is created. `NO_CHANGES` is a failure reason on the operation, not an error code. Edit the worktree
+and run `aw release-set local-commit` again with a new `--idempotency-key` and the same fields — a failed
+`NO_CHANGES` operation never blocks the retry (reusing the old key would only replay the old result).
+
 ```bash
 aw release-set seal --expected-version <n> --idempotency-key seal-1 <releaseSetId>   # no more commits allowed
 aw release-set abandon --expected-version <n> --idempotency-key abandon-1 <releaseSetId>  # discard, never applied

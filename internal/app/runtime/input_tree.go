@@ -215,8 +215,20 @@ func validateStrictlyReadOnlyTrees(
 		if len(changed) == 0 {
 			continue
 		}
-		return fmt.Errorf("%w: mount %s changed %d path(s) since this attempt started despite being read-only by design: %s",
-			scopeguard.ErrScopeViolation, mount.RepositoryID, len(changed), formatChangedPaths(changed))
+		// V9-09: the same message as before, but typed — a
+		// *scopeguard.ViolationsError (still errors.Is ErrScopeViolation) —
+		// so the executor records the changed paths as the attempt's
+		// operator-visible failureDetail (agentevents.RecordScopeViolation).
+		violations := make([]scopeguard.Violation, 0, len(changed))
+		for _, path := range changed {
+			violations = append(violations, scopeguard.Violation{
+				RepositoryID: mount.RepositoryID, Path: path,
+				Reason: "changed since this attempt started despite the mount being read-only by design",
+			})
+		}
+		return scopeguard.NewViolationsErrorWithSummary(violations,
+			fmt.Sprintf("mount %s changed %d path(s) since this attempt started despite being read-only by design: %s",
+				mount.RepositoryID, len(changed), formatChangedPaths(changed)))
 	}
 	return nil
 }

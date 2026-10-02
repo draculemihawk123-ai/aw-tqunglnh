@@ -139,7 +139,7 @@ convention). Neither was exercised by this documentation's own real verification
 schemas before authoring one, and treat this section as a pointer, not a verified reference, until a future
 pass exercises them end to end.
 
-## `aw definition list` / `show` / `versions` / `version show` / `version diff`
+## `aw definition list` / `show` / `versions`, `aw version show` / `aw version diff`
 
 Read-only queries over everything published so far:
 
@@ -147,6 +147,6 @@ Read-only queries over everything published so far:
 aw definition list [--project-id <id>]                  # every definition, any kind
 aw definition show <definitionId>                        # one definition's own metadata
 aw definition versions <definitionId>                     # every published version, newest first
-aw definition version show <definitionId> <versionNumber> # one version's full compiled document
-aw definition version diff <definitionId> <v1> <v2>        # field-level diff between two versions
+aw version show <versionId> [--project-id <id>]            # one version's full compiled document
+aw version diff <versionIdA> <versionIdB> [--project-id <id>]  # field-level diff between two versions
 ```

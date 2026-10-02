@@ -733,6 +733,20 @@ func (w *WorkRepository) GetReleaseSetLocalCommit(_ context.Context, id string) 
 	return intent, nil
 }
 
+// CountNoChangesFailedReleaseSetLocalCommits mirrors sqlite's own method
+// (V9-09).
+func (w *WorkRepository) CountNoChangesFailedReleaseSetLocalCommits(_ context.Context, releaseSetID, repositoryWorkspaceID, actor, messageHash string) (int, error) {
+	count := 0
+	for _, intent := range w.releaseSetLocalCommits {
+		if string(intent.ReleaseSetID) == releaseSetID && intent.RepositoryWorkspaceID == repositoryWorkspaceID &&
+			intent.Actor == actor && intent.MessageHash == messageHash &&
+			intent.State == work.ReleaseSetLocalCommitFailed && intent.FailureReason == work.FailureNoChanges {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // PinReleaseSetLocalCommitParent mirrors sqlite's own method: the identical
 // CAS discipline every other transition method in this fake already
 // performs, requiring State to still be REQUESTED.

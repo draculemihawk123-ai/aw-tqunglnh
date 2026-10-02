@@ -62,7 +62,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		timestamp, timestamp,
 	)
 	if err != nil {
-		return MapSQLiteError(fmt.Errorf("create shared definition: %w", err))
+		// V9-09: a UNIQUE/PRIMARY KEY collision is "this definition id
+		// already exists", not an opaque internal failure.
+		return mapAlreadyExists(fmt.Errorf("create shared definition: %w", err), "definition "+id)
 	}
 	return nil
 }
@@ -306,6 +308,22 @@ func (r definitionsRepository) LoadVersion(ctx context.Context, versionID string
 // every other kind, and a second CreateDefinition call for the same id is
 // a safe no-op as long as the identity it supplies still matches.
 func (r definitionsRepository) CreateDefinition(ctx context.Context, id string, kind definition.Kind, scope definition.Scope, name string, now time.Time) error {
+	// V9-09: a Definition id is ONE namespace across all nine kinds (the
+	// DefinitionCreated event stream is keyed by id alone, and a Workflow
+	// lives in a different table than the other eight), so an existing id
+	// under ANY kind is a typed ports.ErrPersistenceAlreadyExists conflict.
+	// Before this check a duplicate surfaced as "sqlite: unexpected error"
+	// (a PRIMARY KEY failure for the eight shared kinds, a domain_events
+	// UNIQUE failure for Workflow). The check runs inside the caller's
+	// serialized write transaction; createSharedDefinitionTx maps the
+	// remaining cross-process race the same way.
+	exists, err := definitionIDExistsTx(ctx, r.tx, id)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("%w: definition %s", ports.ErrPersistenceAlreadyExists, id)
+	}
 	if kind == definition.KindWorkflow {
 		wfDefinition := workflow.WorkflowDefinition{
 			ID: workflow.WorkflowDefinitionID(id), Name: name,
@@ -318,6 +336,24 @@ func (r definitionsRepository) CreateDefinition(ctx context.Context, id string, 
 		return ensureWorkflowDefinition(ctx, r.tx, wfDefinition, now)
 	}
 	return createSharedDefinitionTx(ctx, r.tx, id, kind, scope, name, now)
+}
+
+// definitionIDExistsTx reports whether id names a Definition of any kind:
+// a shared-table row (eight kinds) or a workflow_definitions row.
+func definitionIDExistsTx(ctx context.Context, tx *sql.Tx, id string) (bool, error) {
+	var found int
+	err := tx.QueryRowContext(ctx, `
+SELECT 1 FROM definitions WHERE id = ?
+UNION ALL
+SELECT 1 FROM workflow_definitions WHERE id = ?
+LIMIT 1`, id, id).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, MapSQLiteError(fmt.Errorf("check definition id %s: %w", id, err))
+	}
+	return true, nil
 }
 
 // GetDefinition implements ports.DefinitionsRepository (V6-05): reads one

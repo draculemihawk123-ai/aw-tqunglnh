@@ -360,10 +360,7 @@ func (e *GateNodeExecutor) classify(
 		evidence, err := buildEvidence(ctx, e.uow, e.ids, e.clk, e.store, e.workspaces, req, request, resolved, nil, true)
 		if err != nil {
 			if errors.Is(err, scopeguard.ErrScopeViolation) {
-				return ports.NodeExecutionResult{
-					State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
-					ErrorCode: errorcode.CodeScopeViolation,
-				}, nil
+				return scopeViolationNodeResult(ctx, e.uow, e.ids, e.clk, e.matcher, req, resolved, err), nil
 			}
 			if errors.Is(err, ErrInputTreeMissing) {
 				return inputTreeUnavailableResult(), nil
@@ -401,10 +398,7 @@ func (e *GateNodeExecutor) classify(
 			// A Gate's own evaluator wrote something despite being
 			// read-only — never trust a PASS verdict from an evaluation
 			// that mutated anything it was never granted.
-			return ports.NodeExecutionResult{
-				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
-				ErrorCode: errorcode.CodeScopeViolation,
-			}, nil
+			return scopeViolationNodeResult(ctx, e.uow, e.ids, e.clk, e.matcher, req, resolved, err), nil
 		}
 		if errors.Is(err, ErrInputTreeMissing) {
 			return inputTreeUnavailableResult(), nil

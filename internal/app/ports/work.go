@@ -396,6 +396,18 @@ type WorkRepository interface {
 	// GetReleaseSetLocalCommit returns the ReleaseSetLocalCommit with the
 	// given ID, or ErrPersistenceNotFound.
 	GetReleaseSetLocalCommit(ctx context.Context, id string) (work.ReleaseSetLocalCommit, error)
+	// CountNoChangesFailedReleaseSetLocalCommits (V9-09) returns how many
+	// operations already closed FAILED with work.FailureNoChanges for the
+	// exact same request-time pins a new RequestReleaseSetLocalCommit would
+	// derive its marker from (release set, repository workspace, actor,
+	// message hash). Such an operation provably never created a commit (the
+	// worktree was clean), so it must not make an identical re-request —
+	// the operator's "fix the worktree and try again" — collide with its
+	// UNIQUE marker: the caller folds this count into the new marker as an
+	// attempt ordinal. Operations in any other state (REQUESTED, COMMITTED,
+	// FAILED for another reason) are NOT counted, so a genuine duplicate
+	// still collides (ErrLocalCommitMarkerCollision).
+	CountNoChangesFailedReleaseSetLocalCommits(ctx context.Context, releaseSetID, repositoryWorkspaceID, actor, messageHash string) (int, error)
 	// PinReleaseSetLocalCommitParent durably records the exact parent
 	// commit a worker resolved (via a real, outside-transaction Inspect
 	// call) immediately BEFORE ever calling LocalCommitCreator — so a

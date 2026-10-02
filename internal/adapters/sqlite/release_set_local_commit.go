@@ -138,6 +138,21 @@ FROM release_set_local_commits WHERE id = ?`, id)
 	return intent, nil
 }
 
+// CountNoChangesFailedReleaseSetLocalCommits implements ports.WorkRepository
+// (V9-09): see that method's own doc comment.
+func (r workRepository) CountNoChangesFailedReleaseSetLocalCommits(ctx context.Context, releaseSetID, repositoryWorkspaceID, actor, messageHash string) (int, error) {
+	var count int
+	err := r.tx.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM release_set_local_commits
+WHERE release_set_id = ? AND repository_workspace_id = ? AND actor = ? AND message_hash = ?
+  AND state = 'FAILED' AND failure_reason = 'NO_CHANGES'`,
+		releaseSetID, repositoryWorkspaceID, actor, messageHash).Scan(&count)
+	if err != nil {
+		return 0, MapSQLiteError(fmt.Errorf("count no-changes release set local commits: %w", err))
+	}
+	return count, nil
+}
+
 // PinReleaseSetLocalCommitParent implements ports.WorkRepository (V6-10E):
 // see that method's own doc comment for the full contract. Never a terminal
 // transition — State is left exactly as it was (must be REQUESTED, checked

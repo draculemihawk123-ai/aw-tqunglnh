@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/apperror"
+	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
@@ -197,8 +198,9 @@ func reportFailure(stderr interface{ Write([]byte) (int, error) }, stdout *count
 // failureBody maps err into the typed error payload. Order matters: the
 // confirmation refusal and usage errors are the CLI's own classes; an
 // *apperror.Error reuses HTTP's own status-independent code mapping so a
-// failing command reports the same code over HTTP and the CLI; everything
-// else is INTERNAL carrying the leaf's own already-sanitized message.
+// failing command reports the same code over HTTP and the CLI;
+// ports.ErrPersistenceAlreadyExists is CONFLICT (V9-09); everything else is
+// INTERNAL carrying the leaf's own already-sanitized message.
 func failureBody(err error) httpapi.ErrorBody {
 	switch {
 	case errors.Is(err, cli.ErrConfirmationRequired):
@@ -211,6 +213,11 @@ func failureBody(err error) httpapi.ErrorBody {
 		return httpapi.ErrorBody{Code: httpapi.ErrorCodeConflict, Message: err.Error()}
 	case cli.IsUsageError(err):
 		return httpapi.ErrorBody{Code: httpapi.ErrorCodeInvalidRequest, Message: err.Error()}
+	case errors.Is(err, ports.ErrPersistenceAlreadyExists):
+		// V9-09: a create with an id that already exists (definition,
+		// repository) is the same typed CONFLICT over the CLI that HTTP
+		// answers with 409, not INTERNAL with a raw persistence message.
+		return httpapi.ErrorBody{Code: httpapi.ErrorCodeConflict, Message: err.Error()}
 	}
 	var appErr *apperror.Error
 	if errors.As(err, &appErr) {

@@ -229,6 +229,16 @@ func (e *AgentNodeExecutor) classify(
 		return ports.NodeExecutionResult{}, fmt.Errorf("%w: process tree did not confirm quiescence on a mutating attempt", ErrIndeterminateExecution)
 	}
 	if agentErr != nil {
+		// V9-09: the Sink's mid-run checkpoint rejected an out-of-scope
+		// write and that rejection travelled up as the adapter's own error
+		// (wrapped with %w the whole way). It is a verdict about what the
+		// attempt DID, not about the provider being unreachable — and it
+		// sits below the quiescence rule above on purpose: a mutating
+		// attempt whose tree never confirmed quiescence stays
+		// indeterminate whatever the error said.
+		if errors.Is(agentErr, scopeguard.ErrScopeViolation) {
+			return e.scopeViolationResult(ctx, req, resolved, agentErr), nil
+		}
 		// A bare Go error before/during the provider process's own
 		// lifecycle (spawn failure, protocol/parse error) with quiescence
 		// otherwise confirmed (or nothing writable to have been left
@@ -291,10 +301,7 @@ func (e *AgentNodeExecutor) classify(
 			// first real producer): the final, post-quiescence diff
 			// itself — not just a mid-run checkpoint's own diff — exceeded
 			// this Attempt's own EffectiveScope.
-			return ports.NodeExecutionResult{
-				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
-				ErrorCode: errorcode.CodeScopeViolation,
-			}, nil
+			return e.scopeViolationResult(ctx, req, resolved, err), nil
 		}
 		if errors.Is(err, ErrInputTreeMissing) {
 			// ADR-030: the recorded InputTree vanished (pruned) between the

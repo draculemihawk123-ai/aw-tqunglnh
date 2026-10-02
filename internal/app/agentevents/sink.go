@@ -220,11 +220,18 @@ func NewSink(ctx context.Context, cfg Config) (*Sink, error) {
 // persisting events/checkpoints as if nothing changed, the exact case
 // FinalizeExecutionAttempt already fences for the terminal transition.
 func (s *Sink) validateFencingLocked(ctx context.Context, tx ports.Tx) error {
-	if err := tx.Jobs().ValidateActiveJob(ctx, s.jobLease, "ExecutionAttempt", s.attemptID); err != nil {
+	return validateFencing(ctx, tx, s.jobLease, s.writeLeases, s.attemptID)
+}
+
+// validateFencing is validateFencingLocked's body as a package-level
+// function (V9-09), so RecordScopeViolation fences its own late write
+// exactly the way the Sink fences every one of its.
+func validateFencing(ctx context.Context, tx ports.Tx, jobLease ports.JobLease, writeLeases []ports.WriteLeaseGrant, attemptID string) error {
+	if err := tx.Jobs().ValidateActiveJob(ctx, jobLease, "ExecutionAttempt", attemptID); err != nil {
 		return err
 	}
-	for _, grant := range s.writeLeases {
-		if err := tx.Runtime().ValidateWriteLeaseFencing(ctx, s.jobLease, grant); err != nil {
+	for _, grant := range writeLeases {
+		if err := tx.Runtime().ValidateWriteLeaseFencing(ctx, jobLease, grant); err != nil {
 			return err
 		}
 	}
@@ -303,6 +310,14 @@ func (s *Sink) validateOrderingLocked(event ports.AgentEvent) error {
 // means Value() only ever sees JSON's own primitive shapes (string,
 // float64, bool, nil, map, slice), never that pitfall.
 func (s *Sink) buildRecord(event ports.AgentEvent) (ports.AgentEventRecord, error) {
+	return buildEventRecord(s.matcher, s.ids, s.attemptID, event)
+}
+
+// buildEventRecord is buildRecord's body as a package-level function
+// (V9-09), shared with RecordScopeViolation so an orchestrator-authored
+// event is redacted, size-checked and encoded by the very same code as every
+// provider event.
+func buildEventRecord(matcher redact.Matcher, ids idsource.Source, attemptID string, event ports.AgentEvent) (ports.AgentEventRecord, error) {
 	payload := Payload{
 		ObservedAt: event.ObservedAt, Message: event.Message, Tool: event.Tool,
 		Usage: event.Usage, Session: event.Session, Diagnostic: event.Diagnostic,
@@ -316,7 +331,7 @@ func (s *Sink) buildRecord(event ports.AgentEvent) (ports.AgentEventRecord, erro
 	if err := json.Unmarshal(raw, &generic); err != nil {
 		return ports.AgentEventRecord{}, fmt.Errorf("agentevents: decode event %d payload for redaction: %w", event.Sequence, err)
 	}
-	redacted, err := s.matcher.Value(generic)
+	redacted, err := matcher.Value(generic)
 	if err != nil {
 		return ports.AgentEventRecord{}, fmt.Errorf("agentevents: redact event %d payload: %w", event.Sequence, err)
 	}
@@ -329,7 +344,7 @@ func (s *Sink) buildRecord(event ports.AgentEvent) (ports.AgentEventRecord, erro
 			ErrPayloadTooLarge, event.Sequence, len(payloadJSON), MaxEventPayloadBytes)
 	}
 	return ports.AgentEventRecord{
-		ID: s.ids.NewID(), AttemptID: s.attemptID, Sequence: event.Sequence,
+		ID: ids.NewID(), AttemptID: attemptID, Sequence: event.Sequence,
 		Kind: string(event.Kind), SchemaVersion: schemaVersionV1,
 		PayloadJSON: string(payloadJSON), CreatedAt: event.ObservedAt,
 	}, nil
