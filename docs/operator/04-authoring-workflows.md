@@ -53,7 +53,8 @@ For an agent, `priority` (`HARD_CONSTRAINT`, `REQUIRED_PROCEDURE`, `GUIDANCE`, `
 appears in its prompt and how it is labelled — see
 [What an agent receives](#what-an-agent-receives--the-instruction-artifact-v9-03-adr-032). Write the rules that must
 hold as `HARD_CONSTRAINT`; the agent reads them first and again at the very end. A Skill does **not** need to list the
-outcomes an agent may report (see the same section).
+outcomes an agent may report (see the same section). `selector` decides *which* attempts get the resource — see
+[Routing knowledge to a code area](#routing-knowledge-to-a-code-area--resource-selectors-v9-04).
 
 ## COMMAND — real, verified shape
 
@@ -221,6 +222,85 @@ present, `messages`, `resources` — no priorities, no outcomes) byte for byte, 
 attempts, which clone the snapshot with its version. Every attempt scheduled afterwards gets v2. Schema v2 is encoded
 without HTML escaping, so `<` and `&` appear as written, not as `<` / `&`.
 
+## Routing knowledge to a code area — resource selectors (V9-04)
+
+A Skill or Layer resource says *when* it applies with its `selector` (a resource with an empty selector must be
+`"global": true`). One agent profile and one context route can therefore serve every area of a repository: pin all the
+resources in the route, tag each one for its area, and the engine picks the right ones for each attempt. You do **not**
+need an agent profile (or a context route) per area. (The document below is a Layer; a Skill resource has the same
+fields with `instruction` in place of `convention`.)
+
+```json
+{"resources": [
+  {"key": "backend-layout", "convention": "...", "priority": "GUIDANCE",
+   "selector": {"pathTags": ["backend"]}, "provenance": {"owner": "...", "source": "...", "revision": "v1"}},
+  {"key": "api-rules", "convention": "...", "priority": "HARD_CONSTRAINT",
+   "selector": {"componentTags": ["backend"]}, "provenance": {"owner": "...", "source": "...", "revision": "v1"}},
+  {"key": "review-checklist", "convention": "...", "priority": "GUIDANCE",
+   "selector": {"blockKinds": ["CHECKER"]}, "provenance": {"owner": "...", "source": "...", "revision": "v1"}},
+  {"key": "shared", "convention": "...", "priority": "GUIDANCE", "global": true, "selector": {},
+   "provenance": {"owner": "...", "source": "...", "revision": "v1"}}]}
+```
+
+**How a selector is evaluated.** When the engine schedules an `AGENT` node it resolves the node's context route against
+the facts of that attempt. A resource applies when **every dimension its selector declares** matches (AND across
+`componentTags`, `pathTags`, `taskKinds`, `blockKinds`, `riskClasses`), and a dimension matches when **any one** of its
+values does (OR within a dimension). A dimension the selector leaves out puts no restriction on it. A resource that does
+not apply is not loaded and is recorded as `NOT_APPLICABLE`. These are the facts, per dimension:
+
+| Dimension | Matched against | Match |
+|---|---|---|
+| `componentTags` | The **names** of the project's Components that the WorkItem touches (below) | exact |
+| `pathTags` | The path scopes of the WorkItem's effective scope (below) | path overlap |
+| `blockKinds` | The node's role: `MAKER` or `CHECKER` (the `role` of the `AGENT` node; `MAKER` when unset) | exact |
+| `taskKinds` | The WorkItem's kind: `ROOT` or `CHILD` | exact |
+| `riskClasses` | The WorkItem contract's `riskLevel`, verbatim | exact |
+
+`blockKinds` accepts any string and publishing does not reject a value other than `MAKER` or `CHECKER`, but only those
+two ever occur: only `AGENT` nodes resolve a context route, so a resource tagged for any other value is never loaded.
+
+**`componentTags` — Components.** A Component is a named directory of a repository; the repository probe creates one per
+top-level directory when you register a repository (`Name` and `Path` are both the directory name, hidden directories
+are skipped; list them with `aw component list <projectId>`). Write the **name** in `componentTags`, not an ID. A Component counts as touched when
+its repository is in the WorkItem's effective scope (a `READ` entry counts as much as a `WRITE` one) **and** its path
+overlaps a path scope of that repository's entry. A scope entry with **no** `pathScopes` covers the whole repository, so it
+touches every Component of that repository.
+
+**`pathTags` — paths.** A path tag is a relative directory path, written like a path scope (`backend`, `services/api`;
+`\` is read as `/`, `./backend/` as `backend`). It matches when the WorkItem's effective scope has an entry with no
+`pathScopes` (the whole repository contains every path), **or** the tag *overlaps* one of the scope's path scopes: they
+are equal, or one is a directory ancestor of the other, compared by whole path segments.
+
+| WorkItem path scope | `pathTags: ["backend"]` | `pathTags: ["backend/src/db"]` | `pathTags: ["services/api"]` |
+|---|---|---|---|
+| `backend` | applies | applies (the task may touch it) | no |
+| `backend/src` | applies | applies | no |
+| `services/apix` | no | no | **no** (`apix` is not `api`) |
+| none (whole repository) | applies | applies | applies |
+
+A path tag is a directory prefix, not a glob: `backend/**` matches nothing but a scope that literally contains such a
+path. A tag that is absolute, contains `..`, or is empty or `.` never matches, not even for a whole-repository scope.
+`pathTags` do not name a repository: with a WorkItem scoped to `backend` in two repositories, a `backend` tag applies
+to both; use `componentTags` (Component names are per repository) when that matters. A WorkItem with no effective
+scope at all receives no path- or component-tagged resource.
+
+**When it is decided.** The scope is read when the node run is scheduled and the result is pinned in that attempt's
+context snapshot. A node run scheduled after an approved scope expansion therefore sees the expanded scope; a retry or
+recovery attempt reuses the snapshot and so the resources it already pinned.
+
+**Seeing why a resource was or was not loaded.** The `CONTEXT_RESOLUTION_V1` decision artifact
+(`<nodeRunId>-context-resolution-v1` in the `decision_artifacts` table) records, per attempt, every resource with
+`SELECTED` / `NOT_APPLICABLE` / `BUDGET_EXCEEDED` as its result, and, as its input, the facts the route was resolved
+against, in this key order (sets are sorted and never `null`):
+
+```json
+{"componentTags":["backend"],"pathTags":["backend"],"wholeRepositoryScope":false,"blockKind":"MAKER","taskKind":"CHILD","riskClass":""}
+```
+
+`wholeRepositoryScope` is `true` when at least one scope entry has no `pathScopes`. If a resource you expected is
+missing, compare its selector with this input first. `aw context-snapshot show <workItemId> <snapshotId> --project-id
+<projectId>` lists what the attempt actually pinned.
+
 ## AGENT_PROFILE — real shape (from the same proven fixture)
 
 ```json
@@ -236,7 +316,8 @@ workflow can pull in wholesale; a Layer/EngineeringPack groups skills/policies f
 convention). Neither was exercised by this documentation's own real verification pass — consult
 `docs/design/04-v2-definition-plane.md` and `internal/domain/{block,layer,engineeringpack}` for their exact
 schemas before authoring one, and treat this section as a pointer, not a verified reference, until a future
-pass exercises them end to end.
+pass exercises them end to end. A Layer resource carries the same `selector` as a Skill resource, evaluated by the same
+rules ([Routing knowledge to a code area](#routing-knowledge-to-a-code-area--resource-selectors-v9-04)).
 
 ## `aw definition list` / `show` / `versions`, `aw version show` / `aw version diff`
 
