@@ -116,6 +116,29 @@ func registerRepositoryTx(ctx context.Context, tx *sql.Tx, req ports.RegisterRep
 		return project.Repository{}, MapSQLiteError(fmt.Errorf("resolve repository project: %w", err))
 	}
 
+	// V9-09 (LIM-06): registering a repository whose id — or whose name,
+	// UNIQUE per project — is already taken is a typed
+	// ports.ErrPersistenceAlreadyExists conflict, not the HTTP 500 /
+	// "sqlite: unexpected error" the raw constraint failure used to become.
+	// Checked explicitly first (the "check tường minh trước khi insert"
+	// discipline this file's other typed errors follow); the INSERT's own
+	// error mapping below is the backstop for a cross-process race.
+	var duplicate int
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM repositories WHERE id = ?`, string(created.ID)).Scan(&duplicate)
+	if err == nil {
+		return project.Repository{}, fmt.Errorf("%w: repository %s", ports.ErrPersistenceAlreadyExists, created.ID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return project.Repository{}, MapSQLiteError(fmt.Errorf("check repository id: %w", err))
+	}
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM repositories WHERE project_id = ? AND name = ?`, string(created.ProjectID), created.Name).Scan(&duplicate)
+	if err == nil {
+		return project.Repository{}, fmt.Errorf("%w: repository name %q in project %s", ports.ErrPersistenceAlreadyExists, created.Name, created.ProjectID)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return project.Repository{}, MapSQLiteError(fmt.Errorf("check repository name: %w", err))
+	}
+
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO repositories (
@@ -125,7 +148,7 @@ INSERT INTO repositories (
 		string(created.ID), string(created.ProjectID), created.Name, created.RemoteLocator, created.DefaultRef,
 		string(created.Status), created.Version, now, now,
 	); err != nil {
-		return project.Repository{}, MapSQLiteError(fmt.Errorf("register repository: %w", err))
+		return project.Repository{}, mapAlreadyExists(fmt.Errorf("register repository: %w", err), "repository "+string(created.ID))
 	}
 	return created, nil
 }

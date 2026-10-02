@@ -404,19 +404,22 @@ func (d *DefinitionsRepository) Seed(fields definition.VersionFields) {
 }
 
 // CreateDefinition mirrors sqlite's createSharedDefinitionTx/
-// definitionsRepository.CreateDefinition: KindWorkflow upserts an
-// in-memory workflow_definitions-equivalent record (a repeat call with
-// the same identity is a safe no-op, mirroring ensureWorkflowDefinition's
-// own ON CONFLICT DO NOTHING + identity-match behavior); every other kind
+// definitionsRepository.CreateDefinition: KindWorkflow creates an
+// in-memory workflow_definitions-equivalent record; every other kind
 // starts a fresh Definition at DRAFT/generation 1 via definition.Create.
+// V9-09: like the real adapter, an id that already names a Definition of
+// ANY kind is ports.ErrPersistenceAlreadyExists (one id namespace across
+// all nine kinds) — the old "repeat Workflow create with the same identity
+// is a no-op" behavior belongs to publish's ensureWorkflowDefinition, not
+// to an explicit create.
 func (d *DefinitionsRepository) CreateDefinition(_ context.Context, id string, kind definition.Kind, scope definition.Scope, name string, _ time.Time) error {
+	if _, exists := d.definitions[id]; exists {
+		return fmt.Errorf("fake: %w: definition %s", ports.ErrPersistenceAlreadyExists, id)
+	}
+	if _, exists := d.workflowDefinitions[id]; exists {
+		return fmt.Errorf("fake: %w: definition %s", ports.ErrPersistenceAlreadyExists, id)
+	}
 	if kind == definition.KindWorkflow {
-		if existing, ok := d.workflowDefinitions[id]; ok {
-			if existing.Name != name {
-				return fmt.Errorf("fake: workflow definition %s already exists with a different identity", id)
-			}
-			return nil
-		}
 		wfDefinition := workflow.WorkflowDefinition{
 			ID: workflow.WorkflowDefinitionID(id), Name: name,
 			Status: workflow.DefinitionStatus(definition.StatusDraft), Version: 1,
@@ -432,9 +435,6 @@ func (d *DefinitionsRepository) CreateDefinition(_ context.Context, id string, k
 		return nil
 	}
 
-	if _, exists := d.definitions[id]; exists {
-		return fmt.Errorf("fake: definition %s already exists", id)
-	}
 	fields, err := definition.Create(definition.CreateRequest{Kind: kind, Scope: scope, Name: name})
 	if err != nil {
 		return err
@@ -733,6 +733,16 @@ func (c *CatalogRepository) RegisterRepository(_ context.Context, req ports.Regi
 	}
 	if _, ok := c.projects[req.ProjectID]; !ok {
 		return project.Repository{}, fmt.Errorf("fake: %w: project %s", ports.ErrPersistenceNotFound, req.ProjectID)
+	}
+	// V9-09 (LIM-06): mirrors sqlite's registerRepositoryTx — a taken id or
+	// a name already used within the project is a typed conflict.
+	if _, exists := c.repositories[req.ID]; exists {
+		return project.Repository{}, fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceAlreadyExists, req.ID)
+	}
+	for _, other := range c.repositories {
+		if other.ProjectID == created.ProjectID && other.Name == created.Name {
+			return project.Repository{}, fmt.Errorf("fake: %w: repository name %q in project %s", ports.ErrPersistenceAlreadyExists, created.Name, created.ProjectID)
+		}
 	}
 	if c.repositories == nil {
 		c.repositories = map[string]project.Repository{}

@@ -48,9 +48,12 @@ type AssembleAgentExecutionRequestRequest struct {
 }
 
 // instructionArtifactContent is the exact deterministic shape
-// AssembleAgentExecutionRequest materializes into the InstructionArtifact —
-// task contract, then messages, then resources, each in the snapshot's own
-// pinned order. encoding/json.Marshal of a fixed Go value is itself
+// AssembleAgentExecutionRequest materializes into the InstructionArtifact for
+// a snapshot that records no instruction schema version (schema v1) — task
+// contract, then messages, then resources, each in the snapshot's own pinned
+// order. Schema v2 (V9-03, ADR-032) is instructionArtifactV2 in
+// instruction_artifact.go; THIS shape and its encoding must never change, so a
+// v1 snapshot keeps rendering the same bytes. encoding/json.Marshal of a fixed Go value is itself
 // deterministic (stable field order from the struct definition), so the
 // same snapshot always produces byte-identical content and therefore the
 // identical ArtifactRef.SHA256/hash — this is what "cùng snapshot tạo cùng
@@ -63,8 +66,13 @@ type instructionArtifactContent struct {
 		AcceptanceCriteria []string `json:"acceptanceCriteria,omitempty"`
 		VerificationSpec   string   `json:"verificationSpec"`
 	} `json:"taskContract"`
-	Messages  []instructionMessage  `json:"messages"`
-	Resources []instructionResource `json:"resources"`
+	// CheckFailures (V9-02, ADR-031 decision 6) is present only for a MAKER
+	// activated through a check's failureOutcome edge: the failing check's
+	// WHAT/WHY/FIX (check_failure_context.go). omitempty keeps every other
+	// prompt byte-for-byte what it was.
+	CheckFailures []instructionCheckFailure `json:"checkFailures,omitempty"`
+	Messages      []instructionMessage      `json:"messages"`
+	Resources     []instructionResource     `json:"resources"`
 }
 
 type instructionMessage struct {
@@ -106,29 +114,45 @@ func AssembleAgentExecutionRequest(
 	}
 
 	// Phase 2: real I/O, entirely outside the transaction above.
-	content := instructionArtifactContent{Messages: []instructionMessage{}, Resources: []instructionResource{}}
-	content.TaskContract.WorkItemID = gathered.workItemID
-	content.TaskContract.Title = gathered.workItemTitle
-	content.TaskContract.Behavior = gathered.workItemBehavior
-	content.TaskContract.VerificationSpec = gathered.workItemVerificationSpec
-	content.TaskContract.AcceptanceCriteria = gathered.workItemAcceptanceCriteria
+	input := instructionRenderInput{
+		workItemID: gathered.workItemID, title: gathered.workItemTitle, behavior: gathered.workItemBehavior,
+		acceptanceCriteria: gathered.workItemAcceptanceCriteria, verificationSpec: gathered.workItemVerificationSpec,
+		riskLevel: gathered.workItemRiskLevel, allowedOutcomes: gathered.allowedOutcomes,
+	}
 	for _, m := range gathered.messages {
 		body, err := readArtifact(ctx, store, m.ref)
 		if err != nil {
 			return ports.AgentExecutionRequest{}, fmt.Errorf("runtime: open message %s content artifact: %w", m.messageID, err)
 		}
-		content.Messages = append(content.Messages, instructionMessage{MessageID: m.messageID, Role: m.role, Content: body})
+		input.messages = append(input.messages, instructionMessage{MessageID: m.messageID, Role: m.role, Content: body})
+	}
+	if len(gathered.checkFailures) > 0 {
+		input.checkFailures, err = renderCheckFailures(ctx, store, gathered.checkFailures)
+		if err != nil {
+			return ports.AgentExecutionRequest{}, err
+		}
 	}
 	for _, r := range gathered.resources {
-		content.Resources = append(content.Resources, instructionResource{
-			OwnerVersionID: r.Identity.OwnerVersionID, ResourceKey: r.Identity.ResourceKey,
-			ContentHash: r.Identity.ContentHash, Content: string(r.Payload),
+		input.resources = append(input.resources, instructionResourceInput{
+			ownerVersionID: r.Identity.OwnerVersionID, resourceKey: r.Identity.ResourceKey, contentHash: r.Identity.ContentHash,
+			priority: r.Priority, content: string(r.Payload),
 		})
 	}
 
-	contentJSON, err := json.Marshal(content)
+	// V9-03 (ADR-032 decision 2): the snapshot, not this build, says which
+	// schema renders it. A snapshot that recorded none is v1 and renders
+	// exactly as it always has.
+	var contentJSON []byte
+	switch gathered.instructionSchema {
+	case contextsnapshot.InstructionSchemaV1:
+		contentJSON, err = renderInstructionV1(input)
+	case contextsnapshot.InstructionSchemaV2:
+		contentJSON, err = renderInstructionV2(input)
+	default:
+		err = fmt.Errorf("runtime: snapshot %s records instruction schema version %d, which this build cannot render", gathered.snapshotID, gathered.instructionSchema)
+	}
 	if err != nil {
-		return ports.AgentExecutionRequest{}, fmt.Errorf("runtime: marshal instruction artifact content: %w", err)
+		return ports.AgentExecutionRequest{}, err
 	}
 	instructionRef, err := store.Put(ctx, ports.ArtifactMetadata{ContentType: "application/json", Sensitivity: redact.Sensitive}, strings.NewReader(string(contentJSON)))
 	if err != nil {
@@ -234,6 +258,10 @@ type assembledRequestInputs struct {
 	adapterBuildID       string
 	snapshotID           contextsnapshot.ID
 	snapshotManifestHash string
+	// instructionSchema is the instruction-artifact schema the snapshot
+	// renders with (contextsnapshot.Snapshot.InstructionSchema): 1 for a
+	// snapshot that recorded none.
+	instructionSchema    int
 	effectiveScope       []workdomain.RepositoryScope
 	executionProfileHash string
 	// timeoutSeconds/model are the pinned AGENT execution profile's own
@@ -253,6 +281,7 @@ type assembledRequestInputs struct {
 	allowedCapabilities []string
 	workspaceMounts     []ports.AgentWorkspaceMount
 	messages            []assembledMessageInput
+	checkFailures       []assembledCheckFailureInput
 	resources           []contextassembler.Candidate
 	allowedOutcomes     []string
 	// recoveryCheckpointID is V5-13's own recovery marker (2026-09-11):
@@ -274,6 +303,7 @@ type assembledRequestInputs struct {
 	workItemTitle              string
 	workItemBehavior           string
 	workItemVerificationSpec   string
+	workItemRiskLevel          string
 	workItemAcceptanceCriteria []string
 }
 
@@ -394,6 +424,20 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		resources = append(resources, candidate)
 	}
 
+	// V9-02 (ADR-031 decision 6): the Evidence a MAKER's snapshot pins is the
+	// failing check that sent it back here (schedule.go,
+	// gatherCheckFailureEvidenceRefs) — resolved now, rendered in Phase 2. A
+	// CHECKER's snapshot also carries EvidenceRefs (its predecessors'), but
+	// those are V5-12's input allowlist for a different reader and are left
+	// exactly as they were.
+	var checkFailures []assembledCheckFailureInput
+	if profile.Role != workflow.AgentRoleChecker && len(snapshot.EvidenceRefs) > 0 {
+		checkFailures, err = gatherCheckFailureInputs(ctx, tx, snapshot.EvidenceRefs)
+		if err != nil {
+			return assembledRequestInputs{}, err
+		}
+	}
+
 	mounts := assembleWorkspaceMounts(nodeRun.EffectiveScope, snapshot.Revisions.Entries())
 	// V5-12 contract 3 (2026-09-10): a CHECKER-role AGENT node's own
 	// mounts are ALWAYS forced read-only, regardless of what
@@ -421,13 +465,13 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 
 	return assembledRequestInputs{
 		providerKey: attempt.ProviderKey, adapterBuildID: profile.AdapterBuild.BuildID,
-		snapshotID: snapshot.ID, snapshotManifestHash: snapshot.ManifestHash,
+		snapshotID: snapshot.ID, snapshotManifestHash: snapshot.ManifestHash, instructionSchema: snapshot.InstructionSchema(),
 		effectiveScope: nodeRun.EffectiveScope, executionProfileHash: attempt.ExecutionProfileHash,
 		timeoutSeconds: profile.TimeoutSeconds, model: profile.Model,
 		isolationTier: profile.IsolationTier, allowedCapabilities: profile.AllowedCapabilities,
-		workspaceMounts: mounts, messages: messages, resources: resources, allowedOutcomes: allowedOutcomes,
+		workspaceMounts: mounts, messages: messages, checkFailures: checkFailures, resources: resources, allowedOutcomes: allowedOutcomes,
 		workItemID: string(workItem.ID), workItemTitle: workItem.Title, workItemBehavior: workItem.Behavior,
-		workItemVerificationSpec: workItem.VerificationSpec, workItemAcceptanceCriteria: acceptance,
+		workItemVerificationSpec: workItem.VerificationSpec, workItemRiskLevel: string(workItem.RiskLevel), workItemAcceptanceCriteria: acceptance,
 		recoveryCheckpointID: recoveryCheckpointID,
 	}, nil
 }

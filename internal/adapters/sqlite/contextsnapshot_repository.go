@@ -60,11 +60,17 @@ func createSnapshotTx(ctx context.Context, tx *sql.Tx, snapshot contextsnapshot.
 		return contextsnapshot.Snapshot{}, fmt.Errorf("marshal context snapshot revision set: %w", err)
 	}
 
+	// instruction_schema_version: NULL while the snapshot records none (a v1
+	// snapshot), the recorded version otherwise (V9-03, migration 0044).
+	var instructionSchemaVersion any
+	if snapshot.InstructionSchemaVersion != 0 {
+		instructionSchemaVersion = snapshot.InstructionSchemaVersion
+	}
 	_, insertErr := tx.ExecContext(ctx, `
-INSERT INTO attempt_context_snapshots (id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, manifest_hash, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO attempt_context_snapshots (id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, instruction_schema_version, manifest_hash, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(snapshot.ID), string(snapshot.ProjectID), string(snapshot.WorkItemID), string(snapshot.AttemptID),
-		string(messageRefsJSON), string(resourceRefsJSON), string(evidenceRefsJSON), string(revisionSetJSON), snapshot.ManifestHash,
+		string(messageRefsJSON), string(resourceRefsJSON), string(evidenceRefsJSON), string(revisionSetJSON), instructionSchemaVersion, snapshot.ManifestHash,
 		formatWorkflowTime(snapshot.CreatedAt),
 	)
 	if insertErr == nil {
@@ -89,7 +95,7 @@ func (r contextSnapshotRepository) GetSnapshotByAttemptID(ctx context.Context, a
 
 func loadSnapshotTx(ctx context.Context, tx *sql.Tx, whereClause string, arg string) (contextsnapshot.Snapshot, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, manifest_hash, created_at
+SELECT id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, instruction_schema_version, manifest_hash, created_at
 FROM attempt_context_snapshots WHERE `+whereClause, arg)
 	snapshot, err := scanSnapshotRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -100,7 +106,10 @@ FROM attempt_context_snapshots WHERE `+whereClause, arg)
 
 func scanSnapshotRow(row repositoryRowScanner) (contextsnapshot.Snapshot, error) {
 	var id, projectID, workItemID, attemptID, messageRefsRaw, resourceRefsRaw, evidenceRefsRaw, revisionSetRaw, manifestHash, createdAtRaw string
-	if err := row.Scan(&id, &projectID, &workItemID, &attemptID, &messageRefsRaw, &resourceRefsRaw, &evidenceRefsRaw, &revisionSetRaw, &manifestHash, &createdAtRaw); err != nil {
+	// NULL (every snapshot written before migration 0044) scans as 0: a v1
+	// snapshot.
+	var instructionSchemaVersion sql.NullInt64
+	if err := row.Scan(&id, &projectID, &workItemID, &attemptID, &messageRefsRaw, &resourceRefsRaw, &evidenceRefsRaw, &revisionSetRaw, &instructionSchemaVersion, &manifestHash, &createdAtRaw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return contextsnapshot.Snapshot{}, err
 		}
@@ -140,6 +149,7 @@ func scanSnapshotRow(row repositoryRowScanner) (contextsnapshot.Snapshot, error)
 	rebuilt, err := contextsnapshot.NewSnapshot(
 		contextsnapshot.ID(id), project.ProjectID(projectID), work.WorkItemID(workItemID), contextsnapshot.AttemptID(attemptID),
 		messageRefs, resourceRefs, evidenceRefs, revisions, createdAt,
+		contextsnapshot.WithInstructionSchemaVersion(int(instructionSchemaVersion.Int64)),
 	)
 	if err != nil {
 		return contextsnapshot.Snapshot{}, err

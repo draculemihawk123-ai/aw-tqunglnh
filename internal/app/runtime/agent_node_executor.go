@@ -229,6 +229,28 @@ func (e *AgentNodeExecutor) classify(
 		return ports.NodeExecutionResult{}, fmt.Errorf("%w: process tree did not confirm quiescence on a mutating attempt", ErrIndeterminateExecution)
 	}
 	if agentErr != nil {
+		// V9-09: the Sink's mid-run checkpoint rejected an out-of-scope
+		// write and that rejection travelled up as the adapter's own error
+		// (wrapped with %w the whole way). It is a verdict about what the
+		// attempt DID, not about the provider being unreachable — and it
+		// sits below the quiescence rule above on purpose: a mutating
+		// attempt whose tree never confirmed quiescence stays
+		// indeterminate whatever the error said.
+		if errors.Is(agentErr, scopeguard.ErrScopeViolation) {
+			return e.scopeViolationResult(ctx, req, resolved, agentErr), nil
+		}
+		// V9-03: the agent's terminal outcome marker was itself wrong — it
+		// names an outcome outside AllowedOutcomes, appears more than once, or
+		// is malformed (ports.ErrOutcomeMarkerRejected, which the adapters
+		// wrap together with their own ErrProtocol). The provider was
+		// reachable and finished its turn, so this is the agent's wrong
+		// answer, not an unavailable provider: it ends exactly like a MISSING
+		// marker on a node with a choice does, below. It sits next to the
+		// scope-violation branch for the same reason and, like it, below the
+		// lease-lost and quiescence checks above, which stay first.
+		if errors.Is(agentErr, ports.ErrOutcomeMarkerRejected) {
+			return outcomeRejectedResult(), nil
+		}
 		// A bare Go error before/during the provider process's own
 		// lifecycle (spawn failure, protocol/parse error) with quiescence
 		// otherwise confirmed (or nothing writable to have been left
@@ -276,10 +298,7 @@ func (e *AgentNodeExecutor) classify(
 		// violation on OUR side of the wire (not an infra/connectivity
 		// concern), mirroring execute.go's own established "malformed
 		// scope expansion proposal -> OUTCOME_REJECTED" precedent exactly.
-		return ports.NodeExecutionResult{
-			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonOutcomeRejected,
-			ErrorCode: errorcode.CodeValidationFailed,
-		}, nil
+		return outcomeRejectedResult(), nil
 	}
 
 	evidence, err := e.buildEvidence(ctx, req, request, resolved, proposedOutcome)
@@ -291,10 +310,7 @@ func (e *AgentNodeExecutor) classify(
 			// first real producer): the final, post-quiescence diff
 			// itself — not just a mid-run checkpoint's own diff — exceeded
 			// this Attempt's own EffectiveScope.
-			return ports.NodeExecutionResult{
-				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonScopeViolation,
-				ErrorCode: errorcode.CodeScopeViolation,
-			}, nil
+			return e.scopeViolationResult(ctx, req, resolved, err), nil
 		}
 		if errors.Is(err, ErrInputTreeMissing) {
 			// ADR-030: the recorded InputTree vanished (pruned) between the
@@ -308,6 +324,22 @@ func (e *AgentNodeExecutor) classify(
 		State: runtimedomain.ExecutionAttemptSucceeded, TerminationReason: runtimedomain.TerminationReasonCompleted,
 		SelectedOutcome: selectedOutcome, Evidence: evidence,
 	}, nil
+}
+
+// outcomeRejectedResult is the one result every "the agent did not give a valid
+// outcome" case ends in — a missing marker on a node with a choice
+// (resolveSelectedOutcome failing), and since V9-03 a marker that names an
+// unlisted outcome, repeats, or is malformed (ports.ErrOutcomeMarkerRejected):
+// FAILED / OUTCOME_REJECTED with failure code VALIDATION_FAILED, the same
+// values execute.go gives a malformed scope-expansion proposal. No evidence is
+// attached, as before. Retry follows the pinned attempt policy like any other
+// failure code (finalize.go decideRetryOrExhaustion): it retries only if the
+// policy's RetryableErrorCodes lists VALIDATION_FAILED.
+func outcomeRejectedResult() ports.NodeExecutionResult {
+	return ports.NodeExecutionResult{
+		State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonOutcomeRejected,
+		ErrorCode: errorcode.CodeValidationFailed,
+	}
 }
 
 // resolveSelectedOutcome applies V5-08B's own locked split of

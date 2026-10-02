@@ -70,6 +70,12 @@ top-level word is a "resource" routed through a shared resource-command layer, V
 runs the pre-V6 offline bundle verifier when invoked with `--evidence-dir`/`--suite` flags instead of a
 `--project-id` — see `cmd/aw/cli.go`'s own `isLegacyBundleVerify`.
 
+`version` names two different things: `aw version` / `aw version --json` is the process command that prints this
+binary's build identity (`CLI_LOCAL`), while `aw version show <versionId>` and `aw version diff <versionIdA>
+<versionIdB>` are the definition-version resource commands (see [04-authoring-workflows.md](04-authoring-workflows.md)).
+`cmd/aw/cli.go`'s own `isRoutedResourceCommand` sends an invocation to the resource router exactly when its first
+non-option argument after `version` is `show` or `diff`; everything else after `version` is the process command.
+
 ## Shared conventions across every resource command
 
 - **Body input**: every mutation reads a JSON request body from stdin (pipe it in) or `--file <path>` — never

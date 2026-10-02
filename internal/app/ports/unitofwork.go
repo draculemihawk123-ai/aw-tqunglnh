@@ -199,7 +199,10 @@ type CatalogRepository interface {
 	// RegisterRepository atomically creates a new Repository row —
 	// always RepositoryRegistering (project.NewRepository's own rule) —
 	// after verifying req.ProjectID names a Project that actually exists
-	// (ErrPersistenceNotFound otherwise). It does not itself enqueue the
+	// (ErrPersistenceNotFound otherwise), and refuses a req.ID that is
+	// already taken — or a req.Name already used by another Repository of
+	// the same Project — with ErrPersistenceAlreadyExists (V9-09, LIM-06;
+	// never a raw constraint failure). It does not itself enqueue the
 	// probe job or append a domain event: those are the calling command
 	// handler's job (internal/app/catalog.RegisterRepository), composed
 	// alongside this call inside the same ports.Tx, exactly the way
@@ -341,7 +344,9 @@ type DefinitionsRepository interface {
 	// the same rule definition.Create expresses for every kind, Workflow
 	// included, even though Workflow's own row lives in a different
 	// table (workflow_definitions, not definitions) than the other eight
-	// kinds do.
+	// kinds do. A Definition id is one namespace across all nine kinds: an
+	// id that already names a Definition of ANY kind is refused with
+	// ErrPersistenceAlreadyExists (V9-09) — never a raw constraint failure.
 	CreateDefinition(ctx context.Context, id string, kind definition.Kind, scope definition.Scope, name string, now time.Time) error
 
 	// PublishVersion publishes a new Version for one of the eight shared

@@ -714,10 +714,9 @@ func (h *RecoveryReaperHandler) retryAttempt(ctx context.Context, attempt runtim
 		}
 		if err == nil {
 			nextSnapshotID := contextsnapshot.ID(h.ids.NewID())
-			clonedSnapshot, err = contextsnapshot.NewSnapshot(
-				nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshot.AttemptID(nextAttemptID),
-				previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.EvidenceRefs, previousSnapshot.Revisions, h.clk.Now(),
-			)
+			// V9-03 (ADR-032): CloneForAttempt carries the instruction schema
+			// version too, so a recovery retry of a v1 attempt stays v1.
+			clonedSnapshot, err = previousSnapshot.CloneForAttempt(nextSnapshotID, contextsnapshot.AttemptID(nextAttemptID), h.clk.Now())
 			if err != nil {
 				return err
 			}
@@ -926,10 +925,9 @@ func (h *RecoveryReaperHandler) consumeFreshStart(
 		}
 
 		nextSnapshotID := contextsnapshot.ID(deterministicRecoverySnapshotID(attempt.ID, payload.Generation))
-		clonedSnapshot, err := contextsnapshot.NewSnapshot(
-			nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshot.AttemptID(nextAttemptIDStr),
-			previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.EvidenceRefs, previousSnapshot.Revisions, h.clk.Now(),
-		)
+		// V9-03 (ADR-032): the FRESH_START replacement is rendered with the
+		// instruction schema of the checkpoint's own snapshot, v1 or v2.
+		clonedSnapshot, err := previousSnapshot.CloneForAttempt(nextSnapshotID, contextsnapshot.AttemptID(nextAttemptIDStr), h.clk.Now())
 		if err != nil {
 			return err
 		}

@@ -64,8 +64,18 @@ func TestCommandNodeExecutor_OutputTruncated_FailsClosedDespiteZeroExit(t *testi
 	if result.State != runtimedomain.ExecutionAttemptFailed {
 		t.Fatalf("result = %+v, want FAILED — a truncated capture must never be trusted as a clean success even with ExitCode=0", result)
 	}
+	// V9-02 (ADR-031 decision 4): the process finished, so its execution record
+	// is kept — but as FAILED evidence, never as a SUCCEEDED row that could
+	// satisfy a completion policy, and never with a proposed outcome.
 	if result.Evidence != nil {
-		t.Fatalf("result.Evidence = %+v, want nil — a truncated attempt never proposes SUCCEEDED evidence", result.Evidence)
+		if result.Evidence.ProposedOutcome != nil {
+			t.Fatalf("result.Evidence.ProposedOutcome = %+v, want nil — a truncated attempt never proposes an outcome", result.Evidence.ProposedOutcome)
+		}
+		for _, entry := range result.Evidence.EvidenceEntries {
+			if entry.Verdict != runtimedomain.EvidenceVerdictFailed {
+				t.Fatalf("evidence entry %+v, want verdict FAILED — a truncated attempt never proposes SUCCEEDED evidence", entry)
+			}
+		}
 	}
 }
 

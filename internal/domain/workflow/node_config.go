@@ -142,6 +142,16 @@ type CommandNodeConfig struct {
 	// PolicyRefs pins the policies this node's execution runs under.
 	// Every pin's Kind must be definition.KindPolicy.
 	PolicyRefs []definition.DependencyPin `json:"policyRefs,omitempty"`
+	// FailureOutcome (V9-02, ADR-031) is optional: the one of this node's
+	// own declared outcomes a FUNCTIONAL failure routes to — the command
+	// exited on its own with a non-zero code — instead of failing the
+	// attempt. Empty (the zero value, omitted from the canonical JSON so a
+	// workflow that never sets it keeps its exact compiled hash) keeps the
+	// pre-V9-02 behaviour: a non-zero exit fails the attempt, then retries,
+	// then fails the NodeRun. Technical errors (timeout, kill, spawn failure,
+	// exit 0 with truncated output, scope violation, lost lease) never take
+	// this route; see validateFailureOutcome for the shape rule.
+	FailureOutcome string `json:"failureOutcome,omitempty"`
 }
 
 func (c *CommandNodeConfig) clone() *CommandNodeConfig {
@@ -164,6 +174,13 @@ type MachineGateNodeConfig struct {
 	// PolicyRefs pins the policies this node's evaluation runs under.
 	// Every pin's Kind must be definition.KindPolicy.
 	PolicyRefs []definition.DependencyPin `json:"policyRefs,omitempty"`
+	// FailureOutcome (V9-02, ADR-031) is optional: the one of this node's
+	// own declared outcomes an OverallVerdict of FAIL routes to instead of
+	// failing the attempt. Empty (omitted from the canonical JSON, so a
+	// workflow that never sets it keeps its exact compiled hash) keeps the
+	// pre-V9-02 behaviour. A verdict of ERROR or NOT_RUN is a technical
+	// error and never takes this route; see validateFailureOutcome.
+	FailureOutcome string `json:"failureOutcome,omitempty"`
 }
 
 func (c *MachineGateNodeConfig) clone() *MachineGateNodeConfig {
@@ -173,6 +190,22 @@ func (c *MachineGateNodeConfig) clone() *MachineGateNodeConfig {
 	cloned := *c
 	cloned.PolicyRefs = append([]definition.DependencyPin(nil), c.PolicyRefs...)
 	return &cloned
+}
+
+// CheckFailureOutcome returns the V9-02 (ADR-031) failureOutcome a COMMAND or
+// MACHINE_GATE node declares, or "" for every other node and for a check that
+// declares none. It is the one place runtime code asks "does this node route a
+// functional failure to an outcome", so none of them has to know which of the
+// two typed configs carries the field.
+func (n Node) CheckFailureOutcome() string {
+	switch {
+	case n.Type == NodeCommand && n.Command != nil:
+		return n.Command.FailureOutcome
+	case n.Type == NodeMachineGate && n.MachineGate != nil:
+		return n.MachineGate.FailureOutcome
+	default:
+		return ""
+	}
 }
 
 // ApprovalNodeConfig is an APPROVAL node's (HE-14's HUMAN_TASK/APPROVAL)

@@ -192,9 +192,18 @@ func RequestReleaseSetLocalCommit(
 		}
 
 		messageHash := computeMessageHash(message)
-		marker := computeOperationMarker(
+		// V9-09: an earlier identical request that closed FAILED/NO_CHANGES
+		// never created a commit, so the operator's retry (after fixing the
+		// worktree) must not collide with its UNIQUE marker — see
+		// withAttemptOrdinal.
+		priorNoChanges, err := tx.Work().CountNoChangesFailedReleaseSetLocalCommits(
+			ctx, string(releaseSet.ID), req.RepositoryWorkspaceID, cmd.Actor, messageHash)
+		if err != nil {
+			return err
+		}
+		marker := withAttemptOrdinal(computeOperationMarker(
 			string(releaseSet.ID), releaseSet.Version, req.RepositoryWorkspaceID, record.Workspace.Generation, cmd.Actor, messageHash,
-		)
+		), priorNoChanges)
 
 		intentID := ids.NewID()
 		intent, err := workdomain.NewReleaseSetLocalCommit(

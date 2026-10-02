@@ -200,6 +200,21 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 		revision, createErr := deps.Creator.CreateLocalCommit(ctx, ports.CreateLocalCommitRequest{
 			Handle: handle, Message: message, AuthorName: intent.AuthorName, AuthorEmail: intent.AuthorEmail,
 		})
+		if errors.Is(createErr, ports.ErrNothingToCommit) {
+			// V9-09: the worktree is clean, so there is nothing to commit —
+			// a determinate fact retrying cannot change. Close the operation
+			// FAILED/NO_CHANGES and complete the job NOW (failTerminal does
+			// both in one fenced transaction) instead of returning an error
+			// the pool would answer by re-claiming the job until it went
+			// DEAD with the operation stuck REQUESTED. The creator answered
+			// this before any `git commit`, so no Git state was mutated and
+			// the write lease can be released whether or not failTerminal
+			// succeeds (on failure the job retries and re-derives the same
+			// answer).
+			failErr := failTerminal(ctx, deps.UnitOfWork, jobLease, intent, workdomain.FailureNoChanges, now)
+			releaseGrant()
+			return failErr
+		}
 		if createErr != nil {
 			releaseGrant()
 			return fmt.Errorf("releasesetcommit: create local commit for %s: %w", intent.RepositoryWorkspaceID, createErr)

@@ -708,8 +708,11 @@ func decideRetryOrExhaustion(
 	// decision, using the SAME terminal-state-neutral helper the SUCCEEDED
 	// branch uses (FinalizeExecutionAttempt's own switch, above), minus the
 	// Checkpoint/ProposedOutcome concerns that belong only to SUCCEEDED.
-	// nil for every other FAILED/TIMED_OUT caller (AGENT/COMMAND's own
-	// generic failure — never required to carry criteria Evidence).
+	// Since V9-02 (ADR-031 decision 4) a COMMAND whose process finished on its
+	// own without succeeding proposes its COMMAND_EXECUTION record here too,
+	// with or without a failureOutcome (a routed failure is SUCCEEDED, not
+	// this branch). nil for every other FAILED/TIMED_OUT caller (an AGENT
+	// failure, a timeout, a kill — never required to carry Evidence).
 	if req.Evidence != nil {
 		if err := validateAndAttachEvidenceArtifactsTx(ctx, tx, clk, req, run); err != nil {
 			return err
@@ -771,10 +774,9 @@ func decideRetryOrExhaustion(
 		}
 		if err == nil {
 			nextSnapshotID := contextsnapshot.ID(ids.NewID())
-			clonedSnapshot, err = contextsnapshot.NewSnapshot(
-				nextSnapshotID, previousSnapshot.ProjectID, previousSnapshot.WorkItemID, contextsnapshot.AttemptID(nextAttemptID),
-				previousSnapshot.MessageRefs, previousSnapshot.ResourceRefs, previousSnapshot.EvidenceRefs, previousSnapshot.Revisions, clk.Now(),
-			)
+			// V9-03 (ADR-032): CloneForAttempt carries the instruction schema
+			// version too, so a retry of a v1 attempt stays v1.
+			clonedSnapshot, err = previousSnapshot.CloneForAttempt(nextSnapshotID, contextsnapshot.AttemptID(nextAttemptID), clk.Now())
 			if err != nil {
 				return err
 			}

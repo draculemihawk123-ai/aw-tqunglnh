@@ -27,7 +27,7 @@ var _ workerpool.Handler = (*Handler)(nil)
 // ExecuteReleaseSetLocalCommit. Any non-nil error here leaves the job
 // un-completed for retry (or DEAD once MaxClaims is exhausted) — exactly
 // like workspacerelease.Handler.Handle's identical discipline; a terminal,
-// typed outcome (STALE_GENERATION/WORKSPACE_QUARANTINED/MARKER_DRIFT) is
+// typed outcome (STALE_GENERATION/WORKSPACE_QUARANTINED/MARKER_DRIFT/NO_CHANGES) is
 // instead recorded by ExecuteReleaseSetLocalCommit itself via its own
 // fenced failTerminal transaction (which also completes the job), so
 // Handle returns nil for that case — never an error a caller would

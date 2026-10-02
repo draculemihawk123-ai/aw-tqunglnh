@@ -679,9 +679,11 @@ func validateNodeConfig(node Node) []string {
 	case node.Command != nil:
 		problems = append(problems, validateExecutorPin(node.Command.CommandRef, definition.KindCommand, "command.commandRef", node.Key)...)
 		problems = append(problems, validatePolicyRefs(node.Command.PolicyRefs, "command.policyRefs", node.Key)...)
+		problems = append(problems, validateFailureOutcome(node, node.Command.FailureOutcome, "command.failureOutcome")...)
 	case node.MachineGate != nil:
 		problems = append(problems, validateExecutorPin(node.MachineGate.GateRef, definition.KindGate, "machineGate.gateRef", node.Key)...)
 		problems = append(problems, validatePolicyRefs(node.MachineGate.PolicyRefs, "machineGate.policyRefs", node.Key)...)
+		problems = append(problems, validateFailureOutcome(node, node.MachineGate.FailureOutcome, "machineGate.failureOutcome")...)
 	case node.Approval != nil:
 		problems = append(problems, validateApprovalConfig(node)...)
 	case node.Wait != nil:
@@ -691,6 +693,50 @@ func validateNodeConfig(node Node) []string {
 	}
 
 	return problems
+}
+
+// validateFailureOutcome enforces ADR-031 decision 2 for a COMMAND or
+// MACHINE_GATE node that declares a failureOutcome (V9-02): of the outcomes
+// the check itself can select — every declared outcome except this node's own
+// CyclePolicy.EscalationOutcome, which the runtime assigns on a SKIPPED
+// NodeRun and a check never selects (the same exclusion AGENT applies to the
+// outcomes an agent may propose) — there must be exactly two: the
+// failureOutcome and one success outcome. Anything else is ambiguous for a
+// node that has no marker protocol to choose between outcomes: with three it
+// would have to guess, with one there is no success route at all.
+//
+// The edge leaving failureOutcome needs no rule of its own here: it is an
+// ordinary FLOW edge, so a loop back to an earlier node is already rejected by
+// validateBoundedCycles unless some node of the loop carries a CyclePolicy
+// whose escalation outcome leaves it (ADR-031 "tuân theo quy tắc vòng lặp hiện
+// có").
+func validateFailureOutcome(node Node, failureOutcome, path string) []string {
+	if failureOutcome == "" {
+		return nil
+	}
+	if failureOutcome != strings.TrimSpace(failureOutcome) {
+		return []string{fmt.Sprintf("node %q %s %q is invalid", node.Key, path, failureOutcome)}
+	}
+	if !contains(node.Outcomes, failureOutcome) {
+		return []string{fmt.Sprintf("node %q %s %q is not one of its declared outcomes %v", node.Key, path, failureOutcome, node.Outcomes)}
+	}
+	selectable := make([]string, 0, len(node.Outcomes))
+	for _, outcome := range node.Outcomes {
+		if node.CyclePolicy != nil && outcome == node.CyclePolicy.EscalationOutcome {
+			continue
+		}
+		selectable = append(selectable, outcome)
+	}
+	if !contains(selectable, failureOutcome) {
+		return []string{fmt.Sprintf("node %q %s %q is the node's own cyclePolicy escalation outcome, which a check never selects — failureOutcome must be an outcome the check itself selects", node.Key, path, failureOutcome)}
+	}
+	if len(selectable) != 2 {
+		return []string{fmt.Sprintf(
+			"node %q declares %s %q, so exactly two outcomes must be selectable by the check (the failure outcome and one success outcome, not counting its own cyclePolicy escalation outcome), found %d: %v",
+			node.Key, path, failureOutcome, len(selectable), selectable,
+		)}
+	}
+	return nil
 }
 
 // validateExecutorPin checks one executable node config's

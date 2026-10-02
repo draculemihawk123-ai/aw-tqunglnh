@@ -58,12 +58,23 @@ const EvidenceKindAgentExecution = "AGENT_EXECUTION"
 const EvidenceVerdictRecorded = "RECORDED"
 
 // EvidenceVerdictSucceeded is the fixed Verdict a COMMAND execution's own
-// Evidence row uses — Command has no gate.Verdict-shaped vocabulary of its
-// own (PASS/FAIL/ERROR/NOT_RUN/NOT_APPLICABLE); reaching this Evidence row
-// at all already means the execution SUCCEEDED (a FAILED Command never
-// proposes Evidence in this remediation's own PR1 scope). An AGENT
-// execution's row uses EvidenceVerdictRecorded instead.
+// Evidence row uses when the process exited 0 with its output intact —
+// Command has no gate.Verdict-shaped vocabulary of its own
+// (PASS/FAIL/ERROR/NOT_RUN/NOT_APPLICABLE). An AGENT execution's row uses
+// EvidenceVerdictRecorded instead; a COMMAND that did not succeed uses
+// EvidenceVerdictFailed.
 const EvidenceVerdictSucceeded = "SUCCEEDED"
+
+// EvidenceVerdictFailed is the Verdict a COMMAND execution's Evidence row
+// carries when the process finished but did not succeed (V9-02, ADR-031
+// decision 4): it exited on its own with a non-zero code (a functional
+// failure), or exited 0 with output that was cut and so cannot be trusted. It
+// is deliberately not one of the verdicts completion accepts (SUCCEEDED, PASS,
+// NOT_APPLICABLE — isPassingVerdict), so a check whose latest activation
+// failed never satisfies a CompletionPolicy's RequiredEvidenceKinds. The row
+// exists whether or not the node declares a failureOutcome: it only adds
+// data, it changes no transition.
+const EvidenceVerdictFailed = "FAILED"
 
 // Evidence is one terminal ExecutionAttempt's own durable, full-lineage
 // record for one criterion (MACHINE_GATE: Kind is that Criterion's own

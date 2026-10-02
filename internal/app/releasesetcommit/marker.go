@@ -48,6 +48,24 @@ func computeOperationMarker(releaseSetID string, releaseSetVersion uint64, repos
 	return hashHex(input)
 }
 
+// withAttemptOrdinal (V9-09) folds a retry ordinal into base for the
+// operator's "fix the worktree and request the same local commit again"
+// path: attempt is how many earlier operations with the very same
+// request-time pins already closed FAILED/NO_CHANGES (they provably never
+// created a commit), so attempt 0 — every first request, and every request
+// with no such predecessor — returns base UNCHANGED (existing markers and
+// the V6-10E marker-collision guarantee are untouched), while attempt n>0
+// derives a distinct, equally deterministic marker from base. A genuine
+// duplicate of a still-live (REQUESTED/COMMITTED) operation therefore still
+// derives the colliding marker and is rejected with
+// ports.ErrLocalCommitMarkerCollision.
+func withAttemptOrdinal(base string, attempt int) string {
+	if attempt <= 0 {
+		return base
+	}
+	return hashHex(base + "\x00attempt\x00" + strconv.Itoa(attempt))
+}
+
 // markerTrailer is the exact line CreateLocalCommit's own Message embeds,
 // and LocalCommitMarkerReader's own real adapter searches HEAD's commit
 // body for.

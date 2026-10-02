@@ -49,7 +49,11 @@ The `remoteLocator` path you registered doesn't resolve from the `aw worker` pro
 commonly a relative path, or a shell-specific path (an MSYS/Git-Bash `/tmp/...`-style path on Windows is NOT
 the same path the native Go process sees). Register a NEW repository ID with the corrected ABSOLUTE,
 OS-native path — there is no "edit repository" command, so fixing this always means registering again with a
-new ID.
+new ID. An ID is never reused: `aw repository register` with an ID (or a name, within the project) that already
+exists fails with a typed `CONFLICT` — `persistent record already exists: repository <id>` (HTTP 409, exit code 1) —
+and registers nothing; the same is true of `aw definition create` with a `definitionId` that already names a
+Definition of any kind (`persistent record already exists: definition <id>`). Replaying the SAME
+`--idempotency-key` is the only way to get the original result back.
 
 ## Gate/command "could not be spawned" / "not a valid Win32 application" / permission denied
 
@@ -59,6 +63,72 @@ Linux/macOS. Fix by publishing a NEW skill version with the OS-correct script, t
 pointing at it, then a new gate/workflow version pointing forward through that chain — Definitions are
 immutable per version, so there is never an "edit and retry" for a published document; always publish forward.
 See [01-quickstart.md](01-quickstart.md)'s own real walkthrough of hitting and fixing exactly this.
+
+## Attempt `FAILED` with `SCOPE_VIOLATION`
+
+```bash
+aw run timeline <runId>
+# an EXECUTION_ATTEMPT entry: "failureCode": "SCOPE_VIOLATION",
+#   "failureDetail": "2 path(s) outside the granted scope: repo-a:leaked.txt; repo-a:docs/x.md"
+```
+
+The agent changed something its WorkItem's `pathScopes` (or, for a CHECKER/gate, its read-only mount) does not
+allow. This is a verdict about what the attempt WROTE — not a provider outage (`PROVIDER_UNAVAILABLE`), and not
+retryable. `failureDetail` names the violating paths (at most 20, then `and N more`; known secrets inside a path
+are masked); the same field is in `GET /runs/{id}/timeline`. Either widen the WorkItem's scope with a scope
+expansion, or fix the agent/skill so it stays inside the paths it was granted. An attempt that failed this way
+before the field existed has the failure code but no `failureDetail`.
+
+## A COMMAND or gate failed — where is the reason?
+
+```bash
+aw evidence list --project-id <id> <workItemId> --kind COMMAND_EXECUTION
+# "verdict": "FAILED", "artifactReferences": ["<artifactId>"]
+aw artifact get <workItemId> <evidenceId> <artifactId> --project-id <id> --output -
+# {"exitCode":1,"argv":[...],"cwd":"...","durationMillis":812,"truncated":false,"stderr":"FAIL: TestAdd ..."}
+```
+
+Since V9-02 a `COMMAND` that exited on its own leaves a `COMMAND_EXECUTION` evidence row even when the exit code was
+not 0 (verdict `FAILED`): the artifact has the exit code, argv, working directory, duration, whether the output was
+cut (`truncated`) and the redacted stdout/stderr the command's `output` contract captures — no need to re-run the
+test in a fresh worktree to learn what failed. A gate's non-`PASS` verdict has always left one row per criterion.
+A timeout, a kill or a spawn failure leaves no such row — those are technical errors; the timeline's
+`failureCode` / `failureDetail` is where to look. If the node declares `failureOutcome` (see
+[04-authoring-workflows.md](04-authoring-workflows.md)) a failure of the check is a `SUCCEEDED` NodeRun with that
+outcome, so look at the NodeRun's `selectedOutcome` rather than at a failed attempt.
+
+## Agent attempt `FAILED` with `OUTCOME_REJECTED`
+
+```bash
+aw run timeline <runId>
+# an EXECUTION_ATTEMPT entry: "terminationReason": "OUTCOME_REJECTED"
+```
+
+A node with more than one outcome needs the agent to end its last message with exactly one
+`<agentkit-outcome>…</agentkit-outcome>` marker naming one of the node's outcomes. The agent's prompt lists the
+allowed outcomes (`taskContract.allowedOutcomes`) and, for a node with a choice, the marker syntax
+(`taskContract.outcomeProtocol`) — see [04-authoring-workflows.md](04-authoring-workflows.md). `OUTCOME_REJECTED`
+(failure code `VALIDATION_FAILED`) means the agent's answer was wrong, in any of four ways: no marker was reported on
+a node with a choice, the marker was repeated (a second one in an earlier message), the marker was malformed, or it
+named an outcome outside that list. The attempt is `FAILED` and the run does not follow any edge. It is **not** a
+provider outage: before this was changed the last three were reported as `EXECUTION_FAILED` with failure code
+`PROVIDER_UNAVAILABLE`, which an attempt policy listing `PROVIDER_UNAVAILABLE` as retryable would retry. Now it
+retries only if the policy's `retryableErrorCodes` lists `VALIDATION_FAILED`. A stream that never delivers its
+terminal event, or is not valid JSONL, is still a provider failure (`PROVIDER_UNAVAILABLE`), not `OUTCOME_REJECTED`.
+An attempt scheduled before the instruction-schema upgrade still has the old prompt (no list), so a multi-outcome
+agent from before the upgrade may need the outcomes in its Skill until it is re-run.
+
+## Local commit `FAILED` with `NO_CHANGES`
+
+```bash
+aw release-set local-commit status --project-id <id> <releaseSetId> <localCommitId>
+# "state": "FAILED", "failureReason": "NO_CHANGES"
+```
+
+The repository workspace's worktree had nothing to commit, so no commit was created and the job did not retry.
+Make the change in the worktree, then run `aw release-set local-commit` again with the same fields and a NEW
+`--idempotency-key` — a `NO_CHANGES` failure never blocks the retry, and it works on a sealed ReleaseSet as well
+(a sealed ReleaseSet cannot be abandoned: `SEALED` and `ABANDONED` are both final).
 
 ## Work item won't reach READY
 
