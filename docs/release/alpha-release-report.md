@@ -93,12 +93,15 @@ money), so CI does not repeat it; the evidence is in [`live-provider/`](live-pro
   `allowedOutcomes` with the marker protocol (V9-03); resources reaching only the role they are tagged for (V9-04); a
   checker running after a maker in the same run without a scope violation (V9-01); the agent process getting exactly
   the declared environment names with no wrapper (V9-05).
-- **Does not work yet (owners in the README):** F1 — a headless Claude **denies every file write** in the worktrees
-  `aw` creates, and `aw worker` has no flag to set its permission mode, so a wrapper is still needed for that;
-  F2 — a **reviewer does not see the repository** (its working directory is an empty scratch directory) and approved
-  a file it wrote itself; F3 — the model did not act on the check's feedback in the first rework build; F4 — no way to
-  pass the CLI an effort level or a spend ceiling, and spend is not recorded; F5 — a `COMMAND` has no `PATH` unless its
-  definition declares one.
+- **Found by the first run and fixed by V9-11a** (re-run: `live-provider/run-3-fixed`): F1 — a headless Claude denied
+  every file write in the worktrees `aw` creates; `aw worker --claude-permission-mode` now sets the CLI's permission
+  mode. F2 — a reviewer did not see the repository (its working directory is an empty scratch directory) and approved a
+  file it wrote itself; the adapter now names the repository mounts to the CLI and the scenario fails if a reviewer
+  approves without reading the maker's file. F5 — a `COMMAND` has no `PATH` unless its definition declares one;
+  documented.
+- **Open (owners in the README, none blocks the V9 verdict):** F3 — the model did not act on the check's feedback in the
+  first rework build (needs 2–3 rounds); F4 — no way to pass the CLI an effort level or a spend ceiling from
+  `aw worker`, and spend is not recorded.
 - **Codex was not run:** its compatibility remains `UNVERIFIED`.
 
 What the product does provide as a safety net: `aw` probes the real executable (`--version`, protocol/capability
