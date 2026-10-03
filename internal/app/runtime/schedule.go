@@ -153,6 +153,13 @@ type ScheduleExecutableNodeRunRequest struct {
 	// (NodeSchedulingHandler passes the job.ID it was handed) — go-core-
 	// spec §20's own "Mọi log/event có... JobID khi có".
 	JobID string
+	// RepositoryInstructionFiles (V9-10, gap G9) are the instruction files the
+	// node's provider loads by itself from the repositories' worktrees, found by
+	// InstructionFileInspector before this call (the lookup is filesystem I/O and
+	// must not happen inside the transaction below). They are pinned in the
+	// attempt's ContextSnapshot; nil — the case for every caller that does not
+	// inspect — pins none and leaves the snapshot, and its hash, as before.
+	RepositoryInstructionFiles []contextsnapshot.InstructionFileRef
 }
 
 // ScheduleExecutableNodeRunResult reports what one scheduling call actually
@@ -440,6 +447,7 @@ func ScheduleExecutableNodeRun(
 			messageRefs, resourceRefs, evidenceRefs, baseRevisionSet, time.Now().UTC(),
 			contextsnapshot.WithInstructionSchemaVersion(contextsnapshot.InstructionSchemaV2),
 			contextsnapshot.WithOmittedMessageRefs(omittedMessageRefs),
+			contextsnapshot.WithRepositoryInstructionFiles(req.RepositoryInstructionFiles),
 		)
 		if err != nil {
 			return err

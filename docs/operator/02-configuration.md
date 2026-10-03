@@ -48,6 +48,10 @@ Usage of serve:
         path to a trusted JSON config file's localPrincipal.actor/localPrincipal.roles (ADR-028); omitted or missing means the local-operator/[operator] default — this is the only allowed way to select a principal, there is no --actor/--role flag
   -ui-dist pnpm build
         directory containing a built V7 UI (pnpm build output of web/, i.e. web/dist) to serve at / and /assets/; omitted = no UI, aw serve still works exactly as before V7
+  -warn-hard-constraints int
+        warn when a published skill/layer version or context policy holds more than this many HARD_CONSTRAINT resources (0 = the default of 15; negative = never warn)
+  -warn-resource-age-days int
+        warn when a published resource's lastVerified is older than this many days (0 = the default of 180; negative = never warn)
   -worker-id aw worker
         identity string recorded in this process' own config.Config for GET /doctor's config-validity check; this process does not itself run the lease/reaper worker pool (run aw worker for that; it has its own --worker-id) (default "aw-serve")
   -workspace-root string
@@ -58,6 +62,11 @@ Usage of serve:
 default). `--ui-dist` is genuinely optional — since V8-08, a release binary built with `cmd/aw-release-build`
 serves its own embedded UI even with `--ui-dist` omitted; a plain `go build ./cmd/aw` (no embedded UI) falls
 back to "no UI" exactly as before V8-08.
+
+`--warn-resource-age-days` and `--warn-hard-constraints` (V9-10) are the thresholds of the knowledge-hygiene
+warnings a definition publish reports — see [04-authoring-workflows.md](04-authoring-workflows.md#keeping-knowledge-honest--warnings-at-publish-and-instruction-files-v9-10).
+`aw definition publish` takes the same two as `--warn-resource-age-days` / `--warn-hard-constraints` for a single
+invocation. `aw worker --instruction-file-warn-bytes` sets the oversize limit recorded with each instruction file.
 
 `--host`/`--port` only ever bind loopback — an external bind is refused at startup, never merely a config
 recommendation (`docs/design/01-system-design.md`'s own "external bind bị từ chối").
@@ -79,6 +88,8 @@ Usage of worker:
         sqlite database path (the same file aw serve uses)
   -env-allowlist string
         comma-separated names of parent environment variables a spawned provider/command process may inherit (default: none); an AGENT process inherits only the names an AgentProfile's envAllowlist also lists, and the provider's version probe inherits all of them
+  -instruction-file-warn-bytes int
+        size in bytes above which an instruction file the provider CLI loads by itself (CLAUDE.md, AGENTS.md) is recorded in the context snapshot as oversized (0 = the default of 16384)
   -lease-heartbeat duration
         how often an in-flight job's lease is renewed; must be shorter than --lease-ttl (default 10s)
   -lease-ttl duration

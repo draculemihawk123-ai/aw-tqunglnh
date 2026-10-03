@@ -105,3 +105,45 @@ func jsonField(t *testing.T, body, field string) string {
 	value, _ := raw[field].(string)
 	return value
 }
+
+// V9-10 (gap G10): `aw definition publish` reports the same knowledge-hygiene
+// warnings, and its --warn-* flags set the thresholds for that invocation.
+const staleSkillDocumentJSON = `{"resources":[{"key":"old-rule","instruction":"follow the old rule","priority":"GUIDANCE","global":true,"provenance":{"owner":"team-x","source":"doc-1","lastVerified":"2020-01-01T00:00:00Z"}}]}`
+
+func publishSkillWarnings(t *testing.T, extraArgs ...string) []string {
+	t.Helper()
+	deps := newTestDeps(t)
+	mustCreateDefinition(t, deps, "SKILL", "", "skill-1", "n", "create-1")
+	args := append([]string{"--kind", "SKILL", "--idempotency-key", "pub-1"}, extraArgs...)
+	args = append(args, "skill-1")
+	var stdout, stderr bytes.Buffer
+	if err := clidefinitions.RunDefinitionPublish(context.Background(), deps, args, strings.NewReader(staleSkillDocumentJSON), &stdout, &stderr); err != nil {
+		t.Fatalf("RunDefinitionPublish: %v (%s)", err, stderr.String())
+	}
+	var envelope struct {
+		Result struct {
+			VersionNumber uint64   `json:"versionNumber"`
+			Warnings      []string `json:"warnings"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil || envelope.Result.VersionNumber != 1 {
+		t.Fatalf("decode %s: %v", stdout.String(), err)
+	}
+	return envelope.Result.Warnings
+}
+
+func TestRunDefinitionPublish_StaleResourceWarns(t *testing.T) {
+	warnings := publishSkillWarnings(t)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `resource "old-rule" was last verified`) {
+		t.Fatalf("warnings = %q, want the stale resource", warnings)
+	}
+}
+
+func TestRunDefinitionPublish_WarnFlagsSetTheThresholds(t *testing.T) {
+	if warnings := publishSkillWarnings(t, "--warn-resource-age-days", "100000"); len(warnings) != 0 {
+		t.Fatalf("with a ceiling older than the resource: %q, want none", warnings)
+	}
+	if warnings := publishSkillWarnings(t, "--warn-resource-age-days", "-1"); len(warnings) != 0 {
+		t.Fatalf("with the age warning off: %q, want none", warnings)
+	}
+}

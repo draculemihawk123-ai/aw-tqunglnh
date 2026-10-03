@@ -41,6 +41,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
+	appdefinitions "github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	appdoctor "github.com/taQuangLing/agent-workflow/internal/app/doctor"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -84,6 +85,9 @@ type Dependencies struct {
 	// UnitOfWork is the one real ports.UnitOfWork every route-owning
 	// package dispatches through.
 	UnitOfWork ports.UnitOfWork
+	// Hygiene (V9-10) configures the knowledge-hygiene warnings a definition
+	// publish reports; the zero value takes the defaults.
+	Hygiene appdefinitions.WarnPolicy
 	// ArtifactStore is the real, composition-root-owned content-addressed
 	// store internal/delivery/httpapi/message and .../evidence both read/
 	// write through — the SAME store, never two separately-rooted ones.
@@ -229,7 +233,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// by the real gitworktree-rooted Queries the composition root built.
 	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: deps.WorkspaceInspectionQueries})
 	// V6-05: Definition authoring routes.
-	httpdefinitions.RegisterRoutes(routes, httpdefinitions.Dependencies{UnitOfWork: deps.UnitOfWork, IDs: idsource.Random{}, Clock: clock.System{}})
+	httpdefinitions.RegisterRoutes(routes, httpdefinitions.Dependencies{UnitOfWork: deps.UnitOfWork, IDs: idsource.Random{}, Clock: clock.System{}, Hygiene: deps.Hygiene})
 	// V6-06D: RetryBlockedActivation/CancelWorkItem/ResolveWorkItemBlocker
 	// recovery command routes. Isolation/Agents are the real dependencies
 	// the composition root built.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"io"
+	"time"
 
 	appdefinitions "github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
@@ -57,12 +58,14 @@ func RunDefinitionPublish(ctx context.Context, deps Dependencies, args []string,
 	filePath := cli.BindFileFlag(fs)
 	formatRaw := fs.String("format", "json", `document format: "json" or "yaml" (WORKFLOW documents are always json)`)
 	schemaVersion := fs.Int("schema-version", 1, "document schema version (ignored for WORKFLOW, whose schemaVersion is a field of the document itself)")
+	warnResourceAgeDays := fs.Int("warn-resource-age-days", 0, "warn when a resource's lastVerified is older than this many days (0 = the default of 180; negative = never warn)")
+	warnHardConstraints := fs.Int("warn-hard-constraints", 0, "warn when one skill/layer version or one context policy holds more than this many HARD_CONSTRAINT resources (0 = the default of 15; negative = never warn)")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	positional := fs.Args()
 	if len(positional) != 1 {
-		return usageErrorf("usage: aw definition publish <id> --kind <KIND> [--project-id <projectId>] [--file <path>] [--format json|yaml] [--schema-version N] (or pipe the document via stdin)")
+		return usageErrorf("usage: aw definition publish <id> --kind <KIND> [--project-id <projectId>] [--file <path>] [--format json|yaml] [--schema-version N] [--warn-resource-age-days N] [--warn-hard-constraints N] (or pipe the document via stdin)")
 	}
 	definitionID := positional[0]
 	kind, err := parseKind(*kindRaw)
@@ -144,7 +147,21 @@ func RunDefinitionPublish(ctx context.Context, deps Dependencies, args []string,
 		// writes its receipt via the byte-for-byte identical
 		// toVersionFieldsDTO field/tag set), so fresh and replayed
 		// responses stay byte-for-byte the same shape either way.
-		return newVersionFieldsView(published), nil
+		view := newVersionFieldsView(published)
+		warn := deps.Hygiene
+		if *warnResourceAgeDays != 0 {
+			warn.MaxResourceAge = time.Duration(*warnResourceAgeDays) * 24 * time.Hour
+		}
+		if *warnHardConstraints != 0 {
+			warn.MaxHardConstraints = *warnHardConstraints
+		}
+		warn.Now = envelope.Command.RequestedAt
+		// Advisory only: a failure to compute them must not turn a published
+		// version into an error.
+		if warnings, err := appdefinitions.PublishWarnings(ctx, deps.UoW, published, warn); err == nil {
+			view.Warnings = warnings
+		}
+		return view, nil
 	})
 	if err != nil {
 		return err

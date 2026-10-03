@@ -1,0 +1,22 @@
+-- attempt_context_snapshots.repository_instruction_files_json: V9-10's record of
+-- the instruction files a provider CLI loads by itself from a repository
+-- worktree (docs/design/12-v9-harness-alignment.md V9-10, gap G9).
+--
+-- Claude Code reads CLAUDE.md, Codex reads AGENTS.md, from the worktree it is
+-- started in. That text reaches the agent outside the instruction artifact aw
+-- renders: no budget counts it and, until this migration, the ContextSnapshot
+-- did not mention it, so a long one silently brought back the problem lecture
+-- 04 describes. When a node is scheduled, aw now looks for the files its
+-- provider declares in the worktrees of the repositories the work item may
+-- touch and pins, per file, repository, path, SHA-256, size and the warning
+-- limit in force (contextsnapshot.InstructionFileRef) -- by reference only,
+-- never content.
+--
+-- NULL means "none recorded": every snapshot written before this migration, and
+-- every snapshot whose provider declares no such file or whose worktrees hold
+-- none. The value takes part in manifest_hash (contextsnapshot.canonicalManifest,
+-- omitted while empty), so the tamper check on load covers it and a snapshot
+-- without such files recomputes exactly the hash it was written with.
+--
+-- Plain ADD COLUMN, no rebuild, no backfill (the same shape as 0042, 0044, 0046).
+ALTER TABLE attempt_context_snapshots ADD COLUMN repository_instruction_files_json TEXT;

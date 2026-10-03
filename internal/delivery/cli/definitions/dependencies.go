@@ -3,6 +3,7 @@ package definitions
 import (
 	"time"
 
+	appdefinitions "github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 )
@@ -21,4 +22,8 @@ type Dependencies struct {
 	// cli.EnvelopeRequest.Now's own doc comment — a caller only needs to
 	// supply this for deterministic tests.
 	Now func() time.Time
+	// Hygiene (V9-10) configures the knowledge-hygiene warnings `definition
+	// publish` reports; the zero value takes the defaults, and the publish
+	// leaf's own --warn-* flags override it per invocation.
+	Hygiene appdefinitions.WarnPolicy
 }

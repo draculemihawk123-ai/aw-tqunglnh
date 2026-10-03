@@ -74,6 +74,10 @@ type versionFieldsView struct {
 	Dependencies     definition.DependencyManifest `json:"dependencies"`
 	PublishedBy      string                        `json:"publishedBy"`
 	PublishedAt      time.Time                     `json:"publishedAt"`
+	// Warnings (V9-10, gap G10) are the knowledge-hygiene warnings of a publish:
+	// a stale resource, too many HARD_CONSTRAINTs. Present only on the response
+	// of a fresh publish; advisory, never a reason the publish failed.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func newVersionFieldsView(v definition.VersionFields) versionFieldsView {

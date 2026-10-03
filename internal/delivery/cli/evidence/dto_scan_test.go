@@ -42,6 +42,7 @@ func TestEvidenceCLI_NeverExposesLocatorPathOrSecretShapedFields(t *testing.T) {
 		reflect.TypeOf(runtimeapp.ContextSnapshotDetail{}),
 		reflect.TypeOf(runtimeapp.MessageRefView{}),
 		reflect.TypeOf(runtimeapp.OmittedMessageRefView{}),
+		reflect.TypeOf(runtimeapp.InstructionFileRefView{}),
 		reflect.TypeOf(runtimeapp.ResourceRefView{}),
 		reflect.TypeOf(runtimeapp.EvidenceRefView{}),
 	}

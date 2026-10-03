@@ -74,6 +74,32 @@ type OmittedMessageRef struct {
 	Reason    OmittedMessageReason
 }
 
+// InstructionFileRef is one instruction file the provider CLI loads by itself
+// from a repository worktree (V9-10, gap G9) — CLAUDE.md for Claude, AGENTS.md
+// for Codex — recorded by reference and hash only, never content. Such a file
+// reaches the agent outside the instruction artifact: it is not counted against
+// any budget and, before V9-10, appeared nowhere in the ContextSnapshot, so a
+// long one brought back the very problem lecture 04 describes unseen. Recording
+// path, hash and size makes it part of the audit trail and lets an oversized
+// one be warned about.
+type InstructionFileRef struct {
+	RepositoryID string
+	// Path is relative to the worktree root, slash-separated.
+	Path      string
+	SHA256    string
+	SizeBytes int64
+	// WarnLimitBytes is the size above which the file is oversized, as
+	// configured when the snapshot was built. It is recorded with the file so
+	// the warning a reader derives (SizeBytes > WarnLimitBytes) is a fact of
+	// the snapshot, not of whatever the setting is later.
+	WarnLimitBytes int64
+}
+
+// Oversized reports whether the file is over the warning limit recorded with it.
+func (r InstructionFileRef) Oversized() bool {
+	return r.WarnLimitBytes > 0 && r.SizeBytes > r.WarnLimitBytes
+}
+
 // ResourceRef is one resolved resource (a contextassembler.ResolvedCandidate's
 // own identity, or any other resource kind a caller pins) this Snapshot
 // includes, by reference only.
@@ -159,8 +185,14 @@ type Snapshot struct {
 	// manifest the hash covers — for every Snapshot whose policy declared no
 	// `messages` budget, which is all Snapshots written before V9-07.
 	OmittedMessageRefs []OmittedMessageRef
-	ManifestHash       string
-	CreatedAt          time.Time
+	// RepositoryInstructionFiles (V9-10, gap G9) lists the instruction files the
+	// provider CLI loads by itself from the repositories' worktrees, sorted by
+	// repository then path. Empty — and absent from the hashed manifest — when
+	// the node's provider declares none or none exists, which is every Snapshot
+	// written before V9-10.
+	RepositoryInstructionFiles []InstructionFileRef
+	ManifestHash               string
+	CreatedAt                  time.Time
 }
 
 const (
@@ -196,6 +228,23 @@ func WithInstructionSchemaVersion(version int) Option {
 	return func(s *Snapshot) { s.InstructionSchemaVersion = version }
 }
 
+// WithRepositoryInstructionFiles records files as the Snapshot's
+// RepositoryInstructionFiles, sorted by repository then path. NewSnapshot
+// rejects a blank repository, path or hash, a negative size, and the same
+// repository and path listed twice.
+func WithRepositoryInstructionFiles(files []InstructionFileRef) Option {
+	return func(s *Snapshot) {
+		s.RepositoryInstructionFiles = append([]InstructionFileRef(nil), files...)
+		sort.Slice(s.RepositoryInstructionFiles, func(i, j int) bool {
+			a, b := s.RepositoryInstructionFiles[i], s.RepositoryInstructionFiles[j]
+			if a.RepositoryID != b.RepositoryID {
+				return a.RepositoryID < b.RepositoryID
+			}
+			return a.Path < b.Path
+		})
+	}
+}
+
 // WithOmittedMessageRefs records refs as the Snapshot's OmittedMessageRefs.
 // NewSnapshot rejects a blank or unknown reason, a blank or repeated message
 // id, and an id that is also one of the Snapshot's MessageRefs.
@@ -219,6 +268,7 @@ func (s Snapshot) CloneForAttempt(id ID, attemptID AttemptID, createdAt time.Tim
 		s.MessageRefs, s.ResourceRefs, s.EvidenceRefs, s.Revisions, createdAt,
 		WithInstructionSchemaVersion(s.InstructionSchemaVersion),
 		WithOmittedMessageRefs(s.OmittedMessageRefs),
+		WithRepositoryInstructionFiles(s.RepositoryInstructionFiles),
 	)
 }
 
@@ -310,7 +360,22 @@ func NewSnapshot(
 		omittedSeen[ref.MessageID] = true
 	}
 
-	manifestHash, err := computeManifestHash(messageRefsCopy, resourceRefsCopy, evidenceRefsCopy, revisionsCopy, recorded.InstructionSchemaVersion, recorded.OmittedMessageRefs)
+	instructionFileSeen := make(map[[2]string]bool, len(recorded.RepositoryInstructionFiles))
+	for _, file := range recorded.RepositoryInstructionFiles {
+		if strings.TrimSpace(file.RepositoryID) == "" || strings.TrimSpace(file.Path) == "" || strings.TrimSpace(file.SHA256) == "" {
+			return Snapshot{}, errors.New("contextsnapshot: InstructionFileRef.RepositoryID, Path and SHA256 must not be blank")
+		}
+		if file.SizeBytes < 0 || file.WarnLimitBytes < 0 {
+			return Snapshot{}, fmt.Errorf("contextsnapshot: instruction file %s/%s has a negative size or limit", file.RepositoryID, file.Path)
+		}
+		key := [2]string{file.RepositoryID, file.Path}
+		if instructionFileSeen[key] {
+			return Snapshot{}, fmt.Errorf("contextsnapshot: instruction file %s/%s is listed more than once", file.RepositoryID, file.Path)
+		}
+		instructionFileSeen[key] = true
+	}
+
+	manifestHash, err := computeManifestHash(messageRefsCopy, resourceRefsCopy, evidenceRefsCopy, revisionsCopy, recorded.InstructionSchemaVersion, recorded.OmittedMessageRefs, recorded.RepositoryInstructionFiles)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -318,9 +383,10 @@ func NewSnapshot(
 	return Snapshot{
 		ID: id, ProjectID: projectID, WorkItemID: workItemID, AttemptID: attemptID,
 		MessageRefs: messageRefsCopy, ResourceRefs: resourceRefsCopy, EvidenceRefs: evidenceRefsCopy, Revisions: revisionsCopy,
-		InstructionSchemaVersion: recorded.InstructionSchemaVersion,
-		OmittedMessageRefs:       recorded.OmittedMessageRefs,
-		ManifestHash:             manifestHash, CreatedAt: createdAt.UTC(),
+		InstructionSchemaVersion:   recorded.InstructionSchemaVersion,
+		OmittedMessageRefs:         recorded.OmittedMessageRefs,
+		RepositoryInstructionFiles: recorded.RepositoryInstructionFiles,
+		ManifestHash:               manifestHash, CreatedAt: createdAt.UTC(),
 	}, nil
 }
 
@@ -359,12 +425,15 @@ type canonicalManifest struct {
 	// as it did before, while one that left messages out cannot have that list
 	// edited without the tamper check on load noticing.
 	OmittedMessageRefs []OmittedMessageRef `json:"omittedMessageRefs,omitempty"`
+	// RepositoryInstructionFiles (V9-10) is omitempty and last, again for the
+	// same reason: a Snapshot with none hashes exactly as before.
+	RepositoryInstructionFiles []InstructionFileRef `json:"repositoryInstructionFiles,omitempty"`
 }
 
-func computeManifestHash(messageRefs []MessageRef, resourceRefs []ResourceRef, evidenceRefs []EvidenceRef, revisions workspace.RevisionSet, instructionSchemaVersion int, omittedMessageRefs []OmittedMessageRef) (string, error) {
+func computeManifestHash(messageRefs []MessageRef, resourceRefs []ResourceRef, evidenceRefs []EvidenceRef, revisions workspace.RevisionSet, instructionSchemaVersion int, omittedMessageRefs []OmittedMessageRef, instructionFiles []InstructionFileRef) (string, error) {
 	data, err := json.Marshal(canonicalManifest{
 		MessageRefs: messageRefs, ResourceRefs: resourceRefs, EvidenceRefs: evidenceRefs, RevisionSetHash: revisions.ContentHash(),
-		InstructionSchemaVersion: instructionSchemaVersion, OmittedMessageRefs: omittedMessageRefs,
+		InstructionSchemaVersion: instructionSchemaVersion, OmittedMessageRefs: omittedMessageRefs, RepositoryInstructionFiles: instructionFiles,
 	})
 	if err != nil {
 		return "", fmt.Errorf("contextsnapshot: marshal canonical manifest: %w", err)

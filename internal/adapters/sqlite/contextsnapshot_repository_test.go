@@ -183,3 +183,47 @@ func TestContextSnapshotRepository_GetSnapshot_NotFound(t *testing.T) {
 		return nil
 	})
 }
+
+// V9-10: the instruction files a provider CLI loads by itself round-trip through
+// attempt_context_snapshots.repository_instruction_files_json, take part in the
+// tamper check, and a snapshot without any stores NULL.
+func TestContextSnapshotRepository_RepositoryInstructionFilesRoundTrip(t *testing.T) {
+	store := openCatalogTestStore(t, "context-snapshots-instruction-files.db")
+	ctx := context.Background()
+	if err := SeedFixtureOwners(ctx, store, "project-1", "family-1", "work-item-1"); err != nil {
+		t.Fatalf("SeedFixtureOwners: %v", err)
+	}
+	if err := SeedFixtureExecutionAttempt(ctx, store, "project-1", "family-1", "work-item-1", "attempt-1"); err != nil {
+		t.Fatalf("SeedFixtureExecutionAttempt: %v", err)
+	}
+	snap, err := contextsnapshot.NewSnapshot(
+		"snap-files", project.ProjectID("project-1"), work.WorkItemID("work-item-1"), contextsnapshot.AttemptID("attempt-1"),
+		nil, nil, nil, testRevisions(t), time.Now().UTC(),
+		contextsnapshot.WithRepositoryInstructionFiles([]contextsnapshot.InstructionFileRef{
+			{RepositoryID: "repo-1", Path: "CLAUDE.md", SHA256: "sha256:abc", SizeBytes: 20000, WarnLimitBytes: 16384},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("NewSnapshot: %v", err)
+	}
+	withCatalogTx(t, store, func(tx *sql.Tx) error {
+		repo := contextSnapshotRepository{tx: tx}
+		if _, err := repo.CreateSnapshot(ctx, snap); err != nil {
+			t.Fatalf("CreateSnapshot: %v", err)
+		}
+		loaded, err := repo.GetSnapshot(ctx, "snap-files")
+		if err != nil {
+			t.Fatalf("GetSnapshot: %v", err)
+		}
+		if len(loaded.RepositoryInstructionFiles) != 1 || loaded.RepositoryInstructionFiles[0] != snap.RepositoryInstructionFiles[0] || loaded.ManifestHash != snap.ManifestHash {
+			t.Fatalf("loaded = %+v hash %s, want the pinned file and %s", loaded.RepositoryInstructionFiles, loaded.ManifestHash, snap.ManifestHash)
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE attempt_context_snapshots SET repository_instruction_files_json = NULL WHERE id = 'snap-files'`); err != nil {
+			t.Fatalf("tamper: %v", err)
+		}
+		if _, err := repo.GetSnapshot(ctx, "snap-files"); err == nil {
+			t.Fatal("GetSnapshot accepted a snapshot whose pinned instruction files were removed")
+		}
+		return nil
+	})
+}

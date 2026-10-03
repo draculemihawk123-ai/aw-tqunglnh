@@ -84,6 +84,12 @@ func New(process ports.ProcessSupervisor, config Config) (*Adapter, error) {
 	return &Adapter{process: process, config: config}, nil
 }
 
+// InstructionFiles (V9-10, gap G9) declares the files this provider's CLI loads
+// by itself from the worktree it is started in, relative to the worktree root.
+// aw pins their path, hash and size in the ContextSnapshot because their text
+// reaches the agent outside the instruction artifact aw renders.
+func InstructionFiles() []string { return []string{"AGENTS.md"} }
+
 // Capabilities probes the CONFIGURED executable live (V5-07, mirroring
 // claude.go's V5-06 shape exactly) — a separate, minimal invocation
 // (config.PrefixArgs + config.VersionArgs) entirely independent of the
