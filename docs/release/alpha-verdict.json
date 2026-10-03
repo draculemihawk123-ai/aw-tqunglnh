@@ -22,8 +22,8 @@
   "nextTasks": [],
   "knownLimitations": ["LIM-01", "LIM-02", "LIM-03", "LIM-04", "LIM-05", "LIM-06", "LIM-07", "LIM-08", "LIM-09", "LIM-10", "LIM-11"],
   "liveProviderCompatibility": {
-    "status": "UNVERIFIED",
-    "detail": "Every provider test runs against the repository's own fake-claude / fake-codex wire-protocol stand-ins. No run against a real Claude or Codex CLI exists, so compatibility with any real CLI build is not claimed."
+    "status": "PARTIAL",
+    "detail": "CI runs every provider test against the repository's own fake-claude / fake-codex stand-ins. V9-11 ran the V9 workload against a real Claude CLI (2.1.288, claude-sonnet-4-6, effort medium): it works end to end but showed five defects with owners (F1 file writes denied in untrusted worktrees and no permission-mode flag, F2 the reviewer cannot see the repository, F3 the model ignores the first rework feedback, F4 no effort/budget settings and no recorded cost, F5 COMMAND has no PATH). Codex was not run and stays UNVERIFIED. Evidence: docs/release/live-provider/README.md."
   },
   "installArtifacts": [
     {

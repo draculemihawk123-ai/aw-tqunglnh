@@ -141,3 +141,24 @@ provider executable.
 
 `COMMAND` and `MACHINE_GATE` nodes are not affected by any of this: they inherit the names their own Command
 definition lists in its `envAllowlist`.
+
+## What a real Claude CLI needs that the fake one does not (V9-11)
+
+V9-11 ran the V9 workload against a real Claude CLI for the first time (evidence and the full list of defects:
+[`../release/live-provider/README.md`](../release/live-provider/README.md)). Until the defects there are fixed, know
+these when you point `aw worker --claude-executable` at a real `claude`:
+
+- **File writes are denied by default.** A headless Claude refuses every `Write`/`Edit` in a worktree it has not been
+  told to trust, and it ignores the repository's own `.claude/settings.json` allow rules there ("this workspace has not
+  been trusted") — `aw` creates a new worktree per WorkItem, so the trust dialog can never be answered. `aw worker`
+  has no flag for the CLI's permission mode (the adapter supports one; the worker does not set it), so an agent that
+  must change files still needs a wrapper that passes `--permission-mode acceptEdits`. This is the one thing V9-05's
+  environment allowlist does not remove.
+- **A checker (a CHECKER-role node) is not shown the repository.** It starts in an empty scratch directory and neither
+  its prompt nor its command line names where the repository is, so a real CLI cannot review what the maker did and
+  may write and approve a file of its own. Do not rely on a CHECKER AGENT node to review code with a real CLI yet;
+  put the check in a `COMMAND`/`MACHINE_GATE`, which does see the worktree.
+- **A `COMMAND` has no `PATH`** unless its Command definition declares one, so a check script that calls an external
+  tool (`findstr`, `grep`, `npm`, …) fails with "not recognized". The failure text reaches the maker accurately; declare
+  the environment names the tool needs, or use shell builtins.
+- Effort level and a per-attempt spend ceiling cannot be passed to the CLI from `aw worker` either.
