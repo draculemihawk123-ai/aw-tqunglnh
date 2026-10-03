@@ -182,6 +182,7 @@ func (a *Adapter) execute(
 	if a.config.PermissionMode != "" {
 		arguments = append(arguments, "--permission-mode", a.config.PermissionMode)
 	}
+	arguments = append(arguments, mountArguments(request)...)
 	if resume == nil {
 		arguments = append(arguments, a.config.StartArgs...)
 	} else {
@@ -234,6 +235,46 @@ func (a *Adapter) execute(
 		return result, protocolErr
 	}
 	return result, nil
+}
+
+// mountArguments (V9-11, finding F2) tells the CLI where the task's repositories
+// are. An attempt's working directory is the root of its writable repository —
+// but a CHECKER has only read-only mounts, so it starts in an empty scratch
+// directory, and a real CLI would not know the repository exists: the first live
+// run had a reviewer write a file of its own into the scratch directory and
+// approve that. Every mount other than the working directory is granted to the
+// CLI with --add-dir, and --append-system-prompt names all of them with their
+// access, so the model is told the absolute paths and which it must not change.
+//
+// This is deliberately not part of the instruction artifact: the artifact is a
+// function of the ContextSnapshot (same snapshot, same bytes and hash), and a
+// path belongs to the machine and the worktree, not to the snapshot. The mounts
+// are the request's WorkspaceMounts — the authorization-bearing field — never
+// anything read out of the prompt. READ_ONLY is a statement to the model; what
+// keeps a read-only attempt read-only is the executor's own check that its
+// mounts are unchanged afterwards (ADR-030).
+func mountArguments(request ports.AgentExecutionRequest) []string {
+	var arguments []string
+	var lines []string
+	granted := map[string]bool{request.WorkingDirectory: true}
+	for _, mount := range request.WorkspaceMounts {
+		directory := strings.TrimSpace(mount.WorkingDirectory)
+		if directory == "" {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- repository %s: %s (%s)", mount.RepositoryID, directory, mount.Access))
+		if !granted[directory] {
+			granted[directory] = true
+			arguments = append(arguments, "--add-dir", directory)
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	notice := "The repositories of this task are at these absolute paths; read and change files there, not in your current working directory, which may be an empty scratch directory:\n" +
+		strings.Join(lines, "\n") +
+		"\nA repository marked READ_ONLY must not be changed: do not create, edit or delete anything in it, and do not leave files anywhere else either."
+	return append(arguments, "--append-system-prompt", notice)
 }
 
 func validateRequest(request ports.AgentExecutionRequest, sink ports.AgentEventSink) error {

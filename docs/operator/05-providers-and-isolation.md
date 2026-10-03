@@ -140,25 +140,31 @@ not exist — `provider:<provider>` already reports that — and nothing for an 
 provider executable.
 
 `COMMAND` and `MACHINE_GATE` nodes are not affected by any of this: they inherit the names their own Command
-definition lists in its `envAllowlist`.
+definition lists in its `envAllowlist`. That includes `PATH`: a check script that calls `grep`, `findstr`, `npm`…
+finds nothing unless its Command definition declares `PATH` (V9-11, found with a real CLI).
 
 ## What a real Claude CLI needs that the fake one does not (V9-11)
 
-V9-11 ran the V9 workload against a real Claude CLI for the first time (evidence and the full list of defects:
-[`../release/live-provider/README.md`](../release/live-provider/README.md)). Until the defects there are fixed, know
-these when you point `aw worker --claude-executable` at a real `claude`:
+The repository's `fake-claude` writes files whenever it is told to and never looks at its prompt. A real Claude
+CLI does neither, and two things follow (found by the live run in [`../release/live-provider/README.md`](../release/live-provider/README.md)).
 
-- **File writes are denied by default.** A headless Claude refuses every `Write`/`Edit` in a worktree it has not been
-  told to trust, and it ignores the repository's own `.claude/settings.json` allow rules there ("this workspace has not
-  been trusted") — `aw` creates a new worktree per WorkItem, so the trust dialog can never be answered. `aw worker`
-  has no flag for the CLI's permission mode (the adapter supports one; the worker does not set it), so an agent that
-  must change files still needs a wrapper that passes `--permission-mode acceptEdits`. This is the one thing V9-05's
-  environment allowlist does not remove.
-- **A checker (a CHECKER-role node) is not shown the repository.** It starts in an empty scratch directory and neither
-  its prompt nor its command line names where the repository is, so a real CLI cannot review what the maker did and
-  may write and approve a file of its own. Do not rely on a CHECKER AGENT node to review code with a real CLI yet;
-  put the check in a `COMMAND`/`MACHINE_GATE`, which does see the worktree.
-- **A `COMMAND` has no `PATH`** unless its Command definition declares one, so a check script that calls an external
-  tool (`findstr`, `grep`, `npm`, …) fails with "not recognized". The failure text reaches the maker accurately; declare
-  the environment names the tool needs, or use shell builtins.
-- Effort level and a per-attempt spend ceiling cannot be passed to the CLI from `aw worker` either.
+**Permission mode — `aw worker --claude-permission-mode`.** A headless Claude refuses every `Write`/`Edit` in a
+worktree it has not been told to trust, and it ignores the project's `.claude/settings.json` allow rules there
+(`Ignoring permissions.allow entries … this workspace has not been trusted`). `aw` creates a new worktree for every
+WorkItem, so the trust dialog can never be answered; without a mode a MAKER can read but not change anything. Start
+the worker with the mode your policy accepts, typically `--claude-permission-mode acceptEdits`; the value is passed
+as `--permission-mode` on every task, an unknown value is refused when the worker starts, and the flag is the
+operator's decision, not the workflow's: it is not part of any definition and not in the ContextSnapshot. `plan`
+and `manual` make the CLI unable to act on its own. The flag does not touch Codex.
+
+**Where the repository is.** A CHECKER's mounts are read-only, so its attempt starts in an empty scratch directory
+(GC-INV-25), not in the repository. The Claude adapter therefore grants every mount that is not the working
+directory with `--add-dir` and names all mounts, with their absolute paths and access (`WRITABLE` / `READ_ONLY`),
+in `--append-system-prompt`; it tells the model that a `READ_ONLY` repository must not be changed. This is not in the
+instruction artifact on purpose: the artifact and its hash are a function of the snapshot, and a path belongs to the
+machine, not to the snapshot. "Read-only" remains the executor's own check that the mounts are unchanged
+afterwards (ADR-030); the sentence to the model is a statement of intent, not the enforcement.
+
+**Effort and spend.** `aw worker` has no setting for the CLI's effort level or spend ceiling, and the canonical
+events do not keep the CLI's reported cost, so spend per attempt is not recorded. Until that exists, watch the
+provider's own usage reporting.
