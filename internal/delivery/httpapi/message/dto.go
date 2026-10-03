@@ -62,6 +62,7 @@ type messageRefDTO struct {
 	ContentArtifactID string    `json:"contentArtifactId"`
 	CorrelationID     string    `json:"correlationId,omitempty"`
 	CreatedAt         time.Time `json:"createdAt"`
+	Pinned            bool      `json:"pinned,omitempty"`
 }
 
 func messageToRefDTO(m messagedomain.Message) messageRefDTO {
@@ -69,6 +70,7 @@ func messageToRefDTO(m messagedomain.Message) messageRefDTO {
 		MessageID: string(m.ID), ProjectID: string(m.ProjectID), WorkItemID: string(m.WorkItemID),
 		Sequence: m.Sequence, Actor: m.Actor, Role: string(m.Role),
 		ContentArtifactID: string(m.ContentArtifactID), CorrelationID: m.CorrelationID, CreatedAt: m.CreatedAt,
+		Pinned: m.Pinned,
 	}
 	if m.AttemptID != nil {
 		dto.AttemptID = string(*m.AttemptID)

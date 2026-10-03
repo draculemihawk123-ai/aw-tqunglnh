@@ -27,11 +27,12 @@ type appendMessageWire struct {
 	Content     string `json:"content"`
 	ContentType string `json:"contentType"`
 	Sensitivity string `json:"sensitivity,omitempty"`
+	Pinned      bool   `json:"pinned,omitempty"`
 }
 
 // RunMessageAppend implements `aw message append <workItemId> --project-id
 // <id> [--attempt-id <id>] [--role <role>] [--content-type <type>]
-// [--sensitivity <level>] [--file <path>]` (or pipe the content via stdin)
+// [--sensitivity <level>] [--pinned] [--file <path>]` (or pipe the content via stdin)
 // — the full CommandEnvelope mutation flow over appmessage.AppendMessage,
 // mirroring internal/delivery/httpapi/message/append.go's own
 // handleAppendMessage step for step: reload the route's own authoritative
@@ -57,6 +58,7 @@ func RunMessageAppend(ctx context.Context, deps Dependencies, args []string, std
 	roleRaw := fs.String("role", string(messagedomain.RoleUser), "message role (USER, ASSISTANT, SYSTEM, TOOL)")
 	contentType := fs.String("content-type", "text/plain", "content media type")
 	sensitivityRaw := fs.String("sensitivity", "", "structural sensitivity (PUBLIC, SENSITIVE, SECRET); empty defaults to PUBLIC")
+	pinned := fs.Bool("pinned", false, "pin the message: a context policy's messages budget never reduces it to a reference")
 	principalConfigPath := cli.BindPrincipalFlag(fs)
 	idempotencyKey := cli.BindIdempotencyKeyFlag(fs)
 	filePath := cli.BindFileFlag(fs)
@@ -65,7 +67,7 @@ func RunMessageAppend(ctx context.Context, deps Dependencies, args []string, std
 	}
 	positional := fs.Args()
 	if len(positional) != 1 {
-		return usageErrorf("usage: aw message append <workItemId> --project-id <projectId> [--attempt-id <id>] [--role <role>] [--content-type <type>] [--sensitivity <level>] [--file <path>]")
+		return usageErrorf("usage: aw message append <workItemId> --project-id <projectId> [--attempt-id <id>] [--role <role>] [--content-type <type>] [--sensitivity <level>] [--pinned] [--file <path>]")
 	}
 	workItemID := positional[0]
 
@@ -92,7 +94,7 @@ func RunMessageAppend(ctx context.Context, deps Dependencies, args []string, std
 
 	wire := appendMessageWire{
 		AttemptID: *attemptID, Role: string(role), Content: string(raw),
-		ContentType: *contentType, Sensitivity: *sensitivityRaw,
+		ContentType: *contentType, Sensitivity: *sensitivityRaw, Pinned: *pinned,
 	}
 	normalized, err := json.Marshal(wire)
 	if err != nil {
@@ -118,7 +120,7 @@ func RunMessageAppend(ctx context.Context, deps Dependencies, args []string, std
 	dispatched, err := cli.Dispatch(ctx, deps.UnitOfWork, envelope.Command, func(ctx context.Context) (any, error) {
 		return appmessage.AppendMessage(ctx, deps.UnitOfWork, deps.ArtifactStore, deps.IDs, clk, envelope.Command, appmessage.AppendMessageRequest{
 			ProjectID: *projectID, WorkItemID: workItemID, AttemptID: *attemptID, Role: role,
-			Content: raw, ContentType: *contentType, Sensitivity: sensitivity, Matcher: deps.Matcher,
+			Content: raw, ContentType: *contentType, Pinned: *pinned, Sensitivity: sensitivity, Matcher: deps.Matcher,
 		})
 	})
 	if err != nil {

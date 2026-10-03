@@ -389,6 +389,13 @@ type MessageRefView struct {
 	MessageID string `json:"messageId"`
 }
 
+// OmittedMessageRefView (V9-07) is a message the snapshot's context policy
+// `messages` budget kept out of the prompt: its id and why, never content.
+type OmittedMessageRefView struct {
+	MessageID string `json:"messageId"`
+	Reason    string `json:"reason"`
+}
+
 type ResourceRefView struct {
 	OwnerVersionID string `json:"ownerVersionId,omitempty"`
 	ResourceKey    string `json:"resourceKey"`
@@ -424,6 +431,9 @@ type ContextSnapshotDetail struct {
 	RevisionSetHash string            `json:"revisionSetHash"`
 	ManifestHash    string            `json:"manifestHash"`
 	CreatedAt       time.Time         `json:"createdAt"`
+	// OmittedMessageRefs (V9-07) lists the messages the `messages` budget left
+	// out of the prompt, each with the reason.
+	OmittedMessageRefs []OmittedMessageRefView `json:"omittedMessageRefs,omitempty"`
 }
 
 // ContextSnapshotToDetail converts a real, already-loaded
@@ -438,6 +448,9 @@ func ContextSnapshotToDetail(s contextsnapshot.Snapshot) ContextSnapshotDetail {
 	}
 	for _, ref := range s.MessageRefs {
 		detail.MessageRefs = append(detail.MessageRefs, MessageRefView{MessageID: ref.MessageID})
+	}
+	for _, ref := range s.OmittedMessageRefs {
+		detail.OmittedMessageRefs = append(detail.OmittedMessageRefs, OmittedMessageRefView{MessageID: ref.MessageID, Reason: string(ref.Reason)})
 	}
 	for _, ref := range s.ResourceRefs {
 		detail.ResourceRefs = append(detail.ResourceRefs, ResourceRefView{

@@ -55,6 +55,25 @@ type MessageRef struct {
 	MessageID string
 }
 
+// OmittedMessageReason names why a Message the WorkItem had when a Snapshot
+// was built is not among that Snapshot's MessageRefs.
+type OmittedMessageReason string
+
+// OmittedMessageBudgetExceeded: the context policy's `messages` budget
+// (V9-07) was full once the newest and pinned messages were counted, so the
+// message reaches the prompt only as a reference (id, author, time).
+const OmittedMessageBudgetExceeded OmittedMessageReason = "BUDGET_EXCEEDED"
+
+// OmittedMessageRef is one Message the Snapshot's `messages` budget left out
+// of the prompt, by reference only — like MessageRef, never the content.
+// Together with MessageRefs it accounts for every message the WorkItem had
+// when the Snapshot was built, which is what lets an audit answer "what did
+// this attempt not see, and why" (HE-04-M06).
+type OmittedMessageRef struct {
+	MessageID string
+	Reason    OmittedMessageReason
+}
+
 // ResourceRef is one resolved resource (a contextassembler.ResolvedCandidate's
 // own identity, or any other resource kind a caller pins) this Snapshot
 // includes, by reference only.
@@ -134,8 +153,14 @@ type Snapshot struct {
 	// manifest ManifestHash is computed over (canonicalManifest), omitted
 	// while zero so a v1 Snapshot's hash is unchanged.
 	InstructionSchemaVersion int
-	ManifestHash             string
-	CreatedAt                time.Time
+	// OmittedMessageRefs (V9-07, gap G7) lists the WorkItem's messages the
+	// node's context policy `messages` budget kept out of MessageRefs, in
+	// message order, each with the reason. Empty — and absent from the
+	// manifest the hash covers — for every Snapshot whose policy declared no
+	// `messages` budget, which is all Snapshots written before V9-07.
+	OmittedMessageRefs []OmittedMessageRef
+	ManifestHash       string
+	CreatedAt          time.Time
 }
 
 const (
@@ -171,8 +196,16 @@ func WithInstructionSchemaVersion(version int) Option {
 	return func(s *Snapshot) { s.InstructionSchemaVersion = version }
 }
 
-// CloneForAttempt returns a Snapshot with s's message, resource and evidence
-// refs, revision set and instruction schema version, but a new identity: id,
+// WithOmittedMessageRefs records refs as the Snapshot's OmittedMessageRefs.
+// NewSnapshot rejects a blank or unknown reason, a blank or repeated message
+// id, and an id that is also one of the Snapshot's MessageRefs.
+func WithOmittedMessageRefs(refs []OmittedMessageRef) Option {
+	return func(s *Snapshot) { s.OmittedMessageRefs = append([]OmittedMessageRef(nil), refs...) }
+}
+
+// CloneForAttempt returns a Snapshot with s's message (included and omitted),
+// resource and evidence refs, revision set and instruction schema version, but
+// a new identity: id,
 // bound to attemptID and created at createdAt. A technical retry
 // (decideRetryOrExhaustion) and the recovery paths (recovery_reaper.go) give
 // the NEW Attempt its own Snapshot this way, never a shared one (each
@@ -185,6 +218,7 @@ func (s Snapshot) CloneForAttempt(id ID, attemptID AttemptID, createdAt time.Tim
 		id, s.ProjectID, s.WorkItemID, attemptID,
 		s.MessageRefs, s.ResourceRefs, s.EvidenceRefs, s.Revisions, createdAt,
 		WithInstructionSchemaVersion(s.InstructionSchemaVersion),
+		WithOmittedMessageRefs(s.OmittedMessageRefs),
 	)
 }
 
@@ -258,7 +292,25 @@ func NewSnapshot(
 		return Snapshot{}, fmt.Errorf("contextsnapshot: unsupported InstructionSchemaVersion %d (want 0 for none, or %d)", recorded.InstructionSchemaVersion, InstructionSchemaV2)
 	}
 
-	manifestHash, err := computeManifestHash(messageRefsCopy, resourceRefsCopy, evidenceRefsCopy, revisionsCopy, recorded.InstructionSchemaVersion)
+	included := make(map[string]bool, len(messageRefsCopy))
+	for _, ref := range messageRefsCopy {
+		included[ref.MessageID] = true
+	}
+	omittedSeen := make(map[string]bool, len(recorded.OmittedMessageRefs))
+	for _, ref := range recorded.OmittedMessageRefs {
+		if strings.TrimSpace(ref.MessageID) == "" {
+			return Snapshot{}, errors.New("contextsnapshot: OmittedMessageRef.MessageID must not be blank")
+		}
+		if ref.Reason != OmittedMessageBudgetExceeded {
+			return Snapshot{}, fmt.Errorf("contextsnapshot: OmittedMessageRef %s has unknown reason %q", ref.MessageID, ref.Reason)
+		}
+		if included[ref.MessageID] || omittedSeen[ref.MessageID] {
+			return Snapshot{}, fmt.Errorf("contextsnapshot: message %s is listed more than once across MessageRefs and OmittedMessageRefs", ref.MessageID)
+		}
+		omittedSeen[ref.MessageID] = true
+	}
+
+	manifestHash, err := computeManifestHash(messageRefsCopy, resourceRefsCopy, evidenceRefsCopy, revisionsCopy, recorded.InstructionSchemaVersion, recorded.OmittedMessageRefs)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -267,6 +319,7 @@ func NewSnapshot(
 		ID: id, ProjectID: projectID, WorkItemID: workItemID, AttemptID: attemptID,
 		MessageRefs: messageRefsCopy, ResourceRefs: resourceRefsCopy, EvidenceRefs: evidenceRefsCopy, Revisions: revisionsCopy,
 		InstructionSchemaVersion: recorded.InstructionSchemaVersion,
+		OmittedMessageRefs:       recorded.OmittedMessageRefs,
 		ManifestHash:             manifestHash, CreatedAt: createdAt.UTC(),
 	}, nil
 }
@@ -301,12 +354,17 @@ type canonicalManifest struct {
 	// is caught by loadSnapshotTx's tamper check instead of going unnoticed.
 	// It is the LAST key so a zero value changes no byte of the earlier ones.
 	InstructionSchemaVersion int `json:"instructionSchemaVersion,omitempty"`
+	// OmittedMessageRefs (V9-07) is omitempty and after every earlier key for
+	// the same reason: a Snapshot without a `messages` budget hashes exactly
+	// as it did before, while one that left messages out cannot have that list
+	// edited without the tamper check on load noticing.
+	OmittedMessageRefs []OmittedMessageRef `json:"omittedMessageRefs,omitempty"`
 }
 
-func computeManifestHash(messageRefs []MessageRef, resourceRefs []ResourceRef, evidenceRefs []EvidenceRef, revisions workspace.RevisionSet, instructionSchemaVersion int) (string, error) {
+func computeManifestHash(messageRefs []MessageRef, resourceRefs []ResourceRef, evidenceRefs []EvidenceRef, revisions workspace.RevisionSet, instructionSchemaVersion int, omittedMessageRefs []OmittedMessageRef) (string, error) {
 	data, err := json.Marshal(canonicalManifest{
 		MessageRefs: messageRefs, ResourceRefs: resourceRefs, EvidenceRefs: evidenceRefs, RevisionSetHash: revisions.ContentHash(),
-		InstructionSchemaVersion: instructionSchemaVersion,
+		InstructionSchemaVersion: instructionSchemaVersion, OmittedMessageRefs: omittedMessageRefs,
 	})
 	if err != nil {
 		return "", fmt.Errorf("contextsnapshot: marshal canonical manifest: %w", err)

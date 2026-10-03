@@ -108,3 +108,63 @@ func TestSnapshot_CloneForAttempt_CarriesTheInstructionSchemaVersion(t *testing.
 		})
 	}
 }
+
+// --- V9-07: omitted message refs ---
+
+func omittedFixture(ids ...string) []OmittedMessageRef {
+	refs := make([]OmittedMessageRef, len(ids))
+	for i, id := range ids {
+		refs[i] = OmittedMessageRef{MessageID: id, Reason: OmittedMessageBudgetExceeded}
+	}
+	return refs
+}
+
+// A Snapshot that omitted nothing hashes exactly as before V9-07 (the pinned
+// value is the one TestNewSnapshot_WithoutInstructionSchemaVersion... holds),
+// while one that omitted a message hashes differently, and a different
+// omitted list is a different manifest.
+func TestNewSnapshot_OmittedMessageRefs_ArePartOfTheManifestHash(t *testing.T) {
+	none := schemaFixtureSnapshot(t, WithOmittedMessageRefs(nil))
+	if want := "sha256:4a2bc61a47d81fff167f5fc8ce9c3fc0762736315e7b28bc881d4bef2a7b5fc4"; none.ManifestHash != want {
+		t.Fatalf("a snapshot without omitted messages hashes %s, want the unchanged %s", none.ManifestHash, want)
+	}
+	one := schemaFixtureSnapshot(t, WithOmittedMessageRefs(omittedFixture("message-000")))
+	two := schemaFixtureSnapshot(t, WithOmittedMessageRefs(omittedFixture("message-000", "message-003")))
+	if one.ManifestHash == none.ManifestHash || one.ManifestHash == two.ManifestHash {
+		t.Fatalf("omitted lists %v, %v and none share a hash", one.ManifestHash, two.ManifestHash)
+	}
+}
+
+func TestNewSnapshot_OmittedMessageRefs_Validation(t *testing.T) {
+	build := func(refs []OmittedMessageRef) error {
+		_, err := NewSnapshot("snap-1", "project-1", "work-item-1", "attempt-1",
+			[]MessageRef{{MessageID: "message-001"}}, nil, nil, validRevisions(t), time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC),
+			WithOmittedMessageRefs(refs))
+		return err
+	}
+	for name, refs := range map[string][]OmittedMessageRef{
+		"blank id":             {{MessageID: " ", Reason: OmittedMessageBudgetExceeded}},
+		"unknown reason":       {{MessageID: "message-000", Reason: "BECAUSE"}},
+		"repeated":             omittedFixture("message-000", "message-000"),
+		"also an included ref": omittedFixture("message-001"),
+		"blank reason":         {{MessageID: "message-000"}},
+	} {
+		if err := build(refs); err == nil {
+			t.Errorf("%s: NewSnapshot accepted %v", name, refs)
+		}
+	}
+	if err := build(omittedFixture("message-000", "message-002")); err != nil {
+		t.Errorf("a valid omitted list was rejected: %v", err)
+	}
+}
+
+func TestCloneForAttempt_CarriesOmittedMessageRefs(t *testing.T) {
+	original := schemaFixtureSnapshot(t, WithInstructionSchemaVersion(InstructionSchemaV2), WithOmittedMessageRefs(omittedFixture("message-000")))
+	clone, err := original.CloneForAttempt("snap-2", "attempt-2", time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("CloneForAttempt: %v", err)
+	}
+	if len(clone.OmittedMessageRefs) != 1 || clone.OmittedMessageRefs[0].MessageID != "message-000" || clone.ManifestHash != original.ManifestHash {
+		t.Fatalf("clone omitted refs = %+v hash %s, want message-000 and the original's %s", clone.OmittedMessageRefs, clone.ManifestHash, original.ManifestHash)
+	}
+}

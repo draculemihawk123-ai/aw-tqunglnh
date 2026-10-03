@@ -743,3 +743,30 @@ func TestGetMessageContextSnapshot_MessageBelongsToAnotherWorkItem_ReturnsHidden
 		t.Fatalf("status = %d, want 404, body=%s", resp.StatusCode, body)
 	}
 }
+
+func TestAppendMessage_Pinned_ReachesTheStoredMessageAndTheListing(t *testing.T) {
+	env := newTestEnv(t)
+	env.seedProject(t, "project-1")
+	env.seedActiveRepository(t, "project-1", "repo-a")
+	root := env.seedRootWorkItem(t, "project-1", "repo-a", "1")
+
+	pinned := appendBody("USER", "never drop this", "text/plain", "", "")
+	pinned["pinned"] = true
+	for i, body := range []map[string]any{appendBody("USER", "plain", "text/plain", "", ""), pinned} {
+		resp := env.do(t, http.MethodPost, "/projects/project-1/work-items/"+root.WorkItemID+"/messages", []string{"idem-plain", "idem-pinned"}[i], body)
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("append %d status = %d, want 201", i, resp.StatusCode)
+		}
+	}
+	listResp := env.do(t, http.MethodGet, "/projects/project-1/work-items/"+root.WorkItemID+"/messages", "", nil)
+	var list struct {
+		Items []struct {
+			Sequence uint64 `json:"sequence"`
+			Pinned   bool   `json:"pinned"`
+		} `json:"items"`
+	}
+	decodeInto(t, listResp, &list)
+	if len(list.Items) != 2 || list.Items[0].Pinned || !list.Items[1].Pinned {
+		t.Fatalf("listed pinned flags = %+v, want [false true]", list.Items)
+	}
+}

@@ -54,6 +54,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/definition"
 	"github.com/taQuangLing/agent-workflow/internal/domain/gate"
 	"github.com/taQuangLing/agent-workflow/internal/domain/layer"
+	"github.com/taQuangLing/agent-workflow/internal/domain/message"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
@@ -329,6 +330,8 @@ func ScheduleExecutableNodeRun(
 		// assemble_execution_request.go, loaded directly from WorkItem,
 		// never through Messages.
 		var messageRefs []contextsnapshot.MessageRef
+		var messageBudgetMessages []message.Message
+		var omittedMessageRefs []contextsnapshot.OmittedMessageRef
 		var evidenceRefs []contextsnapshot.EvidenceRef
 		if node.Type == workflow.NodeAgent && node.Agent.EffectiveRole() == workflow.AgentRoleChecker {
 			evidenceRefs, err = gatherCheckerEvidenceRefs(ctx, tx, run, document, node.Key)
@@ -344,6 +347,7 @@ func ScheduleExecutableNodeRun(
 			for i, m := range messages {
 				messageRefs[i] = contextsnapshot.MessageRef{MessageID: string(m.ID)}
 			}
+			messageBudgetMessages = messages
 			// V9-02 (ADR-031 decision 6): a MAKER activated through the edge
 			// leaving a check's failureOutcome gets the failing check's
 			// Evidence rows in its snapshot, next to the messages it always
@@ -389,9 +393,19 @@ func ScheduleExecutableNodeRun(
 				return err
 			}
 		}
-		resolution, err := gatherContextResourceRefs(ctx, tx, contextPolicyRef, resolutionCtx)
+		resolution, messageBudget, err := gatherContextResourceRefs(ctx, tx, contextPolicyRef, resolutionCtx)
 		if err != nil {
 			return err
+		}
+		// V9-07 (gap G7): a context route that declares a `messages` budget
+		// bounds how much of the task chat this attempt's prompt carries. The
+		// messages that do not fit stay out of messageRefs and are recorded as
+		// omitted, so the snapshot still accounts for every message.
+		if messageBudget != nil {
+			messageRefs, omittedMessageRefs, err = applyMessageBudget(ctx, tx, messageBudgetMessages, *messageBudget)
+			if err != nil {
+				return err
+			}
 		}
 		resourceRefs := make([]contextsnapshot.ResourceRef, len(resolution.Selected))
 		for i, selected := range resolution.Selected {
@@ -425,6 +439,7 @@ func ScheduleExecutableNodeRun(
 			snapshotID, run.ProjectID, run.WorkItemID, contextsnapshot.AttemptID(attemptID),
 			messageRefs, resourceRefs, evidenceRefs, baseRevisionSet, time.Now().UTC(),
 			contextsnapshot.WithInstructionSchemaVersion(contextsnapshot.InstructionSchemaV2),
+			contextsnapshot.WithOmittedMessageRefs(omittedMessageRefs),
 		)
 		if err != nil {
 			return err
@@ -762,19 +777,24 @@ func decodeCompiledLayer(compiledSnapshot string) (layer.LayerDocument, error) {
 // provenance/reason có thể audit". Returning the full Resolution here
 // (rather than only the already-mapped ResourceRefs) is what lets the
 // caller persist that audit trail without re-deriving it.
+//
+// The route's optional V9-07 `messages` budget is returned next to the
+// Resolution (nil when the policy declares none) because it comes from the
+// same pinned policy document; applying it needs the WorkItem's messages,
+// which this function does not read.
 func gatherContextResourceRefs(
 	ctx context.Context, tx ports.Tx, contextPolicyRef definition.DependencyPin, resolutionCtx contextassembler.ResolutionContext,
-) (contextassembler.Resolution, error) {
+) (contextassembler.Resolution, *policy.MessageBudget, error) {
 	if contextPolicyRef.VersionID == "" {
-		return contextassembler.Resolution{}, nil
+		return contextassembler.Resolution{}, nil, nil
 	}
 	routeVersion, err := tx.Definitions().LoadVersion(ctx, contextPolicyRef.VersionID)
 	if err != nil {
-		return contextassembler.Resolution{}, fmt.Errorf("runtime: resolve context route policy %s: %w", contextPolicyRef.VersionID, err)
+		return contextassembler.Resolution{}, nil, fmt.Errorf("runtime: resolve context route policy %s: %w", contextPolicyRef.VersionID, err)
 	}
 	routeDoc, err := decodeCompiledPolicy(routeVersion.CompiledSnapshot())
 	if err != nil {
-		return contextassembler.Resolution{}, fmt.Errorf("runtime: decode context route policy %s: %w", contextPolicyRef.VersionID, err)
+		return contextassembler.Resolution{}, nil, fmt.Errorf("runtime: decode context route policy %s: %w", contextPolicyRef.VersionID, err)
 	}
 	// agentprofile.AgentProfileDocument.ContextPolicyRef's own doc comment
 	// names this exact check as a gap left for "a future compiler" to
@@ -782,14 +802,14 @@ func gatherContextResourceRefs(
 	// actually resolve to a CONTEXT-category policy, never silently treated
 	// as "no resources" just because the wrong category was pinned.
 	if routeDoc.Category != policy.CategoryContext || routeDoc.Context == nil {
-		return contextassembler.Resolution{}, fmt.Errorf("runtime: agent profile's own ContextPolicyRef %s does not resolve to a CONTEXT-category policy (got %q)", contextPolicyRef.VersionID, routeDoc.Category)
+		return contextassembler.Resolution{}, nil, fmt.Errorf("runtime: agent profile's own ContextPolicyRef %s does not resolve to a CONTEXT-category policy (got %q)", contextPolicyRef.VersionID, routeDoc.Category)
 	}
 
 	candidates := make([]contextassembler.Candidate, 0, len(routeDoc.Context.ResourceRefs))
 	for _, pinned := range routeDoc.Context.ResourceRefs {
 		candidate, err := loadResourceCandidate(ctx, tx, pinned)
 		if err != nil {
-			return contextassembler.Resolution{}, err
+			return contextassembler.Resolution{}, nil, err
 		}
 		candidates = append(candidates, candidate)
 	}
@@ -805,9 +825,42 @@ func gatherContextResourceRefs(
 	budget := contextassembler.Budget{MaxBytes: uint64(routeDoc.Context.Budget.MaxTokens)}
 	resolution, err := contextassembler.Resolve(candidates, resolutionCtx, budget, contextassembler.ByteCostEstimator{})
 	if err != nil {
-		return contextassembler.Resolution{}, fmt.Errorf("runtime: resolve context candidates for policy %s: %w", contextPolicyRef.VersionID, err)
+		return contextassembler.Resolution{}, nil, fmt.Errorf("runtime: resolve context candidates for policy %s: %w", contextPolicyRef.VersionID, err)
 	}
-	return resolution, nil
+	return resolution, routeDoc.Context.Messages, nil
+}
+
+// applyMessageBudget applies a context route's V9-07 `messages` budget to the
+// WorkItem's messages (oldest first, as ListMessagesForWorkItem returns them):
+// it reads each message's content size from its artifact row, lets
+// contextassembler.ResolveMessages choose, and returns the MessageRefs that
+// stay in the prompt and the OmittedMessageRefs that become references. The
+// size is the stored (already redacted) content, the bytes the prompt carries
+// before JSON escaping.
+func applyMessageBudget(
+	ctx context.Context, tx ports.Tx, messages []message.Message, budget policy.MessageBudget,
+) ([]contextsnapshot.MessageRef, []contextsnapshot.OmittedMessageRef, error) {
+	if len(messages) == 0 {
+		return nil, nil, nil
+	}
+	candidates := make([]contextassembler.MessageCandidate, len(messages))
+	for i, m := range messages {
+		art, err := tx.Artifacts().GetArtifact(ctx, string(m.ContentArtifactID))
+		if err != nil {
+			return nil, nil, fmt.Errorf("runtime: load message %s content artifact: %w", m.ID, err)
+		}
+		candidates[i] = contextassembler.MessageCandidate{ID: string(m.ID), Pinned: m.Pinned, Bytes: uint64(art.Size)}
+	}
+	selection := contextassembler.ResolveMessages(candidates, contextassembler.MessageBudget{MaxBytes: budget.MaxBytes, KeepLatest: budget.KeepLatest})
+	included := make([]contextsnapshot.MessageRef, len(selection.Included))
+	for i, id := range selection.Included {
+		included[i] = contextsnapshot.MessageRef{MessageID: id}
+	}
+	var omitted []contextsnapshot.OmittedMessageRef
+	for _, id := range selection.Omitted {
+		omitted = append(omitted, contextsnapshot.OmittedMessageRef{MessageID: id, Reason: contextsnapshot.OmittedMessageBudgetExceeded})
+	}
+	return included, omitted, nil
 }
 
 // gatherCheckerEvidenceRefs resolves nodeKey's own CHECKER-role

@@ -78,6 +78,17 @@ func assembleRequestFixtureWith(
 	configProvider ports.RuntimeExecutionConfigProvider, attemptPolicy policy.PolicyDocument,
 ) (uow *fake.UnitOfWork, ids idsource.Source, store ports.ArtifactStore, runID, nodeRunID, attemptID string) {
 	t.Helper()
+	return assembleRequestFixtureWithMessageBudget(t, role, profileDocument, configProvider, attemptPolicy, nil)
+}
+
+// assembleRequestFixtureWithMessageBudget is assembleRequestFixtureWith's own
+// general form (V9-07): messageBudget is the `messages` block of the pinned
+// CONTEXT policy; nil is a policy that declares none.
+func assembleRequestFixtureWithMessageBudget(
+	t *testing.T, role workflow.AgentRole, profileDocument agentprofile.AgentProfileDocument,
+	configProvider ports.RuntimeExecutionConfigProvider, attemptPolicy policy.PolicyDocument, messageBudget *policy.MessageBudget,
+) (uow *fake.UnitOfWork, ids idsource.Source, store ports.ArtifactStore, runID, nodeRunID, attemptID string) {
+	t.Helper()
 	ctx := context.Background()
 	build := assembleFixtureBuild(t)
 	buildID := build.ID()
@@ -112,6 +123,7 @@ func assembleRequestFixtureWith(
 		Context: &policy.ContextRules{
 			Selector: []string{"*"}, Budget: policy.ContextBudget{MaxTokens: 65536},
 			ResourceRefs: []policy.ResourceRef{{OwnerVersionID: "skill-v1", ResourceKey: "golden-rule", ContentHash: hash}},
+			Messages:     messageBudget,
 		},
 	})
 	publishAgentProfileVersionOnly(t, u, "agent-profile-def", "agent-profile-v1", profileDocument)
