@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "verdict": "V9_DONE",
+  "assessedCommit": "e7115815265056beff589a32c39ddb11a4239676",
+  "assessmentRun": {
+    "id": 37138162978,
+    "url": "https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/37138162978",
+    "job": "V8-11 Alpha release acceptance",
+    "artifact": "v8-alpha-assessment"
+  },
+  "gate": {
+    "alphaGatePass": true,
+    "enforcing": true,
+    "goldenWorkloadV801Unchanged": true,
+    "alphaGatedCriteria": { "total": 209, "pass": 209 },
+    "criteriaWithTestEvidence": 50,
+    "journeys": { "total": 23, "pass": 23 },
+    "versionGates": { "total": 9, "pass": 9 },
+    "finalGates": { "total": 7, "pass": 7 }
+  },
+  "adrs": ["ADR-030", "ADR-031", "ADR-032", "ADR-033"],
+  "gaps": [
+    {
+      "id": "G1", "task": "V9-01", "pr": 146,
+      "title": "Maker/checker tách biệt: checker và gate đánh giá thay đổi của maker trong cùng run",
+      "evidence": [
+        { "test": "TestV9AcceptCheckerAfterMaker_CompletesAndCheckerSeesMakerDiff", "file": "internal/integration/v5accept/checker_after_maker_test.go" },
+        { "test": "TestV9AcceptCheckerAfterMaker_CheckerWriteIsScopeViolation", "file": "internal/integration/v5accept/checker_after_maker_test.go" },
+        { "test": "TestV9AcceptGateAfterMaker_VerdictReflectsMakersChange", "file": "internal/integration/v5accept/checker_after_maker_test.go" }
+      ]
+    },
+    {
+      "id": "G2", "task": "V9-02", "pr": 148,
+      "title": "Fail quay lại maker có giới hạn, lỗi có thể hành động",
+      "evidence": [
+        { "test": "TestV9AcceptCheckFailureOutcome_CommandExitsOneThenZero", "file": "internal/integration/v5accept/check_failure_outcome_test.go" },
+        { "test": "TestV9AcceptCheckFailureOutcome_ExceedingTheLoopEscalates", "file": "internal/integration/v5accept/check_failure_outcome_test.go" }
+      ]
+    },
+    {
+      "id": "G3", "task": "V9-03", "pr": 148,
+      "title": "Agent thấy mức ưu tiên và outcome hợp lệ",
+      "evidence": [
+        { "test": "TestV9AcceptInstructionV2_AgentSelectsAnOutcomeListedInThePrompt", "file": "internal/integration/v5accept/instruction_outcomes_test.go" },
+        { "test": "TestV9AcceptInstructionV2_OutcomeNotInTheListIsStillRejected", "file": "internal/integration/v5accept/instruction_outcomes_test.go" }
+      ]
+    },
+    {
+      "id": "G4", "task": "V9-04", "pr": 151,
+      "title": "Định tuyến tri thức theo component/path/block lúc chạy",
+      "evidence": [
+        { "test": "TestV9AcceptAreaKnowledge_OneSharedProfileGetsEachAreasLayer", "file": "internal/integration/v5accept/area_knowledge_test.go" }
+      ]
+    },
+    {
+      "id": "G5", "task": "V9-05", "pr": 153,
+      "title": "Môi trường agent có khai báo, tái lập được",
+      "evidence": [
+        { "test": "TestV9AcceptAgentEnvironment_ProcessInheritsTheIntersection", "file": "internal/integration/v5accept/agent_environment_test.go" },
+        { "test": "TestV9AcceptAgentEnvironment_WorkerAllowingNothingIsACeiling", "file": "internal/integration/v5accept/agent_environment_test.go" }
+      ]
+    },
+    {
+      "id": "G6", "task": "V9-06", "pr": 154,
+      "title": "Một việc, một lịch sử: chạy lại WorkItem sau run FAILED",
+      "evidence": [
+        { "test": "TestV9AcceptRerunWorkItem_FailResolveStartDoneOnTheSameWorkItem", "file": "internal/integration/v5accept/rerun_work_item_test.go" }
+      ]
+    },
+    {
+      "id": "G7", "task": "V9-07", "pr": 155,
+      "title": "Context không phình vô hạn qua các vòng sửa",
+      "evidence": [
+        { "test": "TestReworkLoop_MessageBudget_BoundsThePromptAndKeepsTheNewestMessage", "file": "internal/app/runtime/message_budget_test.go" }
+      ]
+    },
+    {
+      "id": "G8", "task": "V9-08", "pr": 156,
+      "title": "Khởi tạo và baseline trước khi agent ghi",
+      "evidence": [
+        { "test": "TestV9AcceptBaselineGate_RedRepositoryDoesNotAdmitAWriterUntilTheOperatorAcceptsIt", "file": "internal/integration/v5accept/baseline_gate_test.go" },
+        { "test": "TestV9AcceptBaselineGate_VerifyRunsTheBaselineAgain", "file": "internal/integration/v5accept/baseline_gate_test.go" }
+      ]
+    },
+    {
+      "id": "G9", "task": "V9-10", "pr": 157,
+      "title": "Instruction file của repository nằm trong manifest",
+      "evidence": [
+        { "test": "TestScheduling_PinsTheInstructionFilesTheProviderLoadsByItself", "file": "internal/app/runtime/instruction_files_test.go" },
+        { "test": "TestScheduling_NoInstructionFile_LeavesTheSnapshotHashAsBefore", "file": "internal/app/runtime/instruction_files_test.go" }
+      ]
+    },
+    {
+      "id": "G10", "task": "V9-10", "pr": 157,
+      "title": "Tri thức hết hạn: cảnh báo khi publish",
+      "evidence": [
+        { "test": "TestPublishWarnings_StaleResource", "file": "internal/app/definitions/warnings_test.go" },
+        { "test": "TestPublishWarnings_TooManyHardConstraintsInOneSkill", "file": "internal/app/definitions/warnings_test.go" }
+      ]
+    }
+  ],
+  "operatorDefects": [
+    { "task": "V9-09", "pr": 148, "test": "TestExecuteReleaseSetLocalCommit_NoChanges_FailsTerminalWithoutRetry", "file": "internal/app/releasesetcommit/nochanges_test.go" },
+    { "task": "V9-09", "pr": 148, "test": "TestOneShot_DefinitionCreate_ExistingID_IsReadableConflict", "file": "cmd/aw/duplicate_create_test.go" },
+    { "task": "V9-09", "pr": 148, "test": "TestV9AcceptMakerAgentWriteOutsidePathScopes_IsScopeViolationNotProviderUnavailable", "file": "internal/integration/v5accept/agent_scope_violation_test.go" },
+    { "task": "V9-09", "pr": 148, "test": "TestVersionRouting_ShowAndDiffReachTheResourceCommandsWhenVersionIsTheFirstWord", "file": "cmd/aw/version_routing_test.go" }
+  ],
+  "liveProvider": {
+    "status": "PARTIAL",
+    "provider": "Claude Code 2.1.288, claude-sonnet-4-6, effort medium",
+    "test": "TestV9LiveClaude_MakerCheckFailReworkCheckerApprovesWithoutAWrapper",
+    "file": "internal/integration/v5accept/live_claude_test.go",
+    "evidence": "docs/release/live-provider/run-3-fixed/summary.json",
+    "codex": "UNVERIFIED",
+    "open": ["F3", "F4"]
+  },
+  "blockers": [],
+  "knownLimitations": [
+    "Codex CLI was never run (live provider compatibility stays PARTIAL).",
+    "F3: the real model needs 2-3 rework rounds before it acts on a failing check's message.",
+    "F4: aw worker cannot set the CLI's effort level or a spend ceiling, and spend per attempt is not recorded.",
+    "The live Claude scenario is skipped unless AW_LIVE_CLAUDE=1; CI does not repeat it, so the live evidence is a recorded run, not a gate."
+  ]
+}
