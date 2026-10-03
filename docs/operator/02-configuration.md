@@ -80,6 +80,8 @@ Usage of worker:
         artifact storage root directory (must already exist; the same root aw serve uses)
   -claude-executable string
         path to the Claude CLI executable to register as an agent provider (omitted = not registered; AGENT nodes pinned to it cannot run)
+  -claude-permission-mode string
+        the Claude CLI's --permission-mode for every task: acceptEdits, auto, bypassPermissions, dontAsk, manual or plan (omitted = the CLI's default, under which a headless Claude refuses every file write in an aw worktree because it is never a trusted workspace; an agent that must change files needs acceptEdits)
   -codex-executable string
         path to the Codex CLI executable to register as an agent provider (omitted = not registered; AGENT nodes pinned to it cannot run)
   -completion-interval duration

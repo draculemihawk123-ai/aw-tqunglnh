@@ -32,12 +32,14 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	stdruntime "runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/adapters/providers"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
@@ -515,4 +517,63 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestV9AcceptCheckerAfterMaker_CheckerCLIIsToldWhereTheRepositoryIs is the
+// regression for finding F2 of the V9-11 live run: a CHECKER starts in an empty
+// scratch directory (its mounts are read-only), and the real Claude CLI — handed
+// only a prompt that names no path — never saw the repository: the live reviewer
+// wrote a file of its own into the scratch directory and approved that. The fake
+// CLI records the command line it was started with; the last invocation of the
+// run is the checker's, and it must name the maker's worktree as an extra
+// directory and as a READ_ONLY repository, without the prompt (and so the
+// instruction hash) carrying any path.
+func TestV9AcceptCheckerAfterMaker_CheckerCLIIsToldWhereTheRepositoryIs(t *testing.T) {
+	f := newV5AcceptFixture(t)
+	capturePath := filepath.Join(f.fixtureRoot, "fake-cli-capture.json")
+	t.Setenv("AGENTKIT_HELPER_MODE", "outcome-success")
+	t.Setenv("AGENTKIT_HELPER_OUTCOME", "done")
+	t.Setenv("AGENTKIT_HELPER_WRITE_IN_CWD", v9MakerWrittenFile)
+	t.Setenv("AGENTKIT_CAPTURE_PATH", capturePath)
+
+	agents := newV9AgentSetup(t, f)
+	version := publishWorkflowVersion(t, f.uow, v5AcceptProjectID, "v9-mc2-workflow-def", "v9-mc2-workflow-v1", v9MakerCheckerDocument(agents.buildID), workflow.DependencyManifest{})
+	router := &runtime.NodeExecutorRouter{Agent: agents.executor}
+	run := startV9Run(t, f, router, agents.registry, version, "v9mc2", runtimedomain.WorkflowRunVerifying, nil)
+	requireAttemptState(t, run, "review", runtimedomain.ExecutionAttemptSucceeded)
+
+	raw, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("read fake CLI capture: %v", err)
+	}
+	var invocation providers.FakeCLIInvocation
+	if err := json.Unmarshal(raw, &invocation); err != nil {
+		t.Fatalf("decode fake CLI capture: %v", err)
+	}
+	if sameDirectory(invocation.WorkingDirectory, run.workDir) {
+		t.Fatalf("the checker's working directory is the repository worktree %s; it must be a scratch directory", run.workDir)
+	}
+	var addedDirectories []string
+	var notice string
+	for i, argument := range invocation.Argv {
+		switch {
+		case argument == "--add-dir" && i+1 < len(invocation.Argv):
+			addedDirectories = append(addedDirectories, invocation.Argv[i+1])
+		case argument == "--append-system-prompt" && i+1 < len(invocation.Argv):
+			notice = invocation.Argv[i+1]
+		}
+	}
+	if len(addedDirectories) != 1 || !sameDirectory(addedDirectories[0], run.workDir) {
+		t.Fatalf("--add-dir = %v, want the maker's worktree %s (argv %v)", addedDirectories, run.workDir, invocation.Argv)
+	}
+	if !strings.Contains(notice, "repository "+v5AcceptRepositoryID+": ") || !strings.Contains(notice, "(READ_ONLY)") {
+		t.Fatalf("--append-system-prompt = %q, want the repository named with its READ_ONLY access", notice)
+	}
+	if strings.Contains(invocation.Stdin, filepath.ToSlash(run.workDir)) || strings.Contains(invocation.Stdin, run.workDir) {
+		t.Fatalf("the prompt carries the worktree path: a path belongs to the machine, not to the context snapshot that determines the instruction hash")
+	}
+}
+
+func sameDirectory(a, b string) bool {
+	return strings.EqualFold(filepath.Clean(a), filepath.Clean(b))
 }

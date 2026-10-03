@@ -660,3 +660,86 @@ func TestHelperCapturePathHasNoAccidentalWhitespace(t *testing.T) {
 		t.Fatalf("unexpected path whitespace: %q", path)
 	}
 }
+
+// V9-11 (live finding F2): a real CLI is told where the repositories are. A
+// CHECKER has only read-only mounts and starts in a scratch directory; the
+// first live run had its reviewer write a file of its own there and approve it.
+func TestClaudeAdapterNamesTheRepositoryMountsToTheCLI(t *testing.T) {
+	t.Parallel()
+	supervisor := processadapter.NewSupervisor()
+	adapter, err := claude.New(supervisor, claude.Config{
+		Executable: os.Args[0], PrefixArgs: helperPrefix("claude"), VersionEnvironment: map[string]string{"AGENTKIT_PROVIDER_HELPER": "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(t *testing.T, name string, mounts []ports.AgentWorkspaceMount) providers.FakeCLIInvocation {
+		t.Helper()
+		scratch := t.TempDir()
+		capture := filepath.Join(t.TempDir(), name+".json")
+		request := helperRequest(name, scratch, capture, "success")
+		request.WorkspaceMounts = mounts
+		if _, err := adapter.Start(context.Background(), request, &eventCollector{}); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		return readCapture(t, capture)
+	}
+	argumentAfter := func(arguments []string, flag string) []string {
+		var values []string
+		for i, argument := range arguments {
+			if argument == flag && i+1 < len(arguments) {
+				values = append(values, arguments[i+1])
+			}
+		}
+		return values
+	}
+
+	t.Run("a checker's read-only mount is added and named", func(t *testing.T) {
+		t.Parallel()
+		repository := t.TempDir()
+		invocation := run(t, "checker", []ports.AgentWorkspaceMount{{RepositoryID: "repo-a", WorkingDirectory: repository, Access: ports.WorkspaceReadOnly}})
+		if dirs := argumentAfter(invocation.Argv, "--add-dir"); len(dirs) != 1 || dirs[0] != repository {
+			t.Fatalf("--add-dir = %v, want exactly the read-only repository %s (argv %v)", dirs, repository, invocation.Argv)
+		}
+		notice := argumentAfter(invocation.Argv, "--append-system-prompt")
+		if len(notice) != 1 || !strings.Contains(notice[0], "repository repo-a: "+repository+" (READ_ONLY)") || !strings.Contains(notice[0], "must not be changed") {
+			t.Fatalf("--append-system-prompt = %q, want the repository, its path and its READ_ONLY access", notice)
+		}
+		if invocation.Stdin != "literal prompt && not a shell command" {
+			t.Fatalf("stdin = %q: the mounts must not change the prompt", invocation.Stdin)
+		}
+	})
+
+	t.Run("the working directory is not added twice but is named", func(t *testing.T) {
+		t.Parallel()
+		scratch := t.TempDir()
+		other := t.TempDir()
+		capture := filepath.Join(t.TempDir(), "maker.json")
+		request := helperRequest("maker", scratch, capture, "success")
+		request.WorkspaceMounts = []ports.AgentWorkspaceMount{
+			{RepositoryID: "repo-a", WorkingDirectory: scratch, Access: ports.WorkspaceReadWrite},
+			{RepositoryID: "repo-b", WorkingDirectory: other, Access: ports.WorkspaceReadOnly},
+		}
+		if _, err := adapter.Start(context.Background(), request, &eventCollector{}); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		invocation := readCapture(t, capture)
+		if dirs := argumentAfter(invocation.Argv, "--add-dir"); len(dirs) != 1 || dirs[0] != other {
+			t.Fatalf("--add-dir = %v, want only the mount that is not the working directory (%s)", dirs, other)
+		}
+		notice := argumentAfter(invocation.Argv, "--append-system-prompt")
+		if len(notice) != 1 || !strings.Contains(notice[0], "repo-a: "+scratch+" (READ_WRITE)") || !strings.Contains(notice[0], "repo-b: "+other+" (READ_ONLY)") {
+			t.Fatalf("--append-system-prompt = %q, want both repositories with their access", notice)
+		}
+	})
+
+	t.Run("no mounts, no arguments", func(t *testing.T) {
+		t.Parallel()
+		invocation := run(t, "none", nil)
+		for _, flag := range []string{"--add-dir", "--append-system-prompt"} {
+			if values := argumentAfter(invocation.Argv, flag); len(values) != 0 {
+				t.Fatalf("%s = %v with no mounts, want none", flag, values)
+			}
+		}
+	})
+}

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
@@ -29,15 +30,42 @@ import (
 // keeps the probe's environment empty. It never affects what a task run
 // inherits; that is formed per attempt from the pinned execution profile
 // (internal/app/runtime AgentNodeExecutor).
-func newAgentExecutor(providerKey, executablePath string, probeEnvironment []string) (ports.AgentExecutor, error) {
+func newAgentExecutor(providerKey, executablePath string, probeEnvironment []string, options ...agentProviderOption) (ports.AgentExecutor, error) {
+	var settings agentProviderSettings
+	for _, option := range options {
+		option(&settings)
+	}
 	switch ports.ProviderKey(providerKey) {
 	case ports.ProviderClaude:
-		return claude.New(process.NewSupervisor(), claude.Config{Executable: executablePath, VersionInheritedEnvironment: probeEnvironment})
+		return claude.New(process.NewSupervisor(), claude.Config{
+			Executable: executablePath, VersionInheritedEnvironment: probeEnvironment, PermissionMode: settings.claudePermissionMode,
+		})
 	case ports.ProviderCodex:
 		return codex.New(process.NewSupervisor(), codex.Config{Executable: executablePath, VersionInheritedEnvironment: probeEnvironment})
 	default:
 		return nil, fmt.Errorf("adapter: unknown provider %q (want %q or %q)", providerKey, ports.ProviderClaude, ports.ProviderCodex)
 	}
+}
+
+// agentProviderSettings are the per-provider settings of a live executor that
+// are not part of its identity.
+type agentProviderSettings struct {
+	claudePermissionMode string
+}
+
+// agentProviderOption adjusts how newAgentExecutor builds a provider executor.
+type agentProviderOption func(*agentProviderSettings)
+
+// withClaudePermissionMode (V9-11, finding F1) sets the Claude CLI's
+// --permission-mode for every task it runs. The default, no mode, makes a
+// headless Claude refuse every file write in a worktree it has not been told to
+// trust — and an `aw` worktree is new for every WorkItem, so it never is — so
+// an agent that must change files needs "acceptEdits" (or another mode the
+// operator chooses). An unknown value is refused when the executor is built
+// (claude.New), at startup, not on the first task. It has no effect on a
+// provider other than Claude.
+func withClaudePermissionMode(mode string) agentProviderOption {
+	return func(settings *agentProviderSettings) { settings.claudePermissionMode = strings.TrimSpace(mode) }
 }
 
 // probeProviderExecutable is `aw doctor`'s ProviderProbe (V9-05, gap G5): it

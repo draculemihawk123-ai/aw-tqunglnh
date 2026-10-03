@@ -78,14 +78,18 @@ func runWorker(arguments []string, stdout io.Writer) error {
 type workerOptions struct {
 	dbPath, artifactRoot, workspaceRoot string
 	claudeExecutable, codexExecutable   string
-	workerID                            string
-	concurrency                         int
-	leaseTTL, leaseHeartbeat            time.Duration
-	pollInterval, shutdownGrace         time.Duration
-	projectionInterval                  time.Duration
-	completionInterval                  time.Duration
-	reaperInterval, sweepInterval       time.Duration
-	envAllowlist                        []string
+	// claudePermissionMode is the Claude CLI's --permission-mode for every task
+	// (V9-11, finding F1); empty leaves the CLI's default, under which a headless
+	// Claude refuses every file write in an aw worktree.
+	claudePermissionMode          string
+	workerID                      string
+	concurrency                   int
+	leaseTTL, leaseHeartbeat      time.Duration
+	pollInterval, shutdownGrace   time.Duration
+	projectionInterval            time.Duration
+	completionInterval            time.Duration
+	reaperInterval, sweepInterval time.Duration
+	envAllowlist                  []string
 	// instructionFileWarnBytes is the size above which an instruction file the
 	// provider CLI loads by itself is recorded as oversized (V9-10); <= 0 takes
 	// runtime.DefaultInstructionFileWarnBytes.
@@ -119,6 +123,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	workspaceRoot := flags.String("workspace-root", "", "root directory for Git worktree-backed workspaces (the same root `aw serve` uses)")
 	claudeExecutable := flags.String("claude-executable", "", "path to the Claude CLI executable to register as an agent provider (omitted = not registered; AGENT nodes pinned to it cannot run)")
 	codexExecutable := flags.String("codex-executable", "", "path to the Codex CLI executable to register as an agent provider (omitted = not registered; AGENT nodes pinned to it cannot run)")
+	claudePermissionMode := flags.String("claude-permission-mode", "", "the Claude CLI's --permission-mode for every task: acceptEdits, auto, bypassPermissions, dontAsk, manual or plan (omitted = the CLI's default, under which a headless Claude refuses every file write in an aw worktree because it is never a trusted workspace; an agent that must change files needs acceptEdits)")
 	workerID := flags.String("worker-id", fmt.Sprintf("aw-worker-%d", os.Getpid()), "lease-owner identity for this process; must be unique among running workers")
 	concurrency := flags.Int("worker-concurrency", defaults.WorkerConcurrency, "maximum jobs run at once")
 	leaseTTL := flags.Duration("lease-ttl", defaults.LeaseTTL, "how long a claimed job's lease stays valid without a heartbeat")
@@ -151,7 +156,8 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	assembled, err := assembleWorker(ctx, workerOptions{
 		dbPath: *dbPath, artifactRoot: *artifactRoot, workspaceRoot: *workspaceRoot,
 		claudeExecutable: strings.TrimSpace(*claudeExecutable), codexExecutable: strings.TrimSpace(*codexExecutable),
-		workerID: *workerID, concurrency: *concurrency,
+		claudePermissionMode: strings.TrimSpace(*claudePermissionMode),
+		workerID:             *workerID, concurrency: *concurrency,
 		leaseTTL: *leaseTTL, leaseHeartbeat: *leaseHeartbeat,
 		pollInterval: *pollInterval, shutdownGrace: *shutdownGrace,
 		projectionInterval: *projectionInterval, completionInterval: *completionInterval,
@@ -296,7 +302,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	if err != nil {
 		return nil, fmt.Errorf("construct repository prober: %w", err)
 	}
-	agents, err := newWorkerAgentRegistry(ctx, opts.claudeExecutable, opts.codexExecutable, cfg.EnvAllowlist)
+	agents, err := newWorkerAgentRegistry(ctx, opts.claudeExecutable, opts.codexExecutable, cfg.EnvAllowlist, withClaudePermissionMode(opts.claudePermissionMode))
 	if err != nil {
 		return nil, err
 	}
@@ -348,7 +354,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 // the operator allows them once, here, for the probe and (through the
 // profile's envAllowlist) for the task. Names only; nil leaves the probe's
 // environment empty as before.
-func newWorkerAgentRegistry(ctx context.Context, claudeExecutable, codexExecutable string, probeEnvironment []string) (*agentregistry.Registry, error) {
+func newWorkerAgentRegistry(ctx context.Context, claudeExecutable, codexExecutable string, probeEnvironment []string, options ...agentProviderOption) (*agentregistry.Registry, error) {
 	var executors []ports.AgentExecutor
 	for _, entry := range []struct{ provider, executable string }{
 		{string(ports.ProviderClaude), claudeExecutable},
@@ -357,7 +363,7 @@ func newWorkerAgentRegistry(ctx context.Context, claudeExecutable, codexExecutab
 		if strings.TrimSpace(entry.executable) == "" {
 			continue
 		}
-		executor, err := newAgentExecutor(entry.provider, entry.executable, probeEnvironment)
+		executor, err := newAgentExecutor(entry.provider, entry.executable, probeEnvironment, options...)
 		if err != nil {
 			return nil, fmt.Errorf("construct %s agent executor: %w", entry.provider, err)
 		}
