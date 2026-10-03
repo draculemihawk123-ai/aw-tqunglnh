@@ -362,6 +362,7 @@ export interface GetContextSnapshotResponse {
   manifestHash: string;
   createdAt: string;
   omittedMessageRefs?: unknown[];
+  repositoryInstructionFiles?: unknown[];
 }
 
 // GET /projects/{projectId}/work-items/{workItemId}/context-snapshots/{snapshotId} (scope: PROJECT)
@@ -396,6 +397,7 @@ export interface GetDefinitionVersionResponse {
   dependencies: unknown;
   publishedBy: string;
   publishedAt: string;
+  warnings?: string[];
 }
 
 // GET /definitions/versions/{versionId} (scope: INSTALLATION)
@@ -437,6 +439,7 @@ export interface GetMessageContextSnapshotResponse {
   manifestHash: string;
   createdAt: string;
   omittedMessageRefs?: unknown[];
+  repositoryInstructionFiles?: unknown[];
 }
 
 // GET /projects/{projectId}/work-items/{workItemId}/messages/{messageId}/context-snapshot (scope: PROJECT)
@@ -471,6 +474,7 @@ export interface GetProjectDefinitionVersionResponse {
   dependencies: unknown;
   publishedBy: string;
   publishedAt: string;
+  warnings?: string[];
 }
 
 // GET /projects/{projectId}/definitions/versions/{versionId} (scope: PROJECT)
@@ -999,6 +1003,7 @@ export interface PublishDefinitionVersionResponse {
   dependencies: unknown;
   publishedBy: string;
   publishedAt: string;
+  warnings?: string[];
 }
 
 // POST /definitions/{kind}/{id}/publish (scope: INSTALLATION)
@@ -1026,6 +1031,7 @@ export interface PublishProjectDefinitionVersionResponse {
   dependencies: unknown;
   publishedBy: string;
   publishedAt: string;
+  warnings?: string[];
 }
 
 // POST /projects/{projectId}/definitions/{kind}/{id}/publish (scope: PROJECT)
@@ -1349,6 +1355,7 @@ export interface ValidateDefinitionDraftResponse {
   dependencies: unknown;
   publishedBy: string;
   publishedAt: string;
+  warnings?: string[];
 }
 
 // POST /definitions/{kind}/{id}/validate (scope: INSTALLATION)
@@ -1376,6 +1383,7 @@ export interface ValidateProjectDefinitionDraftResponse {
   dependencies: unknown;
   publishedBy: string;
   publishedAt: string;
+  warnings?: string[];
 }
 
 // POST /projects/{projectId}/definitions/{kind}/{id}/validate (scope: PROJECT)

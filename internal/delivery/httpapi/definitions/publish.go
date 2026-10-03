@@ -109,5 +109,15 @@ func publishDefinitionVersionCore(w http.ResponseWriter, r *http.Request, deps D
 	// and dependency pins this task's own "Thực hiện" line asks for
 	// (versionFieldsView's own SourceHash/CompiledHash/Dependencies
 	// fields) — no separate summary is needed.
-	_ = httpapi.EncodeResult(w, http.StatusCreated, newVersionFieldsView(result), "")
+	view := newVersionFieldsView(result)
+	warn := deps.Hygiene
+	warn.Now = cmd.RequestedAt
+	warnings, err := appdefinitions.PublishWarnings(r.Context(), deps.UnitOfWork, result, warn)
+	if err != nil {
+		// The version is published; failing to compute advisory warnings must not
+		// turn that into an error response.
+		warnings = nil
+	}
+	view.Warnings = warnings
+	_ = httpapi.EncodeResult(w, http.StatusCreated, view, "")
 }

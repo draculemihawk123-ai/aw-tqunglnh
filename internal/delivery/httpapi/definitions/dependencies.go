@@ -2,6 +2,7 @@ package definitions
 
 import (
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
+	appdefinitions "github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 )
@@ -24,4 +25,7 @@ type Dependencies struct {
 	// Clock supplies cmd.RequestedAt/PublishedAt for every command envelope
 	// and compiled candidate this package builds.
 	Clock clock.Clock
+	// Hygiene (V9-10) configures the knowledge-hygiene warnings a publish
+	// reports; the zero value takes the defaults (appdefinitions.WarnPolicy).
+	Hygiene appdefinitions.WarnPolicy
 }

@@ -27,12 +27,12 @@ func newScopeView(s definition.Scope) scopeView {
 // the authoritative (non-projected) Definition row, reloaded via
 // internal/app/definitions.GetDefinition, never a client-echoed value.
 type definitionView struct {
-	ID      string          `json:"id"`
-	Kind    definition.Kind `json:"kind"`
-	Scope   scopeView       `json:"scope"`
-	Name    string          `json:"name"`
+	ID      string            `json:"id"`
+	Kind    definition.Kind   `json:"kind"`
+	Scope   scopeView         `json:"scope"`
+	Name    string            `json:"name"`
 	Status  definition.Status `json:"status"`
-	Version uint64          `json:"version"`
+	Version uint64            `json:"version"`
 }
 
 func newDefinitionView(id string, fields definition.Fields) definitionView {
@@ -96,6 +96,10 @@ type versionFieldsView struct {
 	Dependencies     definition.DependencyManifest `json:"dependencies"`
 	PublishedBy      string                        `json:"publishedBy"`
 	PublishedAt      time.Time                     `json:"publishedAt"`
+	// Warnings (V9-10, gap G10) are the knowledge-hygiene warnings of a publish:
+	// a stale resource, too many HARD_CONSTRAINTs. Present only on the response
+	// of a fresh publish; advisory, never a reason the publish failed.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 func newVersionFieldsView(v definition.VersionFields) versionFieldsView {

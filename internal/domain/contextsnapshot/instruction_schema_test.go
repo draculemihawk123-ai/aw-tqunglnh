@@ -168,3 +168,75 @@ func TestCloneForAttempt_CarriesOmittedMessageRefs(t *testing.T) {
 		t.Fatalf("clone omitted refs = %+v hash %s, want message-000 and the original's %s", clone.OmittedMessageRefs, clone.ManifestHash, original.ManifestHash)
 	}
 }
+
+// --- V9-10: repository instruction files ---
+
+func instructionFileFixture(repository, path string, size int64) InstructionFileRef {
+	return InstructionFileRef{RepositoryID: repository, Path: path, SHA256: "sha256:" + path, SizeBytes: size, WarnLimitBytes: 1000}
+}
+
+// A Snapshot that pinned no instruction file hashes exactly as before V9-10, and
+// one that pinned a file hashes differently — and depends on which file.
+func TestNewSnapshot_RepositoryInstructionFiles_ArePartOfTheManifestHash(t *testing.T) {
+	none := schemaFixtureSnapshot(t, WithRepositoryInstructionFiles(nil))
+	if want := "sha256:4a2bc61a47d81fff167f5fc8ce9c3fc0762736315e7b28bc881d4bef2a7b5fc4"; none.ManifestHash != want {
+		t.Fatalf("a snapshot without instruction files hashes %s, want the unchanged %s", none.ManifestHash, want)
+	}
+	claude := schemaFixtureSnapshot(t, WithRepositoryInstructionFiles([]InstructionFileRef{instructionFileFixture("repo-1", "CLAUDE.md", 10)}))
+	other := schemaFixtureSnapshot(t, WithRepositoryInstructionFiles([]InstructionFileRef{instructionFileFixture("repo-1", "CLAUDE.md", 11)}))
+	if claude.ManifestHash == none.ManifestHash || claude.ManifestHash == other.ManifestHash {
+		t.Fatalf("hashes %s, %s and %s are not all different", none.ManifestHash, claude.ManifestHash, other.ManifestHash)
+	}
+}
+
+func TestNewSnapshot_RepositoryInstructionFiles_AreSortedAndValidated(t *testing.T) {
+	sorted := schemaFixtureSnapshot(t, WithRepositoryInstructionFiles([]InstructionFileRef{
+		instructionFileFixture("repo-2", "AGENTS.md", 1), instructionFileFixture("repo-1", "CLAUDE.md", 2), instructionFileFixture("repo-1", "AGENTS.md", 3),
+	}))
+	got := sorted.RepositoryInstructionFiles
+	if len(got) != 3 || got[0].Path != "AGENTS.md" || got[0].RepositoryID != "repo-1" || got[1].Path != "CLAUDE.md" || got[2].RepositoryID != "repo-2" {
+		t.Fatalf("order = %+v, want repository then path", got)
+	}
+	reordered := schemaFixtureSnapshot(t, WithRepositoryInstructionFiles([]InstructionFileRef{
+		instructionFileFixture("repo-1", "AGENTS.md", 3), instructionFileFixture("repo-2", "AGENTS.md", 1), instructionFileFixture("repo-1", "CLAUDE.md", 2),
+	}))
+	if reordered.ManifestHash != sorted.ManifestHash {
+		t.Fatal("the same files in another order hash differently; the manifest must not depend on lookup order")
+	}
+
+	build := func(files ...InstructionFileRef) error {
+		_, err := NewSnapshot("snap-1", "project-1", "work-item-1", "attempt-1", nil, nil, nil, validRevisions(t),
+			time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC), WithRepositoryInstructionFiles(files))
+		return err
+	}
+	for name, files := range map[string][]InstructionFileRef{
+		"blank repository": {{Path: "CLAUDE.md", SHA256: "sha256:x"}},
+		"blank path":       {{RepositoryID: "repo-1", SHA256: "sha256:x"}},
+		"blank hash":       {{RepositoryID: "repo-1", Path: "CLAUDE.md"}},
+		"negative size":    {{RepositoryID: "repo-1", Path: "CLAUDE.md", SHA256: "sha256:x", SizeBytes: -1}},
+		"duplicate":        {instructionFileFixture("repo-1", "CLAUDE.md", 1), instructionFileFixture("repo-1", "CLAUDE.md", 2)},
+	} {
+		if err := build(files...); err == nil {
+			t.Errorf("%s: NewSnapshot accepted %+v", name, files)
+		}
+	}
+}
+
+func TestInstructionFileRef_Oversized(t *testing.T) {
+	for _, tt := range []struct {
+		size, limit int64
+		want        bool
+	}{{100, 1000, false}, {1000, 1000, false}, {1001, 1000, true}, {5000, 0, false}} {
+		if got := (InstructionFileRef{SizeBytes: tt.size, WarnLimitBytes: tt.limit}).Oversized(); got != tt.want {
+			t.Errorf("size %d limit %d: Oversized = %v, want %v", tt.size, tt.limit, got, tt.want)
+		}
+	}
+}
+
+func TestCloneForAttempt_CarriesRepositoryInstructionFiles(t *testing.T) {
+	original := schemaFixtureSnapshot(t, WithRepositoryInstructionFiles([]InstructionFileRef{instructionFileFixture("repo-1", "CLAUDE.md", 10)}))
+	clone, err := original.CloneForAttempt("snap-2", "attempt-2", time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC))
+	if err != nil || len(clone.RepositoryInstructionFiles) != 1 || clone.ManifestHash != original.ManifestHash {
+		t.Fatalf("clone = %+v (%v), want the file and the original's hash %s", clone.RepositoryInstructionFiles, err, original.ManifestHash)
+	}
+}

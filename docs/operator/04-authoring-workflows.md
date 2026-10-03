@@ -345,6 +345,45 @@ the changes made during this task*, or *its baseline had already failed* (and wh
 a failure that matches the baseline is not caused by this task*. The line is derived from the baseline as of the
 moment the maker's context was pinned, so the same snapshot always renders the same prompt.
 
+## Keeping knowledge honest — warnings at publish, and instruction files (V9-10)
+
+Two ways knowledge goes wrong without anyone deciding it should: a rule nobody has checked in a year keeps being
+handed to agents, and a long entry file the provider CLI loads by itself swamps the prompt. Both now leave a trace.
+Neither blocks anything — they are warnings and an audit record.
+
+**Warnings when you publish.** `aw definition publish` (and `POST .../publish`) returns a `warnings` list next to
+the version it created, when there is something to say:
+
+- a resource whose provenance `lastVerified` is older than the configured age (default **180 days**):
+  `skill version V: resource "R" was last verified 400 days ago (2025-09-01), older than the 180 days ...` —
+  re-check the rule and publish it again with a new `lastVerified`. A resource with only a `revision` is never
+  flagged (nothing dates it);
+- too many `HARD_CONSTRAINT` resources for an agent to hold (default **15**): in one Skill/Layer version, and across
+  the resources one **CONTEXT policy** (the route an AgentProfile pins) delivers to an agent. Keep what must never
+  be broken as `HARD_CONSTRAINT` and make the rest `REQUIRED_PROCEDURE` or `GUIDANCE`.
+
+```bash
+aw definition publish --kind SKILL --file skill.json --warn-resource-age-days 90 --warn-hard-constraints 10 <id>
+aw serve ... --warn-resource-age-days 90 --warn-hard-constraints 10     # the default for the HTTP API and the UI
+```
+
+`0` takes the default, a negative number turns that warning off. The warnings are computed when the version is
+published; replaying the same publish (same idempotency key) returns the version without them.
+
+**Instruction files the provider CLI loads by itself.** Claude Code reads `CLAUDE.md` and Codex reads `AGENTS.md`
+from the worktree they run in. That text reaches the agent outside the instruction artifact above, so no budget
+counts it. When a node is scheduled, the files its provider declares are looked up in the worktrees of the
+repositories the work item may touch (read-only access included) and **pinned in the attempt's context snapshot**:
+repository, file name, SHA-256 and size — never the content — plus the oversize limit in force (default
+**16384 bytes**, `aw worker --instruction-file-warn-bytes`). `aw context-snapshot show` (and `aw message context-snapshot`) and the snapshot routes
+show them under `repositoryInstructionFiles`; a file over the limit has `oversized: true` and a `warning` that says
+so. Only a regular file in the worktree root counts (a symlink is not followed). A snapshot of an attempt that had
+no such file, or whose provider declares none, is unchanged and hashes as before.
+
+Both are advisory: a file that cannot be read, or a worktree that cannot be resolved, simply contributes nothing,
+and the oversize flag changes nothing about how the attempt runs. Shorten the file, or move the detail into a Skill
+or Layer resource where it is prioritized, budgeted and versioned.
+
 ## Routing knowledge to a code area — resource selectors (V9-04)
 
 A Skill or Layer resource says *when* it applies with its `selector` (a resource with an empty selector must be

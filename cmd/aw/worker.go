@@ -16,6 +16,8 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/secretenv"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
@@ -84,6 +86,10 @@ type workerOptions struct {
 	completionInterval                  time.Duration
 	reaperInterval, sweepInterval       time.Duration
 	envAllowlist                        []string
+	// instructionFileWarnBytes is the size above which an instruction file the
+	// provider CLI loads by itself is recorded as oversized (V9-10); <= 0 takes
+	// runtime.DefaultInstructionFileWarnBytes.
+	instructionFileWarnBytes int64
 	// localCommitWriteLeaseTTL overrides the package-level
 	// localCommitWriteLeaseTTL constant when positive — see
 	// --local-commit-write-lease-ttl's own flag doc comment.
@@ -123,6 +129,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	completionInterval := flags.Duration("completion-interval", defaultCompletionInterval, "how often the completion orchestrator looks for runs waiting in VERIFYING")
 	reaperInterval := flags.Duration("reaper-interval", defaultReaperInterval, "pause between two recovery-reaper passes (orphaned attempts, stranded cancellation intents)")
 	sweepInterval := flags.Duration("sweep-interval", defaultSweepInterval, "pause between two artifact retention sweeps")
+	instructionFileWarnBytes := flags.Int64("instruction-file-warn-bytes", 0, "size in bytes above which an instruction file the provider CLI loads by itself (CLAUDE.md, AGENTS.md) is recorded in the context snapshot as oversized (0 = the default of 16384)")
 	envAllowlist := flags.String("env-allowlist", "", "comma-separated names of parent environment variables a spawned provider/command process may inherit (default: none); an AGENT process inherits only the names an AgentProfile's envAllowlist also lists, and the provider's version probe inherits all of them")
 	localCommitWriteLeaseTTLFlag := flags.Duration("local-commit-write-lease-ttl", localCommitWriteLeaseTTL,
 		"how long a release-set local-commit write lease (internal/app/releasesetcommit) is held without renewal — bounds how long a crashed worker's own in-flight local commit blocks a fresh worker from reclaiming and retrying it; production has no reason to lower this below the default, it exists so an acceptance test can prove reclaim genuinely happens without waiting out the full production TTL")
@@ -149,6 +156,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 		pollInterval: *pollInterval, shutdownGrace: *shutdownGrace,
 		projectionInterval: *projectionInterval, completionInterval: *completionInterval,
 		reaperInterval: *reaperInterval, sweepInterval: *sweepInterval, envAllowlist: splitCommaList(*envAllowlist),
+		instructionFileWarnBytes: *instructionFileWarnBytes,
 		localCommitWriteLeaseTTL: *localCommitWriteLeaseTTLFlag, projectionRebuildBatchSize: *projectionRebuildBatchSize,
 		projectionRebuildRoundDelay: *projectionRebuildRoundDelay,
 	})
@@ -206,6 +214,8 @@ type workerDeps struct {
 	// reaperInterval/sweepInterval are the pauses the two self-rescheduling
 	// CONTROL jobs leave between passes.
 	reaperInterval, sweepInterval time.Duration
+	// instructionFileWarnBytes — see workerOptions' own identically-named field.
+	instructionFileWarnBytes int64
 	// localCommitWriteLeaseTTL is the effective TTL buildWorkerRegistry
 	// wires into releasesetcommit.NewHandler — see workerOptions' own
 	// identically-named field doc comment.
@@ -302,6 +312,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 		execConfig: process.NewRuntimeExecutionConfigProvider(cfg), matcher: matcher, events: events,
 		prober: prober, catalog: projection.NewCatalog(),
 		reaperInterval: opts.reaperInterval, sweepInterval: opts.sweepInterval,
+		instructionFileWarnBytes: opts.instructionFileWarnBytes,
 		localCommitWriteLeaseTTL: opts.localCommitWriteLeaseTTL, projectionRebuildBatchSize: opts.projectionRebuildBatchSize,
 		projectionRebuildRoundDelay: opts.projectionRebuildRoundDelay,
 	}
@@ -397,7 +408,12 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	registry := workerpool.NewRegistry()
 	// Run execution.
 	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(d.uow, d.ids))
-	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandler(d.uow, d.ids, d.execConfig))
+	// V9-10 (gap G9): pin the instruction files the provider CLI loads by itself
+	// (CLAUDE.md, AGENTS.md) in the snapshot of every attempt it schedules. The
+	// adapters declare the names; the worker only maps a profile's provider key.
+	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandlerWithInstructionFiles(d.uow, d.ids, d.execConfig, &runtime.InstructionFileInspector{
+		Directories: d.provider, Declared: providerInstructionFiles, WarnBytes: d.instructionFileWarnBytes,
+	}))
 	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(d.uow, d.ids, router, d.clk, d.isolation, d.agents, d.store))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(d.uow, d.ids))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(d.uow, d.ids))
@@ -573,5 +589,20 @@ func (w *assembledWorker) driveCompletion(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+	}
+}
+
+// providerInstructionFiles answers which files a provider's CLI loads by itself
+// from the worktree it is started in (V9-10, gap G9). The adapters own the
+// answer; this maps the provider key an AgentProfile pins onto them. An unknown
+// provider declares none.
+func providerInstructionFiles(providerKey string) []string {
+	switch ports.ProviderKey(providerKey) {
+	case ports.ProviderClaude:
+		return claude.InstructionFiles()
+	case ports.ProviderCodex:
+		return codex.InstructionFiles()
+	default:
+		return nil
 	}
 }

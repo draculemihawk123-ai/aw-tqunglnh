@@ -396,6 +396,18 @@ type OmittedMessageRefView struct {
 	Reason    string `json:"reason"`
 }
 
+// InstructionFileRefView (V9-10) is one instruction file pinned in a snapshot.
+// Warning is set when the file is over the limit recorded with it.
+type InstructionFileRefView struct {
+	RepositoryID   string `json:"repositoryId"`
+	FileName       string `json:"fileName"`
+	SHA256         string `json:"sha256"`
+	SizeBytes      int64  `json:"sizeBytes"`
+	WarnLimitBytes int64  `json:"warnLimitBytes"`
+	Oversized      bool   `json:"oversized"`
+	Warning        string `json:"warning,omitempty"`
+}
+
 type ResourceRefView struct {
 	OwnerVersionID string `json:"ownerVersionId,omitempty"`
 	ResourceKey    string `json:"resourceKey"`
@@ -434,6 +446,9 @@ type ContextSnapshotDetail struct {
 	// OmittedMessageRefs (V9-07) lists the messages the `messages` budget left
 	// out of the prompt, each with the reason.
 	OmittedMessageRefs []OmittedMessageRefView `json:"omittedMessageRefs,omitempty"`
+	// RepositoryInstructionFiles (V9-10) are the instruction files the provider
+	// CLI loads by itself, pinned by hash and size, with the oversize warning.
+	RepositoryInstructionFiles []InstructionFileRefView `json:"repositoryInstructionFiles,omitempty"`
 }
 
 // ContextSnapshotToDetail converts a real, already-loaded
@@ -451,6 +466,18 @@ func ContextSnapshotToDetail(s contextsnapshot.Snapshot) ContextSnapshotDetail {
 	}
 	for _, ref := range s.OmittedMessageRefs {
 		detail.OmittedMessageRefs = append(detail.OmittedMessageRefs, OmittedMessageRefView{MessageID: ref.MessageID, Reason: string(ref.Reason)})
+	}
+	for _, file := range s.RepositoryInstructionFiles {
+		view := InstructionFileRefView{
+			RepositoryID: file.RepositoryID, FileName: file.Path, SHA256: file.SHA256, SizeBytes: file.SizeBytes,
+			WarnLimitBytes: file.WarnLimitBytes, Oversized: file.Oversized(),
+		}
+		if view.Oversized {
+			view.Warning = fmt.Sprintf(
+				"%s in repository %s is %d bytes, over the %d the warning allows: the provider CLI loads it on its own, outside the instruction budget; keep it a short map and move detail into a Skill or Layer resource",
+				file.Path, file.RepositoryID, file.SizeBytes, file.WarnLimitBytes)
+		}
+		detail.RepositoryInstructionFiles = append(detail.RepositoryInstructionFiles, view)
 	}
 	for _, ref := range s.ResourceRefs {
 		detail.ResourceRefs = append(detail.ResourceRefs, ResourceRefView{

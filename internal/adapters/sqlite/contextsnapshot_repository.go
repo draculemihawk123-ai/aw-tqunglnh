@@ -65,6 +65,16 @@ func createSnapshotTx(ctx context.Context, tx *sql.Tx, snapshot contextsnapshot.
 		}
 		omittedMessageRefsJSON = string(encoded)
 	}
+	// repository_instruction_files_json: NULL while the snapshot pinned none
+	// (V9-10, migration 0048).
+	var instructionFilesJSON any
+	if len(snapshot.RepositoryInstructionFiles) > 0 {
+		encoded, err := json.Marshal(snapshot.RepositoryInstructionFiles)
+		if err != nil {
+			return contextsnapshot.Snapshot{}, fmt.Errorf("marshal context snapshot repository instruction files: %w", err)
+		}
+		instructionFilesJSON = string(encoded)
+	}
 	revisionSetJSON, err := json.Marshal(snapshot.Revisions.Entries())
 	if err != nil {
 		return contextsnapshot.Snapshot{}, fmt.Errorf("marshal context snapshot revision set: %w", err)
@@ -77,10 +87,10 @@ func createSnapshotTx(ctx context.Context, tx *sql.Tx, snapshot contextsnapshot.
 		instructionSchemaVersion = snapshot.InstructionSchemaVersion
 	}
 	_, insertErr := tx.ExecContext(ctx, `
-INSERT INTO attempt_context_snapshots (id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, instruction_schema_version, omitted_message_refs_json, manifest_hash, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO attempt_context_snapshots (id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, instruction_schema_version, omitted_message_refs_json, repository_instruction_files_json, manifest_hash, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(snapshot.ID), string(snapshot.ProjectID), string(snapshot.WorkItemID), string(snapshot.AttemptID),
-		string(messageRefsJSON), string(resourceRefsJSON), string(evidenceRefsJSON), string(revisionSetJSON), instructionSchemaVersion, omittedMessageRefsJSON, snapshot.ManifestHash,
+		string(messageRefsJSON), string(resourceRefsJSON), string(evidenceRefsJSON), string(revisionSetJSON), instructionSchemaVersion, omittedMessageRefsJSON, instructionFilesJSON, snapshot.ManifestHash,
 		formatWorkflowTime(snapshot.CreatedAt),
 	)
 	if insertErr == nil {
@@ -105,7 +115,7 @@ func (r contextSnapshotRepository) GetSnapshotByAttemptID(ctx context.Context, a
 
 func loadSnapshotTx(ctx context.Context, tx *sql.Tx, whereClause string, arg string) (contextsnapshot.Snapshot, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, instruction_schema_version, omitted_message_refs_json, manifest_hash, created_at
+SELECT id, project_id, work_item_id, attempt_id, message_refs_json, resource_refs_json, evidence_refs_json, revision_set_json, instruction_schema_version, omitted_message_refs_json, repository_instruction_files_json, manifest_hash, created_at
 FROM attempt_context_snapshots WHERE `+whereClause, arg)
 	snapshot, err := scanSnapshotRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -120,8 +130,8 @@ func scanSnapshotRow(row repositoryRowScanner) (contextsnapshot.Snapshot, error)
 	// snapshot.
 	var instructionSchemaVersion sql.NullInt64
 	// NULL (every snapshot that omitted no message, migration 0046) scans as "".
-	var omittedMessageRefsRaw sql.NullString
-	if err := row.Scan(&id, &projectID, &workItemID, &attemptID, &messageRefsRaw, &resourceRefsRaw, &evidenceRefsRaw, &revisionSetRaw, &instructionSchemaVersion, &omittedMessageRefsRaw, &manifestHash, &createdAtRaw); err != nil {
+	var omittedMessageRefsRaw, instructionFilesRaw sql.NullString
+	if err := row.Scan(&id, &projectID, &workItemID, &attemptID, &messageRefsRaw, &resourceRefsRaw, &evidenceRefsRaw, &revisionSetRaw, &instructionSchemaVersion, &omittedMessageRefsRaw, &instructionFilesRaw, &manifestHash, &createdAtRaw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return contextsnapshot.Snapshot{}, err
 		}
@@ -144,6 +154,12 @@ func scanSnapshotRow(row repositoryRowScanner) (contextsnapshot.Snapshot, error)
 	if omittedMessageRefsRaw.Valid {
 		if err := json.Unmarshal([]byte(omittedMessageRefsRaw.String), &omittedMessageRefs); err != nil {
 			return contextsnapshot.Snapshot{}, fmt.Errorf("decode stored context snapshot omitted message refs: %w", err)
+		}
+	}
+	var instructionFiles []contextsnapshot.InstructionFileRef
+	if instructionFilesRaw.Valid {
+		if err := json.Unmarshal([]byte(instructionFilesRaw.String), &instructionFiles); err != nil {
+			return contextsnapshot.Snapshot{}, fmt.Errorf("decode stored context snapshot repository instruction files: %w", err)
 		}
 	}
 	var revisionEntries []workspace.Revision
@@ -169,6 +185,7 @@ func scanSnapshotRow(row repositoryRowScanner) (contextsnapshot.Snapshot, error)
 		messageRefs, resourceRefs, evidenceRefs, revisions, createdAt,
 		contextsnapshot.WithInstructionSchemaVersion(int(instructionSchemaVersion.Int64)),
 		contextsnapshot.WithOmittedMessageRefs(omittedMessageRefs),
+		contextsnapshot.WithRepositoryInstructionFiles(instructionFiles),
 	)
 	if err != nil {
 		return contextsnapshot.Snapshot{}, err

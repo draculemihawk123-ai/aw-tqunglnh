@@ -22,6 +22,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
+	appdefinitions "github.com/taQuangLing/agent-workflow/internal/app/definitions"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/logging"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -139,6 +140,11 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// has, and `/assets/` returns a typed 404 (StaticAssetHandler's own
 	// "not configured" branch) instead of ever reading an arbitrary,
 	// potentially attacker-influenced directory.
+	// V9-10 (gap G10): the thresholds of the knowledge-hygiene warnings a
+	// definition publish reports. 0 takes the default; a negative value turns
+	// that warning off.
+	warnResourceAgeDays := flags.Int("warn-resource-age-days", 0, "warn when a published resource's lastVerified is older than this many days (0 = the default of 180; negative = never warn)")
+	warnHardConstraints := flags.Int("warn-hard-constraints", 0, "warn when a published skill/layer version or context policy holds more than this many HARD_CONSTRAINT resources (0 = the default of 15; negative = never warn)")
 	uiDist := flags.String("ui-dist", "", "directory containing a built V7 UI (`pnpm build` output of web/, i.e. web/dist) to serve at / and /assets/; omitted = no UI, aw serve still works exactly as before V7")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
@@ -423,6 +429,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// full reasoning.
 	httpcompose.ComposeRoutes(routes, httpcompose.Dependencies{
 		UnitOfWork:                 uow,
+		Hygiene:                    appdefinitions.WarnPolicy{MaxResourceAge: time.Duration(*warnResourceAgeDays) * 24 * time.Hour, MaxHardConstraints: *warnHardConstraints},
 		ArtifactStore:              artifactStore,
 		WorkspaceInspectionQueries: workspaceInspectionQueries,
 		Matcher:                    matcher,

@@ -1,7 +1,9 @@
 package definitions_test
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -225,5 +227,44 @@ func TestPublishDefinitionVersion_Workflow_HappyPath(t *testing.T) {
 	defer one.Body.Close()
 	if one.StatusCode != http.StatusOK {
 		t.Fatalf("get version status = %d, want 200", one.StatusCode)
+	}
+}
+
+// V9-10 (gap G10): a publish reports knowledge-hygiene warnings next to the
+// version it created — advisory, the version is published either way.
+const staleSkillDocumentJSON = `{"resources":[{"key":"old-rule","instruction":"follow the old rule","priority":"GUIDANCE","global":true,"provenance":{"owner":"team-x","source":"doc-1","lastVerified":"2020-01-01T00:00:00Z"}}]}`
+
+func TestPublishDefinitionVersion_StaleResourceDrawsAWarningButPublishes(t *testing.T) {
+	e := newTestEnv(t)
+	e.do(t, http.MethodPost, "/definitions/SKILL", "create-1", map[string]any{"definitionId": "skill-1", "name": "Skill"}).Body.Close()
+
+	resp := e.do(t, http.MethodPost, "/definitions/SKILL/skill-1/publish", "publish-1", map[string]any{"content": staleSkillDocumentJSON})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: a stale resource must not stop the publish", resp.StatusCode)
+	}
+	var view struct {
+		VersionNumber uint64   `json:"versionNumber"`
+		Warnings      []string `json:"warnings"`
+	}
+	decodeInto(t, resp, &view)
+	if view.VersionNumber != 1 || len(view.Warnings) != 1 || !strings.Contains(view.Warnings[0], `resource "old-rule" was last verified`) {
+		t.Fatalf("view = %+v, want version 1 with one stale-resource warning", view)
+	}
+}
+
+func TestPublishDefinitionVersion_NothingToWarnAbout_HasNoWarningsKey(t *testing.T) {
+	e := newTestEnv(t)
+	e.do(t, http.MethodPost, "/definitions/BLOCK", "create-1", map[string]any{"definitionId": "blk-1", "name": "Block"}).Body.Close()
+	e.do(t, http.MethodPost, "/definitions/POLICY", "create-policy", map[string]any{"definitionId": "policy-1", "name": "Policy"}).Body.Close()
+	resp := e.do(t, http.MethodPost, "/definitions/BLOCK/blk-1/publish", "publish-1", map[string]any{
+		"content":      validBlockDocumentJSON,
+		"dependencies": []map[string]string{{"kind": "POLICY", "definitionId": "policy-1", "versionId": "policy-1-v1"}},
+	})
+	defer resp.Body.Close()
+	var raw map[string]json.RawMessage
+	decodeInto(t, resp, &raw)
+	if _, present := raw["warnings"]; present {
+		t.Fatalf("a block publish carries a warnings key: %s", raw["warnings"])
 	}
 }

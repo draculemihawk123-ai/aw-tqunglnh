@@ -55,6 +55,27 @@ VALUES ('snap-1', 'project-1', 'work-item-1', 'attempt-1', '[{"MessageID":"msg-1
 	if err := applyOneMigration(ctx, conn, findMigration(t, 46)); err != nil {
 		t.Fatalf("apply migration 46: %v", err)
 	}
+	// The repository reads the columns of every later migration too (it selects
+	// them by name), so bring the database to the latest schema before loading
+	// through it; what is under test is that rows written before 46 survive.
+	for version := 47; ; version++ {
+		later, err := loadMigrations()
+		if err != nil {
+			t.Fatalf("loadMigrations: %v", err)
+		}
+		var found *migration
+		for i := range later {
+			if later[i].Version == version {
+				found = &later[i]
+			}
+		}
+		if found == nil {
+			break
+		}
+		if err := applyOneMigration(ctx, conn, *found); err != nil {
+			t.Fatalf("apply migration %d: %v", version, err)
+		}
+	}
 
 	withCatalogTx(t, store, func(tx *sql.Tx) error {
 		m, err := messageRepository{tx: tx}.GetMessage(ctx, "msg-1")
