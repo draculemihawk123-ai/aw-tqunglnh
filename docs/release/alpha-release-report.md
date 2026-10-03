@@ -145,7 +145,7 @@ publish a workflow, run it to `SUCCEEDED`) was verified by hand against a real b
 the per-gap evidence (G1–G10, each with a test that reproduces the original failure mode) is in
 [`../harness-engineering/15-doi-chieu-v9.md`](../harness-engineering/15-doi-chieu-v9.md). The `ALPHA_READY` verdict above
 is unchanged; V9 adds to it and does not replace it. Live provider compatibility is `PARTIAL` (see its section): Claude
-ran for real, Codex did not. Open and non-blocking: F3, F4.
+ran for real, Codex did not. Open and non-blocking: F3. (F4 was fixed after the verdict by V9-13a.)
 
 ## Where to go next
 
