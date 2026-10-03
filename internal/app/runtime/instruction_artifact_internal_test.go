@@ -281,6 +281,39 @@ func TestRenderInstructionV2_KeyOrderIsTheADROrder(t *testing.T) {
 	}
 }
 
+// V9-07: omittedMessages sits right after messages, is absent when nothing was
+// omitted, and is a reference only — no content key.
+func TestRenderInstructionV2_OmittedMessagesFollowMessages(t *testing.T) {
+	t.Parallel()
+	in := goldenInstructionInput([]string{"approved", "rework"}, false)
+	in.omittedMessages = []instructionOmittedMessage{
+		{MessageID: "message-000", Sequence: 1, Actor: "operator-1", Role: "USER", CreatedAt: "2026-10-03T08:00:00Z", Reason: "BUDGET_EXCEEDED"},
+	}
+	artifact, err := renderInstructionV2(in)
+	if err != nil {
+		t.Fatalf("renderInstructionV2: %v", err)
+	}
+	if got, want := jsonKeys(t, artifact), []string{
+		"schemaVersion", "hardConstraints", "taskContract", "resources", "messages", "omittedMessages", "closingChecklist",
+	}; !equalStrings(got, want) {
+		t.Fatalf("top-level keys = %v, want %v", got, want)
+	}
+	var top struct {
+		OmittedMessages []json.RawMessage `json:"omittedMessages"`
+	}
+	if err := json.Unmarshal(artifact, &top); err != nil || len(top.OmittedMessages) != 1 {
+		t.Fatalf("decode: %v (%d omitted)", err, len(top.OmittedMessages))
+	}
+	if got, want := jsonKeys(t, top.OmittedMessages[0]), []string{"messageId", "sequence", "actor", "role", "createdAt", "reason"}; !equalStrings(got, want) {
+		t.Fatalf("omittedMessages keys = %v, want %v", got, want)
+	}
+	// The same input renders the same bytes (the hash depends on it).
+	again, err := renderInstructionV2(in)
+	if err != nil || !bytes.Equal(artifact, again) {
+		t.Fatalf("two renders differ: %v", err)
+	}
+}
+
 // TestRenderInstructionV2_OrdersByPriorityWhateverTheSnapshotOrder: the order is
 // a property of the renderer, not of how the snapshot happened to list its
 // resources — HARD_CONSTRAINTs are pulled out first (snapshot order among

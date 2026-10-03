@@ -74,4 +74,5 @@ type AppendMessageRequest struct {
 	ContentArtifactID string
 	CorrelationID     string
 	CreatedAt         time.Time
+	Pinned            bool // V9-07: see message.Message.Pinned
 }

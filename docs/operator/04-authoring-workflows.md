@@ -28,7 +28,12 @@ A Policy document has one `category` and exactly the ONE matching rule set for i
 {"category": "PERMISSION", "permission": {"isolationTier": "OPERATOR_TRUSTED_LOCAL", "grantedCapabilities": ["INTEGRATION_MULTI_REPOSITORY_WRITE"]}}
 {"category": "COMPLETION", "completion": {"requiredEvidenceKinds": ["MY_EVIDENCE_KEY"]}}
 {"category": "CONTEXT", "context": {"selector": ["my-context-selector"], "budget": {"maxTokens": 4096}}}
+{"category": "CONTEXT", "context": {"selector": ["my-context-selector"], "budget": {"maxTokens": 4096},
+                                    "messages": {"maxBytes": 32768, "keepLatest": 2}}}
 ```
+
+The optional `context.messages` block bounds how much of the task chat an attempt's prompt carries — see
+[Keeping the prompt bounded across rework rounds](#keeping-the-prompt-bounded-across-rework-rounds-v9-07).
 
 Categories: `ATTEMPT`, `COMPLETION`, `PERMISSION`, `CONTEXT`, `CLEANUP` (`internal/domain/policy/policy.go`).
 `PERMISSION`'s own `isolationTier` is either `OPERATOR_TRUSTED_LOCAL` or `ENFORCED_ISOLATED` — see
@@ -197,6 +202,7 @@ V9-03 it has this shape (**schema v2**, keys in exactly this order):
  "checkFailures": [{"checkNode": "...", "evidenceIds": ["..."], "what": "...", "why": "...", "fix": "..."}],
  "resources": [{"ownerVersionId": "...", "resourceKey": "...", "priority": "GUIDANCE", "contentHash": "...", "content": "..."}],
  "messages": [{"messageId": "...", "role": "USER", "content": "..."}],
+ "omittedMessages": [{"messageId": "...", "sequence": 3, "actor": "...", "role": "TOOL", "createdAt": "...", "reason": "BUDGET_EXCEEDED"}],
  "closingChecklist": {"hardConstraintKeys": ["..."], "allowedOutcomes": ["approved", "rework"]}}
 ```
 
@@ -220,6 +226,8 @@ V9-03 it has this shape (**schema v2**, keys in exactly this order):
   descriptions yet; the list is the names only.
 - **`checkFailures`** is only present for a maker sent back by a failing check (see the section above), right after
   the task contract.
+- **`omittedMessages`** is only present when the node's context policy declares a `messages` budget that left some
+  messages out; it follows `messages` (see below).
 
 **Which schema an attempt gets** is recorded on its context snapshot (`instructionSchemaVersion`, set when the
 attempt is scheduled), not decided by the binary that happens to assemble it. Attempts scheduled before the upgrade
@@ -227,6 +235,49 @@ that introduced this have no recorded version and keep the **v1** shape (`taskCo
 present, `messages`, `resources` — no priorities, no outcomes) byte for byte, and so do their retries and recovery
 attempts, which clone the snapshot with its version. Every attempt scheduled afterwards gets v2. Schema v2 is encoded
 without HTML escaping, so `<` and `&` appear as written, not as `<` / `&`.
+
+## Keeping the prompt bounded across rework rounds (V9-07)
+
+Every round of a rework loop appends to the WorkItem's task chat (a failure log, a review, a human reply), and
+without a limit every later prompt carries all of it, so the prompt grows round after round. A CONTEXT policy can
+declare a budget for the chat:
+
+```json
+{"category": "CONTEXT", "context": {"selector": ["..."], "budget": {"maxTokens": 65536},
+                                    "messages": {"maxBytes": 32768, "keepLatest": 2}}}
+```
+
+When an attempt is scheduled, the node's context policy decides which messages go into its prompt **in full**:
+
+1. the newest `keepLatest` messages and every **pinned** message are always included, whatever their size;
+2. the remaining capacity is `maxBytes` minus what those cost (or zero), spent on the other messages **newest
+   first** — a message that does not fit is skipped, and a smaller older one may still fit;
+3. every message that is not included becomes an entry in the prompt's `omittedMessages`: its `messageId`,
+   `sequence`, `actor`, `role` and `createdAt`, plus the `reason` (`BUDGET_EXCEEDED`) — never its content.
+
+So the message content in a prompt never exceeds the larger of `maxBytes` and the size of the always-kept messages,
+however many rounds have run, and the newest message (for a rework round, the failure it is meant to fix) is always
+there. `maxBytes` counts the stored message content in bytes, the same unit as `budget.maxTokens` for resources;
+`keepLatest` must be at least 1 and `maxBytes` positive, or publishing the policy fails.
+
+The decision is recorded on the attempt's context snapshot (`omittedMessageRefs`, shown by
+`aw message context-snapshot` and the context-snapshot routes) and takes part in its manifest hash, so "what did this
+attempt not see, and why" is answerable after the fact, and the same snapshot always renders the same prompt. A
+technical retry or recovery of the attempt keeps the same included and omitted messages.
+
+A policy without a `messages` block behaves exactly as before: every message of the WorkItem is in every prompt, and
+snapshots already stored are unaffected.
+
+**Pinning a message** keeps it in every later prompt however old it is — use it for the requirement or the
+constraint that must not scroll away:
+
+```bash
+aw message append <workItemId> --project-id <p> --pinned --file requirement.txt
+```
+
+The HTTP route takes `"pinned": true` in the `appendMessage` body. A message is pinned when it is appended and never
+changes afterwards (the chat is append-only); pinned messages count toward the budget, so pinning many large messages
+leaves less room for the rest.
 
 ## Routing knowledge to a code area — resource selectors (V9-04)
 

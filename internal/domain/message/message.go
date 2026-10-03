@@ -63,6 +63,11 @@ type Message struct {
 	ContentArtifactID artifact.ID
 	CorrelationID     string
 	CreatedAt         time.Time
+	// Pinned (V9-07) marks a message the context budget must never turn into
+	// a reference: a CONTEXT policy's `messages` block keeps pinned messages
+	// in the prompt however old they are. It is chosen when the message is
+	// appended and, like the rest of the row, never changes afterwards.
+	Pinned bool
 }
 
 // NewMessage validates and constructs a Message. sequence must already be

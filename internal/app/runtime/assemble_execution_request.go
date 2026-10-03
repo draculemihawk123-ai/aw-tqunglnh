@@ -81,6 +81,20 @@ type instructionMessage struct {
 	Content   string `json:"content"`
 }
 
+// instructionOmittedMessage is how a message the context policy's `messages`
+// budget left out of the prompt (V9-07) still shows up in a v2 artifact: who
+// wrote it, when, and where it sits in the chat, never its content. The agent
+// can ask the operator for it, and the snapshot's OmittedMessageRefs say why
+// it is not here.
+type instructionOmittedMessage struct {
+	MessageID string `json:"messageId"`
+	Sequence  uint64 `json:"sequence"`
+	Actor     string `json:"actor"`
+	Role      string `json:"role"`
+	CreatedAt string `json:"createdAt"`
+	Reason    string `json:"reason"`
+}
+
 type instructionResource struct {
 	OwnerVersionID string `json:"ownerVersionId"`
 	ResourceKey    string `json:"resourceKey"`
@@ -118,6 +132,7 @@ func AssembleAgentExecutionRequest(
 		workItemID: gathered.workItemID, title: gathered.workItemTitle, behavior: gathered.workItemBehavior,
 		acceptanceCriteria: gathered.workItemAcceptanceCriteria, verificationSpec: gathered.workItemVerificationSpec,
 		riskLevel: gathered.workItemRiskLevel, allowedOutcomes: gathered.allowedOutcomes,
+		omittedMessages: gathered.omittedMessages,
 	}
 	for _, m := range gathered.messages {
 		body, err := readArtifact(ctx, store, m.ref)
@@ -294,6 +309,7 @@ type assembledRequestInputs struct {
 	allowedCapabilities []string
 	workspaceMounts     []ports.AgentWorkspaceMount
 	messages            []assembledMessageInput
+	omittedMessages     []instructionOmittedMessage
 	checkFailures       []assembledCheckFailureInput
 	resources           []contextassembler.Candidate
 	allowedOutcomes     []string
@@ -425,6 +441,24 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		})
 	}
 
+	// V9-07: messages the snapshot's budget left out become references (who,
+	// when), in the order the snapshot lists them. The row is read through the
+	// same work-item check as an included message.
+	var omittedMessages []instructionOmittedMessage
+	for _, ref := range snapshot.OmittedMessageRefs {
+		msg, err := tx.Messages().GetMessage(ctx, ref.MessageID)
+		if err != nil {
+			return assembledRequestInputs{}, fmt.Errorf("runtime: load omitted message %s: %w", ref.MessageID, err)
+		}
+		if msg.WorkItemID != run.WorkItemID {
+			return assembledRequestInputs{}, fmt.Errorf("runtime: message %s belongs to work item %s, not %s", ref.MessageID, msg.WorkItemID, run.WorkItemID)
+		}
+		omittedMessages = append(omittedMessages, instructionOmittedMessage{
+			MessageID: ref.MessageID, Sequence: msg.Sequence, Actor: msg.Actor, Role: string(msg.Role),
+			CreatedAt: msg.CreatedAt.UTC().Format(time.RFC3339Nano), Reason: string(ref.Reason),
+		})
+	}
+
 	resources := make([]contextassembler.Candidate, 0, len(snapshot.ResourceRefs))
 	for _, ref := range snapshot.ResourceRefs {
 		// A pre-V5-08B0 snapshot's own ResourceRef has no OwnerVersionID
@@ -486,7 +520,7 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		effectiveScope: nodeRun.EffectiveScope, executionProfileHash: attempt.ExecutionProfileHash,
 		timeoutSeconds: profile.TimeoutSeconds, model: profile.Model,
 		isolationTier: profile.IsolationTier, allowedCapabilities: profile.AllowedCapabilities,
-		workspaceMounts: mounts, messages: messages, checkFailures: checkFailures, resources: resources, allowedOutcomes: allowedOutcomes,
+		workspaceMounts: mounts, messages: messages, omittedMessages: omittedMessages, checkFailures: checkFailures, resources: resources, allowedOutcomes: allowedOutcomes,
 		workItemID: string(workItem.ID), workItemTitle: workItem.Title, workItemBehavior: workItem.Behavior,
 		workItemVerificationSpec: workItem.VerificationSpec, workItemRiskLevel: string(workItem.RiskLevel), workItemAcceptanceCriteria: acceptance,
 		recoveryCheckpointID: recoveryCheckpointID,

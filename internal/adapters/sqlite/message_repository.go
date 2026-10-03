@@ -88,16 +88,17 @@ WHERE ea.id = ?`, req.AttemptID).Scan(&attemptWorkItemID, &attemptProjectID)
 	if err != nil {
 		return message.Message{}, err
 	}
+	m.Pinned = req.Pinned
 
 	var attemptIDColumn any
 	if req.AttemptID != "" {
 		attemptIDColumn = req.AttemptID
 	}
 	_, insertErr := tx.ExecContext(ctx, `
-INSERT INTO messages (id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO messages (id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(m.ID), string(m.ProjectID), string(m.WorkItemID), attemptIDColumn, m.Sequence,
-		m.Actor, string(m.Role), string(m.ContentArtifactID), m.CorrelationID, formatWorkflowTime(m.CreatedAt),
+		m.Actor, string(m.Role), string(m.ContentArtifactID), m.CorrelationID, formatWorkflowTime(m.CreatedAt), m.Pinned,
 	)
 	if insertErr == nil {
 		return m, nil
@@ -120,7 +121,7 @@ func (r messageRepository) GetMessage(ctx context.Context, id string) (message.M
 
 func loadMessageTx(ctx context.Context, tx *sql.Tx, id string) (message.Message, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at
+SELECT id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned
 FROM messages WHERE id = ?`, id)
 	m, err := scanMessageRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -133,8 +134,9 @@ func scanMessageRow(row repositoryRowScanner) (message.Message, error) {
 	var id, projectID, workItemID, actor, role, contentArtifactID, correlationID, createdAtRaw string
 	var attemptIDRaw sql.NullString
 	var sequence uint64
+	var pinned bool
 	if err := row.Scan(
-		&id, &projectID, &workItemID, &attemptIDRaw, &sequence, &actor, &role, &contentArtifactID, &correlationID, &createdAtRaw,
+		&id, &projectID, &workItemID, &attemptIDRaw, &sequence, &actor, &role, &contentArtifactID, &correlationID, &createdAtRaw, &pinned,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return message.Message{}, err
@@ -150,10 +152,15 @@ func scanMessageRow(row repositoryRowScanner) (message.Message, error) {
 		id := runtime.ExecutionAttemptID(attemptIDRaw.String)
 		attemptID = &id
 	}
-	return message.NewMessage(
+	m, err := message.NewMessage(
 		message.ID(id), project.ProjectID(projectID), work.WorkItemID(workItemID), attemptID,
 		sequence, actor, message.Role(role), artifact.ID(contentArtifactID), correlationID, createdAt,
 	)
+	if err != nil {
+		return message.Message{}, err
+	}
+	m.Pinned = pinned
+	return m, nil
 }
 
 // ListMessagesForWorkItem implements ports.MessageRepository, ordered by

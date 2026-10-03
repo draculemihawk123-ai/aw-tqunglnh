@@ -131,6 +131,7 @@ export interface AppendMessageRequest {
   content: string;
   contentType: string;
   sensitivity?: string;
+  pinned?: boolean;
 }
 
 export interface AppendMessageResponse {
@@ -360,6 +361,7 @@ export interface GetContextSnapshotResponse {
   revisionSetHash: string;
   manifestHash: string;
   createdAt: string;
+  omittedMessageRefs?: unknown[];
 }
 
 // GET /projects/{projectId}/work-items/{workItemId}/context-snapshots/{snapshotId} (scope: PROJECT)
@@ -434,6 +436,7 @@ export interface GetMessageContextSnapshotResponse {
   revisionSetHash: string;
   manifestHash: string;
   createdAt: string;
+  omittedMessageRefs?: unknown[];
 }
 
 // GET /projects/{projectId}/work-items/{workItemId}/messages/{messageId}/context-snapshot (scope: PROJECT)

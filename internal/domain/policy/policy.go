@@ -278,6 +278,24 @@ type ContextRules struct {
 	// ResourceRefs is the exact set of pinned passive-resource identities
 	// this route may assemble from.
 	ResourceRefs []ResourceRef `json:"resourceRefs,omitempty" yaml:"resourceRefs,omitempty"`
+	// Messages (V9-07, gap G7) bounds how much of a WorkItem's task chat an
+	// attempt's prompt carries. nil keeps the behavior every route had before
+	// V9-07: every message, however many rework rounds have appended to it.
+	Messages *MessageBudget `json:"messages,omitempty" yaml:"messages,omitempty"`
+}
+
+// MessageBudget is the optional `messages` block of a CONTEXT policy
+// (docs/design/12-v9-harness-alignment.md V9-07). The newest KeepLatest
+// messages and every pinned message are always part of the prompt; the rest
+// are added newest-first while the total content stays within MaxBytes, and
+// whatever does not fit is replaced by a reference (id, author, time) that the
+// ContextSnapshot records as omitted. MaxBytes counts message content bytes,
+// the same unit as the route's resource budget (see ContextBudget); it can
+// never push out the always-kept messages, so a prompt is bounded by
+// max(MaxBytes, size of the always-kept messages).
+type MessageBudget struct {
+	MaxBytes   uint64 `json:"maxBytes" yaml:"maxBytes"`
+	KeepLatest uint32 `json:"keepLatest" yaml:"keepLatest"`
 }
 
 // CleanupRules is Category CLEANUP's rule shape. go-core-spec.md §15

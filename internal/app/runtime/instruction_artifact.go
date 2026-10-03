@@ -25,6 +25,9 @@
 //	checkFailures      [] only for a maker sent back by a failing check (V9-02)
 //	resources          [] every other resource, each with its priority
 //	messages           []
+//	omittedMessages    [] only when the context policy's messages budget left
+//	                   some out (V9-07): messageId, sequence, actor, role,
+//	                   createdAt, reason — a reference, never the content
 //	closingChecklist   hardConstraintKeys, allowedOutcomes
 //
 // The rules that must hold come first, and are repeated by key at the very end
@@ -95,6 +98,10 @@ type instructionRenderInput struct {
 	allowedOutcomes []string
 	checkFailures   []instructionCheckFailure
 	messages        []instructionMessage
+	// omittedMessages are the messages the context policy's `messages` budget
+	// left out (V9-07), rendered by schema v2 only; schema v1 snapshots are
+	// never scheduled with a budget.
+	omittedMessages []instructionOmittedMessage
 	// resources are the snapshot's pinned resources in the snapshot's own
 	// order, which for a snapshot the scheduler built is the context resolver's
 	// order: HARD_CONSTRAINT first, then REQUIRED_PROCEDURE, GUIDANCE,
@@ -152,6 +159,7 @@ type instructionArtifactV2 struct {
 	CheckFailures    []instructionCheckFailure   `json:"checkFailures,omitempty"`
 	Resources        []instructionResourceV2     `json:"resources"`
 	Messages         []instructionMessage        `json:"messages"`
+	OmittedMessages  []instructionOmittedMessage `json:"omittedMessages,omitempty"`
 	ClosingChecklist instructionClosingChecklist `json:"closingChecklist"`
 }
 
@@ -223,6 +231,9 @@ func instructionPriorityRank(p definition.PriorityClass) (int, bool) {
 //     inside one priority (for a scheduler-built snapshot: resourceKey, then
 //     ownerVersionId, then contentHash);
 //   - messages: the snapshot's order, which is message sequence;
+//   - omittedMessages (only when the context policy's `messages` budget left
+//     some out, V9-07): the snapshot's order, again message sequence, right
+//     after messages;
 //   - checkFailures: check node key, then attempt id (gatherCheckFailureInputs);
 //   - allowedOutcomes: the workflow document's declaration order.
 //
@@ -243,6 +254,7 @@ func renderInstructionV2(in instructionRenderInput) ([]byte, error) {
 		Resources:        []instructionResourceV2{},
 		Messages:         []instructionMessage{},
 		CheckFailures:    in.checkFailures,
+		OmittedMessages:  in.omittedMessages,
 		ClosingChecklist: instructionClosingChecklist{HardConstraintKeys: []string{}, AllowedOutcomes: append([]string(nil), in.allowedOutcomes...)},
 	}
 	artifact.TaskContract = instructionTaskContractV2{

@@ -365,3 +365,26 @@ func assertStoredContent(t *testing.T, ctx context.Context, uow *fake.UnitOfWork
 		t.Fatalf("stored content = %q, want %q", content, want)
 	}
 }
+
+func TestAppendMessage_Pinned_IsPersisted(t *testing.T) {
+	uow, store, ids, workItemID := setupFixture(t)
+	ctx := context.Background()
+	clk := clock.NewFixed(time.Now())
+
+	for i, pinned := range []bool{false, true} {
+		key := []string{"idem-plain", "idem-pinned"}[i]
+		if _, err := appmessage.AppendMessage(ctx, uow, store, ids, clk, testCommand(key, "hash-"+key), appmessage.AppendMessageRequest{
+			ProjectID: "project-1", WorkItemID: workItemID, Role: messagedomain.RoleUser,
+			Content: []byte("body " + key), ContentType: "text/plain", Sensitivity: redact.Public, Pinned: pinned,
+		}); err != nil {
+			t.Fatalf("AppendMessage(%s): %v", key, err)
+		}
+	}
+	messages, err := appmessage.ListMessages(ctx, uow, workItemID)
+	if err != nil {
+		t.Fatalf("ListMessages: %v", err)
+	}
+	if len(messages) != 2 || messages[0].Pinned || !messages[1].Pinned {
+		t.Fatalf("pinned flags = %+v, want [false true]", messages)
+	}
+}

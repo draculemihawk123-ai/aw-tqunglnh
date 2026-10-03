@@ -981,6 +981,15 @@ HE-14-M07). Đây là G3. V5-08B0 khóa rằng cùng một snapshot phải cho c
 **Không làm:** chưa thêm mô tả tùy biến cho từng outcome; chưa đổi cú pháp marker. Hai việc này cần ADR riêng nếu có
 nhu cầu.
 
+**Bổ sung 2026-10-03 (V9-07, giữ nguyên các quyết định trên):** khi CONTEXT policy của node khai `messages`
+(`{maxBytes, keepLatest}`) và có message bị loại khỏi prompt, artifact v2 có thêm `omittedMessages[]` ngay sau
+`messages[]` (mục 1 giữa bước 6 và 7): mỗi phần tử gồm `messageId`, `sequence`, `actor`, `role`, `createdAt`, `reason`,
+không có nội dung. Bỏ hẳn key khi không có message nào bị loại, nên artifact của snapshot không dùng budget này không
+đổi byte nào. Danh sách message bị loại (`OmittedMessageRefs`, mỗi phần tử có `reason`) là một phần của
+`ManifestHash` của snapshot theo cùng quy tắc "bỏ qua khi rỗng" của mục 2, và snapshot clone cho retry/recovery giữ
+nguyên cả message được giữ lẫn message bị loại. Message được ghim (`pinned`, đặt khi append, không đổi) không bao giờ
+bị loại.
+
 ## 35. ADR-033 — Run thất bại mở blocker `RUN_FAILED` để chạy lại trên cùng WorkItem
 
 **Bối cảnh:** `transitionRunToFailedTx` (`internal/app/runtime/completion.go`) chuyển run sang `FAILED` và phát
@@ -1044,7 +1053,8 @@ dụng ma trận sau:
 - ADR-031 bổ sung outcome `failureOutcome` cho fail chức năng của COMMAND/MACHINE_GATE và evidence bắt buộc khi
   COMMAND thoát mã khác 0; không đổi ADR-026 (`ROUTER` vẫn một outcome) và không đổi completion.
 - ADR-032 thêm instruction artifact schema v2 (priority, outcome hợp lệ, thứ tự đầu/cuối), chọn theo
-  ContextSnapshot nên snapshot cũ vẫn lắp ra đúng artifact/hash cũ.
+  ContextSnapshot nên snapshot cũ vẫn lắp ra đúng artifact/hash cũ. V9-07 bổ sung `omittedMessages[]` cho message bị
+  ngân sách `messages` của CONTEXT policy loại (ghi trong ContextSnapshot, bỏ qua khi rỗng).
 - ADR-033 thêm blocker `RUN_FAILED` để run thất bại đi qua đúng đường `ResolveWorkItemBlocker` sẵn có và chạy lại
   trên cùng WorkItem, không repin.
 

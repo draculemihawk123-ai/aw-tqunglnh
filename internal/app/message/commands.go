@@ -60,6 +60,10 @@ type AppendMessageRequest struct {
 	// one against a real caller, the same "don't add a field/check no
 	// contract test needs yet" discipline 00-roadmap.md §3 states.
 	ContentType string
+	// Pinned (V9-07) keeps the message in every later prompt even when a
+	// CONTEXT policy's `messages` budget would otherwise reduce it to a
+	// reference. Part of what the command's request hash covers.
+	Pinned      bool
 	Sensitivity redact.Sensitivity
 	// Matcher optionally redacts any EXACT match against a known secret
 	// value (redact.Matcher's own documented "exact equality, never a
@@ -178,7 +182,7 @@ func AppendMessage(
 		m, err := tx.Messages().AppendMessage(ctx, ports.AppendMessageRequest{
 			ID: messageID, ProjectID: req.ProjectID, WorkItemID: req.WorkItemID, AttemptID: req.AttemptID,
 			Actor: cmd.Actor, Role: req.Role, ContentArtifactID: string(prepared.ID),
-			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
+			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt, Pinned: req.Pinned,
 		})
 		if err != nil {
 			return err

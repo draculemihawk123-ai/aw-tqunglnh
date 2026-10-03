@@ -207,3 +207,15 @@ func TestValidateDocument_Cleanup_RejectsZeroRetentionDays(t *testing.T) {
 	diags := policy.ValidateDocument(doc)
 	requireProblemPath(t, diags, "cleanup.retentionDays")
 }
+
+func TestValidateDocument_Context_MessagesBudget(t *testing.T) {
+	doc := validContextDocument()
+	doc.Context.Messages = &policy.MessageBudget{MaxBytes: 4096, KeepLatest: 1}
+	if diags := policy.ValidateDocument(doc); len(diags) != 0 {
+		t.Fatalf("a valid messages block was rejected: %+v", diags)
+	}
+	doc.Context.Messages = &policy.MessageBudget{MaxBytes: 4096, KeepLatest: 0}
+	requireProblemPath(t, policy.ValidateDocument(doc), "context.messages.keepLatest")
+	doc.Context.Messages = &policy.MessageBudget{MaxBytes: 0, KeepLatest: 2}
+	requireProblemPath(t, policy.ValidateDocument(doc), "context.messages.maxBytes")
+}

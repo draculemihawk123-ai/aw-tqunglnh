@@ -143,6 +143,11 @@
             "name": "Sensitivity",
             "jsonTag": "sensitivity,omitempty",
             "type": "string"
+          },
+          {
+            "name": "Pinned",
+            "jsonTag": "pinned,omitempty",
+            "type": "bool"
           }
         ]
       },
@@ -860,6 +865,11 @@
             "name": "CreatedAt",
             "jsonTag": "createdAt",
             "type": "time.Time"
+          },
+          {
+            "name": "OmittedMessageRefs",
+            "jsonTag": "omittedMessageRefs,omitempty",
+            "type": "[]runtime.OmittedMessageRefView"
           }
         ]
       }
@@ -1144,6 +1154,11 @@
             "name": "CreatedAt",
             "jsonTag": "createdAt",
             "type": "time.Time"
+          },
+          {
+            "name": "OmittedMessageRefs",
+            "jsonTag": "omittedMessageRefs,omitempty",
+            "type": "[]runtime.OmittedMessageRefView"
           }
         ]
       }

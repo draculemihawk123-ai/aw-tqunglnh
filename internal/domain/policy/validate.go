@@ -439,6 +439,25 @@ func validateContextRules(rules ContextRules) authoring.Diagnostics {
 		})
 	}
 
+	if rules.Messages != nil {
+		if rules.Messages.KeepLatest == 0 {
+			diags = append(diags, authoring.Diagnostic{
+				Path: "context.messages.keepLatest",
+				What: "keepLatest is zero",
+				Why:  "the newest message is the one an attempt most needs (for a rework round, the failure it is meant to fix); a budget that may drop every message could drop it too",
+				Fix:  "set context.messages.keepLatest to at least 1",
+			})
+		}
+		if rules.Messages.MaxBytes == 0 {
+			diags = append(diags, authoring.Diagnostic{
+				Path: "context.messages.maxBytes",
+				What: "maxBytes is zero",
+				Why:  "a zero byte budget would turn every message that is not one of the newest keepLatest or pinned into a reference — leaving the field out says that more clearly",
+				Fix:  "set context.messages.maxBytes to a positive number of bytes, or remove context.messages",
+			})
+		}
+	}
+
 	seenRef := make(map[ResourceRef]bool, len(rules.ResourceRefs))
 	for i, ref := range rules.ResourceRefs {
 		path := fmt.Sprintf("context.resourceRefs[%d]", i)

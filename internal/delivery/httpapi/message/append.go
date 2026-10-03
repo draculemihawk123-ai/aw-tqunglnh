@@ -27,6 +27,9 @@ type appendMessageBody struct {
 	Content     string `json:"content"`
 	ContentType string `json:"contentType"`
 	Sensitivity string `json:"sensitivity,omitempty"`
+	// Pinned (V9-07) keeps the message in every later prompt even when the
+	// context policy's `messages` budget would drop older ones.
+	Pinned bool `json:"pinned,omitempty"`
 }
 
 // handleAppendMessage implements
@@ -89,7 +92,7 @@ func handleAppendMessage(deps Dependencies) http.HandlerFunc {
 
 		result, err := appmessage.AppendMessage(r.Context(), deps.UnitOfWork, deps.ArtifactStore, deps.IDs, deps.Clock, cmd, appmessage.AppendMessageRequest{
 			ProjectID: projectID, WorkItemID: workItemID, AttemptID: body.AttemptID, Role: role,
-			Content: []byte(body.Content), ContentType: body.ContentType, Sensitivity: sensitivity, Matcher: deps.Matcher,
+			Content: []byte(body.Content), ContentType: body.ContentType, Pinned: body.Pinned, Sensitivity: sensitivity, Matcher: deps.Matcher,
 		})
 		if err != nil {
 			writeCommandError(w, err)
