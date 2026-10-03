@@ -181,17 +181,21 @@ func TestDescriptorsRegisterEveryCommandWithConsistentMetadata(t *testing.T) {
 		scope           string
 		httpOperationID string
 	}{
-		"project list":           {"INSTALLATION", "projectsList"},
-		"project create":         {"INSTALLATION", "projectsCreate"},
-		"project show":           {"PROJECT", "projectsGet"},
-		"repository list":        {"PROJECT", "projectRepositoriesList"},
-		"repository register":    {"PROJECT", "projectRepositoriesRegister"},
-		"repository onboarding":  {"PROJECT", "repositoriesOnboarding"},
-		"repository show":        {"PROJECT", "repositoriesGet"},
-		"repository retry-probe": {"PROJECT", "repositoriesRetryProbe"},
-		"component list":         {"PROJECT", "projectComponentsList"},
-		"pack-assignment list":   {"PROJECT", "componentPackAssignmentsList"},
-		"pack-assignment assign": {"PROJECT", "componentPackAssignmentsAssign"},
+		"project list":                          {"INSTALLATION", "projectsList"},
+		"project create":                        {"INSTALLATION", "projectsCreate"},
+		"project show":                          {"PROJECT", "projectsGet"},
+		"repository list":                       {"PROJECT", "projectRepositoriesList"},
+		"repository register":                   {"PROJECT", "projectRepositoriesRegister"},
+		"repository onboarding":                 {"PROJECT", "repositoriesOnboarding"},
+		"repository show":                       {"PROJECT", "repositoriesGet"},
+		"repository retry-probe":                {"PROJECT", "repositoriesRetryProbe"},
+		"repository readiness show":             {"PROJECT", "repositoriesReadiness"},
+		"repository readiness set":              {"PROJECT", "repositoriesReadinessProfileSet"},
+		"repository readiness verify":           {"PROJECT", "repositoriesReadinessVerify"},
+		"repository readiness accept-exception": {"PROJECT", "repositoriesReadinessAcceptException"},
+		"component list":                        {"PROJECT", "projectComponentsList"},
+		"pack-assignment list":                  {"PROJECT", "componentPackAssignmentsList"},
+		"pack-assignment assign":                {"PROJECT", "componentPackAssignmentsAssign"},
 	}
 
 	all := cli.All()

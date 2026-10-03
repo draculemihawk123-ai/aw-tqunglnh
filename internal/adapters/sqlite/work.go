@@ -871,6 +871,30 @@ FROM repository_workspaces WHERE workspace_set_id = ? ORDER BY repository_id, ge
 	return result, nil
 }
 
+// ListRepositoryWorkspacesForRepository implements ports.WorkRepository (V9-08).
+func (r workRepository) ListRepositoryWorkspacesForRepository(ctx context.Context, repositoryID string) ([]workspace.RepositoryWorkspace, error) {
+	rows, err := r.tx.QueryContext(ctx, `
+SELECT `+repositoryWorkspaceColumns+`
+FROM repository_workspaces WHERE repository_id = ? ORDER BY workspace_set_id, generation`, repositoryID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list repository workspaces for repository: %w", err))
+	}
+	defer rows.Close()
+
+	var result []workspace.RepositoryWorkspace
+	for rows.Next() {
+		rw, err := scanRepositoryWorkspace(rows)
+		if err != nil {
+			return nil, MapSQLiteError(fmt.Errorf("scan repository workspace row: %w", err))
+		}
+		result = append(result, rw)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("iterate repository workspaces for repository: %w", err))
+	}
+	return result, nil
+}
+
 // GetRepositoryWorkspaceByID implements ports.WorkRepository (V3-10): see
 // that interface method's own doc comment for why it returns FamilyID
 // alongside the RepositoryWorkspace itself.

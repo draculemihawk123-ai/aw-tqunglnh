@@ -487,6 +487,17 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		if err != nil {
 			return assembledRequestInputs{}, err
 		}
+		// V9-08: tell the maker how the repository stood before the task, so a
+		// regression of this task is told apart from a failure that was already
+		// there. Read as of the snapshot's creation, so the same snapshot always
+		// renders the same prompt.
+		note, err := baselineNoteAt(ctx, tx, string(workItem.FamilyID), nodeRun.EffectiveScope, snapshot.CreatedAt)
+		if err != nil {
+			return assembledRequestInputs{}, err
+		}
+		for i := range checkFailures {
+			checkFailures[i].baseline = note
+		}
 	}
 
 	mounts := assembleWorkspaceMounts(nodeRun.EffectiveScope, snapshot.Revisions.Entries())

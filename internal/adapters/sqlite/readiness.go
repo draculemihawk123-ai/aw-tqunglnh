@@ -166,11 +166,11 @@ func recordBaselineAttemptTx(ctx context.Context, tx *sql.Tx, req ports.RecordBa
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO readiness_baseline_attempts (
     id, project_id, repository_workspace_id, repository_id, job_id, stage, outcome,
-    exit_code, duration_ms, stdout_excerpt, stderr_excerpt, error_code, error_message, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    exit_code, duration_ms, stdout_excerpt, stderr_excerpt, error_code, error_message, created_at, profile_version
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.ID, req.ProjectID, req.RepositoryWorkspaceID, req.RepositoryID, req.JobID, string(req.Stage), string(req.Outcome),
 		exitCode, req.DurationMS, req.StdoutExcerpt, req.StderrExcerpt,
-		nullableStringPtr(req.ErrorCode), nullableStringPtr(req.ErrorMessage), now.Format(time.RFC3339Nano),
+		nullableStringPtr(req.ErrorCode), nullableStringPtr(req.ErrorMessage), now.Format(time.RFC3339Nano), req.ProfileVersion,
 	); err != nil {
 		return ports.BaselineAttempt{}, MapSQLiteError(fmt.Errorf("record baseline attempt: %w", err))
 	}
@@ -179,14 +179,14 @@ INSERT INTO readiness_baseline_attempts (
 		ID: req.ID, ProjectID: req.ProjectID, RepositoryWorkspaceID: req.RepositoryWorkspaceID,
 		RepositoryID: req.RepositoryID, JobID: req.JobID, Stage: req.Stage, Outcome: req.Outcome,
 		ExitCode: req.ExitCode, DurationMS: req.DurationMS, StdoutExcerpt: req.StdoutExcerpt, StderrExcerpt: req.StderrExcerpt,
-		ErrorCode: req.ErrorCode, ErrorMessage: req.ErrorMessage, CreatedAt: now,
+		ErrorCode: req.ErrorCode, ErrorMessage: req.ErrorMessage, ProfileVersion: req.ProfileVersion, CreatedAt: now,
 	}, nil
 }
 
 func (r readinessRepository) GetBaselineAttemptByJobID(ctx context.Context, jobID string) (ports.BaselineAttempt, error) {
 	row := r.tx.QueryRowContext(ctx, `
 SELECT id, project_id, repository_workspace_id, repository_id, job_id, stage, outcome,
-       exit_code, duration_ms, stdout_excerpt, stderr_excerpt, error_code, error_message, created_at
+       exit_code, duration_ms, stdout_excerpt, stderr_excerpt, error_code, error_message, created_at, profile_version
 FROM readiness_baseline_attempts WHERE job_id = ?`, jobID)
 	attempt, err := scanBaselineAttemptRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -198,8 +198,8 @@ FROM readiness_baseline_attempts WHERE job_id = ?`, jobID)
 func (r readinessRepository) ListBaselineAttempts(ctx context.Context, repositoryWorkspaceID string) ([]ports.BaselineAttempt, error) {
 	rows, err := r.tx.QueryContext(ctx, `
 SELECT id, project_id, repository_workspace_id, repository_id, job_id, stage, outcome,
-       exit_code, duration_ms, stdout_excerpt, stderr_excerpt, error_code, error_message, created_at
-FROM readiness_baseline_attempts WHERE repository_workspace_id = ? ORDER BY julianday(created_at)`, repositoryWorkspaceID)
+       exit_code, duration_ms, stdout_excerpt, stderr_excerpt, error_code, error_message, created_at, profile_version
+FROM readiness_baseline_attempts WHERE repository_workspace_id = ? ORDER BY julianday(created_at), rowid`, repositoryWorkspaceID)
 	if err != nil {
 		return nil, MapSQLiteError(fmt.Errorf("list baseline attempts: %w", err))
 	}
@@ -225,9 +225,10 @@ func scanBaselineAttemptRow(row repositoryRowScanner) (ports.BaselineAttempt, er
 	var durationMS int64
 	var stdoutExcerpt, stderrExcerpt string
 	var errorCode, errorMessage sql.NullString
+	var profileVersion sql.NullInt64
 	if err := row.Scan(
 		&id, &projectID, &repositoryWorkspaceID, &repositoryID, &jobID, &stage, &outcome,
-		&exitCode, &durationMS, &stdoutExcerpt, &stderrExcerpt, &errorCode, &errorMessage, &createdAtText,
+		&exitCode, &durationMS, &stdoutExcerpt, &stderrExcerpt, &errorCode, &errorMessage, &createdAtText, &profileVersion,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ports.BaselineAttempt{}, err
@@ -242,6 +243,7 @@ func scanBaselineAttemptRow(row repositoryRowScanner) (ports.BaselineAttempt, er
 		ID: id, ProjectID: projectID, RepositoryWorkspaceID: repositoryWorkspaceID, RepositoryID: repositoryID, JobID: jobID,
 		Stage: readiness.Stage(stage), Outcome: readiness.BaselineOutcome(outcome),
 		DurationMS: durationMS, StdoutExcerpt: stdoutExcerpt, StderrExcerpt: stderrExcerpt, CreatedAt: createdAt,
+		ProfileVersion: uint64(profileVersion.Int64),
 	}
 	if exitCode.Valid {
 		value := int(exitCode.Int64)
@@ -254,6 +256,66 @@ func scanBaselineAttemptRow(row repositoryRowScanner) (ports.BaselineAttempt, er
 		attempt.ErrorMessage = &errorMessage.String
 	}
 	return attempt, nil
+}
+
+// --- BaselineException (V9-08, migration 0047) ---
+
+func (r readinessRepository) RecordBaselineException(ctx context.Context, req ports.RecordBaselineExceptionRequest) (ports.BaselineException, error) {
+	var workspaceID, repositoryID string
+	err := r.tx.QueryRowContext(ctx,
+		`SELECT repository_workspace_id, repository_id FROM readiness_baseline_attempts WHERE id = ?`, req.BaselineAttemptID,
+	).Scan(&workspaceID, &repositoryID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.BaselineException{}, fmt.Errorf("%w: baseline attempt %s", ports.ErrPersistenceNotFound, req.BaselineAttemptID)
+	}
+	if err != nil {
+		return ports.BaselineException{}, MapSQLiteError(fmt.Errorf("resolve baseline exception attempt: %w", err))
+	}
+	if existing, err := getBaselineExceptionTx(ctx, r.tx, req.BaselineAttemptID); err == nil {
+		return existing, nil
+	} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
+		return ports.BaselineException{}, err
+	}
+	acceptedAt := req.AcceptedAt.UTC()
+	if _, err := r.tx.ExecContext(ctx, `
+INSERT INTO readiness_baseline_exceptions (
+    id, project_id, baseline_attempt_id, repository_workspace_id, repository_id, reason, accepted_by, accepted_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		req.ID, req.ProjectID, req.BaselineAttemptID, workspaceID, repositoryID, req.Reason, req.AcceptedBy, acceptedAt.Format(time.RFC3339Nano),
+	); err != nil {
+		return ports.BaselineException{}, MapSQLiteError(fmt.Errorf("record baseline exception: %w", err))
+	}
+	return ports.BaselineException{
+		ID: req.ID, ProjectID: req.ProjectID, BaselineAttemptID: req.BaselineAttemptID,
+		RepositoryWorkspaceID: workspaceID, RepositoryID: repositoryID,
+		Reason: req.Reason, AcceptedBy: req.AcceptedBy, AcceptedAt: acceptedAt,
+	}, nil
+}
+
+func (r readinessRepository) GetBaselineException(ctx context.Context, baselineAttemptID string) (ports.BaselineException, error) {
+	return getBaselineExceptionTx(ctx, r.tx, baselineAttemptID)
+}
+
+func getBaselineExceptionTx(ctx context.Context, tx *sql.Tx, baselineAttemptID string) (ports.BaselineException, error) {
+	var exception ports.BaselineException
+	var acceptedAtText string
+	err := tx.QueryRowContext(ctx, `
+SELECT id, project_id, baseline_attempt_id, repository_workspace_id, repository_id, reason, accepted_by, accepted_at
+FROM readiness_baseline_exceptions WHERE baseline_attempt_id = ?`, baselineAttemptID,
+	).Scan(&exception.ID, &exception.ProjectID, &exception.BaselineAttemptID, &exception.RepositoryWorkspaceID,
+		&exception.RepositoryID, &exception.Reason, &exception.AcceptedBy, &acceptedAtText)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ports.BaselineException{}, fmt.Errorf("%w: baseline exception for attempt %s", ports.ErrPersistenceNotFound, baselineAttemptID)
+	}
+	if err != nil {
+		return ports.BaselineException{}, MapSQLiteError(fmt.Errorf("load baseline exception: %w", err))
+	}
+	acceptedAt, err := parseDBTime(acceptedAtText)
+	if err != nil {
+		return ports.BaselineException{}, err
+	}
+	exception.AcceptedAt = acceptedAt
+	return exception, nil
 }
 
 // --- EnvironmentBlocker ---

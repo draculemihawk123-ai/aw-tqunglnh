@@ -422,6 +422,24 @@ func (w *WorkRepository) ListWorkspaceSetRepositoryWorkspaces(_ context.Context,
 	return result, nil
 }
 
+// ListRepositoryWorkspacesForRepository mirrors sqlite's
+// listRepositoryWorkspacesForRepositoryTx.
+func (w *WorkRepository) ListRepositoryWorkspacesForRepository(_ context.Context, repositoryID string) ([]workspace.RepositoryWorkspace, error) {
+	var result []workspace.RepositoryWorkspace
+	for _, rw := range w.repositoryWorkspaces {
+		if string(rw.RepositoryID) == repositoryID {
+			result = append(result, rw)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].WorkspaceSetID != result[j].WorkspaceSetID {
+			return result[i].WorkspaceSetID < result[j].WorkspaceSetID
+		}
+		return result[i].Generation < result[j].Generation
+	})
+	return result, nil
+}
+
 func repositoryWorkspaceKey(workspaceSetID, repositoryID string, generation uint64) string {
 	return fmt.Sprintf("%s/%s/%d", workspaceSetID, repositoryID, generation)
 }

@@ -56,7 +56,6 @@ package work
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -444,22 +443,17 @@ func ExplainWorkItemReadiness(ctx context.Context, uow ports.UnitOfWork, scope p
 			return scopeMismatch("work item", workItemID)
 		}
 		result = WorkItemReadiness{WorkItemID: string(item.ID), Status: string(item.Status), Version: item.Version, Ready: true}
-		gateErr := workdomain.ValidateReadinessGate(item)
-		if gateErr == nil {
-			return nil
+		// readinessProblems is ValidateReadinessGate plus V9-08's baseline
+		// check (baseline_gate.go) — the same list MarkWorkItemReady returns.
+		problems, err := readinessProblems(ctx, tx, item)
+		if err != nil {
+			return fmt.Errorf("work: readiness validation: %w", err)
 		}
-		var readinessErr *workdomain.ReadinessError
-		if errors.As(gateErr, &readinessErr) {
+		if len(problems) > 0 {
 			result.Ready = false
-			result.Problems = readinessErr.Problems
-			return nil
+			result.Problems = problems
 		}
-		// ValidateReadinessGate's own contract only ever returns nil or a
-		// *workdomain.ReadinessError (see that function's own doc comment) —
-		// this branch is unreachable today, kept only so a future change to
-		// that contract fails loudly here instead of silently swallowing a
-		// new error shape.
-		return fmt.Errorf("work: unexpected readiness validation error: %w", gateErr)
+		return nil
 	})
 	return result, err
 }

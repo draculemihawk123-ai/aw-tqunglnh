@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/readinesscheck"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -51,6 +53,12 @@ var (
 	// WorkspaceSet is not currently READY — a run cannot start against a
 	// workspace that has no committed base revision to pin.
 	ErrWorkspaceNotReady = errors.New("runtime: workspace set is not READY")
+	// ErrBaselineNotAdmitted (V9-08, gap G8) is returned when the WorkItem may
+	// WRITE to a repository whose readiness profile has no passing baseline and
+	// no accepted exception — for example because the profile changed after the
+	// WorkItem became READY. MarkWorkItemReady checks the same thing; this is the
+	// second line of defence at the moment a writer would actually start.
+	ErrBaselineNotAdmitted = errors.New("runtime: a repository the work item may write to has no passing baseline")
 	// ErrWorkflowVersionMismatch is returned when the WorkItem already
 	// pins a specific WorkflowVersionID and the caller requested a
 	// different one — "version compatibility" (this task's own Thực hiện
@@ -171,6 +179,18 @@ func StartWorkflowRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.So
 		}
 		if workspaceSet.State != workspace.WorkspaceSetReady || workspaceSet.BaseRevisionSet == nil {
 			return fmt.Errorf("%w: workspace set %s is %s", ErrWorkspaceNotReady, workspaceSet.ID, workspaceSet.State)
+		}
+
+		scopes, err := readinesscheck.AdmissionScopes(ctx, tx, req.WorkItemID, string(item.FamilyID))
+		if err != nil {
+			return err
+		}
+		baselineProblems, err := readinesscheck.WriterAdmissionProblems(ctx, tx, string(item.FamilyID), scopes)
+		if err != nil {
+			return err
+		}
+		if len(baselineProblems) > 0 {
+			return fmt.Errorf("%w: %s", ErrBaselineNotAdmitted, strings.Join(baselineProblems, "; "))
 		}
 
 		version, err := tx.Definitions().GetWorkflowVersion(ctx, req.WorkflowVersionID)

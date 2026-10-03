@@ -51,6 +51,10 @@ func writeStartWorkflowRunError(w http.ResponseWriter, err error) {
 	case errors.Is(err, runtime.ErrWorkspaceNotReady):
 		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict,
 			"the work item's workspace set is not READY", nil)
+	case errors.Is(err, runtime.ErrBaselineNotAdmitted):
+		// V9-08: the text names the repository and what to do (verify again, or
+		// accept the failure); it holds repository ids and attempt ids only.
+		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
 	case errors.Is(err, runtime.ErrWorkflowVersionMismatch):
 		// This task's own "pinned conflict" Verify bullet: the work item is
 		// already pinned (StartWorkflowRun's own "start pins manifest/

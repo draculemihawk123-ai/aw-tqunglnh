@@ -279,6 +279,72 @@ The HTTP route takes `"pinned": true` in the `appendMessage` body. A message is 
 changes afterwards (the chat is append-only); pinned messages count toward the budget, so pinning many large messages
 leaves less room for the rest.
 
+## Setting up a repository before an agent writes — readiness profile and baseline (V9-08)
+
+Initialization is a phase of its own with evidence, not something an agent discovers by failing. A repository
+can declare a **readiness profile**: an optional `setup` command (install dependencies) and a `verification`
+command (the repository's own checks). `aw` runs them on a workspace **before any task changes it** — that run
+is the **baseline** — and a work item that may **write** to the repository is admitted only when the baseline
+passed.
+
+```bash
+# declare (or change) the profile; commands are an executable plus argv, never a shell string
+cat > profile.json <<'EOF'
+{"setup": {"executable": "npm", "argv": ["ci"], "timeoutSeconds": 600},
+ "verification": {"executable": "npm", "argv": ["test"], "timeoutSeconds": 600}}
+EOF
+aw repository readiness set --file profile.json <repositoryId>
+
+aw repository readiness show <repositoryId>       # the profile and, per workspace, where its baseline stands
+aw repository readiness verify <repositoryId>     # run the baseline again (after fixing the repository)
+aw repository readiness accept-exception --attempt-id <attemptId> --reason "<why>" <repositoryId>
+```
+
+The same operations exist over HTTP (`repositoriesReadiness`, `repositoriesReadinessProfileSet`,
+`repositoriesReadinessVerify`, `repositoriesReadinessAcceptException`) and in the UI (Projects → a repository →
+**Readiness**), with the same behavior.
+
+**When the baseline runs.** On every `READY` workspace of the repository when the profile is set or changed, on a
+workspace as soon as it becomes `READY` (a new work item's `WorkspaceSet`), and whenever you ask with `verify`. It
+runs by a worker (`aw worker`), so `show` reports `PENDING` until a worker has run it. A repository **without** a
+profile is not gated at all: nothing changes for it.
+
+**Baseline state** (per workspace, in `show`):
+
+| State | Meaning | Admits a writer |
+|---|---|---|
+| `NOT_REQUIRED` | the repository has no profile | yes |
+| `PENDING` | the profile has no baseline yet for its **current version**, or the workspace is not `READY` | no |
+| `PASS` | the latest baseline for the current profile version passed | yes |
+| `FAIL` | the latest baseline did not pass and nobody accepted it | no |
+| `EXCEPTION_ACCEPTED` | the latest baseline failed and an operator accepted that failure | yes |
+
+A baseline only vouches for the profile version it ran, so **changing the profile makes every earlier result
+stale** (back to `PENDING` until the new baseline runs).
+
+**A failed baseline is classified, and it is not the task's fault.** `failureKind` says which:
+`PRE_EXISTING_FAILURE` — the verification (or setup) command ran and exited non-zero, so the repository's own
+checks were already red; `ENVIRONMENT_ERROR` — the command could not be observed to run (missing executable,
+timeout, cancelled). Either way it describes the repository or its environment **before** any task touched it.
+
+**What it gates.** A work item that may `WRITE` to a repository with a profile cannot become `READY`
+(`aw work-item mark-ready`; `aw work-item readiness` lists the same problems) and a run cannot start for it
+(`aw run start` → `CONFLICT`) unless the baseline is `PASS` or `EXCEPTION_ACCEPTED`. Read-only access is never
+gated. For a root work item the repository scope of its task family is what counts; a child work item uses its
+own effective scope.
+
+**Accepting an exception.** `accept-exception` admits writers although the baseline failed. It needs a reason, is
+attributed to you (the configured principal) and the time, covers **that failed attempt only** — a later failing
+baseline, or a baseline of a changed profile, needs its own acceptance — and leaves the failed attempt untouched on
+the record. Only a failed attempt of the repository's current profile version can be accepted.
+
+**Telling a regression from a failure that was already there.** When a check after an agent fails and the workflow
+sends the maker back (`failureOutcome`, above), each entry of `checkFailures` carries a `baseline` line when a
+write repository has a baseline: either *its baseline passed before this task started, so the failure comes from
+the changes made during this task*, or *its baseline had already failed* (and whether an operator accepted it), *so
+a failure that matches the baseline is not caused by this task*. The line is derived from the baseline as of the
+moment the maker's context was pinned, so the same snapshot always renders the same prompt.
+
 ## Routing knowledge to a code area — resource selectors (V9-04)
 
 A Skill or Layer resource says *when* it applies with its `selector` (a resource with an empty selector must be

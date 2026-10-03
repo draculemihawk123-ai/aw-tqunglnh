@@ -41,6 +41,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/readinesscheck"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 )
 
@@ -119,6 +120,28 @@ func RegisterRoutes(registry *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodPost, Path: "/repositories/{id}/retry-probe", OperationID: "repositoriesRetryProbe",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: h.retryRepositoryProbe,
+	})
+
+	// V9-08 (gap G8): the repository's readiness profile and baseline.
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/repositories/{id}/readiness", OperationID: "repositoriesReadiness",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: readinesscheck.RepositoryReadinessView{},
+		Handler: h.getRepositoryReadiness,
+	})
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPut, Path: "/repositories/{id}/readiness-profile", OperationID: "repositoriesReadinessProfileSet",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: setReadinessProfileRequestBody{}, ResponseSchema: readinesscheck.SetRepositoryReadinessProfileResult{},
+		Handler: h.setRepositoryReadinessProfile,
+	})
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/repositories/{id}/readiness/verify", OperationID: "repositoriesReadinessVerify",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: verifyReadinessRequestBody{}, ResponseSchema: readinesscheck.RequestBaselineCheckResult{},
+		Handler: h.verifyRepositoryReadiness,
+	})
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/repositories/{id}/readiness/exceptions", OperationID: "repositoriesReadinessAcceptException",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: acceptBaselineExceptionRequestBody{}, ResponseSchema: readinesscheck.AcceptBaselineExceptionResult{},
+		Handler: h.acceptRepositoryBaselineException,
 	})
 
 	registry.Register(httpapi.RouteDescriptor{

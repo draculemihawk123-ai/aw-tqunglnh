@@ -129,6 +129,18 @@ func catalogRoutes() []Route {
 			return catalog.RunRepositoryRetryProbe(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "retry-probe"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryReadinessShow(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "readiness", "show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryReadinessSet(ctx, deps(d), a, s.Stdin, s.Stdout, s.Stderr)
+		}, "repository", "readiness", "set"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryReadinessVerify(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "readiness", "verify"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryReadinessAcceptException(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "readiness", "accept-exception"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunComponentList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "component", "list"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {

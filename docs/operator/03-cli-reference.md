@@ -39,7 +39,7 @@ Resource commands (aw <resource> <action> [flags]):
   project                create|list|show
   projection             rebuild|rebuild-status|status
   release-set            abandon|create|list|local-commit|local-commit status|seal|show
-  repository             list|onboarding|register|retry-probe|show
+  repository             list|onboarding|readiness|register|retry-probe|show
   repository-workspace   diff|log|reconcile|show|source
   run                    cancel|diagnostics|graph|show|start|timeline
   scope-expansion        approve|list|reject|request|show|withdraw
@@ -124,6 +124,10 @@ UI you can script. Most are `show`/`list`; the ones whose name or arguments are 
 | `aw task-family show --project-id <p> <familyId>` | A task family's status and `scopeVersion`. |
 | `aw scope-expansion list --project-id <p> <familyId>` | Every scope-expansion request of a family, any status — how you find a pending request's id. |
 | `aw scope-expansion show --project-id <p> <requestId>` | One request, including the `version` that `approve`/`reject`/`withdraw` take as `--expected-version`. |
+| `aw repository readiness show <repositoryId>` | The repository's readiness profile and, for each workspace, its baseline state (`PENDING`/`PASS`/`FAIL`/`EXCEPTION_ACCEPTED`), the latest attempt with its `failureKind` and output, and any accepted exception. See [04-authoring-workflows.md](04-authoring-workflows.md#setting-up-a-repository-before-an-agent-writes--readiness-profile-and-baseline-v9-08). |
+| `aw repository readiness set [--file <path>] <repositoryId>` | Declare or change the readiness profile (JSON body: optional `setup`, required `verification`, each `executable`/`argv`/`timeoutSeconds`). Starts a fresh baseline on every `READY` workspace. |
+| `aw repository readiness verify <repositoryId>` | Run the baseline again on every `READY` workspace; read the result back with `show` once a worker has run it. |
+| `aw repository readiness accept-exception --attempt-id <id> --reason <text> <repositoryId>` | Admit writers although the baseline failed; recorded with your name and the reason, for that attempt only. |
 | `aw repository show <repositoryId>` | One repository's status and `version` (what `repository retry-probe --expected-version` takes). Like `repository onboarding`, it takes no `--project-id`: the project is read from the repository. |
 | `aw repository-workspace show --project-id <p> <repositoryWorkspaceId>` | One repository workspace's state, lease and quarantine; `workspace-set show` lists every workspace of a family. |
 | `aw release-set local-commit status --project-id <p> <releaseSetId> <localCommitId>` | A local-commit operation's state (the one `local-commit --wait` observes). |
