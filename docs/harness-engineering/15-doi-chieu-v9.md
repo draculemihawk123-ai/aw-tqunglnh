@@ -1,6 +1,6 @@
 # Đối chiếu 14 lecture với Agent Kit sau Alpha (đầu vào cho V9)
 
-> Trạng thái: **ĐÃ DUYỆT** (PR #143, 2026-10-01). Tài liệu này không đổi nhãn phase hay owner của bất kỳ
+> Trạng thái: **ĐÃ DUYỆT** (PR #143, 2026-10-01); kết quả V9 ở [mục 5](#5-kết-quả-v9-v9-12). Tài liệu này không đổi nhãn phase hay owner của bất kỳ
 > `HE-NN-Mxx` nào; nó ghi lại những chỗ mà tiêu chí đã có owner nhưng **chạy thật chưa đạt**, làm đầu vào cho
 > [V9](../design/12-v9-harness-alignment.md).
 >
@@ -97,3 +97,64 @@ Mỗi lecture rút về vài tiêu chí cốt lõi. Mã `HE-*` trỏ tới tiêu
 | Ngưỡng cứng (≤15 hard constraint, entry 50–200 dòng) | Lecture ghi rõ là mặc định để dạy, không phải ngưỡng đã kiểm chứng; V9-10 chỉ thêm cảnh báo |
 | Quality document theo module, OpenTelemetry export | Nội dung của repository người dùng / SHOULD; journal event hiện có đủ cho Alpha |
 | Nhiều writer song song trên cùng repository | Roadmap §9 ngoài phạm vi |
+
+## 5. Kết quả V9 (V9-12)
+
+**Verdict V9: `V9_DONE`** — đánh giá trên commit `e711581` (master sau #160), từ chính lần chạy gate của commit đã merge:
+CI run [37138162978](https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/37138162978), job `V8-11 Alpha release acceptance` (`v8-alpha-gate`, enforcing), `gatePass = true`.
+Bản ghi máy đọc được: [`release/v9-verdict.json`](../release/v9-verdict.json); một test
+(`internal/alphagate/v9verdict_test.go`) buộc bản ghi, mục này, [start-here](../00-start-here.md) và
+[báo cáo release](../release/alpha-release-report.md) không lệch nhau, và kiểm từng test được trích dẫn còn tồn tại.
+
+| Gate | Kết quả |
+|---|---|
+| `v8-alpha-gate` trên `e711581` | 209/209 tiêu chí Alpha, 23/23 journey, 9/9 version gate, 7/7 final gate; **golden workload V8-01 không đổi** (journey vẫn pass) |
+| `go vet ./...`, `go test ./...` | xanh ở mỗi PR V9 (job `contract`, Linux và Windows) |
+| ADR-030…033 | đã chốt trước khi task tương ứng merge ([quyết định](../architecture/02-architecture-decisions.md)) |
+
+### 5.1. Mỗi G có test tái hiện failure mode gốc
+
+Các test dưới đây chạy trong `go test ./...` (job `contract`). Tên test là bằng chứng; test integration dùng
+`v5accept` (SQLite thật, worktree git thật, worker pool thật, provider giả nói đúng giao thức stream-json).
+
+| # | Mức trước V9 | Task / PR | Đã đóng bằng | Test (bằng chứng) |
+|---|---|---|---|---|
+| G1 | Chưa | V9-01 / #146 | ADR-030: read-only của attempt đo so với trạng thái worktree lúc attempt bắt đầu | `TestV9AcceptCheckerAfterMaker_CompletesAndCheckerSeesMakerDiff`, `TestV9AcceptCheckerAfterMaker_CheckerWriteIsScopeViolation`, `TestV9AcceptGateAfterMaker_VerdictReflectsMakersChange` |
+| G2 | Chưa | V9-02 / #148 | ADR-031: outcome `failureOutcome` cho COMMAND/GATE, evidence và thông điệp lỗi đi vào prompt của maker | `TestV9AcceptCheckFailureOutcome_CommandExitsOneThenZero`, `TestV9AcceptCheckFailureOutcome_ExceedingTheLoopEscalates` |
+| G3 | Một phần | V9-03 / #148 | ADR-032: instruction artifact v2 có ưu tiên và `allowedOutcomes` | `TestV9AcceptInstructionV2_AgentSelectsAnOutcomeListedInThePrompt`, `TestV9AcceptInstructionV2_OutcomeNotInTheListIsStillRejected` |
+| G4 | Chưa | V9-04 / #151 | selector `componentTags`/`pathTags`/`blockKinds` có hiệu lực lúc chạy | `TestV9AcceptAreaKnowledge_OneSharedProfileGetsEachAreasLayer` |
+| G5 | Chưa | V9-05 / #153 | `envAllowlist` của AgentProfile ∩ worker, ghi vào execution profile | `TestV9AcceptAgentEnvironment_ProcessInheritsTheIntersection`, `TestV9AcceptAgentEnvironment_WorkerAllowingNothingIsACeiling` |
+| G6 | Một phần | V9-06 / #154 | ADR-033: blocker `RUN_FAILED`, chạy lại trên cùng WorkItem | `TestV9AcceptRerunWorkItem_FailResolveStartDoneOnTheSameWorkItem` |
+| G7 | Một phần | V9-07 / #155 | ngân sách `messages` trong policy CONTEXT, tin ghim, `OmittedMessageRefs` | `TestReworkLoop_MessageBudget_BoundsThePromptAndKeepsTheNewestMessage` |
+| G8 | Một phần | V9-08 / #156 | readiness/baseline ở CLI + HTTP + UI, writer bị chặn tới khi baseline PASS hoặc có exception | `TestV9AcceptBaselineGate_RedRepositoryDoesNotAdmitAWriterUntilTheOperatorAcceptsIt`, `TestV9AcceptBaselineGate_VerifyRunsTheBaselineAgain` |
+| G9 | Một phần | V9-10 / #157 | file instruction của provider (`CLAUDE.md`, `AGENTS.md`) được ghim trong ContextSnapshot, cảnh báo quá cỡ | `TestScheduling_PinsTheInstructionFilesTheProviderLoadsByItself`, `TestScheduling_NoInstructionFile_LeavesTheSnapshotHashAsBefore` |
+| G10 | Một phần | V9-10 / #157 | cảnh báo khi publish: `lastVerified` quá hạn, quá nhiều HARD_CONSTRAINT | `TestPublishWarnings_StaleResource`, `TestPublishWarnings_TooManyHardConstraintsInOneSkill` |
+
+Bốn lỗi vận hành của §3.3 (V9-09, #148): local commit không có thay đổi (`TestExecuteReleaseSetLocalCommit_NoChanges_FailsTerminalWithoutRetry`),
+`definition create` trùng id (`TestOneShot_DefinitionCreate_ExistingID_IsReadableConflict`), ghi ngoài `pathScopes`
+(`TestV9AcceptMakerAgentWriteOutsidePathScopes_IsScopeViolationNotProviderUnavailable`), `aw version show/diff`
+(`TestVersionRouting_ShowAndDiffReachTheResourceCommandsWhenVersionIsTheFirstWord`).
+
+### 5.2. Kiểm với Claude CLI thật (V9-11, V9-11a, V9-11b)
+
+Một lần chạy thật với Claude Code 2.1.288, `claude-sonnet-4-6`, effort `medium` (bundle:
+[`run-3-fixed`](../release/live-provider/run-3-fixed/summary.json)): build → check ✗ ×3 → build → check ✓ →
+reviewer **đọc file của maker trong worktree** → `approved`; 4 lần build, 9 attempt, 133 s. Chạy thật tìm ra hai lỗi
+chặn mà agent giả lập không bao giờ cho thấy; cả hai đã sửa và kiểm lại:
+
+- **F1** — Claude headless từ chối mọi lần ghi trong worktree chưa tin cậy → `aw worker --claude-permission-mode` (#159).
+- **F2** — reviewer chạy trong thư mục scratch rỗng, không thấy repository, tự ghi file rồi `approved` → adapter chỉ
+  đường dẫn các mount cho CLI (`--add-dir` + `--append-system-prompt`); scenario giờ **fail** nếu reviewer approve mà
+  không đọc file của maker (#159, #160).
+
+Còn mở, **không chặn** verdict: F3 (model cần 2–3 vòng sửa mới làm theo thông điệp của check), F4 (`aw worker` không đặt
+được effort/ngân sách của CLI, chi phí không được ghi), Codex chưa được chạy (`UNVERIFIED`). "Live provider
+compatibility" vì vậy là `PARTIAL`, đúng với tiêu chí hoàn thành của V9-11 ("pass, hoặc danh sách lỗi có owner").
+Test live chỉ chạy khi `AW_LIVE_CLAUDE=1` (tốn tiền) nên CI không lặp lại; đây là bằng chứng ghi lại, không phải gate.
+
+### 5.3. Điều verdict này không nói
+
+- Không nói mọi tiêu chí `HE-*` đã có test riêng: 159/209 tiêu chí Alpha vẫn chỉ có bằng chứng mức suite (xem LIM trong
+  báo cáo release). `V9_DONE` chỉ nói G1–G10 của tài liệu này có test tái hiện failure mode gốc và gate Alpha vẫn xanh.
+- Không nói đã kiểm với Codex CLI, hay với model/effort khác ngoài lần chạy trên.
+- Không mở task V9 nào tiếp theo; F3 và F4 là việc cải tiến có owner trong `release/live-provider/README.md`.

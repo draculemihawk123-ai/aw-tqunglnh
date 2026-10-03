@@ -134,6 +134,16 @@ version. It passed on both platforms for the assessed commit. The full operator 
 publish a workflow, run it to `SUCCEEDED`) was verified by hand against a real binary in V8-09
 ([quickstart](../operator/01-quickstart.md)); it is not re-run by CI.
 
+## V9 addendum (harness alignment)
+
+**Verdict V9: `V9_DONE`** — assessed on commit `e711581` (master after #160) by CI run
+[37138162978](https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/37138162978) (`v8-alpha-gate`, enforcing, `gatePass = true`: 209/209 Alpha-gated criteria, 23/23 journeys,
+9/9 version gates, 7/7 final gates, V8-01 golden workload unchanged). The record is [`v9-verdict.json`](v9-verdict.json);
+the per-gap evidence (G1–G10, each with a test that reproduces the original failure mode) is in
+[`../harness-engineering/15-doi-chieu-v9.md`](../harness-engineering/15-doi-chieu-v9.md). The `ALPHA_READY` verdict above
+is unchanged; V9 adds to it and does not replace it. Live provider compatibility is `PARTIAL` (see its section): Claude
+ran for real, Codex did not. Open and non-blocking: F3, F4.
+
 ## Where to go next
 
 - Operator documentation: [`../operator/00-start-here.md`](../operator/00-start-here.md).

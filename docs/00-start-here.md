@@ -3,7 +3,7 @@
 > Đọc tài liệu này đầu tiên khi bắt đầu một session mới. Nó là điểm vào cho mục tiêu, các quyết định
 > đã chốt, trạng thái thực thi và ranh giới công việc hiện tại.
 >
-> Cập nhật: 2026-10-01 (mục 4A: trạng thái Alpha sau V8; trước đó 2026-09-06, mục 19-23, ADR-026…ADR-028).
+> Cập nhật: 2026-10-04 (mục 4B: verdict V9); 2026-10-01 (mục 4A: trạng thái Alpha sau V8; trước đó 2026-09-06, mục 19-23, ADR-026…ADR-028).
 > Nếu tài liệu này khác ADR, ADR là authority về
 > quyết định kiến trúc; cần sửa tài liệu này trong cùng thay đổi, không tự suy diễn.
 
@@ -144,6 +144,22 @@ Alpha](release/alpha-release-report.md). Một test giữ ba nơi (JSON, báo c�
   chưa kiểm với Claude/Codex CLI thật, binary cũ hơn V8-10 mở DB mới mà không báo): xem báo cáo release.
 - **Tài liệu vận hành** (cài, cấu hình, workflow, backup/restore, nâng cấp/rollback, xử lý sự cố):
   [operator/00-start-here.md](operator/00-start-here.md).
+
+## 4B. Trạng thái V9 (harness alignment)
+
+**Verdict V9: `V9_DONE`** (commit `e711581`, CI run [37138162978](https://github.com/draculemihawk123-ai/aw-tqunglnh/actions/runs/37138162978), gate `v8-alpha-gate` enforcing
+`gatePass = true`: 209/209 tiêu chí, 23/23 journey, 9/9 version gate, 7/7 final gate; golden workload V8-01 không đổi).
+Bản ghi máy đọc được: [`release/v9-verdict.json`](release/v9-verdict.json); đối chiếu từng G1–G10 với test:
+[15-doi-chieu-v9.md mục 5](harness-engineering/15-doi-chieu-v9.md#5-kết-quả-v9-v9-12). Một test giữ bản ghi, tài liệu
+đối chiếu, mục này và báo cáo release không lệch nhau.
+
+- **Đạt:** G1–G10 mỗi gap có test tái hiện failure mode gốc; bốn lỗi vận hành (V9-09) đã sửa; ADR-030…033 đã chốt.
+- **Claude CLI thật:** đã chạy một workload (maker → check ✗ → rework → checker đọc file → approved) — `PARTIAL`.
+  Lần chạy đầu tìm ra F1 (ghi bị từ chối: `aw worker --claude-permission-mode`) và F2 (reviewer không thấy repository);
+  cả hai đã sửa và kiểm lại. Còn mở, không chặn: F3, F4; Codex chưa chạy. Chi tiết:
+  [live-provider](release/live-provider/README.md).
+- **Không có task V9 tiếp theo.** Việc kế tiếp nếu muốn: F3 (lời nhắc khi check fail), F4 (effort/ngân sách/chi phí của
+  CLI trong `aw worker`), kiểm Codex.
 
 ## 5. Đọc theo thứ tự này
 
