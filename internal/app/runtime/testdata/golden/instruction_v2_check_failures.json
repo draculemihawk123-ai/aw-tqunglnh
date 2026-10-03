@@ -40,7 +40,7 @@
       ],
       "what": "check \"test\" failed: the command exited with code 1.",
       "why": "stderr (last part):\n--- FAIL: TestAdd (0.00s)\n    add_test.go:12: want 3, got 2\nFAIL",
-      "fix": "Address the cause described under 'why'. The same check runs again after you finish, and the workflow continues only when it passes."
+      "fix": "The check is authoritative: your work is not done until it passes, even if it already looks correct to you or the check asks for more than the task text says. Make the change that 'why' describes, then finish; do not argue that the check is wrong. The same check runs again after you finish, and the workflow continues only when it passes."
     }
   ],
   "resources": [

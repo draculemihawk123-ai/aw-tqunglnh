@@ -136,7 +136,14 @@ func renderInstructionV1(in instructionRenderInput) ([]byte, error) {
 		content.Messages = append(content.Messages, in.messages...)
 	}
 	if len(in.checkFailures) > 0 {
-		content.CheckFailures = in.checkFailures
+		// ADR-032: a snapshot without instructionSchemaVersion assembles as v1
+		// exactly as before, so a v1 artifact keeps the original FIX wording
+		// (TestRenderInstructionV1_ByteIdenticalToTheArtifactBeforeV903).
+		content.CheckFailures = make([]instructionCheckFailure, len(in.checkFailures))
+		for i, failure := range in.checkFailures {
+			failure.Fix = checkFailureFixV1
+			content.CheckFailures[i] = failure
+		}
 	}
 	for _, r := range in.resources {
 		content.Resources = append(content.Resources, instructionResource{
