@@ -146,7 +146,7 @@ finds nothing unless its Command definition declares `PATH` (V9-11, found with a
 ## What a real Claude CLI needs that the fake one does not (V9-11)
 
 The repository's `fake-claude` writes files whenever it is told to and never looks at its prompt. A real Claude
-CLI does neither, and two things follow.
+CLI does neither, and two things follow (found by the live run in [`../release/live-provider/README.md`](../release/live-provider/README.md)).
 
 **Permission mode — `aw worker --claude-permission-mode`.** A headless Claude refuses every `Write`/`Edit` in a
 worktree it has not been told to trust, and it ignores the project's `.claude/settings.json` allow rules there

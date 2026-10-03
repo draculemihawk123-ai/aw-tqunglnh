@@ -35,7 +35,7 @@ It says every Alpha criterion has passing evidence at the granularity recorded f
 and final gate passed on both platforms for the assessed commit. It does **not** say:
 
 - that each criterion has its own test — only 47 of 209 do (LIM-01);
-- that the product works with a real Claude or Codex CLI — compatibility is `UNVERIFIED` (below);
+- that the product works cleanly with a real Claude or Codex CLI — compatibility is `PARTIAL` (below): Claude was run for real and showed defects, Codex was not run;
 - that process isolation is enforced by the operating system (LIM-02);
 - anything about Beta (PostgreSQL, login/RBAC, server workers), which is out of scope.
 
@@ -81,12 +81,29 @@ Beta (PostgreSQL, login/RBAC, server workers) is out of scope and no Beta backlo
 
 ## Live provider compatibility
 
-**Status: UNVERIFIED.** Every provider test — the conformance matrix, the admission/drift/isolation scenarios, the full
-journeys — runs against the repository's own `fake-claude` and `fake-codex` wire-protocol stand-ins. No run against a
-real Claude or Codex CLI exists, so compatibility with any real CLI build is **not** claimed. What the product does
-provide is the safety net for that gap: `aw` probes the real executable (`--version`, protocol/capability identity) when
-an operator registers an adapter build, re-probes it at admission, and refuses to run a node whose build no longer
-matches the pinned one ([providers and isolation](../operator/05-providers-and-isolation.md)).
+**Status: PARTIAL.** Every provider test in CI — the conformance matrix, the admission/drift/isolation scenarios, the
+full journeys — runs against the repository's own `fake-claude` and `fake-codex` wire-protocol stand-ins. V9-11 added a
+run against a **real Claude CLI** (Claude Code 2.1.288, `claude-sonnet-4-6`, effort `medium`) through the same stack:
+real git worktrees, sqlite, worker pool and `COMMAND` process. It is skipped unless `AW_LIVE_CLAUDE=1` (it spends
+money), so CI does not repeat it; the evidence is in [`live-provider/`](live-provider/README.md).
+
+- **Works with the real CLI:** registering the adapter build from the real `claude.exe` and re-probing it at every
+  admission; the canonical event stream from the real `stream-json`; a check that fails and sends the run back to
+  the maker with its message in the maker's prompt (V9-02); the reviewer choosing `approved`/`rework` from the prompt's
+  `allowedOutcomes` with the marker protocol (V9-03); resources reaching only the role they are tagged for (V9-04); a
+  checker running after a maker in the same run without a scope violation (V9-01); the agent process getting exactly
+  the declared environment names with no wrapper (V9-05).
+- **Does not work yet (owners in the README):** F1 — a headless Claude **denies every file write** in the worktrees
+  `aw` creates, and `aw worker` has no flag to set its permission mode, so a wrapper is still needed for that;
+  F2 — a **reviewer does not see the repository** (its working directory is an empty scratch directory) and approved
+  a file it wrote itself; F3 — the model did not act on the check's feedback in the first rework build; F4 — no way to
+  pass the CLI an effort level or a spend ceiling, and spend is not recorded; F5 — a `COMMAND` has no `PATH` unless its
+  definition declares one.
+- **Codex was not run:** its compatibility remains `UNVERIFIED`.
+
+What the product does provide as a safety net: `aw` probes the real executable (`--version`, protocol/capability
+identity) when an operator registers an adapter build, re-probes it at admission, and refuses to run a node whose build
+no longer matches the pinned one ([providers and isolation](../operator/05-providers-and-isolation.md)).
 
 ## Install artifacts and checksums
 
