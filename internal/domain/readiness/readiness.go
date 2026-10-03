@@ -203,19 +203,53 @@ const (
 	BaselineGreen BaselineOutcome = "GREEN"
 	// BaselineRed: the command ran to completion with a non-zero exit
 	// code — a real, pinned baseline debt, not a fake PASS and not an
-	// environment fault.
+	// environment fault. Since V9-08 it also stops writers: a repository
+	// whose checks were already red is not a baseline an agent may build on
+	// unless an operator accepts the failure (Passed/FailureKind below).
 	BaselineRed BaselineOutcome = "RED"
 	// BaselineEnvironmentError: the command could not even be observed to
 	// run — see this type's own doc comment.
 	BaselineEnvironmentError BaselineOutcome = "ENVIRONMENT_ERROR"
 )
 
-// Blocking reports whether outcome should open a typed environment
-// blocker (internal/app/ports.EnvironmentBlocker): only
-// BaselineEnvironmentError does — GREEN and RED both mean the check
-// genuinely ran (one is good news, one is pinned debt), neither is an
-// environment fault a caller needs to intervene on before a baseline
-// verdict can even be reached.
+// FailureKind classifies a baseline that did not pass (V9-08, gap G8). Both
+// kinds are about the repository or its environment BEFORE any task touched
+// it, never about code a task wrote: that is what lets an operator and a
+// maker tell a test that was already red (or a toolchain that cannot run)
+// from a regression the task introduced.
+type FailureKind string
+
+const (
+	// FailurePreExisting: the command ran to completion with a non-zero exit
+	// code (outcome RED) — the repository's own checks were already failing.
+	FailurePreExisting FailureKind = "PRE_EXISTING_FAILURE"
+	// FailureEnvironment: the command could not be observed to run
+	// (outcome ENVIRONMENT_ERROR) — missing executable, timeout, cancellation.
+	FailureEnvironment FailureKind = "ENVIRONMENT_ERROR"
+)
+
+// Passed reports whether the baseline is clean: only GREEN is.
+func (o BaselineOutcome) Passed() bool { return o == BaselineGreen }
+
+// FailureKind returns the kind of failure o is, or "" for a passing outcome.
+func (o BaselineOutcome) FailureKind() FailureKind {
+	switch o {
+	case BaselineRed:
+		return FailurePreExisting
+	case BaselineEnvironmentError:
+		return FailureEnvironment
+	default:
+		return ""
+	}
+}
+
+// Blocking reports whether the outcome opens an EnvironmentBlocker on the
+// RepositoryWorkspace (V3-07, internal/app/ports.EnvironmentBlocker): only
+// ENVIRONMENT_ERROR does — GREEN and RED both mean the check genuinely ran,
+// neither is an environment fault. It is NOT the writer-admission rule: since
+// V9-08 that is "anything but GREEN, unless an operator accepted it"
+// (readinesscheck.EvaluateWorkspaceBaseline), and RED counts there even though
+// it opens no blocker.
 func (o BaselineOutcome) Blocking() bool {
 	return o == BaselineEnvironmentError
 }

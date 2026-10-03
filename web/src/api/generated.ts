@@ -1072,6 +1072,63 @@ export function repositoriesOnboarding(id: string, opts: RequestOptions = {}): P
   return request<unknown>("GET", `/repositories/${id}/onboarding`, undefined, opts);
 }
 
+export interface RepositoriesReadinessResponse {
+  repositoryId: string;
+  profile?: unknown | null;
+  workspaces: unknown[];
+}
+
+// GET /repositories/{id}/readiness (scope: PROJECT)
+export function repositoriesReadiness(id: string, opts: RequestOptions = {}): Promise<RepositoriesReadinessResponse> {
+  return request<RepositoriesReadinessResponse>("GET", `/repositories/${id}/readiness`, undefined, opts);
+}
+
+export interface RepositoriesReadinessAcceptExceptionRequest {
+  baselineAttemptId: string;
+  reason: string;
+}
+
+export interface RepositoriesReadinessAcceptExceptionResponse {
+  exceptionId: string;
+  baselineAttemptId: string;
+  repositoryWorkspaceId: string;
+  repositoryId: string;
+  acceptedBy: string;
+  acceptedAt: string;
+}
+
+// POST /repositories/{id}/readiness/exceptions (scope: PROJECT)
+export function repositoriesReadinessAcceptException(id: string, body: RepositoriesReadinessAcceptExceptionRequest, opts: RequestOptions = {}): Promise<RepositoriesReadinessAcceptExceptionResponse> {
+  return request<RepositoriesReadinessAcceptExceptionResponse>("POST", `/repositories/${id}/readiness/exceptions`, body, opts);
+}
+
+export interface RepositoriesReadinessProfileSetRequest {
+  setup?: unknown | null;
+  verification: unknown;
+}
+
+export interface RepositoriesReadinessProfileSetResponse {
+  repositoryId: string;
+  profileVersion: number;
+  baselineJobsEnqueued: number;
+}
+
+// PUT /repositories/{id}/readiness-profile (scope: PROJECT)
+export function repositoriesReadinessProfileSet(id: string, body: RepositoriesReadinessProfileSetRequest, opts: RequestOptions = {}): Promise<RepositoriesReadinessProfileSetResponse> {
+  return request<RepositoriesReadinessProfileSetResponse>("PUT", `/repositories/${id}/readiness-profile`, body, opts);
+}
+
+export interface RepositoriesReadinessVerifyResponse {
+  repositoryId: string;
+  profileVersion: number;
+  baselineJobsEnqueued: number;
+}
+
+// POST /repositories/{id}/readiness/verify (scope: PROJECT)
+export function repositoriesReadinessVerify(id: string, body: unknown, opts: RequestOptions = {}): Promise<RepositoriesReadinessVerifyResponse> {
+  return request<RepositoriesReadinessVerifyResponse>("POST", `/repositories/${id}/readiness/verify`, body, opts);
+}
+
 // POST /repositories/{id}/retry-probe (scope: PROJECT)
 export function repositoriesRetryProbe(id: string, body: unknown, opts: RequestOptions = {}): Promise<unknown> {
   return request<unknown>("POST", `/repositories/${id}/retry-probe`, body, opts);

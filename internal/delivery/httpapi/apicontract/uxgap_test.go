@@ -58,7 +58,7 @@ func assertStringSliceEqual(t *testing.T, label string, got, want []string) {
 func TestParseUXDoc_RealDocument(t *testing.T) {
 	rows := parseRealUXDoc(t)
 
-	const wantRowCount = 72
+	const wantRowCount = 76
 	if len(rows) != wantRowCount {
 		t.Errorf("parsed %d UX doc rows, want exactly %d — if the doc was intentionally edited, "+
 			"review the diff before updating this pinned count", len(rows), wantRowCount)

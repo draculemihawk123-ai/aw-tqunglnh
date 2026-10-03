@@ -3162,6 +3162,162 @@
       }
     },
     {
+      "operationId": "repositoriesReadiness",
+      "method": "GET",
+      "path": "/repositories/{id}/readiness",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "readinesscheck.RepositoryReadinessView",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "Profile",
+            "jsonTag": "profile,omitempty",
+            "type": "*readinesscheck.ProfileView"
+          },
+          {
+            "name": "Workspaces",
+            "jsonTag": "workspaces",
+            "type": "[]readinesscheck.WorkspaceBaselineView"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "repositoriesReadinessAcceptException",
+      "method": "POST",
+      "path": "/repositories/{id}/readiness/exceptions",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.acceptBaselineExceptionRequestBody",
+        "fields": [
+          {
+            "name": "BaselineAttemptID",
+            "jsonTag": "baselineAttemptId",
+            "type": "string"
+          },
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "readinesscheck.AcceptBaselineExceptionResult",
+        "fields": [
+          {
+            "name": "ExceptionID",
+            "jsonTag": "exceptionId",
+            "type": "string"
+          },
+          {
+            "name": "BaselineAttemptID",
+            "jsonTag": "baselineAttemptId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "AcceptedBy",
+            "jsonTag": "acceptedBy",
+            "type": "string"
+          },
+          {
+            "name": "AcceptedAt",
+            "jsonTag": "acceptedAt",
+            "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "repositoriesReadinessProfileSet",
+      "method": "PUT",
+      "path": "/repositories/{id}/readiness-profile",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.setReadinessProfileRequestBody",
+        "fields": [
+          {
+            "name": "Setup",
+            "jsonTag": "setup,omitempty",
+            "type": "*readinesscheck.CommandInput"
+          },
+          {
+            "name": "Verification",
+            "jsonTag": "verification",
+            "type": "readinesscheck.CommandInput"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "readinesscheck.SetRepositoryReadinessProfileResult",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "ProfileVersion",
+            "jsonTag": "profileVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "BaselineJobsEnqueued",
+            "jsonTag": "baselineJobsEnqueued",
+            "type": "int"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "repositoriesReadinessVerify",
+      "method": "POST",
+      "path": "/repositories/{id}/readiness/verify",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.verifyReadinessRequestBody"
+      },
+      "responseSchema": {
+        "typeName": "readinesscheck.RequestBaselineCheckResult",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "ProfileVersion",
+            "jsonTag": "profileVersion",
+            "type": "uint64"
+          },
+          {
+            "name": "BaselineJobsEnqueued",
+            "jsonTag": "baselineJobsEnqueued",
+            "type": "int"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "repositoriesRetryProbe",
       "method": "POST",
       "path": "/repositories/{id}/retry-probe",

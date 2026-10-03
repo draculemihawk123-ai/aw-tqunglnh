@@ -58,9 +58,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/readinesscheck"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -338,6 +340,12 @@ func (h *Handler) finishReady(
 		rw.State = workspace.RepositoryWorkspaceReady
 		rw.CurrentRevision = revision.VCSObjectID
 		if _, err := tx.Work().CreateRepositoryWorkspace(ctx, rw); err != nil {
+			return err
+		}
+		// V9-08 (gap G8): a READY workspace of a repository that declared a
+		// readiness profile gets its baseline enqueued in this same transaction.
+		// A repository without a profile enqueues nothing.
+		if err := readinesscheck.EnqueueBaselineForNewWorkspace(ctx, tx, h.ids, string(set.ProjectID), rw, time.Now().UTC()); err != nil {
 			return err
 		}
 		return h.aggregateWorkspaceSet(ctx, tx, payload.WorkspaceSetID, payload.FamilyID)

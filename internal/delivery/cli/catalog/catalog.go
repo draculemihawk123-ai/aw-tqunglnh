@@ -113,6 +113,22 @@ func init() {
 		AppOperation: commandTypeRetryRepositoryProbe, HTTPOperationID: "repositoriesRetryProbe",
 	})
 	cli.MustRegister(cli.Descriptor{
+		Path: []string{"repository", "readiness", "show"}, Scope: cli.ScopeProject,
+		AppOperation: appOpGetRepositoryReadiness, HTTPOperationID: "repositoriesReadiness",
+	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"repository", "readiness", "set"}, Scope: cli.ScopeProject,
+		AppOperation: commandTypeSetRepositoryReadinessProfile, HTTPOperationID: "repositoriesReadinessProfileSet",
+	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"repository", "readiness", "verify"}, Scope: cli.ScopeProject,
+		AppOperation: commandTypeRequestBaselineCheck, HTTPOperationID: "repositoriesReadinessVerify",
+	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"repository", "readiness", "accept-exception"}, Scope: cli.ScopeProject,
+		AppOperation: commandTypeAcceptBaselineException, HTTPOperationID: "repositoriesReadinessAcceptException",
+	})
+	cli.MustRegister(cli.Descriptor{
 		Path: []string{"component", "list"}, Scope: cli.ScopeProject,
 		AppOperation: appOpListComponents, HTTPOperationID: "projectComponentsList",
 	})

@@ -14,6 +14,7 @@ import {
 } from '../components/ui';
 import { ArrowLeft, Boxes, ChevronRight, Columns3, FolderGit2, Plus } from '../components/icons';
 import { AssignPackDialog } from './AssignPackDialog';
+import { RepositoryReadinessDialog } from './RepositoryReadinessDialog';
 
 export type { ProjectView, RepositoryView, ComponentView };
 
@@ -185,6 +186,7 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
   const [registerDialog, setRegisterDialog] = useState(false);
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [assignPackTarget, setAssignPackTarget] = useState<ComponentView | null>(null);
+  const [readinessTarget, setReadinessTarget] = useState<RepositoryView | null>(null);
   const { toasts, show, dismiss } = useToasts();
   const queryClient = useQueryClient();
 
@@ -370,9 +372,12 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
                           <p className="text-xs text-[#92400E] mt-1 bg-[#FEF3C7] border border-[#FCD34D] rounded-[4px] px-2 py-1 font-mono">{repo.lastProbeErrorCode}</p>
                         )}
                       </div>
-                      {repo.status === 'BLOCKED' && (
-                        <Button size="compact" intent="primary" loading={retryingId === repo.id} disabled={isOffline} onClick={() => retryProbe(repo)}>Retry Probe</Button>
-                      )}
+                      <div className="flex items-center gap-2">
+                        <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Readiness of ${repo.name}`} onClick={() => setReadinessTarget(repo)}>Readiness</Button>
+                        {repo.status === 'BLOCKED' && (
+                          <Button size="compact" intent="primary" loading={retryingId === repo.id} disabled={isOffline} onClick={() => retryProbe(repo)}>Retry Probe</Button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -389,6 +394,13 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
         </div>
         <div className="flex justify-end"><Button intent="primary" onClick={() => onNavigate?.('project-board')}><Columns3 size={14} aria-hidden /> Open Board</Button></div>
       </div>
+      {readinessTarget && (
+        <RepositoryReadinessDialog
+          repository={readinessTarget}
+          onClose={() => setReadinessTarget(null)}
+          onDone={message => show({ intent: 'success', message })}
+        />
+      )}
       {registerDialog && (
         <RegisterRepositoryDialog
           projectId={project.id}

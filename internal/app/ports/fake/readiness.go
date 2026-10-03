@@ -24,6 +24,7 @@ type ReadinessRepository struct {
 	baselineAttempts map[string][]ports.BaselineAttempt // by RepositoryWorkspaceID, insertion order
 	attemptsByJobID  map[string]ports.BaselineAttempt
 	openBlockers     map[string]ports.EnvironmentBlocker // by RepositoryWorkspaceID, only while OPEN
+	exceptions       map[string]ports.BaselineException  // by BaselineAttemptID
 }
 
 var _ ports.ReadinessRepository = (*ReadinessRepository)(nil)
@@ -45,9 +46,13 @@ func (r *ReadinessRepository) cloneWith(catalog *CatalogRepository) *ReadinessRe
 	for k, v := range r.openBlockers {
 		openBlockers[k] = v
 	}
+	exceptions := make(map[string]ports.BaselineException, len(r.exceptions))
+	for k, v := range r.exceptions {
+		exceptions[k] = v
+	}
 	return &ReadinessRepository{
 		catalog: catalog, profiles: profiles,
-		baselineAttempts: baselineAttempts, attemptsByJobID: attemptsByJobID, openBlockers: openBlockers,
+		baselineAttempts: baselineAttempts, attemptsByJobID: attemptsByJobID, openBlockers: openBlockers, exceptions: exceptions,
 	}
 }
 
@@ -85,7 +90,7 @@ func (r *ReadinessRepository) RecordBaselineAttempt(_ context.Context, req ports
 		ID: req.ID, ProjectID: req.ProjectID, RepositoryWorkspaceID: req.RepositoryWorkspaceID,
 		RepositoryID: req.RepositoryID, JobID: req.JobID, Stage: req.Stage, Outcome: req.Outcome,
 		ExitCode: req.ExitCode, DurationMS: req.DurationMS, StdoutExcerpt: req.StdoutExcerpt, StderrExcerpt: req.StderrExcerpt,
-		ErrorCode: req.ErrorCode, ErrorMessage: req.ErrorMessage, CreatedAt: time.Now().UTC(),
+		ErrorCode: req.ErrorCode, ErrorMessage: req.ErrorMessage, ProfileVersion: req.ProfileVersion, CreatedAt: time.Now().UTC(),
 	}
 	if r.baselineAttempts == nil {
 		r.baselineAttempts = map[string][]ports.BaselineAttempt{}
@@ -110,6 +115,38 @@ func (r *ReadinessRepository) ListBaselineAttempts(_ context.Context, repository
 	attempts := append([]ports.BaselineAttempt(nil), r.baselineAttempts[repositoryWorkspaceID]...)
 	sort.Slice(attempts, func(i, j int) bool { return attempts[i].CreatedAt.Before(attempts[j].CreatedAt) })
 	return attempts, nil
+}
+
+func (r *ReadinessRepository) RecordBaselineException(_ context.Context, req ports.RecordBaselineExceptionRequest) (ports.BaselineException, error) {
+	if existing, ok := r.exceptions[req.BaselineAttemptID]; ok {
+		return existing, nil
+	}
+	for _, attempts := range r.baselineAttempts {
+		for _, attempt := range attempts {
+			if attempt.ID != req.BaselineAttemptID {
+				continue
+			}
+			exception := ports.BaselineException{
+				ID: req.ID, ProjectID: req.ProjectID, BaselineAttemptID: req.BaselineAttemptID,
+				RepositoryWorkspaceID: attempt.RepositoryWorkspaceID, RepositoryID: attempt.RepositoryID,
+				Reason: req.Reason, AcceptedBy: req.AcceptedBy, AcceptedAt: req.AcceptedAt.UTC(),
+			}
+			if r.exceptions == nil {
+				r.exceptions = map[string]ports.BaselineException{}
+			}
+			r.exceptions[req.BaselineAttemptID] = exception
+			return exception, nil
+		}
+	}
+	return ports.BaselineException{}, fmt.Errorf("fake: %w: baseline attempt %s", ports.ErrPersistenceNotFound, req.BaselineAttemptID)
+}
+
+func (r *ReadinessRepository) GetBaselineException(_ context.Context, baselineAttemptID string) (ports.BaselineException, error) {
+	exception, ok := r.exceptions[baselineAttemptID]
+	if !ok {
+		return ports.BaselineException{}, fmt.Errorf("fake: %w: baseline exception for attempt %s", ports.ErrPersistenceNotFound, baselineAttemptID)
+	}
+	return exception, nil
 }
 
 func (r *ReadinessRepository) OpenEnvironmentBlocker(_ context.Context, req ports.OpenEnvironmentBlockerRequest) (ports.EnvironmentBlocker, bool, error) {

@@ -159,6 +159,10 @@ chuyển `REGISTERING → PROBING → ACTIVE/BLOCKED`.
 | 9 | query | Danh sách component đã discover | `listComponents` | `aw component list` | `ListComponents` [CHƯA CÓ] — chỉ đọc, **không có** `CreateComponent` public dù type nội bộ `ports.CreateComponentRequest` đã tồn tại (ADR-028 cấm expose helper này) | V6-03A |
 | 10 | command | Gán Engineering Pack version cho component | `assignComponentPack` | `aw pack-assignment assign` | `AssignComponentPack` [ĐÃ CÓ: `internal/app/ports/catalog.go:AssignComponentPackRequest`, chưa CommandEnvelope/HTTP/CLI] | V6-03A |
 | 11 | query | Danh sách pack assignment | `listPackAssignments` | `aw pack-assignment list` | `ListPackAssignments` [CHƯA CÓ] | V6-03A |
+| 12 | query | Readiness của repository: profile và trạng thái baseline từng workspace (V9-08) | `repositoriesReadiness` | `aw repository readiness show` | `GetRepositoryReadiness` [ĐÃ CÓ: `internal/app/readinesscheck`] | V9-08 |
+| 13 | command | Khai báo/đổi readiness profile của repository (V9-08) | `repositoriesReadinessProfileSet` | `aw repository readiness set` | `SetRepositoryReadinessProfile` [ĐÃ CÓ: `internal/app/readinesscheck`] | V9-08 |
+| 14 | command | Chạy lại baseline (verify) của repository (V9-08) | `repositoriesReadinessVerify` | `aw repository readiness verify` | `RequestBaselineCheck` [ĐÃ CÓ: `internal/app/readinesscheck`] | V9-08 |
+| 15 | command | Chấp nhận ngoại lệ cho baseline fail, có audit (V9-08) | `repositoriesReadinessAcceptException` | `aw repository readiness accept-exception` | `AcceptBaselineException` [ĐÃ CÓ: `internal/app/readinesscheck`] | V9-08 |
 
 ## 4. Screen 3 — Definition catalog & version detail
 

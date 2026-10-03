@@ -60,7 +60,12 @@ type instructionCheckFailure struct {
 	EvidenceIDs []string `json:"evidenceIds"`
 	What        string   `json:"what"`
 	Why         string   `json:"why,omitempty"`
-	Fix         string   `json:"fix"`
+	// Baseline (V9-08) says how the repository stood BEFORE this task: whether
+	// its own baseline passed (so a failing check is a regression of this task)
+	// or had already failed (so the failure may not be the task's). Absent when
+	// no write repository has a baseline.
+	Baseline string `json:"baseline,omitempty"`
+	Fix      string `json:"fix"`
 }
 
 // assembledCheckFailureInput is what Phase 1 (the read-only transaction) of
@@ -72,6 +77,9 @@ type assembledCheckFailureInput struct {
 	attemptID string
 	evidence  []runtimedomain.Evidence
 	artifacts []assembledCheckFailureArtifact
+	// baseline is the V9-08 note about the repositories' baseline, the same for
+	// every failure of one prompt (see baselineNoteAt).
+	baseline string
 }
 
 type assembledCheckFailureArtifact struct {
@@ -168,7 +176,7 @@ func gatherCheckFailureInputs(ctx context.Context, tx ports.Tx, refs []contextsn
 func renderCheckFailures(ctx context.Context, store ports.ArtifactStore, inputs []assembledCheckFailureInput) ([]instructionCheckFailure, error) {
 	rendered := make([]instructionCheckFailure, 0, len(inputs))
 	for _, input := range inputs {
-		failure := instructionCheckFailure{CheckNode: input.checkNode, Fix: checkFailureFix}
+		failure := instructionCheckFailure{CheckNode: input.checkNode, Baseline: input.baseline, Fix: checkFailureFix}
 		for _, row := range input.evidence {
 			failure.EvidenceIDs = append(failure.EvidenceIDs, string(row.ID))
 		}

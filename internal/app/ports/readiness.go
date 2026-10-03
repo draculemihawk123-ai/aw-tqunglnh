@@ -79,6 +79,16 @@ type ReadinessRepository interface {
 	// "known pre-existing failure" and "we couldn't even check" apart.
 	ListBaselineAttempts(ctx context.Context, repositoryWorkspaceID string) ([]BaselineAttempt, error)
 
+	// RecordBaselineException appends an operator's accepted exception for one
+	// failed BaselineAttempt (V9-08): the attempt keeps its failing outcome,
+	// and writer admission treats it as accepted. At most one exception per
+	// attempt; recording a second one returns the stored row unchanged.
+	// ErrPersistenceNotFound when the attempt does not exist.
+	RecordBaselineException(ctx context.Context, req RecordBaselineExceptionRequest) (BaselineException, error)
+	// GetBaselineException returns the exception recorded for attemptID, or
+	// ErrPersistenceNotFound.
+	GetBaselineException(ctx context.Context, baselineAttemptID string) (BaselineException, error)
+
 	// OpenEnvironmentBlocker opens a new OPEN environment blocker for
 	// req.RepositoryWorkspaceID, or — if one is already OPEN for that
 	// RepositoryWorkspace — returns the existing row unchanged rather than
@@ -119,6 +129,10 @@ type RecordBaselineAttemptRequest struct {
 	StderrExcerpt         string
 	ErrorCode             *string
 	ErrorMessage          *string
+	// ProfileVersion (V9-08) is the version of the readiness profile the
+	// attempt ran: a baseline only vouches for the profile it ran, so a
+	// changed profile makes every earlier attempt stale.
+	ProfileVersion uint64
 }
 
 // BaselineAttempt is one append-only row of the pre-change baseline
@@ -137,7 +151,36 @@ type BaselineAttempt struct {
 	StderrExcerpt         string
 	ErrorCode             *string
 	ErrorMessage          *string
-	CreatedAt             time.Time
+	// ProfileVersion is the readiness profile version the attempt ran; 0 for
+	// an attempt recorded before V9-08, which vouches for no profile.
+	ProfileVersion uint64
+	CreatedAt      time.Time
+}
+
+// RecordBaselineExceptionRequest is what a caller supplies to
+// ReadinessRepository.RecordBaselineException.
+type RecordBaselineExceptionRequest struct {
+	ID                string
+	ProjectID         string
+	BaselineAttemptID string
+	Reason            string
+	AcceptedBy        string
+	AcceptedAt        time.Time
+}
+
+// BaselineException is an operator's audited acceptance of a failed baseline
+// (V9-08): writers are admitted on a repository whose baseline did not pass
+// because a named person accepted that attempt's failure for a stated reason.
+// It names the attempt, so a later failing attempt needs its own acceptance.
+type BaselineException struct {
+	ID                    string
+	ProjectID             string
+	BaselineAttemptID     string
+	RepositoryWorkspaceID string
+	RepositoryID          string
+	Reason                string
+	AcceptedBy            string
+	AcceptedAt            time.Time
 }
 
 // OpenEnvironmentBlockerRequest is what a caller supplies to

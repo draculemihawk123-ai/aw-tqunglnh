@@ -71,14 +71,6 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
-// generation is always 1: baseline evidence, like workspaceprovision's own
-// first-provision scope, only ever concerns the first, READY generation of
-// a RepositoryWorkspace. Regeneration after QUARANTINED is V3-09/V3-10's
-// own separate concern (see internal/app/workspaceprovision's own
-// identical `generation = 1` constant and doc comment) — entirely out of
-// this task's own scope.
-const generation = 1
-
 // excerptLimit bounds how much of a real command's stdout/stderr this
 // handler ever persists as evidence — mirroring
 // internal/adapters/gitworktree's own runGitWithExitCode, which caps a
@@ -151,7 +143,7 @@ func (h *Handler) Handle(ctx context.Context, job ports.DurableJob) error {
 		return nil
 	}
 
-	rw, err := h.loadRepositoryWorkspace(ctx, payload.WorkspaceSetID, payload.RepositoryID)
+	rw, err := h.loadRepositoryWorkspace(ctx, payload.RepositoryWorkspaceID)
 	if err != nil {
 		return fmt.Errorf("readinesscheck: load repository workspace for job %s: %w", job.ID, err)
 	}
@@ -189,6 +181,7 @@ func (h *Handler) Handle(ctx context.Context, job ports.DurableJob) error {
 	}
 
 	record := h.runProfile(ctx, string(job.ID), workingDirectory, *profile)
+	record.ProfileVersion = profile.Version
 	return h.finish(ctx, job, payload, record)
 }
 
@@ -208,11 +201,14 @@ func (h *Handler) loadExistingAttempt(ctx context.Context, jobID string) (*ports
 	return result, err
 }
 
-func (h *Handler) loadRepositoryWorkspace(ctx context.Context, workspaceSetID, repositoryID string) (workspace.RepositoryWorkspace, error) {
+// loadRepositoryWorkspace loads the workspace the job names by its own id (V9-08):
+// the job vouches for that exact workspace, whichever generation it is, rather
+// than for "generation 1 of the repository in the set".
+func (h *Handler) loadRepositoryWorkspace(ctx context.Context, repositoryWorkspaceID string) (workspace.RepositoryWorkspace, error) {
 	var rw workspace.RepositoryWorkspace
 	err := h.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
-		result, err := tx.Work().GetRepositoryWorkspace(ctx, workspaceSetID, repositoryID, generation)
-		rw = result
+		result, err := tx.Work().GetRepositoryWorkspaceByID(ctx, repositoryWorkspaceID)
+		rw = result.Workspace
 		return err
 	})
 	return rw, err
@@ -267,6 +263,8 @@ type attemptRecord struct {
 	StderrExcerpt string
 	ErrorCode     *string
 	ErrorMessage  *string
+	// ProfileVersion is the readiness profile version that ran (V9-08).
+	ProfileVersion uint64
 }
 
 // runProfile runs profile's Setup command (if any) followed by its
@@ -372,7 +370,7 @@ func (h *Handler) finish(ctx context.Context, job ports.DurableJob, payload jobP
 			RepositoryID: payload.RepositoryID, JobID: string(job.ID), Stage: record.Stage, Outcome: record.Outcome,
 			ExitCode: record.ExitCode, DurationMS: record.DurationMS,
 			StdoutExcerpt: record.StdoutExcerpt, StderrExcerpt: record.StderrExcerpt,
-			ErrorCode: record.ErrorCode, ErrorMessage: record.ErrorMessage,
+			ErrorCode: record.ErrorCode, ErrorMessage: record.ErrorMessage, ProfileVersion: record.ProfileVersion,
 		})
 		if err != nil {
 			return err

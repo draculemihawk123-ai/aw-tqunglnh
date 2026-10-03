@@ -159,6 +159,24 @@ The WorkItem has no real readiness contract. Supply one at creation time (`"cont
 "set contract" command; a WorkItem's contract is supplied once, at creation, in the SAME request body as
 `title`/`effectiveScope`.
 
+## Work item won't reach READY: "baseline pending" / "baseline FAILED" (V9-08)
+
+`aw work-item readiness` (and `mark-ready`) list, next to the contract problems, one line per repository the work
+item may write to whose baseline does not admit a writer:
+
+- `repository R: baseline pending — no baseline has run yet for readiness profile version N` — the baseline has not
+  run since the profile was set or changed. It runs by a worker: start `aw worker`, or ask again with
+  `aw repository readiness verify <R>`, then `aw repository readiness show <R>`.
+- `repository R: baseline FAILED (PRE_EXISTING_FAILURE, attempt A) before any change` — the repository's own
+  verification command was already red before any task touched it (the output is in `show`). Fix the repository
+  and run `verify`, or — if you accept going on with it — `aw repository readiness accept-exception --attempt-id A
+  --reason "..." R`. A task that then fails the same check is told that the failure matches the baseline.
+- `... (ENVIRONMENT_ERROR ...)` — the command could not run at all (a missing executable, a timeout): fix the
+  environment the worker runs in, then `verify`.
+
+`aw run start` refuses a work item in the same situation (`CONFLICT`, naming the repository), which happens when the
+profile changed after the work item became `READY`.
+
 ## A run ended `FAILED`: the WorkItem is `BLOCKED` by a `RUN_FAILED` blocker (V9-06, ADR-033)
 
 ```bash

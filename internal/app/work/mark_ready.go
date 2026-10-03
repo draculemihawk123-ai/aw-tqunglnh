@@ -127,8 +127,12 @@ func MarkWorkItemReady(ctx context.Context, uow ports.UnitOfWork, cmd ports.Comm
 		// ExplainWorkItemReadiness already runs read-only — returned
 		// verbatim (a *workdomain.ReadinessError) rather than wrapped, so a
 		// caller sees the identical problem list/vocabulary.
-		if err := workdomain.ValidateReadinessGate(item); err != nil {
+		problems, err := readinessProblems(ctx, tx, item)
+		if err != nil {
 			return err
+		}
+		if len(problems) > 0 {
+			return &workdomain.ReadinessError{Problems: problems}
 		}
 
 		updated, err := tx.Work().TransitionWorkItemStatus(ctx, ports.TransitionWorkItemStatusRequest{

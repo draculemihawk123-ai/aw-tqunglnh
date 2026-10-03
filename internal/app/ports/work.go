@@ -232,6 +232,11 @@ type WorkRepository interface {
 	// can assert on exactly — the state-aggregation step's own "is every
 	// required repository now READY" read.
 	ListWorkspaceSetRepositoryWorkspaces(ctx context.Context, workspaceSetID string) ([]workspace.RepositoryWorkspace, error)
+	// ListRepositoryWorkspacesForRepository returns every RepositoryWorkspace
+	// of repositoryID across all workspace sets, ordered by
+	// (workspace_set_id, generation) (V9-08: the baseline re-runs on each when
+	// the repository's readiness profile changes).
+	ListRepositoryWorkspacesForRepository(ctx context.Context, repositoryID string) ([]workspace.RepositoryWorkspace, error)
 
 	// GetRepositoryWorkspaceByID returns the RepositoryWorkspace row for id,
 	// together with the FamilyID of the TaskFamily whose WorkspaceSet owns
