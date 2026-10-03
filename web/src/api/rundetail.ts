@@ -98,8 +98,18 @@ export interface TimelineEntryView {
   finishedAt?: string;
   terminationReason?: string;
   failureCode?: string;
+  /** What the provider CLI reported this attempt used (V9-13a); absent when it reported nothing. */
+  usage?: UsageView;
   lastCheckpointId?: string;
   contextSnapshotId?: string;
+}
+
+/** Reported provider usage — the provider's own figures, not an aw ledger. */
+export interface UsageView {
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  costUsd: number;
 }
 
 export interface RunTimelineResponse {
@@ -107,6 +117,8 @@ export interface RunTimelineResponse {
   entries: TimelineEntryView[];
   freshness: Freshness;
   nextCursor?: string;
+  /** The whole run's reported usage (sum over every attempt), V9-13a. */
+  usage?: UsageView;
 }
 
 /**

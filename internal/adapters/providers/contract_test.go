@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -742,4 +743,89 @@ func TestClaudeAdapterNamesTheRepositoryMountsToTheCLI(t *testing.T) {
 			}
 		}
 	})
+}
+
+// V9-13a (live finding F4): the effort level and a per-attempt spend ceiling are
+// Config fields, not StartArgs, so they hold for a resumed attempt too — a
+// ceiling that only the first attempt of a node carried would not be one.
+func TestClaudeAdapterPassesEffortAndSpendCeilingOnStartAndResume(t *testing.T) {
+	t.Parallel()
+	supervisor := processadapter.NewSupervisor()
+	adapter, err := claude.New(supervisor, claude.Config{
+		Executable: os.Args[0], PrefixArgs: helperPrefix("claude"), VersionEnvironment: map[string]string{"AGENTKIT_PROVIDER_HELPER": "1"},
+		Effort: "medium", MaxBudgetUSD: 0.75,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	valueAfter := func(arguments []string, flag string) (string, int) {
+		count, value := 0, ""
+		for i, argument := range arguments {
+			if argument == flag && i+1 < len(arguments) {
+				count, value = count+1, arguments[i+1]
+			}
+		}
+		return value, count
+	}
+	check := func(t *testing.T, arguments []string) {
+		t.Helper()
+		if value, count := valueAfter(arguments, "--effort"); count != 1 || value != "medium" {
+			t.Errorf("--effort = %q (x%d), want medium once (argv %v)", value, count, arguments)
+		}
+		if value, count := valueAfter(arguments, "--max-budget-usd"); count != 1 || value != "0.75" {
+			t.Errorf("--max-budget-usd = %q (x%d), want 0.75 once (argv %v)", value, count, arguments)
+		}
+	}
+
+	startCapture := filepath.Join(t.TempDir(), "start.json")
+	if _, err := adapter.Start(context.Background(), helperRequest("start-f4", t.TempDir(), startCapture, "success"), &eventCollector{}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	check(t, readCapture(t, startCapture).Argv)
+
+	resumeCapture := filepath.Join(t.TempDir(), "resume.json")
+	if _, err := adapter.Resume(context.Background(), helperRequest("resume-f4", t.TempDir(), resumeCapture, "success"),
+		ports.ProviderSessionRef{Provider: ports.ProviderClaude, SessionID: "claude-session-0001"}, &eventCollector{}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	check(t, readCapture(t, resumeCapture).Argv)
+
+	t.Run("unset settings add no argument", func(t *testing.T) {
+		t.Parallel()
+		plain, err := claude.New(processadapter.NewSupervisor(), claude.Config{
+			Executable: os.Args[0], PrefixArgs: helperPrefix("claude"), VersionEnvironment: map[string]string{"AGENTKIT_PROVIDER_HELPER": "1"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		capture := filepath.Join(t.TempDir(), "plain.json")
+		if _, err := plain.Start(context.Background(), helperRequest("plain-f4", t.TempDir(), capture, "success"), &eventCollector{}); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		for _, argument := range readCapture(t, capture).Argv {
+			if argument == "--effort" || argument == "--max-budget-usd" {
+				t.Fatalf("%s present with nothing configured", argument)
+			}
+		}
+	})
+}
+
+func TestClaudeAdapterRefusesAnUnusableEffortOrSpendCeiling(t *testing.T) {
+	t.Parallel()
+	for name, config := range map[string]claude.Config{
+		"unknown effort":    {Effort: "ludicrous"},
+		"negative ceiling":  {MaxBudgetUSD: -1},
+		"not-a-number":      {MaxBudgetUSD: math.NaN()},
+		"infinite ceiling":  {MaxBudgetUSD: math.Inf(1)},
+		"effort wrong case": {Effort: "Medium"},
+	} {
+		if _, err := claude.New(processadapter.NewSupervisor(), config); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	for _, effort := range []string{"", "low", "medium", "high", "xhigh", "max"} {
+		if _, err := claude.New(processadapter.NewSupervisor(), claude.Config{Effort: effort}); err != nil {
+			t.Errorf("effort %q was refused: %v", effort, err)
+		}
+	}
 }

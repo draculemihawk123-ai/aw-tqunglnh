@@ -52,4 +52,8 @@ type AgentEventsRepository interface {
 	// ListByAttempt returns every AgentEventRecord for attemptID, ordered
 	// oldest-Sequence-first.
 	ListByAttempt(ctx context.Context, attemptID string) ([]AgentEventRecord, error)
+	// ListByAttemptAndKind is ListByAttempt restricted to one event kind
+	// (V9-13a: the run timeline reads only USAGE_REPORTED, not the whole
+	// stream of every attempt).
+	ListByAttemptAndKind(ctx context.Context, attemptID, kind string) ([]AgentEventRecord, error)
 }

@@ -45,6 +45,20 @@ func (a *AgentEventsRepository) AppendBatch(_ context.Context, batch []ports.Age
 	return nil
 }
 
+func (a *AgentEventsRepository) ListByAttemptAndKind(ctx context.Context, attemptID, kind string) ([]ports.AgentEventRecord, error) {
+	all, err := a.ListByAttempt(ctx, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	var matching []ports.AgentEventRecord
+	for _, record := range all {
+		if record.Kind == kind {
+			matching = append(matching, record)
+		}
+	}
+	return matching, nil
+}
+
 func (a *AgentEventsRepository) ListByAttempt(_ context.Context, attemptID string) ([]ports.AgentEventRecord, error) {
 	records := append([]ports.AgentEventRecord(nil), a.records[attemptID]...)
 	sort.Slice(records, func(i, j int) bool { return records[i].Sequence < records[j].Sequence })

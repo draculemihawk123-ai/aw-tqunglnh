@@ -355,6 +355,37 @@ describe('GraphTimelineTab (V7-12)', () => {
     expect(within(joinRow).getByText('not yet reached')).toBeInTheDocument();
   });
 
+  it('shows what the provider reported an attempt used and the run total (V9-13a), and no usage for an attempt that reported none', async () => {
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1' } as never) } as never);
+    vi.mocked(api.getRunDiagnostics).mockResolvedValue({
+      runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'ACTIVE', runState: 'RUNNING',
+      blockers: [], orphanedAttempts: [], orphanedAttemptsTruncated: false, providers: [], isolation: [], repositoryWorkspaces: [],
+      validActions: [],
+    } as never);
+    vi.mocked(api.getRunGraph).mockResolvedValue({
+      runId: 'run-1', manifestRevision: 1, nodes: FORK_JOIN_NODES, possibleEdges: FORK_JOIN_EDGES, takenEdges: [],
+      activations: [fixtureActivation({ nodeRunId: 'nr-a', nodeKey: 'agent-a', activationSequence: 1, state: 'SUCCEEDED' })],
+      branchTokens: [], freshness: { generation: 1, asOfJournalPosition: 2, status: 'LIVE' },
+    } as never);
+    const attempt = (n: number, usage?: unknown) => ({
+      kind: 'EXECUTION_ATTEMPT', activationSequence: 1, nodeRunId: 'nr-a', nodeKey: 'agent-a', iteration: 1,
+      attemptId: `att-${n}`, attemptNumber: n, attemptState: 'SUCCEEDED', providerKey: 'claude', ...(usage ? { usage } : {}),
+    });
+    vi.mocked(api.getRunTimeline).mockResolvedValue({
+      runId: 'run-1', freshness: { generation: 1, asOfJournalPosition: 2, status: 'LIVE' },
+      entries: [attempt(1, { inputTokens: 11251, cachedInputTokens: 41515, outputTokens: 563, costUsd: 0.0884 }), attempt(2)],
+      usage: { inputTokens: 11251, cachedInputTokens: 41515, outputTokens: 563, costUsd: 0.0884 },
+    } as never);
+    renderGraphTab();
+
+    expect(await screen.findByText(/11,251 in \/ 563 out \(41,515 cached\) · \$0\.0884/, { selector: 'span' })).toBeInTheDocument();
+    await userEvent.click(screen.getByText('EXECUTION_ATTEMPT #1').closest('button')!);
+    expect(screen.getAllByText(/11,251 in \/ 563 out/).length).toBe(2); // run header + the expanded attempt
+    await userEvent.click(screen.getByText('EXECUTION_ATTEMPT #2').closest('button')!);
+    expect(screen.getAllByText(/11,251 in \/ 563 out/).length).toBe(1); // #1 collapsed; #2 reported nothing, so only the run header remains
+    expect(screen.queryByText(/^Usage:/)).not.toBeInTheDocument();
+  });
+
   it('an admission-blocked node offers a real Retry action; a failed retry never fabricates a second blocked activation', async () => {
     vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1', status: 'BLOCKED' } as never) } as never);
     const diagnostics = {

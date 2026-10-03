@@ -1894,6 +1894,11 @@
             "name": "NextCursor",
             "jsonTag": "nextCursor,omitempty",
             "type": "string"
+          },
+          {
+            "name": "Usage",
+            "jsonTag": "usage,omitempty",
+            "type": "*runtime.UsageView"
           }
         ]
       }

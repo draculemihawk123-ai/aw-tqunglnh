@@ -34,6 +34,9 @@ type runTimelineResponse struct {
 	Entries    []runtimeapp.TimelineEntryView `json:"entries"`
 	Freshness  httpapi.Freshness              `json:"freshness"`
 	NextCursor string                         `json:"nextCursor,omitempty"`
+	// Usage (V9-13a, finding F4) is the whole run's reported provider usage —
+	// the sum over ALL its attempts, not just this page's.
+	Usage *runtimeapp.UsageView `json:"usage,omitempty"`
 }
 
 // handleGetRunTimeline implements GET /runs/{id}/timeline (operationId
@@ -133,7 +136,7 @@ func handleGetRunTimeline(deps Dependencies) http.HandlerFunc {
 		page := candidates[:pageCount]
 
 		response := runTimelineResponse{
-			RunID: timeline.RunID, Entries: page,
+			RunID: timeline.RunID, Entries: page, Usage: timeline.Usage,
 			Freshness: httpapi.Freshness{Generation: 0, AsOfJournalPosition: upperWatermark, Status: httpapi.FreshnessLive},
 		}
 		if len(candidates) > pageCount {

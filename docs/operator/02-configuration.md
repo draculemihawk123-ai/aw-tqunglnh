@@ -78,8 +78,12 @@ $ aw worker -h
 Usage of worker:
   -artifact-root aw serve
         artifact storage root directory (must already exist; the same root aw serve uses)
+  -claude-effort string
+        the Claude CLI's --effort for every task: low, medium, high, xhigh or max (omitted = the CLI's default)
   -claude-executable string
         path to the Claude CLI executable to register as an agent provider (omitted = not registered; AGENT nodes pinned to it cannot run)
+  -claude-max-budget-usd float
+        the most ONE Claude attempt may spend, in US dollars, enforced by the CLI itself (--max-budget-usd); 0 = no ceiling. What an attempt actually spent is its USAGE_REPORTED event
   -claude-permission-mode string
         the Claude CLI's --permission-mode for every task: acceptEdits, auto, bypassPermissions, dontAsk, manual or plan (omitted = the CLI's default, under which a headless Claude refuses every file write in an aw worktree because it is never a trusted workspace; an agent that must change files needs acceptEdits)
   -codex-executable string

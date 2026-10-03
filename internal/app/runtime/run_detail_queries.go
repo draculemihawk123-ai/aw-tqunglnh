@@ -659,9 +659,30 @@ type TimelineEntryView struct {
 	// wrote into the attempt's agent_events stream. Empty — and omitted — for
 	// every other attempt, and for a SCOPE_VIOLATION attempt recorded before
 	// V9-09, whose paths were never stored.
-	FailureDetail     string `json:"failureDetail,omitempty"`
-	LastCheckpointID  string `json:"lastCheckpointId,omitempty"`
-	ContextSnapshotID string `json:"contextSnapshotId,omitempty"`
+	FailureDetail string `json:"failureDetail,omitempty"`
+	// Usage (V9-13a, finding F4) is what the provider CLI reported this attempt
+	// used: tokens and, when the CLI reports one, its cost in US dollars —
+	// totalled from the attempt's USAGE_REPORTED events. Omitted for an attempt
+	// with no such event (it never reached a provider, or the CLI reported
+	// nothing). It is the provider's figure, not an aw ledger.
+	Usage             *UsageView `json:"usage,omitempty"`
+	LastCheckpointID  string     `json:"lastCheckpointId,omitempty"`
+	ContextSnapshotID string     `json:"contextSnapshotId,omitempty"`
+}
+
+// UsageView is an attempt's (or, summed, a run's) reported provider usage.
+type UsageView struct {
+	InputTokens       int64   `json:"inputTokens"`
+	CachedInputTokens int64   `json:"cachedInputTokens"`
+	OutputTokens      int64   `json:"outputTokens"`
+	CostUSD           float64 `json:"costUsd"`
+}
+
+func usageView(usage ports.AgentUsage) *UsageView {
+	return &UsageView{
+		InputTokens: usage.InputTokens, CachedInputTokens: usage.CachedInputTokens,
+		OutputTokens: usage.OutputTokens, CostUSD: usage.CostUSD,
+	}
 }
 
 func nodeRunToTimelineEntry(nr runtimedomain.NodeRun, matcher redact.Matcher) TimelineEntryView {
@@ -722,6 +743,10 @@ func buildTimelineEntries(nodeRuns []runtimedomain.NodeRun, attempts []runtimedo
 type RunTimeline struct {
 	RunID   string              `json:"runId"`
 	Entries []TimelineEntryView `json:"entries"`
+	// Usage (V9-13a, finding F4) is the sum of every attempt's reported usage:
+	// what the run cost according to the provider CLIs. Omitted when no attempt
+	// reported any.
+	Usage *UsageView `json:"usage,omitempty"`
 }
 
 // GetRunTimeline returns runID's own full chronological timeline. matcher
@@ -755,6 +780,34 @@ func GetRunTimeline(ctx context.Context, uow ports.UnitOfWork, matcher redact.Ma
 				return err
 			}
 			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.ScopeViolationDetailFromRecords(records))
+		}
+		// V9-13a: what each provider attempt reported using, and the run's total.
+		// Only an attempt with a provider can have usage, and only its
+		// USAGE_REPORTED events are read, never the whole stream.
+		var runTotal ports.AgentUsage
+		anyUsage := false
+		for i := range timeline.Entries {
+			entry := &timeline.Entries[i]
+			if entry.Kind != TimelineEntryExecutionAttempt || entry.ProviderKey == "" {
+				continue
+			}
+			records, err := tx.AgentEvents().ListByAttemptAndKind(ctx, entry.AttemptID, string(ports.AgentEventUsageReported))
+			if err != nil {
+				return err
+			}
+			usage, ok := agentevents.UsageFromRecords(records)
+			if !ok {
+				continue
+			}
+			entry.Usage = usageView(usage)
+			anyUsage = true
+			runTotal.InputTokens += usage.InputTokens
+			runTotal.CachedInputTokens += usage.CachedInputTokens
+			runTotal.OutputTokens += usage.OutputTokens
+			runTotal.CostUSD += usage.CostUSD
+		}
+		if anyUsage {
+			timeline.Usage = usageView(runTotal)
 		}
 		return nil
 	})
