@@ -1,0 +1,200 @@
+{
+  "runId": "v5a-7",
+  "workItemId": "v5a-6",
+  "finalRunState": "VERIFYING",
+  "provider": "claude",
+  "providerVersion": "2.1.288 (Claude Code)",
+  "model": "claude-sonnet-4-6",
+  "effort": "medium",
+  "maxUsdPerAttempt": "0.75",
+  "environmentNames": [
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SystemRoot",
+    "TEMP",
+    "TMP"
+  ],
+  "durationSeconds": 133.3838529,
+  "reworkRounds": 3,
+  "attempts": [
+    {
+      "nodeKey": "build",
+      "activation": 2,
+      "nodeRunId": "live-2",
+      "nodeRunState": "SUCCEEDED",
+      "selectedOutcome": "done",
+      "attemptId": "live-4",
+      "attemptState": "SUCCEEDED",
+      "terminationReason": "COMPLETED",
+      "evidenceIds": [
+        "live-4:AGENT_EXECUTION"
+      ],
+      "promptFile": "prompts/build-2.json",
+      "transcriptFile": "transcripts/build-2.jsonl",
+      "transcriptEvents": 11,
+      "allowedOutcomes": [
+        "done"
+      ],
+      "resourceKeys": [
+        "live-maker-role"
+      ]
+    },
+    {
+      "nodeKey": "check",
+      "activation": 3,
+      "nodeRunId": "live-7",
+      "nodeRunState": "SUCCEEDED",
+      "selectedOutcome": "failed",
+      "attemptId": "live-9",
+      "attemptState": "SUCCEEDED",
+      "terminationReason": "COMPLETED",
+      "evidenceIds": [
+        "live-9:COMMAND_EXECUTION"
+      ]
+    },
+    {
+      "nodeKey": "build",
+      "activation": 4,
+      "nodeRunId": "live-12",
+      "nodeRunState": "SUCCEEDED",
+      "selectedOutcome": "done",
+      "attemptId": "live-14",
+      "attemptState": "SUCCEEDED",
+      "terminationReason": "COMPLETED",
+      "snapshotEvidenceIds": [
+        "live-9:COMMAND_EXECUTION"
+      ],
+      "evidenceIds": [
+        "live-14:AGENT_EXECUTION"
+      ],
+      "promptFile": "prompts/build-4.json",
+      "transcriptFile": "transcripts/build-4.jsonl",
+      "transcriptEvents": 18,
+      "allowedOutcomes": [
+        "done"
+      ],
+      "resourceKeys": [
+        "live-maker-role"
+      ]
+    },
+    {
+      "nodeKey": "check",
+      "activation": 5,
+      "nodeRunId": "live-17",
+      "nodeRunState": "SUCCEEDED",
+      "selectedOutcome": "failed",
+      "attemptId": "live-19",
+      "attemptState": "SUCCEEDED",
+      "terminationReason": "COMPLETED",
+      "evidenceIds": [
+        "live-19:COMMAND_EXECUTION"
+      ]
+    },
+    {
+      "nodeKey": "build",
+      "activation": 6,
+      "nodeRunId": "live-22",
+      "nodeRunState": "SUCCEEDED",
+      "selectedOutcome": "done",
+      "attemptId": "live-24",
+      "attemptState": "SUCCEEDED",
+      "terminationReason": "COMPLETED",
+      "snapshotEvidenceIds": [
+        "live-19:COMMAND_EXECUTION"
+      ],
+      "evidenceIds": [
+        "live-24:AGENT_EXECUTION"
+      ],
+      "promptFile": "prompts/build-6.json",
+      "transcriptFile": "transcripts/build-6.jsonl",
+      "transcriptEvents": 38,
+      "allowedOutcomes": [
+        "done"
+      ],
+      "resourceKeys": [
+        "live-maker-role"
+      ]
+    },
+    {
+      "nodeKey": "check",
+      "activation": 7,
+      "nodeRunId": "live-27",
+      "nodeRunState": "SUCCEEDED",
+      "selectedOutcome": "failed",
+      "attemptId": "live-29",
+      "attemptState": "SUCCEEDED",
+      "terminationReason": "COMPLETED",
+      "evidenceIds": [
+        "live-29:COMMAND_EXECUTION"
+      ]
+    },
+    {
+      "nodeKey": "build",
+      "activation": 8,
+      "nodeRunId": "live-32",
+      "nodeRunState": "SUCCEEDED",
+      "selectedOutcome": "done",
+      "attemptId": "live-34",
+      "attemptState": "SUCCEEDED",
+      "terminationReason": "COMPLETED",
+      "snapshotEvidenceIds": [
+        "live-29:COMMAND_EXECUTION"
+      ],
+      "evidenceIds": [
+        "live-34:AGENT_EXECUTION"
+      ],
+      "promptFile": "prompts/build-8.json",
+      "transcriptFile": "transcripts/build-8.jsonl",
+      "transcriptEvents": 24,
+      "allowedOutcomes": [
+        "done"
+      ],
+      "resourceKeys": [
+        "live-maker-role"
+      ]
+    },
+    {
+      "nodeKey": "check",
+      "activation": 9,
+      "nodeRunId": "live-37",
+      "nodeRunState": "SUCCEEDED",
+      "selectedOutcome": "passed",
+      "attemptId": "live-39",
+      "attemptState": "SUCCEEDED",
+      "terminationReason": "COMPLETED",
+      "evidenceIds": [
+        "live-39:COMMAND_EXECUTION"
+      ]
+    },
+    {
+      "nodeKey": "review",
+      "activation": 10,
+      "nodeRunId": "live-42",
+      "nodeRunState": "SUCCEEDED",
+      "selectedOutcome": "approved",
+      "attemptId": "live-44",
+      "attemptState": "SUCCEEDED",
+      "terminationReason": "COMPLETED",
+      "snapshotEvidenceIds": [
+        "live-39:COMMAND_EXECUTION"
+      ],
+      "evidenceIds": [
+        "live-44:AGENT_EXECUTION"
+      ],
+      "promptFile": "prompts/review-10.json",
+      "transcriptFile": "transcripts/review-10.jsonl",
+      "transcriptEvents": 17,
+      "allowedOutcomes": [
+        "approved",
+        "rework"
+      ],
+      "resourceKeys": [
+        "live-checker-role"
+      ]
+    }
+  ],
+  "finalNotes": "Paris\nVERIFIED-BY-CHECK\n"
+}

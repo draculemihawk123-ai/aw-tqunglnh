@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 2,
+  "hardConstraints": [],
+  "taskContract": {
+    "workItemId": "v5a-6",
+    "title": "Write the capital of France to notes.txt",
+    "behavior": "Create a file named notes.txt in the repository root. Its first line is the name of the capital city of France.",
+    "acceptanceCriteria": [
+      "{Description:notes.txt exists and its first line is the capital of France VerificationRef:review}"
+    ],
+    "verificationSpec": "The check command and then a reviewer read notes.txt.",
+    "riskLevel": "LOW",
+    "allowedOutcomes": [
+      "approved",
+      "rework"
+    ],
+    "outcomeProtocol": "Finish your final message with exactly one outcome marker, as the very last thing you write: <agentkit-outcome>{\"schemaVersion\":1,\"outcome\":\"NAME\"}</agentkit-outcome> where NAME is one of taskContract.allowedOutcomes, spelled exactly as listed. Write the marker once: do not end any earlier message with one. The attempt fails if the marker is missing, repeated, malformed, or names an outcome that is not listed."
+  },
+  "resources": [
+    {
+      "ownerVersionId": "v9-area-layer-v1",
+      "resourceKey": "live-checker-role",
+      "priority": "REQUIRED_PROCEDURE",
+      "contentHash": "sha256:f2de4a32c6d337af9d8bfdb9a293628dcbc5690fe0c4764123f514e1dbb1606a",
+      "content": "You are the reviewer. Do NOT create, edit or delete any file. Read notes.txt. If its first line is exactly Paris, the work is correct: report the outcome approved. Otherwise report rework. Keep your answer to one or two sentences and end it with the outcome marker the task contract describes."
+    }
+  ],
+  "messages": [],
+  "closingChecklist": {
+    "hardConstraintKeys": [],
+    "allowedOutcomes": [
+      "approved",
+      "rework"
+    ]
+  }
+}

@@ -305,8 +305,8 @@ func TestV9LiveClaude_MakerCheckFailReworkCheckerApprovesWithoutAWrapper(t *test
 		// write in a worktree it has not been told to trust, and a worktree aw
 		// creates is new for every WorkItem, so the project's own
 		// .claude/settings.json allow rules are ignored there ("this workspace has
-		// not been trusted") and no one can answer the trust dialog. `aw worker`
-		// has no flag for this: see docs/release/alpha-release-report.md, V9-11.
+		// not been trusted") and no one can answer the trust dialog. This is what
+		// `aw worker --claude-permission-mode acceptEdits` builds (V9-11a, finding F1).
 		Executable: settings.executable, PermissionMode: "acceptEdits",
 		// The CLI flags aw has no setting for: the effort level and a ceiling for
 		// ONE attempt, so a misbehaving model cannot spend without limit.
@@ -442,9 +442,11 @@ func TestV9LiveClaude_MakerCheckFailReworkCheckerApprovesWithoutAWrapper(t *test
 			summary.Attempts = append(summary.Attempts, report)
 		}
 	}
+	reviewerSawMakersFile := true
 	if reviewRuns := history.byKey("review"); len(reviewRuns) == 1 && !reviewerReadMakersFile(t, f, history.onlyAttempt(t, reviewRuns[0])) {
+		reviewerSawMakersFile = false
 		summary.Findings = append(summary.Findings,
-			"F2: the reviewer never read the maker's "+liveNotesFile+". The CLI was started in an empty scratch directory (the checker's working directory) and neither its prompt nor its command line names where the repository is, so it wrote a "+liveNotesFile+" of its own there and approved that.")
+			"F2: the reviewer never read the maker's "+liveNotesFile+". The CLI starts in an empty scratch directory (the checker's working directory); the adapter names the repository mounts to it (--add-dir and --append-system-prompt, V9-11a) but it did not open the maker's file, so its approval is not a review of the maker's work.")
 	}
 	for _, finding := range summary.Findings {
 		t.Logf("FINDING %s", finding)
@@ -452,6 +454,13 @@ func TestV9LiveClaude_MakerCheckFailReworkCheckerApprovesWithoutAWrapper(t *test
 	bundle.writeSummary(t, summary, notes)
 
 	// ---- what the V9 changes must have done ----
+
+	// V9-11a, finding F2: a reviewer that approves must have looked at the file
+	// the maker left. The bundle is already written, so a failure here still
+	// leaves the evidence.
+	if !reviewerSawMakersFile {
+		t.Errorf("the reviewer approved without reading the maker's %s: the checker's CLI was not shown the repository (finding F2); see summary.json", liveNotesFile)
+	}
 
 	if finalState != runtimedomain.WorkflowRunVerifying {
 		t.Fatalf("run %s ended %s, want VERIFYING (the workflow reached its end node); see the evidence bundle", startedRun.RunID, finalState)
