@@ -37,6 +37,8 @@ type TimelineResult struct {
 	Entries        []runtime.TimelineEntryView `json:"entries"`
 	UpperWatermark int64                       `json:"upperWatermark"`
 	NextCursor     string                      `json:"nextCursor,omitempty"`
+	// Usage is the whole run's reported provider usage (V9-13a, finding F4).
+	Usage *runtime.UsageView `json:"usage,omitempty"`
 }
 
 // Timeline implements `aw run timeline <runId>`: runtime.GetRunTimeline's
@@ -112,7 +114,7 @@ func Timeline(ctx context.Context, deps Dependencies, args []string, stdout, std
 	}
 	page := candidates[:pageCount]
 
-	result := TimelineResult{RunID: timeline.RunID, Entries: page, UpperWatermark: upperWatermark}
+	result := TimelineResult{RunID: timeline.RunID, Entries: page, UpperWatermark: upperWatermark, Usage: timeline.Usage}
 	if len(candidates) > pageCount {
 		last := page[len(page)-1]
 		result.NextCursor = encodeCursor(localCursor{

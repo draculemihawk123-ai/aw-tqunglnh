@@ -155,3 +155,39 @@ func TestAgentEventsRepository_AppendBatch_RoundTripsArtifactRefs(t *testing.T) 
 		t.Fatalf("loaded[1].ArtifactRefs = %#v, want empty", got)
 	}
 }
+
+// V9-13a: the run timeline reads only an attempt's USAGE_REPORTED events.
+func TestAgentEventsRepository_ListByAttemptAndKind_ReturnsOnlyThatKind(t *testing.T) {
+	ctx := context.Background()
+	store := openReceiptsStore(t, "agentkit-agent-events-kind.db")
+	const attemptID = "attempt-1"
+	if err := seedAgentEventsFixtureAttempt(ctx, store, attemptID); err != nil {
+		t.Fatalf("seed fixture attempt: %v", err)
+	}
+	now := time.Now().UTC()
+	records := []ports.AgentEventRecord{
+		{ID: "evt-1", AttemptID: attemptID, Sequence: 1, Kind: "ASSISTANT_MESSAGE", SchemaVersion: 1, PayloadJSON: `{"message":"hi"}`, CreatedAt: now},
+		{ID: "evt-2", AttemptID: attemptID, Sequence: 2, Kind: "USAGE_REPORTED", SchemaVersion: 1, PayloadJSON: `{"usage":{"CostUSD":0.1}}`, CreatedAt: now},
+		{ID: "evt-3", AttemptID: attemptID, Sequence: 3, Kind: "USAGE_REPORTED", SchemaVersion: 1, PayloadJSON: `{"usage":{"CostUSD":0.2}}`, CreatedAt: now},
+	}
+	if err := store.RunSerializedWrite(ctx, func(tx *sql.Tx) error { return appendAgentEvents(ctx, tx, records) }); err != nil {
+		t.Fatalf("AppendBatch: %v", err)
+	}
+	var usage, none []ports.AgentEventRecord
+	if err := store.RunReadOnly(ctx, func(tx *sql.Tx) error {
+		var err error
+		if usage, err = (agentEventsRepository{tx: tx}).ListByAttemptAndKind(ctx, attemptID, "USAGE_REPORTED"); err != nil {
+			return err
+		}
+		none, err = (agentEventsRepository{tx: tx}).ListByAttemptAndKind(ctx, attemptID, "DIAGNOSTIC")
+		return err
+	}); err != nil {
+		t.Fatalf("ListByAttemptAndKind: %v", err)
+	}
+	if len(usage) != 2 || usage[0].Sequence != 2 || usage[1].Sequence != 3 {
+		t.Fatalf("usage events = %+v, want sequences 2 and 3 in order", usage)
+	}
+	if len(none) != 0 {
+		t.Fatalf("a kind with no events returned %+v", none)
+	}
+}

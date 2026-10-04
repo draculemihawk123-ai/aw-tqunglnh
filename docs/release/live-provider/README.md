@@ -69,19 +69,19 @@ The fake (`cmd/fake-claude`) is deterministic and never reads its prompt, so eve
 | File writes in the worktree | always | only when the worker passes a permission mode such as `acceptEdits` (`--claude-permission-mode`, F1) |
 | Environment | exactly the declared names | exactly the declared names |
 | One attempt | milliseconds | 7–35 s |
-| Cost | none | about 0.05–0.25 USD per attempt, not recorded by `aw` (F4) |
+| Cost | none | about 0.05–0.25 USD per attempt; recorded as `USAGE_REPORTED` and, since V9-13a, shown in the run timeline (F4) |
 
 ## Findings
 
 Each is a gap the fake CLI cannot show. None is hidden by the scenario's assertions. **F1 and F2 are fixed by V9-11a**
-(status column); F3–F5 were never blockers of the V9 verdict, and F3 and F5 are now fixed too (F4 has its own PR).
+(status column); F3–F5 were never blockers of the V9 verdict, and all five findings are now fixed (F3 by V9-13b, F4 by V9-13a, F5 by documentation).
 
 | # | Finding | Owner | Suggested fix / status |
 |---|---|---|---|
 | **F1** | A headless Claude CLI **denies every file write** in a worktree it does not trust, and ignores the project's `.claude/settings.json` allow rules there (`Ignoring permissions.allow entries … this workspace has not been trusted`). `aw` creates a new worktree per WorkItem, so the trust dialog can never be answered. The adapter has a `PermissionMode` setting; `aw worker` has no flag for it, so a real Claude still needs a wrapper script for its permission mode (V9-05 removed the wrapper only for the environment). The scenario passes `acceptEdits` through the adapter's config. | provider adapter configuration / `aw worker` (V5-06, V9-05 follow-up) | **FIXED (V9-11a):** `aw worker --claude-permission-mode`, documented in [providers and isolation](../../operator/05-providers-and-isolation.md); `run-3-fixed` |
 | **F2** | **The reviewer does not see the repository.** A CHECKER's working directory is an empty scratch directory (its mounts are read-only), and neither its prompt nor its command line says where the repository is. The real model wrote a `notes.txt` of its own into the scratch directory, read it back and answered `approved`: a false approval that no assertion on the outcome can catch. With the fake CLI V9-01 looks fine only because the fake writes through the mount. | V9-01 / V5-12 (how a checker is given its input) | **FIXED (V9-11a):** the Claude adapter grants the mounts with `--add-dir` and names them with their access in `--append-system-prompt` (not in the instruction artifact: paths are machine-specific); the executor's existing "no change" check keeps it read-only; `run-3-fixed`'s reviewer read the file and the scenario now asserts it |
 | **F3** | The model did **not act on the check's feedback in the first rework build**: in all three runs that got that far it read `notes.txt`, saw `Paris` and declared the task done (twice it also argued the check contradicted the task); two of the runs needed a second rework before it wrote the demanded line. The `checkFailures` section was in the prompt each time with the right text. | V9-02 prompt wording (`checkFailureFix`) | **FIXED (V9-13b) for v2 artifacts:** the FIX line now says the check is authoritative, to make the change `why` describes and not to argue; two live runs after it needed **one** rework round (2 builds) where the four before needed 2–3 (`run-4-f3-wording`, `run-5-f3-wording`). Two runs are direction, not statistics, and one model: if the effect fades, the next step is repeating the failing check in `closingChecklist` (a schema change, not done). A v1 artifact keeps the old wording byte for byte (ADR-032). |
-| **F4** | `aw worker` cannot pass the CLI an effort level, a spend ceiling or any extra argument; the scenario used the adapter's `StartArgs`. The canonical events drop the CLI's reported cost, so spend per attempt is not recorded. | provider adapter configuration; V5-08A events | open: adapter settings on `aw worker`; keep `total_cost_usd` in the final event |
+| **F4** | `aw worker` cannot pass the CLI an effort level or a spend ceiling; the scenario used the adapter's `StartArgs`. (This row first also said the canonical events drop the CLI's reported cost. That was wrong: the adapter has always kept it as the attempt's `USAGE_REPORTED` event, as `run-3-fixed/transcripts` shows. What was missing was any place to *see* it.) | provider adapter configuration; run timeline read model | **FIXED (V9-13a):** `aw worker --claude-effort` and `--claude-max-budget-usd` (start and resume); the run timeline (HTTP, `aw run timeline`, UI Graph & Timeline) shows each attempt's reported usage and the run's total |
 | **F5** | A `COMMAND` runs with exactly the environment its Command definition declares — none by default — so a check script cannot call `findstr`, `grep`, `npm`… unless the definition declares `PATH`. The failure is reported accurately (the model saw `'findstr' is not recognized`), but it is easy to hit. | operator documentation | **FIXED (V9-11a):** stated in [providers and isolation](../../operator/05-providers-and-isolation.md) |
 
 Codex was **not** run. Its compatibility remains `UNVERIFIED`.
@@ -89,6 +89,6 @@ Codex was **not** run. Its compatibility remains `UNVERIFIED`.
 ## Cost
 
 Six live runs (two failed on the harness' own mistakes — F1's setup and a check script —, three on the workload, one
-after V9-11a), 4–9 Claude attempts each. `aw` did not record the spend (F4); from the CLI's own reports for
-single calls (about 0.2 USD for a first call that has to build the prompt cache, 0.05 or less for later calls in the
+after V9-11a), 4–9 Claude attempts each. `aw` recorded each attempt's spend as an event but showed it nowhere (F4, fixed
+by V9-13a), so this total is an estimate; from the CLI's own reports for single calls (about 0.2 USD for a first call that has to build the prompt cache, 0.05 or less for later calls in the
 same few minutes) the total is in the order of 2 USD. Each attempt had a 0.75 USD ceiling (`--max-budget-usd`).

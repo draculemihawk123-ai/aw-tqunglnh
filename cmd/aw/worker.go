@@ -82,6 +82,8 @@ type workerOptions struct {
 	// (V9-11, finding F1); empty leaves the CLI's default, under which a headless
 	// Claude refuses every file write in an aw worktree.
 	claudePermissionMode          string
+	claudeEffort                  string
+	claudeMaxBudgetUSD            float64
 	workerID                      string
 	concurrency                   int
 	leaseTTL, leaseHeartbeat      time.Duration
@@ -124,6 +126,8 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	claudeExecutable := flags.String("claude-executable", "", "path to the Claude CLI executable to register as an agent provider (omitted = not registered; AGENT nodes pinned to it cannot run)")
 	codexExecutable := flags.String("codex-executable", "", "path to the Codex CLI executable to register as an agent provider (omitted = not registered; AGENT nodes pinned to it cannot run)")
 	claudePermissionMode := flags.String("claude-permission-mode", "", "the Claude CLI's --permission-mode for every task: acceptEdits, auto, bypassPermissions, dontAsk, manual or plan (omitted = the CLI's default, under which a headless Claude refuses every file write in an aw worktree because it is never a trusted workspace; an agent that must change files needs acceptEdits)")
+	claudeEffort := flags.String("claude-effort", "", "the Claude CLI's --effort for every task: low, medium, high, xhigh or max (omitted = the CLI's default)")
+	claudeMaxBudgetUSD := flags.Float64("claude-max-budget-usd", 0, "the most ONE Claude attempt may spend, in US dollars, enforced by the CLI itself (--max-budget-usd); 0 = no ceiling. What an attempt actually spent is its USAGE_REPORTED event")
 	workerID := flags.String("worker-id", fmt.Sprintf("aw-worker-%d", os.Getpid()), "lease-owner identity for this process; must be unique among running workers")
 	concurrency := flags.Int("worker-concurrency", defaults.WorkerConcurrency, "maximum jobs run at once")
 	leaseTTL := flags.Duration("lease-ttl", defaults.LeaseTTL, "how long a claimed job's lease stays valid without a heartbeat")
@@ -157,6 +161,8 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 		dbPath: *dbPath, artifactRoot: *artifactRoot, workspaceRoot: *workspaceRoot,
 		claudeExecutable: strings.TrimSpace(*claudeExecutable), codexExecutable: strings.TrimSpace(*codexExecutable),
 		claudePermissionMode: strings.TrimSpace(*claudePermissionMode),
+		claudeEffort:         strings.TrimSpace(*claudeEffort),
+		claudeMaxBudgetUSD:   *claudeMaxBudgetUSD,
 		workerID:             *workerID, concurrency: *concurrency,
 		leaseTTL: *leaseTTL, leaseHeartbeat: *leaseHeartbeat,
 		pollInterval: *pollInterval, shutdownGrace: *shutdownGrace,
@@ -302,7 +308,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	if err != nil {
 		return nil, fmt.Errorf("construct repository prober: %w", err)
 	}
-	agents, err := newWorkerAgentRegistry(ctx, opts.claudeExecutable, opts.codexExecutable, cfg.EnvAllowlist, withClaudePermissionMode(opts.claudePermissionMode))
+	agents, err := newWorkerAgentRegistry(ctx, opts.claudeExecutable, opts.codexExecutable, cfg.EnvAllowlist, withClaudePermissionMode(opts.claudePermissionMode), withClaudeEffort(opts.claudeEffort), withClaudeMaxBudgetUSD(opts.claudeMaxBudgetUSD))
 	if err != nil {
 		return nil, err
 	}
