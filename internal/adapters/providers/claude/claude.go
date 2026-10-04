@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -27,11 +28,20 @@ const defaultVersionProbeTimeout = 5 * time.Second
 var ErrProtocol = errors.New("invalid Claude stream-json protocol")
 
 type Config struct {
-	Executable           string
-	PrefixArgs           []string
-	StartArgs            []string
-	ResumeArgs           []string
-	PermissionMode       string
+	Executable     string
+	PrefixArgs     []string
+	StartArgs      []string
+	ResumeArgs     []string
+	PermissionMode string
+	// Effort is the CLI's --effort for every attempt, start and resume alike
+	// (V9-13a, finding F4): low, medium, high, xhigh or max. Empty leaves the
+	// CLI's default.
+	Effort string
+	// MaxBudgetUSD is the CLI's --max-budget-usd, a ceiling on what ONE attempt
+	// may spend, start and resume alike. Zero means no ceiling. It is a
+	// ceiling the CLI enforces on itself, not an accounting: what an attempt
+	// actually spent is the USAGE_REPORTED event.
+	MaxBudgetUSD         float64
 	InheritedEnvironment []string
 	MaxJSONLLineBytes    int
 	// VersionArgs is the argv Capabilities uses to probe the configured
@@ -72,6 +82,12 @@ func New(process ports.ProcessSupervisor, config Config) (*Adapter, error) {
 		config.Executable = "claude"
 	}
 	if err := validatePermissionMode(config.PermissionMode); err != nil {
+		return nil, err
+	}
+	if err := validateEffort(config.Effort); err != nil {
+		return nil, err
+	}
+	if err := validateMaxBudgetUSD(config.MaxBudgetUSD); err != nil {
 		return nil, err
 	}
 	config.PrefixArgs = append([]string(nil), config.PrefixArgs...)
@@ -181,6 +197,12 @@ func (a *Adapter) execute(
 	}
 	if a.config.PermissionMode != "" {
 		arguments = append(arguments, "--permission-mode", a.config.PermissionMode)
+	}
+	if a.config.Effort != "" {
+		arguments = append(arguments, "--effort", a.config.Effort)
+	}
+	if a.config.MaxBudgetUSD > 0 {
+		arguments = append(arguments, "--max-budget-usd", strconv.FormatFloat(a.config.MaxBudgetUSD, 'f', -1, 64))
 	}
 	arguments = append(arguments, mountArguments(request)...)
 	if resume == nil {
@@ -306,6 +328,25 @@ func validatePermissionMode(value string) error {
 	default:
 		return fmt.Errorf("unsupported Claude permission mode %q", value)
 	}
+}
+
+func validateEffort(value string) error {
+	switch value {
+	case "", "low", "medium", "high", "xhigh", "max":
+		return nil
+	default:
+		return fmt.Errorf("unsupported Claude effort %q (want low, medium, high, xhigh or max)", value)
+	}
+}
+
+// validateMaxBudgetUSD refuses a ceiling that cannot be one: a negative or
+// non-finite number would otherwise reach the CLI as an argument it may read
+// differently from what the operator meant.
+func validateMaxBudgetUSD(value float64) error {
+	if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return fmt.Errorf("Claude max budget must be a finite number of US dollars >= 0, got %v", value)
+	}
+	return nil
 }
 
 func processID(attemptID ports.ExecutionAttemptID) ports.ProcessID {

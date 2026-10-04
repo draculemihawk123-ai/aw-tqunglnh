@@ -156,10 +156,11 @@ Bản ghi máy đọc được: [`release/v9-verdict.json`](release/v9-verdict.j
 - **Đạt:** G1–G10 mỗi gap có test tái hiện failure mode gốc; bốn lỗi vận hành (V9-09) đã sửa; ADR-030…033 đã chốt.
 - **Claude CLI thật:** đã chạy một workload (maker → check ✗ → rework → checker đọc file → approved) — `PARTIAL`.
   Lần chạy đầu tìm ra F1 (ghi bị từ chối: `aw worker --claude-permission-mode`) và F2 (reviewer không thấy repository);
-  cả hai đã sửa và kiểm lại. Còn mở, không chặn: F3, F4; Codex chưa chạy. Chi tiết:
+  cả hai đã sửa và kiểm lại. F4 (effort/ngân sách/hiển thị chi phí) đã xong sau verdict (V9-13a). Còn mở, không chặn:
+  F3; Codex chưa chạy. Chi tiết:
   [live-provider](release/live-provider/README.md).
-- **Không có task V9 tiếp theo.** Việc kế tiếp nếu muốn: F3 (lời nhắc khi check fail), F4 (effort/ngân sách/chi phí của
-  CLI trong `aw worker`), kiểm Codex.
+- **Không có task V9 tiếp theo.** Việc kế tiếp nếu muốn: F3 (lời nhắc khi check fail), kiểm Codex; effort/ngân sách theo
+  từng AgentProfile (hiện chỉ đặt chung qua `aw worker`).
 
 ## 5. Đọc theo thứ tự này
 

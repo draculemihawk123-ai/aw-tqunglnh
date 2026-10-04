@@ -39,6 +39,7 @@ func newAgentExecutor(providerKey, executablePath string, probeEnvironment []str
 	case ports.ProviderClaude:
 		return claude.New(process.NewSupervisor(), claude.Config{
 			Executable: executablePath, VersionInheritedEnvironment: probeEnvironment, PermissionMode: settings.claudePermissionMode,
+			Effort: settings.claudeEffort, MaxBudgetUSD: settings.claudeMaxBudgetUSD,
 		})
 	case ports.ProviderCodex:
 		return codex.New(process.NewSupervisor(), codex.Config{Executable: executablePath, VersionInheritedEnvironment: probeEnvironment})
@@ -51,6 +52,8 @@ func newAgentExecutor(providerKey, executablePath string, probeEnvironment []str
 // are not part of its identity.
 type agentProviderSettings struct {
 	claudePermissionMode string
+	claudeEffort         string
+	claudeMaxBudgetUSD   float64
 }
 
 // agentProviderOption adjusts how newAgentExecutor builds a provider executor.
@@ -66,6 +69,18 @@ type agentProviderOption func(*agentProviderSettings)
 // provider other than Claude.
 func withClaudePermissionMode(mode string) agentProviderOption {
 	return func(settings *agentProviderSettings) { settings.claudePermissionMode = strings.TrimSpace(mode) }
+}
+
+// withClaudeEffort (V9-13a, finding F4) sets the Claude CLI's --effort for every
+// task. An unknown value is refused when the executor is built, at startup.
+func withClaudeEffort(effort string) agentProviderOption {
+	return func(settings *agentProviderSettings) { settings.claudeEffort = strings.TrimSpace(effort) }
+}
+
+// withClaudeMaxBudgetUSD (V9-13a, finding F4) sets the Claude CLI's
+// --max-budget-usd: the most ONE attempt may spend. Zero is no ceiling.
+func withClaudeMaxBudgetUSD(dollars float64) agentProviderOption {
+	return func(settings *agentProviderSettings) { settings.claudeMaxBudgetUSD = dollars }
 }
 
 // probeProviderExecutable is `aw doctor`'s ProviderProbe (V9-05, gap G5): it

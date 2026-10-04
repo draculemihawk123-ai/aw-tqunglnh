@@ -24,7 +24,7 @@ import type { WorkItemContract } from '../api/work';
 import type { KanbanCard, WorkItemProjectedDetailResponse, WorkItemRun } from '../api/kanban';
 import { isWaivableBlockerType } from '../api/diagnostics';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
-import type { ApprovalRequestView, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView } from '../api/rundetail';
+import type { ApprovalRequestView, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView, UsageView } from '../api/rundetail';
 import { getSessionToken, withSessionToken } from '../api/session';
 import { decodeDiffPatch, fetchWorkspaceSource } from '../api/workspaceinspection';
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
@@ -35,6 +35,18 @@ import type { ArtifactSummary, EvidenceDetail } from '../api/evidence';
 import { fetchMessageContent, messageContentUrl, uploadAttachment } from '../api/message';
 import type { MessageRef } from '../api/message';
 import type { ScopeExpansionRequestDetail } from '../api/scopeExpansion';
+
+/**
+ * formatUsage renders what a provider CLI reported (V9-13a): tokens in/out and,
+ * when the CLI reported a cost, US dollars. These are the provider's figures,
+ * not an aw ledger, so a zero cost is shown as "no cost reported".
+ */
+function formatUsage(usage: UsageView): string {
+  const tokens = `${usage.inputTokens.toLocaleString()} in / ${usage.outputTokens.toLocaleString()} out`;
+  const cached = usage.cachedInputTokens > 0 ? ` (${usage.cachedInputTokens.toLocaleString()} cached)` : '';
+  const cost = usage.costUsd > 0 ? ` · $${usage.costUsd.toFixed(4)}` : ' · no cost reported';
+  return `${tokens}${cached}${cost}`;
+}
 
 function apiErrorMessage(err: unknown): { code: string; message: string } {
   if (err instanceof ApiError) return { code: err.code, message: err.message };
@@ -670,6 +682,8 @@ function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActio
   const possibleEdges = graphQuery.data!.pages[0].possibleEdges;
   const activations = graphQuery.data!.pages.flatMap(p => p.activations);
   const entries = timelineQuery.data?.pages.flatMap(p => p.entries) ?? [];
+  // Every page carries the whole run's total; the last page loaded is the freshest.
+  const runUsage = timelineQuery.data?.pages[timelineQuery.data.pages.length - 1]?.usage;
   const positions = computeLayout(nodes, possibleEdges);
 
   const latestActivationByNode = new Map<string, NodeActivationView>();
@@ -836,6 +850,7 @@ function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActio
       <div className="flex flex-col overflow-hidden" style={{ flex: '0 0 42%', minWidth: 0 }}>
         <div className="px-4 py-2 border-b border-[#CDD5DF] bg-[#F3F5F8] flex items-center justify-between">
           <span className="text-[12px] font-semibold text-[#475569]">Timeline{selectedNodeKey ? ` — ${selectedNodeKey}` : ''}</span>
+          {runUsage && <span className="text-[12px] text-[#475569]" title="Reported by the provider CLI, summed over every attempt of the run">Run usage: <span className="font-mono text-[#172033]">{formatUsage(runUsage)}</span></span>}
         </div>
         {timelineEntries.length === 0 && <p className="text-[12px] text-[#475569] p-3">No timeline entries yet.</p>}
         <div className="flex-1 overflow-y-auto p-3 space-y-1" role="list" aria-label="Run timeline">
@@ -861,6 +876,7 @@ function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActio
                     {ev.providerKey && <div>Provider: <span className="font-mono text-[#172033]">{ev.providerKey}</span></div>}
                     {ev.terminationReason && <div>Termination reason: <span className="font-mono text-[#991B1B]">{ev.terminationReason}</span></div>}
                     {ev.failureCode && <div>Failure code: <span className="font-mono text-[#991B1B]">{ev.failureCode}</span></div>}
+                    {ev.usage && <div>Usage: <span className="font-mono text-[#172033]">{formatUsage(ev.usage)}</span></div>}
                     {ev.lastCheckpointId && <div>Last checkpoint: <span className="font-mono text-[#172033]">{ev.lastCheckpointId}</span></div>}
                     {ev.startedAt && <div>Started: {new Date(ev.startedAt).toLocaleString()}</div>}
                     {ev.finishedAt && <div>Finished: {new Date(ev.finishedAt).toLocaleString()}</div>}

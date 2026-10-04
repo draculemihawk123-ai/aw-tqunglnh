@@ -41,3 +41,28 @@ func TestNewWorkerAgentRegistry_RefusesAnUnknownClaudePermissionModeAtStartup(t 
 		t.Fatalf("newWorkerAgentRegistry = %v, want a startup error naming the permission mode", err)
 	}
 }
+
+// V9-13a (finding F4): the effort level and the per-attempt spend ceiling reach
+// claude.Config the same way, and an unusable value is refused at startup.
+func TestNewAgentExecutor_ClaudeEffortAndSpendCeiling(t *testing.T) {
+	executable := os.Args[0]
+	if _, err := newAgentExecutor("claude", executable, nil, withClaudeEffort(" high "), withClaudeMaxBudgetUSD(0.5)); err != nil {
+		t.Fatalf("a valid effort and ceiling were refused: %v", err)
+	}
+	if _, err := newAgentExecutor("claude", executable, nil, withClaudeEffort("ludicrous")); err == nil || !strings.Contains(err.Error(), "effort") {
+		t.Fatalf("an unknown effort = %v, want an error naming the effort", err)
+	}
+	if _, err := newAgentExecutor("claude", executable, nil, withClaudeMaxBudgetUSD(-2)); err == nil || !strings.Contains(err.Error(), "budget") {
+		t.Fatalf("a negative ceiling = %v, want an error naming the budget", err)
+	}
+	if _, err := newAgentExecutor("codex", executable, nil, withClaudeEffort("ludicrous"), withClaudeMaxBudgetUSD(-2)); err != nil {
+		t.Errorf("the Claude settings broke the Codex executor: %v", err)
+	}
+}
+
+func TestNewWorkerAgentRegistry_RefusesAnUnusableClaudeEffortAtStartup(t *testing.T) {
+	_, err := newWorkerAgentRegistry(context.Background(), os.Args[0], "", nil, withClaudeEffort("ludicrous"))
+	if err == nil || !strings.Contains(err.Error(), "effort") {
+		t.Fatalf("newWorkerAgentRegistry = %v, want a startup error naming the effort", err)
+	}
+}

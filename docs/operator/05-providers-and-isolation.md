@@ -165,6 +165,15 @@ instruction artifact on purpose: the artifact and its hash are a function of the
 machine, not to the snapshot. "Read-only" remains the executor's own check that the mounts are unchanged
 afterwards (ADR-030); the sentence to the model is a statement of intent, not the enforcement.
 
-**Effort and spend.** `aw worker` has no setting for the CLI's effort level or spend ceiling, and the canonical
-events do not keep the CLI's reported cost, so spend per attempt is not recorded. Until that exists, watch the
-provider's own usage reporting.
+**Effort and spend — `--claude-effort`, `--claude-max-budget-usd`.** Start the worker with the effort level the CLI
+should use (`low`, `medium`, `high`, `xhigh` or `max`) and, as a safety net, the most ONE attempt may spend in US
+dollars; both are passed to the CLI as `--effort` / `--max-budget-usd` on every task, a resumed attempt included. The
+ceiling is enforced by the CLI itself: an attempt that reaches it ends, it does not wait for `aw`. Unknown efforts
+and negative or non-finite ceilings are refused when the worker starts. Like the permission mode, neither is part of
+any definition or snapshot.
+
+What an attempt actually used is shown, not just capped: the CLI's own token counts and, when it reports one, its cost
+are stored as the attempt's `USAGE_REPORTED` event, and `GET /runs/{id}/timeline` / `aw run timeline` /
+Graph & Timeline in the UI show them per attempt (`usage`) and summed for the run. They are the provider's figures,
+not an `aw` ledger: an attempt that never reached the provider has none, and a CLI that reports no cost reports zero
+(the UI says "no cost reported").

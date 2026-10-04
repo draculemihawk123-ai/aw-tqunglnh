@@ -48,6 +48,7 @@ import (
 	"path/filepath"
 	stdruntime "runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -300,6 +301,10 @@ func TestV9LiveClaude_MakerCheckFailReworkCheckerApprovesWithoutAWrapper(t *test
 	f := newV5AcceptFixture(t)
 
 	names := liveEnvironmentNames()
+	maxUSD, err := strconv.ParseFloat(settings.maxUSD, 64)
+	if err != nil {
+		t.Fatalf("AW_LIVE_CLAUDE_MAX_USD %q: %v", settings.maxUSD, err)
+	}
 	adapter, err := claude.New(f.supervisor, claude.Config{
 		// acceptEdits, not the default: a headless Claude CLI refuses every file
 		// write in a worktree it has not been told to trust, and a worktree aw
@@ -308,9 +313,11 @@ func TestV9LiveClaude_MakerCheckFailReworkCheckerApprovesWithoutAWrapper(t *test
 		// not been trusted") and no one can answer the trust dialog. This is what
 		// `aw worker --claude-permission-mode acceptEdits` builds (V9-11a, finding F1).
 		Executable: settings.executable, PermissionMode: "acceptEdits",
-		// The CLI flags aw has no setting for: the effort level and a ceiling for
-		// ONE attempt, so a misbehaving model cannot spend without limit.
-		StartArgs:                   []string{"--effort", settings.effort, "--max-budget-usd", settings.maxUSD},
+		// The effort level and a ceiling for ONE attempt, so a misbehaving model
+		// cannot spend without limit: what `aw worker --claude-effort` and
+		// `--claude-max-budget-usd` build (V9-13a, finding F4).
+		Effort:                      settings.effort,
+		MaxBudgetUSD:                maxUSD,
 		VersionInheritedEnvironment: names,
 	})
 	if err != nil {

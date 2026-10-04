@@ -639,6 +639,7 @@ export interface GetRunTimelineResponse {
   entries: unknown[];
   freshness: unknown;
   nextCursor?: string;
+  usage?: unknown | null;
 }
 
 // GET /runs/{id}/timeline (scope: PROJECT)
