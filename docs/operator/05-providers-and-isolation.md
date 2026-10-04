@@ -177,3 +177,22 @@ are stored as the attempt's `USAGE_REPORTED` event, and `GET /runs/{id}/timeline
 Graph & Timeline in the UI show them per attempt (`usage`) and summed for the run. They are the provider's figures,
 not an `aw` ledger: an attempt that never reached the provider has none, and a CLI that reports no cost reports zero
 (the UI says "no cost reported").
+
+**Long attempts (V9-14a).** An attempt that runs for many minutes — a deep analysis on a large model at high effort —
+meets three limits that a short one never does:
+
+- **The lease.** A running job renews its lease every `--lease-ttl / 3` (see `--lease-heartbeat`). A renewal that fails
+  for a passing reason (a busy database) is retried on the next tick for as long as the lease is still valid; only a
+  lease that is really gone (`ErrJobLeaseLost`) or has expired ends the heartbeat. Before this a single failed renewal
+  ended it for good, the lease lapsed one TTL later, and the recovery reaper reclaimed — and so re-ran, and re-paid for —
+  a job that was still running. If your attempts are long and your disk is slow, a larger `--lease-ttl` (default 30 s)
+  gives the retries more room.
+- **The attempt timeout** comes from the node's ATTEMPT policy (`timeoutSeconds`, required, no upper limit); the
+  AgentProfile has none. Set it to the longest run you accept (for example 3600).
+- **The output cap.** Each provider CLI attempt may write 256 MiB of stdout+stderr (the Claude and Codex adapters'
+  `Config.OutputLimitBytes`; the supervisor's own default of 10 MiB used to apply and cut a long verbose stream short,
+  taking the final result event with it). An attempt that still exceeds the cap now fails as `output_truncated`
+  (`ErrOutputTruncated`) rather than as a protocol error. The cap is not yet a flag of `aw worker`.
+
+What an attempt costs when it is retried is `maxAttempts` times its own cost: `--claude-max-budget-usd` caps ONE attempt,
+and `aw` never resumes a provider session, so a retry starts from the beginning.

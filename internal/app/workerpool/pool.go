@@ -258,10 +258,24 @@ func (p *Pool) heartbeatLoop(ctx context.Context, box *leaseBox) {
 			return
 		case <-ticker.C:
 			updated, err := p.queue.HeartbeatJob(context.WithoutCancel(ctx), box.get(), p.config.LeaseTTL)
-			if err != nil {
-				return // lease lost; nothing more this loop can do
+			if err == nil {
+				box.set(updated)
+				continue
 			}
-			box.set(updated)
+			if errors.Is(err, ports.ErrJobLeaseLost) {
+				return // the lease is no longer ours; nothing more this loop can do
+			}
+			// V9-14a: any other error (a busy database, a stalled commit) failed
+			// ONE renewal and took nothing away: the lease we hold stays valid until
+			// its own LeaseUntil. Giving up here let a long-running handler's lease
+			// lapse one TTL later and the reaper reclaim a job that was still
+			// running — a long AI attempt would run, and be paid for, twice. Try
+			// again on the next tick, and stop only when the lease has expired
+			// anyway (no renewal can revive it; HeartbeatJob would say
+			// ErrJobLeaseLost).
+			if !time.Now().Before(box.get().LeaseUntil) {
+				return
+			}
 		}
 	}
 }
