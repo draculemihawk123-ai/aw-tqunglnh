@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1",
+  "nodes": [
+    {"key": "start", "type": "START", "outcomes": ["next"]},
+    {"key": "implement", "type": "AGENT", "outcomes": ["done", "escalated"],
+     "cyclePolicy": {"maxIterations": 3, "escalationOutcome": "escalated"},
+     "agent": {"profileRef": {"$ref": "agent:agent-dev"},
+               "policyRefs": [{"$ref": "policy:policy-attempt"}, {"$ref": "policy:policy-permission"}],
+               "adapterBuildId": {"$ref": "adapter"}, "role": "MAKER"}},
+    {"key": "verify", "type": "COMMAND", "outcomes": ["passed", "failed"],
+     "command": {"commandRef": {"$ref": "command:cmd-frontend-test"},
+                 "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}],
+                 "failureOutcome": "failed"}},
+    {"key": "reject", "type": "COMMAND", "outcomes": ["done"],
+     "command": {"commandRef": {"$ref": "command:cmd-reject"},
+                 "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}]}},
+    {"key": "end", "type": "END"}
+  ],
+  "edges": [
+    {"key": "start-implement", "from": "start", "outcome": "next", "to": "implement"},
+    {"key": "implement-verify", "from": "implement", "outcome": "done", "to": "verify"},
+    {"key": "verify-end", "from": "verify", "outcome": "passed", "to": "end"},
+    {"key": "verify-implement", "from": "verify", "outcome": "failed", "to": "implement"},
+    {"key": "implement-reject", "from": "implement", "outcome": "escalated", "to": "reject"},
+    {"key": "reject-end", "from": "reject", "outcome": "done", "to": "end"}
+  ],
+  "completionPolicyRef": {"$ref": "policy:policy-completion"}
+}

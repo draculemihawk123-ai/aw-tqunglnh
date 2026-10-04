@@ -1,0 +1,18 @@
+{
+  "title": "F-00: Định nghĩa tính năng hạn chót cho todo",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {"repositoryId": "todolist", "access": "WRITE", "reason": "Giai đoạn định nghĩa chỉ viết tài liệu", "pathScopes": ["docs"]}
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Thư mục tài liệu: docs/features/due-date. Ý tưởng thô (INTAKE): người dùng muốn đặt hạn chót cho từng việc, thấy ngay việc nào đã quá hạn và lọc được các việc quá hạn. Có thể cần nhắc việc sắp tới hạn.",
+    "verificationSpec": "COMMAND check-docs xác nhận 01-brainstorm.md, 02-spec.md, 03-design.md và tasks.json hợp lệ; người vận hành duyệt SPEC ở GATE A và DESIGN ở GATE B.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {"description": "02-spec.md có quy tắc nghiệp vụ và acceptance criteria Given/When/Then, được duyệt ở GATE A", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "03-design.md và tasks.json (mỗi task giao được độc lập) được duyệt ở GATE B", "verificationRef": "COMMAND_EXECUTION"}
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

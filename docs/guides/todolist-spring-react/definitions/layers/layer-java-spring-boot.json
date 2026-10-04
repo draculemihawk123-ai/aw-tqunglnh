@@ -1,0 +1,26 @@
+{
+  "resources": [
+    {
+      "key": "spring.project-structure",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {"componentTags": ["backend"]},
+      "convention": "Backend nằm trọn trong thư mục backend/ của repository. Java 21, Spring Boot 3.5.x (parent org.springframework.boot:spring-boot-starter-parent), build bằng Maven (lệnh `mvn`; dùng ./mvnw nếu repository đã có Maven Wrapper). groupId com.example, artifactId todolist-backend, package gốc com.example.todo. Chia package theo tầng: controller (@RestController, chỉ map HTTP <-> DTO), service (@Service, nghiệp vụ, @Transactional), repository (Spring Data JPA), domain (@Entity), dto (Java record cho request/response). Controller không bao giờ gọi repository trực tiếp. Không sửa file nào nằm ngoài backend/.",
+      "provenance": {"owner": "team-backend", "source": "docs/guides/todolist-spring-react", "revision": "v2", "lastVerified": "2026-10-04T00:00:00Z"}
+    },
+    {
+      "key": "spring.rest-api",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "convention": "REST API của Todo nằm dưới /api/todos và trả JSON: GET /api/todos (lọc tùy chọn ?status=all|active|completed), GET /api/todos/{id}, POST /api/todos (201 + header Location), PUT /api/todos/{id}, PATCH /api/todos/{id}/toggle, DELETE /api/todos/{id} (204). Todo có các trường: id (Long), title (String, bắt buộc, tối đa 200 ký tự), completed (boolean), createdAt, updatedAt (Instant, ISO-8601). Validate bằng jakarta.validation (@Valid, @NotBlank, @Size). Lỗi trả về ProblemDetail (RFC 7807) qua một @RestControllerAdvice: 400 khi input sai, 404 khi không tìm thấy. Server chạy cổng 8080.",
+      "provenance": {"owner": "team-backend", "source": "docs/guides/todolist-spring-react", "revision": "v2", "lastVerified": "2026-10-04T00:00:00Z"}
+    },
+    {
+      "key": "spring.testing",
+      "priority": "GUIDANCE",
+      "selector": {"componentTags": ["backend"]},
+      "convention": "Test bằng JUnit 5 + spring-boot-starter-test. Controller test dùng @SpringBootTest + @AutoConfigureMockMvc (hoặc @WebMvcTest khi chỉ test tầng web). Mỗi endpoint có ít nhất một test cho đường thành công và một test cho lỗi (400/404). Test không được phụ thuộc file database thật của môi trường dev — dùng một file SQLite tạm: @DynamicPropertySource trỏ spring.datasource.url tới một file trong thư mục tạm của JUnit (`@TempDir static Path tempDir`), như TodoApplicationTests đang làm. Không tự xóa file database trong test và không đổi src/test/resources/junit-platform.properties: file đó tắt việc JUnit dọn thư mục tạm, vì Windows không cho xóa file SQLite mà Spring context còn đang mở. `mvn -B test` trong backend/ phải pass mà không cần mạng ngoài việc tải dependency.",
+      "provenance": {"owner": "team-backend", "source": "docs/guides/todolist-spring-react", "revision": "v2", "lastVerified": "2026-10-04T00:00:00Z"}
+    }
+  ]
+}

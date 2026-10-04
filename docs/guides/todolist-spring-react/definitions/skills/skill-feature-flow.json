@@ -1,0 +1,84 @@
+{
+  "resources": [
+    {
+      "key": "flow.working-rules",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Bạn là một node AGENT trong workflow của Agent Kit (aw). taskContract mô tả TOÀN BỘ task hoặc tính năng; workflow chia việc đó thành nhiều giai đoạn, mỗi giai đoạn do một agent làm. Bạn chỉ làm đúng MỘT giai đoạn: giai đoạn nêu trong resource flow.<giai đoạn> ở hardConstraints. Chỉ tạo hoặc sửa những file mà giai đoạn đó cho phép; không làm thay giai đoạn khác, kể cả khi bạn thấy mình làm được ngay. Thư mục tài liệu của tính năng được ghi trong taskContract.behavior (dạng `docs/features/<slug>`). Các outcome bạn được chọn nằm trong taskContract.allowedOutcomes; khi có hơn một outcome, cách báo outcome nằm trong taskContract.outcomeProtocol — làm đúng theo đó, và đừng nhắc lại chuỗi marker ở bất kỳ chỗ nào khác, kể cả khi trích dẫn. Message mới nhất trong messages có hiệu lực cao nhất. Không git commit, git push hay đổi branch.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    },
+    {
+      "key": "flow.needs-info",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "NEEDS_INFO: nếu yêu cầu thiếu hoặc mâu thuẫn tới mức không thể làm tiếp mà không phải đoán (ví dụ hai tài liệu nói ngược nhau, thiếu quy tắc nghiệp vụ quyết định kết quả, AC không kiểm chứng được), KHÔNG đoán. Ghi các câu hỏi cụ thể, đánh số, kèm phương án mặc định bạn đề xuất cho từng câu, vào file <thư mục tài liệu>/needs-info.md (ghi đè), rồi kết thúc với outcome needs_info. Khi được chạy lại, câu trả lời nằm trong messages; đọc chúng trước, cập nhật needs-info.md thành 'Đã giải quyết' kèm câu trả lời, rồi làm tiếp.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    },
+    {
+      "key": "flow.brainstorm",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn của bạn: BRAINSTORM. File duy nhất được tạo hoặc sửa: <thư mục tài liệu>/01-brainstorm.md. Không sửa code, không viết spec hay thiết kế. Đầu vào: ý tưởng thô trong taskContract.behavior và messages. Đọc code và tài liệu hiện có để hiểu hệ thống. Nội dung 01-brainstorm.md: (1) vấn đề và người dùng bị ảnh hưởng, nói lại bằng lời của bạn; (2) 2–4 phương án, mỗi phương án có mô tả, ưu điểm, nhược điểm, rủi ro, ước lượng công sức (S/M/L) và phần bị ảnh hưởng (backend/frontend/DB); (3) phương án đề xuất và lý do; (4) câu hỏi mở.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    },
+    {
+      "key": "flow.spec",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn của bạn: SPEC. File được tạo hoặc sửa: <thư mục tài liệu>/02-spec.md (và needs-info.md khi phải hỏi). Không sửa code, không viết thiết kế. Đọc 01-brainstorm.md, messages (phản hồi 'sửa' của GATE A nếu có) và needs-info.md nếu có. 02-spec.md là tài liệu nghiệp vụ, không nói về cách cài đặt: mục tiêu; trong phạm vi / ngoài phạm vi; user story; quy tắc nghiệp vụ đánh số (BR-1, BR-2…); acceptance criteria dạng Given/When/Then đánh số (AC-1…), mỗi AC kiểm chứng được bằng test; dữ liệu và ràng buộc; các quyết định đã chốt từ câu hỏi mở, ghi rõ quyết định nào do bạn tự chọn để người duyệt xác nhận. Nếu đang sửa theo phản hồi, thêm mục 'Lịch sử sửa' ghi phản hồi nào đã được xử lý. Outcome: `done` khi spec đã đủ để duyệt; `needs_info` khi thiếu thông tin (xem flow.needs-info).",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    },
+    {
+      "key": "flow.design",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn của bạn: DESIGN. File được tạo hoặc sửa: <thư mục tài liệu>/03-design.md và <thư mục tài liệu>/tasks.json. Không sửa code: code do các task viết sau khi thiết kế được duyệt. Nếu prompt có checkFailures thì bước kiểm tra tài liệu ở vòng trước không đạt: sửa đúng điều `why` mô tả trước tiên. Đọc 02-spec.md (đã được GATE A duyệt), messages (phản hồi 'sửa' của GATE B nếu có) và code hiện có. 03-design.md: thay đổi theo tầng (migration DB, entity, service, API contract kèm ví dụ request/response, component UI, API client); quyết định và đánh đổi (ứng viên ADR); kế hoạch test; rủi ro và cách rollback. tasks.json: một mảng JSON, mỗi phần tử {\"id\": \"T-01\", \"title\": \"...\", \"pathScopes\": [\"backend\"] hoặc [\"frontend\"] hoặc cả hai, \"riskLevel\": \"LOW\"|\"MEDIUM\"|\"HIGH\", \"lane\": \"fast\"|\"full\", \"behavior\": \"...\", \"acceptanceCriteria\": [\"AC-1: ...\"]}, theo đúng thứ tự thực hiện; mỗi task giao được độc lập, build và test xanh sau khi xong, AC trích từ 02-spec.md. Chia ít task nhất có thể: mỗi task là một lần review và một commit.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    },
+    {
+      "key": "flow.frame",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn của bạn: FRAME. File được tạo hoặc sửa: <thư mục tài liệu>/tasks/<task id>/frame.md (và needs-info.md khi phải hỏi). Không tạo hay sửa file nào trong backend/ hoặc frontend/: code do giai đoạn BUILD viết. Task id nằm trong taskContract.title. Đọc 02-spec.md, 03-design.md, mục của task trong tasks.json và messages. Nội dung frame.md: acceptance criteria của riêng task (Given/When/Then, kiểm chứng được bằng test), những gì ngoài phạm vi task, phụ thuộc vào task trước, lane và lý do chọn lane. Outcome: `fast` khi ĐỒNG THỜI sửa tối đa khoảng 3 file code, không đổi schema DB, không đổi API contract công khai, không thêm dependency và riskLevel là LOW; `full` cho mọi trường hợp khác; `needs_info` khi thiếu thông tin (xem flow.needs-info).",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    },
+    {
+      "key": "flow.routing-table",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "instruction": "Bảng định tuyến context — chỉ đọc những gì khu vực thay đổi cần, theo bảng: | Khu vực | Đọc trước | — | Schema DB / migration | toàn bộ backend/src/main/resources/db/migration, entity trong backend/src/main/java/com/example/todo/domain | — | Entity / repository | domain/, repository/, migration mới nhất | — | Service / quy tắc nghiệp vụ | service/, các BR trong 02-spec.md | — | REST API | controller/, dto/, mục API của 03-design.md, test controller hiện có | — | Frontend API client | frontend/src/api/, frontend/src/types.ts | — | Frontend UI | frontend/src/components/, frontend/src/hooks/, test cạnh component | — | Quyết định kiến trúc | docs/adr/ | — Không đọc toàn bộ repository; nếu bảng không đủ, ghi rõ trong plan.md đã đọc thêm gì và vì sao.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    },
+    {
+      "key": "flow.plan",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn của bạn: PLAN. Bạn KHÔNG hiện thực task. File duy nhất được tạo hoặc sửa: <thư mục tài liệu>/tasks/<task id>/plan.md. Không tạo hay sửa bất kỳ file nào trong backend/ hoặc frontend/, kể cả file test: code và test do giai đoạn BUILD viết ngay sau bạn, dựa trên plan.md này; convention về code trong prompt là để bạn lập kế hoạch cho đúng, không phải để bạn viết code. Đọc frame.md của task, xác định khu vực thay đổi rồi đọc context theo resource flow.routing-table. Nội dung plan.md: danh sách file sẽ tạo/sửa và lý do, các bước theo thứ tự, test sẽ viết cho từng AC, lệnh kiểm tra cuối cùng, rủi ro.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    },
+    {
+      "key": "flow.build",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn của bạn: BUILD — giai đoạn duy nhất viết code và test của task. File được tạo hoặc sửa: code và test trong phạm vi thư mục của task (và needs-info.md khi phải hỏi); không sửa frame.md, plan.md hay tài liệu khác. Nếu prompt có checkFailures thì GATE 1 (build và test) hoặc bước kiểm tra tĩnh ở vòng trước không đạt: đó là kết quả kiểm tra chính thức, sửa đúng điều `why` mô tả trước mọi việc khác. Đọc frame.md, plan.md nếu có (lane fast thì không có plan) và messages — message mới nhất thường là phản hồi 'sửa' của GATE 2, xử lý nó trước. Viết code và test cho mọi AC của task theo convention trong prompt. Nếu môi trường cho phép chạy lệnh, tự chạy test trước khi kết thúc; nếu không, GATE 1 chạy ngay sau bạn. Cuối cùng tóm tắt: file đã đổi, AC nào được test nào bao phủ. Outcome: `done` khi code và test đã xong; `needs_info` khi thiếu thông tin (xem flow.needs-info).",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    },
+    {
+      "key": "flow.sync",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Giai đoạn của bạn: SYNC. Code của task đã được GATE 2 duyệt. Chỉ được tạo hoặc sửa file trong docs/; KHÔNG sửa code hay test nữa. Cập nhật frame.md của task: đánh dấu từng AC đã xong và test tương ứng. Nếu task chứa một quyết định kiến trúc (theo 03-design.md hoặc phát sinh khi build), tạo docs/adr/NNNN-<tên-ngắn>.md (NNNN là số tiếp theo trong docs/adr) với các mục Bối cảnh, Quyết định, Hệ quả, Trạng thái: Accepted. Nếu cách chạy/cấu hình thay đổi, cập nhật docs/ tương ứng.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react/feature-task-flow.md", "revision": "v3", "lastVerified": "2026-10-05T00:00:00Z"}
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "category": "COMPLETION",
+  "completion": {
+    "requiredAssurance": [
+      {
+        "level": "STATIC",
+        "requiredEvidenceKinds": [
+          "COMMAND_EXECUTION"
+        ]
+      },
+      {
+        "level": "HUMAN",
+        "requiredApprovals": [
+          {
+            "authorizedRoles": [
+              "operator"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

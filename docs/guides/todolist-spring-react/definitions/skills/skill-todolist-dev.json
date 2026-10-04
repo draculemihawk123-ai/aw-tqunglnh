@@ -1,0 +1,34 @@
+{
+  "resources": [
+    {
+      "key": "dev.implement-feature",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {"blockKinds": ["MAKER"]},
+      "instruction": "Bạn đang chạy như agent MAKER của Agent Kit (aw). Prompt là một JSON: hardConstraints (luật bắt buộc, đọc trước tiên), taskContract (title, behavior, acceptanceCriteria, verificationSpec, riskLevel), checkFailures (chỉ có khi một bước kiểm tra ở vòng trước không đạt), resources (convention và hướng dẫn) và messages (phản hồi của người vận hành, theo thứ tự thời gian; message mới nhất có hiệu lực cao nhất). Quy trình: (1) nếu có checkFailures, đó là kết quả kiểm tra chính thức: sửa đúng điều `why` mô tả trước mọi việc khác, kể cả khi bạn cho rằng code đã đúng; (2) đọc kỹ taskContract và mọi message; (3) xem code hiện có trước khi viết code mới; (4) hiện thực thay đổi nhỏ nhất thỏa mãn toàn bộ acceptanceCriteria, đúng convention trong resources; (5) viết hoặc cập nhật test cho hành vi mới; (6) nếu môi trường cho phép chạy lệnh, tự chạy test trước khi kết thúc; nếu không, bước kiểm tra của workflow sẽ chạy sau bạn và gửi lỗi lại qua checkFailures; (7) KHÔNG git commit, KHÔNG git push, KHÔNG đổi branch: aw tạo local commit sau khi người vận hành duyệt; (8) chỉ sửa file trong phạm vi thư mục của task, thay đổi ngoài phạm vi làm attempt thất bại với SCOPE_VIOLATION; (9) kết thúc bằng một đoạn tóm tắt ngắn: đã đổi những file nào, vì sao, và cách kiểm tra.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react", "revision": "v2", "lastVerified": "2026-10-04T00:00:00Z"}
+    },
+    {
+      "key": "dev.definition-of-done",
+      "priority": "HARD_CONSTRAINT",
+      "global": true,
+      "selector": {},
+      "instruction": "Definition of Done: mọi acceptanceCriteria đều được đáp ứng bằng code thật (không stub, không giả lập kết quả); không test nào bị xóa, @Disabled, .skip hay bị nới lỏng để cho qua; build và test của phần bị thay đổi pass; không commit secret, token, file database (*.db) hay thư mục build (target/, node_modules/, dist/) — các đường dẫn này phải nằm trong .gitignore.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react", "revision": "v2", "lastVerified": "2026-10-04T00:00:00Z"}
+    },
+    {
+      "key": "dev.high-risk-extra",
+      "priority": "GUIDANCE",
+      "selector": {"riskClasses": ["HIGH"]},
+      "instruction": "Task này có riskLevel HIGH: ưu tiên thay đổi cộng thêm (additive) thay vì sửa hành vi cũ, giữ tương thích ngược của API /api/todos, và trong phần tóm tắt cuối nêu rõ rủi ro còn lại cùng cách rollback.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react", "revision": "v2", "lastVerified": "2026-10-04T00:00:00Z"}
+    },
+    {
+      "key": "dev.stack-overview",
+      "priority": "REFERENCE",
+      "global": true,
+      "selector": {},
+      "instruction": "Tổng quan hệ thống todolist: một repository, ba thư mục cấp 1. backend/ là Java 21 + Spring Boot 3.5 + Maven, lưu dữ liệu bằng SQLite qua JPA, schema do Flyway quản lý (backend/src/main/resources/db/migration). frontend/ là React + TypeScript + Vite, gọi backend qua /api/todos. docs/ chứa tài liệu: docs/features/<slug> cho từng tính năng, docs/adr cho quyết định kiến trúc. Convention chi tiết của từng phần (cấu trúc package, quy tắc migration, cách test) được nạp cho agent làm việc trong đúng thư mục đó; nếu bạn đang thiết kế hoặc lập kế hoạch mà cần chi tiết, hãy đọc code hiện có trong thư mục tương ứng.",
+      "provenance": {"owner": "team-platform", "source": "docs/guides/todolist-spring-react", "revision": "v1", "lastVerified": "2026-10-04T00:00:00Z"}
+    }
+  ]
+}
