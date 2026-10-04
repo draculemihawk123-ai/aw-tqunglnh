@@ -148,9 +148,9 @@ chặn mà agent giả lập không bao giờ cho thấy; cả hai đã sửa v�
   không đọc file của maker (#159, #160).
 
 Còn mở, **không chặn** verdict: Codex chưa được chạy (`UNVERIFIED`). F3 (model cần 2–3 vòng sửa mới làm theo thông
-điệp của check) **đã sửa sau verdict** bởi V9-13b: lời nhắc `fix` của artifact v2 nói rõ check là thẩm quyền cuối; hai lần
-chạy thật sau đó chỉ cần 1 vòng sửa (mẫu nhỏ, một model; bằng chứng `release/live-provider/run-4-f3-wording`,
-`run-5-f3-wording`). F4 (`aw worker` không đặt được effort/ngân sách của CLI, chi phí không hiển thị) **đã sửa sau verdict**
+điệp của check) **đã sửa sau verdict** bởi V9-13b: lời nhắc `fix` của artifact v2 nói rõ check là thẩm quyền cuối; cả bảy
+lần chạy thật sau đó đều chỉ cần 1 vòng sửa (một model, một dạng task; bằng chứng `release/live-provider/run-4-f3-wording`,
+`run-5-f3-wording`, `f3-samples/`). F4 (`aw worker` không đặt được effort/ngân sách của CLI, chi phí không hiển thị) **đã sửa sau verdict**
 bởi V9-13a (`--claude-effort`, `--claude-max-budget-usd`, usage trong timeline; lưu ý: chi phí vốn đã được ghi thành
 `USAGE_REPORTED`, chỉ chưa có chỗ hiển thị). Verdict không đổi vì F4 chưa bao giờ chặn nó. "Live provider
 compatibility" vì vậy là `PARTIAL`, đúng với tiêu chí hoàn thành của V9-11 ("pass, hoặc danh sách lỗi có owner").
