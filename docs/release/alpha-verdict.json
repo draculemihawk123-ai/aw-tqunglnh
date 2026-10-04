@@ -23,7 +23,7 @@
   "knownLimitations": ["LIM-01", "LIM-02", "LIM-03", "LIM-04", "LIM-05", "LIM-06", "LIM-07", "LIM-08", "LIM-09", "LIM-10", "LIM-11"],
   "liveProviderCompatibility": {
     "status": "PARTIAL",
-    "detail": "CI runs every provider test against the repository's own fake-claude / fake-codex stand-ins. V9-11 ran the V9 workload against a real Claude CLI (2.1.288, claude-sonnet-4-6, effort medium): it works end to end. It showed five defects: F1 (file writes denied in untrusted worktrees, no permission-mode flag) and F2 (the reviewer could not see the repository) were fixed by V9-11a and re-verified live (run-3-fixed); F5 (COMMAND has no PATH) is documented; F4 (no effort/budget settings on aw worker, usage never shown) was fixed by V9-13a; F3 (the model ignores the first rework feedback) is open and does not block. Codex was not run and stays UNVERIFIED. Evidence: docs/release/live-provider/README.md."
+    "detail": "CI runs every provider test against the repository's own fake-claude / fake-codex stand-ins. V9-11 ran the V9 workload against a real Claude CLI (2.1.288, claude-sonnet-4-6, effort medium): it works end to end. It showed five defects: F1 (file writes denied in untrusted worktrees, no permission-mode flag) and F2 (the reviewer could not see the repository) were fixed by V9-11a and re-verified live (run-3-fixed); F5 (COMMAND has no PATH) is documented; F4 (no effort/budget settings on aw worker, usage never shown) was fixed by V9-13a; F3 (the model ignores the first rework feedback) was fixed by V9-13b. Codex was not run and stays UNVERIFIED. Evidence: docs/release/live-provider/README.md."
   },
   "installArtifacts": [
     {
