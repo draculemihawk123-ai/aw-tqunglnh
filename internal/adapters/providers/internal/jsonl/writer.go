@@ -7,6 +7,14 @@ import (
 	"sync"
 )
 
+// DefaultOutputLimitBytes is the most stdout+stderr a provider CLI attempt may
+// write before the process supervisor starts discarding it (V9-14a). The
+// supervisor's own default is 10 MiB, sized for evidence capture; an agent CLI's
+// stream is consumed as it arrives, not buffered, so that cap protected no memory
+// here but cut a long attempt's stream short — dropping the terminal result event
+// after all the money was spent. A runaway child is still bounded.
+const DefaultOutputLimitBytes = 256 << 20
+
 const DefaultMaxLineBytes = 4 << 20
 
 type Consumer func([]byte) error
