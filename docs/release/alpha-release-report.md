@@ -104,8 +104,8 @@ money), so CI does not repeat it; the evidence is in [`live-provider/`](live-pro
   shows what each attempt and the run reported using. (The first write-up said spend was not recorded; it was recorded
   as `USAGE_REPORTED` but never shown.)
 - **Fixed after the V9 verdict by V9-13b:** F3 — the model did not act on the check's feedback in the first rework
-  build (2–3 rounds). The v2 check-failure line now says the check is authoritative; two live runs after it needed one
-  round (two runs, one model: direction, not statistics).
+  build (2–3 rounds). The v2 check-failure line now says the check is authoritative; all seven live runs after it
+  needed one round (one model, one task shape, no failure among them: a clear effect, not a guarantee).
 - **Codex was not run:** its compatibility remains `UNVERIFIED`.
 
 What the product does provide as a safety net: `aw` probes the real executable (`--version`, protocol/capability
