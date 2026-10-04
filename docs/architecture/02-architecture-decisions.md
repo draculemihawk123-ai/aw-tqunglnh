@@ -990,6 +990,14 @@ không có nội dung. Bỏ hẳn key khi không có message nào bị loại, n
 nguyên cả message được giữ lẫn message bị loại. Message được ghim (`pinned`, đặt khi append, không đổi) không bao giờ
 bị loại.
 
+**Bổ sung 2026-10-04 (V9-13b, giữ nguyên các quyết định trên):** dòng `fix` của `checkFailures[]` là văn bản do engine
+sở hữu, không phải cấu trúc của schema. Lần chạy Claude CLI thật (V9-11) cho thấy lời cũ ("Address the cause…") khiến
+model đọc lại file của mình, thấy khớp đề rồi tuyên bố xong, hoặc cãi rằng check mâu thuẫn với đề; lời mới nói check là
+thẩm quyền cuối, phải làm theo điều `why` mô tả và không tranh luận. Chỉ artifact **v2** dùng lời mới. Artifact v1
+(snapshot không có `instructionSchemaVersion`) giữ nguyên từng byte như mục 2 đã hứa, và test
+`TestRenderInstructionV1_ByteIdenticalToTheArtifactBeforeV903` giữ điều đó. Không có hash nào của artifact đã render được
+lưu hay kiểm, nên đổi lời không đổi hash nào của snapshot.
+
 ## 35. ADR-033 — Run thất bại mở blocker `RUN_FAILED` để chạy lại trên cùng WorkItem
 
 **Bối cảnh:** `transitionRunToFailedTx` (`internal/app/runtime/completion.go`) chuyển run sang `FAILED` và phát

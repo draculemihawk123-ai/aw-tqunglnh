@@ -103,8 +103,9 @@ money), so CI does not repeat it; the evidence is in [`live-provider/`](live-pro
   the CLI an effort level and a per-attempt spend ceiling, and the run timeline (HTTP, `aw run timeline`, UI)
   shows what each attempt and the run reported using. (The first write-up said spend was not recorded; it was recorded
   as `USAGE_REPORTED` but never shown.)
-- **Open (owner in the README, does not block the V9 verdict):** F3 — the model did not act on the check's feedback in
-  the first rework build (needs 2–3 rounds).
+- **Fixed after the V9 verdict by V9-13b:** F3 — the model did not act on the check's feedback in the first rework
+  build (2–3 rounds). The v2 check-failure line now says the check is authoritative; two live runs after it needed one
+  round (two runs, one model: direction, not statistics).
 - **Codex was not run:** its compatibility remains `UNVERIFIED`.
 
 What the product does provide as a safety net: `aw` probes the real executable (`--version`, protocol/capability
@@ -145,7 +146,7 @@ publish a workflow, run it to `SUCCEEDED`) was verified by hand against a real b
 the per-gap evidence (G1–G10, each with a test that reproduces the original failure mode) is in
 [`../harness-engineering/15-doi-chieu-v9.md`](../harness-engineering/15-doi-chieu-v9.md). The `ALPHA_READY` verdict above
 is unchanged; V9 adds to it and does not replace it. Live provider compatibility is `PARTIAL` (see its section): Claude
-ran for real, Codex did not. Open and non-blocking: F3. (F4 was fixed after the verdict by V9-13a.)
+ran for real, Codex did not. (F3 and F4 were fixed after the verdict by V9-13b and V9-13a.)
 
 ## Where to go next
 

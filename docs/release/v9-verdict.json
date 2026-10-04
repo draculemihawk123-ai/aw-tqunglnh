@@ -112,12 +112,12 @@
     "file": "internal/integration/v5accept/live_claude_test.go",
     "evidence": "docs/release/live-provider/run-3-fixed/summary.json",
     "codex": "UNVERIFIED",
-    "open": ["F3"]
+    "open": []
   },
   "blockers": [],
   "knownLimitations": [
     "Codex CLI was never run (live provider compatibility stays PARTIAL).",
-    "F3: the real model needs 2-3 rework rounds before it acts on a failing check's message.",
+    "F3 was a limitation at the assessed commit (the real model needed 2-3 rework rounds before it acted on a failing check's message); the v2 check-failure wording was fixed after the verdict by V9-13b (two live runs then needed one round).",
     "F4 was a limitation at the assessed commit (no effort/spend settings on aw worker; recorded usage never shown); fixed after the verdict by V9-13a.",
     "The live Claude scenario is skipped unless AW_LIVE_CLAUDE=1; CI does not repeat it, so the live evidence is a recorded run, not a gate."
   ]

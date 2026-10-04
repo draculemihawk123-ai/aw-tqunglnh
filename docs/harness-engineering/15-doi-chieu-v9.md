@@ -147,8 +147,10 @@ chặn mà agent giả lập không bao giờ cho thấy; cả hai đã sửa v�
   đường dẫn các mount cho CLI (`--add-dir` + `--append-system-prompt`); scenario giờ **fail** nếu reviewer approve mà
   không đọc file của maker (#159, #160).
 
-Còn mở, **không chặn** verdict: F3 (model cần 2–3 vòng sửa mới làm theo thông điệp của check), Codex chưa được chạy
-(`UNVERIFIED`). F4 (`aw worker` không đặt được effort/ngân sách của CLI, chi phí không hiển thị) **đã sửa sau verdict**
+Còn mở, **không chặn** verdict: Codex chưa được chạy (`UNVERIFIED`). F3 (model cần 2–3 vòng sửa mới làm theo thông
+điệp của check) **đã sửa sau verdict** bởi V9-13b: lời nhắc `fix` của artifact v2 nói rõ check là thẩm quyền cuối; hai lần
+chạy thật sau đó chỉ cần 1 vòng sửa (mẫu nhỏ, một model; bằng chứng `release/live-provider/run-4-f3-wording`,
+`run-5-f3-wording`). F4 (`aw worker` không đặt được effort/ngân sách của CLI, chi phí không hiển thị) **đã sửa sau verdict**
 bởi V9-13a (`--claude-effort`, `--claude-max-budget-usd`, usage trong timeline; lưu ý: chi phí vốn đã được ghi thành
 `USAGE_REPORTED`, chỉ chưa có chỗ hiển thị). Verdict không đổi vì F4 chưa bao giờ chặn nó. "Live provider
 compatibility" vì vậy là `PARTIAL`, đúng với tiêu chí hoàn thành của V9-11 ("pass, hoặc danh sách lỗi có owner").
@@ -159,4 +161,4 @@ Test live chỉ chạy khi `AW_LIVE_CLAUDE=1` (tốn tiền) nên CI không lặ
 - Không nói mọi tiêu chí `HE-*` đã có test riêng: 159/209 tiêu chí Alpha vẫn chỉ có bằng chứng mức suite (xem LIM trong
   báo cáo release). `V9_DONE` chỉ nói G1–G10 của tài liệu này có test tái hiện failure mode gốc và gate Alpha vẫn xanh.
 - Không nói đã kiểm với Codex CLI, hay với model/effort khác ngoài lần chạy trên.
-- Không mở task V9 nào tiếp theo; F3 là việc cải tiến có owner trong `release/live-provider/README.md` (F4 đã xong ở V9-13a).
+- Không mở task V9 nào tiếp theo; F3 và F4 đã xong sau verdict (V9-13b, V9-13a), chỉ còn kiểm Codex nếu cần.

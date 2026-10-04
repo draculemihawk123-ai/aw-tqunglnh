@@ -48,7 +48,23 @@ const maxCheckFailureTailBytes = 4096
 // checkFailureFix is the FIX line of every check failure. The engine does not
 // know how to fix a failing test; what it does know is what happens next, and
 // that is what the maker needs in order not to stop early.
-const checkFailureFix = "Address the cause described under 'why'. The same check runs again after you finish, and the workflow continues only when it passes."
+//
+// V9-13b (live finding F3): the first wording only said to "address the cause",
+// and a real model read its own file, found it matched the task text, and
+// declared the work done — in every live run that got that far — or argued that
+// the check contradicted the task. The check, not the maker's reading of the
+// task, decides whether the work continues, so the line now says that, says to
+// make the change rather than dispute the check, and still states what happens
+// next. It is engine-owned text, not part of the artifact's structure
+// (ADR-032): nothing hashes the rendered bytes, so rewording it changes no
+// snapshot hash.
+//
+// Only a v2 artifact carries this wording. A v1 artifact (a snapshot without
+// instructionSchemaVersion) keeps checkFailureFixV1 byte for byte, because
+// ADR-032 promises such a snapshot assembles "exactly as before".
+const checkFailureFixV1 = "Address the cause described under 'why'. The same check runs again after you finish, and the workflow continues only when it passes."
+
+const checkFailureFix = "The check is authoritative: your work is not done until it passes, even if it already looks correct to you or the check asks for more than the task text says. Make the change that 'why' describes, then finish; do not argue that the check is wrong. The same check runs again after you finish, and the workflow continues only when it passes."
 
 // instructionCheckFailure is one failing check attempt as the prompt shows it.
 type instructionCheckFailure struct {
