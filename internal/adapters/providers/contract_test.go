@@ -829,3 +829,40 @@ func TestClaudeAdapterRefusesAnUnusableEffortOrSpendCeiling(t *testing.T) {
 		}
 	}
 }
+
+// V9-20: a provider CLI that reports a failed run says why ("you've hit your
+// limit"); the adapter must carry that reason in its PROVIDER_REPORTED_FAILURE
+// diagnostic, bounded, so the attempt's failureDetail has something to show.
+func TestAgentExecutorProviderReportedFailureCarriesTheProvidersReason(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range providerCases() {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			executor := testCase.newExecutor(t, processadapter.NewSupervisor())
+			request := helperRequest("provider-failure-"+testCase.name, t.TempDir(), filepath.Join(t.TempDir(), "capture.json"), "provider-failure")
+			request.Sandbox = testCase.startSandbox
+			events := &eventCollector{}
+			result, err := executor.Start(context.Background(), request, events)
+			if err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if result.Status != ports.AgentExecutionFailed {
+				t.Fatalf("result = %+v, want FAILED", result)
+			}
+			var message string
+			for _, event := range events.snapshot() {
+				if event.Kind == ports.AgentEventDiagnostic && event.Diagnostic != nil && event.Diagnostic.Code == ports.ProviderFailureDiagnosticCode {
+					message = event.Diagnostic.Message
+				}
+			}
+			if !strings.Contains(message, "hit your") || !strings.Contains(message, "limit") {
+				t.Fatalf("provider failure diagnostic message = %q, want it to carry the provider's own reason", message)
+			}
+			if strings.ContainsAny(message, "\n\r\t") {
+				t.Fatalf("provider failure diagnostic message = %q, want whitespace collapsed to single spaces", message)
+			}
+		})
+	}
+}

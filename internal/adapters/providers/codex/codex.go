@@ -387,11 +387,24 @@ func (n *normalizer) consume(line []byte) error {
 	case "turn.failed", "error":
 		n.terminalSeen = true
 		n.providerOK = false
+		// V9-20: the failure's own words: `error.message` of a turn.failed event,
+		// `message` of an error event.
+		var failure struct {
+			Message string `json:"message"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(line, &failure)
+		reason := failure.Error.Message
+		if reason == "" {
+			reason = failure.Message
+		}
 		return n.emit(ports.AgentEvent{
 			Kind: ports.AgentEventDiagnostic,
 			Diagnostic: &ports.AgentDiagnostic{
-				Code:    "PROVIDER_REPORTED_FAILURE",
-				Message: "Codex reported a failed turn",
+				Code:    ports.ProviderFailureDiagnosticCode,
+				Message: ports.ProviderFailureMessage("Codex reported a failed turn", reason),
 			},
 		}, envelope.Type)
 	default:

@@ -224,3 +224,24 @@ func newSinkOn(t *testing.T, uow *fake.UnitOfWork, attemptID string) (*agenteven
 	}
 	return sink, lease
 }
+
+func TestProviderFailureDetailFromRecords_TakesTheLastProviderDiagnosticOnly(t *testing.T) {
+	record := func(code, message string) ports.AgentEventRecord {
+		return ports.AgentEventRecord{Kind: string(ports.AgentEventDiagnostic), PayloadJSON: `{"diagnostic":{"code":"` + code + `","message":"` + message + `"}}`}
+	}
+	records := []ports.AgentEventRecord{
+		record(ports.ProviderFailureDiagnosticCode, "first"),
+		{Kind: string(ports.AgentEventAssistantMessage), PayloadJSON: `{"message":"hello"}`},
+		record(agentevents.ScopeViolationDiagnosticCode, "a scope violation"),
+		record(ports.ProviderFailureDiagnosticCode, "Claude reported a failed result: You've hit your limit"),
+	}
+	if got := agentevents.ProviderFailureDetailFromRecords(records); got != "Claude reported a failed result: You've hit your limit" {
+		t.Fatalf("detail = %q, want the latest provider failure message", got)
+	}
+	if got := agentevents.ScopeViolationDetailFromRecords(records); got != "a scope violation" {
+		t.Fatalf("scope violation detail = %q, want it unaffected by provider failures", got)
+	}
+	if got := agentevents.ProviderFailureDetailFromRecords(nil); got != "" {
+		t.Fatalf("detail of an empty stream = %q, want empty", got)
+	}
+}

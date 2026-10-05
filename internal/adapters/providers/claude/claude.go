@@ -549,6 +549,7 @@ func (n *normalizer) consumeResult(line []byte, rawType string) error {
 	var event struct {
 		Subtype      string      `json:"subtype"`
 		IsError      bool        `json:"is_error"`
+		Result       string      `json:"result"`
 		SessionID    string      `json:"session_id"`
 		Usage        claudeUsage `json:"usage"`
 		TotalCostUSD float64     `json:"total_cost_usd"`
@@ -569,11 +570,18 @@ func (n *normalizer) consumeResult(line []byte, rawType string) error {
 		return err
 	}
 	if !n.providerOK {
+		// V9-20: the CLI says why in `result` ("You've hit your limit · resets
+		// 5pm", "Credit balance is too low", ...); without it the attempt failed
+		// with a code and nothing to read.
+		summary := "Claude reported a failed result"
+		if event.Subtype != "" && event.Subtype != "success" {
+			summary += " (" + event.Subtype + ")"
+		}
 		return n.emit(ports.AgentEvent{
 			Kind: ports.AgentEventDiagnostic,
 			Diagnostic: &ports.AgentDiagnostic{
-				Code:    "PROVIDER_REPORTED_FAILURE",
-				Message: "Claude reported a failed result",
+				Code:    ports.ProviderFailureDiagnosticCode,
+				Message: ports.ProviderFailureMessage(summary, event.Result),
 			},
 		}, rawType)
 	}

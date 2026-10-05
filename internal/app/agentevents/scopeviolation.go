@@ -176,6 +176,20 @@ func RecordScopeViolation(ctx context.Context, record ScopeViolationRecord, caus
 // ScopeViolationDiagnosticCode DIAGNOSTIC event in records (an attempt's
 // stream, oldest first), or "" when it has none.
 func ScopeViolationDetailFromRecords(records []ports.AgentEventRecord) string {
+	return lastDiagnosticMessage(records, ScopeViolationDiagnosticCode)
+}
+
+// ProviderFailureDetailFromRecords (V9-20) is the same read for the provider's
+// own account of why it failed: the message of the LAST
+// ports.ProviderFailureDiagnosticCode DIAGNOSTIC event, e.g. "Claude reported a
+// failed result: You've hit your limit · resets 5pm". "" when the attempt has
+// none — it did not fail at the provider, or it failed before V9-20 recorded
+// the reason.
+func ProviderFailureDetailFromRecords(records []ports.AgentEventRecord) string {
+	return lastDiagnosticMessage(records, ports.ProviderFailureDiagnosticCode)
+}
+
+func lastDiagnosticMessage(records []ports.AgentEventRecord, code string) string {
 	for i := len(records) - 1; i >= 0; i-- {
 		if records[i].Kind != string(ports.AgentEventDiagnostic) {
 			continue
@@ -184,7 +198,7 @@ func ScopeViolationDetailFromRecords(records []ports.AgentEventRecord) string {
 		if err := json.Unmarshal([]byte(records[i].PayloadJSON), &payload); err != nil || payload.Diagnostic == nil {
 			continue
 		}
-		if payload.Diagnostic.Code == ScopeViolationDiagnosticCode {
+		if payload.Diagnostic.Code == code {
 			return payload.Diagnostic.Message
 		}
 	}
