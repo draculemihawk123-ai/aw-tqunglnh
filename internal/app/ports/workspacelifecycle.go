@@ -28,6 +28,21 @@ type QuarantineRepositoryWorkspaceUpdate struct {
 	OccurredAt            time.Time
 }
 
+// AdvanceRepositoryWorkspaceRevisionUpdate records that a READY
+// RepositoryWorkspace's HEAD moved to Revision because aw itself committed to
+// it (a ReleaseSet local commit). RepositoryWorkspace.CurrentRevision is what
+// a new Run pins as the revision it starts from; before V9-16 it stayed at the
+// revision the worktree was provisioned from, so the second Run of a family
+// pinned a revision that was no longer HEAD and every MACHINE_GATE of it failed
+// its freshness check. Fenced on (id, state=READY, version): a workspace that
+// was quarantined or released since the caller read it is never advanced.
+type AdvanceRepositoryWorkspaceRevisionUpdate struct {
+	RepositoryWorkspaceID workspace.RepositoryWorkspaceID
+	ExpectedVersion       uint64
+	Revision              string
+	OccurredAt            time.Time
+}
+
 // ReleaseRepositoryWorkspaceUpdate is the fenced CAS transition from READY to
 // RELEASED. It deliberately has no path out of QUARANTINED: cleanup of a
 // quarantined generation is refused with ErrWorkspaceQuarantined, because a

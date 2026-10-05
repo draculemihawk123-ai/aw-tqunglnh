@@ -36,6 +36,15 @@ and no commit is created. `NO_CHANGES` is a failure reason on the operation, not
 and run `aw release-set local-commit` again with a new `--idempotency-key` and the same fields — a failed
 `NO_CHANGES` operation never blocks the retry (reusing the old key would only replay the old result).
 
+A committed local commit also moves the repository workspace forward: in the same transaction that marks the
+operation `COMMITTED`, the workspace's `currentRevision` becomes the new commit and its `version` goes up by one
+(read the new `version` before the next `aw release-set local-commit`; the old `expectedWorkspaceVersion` is now
+stale). The next WorkflowRun started for the family pins that `currentRevision` as the revision it starts from, so
+its `MACHINE_GATE` nodes compare against the commit the worktree is really on. Before V9-16 the run kept pinning
+the revision the family was first provisioned from, and every `MACHINE_GATE` of a run started after a local commit
+failed with `VALIDATION_FAILED` (the worktree HEAD no longer matched the pinned revision). Runs that were already
+started keep the revision they pinned; only runs started after the upgrade benefit.
+
 ```bash
 aw release-set seal --expected-version <n> --idempotency-key seal-1 <releaseSetId>   # no more commits allowed
 aw release-set abandon --expected-version <n> --idempotency-key abandon-1 <releaseSetId>  # discard, never applied

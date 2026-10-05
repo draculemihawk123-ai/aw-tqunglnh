@@ -283,6 +283,69 @@ func TestStartWorkflowRun_CreatesRunManifestNodeRunEventAndJobAtomically_Transit
 	}
 }
 
+// V9-16: a Run of a family whose worktree already moved (aw committed to it)
+// must pin the worktree's current HEAD, not the revision the family was first
+// provisioned from — otherwise every MACHINE_GATE of that Run fails its
+// freshness check.
+func TestStartWorkflowRun_PinsTheWorkspaceRevisionAfterALocalCommit(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	root := readyFixture(t, uow, ids, "project-1", "repo-1")
+	version := publishTestWorkflowVersion(t, uow, "project-1", "wf-def-1", "wf-v-1")
+
+	const committed = "feedfacefeedfacefeedfacefeedfacefeedface"
+	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		workspaces, err := tx.Work().ListWorkspaceSetRepositoryWorkspaces(ctx, root.WorkspaceSetID)
+		if err != nil {
+			return err
+		}
+		if len(workspaces) != 1 {
+			t.Fatalf("workspaces = %d, want 1", len(workspaces))
+		}
+		return tx.Work().AdvanceRepositoryWorkspaceRevision(ctx, ports.AdvanceRepositoryWorkspaceRevisionUpdate{
+			RepositoryWorkspaceID: workspaces[0].ID, ExpectedVersion: workspaces[0].Version,
+			Revision: committed, OccurredAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+		})
+	})
+	if err != nil {
+		t.Fatalf("advance workspace revision: %v", err)
+	}
+
+	cmd := testCommand("idem-start-1", "hash-a", ports.ProjectScope("project-1"), "StartWorkflowRun")
+	result, err := runtime.StartWorkflowRun(ctx, uow, ids, cmd, runtime.StartWorkflowRunRequest{
+		ProjectID: "project-1", WorkItemID: root.WorkItemID, WorkflowVersionID: string(version.ID()),
+	})
+	if err != nil {
+		t.Fatalf("StartWorkflowRun: %v", err)
+	}
+
+	manifest, err := uow.Snapshot.Runtime().GetExecutionManifest(ctx, result.RunID)
+	if err != nil {
+		t.Fatalf("GetExecutionManifest: %v", err)
+	}
+	pinned, found := manifest.BaseRevisionSet.RevisionFor("repo-1")
+	if !found {
+		t.Fatalf("manifest base revision set has no entry for repo-1: %+v", manifest.BaseRevisionSet.Entries())
+	}
+	if pinned.VCSObjectID != committed {
+		t.Fatalf("manifest pins %q, want the worktree's current HEAD %q", pinned.VCSObjectID, committed)
+	}
+	if pinned.WorkspaceGeneration != 1 {
+		t.Fatalf("manifest pins generation %d, want 1", pinned.WorkspaceGeneration)
+	}
+
+	// The family's own base revision set is untouched: it still says where the family began.
+	set, err := uow.Snapshot.Work().GetWorkspaceSetByFamilyID(ctx, root.FamilyID)
+	if err != nil {
+		t.Fatalf("GetWorkspaceSet: %v", err)
+	}
+	original, _ := set.BaseRevisionSet.RevisionFor("repo-1")
+	if original.VCSObjectID != "cafebabecafebabecafebabecafebabecafebabe" {
+		t.Fatalf("workspace set base revision = %q, want the provisioning revision", original.VCSObjectID)
+	}
+}
+
 // --- StartWorkflowRun: precondition failures ---
 
 func TestStartWorkflowRun_WorkItemNotReady_ReturnsError(t *testing.T) {

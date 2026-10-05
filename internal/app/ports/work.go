@@ -226,6 +226,13 @@ type WorkRepository interface {
 	// that could leave those steps inconsistent with each other after a
 	// crash between them.
 	QuarantineRepositoryWorkspace(ctx context.Context, update QuarantineRepositoryWorkspaceUpdate) error
+	// AdvanceRepositoryWorkspaceRevision moves a READY RepositoryWorkspace's
+	// CurrentRevision to update.Revision after aw committed to it, in the same
+	// transaction as the local commit's own finalization (V9-16). It bumps the
+	// row's Version and returns ErrOptimisticConflict when the row is no longer
+	// READY at update.ExpectedVersion. No domain event: the local commit's own
+	// ReleaseSetLocalCommitCommitted event already says what happened.
+	AdvanceRepositoryWorkspaceRevision(ctx context.Context, update AdvanceRepositoryWorkspaceRevisionUpdate) error
 	// ListWorkspaceSetRepositoryWorkspaces returns every RepositoryWorkspace
 	// row for workspaceSetID (every generation, every state), ordered by
 	// (repository_id, generation) for a stable, deterministic result a test
