@@ -23,6 +23,7 @@
 //	                   verificationSpec, riskLevel, allowedOutcomes,
 //	                   outcomeProtocol (only when there is more than one outcome)
 //	checkFailures      [] only for a maker sent back by a failing check (V9-02)
+//	reviewerFeedback   [] only for a maker sent back by a CHECKER (V9-17)
 //	resources          [] every other resource, each with its priority
 //	messages           []
 //	omittedMessages    [] only when the context policy's messages budget left
@@ -97,7 +98,10 @@ type instructionRenderInput struct {
 	// pinned workflow document declares them (agentSelectableOutcomes).
 	allowedOutcomes []string
 	checkFailures   []instructionCheckFailure
-	messages        []instructionMessage
+	// reviewerFeedback (V9-17) is what the CHECKER that sent this maker back said;
+	// rendered by schema v2 only.
+	reviewerFeedback []instructionReviewerFeedback
+	messages         []instructionMessage
 	// omittedMessages are the messages the context policy's `messages` budget
 	// left out (V9-07), rendered by schema v2 only; schema v1 snapshots are
 	// never scheduled with a budget.
@@ -160,14 +164,15 @@ func renderInstructionV1(in instructionRenderInput) ([]byte, error) {
 // instructionArtifactV2 is the exact shape of a v2 artifact. Field order IS
 // the JSON key order; see this file's doc comment.
 type instructionArtifactV2 struct {
-	SchemaVersion    int                         `json:"schemaVersion"`
-	HardConstraints  []instructionResourceV2     `json:"hardConstraints"`
-	TaskContract     instructionTaskContractV2   `json:"taskContract"`
-	CheckFailures    []instructionCheckFailure   `json:"checkFailures,omitempty"`
-	Resources        []instructionResourceV2     `json:"resources"`
-	Messages         []instructionMessage        `json:"messages"`
-	OmittedMessages  []instructionOmittedMessage `json:"omittedMessages,omitempty"`
-	ClosingChecklist instructionClosingChecklist `json:"closingChecklist"`
+	SchemaVersion    int                           `json:"schemaVersion"`
+	HardConstraints  []instructionResourceV2       `json:"hardConstraints"`
+	TaskContract     instructionTaskContractV2     `json:"taskContract"`
+	CheckFailures    []instructionCheckFailure     `json:"checkFailures,omitempty"`
+	ReviewerFeedback []instructionReviewerFeedback `json:"reviewerFeedback,omitempty"`
+	Resources        []instructionResourceV2       `json:"resources"`
+	Messages         []instructionMessage          `json:"messages"`
+	OmittedMessages  []instructionOmittedMessage   `json:"omittedMessages,omitempty"`
+	ClosingChecklist instructionClosingChecklist   `json:"closingChecklist"`
 }
 
 // instructionTaskContractV2 is v1's task contract plus what the agent needs to
@@ -261,6 +266,7 @@ func renderInstructionV2(in instructionRenderInput) ([]byte, error) {
 		Resources:        []instructionResourceV2{},
 		Messages:         []instructionMessage{},
 		CheckFailures:    in.checkFailures,
+		ReviewerFeedback: in.reviewerFeedback,
 		OmittedMessages:  in.omittedMessages,
 		ClosingChecklist: instructionClosingChecklist{HardConstraintKeys: []string{}, AllowedOutcomes: append([]string(nil), in.allowedOutcomes...)},
 	}

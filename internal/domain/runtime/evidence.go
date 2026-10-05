@@ -47,6 +47,20 @@ const EvidenceKindCommandExecution = "COMMAND_EXECUTION"
 // not a per-criterion breakdown.
 const EvidenceKindAgentExecution = "AGENT_EXECUTION"
 
+// EvidenceKindAgentOutput is the fixed Kind of the Evidence row an AGENT
+// attempt leaves for what the agent SAID (V9-17): its one artifact is the
+// agent's final message, redacted, as plain text. Two readers need it. An
+// operator reads it with the evidence and artifact commands — before this row
+// the only place the words existed was the agent_events table, which no API
+// exposes. And a MAKER sent back by a CHECKER reads it as the reviewer's
+// feedback in its prompt (gatherReviewerFeedbackEvidenceRefs): the reason a
+// CHECKER chose `rework` is nothing but its message. The row is a record, not
+// a verdict (EvidenceVerdictRecorded), so it can never satisfy a
+// CompletionPolicy. It is a separate Kind from EvidenceKindAgentExecution,
+// whose artifacts are the diff manifests, so the row id (AttemptID plus Kind)
+// of neither changes.
+const EvidenceKindAgentOutput = "AGENT_OUTPUT"
+
 // EvidenceVerdictRecorded is the fixed Verdict an AGENT execution's Evidence
 // row carries: the row RECORDS what the agent produced (its diff manifests),
 // it does not VERIFY it. It is deliberately not one of the verdicts

@@ -368,9 +368,31 @@ func TestV9AcceptCheckerAfterMaker_CompletesAndCheckerSeesMakerDiff(t *testing.T
 	}); err != nil {
 		t.Fatalf("read checker snapshot / maker evidence: %v", err)
 	}
-	if len(makerEvidence) != 1 || makerEvidence[0].Kind != runtimedomain.EvidenceKindAgentExecution {
-		t.Fatalf("maker evidence = %+v, want exactly one %s row", makerEvidence, runtimedomain.EvidenceKindAgentExecution)
+	// V9-17: the maker also leaves an AGENT_OUTPUT row (what it said). It is a
+	// record for the operator and for a maker sent back by a reviewer; a CHECKER
+	// is never given it, so it must not be among the checker's pinned evidence.
+	var makerOutput []runtimedomain.Evidence
+	var makerDiffs []runtimedomain.Evidence
+	for _, row := range makerEvidence {
+		switch row.Kind {
+		case runtimedomain.EvidenceKindAgentOutput:
+			makerOutput = append(makerOutput, row)
+		case runtimedomain.EvidenceKindAgentExecution:
+			makerDiffs = append(makerDiffs, row)
+		}
 	}
+	if len(makerDiffs) != 1 || len(makerEvidence) != len(makerDiffs)+len(makerOutput) {
+		t.Fatalf("maker evidence = %+v, want exactly one %s row (and optionally one %s row)", makerEvidence, runtimedomain.EvidenceKindAgentExecution, runtimedomain.EvidenceKindAgentOutput)
+	}
+	if len(makerOutput) != 1 || makerOutput[0].Verdict != runtimedomain.EvidenceVerdictRecorded {
+		t.Fatalf("maker output evidence = %+v, want one RECORDED %s row (the helper agent says something)", makerOutput, runtimedomain.EvidenceKindAgentOutput)
+	}
+	for _, id := range snapshotEvidenceIDs {
+		if id == string(makerOutput[0].ID) {
+			t.Fatalf("checker snapshot evidence refs = %v include the maker's %s row %s, which a checker must not receive", snapshotEvidenceIDs, runtimedomain.EvidenceKindAgentOutput, id)
+		}
+	}
+	makerEvidence = makerDiffs
 	if makerEvidence[0].Verdict == runtimedomain.EvidenceVerdictSucceeded || makerEvidence[0].Verdict == string(gate.VerdictPass) {
 		t.Fatalf("maker evidence verdict = %s: an agent's own record must never be a passing verdict completion accepts", makerEvidence[0].Verdict)
 	}

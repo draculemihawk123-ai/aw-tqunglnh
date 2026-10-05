@@ -52,17 +52,31 @@ func newMakerCheckLoop(t *testing.T, checkKind workflow.NodeType) *makerCheckLoo
 	buildID := build.ID()
 	store := artifactstoreForTest(t)
 
+	// A CHECKER AGENT (V9-17) reports approved/rework; a COMMAND or MACHINE_GATE
+	// reports passed/failed.
+	passed, failed := "passed", "failed"
+	if checkKind == workflow.NodeAgent {
+		passed, failed = "approved", "rework"
+	}
 	check := workflow.Node{
-		Key: "check", Outcomes: []string{"passed", "failed", "escalated"},
+		Key: "check", Outcomes: []string{passed, failed, "escalated"},
 		CyclePolicy: &workflow.CyclePolicy{MaxIterations: 2, EscalationOutcome: "escalated"},
 	}
 	switch checkKind {
+	case workflow.NodeAgent:
+		check.Type = workflow.NodeAgent
+		check.Agent = &workflow.AgentNodeConfig{
+			ProfileRef:     definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "agent-profile-def", VersionID: "agent-profile-v1"},
+			PolicyRefs:     fullyResolvablePolicyRefs(),
+			AdapterBuildID: &buildID,
+			Role:           workflow.AgentRoleChecker,
+		}
 	case workflow.NodeCommand:
 		check.Type = workflow.NodeCommand
 		check.Command = &workflow.CommandNodeConfig{
 			CommandRef:     definition.DependencyPin{Kind: definition.KindCommand, DefinitionID: "command-def-1", VersionID: "command-v1"},
 			PolicyRefs:     fullyResolvablePolicyRefs(),
-			FailureOutcome: "failed",
+			FailureOutcome: failed,
 		}
 	case workflow.NodeMachineGate:
 		check.Type = workflow.NodeMachineGate
@@ -92,8 +106,8 @@ func newMakerCheckLoop(t *testing.T, checkKind workflow.NodeType) *makerCheckLoo
 		Edges: []workflow.Edge{
 			{Key: "start-to-implement", From: "start", Outcome: "next", To: "implement"},
 			{Key: "implement-to-check", From: "implement", Outcome: "done", To: "check"},
-			{Key: "check-to-end", From: "check", Outcome: "passed", To: "end"},
-			{Key: "check-to-implement", From: "check", Outcome: "failed", To: "implement"},
+			{Key: "check-to-end", From: "check", Outcome: passed, To: "end"},
+			{Key: "check-to-implement", From: "check", Outcome: failed, To: "implement"},
 			{Key: "check-to-escalated", From: "check", Outcome: "escalated", To: "escalated_end"},
 		},
 	}
