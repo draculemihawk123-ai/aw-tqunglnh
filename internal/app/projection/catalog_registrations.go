@@ -55,6 +55,11 @@ func registerClassifications(c *Catalog) {
 		entityKeyFromField(decode[runCancellationRequestedPayload], func(p runCancellationRequestedPayload) string { return p.WorkItemID }), "")
 	c.apply("RUN_COMPLETION_REQUESTED", 1, 1, reduceRunCompletionRequested,
 		entityKeyFromField(decode[runCompletionRequestedPayload], func(p runCompletionRequestedPayload) string { return p.WorkItemID }), "")
+	// COMPLETION_DECIDED is the only event that reports a completion that PASSED
+	// (the transition to DONE writes no other domain event) or that sent the Run
+	// back to REWORK — see reduceCompletionDecided (V9-15).
+	c.apply("COMPLETION_DECIDED", 1, 1, reduceCompletionDecided,
+		entityKeyFromField(decode[completionDecidedPayload], func(p completionDecidedPayload) string { return p.WorkItemID }), "")
 	c.apply("RUN_FAILED", 1, 1, reduceRunFailed,
 		entityKeyFromField(decode[runFailedPayload], func(p runFailedPayload) string { return p.WorkItemID }), "")
 	c.apply("RUN_CANCELLED", 1, 1, reduceRunCancelled,
@@ -106,7 +111,6 @@ func registerClassifications(c *Catalog) {
 	c.ignore("JOIN_DECIDED", 1, "Node/attempt-level graph detail (fork/join visualization), served directly by V6-06B — out of scope.")
 	c.ignore("EXECUTION_ATTEMPT_FINALIZED", 1, "Attempt-level detail, served directly by V6-06B/V6-06C — out of scope.")
 	c.ignore("EXECUTION_ATTEMPT_TERMINATED", 1, "Attempt-level detail, served directly by V6-06B/V6-06C — out of scope.")
-	c.ignore("COMPLETION_DECIDED", 1, "The completion-policy VERDICT is a node/graph-level detail (served directly by V6-06B/V6-06C); its WorkItem-level CONSEQUENCES are what RUN_FAILED/WORK_ITEM_BLOCKED/RUN_COMPLETION_REQUESTED already surface to this projection, which is what this Catalog classifies Apply — applying the raw verdict a second time here would be redundant, lower-layer duplication.")
 	c.ignore("RECOVERY_DECISION_RECORDED", 1, "Recovery-reaper diagnostic detail, served directly by V6-06C — out of scope.")
 
 	// --- Ignore: workspace lifecycle/release/reconcile ---

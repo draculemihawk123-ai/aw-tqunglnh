@@ -134,7 +134,7 @@ func TestWorkItemCardRow_RunCountIsOmittedWhenZero(t *testing.T) {
 func TestCatalog_RerunReducersBumpedTheirHandlerVersion(t *testing.T) {
 	c := NewCatalog()
 	for eventType, want := range map[string]int{
-		"WorkflowRunStarted": 2, "WORK_ITEM_BLOCKER_RESOLVED": 2, "RUN_FAILED": 1, "WORK_ITEM_BLOCKED": 1,
+		"WorkflowRunStarted": 2, "WORK_ITEM_BLOCKER_RESOLVED": 2, "RUN_FAILED": 1, "WORK_ITEM_BLOCKED": 1, "COMPLETION_DECIDED": 1,
 	} {
 		classification, ok := c.Classify(eventschema.EventKey{EventType: eventType, SchemaVersion: 1})
 		if !ok || classification.HandlerVersion != want {

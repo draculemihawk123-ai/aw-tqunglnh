@@ -68,6 +68,13 @@ Restarting after an upgrade is a no-op: a second open applies nothing and change
   journal as it is projected). Run `aw projection rebuild --project-id <id> --projection-name workitem` once per project to build a fresh projection generation from the whole
   journal; `aw work-item detail` lists the exact runs (`runs`) regardless.
 
+**Upgrading to the build that moves a finished WorkItem's board card to DONE (V9-15)** needs no migration. The board
+(`aw work-item kanban`, the Board screen) used to keep the card of a WorkItem whose completion policy had passed in the
+ACTIVE column with a COMPLETING badge, because the projection ignored the event that reports the verdict
+(`COMPLETION_DECIDED`). New events are applied from the upgrade on; cards of WorkItems that finished **before** it stay as
+they were until you run `aw projection rebuild --project-id <id> --projection-name workitem` once per project.
+`aw work-item show` and the task header always had the true status (`DONE`).
+
 ## Rollback
 
 **A binary older than your database refuses to open it.** If a newer release already migrated the database,

@@ -63,7 +63,7 @@ type WorkItemCardRow struct {
 	// badge — empty when no Run is currently associated. ActiveRunStatus
 	// is never a runtime.RunStatus wire value verbatim: it is this
 	// projection's OWN small vocabulary (ACTIVE/CANCELLING/COMPLETING/
-	// FAILED/CANCELLED), chosen deliberately narrower than the full Run
+	// BLOCKED/FAILED/CANCELLED), chosen deliberately narrower than the full Run
 	// domain's own state machine (a Kanban badge needs "what should I show
 	// the operator right now," not the full authoritative state machine —
 	// that stays Screen 7/8's own job).
@@ -132,6 +132,7 @@ const (
 	runStatusActive     = "ACTIVE"
 	runStatusCancelling = "CANCELLING"
 	runStatusCompleting = "COMPLETING"
+	runStatusBlocked    = "BLOCKED"
 	runStatusFailed     = "FAILED"
 	runStatusCancelled  = "CANCELLED"
 )
