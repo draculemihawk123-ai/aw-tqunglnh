@@ -656,9 +656,13 @@ type TimelineEntryView struct {
 	// FAILED with SCOPE_VIOLATION: a bounded, redacted line listing the
 	// violating paths (at most agentevents.MaxReportedViolations, then "and N
 	// more"), read back from the SCOPE_VIOLATION DIAGNOSTIC event the executor
-	// wrote into the attempt's agent_events stream. Empty — and omitted — for
-	// every other attempt, and for a SCOPE_VIOLATION attempt recorded before
-	// V9-09, whose paths were never stored.
+	// wrote into the attempt's agent_events stream. Since V9-20 it also carries
+	// the provider CLI's own reason for a FAILED provider attempt (for example
+	// "Claude reported a failed result: You've hit your limit"), read back from
+	// the PROVIDER_REPORTED_FAILURE DIAGNOSTIC event. Empty — and omitted — for
+	// every other attempt, for a SCOPE_VIOLATION attempt recorded before V9-09
+	// (its paths were never stored) and for a provider failure recorded before
+	// V9-20 (its reason was never stored).
 	FailureDetail string `json:"failureDetail,omitempty"`
 	// Usage (V9-13a, finding F4) is what the provider CLI reported this attempt
 	// used: tokens and, when the CLI reports one, its cost in US dollars —
@@ -780,6 +784,21 @@ func GetRunTimeline(ctx context.Context, uow ports.UnitOfWork, matcher redact.Ma
 				return err
 			}
 			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.ScopeViolationDetailFromRecords(records))
+		}
+		// V9-20: an attempt that FAILED because the provider CLI itself reported a
+		// failure (a session or usage limit, an auth problem) shows the provider's
+		// reason. Only FAILED attempts with a provider read their DIAGNOSTIC events.
+		for i := range timeline.Entries {
+			entry := &timeline.Entries[i]
+			if entry.Kind != TimelineEntryExecutionAttempt || entry.FailureDetail != "" || entry.ProviderKey == "" ||
+				entry.AttemptState != string(runtimedomain.ExecutionAttemptFailed) {
+				continue
+			}
+			records, err := tx.AgentEvents().ListByAttemptAndKind(ctx, entry.AttemptID, string(ports.AgentEventDiagnostic))
+			if err != nil {
+				return err
+			}
+			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.ProviderFailureDetailFromRecords(records))
 		}
 		// V9-13a: what each provider attempt reported using, and the run's total.
 		// Only an attempt with a provider can have usage, and only its

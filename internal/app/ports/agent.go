@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/contextsnapshot"
 	"github.com/taQuangLing/agent-workflow/internal/domain/policy"
@@ -235,6 +238,38 @@ type AgentUsage struct {
 type AgentDiagnostic struct {
 	Code    string
 	Message string
+}
+
+// ProviderFailureDiagnosticCode is the AgentDiagnostic.Code a provider adapter
+// emits when the provider CLI itself reports that the run failed (an error
+// result, a failed turn): a session or usage limit, an authentication problem,
+// a refused request. The adapter's own message names the provider's reason.
+const ProviderFailureDiagnosticCode = "PROVIDER_REPORTED_FAILURE"
+
+// maxProviderFailureReasonRunes bounds the provider's own words in a failure
+// diagnostic: enough for a sentence or two ("You've hit your limit · resets
+// 5pm"), not enough to carry a transcript.
+const maxProviderFailureReasonRunes = 500
+
+// ProviderFailureMessage is the message of a ProviderFailureDiagnosticCode
+// diagnostic: summary, then (when the provider said why) its reason with
+// whitespace collapsed, control characters dropped and the length bounded. The
+// event sink redacts the stored payload as it does for every event.
+func ProviderFailureMessage(summary, providerReason string) string {
+	reason := strings.TrimSpace(strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && !unicode.IsSpace(r) {
+			return -1
+		}
+		return r
+	}, providerReason))
+	reason = strings.Join(strings.Fields(reason), " ")
+	if reason == "" {
+		return summary
+	}
+	if utf8.RuneCountInString(reason) > maxProviderFailureReasonRunes {
+		reason = string([]rune(reason)[:maxProviderFailureReasonRunes]) + "…"
+	}
+	return summary + ": " + reason
 }
 
 type AgentEvent struct {

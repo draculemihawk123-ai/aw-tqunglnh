@@ -95,6 +95,24 @@ are masked); the same field is in `GET /runs/{id}/timeline`. Either widen the Wo
 expansion, or fix the agent/skill so it stays inside the paths it was granted. An attempt that failed this way
 before the field existed has the failure code but no `failureDetail`.
 
+## An agent attempt `FAILED` with `EXECUTION_FAILED` and the provider said why (V9-20)
+
+When the provider CLI itself reports that the run failed — a session or usage limit ("You've hit your limit ·
+resets 5pm"), an authentication problem, a refused request — the attempt ends `FAILED` / `EXECUTION_FAILED`, and
+`aw run timeline <runId>` (and `GET /runs/{id}/timeline`) now shows the provider's own words as the attempt's
+`failureDetail`:
+
+```
+# "failureCode": "EXECUTION_FAILED",
+# "failureDetail": "Claude reported a failed result: You've hit your limit · resets 5pm"
+```
+
+The text is the CLI's reason, whitespace collapsed, cut at 500 characters and redacted like every stored event. A
+session limit is not something to fix in the task: wait for the reset, then run again (`retry-task` in the guides, or
+`aw run start` with the same workflow version once the `RUN_FAILED` blocker is resolved). An attempt that failed
+before V9-20 has the code but no detail, and so does a failure the provider did not report itself (a crash, a
+timeout).
+
 ## A COMMAND or gate failed — where is the reason?
 
 ```bash
