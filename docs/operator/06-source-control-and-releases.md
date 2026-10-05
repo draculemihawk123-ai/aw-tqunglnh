@@ -64,6 +64,33 @@ aw repository-workspace reconcile --project-id <id> --expected-version <n> --ide
 aw workspace-set release --project-id <id> --expected-version <n> --idempotency-key rel-1 <workspaceSetId>
 ```
 
+### A `QUARANTINED` worktree and how it is recovered (V9-18)
+
+A worktree is quarantined when aw cannot rule out that an interrupted attempt changed it: the worker died or the run
+was cancelled while a `MAKER` held the write lease **and** the worktree's HEAD is no longer the commit the attempt
+started from (typically an agent that ran `git commit` itself). Editing files without committing does not quarantine —
+HEAD is unchanged, so the attempt is treated as clean and its changes are simply what the next run finds in the
+worktree. Nothing writes to a quarantined worktree and `aw workspace-set release` refuses while one is current.
+
+`aw repository-workspace reconcile` inspects it. A worktree with **uncommitted changes stays quarantined** (the
+evidence is never reset for you): clean or discard them yourself, then reconcile again. A **clean** one is
+**recreated** as the next generation of the same repository:
+
+- the new generation starts from the quarantined generation's `currentRevision` — the last commit aw itself recorded
+  on it (every ReleaseSet local commit advances it, see above) — so the tasks the family already committed are still
+  in its history. Anything the interrupted attempt committed on its own stays on the old generation's branch, as
+  evidence, and is not carried over. Before V9-18 the new generation started from the repository's default branch and
+  silently dropped the family's earlier commits;
+- if the repository has a readiness profile, the new generation gets its baseline job like a first generation does
+  (`aw repository readiness show <repo>` lists the baseline per workspace). Without it the baseline stayed `PENDING`
+  and no work item could become `READY` for writing;
+- the old generation's row remains `QUARANTINED` for good, as evidence. Only the **newest** generation of a repository
+  counts when aw asks whether a family still has a quarantined worktree, so a superseded one no longer blocks
+  `aw blocker resolve`. Runs started afterwards pin the new generation.
+
+`aw workspace-set show` lists every generation; pick the one with the highest `generation` (the `READY` one) when a
+script needs the current worktree.
+
 ## Read-only source/diff/log — never an interactive terminal
 
 Three commands give paginated, read-only views over a real repository workspace's own Git object store — this

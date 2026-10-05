@@ -195,6 +195,74 @@ func TestResolveWorkItemBlocker_QuarantinedWorkspace_Rejected(t *testing.T) {
 	}
 }
 
+// V9-18: a QUARANTINED generation that a later READY generation of the same
+// repository superseded (reconciliation recreated it) must not block resolution
+// for good; the CURRENT generation still does.
+func TestResolveWorkItemBlocker_SupersededQuarantinedGeneration_DoesNotBlock(t *testing.T) {
+	uow, ids, workItemID, _, blocker := runCancelledBlockerFixture(t)
+	item := workItemState(t, uow, workItemID)
+	set, err := uow.Snapshot.Work().GetWorkspaceSetByFamilyID(context.Background(), string(item.FamilyID))
+	if err != nil {
+		t.Fatalf("GetWorkspaceSetByFamilyID: %v", err)
+	}
+	quarantineExtraRepositoryWorkspace(t, uow, ids, string(set.ID))
+
+	// The quarantined generation 1 of repo-2 is the current one: refused.
+	if _, err := resolveBlocker(t, uow, string(blocker.ID), runtime.ResolutionModeResolved, ""); !errors.Is(err, runtime.ErrWorkspaceQuarantined) {
+		t.Fatalf("resolve with the current generation QUARANTINED = %v, want ErrWorkspaceQuarantined", err)
+	}
+
+	// Reconciliation recreates it as generation 2: the superseded row no longer blocks.
+	if err := uow.WithSerializedWrite(context.Background(), func(tx ports.Tx) error {
+		_, err := tx.Work().CreateRepositoryWorkspace(context.Background(), workspace.RepositoryWorkspace{
+			ID: workspace.RepositoryWorkspaceID(ids.NewID()), WorkspaceSetID: workspace.WorkspaceSetID(set.ID),
+			RepositoryID: project.RepositoryID("repo-2"), Generation: 2, Locator: "handle-repo-2-gen2",
+			BaseRevision: "cafebabecafebabecafebabecafebabecafebabe", State: workspace.RepositoryWorkspaceReady, Version: 1,
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("seed recreated generation: %v", err)
+	}
+	result, err := resolveBlocker(t, uow, string(blocker.ID), runtime.ResolutionModeResolved, "")
+	if err != nil {
+		t.Fatalf("resolve after the quarantined generation was superseded: %v", err)
+	}
+	if result.State != string(workdomain.BlockerResolved) || !result.WorkItemUnblocked {
+		t.Fatalf("result = %+v, want resolved and unblocked", result)
+	}
+}
+
+// A repository whose newest generation is quarantined blocks even when an
+// older generation of it is READY (generation order, not row order, decides).
+func TestResolveWorkItemBlocker_NewestGenerationQuarantined_StillBlocks(t *testing.T) {
+	uow, ids, workItemID, _, blocker := runCancelledBlockerFixture(t)
+	item := workItemState(t, uow, workItemID)
+	set, err := uow.Snapshot.Work().GetWorkspaceSetByFamilyID(context.Background(), string(item.FamilyID))
+	if err != nil {
+		t.Fatalf("GetWorkspaceSetByFamilyID: %v", err)
+	}
+	mustCreateActiveRepository(t, uow, ids, "project-1", "repo-2")
+	seed := func(generation uint64, state workspace.RepositoryWorkspaceState) {
+		t.Helper()
+		if err := uow.WithSerializedWrite(context.Background(), func(tx ports.Tx) error {
+			_, err := tx.Work().CreateRepositoryWorkspace(context.Background(), workspace.RepositoryWorkspace{
+				ID: workspace.RepositoryWorkspaceID(ids.NewID()), WorkspaceSetID: workspace.WorkspaceSetID(set.ID),
+				RepositoryID: project.RepositoryID("repo-2"), Generation: generation, Locator: "handle-repo-2",
+				BaseRevision: "cafebabecafebabecafebabecafebabecafebabe", State: state, Version: 1,
+			})
+			return err
+		}); err != nil {
+			t.Fatalf("seed generation %d: %v", generation, err)
+		}
+	}
+	seed(2, workspace.RepositoryWorkspaceQuarantined)
+	seed(1, workspace.RepositoryWorkspaceReady)
+
+	if _, err := resolveBlocker(t, uow, string(blocker.ID), runtime.ResolutionModeResolved, ""); !errors.Is(err, runtime.ErrWorkspaceQuarantined) {
+		t.Fatalf("resolve with the newest generation QUARANTINED = %v, want ErrWorkspaceQuarantined", err)
+	}
+}
+
 // TestResolveWorkItemBlocker_MissingMode_Rejected proves Mode has no default —
 // ADR-020's own "Payload MUST chọn resolution mode tường minh, không có mặc định".
 func TestResolveWorkItemBlocker_MissingMode_Rejected(t *testing.T) {

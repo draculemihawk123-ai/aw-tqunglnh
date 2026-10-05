@@ -229,8 +229,19 @@ func ResolveWorkItemBlocker(ctx context.Context, uow ports.UnitOfWork, req Resol
 		if err != nil {
 			return err
 		}
+		// V9-18: only the CURRENT generation of a repository can block. A
+		// quarantined generation that a later one superseded (reconciliation
+		// recreated it) stays QUARANTINED permanently, as evidence, and is no
+		// longer anything a writer could be granted; counting it made the
+		// blocker unresolvable for good once a repository had been recovered.
+		newestGeneration := make(map[string]uint64, len(repoWorkspaces))
 		for _, rw := range repoWorkspaces {
-			if rw.State == workspace.RepositoryWorkspaceQuarantined {
+			if rw.Generation > newestGeneration[string(rw.RepositoryID)] {
+				newestGeneration[string(rw.RepositoryID)] = rw.Generation
+			}
+		}
+		for _, rw := range repoWorkspaces {
+			if rw.State == workspace.RepositoryWorkspaceQuarantined && rw.Generation == newestGeneration[string(rw.RepositoryID)] {
 				return fmt.Errorf("%w: repository workspace %s", ErrWorkspaceQuarantined, rw.ID)
 			}
 		}
