@@ -245,6 +245,30 @@ and the task header show the run count (`runCount`). The count on the board is p
 after an upgrade from a build older than V9-06, run `aw projection rebuild --project-id <id> --projection-name workitem` once so the cards of WorkItems that
 already ran show their count (see [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md)); `runs` is always exact.
 
+## The worker died (or was killed) while an agent was writing (V9-19)
+
+When a worker stops without cleaning up — the process was killed, the machine rebooted — the attempt it was running
+cannot report anything. Once the worker's job lease runs out (`--lease-ttl`, 30 s by default) the recovery sweep ends
+that attempt as `INDETERMINATE` / `OWNERSHIP_LOST_MUTATING` (it held the repository's write lease, so aw cannot assume
+nothing was written) and the run goes on with a new attempt, or ends `FAILED` if the node has no attempts left.
+
+The write lease the dead attempt held is **taken over as soon as the sweep has ended that attempt**: the next attempt
+(automatic or `retry-task`) gets the worktree right away. Before V9-19 the lease was kept for the node's whole
+`timeoutSeconds` plus 2 minutes, so every retry failed with `CONFLICT` ("repository workspace already has an active
+writer") for that long — 32 minutes for a 30-minute agent timeout. A lease whose attempt is still `RUNNING` is not taken
+over, whatever its age.
+
+What to check after a crash:
+
+- **The worktree.** Nothing resets it. If the agent had already changed files, the next attempt starts from them;
+  `aw repository-workspace diff` shows what is there, and `git checkout -- .` / `git clean -fd` in the worktree
+  discards it. If the agent had committed on its own, HEAD moved and the worktree is `QUARANTINED` instead — see
+  [06-source-control-and-releases.md](06-source-control-and-releases.md#a-quarantined-worktree-and-how-it-is-recovered-v9-18).
+- **A stray agent process (Linux and macOS).** On Windows an agent process dies with the worker that started it (the
+  worker's job object). On Linux and macOS a worker killed with `SIGKILL` can leave its agent process running, and aw
+  does not look for it: the takeover assumes the attempt is gone. Look for the orphan (`ps` for the provider CLI,
+  working directory = the worktree) and stop it before the retry if one is there.
+
 ## `run start` fails with "work item is not READY"
 
 Call `aw work-item mark-ready --expected-version <n> <workItemId>` first — `readiness: true` from `aw
