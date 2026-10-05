@@ -9,6 +9,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/readinesscheck"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -173,7 +174,11 @@ func ExecuteWorkspaceReconciliation(ctx context.Context, deps ExecuteWorkspaceRe
 		// captured, or a next-generation row from an earlier Recreate
 		// already exists) — nothing more to do. See this package's own doc
 		// comment's "Idempotency" section, layer 2.
-		return nil
+		// V9-18: ...except that a generation recreated by that earlier claim
+		// must have its baseline job; the recreate and the job are two
+		// transactions, so a crash between them left a READY generation no
+		// baseline would ever vouch for.
+		return ensureRecreatedBaseline(ctx, deps, request, current)
 	}
 	if current.State != workspace.RepositoryWorkspaceReady && current.State != workspace.RepositoryWorkspaceQuarantined {
 		return fmt.Errorf("repository workspace %s is %s, want READY or QUARANTINED", current.ID, current.State)
@@ -254,10 +259,27 @@ func executeRecreate(
 		return fmt.Errorf("load repository %s: %w", request.RepositoryID, err)
 	}
 
+	// V9-18: the new generation continues from where the family stood, not
+	// from where the repository's default branch is now. The quarantined
+	// generation's CurrentRevision is the last commit aw itself recorded on it
+	// (a ReleaseSet local commit advances it), so every task the family has
+	// already committed stays in the new generation's history; whatever the
+	// interrupted attempt left uncommitted or committed on its own is not
+	// carried over (it stays on the quarantined generation's branch, as
+	// evidence). Only a row that never recorded either revision falls back to
+	// the default branch, the way every generation used to start.
+	baseRef := current.CurrentRevision
+	if baseRef == "" {
+		baseRef = current.BaseRevision
+	}
+	if baseRef == "" {
+		baseRef = repo.DefaultRef
+	}
+
 	nextGeneration := current.Generation + 1
 	handle, err := deps.Provider.Provision(ctx, ports.ProvisionSpec{
 		RepositoryID: project.RepositoryID(request.RepositoryID), LocalRepository: repo.RemoteLocator,
-		BaseRef: repo.DefaultRef, FamilyID: work.TaskFamilyID(request.FamilyID),
+		BaseRef: baseRef, FamilyID: work.TaskFamilyID(request.FamilyID),
 		WorkspaceSetID: workspace.WorkspaceSetID(request.WorkspaceSetID), Generation: nextGeneration,
 	})
 	if err != nil {
@@ -271,13 +293,62 @@ func executeRecreate(
 		return fmt.Errorf("capture revision for recreated workspace %s: %w", request.RepositoryID, err)
 	}
 
-	_, err = deps.Lifecycle.RecreateRepositoryWorkspace(ctx, ports.RecreateRepositoryWorkspaceRequest{
+	created, err := deps.Lifecycle.RecreateRepositoryWorkspace(ctx, ports.RecreateRepositoryWorkspaceRequest{
 		PreviousRepositoryWorkspaceID: current.ID, PreviousExpectedVersion: current.Version,
 		NewRepositoryWorkspaceID: workspace.RepositoryWorkspaceID(deps.IDs.NewID()),
 		Locator:                  handle.String(), BranchRef: "", BaseRevision: revision.VCSObjectID,
 		EventID: deps.IDs.NewID(), CorrelationID: request.CorrelationID, OccurredAt: time.Now().UTC(),
 	})
+	if err != nil {
+		return err
+	}
+	return enqueueRecreatedBaseline(ctx, deps, request.ProjectID, created)
+}
+
+// enqueueRecreatedBaseline gives a recreated generation the baseline job that
+// workspace provisioning gives a first generation (V9-18). Without it a
+// repository that declares a readiness profile has a READY generation whose
+// baseline is PENDING forever, so no work item that may write to it can become
+// READY. The job's idempotency key is the workspace and profile version, so
+// calling this twice enqueues one job; a repository without a profile enqueues
+// none.
+func enqueueRecreatedBaseline(ctx context.Context, deps ExecuteWorkspaceReconciliationDeps, projectID string, created workspace.RepositoryWorkspace) error {
+	err := deps.UnitOfWork.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		return readinesscheck.EnqueueBaselineForNewWorkspace(ctx, tx, deps.IDs, projectID, created, time.Now().UTC())
+	})
+	// The job is already there (this is a replay): the transaction rolled back
+	// and the baseline it wanted is on its way, which is all that was needed.
+	if errors.Is(err, ports.ErrPersistenceAlreadyExists) {
+		return nil
+	}
 	return err
+}
+
+// ensureRecreatedBaseline is the replay half of enqueueRecreatedBaseline: when
+// current was already superseded by a recreate, make sure the generation that
+// recreate produced has its baseline job.
+func ensureRecreatedBaseline(
+	ctx context.Context, deps ExecuteWorkspaceReconciliationDeps, request ExecuteWorkspaceReconciliationRequest, current workspace.RepositoryWorkspace,
+) error {
+	if current.State != workspace.RepositoryWorkspaceQuarantined {
+		return nil
+	}
+	var next workspace.RepositoryWorkspace
+	err := deps.UnitOfWork.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		next, err = tx.Work().GetRepositoryWorkspace(ctx, request.WorkspaceSetID, request.RepositoryID, current.Generation+1)
+		return err
+	})
+	if errors.Is(err, ports.ErrPersistenceNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load the generation recreated from repository workspace %s: %w", current.ID, err)
+	}
+	if next.State != workspace.RepositoryWorkspaceReady {
+		return nil
+	}
+	return enqueueRecreatedBaseline(ctx, deps, request.ProjectID, next)
 }
 
 // loadCurrentRepositoryWorkspace re-reads request's own RepositoryWorkspace

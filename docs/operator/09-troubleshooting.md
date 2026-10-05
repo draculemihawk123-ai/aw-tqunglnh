@@ -199,7 +199,10 @@ so its messages, evidence and history stay in one place:
    must not see, before the next step.
 3. **Resolve the blocker**: `aw blocker resolve --mode RESOLVED --reason "<why it is fine to run again>" <blockerId>`.
    The WorkItem becomes `READY`. The preconditions are the ones every blocker has: no run of the WorkItem still in
-   progress and no `QUARANTINED` repository workspace in its family (`aw repository-workspace show`).
+   progress and no `QUARANTINED` repository workspace in its family (`aw repository-workspace show`) — the newest
+   generation of each repository is the one that counts, so after `aw repository-workspace reconcile` recreated it
+   ([06-source-control-and-releases.md](06-source-control-and-releases.md#a-quarantined-worktree-and-how-it-is-recovered-v9-18))
+   the old quarantined row no longer blocks.
 4. **Start the next run**: `aw run start --workflow-version-id <the same workflow version> --idempotency-key <new key> <workItemId>`.
 
 What does not change:
