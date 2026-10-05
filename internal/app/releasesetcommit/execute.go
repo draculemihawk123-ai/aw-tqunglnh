@@ -235,6 +235,14 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 		}); err != nil {
 			return err
 		}
+		// V9-16: HEAD of the worktree is now the commit aw just made. Record it, so that the next Run of
+		// this family starts from HEAD and not from the revision the worktree was provisioned from.
+		if err := tx.Work().AdvanceRepositoryWorkspaceRevision(ctx, ports.AdvanceRepositoryWorkspaceRevisionUpdate{
+			RepositoryWorkspaceID: current.Workspace.ID, ExpectedVersion: current.Workspace.Version,
+			Revision: resultVCSObjectID, OccurredAt: now,
+		}); err != nil {
+			return err
+		}
 		eventPayload, err := json.Marshal(releaseSetLocalCommitCommittedEventPayload{
 			ReleaseSetLocalCommitID: string(intent.ID), ParentVCSObjectID: parentVCSObjectID,
 			ResultVCSObjectID: resultVCSObjectID, JobID: string(jobLease.JobID),

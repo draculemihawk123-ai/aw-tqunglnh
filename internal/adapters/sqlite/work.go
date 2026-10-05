@@ -824,6 +824,31 @@ func (r workRepository) QuarantineRepositoryWorkspace(ctx context.Context, updat
 	return quarantineRepositoryWorkspaceTx(ctx, r.tx, update)
 }
 
+// AdvanceRepositoryWorkspaceRevision implements ports.WorkRepository (V9-16): the
+// fenced READY CAS that records the HEAD aw just committed as the workspace's
+// CurrentRevision, composed into the local commit's own finalization.
+func (r workRepository) AdvanceRepositoryWorkspaceRevision(ctx context.Context, update ports.AdvanceRepositoryWorkspaceRevisionUpdate) error {
+	if update.RepositoryWorkspaceID == "" || strings.TrimSpace(update.Revision) == "" {
+		return errors.New("repository workspace revision update is incomplete")
+	}
+	result, err := r.tx.ExecContext(ctx,
+		"UPDATE repository_workspaces SET current_revision = ?, version = version + 1, updated_at = ? "+
+			"WHERE id = ? AND state = 'READY' AND version = ?",
+		strings.TrimSpace(update.Revision), formatWorkflowTime(update.OccurredAt), string(update.RepositoryWorkspaceID), update.ExpectedVersion)
+	if err != nil {
+		return MapSQLiteError(fmt.Errorf("advance repository workspace %s revision: %w", update.RepositoryWorkspaceID, err))
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read repository workspace revision update result: %w", err)
+	}
+	if affected != 1 {
+		return fmt.Errorf("%w: repository workspace %s expected READY@%d",
+			ports.ErrOptimisticConflict, update.RepositoryWorkspaceID, update.ExpectedVersion)
+	}
+	return nil
+}
+
 func getRepositoryWorkspaceTx(ctx context.Context, tx *sql.Tx, workspaceSetID, repositoryID string, generation uint64) (workspace.RepositoryWorkspace, error) {
 	row := tx.QueryRowContext(ctx, `
 SELECT `+repositoryWorkspaceColumns+`

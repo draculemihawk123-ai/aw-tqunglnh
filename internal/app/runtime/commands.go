@@ -226,10 +226,20 @@ func StartWorkflowRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.So
 			return err
 		}
 
+		// V9-16: the Run starts from where the family is now, not from where it began.
+		familyWorkspaces, err := tx.Work().ListWorkspaceSetRepositoryWorkspaces(ctx, string(workspaceSet.ID))
+		if err != nil {
+			return err
+		}
+		startRevisions, err := startRevisionSet(*workspaceSet.BaseRevisionSet, familyWorkspaces)
+		if err != nil {
+			return err
+		}
+
 		manifestID := ids.NewID()
 		manifest, err := runtimedomain.NewExecutionManifest(
 			runtimedomain.ExecutionManifestID(manifestID), run.ID, version.ID(), version.ContentHash(),
-			version.Dependencies(), *workspaceSet.BaseRevisionSet, "", "", cmd.RequestedAt,
+			version.Dependencies(), startRevisions, "", "", cmd.RequestedAt,
 		)
 		if err != nil {
 			return err

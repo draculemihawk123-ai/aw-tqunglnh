@@ -245,6 +245,7 @@ func TestExecuteReleaseSetLocalCommit_HappyPath_CreatesRealCommitAndReleasesLeas
 
 	result := fx.request(t, "req-1", "hash-1", "record repository result")
 	job := fx.claim(t, "worker-1", 10*time.Minute)
+	workspaceBefore := fx.loadRepositoryWorkspace(t).Workspace
 
 	if err := ExecuteReleaseSetLocalCommit(fx.ctx, fx.deps(), job); err != nil {
 		t.Fatalf("ExecuteReleaseSetLocalCommit: %v", err)
@@ -253,6 +254,19 @@ func TestExecuteReleaseSetLocalCommit_HappyPath_CreatesRealCommitAndReleasesLeas
 	intent := fx.loadIntent(t, result.ReleaseSetLocalCommitID)
 	if intent.State != workdomain.ReleaseSetLocalCommitCommitted {
 		t.Fatalf("state = %s, want COMMITTED", intent.State)
+	}
+
+	// V9-16: the worktree's HEAD moved, so the workspace's recorded current
+	// revision must move with it — the next Run of the family pins this value.
+	workspaceAfter := fx.loadRepositoryWorkspace(t).Workspace
+	if workspaceAfter.CurrentRevision != intent.ResultVCSObjectID {
+		t.Fatalf("workspace current revision = %q, want the committed result %q", workspaceAfter.CurrentRevision, intent.ResultVCSObjectID)
+	}
+	if workspaceAfter.Version != workspaceBefore.Version+1 {
+		t.Fatalf("workspace version = %d, want %d (advanced once)", workspaceAfter.Version, workspaceBefore.Version+1)
+	}
+	if workspaceAfter.State != workspace.RepositoryWorkspaceReady {
+		t.Fatalf("workspace state = %s, want READY", workspaceAfter.State)
 	}
 	if intent.ParentVCSObjectID != fx.baseRevision {
 		t.Fatalf("parent = %s, want base revision %s", intent.ParentVCSObjectID, fx.baseRevision)
