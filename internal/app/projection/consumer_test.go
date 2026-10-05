@@ -318,6 +318,41 @@ func TestApplyBatch_FallbackMatch_ScopeExpansionRejectedResolvesToFamilyRoot(t *
 	}
 }
 
+// TestApplyBatch_CompletionDecidedPassMovesTheCardToDone replays the events the
+// production runtime really writes for a WorkItem that finishes: the completion
+// policy's PASS is announced by RUN_COMPLETION_REQUESTED and COMPLETION_DECIDED
+// only — there is no WORKFLOW_RUN_FINALIZED — and the card must end up DONE
+// (V9-15: it used to stay ACTIVE with a COMPLETING badge).
+func TestApplyBatch_CompletionDecidedPassMovesTheCardToDone(t *testing.T) {
+	uow := fake.New()
+	appendTestEvent(t, uow, "project-1", "RootWorkItemCreated", 1,
+		`{"workItemId":"wi-1","projectId":"project-1","familyId":"f-1","workspaceSetId":"ws-1","title":"Root"}`)
+	appendTestEvent(t, uow, "project-1", "WorkflowRunStarted", 1,
+		`{"runId":"run-1","workItemId":"wi-1","nodeRunId":"nr-1","nodeKey":"start"}`)
+	appendTestEvent(t, uow, "project-1", "RUN_COMPLETION_REQUESTED", 1,
+		`{"runId":"run-1","workItemId":"wi-1"}`)
+	appendTestEvent(t, uow, "project-1", "COMPLETION_DECIDED", 1,
+		`{"runId":"run-1","workItemId":"wi-1","endNodeRunId":"nr-9","decisionArtifactId":"d-1","outcome":"PASS"}`)
+
+	outcome, err := ApplyBatch(context.Background(), uow, NewCatalog(), ApplyBatchRequest{
+		ProjectID: "project-1", ProjectionName: ProjectionName, Owner: "consumer-a",
+		TTL: 30 * time.Second, BatchSize: 100, Now: time.Now().UTC(), IDs: idsource.Random{},
+	})
+	if err != nil {
+		t.Fatalf("ApplyBatch: %v", err)
+	}
+	if outcome.Poisoned {
+		t.Fatalf("outcome.Poisoned = true (%s), want false", outcome.PoisonReason)
+	}
+	row := getRow(t, uow, "project-1", outcome.Generation, "wi-1")
+	if row.Status != statusDone || row.ActiveRunID != "" || row.ActiveRunStatus != "" {
+		t.Fatalf("row = status %q run %q badge %q, want DONE with no active Run", row.Status, row.ActiveRunID, row.ActiveRunStatus)
+	}
+	if row.RunCount != 1 {
+		t.Fatalf("row.RunCount = %d, want 1 (the finished Run still counts)", row.RunCount)
+	}
+}
+
 func TestApplyBatch_FallbackMatch_WorkflowRunFinalizedResolvesByActiveRunID(t *testing.T) {
 	uow := fake.New()
 	appendTestEvent(t, uow, "project-1", "RootWorkItemCreated", 1,
