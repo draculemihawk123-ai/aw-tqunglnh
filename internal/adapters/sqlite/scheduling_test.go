@@ -992,3 +992,68 @@ INSERT INTO execution_attempts(
 		t.Fatalf("seed scheduling fixture: %v", err)
 	}
 }
+
+// V9-19: a worker that died mid-attempt left its write lease locked until the
+// lease's own (timeout + grace) expiry. Once the recovery sweep has ended the
+// holder attempt the lease is taken over right away; while the holder is still
+// RUNNING it is held, however long its TTL.
+func TestWriteLeaseIsTakenOverOnceTheHolderAttemptHasEnded(t *testing.T) {
+	store := openSchedulingTestStore(t)
+	seedSchedulingFixture(t, store)
+	ctx := context.Background()
+
+	enqueueSchedulingTestJob(t, store, "job-1", "job-1-key", 3)
+	_, jobLease1, err := store.ClaimJob(ctx, "worker-1", 5*time.Second)
+	if err != nil {
+		t.Fatalf("claim job-1: %v", err)
+	}
+	enqueueSchedulingTestJob(t, store, "job-2", "job-2-key", 3)
+	_, jobLease2, err := store.ClaimJob(ctx, "worker-2", 5*time.Second)
+	if err != nil {
+		t.Fatalf("claim job-2: %v", err)
+	}
+	target := ports.WorkspaceLeaseTarget{RepositoryID: "repo-web", RepositoryWorkspaceID: "rw-web", Generation: 1}
+
+	// The first attempt takes the lease for a long time (an agent's timeout plus grace).
+	first, err := store.AcquireWriteLeases(ctx, ports.AcquireWriteLeasesRequest{
+		JobLease: jobLease1, AttemptID: runtime.ExecutionAttemptID("attempt-1"), Targets: []ports.WorkspaceLeaseTarget{target}, TTL: 45 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("first AcquireWriteLeases: %v", err)
+	}
+
+	// While attempt-1 is RUNNING the lease is held, whatever the second claimant is.
+	second := ports.AcquireWriteLeasesRequest{
+		JobLease: jobLease2, AttemptID: runtime.ExecutionAttemptID("attempt-2"), Targets: []ports.WorkspaceLeaseTarget{target}, TTL: 45 * time.Minute,
+	}
+	if _, err := store.AcquireWriteLeases(ctx, second); !errors.Is(err, ports.ErrWriteLeaseConflict) {
+		t.Fatalf("AcquireWriteLeases while the holder attempt is RUNNING = %v, want ErrWriteLeaseConflict", err)
+	}
+
+	// The worker dies; the recovery sweep ends attempt-1 as INDETERMINATE.
+	if err := store.TerminateInterruptedAttempt(ctx, ports.AttemptTerminationUpdate{
+		AttemptID: "attempt-1", ExpectedVersion: 1, NextState: runtime.ExecutionAttemptIndeterminate,
+		Reason: runtime.TerminationReasonOwnershipLostMutating, EventID: "event-attempt-1-ended", CorrelationID: "v9-19", OccurredAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("TerminateInterruptedAttempt: %v", err)
+	}
+
+	taken, err := store.AcquireWriteLeases(ctx, second)
+	if err != nil {
+		t.Fatalf("AcquireWriteLeases after the holder attempt ended = %v, want the lease taken over", err)
+	}
+	if len(taken) != 1 || taken[0].FenceToken <= first[0].FenceToken {
+		t.Fatalf("takeover grants = %+v, want one with a fence token above %d", taken, first[0].FenceToken)
+	}
+	if err := store.ValidateWriteLease(ctx, taken[0]); err != nil {
+		t.Fatalf("ValidateWriteLease(takeover): %v", err)
+	}
+	// The old holder is fenced.
+	if err := store.ValidateWriteLease(ctx, first[0]); !errors.Is(err, ports.ErrWriteLeaseLost) {
+		t.Fatalf("ValidateWriteLease(stale) = %v, want ErrWriteLeaseLost", err)
+	}
+	// And its late release is ignored as lost, not an error that matters.
+	if err := store.ReleaseWriteLeases(ctx, first); !errors.Is(err, ports.ErrWriteLeaseLost) {
+		t.Fatalf("ReleaseWriteLeases(stale) = %v, want ErrWriteLeaseLost", err)
+	}
+}

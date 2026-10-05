@@ -408,6 +408,24 @@ WHERE state = 'LEASED'
 	return affected, nil
 }
 
+// AcquireWriteLeases grants request.Targets to request.AttemptID as one atomic
+// batch. A target is free when nobody holds it, when the holder's lease_until has
+// passed, or (V9-19) when the holder's own ExecutionAttempt is no longer RUNNING.
+//
+// The last case is the crashed-worker case. A lease is granted for the attempt's
+// whole execution timeout plus a grace period and nothing renews it, so a worker
+// that died mid-attempt left its workspace locked for that long — up to
+// timeoutSeconds + 2 minutes, long after its job lease had expired and the
+// recovery sweep had ended the attempt (LOST / INDETERMINATE). Nobody could
+// write to the worktree in the meantime, and every retry failed with a write
+// lease conflict. An attempt that is no longer RUNNING cannot be the one
+// writing under that lease (the engine has ended it, and the worker lease it ran
+// under is gone), so the lease is taken over exactly like an expired one: the
+// fence token increases, which fences anything the old holder still had. In the
+// normal case the holder's finalization moves the attempt out of RUNNING and then
+// releases the lease; a competitor that gets in between simply wins, and the
+// holder's release is ignored as lost. A lease whose attempt is still RUNNING is
+// held until it expires, exactly as before.
 func (s *Store) AcquireWriteLeases(
 	ctx context.Context,
 	request ports.AcquireWriteLeasesRequest,
@@ -488,6 +506,10 @@ ON CONFLICT(repository_workspace_id, generation) DO UPDATE SET
     lease_until = excluded.lease_until,
     heartbeat_at = excluded.heartbeat_at
 WHERE julianday(write_leases.lease_until) <= julianday('now')
+   OR NOT EXISTS (
+       SELECT 1 FROM execution_attempts AS holder
+       WHERE holder.id = write_leases.holder_attempt_id AND holder.state = 'RUNNING'
+   )
 RETURNING fence_token, lease_until`,
 			request.JobLease.JobID,
 			request.JobLease.Token,
