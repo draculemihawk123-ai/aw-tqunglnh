@@ -437,6 +437,12 @@ func (e *AgentNodeExecutor) buildEvidence(
 			ArtifactReferences: references, PolicyVersion: request.ExecutionProfileHash,
 		})
 	}
+	// V9-17: and one row for what the agent said (agent_output_evidence.go), so
+	// an operator can read it and a maker sent back by this node, if it is a
+	// CHECKER, is told why.
+	if err := stageAgentOutputEvidence(ctx, e.uow, e.ids, e.clk, e.store, req, request, resolved, evidence); err != nil {
+		return nil, err
+	}
 	return evidence, nil
 }
 

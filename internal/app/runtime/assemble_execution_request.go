@@ -147,6 +147,12 @@ func AssembleAgentExecutionRequest(
 			return ports.AgentExecutionRequest{}, err
 		}
 	}
+	if len(gathered.reviewerFeedback) > 0 {
+		input.reviewerFeedback, err = renderReviewerFeedback(ctx, store, gathered.reviewerFeedback)
+		if err != nil {
+			return ports.AgentExecutionRequest{}, err
+		}
+	}
 	for _, r := range gathered.resources {
 		input.resources = append(input.resources, instructionResourceInput{
 			ownerVersionID: r.Identity.OwnerVersionID, resourceKey: r.Identity.ResourceKey, contentHash: r.Identity.ContentHash,
@@ -311,6 +317,7 @@ type assembledRequestInputs struct {
 	messages            []assembledMessageInput
 	omittedMessages     []instructionOmittedMessage
 	checkFailures       []assembledCheckFailureInput
+	reviewerFeedback    []assembledReviewerFeedbackInput
 	resources           []contextassembler.Candidate
 	allowedOutcomes     []string
 	// recoveryCheckpointID is V5-13's own recovery marker (2026-09-11):
@@ -482,8 +489,15 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 	// those are V5-12's input allowlist for a different reader and are left
 	// exactly as they were.
 	var checkFailures []assembledCheckFailureInput
+	var reviewerFeedback []assembledReviewerFeedbackInput
 	if profile.Role != workflow.AgentRoleChecker && len(snapshot.EvidenceRefs) > 0 {
 		checkFailures, err = gatherCheckFailureInputs(ctx, tx, snapshot.EvidenceRefs)
+		if err != nil {
+			return assembledRequestInputs{}, err
+		}
+		// V9-17: the same refs may name the AGENT_OUTPUT row of a CHECKER that
+		// sent this maker back (gatherReviewerFeedbackEvidenceRefs).
+		reviewerFeedback, err = gatherReviewerFeedbackInputs(ctx, tx, snapshot.EvidenceRefs)
 		if err != nil {
 			return assembledRequestInputs{}, err
 		}
@@ -531,7 +545,7 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 		effectiveScope: nodeRun.EffectiveScope, executionProfileHash: attempt.ExecutionProfileHash,
 		timeoutSeconds: profile.TimeoutSeconds, model: profile.Model,
 		isolationTier: profile.IsolationTier, allowedCapabilities: profile.AllowedCapabilities,
-		workspaceMounts: mounts, messages: messages, omittedMessages: omittedMessages, checkFailures: checkFailures, resources: resources, allowedOutcomes: allowedOutcomes,
+		workspaceMounts: mounts, messages: messages, omittedMessages: omittedMessages, checkFailures: checkFailures, reviewerFeedback: reviewerFeedback, resources: resources, allowedOutcomes: allowedOutcomes,
 		workItemID: string(workItem.ID), workItemTitle: workItem.Title, workItemBehavior: workItem.Behavior,
 		workItemVerificationSpec: workItem.VerificationSpec, workItemRiskLevel: string(workItem.RiskLevel), workItemAcceptanceCriteria: acceptance,
 		recoveryCheckpointID: recoveryCheckpointID,

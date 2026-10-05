@@ -187,6 +187,41 @@ When the maker runs again through that edge, its context snapshot carries the ev
 prompt gets a `checkFailures` section: `what` failed, `why` (the tail of stderr, or stdout if stderr was empty, for a
 command; the criteria that did not pass for a gate — bounded to 4 KiB) and `fix`. Only the latest failure is shown.
 
+## What an agent said, and a reviewer sending a maker back (V9-17)
+
+Every `AGENT` attempt that finishes `SUCCEEDED` and said something leaves an **`AGENT_OUTPUT`** evidence row (verdict
+`RECORDED`, so it never satisfies a completion policy): its one artifact is the attempt's **final message** as plain
+text, already redacted (the `<agentkit-outcome>` marker is not part of it). Read it with the commands you already use
+for evidence:
+
+```bash
+aw evidence list --project-id <id> --run-id <runId> <workItemId>          # the row's kind is AGENT_OUTPUT
+aw artifact get --project-id <id> --output - <workItemId> <evidenceId> <artifactId>
+```
+
+This is where a `CHECKER`'s reason for `rework` lives. Only the final message is kept, not the transcript; a failed,
+timed-out or cancelled attempt leaves no row.
+
+When an edge leads **straight from a `CHECKER` `AGENT` node to a `MAKER` `AGENT` node**, the maker's context snapshot
+pins that checker attempt's `AGENT_OUTPUT` row and its prompt gets a `reviewerFeedback` section, right after
+`checkFailures`: `reviewNode`, the `outcome` the reviewer reported, `evidenceIds`, the reviewer's `message` (bounded to
+8 KiB, the start kept) and a `fix` line telling the maker to make the changes asked for, then finish. Like
+`checkFailures` it appears only on the activation that came through that edge. For example, to send a maker back
+from its review (the `implement` node already needs a `cyclePolicy`, as for any loop):
+
+```json
+{"key": "ai-review-rework", "from": "ai-review", "outcome": "rework", "to": "implement"}
+```
+
+A review that routes to an `APPROVAL` first (`ai-review → review → implement`) gives the maker nothing automatically:
+the reviewer's message is on the run for the operator to read (list `AGENT_OUTPUT` in the approval's
+`requestedEvidenceKinds` to have it shown with the approval), and the operator's own `rework` feedback is what
+reaches the maker as a message. The reverse never happens: a `CHECKER` is not given a maker's `AGENT_OUTPUT`
+(the checker's input stays requirement, diff and check evidence).
+
+Schema v2 only: an attempt scheduled before the upgrade keeps its v1 prompt, and a run already in progress sends the
+reviewer's words from the first `rework` after the upgrade.
+
 ## What an agent receives — the instruction artifact (V9-03, ADR-032)
 
 An `AGENT` node's prompt is one JSON document, written to the provider's stdin and pinned as the attempt's
@@ -200,6 +235,7 @@ V9-03 it has this shape (**schema v2**, keys in exactly this order):
                   "verificationSpec": "...", "riskLevel": "HIGH",
                   "allowedOutcomes": ["approved", "rework"], "outcomeProtocol": "..."},
  "checkFailures": [{"checkNode": "...", "evidenceIds": ["..."], "what": "...", "why": "...", "fix": "..."}],
+ "reviewerFeedback": [{"reviewNode": "...", "outcome": "rework", "evidenceIds": ["..."], "message": "...", "fix": "..."}],
  "resources": [{"ownerVersionId": "...", "resourceKey": "...", "priority": "GUIDANCE", "contentHash": "...", "content": "..."}],
  "messages": [{"messageId": "...", "role": "USER", "content": "..."}],
  "omittedMessages": [{"messageId": "...", "sequence": 3, "actor": "...", "role": "TOOL", "createdAt": "...", "reason": "BUDGET_EXCEEDED"}],
@@ -226,6 +262,8 @@ V9-03 it has this shape (**schema v2**, keys in exactly this order):
   descriptions yet; the list is the names only.
 - **`checkFailures`** is only present for a maker sent back by a failing check (see the section above), right after
   the task contract.
+- **`reviewerFeedback`** is only present for a maker sent back by a `CHECKER` (V9-17, section above), right after
+  `checkFailures`.
 - **`omittedMessages`** is only present when the node's context policy declares a `messages` budget that left some
   messages out; it follows `messages` (see below).
 

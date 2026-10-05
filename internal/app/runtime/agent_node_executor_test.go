@@ -120,6 +120,9 @@ type bridgeFakeAgentExecutor struct {
 	result ports.AgentExecutionResult
 	err    error
 	events []ports.AgentEventKind
+	// messages (V9-17) are ASSISTANT_MESSAGE events emitted right after the first
+	// scripted event, before the rest, so the terminal event stays last.
+	messages []string
 	// onStart (V9-01) runs inside Start, before the scripted result is
 	// returned — the stand-in for "what the spawned process did to the
 	// worktree". starts, if non-nil, counts Start calls (a spawn).
@@ -146,10 +149,19 @@ func (f *bridgeFakeAgentExecutor) Start(ctx context.Context, request ports.Agent
 		f.onStart()
 	}
 	var sequence uint64
-	for _, kind := range f.events {
+	for index, kind := range f.events {
 		sequence++
 		if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: request.AttemptID, Sequence: sequence, Kind: kind, ObservedAt: time.Now().UTC()}); err != nil {
 			return ports.AgentExecutionResult{}, err
+		}
+		if index != 0 {
+			continue
+		}
+		for _, message := range f.messages {
+			sequence++
+			if err := sink.Accept(ctx, ports.AgentEvent{AttemptID: request.AttemptID, Sequence: sequence, Kind: ports.AgentEventAssistantMessage, Message: message, ObservedAt: time.Now().UTC()}); err != nil {
+				return ports.AgentExecutionResult{}, err
+			}
 		}
 	}
 	result := f.result
@@ -237,6 +249,9 @@ type bridgeFixtureOptions struct {
 	agentResult     ports.AgentExecutionResult
 	agentErr        error
 	agentEvents     []ports.AgentEventKind
+	// agentMessages (V9-17) are what the scripted agent says: one
+	// ASSISTANT_MESSAGE event each.
+	agentMessages []string
 	// role is V5-12 contract 3's own addition (2026-09-10) — empty (the
 	// zero value, every existing test's own default) resolves to MAKER via
 	// workflow.AgentNodeConfig.EffectiveRole(), identical to every pre-
@@ -319,7 +334,7 @@ func bridgeFixture(t *testing.T, opts bridgeFixtureOptions) (
 	registry := eventschema.NewRegistry()
 	agentevents.RegisterEventSchemas(registry)
 	agents, err := agentregistry.New(ctx, &bridgeFakeAgentExecutor{
-		result: opts.agentResult, err: opts.agentErr, events: opts.agentEvents, onStart: opts.onAgentStart, starts: opts.agentStarts,
+		result: opts.agentResult, err: opts.agentErr, events: opts.agentEvents, messages: opts.agentMessages, onStart: opts.onAgentStart, starts: opts.agentStarts,
 		onRequest: opts.onAgentRequest,
 	})
 	if err != nil {
