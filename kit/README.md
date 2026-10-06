@@ -36,7 +36,7 @@ kit/
 │   ├── lib.sh                  # thư viện cho script lệnh (mục 4)
 │   └── reject.sh  check-feature-docs.sh  secrets-gate.sh
 ├── policies/                   # attempt(-once), permission(-network), completion(-reviewed, -feature)
-├── skills/                     # skill-feature-flow, skill-review
+├── skills/                     # skill-feature-flow, skill-review, skill-code-review
 ├── workflows/                  # wf-feature-definition, wf-task-delivery (mẫu, có chỗ trống cho project điền)
 ├── schema/aw-project.schema.json   # đặc tả của aw-project.json và kit.json
 └── tests/check-kit.sh          # kiểm tra tự động (mục 7)
@@ -122,9 +122,12 @@ Ví dụ: bạn muốn node review dùng một skill review tổng hợp từ nh
    `aw-publish.py` cảnh báo khi một agent nhận quá 15 `HARD_CONSTRAINT`. Viết thành các resource nhỏ theo chủ đề
    (checklist, bảo mật, phong cách…), mỗi resource một `key` có tiền tố theo nguồn (`review.`, `security.`).
 2. **Ghi nguồn.** Mỗi resource có `provenance`:
-   `{"owner": "…", "source": "<đường dẫn trong kho hoặc URL>", "revision": "…", "lastVerified": "<RFC 3339>"}`.
-   Nội dung lấy từ bên ngoài (URL) **phải có thêm `license`**; `--check` từ chối nếu thiếu. Resource quá 180 ngày chưa rà lại
-   bị `aw-publish.py` cảnh báo.
+   `{"owner": "…", "source": "<đường dẫn trong kho, tên nguồn hoặc URL>", "revision": "…", "lastVerified": "<RFC 3339>"}`.
+   **Chỉ bốn trường này**: `aw` đọc nghiêm ngặt và từ chối trường lạ lúc publish (đã thử: `unknown field "license"`), và
+   `--check` bắt sớm lỗi đó. Nội dung lấy từ bên ngoài thì khai thêm ở **entry trong `kit.json`** (chỉ `aw-publish.py` đọc):
+   `"origin": "<từ đâu>"` và `"license": "<giấy phép>"`; có `origin` hoặc `provenance.source` là URL mà thiếu `license` thì
+   `--check` từ chối. Chưa biết giấy phép thì ghi `"license": "UNKNOWN"`: `--check` và publish in cảnh báo mỗi lần cho tới
+   khi xác nhận. Resource quá 180 ngày chưa rà lại bị `aw-publish.py` cảnh báo.
 3. **Chọn `priority` và `selector` đúng chỗ.** Ví dụ review chỉ cho agent `CHECKER`: `"selector": {"blockKinds": ["CHECKER"]}`.
    Hai trường này nằm trong hash của resource, nên project đổi selector là tạo ra một mục khác (xem mục 8).
 4. **Đặt file** vào `skills/` (hoặc `policies/`, `commands/`) và **khai trong `kit.json`**:
@@ -161,6 +164,37 @@ khác major, thiếu bản mẫu, nguồn URL thiếu license, `@aw-include` h�
 
 Chưa có trong script (cần một bản cài `aw` thật): publish hai project và so version. Đã làm tay một lần khi tách kho (ghi ở
 README của ví dụ, mục "Phạm vi kiểm chứng").
+
+## Ví dụ đã thử: `skill-code-review`
+
+Skill review của claudekit (người dùng cung cấp) được nhận vào kho **sau khi chắt lọc**, không dán nguyên. Phần giữ lại:
+phương pháp dựa trên bằng chứng, hai giai đoạn (đúng yêu cầu rồi mới chất lượng), soi dấu hiệu code do AI viết, mức nghiêm
+trọng, và không tuyên bố điều chưa kiểm chứng. Phần bỏ vì không chạy được trong node CHECKER của `aw` (agent không tương tác,
+chỉ đọc, `git` và lệnh shell bị chặn ở chế độ `acceptEdits`): chọn chế độ review bằng `AskUserQuestion`, `gh pr diff`, subagent
+`code-reviewer`, `/ck:scout`, pipeline Task, và các `references/*.md` (không được cung cấp). Giấy phép của nguồn **chưa xác
+định** (`UNKNOWN`).
+
+Dùng: `agent-reviewer` của project thêm `"skill-code-review"` vào `resources` (cạnh `skill-review`, vốn giữ ràng buộc chỉ đọc
+và quy tắc chọn outcome). Cả ba resource có selector `blockKinds: ["CHECKER"]` nên chỉ agent review nhận.
+
+**Đã thử thật** (`aw` build từ repo, Claude CLI, node CHECKER trong workflow chỉ-review, sonnet, effort medium):
+
+| Ca | Skill cũ (`skill-review`) | + `skill-code-review` |
+|---|---|---|
+| Code cài sẵn 9 lỗi (test vẫn xanh), 2 lần mỗi bên | 9/9 lỗi, `rework` | 9/9 lỗi, `rework` |
+| Thay đổi đúng nhưng test thiếu biên Unicode | `approved`, ghi "Minor, không chặn" | `rework` (Important): đột biến `\p{javaWhitespace}`→`\s` qua toàn bộ test, đã kiểm chứng đúng |
+| Cùng thay đổi, test đã kín | `approved` | `approved` |
+
+- **Không chứng minh được "tìm nhiều lỗi hơn"**: reviewer cũ đã tìm đủ 9/9, nên bài thử bão hòa ở chỉ số đó.
+- **Khác biệt quan sát được ở hình thức và kỷ luật**: báo cáo xếp Critical/Important/Minor, mỗi mục có `file:dòng`, mở đầu nói rõ
+  "đã đọc, chưa chạy `mvn`", và đặt điều chưa kiểm chứng ở mục "Nghi ngờ chưa xác minh" riêng. Chi phí cao hơn khoảng 12 đến 17%
+  (0,130 và 0,138 USD so với 0,115 và 0,118).
+- **Tác dụng phụ**: hai lần trên code cài lỗi, reviewer mới xếp "thiếu `GET /{id}` và `PUT`" (không nằm trong tiêu chí của task)
+  ở Critical hoặc Important, trong khi một lần của reviewer cũ ghi đúng rằng việc đó không quyết định outcome. Xu hướng nâng mức
+  cho điều ngoài tiêu chí là rủi ro cần để ý.
+- **Giới hạn của bài thử**: mỗi ô một đến hai lần chạy, một repo, một stack. Ca "đúng nhưng test thiếu biên" do tôi vô tình
+  tạo ra, nên khác biệt ở ca đó có thể một phần là phương sai giữa các lần chạy, không chỉ do skill. Chưa chạy trong
+  `wf-fullstack-review` đủ vòng (có `implement`, hai bước test và cổng người duyệt).
 
 ## 8. Giới hạn hiện tại
 

@@ -60,7 +60,7 @@ cat > "$tmp/p/include.json" <<JSON
  "commands": [{"id": "c", "script": "s#include.sh"}]}
 JSON
 expect_err "@aw-include trỏ file không có" "@aw-include trỏ tới file không có" "$tmp/p/include.json"
-# kho copy: nguồn URL thiếu license
+# kho copy: nguồn URL thiếu license (khai ở entry trong kit.json, không phải trong provenance)
 cp -R "$kit" "$tmp/kitcopy"
 python3 - "$tmp/kitcopy" <<'PY'
 import json, sys
@@ -69,7 +69,20 @@ d = json.load(open(f, encoding="utf-8"))
 d["resources"][0]["provenance"]["source"] = "https://example.com/review"
 json.dump(d, open(f, "w", encoding="utf-8"), ensure_ascii=False)
 PY
-expect_err "nguồn URL thiếu license" "provenance.license" "$tmp/kitcopy/kit.json"
+expect_err "nguồn URL thiếu license ở kit.json" '"license"' "$tmp/kitcopy/kit.json"
+# provenance.license bị aw từ chối lúc publish (decode nghiêm ngặt) nên --check phải chặn sớm
+cp -R "$kit" "$tmp/kitcopy2"
+python3 - "$tmp/kitcopy2" <<'PY'
+import json, sys
+f = sys.argv[1] + "/skills/skill-review.json"
+d = json.load(open(f, encoding="utf-8"))
+d["resources"][0]["provenance"]["license"] = "MIT"
+json.dump(d, open(f, "w", encoding="utf-8"), ensure_ascii=False)
+PY
+expect_err "provenance.license bị chặn (aw không nhận)" "provenance có trường aw không nhận" "$tmp/kitcopy2/kit.json"
+# license UNKNOWN: không chặn, chỉ cảnh báo
+$pub "$kit/kit.json" --check 2>&1 | grep -q "giấy phép chưa xác định" && ok "license UNKNOWN chỉ cảnh báo" \
+  || echo "  (không có mục UNKNOWN trong kho: bỏ qua kiểm tra cảnh báo)"
 
 echo "== script đã nhúng thư viện chạy khi KHÔNG có AW_KIT"
 cat > "$tmp/p/demo.sh" <<'SH'

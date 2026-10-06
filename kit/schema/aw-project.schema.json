@@ -44,7 +44,9 @@
     "documentEntry": {
       "description": "Layer, Skill hoặc Policy lấy từ một file JSON (đường dẫn tính từ thư mục của file khai báo).",
       "type": "object", "additionalProperties": false, "required": ["id", "file"],
-      "properties": {"id": {"$ref": "#/definitions/id"}, "name": {"type": "string"}, "file": {"type": "string"}}
+      "properties": {"id": {"$ref": "#/definitions/id"}, "name": {"type": "string"}, "file": {"type": "string"},
+                     "origin": {"type": "string", "description": "Chỉ kit.json: nội dung lấy từ đâu (nguồn bên ngoài)."},
+                     "license": {"type": "string", "description": "Chỉ kit.json: giấy phép của nội dung bên ngoài; chưa biết thì ghi UNKNOWN (--check cảnh báo). Không đặt trong provenance của resource: aw không nhận trường đó."}}
     },
     "scriptSkill": {
       "description": "Gom các script của Command thành một Skill; key của mỗi resource là tên file. Dòng `. \"${AW_KIT:?…}/commands/lib.sh\" # @aw-include` trong script được nhúng nguyên văn khi publish.",

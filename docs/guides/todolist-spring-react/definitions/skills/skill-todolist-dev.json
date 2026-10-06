@@ -57,19 +57,6 @@
         "revision": "v1",
         "lastVerified": "2026-10-04T00:00:00Z"
       }
-    },
-    {
-      "key": "dev.routing-table",
-      "priority": "REQUIRED_PROCEDURE",
-      "global": true,
-      "selector": {},
-      "instruction": "Bảng định tuyến context — chỉ đọc những gì khu vực thay đổi cần, theo bảng: | Khu vực | Đọc trước | — | Schema DB / migration | toàn bộ backend/src/main/resources/db/migration, entity trong backend/src/main/java/com/example/todo/domain | — | Entity / repository | domain/, repository/, migration mới nhất | — | Service / quy tắc nghiệp vụ | service/, các BR trong 02-spec.md | — | REST API | controller/, dto/, mục API của 03-design.md, test controller hiện có | — | Frontend API client | frontend/src/api/, frontend/src/types.ts | — | Frontend UI | frontend/src/components/, frontend/src/hooks/, test cạnh component | — | Quyết định kiến trúc | docs/adr/ | — Không đọc toàn bộ repository; nếu bảng không đủ, ghi rõ trong plan.md đã đọc thêm gì và vì sao.",
-      "provenance": {
-        "owner": "team-platform",
-        "source": "docs/guides/todolist-spring-react",
-        "revision": "v3",
-        "lastVerified": "2026-10-06T00:00:00Z"
-      }
     }
   ]
 }

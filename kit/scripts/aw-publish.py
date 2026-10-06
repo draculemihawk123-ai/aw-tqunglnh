@@ -267,6 +267,7 @@ def lint(manifest):
     passive = {e["id"] for o in owners(manifest) for e in o["layers"] + o["skills"]}
     packs = {p["id"] for p in manifest["packs"]}
     keys_by_item = {item_id: [r["key"] for r in resources_of(manifest, item_id)] for item_id in passive}
+    problems += lint_resource_fields(manifest)
     if is_kit:
         problems += lint_provenance(manifest)
     for pack in manifest["packs"]:
@@ -354,19 +355,55 @@ def kit_hint(manifest, kind, ref_id):
     return ""
 
 
+PROVENANCE_FIELDS = {"owner", "source", "revision", "lastVerified"}  # aw decode nghiêm ngặt: trường khác bị từ chối
+
+
+def lint_resource_fields(manifest):
+    """Những gì aw sẽ từ chối lúc publish mà --check bắt sớm: provenance chỉ gồm 4 trường owner/source/revision/lastVerified
+    và phải có owner, source."""
+    problems = []
+    for owner in owners(manifest):
+        for section in ("layers", "skills"):
+            for entry in owner[section]:
+                for resource in read_json(owner, entry["file"])["resources"]:
+                    prov = resource.get("provenance") or {}
+                    where = f"{section}/{entry['id']}#{resource.get('key')}"
+                    extra = sorted(set(prov) - PROVENANCE_FIELDS)
+                    if extra:
+                        problems.append(f"{where}: provenance có trường aw không nhận {extra} (chỉ owner, source, revision, "
+                                        f"lastVerified). Nguồn ngoài và giấy phép khai ở entry trong kit.json: origin, license")
+                    for field in ("owner", "source"):
+                        if not prov.get(field):
+                            problems.append(f"{where}: thiếu provenance.{field}")
+    return problems
+
+
 def lint_provenance(manifest):
-    """Nội dung nhận vào kho phải truy được nguồn: source không rỗng; nguồn là URL thì phải ghi license."""
+    """Nội dung nhận vào kho phải truy được nguồn. Entry có `origin`, hoặc có resource với provenance.source là URL, là nội
+    dung từ bên ngoài và phải khai `license` ở entry trong kit.json (không đặt trong provenance vì aw không nhận trường đó)."""
     problems = []
     for section in ("layers", "skills"):
         for entry in manifest[section]:
+            external = bool(entry.get("origin"))
             for resource in read_json(manifest, entry["file"])["resources"]:
-                prov = resource.get("provenance") or {}
-                where = f"{section}/{entry['id']}#{resource.get('key')}"
-                if not prov.get("source"):
-                    problems.append(f"{where}: thiếu provenance.source")
-                elif str(prov["source"]).startswith(("http://", "https://")) and not prov.get("license"):
-                    problems.append(f"{where}: nguồn bên ngoài ({prov['source']}) phải có provenance.license")
+                if str((resource.get("provenance") or {}).get("source", "")).startswith(("http://", "https://")):
+                    external = True
+            if external and not str(entry.get("license", "")).strip():
+                problems.append(f"{section}/{entry['id']}: nội dung từ nguồn bên ngoài phải khai \"license\" (và \"origin\") ở entry "
+                                f"trong kit.json; chưa biết giấy phép thì ghi \"UNKNOWN\" (--check sẽ cảnh báo)")
     return problems
+
+
+def warnings(manifest):
+    """Cảnh báo không chặn: mục của kho có giấy phép chưa xác định."""
+    out = []
+    for owner in owners(manifest):
+        for section in ("layers", "skills"):
+            for entry in owner[section]:
+                if str(entry.get("license", "")).strip().upper().startswith("UNKNOWN"):
+                    out.append(f"{section}/{entry['id']}: giấy phép chưa xác định (origin: {entry.get('origin', '?')}) — "
+                               f"xác nhận trước khi phân phối kho ra ngoài")
+    return out
 
 
 def collect_refs(node):
@@ -719,6 +756,8 @@ def main():
         for problem in problems:
             print("  - " + problem, file=sys.stderr)
         sys.exit(1)
+    for warning in warnings(manifest):
+        print(f"CẢNH BÁO: {warning}", file=sys.stderr)
     if args.check:
         if manifest["role"] == "kit":
             shared = sum(len(manifest[k]) for k in SHARED)

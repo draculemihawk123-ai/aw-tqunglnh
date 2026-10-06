@@ -259,7 +259,7 @@ F-00 chỉ ghi `docs/`, nên bước DESIGN không nhận convention của `back
 
 `dev.routing-table` là "bảng định tuyến" theo nghĩa của sơ đồ nghiệp vụ. Bảng ánh xạ khu vực thay đổi (migration,
 entity, service, REST API, API client, UI, ADR) sang những thư mục và tài liệu cần đọc trước. Bảng là tri thức riêng của todolist nên nằm trong
-[`skill-todolist-dev.json`](definitions/skills/skill-todolist-dev.json), không phải trong skill chung của kit
+[`skill-todolist-routing.json`](definitions/skills/skill-todolist-routing.json), không phải trong skill chung của kit
 (`skill-feature-flow` chỉ nói PLAN "đọc theo bảng định tuyến trong resources nếu có"). Muốn sửa bảng thì sửa resource đó
 rồi chạy lại `aw-publish.py`.
 

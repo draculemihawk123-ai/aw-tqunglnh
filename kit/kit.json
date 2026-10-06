@@ -1,12 +1,15 @@
 {
   "role": "kit",
   "name": "aw-kit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "prefix": "kit-",
 
   "skills": [
     {"id": "skill-feature-flow", "name": "Skill: quy trình tính năng → task", "file": "skills/skill-feature-flow.json"},
-    {"id": "skill-review", "name": "Skill: review độc lập (CHECKER)", "file": "skills/skill-review.json"}
+    {"id": "skill-review", "name": "Skill: review độc lập (CHECKER)", "file": "skills/skill-review.json"},
+    {"id": "skill-code-review", "name": "Skill: code review có bằng chứng (CHECKER)", "file": "skills/skill-code-review.json",
+     "origin": "claudekit/code-review 2.0.0 (người dùng cung cấp; chắt lọc, bỏ phần dành cho Claude Code tương tác)",
+     "license": "UNKNOWN"}
   ],
 
   "scriptSkills": [

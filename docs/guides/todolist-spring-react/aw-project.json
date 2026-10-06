@@ -13,7 +13,8 @@
   ],
 
   "skills": [
-    {"id": "skill-todolist-dev", "name": "Skill: quy trình làm task todolist", "file": "definitions/skills/skill-todolist-dev.json"}
+    {"id": "skill-todolist-dev", "name": "Skill: quy trình làm task todolist", "file": "definitions/skills/skill-todolist-dev.json"},
+    {"id": "skill-todolist-routing", "name": "Skill: bảng định tuyến context của todolist (bước PLAN)", "file": "definitions/skills/skill-todolist-routing.json"}
   ],
 
   "scriptSkills": [
@@ -37,7 +38,7 @@
     {"id": "agent-dev", "name": "Agent: developer (backend và frontend, tri thức theo vùng code)",
      "resources": ["layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev"]},
     {"id": "agent-reviewer", "name": "Agent: reviewer độc lập (CHECKER)",
-     "resources": ["skill-review", "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev"]},
+     "resources": ["skill-review", "skill-code-review", "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev"]},
 
     {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM", "model": "opus",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm",
@@ -51,7 +52,7 @@
     {"id": "agent-flow-frame", "name": "Agent: FRAME",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame"]},
     {"id": "agent-flow-plan", "name": "Agent: PLAN",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-todolist-dev#dev.routing-table", "skill-feature-flow#flow.plan",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-todolist-routing#dev.routing-table", "skill-feature-flow#flow.plan",
                    "layer-java-spring-boot", "layer-sqlite", "layer-react-vite"]},
     {"id": "agent-flow-build", "name": "Agent: BUILD",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.build",
