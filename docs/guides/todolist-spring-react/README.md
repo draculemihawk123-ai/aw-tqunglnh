@@ -53,6 +53,7 @@ project khác, bạn copy `scripts/` rồi viết `aw-project.json` của riêng
 - [6. Giới hạn cần biết](#6-giới-hạn-cần-biết)
 - [Chạy thử quy trình hai tầng tính năng → task (tài liệu riêng)](feature-task-flow.md)
 - [Vận hành hằng ngày: xem trạng thái, xử lý sự cố, bảo trì (tài liệu riêng)](operations.md)
+- [Thêm node test e2e bằng Cypress vào workflow (tài liệu riêng)](add-e2e-cypress-node.md)
 - [Phụ lục A: các file trong thư mục này](#phụ-lục-a-các-file-trong-thư-mục-này)
 - [Phụ lục B: quy ước viết sơ đồ Mermaid](#phụ-lục-b-quy-ước-viết-sơ-đồ-mermaid)
 
@@ -1661,6 +1662,7 @@ Một số tùy biến hay gặp:
 | Muốn | Sửa |
 |---|---|
 | Thêm bước lint/format | Thêm script vào `commands/` và `scriptSkills`, khai báo Command, chèn node COMMAND có `failureOutcome` vào template |
+| Thêm bước test e2e (Cypress) | Làm theo [add-e2e-cypress-node.md](add-e2e-cypress-node.md): script dựng ứng dụng, Layer cho agent, Command, node `e2e` trước `gate2` |
 | Thêm cổng duyệt cho workflow ngắn | Chèn node APPROVAL như `wf-fullstack-review`, đổi `completionPolicyRef` sang `policy-completion-reviewed` |
 | Model khác cho một bước | Khóa `model` của agent tương ứng trong `agents` |
 | Tri thức riêng cho một vùng code mới | Thêm resource với `"selector": {"componentTags": ["<tên thư mục>"]}` hoặc `pathTags` |
@@ -1762,6 +1764,7 @@ todolist-spring-react/
 ├── README.md                         # tài liệu này
 ├── feature-task-flow.md              # chạy thử quy trình hai tầng tính năng → task, chi tiết thiết kế
 ├── operations.md                     # vận hành: xem trạng thái, sự cố, scope expansion, bảo trì
+├── add-e2e-cypress-node.md           # hướng dẫn thêm node test e2e (Cypress) vào wf-task-delivery
 ├── aw-project.json                   # khai báo của project todolist (prefix "todo-")
 ├── definitions/
 │   ├── layers/                       # 3 Layer: Spring Boot, SQLite, React/Vite (resource gắn selector theo vùng)
