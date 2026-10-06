@@ -13,9 +13,12 @@ máy kiểm tra, người duyệt, `aw` ghi lại bằng chứng và tạo commi
 - **Phần 4** là công việc hằng ngày: viết task, chạy, duyệt, commit, merge.
 - **Phần 5 và [operations.md](operations.md)** là vận hành: thay đổi quy trình, xem trạng thái, xử lý sự cố, bảo trì.
 
-Bộ công cụ trong thư mục này **không gắn với todolist**. Mọi thứ riêng của todolist nằm trong
-[`aw-project.json`](aw-project.json) và các file mà nó trỏ tới. Các script trong `scripts/` đọc file khai báo đó. Với
-project khác, bạn copy `scripts/` rồi viết `aw-project.json` của riêng mình (mục 3.5).
+Bộ công cụ dùng chung **không nằm trong thư mục này** mà nằm ở [`kit/`](../../../kit/README.md) của repo `aw`: script
+vận hành (`init-project.sh`, `aw-publish.py`, `run-task.sh`…), policy, hai skill chung, ba script lệnh chung, hai workflow
+chung và thư viện hàm cho script lệnh. Thư mục này chỉ giữ phần **riêng của todolist**: [`aw-project.json`](aw-project.json)
+và các file mà nó trỏ tới (Layer của stack, skill riêng, script test của Maven/npm, bốn workflow rút gọn). Với project
+khác, bạn không copy gì từ đây: bạn khai `"kit"` trong `aw-project.json` của riêng mình và chỉ viết phần riêng của
+project (mục 3.5 và [kit/README.md](../../../kit/README.md)).
 
 > **Phạm vi kiểm chứng.** Mọi lệnh, file JSON và script ở đây đã được chạy với binary `aw` build từ commit `9e720ac`
 > của nhánh `master`, trên Windows 10 trong Git Bash, từ một bản cài mới tinh.
@@ -31,6 +34,12 @@ project khác, bạn copy `scripts/` rồi viết `aw-project.json` của riêng
 >   [operations.md](operations.md). Trong các lần chạy đó, script của node COMMAND là bản thế thân.
 > - **Chưa chạy ở bản cập nhật này:** Linux và macOS (các script là script POSIX, bản trước của hướng dẫn chạy trên
 >   Linux); chế độ quyền khác `acceptEdits`; Codex.
+> - **Sau khi tách phần dùng chung sang `kit/`** (xem [kit/README.md](../../../kit/README.md)): đã publish thật bằng `aw`
+>   build từ repo này cho hai project (todolist và một project thứ hai tối giản), kiểm tra version dùng chung và chạy lại
+>   không đổi gì; script test đã nhúng thư viện cho output giống hệt bản cũ. **Chưa chạy lại với agent thật**: lời
+>   của vài resource trong `skill-feature-flow` đã được đổi cho trung tính với tên thư mục (`flow.brainstorm`, `flow.design`,
+>   `flow.frame`, `flow.plan`), và bảng định tuyến chuyển sang `dev.routing-table`. Hành vi của agent với bản chữ mới chưa
+>   được đo.
 >
 > Lần chạy thật cũng làm lộ ra vài lỗi của chính hướng dẫn, đã được sửa trước khi viết lại tài liệu: test của khung
 > backend không chạy được trên Windows, script kiểm tra in lỗi ra stdout nên agent không nhận được, hướng dẫn của
@@ -110,7 +119,8 @@ và làm lại mỗi khi quy trình thay đổi. Bước 7 lặp lại hằng ng
 | Component | Thư mục cấp 1 mà probe tự phát hiện | `backend`, `frontend`, `docs` |
 | Readiness profile | Lệnh kiểm tra của chính repository, chạy trên mỗi worktree mới **trước** khi nhận task (baseline) | `mvn -q -B test` trong `backend/` |
 | **Layer** | Convention theo *stack công nghệ*; chỉ là văn bản, không thực thi | `layer-java-spring-boot`, `layer-sqlite`, `layer-react-vite` |
-| **Skill** | Hướng dẫn theo *loại công việc*, hoặc script cho Command | `skill-todolist-dev`, `skill-feature-flow`, `skill-review`, `scripts` |
+| **Skill** | Hướng dẫn theo *loại công việc*, hoặc script cho Command | `skill-todolist-dev`, `scripts` của project; `skill-feature-flow`, `skill-review` từ kit |
+| **Kit** | Kho dùng chung trong repo `aw` (`kit/`): script vận hành, policy, skill, script lệnh, workflow mẫu; publish một lần cho cả bản cài | `kit-policy-attempt`, `kit-skill-feature-flow`, workflow mẫu `wf-task-delivery` |
 | Selector | Điều kiện để một resource của Layer/Skill được nạp: vùng code, vai trò, mức rủi ro | `componentTags: ["backend"]`, `blockKinds: ["CHECKER"]` |
 | Engineering Pack | Gói pin một tập Layer/Skill cho một component (chỉ để ghi nhận) | `pack-backend`, `pack-frontend` |
 | CONTEXT policy | Tập resource mà một agent *có thể* nhận, ngân sách cho resource và cho message | `ctx-<agent>`, mỗi agent một policy |
@@ -192,7 +202,7 @@ WorkItem, file trong repository, hoặc output của bước kiểm tra vừa fa
 |---|---|---|
 | `aw` (build từ repo này) | control plane | Xem 2.2 để có UI |
 | Git | repo và worktree | Trên Windows: Git for Windows, kèm Git Bash |
-| `bash`, `jq`, `python3`, `sha256sum` | các script trong `scripts/` và script kiểm tra | Trên Windows chạy trong **Git Bash**; gọi `python` thay cho `python3` |
+| `bash`, `jq`, `python3`, `sha256sum` | các script trong `kit/scripts/` và script kiểm tra | Trên Windows chạy trong **Git Bash**; gọi `python` thay cho `python3` |
 | Claude CLI | agent | Đã đăng nhập; đường dẫn tuyệt đối tới file thực thi |
 | Toolchain của project | build/test | Todolist: JDK 21 + Maven 3.9, Node 20 trở lên + npm |
 
@@ -227,6 +237,7 @@ Thư mục `repo-template/` chứa một khung đã kiểm chứng:
 
 ```bash
 GUIDE=/path/to/aw-tqunglnh/docs/guides/todolist-spring-react
+KIT=/path/to/aw-tqunglnh/kit
 mkdir -p ~/work/todolist && cd ~/work/todolist
 git init -b main
 cp -R "$GUIDE/repo-template/." .
@@ -345,7 +356,8 @@ Các script lưu trạng thái (project id, version id, WorkItem gốc hiện t�
 Mỗi project nên có một thư mục vận hành riêng:
 
 ```bash
-export PATH="$GUIDE/scripts:$PATH"                 # Windows: "$(cygpath -u "$GUIDE")/scripts:$PATH"
+export AW_KIT=$KIT                                 # thư mục kit: aw-publish.py nhúng thư viện chung, chạy tay script lệnh cũng cần
+export PATH="$KIT/scripts:$PATH"                   # Windows: "$(cygpath -u "$KIT")/scripts:$PATH"
 mkdir -p ~/aw/todolist && cd ~/aw/todolist
 init-project.sh todolist todolist "$HOME/work/todolist"     # Windows: "$(cygpath -m ~/work/todolist)"
 # repository todolist: ACTIVE
@@ -355,7 +367,7 @@ init-project.sh todolist todolist "$HOME/work/todolist"     # Windows: "$(cygpat
 # projectId=d552145e-…  → ./aw-state.json
 ```
 
-[`init-project.sh`](scripts/init-project.sh) `<tên project> <repositoryId> <đường dẫn tuyệt đối> [nhánh mặc định]`
+[`init-project.sh`](../../../kit/scripts/init-project.sh) `<tên project> <repositoryId> <đường dẫn tuyệt đối> [nhánh mặc định]`
 làm ba việc: tạo project, đăng ký repository, rồi chờ probe xong. Script chạy lại an toàn. Nếu repository bị `BLOCKED`,
 xem [operations.md mục 5.8](operations.md#58-repository-blocked-sau-khi-đăng-ký).
 
@@ -418,9 +430,11 @@ và ví dụ todolist. Đầu ra cuối cùng là một thư mục khai báo:
 │   ├── layers/*.json            # Bước 4: convention theo stack
 │   ├── skills/*.json            # Bước 4: hướng dẫn theo loại việc / theo bước
 │   └── policies/*.json          # Bước 5: attempt, permission, completion
-├── commands/*.sh                # Bước 5: script cho node COMMAND và cho Gate
-└── scripts/                     # copy nguyên từ thư mục này: aw-publish.py, run-task.sh…
+└── commands/*.sh                # Bước 5: script cho node COMMAND và cho Gate (phần riêng của stack)
 ```
+
+Phần dùng chung (script vận hành `kit/scripts/`, policy, skill chung, workflow mẫu, `lib.sh`) lấy từ kit, không nằm trong
+thư mục khai báo của project: `aw-project.json` chỉ khai `"kit"` (mục 3.5).
 
 ### 3.1 Bước 2 — Mô tả quy trình nghiệp vụ
 
@@ -563,8 +577,8 @@ người review.
 
 | Muốn "xong" nghĩa là | Policy | Ví dụ todolist |
 |---|---|---|
-| Có evidence của các node COMMAND | `{"requiredEvidenceKinds": ["COMMAND_EXECUTION"]}` | [`policy-completion`](definitions/policies/policy-completion.json) |
-| Có test **và** người đã quyết định | `requiredAssurance` gồm `UNIT` (hoặc `STATIC`) và `HUMAN` với `requiredApprovals` | [`policy-completion-reviewed`](definitions/policies/policy-completion-reviewed.json), [`policy-completion-feature`](definitions/policies/policy-completion-feature.json) |
+| Có evidence của các node COMMAND | `{"requiredEvidenceKinds": ["COMMAND_EXECUTION"]}` | [`policy-completion`](../../../kit/policies/policy-completion.json) |
+| Có test **và** người đã quyết định | `requiredAssurance` gồm `UNIT` (hoặc `STATIC`) và `HUMAN` với `requiredApprovals` | [`policy-completion-reviewed`](../../../kit/policies/policy-completion-reviewed.json), [`policy-completion-feature`](../../../kit/policies/policy-completion-feature.json) |
 | Mọi tiêu chí của các gate đều đạt | `requiredEvidenceKinds` liệt kê `evidenceKey` của từng tiêu chí | [`policy-completion-main-check`](definitions/policies/policy-completion-main-check.json) |
 
 Các mức của `requiredAssurance` là `STATIC`, `LINT`, `UNIT`, `INTEGRATION`, `E2E`, `HUMAN`. Mức `HUMAN` chỉ kiểm tra
@@ -595,7 +609,7 @@ Các mức của `requiredAssurance` là `STATIC`, `LINT`, `UNIT`, `INTEGRATION`
 
 Kết quả là ba workflow chính, cộng ba workflow rút gọn.
 
-**Tầng tính năng:** [`wf-feature-definition.json`](definitions/workflows/wf-feature-definition.json). Completion:
+**Tầng tính năng:** [`wf-feature-definition.json`](../../../kit/workflows/wf-feature-definition.json). Completion:
 `STATIC` (evidence của `check-docs`) cộng `HUMAN`.
 
 ```mermaid
@@ -626,7 +640,7 @@ flowchart LR
     class RJ stop;
 ```
 
-**Tầng task:** [`wf-task-delivery.json`](definitions/workflows/wf-task-delivery.json). Completion: `UNIT` (evidence
+**Tầng task:** [`wf-task-delivery.json`](../../../kit/workflows/wf-task-delivery.json). Completion: `UNIT` (evidence
 của `gate1` và `quality`) cộng `HUMAN`.
 
 ```mermaid
@@ -872,12 +886,12 @@ Skill ([`definitions/skills/`](definitions/skills/)):
 | | `dev.definition-of-done` (HARD_CONSTRAINT, global) | Không stub, không tắt test, không commit secret, `*.db` hay thư mục build |
 | | `dev.high-risk-extra` (GUIDANCE, `riskClasses: HIGH`) | Chỉ nạp khi contract có `riskLevel: HIGH` |
 | | `dev.stack-overview` (REFERENCE, global) | Tổng quan ba thư mục, cho các bước không gắn với một vùng code |
-| `skill-review` | `review.read-only` (HARD_CONSTRAINT, `CHECKER`) | Chỉ đọc; repository nằm ở đường dẫn trong system prompt |
+| | `dev.routing-table` (REQUIRED_PROCEDURE, global) | Bảng "khu vực thay đổi → thư mục/tài liệu cần đọc trước" của todolist, cho bước PLAN |
+| `skill-review` (kit) | `review.read-only` (HARD_CONSTRAINT, `CHECKER`) | Chỉ đọc; repository nằm ở đường dẫn trong system prompt |
 | | `review.checklist` (REQUIRED_PROCEDURE, `CHECKER`) | Đối chiếu từng acceptance criteria; khi nào `approved`, khi nào `rework` |
-| `skill-feature-flow` | `flow.working-rules` (HARD_CONSTRAINT) | Mỗi agent chỉ làm một giai đoạn; thư mục tài liệu; cách đọc `allowedOutcomes`; không commit |
+| `skill-feature-flow` (kit) | `flow.working-rules` (HARD_CONSTRAINT) | Mỗi agent chỉ làm một giai đoạn; thư mục tài liệu; cách đọc `allowedOutcomes`; không commit |
 | | `flow.brainstorm`, `flow.spec`, `flow.design`, `flow.frame`, `flow.plan`, `flow.build`, `flow.sync` (HARD_CONSTRAINT) | Hướng dẫn của từng giai đoạn: file được phép tạo hoặc sửa, nội dung cần viết, khi nào chọn outcome nào |
 | | `flow.needs-info` (REQUIRED_PROCEDURE) | Cách dừng để hỏi: ghi `needs-info.md`, outcome `needs_info` |
-| | `flow.routing-table` (REQUIRED_PROCEDURE) | Bảng "khu vực thay đổi → thư mục/tài liệu cần đọc trước" |
 
 Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-project.json)):
 
@@ -889,7 +903,7 @@ Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-projec
 | `agent-flow-spec` | `spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview` |
 | `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview` |
 | `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame` |
-| `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `flow.routing-table`, `flow.plan`, ba Layer |
+| `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, ba Layer |
 | `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra` |
 | `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync` |
 
@@ -945,17 +959,17 @@ Gate là một Command chạy ở chế độ chỉ đọc và trả verdict cho
 | Evidence | Mỗi tiêu chí một evidence, `kind` là `evidenceKey`, `verdict` là verdict của tiêu chí |
 
 Gate khai trong `gates` của `aw-project.json`: Command của nó và danh sách tiêu chí. Completion policy đòi các
-`evidenceKey` đó. Xem [`quality-gate.sh`](commands/quality-gate.sh) và [`secrets-gate.sh`](commands/secrets-gate.sh).
+`evidenceKey` đó. Xem [`quality-gate.sh`](commands/quality-gate.sh) và [`secrets-gate.sh`](../../../kit/commands/secrets-gate.sh).
 
 #### Policy
 
 | File | Category | Nội dung | Dùng ở |
 |---|---|---|---|
-| [`policy-attempt.json`](definitions/policies/policy-attempt.json) | ATTEMPT | 2 lần, backoff 10 giây, timeout 30 phút | Node AGENT |
-| [`policy-attempt-once.json`](definitions/policies/policy-attempt-once.json) | ATTEMPT | 1 lần, timeout 30 phút | Node COMMAND, MACHINE_GATE |
-| [`policy-permission.json`](definitions/policies/policy-permission.json) | PERMISSION | `OPERATOR_TRUSTED_LOCAL` | Mọi node AGENT/COMMAND/MACHINE_GATE |
-| [`policy-permission-network.json`](definitions/policies/policy-permission-network.json) | PERMISSION | Thêm `grantedCapabilities: ["NETWORK_ACCESS"]` | Pin trong **Command** cần mạng |
-| [`policy-completion*.json`](definitions/policies/) | COMPLETION | Xem 3.2 | `completionPolicyRef` của workflow |
+| [`policy-attempt.json`](../../../kit/policies/policy-attempt.json) | ATTEMPT | 2 lần, backoff 10 giây, timeout 30 phút | Node AGENT |
+| [`policy-attempt-once.json`](../../../kit/policies/policy-attempt-once.json) | ATTEMPT | 1 lần, timeout 30 phút | Node COMMAND, MACHINE_GATE |
+| [`policy-permission.json`](../../../kit/policies/policy-permission.json) | PERMISSION | `OPERATOR_TRUSTED_LOCAL` | Mọi node AGENT/COMMAND/MACHINE_GATE |
+| [`policy-permission-network.json`](../../../kit/policies/policy-permission-network.json) | PERMISSION | Thêm `grantedCapabilities: ["NETWORK_ACCESS"]` | Pin trong **Command** cần mạng |
+| [`policy-completion*.json`](../../../kit/policies/) | COMPLETION | Xem 3.2 | `completionPolicyRef` của workflow |
 
 `timeoutSeconds` của policy ATTEMPT cũng là thời gian một attempt giữ khóa ghi worktree nếu worker chết giữa chừng
 ([operations.md mục 5.5](operations.md#55-worker-chết-khi-agent-đang-chạy)). Đặt bằng thời gian dài nhất bạn chấp
@@ -986,9 +1000,13 @@ Vì hash là của chính file CLI, **mỗi lần Claude CLI được cập nh�
 | `cmd-frontend-test` | [`frontend-test.sh`](commands/frontend-test.sh): `npm ci` (hoặc `npm install`), `npm test`, `npm run build` | ALLOWED | `wf-frontend-feature`, `wf-fullstack-review` |
 | `cmd-gate1` | [`gate1.sh`](commands/gate1.sh): test phần code đã đổi, hoặc tất cả nếu không đổi code | ALLOWED | `wf-task-delivery` |
 | `cmd-quality-check` | [`quality-check.sh`](commands/quality-check.sh): không có test bị tắt, không sửa migration đã commit | NONE | `wf-task-delivery` |
-| `cmd-check-feature-docs` | [`check-feature-docs.sh`](commands/check-feature-docs.sh): đủ tài liệu, `tasks.json` đúng schema | NONE | `wf-feature-definition` |
-| `cmd-reject` | [`reject.sh`](commands/reject.sh): `exit 1` | NONE | Mọi nhánh dừng |
-| `cmd-quality-gate`, `cmd-secrets-gate` | [`quality-gate.sh`](commands/quality-gate.sh), [`secrets-gate.sh`](commands/secrets-gate.sh) | NONE | Gate `gate-quality`, `gate-secrets` của `wf-main-check` |
+| `cmd-check-feature-docs` | [`check-feature-docs.sh`](../../../kit/commands/check-feature-docs.sh): đủ tài liệu, `tasks.json` đúng schema | NONE | `wf-feature-definition` |
+| `cmd-reject` | [`reject.sh`](../../../kit/commands/reject.sh): `exit 1` | NONE | Mọi nhánh dừng |
+| `cmd-quality-gate`, `cmd-secrets-gate` | [`quality-gate.sh`](commands/quality-gate.sh), [`secrets-gate.sh`](../../../kit/commands/secrets-gate.sh) | NONE | Gate `gate-quality`, `gate-secrets` của `wf-main-check` |
+
+`cmd-check-feature-docs`, `cmd-reject`, `cmd-secrets-gate` và Gate `gate-secrets` là bản mẫu của kit, lấy bằng `"from": "kit"`;
+script của chúng nằm ở [`kit/commands/`](../../../kit/commands/). Script của project dùng thư viện chung của kit thay vì
+tự viết lại hàm chạy-một-bước (xem [kit/README.md](../../../kit/README.md#thư-viện-script-lệnh-libsh)).
 
 Vì sao `quality` ở tầng task là COMMAND mà không phải MACHINE_GATE: xem mục 6.
 
@@ -1000,7 +1018,8 @@ Một file khai báo mọi thứ của project. Ví dụ đầy đủ: [`aw-proj
 
 | Khóa | Nội dung | Mặc định |
 |---|---|---|
-| `prefix` | Tiền tố ghép vào **mọi** `definitionId` | `""` |
+| `kit` | Kho dùng chung: `"../../../kit/kit.json"` hoặc `{"path": …, "version": "1"}` (ghim số major) | không dùng kit |
+| `prefix` | Tiền tố ghép vào **mọi** `definitionId` của project (khác prefix của kit `kit-`) | `""` |
 | `repository` | `repositoryId` dùng cho `cwdRepositoryTarget` của Command và khi gán Pack | bắt buộc |
 | `provider` | `{key, model, configIdentity, envAllowlist}` của mọi agent | `claude`, `sonnet`, `<prefix>claude`, `[]` |
 | `contextBudgetBytes` | Budget resource của CONTEXT policy mỗi agent | `65536` |
@@ -1013,6 +1032,20 @@ Một file khai báo mọi thứ của project. Ví dụ đầy đủ: [`aw-proj
 | `commands[]` | `{id, name, script: "<scriptSkill>#<file>", network, policies[]}`, có thể thêm `repositoryArg`, `repository`, `envAllowlist`, `timeoutSeconds`, `maxOutputBytes` | `network: "NONE"` |
 | `gates[]` | `{id, name, command, criteria: [{name, evidenceKey}]}` | |
 | `workflows[]` | `{id, name, template}` | |
+
+#### Dùng kho dùng chung (kit)
+
+Mọi id mà `kit/kit.json` khai báo dùng được trong project mà không phải khai lại. Hai loại:
+
+- **Dùng chung thật** (Layer, Skill, script skill, Policy): tham chiếu thẳng, ví dụ `"resources": ["skill-feature-flow#flow.build"]`
+  trong agent, hay `{"$ref": "policy:policy-attempt"}` trong workflow. `aw-publish.py` publish chúng **một lần** cho cả bản cài
+  dưới prefix `kit-` (`kit-policy-attempt`); project thứ hai nhận đúng cùng version, nên không có bản sao theo project.
+- **Bản mẫu** (Command, Gate, Workflow): Command ghim repository của project và Workflow có scope project, nên không dùng
+  chung được. Project lấy về bằng `{"id": "cmd-reject", "from": "kit"}`; bản đó được publish dưới prefix của project, field
+  khác trong entry ghi đè bản mẫu.
+
+`aw-publish.py <aw-project.json> --slots` cho biết mỗi workflow mẫu đòi project tự điền những gì (agent, command…) và đã đủ
+chưa; `--check` báo thiếu kèm gợi ý. Đặc tả của file khai báo: [`kit/schema/aw-project.schema.json`](../../../kit/schema/aw-project.schema.json).
 
 #### Template workflow
 
@@ -1040,7 +1073,8 @@ với id **không có tiền tố**:
 
 `definitionId` là **duy nhất trên toàn bản cài**, kể cả WORKFLOW (dù WORKFLOW có scope project). Tạo trùng bị từ chối
 với `CONFLICT … persistent record already exists`. Mỗi project dùng một tiền tố riêng (todolist dùng `todo-`) thì hai
-project có thể cùng đặt tên `agent-dev` trong file khai báo mà không đụng nhau.
+project có thể cùng đặt tên `agent-dev` trong file khai báo mà không đụng nhau. Phần dùng chung của kit nằm dưới prefix
+riêng `kit-`, nên không đụng prefix của project nào.
 
 #### Kiểm tra rồi publish
 
@@ -1048,7 +1082,7 @@ project có thể cùng đặt tên `agent-dev` trong file khai báo mà không 
 cd ~/aw/todolist                                   # thư mục có aw-state.json (2.6)
 aw-publish.py "$GUIDE/aw-project.json" --check     # chỉ kiểm tra file khai báo, không gọi aw
 aw-publish.py "$GUIDE/aw-project.json"             # cần AW_CLAUDE_EXECUTABLE và các biến AW_* như 2.5
-# Windows: python "$GUIDE/scripts/aw-publish.py" "$GUIDE/aw-project.json"
+# Windows: python "$KIT/scripts/aw-publish.py" "$GUIDE/aw-project.json"
 ```
 
 `--check` bắt các lỗi hay gặp trước khi gọi `aw`:
@@ -1192,7 +1226,7 @@ create-root.sh "Todolist MVP"            # mỗi đợt việc hoặc mỗi tín
 # baseline: PASS
 ```
 
-[`create-root.sh`](scripts/create-root.sh) `"<tiêu đề>" [repositoryId READ bổ sung…]` tạo một TaskFamily. Family có
+[`create-root.sh`](../../../kit/scripts/create-root.sh) `"<tiêu đề>" [repositoryId READ bổ sung…]` tạo một TaskFamily. Family có
 Git worktree riêng trên branch `agentkit/w-…`, tách từ commit hiện tại của nhánh mặc định. Mọi WorkItem con dùng chung
 worktree này. Script chờ worker tạo xong worktree (`workspace: READY`) và chạy xong baseline (`baseline: PASS`,
 mục 2.7); trước đó `aw run start` bị từ chối. Gốc hiện tại được ghi vào `aw-state.json`; tạo gốc mới thì các lệnh sau
@@ -1235,15 +1269,15 @@ Backlog mẫu ([`work-items/`](work-items/)):
 run-task.sh "$GUIDE/work-items/be-01-todo-api.json" wf-backend-feature
 ```
 
-[`run-task.sh`](scripts/run-task.sh) `<file WorkItem> <workflow id trong aw-project.json>` làm các bước sau:
+[`run-task.sh`](../../../kit/scripts/run-task.sh) `<file WorkItem> <workflow id trong aw-project.json>` làm các bước sau:
 
 1. Lấy version của workflow từ `aw-state.json`.
 2. Tạo WorkItem con dưới gốc hiện tại.
 3. Nếu có `MESSAGE="…"`, gửi nó thành message.
 4. Kiểm tra `readiness`, rồi `mark-ready`.
 5. `aw run start`.
-6. [`watch-run.sh`](scripts/watch-run.sh) chờ tới khi run kết thúc **hoặc cần người** (cổng duyệt, tín hiệu, blocker),
-   rồi [`show-run.sh`](scripts/show-run.sh) in trạng thái.
+6. [`watch-run.sh`](../../../kit/scripts/watch-run.sh) chờ tới khi run kết thúc **hoặc cần người** (cổng duyệt, tín hiệu, blocker),
+   rồi [`show-run.sh`](../../../kit/scripts/show-run.sh) in trạng thái.
 
 Output thật của BE-01, chạy với Claude CLI và Maven thật:
 
@@ -1279,7 +1313,7 @@ Cách đọc:
 - Run tới `END` thì completion policy được xét: lần chạy cuối của `verify` đạt, nên WorkItem `DONE`.
 
 **Agent đã nói gì.** `aw` chưa có lệnh nào đọc lời của agent (tab Chat chỉ có message của người vận hành).
-[`agent-log.py`](scripts/agent-log.py) đọc thẳng database và in thông điệp cuối của từng lần agent chạy:
+[`agent-log.py`](../../../kit/scripts/agent-log.py) đọc thẳng database và in thông điệp cuối của từng lần agent chạy:
 
 ```bash
 agent-log.py 9940861d-6bd5-473d-8cc1-a44e554fa4ee --denied
@@ -1350,7 +1384,7 @@ Sau đó quyết định:
 review-task.sh 3b520418-… rework "Thêm test frontend cho trường hợp todo vừa tạo dưới 5 giây (hiển thị 'vừa xong'), và cập nhật thời gian tương đối mỗi 60 giây mà không cần tải lại trang."
 ```
 
-[`review-task.sh`](scripts/review-task.sh) `<runId> <outcome> ["phản hồi"]` làm ba việc:
+[`review-task.sh`](../../../kit/scripts/review-task.sh) `<runId> <outcome> ["phản hồi"]` làm ba việc:
 
 1. Append phản hồi thành message của WorkItem.
 2. Gọi `aw approval resolve` cho approval đang chờ.
@@ -1412,7 +1446,7 @@ AUTHOR_NAME="Tên bạn" AUTHOR_EMAIL="ban@example.com" commit-task.sh "FS-01: h
 # {"state":"COMMITTED","parentVcsObjectId":"359b6bed…","resultVcsObjectId":"3362c96b…"}
 ```
 
-[`commit-task.sh`](scripts/commit-task.sh) thực hiện đúng chuỗi lệnh `aw` cho local commit:
+[`commit-task.sh`](../../../kit/scripts/commit-task.sh) thực hiện đúng chuỗi lệnh `aw` cho local commit:
 
 ```bash
 aw workspace-set show --project-id "$PROJECT_ID" "$FAMILY_ID"     # repositoryWorkspaceId, version, currentRevision
@@ -1475,7 +1509,7 @@ Run: 8e283828-2edd-4963-acfe-2297162bb97a  state: RUNNING
 
 ![Trang task của T-04 sau khi chạy lại: WorkItem DONE, 2 runs](images/14-task-overview-runs.png)
 
-[`retry-task.sh`](scripts/retry-task.sh) `<workItemId> ["ghi chú cho agent"]` in lỗi của các bước kiểm tra trong run
+[`retry-task.sh`](../../../kit/scripts/retry-task.sh) `<workItemId> ["ghi chú cho agent"]` in lỗi của các bước kiểm tra trong run
 trước, gỡ blocker, gửi ghi chú của bạn thành message, rồi start run mới với đúng workflow version đã pin. Ba điều
 cần biết:
 
@@ -1760,37 +1794,33 @@ Các giới hạn dưới đây đều đã gặp khi kiểm chứng. Thiết k�
 ## Phụ lục A: các file trong thư mục này
 
 ```text
-todolist-spring-react/
+todolist-spring-react/                # phần RIÊNG của ví dụ todolist
 ├── README.md                         # tài liệu này
 ├── feature-task-flow.md              # chạy thử quy trình hai tầng tính năng → task, chi tiết thiết kế
 ├── operations.md                     # vận hành: xem trạng thái, sự cố, scope expansion, bảo trì
 ├── add-e2e-cypress-node.md           # hướng dẫn thêm node test e2e (Cypress) vào wf-task-delivery
-├── aw-project.json                   # khai báo của project todolist (prefix "todo-")
+├── aw-project.json                   # khai báo của project todolist (prefix "todo-", dùng kit)
 ├── definitions/
 │   ├── layers/                       # 3 Layer: Spring Boot, SQLite, React/Vite (resource gắn selector theo vùng)
-│   ├── skills/                       # skill-todolist-dev, skill-feature-flow, skill-review
-│   ├── policies/                     # attempt(-once), permission(-network), completion(-reviewed, -feature, -main-check)
-│   └── workflows/                    # template ($ref): wf-backend-feature, wf-frontend-feature, wf-fullstack-review,
-│                                     #   wf-feature-definition, wf-task-delivery, wf-main-check
-├── commands/                         # script của Command: backend-test, frontend-test, gate1, quality-check,
-│                                     #   check-feature-docs, reject; script của Gate: quality-gate, secrets-gate
-├── scripts/                          # dùng chung cho mọi project (đọc aw-project.json / aw-state.json)
-│   ├── init-project.sh               # Bước 1: project + repository → aw-state.json
-│   ├── aw-publish.py                 # Bước 6: kiểm tra (--check) và publish mọi definition
-│   ├── aw-resource-hashes.py         # content hash của resource Layer/Skill (aw-publish.py dùng)
-│   ├── create-root.sh                # Bước 7: WorkItem gốc (family, worktree), chờ worktree và baseline
-│   ├── run-task.sh                   # tạo WorkItem con + chạy workflow
-│   ├── watch-run.sh                  # chờ run tới lúc cần người, rồi gọi show-run.sh
-│   ├── show-run.sh                   # timeline, chi phí, evidence, việc đang chờ người
-│   ├── agent-log.py                  # lời của agent trong một run (đọc thẳng database)
-│   ├── review-task.sh                # quyết định node APPROVAL
-│   ├── retry-task.sh                 # chạy lại trên cùng WorkItem sau khi run FAILED hoặc bị hủy
-│   ├── worktree-path.sh              # đường dẫn worktree của family
-│   ├── commit-task.sh                # ReleaseSet → local commit
-│   └── split-tasks.sh                # tasks.json → các file WorkItem
+│   ├── skills/                       # skill-todolist-dev (kể cả dev.routing-table)
+│   ├── policies/                     # policy-completion-main-check (khóa evidence theo gate của todolist)
+│   └── workflows/                    # wf-backend-feature, wf-frontend-feature, wf-fullstack-review, wf-main-check
+├── commands/                         # script của Command theo stack: backend-test, frontend-test, gate1,
+│                                     #   quality-check; script của Gate: quality-gate
 ├── work-items/                       # BE-01, FE-01, FE-02, FS-01, F-00 (feature-due-date), CHECK-01 (main-check)
 ├── repo-template/                    # khung repo todolist: backend chạy được, CLAUDE.md, gitignore
 └── images/                           # ảnh chụp UI
+
+kit/                                  # phần DÙNG CHUNG cho mọi project (xem kit/README.md)
+├── kit.json                          # khai báo của kho: prefix "kit-", version, danh mục
+├── scripts/                          # init-project, aw-publish, create-root, run-task, watch-run, show-run,
+│                                     #   review-task, retry-task, commit-task, worktree-path, split-tasks,
+│                                     #   agent-log, aw-resource-hashes
+├── commands/                         # lib.sh (thư viện cho script lệnh), reject, check-feature-docs, secrets-gate
+├── policies/                         # attempt(-once), permission(-network), completion(-reviewed, -feature)
+├── skills/                           # skill-feature-flow, skill-review
+├── workflows/                        # wf-feature-definition, wf-task-delivery (mẫu, có chỗ trống cho project điền)
+└── schema/aw-project.schema.json     # đặc tả của aw-project.json và kit.json
 ```
 
 Biến môi trường dùng chung cho các script:
@@ -1799,6 +1829,7 @@ Biến môi trường dùng chung cho các script:
 |---|---|
 | `AW` | Đường dẫn binary `aw`; mặc định `aw` trên `PATH` |
 | `AW_STATE` | File trạng thái; mặc định `./aw-state.json` |
+| `AW_KIT` | Thư mục `kit/`: chạy tay script lệnh nạp thư viện từ đây (bản đã publish tự chứa, không cần biến này) |
 | `AW_DB`, `AW_ARTIFACT_ROOT`, `AW_WORKSPACE_ROOT` | Giống `aw serve`/`aw worker`; mọi lệnh `aw` đọc |
 | `AW_CLAUDE_EXECUTABLE`, `AW_ENV_ALLOWLIST` | Giống `--claude-executable`, `--env-allowlist`; `aw-publish.py`, `aw doctor` và `aw node-run retry-blocked` cần |
 | `MESSAGE` | `run-task.sh`: message gửi trước khi chạy |

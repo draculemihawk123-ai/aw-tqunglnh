@@ -3,7 +3,16 @@
 
 Cách dùng:
     aw-publish.py aw-project.json --check            # chỉ kiểm tra khai báo + template (không gọi aw)
+    aw-publish.py aw-project.json --slots            # chỗ trống mà workflow của kit đòi project điền
     aw-publish.py aw-project.json                    # publish, ghi trạng thái vào aw-state.json
+    aw-publish.py <kit>/kit.json --check             # kiểm tra chính kho (kit)
+
+Kho dùng chung (kit): file khai báo project có khóa "kit": "<đường dẫn tới kit.json>" (hoặc {"path", "version"}).
+Id mà kit khai báo (Layer, Skill, script skill, Policy) tham chiếu được từ project mà không phải khai lại; chúng được
+publish MỘT lần cho cả bản cài, dưới prefix của kit (kit-), nên mọi project dùng chung đúng một version. Command, Gate
+và Workflow của kit là bản mẫu: project lấy bằng {"id": "...", "from": "kit"} và chúng được publish dưới prefix của
+project (Command ghim repository của project, Workflow có scope project). Script có dòng
+`. "${AW_KIT:?…}/commands/lib.sh" # @aw-include` được nhúng nguyên nội dung thư viện khi publish.
 
 Biến môi trường: AW (mặc định "aw"), AW_DB, AW_ARTIFACT_ROOT, AW_WORKSPACE_ROOT (giống aw serve/worker),
 AW_STATE (mặc định ./aw-state.json, phải có projectId — tạo bằng init-project.sh), AW_CLAUDE_EXECUTABLE
@@ -21,6 +30,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -66,7 +76,15 @@ class ManifestError(Exception):
 
 # ---------------------------------------------------------------- khai báo project
 
-def load_manifest(path):
+SECTIONS = (("layers", "LAYER"), ("skills", "SKILL"), ("scriptSkills", "SKILL"), ("packs", "ENGINEERING_PACK"),
+            ("policies", "POLICY"), ("agents", "AGENT_PROFILE"), ("commands", "COMMAND"), ("gates", "GATE"),
+            ("workflows", "WORKFLOW"))
+SHARED = ("layers", "skills", "scriptSkills", "policies")  # phần của kit được publish dùng chung
+INSTANTIATED = ("commands", "gates", "workflows")          # phần của kit là bản mẫu, publish theo project
+INCLUDE_RE = re.compile(r'^\s*\.\s+"\$\{AW_KIT:\?[^}]*\}/(?P<rel>[^"]+)"\s*#\s*@aw-include\s*$')
+
+
+def load_manifest(path, as_kit=False):
     base = os.path.dirname(os.path.abspath(path))
     with open(path, encoding="utf-8") as f:
         manifest = json.load(f)
@@ -81,7 +99,59 @@ def load_manifest(path):
     manifest["provider"].setdefault("configIdentity", manifest["prefix"] + "claude")
     manifest["provider"].setdefault("envAllowlist", [])
     manifest.setdefault("messageBudget", None)
+    manifest.setdefault("role", "kit" if as_kit else "project")
+    manifest["_kit"] = None
+    spec = manifest.pop("kit", None)
+    if spec is not None and not as_kit:
+        spec = {"path": spec} if isinstance(spec, str) else dict(spec)
+        kit = load_manifest(os.path.join(base, spec["path"]), as_kit=True)
+        if kit["role"] != "kit":
+            raise ManifestError(f"{spec['path']} không phải kho (kit): thiếu \"role\": \"kit\"")
+        wanted = str(spec.get("version", "")).split(".")[0]
+        if wanted and wanted != str(kit.get("version", "")).split(".")[0]:
+            raise ManifestError(f"project đòi kit phiên bản {spec['version']} nhưng kho ở {kit.get('version')}")
+        manifest["_kit"] = kit
+        expand_from_kit(manifest, kit)
     return manifest
+
+
+def expand_from_kit(manifest, kit):
+    """{"id": "x", "from": "kit"} trong commands/gates/workflows: lấy bản mẫu cùng id của kit; field khác trong entry
+    của project ghi đè. Đường dẫn file của bản mẫu tính từ thư mục của kit."""
+    for section in INSTANTIATED:
+        expanded = []
+        for entry in manifest[section]:
+            if entry.get("from") == "kit":
+                template = next((e for e in kit[section] if e["id"] == entry["id"]), None)
+                if template is None:
+                    raise ManifestError(f"{section}/{entry['id']}: kit không có bản mẫu này")
+                entry = {**template, **{k: v for k, v in entry.items() if k != "from"}, "_owner": kit}
+            expanded.append(entry)
+        manifest[section] = expanded
+
+
+def owners(manifest):
+    """Project rồi tới kit: thứ tự phân giải id."""
+    return [manifest] + ([manifest["_kit"]] if manifest.get("_kit") else [])
+
+
+def find_entry(manifest, sections, item_id):
+    """(owner, entry) của id trong project hoặc kit; (None, None) nếu không có."""
+    for owner in owners(manifest):
+        for section in sections:
+            for entry in owner[section]:
+                if entry["id"] == item_id:
+                    return owner, entry
+    return None, None
+
+
+def owner_of(manifest, entry):
+    return entry.get("_owner") or manifest
+
+
+def kit_base(manifest):
+    kit = manifest if manifest.get("role") == "kit" else manifest.get("_kit")
+    return kit["_base"] if kit else None
 
 
 def read_json(manifest, rel):
@@ -90,13 +160,13 @@ def read_json(manifest, rel):
 
 
 def resources_of(manifest, item_id):
-    """Danh sách resource (dict) của một Layer/Skill/script skill đã khai báo."""
-    for entry in manifest["layers"] + manifest["skills"]:
-        if entry["id"] == item_id:
-            return read_json(manifest, entry["file"])["resources"]
-    for entry in manifest["scriptSkills"]:
-        if entry["id"] == item_id:
-            return script_skill_doc(manifest, entry)["resources"]
+    """Danh sách resource (dict) của một Layer/Skill/script skill đã khai báo (ở project hoặc kit)."""
+    owner, entry = find_entry(manifest, ("layers", "skills"), item_id)
+    if entry:
+        return read_json(owner, entry["file"])["resources"]
+    owner, entry = find_entry(manifest, ("scriptSkills",), item_id)
+    if entry:
+        return script_skill_doc(owner, entry)["resources"]
     raise ManifestError(f"không có Layer/Skill nào tên {item_id!r}")
 
 
@@ -106,11 +176,32 @@ def script_key(name, windows):
     return name[:-3] + ".cmd" if windows and name.endswith(".sh") else name
 
 
+def inline_includes(manifest, rel, body):
+    """Thay mỗi dòng `. "${AW_KIT:?…}/<đường dẫn>" # @aw-include` bằng nội dung file đó của kit (bỏ dòng shebang)."""
+    lines = []
+    for line in body.splitlines():
+        match = INCLUDE_RE.match(line)
+        if not match:
+            lines.append(line)
+            continue
+        base = kit_base(manifest)
+        if base is None:
+            raise ManifestError(f"{rel}: dùng @aw-include nhưng project không khai báo kit")
+        target = os.path.join(base, match.group("rel"))
+        if not os.path.isfile(target):
+            raise ManifestError(f"{rel}: @aw-include trỏ tới file không có trong kit: {match.group('rel')}")
+        with open(target, encoding="utf-8") as f:
+            included = [l for l in f.read().splitlines() if not l.startswith("#!")]
+        lines += [f"# --- @aw-include {match.group('rel')} (aw-publish nhúng nguyên văn) ---", *included,
+                  "# --- hết @aw-include ---"]
+    return "\n".join(lines) + ("\n" if body.endswith("\n") else "")
+
+
 def script_skill_doc(manifest, entry, windows=False):
     resources = []
     for rel in entry["files"]:
         with open(os.path.join(manifest["_base"], rel), encoding="utf-8") as f:
-            body = f.read()
+            body = inline_includes(manifest, rel, f.read())
         if windows and rel.endswith(".sh"):
             body = WINDOWS_LAUNCHER + body
         resources.append({"key": script_key(rel, windows), "instruction": body, "priority": "REQUIRED_PROCEDURE",
@@ -131,40 +222,63 @@ def split_selector(selector):
 def lint(manifest):
     """Kiểm tra khai báo trước khi gọi aw: file tồn tại, id duy nhất, tham chiếu giải quyết được."""
     problems = []
+    is_kit = manifest["role"] == "kit"
+    kit = manifest["_kit"]
+    if is_kit:
+        for section in ("agents", "packs"):
+            if manifest[section]:
+                problems.append(f"kit không được khai báo {section}: {section} phụ thuộc vào stack của từng project")
+    if kit and kit["prefix"] == manifest["prefix"]:
+        problems.append(f"prefix của project ({manifest['prefix']!r}) trùng prefix của kit")
     seen = {}
-    for section, kind in (("layers", "LAYER"), ("skills", "SKILL"), ("scriptSkills", "SKILL"),
-                          ("packs", "ENGINEERING_PACK"), ("policies", "POLICY"), ("agents", "AGENT_PROFILE"),
-                          ("commands", "COMMAND"), ("gates", "GATE"), ("workflows", "WORKFLOW")):
-        for entry in manifest[section]:
-            item_id = entry.get("id", "")
-            if not item_id:
-                problems.append(f"{section}: thiếu id")
-                continue
-            if item_id in seen:
-                problems.append(f"id {item_id!r} bị trùng ({seen[item_id]} và {section}) — definitionId là duy nhất trên toàn bản cài")
-            seen[item_id] = section
-            for field in ("file", "template"):
-                if field in entry and not os.path.isfile(os.path.join(manifest["_base"], entry[field])):
-                    problems.append(f"{section}/{item_id}: không thấy file {entry[field]}")
-            for rel in entry.get("files", []):
-                if not os.path.isfile(os.path.join(manifest["_base"], rel)):
-                    problems.append(f"{section}/{item_id}: không thấy file {rel}")
+    for owner in owners(manifest):
+        for section, _ in SECTIONS:
+            if owner is kit and section in INSTANTIATED:
+                continue  # bản mẫu của kit chỉ có nghĩa khi project lấy về bằng "from": "kit"
+            for entry in owner[section]:
+                item_id = entry.get("id", "")
+                if not item_id:
+                    problems.append(f"{section}: thiếu id")
+                    continue
+                where = f"{section} của {'kit' if owner is kit or is_kit else 'project'}"
+                if item_id in seen:
+                    problems.append(f"id {item_id!r} bị trùng ({seen[item_id]} và {where}) — definitionId là duy nhất trên toàn bản cài")
+                seen[item_id] = where
+    for owner in owners(manifest):
+        for section, _ in SECTIONS:
+            for entry in owner[section]:
+                entry_owner = owner_of(owner, entry)
+                for field in ("file", "template"):
+                    if field in entry and not os.path.isfile(os.path.join(entry_owner["_base"], entry[field])):
+                        problems.append(f"{section}/{entry.get('id')}: không thấy file {entry[field]}")
+                for rel in entry.get("files", []):
+                    if not os.path.isfile(os.path.join(entry_owner["_base"], rel)):
+                        problems.append(f"{section}/{entry.get('id')}: không thấy file {rel}")
     if problems:
         return problems
-    passive = {e["id"] for e in manifest["layers"] + manifest["skills"]}
-    keys_by_item = {}
-    for item_id in passive:
-        keys_by_item[item_id] = [r["key"] for r in resources_of(manifest, item_id)]
+    for owner in owners(manifest):
+        for entry in owner["scriptSkills"]:
+            try:
+                script_skill_doc(owner, entry)  # nhúng thử: bắt @aw-include trỏ file không có
+            except ManifestError as exc:
+                problems.append(f"scriptSkills/{entry['id']}: {exc}")
+    if problems:
+        return problems
+    passive = {e["id"] for o in owners(manifest) for e in o["layers"] + o["skills"]}
+    packs = {p["id"] for p in manifest["packs"]}
+    keys_by_item = {item_id: [r["key"] for r in resources_of(manifest, item_id)] for item_id in passive}
+    if is_kit:
+        problems += lint_provenance(manifest)
     for pack in manifest["packs"]:
         for dep in pack.get("include", []):
-            if dep not in passive and dep not in {p["id"] for p in manifest["packs"]}:
+            if dep not in passive and dep not in packs:
                 problems.append(f"packs/{pack['id']}: include {dep!r} không phải Layer/Skill/Pack đã khai báo")
     for agent in manifest["agents"]:
         keys = []
         for selector in agent.get("resources", []):
             item_id, key = split_selector(selector)
             if item_id not in passive:
-                problems.append(f"agents/{agent['id']}: {selector!r} không trỏ tới Layer/Skill đã khai báo")
+                problems.append(f"agents/{agent['id']}: {selector!r} không trỏ tới Layer/Skill đã khai báo (ở project hoặc kit)")
             elif key and key not in keys_by_item[item_id]:
                 problems.append(f"agents/{agent['id']}: {item_id} không có resource {key!r}")
             else:
@@ -172,8 +286,14 @@ def lint(manifest):
         duplicated = sorted({k for k in keys if keys.count(k) > 1})
         if duplicated:
             problems.append(f"agents/{agent['id']}: resource key trùng {duplicated} — resolver sẽ báo conflict")
-    script_keys = {s["id"]: [os.path.basename(f) for f in s["files"]] for s in manifest["scriptSkills"]}
-    policy_docs = {p["id"]: read_json(manifest, p["file"]) for p in manifest["policies"]}
+    script_keys = {}
+    for owner in owners(manifest):
+        for s_ in owner["scriptSkills"]:
+            script_keys[s_["id"]] = [os.path.basename(f) for f in s_["files"]]
+    policy_docs = {}
+    for owner in owners(manifest):
+        for p_ in owner["policies"]:
+            policy_docs[p_["id"]] = read_json(owner, p_["file"])
     for command in manifest["commands"]:
         item_id, key = split_selector(command.get("script", ""))
         if item_id not in script_keys or key not in script_keys[item_id]:
@@ -197,24 +317,55 @@ def lint(manifest):
         for name in agent.get("envAllowlist", manifest["provider"]["envAllowlist"]):
             if not name or "=" in name or any(ch.isspace() for ch in name):
                 problems.append(f"agents/{agent['id']}: envAllowlist chỉ chứa TÊN biến, không có giá trị: {name!r}")
+    # Layer/Skill/Policy dùng chung được tham chiếu từ cả project lẫn kit; Command/Gate/Agent/Pack/Workflow chỉ của
+    # project (chúng ghim repository hoặc phụ thuộc stack), nên bản mẫu của kit phải được lấy về bằng "from": "kit".
     declared = {"AGENT_PROFILE": {a["id"] for a in manifest["agents"]}, "COMMAND": command_ids,
                 "GATE": {g["id"] for g in manifest["gates"]},
                 "POLICY": set(policy_docs), "WORKFLOW": {w["id"] for w in manifest["workflows"]},
-                "LAYER": {l["id"] for l in manifest["layers"]},
-                "SKILL": {s["id"] for s in manifest["skills"] + manifest["scriptSkills"]},
-                "ENGINEERING_PACK": {p["id"] for p in manifest["packs"]}}
+                "LAYER": {l["id"] for o in owners(manifest) for l in o["layers"]},
+                "SKILL": {s_["id"] for o in owners(manifest) for s_ in o["skills"] + o["scriptSkills"]},
+                "ENGINEERING_PACK": packs}
     for workflow in manifest["workflows"]:
-        template = read_json(manifest, workflow["template"])
+        template = read_json(owner_of(manifest, workflow), workflow["template"])
         for ref in collect_refs(template):
             if ref == "adapter":
-                if not manifest["agents"]:
+                if not manifest["agents"] and not is_kit:
                     problems.append(f"workflows/{workflow['id']}: dùng $ref adapter nhưng không khai báo agent nào")
                 continue
             kind_word, _, ref_id = ref.partition(":")
             kind = REF_KINDS.get(kind_word)
+            if is_kit and kind in SLOT_KINDS:
+                continue  # chỗ trống: project điền (xem --slots)
             if not kind or ref_id not in declared.get(kind, set()):
-                problems.append(f"workflows/{workflow['id']}: $ref {ref!r} không giải quyết được")
+                problems.append(f"workflows/{workflow['id']}: $ref {ref!r} không giải quyết được" + kit_hint(manifest, kind, ref_id))
         problems += lint_graph(workflow["id"], template)
+    return problems
+
+
+SLOT_KINDS = {"AGENT_PROFILE", "COMMAND", "GATE", "ENGINEERING_PACK", "WORKFLOW"}
+
+
+def kit_hint(manifest, kind, ref_id):
+    """Gợi ý khi một $ref trỏ tới Command/Gate/Workflow mà kit có bản mẫu nhưng project chưa lấy về."""
+    kit = manifest.get("_kit")
+    section = {"COMMAND": "commands", "GATE": "gates", "WORKFLOW": "workflows"}.get(kind)
+    if kit and section and any(e["id"] == ref_id for e in kit[section]):
+        return f' — kit có bản mẫu: thêm {{"id": "{ref_id}", "from": "kit"}} vào {section}'
+    return ""
+
+
+def lint_provenance(manifest):
+    """Nội dung nhận vào kho phải truy được nguồn: source không rỗng; nguồn là URL thì phải ghi license."""
+    problems = []
+    for section in ("layers", "skills"):
+        for entry in manifest[section]:
+            for resource in read_json(manifest, entry["file"])["resources"]:
+                prov = resource.get("provenance") or {}
+                where = f"{section}/{entry['id']}#{resource.get('key')}"
+                if not prov.get("source"):
+                    problems.append(f"{where}: thiếu provenance.source")
+                elif str(prov["source"]).startswith(("http://", "https://")) and not prov.get("license"):
+                    problems.append(f"{where}: nguồn bên ngoài ({prov['source']}) phải có provenance.license")
     return problems
 
 
@@ -290,6 +441,9 @@ class Publisher:
             raise SystemExit(f"{state_path} chưa có projectId — chạy init-project.sh trước")
         self.state["prefix"] = manifest["prefix"]
         self.state.setdefault("definitions", {})
+        kit = manifest["_kit"]
+        if kit:
+            self.state["kit"] = {"name": kit.get("name", "kit"), "version": kit.get("version"), "prefix": kit["prefix"]}
         version = aw.json(["version", "--json"])
         self.os, self.toolchain = version["os"], version["goVersion"]
         self.windows = self.os == "windows"
@@ -298,22 +452,24 @@ class Publisher:
         """Danh sách tên biến môi trường cho một Command hoặc agent, cộng phần riêng của Windows."""
         return sorted(set(names) | set(WINDOWS_ENV if self.windows and names else []))
 
-    def def_id(self, item_id):
-        return self.m["prefix"] + item_id
+    def def_id(self, item_id, prefix=None):
+        return (self.m["prefix"] if prefix is None else prefix) + item_id
 
-    def record(self, kind, item_id, version_id):
-        self.state["definitions"].setdefault(kind, {})[item_id] = {"definitionId": self.def_id(item_id),
+    def record(self, kind, item_id, version_id, prefix=None):
+        self.state["definitions"].setdefault(kind, {})[item_id] = {"definitionId": self.def_id(item_id, prefix),
                                                                    "versionId": version_id}
 
     def version(self, kind, item_id):
         return self.state["definitions"][kind][item_id]["versionId"]
 
     def pin(self, kind, item_id):
-        return {"kind": kind, "definitionId": self.def_id(item_id), "versionId": self.version(kind, item_id)}
+        """Ghim đúng definitionId đã publish (prefix của project hoặc của kit) và version của nó."""
+        entry = self.state["definitions"][kind][item_id]
+        return {"kind": kind, "definitionId": entry["definitionId"], "versionId": entry["versionId"]}
 
-    def publish(self, kind, item_id, name, document, project=False):
+    def publish(self, kind, item_id, name, document, project=False, prefix=None):
         """Tạo vỏ definition nếu chưa có (tạo trùng id bị từ chối với CONFLICT), rồi publish một version."""
-        def_id = self.def_id(item_id)
+        def_id = self.def_id(item_id, prefix)
         scope = ["--project-id", self.state["projectId"]] if project else []
         if self.aw.run(["definition", "show", "--kind", kind, *scope, def_id], check=False).returncode != 0:
             self.aw.run(["definition", "create", "--kind", kind, *scope, "--idempotency-key", f"create-{def_id}"],
@@ -327,14 +483,14 @@ class Publisher:
                                    "--yes", "--file", f.name, def_id])
         finally:
             os.unlink(f.name)
-        self.record(kind, item_id, result["result"]["id"])
+        self.record(kind, item_id, result["result"]["id"], prefix)
         print(f"  {kind:<16} {def_id:<36} {result['result']['id']}")
         for warning in result["result"].get("warnings") or []:
             print(f"    CẢNH BÁO: {warning}")
 
     def resource_refs(self, selector):
         item_id, key = split_selector(selector)
-        kind = "LAYER" if any(l["id"] == item_id for l in self.m["layers"]) else "SKILL"
+        kind = "LAYER" if find_entry(self.m, ("layers",), item_id)[1] else "SKILL"
         owner = self.version(kind, item_id)
         refs = []
         for resource in resources_of(self.m, item_id):
@@ -343,28 +499,41 @@ class Publisher:
                              "contentHash": _hashes.content_hash(resource)})
         return refs
 
+    def publish_passive(self, owner, prefix):
+        """Layer, Skill và script skill của một khai báo (project hoặc kit), dưới prefix tương ứng."""
+        for entry in owner["layers"]:
+            self.publish("LAYER", entry["id"], entry.get("name"), read_json(owner, entry["file"]), prefix=prefix)
+        for entry in owner["skills"]:
+            self.publish("SKILL", entry["id"], entry.get("name"), read_json(owner, entry["file"]), prefix=prefix)
+        for entry in owner["scriptSkills"]:
+            self.publish("SKILL", entry["id"], entry.get("name"), script_skill_doc(owner, entry, self.windows),
+                         prefix=prefix)
+
+    def publish_policies(self, owner, prefix):
+        for entry in owner["policies"]:
+            self.publish("POLICY", entry["id"], entry.get("name"), read_json(owner, entry["file"]), prefix=prefix)
+
     def run_all(self):
         m = self.m
+        kit = m["_kit"]
+        if kit:
+            print(f"== Kit {kit.get('name', 'kit')} {kit.get('version', '')} (dùng chung toàn bản cài, prefix {kit['prefix']})")
+            self.publish_passive(kit, kit["prefix"])
+            self.publish_policies(kit, kit["prefix"])
         print("== Layer / Skill")
-        for entry in m["layers"]:
-            self.publish("LAYER", entry["id"], entry.get("name"), read_json(m, entry["file"]))
-        for entry in m["skills"]:
-            self.publish("SKILL", entry["id"], entry.get("name"), read_json(m, entry["file"]))
-        for entry in m["scriptSkills"]:
-            self.publish("SKILL", entry["id"], entry.get("name"), script_skill_doc(m, entry, self.windows))
+        self.publish_passive(m, m["prefix"])
 
         print("== Engineering Pack")
         for pack in m["packs"]:
             deps = []
             for dep in pack.get("include", []):
-                kind = ("LAYER" if any(l["id"] == dep for l in m["layers"]) else
+                kind = ("LAYER" if find_entry(m, ("layers",), dep)[1] else
                         "ENGINEERING_PACK" if any(p["id"] == dep for p in m["packs"]) else "SKILL")
                 deps.append(self.pin(kind, dep))
             self.publish("ENGINEERING_PACK", pack["id"], pack.get("name"), {"dependencies": deps})
 
         print("== Policy")
-        for entry in m["policies"]:
-            self.publish("POLICY", entry["id"], entry.get("name"), read_json(m, entry["file"]))
+        self.publish_policies(m, m["prefix"])
 
         print("== Agent (mỗi agent một CONTEXT policy = bảng định tuyến của bước đó)")
         for agent in m["agents"]:
@@ -391,8 +560,8 @@ class Publisher:
         for command in m["commands"]:
             skill_id, key = split_selector(command["script"])
             key = script_key(key, self.windows)
-            skill = next(s for s in m["scriptSkills"] if s["id"] == skill_id)
-            resource = next(r for r in script_skill_doc(m, skill, self.windows)["resources"] if r["key"] == key)
+            skill_owner, skill = find_entry(m, ("scriptSkills",), skill_id)
+            resource = next(r for r in script_skill_doc(skill_owner, skill, self.windows)["resources"] if r["key"] == key)
             repository = command.get("repository", m["repository"])
             doc = {"executable": {"ownerVersionId": self.version("SKILL", skill_id), "resourceKey": key,
                                   "contentHash": _hashes.content_hash(resource)},
@@ -425,7 +594,7 @@ class Publisher:
 
         print("== Workflow (scope project)")
         for workflow in m["workflows"]:
-            document = self.resolve_refs(read_json(m, workflow["template"]))
+            document = self.resolve_refs(read_json(owner_of(m, workflow), workflow["template"]))
             self.validate_workflow(workflow["id"], workflow.get("name"), document)
             self.publish("WORKFLOW", workflow["id"], workflow.get("name"), document, project=True)
 
@@ -501,28 +670,68 @@ class Publisher:
         return registered["result"]["build"]["id"]
 
 
+def print_slots(manifest):
+    """Với mỗi workflow của kit: những thứ project phải có (agent, command, gate…) để dùng nó, và đã có chưa."""
+    kit = manifest if manifest["role"] == "kit" else manifest["_kit"]
+    if kit is None:
+        sys.exit("khai báo này không dùng kit (thiếu khóa \"kit\")")
+    project = None if manifest["role"] == "kit" else manifest
+    have = {} if project is None else {
+        "agent": {a["id"] for a in project["agents"]}, "command": {c["id"] for c in project["commands"]},
+        "gate": {g["id"] for g in project["gates"]}, "pack": {p["id"] for p in project["packs"]},
+        "workflow": {w["id"] for w in project["workflows"]}}
+    for workflow in kit["workflows"]:
+        print(f"{workflow['id']}  — {workflow.get('name', '')}")
+        refs = sorted({r for r in collect_refs(read_json(kit, workflow["template"])) if r != "adapter"
+                       and REF_KINDS.get(r.partition(":")[0]) in SLOT_KINDS})
+        for ref in refs:
+            kind_word, _, ref_id = ref.partition(":")
+            from_kit = {"command": "commands", "gate": "gates"}.get(kind_word)
+            offered = from_kit and any(e["id"] == ref_id for e in kit[from_kit])
+            note = "kit có bản mẫu, lấy bằng \"from\": \"kit\"" if offered else "project tự định nghĩa"
+            status = "" if project is None else ("[có]   " if ref_id in have.get(kind_word, set()) else "[THIẾU]")
+            print(f"  {status} {ref:<34} {note}")
+    if project is None:
+        print("(chạy với aw-project.json để thấy project đã đủ chưa)")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("manifest")
     parser.add_argument("--check", action="store_true", help="chỉ kiểm tra khai báo, không gọi aw")
+    parser.add_argument("--slots", action="store_true", help="in chỗ trống mà workflow của kit đòi project điền")
     args = parser.parse_args()
     try:
         manifest = load_manifest(args.manifest)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, ManifestError) as exc:
         sys.exit(f"Không đọc được {args.manifest}: {exc}")
     try:
         problems = lint(manifest)
     except (ManifestError, OSError, json.JSONDecodeError) as exc:
         problems = [str(exc)]
+    if args.slots:
+        print_slots(manifest)
+        if problems:
+            print(f"(khai báo còn {len(problems)} lỗi, chạy --check để xem)", file=sys.stderr)
+        return
     if problems:
         print("Khai báo chưa hợp lệ:", file=sys.stderr)
         for problem in problems:
             print("  - " + problem, file=sys.stderr)
         sys.exit(1)
     if args.check:
-        print(f"OK: {args.manifest} hợp lệ ({len(manifest['agents'])} agent, {len(manifest['commands'])} command, "
-              f"{len(manifest['workflows'])} workflow)")
+        if manifest["role"] == "kit":
+            shared = sum(len(manifest[k]) for k in SHARED)
+            print(f"OK: kit {manifest.get('name', '')} {manifest.get('version', '')} hợp lệ ({shared} mục dùng chung, "
+                  f"{len(manifest['commands'])} command / {len(manifest['gates'])} gate / "
+                  f"{len(manifest['workflows'])} workflow mẫu)")
+        else:
+            kit = manifest["_kit"]
+            print(f"OK: {args.manifest} hợp lệ ({len(manifest['agents'])} agent, {len(manifest['commands'])} command, "
+                  f"{len(manifest['workflows'])} workflow" + (f"; kit {kit.get('version')}" if kit else "") + ")")
         return
+    if manifest["role"] == "kit":
+        sys.exit("kit không publish riêng: nó được publish cùng project, chạy aw-publish.py aw-project.json")
     started = time.time()
     Publisher(manifest, Aw(os.environ.get("AW", "aw")), os.environ.get("AW_STATE", "./aw-state.json")).run_all()
     print(f"({time.time() - started:.1f}s)")

@@ -41,7 +41,7 @@ Một tính năng là một **WorkItem gốc**: một TaskFamily, một worktree
 - WorkItem con `F-00` chạy tầng tính năng;
 - mỗi task là một WorkItem con chạy tầng task.
 
-### 1.1 Tầng tính năng — [`wf-feature-definition.json`](definitions/workflows/wf-feature-definition.json)
+### 1.1 Tầng tính năng — [`wf-feature-definition.json`](../../../kit/workflows/wf-feature-definition.json)
 
 ```mermaid
 flowchart LR
@@ -71,10 +71,10 @@ flowchart LR
     class RJ stop;
 ```
 
-Completion: [`policy-completion-feature`](definitions/policies/policy-completion-feature.json). Policy này cần
+Completion: [`policy-completion-feature`](../../../kit/policies/policy-completion-feature.json). Policy này cần
 `STATIC` (evidence `COMMAND_EXECUTION` của `check-docs`) và `HUMAN` (người có role `operator` đã quyết định).
 
-### 1.2 Tầng task — [`wf-task-delivery.json`](definitions/workflows/wf-task-delivery.json)
+### 1.2 Tầng task — [`wf-task-delivery.json`](../../../kit/workflows/wf-task-delivery.json)
 
 ```mermaid
 flowchart LR
@@ -106,7 +106,7 @@ flowchart LR
     class RJ stop;
 ```
 
-Completion: [`policy-completion-reviewed`](definitions/policies/policy-completion-reviewed.json). Policy này cần
+Completion: [`policy-completion-reviewed`](../../../kit/policies/policy-completion-reviewed.json). Policy này cần
 `UNIT` (evidence `COMMAND_EXECUTION` của `gate1` và `quality`, lần chạy cuối phải đạt) và `HUMAN`.
 
 Giới hạn của các vòng lặp:
@@ -210,10 +210,10 @@ Không có node sinh WorkItem. Vì vậy việc chia task đi qua bốn bước:
 
 1. DESIGN viết `docs/features/<slug>/tasks.json` theo schema
    `[{id: "T-01", title, pathScopes, riskLevel, lane: "fast"|"full", behavior, acceptanceCriteria: [...]}]`.
-2. Node `check-docs` ([`commands/check-feature-docs.sh`](commands/check-feature-docs.sh)) kiểm tra trước GATE B:
+2. Node `check-docs` ([`kit/commands/check-feature-docs.sh`](../../../kit/commands/check-feature-docs.sh)) kiểm tra trước GATE B:
    có đủ `01-brainstorm.md`, `02-spec.md`, `03-design.md`, và `tasks.json` đúng schema. Sai thì run quay lại DESIGN
    với thông báo lỗi; người duyệt chỉ thấy tài liệu đã qua kiểm tra máy.
-3. Sau GATE B và commit, [`split-tasks.sh <slug>`](scripts/split-tasks.sh) sinh `tasks/<slug>/T-xx.json`. Mỗi file là
+3. Sau GATE B và commit, [`split-tasks.sh <slug>`](../../../kit/scripts/split-tasks.sh) sinh `tasks/<slug>/T-xx.json`. Mỗi file là
    một WorkItem con:
    - `pathScopes` của task cộng thêm `docs`;
    - `riskLevel` của task;
@@ -236,7 +236,7 @@ Tri thức tới agent qua hai lớp ([README 3.3](README.md#33-bước-4--chu�
 | spec | `agent-flow-spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview` |
 | design | `agent-flow-design` | opus | `flow.working-rules`, `flow.design`, Layer Spring/SQLite/React, `dev.stack-overview` |
 | frame | `agent-flow-frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame` |
-| plan | `agent-flow-plan` | sonnet | `flow.working-rules`, `flow.routing-table`, `flow.plan`, Layer Spring/SQLite/React |
+| plan | `agent-flow-plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, Layer Spring/SQLite/React |
 | build | `agent-flow-build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, Layer Spring/SQLite/React, `dev.definition-of-done`, `dev.high-risk-extra` |
 | sync | `agent-flow-sync` | sonnet | `flow.working-rules`, `flow.sync` |
 
@@ -257,14 +257,15 @@ file của giai đoạn đó.
 F-00 chỉ ghi `docs/`, nên bước DESIGN không nhận convention của `backend` hay `frontend` qua selector: nó nhận hợp
 đồng API (`spring.rest-api`, global), tổng quan hệ thống (`dev.stack-overview`), và tự đọc code trong worktree.
 
-`flow.routing-table` là "bảng định tuyến" theo nghĩa của sơ đồ nghiệp vụ. Bảng ánh xạ khu vực thay đổi (migration,
-entity, service, REST API, API client, UI, ADR) sang những thư mục và tài liệu cần đọc trước. Nội dung nằm trong
-[`skill-feature-flow.json`](definitions/skills/skill-feature-flow.json). Muốn sửa bảng thì sửa resource đó rồi chạy lại
-`aw-publish.py`.
+`dev.routing-table` là "bảng định tuyến" theo nghĩa của sơ đồ nghiệp vụ. Bảng ánh xạ khu vực thay đổi (migration,
+entity, service, REST API, API client, UI, ADR) sang những thư mục và tài liệu cần đọc trước. Bảng là tri thức riêng của todolist nên nằm trong
+[`skill-todolist-dev.json`](definitions/skills/skill-todolist-dev.json), không phải trong skill chung của kit
+(`skill-feature-flow` chỉ nói PLAN "đọc theo bảng định tuyến trong resources nếu có"). Muốn sửa bảng thì sửa resource đó
+rồi chạy lại `aw-publish.py`.
 
 ## 4. Chạy
 
-Các lệnh dưới đây chạy trong thư mục vận hành có `aw-state.json` (README 2.6), với `$GUIDE/scripts` đã có trên `PATH`.
+Các lệnh dưới đây chạy trong thư mục vận hành có `aw-state.json` (README 2.6), với `$KIT/scripts` đã có trên `PATH` (README 2.6).
 
 Mọi transcript ở mục này lấy từ một lần chạy thật: Claude CLI thật, Maven và npm thật, trên Windows 10 (Git Bash).
 
@@ -559,12 +560,12 @@ vẫn pin workflow version cũ, nên task mới phải dùng WorkItem mới. `sp
 
 | File | Vai trò |
 |---|---|
-| [`definitions/skills/skill-feature-flow.json`](definitions/skills/skill-feature-flow.json) | Hướng dẫn từng giai đoạn, quy tắc làm việc, NEEDS_INFO, bảng định tuyến |
-| [`definitions/workflows/wf-feature-definition.json`](definitions/workflows/wf-feature-definition.json) | Template workflow tầng tính năng |
-| [`definitions/workflows/wf-task-delivery.json`](definitions/workflows/wf-task-delivery.json) | Template workflow tầng task |
-| [`definitions/policies/policy-completion-feature.json`](definitions/policies/policy-completion-feature.json) | Completion tầng tính năng |
+| [`kit/skills/skill-feature-flow.json`](../../../kit/skills/skill-feature-flow.json) | Hướng dẫn từng giai đoạn, quy tắc làm việc, NEEDS_INFO (kit, dùng chung) |
+| [`kit/workflows/wf-feature-definition.json`](../../../kit/workflows/wf-feature-definition.json) | Template workflow tầng tính năng |
+| [`kit/workflows/wf-task-delivery.json`](../../../kit/workflows/wf-task-delivery.json) | Template workflow tầng task |
+| [`kit/policies/policy-completion-feature.json`](../../../kit/policies/policy-completion-feature.json) | Completion tầng tính năng |
 | [`work-items/feature-due-date.json`](work-items/feature-due-date.json) | Mẫu INTAKE |
-| [`aw-project.json`](aw-project.json) | Khai báo 7 agent `agent-flow-*`, `cmd-gate1`, `cmd-quality-check`, `cmd-check-feature-docs` và hai workflow |
-| [`commands/check-feature-docs.sh`](commands/check-feature-docs.sh), [`commands/gate1.sh`](commands/gate1.sh), [`commands/quality-check.sh`](commands/quality-check.sh) | Script của `check-docs`, `gate1` và `quality` |
-| [`scripts/split-tasks.sh`](scripts/split-tasks.sh) | Chia `tasks.json` thành WorkItem |
+| [`aw-project.json`](aw-project.json) | Khai báo 7 agent `agent-flow-*`, `cmd-gate1`, `cmd-quality-check`; lấy `cmd-check-feature-docs` và hai workflow từ kit bằng `"from": "kit"` |
+| [`kit/commands/check-feature-docs.sh`](../../../kit/commands/check-feature-docs.sh), [`commands/gate1.sh`](commands/gate1.sh), [`commands/quality-check.sh`](commands/quality-check.sh) | Script của `check-docs`, `gate1` và `quality` |
+| [`kit/scripts/split-tasks.sh`](../../../kit/scripts/split-tasks.sh) | Chia `tasks.json` thành WorkItem |
 | `create-root.sh`, `run-task.sh`, `review-task.sh`, `retry-task.sh`, `commit-task.sh`, `show-run.sh`, `agent-log.py`, `worktree-path.sh` | Dùng chung với README (Phần 4) |

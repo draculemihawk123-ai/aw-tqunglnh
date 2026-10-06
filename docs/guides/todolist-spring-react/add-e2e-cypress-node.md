@@ -163,14 +163,19 @@ Biến nào được liệt kê nhưng không có trong môi trường của wor
 ## 2. Viết script của node: `commands/e2e-test.sh`
 
 Tuân theo hợp đồng script COMMAND ([README mục 3.4](README.md#script-cho-node-command)): chạy ở gốc worktree,
-`$1` là `run` (bỏ qua), mã thoát 0 là đạt, lỗi ra stderr, không màu.
+`$1` là `run` (bỏ qua), mã thoát 0 là đạt, lỗi ra stderr, không màu. **Không tự viết lại các hàm chạy-một-bước, báo lỗi,
+chờ HTTP**: script nạp chúng từ [`kit/commands/lib.sh`](../../../kit/commands/lib.sh) bằng dòng `# @aw-include` (xem
+[kit/README.md](../../../kit/README.md#thư-viện-script-lệnh-libsh)); `aw-publish.py` nhúng nguyên văn thư viện vào script khi
+publish, nên worker không cần `AW_KIT`. Chạy tay thì đặt `AW_KIT=$KIT`.
 
 ```sh
 #!/bin/sh
-# COMMAND node "e2e": test end-to-end bằng Cypress trên ứng dụng chạy thật (backend + frontend).
+# COMMAND node "e2e": test end-to-end bằng Cypress trên ứng dụng chạy thật (backend + frontend + e2e).
 # Chạy ở gốc worktree. Lỗi của code in ra STDERR (agent nhận 4 KiB cuối); lỗi MÔI TRƯỜNG có tiền tố "MÔI TRƯỜNG:".
 set -eu
-export NO_COLOR=1 CI=true
+. "${AW_KIT:?đặt AW_KIT=<thư mục kit> khi chạy tay}/commands/lib.sh" # @aw-include
+AW_STEP_HEAD="e2e: bước"
+AW_TAIL=40
 BE_PORT=8080   # backend (application.properties) và proxy của vite.config.ts cùng dùng cổng này
 FE_PORT=5173   # cổng mặc định của Vite
 tmp=$(mktemp -d)
@@ -180,66 +185,43 @@ cleanup() {
   rm -rf "$tmp"
 }
 trap cleanup EXIT INT TERM
-fail() { echo "$@" >&2; exit 1; }
-env_fail() { echo "MÔI TRƯỜNG: $* — không phải lỗi code; đừng sửa code, hãy kết thúc bằng outcome needs_info và nêu rõ." >&2; exit 1; }
 
-[ -f backend/pom.xml ] || fail "e2e: không có backend/pom.xml"
-[ -f frontend/package.json ] || fail "e2e: không có frontend/package.json"
-[ -f e2e/package.json ] || fail "e2e: thiếu e2e/package.json. Tạo gói Cypress trong e2e/ theo resource cypress.conventions."
+[ -f backend/pom.xml ] || aw_fail "e2e: không có backend/pom.xml"
+[ -f frontend/package.json ] || aw_fail "e2e: không có frontend/package.json"
+[ -f e2e/package.json ] || aw_fail "e2e: thiếu e2e/package.json. Tạo gói Cypress trong e2e/ theo resource cypress.conventions."
 ls e2e/cypress.config.* > /dev/null 2>&1 \
-  || fail "e2e: thiếu e2e/cypress.config.ts. Thêm cấu hình Cypress theo resource cypress.conventions."
+  || aw_fail "e2e: thiếu e2e/cypress.config.ts. Thêm cấu hình Cypress theo resource cypress.conventions."
 ls e2e/specs/*.cy.* > /dev/null 2>&1 \
-  || fail "e2e: thiếu spec trong e2e/specs/ (đặt tên *.cy.ts)."
+  || aw_fail "e2e: thiếu spec trong e2e/specs/ (đặt tên *.cy.ts)."
 for port in "$BE_PORT" "$FE_PORT"; do
   if curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$port/"; then
-    env_fail "cổng $port đang bị tiến trình khác dùng"
+    aw_env_fail "cổng $port đang bị tiến trình khác dùng"
   fi
 done
 
-step() {  # step <tên> <lệnh…>: hỏng thì in 40 dòng cuối ra stderr
-  name=$1; shift
-  log="$tmp/step.log"
-  if "$@" > "$log" 2>&1; then return 0; fi
-  echo "e2e: bước '$name' không đạt" >&2
-  tail -n 40 "$log" | cut -c1-300 >&2
-  exit 1
-}
-wait_http() {  # wait_http <url> <tên> <log>: tối đa 120 giây
-  i=0
-  until curl -s -o /dev/null --max-time 2 "$1"; do
-    i=$((i + 1))
-    if [ "$i" -gt 120 ]; then
-      echo "e2e: $2 không lên sau 120 giây" >&2
-      tail -n 40 "$3" | cut -c1-300 >&2
-      exit 1
-    fi
-    sleep 1
-  done
-}
-
 # 1. Backend: đóng gói jar rồi chạy với database SQLite tạm (không đụng backend/data/).
-step "mvn package" sh -c 'cd backend && mvn -B -q -DskipTests package'
+aw_step "mvn package" sh -c 'cd backend && mvn -B -q -DskipTests package'
 jar=$(ls backend/target/*.jar | grep -v -E 'original|sources' | head -n 1)
 SPRING_DATASOURCE_URL="jdbc:sqlite:$tmp/e2e.db" java -jar "$jar" --server.port="$BE_PORT" > "$tmp/backend.log" 2>&1 &
 pids="$pids $!"
 # 2. Cài dependency của frontend (cho Vite) và của e2e (cho Cypress), rồi chạy Vite dev server (proxy /api sang backend).
 install() {  # install <thư mục>: npm ci nếu có lockfile, không thì npm install
   if [ -f "$1/package-lock.json" ]; then
-    step "npm ci ($1)" sh -c 'cd "$0" && npm ci --no-audit --no-fund' "$1"
+    aw_step "npm ci ($1)" sh -c 'cd "$0" && npm ci --no-audit --no-fund' "$1"
   else
-    step "npm install ($1)" sh -c 'cd "$0" && npm install --no-audit --no-fund' "$1"
+    aw_step "npm install ($1)" sh -c 'cd "$0" && npm install --no-audit --no-fund' "$1"
   fi
 }
 install frontend
 install e2e
 (cd frontend && exec node node_modules/vite/bin/vite.js --port "$FE_PORT" --strictPort --host 127.0.0.1) > "$tmp/frontend.log" 2>&1 &
 pids="$pids $!"
-wait_http "http://127.0.0.1:$BE_PORT/api/todos" "backend" "$tmp/backend.log"
-wait_http "http://127.0.0.1:$FE_PORT/" "frontend" "$tmp/frontend.log"
+aw_wait_http "http://127.0.0.1:$BE_PORT/api/todos" "e2e: backend" "$tmp/backend.log"
+aw_wait_http "http://127.0.0.1:$FE_PORT/" "e2e: frontend" "$tmp/frontend.log"
 
 # 3. Cypress chỉ ghi vào thư mục tạm, không ghi vào worktree.
 (cd e2e && npx cypress verify) > "$tmp/verify.log" 2>&1 \
-  || { tail -n 15 "$tmp/verify.log" | cut -c1-300 >&2; env_fail "Cypress chưa chạy được trên máy này (thiếu binary hoặc xvfb)"; }
+  || { tail -n 15 "$tmp/verify.log" | cut -c1-300 >&2; aw_env_fail "Cypress chưa chạy được trên máy này (thiếu binary hoặc xvfb)"; }
 log="$tmp/cypress.log"
 if (cd e2e && npx cypress run --config "baseUrl=http://127.0.0.1:$FE_PORT,video=false,screenshotsFolder=$tmp/shots,downloadsFolder=$tmp/dl,trashAssetsBeforeRuns=false") > "$log" 2>&1; then
   echo "e2e: Cypress PASS"
@@ -252,6 +234,8 @@ exit 1
 
 Giải thích những chỗ không hiển nhiên:
 
+- **`aw_step`, `aw_fail`, `aw_env_fail`, `aw_wait_http`** là hàm của thư viện kit; `AW_STEP_HEAD` và `AW_TAIL` chỉnh phần đầu
+  thông báo và số dòng cuối của log in ra stderr (ở đây 40 dòng).
 - **`exec node node_modules/vite/bin/vite.js`** thay cho `npm run dev`. `npm` sinh thêm tiến trình con mà `kill` ở cuối
   không dọn được; gọi thẳng `node` thì `$!` là chính tiến trình Vite. Với backend, `java -jar` cũng là một tiến trình
   duy nhất (jar do `spring-boot-maven-plugin` đóng gói thành jar chạy được).
@@ -272,6 +256,7 @@ Cấp quyền chạy và kiểm tra cú pháp:
 ```bash
 chmod +x commands/e2e-test.sh
 sh -n commands/e2e-test.sh && echo ok
+aw-publish.py "$GUIDE/aw-project.json" --check     # sau khi khai báo ở mục 4: kiểm tra cả @aw-include
 ```
 
 ## 3. Tri thức cho agent: Layer `layer-cypress-e2e`
@@ -352,7 +337,7 @@ Ví dụ `agent-flow-build` sau khi sửa:
                   "DISPLAY", "CYPRESS_CACHE_FOLDER", "CYPRESS_INSTALL_BINARY"]}
 ```
 
-- `network: ALLOWED` kèm `policy-permission-network` là bắt buộc (mục 0). `aw-publish.py --check` bắt lỗi nếu thiếu.
+- `network: ALLOWED` kèm `policy-permission-network` là bắt buộc (mục 0). Policy này nằm trong kit nên không cần khai lại; `aw-publish.py --check` bắt lỗi nếu thiếu.
 - `timeoutSeconds: 1500` (25 phút) nhỏ hơn `timeoutSeconds` 1800 của `policy-attempt-once`. Ước lượng: build jar vài chục
   giây, `npm ci` vài chục giây, Cypress vài phút. Tăng nếu bộ spec lớn lên.
 - `envAllowlist` **thay thế** danh sách mặc định, không cộng thêm, nên phải chép lại các tên mặc định (mục 1.3).
@@ -366,7 +351,26 @@ file template ở mục 5. Agent `agent-reviewer` không cần Layer này vì se
 
 ## 5. Thêm node vào `wf-task-delivery.json`
 
-Hai thay đổi trong `definitions/workflows/wf-task-delivery.json`.
+`wf-task-delivery` hiện là **bản mẫu của kit** (`"from": "kit"`), dùng chung cho mọi project. Node `e2e` phụ thuộc stack (Cypress,
+cổng, `e2e/`), nên không thêm vào bản của kit mà làm một **bản của project**:
+
+```bash
+cp "$KIT/workflows/wf-task-delivery.json" "$GUIDE/definitions/workflows/wf-task-delivery.json"
+```
+
+Trong `aw-project.json`, đổi entry của workflow từ bản mẫu sang file riêng (id giữ nguyên để `run-task.sh … wf-task-delivery`
+không đổi):
+
+```diff
+-    {"id": "wf-task-delivery", "from": "kit"},
++    {"id": "wf-task-delivery", "name": "Workflow: giao một task (có e2e)", "template": "definitions/workflows/wf-task-delivery.json"},
+```
+
+Các `$ref` tới policy (`policy:policy-attempt-once`…) vẫn giải quyết được từ kit. **Đánh đổi:** bản này không còn tự nhận cập nhật
+của `wf-task-delivery` trong kit; khi kit đổi workflow đó, bạn phải gộp tay (so bằng `diff` với bản của kit). Nếu nhiều project cùng cần
+node e2e, đưa nó vào kit như một workflow biến thể thay vì để mỗi project giữ một bản copy.
+
+Hai thay đổi trong `definitions/workflows/wf-task-delivery.json` của project.
 
 **5.1. Thêm node**, ngay sau node `quality` trong mảng `nodes`:
 
@@ -524,7 +528,7 @@ create-root.sh "FE-03: e2e Cypress"
 run-task.sh "$GUIDE/work-items/fe-03-e2e-cypress.json" wf-frontend-feature
 WT=$(worktree-path.sh)
 git -C "$WT" status --porcelain && git -C "$WT" diff       # review (README mục 4.5)
-(cd "$WT" && sh "$GUIDE/commands/e2e-test.sh" run)         # chạy node e2e trên thay đổi của agent
+(cd "$WT" && AW_KIT="$KIT" sh "$GUIDE/commands/e2e-test.sh" run)   # chạy node e2e trên thay đổi của agent
 ```
 
 Chạy tay là cách chắc chắn nhất để bắt sai sót của spec mà agent không tự chạy được. Nếu `e2e-test.sh` đỏ, **chưa

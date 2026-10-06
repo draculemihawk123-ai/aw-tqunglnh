@@ -254,7 +254,7 @@ và có vượt ngưỡng cảnh báo hay không.
 
 **Agent đã nói gì.** Chiều ngược lại, từ agent tới người vận hành, hiện chưa có lệnh `aw` nào: tóm tắt cuối phiên
 của agent, câu hỏi của nó, kết luận của AI reviewer đều không nằm trong message, evidence hay UI.
-[`agent-log.py`](scripts/agent-log.py) đọc thẳng bảng `agent_events` trong database (chỉ đọc; đây là chi tiết cài đặt,
+[`agent-log.py`](../../../kit/scripts/agent-log.py) đọc thẳng bảng `agent_events` trong database (chỉ đọc; đây là chi tiết cài đặt,
 không phải API công khai):
 
 ```bash
@@ -409,7 +409,7 @@ Run: a5bd6e89-…  state: SUCCEEDED
   #4 end (vòng 0): SUCCEEDED
 ```
 
-[`retry-task.sh`](scripts/retry-task.sh) làm bốn việc, đều là lệnh `aw` thường:
+[`retry-task.sh`](../../../kit/scripts/retry-task.sh) làm bốn việc, đều là lệnh `aw` thường:
 
 1. In output của các bước kiểm tra `FAILED` trong run trước (`evidence list` + `artifact get`).
 2. `aw blocker resolve --mode RESOLVED --reason "…" <blockerId>` cho mọi blocker đang mở. WorkItem về `READY`.

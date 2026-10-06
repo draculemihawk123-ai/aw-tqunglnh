@@ -1,0 +1,43 @@
+{
+  "role": "kit",
+  "name": "aw-kit",
+  "version": "1.0.0",
+  "prefix": "kit-",
+
+  "skills": [
+    {"id": "skill-feature-flow", "name": "Skill: quy trình tính năng → task", "file": "skills/skill-feature-flow.json"},
+    {"id": "skill-review", "name": "Skill: review độc lập (CHECKER)", "file": "skills/skill-review.json"}
+  ],
+
+  "scriptSkills": [
+    {"id": "scripts-common", "name": "Script dùng chung cho các Command", "owner": "aw-kit",
+     "files": ["commands/reject.sh", "commands/check-feature-docs.sh", "commands/secrets-gate.sh"]}
+  ],
+
+  "policies": [
+    {"id": "policy-attempt", "name": "Attempt: 2 lần, timeout 30 phút", "file": "policies/policy-attempt.json"},
+    {"id": "policy-attempt-once", "name": "Attempt: 1 lần (bước kiểm tra, không thử lại)", "file": "policies/policy-attempt-once.json"},
+    {"id": "policy-permission", "name": "Permission: OPERATOR_TRUSTED_LOCAL", "file": "policies/policy-permission.json"},
+    {"id": "policy-permission-network", "name": "Permission: cho phép mạng", "file": "policies/policy-permission-network.json"},
+    {"id": "policy-completion", "name": "Completion: test PASS", "file": "policies/policy-completion.json"},
+    {"id": "policy-completion-reviewed", "name": "Completion: test PASS + người duyệt", "file": "policies/policy-completion-reviewed.json"},
+    {"id": "policy-completion-feature", "name": "Completion: kiểm tra tài liệu + người duyệt", "file": "policies/policy-completion-feature.json"}
+  ],
+
+  "commands": [
+    {"id": "cmd-reject", "name": "Command: dừng run khi bị từ chối hoặc hết vòng sửa", "script": "scripts-common#reject.sh"},
+    {"id": "cmd-check-feature-docs", "name": "Command: kiểm tra tài liệu tính năng", "script": "scripts-common#check-feature-docs.sh"},
+    {"id": "cmd-secrets-gate", "name": "Command của gate: không có file bí mật", "script": "scripts-common#secrets-gate.sh",
+     "repositoryArg": true, "timeoutSeconds": 120, "maxOutputBytes": 65536}
+  ],
+
+  "gates": [
+    {"id": "gate-secrets", "name": "Gate: không có file bí mật", "command": "cmd-secrets-gate",
+     "criteria": [{"name": "Không có file bí mật hay file database", "evidenceKey": "NO_SECRET_FILES"}]}
+  ],
+
+  "workflows": [
+    {"id": "wf-feature-definition", "name": "Workflow: định nghĩa tính năng", "template": "workflows/wf-feature-definition.json"},
+    {"id": "wf-task-delivery", "name": "Workflow: giao một task", "template": "workflows/wf-task-delivery.json"}
+  ]
+}
