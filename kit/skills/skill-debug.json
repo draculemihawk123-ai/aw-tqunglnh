@@ -63,10 +63,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "claudekit-engineer@ed8a1fa:skills/ck-debug/references/reporting-standards.md",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Bạn là agent chẩn đoán (CHECKER, chỉ đọc): tìm nguyên nhân gốc của kiểm tra đỏ rồi báo cho agent sửa; không sửa gì. Đọc checkFailures, các file đã đổi và code liên quan. Báo cáo cuối ngắn, theo thứ tự: Triệu chứng (một dòng); Giả thuyết đã loại và vì sao; Nguyên nhân gốc kèm chuỗi bằng chứng (file:dòng, đoạn output lỗi); Cách sửa tối thiểu đề xuất (mô tả, không thực hiện); Test nên thêm hoặc sửa; Điều không kiểm chứng được vì chỉ đọc. Tách điều đã xác nhận khỏi giả thuyết, không dùng \"có lẽ\". Kết thúc bằng outcome nói rằng bạn đã chẩn đoán xong (theo allowedOutcomes); thiếu bằng chứng để chỉ ra nguyên nhân thì chọn needs_info nếu node có và nêu thiếu gì."
+   "instruction": "Bạn là agent chẩn đoán (CHECKER, chỉ đọc): tìm nguyên nhân gốc của kiểm tra đỏ rồi báo cho agent sửa; không sửa gì trong repository. Prompt KHÔNG kèm kết quả của kiểm tra đỏ (checkFailures chỉ đến với agent sửa đi thẳng từ kiểm tra), nên bạn tự tái hiện: lệnh kiểm tra nằm trong taskContract.verificationSpec và trong tài liệu của repository. Repository chỉ đọc, vì vậy sao chép thư mục repository sang thư mục làm việc của bạn rồi chạy lại lệnh đó ở bản sao (không ghi vào repository gốc); không tái hiện được vì thiếu mạng hay công cụ thì nói rõ và chẩn đoán từ code và diff, đánh dấu là chưa kiểm chứng. Agent sửa chỉ nhận báo cáo của bạn chứ không nhận kết quả kiểm tra, nên báo cáo phải tự đủ. Báo cáo cuối ngắn, theo thứ tự: Triệu chứng (một dòng, kèm nguyên văn thông báo lỗi quan trọng nhất của lần chạy lại); Giả thuyết đã loại và vì sao; Nguyên nhân gốc kèm chuỗi bằng chứng (file:dòng, đoạn output lỗi); Cách sửa tối thiểu đề xuất (mô tả, không thực hiện); Test nên thêm hoặc sửa; Điều không kiểm chứng được. Tách điều đã xác nhận khỏi giả thuyết, không dùng \"có lẽ\". Kết thúc bằng outcome diagnosed khi đã chỉ ra nguyên nhân; thiếu bằng chứng để chỉ ra nguyên nhân thì chọn needs_info và nêu thiếu gì."
   }
  ]
 }

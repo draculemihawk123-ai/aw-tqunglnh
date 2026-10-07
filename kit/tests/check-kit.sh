@@ -311,6 +311,38 @@ sed -i 's/SELF_SIGNED_CERT_IN_CHAIN/Cannot find module x/' "$tmp/p/env.sh"
 out=$(AW_KIT="$kit" sh "$tmp/p/env.sh" 2>&1 >/dev/null)
 printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && bad "lỗi code bị báo nhầm là môi trường" || ok "lỗi code vẫn là lỗi code"
 
+echo "== workflow mẫu và expect-fail (V10-14)"
+mkdir -p "$tmp/ef/bin" "$tmp/ef/wt/backend"
+touch "$tmp/ef/wt/backend/pom.xml"
+cat > "$tmp/ef/bin/mvn" <<'MVN'
+#!/bin/sh
+case "$FAKE_MVN" in
+  green) exit 0 ;;
+  red) echo "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0"; echo "[ERROR]   IssueServiceTest.reopen:42 expected: <OPEN> but was: <CLOSED>"; exit 1 ;;
+  compile) echo "[ERROR] COMPILATION ERROR :"; echo "[ERROR] cannot find symbol"; exit 1 ;;
+  net) echo "PKIX path building failed"; exit 1 ;;
+esac
+MVN
+chmod +x "$tmp/ef/bin/mvn"
+ef() { (cd "$tmp/ef/wt" && AW_KIT="$kit" FAKE_MVN="$1" PATH="$tmp/ef/bin:$PATH" sh "$kit/commands/expect-fail.sh" 2>&1); }
+out=$(ef red) && printf '%s' "$out" | grep -q "ĐỎ như mong đợi" && ok "expect-fail: test đỏ thì đạt, in các dòng thất bại" || bad "expect-fail test đỏ: $out"
+out=$(ef green) && bad "expect-fail: test xanh phải không đạt" || { printf '%s' "$out" | grep -q "chưa chạm tới lỗi" && ok "expect-fail: test xanh thì không đạt, dặn sửa test" || bad "expect-fail test xanh: $out"; }
+out=$(ef compile) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "không biên dịch" && ok "expect-fail: lỗi biên dịch không được tính là test đỏ" || bad "expect-fail biên dịch: $out"; }
+out=$(ef net) && bad "expect-fail: lỗi mạng phải không đạt" || { printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && ok "expect-fail: lỗi mạng báo là MÔI TRƯỜNG" || bad "expect-fail mạng: $out"; }
+out=$(cd "$tmp/ef" && AW_KIT="$kit" sh "$kit/commands/expect-fail.sh" 2>&1) && bad "expect-fail: thiếu backend/pom.xml phải không đạt" || ok "expect-fail: không nhận ra stack thì không đạt"
+if [ -n "${AW:-}" ] || command -v aw > /dev/null 2>&1 || command -v go > /dev/null 2>&1; then
+  for s in plus-debug bugfix-not-red; do
+    out=$(python3 "$kit/scripts/walk-workflow.py" "$kit/tests/walk/scenarios/$s.json" 2>&1) && ok "walk-workflow: $s đi đúng thứ tự node" || bad "walk-workflow $s: $out"
+  done
+  if [ -n "${WALK_ALL:-}" ]; then
+    for s in "$kit"/tests/walk/scenarios/*.json; do
+      out=$(python3 "$kit/scripts/walk-workflow.py" "$s" 2>&1) && ok "walk-workflow: $(basename "$s" .json)" || bad "walk-workflow $(basename "$s"): $out"
+    done
+  fi
+else
+  echo "  bỏ qua walk-workflow (không có aw hay go); WALK_ALL=1 chạy hết kịch bản"
+fi
+
 echo "== schema"
 if python3 -c "import jsonschema" 2> /dev/null; then
   python3 - "$kit/schema/aw-project.schema.json" "$kit/kit.json" "$example" <<'PY' && ok "kit.json và ví dụ khớp schema" || bad "khai báo không khớp schema"

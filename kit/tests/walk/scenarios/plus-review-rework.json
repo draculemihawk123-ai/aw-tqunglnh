@@ -1,0 +1,64 @@
+{
+  "name": "wf-task-delivery-plus: review rework → build",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "rework",
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ]
+  },
+  "commands": {
+    "gate1": [
+      "pass"
+    ],
+    "quality": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "build:done",
+      "gate1:passed",
+      "quality:passed",
+      "review:rework",
+      "build:done",
+      "gate1:passed",
+      "quality:passed",
+      "review:approved",
+      "gate2:approved",
+      "sync:done",
+      "end:-"
+    ],
+    "prompts": [
+      {
+        "node": "build",
+        "nth": 2,
+        "has": [
+          "reviewerFeedback"
+        ]
+      }
+    ]
+  }
+}

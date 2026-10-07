@@ -229,7 +229,7 @@ Toàn bộ định nghĩa nằm trong một file khai báo, [`aw-project.json`](
 - **Command và Gate**: lệnh nào thuộc repository nào được khai ở đây. Script riêng (`contract-lint.sh`, `api-conformance.sh`…)
   nằm ở [`commands/`](commands); ba script chung (`secrets-gate`, `reject`, `check-feature-docs`) và hai runner
   `cmd-maven-test`/`cmd-npm-test` lấy từ kit. Có **ba gate bí mật** (một mỗi repository) và một gate `spec hợp lệ`.
-- **Workflow**: năm cái riêng và bốn cái lấy từ kit. Hai cơ chế mới của kit làm việc này gọn:
+- **Workflow**: năm cái riêng và bốn cái lấy từ kit, cộng bốn bản của hai workflow mẫu V10-14 (`wf-task-delivery-plus-api|web`: thêm node chẩn đoán khi gate đỏ và review độc lập; `wf-bugfix-api|web`: test tái hiện phải đỏ trước khi sửa; xem [kit/README](../../../kit/README.md#workflow-mẫu-có-chẩn-đoán-review-độc-lập-và-sửa-lỗi-v10-14)). Hai cơ chế của kit làm việc này gọn:
   - `{"id": "cmd-api-test", "from": "kit:cmd-maven-test", "repository": "api"}`: **một mẫu, nhiều bản** gắn vào repository khác nhau.
   - `{"id": "wf-task-delivery-api", "from": "kit:wf-task-delivery", "bind": {"command:cmd-gate1": "cmd-api-test", …}}`:
     **một workflow mẫu, nhiều bản** gắn Command khác nhau (contracts / api / web), thay vì copy ba lần.

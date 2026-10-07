@@ -1,0 +1,56 @@
+{
+  "name": "wf-task-delivery-plus: người yêu cầu sửa rồi duyệt",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ]
+  },
+  "commands": {
+    "gate1": [
+      "pass"
+    ],
+    "quality": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "revise",
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "build:done",
+      "gate1:passed",
+      "quality:passed",
+      "review:approved",
+      "gate2:revise",
+      "build:done",
+      "gate1:passed",
+      "quality:passed",
+      "review:approved",
+      "gate2:approved",
+      "sync:done",
+      "end:-"
+    ]
+  }
+}

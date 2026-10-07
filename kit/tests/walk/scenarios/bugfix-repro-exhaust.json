@@ -1,0 +1,50 @@
+{
+  "name": "wf-bugfix: test không bao giờ đỏ → hết vòng → reject",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-bugfix",
+  "agents": {
+    "repro": [
+      "done"
+    ],
+    "fix": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ]
+  },
+  "commands": {
+    "expectfail": [
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+    ],
+    "gate1": [
+      "pass"
+    ]
+  },
+  "approvals": {},
+  "expect": {
+    "state": "FAILED",
+    "sequence": [
+      "start:next",
+      "repro:done",
+      "expect-fail:failed",
+      "repro:done",
+      "expect-fail:failed",
+      "repro:done",
+      "expect-fail:failed",
+      "repro:done",
+      "expect-fail:failed",
+      "repro:escalated",
+      "reject:-"
+    ]
+  }
+}

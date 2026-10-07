@@ -1,0 +1,54 @@
+{
+  "name": "wf-bugfix: test chưa đỏ → quay lại viết test",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-bugfix",
+  "agents": {
+    "repro": [
+      "done"
+    ],
+    "fix": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ]
+  },
+  "commands": {
+    "expectfail": [
+      "fail",
+      "pass"
+    ],
+    "gate1": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "repro:done",
+      "expect-fail:failed",
+      "repro:done",
+      "expect-fail:passed",
+      "fix:done",
+      "gate1:passed",
+      "review:approved",
+      "gate2:approved",
+      "end:-"
+    ],
+    "prompts": [
+      {
+        "node": "repro",
+        "nth": 2,
+        "has": [
+          "checkFailures"
+        ]
+      }
+    ]
+  }
+}

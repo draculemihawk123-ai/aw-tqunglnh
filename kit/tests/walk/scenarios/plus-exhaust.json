@@ -1,0 +1,68 @@
+{
+  "name": "wf-task-delivery-plus: hết vòng sửa → reject",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ],
+    "debug": [
+      "diagnosed"
+    ]
+  },
+  "commands": {
+    "gate1": [
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+    ]
+  },
+  "approvals": {},
+  "expect": {
+    "state": "FAILED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "build:done",
+      "gate1:failed",
+      "debug:diagnosed",
+      "build:done",
+      "gate1:failed",
+      "debug:diagnosed",
+      "build:done",
+      "gate1:failed",
+      "debug:diagnosed",
+      "build:done",
+      "gate1:failed",
+      "debug:diagnosed",
+      "build:done",
+      "gate1:failed",
+      "debug:diagnosed",
+      "build:done",
+      "gate1:failed",
+      "debug:diagnosed",
+      "build:escalated",
+      "reject:-"
+    ]
+  }
+}

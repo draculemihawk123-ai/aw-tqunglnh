@@ -863,8 +863,10 @@ def print_slots(manifest):
     if project is not None:  # workflow project lấy từ kit với tên khác hoặc đã gắn lại chỗ trống
         shown += [(w, workflow_template(project, w), w["id"] + "  (bản của project)") for w in project["workflows"]
                   if w.get("_owner") is kit and w.get("bind")]
+    used = set() if project is None else {w.get("template") for w in project["workflows"] if w.get("_owner") is kit}
     for workflow, template, label in shown:
-        print(f"{label}  — {workflow.get('name', '')}")
+        in_use = project is None or workflow.get("template") in used or label.endswith("(bản của project)")
+        print(f"{label}  — {workflow.get('name', '')}" + ("" if in_use else "  (project chưa dùng)"))
         refs = sorted({r for r in collect_refs(template) if r != "adapter"
                        and REF_KINDS.get(r.partition(":")[0]) in SLOT_KINDS})
         for ref in refs:
@@ -872,7 +874,12 @@ def print_slots(manifest):
             from_kit = {"agent": "agents", "command": "commands", "gate": "gates"}.get(kind_word)
             offered = from_kit and any(e["id"] == ref_id for e in kit[from_kit])
             note = "kit có bản mẫu, lấy bằng \"from\": \"kit\"" if offered else "project tự định nghĩa"
-            status = "" if project is None else ("[có]   " if ref_id in have.get(kind_word, set()) else "[THIẾU]")
+            if project is None:
+                status = ""
+            elif ref_id in have.get(kind_word, set()):
+                status = "[có]   "
+            else:
+                status = "[THIẾU]" if in_use else "[chưa có]"
             print(f"  {status} {ref:<34} {note}")
     if project is None:
         print("(chạy với aw-project.json để thấy project đã đủ chưa)")

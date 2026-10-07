@@ -1,0 +1,73 @@
+{
+  "name": "wf-task-delivery-plus: gate1 đỏ → debug → build",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "debug": [
+      "diagnosed"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ]
+  },
+  "commands": {
+    "gate1": [
+      "fail",
+      "pass"
+    ],
+    "quality": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "build:done",
+      "gate1:failed",
+      "debug:diagnosed",
+      "build:done",
+      "gate1:passed",
+      "quality:passed",
+      "review:approved",
+      "gate2:approved",
+      "sync:done",
+      "end:-"
+    ],
+    "prompts": [
+      {
+        "node": "debug",
+        "nth": 1,
+        "has": [
+          "debug.diagnosis-report"
+        ]
+      },
+      {
+        "node": "build",
+        "nth": 2,
+        "has": [
+          "reviewerFeedback"
+        ]
+      }
+    ]
+  }
+}

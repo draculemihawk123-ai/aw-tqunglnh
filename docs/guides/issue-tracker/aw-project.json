@@ -55,7 +55,11 @@
     {"id": "agent-flow-frame", "from": "kit", "addResources": []},
     {"id": "agent-flow-plan", "from": "kit", "addResources": ["skill-tracker-dev#dev.routing-table", "layer-openapi-contract", "layer-stack-spring-sqlite", "layer-api-contract-first", "layer-stack-react-vite", "layer-web-contract-first"]},
     {"id": "agent-flow-build", "from": "kit", "addResources": ["layer-openapi-contract", "layer-stack-spring-sqlite", "layer-api-contract-first", "layer-stack-react-vite", "layer-web-contract-first", "skill-maker#dev.definition-of-done"]},
-    {"id": "agent-flow-sync", "from": "kit", "addResources": []}
+    {"id": "agent-flow-sync", "from": "kit", "addResources": []},
+
+    {"id": "agent-debugger", "from": "kit", "addResources": ["layer-openapi-contract", "layer-stack-spring-sqlite", "layer-api-contract-first", "layer-stack-react-vite", "layer-web-contract-first", "skill-tracker-dev#dev.stack-overview"]},
+    {"id": "agent-flow-repro", "from": "kit", "addResources": ["layer-openapi-contract", "layer-stack-spring-sqlite", "layer-api-contract-first", "layer-stack-react-vite", "layer-web-contract-first", "skill-tracker-dev#dev.stack-overview"]},
+    {"id": "agent-flow-fix", "from": "kit", "addResources": ["layer-openapi-contract", "layer-stack-spring-sqlite", "layer-api-contract-first", "layer-stack-react-vite", "layer-web-contract-first", "skill-maker#dev.definition-of-done", "skill-tracker-dev#dev.stack-overview"]}
   ],
 
   "commands": [
@@ -68,6 +72,8 @@
     {"id": "cmd-api-conformance", "name": "Command: route của api khớp hợp đồng", "script": "scripts#api-conformance.sh",
      "repository": "api", "argRepositories": ["contracts"]},
     {"id": "cmd-web-test", "from": "kit:cmd-npm-test", "name": "Command: test và build web (npm)", "repository": "web"},
+    {"id": "cmd-api-expect-fail", "from": "kit:cmd-expect-fail", "name": "Command: test tái hiện lỗi của api phải đỏ", "repository": "api"},
+    {"id": "cmd-web-expect-fail", "from": "kit:cmd-expect-fail", "name": "Command: test tái hiện lỗi của web phải đỏ", "repository": "web"},
     {"id": "cmd-web-conformance", "name": "Command: lời gọi của web khớp hợp đồng", "script": "scripts#web-conformance.sh",
      "repository": "web", "argRepositories": ["contracts"]},
 
@@ -101,6 +107,19 @@
               "policy:policy-permission": "policy-permission-multirepo"}},
     {"id": "wf-task-delivery-web", "from": "kit:wf-task-delivery", "name": "Workflow: giao task ở repo web",
      "bind": {"command:cmd-gate1": "cmd-web-test", "command:cmd-quality-check": "cmd-web-conformance",
+              "policy:policy-permission": "policy-permission-multirepo"}},
+
+    {"id": "wf-task-delivery-plus-api", "from": "kit:wf-task-delivery-plus", "name": "Workflow: giao task ở repo api (chẩn đoán + review độc lập)",
+     "bind": {"command:cmd-gate1": "cmd-api-test", "command:cmd-quality-check": "cmd-api-conformance",
+              "policy:policy-permission": "policy-permission-multirepo"}},
+    {"id": "wf-task-delivery-plus-web", "from": "kit:wf-task-delivery-plus", "name": "Workflow: giao task ở repo web (chẩn đoán + review độc lập)",
+     "bind": {"command:cmd-gate1": "cmd-web-test", "command:cmd-quality-check": "cmd-web-conformance",
+              "policy:policy-permission": "policy-permission-multirepo"}},
+    {"id": "wf-bugfix-api", "from": "kit:wf-bugfix", "name": "Workflow: sửa lỗi ở repo api (test đỏ trước)",
+     "bind": {"command:cmd-gate1": "cmd-api-test", "command:cmd-expect-fail": "cmd-api-expect-fail",
+              "policy:policy-permission": "policy-permission-multirepo"}},
+    {"id": "wf-bugfix-web", "from": "kit:wf-bugfix", "name": "Workflow: sửa lỗi ở repo web (test đỏ trước)",
+     "bind": {"command:cmd-gate1": "cmd-web-test", "command:cmd-expect-fail": "cmd-web-expect-fail",
               "policy:policy-permission": "policy-permission-multirepo"}}
   ]
 }

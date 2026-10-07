@@ -16,6 +16,7 @@ Tài liệu này chỉ nói về kho. Ví dụ đầy đủ một project dùng 
 
 - [1. Cấu trúc](#1-cấu-trúc)
 - [2. Project dùng kho thế nào](#2-project-dùng-kho-thế-nào)
+- [Workflow mẫu có chẩn đoán, review độc lập và sửa lỗi](#workflow-mẫu-có-chẩn-đoán-review-độc-lập-và-sửa-lỗi-v10-14)
 - [3. Cái nào dùng chung thật, cái nào là bản mẫu](#3-cái-nào-dùng-chung-thật-cái-nào-là-bản-mẫu)
 - [4. Thư viện script lệnh (`lib.sh`)](#thư-viện-script-lệnh-libsh)
 - [5. Thêm một mục vào kho](#5-thêm-một-mục-vào-kho)
@@ -41,7 +42,7 @@ kit/
 ├── layers/                     # layer-stack-spring-sqlite, layer-stack-react-vite, layer-api-design, layer-sql-quality,
 │                               # layer-backend-security, layer-react-quality, layer-frontend-testing
 ├── skills/                     # skill-feature-flow, skill-maker, skill-review, skill-code-review, skill-dev-rules, skill-ask, skill-brainstorm, skill-spec, skill-design, skill-plan, skill-build, skill-debug, skill-test, skill-security, skill-docs
-├── workflows/                  # wf-feature-definition, wf-task-delivery (mẫu, có chỗ trống cho project điền)
+├── workflows/                  # wf-feature-definition, wf-task-delivery, wf-task-delivery-plus, wf-bugfix (mẫu, có chỗ trống cho project điền)
 ├── schema/aw-project.schema.json   # đặc tả của aw-project.json và kit.json
 ├── drafts/                     # bản nháp do import-skill.py sinh (git bỏ qua, không bao giờ publish)
 └── tests/check-kit.sh          # kiểm tra tự động (mục 7)
@@ -88,6 +89,64 @@ aw-publish.py aw-project.json --slots
 
 Rồi `aw-publish.py aw-project.json --check`, rồi publish như thường. Môi trường: `export AW_KIT=<thư mục kit>` và đặt
 `$AW_KIT/scripts` vào `PATH`.
+
+## Workflow mẫu có chẩn đoán, review độc lập và sửa lỗi (V10-14)
+
+Hai workflow mẫu thêm vào `wf-task-delivery` những bước mà ClaudeKit làm bằng `/cook` và `/fix`, nhưng thành **graph có giới hạn vòng**
+của aw (mọi vòng sửa có `cyclePolicy`, hết vòng thì sang `reject` và run FAILED, không lặp vô hạn).
+
+`wf-task-delivery-plus` = `wf-task-delivery` + node **debug** khi gate1 đỏ và node **review** (CHECKER độc lập) trước cổng người duyệt:
+
+```mermaid
+flowchart LR
+  F[frame] -->|full| P[plan] --> B[build]
+  F -->|fast| B
+  B --> G1{gate1}
+  G1 -->|failed| D[debug<br/>CHECKER chỉ đọc]
+  D -->|diagnosed| B
+  G1 -->|passed| Q{quality}
+  Q -->|failed| B
+  Q -->|passed| R[review<br/>CHECKER độc lập]
+  R -->|rework| B
+  R -->|approved| G2[[gate2 người duyệt]]
+  G2 -->|revise| B
+  G2 -->|approved| S[sync] --> E((end))
+  B -->|escalated| X[reject]
+  G2 -->|rejected| X
+```
+
+`wf-bugfix` bắt buộc có **test đỏ trước khi sửa**: agent `repro` chỉ được viết test tái hiện, bước `expect-fail` (Command) chạy bộ test và
+chỉ cho qua khi test **đang đỏ vì đúng một lỗi test**, rồi agent `fix` mới sửa:
+
+```mermaid
+flowchart LR
+  R[repro<br/>viết test tái hiện] --> EF{expect-fail<br/>test phải ĐỎ}
+  EF -->|failed: test xanh hoặc không biên dịch| R
+  EF -->|passed| FX[fix<br/>sửa nguyên nhân gốc]
+  FX --> G1{gate1}
+  G1 -->|failed| D[debug] -->|diagnosed| FX
+  G1 -->|passed| RV[review CHECKER]
+  RV -->|rework| FX
+  RV -->|approved| G2[[gate2 người duyệt]] --> E((end))
+  G2 -->|revise| FX
+```
+
+Điều cần biết khi dùng:
+
+- **Agent `debug` không nhận kết quả của kiểm tra đỏ.** Engine chỉ đưa `checkFailures` cho agent sửa đi thẳng từ một kiểm tra; một CHECKER
+  nhận yêu cầu, diff và evidence nhưng prompt không có đoạn lỗi (đã kiểm bằng `walk-workflow.py`, xem dưới). Vì vậy `debug.diagnosis-report`
+  bắt agent chẩn đoán **tự tái hiện** trên bản sao repository và trích nguyên văn lỗi vào báo cáo; agent sửa sau đó nhận báo cáo ấy dưới dạng
+  `reviewerFeedback` (và **không** nhận `checkFailures`). Chẩn đoán dở thì agent sửa mất luôn thông báo lỗi gốc: đây là rủi ro thật, chỉ chạy
+  `wf-task-delivery-plus` thật mới biết có đáng không (chưa đo; xem kết luận V10-18).
+- `expect-fail.sh` nhận diện stack như `maven-test.sh` và `npm-test.sh` (`backend/pom.xml` hoặc `frontend/package.json`), chạy test và **đảo nghĩa**:
+  đạt khi test đỏ; không đạt khi test xanh, khi code không biên dịch (đỏ vì lý do khác) hoặc khi lỗi mạng (báo `MÔI TRƯỜNG:`).
+- Project cần khai `agent-debugger`, `agent-reviewer` (và `agent-flow-repro`, `agent-flow-fix` cho `wf-bugfix`) bằng `"from": "kit"` kèm `addResources`
+  của stack mình, và một `cmd-expect-fail` theo repository (`from kit:cmd-expect-fail`). Mẫu: [docs/guides/issue-tracker](../docs/guides/issue-tracker/aw-project.json).
+
+**Kiểm tra mọi cạnh không tốn tiền:** `kit/scripts/walk-workflow.py <kịch-bản.json>` dựng bản cài aw tạm, chạy một WorkItem qua workflow với
+agent giả lập (chọn outcome theo kịch bản) và lệnh giả lập (đạt/hỏng theo kịch bản), tự duyệt cổng người, rồi so thứ tự node với mong đợi
+và kiểm nội dung prompt (`checkFailures`, `reviewerFeedback`, resource nào có mặt). 14 kịch bản ở `kit/tests/walk/scenarios/` đi qua mọi cạnh của hai workflow;
+`check-kit.sh` chạy hai kịch bản đại diện, `WALK_ALL=1 sh kit/tests/check-kit.sh` chạy hết (khoảng 4 phút).
 
 ## 3. Cái nào dùng chung thật, cái nào là bản mẫu
 
