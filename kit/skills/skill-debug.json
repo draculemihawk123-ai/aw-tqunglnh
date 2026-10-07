@@ -1,0 +1,56 @@
+{
+ "resources": [
+  {
+   "key": "debug.root-cause",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/ck-debug/references/systematic-debugging.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Khi prompt có checkFailures, đó là kết quả kiểm tra chính thức của vòng trước. Nguyên tắc: không sửa trước khi biết nguyên nhân gốc. Trước khi sửa: (1) đọc trọn thông báo lỗi và stack trace, kể cả các dòng WHAT, WHY, FIX (nếu bắt đầu bằng \"MÔI TRƯỜNG:\" thì lỗi nằm ở máy chạy chứ không ở code: làm theo quy tắc riêng, đừng sửa code); (2) xem lại chính những file bạn đã đổi ở vòng trước, vì lỗi thường nằm ở đó; (3) lần ngược từ nơi lỗi hiện ra tới nguồn: giá trị sai đến từ đâu, ai gọi hàm này với giá trị đó, và sửa ở nguồn thay vì ở triệu chứng; (4) tìm đoạn code tương tự đang chạy đúng trong repository và liệt kê mọi khác biệt, dù nhỏ."
+  },
+  {
+   "key": "debug.hypotheses",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:agents/debugger.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Đặt 2 đến 3 giả thuyết cạnh tranh, mỗi giả thuyết dạng \"nguyên nhân là X vì Y\"; đừng chốt giả thuyết hợp lý đầu tiên. Loại trừ từng giả thuyết bằng bằng chứng bạn đọc được (output lỗi, code, test) và ghi giả thuyết nào bị loại, vì sao. Khi nêu nguyên nhân gốc, kèm chuỗi bằng chứng; đừng viết \"có lẽ\". Thử bằng thay đổi nhỏ nhất, một biến mỗi lần, không gộp nhiều sửa đổi một lúc. Không hiểu thì nói \"tôi chưa hiểu X\" ở câu trả lời cuối thay vì giả vờ đã hiểu."
+  },
+  {
+   "key": "debug.fix-discipline",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/ck-debug/references/systematic-debugging.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Sửa đúng một nguyên nhân gốc bằng một thay đổi; đừng tiện tay sửa thêm. Nếu chưa có test tái hiện lỗi thì thêm hoặc cập nhật một test mà bản chưa sửa sẽ làm đỏ. Vì bạn thường không chạy được lệnh, đừng tuyên bố đã sửa xong chỉ vì đọc code thấy hợp lý: ghi rõ điều chưa kiểm chứng, bước kiểm tra của workflow sẽ chạy lại. Nếu messages hoặc checkFailures cho thấy bạn đã sửa nhiều lần cùng một chỗ mà kiểm tra vẫn đỏ, dừng lại và nghi ngờ giả định hay kiến trúc (mỗi lần sửa lại lộ ra một trạng thái dùng chung hoặc phụ thuộc mới): chọn `needs_info` hoặc `escalated` và nêu vấn đề thay vì thử tiếp."
+  },
+  {
+   "key": "debug.red-flags",
+   "priority": "GUIDANCE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/ck-debug/SKILL.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Dấu hiệu bạn đang đoán mò, hãy dừng và quay về điều tra: \"sửa tạm trước, điều tra sau\"; \"thử đổi X xem sao\"; \"chắc là X\"; \"sửa nhiều chỗ rồi chạy lại\"; \"bỏ qua test, tôi tự kiểm bằng mắt\"; \"không hiểu hết nhưng có thể được\"; \"thử thêm một lần nữa\" khi đã thử hai lần. Câu nào trong số này xuất hiện nghĩa là chưa đủ bằng chứng để sửa."
+  }
+ ]
+}

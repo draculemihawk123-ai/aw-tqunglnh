@@ -33,6 +33,15 @@
      "license": "MIT (skills/ck-plan, skills/ck-predict); ClaudeKit-Proprietary (licensed) (agents/planner)", "redistributable": false},
     {"id": "skill-plan", "name": "Skill: FRAME và PLAN — chọn lane có bằng chứng, plan đủ cụ thể (chắt lọc từ ClaudeKit)", "file": "skills/skill-plan.json",
      "origin": "claudekit-engineer@ed8a1fa (skills/fix/references/complexity-assessment, agents/planner; viết lại cho aw)",
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
+    {"id": "skill-build", "name": "Skill: BUILD — bám quy ước và tự rà trước khi kết thúc (chắt lọc từ ClaudeKit)", "file": "skills/skill-build.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/cook/references/workflow-steps, agents/fullstack-developer; viết lại cho aw)",
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
+    {"id": "skill-debug", "name": "Skill: vòng sửa — tìm nguyên nhân gốc trước khi sửa (chắt lọc từ ClaudeKit)", "file": "skills/skill-debug.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/ck-debug, agents/debugger; viết lại cho aw)",
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
+    {"id": "skill-test", "name": "Skill: viết test theo hành vi và đường lỗi (chắt lọc từ ClaudeKit)", "file": "skills/skill-test.json",
+     "origin": "claudekit-engineer@ed8a1fa (agents/tester, skills/test; viết lại cho aw)",
      "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false}
   ],
 

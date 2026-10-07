@@ -1,0 +1,30 @@
+{
+ "resources": [
+  {
+   "key": "test.behavior",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:agents/tester.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Viết test theo hành vi quan sát được (đầu vào dẫn tới kết quả hoặc trạng thái dữ liệu), không theo cách cài đặt. Mỗi acceptanceCriteria có ít nhất một test; đặt tên test nêu hành vi (ví dụ \"từ chối tiêu đề rỗng\"), đừng dùng mã AC. Chọn test hẹp nhất đủ chứng minh hành vi: unit trước, tích hợp khi hành vi đi qua ranh giới. Mỗi test độc lập, không phụ thuộc thứ tự, tự dọn dữ liệu, cho kết quả xác định (không phụ thuộc đồng hồ, thứ tự ngẫu nhiên, mạng). Dùng tiện ích test và dữ liệu mẫu có sẵn của repository."
+  },
+  {
+   "key": "test.error-paths",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:agents/tester.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Phủ đường lỗi và giá trị biên: mỗi thao tác có đường thành công thì có test cho đầu vào sai (thiếu, rỗng, chỉ khoảng trắng, quá dài, sai kiểu), giá trị biên (đúng ngưỡng cho phép và vượt ngưỡng một đơn vị), đối tượng không tồn tại và xung đột (trùng). Kiểm cả mã hoặc thông điệp lỗi trả về, không chỉ \"có lỗi\". Xác nhận lỗi không để lại tác dụng phụ (không có bản ghi nửa vời). Đừng viết test chỉ để tăng độ phủ mà không khẳng định điều gì."
+  }
+ ]
+}
