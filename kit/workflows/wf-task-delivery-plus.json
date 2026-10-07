@@ -83,7 +83,7 @@
     {"key": "size-quality", "from": "size", "outcome": "passed", "to": "quality"},
     {"key": "size-simplify", "from": "size", "outcome": "large", "to": "simplify"},
     {"key": "simplify-gate1", "from": "simplify", "outcome": "done", "to": "gate1"},
-    {"key": "simplify-quality", "from": "simplify", "outcome": "escalated", "to": "quality"},
+    {"key": "simplify-reject", "from": "simplify", "outcome": "escalated", "to": "reject"},
     {"key": "gate1-debug", "from": "gate1", "outcome": "failed", "to": "debug"},
     {"key": "debug-build", "from": "debug", "outcome": "diagnosed", "to": "build"},
     {"key": "debug-needs-info", "from": "debug", "outcome": "needs_info", "to": "needs-info"},

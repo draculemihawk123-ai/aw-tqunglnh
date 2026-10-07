@@ -29,5 +29,22 @@
       "fail"
     ]
   },
-  "approvals": {}
+  "approvals": {},
+  "expect": {
+    "state": "FAILED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "check-plan:failed",
+      "plan:done",
+      "check-plan:failed",
+      "plan:done",
+      "check-plan:failed",
+      "plan:done",
+      "check-plan:failed",
+      "plan:escalated",
+      "reject:-"
+    ]
+  }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "wf-task-delivery-plus: diff vẫn lớn sau 2 lần làm gọn → đi tiếp",
+  "name": "wf-task-delivery-plus: diff vẫn lớn sau 2 lần làm gọn → reject",
   "manifest": "../aw-project.json",
   "workflow": "wf-task-delivery-plus",
   "agents": {
@@ -35,6 +35,30 @@
   "approvals": {
     "gate2": [
       "approved"
+    ]
+  },
+  "expect": {
+    "state": "FAILED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "check-plan:passed",
+      "build:done",
+      "hygiene:passed",
+      "gate1:passed",
+      "size:large",
+      "simplify:done",
+      "gate1:passed",
+      "size:large",
+      "simplify:done",
+      "gate1:passed",
+      "size:large",
+      "simplify:done",
+      "gate1:passed",
+      "size:large",
+      "simplify:escalated",
+      "reject:-"
     ]
   }
 }

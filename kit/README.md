@@ -111,7 +111,7 @@ flowchart LR
   G1 -->|passed| SZ{size}
   SZ -->|large| SM[simplify] --> G1
   SZ -->|passed| Q{quality}
-  SM -->|escalated| Q
+  SM -->|escalated| X
   Q -->|failed| B
   Q -->|passed| R[review<br/>CHECKER độc lập]
   R -->|rework| B
@@ -157,7 +157,7 @@ ClaudeKit làm các kiểm tra này bằng hook, và hook **lỗi thì cho qua**
 
 | Hook của ClaudeKit | Trong kit | Chỗ gắn trong `wf-task-delivery-plus` |
 |---|---|---|
-| `simplify-gate` (cảnh báo khi diff lớn, tắt được) | `cmd-diff-size` (ngưỡng 400 dòng, 8 file, 200 dòng một file; bỏ qua tài liệu, lockfile) → nhánh `large` → node `simplify` (`agent-simplifier`, tối đa 2 vòng, hết vòng thì đi tiếp để người duyệt thấy) | sau `gate1`, trước `quality` |
+| `simplify-gate` (cảnh báo khi diff lớn, tắt được) | `cmd-diff-size` (ngưỡng 400 dòng, 8 file, 200 dòng một file; bỏ qua tài liệu, lockfile) → nhánh `large` → node `simplify` (`agent-simplifier`, tối đa 2 vòng; diff vẫn lớn thì run dừng ở `reject` để người vận hành chia nhỏ task) | sau `gate1`, trước `quality` |
 | (agent tự nhớ không để rác) | `cmd-temp-artifacts`: chặn `debugger`, `console.log`, `System.out`, `.only`, `@Disabled`/`.skip`, TODO **mới thêm**, báo WHAT / WHY / FIX | ngay sau `build`, trước `gate1` |
 | `plan-format-kanban`, `workflow-artifact-gate` | `cmd-check-plan`: `plan.md` của task phải có đủ sáu mục (`plan.checklist`); thiếu thì gửi về `plan` | sau `plan` |
 | `privacy-block` (chặn đọc file bí mật) | đã có `gate-secrets`/`cmd-secrets-gate` (chặn file bí mật và database trong thay đổi) | gate của repository |
@@ -165,6 +165,11 @@ ClaudeKit làm các kiểm tra này bằng hook, và hook **lỗi thì cho qua**
 
 Hai chỗ khác ClaudeKit: `cmd-diff-size` và `cmd-temp-artifacts` chỉ xét diff **chưa commit** của worktree (so với HEAD), nên chúng đo thay đổi của task đang làm; và `cmd-check-plan`
 nhận tiêu đề bằng từ khóa tiếng Việt hoặc tiếng Anh nên một `plan.md` đúng ý nhưng đặt tên mục lạ vẫn có thể bị gửi trả (đã chỉnh `plan.checklist` để agent dùng đúng tên mục).
+
+**Cạnh hết vòng (`escalationOutcome`) phải dẫn ra ngoài vòng.** Mã runtime của engine (`advance.go`) từ chối cạnh hết vòng dẫn tới node còn quay lại được vòng đó.
+`walk-workflow` đã gặp lỗi này thật: khi `simplify` hết vòng và cạnh `escalated` đi tới `quality` (nằm trong vòng vì `quality` → `build`), attempt kề trước kết thúc
+`INDETERMINATE` (`OWNERSHIP_LOST_MUTATING`) sau 30 giây và run đứng im ở `RUNNING`, không có thông báo lỗi định nghĩa lúc publish. Vì vậy mọi cạnh hết vòng của hai workflow mẫu đều đi tới
+`reject`, và kịch bản `plus-large-exhaust` giữ điều này (đường nhánh tới `reject` chạy được, đã kiểm).
 
 **Kiểm tra mọi cạnh không tốn tiền:** `kit/scripts/walk-workflow.py <kịch-bản.json>` dựng bản cài aw tạm, chạy một WorkItem qua workflow với
 agent giả lập (chọn outcome theo kịch bản) và lệnh giả lập (đạt/hỏng theo kịch bản), tự duyệt cổng người, rồi so thứ tự node với mong đợi
