@@ -141,10 +141,14 @@ Task tổng hợp verdict được phép chạy khi execution gate trước đó
 | V6 — API, projections & operator CLI | `08-v6-api-projections.md` | Local HTTP API/SSE, read models và `aw` operator CLI đầy đủ | API/projection + terminal parity gate pass |
 | V7 — Alpha UI | `09-v7-alpha-ui.md` | Người dùng vận hành toàn bộ core từ local web UI | UI journeys + accessibility smoke pass |
 | V8 — Alpha hardening | `10-v8-alpha-hardening.md` | Recovery/security/packaging/docs đạt release gate | Alpha verdict |
-| V9 — Harness alignment (**ĐANG THỰC THI**) | `12-v9-harness-alignment.md` | Checker sau maker, kiểm tra fail quay lại maker, prompt có ưu tiên/outcome, selector theo path, môi trường agent khai báo | Verdict V9; `v8-alpha-gate` vẫn xanh |
+| V9 — Harness alignment (**ĐÃ XONG: `V9_DONE`**) | `12-v9-harness-alignment.md` | Checker sau maker, kiểm tra fail quay lại maker, prompt có ưu tiên/outcome, selector theo path, môi trường agent khai báo | Verdict V9; `v8-alpha-gate` vẫn xanh |
+| V10 — Tri thức cho kit từ ClaudeKit (**ĐÃ DUYỆT, chưa triển khai**) | `13-v10-kit-knowledge.md` | Mỗi node của workflow mẫu (BRAINSTORM, SPEC, DESIGN, FRAME, PLAN, BUILD, SYNC, REVIEW) có tri thức chắt lọc, có xuất xứ, được đo A/B | Verdict V10; không thay đổi core |
 
 V9 là version sau verdict `ALPHA_READY`, không thuộc định nghĩa Alpha ở mục 2; product owner đã duyệt
 `12-v9-harness-alignment.md` (PR #143). Đầu vào và bằng chứng: `docs/harness-engineering/15-doi-chieu-v9.md`.
+
+V10 chỉ sửa tầng `kit/` và tài liệu, không chạm core engine; file `13-v10-kit-knowledge.md` mới chia task, chưa
+triển khai.
 
 Không chạy song song hai version có dependency nối tiếp. Bên trong một version, mặc định vẫn làm theo
 thứ tự Task ID. Hai task chỉ được chạy song song khi file version ghi rõ `Có thể song song` và chúng

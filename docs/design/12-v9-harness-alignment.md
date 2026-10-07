@@ -1,7 +1,8 @@
 # V9 — Harness alignment sau Alpha
 
-> Trạng thái: **ĐÃ DUYỆT — đang thực thi.** Product owner duyệt kế hoạch khi merge PR #143 (2026-10-01). Mỗi task
-> một PR riêng, chỉ merge khi CI xanh và product owner duyệt. ADR-030…033 đã ghi ở V9-00.
+> Trạng thái: **ĐÃ XONG — `V9_DONE`.** Product owner duyệt kế hoạch khi merge PR #143 (2026-10-01). Verdict `V9_DONE`
+> ghi ở V9-12, đánh giá trên commit `e711581` (mục 5 của [đối chiếu V9](../harness-engineering/15-doi-chieu-v9.md)).
+> Mỗi task một PR riêng, chỉ merge khi CI xanh và product owner duyệt. ADR-030…033 đã ghi ở V9-00.
 >
 > Entry: verdict Alpha `ALPHA_READY` (`f6fd6f6`).
 >
