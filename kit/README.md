@@ -17,6 +17,7 @@ Tài liệu này chỉ nói về kho. Ví dụ đầy đủ một project dùng 
 - [1. Cấu trúc](#1-cấu-trúc)
 - [2. Project dùng kho thế nào](#2-project-dùng-kho-thế-nào)
 - [Workflow mẫu có chẩn đoán, review độc lập và sửa lỗi](#workflow-mẫu-có-chẩn-đoán-review-độc-lập-và-sửa-lỗi-v10-14)
+- [Học dần: bài học thành resource có version](#học-dần-bài-học-thành-resource-có-version-v10-16)
 - [3. Cái nào dùng chung thật, cái nào là bản mẫu](#3-cái-nào-dùng-chung-thật-cái-nào-là-bản-mẫu)
 - [4. Thư viện script lệnh (`lib.sh`)](#thư-viện-script-lệnh-libsh)
 - [5. Thêm một mục vào kho](#5-thêm-một-mục-vào-kho)
@@ -42,7 +43,7 @@ kit/
 ├── layers/                     # layer-stack-spring-sqlite, layer-stack-react-vite, layer-api-design, layer-sql-quality,
 │                               # layer-backend-security, layer-react-quality, layer-frontend-testing
 ├── skills/                     # skill-feature-flow, skill-maker, skill-review, skill-code-review, skill-dev-rules, skill-ask, skill-brainstorm, skill-spec, skill-design, skill-plan, skill-build, skill-debug, skill-test, skill-security, skill-docs
-├── workflows/                  # wf-feature-definition, wf-task-delivery, wf-task-delivery-plus, wf-bugfix (mẫu, có chỗ trống cho project điền)
+├── workflows/                  # wf-feature-definition, wf-task-delivery, wf-task-delivery-plus, wf-bugfix, wf-retro (mẫu, có chỗ trống cho project điền)
 ├── schema/aw-project.schema.json   # đặc tả của aw-project.json và kit.json
 ├── drafts/                     # bản nháp do import-skill.py sinh (git bỏ qua, không bao giờ publish)
 └── tests/check-kit.sh          # kiểm tra tự động (mục 7)
@@ -170,6 +171,33 @@ nhận tiêu đề bằng từ khóa tiếng Việt hoặc tiếng Anh nên mộ
 `walk-workflow` đã gặp lỗi này thật: khi `simplify` hết vòng và cạnh `escalated` đi tới `quality` (nằm trong vòng vì `quality` → `build`), attempt kề trước kết thúc
 `INDETERMINATE` (`OWNERSHIP_LOST_MUTATING`) sau 30 giây và run đứng im ở `RUNNING`, không có thông báo lỗi định nghĩa lúc publish. Vì vậy mọi cạnh hết vòng của hai workflow mẫu đều đi tới
 `reject`, và kịch bản `plus-large-exhaust` giữ điều này (đường nhánh tới `reject` chạy được, đã kiểm).
+
+## Học dần: bài học thành resource có version (V10-16)
+
+Lỗi lặp lại ở review và gate nên trở thành luật mới **có người duyệt**, thay vì chỉ nằm trong transcript. Quy trình gồm bốn bước, hai trong đó là script của kit:
+
+```mermaid
+flowchart LR
+  M["kit-metrics.py lessons-input<br/>(số đo và nhận xét reviewer của các lượt chạy)"] -->|gửi làm message của WorkItem| R[retro<br/>agent-retro viết docs/lessons/ngày.md]
+  R --> C{check-lessons<br/>đúng định dạng}
+  C -->|failed| R
+  C -->|passed| A[[approve-lessons<br/>người duyệt]]
+  A -->|revise| R
+  A -->|approved| K[commit docs/lessons/]
+  K --> L["lessons-to-skill.py<br/>skill-project-lessons + gắn vào agent"]
+  L --> P["aw-publish.py<br/>version mới của skill"]
+```
+
+1. **Tóm tắt dữ liệu thật:** `kit-metrics.py lessons-input <thư mục lượt chạy>...` in Markdown: vòng sửa theo node, gate không qua ngay lần đầu, mã lỗi attempt, và nguyên văn nhận xét của reviewer. Gửi nó vào WorkItem của `wf-retro` làm message (`MESSAGE="$(…)" run-task.sh …`).
+2. **`wf-retro`** (`agent-retro`, `skill-retro`): chỉ đề xuất bài học khi có bằng chứng trích được **và** lặp từ hai lượt trở lên (hoặc lỗi Critical); không viết lại điều một resource đã có nói; tối đa 5 bài học, mỗi bài đúng năm dòng (Bằng chứng, Số lần lặp, Luật đề xuất ≤ 500 ký tự, Gắn vào = id agent, Mức) và mục "Không rút thành luật" cho điều chưa đủ bằng chứng.
+   `check-lessons` kiểm định dạng bằng máy, rồi **người duyệt** xóa, sửa hoặc đánh `- Trạng thái: bỏ`. Chưa duyệt thì không có luật nào được sinh ra.
+3. **`lessons-to-skill.py docs/lessons/<ngày>.md --skill definitions/skills/skill-project-lessons.json --manifest aw-project.json`**: mỗi bài học thành resource `lesson.<tiêu đề>` (`global`, Mức làm priority, provenance trỏ về `docs/lessons/<ngày>.md#L-n`). Cùng tiêu đề mà nội dung đổi thì `provenance.revision` tăng `v1 → v2`; không đổi thì giữ. Script thêm skill vào `skills` của `aw-project.json` và thêm `skill-project-lessons#<key>` vào `addResources` của từng agent trong "Gắn vào"; agent không có trong project là lỗi, không sửa gì.
+4. **Publish** như thường. `check-kit.sh` đã kiểm bằng `aw` thật: publish lần hai không đổi bài học thì skill giữ nguyên `versionId`, đổi nội dung thì ra `versionId` mới.
+
+Lưu ý: bài học gắn vào agent chiếm ngân sách context của agent đó và tính vào giới hạn 15 `HARD_CONSTRAINT` mỗi agent, nên dùng `HARD_CONSTRAINT` chỉ cho luật kiểm được bằng máy.
+
+**Ví dụ từ dữ liệu đo thật:** [`kit/bench/lessons/2026-10-07-A0-A1.md`](bench/lessons/2026-10-07-A0-A1.md) rút từ bốn lượt chạy A0/A1 hai bài học (ADR nằm ngoài `backend/`; hook gọi API không hủy kết quả cũ khi ghi) và ba điều **không** rút thành luật,
+trong đó có một **lỗi của bộ đo** phát hiện được nhờ đọc lại dữ liệu (tiêu chí WorkItem review cố định, xem [A1.md](bench/reports/A1.md)). File này do người viết tay từ dữ liệu đó; chưa có lần chạy `wf-retro` với agent thật nào (kịch bản `retro-*` của `walk-workflow` chạy agent giả lập, chỉ kiểm đồ thị).
 
 **Kiểm tra mọi cạnh không tốn tiền:** `kit/scripts/walk-workflow.py <kịch-bản.json>` dựng bản cài aw tạm, chạy một WorkItem qua workflow với
 agent giả lập (chọn outcome theo kịch bản) và lệnh giả lập (đạt/hỏng theo kịch bản), tự duyệt cổng người, rồi so thứ tự node với mong đợi

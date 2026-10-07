@@ -69,14 +69,17 @@
      "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
     {"id": "skill-bugfix", "name": "Skill: sửa lỗi — test tái hiện trước, sửa nguyên nhân gốc, phòng ngừa (chắt lọc từ ClaudeKit)", "file": "skills/skill-bugfix.json",
      "origin": "claudekit-engineer@ed8a1fa (skills/fix, references prevention-gate, workflow-test; viết lại cho aw)",
-     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false}
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
+    {"id": "skill-retro", "name": "Skill: rút bài học từ số đo và nhận xét review (chắt lọc từ ClaudeKit)", "file": "skills/skill-retro.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/retro, skills/journal, agents/journal-writer; viết lại cho aw)",
+     "license": "MIT (skills/retro, skills/journal)", "redistributable": false}
   ],
 
   "scriptSkills": [
     {"id": "scripts-common", "name": "Script dùng chung cho các Command", "owner": "aw-kit",
      "files": ["commands/reject.sh", "commands/check-feature-docs.sh", "commands/secrets-gate.sh",
                "commands/maven-test.sh", "commands/npm-test.sh", "commands/expect-fail.sh", "commands/diff-size.sh",
-               "commands/temp-artifacts.sh", "commands/check-plan.sh"]}
+               "commands/temp-artifacts.sh", "commands/check-plan.sh", "commands/check-lessons.sh"]}
   ],
 
   "policies": [
@@ -108,6 +111,8 @@
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-bugfix#bugfix.repro", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-debug#debug.root-cause", "skill-test#test.behavior", "skill-test#test.error-paths", "layer-frontend-testing"]},
     {"id": "agent-flow-fix", "name": "Agent: sửa lỗi sau khi có test đỏ",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-dev-rules#rules.principles", "skill-dev-rules#rules.stable-artifacts", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-bugfix#bugfix.fix", "skill-bugfix#bugfix.prevention", "skill-build#build.conformance", "skill-build#build.checklist", "skill-debug#debug.root-cause", "skill-debug#debug.hypotheses", "skill-debug#debug.fix-discipline", "skill-debug#debug.red-flags", "skill-test#test.behavior", "skill-test#test.error-paths", "layer-api-design", "layer-sql-quality", "layer-backend-security", "layer-react-quality", "layer-frontend-testing"]},
+    {"id": "agent-retro", "name": "Agent: rút bài học từ số đo và review",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-retro#retro.evidence", "skill-retro#retro.lessons-format", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish"]},
     {"id": "agent-reviewer", "name": "Agent: reviewer độc lập (CHECKER)",
      "resources": ["skill-review", "skill-code-review", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-security#security.stride", "skill-security#security.owasp", "layer-api-design", "layer-sql-quality", "layer-backend-security", "layer-react-quality", "layer-frontend-testing"]},
     {"id": "agent-debugger", "name": "Agent: chẩn đoán kiểm tra đỏ (CHECKER, chỉ đọc)",
@@ -126,6 +131,7 @@
     {"id": "cmd-diff-size", "name": "Command: diff vượt ngưỡng thì sang node làm gọn", "script": "scripts-common#diff-size.sh"},
     {"id": "cmd-temp-artifacts", "name": "Command: chặn rác để quên trong diff (debug, .only, @Disabled, TODO)", "script": "scripts-common#temp-artifacts.sh"},
     {"id": "cmd-check-plan", "name": "Command: plan.md của task đủ sáu mục", "script": "scripts-common#check-plan.sh"},
+    {"id": "cmd-check-lessons", "name": "Command: file bài học đúng định dạng", "script": "scripts-common#check-lessons.sh"},
     {"id": "cmd-reject", "name": "Command: dừng run khi bị từ chối hoặc hết vòng sửa", "script": "scripts-common#reject.sh"},
     {"id": "cmd-check-feature-docs", "name": "Command: kiểm tra tài liệu tính năng", "script": "scripts-common#check-feature-docs.sh"},
     {"id": "cmd-secrets-gate", "name": "Command của gate: không có file bí mật", "script": "scripts-common#secrets-gate.sh",
@@ -141,6 +147,7 @@
     {"id": "wf-feature-definition", "name": "Workflow: định nghĩa tính năng", "template": "workflows/wf-feature-definition.json"},
     {"id": "wf-task-delivery", "name": "Workflow: giao một task", "template": "workflows/wf-task-delivery.json"},
     {"id": "wf-task-delivery-plus", "name": "Workflow: giao một task, có chẩn đoán khi đỏ và review độc lập", "template": "workflows/wf-task-delivery-plus.json"},
+    {"id": "wf-retro", "name": "Workflow: rút bài học từ số đo, người duyệt rồi mới thành luật", "template": "workflows/wf-retro.json"},
     {"id": "wf-bugfix", "name": "Workflow: sửa lỗi — test đỏ trước, sửa sau", "template": "workflows/wf-bugfix.json"}
   ]
 }

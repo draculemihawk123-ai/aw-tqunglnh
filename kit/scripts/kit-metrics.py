@@ -6,6 +6,7 @@ Cách dùng:
     kit-metrics.py compare <thư mục nhãn A> <thư mục nhãn B> # mỗi thư mục nhãn chứa run-1/, run-2/… đã có metrics.json
     kit-metrics.py blind <thư mục nhãn>... --out THƯ_MỤC     # xuất tài liệu với mã ngẫu nhiên để chấm, ghi key.json riêng
     kit-metrics.py unblind <key.json> <điểm.csv>             # ghép điểm đã chấm với nhãn, in trung bình theo nhãn và loại tài liệu
+    kit-metrics.py lessons-input <thư mục lượt chạy>...      # tóm tắt dữ liệu thật để gửi cho wf-retro (V10-16): in Markdown ra stdout
 
 Chỉ số theo node (cộng trên mọi WorkItem của lượt chạy):
     activations   số lần node được kích hoạt;   loops   số lần kích hoạt lặp lại (vòng sửa: iteration > 0)
@@ -130,6 +131,47 @@ def collect(run_dir):
     return metrics
 
 
+def lessons_input(run_dirs):
+    """Markdown cho wf-retro: mỗi lượt chạy một mục gồm vòng sửa theo node, kiểm tra không qua ngay lần đầu, mã lỗi attempt
+    và nguyên văn nhận xét của reviewer. Dữ liệu đọc thẳng từ database của lượt chạy (chỉ đọc); không suy diễn thêm."""
+    out = ["# Dữ liệu cho rút bài học", "", "Mỗi mục là một lượt chạy. Đây là toàn bộ dữ liệu; thiếu gì thì ghi \"không có dữ liệu\".", ""]
+    for run_dir in run_dirs:
+        db_path = os.path.join(run_dir, "install", "aw.db")
+        if not os.path.isfile(db_path):
+            sys.exit(f"kit-metrics: không thấy {db_path}")
+        db = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        name = os.path.join(os.path.basename(os.path.dirname(run_dir.rstrip("/"))), os.path.basename(run_dir.rstrip("/")))
+        out += [f"## Lượt chạy {name}", ""]
+        loops, first, failed_attempts = {}, {}, {}
+        seen = set()
+        for r in rows(db, """select n.node_key, n.iteration, n.selected_outcome, w.work_item_id from node_runs n
+                             join workflow_runs w on w.id = n.run_id order by w.work_item_id, n.activation_sequence"""):
+            if r["iteration"] > 0:
+                loops[r["node_key"]] = loops.get(r["node_key"], 0) + 1
+            if r["node_key"] in GATE_KEYS and (r["work_item_id"], r["node_key"]) not in seen:
+                seen.add((r["work_item_id"], r["node_key"]))
+                if r["selected_outcome"] != "passed":
+                    first[r["node_key"]] = first.get(r["node_key"], 0) + 1
+        for a in rows(db, """select a.state, a.failure_code, n.node_key from execution_attempts a
+                             join node_runs n on n.id = a.node_run_id where a.state != 'SUCCEEDED'"""):
+            key = f"{a['node_key']}: {a['failure_code'] or a['state']}"
+            failed_attempts[key] = failed_attempts.get(key, 0) + 1
+        out.append("- Vòng sửa (kích hoạt lặp) theo node: " + (", ".join(f"{k} {v}" for k, v in sorted(loops.items())) or "không có"))
+        out.append("- Kiểm tra không qua ngay lần đầu: " + (", ".join(f"{k} {v}" for k, v in sorted(first.items())) or "không có"))
+        out.append("- Attempt hỏng: " + (", ".join(f"{k} ×{v}" for k, v in sorted(failed_attempts.items())) or "không có"))
+        message = ""
+        for a in rows(db, """select a.id from execution_attempts a join node_runs n on n.id = a.node_run_id
+                             where n.node_key in ('ai-review', 'review') and a.state = 'SUCCEEDED' order by a.rowid desc limit 1"""):
+            for e in rows(db, "select kind, payload_json from agent_events where attempt_id = ? order by sequence", a["id"]):
+                payload = json.loads(e["payload_json"])
+                if e["kind"] == "ASSISTANT_MESSAGE" and payload.get("message", "").strip():
+                    message = payload["message"]
+        out += ["", "Nhận xét của reviewer độc lập (nguyên văn):" if message else "Không có nhận xét của reviewer.", ""]
+        if message:
+            out += ["~~~", message.strip(), "~~~", ""]
+    print("\n".join(out))
+
+
 def load_label(label_dir):
     runs = []
     for path in sorted(glob.glob(os.path.join(label_dir, "run-*", "metrics.json"))):
@@ -244,6 +286,8 @@ def main():
     u = sub.add_parser("unblind")
     u.add_argument("key_file")
     u.add_argument("scores_file")
+    li = sub.add_parser("lessons-input")
+    li.add_argument("run_dirs", nargs="+")
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -255,6 +299,8 @@ def main():
         compare(args.label_a, args.label_b)
     elif args.command == "blind":
         blind(args.label_dirs, args.out, args.seed)
+    elif args.command == "lessons-input":
+        lessons_input(args.run_dirs)
     else:
         unblind(args.key_file, args.scores_file)
 

@@ -350,6 +350,35 @@ printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n' > "$d/plan.md"
 out=$(cmdrun check-plan.sh) && bad "check-plan: plan thiếu mục phải không đạt" || { printf '%s' "$out" | grep -q 'THIẾU mục "rủi ro và hoàn tác"' && ok "check-plan: plan thiếu mục thì không đạt, nêu mục thiếu" || bad "check-plan thiếu mục: $out"; }
 printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n## Test cho từng AC\nx\n## Lệnh kiểm tra cuối\nx\n## Rủi ro và hoàn tác\nx\n## Tiêu chí xong\nx\n' > "$d/plan.md"
 out=$(cmdrun check-plan.sh) && ok "check-plan: plan đủ sáu mục thì đạt" || bad "check-plan đủ: $out"
+# check-lessons (V10-16)
+l="$tmp/les"; mkdir -p "$l/docs/lessons" && git -C "$l" init -q -b main && git -C "$l" config user.email t@example.invalid && git -C "$l" config user.name t
+touch "$l/x" && git -C "$l" add -A && git -C "$l" commit -q -m init
+lrun() { (cd "$l" && AW_KIT="$kit" sh "$kit/commands/check-lessons.sh" 2>&1); }
+out=$(lrun) && bad "check-lessons: không có file bài học phải không đạt" || ok "check-lessons: thiếu file thì không đạt"
+cp "$kit/bench/lessons/2026-10-07-A0-A1.md" "$l/docs/lessons/2026-10-07.md"
+out=$(lrun) && ok "check-lessons: ví dụ thật từ A0/A1 đạt" || bad "check-lessons ví dụ: $out"
+sed -i '/^- Mức: GUIDANCE/d' "$l/docs/lessons/2026-10-07.md"
+out=$(lrun) && bad "check-lessons: thiếu Mức phải không đạt" || { printf '%s' "$out" | grep -q 'THIẾU "Mức"' && ok "check-lessons: thiếu trường thì không đạt, nêu bài học và trường" || bad "check-lessons thiếu Mức: $out"; }
+# lessons-input trên database giả lập của một lượt chạy
+KITDIR="$kit" python3 - "$tmp/run-fake" <<'PY' && ok "kit-metrics lessons-input: tóm tắt vòng sửa, gate đỏ, nhận xét reviewer" || bad "kit-metrics lessons-input"
+import json, os, sqlite3, subprocess, sys
+run = sys.argv[1]; os.makedirs(os.path.join(run, "install"))
+db = sqlite3.connect(os.path.join(run, "install", "aw.db"))
+db.executescript("""create table workflow_runs(id text, work_item_id text);
+create table node_runs(id text, run_id text, node_key text, iteration int, selected_outcome text, activation_sequence int);
+create table execution_attempts(id text, node_run_id text, state text, failure_code text, provider_key text);
+create table agent_events(attempt_id text, sequence int, kind text, payload_json text);
+insert into workflow_runs values ('r1','w1');
+insert into node_runs values ('n1','r1','gate1',0,'failed',1),('n2','r1','build',1,'done',2),('n3','r1','ai-review',0,'rework',3);
+insert into execution_attempts values ('a1','n2','FAILED','SCOPE_VIOLATION','claude'),('a2','n3','SUCCEEDED',null,'claude');
+insert into agent_events values ('a2',1,'ASSISTANT_MESSAGE','{"message":"[Important] Foo.java:1 thiếu test"}');""")
+db.commit(); db.close()
+out = subprocess.run([sys.executable, os.path.join(sys.argv[0] if False else os.environ["KITDIR"], "scripts", "kit-metrics.py"), "lessons-input", run],
+                     capture_output=True, text=True).stdout
+for needle in ("build 1", "gate1 1", "build: SCOPE_VIOLATION ×1", "[Important] Foo.java:1 thiếu test"):
+    assert needle in out, (needle, out)
+PY
+out=$(python3 "$kit/tests/test-lessons.py" 2>&1) && ok "lessons-to-skill: định dạng, gộp, revision, gắn vào agent, publish version mới ($(printf '%s' "$out" | grep -c '^  ok') kiểm tra)" || bad "test-lessons: $out"
 if [ -n "${AW:-}" ] || command -v aw > /dev/null 2>&1 || command -v go > /dev/null 2>&1; then
   for s in plus-debug bugfix-not-red; do
     out=$(python3 "$kit/scripts/walk-workflow.py" "$kit/tests/walk/scenarios/$s.json" 2>&1) && ok "walk-workflow: $s đi đúng thứ tự node" || bad "walk-workflow $s: $out"

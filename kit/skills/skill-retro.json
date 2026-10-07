@@ -1,0 +1,30 @@
+{
+  "resources": [
+    {
+      "key": "retro.evidence",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "claudekit-engineer@ed8a1fa:skills/retro/SKILL.md, agents/journal-writer.md (viết lại cho aw; bỏ phần cảm xúc)",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "instruction": "Giai đoạn của bạn: RÚT BÀI HỌC. Chỉ dựa trên dữ liệu có thật trong messages của WorkItem (tóm tắt số đo của các lượt chạy: vòng sửa theo node, kiểm tra không qua ngay lần đầu, mã lỗi attempt, và nguyên văn nhận xét của reviewer) và trong repository. Không bịa số liệu: thiếu dữ liệu thì ghi \"không có dữ liệu\" thay vì ước lượng. Một bài học chỉ được đề xuất khi có bằng chứng cụ thể (trích nguyên văn một dòng hoặc nêu node, mã lỗi, lượt chạy) và hoặc lặp lại từ hai lượt chạy hoặc hai nhận xét trở lên, hoặc là lỗi mức Critical. Nói thẳng nguyên nhân gốc, không dùng từ giảm nhẹ (\"sơ suất\" thay cho \"không kiểm tra migration\"). Không viết lại điều mà một resource hiện có đã nói; nếu bài học thực chất là một luật đã có mà agent không làm theo, ghi rõ đó là vấn đề tuân thủ chứ không phải luật mới. Không sửa code, không sửa file nào ngoài docs/lessons/."
+    },
+    {
+      "key": "retro.lessons-format",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "claudekit-engineer@ed8a1fa:skills/journal/SKILL.md, agents/journal-writer.md (cấu trúc mục: sự kiện, nguyên nhân gốc, bài học, bước tiếp; viết lại cho aw)",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "instruction": "Ghi kết quả vào docs/lessons/<yyyy-mm-dd>.md, đầu file là tiêu đề cấp một và một dòng \"Nguồn:\" nêu các lượt chạy đã đọc. Mỗi bài học là một mục cấp ba đánh số: \"### L-1: <tiêu đề ngắn>\", rồi đúng năm dòng gạch đầu dòng: \"- Bằng chứng:\" (trích nguyên văn ngắn hoặc nêu node, mã lỗi, lượt chạy); \"- Số lần lặp:\" (một số kèm các lượt chạy); \"- Luật đề xuất:\" (một đến hai câu, ra lệnh được và kiểm được, tối đa 500 ký tự, không mơ hồ như \"cẩn thận hơn\"); \"- Gắn vào:\" (id của một hoặc nhiều agent sẽ nhận luật, ví dụ agent-flow-build, agent-reviewer; chỉ chọn agent thực sự cần); \"- Mức:\" (REQUIRED_PROCEDURE hoặc GUIDANCE; HARD_CONSTRAINT chỉ cho luật mà vi phạm là sai và kiểm bằng máy được). Tối đa 5 bài học, xếp theo mức ảnh hưởng. Cuối file thêm mục \"## Không rút thành luật\" liệt kê điều bạn thấy nhưng chưa đủ bằng chứng, mỗi điều một dòng. Người duyệt sẽ xóa, sửa hoặc đổi một bài học thành \"- Trạng thái: bỏ\" trước khi nó được biến thành resource. Nếu feedback của người duyệt có trong messages thì sửa theo đó rồi kết thúc lại."
+    }
+  ]
+}

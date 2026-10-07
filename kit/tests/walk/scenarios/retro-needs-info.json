@@ -1,0 +1,24 @@
+{
+  "name": "wf-retro: thiếu dữ liệu → người bổ sung → retro lại",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-retro",
+  "agents": {
+    "retro": [
+      "needs_info",
+      "done"
+    ]
+  },
+  "commands": {
+    "checklessons": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "needs-info": [
+      "provided"
+    ],
+    "approve-lessons": [
+      "approved"
+    ]
+  }
+}

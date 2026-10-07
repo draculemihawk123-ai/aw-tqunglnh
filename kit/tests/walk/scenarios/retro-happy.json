@@ -1,0 +1,30 @@
+{
+  "name": "wf-retro: đường thẳng",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-retro",
+  "agents": {
+    "retro": [
+      "done"
+    ]
+  },
+  "commands": {
+    "checklessons": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "approve-lessons": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "retro:done",
+      "check-lessons:passed",
+      "approve-lessons:approved",
+      "end:-"
+    ]
+  }
+}
