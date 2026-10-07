@@ -1,0 +1,36 @@
+{
+  "name": "wf-task-delivery-plus: diff lớn → simplify → gate1 lại",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ],
+    "simplify": [
+      "done"
+    ]
+  },
+  "commands": {
+    "size": [
+      "fail",
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ]
+  }
+}

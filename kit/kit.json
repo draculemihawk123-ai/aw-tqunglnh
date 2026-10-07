@@ -75,7 +75,8 @@
   "scriptSkills": [
     {"id": "scripts-common", "name": "Script dùng chung cho các Command", "owner": "aw-kit",
      "files": ["commands/reject.sh", "commands/check-feature-docs.sh", "commands/secrets-gate.sh",
-               "commands/maven-test.sh", "commands/npm-test.sh", "commands/expect-fail.sh"]}
+               "commands/maven-test.sh", "commands/npm-test.sh", "commands/expect-fail.sh", "commands/diff-size.sh",
+               "commands/temp-artifacts.sh", "commands/check-plan.sh"]}
   ],
 
   "policies": [
@@ -122,6 +123,9 @@
      "network": "ALLOWED", "policies": ["policy-permission-network"]},
     {"id": "cmd-expect-fail", "name": "Command: test tái hiện lỗi phải đang đỏ (đảo nghĩa)", "script": "scripts-common#expect-fail.sh",
      "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-diff-size", "name": "Command: diff vượt ngưỡng thì sang node làm gọn", "script": "scripts-common#diff-size.sh"},
+    {"id": "cmd-temp-artifacts", "name": "Command: chặn rác để quên trong diff (debug, .only, @Disabled, TODO)", "script": "scripts-common#temp-artifacts.sh"},
+    {"id": "cmd-check-plan", "name": "Command: plan.md của task đủ sáu mục", "script": "scripts-common#check-plan.sh"},
     {"id": "cmd-reject", "name": "Command: dừng run khi bị từ chối hoặc hết vòng sửa", "script": "scripts-common#reject.sh"},
     {"id": "cmd-check-feature-docs", "name": "Command: kiểm tra tài liệu tính năng", "script": "scripts-common#check-feature-docs.sh"},
     {"id": "cmd-secrets-gate", "name": "Command của gate: không có file bí mật", "script": "scripts-common#secrets-gate.sh",

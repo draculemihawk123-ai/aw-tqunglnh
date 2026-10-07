@@ -8,7 +8,8 @@
 
   "scriptSkills": [
     {"id": "walk-scripts", "name": "Script giả lập của walk-workflow", "owner": "aw-kit",
-     "files": ["commands/gate1.sh", "commands/quality.sh", "commands/expectfail.sh"]}
+     "files": ["commands/gate1.sh", "commands/quality.sh", "commands/expectfail.sh",
+               "commands/hygiene.sh", "commands/size.sh", "commands/checkplan.sh"]}
   ],
 
   "agents": [
@@ -19,6 +20,7 @@
     {"id": "agent-flow-repro", "from": "kit"},
     {"id": "agent-flow-fix", "from": "kit"},
     {"id": "agent-debugger", "from": "kit"},
+    {"id": "agent-simplifier", "from": "kit"},
     {"id": "agent-reviewer", "from": "kit"}
   ],
 
@@ -26,7 +28,10 @@
     {"id": "cmd-reject", "from": "kit"},
     {"id": "cmd-gate1", "name": "Command giả lập: gate1", "script": "walk-scripts#gate1.sh"},
     {"id": "cmd-quality-check", "name": "Command giả lập: quality", "script": "walk-scripts#quality.sh"},
-    {"id": "cmd-expect-fail", "name": "Command giả lập: expect-fail", "script": "walk-scripts#expectfail.sh"}
+    {"id": "cmd-expect-fail", "name": "Command giả lập: expect-fail", "script": "walk-scripts#expectfail.sh"},
+    {"id": "cmd-temp-artifacts", "name": "Command giả lập: hygiene", "script": "walk-scripts#hygiene.sh"},
+    {"id": "cmd-diff-size", "name": "Command giả lập: size", "script": "walk-scripts#size.sh"},
+    {"id": "cmd-check-plan", "name": "Command giả lập: check-plan", "script": "walk-scripts#checkplan.sh"}
   ],
 
   "workflows": [

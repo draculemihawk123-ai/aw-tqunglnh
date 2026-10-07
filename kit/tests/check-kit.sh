@@ -330,6 +330,26 @@ out=$(ef green) && bad "expect-fail: test xanh phải không đạt" || { printf
 out=$(ef compile) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "không biên dịch" && ok "expect-fail: lỗi biên dịch không được tính là test đỏ" || bad "expect-fail biên dịch: $out"; }
 out=$(ef net) && bad "expect-fail: lỗi mạng phải không đạt" || { printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && ok "expect-fail: lỗi mạng báo là MÔI TRƯỜNG" || bad "expect-fail mạng: $out"; }
 out=$(cd "$tmp/ef" && AW_KIT="$kit" sh "$kit/commands/expect-fail.sh" 2>&1) && bad "expect-fail: thiếu backend/pom.xml phải không đạt" || ok "expect-fail: không nhận ra stack thì không đạt"
+# diff-size, temp-artifacts, check-plan (V10-15) trên một repository Git tạm
+g="$tmp/hyg"; mkdir -p "$g/src" && git -C "$g" init -q -b main && git -C "$g" config user.email t@example.invalid && git -C "$g" config user.name t
+echo "class A {}" > "$g/src/A.java"; git -C "$g" add -A && git -C "$g" commit -q -m init
+cmdrun() { (cd "$g" && AW_KIT="$kit" sh "$kit/commands/$1" 2>&1); }
+out=$(cmdrun diff-size.sh) && ok "diff-size: không đổi gì thì trong ngưỡng" || bad "diff-size sạch: $out"
+out=$(cmdrun temp-artifacts.sh) && ok "temp-artifacts: không có dòng thêm thì đạt" || bad "temp-artifacts sạch: $out"
+seq 1 30 | sed 's/^/int x/' > "$g/src/Big.java"
+out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && bad "diff-size: vượt ngưỡng phải không đạt" || { printf '%s' "$out" | grep -q "FIX: làm gọn" && ok "diff-size: vượt ngưỡng thì không đạt, dặn làm gọn" || bad "diff-size vượt: $out"; }
+mkdir -p "$g/docs"; seq 1 500 > "$g/docs/long.md"; rm "$g/src/Big.java"
+out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && ok "diff-size: tài liệu không tính vào ngưỡng" || bad "diff-size tài liệu: $out"
+printf 'class B {\n  void f() { System.out.println("x"); }\n  // TODO later\n  @Disabled void t() {}\n}\n' > "$g/src/B.java"; echo 'it.only("a", () => {});' > "$g/src/a.test.js"
+out=$(cmdrun temp-artifacts.sh) && bad "temp-artifacts: rác phải không đạt" || { n=$(printf '%s' "$out" | grep -c '^WHAT:'); [ "$n" = 4 ] && printf '%s' "$out" | grep -q "^FIX:" && ok "temp-artifacts: bắt đủ 4 loại rác, có WHAT/WHY/FIX" || bad "temp-artifacts rác ($n loại): $out"; }
+git -C "$g" add -A && git -C "$g" commit -q -m "ghi nhận rác cũ"
+out=$(cmdrun temp-artifacts.sh) && ok "temp-artifacts: code cũ đã commit không bị tính" || bad "temp-artifacts code cũ: $out"
+d="$g/docs/features/f/tasks/T-01"; mkdir -p "$d"
+out=$(cmdrun check-plan.sh) && bad "check-plan: không có plan.md phải không đạt" || ok "check-plan: thiếu plan.md thì không đạt"
+printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n' > "$d/plan.md"
+out=$(cmdrun check-plan.sh) && bad "check-plan: plan thiếu mục phải không đạt" || { printf '%s' "$out" | grep -q 'THIẾU mục "rủi ro và hoàn tác"' && ok "check-plan: plan thiếu mục thì không đạt, nêu mục thiếu" || bad "check-plan thiếu mục: $out"; }
+printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n## Test cho từng AC\nx\n## Lệnh kiểm tra cuối\nx\n## Rủi ro và hoàn tác\nx\n## Tiêu chí xong\nx\n' > "$d/plan.md"
+out=$(cmdrun check-plan.sh) && ok "check-plan: plan đủ sáu mục thì đạt" || bad "check-plan đủ: $out"
 if [ -n "${AW:-}" ] || command -v aw > /dev/null 2>&1 || command -v go > /dev/null 2>&1; then
   for s in plus-debug bugfix-not-red; do
     out=$(python3 "$kit/scripts/walk-workflow.py" "$kit/tests/walk/scenarios/$s.json" 2>&1) && ok "walk-workflow: $s đi đúng thứ tự node" || bad "walk-workflow $s: $out"

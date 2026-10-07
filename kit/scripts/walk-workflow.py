@@ -10,7 +10,7 @@ Kịch bản (xem kit/tests/walk/scenarios/*.json):
     manifest    aw-project.json của project thử (đường dẫn tính từ thư mục kịch bản)
     workflow    id workflow trong manifest
     agents      {node: [outcome, ...]}: outcome lần thứ n node AGENT đó chạy (hết danh sách thì lặp lại cái cuối)
-    commands    {gate1|quality|expectfail: ["pass"|"fail", ...]}: kết quả lần thứ n (hết thì "pass")
+    commands    {gate1|quality|expectfail|hygiene|size|checkplan: ["pass"|"fail", ...]}: kết quả lần thứ n (hết thì "pass")
     approvals   {node: [outcome, ...]}: quyết định cho node APPROVAL
     expect      {"state": "SUCCEEDED|FAILED", "sequence": ["node:outcome", ...], "prompts": [{"node", "nth", "has", "lacks"}]}
 
@@ -38,7 +38,7 @@ publish = cc.publish
 
 # Thứ tự quan trọng: resource đặc trưng hơn đứng trước (agent chẩn đoán cũng nạp review.read-only).
 NODE_MARKERS = [("bugfix.repro", "repro"), ("bugfix.fix", "fix"), ("debug.diagnosis-report", "debug"), ("review.checklist", "review"),
-                ("flow.frame", "frame"), ("flow.plan", "plan"), ("flow.build", "build"), ("flow.sync", "sync")]
+                ("simplify.refine", "simplify"), ("flow.frame", "frame"), ("flow.plan", "plan"), ("flow.build", "build"), ("flow.sync", "sync")]
 
 CLAUDE_WRAPPER = '''#!@PYTHON@
 import json, os, subprocess, sys

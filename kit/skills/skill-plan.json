@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "claudekit-engineer@ed8a1fa:agents/planner.md",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "plan.md phải đủ cụ thể để BUILD không phải đoán. Gồm: (1) file sẽ tạo hoặc sửa, theo thứ tự làm, mỗi file một dòng lý do; (2) các bước kèm phụ thuộc giữa chúng (bước nào phải xong trước); (3) với mỗi AC của task: test sẽ viết (tên hoặc mô tả) và điều nó chứng minh, gồm cả đường lỗi; (4) lệnh kiểm tra cuối cùng mà workflow sẽ chạy; (5) rủi ro của task kèm cách giảm, và cách hoàn tác nếu thay đổi khó đảo ngược (migration, đổi hợp đồng); (6) tiêu chí xong đo được. Plan bám thiết kế đã duyệt: nếu thấy cần lệch thì nêu lý do trong plan thay vì lặng lẽ đổi."
+   "instruction": "plan.md phải đủ cụ thể để BUILD không phải đoán. Gồm: (1) file sẽ tạo hoặc sửa, theo thứ tự làm, mỗi file một dòng lý do; (2) các bước kèm phụ thuộc giữa chúng (bước nào phải xong trước); (3) với mỗi AC của task: test sẽ viết (tên hoặc mô tả) và điều nó chứng minh, gồm cả đường lỗi; (4) lệnh kiểm tra cuối cùng mà workflow sẽ chạy; (5) rủi ro của task kèm cách giảm, và cách hoàn tác nếu thay đổi khó đảo ngược (migration, đổi hợp đồng); (6) tiêu chí xong đo được. Plan bám thiết kế đã duyệt: nếu thấy cần lệch thì nêu lý do trong plan thay vì lặng lẽ đổi. Mỗi mục trong sáu mục trên là một tiêu đề cấp hai (##) riêng, đặt tên: \"Tệp sẽ sửa\", \"Các bước\", \"Test cho từng AC\", \"Lệnh kiểm tra cuối\", \"Rủi ro và hoàn tác\", \"Tiêu chí xong\"; workflow có bước kiểm máy các tiêu đề này và gửi plan về cho bạn nếu thiếu."
   }
  ]
 }

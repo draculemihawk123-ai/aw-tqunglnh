@@ -95,16 +95,23 @@ Rồi `aw-publish.py aw-project.json --check`, rồi publish như thường. Mô
 Hai workflow mẫu thêm vào `wf-task-delivery` những bước mà ClaudeKit làm bằng `/cook` và `/fix`, nhưng thành **graph có giới hạn vòng**
 của aw (mọi vòng sửa có `cyclePolicy`, hết vòng thì sang `reject` và run FAILED, không lặp vô hạn).
 
-`wf-task-delivery-plus` = `wf-task-delivery` + node **debug** khi gate1 đỏ và node **review** (CHECKER độc lập) trước cổng người duyệt:
+`wf-task-delivery-plus` = `wf-task-delivery` + kiểm plan, kiểm rác, đo diff (làm gọn nếu lớn), node **debug** khi gate1 đỏ và node **review** (CHECKER độc lập) trước cổng người duyệt:
 
 ```mermaid
 flowchart LR
-  F[frame] -->|full| P[plan] --> B[build]
+  F[frame] -->|full| P[plan] --> CP{check-plan}
+  CP -->|failed| P
+  CP -->|passed| B[build]
   F -->|fast| B
-  B --> G1{gate1}
+  B --> H{hygiene<br/>rác trong diff}
+  H -->|failed| B
+  H -->|passed| G1{gate1}
   G1 -->|failed| D[debug<br/>CHECKER chỉ đọc]
   D -->|diagnosed| B
-  G1 -->|passed| Q{quality}
+  G1 -->|passed| SZ{size}
+  SZ -->|large| SM[simplify] --> G1
+  SZ -->|passed| Q{quality}
+  SM -->|escalated| Q
   Q -->|failed| B
   Q -->|passed| R[review<br/>CHECKER độc lập]
   R -->|rework| B
@@ -112,6 +119,7 @@ flowchart LR
   G2 -->|revise| B
   G2 -->|approved| S[sync] --> E((end))
   B -->|escalated| X[reject]
+  P -->|escalated| X
   G2 -->|rejected| X
 ```
 
@@ -142,6 +150,21 @@ flowchart LR
   đạt khi test đỏ; không đạt khi test xanh, khi code không biên dịch (đỏ vì lý do khác) hoặc khi lỗi mạng (báo `MÔI TRƯỜNG:`).
 - Project cần khai `agent-debugger`, `agent-reviewer` (và `agent-flow-repro`, `agent-flow-fix` cho `wf-bugfix`) bằng `"from": "kit"` kèm `addResources`
   của stack mình, và một `cmd-expect-fail` theo repository (`from kit:cmd-expect-fail`). Mẫu: [docs/guides/issue-tracker](../docs/guides/issue-tracker/aw-project.json).
+
+### Hook của ClaudeKit thành bước kiểm tra của workflow (V10-15)
+
+ClaudeKit làm các kiểm tra này bằng hook, và hook **lỗi thì cho qua** (fail-open). Trong aw chúng là node của workflow, nên lỗi thì **chặn** (fail-closed):
+
+| Hook của ClaudeKit | Trong kit | Chỗ gắn trong `wf-task-delivery-plus` |
+|---|---|---|
+| `simplify-gate` (cảnh báo khi diff lớn, tắt được) | `cmd-diff-size` (ngưỡng 400 dòng, 8 file, 200 dòng một file; bỏ qua tài liệu, lockfile) → nhánh `large` → node `simplify` (`agent-simplifier`, tối đa 2 vòng, hết vòng thì đi tiếp để người duyệt thấy) | sau `gate1`, trước `quality` |
+| (agent tự nhớ không để rác) | `cmd-temp-artifacts`: chặn `debugger`, `console.log`, `System.out`, `.only`, `@Disabled`/`.skip`, TODO **mới thêm**, báo WHAT / WHY / FIX | ngay sau `build`, trước `gate1` |
+| `plan-format-kanban`, `workflow-artifact-gate` | `cmd-check-plan`: `plan.md` của task phải có đủ sáu mục (`plan.checklist`); thiếu thì gửi về `plan` | sau `plan` |
+| `privacy-block` (chặn đọc file bí mật) | đã có `gate-secrets`/`cmd-secrets-gate` (chặn file bí mật và database trong thay đổi) | gate của repository |
+| `scout-block` (giữ agent khỏi thư mục nặng) | **không cần**: aw đã giới hạn đường đi bằng `pathScopes` và mount của WorkItem | - |
+
+Hai chỗ khác ClaudeKit: `cmd-diff-size` và `cmd-temp-artifacts` chỉ xét diff **chưa commit** của worktree (so với HEAD), nên chúng đo thay đổi của task đang làm; và `cmd-check-plan`
+nhận tiêu đề bằng từ khóa tiếng Việt hoặc tiếng Anh nên một `plan.md` đúng ý nhưng đặt tên mục lạ vẫn có thể bị gửi trả (đã chỉnh `plan.checklist` để agent dùng đúng tên mục).
 
 **Kiểm tra mọi cạnh không tốn tiền:** `kit/scripts/walk-workflow.py <kịch-bản.json>` dựng bản cài aw tạm, chạy một WorkItem qua workflow với
 agent giả lập (chọn outcome theo kịch bản) và lệnh giả lập (đạt/hỏng theo kịch bản), tự duyệt cổng người, rồi so thứ tự node với mong đợi

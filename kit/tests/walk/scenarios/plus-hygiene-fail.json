@@ -1,0 +1,33 @@
+{
+  "name": "wf-task-delivery-plus: rác trong diff → build",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ]
+  },
+  "commands": {
+    "hygiene": [
+      "fail",
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ]
+  }
+}
