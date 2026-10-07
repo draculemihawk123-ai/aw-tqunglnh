@@ -7,7 +7,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/ck-plan/references/scope-challenge.md",
+    "source": "kit/skills/skill-spec.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -20,7 +20,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/ck-scenario/SKILL.md",
+    "source": "kit/skills/skill-spec.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -33,7 +33,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/ck-scenario/SKILL.md",
+    "source": "kit/skills/skill-spec.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },

@@ -138,37 +138,16 @@ json.dump(k, open(root + "/kit.json", "w", encoding="utf-8"), ensure_ascii=False
 PY
 }
 cp -R "$kit" "$tmp/k1"; mutate "$tmp/k1" 'd["resources"][0]["instruction"] += " Hãy dùng /ck:plan trước."'
-expect_err "cấu trúc chỉ có ở ClaudeKit bị chặn (/ck:)" "cấu trúc chỉ có ở công cụ gốc" "$tmp/k1/kit.json"
+expect_err "cấu trúc chỉ có ở công cụ gốc bị chặn (/ck:)" "cấu trúc chỉ có ở công cụ gốc" "$tmp/k1/kit.json"
 cp -R "$kit" "$tmp/k2"; mutate "$tmp/k2" 'd["resources"][0]["instruction"] += " Dùng AskUserQuestion để hỏi."'
 expect_err "AskUserQuestion bị chặn" "AskUserQuestion" "$tmp/k2/kit.json"
 cp -R "$kit" "$tmp/k3"; mutate "$tmp/k3" 'd["resources"][0]["instruction"] += " Tiếp theo." * 400'
 expect_err "resource quá lớn bị chặn" "quá 3072" "$tmp/k3/kit.json"
-cp -R "$kit" "$tmp/k4"; mutate "$tmp/k4" 'entry["origin"] = "claudekit-engineer@ed8a1fa"; entry["license"] = "MIT"'
-expect_err "mục từ ClaudeKit thiếu redistributable" "redistributable" "$tmp/k4/kit.json"
-cp -R "$kit" "$tmp/k5"; mutate "$tmp/k5" 'entry["origin"] = "claudekit-engineer@ed8a1fa"; entry["license"] = "MIT"; entry["redistributable"] = True'
-expect_err "mục từ ClaudeKit: provenance.source sai dạng" "provenance.source phải có dạng claudekit-engineer@ed8a1fa:" "$tmp/k5/kit.json"
-SRC='entry["origin"] = "claudekit-engineer@ed8a1fa (chắt lọc)"; entry["license"] = "ClaudeKit-Proprietary (licensed)"; entry["redistributable"] = RED
-for r in d["resources"]: r["provenance"]["source"] = "claudekit-engineer@ed8a1fa:skills/ck-code-review/SKILL.md"'
-cp -R "$kit" "$tmp/k6"; mutate "$tmp/k6" "$(printf '%s' "$SRC" | sed 's/RED/False/')"
-$pub "$tmp/k6/kit.json" --check > "$tmp/o" 2>&1 && ok "mục từ ClaudeKit khai đủ origin, license, redistributable, source" || bad "mục ClaudeKit hợp lệ bị từ chối: $(cat "$tmp/o")"
-$pub "$tmp/k6/kit.json" --share > "$tmp/o" 2>&1 && bad "--share đáng lẽ chặn mục redistributable=false" \
-  || { grep -q "skills/skill-review: không được phân phối lại" "$tmp/o" && ok "--share liệt kê mục redistributable=false và thoát mã 1" || bad "--share thiếu thông báo: $(cat "$tmp/o")"; }
-cp -R "$kit" "$tmp/k7"; mutate "$tmp/k7" "$(printf '%s' "$SRC" | sed 's/RED/True/')"
-python3 - "$tmp/k7/kit.json" <<'PY'
-import json, sys  # trước khi chia sẻ phải xử lý mục UNKNOWN và mục không được phân phối lại: đặt giấy phép rõ ràng, cho phép phân phối
-k = json.load(open(sys.argv[1], encoding="utf-8"))
-for e in k["skills"] + k["layers"] + k["policies"]:
-    if str(e.get("license", "")).upper().startswith("UNKNOWN"):
-        e["license"] = "MIT"
-    if e.get("redistributable") is False:
-        e["redistributable"] = True
-json.dump(k, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False)
-PY
-$pub "$tmp/k7/kit.json" --share > "$tmp/o" 2>&1 && ok "--share cho qua khi mọi mục được phép chia sẻ" || bad "--share chặn nhầm: $(cat "$tmp/o")"
 cp -R "$kit" "$tmp/k11"; mutate "$tmp/k11" 'entry["license"] = "UNKNOWN"'
 $pub "$tmp/k11/kit.json" --check 2>&1 | grep -q "giấy phép chưa xác định" && ok "license UNKNOWN chỉ cảnh báo khi --check" || bad "không cảnh báo license UNKNOWN"
-$pub "$tmp/k11/kit.json" --share > "$tmp/o" 2>&1 && bad "--share đáng lẽ chặn mục giấy phép UNKNOWN" \
-  || { grep -q "giấy phép chưa xác định" "$tmp/o" && ok "--share chặn mục giấy phép UNKNOWN" || bad "--share thiếu thông báo UNKNOWN: $(cat "$tmp/o")"; }
+# nội dung đã chắt lọc của kit không mang tên nguồn (kit tự đứng được, dùng cho project khác)
+leak=$(grep -rIl -i "claudekit" "$kit" --exclude-dir=bench --exclude-dir=tests --exclude-dir=drafts 2>/dev/null | head -n 3)
+[ -z "$leak" ] && ok "kit không chứa tên công cụ nguồn (kit.json, skills, layers, scripts, README)" || bad "còn tên công cụ nguồn trong: $leak"
 cp -R "$kit" "$tmp/k10"; mutate "$tmp/k10" 'd["resources"][0]["selector"] = {}; d["resources"][0].pop("global", None)'
 expect_err "resource không selector mà thiếu global:true" 'phải khai "global": true' "$tmp/k10/kit.json"
 # Layer dùng trường "convention", Skill dùng "instruction": aw từ chối trường lạ lúc publish nên --check phải bắt sớm
@@ -218,7 +197,7 @@ assert "dòng này nằm trong khối code" in by["skill.muc-co-khoi-code"]["ins
 assert not any("dòng này nằm trong khối code" in r["key"] for r in d["resources"])
 report = open(sys.argv[1] + "/sample-skill.report.md", encoding="utf-8").read()
 assert "MIT" in report and "/ck:" in report and "cấu trúc chỉ có ở công cụ gốc" in report, "báo cáo thiếu license hoặc cấu trúc cấm"
-assert '"redistributable"' in report and '"origin": "mau@1"' in report
+assert '"origin": "mau@1"' in report and "redistributable" not in report
 PY
 # bản nháp không nằm trong kit.json nên không bị --check; chuyển vào kho thì lint bắt cấu trúc cấm
 cp -R "$kit" "$tmp/k9"

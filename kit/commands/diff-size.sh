@@ -1,7 +1,7 @@
 #!/bin/sh
-# COMMAND "diff-size" (V10-15; tương ứng hook simplify-gate của ClaudeKit, nhưng KHÔNG thể bỏ qua): đo diff chưa commit của worktree so với
+# COMMAND "diff-size" (V10-15; thay cho kiểu hook cảnh báo diff lớn mà lỗi thì cho qua, ở đây KHÔNG thể bỏ qua): đo diff chưa commit của worktree so với
 # HEAD. Vượt ngưỡng thì thoát mã 1 để workflow đi nhánh `large` sang node làm gọn code; dưới ngưỡng thì thoát mã 0.
-# Ngưỡng mặc định lấy từ ClaudeKit: tổng dòng đổi 400, số file 8, một file 200 dòng. Đặt AW_DIFF_MAX_LOC, AW_DIFF_MAX_FILES,
+# Ngưỡng mặc định: tổng dòng đổi 400, số file 8, một file 200 dòng. Đặt AW_DIFF_MAX_LOC, AW_DIFF_MAX_FILES,
 # AW_DIFF_MAX_FILE_LOC để đổi khi chạy tay. Bỏ qua: tài liệu (docs/, *.md), lockfile, file sinh ra/đã nén; bỏ qua thay đổi khoảng trắng.
 set -eu
 . "${AW_KIT:?đặt AW_KIT=<thư mục kit> khi chạy tay}/commands/lib.sh" # @aw-include

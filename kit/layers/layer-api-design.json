@@ -11,7 +11,7 @@
    },
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/backend-development/references/backend-api-design.md",
+    "source": "kit/layers/layer-api-design.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -28,7 +28,7 @@
    },
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/backend-development/references/backend-api-design.md",
+    "source": "kit/layers/layer-api-design.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },

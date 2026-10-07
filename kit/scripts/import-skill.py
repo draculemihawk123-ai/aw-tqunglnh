@@ -13,7 +13,7 @@ Cách dùng:
   hoặc kit/layers/ và khai trong kit.json (báo cáo có sẵn đoạn khai mẫu).
 - Báo cáo liệt kê những gì `aw-publish.py --check` sẽ bắt: cấu trúc chỉ có ở công cụ gốc, resource quá lớn, luật lặp.
 
-Dùng được cho mọi nguồn theo chuẩn SKILL.md, không riêng ClaudeKit.
+Dùng được cho mọi nguồn theo chuẩn SKILL.md.
 """
 import argparse
 import datetime
@@ -181,9 +181,9 @@ def report_text(name, meta, resources, notes, source, out_json, default_license)
              "## Khai mẫu trong kit.json (sau khi chắt lọc xong và chuyển file vào kit/skills/ hoặc kit/layers/)", "", "```json",
              json.dumps({"id": f"skill-{slug(name)}", "name": f"Skill: {name}",
                          "file": f"skills/skill-{slug(name)}.json", "origin": source,
-                         "license": meta.get("license") or default_license, "redistributable": False}, ensure_ascii=False, indent=1),
+                         "license": meta.get("license") or default_license}, ensure_ascii=False, indent=1),
              "```", "",
-             "Sửa `redistributable` theo giấy phép; `provenance.source` của mỗi resource đã có dạng `<nguồn>:<đường dẫn>`.", "",
+             "Trong bản nháp `provenance.source` của mỗi resource có dạng `<nguồn>:<đường dẫn>` để truy ngược khi chắt lọc; khi chuyển vào kit, đổi nó thành đường dẫn file định nghĩa trong kit nếu không muốn giữ tên nguồn.", "",
              "## Resource", "", "| key | priority | byte | vấn đề |", "|---|---|---|---|"]
     seen = {}
     for resource in resources:

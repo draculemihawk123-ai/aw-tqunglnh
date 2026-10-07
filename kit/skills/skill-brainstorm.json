@@ -7,7 +7,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/brainstorm/SKILL.md",
+    "source": "kit/skills/skill-brainstorm.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -20,7 +20,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/brainstorm/references/problem-first.md",
+    "source": "kit/skills/skill-brainstorm.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -33,7 +33,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/brainstorm/SKILL.md",
+    "source": "kit/skills/skill-brainstorm.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -46,7 +46,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/brainstorm/references/problem-first.md",
+    "source": "kit/skills/skill-brainstorm.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -59,7 +59,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/brainstorm/SKILL.md",
+    "source": "kit/skills/skill-brainstorm.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -72,7 +72,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/problem-solving/SKILL.md",
+    "source": "kit/skills/skill-brainstorm.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },

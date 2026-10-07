@@ -93,7 +93,7 @@ Rồi `aw-publish.py aw-project.json --check`, rồi publish như thường. Mô
 
 ## Workflow mẫu có chẩn đoán, review độc lập và sửa lỗi (V10-14)
 
-Hai workflow mẫu thêm vào `wf-task-delivery` những bước mà ClaudeKit làm bằng `/cook` và `/fix`, nhưng thành **graph có giới hạn vòng**
+Hai workflow mẫu thêm vào `wf-task-delivery` những bước thường có khi giao việc và sửa lỗi bằng agent (chẩn đoán khi đỏ, review độc lập, test tái hiện trước khi sửa), nhưng thành **graph có giới hạn vòng**
 của aw (mọi vòng sửa có `cyclePolicy`, hết vòng thì sang `reject` và run FAILED, không lặp vô hạn).
 
 `wf-task-delivery-plus` = `wf-task-delivery` + kiểm plan, kiểm rác, đo diff (làm gọn nếu lớn), node **debug** khi gate1 đỏ và node **review** (CHECKER độc lập) trước cổng người duyệt:
@@ -152,19 +152,19 @@ flowchart LR
 - Project cần khai `agent-debugger`, `agent-reviewer` (và `agent-flow-repro`, `agent-flow-fix` cho `wf-bugfix`) bằng `"from": "kit"` kèm `addResources`
   của stack mình, và một `cmd-expect-fail` theo repository (`from kit:cmd-expect-fail`). Mẫu: [docs/guides/issue-tracker](../docs/guides/issue-tracker/aw-project.json).
 
-### Hook của ClaudeKit thành bước kiểm tra của workflow (V10-15)
+### Kiểm tra fail-closed thay cho hook (V10-15)
 
-ClaudeKit làm các kiểm tra này bằng hook, và hook **lỗi thì cho qua** (fail-open). Trong aw chúng là node của workflow, nên lỗi thì **chặn** (fail-closed):
+Nhiều công cụ AI-coding làm các kiểm tra này bằng hook và hook **lỗi thì cho qua** (fail-open). Trong aw chúng là node của workflow, nên lỗi thì **chặn** (fail-closed):
 
-| Hook của ClaudeKit | Trong kit | Chỗ gắn trong `wf-task-delivery-plus` |
+| Kiểm tra | Trong kit | Chỗ gắn trong `wf-task-delivery-plus` |
 |---|---|---|
-| `simplify-gate` (cảnh báo khi diff lớn, tắt được) | `cmd-diff-size` (ngưỡng 400 dòng, 8 file, 200 dòng một file; bỏ qua tài liệu, lockfile) → nhánh `large` → node `simplify` (`agent-simplifier`, tối đa 2 vòng; diff vẫn lớn thì run dừng ở `reject` để người vận hành chia nhỏ task) | sau `gate1`, trước `quality` |
-| (agent tự nhớ không để rác) | `cmd-temp-artifacts`: chặn `debugger`, `console.log`, `System.out`, `.only`, `@Disabled`/`.skip`, TODO **mới thêm**, báo WHAT / WHY / FIX | ngay sau `build`, trước `gate1` |
-| `plan-format-kanban`, `workflow-artifact-gate` | `cmd-check-plan`: `plan.md` của task phải có đủ sáu mục (`plan.checklist`); thiếu thì gửi về `plan` | sau `plan` |
-| `privacy-block` (chặn đọc file bí mật) | đã có `gate-secrets`/`cmd-secrets-gate` (chặn file bí mật và database trong thay đổi) | gate của repository |
-| `scout-block` (giữ agent khỏi thư mục nặng) | **không cần**: aw đã giới hạn đường đi bằng `pathScopes` và mount của WorkItem | - |
+| Diff lớn (làm gọn trước khi review) | `cmd-diff-size` (ngưỡng 400 dòng, 8 file, 200 dòng một file; bỏ qua tài liệu, lockfile) → nhánh `large` → node `simplify` (`agent-simplifier`, tối đa 2 vòng; diff vẫn lớn thì run dừng ở `reject` để người vận hành chia nhỏ task) | sau `gate1`, trước `quality` |
+| Rác để quên trong diff | `cmd-temp-artifacts`: chặn `debugger`, `console.log`, `System.out`, `.only`, `@Disabled`/`.skip`, TODO **mới thêm**, báo WHAT / WHY / FIX | ngay sau `build`, trước `gate1` |
+| `plan.md` đủ mục | `cmd-check-plan`: `plan.md` của task phải có đủ sáu mục (`plan.checklist`); thiếu thì gửi về `plan` | sau `plan` |
+| File bí mật trong thay đổi | `gate-secrets` / `cmd-secrets-gate` (chặn file bí mật và database) | gate của repository |
+| Agent đi vào thư mục không liên quan | không cần kiểm riêng: aw giới hạn đường đi bằng `pathScopes` và mount của WorkItem | - |
 
-Hai chỗ khác ClaudeKit: `cmd-diff-size` và `cmd-temp-artifacts` chỉ xét diff **chưa commit** của worktree (so với HEAD), nên chúng đo thay đổi của task đang làm; và `cmd-check-plan`
+Lưu ý: `cmd-diff-size` và `cmd-temp-artifacts` chỉ xét diff **chưa commit** của worktree (so với HEAD), nên chúng đo thay đổi của task đang làm; và `cmd-check-plan`
 nhận tiêu đề bằng từ khóa tiếng Việt hoặc tiếng Anh nên một `plan.md` đúng ý nhưng đặt tên mục lạ vẫn có thể bị gửi trả (đã chỉnh `plan.checklist` để agent dùng đúng tên mục).
 
 **Cạnh hết vòng (`escalationOutcome`) phải dẫn ra ngoài vòng.** Mã runtime của engine (`advance.go`) từ chối cạnh hết vòng dẫn tới node còn quay lại được vòng đó.
@@ -276,7 +276,7 @@ từ nguồn thì xem diff của nội dung chứ không chỉ số revision. Ha
 ## Chắt lọc từ nguồn bên ngoài
 
 Quy ước của V10 ([docs/design/13-v10-kit-knowledge.md](../docs/design/13-v10-kit-knowledge.md)) cho mọi nội dung lấy từ công cụ
-khác (ClaudeKit, skill công khai, tài liệu của nhà cung cấp). Phần lớn được `aw-publish.py --check` kiểm tự động.
+khác (bộ công cụ AI-coding, skill công khai, tài liệu của nhà cung cấp). Phần lớn được `aw-publish.py --check` kiểm tự động.
 
 **Viết lại, không chép nguyên.** Trong `aw`, agent MAKER không chạy được lệnh shell, không có subagent, không hỏi người trực
 tiếp (muốn hỏi thì chọn outcome `needs_info`), và outcome do engine kiểm. Vì vậy `--check` chặn những cấu trúc chỉ có ở công
@@ -295,28 +295,24 @@ cụ gốc: `/ck:…`, `AskUserQuestion`, `TaskCreate`/`TaskUpdate`/`TaskGet`/`T
 `HARD_CONSTRAINT` chỉ dành cho luật kiểm được mà vi phạm là sai. Quy trình thì `REQUIRED_PROCEDURE`, lời khuyên thì
 `GUIDANCE`, tài liệu tra cứu thì `REFERENCE`. Viết tiếng Việt, giữ thuật ngữ kỹ thuật tiếng Anh.
 
-**Xuất xứ và giấy phép theo từng mục** (khai ở entry trong `kit.json`, vì `provenance` của aw chỉ nhận bốn trường):
+**Nội dung đã chắt lọc là của kit, không mang tên nguồn.** Sau khi viết lại, mỗi resource tự đứng được: `provenance.source` là đường dẫn file
+định nghĩa nó trong kit (ví dụ `kit/skills/skill-debug.json`), không trỏ về công cụ gốc, và `kit.json` không có `origin`, `license` hay cờ chia sẻ cho mục đó.
+Muốn biết một luật xuất phát từ đâu thì xem lịch sử git và bản đồ nguồn trong [docs/design/13-v10-kit-knowledge.md](../docs/design/13-v10-kit-knowledge.md),
+không phải từ kit.
+
+Riêng nội dung **nhận nguyên văn từ URL** (không chắt lọc) vẫn phải khai ở entry trong `kit.json` (vì `provenance` của aw chỉ nhận bốn trường):
 
 ```json
-{"id": "skill-debug", "file": "skills/skill-debug.json",
- "origin": "claudekit-engineer@ed8a1fa",
- "license": "MIT",
- "redistributable": true}
+{"id": "skill-x", "file": "skills/skill-x.json", "origin": "https://…", "license": "MIT"}
 ```
 
-- `origin` của mục lấy từ ClaudeKit có dạng `claudekit-engineer@<commit>` (có thể thêm ghi chú sau một dấu cách).
-- `license` ghi theo từng skill nguồn: đọc trường `license:` trong `SKILL.md` của nó (một số là MIT hoặc Apache-2.0).
-  Skill không khai thì theo giấy phép độc quyền của ClaudeKit: ghi `ClaudeKit-Proprietary (licensed)`.
-- `redistributable` bắt buộc với mục lấy từ ClaudeKit: `false` nếu nội dung không được phân phối lại. Trường này không ảnh
-  hưởng việc publish lên bản cài của chính bạn.
-- Mỗi resource của mục đó có `provenance.source` dạng `claudekit-engineer@<commit>:<đường dẫn trong ClaudeKit>`, ví dụ
-  `claudekit-engineer@ed8a1fa:skills/ck-debug/SKILL.md`; `--check` từ chối nếu thiếu hoặc khác commit của `origin`.
+`--check` đòi `license` khi entry có `origin` hoặc resource có `provenance.source` là URL; chưa biết giấy phép thì ghi `UNKNOWN` (`--check` cảnh báo).
 
 **Công cụ cho người chắt lọc.**
 
 - `scripts/import-skill.py <thư mục skill | file .md>` đọc skill dạng `SKILL.md` (kèm `references/*.md`), agent hoặc rule của
   công cụ khác và sinh **bản nháp** vào `kit/drafts/<tên>.json` cùng `<tên>.report.md`: mỗi mục `## …` thành một resource
-  (mục dài được tách theo đoạn), `provenance.source` đã có dạng `<nguồn>:<đường dẫn>`, báo cáo nêu giấy phép trong nguồn, đoạn
+  (mục dài được tách theo đoạn), `provenance.source` tạm có dạng `<nguồn>:<đường dẫn>` để truy ngược khi chắt lọc (đổi thành đường dẫn file trong kit khi chuyển vào kit), báo cáo nêu giấy phép trong nguồn, đoạn
   khai mẫu cho `kit.json` và những chỗ `--check` sẽ chặn. Bản nháp không nằm trong `kit.json` nên không bao giờ được publish;
   bạn viết lại từng resource rồi mới chuyển vào `skills/` hoặc `layers/`. Dùng được cho mọi nguồn theo chuẩn `SKILL.md`.
 - `scripts/context-check.sh <aw-project.json> [<workflow>:]<node> [--repository ID] [--component TÊN] [--risk MỨC]` kiểm tra
@@ -329,9 +325,6 @@ cụ gốc: `/ck:…`, `AskUserQuestion`, `TaskCreate`/`TaskUpdate`/`TaskGet`/`T
   context-check.sh docs/guides/todolist-spring-react/aw-project.json build --component backend \
       --expect flow.build --absent react.api-client
   ```
-
-**Trước khi chia sẻ kho ra ngoài** chạy `aw-publish.py kit/kit.json --share`: lệnh liệt kê mục có `redistributable: false` và
-mục có giấy phép `UNKNOWN`, thoát mã 1 nếu có.
 
 ## 6. Version và nâng cấp
 
@@ -350,7 +343,7 @@ kit/tests/check-kit.sh            # kiểm tra kho, ví dụ todolist, các nhá
 
 Script chạy: `aw-publish.py kit.json --check`; `--check` cho project ví dụ; các nhánh báo lỗi (prefix trùng, id trùng, kit
 khác major, thiếu bản mẫu, nguồn URL thiếu license, `@aw-include` hỏng); các luật chắt lọc (cấu trúc chỉ có ở công cụ
-gốc, kích thước, quá 15 `HARD_CONSTRAINT`, luật lặp, xuất xứ và `--share`); script đã nhúng thư viện chạy đúng **khi không có
+gốc, kích thước, quá 15 `HARD_CONSTRAINT`, luật lặp); script đã nhúng thư viện chạy đúng **khi không có
 `AW_KIT`**; và, nếu có Python `jsonschema`, validate các khai báo theo schema.
 
 Chưa có trong script (cần một bản cài `aw` thật): publish hai project và so version. Đã làm tay một lần khi tách kho (ghi ở
@@ -358,14 +351,12 @@ README của ví dụ, mục "Phạm vi kiểm chứng").
 
 ## Ví dụ đã thử: `skill-code-review`
 
-Skill review của claudekit (người dùng cung cấp) được nhận vào kho **sau khi chắt lọc**, không dán nguyên. Phần giữ lại:
+Skill review do người dùng cung cấp được nhận vào kho **sau khi chắt lọc**, không dán nguyên. Phần giữ lại:
 phương pháp dựa trên bằng chứng, hai giai đoạn (đúng yêu cầu rồi mới chất lượng), soi dấu hiệu code do AI viết, mức nghiêm
 trọng, và không tuyên bố điều chưa kiểm chứng. Phần bỏ vì không chạy được trong node CHECKER của `aw` (agent không tương tác,
 chỉ đọc, `git` và lệnh shell bị chặn ở chế độ `acceptEdits`): chọn chế độ review bằng `AskUserQuestion`, `gh pr diff`, subagent
-`code-reviewer`, `/ck:scout`, pipeline Task, và các `references/*.md` (không được cung cấp). Từ V10-09 skill này được
-ghim lại theo ClaudeKit `ed8a1fa` (`skills/ck-code-review`, `agents/code-reviewer`), giấy phép ghi theo nguồn và `redistributable: false`; bản
-người dùng cung cấp ban đầu (giấy phép `UNKNOWN`) không còn trong kho. Phần bổ sung: dò edge case trước khi review và danh sách rà
-(`codereview.edge-scout`, `codereview.checklist`), báo cáo thêm mục "Edge case dò được" và "Câu hỏi chưa giải quyết".
+`code-reviewer`, `/ck:scout`, pipeline Task, và các `references/*.md` (không được cung cấp). Phần bổ sung ở V10-09: dò edge case trước khi
+review và danh sách rà (`codereview.edge-scout`, `codereview.checklist`), báo cáo thêm mục "Edge case dò được" và "Câu hỏi chưa giải quyết".
 
 Dùng: `agent-reviewer` của project thêm `"skill-code-review"` vào `resources` (cạnh `skill-review`, vốn giữ ràng buộc chỉ đọc
 và quy tắc chọn outcome). Cả ba resource có selector `blockKinds: ["CHECKER"]` nên chỉ agent review nhận.

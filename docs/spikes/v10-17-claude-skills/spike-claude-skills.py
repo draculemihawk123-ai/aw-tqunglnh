@@ -7,7 +7,7 @@ Chạy 3 lượt THẬT (Claude CLI thật, khoảng 0,5 USD tổng): một node
   v1-checker  như v1 nhưng node là CHECKER (chỉ đọc)
 Ghi lại: attempt hỏng hay không (mã lỗi), token và chi phí, công cụ agent gọi, skill agent kể ra, ContextSnapshot có chứa nội dung CK không,
 file hook để lại trong worktree. Kết quả đổ ra --out (mặc định /tmp/spike-claude-skills) dạng JSON + text; báo cáo kết luận ở
-kit/bench/reports/spike-claude-skills.md.
+docs/spikes/v10-17-claude-skills/README.md.
 
 Cách dùng: spike-claude-skills.py --ck <thư mục claude/ của claudekit-engineer> [--out DIR]
 Cần: `aw` (biến AW hoặc PATH), `claude` đã đăng nhập, git, jq, node (hook của ClaudeKit chạy bằng node).
@@ -25,7 +25,7 @@ import time
 
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
-KIT = os.path.dirname(HERE)
+KIT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "kit")
 SCRIPTS = os.path.join(KIT, "scripts")
 spec = importlib.util.spec_from_file_location("context_check", os.path.join(SCRIPTS, "context-check.py"))
 cc = importlib.util.module_from_spec(spec)
@@ -104,10 +104,10 @@ def run_condition(name, with_ck, role, args, aw, claude, out):
         open(os.path.join(work, "run-task.txt"), "w").write(out_text)
     finally:
         os.killpg(worker.pid, signal.SIGTERM)
-    return collect(name, with_ck, role, work, out_text)
+    return collect(name, with_ck, role, work, out_text, aw, env)
 
 
-def collect(name, with_ck, role, work, run_text):
+def collect(name, with_ck, role, work, run_text, aw, env):
     db = sqlite3.connect(f"file:{os.path.join(work, 'install', 'aw.db')}?mode=ro", uri=True)
     db.row_factory = sqlite3.Row
     result = {"name": name, "role": role, "ck": with_ck, "runText": [l for l in run_text.splitlines() if "probe" in l or "state:" in l]}
@@ -135,10 +135,16 @@ def collect(name, with_ck, role, work, run_text):
     result["usage"] = {k: round(v, 4) for k, v in usage.items()}
     result["finalMessage"] = message
     result["ckInMessage"] = any(s in message for s in ("ck-debug", "ck-plan", "cook", "brainstorm"))
-    row = db.execute("select canonical_content from context_snapshots where id = ?", (attempt["context_snapshot_id"],)).fetchone()
-    blob = row["canonical_content"] if row else ""
-    result["snapshotBytes"] = len(blob)
-    result["snapshotMentionsCk"] = any(s in blob for s in (".claude/skills", "ck:debug", "ClaudeKit", "claudekit", "ck-debug"))
+    # ContextSnapshot qua CLI của aw (canonical_content không nằm trong bảng): resource nào agent nhận, có nhắc tới CK không
+    state = json.load(open(env["AW_STATE"], encoding="utf-8"))
+    item = db.execute("select w.work_item_id from workflow_runs w join node_runs n on n.run_id = w.id where n.node_key = 'probe' limit 1").fetchone()
+    shown = subprocess.run([aw, "context-snapshot", "show", "--project-id", state["projectId"], item["work_item_id"], attempt["context_snapshot_id"]],
+                           env=env, capture_output=True, text=True).stdout
+    try:
+        result["snapshotResources"] = [r["resourceKey"] for r in json.loads(shown).get("resourceRefs", [])]
+    except json.JSONDecodeError:
+        result["snapshotResources"] = None
+    result["snapshotMentionsCk"] = any(s in shown for s in (".claude/skills", "ck:debug", "ClaudeKit", "claudekit", "ck-debug"))
     # file còn lại trong worktree
     left = []
     for root, _, files in os.walk(os.path.join(work, "install", "workspaces")):

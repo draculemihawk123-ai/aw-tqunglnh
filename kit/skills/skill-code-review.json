@@ -11,7 +11,7 @@
       "instruction": "Review dựa trên bằng chứng, không dựa trên cảm giác. (1) Mỗi phát hiện phải nêu file và dòng bạn đã đọc, hành vi quan sát được và hậu quả; không có bằng chứng thì không đưa vào danh sách phát hiện, chỉ được ghi riêng dưới tiêu đề \"Nghi ngờ chưa xác minh\". (2) Coi code có thể do AI viết: không tin hình thức gọn gàng, comment tự tin hay test chỉ chạy đường đi thuận; đối chiếu hành vi thật với yêu cầu. (3) Bạn chỉ đọc và không chạy được lệnh: không viết \"test pass\", \"build xanh\", \"đã xác minh\" nếu chưa thấy bằng chứng đó trong prompt hoặc trong file; luôn phân biệt \"đã đọc code\" với \"đã chạy\". Kết luận không được dùng \"có lẽ\", \"chắc là\", \"should\". (4) Không duyệt cho qua để giữ nhịp: `approved` chỉ khi đã đối chiếu từng acceptanceCriteria với code và test thật; không khen chung chung.",
       "provenance": {
         "owner": "aw-kit",
-        "source": "claudekit-engineer@ed8a1fa:skills/ck-code-review/SKILL.md",
+        "source": "kit/skills/skill-code-review.json",
         "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       }
@@ -27,7 +27,7 @@
       "instruction": "Review theo hai giai đoạn, đúng thứ tự. Giai đoạn 1 — đúng yêu cầu: với từng acceptanceCriteria, tìm đoạn code hiện thực nó và test kiểm nó; ghi \"thiếu\" khi không tìm thấy, hoặc chỉ có stub, TODO, hàm rỗng, hàm trả giá trị cố định. Tìm phần thừa không ai yêu cầu (tính năng thêm, file ngoài phạm vi, refactor không liên quan) và gọi tên là lệch phạm vi. Giai đoạn 2 — chất lượng, chỉ khi giai đoạn 1 đã xong: lần theo đường đi của dữ liệu từ đầu vào tới nơi lưu và ngược lại, từng đường lỗi, từng biên (rỗng, null, âm, quá dài, trùng, đồng thời), rồi soát: lỗi logic và hồi quy ở code đã có; xử lý lỗi (nuốt exception, mã trạng thái sai); bảo mật và dữ liệu (nối chuỗi vào SQL, thiếu validate, lộ secret); độ tin cậy; bảo trì theo YAGNI, KISS, DRY (trừu tượng thừa, copy-paste, hằng số cứng). Soi kỹ các dấu hiệu code AI cẩu thả: test không có assertion hoặc chỉ assert điều hiển nhiên, mock toàn bộ thứ cần kiểm, test bị tắt (@Disabled, .skip), comment mô tả điều code không làm, khối catch rỗng, dependency thêm mà không dùng.",
       "provenance": {
         "owner": "aw-kit",
-        "source": "claudekit-engineer@ed8a1fa:skills/ck-code-review/SKILL.md",
+        "source": "kit/skills/skill-code-review.json",
         "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       }
@@ -43,7 +43,7 @@
       "instruction": "Báo cáo cuối ngắn, thẳng, xếp theo mức nghiêm trọng. Mỗi phát hiện một mục: [mức] file:dòng — vấn đề — bằng chứng — cách sửa tối thiểu. Mức Critical: sai chức năng, mất dữ liệu, lỗ hổng bảo mật, hoặc thiếu hẳn một acceptanceCriteria. Mức Important: hồi quy tiềm ẩn, thiếu test cho một acceptanceCriteria, xử lý lỗi sai, hiệu năng hay kiểu dữ liệu có hại, lệch phạm vi. Mức Minor: bảo trì, đặt tên, phong cách, không chặn. Đừng hạ mức một phát hiện để cho qua, và đừng nâng mức điều nằm ngoài acceptanceCriteria của task. Có Critical hoặc Important thì chọn outcome `rework` theo review.checklist; chỉ còn Minor hoặc không có gì thì `approved`. Báo cáo gồm các mục: Phạm vi đã đọc; Phát hiện theo mức; Edge case dò được; Điều không kiểm chứng được vì chỉ đọc; Câu hỏi chưa giải quyết. Khi không có phát hiện nào, vẫn liệt kê đã đối chiếu acceptanceCriteria nào với file nào. Không nhắc lại nội dung task, không mở bài dài dòng.",
       "provenance": {
         "owner": "aw-kit",
-        "source": "claudekit-engineer@ed8a1fa:skills/ck-code-review/SKILL.md",
+        "source": "kit/skills/skill-code-review.json",
         "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       }
@@ -58,7 +58,7 @@
       },
       "provenance": {
         "owner": "aw-kit",
-        "source": "claudekit-engineer@ed8a1fa:agents/code-reviewer.md",
+        "source": "kit/skills/skill-code-review.json",
         "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
@@ -74,7 +74,7 @@
       },
       "provenance": {
         "owner": "aw-kit",
-        "source": "claudekit-engineer@ed8a1fa:agents/code-reviewer.md",
+        "source": "kit/skills/skill-code-review.json",
         "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },

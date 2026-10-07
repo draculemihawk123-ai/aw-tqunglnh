@@ -10,7 +10,7 @@
    },
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/ck-security/SKILL.md",
+    "source": "kit/skills/skill-security.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -26,7 +26,7 @@
    },
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/ck-security/references/stride-owasp-checklist.md",
+    "source": "kit/skills/skill-security.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },

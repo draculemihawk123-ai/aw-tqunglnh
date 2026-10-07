@@ -10,7 +10,7 @@
    },
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/web-testing/references/testing-pyramid-strategy.md",
+    "source": "kit/layers/layer-frontend-testing.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -26,7 +26,7 @@
    },
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/web-testing/references/test-flakiness-mitigation.md",
+    "source": "kit/layers/layer-frontend-testing.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },

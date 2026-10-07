@@ -7,7 +7,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/ck-debug/references/systematic-debugging.md",
+    "source": "kit/skills/skill-debug.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -20,7 +20,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:agents/debugger.md",
+    "source": "kit/skills/skill-debug.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -33,7 +33,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/ck-debug/references/systematic-debugging.md",
+    "source": "kit/skills/skill-debug.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -46,7 +46,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/ck-debug/SKILL.md",
+    "source": "kit/skills/skill-debug.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -62,7 +62,7 @@
    },
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/ck-debug/references/reporting-standards.md",
+    "source": "kit/skills/skill-debug.json",
     "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },

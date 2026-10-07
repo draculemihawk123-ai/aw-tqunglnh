@@ -7,7 +7,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:agents/tester.md",
+    "source": "kit/skills/skill-test.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
@@ -20,7 +20,7 @@
    "selector": {},
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:agents/tester.md",
+    "source": "kit/skills/skill-test.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },

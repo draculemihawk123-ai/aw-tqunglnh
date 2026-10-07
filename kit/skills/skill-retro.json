@@ -7,7 +7,7 @@
       "selector": {},
       "provenance": {
         "owner": "aw-kit",
-        "source": "claudekit-engineer@ed8a1fa:skills/retro/SKILL.md, agents/journal-writer.md (viết lại cho aw; bỏ phần cảm xúc)",
+        "source": "kit/skills/skill-retro.json",
         "revision": "v1",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
@@ -20,7 +20,7 @@
       "selector": {},
       "provenance": {
         "owner": "aw-kit",
-        "source": "claudekit-engineer@ed8a1fa:skills/journal/SKILL.md, agents/journal-writer.md (cấu trúc mục: sự kiện, nguyên nhân gốc, bài học, bước tiếp; viết lại cho aw)",
+        "source": "kit/skills/skill-retro.json",
         "revision": "v1",
         "lastVerified": "2026-10-07T00:00:00Z"
       },

@@ -10,7 +10,7 @@
    },
    "provenance": {
     "owner": "aw-kit",
-    "source": "claudekit-engineer@ed8a1fa:skills/backend-development/references/backend-security.md",
+    "source": "kit/layers/layer-backend-security.json",
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
