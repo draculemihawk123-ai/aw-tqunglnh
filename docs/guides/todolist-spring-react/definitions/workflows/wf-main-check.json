@@ -1,0 +1,35 @@
+{
+  "schemaVersion": "1",
+  "nodes": [
+    {"key": "start", "type": "START", "outcomes": ["next"]},
+    {"key": "route", "type": "ROUTER", "outcomes": ["next"]},
+    {"key": "fork", "type": "FORK", "outcomes": ["quality", "secrets"]},
+    {"key": "quality", "type": "MACHINE_GATE", "outcomes": ["passed"],
+     "machineGate": {"gateRef": {"$ref": "gate:gate-quality"},
+                     "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}]}},
+    {"key": "secrets", "type": "MACHINE_GATE", "outcomes": ["passed"],
+     "machineGate": {"gateRef": {"$ref": "gate:gate-secrets"},
+                     "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}]}},
+    {"key": "join", "type": "JOIN", "outcomes": ["joined"], "join": {"mode": "ALL"}},
+    {"key": "ci", "type": "WAIT", "outcomes": ["signalled", "timed_out"],
+     "wait": {"mode": "SIGNAL", "signalName": "ci-green", "timeoutSeconds": 86400,
+              "completionOutcome": "signalled", "timeoutOutcome": "timed_out"}},
+    {"key": "reject", "type": "COMMAND", "outcomes": ["done"],
+     "command": {"commandRef": {"$ref": "command:cmd-reject"},
+                 "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}]}},
+    {"key": "end", "type": "END"}
+  ],
+  "edges": [
+    {"key": "start-route", "from": "start", "outcome": "next", "to": "route"},
+    {"key": "route-fork", "from": "route", "outcome": "next", "to": "fork"},
+    {"key": "fork-quality", "from": "fork", "outcome": "quality", "to": "quality"},
+    {"key": "fork-secrets", "from": "fork", "outcome": "secrets", "to": "secrets"},
+    {"key": "quality-join", "from": "quality", "outcome": "passed", "to": "join"},
+    {"key": "secrets-join", "from": "secrets", "outcome": "passed", "to": "join"},
+    {"key": "join-ci", "from": "join", "outcome": "joined", "to": "ci"},
+    {"key": "ci-end", "from": "ci", "outcome": "signalled", "to": "end"},
+    {"key": "ci-reject", "from": "ci", "outcome": "timed_out", "to": "reject"},
+    {"key": "reject-end", "from": "reject", "outcome": "done", "to": "end"}
+  ],
+  "completionPolicyRef": {"$ref": "policy:policy-completion-main-check"}
+}

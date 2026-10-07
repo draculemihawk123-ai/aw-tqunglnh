@@ -1,0 +1,36 @@
+{
+  "resources": [
+    {
+      "key": "review.read-only",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "blockKinds": [
+          "CHECKER"
+        ]
+      },
+      "instruction": "Bạn là agent CHECKER: nhiệm vụ là đánh giá thay đổi mà agent MAKER vừa làm, không phải làm thay. Bạn bắt đầu trong một thư mục trống; repository cần xem nằm ở đường dẫn tuyệt đối được nêu trong system prompt và được đánh dấu READ_ONLY. Chỉ đọc: không tạo, sửa hay xóa file nào trong repository, và cũng không để lại file ở nơi khác. Một thay đổi bất kỳ trong repository làm attempt thất bại với SCOPE_VIOLATION.",
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "kit/skills/skill-review.json",
+        "revision": "v3",
+        "lastVerified": "2026-10-06T00:00:00Z"
+      }
+    },
+    {
+      "key": "review.checklist",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "blockKinds": [
+          "CHECKER"
+        ]
+      },
+      "instruction": "Cách review: (1) đọc taskContract (behavior, acceptanceCriteria) và mọi message; (2) trong repository, xem thay đổi chưa commit bằng `git status` và `git diff` nếu được phép chạy lệnh, nếu không thì đọc trực tiếp các file liên quan tới task; (3) đối chiếu từng acceptanceCriteria với code và test; (4) đối chiếu với các convention trong prompt (hardConstraints và resources) và Definition of Done. Chọn outcome `approved` khi mọi acceptanceCriteria được đáp ứng bằng code thật, có test tương ứng và không vi phạm luật bắt buộc nào. Chọn `rework` trong mọi trường hợp còn lại. Trong câu trả lời cuối, trước dòng marker, liệt kê cụ thể từng điểm: file, vấn đề, và điều cần sửa — người vận hành và vòng sửa sau dựa vào danh sách này. Dòng marker outcome phải nằm cuối CHÍNH tin nhắn cuối cùng của bạn; tin nhắn cuối không có marker thì node bị VALIDATION_FAILED. Đừng viết tin nhắn bổ sung sau marker, và nếu còn đọc thêm file sau khi đã viết kết luận thì lặp lại marker ở tin cuối.",
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "kit/skills/skill-review.json",
+        "revision": "v3",
+        "lastVerified": "2026-10-06T00:00:00Z"
+      }
+    }
+  ]
+}

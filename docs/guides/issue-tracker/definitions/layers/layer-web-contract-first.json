@@ -1,0 +1,20 @@
+{
+  "resources": [
+    {
+      "key": "web.contract-first",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "componentTags": [
+          "frontend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-platform",
+        "source": "docs/guides/issue-tracker",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Frontend chỉ gọi những endpoint có trong hợp đồng ở repository contracts, tệp spec/openapi.json (repository đó chỉ đọc; đường dẫn tuyệt đối nằm trong system prompt). Mọi lời gọi backend đi qua các module trong src/api dùng fetch với đường dẫn tương đối /api/... (không hard-code http://localhost:8080); kiểu TypeScript khớp schema trong spec. vite.config.ts cấu hình server.proxy '/api' -> 'http://localhost:8080'. Lỗi từ backend có dạng Problem: hiển thị trường detail cho người dùng. Bước kiểm tra web-conformance báo đường dẫn nào trong code không có trong spec."
+    }
+  ]
+}

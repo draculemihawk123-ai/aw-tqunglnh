@@ -1,0 +1,68 @@
+{
+  "resources": [
+    {
+      "key": "spring.structure",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Backend nằm trọn trong thư mục backend/ của repository. Java 21, Spring Boot 3.5.x (parent org.springframework.boot:spring-boot-starter-parent), build bằng Maven (lệnh `mvn`; dùng ./mvnw nếu repository đã có Maven Wrapper). Package gốc là package của lớp @SpringBootApplication đã có sẵn trong code; giữ nguyên groupId, artifactId và package đó. Chia package theo tầng: controller (@RestController, chỉ map HTTP <-> DTO), service (@Service, nghiệp vụ, @Transactional), repository (Spring Data JPA), domain (@Entity), dto (Java record cho request/response). Controller không bao giờ gọi repository trực tiếp. Không sửa file nào nằm ngoài backend/."
+    },
+    {
+      "key": "spring.testing",
+      "priority": "GUIDANCE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Test bằng JUnit 5 + spring-boot-starter-test. Controller test dùng @SpringBootTest + @AutoConfigureMockMvc (hoặc @WebMvcTest khi chỉ test tầng web). Mỗi endpoint có ít nhất một test cho đường thành công và một test cho lỗi (400/404). Test không được phụ thuộc file database thật của môi trường dev — dùng một file SQLite tạm: @DynamicPropertySource trỏ spring.datasource.url tới một file trong thư mục tạm của JUnit (`@TempDir static Path tempDir`), như test khung của repository đang làm. Không tự xóa file database trong test và không đổi src/test/resources/junit-platform.properties: file đó tắt việc JUnit dọn thư mục tạm, vì Windows không cho xóa file SQLite mà Spring context còn đang mở. `mvn -B test` trong backend/ phải pass mà không cần mạng ngoài việc tải dependency."
+    },
+    {
+      "key": "sqlite.datasource",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Cơ sở dữ liệu là SQLite qua JDBC driver org.xerial:sqlite-jdbc, Hibernate dialect org.hibernate.community.dialect.SQLiteDialect (dependency org.hibernate.orm:hibernate-community-dialects, version do Spring Boot quản lý). URL mặc định đã nằm trong application.properties của khung (jdbc:sqlite:./data/<tên>.db; thư mục data/ phải nằm trong .gitignore). Giữ spring.jpa.hibernate.ddl-auto=validate — schema do migration quản lý, không để Hibernate tự sinh. Cột thời gian lưu TEXT ISO-8601 UTC; map Instant bằng một AttributeConverter<Instant, String> vì SQLite JDBC không tự chuyển Instant. Không dùng H2, PostgreSQL hay MySQL."
+    },
+    {
+      "key": "sqlite.migrations",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Schema được quản lý bằng Flyway (flyway-core) trong backend/src/main/resources/db/migration, đặt tên V<n>__<mo_ta>.sql. Kiểu cột: id INTEGER PRIMARY KEY AUTOINCREMENT, chuỗi TEXT, boolean INTEGER (0/1), thời gian TEXT ISO-8601. Migration đã commit thì không sửa; thay đổi schema luôn bằng một file V<n+1> mới. SQLite chỉ cho một writer tại một thời điểm: giữ transaction ngắn, không mở transaction dài trong request."
+    }
+  ]
+}

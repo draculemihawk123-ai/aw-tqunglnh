@@ -1,0 +1,38 @@
+{
+  "title": "CHECK-01: kiểm tra nhánh chính ba repository sau khi merge",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {
+      "repositoryId": "contracts",
+      "access": "READ",
+      "reason": "Chỉ đọc: chạy các cổng kiểm tra"
+    },
+    {
+      "repositoryId": "api",
+      "access": "READ",
+      "reason": "Chỉ đọc: chạy các cổng kiểm tra"
+    },
+    {
+      "repositoryId": "web",
+      "access": "READ",
+      "reason": "Chỉ đọc: chạy các cổng kiểm tra"
+    }
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Chạy song song bốn cổng (không có file bí mật ở mỗi repository, spec hợp lệ) trên worktree mới tách từ nhánh chính của cả ba repository, rồi chờ tín hiệu CI bên ngoài xác nhận build xanh.",
+    "verificationSpec": "Cả bốn MACHINE_GATE cho verdict PASS và tín hiệu ci-green được gửi tới.",
+    "riskLevel": "LOW",
+    "acceptanceCriteria": [
+      {
+        "description": "Không có file bí mật hay file database trong cả ba repository",
+        "verificationRef": "NO_SECRET_FILES"
+      },
+      {
+        "description": "spec/openapi.json là OpenAPI 3.0 hợp lệ",
+        "verificationRef": "SPEC_VALID"
+      }
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

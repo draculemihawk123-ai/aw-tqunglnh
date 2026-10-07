@@ -1,0 +1,36 @@
+{
+  "resources": [
+    {
+      "key": "contract.format",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "spec"
+        ]
+      },
+      "provenance": {
+        "owner": "team-platform",
+        "source": "docs/guides/issue-tracker",
+        "revision": "v2",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Hợp đồng API duy nhất của hệ thống nằm ở spec/openapi.json (OpenAPI 3.0.3, định dạng JSON, thụt 2 dấu cách). Mọi path bắt đầu bằng /api. Mỗi operation có operationId duy nhất dạng camelCase (listIssues, createIssue…), tags, và ít nhất một response 2xx. Schema dùng chung đặt trong components.schemas và tham chiếu bằng $ref; không có $ref treo. Lỗi 400 và 404 dùng schema Problem có sẵn (type, title, status, detail; theo RFC 7807), khai NGAY tại operation: mỗi response 400 hoặc 404 có content.application/json.schema bằng đúng {\"$ref\": \"#/components/schemas/Problem\"} (không dùng components/responses). Mọi path có tham số {x} khai tham số đó (in: path, required: true) ở operation hoặc ở cấp path. Trường thời gian là string date-time ISO-8601 UTC; id là integer; enum viết hoa (OPEN, IN_PROGRESS, DONE). Chỉ sửa spec/ và docs/; không viết code ứng dụng."
+    },
+    {
+      "key": "contract.compat",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "componentTags": [
+          "spec"
+        ]
+      },
+      "provenance": {
+        "owner": "team-platform",
+        "source": "docs/guides/issue-tracker",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Thay đổi hợp đồng chỉ được cộng thêm: không xóa path, method, response property hay giá trị enum đã có; không đổi kiểu; không thêm trường required vào request đã có. Cần một thay đổi phá vỡ thì dừng và dùng outcome needs_info (nếu node cho phép) hoặc nêu rõ trong phần tóm tắt cuối. Hai bước kiểm tra tự động (contract-lint và contract-compat) sẽ gửi lại lỗi nếu vi phạm."
+    }
+  ]
+}

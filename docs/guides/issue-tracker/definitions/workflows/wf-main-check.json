@@ -1,0 +1,247 @@
+{
+ "schemaVersion": "1",
+ "nodes": [
+  {
+   "key": "start",
+   "type": "START",
+   "outcomes": [
+    "next"
+   ]
+  },
+  {
+   "key": "route",
+   "type": "ROUTER",
+   "outcomes": [
+    "next"
+   ]
+  },
+  {
+   "key": "fork",
+   "type": "FORK",
+   "outcomes": [
+    "secrets-contracts",
+    "secrets-api",
+    "secrets-web",
+    "spec"
+   ]
+  },
+  {
+   "key": "secrets-contracts",
+   "type": "MACHINE_GATE",
+   "outcomes": [
+    "passed"
+   ],
+   "machineGate": {
+    "gateRef": {
+     "$ref": "gate:gate-secrets-contracts"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission"
+     }
+    ]
+   }
+  },
+  {
+   "key": "secrets-api",
+   "type": "MACHINE_GATE",
+   "outcomes": [
+    "passed"
+   ],
+   "machineGate": {
+    "gateRef": {
+     "$ref": "gate:gate-secrets-api"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission"
+     }
+    ]
+   }
+  },
+  {
+   "key": "secrets-web",
+   "type": "MACHINE_GATE",
+   "outcomes": [
+    "passed"
+   ],
+   "machineGate": {
+    "gateRef": {
+     "$ref": "gate:gate-secrets-web"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission"
+     }
+    ]
+   }
+  },
+  {
+   "key": "spec",
+   "type": "MACHINE_GATE",
+   "outcomes": [
+    "passed"
+   ],
+   "machineGate": {
+    "gateRef": {
+     "$ref": "gate:gate-contract-valid"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission"
+     }
+    ]
+   }
+  },
+  {
+   "key": "join",
+   "type": "JOIN",
+   "outcomes": [
+    "joined"
+   ],
+   "join": {
+    "mode": "ALL"
+   }
+  },
+  {
+   "key": "ci",
+   "type": "WAIT",
+   "outcomes": [
+    "signalled",
+    "timed_out"
+   ],
+   "wait": {
+    "mode": "SIGNAL",
+    "signalName": "ci-green",
+    "timeoutSeconds": 86400,
+    "completionOutcome": "signalled",
+    "timeoutOutcome": "timed_out"
+   }
+  },
+  {
+   "key": "reject",
+   "type": "COMMAND",
+   "outcomes": [
+    "done"
+   ],
+   "command": {
+    "commandRef": {
+     "$ref": "command:cmd-reject"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission"
+     }
+    ]
+   }
+  },
+  {
+   "key": "end",
+   "type": "END"
+  }
+ ],
+ "edges": [
+  {
+   "key": "start-route",
+   "from": "start",
+   "outcome": "next",
+   "to": "route"
+  },
+  {
+   "key": "route-fork",
+   "from": "route",
+   "outcome": "next",
+   "to": "fork"
+  },
+  {
+   "key": "fork-secrets-contracts",
+   "from": "fork",
+   "outcome": "secrets-contracts",
+   "to": "secrets-contracts"
+  },
+  {
+   "key": "secrets-contracts-join",
+   "from": "secrets-contracts",
+   "outcome": "passed",
+   "to": "join"
+  },
+  {
+   "key": "fork-secrets-api",
+   "from": "fork",
+   "outcome": "secrets-api",
+   "to": "secrets-api"
+  },
+  {
+   "key": "secrets-api-join",
+   "from": "secrets-api",
+   "outcome": "passed",
+   "to": "join"
+  },
+  {
+   "key": "fork-secrets-web",
+   "from": "fork",
+   "outcome": "secrets-web",
+   "to": "secrets-web"
+  },
+  {
+   "key": "secrets-web-join",
+   "from": "secrets-web",
+   "outcome": "passed",
+   "to": "join"
+  },
+  {
+   "key": "fork-spec",
+   "from": "fork",
+   "outcome": "spec",
+   "to": "spec"
+  },
+  {
+   "key": "spec-join",
+   "from": "spec",
+   "outcome": "passed",
+   "to": "join"
+  },
+  {
+   "key": "join-ci",
+   "from": "join",
+   "outcome": "joined",
+   "to": "ci"
+  },
+  {
+   "key": "ci-end",
+   "from": "ci",
+   "outcome": "signalled",
+   "to": "end"
+  },
+  {
+   "key": "ci-reject",
+   "from": "ci",
+   "outcome": "timed_out",
+   "to": "reject"
+  },
+  {
+   "key": "reject-end",
+   "from": "reject",
+   "outcome": "done",
+   "to": "end"
+  }
+ ],
+ "completionPolicyRef": {
+  "$ref": "policy:policy-completion-main-check"
+ }
+}

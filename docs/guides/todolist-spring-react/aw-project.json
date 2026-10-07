@@ -1,0 +1,95 @@
+{
+  "prefix": "todo-",
+  "repository": "todolist",
+  "provider": {"key": "claude", "model": "sonnet", "configIdentity": "todo-claude", "envAllowlist": ["HOME", "PATH"]},
+  "kit": {"path": "../../../kit/kit.json", "version": "1"},
+  "contextBudgetBytes": 65536,
+  "messageBudget": {"maxBytes": 32768, "keepLatest": 2},
+
+  "layers": [
+    {"id": "layer-java-spring-boot", "name": "Layer: Java 21 + Spring Boot 3.5", "file": "definitions/layers/layer-java-spring-boot.json"},
+    {"id": "layer-sqlite", "name": "Layer: SQLite + Flyway", "file": "definitions/layers/layer-sqlite.json"},
+    {"id": "layer-react-vite", "name": "Layer: React + TypeScript + Vite", "file": "definitions/layers/layer-react-vite.json"}
+  ],
+
+  "skills": [
+    {"id": "skill-todolist-dev", "name": "Skill: quy trình làm task todolist", "file": "definitions/skills/skill-todolist-dev.json"},
+    {"id": "skill-todolist-routing", "name": "Skill: bảng định tuyến context của todolist (bước PLAN)", "file": "definitions/skills/skill-todolist-routing.json"}
+  ],
+
+  "scriptSkills": [
+    {"id": "scripts", "name": "Script cho các Command", "owner": "team-platform",
+     "files": ["commands/backend-test.sh", "commands/frontend-test.sh", "commands/gate1.sh",
+               "commands/quality-check.sh", "commands/quality-gate.sh"]}
+  ],
+
+  "packs": [
+    {"id": "pack-backend", "name": "Pack: backend (Spring Boot + SQLite)",
+     "include": ["layer-java-spring-boot", "layer-sqlite", "skill-todolist-dev"], "assignTo": ["backend"]},
+    {"id": "pack-frontend", "name": "Pack: frontend (React + Vite)",
+     "include": ["layer-react-vite", "skill-todolist-dev"], "assignTo": ["frontend"]}
+  ],
+
+  "policies": [
+    {"id": "policy-completion-main-check", "name": "Completion: các cổng kiểm tra nhánh chính", "file": "definitions/policies/policy-completion-main-check.json"}
+  ],
+
+  "agents": [
+    {"id": "agent-dev", "name": "Agent: developer (backend và frontend, tri thức theo vùng code)",
+     "resources": ["layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev"]},
+    {"id": "agent-reviewer", "name": "Agent: reviewer độc lập (CHECKER)",
+     "resources": ["skill-review", "skill-code-review", "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev"]},
+
+    {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM", "model": "opus",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm",
+                   "skill-todolist-dev#dev.stack-overview"]},
+    {"id": "agent-flow-spec", "name": "Agent: SPEC", "model": "opus",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec",
+                   "skill-todolist-dev#dev.stack-overview"]},
+    {"id": "agent-flow-design", "name": "Agent: DESIGN", "model": "opus",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.design",
+                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev#dev.stack-overview"]},
+    {"id": "agent-flow-frame", "name": "Agent: FRAME",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame"]},
+    {"id": "agent-flow-plan", "name": "Agent: PLAN",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-todolist-routing#dev.routing-table", "skill-feature-flow#flow.plan",
+                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite"]},
+    {"id": "agent-flow-build", "name": "Agent: BUILD",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.build",
+                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite",
+                   "skill-todolist-dev#dev.definition-of-done", "skill-todolist-dev#dev.high-risk-extra"]},
+    {"id": "agent-flow-sync", "name": "Agent: SYNC",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.sync"]}
+  ],
+
+  "commands": [
+    {"id": "cmd-backend-test", "name": "Command: backend test", "script": "scripts#backend-test.sh",
+     "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-frontend-test", "name": "Command: frontend test + build", "script": "scripts#frontend-test.sh",
+     "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-gate1", "name": "Command: GATE 1 build + test", "script": "scripts#gate1.sh",
+     "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-check-feature-docs", "from": "kit"},
+    {"id": "cmd-reject", "from": "kit"},
+    {"id": "cmd-quality-check", "name": "Command: kiểm tra tĩnh trên thay đổi của task", "script": "scripts#quality-check.sh"},
+    {"id": "cmd-quality-gate", "name": "Command của gate: kiểm tra tĩnh sau merge", "script": "scripts#quality-gate.sh",
+     "repositoryArg": true, "timeoutSeconds": 120, "maxOutputBytes": 65536},
+    {"id": "cmd-secrets-gate", "from": "kit"}
+  ],
+
+  "gates": [
+    {"id": "gate-quality", "name": "Gate: chất lượng tĩnh", "command": "cmd-quality-gate",
+     "criteria": [{"name": "Không có test nào bị tắt", "evidenceKey": "NO_DISABLED_TESTS"},
+                  {"name": "Không có hai migration cùng số version", "evidenceKey": "MIGRATION_VERSIONS_UNIQUE"}]},
+    {"id": "gate-secrets", "from": "kit"}
+  ],
+
+  "workflows": [
+    {"id": "wf-backend-feature", "name": "Workflow: task backend", "template": "definitions/workflows/wf-backend-feature.json"},
+    {"id": "wf-frontend-feature", "name": "Workflow: task frontend", "template": "definitions/workflows/wf-frontend-feature.json"},
+    {"id": "wf-fullstack-review", "name": "Workflow: fullstack + AI review + người duyệt", "template": "definitions/workflows/wf-fullstack-review.json"},
+    {"id": "wf-feature-definition", "from": "kit"},
+    {"id": "wf-task-delivery", "from": "kit"},
+    {"id": "wf-main-check", "name": "Workflow: kiểm tra nhánh chính", "template": "definitions/workflows/wf-main-check.json"}
+  ]
+}
