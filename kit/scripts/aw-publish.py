@@ -83,7 +83,7 @@ SECTIONS = (("layers", "LAYER"), ("skills", "SKILL"), ("scriptSkills", "SKILL"),
             ("policies", "POLICY"), ("agents", "AGENT_PROFILE"), ("commands", "COMMAND"), ("gates", "GATE"),
             ("workflows", "WORKFLOW"))
 SHARED = ("layers", "skills", "scriptSkills", "policies")  # phần của kit được publish dùng chung
-INSTANTIATED = ("commands", "gates", "workflows")          # phần của kit là bản mẫu, publish theo project
+INSTANTIATED = ("agents", "commands", "gates", "workflows")  # phần của kit là bản mẫu, publish theo project
 INCLUDE_RE = re.compile(r'^\s*\.\s+"\$\{AW_KIT:\?[^}]*\}/(?P<rel>[^"]+)"\s*#\s*@aw-include\s*$')
 
 
@@ -124,9 +124,10 @@ def load_manifest(path, as_kit=False, kit_override=None):
 
 
 def expand_from_kit(manifest, kit):
-    """{"id": "x", "from": "kit"} trong commands/gates/workflows: lấy bản mẫu cùng id của kit; {"id": "y", "from":
+    """{"id": "x", "from": "kit"} trong agents/commands/gates/workflows: lấy bản mẫu cùng id của kit; {"id": "y", "from":
     "kit:x"} lấy bản mẫu id x và đặt tên y (dùng một bản mẫu cho nhiều repository). Field khác trong entry của project
-    ghi đè bản mẫu. Đường dẫn file của bản mẫu tính từ thư mục của kit."""
+    ghi đè bản mẫu. Đường dẫn file của bản mẫu tính từ thư mục của kit. Agent mẫu có thêm `addResources`: danh sách
+    Layer/Skill của project cộng vào `resources` của bản mẫu (mẫu của kit chỉ biết tri thức của kit)."""
     for section in INSTANTIATED:
         expanded = []
         for entry in manifest[section]:
@@ -139,6 +140,12 @@ def expand_from_kit(manifest, kit):
                 if template is None:
                     raise ManifestError(f"{section}/{entry['id']}: kit không có bản mẫu {template_id!r}")
                 entry = {**template, **{k: v for k, v in entry.items() if k != "from"}, "_owner": kit}
+                if section == "agents":
+                    resources = list(entry.get("resources", []))
+                    for extra in entry.pop("addResources", []):
+                        if extra not in resources:
+                            resources.append(extra)
+                    entry["resources"] = resources
             expanded.append(entry)
         manifest[section] = expanded
 
@@ -258,9 +265,8 @@ def lint(manifest):
     is_kit = manifest["role"] == "kit"
     kit = manifest["_kit"]
     if is_kit:
-        for section in ("agents", "packs"):
-            if manifest[section]:
-                problems.append(f"kit không được khai báo {section}: {section} phụ thuộc vào stack của từng project")
+        if manifest["packs"]:
+            problems.append("kit không được khai báo packs: Engineering Pack gán cho component, phụ thuộc vào stack của từng project")
     if kit and kit["prefix"] == manifest["prefix"]:
         problems.append(f"prefix của project ({manifest['prefix']!r}) trùng prefix của kit")
     seen = {}
@@ -387,7 +393,7 @@ SLOT_KINDS = {"AGENT_PROFILE", "COMMAND", "GATE", "ENGINEERING_PACK", "WORKFLOW"
 def kit_hint(manifest, kind, ref_id):
     """Gợi ý khi một $ref trỏ tới Command/Gate/Workflow mà kit có bản mẫu nhưng project chưa lấy về."""
     kit = manifest.get("_kit")
-    section = {"COMMAND": "commands", "GATE": "gates", "WORKFLOW": "workflows"}.get(kind)
+    section = {"AGENT_PROFILE": "agents", "COMMAND": "commands", "GATE": "gates", "WORKFLOW": "workflows"}.get(kind)
     if kit and section and any(e["id"] == ref_id for e in kit[section]):
         return f' — kit có bản mẫu: thêm {{"id": "{ref_id}", "from": "kit"}} vào {section}'
     return ""
@@ -863,7 +869,7 @@ def print_slots(manifest):
                        and REF_KINDS.get(r.partition(":")[0]) in SLOT_KINDS})
         for ref in refs:
             kind_word, _, ref_id = ref.partition(":")
-            from_kit = {"command": "commands", "gate": "gates"}.get(kind_word)
+            from_kit = {"agent": "agents", "command": "commands", "gate": "gates"}.get(kind_word)
             offered = from_kit and any(e["id"] == ref_id for e in kit[from_kit])
             note = "kit có bản mẫu, lấy bằng \"from\": \"kit\"" if offered else "project tự định nghĩa"
             status = "" if project is None else ("[có]   " if ref_id in have.get(kind_word, set()) else "[THIẾU]")

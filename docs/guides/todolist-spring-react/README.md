@@ -937,6 +937,8 @@ Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-projec
 | `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra`, `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `ask.*`, `build.*`, `debug.*`, `test.*`, năm layer của kit (`api-design`, `sql-quality`, `backend-security`, `react-quality`, `frontend-testing`) |
 | `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync`, `rules.decisions`, `rules.finish`, `docs.*` |
 
+Bảy agent `agent-flow-*` và `agent-reviewer` là bản mẫu của kho (`"from": "kit"`); `aw-project.json` chỉ khai phần riêng của todolist bằng `addResources` (ba Layer stack, `dev.stack-overview`, `dev.routing-table`, `dev.definition-of-done`). Bảng trên là danh sách sau khi gộp.
+
 Sau khi chạy một task, kiểm tra agent thực sự nhận resource nào trong ContextSnapshot của attempt:
 
 ```bash

@@ -98,6 +98,24 @@ sed 's/"command:cmd-gate1"/"command:cmd-gate9"/' "$tmp/p/bind.json" > "$tmp/p/bi
 expect_err "bind gõ sai khóa bị bắt" "không khớp \$ref nào" "$tmp/p/bind-typo.json"
 sed 's/"from": "kit:cmd-reject"}, {"id": "cmd-api-q"/"from": "kit:cmd-khong-co"}, {"id": "cmd-api-q"/' "$tmp/p/bind.json" > "$tmp/p/alias-bad.json"
 expect_err "alias tới bản mẫu không có" "kit không có bản mẫu" "$tmp/p/alias-bad.json"
+
+# agent mẫu của kit + addResources: tri thức của kit cộng tri thức của project, không trùng
+cat > "$tmp/p/agent.json" <<JSON
+{"prefix": "p-", "repository": "r", $kitref, "layers": [{"id": "layer-x", "file": "layer-x.json", "global": true}],
+ "agents": [{"id": "agent-flow-sync", "from": "kit", "addResources": ["layer-x", "skill-docs#docs.when"], "model": "opus"}]}
+JSON
+echo '{"resources": [{"key": "x.k", "convention": "Quy ước x.", "global": true, "provenance": {"owner": "test", "source": "test"}}]}' > "$tmp/p/layer-x.json"
+$pub "$tmp/p/agent.json" --check > "$tmp/o" 2>&1 && ok "agent from kit + addResources hợp lệ" || bad "agent from kit: $(cat "$tmp/o")"
+python3 - "$kit/scripts/aw-publish.py" "$tmp/p/agent.json" <<'PY' && ok "addResources được gộp vào resources của mẫu, không trùng" || bad "addResources không gộp đúng"
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ap", sys.argv[1]); ap = importlib.util.module_from_spec(spec); spec.loader.exec_module(ap)
+agent = ap.load_manifest(sys.argv[2])["agents"][0]
+res = agent["resources"]
+assert res[-1] == "layer-x" and res.count("skill-docs#docs.when") == 1 and "skill-feature-flow#flow.sync" in res, res
+assert agent["model"] == "opus" and "addResources" not in agent
+PY
+sed 's/"layer-x", "skill-docs#docs.when"/"layer-khong-co"/' "$tmp/p/agent.json" > "$tmp/p/agent-bad.json"
+expect_err "addResources trỏ tới resource không có" "layer-khong-co" "$tmp/p/agent-bad.json"
 # argRepositories: lệnh nhận đường dẫn worktree của repository khác (kiểm tra bằng publish thật ở README của ví dụ)
 python3 - "$kit/scripts/aw-publish.py" <<'PY' && ok "argRepositories có trong aw-publish" || bad "argRepositories thiếu"
 import sys

@@ -61,8 +61,12 @@
                      "include": {"type": "array", "items": {"type": "string"}}, "assignTo": {"type": "array", "items": {"type": "string"}}}
     },
     "agent": {
-      "type": "object", "additionalProperties": false, "required": ["id", "resources"],
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "anyOf": [{"required": ["resources"]}, {"required": ["from"]}],
+      "description": "Agent của project, hoặc {\"id\": ..., \"from\": \"kit\" | \"kit:<id>\", \"addResources\": [...]}: lấy agent mẫu của kit và cộng thêm Layer/Skill của project.",
       "properties": {"id": {"$ref": "#/definitions/id"}, "name": {"type": "string"}, "model": {"type": "string"},
+                     "from": {"$ref": "#/definitions/fromKit"},
+                     "addResources": {"type": "array", "items": {"type": "string"}},
                      "resources": {"type": "array", "items": {"type": "string", "description": "<Layer|Skill> hoặc <Layer|Skill>#<resource key>; id lấy từ project hoặc kit."}},
                      "envAllowlist": {"$ref": "#/definitions/envNames"}, "messageBudget": {"$ref": "#/definitions/messageBudget"},
                      "toolRefs": {"type": "array", "items": {"type": "string"}}, "contextBudgetBytes": {"type": "integer", "minimum": 1},

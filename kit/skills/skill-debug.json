@@ -51,6 +51,22 @@
     "lastVerified": "2026-10-07T00:00:00Z"
    },
    "instruction": "Dấu hiệu bạn đang đoán mò, hãy dừng và quay về điều tra: \"sửa tạm trước, điều tra sau\"; \"thử đổi X xem sao\"; \"chắc là X\"; \"sửa nhiều chỗ rồi chạy lại\"; \"bỏ qua test, tôi tự kiểm bằng mắt\"; \"không hiểu hết nhưng có thể được\"; \"thử thêm một lần nữa\" khi đã thử hai lần. Câu nào trong số này xuất hiện nghĩa là chưa đủ bằng chứng để sửa."
+  },
+  {
+   "key": "debug.diagnosis-report",
+   "priority": "REQUIRED_PROCEDURE",
+   "selector": {
+    "blockKinds": [
+     "CHECKER"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/ck-debug/references/reporting-standards.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Bạn là agent chẩn đoán (CHECKER, chỉ đọc): tìm nguyên nhân gốc của kiểm tra đỏ rồi báo cho agent sửa; không sửa gì. Đọc checkFailures, các file đã đổi và code liên quan. Báo cáo cuối ngắn, theo thứ tự: Triệu chứng (một dòng); Giả thuyết đã loại và vì sao; Nguyên nhân gốc kèm chuỗi bằng chứng (file:dòng, đoạn output lỗi); Cách sửa tối thiểu đề xuất (mô tả, không thực hiện); Test nên thêm hoặc sửa; Điều không kiểm chứng được vì chỉ đọc. Tách điều đã xác nhận khỏi giả thuyết, không dùng \"có lẽ\". Kết thúc bằng outcome nói rằng bạn đã chẩn đoán xong (theo allowedOutcomes); thiếu bằng chứng để chỉ ra nguyên nhân thì chọn needs_info nếu node có và nêu thiếu gì."
   }
  ]
 }

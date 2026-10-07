@@ -66,6 +66,10 @@ Một project mới chỉ cần ba thứ trong `aw-project.json`:
 
 - `"kit"` cho phép tham chiếu mọi id của kho mà không khai lại. `version` ghim số major: kho đổi major thì `--check` báo.
 - `"from": "kit"` lấy bản mẫu cùng id; field khác trong entry ghi đè bản mẫu.
+- **Agent mẫu theo vai trò** (`agent-flow-brainstorm … agent-flow-sync`, `agent-reviewer`, `agent-debugger`, `agent-simplifier`): kho
+  chỉ biết tri thức của kho, project cộng tri thức của mình bằng `addResources` (Layer stack, `dev.stack-overview`…), không phải chép lại cả danh sách:
+  `{"id": "agent-flow-build", "from": "kit", "addResources": ["layer-stack-spring-sqlite", "skill-maker#dev.definition-of-done"], "model": "opus"}`.
+  `addResources` được nối vào `resources` của bản mẫu, mục trùng chỉ giữ một; `name`/`model` ghi đè như mọi field khác.
 - **Nhiều repository dùng một bản mẫu:** `{"id": "cmd-secrets-gate-api", "from": "kit:cmd-secrets-gate", "repository": "api"}` đặt tên
   khác cho bản mẫu; với workflow thêm `"bind"` để gắn lại chỗ trống cho từng repo:
   `{"id": "wf-task-delivery-api", "from": "kit:wf-task-delivery", "bind": {"command:cmd-gate1": "cmd-api-test", …}}`.
