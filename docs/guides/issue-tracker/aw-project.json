@@ -60,7 +60,7 @@
     {"id": "agent-flow-design", "name": "Agent: DESIGN",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.design", "layer-openapi-contract",
                    "layer-stack-spring-sqlite", "layer-api-contract-first", "layer-stack-react-vite", "layer-web-contract-first",
-                   "skill-tracker-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model"]},
+                   "skill-tracker-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-design#design.codebase", "skill-design#design.verify-claims", "skill-design#design.checklist", "skill-design#design.solution", "skill-design#design.red-team"]},
     {"id": "agent-flow-frame", "name": "Agent: FRAME",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups"]},
     {"id": "agent-flow-plan", "name": "Agent: PLAN",

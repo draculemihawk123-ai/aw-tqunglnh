@@ -1,0 +1,69 @@
+{
+ "resources": [
+  {
+   "key": "design.codebase",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/ck-plan/references/codebase-understanding.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Hiểu codebase trước khi thiết kế. Đọc README, tài liệu trong docs/ (quy chuẩn code, tóm tắt kiến trúc nếu có), cấu hình môi trường và cách build. Nhận ra pattern đang dùng (xử lý lỗi, đặt tên, tổ chức module) rồi thiết kế bám theo; chỗ nào lệch pattern thì nêu lý do. Xác định điểm tích hợp: module nào bị chạm, hợp đồng nào bị ảnh hưởng, dữ liệu nào đổi. Thiết kế mà không đọc code liên quan thì dễ mô tả những thứ đã tồn tại hoặc nói sai về chúng."
+  },
+  {
+   "key": "design.verify-claims",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:agents/planner.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Kiểm chứng mọi khẳng định về code trong 03-design.md; đừng chép từ trí nhớ hay tóm tắt cũ. Tìm lại file và ký hiệu trong code và ghi `file:dòng` cho mỗi ký hiệu được nhắc; không tìm thấy thì gắn [CHƯA XÁC MINH]. Với khẳng định về hành vi (\"A gọi B\", \"middleware chạy trước handler\") hãy lần theo đường chạy thật thay vì suy ra từ tên. Đừng viết \"cập nhật mọi nơi gọi\": liệt kê từng nơi gọi kèm file:dòng (hơn 10 nơi thì liệt kê 10 và ghi tổng số). Trước khi thêm trạng thái vào một cấu trúc có sẵn, tìm nơi khởi tạo và xác định vòng đời của nó (theo request, theo phiên hay theo tiến trình): trạng thái dùng chung sẽ rò rỉ qua ranh giới cô lập."
+  },
+  {
+   "key": "design.checklist",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:agents/planner.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Trước khi kết thúc, 03-design.md có đủ: luồng dữ liệu (dữ liệu vào, biến đổi, ra ở từng thành phần); phụ thuộc giữa các phần (không phần nào bắt đầu trước khi các phần chặn nó xong); rủi ro từng phần = khả năng × tác động, kèm cách giảm cho rủi ro cao; chiến lược tương thích ngược (dữ liệu, người dùng, tích hợp hiện có); ma trận kiểm thử (cái gì unit, tích hợp, đầu-cuối); cách hoàn tác từng phần; quyền sở hữu file (hai task không sửa cùng một file hay cùng một migration); tiêu chí thành công đo được (\"xong\" là điều quan sát được, không phải cảm nhận)."
+  },
+  {
+   "key": "design.solution",
+   "priority": "GUIDANCE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/ck-plan/references/solution-design.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Thiết kế giải pháp theo YAGNI, KISS, DRY. Với mỗi quyết định kỹ thuật quan trọng, so sánh ít nhất hai phương án bằng đánh đổi (độ phức tạp, rủi ro, công sức, khả năng đảo ngược) và ghi phương án đã loại cùng lý do. Xét lần lượt: bảo mật (xác thực, phân quyền, kiểm tra đầu vào, dữ liệu nhạy cảm); hiệu năng và quy mô (truy vấn, chỉ mục, N+1, kích thước dữ liệu); edge case và failure mode (dịch vụ ngoài lỗi, ghi dở, dữ liệu trùng) kèm hành vi mong đợi; kiến trúc (ranh giới module, hợp đồng giữa các phần, chỗ cần mở rộng sau)."
+  },
+  {
+   "key": "design.red-team",
+   "priority": "GUIDANCE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/ck-plan/references/red-team-personas.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Tự phản biện trước khi gửi duyệt ở GATE B. Đọc lại thiết kế từ bốn góc nhìn đối địch, mỗi góc tìm 2 đến 3 điểm yếu cụ thể: kẻ tấn công (đường lạm dụng, lộ dữ liệu, phân quyền); Murphy (đua tranh, mất dữ liệu, lỗi dây chuyền, thiếu đường hoàn tác); người hoài nghi (phụ thuộc không nói ra, khẳng định \"sẽ chạy\" không bằng chứng, thiếu đường lỗi); người cắt gọt (thiết kế thừa, trừu tượng sớm, thiếu bản tối thiểu; hỏi \"vì sao không làm gì\"). Mỗi điểm yếu ghi tình huống hỏng cụ thể và bằng chứng từ code (file:dòng); điểm không có bằng chứng thì bỏ. Ghi vào mục \"Phản biện\" của 03-design.md: điểm đã sửa trong thiết kế, điểm chấp nhận kèm lý do, điểm bác bỏ kèm nguồn kiểm chứng; kết luận GO, CAUTION (nêu điều kiện) hoặc STOP (hỏi người bằng needs_info nếu không tự gỡ được). Đừng tìm lỗi cho đủ số lượng: không có điểm yếu nào có bằng chứng thì ghi đúng như vậy."
+  }
+ ]
+}

@@ -906,6 +906,8 @@ Skill ([`definitions/skills/`](definitions/skills/)):
 | | `brainstorm.assumptions`, `brainstorm.unstuck` (GUIDANCE) | Giả định kèm rủi ro, cách kiểm chứng và trạng thái bằng chứng; cách gỡ khi phương án ngày càng phức tạp |
 | `skill-spec` (kit, chắt lọc từ ClaudeKit) | `spec.scope-challenge`, `spec.scenarios` (REQUIRED_PROCEDURE) | Thách thức phạm vi (đã có gì, tối thiểu là gì, độ phức tạp; chọn giữ, thu hẹp hay mở rộng và ghi lý do); duyệt các chiều tình huống rồi chuyển tình huống từ High trở lên thành AC |
 | | `spec.ac-quality` (GUIDANCE) | AC quan sát được, có giá trị biên cụ thể, đường lỗi đi cùng đường thành công |
+| `skill-design` (kit, chắt lọc từ ClaudeKit) | `design.codebase`, `design.verify-claims`, `design.checklist` (REQUIRED_PROCEDURE) | Đọc codebase trước; mọi khẳng định về code kèm `file:dòng` hoặc gắn `[CHƯA XÁC MINH]`; thiết kế phải có luồng dữ liệu, phụ thuộc, rủi ro, tương thích ngược, kiểm thử, hoàn tác, quyền sở hữu file |
+| | `design.solution`, `design.red-team` (GUIDANCE) | So sánh phương án và ghi phương án đã loại; tự phản biện từ bốn góc nhìn đối địch, kết luận GO, CAUTION hay STOP |
 | `skill-ask` (kit, chắt lọc từ ClaudeKit) | `ask.analysis-first` (REQUIRED_PROCEDURE), `ask.question-groups` (GUIDANCE) | Đọc repository và viết phân tích trước khi hỏi; 2 đến 4 phương án tự đứng được; gom câu hỏi theo nhóm |
 
 Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-project.json)):
@@ -916,7 +918,7 @@ Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-projec
 | `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.threat-model` |
 | `agent-flow-brainstorm` | `brainstorm` | opus | `flow.working-rules`, `flow.brainstorm`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `brainstorm.*` |
 | `agent-flow-spec` | `spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `ask.*`, `spec.*` |
-| `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `rules.threat-model` |
+| `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `rules.threat-model`, `design.*` |
 | `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame`, `rules.decisions`, `rules.finish`, `ask.*` |
 | `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, ba Layer, `rules.decisions`, `rules.finish` |
 | `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra`, `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `ask.*` |
