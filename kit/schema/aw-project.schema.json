@@ -67,13 +67,14 @@
                      "toolRefs": {"type": "array", "items": {"type": "string"}}, "contextBudgetBytes": {"type": "integer", "minimum": 1},
                      "maxTokens": {"type": "integer", "minimum": 1}}
     },
-    "fromKit": {"const": "kit", "description": "Lấy bản mẫu cùng id của kit; các field khác trong entry ghi đè bản mẫu."},
+    "fromKit": {"type": "string", "pattern": "^kit(:.+)?$", "description": "\"kit\": lấy bản mẫu cùng id của kit; \"kit:<id>\": lấy bản mẫu id đó và đặt tên khác (một bản mẫu cho nhiều repository). Các field khác trong entry ghi đè bản mẫu."},
     "command": {
       "type": "object", "additionalProperties": false, "required": ["id"],
       "properties": {"id": {"$ref": "#/definitions/id"}, "from": {"$ref": "#/definitions/fromKit"}, "name": {"type": "string"},
                      "script": {"type": "string", "pattern": "^[^#]+#[^#]+$", "description": "<scriptSkill>#<tên file>; scriptSkill của project hoặc kit."},
                      "network": {"enum": ["NONE", "ALLOWED"]}, "policies": {"type": "array", "items": {"type": "string"}},
-                     "repositoryArg": {"type": "boolean"}, "repository": {"type": "string"}, "envAllowlist": {"$ref": "#/definitions/envNames"},
+                     "repositoryArg": {"type": "boolean"}, "repository": {"type": "string"},
+                     "argRepositories": {"type": "array", "items": {"type": "string"}, "description": "Id repository KHÁC mà lệnh được nhận đường dẫn worktree (chỉ đọc) làm các tham số tiếp theo ($2, $3…; sau repository của chính nó nếu có repositoryArg)."}, "envAllowlist": {"$ref": "#/definitions/envNames"},
                      "timeoutSeconds": {"type": "integer", "minimum": 1}, "maxOutputBytes": {"type": "integer", "minimum": 1}},
       "oneOf": [{"required": ["from"]}, {"required": ["script"]}]
     },
@@ -88,7 +89,8 @@
     "workflow": {
       "type": "object", "additionalProperties": false, "required": ["id"],
       "properties": {"id": {"$ref": "#/definitions/id"}, "from": {"$ref": "#/definitions/fromKit"}, "name": {"type": "string"},
-                     "template": {"type": "string", "description": "File template; chỗ cần pin definition khác ghi {\"$ref\": \"<loại>:<id>\"}."}},
+                     "template": {"type": "string", "description": "File template; chỗ cần pin definition khác ghi {\"$ref\": \"<loại>:<id>\"}."},
+                     "bind": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Gắn lại chỗ trống của template: {\"command:cmd-gate1\": \"cmd-api-test\"} thay mọi $ref command:cmd-gate1 bằng command:cmd-api-test."}},
       "oneOf": [{"required": ["from"]}, {"required": ["template"]}]
     }
   }

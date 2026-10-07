@@ -84,6 +84,26 @@ expect_err "provenance.license bị chặn (aw không nhận)" "provenance có t
 $pub "$kit/kit.json" --check 2>&1 | grep -q "giấy phép chưa xác định" && ok "license UNKNOWN chỉ cảnh báo" \
   || echo "  (không có mục UNKNOWN trong kho: bỏ qua kiểm tra cảnh báo)"
 
+# alias bản mẫu + bind: một workflow mẫu dùng cho nhiều repository
+cat > "$tmp/p/bind.json" <<JSON
+{"prefix": "p-", "repository": "r", $kitref,
+ "agents": [{"id": "a", "resources": ["skill-feature-flow#flow.working-rules"]}],
+ "commands": [{"id": "cmd-reject", "from": "kit"}, {"id": "cmd-api-test", "from": "kit:cmd-reject"}, {"id": "cmd-api-q", "from": "kit:cmd-reject"}],
+ "workflows": [{"id": "wf-task-delivery-api", "from": "kit:wf-task-delivery", "bind": {"command:cmd-gate1": "cmd-api-test",
+   "command:cmd-quality-check": "cmd-api-q", "agent:agent-flow-frame": "a", "agent:agent-flow-plan": "a",
+   "agent:agent-flow-build": "a", "agent:agent-flow-sync": "a"}}]}
+JSON
+$pub "$tmp/p/bind.json" --check > "$tmp/o" 2>&1 && ok "from kit:<id> + bind giải quyết được chỗ trống" || bad "alias + bind: $(cat "$tmp/o")"
+sed 's/"command:cmd-gate1"/"command:cmd-gate9"/' "$tmp/p/bind.json" > "$tmp/p/bind-typo.json"
+expect_err "bind gõ sai khóa bị bắt" "không khớp \$ref nào" "$tmp/p/bind-typo.json"
+sed 's/"from": "kit:cmd-reject"}, {"id": "cmd-api-q"/"from": "kit:cmd-khong-co"}, {"id": "cmd-api-q"/' "$tmp/p/bind.json" > "$tmp/p/alias-bad.json"
+expect_err "alias tới bản mẫu không có" "kit không có bản mẫu" "$tmp/p/alias-bad.json"
+# argRepositories: lệnh nhận đường dẫn worktree của repository khác (kiểm tra bằng publish thật ở README của ví dụ)
+python3 - "$kit/scripts/aw-publish.py" <<'PY' && ok "argRepositories có trong aw-publish" || bad "argRepositories thiếu"
+import sys
+sys.exit(0 if "argRepositories" in open(sys.argv[1], encoding="utf-8").read() else 1)
+PY
+
 echo "== script đã nhúng thư viện chạy khi KHÔNG có AW_KIT"
 cat > "$tmp/p/demo.sh" <<'SH'
 #!/bin/sh
@@ -123,6 +143,20 @@ out=$(AW_KIT="$kit" sh "$tmp/p/demo.sh" 2>&1 >/dev/null); [ $? = 1 ] && printf '
   && ok "chạy tay với AW_KIT nạp thư viện thật" || bad "chạy tay với AW_KIT hỏng: $out"
 out=$(env -u AW_KIT sh "$tmp/p/demo.sh" 2>&1 >/dev/null); printf '%s' "$out" | grep -q "đặt AW_KIT" \
   && ok "chạy tay thiếu AW_KIT báo rõ cần đặt biến" || bad "thiếu AW_KIT mà không báo: $out"
+
+# aw_step nhận diện lỗi môi trường (AW_ENV_ERRORS) và không coi đó là lỗi code
+cat > "$tmp/p/env.sh" <<'SH'
+#!/bin/sh
+set -eu
+. "${AW_KIT:?x}/commands/lib.sh" # @aw-include
+AW_ENV_ERRORS='SELF_SIGNED_CERT|ENOTFOUND'
+aw_step "cài dependency" sh -c 'echo "npm error code SELF_SIGNED_CERT_IN_CHAIN"; exit 1'
+SH
+out=$(AW_KIT="$kit" sh "$tmp/p/env.sh" 2>&1 >/dev/null); code=$?
+[ "$code" = 1 ] && printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && ok "lỗi mạng/chứng chỉ báo là MÔI TRƯỜNG" || bad "lỗi môi trường bị coi là lỗi code: $out"
+sed -i 's/SELF_SIGNED_CERT_IN_CHAIN/Cannot find module x/' "$tmp/p/env.sh"
+out=$(AW_KIT="$kit" sh "$tmp/p/env.sh" 2>&1 >/dev/null)
+printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && bad "lỗi code bị báo nhầm là môi trường" || ok "lỗi code vẫn là lỗi code"
 
 echo "== schema"
 if python3 -c "import jsonschema" 2> /dev/null; then

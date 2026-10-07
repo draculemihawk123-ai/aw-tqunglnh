@@ -1,0 +1,36 @@
+{
+  "resources": [
+    {
+      "key": "react.structure",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "frontend"
+        ]
+      },
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Frontend nằm trọn trong thư mục frontend/ của repository: React 18+ với TypeScript, build bằng Vite, bố cục như template react-ts của Vite (package.json, vite.config.ts, tsconfig.json, index.html, src/main.tsx, src/App.tsx — tự viết các file này nếu chưa có, không cần chạy lệnh tạo project). Quản lý package bằng npm; package-lock.json do `npm install` sinh ra được giữ trong repository. Cấu trúc: src/api (client gọi backend), src/components (component hiển thị, thuần props), src/hooks (state + gọi API), src/types.ts (kiểu dùng chung). Function component + hooks, không dùng class component. TypeScript strict, không dùng any. Không sửa file nào nằm ngoài frontend/."
+    },
+    {
+      "key": "react.testing",
+      "priority": "GUIDANCE",
+      "selector": {
+        "componentTags": [
+          "frontend"
+        ]
+      },
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Test bằng Vitest + @testing-library/react + jsdom; script `npm test` trong package.json phải là `vitest run` (chạy một lần rồi thoát, không watch). Mock fetch trong test, không gọi backend thật. Mỗi component tương tác có ít nhất một test hành vi. `npm run build` (tsc + vite build) phải pass. Vitest chỉ nạp file *.test.ts(x); không để nó nạp test của công cụ khác."
+    }
+  ]
+}

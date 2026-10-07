@@ -25,9 +25,10 @@ for dir in $dirs; do
           and (.riskLevel | IN("LOW", "MEDIUM", "HIGH"))
           and (.lane | IN("fast", "full"))
           and (.behavior | type == "string" and length > 0)
+          and ((has("repository") | not) or (.repository | type == "string" and length > 0))
           and (.acceptanceCriteria | type == "array" and length > 0))
         and ([.[].id] | length == (unique | length))' "$dir/tasks.json" > /dev/null; then
-      echo "SAI SCHEMA: $dir/tasks.json (cần mảng {id T-nn duy nhất, title, pathScopes, riskLevel, lane, behavior, acceptanceCriteria})" >&2
+      echo "SAI SCHEMA: $dir/tasks.json (cần mảng {id T-nn duy nhất, title, pathScopes, riskLevel, lane, behavior, acceptanceCriteria; repository tùy chọn})" >&2
       fail=1
     else
       echo "OK: $dir — $(jq length "$dir/tasks.json") task"

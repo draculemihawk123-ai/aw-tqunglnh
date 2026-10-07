@@ -1,10 +1,16 @@
 {
   "role": "kit",
   "name": "aw-kit",
-  "version": "1.1.0",
+  "version": "1.5.0",
   "prefix": "kit-",
 
+  "layers": [
+    {"id": "layer-stack-spring-sqlite", "name": "Layer: Java 21 + Spring Boot 3.5 + SQLite + Flyway (tổng quát)", "file": "layers/layer-spring-sqlite.json"},
+    {"id": "layer-stack-react-vite", "name": "Layer: React + TypeScript + Vite (tổng quát)", "file": "layers/layer-react-vite.json"}
+  ],
+
   "skills": [
+    {"id": "skill-maker", "name": "Skill: quy trình MAKER và Definition of Done", "file": "skills/skill-maker.json"},
     {"id": "skill-feature-flow", "name": "Skill: quy trình tính năng → task", "file": "skills/skill-feature-flow.json"},
     {"id": "skill-review", "name": "Skill: review độc lập (CHECKER)", "file": "skills/skill-review.json"},
     {"id": "skill-code-review", "name": "Skill: code review có bằng chứng (CHECKER)", "file": "skills/skill-code-review.json",
@@ -14,7 +20,8 @@
 
   "scriptSkills": [
     {"id": "scripts-common", "name": "Script dùng chung cho các Command", "owner": "aw-kit",
-     "files": ["commands/reject.sh", "commands/check-feature-docs.sh", "commands/secrets-gate.sh"]}
+     "files": ["commands/reject.sh", "commands/check-feature-docs.sh", "commands/secrets-gate.sh",
+               "commands/maven-test.sh", "commands/npm-test.sh"]}
   ],
 
   "policies": [
@@ -28,6 +35,10 @@
   ],
 
   "commands": [
+    {"id": "cmd-maven-test", "name": "Command: test backend Maven", "script": "scripts-common#maven-test.sh",
+     "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-npm-test", "name": "Command: test và build frontend npm", "script": "scripts-common#npm-test.sh",
+     "network": "ALLOWED", "policies": ["policy-permission-network"]},
     {"id": "cmd-reject", "name": "Command: dừng run khi bị từ chối hoặc hết vòng sửa", "script": "scripts-common#reject.sh"},
     {"id": "cmd-check-feature-docs", "name": "Command: kiểm tra tài liệu tính năng", "script": "scripts-common#check-feature-docs.sh"},
     {"id": "cmd-secrets-gate", "name": "Command của gate: không có file bí mật", "script": "scripts-common#secrets-gate.sh",

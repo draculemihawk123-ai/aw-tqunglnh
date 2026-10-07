@@ -43,7 +43,8 @@ _hashes = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_hashes)
 
 DEFAULT_ENV_ALLOWLIST = ["PATH", "HOME", "JAVA_HOME", "MAVEN_OPTS", "JAVA_TOOL_OPTIONS",
-                         "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"]
+                         "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy",
+                         "NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE"]  # proxy và CA của mạng doanh nghiệp (npm, Maven cần)
 # Windows: chương trình nào cũng cần thêm các biến chỉ vị trí hệ thống và thư mục người dùng. aw-publish.py tự cộng
 # danh sách này vào envAllowlist của Command và của agent khi `aw version --json` báo os là windows.
 WINDOWS_ENV = ["USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot", "SystemDrive", "ComSpec", "PATHEXT",
@@ -116,15 +117,20 @@ def load_manifest(path, as_kit=False):
 
 
 def expand_from_kit(manifest, kit):
-    """{"id": "x", "from": "kit"} trong commands/gates/workflows: lấy bản mẫu cùng id của kit; field khác trong entry
-    của project ghi đè. Đường dẫn file của bản mẫu tính từ thư mục của kit."""
+    """{"id": "x", "from": "kit"} trong commands/gates/workflows: lấy bản mẫu cùng id của kit; {"id": "y", "from":
+    "kit:x"} lấy bản mẫu id x và đặt tên y (dùng một bản mẫu cho nhiều repository). Field khác trong entry của project
+    ghi đè bản mẫu. Đường dẫn file của bản mẫu tính từ thư mục của kit."""
     for section in INSTANTIATED:
         expanded = []
         for entry in manifest[section]:
-            if entry.get("from") == "kit":
-                template = next((e for e in kit[section] if e["id"] == entry["id"]), None)
+            source = entry.get("from")
+            if source is not None:
+                if source != "kit" and not source.startswith("kit:"):
+                    raise ManifestError(f"{section}/{entry['id']}: \"from\" phải là \"kit\" hoặc \"kit:<id>\", nhận {source!r}")
+                template_id = source[4:] if source.startswith("kit:") else entry["id"]
+                template = next((e for e in kit[section] if e["id"] == template_id), None)
                 if template is None:
-                    raise ManifestError(f"{section}/{entry['id']}: kit không có bản mẫu này")
+                    raise ManifestError(f"{section}/{entry['id']}: kit không có bản mẫu {template_id!r}")
                 entry = {**template, **{k: v for k, v in entry.items() if k != "from"}, "_owner": kit}
             expanded.append(entry)
         manifest[section] = expanded
@@ -152,6 +158,26 @@ def owner_of(manifest, entry):
 def kit_base(manifest):
     kit = manifest if manifest.get("role") == "kit" else manifest.get("_kit")
     return kit["_base"] if kit else None
+
+
+def rebind(node, bind):
+    """Thay mọi {"$ref": "<loại>:<id>"} có khóa nằm trong bind bằng {"$ref": "<loại>:<id mới>"}."""
+    if isinstance(node, dict):
+        if set(node) == {"$ref"}:
+            ref = node["$ref"]
+            if ref in bind:
+                return {"$ref": ref.partition(":")[0] + ":" + bind[ref]}
+            return node
+        return {k: rebind(v, bind) for k, v in node.items()}
+    if isinstance(node, list):
+        return [rebind(v, bind) for v in node]
+    return node
+
+
+def workflow_template(manifest, workflow):
+    """Template của một workflow, đã gắn lại chỗ trống theo "bind" của entry (nếu có)."""
+    template = read_json(owner_of(manifest, workflow), workflow["template"])
+    return rebind(template, workflow["bind"]) if workflow.get("bind") else template
 
 
 def read_json(manifest, rel):
@@ -327,7 +353,11 @@ def lint(manifest):
                 "SKILL": {s_["id"] for o in owners(manifest) for s_ in o["skills"] + o["scriptSkills"]},
                 "ENGINEERING_PACK": packs}
     for workflow in manifest["workflows"]:
-        template = read_json(owner_of(manifest, workflow), workflow["template"])
+        raw = read_json(owner_of(manifest, workflow), workflow["template"])
+        for key in workflow.get("bind", {}):
+            if key not in collect_refs(raw):
+                problems.append(f"workflows/{workflow['id']}: bind {key!r} không khớp $ref nào trong template")
+        template = workflow_template(manifest, workflow)
         for ref in collect_refs(template):
             if ref == "adapter":
                 if not manifest["agents"] and not is_kit:
@@ -611,11 +641,14 @@ class Publisher:
                    "timeoutSeconds": command.get("timeoutSeconds", 1800),
                    "output": {"captureStdout": True, "captureStderr": True,
                               "maxOutputBytes": command.get("maxOutputBytes", 4194304)}}
-            if command.get("repositoryArg"):
+            placeholders = ([repository] if command.get("repositoryArg") else []) + list(command.get("argRepositories", []))
+            if placeholders:
                 # Lệnh của MACHINE_GATE chạy trong một thư mục scratch: nó nhận đường dẫn worktree của repository
-                # (chỉ đọc) làm tham số thứ hai, qua một placeholder mà engine thay lúc chạy.
-                doc["argv"].append({"kind": "PLACEHOLDER", "value": repository})
-                doc["placeholderAllowlist"] = [repository]
+                # (chỉ đọc) làm tham số thứ hai, qua một placeholder mà engine thay lúc chạy. "argRepositories" thêm
+                # đường dẫn worktree của các repository KHÁC (ví dụ repo contracts) làm các tham số tiếp theo.
+                for repo_id in placeholders:
+                    doc["argv"].append({"kind": "PLACEHOLDER", "value": repo_id})
+                doc["placeholderAllowlist"] = sorted(set(placeholders))
             self.publish("COMMAND", command["id"], command.get("name"), doc)
 
         if m["gates"]:
@@ -631,7 +664,7 @@ class Publisher:
 
         print("== Workflow (scope project)")
         for workflow in m["workflows"]:
-            document = self.resolve_refs(read_json(owner_of(m, workflow), workflow["template"]))
+            document = self.resolve_refs(workflow_template(m, workflow))
             self.validate_workflow(workflow["id"], workflow.get("name"), document)
             self.publish("WORKFLOW", workflow["id"], workflow.get("name"), document, project=True)
 
@@ -717,9 +750,13 @@ def print_slots(manifest):
         "agent": {a["id"] for a in project["agents"]}, "command": {c["id"] for c in project["commands"]},
         "gate": {g["id"] for g in project["gates"]}, "pack": {p["id"] for p in project["packs"]},
         "workflow": {w["id"] for w in project["workflows"]}}
-    for workflow in kit["workflows"]:
-        print(f"{workflow['id']}  — {workflow.get('name', '')}")
-        refs = sorted({r for r in collect_refs(read_json(kit, workflow["template"])) if r != "adapter"
+    shown = [(w, read_json(kit, w["template"]), w["id"]) for w in kit["workflows"]]
+    if project is not None:  # workflow project lấy từ kit với tên khác hoặc đã gắn lại chỗ trống
+        shown += [(w, workflow_template(project, w), w["id"] + "  (bản của project)") for w in project["workflows"]
+                  if w.get("_owner") is kit and w.get("bind")]
+    for workflow, template, label in shown:
+        print(f"{label}  — {workflow.get('name', '')}")
+        refs = sorted({r for r in collect_refs(template) if r != "adapter"
                        and REF_KINDS.get(r.partition(":")[0]) in SLOT_KINDS})
         for ref in refs:
             kind_word, _, ref_id = ref.partition(":")

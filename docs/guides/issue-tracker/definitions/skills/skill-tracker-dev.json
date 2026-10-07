@@ -1,0 +1,30 @@
+{
+  "resources": [
+    {
+      "key": "dev.stack-overview",
+      "priority": "REFERENCE",
+      "selector": {},
+      "global": true,
+      "provenance": {
+        "owner": "team-platform",
+        "source": "docs/guides/issue-tracker",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "instruction": "Tổng quan hệ thống issue tracker: ba repository độc lập. `contracts` giữ hợp đồng API duy nhất (spec/openapi.json) và tài liệu tính năng (docs/features/<slug>). `api` là Java 21 + Spring Boot 3.5 + SQLite (thư mục backend/) hiện thực hợp đồng. `web` là React + TypeScript + Vite (thư mục frontend/) gọi API theo hợp đồng. Quy tắc cốt lõi: hợp đồng đi trước, api và web chỉ theo hợp đồng. Mô hình dữ liệu: Issue {id, title, description, status OPEN|IN_PROGRESS|DONE, priority LOW|MEDIUM|HIGH, assignee, createdAt, updatedAt}; sau này có Comment {id, issueId, author, body, createdAt}. Repository nào bạn được ghi (READ_WRITE) và chỉ đọc (READ_ONLY) nêu trong system prompt."
+    },
+    {
+      "key": "dev.routing-table",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {},
+      "global": true,
+      "provenance": {
+        "owner": "team-platform",
+        "source": "docs/guides/issue-tracker",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "instruction": "Bảng định tuyến context — chỉ đọc những gì khu vực thay đổi cần, theo bảng: | Khu vực | Đọc trước | — | Hợp đồng API | repository contracts: spec/openapi.json, docs/features/<slug>/02-spec.md và 03-design.md | — | Schema DB / migration | repository api: backend/src/main/resources/db/migration, entity trong backend/src/main/java/**/domain | — | Nghiệp vụ và REST | api: service/, controller/, dto/, test controller hiện có | — | API client của frontend | repository web: frontend/src/api/, frontend/src/types.ts | — | UI | web: frontend/src/components/, frontend/src/hooks/, test cạnh component | — | Quyết định kiến trúc | docs/adr/ của repository liên quan | — Không đọc toàn bộ repository; nếu bảng không đủ, ghi rõ trong plan.md đã đọc thêm gì và vì sao."
+    }
+  ]
+}

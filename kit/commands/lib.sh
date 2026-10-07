@@ -7,7 +7,8 @@
 #
 # Hợp đồng của script COMMAND (README mục 3.4): mã thoát 0 là đạt; lỗi in ra STDERR vì agent chỉ nhận 4 KiB cuối của
 # stderr; không màu (NO_COLOR=1) để mã ANSI không chiếm chỗ trong 4 KiB đó. Các hàm dưới đây thực hiện hợp đồng ấy.
-export NO_COLOR=1 CI=true
+# COLORS=false và FORCE_COLOR=0: một số thư viện (Testing Library in cây DOM khi test hỏng) không đọc NO_COLOR mà đọc COLORS.
+export NO_COLOR=1 CI=true COLORS=false FORCE_COLOR=0
 
 # aw_fail <thông báo…>: in lỗi của code ra stderr rồi thoát mã 1 (agent sẽ sửa code).
 aw_fail() { echo "$@" >&2; exit 1; }
@@ -22,10 +23,17 @@ aw_env_fail() {
 # aw_step <tên bước> <lệnh…>: chạy lệnh; đạt thì im lặng. Hỏng thì in "<AW_STEP_HEAD> '<tên>' không đạt" cùng
 # ${AW_TAIL:-60} dòng cuối của output (mỗi dòng cắt 300 ký tự) ra stderr rồi thoát mã 1.
 # AW_STEP_HEAD (mặc định "bước") là phần đầu thông báo, ví dụ "frontend: bước".
+# AW_ENV_ERRORS (regex, mặc định rỗng): output của bước hỏng khớp regex này thì đó là lỗi MÁY CHẠY (mạng, chứng chỉ), không phải
+# lỗi code: in vài dòng cuối rồi báo bằng aw_env_fail để agent không tốn vòng sửa code vô ích.
 aw_step() {
   _aw_name=$1; shift
   _aw_log=$(mktemp)
   if "$@" > "$_aw_log" 2>&1; then rm -f "$_aw_log"; return 0; fi
+  if [ -n "${AW_ENV_ERRORS:-}" ] && grep -q -E "$AW_ENV_ERRORS" "$_aw_log"; then
+    tail -n 8 "$_aw_log" | cut -c1-300 >&2
+    rm -f "$_aw_log"
+    aw_env_fail "bước '$_aw_name' không chạy được vì mạng hoặc chứng chỉ của máy chạy"
+  fi
   echo "${AW_STEP_HEAD:-bước} '$_aw_name' không đạt" >&2
   tail -n "${AW_TAIL:-60}" "$_aw_log" | cut -c1-300 >&2
   rm -f "$_aw_log"

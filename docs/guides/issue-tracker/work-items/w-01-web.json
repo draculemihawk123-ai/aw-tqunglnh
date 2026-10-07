@@ -1,0 +1,48 @@
+{
+  "title": "W-01: Giao diện quản lý issue theo hợp đồng",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {
+      "repositoryId": "web",
+      "access": "WRITE",
+      "reason": "Chỉ sửa frontend",
+      "pathScopes": [
+        "frontend"
+      ]
+    },
+    {
+      "repositoryId": "contracts",
+      "access": "READ",
+      "reason": "Đọc hợp đồng spec/openapi.json"
+    }
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Dựng frontend/ (React + TypeScript + Vite + Vitest; package.json, vite.config.ts có proxy /api tới http://localhost:8080, tsconfig, index.html, src/main.tsx, src/App.tsx) và màn hình quản lý issue theo ĐÚNG hợp đồng spec/openapi.json của repository contracts (chỉ đọc). Màn hình: form tạo issue (title, priority), danh sách issue với bộ lọc trạng thái (Tất cả, OPEN, IN_PROGRESS, DONE), đổi trạng thái từng issue, xóa issue; lỗi từ backend (schema Problem) hiển thị trường detail. Mọi lời gọi API đi qua module trong src/api, đường dẫn tương đối /api/...; không gọi endpoint nào ngoài hợp đồng.",
+    "verificationSpec": "COMMAND web-test chạy `npm ci`/`npm install`, `npm test` và `npm run build` trong frontend/ và COMMAND web-conformance kiểm đường dẫn /api trong code; cả hai phải thoát mã 0.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {
+        "description": "Có khung frontend chạy được: npm test (vitest run) và npm run build đều pass",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "Tạo issue gọi POST /api/issues và xuất hiện ngay trong danh sách; không cho gửi title rỗng",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "Bộ lọc trạng thái gọi GET /api/issues?status=...; đổi trạng thái gọi PATCH /api/issues/{id}/status; xóa gọi DELETE /api/issues/{id}",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "Lỗi dạng Problem từ backend hiển thị detail; mỗi hành vi có test Vitest với fetch được mock",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "web-conformance PASS: mọi đường dẫn /api trong code đều có trong hợp đồng",
+        "verificationRef": "COMMAND_EXECUTION"
+      }
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "title": "A-01: Backend quản lý issue theo hợp đồng",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {
+      "repositoryId": "api",
+      "access": "WRITE",
+      "reason": "Chỉ sửa backend",
+      "pathScopes": [
+        "backend"
+      ]
+    },
+    {
+      "repositoryId": "contracts",
+      "access": "READ",
+      "reason": "Đọc hợp đồng spec/openapi.json"
+    }
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Hiện thực backend theo ĐÚNG hợp đồng spec/openapi.json của repository contracts (chỉ đọc): sáu operation listIssues, createIssue, getIssue, updateIssue, changeIssueStatus, deleteIssue. Lưu Issue vào SQLite bằng migration mới backend/src/main/resources/db/migration/V2__create_issues.sql (bảng issues; không sửa V1). status mặc định OPEN, priority mặc định MEDIUM; createdAt và updatedAt do server đặt (ISO-8601 UTC), PUT và PATCH status cập nhật updatedAt. GET /api/issues sắp theo id tăng và lọc theo ?status. Title rỗng, chỉ có khoảng trắng hoặc dài quá 200 ký tự trả 400; id không tồn tại trả 404; cả hai trả ProblemDetail đúng schema Problem. Không thêm endpoint nào ngoài hợp đồng.",
+    "verificationSpec": "COMMAND api-test chạy `mvn -B test` trong backend/ và COMMAND api-conformance so route trong code với hợp đồng; cả hai phải thoát mã 0.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {
+        "description": "Mỗi operation trong hợp đồng có controller tương ứng, đúng path, method, mã trạng thái và tên trường JSON",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "Dữ liệu lưu qua Flyway V2 và SQLite; createdAt, updatedAt do server đặt; PATCH status đổi updatedAt",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "Title rỗng, toàn khoảng trắng hoặc dài hơn 200 ký tự trả 400 và id không tồn tại trả 404, đều là ProblemDetail",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "Mỗi hành vi, kể cả đường lỗi 400 và 404, có test tự động; không có test nào bị tắt",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "api-conformance PASS: không thiếu và không thừa route so với hợp đồng",
+        "verificationRef": "COMMAND_EXECUTION"
+      }
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

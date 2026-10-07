@@ -1,0 +1,19 @@
+{
+  "openapi": "3.0.3",
+  "info": {"title": "Issue Tracker API", "version": "0.1.0"},
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Problem": {
+        "type": "object",
+        "required": ["type", "title", "status"],
+        "properties": {
+          "type": {"type": "string"},
+          "title": {"type": "string"},
+          "status": {"type": "integer"},
+          "detail": {"type": "string"}
+        }
+      }
+    }
+  }
+}

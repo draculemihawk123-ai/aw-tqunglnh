@@ -1,0 +1,42 @@
+{
+  "title": "R-01: Review độc lập A-01 và W-01",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {
+      "repositoryId": "api",
+      "access": "READ",
+      "reason": "Chỉ đọc để review"
+    },
+    {
+      "repositoryId": "web",
+      "access": "READ",
+      "reason": "Chỉ đọc để review"
+    },
+    {
+      "repositoryId": "contracts",
+      "access": "READ",
+      "reason": "Đọc hợp đồng làm chuẩn"
+    }
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Review độc lập phần hiện thực backend (repository api, thư mục backend/) và frontend (repository web, thư mục frontend/) của issue tracker, đối chiếu với hợp đồng spec/openapi.json của repository contracts và với acceptance criteria của hai task A-01 và W-01 dưới đây.",
+    "verificationSpec": "Reviewer chỉ đọc và báo cáo theo mức nghiêm trọng; người vận hành quyết định ở cổng review.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {
+        "description": "Backend: mỗi operation trong hợp đồng được hiện thực đúng path, method, mã trạng thái, tên trường; title rỗng hoặc dài hơn 200 ký tự trả 400, id không tồn tại trả 404 dạng Problem; mỗi hành vi có test, kể cả đường lỗi; không test nào bị tắt",
+        "verificationRef": "AGENT_EXECUTION"
+      },
+      {
+        "description": "Frontend: mọi lời gọi API khớp hợp đồng; tạo, lọc, đổi trạng thái, xóa hoạt động; lỗi Problem hiển thị detail; mỗi hành vi có test",
+        "verificationRef": "AGENT_EXECUTION"
+      },
+      {
+        "description": "Không có endpoint, tính năng hay file ngoài phạm vi của hai task",
+        "verificationRef": "AGENT_EXECUTION"
+      }
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

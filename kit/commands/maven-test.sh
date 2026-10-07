@@ -1,0 +1,28 @@
+#!/bin/sh
+# COMMAND "maven-test": chạy test của backend Maven trong thư mục backend/ của worktree (gốc worktree là thư mục làm việc).
+# Khi test đỏ, agent được gửi lại 4 KiB cuối của STDERR (checkFailures.why). Maven in lỗi ra stdout, nên script gom output
+# lại và in phần lỗi cô đọng ra stderr; báo cáo chi tiết nằm ở backend/target/surefire-reports.
+set -eu
+. "${AW_KIT:?đặt AW_KIT=<thư mục kit> khi chạy tay}/commands/lib.sh" # @aw-include
+[ -f backend/pom.xml ] || aw_fail "maven-test: không có backend/pom.xml"
+cd backend
+mvn=mvn
+[ -x ./mvnw ] && mvn=./mvnw
+log=$(mktemp)
+if "$mvn" -B -q test > "$log" 2>&1; then
+  rm -f "$log"
+  echo "backend: test PASS"
+  exit 0
+fi
+# Maven không tải được dependency (mạng, chứng chỉ) là lỗi của máy chạy, không phải lỗi code.
+if grep -q -E 'PKIX path|Could not transfer artifact|UnknownHostException|Connection (timed out|refused)|Temporary failure in name resolution|Network is unreachable' "$log"; then
+  grep -E 'PKIX path|Could not transfer artifact|UnknownHostException|Connection (timed out|refused)|Temporary failure|Network is unreachable' "$log" | head -n 4 | cut -c1-300 >&2
+  rm -f "$log"
+  aw_env_fail "Maven không tải được dependency (mạng hoặc chứng chỉ của máy chạy)"
+fi
+grep -E '^\[ERROR\]' "$log" \
+  | grep -v -E 'Re-run Maven|For more information|\[Help 1\]|See dump files|To see the full stack trace|^\[ERROR\] *$' \
+  | cut -c1-400 | head -n 40 >&2 || true
+echo "Chi tiết từng test: backend/target/surefire-reports/*.txt" >&2
+rm -f "$log"
+exit 1

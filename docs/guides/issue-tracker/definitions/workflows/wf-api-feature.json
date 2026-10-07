@@ -1,0 +1,200 @@
+{
+ "schemaVersion": "1",
+ "nodes": [
+  {
+   "key": "start",
+   "type": "START",
+   "outcomes": [
+    "next"
+   ]
+  },
+  {
+   "key": "needs-info",
+   "type": "APPROVAL",
+   "outcomes": [
+    "provided",
+    "abandon"
+   ],
+   "approval": {
+    "authorizedRoles": [
+     "operator"
+    ],
+    "timeoutSeconds": 604800,
+    "escalationOutcome": "abandon"
+   },
+   "cyclePolicy": {
+    "maxIterations": 3,
+    "escalationOutcome": "abandon"
+   }
+  },
+  {
+   "key": "implement",
+   "type": "AGENT",
+   "outcomes": [
+    "done",
+    "needs_info",
+    "escalated"
+   ],
+   "agent": {
+    "profileRef": {
+     "$ref": "agent:agent-api"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt"
+     },
+     {
+      "$ref": "policy:policy-permission-multirepo"
+     }
+    ],
+    "adapterBuildId": {
+     "$ref": "adapter"
+    },
+    "role": "MAKER"
+   },
+   "cyclePolicy": {
+    "maxIterations": 4,
+    "escalationOutcome": "escalated"
+   }
+  },
+  {
+   "key": "test",
+   "type": "COMMAND",
+   "outcomes": [
+    "passed",
+    "failed"
+   ],
+   "command": {
+    "commandRef": {
+     "$ref": "command:cmd-api-test"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission-multirepo"
+     }
+    ],
+    "failureOutcome": "failed"
+   }
+  },
+  {
+   "key": "conformance",
+   "type": "COMMAND",
+   "outcomes": [
+    "passed",
+    "failed"
+   ],
+   "command": {
+    "commandRef": {
+     "$ref": "command:cmd-api-conformance"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission-multirepo"
+     }
+    ],
+    "failureOutcome": "failed"
+   }
+  },
+  {
+   "key": "reject",
+   "type": "COMMAND",
+   "outcomes": [
+    "done"
+   ],
+   "command": {
+    "commandRef": {
+     "$ref": "command:cmd-reject"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission-multirepo"
+     }
+    ]
+   }
+  },
+  {
+   "key": "end",
+   "type": "END"
+  }
+ ],
+ "edges": [
+  {
+   "key": "start-implement",
+   "from": "start",
+   "outcome": "next",
+   "to": "implement"
+  },
+  {
+   "key": "implement-test",
+   "from": "implement",
+   "outcome": "done",
+   "to": "test"
+  },
+  {
+   "key": "implement-escalated-reject",
+   "from": "implement",
+   "outcome": "escalated",
+   "to": "reject"
+  },
+  {
+   "key": "test-conformance",
+   "from": "test",
+   "outcome": "passed",
+   "to": "conformance"
+  },
+  {
+   "key": "test-failed-implement",
+   "from": "test",
+   "outcome": "failed",
+   "to": "implement"
+  },
+  {
+   "key": "conformance-end",
+   "from": "conformance",
+   "outcome": "passed",
+   "to": "end"
+  },
+  {
+   "key": "conformance-failed-implement",
+   "from": "conformance",
+   "outcome": "failed",
+   "to": "implement"
+  },
+  {
+   "key": "reject-end",
+   "from": "reject",
+   "outcome": "done",
+   "to": "end"
+  },
+  {
+   "key": "implement-needs-info",
+   "from": "implement",
+   "outcome": "needs_info",
+   "to": "needs-info"
+  },
+  {
+   "key": "needs-info-implement",
+   "from": "needs-info",
+   "outcome": "provided",
+   "to": "implement"
+  },
+  {
+   "key": "needs-info-reject",
+   "from": "needs-info",
+   "outcome": "abandon",
+   "to": "reject"
+  }
+ ],
+ "completionPolicyRef": {
+  "$ref": "policy:policy-completion"
+ }
+}
