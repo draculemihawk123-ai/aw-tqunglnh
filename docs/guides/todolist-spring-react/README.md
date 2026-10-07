@@ -13,6 +13,10 @@ máy kiểm tra, người duyệt, `aw` ghi lại bằng chứng và tạo commi
 - **Phần 4** là công việc hằng ngày: viết task, chạy, duyệt, commit, merge.
 - **Phần 5 và [operations.md](operations.md)** là vận hành: thay đổi quy trình, xem trạng thái, xử lý sự cố, bảo trì.
 
+> Muốn xem một ví dụ **phức tạp hơn dùng gần như mọi cơ chế của `aw`** (ba repository, hợp đồng làm gốc, task song song,
+> reviewer độc lập, đổi yêu cầu giữa chừng, kiểm tra nhánh chính có chờ CI) thì đọc
+> [../issue-tracker/README.md](../issue-tracker/README.md).
+
 Bộ công cụ dùng chung **không nằm trong thư mục này** mà nằm ở [`kit/`](../../../kit/README.md) của repo `aw`: script
 vận hành (`init-project.sh`, `aw-publish.py`, `run-task.sh`…), policy, hai skill chung, ba script lệnh chung, hai workflow
 chung và thư viện hàm cho script lệnh. Thư mục này chỉ giữ phần **riêng của todolist**: [`aw-project.json`](aw-project.json)

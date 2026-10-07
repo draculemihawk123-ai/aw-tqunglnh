@@ -10,7 +10,7 @@ phải để AI tự viết lại script cho từng project (mỗi lần viết 
 |---|---|
 | Layer (quy ước của stack), lệnh test cụ thể, contract của task, tri thức riêng (bảng định tuyến…) | Script vận hành, `aw-publish.py`, thư viện cho script lệnh, policy, skill chung, workflow mẫu |
 
-Tài liệu này chỉ nói về kho. Ví dụ đầy đủ một project dùng kho: [docs/guides/todolist-spring-react](../docs/guides/todolist-spring-react/README.md).
+Tài liệu này chỉ nói về kho. Ví dụ đầy đủ một project dùng kho: [docs/guides/todolist-spring-react](../docs/guides/todolist-spring-react/README.md). Ví dụ nhiều repository (hợp đồng, api, web; dùng `bind`, `from kit:<id>`, `argRepositories`): [docs/guides/issue-tracker](../docs/guides/issue-tracker/README.md).
 
 ## Mục lục
 
