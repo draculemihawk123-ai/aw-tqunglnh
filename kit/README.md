@@ -38,7 +38,7 @@ kit/
 │   ├── lib.sh                  # thư viện cho script lệnh (mục 4)
 │   └── reject.sh  check-feature-docs.sh  secrets-gate.sh
 ├── policies/                   # attempt(-once), permission(-network), completion(-reviewed, -feature)
-├── skills/                     # skill-feature-flow, skill-maker, skill-review, skill-code-review, skill-dev-rules, skill-ask, skill-brainstorm
+├── skills/                     # skill-feature-flow, skill-maker, skill-review, skill-code-review, skill-dev-rules, skill-ask, skill-brainstorm, skill-spec
 ├── workflows/                  # wf-feature-definition, wf-task-delivery (mẫu, có chỗ trống cho project điền)
 ├── schema/aw-project.schema.json   # đặc tả của aw-project.json và kit.json
 ├── drafts/                     # bản nháp do import-skill.py sinh (git bỏ qua, không bao giờ publish)

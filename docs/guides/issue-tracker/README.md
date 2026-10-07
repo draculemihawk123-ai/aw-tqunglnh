@@ -225,7 +225,7 @@ Toàn bộ định nghĩa nằm trong một file khai báo, [`aw-project.json`](
 - **Pack** gán Layer vào component: `pack-contracts → spec`, `pack-api → backend`, `pack-web → frontend`. Đây là cách
   một agent nhận đúng tri thức mà không ai phải liệt kê tay trong từng task.
 - **Agent** (mỗi cái một `CONTEXT policy` = danh sách resource của riêng nó): `agent-contract`, `agent-api`, `agent-web`,
-  `agent-reviewer` (không nhận quy trình viết code của `skill-maker`; nhận Layer, skill review và `rules.threat-model`) và bảy agent của luồng định nghĩa tính năng. Mọi agent nhận thêm `rules.decisions` và `rules.finish` (skill `skill-dev-rules` của kit); agent viết code nhận thêm `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`; agent có thể hỏi người nhận `ask.analysis-first`, `ask.question-groups` (skill `skill-ask`). Agent BRAINSTORM nhận thêm `skill-brainstorm` (vấn đề gốc, phương án, giả định). Các skill này chắt lọc từ ClaudeKit, xem `origin` trong `kit.json`.
+  `agent-reviewer` (không nhận quy trình viết code của `skill-maker`; nhận Layer, skill review và `rules.threat-model`) và bảy agent của luồng định nghĩa tính năng. Mọi agent nhận thêm `rules.decisions` và `rules.finish` (skill `skill-dev-rules` của kit); agent viết code nhận thêm `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`; agent có thể hỏi người nhận `ask.analysis-first`, `ask.question-groups` (skill `skill-ask`). Agent BRAINSTORM nhận thêm `skill-brainstorm` (vấn đề gốc, phương án, giả định), agent SPEC nhận `skill-spec` (thách thức phạm vi, phủ tình huống). Các skill này chắt lọc từ ClaudeKit, xem `origin` trong `kit.json`.
 - **Command và Gate**: lệnh nào thuộc repository nào được khai ở đây. Script riêng (`contract-lint.sh`, `api-conformance.sh`…)
   nằm ở [`commands/`](commands); ba script chung (`secrets-gate`, `reject`, `check-feature-docs`) và hai runner
   `cmd-maven-test`/`cmd-npm-test` lấy từ kit. Có **ba gate bí mật** (một mỗi repository) và một gate `spec hợp lệ`.
@@ -408,7 +408,17 @@ review-task.sh 4dd24e8c-… approved "Spec đủ, duyệt"
 ```
 
 Spec do agent viết có cả các hạn chế đã biết (BR-12: chưa có xác thực nên ai cũng xóa được mọi bình luận) và phạm vi
-**ngoài** (sửa bình luận, phân trang): người duyệt đọc những dòng này, không chỉ đọc phần "sẽ làm". Sau GATE B, commit
+**ngoài** (sửa bình luận, phân trang): người duyệt đọc những dòng này, không chỉ đọc phần "sẽ làm".
+
+**Checklist cho người duyệt GATE A** (đọc `02-spec.md`; duyệt `approved`, hoặc `revise` kèm phản hồi cụ thể):
+
+1. **Phạm vi và lý do**: spec nêu cái gì đã có, thay đổi tối thiểu và chế độ phạm vi (giữ, thu hẹp, mở rộng) mà agent chọn. Bạn đồng ý với chế độ đó không? Phần "ngoài phạm vi" có đúng ý bạn không?
+2. **Quyết định agent tự chốt**: mỗi quyết định ghi rõ ai chốt. Cái nào là của agent mà bạn chưa đồng ý thì `revise` ngay ở đây, vì thiết kế và task sẽ dựa vào nó.
+3. **Acceptance criteria**: có đường lỗi và giá trị biên (rỗng, dài tối đa, không tồn tại) hay chỉ có đường thành công? Mỗi AC có kiểm chứng được bằng một test tự động không?
+4. **Tình huống bị bỏ**: mục "Hạn chế đã biết" liệt kê các tình huống không thành AC. Có cái nào bạn thấy phải thành AC không?
+5. **Quy tắc và AC khớp nhau**: mỗi quy tắc nghiệp vụ có ít nhất một AC; không có hai AC mâu thuẫn.
+
+Sau GATE B, commit
 tài liệu rồi chia việc:
 
 ```bash
