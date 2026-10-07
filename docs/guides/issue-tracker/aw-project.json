@@ -53,7 +53,7 @@
                    "skill-tracker-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model"]},
 
     {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm", "skill-tracker-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish"]},
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm", "skill-tracker-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-brainstorm#brainstorm.scout-first", "skill-brainstorm#brainstorm.problem-first", "skill-brainstorm#brainstorm.options", "skill-brainstorm#brainstorm.assumptions", "skill-brainstorm#brainstorm.exact-requirements", "skill-brainstorm#brainstorm.unstuck"]},
     {"id": "agent-flow-spec", "name": "Agent: SPEC",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec",
                    "skill-tracker-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups"]},

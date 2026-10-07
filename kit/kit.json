@@ -21,7 +21,10 @@
      "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
     {"id": "skill-ask", "name": "Skill: hỏi người đúng cách (chắt lọc từ ClaudeKit)", "file": "skills/skill-ask.json",
      "origin": "claudekit-engineer@ed8a1fa (rules/CLAUDE.md, skills/ck-plan/references/validate-question-framework; viết lại cho aw)",
-     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false}
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
+    {"id": "skill-brainstorm", "name": "Skill: BRAINSTORM — vấn đề gốc trước giải pháp (chắt lọc từ ClaudeKit)", "file": "skills/skill-brainstorm.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/brainstorm, skills/problem-solving; ý tưởng problem-first của prodmgmt.world; viết lại cho aw)",
+     "license": "MIT (skills/brainstorm); ClaudeKit-Proprietary (licensed) (skills/problem-solving)", "redistributable": false}
   ],
 
   "scriptSkills": [

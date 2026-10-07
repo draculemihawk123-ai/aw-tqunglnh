@@ -902,6 +902,8 @@ Skill ([`definitions/skills/`](definitions/skills/)):
 | `skill-dev-rules` (kit, chắt lọc từ ClaudeKit) | `rules.no-shortcuts` (HARD_CONSTRAINT, `MAKER`) | Làm hành vi thật; không mock, tắt hay làm yếu test để qua kiểm tra; giữ hợp đồng công khai; không để bí mật vào code |
 | | `rules.decisions` (HARD_CONSTRAINT, global) | Không lặng lẽ đảo quyết định người dùng đã chốt; điều đã kiểm chứng chỉ đổi khi có bằng chứng mới |
 | | `rules.principles`, `rules.stable-artifacts`, `rules.threat-model`, `rules.finish` | YAGNI, KISS, DRY và bám pattern có sẵn; không đưa mã task hay finding vào code; xác định mối đe dọa thật trước khi sửa; cách kết thúc (`done` kèm "Điểm còn lo ngại", `needs_info`, `escalated`) |
+| `skill-brainstorm` (kit, chắt lọc từ ClaudeKit) | `brainstorm.scout-first`, `brainstorm.problem-first`, `brainstorm.options`, `brainstorm.exact-requirements` (REQUIRED_PROCEDURE) | Đọc hiện trạng trước; tìm vấn đề gốc thay vì nhận ngay giải pháp; 2 đến 4 phương án thật sự khác nhau, có bản tối thiểu; yêu cầu và câu hỏi mở phải cụ thể |
+| | `brainstorm.assumptions`, `brainstorm.unstuck` (GUIDANCE) | Giả định kèm rủi ro, cách kiểm chứng và trạng thái bằng chứng; cách gỡ khi phương án ngày càng phức tạp |
 | `skill-ask` (kit, chắt lọc từ ClaudeKit) | `ask.analysis-first` (REQUIRED_PROCEDURE), `ask.question-groups` (GUIDANCE) | Đọc repository và viết phân tích trước khi hỏi; 2 đến 4 phương án tự đứng được; gom câu hỏi theo nhóm |
 
 Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-project.json)):
@@ -910,7 +912,7 @@ Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-projec
 |---|---|---|---|
 | `agent-dev` | `implement` của ba workflow rút gọn | sonnet | Ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts` |
 | `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.threat-model` |
-| `agent-flow-brainstorm` | `brainstorm` | opus | `flow.working-rules`, `flow.brainstorm`, `dev.stack-overview`, `rules.decisions`, `rules.finish` |
+| `agent-flow-brainstorm` | `brainstorm` | opus | `flow.working-rules`, `flow.brainstorm`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `brainstorm.*` |
 | `agent-flow-spec` | `spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `ask.*` |
 | `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `rules.threat-model` |
 | `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame`, `rules.decisions`, `rules.finish`, `ask.*` |

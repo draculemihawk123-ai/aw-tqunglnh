@@ -31,12 +31,12 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Giai đoạn của bạn: BRAINSTORM. File duy nhất được tạo hoặc sửa: <thư mục tài liệu>/01-brainstorm.md. Không sửa code, không viết spec hay thiết kế. Đầu vào: ý tưởng thô trong taskContract.behavior và messages. Đọc code và tài liệu hiện có để hiểu hệ thống. Nội dung 01-brainstorm.md: (1) vấn đề và người dùng bị ảnh hưởng, nói lại bằng lời của bạn; (2) 2–4 phương án, mỗi phương án có mô tả, ưu điểm, nhược điểm, rủi ro, ước lượng công sức (S/M/L) và phần của hệ thống bị ảnh hưởng (ví dụ backend, frontend, cơ sở dữ liệu); (3) phương án đề xuất và lý do; (4) câu hỏi mở.",
+      "instruction": "Giai đoạn của bạn: BRAINSTORM. File duy nhất được tạo hoặc sửa: <thư mục tài liệu>/01-brainstorm.md. Không sửa code, không viết spec hay thiết kế. Đầu vào: ý tưởng thô trong taskContract.behavior và messages. Đọc code và tài liệu hiện có để hiểu hệ thống. Nội dung 01-brainstorm.md, theo thứ tự: (1) hiện trạng của phần hệ thống liên quan, từ việc bạn đã đọc; (2) vấn đề gốc và người dùng bị ảnh hưởng, nói lại bằng lời của bạn; (3) giả định và trạng thái bằng chứng của chúng; (4) 2–4 phương án, mỗi phương án có mô tả, ưu điểm, nhược điểm, rủi ro, ước lượng công sức (S/M/L) và phần của hệ thống bị ảnh hưởng (ví dụ backend, frontend, cơ sở dữ liệu); (5) phương án đề xuất và lý do; (6) yêu cầu cụ thể (đầu ra, phạm vi, ràng buộc) và câu hỏi mở.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v4",
-        "lastVerified": "2026-10-06T00:00:00Z"
+        "revision": "v5",
+        "lastVerified": "2026-10-07T00:00:00Z"
       }
     },
     {
