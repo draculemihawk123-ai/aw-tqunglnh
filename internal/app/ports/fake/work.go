@@ -402,6 +402,26 @@ func (w *WorkRepository) QuarantineRepositoryWorkspace(_ context.Context, update
 	return fmt.Errorf("fake: %w: repository workspace %s", ports.ErrPersistenceNotFound, update.RepositoryWorkspaceID)
 }
 
+// AdvanceRepositoryWorkspaceRevision mirrors sqlite's
+// workRepository.AdvanceRepositoryWorkspaceRevision (V9-16): a fenced
+// READY@version CAS that replaces CurrentRevision and bumps Version.
+func (w *WorkRepository) AdvanceRepositoryWorkspaceRevision(_ context.Context, update ports.AdvanceRepositoryWorkspaceRevisionUpdate) error {
+	for key, rw := range w.repositoryWorkspaces {
+		if string(rw.ID) != string(update.RepositoryWorkspaceID) {
+			continue
+		}
+		if rw.State != workspace.RepositoryWorkspaceReady || rw.Version != update.ExpectedVersion {
+			return fmt.Errorf("fake: %w: repository workspace %s expected READY@%d",
+				ports.ErrOptimisticConflict, update.RepositoryWorkspaceID, update.ExpectedVersion)
+		}
+		rw.CurrentRevision = update.Revision
+		rw.Version++
+		w.repositoryWorkspaces[key] = rw
+		return nil
+	}
+	return fmt.Errorf("fake: %w: repository workspace %s", ports.ErrPersistenceNotFound, update.RepositoryWorkspaceID)
+}
+
 // ListWorkspaceSetRepositoryWorkspaces mirrors sqlite's
 // listWorkspaceSetRepositoryWorkspacesTx, ordered by (RepositoryID,
 // Generation) for a stable, deterministic result a test can assert on

@@ -95,6 +95,24 @@ are masked); the same field is in `GET /runs/{id}/timeline`. Either widen the Wo
 expansion, or fix the agent/skill so it stays inside the paths it was granted. An attempt that failed this way
 before the field existed has the failure code but no `failureDetail`.
 
+## An agent attempt `FAILED` with `EXECUTION_FAILED` and the provider said why (V9-20)
+
+When the provider CLI itself reports that the run failed — a session or usage limit ("You've hit your limit ·
+resets 5pm"), an authentication problem, a refused request — the attempt ends `FAILED` / `EXECUTION_FAILED`, and
+`aw run timeline <runId>` (and `GET /runs/{id}/timeline`) now shows the provider's own words as the attempt's
+`failureDetail`:
+
+```
+# "failureCode": "EXECUTION_FAILED",
+# "failureDetail": "Claude reported a failed result: You've hit your limit · resets 5pm"
+```
+
+The text is the CLI's reason, whitespace collapsed, cut at 500 characters and redacted like every stored event. A
+session limit is not something to fix in the task: wait for the reset, then run again (`retry-task` in the guides, or
+`aw run start` with the same workflow version once the `RUN_FAILED` blocker is resolved). An attempt that failed
+before V9-20 has the code but no detail, and so does a failure the provider did not report itself (a crash, a
+timeout).
+
 ## A COMMAND or gate failed — where is the reason?
 
 ```bash
@@ -199,7 +217,10 @@ so its messages, evidence and history stay in one place:
    must not see, before the next step.
 3. **Resolve the blocker**: `aw blocker resolve --mode RESOLVED --reason "<why it is fine to run again>" <blockerId>`.
    The WorkItem becomes `READY`. The preconditions are the ones every blocker has: no run of the WorkItem still in
-   progress and no `QUARANTINED` repository workspace in its family (`aw repository-workspace show`).
+   progress and no `QUARANTINED` repository workspace in its family (`aw repository-workspace show`) — the newest
+   generation of each repository is the one that counts, so after `aw repository-workspace reconcile` recreated it
+   ([06-source-control-and-releases.md](06-source-control-and-releases.md#a-quarantined-worktree-and-how-it-is-recovered-v9-18))
+   the old quarantined row no longer blocks.
 4. **Start the next run**: `aw run start --workflow-version-id <the same workflow version> --idempotency-key <new key> <workItemId>`.
 
 What does not change:
@@ -223,6 +244,30 @@ What does not change:
 and the task header show the run count (`runCount`). The count on the board is projected like the rest of the card:
 after an upgrade from a build older than V9-06, run `aw projection rebuild --project-id <id> --projection-name workitem` once so the cards of WorkItems that
 already ran show their count (see [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md)); `runs` is always exact.
+
+## The worker died (or was killed) while an agent was writing (V9-19)
+
+When a worker stops without cleaning up — the process was killed, the machine rebooted — the attempt it was running
+cannot report anything. Once the worker's job lease runs out (`--lease-ttl`, 30 s by default) the recovery sweep ends
+that attempt as `INDETERMINATE` / `OWNERSHIP_LOST_MUTATING` (it held the repository's write lease, so aw cannot assume
+nothing was written) and the run goes on with a new attempt, or ends `FAILED` if the node has no attempts left.
+
+The write lease the dead attempt held is **taken over as soon as the sweep has ended that attempt**: the next attempt
+(automatic or `retry-task`) gets the worktree right away. Before V9-19 the lease was kept for the node's whole
+`timeoutSeconds` plus 2 minutes, so every retry failed with `CONFLICT` ("repository workspace already has an active
+writer") for that long — 32 minutes for a 30-minute agent timeout. A lease whose attempt is still `RUNNING` is not taken
+over, whatever its age.
+
+What to check after a crash:
+
+- **The worktree.** Nothing resets it. If the agent had already changed files, the next attempt starts from them;
+  `aw repository-workspace diff` shows what is there, and `git checkout -- .` / `git clean -fd` in the worktree
+  discards it. If the agent had committed on its own, HEAD moved and the worktree is `QUARANTINED` instead — see
+  [06-source-control-and-releases.md](06-source-control-and-releases.md#a-quarantined-worktree-and-how-it-is-recovered-v9-18).
+- **A stray agent process (Linux and macOS).** On Windows an agent process dies with the worker that started it (the
+  worker's job object). On Linux and macOS a worker killed with `SIGKILL` can leave its agent process running, and aw
+  does not look for it: the takeover assumes the attempt is gone. Look for the orphan (`ps` for the provider CLI,
+  working directory = the worktree) and stop it before the retry if one is there.
 
 ## `run start` fails with "work item is not READY"
 

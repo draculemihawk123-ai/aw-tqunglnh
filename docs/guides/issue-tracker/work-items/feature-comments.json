@@ -1,0 +1,41 @@
+{
+  "title": "F-00: Định nghĩa tính năng bình luận trên issue",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {
+      "repositoryId": "contracts",
+      "access": "WRITE",
+      "reason": "Giai đoạn định nghĩa chỉ viết tài liệu",
+      "pathScopes": [
+        "docs"
+      ]
+    },
+    {
+      "repositoryId": "api",
+      "access": "READ",
+      "reason": "Đọc code api hiện có để thiết kế"
+    },
+    {
+      "repositoryId": "web",
+      "access": "READ",
+      "reason": "Đọc code web hiện có để thiết kế"
+    }
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Thư mục tài liệu: docs/features/comments (trong repository contracts). Ý tưởng thô (INTAKE): người dùng muốn bình luận trên từng issue: thêm bình luận (tác giả và nội dung), xem danh sách bình luận của một issue theo thời gian, xóa một bình luận. Hệ thống có ba repository: contracts (hợp đồng), api, web. Khi chia task trong tasks.json, mỗi task ghi trường \"repository\" và chia thành đúng ba task theo thứ tự: T-01 hợp đồng (repository contracts, pathScopes [\"spec\"]), T-02 backend (repository api, pathScopes [\"backend\"]), T-03 frontend (repository web, pathScopes [\"frontend\"]). Thay đổi hợp đồng phải chỉ cộng thêm.",
+    "verificationSpec": "COMMAND check-docs xác nhận 01-brainstorm.md, 02-spec.md, 03-design.md và tasks.json hợp lệ; người vận hành duyệt SPEC ở GATE A và DESIGN ở GATE B.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {
+        "description": "02-spec.md có quy tắc nghiệp vụ và acceptance criteria Given/When/Then, được duyệt ở GATE A",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "03-design.md và tasks.json (ba task T-01, T-02, T-03, mỗi task một repository) được duyệt ở GATE B",
+        "verificationRef": "COMMAND_EXECUTION"
+      }
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

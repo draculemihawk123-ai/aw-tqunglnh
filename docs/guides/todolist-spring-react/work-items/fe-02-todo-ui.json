@@ -1,0 +1,20 @@
+{
+  "title": "FE-02: Giao diện quản lý todo",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {"repositoryId": "todolist", "access": "WRITE", "reason": "Chỉ sửa frontend", "pathScopes": ["frontend"]}
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Xây dựng màn hình todolist trong frontend/: ô nhập + nút Thêm, danh sách todo (checkbox đánh dấu hoàn thành, nút Xóa), bộ lọc Tất cả / Đang làm / Đã xong và bộ đếm số việc còn lại. Mọi thao tác gọi backend qua src/api/todos.ts đúng hợp đồng /api/todos; lỗi từ backend hiển thị thành thông báo.",
+    "verificationSpec": "COMMAND node verify chạy `npm ci && npm test && npm run build` trong frontend/ và phải thoát với mã 0; evidence COMMAND_EXECUTION có verdict PASS.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {"description": "Thêm todo mới gọi POST /api/todos và hiển thị ngay trong danh sách; không cho thêm title rỗng", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "Click checkbox gọi PATCH /api/todos/{id}/toggle; nút Xóa gọi DELETE /api/todos/{id}", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "Bộ lọc Tất cả / Đang làm / Đã xong và bộ đếm việc còn lại hoạt động đúng", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "Mỗi hành vi trên có test Vitest + Testing Library với fetch được mock", "verificationRef": "COMMAND_EXECUTION"}
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "prefix": "trk-",
+  "repository": "contracts",
+  "kit": {"path": "../../../kit/kit.json", "version": "1"},
+  "provider": {"key": "claude", "model": "sonnet", "configIdentity": "trk-claude", "envAllowlist": ["HOME", "PATH"]},
+  "contextBudgetBytes": 65536,
+  "messageBudget": {"maxBytes": 32768, "keepLatest": 2},
+
+  "layers": [
+    {"id": "layer-openapi-contract", "name": "Layer: hợp đồng OpenAPI (repo contracts)", "file": "definitions/layers/layer-openapi-contract.json"},
+    {"id": "layer-api-contract-first", "name": "Layer: api theo hợp đồng (repo api)", "file": "definitions/layers/layer-api-contract-first.json"},
+    {"id": "layer-web-contract-first", "name": "Layer: web theo hợp đồng (repo web)", "file": "definitions/layers/layer-web-contract-first.json"}
+  ],
+
+  "skills": [
+    {"id": "skill-tracker-dev", "name": "Skill: tri thức riêng của issue tracker", "file": "definitions/skills/skill-tracker-dev.json"}
+  ],
+
+  "scriptSkills": [
+    {"id": "scripts", "name": "Script cho các Command của issue tracker", "owner": "team-platform",
+     "files": ["commands/contract-lint.sh", "commands/contract-compat.sh", "commands/api-conformance.sh",
+               "commands/web-conformance.sh", "commands/contract-valid-gate.sh"]}
+  ],
+
+  "packs": [
+    {"id": "pack-contracts", "name": "Pack: hợp đồng OpenAPI", "repository": "contracts",
+     "include": ["layer-openapi-contract"], "assignTo": ["spec"]},
+    {"id": "pack-api", "name": "Pack: api (Spring Boot + SQLite)", "repository": "api",
+     "include": ["layer-stack-spring-sqlite", "layer-api-contract-first"], "assignTo": ["backend"]},
+    {"id": "pack-web", "name": "Pack: web (React + Vite)", "repository": "web",
+     "include": ["layer-stack-react-vite", "layer-web-contract-first"], "assignTo": ["frontend"]}
+  ],
+
+  "policies": [
+    {"id": "policy-permission-multirepo", "name": "Permission: nhiều repository (lệnh đọc worktree repo khác)", "file": "definitions/policies/policy-permission-multirepo.json"},
+    {"id": "policy-completion-human", "name": "Completion: có người duyệt", "file": "definitions/policies/policy-completion-human.json"},
+    {"id": "policy-completion-main-check", "name": "Completion: kiểm tra nhánh chính ba repository", "file": "definitions/policies/policy-completion-main-check.json"}
+  ],
+
+  "agents": [
+    {"id": "agent-contract", "name": "Agent: đổi hợp đồng",
+     "resources": ["layer-openapi-contract", "skill-maker#dev.implement-feature", "skill-maker#dev.definition-of-done",
+                   "skill-tracker-dev#dev.stack-overview", "skill-feature-flow#flow.needs-info"]},
+    {"id": "agent-api", "name": "Agent: api",
+     "resources": ["skill-feature-flow#flow.needs-info", "layer-stack-spring-sqlite", "layer-api-contract-first", "skill-maker#dev.implement-feature",
+                   "skill-maker#dev.definition-of-done", "skill-tracker-dev#dev.stack-overview"]},
+    {"id": "agent-web", "name": "Agent: web",
+     "resources": ["skill-feature-flow#flow.needs-info", "layer-stack-react-vite", "layer-web-contract-first", "skill-maker#dev.implement-feature",
+                   "skill-maker#dev.definition-of-done", "skill-tracker-dev#dev.stack-overview"]},
+    {"id": "agent-reviewer", "name": "Agent: reviewer độc lập (CHECKER)",
+     "resources": ["skill-review", "skill-code-review", "layer-openapi-contract", "layer-stack-spring-sqlite", "layer-api-contract-first",
+                   "layer-stack-react-vite", "layer-web-contract-first", "skill-maker#dev.definition-of-done",
+                   "skill-tracker-dev#dev.stack-overview"]},
+
+    {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm", "skill-tracker-dev#dev.stack-overview"]},
+    {"id": "agent-flow-spec", "name": "Agent: SPEC",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec",
+                   "skill-tracker-dev#dev.stack-overview"]},
+    {"id": "agent-flow-design", "name": "Agent: DESIGN",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.design", "layer-openapi-contract",
+                   "layer-stack-spring-sqlite", "layer-api-contract-first", "layer-stack-react-vite", "layer-web-contract-first",
+                   "skill-tracker-dev#dev.stack-overview"]},
+    {"id": "agent-flow-frame", "name": "Agent: FRAME",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame"]},
+    {"id": "agent-flow-plan", "name": "Agent: PLAN",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-tracker-dev#dev.routing-table", "skill-feature-flow#flow.plan",
+                   "layer-openapi-contract", "layer-stack-spring-sqlite", "layer-api-contract-first", "layer-stack-react-vite",
+                   "layer-web-contract-first"]},
+    {"id": "agent-flow-build", "name": "Agent: BUILD",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.build",
+                   "layer-openapi-contract", "layer-stack-spring-sqlite", "layer-api-contract-first", "layer-stack-react-vite",
+                   "layer-web-contract-first", "skill-maker#dev.definition-of-done"]},
+    {"id": "agent-flow-sync", "name": "Agent: SYNC",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.sync"]}
+  ],
+
+  "commands": [
+    {"id": "cmd-reject", "from": "kit"},
+    {"id": "cmd-check-feature-docs", "from": "kit"},
+
+    {"id": "cmd-contract-lint", "name": "Command: kiểm tra spec OpenAPI", "script": "scripts#contract-lint.sh", "repository": "contracts"},
+    {"id": "cmd-contract-compat", "name": "Command: spec không phá vỡ bản đã commit", "script": "scripts#contract-compat.sh", "repository": "contracts"},
+    {"id": "cmd-api-test", "from": "kit:cmd-maven-test", "name": "Command: test api (Maven)", "repository": "api"},
+    {"id": "cmd-api-conformance", "name": "Command: route của api khớp hợp đồng", "script": "scripts#api-conformance.sh",
+     "repository": "api", "argRepositories": ["contracts"]},
+    {"id": "cmd-web-test", "from": "kit:cmd-npm-test", "name": "Command: test và build web (npm)", "repository": "web"},
+    {"id": "cmd-web-conformance", "name": "Command: lời gọi của web khớp hợp đồng", "script": "scripts#web-conformance.sh",
+     "repository": "web", "argRepositories": ["contracts"]},
+
+    {"id": "cmd-secrets-gate-contracts", "from": "kit:cmd-secrets-gate", "repository": "contracts"},
+    {"id": "cmd-secrets-gate-api", "from": "kit:cmd-secrets-gate", "repository": "api"},
+    {"id": "cmd-secrets-gate-web", "from": "kit:cmd-secrets-gate", "repository": "web"},
+    {"id": "cmd-contract-valid-gate", "name": "Command của gate: spec hợp lệ", "script": "scripts#contract-valid-gate.sh",
+     "repository": "contracts", "repositoryArg": true, "timeoutSeconds": 120, "maxOutputBytes": 65536}
+  ],
+
+  "gates": [
+    {"id": "gate-secrets-contracts", "from": "kit:gate-secrets", "command": "cmd-secrets-gate-contracts"},
+    {"id": "gate-secrets-api", "from": "kit:gate-secrets", "command": "cmd-secrets-gate-api"},
+    {"id": "gate-secrets-web", "from": "kit:gate-secrets", "command": "cmd-secrets-gate-web"},
+    {"id": "gate-contract-valid", "name": "Gate: spec hợp lệ", "command": "cmd-contract-valid-gate",
+     "criteria": [{"name": "spec/openapi.json là OpenAPI 3.0 hợp lệ", "evidenceKey": "SPEC_VALID"}]}
+  ],
+
+  "workflows": [
+    {"id": "wf-contract-change", "name": "Workflow: đổi hợp đồng", "template": "definitions/workflows/wf-contract-change.json"},
+    {"id": "wf-api-feature", "name": "Workflow: task api", "template": "definitions/workflows/wf-api-feature.json"},
+    {"id": "wf-web-feature", "name": "Workflow: task web", "template": "definitions/workflows/wf-web-feature.json"},
+    {"id": "wf-code-review", "name": "Workflow: review độc lập + người duyệt", "template": "definitions/workflows/wf-code-review.json"},
+    {"id": "wf-main-check", "name": "Workflow: kiểm tra nhánh chính ba repository", "template": "definitions/workflows/wf-main-check.json"},
+
+    {"id": "wf-feature-definition", "from": "kit"},
+    {"id": "wf-task-delivery-contracts", "from": "kit:wf-task-delivery", "name": "Workflow: giao task ở repo contracts",
+     "bind": {"command:cmd-gate1": "cmd-contract-lint", "command:cmd-quality-check": "cmd-contract-compat"}},
+    {"id": "wf-task-delivery-api", "from": "kit:wf-task-delivery", "name": "Workflow: giao task ở repo api",
+     "bind": {"command:cmd-gate1": "cmd-api-test", "command:cmd-quality-check": "cmd-api-conformance",
+              "policy:policy-permission": "policy-permission-multirepo"}},
+    {"id": "wf-task-delivery-web", "from": "kit:wf-task-delivery", "name": "Workflow: giao task ở repo web",
+     "bind": {"command:cmd-gate1": "cmd-web-test", "command:cmd-quality-check": "cmd-web-conformance",
+              "policy:policy-permission": "policy-permission-multirepo"}}
+  ]
+}

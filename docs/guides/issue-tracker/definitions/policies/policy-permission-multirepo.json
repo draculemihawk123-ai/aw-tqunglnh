@@ -1,0 +1,9 @@
+{
+ "category": "PERMISSION",
+ "permission": {
+  "isolationTier": "OPERATOR_TRUSTED_LOCAL",
+  "grantedCapabilities": [
+   "INTEGRATION_MULTI_REPOSITORY_WRITE"
+  ]
+ }
+}

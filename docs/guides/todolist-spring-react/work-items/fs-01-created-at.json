@@ -1,0 +1,18 @@
+{
+  "title": "FS-01: Hiển thị thời gian tạo của todo",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {"repositoryId": "todolist", "access": "WRITE", "reason": "Sửa cả backend và frontend", "pathScopes": ["backend", "frontend"]}
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Backend đảm bảo createdAt (ISO-8601, UTC) có trong mọi response của /api/todos. Frontend hiển thị thời gian tạo dạng tương đối (ví dụ \"5 phút trước\") bên cạnh mỗi todo, có tooltip là thời điểm đầy đủ.",
+    "verificationSpec": "COMMAND backend-test (`./mvnw -B test`) và frontend-test (`npm ci && npm test && npm run build`) đều thoát mã 0; người vận hành duyệt diff ở node review.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {"description": "Test backend kiểm tra createdAt có mặt và đúng định dạng ISO-8601 trong GET /api/todos", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "Test frontend kiểm tra mỗi todo hiển thị thời gian tạo dạng tương đối", "verificationRef": "COMMAND_EXECUTION"}
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

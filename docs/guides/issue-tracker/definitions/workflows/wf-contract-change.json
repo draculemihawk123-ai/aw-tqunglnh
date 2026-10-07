@@ -1,0 +1,241 @@
+{
+ "schemaVersion": "1",
+ "nodes": [
+  {
+   "key": "start",
+   "type": "START",
+   "outcomes": [
+    "next"
+   ]
+  },
+  {
+   "key": "contract",
+   "type": "AGENT",
+   "outcomes": [
+    "done",
+    "needs_info",
+    "escalated"
+   ],
+   "agent": {
+    "profileRef": {
+     "$ref": "agent:agent-contract"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt"
+     },
+     {
+      "$ref": "policy:policy-permission"
+     }
+    ],
+    "adapterBuildId": {
+     "$ref": "adapter"
+    },
+    "role": "MAKER"
+   },
+   "cyclePolicy": {
+    "maxIterations": 4,
+    "escalationOutcome": "escalated"
+   }
+  },
+  {
+   "key": "lint",
+   "type": "COMMAND",
+   "outcomes": [
+    "passed",
+    "failed"
+   ],
+   "command": {
+    "commandRef": {
+     "$ref": "command:cmd-contract-lint"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission"
+     }
+    ],
+    "failureOutcome": "failed"
+   }
+  },
+  {
+   "key": "compat",
+   "type": "COMMAND",
+   "outcomes": [
+    "passed",
+    "failed"
+   ],
+   "command": {
+    "commandRef": {
+     "$ref": "command:cmd-contract-compat"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission"
+     }
+    ],
+    "failureOutcome": "failed"
+   }
+  },
+  {
+   "key": "review",
+   "type": "APPROVAL",
+   "outcomes": [
+    "approved",
+    "revise",
+    "rejected"
+   ],
+   "approval": {
+    "authorizedRoles": [
+     "operator"
+    ],
+    "timeoutSeconds": 604800,
+    "escalationOutcome": "rejected",
+    "requestedEvidenceKinds": [
+     "COMMAND_EXECUTION"
+    ]
+   },
+   "cyclePolicy": {
+    "maxIterations": 3,
+    "escalationOutcome": "rejected"
+   }
+  },
+  {
+   "key": "needs-info",
+   "type": "APPROVAL",
+   "outcomes": [
+    "provided",
+    "abandon"
+   ],
+   "approval": {
+    "authorizedRoles": [
+     "operator"
+    ],
+    "timeoutSeconds": 604800,
+    "escalationOutcome": "abandon"
+   },
+   "cyclePolicy": {
+    "maxIterations": 3,
+    "escalationOutcome": "abandon"
+   }
+  },
+  {
+   "key": "reject",
+   "type": "COMMAND",
+   "outcomes": [
+    "done"
+   ],
+   "command": {
+    "commandRef": {
+     "$ref": "command:cmd-reject"
+    },
+    "policyRefs": [
+     {
+      "$ref": "policy:policy-attempt-once"
+     },
+     {
+      "$ref": "policy:policy-permission"
+     }
+    ]
+   }
+  },
+  {
+   "key": "end",
+   "type": "END"
+  }
+ ],
+ "edges": [
+  {
+   "key": "start-contract",
+   "from": "start",
+   "outcome": "next",
+   "to": "contract"
+  },
+  {
+   "key": "contract-lint",
+   "from": "contract",
+   "outcome": "done",
+   "to": "lint"
+  },
+  {
+   "key": "contract-needs-info-needs-info",
+   "from": "contract",
+   "outcome": "needs_info",
+   "to": "needs-info"
+  },
+  {
+   "key": "contract-escalated-reject",
+   "from": "contract",
+   "outcome": "escalated",
+   "to": "reject"
+  },
+  {
+   "key": "lint-compat",
+   "from": "lint",
+   "outcome": "passed",
+   "to": "compat"
+  },
+  {
+   "key": "lint-failed-contract",
+   "from": "lint",
+   "outcome": "failed",
+   "to": "contract"
+  },
+  {
+   "key": "compat-review",
+   "from": "compat",
+   "outcome": "passed",
+   "to": "review"
+  },
+  {
+   "key": "compat-failed-contract",
+   "from": "compat",
+   "outcome": "failed",
+   "to": "contract"
+  },
+  {
+   "key": "review-approved-end",
+   "from": "review",
+   "outcome": "approved",
+   "to": "end"
+  },
+  {
+   "key": "review-revise-contract",
+   "from": "review",
+   "outcome": "revise",
+   "to": "contract"
+  },
+  {
+   "key": "review-rejected-reject",
+   "from": "review",
+   "outcome": "rejected",
+   "to": "reject"
+  },
+  {
+   "key": "needs-info-provided-contract",
+   "from": "needs-info",
+   "outcome": "provided",
+   "to": "contract"
+  },
+  {
+   "key": "needs-info-abandon-reject",
+   "from": "needs-info",
+   "outcome": "abandon",
+   "to": "reject"
+  },
+  {
+   "key": "reject-end",
+   "from": "reject",
+   "outcome": "done",
+   "to": "end"
+  }
+ ],
+ "completionPolicyRef": {
+  "$ref": "policy:policy-completion-reviewed"
+ }
+}

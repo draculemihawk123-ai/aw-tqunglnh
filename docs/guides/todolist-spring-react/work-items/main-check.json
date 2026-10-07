@@ -1,0 +1,19 @@
+{
+  "title": "CHECK-01: kiểm tra nhánh chính sau khi merge",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {"repositoryId": "todolist", "access": "READ", "reason": "Chỉ đọc: chạy các cổng kiểm tra trên toàn bộ repository"}
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Chạy song song cổng chất lượng tĩnh và cổng không-có-file-bí-mật trên một worktree mới tách từ nhánh chính, rồi chờ tín hiệu CI bên ngoài xác nhận build xanh.",
+    "verificationSpec": "Cả hai MACHINE_GATE cho verdict PASS ở mọi tiêu chí và tín hiệu ci-green được gửi tới.",
+    "riskLevel": "LOW",
+    "acceptanceCriteria": [
+      {"description": "Không có test nào bị tắt", "verificationRef": "NO_DISABLED_TESTS"},
+      {"description": "Không có hai migration Flyway cùng số version", "verificationRef": "MIGRATION_VERSIONS_UNIQUE"},
+      {"description": "Không có file bí mật hay file database trong repository", "verificationRef": "NO_SECRET_FILES"}
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

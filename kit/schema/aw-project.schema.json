@@ -1,0 +1,97 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "aw-project.schema.json",
+  "title": "aw-project.json / kit.json",
+  "description": "Khai báo của một project (hoặc của kho kit) mà kit/scripts/aw-publish.py đọc. Đây là đặc tả của định dạng; aw-publish.py --check còn kiểm tra những gì schema không diễn đạt được (tham chiếu chéo, đồ thị workflow).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "role": {"enum": ["project", "kit"], "description": "Mặc định project. kit.json phải ghi \"kit\"."},
+    "name": {"type": "string", "description": "Tên kit (chỉ kit.json)."},
+    "version": {"type": "string", "pattern": "^[0-9]+(\\.[0-9]+){0,2}$", "description": "Phiên bản kit (chỉ kit.json); project ghim theo số major."},
+    "prefix": {"type": "string", "description": "Tiền tố ghép vào mọi definitionId. Mỗi project một prefix riêng, khác prefix của kit."},
+    "repository": {"type": "string", "description": "repositoryId của project dùng cho cwdRepositoryTarget của Command (project bắt buộc dùng Command)."},
+    "kit": {
+      "description": "Kho dùng chung mà project dùng: đường dẫn tới kit.json, hoặc {path, version}.",
+      "oneOf": [
+        {"type": "string"},
+        {"type": "object", "additionalProperties": false, "required": ["path"],
+         "properties": {"path": {"type": "string"}, "version": {"type": "string", "description": "Chỉ so số major với version của kit."}}}
+      ]
+    },
+    "provider": {
+      "type": "object", "additionalProperties": false,
+      "properties": {"key": {"type": "string"}, "model": {"type": "string"}, "configIdentity": {"type": "string"},
+                     "envAllowlist": {"$ref": "#/definitions/envNames"}}
+    },
+    "contextBudgetBytes": {"type": "integer", "minimum": 1},
+    "messageBudget": {"$ref": "#/definitions/messageBudget"},
+    "layers": {"type": "array", "items": {"$ref": "#/definitions/documentEntry"}},
+    "skills": {"type": "array", "items": {"$ref": "#/definitions/documentEntry"}},
+    "scriptSkills": {"type": "array", "items": {"$ref": "#/definitions/scriptSkill"}},
+    "packs": {"type": "array", "items": {"$ref": "#/definitions/pack"}},
+    "policies": {"type": "array", "items": {"$ref": "#/definitions/documentEntry"}},
+    "agents": {"type": "array", "items": {"$ref": "#/definitions/agent"}},
+    "commands": {"type": "array", "items": {"$ref": "#/definitions/command"}},
+    "gates": {"type": "array", "items": {"$ref": "#/definitions/gate"}},
+    "workflows": {"type": "array", "items": {"$ref": "#/definitions/workflow"}}
+  },
+  "definitions": {
+    "id": {"type": "string", "minLength": 1, "description": "Id không có tiền tố."},
+    "envNames": {"type": "array", "items": {"type": "string", "pattern": "^[^=\\s]+$"}, "description": "Chỉ TÊN biến môi trường."},
+    "messageBudget": {"type": "object", "additionalProperties": false, "required": ["maxBytes", "keepLatest"],
+                      "properties": {"maxBytes": {"type": "integer", "minimum": 1}, "keepLatest": {"type": "integer", "minimum": 0}}},
+    "documentEntry": {
+      "description": "Layer, Skill hoặc Policy lấy từ một file JSON (đường dẫn tính từ thư mục của file khai báo).",
+      "type": "object", "additionalProperties": false, "required": ["id", "file"],
+      "properties": {"id": {"$ref": "#/definitions/id"}, "name": {"type": "string"}, "file": {"type": "string"},
+                     "origin": {"type": "string", "description": "Chỉ kit.json: nội dung lấy từ đâu (nguồn bên ngoài)."},
+                     "license": {"type": "string", "description": "Chỉ kit.json: giấy phép của nội dung bên ngoài; chưa biết thì ghi UNKNOWN (--check cảnh báo). Không đặt trong provenance của resource: aw không nhận trường đó."}}
+    },
+    "scriptSkill": {
+      "description": "Gom các script của Command thành một Skill; key của mỗi resource là tên file. Dòng `. \"${AW_KIT:?…}/commands/lib.sh\" # @aw-include` trong script được nhúng nguyên văn khi publish.",
+      "type": "object", "additionalProperties": false, "required": ["id", "files"],
+      "properties": {"id": {"$ref": "#/definitions/id"}, "name": {"type": "string"}, "owner": {"type": "string"}, "revision": {"type": "string"},
+                     "files": {"type": "array", "minItems": 1, "items": {"type": "string"}}}
+    },
+    "pack": {
+      "type": "object", "additionalProperties": false, "required": ["id", "include"],
+      "properties": {"id": {"$ref": "#/definitions/id"}, "name": {"type": "string"}, "repository": {"type": "string"},
+                     "include": {"type": "array", "items": {"type": "string"}}, "assignTo": {"type": "array", "items": {"type": "string"}}}
+    },
+    "agent": {
+      "type": "object", "additionalProperties": false, "required": ["id", "resources"],
+      "properties": {"id": {"$ref": "#/definitions/id"}, "name": {"type": "string"}, "model": {"type": "string"},
+                     "resources": {"type": "array", "items": {"type": "string", "description": "<Layer|Skill> hoặc <Layer|Skill>#<resource key>; id lấy từ project hoặc kit."}},
+                     "envAllowlist": {"$ref": "#/definitions/envNames"}, "messageBudget": {"$ref": "#/definitions/messageBudget"},
+                     "toolRefs": {"type": "array", "items": {"type": "string"}}, "contextBudgetBytes": {"type": "integer", "minimum": 1},
+                     "maxTokens": {"type": "integer", "minimum": 1}}
+    },
+    "fromKit": {"type": "string", "pattern": "^kit(:.+)?$", "description": "\"kit\": lấy bản mẫu cùng id của kit; \"kit:<id>\": lấy bản mẫu id đó và đặt tên khác (một bản mẫu cho nhiều repository). Các field khác trong entry ghi đè bản mẫu."},
+    "command": {
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "properties": {"id": {"$ref": "#/definitions/id"}, "from": {"$ref": "#/definitions/fromKit"}, "name": {"type": "string"},
+                     "script": {"type": "string", "pattern": "^[^#]+#[^#]+$", "description": "<scriptSkill>#<tên file>; scriptSkill của project hoặc kit."},
+                     "network": {"enum": ["NONE", "ALLOWED"]}, "policies": {"type": "array", "items": {"type": "string"}},
+                     "repositoryArg": {"type": "boolean"}, "repository": {"type": "string"},
+                     "argRepositories": {"type": "array", "items": {"type": "string"}, "description": "Id repository KHÁC mà lệnh được nhận đường dẫn worktree (chỉ đọc) làm các tham số tiếp theo ($2, $3…; sau repository của chính nó nếu có repositoryArg)."}, "envAllowlist": {"$ref": "#/definitions/envNames"},
+                     "timeoutSeconds": {"type": "integer", "minimum": 1}, "maxOutputBytes": {"type": "integer", "minimum": 1}},
+      "oneOf": [{"required": ["from"]}, {"required": ["script"]}]
+    },
+    "gate": {
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "properties": {"id": {"$ref": "#/definitions/id"}, "from": {"$ref": "#/definitions/fromKit"}, "name": {"type": "string"},
+                     "command": {"type": "string"},
+                     "criteria": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["name", "evidenceKey"],
+                                  "properties": {"name": {"type": "string"}, "evidenceKey": {"type": "string", "minLength": 1}}}}},
+      "oneOf": [{"required": ["from"]}, {"required": ["command", "criteria"]}]
+    },
+    "workflow": {
+      "type": "object", "additionalProperties": false, "required": ["id"],
+      "properties": {"id": {"$ref": "#/definitions/id"}, "from": {"$ref": "#/definitions/fromKit"}, "name": {"type": "string"},
+                     "template": {"type": "string", "description": "File template; chỗ cần pin definition khác ghi {\"$ref\": \"<loại>:<id>\"}."},
+                     "bind": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Gắn lại chỗ trống của template: {\"command:cmd-gate1\": \"cmd-api-test\"} thay mọi $ref command:cmd-gate1 bằng command:cmd-api-test."}},
+      "oneOf": [{"required": ["from"]}, {"required": ["template"]}]
+    }
+  }
+}

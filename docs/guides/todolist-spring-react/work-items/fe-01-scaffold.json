@@ -1,0 +1,19 @@
+{
+  "title": "FE-01: Khởi tạo frontend React + Vite + Vitest",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {"repositoryId": "todolist", "access": "WRITE", "reason": "Chỉ sửa frontend", "pathScopes": ["frontend"]}
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Tạo ứng dụng React + TypeScript bằng Vite trong frontend/ theo resource react.project-structure: cấu hình proxy /api tới http://localhost:8080, thêm Vitest + @testing-library/react + jsdom, script `npm test` = `vitest run`, một test render App. Không cần chạy lệnh tạo project: tự viết các file cấu hình và mã nguồn; package-lock.json sẽ do bước kiểm tra sinh ra khi nó chạy `npm install`.",
+    "verificationSpec": "COMMAND node verify chạy `npm install` (hoặc `npm ci` khi đã có package-lock.json), `npm test` rồi `npm run build` trong frontend/ và phải thoát với mã 0; evidence COMMAND_EXECUTION có verdict PASS.",
+    "riskLevel": "LOW",
+    "acceptanceCriteria": [
+      {"description": "npm test chạy Vitest một lần và pass", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "npm run build (tsc + vite build) pass", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "vite.config.ts proxy /api -> http://localhost:8080", "verificationRef": "COMMAND_EXECUTION"}
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

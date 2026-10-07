@@ -1,0 +1,39 @@
+{
+  "title": "C-01: Hợp đồng API cho quản lý issue (MVP)",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {
+      "repositoryId": "contracts",
+      "access": "WRITE",
+      "reason": "Chỉ sửa hợp đồng",
+      "pathScopes": [
+        "spec"
+      ]
+    }
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Viết hợp đồng API của issue tracker (MVP) vào spec/openapi.json. Endpoint: GET /api/issues (tùy chọn lọc ?status=OPEN|IN_PROGRESS|DONE), POST /api/issues, GET /api/issues/{id}, PUT /api/issues/{id}, PATCH /api/issues/{id}/status, DELETE /api/issues/{id}. Schema Issue {id integer, title string (1 đến 200 ký tự), description string (có thể null), status enum OPEN|IN_PROGRESS|DONE, priority enum LOW|MEDIUM|HIGH, assignee string (có thể null), createdAt và updatedAt kiểu date-time}; NewIssue (title bắt buộc; description, priority mặc định MEDIUM, assignee tùy chọn); IssueUpdate (title bắt buộc; description, priority, assignee tùy chọn); StatusChange {status bắt buộc}. Mã trạng thái: POST trả 201 kèm header Location; GET, PUT, PATCH trả 200 với Issue; DELETE trả 204; lỗi 400 (dữ liệu không hợp lệ) và 404 (không tìm thấy) dùng schema Problem. operationId: listIssues, createIssue, getIssue, updateIssue, changeIssueStatus, deleteIssue.",
+    "verificationSpec": "COMMAND lint (contract-lint) và COMMAND compat (contract-compat) phải thoát mã 0; người vận hành duyệt hợp đồng ở cổng review.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {
+        "description": "spec/openapi.json có đủ sáu operation với đúng operationId, path và method như mô tả",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "Các schema Issue, NewIssue, IssueUpdate, StatusChange đầy đủ trường, kiểu và enum; id là integer, thời gian là date-time",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "Mọi response 400 và 404 dùng schema Problem; POST createIssue trả 201 và khai báo header Location",
+        "verificationRef": "COMMAND_EXECUTION"
+      },
+      {
+        "description": "contract-lint và contract-compat đều PASS",
+        "verificationRef": "COMMAND_EXECUTION"
+      }
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

@@ -1,0 +1,4 @@
+# Script chạy bằng bash/sh phải giữ LF kể cả khi clone trên Windows với core.autocrlf=true:
+# một file .sh có CRLF không chạy được trong Git Bash.
+*.sh text eol=lf
+*.py text eol=lf

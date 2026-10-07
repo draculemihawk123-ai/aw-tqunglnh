@@ -1,0 +1,20 @@
+{
+  "resources": [
+    {
+      "key": "api.contract-first",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-platform",
+        "source": "docs/guides/issue-tracker",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "convention": "Backend hiện thực ĐÚNG hợp đồng ở repository contracts, tệp spec/openapi.json (repository đó chỉ đọc; đường dẫn tuyệt đối nằm trong system prompt): đúng path, method, tên trường, mã trạng thái và schema lỗi Problem (dùng ProblemDetail của Spring, qua một @RestControllerAdvice). Không thêm endpoint ngoài spec; thiếu gì trong spec thì dừng và nói rõ, không tự bịa. Bước kiểm tra api-conformance so route trong code với spec và báo cả route thiếu lẫn route thừa."
+    }
+  ]
+}

@@ -146,7 +146,8 @@ aw blocker resolve --mode WAIVED --reason "accepted" --policy-grant-ref <ref> <b
 ```
 
 `--mode` has no default. The command is idempotent by blocker id (an already resolved or waived blocker is a no-op).
-It refuses while the work item still has a run in progress or a `QUARANTINED` repository workspace. When the last open
+It refuses while the work item still has a run in progress or a `QUARANTINED` repository workspace (only a repository's
+newest generation counts: one that a reconcile replaced with a newer generation does not). When the last open
 blocker of a work item is resolved the work item becomes `READY`, so `aw run start` works again.
 
 | Blocker type | `RESOLVED` | `WAIVED` |

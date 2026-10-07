@@ -366,6 +366,16 @@ func ScheduleExecutableNodeRun(
 				if err != nil {
 					return err
 				}
+				// V9-17: and a MAKER activated through the edge leaving a
+				// CHECKER gets that reviewer's message (its AGENT_OUTPUT row),
+				// so it learns why it was sent back. A node has only one
+				// predecessor in this activation, so at most one of the two
+				// gathers returns anything.
+				reviewerRefs, err := gatherReviewerFeedbackEvidenceRefs(ctx, tx, run, document, nodeRun)
+				if err != nil {
+					return err
+				}
+				evidenceRefs = append(evidenceRefs, reviewerRefs...)
 			}
 		}
 
@@ -947,6 +957,14 @@ func gatherCheckerEvidenceRefs(
 			return nil, err
 		}
 		for _, e := range evidence {
+			// V9-17: what a MAKER said about its own work is not part of the
+			// checker's input (V5-12 contract 2: requirement, diff and
+			// evidence, never the maker's account), so the AGENT_OUTPUT row
+			// is left out. The diff manifests (AGENT_EXECUTION) and every
+			// check's rows are unchanged.
+			if e.Kind == runtimedomain.EvidenceKindAgentOutput {
+				continue
+			}
 			refs = append(refs, contextsnapshot.EvidenceRef{EvidenceID: string(e.ID)})
 		}
 	}

@@ -28,6 +28,7 @@ evidence. It is not a multi-tenant SaaS product — one `aw` installation serves
 | Back up or restore an installation | [08-backup-and-restore.md](08-backup-and-restore.md) |
 | Upgrade to a new release, or roll back one | [10-upgrade-and-rollback.md](10-upgrade-and-rollback.md) |
 | Diagnose a failure | [09-troubleshooting.md](09-troubleshooting.md) |
+| Follow one complete worked example — building a Spring Boot + React application with `aw`, from an empty repository to merged features, run with a real Claude CLI (in Vietnamese) | [../guides/todolist-spring-react/README.md](../guides/todolist-spring-react/README.md) |
 
 ## Out of scope (explicitly, so you stop looking here for it)
 

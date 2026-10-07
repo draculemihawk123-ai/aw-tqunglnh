@@ -1,0 +1,20 @@
+{
+  "title": "BE-01: REST API CRUD cho Todo",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {"repositoryId": "todolist", "access": "WRITE", "reason": "Chỉ sửa backend", "pathScopes": ["backend"]}
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Thêm entity Todo (map bảng todos đã có migration V1), TodoRepository, TodoService và TodoController theo đúng hợp đồng /api/todos trong resource spring.rest-api: liệt kê (lọc status=all|active|completed), lấy theo id, tạo, cập nhật, đổi trạng thái hoàn thành, xóa. Lỗi trả ProblemDetail.",
+    "verificationSpec": "COMMAND node verify chạy `./mvnw -B test` (hoặc `mvn -B test`) trong backend/ và phải thoát với mã 0; evidence COMMAND_EXECUTION có verdict PASS.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {"description": "POST /api/todos với title hợp lệ trả 201 kèm Location; title rỗng hoặc dài hơn 200 ký tự trả 400 ProblemDetail", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "GET /api/todos?status=active chỉ trả các todo chưa hoàn thành; GET /api/todos/{id} không tồn tại trả 404", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "PATCH /api/todos/{id}/toggle đảo trạng thái completed; DELETE /api/todos/{id} trả 204", "verificationRef": "COMMAND_EXECUTION"},
+      {"description": "Mỗi endpoint có test MockMvc cho đường thành công và đường lỗi, chạy trên file SQLite tạm", "verificationRef": "COMMAND_EXECUTION"}
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

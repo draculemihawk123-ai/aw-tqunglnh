@@ -185,6 +185,14 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 		}
 		return 0
 	}
+	if mode == "provider-failure" {
+		// V9-20: a CLI that runs to completion and reports why it failed (a usage
+		// limit), the way a real one does.
+		if !writeProviderFailedTurn(stdout, provider) {
+			return 4
+		}
+		return 0
+	}
 	if !writeProviderStarted(stdout, provider) {
 		return 4
 	}
@@ -341,11 +349,11 @@ func writeProviderFailedTurn(stdout io.Writer, provider string) bool {
 	switch provider {
 	case "codex":
 		fmt.Fprintln(stdout, `{"type":"thread.started","thread_id":"codex-session-0001"}`)
-		fmt.Fprintln(stdout, `{"type":"turn.failed"}`)
+		fmt.Fprintln(stdout, `{"type":"turn.failed","error":{"message":"You've hit your usage limit.\nTry again at 5pm."}}`)
 		return true
 	case "claude":
 		fmt.Fprintln(stdout, `{"type":"system","subtype":"init","session_id":"claude-session-0001"}`)
-		fmt.Fprintln(stdout, `{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"claude-session-0001","usage":{"input_tokens":1,"output_tokens":1}}`)
+		fmt.Fprintln(stdout, `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"You've hit your limit · resets 5pm","session_id":"claude-session-0001","usage":{"input_tokens":1,"output_tokens":1}}`)
 		return true
 	default:
 		return false

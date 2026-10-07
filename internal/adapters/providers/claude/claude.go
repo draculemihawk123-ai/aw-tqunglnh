@@ -27,6 +27,10 @@ const defaultVersionProbeTimeout = 5 * time.Second
 
 var ErrProtocol = errors.New("invalid Claude stream-json protocol")
 
+// ErrOutputTruncated is returned when an attempt's stdout/stderr exceeded
+// Config.OutputLimitBytes and the supervisor discarded the rest (V9-14a).
+var ErrOutputTruncated = errors.New("claude output exceeded the configured limit")
+
 type Config struct {
 	Executable     string
 	PrefixArgs     []string
@@ -44,6 +48,13 @@ type Config struct {
 	MaxBudgetUSD         float64
 	InheritedEnvironment []string
 	MaxJSONLLineBytes    int
+	// OutputLimitBytes caps the stdout+stderr one attempt may write before the
+	// process supervisor discards the rest (V9-14a). Zero means
+	// jsonl.DefaultOutputLimitBytes (256 MiB), not the supervisor's own 10 MiB;
+	// negative is refused. An attempt that exceeds it fails as
+	// "output_truncated" (ErrOutputTruncated) instead of being misread as a
+	// broken protocol.
+	OutputLimitBytes int
 	// VersionArgs is the argv Capabilities uses to probe the configured
 	// executable's real, live version (V5-06) — defaults to ["--version"],
 	// the common CLI convention. Override if the configured Claude CLI
@@ -94,6 +105,12 @@ func New(process ports.ProcessSupervisor, config Config) (*Adapter, error) {
 	config.StartArgs = append([]string(nil), config.StartArgs...)
 	config.ResumeArgs = append([]string(nil), config.ResumeArgs...)
 	config.InheritedEnvironment = append([]string(nil), config.InheritedEnvironment...)
+	if config.OutputLimitBytes < 0 {
+		return nil, fmt.Errorf("Claude output limit must be >= 0, got %d", config.OutputLimitBytes)
+	}
+	if config.OutputLimitBytes == 0 {
+		config.OutputLimitBytes = jsonl.DefaultOutputLimitBytes
+	}
 	if config.MaxJSONLLineBytes <= 0 {
 		config.MaxJSONLLineBytes = jsonl.DefaultMaxLineBytes
 	}
@@ -222,6 +239,7 @@ func (a *Adapter) execute(
 		InheritedEnvironment: mergeEnvironmentKeys(a.config.InheritedEnvironment, request.InheritedEnvironment),
 		Stdin:                []byte(request.Prompt),
 		Timeout:              request.Timeout,
+		OutputLimitBytes:     a.config.OutputLimitBytes,
 	}, stdout, stderr)
 	closeErr := stdout.Close()
 	parseErr := stdout.Err()
@@ -230,6 +248,17 @@ func (a *Adapter) execute(
 	}
 
 	result := normalizer.result(request, processResult)
+	// V9-14a: output past the cap was discarded, so the stream is cut off — the
+	// terminal result event may be gone and the last line half-written. Say so,
+	// rather than let it surface as a protocol error or a missing result (after
+	// the attempt has already spent its money). A timeout or cancel has its own,
+	// more specific reason and is left to finalStatus.
+	if processResult.OutputTruncated && !processResult.TimedOut && !processResult.Cancelled {
+		result.Status = ports.AgentExecutionFailed
+		result.TerminationReason = "output_truncated"
+		_ = normalizer.finish(ports.AgentExecutionFailed, "output_truncated")
+		return result, fmt.Errorf("%w: the CLI wrote more than %d bytes of stdout/stderr; raise Config.OutputLimitBytes if this attempt is legitimately that long", ErrOutputTruncated, a.config.OutputLimitBytes)
+	}
 	if parseErr != nil {
 		result.Status = ports.AgentExecutionFailed
 		result.TerminationReason = "protocol_error"
@@ -520,6 +549,7 @@ func (n *normalizer) consumeResult(line []byte, rawType string) error {
 	var event struct {
 		Subtype      string      `json:"subtype"`
 		IsError      bool        `json:"is_error"`
+		Result       string      `json:"result"`
 		SessionID    string      `json:"session_id"`
 		Usage        claudeUsage `json:"usage"`
 		TotalCostUSD float64     `json:"total_cost_usd"`
@@ -540,11 +570,18 @@ func (n *normalizer) consumeResult(line []byte, rawType string) error {
 		return err
 	}
 	if !n.providerOK {
+		// V9-20: the CLI says why in `result` ("You've hit your limit · resets
+		// 5pm", "Credit balance is too low", ...); without it the attempt failed
+		// with a code and nothing to read.
+		summary := "Claude reported a failed result"
+		if event.Subtype != "" && event.Subtype != "success" {
+			summary += " (" + event.Subtype + ")"
+		}
 		return n.emit(ports.AgentEvent{
 			Kind: ports.AgentEventDiagnostic,
 			Diagnostic: &ports.AgentDiagnostic{
-				Code:    "PROVIDER_REPORTED_FAILURE",
-				Message: "Claude reported a failed result",
+				Code:    ports.ProviderFailureDiagnosticCode,
+				Message: ports.ProviderFailureMessage(summary, event.Result),
 			},
 		}, rawType)
 	}

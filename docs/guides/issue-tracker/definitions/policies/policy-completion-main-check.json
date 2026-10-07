@@ -1,0 +1,9 @@
+{
+ "category": "COMPLETION",
+ "completion": {
+  "requiredEvidenceKinds": [
+   "NO_SECRET_FILES",
+   "SPEC_VALID"
+  ]
+ }
+}

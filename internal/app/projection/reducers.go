@@ -79,6 +79,15 @@ type runCancelledPayload struct {
 	WorkItemID string `json:"workItemId"`
 }
 
+// completionDecidedPayload mirrors internal/app/runtime's COMPLETION_DECIDED
+// payload (completion_policy.go). Outcome is ADR-021's closed vocabulary:
+// PASS / BLOCK / FAIL / REWORK.
+type completionDecidedPayload struct {
+	RunID      string `json:"runId"`
+	WorkItemID string `json:"workItemId"`
+	Outcome    string `json:"outcome"`
+}
+
 type workflowRunFinalizedPayload struct {
 	RunID         string `json:"runId"`
 	TerminalState string `json:"terminalState"`
@@ -237,10 +246,8 @@ func reduceRunCancellationRequested(prior WorkItemCardRow, payloadJSON string) (
 
 // reduceRunCompletionRequested is RUN_COMPLETION_REQUESTED v1's own
 // Reducer (handlerVersion 1) — a transient "completing" badge; the
-// authoritative terminal outcome (success -> DONE) arrives later via
-// WORKFLOW_RUN_FINALIZED (see reduceWorkflowRunFinalized's own doc
-// comment for why no bare "run completed successfully" event exists on
-// its own).
+// authoritative outcome (success -> DONE, rework -> ACTIVE again) arrives
+// later via COMPLETION_DECIDED (reduceCompletionDecided).
 func reduceRunCompletionRequested(prior WorkItemCardRow, payloadJSON string) (WorkItemCardRow, error) {
 	p, err := decode[runCompletionRequestedPayload](payloadJSON)
 	if err != nil {
@@ -248,6 +255,59 @@ func reduceRunCompletionRequested(prior WorkItemCardRow, payloadJSON string) (Wo
 	}
 	if prior.ActiveRunID == p.RunID {
 		prior.ActiveRunStatus = runStatusCompleting
+	}
+	return prior, nil
+}
+
+// reduceCompletionDecided is COMPLETION_DECIDED v1's own Reducer
+// (handlerVersion 1) — the one event that reports how a Run's completion
+// policy ended (internal/app/runtime/completion_policy.go,
+// applyCompletionOutcomeTx), and therefore the only event that ever reports
+// a SUCCESSFUL completion: the PASS transition (Run VERIFYING -> SUCCEEDED,
+// WorkItem ACTIVE -> DONE) is written without any other domain event, and
+// WORKFLOW_RUN_FINALIZED belongs to the fenced worker finalization path that
+// the production runtime does not use for completion. Until this Reducer
+// existed the card stayed ACTIVE with a COMPLETING badge forever (V9-15).
+//
+//   - PASS   -> DONE, Run cleared;
+//   - BLOCK  -> BLOCKED with a BLOCKED badge (the policy opens no blocker row,
+//     so no WORK_ITEM_BLOCKED event follows);
+//   - FAIL   -> BLOCKED with a FAILED badge (the COMPLETION_POLICY_FAILED
+//     blocker's own WORK_ITEM_BLOCKED event adds the blocker badge);
+//   - REWORK -> the Run is RUNNING again, so the COMPLETING badge goes back to
+//     ACTIVE.
+//
+// A card already in a terminal column (DONE/CANCELLED) is never moved, as in
+// every other Reducer; a decision for a Run that is no longer the card's
+// active Run (a late echo of an older Run) leaves the badge alone.
+func reduceCompletionDecided(prior WorkItemCardRow, payloadJSON string) (WorkItemCardRow, error) {
+	p, err := decode[completionDecidedPayload](payloadJSON)
+	if err != nil {
+		return WorkItemCardRow{}, err
+	}
+	if prior.isTerminal() {
+		return prior, nil
+	}
+	current := prior.ActiveRunID == p.RunID
+	switch p.Outcome {
+	case "PASS":
+		prior.Status = statusDone
+		prior.ActiveRunID = ""
+		prior.ActiveRunStatus = ""
+	case "BLOCK":
+		prior.Status = statusBlocked
+		if current {
+			prior.ActiveRunStatus = runStatusBlocked
+		}
+	case "FAIL":
+		prior.Status = statusBlocked
+		if current {
+			prior.ActiveRunStatus = runStatusFailed
+		}
+	case "REWORK":
+		if current {
+			prior.ActiveRunStatus = runStatusActive
+		}
 	}
 	return prior, nil
 }
@@ -303,7 +363,8 @@ func reduceRunCancelled(prior WorkItemCardRow, payloadJSON string) (WorkItemCard
 // and, critically, the ONLY event in this codebase that ever reports a
 // SUCCESSFUL Run completion (there is no standalone "RunCompleted" event —
 // RUN_COMPLETION_REQUESTED is only the two-phase intent). TerminalState is
-// mapped onto WorkItemStatus's own closed enum: COMPLETED -> DONE,
+// mapped onto WorkItemStatus's own closed enum: COMPLETED (or SUCCEEDED, the
+// WorkflowRunState the store actually writes) -> DONE,
 // CANCELLED -> stays whatever RUN_CANCELLED/WORK_ITEM_CANCELLED already
 // resolved (never regresses a card OUT of CANCELLED, matching this event's
 // own late/echo-like arrival relative to those), anything else (FAILED and
@@ -321,7 +382,7 @@ func reduceWorkflowRunFinalized(prior WorkItemCardRow, payloadJSON string) (Work
 		return prior, nil
 	}
 	switch p.TerminalState {
-	case "COMPLETED":
+	case "COMPLETED", "SUCCEEDED":
 		prior.Status = statusDone
 		prior.ActiveRunStatus = ""
 	case "CANCELLED":

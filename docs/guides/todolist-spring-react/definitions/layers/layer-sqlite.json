@@ -1,0 +1,18 @@
+{
+  "resources": [
+    {
+      "key": "sqlite.datasource",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {"componentTags": ["backend"]},
+      "convention": "Cơ sở dữ liệu là SQLite qua JDBC driver org.xerial:sqlite-jdbc, Hibernate dialect org.hibernate.community.dialect.SQLiteDialect (dependency org.hibernate.orm:hibernate-community-dialects, version do Spring Boot quản lý). URL mặc định: jdbc:sqlite:./data/todolist.db (tạo thư mục data/ nếu chưa có, thư mục này phải nằm trong .gitignore). Đặt spring.jpa.hibernate.ddl-auto=validate — schema do migration quản lý, không để Hibernate tự sinh. Không dùng H2, PostgreSQL hay MySQL.",
+      "provenance": {"owner": "team-backend", "source": "docs/guides/todolist-spring-react", "revision": "v2", "lastVerified": "2026-10-04T00:00:00Z"}
+    },
+    {
+      "key": "sqlite.migrations",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {"componentTags": ["backend"]},
+      "convention": "Schema được quản lý bằng Flyway (flyway-core) trong backend/src/main/resources/db/migration, đặt tên V<n>__<mo_ta>.sql. Bảng todos: id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL. Migration đã commit thì không sửa; thay đổi schema luôn bằng một file V<n+1> mới. Nhớ rằng SQLite chỉ cho một writer tại một thời điểm: giữ transaction ngắn, không mở transaction dài trong request.",
+      "provenance": {"owner": "team-backend", "source": "docs/guides/todolist-spring-react", "revision": "v2", "lastVerified": "2026-10-04T00:00:00Z"}
+    }
+  ]
+}
