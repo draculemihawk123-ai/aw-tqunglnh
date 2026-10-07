@@ -6,6 +6,7 @@ Cách dùng:
     aw-publish.py aw-project.json --slots            # chỗ trống mà workflow của kit đòi project điền
     aw-publish.py aw-project.json                    # publish, ghi trạng thái vào aw-state.json
     aw-publish.py <kit>/kit.json --check             # kiểm tra chính kho (kit)
+    aw-publish.py aw-project.json --kit <thư mục kit>  # như trên nhưng dùng kho ở thư mục khác (kit/bench)
     aw-publish.py <kit>/kit.json --share             # mục nào của kho không được chia sẻ ra ngoài (thoát mã 1 nếu có)
 
 Kho dùng chung (kit): file khai báo project có khóa "kit": "<đường dẫn tới kit.json>" (hoặc {"path", "version"}).
@@ -86,7 +87,7 @@ INSTANTIATED = ("commands", "gates", "workflows")          # phần của kit l�
 INCLUDE_RE = re.compile(r'^\s*\.\s+"\$\{AW_KIT:\?[^}]*\}/(?P<rel>[^"]+)"\s*#\s*@aw-include\s*$')
 
 
-def load_manifest(path, as_kit=False):
+def load_manifest(path, as_kit=False, kit_override=None):
     base = os.path.dirname(os.path.abspath(path))
     with open(path, encoding="utf-8") as f:
         manifest = json.load(f)
@@ -106,7 +107,12 @@ def load_manifest(path, as_kit=False):
     spec = manifest.pop("kit", None)
     if spec is not None and not as_kit:
         spec = {"path": spec} if isinstance(spec, str) else dict(spec)
-        kit = load_manifest(os.path.join(base, spec["path"]), as_kit=True)
+        kit_path = os.path.join(base, spec["path"])
+        if kit_override:
+            kit_path = os.path.abspath(kit_override)
+            if os.path.isdir(kit_path):
+                kit_path = os.path.join(kit_path, "kit.json")
+        kit = load_manifest(kit_path, as_kit=True)
         if kit["role"] != "kit":
             raise ManifestError(f"{spec['path']} không phải kho (kit): thiếu \"role\": \"kit\"")
         wanted = str(spec.get("version", "")).split(".")[0]
@@ -864,11 +870,13 @@ def main():
     parser.add_argument("manifest")
     parser.add_argument("--check", action="store_true", help="chỉ kiểm tra khai báo, không gọi aw")
     parser.add_argument("--slots", action="store_true", help="in chỗ trống mà workflow của kit đòi project điền")
+    parser.add_argument("--kit", metavar="THƯ_MỤC|kit.json",
+                        help="dùng kho này thay cho kho khai trong aw-project.json (đo một phiên bản kho khác, xem kit/bench)")
     parser.add_argument("--share", action="store_true",
                         help="liệt kê mục không được chia sẻ ra ngoài (redistributable=false hoặc giấy phép UNKNOWN); thoát mã 1 nếu có")
     args = parser.parse_args()
     try:
-        manifest = load_manifest(args.manifest)
+        manifest = load_manifest(args.manifest, kit_override=args.kit)
     except (OSError, json.JSONDecodeError, ManifestError) as exc:
         sys.exit(f"Không đọc được {args.manifest}: {exc}")
     try:

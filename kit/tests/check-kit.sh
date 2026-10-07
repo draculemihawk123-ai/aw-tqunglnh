@@ -211,6 +211,19 @@ else
   echo "  bỏ qua (cần Go và repo aw để build aw và fake-claude, hoặc đặt AW và AW_FAKE_CLAUDE)"
 fi
 
+echo "== bộ đo (V10-02)"
+python3 "$kit/tests/test-bench.py" > "$tmp/o" 2>&1 && ok "kit-bench (tự duyệt, chạy lại, needs_info) và kit-metrics (collect, compare, blind)" || bad "bộ đo: $(cat "$tmp/o")"
+for fixture in contracts api web; do
+  git clone -q -b main "$kit/bench/issue-tracker-mvp/$fixture.bundle" "$tmp/fx-$fixture" 2> /dev/null && ok "fixture $fixture.bundle clone được" || bad "fixture $fixture.bundle hỏng"
+done
+if command -v go > /dev/null 2>&1 && [ -f "$repo/go.mod" ]; then
+  # chỉ dựng môi trường (không chạy agent, không tốn tiền): dùng agent giả lập làm Claude CLI
+  fake=$(sh -c 'cd "$1" && go build -o "$2/fake-claude" ./cmd/fake-claude && echo "$2/fake-claude"' _ "$repo" "$tmp") \
+    && AW_CLAUDE_EXECUTABLE="$fake" python3 "$kit/scripts/kit-bench.py" --label thu --runs 1 --out "$tmp/bench" --setup-only --no-readiness > "$tmp/o" 2>&1 \
+    && grep -q "setup=SUCCEEDED" "$tmp/o" && ok "kit-bench --setup-only dựng được bản cài, ba repository, publish, gốc (agent giả lập)" \
+    || bad "kit-bench --setup-only: $(tail -5 "$tmp/o")"
+fi
+
 echo "== script đã nhúng thư viện chạy khi KHÔNG có AW_KIT"
 cat > "$tmp/p/demo.sh" <<'SH'
 #!/bin/sh
