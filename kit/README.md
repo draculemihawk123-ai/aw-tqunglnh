@@ -32,7 +32,8 @@ kit/
 ├── scripts/                    # script vận hành (đọc aw-project.json / aw-state.json), không gắn với stack nào
 │   ├── init-project.sh  create-root.sh  run-task.sh  watch-run.sh  show-run.sh  review-task.sh
 │   ├── retry-task.sh  commit-task.sh  worktree-path.sh  split-tasks.sh  agent-log.py
-│   └── aw-publish.py  aw-resource-hashes.py
+│   ├── aw-publish.py  aw-resource-hashes.py
+│   └── import-skill.py  context-check.sh   # công cụ cho người chắt lọc tri thức (mục "Chắt lọc từ nguồn bên ngoài")
 ├── commands/
 │   ├── lib.sh                  # thư viện cho script lệnh (mục 4)
 │   └── reject.sh  check-feature-docs.sh  secrets-gate.sh
@@ -40,6 +41,7 @@ kit/
 ├── skills/                     # skill-feature-flow, skill-review, skill-code-review
 ├── workflows/                  # wf-feature-definition, wf-task-delivery (mẫu, có chỗ trống cho project điền)
 ├── schema/aw-project.schema.json   # đặc tả của aw-project.json và kit.json
+├── drafts/                     # bản nháp do import-skill.py sinh (git bỏ qua, không bao giờ publish)
 └── tests/check-kit.sh          # kiểm tra tự động (mục 7)
 ```
 
@@ -188,6 +190,24 @@ cụ gốc: `/ck:…`, `AskUserQuestion`, `TaskCreate`/`TaskUpdate`/`TaskGet`/`T
   hưởng việc publish lên bản cài của chính bạn.
 - Mỗi resource của mục đó có `provenance.source` dạng `claudekit-engineer@<commit>:<đường dẫn trong ClaudeKit>`, ví dụ
   `claudekit-engineer@ed8a1fa:skills/ck-debug/SKILL.md`; `--check` từ chối nếu thiếu hoặc khác commit của `origin`.
+
+**Công cụ cho người chắt lọc.**
+
+- `scripts/import-skill.py <thư mục skill | file .md>` đọc skill dạng `SKILL.md` (kèm `references/*.md`), agent hoặc rule của
+  công cụ khác và sinh **bản nháp** vào `kit/drafts/<tên>.json` cùng `<tên>.report.md`: mỗi mục `## …` thành một resource
+  (mục dài được tách theo đoạn), `provenance.source` đã có dạng `<nguồn>:<đường dẫn>`, báo cáo nêu giấy phép trong nguồn, đoạn
+  khai mẫu cho `kit.json` và những chỗ `--check` sẽ chặn. Bản nháp không nằm trong `kit.json` nên không bao giờ được publish;
+  bạn viết lại từng resource rồi mới chuyển vào `skills/` hoặc `layers/`. Dùng được cho mọi nguồn theo chuẩn `SKILL.md`.
+- `scripts/context-check.sh <aw-project.json> [<workflow>:]<node> [--repository ID] [--component TÊN] [--risk MỨC]` kiểm tra
+  tri thức nào thực sự đến một node AGENT mà **không tốn tiền**: dựng bản cài aw tạm, publish project, chạy đúng node đó bằng
+  agent giả lập (`fake-claude`) rồi in resource mà attempt nhận (kèm độ ưu tiên, byte, ngân sách) và resource bị loại
+  (`NOT_APPLICABLE`…). `--expect <key>` và `--absent <key>` (lặp được) biến nó thành kiểm tra tự động: thoát mã 1 khi sai.
+  Chạy khoảng 8 giây. Cần `aw` và `fake-claude` (biến `AW`, `AW_FAKE_CLAUDE` hoặc PATH; trong repo aw, thiếu thì tự `go build`).
+
+  ```bash
+  context-check.sh docs/guides/todolist-spring-react/aw-project.json build --component backend \
+      --expect flow.build --absent react.api-client
+  ```
 
 **Trước khi chia sẻ kho ra ngoài** chạy `aw-publish.py kit/kit.json --share`: lệnh liệt kê mục có `redistributable: false` và
 mục có giấy phép `UNKNOWN`, thoát mã 1 nếu có.

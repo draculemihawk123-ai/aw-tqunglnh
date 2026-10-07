@@ -166,6 +166,51 @@ d["resources"][0]["instruction"] += " " + text
 d["resources"][1]["instruction"] += " " + text'
 $pub "$tmp/k8/kit.json" --check 2>&1 | grep -q "lặp luật đã có" && ok "luật lặp ở hai resource chỉ bị cảnh báo" || bad "không cảnh báo luật lặp"
 
+echo "== công cụ nhập skill (V10-01)"
+fixture="$kit/tests/fixtures/skills/sample-skill"
+python3 "$kit/scripts/import-skill.py" "$fixture" --source "mau@1" --out "$tmp/draft" > "$tmp/o" 2>&1 && ok "import-skill chạy trên skill mẫu" || bad "import-skill: $(cat "$tmp/o")"
+python3 - "$tmp/draft" <<'PY' && ok "bản nháp: key, priority, provenance, tách mục dài, bỏ qua dòng ## trong khối code" || bad "bản nháp sai (xem chi tiết ở trên)"
+import json, sys
+d = json.load(open(sys.argv[1] + "/sample-skill.json", encoding="utf-8"))
+keys = [r["key"] for r in d["resources"]]
+by = {r["key"]: r for r in d["resources"]}
+assert "skill.gioi-thieu" in keys and "skill.nguyen-tac-chung" in keys, keys
+assert any(k.startswith("skill.kiem-thu-") for k in keys), keys  # mục dài bị tách thành nhiều phần
+assert all(len(r["instruction"].encode()) <= 3072 for r in d["resources"]), "phần tách còn quá 3072 byte"
+assert by["skill.extra.danh-muc-kiem-tra"]["priority"] == "REFERENCE", by["skill.extra.danh-muc-kiem-tra"]["priority"]
+assert by["skill.nguyen-tac-chung"]["priority"] == "GUIDANCE"
+assert by["skill.nguyen-tac-chung"]["provenance"]["source"] == "mau@1:skills/sample-skill/SKILL.md", by["skill.nguyen-tac-chung"]["provenance"]
+assert set(by["skill.nguyen-tac-chung"]["provenance"]) == {"owner", "source", "revision", "lastVerified"}
+assert "dòng này nằm trong khối code" in by["skill.muc-co-khoi-code"]["instruction"]
+assert not any("dòng này nằm trong khối code" in r["key"] for r in d["resources"])
+report = open(sys.argv[1] + "/sample-skill.report.md", encoding="utf-8").read()
+assert "MIT" in report and "/ck:" in report and "cấu trúc chỉ có ở công cụ gốc" in report, "báo cáo thiếu license hoặc cấu trúc cấm"
+assert '"redistributable"' in report and '"origin": "mau@1"' in report
+PY
+# bản nháp không nằm trong kit.json nên không bị --check; chuyển vào kho thì lint bắt cấu trúc cấm
+cp -R "$kit" "$tmp/k9"
+python3 - "$tmp/draft/sample-skill.json" "$tmp/k9" <<'PY'
+import json, shutil, sys
+shutil.copy(sys.argv[1], sys.argv[2] + "/skills/skill-mau.json")
+k = json.load(open(sys.argv[2] + "/kit.json", encoding="utf-8"))
+k["skills"].append({"id": "skill-mau", "name": "Skill: mẫu", "file": "skills/skill-mau.json", "origin": "mau@1", "license": "MIT"})
+json.dump(k, open(sys.argv[2] + "/kit.json", "w", encoding="utf-8"), ensure_ascii=False)
+PY
+expect_err "bản nháp chưa chắt lọc bị lint chặn khi vào kho" "cấu trúc chỉ có ở công cụ gốc" "$tmp/k9/kit.json"
+git -C "$repo" check-ignore -q "$kit/drafts/x.json" 2> /dev/null && ok "kit/drafts/ được git bỏ qua" || bad "kit/drafts/ chưa được git bỏ qua"
+echo "== context-check (V10-01)"
+if command -v go > /dev/null 2>&1 && [ -f "$repo/go.mod" ]; then
+  if [ -f "$example" ] && sh "$kit/scripts/context-check.sh" "$example" build --component backend --expect flow.build --absent react.api-client > "$tmp/o" 2>&1; then
+    grep -q "NOT_APPLICABLE" "$tmp/o" && ok "context-check: build/backend nạp flow.build, loại react.api-client (agent giả lập)" || bad "context-check không in resource bị loại"
+  else
+    bad "context-check: $(tail -5 "$tmp/o")"
+  fi
+  sh "$kit/scripts/context-check.sh" "$example" build --component backend --expect react.api-client > "$tmp/o" 2>&1 \
+    && bad "context-check đáng lẽ báo thiếu khi --expect resource không được nạp" || { grep -q "thiếu: react.api-client" "$tmp/o" && ok "context-check --expect báo thiếu và thoát mã 1" || bad "thiếu thông báo --expect: $(tail -3 "$tmp/o")"; }
+else
+  echo "  bỏ qua (cần Go và repo aw để build aw và fake-claude, hoặc đặt AW và AW_FAKE_CLAUDE)"
+fi
+
 echo "== script đã nhúng thư viện chạy khi KHÔNG có AW_KIT"
 cat > "$tmp/p/demo.sh" <<'SH'
 #!/bin/sh
