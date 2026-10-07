@@ -13,6 +13,8 @@ máy kiểm tra, người duyệt, `aw` ghi lại bằng chứng và tạo commi
 - **Phần 4** là công việc hằng ngày: viết task, chạy, duyệt, commit, merge.
 - **Phần 5 và [operations.md](operations.md)** là vận hành: thay đổi quy trình, xem trạng thái, xử lý sự cố, bảo trì.
 
+> Người mới với `aw`: đọc [../aw-entities.md](../aw-entities.md) (thực thể, quan hệ, vòng đời; có sơ đồ).
+>
 > Muốn xem một ví dụ **phức tạp hơn dùng gần như mọi cơ chế của `aw`** (ba repository, hợp đồng làm gốc, task song song,
 > reviewer độc lập, đổi yêu cầu giữa chừng, kiểm tra nhánh chính có chờ CI) thì đọc
 > [../issue-tracker/README.md](../issue-tracker/README.md).

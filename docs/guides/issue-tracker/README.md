@@ -6,6 +6,8 @@ Hướng dẫn từng bước, từ một thư mục trống đến một sản 
 **mọi cơ chế của `aw` cùng lúc**: nhiều repository, hợp đồng làm gốc, task chạy song song, reviewer độc lập, đổi
 yêu cầu giữa chừng, kiểm tra nhánh chính có chờ tín hiệu CI.
 
+> Người mới với `aw`: đọc [aw-entities.md](../aw-entities.md) (các thực thể, quan hệ và vòng đời, có sơ đồ) trước khi vào các bước.
+
 Mọi thứ dùng chung (script vận hành, policy, skill, workflow mẫu, Layer của stack) lấy từ [`kit/`](../../../kit/README.md).
 Thư mục này chỉ giữ phần **riêng của issue tracker**: [`aw-project.json`](aw-project.json), ba Layer hợp đồng, một skill,
 năm workflow, năm script kiểm tra, sáu file WorkItem mẫu và [`repo-template/`](repo-template) (khung ban đầu của ba repository).
