@@ -1,0 +1,30 @@
+{
+ "resources": [
+  {
+   "key": "docs.when",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:rules/documentation-management.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Chỉ cập nhật tài liệu khi thay đổi ảnh hưởng tới hành vi nhìn thấy được, cách cài đặt hoặc chạy, lệnh, kiến trúc, tư thế bảo mật, hợp đồng công khai, hoặc một quyết định mà người bảo trì sau này cần biết. Thay đổi thuần nội bộ thì đừng thêm tài liệu hay dòng nhật ký cho có. Tài liệu hay phải đụng tới: quy chuẩn code, mô tả kiến trúc, lộ trình, và changelog nếu repository đã có. Quyết định kiến trúc thì ghi bằng ADR như flow.sync yêu cầu; đừng nhồi vào tài liệu chung."
+  },
+  {
+   "key": "docs.how",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:agents/docs-manager.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Cách cập nhật tài liệu: đọc tài liệu hiện có và code thật trước khi viết, đừng mô tả hành vi bạn tưởng. Kiểm tra tên file, hàm, tham số dòng lệnh được nhắc vẫn còn tồn tại. Ví dụ lệnh hay code phải đúng: bạn không chạy được lệnh, nên chép từ test hoặc script đã có thay vì tự nghĩ ra. Xóa mục đã lỗi thời thay vì để \"TODO: cập nhật\". Đối chiếu với tài liệu liên quan để không mâu thuẫn nhau. Giữ mỗi file tài liệu dưới khoảng 800 dòng (README dưới 300): vượt thì tách theo chủ đề thay vì nối dài. Cuối cùng đọc lại điều bạn vừa viết: ngày, liên kết và mọi khẳng định phải khớp thay đổi thật."
+  }
+ ]
+}

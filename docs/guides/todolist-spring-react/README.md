@@ -915,6 +915,7 @@ Skill ([`definitions/skills/`](definitions/skills/)):
 | `skill-debug` (kit, chắt lọc từ ClaudeKit) | `debug.root-cause`, `debug.hypotheses`, `debug.fix-discipline` (REQUIRED_PROCEDURE) | Vòng sửa sau khi kiểm tra đỏ: đọc trọn lỗi, lần ngược tới nguồn, 2 đến 3 giả thuyết cạnh tranh loại trừ bằng bằng chứng, một thay đổi cho một nguyên nhân; sửa nhiều lần vẫn đỏ thì dừng và hỏi |
 | | `debug.red-flags` (GUIDANCE) | Những câu cho thấy đang đoán mò |
 | `skill-test` (kit, chắt lọc từ ClaudeKit) | `test.behavior`, `test.error-paths` (REQUIRED_PROCEDURE) | Test theo hành vi, độc lập và xác định; phủ đầu vào sai, giá trị biên, đối tượng không tồn tại, và lỗi không để lại tác dụng phụ |
+| `skill-docs` (kit, chắt lọc từ ClaudeKit) | `docs.when`, `docs.how` (REQUIRED_PROCEDURE) | Chỉ cập nhật tài liệu khi hành vi, lệnh, kiến trúc hay hợp đồng đổi; đọc code thật, kiểm tên file và hàm, xóa mục lỗi thời, giữ file gọn |
 | `skill-ask` (kit, chắt lọc từ ClaudeKit) | `ask.analysis-first` (REQUIRED_PROCEDURE), `ask.question-groups` (GUIDANCE) | Đọc repository và viết phân tích trước khi hỏi; 2 đến 4 phương án tự đứng được; gom câu hỏi theo nhóm |
 
 Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-project.json)):
@@ -929,7 +930,7 @@ Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-projec
 | `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame`, `rules.decisions`, `rules.finish`, `ask.*`, `frame.complexity` |
 | `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, ba Layer, `rules.decisions`, `rules.finish`, `plan.checklist`, `design.verify-claims` |
 | `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra`, `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `ask.*`, `build.*`, `debug.*`, `test.*` |
-| `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync`, `rules.decisions`, `rules.finish` |
+| `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync`, `rules.decisions`, `rules.finish`, `docs.*` |
 
 Sau khi chạy một task, kiểm tra agent thực sự nhận resource nào trong ContextSnapshot của attempt:
 

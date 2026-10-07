@@ -59,7 +59,7 @@
                    "layer-java-spring-boot", "layer-sqlite", "layer-react-vite",
                    "skill-todolist-dev#dev.definition-of-done", "skill-todolist-dev#dev.high-risk-extra", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-dev-rules#rules.no-shortcuts", "skill-dev-rules#rules.principles", "skill-dev-rules#rules.stable-artifacts", "skill-build#build.conformance", "skill-build#build.checklist", "skill-debug#debug.root-cause", "skill-debug#debug.hypotheses", "skill-debug#debug.fix-discipline", "skill-debug#debug.red-flags", "skill-test#test.behavior", "skill-test#test.error-paths"]},
     {"id": "agent-flow-sync", "name": "Agent: SYNC",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.sync", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish"]}
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.sync", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-docs#docs.when", "skill-docs#docs.how"]}
   ],
 
   "commands": [

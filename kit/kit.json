@@ -45,7 +45,10 @@
      "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
     {"id": "skill-security", "name": "Skill: soát bảo mật cho task rủi ro cao (CHECKER, chắt lọc từ ClaudeKit)", "file": "skills/skill-security.json",
      "origin": "claudekit-engineer@ed8a1fa (skills/ck-security; viết lại cho aw)",
-     "license": "MIT (skills/ck-security)", "redistributable": false}
+     "license": "MIT (skills/ck-security)", "redistributable": false},
+    {"id": "skill-docs", "name": "Skill: SYNC — cập nhật tài liệu đúng lúc, đúng cách (chắt lọc từ ClaudeKit)", "file": "skills/skill-docs.json",
+     "origin": "claudekit-engineer@ed8a1fa (agents/docs-manager, skills/docs/references/update-workflow, rules/documentation-management; viết lại cho aw)",
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false}
   ],
 
   "scriptSkills": [
