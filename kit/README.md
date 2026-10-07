@@ -19,6 +19,7 @@ Tài liệu này chỉ nói về kho. Ví dụ đầy đủ một project dùng 
 - [3. Cái nào dùng chung thật, cái nào là bản mẫu](#3-cái-nào-dùng-chung-thật-cái-nào-là-bản-mẫu)
 - [4. Thư viện script lệnh (`lib.sh`)](#thư-viện-script-lệnh-libsh)
 - [5. Thêm một mục vào kho](#5-thêm-một-mục-vào-kho)
+- [Chắt lọc từ nguồn bên ngoài](#chắt-lọc-từ-nguồn-bên-ngoài)
 - [6. Version và nâng cấp](#6-version-và-nâng-cấp)
 - [7. Kiểm tra kho](#7-kiểm-tra-kho)
 - [8. Giới hạn hiện tại](#8-giới-hạn-hiện-tại)
@@ -149,6 +150,48 @@ Ví dụ: bạn muốn node review dùng một skill review tổng hợp từ nh
 không có sandbox).** Vì vậy: người đọc từng dòng trước khi nhận, không nhận script chạy được mà chưa đọc, và khi cập nhật
 từ nguồn thì xem diff của nội dung chứ không chỉ số revision. Hash khóa nội dung nên thay đổi không bị lặng lẽ lọt vào.
 
+## Chắt lọc từ nguồn bên ngoài
+
+Quy ước của V10 ([docs/design/13-v10-kit-knowledge.md](../docs/design/13-v10-kit-knowledge.md)) cho mọi nội dung lấy từ công cụ
+khác (ClaudeKit, skill công khai, tài liệu của nhà cung cấp). Phần lớn được `aw-publish.py --check` kiểm tự động.
+
+**Viết lại, không chép nguyên.** Trong `aw`, agent MAKER không chạy được lệnh shell, không có subagent, không hỏi người trực
+tiếp (muốn hỏi thì chọn outcome `needs_info`), và outcome do engine kiểm. Vì vậy `--check` chặn những cấu trúc chỉ có ở công
+cụ gốc: `/ck:…`, `AskUserQuestion`, `TaskCreate`/`TaskUpdate`/`TaskGet`/`TaskList`, `SendMessage`, `Task(…)`, `repomix`,
+đường dẫn `.claude/`, `plans/reports`, marker `@@PRIVACY`. Gặp ý hay dùng các cấu trúc đó thì diễn đạt lại theo cách aw làm
+được (ví dụ "hỏi người" thành "chọn `needs_info` và nêu câu hỏi").
+
+**Một resource một ý.**
+
+| Luật | Ngưỡng | Kết quả của `--check` |
+|---|---|---|
+| Kích thước `instruction` | cảnh báo trên 2048 byte, lỗi trên 3072 byte | tách thành các resource nhỏ hơn |
+| `HARD_CONSTRAINT` mỗi agent | tối đa 15 (cùng ngưỡng cảnh báo của `aw`) | lỗi: hạ bớt xuống `REQUIRED_PROCEDURE` hoặc `GUIDANCE` |
+| Cùng một luật ở hai resource | câu từ 60 ký tự trở lên, giống nhau sau khi chuẩn hóa | cảnh báo: mỗi luật chỉ ở một chỗ, nơi khác tham chiếu |
+
+`HARD_CONSTRAINT` chỉ dành cho luật kiểm được mà vi phạm là sai. Quy trình thì `REQUIRED_PROCEDURE`, lời khuyên thì
+`GUIDANCE`, tài liệu tra cứu thì `REFERENCE`. Viết tiếng Việt, giữ thuật ngữ kỹ thuật tiếng Anh.
+
+**Xuất xứ và giấy phép theo từng mục** (khai ở entry trong `kit.json`, vì `provenance` của aw chỉ nhận bốn trường):
+
+```json
+{"id": "skill-debug", "file": "skills/skill-debug.json",
+ "origin": "claudekit-engineer@ed8a1fa",
+ "license": "MIT",
+ "redistributable": true}
+```
+
+- `origin` của mục lấy từ ClaudeKit có dạng `claudekit-engineer@<commit>` (có thể thêm ghi chú sau một dấu cách).
+- `license` ghi theo từng skill nguồn: đọc trường `license:` trong `SKILL.md` của nó (một số là MIT hoặc Apache-2.0).
+  Skill không khai thì theo giấy phép độc quyền của ClaudeKit: ghi `ClaudeKit-Proprietary (licensed)`.
+- `redistributable` bắt buộc với mục lấy từ ClaudeKit: `false` nếu nội dung không được phân phối lại. Trường này không ảnh
+  hưởng việc publish lên bản cài của chính bạn.
+- Mỗi resource của mục đó có `provenance.source` dạng `claudekit-engineer@<commit>:<đường dẫn trong ClaudeKit>`, ví dụ
+  `claudekit-engineer@ed8a1fa:skills/ck-debug/SKILL.md`; `--check` từ chối nếu thiếu hoặc khác commit của `origin`.
+
+**Trước khi chia sẻ kho ra ngoài** chạy `aw-publish.py kit/kit.json --share`: lệnh liệt kê mục có `redistributable: false` và
+mục có giấy phép `UNKNOWN`, thoát mã 1 nếu có.
+
 ## 6. Version và nâng cấp
 
 - `kit.json` có `version` (`major.minor.patch`). Project ghim số major trong `"kit": {"version": "1"}`.
@@ -165,7 +208,8 @@ kit/tests/check-kit.sh            # kiểm tra kho, ví dụ todolist, các nhá
 ```
 
 Script chạy: `aw-publish.py kit.json --check`; `--check` cho project ví dụ; các nhánh báo lỗi (prefix trùng, id trùng, kit
-khác major, thiếu bản mẫu, nguồn URL thiếu license, `@aw-include` hỏng); script đã nhúng thư viện chạy đúng **khi không có
+khác major, thiếu bản mẫu, nguồn URL thiếu license, `@aw-include` hỏng); các luật chắt lọc (cấu trúc chỉ có ở công cụ
+gốc, kích thước, quá 15 `HARD_CONSTRAINT`, luật lặp, xuất xứ và `--share`); script đã nhúng thư viện chạy đúng **khi không có
 `AW_KIT`**; và, nếu có Python `jsonschema`, validate các khai báo theo schema.
 
 Chưa có trong script (cần một bản cài `aw` thật): publish hai project và so version. Đã làm tay một lần khi tách kho (ghi ở

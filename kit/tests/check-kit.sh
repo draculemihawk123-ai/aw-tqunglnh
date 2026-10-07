@@ -104,6 +104,68 @@ import sys
 sys.exit(0 if "argRepositories" in open(sys.argv[1], encoding="utf-8").read() else 1)
 PY
 
+echo "== tri thức chắt lọc từ nguồn ngoài (V10-00)"
+# mutate <thư mục kho copy> <file python sửa d (skill-review.json) và entry (kit.json)>: dựng một bản kho đã sửa
+mutate() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+root, code = sys.argv[1], sys.argv[2]
+f = root + "/skills/skill-review.json"
+d = json.load(open(f, encoding="utf-8"))
+k = json.load(open(root + "/kit.json", encoding="utf-8"))
+entry = next(e for e in k["skills"] if e["id"] == "skill-review")
+exec(code)
+json.dump(d, open(f, "w", encoding="utf-8"), ensure_ascii=False)
+json.dump(k, open(root + "/kit.json", "w", encoding="utf-8"), ensure_ascii=False)
+PY
+}
+cp -R "$kit" "$tmp/k1"; mutate "$tmp/k1" 'd["resources"][0]["instruction"] += " Hãy dùng /ck:plan trước."'
+expect_err "cấu trúc chỉ có ở ClaudeKit bị chặn (/ck:)" "cấu trúc chỉ có ở công cụ gốc" "$tmp/k1/kit.json"
+cp -R "$kit" "$tmp/k2"; mutate "$tmp/k2" 'd["resources"][0]["instruction"] += " Dùng AskUserQuestion để hỏi."'
+expect_err "AskUserQuestion bị chặn" "AskUserQuestion" "$tmp/k2/kit.json"
+cp -R "$kit" "$tmp/k3"; mutate "$tmp/k3" 'd["resources"][0]["instruction"] += " Tiếp theo." * 400'
+expect_err "resource quá lớn bị chặn" "quá 3072" "$tmp/k3/kit.json"
+cp -R "$kit" "$tmp/k4"; mutate "$tmp/k4" 'entry["origin"] = "claudekit-engineer@ed8a1fa"; entry["license"] = "MIT"'
+expect_err "mục từ ClaudeKit thiếu redistributable" "redistributable" "$tmp/k4/kit.json"
+cp -R "$kit" "$tmp/k5"; mutate "$tmp/k5" 'entry["origin"] = "claudekit-engineer@ed8a1fa"; entry["license"] = "MIT"; entry["redistributable"] = True'
+expect_err "mục từ ClaudeKit: provenance.source sai dạng" "provenance.source phải có dạng claudekit-engineer@ed8a1fa:" "$tmp/k5/kit.json"
+SRC='entry["origin"] = "claudekit-engineer@ed8a1fa (chắt lọc)"; entry["license"] = "ClaudeKit-Proprietary (licensed)"; entry["redistributable"] = RED
+for r in d["resources"]: r["provenance"]["source"] = "claudekit-engineer@ed8a1fa:skills/ck-code-review/SKILL.md"'
+cp -R "$kit" "$tmp/k6"; mutate "$tmp/k6" "$(printf '%s' "$SRC" | sed 's/RED/False/')"
+$pub "$tmp/k6/kit.json" --check > "$tmp/o" 2>&1 && ok "mục từ ClaudeKit khai đủ origin, license, redistributable, source" || bad "mục ClaudeKit hợp lệ bị từ chối: $(cat "$tmp/o")"
+$pub "$tmp/k6/kit.json" --share > "$tmp/o" 2>&1 && bad "--share đáng lẽ chặn mục redistributable=false" \
+  || { grep -q "skills/skill-review: không được phân phối lại" "$tmp/o" && ok "--share liệt kê mục redistributable=false và thoát mã 1" || bad "--share thiếu thông báo: $(cat "$tmp/o")"; }
+cp -R "$kit" "$tmp/k7"; mutate "$tmp/k7" "$(printf '%s' "$SRC" | sed 's/RED/True/')"
+python3 - "$tmp/k7/kit.json" <<'PY'
+import json, sys  # mục UNKNOWN còn lại ở skill-code-review phải được xử lý trước khi chia sẻ: đặt license rõ ràng cho nó
+k = json.load(open(sys.argv[1], encoding="utf-8"))
+for e in k["skills"]:
+    if str(e.get("license", "")).upper().startswith("UNKNOWN"):
+        e["license"] = "MIT"
+json.dump(k, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False)
+PY
+$pub "$tmp/k7/kit.json" --share > "$tmp/o" 2>&1 && ok "--share cho qua khi mọi mục được phép chia sẻ" || bad "--share chặn nhầm: $(cat "$tmp/o")"
+$pub "$kit/kit.json" --share > "$tmp/o" 2>&1 && bad "--share đáng lẽ chặn mục giấy phép UNKNOWN" \
+  || { grep -q "giấy phép chưa xác định" "$tmp/o" && ok "--share chặn mục giấy phép UNKNOWN" || bad "--share thiếu thông báo UNKNOWN: $(cat "$tmp/o")"; }
+# quá 15 HARD_CONSTRAINT cho một agent
+python3 - "$tmp/p" <<'PY'
+import json, sys
+root = sys.argv[1]
+res = [{"key": "h%d" % i, "priority": "HARD_CONSTRAINT", "selector": {}, "instruction": "Luật số %d." % i,
+        "provenance": {"owner": "t", "source": "t", "revision": "v1", "lastVerified": "2026-10-07T00:00:00Z"}} for i in range(16)]
+json.dump({"resources": res}, open(root + "/hard16.json", "w", encoding="utf-8"), ensure_ascii=False)
+PY
+cat > "$tmp/p/hard.json" <<JSON
+{"prefix": "p-", "repository": "r", $kitref, "skills": [{"id": "skill-hard", "file": "hard16.json"}],
+ "agents": [{"id": "a", "resources": ["skill-hard"]}]}
+JSON
+expect_err "agent có quá 15 HARD_CONSTRAINT" "quá 15" "$tmp/p/hard.json"
+# luật lặp giữa hai resource: chỉ cảnh báo
+cp -R "$kit" "$tmp/k8"; mutate "$tmp/k8" 'text = "Mọi khẳng định về code trong báo cáo phải kèm đường dẫn file và số dòng cụ thể để người đọc kiểm chứng được."
+d["resources"][0]["instruction"] += " " + text
+d["resources"][1]["instruction"] += " " + text'
+$pub "$tmp/k8/kit.json" --check 2>&1 | grep -q "lặp luật đã có" && ok "luật lặp ở hai resource chỉ bị cảnh báo" || bad "không cảnh báo luật lặp"
+
 echo "== script đã nhúng thư viện chạy khi KHÔNG có AW_KIT"
 cat > "$tmp/p/demo.sh" <<'SH'
 #!/bin/sh

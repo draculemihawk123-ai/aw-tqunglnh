@@ -6,6 +6,7 @@ Cách dùng:
     aw-publish.py aw-project.json --slots            # chỗ trống mà workflow của kit đòi project điền
     aw-publish.py aw-project.json                    # publish, ghi trạng thái vào aw-state.json
     aw-publish.py <kit>/kit.json --check             # kiểm tra chính kho (kit)
+    aw-publish.py <kit>/kit.json --share             # mục nào của kho không được chia sẻ ra ngoài (thoát mã 1 nếu có)
 
 Kho dùng chung (kit): file khai báo project có khóa "kit": "<đường dẫn tới kit.json>" (hoặc {"path", "version"}).
 Id mà kit khai báo (Layer, Skill, script skill, Policy) tham chiếu được từ project mà không phải khai lại; chúng được
@@ -296,6 +297,7 @@ def lint(manifest):
     problems += lint_resource_fields(manifest)
     if is_kit:
         problems += lint_provenance(manifest)
+    problems += knowledge_findings(manifest)[0]
     for pack in manifest["packs"]:
         for dep in pack.get("include", []):
             if dep not in passive and dep not in packs:
@@ -424,6 +426,93 @@ def lint_provenance(manifest):
     return problems
 
 
+# Chắt lọc từ nguồn bên ngoài (kit/README.md, mục "Chắt lọc từ nguồn bên ngoài"): những cấu trúc chỉ có ở công cụ gốc
+# (ClaudeKit) không dùng được trong aw, vì agent MAKER không chạy được lệnh, không có subagent và không hỏi người trực tiếp.
+FOREIGN_CONSTRUCTS = [
+    (r"/ck:", "lệnh /ck:… của ClaudeKit"), (r"AskUserQuestion", "AskUserQuestion (aw: chọn outcome needs_info)"),
+    (r"\bTask(Create|Update|Get|List)\b", "công cụ Task* của Claude Code"), (r"\bSendMessage\b", "SendMessage"),
+    (r"\bTask\(", "subagent Task(…)"), (r"\brepomix\b", "repomix (agent không chạy được lệnh)"),
+    (r"\.claude/", "đường dẫn .claude/"), (r"plans/reports", "thư mục plans/reports"), (r"@@PRIVACY", "marker privacy-block"),
+]
+INSTRUCTION_WARN_BYTES = 2048   # một resource là một ý, khoảng 2 KB
+INSTRUCTION_MAX_BYTES = 3072
+MAX_HARD_CONSTRAINTS = 15       # trùng ngưỡng cảnh báo của aw (--warn-hard-constraints)
+FOREIGN_ORIGIN_PREFIX = "claudekit-engineer@"
+
+
+def sentences(text):
+    """Câu đủ dài để coi là một luật (>= 60 ký tự sau khi chuẩn hóa)."""
+    out = []
+    for part in re.split(r"(?<=[.;:!?])\s+|\n+", text):
+        norm = re.sub(r"\s+", " ", part).strip().lower()
+        if len(norm) >= 60:
+            out.append(norm)
+    return out
+
+
+def knowledge_findings(manifest):
+    """(lỗi, cảnh báo) của tri thức chắt lọc: cấu trúc chỉ có ở công cụ gốc, kích thước, số HARD_CONSTRAINT mỗi agent, luật
+    lặp giữa các resource, và xuất xứ của mục lấy từ ClaudeKit."""
+    errors, warns = [], []
+    seen = {}
+    for owner in owners(manifest):
+        for section in ("layers", "skills"):
+            for entry in owner[section]:
+                origin = str(entry.get("origin", "")).split()
+                origin = origin[0] if origin else ""
+                if origin.startswith(FOREIGN_ORIGIN_PREFIX):
+                    if not isinstance(entry.get("redistributable"), bool):
+                        errors.append(f"{section}/{entry['id']}: mục lấy từ ClaudeKit phải khai \"redistributable\" (true/false) ở entry trong kit.json")
+                    if not str(entry.get("license", "")).strip():
+                        errors.append(f"{section}/{entry['id']}: mục lấy từ ClaudeKit phải khai \"license\" của từng skill nguồn")
+                elif "redistributable" in entry and not isinstance(entry["redistributable"], bool):
+                    errors.append(f"{section}/{entry['id']}: redistributable phải là true/false")
+                for resource in read_json(owner, entry["file"])["resources"]:
+                    where = f"{section}/{entry['id']}#{resource.get('key')}"
+                    text = resource.get("instruction", "")
+                    for pattern, label in FOREIGN_CONSTRUCTS:
+                        if re.search(pattern, text):
+                            errors.append(f"{where}: dùng cấu trúc chỉ có ở công cụ gốc: {label}; viết lại cho ngữ cảnh aw")
+                    size = len(text.encode("utf-8"))
+                    if size > INSTRUCTION_MAX_BYTES:
+                        errors.append(f"{where}: instruction {size} byte, quá {INSTRUCTION_MAX_BYTES}: tách thành các resource nhỏ hơn (một ý mỗi resource)")
+                    elif size > INSTRUCTION_WARN_BYTES:
+                        warns.append(f"{where}: instruction {size} byte, nên gọn dưới khoảng {INSTRUCTION_WARN_BYTES}")
+                    if origin.startswith(FOREIGN_ORIGIN_PREFIX):
+                        source = str((resource.get("provenance") or {}).get("source", ""))
+                        if not source.startswith(origin + ":"):
+                            errors.append(f"{where}: provenance.source phải có dạng {origin}:<đường dẫn trong ClaudeKit>")
+                    for sentence in sentences(text):
+                        first = seen.setdefault(sentence, where)
+                        if first != where:
+                            warns.append(f"{where}: lặp luật đã có ở {first} (\"{sentence[:50]}…\"); mỗi luật chỉ nên nằm một chỗ")
+    for agent in manifest["agents"]:
+        hard = 0
+        for selector in agent.get("resources", []):
+            item_id, key = split_selector(selector)
+            try:
+                resources = resources_of(manifest, item_id)
+            except ManifestError:
+                continue
+            hard += sum(1 for r in resources if (key is None or r.get("key") == key) and r.get("priority") == "HARD_CONSTRAINT")
+        if hard > MAX_HARD_CONSTRAINTS:
+            errors.append(f"agents/{agent['id']}: {hard} HARD_CONSTRAINT, quá {MAX_HARD_CONSTRAINTS}: hạ bớt xuống REQUIRED_PROCEDURE hoặc GUIDANCE")
+    return errors, sorted(set(warns))
+
+
+def share_report(manifest):
+    """Mục của kho không được phép chia sẻ ra ngoài: redistributable=false, hoặc giấy phép chưa xác định."""
+    blocked = []
+    for owner in owners(manifest):
+        for section in ("layers", "skills", "policies"):
+            for entry in owner[section]:
+                if entry.get("redistributable") is False:
+                    blocked.append(f"{section}/{entry['id']}: không được phân phối lại (origin: {entry.get('origin', '?')}; license: {entry.get('license', '?')})")
+                elif str(entry.get("license", "")).strip().upper().startswith("UNKNOWN"):
+                    blocked.append(f"{section}/{entry['id']}: giấy phép chưa xác định (origin: {entry.get('origin', '?')})")
+    return blocked
+
+
 def warnings(manifest):
     """Cảnh báo không chặn: mục của kho có giấy phép chưa xác định."""
     out = []
@@ -433,6 +522,7 @@ def warnings(manifest):
                 if str(entry.get("license", "")).strip().upper().startswith("UNKNOWN"):
                     out.append(f"{section}/{entry['id']}: giấy phép chưa xác định (origin: {entry.get('origin', '?')}) — "
                                f"xác nhận trước khi phân phối kho ra ngoài")
+    out += knowledge_findings(manifest)[1]
     return out
 
 
@@ -774,6 +864,8 @@ def main():
     parser.add_argument("manifest")
     parser.add_argument("--check", action="store_true", help="chỉ kiểm tra khai báo, không gọi aw")
     parser.add_argument("--slots", action="store_true", help="in chỗ trống mà workflow của kit đòi project điền")
+    parser.add_argument("--share", action="store_true",
+                        help="liệt kê mục không được chia sẻ ra ngoài (redistributable=false hoặc giấy phép UNKNOWN); thoát mã 1 nếu có")
     args = parser.parse_args()
     try:
         manifest = load_manifest(args.manifest)
@@ -783,6 +875,17 @@ def main():
         problems = lint(manifest)
     except (ManifestError, OSError, json.JSONDecodeError) as exc:
         problems = [str(exc)]
+    if args.share:
+        if problems:
+            sys.exit("Khai báo chưa hợp lệ, chạy --check trước")
+        blocked = share_report(manifest)
+        if blocked:
+            print("Không được chia sẻ kho này ra ngoài khi còn các mục:", file=sys.stderr)
+            for line in blocked:
+                print("  - " + line, file=sys.stderr)
+            sys.exit(1)
+        print("OK: mọi mục của kho được phép chia sẻ")
+        return
     if args.slots:
         print_slots(manifest)
         if problems:
