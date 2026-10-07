@@ -893,7 +893,8 @@ Skill ([`definitions/skills/`](definitions/skills/)):
 | | `dev.high-risk-extra` (GUIDANCE, `riskClasses: HIGH`) | Chỉ nạp khi contract có `riskLevel: HIGH` |
 | | `dev.stack-overview` (REFERENCE, global) | Tổng quan ba thư mục, cho các bước không gắn với một vùng code |
 | `skill-todolist-routing` | `dev.routing-table` (REQUIRED_PROCEDURE, global) | Bảng "khu vực thay đổi → thư mục/tài liệu cần đọc trước" của todolist; chỉ `agent-flow-plan` nạp (skill riêng để reviewer và `agent-dev` không nhận) |
-| `skill-code-review` (kit) | `codereview.evidence` (HARD_CONSTRAINT), `codereview.procedure` (REQUIRED_PROCEDURE), `codereview.report` (GUIDANCE), cả ba `CHECKER` | Review có bằng chứng: hai giai đoạn, mức nghiêm trọng, tách "đã đọc" khỏi "đã chạy"; `agent-reviewer` nạp cùng `skill-review` |
+| `skill-code-review` (kit, chắt lọc từ ClaudeKit) | `codereview.evidence` (HARD_CONSTRAINT), `codereview.procedure`, `codereview.edge-scout`, `codereview.checklist` (REQUIRED_PROCEDURE), `codereview.report` (GUIDANCE), đều `CHECKER` | Review có bằng chứng: hai giai đoạn, mức nghiêm trọng, tách "đã đọc" khỏi "đã chạy"; `agent-reviewer` nạp cùng `skill-review` |
+| `skill-security` (kit, chắt lọc từ ClaudeKit) | `security.stride` (REQUIRED_PROCEDURE), `security.owasp` (GUIDANCE), cả hai `riskClasses: HIGH` | Chỉ nạp khi contract có `riskLevel: HIGH`: soát STRIDE và nhóm OWASP, che giá trị bí mật khi báo cáo |
 | `skill-review` (kit) | `review.read-only` (HARD_CONSTRAINT, `CHECKER`) | Chỉ đọc; repository nằm ở đường dẫn trong system prompt |
 | | `review.checklist` (REQUIRED_PROCEDURE, `CHECKER`) | Đối chiếu từng acceptance criteria; khi nào `approved`, khi nào `rework` |
 | `skill-feature-flow` (kit) | `flow.working-rules` (HARD_CONSTRAINT) | Mỗi agent chỉ làm một giai đoạn; thư mục tài liệu; cách đọc `allowedOutcomes`; không commit |
@@ -921,7 +922,7 @@ Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-projec
 | Agent | Dùng ở node | Model | Resource ứng viên |
 |---|---|---|---|
 | `agent-dev` | `implement` của ba workflow rút gọn | sonnet | Ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `build.*`, `debug.*`, `test.*` |
-| `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.threat-model` |
+| `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.threat-model`; `security.*` |
 | `agent-flow-brainstorm` | `brainstorm` | opus | `flow.working-rules`, `flow.brainstorm`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `brainstorm.*` |
 | `agent-flow-spec` | `spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `ask.*`, `spec.*` |
 | `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `rules.threat-model`, `design.*` |

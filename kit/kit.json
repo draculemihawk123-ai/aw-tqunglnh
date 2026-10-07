@@ -14,8 +14,8 @@
     {"id": "skill-feature-flow", "name": "Skill: quy trình tính năng → task", "file": "skills/skill-feature-flow.json"},
     {"id": "skill-review", "name": "Skill: review độc lập (CHECKER)", "file": "skills/skill-review.json"},
     {"id": "skill-code-review", "name": "Skill: code review có bằng chứng (CHECKER)", "file": "skills/skill-code-review.json",
-     "origin": "claudekit/code-review 2.0.0 (người dùng cung cấp; chắt lọc, bỏ phần dành cho Claude Code tương tác)",
-     "license": "UNKNOWN"},
+     "origin": "claudekit-engineer@ed8a1fa (skills/ck-code-review, agents/code-reviewer; thay bản chắt lọc từ code-review 2.0.0 người dùng cung cấp; bỏ phần dành cho Claude Code tương tác)",
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
     {"id": "skill-dev-rules", "name": "Skill: luật phát triển, quyết định và cách kết thúc (chắt lọc từ ClaudeKit)", "file": "skills/skill-dev-rules.json",
      "origin": "claudekit-engineer@ed8a1fa (rules/development-rules, review-audit-self-decision, orchestration-protocol; viết lại cho aw)",
      "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
@@ -42,7 +42,10 @@
      "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
     {"id": "skill-test", "name": "Skill: viết test theo hành vi và đường lỗi (chắt lọc từ ClaudeKit)", "file": "skills/skill-test.json",
      "origin": "claudekit-engineer@ed8a1fa (agents/tester, skills/test; viết lại cho aw)",
-     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false}
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
+    {"id": "skill-security", "name": "Skill: soát bảo mật cho task rủi ro cao (CHECKER, chắt lọc từ ClaudeKit)", "file": "skills/skill-security.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/ck-security; viết lại cho aw)",
+     "license": "MIT (skills/ck-security)", "redistributable": false}
   ],
 
   "scriptSkills": [

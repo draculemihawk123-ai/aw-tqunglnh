@@ -50,7 +50,7 @@
     {"id": "agent-reviewer", "name": "Agent: reviewer độc lập (CHECKER)",
      "resources": ["skill-review", "skill-code-review", "layer-openapi-contract", "layer-stack-spring-sqlite", "layer-api-contract-first",
                    "layer-stack-react-vite", "layer-web-contract-first", "skill-maker#dev.definition-of-done",
-                   "skill-tracker-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model"]},
+                   "skill-tracker-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-security#security.stride", "skill-security#security.owasp"]},
 
     {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm", "skill-tracker-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-brainstorm#brainstorm.scout-first", "skill-brainstorm#brainstorm.problem-first", "skill-brainstorm#brainstorm.options", "skill-brainstorm#brainstorm.assumptions", "skill-brainstorm#brainstorm.exact-requirements", "skill-brainstorm#brainstorm.unstuck"]},

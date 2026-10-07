@@ -147,7 +147,9 @@ for e in k["skills"]:
 json.dump(k, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False)
 PY
 $pub "$tmp/k7/kit.json" --share > "$tmp/o" 2>&1 && ok "--share cho qua khi mọi mục được phép chia sẻ" || bad "--share chặn nhầm: $(cat "$tmp/o")"
-$pub "$kit/kit.json" --share > "$tmp/o" 2>&1 && bad "--share đáng lẽ chặn mục giấy phép UNKNOWN" \
+cp -R "$kit" "$tmp/k11"; mutate "$tmp/k11" 'entry["license"] = "UNKNOWN"'
+$pub "$tmp/k11/kit.json" --check 2>&1 | grep -q "giấy phép chưa xác định" && ok "license UNKNOWN chỉ cảnh báo khi --check" || bad "không cảnh báo license UNKNOWN"
+$pub "$tmp/k11/kit.json" --share > "$tmp/o" 2>&1 && bad "--share đáng lẽ chặn mục giấy phép UNKNOWN" \
   || { grep -q "giấy phép chưa xác định" "$tmp/o" && ok "--share chặn mục giấy phép UNKNOWN" || bad "--share thiếu thông báo UNKNOWN: $(cat "$tmp/o")"; }
 cp -R "$kit" "$tmp/k10"; mutate "$tmp/k10" 'd["resources"][0]["selector"] = {}; d["resources"][0].pop("global", None)'
 expect_err "resource không selector mà thiếu global:true" 'phải khai "global": true' "$tmp/k10/kit.json"

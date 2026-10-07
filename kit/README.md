@@ -38,7 +38,7 @@ kit/
 │   ├── lib.sh                  # thư viện cho script lệnh (mục 4)
 │   └── reject.sh  check-feature-docs.sh  secrets-gate.sh
 ├── policies/                   # attempt(-once), permission(-network), completion(-reviewed, -feature)
-├── skills/                     # skill-feature-flow, skill-maker, skill-review, skill-code-review, skill-dev-rules, skill-ask, skill-brainstorm, skill-spec, skill-design, skill-plan, skill-build, skill-debug, skill-test
+├── skills/                     # skill-feature-flow, skill-maker, skill-review, skill-code-review, skill-dev-rules, skill-ask, skill-brainstorm, skill-spec, skill-design, skill-plan, skill-build, skill-debug, skill-test, skill-security
 ├── workflows/                  # wf-feature-definition, wf-task-delivery (mẫu, có chỗ trống cho project điền)
 ├── schema/aw-project.schema.json   # đặc tả của aw-project.json và kit.json
 ├── drafts/                     # bản nháp do import-skill.py sinh (git bỏ qua, không bao giờ publish)
@@ -241,8 +241,10 @@ Skill review của claudekit (người dùng cung cấp) được nhận vào kh
 phương pháp dựa trên bằng chứng, hai giai đoạn (đúng yêu cầu rồi mới chất lượng), soi dấu hiệu code do AI viết, mức nghiêm
 trọng, và không tuyên bố điều chưa kiểm chứng. Phần bỏ vì không chạy được trong node CHECKER của `aw` (agent không tương tác,
 chỉ đọc, `git` và lệnh shell bị chặn ở chế độ `acceptEdits`): chọn chế độ review bằng `AskUserQuestion`, `gh pr diff`, subagent
-`code-reviewer`, `/ck:scout`, pipeline Task, và các `references/*.md` (không được cung cấp). Giấy phép của nguồn **chưa xác
-định** (`UNKNOWN`).
+`code-reviewer`, `/ck:scout`, pipeline Task, và các `references/*.md` (không được cung cấp). Từ V10-09 skill này được
+ghim lại theo ClaudeKit `ed8a1fa` (`skills/ck-code-review`, `agents/code-reviewer`), giấy phép ghi theo nguồn và `redistributable: false`; bản
+người dùng cung cấp ban đầu (giấy phép `UNKNOWN`) không còn trong kho. Phần bổ sung: dò edge case trước khi review và danh sách rà
+(`codereview.edge-scout`, `codereview.checklist`), báo cáo thêm mục "Edge case dò được" và "Câu hỏi chưa giải quyết".
 
 Dùng: `agent-reviewer` của project thêm `"skill-code-review"` vào `resources` (cạnh `skill-review`, vốn giữ ràng buộc chỉ đọc
 và quy tắc chọn outcome). Cả ba resource có selector `blockKinds: ["CHECKER"]` nên chỉ agent review nhận.

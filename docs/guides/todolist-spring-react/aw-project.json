@@ -38,7 +38,7 @@
     {"id": "agent-dev", "name": "Agent: developer (backend và frontend, tri thức theo vùng code)",
      "resources": ["layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-dev-rules#rules.principles", "skill-dev-rules#rules.stable-artifacts", "skill-build#build.conformance", "skill-build#build.checklist", "skill-debug#debug.root-cause", "skill-debug#debug.hypotheses", "skill-debug#debug.fix-discipline", "skill-debug#debug.red-flags", "skill-test#test.behavior", "skill-test#test.error-paths"]},
     {"id": "agent-reviewer", "name": "Agent: reviewer độc lập (CHECKER)",
-     "resources": ["skill-review", "skill-code-review", "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model"]},
+     "resources": ["skill-review", "skill-code-review", "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-security#security.stride", "skill-security#security.owasp"]},
 
     {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM", "model": "opus",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm",

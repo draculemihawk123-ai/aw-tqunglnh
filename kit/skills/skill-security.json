@@ -1,0 +1,36 @@
+{
+ "resources": [
+  {
+   "key": "security.stride",
+   "priority": "REQUIRED_PROCEDURE",
+   "selector": {
+    "riskClasses": [
+     "HIGH"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/ck-security/SKILL.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Task rủi ro cao: ngoài review thường, soát bảo mật theo STRIDE trên phần code đã đọc. Giả mạo (endpoint nào thiếu xác thực, mật khẩu băm bằng thuật toán yếu, token không hết hạn hay không kiểm ở máy chủ); Giả dữ liệu (đầu vào không kiểm kiểu, độ dài, định dạng; ghép chuỗi vào SQL; phương thức HTTP sai cho thao tác ghi); Chối bỏ (thiếu nhật ký cho đăng nhập, lỗi phân quyền, thay đổi dữ liệu; nhật ký chứa mật khẩu hay token); Lộ thông tin (stack trace, ID nội bộ, bí mật trong code, phản hồi trả thừa trường); Từ chối dịch vụ (danh sách không phân trang, thiếu giới hạn kích thước hay thời gian chờ, regex dễ bùng nổ); Nâng quyền (kiểm quyền chỉ ở phía giao diện, người này truy cập tài nguyên của người khác bằng ID). Chỉ ghi phát hiện kèm file:dòng và kịch bản khai thác; điều đã được bảo vệ ở tầng khác thì nói rõ ở tầng nào."
+  },
+  {
+   "key": "security.owasp",
+   "priority": "GUIDANCE",
+   "selector": {
+    "riskClasses": [
+     "HIGH"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/ck-security/references/stride-owasp-checklist.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Gắn mỗi phát hiện bảo mật vào nhóm OWASP khi hợp lý để người duyệt dễ đánh giá: A01 kiểm soát truy cập hỏng (thiếu kiểm quyền, IDOR, CORS rộng, duyệt đường dẫn); A02 lỗi mật mã (băm yếu, lưu thô, thiếu TLS); A03 chèn mã (SQL, lệnh hệ điều hành, mẫu); A04 thiết kế không an toàn (lỗi logic nghiệp vụ, không nghĩ tới lạm dụng); A05 cấu hình sai (mật khẩu mặc định, trang lỗi chi tiết); A06 thành phần dễ tổn thương (phiên bản cũ có CVE); A07 lỗi xác thực; A08 toàn vẹn dữ liệu (giải tuần tự hóa không tin cậy); A09 thiếu nhật ký bảo mật; A10 SSRF (URL do người dùng cung cấp). Khi báo cáo, che giá trị bí mật: ghi tên biến hay vị trí, không chép giá trị thật."
+  }
+ ]
+}
