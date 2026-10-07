@@ -89,6 +89,8 @@ class Lane:
             "AW_STATE": os.path.join(self.dir, "aw-state.json"), "AW_KIT": os.path.join(tree_root, "kit"),
             "PATH": os.path.join(tree_root, "kit", "scripts") + os.pathsep + os.environ.get("PATH", ""),
             "AUTHOR_NAME": "kit-bench", "AUTHOR_EMAIL": "kit-bench@example.invalid",
+            # cấu hình Claude riêng cho từng lượt: không nạp skill, hook hay cài đặt cấp người dùng của máy chạy (đo ở spike V10-17)
+            "CLAUDE_CONFIG_DIR": os.path.join(self.dir, "claude-config"),
             "WAIT_SECONDS": os.environ.get("WAIT_SECONDS", "2700")})
         self.scripts = os.path.join(tree_root, "kit", "scripts")
         self.logs = os.path.join(self.dir, "logs")
@@ -123,7 +125,7 @@ class Lane:
         a = self.args
         cmd = [self.tools["aw"], "worker", "--db", self.env["AW_DB"], "--artifact-root", self.env["AW_ARTIFACT_ROOT"],
                "--workspace-root", self.env["AW_WORKSPACE_ROOT"], "--claude-executable", self.tools["claude"],
-               "--env-allowlist", "PATH,HOME", "--claude-permission-mode", "acceptEdits", "--claude-effort", a.effort,
+               "--env-allowlist", "PATH,HOME,CLAUDE_CONFIG_DIR", "--claude-permission-mode", "acceptEdits", "--claude-effort", a.effort,
                "--claude-max-budget-usd", str(a.max_budget)]
         self.worker = subprocess.Popen(cmd, env=self.env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         time.sleep(1.0)

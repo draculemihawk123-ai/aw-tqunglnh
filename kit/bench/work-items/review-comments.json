@@ -20,16 +20,16 @@
   ],
   "contract": {
     "schemaVersion": 1,
-    "behavior": "Review độc lập phần hiện thực tính năng bình luận trên issue: hợp đồng spec/openapi.json (repository contracts, phiên bản 0.2.0), backend (repository api, thư mục backend/) và frontend (repository web, thư mục frontend/), đối chiếu với tài liệu tính năng docs/features/comments (02-spec.md, 03-design.md) và với acceptance criteria dưới đây.",
+    "behavior": "Review độc lập phần hiện thực tính năng bình luận trên issue: hợp đồng spec/openapi.json (repository contracts), backend (repository api, thư mục backend/) và frontend (repository web, thư mục frontend/). Chuẩn để đối chiếu là tài liệu tính năng đã được người duyệt ở docs/features/comments (01-brainstorm.md, 02-spec.md, 03-design.md, tasks.json): mọi giá trị cụ thể (tên operation, giới hạn độ dài, phiên bản hợp đồng, mã lỗi) lấy từ các tài liệu đó, không lấy từ nơi khác.",
     "verificationSpec": "Reviewer chỉ đọc và báo cáo theo mức nghiêm trọng; người vận hành quyết định ở cổng review.",
     "riskLevel": "MEDIUM",
     "acceptanceCriteria": [
       {
-        "description": "Hợp đồng chỉ cộng thêm: ba operation bình luận (listComments, createComment, deleteComment) và schema Comment, NewComment; mọi path, schema, response của bản 0.1.0 giữ nguyên",
+        "description": "Hợp đồng chỉ cộng thêm: các operation và schema bình luận đúng theo 03-design.md và 02-spec.md; mọi path, schema, response đã có trước đó giữ nguyên",
         "verificationRef": "AGENT_EXECUTION"
       },
       {
-        "description": "Backend: ba route đúng path, method, mã trạng thái; author và body bắt buộc, không rỗng sau khi bỏ khoảng trắng, tối đa 100 và 5000 ký tự; issue hoặc bình luận không tồn tại trả 404 dạng Problem; xóa issue xóa bình luận của nó; mỗi hành vi có test, kể cả đường lỗi",
+        "description": "Backend: các route đúng path, method, mã trạng thái theo hợp đồng; validation (bắt buộc, không rỗng sau khi bỏ khoảng trắng, giới hạn độ dài) đúng theo 02-spec.md; issue hoặc bình luận không tồn tại trả 404 dạng Problem; xóa issue xóa bình luận của nó; mỗi hành vi có test, kể cả đường lỗi",
         "verificationRef": "AGENT_EXECUTION"
       },
       {
