@@ -1,8 +1,9 @@
 # V10 — Tri thức cho kit: chắt lọc từ ClaudeKit theo từng node
 
-> Trạng thái: **THIẾT KẾ — chờ product owner duyệt, chưa triển khai.** Product owner đã xác nhận kế hoạch ngày
-> 2026-10-07: 19 task dưới đây, đo hiệu quả 2 lượt mỗi lần đo, tri thức chắt lọc viết bằng tiếng Việt. File này chỉ chia
-> task; chưa task nào được thực hiện. Khi triển khai: mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Trạng thái: **ĐÃ DUYỆT — chưa triển khai.** Product owner xác nhận kế hoạch ngày 2026-10-07 (19 task dưới đây, đo
+> hiệu quả 2 lượt mỗi lần đo, tri thức chắt lọc viết bằng tiếng Việt) và duyệt file này khi cho merge vào `master` cùng
+> ngày. File này chỉ chia task; chưa task nào được thực hiện. Khi triển khai: mỗi task một commit, merge vào `master`
+> khi product owner duyệt.
 >
 > Entry: `master` tại `ef59084` (kho `kit/` và hai hướng dẫn đã merge).
 >
