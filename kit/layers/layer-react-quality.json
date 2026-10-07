@@ -1,0 +1,84 @@
+{
+ "resources": [
+  {
+   "key": "react.rerender",
+   "priority": "GUIDANCE",
+   "selector": {
+    "componentTags": [
+     "frontend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/react-best-practices/rules/rerender-derived-state.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Giảm render thừa. Theo dõi trạng thái dẫn xuất (một boolean như `isMobile`) thay vì giá trị liên tục (chiều rộng cửa sổ). Cập nhật state dựa trên giá trị cũ bằng dạng hàm (`setItems(prev => ...)`) để callback ổn định, khỏi phụ thuộc state. Khai báo phụ thuộc của effect bằng giá trị nguyên thủy (`user.id`) thay vì cả đối tượng. Tách phần tính toán nặng vào component bọc `memo` để thoát sớm khi đang tải. Khởi tạo state tốn kém bằng hàm (`useState(() => ...)`). Tính giá trị dẫn xuất ngay lúc render thay vì lưu thêm một state rồi đồng bộ bằng effect."
+  },
+  {
+   "key": "react.bundle",
+   "priority": "GUIDANCE",
+   "selector": {
+    "componentTags": [
+     "frontend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/react-best-practices/rules/bundle-barrel-imports.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Kích thước bundle. Import trực tiếp từ file nguồn thay vì từ file barrel của thư viện lớn (ví dụ bộ icon), vì barrel có thể kéo hàng nghìn module. Tải theo nhu cầu (`React.lazy` và `import()`) cho component nặng chưa cần ở lần hiển thị đầu. Hoãn thư viện bên thứ ba không cần ngay (phân tích, theo dõi) sang sau khi giao diện đã hiện."
+  },
+  {
+   "key": "react.rendering",
+   "priority": "GUIDANCE",
+   "selector": {
+    "componentTags": [
+     "frontend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/react-best-practices/rules/rendering-conditional-render.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Hiển thị. Dùng `? :` khi điều kiện có thể là `0` hoặc `NaN` (`{count && ...}` sẽ in ra `0`). Nhấc JSX tĩnh ra khỏi component để không tạo lại mỗi lần render. Danh sách có `key` ổn định và duy nhất (không dùng chỉ số mảng khi danh sách đổi thứ tự). Mọi dữ liệu lấy từ máy chủ có đủ ba trạng thái: đang tải, rỗng, lỗi."
+  },
+  {
+   "key": "react.async",
+   "priority": "GUIDANCE",
+   "selector": {
+    "componentTags": [
+     "frontend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/react-best-practices/rules/async-parallel.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Gọi API. Các yêu cầu độc lập chạy song song (`Promise.all`), không tuần tự. Đừng `await` sớm hơn nơi cần kết quả. Hủy hoặc bỏ qua kết quả của yêu cầu cũ khi tham số đổi (`AbortController`, cờ hủy) để kết quả chậm không ghi đè kết quả mới. Dùng một lớp client duy nhất cho lời gọi API thay vì rải `fetch` khắp nơi."
+  },
+  {
+   "key": "react.js-perf",
+   "priority": "GUIDANCE",
+   "selector": {
+    "componentTags": [
+     "frontend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/react-best-practices/rules/js-set-map-lookups.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Xử lý dữ liệu. Dùng `Set` hoặc `Map` khi tra cứu thành viên lặp lại thay vì `includes` trên mảng. Trả về sớm khi đã đủ kết quả. Gộp nhiều lần lọc hoặc duyệt cùng một mảng lớn thành một lượt. Sắp xếp mà không làm đổi mảng gốc (`toSorted` hoặc sao chép trước): sắp xếp trực tiếp state hay props gây lỗi khó thấy."
+  }
+ ]
+}

@@ -406,6 +406,10 @@ def lint_resource_fields(manifest):
                 for resource in read_json(owner, entry["file"])["resources"]:
                     prov = resource.get("provenance") or {}
                     where = f"{section}/{entry['id']}#{resource.get('key')}"
+                    body_field, wrong_field = ("convention", "instruction") if section == "layers" else ("instruction", "convention")
+                    if wrong_field in resource or not str(resource.get(body_field, "")).strip():
+                        problems.append(f"{where}: nội dung của resource trong {'Layer' if section == 'layers' else 'Skill'} nằm ở trường "
+                                        f"\"{body_field}\" (không phải \"{wrong_field}\"), và không được rỗng")
                     if not any((resource.get("selector") or {}).values()) and resource.get("global") is not True:
                         problems.append(f"{where}: resource không có selector phải khai \"global\": true (aw yêu cầu mọi resource không toàn cục "
                                         f"nêu khi nào áp dụng: componentTags, pathTags, taskKinds, blockKinds hoặc riskClasses)")
@@ -478,7 +482,7 @@ def knowledge_findings(manifest):
                     errors.append(f"{section}/{entry['id']}: redistributable phải là true/false")
                 for resource in read_json(owner, entry["file"])["resources"]:
                     where = f"{section}/{entry['id']}#{resource.get('key')}"
-                    text = resource.get("instruction", "")
+                    text = resource.get("instruction") or resource.get("convention", "")
                     for pattern, label in FOREIGN_CONSTRUCTS:
                         if re.search(pattern, text):
                             errors.append(f"{where}: dùng cấu trúc chỉ có ở công cụ gốc: {label}; viết lại cho ngữ cảnh aw")

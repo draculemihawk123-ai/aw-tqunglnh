@@ -139,7 +139,7 @@ cp -R "$kit" "$tmp/k7"; mutate "$tmp/k7" "$(printf '%s' "$SRC" | sed 's/RED/True
 python3 - "$tmp/k7/kit.json" <<'PY'
 import json, sys  # trước khi chia sẻ phải xử lý mục UNKNOWN và mục không được phân phối lại: đặt giấy phép rõ ràng, cho phép phân phối
 k = json.load(open(sys.argv[1], encoding="utf-8"))
-for e in k["skills"]:
+for e in k["skills"] + k["layers"] + k["policies"]:
     if str(e.get("license", "")).upper().startswith("UNKNOWN"):
         e["license"] = "MIT"
     if e.get("redistributable") is False:
@@ -153,6 +153,15 @@ $pub "$tmp/k11/kit.json" --share > "$tmp/o" 2>&1 && bad "--share đáng lẽ ch�
   || { grep -q "giấy phép chưa xác định" "$tmp/o" && ok "--share chặn mục giấy phép UNKNOWN" || bad "--share thiếu thông báo UNKNOWN: $(cat "$tmp/o")"; }
 cp -R "$kit" "$tmp/k10"; mutate "$tmp/k10" 'd["resources"][0]["selector"] = {}; d["resources"][0].pop("global", None)'
 expect_err "resource không selector mà thiếu global:true" 'phải khai "global": true' "$tmp/k10/kit.json"
+# Layer dùng trường "convention", Skill dùng "instruction": aw từ chối trường lạ lúc publish nên --check phải bắt sớm
+cp -R "$kit" "$tmp/k12"
+python3 - "$tmp/k12/layers/layer-react-vite.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8"))
+d["resources"][0]["instruction"] = d["resources"][0].pop("convention")
+json.dump(d, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False)
+PY
+expect_err "Layer dùng trường instruction thay vì convention" 'nằm ở trường "convention"' "$tmp/k12/kit.json"
 # quá 15 HARD_CONSTRAINT cho một agent
 python3 - "$tmp/p" <<'PY'
 import json, sys

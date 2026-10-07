@@ -1,0 +1,38 @@
+{
+ "resources": [
+  {
+   "key": "api.rest-conventions",
+   "priority": "REQUIRED_PROCEDURE",
+   "selector": {
+    "componentTags": [
+     "backend",
+     "spec"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/backend-development/references/backend-api-design.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Thiết kế REST. URL theo tài nguyên (danh từ, số nhiều), không có động từ trong đường dẫn; quan hệ lồng một cấp (`/issues/{id}/comments`). Phương thức đúng nghĩa: GET đọc và không bao giờ đổi dữ liệu, POST tạo, PUT thay toàn bộ, PATCH sửa một phần, DELETE xóa. Mã trạng thái có nghĩa: 200 đọc hoặc sửa; 201 tạo kèm header Location; 204 xóa; 400 đầu vào sai; 401 chưa xác thực; 403 không đủ quyền; 404 không tồn tại; 409 xung đột (ví dụ trùng); chỉ dùng 422 nếu hợp đồng của dự án đã dùng. Mọi lỗi theo một dạng chung của dự án (ví dụ Problem trong hợp đồng) với thông điệp cho người đọc, không lộ stack trace hay chi tiết nội bộ. Endpoint trả danh sách phải có giới hạn (phân trang hoặc kích thước tối đa); lọc và sắp xếp qua tham số truy vấn. Nếu hợp đồng hiện có nói khác với gợi ý chung ở đây thì theo hợp đồng."
+  },
+  {
+   "key": "api.compat",
+   "priority": "GUIDANCE",
+   "selector": {
+    "componentTags": [
+     "backend",
+     "spec"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/backend-development/references/backend-api-design.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Tương thích ngược của API: chỉ cộng thêm (trường mới là tùy chọn và có mặc định, endpoint mới). Không đổi tên hay ý nghĩa trường, không đổi kiểu, không thu hẹp giá trị được chấp nhận, không đổi mã trạng thái đang có. Thay đổi phá vỡ cần phiên bản mới và thời gian chuyển; trường ngừng dùng thì đánh dấu deprecated trước khi bỏ. Hợp đồng đi trước code: sửa spec trước rồi mới hiện thực."
+  }
+ ]
+}

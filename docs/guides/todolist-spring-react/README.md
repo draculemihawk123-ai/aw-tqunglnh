@@ -916,20 +916,25 @@ Skill ([`definitions/skills/`](definitions/skills/)):
 | | `debug.red-flags` (GUIDANCE) | Những câu cho thấy đang đoán mò |
 | `skill-test` (kit, chắt lọc từ ClaudeKit) | `test.behavior`, `test.error-paths` (REQUIRED_PROCEDURE) | Test theo hành vi, độc lập và xác định; phủ đầu vào sai, giá trị biên, đối tượng không tồn tại, và lỗi không để lại tác dụng phụ |
 | `skill-docs` (kit, chắt lọc từ ClaudeKit) | `docs.when`, `docs.how` (REQUIRED_PROCEDURE) | Chỉ cập nhật tài liệu khi hành vi, lệnh, kiến trúc hay hợp đồng đổi; đọc code thật, kiểm tên file và hàm, xóa mục lỗi thời, giữ file gọn |
+| `layer-api-design` (kit, chắt lọc từ ClaudeKit; `backend`, `spec`) | `api.rest-conventions` (REQUIRED_PROCEDURE), `api.compat` (GUIDANCE) | URL theo tài nguyên, phương thức và mã trạng thái đúng nghĩa, một dạng lỗi chung, danh sách có giới hạn; API chỉ cộng thêm, hợp đồng đi trước code |
+| `layer-sql-quality` (kit; `backend`) | `sql.queries` (REQUIRED_PROCEDURE), `sql.indexes` (GUIDANCE) | Tham số hóa, tránh `SELECT *` và N+1, giao dịch ngắn, xóa dây chuyền có quyết định rõ; chỉ mục cho cột lọc và khóa ngoại, không sửa migration đã chạy |
+| `layer-backend-security` (kit; `backend`) | `be.security-basics` (REQUIRED_PROCEDURE) | Kiểm đầu vào ở ranh giới, phân quyền phía máy chủ từ chối mặc định, không lộ stack trace hay bí mật, ghi rõ hạn chế khi chưa có xác thực |
+| `layer-react-quality` (kit; `frontend`) | `react.rerender`, `react.bundle`, `react.rendering`, `react.async`, `react.js-perf` (GUIDANCE) | Giảm render thừa, kích thước bundle, hiển thị có điều kiện và ba trạng thái dữ liệu, gọi API song song và hủy yêu cầu cũ, xử lý dữ liệu không đổi mảng gốc (nội dung gốc của Vercel Engineering, qua ClaudeKit) |
+| `layer-frontend-testing` (kit; `frontend`) | `webtest.behavior-first`, `webtest.deterministic` (REQUIRED_PROCEDURE) | Test theo vai trò và nhãn, mock ở ranh giới mạng; không `sleep`, mỗi test tự dựng và dọn, mạng mock có cả đường lỗi |
 | `skill-ask` (kit, chắt lọc từ ClaudeKit) | `ask.analysis-first` (REQUIRED_PROCEDURE), `ask.question-groups` (GUIDANCE) | Đọc repository và viết phân tích trước khi hỏi; 2 đến 4 phương án tự đứng được; gom câu hỏi theo nhóm |
 
 Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-project.json)):
 
 | Agent | Dùng ở node | Model | Resource ứng viên |
 |---|---|---|---|
-| `agent-dev` | `implement` của ba workflow rút gọn | sonnet | Ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `build.*`, `debug.*`, `test.*` |
-| `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.threat-model`; `security.*` |
+| `agent-dev` | `implement` của ba workflow rút gọn | sonnet | Ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `build.*`, `debug.*`, `test.*`, năm layer của kit |
+| `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.threat-model`; `security.*`; năm layer của kit |
 | `agent-flow-brainstorm` | `brainstorm` | opus | `flow.working-rules`, `flow.brainstorm`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `brainstorm.*` |
 | `agent-flow-spec` | `spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `ask.*`, `spec.*` |
-| `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `rules.threat-model`, `design.*` |
+| `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `rules.threat-model`, `design.*`, `layer-api-design`, `layer-sql-quality`, `layer-backend-security` |
 | `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame`, `rules.decisions`, `rules.finish`, `ask.*`, `frame.complexity` |
 | `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, ba Layer, `rules.decisions`, `rules.finish`, `plan.checklist`, `design.verify-claims` |
-| `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra`, `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `ask.*`, `build.*`, `debug.*`, `test.*` |
+| `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra`, `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `ask.*`, `build.*`, `debug.*`, `test.*`, năm layer của kit (`api-design`, `sql-quality`, `backend-security`, `react-quality`, `frontend-testing`) |
 | `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync`, `rules.decisions`, `rules.finish`, `docs.*` |
 
 Sau khi chạy một task, kiểm tra agent thực sự nhận resource nào trong ContextSnapshot của attempt:

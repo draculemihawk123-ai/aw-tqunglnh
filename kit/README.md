@@ -38,6 +38,8 @@ kit/
 │   ├── lib.sh                  # thư viện cho script lệnh (mục 4)
 │   └── reject.sh  check-feature-docs.sh  secrets-gate.sh
 ├── policies/                   # attempt(-once), permission(-network), completion(-reviewed, -feature)
+├── layers/                     # layer-stack-spring-sqlite, layer-stack-react-vite, layer-api-design, layer-sql-quality,
+│                               # layer-backend-security, layer-react-quality, layer-frontend-testing
 ├── skills/                     # skill-feature-flow, skill-maker, skill-review, skill-code-review, skill-dev-rules, skill-ask, skill-brainstorm, skill-spec, skill-design, skill-plan, skill-build, skill-debug, skill-test, skill-security, skill-docs
 ├── workflows/                  # wf-feature-definition, wf-task-delivery (mẫu, có chỗ trống cho project điền)
 ├── schema/aw-project.schema.json   # đặc tả của aw-project.json và kit.json

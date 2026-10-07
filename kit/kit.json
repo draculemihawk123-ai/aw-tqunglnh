@@ -6,7 +6,22 @@
 
   "layers": [
     {"id": "layer-stack-spring-sqlite", "name": "Layer: Java 21 + Spring Boot 3.5 + SQLite + Flyway (tổng quát)", "file": "layers/layer-spring-sqlite.json"},
-    {"id": "layer-stack-react-vite", "name": "Layer: React + TypeScript + Vite (tổng quát)", "file": "layers/layer-react-vite.json"}
+    {"id": "layer-stack-react-vite", "name": "Layer: React + TypeScript + Vite (tổng quát)", "file": "layers/layer-react-vite.json"},
+    {"id": "layer-api-design", "name": "Layer: thiết kế REST API và tương thích ngược (chắt lọc từ ClaudeKit)", "file": "layers/layer-api-design.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/backend-development; viết lại cho aw)",
+     "license": "MIT (skills/backend-development)", "redistributable": false},
+    {"id": "layer-sql-quality", "name": "Layer: truy vấn và chỉ mục SQL (chắt lọc từ ClaudeKit)", "file": "layers/layer-sql-quality.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/databases; chỉ phần SQL chung; viết lại cho aw)",
+     "license": "MIT (skills/databases)", "redistributable": false},
+    {"id": "layer-backend-security", "name": "Layer: backend an toàn mặc định (chắt lọc từ ClaudeKit)", "file": "layers/layer-backend-security.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/backend-development/references/backend-security; viết lại cho aw)",
+     "license": "MIT (skills/backend-development)", "redistributable": false},
+    {"id": "layer-react-quality", "name": "Layer: React hiệu năng và hiển thị cho SPA (chắt lọc từ ClaudeKit)", "file": "layers/layer-react-quality.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/react-best-practices, nội dung gốc của Vercel Engineering; chỉ luật áp dụng cho React và Vite; viết lại cho aw)",
+     "license": "ClaudeKit-Proprietary (licensed) (skills/react-best-practices; nội dung gốc của Vercel Engineering)", "redistributable": false},
+    {"id": "layer-frontend-testing", "name": "Layer: test giao diện theo hành vi và xác định (chắt lọc từ ClaudeKit)", "file": "layers/layer-frontend-testing.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/web-testing; viết lại cho aw)",
+     "license": "Apache-2.0 (skills/web-testing)", "redistributable": false}
   ],
 
   "skills": [

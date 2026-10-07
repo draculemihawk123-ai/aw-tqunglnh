@@ -1,0 +1,36 @@
+{
+ "resources": [
+  {
+   "key": "sql.queries",
+   "priority": "REQUIRED_PROCEDURE",
+   "selector": {
+    "componentTags": [
+     "backend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/databases/references/postgresql-queries.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Truy vấn dữ liệu. Luôn tham số hóa (tham số của JPA hoặc JDBC), không bao giờ nối chuỗi từ đầu vào vào SQL. Chỉ lấy cột và hàng cần dùng: tránh `SELECT *` khi chỉ cần vài cột và luôn giới hạn kích thước kết quả của truy vấn danh sách. Tránh N+1: đừng chạy truy vấn trong vòng lặp qua các bản ghi; gộp bằng fetch join, truy vấn theo lô hoặc một câu `IN`. Giao dịch ngắn, chỉ bao các thao tác phải cùng thành công hoặc cùng thất bại; ghi nhiều bảng thì nằm trong một giao dịch. Với xóa dây chuyền, quyết định rõ (`ON DELETE` hay xóa tường minh trong service) và có test."
+  },
+  {
+   "key": "sql.indexes",
+   "priority": "GUIDANCE",
+   "selector": {
+    "componentTags": [
+     "backend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/databases/references/postgresql-performance.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Chỉ mục: tạo cho cột thường dùng để lọc, sắp xếp hoặc làm khóa ngoại; chỉ mục tổ hợp xếp cột lọc đẳng thức trước, rồi cột khoảng hoặc sắp xếp; đừng thêm chỉ mục mà không truy vấn nào dùng vì nó làm chậm ghi. Migration đã chạy ở bất kỳ môi trường nào thì không sửa: thêm migration mới; mỗi migration một thay đổi mạch lạc, đặt tên theo hành động."
+  }
+ ]
+}
