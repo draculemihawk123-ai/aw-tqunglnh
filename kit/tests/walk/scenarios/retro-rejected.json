@@ -16,5 +16,15 @@
     "approve-lessons": [
       "rejected"
     ]
+  },
+  "expect": {
+    "state": "FAILED",
+    "sequence": [
+      "start:next",
+      "retro:done",
+      "check-lessons:passed",
+      "approve-lessons:rejected",
+      "reject:-"
+    ]
   }
 }

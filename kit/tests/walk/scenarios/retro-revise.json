@@ -17,5 +17,18 @@
       "revise",
       "approved"
     ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "retro:done",
+      "check-lessons:passed",
+      "approve-lessons:revise",
+      "retro:done",
+      "check-lessons:passed",
+      "approve-lessons:approved",
+      "end:-"
+    ]
   }
 }

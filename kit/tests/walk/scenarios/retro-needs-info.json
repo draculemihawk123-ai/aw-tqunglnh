@@ -20,5 +20,17 @@
     "approve-lessons": [
       "approved"
     ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "retro:needs_info",
+      "needs-info:provided",
+      "retro:done",
+      "check-lessons:passed",
+      "approve-lessons:approved",
+      "end:-"
+    ]
   }
 }
