@@ -143,7 +143,7 @@ class Lane:
         self.sh("publish", [sys.executable, os.path.join(self.scripts, "aw-publish.py"),
                             os.path.join(self.tree, "docs", "guides", "issue-tracker", "aw-project.json"),
                             "--kit", os.path.join(self.tree, "kit")], timeout=600)
-        self.script("create-root.sh", f"Bench {os.path.basename(os.path.dirname(self.dir))} {self.index}: bình luận", "api", "web", timeout=3600)
+        self.script("create-root.sh", f"Bench {os.path.basename(os.path.dirname(self.dir))} {self.index}: bình luận", "api=WRITE", "web=WRITE", timeout=3600)
         self.record("setup", "SUCCEEDED", started)
 
     # ---- chạy một WorkItem tới khi xong, tự duyệt cổng người

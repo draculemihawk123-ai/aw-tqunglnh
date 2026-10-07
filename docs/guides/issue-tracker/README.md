@@ -262,7 +262,7 @@ ghi vào ./aw-state.json`. Sửa một file rồi publish lại chỉ tạo **ve
 Tạo gốc (một TaskFamily, mỗi repository một worktree và một branch `agentkit/w-…`), rồi chạy task hợp đồng:
 
 ```bash
-create-root.sh "Đợt MVP: issue tracker" api web       # contracts WRITE; api, web READ (ở gốc)
+create-root.sh "Đợt MVP: issue tracker" api=WRITE web=WRITE   # contracts WRITE; api, web WRITE ở gốc
 run-task.sh "$GUIDE/work-items/c-01-contract.json" wf-contract-change
 ```
 
@@ -273,6 +273,10 @@ baseline api: PASS
 baseline contracts: PASS
 baseline web: NOT_REQUIRED
 ```
+
+**Quyền ở gốc là trần của cả đợt.** Repository bổ sung mặc định chỉ READ; task con muốn ghi vào `api` hay `web` thì gốc phải khai
+`api=WRITE`, `web=WRITE`. Nếu quên, tạo task con bị từ chối: `child effective scope exceeds approved family scope`. Gốc chỉ để
+kiểm tra (mục 10.2) thì READ là đủ.
 
 [`c-01-contract.json`](work-items/c-01-contract.json) là một **WorkItem**: `effectiveScope` (chỉ `contracts`, chỉ thư mục
 `spec`, quyền WRITE), `behavior`, `verificationSpec` và các `acceptanceCriteria`. `wf-contract-change` là:
@@ -569,6 +573,7 @@ Mỗi mục là một lỗi **của hướng dẫn hoặc kit**, đã được s
 | Review xong nhưng `VALIDATION_FAILED` | Tin cuối thiếu marker outcome | `skill-review` nhắc rõ; `retry-task.sh` (8.2) |
 | T-02 ‖ T-03 cùng `SCOPE_VIOLATION` | Task anh em ghi `docs/` vào repository của nhau khi chồng thời gian | Chạy tuần tự (9.3) |
 | `create-root.sh` mới không thấy repository thứ hai/ba | Scope gốc chỉ có repository chính | Truyền `api web` khi tạo gốc (10.2) |
+| Task T-02 bị từ chối ngay: `child effective scope exceeds approved family scope` (hướng dẫn cũ ghi gốc `api web`, chỉ READ) | Gốc chỉ cho READ trên `api` | Gốc đợt MVP khai `api=WRITE web=WRITE` (mục 6); phát hiện khi chạy bộ đo V10 |
 | `provenance.license` bị `aw` từ chối | `provenance` chỉ nhận `owner/source/revision/lastVerified` | Giấy phép/xuất xứ chuyển sang `kit.json`; lint của `aw-publish.py` chặn trường lạ |
 | Layer kit đặt `layer-react-vite` trùng id project todolist | Id định nghĩa duy nhất cả bản cài | Đổi thành `layer-stack-react-vite` |
 
