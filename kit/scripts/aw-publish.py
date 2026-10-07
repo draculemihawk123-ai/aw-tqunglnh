@@ -406,6 +406,9 @@ def lint_resource_fields(manifest):
                 for resource in read_json(owner, entry["file"])["resources"]:
                     prov = resource.get("provenance") or {}
                     where = f"{section}/{entry['id']}#{resource.get('key')}"
+                    if not any((resource.get("selector") or {}).values()) and resource.get("global") is not True:
+                        problems.append(f"{where}: resource không có selector phải khai \"global\": true (aw yêu cầu mọi resource không toàn cục "
+                                        f"nêu khi nào áp dụng: componentTags, pathTags, taskKinds, blockKinds hoặc riskClasses)")
                     extra = sorted(set(prov) - PROVENANCE_FIELDS)
                     if extra:
                         problems.append(f"{where}: provenance có trường aw không nhận {extra} (chỉ owner, source, revision, "

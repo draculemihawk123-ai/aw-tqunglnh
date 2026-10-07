@@ -1,0 +1,91 @@
+{
+ "resources": [
+  {
+   "key": "rules.no-shortcuts",
+   "priority": "HARD_CONSTRAINT",
+   "selector": {
+    "blockKinds": [
+     "MAKER"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:rules/development-rules.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Làm hành vi thật, không đường tắt để qua kiểm tra. Không thêm dữ liệu giả, mock hay giá trị gán cứng chỉ để test, lint, kiểm tra kiểu hoặc build qua. Không tắt, bỏ qua, xóa hay làm yếu test, lint, kiểm tra kiểu (ví dụ `@Disabled`, `.skip`, `.only`, nới điều kiện assert) để chúng qua: kiểm tra đỏ thì sửa nguyên nhân thật. Nếu bạn cho rằng chính test sai, nói rõ lý do ở câu trả lời cuối và chỉ sửa test khi taskContract cho phép. Giữ nguyên hợp đồng công khai (đường dẫn, tên trường, mã trạng thái, chữ ký công khai) trừ khi taskContract nêu rõ phải đổi. Không đưa bí mật, token, mật khẩu hay file `.env` vào code, test hoặc cấu hình."
+  },
+  {
+   "key": "rules.principles",
+   "priority": "REQUIRED_PROCEDURE",
+   "selector": {
+    "blockKinds": [
+     "MAKER"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:rules/development-rules.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Nguyên tắc khi viết code, theo thứ tự ưu tiên: YAGNI (không thêm chức năng chưa được yêu cầu), KISS (cách đơn giản nhất thỏa acceptanceCriteria), DRY (không lặp logic, nhưng đừng gộp những thứ chỉ tình cờ giống nhau). Trước khi viết mới: đọc quy ước của repository, code lân cận và helper có sẵn, rồi bám theo chúng thay vì tạo kiểu mới. Giữ thay đổi trong phạm vi của task và của hợp đồng bị ảnh hưởng; việc liên quan phát hiện thêm thì ghi vào câu trả lời cuối như đề xuất, đừng tự làm. Chỉ tách file hoặc thêm lớp trừu tượng khi nó giảm độ phức tạp thật hoặc khớp ranh giới module đã có. Tên file mới theo quy ước của ngôn ngữ và repository; chỉ khi không có quy ước nào thì dùng kebab-case mô tả đúng nội dung."
+  },
+  {
+   "key": "rules.stable-artifacts",
+   "priority": "GUIDANCE",
+   "selector": {
+    "blockKinds": [
+     "MAKER"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:rules/review-audit-self-decision.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Đừng đưa mã của kế hoạch, giai đoạn, finding review hay task (ví dụ T-02, AC-5, F3) vào comment trong code, tên test, tên migration, tên nhánh hoặc message commit. Hãy nêu trực tiếp bất biến hoặc hành vi được bảo vệ. Comment giải thích vì sao, không lặp lại điều code đã nói."
+  },
+  {
+   "key": "rules.decisions",
+   "priority": "HARD_CONSTRAINT",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:rules/review-audit-self-decision.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Quyết định và bằng chứng. (1) Quyết định mà người dùng đã chốt (ngưỡng, thư viện, phạm vi tính năng, hình dạng dữ liệu, tiến độ, lựa chọn tuân thủ, đánh đổi UX) nằm trong taskContract, messages hoặc tài liệu đã duyệt: đừng lặng lẽ đảo ngược. Thấy lý do chính đáng để đổi thì chọn needs_info và nêu quyết định gốc, mối lo, đánh đổi và các lựa chọn cụ thể. (2) Điều đã kiểm chứng bằng mã nguồn, test hoặc kiểm tra chạy thật thì đừng đổi chỉ vì một lo ngại chung chung; chỉ đổi khi có bằng chứng mới hoặc bối cảnh đã đổi, và khi bác một lo ngại hãy nêu ngắn gọn nguồn kiểm chứng."
+  },
+  {
+   "key": "rules.threat-model",
+   "priority": "GUIDANCE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:rules/review-audit-self-decision.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Trước khi áp dụng một phát hiện về bảo mật hoặc độ bền, xác định đoạn mã đó thực sự lưu, bảo vệ hay phơi ra điều gì. Sửa lỗi có thật; điều không phải vấn đề thì ghi ngắn gọn rằng không phải vấn đề và vì sao; rủi ro có thể xảy ra nhưng phụ thuộc ý định sản phẩm thì hỏi bằng needs_info."
+  },
+  {
+   "key": "rules.finish",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:rules/orchestration-protocol.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Cách kết thúc. Câu trả lời cuối nêu: (1) đã làm gì; (2) điều chưa kiểm chứng được và vì sao (ví dụ không chạy được lệnh); (3) outcome chọn từ allowedOutcomes. Hoàn tất thì chọn `done`; hoàn tất nhưng còn lo ngại thì vẫn `done` và thêm mục \"Điểm còn lo ngại\" liệt kê từng điểm; thiếu thông tin hoặc có quyết định cần người thì chọn `needs_info`; bị chặn mà không tự gỡ được thì chọn `escalated` nếu node cho phép. Một cách làm vừa thất bại thì đổi cách làm hoặc đổi bối cảnh, đừng lặp lại nguyên văn."
+  }
+ ]
+}

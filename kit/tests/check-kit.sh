@@ -137,16 +137,20 @@ $pub "$tmp/k6/kit.json" --share > "$tmp/o" 2>&1 && bad "--share đáng lẽ ch�
   || { grep -q "skills/skill-review: không được phân phối lại" "$tmp/o" && ok "--share liệt kê mục redistributable=false và thoát mã 1" || bad "--share thiếu thông báo: $(cat "$tmp/o")"; }
 cp -R "$kit" "$tmp/k7"; mutate "$tmp/k7" "$(printf '%s' "$SRC" | sed 's/RED/True/')"
 python3 - "$tmp/k7/kit.json" <<'PY'
-import json, sys  # mục UNKNOWN còn lại ở skill-code-review phải được xử lý trước khi chia sẻ: đặt license rõ ràng cho nó
+import json, sys  # trước khi chia sẻ phải xử lý mục UNKNOWN và mục không được phân phối lại: đặt giấy phép rõ ràng, cho phép phân phối
 k = json.load(open(sys.argv[1], encoding="utf-8"))
 for e in k["skills"]:
     if str(e.get("license", "")).upper().startswith("UNKNOWN"):
         e["license"] = "MIT"
+    if e.get("redistributable") is False:
+        e["redistributable"] = True
 json.dump(k, open(sys.argv[1], "w", encoding="utf-8"), ensure_ascii=False)
 PY
 $pub "$tmp/k7/kit.json" --share > "$tmp/o" 2>&1 && ok "--share cho qua khi mọi mục được phép chia sẻ" || bad "--share chặn nhầm: $(cat "$tmp/o")"
 $pub "$kit/kit.json" --share > "$tmp/o" 2>&1 && bad "--share đáng lẽ chặn mục giấy phép UNKNOWN" \
   || { grep -q "giấy phép chưa xác định" "$tmp/o" && ok "--share chặn mục giấy phép UNKNOWN" || bad "--share thiếu thông báo UNKNOWN: $(cat "$tmp/o")"; }
+cp -R "$kit" "$tmp/k10"; mutate "$tmp/k10" 'd["resources"][0]["selector"] = {}; d["resources"][0].pop("global", None)'
+expect_err "resource không selector mà thiếu global:true" 'phải khai "global": true' "$tmp/k10/kit.json"
 # quá 15 HARD_CONSTRAINT cho một agent
 python3 - "$tmp/p" <<'PY'
 import json, sys

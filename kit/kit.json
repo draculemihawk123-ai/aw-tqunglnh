@@ -1,7 +1,7 @@
 {
   "role": "kit",
   "name": "aw-kit",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "prefix": "kit-",
 
   "layers": [
@@ -15,7 +15,13 @@
     {"id": "skill-review", "name": "Skill: review độc lập (CHECKER)", "file": "skills/skill-review.json"},
     {"id": "skill-code-review", "name": "Skill: code review có bằng chứng (CHECKER)", "file": "skills/skill-code-review.json",
      "origin": "claudekit/code-review 2.0.0 (người dùng cung cấp; chắt lọc, bỏ phần dành cho Claude Code tương tác)",
-     "license": "UNKNOWN"}
+     "license": "UNKNOWN"},
+    {"id": "skill-dev-rules", "name": "Skill: luật phát triển, quyết định và cách kết thúc (chắt lọc từ ClaudeKit)", "file": "skills/skill-dev-rules.json",
+     "origin": "claudekit-engineer@ed8a1fa (rules/development-rules, review-audit-self-decision, orchestration-protocol; viết lại cho aw)",
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false},
+    {"id": "skill-ask", "name": "Skill: hỏi người đúng cách (chắt lọc từ ClaudeKit)", "file": "skills/skill-ask.json",
+     "origin": "claudekit-engineer@ed8a1fa (rules/CLAUDE.md, skills/ck-plan/references/validate-question-framework; viết lại cho aw)",
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false}
   ],
 
   "scriptSkills": [

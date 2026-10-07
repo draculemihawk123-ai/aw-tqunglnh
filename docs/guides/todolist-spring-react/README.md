@@ -899,20 +899,24 @@ Skill ([`definitions/skills/`](definitions/skills/)):
 | `skill-feature-flow` (kit) | `flow.working-rules` (HARD_CONSTRAINT) | Mỗi agent chỉ làm một giai đoạn; thư mục tài liệu; cách đọc `allowedOutcomes`; không commit |
 | | `flow.brainstorm`, `flow.spec`, `flow.design`, `flow.frame`, `flow.plan`, `flow.build`, `flow.sync` (HARD_CONSTRAINT) | Hướng dẫn của từng giai đoạn: file được phép tạo hoặc sửa, nội dung cần viết, khi nào chọn outcome nào |
 | | `flow.needs-info` (REQUIRED_PROCEDURE) | Cách dừng để hỏi: ghi `needs-info.md`, outcome `needs_info` |
+| `skill-dev-rules` (kit, chắt lọc từ ClaudeKit) | `rules.no-shortcuts` (HARD_CONSTRAINT, `MAKER`) | Làm hành vi thật; không mock, tắt hay làm yếu test để qua kiểm tra; giữ hợp đồng công khai; không để bí mật vào code |
+| | `rules.decisions` (HARD_CONSTRAINT, global) | Không lặng lẽ đảo quyết định người dùng đã chốt; điều đã kiểm chứng chỉ đổi khi có bằng chứng mới |
+| | `rules.principles`, `rules.stable-artifacts`, `rules.threat-model`, `rules.finish` | YAGNI, KISS, DRY và bám pattern có sẵn; không đưa mã task hay finding vào code; xác định mối đe dọa thật trước khi sửa; cách kết thúc (`done` kèm "Điểm còn lo ngại", `needs_info`, `escalated`) |
+| `skill-ask` (kit, chắt lọc từ ClaudeKit) | `ask.analysis-first` (REQUIRED_PROCEDURE), `ask.question-groups` (GUIDANCE) | Đọc repository và viết phân tích trước khi hỏi; 2 đến 4 phương án tự đứng được; gom câu hỏi theo nhóm |
 
 Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-project.json)):
 
 | Agent | Dùng ở node | Model | Resource ứng viên |
 |---|---|---|---|
-| `agent-dev` | `implement` của ba workflow rút gọn | sonnet | Ba Layer; `skill-todolist-dev` |
-| `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev` |
-| `agent-flow-brainstorm` | `brainstorm` | opus | `flow.working-rules`, `flow.brainstorm`, `dev.stack-overview` |
-| `agent-flow-spec` | `spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview` |
-| `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview` |
-| `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame` |
-| `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, ba Layer |
-| `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra` |
-| `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync` |
+| `agent-dev` | `implement` của ba workflow rút gọn | sonnet | Ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts` |
+| `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.threat-model` |
+| `agent-flow-brainstorm` | `brainstorm` | opus | `flow.working-rules`, `flow.brainstorm`, `dev.stack-overview`, `rules.decisions`, `rules.finish` |
+| `agent-flow-spec` | `spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `ask.*` |
+| `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `rules.threat-model` |
+| `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame`, `rules.decisions`, `rules.finish`, `ask.*` |
+| `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, ba Layer, `rules.decisions`, `rules.finish` |
+| `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra`, `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `ask.*` |
+| `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync`, `rules.decisions`, `rules.finish` |
 
 Sau khi chạy một task, kiểm tra agent thực sự nhận resource nào trong ContextSnapshot của attempt:
 

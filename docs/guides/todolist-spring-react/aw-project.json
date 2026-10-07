@@ -36,30 +36,30 @@
 
   "agents": [
     {"id": "agent-dev", "name": "Agent: developer (backend và frontend, tri thức theo vùng code)",
-     "resources": ["layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev"]},
+     "resources": ["layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-dev-rules#rules.principles", "skill-dev-rules#rules.stable-artifacts"]},
     {"id": "agent-reviewer", "name": "Agent: reviewer độc lập (CHECKER)",
-     "resources": ["skill-review", "skill-code-review", "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev"]},
+     "resources": ["skill-review", "skill-code-review", "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model"]},
 
     {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM", "model": "opus",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm",
-                   "skill-todolist-dev#dev.stack-overview"]},
+                   "skill-todolist-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish"]},
     {"id": "agent-flow-spec", "name": "Agent: SPEC", "model": "opus",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec",
-                   "skill-todolist-dev#dev.stack-overview"]},
+                   "skill-todolist-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups"]},
     {"id": "agent-flow-design", "name": "Agent: DESIGN", "model": "opus",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.design",
-                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev#dev.stack-overview"]},
+                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-todolist-dev#dev.stack-overview", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model"]},
     {"id": "agent-flow-frame", "name": "Agent: FRAME",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame"]},
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups"]},
     {"id": "agent-flow-plan", "name": "Agent: PLAN",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-todolist-routing#dev.routing-table", "skill-feature-flow#flow.plan",
-                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite"]},
+                   "layer-java-spring-boot", "layer-sqlite", "layer-react-vite", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish"]},
     {"id": "agent-flow-build", "name": "Agent: BUILD",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.build",
                    "layer-java-spring-boot", "layer-sqlite", "layer-react-vite",
-                   "skill-todolist-dev#dev.definition-of-done", "skill-todolist-dev#dev.high-risk-extra"]},
+                   "skill-todolist-dev#dev.definition-of-done", "skill-todolist-dev#dev.high-risk-extra", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-dev-rules#rules.no-shortcuts", "skill-dev-rules#rules.principles", "skill-dev-rules#rules.stable-artifacts"]},
     {"id": "agent-flow-sync", "name": "Agent: SYNC",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.sync"]}
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.sync", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish"]}
   ],
 
   "commands": [
