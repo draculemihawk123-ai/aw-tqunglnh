@@ -24,7 +24,7 @@
     "revision": "v1",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Kiểm chứng mọi khẳng định về code trong 03-design.md; đừng chép từ trí nhớ hay tóm tắt cũ. Tìm lại file và ký hiệu trong code và ghi `file:dòng` cho mỗi ký hiệu được nhắc; không tìm thấy thì gắn [CHƯA XÁC MINH]. Với khẳng định về hành vi (\"A gọi B\", \"middleware chạy trước handler\") hãy lần theo đường chạy thật thay vì suy ra từ tên. Đừng viết \"cập nhật mọi nơi gọi\": liệt kê từng nơi gọi kèm file:dòng (hơn 10 nơi thì liệt kê 10 và ghi tổng số). Trước khi thêm trạng thái vào một cấu trúc có sẵn, tìm nơi khởi tạo và xác định vòng đời của nó (theo request, theo phiên hay theo tiến trình): trạng thái dùng chung sẽ rò rỉ qua ranh giới cô lập."
+   "instruction": "Kiểm chứng mọi khẳng định về code trong tài liệu bạn viết (03-design.md, plan.md); đừng chép từ trí nhớ hay tóm tắt cũ. Tìm lại file và ký hiệu trong code và ghi `file:dòng` cho mỗi ký hiệu được nhắc; không tìm thấy thì gắn [CHƯA XÁC MINH]. Với khẳng định về hành vi (\"A gọi B\", \"middleware chạy trước handler\") hãy lần theo đường chạy thật thay vì suy ra từ tên. Đừng viết \"cập nhật mọi nơi gọi\": liệt kê từng nơi gọi kèm file:dòng (hơn 10 nơi thì liệt kê 10 và ghi tổng số). Trước khi thêm trạng thái vào một cấu trúc có sẵn, tìm nơi khởi tạo và xác định vòng đời của nó (theo request, theo phiên hay theo tiến trình): trạng thái dùng chung sẽ rò rỉ qua ranh giới cô lập."
   },
   {
    "key": "design.checklist",

@@ -1,0 +1,30 @@
+{
+ "resources": [
+  {
+   "key": "frame.complexity",
+   "priority": "GUIDANCE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:skills/fix/references/complexity-assessment.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Chọn lane dựa trên bằng chứng, không dựa trên cảm giác. Phân loại độ phức tạp của task: đơn giản (một file, chỗ sửa hiển nhiên, nguyên nhân đã xác nhận chứ không đoán); vừa (2 đến 5 file, hoặc cần điều tra mới xác nhận được nguyên nhân); phức tạp (hơn 5 file, quyết định kiến trúc, bảo mật hoặc hiệu năng, nhiều lớp tương tác). Lane `fast` chỉ khi đúng điều kiện cứng của flow.frame; loại \"vừa\" trở lên, hoặc bạn không chắc, thì chọn `full`. Trong frame.md ghi bằng chứng cho phân loại: các file sẽ chạm và cách bạn tìm ra chúng. Nếu task gồm nhiều việc độc lập thì nói rõ để người vận hành chia nhỏ."
+  },
+  {
+   "key": "plan.checklist",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "claudekit-engineer@ed8a1fa:agents/planner.md",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "plan.md phải đủ cụ thể để BUILD không phải đoán. Gồm: (1) file sẽ tạo hoặc sửa, theo thứ tự làm, mỗi file một dòng lý do; (2) các bước kèm phụ thuộc giữa chúng (bước nào phải xong trước); (3) với mỗi AC của task: test sẽ viết (tên hoặc mô tả) và điều nó chứng minh, gồm cả đường lỗi; (4) lệnh kiểm tra cuối cùng mà workflow sẽ chạy; (5) rủi ro của task kèm cách giảm, và cách hoàn tác nếu thay đổi khó đảo ngược (migration, đổi hợp đồng); (6) tiêu chí xong đo được. Plan bám thiết kế đã duyệt: nếu thấy cần lệch thì nêu lý do trong plan thay vì lặng lẽ đổi."
+  }
+ ]
+}

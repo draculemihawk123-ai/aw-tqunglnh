@@ -30,7 +30,10 @@
      "license": "MIT (skills/ck-plan); ClaudeKit-Proprietary (licensed) (skills/ck-scenario)", "redistributable": false},
     {"id": "skill-design", "name": "Skill: DESIGN — thiết kế có kiểm chứng và phản biện (chắt lọc từ ClaudeKit)", "file": "skills/skill-design.json",
      "origin": "claudekit-engineer@ed8a1fa (agents/planner, skills/ck-plan/references, skills/ck-predict; viết lại cho aw)",
-     "license": "MIT (skills/ck-plan, skills/ck-predict); ClaudeKit-Proprietary (licensed) (agents/planner)", "redistributable": false}
+     "license": "MIT (skills/ck-plan, skills/ck-predict); ClaudeKit-Proprietary (licensed) (agents/planner)", "redistributable": false},
+    {"id": "skill-plan", "name": "Skill: FRAME và PLAN — chọn lane có bằng chứng, plan đủ cụ thể (chắt lọc từ ClaudeKit)", "file": "skills/skill-plan.json",
+     "origin": "claudekit-engineer@ed8a1fa (skills/fix/references/complexity-assessment, agents/planner; viết lại cho aw)",
+     "license": "ClaudeKit-Proprietary (licensed)", "redistributable": false}
   ],
 
   "scriptSkills": [
