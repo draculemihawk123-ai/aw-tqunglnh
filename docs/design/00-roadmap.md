@@ -141,7 +141,7 @@ Task tổng hợp verdict được phép chạy khi execution gate trước đó
 | V6 — API, projections & operator CLI | `08-v6-api-projections.md` | Local HTTP API/SSE, read models và `aw` operator CLI đầy đủ | API/projection + terminal parity gate pass |
 | V7 — Alpha UI | `09-v7-alpha-ui.md` | Người dùng vận hành toàn bộ core từ local web UI | UI journeys + accessibility smoke pass |
 | V8 — Alpha hardening | `10-v8-alpha-hardening.md` | Recovery/security/packaging/docs đạt release gate | Alpha verdict |
-| V9 — Harness alignment (**ĐANG THỰC THI**) | `12-v9-harness-alignment.md` | Checker sau maker, kiểm tra fail quay lại maker, prompt có ưu tiên/outcome, selector theo path, môi trường agent khai báo | Verdict V9; `v8-alpha-gate` vẫn xanh |
+| V9 — Harness alignment (**ĐÃ XONG: `V9_DONE`**) | `12-v9-harness-alignment.md` | Checker sau maker, kiểm tra fail quay lại maker, prompt có ưu tiên/outcome, selector theo path, môi trường agent khai báo | Verdict V9; `v8-alpha-gate` vẫn xanh |
 | V10 — Tri thức cho kit từ ClaudeKit (**THIẾT KẾ, chờ duyệt**) | `13-v10-kit-knowledge.md` | Mỗi node của workflow mẫu (BRAINSTORM, SPEC, DESIGN, FRAME, PLAN, BUILD, SYNC, REVIEW) có tri thức chắt lọc, có xuất xứ, được đo A/B | Verdict V10; không thay đổi core |
 
 V9 là version sau verdict `ALPHA_READY`, không thuộc định nghĩa Alpha ở mục 2; product owner đã duyệt
