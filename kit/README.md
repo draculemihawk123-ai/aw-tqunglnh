@@ -172,6 +172,18 @@ nhận tiêu đề bằng từ khóa tiếng Việt hoặc tiếng Anh nên mộ
 `INDETERMINATE` (`OWNERSHIP_LOST_MUTATING`) sau 30 giây và run đứng im ở `RUNNING`, không có thông báo lỗi định nghĩa lúc publish. Vì vậy mọi cạnh hết vòng của hai workflow mẫu đều đi tới
 `reject`, và kịch bản `plus-large-exhaust` giữ điều này (đường nhánh tới `reject` chạy được, đã kiểm).
 
+## Khung tài liệu chuẩn cho BRAINSTORM, SPEC, DESIGN (V10-19)
+
+Các tài liệu `01-brainstorm.md`, `02-spec.md`, `03-design.md` có khung tiêu đề `##` cố định, do `skill-doc-templates` (`template.brainstorm`, `template.spec`, `template.design`) nạp vào agent tương ứng, và được **máy kiểm** trước khi tới cổng người duyệt:
+
+| Sau node | Command | Kiểm | Lỗi quay về |
+|---|---|---|---|
+| `brainstorm` | `check-brainstorm` | đủ 7 mục; ít nhất một giả định `A-n`; ít nhất hai phương án `P-n` | `brainstorm` |
+| `spec` | `check-spec` | đủ 9 mục (có "Ngoài phạm vi" và "Hạn chế đã biết"); có `BR-n`, `AC-n`; mỗi AC có When và Then | `spec` |
+| `design` | `check-feature-docs` | tasks.json đúng schema; thiết kế đủ 6 mục (có "Ngoài phạm vi"); mỗi quyết định `D-n` có phương án đã loại; mỗi `AC-n` của spec có test trong kế hoạch test (chấp nhận khoảng `AC-2..5`); AC trong tasks.json có trong spec | `design` |
+
+Mục không áp dụng thì giữ tiêu đề và ghi "Không áp dụng: <lý do>". Khung chỉ quy định mục, không quy định độ dài; lỗi in dạng THIẾU/SAI + WHY + FIX nên agent nhận được đúng điều cần sửa. Logic kiểm nằm ở `commands/docs-lib.sh` (nhúng vào script lúc publish). `brainstorm` và `spec` có `cyclePolicy` nên khung không đạt mãi thì run dừng ở `reject`, không lặp vô hạn (kịch bản `fd-*` trong `tests/walk/scenarios/`). `plan.md` đã có khung và bước kiểm riêng (`plan.checklist`, `check-plan`).
+
 ## Học dần: bài học thành resource có version (V10-16)
 
 Lỗi lặp lại ở review và gate nên trở thành luật mới **có người duyệt**, thay vì chỉ nằm trong transcript. Quy trình gồm bốn bước, hai trong đó là script của kit:

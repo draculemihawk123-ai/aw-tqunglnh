@@ -1,0 +1,47 @@
+{
+  "manifest": "../aw-project.json",
+  "workflow": "wf-feature-definition",
+  "name": "wf-feature-definition: spec thiếu mục → làm lại trước cổng A",
+  "agents": {
+    "brainstorm": [
+      "done"
+    ],
+    "spec": [
+      "done"
+    ],
+    "design": [
+      "done"
+    ]
+  },
+  "commands": {
+    "checkspec": [
+      "fail",
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate-a": [
+      "approved"
+    ],
+    "gate-b": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "brainstorm:done",
+      "check-brainstorm:passed",
+      "spec:done",
+      "check-spec:failed",
+      "spec:done",
+      "check-spec:passed",
+      "gate-a:approved",
+      "design:done",
+      "check-docs:passed",
+      "gate-b:approved",
+      "end:-"
+    ]
+  }
+}

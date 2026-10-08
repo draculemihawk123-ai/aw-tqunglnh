@@ -31,12 +31,12 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Giai đoạn của bạn: BRAINSTORM. File duy nhất được tạo hoặc sửa: <thư mục tài liệu>/01-brainstorm.md. Không sửa code, không viết spec hay thiết kế. Đầu vào: ý tưởng thô trong taskContract.behavior và messages. Đọc code và tài liệu hiện có để hiểu hệ thống. Nội dung 01-brainstorm.md, theo thứ tự: (1) hiện trạng của phần hệ thống liên quan, từ việc bạn đã đọc; (2) vấn đề gốc và người dùng bị ảnh hưởng, nói lại bằng lời của bạn; (3) giả định và trạng thái bằng chứng của chúng; (4) 2–4 phương án, mỗi phương án có mô tả, ưu điểm, nhược điểm, rủi ro, ước lượng công sức (S/M/L) và phần của hệ thống bị ảnh hưởng (ví dụ backend, frontend, cơ sở dữ liệu); (5) phương án đề xuất và lý do; (6) yêu cầu cụ thể (đầu ra, phạm vi, ràng buộc) và câu hỏi mở.",
+      "instruction": "Giai đoạn của bạn: BRAINSTORM. File duy nhất được tạo hoặc sửa: <thư mục tài liệu>/01-brainstorm.md. Không sửa code, không viết spec hay thiết kế. Đầu vào: ý tưởng thô trong taskContract.behavior và messages. Đọc code và tài liệu hiện có để hiểu hệ thống. Điền 01-brainstorm.md đúng khung template.brainstorm (các tiêu đề ## cố định). Prompt có checkFailures nghĩa là khung ở vòng trước chưa đạt: đọc phần `why`/`fix`, sửa đúng chỗ đó trước.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v5",
-        "lastVerified": "2026-10-07T00:00:00Z"
+        "revision": "v6",
+        "lastVerified": "2026-10-08T00:00:00Z"
       }
     },
     {
@@ -44,12 +44,12 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Giai đoạn của bạn: SPEC. File được tạo hoặc sửa: <thư mục tài liệu>/02-spec.md (và needs-info.md khi phải hỏi). Không sửa code, không viết thiết kế. Đọc 01-brainstorm.md, messages (phản hồi 'sửa' của GATE A nếu có) và needs-info.md nếu có. 02-spec.md là tài liệu nghiệp vụ, không nói về cách cài đặt: mục tiêu; trong phạm vi / ngoài phạm vi; user story; quy tắc nghiệp vụ đánh số (BR-1, BR-2…); acceptance criteria dạng Given/When/Then đánh số (AC-1…), mỗi AC kiểm chứng được bằng test; dữ liệu và ràng buộc; các quyết định đã chốt từ câu hỏi mở, ghi rõ quyết định nào do bạn tự chọn để người duyệt xác nhận. Nếu đang sửa theo phản hồi, thêm mục 'Lịch sử sửa' ghi phản hồi nào đã được xử lý. Outcome: `done` khi spec đã đủ để duyệt; `needs_info` khi thiếu thông tin (xem flow.needs-info).",
+      "instruction": "Giai đoạn của bạn: SPEC. File được tạo hoặc sửa: <thư mục tài liệu>/02-spec.md (và needs-info.md khi phải hỏi). Không sửa code, không viết thiết kế. Đọc 01-brainstorm.md, messages (phản hồi 'sửa' của GATE A nếu có) và needs-info.md nếu có. 02-spec.md là tài liệu nghiệp vụ, không nói về cách cài đặt; điền đúng khung template.spec (các tiêu đề ## cố định). Khi prompt mang checkFailures, khung spec vòng trước bị bước kiểm máy từ chối; xử lý từng dòng THIẾU/SAI rồi mới sửa chỗ khác. Nếu đang sửa theo phản hồi, thêm mục 'Lịch sử sửa' ghi phản hồi nào đã được xử lý. Outcome: `done` khi spec đã đủ để duyệt; `needs_info` khi thiếu thông tin (xem flow.needs-info).",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v4",
-        "lastVerified": "2026-10-06T00:00:00Z"
+        "revision": "v5",
+        "lastVerified": "2026-10-08T00:00:00Z"
       }
     },
     {
@@ -57,12 +57,12 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Giai đoạn của bạn: DESIGN. File được tạo hoặc sửa: <thư mục tài liệu>/03-design.md và <thư mục tài liệu>/tasks.json. Không sửa code: code do các task viết sau khi thiết kế được duyệt. Nếu prompt có checkFailures thì bước kiểm tra tài liệu ở vòng trước không đạt: sửa đúng điều `why` mô tả trước tiên. Đọc 02-spec.md (đã được GATE A duyệt), messages (phản hồi 'sửa' của GATE B nếu có) và code hiện có. 03-design.md: thay đổi theo tầng của hệ thống (ví dụ migration DB, entity, service, API contract kèm ví dụ request/response, component UI, API client); quyết định và đánh đổi (ứng viên ADR); kế hoạch test; rủi ro và cách rollback. tasks.json: một mảng JSON, mỗi phần tử {\"id\": \"T-01\", \"title\": \"...\", \"pathScopes\": [các thư mục cấp 1 của repository mà task được phép sửa, ví dụ \"backend\", \"frontend\"], \"riskLevel\": \"LOW\"|\"MEDIUM\"|\"HIGH\", \"lane\": \"fast\"|\"full\", \"behavior\": \"...\", \"acceptanceCriteria\": [\"AC-1: ...\"]}, kèm \"repository\": \"<id repository mà task ghi vào>\" khi hệ thống có nhiều repository (bỏ qua khi chỉ có một), theo đúng thứ tự thực hiện; mỗi task giao được độc lập, build và test xanh sau khi xong, AC trích từ 02-spec.md. Chia ít task nhất có thể: mỗi task là một lần review và một commit.",
+      "instruction": "Giai đoạn của bạn: DESIGN. File được tạo hoặc sửa: <thư mục tài liệu>/03-design.md và <thư mục tài liệu>/tasks.json. Không sửa code: code do các task viết sau khi thiết kế được duyệt. Nếu prompt có checkFailures thì bước kiểm tra tài liệu ở vòng trước không đạt: sửa đúng điều `why` mô tả trước tiên. Đọc 02-spec.md (đã được GATE A duyệt), messages (phản hồi 'sửa' của GATE B nếu có) và code hiện có. 03-design.md điền đúng khung template.design (các tiêu đề ## cố định). tasks.json: một mảng JSON, mỗi phần tử {\"id\": \"T-01\", \"title\": \"...\", \"pathScopes\": [các thư mục cấp 1 của repository mà task được phép sửa, ví dụ \"backend\", \"frontend\"], \"riskLevel\": \"LOW\"|\"MEDIUM\"|\"HIGH\", \"lane\": \"fast\"|\"full\", \"behavior\": \"...\", \"acceptanceCriteria\": [\"AC-1: ...\"]}, kèm \"repository\": \"<id repository mà task ghi vào>\" khi hệ thống có nhiều repository (bỏ qua khi chỉ có một), theo đúng thứ tự thực hiện; mỗi task giao được độc lập, build và test xanh sau khi xong, AC trích từ 02-spec.md. Chia ít task nhất có thể: mỗi task là một lần review và một commit.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v4",
-        "lastVerified": "2026-10-06T00:00:00Z"
+        "revision": "v5",
+        "lastVerified": "2026-10-08T00:00:00Z"
       }
     },
     {

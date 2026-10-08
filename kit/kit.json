@@ -24,6 +24,7 @@
     {"id": "skill-brainstorm", "name": "Skill: BRAINSTORM — vấn đề gốc trước giải pháp (chắt lọc)", "file": "skills/skill-brainstorm.json"},
     {"id": "skill-spec", "name": "Skill: SPEC — thách thức phạm vi và phủ tình huống (chắt lọc)", "file": "skills/skill-spec.json"},
     {"id": "skill-design", "name": "Skill: DESIGN — thiết kế có kiểm chứng và phản biện (chắt lọc)", "file": "skills/skill-design.json"},
+    {"id": "skill-doc-templates", "name": "Skill: khung chuẩn cho tài liệu BRAINSTORM, SPEC, DESIGN (kiểm bằng máy)", "file": "skills/skill-doc-templates.json"},
     {"id": "skill-plan", "name": "Skill: FRAME và PLAN — chọn lane có bằng chứng, plan đủ cụ thể (chắt lọc)", "file": "skills/skill-plan.json"},
     {"id": "skill-build", "name": "Skill: BUILD — bám quy ước và tự rà trước khi kết thúc (chắt lọc)", "file": "skills/skill-build.json"},
     {"id": "skill-debug", "name": "Skill: vòng sửa — tìm nguyên nhân gốc trước khi sửa (chắt lọc)", "file": "skills/skill-debug.json"},
@@ -39,7 +40,8 @@
     {"id": "scripts-common", "name": "Script dùng chung cho các Command", "owner": "aw-kit",
      "files": ["commands/reject.sh", "commands/check-feature-docs.sh", "commands/secrets-gate.sh",
                "commands/maven-test.sh", "commands/npm-test.sh", "commands/expect-fail.sh", "commands/diff-size.sh",
-               "commands/temp-artifacts.sh", "commands/check-plan.sh", "commands/check-lessons.sh"]}
+               "commands/temp-artifacts.sh", "commands/check-plan.sh", "commands/check-lessons.sh",
+               "commands/check-brainstorm.sh", "commands/check-spec.sh"]}
   ],
 
   "policies": [
@@ -54,11 +56,11 @@
 
   "agents": [
     {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-brainstorm#brainstorm.scout-first", "skill-brainstorm#brainstorm.problem-first", "skill-brainstorm#brainstorm.options", "skill-brainstorm#brainstorm.assumptions", "skill-brainstorm#brainstorm.exact-requirements", "skill-brainstorm#brainstorm.unstuck"]},
+     "resources": ["skill-doc-templates#template.brainstorm", "skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-brainstorm#brainstorm.scout-first", "skill-brainstorm#brainstorm.problem-first", "skill-brainstorm#brainstorm.options", "skill-brainstorm#brainstorm.assumptions", "skill-brainstorm#brainstorm.exact-requirements", "skill-brainstorm#brainstorm.unstuck"]},
     {"id": "agent-flow-spec", "name": "Agent: SPEC",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-spec#spec.scope-challenge", "skill-spec#spec.scenarios", "skill-spec#spec.ac-quality"]},
+     "resources": ["skill-doc-templates#template.spec", "skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-spec#spec.scope-challenge", "skill-spec#spec.scenarios", "skill-spec#spec.ac-quality"]},
     {"id": "agent-flow-design", "name": "Agent: DESIGN",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.design", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-design#design.codebase", "skill-design#design.verify-claims", "skill-design#design.checklist", "skill-design#design.solution", "skill-design#design.red-team", "layer-api-design", "layer-sql-quality", "layer-backend-security"]},
+     "resources": ["skill-doc-templates#template.design", "skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.design", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-design#design.codebase", "skill-design#design.verify-claims", "skill-design#design.checklist", "skill-design#design.solution", "skill-design#design.red-team", "layer-api-design", "layer-sql-quality", "layer-backend-security"]},
     {"id": "agent-flow-frame", "name": "Agent: FRAME",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-plan#frame.complexity"]},
     {"id": "agent-flow-plan", "name": "Agent: PLAN",
@@ -93,6 +95,8 @@
     {"id": "cmd-check-plan", "name": "Command: plan.md của task đủ sáu mục", "script": "scripts-common#check-plan.sh"},
     {"id": "cmd-check-lessons", "name": "Command: file bài học đúng định dạng", "script": "scripts-common#check-lessons.sh"},
     {"id": "cmd-reject", "name": "Command: dừng run khi bị từ chối hoặc hết vòng sửa", "script": "scripts-common#reject.sh"},
+    {"id": "cmd-check-brainstorm", "name": "Command: 01-brainstorm.md đủ khung", "script": "scripts-common#check-brainstorm.sh"},
+    {"id": "cmd-check-spec", "name": "Command: 02-spec.md đủ khung, AC có Given/When/Then", "script": "scripts-common#check-spec.sh"},
     {"id": "cmd-check-feature-docs", "name": "Command: kiểm tra tài liệu tính năng", "script": "scripts-common#check-feature-docs.sh"},
     {"id": "cmd-secrets-gate", "name": "Command của gate: không có file bí mật", "script": "scripts-common#secrets-gate.sh",
      "repositoryArg": true, "timeoutSeconds": 120, "maxOutputBytes": 65536}

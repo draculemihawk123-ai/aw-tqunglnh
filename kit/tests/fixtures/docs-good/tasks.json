@@ -1,0 +1,1 @@
+[{"id": "T-01", "title": "Bình luận", "pathScopes": ["backend"], "riskLevel": "LOW", "lane": "fast", "behavior": "Ba endpoint bình luận", "acceptanceCriteria": ["AC-1: tạo", "AC-2: quá dài"]}]

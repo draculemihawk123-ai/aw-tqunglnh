@@ -1,0 +1,46 @@
+{
+  "manifest": "../aw-project.json",
+  "workflow": "wf-feature-definition",
+  "name": "wf-feature-definition: spec không bao giờ đạt khung → hết vòng, dừng ở reject",
+  "agents": {
+    "brainstorm": [
+      "done"
+    ],
+    "spec": [
+      "done"
+    ]
+  },
+  "commands": {
+    "checkspec": [
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+    ]
+  },
+  "approvals": {},
+  "expect": {
+    "state": "FAILED",
+    "sequence": [
+      "start:next",
+      "brainstorm:done",
+      "check-brainstorm:passed",
+      "spec:done",
+      "check-spec:failed",
+      "spec:done",
+      "check-spec:failed",
+      "spec:done",
+      "check-spec:failed",
+      "spec:done",
+      "check-spec:failed",
+      "spec:done",
+      "check-spec:failed",
+      "spec:done",
+      "check-spec:failed",
+      "spec:escalated",
+      "reject:-"
+    ]
+  }
+}
