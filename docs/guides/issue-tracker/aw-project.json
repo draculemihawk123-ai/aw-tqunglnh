@@ -65,8 +65,6 @@
 
   "commands": [
     {"id": "cmd-reject", "from": "kit"},
-    {"id": "cmd-check-brainstorm", "from": "kit"},
-    {"id": "cmd-check-spec", "from": "kit"},
     {"id": "cmd-check-feature-docs", "from": "kit"},
 
     {"id": "cmd-contract-lint", "name": "Command: kiểm tra spec OpenAPI", "script": "scripts#contract-lint.sh", "repository": "contracts"},

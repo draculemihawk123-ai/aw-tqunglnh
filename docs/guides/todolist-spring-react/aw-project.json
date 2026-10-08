@@ -55,8 +55,6 @@
      "network": "ALLOWED", "policies": ["policy-permission-network"]},
     {"id": "cmd-gate1", "name": "Command: GATE 1 build + test", "script": "scripts#gate1.sh",
      "network": "ALLOWED", "policies": ["policy-permission-network"]},
-    {"id": "cmd-check-brainstorm", "from": "kit"},
-    {"id": "cmd-check-spec", "from": "kit"},
     {"id": "cmd-check-feature-docs", "from": "kit"},
     {"id": "cmd-reject", "from": "kit"},
     {"id": "cmd-quality-check", "name": "Command: kiểm tra tĩnh trên thay đổi của task", "script": "scripts#quality-check.sh"},

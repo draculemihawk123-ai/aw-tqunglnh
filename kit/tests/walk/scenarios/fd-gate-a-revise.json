@@ -27,12 +27,9 @@
     "sequence": [
       "start:next",
       "brainstorm:done",
-      "check-brainstorm:passed",
       "spec:done",
-      "check-spec:passed",
       "gate-a:revise",
       "spec:done",
-      "check-spec:passed",
       "gate-a:approved",
       "design:done",
       "check-docs:passed",

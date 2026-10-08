@@ -11,7 +11,7 @@
   "scriptSkills": [
     {"id": "walk-scripts", "name": "Script giả lập của walk-workflow", "owner": "aw-kit",
      "files": ["commands/gate1.sh", "commands/quality.sh", "commands/expectfail.sh",
-               "commands/hygiene.sh", "commands/size.sh", "commands/checkplan.sh", "commands/checklessons.sh", "commands/checkbrainstorm.sh", "commands/checkspec.sh", "commands/checkdocs.sh"]}
+               "commands/hygiene.sh", "commands/size.sh", "commands/checkplan.sh", "commands/checklessons.sh", "commands/checkdocs.sh"]}
   ],
 
   "agents": [
@@ -39,8 +39,6 @@
     {"id": "cmd-diff-size", "name": "Command giả lập: size", "script": "walk-scripts#size.sh"},
     {"id": "cmd-check-plan", "name": "Command giả lập: check-plan", "script": "walk-scripts#checkplan.sh"},
     {"id": "cmd-check-lessons", "name": "Command giả lập: check-lessons", "script": "walk-scripts#checklessons.sh"},
-    {"id": "cmd-check-brainstorm", "name": "Command giả lập: check-brainstorm", "script": "walk-scripts#checkbrainstorm.sh"},
-    {"id": "cmd-check-spec", "name": "Command giả lập: check-spec", "script": "walk-scripts#checkspec.sh"},
     {"id": "cmd-check-feature-docs", "name": "Command giả lập: check-feature-docs", "script": "walk-scripts#checkdocs.sh"}
   ],
 

@@ -332,25 +332,6 @@ printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n' > "$d/plan.md"
 out=$(cmdrun check-plan.sh) && bad "check-plan: plan thiếu mục phải không đạt" || { printf '%s' "$out" | grep -q 'THIẾU mục "rủi ro và hoàn tác"' && ok "check-plan: plan thiếu mục thì không đạt, nêu mục thiếu" || bad "check-plan thiếu mục: $out"; }
 printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n## Test cho từng AC\nx\n## Lệnh kiểm tra cuối\nx\n## Rủi ro và hoàn tác\nx\n## Tiêu chí xong\nx\n' > "$d/plan.md"
 out=$(cmdrun check-plan.sh) && ok "check-plan: plan đủ sáu mục thì đạt" || bad "check-plan đủ: $out"
-# khung tài liệu tính năng (skill-doc-templates): check-brainstorm, check-spec, check-feature-docs
-fd="$tmp/fdocs"; mkdir -p "$fd" && git -C "$fd" init -q -b main && git -C "$fd" config user.email t@example.invalid && git -C "$fd" config user.name t
-touch "$fd/x" && git -C "$fd" add -A && git -C "$fd" commit -q -m init
-mkdir -p "$fd/docs/features/f" && cp "$kit"/tests/fixtures/docs-good/* "$fd/docs/features/f/"
-drun() { (cd "$fd" && AW_KIT="$kit" sh "$kit/commands/$1" 2>&1); }
-out=$(drun check-brainstorm.sh) && ok "check-brainstorm: tài liệu đủ khung thì đạt" || bad "check-brainstorm đủ: $out"
-out=$(drun check-spec.sh) && ok "check-spec: tài liệu đủ khung thì đạt" || bad "check-spec đủ: $out"
-out=$(drun check-feature-docs.sh) && ok "check-feature-docs: thiết kế đủ khung, AC khớp thì đạt" || bad "check-feature-docs đủ: $out"
-cp "$fd/docs/features/f/01-brainstorm.md" "$tmp/b.bak"; sed -i '/^### P-2/,/^Ưu: không migration/d; s/P-2/phương án kia/' "$fd/docs/features/f/01-brainstorm.md"
-out=$(drun check-brainstorm.sh) && bad "check-brainstorm: chỉ một phương án phải không đạt" || { printf '%s' "$out" | grep -q 'ít nhất 2' && printf '%s' "$out" | grep -q '^WHY:' && ok "check-brainstorm: thiếu phương án thì không đạt, có WHY/FIX" || bad "check-brainstorm thiếu P: $out"; }
-cp "$tmp/b.bak" "$fd/docs/features/f/01-brainstorm.md"
-cp "$fd/docs/features/f/02-spec.md" "$tmp/s.bak"; sed -i 's/^- AC-2: When POST nội dung 2001 ký tự, Then 400./- AC-2: POST nội dung 2001 ký tự bị từ chối./; /^## Hạn chế đã biết/,/^Chưa phân trang./d' "$fd/docs/features/f/02-spec.md"
-out=$(drun check-spec.sh) && bad "check-spec: AC thiếu When/Then và thiếu mục hạn chế phải không đạt" || { printf '%s' "$out" | grep -q 'AC thiếu When hoặc Then.*AC-2' && printf '%s' "$out" | grep -q 'THIẾU mục "hạn chế đã biết"' && ok "check-spec: nêu AC thiếu When/Then và mục thiếu" || bad "check-spec hỏng: $out"; }
-cp "$tmp/s.bak" "$fd/docs/features/f/02-spec.md"
-cp "$fd/docs/features/f/03-design.md" "$tmp/d.bak"; sed -i 's/AC-2\.\.3/AC-2/; s/ Phương án đã loại: dựa vào ON DELETE CASCADE vì SQLite mặc định tắt khóa ngoại\.//' "$fd/docs/features/f/03-design.md"
-out=$(drun check-feature-docs.sh) && bad "check-feature-docs: AC-3 không có test và quyết định thiếu phương án loại phải không đạt" || { printf '%s' "$out" | grep -q 'THIẾU test cho AC-3' && printf '%s' "$out" | grep -q 'THIẾU phương án bị loại' && ok "check-feature-docs: nêu AC chưa có test và quyết định thiếu phương án loại" || bad "check-feature-docs hỏng: $out"; }
-cp "$tmp/d.bak" "$fd/docs/features/f/03-design.md"
-sed -i 's/AC-2: quá dài/AC-9: không có trong spec/' "$fd/docs/features/f/tasks.json"
-out=$(drun check-feature-docs.sh) && bad "check-feature-docs: AC của task không có trong spec phải không đạt" || { printf '%s' "$out" | grep -q 'SAI: AC-9 trong' && ok "check-feature-docs: AC của tasks.json phải có trong spec" || bad "check-feature-docs AC lạ: $out"; }
 # check-lessons (V10-16)
 l="$tmp/les"; mkdir -p "$l/docs/lessons" && git -C "$l" init -q -b main && git -C "$l" config user.email t@example.invalid && git -C "$l" config user.name t
 touch "$l/x" && git -C "$l" add -A && git -C "$l" commit -q -m init
@@ -381,7 +362,7 @@ for needle in ("build 1", "gate1 1", "build: SCOPE_VIOLATION ×1", "[Important] 
 PY
 out=$(python3 "$kit/tests/test-lessons.py" 2>&1) && ok "lessons-to-skill: định dạng, gộp, revision, gắn vào agent, publish version mới ($(printf '%s' "$out" | grep -c '^  ok') kiểm tra)" || bad "test-lessons: $out"
 if [ -n "${AW:-}" ] || command -v aw > /dev/null 2>&1 || command -v go > /dev/null 2>&1; then
-  for s in plus-debug bugfix-not-red fd-spec-exhaust; do
+  for s in plus-debug bugfix-not-red fd-design-bad; do
     out=$(python3 "$kit/scripts/walk-workflow.py" "$kit/tests/walk/scenarios/$s.json" 2>&1) && ok "walk-workflow: $s đi đúng thứ tự node" || bad "walk-workflow $s: $out"
   done
   if [ -n "${WALK_ALL:-}" ]; then

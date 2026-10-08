@@ -32,9 +32,7 @@
     "sequence": [
       "start:next",
       "brainstorm:done",
-      "check-brainstorm:passed",
       "spec:done",
-      "check-spec:passed",
       "gate-a:approved",
       "design:done",
       "check-docs:failed",

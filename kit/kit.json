@@ -40,8 +40,7 @@
     {"id": "scripts-common", "name": "Script dùng chung cho các Command", "owner": "aw-kit",
      "files": ["commands/reject.sh", "commands/check-feature-docs.sh", "commands/secrets-gate.sh",
                "commands/maven-test.sh", "commands/npm-test.sh", "commands/expect-fail.sh", "commands/diff-size.sh",
-               "commands/temp-artifacts.sh", "commands/check-plan.sh", "commands/check-lessons.sh",
-               "commands/check-brainstorm.sh", "commands/check-spec.sh"]}
+               "commands/temp-artifacts.sh", "commands/check-plan.sh", "commands/check-lessons.sh"]}
   ],
 
   "policies": [
@@ -95,8 +94,6 @@
     {"id": "cmd-check-plan", "name": "Command: plan.md của task đủ sáu mục", "script": "scripts-common#check-plan.sh"},
     {"id": "cmd-check-lessons", "name": "Command: file bài học đúng định dạng", "script": "scripts-common#check-lessons.sh"},
     {"id": "cmd-reject", "name": "Command: dừng run khi bị từ chối hoặc hết vòng sửa", "script": "scripts-common#reject.sh"},
-    {"id": "cmd-check-brainstorm", "name": "Command: 01-brainstorm.md đủ khung", "script": "scripts-common#check-brainstorm.sh"},
-    {"id": "cmd-check-spec", "name": "Command: 02-spec.md đủ khung, AC có Given/When/Then", "script": "scripts-common#check-spec.sh"},
     {"id": "cmd-check-feature-docs", "name": "Command: kiểm tra tài liệu tính năng", "script": "scripts-common#check-feature-docs.sh"},
     {"id": "cmd-secrets-gate", "name": "Command của gate: không có file bí mật", "script": "scripts-common#secrets-gate.sh",
      "repositoryArg": true, "timeoutSeconds": 120, "maxOutputBytes": 65536}

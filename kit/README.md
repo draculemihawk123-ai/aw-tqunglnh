@@ -174,15 +174,9 @@ nhận tiêu đề bằng từ khóa tiếng Việt hoặc tiếng Anh nên mộ
 
 ## Khung tài liệu chuẩn cho BRAINSTORM, SPEC, DESIGN (V10-19)
 
-Các tài liệu `01-brainstorm.md`, `02-spec.md`, `03-design.md` có khung tiêu đề `##` cố định, do `skill-doc-templates` (`template.brainstorm`, `template.spec`, `template.design`) nạp vào agent tương ứng, và được **máy kiểm** trước khi tới cổng người duyệt:
+Các tài liệu `01-brainstorm.md`, `02-spec.md`, `03-design.md` có khung tiêu đề `##` cố định, do `skill-doc-templates` (`template.brainstorm`, `template.spec`, `template.design`) nạp vào agent tương ứng; `flow.brainstorm`, `flow.spec`, `flow.design` chỉ còn quy định file, đầu vào và outcome rồi dẫn tới khung. Mã mục: giả định `A-n`, phương án `P-n`, quy tắc `BR-n`, acceptance criteria `AC-n` (When/Then, có Given khi có tiền điều kiện), quyết định `D-n` kèm phương án đã loại, rủi ro `R-n`. Mục không áp dụng thì giữ tiêu đề và ghi "Không áp dụng: <lý do>". Khung chỉ quy định mục, không quy định độ dài.
 
-| Sau node | Command | Kiểm | Lỗi quay về |
-|---|---|---|---|
-| `brainstorm` | `check-brainstorm` | đủ 7 mục; ít nhất một giả định `A-n`; ít nhất hai phương án `P-n` | `brainstorm` |
-| `spec` | `check-spec` | đủ 9 mục (có "Ngoài phạm vi" và "Hạn chế đã biết"); có `BR-n`, `AC-n`; mỗi AC có When và Then | `spec` |
-| `design` | `check-feature-docs` | tasks.json đúng schema; thiết kế đủ 6 mục (có "Ngoài phạm vi"); mỗi quyết định `D-n` có phương án đã loại; mỗi `AC-n` của spec có test trong kế hoạch test (chấp nhận khoảng `AC-2..5`); AC trong tasks.json có trong spec | `design` |
-
-Mục không áp dụng thì giữ tiêu đề và ghi "Không áp dụng: <lý do>". Khung chỉ quy định mục, không quy định độ dài; lỗi in dạng THIẾU/SAI + WHY + FIX nên agent nhận được đúng điều cần sửa. Logic kiểm nằm ở `commands/docs-lib.sh` (nhúng vào script lúc publish). `brainstorm` và `spec` có `cyclePolicy` nên khung không đạt mãi thì run dừng ở `reject`, không lặp vô hạn (kịch bản `fd-*` trong `tests/walk/scenarios/`). `plan.md` đã có khung và bước kiểm riêng (`plan.checklist`, `check-plan`).
+**Không có bước kiểm máy cho khung.** Đã thử (B4): ba bước kiểm đối chiếu khung (đủ mục, `AC-n` có test trong thiết kế, `D-n` có phương án loại) quay tài liệu về cho agent; chi phí tổng không đổi nhưng vòng sửa của bước code tăng và không tách được đóng góp, nên đã bỏ phần kiểm, chỉ giữ khung (xem `kit/bench/reports/V10-tong-quan.md`). Chỉ `check-feature-docs` (đủ file, `tasks.json` đúng schema) và `check-plan` (sáu mục của `plan.md`) còn chạy.
 
 ## Học dần: bài học thành resource có version (V10-16)
 

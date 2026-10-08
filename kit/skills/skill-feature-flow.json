@@ -31,7 +31,7 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Giai đoạn của bạn: BRAINSTORM. File duy nhất được tạo hoặc sửa: <thư mục tài liệu>/01-brainstorm.md. Không sửa code, không viết spec hay thiết kế. Đầu vào: ý tưởng thô trong taskContract.behavior và messages. Đọc code và tài liệu hiện có để hiểu hệ thống. Điền 01-brainstorm.md đúng khung template.brainstorm (các tiêu đề ## cố định). Prompt có checkFailures nghĩa là khung ở vòng trước chưa đạt: đọc phần `why`/`fix`, sửa đúng chỗ đó trước.",
+      "instruction": "Giai đoạn của bạn: BRAINSTORM. File duy nhất được tạo hoặc sửa: <thư mục tài liệu>/01-brainstorm.md. Không sửa code, không viết spec hay thiết kế. Đầu vào: ý tưởng thô trong taskContract.behavior và messages. Đọc code và tài liệu hiện có để hiểu hệ thống. Điền 01-brainstorm.md đúng khung template.brainstorm (các tiêu đề ## cố định).",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
@@ -44,7 +44,7 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Giai đoạn của bạn: SPEC. File được tạo hoặc sửa: <thư mục tài liệu>/02-spec.md (và needs-info.md khi phải hỏi). Không sửa code, không viết thiết kế. Đọc 01-brainstorm.md, messages (phản hồi 'sửa' của GATE A nếu có) và needs-info.md nếu có. 02-spec.md là tài liệu nghiệp vụ, không nói về cách cài đặt; điền đúng khung template.spec (các tiêu đề ## cố định). Khi prompt mang checkFailures, khung spec vòng trước bị bước kiểm máy từ chối; xử lý từng dòng THIẾU/SAI rồi mới sửa chỗ khác. Nếu đang sửa theo phản hồi, thêm mục 'Lịch sử sửa' ghi phản hồi nào đã được xử lý. Outcome: `done` khi spec đã đủ để duyệt; `needs_info` khi thiếu thông tin (xem flow.needs-info).",
+      "instruction": "Giai đoạn của bạn: SPEC. File được tạo hoặc sửa: <thư mục tài liệu>/02-spec.md (và needs-info.md khi phải hỏi). Không sửa code, không viết thiết kế. Đọc 01-brainstorm.md, messages (phản hồi 'sửa' của GATE A nếu có) và needs-info.md nếu có. 02-spec.md là tài liệu nghiệp vụ, không nói về cách cài đặt; điền đúng khung template.spec (các tiêu đề ## cố định). Nếu đang sửa theo phản hồi, thêm mục 'Lịch sử sửa' ghi phản hồi nào đã được xử lý. Outcome: `done` khi spec đã đủ để duyệt; `needs_info` khi thiếu thông tin (xem flow.needs-info).",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",

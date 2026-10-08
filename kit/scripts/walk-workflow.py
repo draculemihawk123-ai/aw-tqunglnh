@@ -10,7 +10,7 @@ Kịch bản (xem kit/tests/walk/scenarios/*.json):
     manifest    aw-project.json của project thử (đường dẫn tính từ thư mục kịch bản)
     workflow    id workflow trong manifest
     agents      {node: [outcome, ...]}: outcome lần thứ n node AGENT đó chạy (hết danh sách thì lặp lại cái cuối)
-    commands    {gate1|quality|expectfail|hygiene|size|checkplan|checklessons|checkbrainstorm|checkspec|checkdocs: ["pass"|"fail", ...]}: kết quả lần thứ n (hết thì "pass")
+    commands    {gate1|quality|expectfail|hygiene|size|checkplan|checklessons|checkdocs: ["pass"|"fail", ...]}: kết quả lần thứ n (hết thì "pass")
     approvals   {node: [outcome, ...]}: quyết định cho node APPROVAL
     expect      {"state": "SUCCEEDED|FAILED", "sequence": ["node:outcome", ...], "prompts": [{"node", "nth", "has", "lacks"}]}
 
