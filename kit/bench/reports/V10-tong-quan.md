@@ -74,3 +74,29 @@ B2 = cây `83976ab` (agent code nhận 28 resource, 19,9 KB, thay vì 39 resourc
 **Thu gọn không giảm chi phí và không giảm việc phải sửa lại.** Chi phí node code không giảm (1,59 → 1,70), vòng sửa còn tăng; chi phí tổng B2 cao hơn một phần vì một lượt có một attempt review hỏng (chưa điều tra, 1,63 USD ở node review). Với n=2, khác biệt nhỏ chỉ là nhiễu, nhưng ít nhất không có dấu hiệu thu gọn giúp ích. Chưa rút ra kết luận giữ hay bỏ phần đã bỏ.
 
 **Phát hiện khi tìm nguyên nhân (đã sửa trong kit, chưa đo lại):** ở cả 6 lần task backend hỏng kiểm tra lần đầu (B1, B2), danh sách lỗi agent nhận là hàng chục dòng `[ERROR] … <<< ERROR!` của từng test, và `contextLoads` đỏ cùng mọi test khác, tức Spring không nạp được `ApplicationContext`. `maven-test.sh` chỉ in dòng bắt đầu bằng `[ERROR]`, mà stack trace của Surefire (có `Caused by:`) không có tiền tố đó, nên **agent không bao giờ thấy nguyên nhân gốc**. Đã sửa: in các dòng nguyên nhân (không trùng) trước danh sách test. Chưa biết sửa này giảm được bao nhiêu vòng sửa; cần một mốc đo mới (B3, khoảng 10 USD).
+
+## Bổ sung: chất lượng đầu ra B2 so với B0 (chấm mù)
+
+Cùng 2 lượt mỗi bên, task api + web (bình luận cho issue). Nhãn bị ẩn khi chấm; giải mã sau (D, B = B0; A, C = B2).
+
+**Tài liệu (brainstorm, thiết kế, spec, plan; 24 file, một agent chấm theo rubric 1–5):**
+
+| Loại | B0 | B2 |
+|---|---:|---:|
+| brainstorm | 3,00 | 4,50 |
+| design | 2,50 | 4,50 |
+| plan | 3,83 | 4,67 |
+| spec | 4,00 | 5,00 |
+
+**Mã (một agent review mỗi lượt, chỉ đọc diff, không chạy):**
+
+| Lượt | đúng spec | đường lỗi | test | vững | quy ước |
+|---|---:|---:|---:|---:|---:|
+| B0 run-1 | 4 | 4 | 4 | 4 | 5 |
+| B0 run-2 | 4 | 4 | 4 | 4 | 4 |
+| B2 run-1 | 4 | 4 | 4 | 4 | 3 |
+| B2 run-2 | 4 | 4 | 4 | 3 | 4 |
+
+Kết luận: tài liệu của B2 rõ ràng tốt hơn B0 (chênh khoảng 1–2 điểm, ổn định ở cả bốn loại). Mã thì ngang nhau, không phân biệt được trong khoảng nhiễu. Lỗi hay gặp ở cả hai bên là frontend: thiếu chống gửi trùng, trạng thái lỗi lẫn trạng thái rỗng, race khi đổi issue.
+
+Giới hạn: n=2 mỗi bên; chấm bằng LLM, mỗi lượt một người chấm; review mã chỉ đọc diff; số liệu test đếm bằng regex. Phần tăng chi phí và số vòng sửa của B2 mua được chất lượng tài liệu, không mua được chất lượng mã.
