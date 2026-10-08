@@ -103,4 +103,6 @@ Giới hạn: n=2 mỗi bên; chấm bằng LLM, mỗi lượt một người ch
 
 ## Quyết định sau khi so sánh B2 và B0
 
-Giữ tri thức đầy đủ cho brainstorm, design, spec, plan (nơi B2 tốt hơn rõ). **Hoàn lại agent code về như B0**: `agent-flow-build` nhận lại 39 resource (`rules.principles`, `build.checklist`, `debug.hypotheses`, `debug.red-flags`, `ask.*`, `layer-react-quality` và các resource đầy đủ của `layer-sql-quality`, `layer-api-design`), vì thu gọn không giảm chi phí hay vòng sửa và mã không khác. Sửa `maven-test.sh` (in `Caused by:`) vẫn giữ; tác dụng của nó chưa đo.
+Giữ tri thức đầy đủ cho brainstorm, design, spec, plan (nơi B2 tốt hơn rõ). **Đưa agent code về đúng như B0**: `agent-flow-build` chỉ nạp `flow.working-rules`, `flow.needs-info`, `flow.build` (cộng phần riêng của project: layer của project và `dev.definition-of-done`), không nạp skill hay layer chắt lọc nào của V10. Lý do: B1 (39 resource) và B2 (28 resource) đều đắt hơn B0 mà mã không khác. Các file layer và skill vẫn nằm trong kit và vẫn dùng cho agent khác (design, reviewer…); chỉ danh sách resource của agent code thay đổi, nội dung layer/skill không sửa.
+
+Ghi chú sửa lỗi: lần đầu tôi hoàn nhầm về bản B1 (39 resource); đã sửa lại thành B0. Sửa `maven-test.sh` (in `Caused by:`) vẫn giữ; tác dụng chưa đo.

@@ -934,7 +934,7 @@ Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-projec
 | `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `rules.threat-model`, `design.*`, `layer-api-design`, `layer-sql-quality`, `layer-backend-security` |
 | `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame`, `rules.decisions`, `rules.finish`, `ask.*`, `frame.complexity` |
 | `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, ba Layer, `rules.decisions`, `rules.finish`, `plan.checklist`, `design.verify-claims` |
-| `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra`, `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `ask.*`, `build.*`, `debug.*`, `test.*`, năm layer của kit (`api-design`, `sql-quality`, `backend-security`, `react-quality`, `frontend-testing`) |
+| `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra`. Giống kho trước V10: sau khi đo B0/B1/B2, agent code không nạp thêm skill hay layer chắt lọc (xem `kit/bench/reports/V10-tong-quan.md`) |
 | `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync`, `rules.decisions`, `rules.finish`, `docs.*` |
 
 Bảy agent `agent-flow-*` và `agent-reviewer` là bản mẫu của kho (`"from": "kit"`); `aw-project.json` chỉ khai phần riêng của todolist bằng `addResources` (ba Layer stack, `dev.stack-overview`, `dev.routing-table`, `dev.definition-of-done`). Bảng trên là danh sách sau khi gộp.

@@ -64,7 +64,7 @@
     {"id": "agent-flow-plan", "name": "Agent: PLAN",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.plan", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-plan#plan.checklist", "skill-design#design.verify-claims"]},
     {"id": "agent-flow-build", "name": "Agent: BUILD",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.build", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-dev-rules#rules.principles", "skill-dev-rules#rules.stable-artifacts", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-build#build.conformance", "skill-build#build.checklist", "skill-debug#debug.root-cause", "skill-debug#debug.hypotheses", "skill-debug#debug.fix-discipline", "skill-debug#debug.red-flags", "skill-test#test.behavior", "skill-test#test.error-paths", "layer-api-design", "layer-sql-quality", "layer-backend-security", "layer-react-quality", "layer-frontend-testing"]},
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.build"]},
     {"id": "agent-flow-sync", "name": "Agent: SYNC",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.sync", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-docs#docs.when", "skill-docs#docs.how"]},
     {"id": "agent-flow-repro", "name": "Agent: tái hiện lỗi (viết test đỏ)",
