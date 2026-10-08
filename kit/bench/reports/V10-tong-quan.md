@@ -123,3 +123,55 @@ B3 = cây `8d55534` (`agent-flow-build` chỉ nạp 3 skill flow + phần riêng
 **Nguyên nhân gốc của gate1 hỏng lần đầu ở task api (tìm được nhờ bản sửa `maven-test.sh`).** Lần hỏng duy nhất của B3 hiện rõ trong output: Spring không nạp được context vì `path to './data/tracker.db' ... backend/./data does not exist`. Thư mục `backend/data` không có trong worktree mới (không nằm trong git), nên mọi test nạp context đều đỏ cho đến khi agent tự tạo thư mục. Đây là lỗi của môi trường thử (cấu hình đường dẫn DB tương đối của fixture api), không phải do tri thức của agent. Sau đó còn một lỗi khác ở cùng lượt (`CannotAcquireLockException` khi xóa bình luận) do agent code tự xử lý. Điều này giải thích vì sao api hỏng gate1 ở B1/B2 mà không hỏng ở B0 chưa chắc là do tri thức; cần kiểm bằng cách sửa fixture rồi đo lại.
 
 Giới hạn: chưa chấm chất lượng tài liệu và mã của B3 (chi phí chấm thêm); n=2.
+
+## Bổ sung: B4 — khung tài liệu chuẩn cho BRAINSTORM/SPEC/DESIGN (V10-19), so với B3
+
+B4 = cây `97e6c36`: B3 cộng `skill-doc-templates` (khung tiêu đề cố định cho 01-brainstorm, 02-spec, 03-design), ba bước kiểm máy (`check-brainstorm` sau brainstorm, `check-spec` sau spec, `check-feature-docs` mở rộng sau design) và `cyclePolicy` cho brainstorm/spec. Agent code vẫn như B0. 2 lượt. Lần chạy đầu bị hạn mức phiên của tài khoản cắt giữa F-00 (không liên quan kit), đã chạy lại từ đầu.
+
+**Chi phí và vòng sửa**
+
+| | B3 | B4 |
+|---|---:|---:|
+| Chi phí mỗi lượt (USD) | 5,07 | 5,17 (4,90 và 5,45) |
+| Chi phí node design (USD) | 0,43 | 0,82 |
+| Chi phí node plan (USD) | 0,95 | 0,73 |
+| Vòng sửa (trung bình mỗi lượt) | 2 | 4 |
+| gate1 qua ngay lần đầu (trên 6 task) | 5 | 4 |
+
+Tổng chi phí không đổi. Khung làm design đắt gần gấp đôi nhưng plan và sync rẻ hơn. Vòng sửa của bước code tăng từ 2 lên 4; với n=2 chưa phân biệt được với nhiễu.
+
+**Chất lượng đầu ra, độc lập với agent (chạy thật, cùng một bộ gọi HTTP cho mọi lượt; xem `kit/scripts/code-accept.py`)**
+
+| Lượt | API đạt | lỗi 5xx | test web | build web |
+|---|---:|---:|---:|---|
+| B0 run-1 / run-2 | 25/28, 25/28 | 13, 7 | 17, 17 đạt | đạt |
+| B1 run-1 / run-2 | 27/28, 27/28 | 10, 12 | 23, 17 đạt | đạt |
+| B2 run-1 / run-2 | 28/28, 28/28 | 0, 0 | 12, 15 đạt | đạt |
+| B3 run-1 / run-2 | 26/28, 25/28 | 0, 8 | 29, 17 đạt | đạt |
+| B4 run-1 / run-2 | 28/28, 28/28 | 0, 0 | 16, 17 đạt | đạt |
+
+Các lỗi 5xx đều là 20 POST đồng thời vào SQLite (database locked). Hai kiểm tra cũng hỏng ở B0 và B3: `body`/`author` sai kiểu (số) vẫn được nhận 201. Chênh lệch giữa nhóm nằm ở đồng thời; với n=2 mỗi nhóm và một kịch bản đồng thời duy nhất, đây là gợi ý chứ không phải kết luận.
+
+**Review mã mù (một agent mỗi lượt, chỉ đọc diff; đúng-spec / đường-lỗi / test / vững / quy-ước)**
+
+| Lượt | điểm |
+|---|---|
+| B3 run-1 | 4 / 4 / 4 / 4 / 3 |
+| B3 run-2 | 5 / 4 / 4 / 4 / 4 |
+| B4 run-1 | 4 / 4 / 4 / 3 / 4 |
+| B4 run-2 | 4 / 4 / 4 / 4 / 4 |
+
+Mã B3 và B4 ngang nhau (trung bình 20,0 so với 19,5 trên 25). Các điểm yếu reviewer nêu giống nhau ở cả hai: frontend thiếu chống gửi trùng và trạng thái loading, test sắp xếp không phân biệt được `createdAt` với `id`, cấu hình SQLite toàn cục thêm ngoài phạm vi.
+
+**Chấm mù tài liệu (một agent, 23 file, thang 1–5)**
+
+| Loại | B3 | B4 |
+|---|---:|---:|
+| brainstorm | 4,00 | 5,00 |
+| design | 3,50 | 4,00 |
+| plan | 4,33 | 4,20 |
+| spec | 4,50 | 4,50 |
+
+Agent chấm cho biết điểm phân biệt lớn nhất không liên quan khung: một số design/plan sắp bình luận bằng `ORDER BY created_at` trên chuỗi `Instant.toString()` (sai thứ tự khi mili-giây bằng 0), và hai tài liệu khẳng định điều này đúng. Khung không bắt được loại lỗi nội dung này.
+
+**Nhận xét.** Khung và bước kiểm máy: (1) không tăng chi phí tổng; (2) cho tài liệu có cấu trúc đủ và bắt được thiếu sót (cả hai lượt B4 qua cả ba bước kiểm; trên tài liệu cũ B0–B3 các bước này báo thiếu mục "Ngoài phạm vi", mã `D-n`, test cho `AC-n`); (3) brainstorm và design điểm cao hơn một chút, plan và spec ngang nhau; (4) mã không khác theo review mù, và qua kiểm chấp nhận độc lập sạch hơn ở cả hai lượt B4. Không có bằng chứng nó làm xấu đi thứ gì ngoài vòng sửa của bước code tăng (nhiễu chưa loại trừ được). Giới hạn: n=2; chấm bằng LLM, mỗi lượt một người chấm; review mã chỉ đọc diff; kiểm chấp nhận chỉ có một kịch bản đồng thời; B4 khác B3 ở nhiều thứ cùng lúc (khung, ba bước kiểm, cyclePolicy).
