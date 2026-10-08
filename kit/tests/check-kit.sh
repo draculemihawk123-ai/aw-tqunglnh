@@ -340,7 +340,7 @@ drun() { (cd "$fd" && AW_KIT="$kit" sh "$kit/commands/$1" 2>&1); }
 out=$(drun check-brainstorm.sh) && ok "check-brainstorm: tài liệu đủ khung thì đạt" || bad "check-brainstorm đủ: $out"
 out=$(drun check-spec.sh) && ok "check-spec: tài liệu đủ khung thì đạt" || bad "check-spec đủ: $out"
 out=$(drun check-feature-docs.sh) && ok "check-feature-docs: thiết kế đủ khung, AC khớp thì đạt" || bad "check-feature-docs đủ: $out"
-cp "$fd/docs/features/f/01-brainstorm.md" "$tmp/b.bak"; sed -i '/^### P-2/,/^Ưu: không migration/d' "$fd/docs/features/f/01-brainstorm.md"
+cp "$fd/docs/features/f/01-brainstorm.md" "$tmp/b.bak"; sed -i '/^### P-2/,/^Ưu: không migration/d; s/P-2/phương án kia/' "$fd/docs/features/f/01-brainstorm.md"
 out=$(drun check-brainstorm.sh) && bad "check-brainstorm: chỉ một phương án phải không đạt" || { printf '%s' "$out" | grep -q 'ít nhất 2' && printf '%s' "$out" | grep -q '^WHY:' && ok "check-brainstorm: thiếu phương án thì không đạt, có WHY/FIX" || bad "check-brainstorm thiếu P: $out"; }
 cp "$tmp/b.bak" "$fd/docs/features/f/01-brainstorm.md"
 cp "$fd/docs/features/f/02-spec.md" "$tmp/s.bak"; sed -i 's/^- AC-2: When POST nội dung 2001 ký tự, Then 400./- AC-2: POST nội dung 2001 ký tự bị từ chối./; /^## Hạn chế đã biết/,/^Chưa phân trang./d' "$fd/docs/features/f/02-spec.md"

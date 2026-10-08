@@ -1,170 +1,53 @@
 {
   "prefix": "walk-",
   "repository": "repo",
-  "kit": {
-    "path": "../../kit.json",
-    "version": "1"
-  },
-  "provider": {
-    "key": "claude",
-    "model": "sonnet",
-    "configIdentity": "walk-claude",
-    "envAllowlist": [
-      "HOME",
-      "PATH"
-    ]
-  },
+  "kit": {"path": "../../kit.json", "version": "1"},
+  "provider": {"key": "claude", "model": "sonnet", "configIdentity": "walk-claude", "envAllowlist": ["HOME", "PATH"]},
   "contextBudgetBytes": 65536,
-  "messageBudget": {
-    "maxBytes": 32768,
-    "keepLatest": 2
-  },
+  "messageBudget": {"maxBytes": 32768, "keepLatest": 2},
+
   "skills": [],
+
   "scriptSkills": [
-    {
-      "id": "walk-scripts",
-      "name": "Script giả lập của walk-workflow",
-      "owner": "aw-kit",
-      "files": [
-        "commands/gate1.sh",
-        "commands/quality.sh",
-        "commands/expectfail.sh",
-        "commands/hygiene.sh",
-        "commands/size.sh",
-        "commands/checkplan.sh",
-        "commands/checklessons.sh",
-        "commands/checkbrainstorm.sh",
-        "commands/checkspec.sh",
-        "commands/checkdocs.sh"
-      ]
-    }
+    {"id": "walk-scripts", "name": "Script giả lập của walk-workflow", "owner": "aw-kit",
+     "files": ["commands/gate1.sh", "commands/quality.sh", "commands/expectfail.sh",
+               "commands/hygiene.sh", "commands/size.sh", "commands/checkplan.sh", "commands/checklessons.sh", "commands/checkbrainstorm.sh", "commands/checkspec.sh", "commands/checkdocs.sh"]}
   ],
+
   "agents": [
-    {
-      "id": "agent-flow-frame",
-      "from": "kit"
-    },
-    {
-      "id": "agent-flow-plan",
-      "from": "kit"
-    },
-    {
-      "id": "agent-flow-build",
-      "from": "kit"
-    },
-    {
-      "id": "agent-flow-sync",
-      "from": "kit"
-    },
-    {
-      "id": "agent-flow-repro",
-      "from": "kit"
-    },
-    {
-      "id": "agent-flow-fix",
-      "from": "kit"
-    },
-    {
-      "id": "agent-debugger",
-      "from": "kit"
-    },
-    {
-      "id": "agent-simplifier",
-      "from": "kit"
-    },
-    {
-      "id": "agent-retro",
-      "from": "kit"
-    },
-    {
-      "id": "agent-reviewer",
-      "from": "kit"
-    },
-    {
-      "id": "agent-flow-brainstorm",
-      "from": "kit"
-    },
-    {
-      "id": "agent-flow-spec",
-      "from": "kit"
-    },
-    {
-      "id": "agent-flow-design",
-      "from": "kit"
-    }
+    {"id": "agent-flow-frame", "from": "kit"},
+    {"id": "agent-flow-plan", "from": "kit"},
+    {"id": "agent-flow-build", "from": "kit"},
+    {"id": "agent-flow-sync", "from": "kit"},
+    {"id": "agent-flow-repro", "from": "kit"},
+    {"id": "agent-flow-fix", "from": "kit"},
+    {"id": "agent-debugger", "from": "kit"},
+    {"id": "agent-simplifier", "from": "kit"},
+    {"id": "agent-retro", "from": "kit"},
+    {"id": "agent-reviewer", "from": "kit"},
+    {"id": "agent-flow-brainstorm", "from": "kit"},
+    {"id": "agent-flow-spec", "from": "kit"},
+    {"id": "agent-flow-design", "from": "kit"}
   ],
+
   "commands": [
-    {
-      "id": "cmd-reject",
-      "from": "kit"
-    },
-    {
-      "id": "cmd-gate1",
-      "name": "Command giả lập: gate1",
-      "script": "walk-scripts#gate1.sh"
-    },
-    {
-      "id": "cmd-quality-check",
-      "name": "Command giả lập: quality",
-      "script": "walk-scripts#quality.sh"
-    },
-    {
-      "id": "cmd-expect-fail",
-      "name": "Command giả lập: expect-fail",
-      "script": "walk-scripts#expectfail.sh"
-    },
-    {
-      "id": "cmd-temp-artifacts",
-      "name": "Command giả lập: hygiene",
-      "script": "walk-scripts#hygiene.sh"
-    },
-    {
-      "id": "cmd-diff-size",
-      "name": "Command giả lập: size",
-      "script": "walk-scripts#size.sh"
-    },
-    {
-      "id": "cmd-check-plan",
-      "name": "Command giả lập: check-plan",
-      "script": "walk-scripts#checkplan.sh"
-    },
-    {
-      "id": "cmd-check-lessons",
-      "name": "Command giả lập: check-lessons",
-      "script": "walk-scripts#checklessons.sh"
-    },
-    {
-      "id": "cmd-check-brainstorm",
-      "name": "Command giả lập: check-brainstorm",
-      "script": "walk-scripts#checkbrainstorm.sh"
-    },
-    {
-      "id": "cmd-check-spec",
-      "name": "Command giả lập: check-spec",
-      "script": "walk-scripts#checkspec.sh"
-    },
-    {
-      "id": "cmd-check-feature-docs",
-      "name": "Command giả lập: check-feature-docs",
-      "script": "walk-scripts#checkdocs.sh"
-    }
+    {"id": "cmd-reject", "from": "kit"},
+    {"id": "cmd-gate1", "name": "Command giả lập: gate1", "script": "walk-scripts#gate1.sh"},
+    {"id": "cmd-quality-check", "name": "Command giả lập: quality", "script": "walk-scripts#quality.sh"},
+    {"id": "cmd-expect-fail", "name": "Command giả lập: expect-fail", "script": "walk-scripts#expectfail.sh"},
+    {"id": "cmd-temp-artifacts", "name": "Command giả lập: hygiene", "script": "walk-scripts#hygiene.sh"},
+    {"id": "cmd-diff-size", "name": "Command giả lập: size", "script": "walk-scripts#size.sh"},
+    {"id": "cmd-check-plan", "name": "Command giả lập: check-plan", "script": "walk-scripts#checkplan.sh"},
+    {"id": "cmd-check-lessons", "name": "Command giả lập: check-lessons", "script": "walk-scripts#checklessons.sh"},
+    {"id": "cmd-check-brainstorm", "name": "Command giả lập: check-brainstorm", "script": "walk-scripts#checkbrainstorm.sh"},
+    {"id": "cmd-check-spec", "name": "Command giả lập: check-spec", "script": "walk-scripts#checkspec.sh"},
+    {"id": "cmd-check-feature-docs", "name": "Command giả lập: check-feature-docs", "script": "walk-scripts#checkdocs.sh"}
   ],
+
   "workflows": [
-    {
-      "id": "wf-task-delivery-plus",
-      "from": "kit"
-    },
-    {
-      "id": "wf-bugfix",
-      "from": "kit"
-    },
-    {
-      "id": "wf-retro",
-      "from": "kit"
-    },
-    {
-      "id": "wf-feature-definition",
-      "from": "kit"
-    }
+    {"id": "wf-task-delivery-plus", "from": "kit"},
+    {"id": "wf-bugfix", "from": "kit"},
+    {"id": "wf-retro", "from": "kit"},
+    {"id": "wf-feature-definition", "from": "kit"}
   ]
 }
