@@ -143,11 +143,15 @@ Task tổng hợp verdict được phép chạy khi execution gate trước đó
 | V8 — Alpha hardening | `10-v8-alpha-hardening.md` | Recovery/security/packaging/docs đạt release gate | Alpha verdict |
 | V9 — Harness alignment (**ĐÃ XONG: `V9_DONE`**) | `12-v9-harness-alignment.md` | Checker sau maker, kiểm tra fail quay lại maker, prompt có ưu tiên/outcome, selector theo path, môi trường agent khai báo | Verdict V9; `v8-alpha-gate` vẫn xanh |
 | V10 — Tri thức cho kit từ ClaudeKit (**ĐÃ DUYỆT, chưa triển khai**) | `13-v10-kit-knowledge.md` | Mỗi node của workflow mẫu (BRAINSTORM, SPEC, DESIGN, FRAME, PLAN, BUILD, SYNC, REVIEW) có tri thức chắt lọc, có xuất xứ, được đo A/B | Verdict V10; không thay đổi core |
+| V11 — Sửa lỗi, được sửa core (**ĐANG SOẠN, chưa triển khai**) | `14-v11-bugfix.md` | Lỗi phát hiện khi làm và đo V10: commit ngoài aw làm lệch HEAD, hết hạn mức bị coi là lỗi thường, cạnh hết vòng sai làm run treo, CHECKER không nhận kết quả kiểm tra, cấu hình CLI không cô lập | Mỗi lỗi có test hồi quy; `go test ./...` và CI xanh |
 
 V9 là version sau verdict `ALPHA_READY`, không thuộc định nghĩa Alpha ở mục 2; product owner đã duyệt
 `12-v9-harness-alignment.md` (PR #143). Đầu vào và bằng chứng: `docs/harness-engineering/15-doi-chieu-v9.md`.
 
 V10 chỉ sửa tầng `kit/` và tài liệu, không chạm core engine; file `13-v10-kit-knowledge.md` mới chia task, chưa
+triển khai.
+
+V11 là nơi sửa lỗi và **được phép sửa core engine**; file `14-v11-bugfix.md` mới chia task (5 task, V11-01 chi tiết), chưa
 triển khai.
 
 Không chạy song song hai version có dependency nối tiếp. Bên trong một version, mặc định vẫn làm theo
