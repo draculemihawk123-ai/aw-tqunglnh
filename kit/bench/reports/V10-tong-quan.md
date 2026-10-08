@@ -106,3 +106,20 @@ Giới hạn: n=2 mỗi bên; chấm bằng LLM, mỗi lượt một người ch
 Giữ tri thức đầy đủ cho brainstorm, design, spec, plan (nơi B2 tốt hơn rõ). **Đưa agent code về đúng như B0**: `agent-flow-build` chỉ nạp `flow.working-rules`, `flow.needs-info`, `flow.build` (cộng phần riêng của project: layer của project và `dev.definition-of-done`), không nạp skill hay layer chắt lọc nào của V10. Lý do: B1 (39 resource) và B2 (28 resource) đều đắt hơn B0 mà mã không khác. Các file layer và skill vẫn nằm trong kit và vẫn dùng cho agent khác (design, reviewer…); chỉ danh sách resource của agent code thay đổi, nội dung layer/skill không sửa.
 
 Ghi chú sửa lỗi: lần đầu tôi hoàn nhầm về bản B1 (39 resource); đã sửa lại thành B0. Sửa `maven-test.sh` (in `Caused by:`) vẫn giữ; tác dụng chưa đo.
+
+## Bổ sung: B3 — agent code về như B0, các bước còn lại giữ tri thức V10
+
+B3 = cây `8d55534` (`agent-flow-build` chỉ nạp 3 skill flow + phần riêng của project, như B0; brainstorm, design, spec, plan, review giữ nguyên V10; `maven-test.sh` in `Caused by:`). 2 lượt, cùng bộ đo. Lần chạy đầu hỏng cả hai lượt ngay lúc khởi tạo vì lỗi migrate đua của aw; đã vá `kit-bench.py` (đợi worker migrate xong) rồi chạy lại.
+
+| | B0 | B1 | B2 | B3 |
+|---|---:|---:|---:|---:|
+| Chi phí mỗi lượt (USD) | 3,78 | 5,31 | 6,12 | 5,07 (4,79 và 5,36) |
+| Chi phí node code (USD) | 1,19 | 1,59 | 1,70 | 1,46 |
+| gate1 hỏng ở lần đầu (trên 6 task) | 0 | 2 | 4 | 1 |
+| Vòng sửa (trung bình mỗi lượt) | 0 | 1 | 2 | 2 (0 và 4) |
+
+**Đọc kết quả.** Agent code đã giống B0 nhưng chi phí node code vẫn cao hơn B0 (1,46 so với 1,19), và tổng chi phí 5,07 so với 3,78. Phần chênh nằm ở các bước trước: brainstorm, design, plan, spec đều đắt hơn (design 0,43 so với 0,21; plan 0,95 so với 0,60), và tài liệu dài hơn làm agent code phải đọc nhiều hơn. Tức chi phí thêm đến từ tài liệu tốt hơn, không phải từ tri thức của agent code. So với B2, B3 rẻ hơn (5,07 so với 6,12) và gate1 hỏng ít hơn (1 so với 4), nhưng n=2 và B2 có một lượt bị loại, nên chênh lệch này chưa chắc là do thay đổi.
+
+**Nguyên nhân gốc của gate1 hỏng lần đầu ở task api (tìm được nhờ bản sửa `maven-test.sh`).** Lần hỏng duy nhất của B3 hiện rõ trong output: Spring không nạp được context vì `path to './data/tracker.db' ... backend/./data does not exist`. Thư mục `backend/data` không có trong worktree mới (không nằm trong git), nên mọi test nạp context đều đỏ cho đến khi agent tự tạo thư mục. Đây là lỗi của môi trường thử (cấu hình đường dẫn DB tương đối của fixture api), không phải do tri thức của agent. Sau đó còn một lỗi khác ở cùng lượt (`CannotAcquireLockException` khi xóa bình luận) do agent code tự xử lý. Điều này giải thích vì sao api hỏng gate1 ở B1/B2 mà không hỏng ở B0 chưa chắc là do tri thức; cần kiểm bằng cách sửa fixture rồi đo lại.
+
+Giới hạn: chưa chấm chất lượng tài liệu và mã của B3 (chi phí chấm thêm); n=2.
