@@ -1,0 +1,43 @@
+{
+  "resources": [
+    {
+      "key": "bugfix.repro",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "kit/skills/skill-bugfix.json",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "instruction": "Giai đoạn của bạn: TÁI HIỆN LỖI. Việc duy nhất: viết (hoặc sửa) test khiến lỗi mô tả trong taskContract.behavior hiện ra thành một test ĐỎ. Không sửa code sản phẩm, không sửa lỗi. Sau bạn có một bước kiểm tra tự động chạy bộ test: nó chỉ cho qua khi test đang đỏ. Cách làm: (1) đọc mô tả lỗi, các bước tái hiện và code liên quan; thiếu dữ kiện để dựng ca tái hiện thì dừng bằng outcome needs_info và nêu cần biết gì. (2) Viết test nhỏ nhất, theo hành vi quan sát được (đầu vào, đầu ra hoặc trạng thái cuối), đặt cạnh test cùng loại có sẵn, theo cách đặt tên và cấu trúc của chúng. (3) Test phải đỏ vì ĐÚNG lỗi đó: kiểm tra thông điệp lỗi hoặc giá trị sai trùng với mô tả, không đỏ vì lỗi biên dịch, thiếu import hay dữ liệu thử sai. (4) Khi bước kiểm tra báo test không đỏ, test của bạn chưa chạm tới lỗi: sửa chính test, đừng cho rằng lỗi không tồn tại. (5) Kết thúc bằng outcome done và nêu: tên test, lệnh chạy riêng nó, thông điệp lỗi mong đợi."
+    },
+    {
+      "key": "bugfix.fix",
+      "priority": "REQUIRED_PROCEDURE",
+      "global": true,
+      "selector": {},
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "kit/skills/skill-bugfix.json",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "instruction": "Giai đoạn của bạn: SỬA LỖI, sau khi đã có test tái hiện đang đỏ (nằm trong thay đổi của giai đoạn trước). Quy tắc: (1) không sửa trước khi biết nguyên nhân gốc: chạy riêng test tái hiện, đọc lỗi, lần ngược tới chỗ dữ liệu bắt đầu sai; sửa ở nguyên nhân, không vá ở triệu chứng. (2) KHÔNG sửa, làm yếu, bỏ qua hay xóa test tái hiện để được xanh; chỉ được đổi nó khi chính nó sai, và khi đó nêu rõ trong báo cáo vì sao. (3) Sửa tối thiểu, không dọn dẹp hay tái cấu trúc ngoài phạm vi lỗi. (4) Sau khi sửa chạy lại đúng lệnh trước đó để thấy test tái hiện xanh, rồi chạy cả bộ test của vùng thay đổi; hỏng ở chỗ khác nghĩa là sửa chạm hành vi khác, quay lại bước 1. (5) Nếu prompt có reviewerFeedback từ agent chẩn đoán, đó là phân tích nguyên nhân từ bước kiểm tra đỏ vừa rồi: dùng nó làm giả thuyết đầu tiên và kiểm lại bằng bằng chứng, không tin mù. Báo cáo cuối: nguyên nhân gốc (một đến hai câu, có file:dòng), thay đổi đã làm, so sánh trước và sau (lỗi cũ và kết quả mới), nơi còn có thể mắc cùng kiểu lỗi."
+    },
+    {
+      "key": "bugfix.prevention",
+      "priority": "GUIDANCE",
+      "global": true,
+      "selector": {},
+      "provenance": {
+        "owner": "aw-kit",
+        "source": "kit/skills/skill-bugfix.json",
+        "revision": "v1",
+        "lastVerified": "2026-10-07T00:00:00Z"
+      },
+      "instruction": "Sửa xong, xét cách cùng kiểu lỗi khó quay lại; chỉ làm điều có liên quan tới lỗi vừa sửa, mỗi mục một thay đổi nhỏ: kiểm tra đầu vào tại ranh giới nếu lỗi đến từ dữ liệu ngoài; ràng buộc nghiệp vụ tại nơi xử lý nếu dữ liệu sai được chấp nhận ngầm; kiểu hoặc giá trị bắt buộc nếu lỗi do null hoặc thiếu trường; xử lý lỗi rõ ràng nếu lỗi bị nuốt im lặng. Test tái hiện đã là lớp phòng ngừa bắt buộc; các lớp trên chỉ thêm khi chúng ngăn đúng cơ chế gây lỗi. Không thêm lớp phòng ngừa cho lỗi chính tả hay lỗi kiểu của trình biên dịch."
+    }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "name": "wf-task-delivery-plus: debug needs_info → người → frame",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ],
+    "debug": [
+      "needs_info",
+      "diagnosed"
+    ]
+  },
+  "commands": {
+    "gate1": [
+      "fail",
+      "pass"
+    ],
+    "quality": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "needs-info": [
+      "provided"
+    ],
+    "gate2": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "check-plan:passed",
+      "build:done",
+      "hygiene:passed",
+      "gate1:failed",
+      "debug:needs_info",
+      "needs-info:provided",
+      "frame:full",
+      "plan:done",
+      "check-plan:passed",
+      "build:done",
+      "hygiene:passed",
+      "gate1:passed",
+      "size:passed",
+      "quality:passed",
+      "review:approved",
+      "gate2:approved",
+      "sync:done",
+      "end:-"
+    ]
+  }
+}

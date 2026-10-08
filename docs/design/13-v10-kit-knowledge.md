@@ -1,5 +1,7 @@
 # V10 — Tri thức cho kit: chắt lọc từ ClaudeKit theo từng node
 
+> **Cập nhật sau khi triển khai:** quy ước xuất xứ ở V10-00 (`origin`, `license`, `redistributable`, `provenance.source` dạng `<nguồn>@<commit>:<đường dẫn>`, `--share`) đã được **gỡ khỏi kit**: nội dung chắt lọc là của kit và `provenance.source` chỉ trỏ tới file định nghĩa trong kit. Bản đồ nguồn của file này và lịch sử git là nơi truy nguồn.
+
 > Trạng thái: **ĐÃ DUYỆT — chưa triển khai.** Product owner xác nhận kế hoạch ngày 2026-10-07 (19 task dưới đây, đo
 > hiệu quả 2 lượt mỗi lần đo, tri thức chắt lọc viết bằng tiếng Việt) và duyệt file này khi cho merge vào `master` cùng
 > ngày. File này chỉ chia task; chưa task nào được thực hiện. Khi triển khai: mỗi task một commit, merge vào `master`

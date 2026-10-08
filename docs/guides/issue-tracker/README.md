@@ -225,11 +225,11 @@ Toàn bộ định nghĩa nằm trong một file khai báo, [`aw-project.json`](
 - **Pack** gán Layer vào component: `pack-contracts → spec`, `pack-api → backend`, `pack-web → frontend`. Đây là cách
   một agent nhận đúng tri thức mà không ai phải liệt kê tay trong từng task.
 - **Agent** (mỗi cái một `CONTEXT policy` = danh sách resource của riêng nó): `agent-contract`, `agent-api`, `agent-web`,
-  `agent-reviewer` (không nhận `skill-maker`, chỉ nhận Layer + skill review) và bảy agent của luồng định nghĩa tính năng.
+  `agent-reviewer` (không nhận quy trình viết code của `skill-maker`; nhận Layer, skill review và `rules.threat-model`) và bảy agent của luồng định nghĩa tính năng (agent luồng và `agent-reviewer` lấy bản mẫu của kit bằng `"from": "kit"`, project chỉ cộng phần riêng bằng `addResources`). Mọi agent nhận thêm `rules.decisions` và `rules.finish` (skill `skill-dev-rules` của kit); agent viết code nhận thêm `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`; agent có thể hỏi người nhận `ask.analysis-first`, `ask.question-groups` (skill `skill-ask`). Agent BRAINSTORM nhận thêm `skill-brainstorm` (vấn đề gốc, phương án, giả định), agent SPEC nhận `skill-spec` (thách thức phạm vi, phủ tình huống), agent DESIGN nhận `skill-design` (kiểm chứng khẳng định về code, đánh đổi, phản biện), agent FRAME và PLAN nhận `skill-plan` (chọn lane có bằng chứng, plan đủ cụ thể; PLAN dùng chung `design.verify-claims`). Agent viết code (`agent-api`, `agent-web`, BUILD) nhận `skill-build`, `skill-debug` (vòng sửa) và `skill-test`; `agent-contract` nhận `skill-debug`. Agent SYNC nhận `skill-docs` (khi nào và cách cập nhật tài liệu). Năm layer của kit chắt lọc từ ClaudeKit đi theo component: `layer-api-design` (`backend`, `spec`), `layer-sql-quality` và `layer-backend-security` (`backend`), `layer-react-quality` và `layer-frontend-testing` (`frontend`); selector `componentTags` giữ cho agent `api` không nhận quy ước React và ngược lại. `agent-reviewer` nhận `skill-code-review` (đã ghim theo ClaudeKit: dò edge case, danh sách rà) và `skill-security` (chỉ khi task có `riskLevel: HIGH`). Các skill này chắt lọc từ ClaudeKit, xem `origin` trong `kit.json`.
 - **Command và Gate**: lệnh nào thuộc repository nào được khai ở đây. Script riêng (`contract-lint.sh`, `api-conformance.sh`…)
   nằm ở [`commands/`](commands); ba script chung (`secrets-gate`, `reject`, `check-feature-docs`) và hai runner
   `cmd-maven-test`/`cmd-npm-test` lấy từ kit. Có **ba gate bí mật** (một mỗi repository) và một gate `spec hợp lệ`.
-- **Workflow**: năm cái riêng và bốn cái lấy từ kit. Hai cơ chế mới của kit làm việc này gọn:
+- **Workflow**: năm cái riêng và bốn cái lấy từ kit, cộng bốn bản của hai workflow mẫu V10-14 (`wf-task-delivery-plus-api|web`: thêm node chẩn đoán khi gate đỏ và review độc lập; `wf-bugfix-api|web`: test tái hiện phải đỏ trước khi sửa; xem [kit/README](../../../kit/README.md#workflow-mẫu-có-chẩn-đoán-review-độc-lập-và-sửa-lỗi-v10-14)). Hai cơ chế của kit làm việc này gọn:
   - `{"id": "cmd-api-test", "from": "kit:cmd-maven-test", "repository": "api"}`: **một mẫu, nhiều bản** gắn vào repository khác nhau.
   - `{"id": "wf-task-delivery-api", "from": "kit:wf-task-delivery", "bind": {"command:cmd-gate1": "cmd-api-test", …}}`:
     **một workflow mẫu, nhiều bản** gắn Command khác nhau (contracts / api / web), thay vì copy ba lần.
@@ -262,7 +262,7 @@ ghi vào ./aw-state.json`. Sửa một file rồi publish lại chỉ tạo **ve
 Tạo gốc (một TaskFamily, mỗi repository một worktree và một branch `agentkit/w-…`), rồi chạy task hợp đồng:
 
 ```bash
-create-root.sh "Đợt MVP: issue tracker" api web       # contracts WRITE; api, web READ (ở gốc)
+create-root.sh "Đợt MVP: issue tracker" api=WRITE web=WRITE   # contracts WRITE; api, web WRITE ở gốc
 run-task.sh "$GUIDE/work-items/c-01-contract.json" wf-contract-change
 ```
 
@@ -273,6 +273,10 @@ baseline api: PASS
 baseline contracts: PASS
 baseline web: NOT_REQUIRED
 ```
+
+**Quyền ở gốc là trần của cả đợt.** Repository bổ sung mặc định chỉ READ; task con muốn ghi vào `api` hay `web` thì gốc phải khai
+`api=WRITE`, `web=WRITE`. Nếu quên, tạo task con bị từ chối: `child effective scope exceeds approved family scope`. Gốc chỉ để
+kiểm tra (mục 10.2) thì READ là đủ.
 
 [`c-01-contract.json`](work-items/c-01-contract.json) là một **WorkItem**: `effectiveScope` (chỉ `contracts`, chỉ thư mục
 `spec`, quyền WRITE), `behavior`, `verificationSpec` và các `acceptanceCriteria`. `wf-contract-change` là:
@@ -408,7 +412,25 @@ review-task.sh 4dd24e8c-… approved "Spec đủ, duyệt"
 ```
 
 Spec do agent viết có cả các hạn chế đã biết (BR-12: chưa có xác thực nên ai cũng xóa được mọi bình luận) và phạm vi
-**ngoài** (sửa bình luận, phân trang): người duyệt đọc những dòng này, không chỉ đọc phần "sẽ làm". Sau GATE B, commit
+**ngoài** (sửa bình luận, phân trang): người duyệt đọc những dòng này, không chỉ đọc phần "sẽ làm".
+
+**Checklist cho người duyệt GATE A** (đọc `02-spec.md`; duyệt `approved`, hoặc `revise` kèm phản hồi cụ thể):
+
+1. **Phạm vi và lý do**: spec nêu cái gì đã có, thay đổi tối thiểu và chế độ phạm vi (giữ, thu hẹp, mở rộng) mà agent chọn. Bạn đồng ý với chế độ đó không? Phần "ngoài phạm vi" có đúng ý bạn không?
+2. **Quyết định agent tự chốt**: mỗi quyết định ghi rõ ai chốt. Cái nào là của agent mà bạn chưa đồng ý thì `revise` ngay ở đây, vì thiết kế và task sẽ dựa vào nó.
+3. **Acceptance criteria**: có đường lỗi và giá trị biên (rỗng, dài tối đa, không tồn tại) hay chỉ có đường thành công? Mỗi AC có kiểm chứng được bằng một test tự động không?
+4. **Tình huống bị bỏ**: mục "Hạn chế đã biết" liệt kê các tình huống không thành AC. Có cái nào bạn thấy phải thành AC không?
+5. **Quy tắc và AC khớp nhau**: mỗi quy tắc nghiệp vụ có ít nhất một AC; không có hai AC mâu thuẫn.
+
+**Checklist cho người duyệt GATE B** (đọc `03-design.md` và `tasks.json`; duyệt `approved`, hoặc `revise` kèm phản hồi cụ thể):
+
+1. **Khẳng định về code có kiểm chứng**: các tên file, hàm, endpoint trong thiết kế có kèm `file:dòng` không? Chỗ nào còn `[CHƯA XÁC MINH]` thì thiết kế dựa vào thứ chưa ai kiểm.
+2. **Quyết định và phương án đã loại**: mỗi quyết định quan trọng nêu ít nhất hai phương án, đánh đổi và lý do loại. Bạn có đồng ý với đánh đổi đó không?
+3. **Luồng dữ liệu, rủi ro, hoàn tác, tương thích ngược**: có đủ bốn mục này không, và rủi ro cao có cách giảm cụ thể không?
+4. **Phản biện**: mục "Phản biện" ghi điểm yếu nào đã sửa, điểm nào chấp nhận (lý do), điểm nào bác (nguồn kiểm chứng), và kết luận GO, CAUTION hay STOP. CAUTION thì điều kiện có chấp nhận được không?
+5. **`tasks.json`**: thứ tự theo phụ thuộc; không hai task cùng sửa một file hoặc một migration; mỗi task có hành vi, AC đo được, mức rủi ro; số task ít nhất có thể (mỗi task là một lần review và một commit).
+
+Sau GATE B, commit
 tài liệu rồi chia việc:
 
 ```bash
@@ -559,6 +581,7 @@ Mỗi mục là một lỗi **của hướng dẫn hoặc kit**, đã được s
 | Review xong nhưng `VALIDATION_FAILED` | Tin cuối thiếu marker outcome | `skill-review` nhắc rõ; `retry-task.sh` (8.2) |
 | T-02 ‖ T-03 cùng `SCOPE_VIOLATION` | Task anh em ghi `docs/` vào repository của nhau khi chồng thời gian | Chạy tuần tự (9.3) |
 | `create-root.sh` mới không thấy repository thứ hai/ba | Scope gốc chỉ có repository chính | Truyền `api web` khi tạo gốc (10.2) |
+| Task T-02 bị từ chối ngay: `child effective scope exceeds approved family scope` (hướng dẫn cũ ghi gốc `api web`, chỉ READ) | Gốc chỉ cho READ trên `api` | Gốc đợt MVP khai `api=WRITE web=WRITE` (mục 6); phát hiện khi chạy bộ đo V10 |
 | `provenance.license` bị `aw` từ chối | `provenance` chỉ nhận `owner/source/revision/lastVerified` | Giấy phép/xuất xứ chuyển sang `kit.json`; lint của `aw-publish.py` chặn trường lạ |
 | Layer kit đặt `layer-react-vite` trùng id project todolist | Id định nghĩa duy nhất cả bản cài | Đổi thành `layer-stack-react-vite` |
 

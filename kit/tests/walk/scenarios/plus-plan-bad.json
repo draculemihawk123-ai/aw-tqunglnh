@@ -1,0 +1,53 @@
+{
+  "name": "wf-task-delivery-plus: plan thiếu mục → plan lại",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ]
+  },
+  "commands": {
+    "checkplan": [
+      "fail",
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "check-plan:failed",
+      "plan:done",
+      "check-plan:passed",
+      "build:done",
+      "hygiene:passed",
+      "gate1:passed",
+      "size:passed",
+      "quality:passed",
+      "review:approved",
+      "gate2:approved",
+      "sync:done",
+      "end:-"
+    ]
+  }
+}

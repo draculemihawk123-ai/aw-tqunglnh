@@ -1,0 +1,20 @@
+{
+ "resources": [
+  {
+   "key": "be.security-basics",
+   "priority": "REQUIRED_PROCEDURE",
+   "selector": {
+    "componentTags": [
+     "backend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/layers/layer-backend-security.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Viết backend an toàn mặc định. Kiểm tra mọi đầu vào từ bên ngoài ở ranh giới hệ thống bằng danh sách cho phép (kiểu, độ dài, định dạng, giá trị hợp lệ), không chỉ ở giao diện. Phân quyền ở máy chủ theo nguyên tắc từ chối mặc định, và với thao tác nhạy cảm kiểm cả danh tính lẫn quyền (người này không được đọc hay sửa tài nguyên của người khác bằng cách đoán ID). Không để lộ stack trace, ID nội bộ hay thông tin cá nhân trong phản hồi và log. Bí mật lấy từ biến môi trường hoặc kho bí mật, không nằm trong code hay file cấu hình được commit. Mật khẩu băm bằng thuật toán chậm có muối (Argon2id hoặc bcrypt). Chỉ thêm dependency khi cần và ghim phiên bản. Dự án chưa có xác thực thì ghi rõ đó là hạn chế đã biết thay vì tự dựng một cơ chế."
+  }
+ ]
+}

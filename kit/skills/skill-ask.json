@@ -1,0 +1,30 @@
+{
+ "resources": [
+  {
+   "key": "ask.analysis-first",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-ask.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Trước khi chọn needs_info để hỏi người: (1) đọc README, tài liệu liên quan và code lân cận, vì điều tìm được trong repository thì đừng hỏi; chỉ hỏi khi repository có bằng chứng mâu thuẫn, thiếu bối cảnh, cần phán đoán nghiệp vụ hoặc việc khó hoàn tác. (2) Trong needs-info.md viết phân tích trước: bạn đã tìm gì, vì sao chưa quyết được. (3) Nêu 2 đến 4 phương án cụ thể, mỗi phương án tự đứng được (đọc riêng vẫn hiểu), kèm ảnh hưởng của nó; đánh dấu phương án bạn đề xuất và lý do. Người duyệt chỉ thấy những gì bạn viết: đừng hỏi về phân tích họ chưa đọc."
+  },
+  {
+   "key": "ask.question-groups",
+   "priority": "GUIDANCE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-ask.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Gom câu hỏi theo nhóm để người duyệt trả lời một lần: Phạm vi (làm gì, không làm gì, bản tối thiểu hay đầy đủ); Giả định (điều bạn coi là đúng và sẽ sai nếu ...); Đánh đổi (A hay B); Rủi ro (phụ thuộc, điểm có thể hỏng); Kiến trúc (tổ chức, dữ liệu, API). Mỗi câu ghi trọn câu hỏi, các phương án và vì sao quyết định này ảnh hưởng tới việc triển khai. Câu hỏi tốt làm lộ quyết định ngầm, không chỉ xác nhận điều hiển nhiên."
+  }
+ ]
+}

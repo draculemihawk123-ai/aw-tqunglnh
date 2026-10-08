@@ -311,13 +311,31 @@ của spec. Cần xác nhận khi duyệt: …
 ```
 
 Ở lần chạy này SPEC không dừng để hỏi: nó tự chốt các câu hỏi mở, ghi rõ từng quyết định là của ai, và để GATE A xác
-nhận. Người vận hành thu nhỏ phạm vi ngay tại cổng:
+nhận.
+
+**Checklist cho người duyệt GATE A** (đọc `02-spec.md`; duyệt `approved`, hoặc `revise` kèm phản hồi cụ thể):
+
+1. **Phạm vi và lý do**: spec nêu cái gì đã có, thay đổi tối thiểu và chế độ phạm vi (giữ, thu hẹp, mở rộng) mà agent chọn. Bạn đồng ý với chế độ đó không? Phần "ngoài phạm vi" có đúng ý bạn không?
+2. **Quyết định agent tự chốt**: mỗi quyết định ghi rõ ai chốt. Cái nào là của agent mà bạn chưa đồng ý thì `revise` ngay ở đây, vì thiết kế và task sẽ dựa vào nó.
+3. **Acceptance criteria**: có đường lỗi và giá trị biên (rỗng, dài tối đa, không tồn tại) hay chỉ có đường thành công? Mỗi AC có kiểm chứng được bằng một test tự động không?
+4. **Tình huống bị bỏ**: mục "Hạn chế đã biết" liệt kê các tình huống không thành AC. Có cái nào bạn thấy phải thành AC không?
+5. **Quy tắc và AC khớp nhau**: mỗi quy tắc nghiệp vụ có ít nhất một AC; không có hai AC mâu thuẫn.
+
+Người vận hành thu nhỏ phạm vi ngay tại cổng:
 
 ```bash
 review-task.sh 6c192830-… revise "Thu nhỏ phạm vi: bỏ phần nhãn 'Sắp tới hạn' (nhắc việc) khỏi đợt này. Chỉ giữ: đặt, đổi, xóa hạn chót theo ngày; đánh dấu việc quá hạn; lọc việc quá hạn. Các quyết định còn lại ở mục 8 tôi đồng ý."
 review-task.sh 6c192830-… approved          # GATE A: duyệt SPEC đã sửa
 review-task.sh 6c192830-… approved          # GATE B: duyệt DESIGN
 ```
+
+**Checklist cho người duyệt GATE B** (đọc `03-design.md` và `tasks.json`; duyệt `approved`, hoặc `revise` kèm phản hồi cụ thể):
+
+1. **Khẳng định về code có kiểm chứng**: các tên file, hàm, endpoint trong thiết kế có kèm `file:dòng` không? Chỗ nào còn `[CHƯA XÁC MINH]` thì thiết kế dựa vào thứ chưa ai kiểm.
+2. **Quyết định và phương án đã loại**: mỗi quyết định quan trọng nêu ít nhất hai phương án, đánh đổi và lý do loại. Bạn có đồng ý với đánh đổi đó không?
+3. **Luồng dữ liệu, rủi ro, hoàn tác, tương thích ngược**: có đủ bốn mục này không, và rủi ro cao có cách giảm cụ thể không?
+4. **Phản biện**: mục "Phản biện" ghi điểm yếu nào đã sửa, điểm nào chấp nhận (lý do), điểm nào bác (nguồn kiểm chứng), và kết luận GO, CAUTION hay STOP. CAUTION thì điều kiện có chấp nhận được không?
+5. **`tasks.json`**: thứ tự theo phụ thuộc; không hai task cùng sửa một file hoặc một migration; mỗi task có hành vi, AC đo được, mức rủi ro; số task ít nhất có thể (mỗi task là một lần review và một commit).
 
 Timeline đầy đủ:
 

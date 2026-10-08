@@ -1,0 +1,46 @@
+{
+  "title": "R-02: Review độc lập tính năng bình luận (T-01, T-02, T-03)",
+  "parentJoinPolicy": "ALL_CHILDREN_DONE",
+  "effectiveScope": [
+    {
+      "repositoryId": "api",
+      "access": "READ",
+      "reason": "Chỉ đọc để review"
+    },
+    {
+      "repositoryId": "web",
+      "access": "READ",
+      "reason": "Chỉ đọc để review"
+    },
+    {
+      "repositoryId": "contracts",
+      "access": "READ",
+      "reason": "Đọc hợp đồng làm chuẩn"
+    }
+  ],
+  "contract": {
+    "schemaVersion": 1,
+    "behavior": "Review độc lập phần hiện thực tính năng bình luận trên issue: hợp đồng spec/openapi.json (repository contracts), backend (repository api, thư mục backend/) và frontend (repository web, thư mục frontend/). Chuẩn để đối chiếu là tài liệu tính năng đã được người duyệt ở docs/features/comments (01-brainstorm.md, 02-spec.md, 03-design.md, tasks.json): mọi giá trị cụ thể (tên operation, giới hạn độ dài, phiên bản hợp đồng, mã lỗi) lấy từ các tài liệu đó, không lấy từ nơi khác.",
+    "verificationSpec": "Reviewer chỉ đọc và báo cáo theo mức nghiêm trọng; người vận hành quyết định ở cổng review.",
+    "riskLevel": "MEDIUM",
+    "acceptanceCriteria": [
+      {
+        "description": "Hợp đồng chỉ cộng thêm: các operation và schema bình luận đúng theo 03-design.md và 02-spec.md; mọi path, schema, response đã có trước đó giữ nguyên",
+        "verificationRef": "AGENT_EXECUTION"
+      },
+      {
+        "description": "Backend: các route đúng path, method, mã trạng thái theo hợp đồng; validation (bắt buộc, không rỗng sau khi bỏ khoảng trắng, giới hạn độ dài) đúng theo 02-spec.md; issue hoặc bình luận không tồn tại trả 404 dạng Problem; xóa issue xóa bình luận của nó; mỗi hành vi có test, kể cả đường lỗi",
+        "verificationRef": "AGENT_EXECUTION"
+      },
+      {
+        "description": "Frontend: chỉ gọi endpoint có trong hợp đồng; thêm, xem, xóa bình luận hoạt động; lỗi Problem hiển thị detail; mỗi hành vi có test",
+        "verificationRef": "AGENT_EXECUTION"
+      },
+      {
+        "description": "Không có endpoint, tính năng hay file ngoài phạm vi của ba task",
+        "verificationRef": "AGENT_EXECUTION"
+      }
+    ],
+    "workflowVersionId": "WORKFLOW_VERSION_ID"
+  }
+}

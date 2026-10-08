@@ -1,0 +1,43 @@
+{
+ "resources": [
+  {
+   "key": "spec.scope-challenge",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-spec.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Thách thức phạm vi trước khi viết quy tắc, và ghi kết quả vào mục \"Phạm vi và lý do\" của 02-spec.md. Trả lời ngắn ba câu: (1) hệ thống đã có gì giải quyết một phần việc này (hàm, endpoint, màn hình, bảng) và spec có đang dựng lại thứ đã có không; (2) thay đổi tối thiểu để đạt mục tiêu là gì, việc nào hoãn được mà không chặn mục tiêu, cái nào là mong muốn đội lốt yêu cầu; (3) độ phức tạp: nếu việc sẽ chạm hơn 8 file, thêm hơn 2 lớp hoặc dịch vụ mới, hoặc cần hơn 3 giai đoạn thì tự hỏi có đạt cùng mục tiêu với ít hơn không và nêu lý do cho từng cái. Rồi chọn một chế độ và ghi lý do để người duyệt xác nhận ở GATE A: GIỮ (phạm vi đúng, tập trung vào đường lỗi, giá trị biên, test), THU HẸP (chuyển mọi thứ không chặn mục tiêu sang \"ngoài phạm vi\") hoặc MỞ RỘNG (chỉ khi brainstorm hoặc messages đã yêu cầu; đánh dấu rõ phần mở rộng). Đã chọn thì giữ: đừng lặng lẽ thu hẹp hay mở rộng về sau. Việc nhỏ và hiển nhiên (sửa chính tả, một dòng cấu hình) thì bỏ qua bước này."
+  },
+  {
+   "key": "spec.scenarios",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-spec.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Phủ tình huống trước khi chốt acceptance criteria. Duyệt các chiều sau, chỉ giữ chiều thật sự áp dụng và ghi chiều bỏ qua kèm lý do một dòng: loại người dùng; giá trị đầu vào cực đoan (rỗng, null, dài tối đa, unicode, ký tự đặc biệt, chuỗi chỉ gồm khoảng trắng); thời điểm (hai thao tác cùng lúc, thử lại); quy mô (0, 1, nhiều phần tử, ranh giới phân trang); chuyển trạng thái (dùng lần đầu, bỏ dở giữa chừng, làm lại); chuỗi lỗi (cơ sở dữ liệu hay dịch vụ ngoài chậm hoặc hỏng, ghi dở); phân quyền; toàn vẹn dữ liệu (trùng, tham chiếu mồ côi, xóa dây chuyền); tích hợp (hợp đồng đổi, phiên bản lệch); tuân thủ (dữ liệu cá nhân, nhật ký kiểm toán); logic nghiệp vụ (giá trị 0 hoặc âm, giới hạn). Mỗi chiều áp dụng sinh 3 đến 5 tình huống cụ thể, xếp mức Critical, High, Medium hoặc Low (Critical: mất hoặc hỏng dữ liệu, lộ bảo mật; High: hỏng chức năng với một nhóm người dùng). Tình huống từ High trở lên và mọi đường lỗi phải thành acceptance criteria; phần còn lại ghi vào \"Hạn chế đã biết\"."
+  },
+  {
+   "key": "spec.ac-quality",
+   "priority": "GUIDANCE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-spec.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Chất lượng acceptance criteria. Mỗi AC mô tả một hành vi quan sát được (mã trạng thái, thông báo, trạng thái dữ liệu) chứ không mô tả cách cài đặt. Thay từ mơ hồ bằng giá trị cụ thể (\"hợp lệ\" thành 200 ký tự được nhận, 201 ký tự bị từ chối). AC đường lỗi đi cùng AC đường thành công của cùng thao tác. Không có hai AC mâu thuẫn hoặc trùng nhau; mỗi AC kiểm chứng được bằng một test tự động. Rà lại trước khi kết thúc: mỗi quy tắc nghiệp vụ BR có ít nhất một AC, và mỗi AC dẫn về một BR hoặc một user story."
+  }
+ ]
+}

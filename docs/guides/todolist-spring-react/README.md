@@ -893,26 +893,51 @@ Skill ([`definitions/skills/`](definitions/skills/)):
 | | `dev.high-risk-extra` (GUIDANCE, `riskClasses: HIGH`) | Chỉ nạp khi contract có `riskLevel: HIGH` |
 | | `dev.stack-overview` (REFERENCE, global) | Tổng quan ba thư mục, cho các bước không gắn với một vùng code |
 | `skill-todolist-routing` | `dev.routing-table` (REQUIRED_PROCEDURE, global) | Bảng "khu vực thay đổi → thư mục/tài liệu cần đọc trước" của todolist; chỉ `agent-flow-plan` nạp (skill riêng để reviewer và `agent-dev` không nhận) |
-| `skill-code-review` (kit) | `codereview.evidence` (HARD_CONSTRAINT), `codereview.procedure` (REQUIRED_PROCEDURE), `codereview.report` (GUIDANCE), cả ba `CHECKER` | Review có bằng chứng: hai giai đoạn, mức nghiêm trọng, tách "đã đọc" khỏi "đã chạy"; `agent-reviewer` nạp cùng `skill-review` |
+| `skill-code-review` (kit, chắt lọc từ ClaudeKit) | `codereview.evidence` (HARD_CONSTRAINT), `codereview.procedure`, `codereview.edge-scout`, `codereview.checklist` (REQUIRED_PROCEDURE), `codereview.report` (GUIDANCE), đều `CHECKER` | Review có bằng chứng: hai giai đoạn, mức nghiêm trọng, tách "đã đọc" khỏi "đã chạy"; `agent-reviewer` nạp cùng `skill-review` |
+| `skill-security` (kit, chắt lọc từ ClaudeKit) | `security.stride` (REQUIRED_PROCEDURE), `security.owasp` (GUIDANCE), cả hai `riskClasses: HIGH` | Chỉ nạp khi contract có `riskLevel: HIGH`: soát STRIDE và nhóm OWASP, che giá trị bí mật khi báo cáo |
 | `skill-review` (kit) | `review.read-only` (HARD_CONSTRAINT, `CHECKER`) | Chỉ đọc; repository nằm ở đường dẫn trong system prompt |
 | | `review.checklist` (REQUIRED_PROCEDURE, `CHECKER`) | Đối chiếu từng acceptance criteria; khi nào `approved`, khi nào `rework` |
 | `skill-feature-flow` (kit) | `flow.working-rules` (HARD_CONSTRAINT) | Mỗi agent chỉ làm một giai đoạn; thư mục tài liệu; cách đọc `allowedOutcomes`; không commit |
 | | `flow.brainstorm`, `flow.spec`, `flow.design`, `flow.frame`, `flow.plan`, `flow.build`, `flow.sync` (HARD_CONSTRAINT) | Hướng dẫn của từng giai đoạn: file được phép tạo hoặc sửa, nội dung cần viết, khi nào chọn outcome nào |
 | | `flow.needs-info` (REQUIRED_PROCEDURE) | Cách dừng để hỏi: ghi `needs-info.md`, outcome `needs_info` |
+| `skill-dev-rules` (kit, chắt lọc từ ClaudeKit) | `rules.no-shortcuts` (HARD_CONSTRAINT, `MAKER`) | Làm hành vi thật; không mock, tắt hay làm yếu test để qua kiểm tra; giữ hợp đồng công khai; không để bí mật vào code |
+| | `rules.decisions` (HARD_CONSTRAINT, global) | Không lặng lẽ đảo quyết định người dùng đã chốt; điều đã kiểm chứng chỉ đổi khi có bằng chứng mới |
+| | `rules.principles`, `rules.stable-artifacts`, `rules.threat-model`, `rules.finish` | YAGNI, KISS, DRY và bám pattern có sẵn; không đưa mã task hay finding vào code; xác định mối đe dọa thật trước khi sửa; cách kết thúc (`done` kèm "Điểm còn lo ngại", `needs_info`, `escalated`) |
+| `skill-brainstorm` (kit, chắt lọc từ ClaudeKit) | `brainstorm.scout-first`, `brainstorm.problem-first`, `brainstorm.options`, `brainstorm.exact-requirements` (REQUIRED_PROCEDURE) | Đọc hiện trạng trước; tìm vấn đề gốc thay vì nhận ngay giải pháp; 2 đến 4 phương án thật sự khác nhau, có bản tối thiểu; yêu cầu và câu hỏi mở phải cụ thể |
+| | `brainstorm.assumptions`, `brainstorm.unstuck` (GUIDANCE) | Giả định kèm rủi ro, cách kiểm chứng và trạng thái bằng chứng; cách gỡ khi phương án ngày càng phức tạp |
+| `skill-spec` (kit, chắt lọc từ ClaudeKit) | `spec.scope-challenge`, `spec.scenarios` (REQUIRED_PROCEDURE) | Thách thức phạm vi (đã có gì, tối thiểu là gì, độ phức tạp; chọn giữ, thu hẹp hay mở rộng và ghi lý do); duyệt các chiều tình huống rồi chuyển tình huống từ High trở lên thành AC |
+| | `spec.ac-quality` (GUIDANCE) | AC quan sát được, có giá trị biên cụ thể, đường lỗi đi cùng đường thành công |
+| `skill-design` (kit, chắt lọc từ ClaudeKit) | `design.codebase`, `design.verify-claims`, `design.checklist` (REQUIRED_PROCEDURE) | Đọc codebase trước; mọi khẳng định về code kèm `file:dòng` hoặc gắn `[CHƯA XÁC MINH]`; thiết kế phải có luồng dữ liệu, phụ thuộc, rủi ro, tương thích ngược, kiểm thử, hoàn tác, quyền sở hữu file |
+| | `design.solution`, `design.red-team` (GUIDANCE) | So sánh phương án và ghi phương án đã loại; tự phản biện từ bốn góc nhìn đối địch, kết luận GO, CAUTION hay STOP |
+| `skill-plan` (kit, chắt lọc từ ClaudeKit) | `frame.complexity` (GUIDANCE) | Phân loại đơn giản, vừa, phức tạp bằng bằng chứng (số file, nguyên nhân đã xác nhận); không chắc thì `full`; frame.md ghi bằng chứng |
+| | `plan.checklist` (REQUIRED_PROCEDURE) | plan.md đủ cụ thể: file theo thứ tự và lý do, phụ thuộc giữa bước, test cho từng AC kể cả đường lỗi, lệnh kiểm tra cuối, rủi ro và cách hoàn tác, tiêu chí xong đo được |
+| `skill-build` (kit, chắt lọc từ ClaudeKit) | `build.conformance`, `build.checklist` (REQUIRED_PROCEDURE) | Bám quy ước, import, xử lý lỗi và helper có sẵn trước khi viết; tự rà xử lý lỗi, kiểm tra đầu vào ở biên, không TODO mới, giao diện khớp spec; không khẳng định "đã qua" khi chưa ai chạy |
+| `skill-debug` (kit, chắt lọc từ ClaudeKit) | `debug.root-cause`, `debug.hypotheses`, `debug.fix-discipline` (REQUIRED_PROCEDURE) | Vòng sửa sau khi kiểm tra đỏ: đọc trọn lỗi, lần ngược tới nguồn, 2 đến 3 giả thuyết cạnh tranh loại trừ bằng bằng chứng, một thay đổi cho một nguyên nhân; sửa nhiều lần vẫn đỏ thì dừng và hỏi |
+| | `debug.red-flags` (GUIDANCE) | Những câu cho thấy đang đoán mò |
+| `skill-test` (kit, chắt lọc từ ClaudeKit) | `test.behavior`, `test.error-paths` (REQUIRED_PROCEDURE) | Test theo hành vi, độc lập và xác định; phủ đầu vào sai, giá trị biên, đối tượng không tồn tại, và lỗi không để lại tác dụng phụ |
+| `skill-docs` (kit, chắt lọc từ ClaudeKit) | `docs.when`, `docs.how` (REQUIRED_PROCEDURE) | Chỉ cập nhật tài liệu khi hành vi, lệnh, kiến trúc hay hợp đồng đổi; đọc code thật, kiểm tên file và hàm, xóa mục lỗi thời, giữ file gọn |
+| `layer-api-design` (kit, chắt lọc từ ClaudeKit; `backend`, `spec`) | `api.rest-conventions` (REQUIRED_PROCEDURE), `api.compat` (GUIDANCE) | URL theo tài nguyên, phương thức và mã trạng thái đúng nghĩa, một dạng lỗi chung, danh sách có giới hạn; API chỉ cộng thêm, hợp đồng đi trước code |
+| `layer-sql-quality` (kit; `backend`) | `sql.queries` (REQUIRED_PROCEDURE), `sql.indexes` (GUIDANCE) | Tham số hóa, tránh `SELECT *` và N+1, giao dịch ngắn, xóa dây chuyền có quyết định rõ; chỉ mục cho cột lọc và khóa ngoại, không sửa migration đã chạy |
+| `layer-backend-security` (kit; `backend`) | `be.security-basics` (REQUIRED_PROCEDURE) | Kiểm đầu vào ở ranh giới, phân quyền phía máy chủ từ chối mặc định, không lộ stack trace hay bí mật, ghi rõ hạn chế khi chưa có xác thực |
+| `layer-react-quality` (kit; `frontend`) | `react.rerender`, `react.bundle`, `react.rendering`, `react.async`, `react.js-perf` (GUIDANCE) | Giảm render thừa, kích thước bundle, hiển thị có điều kiện và ba trạng thái dữ liệu, gọi API song song và hủy yêu cầu cũ, xử lý dữ liệu không đổi mảng gốc (nội dung gốc của Vercel Engineering, qua ClaudeKit) |
+| `layer-frontend-testing` (kit; `frontend`) | `webtest.behavior-first`, `webtest.deterministic` (REQUIRED_PROCEDURE) | Test theo vai trò và nhãn, mock ở ranh giới mạng; không `sleep`, mỗi test tự dựng và dọn, mạng mock có cả đường lỗi |
+| `skill-ask` (kit, chắt lọc từ ClaudeKit) | `ask.analysis-first` (REQUIRED_PROCEDURE), `ask.question-groups` (GUIDANCE) | Đọc repository và viết phân tích trước khi hỏi; 2 đến 4 phương án tự đứng được; gom câu hỏi theo nhóm |
 
 Agent và resource (khai báo trong `agents` của [`aw-project.json`](aw-project.json)):
 
 | Agent | Dùng ở node | Model | Resource ứng viên |
 |---|---|---|---|
-| `agent-dev` | `implement` của ba workflow rút gọn | sonnet | Ba Layer; `skill-todolist-dev` |
-| `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev` |
-| `agent-flow-brainstorm` | `brainstorm` | opus | `flow.working-rules`, `flow.brainstorm`, `dev.stack-overview` |
-| `agent-flow-spec` | `spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview` |
-| `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview` |
-| `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame` |
-| `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, ba Layer |
-| `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra` |
-| `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync` |
+| `agent-dev` | `implement` của ba workflow rút gọn | sonnet | Ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.no-shortcuts`, `rules.principles`, `rules.stable-artifacts`, `build.*`, `debug.*`, `test.*`, năm layer của kit |
+| `agent-reviewer` | `ai-review` | sonnet | `skill-review`, `skill-code-review`; ba Layer; `skill-todolist-dev`; `rules.decisions`, `rules.finish`, `rules.threat-model`; `security.*`; năm layer của kit |
+| `agent-flow-brainstorm` | `brainstorm` | opus | `flow.working-rules`, `flow.brainstorm`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `brainstorm.*` |
+| `agent-flow-spec` | `spec` | opus | `flow.working-rules`, `flow.needs-info`, `flow.spec`, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `ask.*`, `spec.*` |
+| `agent-flow-design` | `design` | opus | `flow.working-rules`, `flow.design`, ba Layer, `dev.stack-overview`, `rules.decisions`, `rules.finish`, `rules.threat-model`, `design.*`, `layer-api-design`, `layer-sql-quality`, `layer-backend-security` |
+| `agent-flow-frame` | `frame` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.frame`, `rules.decisions`, `rules.finish`, `ask.*`, `frame.complexity` |
+| `agent-flow-plan` | `plan` | sonnet | `flow.working-rules`, `dev.routing-table`, `flow.plan`, ba Layer, `rules.decisions`, `rules.finish`, `plan.checklist`, `design.verify-claims` |
+| `agent-flow-build` | `build` | sonnet | `flow.working-rules`, `flow.needs-info`, `flow.build`, ba Layer, `dev.definition-of-done`, `dev.high-risk-extra`. Giống kho trước V10: sau khi đo B0/B1/B2, agent code không nạp thêm skill hay layer chắt lọc (xem `kit/bench/reports/V10-tong-quan.md`) |
+| `agent-flow-sync` | `sync` | sonnet | `flow.working-rules`, `flow.sync`, `rules.decisions`, `rules.finish`, `docs.*` |
+
+Bảy agent `agent-flow-*` và `agent-reviewer` là bản mẫu của kho (`"from": "kit"`); `aw-project.json` chỉ khai phần riêng của todolist bằng `addResources` (ba Layer stack, `dev.stack-overview`, `dev.routing-table`, `dev.definition-of-done`). Bảng trên là danh sách sau khi gộp.
 
 Sau khi chạy một task, kiểm tra agent thực sự nhận resource nào trong ContextSnapshot của attempt:
 

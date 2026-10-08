@@ -1,0 +1,34 @@
+{
+  "name": "wf-retro: người duyệt yêu cầu sửa → retro lại",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-retro",
+  "agents": {
+    "retro": [
+      "done"
+    ]
+  },
+  "commands": {
+    "checklessons": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "approve-lessons": [
+      "revise",
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "retro:done",
+      "check-lessons:passed",
+      "approve-lessons:revise",
+      "retro:done",
+      "check-lessons:passed",
+      "approve-lessons:approved",
+      "end:-"
+    ]
+  }
+}

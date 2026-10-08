@@ -6,6 +6,7 @@ Cách dùng:
     aw-publish.py aw-project.json --slots            # chỗ trống mà workflow của kit đòi project điền
     aw-publish.py aw-project.json                    # publish, ghi trạng thái vào aw-state.json
     aw-publish.py <kit>/kit.json --check             # kiểm tra chính kho (kit)
+    aw-publish.py aw-project.json --kit <thư mục kit>  # như trên nhưng dùng kho ở thư mục khác (kit/bench)
 
 Kho dùng chung (kit): file khai báo project có khóa "kit": "<đường dẫn tới kit.json>" (hoặc {"path", "version"}).
 Id mà kit khai báo (Layer, Skill, script skill, Policy) tham chiếu được từ project mà không phải khai lại; chúng được
@@ -81,11 +82,11 @@ SECTIONS = (("layers", "LAYER"), ("skills", "SKILL"), ("scriptSkills", "SKILL"),
             ("policies", "POLICY"), ("agents", "AGENT_PROFILE"), ("commands", "COMMAND"), ("gates", "GATE"),
             ("workflows", "WORKFLOW"))
 SHARED = ("layers", "skills", "scriptSkills", "policies")  # phần của kit được publish dùng chung
-INSTANTIATED = ("commands", "gates", "workflows")          # phần của kit là bản mẫu, publish theo project
+INSTANTIATED = ("agents", "commands", "gates", "workflows")  # phần của kit là bản mẫu, publish theo project
 INCLUDE_RE = re.compile(r'^\s*\.\s+"\$\{AW_KIT:\?[^}]*\}/(?P<rel>[^"]+)"\s*#\s*@aw-include\s*$')
 
 
-def load_manifest(path, as_kit=False):
+def load_manifest(path, as_kit=False, kit_override=None):
     base = os.path.dirname(os.path.abspath(path))
     with open(path, encoding="utf-8") as f:
         manifest = json.load(f)
@@ -105,7 +106,12 @@ def load_manifest(path, as_kit=False):
     spec = manifest.pop("kit", None)
     if spec is not None and not as_kit:
         spec = {"path": spec} if isinstance(spec, str) else dict(spec)
-        kit = load_manifest(os.path.join(base, spec["path"]), as_kit=True)
+        kit_path = os.path.join(base, spec["path"])
+        if kit_override:
+            kit_path = os.path.abspath(kit_override)
+            if os.path.isdir(kit_path):
+                kit_path = os.path.join(kit_path, "kit.json")
+        kit = load_manifest(kit_path, as_kit=True)
         if kit["role"] != "kit":
             raise ManifestError(f"{spec['path']} không phải kho (kit): thiếu \"role\": \"kit\"")
         wanted = str(spec.get("version", "")).split(".")[0]
@@ -117,9 +123,10 @@ def load_manifest(path, as_kit=False):
 
 
 def expand_from_kit(manifest, kit):
-    """{"id": "x", "from": "kit"} trong commands/gates/workflows: lấy bản mẫu cùng id của kit; {"id": "y", "from":
+    """{"id": "x", "from": "kit"} trong agents/commands/gates/workflows: lấy bản mẫu cùng id của kit; {"id": "y", "from":
     "kit:x"} lấy bản mẫu id x và đặt tên y (dùng một bản mẫu cho nhiều repository). Field khác trong entry của project
-    ghi đè bản mẫu. Đường dẫn file của bản mẫu tính từ thư mục của kit."""
+    ghi đè bản mẫu. Đường dẫn file của bản mẫu tính từ thư mục của kit. Agent mẫu có thêm `addResources`: danh sách
+    Layer/Skill của project cộng vào `resources` của bản mẫu (mẫu của kit chỉ biết tri thức của kit)."""
     for section in INSTANTIATED:
         expanded = []
         for entry in manifest[section]:
@@ -132,6 +139,12 @@ def expand_from_kit(manifest, kit):
                 if template is None:
                     raise ManifestError(f"{section}/{entry['id']}: kit không có bản mẫu {template_id!r}")
                 entry = {**template, **{k: v for k, v in entry.items() if k != "from"}, "_owner": kit}
+                if section == "agents":
+                    resources = list(entry.get("resources", []))
+                    for extra in entry.pop("addResources", []):
+                        if extra not in resources:
+                            resources.append(extra)
+                    entry["resources"] = resources
             expanded.append(entry)
         manifest[section] = expanded
 
@@ -251,9 +264,8 @@ def lint(manifest):
     is_kit = manifest["role"] == "kit"
     kit = manifest["_kit"]
     if is_kit:
-        for section in ("agents", "packs"):
-            if manifest[section]:
-                problems.append(f"kit không được khai báo {section}: {section} phụ thuộc vào stack của từng project")
+        if manifest["packs"]:
+            problems.append("kit không được khai báo packs: Engineering Pack gán cho component, phụ thuộc vào stack của từng project")
     if kit and kit["prefix"] == manifest["prefix"]:
         problems.append(f"prefix của project ({manifest['prefix']!r}) trùng prefix của kit")
     seen = {}
@@ -296,6 +308,7 @@ def lint(manifest):
     problems += lint_resource_fields(manifest)
     if is_kit:
         problems += lint_provenance(manifest)
+    problems += knowledge_findings(manifest)[0]
     for pack in manifest["packs"]:
         for dep in pack.get("include", []):
             if dep not in passive and dep not in packs:
@@ -379,7 +392,7 @@ SLOT_KINDS = {"AGENT_PROFILE", "COMMAND", "GATE", "ENGINEERING_PACK", "WORKFLOW"
 def kit_hint(manifest, kind, ref_id):
     """Gợi ý khi một $ref trỏ tới Command/Gate/Workflow mà kit có bản mẫu nhưng project chưa lấy về."""
     kit = manifest.get("_kit")
-    section = {"COMMAND": "commands", "GATE": "gates", "WORKFLOW": "workflows"}.get(kind)
+    section = {"AGENT_PROFILE": "agents", "COMMAND": "commands", "GATE": "gates", "WORKFLOW": "workflows"}.get(kind)
     if kit and section and any(e["id"] == ref_id for e in kit[section]):
         return f' — kit có bản mẫu: thêm {{"id": "{ref_id}", "from": "kit"}} vào {section}'
     return ""
@@ -398,6 +411,13 @@ def lint_resource_fields(manifest):
                 for resource in read_json(owner, entry["file"])["resources"]:
                     prov = resource.get("provenance") or {}
                     where = f"{section}/{entry['id']}#{resource.get('key')}"
+                    body_field, wrong_field = ("convention", "instruction") if section == "layers" else ("instruction", "convention")
+                    if wrong_field in resource or not str(resource.get(body_field, "")).strip():
+                        problems.append(f"{where}: nội dung của resource trong {'Layer' if section == 'layers' else 'Skill'} nằm ở trường "
+                                        f"\"{body_field}\" (không phải \"{wrong_field}\"), và không được rỗng")
+                    if not any((resource.get("selector") or {}).values()) and resource.get("global") is not True:
+                        problems.append(f"{where}: resource không có selector phải khai \"global\": true (aw yêu cầu mọi resource không toàn cục "
+                                        f"nêu khi nào áp dụng: componentTags, pathTags, taskKinds, blockKinds hoặc riskClasses)")
                     extra = sorted(set(prov) - PROVENANCE_FIELDS)
                     if extra:
                         problems.append(f"{where}: provenance có trường aw không nhận {extra} (chỉ owner, source, revision, "
@@ -424,6 +444,66 @@ def lint_provenance(manifest):
     return problems
 
 
+# Chắt lọc từ nguồn bên ngoài (kit/README.md, mục "Chắt lọc từ nguồn bên ngoài"): những cấu trúc chỉ có ở công cụ gốc
+# (công cụ gốc) không dùng được trong aw, vì agent MAKER không chạy được lệnh, không có subagent và không hỏi người trực tiếp.
+FOREIGN_CONSTRUCTS = [
+    (r"/ck:", "lệnh /ck:… của công cụ gốc"), (r"AskUserQuestion", "AskUserQuestion (aw: chọn outcome needs_info)"),
+    (r"\bTask(Create|Update|Get|List)\b", "công cụ Task* của Claude Code"), (r"\bSendMessage\b", "SendMessage"),
+    (r"\bTask\(", "subagent Task(…)"), (r"\brepomix\b", "repomix (agent không chạy được lệnh)"),
+    (r"\.claude/", "đường dẫn .claude/"), (r"plans/reports", "thư mục plans/reports"), (r"@@PRIVACY", "marker privacy-block"),
+]
+INSTRUCTION_WARN_BYTES = 2048   # một resource là một ý, khoảng 2 KB
+INSTRUCTION_MAX_BYTES = 3072
+MAX_HARD_CONSTRAINTS = 15       # trùng ngưỡng cảnh báo của aw (--warn-hard-constraints)
+
+
+def sentences(text):
+    """Câu đủ dài để coi là một luật (>= 60 ký tự sau khi chuẩn hóa)."""
+    out = []
+    for part in re.split(r"(?<=[.;:!?])\s+|\n+", text):
+        norm = re.sub(r"\s+", " ", part).strip().lower()
+        if len(norm) >= 60:
+            out.append(norm)
+    return out
+
+
+def knowledge_findings(manifest):
+    """(lỗi, cảnh báo) của tri thức chắt lọc: cấu trúc chỉ có ở công cụ gốc, kích thước, số HARD_CONSTRAINT mỗi agent, luật
+    lặp giữa các resource."""
+    errors, warns = [], []
+    seen = {}
+    for owner in owners(manifest):
+        for section in ("layers", "skills"):
+            for entry in owner[section]:
+                for resource in read_json(owner, entry["file"])["resources"]:
+                    where = f"{section}/{entry['id']}#{resource.get('key')}"
+                    text = resource.get("instruction") or resource.get("convention", "")
+                    for pattern, label in FOREIGN_CONSTRUCTS:
+                        if re.search(pattern, text):
+                            errors.append(f"{where}: dùng cấu trúc chỉ có ở công cụ gốc: {label}; viết lại cho ngữ cảnh aw")
+                    size = len(text.encode("utf-8"))
+                    if size > INSTRUCTION_MAX_BYTES:
+                        errors.append(f"{where}: instruction {size} byte, quá {INSTRUCTION_MAX_BYTES}: tách thành các resource nhỏ hơn (một ý mỗi resource)")
+                    elif size > INSTRUCTION_WARN_BYTES:
+                        warns.append(f"{where}: instruction {size} byte, nên gọn dưới khoảng {INSTRUCTION_WARN_BYTES}")
+                    for sentence in sentences(text):
+                        first = seen.setdefault(sentence, where)
+                        if first != where:
+                            warns.append(f"{where}: lặp luật đã có ở {first} (\"{sentence[:50]}…\"); mỗi luật chỉ nên nằm một chỗ")
+    for agent in manifest["agents"]:
+        hard = 0
+        for selector in agent.get("resources", []):
+            item_id, key = split_selector(selector)
+            try:
+                resources = resources_of(manifest, item_id)
+            except ManifestError:
+                continue
+            hard += sum(1 for r in resources if (key is None or r.get("key") == key) and r.get("priority") == "HARD_CONSTRAINT")
+        if hard > MAX_HARD_CONSTRAINTS:
+            errors.append(f"agents/{agent['id']}: {hard} HARD_CONSTRAINT, quá {MAX_HARD_CONSTRAINTS}: hạ bớt xuống REQUIRED_PROCEDURE hoặc GUIDANCE")
+    return errors, sorted(set(warns))
+
+
 def warnings(manifest):
     """Cảnh báo không chặn: mục của kho có giấy phép chưa xác định."""
     out = []
@@ -433,6 +513,7 @@ def warnings(manifest):
                 if str(entry.get("license", "")).strip().upper().startswith("UNKNOWN"):
                     out.append(f"{section}/{entry['id']}: giấy phép chưa xác định (origin: {entry.get('origin', '?')}) — "
                                f"xác nhận trước khi phân phối kho ra ngoài")
+    out += knowledge_findings(manifest)[1]
     return out
 
 
@@ -754,16 +835,23 @@ def print_slots(manifest):
     if project is not None:  # workflow project lấy từ kit với tên khác hoặc đã gắn lại chỗ trống
         shown += [(w, workflow_template(project, w), w["id"] + "  (bản của project)") for w in project["workflows"]
                   if w.get("_owner") is kit and w.get("bind")]
+    used = set() if project is None else {w.get("template") for w in project["workflows"] if w.get("_owner") is kit}
     for workflow, template, label in shown:
-        print(f"{label}  — {workflow.get('name', '')}")
+        in_use = project is None or workflow.get("template") in used or label.endswith("(bản của project)")
+        print(f"{label}  — {workflow.get('name', '')}" + ("" if in_use else "  (project chưa dùng)"))
         refs = sorted({r for r in collect_refs(template) if r != "adapter"
                        and REF_KINDS.get(r.partition(":")[0]) in SLOT_KINDS})
         for ref in refs:
             kind_word, _, ref_id = ref.partition(":")
-            from_kit = {"command": "commands", "gate": "gates"}.get(kind_word)
+            from_kit = {"agent": "agents", "command": "commands", "gate": "gates"}.get(kind_word)
             offered = from_kit and any(e["id"] == ref_id for e in kit[from_kit])
             note = "kit có bản mẫu, lấy bằng \"from\": \"kit\"" if offered else "project tự định nghĩa"
-            status = "" if project is None else ("[có]   " if ref_id in have.get(kind_word, set()) else "[THIẾU]")
+            if project is None:
+                status = ""
+            elif ref_id in have.get(kind_word, set()):
+                status = "[có]   "
+            else:
+                status = "[THIẾU]" if in_use else "[chưa có]"
             print(f"  {status} {ref:<34} {note}")
     if project is None:
         print("(chạy với aw-project.json để thấy project đã đủ chưa)")
@@ -774,9 +862,11 @@ def main():
     parser.add_argument("manifest")
     parser.add_argument("--check", action="store_true", help="chỉ kiểm tra khai báo, không gọi aw")
     parser.add_argument("--slots", action="store_true", help="in chỗ trống mà workflow của kit đòi project điền")
+    parser.add_argument("--kit", metavar="THƯ_MỤC|kit.json",
+                        help="dùng kho này thay cho kho khai trong aw-project.json (đo một phiên bản kho khác, xem kit/bench)")
     args = parser.parse_args()
     try:
-        manifest = load_manifest(args.manifest)
+        manifest = load_manifest(args.manifest, kit_override=args.kit)
     except (OSError, json.JSONDecodeError, ManifestError) as exc:
         sys.exit(f"Không đọc được {args.manifest}: {exc}")
     try:

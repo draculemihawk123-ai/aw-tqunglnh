@@ -1,27 +1,45 @@
 {
   "role": "kit",
   "name": "aw-kit",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "prefix": "kit-",
 
   "layers": [
     {"id": "layer-stack-spring-sqlite", "name": "Layer: Java 21 + Spring Boot 3.5 + SQLite + Flyway (tổng quát)", "file": "layers/layer-spring-sqlite.json"},
-    {"id": "layer-stack-react-vite", "name": "Layer: React + TypeScript + Vite (tổng quát)", "file": "layers/layer-react-vite.json"}
+    {"id": "layer-stack-react-vite", "name": "Layer: React + TypeScript + Vite (tổng quát)", "file": "layers/layer-react-vite.json"},
+    {"id": "layer-api-design", "name": "Layer: thiết kế REST API và tương thích ngược (chắt lọc)", "file": "layers/layer-api-design.json"},
+    {"id": "layer-sql-quality", "name": "Layer: truy vấn và chỉ mục SQL (chắt lọc)", "file": "layers/layer-sql-quality.json"},
+    {"id": "layer-backend-security", "name": "Layer: backend an toàn mặc định (chắt lọc)", "file": "layers/layer-backend-security.json"},
+    {"id": "layer-react-quality", "name": "Layer: React hiệu năng và hiển thị cho SPA (chắt lọc)", "file": "layers/layer-react-quality.json"},
+    {"id": "layer-frontend-testing", "name": "Layer: test giao diện theo hành vi và xác định (chắt lọc)", "file": "layers/layer-frontend-testing.json"}
   ],
 
   "skills": [
     {"id": "skill-maker", "name": "Skill: quy trình MAKER và Definition of Done", "file": "skills/skill-maker.json"},
     {"id": "skill-feature-flow", "name": "Skill: quy trình tính năng → task", "file": "skills/skill-feature-flow.json"},
     {"id": "skill-review", "name": "Skill: review độc lập (CHECKER)", "file": "skills/skill-review.json"},
-    {"id": "skill-code-review", "name": "Skill: code review có bằng chứng (CHECKER)", "file": "skills/skill-code-review.json",
-     "origin": "claudekit/code-review 2.0.0 (người dùng cung cấp; chắt lọc, bỏ phần dành cho Claude Code tương tác)",
-     "license": "UNKNOWN"}
+    {"id": "skill-code-review", "name": "Skill: code review có bằng chứng (CHECKER)", "file": "skills/skill-code-review.json"},
+    {"id": "skill-dev-rules", "name": "Skill: luật phát triển, quyết định và cách kết thúc (chắt lọc)", "file": "skills/skill-dev-rules.json"},
+    {"id": "skill-ask", "name": "Skill: hỏi người đúng cách (chắt lọc)", "file": "skills/skill-ask.json"},
+    {"id": "skill-brainstorm", "name": "Skill: BRAINSTORM — vấn đề gốc trước giải pháp (chắt lọc)", "file": "skills/skill-brainstorm.json"},
+    {"id": "skill-spec", "name": "Skill: SPEC — thách thức phạm vi và phủ tình huống (chắt lọc)", "file": "skills/skill-spec.json"},
+    {"id": "skill-design", "name": "Skill: DESIGN — thiết kế có kiểm chứng và phản biện (chắt lọc)", "file": "skills/skill-design.json"},
+    {"id": "skill-plan", "name": "Skill: FRAME và PLAN — chọn lane có bằng chứng, plan đủ cụ thể (chắt lọc)", "file": "skills/skill-plan.json"},
+    {"id": "skill-build", "name": "Skill: BUILD — bám quy ước và tự rà trước khi kết thúc (chắt lọc)", "file": "skills/skill-build.json"},
+    {"id": "skill-debug", "name": "Skill: vòng sửa — tìm nguyên nhân gốc trước khi sửa (chắt lọc)", "file": "skills/skill-debug.json"},
+    {"id": "skill-test", "name": "Skill: viết test theo hành vi và đường lỗi (chắt lọc)", "file": "skills/skill-test.json"},
+    {"id": "skill-security", "name": "Skill: soát bảo mật cho task rủi ro cao (CHECKER, chắt lọc)", "file": "skills/skill-security.json"},
+    {"id": "skill-docs", "name": "Skill: SYNC — cập nhật tài liệu đúng lúc, đúng cách (chắt lọc)", "file": "skills/skill-docs.json"},
+    {"id": "skill-simplify", "name": "Skill: làm gọn code sau khi đã qua kiểm tra (chắt lọc)", "file": "skills/skill-simplify.json"},
+    {"id": "skill-bugfix", "name": "Skill: sửa lỗi — test tái hiện trước, sửa nguyên nhân gốc, phòng ngừa (chắt lọc)", "file": "skills/skill-bugfix.json"},
+    {"id": "skill-retro", "name": "Skill: rút bài học từ số đo và nhận xét review (chắt lọc)", "file": "skills/skill-retro.json"}
   ],
 
   "scriptSkills": [
     {"id": "scripts-common", "name": "Script dùng chung cho các Command", "owner": "aw-kit",
      "files": ["commands/reject.sh", "commands/check-feature-docs.sh", "commands/secrets-gate.sh",
-               "commands/maven-test.sh", "commands/npm-test.sh"]}
+               "commands/maven-test.sh", "commands/npm-test.sh", "commands/expect-fail.sh", "commands/diff-size.sh",
+               "commands/temp-artifacts.sh", "commands/check-plan.sh", "commands/check-lessons.sh"]}
   ],
 
   "policies": [
@@ -34,11 +52,46 @@
     {"id": "policy-completion-feature", "name": "Completion: kiểm tra tài liệu + người duyệt", "file": "policies/policy-completion-feature.json"}
   ],
 
+  "agents": [
+    {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-brainstorm#brainstorm.scout-first", "skill-brainstorm#brainstorm.problem-first", "skill-brainstorm#brainstorm.options", "skill-brainstorm#brainstorm.assumptions", "skill-brainstorm#brainstorm.exact-requirements", "skill-brainstorm#brainstorm.unstuck"]},
+    {"id": "agent-flow-spec", "name": "Agent: SPEC",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-spec#spec.scope-challenge", "skill-spec#spec.scenarios", "skill-spec#spec.ac-quality"]},
+    {"id": "agent-flow-design", "name": "Agent: DESIGN",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.design", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-design#design.codebase", "skill-design#design.verify-claims", "skill-design#design.checklist", "skill-design#design.solution", "skill-design#design.red-team", "layer-api-design", "layer-sql-quality", "layer-backend-security"]},
+    {"id": "agent-flow-frame", "name": "Agent: FRAME",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-plan#frame.complexity"]},
+    {"id": "agent-flow-plan", "name": "Agent: PLAN",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.plan", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-plan#plan.checklist", "skill-design#design.verify-claims"]},
+    {"id": "agent-flow-build", "name": "Agent: BUILD",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.build"]},
+    {"id": "agent-flow-sync", "name": "Agent: SYNC",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.sync", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-docs#docs.when", "skill-docs#docs.how"]},
+    {"id": "agent-flow-repro", "name": "Agent: tái hiện lỗi (viết test đỏ)",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-bugfix#bugfix.repro", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-debug#debug.root-cause", "skill-test#test.behavior", "skill-test#test.error-paths", "layer-frontend-testing"]},
+    {"id": "agent-flow-fix", "name": "Agent: sửa lỗi sau khi có test đỏ",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-dev-rules#rules.principles", "skill-dev-rules#rules.stable-artifacts", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-bugfix#bugfix.fix", "skill-bugfix#bugfix.prevention", "skill-build#build.conformance", "skill-build#build.checklist", "skill-debug#debug.root-cause", "skill-debug#debug.hypotheses", "skill-debug#debug.fix-discipline", "skill-debug#debug.red-flags", "skill-test#test.behavior", "skill-test#test.error-paths", "layer-api-design", "layer-sql-quality", "layer-backend-security", "layer-react-quality", "layer-frontend-testing"]},
+    {"id": "agent-retro", "name": "Agent: rút bài học từ số đo và review",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-retro#retro.evidence", "skill-retro#retro.lessons-format", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish"]},
+    {"id": "agent-reviewer", "name": "Agent: reviewer độc lập (CHECKER)",
+     "resources": ["skill-review", "skill-code-review", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-security#security.stride", "skill-security#security.owasp", "layer-api-design", "layer-sql-quality", "layer-backend-security", "layer-react-quality", "layer-frontend-testing"]},
+    {"id": "agent-debugger", "name": "Agent: chẩn đoán kiểm tra đỏ (CHECKER, chỉ đọc)",
+     "resources": ["skill-review#review.read-only", "skill-debug#debug.root-cause", "skill-debug#debug.hypotheses", "skill-debug#debug.fix-discipline", "skill-debug#debug.diagnosis-report", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "layer-api-design", "layer-sql-quality", "layer-backend-security", "layer-react-quality", "layer-frontend-testing"]},
+    {"id": "agent-simplifier", "name": "Agent: làm gọn code (MAKER)",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-simplify#simplify.refine", "skill-simplify#simplify.balance", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-dev-rules#rules.principles"]}
+  ],
+
   "commands": [
     {"id": "cmd-maven-test", "name": "Command: test backend Maven", "script": "scripts-common#maven-test.sh",
      "network": "ALLOWED", "policies": ["policy-permission-network"]},
     {"id": "cmd-npm-test", "name": "Command: test và build frontend npm", "script": "scripts-common#npm-test.sh",
      "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-expect-fail", "name": "Command: test tái hiện lỗi phải đang đỏ (đảo nghĩa)", "script": "scripts-common#expect-fail.sh",
+     "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-diff-size", "name": "Command: diff vượt ngưỡng thì sang node làm gọn", "script": "scripts-common#diff-size.sh"},
+    {"id": "cmd-temp-artifacts", "name": "Command: chặn rác để quên trong diff (debug, .only, @Disabled, TODO)", "script": "scripts-common#temp-artifacts.sh"},
+    {"id": "cmd-check-plan", "name": "Command: plan.md của task đủ sáu mục", "script": "scripts-common#check-plan.sh"},
+    {"id": "cmd-check-lessons", "name": "Command: file bài học đúng định dạng", "script": "scripts-common#check-lessons.sh"},
     {"id": "cmd-reject", "name": "Command: dừng run khi bị từ chối hoặc hết vòng sửa", "script": "scripts-common#reject.sh"},
     {"id": "cmd-check-feature-docs", "name": "Command: kiểm tra tài liệu tính năng", "script": "scripts-common#check-feature-docs.sh"},
     {"id": "cmd-secrets-gate", "name": "Command của gate: không có file bí mật", "script": "scripts-common#secrets-gate.sh",
@@ -52,6 +105,9 @@
 
   "workflows": [
     {"id": "wf-feature-definition", "name": "Workflow: định nghĩa tính năng", "template": "workflows/wf-feature-definition.json"},
-    {"id": "wf-task-delivery", "name": "Workflow: giao một task", "template": "workflows/wf-task-delivery.json"}
+    {"id": "wf-task-delivery", "name": "Workflow: giao một task", "template": "workflows/wf-task-delivery.json"},
+    {"id": "wf-task-delivery-plus", "name": "Workflow: giao một task, có chẩn đoán khi đỏ và review độc lập", "template": "workflows/wf-task-delivery-plus.json"},
+    {"id": "wf-retro", "name": "Workflow: rút bài học từ số đo, người duyệt rồi mới thành luật", "template": "workflows/wf-retro.json"},
+    {"id": "wf-bugfix", "name": "Workflow: sửa lỗi — test đỏ trước, sửa sau", "template": "workflows/wf-bugfix.json"}
   ]
 }

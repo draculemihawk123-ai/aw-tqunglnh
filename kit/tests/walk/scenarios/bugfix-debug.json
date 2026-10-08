@@ -1,0 +1,58 @@
+{
+  "name": "wf-bugfix: gate1 đỏ → debug → fix",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-bugfix",
+  "agents": {
+    "repro": [
+      "done"
+    ],
+    "fix": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "debug": [
+      "diagnosed"
+    ]
+  },
+  "commands": {
+    "expectfail": [
+      "pass"
+    ],
+    "gate1": [
+      "fail",
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "repro:done",
+      "expect-fail:passed",
+      "fix:done",
+      "gate1:failed",
+      "debug:diagnosed",
+      "fix:done",
+      "gate1:passed",
+      "review:approved",
+      "gate2:approved",
+      "end:-"
+    ],
+    "prompts": [
+      {
+        "node": "fix",
+        "nth": 2,
+        "has": [
+          "reviewerFeedback"
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "name": "wf-bugfix: đường thẳng",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-bugfix",
+  "agents": {
+    "repro": [
+      "done"
+    ],
+    "fix": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ]
+  },
+  "commands": {
+    "expectfail": [
+      "pass"
+    ],
+    "gate1": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "repro:done",
+      "expect-fail:passed",
+      "fix:done",
+      "gate1:passed",
+      "review:approved",
+      "gate2:approved",
+      "end:-"
+    ],
+    "prompts": [
+      {
+        "node": "repro",
+        "nth": 1,
+        "has": [
+          "bugfix.repro"
+        ],
+        "lacks": [
+          "bugfix.fix"
+        ]
+      },
+      {
+        "node": "fix",
+        "nth": 1,
+        "has": [
+          "bugfix.fix",
+          "bugfix.prevention"
+        ],
+        "lacks": [
+          "bugfix.repro"
+        ]
+      }
+    ]
+  }
+}

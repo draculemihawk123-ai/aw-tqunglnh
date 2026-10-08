@@ -1,0 +1,33 @@
+{
+  "name": "wf-retro: file bài học sai định dạng → viết lại",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-retro",
+  "agents": {
+    "retro": [
+      "done"
+    ]
+  },
+  "commands": {
+    "checklessons": [
+      "fail",
+      "pass"
+    ]
+  },
+  "approvals": {
+    "approve-lessons": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "retro:done",
+      "check-lessons:failed",
+      "retro:done",
+      "check-lessons:passed",
+      "approve-lessons:approved",
+      "end:-"
+    ]
+  }
+}

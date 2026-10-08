@@ -1,0 +1,40 @@
+{
+  "schemaVersion": "1",
+  "nodes": [
+    {"key": "start", "type": "START", "outcomes": ["next"]},
+    {"key": "retro", "type": "AGENT", "outcomes": ["done", "needs_info", "escalated"],
+     "cyclePolicy": {"maxIterations": 3, "escalationOutcome": "escalated"},
+     "agent": {"profileRef": {"$ref": "agent:agent-retro"},
+               "policyRefs": [{"$ref": "policy:policy-attempt"}, {"$ref": "policy:policy-permission"}],
+               "adapterBuildId": {"$ref": "adapter"}, "role": "MAKER"}},
+    {"key": "check-lessons", "type": "COMMAND", "outcomes": ["passed", "failed"],
+     "command": {"commandRef": {"$ref": "command:cmd-check-lessons"},
+                 "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}],
+                 "failureOutcome": "failed"}},
+    {"key": "approve-lessons", "type": "APPROVAL", "outcomes": ["approved", "revise", "rejected"],
+     "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "rejected"},
+     "cyclePolicy": {"maxIterations": 3, "escalationOutcome": "rejected"}},
+    {"key": "needs-info", "type": "APPROVAL", "outcomes": ["provided", "abandon"],
+     "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "abandon"},
+     "cyclePolicy": {"maxIterations": 3, "escalationOutcome": "abandon"}},
+    {"key": "reject", "type": "COMMAND", "outcomes": ["done"],
+     "command": {"commandRef": {"$ref": "command:cmd-reject"},
+                 "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}]}},
+    {"key": "end", "type": "END"}
+  ],
+  "edges": [
+    {"key": "start-retro", "from": "start", "outcome": "next", "to": "retro"},
+    {"key": "retro-check-lessons", "from": "retro", "outcome": "done", "to": "check-lessons"},
+    {"key": "check-lessons-approve-lessons", "from": "check-lessons", "outcome": "passed", "to": "approve-lessons"},
+    {"key": "check-lessons-retro", "from": "check-lessons", "outcome": "failed", "to": "retro"},
+    {"key": "retro-needs-info", "from": "retro", "outcome": "needs_info", "to": "needs-info"},
+    {"key": "retro-reject", "from": "retro", "outcome": "escalated", "to": "reject"},
+    {"key": "approve-lessons-end", "from": "approve-lessons", "outcome": "approved", "to": "end"},
+    {"key": "approve-lessons-retro", "from": "approve-lessons", "outcome": "revise", "to": "retro"},
+    {"key": "approve-lessons-reject", "from": "approve-lessons", "outcome": "rejected", "to": "reject"},
+    {"key": "needs-info-retro", "from": "needs-info", "outcome": "provided", "to": "retro"},
+    {"key": "needs-info-reject", "from": "needs-info", "outcome": "abandon", "to": "reject"},
+    {"key": "reject-end", "from": "reject", "outcome": "done", "to": "end"}
+  ],
+  "completionPolicyRef": {"$ref": "policy:policy-completion-feature"}
+}

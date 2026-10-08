@@ -1,0 +1,50 @@
+{
+  "name": "wf-task-delivery-plus: plan không bao giờ đủ → reject",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ]
+  },
+  "commands": {
+    "checkplan": [
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+    ]
+  },
+  "approvals": {},
+  "expect": {
+    "state": "FAILED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "check-plan:failed",
+      "plan:done",
+      "check-plan:failed",
+      "plan:done",
+      "check-plan:failed",
+      "plan:done",
+      "check-plan:failed",
+      "plan:escalated",
+      "reject:-"
+    ]
+  }
+}

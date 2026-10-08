@@ -1,0 +1,36 @@
+{
+ "resources": [
+  {
+   "key": "webtest.behavior-first",
+   "priority": "REQUIRED_PROCEDURE",
+   "selector": {
+    "componentTags": [
+     "frontend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/layers/layer-frontend-testing.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Test giao diện theo cách người dùng thấy. Truy vấn phần tử bằng vai trò và nhãn (`getByRole`, `getByLabelText`, `getByText`) trước; `data-testid` là phương án cuối. Khẳng định điều hiển thị và hành vi (thêm một mục thì mục đó xuất hiện), không khẳng định state nội bộ hay số lần render. Ít mock: mock ở ranh giới mạng (`fetch` hoặc MSW), không mock component con hay hook của chính dự án. Nhiều test component và tích hợp ở mức màn hình, ít test đầu-cuối chỉ cho hành trình quan trọng. Mỗi test theo ba bước chuẩn bị, thực hiện, khẳng định; tên test nêu hành vi."
+  },
+  {
+   "key": "webtest.deterministic",
+   "priority": "REQUIRED_PROCEDURE",
+   "selector": {
+    "componentTags": [
+     "frontend"
+    ]
+   },
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/layers/layer-frontend-testing.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "convention": "Test xác định, không chập chờn. Không `sleep` hay chờ cố định: chờ theo điều kiện (`findBy...`, `waitFor`). Mỗi test tự dựng và dọn trạng thái (reset mock, hẹn giờ, bộ nhớ cục bộ), không phụ thuộc thứ tự. Dữ liệu mẫu không phụ thuộc đồng hồ hay ngẫu nhiên. Mạng luôn được mock với phản hồi xác định, gồm cả đường lỗi (404, 400, lỗi mạng). Test chỉ qua khi chạy lại là lỗi của test: sửa nguyên nhân, đừng thêm retry."
+  }
+ ]
+}

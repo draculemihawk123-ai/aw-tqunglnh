@@ -1,0 +1,30 @@
+{
+ "resources": [
+  {
+   "key": "build.conformance",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-build.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Trước khi viết code của mỗi bước, xác nhận: (1) tên, cấu trúc thư mục và cách xử lý lỗi vẫn đúng với repository (đọc quy chuẩn trong docs/ và code lân cận); (2) bám cùng kiểu import, ghi log và bọc lỗi với file bạn đang sửa; (3) tìm helper hoặc tiện ích có sẵn trước khi tạo cái mới; (4) mở rộng giao diện hiện có thay vì tạo một giao diện song song; (5) đối chiếu danh sách file trong plan.md để mọi file đều được xử lý. Sau mỗi file sửa, đọc lại: code khớp quy ước lân cận, không thêm import thừa hay vòng phụ thuộc, chữ ký và kiểu khớp nơi gọi."
+  },
+  {
+   "key": "build.checklist",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-build.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Trước khi kết thúc, tự rà từng mục: mọi thao tác bất đồng bộ hoặc gọi ra ngoài có xử lý lỗi rõ ràng, không nuốt lỗi; dữ liệu từ bên ngoài được kiểm tra ở biên hệ thống; không để TODO hoặc FIXME mới (cần giải pháp tạm thì ghi rõ trong câu trả lời cuối); giao diện công khai nhỏ nhất có thể, có kiểu và khớp đúng spec hoặc hợp đồng; chỉ sửa file thuộc phạm vi task; logic mới có test cho đường thành công và các lỗi chính; không dùng kiểu lỏng (`any`, ép kiểu trần) khi chưa có lý do ghi trong comment. Bằng chứng trước lời khẳng định: đừng viết \"đã qua\" hay \"đã sửa\" nếu chưa ai chạy; nếu bạn không chạy được lệnh thì nói rõ \"chưa chạy X\" thay vì \"chắc sẽ qua\"."
+  }
+ ]
+}

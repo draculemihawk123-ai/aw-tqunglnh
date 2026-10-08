@@ -1,0 +1,82 @@
+{
+ "resources": [
+  {
+   "key": "brainstorm.scout-first",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-brainstorm.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Đọc trước khi nghĩ. Trước khi viết phương án, đọc README, `docs/`, code và quy ước liên quan tới yêu cầu. Mở 01-brainstorm.md bằng mục \"Hiện trạng\" gồm 3 đến 6 gạch đầu dòng: loại dự án và công nghệ chính; module hoặc file liên quan; pattern đang dùng cho việc tương tự; ràng buộc đã thấy (schema, API công khai, quy ước đặt tên, hợp đồng); tài liệu hoặc kế hoạch liên quan. Mọi câu hỏi mở phải dựa trên hiện trạng này; đừng hỏi điều repository đã trả lời."
+  },
+  {
+   "key": "brainstorm.problem-first",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-brainstorm.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Tìm vấn đề gốc trước giải pháp. Yêu cầu thô thường là cách diễn đạt nén của một vấn đề chưa được gọi tên. Đừng bác giải pháp người dùng nêu: hãy giải nén nó. Tín hiệu nào khiến họ thấy cần nó, nỗi đau hay cơ hội nào nằm bên dưới? Ghi mục \"Vấn đề gốc\" nói bằng lời của bạn, không lấy chính giải pháp được đề xuất làm câu trả lời, gồm: ai bị ảnh hưởng và trong bối cảnh nào; điều gì chậm hoặc hỏng; nguyên nhân; hậu quả; thế nào là tốt hơn quan sát được. Nếu bằng chứng đã mạnh và việc đã rõ thì đừng dùng bước này để trì hoãn: ghi ngắn \"vấn đề đã rõ\" và đi tiếp. Ý tưởng problem-first gốc của George (prodmgmt.world)."
+  },
+  {
+   "key": "brainstorm.options",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-brainstorm.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Đưa 2 đến 4 phương án thật sự khác nhau, không phải cùng một cách đổi tên. Mỗi phương án nêu: mô tả; ưu; nhược; rủi ro; công sức S/M/L; phần hệ thống bị ảnh hưởng; tác động lên người dùng cuối, người phát triển và vận hành. Có ít nhất một phương án tối thiểu (YAGNI) và, khi hợp lý, một phương án \"dùng cái đã có\". Đánh giá thẳng thắn: phương án nào quá phức tạp, chưa cần thiết hoặc dễ gây hỏng; đừng chiều ý người dùng khi bằng chứng không ủng hộ. Phương án đề xuất phải kèm lý do bằng đánh đổi cụ thể."
+  },
+  {
+   "key": "brainstorm.assumptions",
+   "priority": "GUIDANCE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-brainstorm.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Liệt kê giả định mà yêu cầu và phương án đề xuất dựa vào. Với mỗi giả định ghi: rủi ro nếu sai; cách kiểm chứng rẻ nhất; trạng thái bằng chứng: không có, yếu (một ý kiến, một lời phàn nàn), trung bình (tín hiệu lặp lại), mạnh (định tính và định lượng cùng chỉ một hướng). Giả định hệ trọng mà chưa kiểm chứng được thì đưa vào câu hỏi mở thay vì tự chọn một phía. Nêu điều gì sẽ khiến bạn loại phương án đề xuất."
+  },
+  {
+   "key": "brainstorm.exact-requirements",
+   "priority": "REQUIRED_PROCEDURE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-brainstorm.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Yêu cầu và câu hỏi mở phải cụ thể. Trước khi kết thúc, 01-brainstorm.md trả lời được mỗi ý sau bằng một câu: đầu ra mong đợi (kiểm chứng được); thế nào là đúng; điều nằm ngoài vòng này; ràng buộc không thương lượng (công nghệ, vị trí file, tương thích ngược, thời hạn); điểm chạm với module hiện có. Chỗ còn mơ hồ (\"làm tốt hơn\", \"thêm validate\") thì đừng viết vào phương án như thể đã rõ: đưa thành câu hỏi mở kèm ví dụ đầu vào và đầu ra mẫu, hoặc phương án mặc định bạn đề xuất."
+  },
+  {
+   "key": "brainstorm.unstuck",
+   "priority": "GUIDANCE",
+   "global": true,
+   "selector": {},
+   "provenance": {
+    "owner": "aw-kit",
+    "source": "kit/skills/skill-brainstorm.json",
+    "revision": "v1",
+    "lastVerified": "2026-10-07T00:00:00Z"
+   },
+   "instruction": "Khi các phương án ngày càng nhiều ca đặc biệt, hoặc bạn thấy mình nghĩ \"chỉ cần thêm một trường hợp nữa\": tìm một ý gom nhiều thành phần lại (\"nếu điều này đúng thì không cần X, Y, Z\"). Khi một cách làm có vẻ là duy nhất: đảo ngược nó (nếu làm điều ngược lại thì sao?). Khi chưa chắc nó chịu được thực tế: thử ở quy mô cực đoan (gấp nghìn lần, hoặc chỉ một người dùng) để lộ giả định ẩn."
+  }
+ ]
+}

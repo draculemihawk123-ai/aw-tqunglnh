@@ -1,0 +1,48 @@
+{
+  "name": "wf-bugfix: repro needs_info → người → repro",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-bugfix",
+  "agents": {
+    "repro": [
+      "needs_info",
+      "done"
+    ],
+    "fix": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ]
+  },
+  "commands": {
+    "expectfail": [
+      "pass"
+    ],
+    "gate1": [
+      "pass"
+    ]
+  },
+  "approvals": {
+    "needs-info": [
+      "provided"
+    ],
+    "gate2": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "repro:needs_info",
+      "needs-info:provided",
+      "repro:done",
+      "expect-fail:passed",
+      "fix:done",
+      "gate1:passed",
+      "review:approved",
+      "gate2:approved",
+      "end:-"
+    ]
+  }
+}
