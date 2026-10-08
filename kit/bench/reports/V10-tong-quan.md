@@ -59,3 +59,18 @@ Khoảng **23 USD**: bốn lượt hợp lệ 18,2 USD (B0 7,55; B1 10,63) và k
 2. **Thu gọn tri thức BUILD** (giảm số resource nạp cho agent code; ví dụ chỉ nạp `build.*` và `test.*` cho task rủi ro cao) rồi đo lại một mốc B2 (khoảng 10 USD) để xem chi phí và gate1 có cải thiện không.
 3. **Điều tra vì sao gate1 hỏng lần đầu ở B1** trước khi kết luận về BUILD.
 4. Chạy thật `wf-task-delivery-plus` một lần (khoảng 2 đến 3 USD) để kiểm các bước mới.
+
+## Bổ sung: B2 — sau khi thu gọn tri thức của agent code
+
+B2 = cây `83976ab` (agent code nhận 28 resource, 19,9 KB, thay vì 39 resource, 27,3 KB), cùng bộ đo, 2 lượt (một lượt đầu hỏng ngay lúc khởi tạo vì một lỗi của aw: hai tiến trình cùng migrate database mới tạo, `UNIQUE constraint failed: schema_migrations.version`; đã chạy bù một lượt).
+
+| | B0 (kit cũ) | B1 | B2 (thu gọn) |
+|---|---:|---:|---:|
+| Chi phí mỗi lượt (USD) | 3,78 | 5,31 | 6,12 |
+| Chi phí node code (USD) | 1,19 | 1,59 | 1,70 |
+| gate1 hỏng ở lần đầu (trên 6 task) | 0 | 2 | 4 |
+| Vòng sửa | 0 | 2 | 4 |
+
+**Thu gọn không giảm chi phí và không giảm việc phải sửa lại.** Chi phí node code không giảm (1,59 → 1,70), vòng sửa còn tăng; chi phí tổng B2 cao hơn một phần vì một lượt có một attempt review hỏng (chưa điều tra, 1,63 USD ở node review). Với n=2, khác biệt nhỏ chỉ là nhiễu, nhưng ít nhất không có dấu hiệu thu gọn giúp ích. Chưa rút ra kết luận giữ hay bỏ phần đã bỏ.
+
+**Phát hiện khi tìm nguyên nhân (đã sửa trong kit, chưa đo lại):** ở cả 6 lần task backend hỏng kiểm tra lần đầu (B1, B2), danh sách lỗi agent nhận là hàng chục dòng `[ERROR] … <<< ERROR!` của từng test, và `contextLoads` đỏ cùng mọi test khác, tức Spring không nạp được `ApplicationContext`. `maven-test.sh` chỉ in dòng bắt đầu bằng `[ERROR]`, mà stack trace của Surefire (có `Caused by:`) không có tiền tố đó, nên **agent không bao giờ thấy nguyên nhân gốc**. Đã sửa: in các dòng nguyên nhân (không trùng) trước danh sách test. Chưa biết sửa này giảm được bao nhiêu vòng sửa; cần một mốc đo mới (B3, khoảng 10 USD).
