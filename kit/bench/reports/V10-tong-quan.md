@@ -100,3 +100,7 @@ Cùng 2 lượt mỗi bên, task api + web (bình luận cho issue). Nhãn bị 
 Kết luận: tài liệu của B2 rõ ràng tốt hơn B0 (chênh khoảng 1–2 điểm, ổn định ở cả bốn loại). Mã thì ngang nhau, không phân biệt được trong khoảng nhiễu. Lỗi hay gặp ở cả hai bên là frontend: thiếu chống gửi trùng, trạng thái lỗi lẫn trạng thái rỗng, race khi đổi issue.
 
 Giới hạn: n=2 mỗi bên; chấm bằng LLM, mỗi lượt một người chấm; review mã chỉ đọc diff; số liệu test đếm bằng regex. Phần tăng chi phí và số vòng sửa của B2 mua được chất lượng tài liệu, không mua được chất lượng mã.
+
+## Quyết định sau khi so sánh B2 và B0
+
+Giữ tri thức đầy đủ cho brainstorm, design, spec, plan (nơi B2 tốt hơn rõ). **Hoàn lại agent code về như B0**: `agent-flow-build` nhận lại 39 resource (`rules.principles`, `build.checklist`, `debug.hypotheses`, `debug.red-flags`, `ask.*`, `layer-react-quality` và các resource đầy đủ của `layer-sql-quality`, `layer-api-design`), vì thu gọn không giảm chi phí hay vòng sửa và mã không khác. Sửa `maven-test.sh` (in `Caused by:`) vẫn giữ; tác dụng của nó chưa đo.
