@@ -39,6 +39,8 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | Đã đo (spike V10-17) |
 | V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **Đã gặp thật** (chạy issue-tracker C-01 trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | Cơ chế **đã đọc trong mã**; thiết kế cần product owner chốt 6 điểm (mục "Quyết định cần chốt" của V11-07) |
+| V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | Chính sách đã nêu; hiệu ứng lên chi phí và chất lượng **chưa đo** |
+| V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện** trên Windows 11 (Git 2.55); nguyên nhân gốc chưa xác định; bản vá tạm đã có, chưa kiểm chứng |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -329,6 +331,61 @@ Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; s
   bản cài thật: duyệt kèm commit từ trình duyệt, không dùng terminal ở bước nào, rồi kiểm tab Diff của commit mới.
 - **Kit:** kịch bản `walk-workflow.py` cho duyệt kèm commit; `kit/tests/check-kit.sh` với `WALK_ALL=1` xanh.
 
+## V11-08 — Thống nhất ngôn ngữ của kit
+
+- **Hiện trạng:** skill, layer, thông báo lỗi của script, tên và mô tả định nghĩa đều bằng tiếng Việt (83 tài nguyên tri thức, khoảng
+  67 KB, 9.341 ký tự có dấu; 11 script trong `kit/commands/`, mỗi script 4 đến 21 dòng có ký tự không ASCII). Tài liệu cho người cũng
+  tiếng Việt. Chưa có quy ước nào nói phần nào dùng ngôn ngữ nào.
+- **Quyết định của product owner (2026-10-09):** phần agent và engine đọc dùng **tiếng Anh**; phần dành cho người đọc giữ tiếng Việt.
+  Chính sách:
+
+  | Phần | Ngôn ngữ |
+  |---|---|
+  | Skill, layer, tài nguyên của agent (`kit/skills`, `kit/layers`) | Tiếng Anh |
+  | Script chạy trong worker (`kit/commands/*.sh`): thông báo, chú thích | Tiếng Anh, **chỉ ASCII** |
+  | Tên và mô tả định nghĩa trong `kit.json`, workflow, policy | Tiếng Anh |
+  | README, hướng dẫn, `docs/design`, báo cáo | Tiếng Việt |
+  | Script vận hành cho người (`kit/scripts/*.sh`) | Tiếng Việt |
+  | **Tài liệu agent sinh ra** (brainstorm, spec, design, plan) | Theo ngôn ngữ của `taskContract.behavior` |
+
+- **Thực hiện (đề xuất, theo thứ tự, mỗi bước một commit):**
+  1. **Script worker sang tiếng Anh ASCII** (`kit/commands/*.sh`, khoảng 120 dòng). Thêm kiểm tra trong `kit/tests/check-kit.sh`: script
+     publish lên worker có ký tự không ASCII thì hỏng. Sửa các test đang dò chuỗi tiếng Việt (`THIẾU mục`, `WHAT:`/`FIX:`...).
+  2. **Luật ngôn ngữ cho tài liệu sinh ra:** thêm vào `flow.working-rules` (một chỗ duy nhất): "viết tài liệu bằng ngôn ngữ của
+     `taskContract.behavior`; tên mục theo khung của skill". Giữ hợp đồng skill ↔ kiểm tra bằng máy: `plan.checklist` ↔ `check-plan.sh`
+     (từ khóa tiêu đề song ngữ), và các từ khóa trong `check-feature-docs.sh`.
+  3. **Dịch skill và layer** (83 tài nguyên) và tên/mô tả định nghĩa. Giữ nguyên ý nghĩa; không chỉnh nội dung cùng lúc để việc đo
+     không bị lẫn. Cập nhật `revision` của từng tài nguyên.
+  4. **Đo A/B** (bench B-series, hai lượt mỗi nhóm, chấm mù tài liệu và mã, kiểm chấp nhận độc lập `code-accept.py`) giữa bản tiếng
+     Việt và bản tiếng Anh: chi phí, vòng sửa, điểm tài liệu, điểm mã, **ngôn ngữ của tài liệu sinh ra**. Quyết định giữ hay quay lại
+     dựa trên số đo; bước 1 và 2 giữ riêng vì có lý do độc lập (Windows, rõ ràng).
+- **Rủi ro cần biết:** (a) chất lượng và chi phí có thể đổi theo cả hai hướng, hiện chưa có số; (b) agent có thể viết tài liệu tiếng
+  Anh khi người dùng cần tiếng Việt, nên luật ở bước 2 phải được đo; (c) mọi số B0–B4 đo với skill tiếng Việt, nên sau khi dịch phải
+  lập mốc mới, không so thẳng; (d) người vận hành đọc log agent bằng tiếng Anh.
+- **Verify:** `check-kit.sh` với `WALK_ALL=1` xanh; `grep -P '[^\x00-\x7F]' kit/commands/*.sh` rỗng; bench A/B có báo cáo; một lượt chạy
+  với work item tiếng Việt cho tài liệu tiếng Việt.
+
+## V11-09 — Bộ bọc `.cmd` trên Windows chạy phần bash như lệnh Windows
+
+- **Bằng chứng (người vận hành, Windows 11 build 26100, Git 2.55.0.windows.3, 2026-10-09):** task W-01 của issue-tracker; bước
+  `test` luôn trả `failed` nhưng nội dung lỗi mà agent nhận là chuỗi `'<từ>' is not recognized as an internal or external command`
+  với các từ lấy từ chú thích và thông báo của `lib.sh`. Agent sửa mò ba vòng (2,2 USD), rồi dừng bằng `needs_info` và vi phạm scope.
+  Chạy tay `sh kit/commands/npm-test.sh` trong Git Bash thì in đúng lỗi thật (`Cannot find module '@testing-library/dom'`); chạy tay
+  file `.cmd` do `aw-publish.py` tạo bằng `cmd //c` thì tái hiện lỗi: `cmd.exe` thực thi từ **giữa dòng** (có khi giữa một ký tự UTF-8)
+  của phần bash, tức đọc file sai vị trí sau khi chạy lệnh ngoài.
+- **Nguyên nhân gốc: chưa xác định.** Hai giả thuyết (có thể cùng đúng): (1) file chỉ có `\n` làm `cmd.exe` mất vị trí khi đọc lại
+  file sau lệnh ngoài (`git --exec-path`, `sh.exe`); (2) ký tự UTF-8 nhiều byte trong phần bash làm lệch vị trí. Bài thử 8 tổ hợp (bốn
+  kiểu bọc x nội dung tiếng Việt hoặc ASCII) đã soạn, **chưa chạy**.
+- **Bản vá tạm đã có trong kit (chưa kiểm chứng):** phần đầu thành một khối lệnh duy nhất có `enabledelayedexpansion`, đuôi dòng CRLF
+  riêng cho phần đầu, phần bash giữ LF; có kiểm tra tự động về hình dạng nội dung (không kiểm hành vi `cmd.exe`).
+- **Mục tiêu:** bước kiểm tra chạy trên Windows cho cùng kết quả và cùng thông báo như trên Linux, với mọi script trong `kit/commands/`.
+- **Thực hiện (đề xuất):** (a) xác định nguyên nhân bằng bài thử đã soạn và ghi vào đây; (b) nếu do ký tự không ASCII thì V11-08
+  bước 1 là bản sửa, bộ bọc giữ nguyên; (c) cân nhắc sửa ở engine để không cần bộ bọc: Command khai thông dịch viên (`interpreter:
+  sh`) và worker trên Windows tự gọi `sh.exe` của Git, thay vì kit bọc file; (d) `aw doctor` thêm kiểm tra `sh.exe` của Git for Windows.
+- **Verify:** trên máy Windows có Git for Windows: tất cả script `kit/commands` chạy qua `cmd //c` cho đúng mã thoát và đúng thông
+  báo, với nội dung có tiếng Việt và không có; một lượt chạy thật của W-01 cho agent nhận đúng lỗi test thay vì rác; kịch bản kiểm
+  tra trong CI nếu có runner Windows.
+
 ## Gate của V11
 
 Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
@@ -340,3 +397,5 @@ Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
 5. Hai script tái hiện của V11-01 cho kết quả đúng thiết kế.
 6. V11-06: chụp màn hình tab Diff của một cổng duyệt thật hiện nội dung chưa commit; test chứng minh index và HEAD không đổi sau khi đọc.
 7. V11-07: một lần duyệt trên web, không mở terminal, tạo commit chỉ chứa đúng các file đã chọn; file còn lại đúng theo xử lý đã chọn; `changeSetDigest` lệch thì không commit.
+8. V11-08: `grep -P '[^\x00-\x7F]' kit/commands/*.sh` rỗng; bench A/B có báo cáo.
+9. V11-09: script kiểm tra chạy đúng trên Windows, agent nhận đúng lỗi thật.

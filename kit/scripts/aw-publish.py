@@ -53,17 +53,17 @@ WINDOWS_ENV = ["USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot", "SystemDr
 # Worker trên Windows không spawn được file .sh. Mỗi script .sh được bọc thành một file .cmd tự chứa: cmd.exe chạy
 # phần đầu (tìm sh.exe của Git for Windows rồi gọi nó trên chính file này); sh thì bỏ qua phần đầu nhờ here-document
 # và chạy nguyên văn script gốc ở phía dưới. Nội dung script không đổi giữa các hệ điều hành.
+# Phần đầu là MỘT khối lệnh trong ngoặc và có đuôi dòng CRLF (phần script gốc bên dưới giữ nguyên LF): cmd.exe đọc cả khối trước
+# khi chạy nên không phải đọc lại file sau khi chạy lệnh ngoài, và không đọc tiếp xuống phần bash. Bản trước (nhiều dòng, chỉ LF)
+# làm cmd.exe của Windows 11 chạy phần bash như lệnh Windows (lỗi "is not recognized" với chữ trong chú thích). TẠM THỜI: chưa kiểm
+# chứng trên máy khác; xem V11-09 trong docs/design/14-v11-bugfix.md.
 WINDOWS_LAUNCHER = """: << 'AW_CMD_HEADER'
-@echo off
-setlocal
-set "AW_SH="
-for /f "delims=" %%i in ('git --exec-path') do set "AW_SH=%%i\\..\\..\\..\\bin\\sh.exe"
-if not exist "%AW_SH%" (
-  echo aw-publish launcher: khong tim thay sh.exe cua Git for Windows qua "git --exec-path" 1>&2
-  exit /b 127
+@echo off & setlocal enabledelayedexpansion & (
+ set "AW_SH=" & for /f "delims=" %%i in ('git --exec-path') do set "AW_SH=%%i\\..\\..\\..\\bin\\sh.exe"
+ if not exist "!AW_SH!" ( echo aw-publish launcher: khong tim thay sh.exe cua Git for Windows qua "git --exec-path" 1>&2 & exit /b 127 )
+ "!AW_SH!" "%~f0" %*
+ exit /b
 )
-"%AW_SH%" "%~f0" %*
-exit /b %errorlevel%
 AW_CMD_HEADER
 """
 CLAUDE_EVENT_KINDS = ["EXECUTION_STARTED", "STATUS_CHANGED", "ASSISTANT_MESSAGE", "TOOL_CALL_STARTED",
@@ -242,7 +242,7 @@ def script_skill_doc(manifest, entry, windows=False):
         with open(os.path.join(manifest["_base"], rel), encoding="utf-8") as f:
             body = inline_includes(manifest, rel, f.read())
         if windows and rel.endswith(".sh"):
-            body = WINDOWS_LAUNCHER + body
+            body = WINDOWS_LAUNCHER.replace("\n", "\r\n") + body
         resources.append({"key": script_key(rel, windows), "instruction": body, "priority": "REQUIRED_PROCEDURE",
                           "global": True, "selector": {},
                           "provenance": {"owner": entry.get("owner", "platform"),

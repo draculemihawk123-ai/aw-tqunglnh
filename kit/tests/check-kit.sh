@@ -332,6 +332,22 @@ printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n' > "$d/plan.md"
 out=$(cmdrun check-plan.sh) && bad "check-plan: plan thiếu mục phải không đạt" || { printf '%s' "$out" | grep -q 'THIẾU mục "rủi ro và hoàn tác"' && ok "check-plan: plan thiếu mục thì không đạt, nêu mục thiếu" || bad "check-plan thiếu mục: $out"; }
 printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n## Test cho từng AC\nx\n## Lệnh kiểm tra cuối\nx\n## Rủi ro và hoàn tác\nx\n## Tiêu chí xong\nx\n' > "$d/plan.md"
 out=$(cmdrun check-plan.sh) && ok "check-plan: plan đủ sáu mục thì đạt" || bad "check-plan đủ: $out"
+# bộ bọc .cmd của Windows: phần đầu một khối, CRLF, phần script bên dưới giữ LF và nguyên văn; mọi script publish đều có bộ bọc
+KITDIR="$kit" python3 - <<'PY' && ok "bộ bọc Windows: phần đầu một khối + CRLF, phần script giữ nguyên LF" || bad "bộ bọc Windows"
+import importlib.util, os
+kit = os.environ["KITDIR"]; os.environ["AW_KIT"] = kit
+spec = importlib.util.spec_from_file_location("p", kit + "/scripts/aw-publish.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+kitm = m.load_manifest(kit + "/kit.json")
+doc = m.script_skill_doc(kitm, kitm["scriptSkills"][0], True)
+assert len(doc["resources"]) >= 10
+for r in doc["resources"]:
+    head, sep, rest = r["instruction"].partition("AW_CMD_HEADER\r\n")
+    assert r["key"].endswith(".cmd") and sep, r["key"]
+    assert head.startswith(": << 'AW_CMD_HEADER'\r\n"), r["key"]
+    assert head.count("\r\n") == head.count("\n"), r["key"]          # đầu: mọi dòng CRLF
+    assert "\r" not in rest and rest.startswith("#!/bin/sh\n"), r["key"]  # thân: LF, shebang ngay sau đầu
+    assert "!AW_SH!" in head and head.rstrip().endswith(")"), r["key"]
+PY
 # check-lessons (V10-16)
 l="$tmp/les"; mkdir -p "$l/docs/lessons" && git -C "$l" init -q -b main && git -C "$l" config user.email t@example.invalid && git -C "$l" config user.name t
 touch "$l/x" && git -C "$l" add -A && git -C "$l" commit -q -m init
