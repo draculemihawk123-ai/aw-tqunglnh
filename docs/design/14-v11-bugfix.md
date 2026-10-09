@@ -37,6 +37,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | Đã tái hiện; nguyên nhân gốc **cần xác minh** |
 | V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | Đã tái hiện (prompt dump) |
 | V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | Đã đo (spike V10-17) |
+| V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **Đã gặp thật** (chạy issue-tracker C-01 trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -138,6 +139,46 @@ Mặc định làm tuần tự theo Task ID.
   băm của cây `.claude/` vào manifest của attempt. Kiểm cờ tương ứng của CLI (ví dụ `CLAUDE_CONFIG_DIR`, chọn nguồn cấu hình) trước.
 - **Verify:** lượt dò giống spike cho thấy skill của repository không còn lọt vào attempt khi bật cô lập, hoặc xuất hiện trong manifest.
 
+## V11-06 — Duyệt cổng người mà không xem được nội dung thay đổi
+
+> Đây là **thiếu khả năng**, không phải lỗi đúng nghĩa. Vẫn đưa vào V11 vì nó làm cổng duyệt (`APPROVAL`) mất tác dụng trên web:
+> người duyệt phải quyết định mà không thấy agent đã sửa gì, trong khi đó là lý do tồn tại của cổng. Product owner có thể chuyển
+> sang một version khác nếu muốn giữ V11 chỉ cho lỗi.
+
+- **Bằng chứng:** chạy C-01 của `docs/guides/issue-tracker` (người vận hành, Windows, UI qua `aw serve --ui-dist`). Run tới node
+  `review` (APPROVAL, `WAITING`). Trang Task, tab Workspace, mục Diff hiện `e738631385 → e738631385 · 0 files changed` và "No
+  changes between the base and current revision", dù agent đã ghi `spec/openapi.json` trong worktree.
+- **Nguyên nhân (đã đọc trong mã, chưa viết test):** `web/src/screens/TaskDetail.tsx` (`WorkspaceTab`) truy vấn diff với
+  `base = baseRevision` và `result = currentRevision` của workspace; `internal/adapters/gitworktree/inspection.go` (`ReadDiff`)
+  chạy `git diff <base> <result>` giữa **hai commit**, sau `authorizeRevision` cho từng revision. `currentRevision` chỉ tiến lên
+  qua ReleaseSet Local Commit (xem `run_start_revisions.go`). Thay đổi chưa commit trong worktree không có revision, nên không có
+  chỗ nào trong API hay UI để xem; tab Source cũng chỉ đọc file tại một revision. Muốn xem, người vận hành phải mở worktree bằng
+  terminal hoặc IDE (`worktree-path.sh`), mà thao tác Git ngoài aw lại là chính lỗi của V11-01.
+- **Mục tiêu:** tại cổng duyệt, người duyệt xem được trên web (và CLI) **những gì đã thay đổi so với `currentRevision`**, kiểu một pull
+  request: danh sách file (thêm/sửa/xóa, số dòng), diff từng file, file mới (untracked) có nội dung đầy đủ, file nhị phân chỉ hiện
+  tên và kích thước. Không cần commit trước khi duyệt.
+- **Thực hiện (đề xuất):**
+  1. Mở rộng `ports.WorkspaceInspectionReader` với đọc diff **working tree so với một revision đã được ủy quyền**: tracked bằng
+     `git diff <currentRevision> --`, untracked bằng `git ls-files --others --exclude-standard` rồi `git diff --no-index` từng
+     file với `/dev/null`. Chỉ đọc: chạy với `GIT_OPTIONAL_LOCKS=0`, không `git add`, không ghi index, không đổi HEAD.
+  2. Giữ nguyên giới hạn của `ReadDiff` (`byteLimit`, `fileLimit`, `lineLimit`, `maxDiffSummaryBytes`), kiểm đường dẫn nằm trong
+     worktree (symlink không được thoát ra ngoài), bỏ qua `.git`.
+  3. Chỉ cho phép khi workspace **không có node ghi đang chạy** (đang ở APPROVAL hoặc run đã dừng), để tránh đọc nửa chừng; nếu
+     đang có attempt ghi thì trả mã lỗi rõ ràng thay vì kết quả sai.
+  4. API: tham số `result=WORKING_TREE` (hoặc route riêng) cho `GET` diff của workspace; CLI `aw repository-workspace diff
+     --working-tree`; kết quả có cờ `uncommitted: true` để UI không nhầm với commit.
+  5. UI: trong tab Workspace thêm chế độ **"Thay đổi chưa commit"**, mặc định bật khi `currentRevision` không đổi so với `base`
+     nhưng worktree có thay đổi; ở thẻ yêu cầu duyệt (Graph & Timeline) thêm dòng tóm tắt "N file đổi, +x −y" kèm liên kết. Văn bản
+     tab Diff hiện tại khi trống phải nói rõ "có thay đổi chưa commit" thay vì "No changes".
+  6. Cập nhật `docs/operator/06-source-control-and-releases.md`, hướng dẫn issue-tracker (bước duyệt C-01) và thêm ADR.
+- **Ngoài phạm vi:** sửa hay stage từ UI; diff giữa hai run; bình luận trên dòng.
+- **Verify:** test tích hợp với worktree thật: file sửa, file mới, file xóa, file nhị phân, file lớn quá giới hạn, symlink ra ngoài
+  worktree; sau mỗi lệnh đọc thì `git status --porcelain`, `git rev-parse HEAD` và hash của `.git/index` không đổi; gọi khi attempt
+  ghi đang chạy trả lỗi đúng mã. Test UI (Vitest) cho chế độ mới và cho thông điệp khi trống. Chạy lại C-01 trên bản cài thật và
+  chụp màn hình tab Diff trước khi duyệt.
+- **Cách làm tạm trong lúc chưa có:** `cd "$(worktree-path.sh contracts)" && git status --short && git diff`; chỉ xem, không thao
+  tác Git ghi. Đã ghi vào hướng dẫn issue-tracker và hướng dẫn vận hành.
+
 ## Gate của V11
 
 Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
@@ -147,3 +188,4 @@ Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
 3. Mỗi thay đổi hành vi công khai có ADR và cập nhật `docs/operator/`.
 4. `kit/tests/check-kit.sh` với `WALK_ALL=1` xanh sau khi core đổi (kịch bản chạy trên engine thật).
 5. Hai script tái hiện của V11-01 cho kết quả đúng thiết kế.
+6. V11-06: chụp màn hình tab Diff của một cổng duyệt thật hiện nội dung chưa commit; test chứng minh index và HEAD không đổi sau khi đọc.
