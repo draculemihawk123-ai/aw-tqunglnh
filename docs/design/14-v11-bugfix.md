@@ -177,7 +177,7 @@ Mặc định làm tuần tự theo Task ID.
   ghi đang chạy trả lỗi đúng mã. Test UI (Vitest) cho chế độ mới và cho thông điệp khi trống. Chạy lại C-01 trên bản cài thật và
   chụp màn hình tab Diff trước khi duyệt.
 - **Cách làm tạm trong lúc chưa có:** `cd "$(worktree-path.sh contracts)" && git status --short && git diff`; chỉ xem, không thao
-  tác Git ghi. Đã ghi vào hướng dẫn issue-tracker và hướng dẫn vận hành.
+  tác Git ghi. Đã ghi vào hướng dẫn issue-tracker (bước duyệt C-01); chưa ghi vào `docs/operator/`.
 
 ## Gate của V11
 
