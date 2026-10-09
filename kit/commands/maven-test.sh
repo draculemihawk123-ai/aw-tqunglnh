@@ -16,6 +16,13 @@ if [ "$code" = 0 ]; then
   echo "backend: test PASS"
   exit 0
 fi
+# mvn không chạy được (không có trong PATH, JAVA_HOME sai) là lỗi của máy chạy, không phải lỗi code: báo là MÔI TRƯỜNG để agent dừng
+# bằng needs_info thay vì sửa code vô ích (đã tốn 5,87 USD ở một lượt chạy thật vì thiếu Maven).
+if [ "$code" = 127 ] || grep -q -i -E 'mvn: command not found|command not found|is not recognized|JAVA_HOME (environment variable )?(is|not)|JAVA_HOME.*(invalid|not defined|not found)' "$log"; then
+  head -n 4 "$log" | cut -c1-300 >&2
+  rm -f "$log"
+  aw_env_fail "mvn không chạy được trong môi trường của worker (mvn không có trong PATH hoặc JAVA_HOME sai)"
+fi
 # Maven không tải được dependency (mạng, chứng chỉ) là lỗi của máy chạy, không phải lỗi code.
 if grep -q -E 'PKIX path|Could not transfer artifact|UnknownHostException|Connection (timed out|refused)|Temporary failure in name resolution|Network is unreachable' "$log"; then
   grep -E 'PKIX path|Could not transfer artifact|UnknownHostException|Connection (timed out|refused)|Temporary failure|Network is unreachable' "$log" | head -n 4 | cut -c1-300 >&2
