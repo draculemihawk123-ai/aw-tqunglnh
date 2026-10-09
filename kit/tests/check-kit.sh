@@ -301,12 +301,16 @@ case "$FAKE_MVN" in
   context) echo "[ERROR] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0 <<< FAILURE! -- in AppTests"; echo "java.lang.IllegalStateException: Failed to load ApplicationContext"; echo "Caused by: org.flywaydb.core.api.FlywayException: Found non-empty schema without schema history table"; echo "Caused by: org.flywaydb.core.api.FlywayException: Found non-empty schema without schema history table"; exit 1 ;;
   compile) echo "[ERROR] COMPILATION ERROR :"; echo "[ERROR] cannot find symbol"; exit 1 ;;
   net) echo "PKIX path building failed"; exit 1 ;;
+  weird) echo "The JAVA_HOME environment variable is not defined correctly"; exit 1 ;;
+  silent) exit 7 ;;
 esac
 MVN
 chmod +x "$tmp/ef/bin/mvn"
 ef() { (cd "$tmp/ef/wt" && AW_KIT="$kit" FAKE_MVN="$1" PATH="$tmp/ef/bin:$PATH" sh "$kit/commands/expect-fail.sh" 2>&1); }
 mt() { (cd "$tmp/ef/wt" && AW_KIT="$kit" FAKE_MVN="$1" PATH="$tmp/ef/bin:$PATH" sh "$kit/commands/maven-test.sh" 2>&1); }
 out=$(mt context) && bad "maven-test: context lỗi phải không đạt" || { printf '%s' "$out" | grep -q "Caused by: org.flywaydb" && [ "$(printf '%s' "$out" | grep -c 'Caused by')" = 1 ] && ok "maven-test: in nguyên nhân gốc (Caused by), bỏ trùng, không chỉ danh sách test đỏ" || bad "maven-test nguyên nhân: $out"; }
+out=$(mt weird) && bad "maven-test: lỗi lạ phải không đạt" || { printf '%s' "$out" | grep -q "JAVA_HOME environment variable" && printf '%s' "$out" | grep -q "mvn thoát mã 1" && ok "maven-test: lỗi dạng lạ không bị nuốt, in mã thoát và phần cuối output" || bad "maven-test lỗi lạ: $out"; }
+out=$(mt silent) && bad "maven-test: mvn lỗi không output phải không đạt" || { printf '%s' "$out" | grep -q "mvn thoát mã 7" && printf '%s' "$out" | grep -q "output rỗng" && ok "maven-test: mvn lỗi không in gì vẫn báo mã thoát" || bad "maven-test mvn im lặng: $out"; }
 out=$(ef red) && printf '%s' "$out" | grep -q "ĐỎ như mong đợi" && ok "expect-fail: test đỏ thì đạt, in các dòng thất bại" || bad "expect-fail test đỏ: $out"
 out=$(ef green) && bad "expect-fail: test xanh phải không đạt" || { printf '%s' "$out" | grep -q "chưa chạm tới lỗi" && ok "expect-fail: test xanh thì không đạt, dặn sửa test" || bad "expect-fail test xanh: $out"; }
 out=$(ef compile) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "không biên dịch" && ok "expect-fail: lỗi biên dịch không được tính là test đỏ" || bad "expect-fail biên dịch: $out"; }
