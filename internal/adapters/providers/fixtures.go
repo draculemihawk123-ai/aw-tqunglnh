@@ -179,8 +179,17 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 		// A real CLI whose session expired server-side still runs to
 		// completion and reports a failed turn — it does not crash. SPK-12
 		// is about the orchestrator never calling Resume in the first
-		// place, not about surviving a process crash.
-		if !writeProviderFailedTurn(stdout, provider) {
+		// place, not about surviving a process crash. The failure is not a usage
+		// limit (V11-02 gives that its own termination reason), just a dead session.
+		if !writeProviderFailedTurnOther(stdout, provider) {
+			return 4
+		}
+		return 0
+	}
+	if mode == "provider-failure-other" {
+		// V11-02: a failed run whose reason is not a limit (an authentication
+		// problem). It must stay an ordinary provider failure.
+		if !writeProviderFailedTurnOther(stdout, provider) {
 			return 4
 		}
 		return 0
@@ -354,6 +363,23 @@ func writeProviderFailedTurn(stdout io.Writer, provider string) bool {
 	case "claude":
 		fmt.Fprintln(stdout, `{"type":"system","subtype":"init","session_id":"claude-session-0001"}`)
 		fmt.Fprintln(stdout, `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"You've hit your limit · resets 5pm","session_id":"claude-session-0001","usage":{"input_tokens":1,"output_tokens":1}}`)
+		return true
+	default:
+		return false
+	}
+}
+
+// writeProviderFailedTurnOther is writeProviderFailedTurn for a failure that is
+// not a limit: an invalid API key.
+func writeProviderFailedTurnOther(stdout io.Writer, provider string) bool {
+	switch provider {
+	case "codex":
+		fmt.Fprintln(stdout, `{"type":"thread.started","thread_id":"codex-session-0001"}`)
+		fmt.Fprintln(stdout, `{"type":"turn.failed","error":{"message":"Invalid API key. Please run codex login."}}`)
+		return true
+	case "claude":
+		fmt.Fprintln(stdout, `{"type":"system","subtype":"init","session_id":"claude-session-0001"}`)
+		fmt.Fprintln(stdout, `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Invalid API key · Please run /login","session_id":"claude-session-0001","usage":{"input_tokens":1,"output_tokens":1}}`)
 		return true
 	default:
 		return false

@@ -866,3 +866,36 @@ func TestAgentExecutorProviderReportedFailureCarriesTheProvidersReason(t *testin
 		})
 	}
 }
+
+// V11-02: a provider that says the account hit a session/usage limit ends the
+// attempt with the dedicated termination reason (whatever its exit code), so the
+// executor can stop it from burning the attempt budget; any other provider failure
+// keeps the generic "provider_failure".
+func TestAgentExecutorProviderQuotaIsReportedWithItsOwnTerminationReason(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range providerCases() {
+		testCase := testCase
+		for _, scenario := range []struct {
+			mode, want string
+		}{
+			{"provider-failure", ports.TerminationProviderQuotaExceeded},
+			{"provider-failure-other", "provider_failure"},
+		} {
+			scenario := scenario
+			t.Run(testCase.name+"/"+scenario.mode, func(t *testing.T) {
+				t.Parallel()
+				executor := testCase.newExecutor(t, processadapter.NewSupervisor())
+				request := helperRequest(scenario.mode+"-"+testCase.name, t.TempDir(), filepath.Join(t.TempDir(), "capture.json"), scenario.mode)
+				request.Sandbox = testCase.startSandbox
+				result, err := executor.Start(context.Background(), request, &eventCollector{})
+				if err != nil {
+					t.Fatalf("Start: %v", err)
+				}
+				if result.Status != ports.AgentExecutionFailed || result.TerminationReason != scenario.want {
+					t.Fatalf("result = status %s reason %q, want FAILED/%q", result.Status, result.TerminationReason, scenario.want)
+				}
+			})
+		}
+	}
+}

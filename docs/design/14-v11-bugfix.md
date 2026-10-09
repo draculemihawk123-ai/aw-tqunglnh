@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01, V11-02. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -34,7 +34,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | Task | Lỗi | Mức | Trạng thái xác minh |
 |---|---|---|---|
 | V11-01 | Commit ngoài aw (IDE hoặc terminal) làm lệch HEAD so với revision aw ghi | Cao | **XONG 2026-10-10** (ADR-034) |
-| V11-02 | Nhà cung cấp báo hết hạn mức phiên bị coi là lỗi thực thi thường, đốt hết lần thử | Cao | **Đã gặp thật** (bench B0/B1) |
+| V11-02 | Nhà cung cấp báo hết hạn mức phiên bị coi là lỗi thực thi thường, đốt hết lần thử | Cao | **XONG 2026-10-10** (ADR-035) |
 | V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | Đã tái hiện; nguyên nhân gốc **cần xác minh** |
 | V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | Đã tái hiện (prompt dump) |
 | V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | Đã đo (spike V10-17) |
@@ -148,6 +148,25 @@ máy Windows hiện tại không có `jq` và `os.killpg`). Phần engine đư�
 - **Thực hiện (đề xuất):** mã lỗi `PROVIDER_QUOTA_EXCEEDED` không thuộc `RetryableErrorCodes`; attempt kết thúc với lý do này và mở
   blocker có thể `retry-blocked` sau thời điểm reset (nếu đọc được) thay vì làm run `FAILED`; `show-run.sh` nêu rõ giờ reset.
 - **Verify:** adapter giả lập phát thông báo hạn mức: một attempt, không thử lại, run vào trạng thái chờ được; retry sau đó chạy tiếp.
+
+### Kết quả triển khai V11-02 (2026-10-10, ADR-035)
+
+Khảo sát: cả hai CLI chỉ báo hạn mức bằng văn bản — `result` của Claude (`is_error`), `error.message` của Codex
+(`turn.failed`) — không có mã hay giờ reset đọc được bằng máy; `rate_limit_event` của Claude không mang thông tin dùng được và adapter
+vẫn bỏ qua nó. Vì vậy nhận diện theo cụm từ (`ports.IsProviderQuotaMessage`).
+
+Đã làm: mã `PROVIDER_QUOTA_EXCEEDED` (tập mã §18: 22 → 23, thuộc `neverRetryable`, publish policy từ chối liệt kê nó là retryable);
+adapter Claude và Codex báo `TerminationReason = provider_quota_exceeded` trước kiểm tra mã thoát; `AgentNodeExecutor` ánh xạ sang mã mới;
+`show-run.sh` in hướng dẫn; tài liệu operator 09 và ADR-035.
+
+**Điều chỉnh so với đề xuất:** không mở blocker `retry-blocked` sau giờ reset. Giờ reset không đọc được bằng máy nên aw không có
+thời điểm để hẹn, và `retry-blocked` dành cho admission chặn trước khi attempt chạy. "Dừng có thể tiếp tục" dùng đường sẵn có của ADR-033: attempt
+đầu kết thúc node, run `FAILED` mở blocker `RUN_FAILED`, chạy lại cùng WorkItem bằng `retry-task.sh` sau giờ reset. Thứ đã
+sửa là điều gây hại: hai lần thử không còn bị đốt trong vài giây.
+
+Test: `TestIsProviderQuotaMessage`, `TestAgentExecutorProviderQuotaIsReportedWithItsOwnTerminationReason` (Claude và Codex, quota và lỗi khác),
+`TestAgentNodeExecutor_ProviderQuotaExceeded_ReturnsProviderQuotaExceeded`, `TestExecuteNodeHandler_ProviderQuotaExceeded_IsNeverRetried`,
+`TestValidateDocument_Attempt_RejectsProviderQuotaAsRetryable`.
 
 ## V11-03 — Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm
 

@@ -272,6 +272,37 @@ func ProviderFailureMessage(summary, providerReason string) string {
 	return summary + ": " + reason
 }
 
+// TerminationProviderQuotaExceeded is the AgentExecutionResult.TerminationReason
+// an adapter reports when the provider CLI refused the work because the account
+// hit a session, usage or rate limit (V11-02, ADR-035). The agent executor maps
+// it to the non-retryable PROVIDER_QUOTA_EXCEEDED failure code.
+const TerminationProviderQuotaExceeded = "provider_quota_exceeded"
+
+// quotaPhrases are the provider-reported words that mean "the account hit a
+// limit": Claude's "You've hit your limit · resets 5pm" / "session limit",
+// Codex's "You've hit your usage limit. Try again at 5pm", and the generic
+// 429 vocabulary. The CLIs publish no machine-readable reset time or code (the
+// stream carries only this text), so this is the contract; a context or token
+// length limit ("context limit", "output token limit") is NOT a quota and
+// does not match.
+var quotaPhrases = []string{
+	"hit your limit", "hit your session limit", "hit your usage limit", "usage limit", "session limit",
+	"rate limit", "rate_limit", "limit reached", "quota", "too many requests", "credit balance",
+}
+
+// IsProviderQuotaMessage reports whether providerReason — the provider CLI's
+// own words for why a run failed — says the account hit a session, usage or
+// rate limit. Matching is case-insensitive over the words in quotaPhrases.
+func IsProviderQuotaMessage(providerReason string) bool {
+	lower := strings.ToLower(providerReason)
+	for _, phrase := range quotaPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 type AgentEvent struct {
 	AttemptID        ExecutionAttemptID
 	Sequence         uint64

@@ -409,6 +409,10 @@ type normalizer struct {
 	usage        ports.AgentUsage
 	terminalSeen bool
 	providerOK   bool
+	// quotaExceeded (V11-02): the failed result's own words say the account hit
+	// a session/usage/rate limit; finalStatus then reports
+	// ports.TerminationProviderQuotaExceeded whatever the CLI's exit code.
+	quotaExceeded bool
 	// outcomeOccurrences/outcomeValid/outcomeValue track the terminal
 	// <agentkit-outcome> marker (V5-08B, ports.AgentProposedOutcome's own
 	// doc comment) across every ASSISTANT_MESSAGE this normalizer emits —
@@ -573,6 +577,7 @@ func (n *normalizer) consumeResult(line []byte, rawType string) error {
 		// V9-20: the CLI says why in `result` ("You've hit your limit · resets
 		// 5pm", "Credit balance is too low", ...); without it the attempt failed
 		// with a code and nothing to read.
+		n.quotaExceeded = ports.IsProviderQuotaMessage(event.Result)
 		summary := "Claude reported a failed result"
 		if event.Subtype != "" && event.Subtype != "success" {
 			summary += " (" + event.Subtype + ")"
@@ -723,6 +728,11 @@ func (n *normalizer) finalStatus(
 	}
 	if process.Cancelled {
 		return ports.AgentExecutionCancelled, "cancelled", nil, nil
+	}
+	// V11-02: the CLI said, in its own terminal result, that the account hit a
+	// limit. That is the cause whatever the exit code the CLI then returned with.
+	if n.quotaExceeded {
+		return ports.AgentExecutionFailed, ports.TerminationProviderQuotaExceeded, nil, nil
 	}
 	if process.ExitCode != 0 {
 		return ports.AgentExecutionFailed, "process_exit", nil, nil

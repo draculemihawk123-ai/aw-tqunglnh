@@ -287,6 +287,43 @@ func TestExecuteNodeHandler_RetryableFailure_BudgetExhausted_FailsNodeRun(t *tes
 	}
 }
 
+// V11-02 (ADR-035): when the provider refuses the work because the account hit a
+// session limit, the first attempt ends the node run: no retry attempt is created
+// even though the pinned policy has budget left and retries other provider errors
+// (B0/B1 burnt both attempts of every parallel node in seconds).
+func TestExecuteNodeHandler_ProviderQuotaExceeded_IsNeverRetried(t *testing.T) {
+	attemptDoc := retryableAttemptPolicyDocument(3, 30, 600, errorcode.CodeProviderUnavailable, errorcode.CodeExecutionFailed)
+	uow, ids, _, nodeRunID, attemptID := scheduledExecutionFixtureWithAttemptPolicy(t, attemptDoc)
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+
+	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
+		State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
+		ErrorCode: errorcode.CodeProviderQuotaExceeded,
+	}}
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, sharedTestAgentRegistry(t), nil)
+	if err := handler.Handle(context.Background(), job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	attempt, err := uow.Snapshot.Runtime().GetExecutionAttempt(context.Background(), attemptID)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt: %v", err)
+	}
+	if attempt.State != runtimedomain.ExecutionAttemptFailed || attempt.FailureCode != errorcode.CodeProviderQuotaExceeded {
+		t.Fatalf("attempt = %+v, want FAILED/PROVIDER_QUOTA_EXCEEDED", attempt)
+	}
+	if attempts := uow.Snapshot.Runtime().(*fake.RuntimeRepository).Attempts(); len(attempts) != 1 {
+		t.Fatalf("attempt count = %d, want exactly 1 — a provider limit must not spend the retry budget", len(attempts))
+	}
+	nodeRun, err := uow.Snapshot.Runtime().GetNodeRun(context.Background(), nodeRunID)
+	if err != nil {
+		t.Fatalf("GetNodeRun: %v", err)
+	}
+	if nodeRun.State != runtimedomain.NodeRunFailed {
+		t.Fatalf("node run = %+v, want FAILED", nodeRun)
+	}
+}
+
 // TestFinalizeExecutionAttempt_BlockedState_MismatchedReasonRejectedNeverConsumesRetryBudget
 // proves ExecutionAttemptBlocked never reaches the retry decision at all —
 // V4-12A widened isFinalizableExecutionAttemptState to accept BLOCKED (it

@@ -329,6 +329,8 @@ type normalizer struct {
 	usage        ports.AgentUsage
 	terminalSeen bool
 	providerOK   bool
+	// quotaExceeded (V11-02): see claude.go's field of the same name.
+	quotaExceeded bool
 	// outcomeOccurrences/outcomeValid/outcomeValue track the terminal
 	// <agentkit-outcome> marker (V5-08B, ports.AgentProposedOutcome's own
 	// doc comment, mirroring claude.go's own identical fields) across
@@ -400,6 +402,7 @@ func (n *normalizer) consume(line []byte) error {
 		if reason == "" {
 			reason = failure.Message
 		}
+		n.quotaExceeded = ports.IsProviderQuotaMessage(reason)
 		return n.emit(ports.AgentEvent{
 			Kind: ports.AgentEventDiagnostic,
 			Diagnostic: &ports.AgentDiagnostic{
@@ -609,6 +612,10 @@ func (n *normalizer) finalStatus(
 	}
 	if process.Cancelled {
 		return ports.AgentExecutionCancelled, "cancelled", nil, nil
+	}
+	// V11-02: see claude.go's finalStatus.
+	if n.quotaExceeded {
+		return ports.AgentExecutionFailed, ports.TerminationProviderQuotaExceeded, nil, nil
 	}
 	if process.ExitCode != 0 {
 		return ports.AgentExecutionFailed, "process_exit", nil, nil

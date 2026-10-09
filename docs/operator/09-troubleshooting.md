@@ -97,8 +97,8 @@ before the field existed has the failure code but no `failureDetail`.
 
 ## An agent attempt `FAILED` with `EXECUTION_FAILED` and the provider said why (V9-20)
 
-When the provider CLI itself reports that the run failed — a session or usage limit ("You've hit your limit ·
-resets 5pm"), an authentication problem, a refused request — the attempt ends `FAILED` / `EXECUTION_FAILED`, and
+When the provider CLI itself reports that the run failed — an authentication problem, a refused request — the
+attempt ends `FAILED` / `EXECUTION_FAILED`, and
 `aw run timeline <runId>` (and `GET /runs/{id}/timeline`) now shows the provider's own words as the attempt's
 `failureDetail`:
 
@@ -107,11 +107,29 @@ resets 5pm"), an authentication problem, a refused request — the attempt ends 
 # "failureDetail": "Claude reported a failed result: You've hit your limit · resets 5pm"
 ```
 
-The text is the CLI's reason, whitespace collapsed, cut at 500 characters and redacted like every stored event. A
-session limit is not something to fix in the task: wait for the reset, then run again (`retry-task` in the guides, or
-`aw run start` with the same workflow version once the `RUN_FAILED` blocker is resolved). An attempt that failed
-before V9-20 has the code but no detail, and so does a failure the provider did not report itself (a crash, a
-timeout).
+The text is the CLI's reason, whitespace collapsed, cut at 500 characters and redacted like every stored event. An
+attempt that failed before V9-20 has the code but no detail, and so does a failure the provider did not report itself
+(a crash, a timeout).
+
+### The account hit a session or usage limit: `PROVIDER_QUOTA_EXCEEDED` (V11-02)
+
+When the CLI's reason says the account hit a limit ("You've hit your limit · resets 5pm", "session limit", "usage
+limit", rate limit, quota, "credit balance is too low"), the attempt ends `FAILED` with the dedicated failure code
+`PROVIDER_QUOTA_EXCEEDED` instead of `EXECUTION_FAILED`:
+
+```
+# "failureCode": "PROVIDER_QUOTA_EXCEEDED",
+# "failureDetail": "Claude reported a failed result: You've hit your limit · resets 5:30pm (UTC)"
+```
+
+The code is **never retryable**: an attempt policy cannot list it in `retryableErrorCodes` (publish refuses), and the
+engine does not retry it. A limit resets in hours, so retrying at once only spent the attempt budget — before this
+code, every parallel agent node burnt all its attempts within seconds and the run ended `FAILED`. Now the first
+attempt of the node ends the node, the run ends `FAILED` with the usual `RUN_FAILED` blocker, and nothing else is
+spent. The reset time is **only** in the provider's words (`failureDetail`): neither CLI reports it in a form aw can
+read, so aw does not schedule a retry. Wait until the time the message names, then run again on the same WorkItem
+(`retry-task.sh` in the kit, or `aw blocker resolve --mode RESOLVED` then `aw run start`). `show-run.sh` prints a line
+for it. The classification follows the CLI's text: a limit message the CLI words differently stays `EXECUTION_FAILED`.
 
 ## A COMMAND or gate failed — where is the reason?
 

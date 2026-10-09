@@ -652,6 +652,31 @@ func TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed(t *tes
 	}
 }
 
+// V11-02 (ADR-035): a provider that refused the work because the account hit a
+// session/usage limit is a determinate FAILED with its own non-retryable code, not
+// the generic EXECUTION_FAILED that a policy may list as retryable.
+func TestAgentNodeExecutor_ProviderQuotaExceeded_ReturnsProviderQuotaExceeded(t *testing.T) {
+	executor, req, _, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
+		diff: defaultInScopeDiff(),
+		agentResult: ports.AgentExecutionResult{
+			Status: ports.AgentExecutionFailed, TerminationReason: ports.TerminationProviderQuotaExceeded, TreeQuiesced: true,
+		},
+		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
+	})
+
+	result, err := executor.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if result.State != domainruntime.ExecutionAttemptFailed || result.TerminationReason != domainruntime.TerminationReasonExecutionFailed ||
+		result.ErrorCode != errorcode.CodeProviderQuotaExceeded {
+		t.Fatalf("result = %+v, want FAILED/EXECUTION_FAILED/PROVIDER_QUOTA_EXCEEDED", result)
+	}
+	if !result.ErrorCode.NeverRetryable() {
+		t.Fatalf("%s must never be retryable", result.ErrorCode)
+	}
+}
+
 // TestAgentNodeExecutor_ProviderUnavailableBareError_ReturnsProviderUnavailable
 // is V5-08B's own locked provider-loss mapping row 1: a bare Go error from
 // AgentExecutor.Start itself (not a lease-lost sentinel, not an

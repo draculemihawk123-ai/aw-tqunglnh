@@ -13,11 +13,11 @@
 > ADR-030…033 chốt ngày 2026-10-01 cho V9 (`docs/design/12-v9-harness-alignment.md`, task V9-00): orchestrator
 > viết và chốt theo ủy quyền của product owner; product owner duyệt ở PR của V9-00.
 >
-> ADR-034 chốt ngày 2026-10-10 cho V11-01 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
+> ADR-034 và ADR-035 chốt ngày 2026-10-10 cho V11-01 và V11-02 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
 > viết ADR khi triển khai.
 >
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034, ADR-035).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -1076,9 +1076,38 @@ ngoài vào lịch sử aw mà không có lệnh tường minh và sự kiện a
 chạy khi một local commit của chính aw đang giữa chừng có thể nhận commit của aw; `Advance` của local commit khi đó
 thất bại version fence và job retry theo marker. Không đổi hành vi cho workflow không bị commit ngoài.
 
-## 37. Baseline sau review thiết kế
+## 37. ADR-035 — Hết hạn mức của nhà cung cấp là `PROVIDER_QUOTA_EXCEEDED`, không bao giờ retry
 
-ADR-001…034 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** khi đo B0/B1 (2026-10-07), CLI Claude trả "You've hit your session limit · resets 5:30pm (UTC)". Adapter ghi
+diagnostic `PROVIDER_REPORTED_FAILURE` (V9-20) rồi attempt kết thúc `FAILED` / `EXECUTION_FAILED`, và attempt policy retry
+mã này: ở mọi node agent chạy song song, hai lần thử cháy hết trong vài giây rồi run `FAILED`. Hạn mức reset sau vài giờ, nên
+thử lại ngay không bao giờ có ích. Cả hai CLI chỉ báo lý do bằng văn bản (`result` của Claude, `error.message` của
+Codex); không có mã hay thời điểm reset đọc được bằng máy.
+
+**Quyết định:**
+
+1. Thêm mã lỗi `PROVIDER_QUOTA_EXCEEDED` vào tập đóng của go-core-spec §18 (22 → 23) và vào `neverRetryable` cùng
+   `ISOLATION_ENFORCEMENT_UNAVAILABLE` và `INDETERMINATE`: publish policy liệt kê nó trong `retryableErrorCodes` bị từ chối,
+   và `decideRetryOrExhaustion` không bao giờ thử lại nó.
+2. Adapter nhận diện từ lời của CLI (`ports.IsProviderQuotaMessage`: "hit your limit", "session limit", "usage limit",
+   "rate limit", "quota", "too many requests", "credit balance"…; không khớp "context limit" hay "output token limit") và báo
+   `AgentExecutionResult.TerminationReason = "provider_quota_exceeded"`, **trước** kiểm tra mã thoát của tiến trình (CLI có
+   thể thoát mã khác 0 sau kết quả lỗi). `AgentNodeExecutor` ánh xạ nó sang attempt `FAILED` /
+   `EXECUTION_FAILED` (termination) với mã `PROVIDER_QUOTA_EXCEEDED`. Lỗi không phải hạn mức vẫn là `EXECUTION_FAILED`.
+3. Lời của CLI, gồm giờ reset, vẫn nằm trong diagnostic `PROVIDER_REPORTED_FAILURE` và hiện ở `failureDetail` của timeline
+   (V9-20); `show-run.sh` in thêm một dòng hướng dẫn.
+4. **Dừng có thể tiếp tục = đường sẵn có.** Attempt đầu kết thúc node, run `FAILED` mở blocker `RUN_FAILED` (ADR-033), và
+   người vận hành chạy lại trên cùng WorkItem sau giờ reset (`retry-task.sh`). Không thêm loại blocker hay trạng thái `BLOCKED`
+   mới: thiết kế V11 đề xuất blocker `retry-blocked` sau giờ reset, nhưng giờ reset không đọc được bằng máy nên aw không có thời
+   điểm để hẹn, và `retry-blocked` dành cho admission chặn trước khi attempt chạy, không cho attempt đã chạy giữa chừng.
+
+**Hệ quả:** hạn mức không còn đốt ngân sách retry; mã phân biệt hạn mức với lỗi thực thi thường ở timeline, Kanban và event
+`NODE_RUN_FAILED`. Không đổi hành vi cho lỗi khác. Giới hạn: phân loại theo văn bản của CLI, nên một câu báo hạn mức mà CLI diễn
+đạt khác sẽ vẫn là `EXECUTION_FAILED` cho đến khi thêm cụm từ.
+
+## 38. Baseline sau review thiết kế
+
+ADR-001…035 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1119,5 +1148,7 @@ dụng ma trận sau:
   trên cùng WorkItem, không repin.
 - ADR-034 (V11-01) thêm lệnh `AdoptWorkspaceHead`, chẩn đoán `WORKSPACE_HEAD_DRIFT`, kiểm HEAD trước khi start run và lý do
   `HEAD_DRIFT` của local commit; không đổi ADR-014 (vẫn không push/PR/merge) và không đổi ADR-011 (manifest bất biến).
+- ADR-035 (V11-02) thêm mã lỗi `PROVIDER_QUOTA_EXCEEDED` (tập mã §18: 22 → 23), không bao giờ retry; dừng có thể tiếp tục
+  qua `RUN_FAILED` của ADR-033, không thêm blocker mới.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

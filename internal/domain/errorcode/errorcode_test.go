@@ -15,10 +15,10 @@ func TestCode_Valid(t *testing.T) {
 		errorcode.CodeIsolationEnforcementUnavailable, errorcode.CodeAdapterBuildDrift,
 		errorcode.CodeUnavailable, errorcode.CodeProviderUnavailable, errorcode.CodeExecutionFailed,
 		errorcode.CodeTimeout, errorcode.CodeCancelled, errorcode.CodeIndeterminate,
-		errorcode.CodeRetryExhausted, errorcode.CodeInternal,
+		errorcode.CodeRetryExhausted, errorcode.CodeInternal, errorcode.CodeProviderQuotaExceeded,
 	}
-	if len(valid) != 22 {
-		t.Fatalf("test lists %d codes, want exactly 22 (go-core-spec §18's own count)", len(valid))
+	if len(valid) != 23 {
+		t.Fatalf("test lists %d codes, want exactly 23 (go-core-spec §18's 22, plus PROVIDER_QUOTA_EXCEEDED from ADR-035)", len(valid))
 	}
 	for _, code := range valid {
 		if !code.Valid() {
@@ -31,7 +31,7 @@ func TestCode_Valid(t *testing.T) {
 }
 
 func TestCode_NeverRetryable(t *testing.T) {
-	neverRetryable := []errorcode.Code{errorcode.CodeIsolationEnforcementUnavailable, errorcode.CodeIndeterminate}
+	neverRetryable := []errorcode.Code{errorcode.CodeIsolationEnforcementUnavailable, errorcode.CodeIndeterminate, errorcode.CodeProviderQuotaExceeded}
 	for _, code := range neverRetryable {
 		if !code.NeverRetryable() {
 			t.Fatalf("Code(%q).NeverRetryable() = false, want true", code)
