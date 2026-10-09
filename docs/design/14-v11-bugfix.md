@@ -651,12 +651,12 @@ luồng sự kiện ra file; thay đổi cách agent tạo `agent_events` (adapt
 6. **Tài liệu.** Cập nhật `docs/operator/`, hướng dẫn issue-tracker (thêm mục "đăng ký sai thì làm gì"), parity registry, sinh lại `generated.ts`, ADR cho các lệnh mới (sửa, ngừng dùng, xóa),
    `failureKind` và việc sửa máy trạng thái.
 
-### Quyết định cần chốt với product owner (điểm 3 đã chốt)
+### Quyết định đã chốt (product owner, 2026-10-09)
 
-1. **Sửa chỉ khi `BLOCKED`, hay cả `ACTIVE` chưa có tham chiếu?** Đề xuất: chỉ `BLOCKED`.
-2. **Cho `BLOCKED -> DISABLED` (sửa quyết định V3-01)?** Đề xuất: có; không thì lần đăng ký sai không thoát được.
-3. **Xóa cứng repository chưa từng `ACTIVE` và không được tham chiếu: ĐÃ CHỐT, cho phép** (product owner, 2026-10-09). Repository đã từng `ACTIVE` chỉ ngừng dùng, không xóa cứng.
-4. **Stderr của Git (đã redact) hiển thị cho mọi người xem project?** Đề xuất: có; đường dẫn máy là thông tin vận hành, không phải bí mật.
+1. **Sửa đường dẫn và `defaultRef` chỉ khi repository `BLOCKED`.** Repository `ACTIVE` không sửa đường dẫn; muốn đổi thì ngừng dùng rồi đăng ký mới.
+2. **Cho phép `BLOCKED -> DISABLED`** (sửa quyết định V3-01 "chỉ từ ACTIVE" bằng ADR mới), để lần đăng ký sai thoát được.
+3. **Xóa cứng repository chưa từng `ACTIVE` và không được tham chiếu: cho phép.** Repository đã từng `ACTIVE` chỉ ngừng dùng, không xóa cứng.
+4. **Stderr của Git (đã redact) hiển thị cho mọi người xem project.** Đường dẫn máy là thông tin vận hành, không phải bí mật.
 
 ### Ngoài phạm vi
 
@@ -708,11 +708,11 @@ Tự động chạy `git init` hay `git config` thay người dùng; đổi `id`
    Các nút theo `validActions` do core trả. Thanh đầu trang của project đã lưu trữ ghi rõ trạng thái chỉ đọc.
 6. **Tài liệu.** Cập nhật `docs/operator/`, parity registry, sinh lại `generated.ts`, ADR cho ba lệnh mới và quy tắc "project lưu trữ là chỉ đọc".
 
-### Quyết định cần chốt với product owner
+### Quyết định đã chốt (product owner, 2026-10-09, theo đề xuất)
 
-1. **Lưu trữ chặn khi còn thứ đang chạy (đề xuất), hay tự hủy chúng?** Đề xuất: chặn và liệt kê; không tự hủy.
-2. **Có xóa cứng Project rỗng** (không repository, không work item) không? Đề xuất: không trong V11; lưu trữ là đủ, xóa cứng để sau nếu cần.
-3. **Project lưu trữ chỉ đọc hoàn toàn**, hay cho tiếp tục xem evidence và xuất dữ liệu? Đề xuất: xem được hết, ghi thì chặn.
+1. **Lưu trữ chặn khi còn thứ đang chạy và liệt kê chúng; không tự hủy.**
+2. **Không xóa cứng Project trong V11** (kể cả Project rỗng); lưu trữ là đủ, xóa cứng để sau nếu cần.
+3. **Project lưu trữ xem được hết (evidence, lịch sử, xuất dữ liệu), mọi thao tác ghi bị chặn.**
 
 ### Ngoài phạm vi
 
