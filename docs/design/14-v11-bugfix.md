@@ -41,6 +41,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | Cơ chế **đã đọc trong mã**; thiết kế cần product owner chốt 6 điểm (mục "Quyết định cần chốt" của V11-07) |
 | V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | Chính sách đã nêu; hiệu ứng lên chi phí và chất lượng **chưa đo** |
 | V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện và vá tạm** trên Windows 11 (Git 2.55); chạy tay file `.cmd` đã vá cho kết quả đúng; chưa thử trên máy khác |
+| V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | Cơ chế **đã đọc trong mã**; kiểm chứng bằng chính các lần chạy lại của người vận hành |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -387,6 +388,86 @@ Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; s
   báo, với nội dung có tiếng Việt và không có; một lượt chạy thật của W-01 cho agent nhận đúng lỗi test thay vì rác; kịch bản kiểm
   tra trong CI nếu có runner Windows.
 
+## V11-10 — Chạy lại và làm lại một task bằng một thao tác trên web
+
+> Cũng là **thiếu khả năng** (như V11-06, V11-07). Mục tiêu: người vận hành không phải rời web để xử lý một task hỏng.
+
+### Bằng chứng (đã đọc trong mã)
+
+- Hôm nay "chạy lại" gồm nhiều bước ở nhiều nơi. Trên web có từng mảnh: tab Chat (gửi ghi chú cho agent), gỡ blocker `RUN_FAILED`
+  (`resolveWorkItemBlocker`, chỉ chọn `RESOLVED`), nút `Start Run` (chỉ hiện khi WorkItem `READY`), `Cancel Run`, `Cancel WorkItem`.
+  `kit/scripts/retry-task.sh` làm cả chuỗi đó một lượt (in lỗi, gỡ blocker, gửi ghi chú, start run) nhưng phải mở terminal.
+- Nút `Retry` có sẵn trong `TaskDetail.tsx` gọi `retryBlockedActivation` là **việc khác**: thử lại một activation bị chặn (ví dụ
+  `ADAPTER_BUILD_DRIFT`); nó không chạy lại một run đã `FAILED`.
+- Run mới trên cùng WorkItem **luôn dùng workflow version đã ghim**: `StartWorkflowRun` (`internal/app/runtime/commands.go`) từ chối với
+  `ErrWorkflowVersionMismatch` nếu version yêu cầu khác version đã ghim trong contract. Vì vậy sau khi sửa kit hoặc định nghĩa rồi publish
+  lại, "chạy lại" trên WorkItem cũ vẫn chạy bản **cũ** (đã gặp: sửa bộ bọc `.cmd` rồi vẫn phải tạo WorkItem mới).
+- Tạo WorkItem **con** có API (`createChildWorkItem` trong `web/src/api/generated.ts`, `aw work-item create-child`) nhưng **không có
+  giao diện**: `CreateWorkItemDialog.tsx` ghi rõ việc này "deferred to V7-11" và chưa ai làm. Nên "hủy rồi tạo mới" hiện phải qua `run-task.sh`.
+- Hậu quả thực tế: một lần sửa kit rồi chạy lại cần bốn bước ở hai nơi (hủy trên web, xóa file thừa trong worktree, publish, `run-task.sh`),
+  và `commit-task.sh` từ chối chạy khi family còn WorkItem `ACTIVE` hoặc `BLOCKED`, nên quên hủy bản cũ là chặn luôn việc commit.
+
+### Hai thao tác cần có
+
+**A. Chạy lại (cùng WorkItem).** Nút `Chạy lại` ở trang Task khi run gần nhất `FAILED` hoặc bị hủy. Hộp thoại: ô ghi chú cho agent (tùy
+chọn), dòng thông tin "sẽ chạy bằng workflow version đã ghim: <version>", và xem trước các blocker sẽ được gỡ. Một lần bấm: gửi ghi chú,
+gỡ blocker `RUN_FAILED` đang mở, start run mới. Dùng khi nguyên nhân là môi trường hoặc ghi chú đủ để agent làm đúng.
+
+**B. Làm lại với định nghĩa mới (hủy và tạo mới).** Nút `Làm lại bằng phiên bản mới` ở trang Task. Hộp thoại hiển thị: version workflow
+đang ghim và version mới nhất của **cùng** workflow definition, tùy chọn mang theo các ghi chú của người vận hành sang WorkItem mới, ô lý
+do. Một lần bấm: hủy WorkItem cũ, tạo WorkItem con mới cùng parent với **cùng nội dung** (tiêu đề thêm hậu tố "lần 2", `effectiveScope`,
+contract) nhưng `workflowVersionId` là version mới nhất, đánh dấu READY, start run. WorkItem mới ghi `supersedes` trỏ về cái cũ, UI
+Board hiện "thay thế cho ..." và WorkItem cũ hiện "bị thay bởi ...". Dùng khi vừa sửa kit hoặc định nghĩa và publish lại.
+
+### Thực hiện (đề xuất)
+
+1. **Lệnh gộp trong core, không ghép nhiều gọi từ trình duyệt.** Nếu UI gọi tuần tự nhiều API thì một lỗi giữa chừng để lại trạng thái dở
+   (đã gỡ blocker mà chưa start run; đã hủy cái cũ mà chưa tạo cái mới). Thêm hai lệnh có kiểu, idempotent, mỗi lệnh một idempotency key:
+   `RetryWorkItem` (ghi chú + gỡ blocker + start run, trong một transaction cho phần ghi DB) và `RecreateWorkItem` (kiểm điều kiện, tạo
+   WorkItem mới và run, yêu cầu hủy cái cũ). CLI: `aw work-item retry <id> [--note ...]` và `aw work-item recreate <id> [--note ...]
+   [--carry-messages]`; đăng ký trong `internal/delivery/parity/registry.go`; sinh lại `web/src/api/generated.ts`.
+2. **Thứ tự và an toàn của `RecreateWorkItem`.** Kiểm tất cả điều kiện trước khi đổi gì: WorkItem cũ không có run đang chạy hoặc đang ở bước
+   ghi; family không có worktree `QUARANTINED`; tồn tại version workflow mới hơn hoặc ít nhất cùng version; scope của bản mới là tập con của
+   scope được phê duyệt của family. Thao tác ghi: tạo WorkItem mới và run trong một transaction; yêu cầu hủy WorkItem cũ (theo cơ chế hủy hiện
+   có, bất đồng bộ) trong cùng transaction. Cần khảo sát: hai WorkItem cùng một worktree của family trong lúc bản cũ đang được hủy.
+3. **Lỗi giữa chừng.** Cả hai lệnh trả kết quả rõ (đã làm tới đâu); lỗi điều kiện trả mã có kiểu và UI giải thích bằng lời, không để trạng
+   thái dở. Replay cùng idempotency key trả đúng kết quả cũ, kể cả id WorkItem mới.
+4. **File thừa của lần chạy trước.** Lần chạy hỏng có thể để lại file ngoài scope (ví dụ `docs/needs-info.md`) làm lần sau vi phạm `SCOPE_VIOLATION`. Hộp
+   thoại liệt kê các đường dẫn đang thay đổi trong worktree (dùng danh sách thay đổi của V11-06) và đánh dấu cái nào **ngoài scope** của
+   WorkItem; lệnh từ chối chạy khi còn file ngoài scope mà người dùng chưa chọn cách xử lý: `Giữ` (mặc định, kèm cảnh báo sẽ vi phạm lại) hoặc
+   `Cất` (cùng cơ chế `PARK` của V11-07). Không xóa hẳn file. Nếu V11-06 và V11-07 chưa xong thì bước này tạm bỏ và UI chỉ hiện cảnh báo.
+5. **Giao diện.** Hai nút ở thanh đầu trang Task, đặt cạnh `Cancel Run` và `Cancel WorkItem`; chỉ hiện khi đủ điều kiện (`validActions` từ
+   `getRunDiagnostics`, như các nút khác). Sau khi bấm, trang chuyển tới WorkItem mới (nếu là B) và theo dõi run. Hộp thoại ghi rõ chi phí
+   đã tiêu của các run trước (để người vận hành thấy việc lặp lại tốn bao nhiêu).
+6. **Kit và tài liệu.** `retry-task.sh` gọi `aw work-item retry` (giữ phần in lỗi của bước kiểm tra); thêm `recreate-task.sh` mỏng; cập nhật
+   `docs/operator/`, hướng dẫn issue-tracker (bỏ bước "hủy trên web rồi `run-task.sh`" khỏi luồng sửa lỗi), thêm ADR cho hai lệnh mới.
+
+### Quyết định cần chốt với product owner
+
+1. **Hủy rồi tạo mới (B) hay đổi version đã ghim trên chính WorkItem?** B dùng các nguyên hàm hiện có (hủy, tạo con, start) nên ít rủi ro, nhưng
+   để lại một WorkItem `CANCELLED` cho mỗi lần làm lại. Phương án thay thế "đổi version đã ghim" giữ lịch sử ở một WorkItem, nhưng phá bất biến
+   "WorkItem ghim một version" (ADR mới, sự kiện kiểm toán, chỉ cho phép khi không có run mở). Đề xuất: làm B theo yêu cầu, đánh giá phương án thay
+   thế sau.
+2. **Mang theo ghi chú sang WorkItem mới theo mặc định hay không?** Đề xuất: mặc định có, người dùng bỏ được.
+3. **Giới hạn số lần làm lại** (chặn vòng lặp vô ích đã tốn tiền)? Đề xuất: không chặn cứng; hộp thoại hiện tổng chi phí các lần trước và cảnh
+   báo từ lần thứ ba.
+
+### Ngoài phạm vi
+
+Tự động quyết định chạy lại; chạy lại một phần (từ node hỏng thay vì từ đầu: `aw` không chạy tiếp từ node bị hỏng, chạy lại là chạy workflow từ đầu);
+sửa nội dung contract khi làm lại (làm lại giữ nguyên contract); thay đổi quyền.
+
+### Verify
+
+- **Engine (test tích hợp):** `RetryWorkItem`: run `FAILED` với blocker mở thành run mới, ghi chú có trong prompt, blocker `RESOLVED`; lỗi giữa
+  chừng không để blocker đã gỡ mà chưa có run; replay cùng key cho cùng kết quả; không chạy khi WorkItem không `READY` sau khi gỡ blocker.
+  `RecreateWorkItem`: WorkItem mới có đúng contract, scope và version mới nhất, `supersedes` đúng, cái cũ vào trạng thái hủy; từ chối khi có run
+  đang ghi, khi worktree `QUARANTINED`, khi scope vượt phê duyệt; khi version mới nhất bằng version đã ghim vẫn tạo được (làm lại sạch).
+- **Không hồi quy:** `StartWorkflowRun` vẫn từ chối version khác version đã ghim; `commit-task.sh` không còn bị WorkItem cũ chặn sau khi làm lại.
+- **UI:** Vitest cho hai hộp thoại và trạng thái nút theo `validActions`; e2e Playwright trên bản cài thật: một run hỏng, bấm `Chạy lại`, rồi bấm
+  `Làm lại bằng phiên bản mới` sau khi publish workflow mới, không mở terminal.
+- **Kit:** kịch bản `walk-workflow.py` cho retry và recreate; `kit/tests/check-kit.sh` với `WALK_ALL=1` xanh.
+
 ## Gate của V11
 
 Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
@@ -400,3 +481,4 @@ Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
 7. V11-07: một lần duyệt trên web, không mở terminal, tạo commit chỉ chứa đúng các file đã chọn; file còn lại đúng theo xử lý đã chọn; `changeSetDigest` lệch thì không commit.
 8. V11-08: `grep -P '[^\x00-\x7F]' kit/commands/*.sh` rỗng; bench A/B có báo cáo.
 9. V11-09: script kiểm tra chạy đúng trên Windows, agent nhận đúng lỗi thật.
+10. V11-10: từ một run hỏng, `Chạy lại` và `Làm lại bằng phiên bản mới` hoàn tất trên web, không để trạng thái dở khi lỗi giữa chừng.
