@@ -172,6 +172,22 @@ ceiling is enforced by the CLI itself: an attempt that reaches it ends, it does 
 and negative or non-finite ceilings are refused when the worker starts. Like the permission mode, neither is part of
 any definition or snapshot.
 
+**Isolating the CLI's own configuration — `--claude-safe-mode` (V11-05, ADR-038).** By default the Claude CLI reads more than
+`aw` gives it: your `~/.claude` (user skills, agents, slash commands, hooks, MCP servers) and, in the worktree, the repository's
+`.claude/` and `CLAUDE.md`. None of that is in the ContextSnapshot, so two identical runs can know different things, a
+repository hook that writes into the worktree fails a `MAKER` attempt with `SCOPE_VIOLATION`, and a `CHECKER` pays for the skill
+list too (spike V10-17: about 2.4 times the cost of a small node with a large `.claude/`). Start the worker with
+`--claude-safe-mode` and every attempt, a resumed one included, runs `claude --safe-mode`: the CLI loads none of those
+customizations, while authentication, model selection and the built-in tools work as usual. Checked against Claude Code 2.1.288
+with a fixture that has a user skill, a repository skill and a `SessionStart` hook: without the flag both skills are listed and
+the hook runs; with it neither skill is listed and no hook event is emitted. It is off by default, so nothing changes for an
+installation that relies on its own `~/.claude`, and it needs a CLI that knows `--safe-mode` (an older one refuses the flag and the
+attempt fails). Consequences to plan for: the repository's `CLAUDE.md` is **not** loaded either, so conventions that live only
+there must move into a Layer or Skill of the kit (they then reach the prompt through the ContextSnapshot); and the instruction-file
+oversize warning ([04-authoring-workflows.md](04-authoring-workflows.md)) describes a file the CLI would load, which it no longer
+does under this flag. Like the permission mode, effort and budget, the flag is a property of the worker, not of any definition
+or snapshot. Codex has no equivalent flag today; the option does nothing for it.
+
 What an attempt actually used is shown, not just capped: the CLI's own token counts and, when it reports one, its cost
 are stored as the attempt's `USAGE_REPORTED` event, and `GET /runs/{id}/timeline` / `aw run timeline` /
 Graph & Timeline in the UI show them per attempt (`usage`) and summed for the run. They are the provider's figures,

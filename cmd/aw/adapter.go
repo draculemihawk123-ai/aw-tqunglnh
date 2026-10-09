@@ -39,7 +39,7 @@ func newAgentExecutor(providerKey, executablePath string, probeEnvironment []str
 	case ports.ProviderClaude:
 		return claude.New(process.NewSupervisor(), claude.Config{
 			Executable: executablePath, VersionInheritedEnvironment: probeEnvironment, PermissionMode: settings.claudePermissionMode,
-			Effort: settings.claudeEffort, MaxBudgetUSD: settings.claudeMaxBudgetUSD,
+			Effort: settings.claudeEffort, MaxBudgetUSD: settings.claudeMaxBudgetUSD, SafeMode: settings.claudeSafeMode,
 		})
 	case ports.ProviderCodex:
 		return codex.New(process.NewSupervisor(), codex.Config{Executable: executablePath, VersionInheritedEnvironment: probeEnvironment})
@@ -54,6 +54,7 @@ type agentProviderSettings struct {
 	claudePermissionMode string
 	claudeEffort         string
 	claudeMaxBudgetUSD   float64
+	claudeSafeMode       bool
 }
 
 // agentProviderOption adjusts how newAgentExecutor builds a provider executor.
@@ -81,6 +82,14 @@ func withClaudeEffort(effort string) agentProviderOption {
 // --max-budget-usd: the most ONE attempt may spend. Zero is no ceiling.
 func withClaudeMaxBudgetUSD(dollars float64) agentProviderOption {
 	return func(settings *agentProviderSettings) { settings.claudeMaxBudgetUSD = dollars }
+}
+
+// withClaudeSafeMode (V11-05, spike V10-17) starts the Claude CLI with
+// --safe-mode for every task: it loads none of the user's or the repository's
+// skills, agents, hooks, MCP servers or CLAUDE.md, so what an agent knows is what
+// the ContextSnapshot says. It has no effect on a provider other than Claude.
+func withClaudeSafeMode(enabled bool) agentProviderOption {
+	return func(settings *agentProviderSettings) { settings.claudeSafeMode = enabled }
 }
 
 // probeProviderExecutable is `aw doctor`'s ProviderProbe (V9-05, gap G5): it

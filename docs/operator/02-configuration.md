@@ -32,6 +32,8 @@ Usage of serve:
         artifact storage root directory
   -claude-executable string
         path to the Claude CLI executable to register as a live agent provider for RetryBlockedActivation's own admission re-checks (omitted = provider not registered, RetryBlockedActivation fails closed with 503 for a build pinned to it)
+  -claude-safe-mode
+        start the Claude CLI with --safe-mode for every task: it loads none of the user's (~/.claude) or the repository's (.claude/) skills, agents, slash commands, hooks, MCP servers or CLAUDE.md, so an agent knows only what the ContextSnapshot gives it and a repository hook cannot write into the worktree; auth and the model work as usual (default: off, the CLI loads its normal configuration)
   -codex-executable string
         path to the Codex CLI executable to register as a live agent provider for RetryBlockedActivation's own admission re-checks (omitted = provider not registered, RetryBlockedActivation fails closed with 503 for a build pinned to it)
   -db string

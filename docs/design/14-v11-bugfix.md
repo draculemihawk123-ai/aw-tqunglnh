@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01, V11-02, V11-03, V11-04. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-05. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -37,7 +37,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-02 | Nhà cung cấp báo hết hạn mức phiên bị coi là lỗi thực thi thường, đốt hết lần thử | Cao | **XONG 2026-10-10** (ADR-035) |
 | V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | **XONG 2026-10-10** (ADR-036) |
 | V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | **XONG 2026-10-10** (ADR-037) |
-| V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | Đã đo (spike V10-17) |
+| V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | **XONG 2026-10-10** (ADR-038) |
 | V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **Đã gặp thật** (chạy issue-tracker C-01 trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | Cơ chế **đã đọc trong mã**; thiết kế cần product owner chốt 6 điểm (mục "Quyết định cần chốt" của V11-07) |
 | V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | Chính sách đã nêu; hiệu ứng lên chi phí và chất lượng **chưa đo** |
@@ -241,6 +241,19 @@ Test: `TestDiagnosingCheckerAfterFailingCheck_ReceivesTheCheckFailures`, `TestMa
 - **Mục tiêu:** worker có tùy chọn cô lập cấu hình của CLI (thư mục cấu hình riêng, không nạp cấu hình người dùng/dự án) và/hoặc ghi
   băm của cây `.claude/` vào manifest của attempt. Kiểm cờ tương ứng của CLI (ví dụ `CLAUDE_CONFIG_DIR`, chọn nguồn cấu hình) trước.
 - **Verify:** lượt dò giống spike cho thấy skill của repository không còn lọt vào attempt khi bật cô lập, hoặc xuất hiện trong manifest.
+
+### Kết quả triển khai V11-05 (2026-10-10, ADR-038)
+
+Kiểm cờ của CLI (Claude Code 2.1.288, `claude --help`): `--safe-mode` ("tắt mọi tùy biến: CLAUDE.md, skill, plugin cài thêm, hook, MCP server, command và agent
+tùy biến… Đăng nhập, chọn model, công cụ built-in vẫn bình thường"); `--bare` không đọc OAuth/keychain nên không dùng được; `CLAUDE_CONFIG_DIR` mất thông tin đăng nhập.
+Đo lại như spike nhưng **không gọi API** (HOME trống, đọc sự kiện `system init`): fixture có skill cấp người dùng, skill của repository và hook `SessionStart`; không cờ thì thấy cả hai
+skill và 2 sự kiện hook, có `--safe-mode` thì không thấy skill nào trong hai và 0 sự kiện hook.
+
+Đã làm: `claude.Config.SafeMode` và cờ `aw worker --claude-safe-mode` (mặc định tắt, có trên mọi lần gọi CLI kể cả resume); tài liệu operator 02 và 05; ADR-038.
+**Điều chỉnh:** chọn hướng cô lập, không làm hướng băm `.claude/` (xem ADR). Hệ quả cần biết: `CLAUDE.md` của repository cũng không được CLI nạp khi bật cờ, nên quy ước chỉ nằm ở đó phải chuyển
+thành Layer/Skill của kit.
+
+Test: `TestClaudeAdapterPassesSafeModeOnStartAndResumeOnly`, `TestNewAgentExecutor_ClaudeSafeMode`. Chưa chạy lại spike V10-17 qua aw bằng CLI thật có tài khoản (tốn tiền; việc kiểm trên là không gọi API).
 
 ## V11-06 — Duyệt cổng người mà không xem được nội dung thay đổi
 

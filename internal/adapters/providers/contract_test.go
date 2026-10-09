@@ -899,3 +899,57 @@ func TestAgentExecutorProviderQuotaIsReportedWithItsOwnTerminationReason(t *test
 		}
 	}
 }
+
+// V11-05 (spike V10-17): SafeMode is a Config field, so --safe-mode is on every
+// invocation, start and resume alike — the point is that the CLI loads none of the
+// user's or the repository's skills, agents, hooks or MCP servers, and a resumed
+// attempt that loaded them again would defeat it. Without it nothing is added.
+func TestClaudeAdapterPassesSafeModeOnStartAndResumeOnly(t *testing.T) {
+	t.Parallel()
+	count := func(arguments []string) int {
+		n := 0
+		for _, argument := range arguments {
+			if argument == "--safe-mode" {
+				n++
+			}
+		}
+		return n
+	}
+	newAdapter := func(t *testing.T, safe bool) *claude.Adapter {
+		t.Helper()
+		adapter, err := claude.New(processadapter.NewSupervisor(), claude.Config{
+			Executable: os.Args[0], PrefixArgs: helperPrefix("claude"), VersionEnvironment: map[string]string{"AGENTKIT_PROVIDER_HELPER": "1"},
+			SafeMode: safe,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return adapter
+	}
+
+	safe := newAdapter(t, true)
+	startCapture := filepath.Join(t.TempDir(), "start.json")
+	if _, err := safe.Start(context.Background(), helperRequest("start-safe", t.TempDir(), startCapture, "success"), &eventCollector{}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if n := count(readCapture(t, startCapture).Argv); n != 1 {
+		t.Errorf("--safe-mode appears %d times on start, want once (argv %v)", n, readCapture(t, startCapture).Argv)
+	}
+	resumeCapture := filepath.Join(t.TempDir(), "resume.json")
+	if _, err := safe.Resume(context.Background(), helperRequest("resume-safe", t.TempDir(), resumeCapture, "success"),
+		ports.ProviderSessionRef{Provider: ports.ProviderClaude, SessionID: "claude-session-0001"}, &eventCollector{}); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if n := count(readCapture(t, resumeCapture).Argv); n != 1 {
+		t.Errorf("--safe-mode appears %d times on resume, want once", n)
+	}
+
+	plain := newAdapter(t, false)
+	plainCapture := filepath.Join(t.TempDir(), "plain.json")
+	if _, err := plain.Start(context.Background(), helperRequest("start-plain", t.TempDir(), plainCapture, "success"), &eventCollector{}); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if n := count(readCapture(t, plainCapture).Argv); n != 0 {
+		t.Errorf("--safe-mode present with SafeMode off")
+	}
+}

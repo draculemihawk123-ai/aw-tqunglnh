@@ -13,11 +13,11 @@
 > ADR-030…033 chốt ngày 2026-10-01 cho V9 (`docs/design/12-v9-harness-alignment.md`, task V9-00): orchestrator
 > viết và chốt theo ủy quyền của product owner; product owner duyệt ở PR của V9-00.
 >
-> ADR-034…037 chốt ngày 2026-10-10 cho V11-01…V11-04 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
+> ADR-034…038 chốt ngày 2026-10-10 cho V11-01…V11-05 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
 > viết ADR khi triển khai.
 >
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…037).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…038).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -1156,9 +1156,31 @@ Agent chẩn đoán phải tự tái hiện lỗi mà kit đang dặn, và maker
 **Hệ quả:** workflow mẫu `wf-task-delivery-plus` không cần sửa; agent `debug` đọc được lỗi thật của `gate1` thay vì tái hiện nó, và kit có thể
 rút gọn dặn dò "tự tái hiện" khi cần. Hành vi prompt của workflow không có CHECKER nằm giữa không đổi.
 
-## 40. Baseline sau review thiết kế
+## 40. ADR-038 — Cô lập cấu hình của CLI Claude bằng `--safe-mode` (tùy chọn của worker)
 
-ADR-001…037 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** spike V10-17 đo (`docs/spikes/v10-17-claude-skills/README.md`) rằng aw gọi `claude -p …` không chọn nguồn cấu hình, nên CLI nạp
+`~/.claude` của máy chạy worker và `.claude/` cùng `CLAUDE.md` của repository: skill, agent, slash command, hook, MCP server nằm **ngoài** ContextSnapshot
+(không băm, không audit, không tái hiện); hook ghi file vào worktree làm attempt MAKER hỏng `SCOPE_VIOLATION`; CHECKER cũng trả tiền cho danh sách
+skill. Thiết kế V11 đề xuất hai hướng: cô lập cấu hình, hoặc ghi băm cây `.claude/` vào manifest, sau khi kiểm cờ của CLI.
+
+**Quyết định:**
+
+1. Làm hướng cô lập, bằng cờ `--safe-mode` của CLI (không phải `CLAUDE_CONFIG_DIR`: đổi thư mục cấu hình mất thông tin đăng nhập; không phải `--bare`: nó
+   không đọc OAuth/keychain nên hỏng với người dùng đăng nhập bằng tài khoản). Kiểm với Claude Code 2.1.288 bằng sự kiện `system init`, không gọi API: có skill
+   cấp người dùng, skill của repository và hook `SessionStart` thì không cờ liệt kê cả hai skill và hook chạy (2 sự kiện); có `--safe-mode` thì không skill nào
+   trong hai và 0 sự kiện hook. Đăng nhập và model dùng bình thường.
+2. Tùy chọn của worker `aw worker --claude-safe-mode` (mặc định tắt), trường `claude.Config.SafeMode`: `--safe-mode` có trên **mọi** lần gọi CLI, start và resume, giống
+   effort và ngân sách (V9-13a). Mặc định tắt vì nó đổi cái CLI thấy (mất `~/.claude` và `CLAUDE.md` của repository) và cần CLI biết cờ này.
+3. Không làm hướng băm `.claude/`: với `--safe-mode` bật, không có tri thức ngoài manifest để băm; còn khi tắt, hành vi cũ giữ nguyên (nạp, không kiểm). Không đổi
+   phép kiểm scope: hook không còn chạy nên không còn ghi vào worktree.
+4. Không đổi AdapterBuild: cờ là cấu hình của worker như `--permission-mode`, không thuộc định nghĩa hay snapshot.
+
+**Hệ quả:** cài đặt muốn tái hiện được dùng `--claude-safe-mode` và đưa quy ước vào Layer/Skill của kit (đi qua ContextSnapshot). Cảnh báo kích thước file hướng dẫn
+(`--instruction-file-warn-bytes`, V9-10) vẫn ghi file mà CLI sẽ nạp; dưới `--safe-mode` CLI không nạp chúng nên cảnh báo chỉ còn tính chất thông tin. Codex chưa có cờ tương đương.
+
+## 41. Baseline sau review thiết kế
+
+ADR-001…038 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1204,5 +1226,6 @@ dụng ma trận sau:
 - ADR-036 (V11-03) siết luật vòng có chặn theo từng node (chỉ lúc publish, `workflow.Rehydrate` giữ version cũ đọc được) và
   làm lỗi định tuyến do định nghĩa thành run `FAILED` có lý do `WORKFLOW_DEFINITION_DEFECT`.
 - ADR-037 (V11-04) bổ sung ADR-031 quyết định 6 và V9-17: `checkFailures` đi tiếp qua CHECKER chẩn đoán nằm giữa kiểm tra và maker.
+- ADR-038 (V11-05) thêm tùy chọn worker `--claude-safe-mode` (CLI Claude chạy `--safe-mode`, không nạp cấu hình người dùng và repository); mặc định tắt.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

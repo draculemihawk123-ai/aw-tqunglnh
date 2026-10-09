@@ -8,3 +8,4 @@ UI draft/
 # V6-14B acceptance report, when AW_V6_REPORT_PATH points inside the tree
 # (CI does; the local default writes to the temp directory instead).
 v6-report/
+/aw.exe

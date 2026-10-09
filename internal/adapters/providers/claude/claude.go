@@ -45,7 +45,15 @@ type Config struct {
 	// may spend, start and resume alike. Zero means no ceiling. It is a
 	// ceiling the CLI enforces on itself, not an accounting: what an attempt
 	// actually spent is the USAGE_REPORTED event.
-	MaxBudgetUSD         float64
+	MaxBudgetUSD float64
+	// SafeMode (V11-05, spike V10-17) starts the CLI with --safe-mode, start and
+	// resume alike: it loads none of the user's or the repository's customizations
+	// (skills, agents, slash commands, hooks, MCP servers, CLAUDE.md, output styles)
+	// while auth, model selection and the built-in tools work as usual. Without it
+	// the CLI reads ~/.claude and the worktree's .claude/ — knowledge that sits
+	// outside the ContextSnapshot, and hooks that write into the worktree and
+	// fail an attempt with SCOPE_VIOLATION. Off by default.
+	SafeMode             bool
 	InheritedEnvironment []string
 	MaxJSONLLineBytes    int
 	// OutputLimitBytes caps the stdout+stderr one attempt may write before the
@@ -220,6 +228,9 @@ func (a *Adapter) execute(
 	}
 	if a.config.MaxBudgetUSD > 0 {
 		arguments = append(arguments, "--max-budget-usd", strconv.FormatFloat(a.config.MaxBudgetUSD, 'f', -1, 64))
+	}
+	if a.config.SafeMode {
+		arguments = append(arguments, "--safe-mode")
 	}
 	arguments = append(arguments, mountArguments(request)...)
 	if resume == nil {

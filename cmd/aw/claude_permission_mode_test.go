@@ -66,3 +66,15 @@ func TestNewWorkerAgentRegistry_RefusesAnUnusableClaudeEffortAtStartup(t *testin
 		t.Fatalf("newWorkerAgentRegistry = %v, want a startup error naming the effort", err)
 	}
 }
+
+// V11-05: the safe-mode option reaches claude.Config, and a provider other than
+// Claude ignores it.
+func TestNewAgentExecutor_ClaudeSafeMode(t *testing.T) {
+	executable := os.Args[0]
+	if _, err := newAgentExecutor("claude", executable, nil, withClaudeSafeMode(true)); err != nil {
+		t.Fatalf("safe mode was refused: %v", err)
+	}
+	if _, err := newAgentExecutor("codex", executable, nil, withClaudeSafeMode(true)); err != nil {
+		t.Errorf("the Claude safe-mode setting broke the Codex executor: %v", err)
+	}
+}
