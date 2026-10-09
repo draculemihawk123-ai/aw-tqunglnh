@@ -45,6 +45,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | Cơ chế **đã đọc trong mã**; kiểm chứng bằng chính các lần chạy lại của người vận hành |
 | V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | Cơ chế **đã đọc trong mã**; dữ liệu phần lớn đã có trong DB nhưng không có API/UI đọc |
 | V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **Đã gặp thật** (đăng ký thư mục chưa `git init` trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
+| V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | Cơ chế **đã đọc trong mã**: chỉ có `create`, `list`, `show` |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -663,6 +664,55 @@ Tự động chạy `git init` hay `git config` thay người dùng; đổi `id`
 - **Kit:** `init-project.sh` và `add-repository.sh` in lý do khi `BLOCKED`; `kit/tests/check-kit.sh` xanh.
 - **Không hồi quy:** mã lỗi công khai cũ (`INVALID_ARGUMENT`, `NOT_FOUND`) vẫn giữ nguyên; `go test ./...` và `docs-coverage-check` xanh.
 
+## V11-13 — Đổi tên và lưu trữ Project
+
+> Cùng loại thiếu sót với V11-12 nhưng ở mức Project: tạo nhầm hoặc đặt tên sai là kẹt vĩnh viễn.
+
+### Bằng chứng (đã đọc trong mã)
+
+- **Chỉ có ba thao tác.** CLI `aw project create|list|show` (`internal/delivery/cli/catalog/project.go`) và HTTP `projectsCreate|projectsList|projectsGet`
+  (`internal/delivery/httpapi/catalog/catalog.go`). Không có đổi tên, xóa hay lưu trữ; trên web cũng không có.
+- **Trạng thái đã có nhưng không ai đặt.** `ProjectArchived` có trong domain (`ProjectActive|ProjectArchived`) và trong ràng buộc CHECK của bảng `projects`, nhưng không lệnh
+  nào chuyển sang `ARCHIVED`, và `ListProjects` không lọc theo trạng thái.
+- **Xóa cứng không an toàn.** 25 migration có khóa ngoại tới `projects(id)` (repository, work item, family, run, evidence, release set, definition gán, nhật ký sự kiện, biên nhận...).
+  Xóa dòng `projects` hoặc làm hỏng lịch sử kiểm toán, hoặc bị khóa ngoại từ chối.
+- **Tên không duy nhất** (cột `projects.name` không có UNIQUE), nên hai project cùng tên là hợp lệ và chỉ phân biệt bằng id; đổi tên không đụng ràng buộc nào.
+- **Cạm bẫy của kit:** `kit/scripts/init-project.sh` tạo project với khóa idempotency là `sha256(tên)`. Chạy lại cùng tên **trả đúng project cũ** (biên nhận), kể cả khi người dùng muốn một project mới
+  sau khi lưu trữ. Cần xử lý khi thêm lưu trữ.
+
+### Thiết kế
+
+1. **Đổi tên (`RenameProject`).** `aw project rename <id> --expected-version <n> --name <tên>` và `PATCH /projects/{id}` (If-Match theo `version`). Một transaction: ghi tên mới, tăng `version`,
+   ghi sự kiện `ProjectRenamed` (tên cũ, tên mới, người thực hiện) và biên nhận idempotent. Kiểm tên: khác rỗng, tối đa 200 ký tự, cắt khoảng trắng hai đầu; id không đổi.
+   Cho phép khi Project `ACTIVE`; Project `ARCHIVED` phải khôi phục trước khi đổi tên.
+2. **Lưu trữ (`ArchiveProject`) thay cho xóa.** `aw project archive <id> --expected-version <n> [--reason ...]` và `restore`. Chuyển `ACTIVE <-> ARCHIVED`. Từ chối có kiểu lỗi và liệt kê thứ
+   đang chạy: WorkflowRun chưa kết thúc, work item `ACTIVE`/`BLOCKED`, job nền đang giữ lease, release set còn mở. Người dùng xử lý (hủy, hoàn tất) rồi lưu trữ lại. Project `ARCHIVED` bị ẩn khỏi danh sách
+   mặc định (`--include-archived` để xem), **chỉ đọc**: mọi lệnh ghi vào Project hoặc repository, work item của nó bị từ chối với lỗi nói rõ "project đã lưu trữ" cùng cách khôi phục;
+   worker không nhận job mới của nó; evidence và lịch sử vẫn xem được.
+3. **Không có xóa cứng** trong V11 (xem quyết định 2). Hộp thoại ghi rõ "lưu trữ, không xóa dữ liệu".
+4. **Kit.** `init-project.sh` khi khóa idempotency trỏ về một project `ARCHIVED` thì in lý do và gợi ý `restore` hoặc dùng tên khác (hoặc thêm hậu tố vào khóa), thay vì im lặng dùng lại.
+5. **Giao diện.** Trang Projects: nút `Đổi tên` (hộp thoại một ô, kiểm tra tại chỗ) và `Lưu trữ` (hộp thoại liệt kê thứ đang chặn, ghi lý do), bộ lọc "hiện cả project đã lưu trữ" với nút `Khôi phục`.
+   Các nút theo `validActions` do core trả. Thanh đầu trang của project đã lưu trữ ghi rõ trạng thái chỉ đọc.
+6. **Tài liệu.** Cập nhật `docs/operator/`, parity registry, sinh lại `generated.ts`, ADR cho ba lệnh mới và quy tắc "project lưu trữ là chỉ đọc".
+
+### Quyết định cần chốt với product owner
+
+1. **Lưu trữ chặn khi còn thứ đang chạy (đề xuất), hay tự hủy chúng?** Đề xuất: chặn và liệt kê; không tự hủy.
+2. **Có xóa cứng Project rỗng** (không repository, không work item) không? Đề xuất: không trong V11; lưu trữ là đủ, xóa cứng để sau nếu cần.
+3. **Project lưu trữ chỉ đọc hoàn toàn**, hay cho tiếp tục xem evidence và xuất dữ liệu? Đề xuất: xem được hết, ghi thì chặn.
+
+### Ngoài phạm vi
+
+Gộp hai project; di chuyển repository sang project khác; xuất hoặc nhập project; quyền riêng theo project.
+
+### Verify
+
+- **Engine:** đổi tên cập nhật tên, `version`, sự kiện và biên nhận; replay cùng khóa cho cùng kết quả; sai `version` bị từ chối; tên rỗng hoặc quá dài bị từ chối. Lưu trữ bị từ chối khi còn run, work item hay job mở và liệt kê đúng;
+  khi thành công, mọi lệnh ghi vào project đó bị từ chối với lỗi đúng, worker không claim job của nó, các truy vấn đọc vẫn chạy; `restore` đưa mọi thứ về như cũ.
+- **Không hồi quy:** `project create`, `list`, `show` giữ hành vi cũ với project `ACTIVE`; `go test ./...`, `docs-coverage-check` xanh.
+- **UI:** Vitest cho hai hộp thoại, bộ lọc, nút theo `validActions`; e2e Playwright: tạo project, đổi tên, lưu trữ (bị chặn khi còn work item, rồi được khi đã dọn), khôi phục, không mở terminal.
+- **Kit:** `init-project.sh` với tên của project đã lưu trữ in đúng gợi ý; `kit/tests/check-kit.sh` xanh.
+
 ## Gate của V11
 
 Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
@@ -679,3 +729,4 @@ Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
 10. V11-10: từ một run hỏng, `Chạy lại` và `Làm lại bằng phiên bản mới` hoàn tất trên web, không để trạng thái dở khi lỗi giữa chừng.
 11. V11-11: bấm một node (đang chạy, đã xong, đã hỏng) hiện đủ đầu vào, tiến trình, kết quả, lỗi từ dữ liệu thật; Chat có tin hoạt động của agent; prompt của agent kế tiếp không đổi khi bật tính năng.
 12. V11-12: đăng ký thư mục chưa phải repository Git cho thông báo nói đúng nguyên nhân kèm lệnh sửa trên web, CLI và script kit; repository `BLOCKED` sửa được và ngừng dùng được mà không xóa cứng.
+13. V11-13: đổi tên project, lưu trữ và khôi phục project hoàn tất trên web; lưu trữ bị chặn có lý do khi còn việc đang chạy; project lưu trữ chỉ đọc.
