@@ -594,7 +594,7 @@ luồng sự kiện ra file; thay đổi cách agent tạo `agent_events` (adapt
 - **Không có lệnh ngừng dùng.** Máy trạng thái (`legalRepositoryTransitions`, `internal/domain/project/project.go`): `BLOCKED -> PROBING` là cạnh ra duy nhất của
   `BLOCKED`; `DISABLED` chỉ đến được từ `ACTIVE` (ghi chú trong mã: "BLOCKED never DISABLED"), và hiện **không có lệnh nào** thực hiện cạnh
   `ACTIVE -> DISABLED` (`RepositoryDisabled` chỉ được nhắc ở bộ xử lý thăm dò). Hơn mười bảng tham chiếu `repositories(id)` (scope của work item,
-  workspace, release set, readiness, evidence), nên xóa cứng không an toàn.
+  workspace, release set, readiness, evidence), nên xóa cứng chỉ an toàn cho repository chưa có tham chiếu nào, tức chưa từng `ACTIVE`.
 - **Lỗi chỉ hiện mã.** `repository_probe_attempts` đã lưu `errorMessage`, nhưng `repository list` và `repository show` chỉ trả `lastProbeErrorCode`; thẻ
   repository trên web (`Projects.tsx`, khối `lastProbeErrorCode`) cũng chỉ hiện mã. Chỉ `repository onboarding` có câu lý do, và không lệnh nào gợi ý
   dùng nó. `kit/scripts/init-project.sh` và `add-repository.sh` chỉ in `repository <id>: BLOCKED`.
@@ -634,17 +634,28 @@ luồng sự kiện ra file; thay đổi cách agent tạo `agent_events` (adapt
    đang giữ nó: work item chưa kết thúc có repository trong scope, workspace hoặc release set còn mở.
 3. **Giải phóng tên.** Ràng buộc "tên duy nhất trong project" chỉ áp dụng cho repository chưa `DISABLED` (chỉ mục duy nhất một phần), để đăng ký lại cùng tên sau khi
    ngừng dùng. `id` vẫn duy nhất mãi mãi.
-4. **Không xóa cứng.** Repository `DISABLED` bị ẩn khỏi danh sách mặc định (`--include-disabled` để xem) nhưng vẫn còn cho lịch sử, evidence và kiểm toán.
-5. **Giao diện.** Thẻ repository: `Sửa` (chỉ khi `BLOCKED`, dùng chung form với kiểm tra trước), `Thăm dò lại` (đã có), `Ngừng dùng` (hộp thoại liệt kê thứ đang giữ). Các nút theo
+4. **Xóa cứng chỉ cho repository chưa từng `ACTIVE`** (`DeleteRepository`: `aw repository delete <id> --expected-version <n>`, `DELETE /repositories/{id}`). Điều kiện, kiểm tất cả
+   trong cùng transaction với việc xóa:
+   - trạng thái hiện tại là `REGISTERING`, `PROBING` hoặc `BLOCKED`; và **chưa lần thăm dò nào của nó thành `ACTIVE`** (đọc từ `repository_probe_attempts`; trạng thái không đủ vì một repository
+     có thể từng `ACTIVE` rồi chuyển đi);
+   - không có tham chiếu nào ở bất kỳ bảng nào có khóa ngoại tới `repositories(id)` (scope của work item, workspace, release set, readiness, evidence, component...). Có tham chiếu thì từ chối và liệt kê.
+   Xóa dòng repository cùng các bản ghi phụ của nó (lần thăm dò, component phát hiện), hủy job thăm dò đang chờ, ghi sự kiện `RepositoryDeleted` (id, tên, đường dẫn, lý do, người thực hiện) giữ nguyên trong nhật ký sự kiện.
+   Repository đã từng `ACTIVE` không xóa cứng được, chỉ `Ngừng dùng`; repository `DISABLED` bị ẩn khỏi danh sách mặc định (`--include-disabled` để xem), vẫn giữ lịch sử, evidence và kiểm toán.
+   **Hai cạm bẫy đã đọc trong mã, phải xử lý:**
+   - `RegisterRepository` trả lại kết quả cũ nếu biên nhận (receipt) cùng khóa idempotency còn đó, **không kiểm dòng repository có còn không**. Sau khi xóa, chạy lại `add-repository.sh` (khóa suy ra từ id) sẽ báo "đã đăng ký" trong khi
+     repository không tồn tại. Cách xử lý: bước phát lại biên nhận kiểm repository còn tồn tại; nếu mất thì trả lỗi có kiểu `REPOSITORY_DELETED` kèm gợi ý "dùng khóa idempotency mới". Script kit thêm một số đếm lần đăng ký vào khóa.
+   - Sự kiện của repository đánh số theo `(aggregate, sequence)` và `RegisterRepository` ghi `Sequence = 1`. Đăng ký lại cùng `id` sau khi xóa sẽ xung đột. Quyết định: **`id` của repository đã xóa không dùng lại**
+     (ghi dấu xóa); chỉ **tên** được dùng lại.
+5. **Giao diện.** Thẻ repository: `Sửa` (chỉ khi `BLOCKED`, dùng chung form với kiểm tra trước), `Thăm dò lại` (đã có), `Ngừng dùng` (hộp thoại liệt kê thứ đang giữ), `Xóa` (chỉ hiện cho repository chưa từng `ACTIVE`; hộp thoại xác nhận ghi rõ "xóa vĩnh viễn, id không dùng lại"). Các nút theo
    `validActions` do core trả, như các màn hình khác.
-6. **Tài liệu.** Cập nhật `docs/operator/`, hướng dẫn issue-tracker (thêm mục "đăng ký sai thì làm gì"), parity registry, sinh lại `generated.ts`, ADR cho hai lệnh mới,
+6. **Tài liệu.** Cập nhật `docs/operator/`, hướng dẫn issue-tracker (thêm mục "đăng ký sai thì làm gì"), parity registry, sinh lại `generated.ts`, ADR cho các lệnh mới (sửa, ngừng dùng, xóa),
    `failureKind` và việc sửa máy trạng thái.
 
-### Quyết định cần chốt với product owner
+### Quyết định cần chốt với product owner (điểm 3 đã chốt)
 
 1. **Sửa chỉ khi `BLOCKED`, hay cả `ACTIVE` chưa có tham chiếu?** Đề xuất: chỉ `BLOCKED`.
 2. **Cho `BLOCKED -> DISABLED` (sửa quyết định V3-01)?** Đề xuất: có; không thì lần đăng ký sai không thoát được.
-3. **Xóa cứng repository chưa từng `ACTIVE` và không được tham chiếu?** Đề xuất: không; ngừng dùng và giải phóng tên là đủ.
+3. **Xóa cứng repository chưa từng `ACTIVE` và không được tham chiếu: ĐÃ CHỐT, cho phép** (product owner, 2026-10-09). Repository đã từng `ACTIVE` chỉ ngừng dùng, không xóa cứng.
 4. **Stderr của Git (đã redact) hiển thị cho mọi người xem project?** Đề xuất: có; đường dẫn máy là thông tin vận hành, không phải bí mật.
 
 ### Ngoài phạm vi
@@ -659,6 +670,8 @@ Tự động chạy `git init` hay `git config` thay người dùng; đổi `id`
 - **Windows:** đường dẫn `D:\x`, `D:/x`, `/d/x`; `failureKind` và `hint` đúng cho từng kiểu. Chạy trên runner Windows nếu CI có.
 - **Sửa và ngừng dùng:** `UpdateRepository` chỉ chạy khi `BLOCKED`, đổi đường dẫn rồi thăm dò lại và thành `ACTIVE`; replay cùng khóa cho cùng kết quả; sai `version` bị từ chối.
   `DisableRepository` bị từ chối khi còn work item hay workspace dùng và liệt kê đúng; thành công thì tên dùng lại được; `ACTIVE -> DISABLED` có test hồi quy.
+  `DeleteRepository`: xóa được repository `BLOCKED` chưa từng `ACTIVE` và không tham chiếu, kèm bản ghi phụ và job chờ; từ chối repository đã từng `ACTIVE` (kể cả khi đã chuyển sang `DISABLED`), repository có tham chiếu (liệt kê đúng), sai `version`;
+  `RepositoryDeleted` còn trong nhật ký; đăng ký lại cùng tên được, cùng `id` bị từ chối; phát lại biên nhận cũ sau khi xóa trả `REPOSITORY_DELETED`, không báo thành công giả.
 - **Hiển thị:** `list`, `show`, `onboarding` có `lastProbeError`; Vitest cho thẻ repository (message, hint, mở rộng detail), form đăng ký có kiểm tra trước, hộp thoại `Sửa` và `Ngừng dùng`.
   e2e Playwright tái hiện ca thật: đăng ký thư mục chưa `git init`, thấy câu "chưa phải repository Git" và lệnh gợi ý, `git init` và commit, bấm `Thăm dò lại`, thành `ACTIVE`, không mở terminal để tìm lý do.
 - **Kit:** `init-project.sh` và `add-repository.sh` in lý do khi `BLOCKED`; `kit/tests/check-kit.sh` xanh.
@@ -728,5 +741,5 @@ Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
 9. V11-09: script kiểm tra chạy đúng trên Windows, agent nhận đúng lỗi thật.
 10. V11-10: từ một run hỏng, `Chạy lại` và `Làm lại bằng phiên bản mới` hoàn tất trên web, không để trạng thái dở khi lỗi giữa chừng.
 11. V11-11: bấm một node (đang chạy, đã xong, đã hỏng) hiện đủ đầu vào, tiến trình, kết quả, lỗi từ dữ liệu thật; Chat có tin hoạt động của agent; prompt của agent kế tiếp không đổi khi bật tính năng.
-12. V11-12: đăng ký thư mục chưa phải repository Git cho thông báo nói đúng nguyên nhân kèm lệnh sửa trên web, CLI và script kit; repository `BLOCKED` sửa được và ngừng dùng được mà không xóa cứng.
+12. V11-12: đăng ký thư mục chưa phải repository Git cho thông báo nói đúng nguyên nhân kèm lệnh sửa trên web, CLI và script kit; repository `BLOCKED` sửa được, ngừng dùng được; repository chưa từng `ACTIVE` xóa cứng được trên web và không để lại biên nhận báo thành công giả.
 13. V11-13: đổi tên project, lưu trữ và khôi phục project hoàn tất trên web; lưu trữ bị chặn có lý do khi còn việc đang chạy; project lưu trữ chỉ đọc.
