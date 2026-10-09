@@ -240,6 +240,20 @@ Sau commit một phần, worktree vẫn còn các file đó. Mà node chỉ-đ�
 2. **Chống lệch giữa lúc xem và lúc commit ("duyệt đúng cái đã thấy").** Quyết định mang theo `changeSet`: danh sách
    `{repositoryId, path, status, contentHash}` của các file được chọn, và `changeSetDigest`. Job commit tính lại trong lúc
    giữ `WriteLease`; khác thì **không commit**, kết thúc `FAILED/CHANGESET_DRIFT`. Cùng cơ chế với `FAILED/NO_CHANGES` hiện có.
+2b. **Danh tính tác giả từ `git config`.** Thêm một cổng đọc `ports.GitIdentityReader`: `git -C <worktree> config --get user.name` và
+   `user.email` (cấu hình của repository đè cấu hình toàn cục; báo nguồn `local` hay `global`). Chỉ đọc, chạy ở tiến trình `aw`, nên
+   tiến trình đó phải có `HOME` (Windows: `USERPROFILE`) trong môi trường, nếu không sẽ không thấy cấu hình toàn cục và báo thiếu giả.
+   Mỗi repository có danh tính riêng (repository có `user.name` cục bộ khác được giữ). Cách dùng:
+   - **Trước khi hiện mục Commit**, UI gọi truy vấn mới (`GET` danh tính theo repository) và hiển thị "Tác giả: Tên <email> (git config,
+     nguồn)" chỉ đọc cho từng repository.
+   - **Thiếu `user.name` hoặc `user.email`** của repository nào: hiện cảnh báo rõ repository đó, kèm lệnh
+     `git config --global user.name "Tên"` và `git config --global user.email "email"`, nút "Kiểm tra lại", và **vô hiệu hóa tích Commit**
+     cho tới khi có. Duyệt không kèm commit vẫn dùng được.
+   - **Chặn cả ở máy chủ:** `ResolveApproval` có `commit` mà thiếu danh tính thì **từ chối toàn bộ lệnh với mã `COMMIT_IDENTITY_MISSING`,
+     trước khi ghi bất cứ thứ gì** (cổng duyệt vẫn `PENDING`, run không đi tiếp). Việc đọc `git config` làm **ngoài transaction**, rồi truyền
+     giá trị đã đọc vào lệnh; danh tính được lưu cùng thao tác commit và job dùng đúng giá trị đó, không đọc lại, để không lệch giữa lúc
+     duyệt và lúc commit. Danh tính truyền cho `git` bằng `-c user.name=… -c user.email=…` như hiện nay, không ghi vào cấu hình của worktree.
+   - Đề xuất nhỏ kèm theo: thêm kiểm tra `aw doctor` mức cảnh báo cho danh tính git toàn cục, để người vận hành biết sớm.
 3. **Chính sách của workflow.** `ApprovalNodeConfig` thêm `release`: `{"commit": "DISABLED"|"OFFERED"|"REQUIRED", "outcomes": ["approved"]}`.
    Mặc định `DISABLED` nên mọi định nghĩa cũ không đổi hash, không đổi hành vi. Compiler từ chối khi một outcome có `release` dẫn
    tới node có thể ghi (commit nền sẽ đua với agent): chỉ cho outcome dẫn tới `END` hoặc tới các node không ghi.
@@ -258,7 +272,7 @@ Sau commit một phần, worktree vẫn còn các file đó. Mà node chỉ-đ�
 7. **Giao diện (web).** Trong trang Task, thẻ yêu cầu duyệt có tóm tắt "N file đổi, +x −y" và liên kết tới tab Workspace.
    Hộp thoại duyệt: các nút outcome như hôm nay; nếu `release` cho phép, hiện mục **Commit**: tích chọn, cây thư mục có hộp
    kiểm ba trạng thái theo file, diff của file đang chọn bên cạnh, cách xử lý file không chọn (`KEEP`/`PARK`), ô commit message
-   (điền sẵn từ tiêu đề WorkItem) và tác giả. Sau khi bấm: trạng thái từng repository (đang commit, đã commit kèm id, lỗi) và
+   (điền sẵn từ tiêu đề WorkItem) và dòng tác giả chỉ đọc lấy từ `git config` (bước 2b). Sau khi bấm: trạng thái từng repository (đang commit, đã commit kèm id, lỗi) và
    liên kết tới Diff của commit. Có các nút "Khôi phục file đã cất" và "Thử commit lại". Tab Workspace giữ `Seal`/`Local Commit`
    thủ công và dùng chung bộ chọn file (cùng backend).
 8. **API, CLI, parity.** Thêm vào hợp đồng OpenAPI và regenerate `web/src/api/generated.ts`; `aw approval resolve` nhận
@@ -269,18 +283,24 @@ Sau commit một phần, worktree vẫn còn các file đó. Mà node chỉ-đ�
    chú. Cập nhật `docs/operator/` (04, 06), hướng dẫn issue-tracker (bỏ bước `commit-task.sh` khỏi luồng chính), thêm ADR mới
    ("approval-bound release", bổ sung ADR-014).
 
-### Quyết định cần chốt với product owner (chưa tự quyết)
+### Quyết định đã chốt (product owner, 2026-10-09)
 
-1. **Mặc định `KEEP` hay `PARK`** cho file không chọn? (Đề xuất `KEEP` để không đổi hành vi, kèm cảnh báo rõ.)
-2. **Có cần xóa hẳn file** từ UI không, hay `PARK` là đủ? (Đề xuất: không, làm sau nếu cần.)
-3. **Tác giả commit:** lấy từ đâu? Hiện `commit-task.sh` lấy `git config` của máy chạy script; trên web không có nguồn đó. Đề
-   xuất: safe setting `commitAuthor` của bản cài, người duyệt sửa được trong hộp thoại, bắt buộc có giá trị.
-4. **Vai trò:** quyền duyệt và quyền commit cùng một role, hay tách (`release` có `authorizedRoles` riêng)? (Đề xuất: mặc định
-   bằng quyền duyệt, cho khai tách khi cần.)
-5. **`REQUIRED`** có cần không, hay chỉ `OFFERED`? (`REQUIRED` buộc phải commit khi duyệt; hữu ích cho quy trình không cho phép
-   duyệt mà chưa commit.)
-6. **Mức chọn:** file, không phải hunk. Chọn theo dòng hay hunk cần dựng patch và áp bằng `git apply --cached`, có rủi ro lệch
-   nội dung; đề xuất ngoài phạm vi, làm thành task sau.
+1. **File không chọn: mặc định `KEEP`.** `PARK` vẫn là lựa chọn không mặc định.
+2. **Không xóa hẳn file** từ UI. Muốn bỏ file thì `PARK`.
+3. **Tác giả commit lấy từ `git config` của máy chạy `aw`**, không có ô nhập tay và không có safe setting riêng. Khi người duyệt tích Commit,
+   engine đọc `user.name` và `user.email` trước; **thiếu thì hiện cảnh báo hướng dẫn cấu hình git** và không cho commit (xem bước 2b).
+4. **Quyền commit = quyền duyệt** (cùng `authorizedRoles` của node). Không có role riêng cho release.
+5. **Dùng cả `OFFERED` và `REQUIRED`; kit chỉ bật `OFFERED`** (khuyến nghị được nhận). Lý do và cách xử lý ở "Về `REQUIRED`" bên dưới.
+6. **Chọn theo file, không theo hunk/dòng.**
+
+#### Về `REQUIRED` (khuyến nghị)
+
+- `REQUIRED` hợp với quy trình "không có duyệt nào mà chưa commit", đúng lỗi mà người vận hành đã gặp ở C-01. Nhưng nếu áp cho node mà
+  lần chạy đó không đổi file nào (ví dụ cổng duyệt tài liệu đã commit từ trước) thì buộc commit sẽ thành lỗi vô lý.
+- Vì vậy: schema hỗ trợ cả ba giá trị; **kit chỉ dùng `OFFERED`**; với `REQUIRED` mà tập thay đổi rỗng thì commit **được bỏ qua và ghi
+  nhận `NOTHING_TO_COMMIT`** (không coi là lỗi, không tạo blocker), còn người duyệt vẫn bắt buộc đi qua hộp thoại commit khi có file.
+  Với `OFFERED` rỗng thì mục Commit không hiện.
+- Ngoài ra `NO_CHANGES` của lệnh commit thủ công (`aw release-set local-commit`) giữ nguyên như hiện nay.
 
 ### Ngoài phạm vi
 
@@ -298,6 +318,11 @@ Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; s
   replay cùng idempotency key trả cùng kết quả; khác `commit` mà cùng key bị `ErrReceiptConflict`; role không đủ quyền bị
   `POLICY_DENIED`; nhiều repository mà một repository lỗi cho blocker `RELEASE_FAILED`, repository kia vẫn commit, không
   rollback.
+- **Danh tính:** repository có `user.name` cục bộ dùng giá trị cục bộ, thiếu cục bộ thì dùng toàn cục; thiếu cả hai thì UI hiện cảnh báo với lệnh
+  cấu hình và vô hiệu hóa tích Commit; gọi thẳng `ResolveApproval` có `commit` khi thiếu danh tính trả `COMMIT_IDENTITY_MISSING` và
+  cổng duyệt vẫn `PENDING`, run không đổi; danh tính đổi giữa lúc duyệt và lúc commit không ảnh hưởng commit (dùng giá trị đã lưu);
+  tiến trình thiếu `HOME`/`USERPROFILE` báo thiếu thay vì đoán; chạy trên Windows (Git Bash).
+- **`REQUIRED`:** tập thay đổi rỗng thì ghi `NOTHING_TO_COMMIT`, không blocker, run vẫn đi tiếp; có file thì buộc đi qua hộp thoại commit.
 - **Không hồi quy:** workflow không có `release` giữ nguyên hash và hành vi; `commit-task.sh` và `aw release-set local-commit`
   không có `--path` vẫn commit tất cả; V11-01 (HEAD lệch) vẫn bị chặn trước khi commit.
 - **UI:** Vitest cho hộp thoại (chọn một phần, ba trạng thái thư mục, cảnh báo `KEEP`, trạng thái lỗi) và e2e Playwright chạy trên
