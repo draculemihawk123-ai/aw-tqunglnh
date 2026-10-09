@@ -569,7 +569,7 @@ class Aw:
         self.binary = binary
 
     def run(self, args, body=None, check=True):
-        proc = subprocess.run([self.binary, *args], input=body, capture_output=True, text=True)
+        proc = subprocess.run([self.binary, *args], input=body, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if check and proc.returncode != 0:
             raise SystemExit(f"aw {' '.join(args)} thất bại:\n{proc.stderr or proc.stdout}")
         return proc
