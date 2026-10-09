@@ -1,0 +1,84 @@
+{
+  "resources": [
+    {
+      "key": "bpmgl.fe.structure",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "frontend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Frontend BPM-GL (mfe-bpmacct-contract): Angular 12.2, Nx 12.9 (file `workspace.json`, không có angular.json), TypeScript 4.3, RxJS 6.6, Module Federation (app `contract` là remote cổng 4204, app `dashboard` là shell cổng 4200). Chỉ dùng cú pháp và API có ở Angular 12 và TypeScript 4.3: KHÔNG dùng standalone component, signals, hàm `inject()`, control flow `@if/@for`, `satisfies`, `typed forms` kiểu mới. Dùng NgModule. Bố cục lib Nx: `libs/<phạm vi>/{feature,data-access,common}`; màn hình ở `libs/contract/feature/...` (module + component + html + scss), service ở `libs/contract/data-access/services`, model ở `libs/contract/data-access/models`, hằng số ở `libs/contract/common/constants`. Import chéo lib bằng alias `@mf-app/...` khai báo trong `tsconfig.base.json`; lib mới phải thêm project vào `workspace.json` và alias vào `tsconfig.base.json`. Tên file kebab-case (`ten.component.ts`, `.service.ts`, `.model.ts`, `.module.ts`), style SCSS. Selector component: `mf-app-xxx` trong lib contract, `bpm-xxx` trong lib UI dùng chung (`libs/shared/ui`). Không sửa `dist/`, `tmp/`, `coverage/`, `node_modules/`."
+    },
+    {
+      "key": "bpmgl.fe.data",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "frontend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Gọi API. Service là `@Injectable({ providedIn: 'root' })`, gọi backend qua `HttpClientService` (từ `@mf-app/shared/core`) với `HttpOptions { url, path, params, body }`: `url` lấy từ `environment.urlAcctContract` (hoặc `urlSystem`), `path` là hằng trong `CONTRACT_PATH` (không viết chuỗi đường dẫn rải rác), kiểu trả về `Observable<HttpInterface<T>>`. Model là `interface` viết tay (PascalCase, field tùy chọn dùng `?`), ghi chú tiếng Việt `khớp XxxRequest/Response.java` và phải đối chiếu thủ công với lớp Java tương ứng vì không có sinh mã từ OpenAPI. Ngày giờ truyền dưới dạng chuỗi `yyyy-MM-dd HH:mm:ss`. Lỗi HTTP và loading đã được `ErrorInterceptor` (đọc `soaErrorDesc || error`, hiện toast) và `LoaderInterceptor` xử lý: không tự `catchError` để hiện thêm một toast trùng, chỉ bắt khi cần xử lý riêng. Hủy subscribe khi component hủy bằng `DestroyService` của `shared/core`."
+    },
+    {
+      "key": "bpmgl.fe.ui",
+      "priority": "GUIDANCE",
+      "selector": {
+        "componentTags": [
+          "frontend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Giao diện. Ưu tiên bộ component dùng chung `libs/shared/ui/bpm-*` (button, input, select, table, modal, date-picker...) rồi mới tới Angular Material 12 và `@ng-select/ng-select`; thông báo và hộp thoại qua `ToastService`, `ConfirmDialogService`, `ModalService` của `@mf-app/shared/core`, không dùng `alert`. Form: template-driven với `ngModel` là cách chủ đạo (32 file html so với 1 file dùng Reactive Forms): viết mới theo `ngModel`, chỉ dùng Reactive Forms khi form quá phức tạp. Theo ghi chú của team, `bpm-button` nhận `text`, `icon`, `type` qua `@Attribute` (giá trị tĩnh), không bind được bằng `[text]`; kiểm lại ở mã nguồn của `bpm-button` trước khi dùng. Chuỗi hiển thị viết thẳng bằng tiếng Việt có dấu trong code và html (dự án không có i18n). Không thêm thư viện UI mới."
+    },
+    {
+      "key": "bpmgl.fe.testing",
+      "priority": "GUIDANCE",
+      "selector": {
+        "componentTags": [
+          "frontend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Test frontend. Runner là Jest 27 + jest-preset-angular 9 (không Karma, không cần trình duyệt). Repo hiện có 0 file spec và mọi project đặt `passWithNoTests: true`, nên `nx test` luôn \"đạt\" và KHÔNG chứng minh gì. Với service và component mới viết thêm spec cạnh file (`xxx.service.spec.ts`, `xxx.component.spec.ts`), dùng `TestBed`, thay `HttpClientService` bằng mock `jest.fn()` (không gọi backend thật). Chạy không tương tác: `npx nx test <project> --watch=false`. Chưa có mẫu spec trong repo: giữ spec nhỏ, kiểm hành vi nhìn thấy được, và nói rõ trong báo cáo rằng đây là spec đầu tiên của lib đó."
+    },
+    {
+      "key": "bpmgl.fe.build",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "componentTags": [
+          "frontend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Công cụ và lệnh. Dùng Node 16.20.2 và npm 8.19.4 (`package.json` không có `engines`; tài liệu cũ nói Node 14.21.3 nhưng đường dẫn đó không tồn tại, bản 16 build thành công). TUYỆT ĐỐI KHÔNG chạy `npm ci --dry-run` (với npm 8.x nó xóa toàn bộ `node_modules` và chạy `postinstall`). Không chạy `npm install` hay thêm gói khi task không yêu cầu, và không để `package-lock.json` đổi ngoài ý muốn. Build: `npx nx build contract` (cấu hình mặc định production, mất khoảng 1 phút). Lint theo project: `npx nx lint <project>`; KHÔNG dùng `npm run lint` làm cổng kiểm vì `nx workspace-lint` đang báo `workspace.json` lệch thư mục (lỗi sẵn có, không phải do bạn). Không sửa `workspace.json` ngoài việc thêm đúng project của lib mới."
+    }
+  ]
+}

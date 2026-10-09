@@ -1,0 +1,84 @@
+{
+  "resources": [
+    {
+      "key": "bpmgl.be.structure",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Backend BPM-GL (ms001 và các microservice cùng khuôn): Java 21, Spring Boot 3.5.x, Maven đơn module (không có mvnw; dùng lệnh `mvn`), Lombok. Package gốc `vn.com.mbv.bpm.acct.contract`, chia theo LAYER rồi theo miền: `controller/{contract,vendor}`, `service/{contract,ncc}`, `repository/{contract,ncc}` (+ `repository/impl`), `entity`, `model/req`, `model/res`, `enums`, `constants`, `utils`. Service là CLASS CỤ THỂ `@Service`, KHÔNG tạo interface và `XxxServiceImpl` (repo hiện 0 file Impl). Tiêm phụ thuộc bằng constructor với `@RequiredArgsConstructor` và field `private final`; không dùng `@Autowired` field. Request nằm ở `model/req/XxxRequest`, response ở `model/res/XxxResponse`; code mới không tạo thêm lớp trong `dto/` (dạng cũ). Ánh xạ entity sang response VIẾT TAY trong service (MapStruct và ModelMapper có trong pom nhưng repo không dùng). `ms004-bpmacct-commons` là thư viện jar dùng chung (không có @SpringBootApplication, không có test): sửa ở đó phải build và publish lại thì repo phụ thuộc mới thấy, nên chỉ sửa khi task yêu cầu. Không sửa tay `target/`, `.idea/`."
+    },
+    {
+      "key": "bpmgl.be.api",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "API. Controller kế thừa `BaseController` (lấy người dùng bằng `this.getUserId()`), đánh `@RestController`, `@RequestMapping(\"/<miền>/<tài-nguyên>\")` kebab-case, `@Tag` và `@Operation(description=...)` bằng tiếng Việt có dấu. Mọi endpoint có `@PreAuthorize(\"hasAuthority('\" + ScopeConstants.X + \"')\")`, hằng số lấy từ `ScopeConstants` của ms004 (không thêm tiền tố SCOPE_); endpoint mới thiếu `@PreAuthorize` là lỗi. Trả `ResponseEntity<?>` bằng `ResponseFactory.response(data)` (ms001), không tự dựng `ResponseData`. Lỗi nghiệp vụ: `throw new BusinessException(ErrorCode.XXX)`; thêm mã vào enum `ErrorCode` (mã, khóa message, HttpStatus) và khóa message vào `lang/messages*.properties`. `BusinessException` là CHECKED nên method khai báo `throws BusinessException`. Phân trang 1-based: `@RequestParam(name=\"pageNumber\", defaultValue=\"1\") int pageNumber`, `pageSize` mặc định 10, trả `Paging<T>` của bpm-core; không dùng `Pageable`/`Page`. Request có Bean Validation (`@NotBlank`, `@Size`...) khi có thể kèm `@Valid`, phần kiểm nghiệp vụ nằm trong service. Thời gian trong request: `Timestamp` với `@JsonFormat(shape = STRING, pattern = \"yyyy-MM-dd HH:mm:ss\")`. Thao tác trên hồ sơ BPM nhận `taskId` qua `@RequestParam` và xác thực bằng service dùng chung (mẫu: `contractDataService.requireProposalTask(taskId, userId)`)."
+    },
+    {
+      "key": "bpmgl.be.persistence",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Dữ liệu (Oracle, Spring Data JPA/Hibernate). Naming strategy là `PhysicalNamingStrategyStandardImpl`: Hibernate KHÔNG tự đổi tên, nên mỗi entity phải khai báo đúng `@Table(name=\"...\")` và từng `@Column(name=\"...\")` (chữ hoa, có gạch dưới) khớp DDL. Entity đặt tên `Bpm{Cs|Ls}Xxx` cho bảng `BPM_CS_*` (dữ liệu hồ sơ) hoặc `BPM_LS_*` (danh mục). Khóa chính `Long` với `@GeneratedValue(SEQUENCE)` và `@SequenceGenerator(allocationSize = 1)`; id nghiệp vụ BPM là `String bpmId` (tối đa 50 ký tự, tiền tố ở enum `BpmIdPrefix`). Thời gian dùng `java.sql.Timestamp`; `createdBy/createdTime/updatedBy/updatedTime` gán THỦ CÔNG trong service. Không đổi tên field Java dạng tiếng Việt không dấu (ví dụ `bangiao*`, `dagiao*`) cho đẹp. Mọi method ghi dùng `@Transactional(rollbackFor = Exception.class)` (bắt buộc vì `BusinessException` là checked, thiếu `rollbackFor` thì lỗi nghiệp vụ vẫn commit). Truy vấn: derived query (`findAllByBpmIdOrderByIdAsc`) hoặc `@Query` với tham số có tên, không nối chuỗi; truy vấn phức tạp dùng cặp `XxxRepositoryCustom` + `repository/impl/XxxRepositoryCustomImpl` (EntityManager). Repo KHÔNG có công cụ migration: không tự tạo file migration hay chạy DDL; thay đổi bảng chỉ ghi vào tài liệu DDL của dự án và báo cho người, không tự sửa DB. Không bao giờ kết nối Oracle dùng chung từ máy chạy agent."
+    },
+    {
+      "key": "bpmgl.be.secrets",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Bí mật. `application-local.properties` đã được commit và chứa thông tin xác thực thật: không đọc nội dung ra output, không chép giá trị vào tài liệu, test, log hay commit message, không thêm giá trị bí mật mới vào bất kỳ file cấu hình nào. Khóa cấu hình mới chỉ thêm tên khóa với giá trị giữ chỗ hoặc tham chiếu biến môi trường. Không log token, mật khẩu, header Authorization."
+    },
+    {
+      "key": "bpmgl.be.testing",
+      "priority": "GUIDANCE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Test backend. JUnit 5 + Mockito + `org.junit.jupiter.api.Assertions` (không dùng AssertJ). Test hiện có là unit thuần dùng mock, KHÔNG dùng `@SpringBootTest`/`@WebMvcTest`/`@DataJpaTest` vì máy chạy không có Oracle; giữ cách này. Thư mục test phản chiếu package của main; tên class `XxxTest`; tên method mô tả hành vi bằng tiếng Anh (`saveRoutesUsingEngineTaskTypeWithoutReadingPipeline`). Dùng `@ParameterizedTest` cho enum và giá trị biên. Mỗi nghiệp vụ mới có ít nhất một test đường thành công và một test đường lỗi, và test lỗi phải kiểm `getCode()` và `getHttpStatus()` của `BusinessException`. Chạy đúng lớp của mình bằng `mvn -B -o test -Dtest=XxxTest`; `-DskipTests` vẫn biên dịch test, muốn bỏ hẳn phải dùng `-Dmaven.test.skip=true`. Nếu test của người khác đã đỏ từ trước khi bạn sửa (ví dụ lỗi Mockito với `FacadeTaskService`), không sửa chúng và không coi là lỗi của mình: ghi rõ trong báo cáo test nào đỏ sẵn."
+    }
+  ]
+}

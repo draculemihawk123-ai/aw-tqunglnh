@@ -1,0 +1,20 @@
+{
+  "resources": [
+    {
+      "key": "bpmgl.bpm.engine",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; mục này chưa đối chiếu với tài liệu BPM của dự án (BPM-BASELINE-CONVENTIONS.md, BPM-LUONG-HOAT-DONG.md, bpmn/), bản sơ bộ",
+        "revision": "v1",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Engine BPM (thư mục `engine/**`, nhánh theo `TaskType`, lớp `*Pipeline`, `*UserTask`, `*ServiceTask`). Quy trình đang chạy được lưu trong DB và tham chiếu tới các lớp này bằng TÊN, nên đổi tên class `@Component` trong `engine/**`, đổi tên hoặc kiểu field của lớp `*Pipeline`, đổi giá trị trong `TaskType` KHÔNG gây lỗi biên dịch nhưng làm hỏng quy trình đang chạy. Không đổi các thứ đó trừ khi task yêu cầu đúng việc này; nếu cần, dừng và hỏi người. Không thêm cột hay khóa ngoại lên bảng `T_RE_*`/`T_RU_*` (thuộc bpm-engine). `bpm-core` và `bpm-engine` là thư viện nội bộ dạng jar, không có mã nguồn trong repo: chỉ dùng API đã có, không đoán phương thức. Nhánh xử lý theo loại task đi qua `ProcessTaskFactory` và các `service/*/task/*ProcessTask`; thêm loại task mới thì làm đủ các điểm đã có cho một loại task cũ (enum `TaskType`, lớp xử lý, đăng ký trong factory, test), lấy loại task gần nhất làm mẫu."
+    }
+  ]
+}
