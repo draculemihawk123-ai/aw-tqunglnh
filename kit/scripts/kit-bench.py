@@ -117,6 +117,28 @@ class Lane:
             json.dump(self.steps, f, ensure_ascii=False, indent=1)
 
     # ---- dựng môi trường
+    def wait_migrated(self, timeout=60):
+        """Đợi worker migrate xong database mới trước khi chạy lệnh aw khác: hai tiến trình cùng migrate một database mới
+        thì một bên hỏng (`table ... already exists`). Xong khi số version trong schema_migrations không đổi trong 2 giây."""
+        import sqlite3
+        deadline, last, stable_since = time.time() + timeout, None, None
+        while time.time() < deadline:
+            if self.worker.poll() is not None:
+                return
+            current = None
+            try:
+                con = sqlite3.connect("file:" + self.env["AW_DB"] + "?mode=ro", uri=True, timeout=1)
+                current = con.execute("select count(*) from schema_migrations").fetchone()[0]
+                con.close()
+            except sqlite3.Error:
+                pass
+            if current and current == last:
+                if time.time() - stable_since >= 2.0:
+                    return
+            else:
+                last, stable_since = current, time.time()
+            time.sleep(0.3)
+
     def setup(self):
         started = time.time()
         for sub in ("logs", "repos", "install/artifacts", "install/workspaces"):
@@ -128,7 +150,7 @@ class Lane:
                "--env-allowlist", "PATH,HOME,CLAUDE_CONFIG_DIR", "--claude-permission-mode", "acceptEdits", "--claude-effort", a.effort,
                "--claude-max-budget-usd", str(a.max_budget)]
         self.worker = subprocess.Popen(cmd, env=self.env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        time.sleep(1.0)
+        self.wait_migrated()
         repos = {}
         for repo in ("contracts", "api", "web"):
             repos[repo] = os.path.join(self.dir, "repos", repo)

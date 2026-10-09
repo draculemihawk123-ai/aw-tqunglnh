@@ -9,10 +9,19 @@ cd backend
 mvn=mvn
 [ -x ./mvnw ] && mvn=./mvnw
 log=$(mktemp)
-if "$mvn" -B -q test > "$log" 2>&1; then
+code=0
+"$mvn" -B -q test > "$log" 2>&1 || code=$?
+if [ "$code" = 0 ]; then
   rm -f "$log"
   echo "backend: test PASS"
   exit 0
+fi
+# mvn không chạy được (không có trong PATH, JAVA_HOME sai) là lỗi của máy chạy, không phải lỗi code: báo là MÔI TRƯỜNG để agent dừng
+# bằng needs_info thay vì sửa code vô ích (đã tốn 5,87 USD ở một lượt chạy thật vì thiếu Maven).
+if [ "$code" = 127 ] || grep -q -i -E 'mvn: command not found|command not found|is not recognized|JAVA_HOME (environment variable )?(is|not)|JAVA_HOME.*(invalid|not defined|not found)' "$log"; then
+  head -n 4 "$log" | cut -c1-300 >&2
+  rm -f "$log"
+  aw_env_fail "mvn không chạy được trong môi trường của worker (mvn không có trong PATH hoặc JAVA_HOME sai)"
 fi
 # Maven không tải được dependency (mạng, chứng chỉ) là lỗi của máy chạy, không phải lỗi code.
 if grep -q -E 'PKIX path|Could not transfer artifact|UnknownHostException|Connection (timed out|refused)|Temporary failure in name resolution|Network is unreachable' "$log"; then
@@ -29,9 +38,16 @@ if [ -n "$causes" ]; then
   echo "Nguyên nhân (các dòng khác nhau đầu tiên trong stack trace):" >&2
   printf '%s\n' "$causes" >&2
 fi
-grep -E '^\[ERROR\]' "$log" \
+errors=$(grep -E '^\[ERROR\]' "$log" \
   | grep -v -E 'Re-run Maven|For more information|\[Help 1\]|See dump files|To see the full stack trace|^\[ERROR\] *$' \
-  | cut -c1-400 | head -n 25 >&2 || true
+  | cut -c1-400 | head -n 25 || true)
+[ -z "$errors" ] || printf '%s\n' "$errors" >&2
+# Không nhận ra dạng lỗi nào (ví dụ JAVA_HOME sai, mvn không chạy được, bản Maven in lỗi khác dạng): KHÔNG nuốt lỗi, in mã thoát và
+# phần cuối output để agent và người vận hành còn thấy lý do.
+if [ -z "$causes" ] && [ -z "$errors" ]; then
+  echo "mvn thoát mã $code mà không in dòng lỗi nào script nhận ra. 30 dòng cuối output của mvn:" >&2
+  if [ -s "$log" ]; then tail -n 30 "$log" | cut -c1-300 >&2; else echo "(output rỗng; mã 127 nghĩa là không tìm thấy lệnh mvn trong PATH)" >&2; fi
+fi
 echo "Chi tiết từng test: backend/target/surefire-reports/*.txt" >&2
 rm -f "$log"
 exit 1

@@ -172,6 +172,12 @@ nhận tiêu đề bằng từ khóa tiếng Việt hoặc tiếng Anh nên mộ
 `INDETERMINATE` (`OWNERSHIP_LOST_MUTATING`) sau 30 giây và run đứng im ở `RUNNING`, không có thông báo lỗi định nghĩa lúc publish. Vì vậy mọi cạnh hết vòng của hai workflow mẫu đều đi tới
 `reject`, và kịch bản `plus-large-exhaust` giữ điều này (đường nhánh tới `reject` chạy được, đã kiểm).
 
+## Khung tài liệu chuẩn cho BRAINSTORM, SPEC, DESIGN (V10-19)
+
+Các tài liệu `01-brainstorm.md`, `02-spec.md`, `03-design.md` có khung tiêu đề `##` cố định, do `skill-doc-templates` (`template.brainstorm`, `template.spec`, `template.design`) nạp vào agent tương ứng; `flow.brainstorm`, `flow.spec`, `flow.design` chỉ còn quy định file, đầu vào và outcome rồi dẫn tới khung. Mã mục: giả định `A-n`, phương án `P-n`, quy tắc `BR-n`, acceptance criteria `AC-n` (When/Then, có Given khi có tiền điều kiện), quyết định `D-n` kèm phương án đã loại, rủi ro `R-n`. Mục không áp dụng thì giữ tiêu đề và ghi "Không áp dụng: <lý do>". Khung chỉ quy định mục, không quy định độ dài.
+
+**Không có bước kiểm máy cho khung.** Đã thử (B4): ba bước kiểm đối chiếu khung (đủ mục, `AC-n` có test trong thiết kế, `D-n` có phương án loại) quay tài liệu về cho agent; chi phí tổng không đổi nhưng vòng sửa của bước code tăng và không tách được đóng góp, nên đã bỏ phần kiểm, chỉ giữ khung (xem `kit/bench/reports/V10-tong-quan.md`). Chỉ `check-feature-docs` (đủ file, `tasks.json` đúng schema) và `check-plan` (sáu mục của `plan.md`) còn chạy.
+
 ## Học dần: bài học thành resource có version (V10-16)
 
 Lỗi lặp lại ở review và gate nên trở thành luật mới **có người duyệt**, thay vì chỉ nằm trong transcript. Quy trình gồm bốn bước, hai trong đó là script của kit:

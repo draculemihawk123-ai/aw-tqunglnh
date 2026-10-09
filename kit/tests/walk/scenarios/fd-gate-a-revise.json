@@ -1,0 +1,40 @@
+{
+  "manifest": "../aw-project.json",
+  "workflow": "wf-feature-definition",
+  "name": "wf-feature-definition: cổng A yêu cầu sửa → spec lại và qua khung lần nữa",
+  "agents": {
+    "brainstorm": [
+      "done"
+    ],
+    "spec": [
+      "done"
+    ],
+    "design": [
+      "done"
+    ]
+  },
+  "approvals": {
+    "gate-a": [
+      "revise",
+      "approved"
+    ],
+    "gate-b": [
+      "approved"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "brainstorm:done",
+      "spec:done",
+      "gate-a:revise",
+      "spec:done",
+      "gate-a:approved",
+      "design:done",
+      "check-docs:passed",
+      "gate-b:approved",
+      "end:-"
+    ]
+  }
+}
