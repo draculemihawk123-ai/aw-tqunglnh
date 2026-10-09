@@ -24,6 +24,7 @@
     {"id": "skill-brainstorm", "name": "Skill: BRAINSTORM — vấn đề gốc trước giải pháp (chắt lọc)", "file": "skills/skill-brainstorm.json"},
     {"id": "skill-spec", "name": "Skill: SPEC — thách thức phạm vi và phủ tình huống (chắt lọc)", "file": "skills/skill-spec.json"},
     {"id": "skill-design", "name": "Skill: DESIGN — thiết kế có kiểm chứng và phản biện (chắt lọc)", "file": "skills/skill-design.json"},
+    {"id": "skill-doc-templates", "name": "Skill: khung chuẩn cho tài liệu BRAINSTORM, SPEC, DESIGN (kiểm bằng máy)", "file": "skills/skill-doc-templates.json"},
     {"id": "skill-plan", "name": "Skill: FRAME và PLAN — chọn lane có bằng chứng, plan đủ cụ thể (chắt lọc)", "file": "skills/skill-plan.json"},
     {"id": "skill-build", "name": "Skill: BUILD — bám quy ước và tự rà trước khi kết thúc (chắt lọc)", "file": "skills/skill-build.json"},
     {"id": "skill-debug", "name": "Skill: vòng sửa — tìm nguyên nhân gốc trước khi sửa (chắt lọc)", "file": "skills/skill-debug.json"},
@@ -54,11 +55,11 @@
 
   "agents": [
     {"id": "agent-flow-brainstorm", "name": "Agent: BRAINSTORM",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-brainstorm#brainstorm.scout-first", "skill-brainstorm#brainstorm.problem-first", "skill-brainstorm#brainstorm.options", "skill-brainstorm#brainstorm.assumptions", "skill-brainstorm#brainstorm.exact-requirements", "skill-brainstorm#brainstorm.unstuck"]},
+     "resources": ["skill-doc-templates#template.brainstorm", "skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.brainstorm", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-brainstorm#brainstorm.scout-first", "skill-brainstorm#brainstorm.problem-first", "skill-brainstorm#brainstorm.options", "skill-brainstorm#brainstorm.assumptions", "skill-brainstorm#brainstorm.exact-requirements", "skill-brainstorm#brainstorm.unstuck"]},
     {"id": "agent-flow-spec", "name": "Agent: SPEC",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-spec#spec.scope-challenge", "skill-spec#spec.scenarios", "skill-spec#spec.ac-quality"]},
+     "resources": ["skill-doc-templates#template.spec", "skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.spec", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-spec#spec.scope-challenge", "skill-spec#spec.scenarios", "skill-spec#spec.ac-quality"]},
     {"id": "agent-flow-design", "name": "Agent: DESIGN",
-     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.design", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-design#design.codebase", "skill-design#design.verify-claims", "skill-design#design.checklist", "skill-design#design.solution", "skill-design#design.red-team", "layer-api-design", "layer-sql-quality", "layer-backend-security"]},
+     "resources": ["skill-doc-templates#template.design", "skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.design", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.threat-model", "skill-design#design.codebase", "skill-design#design.verify-claims", "skill-design#design.checklist", "skill-design#design.solution", "skill-design#design.red-team", "layer-api-design", "layer-sql-quality", "layer-backend-security"]},
     {"id": "agent-flow-frame", "name": "Agent: FRAME",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-feature-flow#flow.frame", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-plan#frame.complexity"]},
     {"id": "agent-flow-plan", "name": "Agent: PLAN",

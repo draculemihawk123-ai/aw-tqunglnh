@@ -301,12 +301,20 @@ case "$FAKE_MVN" in
   context) echo "[ERROR] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0 <<< FAILURE! -- in AppTests"; echo "java.lang.IllegalStateException: Failed to load ApplicationContext"; echo "Caused by: org.flywaydb.core.api.FlywayException: Found non-empty schema without schema history table"; echo "Caused by: org.flywaydb.core.api.FlywayException: Found non-empty schema without schema history table"; exit 1 ;;
   compile) echo "[ERROR] COMPILATION ERROR :"; echo "[ERROR] cannot find symbol"; exit 1 ;;
   net) echo "PKIX path building failed"; exit 1 ;;
+  weird) echo "Something unexpected happened in the build tool"; exit 1 ;;
+  nomvn) echo "mvn: command not found"; exit 127 ;;
+  javahome) echo "The JAVA_HOME environment variable is not defined correctly"; exit 1 ;;
+  silent) exit 7 ;;
 esac
 MVN
 chmod +x "$tmp/ef/bin/mvn"
 ef() { (cd "$tmp/ef/wt" && AW_KIT="$kit" FAKE_MVN="$1" PATH="$tmp/ef/bin:$PATH" sh "$kit/commands/expect-fail.sh" 2>&1); }
 mt() { (cd "$tmp/ef/wt" && AW_KIT="$kit" FAKE_MVN="$1" PATH="$tmp/ef/bin:$PATH" sh "$kit/commands/maven-test.sh" 2>&1); }
 out=$(mt context) && bad "maven-test: context lỗi phải không đạt" || { printf '%s' "$out" | grep -q "Caused by: org.flywaydb" && [ "$(printf '%s' "$out" | grep -c 'Caused by')" = 1 ] && ok "maven-test: in nguyên nhân gốc (Caused by), bỏ trùng, không chỉ danh sách test đỏ" || bad "maven-test nguyên nhân: $out"; }
+out=$(mt weird) && bad "maven-test: lỗi lạ phải không đạt" || { printf '%s' "$out" | grep -q "Something unexpected happened" && printf '%s' "$out" | grep -q "mvn thoát mã 1" && ok "maven-test: lỗi dạng lạ không bị nuốt, in mã thoát và phần cuối output" || bad "maven-test lỗi lạ: $out"; }
+out=$(mt nomvn) && bad "maven-test: thiếu mvn phải không đạt" || { printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && ok "maven-test: mvn không chạy được thì báo MÔI TRƯỜNG (agent không sửa code vô ích)" || bad "maven-test thiếu mvn: $out"; }
+out=$(mt javahome) && bad "maven-test: JAVA_HOME sai phải không đạt" || { printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && ok "maven-test: JAVA_HOME sai thì báo MÔI TRƯỜNG" || bad "maven-test JAVA_HOME: $out"; }
+out=$(mt silent) && bad "maven-test: mvn lỗi không output phải không đạt" || { printf '%s' "$out" | grep -q "mvn thoát mã 7" && printf '%s' "$out" | grep -q "output rỗng" && ok "maven-test: mvn lỗi không in gì vẫn báo mã thoát" || bad "maven-test mvn im lặng: $out"; }
 out=$(ef red) && printf '%s' "$out" | grep -q "ĐỎ như mong đợi" && ok "expect-fail: test đỏ thì đạt, in các dòng thất bại" || bad "expect-fail test đỏ: $out"
 out=$(ef green) && bad "expect-fail: test xanh phải không đạt" || { printf '%s' "$out" | grep -q "chưa chạm tới lỗi" && ok "expect-fail: test xanh thì không đạt, dặn sửa test" || bad "expect-fail test xanh: $out"; }
 out=$(ef compile) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "không biên dịch" && ok "expect-fail: lỗi biên dịch không được tính là test đỏ" || bad "expect-fail biên dịch: $out"; }
@@ -332,6 +340,22 @@ printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n' > "$d/plan.md"
 out=$(cmdrun check-plan.sh) && bad "check-plan: plan thiếu mục phải không đạt" || { printf '%s' "$out" | grep -q 'THIẾU mục "rủi ro và hoàn tác"' && ok "check-plan: plan thiếu mục thì không đạt, nêu mục thiếu" || bad "check-plan thiếu mục: $out"; }
 printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n## Test cho từng AC\nx\n## Lệnh kiểm tra cuối\nx\n## Rủi ro và hoàn tác\nx\n## Tiêu chí xong\nx\n' > "$d/plan.md"
 out=$(cmdrun check-plan.sh) && ok "check-plan: plan đủ sáu mục thì đạt" || bad "check-plan đủ: $out"
+# bộ bọc .cmd của Windows: phần đầu một khối, CRLF, phần script bên dưới giữ LF và nguyên văn; mọi script publish đều có bộ bọc
+KITDIR="$kit" python3 - <<'PY' && ok "bộ bọc Windows: phần đầu một khối + CRLF, phần script giữ nguyên LF" || bad "bộ bọc Windows"
+import importlib.util, os
+kit = os.environ["KITDIR"]; os.environ["AW_KIT"] = kit
+spec = importlib.util.spec_from_file_location("p", kit + "/scripts/aw-publish.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+kitm = m.load_manifest(kit + "/kit.json")
+doc = m.script_skill_doc(kitm, kitm["scriptSkills"][0], True)
+assert len(doc["resources"]) >= 10
+for r in doc["resources"]:
+    head, sep, rest = r["instruction"].partition("AW_CMD_HEADER\r\n")
+    assert r["key"].endswith(".cmd") and sep, r["key"]
+    assert head.startswith(": << 'AW_CMD_HEADER'\r\n"), r["key"]
+    assert head.count("\r\n") == head.count("\n"), r["key"]          # đầu: mọi dòng CRLF
+    assert "\r" not in rest and rest.startswith("#!/bin/sh\n"), r["key"]  # thân: LF, shebang ngay sau đầu
+    assert "!AW_SH!" in head and head.rstrip().endswith(")"), r["key"]
+PY
 # check-lessons (V10-16)
 l="$tmp/les"; mkdir -p "$l/docs/lessons" && git -C "$l" init -q -b main && git -C "$l" config user.email t@example.invalid && git -C "$l" config user.name t
 touch "$l/x" && git -C "$l" add -A && git -C "$l" commit -q -m init
@@ -362,7 +386,7 @@ for needle in ("build 1", "gate1 1", "build: SCOPE_VIOLATION ×1", "[Important] 
 PY
 out=$(python3 "$kit/tests/test-lessons.py" 2>&1) && ok "lessons-to-skill: định dạng, gộp, revision, gắn vào agent, publish version mới ($(printf '%s' "$out" | grep -c '^  ok') kiểm tra)" || bad "test-lessons: $out"
 if [ -n "${AW:-}" ] || command -v aw > /dev/null 2>&1 || command -v go > /dev/null 2>&1; then
-  for s in plus-debug bugfix-not-red; do
+  for s in plus-debug bugfix-not-red fd-design-bad; do
     out=$(python3 "$kit/scripts/walk-workflow.py" "$kit/tests/walk/scenarios/$s.json" 2>&1) && ok "walk-workflow: $s đi đúng thứ tự node" || bad "walk-workflow $s: $out"
   done
   if [ -n "${WALK_ALL:-}" ]; then

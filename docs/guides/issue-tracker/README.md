@@ -299,7 +299,14 @@ Run: 25dbcd50-…  state: RUNNING
 
 Đây là chỗ thấy rõ giá trị của kiểm tra bằng máy: hai lần agent viết spec chưa hợp lệ (lint bắt được), không ai phải đọc
 hộ. `evidence list` cho thấy từng lần: `COMMAND_EXECUTION FAILED, FAILED, SUCCEEDED, SUCCEEDED`. Xem spec trong worktree
-(`worktree-path.sh contracts`), rồi duyệt và commit:
+(`worktree-path.sh contracts`), rồi duyệt và commit.
+
+> **Xem thay đổi trước khi duyệt.** Tab Diff của UI so sánh hai **commit**, nên ở cổng duyệt (chưa commit) nó hiện "0 files
+> changed". Hãy xem trong worktree, chỉ đọc: `cd "$(worktree-path.sh contracts)" && git status --short && git diff` (file mới
+> chỉ có trong `git status`; xem bằng `cat`). Đừng `git add`, `git commit` hay `checkout` ở đó: commit ngoài `aw` làm lệch HEAD
+> so với revision `aw` đã ghi (xem V11-01 và V11-06 trong `docs/design/14-v11-bugfix.md`).
+
+Duyệt và commit:
 
 ```bash
 review-task.sh 25dbcd50-… approved "Hợp đồng đủ 6 operation"
