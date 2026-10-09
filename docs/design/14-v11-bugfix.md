@@ -38,6 +38,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | Đã tái hiện (prompt dump) |
 | V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | Đã đo (spike V10-17) |
 | V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **Đã gặp thật** (chạy issue-tracker C-01 trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
+| V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | Cơ chế **đã đọc trong mã**; thiết kế cần product owner chốt 6 điểm (mục "Quyết định cần chốt" của V11-07) |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -165,6 +166,7 @@ Mặc định làm tuần tự theo Task ID.
      worktree (symlink không được thoát ra ngoài), bỏ qua `.git`.
   3. Chỉ cho phép khi workspace **không có node ghi đang chạy** (đang ở APPROVAL hoặc run đã dừng), để tránh đọc nửa chừng; nếu
      đang có attempt ghi thì trả mã lỗi rõ ràng thay vì kết quả sai.
+  3b. Mỗi file trong kết quả có `contentHash` và kết quả có `changeSetDigest` (V11-07 dùng chúng để bảo đảm commit đúng cái đã duyệt).
   4. API: tham số `result=WORKING_TREE` (hoặc route riêng) cho `GET` diff của workspace; CLI `aw repository-workspace diff
      --working-tree`; kết quả có cờ `uncommitted: true` để UI không nhầm với commit.
   5. UI: trong tab Workspace thêm chế độ **"Thay đổi chưa commit"**, mặc định bật khi `currentRevision` không đổi so với `base`
@@ -179,6 +181,129 @@ Mặc định làm tuần tự theo Task ID.
 - **Cách làm tạm trong lúc chưa có:** `cd "$(worktree-path.sh contracts)" && git status --short && git diff`; chỉ xem, không thao
   tác Git ghi. Đã ghi vào hướng dẫn issue-tracker (bước duyệt C-01); chưa ghi vào `docs/operator/`.
 
+## V11-07 — Duyệt và commit trong một thao tác, chọn được file, làm hoàn toàn trên web
+
+> Cũng là **thiếu khả năng** như V11-06, đưa vào V11 vì cùng gốc: cổng duyệt không đi tới được điều mà nó phải quyết định.
+> Task lớn (engine, API, CLI, UI, kit). Làm sau V11-06, vì cần chung danh sách thay đổi và băm của V11-06.
+
+### Bằng chứng (đã đọc trong mã)
+
+- `internal/adapters/gitworktree/localcommit.go` (`CreateLocalCommit`): chạy `git add -A` rồi `git commit`. `ports.CreateLocalCommitRequest`
+  chỉ có `Handle, Message, AuthorName, AuthorEmail`, **không có danh sách đường dẫn**. Mọi thay đổi trong worktree, kể cả file
+  mới chưa theo dõi, đều vào commit; không có cách commit một phần.
+- Worktree thuộc về **TaskFamily và repository**, không thuộc về một task. `kit/scripts/commit-task.sh` phải tự cảnh báo "family còn
+  task dở" vì commit sẽ đóng dấu luôn phần việc chưa duyệt của task khác.
+- Duyệt (`internal/app/runtime/approval.go`, `ResolveApproval`) chỉ ghi quyết định và đẩy run đi tiếp trong **một transaction**.
+  Commit là một thao tác khác (`release-set create → seal → local-commit`, job nền `ExecuteReleaseSetLocalCommit`), nên người dùng
+  phải chạy `commit-task.sh` hoặc thao tác tab Workspace sau khi duyệt. Quên bước này thì task sau bị `SCOPE_VIOLATION` mà thông
+  báo không nói nguyên nhân (đã gặp khi chạy issue-tracker).
+- `docs/architecture/04-go-core-spec.md` mục 11.1: không gọi Git trong transaction. Vì vậy "duyệt kèm commit" không thể gọi
+  `git commit` ngay trong `ResolveApproval`; phải tạo ý định commit bền trong cùng transaction rồi để job nền thực hiện.
+- ADR-014 cho phép local commit "khi workflow policy cho phép hoặc operator phát typed command". Thiết kế dưới đây thỏa cả hai
+  vế: workflow khai policy cho phép, và quyết định của người là lệnh có kiểu.
+
+### Mục tiêu
+
+Ở cổng duyệt trên web, người duyệt: (1) xem được **đúng những file sẽ bị ảnh hưởng** (V11-06); (2) chọn outcome; (3) tích "Commit"
+và chọn file nào được commit, file còn lại xử lý ra sao; (4) bấm một nút. Engine ghi quyết định, đẩy run đi tiếp và tạo local
+commit cho đúng tập file đã chọn. Mọi bước, kể cả xử lý khi commit lỗi, làm được trên web; CLI có lệnh tương đương (parity).
+
+### Đối tượng của commit là gì
+
+| Khái niệm | Định nghĩa |
+|---|---|
+| **Tập thay đổi** (change set) | Với mỗi repository của family: các đường dẫn mà worktree khác `currentRevision` của workspace, tính như `git status --porcelain=v1 -z --untracked-files=all`, không gồm file bị `.gitignore`. Đây là cùng nguồn với tab diff của V11-06 và với `scopeguard`. |
+| Đơn vị chọn | **File** (đường dẫn). Xóa là một mục; đổi tên là **một cặp** (đường dẫn cũ và mới được chọn hoặc bỏ cùng nhau). Không chọn theo dòng hay hunk (ngoài phạm vi, xem dưới). |
+| Phạm vi chọn | Từng repository riêng. Repository không tích chọn thì không tạo commit. Mỗi repository có thay đổi nhận một commit, như hiện nay (ADR-004: không atomic xuyên repository). |
+| Mặc định | Chọn **tất cả** file của các repository có thay đổi (giữ hành vi hiện tại), người duyệt bỏ chọn nếu muốn. |
+| Nguồn gốc từng file | Nếu khảo sát thấy engine đã lưu danh sách đường dẫn của từng attempt (nó đã tính `WorkspaceDiff.Files` để kiểm scope), UI gắn nhãn "do node X, vòng N". Nếu chưa lưu thì thêm vào evidence của attempt. Mục đích: khi family có nhiều task, người duyệt biết file nào của task nào. |
+
+### Commit một phần: điều gì xảy ra với file không được chọn
+
+Sau commit một phần, worktree vẫn còn các file đó. Mà node chỉ-đọc (CHECKER, MACHINE_GATE) coi worktree còn thay đổi là
+`SCOPE_VIOLATION` (`validateStrictlyReadOnlyDiffs`), nên người duyệt **phải chọn** cách xử lý, không để mặc định âm thầm:
+
+| Xử lý | Ý nghĩa | Ghi chú |
+|---|---|---|
+| `KEEP` (mặc định) | Để nguyên trong worktree, chưa commit | Giống hôm nay. UI cảnh báo: node chỉ-đọc kế tiếp của family sẽ bị chặn cho tới khi file được commit hoặc cất đi |
+| `PARK` | Cất vào một ref ẩn `refs/agentkit/parked/<releaseSetId>` rồi dọn khỏi worktree | Khôi phục được bằng một nút ("Khôi phục file đã cất"); worktree sạch nên các node sau chạy bình thường |
+| Xóa hẳn | **Không có trong V11-07** | Xóa không hoàn tác được; muốn bỏ file thì `PARK` rồi để cơ chế retention dọn. Nếu product owner muốn thì làm thành task riêng có xác nhận gõ lại tên file |
+
+### Thực hiện (đề xuất, theo thứ tự)
+
+1. **Engine, commit theo đường dẫn.** `ports.CreateLocalCommitRequest` thêm `Paths []string` (rỗng = tất cả, giữ hành vi cũ) và
+   `Unselected` (`KEEP` hoặc `PARK`). `CreateLocalCommit`: kiểm mọi đường dẫn thuộc tập thay đổi; `git reset -q` (chỉ index) rồi
+   `git add -A -- :(literal)<path>…` qua `--pathspec-from-file=- --pathspec-file-nul` (chống glob, dấu cách, tiền tố `-`, unicode);
+   `git commit` không `-a`; xác minh sau commit rằng cây commit chỉ chứa đúng đường dẫn đã chọn. `PARK`: `git stash create`
+   cho phần còn lại, ghi vào ref ẩn rồi `git restore`/`git clean` đúng các đường dẫn đó. Mọi bước dưới `WriteLease` hiện có;
+   dấu `marker` phục hồi sau crash giữ nguyên và test lại.
+2. **Chống lệch giữa lúc xem và lúc commit ("duyệt đúng cái đã thấy").** Quyết định mang theo `changeSet`: danh sách
+   `{repositoryId, path, status, contentHash}` của các file được chọn, và `changeSetDigest`. Job commit tính lại trong lúc
+   giữ `WriteLease`; khác thì **không commit**, kết thúc `FAILED/CHANGESET_DRIFT`. Cùng cơ chế với `FAILED/NO_CHANGES` hiện có.
+3. **Chính sách của workflow.** `ApprovalNodeConfig` thêm `release`: `{"commit": "DISABLED"|"OFFERED"|"REQUIRED", "outcomes": ["approved"]}`.
+   Mặc định `DISABLED` nên mọi định nghĩa cũ không đổi hash, không đổi hành vi. Compiler từ chối khi một outcome có `release` dẫn
+   tới node có thể ghi (commit nền sẽ đua với agent): chỉ cho outcome dẫn tới `END` hoặc tới các node không ghi.
+4. **`ResolveApproval` nhận `commit`.** Trong **cùng một transaction** với quyết định: kiểm policy và quyền, kiểm `outcome` nằm
+   trong `release.outcomes`, tạo ReleaseSet cho family, seal, và tạo `ReleaseSetLocalCommit` ở `REQUESTED` cho từng repository kèm
+   job nền. Không gọi Git trong transaction (mục 11.1). Request hash gồm cả `commit`, nên replay idempotent trả lại cùng id các
+   thao tác commit. Kết quả trả về danh sách thao tác commit để UI theo dõi.
+5. **Lưu bằng chứng của cái đã duyệt.** Tại thời điểm quyết định, lưu patch của các file được chọn (có giới hạn byte) thành
+   artifact gắn với `ApprovalRequest`, kèm `changeSetDigest`. Sau này xem lại được người duyệt đã thấy gì, kể cả khi worktree
+   đã đổi.
+6. **Commit lỗi sau khi duyệt.** Run đã đi tiếp và không rollback. Commit `FAILED` (`NO_CHANGES`, `CHANGESET_DRIFT`, workspace
+   `QUARANTINED`, `CONFLICT`) mở blocker mới `RELEASE_FAILED` trên WorkItem (hiện ở Board) và dòng trạng thái từng repository.
+   Có thao tác "Thử commit lại" mở lại hộp thoại với danh sách file **mới**, không tái dùng lựa chọn cũ. Cần khảo sát: quan hệ với
+   `CompletionPolicy` (WorkItem có được `DONE` khi commit chưa xong, theo ADR-014 "parent chỉ DONE khi mọi repository bắt buộc đạt
+   release policy hoặc policy cho phép uncommitted").
+7. **Giao diện (web).** Trong trang Task, thẻ yêu cầu duyệt có tóm tắt "N file đổi, +x −y" và liên kết tới tab Workspace.
+   Hộp thoại duyệt: các nút outcome như hôm nay; nếu `release` cho phép, hiện mục **Commit**: tích chọn, cây thư mục có hộp
+   kiểm ba trạng thái theo file, diff của file đang chọn bên cạnh, cách xử lý file không chọn (`KEEP`/`PARK`), ô commit message
+   (điền sẵn từ tiêu đề WorkItem) và tác giả. Sau khi bấm: trạng thái từng repository (đang commit, đã commit kèm id, lỗi) và
+   liên kết tới Diff của commit. Có các nút "Khôi phục file đã cất" và "Thử commit lại". Tab Workspace giữ `Seal`/`Local Commit`
+   thủ công và dùng chung bộ chọn file (cùng backend).
+8. **API, CLI, parity.** Thêm vào hợp đồng OpenAPI và regenerate `web/src/api/generated.ts`; `aw approval resolve` nhận
+   `--commit-spec <json|->`; `aw release-set local-commit` nhận `--path` (lặp được) và `--unselected`; đăng ký trong
+   `internal/delivery/parity/registry.go`, `go run ./cmd/docs-coverage-check` nợ 0.
+9. **Kit và tài liệu.** `review-task.sh` thêm `--commit "<message>"` (dùng cùng API, mặc định chọn tất cả); các workflow mẫu có
+   bước người duyệt ghi file (`wf-contract-change`, `wf-task-delivery*`) bật `OFFERED`; `commit-task.sh` giữ làm đường thủ công và ghi
+   chú. Cập nhật `docs/operator/` (04, 06), hướng dẫn issue-tracker (bỏ bước `commit-task.sh` khỏi luồng chính), thêm ADR mới
+   ("approval-bound release", bổ sung ADR-014).
+
+### Quyết định cần chốt với product owner (chưa tự quyết)
+
+1. **Mặc định `KEEP` hay `PARK`** cho file không chọn? (Đề xuất `KEEP` để không đổi hành vi, kèm cảnh báo rõ.)
+2. **Có cần xóa hẳn file** từ UI không, hay `PARK` là đủ? (Đề xuất: không, làm sau nếu cần.)
+3. **Tác giả commit:** lấy từ đâu? Hiện `commit-task.sh` lấy `git config` của máy chạy script; trên web không có nguồn đó. Đề
+   xuất: safe setting `commitAuthor` của bản cài, người duyệt sửa được trong hộp thoại, bắt buộc có giá trị.
+4. **Vai trò:** quyền duyệt và quyền commit cùng một role, hay tách (`release` có `authorizedRoles` riêng)? (Đề xuất: mặc định
+   bằng quyền duyệt, cho khai tách khi cần.)
+5. **`REQUIRED`** có cần không, hay chỉ `OFFERED`? (`REQUIRED` buộc phải commit khi duyệt; hữu ích cho quy trình không cho phép
+   duyệt mà chưa commit.)
+6. **Mức chọn:** file, không phải hunk. Chọn theo dòng hay hunk cần dựng patch và áp bằng `git apply --cached`, có rủi ro lệch
+   nội dung; đề xuất ngoài phạm vi, làm thành task sau.
+
+### Ngoài phạm vi
+
+Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; sửa nội dung file từ UI; commit cho repository ngoài family.
+
+### Verify
+
+- **Engine (test tích hợp, Git thật):** tập file gồm sửa, mới, xóa, đổi tên, tên có dấu cách/unicode/ký tự glob/bắt đầu bằng `-`,
+  file nhị phân, symlink; chọn một phần thì `git show --name-status HEAD` chỉ chứa đúng file đã chọn, file còn lại đúng theo
+  `KEEP` (còn trong worktree) hoặc `PARK` (worktree sạch, ref ẩn chứa đúng nội dung, khôi phục lại giống hệt); đường dẫn `..`,
+  tuyệt đối, `.git/...`, hoặc không thuộc tập thay đổi bị từ chối; file đổi giữa lúc xem và lúc commit cho `CHANGESET_DRIFT` và
+  không có commit; crash giữa chừng và `marker` vẫn phục hồi đúng.
+- **Duyệt kèm commit:** workflow thử có node duyệt `OFFERED`; duyệt với chọn một phần cho run `SUCCEEDED` và đúng một commit
+  mỗi repository đã chọn; outcome không nằm trong `release.outcomes` bị từ chối; compiler từ chối `release` dẫn tới node ghi;
+  replay cùng idempotency key trả cùng kết quả; khác `commit` mà cùng key bị `ErrReceiptConflict`; role không đủ quyền bị
+  `POLICY_DENIED`; nhiều repository mà một repository lỗi cho blocker `RELEASE_FAILED`, repository kia vẫn commit, không
+  rollback.
+- **Không hồi quy:** workflow không có `release` giữ nguyên hash và hành vi; `commit-task.sh` và `aw release-set local-commit`
+  không có `--path` vẫn commit tất cả; V11-01 (HEAD lệch) vẫn bị chặn trước khi commit.
+- **UI:** Vitest cho hộp thoại (chọn một phần, ba trạng thái thư mục, cảnh báo `KEEP`, trạng thái lỗi) và e2e Playwright chạy trên
+  bản cài thật: duyệt kèm commit từ trình duyệt, không dùng terminal ở bước nào, rồi kiểm tab Diff của commit mới.
+- **Kit:** kịch bản `walk-workflow.py` cho duyệt kèm commit; `kit/tests/check-kit.sh` với `WALK_ALL=1` xanh.
+
 ## Gate của V11
 
 Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
@@ -189,3 +314,4 @@ Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
 4. `kit/tests/check-kit.sh` với `WALK_ALL=1` xanh sau khi core đổi (kịch bản chạy trên engine thật).
 5. Hai script tái hiện của V11-01 cho kết quả đúng thiết kế.
 6. V11-06: chụp màn hình tab Diff của một cổng duyệt thật hiện nội dung chưa commit; test chứng minh index và HEAD không đổi sau khi đọc.
+7. V11-07: một lần duyệt trên web, không mở terminal, tạo commit chỉ chứa đúng các file đã chọn; file còn lại đúng theo xử lý đã chọn; `changeSetDigest` lệch thì không commit.
