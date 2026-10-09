@@ -13,8 +13,11 @@
 > ADR-030…033 chốt ngày 2026-10-01 cho V9 (`docs/design/12-v9-harness-alignment.md`, task V9-00): orchestrator
 > viết và chốt theo ủy quyền của product owner; product owner duyệt ở PR của V9-00.
 >
+> ADR-034 chốt ngày 2026-10-10 cho V11-01 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
+> viết ADR khi triển khai.
+>
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -1024,9 +1027,58 @@ cùng một việc vì vậy bị tách ra nhiều WorkItem (HE-08-M02, HE-08-M0
 **Hệ quả:** vòng làm việc khi fail là `aw blocker resolve <id> --mode RESOLVED --reason …` rồi `aw run start`, trên
 cùng WorkItem. Kanban hiện WorkItem ở cột BLOCKED thay vì kẹt ở ACTIVE. Không cần trạng thái WorkItem mới.
 
-## 36. Baseline sau review thiết kế
+## 36. ADR-034 — Commit ngoài aw: chẩn đoán có kiểu, lệnh nhận có audit, chặn commit và run trên HEAD lệch
 
-ADR-001…033 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** người dùng tự `git commit` (IDE, terminal) trong worktree do aw quản lý làm HEAD thật lệch khỏi
+`RepositoryWorkspace.CurrentRevision`, thứ duy nhất aw ghi. Ca tái hiện trong `docs/spikes/v11-01-external-commit/`:
+một `MACHINE_GATE` sau commit tay thất bại `VALIDATION_FAILED` không nêu nguyên nhân (`staleMountRevision` so HEAD
+với revision đã ghim và trả mã trần); `commit-task.sh` báo "không có gì để commit" vì commit tay đã lấy hết thay đổi;
+và `CreateLocalCommit` chạy trên HEAD lệch sẽ đưa các commit ngoài vào lịch sử mà aw coi là của mình, không qua
+cổng nào. `CurrentRevision` chỉ tiến lên bằng local commit của ReleaseSet (V9-16); không đường nào để aw biết commit
+ngoài.
+
+**Quyết định:**
+
+1. **Chẩn đoán có kiểu.** Khi `MACHINE_GATE` thấy HEAD lệch revision đã ghim, attempt vẫn thất bại fail-closed với
+   `VALIDATION_FAILED`, kèm một sự kiện `DIAGNOSTIC` mã `WORKSPACE_HEAD_DRIFT` ghi vào `agent_events` của attempt
+   (cùng đường V9-09 dùng cho danh sách vi phạm scope): repository, revision đã ghim, HEAD thật, các commit nằm ngoài
+   aw (hash, tác giả, tiêu đề, giới hạn 5 commit mới nhất) và cách xử lý. `GetRunTimeline` đọc nó thành
+   `failureDetail` của attempt, nên `aw run timeline`, `show-run.sh` và UI hiện nó. Không thêm mã lỗi vào enum đóng
+   của go-core-spec §18; tên kiểu là mã của diagnostic. Việc đọc Git đi qua port hẹp mới
+   `ports.WorkspaceHeadAuditor` (`gitworktree.Provider` thỏa bằng structural typing); provider không kiểm được thì
+   diagnostic chỉ nói HEAD khác.
+2. **Lệnh nhận commit ngoài, tường minh và có audit:** `AdoptWorkspaceHead` — CLI `aw repository-workspace adopt-head
+   --project-id P --expected-version N [--idempotency-key K] <repositoryWorkspaceId>`, HTTP `POST
+   /projects/{projectId}/repository-workspaces/{id}/adopt-head` (If-Match theo version của workspace, operationId
+   `adoptWorkspaceHead`). Đồng bộ, không có job nền: đọc Git ngoài transaction, một transaction ghi ngắn kiểm lại mọi
+   hàng rào. Chỉ chạy khi workspace `READY` (`QUARANTINED` bị từ chối với `WORKSPACE_QUARANTINED`), không attempt nào
+   giữ write lease, worktree sạch, HEAD là hậu duệ tuyến tính của `CurrentRevision` và khác nó. Khi đó ghi
+   `CurrentRevision = HEAD`, `version + 1`, sự kiện `WorkspaceHeadAdopted` (commit, tác giả, người thao tác) và biên nhận
+   idempotent. HEAD sau `reset`/`rebase` bị từ chối, hướng dẫn đưa worktree về revision đã ghi hoặc reconcile. Nhận
+   commit ngoài là việc của người vận hành, không bao giờ tự động; gate của các run sau vẫn chạy trên mã đó.
+3. **Run đang chờ duyệt không đổi pin.** `ExecutionManifest` bất biến (ADR-011) và `run_manifest_amendments` chỉ ghi
+   phiên bản scope đã duyệt, không ghi revision; mở rộng nó để cập nhật revision cần migration và đổi ngữ nghĩa
+   ghim. Vì vậy sau `adopt-head`, run đã bắt đầu giữ revision cũ, và gate của nó vẫn báo `WORKSPACE_HEAD_DRIFT`; diagnostic
+   nói rõ run phải được hủy và bắt đầu lại.
+4. **Run mới kiểm trước, mặc định từ chối.** `POST /work-items/{id}/runs` và `aw run start` gọi
+   `CheckFamilyWorkspaceHeads` trước `StartWorkflowRun`: mỗi repository có HEAD khác `CurrentRevision` thì từ chối
+   (HTTP 409, mã `CONFLICT`, thông báo `WORKSPACE_HEAD_DRIFT: …` nêu repository, hai revision, số commit, tác giả commit mới
+   nhất và đúng lệnh `adopt-head` kèm `--expected-version`). Không có cờ tự nhận. `aw run start` kiểm khi có
+   `--workspace-root`/`AW_WORKSPACE_ROOT`; không có thì chạy như trước. Worktree không đọc được thì bỏ qua repository đó
+   (best effort): `StartWorkflowRun` và gate vẫn giữ kiểm tra của chúng.
+5. **Local commit chặn trên HEAD lệch.** `ExecuteReleaseSetLocalCommit` so HEAD với `CurrentRevision` trước khi tạo commit;
+   lệch thì operation kết thúc `FAILED` lý do `HEAD_DRIFT` (migration 0049 mở rộng CHECK của
+   `release_set_local_commits.failure_reason`), không `git commit`, job hoàn tất (xác định, không retry). Lý do là typed
+   reason của operation như `NO_CHANGES` (ADR đã dùng ở V9-09), không phải mã lỗi mới.
+
+**Hệ quả:** commit ngoài không còn gây hỏng khó hiểu: lỗi nói nguyên nhân và lệnh sửa; không đường nào đưa commit
+ngoài vào lịch sử aw mà không có lệnh tường minh và sự kiện audit. Cạnh bất biến cần biết: một lệnh `adopt-head`
+chạy khi một local commit của chính aw đang giữa chừng có thể nhận commit của aw; `Advance` của local commit khi đó
+thất bại version fence và job retry theo marker. Không đổi hành vi cho workflow không bị commit ngoài.
+
+## 37. Baseline sau review thiết kế
+
+ADR-001…034 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1065,5 +1117,7 @@ dụng ma trận sau:
   ngân sách `messages` của CONTEXT policy loại (ghi trong ContextSnapshot, bỏ qua khi rỗng).
 - ADR-033 thêm blocker `RUN_FAILED` để run thất bại đi qua đúng đường `ResolveWorkItemBlocker` sẵn có và chạy lại
   trên cùng WorkItem, không repin.
+- ADR-034 (V11-01) thêm lệnh `AdoptWorkspaceHead`, chẩn đoán `WORKSPACE_HEAD_DRIFT`, kiểm HEAD trước khi start run và lý do
+  `HEAD_DRIFT` của local commit; không đổi ADR-014 (vẫn không push/PR/merge) và không đổi ADR-011 (manifest bất biến).
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

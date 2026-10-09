@@ -152,6 +152,27 @@ terminal event, or is not valid JSONL, is still a provider failure (`PROVIDER_UN
 An attempt scheduled before the instruction-schema upgrade still has the old prompt (no list), so a multi-outcome
 agent from before the upgrade may need the outcomes in its Skill until it is re-run.
 
+## `WORKSPACE_HEAD_DRIFT`, or a local commit `FAILED` with `HEAD_DRIFT` (V11-01)
+
+```bash
+aw run start <workItemId> --workflow-version-id <v>
+# WORKSPACE_HEAD_DRIFT: a worktree HEAD is not the revision aw recorded … Repository repo-a (workspace rw-1): HEAD 2f5f08d0,
+#   recorded 1ddc449a, 1 commit(s) made outside aw (newest 2f5f08d0 by Ide User). To keep them: aw repository-workspace adopt-head …
+aw run timeline <runId>
+# an EXECUTION_ATTEMPT entry: "failureCode": "VALIDATION_FAILED", "failureDetail": "WORKSPACE_HEAD_DRIFT: repository repo-a: …"
+aw release-set local-commit status --project-id <id> <releaseSetId> <localCommitId>
+# "state": "FAILED", "failureReason": "HEAD_DRIFT"
+```
+
+Somebody committed in the worktree outside aw (an IDE or `git commit` in a terminal), so Git's HEAD is not the revision
+aw recorded. aw stopped before anything unvetted entered its history. Look at what was committed
+(`git -C <worktree> log <recorded>..HEAD`), then either keep it with `aw repository-workspace adopt-head` or put the
+worktree back on the recorded revision. A run that was already running keeps the old pin: cancel it and start it again
+(`retry-task.sh`). Full explanation: [06-source-control-and-releases.md](06-source-control-and-releases.md), section
+"A commit made outside aw". `adopt-head` refuses with a message that says what to fix: uncommitted changes in the
+worktree (commit or discard them), an attempt still writing (wait or cancel it), or a HEAD that no longer descends from
+the recorded revision after a reset or rebase (put the worktree back on the recorded revision).
+
 ## Local commit `FAILED` with `NO_CHANGES`
 
 ```bash

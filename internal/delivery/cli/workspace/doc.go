@@ -122,6 +122,10 @@ type Dependencies struct {
 	// internal/delivery/cli/evidence.Dependencies for the identical
 	// "raw UnitOfWork + raw ArtifactStore, not a wrapped object" shape).
 	Reader ports.WorkspaceInspectionReader
+	// HeadAuditor (V11-01) is how `repository-workspace adopt-head` reads a
+	// worktree's HEAD: the same real Git workspace provider Reader is. Nil makes
+	// the subcommand fail with a clear error instead of adopting blindly.
+	HeadAuditor ports.WorkspaceHeadAuditor
 	// Now overrides BuildEnvelope's own default time source
 	// (time.Now().UTC()) — nil in production, set only for deterministic
 	// tests.

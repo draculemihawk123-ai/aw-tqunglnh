@@ -91,6 +91,16 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 			return fail(fmt.Errorf("open git workspace provider: %w", err))
 		}
 		deps.WorkspaceReader = provider
+		deps.WorkspaceHeadAuditor = provider
+	}
+
+	if needs&clicompose.NeedWorkspaceIfConfigured != 0 && needs&clicompose.NeedWorkspace == 0 && strings.TrimSpace(opts.WorkspaceRoot) != "" {
+		provider, err := gitworktree.New(gitworktree.Config{Root: opts.WorkspaceRoot})
+		if err != nil {
+			return fail(fmt.Errorf("open git workspace provider: %w", err))
+		}
+		deps.WorkspaceReader = provider
+		deps.WorkspaceHeadAuditor = provider
 	}
 
 	if needs&clicompose.NeedIsolation != 0 {

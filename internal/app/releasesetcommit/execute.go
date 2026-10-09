@@ -188,6 +188,15 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 		}
 		resultVCSObjectID = headRevision.VCSObjectID
 	} else {
+		// V11-01: the worktree's HEAD must still be the revision aw recorded. If
+		// someone committed outside aw, a commit made on top of it would take those
+		// commits into aw's history with no audit and no gate: close the operation
+		// FAILED/HEAD_DRIFT before any `git commit` (determinate, so no retry).
+		if recorded := current.Workspace.CurrentRevision; recorded != "" && headRevision.VCSObjectID != recorded {
+			failErr := failTerminal(ctx, deps.UnitOfWork, jobLease, intent, workdomain.FailureHeadDrift, now)
+			releaseGrant()
+			return failErr
+		}
 		parentVCSObjectID = headRevision.VCSObjectID
 		pinned, pinErr := pinParent(ctx, deps.UnitOfWork, intent, parentVCSObjectID)
 		if pinErr != nil {

@@ -38,9 +38,20 @@ func DecodeWorkspaceReconciliationRequestedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// DecodeWorkspaceHeadAdoptedV1 decodes WorkspaceHeadAdopted v1 (V11-01,
+// AdoptWorkspaceHead).
+func DecodeWorkspaceHeadAdoptedV1(payloadJSON string) (any, error) {
+	var payload workspaceHeadAdoptedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry — mirrors internal/app/runtime/event_schema.go's own
 // RegisterEventSchemas exactly.
 func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(WorkspaceReconciliationRequestedEventType, WorkspaceReconciliationRequestedSchemaVersion, DecodeWorkspaceReconciliationRequestedV1)
+	registry.Register(WorkspaceHeadAdoptedEventType, WorkspaceHeadAdoptedSchemaVersion, DecodeWorkspaceHeadAdoptedV1)
 }

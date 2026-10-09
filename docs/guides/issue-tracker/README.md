@@ -317,6 +317,10 @@ commit-task.sh "C-01: hợp đồng API cho quản lý issue"
 `commit-task.sh` tạo một ReleaseSet, seal rồi tạo **local commit thật** trên branch của family, mỗi repository có thay đổi
 một commit, bỏ qua repository không đổi. `aw` không push và không merge (mục 10).
 
+> Đừng tự `git commit` trong worktree của `aw` (IDE hay terminal): HEAD sẽ lệch khỏi revision `aw` đã ghi, `run-task.sh` bị
+> từ chối với `WORKSPACE_HEAD_DRIFT` và `commit-task.sh` dừng lại. Lỡ commit thì giữ nó bằng `adopt-head.sh` (cần worktree sạch),
+> hoặc đưa worktree về revision đã ghi. Chi tiết: `docs/operator/06-source-control-and-releases.md`, mục "A commit made outside aw".
+
 ---
 
 ## 7. Bước 5 — Backend và frontend song song (A-01, W-01)

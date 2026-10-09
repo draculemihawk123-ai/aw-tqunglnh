@@ -218,6 +218,7 @@ func PublicOperations() []PublicOperation {
 		{Name: "RequestWorkspaceSetRelease", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("requestWorkspaceSetRelease")}, Symbol: wsRelease + ".RequestWorkspaceSetRelease",
 			HighImpact: true, Cite: "confirm phải nêu rõ đây là intent"},
 		{Name: "RequestWorkspaceReconciliation", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("requestWorkspaceReconciliation")}, Symbol: wsReconcile + ".RequestWorkspaceReconciliation"},
+		{Name: "AdoptWorkspaceHead", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("adoptWorkspaceHead")}, Symbol: wsReconcile + ".AdoptWorkspaceHead"},
 		{Name: "GetSource", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceSource")}, Symbol: wsInspect + ".Queries.GetSource"},
 		{Name: "GetDiff", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceDiff")}, Symbol: wsInspect + ".Queries.GetDiff"},
 		{Name: "GetRepositoryLog", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceRepositoryLog")}, Symbol: wsInspect + ".Queries.GetRepositoryLog"},

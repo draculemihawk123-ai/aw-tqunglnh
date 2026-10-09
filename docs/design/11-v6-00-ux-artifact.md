@@ -392,6 +392,7 @@ màu (không chỉ màu); danh sách log điều hướng và phân trang đư�
 | 4 | query | Nội dung source file | `getSource` | `aw repository-workspace source` | `GetSource` [CHƯA CÓ] — tên khóa cứng ở Mục tiêu V6-10C | V6-10C / V6-10D (route) |
 | 5 | query | Diff | `getDiff` | `aw repository-workspace diff` | `GetDiff` [CHƯA CÓ] — tên khóa cứng ở Mục tiêu V6-10C | V6-10C / V6-10D |
 | 6 | query | Repository log | `getRepositoryLog` | `aw repository-workspace log` | `GetRepositoryLog` [CHƯA CÓ] — tên khóa cứng ở Mục tiêu V6-10C | V6-10C / V6-10D |
+| 7 | command | Nhận commit ngoài aw vào revision hiện tại của repository-workspace | `adoptWorkspaceHead` | `aw repository-workspace adopt-head` | `AdoptWorkspaceHead` [ĐÃ CÓ: `internal/app/workspacereconcile/adopt_head.go:AdoptWorkspaceHeadRequest`] — đồng bộ, chỉ khi worktree sạch, HEAD là hậu duệ tuyến tính của revision đã ghi và không có attempt ghi nào | V11-01 |
 
 ## 11. Screen 10 — ReleaseSet & local commit
 

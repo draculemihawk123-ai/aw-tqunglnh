@@ -46,6 +46,61 @@
       }
     },
     {
+      "operationId": "adoptWorkspaceHead",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/adopt-head",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workspacereconcile.AdoptWorkspaceHeadResult",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "PreviousRevision",
+            "jsonTag": "previousRevision",
+            "type": "string"
+          },
+          {
+            "name": "AdoptedRevision",
+            "jsonTag": "adoptedRevision",
+            "type": "string"
+          },
+          {
+            "name": "AdoptedCommitCount",
+            "jsonTag": "adoptedCommitCount",
+            "type": "int"
+          },
+          {
+            "name": "AdoptedCommits",
+            "jsonTag": "adoptedCommits",
+            "type": "[]workspacereconcile.AdoptedCommit"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "appendConversationAttachment",
       "method": "POST",
       "path": "/projects/{projectId}/work-items/{workItemId}/attachments",

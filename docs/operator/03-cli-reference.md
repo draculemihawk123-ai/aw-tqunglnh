@@ -40,7 +40,7 @@ Resource commands (aw <resource> <action> [flags]):
   projection             rebuild|rebuild-status|status
   release-set            abandon|create|list|local-commit|local-commit status|seal|show
   repository             list|onboarding|readiness|register|retry-probe|show
-  repository-workspace   diff|log|reconcile|show|source
+  repository-workspace   adopt-head|diff|log|reconcile|show|source
   run                    cancel|diagnostics|graph|show|start|timeline
   scope-expansion        approve|list|reject|request|show|withdraw
   settings               show|update

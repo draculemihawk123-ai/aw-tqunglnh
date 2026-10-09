@@ -77,10 +77,12 @@ func newExecuteFixture(t *testing.T) *executeFixture {
 	if err := sqlite.SeedFixtureOwners(ctx, store, "project-1", "family-1", "work-root"); err != nil {
 		t.Fatalf("SeedFixtureOwners: %v", err)
 	}
-	if err := sqlite.SeedFixtureRepositoryWorkspaceWithLocator(
-		ctx, store, "project-1", "family-1", "set-1", "repo-1", "rw-1", handle.String(),
+	// The recorded revision is the worktree's real HEAD (V11-01: a local commit
+	// refuses to build on a HEAD that is not the recorded revision).
+	if err := sqlite.SeedFixtureRepositoryWorkspaceWithLocatorAtRevision(
+		ctx, store, "project-1", "family-1", "set-1", "repo-1", "rw-1", handle.String(), baseRevision,
 	); err != nil {
-		t.Fatalf("SeedFixtureRepositoryWorkspaceWithLocator: %v", err)
+		t.Fatalf("SeedFixtureRepositoryWorkspaceWithLocatorAtRevision: %v", err)
 	}
 
 	uow := sqlite.NewUnitOfWork(store)

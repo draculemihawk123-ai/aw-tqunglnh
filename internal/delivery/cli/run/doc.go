@@ -62,6 +62,10 @@ type Dependencies struct {
 	// generated --idempotency-key (Start) and a fresh CorrelationID for a
 	// command that carries no ports.Command envelope at all (Cancel).
 	IDs idsource.Source
+	// HeadAuditor (V11-01) lets `run start` refuse early, with an explanation,
+	// when a worktree's HEAD is not the revision aw recorded. Nil (a process
+	// without --workspace-root) skips that preflight.
+	HeadAuditor ports.WorkspaceHeadAuditor
 	// Isolation and Agents are GetRunDiagnostics' own two admission
 	// cross-reference dependencies (diagnostics.go) — the SAME two
 	// dependencies internal/delivery/httpapi/diagnostics.Dependencies

@@ -112,7 +112,7 @@ func TestLocalCommitStatus_PartialAcrossTwoRepositories_ReportsEachEntryAccurate
 	writeTestFile(t, filepath.Join(workspacePath, "service.txt"), "changed\n")
 
 	env.seedFamily(t, "project-1", "family-1")
-	if err := sqlite.SeedFixtureRepositoryWorkspaceWithLocator(ctx, env.store, "project-1", "family-1", "set-1", "repo-a", "rw-a", handle.String()); err != nil {
+	if err := sqlite.SeedFixtureRepositoryWorkspaceWithLocatorAtRevision(ctx, env.store, "project-1", "family-1", "set-1", "repo-a", "rw-a", handle.String(), baseRevision); err != nil {
 		t.Fatalf("SeedFixtureRepositoryWorkspaceWithLocator: %v", err)
 	}
 	// repo-b: a second repository under the SAME family/WorkspaceSet, with

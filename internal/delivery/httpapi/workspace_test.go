@@ -14,6 +14,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -49,7 +50,7 @@ func startWorkspaceTestServer(t *testing.T) workspaceTestServer {
 	uow := sqlite.NewUnitOfWork(store)
 
 	routes := httpapi.NewRouteRegistry()
-	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{})
+	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{}, nil, redact.NewMatcher())
 
 	server, err := httpapi.NewServer(httpapi.Config{
 		Host: "127.0.0.1", Port: 0, Routes: routes, IDs: idsource.Random{},
@@ -603,15 +604,16 @@ func TestRegisterWorkspaceRoutes_RegistersFourProjectScopedRoutes(t *testing.T) 
 	uow := sqlite.NewUnitOfWork(store)
 
 	routes := httpapi.NewRouteRegistry()
-	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{})
+	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{}, nil, redact.NewMatcher())
 
 	descriptors := routes.Descriptors()
-	if len(descriptors) != 4 {
-		t.Fatalf("len(descriptors) = %d, want 4", len(descriptors))
+	if len(descriptors) != 5 {
+		t.Fatalf("len(descriptors) = %d, want 5", len(descriptors))
 	}
 	wantOperationIDs := map[string]bool{
 		"getWorkspaceSetState": false, "getRepositoryWorkspaceState": false,
 		"requestWorkspaceSetRelease": false, "requestWorkspaceReconciliation": false,
+		"adoptWorkspaceHead": false,
 	}
 	for _, d := range descriptors {
 		if d.ScopeKind != httpapi.ScopeProject {

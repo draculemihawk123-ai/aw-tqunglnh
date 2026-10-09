@@ -59,7 +59,7 @@ func SeedFixtureRepositoryWorkspace(
 	ctx context.Context, store *Store,
 	projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID string,
 ) error {
-	return seedFixtureRepositoryWorkspaceTx(ctx, store, projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, "opaque:"+repositoryID)
+	return seedFixtureRepositoryWorkspaceTx(ctx, store, projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, "opaque:"+repositoryID, "base-rev")
 }
 
 // SeedFixtureRepositoryWorkspaceWithLocator mirrors SeedFixtureRepositoryWorkspace
@@ -75,12 +75,26 @@ func SeedFixtureRepositoryWorkspaceWithLocator(
 	ctx context.Context, store *Store,
 	projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator string,
 ) error {
-	return seedFixtureRepositoryWorkspaceTx(ctx, store, projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator)
+	return seedFixtureRepositoryWorkspaceTx(ctx, store, projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator, "base-rev")
+}
+
+// SeedFixtureRepositoryWorkspaceWithLocatorAtRevision is
+// SeedFixtureRepositoryWorkspaceWithLocator with the RepositoryWorkspace's
+// BaseRevision and CurrentRevision set to revision instead of the "base-rev"
+// placeholder. A scenario that runs a real local commit against a real worktree
+// needs the recorded revision to be the worktree's real HEAD: since V11-01 the
+// local commit refuses (FAILED/HEAD_DRIFT) when HEAD is not the recorded
+// revision.
+func SeedFixtureRepositoryWorkspaceWithLocatorAtRevision(
+	ctx context.Context, store *Store,
+	projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator, revision string,
+) error {
+	return seedFixtureRepositoryWorkspaceTx(ctx, store, projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator, revision)
 }
 
 func seedFixtureRepositoryWorkspaceTx(
 	ctx context.Context, store *Store,
-	projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator string,
+	projectID, familyID, workspaceSetID, repositoryID, repositoryWorkspaceID, locator, revision string,
 ) error {
 	const timestamp = "2026-08-28T16:00:00Z"
 	if _, err := store.db.ExecContext(ctx, `
@@ -101,9 +115,9 @@ VALUES (?, ?, ?, 'READY', 1, ?, ?);`,
 INSERT INTO repository_workspaces(
   id, project_id, workspace_set_id, family_id, repository_id, generation,
   locator, branch_ref, base_revision, current_revision, state, version, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'base-rev', 'base-rev', 'READY', 1, ?, ?);`,
+) VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 'READY', 1, ?, ?);`,
 		repositoryWorkspaceID, projectID, workspaceSetID, familyID, repositoryID,
-		locator, "agentkit/"+repositoryID, timestamp, timestamp,
+		locator, "agentkit/"+repositoryID, revision, revision, timestamp, timestamp,
 	); err != nil {
 		return fmt.Errorf("seed fixture repository workspace: %w", err)
 	}

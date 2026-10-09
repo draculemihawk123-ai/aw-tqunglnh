@@ -432,6 +432,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		Hygiene:                    appdefinitions.WarnPolicy{MaxResourceAge: time.Duration(*warnResourceAgeDays) * 24 * time.Hour, MaxHardConstraints: *warnHardConstraints},
 		ArtifactStore:              artifactStore,
 		WorkspaceInspectionQueries: workspaceInspectionQueries,
+		WorkspaceHeadAuditor:       workspaceProvider,
 		Matcher:                    matcher,
 		Cursor:                     cursorCodec,
 		Isolation:                  isolationChecker,

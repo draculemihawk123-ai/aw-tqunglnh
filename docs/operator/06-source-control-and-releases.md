@@ -56,11 +56,12 @@ aw release-set list --project-id <id>
 
 A `RepositoryWorkspace` is the real, provisioned Git worktree a WorkItem's own `WorkspaceSet` holds for one
 repository — created automatically when a root WorkItem's `initialScope` names that repository (see
-[01-quickstart.md](01-quickstart.md)'s own `provisionedRepositories` response field). Two commands manage its
+[01-quickstart.md](01-quickstart.md)'s own `provisionedRepositories` response field). Three commands manage its
 own lifecycle directly:
 
 ```bash
 aw repository-workspace reconcile --project-id <id> --expected-version <n> --idempotency-key r-1 <id>
+aw repository-workspace adopt-head --project-id <id> --expected-version <n> --idempotency-key a-1 <id>   # see below
 aw workspace-set release --project-id <id> --expected-version <n> --idempotency-key rel-1 <workspaceSetId>
 ```
 
@@ -90,6 +91,44 @@ evidence is never reset for you): clean or discard them yourself, then reconcile
 
 `aw workspace-set show` lists every generation; pick the one with the highest `generation` (the `READY` one) when a
 script needs the current worktree.
+
+### A commit made outside aw (V11-01, ADR-034)
+
+aw records, for each repository workspace, the revision it expects the worktree to be on: `currentRevision` (see
+`aw workspace-set show`). It only moves forward through an aw local commit (above) or `adopt-head` (below). If you —
+or an IDE — run `git commit` in the worktree directly, HEAD moves and aw no longer agrees with Git. aw never papers
+over that: nothing you committed outside aw is treated as aw's own until you say so.
+
+What aw does when HEAD and `currentRevision` differ:
+
+- `aw run start` (and `POST /work-items/{id}/runs`) refuse with `WORKSPACE_HEAD_DRIFT: …`, naming the repository, both
+  revisions, how many commits were made outside aw and the exact `adopt-head` command. This check needs the Git
+  worktree: `aw run start` makes it when `--workspace-root` / `AW_WORKSPACE_ROOT` is set, and skips it otherwise.
+- A run that was already started keeps the revision it pinned (a run's manifest never changes). Its first
+  `MACHINE_GATE` fails closed with `VALIDATION_FAILED`, and the attempt's `failureDetail` in `aw run timeline` is the
+  same typed `WORKSPACE_HEAD_DRIFT` explanation, with the commits (hash, author, subject). Cancel that run and start
+  again after you resolve the drift.
+- `aw release-set local-commit` does not build a commit on top of the outside commits: the operation ends `FAILED`
+  with `failureReason: "HEAD_DRIFT"` before any `git commit` (a failure reason on the operation, like `NO_CHANGES`).
+
+To **keep** the outside commits, record them:
+
+```bash
+aw repository-workspace adopt-head --project-id <id> --expected-version <n> --idempotency-key a-1 <repositoryWorkspaceId>
+# result: previousRevision, adoptedRevision, adoptedCommitCount, adoptedCommits[] (commit, author, subject), version
+```
+
+`adopt-head` is synchronous and is refused unless all of these hold: the workspace is `READY` (a `QUARANTINED` one is
+refused with `WORKSPACE_QUARANTINED`; use `reconcile`), no attempt holds the write lease, the worktree is clean (no
+uncommitted change), HEAD descends from the recorded `currentRevision` in a straight line (it does not after a
+`git reset` or a rebase), and HEAD really differs from it. On success it sets `currentRevision` to HEAD, adds one to the
+workspace `version`, and appends a `WorkspaceHeadAdopted` event with the commits, their authors and the operator.
+Repeating the same `--idempotency-key` replays the result; a stale `--expected-version` is refused. The code in those
+commits did not pass any aw gate, but from now on aw treats it as part of the family's history — the gates of later
+runs still run on it. The kit wraps this as `kit/scripts/adopt-head.sh`.
+
+To **not** keep them, put the worktree back on the recorded revision (for example `git -C <worktree> reset --hard
+<currentRevision>`) before the next run; `aw` never resets a worktree for you.
 
 ## Read-only source/diff/log — never an interactive terminal
 

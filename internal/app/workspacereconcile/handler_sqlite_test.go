@@ -162,6 +162,7 @@ type realFixture struct {
 	projectID      string
 	familyID       string
 	workspaceSetID string
+	workItemID     string
 	repositoryID   string
 	rw             workspace.RepositoryWorkspace
 	repoPath       string
@@ -209,7 +210,7 @@ func newRealFixture(t *testing.T, dbName string) *realFixture {
 
 	return &realFixture{
 		store: store, uow: uow, ids: ids, provider: provider,
-		projectID: "project-1", familyID: root.FamilyID, workspaceSetID: root.WorkspaceSetID,
+		projectID: "project-1", familyID: root.FamilyID, workspaceSetID: root.WorkspaceSetID, workItemID: root.WorkItemID,
 		repositoryID: "repo-a", rw: rw, repoPath: repoPath,
 	}
 }

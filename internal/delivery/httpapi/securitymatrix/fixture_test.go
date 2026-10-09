@@ -230,6 +230,7 @@ func newEnv(t *testing.T) *env {
 		UnitOfWork:                 uow,
 		ArtifactStore:              artifactStoreImpl,
 		WorkspaceInspectionQueries: inspectionQueries,
+		WorkspaceHeadAuditor:       workspaceProvider,
 		Matcher:                    matcher,
 		Cursor:                     cursorCodec,
 		Isolation:                  process.NewIsolationChecker(),

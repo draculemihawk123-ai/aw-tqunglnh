@@ -125,6 +125,22 @@ export function abandonReleaseSet(projectId: string, releaseSetId: string, body:
   return request<AbandonReleaseSetResponse>("POST", `/projects/${projectId}/release-sets/${releaseSetId}/abandon`, body, opts);
 }
 
+export interface AdoptWorkspaceHeadResponse {
+  repositoryWorkspaceId: string;
+  projectId: string;
+  repositoryId: string;
+  previousRevision: string;
+  adoptedRevision: string;
+  adoptedCommitCount: number;
+  adoptedCommits: unknown[];
+  version: number;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/adopt-head (scope: PROJECT)
+export function adoptWorkspaceHead(projectId: string, repositoryWorkspaceId: string, body: unknown, opts: RequestOptions = {}): Promise<AdoptWorkspaceHeadResponse> {
+  return request<AdoptWorkspaceHeadResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/adopt-head`, body, opts);
+}
+
 export interface AppendMessageRequest {
   attemptId?: string;
   role: string;

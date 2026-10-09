@@ -120,6 +120,7 @@ func registerClassifications(c *Catalog) {
 	c.ignore("REPOSITORY_WORKSPACE_RECREATED", 1, "RepositoryWorkspace health/lifecycle — out of scope, see REPOSITORY_WORKSPACE_QUARANTINED.")
 	c.ignore("WorkspaceSetReleaseRequested", 1, "ReleaseSet/local-Git operation, a separate screen's own concern (V6-10F), no Kanban card surface.")
 	c.ignore("WorkspaceReconciliationRequested", 1, "Workspace reconcile operation, no Kanban card surface.")
+	c.ignore("WorkspaceHeadAdopted", 1, "Operator adopted commits made outside aw into a workspace's recorded revision (V11-01); an audit record, no Kanban card surface.")
 
 	// --- Ignore: ReleaseSet local commit (internal/app/releasesetcommit) ---
 

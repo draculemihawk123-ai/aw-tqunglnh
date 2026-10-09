@@ -9,6 +9,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/app/workspacereconcile"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 )
 
@@ -124,6 +125,13 @@ func StartWorkflowRunHandler(deps Dependencies) http.HandlerFunc {
 				return
 			}
 			httpapi.WriteReceiptReplay(w, receipt)
+			return
+		}
+
+		// V11-01: a worktree HEAD that is not the revision aw recorded would only
+		// surface at the run's first machine gate; say so now, before any agent node.
+		if err := workspacereconcile.CheckFamilyWorkspaceHeads(ctx, deps.UOW, deps.HeadAuditor, workItemID); err != nil {
+			writeStartWorkflowRunError(w, err)
 			return
 		}
 

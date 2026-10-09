@@ -48,6 +48,10 @@ import (
 type Dependencies struct {
 	UOW ports.UnitOfWork
 	IDs idsource.Source
+	// HeadAuditor (V11-01) lets startWorkflowRun refuse early, with an
+	// explanation, when a worktree's HEAD is not the revision aw recorded (a
+	// commit made outside aw). Nil skips that preflight.
+	HeadAuditor ports.WorkspaceHeadAuditor
 }
 
 // RegisterRoutes registers this package's own two route fragments —

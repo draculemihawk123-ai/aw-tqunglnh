@@ -785,6 +785,21 @@ func GetRunTimeline(ctx context.Context, uow ports.UnitOfWork, matcher redact.Ma
 			}
 			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.ScopeViolationDetailFromRecords(records))
 		}
+		// V11-01: a MACHINE_GATE attempt that FAILED with VALIDATION_FAILED because
+		// the worktree HEAD is not the revision the run pinned (a commit made outside
+		// aw) shows which commits, read from its WORKSPACE_HEAD_DRIFT diagnostic.
+		for i := range timeline.Entries {
+			entry := &timeline.Entries[i]
+			if entry.Kind != TimelineEntryExecutionAttempt || entry.FailureDetail != "" ||
+				entry.FailureCode != string(errorcode.CodeValidationFailed) {
+				continue
+			}
+			records, err := tx.AgentEvents().ListByAttemptAndKind(ctx, entry.AttemptID, string(ports.AgentEventDiagnostic))
+			if err != nil {
+				return err
+			}
+			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.WorkspaceHeadDriftDetailFromRecords(records))
+		}
 		// V9-20: an attempt that FAILED because the provider CLI itself reported a
 		// failure (a session or usage limit, an auth problem) shows the provider's
 		// reason. Only FAILED attempts with a provider read their DIAGNOSTIC events.

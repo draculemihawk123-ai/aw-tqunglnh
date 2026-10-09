@@ -79,12 +79,21 @@ const (
 	// machine-readable failure REASON on the operation, deliberately not a
 	// new errorcode.Code: that enum is closed (go-core-spec §18).
 	FailureNoChanges ReleaseSetLocalCommitFailureReason = "NO_CHANGES"
+	// FailureHeadDrift (V11-01): the worktree's HEAD is not the revision aw
+	// recorded as the RepositoryWorkspace's CurrentRevision — someone committed
+	// in the worktree outside aw (an IDE, a terminal). A local commit created on
+	// top of that HEAD would fold the outside commits into the history aw treats
+	// as its own with no audit and no gate, so the operation closes FAILED before
+	// any `git commit`. Determinate: retrying the job cannot change it. The
+	// operator adopts the commits (`aw repository-workspace adopt-head`) or puts
+	// the worktree back, then requests a new local commit.
+	FailureHeadDrift ReleaseSetLocalCommitFailureReason = "HEAD_DRIFT"
 )
 
 // IsValid reports whether reason is one of this type's own closed set.
 func (r ReleaseSetLocalCommitFailureReason) IsValid() bool {
 	switch r {
-	case FailureWorkspaceQuarantined, FailureMarkerDrift, FailureNoChanges:
+	case FailureWorkspaceQuarantined, FailureMarkerDrift, FailureNoChanges, FailureHeadDrift:
 		return true
 	default:
 		return false

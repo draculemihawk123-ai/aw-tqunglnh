@@ -259,11 +259,13 @@ func workItemRoutes() []Route {
 func runRoutes() []Route {
 	deps := func(d *Deps) run.Dependencies {
 		return run.Dependencies{
-			UOW: d.UoW, IDs: d.ids(), Isolation: d.Isolation, Agents: d.Agents,
+			UOW: d.UoW, IDs: d.ids(), HeadAuditor: d.WorkspaceHeadAuditor, Isolation: d.Isolation, Agents: d.Agents,
 			Matcher: d.Matcher, Now: d.Now, Sleep: d.Sleep,
 		}
 	}
-	const runNeeds = NeedUoW | NeedIsolation | NeedAgents
+	// NeedWorkspaceIfConfigured: `run start` audits worktree HEADs when
+	// --workspace-root is given, and works exactly as before without it.
+	const runNeeds = NeedUoW | NeedIsolation | NeedAgents | NeedWorkspaceIfConfigured
 	return []Route{
 		route(runNeeds, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return run.Start(ctx, deps(d), a, s.Stdout, s.Stderr)
@@ -391,7 +393,7 @@ func workspaceRoutes() []Route {
 	deps := func(d *Deps) workspace.Dependencies {
 		return workspace.Dependencies{
 			UOW: d.UoW, IDs: d.ids(), Authority: workapp.NewEligibilityAuthority(d.UoW),
-			Reader: d.WorkspaceReader, Now: d.Now,
+			Reader: d.WorkspaceReader, HeadAuditor: d.WorkspaceHeadAuditor, Now: d.Now,
 		}
 	}
 	const needs = NeedUoW | NeedWorkspace
@@ -417,6 +419,9 @@ func workspaceRoutes() []Route {
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceReconcile(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "reconcile"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceAdoptHead(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "adopt-head"),
 	}
 }
 

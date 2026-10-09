@@ -98,6 +98,11 @@ type Dependencies struct {
 	// itself built from a real internal/adapters/gitworktree.Provider
 	// rooted at the composition root's own --workspace-root.
 	WorkspaceInspectionQueries *appworkspaceinspection.Queries
+	// WorkspaceHeadAuditor (V11-01) is how the adopt-head route reads a
+	// worktree's HEAD: the same real Git workspace provider that backs
+	// WorkspaceInspectionQueries. May be nil in a composition without one; the
+	// route then answers UNAVAILABLE.
+	WorkspaceHeadAuditor ports.WorkspaceHeadAuditor
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -219,7 +224,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// V6-04: WorkItem/family/readiness/scope-expansion routes.
 	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: deps.UnitOfWork, IDs: idsource.Random{}, Clock: clock.System{}})
 	// V6-06: Run start/cancel controls.
-	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}})
+	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}, HeadAuditor: deps.WorkspaceHeadAuditor})
 	// V6-06B: Run detail/graph/timeline query routes. Reuses the SAME
 	// process-lifetime matcher/cursor every other redacting/paging route
 	// in this process reuses.
@@ -228,7 +233,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	decision.RegisterRoutes(routes, decision.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}})
 	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
 	// and release/reconcile request routes.
-	httpapi.RegisterWorkspaceRoutes(routes, deps.UnitOfWork, idsource.Random{})
+	httpapi.RegisterWorkspaceRoutes(routes, deps.UnitOfWork, idsource.Random{}, deps.WorkspaceHeadAuditor, deps.Matcher)
 	// V6-10D: bounded source/diff/repository-log inspection routes, backed
 	// by the real gitworktree-rooted Queries the composition root built.
 	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: deps.WorkspaceInspectionQueries})

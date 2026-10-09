@@ -49,5 +49,6 @@ out=$(mktemp) err=$(mktemp)
 trap 'rm -f "$out" "$err"' EXIT
 "$AW" run start --workflow-version-id "$wf" --idempotency-key "run-$work_item-$((runs + 1))" "$work_item" \
   > "$out" 2> "$err" || true
-run_id=$(jq -er '.result.runId' "$out" 2> /dev/null) || { echo "run start bị từ chối:" >&2; cat "$err" >&2; exit 1; }
+run_id=$(jq -er '.result.runId' "$out" 2> /dev/null) || { echo "run start bị từ chối:" >&2; cat "$err" >&2
+  if grep -q WORKSPACE_HEAD_DRIFT "$err"; then echo "Giữ các commit ngoài aw: adopt-head.sh [repositoryId], rồi chạy lại script này." >&2; fi; exit 1; }
 "$(dirname "$0")/watch-run.sh" "$run_id"

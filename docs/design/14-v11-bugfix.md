@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
-> Trạng thái: **ĐANG SOẠN — chờ product owner duyệt, chưa triển khai.** File này chia task; chưa task nào được thực hiện.
-> Khi triển khai: mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
+> Đã xong: V11-01. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -33,7 +33,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 
 | Task | Lỗi | Mức | Trạng thái xác minh |
 |---|---|---|---|
-| V11-01 | Commit ngoài aw (IDE hoặc terminal) làm lệch HEAD so với revision aw ghi | Cao | **Đã tái hiện** (script trong repo) |
+| V11-01 | Commit ngoài aw (IDE hoặc terminal) làm lệch HEAD so với revision aw ghi | Cao | **XONG 2026-10-10** (ADR-034) |
 | V11-02 | Nhà cung cấp báo hết hạn mức phiên bị coi là lỗi thực thi thường, đốt hết lần thử | Cao | **Đã gặp thật** (bench B0/B1) |
 | V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | Đã tái hiện; nguyên nhân gốc **cần xác minh** |
 | V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | Đã tái hiện (prompt dump) |
@@ -99,6 +99,43 @@ Mặc định làm tuần tự theo Task ID.
 - **Hoàn thành khi:** thông báo lỗi nêu nguyên nhân, có đường nhận commit ngoài có audit, test hồi quy xanh, tài liệu và ADR có.
 - **Rủi ro:** nhận commit ngoài làm mã chưa qua gate được ghi vào lịch sử aw coi là hợp lệ; vì vậy chỉ do hành động tường minh
   của người vận hành, có audit, và gate của các run sau vẫn chạy trên mã đó.
+
+### Kết quả triển khai V11-01 (2026-10-10, ADR-034)
+
+Khảo sát đầu task, rồi chỗ đã làm:
+
+- **Nơi so HEAD với revision đã ghim:** chỉ `staleMountRevision` của `MACHINE_GATE`. Node agent/command và
+  `handleMutatingCancellation` không so như vậy: cái sau dùng `CaptureRevision` để phân xử attempt bị hủy, không phải để
+  phát hiện commit ngoài.
+- **Run đang chờ duyệt:** mọi attempt của một run lấy revision từ `ExecutionManifest.BaseRevisionSet` (bất biến, ADR-011) và
+  `run_manifest_amendments` chỉ ghi phiên bản scope đã duyệt, không ghi revision. Dùng nó cần migration và đổi ngữ nghĩa
+  ghim, nên **không** cập nhật pin của run đang chạy: sau `adopt-head` run đó vẫn báo drift và diagnostic nói rõ phải hủy rồi
+  chạy lại.
+- **Báo lệch hiện nay:** `aw workspace-set show` chỉ đọc cơ sở dữ liệu nên không thấy commit ngoài. `repository-workspace
+  diff|source|log` nhận revision do người gọi đưa (UI lấy từ `currentRevision` trong DB) và adapter chỉ cho revision bằng
+  `baseRevision` hoặc HEAD sống (`authorizeRevision`), nên sau commit ngoài, truyền `currentRevision` cũ cho lỗi chung
+  "invalid, unauthorized, or unreadable revision" thay vì nêu nguyên nhân. Chưa sửa (ngoài phạm vi V11-01); hết sau
+  `adopt-head`. Đã thêm `AuditHead` làm nguồn đọc lệch.
+
+Đã làm (khớp thiết kế, kèm hai điều chỉnh):
+
+1. `WORKSPACE_HEAD_DRIFT`: diagnostic ghi vào `agent_events` của attempt gate, đọc thành `failureDetail` trong
+   `aw run timeline` và `show-run.sh`; attempt vẫn `VALIDATION_FAILED` (không thêm mã lỗi vào enum đóng).
+2. `aw repository-workspace adopt-head` / `POST …/adopt-head` / `adopt-head.sh`, sự kiện `WorkspaceHeadAdopted`.
+3. Chạy lại **không đổi pin của run đang chờ**: diagnostic hướng dẫn hủy và bắt đầu lại.
+4. `aw run start` và `POST /work-items/{id}/runs` từ chối khi HEAD lệch (không có cờ `--adopt-head`); CLI chỉ kiểm khi có
+   `--workspace-root`.
+5. **Điều chỉnh ngoài danh sách thiết kế:** `release-set local-commit` cũng chặn trên HEAD lệch (`FAILED/HEAD_DRIFT`,
+   migration 0049), vì nếu không commit của aw sẽ nuốt commit ngoài mà không audit. Đây là điều V11-07 mục "Không hồi quy"
+   đã giả định.
+6. Kit: `commit-task.sh` dừng sớm kèm danh sách commit; `run-task.sh`/`retry-task.sh` gợi ý `adopt-head.sh`.
+7. Tài liệu: `docs/operator/06` (mục "A commit made outside aw"), `09`, `03`; ADR-034; dòng 7 của Screen 9 trong UX artifact.
+
+Chưa chạy được trên máy này: `kit/tests/check-kit.sh` với `WALK_ALL=1` và hai script tái hiện (Linux-only, cần `jq`;
+máy Windows hiện tại không có `jq` và `os.killpg`). Phần engine được chứng minh bằng test Go với Git và SQLite thật
+(`internal/app/workspacereconcile/adopt_head_sqlite_test.go`, `head_preflight_sqlite_test.go`,
+`internal/app/runtime/gate_head_drift_test.go`, `internal/app/releasesetcommit/headdrift_test.go`,
+`internal/adapters/gitworktree/headaudit_test.go`).
 
 ## V11-02 — Hết hạn mức phiên của nhà cung cấp bị coi là lỗi thực thi thường
 

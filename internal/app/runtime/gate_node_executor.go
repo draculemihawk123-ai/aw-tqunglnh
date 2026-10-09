@@ -219,9 +219,13 @@ func (e *GateNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionR
 	}
 	request.WorkspaceMounts = resolved.mounts
 
-	if staleRepositoryID, staleErr := staleMountRevision(ctx, e.workspaces, resolved.mounts); staleErr != nil {
+	if stale, staleErr := staleMountRevision(ctx, e.workspaces, resolved.mounts); staleErr != nil {
 		return ports.NodeExecutionResult{}, fmt.Errorf("runtime: check gate mount revision freshness: %w", staleErr)
-	} else if staleRepositoryID != "" {
+	} else if stale != nil {
+		// V11-01: still fail-closed with the same classification, but say why. The
+		// attempt row keeps only the error code; the diagnostic carries the
+		// repository, both revisions and the commits made outside aw.
+		e.recordHeadDrift(ctx, req, resolved, *stale)
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 			ErrorCode: errorcode.CodeValidationFailed,
@@ -576,24 +580,53 @@ func maxSeverityVerdict(a, b gate.Verdict) gate.Verdict {
 	return a
 }
 
+// staleMount is a mount whose worktree HEAD is no longer the revision this
+// Attempt's ContextSnapshot pinned.
+type staleMount struct {
+	mount ports.AgentWorkspaceMount
+	// liveRevision is the worktree's HEAD now.
+	liveRevision string
+}
+
 // staleMountRevision re-captures every resolved mount's own LIVE on-disk
 // revision and compares it against what this Attempt's own ContextSnapshot
 // already pinned (mount.VCSObjectID) — the identical CaptureRevision
 // primitive V5-08C's own handleMutatingCancellation already uses for the
 // same "has anything actually changed since we pinned this" question.
-// Returns the first mismatched RepositoryID found (empty string when
-// every mount is still fresh).
-func staleMountRevision(ctx context.Context, workspaces ports.WorkspaceProvider, mounts []ports.AgentWorkspaceMount) (project.RepositoryID, error) {
+// Returns the first mismatched mount found (nil when every mount is still
+// fresh).
+func staleMountRevision(ctx context.Context, workspaces ports.WorkspaceProvider, mounts []ports.AgentWorkspaceMount) (*staleMount, error) {
 	for _, mount := range mounts {
 		current, err := workspaces.CaptureRevision(ctx, mount.Handle)
 		if err != nil {
-			return "", fmt.Errorf("capture current revision for repository %s: %w", mount.RepositoryID, err)
+			return nil, fmt.Errorf("capture current revision for repository %s: %w", mount.RepositoryID, err)
 		}
 		if current.VCSObjectID != mount.VCSObjectID {
-			return mount.RepositoryID, nil
+			return &staleMount{mount: mount, liveRevision: current.VCSObjectID}, nil
 		}
 	}
-	return "", nil
+	return nil, nil
+}
+
+// recordHeadDrift writes the WORKSPACE_HEAD_DRIFT diagnostic for a stale mount
+// (V11-01). When the workspace provider can audit HEAD (ports.WorkspaceHeadAuditor,
+// satisfied by gitworktree.Provider) the line names the commits made outside aw;
+// otherwise, or when the audit fails, it states only that HEAD differs. Best
+// effort: the attempt is already classified, and a failure to annotate it must
+// not change that.
+func (e *GateNodeExecutor) recordHeadDrift(ctx context.Context, req ports.NodeExecutionRequest, resolved resolvedExecutionResources, stale staleMount) {
+	facts := agentevents.HeadDriftFacts{
+		RepositoryID: string(stale.mount.RepositoryID), Pinned: stale.mount.VCSObjectID, Head: stale.liveRevision,
+	}
+	if auditor, ok := e.workspaces.(ports.WorkspaceHeadAuditor); ok {
+		if audit, err := auditor.AuditHead(ctx, ports.AuditHeadRequest{Handle: stale.mount.Handle, PinnedRevision: stale.mount.VCSObjectID}); err == nil {
+			facts.Audited, facts.FastForward, facts.TotalCommits, facts.Commits = true, audit.FastForward, audit.TotalCommits, audit.Commits
+		}
+	}
+	_ = agentevents.RecordWorkspaceHeadDrift(ctx, agentevents.ScopeViolationRecord{
+		AttemptID: req.AttemptID, JobLease: req.JobLease, WriteLeases: resolved.writeLeaseGrants,
+		UOW: e.uow, IDs: e.ids, Clock: e.clk, Matcher: e.matcher,
+	}, facts)
 }
 
 // scratchDirectory creates a fresh, empty, local temp directory outside
