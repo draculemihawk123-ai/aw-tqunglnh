@@ -442,15 +442,12 @@ Board hiện "thay thế cho ..." và WorkItem cũ hiện "bị thay bởi ...".
 6. **Kit và tài liệu.** `retry-task.sh` gọi `aw work-item retry` (giữ phần in lỗi của bước kiểm tra); thêm `recreate-task.sh` mỏng; cập nhật
    `docs/operator/`, hướng dẫn issue-tracker (bỏ bước "hủy trên web rồi `run-task.sh`" khỏi luồng sửa lỗi), thêm ADR cho hai lệnh mới.
 
-### Quyết định cần chốt với product owner
+### Quyết định đã chốt (product owner)
 
-1. **Hủy rồi tạo mới (B) hay đổi version đã ghim trên chính WorkItem?** B dùng các nguyên hàm hiện có (hủy, tạo con, start) nên ít rủi ro, nhưng
-   để lại một WorkItem `CANCELLED` cho mỗi lần làm lại. Phương án thay thế "đổi version đã ghim" giữ lịch sử ở một WorkItem, nhưng phá bất biến
-   "WorkItem ghim một version" (ADR mới, sự kiện kiểm toán, chỉ cho phép khi không có run mở). Đề xuất: làm B theo yêu cầu, đánh giá phương án thay
-   thế sau.
-2. **Mang theo ghi chú sang WorkItem mới theo mặc định hay không?** Đề xuất: mặc định có, người dùng bỏ được.
-3. **Giới hạn số lần làm lại** (chặn vòng lặp vô ích đã tốn tiền)? Đề xuất: không chặn cứng; hộp thoại hiện tổng chi phí các lần trước và cảnh
-   báo từ lần thứ ba.
+1. **Làm lại = hủy WorkItem cũ rồi tạo WorkItem con mới (B)**, không đổi version đã ghim trên chính WorkItem. Giữ bất biến "WorkItem ghim một
+   version"; mỗi lần làm lại để lại một WorkItem `CANCELLED` kèm liên kết `supersedes`. Phương án "đổi version đã ghim" không làm trong V11.
+2. **Mang theo ghi chú của người vận hành sang WorkItem mới: mặc định có**, hộp thoại có ô bỏ chọn.
+3. **Không giới hạn cứng số lần làm lại.** Hộp thoại hiện tổng chi phí các lần trước và cảnh báo từ lần thứ ba.
 
 ### Ngoài phạm vi
 
