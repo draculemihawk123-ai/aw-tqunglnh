@@ -52,4 +52,73 @@ type CreateLocalCommitRequest struct {
 	Message     string
 	AuthorName  string
 	AuthorEmail string
+	// Selection (V11-07), when set, commits only those files and nothing else; nil keeps
+	// the behavior of `git add -A` over the whole worktree.
+	Selection *LocalCommitSelection
+}
+
+// UnselectedHandling says what happens to the worktree's changes that a selective local
+// commit (V11-07) did not select.
+type UnselectedHandling string
+
+const (
+	// UnselectedKeep leaves them in the worktree, uncommitted (today's behavior and the
+	// default). A strictly read-only node that runs next sees them as a SCOPE_VIOLATION.
+	UnselectedKeep UnselectedHandling = "KEEP"
+	// UnselectedPark moves them into a hidden ref (refs/agentkit/parked/...) and cleans
+	// them from the worktree; RestoreParkedChanges puts them back.
+	UnselectedPark UnselectedHandling = "PARK"
+)
+
+// IsValid reports whether h is one of the two closed values.
+func (h UnselectedHandling) IsValid() bool { return h == UnselectedKeep || h == UnselectedPark }
+
+// LocalCommitFile names one file of a selective commit. ContentHash (and Status) are what
+// the approver saw: when set, the commit is refused with ErrChangeSetDrift if the worktree
+// no longer has exactly that content for the path. Both empty means "no drift check" (a
+// manual commit whose caller did not see hashes).
+type LocalCommitFile struct {
+	Path        string
+	Status      WorkingTreeFileStatus
+	ContentHash string
+}
+
+// LocalCommitSelection restricts a local commit to some of the worktree's changes
+// (V11-07). Files must be a non-empty subset of the change set (what differs from HEAD).
+type LocalCommitSelection struct {
+	Files []LocalCommitFile
+}
+
+var (
+	// ErrChangeSetDrift is returned by CreateLocalCommit when a selected file no longer
+	// has the content (or status) the approver saw, or is no longer changed at all.
+	// Determinate: nothing was staged or committed.
+	ErrChangeSetDrift = errors.New("the worktree no longer matches the change set that was approved")
+	// ErrPathNotInChangeSet is returned when a selected path is not changed in the worktree
+	// (and no hash says the approver saw it), or names something that is never committed
+	// (.git, a path outside the worktree).
+	ErrPathNotInChangeSet = errors.New("selected path is not part of the worktree's change set")
+	// ErrParkedRestoreConflict is returned by RestoreParkedChanges when restoring would
+	// overwrite something the worktree changed since the files were parked.
+	ErrParkedRestoreConflict = errors.New("restoring the parked changes would overwrite newer changes in the worktree")
+)
+
+// ParkedChanges describes what ParkRemainingChanges moved out of the worktree.
+type ParkedChanges struct {
+	Ref   string
+	Paths []string
+}
+
+// UnselectedChangeParker moves a worktree's remaining changes out of it, and back.
+// Declared apart from LocalCommitCreator for the same reason that port is apart from
+// WorkspaceProvider: only the release-set commit worker needs it.
+type UnselectedChangeParker interface {
+	// ParkRemainingChanges stores everything that still differs from HEAD (tracked
+	// changes, deletions and untracked files) as a commit under ref, then cleans those
+	// paths from the worktree. Idempotent: with nothing left it does nothing and returns
+	// no paths, so the commit worker may call it again after a crash.
+	ParkRemainingChanges(ctx context.Context, handle WorkspaceHandle, ref string) (ParkedChanges, error)
+	// RestoreParkedChanges writes the parked files back into the worktree and deletes ref.
+	// It refuses with ErrParkedRestoreConflict if a path was changed meanwhile.
+	RestoreParkedChanges(ctx context.Context, handle WorkspaceHandle, ref string) ([]string, error)
 }

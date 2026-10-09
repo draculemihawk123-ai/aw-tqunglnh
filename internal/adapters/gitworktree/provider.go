@@ -623,6 +623,19 @@ func (p *Provider) runGitWithEnv(
 	extraEnv []string,
 	arguments ...string,
 ) ([]byte, int, error) {
+	return p.runGitIO(ctx, directory, extraEnv, nil, arguments...)
+}
+
+// runGitIO is runGitWithEnv with an optional stdin (V11-07: pathspecs are passed to
+// `git add --pathspec-from-file=-` NUL-separated, so no path is ever parsed as an option,
+// a glob or a quoted string).
+func (p *Provider) runGitIO(
+	ctx context.Context,
+	directory string,
+	extraEnv []string,
+	stdin []byte,
+	arguments ...string,
+) ([]byte, int, error) {
 	commandArguments := append([]string{"-C", directory}, arguments...)
 	command := exec.CommandContext(ctx, p.gitExecutable, commandArguments...)
 	// GIT_OPTIONAL_LOCKS=0 (V11-06): a read such as `git status` or `git diff` must
@@ -634,6 +647,9 @@ func (p *Provider) runGitWithEnv(
 	var stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
+	if stdin != nil {
+		command.Stdin = bytes.NewReader(stdin)
+	}
 	err := command.Run()
 	if err == nil {
 		return stdout.Bytes(), 0, nil

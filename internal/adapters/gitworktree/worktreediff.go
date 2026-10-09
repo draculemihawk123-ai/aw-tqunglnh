@@ -66,53 +66,10 @@ func (p *Provider) ReadWorkingTreeDiff(ctx context.Context, req ports.ReadWorkin
 	}
 	base := req.BaseRevision.VCSObjectID
 
-	// Tracked changes against base: status letters, then line counts.
-	statusOutput, _, err := p.runGitCapped(ctx, workspacePath, maxDiffSummaryBytes, "diff", "--name-status", "-z", "--no-renames", base, "--")
+	entries, err := p.collectChangeSet(ctx, workspacePath, base)
 	if err != nil {
 		return ports.WorkingTreeDiff{}, err
 	}
-	numstatOutput, _, err := p.runGitCapped(ctx, workspacePath, maxDiffSummaryBytes, "diff", "--numstat", "-z", "--no-renames", base, "--")
-	if err != nil {
-		return ports.WorkingTreeDiff{}, err
-	}
-	untrackedOutput, _, err := p.runGitCapped(ctx, workspacePath, maxDiffSummaryBytes, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return ports.WorkingTreeDiff{}, err
-	}
-
-	statuses, err := parseNameStatusZ(statusOutput)
-	if err != nil {
-		return ports.WorkingTreeDiff{}, err
-	}
-	counts := parseNumstatCounts(numstatOutput)
-	untracked := splitNul(untrackedOutput)
-	if len(statuses)+len(untracked) > maxWorkingTreeEntries {
-		return ports.WorkingTreeDiff{}, fmt.Errorf("%w: %d paths (limit %d)", ErrWorkingTreeTooLarge, len(statuses)+len(untracked), maxWorkingTreeEntries)
-	}
-
-	entries := make([]ports.WorkingTreeFileChange, 0, len(statuses)+len(untracked))
-	for _, st := range statuses {
-		change := ports.WorkingTreeFileChange{Path: st.path, Status: st.status}
-		if c, ok := counts[st.path]; ok {
-			change.Additions, change.Deletions, change.Binary = c.additions, c.deletions, c.binary
-		}
-		if err := p.describeWorkingFile(workspacePath, &change); err != nil {
-			return ports.WorkingTreeDiff{}, err
-		}
-		entries = append(entries, change)
-	}
-	for _, name := range untracked {
-		normalized, err := normalizeReportedPath(name)
-		if err != nil {
-			return ports.WorkingTreeDiff{}, err
-		}
-		change := ports.WorkingTreeFileChange{Path: normalized, Status: ports.WorkingTreeFileAdded, Untracked: true}
-		if err := p.describeWorkingFile(workspacePath, &change); err != nil {
-			return ports.WorkingTreeDiff{}, err
-		}
-		entries = append(entries, change)
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 
 	result := ports.WorkingTreeDiff{
 		BaseRevision: req.BaseRevision, TotalFiles: len(entries), ByteLimit: byteLimit, FileLimit: fileLimit,
@@ -152,6 +109,63 @@ func (p *Provider) ReadWorkingTreeDiff(ctx context.Context, req ports.ReadWorkin
 	}
 	result.Files = entries
 	return result, nil
+}
+
+// collectChangeSet returns every path whose worktree state differs from revision (tracked
+// modifications, deletions, type changes and untracked files that are not ignored), sorted
+// by path, each with size and content hash. It is the one definition of "the change set"
+// shared by ReadWorkingTreeDiff and the selective local commit (V11-07), so what an approver
+// is shown is exactly what a commit is checked against.
+func (p *Provider) collectChangeSet(ctx context.Context, workspacePath, base string) ([]ports.WorkingTreeFileChange, error) {
+	// Tracked changes against base: status letters, then line counts.
+	statusOutput, _, err := p.runGitCapped(ctx, workspacePath, maxDiffSummaryBytes, "diff", "--name-status", "-z", "--no-renames", base, "--")
+	if err != nil {
+		return nil, err
+	}
+	numstatOutput, _, err := p.runGitCapped(ctx, workspacePath, maxDiffSummaryBytes, "diff", "--numstat", "-z", "--no-renames", base, "--")
+	if err != nil {
+		return nil, err
+	}
+	untrackedOutput, _, err := p.runGitCapped(ctx, workspacePath, maxDiffSummaryBytes, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return nil, err
+	}
+
+	statuses, err := parseNameStatusZ(statusOutput)
+	if err != nil {
+		return nil, err
+	}
+	counts := parseNumstatCounts(numstatOutput)
+	untracked := splitNul(untrackedOutput)
+	if len(statuses)+len(untracked) > maxWorkingTreeEntries {
+		return nil, fmt.Errorf("%w: %d paths (limit %d)", ErrWorkingTreeTooLarge, len(statuses)+len(untracked), maxWorkingTreeEntries)
+	}
+
+	entries := make([]ports.WorkingTreeFileChange, 0, len(statuses)+len(untracked))
+	for _, st := range statuses {
+		change := ports.WorkingTreeFileChange{Path: st.path, Status: st.status}
+		if c, ok := counts[st.path]; ok {
+			change.Additions, change.Deletions, change.Binary = c.additions, c.deletions, c.binary
+		}
+		if err := p.describeWorkingFile(workspacePath, &change); err != nil {
+			return nil, err
+		}
+		entries = append(entries, change)
+	}
+	for _, name := range untracked {
+		normalized, err := normalizeReportedPath(name)
+		if err != nil {
+			return nil, err
+		}
+		change := ports.WorkingTreeFileChange{Path: normalized, Status: ports.WorkingTreeFileAdded, Untracked: true}
+		if err := p.describeWorkingFile(workspacePath, &change); err != nil {
+			return nil, err
+		}
+		entries = append(entries, change)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
+	return entries, nil
 }
 
 type nameStatus struct {
