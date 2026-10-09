@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01 … V11-05. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-06. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -38,7 +38,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | **XONG 2026-10-10** (ADR-036) |
 | V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | **XONG 2026-10-10** (ADR-037) |
 | V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | **XONG 2026-10-10** (ADR-038) |
-| V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **Đã gặp thật** (chạy issue-tracker C-01 trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
+| V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **XONG 2026-10-10** (ADR-039); đã gặp thật khi chạy issue-tracker C-01 trên Windows, 2026-10-09 |
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | Cơ chế **đã đọc trong mã**; thiết kế cần product owner chốt 6 điểm (mục "Quyết định cần chốt" của V11-07) |
 | V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | Chính sách đã nêu; hiệu ứng lên chi phí và chất lượng **chưa đo** |
 | V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện và vá tạm** trên Windows 11 (Git 2.55); chạy tay file `.cmd` đã vá cho kết quả đúng; chưa thử trên máy khác |
@@ -295,6 +295,21 @@ Test: `TestClaudeAdapterPassesSafeModeOnStartAndResumeOnly`, `TestNewAgentExecut
   chụp màn hình tab Diff trước khi duyệt.
 - **Cách làm tạm trong lúc chưa có:** `cd "$(worktree-path.sh contracts)" && git status --short && git diff`; chỉ xem, không thao
   tác Git ghi. Đã ghi vào hướng dẫn issue-tracker (bước duyệt C-01); chưa ghi vào `docs/operator/`.
+
+### Kết quả triển khai V11-06 (2026-10-10, ADR-039)
+
+Làm theo đề xuất, với một điều chỉnh: **không thêm route**, dùng `result=WORKING_TREE` của route diff hiện có (xem ADR-039) để giữ 1:1 giữa parity, CLI, contract và UI.
+
+- Adapter `gitworktree.ReadWorkingTreeDiff` (`worktreediff.go`): tracked `git diff <base> --`, untracked qua `ls-files --others --exclude-standard` + `diff --no-index`,
+  file nhị phân/symlink chỉ tên và kích thước, `contentHash` từng file, `changeSetDigest`, giới hạn byte/file/dòng và 20000 đường dẫn. Mọi lệnh git của adapter chạy với `GIT_OPTIONAL_LOCKS=0`.
+- App `GetWorkingTreeDiff`: từ chối khi workspace có lease ghi (`ErrWorkspaceWriterActive` → 409), `base` vẫn qua `authorizeRevision`.
+- HTTP + CLI `--working-tree` + contract/`generated.ts` được sinh lại; UI: tab Workspace mặc định hiện `UNCOMMITTED` khi worktree có thay đổi, thông điệp khi trống nói rõ
+  "No committed changes" hoặc "nothing is uncommitted"; thẻ duyệt ở tab Graph có dòng "N files changed, +x −y" và nút View changes; lỗi đọc hiện lý do.
+- Docs: operator 06, hướng dẫn issue-tracker (bước C-01), ADR-039.
+
+Test: adapter với repo Git thật (file sửa, mới, xóa, nhị phân, quá giới hạn, symlink ra ngoài; sau mỗi lần đọc `git status --porcelain`, HEAD và hash `.git/index` không đổi),
+HTTP (`workingtree_test.go`: 200 có thay đổi, worktree sạch, 409 khi lease ghi còn sống, 400 khi base sai/thiếu phạm vi), CLI, Vitest (`TaskDetail.uncommitted.test.tsx`, 8 ca).
+`go test ./...`, `go vet`, docs-coverage, `pnpm typecheck` và toàn bộ Vitest (279) xanh. **Chưa làm:** chạy lại C-01 trên bản cài thật và chụp màn hình tab Diff (không có môi trường để chạy với CLI có tài khoản); chưa có Playwright cho màn này.
 
 ## V11-07 — Duyệt và commit trong một thao tác, chọn được file, làm hoàn toàn trên web
 

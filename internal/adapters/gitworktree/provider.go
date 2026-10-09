@@ -625,7 +625,11 @@ func (p *Provider) runGitWithEnv(
 ) ([]byte, int, error) {
 	commandArguments := append([]string{"-C", directory}, arguments...)
 	command := exec.CommandContext(ctx, p.gitExecutable, commandArguments...)
-	command.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0"), extraEnv...)
+	// GIT_OPTIONAL_LOCKS=0 (V11-06): a read such as `git status` or `git diff` must
+	// not refresh the index on disk behind the operator's back — HEAD, the index and
+	// the working tree stay byte-for-byte what they were. Required locks (add,
+	// commit) are unaffected.
+	command.Env = append(append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"), extraEnv...)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	command.Stdout = &stdout

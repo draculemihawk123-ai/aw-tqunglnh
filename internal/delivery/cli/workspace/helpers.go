@@ -123,6 +123,10 @@ func mapInspectionQueryError(err error) error {
 		return errors.New("workspace: repository workspace not found")
 	case errors.Is(err, appinspection.ErrWorkspaceNotReady):
 		return errors.New("workspace: repository workspace is not currently READY for inspection")
+	case errors.Is(err, appinspection.ErrWorkspaceWriterActive):
+		return errors.New("workspace: an attempt is writing to this repository workspace, so its uncommitted state is in flux; wait for it to finish or cancel it")
+	case errors.Is(err, ports.ErrWorkingTreeTooLarge):
+		return errors.New("workspace: the worktree has too many changed paths to describe; add the generated files to .gitignore or remove them")
 	default:
 		return errors.New("workspace: the request names an invalid, unauthorized, or unreadable revision, path, or cursor")
 	}

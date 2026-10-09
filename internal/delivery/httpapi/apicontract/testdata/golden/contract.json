@@ -2339,6 +2339,21 @@
             "name": "PatchTruncated",
             "jsonTag": "patchTruncated",
             "type": "bool"
+          },
+          {
+            "name": "Uncommitted",
+            "jsonTag": "uncommitted,omitempty",
+            "type": "bool"
+          },
+          {
+            "name": "TotalFiles",
+            "jsonTag": "totalFiles,omitempty",
+            "type": "int"
+          },
+          {
+            "name": "ChangeSetDigest",
+            "jsonTag": "changeSetDigest,omitempty",
+            "type": "string"
           }
         ]
       }

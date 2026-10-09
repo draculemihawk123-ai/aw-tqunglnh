@@ -768,6 +768,9 @@ export interface GetWorkspaceDiffResponse {
   fileLimit: number;
   filesTruncated: boolean;
   patchTruncated: boolean;
+  uncommitted?: boolean;
+  totalFiles?: number;
+  changeSetDigest?: string;
 }
 
 // GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/diff (scope: PROJECT)

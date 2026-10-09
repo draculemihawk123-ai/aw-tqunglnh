@@ -301,10 +301,13 @@ Run: 25dbcd50-…  state: RUNNING
 hộ. `evidence list` cho thấy từng lần: `COMMAND_EXECUTION FAILED, FAILED, SUCCEEDED, SUCCEEDED`. Xem spec trong worktree
 (`worktree-path.sh contracts`), rồi duyệt và commit.
 
-> **Xem thay đổi trước khi duyệt.** Tab Diff của UI so sánh hai **commit**, nên ở cổng duyệt (chưa commit) nó hiện "0 files
-> changed". Hãy xem trong worktree, chỉ đọc: `cd "$(worktree-path.sh contracts)" && git status --short && git diff` (file mới
-> chỉ có trong `git status`; xem bằng `cat`). Đừng `git add`, `git commit` hay `checkout` ở đó: commit ngoài `aw` làm lệch HEAD
-> so với revision `aw` đã ghi (xem V11-01 và V11-06 trong `docs/design/14-v11-bugfix.md`).
+> **Xem thay đổi trước khi duyệt.** Mở trang Task → tab Workspace: mục Diff mặc định hiện **thay đổi chưa commit** của worktree
+> (nhãn `UNCOMMITTED`), gồm file sửa, file mới (`untracked`), file xóa; file nhị phân chỉ có tên và kích thước. Thẻ duyệt ở tab
+> Graph cũng ghi "N files changed, +x −y" kèm nút **View changes**. Bằng CLI: `aw repository-workspace diff … --working-tree`
+> (xem `docs/operator/06-source-control-and-releases.md`). Chỉ đọc; trong lúc có attempt đang ghi thì trả 409, chờ nó xong. Đừng
+> `git add`, `git commit` hay `checkout` trong worktree: commit ngoài `aw` làm lệch HEAD so với revision `aw` đã ghi (V11-01).
+> Chưa chạy lại bước này trên bản cài thật sau V11-06; nếu cần xem khi UI chưa bản mới:
+> `cd "$(worktree-path.sh contracts)" && git status --short && git diff`.
 
 Duyệt và commit:
 

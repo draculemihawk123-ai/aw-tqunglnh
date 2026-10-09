@@ -1178,9 +1178,32 @@ skill. Thiết kế V11 đề xuất hai hướng: cô lập cấu hình, hoặc
 **Hệ quả:** cài đặt muốn tái hiện được dùng `--claude-safe-mode` và đưa quy ước vào Layer/Skill của kit (đi qua ContextSnapshot). Cảnh báo kích thước file hướng dẫn
 (`--instruction-file-warn-bytes`, V9-10) vẫn ghi file mà CLI sẽ nạp; dưới `--safe-mode` CLI không nạp chúng nên cảnh báo chỉ còn tính chất thông tin. Codex chưa có cờ tương đương.
 
-## 41. Baseline sau review thiết kế
+## 41. ADR-039 — Diff của working tree là chế độ `result=WORKING_TREE` của route diff hiện có, chỉ đọc
 
-ADR-001…038 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** ở cổng `APPROVAL` agent đã ghi file vào worktree nhưng chưa commit, nên `currentRevision` chưa tiến. API diff chỉ so hai commit
+(`git diff <base> <result>`), tab Diff hiện "No changes between the base and current revision" và người duyệt quyết định mà không thấy agent đã sửa gì.
+Xem thay đổi bằng terminal lại là thao tác Git ngoài aw, chính là lỗi của V11-01.
+
+**Quyết định:**
+
+1. Không thêm route mới: `GET .../repository-workspaces/{id}/diff` nhận `result=WORKING_TREE` (thay cho revision đích). Giữ 1:1 giữa parity registry, CLI
+   (`aw repository-workspace diff --working-tree`), contract và UI; phản hồi thêm `uncommitted`, `totalFiles`, `changeSetDigest`, và mỗi file có `status`,
+   `untracked`, `symlink`, `sizeBytes`, `contentHash`. Diff giữa hai commit không có các trường này (test khẳng định).
+2. Chỉ đọc, kể cả với repository đang dùng: `GIT_OPTIONAL_LOCKS=0` cho mọi lệnh git của adapter (cả đọc commit), không `git add`/`reset`, không ghi index,
+   HEAD không đổi. Tracked đọc bằng `git diff <base> --`, untracked bằng `git ls-files --others --exclude-standard` rồi `git diff --no-index` với file rỗng,
+   từng file, có giới hạn byte/file/dòng của `ReadDiff`. Không đi theo symlink ra ngoài worktree; file nhị phân chỉ trả tên và kích thước; bỏ `.git`.
+3. Từ chối khi có attempt ghi (`409`, giữ lease ghi): worktree đang đổi thì kết quả nửa chừng còn tệ hơn không có kết quả. Quá 20000 đường dẫn đổi thì `422`
+   thay vì mô tả sai.
+4. `base` vẫn phải là revision đã được ủy quyền của workspace (cùng `authorizeRevision` như diff giữa hai commit).
+5. `contentHash` từng file và `changeSetDigest` là đầu vào cho V11-07 (commit đúng cái đã duyệt); V11-06 chỉ tính và trả, không đối chiếu.
+6. UI: mặc định tab Workspace hiện thay đổi chưa commit khi worktree có thay đổi, nếu không thì hiện diff commit và nói rõ là "No committed changes";
+   thẻ duyệt ở tab Graph có dòng tóm tắt và nút mở tab Workspace; lỗi đọc (vd 409) hiện lý do thay vì "không có thay đổi".
+
+**Hệ quả:** cổng duyệt có cái để quyết định. Không có thao tác ghi nào từ UI (stage, sửa) — nằm ngoài V11-06; commit đúng cái đã duyệt là V11-07.
+
+## 42. Baseline sau review thiết kế
+
+ADR-001…039 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1227,5 +1250,6 @@ dụng ma trận sau:
   làm lỗi định tuyến do định nghĩa thành run `FAILED` có lý do `WORKFLOW_DEFINITION_DEFECT`.
 - ADR-037 (V11-04) bổ sung ADR-031 quyết định 6 và V9-17: `checkFailures` đi tiếp qua CHECKER chẩn đoán nằm giữa kiểm tra và maker.
 - ADR-038 (V11-05) thêm tùy chọn worker `--claude-safe-mode` (CLI Claude chạy `--safe-mode`, không nạp cấu hình người dùng và repository); mặc định tắt.
+- ADR-039 (V11-06) thêm chế độ `result=WORKING_TREE` cho route diff của workspace (thay đổi chưa commit, chỉ đọc, từ chối khi attempt đang ghi).
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

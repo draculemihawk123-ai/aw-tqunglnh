@@ -357,7 +357,7 @@ func (p *Provider) runGitCapped(ctx context.Context, directory string, maxBytes 
 	}
 	commandArguments := append([]string{"-C", directory}, arguments...)
 	command := exec.CommandContext(ctx, p.gitExecutable, commandArguments...)
-	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0")
 	stdout, pipeErr := command.StdoutPipe()
 	if pipeErr != nil {
 		return nil, false, fmt.Errorf("%w: open git stdout pipe: %v", ErrGit, pipeErr)

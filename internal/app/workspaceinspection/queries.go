@@ -61,6 +61,12 @@ var ErrScopeMismatch = errors.New("workspaceinspection: repository workspace doe
 // internal/app/readinesscheck.Handler.Handle's own identical check).
 var ErrWorkspaceNotReady = errors.New("workspaceinspection: repository workspace is not READY")
 
+// ErrWorkspaceWriterActive (V11-06) is returned by GetWorkingTreeDiff when an
+// attempt currently holds the write lease on the RepositoryWorkspace: the working
+// tree is moving, so a read of it would show half a change. The caller waits for
+// the attempt (an approval gate is exactly when none runs) or cancels it.
+var ErrWorkspaceWriterActive = errors.New("workspaceinspection: an attempt is writing to this repository workspace")
+
 // Bounds a caller-supplied limit is clamped into before ever reaching
 // ports.WorkspaceInspectionReader — "ByteLimit/LineLimit are always
 // already-clamped, positive values by the time a real adapter sees them"
@@ -118,7 +124,7 @@ type GetSourceRequest struct {
 // ports.WorkspaceInspectionReader.ReadSource for the full safety contract
 // this delegates to.
 func (q *Queries) GetSource(ctx context.Context, req GetSourceRequest) (ports.SourceContent, error) {
-	handle, err := q.resolveScope(ctx, req.Scope)
+	handle, err := q.resolveScope(ctx, req.Scope, false)
 	if err != nil {
 		return ports.SourceContent{}, err
 	}
@@ -143,7 +149,7 @@ type GetDiffRequest struct {
 // GetDiff returns the exact patch between req.BaseRevision and
 // req.ResultRevision — see ports.WorkspaceInspectionReader.ReadDiff.
 func (q *Queries) GetDiff(ctx context.Context, req GetDiffRequest) (ports.DiffContent, error) {
-	handle, err := q.resolveScope(ctx, req.Scope)
+	handle, err := q.resolveScope(ctx, req.Scope, false)
 	if err != nil {
 		return ports.DiffContent{}, err
 	}
@@ -153,6 +159,35 @@ func (q *Queries) GetDiff(ctx context.Context, req GetDiffRequest) (ports.DiffCo
 		ResultRevision: req.ResultRevision,
 		ByteLimit:      clamp(req.ByteLimit, defaultByteLimit, maxByteLimit),
 		FileLimit:      clampInt(req.FileLimit, defaultFileLimit, maxFileLimit),
+	})
+}
+
+// GetWorkingTreeDiffRequest is what a caller supplies to
+// Queries.GetWorkingTreeDiff.
+type GetWorkingTreeDiffRequest struct {
+	Scope        WorkspaceScope
+	BaseRevision workspace.Revision
+	ByteLimit    int64
+	FileLimit    int
+}
+
+// GetWorkingTreeDiff (V11-06) returns what the worktree's uncommitted state
+// differs by from req.BaseRevision — see
+// ports.WorkspaceInspectionReader.ReadWorkingTreeDiff. It refuses with
+// ErrWorkspaceWriterActive while an attempt holds the workspace's write lease.
+// The check and the read are not one atomic step (an attempt could start between
+// them); that is acceptable for a view, and anything that acts on the change set
+// (V11-07) re-derives and compares its digest under its own lock.
+func (q *Queries) GetWorkingTreeDiff(ctx context.Context, req GetWorkingTreeDiffRequest) (ports.WorkingTreeDiff, error) {
+	handle, err := q.resolveScope(ctx, req.Scope, true)
+	if err != nil {
+		return ports.WorkingTreeDiff{}, err
+	}
+	return q.reader.ReadWorkingTreeDiff(ctx, ports.ReadWorkingTreeDiffRequest{
+		Handle:       handle,
+		BaseRevision: req.BaseRevision,
+		ByteLimit:    clamp(req.ByteLimit, defaultByteLimit, maxByteLimit),
+		FileLimit:    clampInt(req.FileLimit, defaultFileLimit, maxFileLimit),
 	})
 }
 
@@ -169,7 +204,7 @@ type GetRepositoryLogRequest struct {
 // GetRepositoryLog returns one page of req.Anchor's own commit ancestry —
 // see ports.WorkspaceInspectionReader.ReadRepositoryLog.
 func (q *Queries) GetRepositoryLog(ctx context.Context, req GetRepositoryLogRequest) (ports.RepositoryLogPage, error) {
-	handle, err := q.resolveScope(ctx, req.Scope)
+	handle, err := q.resolveScope(ctx, req.Scope, false)
 	if err != nil {
 		return ports.RepositoryLogPage{}, err
 	}
@@ -189,7 +224,7 @@ func (q *Queries) GetRepositoryLog(ctx context.Context, req GetRepositoryLogRequ
 // this task's own "reload workspace/repository/project" step. This never
 // caches a prior resolution: a RepositoryWorkspace quarantined or released
 // between two calls is never inspected on stale authority.
-func (q *Queries) resolveScope(ctx context.Context, scope WorkspaceScope) (ports.WorkspaceHandle, error) {
+func (q *Queries) resolveScope(ctx context.Context, scope WorkspaceScope, rejectActiveWriter bool) (ports.WorkspaceHandle, error) {
 	if scope.ProjectID == "" || scope.RepositoryID == "" || scope.WorkspaceSetID == "" || scope.RepositoryWorkspaceID == "" {
 		return ports.WorkspaceHandle{}, fmt.Errorf(
 			"%w: project, repository, workspace set and repository workspace id are all required", ErrScopeMismatch)
@@ -197,6 +232,7 @@ func (q *Queries) resolveScope(ctx context.Context, scope WorkspaceScope) (ports
 
 	var record ports.RepositoryWorkspaceRecord
 	var repositoryProjectID string
+	var writerActive bool
 	err := q.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
 		var err error
 		record, err = tx.Work().GetRepositoryWorkspaceByID(ctx, scope.RepositoryWorkspaceID)
@@ -208,6 +244,12 @@ func (q *Queries) resolveScope(ctx context.Context, scope WorkspaceScope) (ports
 			return err
 		}
 		repositoryProjectID = string(repository.ProjectID)
+		if rejectActiveWriter {
+			writerActive, err = tx.Work().HasActiveWriteLease(ctx, []string{scope.RepositoryWorkspaceID})
+			if err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -221,6 +263,9 @@ func (q *Queries) resolveScope(ctx context.Context, scope WorkspaceScope) (ports
 	}
 	if record.Workspace.State != workspace.RepositoryWorkspaceReady {
 		return ports.WorkspaceHandle{}, ErrWorkspaceNotReady
+	}
+	if writerActive {
+		return ports.WorkspaceHandle{}, ErrWorkspaceWriterActive
 	}
 
 	handle, err := ports.NewWorkspaceHandle(record.Workspace.Locator)

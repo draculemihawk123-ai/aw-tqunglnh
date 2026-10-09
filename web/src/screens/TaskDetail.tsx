@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Badge, StatusBadge, Button, IconButton, ValidActionBar, BlockerCard,
   CopyableId, VerdictBadge, OperationNotice, Dialog, Skeleton, Select, TextField,
@@ -26,7 +26,7 @@ import { isWaivableBlockerType } from '../api/diagnostics';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
 import type { ApprovalRequestView, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView, UsageView } from '../api/rundetail';
 import { getSessionToken, withSessionToken } from '../api/session';
-import { decodeDiffPatch, fetchWorkspaceSource } from '../api/workspaceinspection';
+import { decodeDiffPatch, fetchWorkspaceSource, summarizeUncommitted, WORKING_TREE_RESULT } from '../api/workspaceinspection';
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
 import { VERDICT_OPTIONS } from '../api/releaseset';
 import type { ReleaseSetDetail, RepositoryReleaseDetail, Verdict } from '../api/releaseset';
@@ -578,13 +578,15 @@ const NODE_STYLE: Record<string, { bg: string; bd: string; fc: string }> = {
 
 interface GraphTimelineTabProps {
   projectId: string;
+  familyId?: string;
+  onOpenWorkspace?: () => void;
   runId?: string;
   runDiagnostics?: RunDiagnosticsResponse;
   isOffline?: boolean;
   onActionSettled: () => void;
 }
 
-function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActionSettled }: GraphTimelineTabProps) {
+function GraphTimelineTab({ projectId, familyId, onOpenWorkspace, runId, runDiagnostics, isOffline, onActionSettled }: GraphTimelineTabProps) {
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
@@ -736,6 +738,8 @@ function GraphTimelineTab({ projectId, runId, runDiagnostics, isOffline, onActio
               </div>
             );
           })}
+          {/* V11-06: what the approver is about to approve — the worktree's uncommitted changes */}
+          <UncommittedChangesSummary projectId={projectId} familyId={familyId} isOffline={isOffline} onOpenWorkspace={onOpenWorkspace} />
         </div>
       )}
       <div className="flex-1 flex overflow-hidden">
@@ -924,6 +928,127 @@ function shortRev(rev?: string): string {
   return rev ? rev.slice(0, 10) : '';
 }
 
+/** One repository workspace's uncommitted state (V11-06): the worktree's changes on top of its current revision. */
+function fetchWorkingTreeDiff(projectId: string, repo: RepositoryWorkspaceState): Promise<DiffContent> {
+  return getWorkspaceDiff(projectId, repo.repositoryWorkspaceId, {
+    ...withSessionToken(),
+    query: {
+      repositoryId: repo.repositoryId, workspaceSetId: repo.workspaceSetId,
+      base: repo.currentRevision ?? '', baseGeneration: String(repo.generation), result: WORKING_TREE_RESULT,
+    },
+  }) as unknown as Promise<DiffContent>;
+}
+
+function workingTreeQueryKey(projectId: string, repo?: RepositoryWorkspaceState) {
+  return ['workspaceWorkingTreeDiff', projectId, repo?.repositoryWorkspaceId, repo?.currentRevision, repo?.version] as const;
+}
+
+/** The unified-diff body shared by the committed and the uncommitted Diff views. */
+function PatchView({ patch }: { patch: string }) {
+  return (
+    <pre className="font-mono text-[12px] leading-6 p-4 whitespace-pre-wrap break-words border-t border-[#ECEFF4]">
+      {decodeDiffPatch(patch).split('\n').map((line, i) => (
+        <div key={i} className={
+          line.startsWith('+') && !line.startsWith('+++') ? 'bg-[#DCFCE7] text-[#166534] px-2 -mx-2'
+          : line.startsWith('-') && !line.startsWith('---') ? 'bg-[#FEE2E2] text-[#991B1B] px-2 -mx-2'
+          : line.startsWith('@@') ? 'bg-[#EEF2FF] text-[#3659E3] px-2 -mx-2'
+          : 'text-[#172033]'
+        }>{line || ' '}</div>
+      ))}
+    </pre>
+  );
+}
+
+const WORKING_TREE_STATUS_LABEL: Record<string, string> = { ADDED: 'added', MODIFIED: 'modified', DELETED: 'deleted', TYPE_CHANGED: 'type changed' };
+
+/**
+ * V11-06: what an approver needs before deciding — the worktree's uncommitted changes against the current revision, the
+ * way a pull request lists them. Read-only: the server never stages, resets or moves HEAD to produce it.
+ */
+function UncommittedDiffView({ data, baseRevision, onRefresh }: { data: DiffContent; baseRevision?: string; onRefresh: () => void }) {
+  const summary = summarizeUncommitted(data);
+  return (
+    <div className="text-[12px]">
+      <div className="px-4 py-2 border-b border-[#ECEFF4] text-[#475569] flex items-center gap-2 flex-wrap">
+        <Badge label="UNCOMMITTED" intent="warning" />
+        <span>working tree on top of <span className="font-mono">{shortRev(baseRevision)}</span></span>
+        <span>· {summary.files} file{summary.files === 1 ? '' : 's'} changed</span>
+        {summary.files > 0 && <span className="text-[#166534]">+{summary.additions}</span>}
+        {summary.files > 0 && <span className="text-[#991B1B]">−{summary.deletions}</span>}
+        {data.filesTruncated && <Badge label="FILES TRUNCATED" intent="warning" />}
+        {data.patchTruncated && <Badge label="PATCH TRUNCATED" intent="warning" />}
+        <div className="flex-1" />
+        <Button size="compact" intent="quiet" onClick={onRefresh}>Refresh</Button>
+      </div>
+      {data.files.length === 0 ? (
+        <p className="p-4 text-[#475569]">The worktree matches the current revision — nothing is uncommitted.</p>
+      ) : (
+        <ul className="divide-y divide-[#ECEFF4]" aria-label="Uncommitted files">
+          {data.files.map(f => (
+            <li key={f.path} className="flex items-center gap-3 px-4 py-2">
+              <span className="font-mono text-[#172033] flex-1 min-w-0 truncate">{f.path}</span>
+              <span className="text-[#475569]">{WORKING_TREE_STATUS_LABEL[f.status ?? 'MODIFIED'] ?? f.status}{f.untracked ? ' · untracked' : ''}</span>
+              {f.symlink ? <span className="text-[#475569]">symlink</span>
+                : f.binary ? <span className="text-[#475569]">binary · {f.sizeBytes ?? 0} bytes</span>
+                : <><span className="text-[#166534]">+{f.additions}</span><span className="text-[#991B1B]">−{f.deletions}</span></>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {data.patch && <PatchView patch={data.patch} />}
+    </div>
+  );
+}
+
+interface UncommittedChangesSummaryProps {
+  projectId: string;
+  familyId?: string;
+  isOffline?: boolean;
+  onOpenWorkspace?: () => void;
+}
+
+/**
+ * V11-06: the line an approval card shows — "3 files changed, +41 −2" — so the approver knows there is something to look at
+ * before deciding, with a link to the Workspace tab for the full diff. Shares its queries with the Workspace tab.
+ */
+function UncommittedChangesSummary({ projectId, familyId, isOffline, onOpenWorkspace }: UncommittedChangesSummaryProps) {
+  const setQuery = useQuery({
+    queryKey: ['workspaceSetState', projectId, familyId],
+    queryFn: async () => (await getWorkspaceSetState(projectId, familyId!, withSessionToken())) as unknown as WorkspaceSetState,
+    enabled: !isOffline && !!familyId,
+  });
+  const repos = (setQuery.data?.repositoryWorkspaces ?? []).filter(r => r.state === 'READY' && !!r.currentRevision);
+  const results = useQueries({
+    queries: repos.map(repo => ({
+      queryKey: workingTreeQueryKey(projectId, repo),
+      queryFn: () => fetchWorkingTreeDiff(projectId, repo),
+      enabled: !isOffline,
+    })),
+  });
+  if (!familyId || repos.length === 0) return null;
+  const failed = results.find(r => r.isError);
+  if (failed) {
+    return (
+      <p className="text-[12px] text-[#3730A3]" role="status">
+        Could not read the uncommitted changes: {apiErrorMessage(failed.error).message}
+      </p>
+    );
+  }
+  if (results.some(r => r.isPending)) return <p className="text-[12px] text-[#3730A3]" role="status">Reading the uncommitted changes…</p>;
+  const totals = results.reduce((sum, r) => {
+    const one = summarizeUncommitted(r.data);
+    return { files: sum.files + one.files, additions: sum.additions + one.additions, deletions: sum.deletions + one.deletions };
+  }, { files: 0, additions: 0, deletions: 0 });
+  return (
+    <div className="flex items-center gap-2 flex-wrap text-[12px] text-[#3730A3]" role="status">
+      {totals.files === 0
+        ? <span>No uncommitted changes in the worktree.</span>
+        : <span>{totals.files} file{totals.files === 1 ? '' : 's'} changed, +{totals.additions} −{totals.deletions} <span className="opacity-75">(uncommitted)</span></span>}
+      {onOpenWorkspace && totals.files > 0 && <Button size="compact" intent="quiet" onClick={onOpenWorkspace}>View changes</Button>}
+    </div>
+  );
+}
+
 interface WorkspaceTabProps {
   projectId: string;
   familyId?: string;
@@ -950,6 +1075,8 @@ interface WorkspaceTabProps {
 function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
   const [activeRepositoryWorkspaceId, setActiveRepositoryWorkspaceId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'diff' | 'source' | 'log'>('diff');
+  // V11-06: 'auto' shows the uncommitted changes when the worktree has some, the committed diff otherwise.
+  const [diffMode, setDiffMode] = useState<'auto' | 'committed' | 'uncommitted'>('auto');
   const [sourcePathDraft, setSourcePathDraft] = useState('');
   const [sourcePath, setSourcePath] = useState('');
   const [sourceRevisionSide, setSourceRevisionSide] = useState<'current' | 'base'>('current');
@@ -986,6 +1113,14 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
     })) as unknown as DiffContent,
     enabled: !isOffline && !!activeRepo?.baseRevision && !!activeRepo?.currentRevision,
   });
+
+  const workingTreeQuery = useQuery({
+    queryKey: workingTreeQueryKey(projectId, activeRepo),
+    queryFn: () => fetchWorkingTreeDiff(projectId, activeRepo!),
+    enabled: !isOffline && viewMode === 'diff' && !!activeRepo?.currentRevision && activeRepo?.state === 'READY',
+  });
+  const uncommittedFiles = summarizeUncommitted(workingTreeQuery.data).files;
+  const effectiveDiffMode = diffMode === 'auto' ? (uncommittedFiles > 0 ? 'uncommitted' : 'committed') : diffMode;
 
   const logQuery = useInfiniteQuery({
     queryKey: ['workspaceRepositoryLog', projectId, activeRepo?.repositoryWorkspaceId],
@@ -1042,7 +1177,7 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
           const isActive = activeRepo?.repositoryWorkspaceId === r.repositoryWorkspaceId;
           return (
             <button key={r.repositoryWorkspaceId}
-              onClick={() => { setActiveRepositoryWorkspaceId(r.repositoryWorkspaceId); setViewMode('diff'); setSourcePath(''); setSourcePathDraft(''); }}
+              onClick={() => { setActiveRepositoryWorkspaceId(r.repositoryWorkspaceId); setViewMode('diff'); setDiffMode('auto'); setSourcePath(''); setSourcePathDraft(''); }}
               aria-pressed={isActive}
               aria-label={`${r.repositoryId} revision ${shortRev(r.currentRevision)}${r.state === 'QUARANTINED' ? ', quarantined' : ''}`}
               className={`flex items-center gap-2 px-3 py-2.5 text-[13px] border-b-2 transition-colors flex-shrink-0 ${isActive ? 'border-[#3659E3] text-[#3659E3] font-semibold' : 'border-transparent text-[#475569] hover:text-[#172033]'}`}>
@@ -1115,47 +1250,65 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
             {viewMode === 'diff' && (
               !activeRepo?.baseRevision || !activeRepo?.currentRevision ? (
                 <p className="p-4 text-[13px] text-[#475569]">This repository workspace has no revision recorded yet.</p>
-              ) : diffQuery.isPending ? (
-                <div className="p-4" aria-hidden><Skeleton className="h-24 w-full" /></div>
-              ) : diffQuery.isError ? (
-                <div className="p-4"><InlineError {...apiErrorMessage(diffQuery.error)} onRetry={() => diffQuery.refetch()} /></div>
               ) : (
-                <div className="text-[12px]">
-                  <div className="px-4 py-2 border-b border-[#ECEFF4] text-[#475569] flex items-center gap-2 flex-wrap">
-                    <span className="font-mono">{shortRev(activeRepo.baseRevision)}</span> → <span className="font-mono">{shortRev(activeRepo.currentRevision)}</span>
-                    <span>· {diffFiles.length} file{diffFiles.length === 1 ? '' : 's'} changed</span>
-                    {diffQuery.data?.filesTruncated && <Badge label="FILES TRUNCATED" intent="warning" />}
-                    {diffQuery.data?.patchTruncated && <Badge label="PATCH TRUNCATED" intent="warning" />}
+                <>
+                  {/* V11-06: committed history vs what is in the worktree and not committed yet */}
+                  <div className="flex items-center gap-1 px-4 py-2 border-b border-[#ECEFF4] bg-white" role="group" aria-label="Diff scope">
+                    <Button size="compact" intent={effectiveDiffMode === 'committed' ? 'primary' : 'quiet'} aria-pressed={effectiveDiffMode === 'committed'}
+                      onClick={() => setDiffMode('committed')}>Committed</Button>
+                    <Button size="compact" intent={effectiveDiffMode === 'uncommitted' ? 'primary' : 'quiet'} aria-pressed={effectiveDiffMode === 'uncommitted'}
+                      onClick={() => setDiffMode('uncommitted')}>
+                      Uncommitted changes{workingTreeQuery.isSuccess ? ` (${uncommittedFiles})` : ''}
+                    </Button>
                   </div>
-                  {diffFiles.length === 0 ? (
-                    <p className="p-4 text-[#475569]">No changes between the base and current revision.</p>
+                  {effectiveDiffMode === 'uncommitted' ? (
+                    workingTreeQuery.isPending ? (
+                      <div className="p-4" aria-hidden><Skeleton className="h-24 w-full" /></div>
+                    ) : workingTreeQuery.isError ? (
+                      <div className="p-4"><InlineError {...apiErrorMessage(workingTreeQuery.error)} onRetry={() => workingTreeQuery.refetch()} /></div>
+                    ) : (
+                      <UncommittedDiffView data={workingTreeQuery.data} baseRevision={activeRepo.currentRevision} onRefresh={() => workingTreeQuery.refetch()} />
+                    )
+                  ) : diffQuery.isPending ? (
+                    <div className="p-4" aria-hidden><Skeleton className="h-24 w-full" /></div>
+                  ) : diffQuery.isError ? (
+                    <div className="p-4"><InlineError {...apiErrorMessage(diffQuery.error)} onRetry={() => diffQuery.refetch()} /></div>
                   ) : (
-                    <div className="divide-y divide-[#ECEFF4]">
-                      {diffFiles.map(f => (
-                        <div key={f.path} className="flex items-center gap-3 px-4 py-2">
-                          <span className="font-mono text-[#172033] flex-1 min-w-0 truncate">{f.path}</span>
-                          {f.binary
-                            ? <span className="text-[#475569]">binary</span>
-                            : <span className="text-[#166534]">+{f.additions}</span>}
-                          {!f.binary && <span className="text-[#991B1B]">-{f.deletions}</span>}
-                          <Button size="compact" intent="quiet" onClick={() => { setSourcePath(f.path); setSourcePathDraft(f.path); setSourceRevisionSide('current'); setViewMode('source'); }}>View Source</Button>
+                    <div className="text-[12px]">
+                      <div className="px-4 py-2 border-b border-[#ECEFF4] text-[#475569] flex items-center gap-2 flex-wrap">
+                        <span className="font-mono">{shortRev(activeRepo.baseRevision)}</span> → <span className="font-mono">{shortRev(activeRepo.currentRevision)}</span>
+                        <span>· {diffFiles.length} file{diffFiles.length === 1 ? '' : 's'} changed</span>
+                        {diffQuery.data?.filesTruncated && <Badge label="FILES TRUNCATED" intent="warning" />}
+                        {diffQuery.data?.patchTruncated && <Badge label="PATCH TRUNCATED" intent="warning" />}
+                      </div>
+                      {workingTreeQuery.isError && diffMode === 'auto' && (
+                        <p className="px-4 py-2 text-[12px] text-[#92400E] bg-[#FEF3C7]" role="status">
+                          Could not read the uncommitted changes: {apiErrorMessage(workingTreeQuery.error).message}
+                        </p>
+                      )}
+                      {diffFiles.length === 0 ? (
+                        <p className="p-4 text-[#475569]">
+                          No committed changes between the base and current revision.
+                          {uncommittedFiles > 0 && <> The worktree has {uncommittedFiles} uncommitted file{uncommittedFiles === 1 ? '' : 's'} — see “Uncommitted changes”.</>}
+                        </p>
+                      ) : (
+                        <div className="divide-y divide-[#ECEFF4]">
+                          {diffFiles.map(f => (
+                            <div key={f.path} className="flex items-center gap-3 px-4 py-2">
+                              <span className="font-mono text-[#172033] flex-1 min-w-0 truncate">{f.path}</span>
+                              {f.binary
+                                ? <span className="text-[#475569]">binary</span>
+                                : <span className="text-[#166534]">+{f.additions}</span>}
+                              {!f.binary && <span className="text-[#991B1B]">-{f.deletions}</span>}
+                              <Button size="compact" intent="quiet" onClick={() => { setSourcePath(f.path); setSourcePathDraft(f.path); setSourceRevisionSide('current'); setViewMode('source'); }}>View Source</Button>
+                            </div>
+                          ))}
                         </div>
-                      ))}
+                      )}
+                      {diffQuery.data?.patch && <PatchView patch={diffQuery.data.patch} />}
                     </div>
                   )}
-                  {diffQuery.data?.patch && (
-                    <pre className="font-mono text-[12px] leading-6 p-4 whitespace-pre-wrap break-words border-t border-[#ECEFF4]">
-                      {decodeDiffPatch(diffQuery.data.patch).split('\n').map((line, i) => (
-                        <div key={i} className={
-                          line.startsWith('+') && !line.startsWith('+++') ? 'bg-[#DCFCE7] text-[#166534] px-2 -mx-2'
-                          : line.startsWith('-') && !line.startsWith('---') ? 'bg-[#FEE2E2] text-[#991B1B] px-2 -mx-2'
-                          : line.startsWith('@@') ? 'bg-[#EEF2FF] text-[#3659E3] px-2 -mx-2'
-                          : 'text-[#172033]'
-                        }>{line || ' '}</div>
-                      ))}
-                    </pre>
-                  )}
-                </div>
+                </>
               )
             )}
 
@@ -2227,7 +2380,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       <div id="workitem-tab-panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} />}
       {activeTab === 'task-graph'      && (
-        <GraphTimelineTab projectId={projectId} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled} />
+        <GraphTimelineTab projectId={projectId} familyId={familyId} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled} />
       )}
       {activeTab === 'task-workspace'  && <WorkspaceTab projectId={projectId} familyId={familyId} isOffline={isOffline} />}
       {activeTab === 'task-evidence'   && <EvidenceTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} />}

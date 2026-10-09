@@ -150,6 +150,27 @@ aw repository-workspace log --project-id <id> --repository-id <repoId> --workspa
   --anchor <commitId> --anchor-generation <gen> [--cursor <commitId>] [--limit <n>]
 ```
 
+### Uncommitted changes — what an approval gate has to show
+
+A commit-to-commit diff is empty at an `APPROVAL` gate: the agent wrote files into the worktree, but nothing is committed
+yet, so `currentRevision` has not moved. To see what the agent changed, ask for the worktree itself:
+
+```bash
+aw repository-workspace diff --project-id <id> --repository-id <repoId> --workspace-set-id <wsId> \
+  --base-revision <currentRevision> --base-revision-generation <gen> --working-tree
+```
+
+(HTTP: the same `GET .../diff` route with `result=WORKING_TREE`.) The answer carries `uncommitted: true`, lists every
+modified, added, deleted and untracked file (never ignored files) with line counts, a `contentHash` per file and a
+`changeSetDigest` over the whole set, plus a unified patch. A binary file is a name and a size, never content; a symlink is
+a name, never followed. The web UI's Workspace tab shows this view by default when the worktree has changes, and an
+approval card in the Graph tab says "N files changed, +x −y" with a link to it.
+
+It is read-only (`GIT_OPTIONAL_LOCKS=0`, no `git add`, no index write, HEAD unchanged), and it is **refused with 409 while an
+attempt holds the write lease** on that repository workspace: the worktree is in flux, so wait for the attempt or cancel it.
+A worktree with more than 20000 changed paths is refused (422): add the generated files to `.gitignore` or remove them. The
+base revision must still be one `aw` recorded for the workspace.
+
 Every one of these three takes `--byte-limit`/`--file-limit`/`--line-limit` (server-default if omitted) — a
 genuinely huge diff or file is truncated, never silently loaded in full into memory or into your terminal.
 `--workspace-set-id`/`--repository-id`/a revision + its own generation number are all required — a revision is
