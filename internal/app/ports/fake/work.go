@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -42,6 +43,8 @@ type WorkRepository struct {
 	releaseSets map[string]work.ReleaseSet
 	// releaseSetLocalCommits is keyed by ReleaseSetLocalCommit.ID (V6-10E).
 	releaseSetLocalCommits map[string]work.ReleaseSetLocalCommit
+	// releaseSetLocalCommitSelections is keyed by ReleaseSetLocalCommit.ID (V11-07).
+	releaseSetLocalCommitSelections map[string]work.ReleaseSetLocalCommitSelection
 }
 
 var _ ports.WorkRepository = (*WorkRepository)(nil)
@@ -92,11 +95,16 @@ func (w *WorkRepository) cloneWith(catalog *CatalogRepository) *WorkRepository {
 	for k, v := range w.releaseSetLocalCommits {
 		releaseSetLocalCommits[k] = v
 	}
+	releaseSetLocalCommitSelections := make(map[string]work.ReleaseSetLocalCommitSelection, len(w.releaseSetLocalCommitSelections))
+	for k, v := range w.releaseSetLocalCommitSelections {
+		releaseSetLocalCommitSelections[k] = v
+	}
 	return &WorkRepository{
 		catalog: catalog, workItems: workItems, taskFamilies: taskFamilies,
 		workspaceSets: workspaceSets, repositoryScopes: repositoryScopes, effectiveScopes: effectiveScopes,
 		repositoryWorkspaces: repositoryWorkspaces, scopeExpansionRequests: scopeExpansionRequests, blockers: blockers,
 		releaseSets: releaseSets, releaseSetLocalCommits: releaseSetLocalCommits,
+		releaseSetLocalCommitSelections: releaseSetLocalCommitSelections,
 	}
 }
 
@@ -771,6 +779,77 @@ func (w *WorkRepository) GetReleaseSetLocalCommit(_ context.Context, id string) 
 	return intent, nil
 }
 
+// CreateReleaseSetLocalCommitSelection mirrors sqlite's own method (V11-07).
+func (w *WorkRepository) CreateReleaseSetLocalCommitSelection(_ context.Context, selection work.ReleaseSetLocalCommitSelection) error {
+	if _, ok := w.releaseSetLocalCommits[string(selection.ReleaseSetLocalCommitID)]; !ok {
+		return fmt.Errorf("%w: release set local commit %s", ports.ErrPersistenceNotFound, selection.ReleaseSetLocalCommitID)
+	}
+	if w.releaseSetLocalCommitSelections == nil {
+		w.releaseSetLocalCommitSelections = map[string]work.ReleaseSetLocalCommitSelection{}
+	}
+	if _, exists := w.releaseSetLocalCommitSelections[string(selection.ReleaseSetLocalCommitID)]; exists {
+		return nil
+	}
+	w.releaseSetLocalCommitSelections[string(selection.ReleaseSetLocalCommitID)] = selection
+	return nil
+}
+
+// GetReleaseSetLocalCommitSelection mirrors sqlite's own method (V11-07).
+func (w *WorkRepository) GetReleaseSetLocalCommitSelection(_ context.Context, id string) (work.ReleaseSetLocalCommitSelection, bool, error) {
+	selection, ok := w.releaseSetLocalCommitSelections[id]
+	return selection, ok, nil
+}
+
+// RecordReleaseSetLocalCommitParked mirrors sqlite's own method (V11-07).
+func (w *WorkRepository) RecordReleaseSetLocalCommitParked(_ context.Context, id, ref string, paths []string) error {
+	selection, ok := w.releaseSetLocalCommitSelections[id]
+	if !ok {
+		return fmt.Errorf("%w: release set local commit selection %s", ports.ErrPersistenceNotFound, id)
+	}
+	selection.ParkedRef, selection.ParkedPaths = ref, append([]string(nil), paths...)
+	w.releaseSetLocalCommitSelections[id] = selection
+	return nil
+}
+
+// MarkReleaseSetLocalCommitParkedRestored mirrors sqlite's own method (V11-07).
+func (w *WorkRepository) MarkReleaseSetLocalCommitParkedRestored(_ context.Context, id string, at time.Time) error {
+	selection, ok := w.releaseSetLocalCommitSelections[id]
+	if !ok {
+		return fmt.Errorf("%w: release set local commit selection %s", ports.ErrPersistenceNotFound, id)
+	}
+	restored := at.UTC()
+	selection.RestoredAt = &restored
+	w.releaseSetLocalCommitSelections[id] = selection
+	return nil
+}
+
+// ListParkedChanges mirrors sqlite's own method (V11-07).
+func (w *WorkRepository) ListParkedChanges(_ context.Context, familyID string) ([]work.ParkedChange, error) {
+	var out []work.ParkedChange
+	for id, selection := range w.releaseSetLocalCommitSelections {
+		if selection.ParkedRef == "" || selection.RestoredAt != nil {
+			continue
+		}
+		intent := w.releaseSetLocalCommits[id]
+		releaseSet, ok := w.releaseSets[string(intent.ReleaseSetID)]
+		if !ok || string(releaseSet.FamilyID) != familyID {
+			continue
+		}
+		out = append(out, work.ParkedChange{
+			ReleaseSetLocalCommitID: work.ReleaseSetLocalCommitID(id), ReleaseSetID: intent.ReleaseSetID, RepositoryWorkspaceID: intent.RepositoryWorkspaceID,
+			RepositoryID: string(intent.RepositoryID), Ref: selection.ParkedRef, Paths: append([]string(nil), selection.ParkedPaths...),
+			ParkedAt: selection.CreatedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].ParkedAt.Equal(out[j].ParkedAt) {
+			return out[i].ParkedAt.Before(out[j].ParkedAt)
+		}
+		return out[i].ReleaseSetLocalCommitID < out[j].ReleaseSetLocalCommitID
+	})
+	return out, nil
+}
+
 // CountNoChangesFailedReleaseSetLocalCommits mirrors sqlite's own method
 // (V9-09).
 func (w *WorkRepository) CountNoChangesFailedReleaseSetLocalCommits(_ context.Context, releaseSetID, repositoryWorkspaceID, actor, messageHash string) (int, error) {
@@ -778,7 +857,7 @@ func (w *WorkRepository) CountNoChangesFailedReleaseSetLocalCommits(_ context.Co
 	for _, intent := range w.releaseSetLocalCommits {
 		if string(intent.ReleaseSetID) == releaseSetID && intent.RepositoryWorkspaceID == repositoryWorkspaceID &&
 			intent.Actor == actor && intent.MessageHash == messageHash &&
-			intent.State == work.ReleaseSetLocalCommitFailed && intent.FailureReason == work.FailureNoChanges {
+			intent.State == work.ReleaseSetLocalCommitFailed && neverCommitted(intent.FailureReason) {
 			count++
 		}
 	}
@@ -854,4 +933,11 @@ func (w *WorkRepository) TransitionReleaseSetLocalCommitToFailed(_ context.Conte
 // for the precedent this mirrors.
 func (w *WorkRepository) ValidateLocalCommitWriteLeaseFencing(_ context.Context, _ ports.JobLease, _ ports.LocalCommitWriteLeaseGrant) error {
 	return nil
+}
+
+// neverCommitted reports whether a failure reason proves the operation created no commit (V11-07
+// widens V9-09's NO_CHANGES-only rule): HEAD_DRIFT and CHANGESET_DRIFT both close the operation before
+// any `git commit`, so a corrected re-request must not collide with the failed operation's marker.
+func neverCommitted(reason work.ReleaseSetLocalCommitFailureReason) bool {
+	return reason == work.FailureNoChanges || reason == work.FailureHeadDrift || reason == work.FailureChangeSetDrift
 }

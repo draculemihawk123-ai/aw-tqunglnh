@@ -169,6 +169,9 @@ func normalizeNodeConfig(node *Node) {
 	case node.Approval != nil:
 		sort.Strings(node.Approval.AuthorizedRoles)
 		sort.Strings(node.Approval.RequestedEvidenceKinds)
+		if node.Approval.Release != nil {
+			sort.Strings(node.Approval.Release.Outcomes)
+		}
 	}
 }
 

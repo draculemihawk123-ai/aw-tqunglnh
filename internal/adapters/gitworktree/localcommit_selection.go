@@ -196,6 +196,16 @@ func (p *Provider) ParkRemainingChanges(ctx context.Context, handle ports.Worksp
 	}
 	parked := ports.ParkedChanges{Ref: ref}
 	if len(entries) == 0 {
+		// Nothing is left to park. If the ref exists, an earlier call (one whose result was lost
+		// to a crash) already parked: report what it holds so the caller can still record it.
+		if out, exitCode, _ := p.runGitWithEnv(ctx, workspacePath, nil, "rev-parse", "--verify", "-q", ref+"^{commit}"); exitCode == 0 {
+			commit := strings.TrimSpace(string(out))
+			names, err := p.nameList(ctx, workspacePath, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", commit+"^1", commit)
+			if err != nil {
+				return ports.ParkedChanges{}, err
+			}
+			parked.Paths = names
+		}
 		return parked, nil
 	}
 	paths := make([]string, 0, len(entries))

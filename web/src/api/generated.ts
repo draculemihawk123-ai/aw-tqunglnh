@@ -1256,6 +1256,8 @@ export interface ResolveApprovalResponse {
   advanced: boolean;
   nextNodeRunId?: string;
   nextNodeKey?: string;
+  commit?: unknown | null;
+  commitSkipped?: string;
   validActions: unknown[];
 }
 

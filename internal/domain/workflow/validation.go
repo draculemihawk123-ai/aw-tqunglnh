@@ -239,6 +239,7 @@ func validateNormalizedDocument(document WorkflowDocument, publishStrict bool) e
 		}
 	}
 
+	problems = append(problems, validateApprovalReleaseRouting(nodes, outgoing)...)
 	problems = append(problems, validateBoundedCycles(nodes, outgoing, publishStrict)...)
 	problems = append(problems, validateForkJoinTopology(nodes, outgoing)...)
 	problems = append(problems, validateSharedState(document.SharedState, nodes)...)
@@ -873,6 +874,7 @@ func validateApprovalConfig(node Node) []string {
 		seenEvidence[kind] = struct{}{}
 	}
 
+	problems = append(problems, validateApprovalReleaseFields(node)...)
 	return problems
 }
 

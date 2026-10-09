@@ -64,6 +64,13 @@ type ExecuteReleaseSetLocalCommitDeps struct {
 	MarkerReader ports.LocalCommitMarkerReader
 	Creator      ports.LocalCommitCreator
 	Lifecycle    ports.WorkspaceLifecycle
+	// Parker (V11-07) moves the changes a PARK operation did not select out of the worktree; it
+	// may be nil when no operation ever parks (an operation that needs it then fails retryably).
+	Parker ports.UnselectedChangeParker
+	// OnFailed (V11-07), when set, runs inside the transaction that closes an operation FAILED, so
+	// the caller can open RELEASE_FAILED on the WorkItem atomically with the failure. It is wired
+	// by cmd/aw to internal/app/runtime, which this package cannot import (runtime imports it).
+	OnFailed func(ctx context.Context, tx ports.Tx, intent workdomain.ReleaseSetLocalCommit, reason workdomain.ReleaseSetLocalCommitFailureReason) error
 	// WriteLeaseTTL bounds how long a local commit write lease is held
 	// without this function itself renewing it — this operation's own real
 	// Git call is bounded/synchronous within one Handle() invocation (never
@@ -113,6 +120,10 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 		// more to do, and no second Git operation is ever attempted.
 		return nil
 	}
+	selection, selective, err := loadSelection(ctx, deps.UnitOfWork, payload.ReleaseSetLocalCommitID)
+	if err != nil {
+		return fmt.Errorf("releasesetcommit: load selection of %s: %w", payload.ReleaseSetLocalCommitID, err)
+	}
 
 	grant, err := deps.WriteLeases.AcquireLocalCommitWriteLease(ctx, ports.AcquireLocalCommitWriteLeaseRequest{
 		JobLease: jobLease,
@@ -149,7 +160,7 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 	switch current.Workspace.State {
 	case workspace.RepositoryWorkspaceQuarantined:
 		releaseGrant()
-		return failTerminal(ctx, deps.UnitOfWork, jobLease, intent, workdomain.FailureWorkspaceQuarantined, now)
+		return failTerminal(ctx, deps, jobLease, intent, workdomain.FailureWorkspaceQuarantined, now)
 	case workspace.RepositoryWorkspaceReady:
 		// proceed
 	default:
@@ -180,7 +191,7 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 			if quarantineErr := quarantineWorkspace(ctx, deps, current.Workspace, jobLease, reason, now); quarantineErr != nil {
 				return quarantineErr
 			}
-			return failTerminal(ctx, deps.UnitOfWork, jobLease, intent, workdomain.FailureMarkerDrift, now)
+			return failTerminal(ctx, deps, jobLease, intent, workdomain.FailureMarkerDrift, now)
 		}
 		parentVCSObjectID = headParentVCSObjectID
 		if parentVCSObjectID == "" {
@@ -193,7 +204,7 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 		// commits into aw's history with no audit and no gate: close the operation
 		// FAILED/HEAD_DRIFT before any `git commit` (determinate, so no retry).
 		if recorded := current.Workspace.CurrentRevision; recorded != "" && headRevision.VCSObjectID != recorded {
-			failErr := failTerminal(ctx, deps.UnitOfWork, jobLease, intent, workdomain.FailureHeadDrift, now)
+			failErr := failTerminal(ctx, deps, jobLease, intent, workdomain.FailureHeadDrift, now)
 			releaseGrant()
 			return failErr
 		}
@@ -206,9 +217,21 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 		intent = pinned
 
 		message := commitMessageWithMarker(intent.Message, intent.Marker)
-		revision, createErr := deps.Creator.CreateLocalCommit(ctx, ports.CreateLocalCommitRequest{
+		createRequest := ports.CreateLocalCommitRequest{
 			Handle: handle, Message: message, AuthorName: intent.AuthorName, AuthorEmail: intent.AuthorEmail,
-		})
+		}
+		if selective {
+			createRequest.Selection = portsSelection(selection)
+		}
+		revision, createErr := deps.Creator.CreateLocalCommit(ctx, createRequest)
+		if errors.Is(createErr, ports.ErrChangeSetDrift) || errors.Is(createErr, ports.ErrPathNotInChangeSet) {
+			// V11-07: the worktree no longer holds what the approver reviewed. The creator stages
+			// nothing before it decides this, so no Git state changed and the write lease can be
+			// released whether or not failTerminal succeeds (a retry re-derives the same answer).
+			failErr := failTerminal(ctx, deps, jobLease, intent, workdomain.FailureChangeSetDrift, now)
+			releaseGrant()
+			return failErr
+		}
 		if errors.Is(createErr, ports.ErrNothingToCommit) {
 			// V9-09: the worktree is clean, so there is nothing to commit —
 			// a determinate fact retrying cannot change. Close the operation
@@ -220,7 +243,7 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 			// the write lease can be released whether or not failTerminal
 			// succeeds (on failure the job retries and re-derives the same
 			// answer).
-			failErr := failTerminal(ctx, deps.UnitOfWork, jobLease, intent, workdomain.FailureNoChanges, now)
+			failErr := failTerminal(ctx, deps, jobLease, intent, workdomain.FailureNoChanges, now)
 			releaseGrant()
 			return failErr
 		}
@@ -231,12 +254,34 @@ func ExecuteReleaseSetLocalCommit(ctx context.Context, deps ExecuteReleaseSetLoc
 		resultVCSObjectID = revision.VCSObjectID
 	}
 
+	// V11-07: with PARK, the changes the commit did not take leave the worktree now — on the fresh
+	// commit and on a reused one alike (a crash after the commit but before this step leaves them
+	// behind; ParkRemainingChanges is idempotent and returns the paths already parked).
+	var parked ports.ParkedChanges
+	if selective && selection.Unselected == workdomain.UnselectedPark {
+		if deps.Parker == nil {
+			releaseGrant()
+			return fmt.Errorf("releasesetcommit: operation %s parks its unselected changes but no parker is configured", intent.ID)
+		}
+		var parkErr error
+		parked, parkErr = deps.Parker.ParkRemainingChanges(ctx, handle, ParkedRef(intent.ReleaseSetID))
+		if parkErr != nil {
+			releaseGrant()
+			return fmt.Errorf("releasesetcommit: park the unselected changes of %s: %w", intent.RepositoryWorkspaceID, parkErr)
+		}
+	}
+
 	finalizeErr := deps.UnitOfWork.WithSerializedWrite(ctx, func(tx ports.Tx) error {
 		if err := tx.Jobs().ValidateActiveJob(ctx, jobLease, aggregateType, string(intent.ID)); err != nil {
 			return err
 		}
 		if err := tx.Work().ValidateLocalCommitWriteLeaseFencing(ctx, jobLease, grant); err != nil {
 			return err
+		}
+		if len(parked.Paths) > 0 {
+			if err := tx.Work().RecordReleaseSetLocalCommitParked(ctx, string(intent.ID), parked.Ref, parked.Paths); err != nil {
+				return err
+			}
 		}
 		if _, err := tx.Work().TransitionReleaseSetLocalCommitToCommitted(ctx, ports.TransitionReleaseSetLocalCommitToCommittedRequest{
 			ReleaseSetLocalCommitID: string(intent.ID), ExpectedVersion: intent.Version,
@@ -310,6 +355,17 @@ func loadIntent(ctx context.Context, uow ports.UnitOfWork, id string) (workdomai
 	return intent, err
 }
 
+// loadSelection returns the selection record of operation id; selective is false for an
+// operation that commits the whole worktree.
+func loadSelection(ctx context.Context, uow ports.UnitOfWork, id string) (selection workdomain.ReleaseSetLocalCommitSelection, selective bool, err error) {
+	err = uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var loadErr error
+		selection, selective, loadErr = tx.Work().GetReleaseSetLocalCommitSelection(ctx, id)
+		return loadErr
+	})
+	return selection, selective, err
+}
+
 func loadRepositoryWorkspace(ctx context.Context, uow ports.UnitOfWork, id string) (ports.RepositoryWorkspaceRecord, error) {
 	var record ports.RepositoryWorkspaceRecord
 	err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
@@ -336,10 +392,10 @@ func pinParent(ctx context.Context, uow ports.UnitOfWork, intent workdomain.Rele
 }
 
 func failTerminal(
-	ctx context.Context, uow ports.UnitOfWork, jobLease ports.JobLease, intent workdomain.ReleaseSetLocalCommit,
+	ctx context.Context, deps ExecuteReleaseSetLocalCommitDeps, jobLease ports.JobLease, intent workdomain.ReleaseSetLocalCommit,
 	reason workdomain.ReleaseSetLocalCommitFailureReason, now time.Time,
 ) error {
-	return uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+	return deps.UnitOfWork.WithSerializedWrite(ctx, func(tx ports.Tx) error {
 		if err := tx.Jobs().ValidateActiveJob(ctx, jobLease, aggregateType, string(intent.ID)); err != nil {
 			return err
 		}
@@ -361,6 +417,11 @@ func failTerminal(
 			PayloadJSON: string(payload), CreatedAt: now,
 		}); err != nil {
 			return err
+		}
+		if deps.OnFailed != nil {
+			if err := deps.OnFailed(ctx, tx, intent, reason); err != nil {
+				return err
+			}
 		}
 		return tx.Jobs().CompleteJob(ctx, jobLease)
 	})

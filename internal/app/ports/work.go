@@ -409,7 +409,9 @@ type WorkRepository interface {
 	// given ID, or ErrPersistenceNotFound.
 	GetReleaseSetLocalCommit(ctx context.Context, id string) (work.ReleaseSetLocalCommit, error)
 	// CountNoChangesFailedReleaseSetLocalCommits (V9-09) returns how many
-	// operations already closed FAILED with work.FailureNoChanges for the
+	// operations already closed FAILED with work.FailureNoChanges (V11-07: or
+	// FailureHeadDrift / FailureChangeSetDrift, which also close before any
+	// `git commit`) for the
 	// exact same request-time pins a new RequestReleaseSetLocalCommit would
 	// derive its marker from (release set, repository workspace, actor,
 	// message hash). Such an operation provably never created a commit (the
@@ -454,6 +456,22 @@ type WorkRepository interface {
 	// FinalizeExecutionAttempt's identical "validate every WriteLease
 	// fencing proof" step (internal/app/runtime/finalize.go).
 	ValidateLocalCommitWriteLeaseFencing(ctx context.Context, lease JobLease, grant LocalCommitWriteLeaseGrant) error
+
+	// CreateReleaseSetLocalCommitSelection (V11-07, ADR-040) stores the selection record of an
+	// operation that commits only some files: what the approver saw, the digest, what to do with
+	// the rest, and a bounded copy of the reviewed patch. The operation row must already exist
+	// (same transaction). Idempotent by operation id.
+	CreateReleaseSetLocalCommitSelection(ctx context.Context, selection work.ReleaseSetLocalCommitSelection) error
+	// GetReleaseSetLocalCommitSelection returns the selection of operation id; found is false
+	// for an operation that commits the whole worktree.
+	GetReleaseSetLocalCommitSelection(ctx context.Context, releaseSetLocalCommitID string) (selection work.ReleaseSetLocalCommitSelection, found bool, err error)
+	// RecordReleaseSetLocalCommitParked records where the leftover changes of a PARK operation
+	// were moved. Idempotent: the same ref and paths again is a no-op.
+	RecordReleaseSetLocalCommitParked(ctx context.Context, releaseSetLocalCommitID, ref string, paths []string) error
+	// MarkReleaseSetLocalCommitParkedRestored records that the parked files were put back.
+	MarkReleaseSetLocalCommitParkedRestored(ctx context.Context, releaseSetLocalCommitID string, at time.Time) error
+	// ListParkedChanges returns every parked set of familyID not restored yet, oldest first.
+	ListParkedChanges(ctx context.Context, familyID string) ([]work.ParkedChange, error)
 }
 
 // ErrLocalCommitMarkerCollision is returned by

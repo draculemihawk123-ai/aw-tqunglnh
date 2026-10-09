@@ -250,6 +250,10 @@ type ApprovalNodeConfig struct {
 	// already references. Optional: an approval may need no supporting
 	// evidence beyond the request itself.
 	RequestedEvidenceKinds []string `json:"requestedEvidenceKinds,omitempty"`
+	// Release (V11-07, ADR-040) lets the approver commit the worktree's changes in the same
+	// action as the decision. nil means DISABLED, so a definition authored before V11-07 keeps
+	// the hash and behavior it had.
+	Release *ApprovalReleaseConfig `json:"release,omitempty"`
 }
 
 func (c *ApprovalNodeConfig) clone() *ApprovalNodeConfig {
@@ -259,6 +263,7 @@ func (c *ApprovalNodeConfig) clone() *ApprovalNodeConfig {
 	cloned := *c
 	cloned.AuthorizedRoles = append([]string(nil), c.AuthorizedRoles...)
 	cloned.RequestedEvidenceKinds = append([]string(nil), c.RequestedEvidenceKinds...)
+	cloned.Release = c.Release.clone()
 	return &cloned
 }
 

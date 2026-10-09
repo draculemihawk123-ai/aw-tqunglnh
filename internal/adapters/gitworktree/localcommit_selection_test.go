@@ -309,10 +309,15 @@ func TestParkRemainingChanges_CleansTheWorktreeAndRestoreBringsEverythingBack(t 
 		t.Fatal("the parked ref does not exist")
 	}
 
-	// Parking again with nothing left is a no-op (crash recovery calls it twice).
+	// Parking again with nothing left changes nothing and reports what is already parked, so a
+	// crash between parking and recording it loses nothing (the commit worker calls it twice).
+	refBefore := strings.TrimSpace(f.gitOutput(t, "rev-parse", testParkedRef))
 	again, err := f.provider.ParkRemainingChanges(context.Background(), f.handle, testParkedRef)
-	if err != nil || len(again.Paths) != 0 {
-		t.Fatalf("second ParkRemainingChanges = %+v, %v; want nothing", again, err)
+	if err != nil || !equalStrings(again.Paths, parked.Paths) {
+		t.Fatalf("second ParkRemainingChanges = %+v, %v; want the already parked %v", again, err, parked.Paths)
+	}
+	if refAfter := strings.TrimSpace(f.gitOutput(t, "rev-parse", testParkedRef)); refAfter != refBefore {
+		t.Fatalf("parking twice moved the ref: %s -> %s", refBefore, refAfter)
 	}
 
 	restored, err := f.provider.RestoreParkedChanges(context.Background(), f.handle, testParkedRef)

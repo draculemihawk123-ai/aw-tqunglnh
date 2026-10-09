@@ -447,6 +447,9 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	registry.Register(releasesetcommit.ReleaseSetLocalCommitJobKind, releasesetcommit.NewHandler(releasesetcommit.ExecuteReleaseSetLocalCommitDeps{
 		UnitOfWork: d.uow, IDs: d.ids, WriteLeases: d.store, MarkerReader: d.provider, Creator: d.provider,
 		Lifecycle: d.store, WriteLeaseTTL: d.localCommitWriteLeaseTTL,
+		// V11-07: park the changes a decision did not select, and open RELEASE_FAILED when a commit
+		// requested together with a decision closes FAILED.
+		Parker: d.provider, OnFailed: runtime.OpenReleaseFailedBlockerTx,
 	}))
 	registry.Register(projectionrebuild.ProjectionRebuildJobKind, projectionrebuildworker.NewHandler(projectionrebuildworker.Deps{
 		UnitOfWork: d.uow, IDs: d.ids, Catalog: d.catalog, BatchSize: d.projectionRebuildBatchSize, RoundDelay: d.projectionRebuildRoundDelay,

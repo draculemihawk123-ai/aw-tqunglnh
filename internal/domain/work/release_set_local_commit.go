@@ -88,12 +88,18 @@ const (
 	// operator adopts the commits (`aw repository-workspace adopt-head`) or puts
 	// the worktree back, then requests a new local commit.
 	FailureHeadDrift ReleaseSetLocalCommitFailureReason = "HEAD_DRIFT"
+	// FailureChangeSetDrift (V11-07): the worktree no longer holds what the approver
+	// reviewed — a selected file changed after the review, or is no longer changed at all.
+	// Nothing was staged or committed. Determinate (retrying the job cannot change it), so the
+	// operation closes FAILED and the operator requests a new commit from the current change
+	// set, which shows the approver what is there now.
+	FailureChangeSetDrift ReleaseSetLocalCommitFailureReason = "CHANGESET_DRIFT"
 )
 
 // IsValid reports whether reason is one of this type's own closed set.
 func (r ReleaseSetLocalCommitFailureReason) IsValid() bool {
 	switch r {
-	case FailureWorkspaceQuarantined, FailureMarkerDrift, FailureNoChanges, FailureHeadDrift:
+	case FailureWorkspaceQuarantined, FailureMarkerDrift, FailureNoChanges, FailureHeadDrift, FailureChangeSetDrift:
 		return true
 	default:
 		return false

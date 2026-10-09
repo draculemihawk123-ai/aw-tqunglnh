@@ -37,9 +37,12 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/apperror"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
 	"github.com/taQuangLing/agent-workflow/internal/app/workerpool"
 	"github.com/taQuangLing/agent-workflow/internal/domain/errorcode"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workflow"
 )
 
 // ApprovalTimerJobKind is the durable job advanceRunTx enqueues (with
@@ -132,7 +135,47 @@ type ResolveApprovalRequest struct {
 	// this command.
 	Outcome string
 	Reason  string
+	// Commit (V11-07, ADR-040), when set, asks the same transaction to also request a local commit
+	// of the worktree's changes for the repositories it names. The approval node's release policy
+	// decides whether it is allowed for Outcome; nil means no commit.
+	Commit *ApprovalCommit
 }
+
+// ApprovalCommit is the commit a decision carries.
+type ApprovalCommit struct {
+	Message string
+	// Repositories lists what to commit per repository. Empty means there is nothing to commit
+	// (recorded as NOTHING_TO_COMMIT, never an error) — the shape a REQUIRED policy accepts when
+	// the worktree has no changes.
+	Repositories []ApprovalCommitRepository
+}
+
+// ApprovalCommitRepository is one repository of an ApprovalCommit. AuthorName/AuthorEmail are the
+// git identity read before the transaction (ports.GitIdentityReader); Files carry what the
+// approver reviewed, so the commit job can refuse to commit anything else.
+type ApprovalCommitRepository struct {
+	RepositoryWorkspaceID    string
+	ExpectedWorkspaceVersion uint64
+	AuthorName               string
+	AuthorEmail              string
+	Files                    []workdomain.LocalCommitFile
+	Unselected               workdomain.UnselectedHandling
+	Patch                    []byte
+	PatchTruncated           bool
+}
+
+var (
+	// ErrCommitNotOffered is returned when a decision carries a commit that the approval node's
+	// release policy does not offer for that outcome.
+	ErrCommitNotOffered = errors.New("runtime: this approval node does not offer a commit for this outcome")
+	// ErrCommitRequired is returned when the node's policy is REQUIRED for the outcome and the
+	// decision carries no commit (not even an empty one).
+	ErrCommitRequired = errors.New("runtime: this approval node requires a commit decision for this outcome")
+)
+
+// CommitSkippedNothingToCommit is ResolveApprovalResult.CommitSkipped when a commit was requested
+// but named no files.
+const CommitSkippedNothingToCommit = "NOTHING_TO_COMMIT"
 
 // ResolveApprovalResult is ResolveApproval's own idempotent result.
 type ResolveApprovalResult struct {
@@ -147,6 +190,10 @@ type ResolveApprovalResult struct {
 	Advanced      bool   `json:"advanced"`
 	NextNodeRunID string `json:"nextNodeRunId,omitempty"`
 	NextNodeKey   string `json:"nextNodeKey,omitempty"`
+	// Commit (V11-07) lists the local-commit operations this decision requested; CommitSkipped is
+	// NOTHING_TO_COMMIT when a commit was requested but named no files.
+	Commit        *releasesetcommit.ApprovalBoundResult `json:"commit,omitempty"`
+	CommitSkipped string                                `json:"commitSkipped,omitempty"`
 }
 
 // ResolveApproval is V4-09's own public command: the sole entry point a
@@ -210,6 +257,11 @@ func ResolveApproval(ctx context.Context, uow ports.UnitOfWork, ids idsource.Sou
 		}
 
 		if request.State == runtimedomain.ApprovalRequestPending {
+			// V11-07: the release policy and the author identity are checked BEFORE anything is
+			// written, so a refused commit leaves the gate PENDING and the run untouched.
+			if err := checkApprovalCommit(ctx, tx, request, req); err != nil {
+				return err
+			}
 			updated, casErr := tx.Approvals().TransitionApprovalRequest(ctx, ports.TransitionApprovalRequestRequest{
 				ApprovalRequestID: req.ApprovalRequestID, ExpectedState: runtimedomain.ApprovalRequestPending, ExpectedVersion: request.Version,
 				NextState: runtimedomain.ApprovalRequestDecided, DecidedBy: cmd.Actor, DecidedRole: matchedRole,
@@ -227,6 +279,11 @@ func ResolveApproval(ctx context.Context, uow ports.UnitOfWork, ids idsource.Sou
 				result = ResolveApprovalResult{
 					ApprovalRequestID: req.ApprovalRequestID, State: string(updated.State), Won: true, MatchedRole: matchedRole,
 					Advanced: advanceResult.Advanced, NextNodeRunID: advanceResult.NextNodeRunID, NextNodeKey: advanceResult.NextNodeKey,
+				}
+				if req.Commit != nil {
+					if err := requestApprovalCommitTx(ctx, tx, ids, cmd, request, req, &result); err != nil {
+						return err
+					}
 				}
 			case errors.Is(casErr, ports.ErrOptimisticConflict):
 				// Lost the race to something else (another decision, or
@@ -279,4 +336,81 @@ func MatchAuthorizedRole(actorRoles, authorizedRoles []string) string {
 		}
 	}
 	return ""
+}
+
+// checkApprovalCommit enforces the approval node's release policy for this decision (V11-07).
+// It runs inside the decision's transaction, before the decision is written.
+func checkApprovalCommit(ctx context.Context, tx ports.Tx, request runtimedomain.ApprovalRequest, req ResolveApprovalRequest) error {
+	run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
+	if err != nil {
+		return err
+	}
+	version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+	if err != nil {
+		return err
+	}
+	node, ok := findNode(version.Document(), request.NodeKey)
+	if !ok || node.Approval == nil {
+		return fmt.Errorf("runtime: approval node %s not found in workflow version %s", request.NodeKey, run.WorkflowVersionID)
+	}
+	policy := node.Approval.Release
+	allowed := policy.AllowsCommitOn(req.Outcome)
+	switch {
+	case req.Commit != nil && !allowed:
+		return fmt.Errorf("%w: node %s, outcome %q", ErrCommitNotOffered, node.Key, req.Outcome)
+	case req.Commit == nil && allowed && policy.Mode() == workflow.ReleaseCommitRequired:
+		return fmt.Errorf("%w: node %s, outcome %q", ErrCommitRequired, node.Key, req.Outcome)
+	}
+	if req.Commit == nil {
+		return nil
+	}
+	for _, repository := range req.Commit.Repositories {
+		if len(repository.Files) == 0 {
+			continue
+		}
+		if repository.AuthorName == "" || repository.AuthorEmail == "" {
+			return fmt.Errorf("%w: repository workspace %s", releasesetcommit.ErrCommitIdentityMissing, repository.RepositoryWorkspaceID)
+		}
+	}
+	return nil
+}
+
+// requestApprovalCommitTx creates the sealed ReleaseSet and one REQUESTED local commit per
+// repository, in the decision's own transaction (no Git here, §11.1).
+func requestApprovalCommitTx(
+	ctx context.Context, tx ports.Tx, ids idsource.Source, cmd ports.Command, request runtimedomain.ApprovalRequest,
+	req ResolveApprovalRequest, result *ResolveApprovalResult,
+) error {
+	repositories := make([]releasesetcommit.ApprovalBoundRepository, 0, len(req.Commit.Repositories))
+	for _, repository := range req.Commit.Repositories {
+		if len(repository.Files) == 0 {
+			continue
+		}
+		repositories = append(repositories, releasesetcommit.ApprovalBoundRepository{
+			RepositoryWorkspaceID: repository.RepositoryWorkspaceID, ExpectedWorkspaceVersion: repository.ExpectedWorkspaceVersion,
+			AuthorName: repository.AuthorName, AuthorEmail: repository.AuthorEmail, Files: repository.Files,
+			Unselected: repository.Unselected, Patch: repository.Patch, PatchTruncated: repository.PatchTruncated,
+		})
+	}
+	if len(repositories) == 0 {
+		result.CommitSkipped = CommitSkippedNothingToCommit
+		return nil
+	}
+	run, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
+	if err != nil {
+		return err
+	}
+	item, err := tx.Work().GetWorkItem(ctx, string(run.WorkItemID))
+	if err != nil {
+		return err
+	}
+	bound, err := releasesetcommit.RequestApprovalBoundCommitsTx(ctx, tx, ids, cmd, releasesetcommit.ApprovalBoundRequest{
+		ProjectID: string(request.ProjectID), FamilyID: string(item.FamilyID), WorkItemID: string(run.WorkItemID), RunID: req.RunID,
+		ApprovalRequestID: req.ApprovalRequestID, Message: req.Commit.Message, Repositories: repositories,
+	})
+	if err != nil {
+		return err
+	}
+	result.Commit = &bound
+	return nil
 }

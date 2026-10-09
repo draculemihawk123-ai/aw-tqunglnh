@@ -81,6 +81,12 @@ const (
 	// BlockerWriteCapabilityOrGrantMissing: admission blocker group — no
 	// real producer yet.
 	BlockerWriteCapabilityOrGrantMissing BlockerType = "WRITE_CAPABILITY_OR_GRANT_MISSING"
+	// BlockerReleaseFailed (V11-07, ADR-040): a commit that was requested together with an approval
+	// decision closed FAILED (CHANGESET_DRIFT, NO_CHANGES, HEAD_DRIFT, a quarantined workspace).
+	// The decision already moved the run on and is not rolled back, so this blocker keeps the
+	// failure visible on the WorkItem. RESOLVED only (never waived): the exits are requesting a
+	// new commit from the current change set and then resolving this blocker, or CancelWorkItem.
+	BlockerReleaseFailed BlockerType = "RELEASE_FAILED"
 )
 
 var knownBlockerTypes = map[BlockerType]struct{}{
@@ -92,6 +98,7 @@ var knownBlockerTypes = map[BlockerType]struct{}{
 	BlockerAdapterBuildDrift:                {},
 	BlockerCapabilityRequirementUnsatisfied: {},
 	BlockerWriteCapabilityOrGrantMissing:    {},
+	BlockerReleaseFailed:                    {},
 }
 
 // IsValid reports whether t is a member of the closed BlockerType set.

@@ -3743,6 +3743,16 @@
             "type": "string"
           },
           {
+            "name": "Commit",
+            "jsonTag": "commit,omitempty",
+            "type": "*releasesetcommit.ApprovalBoundResult"
+          },
+          {
+            "name": "CommitSkipped",
+            "jsonTag": "commitSkipped,omitempty",
+            "type": "string"
+          },
+          {
             "name": "ValidActions",
             "jsonTag": "validActions",
             "type": "[]httpapi.ValidAction"
