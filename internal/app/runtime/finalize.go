@@ -343,11 +343,22 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 				RunID: req.RunID, NodeRunID: req.NodeRunID, Outcome: req.SelectedOutcome,
 				SharedStatePatch: req.SharedStatePatch, CorrelationID: req.CorrelationID, JobID: string(req.JobLease.JobID),
 			})
-			if err != nil {
+			var defect *RoutingDefectError
+			if errors.As(err, &defect) {
+				// V11-03: the node did its work but the definition cannot route what
+				// comes next. advanceRunTx wrote nothing, so this transaction can still
+				// commit the finished attempt and then fail the run WITH the reason —
+				// returning the error would roll the whole finalize back and leave the
+				// node RUNNING until the recovery reaper called it INDETERMINATE.
+				if err := failRunForRoutingDefectTx(ctx, tx, req, run, defect); err != nil {
+					return err
+				}
+			} else if err != nil {
 				return err
+			} else {
+				result.Advanced = true
+				result.AdvanceResult = advanceResult
 			}
-			result.Advanced = true
-			result.AdvanceResult = advanceResult
 
 		case runtimedomain.ExecutionAttemptFailed, runtimedomain.ExecutionAttemptTimedOut:
 			if err := decideRetryOrExhaustion(ctx, tx, ids, clk, req, updatedAttempt, run, &result); err != nil {
@@ -1063,4 +1074,50 @@ func isFinalizableExecutionAttemptState(state runtimedomain.ExecutionAttemptStat
 	default:
 		return false
 	}
+}
+
+// RunFailureReasonWorkflowDefinitionDefect is the typed prefix of the RUN_FAILED
+// reason (and of the blocker built from it) when the run could not continue because
+// its pinned workflow definition cannot route a node (V11-03).
+const RunFailureReasonWorkflowDefinitionDefect = "WORKFLOW_DEFINITION_DEFECT"
+
+// failRunForRoutingDefectTx ends a run whose pinned definition cannot route the
+// node that just finished (see ErrWorkflowRoutingDefect). The NodeRun really
+// succeeded, so it is recorded SUCCEEDED with its outcome; then, when nothing else
+// of the run is still live, the run fails with an explicit reason — shown by the
+// RUN_FAILED blocker, `aw run diagnostics` and the Kanban board — so the operator
+// learns what to fix (publish a corrected workflow version) instead of watching
+// a run that never ends. If other branches are still running the normal run
+// reconciliation decides when they finish.
+func failRunForRoutingDefectTx(ctx context.Context, tx ports.Tx, req FinalizeExecutionAttemptRequest, run runtimedomain.WorkflowRun, defect *RoutingDefectError) error {
+	nodeRun, err := tx.Runtime().GetNodeRun(ctx, req.NodeRunID)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Runtime().TransitionNodeRun(ctx, ports.TransitionNodeRunRequest{
+		NodeRunID: req.NodeRunID, ExpectedState: nodeRun.State, ExpectedVersion: nodeRun.Version,
+		NextState: runtimedomain.NodeRunSucceeded, SelectedOutcome: req.SelectedOutcome,
+	}); err != nil {
+		return err
+	}
+	version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+	if err != nil {
+		return err
+	}
+	document := version.Document()
+	current, err := tx.Runtime().GetWorkflowRun(ctx, req.RunID)
+	if err != nil {
+		return err
+	}
+	if current.State != runtimedomain.WorkflowRunRunning && current.State != runtimedomain.WorkflowRunWaiting {
+		return reconcileRunTerminalityTx(ctx, tx, current, document, req.CorrelationID, string(req.JobLease.JobID))
+	}
+	summary, err := computeRunNodeStateSummary(ctx, tx, req.RunID, document)
+	if err != nil {
+		return err
+	}
+	if summary.LiveCount > 0 || summary.BlockedCount > 0 {
+		return nil
+	}
+	return transitionRunToFailedTx(ctx, tx, current, RunFailureReasonWorkflowDefinitionDefect+": "+defect.Detail, req.CorrelationID, string(req.JobLease.JobID))
 }

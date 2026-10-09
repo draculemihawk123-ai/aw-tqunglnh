@@ -131,6 +131,24 @@ read, so aw does not schedule a retry. Wait until the time the message names, th
 (`retry-task.sh` in the kit, or `aw blocker resolve --mode RESOLVED` then `aw run start`). `show-run.sh` prints a line
 for it. The classification follows the CLI's text: a limit message the CLI words differently stays `EXECUTION_FAILED`.
 
+## A run ended `FAILED` with `WORKFLOW_DEFINITION_DEFECT` (V11-03)
+
+```bash
+aw run diagnostics --project-id <id> <runId>
+# a RUN_FAILED blocker: "workflow run … failed (WORKFLOW_DEFINITION_DEFECT: node "simplify" ran out of its cyclePolicy
+#   budget (2 iterations) but its escalation edge "simplify-escalated" leads to "quality", inside the same cycle, …)"
+```
+
+A node on a loop ran out of its `cyclePolicy` budget and the engine had to take its `escalationOutcome` edge, but that edge
+points back into the same loop (or does not exist), so the run cannot leave it. The node that had just finished is recorded
+`SUCCEEDED`; the run ends `FAILED` right away with the reason above and the usual `RUN_FAILED` blocker. Before V11-03 such a run
+just stopped moving: the engine hit the problem while routing, aborted the finish of the node before it, and 30 seconds later
+the recovery reaper marked that node's attempt `INDETERMINATE` (`OWNERSHIP_LOST_MUTATING`) with no message.
+
+Fix the **workflow definition** (point that edge outside the loop, for example at the node that rejects the work), publish a new
+version and run a new WorkItem with it: a WorkItem is pinned to the version it started with. Publishing a definition with such an
+edge is refused since V11-03; only versions published earlier can still do this.
+
 ## A COMMAND or gate failed — where is the reason?
 
 ```bash

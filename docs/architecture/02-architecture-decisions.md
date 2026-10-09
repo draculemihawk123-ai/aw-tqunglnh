@@ -13,11 +13,11 @@
 > ADR-030…033 chốt ngày 2026-10-01 cho V9 (`docs/design/12-v9-harness-alignment.md`, task V9-00): orchestrator
 > viết và chốt theo ủy quyền của product owner; product owner duyệt ở PR của V9-00.
 >
-> ADR-034 và ADR-035 chốt ngày 2026-10-10 cho V11-01 và V11-02 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
+> ADR-034, ADR-035 và ADR-036 chốt ngày 2026-10-10 cho V11-01, V11-02 và V11-03 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
 > viết ADR khi triển khai.
 >
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034, ADR-035).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034, ADR-035, ADR-036).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -1105,9 +1105,37 @@ Codex); không có mã hay thời điểm reset đọc được bằng máy.
 `NODE_RUN_FAILED`. Không đổi hành vi cho lỗi khác. Giới hạn: phân loại theo văn bản của CLI, nên một câu báo hạn mức mà CLI diễn
 đạt khác sẽ vẫn là `EXECUTION_FAILED` cho đến khi thêm cụm từ.
 
-## 38. Baseline sau review thiết kế
+## 38. ADR-036 — Cạnh escalation của mọi node có `cyclePolicy` phải rời vòng; lỗi định nghĩa làm run thất bại có lý do
 
-ADR-001…035 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** `wf-task-delivery-plus` có node `simplify` với `cyclePolicy` và cạnh `escalated → quality`, mà `quality` nằm trong
+cùng vòng (`quality` quay lại `build`). Compiler (`validateBoundedCycles`) chỉ đòi **một node nào đó** của thành phần liên thông
+có `cyclePolicy` và cạnh escalation rời vòng (ở đây là `build`), nên định nghĩa được publish. Khi `simplify` hết ngân sách,
+`advanceRunTx` từ chối cạnh (`ErrCycleEscalationNotBounded`) **bên trong** transaction của `FinalizeExecutionAttempt`, nên cả
+finalize của node đứng trước bị rollback: attempt đó vẫn `RUNNING` mất lease, run đứng ở `RUNNING`, và 30 giây sau recovery reaper
+đánh dấu attempt `INDETERMINATE (OWNERSHIP_LOST_MUTATING)`, không có thông báo nào.
+
+**Quyết định:**
+
+1. **Compiler kiểm theo từng node.** `validateBoundedCycles` giữ luật cũ (vòng phải có ít nhất một node có ngân sách và lối ra),
+   thêm: mỗi node nằm trên một vòng và có `cyclePolicy.maxIterations > 0` phải có cạnh `escalationOutcome` dẫn **ra ngoài** vòng
+   của nó. Thông báo nêu node, cạnh, đích và vòng.
+2. **Version đã lưu vẫn đọc được.** Persistence nạp version bằng cách dựng lại qua compiler, nên luật mới sẽ làm mọi run, đồ thị
+   và lịch sử của version cũ không đọc được. Thêm `workflow.Rehydrate` (dùng ở loader của sqlite): mọi kiểm tra của `Compile`
+   **trừ** luật mới. Luật chỉ siết việc **publish**.
+3. **Lỗi lúc chạy phải rõ.** `advanceRunTx` kiểm trước khi ghi bất cứ thứ gì (`checkCycleEscalationRoutable`) và trả
+   `*RoutingDefectError` (`ErrWorkflowRoutingDefect`) khi node sắp được kích hoạt hết ngân sách mà cạnh escalation thiếu hoặc
+   không rời vòng. `FinalizeExecutionAttempt` bắt lỗi này: attempt và NodeRun của node vừa xong được ghi `SUCCEEDED`
+   (việc đã làm xong thật), rồi khi không còn node nào sống hoặc bị chặn thì run `FAILED` với lý do
+   `WORKFLOW_DEFINITION_DEFECT: …` (hiện ở blocker `RUN_FAILED` và `aw run diagnostics`). Còn nhánh khác đang chạy thì việc
+   đóng run để cho reconcile thông thường. Các đường khác gọi `advanceRunTx` (duyệt, chờ tín hiệu) vẫn trả lỗi cho người gọi,
+   tức đã thấy được, không treo.
+
+**Hệ quả:** định nghĩa như `simplify → quality` bị từ chối lúc publish với lý do nêu tên; version cũ đã publish không còn làm run
+treo âm thầm. Workflow mẫu của kit không đổi (mọi cạnh escalation đã rời vòng).
+
+## 39. Baseline sau review thiết kế
+
+ADR-001…036 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1150,5 +1178,7 @@ dụng ma trận sau:
   `HEAD_DRIFT` của local commit; không đổi ADR-014 (vẫn không push/PR/merge) và không đổi ADR-011 (manifest bất biến).
 - ADR-035 (V11-02) thêm mã lỗi `PROVIDER_QUOTA_EXCEEDED` (tập mã §18: 22 → 23), không bao giờ retry; dừng có thể tiếp tục
   qua `RUN_FAILED` của ADR-033, không thêm blocker mới.
+- ADR-036 (V11-03) siết luật vòng có chặn theo từng node (chỉ lúc publish, `workflow.Rehydrate` giữ version cũ đọc được) và
+  làm lỗi định tuyến do định nghĩa thành run `FAILED` có lý do `WORKFLOW_DEFINITION_DEFECT`.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

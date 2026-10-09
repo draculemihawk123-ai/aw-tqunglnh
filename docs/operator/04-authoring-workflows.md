@@ -142,6 +142,10 @@ declare an optional `failureOutcome` on the `command` / `machineGate` config: th
 **functional** failure routes to, so the node finishes `SUCCEEDED` with that outcome (no retry — the result is
 deterministic) and the edge leaving it can lead back to the maker. A loop needs a bound as for any other cycle:
 put a `cyclePolicy` on a node of the loop (the maker, or the check itself) whose `escalationOutcome` edge leaves it.
+**Every** node on a loop that carries a `cyclePolicy` must have its own `escalationOutcome` edge lead **outside** that loop
+(V11-03): when that node's budget runs out the engine forces that edge, so one node escaping is not enough — publish
+refuses the definition and names the node, the edge and the target that stays inside (a run of an older version with such an
+edge ends `FAILED` with `WORKFLOW_DEFINITION_DEFECT`, see [09-troubleshooting.md](09-troubleshooting.md)).
 
 ```json
 {"key": "build", "type": "AGENT", "outcomes": ["done", "escalated"],

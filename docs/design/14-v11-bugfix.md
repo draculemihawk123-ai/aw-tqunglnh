@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01, V11-02. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01, V11-02, V11-03. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -35,7 +35,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 |---|---|---|---|
 | V11-01 | Commit ngoài aw (IDE hoặc terminal) làm lệch HEAD so với revision aw ghi | Cao | **XONG 2026-10-10** (ADR-034) |
 | V11-02 | Nhà cung cấp báo hết hạn mức phiên bị coi là lỗi thực thi thường, đốt hết lần thử | Cao | **XONG 2026-10-10** (ADR-035) |
-| V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | Đã tái hiện; nguyên nhân gốc **cần xác minh** |
+| V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | **XONG 2026-10-10** (ADR-036) |
 | V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | Đã tái hiện (prompt dump) |
 | V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | Đã đo (spike V10-17) |
 | V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **Đã gặp thật** (chạy issue-tracker C-01 trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
@@ -182,6 +182,28 @@ Test: `TestIsProviderQuotaMessage`, `TestAgentExecutorProviderQuotaIsReportedWit
   rõ ràng, không treo.
 - **Verify:** test compiler với định nghĩa của `wf-task-delivery-plus` bản cũ (cạnh `escalated → quality`) bị từ chối; test runtime
   cho cạnh sai không để lại attempt `INDETERMINATE`.
+
+### Kết quả triển khai V11-03 (2026-10-10, ADR-036)
+
+Nguyên nhân gốc đã xác minh, gồm cả hai câu hỏi của task:
+
+- **Vì sao compiler không bắt:** `validateBoundedCycles` coi vòng là có chặn nếu **một node bất kỳ** của thành phần liên thông có
+  `cyclePolicy` và cạnh escalation rời vòng. Runtime thì kiểm **theo từng node** khi chính node đó hết ngân sách. Trong
+  `wf-task-delivery-plus` bản cũ `build` rời vòng đúng, `simplify` (`escalated → quality`) thì không; compiler nhìn thấy `build` và chấp nhận.
+- **Vì sao thành `INDETERMINATE`:** `advanceRunTx` chạy **bên trong** transaction của `FinalizeExecutionAttempt` (nhánh `SUCCEEDED`). Lỗi
+  định tuyến làm rollback cả finalize: attempt của node trước vẫn `RUNNING`, lease mất, và recovery reaper đánh dấu nó
+  `INDETERMINATE` (`OWNERSHIP_LOST_MUTATING`) sau 30 giây. Không có đường nào đưa lỗi ra ngoài.
+
+Đã làm: luật theo từng node ở compiler; `workflow.Rehydrate` cho loader (version cũ vẫn đọc được); `advanceRunTx` kiểm trước khi ghi và
+trả `*RoutingDefectError`; `FinalizeExecutionAttempt` ghi node vừa xong `SUCCEEDED` và đóng run `FAILED` với lý do
+`WORKFLOW_DEFINITION_DEFECT` (blocker `RUN_FAILED`); `show-run.sh` in lý do của blocker; tài liệu operator 04/09 và ADR-036.
+
+**Điều chỉnh:** nếu còn nhánh khác của run đang chạy thì không đóng run ngay mà để reconcile thông thường (run kết thúc `FAILED` khi nhánh đó
+xong; lý do chung hơn). Các đường duyệt và chờ tín hiệu vẫn trả lỗi cho người gọi (đã thấy được, không treo).
+
+Test: `TestValidateDocument_RejectsACyclePolicyWhoseEscalationEdgeStaysInsideItsCycle` (và hai test bù), `TestKitWorkflowsKeepEveryEscalationEdgeOutsideItsCycle`,
+`TestWorkflowCompile_RefusesWhatRehydrateStillLoads`, `TestExecuteNodeHandler_RoutingDefect_FailsTheRunClearlyInsteadOfHanging`
+(trước khi sửa: `Handle` trả chính lỗi `ErrCycleEscalationNotBounded`).
 
 ## V11-04 — CHECKER sau gate không nhận kết quả kiểm tra
 

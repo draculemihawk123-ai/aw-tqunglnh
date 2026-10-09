@@ -124,6 +124,15 @@ var (
 	// fails closed if it somehow does not hold.
 	ErrCycleEscalationNotBounded = errors.New("runtime: cycle escalation edge does not lead outside its own cycle")
 
+	// ErrWorkflowRoutingDefect (V11-03) marks a routing hop the pinned
+	// WorkflowVersion cannot make because the DEFINITION is defective — today a
+	// CyclePolicy whose budget ran out but whose escalation route is missing or stays
+	// inside its own cycle. advanceRunTx detects it BEFORE writing anything, as a
+	// *RoutingDefectError, so FinalizeExecutionAttempt can fail the run with the
+	// reason instead of rolling back its whole transaction (which left the finished
+	// node RUNNING until the recovery reaper marked it INDETERMINATE).
+	ErrWorkflowRoutingDefect = errors.New("runtime: the workflow definition cannot route this node")
+
 	// ErrSharedStateFieldNotDeclared is HE-14-M04's own enforcement point
 	// (correction found during V4-03 review): AdvanceRunRequest.SharedStatePatch
 	// named a field the pinned WorkflowVersion's own SharedState schema
@@ -160,6 +169,24 @@ type AdvanceRunJobPayload struct {
 }
 
 const defaultAdvanceRunJobMaxClaimsFollowUp = 3
+
+// RoutingDefectError is advanceRunTx's typed form of ErrWorkflowRoutingDefect: it
+// names the node being routed, the node whose cycle budget is exhausted and the
+// edge that cannot be taken. Cause is the underlying sentinel
+// (ErrCycleEscalationRouteNotFound or ErrCycleEscalationNotBounded).
+type RoutingDefectError struct {
+	NodeKey       string
+	DownstreamKey string
+	EdgeKey       string
+	Detail        string
+	Cause         error
+}
+
+func (e *RoutingDefectError) Error() string {
+	return fmt.Sprintf("%v: %s (%v)", ErrWorkflowRoutingDefect, e.Detail, e.Cause)
+}
+
+func (e *RoutingDefectError) Unwrap() []error { return []error{ErrWorkflowRoutingDefect, e.Cause} }
 
 // AdvanceRunRequest is what a caller supplies to AdvanceRun.
 type AdvanceRunRequest struct {
@@ -403,6 +430,16 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 	downstreamNode, ok := findNode(document, edge.To)
 	if !ok {
 		return AdvanceRunResult{}, fmt.Errorf("runtime: edge %s targets unknown node %s", edge.Key, edge.To)
+	}
+
+	// V11-03: refuse an impossible routing hop before the first write of this
+	// transaction (see ErrWorkflowRoutingDefect). A cancelling run does not route at
+	// all, and a hop into a JOIN is not a cycle activation.
+	if run.State != runtimedomain.WorkflowRunCancelling && run.State != runtimedomain.WorkflowRunCancelled &&
+		downstreamNode.Type != workflow.NodeJoin {
+		if err := checkCycleEscalationRoutable(ctx, tx, req.RunID, document, node, downstreamNode); err != nil {
+			return AdvanceRunResult{}, err
+		}
 	}
 
 	newSharedState := run.SharedState
@@ -1828,4 +1865,46 @@ func mergeSharedStateValue(field workflow.SharedStateField, existing, incoming j
 	default:
 		return nil, fmt.Errorf("runtime: field %q has unsupported merge rule %q", field.Name, field.MergeRule)
 	}
+}
+
+// checkCycleEscalationRoutable reports, as a *RoutingDefectError, a hop into
+// downstream that the definition cannot complete: downstream carries a CyclePolicy,
+// activating it again would exceed its MaxIterations (so the scheduler forces its
+// escalation edge), and that edge is missing or does not leave downstream's cycle.
+// It mirrors, read-only and in advance of any write, the checks the exhausted
+// branch of advanceRunTx performs; those stay as a second line of defence.
+func checkCycleEscalationRoutable(
+	ctx context.Context, tx ports.Tx, runID string, document workflow.WorkflowDocument, from, downstream workflow.Node,
+) error {
+	if downstream.CyclePolicy == nil {
+		return nil
+	}
+	priorMax, found, err := tx.Runtime().GetMaxNodeIteration(ctx, runID, downstream.Key)
+	if err != nil {
+		return err
+	}
+	candidate := uint32(0)
+	if found {
+		candidate = priorMax + 1
+	}
+	if candidate <= downstream.CyclePolicy.MaxIterations {
+		return nil
+	}
+	escalationEdge, ok := findEdge(document, downstream.Key, downstream.CyclePolicy.EscalationOutcome)
+	if !ok {
+		return &RoutingDefectError{
+			NodeKey: from.Key, DownstreamKey: downstream.Key, Cause: ErrCycleEscalationRouteNotFound,
+			Detail: fmt.Sprintf("node %q ran out of its cyclePolicy budget (%d iterations) but declares no edge for its escalation outcome %q; "+
+				"publish a corrected version of the workflow", downstream.Key, downstream.CyclePolicy.MaxIterations, downstream.CyclePolicy.EscalationOutcome),
+		}
+	}
+	if membership := workflow.CycleMembership(document); membership[downstream.Key] == membership[escalationEdge.To] {
+		return &RoutingDefectError{
+			NodeKey: from.Key, DownstreamKey: downstream.Key, EdgeKey: escalationEdge.Key, Cause: ErrCycleEscalationNotBounded,
+			Detail: fmt.Sprintf("node %q ran out of its cyclePolicy budget (%d iterations) but its escalation edge %q leads to %q, inside the same cycle, "+
+				"so the run cannot leave the loop; publish a corrected version of the workflow",
+				downstream.Key, downstream.CyclePolicy.MaxIterations, escalationEdge.Key, escalationEdge.To),
+		}
+	}
+	return nil
 }

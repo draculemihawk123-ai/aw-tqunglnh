@@ -16,7 +16,7 @@ func (e *ValidationError) Error() string {
 	return "invalid workflow graph: " + strings.Join(e.Problems, "; ")
 }
 
-func validateNormalizedDocument(document WorkflowDocument) error {
+func validateNormalizedDocument(document WorkflowDocument, publishStrict bool) error {
 	problems := make([]string, 0)
 	if strings.TrimSpace(document.SchemaVersion) == "" {
 		problems = append(problems, "schema version is required")
@@ -239,7 +239,7 @@ func validateNormalizedDocument(document WorkflowDocument) error {
 		}
 	}
 
-	problems = append(problems, validateBoundedCycles(nodes, outgoing)...)
+	problems = append(problems, validateBoundedCycles(nodes, outgoing, publishStrict)...)
 	problems = append(problems, validateForkJoinTopology(nodes, outgoing)...)
 	problems = append(problems, validateSharedState(document.SharedState, nodes)...)
 	if len(problems) == 0 {
@@ -294,7 +294,7 @@ func walkBackward(ends []string, incoming map[string][]Edge) map[string]bool {
 	return visited
 }
 
-func validateBoundedCycles(nodes map[string]Node, outgoing map[string][]Edge) []string {
+func validateBoundedCycles(nodes map[string]Node, outgoing map[string][]Edge, publishStrict bool) []string {
 	components := stronglyConnectedComponents(nodes, outgoing)
 	problems := make([]string, 0)
 	for _, component := range components {
@@ -339,6 +339,37 @@ func validateBoundedCycles(nodes map[string]Node, outgoing map[string][]Edge) []
 				"cycle [%s] requires a positive iteration budget and escalation route outside the cycle",
 				strings.Join(component, ","),
 			))
+			continue
+		}
+		if !publishStrict {
+			continue
+		}
+
+		// V11-03: "some node of the cycle escapes" is not enough. Every node on the
+		// cycle that carries its own CyclePolicy forces its escalation edge the
+		// moment ITS budget runs out (advance.go refuses an escalation edge that
+		// stays inside the node's own cycle), so each one must leave the cycle
+		// itself. Accepting the document here let a run fail at run time, after the
+		// previous node had already finished.
+		ordered := append([]string(nil), component...)
+		sort.Strings(ordered)
+		for _, key := range ordered {
+			node := nodes[key]
+			if node.CyclePolicy == nil || node.CyclePolicy.MaxIterations == 0 {
+				continue
+			}
+			for _, edge := range outgoing[key] {
+				if edge.Outcome != node.CyclePolicy.EscalationOutcome {
+					continue
+				}
+				if _, targetInCycle := members[edge.To]; targetInCycle {
+					problems = append(problems, fmt.Sprintf(
+						"node %q: cyclePolicy escalation edge %q (outcome %q) leads to %q, which is inside the same cycle [%s]; "+
+							"an escalation edge must lead outside the cycle it escapes",
+						key, edge.Key, edge.Outcome, edge.To, strings.Join(ordered, ","),
+					))
+				}
+			}
 		}
 	}
 	return problems

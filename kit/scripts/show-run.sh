@@ -37,7 +37,7 @@ jq -r --arg run "$run_id" '.waitRegistrations[]? | select(.state == "ACTIVE")
 diagnostics=$("$AW" run diagnostics --project-id "$project_id" "$run_id")
 jq -r '.blockers[]? | select(.state == "OPEN") | if .admissionReason
   then "  BỊ CHẶN \(.type): \(.reason)\n    sửa nguyên nhân rồi chạy: aw node-run retry-blocked --reason \"<lý do>\" \(.sourceNodeRunId)"
-  else "  BLOCKER \(.type) đang mở" end' <<<"$diagnostics"
+  else "  BLOCKER \(.type) đang mở\(if (.reason // "") != "" then ": \(.reason)" else "" end)" end' <<<"$diagnostics"
 jq -r '.repositoryWorkspaces[]? | select(.state == "QUARANTINED")
   | "  WORKTREE của \(.repositoryId) bị QUARANTINED: đọc operations.md mục 5.4 trước khi làm gì tiếp"' <<<"$diagnostics"
 case "$state" in
