@@ -490,6 +490,39 @@ func gatherAssembledRequestInputs(ctx context.Context, tx ports.Tx, req Assemble
 	// exactly as they were.
 	var checkFailures []assembledCheckFailureInput
 	var reviewerFeedback []assembledReviewerFeedbackInput
+	if profile.Role == workflow.AgentRoleChecker && len(snapshot.EvidenceRefs) > 0 {
+		// V11-04 (ADR-037): a CHECKER that a failing check sent the run to (a
+		// diagnosing `debug` node) reads that check's failure — the output the
+		// check printed — in the same checkFailures section a maker reads. Only the
+		// check that activated THIS NodeRun counts: its snapshot also pins every
+		// predecessor's latest evidence for the input allowlist (V5-12), and a
+		// failure that did not send the run here is not its business. A CHECKER
+		// reached by any other edge gets no section, so its prompt is unchanged.
+		nodeRuns, err := tx.Runtime().ListNodeRunsForRun(ctx, string(run.ID))
+		if err != nil {
+			return assembledRequestInputs{}, err
+		}
+		if failing := activatingFailedCheck(nodeRuns, document, nodeRun); failing != nil {
+			inputs, err := gatherCheckFailureInputs(ctx, tx, snapshot.EvidenceRefs)
+			if err != nil {
+				return assembledRequestInputs{}, err
+			}
+			for _, input := range inputs {
+				if len(input.evidence) > 0 && input.evidence[0].NodeRunID == failing.ID {
+					checkFailures = append(checkFailures, input)
+				}
+			}
+			if len(checkFailures) > 0 {
+				note, err := baselineNoteAt(ctx, tx, string(workItem.FamilyID), nodeRun.EffectiveScope, snapshot.CreatedAt)
+				if err != nil {
+					return assembledRequestInputs{}, err
+				}
+				for i := range checkFailures {
+					checkFailures[i].baseline = note
+				}
+			}
+		}
+	}
 	if profile.Role != workflow.AgentRoleChecker && len(snapshot.EvidenceRefs) > 0 {
 		checkFailures, err = gatherCheckFailureInputs(ctx, tx, snapshot.EvidenceRefs)
 		if err != nil {

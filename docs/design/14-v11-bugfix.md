@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01, V11-02, V11-03. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01, V11-02, V11-03, V11-04. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -36,7 +36,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-01 | Commit ngoài aw (IDE hoặc terminal) làm lệch HEAD so với revision aw ghi | Cao | **XONG 2026-10-10** (ADR-034) |
 | V11-02 | Nhà cung cấp báo hết hạn mức phiên bị coi là lỗi thực thi thường, đốt hết lần thử | Cao | **XONG 2026-10-10** (ADR-035) |
 | V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | **XONG 2026-10-10** (ADR-036) |
-| V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | Đã tái hiện (prompt dump) |
+| V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | **XONG 2026-10-10** (ADR-037) |
 | V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | Đã đo (spike V10-17) |
 | V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **Đã gặp thật** (chạy issue-tracker C-01 trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | Cơ chế **đã đọc trong mã**; thiết kế cần product owner chốt 6 điểm (mục "Quyết định cần chốt" của V11-07) |
@@ -215,6 +215,23 @@ Test: `TestValidateDocument_RejectsACyclePolicyWhoseEscalationEdgeStaysInsideIts
   `checkFailures` có đi tiếp qua CHECKER không). Đây là thay đổi hành vi công khai, nên cần ADR; nếu product owner quyết giữ nguyên,
   task đóng bằng cách ghi rõ giới hạn trong tài liệu và dùng cách đang áp dụng ở kit (agent chẩn đoán tự tái hiện).
 - **Verify:** nếu thay đổi: kịch bản `plus-debug` cho thấy `debug` và `build` nhận lỗi của `gate1`.
+
+### Kết quả triển khai V11-04 (2026-10-10, ADR-037)
+
+Quyết định (do thiết kế để ngỏ cho product owner): **đưa `checkFailures` đi tiếp**, không giữ nguyên giới hạn. Lý do: kiểm tra là thẩm quyền
+cuối (ADR-032, V9-13b); agent chẩn đoán không phải tự tái hiện lỗi mà kit đang dặn, và maker không thấy lại đầu ra của chính kiểm tra đã
+gửi nó đi. Nếu product owner muốn giữ hành vi cũ, đảo lại là bỏ hai khối trong `assemble_execution_request.go` và
+`gatherCheckFailureEvidenceRefs` (xem ADR-037).
+
+Khảo sát: snapshot của một CHECKER đã ghim evidence của các node đứng trước (allowlist V5-12), nên evidence của kiểm tra thất bại đã ở trong snapshot của
+`debug`; chỉ bước dựng prompt bỏ qua CHECKER. Maker sau `debug` thì không có ref nào tới kiểm tra gốc (chỉ AGENT_OUTPUT của `debug`).
+
+Đã làm: CHECKER được kích hoạt bởi `failureOutcome` của một kiểm tra nhận `checkFailures` của đúng kiểm tra đó; maker sau CHECKER ấy nhận cả `reviewerFeedback`
+và `checkFailures` gốc; mọi trường hợp khác không đổi. Tài liệu operator 04 và ADR-037. Kịch bản `plus-debug` của `walk-workflow.py` (khẳng định lúc trước là
+`debug`/`build` không có `checkFailures`) cần chạy lại trên Linux có `jq`; chưa chạy được trên máy này.
+
+Test: `TestDiagnosingCheckerAfterFailingCheck_ReceivesTheCheckFailures`, `TestMakerAfterDiagnosingChecker_ReceivesBothTheDiagnosisAndTheOriginalCheckFailure`,
+`TestCheckerReachedWithoutAFailingCheck_HasNoCheckFailures`, `TestDiagnosingCheckerAfterTheNextFailure_ReceivesOnlyTheLatestFailure` (ba test đầu thất bại trước khi sửa).
 
 ## V11-05 — Cô lập cấu hình CLI của nhà cung cấp
 

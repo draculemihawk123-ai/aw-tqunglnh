@@ -123,28 +123,15 @@ func gatherCheckFailureEvidenceRefs(
 	if err != nil {
 		return nil, err
 	}
-	var failing *runtimedomain.NodeRun
-	for i := range nodeRuns {
-		candidate := nodeRuns[i]
-		if candidate.State != runtimedomain.NodeRunSucceeded || candidate.ActivationSequence+1 != nodeRun.ActivationSequence {
-			continue
+	failing := activatingFailedCheck(nodeRuns, document, nodeRun)
+	if failing == nil {
+		// V11-04 (ADR-037): a MAKER sent back by a CHECKER that a failing check had
+		// sent the run to (check --failed--> debug --diagnosed--> maker) still
+		// reads the original failure: the diagnosis explains it, it does not replace
+		// the check, which stays authoritative.
+		if checker := activatingChecker(nodeRuns, document, nodeRun); checker != nil {
+			failing = activatingFailedCheck(nodeRuns, document, *checker)
 		}
-		if !sameBranchLineage(candidate.BranchTokenID, nodeRun.BranchTokenID) {
-			continue
-		}
-		checkNode, ok := findNode(document, candidate.NodeKey)
-		if !ok {
-			continue
-		}
-		failureOutcome := checkNode.CheckFailureOutcome()
-		if failureOutcome == "" || candidate.SelectedOutcome != failureOutcome {
-			continue
-		}
-		if edge, ok := findEdge(document, checkNode.Key, failureOutcome); !ok || edge.To != nodeRun.NodeKey {
-			continue
-		}
-		failing = &candidate
-		break
 	}
 	if failing == nil {
 		return nil, nil
@@ -185,4 +172,66 @@ func sameBranchLineage(a, b *runtimedomain.BranchTokenID) bool {
 		return a == nil && b == nil
 	}
 	return *a == *b
+}
+
+// activatingFailedCheck returns the check NodeRun that routed the run to
+// nodeRun through its node's failureOutcome edge, or nil. See
+// gatherCheckFailureEvidenceRefs for the rules; it is shared with the CHECKER
+// side of the prompt (V11-04), which must name the very same check.
+func activatingFailedCheck(nodeRuns []runtimedomain.NodeRun, document workflow.WorkflowDocument, nodeRun runtimedomain.NodeRun) *runtimedomain.NodeRun {
+	if nodeRun.ActivationSequence == 0 {
+		return nil
+	}
+	for i := range nodeRuns {
+		candidate := nodeRuns[i]
+		if candidate.State != runtimedomain.NodeRunSucceeded || candidate.ActivationSequence+1 != nodeRun.ActivationSequence {
+			continue
+		}
+		if !sameBranchLineage(candidate.BranchTokenID, nodeRun.BranchTokenID) {
+			continue
+		}
+		checkNode, ok := findNode(document, candidate.NodeKey)
+		if !ok {
+			continue
+		}
+		failureOutcome := checkNode.CheckFailureOutcome()
+		if failureOutcome == "" || candidate.SelectedOutcome != failureOutcome {
+			continue
+		}
+		if edge, ok := findEdge(document, checkNode.Key, failureOutcome); !ok || edge.To != nodeRun.NodeKey {
+			continue
+		}
+		return &candidate
+	}
+	return nil
+}
+
+// activatingChecker returns the CHECKER AGENT NodeRun that routed the run to
+// nodeRun through the edge of its selected outcome, or nil: SUCCEEDED, an AGENT
+// node whose effective role is CHECKER, ActivationSequence exactly one before
+// nodeRun's, in the same lineage (same BranchTokenID), and whose selected-outcome
+// edge leads to nodeRun's node. The same selection gatherReviewerFeedbackEvidenceRefs
+// makes for its AGENT_OUTPUT row.
+func activatingChecker(nodeRuns []runtimedomain.NodeRun, document workflow.WorkflowDocument, nodeRun runtimedomain.NodeRun) *runtimedomain.NodeRun {
+	if nodeRun.ActivationSequence == 0 {
+		return nil
+	}
+	for i := range nodeRuns {
+		candidate := nodeRuns[i]
+		if candidate.State != runtimedomain.NodeRunSucceeded || candidate.ActivationSequence+1 != nodeRun.ActivationSequence {
+			continue
+		}
+		if !sameBranchLineage(candidate.BranchTokenID, nodeRun.BranchTokenID) {
+			continue
+		}
+		node, ok := findNode(document, candidate.NodeKey)
+		if !ok || node.Type != workflow.NodeAgent || node.Agent.EffectiveRole() != workflow.AgentRoleChecker {
+			continue
+		}
+		if edge, ok := findEdge(document, node.Key, candidate.SelectedOutcome); !ok || edge.To != nodeRun.NodeKey {
+			continue
+		}
+		return &candidate
+	}
+	return nil
 }

@@ -191,6 +191,13 @@ When the maker runs again through that edge, its context snapshot carries the ev
 prompt gets a `checkFailures` section: `what` failed, `why` (the tail of stderr, or stdout if stderr was empty, for a
 command; the criteria that did not pass for a gate — bounded to 4 KiB) and `fix`. Only the latest failure is shown.
 
+The failure also goes **through a diagnosing `CHECKER`** placed between the check and the maker (V11-04, ADR-037):
+`check --failed--> debug (CHECKER) --diagnosed--> build`. `debug` is activated by the failing check, so its prompt gets the
+same `checkFailures` section (it no longer has to reproduce the failure to read it), and `build` — sent back by `debug` —
+gets both `reviewerFeedback` (the diagnosis) and the original `checkFailures`: the diagnosis explains the failure, it does
+not replace the check, which stays authoritative. A `CHECKER` reached by any other edge (a reviewer after a passing
+check) gets no `checkFailures`, and only the check that sent the run there counts, never an older failure.
+
 ## What an agent said, and a reviewer sending a maker back (V9-17)
 
 Every `AGENT` attempt that finishes `SUCCEEDED` and said something leaves an **`AGENT_OUTPUT`** evidence row (verdict
@@ -264,8 +271,8 @@ V9-03 it has this shape (**schema v2**, keys in exactly this order):
   choice), a second marker in an earlier message, a malformed one, or an outcome outside the list fails the attempt
   (all four are `OUTCOME_REJECTED`; see [09-troubleshooting.md](09-troubleshooting.md)). There are no per-outcome
   descriptions yet; the list is the names only.
-- **`checkFailures`** is only present for a maker sent back by a failing check (see the section above), right after
-  the task contract.
+- **`checkFailures`** is only present for a maker sent back by a failing check, or by a `CHECKER` that a failing check sent
+  the run to, and for that `CHECKER` itself (see the section above), right after the task contract.
 - **`reviewerFeedback`** is only present for a maker sent back by a `CHECKER` (V9-17, section above), right after
   `checkFailures`.
 - **`omittedMessages`** is only present when the node's context policy declares a `messages` budget that left some

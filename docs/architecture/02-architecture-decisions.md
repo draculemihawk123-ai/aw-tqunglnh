@@ -13,11 +13,11 @@
 > ADR-030…033 chốt ngày 2026-10-01 cho V9 (`docs/design/12-v9-harness-alignment.md`, task V9-00): orchestrator
 > viết và chốt theo ủy quyền của product owner; product owner duyệt ở PR của V9-00.
 >
-> ADR-034, ADR-035 và ADR-036 chốt ngày 2026-10-10 cho V11-01, V11-02 và V11-03 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
+> ADR-034…037 chốt ngày 2026-10-10 cho V11-01…V11-04 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
 > viết ADR khi triển khai.
 >
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034, ADR-035, ADR-036).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…037).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -1133,9 +1133,32 @@ finalize của node đứng trước bị rollback: attempt đó vẫn `RUNNING`
 **Hệ quả:** định nghĩa như `simplify → quality` bị từ chối lúc publish với lý do nêu tên; version cũ đã publish không còn làm run
 treo âm thầm. Workflow mẫu của kit không đổi (mọi cạnh escalation đã rời vòng).
 
-## 39. Baseline sau review thiết kế
+## 39. ADR-037 — `checkFailures` đi qua CHECKER chẩn đoán nằm giữa kiểm tra và maker
 
-ADR-001…036 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** ADR-031 quyết định 6 cho MAKER vừa bị `failureOutcome` của một node kiểm tra gửi lại nhận `checkFailures`, và V9-17 cho MAKER bị
+CHECKER gửi lại nhận `reviewerFeedback`. Trong `wf-task-delivery-plus`, `gate1 (failed) → debug (CHECKER) → build` rơi vào khoảng trống giữa hai
+đường: prompt của `debug` không có `checkFailures` (assembler bỏ qua mọi CHECKER), và prompt của `build` sau đó chỉ có báo cáo của `debug`.
+Agent chẩn đoán phải tự tái hiện lỗi mà kit đang dặn, và maker không thấy lại đầu ra của chính kiểm tra đã gửi nó đi.
+
+**Quyết định:** đưa `checkFailures` đi tiếp, chỉ dọc theo cạnh do kiểm tra thất bại kích hoạt.
+
+1. Một CHECKER AGENT được kích hoạt bằng cạnh `failureOutcome` của một node kiểm tra nhận `checkFailures` của kiểm tra đó, cùng nhãn
+   WHAT/WHY/FIX, cùng giới hạn 4 KiB, cùng ghi chú baseline. Chỉ kiểm tra đã kích hoạt NodeRun này được tính (`activatingFailedCheck`),
+   không phải mọi bằng chứng mà snapshot của CHECKER ghim cho allowlist đầu vào của V5-12. Snapshot của CHECKER không đổi (nó đã ghim
+   evidence của node đứng trước), nên không hash nào đổi; chỉ phần dựng prompt đổi.
+2. Một MAKER được kích hoạt bằng cạnh của một CHECKER mà chính CHECKER đó được kích hoạt bằng cạnh `failureOutcome` của một kiểm tra nhận thêm evidence của
+   kiểm tra gốc (`gatherCheckFailureEvidenceRefs` nhìn xuyên một CHECKER). Nó có cả `reviewerFeedback` (chẩn đoán) lẫn `checkFailures` (kiểm
+   tra gốc). Chẩn đoán giải thích lỗi, không thay thế kiểm tra, vốn vẫn là thẩm quyền cuối (ADR-032, V9-13b). Snapshot của maker này có
+   thêm evidence ref nên hash của nó khác trước, chỉ cho kích hoạt này.
+3. Một CHECKER không đi qua kiểm tra thất bại (reviewer sau kiểm tra đạt), và maker mà nó gửi lại, không có `checkFailures`; prompt của họ không đổi.
+   Chỉ đi xuyên một CHECKER, không đệ quy xa hơn.
+
+**Hệ quả:** workflow mẫu `wf-task-delivery-plus` không cần sửa; agent `debug` đọc được lỗi thật của `gate1` thay vì tái hiện nó, và kit có thể
+rút gọn dặn dò "tự tái hiện" khi cần. Hành vi prompt của workflow không có CHECKER nằm giữa không đổi.
+
+## 40. Baseline sau review thiết kế
+
+ADR-001…037 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1180,5 +1203,6 @@ dụng ma trận sau:
   qua `RUN_FAILED` của ADR-033, không thêm blocker mới.
 - ADR-036 (V11-03) siết luật vòng có chặn theo từng node (chỉ lúc publish, `workflow.Rehydrate` giữ version cũ đọc được) và
   làm lỗi định tuyến do định nghĩa thành run `FAILED` có lý do `WORKFLOW_DEFINITION_DEFECT`.
+- ADR-037 (V11-04) bổ sung ADR-031 quyết định 6 và V9-17: `checkFailures` đi tiếp qua CHECKER chẩn đoán nằm giữa kiểm tra và maker.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.
