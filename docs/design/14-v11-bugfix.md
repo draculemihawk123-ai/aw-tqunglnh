@@ -44,6 +44,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện và vá tạm** trên Windows 11 (Git 2.55); chạy tay file `.cmd` đã vá cho kết quả đúng; chưa thử trên máy khác |
 | V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | Cơ chế **đã đọc trong mã**; kiểm chứng bằng chính các lần chạy lại của người vận hành |
 | V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | Cơ chế **đã đọc trong mã**; dữ liệu phần lớn đã có trong DB nhưng không có API/UI đọc |
+| V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **Đã gặp thật** (đăng ký thư mục chưa `git init` trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -577,6 +578,91 @@ luồng sự kiện ra file; thay đổi cách agent tạo `agent_events` (adapt
   chạy một workflow nhiều node, bấm từng node trong lúc chạy và sau khi xong, thấy đúng tiến trình và kết quả, Chat có tin hoạt động.
 - **Không hồi quy:** `docs-coverage`, parity API/CLI, `v8-alpha-gate` xanh; không thêm truy vấn nào ghi dữ liệu.
 
+## V11-12 — Sửa và ngừng dùng repository; thông báo lỗi chi tiết khi đăng ký và thăm dò
+
+> Hai thiếu sót đi cùng nhau: đăng ký sai là lỗi rất thường gặp, mà người dùng vừa **không biết sai gì** vừa **không có cách sửa**.
+
+### Bằng chứng (đã gặp thật và đã đọc trong mã)
+
+- **Ca thật:** đăng ký `D:\project\bpm-gl` (thư mục chưa `git init`). Repository vào `BLOCKED` với mã `INVALID_ARGUMENT`. Người dùng phải đoán qua
+  ba lệnh (`list`, `show`, `onboarding`) mới thấy câu `repository local path is not a Git working tree`, rồi tự chạy `git` để biết thật sự thiếu
+  gì.
+- **Không có lệnh sửa.** Chỉ có `register`, `list`, `show`, `onboarding`, `retry-probe` và nhóm `readiness`. `retry-probe` thăm dò lại **đúng đường dẫn đã
+  lưu** (`repositories.local_path`), nên đổi đường dẫn hay `defaultRef` là không thể. Mã định danh và tên (duy nhất trong mỗi project, kiểm ở
+  `registerRepositoryTx`) bị giữ mãi bởi bản đăng ký sai.
+- **Không có lệnh ngừng dùng.** Máy trạng thái (`legalRepositoryTransitions`, `internal/domain/project/project.go`): `BLOCKED -> PROBING` là cạnh ra duy nhất của
+  `BLOCKED`; `DISABLED` chỉ đến được từ `ACTIVE` (ghi chú trong mã: "BLOCKED never DISABLED"), và hiện **không có lệnh nào** thực hiện cạnh
+  `ACTIVE -> DISABLED` (`RepositoryDisabled` chỉ được nhắc ở bộ xử lý thăm dò). Hơn mười bảng tham chiếu `repositories(id)` (scope của work item,
+  workspace, release set, readiness, evidence), nên xóa cứng không an toàn.
+- **Lỗi chỉ hiện mã.** `repository_probe_attempts` đã lưu `errorMessage`, nhưng `repository list` và `repository show` chỉ trả `lastProbeErrorCode`; thẻ
+  repository trên web (`Projects.tsx`, khối `lastProbeErrorCode`) cũng chỉ hiện mã. Chỉ `repository onboarding` có câu lý do, và không lệnh nào gợi ý
+  dùng nó. `kit/scripts/init-project.sh` và `add-repository.sh` chỉ in `repository <id>: BLOCKED`.
+- **Câu lý do quá chung.** `runGit` (`internal/adapters/repoprobe/prober.go`) bỏ stderr của Git; mọi lần `git rev-parse --show-toplevel` thoát khác 0 đều thành
+  một câu `is not a Git working tree`, trộn bốn nguyên nhân khác hẳn nhau: chưa `git init`, "dubious ownership" (thư mục thuộc người dùng khác),
+  repo bare, Git hỏng. Mỗi nguyên nhân có cách sửa khác nhau. Câu lý do cũng không nêu đường dẫn đã dùng hay lệnh sửa.
+- Form `Register Repository` (`Projects.tsx`) chỉ kiểm "bắt buộc"; sai đường dẫn chỉ lộ ra sau khi đã đăng ký và đã tốn một lượt thăm dò.
+
+### A. Thông báo lỗi chi tiết
+
+1. **Phân loại lỗi thăm dò thành tập đóng `failureKind`** thay vì một mã chung. Mỗi giá trị có câu giải thích và gợi ý riêng:
+   `PATH_EMPTY`, `PATH_NOT_FOUND`, `PATH_NOT_DIRECTORY`, `NOT_A_GIT_REPOSITORY`, `DUBIOUS_OWNERSHIP`, `BARE_REPOSITORY`, `NOT_TOP_LEVEL`
+   (kèm đường dẫn thư mục gốc thật của repo cha), `NO_COMMITS`, `REF_NOT_FOUND` (kèm danh sách nhánh hiện có), `REF_INVALID`, `GIT_NOT_FOUND`,
+   `PERMISSION_DENIED`, `GIT_FAILED` (còn lại), `TIMEOUT`. Mã lỗi công khai cũ (`INVALID_ARGUMENT`, `NOT_FOUND`, `UNAVAILABLE`) giữ nguyên để tương thích.
+2. **Bắt stderr của Git, đã redact và có giới hạn** (ví dụ 2 KB), và chạy Git với `LC_ALL=C` (hoặc `LANGUAGE=C`) để việc phân loại theo câu chữ ổn định,
+   không phụ thuộc ngôn ngữ của Windows. Stderr có thể chứa URL remote kèm thông tin xác thực, nên đi qua cùng bộ redact (`redact.Matcher`) như
+   `agent_events`. Không phân loại bằng stderr thì rơi về `GIT_FAILED` kèm nguyên văn stderr đã redact, không đoán.
+3. **Mỗi lỗi trả bốn phần:** `message` (một câu bằng lời thường), `path` (chuỗi đã khai và đường dẫn đã chuẩn hóa), `detail` (stderr đã redact),
+   `hint` (việc cần làm, có lệnh chép dán được). Ví dụ cho ca thật: "Thư mục `D:\project\bpm-gl` chưa phải repository Git. Chạy
+   `git -C D:/project/bpm-gl init -b main` rồi commit đầu tiên, sau đó bấm Thăm dò lại." Gợi ý riêng cho Windows: đường dẫn kiểu Git Bash (`/d/...`) báo
+   `PATH_NOT_FOUND` kèm "thử `D:/...`"; "dubious ownership" kèm đúng lệnh `git config --global --add safe.directory <path>`.
+4. **Hiển thị ở mọi nơi người dùng nhìn thấy repository:** thêm `lastProbeError {failureKind, message, hint}` vào dữ liệu của `list`, `show` và
+   `onboarding` (chi tiết đầy đủ và `detail` ở `onboarding`); thẻ repository trên web hiện `message` và `hint` ngay trên thẻ, mở rộng được để xem `detail` và
+   sao chép lệnh gợi ý; `kit/scripts/init-project.sh` và `add-repository.sh` in `message` và `hint` khi trạng thái là `BLOCKED`.
+5. **Kiểm tra trước khi đăng ký.** Thêm truy vấn chỉ đọc `aw repository check --path <p> --ref <r>` (và `POST /projects/{id}/repositories/check`) chạy đúng bộ
+   thăm dò nhưng **không ghi gì**; trả `failureKind`/`message`/`hint` hoặc kết quả đạt (base commit, có thay đổi chưa commit, thành phần phát hiện được).
+   Form `Register Repository` trên web gọi nó khi rời ô đường dẫn và hiển thị kết quả ngay trong form, để lỗi dạng ca thật bị chặn trước khi đăng ký.
+
+### B. Sửa và ngừng dùng repository
+
+1. **Sửa (`UpdateRepository`).** `aw repository update <id> --expected-version <n>` và `PATCH /repositories/{id}` (If-Match theo `version`), cho `remoteLocator`
+   và `defaultRef` (và `name` nếu rảnh; `id` bất biến). Chỉ cho khi repository ở `BLOCKED`: sửa một lần đăng ký sai. Một transaction: ghi trường mới,
+   chuyển `BLOCKED -> PROBING` và xếp job thăm dò (giống `RegisterRepository`), ghi sự kiện `RepositoryUpdated` và biên nhận idempotent. Repository
+   `ACTIVE` không cho sửa đường dẫn (workspace, revision và evidence đã gắn với đường dẫn cũ); muốn đổi thì ngừng dùng rồi đăng ký mới.
+2. **Ngừng dùng (`DisableRepository`).** `aw repository disable <id> --expected-version <n> [--reason ...]`. Sửa máy trạng thái để cho phép cả
+   `BLOCKED -> DISABLED` (sửa quyết định V3-01 "chỉ từ ACTIVE" bằng ADR mới) và thêm lệnh thực hiện `ACTIVE -> DISABLED`. Từ chối có kiểu lỗi, liệt kê rõ các thứ
+   đang giữ nó: work item chưa kết thúc có repository trong scope, workspace hoặc release set còn mở.
+3. **Giải phóng tên.** Ràng buộc "tên duy nhất trong project" chỉ áp dụng cho repository chưa `DISABLED` (chỉ mục duy nhất một phần), để đăng ký lại cùng tên sau khi
+   ngừng dùng. `id` vẫn duy nhất mãi mãi.
+4. **Không xóa cứng.** Repository `DISABLED` bị ẩn khỏi danh sách mặc định (`--include-disabled` để xem) nhưng vẫn còn cho lịch sử, evidence và kiểm toán.
+5. **Giao diện.** Thẻ repository: `Sửa` (chỉ khi `BLOCKED`, dùng chung form với kiểm tra trước), `Thăm dò lại` (đã có), `Ngừng dùng` (hộp thoại liệt kê thứ đang giữ). Các nút theo
+   `validActions` do core trả, như các màn hình khác.
+6. **Tài liệu.** Cập nhật `docs/operator/`, hướng dẫn issue-tracker (thêm mục "đăng ký sai thì làm gì"), parity registry, sinh lại `generated.ts`, ADR cho hai lệnh mới,
+   `failureKind` và việc sửa máy trạng thái.
+
+### Quyết định cần chốt với product owner
+
+1. **Sửa chỉ khi `BLOCKED`, hay cả `ACTIVE` chưa có tham chiếu?** Đề xuất: chỉ `BLOCKED`.
+2. **Cho `BLOCKED -> DISABLED` (sửa quyết định V3-01)?** Đề xuất: có; không thì lần đăng ký sai không thoát được.
+3. **Xóa cứng repository chưa từng `ACTIVE` và không được tham chiếu?** Đề xuất: không; ngừng dùng và giải phóng tên là đủ.
+4. **Stderr của Git (đã redact) hiển thị cho mọi người xem project?** Đề xuất: có; đường dẫn máy là thông tin vận hành, không phải bí mật.
+
+### Ngoài phạm vi
+
+Tự động chạy `git init` hay `git config` thay người dùng; đổi `id`; di chuyển workspace và evidence sang đường dẫn mới; clone repository từ URL.
+
+### Verify
+
+- **Phân loại (test với Git thật trong thư mục tạm):** thư mục không phải repo; thư mục con của repo; repo bare; repo chưa có commit; ref không tồn tại; đường dẫn không tồn tại; đường dẫn là file. "Dubious
+  ownership" và Git không có: dùng trình chạy Git giả trả stderr tương ứng. Mỗi trường hợp có đúng `failureKind`, `message`, `hint`. Stderr chứa URL có token thì `detail` đã bị redact.
+  Chạy với `LC_ALL=C`: kết quả không đổi khi ngôn ngữ hệ thống khác.
+- **Windows:** đường dẫn `D:\x`, `D:/x`, `/d/x`; `failureKind` và `hint` đúng cho từng kiểu. Chạy trên runner Windows nếu CI có.
+- **Sửa và ngừng dùng:** `UpdateRepository` chỉ chạy khi `BLOCKED`, đổi đường dẫn rồi thăm dò lại và thành `ACTIVE`; replay cùng khóa cho cùng kết quả; sai `version` bị từ chối.
+  `DisableRepository` bị từ chối khi còn work item hay workspace dùng và liệt kê đúng; thành công thì tên dùng lại được; `ACTIVE -> DISABLED` có test hồi quy.
+- **Hiển thị:** `list`, `show`, `onboarding` có `lastProbeError`; Vitest cho thẻ repository (message, hint, mở rộng detail), form đăng ký có kiểm tra trước, hộp thoại `Sửa` và `Ngừng dùng`.
+  e2e Playwright tái hiện ca thật: đăng ký thư mục chưa `git init`, thấy câu "chưa phải repository Git" và lệnh gợi ý, `git init` và commit, bấm `Thăm dò lại`, thành `ACTIVE`, không mở terminal để tìm lý do.
+- **Kit:** `init-project.sh` và `add-repository.sh` in lý do khi `BLOCKED`; `kit/tests/check-kit.sh` xanh.
+- **Không hồi quy:** mã lỗi công khai cũ (`INVALID_ARGUMENT`, `NOT_FOUND`) vẫn giữ nguyên; `go test ./...` và `docs-coverage-check` xanh.
+
 ## Gate của V11
 
 Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
@@ -592,3 +678,4 @@ Kế thừa gate chung ở mục 6 của `00-roadmap.md`, thêm:
 9. V11-09: script kiểm tra chạy đúng trên Windows, agent nhận đúng lỗi thật.
 10. V11-10: từ một run hỏng, `Chạy lại` và `Làm lại bằng phiên bản mới` hoàn tất trên web, không để trạng thái dở khi lỗi giữa chừng.
 11. V11-11: bấm một node (đang chạy, đã xong, đã hỏng) hiện đủ đầu vào, tiến trình, kết quả, lỗi từ dữ liệu thật; Chat có tin hoạt động của agent; prompt của agent kế tiếp không đổi khi bật tính năng.
+12. V11-12: đăng ký thư mục chưa phải repository Git cho thông báo nói đúng nguyên nhân kèm lệnh sửa trên web, CLI và script kit; repository `BLOCKED` sửa được và ngừng dùng được mà không xóa cứng.

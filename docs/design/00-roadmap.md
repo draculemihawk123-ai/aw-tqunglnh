@@ -151,7 +151,7 @@ V9 là version sau verdict `ALPHA_READY`, không thuộc định nghĩa Alpha �
 V10 chỉ sửa tầng `kit/` và tài liệu, không chạm core engine; file `13-v10-kit-knowledge.md` mới chia task, chưa
 triển khai.
 
-V11 là nơi sửa lỗi và **được phép sửa core engine**; file `14-v11-bugfix.md` mới chia task (11 task, V11-01 chi tiết), chưa
+V11 là nơi sửa lỗi và **được phép sửa core engine**; file `14-v11-bugfix.md` mới chia task (12 task, V11-01 chi tiết), chưa
 triển khai.
 
 Không chạy song song hai version có dependency nối tiếp. Bên trong một version, mặc định vẫn làm theo
