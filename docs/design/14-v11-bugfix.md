@@ -40,7 +40,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **Đã gặp thật** (chạy issue-tracker C-01 trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | Cơ chế **đã đọc trong mã**; thiết kế cần product owner chốt 6 điểm (mục "Quyết định cần chốt" của V11-07) |
 | V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | Chính sách đã nêu; hiệu ứng lên chi phí và chất lượng **chưa đo** |
-| V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện** trên Windows 11 (Git 2.55); nguyên nhân gốc chưa xác định; bản vá tạm đã có, chưa kiểm chứng |
+| V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện và vá tạm** trên Windows 11 (Git 2.55); chạy tay file `.cmd` đã vá cho kết quả đúng; chưa thử trên máy khác |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -349,7 +349,7 @@ Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; s
   | **Tài liệu agent sinh ra** (brainstorm, spec, design, plan) | Theo ngôn ngữ của `taskContract.behavior` |
 
 - **Thực hiện (đề xuất, theo thứ tự, mỗi bước một commit):**
-  1. **Script worker sang tiếng Anh ASCII** (`kit/commands/*.sh`, khoảng 120 dòng). Thêm kiểm tra trong `kit/tests/check-kit.sh`: script
+  1. **Script worker sang tiếng Anh ASCII** (không còn vì lỗi Windows: V11-09 cho thấy tiếng Việt không phải nguyên nhân; làm vì thống nhất ngôn ngữ) (`kit/commands/*.sh`, khoảng 120 dòng). Thêm kiểm tra trong `kit/tests/check-kit.sh`: script
      publish lên worker có ký tự không ASCII thì hỏng. Sửa các test đang dò chuỗi tiếng Việt (`THIẾU mục`, `WHAT:`/`FIX:`...).
   2. **Luật ngôn ngữ cho tài liệu sinh ra:** thêm vào `flow.working-rules` (một chỗ duy nhất): "viết tài liệu bằng ngôn ngữ của
      `taskContract.behavior`; tên mục theo khung của skill". Giữ hợp đồng skill ↔ kiểm tra bằng máy: `plan.checklist` ↔ `check-plan.sh`
@@ -373,14 +373,15 @@ Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; s
   Chạy tay `sh kit/commands/npm-test.sh` trong Git Bash thì in đúng lỗi thật (`Cannot find module '@testing-library/dom'`); chạy tay
   file `.cmd` do `aw-publish.py` tạo bằng `cmd //c` thì tái hiện lỗi: `cmd.exe` thực thi từ **giữa dòng** (có khi giữa một ký tự UTF-8)
   của phần bash, tức đọc file sai vị trí sau khi chạy lệnh ngoài.
-- **Nguyên nhân gốc: chưa xác định.** Hai giả thuyết (có thể cùng đúng): (1) file chỉ có `\n` làm `cmd.exe` mất vị trí khi đọc lại
-  file sau lệnh ngoài (`git --exec-path`, `sh.exe`); (2) ký tự UTF-8 nhiều byte trong phần bash làm lệch vị trí. Bài thử 8 tổ hợp (bốn
-  kiểu bọc x nội dung tiếng Việt hoặc ASCII) đã soạn, **chưa chạy**.
-- **Bản vá tạm đã có trong kit (chưa kiểm chứng):** phần đầu thành một khối lệnh duy nhất có `enabledelayedexpansion`, đuôi dòng CRLF
-  riêng cho phần đầu, phần bash giữ LF; có kiểm tra tự động về hình dạng nội dung (không kiểm hành vi `cmd.exe`).
+- **Nguyên nhân (đã xác nhận một phần, 2026-10-09):** lỗi nằm ở **phần đầu của file `.cmd`** (nhiều dòng, chỉ `\n`), không phải ở nội
+  dung bash hay tiếng Việt. Bằng chứng: sau khi đổi phần đầu thành một khối lệnh duy nhất kèm đuôi CRLF (bản vá tạm bên dưới),
+  chạy tay file `npm-test.cmd` do `aw-publish.py` tạo (**vẫn chứa tiếng Việt**) bằng `cmd //c` cho đúng thông báo của `npm-test.sh`,
+  không còn dòng `is not recognized`. Chưa phân biệt được giữa "một khối" và "CRLF" cái nào là cái có tác dụng (bản vá làm cả hai);
+  chưa kiểm trên máy Windows khác hay phiên bản Git khác. Bài thử 8 tổ hợp chưa cần chạy nữa trừ khi muốn tách hai yếu tố này.
+- **Bản vá tạm trong kit:** phần đầu thành một khối lệnh duy nhất có `enabledelayedexpansion`, đuôi dòng CRLF riêng cho phần đầu,
+  phần bash giữ LF; có kiểm tra tự động về hình dạng nội dung (không kiểm hành vi `cmd.exe`).
 - **Mục tiêu:** bước kiểm tra chạy trên Windows cho cùng kết quả và cùng thông báo như trên Linux, với mọi script trong `kit/commands/`.
-- **Thực hiện (đề xuất):** (a) xác định nguyên nhân bằng bài thử đã soạn và ghi vào đây; (b) nếu do ký tự không ASCII thì V11-08
-  bước 1 là bản sửa, bộ bọc giữ nguyên; (c) cân nhắc sửa ở engine để không cần bộ bọc: Command khai thông dịch viên (`interpreter:
+- **Thực hiện (đề xuất):** (a) xác định nguyên nhân bằng bài thử đã soạn và ghi vào đây; (b) tách hai yếu tố "một khối" và "CRLF" để giữ bản vá nhỏ nhất; (c) cân nhắc sửa ở engine để không cần bộ bọc: Command khai thông dịch viên (`interpreter:
   sh`) và worker trên Windows tự gọi `sh.exe` của Git, thay vì kit bọc file; (d) `aw doctor` thêm kiểm tra `sh.exe` của Git for Windows.
 - **Verify:** trên máy Windows có Git for Windows: tất cả script `kit/commands` chạy qua `cmd //c` cho đúng mã thoát và đúng thông
   báo, với nội dung có tiếng Việt và không có; một lượt chạy thật của W-01 cho agent nhận đúng lỗi test thay vì rác; kịch bản kiểm
