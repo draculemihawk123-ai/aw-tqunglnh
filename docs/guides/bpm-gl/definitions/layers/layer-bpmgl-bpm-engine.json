@@ -1,7 +1,23 @@
 {
   "resources": [
     {
-      "key": "bpmgl.bpm.engine",
+      "key": "bpmgl.bpm.model",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; khảo sát BPM engine ngày 2026-10-09 (HEAD a3c6d71)",
+        "revision": "v2",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Mô hình engine BPM. Ứng dụng KHÔNG tự điều hướng luồng: engine (bpm-engine) giữ đồ thị bước đọc từ XML BPMN lưu trong bảng `T_RE_PROCESS_DEFINITION` và gọi ngược vào các bean `@Component` của ứng dụng tại từng bước. ms001 có hai quy trình (`acct_create_vendor`, `acct_create_contract`), bốn user task (ContractProposal, ContractControl, NccProposal, NccControl), hai service task (ContractBeforeEnd, NccBeforeEnd). Mỗi task gồm HAI tầng: (1) bean của engine ở `engine/<domain>/user_task|service_task` (extends `UserTask`/`ServiceTask`), chỉ gán người xử lý và đổ cột inbox, KHÔNG chứa nghiệp vụ; (2) handler nghiệp vụ ở `service/<domain>/task/<Domain><Bước>ProcessTask` (implements `ContractProcessTask` hoặc `NccProcessTask`, `@Component`, `getTaskType()`), được `ProcessTaskFactory` đăng ký theo `TaskType`. Trạng thái hồ sơ đi qua các bước trong POJO `pipeline` (`AcctContractPipeline`, `AcctVendorPipeline`), lưu dạng JSON ở `T_RU_TASK.DATA`. Mã hồ sơ nghiệp vụ `bpmId` (customId/customTaskId) nối engine với bảng `BPM_CS_*`. Nghiệp vụ nặng đặt ở handler, không đặt trong bean của engine."
+    },
+    {
+      "key": "bpmgl.bpm.names",
       "priority": "HARD_CONSTRAINT",
       "selector": {
         "componentTags": [
@@ -10,11 +26,107 @@
       },
       "provenance": {
         "owner": "team-bpm-gl",
-        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; mục này chưa đối chiếu với tài liệu BPM của dự án (BPM-BASELINE-CONVENTIONS.md, BPM-LUONG-HOAT-DONG.md, bpmn/), bản sơ bộ",
-        "revision": "v1",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; khảo sát BPM engine ngày 2026-10-09 (HEAD a3c6d71)",
+        "revision": "v2",
         "lastVerified": "2026-10-09T00:00:00Z"
       },
-      "convention": "Engine BPM (thư mục `engine/**`, nhánh theo `TaskType`, lớp `*Pipeline`, `*UserTask`, `*ServiceTask`). Quy trình đang chạy được lưu trong DB và tham chiếu tới các lớp này bằng TÊN, nên đổi tên class `@Component` trong `engine/**`, đổi tên hoặc kiểu field của lớp `*Pipeline`, đổi giá trị trong `TaskType` KHÔNG gây lỗi biên dịch nhưng làm hỏng quy trình đang chạy. Không đổi các thứ đó trừ khi task yêu cầu đúng việc này; nếu cần, dừng và hỏi người. Không thêm cột hay khóa ngoại lên bảng `T_RE_*`/`T_RU_*` (thuộc bpm-engine). `bpm-core` và `bpm-engine` là thư viện nội bộ dạng jar, không có mã nguồn trong repo: chỉ dùng API đã có, không đoán phương thức. Nhánh xử lý theo loại task đi qua `ProcessTaskFactory` và các `service/*/task/*ProcessTask`; thêm loại task mới thì làm đủ các điểm đã có cho một loại task cũ (enum `TaskType`, lớp xử lý, đăng ký trong factory, test), lấy loại task gần nhất làm mẫu."
+      "convention": "Các thứ ràng buộc với XML trong DB bằng CHUỖI. Đổi chúng vẫn biên dịch được nhưng làm hỏng quy trình đang chạy, nên KHÔNG đổi, xóa, chuyển package hay đổi kiểu trừ khi task nêu đúng việc này (khi đó dừng và hỏi người): (1) tên đầy đủ (FQCN) của `ContractProposal`, `ContractControl`, `NccProposal`, `NccControl`, `ContractBeforeEnd`, `NccBeforeEnd` (XML có `implementation=\"FQCN\"`); (2) FQCN của `AcctContractPipeline` và `AcctVendorPipeline`; (3) tên field của mọi pipeline và các lớp con của nó (JSON cũ ở `T_RU_TASK.DATA` mang tên field; điều kiện BPMN đọc thẳng, ví dụ `acctContractData.rmOpn eq '2'`), đặc biệt `rmOpn`, `rmControlOpn` kiểu `String` và giá trị cờ \"1\"/\"2\"; (4) giá trị UUID `type` trong enum `TaskType` (có trong XML, `T_RE_TASK_TYPE`, `BPM_CS_TRACKING`, `BPM_CS_COMMENT`, `BPM_LS_STATUS`); (5) hằng `ACCT_CREATE_VENDOR_PROCESS_CODE`, `ACCT_CREATE_CONTRACT_PROCESS_CODE` và `START_EVENT = \"Start\"` trong `BusinessConstant`. Chỉ THÊM field vào pipeline (cuối nhóm, kiểu `String`/`Long` phẳng), không xóa hay đổi tên field cũ. UUID trong `TaskType` viết HOA; so sánh trong `getTaskByTaskTypeId` phân biệt hoa thường và kết quả `null` làm `getStatus()` ném NPE ở các hook `queuedAction`, nên khi thêm UUID phải chép đúng chữ hoa như `T_RE_TASK_TYPE`."
+    },
+    {
+      "key": "bpmgl.bpm.new-task",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; khảo sát BPM engine ngày 2026-10-09 (HEAD a3c6d71)",
+        "revision": "v2",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Thêm hoặc hoàn thiện một user task trong quy trình có sẵn (công thức từ các commit 634db2e, dc724e9, 7a3761a). Làm đủ các điểm sau, lấy `ContractProposal`/`ContractProposalProcessTask` làm mẫu: (1) `enums/TaskType.java` thêm hằng `(DOMAIN, \"UUID-HOA\", \"mã status\", \"STEP_TYPE\", \"tên vai trò\")`; (2) `engine/<domain>/user_task/<Tên>.java`: `@Component @RequiredArgsConstructor`, extends `UserTask`, override đủ 8 hook, chỉ `queuedAction` có nội dung: đọc pipeline bằng `CommonUtil.stringToBean(taskInfo.getData(), ...)`, gọi `TaskUtil.setFieldXxxTaskInbox`, `taskInfo.setAssignedTo(...)`, `taskInfo.setData(CommonUtil.beanToString(pipeline))` (thiếu dòng này thì thay đổi pipeline mất âm thầm), rồi `updateCurrentStatus(customTaskId, taskType.getStatus())`; (3) `service/<domain>/task/<Tên>ProcessTask.java` implements interface của domain, `getTaskType()` trả hằng ở bước 1, có `saveTask`, `cancelTask`, `completeTask`; (4) mã lỗi mới trong `enums/ErrorCode.java` cùng khóa message trong `lang/messages*.properties`; (5) test cho handler (xem mục test). `ProcessTaskFactory` kiểm lúc khởi động và ném `IllegalStateException` nếu handler thiếu `getTaskType()`, sai domain hoặc trùng `TaskType`: ứng dụng không lên. Hai việc nằm NGOÀI repo và phải ghi vào báo cáo cuối task để người làm tay: thêm `<userTask implementation=\"FQCN\" taskTypeId=\"UUID\">` và `sequenceFlow` vào XML BPMN, và thêm dòng `T_RE_TASK_TYPE` (UUID, tên, `TASK_URL`)."
+    },
+    {
+      "key": "bpmgl.bpm.handler",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; khảo sát BPM engine ngày 2026-10-09 (HEAD a3c6d71)",
+        "revision": "v2",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Handler nghiệp vụ của task (`service/<domain>/task/*ProcessTask`). Mọi API ghi bắt đầu bằng `FacadeTaskService.checkModifiableTask(taskId, userId)` (qua `ContractProcessService` hoặc `ContractDataService.requireProposalTask`). Handler `completeTask` đánh `@Transactional(rollbackFor = Exception.class)`, thứ tự cố định: validate đầu vào, ghi DB và lịch sử, gán cờ định tuyến vào pipeline (`pipeline.getAcctContractData().setRmOpn(\"2\")` khi proposal chuyển tiếp, `setRmControlOpn` ở bước kiểm soát), và gọi `taskService.completeTask(taskId, userId, pipeline)` Ở CUỐI. Mọi validate đặt trước lần ghi đầu tiên. Hủy không gọi `cancelTask` của engine mà là hoàn thành task kèm cờ (`rmOpn = \"1\"`, trạng thái canceled) để đi nhánh mặc định về kết thúc. `ContractProcessService` không có `@Transactional`: giao dịch nằm ở handler. Lưu nháp (`saveTask`) không gọi engine."
+    },
+    {
+      "key": "bpmgl.bpm.pipeline-field",
+      "priority": "REQUIRED_PROCEDURE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; khảo sát BPM engine ngày 2026-10-09 (HEAD a3c6d71)",
+        "revision": "v2",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Thêm một field vào pipeline và dùng ở task sau (commit 634db2e thêm `contractNumber`). Các điểm phải sửa cùng lúc: (1) `engine/<domain>/pipeline/Acct*Data.java` thêm `private String <field>;` (chỉ thêm); (2) nơi dựng pipeline lúc khởi tạo (`InitAcctContractService.buildPipeline`) thêm tham số và `.field(value)` trong builder; (3) nếu hiện trong inbox, `utils/TaskUtil.java` đổ vào `fieldNTaskInbox`; (4) hook `queuedAction` của task gọi `TaskUtil.setFieldXxxTaskInbox(...)` rồi `taskInfo.setData(CommonUtil.beanToString(pipeline))`. Nếu field là cờ rẽ nhánh thì điều kiện nằm trong XML (`implementation=\"acctContractData.<field> eq '<giá trị>'\"`, chuỗi có nháy đơn, số không nháy) và handler gán giá trị trước `taskService.completeTask(...)`; sửa XML là việc ngoài repo, ghi vào báo cáo cuối task. Pipeline cũ đang chạy mang field mới bằng `null`, nên điều kiện phải an toàn với `null` (dạng khẳng định `eq '1'` rơi vào nhánh mặc định). Pipeline không có `@JsonIgnoreProperties(ignoreUnknown = true)`: không xóa field."
+    },
+    {
+      "key": "bpmgl.bpm.deploy",
+      "priority": "HARD_CONSTRAINT",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; khảo sát BPM engine ngày 2026-10-09 (HEAD a3c6d71)",
+        "revision": "v2",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Định nghĩa quy trình và DB của engine. Agent KHÔNG sửa, sinh bản deploy hay chạy SQL vào `T_RE_PROCESS_DEFINITION`, `T_RE_TASK_TYPE`, `T_RE_*`, `T_RU_*`, và không gọi endpoint `process/deployProcess`. XML BPMN không nằm đầy đủ trong repo (`create_new_provider.bpmn` của NCC có trong `src/main/resources` nhưng không code nào đọc và có thể lệch bản trong DB; `contract.bpmn` nằm ngoài git ở `bpm-gl/docs/bpmn/`). Khi thay đổi cần sửa XML hoặc nạp task type, agent soạn phần đề xuất (đoạn XML, UUID, tên, `TASK_URL`) trong báo cáo cuối task để người thực hiện. Thứ tự triển khai: build và deploy ứng dụng có bean mới TRƯỚC, rồi mới nạp hoặc sửa XML; khi xóa hoặc đổi tên thì làm ngược lại. Không đọc `docs/BPM-BASELINE-CONVENTIONS.md` như quy ước của ms001: tài liệu đó chắt từ dự án khác (có dispatch `keyBusiness`, `@UseLogging`, service interface + Impl) và lệch code của ms001; khi tài liệu và code khác nhau, theo code."
+    },
+    {
+      "key": "bpmgl.bpm.integration",
+      "priority": "GUIDANCE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; khảo sát BPM engine ngày 2026-10-09 (HEAD a3c6d71)",
+        "revision": "v2",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Service task và tích hợp ngoài. `ServiceTask.execute(StepInfo)` nhận `stepInfo.getCustomId()` và `getStepData()`; hiện chưa có service task nào làm việc thật (`ContractBeforeEnd` mồ côi, thân `NccBeforeEnd` bị comment), nên chưa có mẫu chuẩn: hỏi người trước khi thêm. Tích hợp GL/T24 dùng outbox của ms004: `OutboxService.createOutbox` BẮT BUỘC chạy trong transaction (`Propagation.MANDATORY`), việc gửi diễn ra sau commit, bản ghi lưu ở `BPM_CS_INTEGRATION`. Hiện KHÔNG có job nào gọi `findReadyForRetry`, nên bản ghi lỗi không tự chạy lại; không mặc định cho rằng đã có retry. Không chép kiểu truyền `stepId` cứng (`\"123123\"` trong `NccControlProcessTask`) vào code mới. Khởi tạo quy trình publish bằng `processPublisher.publish(processKey, \"Start\", pipeline, bpmId)` trong `afterCommit`, không bắt lỗi và không retry: nếu publish lỗi thì dữ liệu đã lưu mà chưa có tiến trình."
+    },
+    {
+      "key": "bpmgl.bpm.unknowns",
+      "priority": "GUIDANCE",
+      "selector": {
+        "componentTags": [
+          "backend"
+        ]
+      },
+      "provenance": {
+        "owner": "team-bpm-gl",
+        "source": "khảo sát ms001-bpmacct-contract, ms004-bpmacct-commons, mfe-bpmacct-contract ngày 2026-10-09; khảo sát BPM engine ngày 2026-10-09 (HEAD a3c6d71)",
+        "revision": "v2",
+        "lastVerified": "2026-10-09T00:00:00Z"
+      },
+      "convention": "Những điều CHƯA xác minh về engine (jar bpm-engine bị obfuscate, không có source): engine chạy `queuedAction`/`ServiceTask` đồng bộ trong request hay qua `T_RU_JOB`; có chung transaction với `completeTask` không; retry và `bpm.scheduler.*` hoạt động ra sao; định nghĩa mới áp cho instance đang chạy không; engine dùng thuộc tính `implementation` hay `conditionExpression` làm điều kiện; `checkModifiableTask` kiểm chính xác những gì và `completeTask` gọi hai lần ra sao. Khi một task phụ thuộc vào các điểm này, KHÔNG suy đoán hành vi và KHÔNG viết code dựa trên giả định: dừng và nêu câu hỏi cho người (needs-info). Không thêm CallActivity hay nhánh song song (`T_RU_MERGING_PARALLEL`): ms001 chưa dùng và chưa có quy ước."
     }
   ]
 }
