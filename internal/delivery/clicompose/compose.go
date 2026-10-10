@@ -120,7 +120,11 @@ type Deps struct {
 	// WorkspaceHeadAuditor (V11-01) is the same Git workspace provider, as the
 	// narrow ports.WorkspaceHeadAuditor `repository-workspace adopt-head` uses.
 	WorkspaceHeadAuditor ports.WorkspaceHeadAuditor
-	Isolation            ports.IsolationEnforcementChecker
+	// GitIdentities and ParkedChanges (V11-07) are the same Git workspace provider, as the narrow ports
+	// `approval resolve --commit-spec` and `repository-workspace restore-parked` use.
+	GitIdentities ports.GitIdentityReader
+	ParkedChanges ports.UnselectedChangeParker
+	Isolation     ports.IsolationEnforcementChecker
 	Agents               *agentregistry.Registry
 	Config               config.Config
 	// ProviderProbe is what `aw doctor` runs the provider executable's

@@ -101,6 +101,9 @@ var (
 	// ErrParkedRestoreConflict is returned by RestoreParkedChanges when restoring would
 	// overwrite something the worktree changed since the files were parked.
 	ErrParkedRestoreConflict = errors.New("restoring the parked changes would overwrite newer changes in the worktree")
+	// ErrNothingParked is returned by RestoreParkedChanges when the ref does not exist (never
+	// parked, or already restored).
+	ErrNothingParked = errors.New("nothing is parked under that ref")
 )
 
 // ParkedChanges describes what ParkRemainingChanges moved out of the worktree.

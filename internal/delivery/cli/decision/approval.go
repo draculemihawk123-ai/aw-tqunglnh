@@ -3,11 +3,13 @@ package decision
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"strings"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/approvalrelease"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
@@ -34,11 +36,13 @@ type resolveApprovalHashPayload struct {
 	ApprovalRequestID string `json:"approvalRequestId"`
 	Outcome           string `json:"outcome"`
 	Reason            string `json:"reason,omitempty"`
+	// Commit mirrors the HTTP handler's hash payload (V11-07).
+	Commit *commitSpec `json:"commit,omitempty"`
 }
 
 type resolveApprovalFlags struct {
-	principal, idempotencyKey, outcome, reason *string
-	expectedVersion                            *uint64
+	principal, idempotencyKey, outcome, reason, commitSpec *string
+	expectedVersion                                        *uint64
 }
 
 // bindResolveApprovalFlags is ResolveApproval's own flag-binding step,
@@ -56,6 +60,7 @@ func bindResolveApprovalFlags(fs *flag.FlagSet) resolveApprovalFlags {
 		idempotencyKey:  cli.BindIdempotencyKeyFlag(fs),
 		outcome:         fs.String("outcome", "", "the exact declared outcome this operator's decision maps to (required; an open, per-node vocabulary — validated against the node's own allow-list inside advanceRunTx, never a closed enum here)"),
 		reason:          fs.String("reason", "", "optional human-readable reason for this decision"),
+		commitSpec:      fs.String("commit-spec", "", "V11-07: also commit the worktree's changes — JSON like the HTTP body's \"commit\" object, or @path to read it from a file (allowed only where the approval node's release policy offers it)"),
 	}
 }
 
@@ -115,7 +120,11 @@ func ResolveApproval(ctx context.Context, deps Dependencies, args []string, stdo
 	}
 
 	scope := ports.ProjectScope(string(request.ProjectID))
-	hashPayload, err := json.Marshal(resolveApprovalHashPayload{ApprovalRequestID: approvalRequestID, Outcome: *f.outcome, Reason: *f.reason})
+	spec, err := parseCommitSpec(*f.commitSpec)
+	if err != nil {
+		return err
+	}
+	hashPayload, err := json.Marshal(resolveApprovalHashPayload{ApprovalRequestID: approvalRequestID, Outcome: *f.outcome, Reason: *f.reason, Commit: spec})
 	if err != nil {
 		return err
 	}
@@ -130,8 +139,19 @@ func ResolveApproval(ctx context.Context, deps Dependencies, args []string, stdo
 		if request.Version != *f.expectedVersion {
 			return nil, fmt.Errorf("approval request %s is at version %d, not %d — reload and retry", approvalRequestID, request.Version, *f.expectedVersion)
 		}
+		var commit *runtime.ApprovalCommit
+		if spec != nil {
+			if deps.Release.Identities == nil {
+				return nil, errors.New("decision: this process has no Git workspace provider, so a decision cannot carry a commit (pass --workspace-root)")
+			}
+			prepared, prepErr := approvalrelease.Preparer{UOW: deps.UOW, Identities: deps.Release.Identities, Inspection: deps.Release.Inspection}.Prepare(ctx, spec.input())
+			if prepErr != nil {
+				return nil, prepErr
+			}
+			commit = prepared
+		}
 		return runtime.ResolveApproval(ctx, deps.UOW, deps.IDs, envelope.Command, runtime.ResolveApprovalRequest{
-			RunID: runID, ApprovalRequestID: approvalRequestID, Outcome: *f.outcome, Reason: *f.reason,
+			RunID: runID, ApprovalRequestID: approvalRequestID, Outcome: *f.outcome, Reason: *f.reason, Commit: commit,
 		})
 	})
 	if err != nil {

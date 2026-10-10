@@ -30,6 +30,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/safesettings"
 	appworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/app/workspaceinspection"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/decision"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpcompose"
 )
 
@@ -433,6 +434,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		ArtifactStore:              artifactStore,
 		WorkspaceInspectionQueries: workspaceInspectionQueries,
 		WorkspaceHeadAuditor:       workspaceProvider,
+		Release:                    decision.ReleaseSupport{Identities: workspaceProvider, Inspection: workspaceProvider, Parker: workspaceProvider},
 		Matcher:                    matcher,
 		Cursor:                     cursorCodec,
 		Isolation:                  isolationChecker,

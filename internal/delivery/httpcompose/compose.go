@@ -103,6 +103,10 @@ type Dependencies struct {
 	// WorkspaceInspectionQueries. May be nil in a composition without one; the
 	// route then answers UNAVAILABLE.
 	WorkspaceHeadAuditor ports.WorkspaceHeadAuditor
+	// Release (V11-07, ADR-040) is how a decision carries a commit, how the dialog reads the git author and
+	// parked changes, and how parked files are restored: all the same real Git workspace provider. The zero
+	// value (a composition without one) makes those paths answer UNAVAILABLE.
+	Release decision.ReleaseSupport
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -230,7 +234,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// in this process reuses.
 	httprundetail.RegisterRoutes(routes, httprundetail.Dependencies{UnitOfWork: deps.UnitOfWork, Matcher: deps.Matcher, Cursor: deps.Cursor})
 	// V6-06A: Approval decision and typed WAIT signal endpoints.
-	decision.RegisterRoutes(routes, decision.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}})
+	decision.RegisterRoutes(routes, decision.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}, Release: deps.Release})
 	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
 	// and release/reconcile request routes.
 	httpapi.RegisterWorkspaceRoutes(routes, deps.UnitOfWork, idsource.Random{}, deps.WorkspaceHeadAuditor, deps.Matcher)

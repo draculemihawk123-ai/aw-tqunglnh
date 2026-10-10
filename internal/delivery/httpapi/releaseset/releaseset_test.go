@@ -22,6 +22,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	workapp "github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
 const testSessionToken = "test-releaseset-session-token"
@@ -724,5 +726,62 @@ func TestMutatingRoutes_RequireIdempotencyKey(t *testing.T) {
 	})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing Idempotency-Key status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// V11-07: a manual local commit may name the files to commit and what happens to the rest.
+func TestRequestReleaseSetLocalCommit_Selection_ValidatedAndAccepted(t *testing.T) {
+	env := newTestEnv(t)
+	env.seedFamily(t, "project-1", "family-1")
+	env.seedReadyWorkspace(t, "project-1", "family-1", "set-1", "repo-a", "rw-a")
+	createResp := env.do(t, http.MethodPost, "/projects/project-1/task-families/family-1/release-sets", "idem-sel-create", "", map[string]any{
+		"repositories": []any{repositoryReleaseJSON("repo-a", "base-rev", "result-rev", "PASS")},
+	})
+	var created workapp.ReleaseSetResult
+	decodeInto(t, createResp, &created)
+	request := func(key string, extra map[string]any) *http.Response {
+		body := map[string]any{
+			"expectedReleaseSetVersion": 1, "repositoryWorkspaceId": "rw-a", "expectedWorkspaceVersion": 1,
+			"message": "select files", "authorName": "Release Bot", "authorEmail": "release-bot@example.invalid",
+		}
+		for k, v := range extra {
+			body[k] = v
+		}
+		return env.do(t, http.MethodPost, "/projects/project-1/release-sets/"+created.ReleaseSetID+"/local-commits", key, "", body)
+	}
+
+	for name, extra := range map[string]map[string]any{
+		"unselected without files": {"unselected": "PARK"},
+		"bad handling":             {"files": []any{map[string]any{"path": "a.txt"}}, "unselected": "DELETE"},
+		"empty path":               {"files": []any{map[string]any{"path": " "}}},
+	} {
+		resp := request("idem-sel-bad-"+strings.ReplaceAll(name, " ", "-"), extra)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, resp.StatusCode)
+		}
+	}
+
+	resp := request("idem-sel-ok", map[string]any{
+		"files":      []any{map[string]any{"path": "spec/openapi.json", "status": "ADDED", "contentHash": "abc"}},
+		"unselected": "park",
+	})
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	var accepted struct {
+		ReleaseSetLocalCommitID string `json:"releaseSetLocalCommitId"`
+	}
+	decodeInto(t, resp, &accepted)
+	var selection workdomain.ReleaseSetLocalCommitSelection
+	var found bool
+	if err := env.uow.WithReadOnly(context.Background(), func(tx ports.Tx) error {
+		var err error
+		selection, found, err = tx.Work().GetReleaseSetLocalCommitSelection(context.Background(), accepted.ReleaseSetLocalCommitID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !found || selection.Unselected != workdomain.UnselectedPark || len(selection.Files) != 1 || selection.Files[0].ContentHash != "abc" || selection.ApprovalRequestID != "" {
+		t.Fatalf("selection = %+v (found %v), want a manual PARK selection of one file", selection, found)
 	}
 }

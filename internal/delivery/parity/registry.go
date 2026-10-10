@@ -121,6 +121,7 @@ func PublicOperations() []PublicOperation {
 		wsInspect      = "internal/app/workspaceinspection"
 		rsCommit       = "internal/app/releasesetcommit"
 		kanbanApp      = "internal/app/kanban"
+		approvalRelease = "internal/app/approvalrelease"
 	)
 	return []PublicOperation{
 		// ---- installation health and configuration -----------------------
@@ -219,6 +220,9 @@ func PublicOperations() []PublicOperation {
 			HighImpact: true, Cite: "confirm phải nêu rõ đây là intent"},
 		{Name: "RequestWorkspaceReconciliation", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("requestWorkspaceReconciliation")}, Symbol: wsReconcile + ".RequestWorkspaceReconciliation"},
 		{Name: "AdoptWorkspaceHead", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("adoptWorkspaceHead")}, Symbol: wsReconcile + ".AdoptWorkspaceHead"},
+		{Name: "GetFamilyReleaseContext", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getFamilyReleaseContext")}, Symbol: approvalRelease + ".Queries.FamilyReleaseContext"},
+		{Name: "GetApprovalRelease", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getApprovalRelease")}, Symbol: approvalRelease + ".Queries.ApprovalRelease"},
+		{Name: "RestoreParkedChanges", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("restoreParkedChanges")}, Symbol: approvalRelease + ".RestoreParked"},
 		{Name: "GetSource", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceSource")}, Symbol: wsInspect + ".Queries.GetSource"},
 		{Name: "GetDiff", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceDiff")}, Symbol: wsInspect + ".Queries.GetDiff"},
 		{Name: "GetRepositoryLog", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceRepositoryLog")}, Symbol: wsInspect + ".Queries.GetRepositoryLog"},

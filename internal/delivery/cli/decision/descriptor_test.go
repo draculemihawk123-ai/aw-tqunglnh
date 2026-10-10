@@ -15,6 +15,9 @@ func TestDecisionPackage_RegistersEveryDescriptorInDefault(t *testing.T) {
 	want := map[string]string{
 		"approval resolve|PROJECT": "ResolveApproval",
 		"wait signal|PROJECT":      "SignalWait",
+		"approval release|PROJECT":                    "GetApprovalRelease",
+		"workspace-set release-context|PROJECT":       "GetFamilyReleaseContext",
+		"repository-workspace restore-parked|PROJECT": "RestoreParkedChanges",
 	}
 
 	got := map[string]string{}

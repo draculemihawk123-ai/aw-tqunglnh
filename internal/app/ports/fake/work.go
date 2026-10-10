@@ -823,6 +823,18 @@ func (w *WorkRepository) MarkReleaseSetLocalCommitParkedRestored(_ context.Conte
 	return nil
 }
 
+// ListReleaseSetLocalCommitSelectionsByApproval mirrors sqlite's own method (V11-07).
+func (w *WorkRepository) ListReleaseSetLocalCommitSelectionsByApproval(_ context.Context, approvalRequestID string) ([]work.ReleaseSetLocalCommitSelection, error) {
+	var out []work.ReleaseSetLocalCommitSelection
+	for _, selection := range w.releaseSetLocalCommitSelections {
+		if selection.ApprovalRequestID == approvalRequestID {
+			out = append(out, selection)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ReleaseSetLocalCommitID < out[j].ReleaseSetLocalCommitID })
+	return out, nil
+}
+
 // ListParkedChanges mirrors sqlite's own method (V11-07).
 func (w *WorkRepository) ListParkedChanges(_ context.Context, familyID string) ([]work.ParkedChange, error) {
 	var out []work.ParkedChange

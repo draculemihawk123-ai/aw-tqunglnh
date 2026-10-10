@@ -323,7 +323,7 @@ func (p *Provider) RestoreParkedChanges(ctx context.Context, handle ports.Worksp
 	}
 	out, exitCode, _ := p.runGitWithEnv(ctx, workspacePath, nil, "rev-parse", "--verify", "-q", ref+"^{commit}")
 	if exitCode != 0 {
-		return nil, fmt.Errorf("%w: nothing is parked under %s", ErrGit, ref)
+		return nil, fmt.Errorf("%w: %s", ports.ErrNothingParked, ref)
 	}
 	parkedCommit := strings.TrimSpace(string(out))
 	parkedBase := parkedCommit + "^1"

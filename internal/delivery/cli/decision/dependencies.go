@@ -21,4 +21,14 @@ type Dependencies struct {
 	// cli.EnvelopeRequest.Now's own doc comment — a caller only needs to
 	// supply this for deterministic tests.
 	Now func() time.Time
+	// Release (V11-07, ADR-040) carries the Git-backed collaborators of approve-and-commit; the zero value
+	// disables commit-bearing decisions and restore.
+	Release ReleaseSupport
+}
+
+// ReleaseSupport mirrors internal/delivery/httpapi/decision.ReleaseSupport.
+type ReleaseSupport struct {
+	Identities ports.GitIdentityReader
+	Inspection ports.WorkspaceInspectionReader
+	Parker     ports.UnselectedChangeParker
 }

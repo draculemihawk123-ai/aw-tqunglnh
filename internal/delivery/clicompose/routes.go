@@ -300,7 +300,10 @@ func decisionRoutes() []Route {
 		return scopeexpansion.Dependencies{UOW: d.UoW, IDs: d.ids(), Now: d.Now}
 	}
 	decisionDeps := func(d *Deps) decision.Dependencies {
-		return decision.Dependencies{UOW: d.UoW, IDs: d.ids(), Now: d.Now}
+		return decision.Dependencies{
+			UOW: d.UoW, IDs: d.ids(), Now: d.Now,
+			Release: decision.ReleaseSupport{Identities: d.GitIdentities, Inspection: d.WorkspaceReader, Parker: d.ParkedChanges},
+		}
 	}
 	return []Route{
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
@@ -321,9 +324,18 @@ func decisionRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return scopeexpansion.List(ctx, scopeDeps(d), a, s.Stdout, s.Stderr)
 		}, "scope-expansion", "list"),
-		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return decision.ResolveApproval(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
 		}, "approval", "resolve"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return decision.ApprovalRelease(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
+		}, "approval", "release"),
+		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return decision.WorkspaceSetReleaseContext(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
+		}, "workspace-set", "release-context"),
+		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return decision.RepositoryWorkspaceRestoreParked(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "restore-parked"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return decision.SignalWait(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
 		}, "wait", "signal"),

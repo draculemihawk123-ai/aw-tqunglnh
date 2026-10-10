@@ -7,6 +7,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
 // requestReleaseSetLocalCommitBody is
@@ -30,6 +31,43 @@ type requestReleaseSetLocalCommitBody struct {
 	Message                   string `json:"message"`
 	AuthorName                string `json:"authorName"`
 	AuthorEmail               string `json:"authorEmail"`
+	// Files and Unselected (V11-07, ADR-040) restrict the commit to those files and say what happens to the
+	// rest (KEEP, the default, or PARK). Absent means the whole worktree, as before. Files carry the status and
+	// content hash the caller saw so the job can refuse anything else (CHANGESET_DRIFT).
+	Files      []localCommitFileBody `json:"files,omitempty"`
+	Unselected string                `json:"unselected,omitempty"`
+}
+
+// localCommitFileBody is one selected file of a selective manual commit.
+type localCommitFileBody struct {
+	Path        string `json:"path"`
+	Status      string `json:"status,omitempty"`
+	ContentHash string `json:"contentHash,omitempty"`
+}
+
+// selectionFromBody converts the optional selection; a validation message is returned for a malformed one.
+func selectionFromBody(body requestReleaseSetLocalCommitBody) (*releasesetcommit.LocalCommitSelectionInput, string) {
+	if len(body.Files) == 0 {
+		if body.Unselected != "" {
+			return nil, "unselected needs files"
+		}
+		return nil, ""
+	}
+	unselected := workdomain.UnselectedHandling(strings.ToUpper(strings.TrimSpace(body.Unselected)))
+	if unselected == "" {
+		unselected = workdomain.UnselectedKeep
+	}
+	if !unselected.IsValid() {
+		return nil, "unselected must be KEEP or PARK"
+	}
+	files := make([]workdomain.LocalCommitFile, 0, len(body.Files))
+	for _, file := range body.Files {
+		if strings.TrimSpace(file.Path) == "" {
+			return nil, "every file needs a path"
+		}
+		files = append(files, workdomain.LocalCommitFile{Path: file.Path, Status: file.Status, ContentHash: file.ContentHash})
+	}
+	return &releasesetcommit.LocalCommitSelectionInput{Files: files, Unselected: unselected}, ""
 }
 
 // handleRequestReleaseSetLocalCommit implements
@@ -100,6 +138,12 @@ func handleRequestReleaseSetLocalCommit(deps Dependencies) http.HandlerFunc {
 			return
 		}
 
+		selection, problem := selectionFromBody(body)
+		if problem != "" {
+			writeValidationError(w, "files", problem)
+			return
+		}
+
 		if replayOrProceed(r.Context(), w, deps, cmd) {
 			return
 		}
@@ -107,7 +151,7 @@ func handleRequestReleaseSetLocalCommit(deps Dependencies) http.HandlerFunc {
 		result, err := releasesetcommit.RequestReleaseSetLocalCommit(r.Context(), deps.UnitOfWork, deps.IDs, cmd, releasesetcommit.RequestReleaseSetLocalCommitRequest{
 			ProjectID: projectID, ReleaseSetID: releaseSetID, ExpectedReleaseSetVersion: body.ExpectedReleaseSetVersion,
 			RepositoryWorkspaceID: body.RepositoryWorkspaceID, ExpectedWorkspaceVersion: body.ExpectedWorkspaceVersion,
-			Message: body.Message, AuthorName: body.AuthorName, AuthorEmail: body.AuthorEmail,
+			Message: body.Message, AuthorName: body.AuthorName, AuthorEmail: body.AuthorEmail, Selection: selection,
 		})
 		if err != nil {
 			writeCommandError(w, err)

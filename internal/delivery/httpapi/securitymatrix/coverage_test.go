@@ -72,6 +72,7 @@ var noCrossProjectProof = []string{
 	"createProjectDefinition",
 	"createRootWorkItem",
 	"diffProjectDefinitionVersions",
+	"getApprovalRelease",
 	"getProjectDefinition",
 	"getProjectDefinitionVersion",
 	"getProjectionRebuildOperationStatus",

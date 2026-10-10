@@ -393,6 +393,9 @@ màu (không chỉ màu); danh sách log điều hướng và phân trang đư�
 | 5 | query | Diff | `getDiff` | `aw repository-workspace diff` | `GetDiff` [CHƯA CÓ] — tên khóa cứng ở Mục tiêu V6-10C | V6-10C / V6-10D |
 | 6 | query | Repository log | `getRepositoryLog` | `aw repository-workspace log` | `GetRepositoryLog` [CHƯA CÓ] — tên khóa cứng ở Mục tiêu V6-10C | V6-10C / V6-10D |
 | 7 | command | Nhận commit ngoài aw vào revision hiện tại của repository-workspace | `adoptWorkspaceHead` | `aw repository-workspace adopt-head` | `AdoptWorkspaceHead` [ĐÃ CÓ: `internal/app/workspacereconcile/adopt_head.go:AdoptWorkspaceHeadRequest`] — đồng bộ, chỉ khi worktree sạch, HEAD là hậu duệ tuyến tính của revision đã ghi và không có attempt ghi nào | V11-01 |
+| 8 | query | Tác giả commit (git config) và các file đã cất, trước khi hiện mục Commit ở cổng duyệt | `getFamilyReleaseContext` | `aw workspace-set release-context` | `GetFamilyReleaseContext` [ĐÃ CÓ: `internal/app/approvalrelease/approvalrelease.go:Queries.FamilyReleaseContext`] — chỉ đọc; thiếu `user.name`/`user.email` thì UI vô hiệu hóa tích Commit và hiện lệnh cấu hình | V11-07 |
+| 9 | query | Các commit mà một quyết định duyệt đã yêu cầu: trạng thái từng repository và patch người duyệt đã xem | `getApprovalRelease` | `aw approval release` | `GetApprovalRelease` [ĐÃ CÓ: `internal/app/approvalrelease/approvalrelease.go:Queries.ApprovalRelease`] | V11-07 |
+| 10 | command | Khôi phục các file đã cất bởi một commit PARK | `restoreParkedChanges` | `aw repository-workspace restore-parked` | `RestoreParkedChanges` [ĐÃ CÓ: `internal/app/approvalrelease/approvalrelease.go:RestoreParked`] — từ chối khi có attempt đang ghi hoặc khi sẽ ghi đè thay đổi mới hơn | V11-07 |
 
 ## 11. Screen 10 — ReleaseSet & local commit
 

@@ -92,6 +92,8 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 		}
 		deps.WorkspaceReader = provider
 		deps.WorkspaceHeadAuditor = provider
+		deps.GitIdentities = provider
+		deps.ParkedChanges = provider
 	}
 
 	if needs&clicompose.NeedWorkspaceIfConfigured != 0 && needs&clicompose.NeedWorkspace == 0 && strings.TrimSpace(opts.WorkspaceRoot) != "" {
@@ -101,6 +103,8 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 		}
 		deps.WorkspaceReader = provider
 		deps.WorkspaceHeadAuditor = provider
+		deps.GitIdentities = provider
+		deps.ParkedChanges = provider
 	}
 
 	if needs&clicompose.NeedIsolation != 0 {

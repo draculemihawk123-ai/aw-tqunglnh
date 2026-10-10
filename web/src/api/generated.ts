@@ -365,6 +365,17 @@ export function getAdapterBuild(id: string, opts: RequestOptions = {}): Promise<
   return request<GetAdapterBuildResponse>("GET", `/adapter-builds/${id}`, undefined, opts);
 }
 
+export interface GetApprovalReleaseResponse {
+  approvalRequestId: string;
+  projectId: string;
+  operations: unknown[];
+}
+
+// GET /runs/{runId}/approval-requests/{approvalRequestId}/release (scope: PROJECT)
+export function getApprovalRelease(runId: string, approvalRequestId: string, opts: RequestOptions = {}): Promise<GetApprovalReleaseResponse> {
+  return request<GetApprovalReleaseResponse>("GET", `/runs/${runId}/approval-requests/${approvalRequestId}/release`, undefined, opts);
+}
+
 export interface GetContextSnapshotResponse {
   snapshotId: string;
   projectId: string;
@@ -440,6 +451,17 @@ export interface GetEvidenceResponse {
 // GET /projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId} (scope: PROJECT)
 export function getEvidence(projectId: string, workItemId: string, evidenceId: string, opts: RequestOptions = {}): Promise<GetEvidenceResponse> {
   return request<GetEvidenceResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/evidence/${evidenceId}`, undefined, opts);
+}
+
+export interface GetFamilyReleaseContextResponse {
+  familyId: string;
+  repositories: unknown[];
+  parked: unknown[];
+}
+
+// GET /projects/{projectId}/task-families/{familyId}/release-context (scope: PROJECT)
+export function getFamilyReleaseContext(projectId: string, familyId: string, opts: RequestOptions = {}): Promise<GetFamilyReleaseContextResponse> {
+  return request<GetFamilyReleaseContextResponse>("GET", `/projects/${projectId}/task-families/${familyId}/release-context`, undefined, opts);
 }
 
 export interface GetMessageContextSnapshotResponse {
@@ -1184,6 +1206,8 @@ export interface RequestReleaseSetLocalCommitRequest {
   message: string;
   authorName: string;
   authorEmail: string;
+  files?: unknown[];
+  unselected?: string;
 }
 
 export interface RequestReleaseSetLocalCommitResponse {
@@ -1246,6 +1270,7 @@ export function requestWorkspaceSetRelease(projectId: string, familyId: string, 
 export interface ResolveApprovalRequest {
   outcome: string;
   reason?: string;
+  commit?: unknown | null;
 }
 
 export interface ResolveApprovalResponse {
@@ -1283,6 +1308,21 @@ export interface ResolveWorkItemBlockerResponse {
 // POST /work-item-blockers/{blockerId}/resolve (scope: PROJECT)
 export function resolveWorkItemBlocker(blockerId: string, body: ResolveWorkItemBlockerRequest, opts: RequestOptions = {}): Promise<ResolveWorkItemBlockerResponse> {
   return request<ResolveWorkItemBlockerResponse>("POST", `/work-item-blockers/${blockerId}/resolve`, body, opts);
+}
+
+export interface RestoreParkedChangesRequest {
+  releaseSetLocalCommitId: string;
+}
+
+export interface RestoreParkedChangesResponse {
+  releaseSetLocalCommitId: string;
+  ref: string;
+  restoredPaths: string[];
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/restore-parked (scope: PROJECT)
+export function restoreParkedChanges(projectId: string, repositoryWorkspaceId: string, body: RestoreParkedChangesRequest, opts: RequestOptions = {}): Promise<RestoreParkedChangesResponse> {
+  return request<RestoreParkedChangesResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/restore-parked`, body, opts);
 }
 
 export interface RetryBlockedActivationRequest {

@@ -472,6 +472,9 @@ type WorkRepository interface {
 	MarkReleaseSetLocalCommitParkedRestored(ctx context.Context, releaseSetLocalCommitID string, at time.Time) error
 	// ListParkedChanges returns every parked set of familyID not restored yet, oldest first.
 	ListParkedChanges(ctx context.Context, familyID string) ([]work.ParkedChange, error)
+	// ListReleaseSetLocalCommitSelectionsByApproval returns the selection records of the operations
+	// a decision requested (V11-07), ordered by operation id; empty when it requested none.
+	ListReleaseSetLocalCommitSelectionsByApproval(ctx context.Context, approvalRequestID string) ([]work.ReleaseSetLocalCommitSelection, error)
 }
 
 // ErrLocalCommitMarkerCollision is returned by

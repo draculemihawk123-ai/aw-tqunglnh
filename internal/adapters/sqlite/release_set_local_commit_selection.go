@@ -49,13 +49,43 @@ INSERT OR IGNORE INTO release_set_local_commit_selections (
 	return nil
 }
 
+const selectionColumns = `release_set_local_commit_id, approval_request_id, work_item_id, run_id, files_json, change_set_digest, unselected,
+       parked_ref, parked_paths_json, patch, patch_truncated, restored_at, created_at`
+
 // GetReleaseSetLocalCommitSelection implements ports.WorkRepository.
 func (r workRepository) GetReleaseSetLocalCommitSelection(ctx context.Context, id string) (work.ReleaseSetLocalCommitSelection, bool, error) {
-	row := r.tx.QueryRowContext(ctx, `
-SELECT release_set_local_commit_id, approval_request_id, work_item_id, run_id, files_json, change_set_digest, unselected,
-       parked_ref, parked_paths_json, patch, patch_truncated, restored_at, created_at
-FROM release_set_local_commit_selections WHERE release_set_local_commit_id = ?`, id)
+	selection, err := scanSelection(r.tx.QueryRowContext(ctx,
+		`SELECT `+selectionColumns+` FROM release_set_local_commit_selections WHERE release_set_local_commit_id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return work.ReleaseSetLocalCommitSelection{}, false, nil
+	}
+	if err != nil {
+		return work.ReleaseSetLocalCommitSelection{}, false, err
+	}
+	return selection, true, nil
+}
 
+// ListReleaseSetLocalCommitSelectionsByApproval implements ports.WorkRepository.
+func (r workRepository) ListReleaseSetLocalCommitSelectionsByApproval(ctx context.Context, approvalRequestID string) ([]work.ReleaseSetLocalCommitSelection, error) {
+	rows, err := r.tx.QueryContext(ctx,
+		`SELECT `+selectionColumns+` FROM release_set_local_commit_selections WHERE approval_request_id = ? ORDER BY release_set_local_commit_id`, approvalRequestID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list selections of approval %s: %w", approvalRequestID, err))
+	}
+	defer rows.Close()
+	var out []work.ReleaseSetLocalCommitSelection
+	for rows.Next() {
+		selection, err := scanSelection(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, selection)
+	}
+	return out, MapSQLiteError(rows.Err())
+}
+
+// scanSelection reads one selectionColumns row; sql.ErrNoRows is returned bare so Get can answer found=false.
+func scanSelection(row rowScanner) (work.ReleaseSetLocalCommitSelection, error) {
 	var selection work.ReleaseSetLocalCommitSelection
 	var opID, unselected, filesJSON, createdRaw string
 	var approvalRequestID, workItemID, runID, parkedRef, parkedPathsJSON, restoredRaw sql.NullString
@@ -64,26 +94,26 @@ FROM release_set_local_commit_selections WHERE release_set_local_commit_id = ?`,
 	if err := row.Scan(&opID, &approvalRequestID, &workItemID, &runID, &filesJSON, &selection.ChangeSetDigest, &unselected,
 		&parkedRef, &parkedPathsJSON, &patch, &truncated, &restoredRaw, &createdRaw); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return work.ReleaseSetLocalCommitSelection{}, false, nil
+			return work.ReleaseSetLocalCommitSelection{}, err
 		}
-		return work.ReleaseSetLocalCommitSelection{}, false, MapSQLiteError(fmt.Errorf("scan release set local commit selection: %w", err))
+		return work.ReleaseSetLocalCommitSelection{}, MapSQLiteError(fmt.Errorf("scan release set local commit selection: %w", err))
 	}
 	if err := json.Unmarshal([]byte(filesJSON), &selection.Files); err != nil {
-		return work.ReleaseSetLocalCommitSelection{}, false, fmt.Errorf("decode selection files: %w", err)
+		return work.ReleaseSetLocalCommitSelection{}, fmt.Errorf("decode selection files: %w", err)
 	}
 	if parkedPathsJSON.Valid && parkedPathsJSON.String != "" {
 		if err := json.Unmarshal([]byte(parkedPathsJSON.String), &selection.ParkedPaths); err != nil {
-			return work.ReleaseSetLocalCommitSelection{}, false, fmt.Errorf("decode parked paths: %w", err)
+			return work.ReleaseSetLocalCommitSelection{}, fmt.Errorf("decode parked paths: %w", err)
 		}
 	}
 	createdAt, err := parseWorkflowTime(createdRaw)
 	if err != nil {
-		return work.ReleaseSetLocalCommitSelection{}, false, err
+		return work.ReleaseSetLocalCommitSelection{}, err
 	}
 	if restoredRaw.Valid {
 		restoredAt, err := parseWorkflowTime(restoredRaw.String)
 		if err != nil {
-			return work.ReleaseSetLocalCommitSelection{}, false, err
+			return work.ReleaseSetLocalCommitSelection{}, err
 		}
 		selection.RestoredAt = &restoredAt
 	}
@@ -92,7 +122,7 @@ FROM release_set_local_commit_selections WHERE release_set_local_commit_id = ?`,
 	selection.Unselected = work.UnselectedHandling(unselected)
 	selection.ParkedRef = parkedRef.String
 	selection.Patch, selection.PatchTruncated, selection.CreatedAt = patch, truncated == 1, createdAt
-	return selection, true, nil
+	return selection, nil
 }
 
 // RecordReleaseSetLocalCommitParked implements ports.WorkRepository.

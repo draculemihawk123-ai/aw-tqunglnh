@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/approvalrelease"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
@@ -42,6 +43,32 @@ type ResolveApprovalBody struct {
 	// what actually validates it.
 	Outcome string `json:"outcome"`
 	Reason  string `json:"reason,omitempty"`
+	// Commit (V11-07, ADR-040), when present, asks the same action to also commit the worktree's
+	// changes for the repositories it names. The approval node's release policy decides whether that
+	// is allowed for Outcome; an empty Repositories list is the "nothing to commit" answer.
+	Commit *ResolveApprovalCommitBody `json:"commit,omitempty"`
+}
+
+// ResolveApprovalCommitBody is the commit a decision carries.
+type ResolveApprovalCommitBody struct {
+	Message      string                                `json:"message"`
+	Repositories []ResolveApprovalCommitRepositoryBody `json:"repositories"`
+}
+
+// ResolveApprovalCommitRepositoryBody is one repository of the commit: the files the approver chose and
+// what they saw of them (so the commit job can refuse anything else), and what happens to the rest.
+type ResolveApprovalCommitRepositoryBody struct {
+	RepositoryWorkspaceID    string                `json:"repositoryWorkspaceId"`
+	ExpectedWorkspaceVersion uint64                `json:"expectedWorkspaceVersion"`
+	Files                    []ResolveApprovalFile `json:"files"`
+	Unselected               string                `json:"unselected,omitempty"`
+}
+
+// ResolveApprovalFile is a chosen file with the status and content hash the approver saw.
+type ResolveApprovalFile struct {
+	Path        string `json:"path"`
+	Status      string `json:"status,omitempty"`
+	ContentHash string `json:"contentHash,omitempty"`
 }
 
 // resolveApprovalHashPayload is what this handler actually canonicalizes
@@ -57,6 +84,8 @@ type resolveApprovalHashPayload struct {
 	ApprovalRequestID string `json:"approvalRequestId"`
 	Outcome           string `json:"outcome"`
 	Reason            string `json:"reason,omitempty"`
+	// Commit is folded in so the same Idempotency-Key with a different commit is a conflict, not a replay.
+	Commit *ResolveApprovalCommitBody `json:"commit,omitempty"`
 }
 
 // ResolveApprovalResponse is a successful (fresh or replayed) decision's
@@ -125,7 +154,7 @@ func ResolveApprovalHandler(deps Dependencies) http.HandlerFunc {
 
 		scope := ports.ProjectScope(string(request.ProjectID))
 		hashPayload, err := json.Marshal(resolveApprovalHashPayload{
-			ApprovalRequestID: approvalRequestID, Outcome: body.Outcome, Reason: body.Reason,
+			ApprovalRequestID: approvalRequestID, Outcome: body.Outcome, Reason: body.Reason, Commit: body.Commit,
 		})
 		if err != nil {
 			httpapi.WriteError(w, http.StatusInternalServerError, httpapi.ErrorCodeInternal, "internal error", nil)
@@ -195,8 +224,24 @@ func ResolveApprovalHandler(deps Dependencies) http.HandlerFunc {
 			CorrelationID: httpapi.CorrelationIDFromContext(ctx), Scope: scope, ExpectedVersion: expectedVersion,
 			RequestedAt: time.Now().UTC(), Type: "ResolveApproval", RequestHash: requestHash,
 		}
+		// V11-07: the git author identity and the reviewed patch are read here, outside the decision's
+		// transaction, and handed to the command as plain values.
+		var commit *runtime.ApprovalCommit
+		if body.Commit != nil {
+			if deps.Release.Identities == nil {
+				httpapi.WriteError(w, http.StatusServiceUnavailable, httpapi.ErrorCodeUnavailable,
+					"this server has no Git workspace provider, so a decision cannot carry a commit", nil)
+				return
+			}
+			var prepErr error
+			commit, prepErr = deps.preparer().Prepare(ctx, commitInput(body.Commit))
+			if prepErr != nil {
+				writeCommitPrepareError(w, prepErr)
+				return
+			}
+		}
 		result, err := runtime.ResolveApproval(ctx, deps.UOW, deps.IDs, cmd, runtime.ResolveApprovalRequest{
-			RunID: runID, ApprovalRequestID: approvalRequestID, Outcome: body.Outcome, Reason: body.Reason,
+			RunID: runID, ApprovalRequestID: approvalRequestID, Outcome: body.Outcome, Reason: body.Reason, Commit: commit,
 		})
 		if err != nil {
 			writeResolveApprovalError(w, err)
@@ -249,4 +294,20 @@ func loadApprovalRequestForUpdate(w http.ResponseWriter, ctx context.Context, uo
 		return runtimedomain.ApprovalRequest{}, false
 	}
 	return request, true
+}
+
+// commitInput converts the wire commit into the application's specification.
+func commitInput(body *ResolveApprovalCommitBody) approvalrelease.CommitInput {
+	input := approvalrelease.CommitInput{Message: body.Message}
+	for _, repository := range body.Repositories {
+		files := make([]approvalrelease.FileInput, 0, len(repository.Files))
+		for _, file := range repository.Files {
+			files = append(files, approvalrelease.FileInput{Path: file.Path, Status: file.Status, ContentHash: file.ContentHash})
+		}
+		input.Repositories = append(input.Repositories, approvalrelease.RepositoryInput{
+			RepositoryWorkspaceID: repository.RepositoryWorkspaceID, ExpectedWorkspaceVersion: repository.ExpectedWorkspaceVersion,
+			Files: files, Unselected: repository.Unselected,
+		})
+	}
+	return input
 }

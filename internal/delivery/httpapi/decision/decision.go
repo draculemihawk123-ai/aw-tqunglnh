@@ -85,6 +85,7 @@ package decision
 import (
 	"net/http"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/approvalrelease"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
@@ -99,6 +100,26 @@ import (
 type Dependencies struct {
 	UOW ports.UnitOfWork
 	IDs idsource.Source
+	// Release (V11-07, ADR-040) is how a decision carries a commit and how the dialog reads the author
+	// identity and parked changes. The zero value disables them: a decision with a commit then answers
+	// UNAVAILABLE, and the release-context reports every identity as unreadable.
+	Release ReleaseSupport
+}
+
+// ReleaseSupport is the Git-backed collaborators V11-07's routes use. In production they are all the
+// same real Git workspace provider.
+type ReleaseSupport struct {
+	Identities ports.GitIdentityReader
+	Inspection ports.WorkspaceInspectionReader
+	Parker     ports.UnselectedChangeParker
+}
+
+func (d Dependencies) preparer() approvalrelease.Preparer {
+	return approvalrelease.Preparer{UOW: d.UOW, Identities: d.Release.Identities, Inspection: d.Release.Inspection}
+}
+
+func (d Dependencies) queries() approvalrelease.Queries {
+	return approvalrelease.Queries{UOW: d.UOW, Identities: d.Release.Identities}
 }
 
 // RegisterRoutes registers this package's own two route fragments —
@@ -116,6 +137,21 @@ func RegisterRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodPost, Path: "/runs/{runId}/approval-requests/{approvalRequestId}/resolve", OperationID: "resolveApproval",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: ResolveApprovalBody{}, ResponseSchema: ResolveApprovalResponse{},
 		Handler: ResolveApprovalHandler(deps),
+	})
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/runs/{runId}/approval-requests/{approvalRequestId}/release", OperationID: "getApprovalRelease",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: approvalrelease.ApprovalRelease{},
+		Handler: GetApprovalReleaseHandler(deps),
+	})
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{projectId}/task-families/{familyId}/release-context", OperationID: "getFamilyReleaseContext",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: approvalrelease.ReleaseContext{},
+		Handler: GetFamilyReleaseContextHandler(deps),
+	})
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/restore-parked", OperationID: "restoreParkedChanges",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: RestoreParkedChangesBody{}, ResponseSchema: approvalrelease.RestoreResult{},
+		Handler: RestoreParkedChangesHandler(deps),
 	})
 	routes.Register(httpapi.RouteDescriptor{
 		Method: http.MethodPost, Path: "/runs/{runId}/wait-registrations/{waitRegistrationId}/signal", OperationID: "submitWaitSignal",

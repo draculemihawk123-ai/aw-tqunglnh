@@ -841,6 +841,36 @@
       }
     },
     {
+      "operationId": "getApprovalRelease",
+      "method": "GET",
+      "path": "/runs/{runId}/approval-requests/{approvalRequestId}/release",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "approvalrelease.ApprovalRelease",
+        "fields": [
+          {
+            "name": "ApprovalRequestID",
+            "jsonTag": "approvalRequestId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Operations",
+            "jsonTag": "operations",
+            "type": "[]approvalrelease.OperationView"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getArtifactContent",
       "method": "GET",
       "path": "/projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId}/artifacts/{artifactId}/content",
@@ -1135,6 +1165,36 @@
             "name": "CreatedAt",
             "jsonTag": "createdAt",
             "type": "time.Time"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getFamilyReleaseContext",
+      "method": "GET",
+      "path": "/projects/{projectId}/task-families/{familyId}/release-context",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "approvalrelease.ReleaseContext",
+        "fields": [
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "Repositories",
+            "jsonTag": "repositories",
+            "type": "[]approvalrelease.RepositoryContext"
+          },
+          {
+            "name": "Parked",
+            "jsonTag": "parked",
+            "type": "[]approvalrelease.ParkedSet"
           }
         ]
       }
@@ -3519,6 +3579,16 @@
             "name": "AuthorEmail",
             "jsonTag": "authorEmail",
             "type": "string"
+          },
+          {
+            "name": "Files",
+            "jsonTag": "files,omitempty",
+            "type": "[]releaseset.localCommitFileBody"
+          },
+          {
+            "name": "Unselected",
+            "jsonTag": "unselected,omitempty",
+            "type": "string"
           }
         ]
       },
@@ -3701,6 +3771,11 @@
             "name": "Reason",
             "jsonTag": "reason,omitempty",
             "type": "string"
+          },
+          {
+            "name": "Commit",
+            "jsonTag": "commit,omitempty",
+            "type": "*decision.ResolveApprovalCommitBody"
           }
         ]
       },
@@ -3812,6 +3887,42 @@
             "name": "WorkItemStatus",
             "jsonTag": "workItemStatus",
             "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "restoreParkedChanges",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/restore-parked",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "decision.RestoreParkedChangesBody",
+        "fields": [
+          {
+            "name": "ReleaseSetLocalCommitID",
+            "jsonTag": "releaseSetLocalCommitId",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "approvalrelease.RestoreResult",
+        "fields": [
+          {
+            "name": "ReleaseSetLocalCommitID",
+            "jsonTag": "releaseSetLocalCommitId",
+            "type": "string"
+          },
+          {
+            "name": "Ref",
+            "jsonTag": "ref",
+            "type": "string"
+          },
+          {
+            "name": "RestoredPaths",
+            "jsonTag": "restoredPaths",
+            "type": "[]string"
           }
         ]
       }
