@@ -175,6 +175,16 @@ type ApprovalRequestView struct {
 	// (an escalation has no deciding actor and no chosen outcome — see
 	// EscalationOutcome for what the timer routed with).
 	ResolvedOutcome string `json:"resolvedOutcome,omitempty"`
+	// Release (V11-07, ADR-040) is the approval node's release policy — which outcomes may carry a commit and
+	// whether it is OFFERED or REQUIRED. Omitted for a node with none (DISABLED), so every response from before
+	// V11-07 stays byte-identical.
+	Release *ApprovalReleaseView `json:"release,omitempty"`
+}
+
+// ApprovalReleaseView is an approval node's non-disabled release policy as the dialog reads it.
+type ApprovalReleaseView struct {
+	Commit   string   `json:"commit"`
+	Outcomes []string `json:"outcomes"`
 }
 
 // WaitRegistrationView is the operator-facing, read-only view of one
@@ -221,7 +231,7 @@ func activationOrder(nodeRuns []runtimedomain.NodeRun) map[runtimedomain.NodeRun
 // order tiebreak — ActivationSequence can legitimately tie across fork
 // branches, see sortedNodeRuns). Returns nil (never an empty slice) for no
 // requests so the caller's omitempty tag drops the whole key.
-func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[runtimedomain.NodeRunID]uint64) []ApprovalRequestView {
+func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[runtimedomain.NodeRunID]uint64, document workflow.WorkflowDocument) []ApprovalRequestView {
 	if len(requests) == 0 {
 		return nil
 	}
@@ -237,13 +247,19 @@ func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[
 	})
 	views := make([]ApprovalRequestView, 0, len(sorted))
 	for _, r := range sorted {
-		views = append(views, ApprovalRequestView{
+		view := ApprovalRequestView{
 			ApprovalRequestID: string(r.ID), NodeRunID: string(r.NodeRunID), NodeKey: r.NodeKey,
 			State: string(r.State), Version: r.Version,
 			AuthorizedRoles:        append([]string(nil), r.AuthorizedRoles...),
 			RequestedEvidenceKinds: append([]string(nil), r.RequestedEvidenceKinds...),
 			DueAt:                  r.DueAt, EscalationOutcome: r.EscalationOutcome, ResolvedOutcome: r.DecidedOutcome,
-		})
+		}
+		if node, ok := findNode(document, r.NodeKey); ok && node.Approval != nil && node.Approval.Release.Mode() != workflow.ReleaseCommitDisabled {
+			view.Release = &ApprovalReleaseView{
+				Commit: string(node.Approval.Release.Mode()), Outcomes: append([]string(nil), node.Approval.Release.Outcomes...),
+			}
+		}
+		views = append(views, view)
 	}
 	return views
 }
@@ -365,6 +381,14 @@ func GetRunDetail(ctx context.Context, uow ports.UnitOfWork, runID string) (RunD
 			amendmentViews = append(amendmentViews, toRunManifestAmendmentView(a))
 		}
 		order := activationOrder(nodeRuns)
+		var document workflow.WorkflowDocument
+		if len(approvalRequests) > 0 {
+			version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+			if err != nil {
+				return err
+			}
+			document = version.Document()
+		}
 		detail = RunDetail{
 			RunID: string(run.ID), ProjectID: string(run.ProjectID), WorkItemID: string(run.WorkItemID),
 			FamilyID: string(run.FamilyID), State: string(run.State), Version: run.Version, ScopeVersion: run.ScopeVersion,
@@ -372,7 +396,7 @@ func GetRunDetail(ctx context.Context, uow ports.UnitOfWork, runID string) (RunD
 			StartedAt: run.StartedAt, FinishedAt: run.FinishedAt, Cancelling: run.CancelEpoch != nil,
 			Manifest: toExecutionManifestDetail(manifest), Amendments: amendmentViews,
 			NodeRunCount: len(nodeRuns), ExecutionAttemptCount: len(attempts),
-			ApprovalRequests:  toApprovalRequestViews(approvalRequests, order),
+			ApprovalRequests:  toApprovalRequestViews(approvalRequests, order, document),
 			WaitRegistrations: toWaitRegistrationViews(waitRegistrations, order),
 		}
 		return nil

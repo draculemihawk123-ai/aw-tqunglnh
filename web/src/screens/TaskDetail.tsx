@@ -26,8 +26,11 @@ import { isWaivableBlockerType } from '../api/diagnostics';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
 import type { ApprovalRequestView, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView, UsageView } from '../api/rundetail';
 import { getSessionToken, withSessionToken } from '../api/session';
-import { decodeDiffPatch, fetchWorkspaceSource, summarizeUncommitted, WORKING_TREE_RESULT } from '../api/workspaceinspection';
+import { decodeDiffPatch, fetchWorkingTreeDiff, fetchWorkspaceSource, summarizeUncommitted, workingTreeQueryKey } from '../api/workspaceinspection';
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
+import { commitAllowedFor } from '../api/approvalrelease';
+import type { ApprovalCommitBody } from '../api/approvalrelease';
+import { ApprovalCommitDialog, ReleaseStatusStrip } from './ApprovalRelease';
 import { VERDICT_OPTIONS } from '../api/releaseset';
 import type { ReleaseSetDetail, RepositoryReleaseDetail, Verdict } from '../api/releaseset';
 import { artifactContentUrl, fetchArtifactContent, isInlineSafeMediaType, PREVIEW_SIZE_LIMIT_BYTES } from '../api/evidence';
@@ -579,6 +582,8 @@ const NODE_STYLE: Record<string, { bg: string; bd: string; fc: string }> = {
 interface GraphTimelineTabProps {
   projectId: string;
   familyId?: string;
+  /** The WorkItem's title — the default commit message of an approval-bound commit (V11-07). */
+  workItemTitle?: string;
   onOpenWorkspace?: () => void;
   runId?: string;
   runDiagnostics?: RunDiagnosticsResponse;
@@ -586,12 +591,14 @@ interface GraphTimelineTabProps {
   onActionSettled: () => void;
 }
 
-function GraphTimelineTab({ projectId, familyId, onOpenWorkspace, runId, runDiagnostics, isOffline, onActionSettled }: GraphTimelineTabProps) {
+function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace, runId, runDiagnostics, isOffline, onActionSettled }: GraphTimelineTabProps) {
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [showList, setShowList] = useState(false);
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [retrying, setRetrying] = useState<{ nodeRunId: string; nodeKey: string } | null>(null);
   const [retryReason, setRetryReason] = useState('');
+  // V11-07: the decision being made through the commit dialog (an outcome the node's release policy offers a commit for).
+  const [deciding, setDeciding] = useState<{ approval: ApprovalRequestView; outcome: string } | null>(null);
   const { toasts, show, dismiss } = useToasts();
 
   const graphQuery = useInfiniteQuery({
@@ -654,16 +661,19 @@ function GraphTimelineTab({ projectId, familyId, onOpenWorkspace, runId, runDiag
   // real current version right before submitting, never trust the version
   // this tab loaded whenever it first fetched the run.
   const resolveApprovalMutation = useMutation({
-    mutationFn: async ({ approval, outcome }: { approval: ApprovalRequestView; outcome: string }) => {
+    mutationFn: async ({ approval, outcome, commit }: { approval: ApprovalRequestView; outcome: string; commit?: ApprovalCommitBody }) => {
       const fresh = (await getRunDetail(runId!, withSessionToken())) as unknown as { approvalRequests?: ApprovalRequestView[] };
       const freshApproval = (fresh.approvalRequests ?? []).find(a => a.approvalRequestId === approval.approvalRequestId);
       if (!freshApproval || freshApproval.state !== 'PENDING') {
         throw new Error('This approval is no longer pending — it may have already been decided elsewhere. Refresh to see the current state.');
       }
-      return resolveApproval(runId!, approval.approvalRequestId, { outcome }, withSessionToken({ ifMatch: `"${freshApproval.version}"` }));
+      return resolveApproval(runId!, approval.approvalRequestId, { outcome, ...(commit ? { commit } : {}) }, withSessionToken({ ifMatch: `"${freshApproval.version}"` }));
     },
     onSuccess: result => {
-      show({ intent: 'success', message: `Approval resolved — ${result.advanced ? `advanced to ${result.nextNodeKey ?? 'the next step'}` : 'recorded'}.` });
+      const commit = result.commit as { operations?: unknown[] } | null | undefined;
+      const commitNote = commit?.operations?.length ? ` A commit was requested for ${commit.operations.length} repositor${commit.operations.length === 1 ? 'y' : 'ies'}.` : '';
+      show({ intent: 'success', message: `Approval resolved — ${result.advanced ? `advanced to ${result.nextNodeKey ?? 'the next step'}` : 'recorded'}.${commitNote}` });
+      setDeciding(null);
       runDetailQuery.refetch();
       onActionSettled();
     },
@@ -731,7 +741,7 @@ function GraphTimelineTab({ projectId, familyId, onOpenWorkspace, runId, runDiag
                 ) : outcomes.map(outcome => (
                   <Button key={outcome} size="compact" intent="primary" disabled={isOffline}
                     loading={resolveApprovalMutation.isPending && resolveApprovalMutation.variables?.approval.approvalRequestId === approval.approvalRequestId && resolveApprovalMutation.variables?.outcome === outcome}
-                    onClick={() => resolveApprovalMutation.mutate({ approval, outcome })}>
+                    onClick={() => (commitAllowedFor(approval.release, outcome) ? setDeciding({ approval, outcome }) : resolveApprovalMutation.mutate({ approval, outcome }))}>
                     {outcome}
                   </Button>
                 ))}
@@ -742,6 +752,8 @@ function GraphTimelineTab({ projectId, familyId, onOpenWorkspace, runId, runDiag
           <UncommittedChangesSummary projectId={projectId} familyId={familyId} isOffline={isOffline} onOpenWorkspace={onOpenWorkspace} />
         </div>
       )}
+      {/* V11-07: how the commits requested with earlier decisions went */}
+      <ReleaseStatusStrip projectId={projectId} runId={runId} approvals={runDetailQuery.data?.approvalRequests ?? []} isOffline={isOffline} onOpenWorkspace={onOpenWorkspace} />
       <div className="flex-1 flex overflow-hidden">
       {/* Graph panel — 58% */}
       <div className="flex flex-col overflow-hidden" style={{ flex: '0 0 58%', minWidth: 0 }}>
@@ -897,6 +909,15 @@ function GraphTimelineTab({ projectId, familyId, onOpenWorkspace, runId, runDiag
       </div>
       </div>
 
+      {deciding && (
+        <ApprovalCommitDialog
+          projectId={projectId} familyId={familyId} approval={deciding.approval} outcome={deciding.outcome}
+          defaultMessage={workItemTitle ?? ''} isOffline={isOffline}
+          pending={resolveApprovalMutation.isPending} error={resolveApprovalMutation.error}
+          onClose={() => { setDeciding(null); resolveApprovalMutation.reset(); }}
+          onSubmit={commit => resolveApprovalMutation.mutate({ approval: deciding.approval, outcome: deciding.outcome, commit })}
+        />
+      )}
       {retrying && (
         <Dialog
           title="Retry Blocked Activation"
@@ -929,20 +950,6 @@ function shortRev(rev?: string): string {
 }
 
 /** One repository workspace's uncommitted state (V11-06): the worktree's changes on top of its current revision. */
-function fetchWorkingTreeDiff(projectId: string, repo: RepositoryWorkspaceState): Promise<DiffContent> {
-  return getWorkspaceDiff(projectId, repo.repositoryWorkspaceId, {
-    ...withSessionToken(),
-    query: {
-      repositoryId: repo.repositoryId, workspaceSetId: repo.workspaceSetId,
-      base: repo.currentRevision ?? '', baseGeneration: String(repo.generation), result: WORKING_TREE_RESULT,
-    },
-  }) as unknown as Promise<DiffContent>;
-}
-
-function workingTreeQueryKey(projectId: string, repo?: RepositoryWorkspaceState) {
-  return ['workspaceWorkingTreeDiff', projectId, repo?.repositoryWorkspaceId, repo?.currentRevision, repo?.version] as const;
-}
-
 /** The unified-diff body shared by the committed and the uncommitted Diff views. */
 function PatchView({ patch }: { patch: string }) {
   return (
@@ -2380,7 +2387,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       <div id="workitem-tab-panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} />}
       {activeTab === 'task-graph'      && (
-        <GraphTimelineTab projectId={projectId} familyId={familyId} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled} />
+        <GraphTimelineTab projectId={projectId} familyId={familyId} workItemTitle={workItemQuery.data?.title} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled} />
       )}
       {activeTab === 'task-workspace'  && <WorkspaceTab projectId={projectId} familyId={familyId} isOffline={isOffline} />}
       {activeTab === 'task-evidence'   && <EvidenceTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} />}

@@ -10,6 +10,7 @@
  */
 
 import type { Freshness } from './kanban';
+import type { ApprovalReleasePolicy } from './approvalrelease';
 
 export type NodeType = 'START' | 'END' | 'AGENT' | 'MACHINE_GATE' | 'APPROVAL' | 'FORK' | 'JOIN' | 'ROUTER' | string;
 
@@ -145,4 +146,6 @@ export interface ApprovalRequestView {
   dueAt: string;
   escalationOutcome: string;
   resolvedOutcome?: string;
+  /** V11-07: the node's release policy (which outcomes may carry a commit); absent when it has none. */
+  release?: ApprovalReleasePolicy;
 }

@@ -362,3 +362,21 @@ func TestOpenReleaseFailedBlockerTx_OpensNothingForAManualCommit(t *testing.T) {
 		t.Fatalf("a manual commit has no selection record, so the hook has nothing to do: %v", err)
 	}
 }
+
+func TestGetRunDetail_ShowsTheApprovalNodesReleasePolicyOnlyWhenThereIsOne(t *testing.T) {
+	with := newReleaseFixture(t, offeredOnApproved)
+	detail, err := runtime.GetRunDetail(with.ctx, with.uow, with.runID)
+	if err != nil || len(detail.ApprovalRequests) != 1 {
+		t.Fatalf("GetRunDetail = %+v, %v", detail, err)
+	}
+	release := detail.ApprovalRequests[0].Release
+	if release == nil || release.Commit != "OFFERED" || len(release.Outcomes) != 1 || release.Outcomes[0] != "approved" {
+		t.Fatalf("release = %+v, want OFFERED on approved", release)
+	}
+
+	without := newReleaseFixture(t, nil)
+	detail, err = runtime.GetRunDetail(without.ctx, without.uow, without.runID)
+	if err != nil || len(detail.ApprovalRequests) != 1 || detail.ApprovalRequests[0].Release != nil {
+		t.Fatalf("a node without a policy must not carry one: %+v, %v", detail.ApprovalRequests, err)
+	}
+}
