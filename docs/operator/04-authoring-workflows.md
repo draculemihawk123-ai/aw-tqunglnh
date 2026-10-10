@@ -564,3 +564,29 @@ aw definition versions <definitionId>                     # every published vers
 aw version show <versionId> [--project-id <id>]            # one version's full compiled document
 aw version diff <versionIdA> <versionIdB> [--project-id <id>]  # field-level diff between two versions
 ```
+
+## An approval that also commits (`approval.release`, V11-07)
+
+By default a decision at an `APPROVAL` node only moves the run on; the files the agent wrote stay uncommitted in the
+worktree until someone runs `aw release-set local-commit` (or the kit's `commit-task.sh`). To let the approver **decide
+and commit in one action**, give the node a `release` policy:
+
+```json
+{"key": "review", "type": "APPROVAL", "outcomes": ["approved", "revise", "rejected"],
+ "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "rejected",
+              "release": {"commit": "OFFERED", "outcomes": ["approved"]}}}
+```
+
+- `commit`: `DISABLED` (the default; an absent `release` is the same, so definitions written before V11-07 keep their
+  hash), `OFFERED` (for an outcome in `outcomes` the approver may tick *Commit* and choose the files) or `REQUIRED`
+  (for those outcomes the decision must pass through the commit step: choose files, or confirm there is nothing to
+  commit — a worktree with no changes is recorded as `NOTHING_TO_COMMIT`, not as an error).
+- `outcomes` must be outcomes the node declares, and each must lead **only to `END` or to nodes that never write to the
+  worktree** — a `CHECKER`, a gate, another approval. The commit runs in the background after the decision, so offering
+  it where a `MAKER` agent or a `COMMAND` node can run next would race with that node; publishing such a definition is
+  refused with `approval release outcome "approved" can reach node "…", which may write to the worktree`. A workflow
+  whose `approved` edge goes to a writing node (the delivery workflows' `sync` step) cannot offer a commit there.
+- Commit authority is decision authority: whoever may resolve the approval (`authorizedRoles`) may commit with it.
+
+How the commit is made, who the author is, what happens to the files you do not choose, and what happens when the
+commit fails are in [06-source-control-and-releases.md](06-source-control-and-releases.md#approve-and-commit-in-one-action).

@@ -309,13 +309,31 @@ hộ. `evidence list` cho thấy từng lần: `COMMAND_EXECUTION FAILED, FAILED
 > Chưa chạy lại bước này trên bản cài thật sau V11-06; nếu cần xem khi UI chưa bản mới:
 > `cd "$(worktree-path.sh contracts)" && git status --short && git diff`.
 
-Duyệt và commit:
+Duyệt và commit. Từ V11-07, node `review` của `wf-contract-change` bật `release: OFFERED` cho outcome `approved`, nên **duyệt
+và commit là một thao tác**, làm hoàn toàn trên web: trang Task → tab Graph → bấm `approved` → hộp thoại mở ra, tích
+*Commit the worktree's changes with this decision*, chọn file cần commit (mặc định chọn hết; hộp kiểm theo thư mục có ba
+trạng thái), sửa commit message (điền sẵn tiêu đề task), rồi bấm nút. Tác giả commit là `git config user.name/user.email` của
+máy chạy `aw` (hộp thoại hiện dòng "Author: …"; thiếu thì hiện lệnh `git config --global …` cần chạy và chưa cho commit). File
+không chọn thì chọn `Keep` (để nguyên, node chỉ-đọc kế tiếp sẽ bị chặn) hoặc `Park` (cất vào ref ẩn, khôi phục bằng nút
+*Restore*). Sau đó tab Graph hiện từng repository: committing → committed (kèm commit id) hoặc failed (giải thích vì sao, nút
+*Review changes*).
+
+Bằng dòng lệnh, cùng một thao tác (chọn mọi file đang thay đổi):
+
+```bash
+review-task.sh --commit "C-01: hợp đồng API cho quản lý issue" 25dbcd50-… approved "Hợp đồng đủ 6 operation"
+```
+
+Đường thủ công cũ vẫn dùng được (workflow không bật `release`, hoặc commit lại sau một lần `FAILED`):
 
 ```bash
 review-task.sh 25dbcd50-… approved "Hợp đồng đủ 6 operation"
 commit-task.sh "C-01: hợp đồng API cho quản lý issue"
 # repository contracts: {"state":"COMMITTED","parentVcsObjectId":"e8fc7e6…","resultVcsObjectId":"f598e9b…"}
 ```
+
+> Chưa chạy lại bước này trên bản cài thật sau V11-07 (xem `docs/design/14-v11-bugfix.md`, kết quả V11-07); các workflow
+> `wf-task-delivery*` không bật commit ở cổng duyệt vì sau `approved` còn node `sync` có thể ghi file.
 
 `commit-task.sh` tạo một ReleaseSet, seal rồi tạo **local commit thật** trên branch của family, mỗi repository có thay đổi
 một commit, bỏ qua repository không đổi. `aw` không push và không merge (mục 10).

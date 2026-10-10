@@ -26,7 +26,7 @@
                  "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}],
                  "failureOutcome": "failed"}},
     {"key": "gate-b", "type": "APPROVAL", "outcomes": ["approved", "revise", "rejected"],
-     "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "rejected",
+     "approval": {"release": {"commit": "OFFERED", "outcomes": ["approved"]}, "authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "rejected",
                   "requestedEvidenceKinds": ["COMMAND_EXECUTION"]},
      "cyclePolicy": {"maxIterations": 3, "escalationOutcome": "rejected"}},
     {"key": "reject", "type": "COMMAND", "outcomes": ["done"],

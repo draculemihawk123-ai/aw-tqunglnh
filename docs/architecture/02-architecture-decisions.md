@@ -1201,9 +1201,43 @@ Xem thay đổi bằng terminal lại là thao tác Git ngoài aw, chính là l�
 
 **Hệ quả:** cổng duyệt có cái để quyết định. Không có thao tác ghi nào từ UI (stage, sửa) — nằm ngoài V11-06; commit đúng cái đã duyệt là V11-07.
 
-## 42. Baseline sau review thiết kế
+## 42. ADR-040 — Duyệt và commit là một thao tác: ý định commit nằm trong transaction của quyết định, Git chạy ở job nền
 
-ADR-001…039 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** ADR-014 cho phép local commit "khi workflow policy cho phép hoặc operator phát typed command", nhưng chỉ có đường thứ hai, và nó gom MỌI thay đổi
+(`git add -A`). Hệ quả khi chạy issue-tracker: người duyệt phải rời web để chạy `commit-task.sh`; quên bước này thì task sau bị `SCOPE_VIOLATION` mà thông báo không nói
+nguyên nhân; không commit một phần được; worktree thuộc về family chứ không phải một task nên commit đóng dấu cả phần việc chưa duyệt của task khác. §11.1 của
+go-core-spec cấm gọi Git trong transaction nên không thể gọi `git commit` ngay trong `ResolveApproval`.
+
+**Quyết định:**
+
+1. Node APPROVAL có `approval.release {commit: DISABLED|OFFERED|REQUIRED, outcomes}`; vắng = DISABLED (định nghĩa cũ không đổi hash, không đổi hành vi). Compiler chỉ cho
+   outcome mà đường đi từ nó chỉ tới `END` hoặc node không ghi worktree (AGENT khác CHECKER, và COMMAND, bị coi là ghi), vì commit chạy nền sẽ đua với node ghi.
+   Kit chỉ bật `OFFERED`; `REQUIRED` với tập thay đổi rỗng được ghi `NOTHING_TO_COMMIT`, không phải lỗi.
+2. `ResolveApproval` nhận `commit`. Trong **cùng transaction** với quyết định: kiểm policy và danh tính tác giả TRƯỚC khi ghi gì (bị từ chối thì cổng vẫn PENDING), ghi quyết
+   định, rồi tạo ReleaseSet (base = result = revision đã ghi, PASS), seal, và một `ReleaseSetLocalCommit` REQUESTED + job + selection cho từng repository. Lỗi ở bất cứ bước nào
+   thì quyết định cũng rollback; mất race thì không commit; replay trả lại đúng các operation. Quyền commit = quyền duyệt (`authorizedRoles`); không có role release riêng.
+3. **Tác giả lấy từ `git config` của máy chạy aw** (cấu hình repository đè toàn cục), đọc NGOÀI transaction (`ports.GitIdentityReader`) và truyền vào lệnh như giá trị; job dùng
+   đúng giá trị đã lưu, không đọc lại. Không có ô nhập tay. Thiếu thì từ chối cả lệnh bằng `COMMIT_IDENTITY_MISSING` (nằm trong `details` của lỗi 422, không thêm mã vào enum lỗi
+   đóng của §18) kèm lệnh cấu hình.
+4. **Chọn theo file, và duyệt đúng cái đã thấy.** Request mang `{path, status, contentHash}` của các file được chọn; adapter tính lại dưới write lease và từ chối
+   (`CHANGESET_DRIFT`, determinate, không commit gì) nếu khác. Staging bằng `git --literal-pathspecs add -A --pathspec-from-file=- --pathspec-file-nul` sau `git reset -q`
+   (chỉ index), đọc lại index và cây commit để bảo đảm đúng bằng tập đã chọn. Tập thay đổi (`collectChangeSet`) là MỘT định nghĩa dùng chung với diff của V11-06.
+5. **File không chọn: `KEEP` (mặc định) hoặc `PARK`.** PARK ghi phần còn lại thành commit dưới `refs/agentkit/parked/<releaseSetId>` bằng index tạm rồi dọn đúng các đường dẫn đó;
+   idempotent và chạy cả trên commit tái dùng sau crash (trả lại danh sách đã cất nếu ref đã có). Khôi phục từ chối ghi đè mọi thứ đã đổi và từ chối khi có attempt ghi. Không có
+   "xóa hẳn" (muốn bỏ thì PARK).
+6. **Commit lỗi sau quyết định không rollback quyết định**; nó đóng operation `FAILED` (+ `CHANGESET_DRIFT` mới) và mở blocker `RELEASE_FAILED` (RESOLVED-only) trên WorkItem trong
+   cùng transaction (hook `OnFailed`, nối ở worker để `releasesetcommit` không import `runtime`). "Thử commit lại" là commit mới từ tập thay đổi hiện tại (đường thủ công có `--path`),
+   rồi resolve blocker. Số đếm "attempt ordinal" của marker (V9-09) tính cả HEAD_DRIFT và CHANGESET_DRIFT vì cả hai đóng trước `git commit`.
+7. Bằng chứng của cái đã duyệt: file + hash + digest + patch working tree (có giới hạn 1 MiB) lưu trong `release_set_local_commit_selections` (migration 0050), đọc lại bằng
+   `getApprovalRelease`. Route mới: `getApprovalRelease`, `getFamilyReleaseContext`, `restoreParkedChanges`; CLI tương ứng; `getRunDetail` báo `release` của node.
+
+**Hệ quả:** quy trình mặc định của kit không còn cần `commit-task.sh` ở cổng duyệt của workflow kết thúc ở `END`; workflow có node ghi sau `approved` (delivery `sync`) vẫn commit thủ công.
+Không push/PR/merge (ADR-014 giữ nguyên). Chưa có: chọn file cho commit thủ công trên UI (backend/CLI/HTTP có), ghép cặp đổi tên (đổi tên là một xóa + một thêm, chọn độc lập), patch lọc riêng
+từng file đã chọn (lưu patch cả working tree lúc duyệt; file + hash là bằng chứng chính xác phần được chọn).
+
+## 43. Baseline sau review thiết kế
+
+ADR-001…040 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1251,5 +1285,6 @@ dụng ma trận sau:
 - ADR-037 (V11-04) bổ sung ADR-031 quyết định 6 và V9-17: `checkFailures` đi tiếp qua CHECKER chẩn đoán nằm giữa kiểm tra và maker.
 - ADR-038 (V11-05) thêm tùy chọn worker `--claude-safe-mode` (CLI Claude chạy `--safe-mode`, không nạp cấu hình người dùng và repository); mặc định tắt.
 - ADR-039 (V11-06) thêm chế độ `result=WORKING_TREE` cho route diff của workspace (thay đổi chưa commit, chỉ đọc, từ chối khi attempt đang ghi).
+- ADR-040 (V11-07) hoàn thiện ADR-014: quyết định duyệt kèm yêu cầu commit chọn file trong cùng transaction (policy `approval.release`, danh tính từ git config, drift theo hash, KEEP/PARK, blocker `RELEASE_FAILED`).
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

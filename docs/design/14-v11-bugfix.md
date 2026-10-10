@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01 … V11-06. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-07. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -39,7 +39,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | **XONG 2026-10-10** (ADR-037) |
 | V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | **XONG 2026-10-10** (ADR-038) |
 | V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **XONG 2026-10-10** (ADR-039); đã gặp thật khi chạy issue-tracker C-01 trên Windows, 2026-10-09 |
-| V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | Cơ chế **đã đọc trong mã**; thiết kế cần product owner chốt 6 điểm (mục "Quyết định cần chốt" của V11-07) |
+| V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | **XONG 2026-10-10** (ADR-040; 6 điểm đã được product owner chốt 2026-10-09) |
 | V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | Chính sách đã nêu; hiệu ứng lên chi phí và chất lượng **chưa đo** |
 | V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện và vá tạm** trên Windows 11 (Git 2.55); chạy tay file `.cmd` đã vá cho kết quả đúng; chưa thử trên máy khác |
 | V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | Cơ chế **đã đọc trong mã**; kiểm chứng bằng chính các lần chạy lại của người vận hành |
@@ -458,6 +458,32 @@ Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; s
 - **UI:** Vitest cho hộp thoại (chọn một phần, ba trạng thái thư mục, cảnh báo `KEEP`, trạng thái lỗi) và e2e Playwright chạy trên
   bản cài thật: duyệt kèm commit từ trình duyệt, không dùng terminal ở bước nào, rồi kiểm tab Diff của commit mới.
 - **Kit:** kịch bản `walk-workflow.py` cho duyệt kèm commit; `kit/tests/check-kit.sh` với `WALK_ALL=1` xanh.
+
+### Kết quả triển khai V11-07 (2026-10-10, ADR-040)
+
+Làm theo thiết kế và 6 quyết định đã chốt, trong 5 commit (07a..07e, task lớn):
+
+- **07a — engine:** `CreateLocalCommit(Selection)` chỉ stage đúng các file đã chọn (`--literal-pathspecs … --pathspec-from-file=- --pathspec-file-nul` sau `git reset -q`), kiểm đường dẫn
+  và drift theo `contentHash`/`status`, đọc lại index và cây commit; `ParkRemainingChanges`/`RestoreParkedChanges` (ref `refs/agentkit/parked/<releaseSetId>`, index tạm, idempotent, từ chối ghi đè).
+  `collectChangeSet` là định nghĩa duy nhất của "tập thay đổi", dùng chung với diff của V11-06.
+- **07b — lõi ứng dụng:** `approval.release {commit, outcomes}` (compiler từ chối outcome đi tới node có thể ghi), migration 0050 (`CHANGESET_DRIFT`, `RELEASE_FAILED`, bảng selection),
+  `RequestApprovalBoundCommitsTx` + `ResolveApproval.Commit` trong cùng transaction, blocker `RELEASE_FAILED` qua hook `OnFailed`.
+- **07c — API/CLI:** danh tính từ `git config` (`GitIdentityReader`), `Preparer`, 3 route mới + CLI + parity, `--commit-spec`, `--path/--unselected` cho commit thủ công.
+- **07d — UI:** hộp thoại ở thẻ duyệt (cây thư mục ba trạng thái, KEEP/PARK, tác giả, cảnh báo, trạng thái, khôi phục).
+- **07e — kit và tài liệu:** `review-task.sh --commit`, bật `OFFERED` ở `wf-bugfix.gate2`, `wf-feature-definition.gate-b`, `wf-retro.approve-lessons`, `wf-contract-change.review` (guide issue-tracker),
+  `wf-fullstack-review.review` (guide todolist); không bật ở `wf-task-delivery*` vì sau `approved` còn node `sync` có thể ghi. Docs operator 03/04/06, guide issue-tracker, ADR-040.
+
+**Khác thiết kế (cần product owner biết):**
+- Patch lưu theo quyết định là patch của **cả working tree** lúc duyệt (có giới hạn 1 MiB), không lọc riêng từng file đã chọn; bằng chứng chính xác của phần được chọn là danh sách file + hash + digest.
+- Đổi tên file không ghép cặp: là một xóa + một thêm, chọn độc lập (đã nêu trong ADR-040).
+- `COMMIT_IDENTITY_MISSING` là chuỗi trong `details`/thông báo của lỗi 422, không phải mã mới trong enum lỗi đóng §18.
+- Chưa làm: chọn file cho commit **thủ công** trên tab Workspace (backend, HTTP và CLI đã nhận `files`/`unselected`; UI chỉ ở cổng duyệt); `aw doctor` cảnh báo danh tính git; đọc patch đã duyệt trên UI
+  (chỉ qua `getApprovalRelease`/`aw approval release`).
+
+Test: Git thật cho chọn một phần/tên khó/đường dẫn bị từ chối/drift/file staged tay/nhị phân/PARK/khôi phục/ref ngoài namespace; sqlite + Git thật cho executor (chọn lọc, drift, PARK qua crash, thiếu parker);
+`ResolveApproval` (atomic, replay, race thua, REQUIRED, danh tính, rollback); migration 0050 trên dữ liệu thật; HTTP (commit end-to-end, danh tính, policy, spec sai, replay vs conflict, không Git, release-context, restore);
+14 ca Vitest. `go test ./...`, `go vet`, docs-coverage, `tsc` và Vitest (293) xanh. **Chưa chạy:** kit scripts (`review-task.sh --commit`, `check-kit.sh`/`walk-workflow.py`, cần Linux + `jq`), C-01 trên bản cài thật
+với trình duyệt (Playwright), CLI Claude thật qua toàn bộ luồng.
 
 ## V11-08 — Thống nhất ngôn ngữ của kit
 

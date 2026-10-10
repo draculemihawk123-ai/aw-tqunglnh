@@ -91,6 +91,12 @@
     "rejected"
    ],
    "approval": {
+    "release": {
+     "commit": "OFFERED",
+     "outcomes": [
+      "approved"
+     ]
+    },
     "authorizedRoles": [
      "operator"
     ],
