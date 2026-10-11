@@ -101,6 +101,21 @@ func RegisterRoutes(registry *httpapi.RouteRegistry, deps Dependencies) {
 	})
 
 	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPatch, Path: "/projects/{id}", OperationID: "projectsRename",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: renameProjectRequestBody{}, ResponseSchema: appcatalog.RenameProjectResult{},
+		Handler: h.renameProject,
+	})
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/projects/{id}/archive", OperationID: "projectsArchive",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: reasonRequestBody{}, ResponseSchema: appcatalog.ProjectStatusResult{},
+		Handler: h.archiveProject,
+	})
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/projects/{id}/restore", OperationID: "projectsRestore",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: emptyRequestBody{}, ResponseSchema: appcatalog.ProjectStatusResult{},
+		Handler: h.restoreProject,
+	})
+	registry.Register(httpapi.RouteDescriptor{
 		Method: http.MethodPost, Path: "/projects/{id}/repositories", OperationID: "projectRepositoriesRegister",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: h.registerRepository,

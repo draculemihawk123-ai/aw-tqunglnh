@@ -196,6 +196,15 @@ type CatalogRepository interface {
 	// unit, so "list scoped to a project" is not a query that exists).
 	ListProjects(ctx context.Context) ([]project.Project, error)
 
+	// RenameProject (V11-13, ADR-044) changes the name of an ACTIVE project: one compare-and-swap on ExpectedVersion (ErrOptimisticConflict when stale
+	// or the project is not ACTIVE), version + 1. The name is validated like a new project's.
+	RenameProject(ctx context.Context, req RenameProjectRequest) (project.Project, error)
+	// TransitionProjectStatus moves a project ACTIVE <-> ARCHIVED against ExpectedStatus and ExpectedVersion, version + 1.
+	TransitionProjectStatus(ctx context.Context, req TransitionProjectStatusRequest) (project.Project, error)
+	// ListProjectHolders lists what is still running or open in the project: workflow runs not finished, work items ACTIVE or BLOCKED, background jobs
+	// holding a lease, release sets still open. Empty means it can be archived.
+	ListProjectHolders(ctx context.Context, projectID string) ([]ProjectHolder, error)
+
 	// RegisterRepository atomically creates a new Repository row —
 	// always RepositoryRegistering (project.NewRepository's own rule) —
 	// after verifying req.ProjectID names a Project that actually exists

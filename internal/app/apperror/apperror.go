@@ -132,3 +132,13 @@ func CodeOf(err error) Code {
 	}
 	return e.Code
 }
+
+// ProjectArchivedCode is the stable code of the error a write into an archived project fails with (V11-13, ADR-044).
+const ProjectArchivedCode = "PROJECT_ARCHIVED"
+
+// ProjectArchived is what every write into an ARCHIVED project fails with: a CONFLICT that says the project is read-only and how to get it back. Being an
+// *Error, every delivery layer already maps it (409) without knowing about archiving.
+func ProjectArchived(projectID string) *Error {
+	return New(CodeConflict,
+		fmt.Sprintf("%s: project %s is archived and read-only; restore it first (aw project restore, or Restore on the Projects page)", ProjectArchivedCode, projectID), false)
+}

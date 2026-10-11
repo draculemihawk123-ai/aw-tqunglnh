@@ -50,3 +50,42 @@ func TestRepositoryLifecycleEvents_GoldenFixturesDecode(t *testing.T) {
 		})
 	}
 }
+
+// TestProjectLifecycleEvents_GoldenFixturesDecode proves ProjectRenamed, ProjectArchived and ProjectRestored (V11-13) decode from their golden fixtures.
+func TestProjectLifecycleEvents_GoldenFixturesDecode(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+	cases := []struct {
+		file      string
+		eventType string
+		version   int
+		want      any
+	}{
+		{"project_renamed_v1.json", ProjectRenamedEventType, ProjectRenamedSchemaVersion, projectRenamedEventPayload{
+			ProjectID: "project-1", PreviousName: "old name", Name: "new name", Actor: "actor-1",
+		}},
+		{"project_archived_v1.json", ProjectArchivedEventType, ProjectArchivedSchemaVersion, projectStatusChangedEventPayload{
+			ProjectID: "project-1", Name: "demo", PreviousStatus: "ACTIVE", Status: "ARCHIVED", Reason: "finished", Actor: "actor-1",
+		}},
+		{"project_restored_v1.json", ProjectRestoredEventType, ProjectRestoredSchemaVersion, projectStatusChangedEventPayload{
+			ProjectID: "project-1", Name: "demo", PreviousStatus: "ARCHIVED", Status: "ACTIVE", Actor: "actor-1",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			payload, err := os.ReadFile(filepath.Join("testdata", "golden", tc.file))
+			if err != nil {
+				t.Fatalf("read golden fixture: %v", err)
+			}
+			got, err := registry.Decode(tc.eventType, tc.version, string(payload))
+			if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Decode(%s v%d) = %+v, %v; want %+v", tc.eventType, tc.version, got, err, tc.want)
+			}
+			produced, _ := json.Marshal(tc.want)
+			again, err := registry.Decode(tc.eventType, tc.version, string(produced))
+			if err != nil || !reflect.DeepEqual(again, tc.want) {
+				t.Fatalf("Decode(marshal(want)) = %+v, %v", again, err)
+			}
+		})
+	}
+}

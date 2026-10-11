@@ -85,6 +85,9 @@ func registerClassifications(c *Catalog) {
 	c.ignore("RepositoryUpdated", 1, "Repository catalog/onboarding data, no Kanban/task-detail surface.")
 	c.ignore("RepositoryDisabled", 1, "Repository catalog data; a disabled repository cannot be in use by an unfinished work item, so no Kanban/task-detail row changes.")
 	c.ignore("RepositoryDeleted", 1, "Repository catalog data; only a never-ACTIVE, unreferenced repository can be deleted, so no Kanban/task-detail row refers to it.")
+	c.ignore("ProjectRenamed", 1, "Project catalog data, no Kanban/task-detail surface.")
+	c.ignore("ProjectArchived", 1, "Project catalog data; an archived project has no running or open work, and its read models stay readable as they were.")
+	c.ignore("ProjectRestored", 1, "Project catalog data, no Kanban/task-detail surface.")
 	c.ignore("ComponentPackAssigned", 1, "Component/pack catalog data, no Kanban/task-detail surface.")
 
 	// --- Ignore: definition authoring (internal/app/definitions) ---

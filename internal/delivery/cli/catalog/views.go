@@ -5,6 +5,7 @@ import (
 
 	appcatalog "github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 )
 
@@ -26,14 +27,19 @@ import (
 // projectView is `aw project list`/`aw project show`'s own wire shape for
 // a project.Project.
 type projectView struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Status  string `json:"status"`
-	Version uint64 `json:"version"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	Status       string                `json:"status"`
+	Version      uint64                `json:"version"`
+	ValidActions []httpapi.ValidAction `json:"validActions,omitempty"`
 }
 
 func newProjectView(p project.Project) projectView {
-	return projectView{ID: string(p.ID), Name: p.Name, Status: string(p.Status), Version: p.Version}
+	view := projectView{ID: string(p.ID), Name: p.Name, Status: string(p.Status), Version: p.Version}
+	for _, id := range appcatalog.ProjectActionIDs(p) {
+		view.ValidActions = append(view.ValidActions, httpapi.ValidAction{OperationID: id, ScopeKind: httpapi.ScopeProject, TargetVersion: int64(p.Version)})
+	}
+	return view
 }
 
 type projectListView struct {

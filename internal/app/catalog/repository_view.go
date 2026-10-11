@@ -130,3 +130,11 @@ func CheckRepository(ctx context.Context, prober ports.RepositoryProber, path, r
 		ResolvedPath: appErr.Details[ports.ProbeDetailResolvedPath], Detail: appErr.Details[ports.ProbeDetailDetail], Hint: appErr.Details[ports.ProbeDetailHint],
 	}, nil
 }
+
+// ProjectActionIDs lists the lifecycle operations a project allows (advisory, V11-13): an ACTIVE one can be renamed or archived, an ARCHIVED one only restored.
+func ProjectActionIDs(p project.Project) []string {
+	if p.Status == project.ProjectArchived {
+		return []string{"projectsRestore"}
+	}
+	return []string{"projectsRename", "projectsArchive"}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/apperror"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
@@ -26,24 +27,33 @@ const (
 	RefusalDeleted         = "REPOSITORY_DELETED"
 )
 
-// RepositoryRefusal is a typed "no" from a repository lifecycle command: Code is stable, Items names what stands in the way (the work items,
-// workspaces or tables that hold the repository).
-type RepositoryRefusal struct {
+// Refusal is a typed "no" from a repository or project lifecycle command: Code is stable, Items names what stands in the way (the work items,
+// workspaces, runs or tables that hold the thing).
+type Refusal struct {
 	Code    string
 	Message string
 	Items   []string
 }
 
-func (e *RepositoryRefusal) Error() string {
+func (e *Refusal) Error() string {
 	if len(e.Items) == 0 {
 		return e.Code + ": " + e.Message
 	}
 	return e.Code + ": " + e.Message + " (" + strings.Join(e.Items, "; ") + ")"
 }
 
+// RepositoryRefusal is the name this type had before the project lifecycle shared it.
+type RepositoryRefusal = Refusal
+
+// RefusalCode returns the refusal code inside err, or "" when err is not a refusal (repository and project commands alike).
+func RefusalCode(err error) string { return RepositoryRefusalCode(err) }
+
+// RefusalItems returns what stands in the way, when err is a refusal that names it.
+func RefusalItems(err error) []string { return RepositoryRefusalItems(err) }
+
 // RepositoryRefusalCode returns the refusal code inside err, or "" when err is not a refusal.
 func RepositoryRefusalCode(err error) string {
-	var refusal *RepositoryRefusal
+	var refusal *Refusal
 	if errors.As(err, &refusal) {
 		return refusal.Code
 	}
@@ -52,7 +62,7 @@ func RepositoryRefusalCode(err error) string {
 
 // RepositoryRefusalItems returns what stands in the way, when err is a refusal that names it.
 func RepositoryRefusalItems(err error) []string {
-	var refusal *RepositoryRefusal
+	var refusal *Refusal
 	if errors.As(err, &refusal) {
 		return refusal.Items
 	}
@@ -60,7 +70,7 @@ func RepositoryRefusalItems(err error) []string {
 }
 
 func refuse(code, message string, items ...string) error {
-	return &RepositoryRefusal{Code: code, Message: message, Items: items}
+	return &Refusal{Code: code, Message: message, Items: items}
 }
 
 // loadRepositoryInProject reloads the repository and proves it belongs to projectID, the discipline every command here shares.
@@ -68,6 +78,10 @@ func loadRepositoryInProject(ctx context.Context, tx ports.Tx, repositoryID, pro
 	repo, err := tx.Catalog().GetRepository(ctx, repositoryID)
 	if err != nil {
 		return project.Repository{}, err
+	}
+	// V11-13: say "archived" before any business rule can answer with something less helpful.
+	if owner, err := tx.Catalog().GetProject(ctx, string(repo.ProjectID)); err == nil && owner.Status == project.ProjectArchived {
+		return project.Repository{}, apperror.ProjectArchived(string(repo.ProjectID))
 	}
 	if string(repo.ProjectID) != projectID {
 		return project.Repository{}, fmt.Errorf("%w: repository %s belongs to project %s, not %s", ports.ErrCrossProjectReference, repositoryID, repo.ProjectID, projectID)

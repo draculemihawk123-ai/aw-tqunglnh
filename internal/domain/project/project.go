@@ -28,6 +28,32 @@ const (
 	ProjectArchived ProjectStatus = "ARCHIVED"
 )
 
+// ErrIllegalProjectTransition is returned for a project status change that is not ACTIVE <-> ARCHIVED (V11-13, ADR-044).
+var ErrIllegalProjectTransition = errors.New("project: illegal project status transition")
+
+// CanTransitionProjectStatus reports whether from -> to is legal: a project is archived and restored, nothing else.
+func CanTransitionProjectStatus(from, to ProjectStatus) error {
+	if (from == ProjectActive && to == ProjectArchived) || (from == ProjectArchived && to == ProjectActive) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s -> %s", ErrIllegalProjectTransition, from, to)
+}
+
+// MaxProjectNameLength bounds a project name (V11-13).
+const MaxProjectNameLength = 200
+
+// NormalizeProjectName trims a project name and checks it is not empty and not longer than MaxProjectNameLength characters.
+func NormalizeProjectName(name string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", errors.New("project name is required")
+	}
+	if len([]rune(name)) > MaxProjectNameLength {
+		return "", fmt.Errorf("project name is longer than %d characters", MaxProjectNameLength)
+	}
+	return name, nil
+}
+
 // RepositoryStatus is a Repository's own onboarding/health lifecycle
 // (docs/design/05-v3-project-workspace.md V3-01, V3-02):
 // REGISTERING -> PROBING -> ACTIVE|BLOCKED is driven by V3-02's future
@@ -35,7 +61,7 @@ const (
 // see CanTransitionRepositoryStatus's own doc comment for exactly which
 // edges this task declares legal versus which it merely allows a later
 // task to implement); DISABLED is reachable only as an explicit operator
-// action, and only ever from ACTIVE.
+// action, from ACTIVE or (V11-12) from BLOCKED.
 type RepositoryStatus string
 
 const (
@@ -54,9 +80,9 @@ const (
 	// for a typed retry (RetryRepositoryProbe, V3-02) rather than silently
 	// treated as usable.
 	RepositoryBlocked RepositoryStatus = "BLOCKED"
-	// RepositoryDisabled is a terminal operator action, reachable only
-	// from RepositoryActive — a repository that has never been proven
-	// ACTIVE has nothing meaningful to "disable".
+	// RepositoryDisabled is a terminal operator action, reachable from
+	// RepositoryActive and, since V11-12, from RepositoryBlocked (a wrong
+	// registration must be able to leave).
 	RepositoryDisabled RepositoryStatus = "DISABLED"
 )
 

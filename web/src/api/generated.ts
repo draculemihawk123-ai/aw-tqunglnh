@@ -1105,6 +1105,22 @@ export function projectRepositoriesRegister(id: string, body: unknown, opts: Req
   return request<unknown>("POST", `/projects/${id}/repositories`, body, opts);
 }
 
+export interface ProjectsArchiveRequest {
+  reason: string;
+}
+
+export interface ProjectsArchiveResponse {
+  projectId: string;
+  status: string;
+  previousStatus: string;
+  version: number;
+}
+
+// POST /projects/{id}/archive (scope: PROJECT)
+export function projectsArchive(id: string, body: ProjectsArchiveRequest, opts: RequestOptions = {}): Promise<ProjectsArchiveResponse> {
+  return request<ProjectsArchiveResponse>("POST", `/projects/${id}/archive`, body, opts);
+}
+
 // POST /projects (scope: INSTALLATION)
 export function projectsCreate(body: unknown, opts: RequestOptions = {}): Promise<unknown> {
   return request<unknown>("POST", "/projects", body, opts);
@@ -1118,6 +1134,34 @@ export function projectsGet(id: string, opts: RequestOptions = {}): Promise<unkn
 // GET /projects (scope: INSTALLATION)
 export function projectsList(opts: RequestOptions = {}): Promise<unknown> {
   return request<unknown>("GET", "/projects", undefined, opts);
+}
+
+export interface ProjectsRenameRequest {
+  name: string;
+}
+
+export interface ProjectsRenameResponse {
+  projectId: string;
+  name: string;
+  status: string;
+  version: number;
+}
+
+// PATCH /projects/{id} (scope: PROJECT)
+export function projectsRename(id: string, body: ProjectsRenameRequest, opts: RequestOptions = {}): Promise<ProjectsRenameResponse> {
+  return request<ProjectsRenameResponse>("PATCH", `/projects/${id}`, body, opts);
+}
+
+export interface ProjectsRestoreResponse {
+  projectId: string;
+  status: string;
+  previousStatus: string;
+  version: number;
+}
+
+// POST /projects/{id}/restore (scope: PROJECT)
+export function projectsRestore(id: string, body: unknown, opts: RequestOptions = {}): Promise<ProjectsRestoreResponse> {
+  return request<ProjectsRestoreResponse>("POST", `/projects/${id}/restore`, body, opts);
 }
 
 export interface PublishDefinitionVersionRequest {

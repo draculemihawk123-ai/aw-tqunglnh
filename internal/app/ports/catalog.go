@@ -197,3 +197,26 @@ type DeleteRepositoryRequest struct {
 	Actor           string
 	DeletedAt       time.Time
 }
+
+// RenameProjectRequest changes a project's name (V11-13): compare-and-swap on ExpectedVersion, version + 1.
+type RenameProjectRequest struct {
+	ProjectID       string
+	ExpectedVersion uint64
+	Name            string
+}
+
+// TransitionProjectStatusRequest moves a project ACTIVE <-> ARCHIVED (V11-13): compare-and-swap on ExpectedStatus and ExpectedVersion, version + 1.
+type TransitionProjectStatusRequest struct {
+	ProjectID       string
+	ExpectedStatus  project.ProjectStatus
+	ExpectedVersion uint64
+	NextStatus      project.ProjectStatus
+}
+
+// ProjectHolder is one thing still running or open in a project, which stops it being archived (V11-13).
+type ProjectHolder struct {
+	// Kind is WORKFLOW_RUN, WORK_ITEM, JOB or RELEASE_SET.
+	Kind   string `json:"kind"`
+	ID     string `json:"id"`
+	Detail string `json:"detail,omitempty"`
+}

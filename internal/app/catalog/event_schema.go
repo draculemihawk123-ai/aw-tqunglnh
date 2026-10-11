@@ -35,6 +35,16 @@ const (
 	RepositoryDeletedEventType     = "RepositoryDeleted"
 	RepositoryDeletedSchemaVersion = 1
 
+	// V11-13 (ADR-044): renaming, archiving and restoring a project.
+	ProjectRenamedEventType     = "ProjectRenamed"
+	ProjectRenamedSchemaVersion = 1
+
+	ProjectArchivedEventType     = "ProjectArchived"
+	ProjectArchivedSchemaVersion = 1
+
+	ProjectRestoredEventType     = "ProjectRestored"
+	ProjectRestoredSchemaVersion = 1
+
 	ComponentPackAssignedEventType     = "ComponentPackAssigned"
 	ComponentPackAssignedSchemaVersion = 1
 
@@ -105,6 +115,24 @@ type repositoryDeletedEventPayload struct {
 	Actor          string `json:"actor"`
 }
 
+// projectRenamedEventPayload is ProjectRenamed v1's own shape (RenameProject, project_lifecycle.go).
+type projectRenamedEventPayload struct {
+	ProjectID    string `json:"projectId"`
+	PreviousName string `json:"previousName"`
+	Name         string `json:"name"`
+	Actor        string `json:"actor"`
+}
+
+// projectStatusChangedEventPayload is the shape of both ProjectArchived v1 and ProjectRestored v1 (ArchiveProject / RestoreProject).
+type projectStatusChangedEventPayload struct {
+	ProjectID      string `json:"projectId"`
+	Name           string `json:"name"`
+	PreviousStatus string `json:"previousStatus"`
+	Status         string `json:"status"`
+	Reason         string `json:"reason,omitempty"`
+	Actor          string `json:"actor"`
+}
+
 // componentPackAssignedEventPayload is ComponentPackAssigned v1's own
 // shape (AssignComponentPack, commands.go).
 type componentPackAssignedEventPayload struct {
@@ -167,6 +195,30 @@ func DecodeRepositoryDeletedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+func DecodeProjectRenamedV1(payloadJSON string) (any, error) {
+	var payload projectRenamedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func decodeProjectStatusChangedV1(payloadJSON string) (any, error) {
+	var payload projectStatusChangedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func DecodeProjectArchivedV1(payloadJSON string) (any, error) {
+	return decodeProjectStatusChangedV1(payloadJSON)
+}
+
+func DecodeProjectRestoredV1(payloadJSON string) (any, error) {
+	return decodeProjectStatusChangedV1(payloadJSON)
+}
+
 func DecodeComponentPackAssignedV1(payloadJSON string) (any, error) {
 	var payload componentPackAssignedEventPayload
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
@@ -192,6 +244,9 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(RepositoryUpdatedEventType, RepositoryUpdatedSchemaVersion, DecodeRepositoryUpdatedV1)
 	registry.Register(RepositoryDisabledEventType, RepositoryDisabledSchemaVersion, DecodeRepositoryDisabledV1)
 	registry.Register(RepositoryDeletedEventType, RepositoryDeletedSchemaVersion, DecodeRepositoryDeletedV1)
+	registry.Register(ProjectRenamedEventType, ProjectRenamedSchemaVersion, DecodeProjectRenamedV1)
+	registry.Register(ProjectArchivedEventType, ProjectArchivedSchemaVersion, DecodeProjectArchivedV1)
+	registry.Register(ProjectRestoredEventType, ProjectRestoredSchemaVersion, DecodeProjectRestoredV1)
 	registry.Register(ComponentPackAssignedEventType, ComponentPackAssignedSchemaVersion, DecodeComponentPackAssignedV1)
 	registry.Register(ProjectCreatedEventType, ProjectCreatedSchemaVersion, DecodeProjectCreatedV1)
 }

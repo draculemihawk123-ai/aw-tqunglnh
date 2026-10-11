@@ -721,6 +721,46 @@ func (c *CatalogRepository) GetProject(_ context.Context, id string) (project.Pr
 
 // ListProjects mirrors sqlite's own listProjectsTx: every Project row, ID
 // order.
+// RenameProject mirrors sqlite's: ACTIVE only, compare-and-swap on the version.
+func (c *CatalogRepository) RenameProject(_ context.Context, req ports.RenameProjectRequest) (project.Project, error) {
+	name, err := project.NormalizeProjectName(req.Name)
+	if err != nil {
+		return project.Project{}, err
+	}
+	p, ok := c.projects[req.ProjectID]
+	if !ok {
+		return project.Project{}, fmt.Errorf("fake: %w: project %s", ports.ErrPersistenceNotFound, req.ProjectID)
+	}
+	if p.Status != project.ProjectActive || p.Version != req.ExpectedVersion {
+		return project.Project{}, fmt.Errorf("fake: %w: project %s expected ACTIVE@%d", ports.ErrOptimisticConflict, req.ProjectID, req.ExpectedVersion)
+	}
+	p.Name, p.Version = name, p.Version+1
+	c.projects[req.ProjectID] = p
+	return p, nil
+}
+
+// TransitionProjectStatus mirrors sqlite's.
+func (c *CatalogRepository) TransitionProjectStatus(_ context.Context, req ports.TransitionProjectStatusRequest) (project.Project, error) {
+	if err := project.CanTransitionProjectStatus(req.ExpectedStatus, req.NextStatus); err != nil {
+		return project.Project{}, err
+	}
+	p, ok := c.projects[req.ProjectID]
+	if !ok {
+		return project.Project{}, fmt.Errorf("fake: %w: project %s", ports.ErrPersistenceNotFound, req.ProjectID)
+	}
+	if p.Status != req.ExpectedStatus || p.Version != req.ExpectedVersion {
+		return project.Project{}, fmt.Errorf("fake: %w: project %s expected %s@%d", ports.ErrOptimisticConflict, req.ProjectID, req.ExpectedStatus, req.ExpectedVersion)
+	}
+	p.Status, p.Version = req.NextStatus, p.Version+1
+	c.projects[req.ProjectID] = p
+	return p, nil
+}
+
+// ListProjectHolders: the fake keeps no runs, work items, jobs or release sets, so nothing ever holds a project.
+func (c *CatalogRepository) ListProjectHolders(_ context.Context, _ string) ([]ports.ProjectHolder, error) {
+	return nil, nil
+}
+
 func (c *CatalogRepository) ListProjects(_ context.Context) ([]project.Project, error) {
 	result := make([]project.Project, 0, len(c.projects))
 	for _, p := range c.projects {

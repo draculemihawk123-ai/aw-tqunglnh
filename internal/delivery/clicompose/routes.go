@@ -120,6 +120,15 @@ func catalogRoutes() []Route {
 			return catalog.RunProjectShow(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "project", "show"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectRename(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "rename"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectArchive(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "archive"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectRestore(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "restore"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "list"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {

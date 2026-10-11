@@ -34,10 +34,12 @@ type projectView struct {
 	Name    string `json:"name"`
 	Status  string `json:"status"`
 	Version uint64 `json:"version"`
+	// ValidActions (V11-13) lists rename and archive for an ACTIVE project, restore for an ARCHIVED one.
+	ValidActions []httpapi.ValidAction `json:"validActions,omitempty"`
 }
 
 func newProjectView(p project.Project) projectView {
-	return projectView{ID: string(p.ID), Name: p.Name, Status: string(p.Status), Version: p.Version}
+	return projectView{ID: string(p.ID), Name: p.Name, Status: string(p.Status), Version: p.Version, ValidActions: projectValidActions(p)}
 }
 
 type projectListView struct {
