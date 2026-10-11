@@ -139,167 +139,11 @@ func StartWorkflowRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.So
 			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
 		}
 
-		item, err := tx.Work().GetWorkItem(ctx, req.WorkItemID)
+		res, err := startWorkflowRunTx(ctx, tx, ids, cmd, req)
 		if err != nil {
 			return err
 		}
-		if item.Status != workdomain.WorkItemReady {
-			return fmt.Errorf("%w: work item %s is %s", ErrWorkItemNotReady, req.WorkItemID, item.Status)
-		}
-		if item.WorkflowVersionID != nil && string(*item.WorkflowVersionID) != req.WorkflowVersionID {
-			return fmt.Errorf(
-				"%w: work item %s is pinned to %s, requested %s",
-				ErrWorkflowVersionMismatch, req.WorkItemID, *item.WorkflowVersionID, req.WorkflowVersionID,
-			)
-		}
-
-		// GC-INV-39: a still-open work-item cancellation intent fences
-		// admission into a new run, even before any coordinator has
-		// terminalized the WorkItem.
-		intent, err := tx.Runtime().GetWorkItemCancellationIntent(ctx, req.WorkItemID)
-		switch {
-		case err == nil:
-			if intent.State == runtimedomain.CancellationIntentRequested {
-				return fmt.Errorf("%w: work item %s", ErrWorkItemCancellationPending, req.WorkItemID)
-			}
-		case errors.Is(err, ports.ErrPersistenceNotFound):
-			// No intent at all — the common case.
-		default:
-			return err
-		}
-
-		family, err := tx.Work().GetTaskFamily(ctx, string(item.FamilyID))
-		if err != nil {
-			return err
-		}
-
-		workspaceSet, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, string(item.FamilyID))
-		if err != nil {
-			return err
-		}
-		if workspaceSet.State != workspace.WorkspaceSetReady || workspaceSet.BaseRevisionSet == nil {
-			return fmt.Errorf("%w: workspace set %s is %s", ErrWorkspaceNotReady, workspaceSet.ID, workspaceSet.State)
-		}
-
-		scopes, err := readinesscheck.AdmissionScopes(ctx, tx, req.WorkItemID, string(item.FamilyID))
-		if err != nil {
-			return err
-		}
-		baselineProblems, err := readinesscheck.WriterAdmissionProblems(ctx, tx, string(item.FamilyID), scopes)
-		if err != nil {
-			return err
-		}
-		if len(baselineProblems) > 0 {
-			return fmt.Errorf("%w: %s", ErrBaselineNotAdmitted, strings.Join(baselineProblems, "; "))
-		}
-
-		version, err := tx.Definitions().GetWorkflowVersion(ctx, req.WorkflowVersionID)
-		if err != nil {
-			return err
-		}
-		startNodeKey, err := resolveStartNodeKey(version.Document())
-		if err != nil {
-			return err
-		}
-
-		activated, err := tx.Work().TransitionWorkItemStatus(ctx, ports.TransitionWorkItemStatusRequest{
-			WorkItemID: req.WorkItemID, ExpectedStatus: workdomain.WorkItemReady, ExpectedVersion: item.Version,
-			NextStatus: workdomain.WorkItemActive,
-		})
-		if err != nil {
-			return err
-		}
-
-		runID := ids.NewID()
-		sharedState := json.RawMessage(`{}`)
-		run, err := runtimedomain.NewWorkflowRun(
-			runtimedomain.WorkflowRunID(runID), project.ProjectID(req.ProjectID), activated.ID,
-			version, activated.FamilyID, family.ScopeVersion, sharedState,
-		)
-		if err != nil {
-			return err
-		}
-		startedAt := cmd.RequestedAt
-		run.State = runtimedomain.WorkflowRunRunning
-		run.StartedAt = &startedAt
-		if _, err := tx.Runtime().CreateWorkflowRun(ctx, run); err != nil {
-			return err
-		}
-
-		// V9-16: the Run starts from where the family is now, not from where it began.
-		familyWorkspaces, err := tx.Work().ListWorkspaceSetRepositoryWorkspaces(ctx, string(workspaceSet.ID))
-		if err != nil {
-			return err
-		}
-		startRevisions, err := startRevisionSet(*workspaceSet.BaseRevisionSet, familyWorkspaces)
-		if err != nil {
-			return err
-		}
-
-		manifestID := ids.NewID()
-		manifest, err := runtimedomain.NewExecutionManifest(
-			runtimedomain.ExecutionManifestID(manifestID), run.ID, version.ID(), version.ContentHash(),
-			version.Dependencies(), startRevisions, "", "", cmd.RequestedAt,
-		)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Runtime().CreateExecutionManifest(ctx, manifest); err != nil {
-			return err
-		}
-
-		nodeRunID := ids.NewID()
-		nodeRun, err := runtimedomain.NewNodeRun(
-			runtimedomain.NodeRunID(nodeRunID), run.ID, startNodeKey, 1, 0, nil,
-			canonicalStateHash(sharedState), "",
-		)
-		if err != nil {
-			return err
-		}
-		nodeRun.State = runtimedomain.NodeRunRunning
-		if _, err := tx.Runtime().CreateNodeRun(ctx, nodeRun); err != nil {
-			return err
-		}
-
-		eventPayload, err := json.Marshal(workflowRunStartedEventPayload{
-			RunID: string(run.ID), WorkItemID: req.WorkItemID, NodeRunID: nodeRunID, NodeKey: startNodeKey,
-		})
-		if err != nil {
-			return fmt.Errorf("marshal WorkflowRunStarted payload: %w", err)
-		}
-		if err := tx.Events().Append(ctx, ports.DomainEvent{
-			ID: cmd.ID + "-started", ProjectID: req.ProjectID,
-			AggregateType: "WorkflowRun", AggregateID: string(run.ID), Sequence: 1,
-			EventType: WorkflowRunStartedEventType, SchemaVersion: WorkflowRunStartedSchemaVersion, PayloadJSON: string(eventPayload),
-			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
-		}); err != nil {
-			return err
-		}
-
-		// CorrelationID seeds AdvanceRunJobPayload's own chain (correction
-		// found during V4-03 review): every downstream AdvanceRun hop
-		// forwards it unchanged into its own follow-up job, so the whole
-		// run's own sequence of NODE_ROUTED events shares this command's
-		// CorrelationID (go-core-spec §20).
-		jobPayload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: nodeRunID, CorrelationID: cmd.CorrelationID})
-		if err != nil {
-			return fmt.Errorf("marshal %s job payload: %w", AdvanceRunJobKind, err)
-		}
-		jobID := ids.NewID()
-		job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
-			ID: ports.JobID(jobID), ProjectID: project.ProjectID(req.ProjectID), Kind: AdvanceRunJobKind,
-			AggregateType: "WorkflowRun", AggregateID: string(run.ID), Payload: jobPayload,
-			AvailableAt: cmd.RequestedAt, MaxClaims: defaultAdvanceRunJobMaxClaims,
-			IdempotencyKey: fmt.Sprintf("%s-advance-%s", cmd.IdempotencyKey, run.ID),
-		})
-		if err != nil {
-			return err
-		}
-
-		result = StartWorkflowRunResult{
-			RunID: string(run.ID), ProjectID: req.ProjectID, WorkItemID: req.WorkItemID,
-			FamilyID: string(activated.FamilyID), State: string(run.State), NodeRunID: nodeRunID, JobID: string(job.ID),
-		}
+		result = res
 		resultJSON, err := json.Marshal(result)
 		if err != nil {
 			return fmt.Errorf("marshal receipt result: %w", err)
@@ -311,6 +155,174 @@ func StartWorkflowRun(ctx context.Context, uow ports.UnitOfWork, ids idsource.So
 		})
 	})
 	return result, err
+}
+
+// startWorkflowRunTx is StartWorkflowRun's transaction body without its idempotency receipt, so a command that
+// composes a run start with other writes (RetryWorkItem, RecreateWorkItem; V11-10) does it inside ITS OWN
+// transaction and receipt instead of nesting a second one. cmd supplies the event ids, the job idempotency key
+// and the timestamp; a caller composing several sub-steps hands each its own cmd.ID.
+func startWorkflowRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, cmd ports.Command, req StartWorkflowRunRequest) (StartWorkflowRunResult, error) {
+	item, err := tx.Work().GetWorkItem(ctx, req.WorkItemID)
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+	if item.Status != workdomain.WorkItemReady {
+		return StartWorkflowRunResult{}, fmt.Errorf("%w: work item %s is %s", ErrWorkItemNotReady, req.WorkItemID, item.Status)
+	}
+	if item.WorkflowVersionID != nil && string(*item.WorkflowVersionID) != req.WorkflowVersionID {
+		return StartWorkflowRunResult{}, fmt.Errorf(
+			"%w: work item %s is pinned to %s, requested %s",
+			ErrWorkflowVersionMismatch, req.WorkItemID, *item.WorkflowVersionID, req.WorkflowVersionID,
+		)
+	}
+
+	// GC-INV-39: a still-open work-item cancellation intent fences
+	// admission into a new run, even before any coordinator has
+	// terminalized the WorkItem.
+	intent, err := tx.Runtime().GetWorkItemCancellationIntent(ctx, req.WorkItemID)
+	switch {
+	case err == nil:
+		if intent.State == runtimedomain.CancellationIntentRequested {
+			return StartWorkflowRunResult{}, fmt.Errorf("%w: work item %s", ErrWorkItemCancellationPending, req.WorkItemID)
+		}
+	case errors.Is(err, ports.ErrPersistenceNotFound):
+		// No intent at all — the common case.
+	default:
+		return StartWorkflowRunResult{}, err
+	}
+
+	family, err := tx.Work().GetTaskFamily(ctx, string(item.FamilyID))
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+
+	workspaceSet, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, string(item.FamilyID))
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+	if workspaceSet.State != workspace.WorkspaceSetReady || workspaceSet.BaseRevisionSet == nil {
+		return StartWorkflowRunResult{}, fmt.Errorf("%w: workspace set %s is %s", ErrWorkspaceNotReady, workspaceSet.ID, workspaceSet.State)
+	}
+
+	scopes, err := readinesscheck.AdmissionScopes(ctx, tx, req.WorkItemID, string(item.FamilyID))
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+	baselineProblems, err := readinesscheck.WriterAdmissionProblems(ctx, tx, string(item.FamilyID), scopes)
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+	if len(baselineProblems) > 0 {
+		return StartWorkflowRunResult{}, fmt.Errorf("%w: %s", ErrBaselineNotAdmitted, strings.Join(baselineProblems, "; "))
+	}
+
+	version, err := tx.Definitions().GetWorkflowVersion(ctx, req.WorkflowVersionID)
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+	startNodeKey, err := resolveStartNodeKey(version.Document())
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+
+	activated, err := tx.Work().TransitionWorkItemStatus(ctx, ports.TransitionWorkItemStatusRequest{
+		WorkItemID: req.WorkItemID, ExpectedStatus: workdomain.WorkItemReady, ExpectedVersion: item.Version,
+		NextStatus: workdomain.WorkItemActive,
+	})
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+
+	runID := ids.NewID()
+	sharedState := json.RawMessage(`{}`)
+	run, err := runtimedomain.NewWorkflowRun(
+		runtimedomain.WorkflowRunID(runID), project.ProjectID(req.ProjectID), activated.ID,
+		version, activated.FamilyID, family.ScopeVersion, sharedState,
+	)
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+	startedAt := cmd.RequestedAt
+	run.State = runtimedomain.WorkflowRunRunning
+	run.StartedAt = &startedAt
+	if _, err := tx.Runtime().CreateWorkflowRun(ctx, run); err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+
+	// V9-16: the Run starts from where the family is now, not from where it began.
+	familyWorkspaces, err := tx.Work().ListWorkspaceSetRepositoryWorkspaces(ctx, string(workspaceSet.ID))
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+	startRevisions, err := startRevisionSet(*workspaceSet.BaseRevisionSet, familyWorkspaces)
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+
+	manifestID := ids.NewID()
+	manifest, err := runtimedomain.NewExecutionManifest(
+		runtimedomain.ExecutionManifestID(manifestID), run.ID, version.ID(), version.ContentHash(),
+		version.Dependencies(), startRevisions, "", "", cmd.RequestedAt,
+	)
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+	if _, err := tx.Runtime().CreateExecutionManifest(ctx, manifest); err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+
+	nodeRunID := ids.NewID()
+	nodeRun, err := runtimedomain.NewNodeRun(
+		runtimedomain.NodeRunID(nodeRunID), run.ID, startNodeKey, 1, 0, nil,
+		canonicalStateHash(sharedState), "",
+	)
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+	nodeRun.State = runtimedomain.NodeRunRunning
+	if _, err := tx.Runtime().CreateNodeRun(ctx, nodeRun); err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+
+	eventPayload, err := json.Marshal(workflowRunStartedEventPayload{
+		RunID: string(run.ID), WorkItemID: req.WorkItemID, NodeRunID: nodeRunID, NodeKey: startNodeKey,
+	})
+	if err != nil {
+		return StartWorkflowRunResult{}, fmt.Errorf("marshal WorkflowRunStarted payload: %w", err)
+	}
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: cmd.ID + "-started", ProjectID: req.ProjectID,
+		AggregateType: "WorkflowRun", AggregateID: string(run.ID), Sequence: 1,
+		EventType: WorkflowRunStartedEventType, SchemaVersion: WorkflowRunStartedSchemaVersion, PayloadJSON: string(eventPayload),
+		CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
+	}); err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+
+	// CorrelationID seeds AdvanceRunJobPayload's own chain (correction
+	// found during V4-03 review): every downstream AdvanceRun hop
+	// forwards it unchanged into its own follow-up job, so the whole
+	// run's own sequence of NODE_ROUTED events shares this command's
+	// CorrelationID (go-core-spec §20).
+	jobPayload, err := json.Marshal(AdvanceRunJobPayload{RunID: string(run.ID), NodeRunID: nodeRunID, CorrelationID: cmd.CorrelationID})
+	if err != nil {
+		return StartWorkflowRunResult{}, fmt.Errorf("marshal %s job payload: %w", AdvanceRunJobKind, err)
+	}
+	jobID := ids.NewID()
+	job, err := tx.Jobs().EnqueueJob(ctx, ports.EnqueueJobRequest{
+		ID: ports.JobID(jobID), ProjectID: project.ProjectID(req.ProjectID), Kind: AdvanceRunJobKind,
+		AggregateType: "WorkflowRun", AggregateID: string(run.ID), Payload: jobPayload,
+		AvailableAt: cmd.RequestedAt, MaxClaims: defaultAdvanceRunJobMaxClaims,
+		IdempotencyKey: fmt.Sprintf("%s-advance-%s", cmd.IdempotencyKey, run.ID),
+	})
+	if err != nil {
+		return StartWorkflowRunResult{}, err
+	}
+
+	return StartWorkflowRunResult{
+		RunID: string(run.ID), ProjectID: req.ProjectID, WorkItemID: req.WorkItemID,
+		FamilyID: string(activated.FamilyID), State: string(run.State), NodeRunID: nodeRunID, JobID: string(job.ID),
+	}, nil
 }
 
 // resolveStartNodeKey finds the document's one START node. The workflow

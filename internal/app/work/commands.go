@@ -525,103 +525,11 @@ func CreateChildWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource
 			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
 		}
 
-		parent, err := tx.Work().GetWorkItem(ctx, req.ParentWorkItemID)
+		res, err := CreateChildWorkItemTx(ctx, tx, ids, cmd, req)
 		if err != nil {
 			return err
 		}
-
-		family, err := tx.Work().GetTaskFamily(ctx, string(parent.FamilyID))
-		if err != nil {
-			return err
-		}
-
-		var sourceNodeRunID *workdomain.SourceNodeRunID
-		if trimmed := strings.TrimSpace(req.SourceNodeRunID); trimmed != "" {
-			nodeRunID := workdomain.SourceNodeRunID(trimmed)
-			sourceNodeRunID = &nodeRunID
-		}
-
-		childID := ids.NewID()
-		child, err := workdomain.NewChildWorkItem(
-			workdomain.WorkItemID(childID), parent, req.Title,
-			workdomain.JoinPolicy(req.ParentJoinPolicy), sourceNodeRunID,
-		)
-		if err != nil {
-			return err
-		}
-		if err := applyWorkItemContract(ctx, tx, &child, req.Contract); err != nil {
-			return err
-		}
-		if _, err := tx.Work().CreateWorkItem(ctx, child); err != nil {
-			return err
-		}
-
-		familyScopes, err := tx.Work().ListFamilyRepositoryScopes(ctx, string(parent.FamilyID))
-		if err != nil {
-			return err
-		}
-
-		seenRepositories := make(map[string]bool, len(req.EffectiveScope))
-		candidates := make([]workdomain.RepositoryScope, 0, len(req.EffectiveScope))
-		for _, grant := range req.EffectiveScope {
-			if seenRepositories[grant.RepositoryID] {
-				return fmt.Errorf("work: duplicate repository %q in effective scope", grant.RepositoryID)
-			}
-			seenRepositories[grant.RepositoryID] = true
-
-			candidate, err := workdomain.NewRepositoryScope(
-				parent.FamilyID, family.ScopeVersion, project.RepositoryID(grant.RepositoryID),
-				workdomain.RepositoryAccess(grant.Access), grant.PathScopes, grant.Reason, cmd.Actor, cmd.RequestedAt,
-			)
-			if err != nil {
-				return err
-			}
-			candidates = append(candidates, candidate)
-		}
-
-		// The reused, already-tested subset algorithm (GC-INV-05,
-		// AK-ARCH-012) — this command never reimplements READ/WRITE
-		// escalation or path-prefix subset checking itself.
-		if err := workdomain.ValidateEffectiveScopes(family, family.ScopeVersion, familyScopes, candidates); err != nil {
-			return fmt.Errorf("%w: %v", ErrEffectiveScopeExceedsFamilyScope, err)
-		}
-
-		persisted := make([]EffectiveScopeGrant, 0, len(candidates))
-		for _, candidate := range candidates {
-			if _, err := tx.Work().AddEffectiveScope(ctx, childID, candidate); err != nil {
-				return err
-			}
-			persisted = append(persisted, EffectiveScopeGrant{
-				RepositoryID: string(candidate.RepositoryID()), Access: string(candidate.Access()),
-			})
-		}
-
-		eventPayload, err := json.Marshal(childWorkItemCreatedEventPayload{
-			WorkItemID: childID, ProjectID: string(child.ProjectID), FamilyID: string(child.FamilyID),
-			ParentWorkItemID: req.ParentWorkItemID, Title: child.Title, ScopeCount: len(candidates),
-		})
-		if err != nil {
-			return fmt.Errorf("marshal ChildWorkItemCreated payload: %w", err)
-		}
-		// AggregateID is the new child WorkItem's own ID; Sequence=1 is safe
-		// for the identical reason CreateRootWorkItem's own
-		// RootWorkItemCreated event gives: this is the child's very first
-		// and only event from this command, and the receipt check above
-		// guarantees this branch runs at most once per distinct (Actor,
-		// Scope, IdempotencyKey, Type).
-		if err := tx.Events().Append(ctx, ports.DomainEvent{
-			ID: cmd.ID + "-created", ProjectID: string(child.ProjectID),
-			AggregateType: "WorkItem", AggregateID: childID, Sequence: 1,
-			EventType: ChildWorkItemCreatedEventType, SchemaVersion: ChildWorkItemCreatedSchemaVersion, PayloadJSON: string(eventPayload),
-			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
-		}); err != nil {
-			return err
-		}
-
-		result = CreateChildWorkItemResult{
-			WorkItemID: childID, ProjectID: string(child.ProjectID), FamilyID: string(child.FamilyID),
-			ParentWorkItemID: req.ParentWorkItemID, Status: string(child.Status), EffectiveScope: persisted,
-		}
+		result = res
 		resultJSON, err := json.Marshal(result)
 		if err != nil {
 			return fmt.Errorf("marshal receipt result: %w", err)
@@ -633,4 +541,106 @@ func CreateChildWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource
 		})
 	})
 	return result, err
+}
+
+// CreateChildWorkItemTx is CreateChildWorkItem's transaction body without its idempotency receipt, so
+// RecreateWorkItem (V11-10) creates the replacement WorkItem inside its own transaction. req is already validated.
+func CreateChildWorkItemTx(ctx context.Context, tx ports.Tx, ids idsource.Source, cmd ports.Command, req CreateChildWorkItemRequest) (CreateChildWorkItemResult, error) {
+	parent, err := tx.Work().GetWorkItem(ctx, req.ParentWorkItemID)
+	if err != nil {
+		return CreateChildWorkItemResult{}, err
+	}
+
+	family, err := tx.Work().GetTaskFamily(ctx, string(parent.FamilyID))
+	if err != nil {
+		return CreateChildWorkItemResult{}, err
+	}
+
+	var sourceNodeRunID *workdomain.SourceNodeRunID
+	if trimmed := strings.TrimSpace(req.SourceNodeRunID); trimmed != "" {
+		nodeRunID := workdomain.SourceNodeRunID(trimmed)
+		sourceNodeRunID = &nodeRunID
+	}
+
+	childID := ids.NewID()
+	child, err := workdomain.NewChildWorkItem(
+		workdomain.WorkItemID(childID), parent, req.Title,
+		workdomain.JoinPolicy(req.ParentJoinPolicy), sourceNodeRunID,
+	)
+	if err != nil {
+		return CreateChildWorkItemResult{}, err
+	}
+	if err := applyWorkItemContract(ctx, tx, &child, req.Contract); err != nil {
+		return CreateChildWorkItemResult{}, err
+	}
+	if _, err := tx.Work().CreateWorkItem(ctx, child); err != nil {
+		return CreateChildWorkItemResult{}, err
+	}
+
+	familyScopes, err := tx.Work().ListFamilyRepositoryScopes(ctx, string(parent.FamilyID))
+	if err != nil {
+		return CreateChildWorkItemResult{}, err
+	}
+
+	seenRepositories := make(map[string]bool, len(req.EffectiveScope))
+	candidates := make([]workdomain.RepositoryScope, 0, len(req.EffectiveScope))
+	for _, grant := range req.EffectiveScope {
+		if seenRepositories[grant.RepositoryID] {
+			return CreateChildWorkItemResult{}, fmt.Errorf("work: duplicate repository %q in effective scope", grant.RepositoryID)
+		}
+		seenRepositories[grant.RepositoryID] = true
+
+		candidate, err := workdomain.NewRepositoryScope(
+			parent.FamilyID, family.ScopeVersion, project.RepositoryID(grant.RepositoryID),
+			workdomain.RepositoryAccess(grant.Access), grant.PathScopes, grant.Reason, cmd.Actor, cmd.RequestedAt,
+		)
+		if err != nil {
+			return CreateChildWorkItemResult{}, err
+		}
+		candidates = append(candidates, candidate)
+	}
+
+	// The reused, already-tested subset algorithm (GC-INV-05,
+	// AK-ARCH-012) — this command never reimplements READ/WRITE
+	// escalation or path-prefix subset checking itself.
+	if err := workdomain.ValidateEffectiveScopes(family, family.ScopeVersion, familyScopes, candidates); err != nil {
+		return CreateChildWorkItemResult{}, fmt.Errorf("%w: %v", ErrEffectiveScopeExceedsFamilyScope, err)
+	}
+
+	persisted := make([]EffectiveScopeGrant, 0, len(candidates))
+	for _, candidate := range candidates {
+		if _, err := tx.Work().AddEffectiveScope(ctx, childID, candidate); err != nil {
+			return CreateChildWorkItemResult{}, err
+		}
+		persisted = append(persisted, EffectiveScopeGrant{
+			RepositoryID: string(candidate.RepositoryID()), Access: string(candidate.Access()),
+		})
+	}
+
+	eventPayload, err := json.Marshal(childWorkItemCreatedEventPayload{
+		WorkItemID: childID, ProjectID: string(child.ProjectID), FamilyID: string(child.FamilyID),
+		ParentWorkItemID: req.ParentWorkItemID, Title: child.Title, ScopeCount: len(candidates),
+	})
+	if err != nil {
+		return CreateChildWorkItemResult{}, fmt.Errorf("marshal ChildWorkItemCreated payload: %w", err)
+	}
+	// AggregateID is the new child WorkItem's own ID; Sequence=1 is safe
+	// for the identical reason CreateRootWorkItem's own
+	// RootWorkItemCreated event gives: this is the child's very first
+	// and only event from this command, and the receipt check above
+	// guarantees this branch runs at most once per distinct (Actor,
+	// Scope, IdempotencyKey, Type).
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: cmd.ID + "-created", ProjectID: string(child.ProjectID),
+		AggregateType: "WorkItem", AggregateID: childID, Sequence: 1,
+		EventType: ChildWorkItemCreatedEventType, SchemaVersion: ChildWorkItemCreatedSchemaVersion, PayloadJSON: string(eventPayload),
+		CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
+	}); err != nil {
+		return CreateChildWorkItemResult{}, err
+	}
+
+	return CreateChildWorkItemResult{
+		WorkItemID: childID, ProjectID: string(child.ProjectID), FamilyID: string(child.FamilyID),
+		ParentWorkItemID: req.ParentWorkItemID, Status: string(child.Status), EffectiveScope: persisted,
+	}, nil
 }

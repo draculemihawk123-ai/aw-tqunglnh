@@ -102,32 +102,8 @@ func AppendMessage(
 	cmd ports.Command,
 	req AppendMessageRequest,
 ) (AppendMessageResult, error) {
-	if strings.TrimSpace(req.ProjectID) == "" {
-		return AppendMessageResult{}, errors.New("message: ProjectID is required")
-	}
-	if strings.TrimSpace(req.WorkItemID) == "" {
-		return AppendMessageResult{}, errors.New("message: WorkItemID is required")
-	}
-	if !req.Role.Valid() {
-		return AppendMessageResult{}, fmt.Errorf("message: unknown Role %q", req.Role)
-	}
-	if len(req.Content) == 0 {
-		return AppendMessageResult{}, errors.New("message: Content is required")
-	}
-	if len(req.Content) > MaxContentSize {
-		return AppendMessageResult{}, ErrContentTooLarge
-	}
-	if strings.TrimSpace(req.ContentType) == "" {
-		return AppendMessageResult{}, errors.New("message: ContentType is required")
-	}
-	// Validated BEFORE any redaction/Put: an out-of-range Sensitivity
-	// would otherwise fall through redact.Matcher.Tagged's own default
-	// (unredacted passthrough) and only be caught later by
-	// artifact.NewArtifact INSIDE the transaction — by which point Put has
-	// already written the unredacted bytes durably to disk, with no
-	// Delete method on ArtifactStore to ever remove them again.
-	if req.Sensitivity < redact.Public || req.Sensitivity > redact.Secret {
-		return AppendMessageResult{}, fmt.Errorf("message: unknown Sensitivity %d", req.Sensitivity)
+	if err := validateAppendRequest(req); err != nil {
+		return AppendMessageResult{}, err
 	}
 
 	// Pre-check the idempotency receipt BEFORE any ArtifactStore I/O (audit
@@ -148,6 +124,77 @@ func AppendMessage(
 		return preResult, nil
 	}
 
+	prepared, err := PrepareMessage(ctx, store, ids, clk, req)
+	if err != nil {
+		return AppendMessageResult{}, err
+	}
+
+	var result AppendMessageResult
+	err = uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		if replayedResult, found, err := loadOrValidateReceiptTx(ctx, tx, cmd); err != nil {
+			return err
+		} else if found {
+			result = replayedResult
+			return nil
+		}
+
+		res, err := AppendPreparedMessageTx(ctx, tx, ids, cmd, req, prepared)
+		if err != nil {
+			return err
+		}
+		result = res
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("marshal receipt result: %w", err)
+		}
+		return tx.Receipts().Record(ctx, ports.Receipt{
+			Actor: cmd.Actor, Scope: cmd.Scope, IdempotencyKey: cmd.IdempotencyKey,
+			CommandType: cmd.Type, RequestHash: cmd.RequestHash, ResultJSON: string(resultJSON),
+			CreatedAt: cmd.RequestedAt,
+		})
+	})
+	return result, err
+}
+
+// validateAppendRequest is AppendMessage's request-shape validation, run before any ArtifactStore I/O.
+func validateAppendRequest(req AppendMessageRequest) error {
+	if strings.TrimSpace(req.ProjectID) == "" {
+		return errors.New("message: ProjectID is required")
+	}
+	if strings.TrimSpace(req.WorkItemID) == "" {
+		return errors.New("message: WorkItemID is required")
+	}
+	if !req.Role.Valid() {
+		return fmt.Errorf("message: unknown Role %q", req.Role)
+	}
+	if len(req.Content) == 0 {
+		return errors.New("message: Content is required")
+	}
+	if len(req.Content) > MaxContentSize {
+		return ErrContentTooLarge
+	}
+	if strings.TrimSpace(req.ContentType) == "" {
+		return errors.New("message: ContentType is required")
+	}
+	// Validated BEFORE any redaction/Put: an out-of-range Sensitivity
+	// would otherwise fall through redact.Matcher.Tagged's own default
+	// (unredacted passthrough) and only be caught later by
+	// artifact.NewArtifact INSIDE the transaction — by which point Put has
+	// already written the unredacted bytes durably to disk, with no
+	// Delete method on ArtifactStore to ever remove them again.
+	if req.Sensitivity < redact.Public || req.Sensitivity > redact.Secret {
+		return fmt.Errorf("message: unknown Sensitivity %d", req.Sensitivity)
+	}
+	return nil
+}
+
+// PrepareMessage validates req, redacts its content and durably attaches it to the ArtifactStore, OUTSIDE any
+// transaction (the first half of AppendMessage). A command that appends a message inside its own transaction
+// (RetryWorkItem, RecreateWorkItem; V11-10) prepares first and then calls AppendPreparedMessageTx.
+func PrepareMessage(ctx context.Context, store ports.ArtifactStore, ids idsource.Source, clk clock.Clock, req AppendMessageRequest) (artifact.Artifact, error) {
+	if err := validateAppendRequest(req); err != nil {
+		return artifact.Artifact{}, err
+	}
 	// Redact BEFORE Put — the same "redact first, then bound" ordering
 	// V1-09's own checklist establishes: content must be in its final,
 	// redacted form before anything durable is ever written from it.
@@ -162,74 +209,77 @@ func AppendMessage(
 		RetentionClass: artifact.RetentionCanonicalContext,
 	})
 	if err != nil {
-		return AppendMessageResult{}, fmt.Errorf("message: prepare content attachment: %w", err)
+		return artifact.Artifact{}, fmt.Errorf("message: prepare content attachment: %w", err)
+	}
+	return prepared, nil
+}
+
+// AppendPreparedMessageTx inserts a PrepareMessage result's artifact row, the Message row and the MessageAppended
+// event inside the caller's transaction, without an idempotency receipt of its own (the caller's command records
+// one). cmd supplies the actor, correlation id, timestamp and the event id (cmd.ID); a caller appending several
+// messages gives each its own cmd.ID.
+func AppendPreparedMessageTx(ctx context.Context, tx ports.Tx, ids idsource.Source, cmd ports.Command, req AppendMessageRequest, prepared artifact.Artifact) (AppendMessageResult, error) {
+	if _, err := tx.Artifacts().InsertArtifact(ctx, prepared); err != nil {
+		return AppendMessageResult{}, err
+	}
+	return appendMessageRowTx(ctx, tx, ids, cmd, ports.AppendMessageRequest{
+		ProjectID: req.ProjectID, WorkItemID: req.WorkItemID, AttemptID: req.AttemptID,
+		Actor: cmd.Actor, Role: req.Role, ContentArtifactID: string(prepared.ID), Pinned: req.Pinned,
+	})
+}
+
+// CopyMessageTx appends a copy of src to workItemID inside the caller's transaction: a new Message row, in the same
+// role and with the same author, that points at src's EXISTING content artifact (the content is immutable, so two
+// messages can share it and no blob is written). RecreateWorkItem (V11-10) carries the operator's notes over to the
+// replacement WorkItem this way. cmd.ID keys the event, so a caller copying several messages gives each its own.
+func CopyMessageTx(ctx context.Context, tx ports.Tx, ids idsource.Source, cmd ports.Command, src message.Message, workItemID string) (AppendMessageResult, error) {
+	return appendMessageRowTx(ctx, tx, ids, cmd, ports.AppendMessageRequest{
+		ProjectID: string(src.ProjectID), WorkItemID: workItemID,
+		Actor: src.Actor, Role: src.Role, ContentArtifactID: string(src.ContentArtifactID), Pinned: src.Pinned,
+	})
+}
+
+// appendMessageRowTx writes the Message row and its MessageAppended event. req.ID, CorrelationID and CreatedAt are
+// filled from the command and the id source.
+func appendMessageRowTx(ctx context.Context, tx ports.Tx, ids idsource.Source, cmd ports.Command, req ports.AppendMessageRequest) (AppendMessageResult, error) {
+	messageID := ids.NewID()
+	req.ID, req.CorrelationID, req.CreatedAt = messageID, cmd.CorrelationID, cmd.RequestedAt
+	m, err := tx.Messages().AppendMessage(ctx, req)
+	if err != nil {
+		return AppendMessageResult{}, err
 	}
 
-	var result AppendMessageResult
-	err = uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
-		if replayedResult, found, err := loadOrValidateReceiptTx(ctx, tx, cmd); err != nil {
-			return err
-		} else if found {
-			result = replayedResult
-			return nil
-		}
-
-		if _, err := tx.Artifacts().InsertArtifact(ctx, prepared); err != nil {
-			return err
-		}
-
-		messageID := ids.NewID()
-		m, err := tx.Messages().AppendMessage(ctx, ports.AppendMessageRequest{
-			ID: messageID, ProjectID: req.ProjectID, WorkItemID: req.WorkItemID, AttemptID: req.AttemptID,
-			Actor: cmd.Actor, Role: req.Role, ContentArtifactID: string(prepared.ID),
-			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt, Pinned: req.Pinned,
-		})
-		if err != nil {
-			return err
-		}
-
-		eventPayload, err := json.Marshal(messageAppendedEventPayload{
-			WorkItemID: req.WorkItemID, Role: string(m.Role),
-			Sequence: m.Sequence, ContentArtifactID: string(m.ContentArtifactID),
-		})
-		if err != nil {
-			return fmt.Errorf("marshal MessageAppended payload: %w", err)
-		}
-		// AggregateType/AggregateID is this brand-new Message's OWN
-		// identity, not the WorkItem's — Sequence=1 is safe because this
-		// is that Message's very first and only event, ever (messages are
-		// immutable/append-only, so no future command ever appends a
-		// second event for the same MessageID). Scoping to the WorkItem's
-		// own aggregate stream instead would require a real MAX(sequence)
-		// query against that stream (which already accumulates events
-		// from unrelated commands) — unnecessary complexity this
-		// dedicated per-message stream avoids entirely, the same
-		// per-entity-stream discipline WorkItemBlocker/ScopeExpansionOrigin
-		// already use for their own domain events.
-		if err := tx.Events().Append(ctx, ports.DomainEvent{
-			ID: cmd.ID + "-appended", ProjectID: req.ProjectID,
-			AggregateType: "Message", AggregateID: messageID, Sequence: 1,
-			EventType: MessageAppendedEventType, SchemaVersion: MessageAppendedSchemaVersion, PayloadJSON: string(eventPayload),
-			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
-		}); err != nil {
-			return err
-		}
-
-		result = AppendMessageResult{
-			MessageID: string(m.ID), ProjectID: req.ProjectID, WorkItemID: req.WorkItemID,
-			Sequence: m.Sequence, ContentArtifactID: string(m.ContentArtifactID),
-		}
-		resultJSON, err := json.Marshal(result)
-		if err != nil {
-			return fmt.Errorf("marshal receipt result: %w", err)
-		}
-		return tx.Receipts().Record(ctx, ports.Receipt{
-			Actor: cmd.Actor, Scope: cmd.Scope, IdempotencyKey: cmd.IdempotencyKey,
-			CommandType: cmd.Type, RequestHash: cmd.RequestHash, ResultJSON: string(resultJSON),
-			CreatedAt: cmd.RequestedAt,
-		})
+	eventPayload, err := json.Marshal(messageAppendedEventPayload{
+		WorkItemID: req.WorkItemID, Role: string(m.Role),
+		Sequence: m.Sequence, ContentArtifactID: string(m.ContentArtifactID),
 	})
-	return result, err
+	if err != nil {
+		return AppendMessageResult{}, fmt.Errorf("marshal MessageAppended payload: %w", err)
+	}
+	// AggregateType/AggregateID is this brand-new Message's OWN
+	// identity, not the WorkItem's — Sequence=1 is safe because this
+	// is that Message's very first and only event, ever (messages are
+	// immutable/append-only, so no future command ever appends a
+	// second event for the same MessageID). Scoping to the WorkItem's
+	// own aggregate stream instead would require a real MAX(sequence)
+	// query against that stream (which already accumulates events
+	// from unrelated commands) — unnecessary complexity this
+	// dedicated per-message stream avoids entirely, the same
+	// per-entity-stream discipline WorkItemBlocker/ScopeExpansionOrigin
+	// already use for their own domain events.
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: cmd.ID + "-appended", ProjectID: req.ProjectID,
+		AggregateType: "Message", AggregateID: messageID, Sequence: 1,
+		EventType: MessageAppendedEventType, SchemaVersion: MessageAppendedSchemaVersion, PayloadJSON: string(eventPayload),
+		CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
+	}); err != nil {
+		return AppendMessageResult{}, err
+	}
+
+	return AppendMessageResult{
+		MessageID: string(m.ID), ProjectID: req.ProjectID, WorkItemID: req.WorkItemID,
+		Sequence: m.Sequence, ContentArtifactID: string(m.ContentArtifactID),
+	}, nil
 }
 
 // loadOrValidateReceipt is AppendMessage's own read-only pre-check, run

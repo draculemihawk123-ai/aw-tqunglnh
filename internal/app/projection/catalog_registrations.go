@@ -121,6 +121,8 @@ func registerClassifications(c *Catalog) {
 	c.ignore("WorkspaceSetReleaseRequested", 1, "ReleaseSet/local-Git operation, a separate screen's own concern (V6-10F), no Kanban card surface.")
 	c.ignore("WorkspaceReconciliationRequested", 1, "Workspace reconcile operation, no Kanban card surface.")
 	c.ignore("WorkspaceHeadAdopted", 1, "Operator adopted commits made outside aw into a workspace's recorded revision (V11-01); an audit record, no Kanban card surface.")
+	c.ignore("WORK_ITEM_RETRIED", 1, "Audit record of a one-action retry (V11-10); every state change it makes (blockers resolved, run started) is already classified through its own events, so the card needs nothing from it.")
+	c.ignore("WORK_ITEM_RECREATED", 1, "Audit record of a redo with the newest workflow version (V11-10); the old WorkItem's cancellation and the new one's creation, READY mark and run start are classified through their own events.")
 
 	// --- Ignore: ReleaseSet local commit (internal/app/releasesetcommit) ---
 

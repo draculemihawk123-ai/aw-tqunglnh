@@ -337,6 +337,17 @@ type WorkRepository interface {
 	// ResolveWorkItemBlocker's own "how many OPEN blockers remain" count and
 	// CancelWorkItem's own audit trail both read the full, unfiltered set.
 	ListWorkItemBlockersForWorkItem(ctx context.Context, workItemID string) ([]work.WorkItemBlocker, error)
+	// RecordWorkItemSupersession (V11-10, ADR-041) stores that supersession.NewWorkItemID replaced
+	// supersession.OldWorkItemID. Idempotent by NewWorkItemID: the identical pair returns the stored row; a
+	// different old WorkItem for the same new one, or an old WorkItem already replaced by another, is
+	// ErrPersistenceAlreadyExists. Both WorkItems must exist (ErrPersistenceNotFound otherwise).
+	RecordWorkItemSupersession(ctx context.Context, supersession work.WorkItemSupersession) (work.WorkItemSupersession, error)
+	// GetWorkItemSupersessionByOld returns the supersession that replaced workItemID, or ErrPersistenceNotFound
+	// when nothing replaced it.
+	GetWorkItemSupersessionByOld(ctx context.Context, workItemID string) (work.WorkItemSupersession, error)
+	// GetWorkItemSupersessionByNew returns the supersession that created workItemID as a replacement, or
+	// ErrPersistenceNotFound when workItemID replaced nothing.
+	GetWorkItemSupersessionByNew(ctx context.Context, workItemID string) (work.WorkItemSupersession, error)
 	// TransitionWorkItemBlockerState is the fenced CAS that closes a
 	// blocker's own lifecycle — OPEN -> RESOLVED or OPEN -> WAIVED — the
 	// identical req.ExpectedState/req.ExpectedVersion CAS discipline every

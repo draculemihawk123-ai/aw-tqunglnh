@@ -99,84 +99,90 @@ func CancelWorkItem(ctx context.Context, uow ports.UnitOfWork, ids idsource.Sour
 
 	var result CancelWorkItemResult
 	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
-		item, err := tx.Work().GetWorkItem(ctx, workItemID)
-		if err != nil {
-			return err
-		}
-
-		if _, err := tx.Runtime().GetWorkItemCancellationIntent(ctx, workItemID); err == nil {
-			// A second CancelWorkItem call for the same work item — the
-			// identical "idempotent theo run" rule CancelRun's own
-			// cancelRunTx already applies, at the WorkItem level: return the
-			// already-committed state, never re-quiesce, never re-append the
-			// requested event a second time.
-			result = CancelWorkItemResult{WorkItemID: workItemID, AlreadyRequested: true, Status: string(item.Status)}
-			return nil
-		} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
-			return err
-		}
-
-		if item.Status == workdomain.WorkItemDone || item.Status == workdomain.WorkItemCancelled {
-			return fmt.Errorf("%w: work item %s is %s", ErrWorkItemAlreadyTerminal, workItemID, item.Status)
-		}
-
-		intentID := ids.NewID()
-		intent, err := runtimedomain.NewWorkItemCancellationIntent(
-			runtimedomain.WorkItemCancellationIntentID(intentID), item.ProjectID, item.ID, actor, reason, time.Now().UTC(),
-		)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Runtime().RecordWorkItemCancellationIntent(ctx, intent); err != nil {
-			return err
-		}
-
-		eventPayload, err := json.Marshal(workItemCancellationRequestedEventPayload{WorkItemID: workItemID, Actor: actor, Reason: reason})
-		if err != nil {
-			return fmt.Errorf("marshal %s event payload: %w", WorkItemCancellationRequestedEventType, err)
-		}
-		if err := tx.Events().Append(ctx, ports.DomainEvent{
-			ID: intentID + "-requested", ProjectID: string(item.ProjectID),
-			AggregateType: "WorkItemCancellationIntent", AggregateID: intentID, Sequence: 1,
-			EventType: WorkItemCancellationRequestedEventType, SchemaVersion: WorkItemCancellationRequestedSchemaVersion,
-			PayloadJSON: string(eventPayload), CorrelationID: req.CorrelationID, CreatedAt: time.Now().UTC(),
-		}); err != nil {
-			return err
-		}
-
-		// Quiesce every currently-non-terminal Run this WorkItem has ever
-		// had — cancelRunTx (cancel_run.go) is the exact same protocol
-		// CancelRun itself uses, each call idempotent by RunID (a Run a
-		// standalone CancelRun already targeted is a harmless no-op here).
-		runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, workItemID)
-		if err != nil {
-			return err
-		}
-		for _, run := range runs {
-			if isWorkflowRunTerminal(run.State) {
-				continue
-			}
-			if _, err := cancelRunTx(ctx, tx, ids, string(run.ID), actor, reason, req.CorrelationID); err != nil {
-				return err
-			}
-		}
-
-		// The common case for a WorkItem with zero Runs at all, or every Run
-		// already historically terminal before this call: close out right
-		// now rather than waiting for a Run-closing transaction that will
-		// never come.
-		if err := reconcileWorkItemCancellationTx(ctx, tx, workItemID, req.CorrelationID, ""); err != nil {
-			return err
-		}
-
-		final, err := tx.Work().GetWorkItem(ctx, workItemID)
-		if err != nil {
-			return err
-		}
-		result = CancelWorkItemResult{WorkItemID: workItemID, Status: string(final.Status)}
-		return nil
+		var err error
+		result, err = cancelWorkItemTx(ctx, tx, ids, workItemID, actor, reason, req.CorrelationID)
+		return err
 	})
 	return result, err
+}
+
+// cancelWorkItemTx is CancelWorkItem's transaction body, shared with RecreateWorkItem (V11-10) which cancels the
+// superseded WorkItem inside its own transaction. workItemID, actor and reason are already trimmed and non-blank.
+func cancelWorkItemTx(ctx context.Context, tx ports.Tx, ids idsource.Source, workItemID, actor, reason, correlationID string) (CancelWorkItemResult, error) {
+	item, err := tx.Work().GetWorkItem(ctx, workItemID)
+	if err != nil {
+		return CancelWorkItemResult{}, err
+	}
+
+	if _, err := tx.Runtime().GetWorkItemCancellationIntent(ctx, workItemID); err == nil {
+		// A second CancelWorkItem call for the same work item — the
+		// identical "idempotent theo run" rule CancelRun's own
+		// cancelRunTx already applies, at the WorkItem level: return the
+		// already-committed state, never re-quiesce, never re-append the
+		// requested event a second time.
+		return CancelWorkItemResult{WorkItemID: workItemID, AlreadyRequested: true, Status: string(item.Status)}, nil
+	} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
+		return CancelWorkItemResult{}, err
+	}
+
+	if item.Status == workdomain.WorkItemDone || item.Status == workdomain.WorkItemCancelled {
+		return CancelWorkItemResult{}, fmt.Errorf("%w: work item %s is %s", ErrWorkItemAlreadyTerminal, workItemID, item.Status)
+	}
+
+	intentID := ids.NewID()
+	intent, err := runtimedomain.NewWorkItemCancellationIntent(
+		runtimedomain.WorkItemCancellationIntentID(intentID), item.ProjectID, item.ID, actor, reason, time.Now().UTC(),
+	)
+	if err != nil {
+		return CancelWorkItemResult{}, err
+	}
+	if _, err := tx.Runtime().RecordWorkItemCancellationIntent(ctx, intent); err != nil {
+		return CancelWorkItemResult{}, err
+	}
+
+	eventPayload, err := json.Marshal(workItemCancellationRequestedEventPayload{WorkItemID: workItemID, Actor: actor, Reason: reason})
+	if err != nil {
+		return CancelWorkItemResult{}, fmt.Errorf("marshal %s event payload: %w", WorkItemCancellationRequestedEventType, err)
+	}
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: intentID + "-requested", ProjectID: string(item.ProjectID),
+		AggregateType: "WorkItemCancellationIntent", AggregateID: intentID, Sequence: 1,
+		EventType: WorkItemCancellationRequestedEventType, SchemaVersion: WorkItemCancellationRequestedSchemaVersion,
+		PayloadJSON: string(eventPayload), CorrelationID: correlationID, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		return CancelWorkItemResult{}, err
+	}
+
+	// Quiesce every currently-non-terminal Run this WorkItem has ever
+	// had — cancelRunTx (cancel_run.go) is the exact same protocol
+	// CancelRun itself uses, each call idempotent by RunID (a Run a
+	// standalone CancelRun already targeted is a harmless no-op here).
+	runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, workItemID)
+	if err != nil {
+		return CancelWorkItemResult{}, err
+	}
+	for _, run := range runs {
+		if isWorkflowRunTerminal(run.State) {
+			continue
+		}
+		if _, err := cancelRunTx(ctx, tx, ids, string(run.ID), actor, reason, correlationID); err != nil {
+			return CancelWorkItemResult{}, err
+		}
+	}
+
+	// The common case for a WorkItem with zero Runs at all, or every Run
+	// already historically terminal before this call: close out right
+	// now rather than waiting for a Run-closing transaction that will
+	// never come.
+	if err := reconcileWorkItemCancellationTx(ctx, tx, workItemID, correlationID, ""); err != nil {
+		return CancelWorkItemResult{}, err
+	}
+
+	final, err := tx.Work().GetWorkItem(ctx, workItemID)
+	if err != nil {
+		return CancelWorkItemResult{}, err
+	}
+	return CancelWorkItemResult{WorkItemID: workItemID, Status: string(final.Status)}, nil
 }
 
 // isWorkflowRunTerminal reports whether state is one of a WorkflowRun's own

@@ -39,6 +39,8 @@ type WorkRepository struct {
 	scopeExpansionRequests map[string]work.ScopeExpansionRequest
 	// blockers is keyed by WorkItemBlocker.ID (V4-12C).
 	blockers map[string]work.WorkItemBlocker
+	// supersessions is keyed by the NEW WorkItem's id (V11-10), mirroring work_item_supersessions' primary key.
+	supersessions map[string]work.WorkItemSupersession
 	// releaseSets is keyed by ReleaseSet.ID (V5-10A).
 	releaseSets map[string]work.ReleaseSet
 	// releaseSetLocalCommits is keyed by ReleaseSetLocalCommit.ID (V6-10E).
@@ -87,6 +89,10 @@ func (w *WorkRepository) cloneWith(catalog *CatalogRepository) *WorkRepository {
 	for k, v := range w.blockers {
 		blockers[k] = v
 	}
+	supersessions := make(map[string]work.WorkItemSupersession, len(w.supersessions))
+	for k, v := range w.supersessions {
+		supersessions[k] = v
+	}
 	releaseSets := make(map[string]work.ReleaseSet, len(w.releaseSets))
 	for k, v := range w.releaseSets {
 		releaseSets[k] = v
@@ -104,7 +110,7 @@ func (w *WorkRepository) cloneWith(catalog *CatalogRepository) *WorkRepository {
 		workspaceSets: workspaceSets, repositoryScopes: repositoryScopes, effectiveScopes: effectiveScopes,
 		repositoryWorkspaces: repositoryWorkspaces, scopeExpansionRequests: scopeExpansionRequests, blockers: blockers,
 		releaseSets: releaseSets, releaseSetLocalCommits: releaseSetLocalCommits,
-		releaseSetLocalCommitSelections: releaseSetLocalCommitSelections,
+		releaseSetLocalCommitSelections: releaseSetLocalCommitSelections, supersessions: supersessions,
 	}
 }
 
@@ -612,6 +618,50 @@ func (w *WorkRepository) CreateWorkItemBlocker(_ context.Context, blocker work.W
 	}
 	w.blockers[string(blocker.ID)] = blocker
 	return blocker, nil
+}
+
+// RecordWorkItemSupersession mirrors sqlite's recordWorkItemSupersessionTx.
+func (w *WorkRepository) RecordWorkItemSupersession(_ context.Context, supersession work.WorkItemSupersession) (work.WorkItemSupersession, error) {
+	for _, id := range []work.WorkItemID{supersession.OldWorkItemID, supersession.NewWorkItemID} {
+		if _, ok := w.workItems[string(id)]; !ok {
+			return work.WorkItemSupersession{}, fmt.Errorf("fake: %w: work item %s", ports.ErrPersistenceNotFound, id)
+		}
+	}
+	if existing, ok := w.supersessions[string(supersession.NewWorkItemID)]; ok {
+		if existing.OldWorkItemID != supersession.OldWorkItemID {
+			return work.WorkItemSupersession{}, fmt.Errorf("fake: %w: work item %s already replaces %s", ports.ErrPersistenceAlreadyExists, existing.NewWorkItemID, existing.OldWorkItemID)
+		}
+		return existing, nil
+	}
+	for _, existing := range w.supersessions {
+		if existing.OldWorkItemID == supersession.OldWorkItemID {
+			return work.WorkItemSupersession{}, fmt.Errorf("fake: %w: work item %s is already replaced by %s", ports.ErrPersistenceAlreadyExists, existing.OldWorkItemID, existing.NewWorkItemID)
+		}
+	}
+	if w.supersessions == nil {
+		w.supersessions = map[string]work.WorkItemSupersession{}
+	}
+	w.supersessions[string(supersession.NewWorkItemID)] = supersession
+	return supersession, nil
+}
+
+// GetWorkItemSupersessionByOld mirrors sqlite's loadWorkItemSupersessionTx(old_work_item_id).
+func (w *WorkRepository) GetWorkItemSupersessionByOld(_ context.Context, workItemID string) (work.WorkItemSupersession, error) {
+	for _, supersession := range w.supersessions {
+		if string(supersession.OldWorkItemID) == workItemID {
+			return supersession, nil
+		}
+	}
+	return work.WorkItemSupersession{}, fmt.Errorf("fake: %w: work item supersession for work item %s", ports.ErrPersistenceNotFound, workItemID)
+}
+
+// GetWorkItemSupersessionByNew mirrors sqlite's loadWorkItemSupersessionTx(new_work_item_id).
+func (w *WorkRepository) GetWorkItemSupersessionByNew(_ context.Context, workItemID string) (work.WorkItemSupersession, error) {
+	supersession, ok := w.supersessions[workItemID]
+	if !ok {
+		return work.WorkItemSupersession{}, fmt.Errorf("fake: %w: work item supersession for work item %s", ports.ErrPersistenceNotFound, workItemID)
+	}
+	return supersession, nil
 }
 
 // GetWorkItemBlocker mirrors sqlite's loadWorkItemBlockerTx.
