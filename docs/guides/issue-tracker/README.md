@@ -588,8 +588,8 @@ bốn gate PASS, gửi tín hiệu `ci-build-2` → `CONSUMED`.
   (còn lại `CANCELLED`, kèm "replaced by …") và tạo WorkItem con mới cùng parent, cùng nội dung (tiêu đề thêm "(lần N)"), ghim version
   mới nhất, READY, start run; mang theo ghi chú của bạn (`CARRY_MESSAGES=0` để bỏ). Chỉ cho task con, chỉ khi mọi run đã kết thúc. Sau đó
   `commit-task.sh` không còn bị WorkItem cũ chặn.
-- **Xem agent đã nói gì:** `agent-log.py <runId> [--node …] [--all] [--denied]` (đọc thẳng database, chỉ đọc;
-  `aw` CLI hiện chưa có lệnh đọc lời của agent). `show-run.sh`, `watch-run.sh` in timeline, evidence, việc đang chờ người.
+- **Xem agent đã nói gì:** bấm node trong tab Graph (ngăn chi tiết: đầu vào, tiến trình từng công cụ, kết quả, lỗi và hướng xử lý; tự cập nhật khi đang chạy) hoặc `aw node-run show <nodeRunId>` /
+  `aw node-run events <attemptId> --follow`; Chat có tin hoạt động của engine. `agent-log.py <runId> [--node …] [--all] [--denied]` vẫn đọc thẳng database (chỉ đọc). `show-run.sh`, `watch-run.sh` in timeline, evidence, việc đang chờ người.
 - **Sao lưu:** `aw-maintenance backup --db "$AW_DB" --out ~/aw/backup` ghi `snapshot.db` + `manifest.json` (193 artifact).
   **Artifact và worktree không nằm trong đó**: sao chép `$AW_ARTIFACT_ROOT` riêng, rồi `restore`:
 

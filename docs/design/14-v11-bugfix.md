@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 (lõi, API, CLI, UI; chưa chạy thật trên bản cài). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 (lõi, API, CLI, UI; chưa chạy thật trên bản cài); V11-11 (đọc theo node, tin hoạt động, UI; chưa Playwright/chạy thật). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -43,7 +43,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | **Bước 1–3 XONG 2026-10-11; bước 4 (đo A/B) chưa chạy** (xem khối kết quả) |
 | V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **XONG MỘT PHẦN 2026-10-11**: sửa lỗi mất mã thoát của bộ bọc + test hành vi + check `git_shell`; lỗi gốc chưa tái hiện được trên Windows 10 |
 | V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | **XONG 2026-10-11** (lõi, API, CLI, UI; chưa chạy thật trên bản cài, chưa có Playwright/walk-workflow) |
-| V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | Cơ chế **đã đọc trong mã**; dữ liệu phần lớn đã có trong DB nhưng không có API/UI đọc |
+| V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | **XONG MỘT PHẦN 2026-10-11** (ADR-042): đọc theo node, lời agent khi hỏng, tin hoạt động, UI; chưa đọc được lời nhắc, chưa Playwright/chạy thật |
 | V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **Đã gặp thật** (đăng ký thư mục chưa `git init` trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
 | V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | Cơ chế **đã đọc trong mã**: chỉ có `create`, `list`, `show` |
 
@@ -777,6 +777,24 @@ luồng sự kiện ra file; thay đổi cách agent tạo `agent_events` (adapt
   `command-output+json`, Chat với tin hoạt động và bộ lọc; kiểm tra trình đọc màn hình ở danh sách truy cập. e2e Playwright trên bản cài thật:
   chạy một workflow nhiều node, bấm từng node trong lúc chạy và sau khi xong, thấy đúng tiến trình và kết quả, Chat có tin hoạt động.
 - **Không hồi quy:** `docs-coverage`, parity API/CLI, `v8-alpha-gate` xanh; không thêm truy vấn nào ghi dữ liệu.
+
+### Kết quả triển khai V11-11 (2026-10-11): đọc theo node, lời agent khi hỏng, tin hoạt động trong Chat; chưa đọc được lời nhắc, chưa Playwright và chạy thật
+
+Đã làm (ADR-042):
+
+- **Đọc theo node.** `getNodeRunDetail` và `listAttemptEvents` (hai route chỉ đọc, 107 route), `aw node-run show|events [--follow]`, parity, UX doc (Screen 8 hàng 8–9), `ExplainFailure` (mã lỗi → giải thích + hành động). Redact lúc đọc bằng
+  `Matcher.Redact` (test bắt được lỗi dùng `Matcher.String` chỉ khớp cả giá trị). Phân trang theo `Sequence` qua `ListAfterSequence`, bản ghi bị cắt kích thước.
+- **Giữ lời agent khi hỏng.** Attempt FAILED/TIMED_OUT để lại evidence `AGENT_OUTPUT` một phần (`RECORDED`, không thỏa CompletionPolicy); đường SUCCEEDED không đổi.
+- **Tin hoạt động.** Migration 0052 (`display_only`, `node_run_id`), `ActivityPoster` best-effort sau commit, id tất định nên replay không nhân đôi, bộ lắp ngữ cảnh loại tin `display_only` khỏi khối `messages` (test: khối không đổi).
+  Chat nhận bắt đầu node, lời cuối, kết thúc (outcome / số file / chi phí hoặc lỗi kèm giải thích), chờ duyệt.
+- **Evidence gắn node.** `nodeKey`, `iteration`, `attemptNumber` trên chi tiết evidence; hai media type JSON xem trước được.
+- **UI.** `NodeDetailPane` (đầu vào, tiến trình tự cập nhật theo cursor, kết quả theo loại node, lỗi + việc cần làm, liên kết sang Evidence), nhãn một dòng trên node và danh sách truy cập, graph/timeline làm mới 4 giây khi run còn sống,
+  Evidence có cột node và lọc theo node, Chat có kiểu riêng cho tin hoạt động, bộ lọc "only my messages" và liên kết "view progress". Văn bản luôn là text.
+- **Test đã chạy thật:** sqlite thật (chi tiết từng loại node, phân trang/redact/giới hạn, lời một phần, tin hoạt động một lần, prompt không đổi), migration 0052, HTTP, Vitest (NodeDetailPane 7 ca có axe, TaskDetail.progress 5 ca; toàn bộ
+  Vitest xanh sau khi chạy lại một ca `CreateWorkItemDialog` timeout do tải), `go build`, `go vet`, `go test ./...` xanh.
+
+Chưa làm / chưa chạy được: (1) **đọc lời nhắc** (mục 3 của thực hiện): `InstructionArtifact` chưa được ghi vào DB nên không có tham chiếu để đọc lại; "đầu vào" hiện là định nghĩa, vai trò, outcome, pin; (2) **e2e Playwright** và chạy thật với
+Claude (bấm node trong lúc chạy); (3) tin hoạt động cho câu hỏi làm rõ của agent (chỉ có lời cuối); (4) cập nhật qua SSE (đang thăm dò theo cursor, ghi trong ADR là bước tạm).
 
 ## V11-12 — Sửa và ngừng dùng repository; thông báo lỗi chi tiết khi đăng ký và thăm dò
 

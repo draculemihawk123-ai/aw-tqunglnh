@@ -17,7 +17,7 @@
 > viết ADR khi triển khai.
 >
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…038).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…038); 2026-10-11 (ADR-039…042).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -1270,9 +1270,35 @@ WorkItem `ACTIVE`/`BLOCKED`, nên quên hủy bản cũ chặn luôn việc comm
 **Hệ quả:** luồng sửa kit rồi chạy lại là Publish → một nút/lệnh; không còn bước "hủy trên web rồi `run-task.sh`" và `commit-task.sh` không bị WorkItem cũ chặn. Chưa có: khôi phục file đã cất bằng nút,
 cảnh báo cứng khi làm lại quá nhiều lần (chỉ cảnh báo từ lần thứ ba), kịch bản `walk-workflow.py` cho retry/recreate.
 
-## 44. Baseline sau review thiết kế
+## 44. ADR-042 — Đọc theo node, giữ lời agent khi hỏng, và tin hoạt động trong Chat là tin chỉ-hiển-thị
 
-ADR-001…041 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** người vận hành bấm một node trên web chỉ thấy timeline được lọc; không biết agent đã nói gì, gọi công cụ gì, lệnh in ra gì, hỏng vì sao. Dữ liệu phần lớn đã có trong DB
+(`agent_events`, evidence `COMMAND_EXECUTION`/`AGENT_EXECUTION`, mã lỗi) nhưng không có đường đọc; attempt hỏng không để lại lời agent; engine không bao giờ ghi vào thread Chat. Ghi tin vào thread mà
+không chặn sẽ làm tin đó chui vào khối `messages` của CONTEXT policy (V9-07) và vào prompt của agent kế tiếp.
+
+**Quyết định:**
+
+1. **Hai truy vấn chỉ đọc, không thêm nguồn sự thật.** `getNodeRunDetail` (`GET /node-runs/{nodeRunId}`): đầu vào của node (định nghĩa, vai trò, outcome, pin), các attempt, evidence, kết quả theo loại node
+   (AGENT: outcome, lời cuối, file đổi, chi phí; COMMAND: exit code, thời lượng, stdout/stderr; GATE: từng tiêu chí; APPROVAL: ai quyết định; cấu trúc: một dòng), dòng tiến trình của attempt gần nhất và lỗi đã
+   giải thích (`ExplainFailure`: mã → tiêu đề, câu giải thích, gợi ý, hành động đề nghị). `listAttemptEvents` (`GET /execution-attempts/{attemptId}/events?cursor=&limit=`): phân trang theo `Sequence` bằng
+   `AgentEventStore.ListAfterSequence`, mỗi bản ghi bị cắt kích thước. CLI `aw node-run show` và `aw node-run events [--follow]`.
+2. **Redact ở lúc đọc bằng `Matcher.Redact`** (thay mọi đoạn khớp trong văn bản tự do), không phải `Matcher.String` (chỉ khớp cả giá trị): dữ liệu đã redact lúc ghi, đọc lại bị lọc thêm một lần.
+3. **Giữ lời agent khi FAILED/TIMED_OUT.** `AgentNodeExecutor.StagePartialOutput` lưu artifact văn bản (tin nhắn cuối đã có trong `agent_events`) trước transaction kết thúc attempt; `decideRetryOrExhaustion`
+   gắn nó thành evidence `AGENT_OUTPUT` với verdict `RECORDED` (không thỏa CompletionPolicy) và đánh dấu `partial`. Attempt SUCCEEDED giữ nguyên đường V9-17.
+4. **Tin hoạt động là tin chỉ-hiển-thị.** Migration 0052 thêm `messages.display_only` (mặc định 0) và `messages.node_run_id`. `ActivityPoster` (best-effort, sau khi transaction của engine đã commit, lỗi bị
+   bỏ qua) ghi qua `AppendActivity`: id tất định theo khóa `start:|say:|end:|approval:` + id attempt nên replay không nhân đôi; nội dung đi qua cùng đường redact/lưu artifact như mọi message. Bộ lắp ngữ cảnh
+   (`schedule.go`) **loại mọi message `display_only` khỏi khối `messages`**; test chứng minh khối đó không đổi khi có tin hoạt động. Chat chỉ nhận mốc và tin cuối (bắt đầu node, lời cuối, kết thúc kèm outcome/số file/chi
+   phí hoặc lỗi và lời giải thích, chờ duyệt); luồng từng công cụ nằm ở ngăn chi tiết của node.
+5. **Hiển thị khi đang chạy bằng thăm dò theo cursor `Sequence`** (2–4 giây), không qua SSE: journal chưa phát sự kiện cho `agent_events`; đây là bước tạm. Graph và timeline làm mới mỗi 4 giây khi run còn sống.
+6. **Evidence gắn node.** Chi tiết evidence thêm `nodeKey`, `iteration` (từ 0), `attemptNumber`; hai media type `application/vnd.agentkit.command-output+json` và `...diff-manifest+json` vào danh sách
+   inline-an-toàn để xem trước.
+7. **Chưa làm:** đọc lời nhắc (`InstructionArtifact` chưa được ghi vào DB nên chưa có tham chiếu để đọc; phần "đầu vào" hiện gồm định nghĩa, vai trò, outcome và pin); tin hoạt động cho câu hỏi làm rõ của agent.
+
+**Hệ quả:** thêm hai route chỉ đọc (107 route), một migration, một cột chỉ-hiển-thị. Prompt của agent kế tiếp không đổi khi bật tính năng.
+
+## 45. Baseline sau review thiết kế
+
+ADR-001…042 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1322,5 +1348,6 @@ dụng ma trận sau:
 - ADR-039 (V11-06) thêm chế độ `result=WORKING_TREE` cho route diff của workspace (thay đổi chưa commit, chỉ đọc, từ chối khi attempt đang ghi).
 - ADR-040 (V11-07) hoàn thiện ADR-014: quyết định duyệt kèm yêu cầu commit chọn file trong cùng transaction (policy `approval.release`, danh tính từ git config, drift theo hash, KEEP/PARK, blocker `RELEASE_FAILED`).
 - ADR-041 (V11-10) bổ sung ADR-033: chạy lại (cùng version đã ghim) và làm lại bằng version mới nhất (hủy và tạo WorkItem mới, `WorkItemSupersession`) là hai lệnh có kiểu, mỗi lệnh một transaction; file ngoài scope của run trước được cất (PARK) trước lệnh.
+- ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

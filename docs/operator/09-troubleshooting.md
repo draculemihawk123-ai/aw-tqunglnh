@@ -406,3 +406,22 @@ work stays. Nothing is deleted; bring parked files back with
 
 A refusal changes nothing and says why: the run is not finished, the family has a `QUARANTINED` workspace (reconcile it first),
 another blocker is open (a scope expansion, a failed release), or the work item was already replaced.
+
+## What is a node doing, what did it produce, why did it fail (V11-10 follow-up: V11-11)
+
+On the task page, **click a node in the Graph tab**. A pane opens above the timeline with four parts, all read from what aw recorded:
+
+- **Asked to do**: the node's type, role, the outcomes it may choose and the agent profile / resources it is pinned to.
+- **Progress**: the agent's messages and every tool call (name, shortened arguments, ok or error), in order. While the attempt runs, the pane follows it (it asks again every few seconds from the last sequence it saw) and the top line
+  says how many tool calls and what happened last. Everything is shown as plain text, never as markup, and anything that looks like a secret is masked again on the way out.
+- **Result**: an agent node shows the outcome it chose, its last words (kept even when the attempt failed, marked as the words before it stopped), the files it changed and the cost; a command node shows the exit code, duration, stdout and
+  stderr; a gate shows each criterion; an approval shows who decided; start/fork/join/end nodes are one line.
+- **Why it failed**: the code with a plain explanation and what to do next (for example `SCOPE_VIOLATION` names the path; a failed run points at **Run Again**).
+
+Each node in the graph also carries a one-line label (for example "approved · 3 files" or "running 02:10") so you do not have to click to see where the run is. The **Evidence** tab names the node, iteration and attempt of each row, can be
+filtered by node, and previews a command node's recorded output as text. The **Chat** tab now also shows the engine's milestones (a node started, the agent's last words, how a node ended, an approval waiting) in a different style;
+"only my messages" hides them. They are for you only: agents never see them, so they cost no tokens and cannot start a feedback loop.
+
+From a terminal: `aw node-run show <nodeRunId>` and `aw node-run events <attemptId> [--follow]` print the same data.
+
+Not available yet: the prompt an agent received (it is not recorded where aw can read it back).
