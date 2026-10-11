@@ -348,6 +348,9 @@ type WorkRepository interface {
 	// GetWorkItemSupersessionByNew returns the supersession that created workItemID as a replacement, or
 	// ErrPersistenceNotFound when workItemID replaced nothing.
 	GetWorkItemSupersessionByNew(ctx context.Context, workItemID string) (work.WorkItemSupersession, error)
+	// ListWorkItemSupersessions returns every supersession of the project's WorkItems, ordered by the replacing WorkItem's id: one
+	// query for the whole board instead of one lookup per card.
+	ListWorkItemSupersessions(ctx context.Context, projectID string) ([]work.WorkItemSupersession, error)
 	// TransitionWorkItemBlockerState is the fenced CAS that closes a
 	// blocker's own lifecycle — OPEN -> RESOLVED or OPEN -> WAIVED — the
 	// identical req.ExpectedState/req.ExpectedVersion CAS discipline every

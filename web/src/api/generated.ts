@@ -781,6 +781,37 @@ export function getWorkItemReadiness(projectId: string, workItemId: string, opts
   return request<GetWorkItemReadinessResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/readiness`, undefined, opts);
 }
 
+export interface GetWorkItemRedoPreviewResponse {
+  workItemId: string;
+  projectId: string;
+  title: string;
+  status: string;
+  isChild: boolean;
+  canRetry: boolean;
+  retryRefusal?: unknown | null;
+  canRecreate: boolean;
+  recreateRefusal?: unknown | null;
+  pinnedWorkflowVersion: unknown;
+  latestWorkflowVersion: unknown;
+  newerVersionAvailable: boolean;
+  blockersToResolve: unknown[];
+  operatorMessageCount: number;
+  redoNumber: number;
+  priorRunCount: number;
+  priorCostUsd: number;
+  costKnown: boolean;
+  supersedes?: unknown | null;
+  supersededBy?: unknown | null;
+  files: unknown[];
+  outOfScopeCount: number;
+  filesUnavailableReason?: string;
+}
+
+// GET /work-items/{workItemId}/redo-preview (scope: PROJECT)
+export function getWorkItemRedoPreview(workItemId: string, opts: RequestOptions = {}): Promise<GetWorkItemRedoPreviewResponse> {
+  return request<GetWorkItemRedoPreviewResponse>("GET", `/work-items/${workItemId}/redo-preview`, undefined, opts);
+}
+
 export interface GetWorkspaceDiffResponse {
   baseRevision: unknown;
   resultRevision: unknown;
@@ -1081,6 +1112,37 @@ export function publishProjectDefinitionVersion(projectId: string, kind: string,
   return request<PublishProjectDefinitionVersionResponse>("POST", `/projects/${projectId}/definitions/${kind}/${id}/publish`, body, opts);
 }
 
+export interface RecreateWorkItemRequest {
+  reason: string;
+  note?: string;
+  carryMessages?: boolean | null;
+  outOfScope?: string;
+}
+
+export interface RecreateWorkItemResponse {
+  oldWorkItemId: string;
+  newWorkItemId: string;
+  parentWorkItemId: string;
+  title: string;
+  redoNumber: number;
+  previousWorkflowVersionId: string;
+  workflowVersionId: string;
+  runId: string;
+  runState: string;
+  nodeRunId: string;
+  jobId: string;
+  oldWorkItemStatus: string;
+  carriedMessageCount: number;
+  noteMessageId?: string;
+  outOfScope?: string;
+  parked?: unknown[];
+}
+
+// POST /work-items/{workItemId}/recreate (scope: PROJECT)
+export function recreateWorkItem(workItemId: string, body: RecreateWorkItemRequest, opts: RequestOptions = {}): Promise<RecreateWorkItemResponse> {
+  return request<RecreateWorkItemResponse>("POST", `/work-items/${workItemId}/recreate`, body, opts);
+}
+
 export interface RegisterAdapterBuildRequest {
   token: unknown;
   capabilityManifest: unknown;
@@ -1341,6 +1403,30 @@ export interface RetryBlockedActivationResponse {
 // POST /node-runs/{nodeRunId}/retry-blocked-activation (scope: PROJECT)
 export function retryBlockedActivation(nodeRunId: string, body: RetryBlockedActivationRequest, opts: RequestOptions = {}): Promise<RetryBlockedActivationResponse> {
   return request<RetryBlockedActivationResponse>("POST", `/node-runs/${nodeRunId}/retry-blocked-activation`, body, opts);
+}
+
+export interface RetryWorkItemRequest {
+  note?: string;
+  outOfScope?: string;
+}
+
+export interface RetryWorkItemResponse {
+  workItemId: string;
+  previousRunId: string;
+  runId: string;
+  runState: string;
+  nodeRunId: string;
+  jobId: string;
+  workflowVersionId: string;
+  resolvedBlockerIds: string[];
+  noteMessageId?: string;
+  outOfScope?: string;
+  parked?: unknown[];
+}
+
+// POST /work-items/{workItemId}/retry (scope: PROJECT)
+export function retryWorkItem(workItemId: string, body: RetryWorkItemRequest, opts: RequestOptions = {}): Promise<RetryWorkItemResponse> {
+  return request<RetryWorkItemResponse>("POST", `/work-items/${workItemId}/retry`, body, opts);
 }
 
 export interface SealReleaseSetResponse {

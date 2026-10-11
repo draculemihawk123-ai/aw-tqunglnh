@@ -46,7 +46,9 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	safesettingsapp "github.com/taQuangLing/agent-workflow/internal/app/safesettings"
+	"github.com/taQuangLing/agent-workflow/internal/app/workitemredo"
 	appworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/app/workspaceinspection"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
@@ -61,6 +63,7 @@ import (
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	httpprojectionrebuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/projectionrebuild"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
+	redohttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/redo"
 	httpreleaseset "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 	httprundetail "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/rundetail"
@@ -107,6 +110,9 @@ type Dependencies struct {
 	// parked changes, and how parked files are restored: all the same real Git workspace provider. The zero
 	// value (a composition without one) makes those paths answer UNAVAILABLE.
 	Release decision.ReleaseSupport
+	// RedoParker (V11-10, ADR-041) parks the files a previous run left outside a work item's scope before a retry or redo: the same real
+	// Git workspace provider as the fields above. Nil makes PARK answer UNAVAILABLE.
+	RedoParker ports.SelectedChangeParker
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -227,6 +233,16 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: deps.UnitOfWork, IDs: idsource.Random{}})
 	// V6-04: WorkItem/family/readiness/scope-expansion routes.
 	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: deps.UnitOfWork, IDs: idsource.Random{}, Clock: clock.System{}})
+	// V11-10: run a failed task again / redo it with the newest workflow version, in one action each.
+	redohttp.RegisterRoutes(routes, redohttp.Dependencies{
+		UOW: deps.UnitOfWork, HeadAuditor: deps.WorkspaceHeadAuditor,
+		Service: workitemredo.Service{
+			RedoDeps: runtime.RedoDeps{
+				UnitOfWork: deps.UnitOfWork, ArtifactStore: deps.ArtifactStore, IDs: idsource.Random{}, Clock: clock.System{}, Matcher: deps.Matcher,
+			},
+			Inspection: deps.WorkspaceInspectionQueries, Parker: deps.RedoParker,
+		},
+	})
 	// V6-06: Run start/cancel controls.
 	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}, HeadAuditor: deps.WorkspaceHeadAuditor})
 	// V6-06B: Run detail/graph/timeline query routes. Reuses the SAME

@@ -86,3 +86,30 @@ FROM work_item_supersessions WHERE `+column+` = ?`, workItemID).Scan(&oldID, &ne
 		Actor: actor, Reason: reason, CreatedAt: createdAt,
 	}, nil
 }
+
+// ListWorkItemSupersessions implements ports.WorkRepository.
+func (r workRepository) ListWorkItemSupersessions(ctx context.Context, projectID string) ([]work.WorkItemSupersession, error) {
+	rows, err := r.tx.QueryContext(ctx, `
+SELECT old_work_item_id, new_work_item_id, project_id, actor, reason, created_at
+FROM work_item_supersessions WHERE project_id = ? ORDER BY new_work_item_id`, projectID)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list work item supersessions for project %s: %w", projectID, err))
+	}
+	defer rows.Close()
+	var out []work.WorkItemSupersession
+	for rows.Next() {
+		var oldID, newID, projectColumn, actor, reason, createdAtRaw string
+		if err := rows.Scan(&oldID, &newID, &projectColumn, &actor, &reason, &createdAtRaw); err != nil {
+			return nil, fmt.Errorf("scan work item supersession: %w", err)
+		}
+		createdAt, err := parseWorkflowTime(createdAtRaw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, work.WorkItemSupersession{
+			ProjectID: project.ProjectID(projectColumn), OldWorkItemID: work.WorkItemID(oldID), NewWorkItemID: work.WorkItemID(newID),
+			Actor: actor, Reason: reason, CreatedAt: createdAt,
+		})
+	}
+	return out, rows.Err()
+}

@@ -2349,6 +2349,136 @@
       }
     },
     {
+      "operationId": "getWorkItemRedoPreview",
+      "method": "GET",
+      "path": "/work-items/{workItemId}/redo-preview",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "redo.PreviewResponse",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Title",
+            "jsonTag": "title",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "IsChild",
+            "jsonTag": "isChild",
+            "type": "bool"
+          },
+          {
+            "name": "CanRetry",
+            "jsonTag": "canRetry",
+            "type": "bool"
+          },
+          {
+            "name": "RetryRefusal",
+            "jsonTag": "retryRefusal,omitempty",
+            "type": "*runtime.RedoRefusal"
+          },
+          {
+            "name": "CanRecreate",
+            "jsonTag": "canRecreate",
+            "type": "bool"
+          },
+          {
+            "name": "RecreateRefusal",
+            "jsonTag": "recreateRefusal,omitempty",
+            "type": "*runtime.RedoRefusal"
+          },
+          {
+            "name": "PinnedWorkflowVersion",
+            "jsonTag": "pinnedWorkflowVersion",
+            "type": "workitemredo.VersionView"
+          },
+          {
+            "name": "LatestWorkflowVersion",
+            "jsonTag": "latestWorkflowVersion",
+            "type": "workitemredo.VersionView"
+          },
+          {
+            "name": "NewerVersionAvailable",
+            "jsonTag": "newerVersionAvailable",
+            "type": "bool"
+          },
+          {
+            "name": "BlockersToResolve",
+            "jsonTag": "blockersToResolve",
+            "type": "[]runtime.RedoBlocker"
+          },
+          {
+            "name": "OperatorMessageCount",
+            "jsonTag": "operatorMessageCount",
+            "type": "int"
+          },
+          {
+            "name": "RedoNumber",
+            "jsonTag": "redoNumber",
+            "type": "int"
+          },
+          {
+            "name": "PriorRunCount",
+            "jsonTag": "priorRunCount",
+            "type": "int"
+          },
+          {
+            "name": "PriorCostUsd",
+            "jsonTag": "priorCostUsd",
+            "type": "float64"
+          },
+          {
+            "name": "CostKnown",
+            "jsonTag": "costKnown",
+            "type": "bool"
+          },
+          {
+            "name": "Supersedes",
+            "jsonTag": "supersedes,omitempty",
+            "type": "*workitemredo.WorkItemRef"
+          },
+          {
+            "name": "SupersededBy",
+            "jsonTag": "supersededBy,omitempty",
+            "type": "*workitemredo.WorkItemRef"
+          },
+          {
+            "name": "Files",
+            "jsonTag": "files",
+            "type": "[]workitemredo.LeftoverFile"
+          },
+          {
+            "name": "OutOfScopeCount",
+            "jsonTag": "outOfScopeCount",
+            "type": "int"
+          },
+          {
+            "name": "FilesUnavailableReason",
+            "jsonTag": "filesUnavailableReason,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getWorkspaceDiff",
       "method": "GET",
       "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/diff",
@@ -3232,6 +3362,122 @@
       }
     },
     {
+      "operationId": "recreateWorkItem",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/recreate",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "redo.RecreateRequest",
+        "fields": [
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          },
+          {
+            "name": "Note",
+            "jsonTag": "note,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "CarryMessages",
+            "jsonTag": "carryMessages,omitempty",
+            "type": "*bool"
+          },
+          {
+            "name": "OutOfScope",
+            "jsonTag": "outOfScope,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "redo.RecreateResponse",
+        "fields": [
+          {
+            "name": "OldWorkItemID",
+            "jsonTag": "oldWorkItemId",
+            "type": "string"
+          },
+          {
+            "name": "NewWorkItemID",
+            "jsonTag": "newWorkItemId",
+            "type": "string"
+          },
+          {
+            "name": "ParentWorkItemID",
+            "jsonTag": "parentWorkItemId",
+            "type": "string"
+          },
+          {
+            "name": "Title",
+            "jsonTag": "title",
+            "type": "string"
+          },
+          {
+            "name": "RedoNumber",
+            "jsonTag": "redoNumber",
+            "type": "int"
+          },
+          {
+            "name": "PreviousWorkflowVersionID",
+            "jsonTag": "previousWorkflowVersionId",
+            "type": "string"
+          },
+          {
+            "name": "WorkflowVersionID",
+            "jsonTag": "workflowVersionId",
+            "type": "string"
+          },
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "RunState",
+            "jsonTag": "runState",
+            "type": "string"
+          },
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "JobID",
+            "jsonTag": "jobId",
+            "type": "string"
+          },
+          {
+            "name": "OldWorkItemStatus",
+            "jsonTag": "oldWorkItemStatus",
+            "type": "string"
+          },
+          {
+            "name": "CarriedMessageCount",
+            "jsonTag": "carriedMessageCount",
+            "type": "int"
+          },
+          {
+            "name": "NoteMessageID",
+            "jsonTag": "noteMessageId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "OutOfScope",
+            "jsonTag": "outOfScope,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Parked",
+            "jsonTag": "parked,omitempty",
+            "type": "[]runtime.RedoParkedSet"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "registerAdapterBuild",
       "method": "POST",
       "path": "/adapter-builds",
@@ -3974,6 +4220,87 @@
             "name": "FailureDetail",
             "jsonTag": "failureDetail,omitempty",
             "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "retryWorkItem",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/retry",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "redo.RetryRequest",
+        "fields": [
+          {
+            "name": "Note",
+            "jsonTag": "note,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "OutOfScope",
+            "jsonTag": "outOfScope,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "redo.RetryResponse",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "PreviousRunID",
+            "jsonTag": "previousRunId",
+            "type": "string"
+          },
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "RunState",
+            "jsonTag": "runState",
+            "type": "string"
+          },
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "JobID",
+            "jsonTag": "jobId",
+            "type": "string"
+          },
+          {
+            "name": "WorkflowVersionID",
+            "jsonTag": "workflowVersionId",
+            "type": "string"
+          },
+          {
+            "name": "ResolvedBlockerIDs",
+            "jsonTag": "resolvedBlockerIds",
+            "type": "[]string"
+          },
+          {
+            "name": "NoteMessageID",
+            "jsonTag": "noteMessageId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "OutOfScope",
+            "jsonTag": "outOfScope,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Parked",
+            "jsonTag": "parked,omitempty",
+            "type": "[]runtime.RedoParkedSet"
           }
         ]
       }

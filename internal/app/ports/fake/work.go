@@ -664,6 +664,18 @@ func (w *WorkRepository) GetWorkItemSupersessionByNew(_ context.Context, workIte
 	return supersession, nil
 }
 
+// ListWorkItemSupersessions mirrors sqlite's ListWorkItemSupersessions.
+func (w *WorkRepository) ListWorkItemSupersessions(_ context.Context, projectID string) ([]work.WorkItemSupersession, error) {
+	var out []work.WorkItemSupersession
+	for _, supersession := range w.supersessions {
+		if string(supersession.ProjectID) == projectID {
+			out = append(out, supersession)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].NewWorkItemID < out[j].NewWorkItemID })
+	return out, nil
+}
+
 // GetWorkItemBlocker mirrors sqlite's loadWorkItemBlockerTx.
 func (w *WorkRepository) GetWorkItemBlocker(_ context.Context, id string) (work.WorkItemBlocker, error) {
 	blocker, ok := w.blockers[id]

@@ -435,6 +435,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		WorkspaceInspectionQueries: workspaceInspectionQueries,
 		WorkspaceHeadAuditor:       workspaceProvider,
 		Release:                    decision.ReleaseSupport{Identities: workspaceProvider, Inspection: workspaceProvider, Parker: workspaceProvider},
+		RedoParker:                 workspaceProvider,
 		Matcher:                    matcher,
 		Cursor:                     cursorCodec,
 		Isolation:                  isolationChecker,

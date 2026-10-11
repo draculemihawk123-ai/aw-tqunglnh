@@ -52,6 +52,9 @@ type KanbanCardDTO struct {
 	PendingScopeExpansionCount int                  `json:"pendingScopeExpansionCount"`
 	RunCount                   int                  `json:"runCount"`
 	RepositoryBadges           []RepositoryBadgeDTO `json:"repositoryBadges,omitempty"`
+	// SupersedesWorkItemID / SupersededByWorkItemID (V11-10): the WorkItem this one replaced by a redo, and the one that replaced it.
+	SupersedesWorkItemID   string `json:"supersedesWorkItemId,omitempty"`
+	SupersededByWorkItemID string `json:"supersededByWorkItemId,omitempty"`
 }
 
 // cardToDTO converts one application Card into the wire DTO.
@@ -69,6 +72,7 @@ func cardToDTO(card kanbanapp.Card) KanbanCardDTO {
 		Status: card.Status, ActiveRunID: card.ActiveRunID, ActiveRunStatus: card.ActiveRunStatus,
 		BlockerCount: card.BlockerCount, TopBlockerType: card.TopBlockerType,
 		PendingScopeExpansionCount: card.PendingScopeExpansionCount, RunCount: card.RunCount, RepositoryBadges: badges,
+		SupersedesWorkItemID: card.SupersedesWorkItemID, SupersededByWorkItemID: card.SupersededByWorkItemID,
 	}
 }
 

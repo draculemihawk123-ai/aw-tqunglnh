@@ -124,6 +124,8 @@ type Deps struct {
 	// `approval resolve --commit-spec` and `repository-workspace restore-parked` use.
 	GitIdentities ports.GitIdentityReader
 	ParkedChanges ports.UnselectedChangeParker
+	// RedoParker (V11-10) is the same provider as the narrow port `work-item retry/recreate --out-of-scope PARK` uses.
+	RedoParker ports.SelectedChangeParker
 	Isolation     ports.IsolationEnforcementChecker
 	Agents               *agentregistry.Registry
 	Config               config.Config

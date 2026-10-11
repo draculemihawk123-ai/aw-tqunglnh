@@ -9,6 +9,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/app/clock"
+	"github.com/taQuangLing/agent-workflow/internal/app/kanban"
 	appmessage "github.com/taQuangLing/agent-workflow/internal/app/message"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
@@ -668,5 +669,39 @@ func TestAssessRedo_SQLite_RootAndForeignProject(t *testing.T) {
 	}
 	if runtime.RedoRefusalCode(errors.New("boom")) != "" {
 		t.Fatal("an unrelated error must have no refusal code")
+	}
+}
+
+// The Board and the task page read the link both ways: the new card says what it replaces, the old one what replaced it.
+func TestRecreateWorkItem_SQLite_CardsLinkTheTwoWorkItems(t *testing.T) {
+	f, _ := newRecreateSQLite(t)
+	oldID := f.workItemID
+	f.failRun(f.mustStart("idem-start-1"))
+	redone, err := f.recreate("idem-recreate-1", true, "")
+	if err != nil {
+		t.Fatalf("RecreateWorkItem: %v", err)
+	}
+	oldDetail, err := kanban.GetWorkItemProjectedDetail(f.ctx, f.uow, kanban.DetailRequest{WorkItemID: oldID})
+	if err != nil {
+		t.Fatalf("detail of the old item: %v", err)
+	}
+	newDetail, err := kanban.GetWorkItemProjectedDetail(f.ctx, f.uow, kanban.DetailRequest{WorkItemID: redone.NewWorkItemID})
+	if err != nil {
+		t.Fatalf("detail of the new item: %v", err)
+	}
+	if oldDetail.Card.SupersededByWorkItemID != redone.NewWorkItemID || oldDetail.Card.SupersedesWorkItemID != "" {
+		t.Fatalf("old card = %+v, want superseded by %s", oldDetail.Card, redone.NewWorkItemID)
+	}
+	if newDetail.Card.SupersedesWorkItemID != oldID || newDetail.Card.SupersededByWorkItemID != "" {
+		t.Fatalf("new card = %+v, want it replacing %s", newDetail.Card, oldID)
+	}
+	page, err := kanban.ListWorkItemKanban(f.ctx, f.uow, kanban.ListRequest{ProjectID: "project-1"})
+	if err != nil {
+		t.Fatalf("ListWorkItemKanban: %v", err)
+	}
+	for _, card := range page.Items {
+		if card.WorkItemID == redone.NewWorkItemID && card.SupersedesWorkItemID != oldID {
+			t.Fatalf("listed card %+v, want it replacing %s", card, oldID)
+		}
 	}
 }

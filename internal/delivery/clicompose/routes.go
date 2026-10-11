@@ -3,7 +3,10 @@ package clicompose
 import (
 	"context"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	workapp "github.com/taQuangLing/agent-workflow/internal/app/work"
+	"github.com/taQuangLing/agent-workflow/internal/app/workitemredo"
+	appworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/app/workspaceinspection"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/adapterbuild"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/decision"
@@ -15,6 +18,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/message"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/noderun"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/projection"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/redo"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/releaseset"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/run"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/scopeexpansion"
@@ -214,7 +218,28 @@ func workItemRoutes() []Route {
 	deps := func(d *Deps) workitem.Dependencies {
 		return workitem.Dependencies{UoW: d.UoW, IDs: d.ids(), Now: d.Now}
 	}
+	// V11-10 (ADR-041): retry / redo with the newest workflow version. The Git workspace provider is optional: without one files outside
+	// the scope are not inspected and PARK is refused.
+	redoDeps := func(d *Deps) redo.Dependencies {
+		service := workitemredo.Service{
+			RedoDeps: runtime.RedoDeps{UnitOfWork: d.UoW, ArtifactStore: d.ArtifactStore, IDs: d.ids(), Clock: d.clock(), Matcher: d.Matcher},
+			Parker:   d.RedoParker,
+		}
+		if d.WorkspaceReader != nil {
+			service.Inspection = appworkspaceinspection.New(d.UoW, d.WorkspaceReader)
+		}
+		return redo.Dependencies{UoW: d.UoW, Service: service, Now: d.Now}
+	}
 	return []Route{
+		route(NeedUoW|NeedArtifactStore|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Retry(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "retry"),
+		route(NeedUoW|NeedArtifactStore|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Recreate(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "recreate"),
+		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Preview(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "redo-preview"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workitem.RunWorkItemList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "list"),
