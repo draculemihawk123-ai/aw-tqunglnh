@@ -31,7 +31,7 @@ func RunRepositoryList(ctx context.Context, deps Dependencies, args []string, st
 	}
 	positional := fs.Args()
 	if len(positional) != 1 {
-		return usageErrorf("usage: aw repository list <projectId> [--include-disabled]")
+		return usageErrorf("usage: aw repository list [--include-disabled] <projectId>")
 	}
 	projectID := positional[0]
 

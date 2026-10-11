@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 (lõi, API, CLI, UI; chưa chạy thật trên bản cài); V11-11 (đọc theo node, tin hoạt động, UI; chưa Playwright/chạy thật). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 (lõi, API, CLI, UI; chưa chạy thật trên bản cài); V11-11 (đọc theo node, tin hoạt động, UI; chưa Playwright/chạy thật); V11-12 (lỗi thăm dò có loại, sửa/ngừng dùng/xóa repository; đã chạy thật bằng CLI, chưa Playwright). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -44,7 +44,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **XONG MỘT PHẦN 2026-10-11**: sửa lỗi mất mã thoát của bộ bọc + test hành vi + check `git_shell`; lỗi gốc chưa tái hiện được trên Windows 10 |
 | V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | **XONG 2026-10-11** (lõi, API, CLI, UI; chưa chạy thật trên bản cài, chưa có Playwright/walk-workflow) |
 | V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | **XONG MỘT PHẦN 2026-10-11** (ADR-042): đọc theo node, lời agent khi hỏng, tin hoạt động, UI; chưa đọc được lời nhắc, chưa Playwright/chạy thật |
-| V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **Đã gặp thật** (đăng ký thư mục chưa `git init` trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
+| V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **XONG 2026-10-12** (ADR-043; ca thật đã tái hiện và sửa bằng CLI thật + worker thật trên Windows; chưa Playwright) |
 | V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | Cơ chế **đã đọc trong mã**: chỉ có `create`, `list`, `show` |
 
 Mặc định làm tuần tự theo Task ID.
@@ -893,6 +893,24 @@ Tự động chạy `git init` hay `git config` thay người dùng; đổi `id`
   e2e Playwright tái hiện ca thật: đăng ký thư mục chưa `git init`, thấy câu "chưa phải repository Git" và lệnh gợi ý, `git init` và commit, bấm `Thăm dò lại`, thành `ACTIVE`, không mở terminal để tìm lý do.
 - **Kit:** `init-project.sh` và `add-repository.sh` in lý do khi `BLOCKED`; `kit/tests/check-kit.sh` xanh.
 - **Không hồi quy:** mã lỗi công khai cũ (`INVALID_ARGUMENT`, `NOT_FOUND`) vẫn giữ nguyên; `go test ./...` và `docs-coverage-check` xanh.
+
+### Kết quả triển khai V11-12 (2026-10-12): lỗi thăm dò có loại, sửa/ngừng dùng/xóa repository; chạy thật bằng CLI và worker, chưa Playwright
+
+Đã làm (3 commit `v11-12a` … `v11-12c`, ADR-043):
+
+- **Lỗi có loại.** `internal/adapters/repoprobe/failure.go`: 14 giá trị `failureKind`, mỗi lỗi có `message`, `path`/`resolvedPath`, `detail` (stderr Git đã redact, thông tin xác thực trong URL bị gỡ, cắt 2 KiB) và `hint` chép dán được; Git chạy `LC_ALL=C`. Mã công khai cũ giữ nguyên.
+  Test với Git thật (thư mục không phải repo, thư mục con, bare, chưa commit, ref không có, đường dẫn không có/là file, ngôn ngữ hệ thống khác) và Git giả (dubious ownership, stderr chứa token, stderr quá dài, Git không có).
+- **Lưu và hiển thị.** Migration 0053; `lastProbeError` trong `list`/`show`/`onboarding` (HTTP, CLI); thẻ repository trên web hiện lý do và gợi ý, tải Git output theo yêu cầu.
+- **Kiểm tra trước đăng ký.** `CheckRepository`, route `projectRepositoriesCheck` (GET, chỉ đọc), `aw repository check`; form đăng ký gọi khi rời ô đường dẫn; `init-project.sh`/`add-repository.sh` gọi trước khi đăng ký và in lý do + hướng sửa khi `BLOCKED`.
+- **Sửa / ngừng dùng / xóa.** `UpdateRepository`, `DisableRepository` (thêm cạnh `BLOCKED -> DISABLED`, từ chối `REPOSITORY_IN_USE` kèm danh sách), `DeleteRepository` (chưa từng `ACTIVE`, không tham chiếu theo khóa ngoại của schema, hủy job chờ, dấu xóa, sự kiện); chỉ mục tên duy nhất một phần; id đã xóa không dùng lại và phát lại biên nhận
+  đăng ký sau khi xóa trả `REPOSITORY_DELETED`. Route `repositoriesUpdate|Disable|Delete`, 111 route, parity, UX doc (4 hàng), `validActions`, ba sự kiện có golden fixture.
+- **Giao diện.** Edit / Disable / Delete / Show disabled, kiểm tra đường dẫn trong form đăng ký và form Edit, hộp thoại Disable liệt kê thứ đang giữ, Delete bắt buộc lý do và cảnh báo vĩnh viễn.
+- **Đã chạy thật** (Windows, `aw.exe` vừa build, sqlite thật, `aw worker` thật, Git thật): `repository check` trên thư mục chưa `git init` cho `NOT_A_GIT_REPOSITORY` + lệnh sửa; đăng ký, worker thăm dò ra `BLOCKED` và `show` trả đúng `lastProbeError`; `update` đường dẫn đúng thì worker đưa lên `ACTIVE`; `delete` repository `BLOCKED`
+  (biến mất), `delete` repository `ACTIVE` bị từ chối `REPOSITORY_WAS_ACTIVE`; `disable` rồi `list` ẩn, `list --include-disabled` hiện. Lần chạy này tìm ra một điểm dễ nhầm: cờ phải đặt **trước** đối số vị trí (bộ phân tích cờ của `aw` dừng ở đối số đầu), đã sửa câu hướng dẫn trong usage, kit và tài liệu.
+- **Test:** Go (probe, migration 0053 trên dữ liệu có workspace tham chiếu, lệnh vòng đời trên sqlite thật, sự kiện, HTTP, CLI), Vitest 8 ca mới (324 test xanh), `go vet`, `go test ./internal/delivery/... ./internal/archtest/...`.
+
+Chưa làm / chưa chạy được: (1) **e2e Playwright** của ca thật trên web; (2) kit `init-project.sh`/`add-repository.sh` chỉ được kiểm cú pháp `bash -n` (cần Linux/WSL + jq), phần gọi `aw repository check` được kiểm bằng lệnh CLI trực tiếp; (3) con số "đếm lần đăng ký trong khóa idempotency" của spec không cần: id đã xóa không dùng lại nên đăng ký lại luôn có id, nên khóa, mới;
+(4) chỉ chạy trên máy Windows 10 cục bộ: chưa chạy trên Linux hay CI (các test Git thật và đường dẫn kiểu Git Bash cần kiểm lại ở đó); (5) không có nút khôi phục repository đã ngừng dùng.
 
 ## V11-13 — Đổi tên và lưu trữ Project
 

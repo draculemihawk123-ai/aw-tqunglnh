@@ -183,6 +183,16 @@ repository web: ACTIVE
   component frontend (frontend)
 ```
 
+**Đăng ký sai thì làm gì (V11-12).** Cả hai script kiểm đường dẫn trước khi đăng ký và dừng với lý do cùng lệnh sửa chép dán được; nếu vẫn đăng ký được rồi `BLOCKED`, chúng in `failureKind`, câu giải thích và gợi ý:
+
+```text
+repository api: không đăng ký được — NOT_A_GIT_REPOSITORY: The folder C:/work/api is not a Git repository yet.
+  → Run: git -C C:/work/api init -b main — then add a first commit (…) — then retry the probe.
+```
+
+Sửa thư mục rồi chạy lại script (an toàn). Đã lỡ đăng ký sai đường dẫn: `aw repository update --expected-version <version> --remote-locator <đường dẫn đúng> <id>` (hoặc nút **Edit**); muốn bỏ: `aw repository disable …` (trả lại tên) hoặc `aw repository delete --reason …`
+nếu chưa từng `ACTIVE` (id đã xóa không dùng lại, đăng ký lại bằng id khác). Chi tiết: [operator/09-troubleshooting.md](../../operator/09-troubleshooting.md).
+
 Id repository là **duy nhất trên cả bản cài**, nên đừng đặt `api` nếu một project khác đã dùng; ở đây mỗi bản cài chỉ
 có một tracker. `aw-state.json` ghi `projectId` và repository chính để các script sau dùng.
 

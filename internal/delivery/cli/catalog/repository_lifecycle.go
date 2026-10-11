@@ -67,7 +67,7 @@ func repositoryMutation(ctx context.Context, deps Dependencies, stdout io.Writer
 	})
 }
 
-// RunRepositoryUpdate implements `aw repository update <id> --expected-version <n> [--remote-locator …] [--default-ref …] [--name …]`: correct a BLOCKED
+// RunRepositoryUpdate implements `aw repository update --expected-version <n> [--remote-locator …] [--default-ref …] [--name …] <id>` (flags first: the flag parser stops at the first argument): correct a BLOCKED
 // repository's registration and probe it again. A flag left out keeps the current value.
 func RunRepositoryUpdate(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("repository update", flag.ContinueOnError)
@@ -82,7 +82,7 @@ func RunRepositoryUpdate(ctx context.Context, deps Dependencies, args []string, 
 		return err
 	}
 	if len(fs.Args()) != 1 {
-		return usageErrorf("usage: aw repository update <repositoryId> --expected-version <version> [--remote-locator <path>] [--default-ref <ref>] [--name <name>]")
+		return usageErrorf("usage: aw repository update --expected-version <version> [--remote-locator <path>] [--default-ref <ref>] [--name <name>] <repositoryId>")
 	}
 	if *expectedVersion == 0 {
 		return usageErrorf("--expected-version is required (the Repository version you observed, the CLI equivalent of HTTP's If-Match)")
@@ -121,7 +121,7 @@ func RunRepositoryDisable(ctx context.Context, deps Dependencies, args []string,
 		return err
 	}
 	if len(fs.Args()) != 1 {
-		return usageErrorf("usage: aw repository disable <repositoryId> --expected-version <version> [--reason <text>]")
+		return usageErrorf("usage: aw repository disable --expected-version <version> [--reason <text>] <repositoryId>")
 	}
 	if *expectedVersion == 0 {
 		return usageErrorf("--expected-version is required (the Repository version you observed, the CLI equivalent of HTTP's If-Match)")
@@ -147,7 +147,7 @@ func RunRepositoryDelete(ctx context.Context, deps Dependencies, args []string, 
 		return err
 	}
 	if len(fs.Args()) != 1 {
-		return usageErrorf("usage: aw repository delete <repositoryId> --expected-version <version> --reason <text>")
+		return usageErrorf("usage: aw repository delete --expected-version <version> --reason <text> <repositoryId>")
 	}
 	if *expectedVersion == 0 {
 		return usageErrorf("--expected-version is required (the Repository version you observed, the CLI equivalent of HTTP's If-Match)")

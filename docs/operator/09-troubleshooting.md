@@ -425,3 +425,28 @@ filtered by node, and previews a command node's recorded output as text. The **C
 From a terminal: `aw node-run show <nodeRunId>` and `aw node-run events <attemptId> [--follow]` print the same data.
 
 Not available yet: the prompt an agent received (it is not recorded where aw can read it back).
+
+## A repository is BLOCKED, or was registered wrong (V11-12)
+
+A repository is probed when it is registered. If the probe fails the repository is `BLOCKED` and says **why** where you look: `aw repository list|show|onboarding` and the repository card on the project page show `lastProbeError`:
+
+- `failureKind`: the kind of problem. `PATH_NOT_FOUND`, `PATH_NOT_DIRECTORY`, `NOT_A_GIT_REPOSITORY` (the folder was never `git init`ed), `DUBIOUS_OWNERSHIP`, `BARE_REPOSITORY`, `NOT_TOP_LEVEL`
+  (a subfolder of a repository: the message names the real root), `NO_COMMITS`, `REF_NOT_FOUND` (the existing branches are listed), `REF_INVALID`, `GIT_NOT_FOUND`, `PERMISSION_DENIED`, `TIMEOUT`, `GIT_FAILED`.
+- `message`: one sentence naming the folder. `hint`: what to do, with a command you can paste (for example `git -C D:/work/app init -b main`, or `git config --global --add safe.directory …` for dubious ownership). On Windows a Git Bash
+  style path (`/d/work/app`) is reported as `PATH_NOT_FOUND` with the `D:/work/app` spelling.
+- `detail` (only in `onboarding`, and behind "Load Git output" on the web): what Git printed, with secrets and URL credentials masked and cut at 2 KiB.
+
+**Check before you register.** `aw repository check --project-id <id> --path <path> [--ref <ref>]` runs the same probe and writes nothing; the Register dialog does it when you leave the path field; `init-project.sh` and `add-repository.sh` do it before registering.
+
+**Fix a wrong registration.** Flags go before the id (the `aw` flag parser stops at the first argument).
+
+| You want | Command | Web |
+|---|---|---|
+| correct the path / ref / name of a `BLOCKED` repository and probe it again | `aw repository update --expected-version <n> --remote-locator <path> [--default-ref <ref>] [--name <name>] <id>` | **Edit** |
+| retire a repository (`ACTIVE` or `BLOCKED`); its name can be registered again | `aw repository disable --expected-version <n> [--reason <text>] <id>` | **Disable** |
+| remove a registration that never became `ACTIVE` and that nothing references (permanent; the id is never reused) | `aw repository delete --expected-version <n> --reason <text> <id>` | **Delete** |
+| see retired repositories | `aw repository list --include-disabled <projectId>` | **Show disabled** |
+
+`<n>` is the `version` from `aw repository show`. An `ACTIVE` repository cannot be edited (workspaces and evidence are tied to its path): disable it and register a new one. Refusals change nothing and carry a code: `REPOSITORY_NOT_BLOCKED`,
+`REPOSITORY_IN_USE` (lists the unfinished work items, workspaces and release sets that still use it), `REPOSITORY_ALREADY_DISABLED`, `REPOSITORY_PROBE_IN_PROGRESS`, `REPOSITORY_WAS_ACTIVE` (a repository that was ever `ACTIVE` keeps its history and can only be disabled),
+`REPOSITORY_REFERENCED` (lists the tables that reference it) and `REPOSITORY_DELETED` (an id that was deleted cannot be registered again, and replaying the old registration says so instead of reporting success: register under a new id).

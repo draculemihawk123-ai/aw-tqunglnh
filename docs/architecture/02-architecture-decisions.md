@@ -17,7 +17,7 @@
 > viết ADR khi triển khai.
 >
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…038); 2026-10-11 (ADR-039…042).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…038); 2026-10-11 (ADR-039…043).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -1296,9 +1296,36 @@ không chặn sẽ làm tin đó chui vào khối `messages` của CONTEXT polic
 
 **Hệ quả:** thêm hai route chỉ đọc (107 route), một migration, một cột chỉ-hiển-thị. Prompt của agent kế tiếp không đổi khi bật tính năng.
 
-## 45. Baseline sau review thiết kế
+## 45. ADR-043 — Lỗi thăm dò repository có loại, đường dẫn, lời giải thích và gợi ý; repository sửa được, ngừng dùng được, xóa được khi chưa từng ACTIVE
 
-ADR-001…042 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** đăng ký repository sai (ca thật: thư mục chưa `git init`) để lại một repository `BLOCKED` với mã `INVALID_ARGUMENT`; lý do thật nằm ở `repository onboarding`, mà không lệnh nào gợi ý, và không có cách sửa hay bỏ: `retry-probe`
+thăm dò lại đúng đường dẫn đã lưu, `BLOCKED` chỉ đi tiếp được tới `PROBING`, `ACTIVE -> DISABLED` không có lệnh nào thực hiện, và `UNIQUE (project_id, name)` giữ tên mãi.
+
+**Quyết định:**
+
+1. **Lỗi thăm dò có loại.** Mọi lỗi của prober vẫn là `*apperror.Error` với mã công khai cũ (`INVALID_ARGUMENT`, `NOT_FOUND`, `UNAVAILABLE`, không đổi); `Details` mang tập đóng `failureKind` (`PATH_EMPTY`, `PATH_NOT_FOUND`, `PATH_NOT_DIRECTORY`,
+   `NOT_A_GIT_REPOSITORY`, `DUBIOUS_OWNERSHIP`, `BARE_REPOSITORY`, `NOT_TOP_LEVEL`, `NO_COMMITS`, `REF_NOT_FOUND`, `REF_INVALID`, `GIT_NOT_FOUND`, `PERMISSION_DENIED`, `GIT_FAILED`, `TIMEOUT`), `path` (đã khai) và `resolvedPath`, `detail`
+   (stderr của Git đã redact và cắt 2 KiB) và `hint` (việc cần làm, có lệnh chép dán được). Git chạy với `LC_ALL=C` và `LANGUAGE=C` nên việc phân loại theo câu chữ không phụ thuộc ngôn ngữ của hệ điều hành; không nhận ra thì rơi về `GIT_FAILED`
+   kèm nguyên văn đã redact, không đoán. Stderr đi qua `redact.Matcher` và một bước gỡ thông tin xác thực trong URL.
+2. **Lưu và hiển thị.** Migration 0053 thêm `failure_kind`, `error_detail`, `error_hint` vào `repository_probe_attempts`. `list`, `show` và `onboarding` (HTTP và CLI) trả `lastProbeError {failureKind, message, hint}` khi repository `BLOCKED`
+   (`detail` chỉ ở `onboarding`); thẻ repository trên web hiện lý do và gợi ý ngay, tải Git output theo yêu cầu.
+3. **Kiểm tra trước khi đăng ký.** `CheckRepository` chạy đúng bộ thăm dò, không ghi gì: `GET /projects/{id}/repositories/check?path=&ref=` (GET vì chỉ đọc, giống bản xem trước của V11-10, nên không cần Idempotency-Key) và `aw repository check`. Form đăng ký gọi nó khi rời ô đường dẫn;
+   `init-project.sh` và `add-repository.sh` gọi nó trước khi đăng ký.
+4. **Sửa: `UpdateRepository`** (`PATCH /repositories/{id}`, If-Match theo `version`). Chỉ khi `BLOCKED`: một transaction ghi trường mới, `BLOCKED -> PROBING`, xếp job thăm dò, sự kiện `RepositoryUpdated`, biên nhận idempotent. Repository `ACTIVE` có workspace, revision
+   và evidence gắn với đường dẫn cũ nên không sửa đường dẫn: ngừng dùng rồi đăng ký mới. Từ chối có mã `REPOSITORY_NOT_BLOCKED`.
+5. **Ngừng dùng: `DisableRepository`** (`POST /repositories/{id}/disable`). Máy trạng thái thêm cạnh `BLOCKED -> DISABLED` (sửa ADR của V3-01 "chỉ từ ACTIVE") và có lệnh thực hiện `ACTIVE -> DISABLED`. Từ chối `REPOSITORY_IN_USE` kèm danh sách work item/task family chưa kết thúc có
+   repository trong scope, workspace chưa released, release set còn `CREATED`; từ chối khi đang `REGISTERING`/`PROBING`. Ràng buộc tên thành chỉ mục duy nhất một phần `WHERE status <> 'DISABLED'` (bảng `repositories` dựng lại với `foreign_keys=OFF`) nên tên dùng lại được; `id` vẫn duy nhất mãi.
+6. **Xóa cứng: `DeleteRepository`** (`DELETE /repositories/{id}`, body `{reason}` bắt buộc). Chỉ `REGISTERING`/`PROBING`/`BLOCKED` mà **không lần thăm dò nào ra `ACTIVE`** và **không bảng nào tham chiếu** (tìm từ khóa ngoại của schema, nên bảng thêm sau tự được tính). Kiểm tra và xóa cùng một transaction:
+   xóa lịch sử thăm dò, hủy job thăm dò đang chờ, ghi dấu trong `deleted_repositories`, sự kiện `RepositoryDeleted` (id, tên, đường dẫn, lý do, người làm). Từ chối `REPOSITORY_WAS_ACTIVE` (kể cả repository đã `DISABLED` từng `ACTIVE`), `REPOSITORY_REFERENCED` kèm bảng và số dòng, `REPOSITORY_PROBE_IN_PROGRESS`.
+7. **Cạm bẫy.** `id` của repository đã xóa không dùng lại (dấu xóa; đăng ký lại cùng id trả `REPOSITORY_DELETED`); phát lại biên nhận đăng ký sau khi xóa trả `REPOSITORY_DELETED` thay vì báo thành công giả. Ba sự kiện mới đi theo kiểu `RepositoryProbeRetried` (khóa theo id lệnh vì luồng sự kiện của repository đã dùng Sequence 1), đều có
+   golden fixture và được projection bỏ qua có lý do.
+8. **Bề mặt:** `projectRepositoriesCheck`, `repositoriesUpdate`, `repositoriesDisable`, `repositoriesDelete` (111 route); `aw repository check|update|disable|delete`, `list --include-disabled` (cờ đặt trước đối số vị trí, như mọi lệnh `aw`); `validActions` của repository thêm `repositoriesUpdate|Disable|Delete`.
+
+**Hệ quả:** một repository đăng ký sai được sửa hoặc bỏ mà không mở terminal, và lý do cùng cách sửa hiện ngay ở nơi người dùng nhìn. Chưa có: tự `git init`/`git config` thay người dùng (ngoài phạm vi), di chuyển workspace/evidence sang đường dẫn mới, nút khôi phục repository đã ngừng dùng.
+
+## 46. Baseline sau review thiết kế
+
+ADR-001…043 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1348,6 +1375,7 @@ dụng ma trận sau:
 - ADR-039 (V11-06) thêm chế độ `result=WORKING_TREE` cho route diff của workspace (thay đổi chưa commit, chỉ đọc, từ chối khi attempt đang ghi).
 - ADR-040 (V11-07) hoàn thiện ADR-014: quyết định duyệt kèm yêu cầu commit chọn file trong cùng transaction (policy `approval.release`, danh tính từ git config, drift theo hash, KEEP/PARK, blocker `RELEASE_FAILED`).
 - ADR-041 (V11-10) bổ sung ADR-033: chạy lại (cùng version đã ghim) và làm lại bằng version mới nhất (hủy và tạo WorkItem mới, `WorkItemSupersession`) là hai lệnh có kiểu, mỗi lệnh một transaction; file ngoài scope của run trước được cất (PARK) trước lệnh.
+- ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.
