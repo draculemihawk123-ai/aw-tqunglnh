@@ -12,10 +12,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/layers/layer-api-design.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "convention": "Thiết kế REST. URL theo tài nguyên (danh từ, số nhiều), không có động từ trong đường dẫn; quan hệ lồng một cấp (`/issues/{id}/comments`). Phương thức đúng nghĩa: GET đọc và không bao giờ đổi dữ liệu, POST tạo, PUT thay toàn bộ, PATCH sửa một phần, DELETE xóa. Mã trạng thái có nghĩa: 200 đọc hoặc sửa; 201 tạo kèm header Location; 204 xóa; 400 đầu vào sai; 401 chưa xác thực; 403 không đủ quyền; 404 không tồn tại; 409 xung đột (ví dụ trùng); chỉ dùng 422 nếu hợp đồng của dự án đã dùng. Mọi lỗi theo một dạng chung của dự án (ví dụ Problem trong hợp đồng) với thông điệp cho người đọc, không lộ stack trace hay chi tiết nội bộ. Endpoint trả danh sách phải có giới hạn (phân trang hoặc kích thước tối đa); lọc và sắp xếp qua tham số truy vấn. Nếu hợp đồng hiện có nói khác với gợi ý chung ở đây thì theo hợp đồng."
+   "convention": "REST design. URLs name resources (plural nouns) with no verbs in the path; nest relations one level deep (`/issues/{id}/comments`). Use methods for what they mean: GET reads and never changes data, POST creates, PUT replaces the whole resource, PATCH changes part of it, DELETE removes. Status codes carry meaning: 200 read or update; 201 create, with a Location header; 204 delete; 400 bad input; 401 not authenticated; 403 not allowed; 404 not found; 409 conflict (for example a duplicate); use 422 only if the project's contract already does. Every error follows one project-wide shape (for example the Problem in the contract) with a message for a reader, never a stack trace or internal detail. An endpoint that returns a list must be bounded (pagination or a maximum size); filter and sort through query parameters. If the existing contract says otherwise than these general hints, follow the contract."
   },
   {
    "key": "api.compat",
@@ -29,10 +29,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/layers/layer-api-design.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "convention": "Tương thích ngược của API: chỉ cộng thêm (trường mới là tùy chọn và có mặc định, endpoint mới). Không đổi tên hay ý nghĩa trường, không đổi kiểu, không thu hẹp giá trị được chấp nhận, không đổi mã trạng thái đang có. Thay đổi phá vỡ cần phiên bản mới và thời gian chuyển; trường ngừng dùng thì đánh dấu deprecated trước khi bỏ. Hợp đồng đi trước code: sửa spec trước rồi mới hiện thực."
+   "convention": "API backward compatibility: only add (new fields are optional and have defaults; new endpoints). Do not rename a field or change its meaning, do not change a type, do not narrow the accepted values, do not change an existing status code. A breaking change needs a new version and a transition period; a field that is going away is marked deprecated before it is removed. The contract comes before the code: change the spec first, then implement."
   }
  ]
 }

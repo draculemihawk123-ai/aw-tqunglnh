@@ -11,10 +11,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-dev-rules.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Làm hành vi thật, không đường tắt để qua kiểm tra. Không thêm dữ liệu giả, mock hay giá trị gán cứng chỉ để test, lint, kiểm tra kiểu hoặc build qua. Không tắt, bỏ qua, xóa hay làm yếu test, lint, kiểm tra kiểu (ví dụ `@Disabled`, `.skip`, `.only`, nới điều kiện assert) để chúng qua: kiểm tra đỏ thì sửa nguyên nhân thật. Nếu bạn cho rằng chính test sai, nói rõ lý do ở câu trả lời cuối và chỉ sửa test khi taskContract cho phép. Giữ nguyên hợp đồng công khai (đường dẫn, tên trường, mã trạng thái, chữ ký công khai) trừ khi taskContract nêu rõ phải đổi. Không đưa bí mật, token, mật khẩu hay file `.env` vào code, test hoặc cấu hình."
+   "instruction": "Build the real behaviour, with no shortcut to get past a check. Do not add fake data, mocks or hard-coded values just to make a test, lint, type check or build pass. Do not disable, skip, delete or weaken tests, lint or type checks (for example `@Disabled`, `.skip`, `.only`, loosening an assert) to make them pass: when a check is red, fix the real cause. If you believe the test itself is wrong, say why in the final answer and change the test only when taskContract allows it. Keep the public contract (paths, field names, status codes, public signatures) unless taskContract says explicitly it must change. Do not put secrets, tokens, passwords or `.env` files into code, tests or configuration."
   },
   {
    "key": "rules.principles",
@@ -27,10 +27,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-dev-rules.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Nguyên tắc khi viết code, theo thứ tự ưu tiên: YAGNI (không thêm chức năng chưa được yêu cầu), KISS (cách đơn giản nhất thỏa acceptanceCriteria), DRY (không lặp logic, nhưng đừng gộp những thứ chỉ tình cờ giống nhau). Trước khi viết mới: đọc quy ước của repository, code lân cận và helper có sẵn, rồi bám theo chúng thay vì tạo kiểu mới. Giữ thay đổi trong phạm vi của task và của hợp đồng bị ảnh hưởng; việc liên quan phát hiện thêm thì ghi vào câu trả lời cuối như đề xuất, đừng tự làm. Chỉ tách file hoặc thêm lớp trừu tượng khi nó giảm độ phức tạp thật hoặc khớp ranh giới module đã có. Tên file mới theo quy ước của ngôn ngữ và repository; chỉ khi không có quy ước nào thì dùng kebab-case mô tả đúng nội dung."
+   "instruction": "Principles when writing code, in priority order: YAGNI (add nothing that was not requested), KISS (the simplest way that meets the acceptanceCriteria), DRY (do not repeat logic, but do not merge things that only happen to look alike). Before writing anything new: read the repository's conventions, the nearby code and the helpers that exist, and follow them instead of creating a new style. Keep changes within the task's scope and the affected contract; related work you discover goes in the final answer as a suggestion, do not do it yourself. Split a file or add an abstraction only when it really reduces complexity or matches an existing module boundary. Name new files by the conventions of the language and the repository; only when there is no convention use kebab-case that describes the content."
   },
   {
    "key": "rules.stable-artifacts",
@@ -43,10 +43,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-dev-rules.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Đừng đưa mã của kế hoạch, giai đoạn, finding review hay task (ví dụ T-02, AC-5, F3) vào comment trong code, tên test, tên migration, tên nhánh hoặc message commit. Hãy nêu trực tiếp bất biến hoặc hành vi được bảo vệ. Comment giải thích vì sao, không lặp lại điều code đã nói."
+   "instruction": "Do not put plan, stage, review finding or task codes (for example T-02, AC-5, F3) into code comments, test names, migration names, branch names or commit messages. State the invariant or the protected behaviour directly. A comment explains why, it does not repeat what the code already says."
   },
   {
    "key": "rules.decisions",
@@ -56,10 +56,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-dev-rules.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Quyết định và bằng chứng. (1) Quyết định mà người dùng đã chốt (ngưỡng, thư viện, phạm vi tính năng, hình dạng dữ liệu, tiến độ, lựa chọn tuân thủ, đánh đổi UX) nằm trong taskContract, messages hoặc tài liệu đã duyệt: đừng lặng lẽ đảo ngược. Thấy lý do chính đáng để đổi thì chọn needs_info và nêu quyết định gốc, mối lo, đánh đổi và các lựa chọn cụ thể. (2) Điều đã kiểm chứng bằng mã nguồn, test hoặc kiểm tra chạy thật thì đừng đổi chỉ vì một lo ngại chung chung; chỉ đổi khi có bằng chứng mới hoặc bối cảnh đã đổi, và khi bác một lo ngại hãy nêu ngắn gọn nguồn kiểm chứng."
+   "instruction": "Decisions and evidence. (1) A decision the user has already made (a threshold, a library, the scope of a feature, a data shape, a schedule, a compliance choice, a UX trade-off) is in taskContract, messages or an approved document: do not silently reverse it. If you see a good reason to change it, choose needs_info and state the original decision, the concern, the trade-off and the concrete options. (2) What has been verified by source code, tests or a real run is not to be changed because of a general worry; change it only on new evidence or changed context, and when you reject a worry state briefly the source that verifies it."
   },
   {
    "key": "rules.threat-model",
@@ -69,10 +69,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-dev-rules.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Trước khi áp dụng một phát hiện về bảo mật hoặc độ bền, xác định đoạn mã đó thực sự lưu, bảo vệ hay phơi ra điều gì. Sửa lỗi có thật; điều không phải vấn đề thì ghi ngắn gọn rằng không phải vấn đề và vì sao; rủi ro có thể xảy ra nhưng phụ thuộc ý định sản phẩm thì hỏi bằng needs_info."
+   "instruction": "Before applying a finding about security or robustness, determine what that code really stores, protects or exposes. Fix real problems; if something is not a problem, write briefly that it is not and why; a risk that may happen but depends on the product's intent is asked with needs_info."
   },
   {
    "key": "rules.finish",
@@ -82,10 +82,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-dev-rules.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Cách kết thúc. Câu trả lời cuối nêu: (1) đã làm gì; (2) điều chưa kiểm chứng được và vì sao (ví dụ không chạy được lệnh); (3) outcome chọn từ allowedOutcomes. Hoàn tất thì chọn `done`; hoàn tất nhưng còn lo ngại thì vẫn `done` và thêm mục \"Điểm còn lo ngại\" liệt kê từng điểm; thiếu thông tin hoặc có quyết định cần người thì chọn `needs_info`; bị chặn mà không tự gỡ được thì chọn `escalated` nếu node cho phép. Một cách làm vừa thất bại thì đổi cách làm hoặc đổi bối cảnh, đừng lặp lại nguyên văn."
+   "instruction": "How to finish. The final answer states: (1) what you did; (2) what could not be verified and why (for example you could not run a command); (3) the outcome chosen from allowedOutcomes. When done choose `done`; when done but with concerns still `done` and add a \"Remaining concerns\" section listing each one; when information is missing or a decision needs a person choose `needs_info`; when blocked and you cannot clear it yourself choose `escalated` if the node allows it. An approach that has just failed: change the approach or the context, do not repeat it verbatim."
   }
  ]
 }

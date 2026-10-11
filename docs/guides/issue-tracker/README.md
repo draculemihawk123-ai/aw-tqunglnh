@@ -448,7 +448,7 @@ Spec do agent viết có cả các hạn chế đã biết (BR-12: chưa có xá
 
 **Checklist cho người duyệt GATE A** (đọc `02-spec.md`; duyệt `approved`, hoặc `revise` kèm phản hồi cụ thể):
 
-1. **Phạm vi và lý do**: spec nêu cái gì đã có, thay đổi tối thiểu và chế độ phạm vi (giữ, thu hẹp, mở rộng) mà agent chọn. Bạn đồng ý với chế độ đó không? Phần "ngoài phạm vi" có đúng ý bạn không?
+1. **Phạm vi và lý do** (mục "Scope and rationale" từ kit 1.7.0): spec nêu cái gì đã có, thay đổi tối thiểu và chế độ phạm vi (giữ, thu hẹp, mở rộng) mà agent chọn. Bạn đồng ý với chế độ đó không? Phần "ngoài phạm vi" có đúng ý bạn không?
 2. **Quyết định agent tự chốt**: mỗi quyết định ghi rõ ai chốt. Cái nào là của agent mà bạn chưa đồng ý thì `revise` ngay ở đây, vì thiết kế và task sẽ dựa vào nó.
 3. **Acceptance criteria**: có đường lỗi và giá trị biên (rỗng, dài tối đa, không tồn tại) hay chỉ có đường thành công? Mỗi AC có kiểm chứng được bằng một test tự động không?
 4. **Tình huống bị bỏ**: mục "Hạn chế đã biết" liệt kê các tình huống không thành AC. Có cái nào bạn thấy phải thành AC không?
@@ -456,10 +456,10 @@ Spec do agent viết có cả các hạn chế đã biết (BR-12: chưa có xá
 
 **Checklist cho người duyệt GATE B** (đọc `03-design.md` và `tasks.json`; duyệt `approved`, hoặc `revise` kèm phản hồi cụ thể):
 
-1. **Khẳng định về code có kiểm chứng**: các tên file, hàm, endpoint trong thiết kế có kèm `file:dòng` không? Chỗ nào còn `[CHƯA XÁC MINH]` thì thiết kế dựa vào thứ chưa ai kiểm.
+1. **Khẳng định về code có kiểm chứng**: các tên file, hàm, endpoint trong thiết kế có kèm `file:dòng` không? Chỗ nào còn `[UNVERIFIED]` (trước kit 1.7.0: `[CHƯA XÁC MINH]`) thì thiết kế dựa vào thứ chưa ai kiểm.
 2. **Quyết định và phương án đã loại**: mỗi quyết định quan trọng nêu ít nhất hai phương án, đánh đổi và lý do loại. Bạn có đồng ý với đánh đổi đó không?
 3. **Luồng dữ liệu, rủi ro, hoàn tác, tương thích ngược**: có đủ bốn mục này không, và rủi ro cao có cách giảm cụ thể không?
-4. **Phản biện**: mục "Phản biện" ghi điểm yếu nào đã sửa, điểm nào chấp nhận (lý do), điểm nào bác (nguồn kiểm chứng), và kết luận GO, CAUTION hay STOP. CAUTION thì điều kiện có chấp nhận được không?
+4. **Phản biện**: mục "Red team" (trước kit 1.7.0: "Phản biện") ghi điểm yếu nào đã sửa, điểm nào chấp nhận (lý do), điểm nào bác (nguồn kiểm chứng), và kết luận GO, CAUTION hay STOP. CAUTION thì điều kiện có chấp nhận được không?
 5. **`tasks.json`**: thứ tự theo phụ thuộc; không hai task cùng sửa một file hoặc một migration; mỗi task có hành vi, AC đo được, mức rủi ro; số task ít nhất có thể (mỗi task là một lần review và một commit).
 
 Sau GATE B, commit

@@ -8,10 +8,10 @@
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-bugfix.json",
-        "revision": "v1",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "instruction": "Giai đoạn của bạn: TÁI HIỆN LỖI. Việc duy nhất: viết (hoặc sửa) test khiến lỗi mô tả trong taskContract.behavior hiện ra thành một test ĐỎ. Không sửa code sản phẩm, không sửa lỗi. Sau bạn có một bước kiểm tra tự động chạy bộ test: nó chỉ cho qua khi test đang đỏ. Cách làm: (1) đọc mô tả lỗi, các bước tái hiện và code liên quan; thiếu dữ kiện để dựng ca tái hiện thì dừng bằng outcome needs_info và nêu cần biết gì. (2) Viết test nhỏ nhất, theo hành vi quan sát được (đầu vào, đầu ra hoặc trạng thái cuối), đặt cạnh test cùng loại có sẵn, theo cách đặt tên và cấu trúc của chúng. (3) Test phải đỏ vì ĐÚNG lỗi đó: kiểm tra thông điệp lỗi hoặc giá trị sai trùng với mô tả, không đỏ vì lỗi biên dịch, thiếu import hay dữ liệu thử sai. (4) Khi bước kiểm tra báo test không đỏ, test của bạn chưa chạm tới lỗi: sửa chính test, đừng cho rằng lỗi không tồn tại. (5) Kết thúc bằng outcome done và nêu: tên test, lệnh chạy riêng nó, thông điệp lỗi mong đợi."
+      "instruction": "Your stage: REPRODUCE THE BUG. The one job: write (or change) a test that makes the bug described in taskContract.behavior appear as a RED test. Do not change product code, do not fix the bug. After you comes an automatic check that runs the test suite: it passes only when the test is red. How: (1) read the bug description, the reproduction steps and the relevant code; if you lack the facts to build a reproduction, stop with the outcome needs_info and say what you need to know. (2) Write the smallest test, in terms of observable behaviour (input, output or final state), next to existing tests of the same kind, following their naming and structure. (3) The test must be red for EXACTLY that bug: check that the error message or the wrong value matches the description, not red because of a compile error, a missing import or wrong test data. (4) When the check says the test is not red, your test has not reached the bug: fix the test itself, do not assume the bug does not exist. (5) Finish with the outcome done and state: the test name, the command that runs it alone, the expected error message."
     },
     {
       "key": "bugfix.fix",
@@ -21,10 +21,10 @@
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-bugfix.json",
-        "revision": "v1",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "instruction": "Giai đoạn của bạn: SỬA LỖI, sau khi đã có test tái hiện đang đỏ (nằm trong thay đổi của giai đoạn trước). Quy tắc: (1) không sửa trước khi biết nguyên nhân gốc: chạy riêng test tái hiện, đọc lỗi, lần ngược tới chỗ dữ liệu bắt đầu sai; sửa ở nguyên nhân, không vá ở triệu chứng. (2) KHÔNG sửa, làm yếu, bỏ qua hay xóa test tái hiện để được xanh; chỉ được đổi nó khi chính nó sai, và khi đó nêu rõ trong báo cáo vì sao. (3) Sửa tối thiểu, không dọn dẹp hay tái cấu trúc ngoài phạm vi lỗi. (4) Sau khi sửa chạy lại đúng lệnh trước đó để thấy test tái hiện xanh, rồi chạy cả bộ test của vùng thay đổi; hỏng ở chỗ khác nghĩa là sửa chạm hành vi khác, quay lại bước 1. (5) Nếu prompt có reviewerFeedback từ agent chẩn đoán, đó là phân tích nguyên nhân từ bước kiểm tra đỏ vừa rồi: dùng nó làm giả thuyết đầu tiên và kiểm lại bằng bằng chứng, không tin mù. Báo cáo cuối: nguyên nhân gốc (một đến hai câu, có file:dòng), thay đổi đã làm, so sánh trước và sau (lỗi cũ và kết quả mới), nơi còn có thể mắc cùng kiểu lỗi."
+      "instruction": "Your stage: FIX THE BUG, after a red reproduction test exists (it is part of the previous stage's change). Rules: (1) do not fix before you know the root cause: run the reproduction test alone, read the error, trace back to where the data first goes wrong; fix at the cause, not at the symptom. (2) Do NOT change, weaken, skip or delete the reproduction test to get green; change it only when it is itself wrong, and then say why in the report. (3) Make the smallest fix, no clean-up or refactoring outside the scope of the bug. (4) After the fix run the same command as before to see the reproduction test green, then run the whole test suite of the changed area; a failure elsewhere means the fix touched other behaviour, go back to step 1. (5) If the prompt has reviewerFeedback from a diagnosing agent, it is a cause analysis from the red check that just ran: use it as your first hypothesis and verify it with evidence, do not trust it blindly. Final report: the root cause (one or two sentences, with file:line), the change made, a before and after comparison (the old failure and the new result), where the same kind of bug could still occur."
     },
     {
       "key": "bugfix.prevention",
@@ -34,10 +34,10 @@
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-bugfix.json",
-        "revision": "v1",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "instruction": "Sửa xong, xét cách cùng kiểu lỗi khó quay lại; chỉ làm điều có liên quan tới lỗi vừa sửa, mỗi mục một thay đổi nhỏ: kiểm tra đầu vào tại ranh giới nếu lỗi đến từ dữ liệu ngoài; ràng buộc nghiệp vụ tại nơi xử lý nếu dữ liệu sai được chấp nhận ngầm; kiểu hoặc giá trị bắt buộc nếu lỗi do null hoặc thiếu trường; xử lý lỗi rõ ràng nếu lỗi bị nuốt im lặng. Test tái hiện đã là lớp phòng ngừa bắt buộc; các lớp trên chỉ thêm khi chúng ngăn đúng cơ chế gây lỗi. Không thêm lớp phòng ngừa cho lỗi chính tả hay lỗi kiểu của trình biên dịch."
+      "instruction": "After the fix, consider how the same kind of bug could be made hard to bring back; do only what relates to the bug you just fixed, one small change per item: input validation at the boundary if the bug came from outside data; a business constraint where it is handled if wrong data was accepted implicitly; a type or required value if the bug was a null or missing field; explicit error handling if an error was swallowed silently. The reproduction test is already the mandatory prevention layer; add the layers above only when they stop the exact mechanism that caused the bug. Do not add prevention for typos or for errors the compiler's types already catch."
     }
   ]
 }

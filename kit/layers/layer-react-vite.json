@@ -10,11 +10,11 @@
       },
       "provenance": {
         "owner": "aw-kit",
-        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
-        "revision": "v1",
+        "source": "generalised from docs/guides/todolist-spring-react (verified with a real agent)",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "convention": "Frontend nằm trọn trong thư mục frontend/ của repository: React 18+ với TypeScript, build bằng Vite, bố cục như template react-ts của Vite (package.json, vite.config.ts, tsconfig.json, index.html, src/main.tsx, src/App.tsx — tự viết các file này nếu chưa có, không cần chạy lệnh tạo project). Quản lý package bằng npm; package-lock.json do `npm install` sinh ra được giữ trong repository. Cấu trúc: src/api (client gọi backend), src/components (component hiển thị, thuần props), src/hooks (state + gọi API), src/types.ts (kiểu dùng chung). Function component + hooks, không dùng class component. TypeScript strict, không dùng any. Không sửa file nào nằm ngoài frontend/."
+      "convention": "The frontend lives entirely in the frontend/ directory of the repository: React 18+ with TypeScript, built with Vite, laid out like the Vite react-ts template (package.json, vite.config.ts, tsconfig.json, index.html, src/main.tsx, src/App.tsx - write these files yourself if they are missing, there is no need to run a project generator). Manage packages with npm; keep the package-lock.json that `npm install` produces in the repository. Structure: src/api (client that calls the backend), src/components (presentational components, props only), src/hooks (state + API calls), src/types.ts (shared types). Function components + hooks, no class components. TypeScript strict, no any. Do not change any file outside frontend/."
     },
     {
       "key": "react.testing",
@@ -26,11 +26,11 @@
       },
       "provenance": {
         "owner": "aw-kit",
-        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
-        "revision": "v1",
+        "source": "generalised from docs/guides/todolist-spring-react (verified with a real agent)",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "convention": "Test bằng Vitest + @testing-library/react + jsdom; script `npm test` trong package.json phải là `vitest run` (chạy một lần rồi thoát, không watch). Mock fetch trong test, không gọi backend thật. Mỗi component tương tác có ít nhất một test hành vi. `npm run build` (tsc + vite build) phải pass. Vitest chỉ nạp file *.test.ts(x); không để nó nạp test của công cụ khác."
+      "convention": "Test with Vitest + @testing-library/react + jsdom; the `npm test` script in package.json must be `vitest run` (run once and exit, no watch). Mock fetch in tests, never call the real backend. Every interactive component has at least one behaviour test. `npm run build` (tsc + vite build) must pass. Vitest loads only *.test.ts(x) files; do not let it load another tool's tests."
     }
   ]
 }

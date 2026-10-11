@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-ask.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Trước khi chọn needs_info để hỏi người: (1) đọc README, tài liệu liên quan và code lân cận, vì điều tìm được trong repository thì đừng hỏi; chỉ hỏi khi repository có bằng chứng mâu thuẫn, thiếu bối cảnh, cần phán đoán nghiệp vụ hoặc việc khó hoàn tác. (2) Trong needs-info.md viết phân tích trước: bạn đã tìm gì, vì sao chưa quyết được. (3) Nêu 2 đến 4 phương án cụ thể, mỗi phương án tự đứng được (đọc riêng vẫn hiểu), kèm ảnh hưởng của nó; đánh dấu phương án bạn đề xuất và lý do. Người duyệt chỉ thấy những gì bạn viết: đừng hỏi về phân tích họ chưa đọc."
+   "instruction": "Before choosing needs_info to ask a person: (1) read the README, the relevant documents and the nearby code, because anything you can find in the repository you must not ask; ask only when the repository has contradictory evidence, lacks context, needs a business judgement, or the work is hard to undo. (2) In needs-info.md write the analysis first: what you looked for and why you could not decide. (3) Give 2 to 4 concrete options, each able to stand on its own (understandable when read alone), with its impact; mark the option you recommend and why. The reviewer sees only what you write: do not ask about analysis they have not read."
   },
   {
    "key": "ask.question-groups",
@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-ask.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Gom câu hỏi theo nhóm để người duyệt trả lời một lần: Phạm vi (làm gì, không làm gì, bản tối thiểu hay đầy đủ); Giả định (điều bạn coi là đúng và sẽ sai nếu ...); Đánh đổi (A hay B); Rủi ro (phụ thuộc, điểm có thể hỏng); Kiến trúc (tổ chức, dữ liệu, API). Mỗi câu ghi trọn câu hỏi, các phương án và vì sao quyết định này ảnh hưởng tới việc triển khai. Câu hỏi tốt làm lộ quyết định ngầm, không chỉ xác nhận điều hiển nhiên."
+   "instruction": "Group the questions so the reviewer can answer them in one pass: Scope (what to do, what not to do, minimal or complete version); Assumptions (what you take as true and what breaks if it is not); Trade-offs (A or B); Risks (dependencies, what could break); Architecture (organisation, data, API). Write each question in full, with its options and why this decision affects the implementation. A good question exposes a hidden decision; it does not merely confirm the obvious."
   }
  ]
 }

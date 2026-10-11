@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-debug.json",
-    "revision": "v2",
+    "revision": "v3",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Khi prompt có checkFailures, đó là kết quả kiểm tra chính thức của vòng trước. Nguyên tắc: không sửa trước khi biết nguyên nhân gốc. Trước khi sửa: (1) đọc trọn thông báo lỗi và stack trace, kể cả các dòng WHAT, WHY, FIX (nếu bắt đầu bằng \"ENVIRONMENT:\" thì lỗi nằm ở máy chạy chứ không ở code: làm theo quy tắc riêng, đừng sửa code); (2) xem lại chính những file bạn đã đổi ở vòng trước, vì lỗi thường nằm ở đó; (3) lần ngược từ nơi lỗi hiện ra tới nguồn: giá trị sai đến từ đâu, ai gọi hàm này với giá trị đó, và sửa ở nguồn thay vì ở triệu chứng; (4) tìm đoạn code tương tự đang chạy đúng trong repository và liệt kê mọi khác biệt, dù nhỏ."
+   "instruction": "When the prompt has checkFailures, they are the official result of the previous round's check. Principle: do not fix before you know the root cause. Before fixing: (1) read the whole error message and stack trace, including the WHAT, WHY and FIX lines (if it starts with \"ENVIRONMENT:\" the error is in the machine running the step and not in the code: follow the rule for that, do not change code); (2) look again at the very files you changed in the previous round, because the bug is usually there; (3) trace back from where the error shows to its source: where the wrong value came from, who calls this function with that value, and fix at the source instead of at the symptom; (4) find similar code in the repository that works correctly and list every difference, however small."
   },
   {
    "key": "debug.hypotheses",
@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-debug.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Đặt 2 đến 3 giả thuyết cạnh tranh, mỗi giả thuyết dạng \"nguyên nhân là X vì Y\"; đừng chốt giả thuyết hợp lý đầu tiên. Loại trừ từng giả thuyết bằng bằng chứng bạn đọc được (output lỗi, code, test) và ghi giả thuyết nào bị loại, vì sao. Khi nêu nguyên nhân gốc, kèm chuỗi bằng chứng; đừng viết \"có lẽ\". Thử bằng thay đổi nhỏ nhất, một biến mỗi lần, không gộp nhiều sửa đổi một lúc. Không hiểu thì nói \"tôi chưa hiểu X\" ở câu trả lời cuối thay vì giả vờ đã hiểu."
+   "instruction": "Form 2 to 3 competing hypotheses, each as \"the cause is X because Y\"; do not settle on the first plausible one. Rule out each hypothesis with evidence you can read (error output, code, tests) and write down which hypothesis was ruled out and why. When you state the root cause, attach the chain of evidence; do not write \"probably\". Test with the smallest change, one variable at a time, never several changes at once. If you do not understand, say \"I do not understand X\" in the final answer instead of pretending you do."
   },
   {
    "key": "debug.fix-discipline",
@@ -34,10 +34,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-debug.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Sửa đúng một nguyên nhân gốc bằng một thay đổi; đừng tiện tay sửa thêm. Nếu chưa có test tái hiện lỗi thì thêm hoặc cập nhật một test mà bản chưa sửa sẽ làm đỏ. Vì bạn thường không chạy được lệnh, đừng tuyên bố đã sửa xong chỉ vì đọc code thấy hợp lý: ghi rõ điều chưa kiểm chứng, bước kiểm tra của workflow sẽ chạy lại. Nếu messages hoặc checkFailures cho thấy bạn đã sửa nhiều lần cùng một chỗ mà kiểm tra vẫn đỏ, dừng lại và nghi ngờ giả định hay kiến trúc (mỗi lần sửa lại lộ ra một trạng thái dùng chung hoặc phụ thuộc mới): chọn `needs_info` hoặc `escalated` và nêu vấn đề thay vì thử tiếp."
+   "instruction": "Fix exactly one root cause with one change; do not fix more along the way. If no test reproduces the bug yet, add or update a test that the unfixed version turns red. Because you usually cannot run commands, do not declare it fixed just because the code reads right: state clearly what is not verified, and the workflow's check will run again. If messages or checkFailures show you have fixed the same place several times and the check is still red, stop and doubt the assumption or the architecture (each fix reveals another shared state or dependency): choose `needs_info` or `escalated` and state the problem instead of trying again."
   },
   {
    "key": "debug.red-flags",
@@ -47,10 +47,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-debug.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Dấu hiệu bạn đang đoán mò, hãy dừng và quay về điều tra: \"sửa tạm trước, điều tra sau\"; \"thử đổi X xem sao\"; \"chắc là X\"; \"sửa nhiều chỗ rồi chạy lại\"; \"bỏ qua test, tôi tự kiểm bằng mắt\"; \"không hiểu hết nhưng có thể được\"; \"thử thêm một lần nữa\" khi đã thử hai lần. Câu nào trong số này xuất hiện nghĩa là chưa đủ bằng chứng để sửa."
+   "instruction": "Signs that you are guessing; stop and go back to investigating: \"fix it quickly now, investigate later\"; \"try changing X and see\"; \"it is probably X\"; \"change several places and run again\"; \"skip the test, I will check by eye\"; \"I do not fully understand but it might work\"; \"one more try\" after two tries. Any of these appearing means you do not have enough evidence to fix."
   },
   {
    "key": "debug.diagnosis-report",
@@ -63,10 +63,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-debug.json",
-    "revision": "v3",
+    "revision": "v4",
     "lastVerified": "2026-10-10T00:00:00Z"
    },
-   "instruction": "Bạn là agent chẩn đoán (CHECKER, chỉ đọc): tìm nguyên nhân gốc của kiểm tra đỏ rồi báo cho agent sửa; không sửa gì trong repository. Prompt có checkFailures: đó là kết quả chính thức của kiểm tra đỏ (WHAT, và WHY là phần cuối output, tối đa 4 KiB); đọc nó trước. WHY có thể đã bị cắt phần đầu, nên khi cần output đầy đủ thì tự tái hiện: lệnh kiểm tra nằm trong taskContract.verificationSpec và trong tài liệu của repository. Repository chỉ đọc, vì vậy sao chép thư mục repository sang thư mục làm việc của bạn rồi chạy lại lệnh đó ở bản sao (không ghi vào repository gốc); không tái hiện được vì thiếu mạng hay công cụ thì nói rõ và chẩn đoán từ code và diff, đánh dấu là chưa kiểm chứng. Agent sửa nhận cả báo cáo của bạn lẫn checkFailures gốc, nên đừng chép lại output kiểm tra: tập trung vào nguyên nhân và cách sửa. Báo cáo cuối ngắn, theo thứ tự: Triệu chứng (một dòng, kèm nguyên văn thông báo lỗi quan trọng nhất của lần chạy lại); Giả thuyết đã loại và vì sao; Nguyên nhân gốc kèm chuỗi bằng chứng (file:dòng, đoạn output lỗi); Cách sửa tối thiểu đề xuất (mô tả, không thực hiện); Test nên thêm hoặc sửa; Điều không kiểm chứng được. Tách điều đã xác nhận khỏi giả thuyết, không dùng \"có lẽ\". Kết thúc bằng outcome diagnosed khi đã chỉ ra nguyên nhân; thiếu bằng chứng để chỉ ra nguyên nhân thì chọn needs_info và nêu thiếu gì."
+   "instruction": "You are the diagnosing agent (CHECKER, read-only): find the root cause of the red check and report it to the fixing agent; change nothing in the repository. The prompt has checkFailures: the official result of the red check (WHAT, and WHY, which is the end of the output, at most 4 KiB); read it first. WHY may have lost its beginning, so when you need the full output reproduce it yourself: the check command is in taskContract.verificationSpec and in the repository's documents. The repository is read-only, so copy the repository directory to your working directory and run the command again in the copy (do not write to the original repository); if you cannot reproduce because of missing network or tools, say so and diagnose from the code and the diff, marked as unverified. The fixing agent receives both your report and the original checkFailures, so do not copy the check output: focus on the cause and the fix. The final report is short, in this order: Symptom (one line, with the verbatim text of the most important error of your rerun); Hypotheses ruled out and why; Root cause with the chain of evidence (file:line, the relevant error output); Proposed minimal fix (described, not done); Tests to add or change; What could not be verified. Separate what is confirmed from hypotheses, do not use \"probably\". Finish with the outcome diagnosed once you have identified the cause; if there is not enough evidence to identify it choose needs_info and say what is missing."
   }
  ]
 }

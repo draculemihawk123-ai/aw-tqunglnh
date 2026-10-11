@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-docs.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Chỉ cập nhật tài liệu khi thay đổi ảnh hưởng tới hành vi nhìn thấy được, cách cài đặt hoặc chạy, lệnh, kiến trúc, tư thế bảo mật, hợp đồng công khai, hoặc một quyết định mà người bảo trì sau này cần biết. Thay đổi thuần nội bộ thì đừng thêm tài liệu hay dòng nhật ký cho có. Tài liệu hay phải đụng tới: quy chuẩn code, mô tả kiến trúc, lộ trình, và changelog nếu repository đã có. Quyết định kiến trúc thì ghi bằng ADR như flow.sync yêu cầu; đừng nhồi vào tài liệu chung."
+   "instruction": "Update documents only when the change affects visible behaviour, how to install or run, commands, architecture, security posture, the public contract, or a decision a future maintainer needs to know. A purely internal change gets no document or log entry for show. The documents that usually need touching: code conventions, the architecture description, the roadmap, and the changelog if the repository has one. Record an architecture decision as an ADR as flow.sync requires; do not stuff it into a general document."
   },
   {
    "key": "docs.how",
@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-docs.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Cách cập nhật tài liệu: đọc tài liệu hiện có và code thật trước khi viết, đừng mô tả hành vi bạn tưởng. Kiểm tra tên file, hàm, tham số dòng lệnh được nhắc vẫn còn tồn tại. Ví dụ lệnh hay code phải đúng: bạn không chạy được lệnh, nên chép từ test hoặc script đã có thay vì tự nghĩ ra. Xóa mục đã lỗi thời thay vì để \"TODO: cập nhật\". Đối chiếu với tài liệu liên quan để không mâu thuẫn nhau. Giữ mỗi file tài liệu dưới khoảng 800 dòng (README dưới 300): vượt thì tách theo chủ đề thay vì nối dài. Cuối cùng đọc lại điều bạn vừa viết: ngày, liên kết và mọi khẳng định phải khớp thay đổi thật."
+   "instruction": "How to update documents: read the existing documents and the real code before writing, do not describe behaviour you assume. Check that the file names, functions and command-line parameters you mention still exist. Command and code examples must be right: you cannot run commands, so copy from existing tests or scripts instead of inventing them. Delete an outdated section instead of leaving \"TODO: update\". Compare with related documents so they do not contradict each other. Keep each document file under about 800 lines (a README under 300): beyond that split by topic instead of making it longer. Finally read again what you just wrote: dates, links and every claim must match the real change."
   }
  ]
 }

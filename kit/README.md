@@ -178,6 +178,28 @@ Các tài liệu `01-brainstorm.md`, `02-spec.md`, `03-design.md` có khung tiê
 
 **Không có bước kiểm máy cho khung.** Đã thử (B4): ba bước kiểm đối chiếu khung (đủ mục, `AC-n` có test trong thiết kế, `D-n` có phương án loại) quay tài liệu về cho agent; chi phí tổng không đổi nhưng vòng sửa của bước code tăng và không tách được đóng góp, nên đã bỏ phần kiểm, chỉ giữ khung (xem `kit/bench/reports/V10-tong-quan.md`). Chỉ `check-feature-docs` (đủ file, `tasks.json` đúng schema) và `check-plan` (sáu mục của `plan.md`) còn chạy.
 
+## Ngôn ngữ trong kit (V11-08)
+
+Phần mà agent và engine đọc dùng **tiếng Anh**; phần dành cho người đọc giữ tiếng Việt:
+
+| Phần | Ngôn ngữ |
+|---|---|
+| Skill, layer, tài nguyên của agent (`skills/`, `layers/`) | Tiếng Anh |
+| Script chạy trong worker (`commands/*.sh`): thông báo và chú thích | Tiếng Anh, **chỉ ASCII** (`check-kit.sh` kiểm; nội dung được publish nguyên văn lên worker, kể cả bản bọc `.cmd` của Windows) |
+| Tên (và mô tả) định nghĩa trong `kit.json`, workflow, policy | Tiếng Anh |
+| README, hướng dẫn, `docs/design`, báo cáo | Tiếng Việt |
+| Script vận hành cho người (`scripts/*.sh`, `scripts/*.py`) | Tiếng Việt |
+| **Tài liệu agent sinh ra** (brainstorm, spec, design, plan, báo cáo) | Theo ngôn ngữ của `taskContract.behavior` (luật ở `flow.working-rules`); tên mục theo khung của skill |
+
+Hợp đồng giữa skill và kiểm tra bằng máy khi tài liệu có thể bằng tiếng Việt: `check-plan.sh` nhận tiêu đề `##` tiếng Anh **và** tiếng Việt (từ khóa tiếng Việt viết bằng mã octal để script vẫn ASCII);
+`check-lessons.sh` và `lessons-to-skill.py` dùng nhãn tiếng Anh (`Evidence`, `Occurrences`, `Proposed rule`, `Attach to`, `Level`, `Status: skip`) và vẫn đọc nhãn tiếng Việt cũ;
+`check-feature-docs.sh` chỉ kiểm tên file và schema của `tasks.json`. Các khung tiêu đề của agent là tiếng Anh từ kit 1.7.0: `Current state`, `Root problem`, `Red team`, `Revision history`,
+`[UNVERIFIED]`, `Remaining concerns`, `Unverified suspicions`, `Edge cases found`, `Scope and rationale`, `Files to change`... (trước đó là `Hiện trạng`, `Vấn đề gốc`, `Phản biện`, `Lịch sử sửa`, `[CHƯA XÁC MINH]`...).
+
+**Chưa đo.** Dịch 83 tài nguyên (kit 1.7.0, mỗi tài nguyên tăng `revision`) giữ nguyên nghĩa và không chỉnh nội dung cùng lúc. Chi phí, vòng sửa, điểm tài liệu và mã, và việc agent có viết đúng ngôn ngữ của work item hay không
+**chưa được đo A/B** (bench B-series hai lượt mỗi nhóm, chấm mù, `code-accept.py`); mọi số B0–B4 trong tài liệu này được đo với skill tiếng Việt, nên sau bản dịch phải lập mốc mới, không so thẳng.
+Quyết định giữ hay quay lại bản tiếng Việt dựa trên số đo đó (xem V11-08 trong `docs/design/14-v11-bugfix.md`); `git revert` commit dịch (`feat(v11-08c)`) là đường quay lại, các bước 1 và 2 độc lập với nó.
+
 ## Học dần: bài học thành resource có version (V10-16)
 
 Lỗi lặp lại ở review và gate nên trở thành luật mới **có người duyệt**, thay vì chỉ nằm trong transcript. Quy trình gồm bốn bước, hai trong đó là script của kit:
@@ -362,7 +384,7 @@ phương pháp dựa trên bằng chứng, hai giai đoạn (đúng yêu cầu r
 trọng, và không tuyên bố điều chưa kiểm chứng. Phần bỏ vì không chạy được trong node CHECKER của `aw` (agent không tương tác,
 chỉ đọc, `git` và lệnh shell bị chặn ở chế độ `acceptEdits`): chọn chế độ review bằng `AskUserQuestion`, `gh pr diff`, subagent
 `code-reviewer`, `/ck:scout`, pipeline Task, và các `references/*.md` (không được cung cấp). Phần bổ sung ở V10-09: dò edge case trước khi
-review và danh sách rà (`codereview.edge-scout`, `codereview.checklist`), báo cáo thêm mục "Edge case dò được" và "Câu hỏi chưa giải quyết".
+review và danh sách rà (`codereview.edge-scout`, `codereview.checklist`), báo cáo thêm mục "Edge cases found" và "Unresolved questions" (tiếng Việt trước kit 1.7.0: "Edge case dò được", "Câu hỏi chưa giải quyết").
 
 Dùng: `agent-reviewer` của project thêm `"skill-code-review"` vào `resources` (cạnh `skill-review`, vốn giữ ràng buộc chỉ đọc
 và quy tắc chọn outcome). Cả ba resource có selector `blockKinds: ["CHECKER"]` nên chỉ agent review nhận.
@@ -377,7 +399,7 @@ và quy tắc chọn outcome). Cả ba resource có selector `blockKinds: ["CHEC
 
 - **Không chứng minh được "tìm nhiều lỗi hơn"**: reviewer cũ đã tìm đủ 9/9, nên bài thử bão hòa ở chỉ số đó.
 - **Khác biệt quan sát được ở hình thức và kỷ luật**: báo cáo xếp Critical/Important/Minor, mỗi mục có `file:dòng`, mở đầu nói rõ
-  "đã đọc, chưa chạy `mvn`", và đặt điều chưa kiểm chứng ở mục "Nghi ngờ chưa xác minh" riêng. Chi phí cao hơn khoảng 12 đến 17%
+  "đã đọc, chưa chạy `mvn`", và đặt điều chưa kiểm chứng ở mục "Unverified suspicions" riêng (trước kit 1.7.0: "Nghi ngờ chưa xác minh"). Chi phí cao hơn khoảng 12 đến 17%
   (0,130 và 0,138 USD so với 0,115 và 0,118).
 - **Tác dụng phụ**: hai lần trên code cài lỗi, reviewer mới xếp "thiếu `GET /{id}` và `PUT`" (không nằm trong tiêu chí của task)
   ở Critical hoặc Important, trong khi một lần của reviewer cũ ghi đúng rằng việc đó không quyết định outcome. Xu hướng nâng mức
