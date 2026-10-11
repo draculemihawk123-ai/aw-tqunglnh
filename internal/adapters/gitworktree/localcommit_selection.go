@@ -183,6 +183,20 @@ func validParkedRef(ref string) bool {
 
 // ParkRemainingChanges implements ports.UnselectedChangeParker.
 func (p *Provider) ParkRemainingChanges(ctx context.Context, handle ports.WorkspaceHandle, ref string) (ports.ParkedChanges, error) {
+	return p.parkChanges(ctx, handle, ref, nil)
+}
+
+// ParkChangedPaths implements ports.SelectedChangeParker: ParkRemainingChanges restricted to the named paths.
+func (p *Provider) ParkChangedPaths(ctx context.Context, handle ports.WorkspaceHandle, ref string, paths []string) (ports.ParkedChanges, error) {
+	only := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		only[path] = true
+	}
+	return p.parkChanges(ctx, handle, ref, only)
+}
+
+// parkChanges parks every changed path (only == nil) or only the changed paths named in only.
+func (p *Provider) parkChanges(ctx context.Context, handle ports.WorkspaceHandle, ref string, only map[string]bool) (ports.ParkedChanges, error) {
 	if !validParkedRef(ref) {
 		return ports.ParkedChanges{}, fmt.Errorf("%w: %q is not a ref under %s", ErrInvalidSpec, ref, parkedRefPrefix)
 	}
@@ -193,6 +207,15 @@ func (p *Provider) ParkRemainingChanges(ctx context.Context, handle ports.Worksp
 	entries, err := p.collectChangeSet(ctx, workspacePath, "HEAD")
 	if err != nil {
 		return ports.ParkedChanges{}, err
+	}
+	if only != nil {
+		selected := entries[:0:0]
+		for _, entry := range entries {
+			if only[entry.Path] {
+				selected = append(selected, entry)
+			}
+		}
+		entries = selected
 	}
 	parked := ports.ParkedChanges{Ref: ref}
 	if len(entries) == 0 {

@@ -589,3 +589,84 @@ func TestStartWorkflowRun_SQLite_StillRefusesAnotherVersionThanThePinned(t *test
 		t.Fatalf("start with another version = %v, want ErrWorkflowVersionMismatch", err)
 	}
 }
+
+// --- AssessRedo ---
+
+func (f *rerunSQLite) assess() runtime.RedoAssessment {
+	f.t.Helper()
+	got, err := runtime.AssessRedo(f.ctx, f.uow, "project-1", f.workItemID)
+	if err != nil {
+		f.t.Fatalf("AssessRedo: %v", err)
+	}
+	return got
+}
+
+// The assessment says, without changing anything, what each command would do and why one would refuse.
+func TestAssessRedo_SQLite_ReportsEligibilityVersionsAndLineage(t *testing.T) {
+	f, rootID := newRecreateSQLite(t)
+
+	// before any run: nothing to retry, but a redo is possible (a READY child pins a version)
+	got := f.assess()
+	if got.Retry == nil || got.Retry.Code != runtime.RedoRefusalNeverRan {
+		t.Fatalf("retry before any run = %+v, want NEVER_RAN", got.Retry)
+	}
+
+	first := f.mustStart("idem-start-1")
+	if got := f.assess(); got.Retry == nil || got.Retry.Code != runtime.RedoRefusalNotRetryable || got.Recreate == nil || got.Recreate.Code != runtime.RedoRefusalRunInProgress {
+		t.Fatalf("while running: retry %+v recreate %+v, want NOT_RETRYABLE / RUN_IN_PROGRESS", got.Retry, got.Recreate)
+	}
+
+	f.failRun(first)
+	f.appendMessage(message.RoleUser, "an operator note", "idem-msg-user")
+	newer := f.publishNewerWorkflowVersion()
+	got = f.assess()
+	if got.Retry != nil || got.Recreate != nil {
+		t.Fatalf("after a failed run: retry %+v recreate %+v, want both allowed", got.Retry, got.Recreate)
+	}
+	if got.PinnedWorkflowVersionID != string(f.version.ID()) || got.PinnedVersionNumber != 1 || got.LatestWorkflowVersionID != newer || got.LatestVersionNumber != 2 {
+		t.Fatalf("versions = %+v", got)
+	}
+	if len(got.BlockersToResolve) != 1 || got.BlockersToResolve[0].Type != string(workdomain.BlockerRunFailed) || got.OperatorMessageCount != 1 || got.RedoNumber != 2 {
+		t.Fatalf("assessment = %+v, want the RUN_FAILED blocker, one operator message and redo number 2", got)
+	}
+	if len(got.Scopes) != 1 || got.Scopes[0].RepositoryID() != "repo-1" || got.Scopes[0].Access() != workdomain.RepositoryWrite {
+		t.Fatalf("scopes = %+v", got.Scopes)
+	}
+	if !got.IsChild || got.LineageRunIDs[0] != first.RunID {
+		t.Fatalf("assessment = %+v", got)
+	}
+	_ = rootID
+
+	// after a redo the old item is superseded and the new one knows what it replaced, with both histories in its lineage
+	redone, err := f.recreate("idem-recreate-1", true, "")
+	if err != nil {
+		t.Fatalf("RecreateWorkItem: %v", err)
+	}
+	old, err := runtime.AssessRedo(f.ctx, f.uow, "project-1", f.workItemID)
+	if err != nil {
+		t.Fatalf("AssessRedo(old): %v", err)
+	}
+	if old.SupersededByWorkItemID != redone.NewWorkItemID || old.Recreate == nil || old.Recreate.Code != runtime.RedoRefusalNotRecreatable && old.Recreate.Code != runtime.RedoRefusalAlreadySuperseded {
+		t.Fatalf("old item = %+v, want it superseded by %s and not recreatable", old, redone.NewWorkItemID)
+	}
+	f.workItemID = redone.NewWorkItemID
+	fresh := f.assess()
+	if fresh.SupersedesWorkItemID == "" || fresh.RedoNumber != 3 || len(fresh.LineageRunIDs) != 2 || fresh.LineageRunIDs[1] != redone.RunID {
+		t.Fatalf("new item = %+v, want it replacing the old one, redo number 3 and both runs in its lineage", fresh)
+	}
+}
+
+func TestAssessRedo_SQLite_RootAndForeignProject(t *testing.T) {
+	f := newRerunSQLite(t)
+	f.failRun(f.mustStart("idem-start-1"))
+	got := f.assess()
+	if got.IsChild || got.Recreate == nil || got.Recreate.Code != runtime.RedoRefusalRootUnsupported || got.Retry != nil {
+		t.Fatalf("root: %+v, want retry allowed and recreate ROOT_UNSUPPORTED", got)
+	}
+	if _, err := runtime.AssessRedo(f.ctx, f.uow, "project-2", f.workItemID); !errors.Is(err, ports.ErrScopeMismatch) {
+		t.Fatalf("assess through another project = %v, want ErrScopeMismatch", err)
+	}
+	if runtime.RedoRefusalCode(errors.New("boom")) != "" {
+		t.Fatal("an unrelated error must have no refusal code")
+	}
+}

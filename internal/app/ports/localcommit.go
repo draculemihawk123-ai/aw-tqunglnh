@@ -125,3 +125,13 @@ type UnselectedChangeParker interface {
 	// It refuses with ErrParkedRestoreConflict if a path was changed meanwhile.
 	RestoreParkedChanges(ctx context.Context, handle WorkspaceHandle, ref string) ([]string, error)
 }
+
+// SelectedChangeParker is UnselectedChangeParker's sibling that parks only the named paths and leaves every other change in place
+// (V11-10: a redo parks the files a previous run left OUTSIDE the WorkItem's scope but keeps the in-scope work the new run continues
+// from). Restoring is the same RestoreParkedChanges of UnselectedChangeParker, which works for any ref this produces.
+type SelectedChangeParker interface {
+	// ParkChangedPaths stores the named paths' current changes as a commit under ref and cleans exactly those paths from the
+	// worktree. A path that is not changed is ignored. Idempotent like ParkRemainingChanges: when none of the paths is changed any
+	// more and ref exists, it reports what ref already holds.
+	ParkChangedPaths(ctx context.Context, handle WorkspaceHandle, ref string, paths []string) (ParkedChanges, error)
+}

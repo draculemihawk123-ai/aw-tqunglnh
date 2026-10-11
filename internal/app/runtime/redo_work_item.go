@@ -82,6 +82,17 @@ var (
 	ErrNoPinnedWorkflowVersion = errors.New("runtime: work item has no pinned workflow version")
 )
 
+// RedoParkedSet records files the caller moved out of a worktree (parked under a hidden Git ref, not deleted) before the redo
+// command ran, so a run starting from a clean state does not trip over a previous run's stray files. The command only records
+// it, in its result, its receipt and its event; moving the files is the caller's job (internal/app/workitemredo), done before the
+// transaction because Git never runs inside one.
+type RedoParkedSet struct {
+	RepositoryID          string   `json:"repositoryId"`
+	RepositoryWorkspaceID string   `json:"repositoryWorkspaceId"`
+	Ref                   string   `json:"ref"`
+	Paths                 []string `json:"paths"`
+}
+
 // RetryWorkItemRequest is what a caller supplies to RetryWorkItem.
 type RetryWorkItemRequest struct {
 	ProjectID  string
@@ -89,29 +100,37 @@ type RetryWorkItemRequest struct {
 	// Note is the optional message for the agent; it is appended as a USER message before the new run starts, so the run's prompt
 	// carries it. It is also the resolution note recorded on the resolved blockers.
 	Note string
+	// OutOfScope (KEEP or PARK, empty when there was nothing out of scope) and Parked record how the caller settled files a
+	// previous run left outside the WorkItem's scope; see RedoParkedSet.
+	OutOfScope string
+	Parked     []RedoParkedSet
 }
 
 // RetryWorkItemResult is what RetryWorkItem returns and what a replayed receipt reconstructs.
 type RetryWorkItemResult struct {
-	WorkItemID         string   `json:"workItemId"`
-	PreviousRunID      string   `json:"previousRunId"`
-	RunID              string   `json:"runId"`
-	RunState           string   `json:"runState"`
-	NodeRunID          string   `json:"nodeRunId"`
-	JobID              string   `json:"jobId"`
-	WorkflowVersionID  string   `json:"workflowVersionId"`
-	ResolvedBlockerIDs []string `json:"resolvedBlockerIds"`
-	NoteMessageID      string   `json:"noteMessageId,omitempty"`
+	WorkItemID         string          `json:"workItemId"`
+	PreviousRunID      string          `json:"previousRunId"`
+	RunID              string          `json:"runId"`
+	RunState           string          `json:"runState"`
+	NodeRunID          string          `json:"nodeRunId"`
+	JobID              string          `json:"jobId"`
+	WorkflowVersionID  string          `json:"workflowVersionId"`
+	ResolvedBlockerIDs []string        `json:"resolvedBlockerIds"`
+	NoteMessageID      string          `json:"noteMessageId,omitempty"`
+	OutOfScope         string          `json:"outOfScope,omitempty"`
+	Parked             []RedoParkedSet `json:"parked,omitempty"`
 }
 
 type workItemRetriedEventPayload struct {
-	WorkItemID         string   `json:"workItemId"`
-	PreviousRunID      string   `json:"previousRunId"`
-	RunID              string   `json:"runId"`
-	WorkflowVersionID  string   `json:"workflowVersionId"`
-	ResolvedBlockerIDs []string `json:"resolvedBlockerIds"`
-	NoteMessageID      string   `json:"noteMessageId,omitempty"`
-	Actor              string   `json:"actor"`
+	WorkItemID         string          `json:"workItemId"`
+	PreviousRunID      string          `json:"previousRunId"`
+	RunID              string          `json:"runId"`
+	WorkflowVersionID  string          `json:"workflowVersionId"`
+	ResolvedBlockerIDs []string        `json:"resolvedBlockerIds"`
+	NoteMessageID      string          `json:"noteMessageId,omitempty"`
+	Actor              string          `json:"actor"`
+	OutOfScope         string          `json:"outOfScope,omitempty"`
+	Parked             []RedoParkedSet `json:"parked,omitempty"`
 }
 
 // retryResolvableBlockerTypes are the blockers a failed or cancelled run leaves behind and that RetryWorkItem resolves itself.
@@ -161,57 +180,21 @@ func RetryWorkItem(ctx context.Context, deps RedoDeps, cmd ports.Command, req Re
 			return nil
 		}
 
-		item, err := loadRedoTarget(ctx, tx, projectID, workItemID)
+		plan, err := planRetryTx(ctx, tx, projectID, workItemID)
 		if err != nil {
 			return err
 		}
-		if item.Status != workdomain.WorkItemBlocked && item.Status != workdomain.WorkItemReady {
-			return fmt.Errorf("%w: work item %s is %s", ErrWorkItemNotRetryable, workItemID, item.Status)
-		}
-		runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, workItemID)
-		if err != nil {
-			return err
-		}
-		if len(runs) == 0 {
-			return fmt.Errorf("%w: work item %s", ErrWorkItemNeverRan, workItemID)
-		}
-		last, err := requireFinishedRuns(runs, workItemID)
-		if err != nil {
-			return err
-		}
-		if last.State != runtimedomain.WorkflowRunFailed && last.State != runtimedomain.WorkflowRunCancelled {
-			return fmt.Errorf("%w: run %s is %s", ErrLatestRunNotRetryable, last.ID, last.State)
-		}
-		// The run uses the version the WorkItem is pinned to; a WorkItem that pins nothing keeps the version its last run used.
-		versionID := string(last.WorkflowVersionID)
-		if item.WorkflowVersionID != nil {
-			versionID = string(*item.WorkflowVersionID)
-		}
-
-		blockers, err := tx.Work().ListWorkItemBlockersForWorkItem(ctx, workItemID)
-		if err != nil {
-			return err
-		}
+		last, versionID := plan.last, plan.versionID
 		reason := note
 		if reason == "" {
 			reason = "retried from the operator console"
 		}
 		resolved := []string{}
-		for _, blocker := range blockers {
-			if blocker.State != workdomain.BlockerOpen || !retryResolvableBlockerType(blocker.Type) {
-				continue
-			}
+		for _, blocker := range plan.toResolve {
 			if _, err := resolveWorkItemBlockerTx(ctx, tx, ResolutionModeResolved, string(blocker.ID), cmd.Actor, reason, "", cmd.CorrelationID); err != nil {
 				return err
 			}
 			resolved = append(resolved, string(blocker.ID))
-		}
-		if len(resolved) == 0 {
-			// Already READY with nothing to resolve (the blockers were resolved by hand): the quarantine check the resolve command
-			// makes must still hold before a new run starts on the workspace.
-			if err := ensureNoQuarantinedWorkspaceTx(ctx, tx, item); err != nil {
-				return err
-			}
 		}
 		afterResolve, err := tx.Work().GetWorkItem(ctx, workItemID)
 		if err != nil {
@@ -240,11 +223,11 @@ func RetryWorkItem(ctx context.Context, deps RedoDeps, cmd ports.Command, req Re
 		result = RetryWorkItemResult{
 			WorkItemID: workItemID, PreviousRunID: string(last.ID), RunID: started.RunID, RunState: started.State,
 			NodeRunID: started.NodeRunID, JobID: started.JobID, WorkflowVersionID: versionID,
-			ResolvedBlockerIDs: resolved, NoteMessageID: noteMessageID,
+			ResolvedBlockerIDs: resolved, NoteMessageID: noteMessageID, OutOfScope: req.OutOfScope, Parked: req.Parked,
 		}
 		payload, err := json.Marshal(workItemRetriedEventPayload{
 			WorkItemID: workItemID, PreviousRunID: string(last.ID), RunID: started.RunID, WorkflowVersionID: versionID,
-			ResolvedBlockerIDs: resolved, NoteMessageID: noteMessageID, Actor: cmd.Actor,
+			ResolvedBlockerIDs: resolved, NoteMessageID: noteMessageID, Actor: cmd.Actor, OutOfScope: req.OutOfScope, Parked: req.Parked,
 		})
 		if err != nil {
 			return fmt.Errorf("marshal %s event payload: %w", WorkItemRetriedEventType, err)
@@ -273,36 +256,43 @@ type RecreateWorkItemRequest struct {
 	// CarryMessages copies the operator's (USER) messages of the old WorkItem to the new one. The caller chooses it; the product
 	// default is to carry them.
 	CarryMessages bool
+	// OutOfScope and Parked: see RetryWorkItemRequest.
+	OutOfScope string
+	Parked     []RedoParkedSet
 }
 
 // RecreateWorkItemResult is what RecreateWorkItem returns and what a replayed receipt reconstructs.
 type RecreateWorkItemResult struct {
-	OldWorkItemID             string `json:"oldWorkItemId"`
-	NewWorkItemID             string `json:"newWorkItemId"`
-	ParentWorkItemID          string `json:"parentWorkItemId"`
-	Title                     string `json:"title"`
-	RedoNumber                int    `json:"redoNumber"`
-	PreviousWorkflowVersionID string `json:"previousWorkflowVersionId"`
-	WorkflowVersionID         string `json:"workflowVersionId"`
-	RunID                     string `json:"runId"`
-	RunState                  string `json:"runState"`
-	NodeRunID                 string `json:"nodeRunId"`
-	JobID                     string `json:"jobId"`
-	OldWorkItemStatus         string `json:"oldWorkItemStatus"`
-	CarriedMessageCount       int    `json:"carriedMessageCount"`
-	NoteMessageID             string `json:"noteMessageId,omitempty"`
+	OldWorkItemID             string          `json:"oldWorkItemId"`
+	NewWorkItemID             string          `json:"newWorkItemId"`
+	ParentWorkItemID          string          `json:"parentWorkItemId"`
+	Title                     string          `json:"title"`
+	RedoNumber                int             `json:"redoNumber"`
+	PreviousWorkflowVersionID string          `json:"previousWorkflowVersionId"`
+	WorkflowVersionID         string          `json:"workflowVersionId"`
+	RunID                     string          `json:"runId"`
+	RunState                  string          `json:"runState"`
+	NodeRunID                 string          `json:"nodeRunId"`
+	JobID                     string          `json:"jobId"`
+	OldWorkItemStatus         string          `json:"oldWorkItemStatus"`
+	CarriedMessageCount       int             `json:"carriedMessageCount"`
+	NoteMessageID             string          `json:"noteMessageId,omitempty"`
+	OutOfScope                string          `json:"outOfScope,omitempty"`
+	Parked                    []RedoParkedSet `json:"parked,omitempty"`
 }
 
 type workItemRecreatedEventPayload struct {
-	OldWorkItemID             string `json:"oldWorkItemId"`
-	NewWorkItemID             string `json:"newWorkItemId"`
-	RunID                     string `json:"runId"`
-	PreviousWorkflowVersionID string `json:"previousWorkflowVersionId"`
-	WorkflowVersionID         string `json:"workflowVersionId"`
-	RedoNumber                int    `json:"redoNumber"`
-	CarriedMessageCount       int    `json:"carriedMessageCount"`
-	Reason                    string `json:"reason"`
-	Actor                     string `json:"actor"`
+	OldWorkItemID             string          `json:"oldWorkItemId"`
+	NewWorkItemID             string          `json:"newWorkItemId"`
+	RunID                     string          `json:"runId"`
+	PreviousWorkflowVersionID string          `json:"previousWorkflowVersionId"`
+	WorkflowVersionID         string          `json:"workflowVersionId"`
+	RedoNumber                int             `json:"redoNumber"`
+	CarriedMessageCount       int             `json:"carriedMessageCount"`
+	Reason                    string          `json:"reason"`
+	Actor                     string          `json:"actor"`
+	OutOfScope                string          `json:"outOfScope,omitempty"`
+	Parked                    []RedoParkedSet `json:"parked,omitempty"`
 }
 
 // redoTitleSuffix matches the " (lần N)" suffix a previous redo appended, so redoing a redo does not stack suffixes.
@@ -352,72 +342,11 @@ func RecreateWorkItem(ctx context.Context, deps RedoDeps, cmd ports.Command, req
 			return nil
 		}
 
-		old, err := loadRedoTarget(ctx, tx, projectID, workItemID)
+		plan, err := planRecreateTx(ctx, tx, projectID, workItemID)
 		if err != nil {
 			return err
 		}
-		if old.ParentID == nil {
-			return fmt.Errorf("%w: work item %s", ErrRecreateRootUnsupported, workItemID)
-		}
-		switch old.Status {
-		case workdomain.WorkItemBlocked, workdomain.WorkItemReady, workdomain.WorkItemActive, workdomain.WorkItemCancelled:
-		default:
-			return fmt.Errorf("%w: work item %s is %s", ErrWorkItemNotRecreatable, workItemID, old.Status)
-		}
-		if successor, err := tx.Work().GetWorkItemSupersessionByOld(ctx, workItemID); err == nil {
-			return fmt.Errorf("%w: work item %s was replaced by %s", ErrWorkItemAlreadySuperseded, workItemID, successor.NewWorkItemID)
-		} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
-			return err
-		}
-		runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, workItemID)
-		if err != nil {
-			return err
-		}
-		if _, err := requireFinishedRuns(runs, workItemID); err != nil {
-			return err
-		}
-		if err := ensureNoQuarantinedWorkspaceTx(ctx, tx, old); err != nil {
-			return err
-		}
-
-		// The newest version of the definition the WorkItem is pinned to. It is at least the pinned version itself, so a redo with no
-		// newer version is a clean redo of the same one.
-		pinnedID := ""
-		switch {
-		case old.WorkflowVersionID != nil:
-			pinnedID = string(*old.WorkflowVersionID)
-		case len(runs) > 0:
-			pinnedID = string(runs[len(runs)-1].WorkflowVersionID)
-		default:
-			return fmt.Errorf("%w: work item %s", ErrNoPinnedWorkflowVersion, workItemID)
-		}
-		pinned, err := tx.Definitions().GetWorkflowVersion(ctx, pinnedID)
-		if err != nil {
-			return err
-		}
-		versions, err := tx.Definitions().ListVersions(ctx, definition.KindWorkflow, string(pinned.DefinitionID()))
-		if err != nil {
-			return err
-		}
-		latestID, latestNumber := pinnedID, pinned.VersionNumber()
-		for _, version := range versions {
-			if version.VersionNumber() > latestNumber {
-				latestID, latestNumber = version.ID(), version.VersionNumber()
-			}
-		}
-
-		redoNumber := 2
-		for cursor := workItemID; ; {
-			previous, err := tx.Work().GetWorkItemSupersessionByNew(ctx, cursor)
-			if errors.Is(err, ports.ErrPersistenceNotFound) {
-				break
-			}
-			if err != nil {
-				return err
-			}
-			redoNumber++
-			cursor = string(previous.OldWorkItemID)
-		}
+		old, pinnedID, latestID, redoNumber := plan.old, plan.pinnedID, plan.latestID, plan.redoNumber
 
 		scopes, err := tx.Work().ListWorkItemEffectiveScopes(ctx, workItemID)
 		if err != nil {
@@ -515,12 +444,12 @@ func RecreateWorkItem(ctx context.Context, deps RedoDeps, cmd ports.Command, req
 			OldWorkItemID: workItemID, NewWorkItemID: created.WorkItemID, ParentWorkItemID: created.ParentWorkItemID, Title: title,
 			RedoNumber: redoNumber, PreviousWorkflowVersionID: pinnedID, WorkflowVersionID: latestID,
 			RunID: started.RunID, RunState: started.State, NodeRunID: started.NodeRunID, JobID: started.JobID,
-			OldWorkItemStatus: oldStatus, CarriedMessageCount: carried, NoteMessageID: noteMessageID,
+			OldWorkItemStatus: oldStatus, CarriedMessageCount: carried, NoteMessageID: noteMessageID, OutOfScope: req.OutOfScope, Parked: req.Parked,
 		}
 		payload, err := json.Marshal(workItemRecreatedEventPayload{
 			OldWorkItemID: workItemID, NewWorkItemID: created.WorkItemID, RunID: started.RunID,
 			PreviousWorkflowVersionID: pinnedID, WorkflowVersionID: latestID, RedoNumber: redoNumber,
-			CarriedMessageCount: carried, Reason: reason, Actor: cmd.Actor,
+			CarriedMessageCount: carried, Reason: reason, Actor: cmd.Actor, OutOfScope: req.OutOfScope, Parked: req.Parked,
 		})
 		if err != nil {
 			return fmt.Errorf("marshal %s event payload: %w", WorkItemRecreatedEventType, err)
@@ -536,6 +465,165 @@ func RecreateWorkItem(ctx context.Context, deps RedoDeps, cmd ports.Command, req
 		return recordRedoReceipt(ctx, tx, cmd, result)
 	})
 	return result, err
+}
+
+// retryPlan is everything RetryWorkItem (and the read-only assessment behind the redo preview) derives from the stored state.
+type retryPlan struct {
+	item      workdomain.WorkItem
+	last      runtimedomain.WorkflowRun
+	versionID string
+	toResolve []workdomain.WorkItemBlocker
+}
+
+// planRetryTx decides whether a retry can run and what it would do, changing nothing. Every refusal of RetryWorkItem is made here.
+func planRetryTx(ctx context.Context, tx ports.Tx, projectID, workItemID string) (retryPlan, error) {
+	item, err := loadRedoTarget(ctx, tx, projectID, workItemID)
+	if err != nil {
+		return retryPlan{}, err
+	}
+	if item.Status != workdomain.WorkItemBlocked && item.Status != workdomain.WorkItemReady {
+		return retryPlan{}, fmt.Errorf("%w: work item %s is %s", ErrWorkItemNotRetryable, workItemID, item.Status)
+	}
+	runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, workItemID)
+	if err != nil {
+		return retryPlan{}, err
+	}
+	if len(runs) == 0 {
+		return retryPlan{}, fmt.Errorf("%w: work item %s", ErrWorkItemNeverRan, workItemID)
+	}
+	last, err := requireFinishedRuns(runs, workItemID)
+	if err != nil {
+		return retryPlan{}, err
+	}
+	if last.State != runtimedomain.WorkflowRunFailed && last.State != runtimedomain.WorkflowRunCancelled {
+		return retryPlan{}, fmt.Errorf("%w: run %s is %s", ErrLatestRunNotRetryable, last.ID, last.State)
+	}
+	// The run uses the version the WorkItem is pinned to; a WorkItem that pins nothing keeps the version its last run used.
+	versionID := string(last.WorkflowVersionID)
+	if item.WorkflowVersionID != nil {
+		versionID = string(*item.WorkflowVersionID)
+	}
+	blockers, err := tx.Work().ListWorkItemBlockersForWorkItem(ctx, workItemID)
+	if err != nil {
+		return retryPlan{}, err
+	}
+	plan := retryPlan{item: item, last: last, versionID: versionID}
+	var others []string
+	for _, blocker := range blockers {
+		if blocker.State != workdomain.BlockerOpen {
+			continue
+		}
+		if retryResolvableBlockerType(blocker.Type) {
+			plan.toResolve = append(plan.toResolve, blocker)
+		} else {
+			others = append(others, string(blocker.Type))
+		}
+	}
+	if len(others) > 0 {
+		return retryPlan{}, fmt.Errorf("%w: work item %s has open blockers retry does not resolve: %s", ErrWorkItemStillBlocked, workItemID, strings.Join(others, ", "))
+	}
+	if err := ensureNoQuarantinedWorkspaceTx(ctx, tx, item); err != nil {
+		return retryPlan{}, err
+	}
+	return plan, nil
+}
+
+// redoVersions are the pinned workflow version of a WorkItem and the newest version of the same workflow definition.
+type redoVersions struct {
+	pinnedID, latestID         string
+	pinnedNumber, latestNumber uint64
+}
+
+// redoVersionsTx resolves the version a WorkItem is pinned to (a WorkItem that pins nothing keeps the version its last run used) and
+// the newest version of the same definition. The newest is at least the pinned one, so a redo with no newer version is a clean redo
+// of the same one. ErrNoPinnedWorkflowVersion when neither the WorkItem nor a run names a version.
+func redoVersionsTx(ctx context.Context, tx ports.Tx, item workdomain.WorkItem, runs []runtimedomain.WorkflowRun) (redoVersions, error) {
+	var out redoVersions
+	switch {
+	case item.WorkflowVersionID != nil:
+		out.pinnedID = string(*item.WorkflowVersionID)
+	case len(runs) > 0:
+		out.pinnedID = string(runs[len(runs)-1].WorkflowVersionID)
+	default:
+		return redoVersions{}, fmt.Errorf("%w: work item %s", ErrNoPinnedWorkflowVersion, item.ID)
+	}
+	pinned, err := tx.Definitions().GetWorkflowVersion(ctx, out.pinnedID)
+	if err != nil {
+		return redoVersions{}, err
+	}
+	versions, err := tx.Definitions().ListVersions(ctx, definition.KindWorkflow, string(pinned.DefinitionID()))
+	if err != nil {
+		return redoVersions{}, err
+	}
+	out.pinnedNumber = pinned.VersionNumber()
+	out.latestID, out.latestNumber = out.pinnedID, out.pinnedNumber
+	for _, version := range versions {
+		if version.VersionNumber() > out.latestNumber {
+			out.latestID, out.latestNumber = version.ID(), version.VersionNumber()
+		}
+	}
+	return out, nil
+}
+
+// recreatePlan is what RecreateWorkItem derives from the stored state.
+type recreatePlan struct {
+	old          workdomain.WorkItem
+	runs         []runtimedomain.WorkflowRun
+	pinnedID     string
+	latestID     string
+	latestNumber uint64
+	pinnedNumber uint64
+	redoNumber   int
+}
+
+// planRecreateTx decides whether a redo can run and with which versions, changing nothing. Every refusal of RecreateWorkItem is made here.
+func planRecreateTx(ctx context.Context, tx ports.Tx, projectID, workItemID string) (recreatePlan, error) {
+	old, err := loadRedoTarget(ctx, tx, projectID, workItemID)
+	if err != nil {
+		return recreatePlan{}, err
+	}
+	if old.ParentID == nil {
+		return recreatePlan{}, fmt.Errorf("%w: work item %s", ErrRecreateRootUnsupported, workItemID)
+	}
+	switch old.Status {
+	case workdomain.WorkItemBlocked, workdomain.WorkItemReady, workdomain.WorkItemActive, workdomain.WorkItemCancelled:
+	default:
+		return recreatePlan{}, fmt.Errorf("%w: work item %s is %s", ErrWorkItemNotRecreatable, workItemID, old.Status)
+	}
+	if successor, err := tx.Work().GetWorkItemSupersessionByOld(ctx, workItemID); err == nil {
+		return recreatePlan{}, fmt.Errorf("%w: work item %s was replaced by %s", ErrWorkItemAlreadySuperseded, workItemID, successor.NewWorkItemID)
+	} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
+		return recreatePlan{}, err
+	}
+	runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, workItemID)
+	if err != nil {
+		return recreatePlan{}, err
+	}
+	if _, err := requireFinishedRuns(runs, workItemID); err != nil {
+		return recreatePlan{}, err
+	}
+	if err := ensureNoQuarantinedWorkspaceTx(ctx, tx, old); err != nil {
+		return recreatePlan{}, err
+	}
+
+	plan := recreatePlan{old: old, runs: runs, redoNumber: 2}
+	versions, err := redoVersionsTx(ctx, tx, old, runs)
+	if err != nil {
+		return recreatePlan{}, err
+	}
+	plan.pinnedID, plan.pinnedNumber, plan.latestID, plan.latestNumber = versions.pinnedID, versions.pinnedNumber, versions.latestID, versions.latestNumber
+	for cursor := workItemID; ; {
+		previous, err := tx.Work().GetWorkItemSupersessionByNew(ctx, cursor)
+		if errors.Is(err, ports.ErrPersistenceNotFound) {
+			break
+		}
+		if err != nil {
+			return recreatePlan{}, err
+		}
+		plan.redoNumber++
+		cursor = string(previous.OldWorkItemID)
+	}
+	return plan, nil
 }
 
 // loadRedoTarget reloads the WorkItem and checks it belongs to the project the caller named, never trusting the request beyond ids.

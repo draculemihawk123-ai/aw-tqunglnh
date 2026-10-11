@@ -398,3 +398,44 @@ func execGit(dir string, args ...string) (string, error) {
 	output, err := exec.Command("git", append([]string{"-C", dir}, args...)...).Output()
 	return string(output), err
 }
+
+// V11-10: a redo parks only the files OUTSIDE the WorkItem's scope; the in-scope work stays for the next run to continue from.
+func TestParkChangedPaths_ParksOnlyTheNamedPathsAndRestoreBringsThemBack(t *testing.T) {
+	t.Parallel()
+	f := newInspectionFixture(t)
+	root := f.leftoverFixture(t)
+	const ref = "refs/agentkit/parked/redo-1"
+
+	parked, err := f.provider.ParkChangedPaths(context.Background(), f.handle, ref, []string{"notes/untracked.md", "not-changed.txt"})
+	if err != nil {
+		t.Fatalf("ParkChangedPaths: %v", err)
+	}
+	if want := []string{"notes/untracked.md"}; !equalStrings(parked.Paths, want) {
+		t.Fatalf("parked %v, want %v (a path that is not changed is ignored)", parked.Paths, want)
+	}
+	if _, err := os.Stat(filepath.Join(root, "notes", "untracked.md")); !os.IsNotExist(err) {
+		t.Fatalf("the parked untracked file must leave the worktree: %v", err)
+	}
+	if left := f.changedPaths(t); !equalStrings(left, sorted("chosen.txt", "doomed.txt", "service.txt", "staged-new.txt")) {
+		t.Fatalf("the other changes must stay in place, changed now: %v", left)
+	}
+
+	// parking again with the file already gone reports what the ref holds and moves nothing
+	refBefore := strings.TrimSpace(f.gitOutput(t, "rev-parse", ref))
+	again, err := f.provider.ParkChangedPaths(context.Background(), f.handle, ref, []string{"notes/untracked.md"})
+	if err != nil || !equalStrings(again.Paths, parked.Paths) {
+		t.Fatalf("second ParkChangedPaths = %+v, %v; want the already parked %v", again, err, parked.Paths)
+	}
+	if refAfter := strings.TrimSpace(f.gitOutput(t, "rev-parse", ref)); refAfter != refBefore {
+		t.Fatalf("parking twice moved the ref: %s -> %s", refBefore, refAfter)
+	}
+
+	restored, err := f.provider.RestoreParkedChanges(context.Background(), f.handle, ref)
+	if err != nil || !equalStrings(restored, parked.Paths) {
+		t.Fatalf("RestoreParkedChanges = %v, %v; want %v", restored, err, parked.Paths)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "notes", "untracked.md"))
+	if err != nil || string(data) != "an untracked note\n" {
+		t.Fatalf("restored file = %q, %v", data, err)
+	}
+}
