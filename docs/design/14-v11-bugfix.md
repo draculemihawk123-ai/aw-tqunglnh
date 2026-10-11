@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01 … V11-07. Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -40,7 +40,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | **XONG 2026-10-10** (ADR-038) |
 | V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **XONG 2026-10-10** (ADR-039); đã gặp thật khi chạy issue-tracker C-01 trên Windows, 2026-10-09 |
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | **XONG 2026-10-10** (ADR-040; 6 điểm đã được product owner chốt 2026-10-09) |
-| V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | Chính sách đã nêu; hiệu ứng lên chi phí và chất lượng **chưa đo** |
+| V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | **Bước 1–3 XONG 2026-10-11; bước 4 (đo A/B) chưa chạy** (xem khối kết quả) |
 | V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện và vá tạm** trên Windows 11 (Git 2.55); chạy tay file `.cmd` đã vá cho kết quả đúng; chưa thử trên máy khác |
 | V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | Cơ chế **đã đọc trong mã**; kiểm chứng bằng chính các lần chạy lại của người vận hành |
 | V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | Cơ chế **đã đọc trong mã**; dữ liệu phần lớn đã có trong DB nhưng không có API/UI đọc |
@@ -518,6 +518,19 @@ với trình duyệt (Playwright), CLI Claude thật qua toàn bộ luồng.
   lập mốc mới, không so thẳng; (d) người vận hành đọc log agent bằng tiếng Anh.
 - **Verify:** `check-kit.sh` với `WALK_ALL=1` xanh; `grep -P '[^\x00-\x7F]' kit/commands/*.sh` rỗng; bench A/B có báo cáo; một lượt chạy
   với work item tiếng Việt cho tài liệu tiếng Việt.
+
+### Kết quả triển khai V11-08 (2026-10-11): bước 1–3 xong, bước 4 (đo A/B) CHƯA CHẠY
+
+- **Bước 1 (`feat(v11-08a)`):** 11 script `kit/commands/*.sh` sang tiếng Anh, chỉ ASCII. Các chuỗi tiếng Việt cần nhận diện (từ khóa tiêu đề `plan.md`, nhãn bài học, dấu `✗` `×`) viết bằng mã octal `printf` để script vẫn ASCII mà vẫn nhận plan và bài học viết tiếng Việt.
+  `aw_env_fail` in `ENVIRONMENT:` thay `MÔI TRƯỜNG:`; hai dòng đánh dấu `@aw-include` do `aw-publish.py` chèn vào script publish cũng là tiếng Anh (trước đó script gửi lên worker còn chứa tiếng Việt).
+  Nhãn bài học đổi sang tiếng Anh (`Evidence`, `Occurrences`, `Proposed rule`, `Attach to`, `Level`, `Status: skip`) vì `check-lessons.sh` không thể giữ nhãn có dấu trong file ASCII; `lessons-to-skill.py` và `check-lessons.sh` vẫn đọc nhãn cũ.
+  `check-kit.sh` thêm kiểm tra ASCII cho `kit/commands/*.sh` và plan tiếng Anh; `test-lessons.py` thêm ca nhãn cũ. `grep -P '[^\x00-\x7F]' kit/commands/*.sh` rỗng.
+- **Bước 2 (`feat(v11-08b)`):** luật "viết tài liệu theo ngôn ngữ của `taskContract.behavior`, tên mục theo khung của skill" nằm ở một chỗ (`flow.working-rules`, v5).
+- **Bước 3 (`feat(v11-08c)`):** 83 tài nguyên (`kit/skills`, `kit/layers`) và 54 tên trong `kit.json` dịch sang tiếng Anh, giữ nguyên nghĩa, tăng `revision` từng tài nguyên, kit 1.6.0 → 1.7.0. Khung tiêu đề của tài liệu agent sinh ra đổi sang tiếng Anh và khớp
+  từ khóa của `check-plan.sh`. Không còn ký tự không ASCII trong `kit/skills`, `kit/layers`, `kit/kit.json`, `kit/commands`. Tài nguyên trong `docs/guides/*/definitions` (hướng dẫn cho người) chưa dịch.
+- **Bước 4 CHƯA CHẠY:** bench A/B (B-series, hai lượt mỗi nhóm, chấm mù, `code-accept.py`) giữa bản tiếng Việt (`git` trước `feat(v11-08c)`) và tiếng Anh cần agent Claude thật (tốn tiền) và máy Linux. Cho tới khi có số đo: chưa biết chi phí và chất lượng đổi theo hướng nào, và luật ngôn ngữ của
+  bước 2 chưa được kiểm trên một work item tiếng Việt. Quyết định giữ hay quay lại thuộc về số đo đó; `git revert f31129b` (bước 3) là đường quay lại và bước 1, 2 độc lập với nó.
+- Kiểm: `aw-publish.py kit/kit.json --check` hợp lệ, không cảnh báo mới; `check-kit.sh` trên Git Bash/Windows cho cùng tập đạt/hỏng trước và sau khi dịch (phần hỏng do môi trường Windows: không có `jq`, symlink, `os.killpg`). Chưa chạy `WALK_ALL=1` (cần Linux + `jq`).
 
 ## V11-09 — Bộ bọc `.cmd` trên Windows chạy phần bash như lệnh Windows
 
