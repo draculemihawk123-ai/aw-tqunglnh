@@ -13,6 +13,7 @@ vi.mock('../api/generated', async () => {
     ...actual,
     projectsList: vi.fn(), projectsCreate: vi.fn(),
     projectRepositoriesList: vi.fn(), projectRepositoriesRegister: vi.fn(), repositoriesRetryProbe: vi.fn(),
+    projectRepositoriesCheck: vi.fn(), repositoriesUpdate: vi.fn(), repositoriesDisable: vi.fn(), repositoriesDelete: vi.fn(), repositoriesOnboarding: vi.fn(),
     projectComponentsList: vi.fn(), componentPackAssignmentsList: vi.fn(), componentPackAssignmentsAssign: vi.fn(),
   };
 });
@@ -29,8 +30,17 @@ const PROJECTS = { projects: [
 ] };
 
 const REPOS = { repositories: [
-  { id: 'repo-1', projectId: 'proj-1', name: 'core-api', remoteLocator: '/repos/core-api', defaultRef: 'main', status: 'ACTIVE', version: 2 },
-  { id: 'repo-2', projectId: 'proj-1', name: 'worker-service', remoteLocator: '/repos/worker', defaultRef: 'main', status: 'BLOCKED', lastProbeErrorCode: 'PROBE_UNREACHABLE', version: 3 },
+  { id: 'repo-1', projectId: 'proj-1', name: 'core-api', remoteLocator: '/repos/core-api', defaultRef: 'main', status: 'ACTIVE', version: 2,
+    validActions: [{ operationId: 'repositoriesDisable', targetVersion: 2 }] },
+  { id: 'repo-2', projectId: 'proj-1', name: 'worker-service', remoteLocator: '/repos/worker', defaultRef: 'main', status: 'BLOCKED', lastProbeErrorCode: 'PROBE_UNREACHABLE', version: 3,
+    validActions: ['repositoriesRetryProbe', 'repositoriesUpdate', 'repositoriesDisable', 'repositoriesDelete'].map(operationId => ({ operationId, targetVersion: 3 })) },
+] };
+
+// V11-12: a BLOCKED repository whose probe said what was wrong and what to do.
+const BLOCKED_WITH_REASON = { repositories: [
+  { id: 'repo-9', projectId: 'proj-1', name: 'bpm-gl', remoteLocator: 'D:/project/bpm-gl', defaultRef: 'main', status: 'BLOCKED', lastProbeErrorCode: 'INVALID_ARGUMENT', version: 3,
+    lastProbeError: { failureKind: 'NOT_A_GIT_REPOSITORY', message: 'The folder D:/project/bpm-gl is not a Git repository yet.', hint: 'Run: git -C D:/project/bpm-gl init -b main' },
+    validActions: ['repositoriesRetryProbe', 'repositoriesUpdate', 'repositoriesDisable', 'repositoriesDelete'].map(operationId => ({ operationId, targetVersion: 3 })) },
 ] };
 
 describe('ProjectsScreen — list', () => {
@@ -181,5 +191,117 @@ describe('ProjectsScreen — components', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Assign Pack' }));
     expect(await screen.findByRole('heading', { name: 'Assign Engineering Pack' })).toBeInTheDocument();
     expect(api.componentPackAssignmentsList).toHaveBeenCalledWith('comp-1', expect.anything());
+  });
+});
+
+describe('ProjectsScreen — repository lifecycle (V11-12)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(api.projectsList).mockResolvedValue(PROJECTS as never);
+  });
+
+  it('a BLOCKED card says what is wrong and what to do, not just a code', async () => {
+    vi.mocked(api.projectRepositoriesList).mockResolvedValue(BLOCKED_WITH_REASON as never);
+    render(<ProjectsScreen view="overview" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    const note = await screen.findByTestId('repo-error-repo-9');
+    expect(note).toHaveTextContent('NOT_A_GIT_REPOSITORY');
+    expect(note).toHaveTextContent('is not a Git repository yet');
+    expect(note).toHaveTextContent('git -C D:/project/bpm-gl init -b main');
+  });
+
+  it('the Git output is fetched only when asked for', async () => {
+    vi.mocked(api.projectRepositoriesList).mockResolvedValue(BLOCKED_WITH_REASON as never);
+    vi.mocked(api.repositoriesOnboarding).mockResolvedValue({
+      repositoryId: 'repo-9', projectId: 'proj-1', status: 'BLOCKED', version: 3, attempts: [],
+      lastProbeError: { failureKind: 'NOT_A_GIT_REPOSITORY', message: 'x', detail: 'fatal: not a git repository' },
+    } as never);
+    render(<ProjectsScreen view="overview" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    await screen.findByTestId('repo-error-repo-9');
+    expect(api.repositoriesOnboarding).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Load Git output' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Show Git output' }));
+    expect(await screen.findByTestId('failure-detail')).toHaveTextContent('fatal: not a git repository');
+  });
+
+  it('buttons follow the validActions the server sent', async () => {
+    vi.mocked(api.projectRepositoriesList).mockResolvedValue(REPOS as never);
+    render(<ProjectsScreen view="overview" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    await screen.findByText('worker-service');
+    // BLOCKED: retry, edit, disable, delete.  ACTIVE: disable only.
+    expect(screen.getByRole('button', { name: 'Edit worker-service' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete worker-service' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Disable worker-service' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Disable core-api' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit core-api' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete core-api' })).not.toBeInTheDocument();
+  });
+
+  it('registering checks the path when leaving the field and shows the problem before anything is registered', async () => {
+    vi.mocked(api.projectRepositoriesList).mockResolvedValue({ repositories: [] } as never);
+    vi.mocked(api.projectRepositoriesCheck).mockResolvedValue({
+      ok: false, failureKind: 'PATH_NOT_FOUND', message: 'The folder /d/x does not exist.', hint: 'Use D:/x instead.',
+    } as never);
+    render(<ProjectsScreen view="overview" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Register Repository' }));
+    await userEvent.type(screen.getByLabelText(/Local repository path/), '/d/x');
+    await userEvent.tab();
+    const failure = await screen.findByTestId('check-failure');
+    expect(failure).toHaveTextContent('PATH_NOT_FOUND');
+    expect(failure).toHaveTextContent('Use D:/x instead.');
+    expect(api.projectRepositoriesCheck).toHaveBeenCalledWith('proj-1', expect.objectContaining({ query: { path: '/d/x', ref: 'main' } }));
+    expect(api.projectRepositoriesRegister).not.toHaveBeenCalled();
+  });
+
+  it('Edit sends only what changed, with the version as If-Match', async () => {
+    vi.mocked(api.projectRepositoriesList).mockResolvedValue(BLOCKED_WITH_REASON as never);
+    vi.mocked(api.projectRepositoriesCheck).mockResolvedValue({ ok: true, canonicalPath: 'D:/work/bpm-gl' } as never);
+    vi.mocked(api.repositoriesUpdate).mockResolvedValue({ repositoryId: 'repo-9', projectId: 'proj-1', status: 'PROBING', version: 4, probeJobId: 'job-1' } as never);
+    render(<ProjectsScreen view="overview" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Edit bpm-gl' }));
+    const path = screen.getByLabelText(/Local repository path/);
+    await userEvent.clear(path);
+    await userEvent.type(path, 'D:/work/bpm-gl');
+    await userEvent.tab();
+    expect(await screen.findByTestId('check-ok')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Save and Probe' }));
+    await waitFor(() => expect(api.repositoriesUpdate).toHaveBeenCalledWith(
+      'repo-9', { name: null, remoteLocator: 'D:/work/bpm-gl', defaultRef: 'main' }, expect.objectContaining({ ifMatch: '"3"' }),
+    ));
+    expect(await screen.findByText('bpm-gl updated — probing again.')).toBeInTheDocument();
+  });
+
+  it('Disable names what still uses the repository when the server refuses', async () => {
+    vi.mocked(api.projectRepositoriesList).mockResolvedValue(REPOS as never);
+    vi.mocked(api.repositoriesDisable).mockRejectedValue(new api.ApiError(409, 'CONFLICT', 'REPOSITORY_IN_USE: repository repo-1 is still used by 1 unfinished item(s)', [
+      { field: 'repository', message: 'REPOSITORY_IN_USE' }, { field: 'items', message: 'WORKSPACE rw-1 — workspace READY' },
+    ]));
+    render(<ProjectsScreen view="overview" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Disable core-api' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('REPOSITORY_IN_USE');
+    expect(screen.getByTestId('holders')).toHaveTextContent('WORKSPACE rw-1');
+    expect(api.repositoriesDisable).toHaveBeenCalledWith('repo-1', { reason: '' }, expect.objectContaining({ ifMatch: '"2"' }));
+  });
+
+  it('Delete needs a reason and warns that it is permanent', async () => {
+    vi.mocked(api.projectRepositoriesList).mockResolvedValue(BLOCKED_WITH_REASON as never);
+    vi.mocked(api.repositoriesDelete).mockResolvedValue({ repositoryId: 'repo-9', projectId: 'proj-1', name: 'bpm-gl' } as never);
+    render(<ProjectsScreen view="overview" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete bpm-gl' }));
+    expect(screen.getByText(/never used again/)).toBeInTheDocument();
+    const confirm = screen.getByRole('button', { name: 'Delete permanently' });
+    expect(confirm).toBeDisabled();
+    await userEvent.type(screen.getByLabelText(/^Reason/), 'wrong folder');
+    await userEvent.click(confirm);
+    await waitFor(() => expect(api.repositoriesDelete).toHaveBeenCalledWith('repo-9', { reason: 'wrong folder' }, expect.objectContaining({ ifMatch: '"3"' })));
+    expect(await screen.findByText('bpm-gl deleted.')).toBeInTheDocument();
+  });
+
+  it('Show disabled asks the server for disabled repositories too', async () => {
+    vi.mocked(api.projectRepositoriesList).mockResolvedValue(REPOS as never);
+    render(<ProjectsScreen view="overview" projectId="proj-1" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    await screen.findByText('core-api');
+    await userEvent.click(screen.getByLabelText('Show disabled'));
+    await waitFor(() => expect(api.projectRepositoriesList).toHaveBeenLastCalledWith('proj-1', expect.objectContaining({ query: { includeDisabled: 'true' } })));
   });
 });

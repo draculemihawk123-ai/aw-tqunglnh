@@ -496,8 +496,8 @@ export function Drawer({ title, onClose, children }: { title: string; onClose: (
 
 // ─── TextField ───────────────────────────────────────────────────────────────
 
-export function TextField({ label, value, onChange, placeholder, error, helper, mono, readOnly, required, id: idOverride }: {
-  label: string; value: string; onChange?: (v: string) => void;
+export function TextField({ label, value, onChange, onBlur, placeholder, error, helper, mono, readOnly, required, id: idOverride }: {
+  label: string; value: string; onChange?: (v: string) => void; onBlur?: () => void;
   placeholder?: string; error?: string; helper?: string; mono?: boolean; readOnly?: boolean; required?: boolean; id?: string;
 }) {
   const id = idOverride ?? `field-${label.replace(/\s+/g, '-').toLowerCase()}`;
@@ -513,6 +513,7 @@ export function TextField({ label, value, onChange, placeholder, error, helper, 
         type="text"
         value={value}
         onChange={e => onChange?.(e.target.value)}
+        onBlur={onBlur}
         placeholder={placeholder}
         readOnly={readOnly}
         required={required}

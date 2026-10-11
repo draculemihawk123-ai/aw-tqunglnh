@@ -15,6 +15,10 @@ import {
 import { ArrowLeft, Boxes, ChevronRight, Columns3, FolderGit2, Plus } from '../components/icons';
 import { AssignPackDialog } from './AssignPackDialog';
 import { RepositoryReadinessDialog } from './RepositoryReadinessDialog';
+import {
+  CheckResult, DeleteRepositoryDialog, DisableRepositoryDialog, EditRepositoryDialog, RepositoryFailure, checkRepositoryPath,
+} from './RepositoryDialogs';
+import type { CheckOutcome } from './RepositoryDialogs';
 
 export type { ProjectView, RepositoryView, ComponentView };
 
@@ -44,6 +48,11 @@ interface Props {
   isOffline?: boolean;
 }
 
+/** Advisory: the server says which lifecycle operations a repository allows; the command re-checks. */
+function allows(repo: RepositoryView, operationId: string): boolean {
+  return (repo.validActions ?? []).some(a => a.operationId === operationId);
+}
+
 function apiErrorMessage(err: unknown): { code: string; message: string } {
   if (err instanceof ApiError) return { code: err.code, message: err.message };
   return { code: 'UNKNOWN', message: err instanceof Error ? err.message : 'unexpected error' };
@@ -62,10 +71,10 @@ function useProjectsQuery(isOffline: boolean) {
   });
 }
 
-function useProjectRepositoriesQuery(projectId: string | undefined, isOffline: boolean) {
+function useProjectRepositoriesQuery(projectId: string | undefined, isOffline: boolean, includeDisabled = false) {
   return useQuery({
-    queryKey: ['projectRepositories', projectId],
-    queryFn: async () => (await projectRepositoriesList(projectId!, withSessionToken())) as unknown as { repositories: RepositoryView[] },
+    queryKey: ['projectRepositories', projectId, includeDisabled],
+    queryFn: async () => (await projectRepositoriesList(projectId!, withSessionToken(includeDisabled ? { query: { includeDisabled: 'true' } } : {}))) as unknown as { repositories: RepositoryView[] },
     enabled: !isOffline && !!projectId,
     refetchInterval: query => (hasTransientRepository(query.state.data?.repositories) ? 1500 : false),
   });
@@ -114,6 +123,20 @@ function RegisterRepositoryDialog({ projectId, onClose, onRegistered }: {
   const [remoteLocator, setRemoteLocator] = useState('');
   const [defaultRef, setDefaultRef] = useState('main');
   const [submitted, setSubmitted] = useState(false);
+  // V11-12: the same probe a registration runs, without registering — a wrong path shows up here, before it is registered.
+  const [outcome, setOutcome] = useState<CheckOutcome | null>(null);
+  const [checking, setChecking] = useState(false);
+  async function checkPath() {
+    if (!remoteLocator.trim()) return;
+    setChecking(true);
+    try {
+      setOutcome(await checkRepositoryPath(projectId, remoteLocator.trim(), defaultRef));
+    } catch (err) {
+      setOutcome({ ok: false, message: apiErrorMessage(err).message });
+    } finally {
+      setChecking(false);
+    }
+  }
   const mutation = useMutation({
     mutationFn: () => projectRepositoriesRegister(projectId, {
       repositoryId: repositoryId.trim(), name: name.trim(), remoteLocator: remoteLocator.trim(), defaultRef: defaultRef.trim(),
@@ -149,10 +172,12 @@ function RegisterRepositoryDialog({ projectId, onClose, onRegistered }: {
         <TextField label="Name" required value={name} error={submitted && errors.name ? 'required' : undefined}
           placeholder="core-api" onChange={setName} />
         <TextField label="Local repository path" required mono value={remoteLocator} error={submitted && errors.remoteLocator ? 'required' : undefined}
-          helper="canonical absolute local path to the checked-out repository; must not live under a managed workspace root"
-          placeholder="D:\repos\core-api" onChange={setRemoteLocator} />
+          helper="canonical absolute local path to the checked-out repository; must not live under a managed workspace root; aw checks it when you leave this field"
+          placeholder="D:\repos\core-api" onChange={v => { setRemoteLocator(v); setOutcome(null); }} onBlur={checkPath} />
         <TextField label="Default ref" required value={defaultRef} error={submitted && errors.defaultRef ? 'required' : undefined}
-          mono onChange={setDefaultRef} />
+          mono onChange={v => { setDefaultRef(v); setOutcome(null); }} onBlur={checkPath} />
+        {checking && <p className="text-[12px] text-[#475569]" role="status">Checking the path…</p>}
+        {outcome && <CheckResult outcome={outcome} />}
         {mutation.isError && <InlineError {...apiErrorMessage(mutation.error)} />}
       </div>
     </Dialog>
@@ -187,6 +212,10 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
   const [retryingId, setRetryingId] = useState<string | null>(null);
   const [assignPackTarget, setAssignPackTarget] = useState<ComponentView | null>(null);
   const [readinessTarget, setReadinessTarget] = useState<RepositoryView | null>(null);
+  const [editTarget, setEditTarget] = useState<RepositoryView | null>(null);
+  const [disableTarget, setDisableTarget] = useState<RepositoryView | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<RepositoryView | null>(null);
+  const [showDisabled, setShowDisabled] = useState(false);
   const { toasts, show, dismiss } = useToasts();
   const queryClient = useQueryClient();
 
@@ -194,7 +223,7 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
   const projects = projectsQuery.data?.projects ?? [];
   const project = projects.find(p => p.id === projectId);
 
-  const reposQuery = useProjectRepositoriesQuery(projectId, isOffline);
+  const reposQuery = useProjectRepositoriesQuery(projectId, isOffline, showDisabled);
   const repos = reposQuery.data?.repositories ?? [];
   const blockerCount = repos.filter(r => r.status === 'BLOCKED').length;
 
@@ -209,6 +238,10 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
     mutationFn: (repo: RepositoryView) =>
       repositoriesRetryProbe(repo.id, {}, withSessionToken({ ifMatch: `"${repo.version}"` })) as unknown as Promise<unknown>,
   });
+
+  function refreshRepositories() {
+    queryClient.invalidateQueries({ queryKey: ['projectRepositories', projectId] });
+  }
 
   function retryProbe(repo: RepositoryView) {
     if (isOffline) return;
@@ -368,14 +401,25 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
                           <StatusBadge state={repo.status} entity="repository" />
                         </div>
                         <div className="flex gap-3 mt-1 text-[12px] text-[#475569]"><CopyableId value={repo.id} /><span>ref {repo.defaultRef}</span></div>
-                        {repo.lastProbeErrorCode && (
+                        {repo.lastProbeError ? (
+                          <RepositoryFailure repository={repo} />
+                        ) : repo.lastProbeErrorCode && (
                           <p className="text-xs text-[#92400E] mt-1 bg-[#FEF3C7] border border-[#FCD34D] rounded-[4px] px-2 py-1 font-mono">{repo.lastProbeErrorCode}</p>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
                         <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Readiness of ${repo.name}`} onClick={() => setReadinessTarget(repo)}>Readiness</Button>
-                        {repo.status === 'BLOCKED' && (
+                        {allows(repo, 'repositoriesRetryProbe') && (
                           <Button size="compact" intent="primary" loading={retryingId === repo.id} disabled={isOffline} onClick={() => retryProbe(repo)}>Retry Probe</Button>
+                        )}
+                        {allows(repo, 'repositoriesUpdate') && (
+                          <Button size="compact" intent="secondary" disabled={isOffline} aria-label={`Edit ${repo.name}`} onClick={() => setEditTarget(repo)}>Edit</Button>
+                        )}
+                        {allows(repo, 'repositoriesDisable') && (
+                          <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Disable ${repo.name}`} onClick={() => setDisableTarget(repo)}>Disable</Button>
+                        )}
+                        {allows(repo, 'repositoriesDelete') && (
+                          <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Delete ${repo.name}`} onClick={() => setDeleteTarget(repo)}>Delete</Button>
                         )}
                       </div>
                     </div>
@@ -384,7 +428,13 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
                 {repos.length === 0 && <div className="px-5 py-10 text-center text-[13px] text-[#475569]">No repositories registered yet.</div>}
               </div>
             )}
-            <div className="px-5 py-3 border-t border-[#CDD5DF] bg-[#F8FAFC]"><Button intent="secondary" size="compact" disabled={isOffline} onClick={() => setRegisterDialog(true)}>Register Repository</Button></div>
+            <div className="px-5 py-3 border-t border-[#CDD5DF] bg-[#F8FAFC] flex items-center justify-between gap-3">
+              <Button intent="secondary" size="compact" disabled={isOffline} onClick={() => setRegisterDialog(true)}>Register Repository</Button>
+              <label className="flex items-center gap-2 text-[12px] text-[#475569]">
+                <input type="checkbox" checked={showDisabled} onChange={e => setShowDisabled(e.target.checked)} />
+                Show disabled
+              </label>
+            </div>
           </section>
           <section className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
             <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC] flex items-center justify-between"><h2 className="text-sm font-semibold">Discovered components</h2><Boxes size={15} aria-hidden className="text-[#475569]" /></div>
@@ -400,6 +450,18 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
           onClose={() => setReadinessTarget(null)}
           onDone={message => show({ intent: 'success', message })}
         />
+      )}
+      {editTarget && (
+        <EditRepositoryDialog repository={editTarget} onClose={() => setEditTarget(null)}
+          onDone={message => { setEditTarget(null); refreshRepositories(); show({ intent: 'success', message }); }} />
+      )}
+      {disableTarget && (
+        <DisableRepositoryDialog repository={disableTarget} onClose={() => setDisableTarget(null)}
+          onDone={message => { setDisableTarget(null); refreshRepositories(); show({ intent: 'success', message }); }} />
+      )}
+      {deleteTarget && (
+        <DeleteRepositoryDialog repository={deleteTarget} onClose={() => setDeleteTarget(null)}
+          onDone={message => { setDeleteTarget(null); refreshRepositories(); show({ intent: 'success', message }); }} />
       )}
       {registerDialog && (
         <RegisterRepositoryDialog
