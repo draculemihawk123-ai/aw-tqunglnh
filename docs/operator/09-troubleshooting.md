@@ -450,3 +450,20 @@ A repository is probed when it is registered. If the probe fails the repository 
 `<n>` is the `version` from `aw repository show`. An `ACTIVE` repository cannot be edited (workspaces and evidence are tied to its path): disable it and register a new one. Refusals change nothing and carry a code: `REPOSITORY_NOT_BLOCKED`,
 `REPOSITORY_IN_USE` (lists the unfinished work items, workspaces and release sets that still use it), `REPOSITORY_ALREADY_DISABLED`, `REPOSITORY_PROBE_IN_PROGRESS`, `REPOSITORY_WAS_ACTIVE` (a repository that was ever `ACTIVE` keeps its history and can only be disabled),
 `REPOSITORY_REFERENCED` (lists the tables that reference it) and `REPOSITORY_DELETED` (an id that was deleted cannot be registered again, and replaying the old registration says so instead of reporting success: register under a new id).
+
+## A project was created by mistake, or named wrong (V11-13)
+
+Projects are renamed and **archived**, not deleted: nothing is erased, so history and evidence stay intact. Flags go before the id.
+
+| You want | Command | Web (Projects) |
+|---|---|---|
+| rename a project (the id stays) | `aw project rename --expected-version <n> --name <name> <id>` | **Rename** |
+| archive it: read-only, hidden from the default list | `aw project archive --expected-version <n> [--reason <text>] <id>` | **Archive** |
+| bring it back exactly as it was | `aw project restore --expected-version <n> <id>` | **Show archived**, then **Restore** |
+| list archived projects too | `aw project list --include-archived` | **Show archived** |
+
+`<n>` is the `version` from `aw project show`. A project cannot be archived while something is still running or open in it. The refusal is `PROJECT_BUSY` and lists each item: unfinished workflow runs, work items that are `ACTIVE` or `BLOCKED`, background jobs holding a
+lease, release sets still open. Cancel or finish them, then archive again; aw never cancels anything for you.
+
+An archived project is **read-only**. Reading works (project page, evidence, history). Every command that writes into it, including registering a repository, creating a work item or starting a run, fails with `PROJECT_ARCHIVED` and says how to restore it; the worker does not
+pick up its background jobs until it is restored. `init-project.sh` with the name of an archived project stops and says so (its idempotency key comes from the name, so it would otherwise return that same read-only project): restore it, or use another name.

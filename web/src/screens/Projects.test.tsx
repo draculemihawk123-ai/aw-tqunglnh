@@ -11,7 +11,7 @@ vi.mock('../api/generated', async () => {
   const actual = await vi.importActual<typeof import('../api/generated')>('../api/generated');
   return {
     ...actual,
-    projectsList: vi.fn(), projectsCreate: vi.fn(),
+    projectsList: vi.fn(), projectsCreate: vi.fn(), projectsRename: vi.fn(), projectsArchive: vi.fn(), projectsRestore: vi.fn(),
     projectRepositoriesList: vi.fn(), projectRepositoriesRegister: vi.fn(), repositoriesRetryProbe: vi.fn(),
     projectRepositoriesCheck: vi.fn(), repositoriesUpdate: vi.fn(), repositoriesDisable: vi.fn(), repositoriesDelete: vi.fn(), repositoriesOnboarding: vi.fn(),
     projectComponentsList: vi.fn(), componentPackAssignmentsList: vi.fn(), componentPackAssignmentsAssign: vi.fn(),
@@ -303,5 +303,86 @@ describe('ProjectsScreen — repository lifecycle (V11-12)', () => {
     await screen.findByText('core-api');
     await userEvent.click(screen.getByLabelText('Show disabled'));
     await waitFor(() => expect(api.projectRepositoriesList).toHaveBeenLastCalledWith('proj-1', expect.objectContaining({ query: { includeDisabled: 'true' } })));
+  });
+});
+
+const ACTIVE_ACTIONS = [{ operationId: 'projectsRename', targetVersion: 4 }, { operationId: 'projectsArchive', targetVersion: 4 }];
+const LIFECYCLE_PROJECTS = { projects: [
+  { id: 'proj-1', name: 'platform-core', status: 'ACTIVE', version: 4, validActions: ACTIVE_ACTIONS },
+  { id: 'proj-old', name: 'legacy', status: 'ARCHIVED', version: 7, validActions: [{ operationId: 'projectsRestore', targetVersion: 7 }] },
+] };
+
+describe('ProjectsScreen — project lifecycle (V11-13)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('archived projects are hidden until asked for, and then offer only Restore', async () => {
+    vi.mocked(api.projectsList).mockResolvedValue(LIFECYCLE_PROJECTS as never);
+    render(<ProjectsScreen view="list" onSelectProject={vi.fn()} />);
+    expect(await screen.findByText('platform-core')).toBeInTheDocument();
+    expect(screen.queryByText('legacy')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rename platform-core' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Archive platform-core' })).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText('Show archived'));
+    expect(await screen.findByText('legacy')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Restore legacy' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Rename legacy' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Archive legacy' })).not.toBeInTheDocument();
+  });
+
+  it('Rename checks the name where you type it and sends the version as If-Match', async () => {
+    vi.mocked(api.projectsList).mockResolvedValue(LIFECYCLE_PROJECTS as never);
+    vi.mocked(api.projectsRename).mockResolvedValue({ projectId: 'proj-1', name: 'platform', status: 'ACTIVE', version: 5 } as never);
+    render(<ProjectsScreen view="list" onSelectProject={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Rename platform-core' }));
+    const field = screen.getByLabelText(/Project name/);
+    await userEvent.clear(field);
+    expect(await screen.findByText('a name is required')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeDisabled();
+    await userEvent.type(field, 'platform');
+    await userEvent.click(screen.getByRole('button', { name: 'Rename' }));
+    await waitFor(() => expect(api.projectsRename).toHaveBeenCalledWith('proj-1', { name: 'platform' }, expect.objectContaining({ ifMatch: '"4"' })));
+    expect(await screen.findByText('Renamed to platform.')).toBeInTheDocument();
+  });
+
+  it('Archive says nothing is deleted and names what blocks it when the server refuses', async () => {
+    vi.mocked(api.projectsList).mockResolvedValue(LIFECYCLE_PROJECTS as never);
+    vi.mocked(api.projectsArchive).mockRejectedValue(new api.ApiError(409, 'CONFLICT', 'PROJECT_BUSY: project proj-1 still has 1 running or open item(s)', [
+      { field: 'repository', message: 'PROJECT_BUSY' }, { field: 'items', message: 'WORK_ITEM wi-1 — Build the thing (ACTIVE)' },
+    ]));
+    render(<ProjectsScreen view="list" onSelectProject={vi.fn()} />);
+    await userEvent.click(await screen.findByRole('button', { name: 'Archive platform-core' }));
+    expect(screen.getByText(/does not delete anything/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Archive' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('PROJECT_BUSY');
+    expect(screen.getByTestId('project-holders')).toHaveTextContent('WORK_ITEM wi-1');
+    expect(api.projectsArchive).toHaveBeenCalledWith('proj-1', { reason: '' }, expect.objectContaining({ ifMatch: '"4"' }));
+  });
+
+  it('Restore sends the version and the project comes back', async () => {
+    vi.mocked(api.projectsList).mockResolvedValue(LIFECYCLE_PROJECTS as never);
+    vi.mocked(api.projectsRestore).mockResolvedValue({ projectId: 'proj-old', status: 'ACTIVE', previousStatus: 'ARCHIVED', version: 8 } as never);
+    render(<ProjectsScreen view="list" onSelectProject={vi.fn()} />);
+    await userEvent.click(await screen.findByLabelText('Show archived'));
+    await userEvent.click(await screen.findByRole('button', { name: 'Restore legacy' }));
+    await waitFor(() => expect(api.projectsRestore).toHaveBeenCalledWith('proj-old', {}, expect.objectContaining({ ifMatch: '"7"' })));
+    expect(await screen.findByText('legacy restored.')).toBeInTheDocument();
+  });
+
+  it('an archived project opens read-only: the banner says so and every writing control is disabled', async () => {
+    vi.mocked(api.projectsList).mockResolvedValue(LIFECYCLE_PROJECTS as never);
+    vi.mocked(api.projectRepositoriesList).mockResolvedValue({ repositories: [
+      { id: 'repo-b', projectId: 'proj-old', name: 'blocked-one', remoteLocator: 'D:/x', defaultRef: 'main', status: 'BLOCKED', version: 3,
+        validActions: ['repositoriesRetryProbe', 'repositoriesUpdate', 'repositoriesDisable', 'repositoriesDelete'].map(operationId => ({ operationId, targetVersion: 3 })) },
+    ] } as never);
+    render(<ProjectsScreen view="overview" projectId="proj-old" onSelectProject={vi.fn()} onNavigate={vi.fn()} />);
+    expect(await screen.findByTestId('archived-banner')).toHaveTextContent('archived and read-only');
+    await screen.findByText('blocked-one');
+    expect(screen.getByRole('button', { name: 'Register Repository' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Edit blocked-one' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Disable blocked-one' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Delete blocked-one' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Retry Probe' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Restore' })).toBeEnabled();
   });
 });

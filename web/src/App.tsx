@@ -42,7 +42,8 @@ export default function App() {
   // cache entry, so this never double-fetches.
   const projectsQuery = useQuery({
     queryKey: ['projects'],
-    queryFn: async () => (await projectsList(withSessionToken())) as unknown as { projects: ProjectView[] },
+    // V11-13: archived projects stay resolvable (a deep link to one opens it read-only); the Projects list hides them unless asked.
+    queryFn: async () => (await projectsList(withSessionToken({ query: { includeArchived: 'true' } }))) as unknown as { projects: ProjectView[] },
     enabled: !isOffline,
   });
 

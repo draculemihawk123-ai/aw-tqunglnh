@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 (lõi, API, CLI, UI; chưa chạy thật trên bản cài); V11-11 (đọc theo node, tin hoạt động, UI; chưa Playwright/chạy thật); V11-12 (lỗi thăm dò có loại, sửa/ngừng dùng/xóa repository; đã chạy thật bằng CLI, chưa Playwright). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 (lõi, API, CLI, UI; chưa chạy thật trên bản cài); V11-11 (đọc theo node, tin hoạt động, UI; chưa Playwright/chạy thật); V11-12 (lỗi thăm dò có loại, sửa/ngừng dùng/xóa repository; đã chạy thật bằng CLI, chưa Playwright); V11-13 (đổi tên, lưu trữ, khôi phục project; đã chạy thật bằng CLI + worker, chưa Playwright). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -45,7 +45,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | **XONG 2026-10-11** (lõi, API, CLI, UI; chưa chạy thật trên bản cài, chưa có Playwright/walk-workflow) |
 | V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | **XONG MỘT PHẦN 2026-10-11** (ADR-042): đọc theo node, lời agent khi hỏng, tin hoạt động, UI; chưa đọc được lời nhắc, chưa Playwright/chạy thật |
 | V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **XONG 2026-10-12** (ADR-043; ca thật đã tái hiện và sửa bằng CLI thật + worker thật trên Windows; chưa Playwright) |
-| V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | Cơ chế **đã đọc trong mã**: chỉ có `create`, `list`, `show` |
+| V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | **XONG 2026-10-12** (ADR-044; chạy thật bằng CLI + worker, chưa Playwright) |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -960,6 +960,23 @@ Gộp hai project; di chuyển repository sang project khác; xuất hoặc nh�
 - **Không hồi quy:** `project create`, `list`, `show` giữ hành vi cũ với project `ACTIVE`; `go test ./...`, `docs-coverage-check` xanh.
 - **UI:** Vitest cho hai hộp thoại, bộ lọc, nút theo `validActions`; e2e Playwright: tạo project, đổi tên, lưu trữ (bị chặn khi còn work item, rồi được khi đã dọn), khôi phục, không mở terminal.
 - **Kit:** `init-project.sh` với tên của project đã lưu trữ in đúng gợi ý; `kit/tests/check-kit.sh` xanh.
+
+### Kết quả triển khai V11-13 (2026-10-12): đổi tên, lưu trữ, khôi phục project; lưu trữ là chỉ đọc; chạy thật bằng CLI và worker, chưa Playwright
+
+Đã làm (ADR-044):
+
+- **Lệnh.** `RenameProject`, `ArchiveProject`, `RestoreProject` (một transaction mỗi lệnh, If-Match, biên nhận idempotent, ba sự kiện có golden fixture); tên cắt khoảng trắng, không rỗng, tối đa 200 ký tự. Lưu trữ bị từ chối `PROJECT_BUSY` và liệt kê từng thứ đang chạy
+  (run chưa kết thúc, work item `ACTIVE`/`BLOCKED`, job giữ lease, release set mở); không tự hủy gì; không có xóa cứng.
+- **Chỉ đọc khi lưu trữ, một điểm chặn.** `Receipts().Record` của sqlite từ chối biên nhận trong scope của project `ARCHIVED` (trừ `ArchiveProject`/`RestoreProject`) bằng `PROJECT_ARCHIVED` kèm cách khôi phục; lệnh bị hủy cả transaction. `ClaimJob` bỏ qua job của project lưu trữ. Lệnh của repository nói
+  "đã lưu trữ" trước các luật khác. Đọc vẫn chạy.
+- **Bề mặt.** `projectsRename` (PATCH), `projectsArchive`, `projectsRestore` (114 route), `aw project rename|archive|restore`, `list --include-archived`, `validActions` của project, parity, UX doc (3 hàng).
+- **Giao diện.** Rename (kiểm tên tại chỗ), Archive (nói rõ không xóa gì, liệt kê thứ đang chặn), Restore, "Show archived", banner chỉ đọc và nút ghi bị tắt trên trang project lưu trữ.
+- **Kit.** `init-project.sh` gặp project lưu trữ cùng tên thì in lý do và gợi ý thay vì im lặng dùng lại.
+- **Đã chạy thật** (Windows, `aw.exe`, sqlite, `aw worker`): đổi tên; đăng ký repository (job thăm dò đang chờ) rồi lưu trữ; `list` ẩn, `--include-archived` hiện; đăng ký thêm repository bị `PROJECT_ARCHIVED`; worker chạy 10 giây mà repository vẫn `REGISTERING`; `restore` rồi worker đưa repository lên `ACTIVE`.
+- **Test:** Go (lệnh trên sqlite thật gồm chặn ghi, worker không nhận job, replay, tên sai, version cũ; sự kiện; HTTP; CLI; mọi gate route/parity/contract/archtest), Vitest 5 ca mới (329 test xanh), `go vet`.
+
+Chưa làm / chưa chạy được: (1) **e2e Playwright** (tạo project, đổi tên, lưu trữ bị chặn khi còn work item rồi được khi đã dọn, khôi phục); (2) lưu trữ bị chặn khi còn work item/run/job/release set mới được thử bằng test sqlite (một work item `ACTIVE`), chưa tự dựng cả bốn loại trong một lần chạy thật; (3) `init-project.sh` chỉ được kiểm cú pháp `bash -n`;
+(4) lệnh ghi không có biên nhận (engine nội bộ) không bị chặn, được chấp nhận vì lưu trữ chỉ khi không còn gì chạy; (5) chưa chạy trên Linux/CI.
 
 ## Gate của V11
 

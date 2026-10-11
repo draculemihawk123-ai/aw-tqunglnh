@@ -17,7 +17,7 @@
 > viết ADR khi triển khai.
 >
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…038); 2026-10-11 (ADR-039…043).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…038); 2026-10-11 (ADR-039…044).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -1323,9 +1323,27 @@ thăm dò lại đúng đường dẫn đã lưu, `BLOCKED` chỉ đi tiếp đ�
 
 **Hệ quả:** một repository đăng ký sai được sửa hoặc bỏ mà không mở terminal, và lý do cùng cách sửa hiện ngay ở nơi người dùng nhìn. Chưa có: tự `git init`/`git config` thay người dùng (ngoài phạm vi), di chuyển workspace/evidence sang đường dẫn mới, nút khôi phục repository đã ngừng dùng.
 
-## 46. Baseline sau review thiết kế
+## 46. ADR-044 — Project đổi tên được và lưu trữ được (thay cho xóa); project lưu trữ là chỉ đọc, chặn ở một điểm duy nhất
 
-ADR-001…043 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** `aw project` chỉ có `create|list|show`; tạo nhầm hoặc đặt tên sai là kẹt vĩnh viễn. `ProjectArchived` có trong domain và CHECK nhưng không lệnh nào đặt. Xóa cứng không an toàn (25 migration có khóa ngoại tới `projects(id)`, cộng nhật ký sự kiện và biên nhận).
+
+**Quyết định:**
+
+1. **`RenameProject`** (`PATCH /projects/{id}`, If-Match theo `version`, `aw project rename`): một transaction ghi tên đã cắt khoảng trắng (không rỗng, tối đa 200 ký tự), tăng `version`, sự kiện `ProjectRenamed`, biên nhận idempotent. Tên không cần duy nhất, id không đổi. Project `ARCHIVED` bị từ chối.
+2. **`ArchiveProject` / `RestoreProject`** (`POST /projects/{id}/archive|restore`, `aw project archive|restore`): `ACTIVE <-> ARCHIVED`, mỗi lệnh một transaction với sự kiện `ProjectArchived` / `ProjectRestored`. Lưu trữ bị từ chối `PROJECT_BUSY` kèm danh sách từng thứ đang chạy: workflow run chưa kết thúc,
+   work item `ACTIVE`/`BLOCKED`, job nền đang giữ lease, release set còn `CREATED`. Không tự hủy gì. Không xóa dữ liệu; **không có xóa cứng Project trong V11** (kể cả project rỗng).
+3. **Project lưu trữ là chỉ đọc, chặn ở một chỗ.** Mọi lệnh idempotent kết thúc bằng việc ghi biên nhận trong cùng transaction với các thay đổi của nó, nên `Receipts().Record` của sqlite từ chối biên nhận có scope là một project `ARCHIVED` (trừ `ArchiveProject`/`RestoreProject`) bằng
+   `*apperror.Error` CONFLICT `PROJECT_ARCHIVED` kèm cách khôi phục: transaction của lệnh bị hủy, không cần sửa từng lệnh ở 20 điểm vào. Các lệnh của repository nói "đã lưu trữ" trước mọi luật nghiệp vụ khác. `ClaimJob` bỏ qua job của project `ARCHIVED`, nên worker không nhận
+   việc mới của nó và việc đang chờ chạy tiếp khi khôi phục. Đọc vẫn chạy hết (evidence, lịch sử). Lệnh của engine không có biên nhận (scheduler, hoàn tất run) không bị chặn: lưu trữ chỉ được khi không còn gì đang chạy.
+4. **Hiển thị:** `GET /projects` ẩn project lưu trữ, `?includeArchived=true` (`--include-archived`) cho thấy; `validActions` của project (`projectsRename` + `projectsArchive` khi `ACTIVE`, `projectsRestore` khi `ARCHIVED`). Web: Rename / Archive / Restore, "Show archived", banner chỉ đọc và các nút ghi bị tắt trên trang project lưu trữ.
+   Kit: `init-project.sh` gặp project cùng tên đã lưu trữ (khóa idempotency suy ra từ tên nên lệnh trả đúng project cũ) thì in lý do và gợi ý `restore` hoặc dùng tên khác.
+5. **Bề mặt:** `projectsRename`, `projectsArchive`, `projectsRestore` (114 route), parity, UX doc (3 hàng), ba sự kiện có golden fixture. `ProjectArchivedError` nằm ở `apperror` (không phải `ports`) để adapter provider không phụ thuộc thêm.
+
+**Hệ quả:** tạo nhầm project thì đổi tên hoặc lưu trữ được; không thể mất lịch sử. Chưa có: xóa cứng, gộp project, xuất/nhập, tự phát hiện lệnh ghi không có biên nhận (nếu sau này có lệnh người dùng không ghi biên nhận thì phải tự kiểm trạng thái project).
+
+## 47. Baseline sau review thiết kế
+
+ADR-001…044 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1375,6 +1393,7 @@ dụng ma trận sau:
 - ADR-039 (V11-06) thêm chế độ `result=WORKING_TREE` cho route diff của workspace (thay đổi chưa commit, chỉ đọc, từ chối khi attempt đang ghi).
 - ADR-040 (V11-07) hoàn thiện ADR-014: quyết định duyệt kèm yêu cầu commit chọn file trong cùng transaction (policy `approval.release`, danh tính từ git config, drift theo hash, KEEP/PARK, blocker `RELEASE_FAILED`).
 - ADR-041 (V11-10) bổ sung ADR-033: chạy lại (cùng version đã ghim) và làm lại bằng version mới nhất (hủy và tạo WorkItem mới, `WorkItemSupersession`) là hai lệnh có kiểu, mỗi lệnh một transaction; file ngoài scope của run trước được cất (PARK) trước lệnh.
+- ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
 

@@ -16,6 +16,14 @@ case "$(uname -s)" in
 esac
 key=$(printf '%s' "$name" | sha256sum | cut -c1-16)
 project_id=$(jq -n --arg n "$name" '{name: $n}' | "$AW" project create --idempotency-key "project-$key" | jq -er '.result.projectId')
+# V11-13: the idempotency key is derived from the name, so running this again with the name of an ARCHIVED project returns that same project.
+# Say so instead of quietly reusing a read-only one.
+if [ "$("$AW" project show "$project_id" | tr -d '' | jq -r '.status')" = ARCHIVED ]; then
+  echo "project \"$name\" ($project_id) đã được lưu trữ (chỉ đọc)." >&2
+  echo "  → khôi phục: aw project restore --expected-version <version> $project_id   (xem version bằng: aw project show $project_id)" >&2
+  echo "  → hoặc dùng một tên project khác." >&2
+  exit 1
+fi
 # V11-12: kiểm tra đường dẫn TRƯỚC khi đăng ký — cùng bộ thăm dò, không ghi gì. Lỗi dạng "chưa git init" dừng ở đây với lệnh sửa chép dán được.
 # (aw cũ chưa có lệnh `repository check` thì bỏ qua bước này.)
 if check=$("$AW" repository check --project-id "$project_id" --path "$repo_path" --ref "$ref" 2>/dev/null | tr -d '\r'); then

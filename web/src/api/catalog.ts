@@ -18,6 +18,8 @@ export interface ProjectView {
   name: string;
   status: string;
   version: number;
+  /** Advisory (V11-13): projectsRename + projectsArchive for an ACTIVE project, projectsRestore for an ARCHIVED one. */
+  validActions?: { operationId: string; targetVersion: number }[];
 }
 
 export interface RepositoryView {

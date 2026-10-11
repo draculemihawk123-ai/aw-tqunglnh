@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  projectsCreate, projectsList, projectRepositoriesList, projectRepositoriesRegister,
+  projectsCreate, projectsList, projectsRestore, projectRepositoriesList, projectRepositoriesRegister,
   repositoriesRetryProbe, projectComponentsList, ApiError,
 } from '../api/generated';
 import type {
@@ -15,6 +15,7 @@ import {
 import { ArrowLeft, Boxes, ChevronRight, Columns3, FolderGit2, Plus } from '../components/icons';
 import { AssignPackDialog } from './AssignPackDialog';
 import { RepositoryReadinessDialog } from './RepositoryReadinessDialog';
+import { ArchiveProjectDialog, RenameProjectDialog } from './ProjectDialogs';
 import {
   CheckResult, DeleteRepositoryDialog, DisableRepositoryDialog, EditRepositoryDialog, RepositoryFailure, checkRepositoryPath,
 } from './RepositoryDialogs';
@@ -66,9 +67,15 @@ function hasTransientRepository(repos: RepositoryView[] | undefined): boolean {
 function useProjectsQuery(isOffline: boolean) {
   return useQuery({
     queryKey: ['projects'],
-    queryFn: async () => (await projectsList(withSessionToken())) as unknown as { projects: ProjectView[] },
+    // Shares the ['projects'] cache entry with App.tsx, which asks for archived projects too; the list view filters them out unless asked.
+    queryFn: async () => (await projectsList(withSessionToken({ query: { includeArchived: 'true' } }))) as unknown as { projects: ProjectView[] },
     enabled: !isOffline,
   });
+}
+
+/** Advisory: the server says which lifecycle operations a project allows; the command re-checks. */
+function projectAllows(project: ProjectView, operationId: string): boolean {
+  return (project.validActions ?? []).some(a => a.operationId === operationId);
 }
 
 function useProjectRepositoriesQuery(projectId: string | undefined, isOffline: boolean, includeDisabled = false) {
@@ -184,8 +191,8 @@ function RegisterRepositoryDialog({ projectId, onClose, onRegistered }: {
   );
 }
 
-function ProjectIdentity({ project, repoCount, componentCount, blockerCount, onBack }: {
-  project: ProjectView; repoCount: number; componentCount: number; blockerCount: number; onBack?: () => void;
+function ProjectIdentity({ project, repoCount, componentCount, blockerCount, onBack, onRestore }: {
+  project: ProjectView; repoCount: number; componentCount: number; blockerCount: number; onBack?: () => void; onRestore?: () => void;
 }) {
   return (
     <div>
@@ -202,6 +209,12 @@ function ProjectIdentity({ project, repoCount, componentCount, blockerCount, onB
         <CopyableId value={project.id} />
         <span>{repoCount} repositories · {componentCount} components · {blockerCount} {blockerCount === 1 ? 'blocker' : 'blockers'}</span>
       </div>
+      {project.status === 'ARCHIVED' && (
+        <div role="status" data-testid="archived-banner" className="mt-3 flex items-center justify-between gap-3 rounded-[8px] border border-[#FCD34D] bg-[#FEF3C7] px-3 py-2 text-[13px] text-[#92400E]">
+          <span>This project is archived and read-only. Evidence and history stay readable; restore it to make changes.</span>
+          {onRestore && <Button size="compact" intent="secondary" onClick={onRestore}>Restore</Button>}
+        </div>
+      )}
     </div>
   );
 }
@@ -216,12 +229,18 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
   const [disableTarget, setDisableTarget] = useState<RepositoryView | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<RepositoryView | null>(null);
   const [showDisabled, setShowDisabled] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<ProjectView | null>(null);
+  const [archiveTarget, setArchiveTarget] = useState<ProjectView | null>(null);
   const { toasts, show, dismiss } = useToasts();
   const queryClient = useQueryClient();
 
   const projectsQuery = useProjectsQuery(isOffline);
-  const projects = projectsQuery.data?.projects ?? [];
-  const project = projects.find(p => p.id === projectId);
+  const allProjects = projectsQuery.data?.projects ?? [];
+  const projects = showArchived ? allProjects : allProjects.filter(p => p.status !== 'ARCHIVED');
+  const project = allProjects.find(p => p.id === projectId);
+  // An ARCHIVED project is read-only: every writing control below is disabled and the header says so.
+  const readOnly = project?.status === 'ARCHIVED';
 
   const reposQuery = useProjectRepositoriesQuery(projectId, isOffline, showDisabled);
   const repos = reposQuery.data?.repositories ?? [];
@@ -238,6 +257,25 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
     mutationFn: (repo: RepositoryView) =>
       repositoriesRetryProbe(repo.id, {}, withSessionToken({ ifMatch: `"${repo.version}"` })) as unknown as Promise<unknown>,
   });
+
+  const restoreMutation = useMutation({
+    mutationFn: (target: ProjectView) => projectsRestore(target.id, {}, withSessionToken({ ifMatch: `"${target.version}"` })),
+  });
+
+  function restoreProject(target: ProjectView) {
+    restoreMutation.mutate(target, {
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: ['projects'] });
+        show({ intent: 'success', message: `${target.name} restored.` });
+      },
+      onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+    });
+  }
+
+  function refreshProjects(message: string) {
+    queryClient.invalidateQueries({ queryKey: ['projects'] });
+    show({ intent: 'success', message });
+  }
 
   function refreshRepositories() {
     queryClient.invalidateQueries({ queryKey: ['projectRepositories', projectId] });
@@ -266,6 +304,10 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
             <div>
               <h1 className="text-xl font-semibold text-[#172033]">Projects</h1>
               <p className="text-[13px] text-[#475569] mt-0.5">{projects.length} projects in this installation.</p>
+              <label className="mt-1 flex items-center gap-2 text-[12px] text-[#475569]">
+                <input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} />
+                Show archived
+              </label>
             </div>
             <Button intent="primary" onClick={() => setCreateDialog(true)} icon={<Plus size={14} aria-hidden />} disabled={isOffline} title={isOffline ? 'Reconnect to create a project' : undefined}>New Project</Button>
           </div>
@@ -281,24 +323,45 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
 
           <div className="grid grid-cols-1 gap-3">
             {projects.map(proj => (
-              <button key={proj.id} onClick={() => onSelectProject(proj.id)}
-                className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow p-5 text-left hover:border-[#AAB4C3] transition-colors group">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-3 flex-wrap">
-                      <span className="text-base font-semibold text-[#172033] group-hover:text-[#3659E3]">{proj.name}</span>
-                      <StatusBadge state={proj.status} entity="repository" />
+              <div key={proj.id} className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow hover:border-[#AAB4C3] transition-colors flex items-stretch">
+                <button onClick={() => onSelectProject(proj.id)} className="flex-1 min-w-0 p-5 text-left group">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <span className="text-base font-semibold text-[#172033] group-hover:text-[#3659E3]">{proj.name}</span>
+                        <StatusBadge state={proj.status} entity="repository" />
+                      </div>
+                      <div className="flex items-center gap-4 mt-2 text-[12px] text-[#475569]">
+                        <span className="font-mono">{proj.id}</span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4 mt-2 text-[12px] text-[#475569]">
-                      <span className="font-mono">{proj.id}</span>
-                    </div>
+                    <ChevronRight size={16} className="text-[#475569] group-hover:text-[#3659E3]" aria-hidden />
                   </div>
-                  <ChevronRight size={16} className="text-[#475569] group-hover:text-[#3659E3]" aria-hidden />
+                </button>
+                <div className="flex items-center gap-2 pr-4">
+                  {projectAllows(proj, 'projectsRename') && (
+                    <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Rename ${proj.name}`} onClick={() => setRenameTarget(proj)}>Rename</Button>
+                  )}
+                  {projectAllows(proj, 'projectsArchive') && (
+                    <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Archive ${proj.name}`} onClick={() => setArchiveTarget(proj)}>Archive</Button>
+                  )}
+                  {projectAllows(proj, 'projectsRestore') && (
+                    <Button size="compact" intent="secondary" disabled={isOffline} loading={restoreMutation.isPending && restoreMutation.variables?.id === proj.id}
+                      aria-label={`Restore ${proj.name}`} onClick={() => restoreProject(proj)}>Restore</Button>
+                  )}
                 </div>
-              </button>
+              </div>
             ))}
           </div>
         </div>
+        {renameTarget && (
+          <RenameProjectDialog project={renameTarget} onClose={() => setRenameTarget(null)}
+            onDone={message => { setRenameTarget(null); refreshProjects(message); }} />
+        )}
+        {archiveTarget && (
+          <ArchiveProjectDialog project={archiveTarget} onClose={() => setArchiveTarget(null)}
+            onDone={message => { setArchiveTarget(null); refreshProjects(message); }} />
+        )}
         {createDialog && (
           <CreateProjectDialog
             onClose={() => setCreateDialog(false)}
@@ -340,7 +403,7 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
     return (
       <div className="flex-1 overflow-y-auto p-6 bg-[#E9EDF3]">
         <div className="max-w-5xl mx-auto space-y-5">
-          <ProjectIdentity project={project} repoCount={repos.length} componentCount={components.length} blockerCount={blockerCount} onBack={() => onNavigate?.('projects')} />
+          <ProjectIdentity project={project} repoCount={repos.length} componentCount={components.length} blockerCount={blockerCount} onBack={() => onNavigate?.('projects')} onRestore={() => restoreProject(project)} />
           <div className="flex items-center justify-between">
             <div><h2 className="text-lg font-semibold text-[#172033]">Components</h2><p className="text-[13px] text-[#475569]">Component identities discovered by a repository probe.</p></div>
             <Button intent="secondary" size="compact" onClick={() => onNavigate?.('project-board')}><Columns3 size={13} aria-hidden /> Open Board</Button>
@@ -360,7 +423,7 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
                     <td className="px-5 py-4"><div className="font-medium">{comp.name}</div><CopyableId value={comp.id} /></td>
                     <td className="px-5 py-4"><div className="font-mono text-[12px] text-[#475569]">{comp.path}</div><CopyableId value={comp.repositoryId} /></td>
                     <td className="px-5 py-4">{comp.kind}</td>
-                    <td className="px-5 py-4 text-right"><Button size="compact" intent="quiet" disabled={isOffline} onClick={() => setAssignPackTarget(comp)}>Assign Pack</Button></td>
+                    <td className="px-5 py-4 text-right"><Button size="compact" intent="quiet" disabled={isOffline || readOnly} onClick={() => setAssignPackTarget(comp)}>Assign Pack</Button></td>
                   </tr>
                 ))}{components.length === 0 && <tr><td colSpan={4} className="px-5 py-10 text-center text-[13px] text-[#475569]">No components discovered yet. Register and probe a repository first.</td></tr>}</tbody>
               </table>
@@ -382,7 +445,7 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-[#E9EDF3]">
       <div className="max-w-5xl mx-auto space-y-5">
-        <ProjectIdentity project={project} repoCount={repos.length} componentCount={components.length} blockerCount={blockerCount} onBack={() => onNavigate?.('projects')} />
+        <ProjectIdentity project={project} repoCount={repos.length} componentCount={components.length} blockerCount={blockerCount} onBack={() => onNavigate?.('projects')} onRestore={() => restoreProject(project)} />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <section className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
             <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC] flex items-center justify-between"><h2 className="text-sm font-semibold">Repository onboarding</h2><FolderGit2 size={15} aria-hidden className="text-[#475569]" /></div>
@@ -410,16 +473,16 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
                       <div className="flex items-center gap-2">
                         <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Readiness of ${repo.name}`} onClick={() => setReadinessTarget(repo)}>Readiness</Button>
                         {allows(repo, 'repositoriesRetryProbe') && (
-                          <Button size="compact" intent="primary" loading={retryingId === repo.id} disabled={isOffline} onClick={() => retryProbe(repo)}>Retry Probe</Button>
+                          <Button size="compact" intent="primary" loading={retryingId === repo.id} disabled={isOffline || readOnly} onClick={() => retryProbe(repo)}>Retry Probe</Button>
                         )}
                         {allows(repo, 'repositoriesUpdate') && (
-                          <Button size="compact" intent="secondary" disabled={isOffline} aria-label={`Edit ${repo.name}`} onClick={() => setEditTarget(repo)}>Edit</Button>
+                          <Button size="compact" intent="secondary" disabled={isOffline || readOnly} aria-label={`Edit ${repo.name}`} onClick={() => setEditTarget(repo)}>Edit</Button>
                         )}
                         {allows(repo, 'repositoriesDisable') && (
-                          <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Disable ${repo.name}`} onClick={() => setDisableTarget(repo)}>Disable</Button>
+                          <Button size="compact" intent="quiet" disabled={isOffline || readOnly} aria-label={`Disable ${repo.name}`} onClick={() => setDisableTarget(repo)}>Disable</Button>
                         )}
                         {allows(repo, 'repositoriesDelete') && (
-                          <Button size="compact" intent="quiet" disabled={isOffline} aria-label={`Delete ${repo.name}`} onClick={() => setDeleteTarget(repo)}>Delete</Button>
+                          <Button size="compact" intent="quiet" disabled={isOffline || readOnly} aria-label={`Delete ${repo.name}`} onClick={() => setDeleteTarget(repo)}>Delete</Button>
                         )}
                       </div>
                     </div>
@@ -429,7 +492,7 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, i
               </div>
             )}
             <div className="px-5 py-3 border-t border-[#CDD5DF] bg-[#F8FAFC] flex items-center justify-between gap-3">
-              <Button intent="secondary" size="compact" disabled={isOffline} onClick={() => setRegisterDialog(true)}>Register Repository</Button>
+              <Button intent="secondary" size="compact" disabled={isOffline || readOnly} title={readOnly ? 'Archived projects are read-only' : undefined} onClick={() => setRegisterDialog(true)}>Register Repository</Button>
               <label className="flex items-center gap-2 text-[12px] text-[#475569]">
                 <input type="checkbox" checked={showDisabled} onChange={e => setShowDisabled(e.target.checked)} />
                 Show disabled
