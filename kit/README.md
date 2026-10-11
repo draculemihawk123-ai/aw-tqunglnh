@@ -33,7 +33,7 @@ kit/
 ├── kit.json                    # khai báo của kho: role "kit", name, version, prefix "kit-", danh mục mục
 ├── scripts/                    # script vận hành (đọc aw-project.json / aw-state.json), không gắn với stack nào
 │   ├── init-project.sh  create-root.sh  run-task.sh  watch-run.sh  show-run.sh  review-task.sh
-│   ├── retry-task.sh  commit-task.sh  adopt-head.sh  worktree-path.sh  split-tasks.sh  agent-log.py
+│   ├── retry-task.sh  recreate-task.sh  commit-task.sh  adopt-head.sh  worktree-path.sh  split-tasks.sh  agent-log.py
 │   ├── aw-publish.py  aw-resource-hashes.py
 │   └── import-skill.py  context-check.sh   # công cụ cho người chắt lọc tri thức (mục "Chắt lọc từ nguồn bên ngoài")
 ├── commands/

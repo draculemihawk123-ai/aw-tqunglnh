@@ -136,7 +136,7 @@ code, every parallel agent node burnt all its attempts within seconds and the ru
 attempt of the node ends the node, the run ends `FAILED` with the usual `RUN_FAILED` blocker, and nothing else is
 spent. The reset time is **only** in the provider's words (`failureDetail`): neither CLI reports it in a form aw can
 read, so aw does not schedule a retry. Wait until the time the message names, then run again on the same WorkItem
-(`retry-task.sh` in the kit, or `aw blocker resolve --mode RESOLVED` then `aw run start`). `show-run.sh` prints a line
+(`retry-task.sh` in the kit, the **Run Again** button, or `aw work-item retry`; the older `aw blocker resolve --mode RESOLVED` then `aw run start` still works). `show-run.sh` prints a line
 for it. The classification follows the CLI's text: a limit message the CLI words differently stays `EXECUTION_FAILED`.
 
 ## A run ended `FAILED` with `WORKFLOW_DEFINITION_DEFECT` (V11-03)
@@ -378,3 +378,31 @@ serves the HTTP/CLI surface and accepts commands. See [01-quickstart.md](01-quic
 - Everything this installation's database/artifacts actually contain, independent of any in-flight run: `aw
   work-item show`, `aw run show`, `aw project list`, `aw repository list` — all real, live queries, never a
   cached or stale summary.
+
+## A task failed: run it again, or redo it with the newest workflow (V11-10)
+
+Two actions on the task page deal with a failed or cancelled run without leaving the web. Both are one request that either
+happens completely or not at all.
+
+**Run Again** (`aw work-item retry <id> [--note …]`, kit: `retry-task.sh`). The same work item runs again from the start of its
+workflow, **on the workflow version it is pinned to**. In one transaction aw sends your note to the agent, resolves the failed
+run's blocker and starts the run. Work already in the worktree stays; the agents continue from it. Use it when the cause was the
+environment, or your note is enough for the agent to get it right.
+
+**Redo with Latest Version** (`aw work-item recreate <id> --reason … [--carry-messages=false]`, kit: `recreate-task.sh`). A work
+item pins one workflow version for good, so after you fix a kit or definition and publish it again, Run Again still runs the *old*
+version. Redo cancels the work item and creates a new one under the same parent with the same title (plus "(lần N)"), scope and
+contract, pinned to the newest version of the same workflow, marks it READY and starts it. The old work item stays `CANCELLED` and
+the Board shows "replaced by …" on it and "replaces …" on the new one. Your notes are carried over unless you untick the box.
+There is no limit on redos; the dialog shows what the earlier attempts cost and warns from the third. A root work item cannot be
+redone, and neither can one with a run still going.
+
+Both dialogs show what will happen first: the pinned and newest versions, the blockers that will be resolved, the cost so far and
+the uncommitted files in the worktree. Files a run left **outside the task's scope** (a stray `docs/needs-info.md`) would make the
+next run fail with `SCOPE_VIOLATION` again, so you must choose: **Keep** them (the next run will probably fail) or **Park** them
+(`--out-of-scope PARK` / `OUT_OF_SCOPE=PARK`): exactly those files move into a hidden Git ref `refs/agentkit/parked/redo-…`, in-scope
+work stays. Nothing is deleted; bring parked files back with
+`git -C <worktree> restore --source=<ref> --worktree -- <path>` (the ref is in the command's result and its event).
+
+A refusal changes nothing and says why: the run is not finished, the family has a `QUARANTINED` workspace (reconcile it first),
+another blocker is open (a scope expansion, a failed release), or the work item was already replaced.

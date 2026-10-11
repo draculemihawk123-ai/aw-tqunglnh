@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 (lõi, API, CLI, UI; chưa chạy thật trên bản cài). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -42,7 +42,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | **XONG 2026-10-10** (ADR-040; 6 điểm đã được product owner chốt 2026-10-09) |
 | V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | **Bước 1–3 XONG 2026-10-11; bước 4 (đo A/B) chưa chạy** (xem khối kết quả) |
 | V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **XONG MỘT PHẦN 2026-10-11**: sửa lỗi mất mã thoát của bộ bọc + test hành vi + check `git_shell`; lỗi gốc chưa tái hiện được trên Windows 10 |
-| V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | Cơ chế **đã đọc trong mã**; kiểm chứng bằng chính các lần chạy lại của người vận hành |
+| V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | **XONG 2026-10-11** (lõi, API, CLI, UI; chưa chạy thật trên bản cài, chưa có Playwright/walk-workflow) |
 | V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | Cơ chế **đã đọc trong mã**; dữ liệu phần lớn đã có trong DB nhưng không có API/UI đọc |
 | V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **Đã gặp thật** (đăng ký thư mục chưa `git init` trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
 | V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | Cơ chế **đã đọc trong mã**: chỉ có `create`, `list`, `show` |
@@ -645,6 +645,28 @@ sửa nội dung contract khi làm lại (làm lại giữ nguyên contract); th
 - **UI:** Vitest cho hai hộp thoại và trạng thái nút theo `validActions`; e2e Playwright trên bản cài thật: một run hỏng, bấm `Chạy lại`, rồi bấm
   `Làm lại bằng phiên bản mới` sau khi publish workflow mới, không mở terminal.
 - **Kit:** kịch bản `walk-workflow.py` cho retry và recreate; `kit/tests/check-kit.sh` với `WALK_ALL=1` xanh.
+
+### Kết quả triển khai V11-10 (2026-10-11): chạy lại và làm lại là hai lệnh một transaction; chưa chạy thật trên bản cài và Playwright
+
+Đã làm (4 commit `v11-10a` … `v11-10d`, ADR-041):
+
+- **Lệnh trong core, một transaction mỗi lệnh.** Thân transaction của `StartWorkflowRun`, `CancelWorkItem`, `ResolveWorkItemBlocker`, `CreateChildWorkItem`, `MarkWorkItemReady`, `AppendMessage` được tách thành hàm `...Tx` (không đổi
+  hành vi, toàn bộ test cũ xanh) rồi ghép: `RetryWorkItem` (ghi chú + gỡ blocker + run mới trên version đã ghim) và `RecreateWorkItem` (hủy cũ, tạo WorkItem con mới cùng nội dung trên version mới nhất, READY, mang ghi chú USER,
+  start run, ghi liên kết). Lỗi giữa chừng không để lại gì (test: blocker còn mở sau khi bị từ chối vì blocker khác; không có message/run/sự kiện nào); replay cùng khóa trả đúng kết quả cũ kể cả id WorkItem mới, khác nội dung thì 409.
+- **Luật thật dùng chung với bản xem trước.** `AssessRedo` gọi đúng hàm lập kế hoạch của hai lệnh nên bản xem trước không lệch luật: từ chối có mã ổn định (`NOT_RETRYABLE`, `NEVER_RAN`, `RUN_IN_PROGRESS`, `STILL_BLOCKED`,
+  `WORKSPACE_QUARANTINED`, `ROOT_UNSUPPORTED`, `ALREADY_SUPERSEDED`…). Quyết định thiết kế ghi trong ADR-041: làm lại chỉ khi **mọi run đã kết thúc** (nên hủy WorkItem cũ xong ngay trong transaction, không có lúc hai WorkItem
+  cùng một worktree); chỉ cho WorkItem **con** (root có family riêng).
+- **File thừa ngoài scope (mục 4 của spec): đã làm đủ.** `workitemredo.Service` đọc worktree bằng chế độ `WORKING_TREE` của V11-06, đánh dấu ngoài scope (`scopeguard.PathAllowed`), từ chối khi chưa chọn `KEEP`/`PARK`, và `PARK`
+  cất **đúng các file ngoài scope** (`gitworktree.ParkChangedPaths`, test với Git thật) trước lệnh; replay không cất lần hai, lệnh sẽ bị từ chối thì không cất gì.
+- **Bề mặt.** Route `retryWorkItem`, `recreateWorkItem`, `getWorkItemRedoPreview` (105 route), `aw work-item retry|recreate|redo-preview`, parity, UX doc (3 hàng), `validActions` của run diagnostics, liên kết `supersedes`/`supersededBy` trên thẻ
+  Board và chi tiết WorkItem; migration 0051. UI: nút **Run Again** và **Redo with Latest Version** cạnh Cancel Run/Cancel WorkItem, hộp thoại có version ghim và mới nhất, blocker sẽ gỡ, chi phí các lần trước, cảnh báo từ lần thứ ba,
+  chọn Giữ/Cất, ô mang ghi chú (mặc định có), ô lý do; sau khi làm lại chuyển tới WorkItem mới. Kit: `retry-task.sh` gọi một lệnh, thêm `recreate-task.sh`; docs `operator/09-troubleshooting.md`, hướng dẫn issue-tracker.
+- **Test đã chạy thật:** engine trên sqlite thật (20+ ca: ghi chú/blocker/run, replay/conflict, atomicity, từ chối, version mới/cùng version, mang/không mang ghi chú, làm lại của làm lại, cất file, liên kết Board), migration 0051,
+  Git thật cho cất file, HTTP (6 ca), CLI (đối số), Vitest 11 ca mới (304 test xanh), `go test ./...` và `go vet` xanh.
+
+Chưa làm / chưa chạy được: (1) **e2e Playwright** và kịch bản `walk-workflow.py` cho retry/recreate (cần bản cài thật, Linux + jq; khối kit chỉ được kiểm cú pháp `bash -n`); (2) **chưa chạy với Claude thật**: một run hỏng thật rồi bấm hai nút
+trên bản cài; (3) không có nút khôi phục file đã cất trong lần làm lại (dùng `git restore --source=<ref>`, ref nằm trong kết quả và sự kiện); (4) `commit-task.sh` "không còn bị WorkItem cũ chặn" chỉ được suy ra từ việc WorkItem cũ vào `CANCELLED`
+(không chạy script); (5) `RecreateWorkItem` bỏ `ApprovalException` của contract cũ (không có đường đặt lại qua `CreateChildWorkItem`): WorkItem như vậy bị từ chối ở bước READY với lỗi rõ.
 
 ## V11-11 — Xem tiến trình và kết quả của từng node trên web; Chat thành nguồn tin hoạt động của agent
 

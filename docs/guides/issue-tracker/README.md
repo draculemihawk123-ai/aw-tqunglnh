@@ -414,6 +414,8 @@ người duyệt cần, và là lý do review của agent không thay cho gate c
 1. **`SCOPE_VIOLATION`**: lần đầu chạy review khi A-01/W-01 chưa commit. `aw` phát hiện thay đổi (30 path) trong repository
    mà task chỉ có quyền READ và hủy attempt. Sửa: commit trước, rồi chạy review. WorkItem hỏng được hủy bằng
    `aw work-item cancel --reason … --yes <id>` và tạo lại với tiêu đề khác (khóa idempotency khác).
+   *(Từ V11-10 không cần làm tay: `recreate-task.sh <id> "lý do"` hoặc nút **Redo with Latest Version** trên web hủy WorkItem cũ,
+   tạo WorkItem mới cùng nội dung trên workflow version mới nhất và start run trong một thao tác — mục 11.)*
 2. **`VALIDATION_FAILED`**: agent đã review xong nhưng tin nhắn **cuối** không có marker (nó viết "marker ở tin trước").
    `aw` chỉ đọc tin cuối. Sửa hai tầng: `skill-review` nay nói rõ "marker phải ở cuối chính tin nhắn cuối cùng", và
    `retry-task.sh <workItemId> "ghi chú"` chạy lại **trên chính WorkItem đó** (lịch sử và evidence ở một chỗ, blocker cũ
@@ -578,6 +580,14 @@ bốn gate PASS, gửi tín hiệu `ci-build-2` → `CONSUMED`.
   cho W-01 lần đầu (npm treo vì thiếu CA, xem 12) và R-01 lần đầu.
 - **Chạy lại:** `retry-task.sh <workItemId> ["ghi chú cho agent"]` chạy lại trên chính WorkItem, **từ đầu workflow** (không
   tiếp nối node hỏng), worktree không bị reset: hoàn tác những gì run mới không nên thấy trước khi gọi.
+  Từ V11-10 script gọi **một** lệnh `aw work-item retry` (ghi chú + gỡ blocker + run mới trong một transaction; trên web là nút
+  **Run Again**). File run trước để lại **ngoài scope** của task làm run sau hỏng `SCOPE_VIOLATION` lần nữa, nên lệnh từ chối cho đến khi
+  bạn chọn `OUT_OF_SCOPE=KEEP` (giữ) hoặc `OUT_OF_SCOPE=PARK` (cất vào một ref Git ẩn, không xóa; chỉ các file ngoài scope).
+- **Làm lại bằng workflow version mới:** `recreate-task.sh <workItemId> "lý do" ["ghi chú"]` (hoặc nút **Redo with Latest Version**).
+  WorkItem ghim đúng một version, nên sau khi sửa kit rồi publish lại, `retry-task.sh` vẫn chạy bản **cũ**. Lệnh này hủy WorkItem cũ
+  (còn lại `CANCELLED`, kèm "replaced by …") và tạo WorkItem con mới cùng parent, cùng nội dung (tiêu đề thêm "(lần N)"), ghim version
+  mới nhất, READY, start run; mang theo ghi chú của bạn (`CARRY_MESSAGES=0` để bỏ). Chỉ cho task con, chỉ khi mọi run đã kết thúc. Sau đó
+  `commit-task.sh` không còn bị WorkItem cũ chặn.
 - **Xem agent đã nói gì:** `agent-log.py <runId> [--node …] [--all] [--denied]` (đọc thẳng database, chỉ đọc;
   `aw` CLI hiện chưa có lệnh đọc lời của agent). `show-run.sh`, `watch-run.sh` in timeline, evidence, việc đang chờ người.
 - **Sao lưu:** `aw-maintenance backup --db "$AW_DB" --out ~/aw/backup` ghi `snapshot.db` + `manifest.json` (193 artifact).

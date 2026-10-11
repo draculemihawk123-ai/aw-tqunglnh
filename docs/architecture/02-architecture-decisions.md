@@ -1235,9 +1235,44 @@ go-core-spec cấm gọi Git trong transaction nên không thể gọi `git comm
 Không push/PR/merge (ADR-014 giữ nguyên). Chưa có: chọn file cho commit thủ công trên UI (backend/CLI/HTTP có), ghép cặp đổi tên (đổi tên là một xóa + một thêm, chọn độc lập), patch lọc riêng
 từng file đã chọn (lưu patch cả working tree lúc duyệt; file + hash là bằng chứng chính xác phần được chọn).
 
-## 43. Baseline sau review thiết kế
+## 43. ADR-041 — Chạy lại và làm lại một task là hai lệnh có kiểu, mỗi lệnh một transaction; làm lại là hủy-và-tạo-mới
 
-ADR-001…040 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** xử lý một task hỏng là chuỗi gọi rời rạc ở nhiều nơi (gửi ghi chú, gỡ blocker `RUN_FAILED`, start run; hủy WorkItem, tạo WorkItem mới bằng tay), nên một trình duyệt gọi tuần tự
+có thể dừng giữa chừng và để trạng thái dở (đã gỡ blocker mà chưa có run; đã hủy cái cũ mà chưa tạo cái mới). Hơn nữa WorkItem ghim đúng một workflow version (ADR-033 quyết định 4):
+sau khi sửa kit rồi publish lại, chạy lại trên WorkItem cũ vẫn chạy bản cũ, và cách duy nhất để dùng bản mới là tạo WorkItem mới bằng tay. `commit-task.sh` lại từ chối khi family còn
+WorkItem `ACTIVE`/`BLOCKED`, nên quên hủy bản cũ chặn luôn việc commit.
+
+**Quyết định:**
+
+1. Hai lệnh có kiểu, idempotent (một receipt mỗi lệnh), mọi thao tác ghi DB trong **một** transaction:
+   - `RetryWorkItem` (cùng WorkItem, run gần nhất `FAILED`/`CANCELLED`): ghi chú tùy chọn thành message USER, gỡ các blocker `RUN_FAILED`/`RUN_CANCELLED`/`COMPLETION_POLICY_FAILED` đang mở,
+     start run mới **trên version đã ghim** (không đổi ADR-033). Còn blocker loại khác (scope expansion, admission, `RELEASE_FAILED`) hay worktree `QUARANTINED` thì từ chối, không đổi gì.
+   - `RecreateWorkItem` (làm lại bằng version mới nhất của **cùng** workflow definition): hủy WorkItem cũ, tạo WorkItem con mới cùng parent với cùng nội dung (tiêu đề thêm " (lần N)",
+     effective scope, contract) nhưng ghim version mới nhất, READY, mang theo message USER (tùy chọn, mặc định có), start run, ghi `WorkItemSupersession`. Không đổi version đã ghim trên chính
+     WorkItem cũ: bất biến "một WorkItem ghim một version" giữ nguyên, mỗi lần làm lại để lại một WorkItem `CANCELLED` kèm liên kết. Không giới hạn số lần làm lại; số lần và chi phí được hiện ở hộp thoại.
+2. Điều kiện kiểm **trước** khi đổi gì, bằng cùng một hàm lập kế hoạch với bản xem trước (`runtime.AssessRedo`): mọi run của WorkItem đã kết thúc (không cần chờ hủy bất đồng bộ nên hủy WorkItem cũ
+   xong ngay trong transaction và không có hai WorkItem cùng chạy trên một worktree), family không có workspace `QUARANTINED`, chỉ WorkItem con (root có family và workspace riêng nên không làm lại được),
+   WorkItem chưa bị thay. Scope của bản mới là scope của bản cũ đi qua `CreateChildWorkItem` nên luật tập con của GC-INV-05 được áp dụng như mọi child. Từ chối trả mã ổn định (`NOT_RETRYABLE`,
+   `RUN_IN_PROGRESS`, `STILL_BLOCKED`, `WORKSPACE_QUARANTINED`, `ROOT_UNSUPPORTED`, `ALREADY_SUPERSEDED`…) trong `details` của lỗi 409 để UI giải thích bằng lời.
+3. Cách thực hiện: thân transaction của `StartWorkflowRun`, `CancelWorkItem`, `ResolveWorkItemBlocker`, `CreateChildWorkItem`, `MarkWorkItemReady` và `AppendMessage` được tách thành hàm `...Tx` để ghép trong transaction
+   của lệnh mới (không lồng transaction); lệnh con dùng id sự kiện/khóa idempotency dẫn xuất từ lệnh cha. Nội dung ghi chú được lưu vào kho artifact **trước** transaction như mọi message. Message
+   mang theo dùng lại artifact của message gốc (nội dung bất biến, không sao chép blob).
+4. **File thừa ngoài scope.** Git không chạy trong transaction, nên `internal/app/workitemredo` đọc thay đổi chưa commit của worktree (chế độ `WORKING_TREE` của ADR-039), đánh dấu file ngoài WRITE scope
+   (`scopeguard.PathAllowed`), từ chối khi chưa chọn `KEEP` (mặc định, kèm cảnh báo sẽ vi phạm lại) hoặc `PARK`, và với `PARK` cất **đúng các file ngoài scope** (`SelectedChangeParker`, cùng cơ chế ref
+   `refs/agentkit/parked/` của ADR-040, công việc trong scope ở lại cho run sau) **trước** lệnh, vì lệnh khởi tạo một run mà worker có thể nhận ngay. Lệnh chỉ ghi lại việc đã làm (result, receipt, sự kiện).
+   Replay không cất lần hai; lệnh sẽ bị từ chối thì không cất gì. Giới hạn: nếu lệnh bị từ chối sau khi cất (race) file vẫn nằm ở ref (không mất); chưa có nút khôi phục cho phần cất này (dùng `git restore --source=<ref>`).
+5. Dữ liệu: bảng `work_item_supersessions` (migration 0051; khóa chính = WorkItem mới, `UNIQUE` WorkItem cũ: chuỗi làm lại). Sự kiện `WORK_ITEM_RETRIED` và `WORK_ITEM_RECREATED` (ghi nhận, projection bỏ qua).
+   Thẻ Board và chi tiết WorkItem đọc liên kết trực tiếp (không project) bằng một truy vấn cho cả trang.
+6. Bề mặt: route `retryWorkItem`, `recreateWorkItem`, `getWorkItemRedoPreview`; CLI `aw work-item retry|recreate|redo-preview`; `validActions` của run diagnostics thêm `retryWorkItem`/`recreateWorkItem`;
+   UI hai nút **Run Again** / **Redo with Latest Version**; kit `retry-task.sh` gọi `aw work-item retry`, thêm `recreate-task.sh`. Không có lệnh tự động quyết định chạy lại, không chạy lại từng phần (aw không
+   chạy tiếp từ node hỏng), không sửa contract khi làm lại.
+
+**Hệ quả:** luồng sửa kit rồi chạy lại là Publish → một nút/lệnh; không còn bước "hủy trên web rồi `run-task.sh`" và `commit-task.sh` không bị WorkItem cũ chặn. Chưa có: khôi phục file đã cất bằng nút,
+cảnh báo cứng khi làm lại quá nhiều lần (chỉ cảnh báo từ lần thứ ba), kịch bản `walk-workflow.py` cho retry/recreate.
+
+## 44. Baseline sau review thiết kế
+
+ADR-001…041 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1286,5 +1321,6 @@ dụng ma trận sau:
 - ADR-038 (V11-05) thêm tùy chọn worker `--claude-safe-mode` (CLI Claude chạy `--safe-mode`, không nạp cấu hình người dùng và repository); mặc định tắt.
 - ADR-039 (V11-06) thêm chế độ `result=WORKING_TREE` cho route diff của workspace (thay đổi chưa commit, chỉ đọc, từ chối khi attempt đang ghi).
 - ADR-040 (V11-07) hoàn thiện ADR-014: quyết định duyệt kèm yêu cầu commit chọn file trong cùng transaction (policy `approval.release`, danh tính từ git config, drift theo hash, KEEP/PARK, blocker `RELEASE_FAILED`).
+- ADR-041 (V11-10) bổ sung ADR-033: chạy lại (cùng version đã ghim) và làm lại bằng version mới nhất (hủy và tạo WorkItem mới, `WorkItemSupersession`) là hai lệnh có kiểu, mỗi lệnh một transaction; file ngoài scope của run trước được cất (PARK) trước lệnh.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.
