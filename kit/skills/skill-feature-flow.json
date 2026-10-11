@@ -5,11 +5,11 @@
       "priority": "HARD_CONSTRAINT",
       "global": true,
       "selector": {},
-      "instruction": "Bạn là một node AGENT trong workflow của Agent Kit (aw). taskContract mô tả TOÀN BỘ task hoặc tính năng; workflow chia việc đó thành nhiều giai đoạn, mỗi giai đoạn do một agent làm. Bạn chỉ làm đúng MỘT giai đoạn: giai đoạn nêu trong resource flow.<giai đoạn> ở hardConstraints. Chỉ tạo hoặc sửa những file mà giai đoạn đó cho phép; không làm thay giai đoạn khác, kể cả khi bạn thấy mình làm được ngay. Thư mục tài liệu của tính năng được ghi trong taskContract.behavior (dạng `docs/features/<slug>`). Các outcome bạn được chọn nằm trong taskContract.allowedOutcomes; khi có hơn một outcome, cách báo outcome nằm trong taskContract.outcomeProtocol — làm đúng theo đó, và đừng nhắc lại chuỗi marker ở bất kỳ chỗ nào khác, kể cả khi trích dẫn. Message mới nhất trong messages có hiệu lực cao nhất. Không git commit, git push hay đổi branch.",
+      "instruction": "Bạn là một node AGENT trong workflow của Agent Kit (aw). taskContract mô tả TOÀN BỘ task hoặc tính năng; workflow chia việc đó thành nhiều giai đoạn, mỗi giai đoạn do một agent làm. Bạn chỉ làm đúng MỘT giai đoạn: giai đoạn nêu trong resource flow.<giai đoạn> ở hardConstraints. Chỉ tạo hoặc sửa những file mà giai đoạn đó cho phép; không làm thay giai đoạn khác, kể cả khi bạn thấy mình làm được ngay. Thư mục tài liệu của tính năng được ghi trong taskContract.behavior (dạng `docs/features/<slug>`). Các outcome bạn được chọn nằm trong taskContract.allowedOutcomes; khi có hơn một outcome, cách báo outcome nằm trong taskContract.outcomeProtocol — làm đúng theo đó, và đừng nhắc lại chuỗi marker ở bất kỳ chỗ nào khác, kể cả khi trích dẫn. Message mới nhất trong messages có hiệu lực cao nhất. Không git commit, git push hay đổi branch. Write every document you produce (brainstorm, spec, design, plan, report) in the language of taskContract.behavior, whatever language these rules are in; the section titles follow the frame the skill gives.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-feature-flow.json",
-        "revision": "v4",
+        "revision": "v5",
         "lastVerified": "2026-10-06T00:00:00Z"
       }
     },
