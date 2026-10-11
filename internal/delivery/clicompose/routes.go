@@ -315,6 +315,12 @@ func runRoutes() []Route {
 				UOW: d.UoW, IDs: d.ids(), Isolation: d.Isolation, Agents: d.Agents,
 			}, a, s.Stdout, s.Stderr)
 		}, "node-run", "retry-blocked"),
+		route(NeedUoW|NeedArtifactStore, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return noderun.Show(ctx, noderun.Dependencies{UOW: d.UoW, ArtifactStore: d.ArtifactStore, Matcher: d.Matcher}, a, s.Stdout, s.Stderr)
+		}, "node-run", "show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return noderun.Events(ctx, noderun.Dependencies{UOW: d.UoW, Matcher: d.Matcher, Sleep: d.Sleep}, a, s.Stdout, s.Stderr)
+		}, "node-run", "events"),
 	}
 }
 

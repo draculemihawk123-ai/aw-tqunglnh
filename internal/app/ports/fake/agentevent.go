@@ -59,6 +59,20 @@ func (a *AgentEventsRepository) ListByAttemptAndKind(ctx context.Context, attemp
 	return matching, nil
 }
 
+func (a *AgentEventsRepository) ListAfterSequence(ctx context.Context, attemptID string, afterSequence uint64, limit int) ([]ports.AgentEventRecord, error) {
+	all, err := a.ListByAttempt(ctx, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	var page []ports.AgentEventRecord
+	for _, record := range all {
+		if record.Sequence > afterSequence && len(page) < limit {
+			page = append(page, record)
+		}
+	}
+	return page, nil
+}
+
 func (a *AgentEventsRepository) ListByAttempt(_ context.Context, attemptID string) ([]ports.AgentEventRecord, error) {
 	records := append([]ports.AgentEventRecord(nil), a.records[attemptID]...)
 	sort.Slice(records, func(i, j int) bool { return records[i].Sequence < records[j].Sequence })

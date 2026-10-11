@@ -242,7 +242,10 @@ func CopyMessageTx(ctx context.Context, tx ports.Tx, ids idsource.Source, cmd po
 // appendMessageRowTx writes the Message row and its MessageAppended event. req.ID, CorrelationID and CreatedAt are
 // filled from the command and the id source.
 func appendMessageRowTx(ctx context.Context, tx ports.Tx, ids idsource.Source, cmd ports.Command, req ports.AppendMessageRequest) (AppendMessageResult, error) {
-	messageID := ids.NewID()
+	messageID := req.ID
+	if messageID == "" {
+		messageID = ids.NewID()
+	}
 	req.ID, req.CorrelationID, req.CreatedAt = messageID, cmd.CorrelationID, cmd.RequestedAt
 	m, err := tx.Messages().AppendMessage(ctx, req)
 	if err != nil {

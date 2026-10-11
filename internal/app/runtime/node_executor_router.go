@@ -57,3 +57,12 @@ func (r *NodeExecutorRouter) Execute(ctx context.Context, req ports.NodeExecutio
 	}
 	return executor.Execute(ctx, req)
 }
+
+// StagePartialOutput implements PartialOutputStager: only the agent executor keeps words. The other kinds (a command, a gate) have none.
+func (r *NodeExecutorRouter) StagePartialOutput(ctx context.Context, runID, nodeRunID, attemptID string) (string, error) {
+	stager, ok := r.Agent.(PartialOutputStager)
+	if !ok {
+		return "", nil
+	}
+	return stager.StagePartialOutput(ctx, runID, nodeRunID, attemptID)
+}

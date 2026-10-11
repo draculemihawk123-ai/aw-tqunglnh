@@ -89,16 +89,21 @@ WHERE ea.id = ?`, req.AttemptID).Scan(&attemptWorkItemID, &attemptProjectID)
 		return message.Message{}, err
 	}
 	m.Pinned = req.Pinned
+	m.DisplayOnly, m.NodeRunID = req.DisplayOnly, req.NodeRunID
 
-	var attemptIDColumn any
+	var attemptIDColumn, nodeRunIDColumn any
 	if req.AttemptID != "" {
 		attemptIDColumn = req.AttemptID
 	}
+	if req.NodeRunID != "" {
+		nodeRunIDColumn = req.NodeRunID
+	}
 	_, insertErr := tx.ExecContext(ctx, `
-INSERT INTO messages (id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+INSERT INTO messages (id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned, display_only, node_run_id)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		string(m.ID), string(m.ProjectID), string(m.WorkItemID), attemptIDColumn, m.Sequence,
 		m.Actor, string(m.Role), string(m.ContentArtifactID), m.CorrelationID, formatWorkflowTime(m.CreatedAt), m.Pinned,
+		m.DisplayOnly, nodeRunIDColumn,
 	)
 	if insertErr == nil {
 		return m, nil
@@ -121,7 +126,7 @@ func (r messageRepository) GetMessage(ctx context.Context, id string) (message.M
 
 func loadMessageTx(ctx context.Context, tx *sql.Tx, id string) (message.Message, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned
+SELECT id, project_id, work_item_id, attempt_id, sequence, actor, role, content_artifact_id, correlation_id, created_at, pinned, display_only, node_run_id
 FROM messages WHERE id = ?`, id)
 	m, err := scanMessageRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -132,11 +137,11 @@ FROM messages WHERE id = ?`, id)
 
 func scanMessageRow(row repositoryRowScanner) (message.Message, error) {
 	var id, projectID, workItemID, actor, role, contentArtifactID, correlationID, createdAtRaw string
-	var attemptIDRaw sql.NullString
+	var attemptIDRaw, nodeRunIDRaw sql.NullString
 	var sequence uint64
-	var pinned bool
+	var pinned, displayOnly bool
 	if err := row.Scan(
-		&id, &projectID, &workItemID, &attemptIDRaw, &sequence, &actor, &role, &contentArtifactID, &correlationID, &createdAtRaw, &pinned,
+		&id, &projectID, &workItemID, &attemptIDRaw, &sequence, &actor, &role, &contentArtifactID, &correlationID, &createdAtRaw, &pinned, &displayOnly, &nodeRunIDRaw,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return message.Message{}, err
@@ -160,6 +165,7 @@ func scanMessageRow(row repositoryRowScanner) (message.Message, error) {
 		return message.Message{}, err
 	}
 	m.Pinned = pinned
+	m.DisplayOnly, m.NodeRunID = displayOnly, nodeRunIDRaw.String
 	return m, nil
 }
 

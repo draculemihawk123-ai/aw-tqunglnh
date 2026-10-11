@@ -13,6 +13,8 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
 )
 
 // Dependencies is everything this package's one subcommand needs — the
@@ -25,4 +27,9 @@ type Dependencies struct {
 	IDs       idsource.Source
 	Isolation ports.IsolationEnforcementChecker
 	Agents    *agentregistry.Registry
+	// ArtifactStore, Matcher and Sleep serve `node-run show` and `node-run events` (V11-11): the store lets the detail summarize artifacts,
+	// the matcher redacts, Sleep overrides the real clock between polls of --follow (nil = real time).
+	ArtifactStore ports.ArtifactStore
+	Matcher       redact.Matcher
+	Sleep         cli.Sleeper
 }

@@ -30,7 +30,9 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/domain/artifact"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
 // agentOutputArtifactMediaType is the media type of an AGENT_OUTPUT artifact:
@@ -83,31 +85,99 @@ func stageAgentOutputEvidence(
 	if message == "" {
 		return nil
 	}
-	ref, err := store.Put(ctx, ports.ArtifactMetadata{ContentType: agentOutputArtifactMediaType, Sensitivity: redact.Sensitive, Redacted: true}, bytes.NewReader([]byte(message)))
+	artifactID, err := stageAgentOutputArtifact(ctx, uow, ids, clk, store, string(resolved.projectID), message)
 	if err != nil {
-		return fmt.Errorf("put agent output artifact: %w", err)
-	}
-	if err := store.Verify(ctx, ref); err != nil {
-		return fmt.Errorf("verify agent output artifact: %w", err)
-	}
-	artifactID := ids.NewID()
-	record, err := artifact.NewArtifact(
-		artifact.ID(artifactID), resolved.projectID, ref.Locator, ref.SHA256, ref.Size, ref.ContentType,
-		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Orphan, false, nil, clk.Now(), 1,
-	)
-	if err != nil {
-		return fmt.Errorf("construct agent output artifact record: %w", err)
-	}
-	if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
-		_, err := tx.Artifacts().InsertArtifact(ctx, record)
 		return err
-	}); err != nil {
-		return fmt.Errorf("insert agent output artifact as ORPHAN: %w", err)
 	}
 	evidence.OutputArtifactRefs = append(evidence.OutputArtifactRefs, artifactID)
 	evidence.EvidenceEntries = append(evidence.EvidenceEntries, ports.EvidenceProposal{
 		Kind: runtimedomain.EvidenceKindAgentOutput, Verdict: runtimedomain.EvidenceVerdictRecorded,
 		ArtifactReferences: []string{artifactID}, PolicyVersion: request.ExecutionProfileHash,
 	})
+	return nil
+}
+
+// stageAgentOutputArtifact stores message as an ORPHAN agent-output artifact of the project and returns its id. The words were redacted
+// when the sink persisted them, so nothing is redacted again here.
+func stageAgentOutputArtifact(
+	ctx context.Context, uow ports.UnitOfWork, ids idsource.Source, clk clock.Clock, store ports.ArtifactStore, projectID, message string,
+) (string, error) {
+	ref, err := store.Put(ctx, ports.ArtifactMetadata{ContentType: agentOutputArtifactMediaType, Sensitivity: redact.Sensitive, Redacted: true}, bytes.NewReader([]byte(message)))
+	if err != nil {
+		return "", fmt.Errorf("put agent output artifact: %w", err)
+	}
+	if err := store.Verify(ctx, ref); err != nil {
+		return "", fmt.Errorf("verify agent output artifact: %w", err)
+	}
+	artifactID := ids.NewID()
+	record, err := artifact.NewArtifact(
+		artifact.ID(artifactID), project.ProjectID(projectID), ref.Locator, ref.SHA256, ref.Size, ref.ContentType,
+		ref.Sensitivity, ref.Redacted, artifact.RetentionCanonicalContext, artifact.Orphan, false, nil, clk.Now(), 1,
+	)
+	if err != nil {
+		return "", fmt.Errorf("construct agent output artifact record: %w", err)
+	}
+	if err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
+		_, err := tx.Artifacts().InsertArtifact(ctx, record)
+		return err
+	}); err != nil {
+		return "", fmt.Errorf("insert agent output artifact as ORPHAN: %w", err)
+	}
+	return artifactID, nil
+}
+
+// PartialOutputStager (V11-11, ADR-042) is implemented by an executor that can keep what an attempt SAID even though the attempt did not
+// succeed. ExecuteNodeHandler asks it before it finalizes a FAILED or TIMED_OUT attempt: a failed agent used to leave none of its words
+// (the AGENT_OUTPUT evidence of V9-17 is only written on success), so the operator saw the failure code and nothing of the reasoning that
+// led to it. StagePartialOutput stores the attempt's last words as an ORPHAN artifact and returns its id ("" when the attempt said
+// nothing or the executor is not an agent). FinalizeExecutionAttempt then attaches it and records an AGENT_OUTPUT evidence row.
+// Best effort: an error here never blocks finalizing.
+type PartialOutputStager interface {
+	StagePartialOutput(ctx context.Context, runID, nodeRunID, attemptID string) (string, error)
+}
+
+// StagePartialOutput implements PartialOutputStager.
+func (e *AgentNodeExecutor) StagePartialOutput(ctx context.Context, runID, nodeRunID, attemptID string) (string, error) {
+	message, err := finalAssistantMessage(ctx, e.uow, attemptID)
+	if err != nil || message == "" {
+		return "", err
+	}
+	var projectID string
+	if err := e.uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		run, err := tx.Runtime().GetWorkflowRun(ctx, runID)
+		projectID = string(run.ProjectID)
+		return err
+	}); err != nil {
+		return "", err
+	}
+	return stageAgentOutputArtifact(ctx, e.uow, e.ids, e.clk, e.store, projectID, message)
+}
+
+// attachPartialAgentOutputTx promotes the staged artifact and records the AGENT_OUTPUT evidence row of an attempt that did not succeed.
+// Idempotent by the evidence id (attempt:AGENT_OUTPUT). The verdict is RECORDED like on success: it never satisfies a CompletionPolicy.
+func attachPartialAgentOutputTx(
+	ctx context.Context, tx ports.Tx, clk clock.Clock, req FinalizeExecutionAttemptRequest, attempt runtimedomain.ExecutionAttempt, run runtimedomain.WorkflowRun,
+) error {
+	record, err := tx.Artifacts().GetArtifact(ctx, req.PartialOutputArtifactID)
+	if err != nil {
+		return fmt.Errorf("runtime: load partial agent output artifact %s: %w", req.PartialOutputArtifactID, err)
+	}
+	if _, err := tx.Artifacts().TransitionArtifactAttachState(ctx, ports.TransitionArtifactAttachStateRequest{
+		ArtifactID: req.PartialOutputArtifactID, ExpectedState: artifact.Orphan, ExpectedVersion: record.Version, NextState: artifact.Attached,
+	}); err != nil {
+		return fmt.Errorf("runtime: attach partial agent output artifact %s: %w", req.PartialOutputArtifactID, err)
+	}
+	row, err := runtimedomain.NewEvidence(
+		runtimedomain.EvidenceID(req.AttemptID+":"+runtimedomain.EvidenceKindAgentOutput), run.ProjectID, run.WorkItemID,
+		runtimedomain.WorkflowRunID(req.RunID), runtimedomain.NodeRunID(req.NodeRunID), runtimedomain.ExecutionAttemptID(req.AttemptID),
+		runtimedomain.EvidenceKindAgentOutput, runtimedomain.EvidenceVerdictRecorded, []string{req.PartialOutputArtifactID},
+		workspace.RevisionSet{}, attempt.ExecutionProfileHash, clk.Now(),
+	)
+	if err != nil {
+		return fmt.Errorf("runtime: build partial agent output evidence: %w", err)
+	}
+	if _, err := tx.Runtime().CreateEvidence(ctx, row); err != nil {
+		return fmt.Errorf("runtime: persist partial agent output evidence: %w", err)
+	}
 	return nil
 }

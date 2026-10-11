@@ -423,14 +423,16 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 
 	registry := workerpool.NewRegistry()
 	// Run execution.
-	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(d.uow, d.ids))
+	// V11-11: the engine writes its milestones into the task chat (display-only messages; no prompt ever contains them).
+	activity := runtime.NewActivityPoster(d.uow, d.artifacts, d.ids, d.clk, d.matcher)
+	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(d.uow, d.ids).WithActivityPoster(activity))
 	// V9-10 (gap G9): pin the instruction files the provider CLI loads by itself
 	// (CLAUDE.md, AGENTS.md) in the snapshot of every attempt it schedules. The
 	// adapters declare the names; the worker only maps a profile's provider key.
 	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandlerWithInstructionFiles(d.uow, d.ids, d.execConfig, &runtime.InstructionFileInspector{
 		Directories: d.provider, Declared: providerInstructionFiles, WarnBytes: d.instructionFileWarnBytes,
 	}))
-	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(d.uow, d.ids, router, d.clk, d.isolation, d.agents, d.store))
+	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(d.uow, d.ids, router, d.clk, d.isolation, d.agents, d.store).WithActivityPoster(activity))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(d.uow, d.ids))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(d.uow, d.ids))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(d.uow, d.ids))

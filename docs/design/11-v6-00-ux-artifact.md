@@ -366,6 +366,8 @@ text (không chỉ qua tooltip hover) để screen reader/bàn phím đọc đư
 | 5 | command | Retry blocked activation | `retryBlockedActivation` | `aw node-run retry-blocked` | `RetryBlockedActivation` [ĐÃ CÓ: `internal/app/runtime/retry_blocked_activation.go:RetryBlockedActivationRequest`] — retry thất bại KHÔNG được sinh thêm blocked activation mới trong view (Verify V7-12) | V6-06D |
 | 6 | command | Cancel run (fallback khi adapter drift không phục hồi được) | *(dùng lại Screen 7 hàng 4)* | *(dùng lại)* | `CancelRun` — **authority dùng chung với Screen 7**, không định nghĩa lại | V6-06 |
 | 7 | command | Cancel WorkItem / Resolve blocker (thực thi thật, có ngữ cảnh node/attempt) | *(dùng lại Screen 7 hàng 5/6)* | *(dùng lại)* | `CancelWorkItem` / `ResolveWorkItemBlocker` — **authority dùng chung với Screen 7**; hai bề mặt UI (summary-link ở Screen 7, nút thao tác thật ở Screen 8) chia sẻ ĐÚNG MỘT command mỗi loại, không phải hai owner | V6-06D |
+| 8 | query | Chi tiết một node: được yêu cầu làm gì, đang làm gì, kết quả, vì sao hỏng và làm gì tiếp | `getNodeRunDetail` | `aw node-run show` | `GetNodeRunDetail` [ĐÃ CÓ: `internal/app/runtime/node_run_detail.go:GetNodeRunDetail`] — chỉ đọc; tóm tắt artifact (lời cuối của agent, đầu ra lệnh, file đổi) đã redact và giới hạn kích thước | V11-11 |
+| 9 | query | Luồng sự kiện của một attempt (tin nhắn agent, công cụ gọi, cảnh báo), phân trang theo Sequence để theo dõi khi đang chạy | `listAttemptEvents` | `aw node-run events` | `ListAttemptEvents` [ĐÃ CÓ: `internal/app/runtime/attempt_events.go:ListAttemptEvents`] — chỉ đọc, đã redact lần hai, cắt theo trường | V11-11 |
 
 ## 10. Screen 9 — Workspace / source-diff-log viewer
 

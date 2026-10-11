@@ -248,7 +248,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// V6-06B: Run detail/graph/timeline query routes. Reuses the SAME
 	// process-lifetime matcher/cursor every other redacting/paging route
 	// in this process reuses.
-	httprundetail.RegisterRoutes(routes, httprundetail.Dependencies{UnitOfWork: deps.UnitOfWork, Matcher: deps.Matcher, Cursor: deps.Cursor})
+	httprundetail.RegisterRoutes(routes, httprundetail.Dependencies{UnitOfWork: deps.UnitOfWork, Matcher: deps.Matcher, Cursor: deps.Cursor, ArtifactStore: deps.ArtifactStore})
 	// V6-06A: Approval decision and typed WAIT signal endpoints.
 	decision.RegisterRoutes(routes, decision.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}, Release: deps.Release})
 	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine

@@ -1165,6 +1165,21 @@
             "name": "CreatedAt",
             "jsonTag": "createdAt",
             "type": "time.Time"
+          },
+          {
+            "name": "NodeKey",
+            "jsonTag": "nodeKey,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Iteration",
+            "jsonTag": "iteration",
+            "type": "uint32"
+          },
+          {
+            "name": "AttemptNumber",
+            "jsonTag": "attemptNumber,omitempty",
+            "type": "uint32"
           }
         ]
       }
@@ -1289,6 +1304,116 @@
             "name": "RepositoryInstructionFiles",
             "jsonTag": "repositoryInstructionFiles,omitempty",
             "type": "[]runtime.InstructionFileRefView"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "getNodeRunDetail",
+      "method": "GET",
+      "path": "/node-runs/{nodeRunId}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.NodeRunDetail",
+        "fields": [
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "NodeKey",
+            "jsonTag": "nodeKey",
+            "type": "string"
+          },
+          {
+            "name": "NodeType",
+            "jsonTag": "nodeType",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Iteration",
+            "jsonTag": "iteration",
+            "type": "uint32"
+          },
+          {
+            "name": "ActivationSequence",
+            "jsonTag": "activationSequence",
+            "type": "uint64"
+          },
+          {
+            "name": "SelectedOutcome",
+            "jsonTag": "selectedOutcome,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "BlockReason",
+            "jsonTag": "blockReason,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "ReactivationReason",
+            "jsonTag": "reactivationReason,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Definition",
+            "jsonTag": "definition",
+            "type": "runtime.NodeDefinitionView"
+          },
+          {
+            "name": "Attempts",
+            "jsonTag": "attempts",
+            "type": "[]runtime.TimelineEntryView"
+          },
+          {
+            "name": "Evidence",
+            "jsonTag": "evidence",
+            "type": "[]runtime.NodeEvidenceView"
+          },
+          {
+            "name": "Approval",
+            "jsonTag": "approval,omitempty",
+            "type": "*runtime.ApprovalRequestView"
+          },
+          {
+            "name": "Result",
+            "jsonTag": "result",
+            "type": "runtime.NodeResultView"
+          },
+          {
+            "name": "Progress",
+            "jsonTag": "progress,omitempty",
+            "type": "*runtime.NodeProgressView"
+          },
+          {
+            "name": "Failure",
+            "jsonTag": "failure,omitempty",
+            "type": "*runtime.ExplainedFailure"
           }
         ]
       }
@@ -2726,6 +2851,56 @@
             "name": "Items",
             "jsonTag": "items",
             "type": "[]runtime.ArtifactSummary"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "listAttemptEvents",
+      "method": "GET",
+      "path": "/execution-attempts/{attemptId}/events",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.AttemptEventsPage",
+        "fields": [
+          {
+            "name": "AttemptID",
+            "jsonTag": "attemptId",
+            "type": "string"
+          },
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "AttemptState",
+            "jsonTag": "attemptState",
+            "type": "string"
+          },
+          {
+            "name": "Finished",
+            "jsonTag": "finished",
+            "type": "bool"
+          },
+          {
+            "name": "Events",
+            "jsonTag": "events",
+            "type": "[]runtime.AttemptEventView"
+          },
+          {
+            "name": "NextSequence",
+            "jsonTag": "nextSequence",
+            "type": "uint64"
+          },
+          {
+            "name": "HasMore",
+            "jsonTag": "hasMore",
+            "type": "bool"
           }
         ]
       }

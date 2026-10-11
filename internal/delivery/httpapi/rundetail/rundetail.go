@@ -77,6 +77,9 @@ type Dependencies struct {
 	UnitOfWork ports.UnitOfWork
 	Matcher    redact.Matcher
 	Cursor     *httpapi.CursorCodec
+	// ArtifactStore (V11-11) lets getNodeRunDetail summarize the few artifacts worth reading at a glance (the agent's last words, a
+	// command's output, the changed files). Nil leaves those summaries out.
+	ArtifactStore ports.ArtifactStore
 }
 
 // RegisterRoutes registers this package's own three route fragments onto
@@ -100,5 +103,15 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodGet, Path: "/runs/{id}/timeline", OperationID: "getRunTimeline",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: runTimelineResponse{},
 		Handler: handleGetRunTimeline(deps),
+	})
+	reg.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/node-runs/{nodeRunId}", OperationID: "getNodeRunDetail",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: runtimeapp.NodeRunDetail{},
+		Handler: handleGetNodeRunDetail(deps),
+	})
+	reg.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/execution-attempts/{attemptId}/events", OperationID: "listAttemptEvents",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: runtimeapp.AttemptEventsPage{},
+		Handler: handleListAttemptEvents(deps),
 	})
 }

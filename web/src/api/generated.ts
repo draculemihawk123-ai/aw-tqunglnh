@@ -446,6 +446,9 @@ export interface GetEvidenceResponse {
   revisionSetHash: string;
   policyVersion: string;
   createdAt: string;
+  nodeKey?: string;
+  iteration: number;
+  attemptNumber?: number;
 }
 
 // GET /projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId} (scope: PROJECT)
@@ -483,6 +486,33 @@ export interface GetMessageContextSnapshotResponse {
 // GET /projects/{projectId}/work-items/{workItemId}/messages/{messageId}/context-snapshot (scope: PROJECT)
 export function getMessageContextSnapshot(projectId: string, workItemId: string, messageId: string, opts: RequestOptions = {}): Promise<GetMessageContextSnapshotResponse> {
   return request<GetMessageContextSnapshotResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/messages/${messageId}/context-snapshot`, undefined, opts);
+}
+
+export interface GetNodeRunDetailResponse {
+  nodeRunId: string;
+  runId: string;
+  workItemId: string;
+  projectId: string;
+  nodeKey: string;
+  nodeType: string;
+  state: string;
+  iteration: number;
+  activationSequence: number;
+  selectedOutcome?: string;
+  blockReason?: string;
+  reactivationReason?: string;
+  definition: unknown;
+  attempts: unknown[];
+  evidence: unknown[];
+  approval?: unknown | null;
+  result: unknown;
+  progress?: unknown | null;
+  failure?: unknown | null;
+}
+
+// GET /node-runs/{nodeRunId} (scope: PROJECT)
+export function getNodeRunDetail(nodeRunId: string, opts: RequestOptions = {}): Promise<GetNodeRunDetailResponse> {
+  return request<GetNodeRunDetailResponse>("GET", `/node-runs/${nodeRunId}`, undefined, opts);
 }
 
 export interface GetProjectDefinitionResponse {
@@ -887,6 +917,21 @@ export interface ListArtifactsResponse {
 // GET /projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId}/artifacts (scope: PROJECT)
 export function listArtifacts(projectId: string, workItemId: string, evidenceId: string, opts: RequestOptions = {}): Promise<ListArtifactsResponse> {
   return request<ListArtifactsResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/evidence/${evidenceId}/artifacts`, undefined, opts);
+}
+
+export interface ListAttemptEventsResponse {
+  attemptId: string;
+  nodeRunId: string;
+  attemptState: string;
+  finished: boolean;
+  events: unknown[];
+  nextSequence: number;
+  hasMore: boolean;
+}
+
+// GET /execution-attempts/{attemptId}/events (scope: PROJECT)
+export function listAttemptEvents(attemptId: string, opts: RequestOptions = {}): Promise<ListAttemptEventsResponse> {
+  return request<ListAttemptEventsResponse>("GET", `/execution-attempts/${attemptId}/events`, undefined, opts);
 }
 
 export interface ListChildWorkItemsResponse {

@@ -124,6 +124,9 @@ type FinalizeExecutionAttemptRequest struct {
 	JobLease                ports.JobLease
 	WriteLeases             []ports.WriteLeaseGrant
 	CorrelationID           string
+	// PartialOutputArtifactID (V11-11) names an ORPHAN agent-output artifact staged by a PartialOutputStager: the last words of an attempt
+	// that FAILED or TIMED_OUT. Honoured only for those two states; it becomes an AGENT_OUTPUT evidence row.
+	PartialOutputArtifactID string
 	// Evidence is populated now (V5-08B) exactly when the caller is the
 	// NodeExecutor->AgentExecutor bridge proposing a real AGENT
 	// completion — required when NextState is SUCCEEDED and the caller is
@@ -726,6 +729,11 @@ func decideRetryOrExhaustion(
 	// failure, a timeout, a kill — never required to carry Evidence).
 	if req.Evidence != nil {
 		if err := validateAndAttachEvidenceArtifactsTx(ctx, tx, clk, req, run); err != nil {
+			return err
+		}
+	}
+	if req.PartialOutputArtifactID != "" {
+		if err := attachPartialAgentOutputTx(ctx, tx, clk, req, attempt, run); err != nil {
 			return err
 		}
 	}

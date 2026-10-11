@@ -99,6 +99,7 @@ func (m *MessageRepository) AppendMessage(_ context.Context, req ports.AppendMes
 		return message.Message{}, err
 	}
 	msg.Pinned = req.Pinned
+	msg.DisplayOnly, msg.NodeRunID = req.DisplayOnly, req.NodeRunID
 	if m.messages == nil {
 		m.messages = map[string]message.Message{}
 	}
