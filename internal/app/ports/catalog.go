@@ -130,8 +130,12 @@ type RecordRepositoryProbeAttemptRequest struct {
 	Result       *project.RepositoryStatus
 	ErrorCode    *string
 	ErrorMessage *string
-	BaseCommit   *string
-	Dirty        *bool
+	// FailureKind, ErrorDetail and ErrorHint (V11-12) say what kind of failure it was (ProbeFailureKind), Git's redacted stderr and what to do.
+	FailureKind *string
+	ErrorDetail *string
+	ErrorHint   *string
+	BaseCommit  *string
+	Dirty       *bool
 }
 
 // RepositoryProbeAttempt is one append-only row of the onboarding-probe
@@ -146,7 +150,50 @@ type RepositoryProbeAttempt struct {
 	Result       *project.RepositoryStatus
 	ErrorCode    *string
 	ErrorMessage *string
+	FailureKind  *string
+	ErrorDetail  *string
+	ErrorHint    *string
 	BaseCommit   *string
 	Dirty        *bool
 	CreatedAt    time.Time
+}
+
+// ErrRepositoryDeleted is returned when a repository id was deleted (V11-12, ADR-043): its id is never reused, and a replayed registration whose
+// repository no longer exists must say so instead of reporting success.
+var ErrRepositoryDeleted = errors.New("ports: repository was deleted")
+
+// ErrRepositoryReferenced is returned by DeleteRepository when some row still references the repository.
+var ErrRepositoryReferenced = errors.New("ports: repository is still referenced")
+
+// UpdateRepositoryRequest corrects a BLOCKED repository's registration (V11-12): the row gets the new values, goes BLOCKED -> PROBING and its
+// last probe error is cleared, all as one compare-and-swap against ExpectedVersion. Name empty keeps the current name.
+type UpdateRepositoryRequest struct {
+	RepositoryID    string
+	ExpectedVersion uint64
+	Name            string
+	RemoteLocator   string
+	DefaultRef      string
+}
+
+// RepositoryHolder is one thing that still depends on a repository and so stops it being disabled (V11-12).
+type RepositoryHolder struct {
+	// Kind is WORK_ITEM, TASK_FAMILY, WORKSPACE or RELEASE_SET.
+	Kind   string `json:"kind"`
+	ID     string `json:"id"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// RepositoryReference counts the rows of one table that reference a repository (V11-12): a repository with any such row cannot be deleted.
+type RepositoryReference struct {
+	Table string `json:"table"`
+	Count int    `json:"count"`
+}
+
+// DeleteRepositoryRequest removes a repository that never became ACTIVE, together with its probe history, and leaves a tombstone for its id.
+type DeleteRepositoryRequest struct {
+	RepositoryID    string
+	ExpectedVersion uint64
+	Reason          string
+	Actor           string
+	DeletedAt       time.Time
 }

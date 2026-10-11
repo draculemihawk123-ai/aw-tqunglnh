@@ -74,10 +74,9 @@ var ErrIllegalRepositoryTransition = errors.New("project: illegal repository sta
 //   - REGISTERING -> PROBING: the only exit from REGISTERING (V3-02's
 //     probe handler claims a freshly registered repository).
 //   - PROBING -> ACTIVE | BLOCKED: the probe's two possible outcomes.
-//   - BLOCKED -> PROBING: RetryRepositoryProbe (V3-02) re-runs the probe;
-//     BLOCKED can never go anywhere else (in particular, never straight
-//     to DISABLED — only a repository that reached ACTIVE at least once
-//     may ever be disabled).
+//   - BLOCKED -> PROBING: RetryRepositoryProbe (V3-02) re-runs the probe.
+//   - BLOCKED -> DISABLED: V11-12 (ADR-043) corrects V3-01's "only from
+//     ACTIVE": a wrongly registered repository must be able to leave.
 //   - ACTIVE -> DISABLED: the one operator-initiated edge; nothing else
 //     leaves ACTIVE in this task's own scope (V3-01/V3-02 cite no path
 //     back from ACTIVE to PROBING/BLOCKED, so none is declared here —
@@ -93,7 +92,7 @@ var ErrIllegalRepositoryTransition = errors.New("project: illegal repository sta
 var legalRepositoryTransitions = map[RepositoryStatus]map[RepositoryStatus]bool{
 	RepositoryRegistering: {RepositoryProbing: true},
 	RepositoryProbing:     {RepositoryActive: true, RepositoryBlocked: true},
-	RepositoryBlocked:     {RepositoryProbing: true},
+	RepositoryBlocked:     {RepositoryProbing: true, RepositoryDisabled: true},
 	RepositoryActive:      {RepositoryDisabled: true},
 	RepositoryDisabled:    {},
 }

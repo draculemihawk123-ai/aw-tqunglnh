@@ -250,6 +250,23 @@ type CatalogRepository interface {
 	// thể hành động").
 	ListRepositoryProbeAttempts(ctx context.Context, repositoryID string) ([]RepositoryProbeAttempt, error)
 
+	// UpdateRepository (V11-12, ADR-043) corrects a BLOCKED repository: new name/locator/default ref, BLOCKED -> PROBING, last probe error cleared,
+	// version + 1, one compare-and-swap on ExpectedVersion (ErrOptimisticConflict when stale or not BLOCKED, ErrPersistenceAlreadyExists when the
+	// new name is taken by another live repository of the project).
+	UpdateRepository(ctx context.Context, req UpdateRepositoryRequest) (project.Repository, error)
+	// ListRepositoryHolders lists what still depends on the repository: unfinished work items and task families whose scope names it, workspaces
+	// not yet released and release sets still open. Empty means it can be disabled.
+	ListRepositoryHolders(ctx context.Context, repositoryID string) ([]RepositoryHolder, error)
+	// RepositoryEverActive reports whether any probe of the repository ended ACTIVE (a repository can have been ACTIVE and moved on, so its status
+	// alone is not enough).
+	RepositoryEverActive(ctx context.Context, repositoryID string) (bool, error)
+	// ListRepositoryReferences counts, per table, the rows that reference the repository other than its own probe history. Found from the schema's
+	// foreign keys, so a table added later is covered without touching this method.
+	ListRepositoryReferences(ctx context.Context, repositoryID string) ([]RepositoryReference, error)
+	// DeleteRepository removes the repository row and its probe history, cancels its waiting probe jobs and records a tombstone for the id. It
+	// refuses when anything references the repository (ErrRepositoryReferenced) and compares ExpectedVersion like any other write.
+	DeleteRepository(ctx context.Context, req DeleteRepositoryRequest) error
+
 	// CreateComponent inserts a new Component row after verifying
 	// req.RepositoryID names a Repository that actually exists and that
 	// its own project_id matches req.ProjectID exactly —

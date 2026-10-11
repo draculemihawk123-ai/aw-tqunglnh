@@ -82,6 +82,9 @@ func registerClassifications(c *Catalog) {
 	c.ignore("ProjectCreated", 1, "Project existence is catalog data, not a Kanban/task-detail entity; ProjectID scoping for this projection's own rows comes from each WorkItem/Run event's own ProjectID field, never from tracking Project creation itself.")
 	c.ignore("RepositoryRegistered", 1, "Repository catalog data — V6-10's own multi-repo badge aggregation cross-references catalog state directly at read time (its own explicit Thực hiện bullet), never via this projection.")
 	c.ignore("RepositoryProbeRetried", 1, "Repository catalog/onboarding data, no Kanban/task-detail surface.")
+	c.ignore("RepositoryUpdated", 1, "Repository catalog/onboarding data, no Kanban/task-detail surface.")
+	c.ignore("RepositoryDisabled", 1, "Repository catalog data; a disabled repository cannot be in use by an unfinished work item, so no Kanban/task-detail row changes.")
+	c.ignore("RepositoryDeleted", 1, "Repository catalog data; only a never-ACTIVE, unreferenced repository can be deleted, so no Kanban/task-detail row refers to it.")
 	c.ignore("ComponentPackAssigned", 1, "Component/pack catalog data, no Kanban/task-detail surface.")
 
 	// --- Ignore: definition authoring (internal/app/definitions) ---

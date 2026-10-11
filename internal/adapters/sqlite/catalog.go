@@ -131,7 +131,15 @@ func registerRepositoryTx(ctx context.Context, tx *sql.Tx, req ports.RegisterRep
 	if !errors.Is(err, sql.ErrNoRows) {
 		return project.Repository{}, MapSQLiteError(fmt.Errorf("check repository id: %w", err))
 	}
-	err = tx.QueryRowContext(ctx, `SELECT 1 FROM repositories WHERE project_id = ? AND name = ?`, string(created.ProjectID), created.Name).Scan(&duplicate)
+	// V11-12: a deleted repository's id is never reused (its tombstone is checked first), and only a live (not DISABLED) repository holds a name.
+	deleted, err := repositoryIDDeleted(ctx, tx, string(created.ID))
+	if err != nil {
+		return project.Repository{}, err
+	}
+	if deleted {
+		return project.Repository{}, fmt.Errorf("%w: repository %s", ports.ErrRepositoryDeleted, created.ID)
+	}
+	err = tx.QueryRowContext(ctx, `SELECT 1 FROM repositories WHERE project_id = ? AND name = ? AND status <> 'DISABLED'`, string(created.ProjectID), created.Name).Scan(&duplicate)
 	if err == nil {
 		return project.Repository{}, fmt.Errorf("%w: repository name %q in project %s", ports.ErrPersistenceAlreadyExists, created.Name, created.ProjectID)
 	}
@@ -295,6 +303,9 @@ func recordRepositoryProbeAttemptTx(ctx context.Context, tx *sql.Tx, req ports.R
 	}
 	errorCode := nullableStringPtr(req.ErrorCode)
 	errorMessage := nullableStringPtr(req.ErrorMessage)
+	failureKind := nullableStringPtr(req.FailureKind)
+	errorDetail := nullableStringPtr(req.ErrorDetail)
+	errorHint := nullableStringPtr(req.ErrorHint)
 	baseCommit := nullableStringPtr(req.BaseCommit)
 	var dirty sql.NullInt64
 	if req.Dirty != nil {
@@ -308,10 +319,10 @@ func recordRepositoryProbeAttemptTx(ctx context.Context, tx *sql.Tx, req ports.R
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO repository_probe_attempts (
     id, project_id, repository_id, job_id, state, result,
-    error_code, error_message, base_commit, dirty, created_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    error_code, error_message, base_commit, dirty, created_at, failure_kind, error_detail, error_hint
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.ID, req.ProjectID, req.RepositoryID, req.JobID, string(req.State), result,
-		errorCode, errorMessage, baseCommit, dirty, now.Format(time.RFC3339Nano),
+		errorCode, errorMessage, baseCommit, dirty, now.Format(time.RFC3339Nano), failureKind, errorDetail, errorHint,
 	); err != nil {
 		return ports.RepositoryProbeAttempt{}, MapSQLiteError(fmt.Errorf("record repository probe attempt: %w", err))
 	}
@@ -319,6 +330,7 @@ INSERT INTO repository_probe_attempts (
 	return ports.RepositoryProbeAttempt{
 		ID: req.ID, ProjectID: req.ProjectID, RepositoryID: req.RepositoryID, JobID: req.JobID,
 		State: req.State, Result: req.Result, ErrorCode: req.ErrorCode, ErrorMessage: req.ErrorMessage,
+		FailureKind: req.FailureKind, ErrorDetail: req.ErrorDetail, ErrorHint: req.ErrorHint,
 		BaseCommit: req.BaseCommit, Dirty: req.Dirty, CreatedAt: now,
 	}, nil
 }
@@ -331,7 +343,8 @@ func (r catalogRepository) ListRepositoryProbeAttempts(ctx context.Context, repo
 
 func listRepositoryProbeAttemptsTx(ctx context.Context, tx *sql.Tx, repositoryID string) ([]ports.RepositoryProbeAttempt, error) {
 	rows, err := tx.QueryContext(ctx, `
-SELECT id, project_id, repository_id, job_id, state, result, error_code, error_message, base_commit, dirty, created_at
+SELECT id, project_id, repository_id, job_id, state, result, error_code, error_message, base_commit, dirty, created_at,
+    failure_kind, error_detail, error_hint
 FROM repository_probe_attempts WHERE repository_id = ? ORDER BY julianday(created_at)`, repositoryID)
 	if err != nil {
 		return nil, MapSQLiteError(fmt.Errorf("list repository probe attempts: %w", err))
@@ -354,9 +367,10 @@ FROM repository_probe_attempts WHERE repository_id = ? ORDER BY julianday(create
 
 func scanRepositoryProbeAttemptRow(row repositoryRowScanner) (ports.RepositoryProbeAttempt, error) {
 	var id, projectID, repositoryID, jobID, state, createdAtText string
-	var resultValue, errorCode, errorMessage, baseCommit sql.NullString
+	var resultValue, errorCode, errorMessage, baseCommit, failureKind, errorDetail, errorHint sql.NullString
 	var dirty sql.NullInt64
-	if err := row.Scan(&id, &projectID, &repositoryID, &jobID, &state, &resultValue, &errorCode, &errorMessage, &baseCommit, &dirty, &createdAtText); err != nil {
+	if err := row.Scan(&id, &projectID, &repositoryID, &jobID, &state, &resultValue, &errorCode, &errorMessage, &baseCommit, &dirty, &createdAtText,
+		&failureKind, &errorDetail, &errorHint); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ports.RepositoryProbeAttempt{}, err
 		}
@@ -379,6 +393,15 @@ func scanRepositoryProbeAttemptRow(row repositoryRowScanner) (ports.RepositoryPr
 	}
 	if errorMessage.Valid {
 		attempt.ErrorMessage = &errorMessage.String
+	}
+	if failureKind.Valid {
+		attempt.FailureKind = &failureKind.String
+	}
+	if errorDetail.Valid {
+		attempt.ErrorDetail = &errorDetail.String
+	}
+	if errorHint.Valid {
+		attempt.ErrorHint = &errorHint.String
 	}
 	if baseCommit.Valid {
 		attempt.BaseCommit = &baseCommit.String

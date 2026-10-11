@@ -137,6 +137,9 @@ var migrationsRequiringForeignKeysOff = map[int]bool{
 	// for RECOVERY_REAPER — see that migration's own doc comment for why
 	// durable_jobs specifically needs this treatment.
 	34: true,
+	// 53 (V11-12, 0053_repository_lifecycle.sql) rebuilds repositories to turn UNIQUE (project_id, name) into a partial index that ignores
+	// DISABLED rows; more than ten tables REFERENCE repositories(id), so the DROP needs foreign_keys=OFF like 25, 32 and 34.
+	53: true,
 }
 
 // Migrate applies every pending numbered migration in version order. Each

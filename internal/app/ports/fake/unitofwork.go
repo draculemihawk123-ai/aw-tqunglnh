@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -658,6 +659,7 @@ type CatalogRepository struct {
 	assignments   map[string][]project.ComponentPackAssignment // by ComponentID, oldest first
 	probeAttempts map[string][]ports.RepositoryProbeAttempt    // by RepositoryID, oldest first
 	probeJobIDs   map[string]bool                              // JobID -> already recorded, mirroring the sqlite adapter's UNIQUE(job_id)
+	deleted       map[string]bool                              // V11-12: ids of deleted repositories (the sqlite tombstone table)
 }
 
 var _ ports.CatalogRepository = (*CatalogRepository)(nil)
@@ -687,9 +689,13 @@ func (c *CatalogRepository) clone() *CatalogRepository {
 	for k, v := range c.probeJobIDs {
 		probeJobIDs[k] = v
 	}
+	deleted := make(map[string]bool, len(c.deleted))
+	for k, v := range c.deleted {
+		deleted[k] = v
+	}
 	return &CatalogRepository{
 		projects: projects, repositories: repositories, components: components,
-		assignments: assignments, probeAttempts: probeAttempts, probeJobIDs: probeJobIDs,
+		assignments: assignments, probeAttempts: probeAttempts, probeJobIDs: probeJobIDs, deleted: deleted,
 	}
 }
 
@@ -739,8 +745,11 @@ func (c *CatalogRepository) RegisterRepository(_ context.Context, req ports.Regi
 	if _, exists := c.repositories[req.ID]; exists {
 		return project.Repository{}, fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceAlreadyExists, req.ID)
 	}
+	if c.deleted[req.ID] {
+		return project.Repository{}, fmt.Errorf("fake: %w: repository %s", ports.ErrRepositoryDeleted, req.ID)
+	}
 	for _, other := range c.repositories {
-		if other.ProjectID == created.ProjectID && other.Name == created.Name {
+		if other.ProjectID == created.ProjectID && other.Name == created.Name && other.Status != project.RepositoryDisabled {
 			return project.Repository{}, fmt.Errorf("fake: %w: repository name %q in project %s", ports.ErrPersistenceAlreadyExists, created.Name, created.ProjectID)
 		}
 	}
@@ -805,6 +814,7 @@ func (c *CatalogRepository) RecordRepositoryProbeAttempt(_ context.Context, req 
 	attempt := ports.RepositoryProbeAttempt{
 		ID: req.ID, ProjectID: req.ProjectID, RepositoryID: req.RepositoryID, JobID: req.JobID,
 		State: req.State, Result: req.Result, ErrorCode: req.ErrorCode, ErrorMessage: req.ErrorMessage,
+		FailureKind: req.FailureKind, ErrorDetail: req.ErrorDetail, ErrorHint: req.ErrorHint,
 		BaseCommit: req.BaseCommit, Dirty: req.Dirty, CreatedAt: time.Now().UTC(),
 	}
 	if c.probeAttempts == nil {
@@ -820,6 +830,86 @@ func (c *CatalogRepository) RecordRepositoryProbeAttempt(_ context.Context, req 
 
 func (c *CatalogRepository) ListRepositoryProbeAttempts(_ context.Context, repositoryID string) ([]ports.RepositoryProbeAttempt, error) {
 	return append([]ports.RepositoryProbeAttempt(nil), c.probeAttempts[repositoryID]...), nil
+}
+
+// UpdateRepository mirrors sqlite's updateRepositoryTx.
+func (c *CatalogRepository) UpdateRepository(_ context.Context, req ports.UpdateRepositoryRequest) (project.Repository, error) {
+	repo, ok := c.repositories[req.RepositoryID]
+	if !ok {
+		return project.Repository{}, fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceNotFound, req.RepositoryID)
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		name = repo.Name
+	}
+	validated, err := project.NewRepository(repo.ID, repo.ProjectID, name, req.RemoteLocator, req.DefaultRef)
+	if err != nil {
+		return project.Repository{}, err
+	}
+	if repo.Status != project.RepositoryBlocked || repo.Version != req.ExpectedVersion {
+		return project.Repository{}, fmt.Errorf("fake: %w: repository %s expected BLOCKED@%d", ports.ErrOptimisticConflict, req.RepositoryID, req.ExpectedVersion)
+	}
+	for _, other := range c.repositories {
+		if other.ID != repo.ID && other.ProjectID == repo.ProjectID && other.Name == validated.Name && other.Status != project.RepositoryDisabled {
+			return project.Repository{}, fmt.Errorf("fake: %w: repository name %q in project %s", ports.ErrPersistenceAlreadyExists, validated.Name, repo.ProjectID)
+		}
+	}
+	repo.Name, repo.RemoteLocator, repo.DefaultRef = validated.Name, validated.RemoteLocator, validated.DefaultRef
+	repo.Status, repo.LastProbeErrorCode = project.RepositoryProbing, nil
+	repo.Version++
+	c.repositories[req.RepositoryID] = repo
+	return repo, nil
+}
+
+// ListRepositoryHolders: the fake keeps no work items, workspaces or release sets, so nothing ever holds a repository.
+func (c *CatalogRepository) ListRepositoryHolders(_ context.Context, _ string) ([]ports.RepositoryHolder, error) {
+	return nil, nil
+}
+
+func (c *CatalogRepository) RepositoryEverActive(_ context.Context, repositoryID string) (bool, error) {
+	for _, attempt := range c.probeAttempts[repositoryID] {
+		if attempt.Result != nil && *attempt.Result == project.RepositoryActive {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ListRepositoryReferences: only the components the fake knows about reference a repository.
+func (c *CatalogRepository) ListRepositoryReferences(_ context.Context, repositoryID string) ([]ports.RepositoryReference, error) {
+	n := 0
+	for _, component := range c.components {
+		if string(component.RepositoryID) == repositoryID {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil, nil
+	}
+	return []ports.RepositoryReference{{Table: "components", Count: n}}, nil
+}
+
+func (c *CatalogRepository) DeleteRepository(ctx context.Context, req ports.DeleteRepositoryRequest) error {
+	repo, ok := c.repositories[req.RepositoryID]
+	if !ok {
+		return fmt.Errorf("fake: %w: repository %s", ports.ErrPersistenceNotFound, req.RepositoryID)
+	}
+	if repo.Version != req.ExpectedVersion {
+		return fmt.Errorf("fake: %w: repository %s expected version %d", ports.ErrOptimisticConflict, req.RepositoryID, req.ExpectedVersion)
+	}
+	if references, _ := c.ListRepositoryReferences(ctx, req.RepositoryID); len(references) > 0 {
+		return fmt.Errorf("fake: %w: repository %s", ports.ErrRepositoryReferenced, req.RepositoryID)
+	}
+	for _, attempt := range c.probeAttempts[req.RepositoryID] {
+		delete(c.probeJobIDs, attempt.JobID)
+	}
+	delete(c.probeAttempts, req.RepositoryID)
+	delete(c.repositories, req.RepositoryID)
+	if c.deleted == nil {
+		c.deleted = map[string]bool{}
+	}
+	c.deleted[req.RepositoryID] = true
+	return nil
 }
 
 func (c *CatalogRepository) CreateComponent(_ context.Context, req ports.CreateComponentRequest) (project.Component, error) {
