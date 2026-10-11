@@ -68,6 +68,8 @@ import (
 type Dependencies struct {
 	UoW ports.UnitOfWork
 	IDs idsource.Source
+	// Prober (V11-12) backs `repository check`; nil makes it fail with a plain message.
+	Prober ports.RepositoryProber
 	// Now defaults to time.Now().UTC when nil, exactly like
 	// cli.EnvelopeRequest.Now's own doc comment — a caller only needs to
 	// supply this for deterministic tests.

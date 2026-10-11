@@ -1076,6 +1076,25 @@ export function projectComponentsList(id: string, opts: RequestOptions = {}): Pr
   return request<unknown>("GET", `/projects/${id}/components`, undefined, opts);
 }
 
+export interface ProjectRepositoriesCheckResponse {
+  ok: boolean;
+  failureKind?: string;
+  message?: string;
+  path?: string;
+  resolvedPath?: string;
+  detail?: string;
+  hint?: string;
+  canonicalPath?: string;
+  baseCommit?: string;
+  dirty?: boolean;
+  components?: unknown[];
+}
+
+// GET /projects/{id}/repositories/check (scope: PROJECT)
+export function projectRepositoriesCheck(id: string, opts: RequestOptions = {}): Promise<ProjectRepositoriesCheckResponse> {
+  return request<ProjectRepositoriesCheckResponse>("GET", `/projects/${id}/repositories/check`, undefined, opts);
+}
+
 // GET /projects/{id}/repositories (scope: PROJECT)
 export function projectRepositoriesList(id: string, opts: RequestOptions = {}): Promise<unknown> {
   return request<unknown>("GET", `/projects/${id}/repositories`, undefined, opts);
@@ -1217,6 +1236,38 @@ export function rejectScopeExpansion(projectId: string, requestId: string, body:
   return request<RejectScopeExpansionResponse>("POST", `/projects/${projectId}/scope-expansions/${requestId}/reject`, body, opts);
 }
 
+export interface RepositoriesDeleteRequest {
+  reason: string;
+}
+
+export interface RepositoriesDeleteResponse {
+  repositoryId: string;
+  projectId: string;
+  name: string;
+}
+
+// DELETE /repositories/{id} (scope: PROJECT)
+export function repositoriesDelete(id: string, body: RepositoriesDeleteRequest, opts: RequestOptions = {}): Promise<RepositoriesDeleteResponse> {
+  return request<RepositoriesDeleteResponse>("DELETE", `/repositories/${id}`, body, opts);
+}
+
+export interface RepositoriesDisableRequest {
+  reason: string;
+}
+
+export interface RepositoriesDisableResponse {
+  repositoryId: string;
+  projectId: string;
+  status: string;
+  version: number;
+  previousStatus: string;
+}
+
+// POST /repositories/{id}/disable (scope: PROJECT)
+export function repositoriesDisable(id: string, body: RepositoriesDisableRequest, opts: RequestOptions = {}): Promise<RepositoriesDisableResponse> {
+  return request<RepositoriesDisableResponse>("POST", `/repositories/${id}/disable`, body, opts);
+}
+
 // GET /repositories/{id} (scope: PROJECT)
 export function repositoriesGet(id: string, opts: RequestOptions = {}): Promise<unknown> {
   return request<unknown>("GET", `/repositories/${id}`, undefined, opts);
@@ -1287,6 +1338,25 @@ export function repositoriesReadinessVerify(id: string, body: unknown, opts: Req
 // POST /repositories/{id}/retry-probe (scope: PROJECT)
 export function repositoriesRetryProbe(id: string, body: unknown, opts: RequestOptions = {}): Promise<unknown> {
   return request<unknown>("POST", `/repositories/${id}/retry-probe`, body, opts);
+}
+
+export interface RepositoriesUpdateRequest {
+  name: string | null;
+  remoteLocator: string | null;
+  defaultRef: string | null;
+}
+
+export interface RepositoriesUpdateResponse {
+  repositoryId: string;
+  projectId: string;
+  status: string;
+  version: number;
+  probeJobId: string;
+}
+
+// PATCH /repositories/{id} (scope: PROJECT)
+export function repositoriesUpdate(id: string, body: RepositoriesUpdateRequest, opts: RequestOptions = {}): Promise<RepositoriesUpdateResponse> {
+  return request<RepositoriesUpdateResponse>("PATCH", `/repositories/${id}`, body, opts);
 }
 
 export interface RequestProjectionRebuildRequest {

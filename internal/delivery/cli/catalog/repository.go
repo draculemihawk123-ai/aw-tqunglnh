@@ -25,12 +25,13 @@ import (
 func RunRepositoryList(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("repository list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	includeDisabled := fs.Bool("include-disabled", false, "also list DISABLED repositories (hidden by default; their history and evidence are kept)")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	positional := fs.Args()
 	if len(positional) != 1 {
-		return usageErrorf("usage: aw repository list <projectId>")
+		return usageErrorf("usage: aw repository list <projectId> [--include-disabled]")
 	}
 	projectID := positional[0]
 
@@ -43,7 +44,14 @@ func RunRepositoryList(ctx context.Context, deps Dependencies, args []string, st
 	}
 	views := make([]repositoryView, 0, len(repos))
 	for _, r := range repos {
-		views = append(views, newRepositoryView(r))
+		if r.Status == project.RepositoryDisabled && !*includeDisabled {
+			continue
+		}
+		attempts, err := appcatalog.ListRepositoryProbeAttempts(ctx, deps.UoW, string(r.ID))
+		if err != nil {
+			return err
+		}
+		views = append(views, newRepositoryView(r, attempts))
 	}
 	return cli.EncodeQueryResult(stdout, repositoryListView{Repositories: views})
 }

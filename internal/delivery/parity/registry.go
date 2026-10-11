@@ -106,21 +106,21 @@ func installation(id string) HTTPBinding { return HTTPBinding{id, cli.ScopeInsta
 // with the descriptors by construction and prove nothing.
 func PublicOperations() []PublicOperation {
 	const (
-		catalog        = "internal/app/catalog"
-		readinesscheck = "internal/app/readinesscheck"
-		definitions    = "internal/app/definitions"
-		adapterb       = "internal/app/adapterbuild"
-		work           = "internal/app/work"
-		runtimeApp     = "internal/app/runtime"
-		message        = "internal/app/message"
-		safe           = "internal/app/safesettings"
-		proj           = "internal/app/projectionrebuild"
-		wsState        = "internal/app/workspacestate"
-		wsRelease      = "internal/app/workspacerelease"
-		wsReconcile    = "internal/app/workspacereconcile"
-		wsInspect      = "internal/app/workspaceinspection"
-		rsCommit       = "internal/app/releasesetcommit"
-		kanbanApp      = "internal/app/kanban"
+		catalog         = "internal/app/catalog"
+		readinesscheck  = "internal/app/readinesscheck"
+		definitions     = "internal/app/definitions"
+		adapterb        = "internal/app/adapterbuild"
+		work            = "internal/app/work"
+		runtimeApp      = "internal/app/runtime"
+		message         = "internal/app/message"
+		safe            = "internal/app/safesettings"
+		proj            = "internal/app/projectionrebuild"
+		wsState         = "internal/app/workspacestate"
+		wsRelease       = "internal/app/workspacerelease"
+		wsReconcile     = "internal/app/workspacereconcile"
+		wsInspect       = "internal/app/workspaceinspection"
+		rsCommit        = "internal/app/releasesetcommit"
+		kanbanApp       = "internal/app/kanban"
 		approvalRelease = "internal/app/approvalrelease"
 	)
 	return []PublicOperation{
@@ -140,6 +140,10 @@ func PublicOperations() []PublicOperation {
 		{Name: "GetRepository", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesGet")}, Symbol: catalog + ".GetRepository"},
 		{Name: "RepositoryOnboarding", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesOnboarding")}, Symbol: catalog + ".ListRepositoryProbeAttempts"},
 		{Name: "RetryRepositoryProbe", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesRetryProbe")}, Symbol: catalog + ".RetryRepositoryProbe"},
+		{Name: "UpdateRepository", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesUpdate")}, Symbol: catalog + ".UpdateRepository"},
+		{Name: "DisableRepository", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesDisable")}, Symbol: catalog + ".DisableRepository"},
+		{Name: "DeleteRepository", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesDelete")}, Symbol: catalog + ".DeleteRepository"},
+		{Name: "CheckRepository", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("projectRepositoriesCheck")}, Symbol: catalog + ".CheckRepository"},
 		{Name: "GetRepositoryReadiness", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesReadiness")}, Symbol: readinesscheck + ".GetRepositoryReadiness"},
 		{Name: "SetRepositoryReadinessProfile", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesReadinessProfileSet")}, Symbol: readinesscheck + ".SetRepositoryReadinessProfile"},
 		{Name: "RequestBaselineCheck", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesReadinessVerify")}, Symbol: readinesscheck + ".RequestBaselineCheck"},

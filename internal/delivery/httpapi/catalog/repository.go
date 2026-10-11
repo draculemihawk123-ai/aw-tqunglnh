@@ -41,7 +41,12 @@ func (h *handler) getRepository(w http.ResponseWriter, r *http.Request) {
 		writeCatalogError(w, err)
 		return
 	}
-	_ = httpapi.EncodeResult(w, http.StatusOK, newRepositoryView(repo), httpapi.ETagFromVersion(repo.Version))
+	attempts, err := appcatalog.ListRepositoryProbeAttempts(r.Context(), h.uow, id)
+	if err != nil {
+		writeCatalogError(w, err)
+		return
+	}
+	_ = httpapi.EncodeResult(w, http.StatusOK, newRepositoryView(repo, attempts), httpapi.ETagFromVersion(repo.Version))
 }
 
 // getRepositoryOnboarding handles `GET /repositories/{id}/onboarding`.
@@ -201,9 +206,19 @@ func (h *handler) listProjectRepositories(w http.ResponseWriter, r *http.Request
 		writeCatalogError(w, err)
 		return
 	}
+	// A DISABLED repository is hidden from the default list; ?includeDisabled=true shows it (its history and evidence are kept either way).
+	includeDisabled := r.URL.Query().Get("includeDisabled") == "true"
 	views := make([]repositoryView, 0, len(repos))
 	for _, repo := range repos {
-		views = append(views, newRepositoryView(repo))
+		if repo.Status == project.RepositoryDisabled && !includeDisabled {
+			continue
+		}
+		attempts, err := appcatalog.ListRepositoryProbeAttempts(r.Context(), h.uow, string(repo.ID))
+		if err != nil {
+			writeCatalogError(w, err)
+			return
+		}
+		views = append(views, newRepositoryView(repo, attempts))
 	}
 	_ = httpapi.EncodeResult(w, http.StatusOK, repositoryListView{Repositories: views}, "")
 }

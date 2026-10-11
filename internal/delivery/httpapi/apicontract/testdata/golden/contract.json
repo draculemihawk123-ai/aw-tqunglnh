@@ -3265,6 +3265,76 @@
       }
     },
     {
+      "operationId": "projectRepositoriesCheck",
+      "method": "GET",
+      "path": "/projects/{id}/repositories/check",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "catalog.CheckRepositoryResult",
+        "fields": [
+          {
+            "name": "OK",
+            "jsonTag": "ok",
+            "type": "bool"
+          },
+          {
+            "name": "FailureKind",
+            "jsonTag": "failureKind,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Message",
+            "jsonTag": "message,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Path",
+            "jsonTag": "path,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "ResolvedPath",
+            "jsonTag": "resolvedPath,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Detail",
+            "jsonTag": "detail,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Hint",
+            "jsonTag": "hint,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "CanonicalPath",
+            "jsonTag": "canonicalPath,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "BaseCommit",
+            "jsonTag": "baseCommit,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Dirty",
+            "jsonTag": "dirty,omitempty",
+            "type": "bool"
+          },
+          {
+            "name": "Components",
+            "jsonTag": "components,omitempty",
+            "type": "[]catalog.CheckedComponent"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "projectRepositoriesList",
       "method": "GET",
       "path": "/projects/{id}/repositories",
@@ -3720,6 +3790,88 @@
       }
     },
     {
+      "operationId": "repositoriesDelete",
+      "method": "DELETE",
+      "path": "/repositories/{id}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.reasonRequestBody",
+        "fields": [
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "catalog.DeleteRepositoryResult",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Name",
+            "jsonTag": "name",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "repositoriesDisable",
+      "method": "POST",
+      "path": "/repositories/{id}/disable",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.reasonRequestBody",
+        "fields": [
+          {
+            "name": "Reason",
+            "jsonTag": "reason",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "catalog.DisableRepositoryResult",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "PreviousStatus",
+            "jsonTag": "previousStatus",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "repositoriesGet",
       "method": "GET",
       "path": "/repositories/{id}",
@@ -3915,6 +4067,62 @@
       "responseSchema": {
         "typeName": "struct {}",
         "opaque": true
+      }
+    },
+    {
+      "operationId": "repositoriesUpdate",
+      "method": "PATCH",
+      "path": "/repositories/{id}",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.updateRepositoryRequestBody",
+        "fields": [
+          {
+            "name": "Name",
+            "jsonTag": "name",
+            "type": "*string"
+          },
+          {
+            "name": "RemoteLocator",
+            "jsonTag": "remoteLocator",
+            "type": "*string"
+          },
+          {
+            "name": "DefaultRef",
+            "jsonTag": "defaultRef",
+            "type": "*string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "catalog.UpdateRepositoryResult",
+        "fields": [
+          {
+            "name": "RepositoryID",
+            "jsonTag": "repositoryId",
+            "type": "string"
+          },
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Status",
+            "jsonTag": "status",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "ProbeJobID",
+            "jsonTag": "probeJobId",
+            "type": "string"
+          }
+        ]
       }
     },
     {

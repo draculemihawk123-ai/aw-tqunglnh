@@ -196,6 +196,10 @@ func TestDescriptorsRegisterEveryCommandWithConsistentMetadata(t *testing.T) {
 		"component list":                        {"PROJECT", "projectComponentsList"},
 		"pack-assignment list":                  {"PROJECT", "componentPackAssignmentsList"},
 		"pack-assignment assign":                {"PROJECT", "componentPackAssignmentsAssign"},
+		"repository update":                     {"PROJECT", "repositoriesUpdate"},
+		"repository disable":                    {"PROJECT", "repositoriesDisable"},
+		"repository delete":                     {"PROJECT", "repositoriesDelete"},
+		"repository check":                      {"PROJECT", "projectRepositoriesCheck"},
 	}
 
 	all := cli.All()

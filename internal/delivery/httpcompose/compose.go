@@ -113,6 +113,8 @@ type Dependencies struct {
 	// RedoParker (V11-10, ADR-041) parks the files a previous run left outside a work item's scope before a retry or redo: the same real
 	// Git workspace provider as the fields above. Nil makes PARK answer UNAVAILABLE.
 	RedoParker ports.SelectedChangeParker
+	// RepositoryProber (V11-12, ADR-043) backs the pre-registration repository check: the same read-only prober the worker runs. Nil makes the check answer UNAVAILABLE.
+	RepositoryProber ports.RepositoryProber
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -230,7 +232,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		Handler: deps.BootstrapHandler,
 	})
 	// V6-03A: Project/repository/component catalog routes.
-	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: deps.UnitOfWork, IDs: idsource.Random{}})
+	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: deps.UnitOfWork, IDs: idsource.Random{}, Prober: deps.RepositoryProber})
 	// V6-04: WorkItem/family/readiness/scope-expansion routes.
 	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: deps.UnitOfWork, IDs: idsource.Random{}, Clock: clock.System{}})
 	// V11-10: run a failed task again / redo it with the newest workflow version, in one action each.

@@ -39,6 +39,7 @@ package catalog
 import (
 	"net/http"
 
+	appcatalog "github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/readinesscheck"
@@ -64,13 +65,16 @@ const maxRequestBodyBytes = 1 << 20
 type Dependencies struct {
 	UoW ports.UnitOfWork
 	IDs idsource.Source
+	// Prober (V11-12) backs the pre-registration check; nil makes that route answer UNAVAILABLE.
+	Prober ports.RepositoryProber
 }
 
 // handler holds Dependencies for every method below — unexported so no
 // other package can construct one directly except through RegisterRoutes.
 type handler struct {
-	uow ports.UnitOfWork
-	ids idsource.Source
+	uow    ports.UnitOfWork
+	ids    idsource.Source
+	prober ports.RepositoryProber
 }
 
 // RegisterRoutes registers every V6-03A route into registry. A composition
@@ -78,7 +82,7 @@ type handler struct {
 // passing the same ports.UnitOfWork/idsource.Source it already
 // constructed.
 func RegisterRoutes(registry *httpapi.RouteRegistry, deps Dependencies) {
-	h := &handler{uow: deps.UoW, ids: deps.IDs}
+	h := &handler{uow: deps.UoW, ids: deps.IDs, prober: deps.Prober}
 
 	registry.Register(httpapi.RouteDescriptor{
 		Method: http.MethodPost, Path: "/projects", OperationID: "projectsCreate",
@@ -110,6 +114,26 @@ func RegisterRoutes(registry *httpapi.RouteRegistry, deps Dependencies) {
 		Method: http.MethodGet, Path: "/repositories/{id}", OperationID: "repositoriesGet",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: struct{}{},
 		Handler: h.getRepository,
+	})
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{id}/repositories/check", OperationID: "projectRepositoriesCheck",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: appcatalog.CheckRepositoryResult{},
+		Handler: h.checkRepository,
+	})
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPatch, Path: "/repositories/{id}", OperationID: "repositoriesUpdate",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: updateRepositoryRequestBody{}, ResponseSchema: appcatalog.UpdateRepositoryResult{},
+		Handler: h.updateRepository,
+	})
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/repositories/{id}/disable", OperationID: "repositoriesDisable",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: reasonRequestBody{}, ResponseSchema: appcatalog.DisableRepositoryResult{},
+		Handler: h.disableRepository,
+	})
+	registry.Register(httpapi.RouteDescriptor{
+		Method: http.MethodDelete, Path: "/repositories/{id}", OperationID: "repositoriesDelete",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: reasonRequestBody{}, ResponseSchema: appcatalog.DeleteRepositoryResult{},
+		Handler: h.deleteRepository,
 	})
 	registry.Register(httpapi.RouteDescriptor{
 		Method: http.MethodGet, Path: "/repositories/{id}/onboarding", OperationID: "repositoriesOnboarding",

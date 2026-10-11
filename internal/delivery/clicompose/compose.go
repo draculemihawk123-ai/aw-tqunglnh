@@ -126,9 +126,11 @@ type Deps struct {
 	ParkedChanges ports.UnselectedChangeParker
 	// RedoParker (V11-10) is the same provider as the narrow port `work-item retry/recreate --out-of-scope PARK` uses.
 	RedoParker ports.SelectedChangeParker
-	Isolation     ports.IsolationEnforcementChecker
-	Agents               *agentregistry.Registry
-	Config               config.Config
+	// RepositoryProber (V11-12) backs `repository check`: the same read-only prober the worker runs.
+	RepositoryProber ports.RepositoryProber
+	Isolation        ports.IsolationEnforcementChecker
+	Agents           *agentregistry.Registry
+	Config           config.Config
 	// ProviderProbe is what `aw doctor` runs the provider executable's
 	// version probe through (V9-05, NeedProviderProbe); nil skips that check.
 	ProviderProbe appdoctor.ProviderProbe

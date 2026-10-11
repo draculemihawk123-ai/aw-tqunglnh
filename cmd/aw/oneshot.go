@@ -10,6 +10,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
@@ -80,6 +81,11 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 			return fail(fmt.Errorf("open artifact store: %w", err))
 		}
 		deps.ArtifactStore = artifacts
+	}
+
+	// V11-12: `repository check` needs the prober; without Git on PATH it is left nil and the command says so.
+	if prober, err := repoprobe.New(repoprobe.Config{}); err == nil {
+		deps.RepositoryProber = prober
 	}
 
 	if needs&clicompose.NeedWorkspace != 0 {

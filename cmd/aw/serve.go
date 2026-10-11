@@ -19,6 +19,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
@@ -239,6 +240,11 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// own source/diff/repository-log routes below. gitworktree.New itself
 	// creates --workspace-root if it does not already exist (unlike
 	// --artifact-root's own must-already-exist os.Stat check above).
+	// V11-12: the same read-only prober the worker runs, for the pre-registration check. Without Git on PATH the check answers UNAVAILABLE.
+	var repositoryProber ports.RepositoryProber
+	if prober, proberErr := repoprobe.New(repoprobe.Config{}); proberErr == nil {
+		repositoryProber = prober
+	}
 	workspaceProvider, err := gitworktree.New(gitworktree.Config{Root: *workspaceRoot})
 	if err != nil {
 		return fmt.Errorf("open git workspace provider: %w", err)
@@ -436,6 +442,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 		WorkspaceHeadAuditor:       workspaceProvider,
 		Release:                    decision.ReleaseSupport{Identities: workspaceProvider, Inspection: workspaceProvider, Parker: workspaceProvider},
 		RedoParker:                 workspaceProvider,
+		RepositoryProber:           repositoryProber,
 		Matcher:                    matcher,
 		Cursor:                     cursorCodec,
 		Isolation:                  isolationChecker,

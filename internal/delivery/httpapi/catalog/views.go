@@ -3,6 +3,7 @@ package catalog
 import (
 	"time"
 
+	appcatalog "github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
@@ -49,24 +50,44 @@ type projectListView struct {
 // exactly which fields each of the two GET routes returns and why they
 // are two routes rather than one).
 type repositoryView struct {
-	ID                 string                `json:"id"`
-	ProjectID          string                `json:"projectId"`
-	Name               string                `json:"name"`
-	RemoteLocator      string                `json:"remoteLocator"`
-	DefaultRef         string                `json:"defaultRef"`
-	Status             string                `json:"status"`
-	LastProbeErrorCode *string               `json:"lastProbeErrorCode,omitempty"`
-	Version            uint64                `json:"version"`
-	ValidActions       []httpapi.ValidAction `json:"validActions,omitempty"`
+	ID                 string  `json:"id"`
+	ProjectID          string  `json:"projectId"`
+	Name               string  `json:"name"`
+	RemoteLocator      string  `json:"remoteLocator"`
+	DefaultRef         string  `json:"defaultRef"`
+	Status             string  `json:"status"`
+	LastProbeErrorCode *string `json:"lastProbeErrorCode,omitempty"`
+	// LastProbeError (V11-12) says in words why a BLOCKED repository is blocked: what, what kind, what to do.
+	LastProbeError *appcatalog.ProbeErrorView `json:"lastProbeError,omitempty"`
+	Version        uint64                     `json:"version"`
+	ValidActions   []httpapi.ValidAction      `json:"validActions,omitempty"`
 }
 
-func newRepositoryView(r project.Repository) repositoryView {
+func newRepositoryView(r project.Repository, attempts []ports.RepositoryProbeAttempt) repositoryView {
 	return repositoryView{
 		ID: string(r.ID), ProjectID: string(r.ProjectID), Name: r.Name,
 		RemoteLocator: r.RemoteLocator, DefaultRef: r.DefaultRef,
 		Status: string(r.Status), LastProbeErrorCode: r.LastProbeErrorCode, Version: r.Version,
-		ValidActions: retryProbeValidActions(r),
+		LastProbeError: appcatalog.LastProbeError(r, attempts, false),
+		ValidActions:   repositoryValidActions(r, attempts),
 	}
+}
+
+// repositoryValidActions lists the lifecycle operations the repository allows right now (advisory, like every validAction): retry the probe, correct it
+// (BLOCKED only), disable it, delete it (never ACTIVE).
+func repositoryValidActions(r project.Repository, attempts []ports.RepositoryProbeAttempt) []httpapi.ValidAction {
+	actions := appcatalog.ActionsFor(r, attempts)
+	var result []httpapi.ValidAction
+	add := func(allowed bool, operationID string) {
+		if allowed {
+			result = append(result, httpapi.ValidAction{OperationID: operationID, ScopeKind: httpapi.ScopeProject, TargetVersion: int64(r.Version)})
+		}
+	}
+	add(actions.RetryProbe, "repositoriesRetryProbe")
+	add(actions.Update, "repositoriesUpdate")
+	add(actions.Disable, "repositoriesDisable")
+	add(actions.Delete, "repositoriesDelete")
+	return result
 }
 
 // retryProbeValidActions returns the one advisory httpapi.ValidAction
@@ -101,6 +122,9 @@ type probeAttemptView struct {
 	Result       *string   `json:"result,omitempty"`
 	ErrorCode    *string   `json:"errorCode,omitempty"`
 	ErrorMessage *string   `json:"errorMessage,omitempty"`
+	FailureKind  *string   `json:"failureKind,omitempty"`
+	ErrorDetail  *string   `json:"errorDetail,omitempty"`
+	ErrorHint    *string   `json:"errorHint,omitempty"`
 	BaseCommit   *string   `json:"baseCommit,omitempty"`
 	Dirty        *bool     `json:"dirty,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
@@ -109,7 +133,8 @@ type probeAttemptView struct {
 func newProbeAttemptView(a ports.RepositoryProbeAttempt) probeAttemptView {
 	view := probeAttemptView{
 		ID: a.ID, JobID: a.JobID, State: string(a.State),
-		ErrorCode: a.ErrorCode, ErrorMessage: a.ErrorMessage, BaseCommit: a.BaseCommit, Dirty: a.Dirty,
+		ErrorCode: a.ErrorCode, ErrorMessage: a.ErrorMessage, FailureKind: a.FailureKind, ErrorDetail: a.ErrorDetail, ErrorHint: a.ErrorHint,
+		BaseCommit: a.BaseCommit, Dirty: a.Dirty,
 		CreatedAt: a.CreatedAt,
 	}
 	if a.Result != nil {
@@ -126,13 +151,14 @@ func newProbeAttemptView(a ports.RepositoryProbeAttempt) probeAttemptView {
 // /repositories/{id}/onboarding | trạng thái/error/probe history có thể
 // hành động").
 type onboardingView struct {
-	RepositoryID       string                `json:"repositoryId"`
-	ProjectID          string                `json:"projectId"`
-	Status             string                `json:"status"`
-	LastProbeErrorCode *string               `json:"lastProbeErrorCode,omitempty"`
-	Version            uint64                `json:"version"`
-	Attempts           []probeAttemptView    `json:"attempts"`
-	ValidActions       []httpapi.ValidAction `json:"validActions,omitempty"`
+	RepositoryID       string                     `json:"repositoryId"`
+	ProjectID          string                     `json:"projectId"`
+	Status             string                     `json:"status"`
+	LastProbeErrorCode *string                    `json:"lastProbeErrorCode,omitempty"`
+	LastProbeError     *appcatalog.ProbeErrorView `json:"lastProbeError,omitempty"`
+	Version            uint64                     `json:"version"`
+	Attempts           []probeAttemptView         `json:"attempts"`
+	ValidActions       []httpapi.ValidAction      `json:"validActions,omitempty"`
 }
 
 func newOnboardingView(r project.Repository, attempts []ports.RepositoryProbeAttempt) onboardingView {
@@ -142,8 +168,8 @@ func newOnboardingView(r project.Repository, attempts []ports.RepositoryProbeAtt
 	}
 	return onboardingView{
 		RepositoryID: string(r.ID), ProjectID: string(r.ProjectID), Status: string(r.Status),
-		LastProbeErrorCode: r.LastProbeErrorCode, Version: r.Version, Attempts: views,
-		ValidActions: retryProbeValidActions(r),
+		LastProbeErrorCode: r.LastProbeErrorCode, LastProbeError: appcatalog.LastProbeError(r, attempts, true), Version: r.Version, Attempts: views,
+		ValidActions: repositoryValidActions(r, attempts),
 	}
 }
 

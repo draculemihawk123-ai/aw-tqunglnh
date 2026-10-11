@@ -106,7 +106,9 @@ func settingsRoutes() []Route {
 // V6-15D ---------------------------------------------------------------
 
 func catalogRoutes() []Route {
-	deps := func(d *Deps) catalog.Dependencies { return catalog.Dependencies{UoW: d.UoW, IDs: d.ids(), Now: d.Now} }
+	deps := func(d *Deps) catalog.Dependencies {
+		return catalog.Dependencies{UoW: d.UoW, IDs: d.ids(), Now: d.Now, Prober: d.RepositoryProber}
+	}
 	return []Route{
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectList(ctx, deps(d), a, s.Stdout, s.Stderr)
@@ -132,6 +134,18 @@ func catalogRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryRetryProbe(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "retry-probe"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryUpdate(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "update"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryDisable(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "disable"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryDelete(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "delete"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryCheck(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "check"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryReadinessShow(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "readiness", "show"),
