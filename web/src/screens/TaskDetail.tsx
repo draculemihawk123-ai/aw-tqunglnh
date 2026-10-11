@@ -32,6 +32,8 @@ import { commitAllowedFor } from '../api/approvalrelease';
 import type { ApprovalCommitBody } from '../api/approvalrelease';
 import { ApprovalCommitDialog, ReleaseStatusStrip } from './ApprovalRelease';
 import { RecreateDialog, RetryDialog, SupersessionLinks } from './RedoDialogs';
+import { NodeDetailPane } from './NodeDetailPane';
+import { nodeOneLiner } from '../api/nodedetail';
 import { VERDICT_OPTIONS } from '../api/releaseset';
 import type { ReleaseSetDetail, RepositoryReleaseDetail, Verdict } from '../api/releaseset';
 import { artifactContentUrl, fetchArtifactContent, isInlineSafeMediaType, PREVIEW_SIZE_LIMIT_BYTES } from '../api/evidence';
@@ -624,10 +626,17 @@ interface GraphTimelineTabProps {
   runDiagnostics?: RunDiagnosticsResponse;
   isOffline?: boolean;
   onActionSettled: () => void;
+  /** A node run to select when the tab opens (V11-11: the Chat's "view progress" link). */
+  focusNodeRunId?: string;
+  /** Opens the Evidence tab filtered to a node. */
+  onOpenEvidence?: (nodeKey: string) => void;
 }
 
-function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace, runId, runDiagnostics, isOffline, onActionSettled }: GraphTimelineTabProps) {
+function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace, runId, runDiagnostics, isOffline, onActionSettled, focusNodeRunId, onOpenEvidence }: GraphTimelineTabProps) {
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
+  // V11-11: while the run is going, the graph, timeline and node pane follow it.
+  const runLive = !!runDiagnostics && ['RUNNING', 'WAITING', 'VERIFYING', 'CANCELLING', 'PENDING'].includes(runDiagnostics.runState);
+  const followMs = runLive ? 4000 : false;
   const [showList, setShowList] = useState(false);
   const [expandedEntry, setExpandedEntry] = useState<number | null>(null);
   const [retrying, setRetrying] = useState<{ nodeRunId: string; nodeKey: string } | null>(null);
@@ -646,6 +655,7 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
     initialPageParam: undefined as string | undefined,
     getNextPageParam: last => last.nextCursor,
     enabled: !isOffline && !!runId,
+    refetchInterval: followMs,
   });
 
   // V7-17B: getRunDetail's own approvalRequests is the ONE public read that
@@ -669,7 +679,15 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
     initialPageParam: undefined as string | undefined,
     getNextPageParam: last => last.nextCursor,
     enabled: !isOffline && !!runId,
+    refetchInterval: followMs,
   });
+
+  const focusActivations = graphQuery.data?.pages.flatMap(p => p.activations);
+  useEffect(() => {
+    if (!focusNodeRunId || !focusActivations) return;
+    const target = focusActivations.find(a => a.nodeRunId === focusNodeRunId);
+    if (target) setSelectedNodeKey(target.nodeKey);
+  }, [focusNodeRunId, focusActivations]);
 
   const retryMutation = useMutation({
     mutationFn: () => retryBlockedActivation(retrying!.nodeRunId, { reason: retryReason.trim() }, withSessionToken()),
@@ -817,6 +835,7 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
                         <span className="text-[13px] font-medium text-[#172033]">{node.key}</span>
                         {activation && <StatusBadge state={activation.state} entity="workitem" />}
                         {!activation && <span className="text-[12px] text-[#475569]">not yet reached</span>}
+                        {activation && <span className="text-[12px] text-[#475569]" data-testid={`node-label-${node.key}`}>{nodeOneLiner(activation.nodeRunId, entries, Date.now())}</span>}
                       </div>
                       <div className="text-[12px] text-[#475569] mt-1">
                         {possibleEdges.filter(e => e.to === node.key).map(e => `← ${e.from}${e.outcome ? ` (${e.outcome})` : ''}`).join(' · ')}
@@ -851,7 +870,7 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
                 if (!f || !t) return null;
                 const rw = e.kind === 'COMPLETION_REWORK';
                 const taken = (graphQuery.data?.pages.flatMap(p => p.takenEdges ?? []) ?? []).some(te => te.edgeKey === e.key || (te.fromNodeKey === e.from && te.outcome === e.outcome));
-                const x1 = f.x + 55, y1 = f.y + 24, x2 = t.x + 55, y2 = t.y;
+                const x1 = f.x + 55, y1 = f.y + 29, x2 = t.x + 55, y2 = t.y;
                 const path = rw
                   ? `M ${x1} ${y1} C ${x1 - 70} ${y1 + 50}, ${x2 - 70} ${y2 - 50}, ${x2} ${y2}`
                   : `M ${x1} ${y1} L ${x2} ${y2}`;
@@ -884,10 +903,11 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
                     aria-hidden>
                     {round
                       ? <circle cx={pos.x + 55} cy={pos.y + 12} r={22} fill={style.bg} stroke={sel ? '#3659E3' : style.bd} strokeWidth={sel ? 2.5 : 1.5} />
-                      : <rect x={pos.x} y={pos.y} width={110} height={46} rx="8" fill={style.bg} stroke={sel ? '#3659E3' : style.bd} strokeWidth={sel ? 2.5 : 1.5} />
+                      : <rect x={pos.x} y={pos.y} width={110} height={58} rx="8" fill={style.bg} stroke={sel ? '#3659E3' : style.bd} strokeWidth={sel ? 2.5 : 1.5} />
                     }
                     <text x={pos.x + 55} y={pos.y + (round ? 8 : 17)} textAnchor="middle" fontSize="12" fontWeight="500" fill={style.fc} fontFamily="Inter, sans-serif">{node.type}</text>
                     <text x={pos.x + 55} y={pos.y + (round ? 22 : 33)} textAnchor="middle" fontSize="12" fill={style.fc} fontFamily="Inter, sans-serif">{node.key}</text>
+                    {!round && activation && <text x={pos.x + 55} y={pos.y + 50} textAnchor="middle" fontSize="11" fill={style.fc} fontFamily="Inter, sans-serif" data-testid={`node-label-${node.key}`}>{nodeOneLiner(activation.nodeRunId, entries, Date.now())}</text>}
                   </g>
                 );
               })}
@@ -899,6 +919,12 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
       <div className="w-1 bg-[#E9EDF3] border-x border-[#CDD5DF] cursor-col-resize flex-shrink-0" aria-hidden title="Resize panels" />
       {/* Timeline panel — 42% */}
       <div className="flex flex-col overflow-hidden" style={{ flex: '0 0 42%', minWidth: 0 }}>
+        {selectedNodeKey && latestActivationByNode.get(selectedNodeKey) && (
+          <NodeDetailPane
+            nodeRunId={latestActivationByNode.get(selectedNodeKey)!.nodeRunId} isOffline={isOffline}
+            onClose={() => setSelectedNodeKey(null)} onOpenEvidence={onOpenEvidence}
+          />
+        )}
         <div className="px-4 py-2 border-b border-[#CDD5DF] bg-[#F3F5F8] flex items-center justify-between">
           <span className="text-[12px] font-semibold text-[#475569]">Timeline{selectedNodeKey ? ` — ${selectedNodeKey}` : ''}</span>
           {runUsage && <span className="text-[12px] text-[#475569]" title="Reported by the provider CLI, summed over every attempt of the run">Run usage: <span className="font-mono text-[#172033]">{formatUsage(runUsage)}</span></span>}
@@ -1999,6 +2025,12 @@ function EvidenceRow({ projectId, workItemId, evidence, isOffline, onPreview }: 
         <VerdictBadge verdict={evidence.verdict} />
         <div className="flex-1 min-w-0">
           <p className="text-[13px] text-[#172033] font-mono">{evidence.kind}</p>
+          {evidence.nodeKey && (
+            <p className="text-[12px] text-[#475569] mt-0.5" data-testid={`evidence-node-${evidence.evidenceId}`}>
+              node <span className="font-mono text-[#172033]">{evidence.nodeKey}</span>
+              {evidence.iteration !== undefined ? ` · iteration ${evidence.iteration}` : ''}{evidence.attemptNumber ? ` · attempt ${evidence.attemptNumber}` : ''}
+            </p>
+          )}
           <div className="flex items-center gap-3 mt-1 flex-wrap text-[12px] text-[#475569]">
             <span>revisionSet: <span className="font-mono">{shortHash(evidence.revisionSetHash)}</span></span>
             <span>policy: <span className="font-mono">{evidence.policyVersion}</span></span>
@@ -2038,6 +2070,37 @@ function EvidenceRow({ projectId, workItemId, evidence, isOffline, onPreview }: 
   );
 }
 
+interface CommandOutput {
+  exitCode: number;
+  durationMillis?: number;
+  truncated?: boolean;
+  argv?: string[];
+  stdout?: string;
+  stderr?: string;
+}
+
+/** Reads a COMMAND node's recorded execution (media type application/vnd.agentkit.command-output+json); null when it is not that shape. */
+function parseCommandOutput(text: string): CommandOutput | null {
+  try {
+    const value = JSON.parse(text) as Partial<CommandOutput>;
+    return typeof value.exitCode === 'number' ? (value as CommandOutput) : null;
+  } catch {
+    return null;
+  }
+}
+
+function CommandOutputView({ output }: { output: CommandOutput }) {
+  return (
+    <div className="text-[12px] space-y-2" data-testid="command-output-view">
+      <p>Exit code <span className={`font-mono font-medium ${output.exitCode === 0 ? 'text-[#166534]' : 'text-[#991B1B]'}`}>{output.exitCode}</span>
+        {output.durationMillis !== undefined ? ` · ${(output.durationMillis / 1000).toFixed(1)}s` : ''}{output.truncated ? ' · output cut by the runner' : ''}</p>
+      {output.argv && output.argv.length > 0 && <p className="font-mono text-[#475569] break-words">{output.argv.join(' ')}</p>}
+      {output.stdout && <><p className="text-[#475569]">stdout</p><pre className="font-mono text-[12px] whitespace-pre-wrap break-words max-h-[30vh] overflow-auto p-3 bg-white border border-[#ECEFF4] rounded-[6px]">{output.stdout}</pre></>}
+      {output.stderr && <><p className="text-[#475569]">stderr</p><pre className="font-mono text-[12px] whitespace-pre-wrap break-words max-h-[30vh] overflow-auto p-3 bg-[#FEF2F2] border border-[#FCA5A5] rounded-[6px]">{output.stderr}</pre></>}
+    </div>
+  );
+}
+
 interface ArtifactPreviewDialogProps {
   projectId: string; workItemId: string; evidenceId: string; artifact: ArtifactSummary; onClose: () => void;
 }
@@ -2070,7 +2133,7 @@ function ArtifactPreviewDialog({ projectId, workItemId, evidenceId, artifact, on
   React.useEffect(() => {
     if (!contentQuery.data) return;
     const base = contentQuery.data.contentType.split(';')[0]?.trim().toLowerCase();
-    if (base === 'text/plain' || base === 'text/csv' || base === 'application/json') {
+    if (base === 'text/plain' || base === 'text/csv' || base === 'application/json' || base === 'application/vnd.agentkit.command-output+json' || base === 'application/vnd.agentkit.diff-manifest+json') {
       contentQuery.data.blob.text().then(setText);
     } else {
       setText(null);
@@ -2090,6 +2153,8 @@ function ArtifactPreviewDialog({ projectId, workItemId, evidenceId, artifact, on
         <img src={objectUrl} alt={artifact.artifactId} className="max-w-full max-h-[60vh] mx-auto" />
       ) : base === 'application/pdf' && objectUrl ? (
         <embed src={objectUrl} type="application/pdf" className="w-full h-[60vh]" />
+      ) : text !== null && base === 'application/vnd.agentkit.command-output+json' && parseCommandOutput(text) ? (
+        <CommandOutputView output={parseCommandOutput(text)!} />
       ) : text !== null ? (
         <pre className="font-mono text-[12px] whitespace-pre-wrap break-words max-h-[60vh] overflow-auto p-3 bg-white border border-[#ECEFF4] rounded-[6px]">{text}</pre>
       ) : (
@@ -2099,7 +2164,7 @@ function ArtifactPreviewDialog({ projectId, workItemId, evidenceId, artifact, on
   );
 }
 
-function EvidenceTab({ projectId, workItemId, isOffline }: { projectId: string; workItemId: string; isOffline?: boolean }) {
+function EvidenceTab({ projectId, workItemId, isOffline, nodeFilter, onNodeFilterChange }: { projectId: string; workItemId: string; isOffline?: boolean; nodeFilter?: string | null; onNodeFilterChange?: (nodeKey: string | null) => void }) {
   const [previewing, setPreviewing] = useState<{ evidenceId: string; artifact: ArtifactSummary } | null>(null);
 
   const evidenceQuery = useQuery({
@@ -2114,17 +2179,30 @@ function EvidenceTab({ projectId, workItemId, isOffline }: { projectId: string; 
   if (evidenceQuery.isError) {
     return <div className="flex-1 p-6"><InlineError {...apiErrorMessage(evidenceQuery.error)} onRetry={() => evidenceQuery.refetch()} /></div>;
   }
-  const items = evidenceQuery.data?.items ?? [];
+  const all = evidenceQuery.data?.items ?? [];
+  const nodeKeys = Array.from(new Set(all.map(e => e.nodeKey).filter((k): k is string => !!k))).sort();
+  const items = nodeFilter ? all.filter(e => e.nodeKey === nodeFilter) : all;
 
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-[#E9EDF3]">
       <div className="max-w-4xl mx-auto space-y-4">
         <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
           <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC]">
-            <h2 className="text-sm font-semibold text-[#172033]">Evidence</h2>
+            <div className="flex items-center gap-3">
+              <h2 className="text-sm font-semibold text-[#172033]">Evidence</h2>
+              {nodeKeys.length > 0 && onNodeFilterChange && (
+                <label className="flex items-center gap-1.5 text-[12px] text-[#475569]">Node
+                  <select aria-label="Filter evidence by node" value={nodeFilter ?? ''} onChange={e => onNodeFilterChange(e.target.value || null)}
+                    className="h-7 px-2 rounded-[6px] border border-[#CDD5DF] bg-white text-[12px]">
+                    <option value="">All nodes</option>
+                    {nodeKeys.map(k => <option key={k} value={k}>{k}</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
           </div>
           {items.length === 0 ? (
-            <p className="px-5 py-4 text-[13px] text-[#475569]">No evidence recorded yet for this WorkItem.</p>
+            <p className="px-5 py-4 text-[13px] text-[#475569]">{nodeFilter ? `No evidence recorded for node ${nodeFilter}.` : 'No evidence recorded yet for this WorkItem.'}</p>
           ) : (
             <div className="divide-y divide-[#ECEFF4]" role="list">
               {items.map(e => (
@@ -2217,8 +2295,10 @@ function MessageBody({ projectId, workItemId, message }: { projectId: string; wo
   );
 }
 
-function ChatTab({ projectId, workItemId, isOffline }: { projectId: string; workItemId: string; isOffline?: boolean }) {
+function ChatTab({ projectId, workItemId, isOffline, onViewNode }: { projectId: string; workItemId: string; isOffline?: boolean; onViewNode?: (nodeRunId: string) => void }) {
   const queryClient = useQueryClient();
+  // V11-11: the engine writes its milestones here too; "mine" hides them.
+  const [onlyMine, setOnlyMine] = useState(false);
   const { toasts, show, dismiss } = useToasts();
   const [draft, setDraft] = useState('');
   // Fixed for the lifetime of one compose attempt — a Retry after a failed
@@ -2245,7 +2325,9 @@ function ChatTab({ projectId, workItemId, isOffline }: { projectId: string; work
     // integration this task did not build.
     refetchInterval: isOffline ? false : 4000,
   });
-  const messages = messagesQuery.data?.pages.flatMap(p => p.items) ?? [];
+  const everyMessage = messagesQuery.data?.pages.flatMap(p => p.items) ?? [];
+  const messages = onlyMine ? everyMessage.filter(m => !m.displayOnly) : everyMessage;
+  const hasActivity = everyMessage.some(m => m.displayOnly);
 
   const sendMutation = useMutation({
     mutationFn: () => appendMessage(projectId, workItemId, {
@@ -2281,6 +2363,13 @@ function ChatTab({ projectId, workItemId, isOffline }: { projectId: string; work
   return (
     <div className="flex-1 flex overflow-hidden">
       <div className="flex-1 flex flex-col overflow-hidden">
+        {hasActivity && (
+          <div className="px-5 pt-3 flex items-center gap-2 text-[12px] text-[#475569]" role="group" aria-label="Message filter">
+            <span>Show</span>
+            <button type="button" aria-pressed={!onlyMine} onClick={() => setOnlyMine(false)} className={`px-2 py-0.5 rounded-[4px] border ${!onlyMine ? 'bg-[#EEF2FF] border-[#C7D2FE] text-[#3659E3]' : 'border-[#CDD5DF]'}`}>everything</button>
+            <button type="button" aria-pressed={onlyMine} onClick={() => setOnlyMine(true)} className={`px-2 py-0.5 rounded-[4px] border ${onlyMine ? 'bg-[#EEF2FF] border-[#C7D2FE] text-[#3659E3]' : 'border-[#CDD5DF]'}`}>only my messages</button>
+          </div>
+        )}
         <div className="flex-1 overflow-y-auto p-5 space-y-4" role="log" aria-label="Conversation messages" aria-live="polite">
           {messagesQuery.isPending ? (
             <div aria-hidden><Skeleton className="h-24 w-full" /></div>
@@ -2292,7 +2381,7 @@ function ChatTab({ projectId, workItemId, isOffline }: { projectId: string; work
             messages.map(msg => {
               const isUser = msg.role === 'USER';
               return (
-                <article key={msg.messageId} className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}
+                <article key={msg.messageId} data-testid={msg.displayOnly ? `activity-${msg.messageId}` : undefined} className={`flex gap-3 ${isUser ? 'flex-row-reverse' : ''}`}
                   aria-label={`Message from ${msg.actor} (${msg.role}) at ${new Date(msg.createdAt).toLocaleString()}`}>
                   <div className={`w-7 h-7 rounded-full flex items-center justify-center flex-shrink-0 border ${isUser ? 'bg-[#EEF2FF] text-[#3659E3] border-[#C7D2FE]' : 'bg-[#EDE9FE] text-[#5B21B6] border-[#C4B5FD]'}`} aria-hidden>
                     {isUser ? <User size={14} /> : <Cpu size={14} />}
@@ -2303,8 +2392,12 @@ function ChatTab({ projectId, workItemId, isOffline }: { projectId: string; work
                       <span className="font-mono text-[12px] px-1.5 py-0.5 bg-[#F3F5F8] text-[#475569] rounded-[4px]">{msg.role}</span>
                       <span className="text-[12px] text-[#475569]">{new Date(msg.createdAt).toLocaleTimeString()}</span>
                       {msg.attemptId && <span className="font-mono text-[12px] px-1.5 py-0.5 bg-[#EDE9FE] text-[#5B21B6] rounded-[4px]">{msg.attemptId}</span>}
+                      {msg.displayOnly && <span className="text-[12px] px-1.5 py-0.5 bg-[#FEF3C7] text-[#92400E] rounded-[4px]">activity</span>}
+                      {msg.displayOnly && msg.nodeRunId && onViewNode && (
+                        <button type="button" className="text-[12px] text-[#3659E3] hover:underline" onClick={() => onViewNode(msg.nodeRunId!)}>view progress</button>
+                      )}
                     </div>
-                    <div className={`rounded-[8px] px-3.5 py-2.5 text-[13px] text-[#172033] ${isUser ? 'bg-[#EEF2FF] border border-[#C7D2FE]' : 'bg-[#F3F5F8] border border-[#CDD5DF]'}`}>
+                    <div className={`rounded-[8px] px-3.5 py-2.5 text-[13px] text-[#172033] ${isUser ? 'bg-[#EEF2FF] border border-[#C7D2FE]' : msg.displayOnly ? 'bg-[#FFFBEB] border border-[#FDE68A]' : 'bg-[#F3F5F8] border border-[#CDD5DF]'}`}>
                       <MessageBody projectId={projectId} workItemId={workItemId} message={msg} />
                     </div>
                   </div>
@@ -2374,6 +2467,9 @@ interface TaskDetailProps {
  */
 export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab, onTabChange, isOffline }: TaskDetailProps) {
   const queryClient = useQueryClient();
+  // V11-11: which node run the Graph tab should select (from a Chat link), and which node the Evidence tab is filtered to (from the node pane).
+  const [focusNodeRunId, setFocusNodeRunId] = useState<string | undefined>(undefined);
+  const [evidenceNode, setEvidenceNode] = useState<string | null>(null);
 
   const workItemQuery = useQuery({
     queryKey: ['workItemAuthoritative', projectId, workItemId],
@@ -2422,11 +2518,12 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       <div id="workitem-tab-panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} />}
       {activeTab === 'task-graph'      && (
-        <GraphTimelineTab projectId={projectId} familyId={familyId} workItemTitle={workItemQuery.data?.title} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled} />
+        <GraphTimelineTab projectId={projectId} familyId={familyId} workItemTitle={workItemQuery.data?.title} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled}
+          focusNodeRunId={focusNodeRunId} onOpenEvidence={nodeKey => { setEvidenceNode(nodeKey); onTabChange('task-evidence', { projectId, taskId: workItemId }); }} />
       )}
       {activeTab === 'task-workspace'  && <WorkspaceTab projectId={projectId} familyId={familyId} isOffline={isOffline} />}
-      {activeTab === 'task-evidence'   && <EvidenceTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} />}
-      {activeTab === 'task-chat'       && <ChatTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} />}
+      {activeTab === 'task-evidence'   && <EvidenceTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} nodeFilter={evidenceNode} onNodeFilterChange={setEvidenceNode} />}
+      {activeTab === 'task-chat'       && <ChatTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} onViewNode={nodeRunId => { setFocusNodeRunId(nodeRunId); onTabChange('task-graph', { projectId, taskId: workItemId }); }} />}
       </div>
     </div>
   );
