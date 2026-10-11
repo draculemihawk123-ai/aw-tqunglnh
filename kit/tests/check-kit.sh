@@ -345,6 +345,8 @@ out=$(cmdrun check-plan.sh) && ok "check-plan: plan viết bằng tiếng Anh đ
 # V11-08: script chạy trong worker là tiếng Anh, chỉ ASCII (nội dung được publish nguyên văn lên worker, kể cả bản bọc .cmd của Windows)
 nonascii=$(LC_ALL=C grep -l -P '[^\x00-\x7F]' "$kit"/commands/*.sh 2> /dev/null || true)
 [ -z "$nonascii" ] && ok "kit/commands/*.sh chỉ có ký tự ASCII" || bad "script worker còn ký tự không ASCII: $nonascii"
+# V11-09: chạy thật bộ bọc .cmd bằng cmd.exe (chỉ trên Windows có Git for Windows; nơi khác tự bỏ qua): cùng mã thoát, cùng thông báo như sh
+out=$(python3 "$kit/tests/test-windows-launcher.py" 2>&1) && ok "bộ bọc .cmd chạy đúng mã thoát và thông báo như .sh (hoặc bỏ qua ngoài Windows)" || bad "test-windows-launcher: $out"
 # bộ bọc .cmd của Windows: phần đầu một khối, CRLF, phần script bên dưới giữ LF và nguyên văn; mọi script publish đều có bộ bọc
 KITDIR="$kit" python3 - <<'PY' && ok "bộ bọc Windows: phần đầu một khối + CRLF, phần script giữ nguyên LF" || bad "bộ bọc Windows"
 import importlib.util, os

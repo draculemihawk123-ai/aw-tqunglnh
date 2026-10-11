@@ -28,6 +28,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"runtime"
 
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	appdoctor "github.com/taQuangLing/agent-workflow/internal/app/doctor"
@@ -115,6 +116,7 @@ type Report struct {
 func BuildReport(ctx context.Context, deps Dependencies) Report {
 	report := appdoctor.Run(ctx, appdoctor.Options{
 		Config: deps.Config, Store: deps.Store, UnitOfWork: deps.UnitOfWork, ProviderProbe: deps.ProviderProbe,
+		CheckGitShell: runtime.GOOS == "windows",
 	})
 	checks := append([]appdoctor.CheckResult{}, report.Checks...)
 	checks = append(checks, isolationCheck(ctx, deps.Isolation))

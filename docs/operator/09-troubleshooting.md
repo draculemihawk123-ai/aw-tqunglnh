@@ -80,6 +80,14 @@ pointing at it, then a new gate/workflow version pointing forward through that c
 immutable per version, so there is never an "edit and retry" for a published document; always publish forward.
 See [01-quickstart.md](01-quickstart.md)'s own real walkthrough of hitting and fixing exactly this.
 
+**The kit's COMMAND scripts on Windows (V11-09).** `aw-publish.py` publishes each `kit/commands/*.sh` as a self-contained `.cmd`
+whose header finds Git for Windows' own `sh.exe` (`<git --exec-path>/../../../bin/sh.exe`) and runs the script with it, so a
+Windows worker needs Git for Windows with its bash. `aw doctor` (on Windows) reports it as `git_shell [CAPABILITY]`: DEGRADED with the
+path it looked for when `sh.exe` is missing, and every kit COMMAND node then fails before it runs anything (the launcher exits 127
+and says it could not find `sh.exe`). Before V11-09 the launcher also returned exit code 0 whatever the script returned, so a failing
+check could look like a pass; `kit/tests/test-windows-launcher.py` now runs every `kit/commands` script both ways (`sh` and `cmd /c`)
+and requires the same exit code and the same messages.
+
 ## Attempt `FAILED` with `SCOPE_VIOLATION`
 
 ```bash

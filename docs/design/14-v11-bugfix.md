@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -41,7 +41,7 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **XONG 2026-10-10** (ADR-039); đã gặp thật khi chạy issue-tracker C-01 trên Windows, 2026-10-09 |
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | **XONG 2026-10-10** (ADR-040; 6 điểm đã được product owner chốt 2026-10-09) |
 | V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | **Bước 1–3 XONG 2026-10-11; bước 4 (đo A/B) chưa chạy** (xem khối kết quả) |
-| V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện và vá tạm** trên Windows 11 (Git 2.55); chạy tay file `.cmd` đã vá cho kết quả đúng; chưa thử trên máy khác |
+| V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **XONG MỘT PHẦN 2026-10-11**: sửa lỗi mất mã thoát của bộ bọc + test hành vi + check `git_shell`; lỗi gốc chưa tái hiện được trên Windows 10 |
 | V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | Cơ chế **đã đọc trong mã**; kiểm chứng bằng chính các lần chạy lại của người vận hành |
 | V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | Cơ chế **đã đọc trong mã**; dữ liệu phần lớn đã có trong DB nhưng không có API/UI đọc |
 | V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **Đã gặp thật** (đăng ký thư mục chưa `git init` trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
@@ -553,6 +553,21 @@ với trình duyệt (Playwright), CLI Claude thật qua toàn bộ luồng.
 - **Verify:** trên máy Windows có Git for Windows: tất cả script `kit/commands` chạy qua `cmd //c` cho đúng mã thoát và đúng thông
   báo, với nội dung có tiếng Việt và không có; một lượt chạy thật của W-01 cho agent nhận đúng lỗi test thay vì rác; kịch bản kiểm
   tra trong CI nếu có runner Windows.
+
+### Kết quả triển khai V11-09 (2026-10-11): sửa được một lỗi thật khác, chưa tái hiện được lỗi gốc
+
+Chạy thử trên Windows 10 (build 19045) với Git 2.55.0.windows.2, bằng `cmd.exe /c <file>.cmd` thật (không giả lập):
+
+- **Lỗi gốc ("cmd.exe chạy phần bash từ giữa dòng") KHÔNG tái hiện được ở đây.** Bài thử 8 tổ hợp (phần đầu một khối / nhiều dòng × đuôi CRLF / LF × thân có tiếng Việt / ASCII) đều chạy đúng phần bash, không có dòng
+  `is not recognized` ở tổ hợp nào, kể cả bản nhiều dòng chỉ LF. Lỗi của người vận hành xảy ra trên Windows 11 build 26100 / Git 2.55.0.windows.3; vì vậy (a) chưa xác định được nguyên nhân và (b) chưa tách được "một khối" với "CRLF":
+  giữ bản vá tạm (khối + CRLF), chưa kết luận nó là cái có tác dụng.
+- **Lỗi thật khác tìm thấy bằng chính bài thử đó: bộ bọc làm mất mã thoát.** Phần đầu kết thúc bằng `exit /b` (và `exit /b %errorlevel%` trong khối ngoặc cũng vậy): cmd.exe trả **mã 0 bất kể script bash trả gì**.
+  Nghĩa là trên Windows một bước kiểm tra hỏng (test đỏ, `diff-size`, `check-plan`...) vẫn **"đạt"**. Sửa thành `exit /b !errorlevel!` (đã có `enabledelayedexpansion`). Bài thử: block × `exit /b` → mã 0; `exit /b !errorlevel!` → mã 3 (đúng).
+- **Test hành vi thật** `kit/tests/test-windows-launcher.py` (chỉ chạy trên Windows có Git for Windows, nơi khác tự bỏ qua; gọi từ `check-kit.sh`): với một repository trong thư mục có dấu cách, chạy cặp `sh script.sh` và `cmd /c script.cmd` cho 4 script tổng hợp
+  (mã 0, 1, 3, 5; nội dung có tiếng Việt, đối số có dấu) và cho cả 11 script của `kit/commands`, bắt buộc **cùng mã thoát và cùng thông báo**. Với launcher cũ (`exit /b` trần) test này hỏng 11 ca; với bản sửa đạt hết.
+- **(d) `aw doctor` thêm check `git_shell`** (chỉ Windows, mở bằng `Options.CheckGitShell` nên báo cáo mặc định và các golden không đổi): DEGRADED kèm đường dẫn `sh.exe` đã tìm khi Git for Windows thiếu bash.
+- **(c) Không làm:** khai thông dịch viên trong Command và để worker tự gọi `sh.exe` là thay đổi engine (schema Command, hash định nghĩa); để lại sau khi có ca tái hiện để biết bộ bọc có còn cần không.
+- **Chưa chạy:** W-01 thật trên máy của người vận hành (Windows 11 build 26100) để xem agent có nhận đúng lỗi test thay vì rác; kịch bản kiểm tra trong CI (chưa có runner Windows). Docs: `docs/operator/09-troubleshooting.md`.
 
 ## V11-10 — Chạy lại và làm lại một task bằng một thao tác trên web
 
