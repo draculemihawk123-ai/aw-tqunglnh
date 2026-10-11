@@ -31,6 +31,7 @@ import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceCo
 import { commitAllowedFor } from '../api/approvalrelease';
 import type { ApprovalCommitBody } from '../api/approvalrelease';
 import { ApprovalCommitDialog, ReleaseStatusStrip } from './ApprovalRelease';
+import { RecreateDialog, RetryDialog, SupersessionLinks } from './RedoDialogs';
 import { VERDICT_OPTIONS } from '../api/releaseset';
 import type { ReleaseSetDetail, RepositoryReleaseDetail, Verdict } from '../api/releaseset';
 import { artifactContentUrl, fetchArtifactContent, isInlineSafeMediaType, PREVIEW_SIZE_LIMIT_BYTES } from '../api/evidence';
@@ -94,6 +95,8 @@ function TaskHeader({
 }: TaskHeaderProps) {
   const [cancelRunDialog, setCancelRunDialog] = useState(false);
   const [cancelWiDialog, setCancelWiDialog] = useState(false);
+  const [retryDialog, setRetryDialog] = useState(false);
+  const [recreateDialog, setRecreateDialog] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
   const [resolvingBlocker, setResolvingBlocker] = useState<BlockerDiagnostic | null>(null);
   const [resolveMode, setResolveMode] = useState<'RESOLVED' | 'WAIVED'>('RESOLVED');
@@ -199,6 +202,9 @@ function TaskHeader({
   const runCount = runs?.length ?? card?.runCount ?? 0;
   const runValidActions = runDiagnostics?.validActions ?? [];
   const canCancelRun = !!activeRunId && runValidActions.some(a => a.operationId === 'cancelRun');
+  // V11-10 (ADR-041): run a failed or cancelled task again, or redo it with the newest workflow version — both advertised by the server.
+  const canRetry = runValidActions.some(a => a.operationId === 'retryWorkItem');
+  const canRecreate = runValidActions.some(a => a.operationId === 'recreateWorkItem');
   const canCancelWorkItem = activeRunId
     ? runValidActions.some(a => a.operationId === 'cancelWorkItem')
     : !!workItem && cancelWorkItemEligibleFromStatus(workItem.status);
@@ -274,10 +280,16 @@ function TaskHeader({
               </div>
             </>
           )}
+          <SupersessionLinks
+            supersedes={card?.supersedesWorkItemId} supersededBy={card?.supersededByWorkItemId}
+            onOpen={id => onTabChange('task-overview', { projectId, taskId: id })}
+          />
           <div className="flex-1" />
           {/* Single ValidActionBar — only actions the real server-computed data currently advertises */}
           <ValidActionBar actions={[
             ...(canStartRun ? [{ label: 'Start Run', intent: 'primary' as const, onClick: () => startRunMutation.mutate(), disabled: isOffline || startRunMutation.isPending }] : []),
+            ...(canRetry ? [{ label: 'Run Again', intent: 'primary' as const, onClick: () => setRetryDialog(true), disabled: isOffline }] : []),
+            ...(canRecreate ? [{ label: 'Redo with Latest Version', intent: 'secondary' as const, onClick: () => setRecreateDialog(true), disabled: isOffline }] : []),
             ...(canCancelRun ? [{ label: 'Cancel Run', intent: 'secondary' as const, onClick: () => setCancelRunDialog(true), disabled: isOffline }] : []),
             ...(canCancelWorkItem ? [{ label: 'Cancel WorkItem', intent: 'destructive' as const, onClick: () => setCancelWiDialog(true), disabled: isOffline }] : []),
           ]} />
@@ -333,6 +345,29 @@ function TaskHeader({
           ))}
         </div>
       </div>
+
+      {/* ── Run Again / Redo dialogs (V11-10) ─────────────────────────── */}
+      {retryDialog && (
+        <RetryDialog
+          workItemId={workItemId} isOffline={isOffline} onClose={() => setRetryDialog(false)}
+          onDone={result => {
+            setRetryDialog(false);
+            show({ intent: 'success', message: `Run started (${result.runId}) — ${result.resolvedBlockerIds.length} blocker${result.resolvedBlockerIds.length === 1 ? '' : 's'} resolved.` });
+            onActionSettled();
+          }}
+        />
+      )}
+      {recreateDialog && (
+        <RecreateDialog
+          workItemId={workItemId} isOffline={isOffline} onClose={() => setRecreateDialog(false)}
+          onDone={result => {
+            setRecreateDialog(false);
+            show({ intent: 'success', message: `Redone as ${result.newWorkItemId} on workflow ${result.workflowVersionId}; the previous work item is ${result.oldWorkItemStatus}.` });
+            onActionSettled();
+            onTabChange('task-overview', { projectId, taskId: result.newWorkItemId });
+          }}
+        />
+      )}
 
       {/* ── Cancel Run dialog ─────────────────────────────────────────── */}
       {cancelRunDialog && (
