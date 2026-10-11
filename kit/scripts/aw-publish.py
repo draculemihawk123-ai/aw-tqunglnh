@@ -231,8 +231,9 @@ def inline_includes(manifest, rel, body):
             raise ManifestError(f"{rel}: @aw-include trỏ tới file không có trong kit: {match.group('rel')}")
         with open(target, encoding="utf-8") as f:
             included = [l for l in f.read().splitlines() if not l.startswith("#!")]
-        lines += [f"# --- @aw-include {match.group('rel')} (aw-publish nhúng nguyên văn) ---", *included,
-                  "# --- hết @aw-include ---"]
+        # These two marker lines end up inside the published script, so they are English and ASCII (V11-08).
+        lines += [f"# --- @aw-include {match.group('rel')} (inlined verbatim by aw-publish) ---", *included,
+                  "# --- end @aw-include ---"]
     return "\n".join(lines) + ("\n" if body.endswith("\n") else "")
 
 

@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-debug.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Khi prompt có checkFailures, đó là kết quả kiểm tra chính thức của vòng trước. Nguyên tắc: không sửa trước khi biết nguyên nhân gốc. Trước khi sửa: (1) đọc trọn thông báo lỗi và stack trace, kể cả các dòng WHAT, WHY, FIX (nếu bắt đầu bằng \"MÔI TRƯỜNG:\" thì lỗi nằm ở máy chạy chứ không ở code: làm theo quy tắc riêng, đừng sửa code); (2) xem lại chính những file bạn đã đổi ở vòng trước, vì lỗi thường nằm ở đó; (3) lần ngược từ nơi lỗi hiện ra tới nguồn: giá trị sai đến từ đâu, ai gọi hàm này với giá trị đó, và sửa ở nguồn thay vì ở triệu chứng; (4) tìm đoạn code tương tự đang chạy đúng trong repository và liệt kê mọi khác biệt, dù nhỏ."
+   "instruction": "Khi prompt có checkFailures, đó là kết quả kiểm tra chính thức của vòng trước. Nguyên tắc: không sửa trước khi biết nguyên nhân gốc. Trước khi sửa: (1) đọc trọn thông báo lỗi và stack trace, kể cả các dòng WHAT, WHY, FIX (nếu bắt đầu bằng \"ENVIRONMENT:\" thì lỗi nằm ở máy chạy chứ không ở code: làm theo quy tắc riêng, đừng sửa code); (2) xem lại chính những file bạn đã đổi ở vòng trước, vì lỗi thường nằm ở đó; (3) lần ngược từ nơi lỗi hiện ra tới nguồn: giá trị sai đến từ đâu, ai gọi hàm này với giá trị đó, và sửa ở nguồn thay vì ở triệu chứng; (4) tìm đoạn code tương tự đang chạy đúng trong repository và liệt kê mọi khác biệt, dù nhỏ."
   },
   {
    "key": "debug.hypotheses",

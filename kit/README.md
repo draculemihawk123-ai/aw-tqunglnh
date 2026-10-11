@@ -148,7 +148,7 @@ flowchart LR
   `reviewerFeedback` (và **không** nhận `checkFailures`). Chẩn đoán dở thì agent sửa mất luôn thông báo lỗi gốc: đây là rủi ro thật, chỉ chạy
   `wf-task-delivery-plus` thật mới biết có đáng không (chưa đo; xem kết luận V10-18).
 - `expect-fail.sh` nhận diện stack như `maven-test.sh` và `npm-test.sh` (`backend/pom.xml` hoặc `frontend/package.json`), chạy test và **đảo nghĩa**:
-  đạt khi test đỏ; không đạt khi test xanh, khi code không biên dịch (đỏ vì lý do khác) hoặc khi lỗi mạng (báo `MÔI TRƯỜNG:`).
+  đạt khi test đỏ; không đạt khi test xanh, khi code không biên dịch (đỏ vì lý do khác) hoặc khi lỗi mạng (báo `ENVIRONMENT:`).
 - Project cần khai `agent-debugger`, `agent-reviewer` (và `agent-flow-repro`, `agent-flow-fix` cho `wf-bugfix`) bằng `"from": "kit"` kèm `addResources`
   của stack mình, và một `cmd-expect-fail` theo repository (`from kit:cmd-expect-fail`). Mẫu: [docs/guides/issue-tracker](../docs/guides/issue-tracker/aw-project.json).
 
@@ -196,8 +196,8 @@ flowchart LR
 
 1. **Tóm tắt dữ liệu thật:** `kit-metrics.py lessons-input <thư mục lượt chạy>...` in Markdown: vòng sửa theo node, gate không qua ngay lần đầu, mã lỗi attempt, và nguyên văn nhận xét của reviewer. Gửi nó vào WorkItem của `wf-retro` làm message (`MESSAGE="$(…)" run-task.sh …`).
 2. **`wf-retro`** (`agent-retro`, `skill-retro`): chỉ đề xuất bài học khi có bằng chứng trích được **và** lặp từ hai lượt trở lên (hoặc lỗi Critical); không viết lại điều một resource đã có nói; tối đa 5 bài học, mỗi bài đúng năm dòng (Bằng chứng, Số lần lặp, Luật đề xuất ≤ 500 ký tự, Gắn vào = id agent, Mức) và mục "Không rút thành luật" cho điều chưa đủ bằng chứng.
-   `check-lessons` kiểm định dạng bằng máy, rồi **người duyệt** xóa, sửa hoặc đánh `- Trạng thái: bỏ`. Chưa duyệt thì không có luật nào được sinh ra.
-3. **`lessons-to-skill.py docs/lessons/<ngày>.md --skill definitions/skills/skill-project-lessons.json --manifest aw-project.json`**: mỗi bài học thành resource `lesson.<tiêu đề>` (`global`, Mức làm priority, provenance trỏ về `docs/lessons/<ngày>.md#L-n`). Cùng tiêu đề mà nội dung đổi thì `provenance.revision` tăng `v1 → v2`; không đổi thì giữ. Script thêm skill vào `skills` của `aw-project.json` và thêm `skill-project-lessons#<key>` vào `addResources` của từng agent trong "Gắn vào"; agent không có trong project là lỗi, không sửa gì.
+   `check-lessons` kiểm định dạng bằng máy, rồi **người duyệt** xóa, sửa hoặc đánh `- Status: skip`. Chưa duyệt thì không có luật nào được sinh ra.
+3. **`lessons-to-skill.py docs/lessons/<ngày>.md --skill definitions/skills/skill-project-lessons.json --manifest aw-project.json`**: mỗi bài học thành resource `lesson.<tiêu đề>` (`global`, Mức làm priority, provenance trỏ về `docs/lessons/<ngày>.md#L-n`). Cùng tiêu đề mà nội dung đổi thì `provenance.revision` tăng `v1 → v2`; không đổi thì giữ. Script thêm skill vào `skills` của `aw-project.json` và thêm `skill-project-lessons#<key>` vào `addResources` của từng agent trong "Attach to"; agent không có trong project là lỗi, không sửa gì.
 4. **Publish** như thường. `check-kit.sh` đã kiểm bằng `aw` thật: publish lần hai không đổi bài học thì skill giữ nguyên `versionId`, đổi nội dung thì ra `versionId` mới.
 
 Lưu ý: bài học gắn vào agent chiếm ngân sách context của agent đó và tính vào giới hạn 15 `HARD_CONSTRAINT` mỗi agent, nên dùng `HARD_CONSTRAINT` chỉ cho luật kiểm được bằng máy.
@@ -230,7 +230,7 @@ chỉ nhận 4 KiB cuối của stderr; không màu. Để mọi script thực h
 |---|---|
 | `aw_step <tên> <lệnh…>` | Chạy lệnh; đạt thì im lặng. Hỏng thì in `<AW_STEP_HEAD> '<tên>' không đạt` và `${AW_TAIL:-60}` dòng cuối của output ra stderr, thoát mã 1 |
 | `aw_fail <thông báo>` | Lỗi của code: in stderr, thoát 1 |
-| `aw_env_fail <thông báo>` | Lỗi của máy chạy (thiếu binary, cổng bị chiếm): in `MÔI TRƯỜNG: …` kèm lời dặn agent dừng bằng `needs_info` thay vì sửa code vô ích |
+| `aw_env_fail <thông báo>` | Lỗi của máy chạy (thiếu binary, cổng bị chiếm): in `ENVIRONMENT: …` kèm lời dặn agent dừng bằng `needs_info` thay vì sửa code vô ích |
 | `aw_wait_http <url> <tên> <log> [giây]` | Chờ một URL trả lời; quá hạn thì in lỗi kèm đuôi log |
 
 Cách dùng, một dòng ở đầu script:

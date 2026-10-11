@@ -43,6 +43,11 @@ def tool(*args, **kw):
 
 
 def lesson(title="Một bài học", rule="Luật ngắn gọn.", level="GUIDANCE", agents="agent-flow-build", extra=""):
+    return (f"# Lessons\n\n### L-1: {title}\n- Evidence: x\n- Occurrences: 2\n- Proposed rule: {rule}\n- Attach to: {agents}\n- Level: {level}\n{extra}")
+
+
+def legacy_lesson(title="Một bài học", rule="Luật ngắn gọn.", level="GUIDANCE", agents="agent-flow-build", extra=""):
+    """Định dạng nhãn tiếng Việt dùng trước V11-08; vẫn phải đọc được."""
     return (f"# Bài học\n\n### L-1: {title}\n- Bằng chứng: x\n- Số lần lặp: 2\n- Luật đề xuất: {rule}\n- Gắn vào: {agents}\n- Mức: {level}\n{extra}")
 
 
@@ -53,8 +58,8 @@ def main():
         skill = os.path.join(tmp, "skill.json")
         # 1. định dạng
         for name, text, needle in [
-            ("thiếu trường Mức", lesson().replace("- Mức: GUIDANCE\n", ""), "thiếu \"Mức\""),
-            ("Mức không hợp lệ", lesson(level="QUAN_TRONG"), "không hợp lệ"),
+            ("thiếu trường Level", lesson().replace("- Level: GUIDANCE\n", ""), "thiếu \"Level\""),
+            ("Level không hợp lệ", lesson(level="QUAN_TRONG"), "không hợp lệ"),
             ("luật quá dài", lesson(rule="x" * 501), "tối đa 500"),
         ]:
             path = os.path.join(tmp, "bad.md")
@@ -75,9 +80,18 @@ def main():
         code, out = tool(path, "--skill", skill)
         res = json.load(open(skill, encoding="utf-8"))["resources"][0]
         check("lessons-to-skill: nội dung đổi thì revision tăng v2", "cập nhật 1" in out and res["provenance"]["revision"] == "v2" and res["instruction"] == "Luật đã đổi.", out)
-        open(path, "w", encoding="utf-8").write(lesson(extra="- Trạng thái: bỏ\n"))
+        open(path, "w", encoding="utf-8").write(lesson(extra="- Status: skip\n"))
         code, out = tool(path, "--skill", skill)
-        check("lessons-to-skill: bài học đánh dấu bỏ không được lấy", code != 0 and "không có bài học nào còn hiệu lực" in out, out)
+        check("lessons-to-skill: bài học đánh dấu skip không được lấy", code != 0 and "không có bài học nào còn hiệu lực" in out, out)
+        # nhãn tiếng Việt cũ (trước V11-08) vẫn đọc được, cho cùng kết quả như nhãn tiếng Anh
+        legacy_skill = os.path.join(tmp, "legacy-skill.json")
+        legacy_path = os.path.join(tmp, "legacy.md")
+        open(legacy_path, "w", encoding="utf-8").write(legacy_lesson())
+        code, out = tool(legacy_path, "--skill", legacy_skill)
+        check("lessons-to-skill: nhãn tiếng Việt cũ vẫn đọc được", code == 0 and json.load(open(legacy_skill, encoding="utf-8"))["resources"][0]["instruction"] == "Luật ngắn gọn.", out)
+        open(legacy_path, "w", encoding="utf-8").write(legacy_lesson(extra="- Trạng thái: bỏ\n"))
+        code, out = tool(legacy_path, "--skill", legacy_skill)
+        check("lessons-to-skill: 'Trạng thái: bỏ' cũ vẫn đánh dấu bỏ", code != 0 and "không có bài học nào còn hiệu lực" in out, out)
 
         # 3. aw-project.json của hướng dẫn issue tracker (bản sao)
         mirror = os.path.join(tmp, "mirror")
