@@ -106,13 +106,14 @@ export async function publishBlockerWorkflow(
     category: 'CONTEXT', context: { selector: ['e2e-agent-context'], budget: { maxTokens: 4096 } },
   });
   const agentProfile = await publishDefinition(request, baseURL, token, '', 'AGENT_PROFILE', `e2e-agent-profile-${suffix}`, 'e2e agent profile', {
-    providerKey: 'claude', model: 'fake-model', toolRefs: ['read_file'],
+    providerKey: 'claude', model: process.env.AW_E2E_MODEL || 'fake-model', toolRefs: ['read_file'],
+    ...(process.env.AW_E2E_ENV_ALLOWLIST ? { envAllowlist: process.env.AW_E2E_ENV_ALLOWLIST.split(',') } : {}),
     contextPolicyRef: pin(contextPolicy, 'POLICY'),
     compatibility: { os: [process.platform === 'win32' ? 'windows' : 'linux'] },
     budget: { maxTokens: 4096 },
   });
   const attemptPolicy = await publishDefinition(request, baseURL, token, '', 'POLICY', `e2e-attempt-${suffix}`, 'e2e attempt policy', {
-    category: 'ATTEMPT', attempt: { maxAttempts: 1, backoffSeconds: 1, timeoutSeconds: 60 },
+    category: 'ATTEMPT', attempt: { maxAttempts: 1, backoffSeconds: 1, timeoutSeconds: Number(process.env.AW_E2E_ATTEMPT_TIMEOUT || 60) },
   });
   const permissionPolicy = await publishDefinition(request, baseURL, token, '', 'POLICY', `e2e-permission-${suffix}`, 'e2e permission policy', {
     category: 'PERMISSION', permission: { isolationTier: 'OPERATOR_TRUSTED_LOCAL', grantedCapabilities: [] },

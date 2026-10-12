@@ -117,7 +117,13 @@ export async function startStack(): Promise<Stack> {
   mkdirSync(workspaceRoot, { recursive: true });
   initRealGitRepo(repoReady);
 
-  const { awBinary, fakeClaudeBinary, goVersion } = buildBinaries(binDir);
+  const built = buildBinaries(binDir);
+  const { awBinary, goVersion } = built;
+  // AW_E2E_CLAUDE_EXECUTABLE (opt-in, real-claude.spec.ts): register the REAL Claude CLI instead of the fake provider.
+  const realClaude = process.env.AW_E2E_CLAUDE_EXECUTABLE;
+  const fakeClaudeBinary = realClaude || built.fakeClaudeBinary;
+  const realFlags = realClaude ? ['--claude-permission-mode', 'acceptEdits', '--claude-max-budget-usd', process.env.AW_E2E_MAX_BUDGET_USD || '0.4'] : [];
+  const realEnv = realClaude ? ',USERPROFILE,HOME,HOMEDRIVE,HOMEPATH,APPDATA,LOCALAPPDATA,SystemRoot,TEMP,TMP,PATH' : '';
 
   // A fixed port rather than `--port 0`: playwright.config.ts's own
   // `use.baseURL` is read BEFORE globalSetup ever runs, so it cannot learn
@@ -144,7 +150,7 @@ export async function startStack(): Promise<Stack> {
   const worker = spawn(awBinary, [
     'worker', '--db', dbPath, '--artifact-root', artifactRoot, '--workspace-root', workspaceRoot,
     '--claude-executable', fakeClaudeBinary, '--poll-interval', '150ms', '--projection-interval', '150ms',
-    '--completion-interval', '200ms', '--env-allowlist', 'AGENTKIT_HELPER_MODE,AGENTKIT_HELPER_OUTCOME',
+    '--completion-interval', '200ms', '--env-allowlist', 'AGENTKIT_HELPER_MODE,AGENTKIT_HELPER_OUTCOME' + realEnv, ...realFlags,
   ], {
     cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, AGENTKIT_HELPER_MODE: 'outcome-success', AGENTKIT_HELPER_OUTCOME: 'done' },
