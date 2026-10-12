@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
-> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 (lõi, API, CLI, UI; chưa chạy thật trên bản cài); V11-11 (đọc theo node, tin hoạt động, UI; chưa Playwright/chạy thật); V11-12 (lỗi thăm dò có loại, sửa/ngừng dùng/xóa repository; đã chạy thật bằng CLI, chưa Playwright); V11-13 (đổi tên, lưu trữ, khôi phục project; đã chạy thật bằng CLI + worker, chưa Playwright). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 … V11-13 (mỗi task đã chạy thật; xem "Kết quả kiểm chứng bổ sung" ở cuối trước Gate). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -42,10 +42,10 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 | V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | **XONG 2026-10-10** (ADR-040; 6 điểm đã được product owner chốt 2026-10-09) |
 | V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | **Bước 1–3 XONG 2026-10-11; bước 4 (đo A/B) chưa chạy** (xem khối kết quả) |
 | V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **XONG MỘT PHẦN 2026-10-11**: sửa lỗi mất mã thoát của bộ bọc + test hành vi + check `git_shell`; lỗi gốc chưa tái hiện được trên Windows 10 |
-| V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | **XONG 2026-10-11** (lõi, API, CLI, UI; chưa chạy thật trên bản cài, chưa có Playwright/walk-workflow) |
-| V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | **XONG MỘT PHẦN 2026-10-11** (ADR-042): đọc theo node, lời agent khi hỏng, tin hoạt động, UI; chưa đọc được lời nhắc, chưa Playwright/chạy thật |
-| V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **XONG 2026-10-12** (ADR-043; ca thật đã tái hiện và sửa bằng CLI thật + worker thật trên Windows; chưa Playwright) |
-| V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | **XONG 2026-10-12** (ADR-044; chạy thật bằng CLI + worker, chưa Playwright) |
+| V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | **XONG 2026-10-11**; đã chạy thật 2026-10-12 (Playwright trên stack thật, walk-workflow `retry`/`recreate` trên Linux; xem khối kiểm chứng bổ sung) |
+| V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | **XONG MỘT PHẦN 2026-10-11** (ADR-042): đọc theo node, lời agent khi hỏng, tin hoạt động, UI; đã chạy thật với Claude thật và Playwright 2026-10-12; chưa đọc được lời nhắc |
+| V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **XONG 2026-10-12** (ADR-043; ca thật đã tái hiện và sửa bằng CLI thật + worker thật, Playwright, script kit và prober trên Linux) |
+| V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | **XONG 2026-10-12** (ADR-044; chạy thật bằng CLI + worker, Playwright, script kit trên Linux) |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -977,6 +977,21 @@ Gộp hai project; di chuyển repository sang project khác; xuất hoặc nh�
 
 Chưa làm / chưa chạy được: (1) **e2e Playwright** (tạo project, đổi tên, lưu trữ bị chặn khi còn work item rồi được khi đã dọn, khôi phục); (2) lưu trữ bị chặn khi còn work item/run/job/release set mới được thử bằng test sqlite (một work item `ACTIVE`), chưa tự dựng cả bốn loại trong một lần chạy thật; (3) `init-project.sh` chỉ được kiểm cú pháp `bash -n`;
 (4) lệnh ghi không có biên nhận (engine nội bộ) không bị chặn, được chấp nhận vì lưu trữ chỉ khi không còn gì chạy; (5) chưa chạy trên Linux/CI.
+
+### Kết quả kiểm chứng bổ sung (2026-10-12): phần chưa kiểm của V11-10 … V11-13
+
+Chạy sau khi hoàn tất một lượt V11; mọi thứ dưới đây chạy thật (không mô phỏng), trừ chỗ ghi rõ.
+
+- **Playwright trên stack thật** (`web/e2e/v11-operations.spec.ts`, cùng `aw serve` + `aw worker` + provider giả của V7-17; cả hai spec xanh khi chạy chung):
+  - V11-12: form đăng ký báo `NOT_A_GIT_REPOSITORY` kèm `git init -b main` **trước khi** đăng ký; thẻ `BLOCKED` nói đúng lý do, hint và Git output; sau `git init` thẻ báo `REF_NOT_FOUND` và liệt kê nhánh; **Edit** sửa ref và repository lên `ACTIVE`; repository `ACTIVE` không còn nút Edit; xóa một đăng ký sai (đường dẫn không có) cần lý do và biến mất; **Disable** ẩn repository, "Show disabled" hiện lại, tên đăng ký lại được.
+  - V11-13: đổi tên; lưu trữ project nhàn rỗi; ẩn khỏi danh sách; banner chỉ đọc và nút Register bị tắt; API từ chối `PROJECT_ARCHIVED`; **Restore** khôi phục; project còn work item mở bị `PROJECT_BUSY` và hộp thoại liệt kê.
+  - V11-11: một run thật hỏng completion policy; bấm node cho thấy đầu vào, tiến trình, kết quả; Chat có tin hoạt động của engine và "only my messages" ẩn chúng; Evidence lọc theo node.
+  - V11-10: **Run Again** gỡ blocker và tạo run thứ hai ngay trên web; WorkItem gốc không có nút Redo (đúng ADR-041); với một WorkItem **con**, sau khi publish lại version 2 của cùng workflow, **Redo with Latest Version** hủy WorkItem cũ, tạo WorkItem mới "replaces …" và chuyển tới nó.
+- **Claude thật** (`web/e2e/real-claude.spec.ts`, mặc định bỏ qua; Claude CLI trên Windows, model sonnet, trần 0,4 USD mỗi attempt): attempt thành công ($0,0543): ngăn node hiện lệnh `Write` thật, lời agent, outcome `done` và chi phí; Chat có "maker started", lời cuối và "maker finished, outcome done, cost …". Attempt bị cắt bởi timeout 6 giây ($0,0881): ngăn node hiện "Agent's last words before it stopped"
+  (lời một phần được giữ), mã lỗi kèm giải thích và hướng xử lý; Chat có lời cuối kèm nhãn. Tổng khoảng 0,14 USD cho hai lần chạy.
+- **Linux thật (WSL Ubuntu, jq 1.7.1 tải riêng)**: `kit/tests/check-kit.sh` 73 đạt và `WALK_ALL=1` 91 đạt; các ca hỏng (mỗi lần chạy một tập khác nhau, từ 2 đến 15) đều là lỗi ngẫu nhiên `sqlite: unexpected error` / `database disk image is malformed` ở bước publish hoặc init do WSL1 không hỗ trợ khóa SQLite đáng tin, ngoài một ca "kit/drafts chưa được git bỏ qua" vì bản sao thử không phải repo Git (bản `aw` dùng để thử phải đổi journal sang TRUNCATE chỉ trong binary thử, mã nguồn không đổi), chạy lại thì qua. `init-project.sh` và `add-repository.sh` thật: thư mục chưa `git init` bị chặn
+  trước khi đăng ký kèm lệnh sửa, đường dẫn không có bị `PATH_NOT_FOUND`, project đã lưu trữ cùng tên in lý do và gợi ý `restore`. `walk-workflow.py` có bước `after` mới và hai kịch bản (`bugfix-repro-exhaust-retry`, `bugfix-repro-exhaust-recreate`): run hết vòng `FAILED`, `retry-task.sh` / `recreate-task.sh` thật chạy lại và run cuối `SUCCEEDED` đúng thứ tự node. Lần chạy này tìm ra `recreate-task.sh` thiếu quyền thực thi trong Git (đã sửa, `100755`). Các test prober chạy trên Linux (build `go test -c` rồi chạy trong WSL) đều xanh.
+- **Vẫn chưa kiểm:** (1) bench A/B của V11-08 bước 4 (nhiều giờ chạy Claude thật và chấm mù, tốn tiền: cần quyết định riêng); (2) đọc lời nhắc (prompt) của agent ở V11-11 (cần ghi `InstructionArtifact` vào DB, chưa làm); (3) `go test ./...` đầy đủ trên Linux/CI (WSL1 không chạy được SQLite đủ tin cậy; chỉ chạy test prober); (4) kiểm tra trên runner Windows của CI; (5) Playwright chưa chạy trên Linux. Quan sát ngoài phạm vi V11: trong lần chạy Claude thật, agent MAKER ghi file vào thư mục `agentkit-gate-scratch-…` thay vì worktree của task; chưa điều tra.
 
 ## Gate của V11
 
