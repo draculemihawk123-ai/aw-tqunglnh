@@ -101,7 +101,7 @@ export async function publishApprovalWorkflow(
  */
 export async function publishBlockerWorkflow(
   request: APIRequestContext, baseURL: string, token: string, projectId: string, suffix: string, adapterBuildId: string,
-): Promise<PublishedDefinition> {
+): Promise<PublishedDefinition & { republish: () => Promise<PublishedDefinition> }> {
   const contextPolicy = await publishDefinition(request, baseURL, token, '', 'POLICY', `e2e-context-${suffix}`, 'e2e context policy', {
     category: 'CONTEXT', context: { selector: ['e2e-agent-context'], budget: { maxTokens: 4096 } },
   });
@@ -139,5 +139,25 @@ export async function publishBlockerWorkflow(
       { key: 'maker-end', from: 'maker', outcome: 'done', to: 'end' },
     ],
   };
-  return publishDefinition(request, baseURL, token, `/projects/${projectId}`, 'WORKFLOW', `e2e-blocker-workflow-${suffix}`, 'e2e blocker workflow', document);
+  const published = await publishDefinition(request, baseURL, token, `/projects/${projectId}`, 'WORKFLOW', `e2e-blocker-workflow-${suffix}`, 'e2e blocker workflow', document);
+  // V11-10: a second version of the SAME workflow definition (an edge renamed), for "Redo with Latest Version".
+  const republish = () => publishNewVersion(request, baseURL, token, `/projects/${projectId}`, 'WORKFLOW', published.definitionId, {
+    ...document, edges: document.edges.map(e => (e.key === 'maker-end' ? { ...e, key: 'maker-end-v2' } : e)),
+  });
+  return { ...published, republish };
+}
+
+/** publishNewVersion publishes another version of an existing definition (validate + publish, no create). */
+export async function publishNewVersion(
+  request: APIRequestContext, baseURL: string, token: string, scopePrefix: string, kind: string, definitionId: string, document: unknown,
+): Promise<PublishedDefinition> {
+  const headers = { 'X-Aw-Session-Token': token, 'Idempotency-Key': crypto.randomUUID() };
+  const base = `${baseURL}${scopePrefix}/definitions/${kind}/${definitionId}`;
+  const body = { content: JSON.stringify(document), format: 'json', schemaVersion: 1 };
+  const validated = await request.post(`${base}/validate`, { headers, data: body });
+  if (!validated.ok()) throw new Error(`validate ${kind}/${definitionId}: ${validated.status()} ${await validated.text()}`);
+  const published = await request.post(`${base}/publish`, { headers, data: body });
+  if (!published.ok()) throw new Error(`publish ${kind}/${definitionId}: ${published.status()} ${await published.text()}`);
+  const version = await published.json() as { id: string; compiledHash: string };
+  return { definitionId, versionId: version.id, compiledHash: version.compiledHash };
 }
