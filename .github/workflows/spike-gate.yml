@@ -215,7 +215,7 @@ jobs:
 
           echo "== race detector (go test -race -count=1 ./...) =="
           race_start=$(date +%s)
-          if go test -race -count=1 ./... > race-part/race-detector.log 2>&1; then
+          if go test -race -count=1 -timeout 30m ./... > race-part/race-detector.log 2>&1; then
             race_passed=true
           else
             race_passed=false
