@@ -16,21 +16,32 @@ func (j *journey) conversation(t *testing.T) {
 	api := j.s.api
 	base := "/projects/" + j.projectID + "/work-items/" + j.childWorkItemID
 
+	activity := 0
 	list := func() (count int, sequences []uint64) {
 		var page struct {
 			Items []struct {
-				MessageID string `json:"messageId"`
-				Sequence  uint64 `json:"sequence"`
+				MessageID   string `json:"messageId"`
+				Sequence    uint64 `json:"sequence"`
+				DisplayOnly bool   `json:"displayOnly"`
 			} `json:"items"`
 		}
 		api.get(t, base+"/messages").requireStatus(t, http.StatusOK).decode(t, &page)
 		for _, item := range page.Items {
+			// V11-11 (ADR-042): the engine writes its own milestones (a node started, how it ended) into the thread as display-only messages.
+			// This stage is about the conversation people write, so it counts only those.
+			if item.DisplayOnly {
+				activity++
+				continue
+			}
 			sequences = append(sequences, item.Sequence)
 		}
-		return len(page.Items), sequences
+		return len(sequences), sequences
 	}
 	if count, _ := list(); count != 0 {
-		t.Fatalf("a new WorkItem has %d messages, want 0", count)
+		t.Fatalf("a new WorkItem has %d human messages, want 0", count)
+	}
+	if activity == 0 {
+		t.Fatal("the child work item ran, so the engine's display-only milestones should be in its thread (V11-11)")
 	}
 
 	message := map[string]string{"role": "USER", "content": "please keep the change small", "contentType": "text/plain"}

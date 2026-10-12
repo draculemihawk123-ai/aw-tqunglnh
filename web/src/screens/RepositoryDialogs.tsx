@@ -155,8 +155,11 @@ export function EditRepositoryDialog({ repository, onClose, onDone }: { reposito
         <TextField label="Local repository path" required mono value={remoteLocator} onChange={v => { setRemoteLocator(v); setOutcome(null); }} onBlur={check}
           helper="aw checks the path when you leave this field" />
         <TextField label="Default ref" required mono value={defaultRef} onChange={v => { setDefaultRef(v); setOutcome(null); }} onBlur={check} />
-        {checking && <p className="text-[12px] text-[#475569]" role="status">Checking the path…</p>}
-        {outcome && <CheckResult outcome={outcome} />}
+        {/* Fixed height, so the answer cannot move the buttons under the pointer. */}
+        <div className="h-28 overflow-y-auto" aria-live="polite">
+          {checking && <p className="text-[12px] text-[#475569]" role="status">Checking the path…</p>}
+          {outcome && <CheckResult outcome={outcome} />}
+        </div>
         {mutation.isError && <InlineError {...apiErrorMessage(mutation.error)} />}
       </div>
     </Dialog>

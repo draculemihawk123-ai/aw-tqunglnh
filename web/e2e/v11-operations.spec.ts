@@ -76,6 +76,9 @@ test('V11 operator journeys: repository mistakes, project lifecycle, a failed ru
   const scratch = mkdtempSync(path.join(tmpdir(), 'aw-e2e-v11-'));
   let token = '';
 
+  // The path check answers late on a slow runner, while the operator is already clicking Register: slow it on purpose so a layout shift under the
+  // pointer (which made the click miss on windows-latest) fails here too.
+  await page.route('**/repositories/check*', async route => { await new Promise(resolve => setTimeout(resolve, 800)); await route.continue(); });
   await page.addInitScript(() => {
     let value: unknown;
     Object.defineProperty(window, '__AW_BOOTSTRAP__', {

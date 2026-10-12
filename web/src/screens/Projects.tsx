@@ -183,8 +183,12 @@ function RegisterRepositoryDialog({ projectId, onClose, onRegistered }: {
           placeholder="D:\repos\core-api" onChange={v => { setRemoteLocator(v); setOutcome(null); }} onBlur={checkPath} />
         <TextField label="Default ref" required value={defaultRef} error={submitted && errors.defaultRef ? 'required' : undefined}
           mono onChange={v => { setDefaultRef(v); setOutcome(null); }} onBlur={checkPath} />
-        {checking && <p className="text-[12px] text-[#475569]" role="status">Checking the path…</p>}
-        {outcome && <CheckResult outcome={outcome} />}
+        {/* Fixed height: the check answers while the operator is already moving to the button, and a dialog that grows under the pointer
+            makes the click miss (found on a slow CI runner). */}
+        <div className="h-28 overflow-y-auto" aria-live="polite">
+          {checking && <p className="text-[12px] text-[#475569]" role="status">Checking the path…</p>}
+          {outcome && <CheckResult outcome={outcome} />}
+        </div>
         {mutation.isError && <InlineError {...apiErrorMessage(mutation.error)} />}
       </div>
     </Dialog>
