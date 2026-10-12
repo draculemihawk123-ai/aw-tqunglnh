@@ -193,4 +193,3 @@ func (s *commitSpec) input() approvalrelease.CommitInput {
 	}
 	return input
 }
-

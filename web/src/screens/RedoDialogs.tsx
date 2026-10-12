@@ -222,4 +222,3 @@ export function SupersessionLinks({ supersedes, supersededBy, onOpen }: { supers
     </>
   );
 }
-
