@@ -46,7 +46,9 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/redact"
+	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	safesettingsapp "github.com/taQuangLing/agent-workflow/internal/app/safesettings"
+	"github.com/taQuangLing/agent-workflow/internal/app/workitemredo"
 	appworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/app/workspaceinspection"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	httpadapterbuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/adapterbuild"
@@ -61,6 +63,7 @@ import (
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	httpprojectionrebuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/projectionrebuild"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
+	redohttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/redo"
 	httpreleaseset "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/releaseset"
 	runhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/run"
 	httprundetail "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/rundetail"
@@ -98,6 +101,20 @@ type Dependencies struct {
 	// itself built from a real internal/adapters/gitworktree.Provider
 	// rooted at the composition root's own --workspace-root.
 	WorkspaceInspectionQueries *appworkspaceinspection.Queries
+	// WorkspaceHeadAuditor (V11-01) is how the adopt-head route reads a
+	// worktree's HEAD: the same real Git workspace provider that backs
+	// WorkspaceInspectionQueries. May be nil in a composition without one; the
+	// route then answers UNAVAILABLE.
+	WorkspaceHeadAuditor ports.WorkspaceHeadAuditor
+	// Release (V11-07, ADR-040) is how a decision carries a commit, how the dialog reads the git author and
+	// parked changes, and how parked files are restored: all the same real Git workspace provider. The zero
+	// value (a composition without one) makes those paths answer UNAVAILABLE.
+	Release decision.ReleaseSupport
+	// RedoParker (V11-10, ADR-041) parks the files a previous run left outside a work item's scope before a retry or redo: the same real
+	// Git workspace provider as the fields above. Nil makes PARK answer UNAVAILABLE.
+	RedoParker ports.SelectedChangeParker
+	// RepositoryProber (V11-12, ADR-043) backs the pre-registration repository check: the same read-only prober the worker runs. Nil makes the check answer UNAVAILABLE.
+	RepositoryProber ports.RepositoryProber
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -215,20 +232,30 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		Handler: deps.BootstrapHandler,
 	})
 	// V6-03A: Project/repository/component catalog routes.
-	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: deps.UnitOfWork, IDs: idsource.Random{}})
+	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: deps.UnitOfWork, IDs: idsource.Random{}, Prober: deps.RepositoryProber})
 	// V6-04: WorkItem/family/readiness/scope-expansion routes.
 	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: deps.UnitOfWork, IDs: idsource.Random{}, Clock: clock.System{}})
+	// V11-10: run a failed task again / redo it with the newest workflow version, in one action each.
+	redohttp.RegisterRoutes(routes, redohttp.Dependencies{
+		UOW: deps.UnitOfWork, HeadAuditor: deps.WorkspaceHeadAuditor,
+		Service: workitemredo.Service{
+			RedoDeps: runtime.RedoDeps{
+				UnitOfWork: deps.UnitOfWork, ArtifactStore: deps.ArtifactStore, IDs: idsource.Random{}, Clock: clock.System{}, Matcher: deps.Matcher,
+			},
+			Inspection: deps.WorkspaceInspectionQueries, Parker: deps.RedoParker,
+		},
+	})
 	// V6-06: Run start/cancel controls.
-	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}})
+	runhttp.RegisterRoutes(routes, runhttp.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}, HeadAuditor: deps.WorkspaceHeadAuditor})
 	// V6-06B: Run detail/graph/timeline query routes. Reuses the SAME
 	// process-lifetime matcher/cursor every other redacting/paging route
 	// in this process reuses.
-	httprundetail.RegisterRoutes(routes, httprundetail.Dependencies{UnitOfWork: deps.UnitOfWork, Matcher: deps.Matcher, Cursor: deps.Cursor})
+	httprundetail.RegisterRoutes(routes, httprundetail.Dependencies{UnitOfWork: deps.UnitOfWork, Matcher: deps.Matcher, Cursor: deps.Cursor, ArtifactStore: deps.ArtifactStore})
 	// V6-06A: Approval decision and typed WAIT signal endpoints.
-	decision.RegisterRoutes(routes, decision.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}})
+	decision.RegisterRoutes(routes, decision.Dependencies{UOW: deps.UnitOfWork, IDs: idsource.Random{}, Release: deps.Release})
 	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
 	// and release/reconcile request routes.
-	httpapi.RegisterWorkspaceRoutes(routes, deps.UnitOfWork, idsource.Random{})
+	httpapi.RegisterWorkspaceRoutes(routes, deps.UnitOfWork, idsource.Random{}, deps.WorkspaceHeadAuditor, deps.Matcher)
 	// V6-10D: bounded source/diff/repository-log inspection routes, backed
 	// by the real gitworktree-rooted Queries the composition root built.
 	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: deps.WorkspaceInspectionQueries})

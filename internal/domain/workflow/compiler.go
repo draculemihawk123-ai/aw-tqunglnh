@@ -20,6 +20,21 @@ type canonicalWorkflow struct {
 }
 
 func Compile(definition WorkflowDefinition, request PublishRequest) (WorkflowVersion, error) {
+	return compile(definition, request, true)
+}
+
+// Rehydrate rebuilds an already-published WorkflowVersion from its stored
+// document (the persistence adapter's loader). It runs exactly the checks Compile
+// runs, except those introduced after some stored version was published
+// (publishStrict false): a rule that tightens what may be PUBLISHED must not make
+// an existing version unreadable — its runs, their graph and their history stay
+// viewable, and the runtime keeps its own defensive checks. Today that is
+// validateBoundedCycles' per-node escalation rule (V11-03).
+func Rehydrate(definition WorkflowDefinition, request PublishRequest) (WorkflowVersion, error) {
+	return compile(definition, request, false)
+}
+
+func compile(definition WorkflowDefinition, request PublishRequest, publishStrict bool) (WorkflowVersion, error) {
 	if definition.ID == "" {
 		return WorkflowVersion{}, errors.New("workflow definition id is required")
 	}
@@ -35,7 +50,7 @@ func Compile(definition WorkflowDefinition, request PublishRequest) (WorkflowVer
 	}
 
 	normalizedDocument := normalizeDocument(request.Document)
-	if err := validateNormalizedDocument(normalizedDocument); err != nil {
+	if err := validateNormalizedDocument(normalizedDocument, publishStrict); err != nil {
 		return WorkflowVersion{}, err
 	}
 	normalizedManifest, err := normalizeManifest(request.Dependencies)
@@ -85,7 +100,7 @@ func CompileJSON(
 }
 
 func ValidateDocument(document WorkflowDocument) error {
-	return validateNormalizedDocument(normalizeDocument(document))
+	return validateNormalizedDocument(normalizeDocument(document), true)
 }
 
 func ensureJSONEOF(decoder *json.Decoder) error {
@@ -154,6 +169,9 @@ func normalizeNodeConfig(node *Node) {
 	case node.Approval != nil:
 		sort.Strings(node.Approval.AuthorizedRoles)
 		sort.Strings(node.Approval.RequestedEvidenceKinds)
+		if node.Approval.Release != nil {
+			sort.Strings(node.Approval.Release.Outcomes)
+		}
 	}
 }
 

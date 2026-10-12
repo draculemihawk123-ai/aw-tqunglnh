@@ -20,6 +20,14 @@ import (
 type Scheduler struct {
 	uow ports.UnitOfWork
 	ids idsource.Source
+	// activity (V11-11) announces an approval that now waits for a decision; nil posts nothing.
+	activity *ActivityPoster
+}
+
+// WithActivityPoster makes the scheduler write "waiting for your approval" into the task chat when a run reaches an APPROVAL node.
+func (s *Scheduler) WithActivityPoster(poster *ActivityPoster) *Scheduler {
+	s.activity = poster
+	return s
 }
 
 // NewScheduler returns a ready-to-register Scheduler.
@@ -46,9 +54,12 @@ func (s *Scheduler) Handle(ctx context.Context, job ports.DurableJob) error {
 	if payload.RunID == "" || payload.NodeRunID == "" {
 		return fmt.Errorf("runtime: %s job %s payload missing runId/nodeRunId", AdvanceRunJobKind, job.ID)
 	}
-	_, err := AdvanceRun(ctx, s.uow, s.ids, AdvanceRunRequest{
+	advanced, err := AdvanceRun(ctx, s.uow, s.ids, AdvanceRunRequest{
 		RunID: payload.RunID, NodeRunID: payload.NodeRunID,
 		CorrelationID: payload.CorrelationID, JobID: string(job.ID),
 	})
+	if err == nil && s.activity != nil {
+		s.activity.NodeReached(ctx, advanced.NextNodeRunID)
+	}
 	return err
 }

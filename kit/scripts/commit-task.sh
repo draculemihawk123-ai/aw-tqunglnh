@@ -28,13 +28,23 @@ repos=$("$AW" workspace-set show --project-id "$project_id" "$family" | jq -r '.
 committed=0
 for r in $repos; do
   worktree=$(AW_STATE="$AW_STATE" "$(dirname "$0")/worktree-path.sh" "$r")
+  ws=$("$AW" workspace-set show --project-id "$project_id" "$family" \
+    | jq -ec --arg r "$r" '.repositoryWorkspaces[] | select(.repositoryId == $r)')
+  # Có commit tạo NGOÀI aw (IDE, terminal) thì HEAD không còn là revision aw đã ghi. Commit lên trên HEAD đó sẽ
+  # đưa các commit ấy vào lịch sử của aw mà không qua kiểm toán, nên `aw` cũng từ chối (FAILED/HEAD_DRIFT).
+  # Báo sớm và nói cách xử lý, thay vì để lỗi hiện ra sau khi đã tạo ReleaseSet.
+  recorded=$(jq -r '.currentRevision' <<<"$ws") head=$(git -C "$worktree" rev-parse HEAD)
+  if [ -n "$recorded" ] && [ "$head" != "$recorded" ]; then
+    echo "repository $r: HEAD của worktree ($head) không phải revision aw đã ghi ($recorded) — có commit tạo ngoài aw:" >&2
+    git -C "$worktree" log --reverse --format='  %h %an: %s' "$recorded..$head" >&2 || true
+    echo "Giữ chúng: adopt-head.sh $r   |   không giữ: đưa worktree về $recorded." >&2
+    exit 1
+  fi
   # Worktree không có gì để commit thì `aw` kết thúc local commit ở FAILED với lý do NO_CHANGES (không tạo
   # commit, không thử lại). Kiểm tra trước để báo sớm, khỏi tạo một ReleaseSet thừa.
   [ -n "$(git -C "$worktree" status --porcelain)" ] || continue
   if [ "$r" = "$repo" ]; then key=$(printf '%s|%s' "$family" "$message" | sha256sum | cut -c1-16)
   else key=$(printf '%s|%s|%s' "$family" "$r" "$message" | sha256sum | cut -c1-16); fi
-  ws=$("$AW" workspace-set show --project-id "$project_id" "$family" \
-    | jq -ec --arg r "$r" '.repositoryWorkspaces[] | select(.repositoryId == $r)')
   revision=$(jq -r '.currentRevision' <<<"$ws")
   rs=$(jq -n --arg r "$r" --arg v "$revision" \
     '{repositories: [{repositoryId: $r, baseVcsObjectId: $v, resultVcsObjectId: $v, verdict: "PASS"}]}' \

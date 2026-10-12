@@ -137,6 +137,36 @@ func CheckGit(ctx context.Context) CheckResult {
 	}
 }
 
+// CheckGitShell (V11-09) confirms the shell the kit's COMMAND scripts run through exists on Windows: the kit publishes each
+// .sh script as a self-contained .cmd whose header finds Git for Windows' own sh.exe at <git --exec-path>\..\..\..\bin\sh.exe
+// and runs the script with it. Without that file every COMMAND node of the kit fails before it runs anything. It reads only
+// `git --exec-path` and looks for the file; it executes nothing from the install. Opt in with Options.CheckGitShell (Windows only);
+// a missing git is already CheckGit's finding, so here it is reported as not checkable.
+func CheckGitShell(ctx context.Context) CheckResult {
+	output, err := exec.CommandContext(ctx, "git", "--exec-path").Output()
+	return gitShellResult(strings.TrimSpace(string(output)), err)
+}
+
+func gitShellResult(execPath string, execErr error) CheckResult {
+	const name = "git_shell"
+	if execErr != nil || execPath == "" {
+		return CheckResult{
+			Name: name, Category: CategoryCapability, Status: StatusDegraded,
+			Detail: "git --exec-path failed, so the Git for Windows shell cannot be located", Remediation: "fix the git installation (see the git check)",
+		}
+	}
+	shell := filepath.Join(execPath, "..", "..", "..", "bin", "sh.exe")
+	info, err := os.Stat(shell)
+	if err != nil || info.IsDir() {
+		return CheckResult{
+			Name: name, Category: CategoryCapability, Status: StatusDegraded,
+			Detail:      fmt.Sprintf("%s does not exist: the kit's COMMAND scripts (.cmd launchers) run through Git for Windows' sh.exe", filepath.Clean(shell)),
+			Remediation: "install Git for Windows with its bash included (the default), then restart the worker",
+		}
+	}
+	return CheckResult{Name: name, Category: CategoryCapability, Status: StatusHealthy, Detail: filepath.Clean(shell)}
+}
+
 // CheckWorkerConfig runs cfg through workerpool.Config.Validate.
 func CheckWorkerConfig(cfg workerpool.Config) CheckResult {
 	if _, err := cfg.Validate(); err != nil {

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # Chạy lại một WorkItem có run vừa FAILED hoặc bị hủy, trên CHÍNH WorkItem đó (lịch sử, message và evidence ở
-# một chỗ): in lỗi của các bước kiểm tra, gỡ blocker đang mở, gửi ghi chú cho agent (tùy chọn) rồi start một run
-# mới với đúng workflow version đã pin. Worktree KHÔNG được reset: run mới bắt đầu từ những gì run trước để lại —
-# hoàn tác những gì run mới không nên thấy TRƯỚC khi gọi script này.
+# một chỗ): in lỗi của các bước kiểm tra rồi gọi `aw work-item retry` — MỘT lệnh gửi ghi chú cho agent (tùy chọn),
+# gỡ blocker của run hỏng và start run mới với đúng workflow version đã pin, trong một transaction (V11-10, ADR-041).
+# Worktree KHÔNG được reset: run mới bắt đầu từ những gì run trước để lại.
 # Cách dùng: retry-task.sh <workItemId> ["ghi chú cho agent"]
-# Biến tùy chọn: WAIT_SECONDS (mặc định 2700) thời gian chờ tối đa, xem watch-run.sh.
+# Biến tùy chọn: OUT_OF_SCOPE=KEEP|PARK xử lý file run trước để lại NGOÀI scope của task (bắt buộc khi có; PARK cất vào
+#                một ref Git ẩn, không xóa); WAIT_SECONDS (mặc định 2700) thời gian chờ tối đa, xem watch-run.sh.
+# Muốn chạy bằng workflow version MỚI (vừa sửa kit rồi publish lại): dùng recreate-task.sh.
 # Run mới chạy lại workflow TỪ ĐẦU (aw không chạy tiếp từ node bị hỏng); các agent thấy phần việc đã có trong
 # worktree và làm tiếp từ đó.
 # Ghi chú Windows: jq.exe in CRLF. `$(…)` của Git Bash tự bỏ CR cuối, còn `read` thì không, nên các vòng
@@ -29,25 +31,18 @@ wf=$("$AW" run show "$last_run" | jq -er '.workflowVersionId')
       | jq -r '"lệnh thoát mã \(.exitCode): \((.stderr // .stdout // "(không có output)") | gsub("\\s+"; " ") | .[0:600])"'
   done | uniq -c
 
-# 2. Gỡ mọi blocker đang mở của run đó. RUN_FAILED chỉ RESOLVED được (không WAIVED được); lệnh bị từ chối khi
-#    family còn worktree QUARANTINED (operations.md mục 5.4).
-"$AW" run diagnostics --project-id "$project_id" "$last_run" \
-  | jq -r '.blockers[]? | select(.state == "OPEN") | .blockerId' | tr -d '\r' | while read -r blocker; do
-    "$AW" blocker resolve --mode RESOLVED --reason "${note:-đã xem lỗi, chạy lại}" "$blocker" > /dev/null
-    echo "Đã gỡ blocker $blocker"
-  done
-
-# 3. Ghi chú cho agent: thành message của WorkItem, có trong prompt của run mới.
-if [ -n "$note" ]; then
-  printf '%s\n' "$note" | "$AW" message append --project-id "$project_id" --role USER \
-    --idempotency-key "retry-note-$work_item-$runs" "$work_item" > /dev/null 2>&1
-fi
-
-# 4. Run mới trên cùng WorkItem. Khóa idempotency gắn với số thứ tự run, nên gọi lại script sau một lần FAILED
-#    nữa sẽ tạo run tiếp theo chứ không phát lại run cũ.
+# 2. Một lệnh: ghi chú + gỡ blocker + run mới. Khóa idempotency gắn với số thứ tự run, nên gọi lại script sau một
+#    lần FAILED nữa sẽ tạo run tiếp theo chứ không phát lại run cũ; gọi lại ngay sau khi lệnh đã thành công thì phát lại
+#    đúng kết quả cũ.
 out=$(mktemp) err=$(mktemp)
 trap 'rm -f "$out" "$err"' EXIT
-"$AW" run start --workflow-version-id "$wf" --idempotency-key "run-$work_item-$((runs + 1))" "$work_item" \
-  > "$out" 2> "$err" || true
-run_id=$(jq -er '.result.runId' "$out" 2> /dev/null) || { echo "run start bị từ chối:" >&2; cat "$err" >&2; exit 1; }
+args=(--idempotency-key "retry-$work_item-$((runs + 1))")
+[ -z "$note" ] || args+=(--note "$note")
+[ -z "${OUT_OF_SCOPE:-}" ] || args+=(--out-of-scope "$OUT_OF_SCOPE")
+"$AW" work-item retry "${args[@]}" "$work_item" > "$out" 2> "$err" || true
+run_id=$(jq -er '.result.runId' "$out" 2> /dev/null) || { echo "retry bị từ chối:" >&2; cat "$err" >&2
+  if grep -q WORKSPACE_HEAD_DRIFT "$err"; then echo "Giữ các commit ngoài aw: adopt-head.sh [repositoryId], rồi chạy lại script này." >&2; fi
+  if grep -q "outside the work item's scope" "$err"; then echo "Chạy lại với OUT_OF_SCOPE=PARK (cất các file đó) hoặc OUT_OF_SCOPE=KEEP (giữ, run sau có thể vi phạm scope lần nữa)." >&2; fi
+  exit 1; }
+jq -r '.result | "Đã gỡ \(.resolvedBlockerIds | length) blocker, run mới \(.runId)" + (if .parked then "; đã cất file ngoài scope: \([.parked[].paths[]] | join(", "))" else "" end)' "$out"
 "$(dirname "$0")/watch-run.sh" "$run_id"

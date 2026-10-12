@@ -185,6 +185,17 @@ export function KanbanScreen({ project, onOpenTask, isOffline = false }: Props) 
                           </div>
                         )}
 
+                        {card.supersedesWorkItemId && (
+                          <div className="mt-2 text-[12px] text-[#475569]" data-testid={`supersedes-${card.workItemId}`}>
+                            replaces <span className="font-mono">{card.supersedesWorkItemId}</span>
+                          </div>
+                        )}
+                        {card.supersededByWorkItemId && (
+                          <div className="mt-2 text-[12px] text-[#92400E]" data-testid={`superseded-by-${card.workItemId}`}>
+                            replaced by <span className="font-mono">{card.supersededByWorkItemId}</span>
+                          </div>
+                        )}
+
                         {(card.runCount ?? 0) > 0 && (
                           <div className="mt-2 text-[12px] text-[#475569]" data-testid={`run-count-${card.workItemId}`}>
                             {card.runCount} {card.runCount === 1 ? 'run' : 'runs'}

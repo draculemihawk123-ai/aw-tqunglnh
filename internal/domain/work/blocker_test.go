@@ -41,6 +41,7 @@ func TestBlockerType_AuthorityMatrix(t *testing.T) {
 		{BlockerAdapterBuildDrift, false, true},
 		{BlockerCapabilityRequirementUnsatisfied, false, true},
 		{BlockerWriteCapabilityOrGrantMissing, false, true},
+		{BlockerReleaseFailed, false, true},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.blockerType), func(t *testing.T) {

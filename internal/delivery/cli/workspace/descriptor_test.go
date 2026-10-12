@@ -19,12 +19,13 @@ func TestWorkspacePackage_RegistersEveryDescriptorInDefault(t *testing.T) {
 		appOp    string
 		httpOpID string
 	}{
-		"workspace-set show|PROJECT":             {"GetWorkspaceSetState", "getWorkspaceSetState"},
-		"workspace-set release|PROJECT":          {"RequestWorkspaceSetRelease", "requestWorkspaceSetRelease"},
-		"repository-workspace source|PROJECT":    {"GetSource", "getWorkspaceSource"},
-		"repository-workspace diff|PROJECT":      {"GetDiff", "getWorkspaceDiff"},
-		"repository-workspace log|PROJECT":       {"GetRepositoryLog", "getWorkspaceRepositoryLog"},
-		"repository-workspace reconcile|PROJECT": {"RequestWorkspaceReconciliation", "requestWorkspaceReconciliation"},
+		"workspace-set show|PROJECT":              {"GetWorkspaceSetState", "getWorkspaceSetState"},
+		"workspace-set release|PROJECT":           {"RequestWorkspaceSetRelease", "requestWorkspaceSetRelease"},
+		"repository-workspace source|PROJECT":     {"GetSource", "getWorkspaceSource"},
+		"repository-workspace diff|PROJECT":       {"GetDiff", "getWorkspaceDiff"},
+		"repository-workspace log|PROJECT":        {"GetRepositoryLog", "getWorkspaceRepositoryLog"},
+		"repository-workspace reconcile|PROJECT":  {"RequestWorkspaceReconciliation", "requestWorkspaceReconciliation"},
+		"repository-workspace adopt-head|PROJECT": {"AdoptWorkspaceHead", "adoptWorkspaceHead"},
 	}
 
 	got := map[string]cli.Descriptor{}

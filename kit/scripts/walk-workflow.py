@@ -12,6 +12,9 @@ Kịch bản (xem kit/tests/walk/scenarios/*.json):
     agents      {node: [outcome, ...]}: outcome lần thứ n node AGENT đó chạy (hết danh sách thì lặp lại cái cuối)
     commands    {gate1|quality|expectfail|hygiene|size|checkplan|checklessons|checkdocs: ["pass"|"fail", ...]}: kết quả lần thứ n (hết thì "pass")
     approvals   {node: [outcome, ...]}: quyết định cho node APPROVAL
+    after       (tùy chọn, V11-10) các bước chạy tiếp trên run đã xong: [{"do": "retry", "note": "...", "agents": {...}, "commands": {...}},
+                {"do": "recreate", "reason": "...", ...}]. retry-task.sh / recreate-task.sh thật chạy trên chính bản cài tạm; "agents" và
+                "commands" (nếu có) thay kịch bản agent/lệnh cho run mới (bộ đếm về 0). expect.state và expect.sequence là của run CUỐI.
     expect      {"state": "SUCCEEDED|FAILED", "sequence": ["node:outcome", ...], "prompts": [{"node", "nth", "has", "lacks"}]}
 
 Node AGENT được nhận ra bằng resource có trong prompt (frame ← flow.frame, repro ← bugfix.repro…). Cần: binary `aw` (biến AW hoặc
@@ -144,20 +147,57 @@ def main():
             fail("không thấy runId:\n" + out[-600:])
 
         approvals = {k: list(v) for k, v in scenario.get("approvals", {}).items()}
-        state = ""
-        for _ in range(60):
-            if "state: SUCCEEDED" in out or "state: FAILED" in out or "state: CANCELLED" in out:
-                break
-            waiting = [line for line in out.splitlines() if "CHỜ DUYỆT node" in line]
-            if not waiting:
-                out = run([os.path.join(HERE, "watch-run.sh"), run_id], check=False)
-                continue
-            node = waiting[0].split("CHỜ DUYỆT node ")[1].split(":")[0]
-            if not approvals.get(node):
-                fail(f"kịch bản chưa có quyết định cho node duyệt {node!r}:\n{out[-600:]}")
-            outcome = approvals[node].pop(0)
-            out = run([os.path.join(HERE, "review-task.sh"), run_id, outcome, f"walk-workflow: {outcome}"], check=False)
-        state = next((line.split("state: ")[1].split()[0] for line in out.splitlines() if "state: " in line), "?")
+        item_id = next((line.split()[1] for line in out.splitlines() if line.startswith("WorkItem: ")), "")
+
+        def drive(out, run_id):
+            # Duyệt các cổng người theo kịch bản cho tới khi run kết thúc; trả (output cuối, trạng thái).
+            for _ in range(60):
+                if "state: SUCCEEDED" in out or "state: FAILED" in out or "state: CANCELLED" in out:
+                    break
+                waiting = [line for line in out.splitlines() if "CHỜ DUYỆT node" in line]
+                if not waiting:
+                    out = run([os.path.join(HERE, "watch-run.sh"), run_id], check=False)
+                    continue
+                node = waiting[0].split("CHỜ DUYỆT node ")[1].split(":")[0]
+                if not approvals.get(node):
+                    fail(f"kịch bản chưa có quyết định cho node duyệt {node!r}:\n{out[-600:]}")
+                outcome = approvals[node].pop(0)
+                out = run([os.path.join(HERE, "review-task.sh"), run_id, outcome, f"walk-workflow: {outcome}"], check=False)
+            return out, next((line.split("state: ")[1].split()[0] for line in out.splitlines() if "state: " in line), "?")
+
+        out, state = drive(out, run_id)
+
+        def latest_run(item):
+            detail = json.loads(run([aw, "work-item", "detail", "--project-id", json.load(open(env["AW_STATE"]))["projectId"], item]))
+            return detail["runs"][-1]["runId"]
+
+        for step in scenario.get("after", []):
+            if "agents" in step:
+                with open(os.path.join(home, "agents.json"), "w") as f:
+                    json.dump(step["agents"], f)
+                for name in os.listdir(os.path.join(home, "prompts")):
+                    if name.endswith(".n"):
+                        os.remove(os.path.join(home, "prompts", name))
+            if "commands" in step:
+                for name in os.listdir(os.path.join(home, "seq")):
+                    os.remove(os.path.join(home, "seq", name))
+                for name, results in step["commands"].items():
+                    with open(os.path.join(home, "seq", name), "w") as f:
+                        f.write("\n".join(results) + "\n")
+            if step["do"] == "retry":
+                cmd = [os.path.join(HERE, "retry-task.sh"), item_id] + ([step["note"]] if step.get("note") else [])
+            elif step["do"] == "recreate":
+                cmd = [os.path.join(HERE, "recreate-task.sh"), item_id, step.get("reason", "walk-workflow")] + ([step["note"]] if step.get("note") else [])
+            else:
+                fail(f"bước after không biết: {step['do']!r}")
+            out = run(cmd, check=False)
+            if step["do"] == "recreate":
+                new_item = next((line.split("WorkItem mới: ")[1].split()[0] for line in out.splitlines() if "WorkItem mới: " in line), "")
+                if not new_item:
+                    fail("recreate-task.sh không báo WorkItem mới:\n" + out[-600:])
+                item_id = new_item
+            run_id = latest_run(item_id)
+            out, state = drive(out, run_id)
 
         timeline = json.loads(run([aw, "run", "timeline", run_id]))
         entries = sorted((e for e in timeline["entries"] if e.get("kind") == "NODE_RUN"), key=lambda e: e["activationSequence"])

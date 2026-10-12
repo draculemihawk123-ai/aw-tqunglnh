@@ -67,6 +67,18 @@ describe('KanbanScreen', () => {
     expect(screen.getByText('completion not yet gate-verified')).toBeInTheDocument();
   });
 
+  it('V11-10: a redone card says what it replaces and the old one what replaced it', async () => {
+    const OLD = { ...ACTIVE_CARD, workItemId: 'wi-6', title: 'T-01: add the endpoint', status: 'CANCELLED', supersededByWorkItemId: 'wi-7' };
+    const NEW = { ...ACTIVE_CARD, workItemId: 'wi-7', title: 'T-01: add the endpoint (lần 2)', supersedesWorkItemId: 'wi-6' };
+    vi.mocked(api.listWorkItemKanban).mockResolvedValue({ items: [OLD, NEW], freshness: freshness() } as never);
+    render(<KanbanScreen project={PROJECT} onOpenTask={vi.fn()} />);
+
+    await screen.findByText('T-01: add the endpoint (lần 2)');
+    expect(screen.getByTestId('supersedes-wi-7')).toHaveTextContent('replaces wi-6');
+    expect(screen.getByTestId('superseded-by-wi-6')).toHaveTextContent('replaced by wi-7');
+    expect(screen.queryByTestId('supersedes-wi-6')).not.toBeInTheDocument();
+  });
+
   it('V9-06: a card shows how many runs its WorkItem has had, and a never-run card shows none', async () => {
     const RERUN_CARD = {
       workItemId: 'wi-4', projectId: 'proj-1', familyId: 'fam-4', title: 'Flaky integration test',

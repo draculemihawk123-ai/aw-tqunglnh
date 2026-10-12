@@ -82,6 +82,12 @@ func registerClassifications(c *Catalog) {
 	c.ignore("ProjectCreated", 1, "Project existence is catalog data, not a Kanban/task-detail entity; ProjectID scoping for this projection's own rows comes from each WorkItem/Run event's own ProjectID field, never from tracking Project creation itself.")
 	c.ignore("RepositoryRegistered", 1, "Repository catalog data — V6-10's own multi-repo badge aggregation cross-references catalog state directly at read time (its own explicit Thực hiện bullet), never via this projection.")
 	c.ignore("RepositoryProbeRetried", 1, "Repository catalog/onboarding data, no Kanban/task-detail surface.")
+	c.ignore("RepositoryUpdated", 1, "Repository catalog/onboarding data, no Kanban/task-detail surface.")
+	c.ignore("RepositoryDisabled", 1, "Repository catalog data; a disabled repository cannot be in use by an unfinished work item, so no Kanban/task-detail row changes.")
+	c.ignore("RepositoryDeleted", 1, "Repository catalog data; only a never-ACTIVE, unreferenced repository can be deleted, so no Kanban/task-detail row refers to it.")
+	c.ignore("ProjectRenamed", 1, "Project catalog data, no Kanban/task-detail surface.")
+	c.ignore("ProjectArchived", 1, "Project catalog data; an archived project has no running or open work, and its read models stay readable as they were.")
+	c.ignore("ProjectRestored", 1, "Project catalog data, no Kanban/task-detail surface.")
 	c.ignore("ComponentPackAssigned", 1, "Component/pack catalog data, no Kanban/task-detail surface.")
 
 	// --- Ignore: definition authoring (internal/app/definitions) ---
@@ -120,6 +126,9 @@ func registerClassifications(c *Catalog) {
 	c.ignore("REPOSITORY_WORKSPACE_RECREATED", 1, "RepositoryWorkspace health/lifecycle — out of scope, see REPOSITORY_WORKSPACE_QUARANTINED.")
 	c.ignore("WorkspaceSetReleaseRequested", 1, "ReleaseSet/local-Git operation, a separate screen's own concern (V6-10F), no Kanban card surface.")
 	c.ignore("WorkspaceReconciliationRequested", 1, "Workspace reconcile operation, no Kanban card surface.")
+	c.ignore("WorkspaceHeadAdopted", 1, "Operator adopted commits made outside aw into a workspace's recorded revision (V11-01); an audit record, no Kanban card surface.")
+	c.ignore("WORK_ITEM_RETRIED", 1, "Audit record of a one-action retry (V11-10); every state change it makes (blockers resolved, run started) is already classified through its own events, so the card needs nothing from it.")
+	c.ignore("WORK_ITEM_RECREATED", 1, "Audit record of a redo with the newest workflow version (V11-10); the old WorkItem's cancellation and the new one's creation, READY mark and run start are classified through their own events.")
 
 	// --- Ignore: ReleaseSet local commit (internal/app/releasesetcommit) ---
 

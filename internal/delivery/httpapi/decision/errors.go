@@ -4,7 +4,9 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/approvalrelease"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 )
@@ -29,6 +31,14 @@ func writeResolveApprovalError(w http.ResponseWriter, err error) {
 		// leakage-normalized shape as that reload's own not-found/mismatch
 		// branch.
 		httpapi.WriteResourceHidden(w)
+	case errors.Is(err, runtime.ErrCommitNotOffered), errors.Is(err, runtime.ErrCommitRequired):
+		// V11-07: the approval node's release policy refused the decision as asked; nothing was written.
+		httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest, err.Error(), nil)
+	case errors.Is(err, releasesetcommit.ErrCommitIdentityMissing):
+		writeIdentityMissing(w, err)
+	case errors.Is(err, ports.ErrOptimisticConflict), errors.Is(err, releasesetcommit.ErrWorkspaceNotReady):
+		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict,
+			"the repository workspace changed since the changes were reviewed; reload and review again", nil)
 	case errors.Is(err, ports.ErrReceiptConflict):
 		// A genuine race: two concurrent callers with the same
 		// Idempotency-Key both passed this handler's own LookupReceipt fast
@@ -64,4 +74,34 @@ func writeSignalWaitError(w http.ResponseWriter, err error) {
 	default:
 		httpapi.WriteAppError(w, err)
 	}
+}
+
+// writeCommitPrepareError classifies an error from approvalrelease.Preparer.Prepare.
+func writeCommitPrepareError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, releasesetcommit.ErrCommitIdentityMissing):
+		writeIdentityMissing(w, err)
+	case errors.Is(err, approvalrelease.ErrInvalidCommit):
+		httpapi.WriteError(w, http.StatusBadRequest, httpapi.ErrorCodeInvalidRequest, err.Error(), nil)
+	case errors.Is(err, ports.ErrPersistenceNotFound):
+		httpapi.WriteResourceHidden(w)
+	case errors.Is(err, ports.ErrWorkingTreeTooLarge):
+		httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest,
+			"the worktree has too many changed paths to commit; add the generated files to .gitignore or remove them", nil)
+	default:
+		httpapi.WriteAppError(w, err)
+	}
+}
+
+// writeIdentityMissing answers 422 with a machine-readable COMMIT_IDENTITY_MISSING detail per repository, so a
+// client can tell the approver exactly which repository needs git configured and with which commands.
+func writeIdentityMissing(w http.ResponseWriter, err error) {
+	var missing *approvalrelease.IdentityMissingError
+	var details []httpapi.ErrorDetail
+	if errors.As(err, &missing) {
+		for _, m := range missing.Missing {
+			details = append(details, httpapi.ErrorDetail{Field: "commit.repositories." + m.RepositoryWorkspaceID, Message: "COMMIT_IDENTITY_MISSING: " + m.RepositoryID})
+		}
+	}
+	httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest, err.Error(), details)
 }

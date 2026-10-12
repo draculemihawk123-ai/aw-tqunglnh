@@ -213,6 +213,10 @@ func (h *Handler) finishActive(ctx context.Context, job ports.DurableJob, repo p
 func (h *Handler) finishBlocked(ctx context.Context, job ports.DurableJob, repo project.Repository, appErr *apperror.Error) error {
 	code := string(appErr.Code)
 	message := appErr.Message
+	// V11-12: what kind of failure, Git's redacted words and what to do (set by the prober on apperror.Error.Details).
+	failureKind := optionalDetail(appErr, ports.ProbeDetailFailureKind)
+	errorDetail := optionalDetail(appErr, ports.ProbeDetailDetail)
+	errorHint := optionalDetail(appErr, ports.ProbeDetailHint)
 	return h.uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
 		updated, err := tx.Catalog().TransitionRepositoryStatus(ctx, ports.TransitionRepositoryStatusRequest{
 			RepositoryID: string(repo.ID), ExpectedStatus: project.RepositoryProbing, ExpectedVersion: repo.Version,
@@ -226,7 +230,17 @@ func (h *Handler) finishBlocked(ctx context.Context, job ports.DurableJob, repo 
 		_, err = tx.Catalog().RecordRepositoryProbeAttempt(ctx, ports.RecordRepositoryProbeAttemptRequest{
 			ID: h.ids.NewID(), ProjectID: string(updated.ProjectID), RepositoryID: string(updated.ID), JobID: string(job.ID),
 			State: ports.RepositoryProbeAttemptSucceeded, Result: &result, ErrorCode: &code, ErrorMessage: &message,
+			FailureKind: failureKind, ErrorDetail: errorDetail, ErrorHint: errorHint,
 		})
 		return err
 	})
+}
+
+// optionalDetail returns a pointer to the named detail of a probe failure, or nil when the failure does not carry it.
+func optionalDetail(appErr *apperror.Error, key string) *string {
+	value, ok := appErr.Details[key]
+	if !ok || value == "" {
+		return nil
+	}
+	return &value
 }

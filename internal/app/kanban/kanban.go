@@ -116,6 +116,10 @@ type Card struct {
 	PendingScopeExpansionCount int               `json:"pendingScopeExpansionCount"`
 	RunCount                   int               `json:"runCount"`
 	RepositoryBadges           []RepositoryBadge `json:"repositoryBadges,omitempty"`
+	// SupersedesWorkItemID and SupersededByWorkItemID (V11-10, ADR-041) link a WorkItem that was redone with a newer workflow version to
+	// the one it replaced and to the one that replaced it. They are read live from work_item_supersessions, not projected.
+	SupersedesWorkItemID   string `json:"supersedesWorkItemId,omitempty"`
+	SupersededByWorkItemID string `json:"supersededByWorkItemId,omitempty"`
 }
 
 // Freshness is how current the projection the cards were read from is:
@@ -254,6 +258,10 @@ func ListWorkItemKanban(ctx context.Context, uow ports.UnitOfWork, req ListReque
 		}
 		window := candidates[:pageCount]
 
+		links, err := loadSupersessionLinks(ctx, tx, projectID)
+		if err != nil {
+			return err
+		}
 		badges := newBadgeLookup(tx)
 		items := make([]Card, 0, len(window))
 		for _, entry := range window {
@@ -262,7 +270,9 @@ func ListWorkItemKanban(ctx context.Context, uow ports.UnitOfWork, req ListReque
 			if err != nil {
 				return err
 			}
-			items = append(items, newCard(entry.row.EntityKey, projectID, entry.card, workspaceSetID, cardBadges))
+			card := newCard(entry.row.EntityKey, projectID, entry.card, workspaceSetID, cardBadges)
+			links.apply(&card)
+			items = append(items, card)
 		}
 		page.Items = items
 
@@ -334,4 +344,28 @@ func resolveProjectionState(ctx context.Context, tx ports.Tx, projectID string) 
 	return generation, Freshness{
 		Generation: generation, AsOfJournalPosition: checkpoint.Cursor, Status: string(checkpoint.Status),
 	}, nil
+}
+
+// supersessionLinks maps a WorkItem to the WorkItem it replaced and to the one that replaced it.
+type supersessionLinks struct {
+	replaces   map[string]string
+	replacedBy map[string]string
+}
+
+func loadSupersessionLinks(ctx context.Context, tx ports.Tx, projectID string) (supersessionLinks, error) {
+	links := supersessionLinks{replaces: map[string]string{}, replacedBy: map[string]string{}}
+	all, err := tx.Work().ListWorkItemSupersessions(ctx, projectID)
+	if err != nil {
+		return links, err
+	}
+	for _, s := range all {
+		links.replaces[string(s.NewWorkItemID)] = string(s.OldWorkItemID)
+		links.replacedBy[string(s.OldWorkItemID)] = string(s.NewWorkItemID)
+	}
+	return links, nil
+}
+
+func (l supersessionLinks) apply(card *Card) {
+	card.SupersedesWorkItemID = l.replaces[card.WorkItemID]
+	card.SupersededByWorkItemID = l.replacedBy[card.WorkItemID]
 }

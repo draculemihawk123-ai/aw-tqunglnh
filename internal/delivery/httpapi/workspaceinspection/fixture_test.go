@@ -60,6 +60,7 @@ type testEnv struct {
 	base            string
 	client          *http.Client
 	uow             ports.UnitOfWork
+	store           *sqlite.Store
 	provider        *gitworktree.Provider
 	handle          ports.WorkspaceHandle
 	baseRevision    workspace.Revision
@@ -132,7 +133,7 @@ func newTestEnv(t *testing.T, initialState workspace.RepositoryWorkspaceState) *
 
 	return &testEnv{
 		base: "http://" + server.Addr(), client: &http.Client{Timeout: 30 * time.Second},
-		uow: uow, provider: provider, handle: handle,
+		uow: uow, store: store, provider: provider, handle: handle,
 		baseRevision: inspection.BaseRevision, currentRevision: inspection.CurrentRevision, sourceRepo: sourceRepo,
 	}
 }

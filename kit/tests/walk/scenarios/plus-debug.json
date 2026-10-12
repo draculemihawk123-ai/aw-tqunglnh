@@ -62,14 +62,16 @@
         "node": "debug",
         "nth": 1,
         "has": [
-          "debug.diagnosis-report"
+          "debug.diagnosis-report",
+          "checkFailures"
         ]
       },
       {
         "node": "build",
         "nth": 2,
         "has": [
-          "reviewerFeedback"
+          "reviewerFeedback",
+          "checkFailures"
         ]
       }
     ]

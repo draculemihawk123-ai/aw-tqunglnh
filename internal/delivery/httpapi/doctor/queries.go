@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"net/http"
+	"runtime"
 
 	appdoctor "github.com/taQuangLing/agent-workflow/internal/app/doctor"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
@@ -23,6 +24,7 @@ func handleDoctor(deps Dependencies) http.HandlerFunc {
 
 		report := appdoctor.Run(ctx, appdoctor.Options{
 			Config: deps.Config, Store: deps.Store, UnitOfWork: deps.UnitOfWork, ProviderProbe: deps.ProviderProbe,
+			CheckGitShell: runtime.GOOS == "windows",
 		})
 		checks := append([]appdoctor.CheckResult{}, report.Checks...)
 		checks = append(checks, isolationCheck(ctx, deps.Isolation))

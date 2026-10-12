@@ -44,6 +44,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/apperror"
 	"github.com/taQuangLing/agent-workflow/internal/app/idsource"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspacereconcile"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspacerelease"
@@ -62,8 +63,8 @@ import (
 // (WriteDecodeError) instead of an unbounded read.
 const maxWorkspaceCommandBodyBytes = 1 << 16
 
-// RegisterWorkspaceRoutes registers this task's own 4 routes into routes: 2
-// read-only state queries and 2 write-intent dispatches. A composition root
+// RegisterWorkspaceRoutes registers this task's own 5 routes into routes: 2
+// read-only state queries, 2 write-intent dispatches and (V11-01) adopt-head. A composition root
 // calls this once at startup, passing the same uow/ids every other route
 // registration in that same process uses (cmd/aw/serve.go's own
 // idsource.Random{} — never a fresh source per request, mirroring this
@@ -73,7 +74,13 @@ const maxWorkspaceCommandBodyBytes = 1 << 16
 // is the real ports.ReleaseEligibilityAuthority implementation
 // (internal/app/work/release_set.go), backed by a family's own real, most
 // recently created ReleaseSet; there is no fake anywhere on this path.
-func RegisterWorkspaceRoutes(routes *RouteRegistry, uow ports.UnitOfWork, ids idsource.Source) {
+//
+// headAuditor and matcher (V11-01) back the adopt-head route: the application
+// command reads the worktree's HEAD through headAuditor (a Git workspace
+// provider in production) and redacts commit text with matcher. headAuditor may
+// be nil in a composition without a Git provider; the route is still registered
+// (the contract lists it) and answers UNAVAILABLE.
+func RegisterWorkspaceRoutes(routes *RouteRegistry, uow ports.UnitOfWork, ids idsource.Source, headAuditor ports.WorkspaceHeadAuditor, matcher redact.Matcher) {
 	authority := work.NewEligibilityAuthority(uow)
 
 	routes.Register(RouteDescriptor{
@@ -99,6 +106,12 @@ func RegisterWorkspaceRoutes(routes *RouteRegistry, uow ports.UnitOfWork, ids id
 		OperationID: "requestWorkspaceReconciliation", ScopeKind: ScopeProject,
 		RequestSchema: struct{}{}, ResponseSchema: workspacereconcile.RequestWorkspaceReconciliationResult{},
 		Handler: requestWorkspaceReconciliationHandler(uow, ids),
+	})
+	routes.Register(RouteDescriptor{
+		Method: http.MethodPost, Path: "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/adopt-head",
+		OperationID: "adoptWorkspaceHead", ScopeKind: ScopeProject,
+		RequestSchema: struct{}{}, ResponseSchema: workspacereconcile.AdoptWorkspaceHeadResult{},
+		Handler: adoptWorkspaceHeadHandler(uow, headAuditor, matcher),
 	})
 }
 
@@ -168,6 +181,20 @@ func writeWorkspaceCommandError(w http.ResponseWriter, err error) {
 	case errors.Is(err, workspacereconcile.ErrWorkspaceNotReconcilable):
 		WriteAppError(w, apperror.Wrap(errorcode.CodeConflict,
 			"the repository workspace is not currently in a reconcilable state (must be READY or QUARANTINED)", false, err))
+
+	// V11-01 (AdoptWorkspaceHead): each refusal carries its own operator-readable
+	// message, which already says what to do next.
+	case errors.Is(err, ports.ErrWorkspaceQuarantined):
+		WriteAppError(w, apperror.Wrap(errorcode.CodeWorkspaceQuarantined, err.Error(), false, err))
+
+	case errors.Is(err, workspacereconcile.ErrAdoptWorkspaceNotReady),
+		errors.Is(err, workspacereconcile.ErrAdoptWorktreeDirty),
+		errors.Is(err, workspacereconcile.ErrAdoptHeadNotDescendant),
+		errors.Is(err, workspacereconcile.ErrAdoptNothingToAdopt):
+		WriteAppError(w, apperror.Wrap(errorcode.CodeConflict, err.Error(), false, err))
+
+	case errors.Is(err, workspacereconcile.ErrAdoptWriterActive):
+		WriteAppError(w, apperror.Wrap(errorcode.CodeConflict, err.Error(), true, err))
 
 	default:
 		WriteAppError(w, err)

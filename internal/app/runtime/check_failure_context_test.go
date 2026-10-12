@@ -47,6 +47,15 @@ type makerCheckLoop struct {
 
 func newMakerCheckLoop(t *testing.T, checkKind workflow.NodeType) *makerCheckLoop {
 	t.Helper()
+	return newMakerCheckLoopWithDiagnosis(t, checkKind, false)
+}
+
+// newMakerCheckLoopWithDiagnosis is newMakerCheckLoop with, when diagnose is true,
+// a diagnosing CHECKER between the failing check and the maker (V11-04):
+//
+//	check --failed--> debug (CHECKER AGENT) --diagnosed--> implement
+func newMakerCheckLoopWithDiagnosis(t *testing.T, checkKind workflow.NodeType, diagnose bool) *makerCheckLoop {
+	t.Helper()
 	ctx := context.Background()
 	build := assembleFixtureBuild(t)
 	buildID := build.ID()
@@ -110,6 +119,22 @@ func newMakerCheckLoop(t *testing.T, checkKind workflow.NodeType) *makerCheckLoo
 			{Key: "check-to-implement", From: "check", Outcome: failed, To: "implement"},
 			{Key: "check-to-escalated", From: "check", Outcome: "escalated", To: "escalated_end"},
 		},
+	}
+	if diagnose {
+		document.Nodes = append(document.Nodes, workflow.Node{
+			Key: "debug", Type: workflow.NodeAgent, Outcomes: []string{"diagnosed"}, Agent: &workflow.AgentNodeConfig{
+				ProfileRef:     definition.DependencyPin{Kind: definition.KindAgentProfile, DefinitionID: "agent-profile-def", VersionID: "agent-profile-v1"},
+				PolicyRefs:     fullyResolvablePolicyRefs(),
+				AdapterBuildID: &buildID,
+				Role:           workflow.AgentRoleChecker,
+			},
+		})
+		for i := range document.Edges {
+			if document.Edges[i].Key == "check-to-implement" {
+				document.Edges[i] = workflow.Edge{Key: "check-to-debug", From: "check", Outcome: failed, To: "debug"}
+			}
+		}
+		document.Edges = append(document.Edges, workflow.Edge{Key: "debug-to-implement", From: "debug", Outcome: "diagnosed", To: "implement"})
 	}
 	u, seq, rID, nrID := scheduleFixture(t, document)
 	if err := u.WithSerializedWrite(ctx, func(tx ports.Tx) error {

@@ -10,11 +10,11 @@
       },
       "provenance": {
         "owner": "aw-kit",
-        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
-        "revision": "v1",
+        "source": "generalised from docs/guides/todolist-spring-react (verified with a real agent)",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "convention": "Backend nằm trọn trong thư mục backend/ của repository. Java 21, Spring Boot 3.5.x (parent org.springframework.boot:spring-boot-starter-parent), build bằng Maven (lệnh `mvn`; dùng ./mvnw nếu repository đã có Maven Wrapper). Package gốc là package của lớp @SpringBootApplication đã có sẵn trong code; giữ nguyên groupId, artifactId và package đó. Chia package theo tầng: controller (@RestController, chỉ map HTTP <-> DTO), service (@Service, nghiệp vụ, @Transactional), repository (Spring Data JPA), domain (@Entity), dto (Java record cho request/response). Controller không bao giờ gọi repository trực tiếp. Không sửa file nào nằm ngoài backend/."
+      "convention": "The backend lives entirely in the backend/ directory of the repository. Java 21, Spring Boot 3.5.x (parent org.springframework.boot:spring-boot-starter-parent), built with Maven (the `mvn` command; use ./mvnw if the repository already has the Maven Wrapper). The root package is the package of the @SpringBootApplication class already in the code; keep that groupId, artifactId and package. Split packages by layer: controller (@RestController, only maps HTTP <-> DTO), service (@Service, business logic, @Transactional), repository (Spring Data JPA), domain (@Entity), dto (Java records for request/response). A controller never calls a repository directly. Do not change any file outside backend/."
     },
     {
       "key": "spring.testing",
@@ -26,11 +26,11 @@
       },
       "provenance": {
         "owner": "aw-kit",
-        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
-        "revision": "v1",
+        "source": "generalised from docs/guides/todolist-spring-react (verified with a real agent)",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "convention": "Test bằng JUnit 5 + spring-boot-starter-test. Controller test dùng @SpringBootTest + @AutoConfigureMockMvc (hoặc @WebMvcTest khi chỉ test tầng web). Mỗi endpoint có ít nhất một test cho đường thành công và một test cho lỗi (400/404). Test không được phụ thuộc file database thật của môi trường dev — dùng một file SQLite tạm: @DynamicPropertySource trỏ spring.datasource.url tới một file trong thư mục tạm của JUnit (`@TempDir static Path tempDir`), như test khung của repository đang làm. Không tự xóa file database trong test và không đổi src/test/resources/junit-platform.properties: file đó tắt việc JUnit dọn thư mục tạm, vì Windows không cho xóa file SQLite mà Spring context còn đang mở. `mvn -B test` trong backend/ phải pass mà không cần mạng ngoài việc tải dependency."
+      "convention": "Test with JUnit 5 + spring-boot-starter-test. Controller tests use @SpringBootTest + @AutoConfigureMockMvc (or @WebMvcTest when testing only the web layer). Every endpoint has at least one test for the success path and one for an error (400/404). Tests must not depend on the real database file of the dev environment - use a temporary SQLite file: @DynamicPropertySource points spring.datasource.url at a file in JUnit's temp directory (`@TempDir static Path tempDir`), as the repository's skeleton test already does. Do not delete database files in a test and do not change src/test/resources/junit-platform.properties: that file turns off JUnit's temp directory cleanup, because Windows will not delete a SQLite file while the Spring context still has it open. `mvn -B test` in backend/ must pass without the network except to download dependencies."
     },
     {
       "key": "sqlite.datasource",
@@ -42,11 +42,11 @@
       },
       "provenance": {
         "owner": "aw-kit",
-        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
-        "revision": "v1",
+        "source": "generalised from docs/guides/todolist-spring-react (verified with a real agent)",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "convention": "Cơ sở dữ liệu là SQLite qua JDBC driver org.xerial:sqlite-jdbc, Hibernate dialect org.hibernate.community.dialect.SQLiteDialect (dependency org.hibernate.orm:hibernate-community-dialects, version do Spring Boot quản lý). URL mặc định đã nằm trong application.properties của khung (jdbc:sqlite:./data/<tên>.db; thư mục data/ phải nằm trong .gitignore). Giữ spring.jpa.hibernate.ddl-auto=validate — schema do migration quản lý, không để Hibernate tự sinh. Cột thời gian lưu TEXT ISO-8601 UTC; map Instant bằng một AttributeConverter<Instant, String> vì SQLite JDBC không tự chuyển Instant. Không dùng H2, PostgreSQL hay MySQL."
+      "convention": "The database is SQLite through the JDBC driver org.xerial:sqlite-jdbc, with the Hibernate dialect org.hibernate.community.dialect.SQLiteDialect (dependency org.hibernate.orm:hibernate-community-dialects, version managed by Spring Boot). The default URL is already in the skeleton's application.properties (jdbc:sqlite:./data/<name>.db; the data/ directory must be in .gitignore). Keep spring.jpa.hibernate.ddl-auto=validate - migrations manage the schema, Hibernate must not generate it. Store time columns as ISO-8601 UTC TEXT; map Instant with an AttributeConverter<Instant, String> because the SQLite JDBC driver does not convert Instant on its own. Do not use H2, PostgreSQL or MySQL."
     },
     {
       "key": "sqlite.migrations",
@@ -58,11 +58,11 @@
       },
       "provenance": {
         "owner": "aw-kit",
-        "source": "tổng quát hóa từ docs/guides/todolist-spring-react (đã kiểm chứng với agent thật)",
-        "revision": "v1",
+        "source": "generalised from docs/guides/todolist-spring-react (verified with a real agent)",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "convention": "Schema được quản lý bằng Flyway (flyway-core) trong backend/src/main/resources/db/migration, đặt tên V<n>__<mo_ta>.sql. Kiểu cột: id INTEGER PRIMARY KEY AUTOINCREMENT, chuỗi TEXT, boolean INTEGER (0/1), thời gian TEXT ISO-8601. Migration đã commit thì không sửa; thay đổi schema luôn bằng một file V<n+1> mới. SQLite chỉ cho một writer tại một thời điểm: giữ transaction ngắn, không mở transaction dài trong request."
+      "convention": "The schema is managed with Flyway (flyway-core) in backend/src/main/resources/db/migration, named V<n>__<description>.sql. Column types: id INTEGER PRIMARY KEY AUTOINCREMENT, strings TEXT, booleans INTEGER (0/1), time TEXT ISO-8601. A committed migration is never edited; a schema change is always a new V<n+1> file. SQLite allows one writer at a time: keep transactions short, never hold a long transaction open across a request."
     }
   ]
 }

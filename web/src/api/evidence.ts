@@ -46,6 +46,10 @@ export interface EvidenceDetail {
   revisionSetHash: string;
   policyVersion: string;
   createdAt: string;
+  /** V11-11: the node this evidence belongs to, with its iteration and the attempt number. */
+  nodeKey?: string;
+  iteration?: number;
+  attemptNumber?: number;
 }
 
 /** redact.Sensitivity's own closed wire vocabulary (internal/app/runtime/queries.go's own sensitivityWireName). */
@@ -83,6 +87,8 @@ export interface ArtifactSummary {
  */
 const INLINE_SAFE_MEDIA_TYPES = new Set([
   'text/plain', 'text/csv', 'application/json', 'image/png', 'image/jpeg', 'image/gif', 'application/pdf',
+  // V11-11: the recorded output of a COMMAND node and the manifest of what an agent changed (JSON the preview formats)
+  'application/vnd.agentkit.command-output+json', 'application/vnd.agentkit.diff-manifest+json',
 ]);
 
 export function isInlineSafeMediaType(mediaType: string): boolean {

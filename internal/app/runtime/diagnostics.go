@@ -231,8 +231,12 @@ type RunDiagnostics struct {
 	// re-derives its own precondition fresh).
 	WorkItemStatus  string
 	WorkItemVersion uint64
-	RunState        string
-	RunVersion      uint64
+	// WorkItemIsChild and WorkItemSuperseded (V11-10) are what the delivery layer needs to advise recreateWorkItem: only a child can be
+	// redone, and only once.
+	WorkItemIsChild    bool
+	WorkItemSuperseded bool
+	RunState           string
+	RunVersion         uint64
 
 	Blockers []BlockerDiagnostic
 
@@ -342,9 +346,16 @@ func runDiagnosticsBase(ctx context.Context, uow ports.UnitOfWork, projectID, ru
 			})
 		}
 
+		superseded := false
+		if _, err := tx.Work().GetWorkItemSupersessionByOld(ctx, string(run.WorkItemID)); err == nil {
+			superseded = true
+		} else if !errors.Is(err, ports.ErrPersistenceNotFound) {
+			return err
+		}
 		result = RunDiagnostics{
 			RunID: runID, ProjectID: projectID, WorkItemID: string(run.WorkItemID),
 			WorkItemStatus: string(item.Status), WorkItemVersion: item.Version,
+			WorkItemIsChild: item.ParentID != nil, WorkItemSuperseded: superseded,
 			RunState: string(run.State), RunVersion: run.Version,
 			Blockers:                  blockerDiags,
 			OrphanedAttempts:          orphanedDiags,

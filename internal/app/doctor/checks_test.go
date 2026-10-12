@@ -2,6 +2,7 @@ package doctor_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -160,6 +161,57 @@ func TestCheckProviderExecutable_Found_HealthyAndObservedOnly(t *testing.T) {
 	for _, want := range []string{"observed", "sha256:", "not a registered AdapterBuildVersion"} {
 		if !strings.Contains(result.Detail, want) {
 			t.Fatalf("CheckProviderExecutable(found).Detail = %q, want it to contain %q (per ADR-022, must be clearly marked observed-only)", result.Detail, want)
+		}
+	}
+}
+
+// V11-09: the shell the kit's COMMAND scripts run through on Windows.
+func TestGitShellResult(t *testing.T) {
+	dir := t.TempDir()
+	execPath := filepath.Join(dir, "mingw64", "libexec", "git-core")
+	if err := os.MkdirAll(execPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	missing := doctor.GitShellResultForTest(execPath, nil)
+	if missing.Status != doctor.StatusDegraded || missing.Category != doctor.CategoryCapability || missing.Remediation == "" || !strings.Contains(missing.Detail, "sh.exe") {
+		t.Fatalf("a Git without sh.exe = %+v, want DEGRADED with a remediation naming sh.exe", missing)
+	}
+
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "sh.exe"), []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if healthy := doctor.GitShellResultForTest(execPath, nil); healthy.Status != doctor.StatusHealthy || !strings.HasSuffix(healthy.Detail, "sh.exe") {
+		t.Fatalf("a Git with sh.exe = %+v, want HEALTHY", healthy)
+	}
+
+	for name, result := range map[string]doctor.CheckResult{
+		"git failed": doctor.GitShellResultForTest("", errors.New("exit status 1")),
+		"empty path": doctor.GitShellResultForTest("  ", nil),
+	} {
+		if result.Status != doctor.StatusDegraded || result.Name != "git_shell" {
+			t.Errorf("%s = %+v, want DEGRADED git_shell", name, result)
+		}
+	}
+}
+
+// The check is opt in: a default report is exactly what it was before V11-09.
+func TestRun_GitShellCheckIsOptIn(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		_, store := openTestQueryStore(t)
+		report := doctor.Run(context.Background(), doctor.Options{Store: store, CheckGitShell: enabled})
+		found := false
+		for _, check := range report.Checks {
+			if check.Name == "git_shell" {
+				found = true
+			}
+		}
+		if found != enabled {
+			t.Errorf("CheckGitShell=%v: git_shell in report = %v", enabled, found)
 		}
 	}
 }

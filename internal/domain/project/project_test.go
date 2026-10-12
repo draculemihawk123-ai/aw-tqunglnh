@@ -58,6 +58,7 @@ func TestCanTransitionRepositoryStatus_LegalEdges(t *testing.T) {
 		{project.RepositoryProbing, project.RepositoryActive},
 		{project.RepositoryProbing, project.RepositoryBlocked},
 		{project.RepositoryBlocked, project.RepositoryProbing},
+		{project.RepositoryBlocked, project.RepositoryDisabled}, // V11-12
 		{project.RepositoryActive, project.RepositoryDisabled},
 	}
 	for _, tc := range legal {
@@ -78,7 +79,6 @@ func TestCanTransitionRepositoryStatus_IllegalEdges(t *testing.T) {
 		// BLOCKED may only retry back to PROBING -- never straight to
 		// DISABLED (only a repository that reached ACTIVE at least once
 		// may ever be disabled).
-		{project.RepositoryBlocked, project.RepositoryDisabled},
 		{project.RepositoryBlocked, project.RepositoryActive},
 		// ACTIVE may only be explicitly disabled by an operator -- this
 		// task declares no path back to PROBING/BLOCKED.

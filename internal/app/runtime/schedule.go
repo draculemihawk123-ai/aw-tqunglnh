@@ -346,9 +346,16 @@ func ScheduleExecutableNodeRun(
 				return err
 			}
 		} else {
-			messages, err := tx.Messages().ListMessagesForWorkItem(ctx, string(run.WorkItemID))
+			thread, err := tx.Messages().ListMessagesForWorkItem(ctx, string(run.WorkItemID))
 			if err != nil {
 				return err
+			}
+			// V11-11 (ADR-042): activity messages the engine wrote for people never reach a prompt.
+			messages := make([]message.Message, 0, len(thread))
+			for _, m := range thread {
+				if !m.DisplayOnly {
+					messages = append(messages, m)
+				}
 			}
 			messageRefs = make([]contextsnapshot.MessageRef, len(messages))
 			for i, m := range messages {

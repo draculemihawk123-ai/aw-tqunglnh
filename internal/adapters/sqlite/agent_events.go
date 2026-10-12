@@ -72,6 +72,15 @@ WHERE attempt_id = ? AND kind = ?
 ORDER BY sequence ASC`, attemptID, kind)
 }
 
+func (r agentEventsRepository) ListAfterSequence(ctx context.Context, attemptID string, afterSequence uint64, limit int) ([]ports.AgentEventRecord, error) {
+	return r.list(ctx, `
+SELECT id, attempt_id, sequence, kind, schema_version, payload_json, artifact_refs_json, created_at
+FROM agent_events
+WHERE attempt_id = ? AND sequence > ?
+ORDER BY sequence ASC
+LIMIT ?`, attemptID, afterSequence, limit)
+}
+
 func (r agentEventsRepository) list(ctx context.Context, query string, args ...any) ([]ports.AgentEventRecord, error) {
 	rows, err := r.tx.QueryContext(ctx, query, args...)
 	if err != nil {

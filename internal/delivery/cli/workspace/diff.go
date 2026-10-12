@@ -24,10 +24,15 @@ func init() {
 // diffFileChangeResponse — see revisionResult's own doc comment (helpers.go)
 // for why this package duplicates rather than imports it.
 type diffFileChangeResult struct {
-	Path      string `json:"path"`
-	Additions int64  `json:"additions"`
-	Deletions int64  `json:"deletions"`
-	Binary    bool   `json:"binary"`
+	Path        string `json:"path"`
+	Additions   int64  `json:"additions"`
+	Deletions   int64  `json:"deletions"`
+	Binary      bool   `json:"binary"`
+	Status      string `json:"status,omitempty"`
+	Untracked   bool   `json:"untracked,omitempty"`
+	Symlink     bool   `json:"symlink,omitempty"`
+	SizeBytes   int64  `json:"sizeBytes,omitempty"`
+	ContentHash string `json:"contentHash,omitempty"`
 }
 
 // diffResult mirrors
@@ -44,6 +49,25 @@ type diffResult struct {
 	FileLimit      int                    `json:"fileLimit"`
 	FilesTruncated bool                   `json:"filesTruncated"`
 	PatchTruncated bool                   `json:"patchTruncated"`
+	// Only set for --working-tree (V11-06); see the HTTP DTO.
+	Uncommitted     bool   `json:"uncommitted,omitempty"`
+	TotalFiles      int    `json:"totalFiles,omitempty"`
+	ChangeSetDigest string `json:"changeSetDigest,omitempty"`
+}
+
+func toWorkingTreeDiffResult(d ports.WorkingTreeDiff) diffResult {
+	files := make([]diffFileChangeResult, 0, len(d.Files))
+	for _, f := range d.Files {
+		files = append(files, diffFileChangeResult{
+			Path: f.Path, Additions: f.Additions, Deletions: f.Deletions, Binary: f.Binary,
+			Status: string(f.Status), Untracked: f.Untracked, Symlink: f.Symlink, SizeBytes: f.SizeBytes, ContentHash: f.ContentHash,
+		})
+	}
+	return diffResult{
+		BaseRevision: toRevisionResult(d.BaseRevision), Files: files, Patch: d.Patch, ByteLimit: d.ByteLimit, FileLimit: d.FileLimit,
+		FilesTruncated: d.FilesTruncated, PatchTruncated: d.PatchTruncated,
+		Uncommitted: true, TotalFiles: d.TotalFiles, ChangeSetDigest: d.ChangeSetDigest,
+	}
 }
 
 func toDiffResult(d ports.DiffContent) diffResult {
@@ -75,8 +99,9 @@ func RunRepositoryWorkspaceDiff(ctx context.Context, deps Dependencies, args []s
 	workspaceSetID := fs.String("workspace-set-id", "", "workspace set id this repository workspace belongs to (required)")
 	baseRevisionID := fs.String("base-revision", "", "the base commit object id to diff from (required)")
 	baseRevisionGeneration := fs.Uint64("base-revision-generation", 0, "the workspace generation --base-revision belongs to (required)")
-	resultRevisionID := fs.String("result-revision", "", "the result commit object id to diff to (required)")
-	resultRevisionGeneration := fs.Uint64("result-revision-generation", 0, "the workspace generation --result-revision belongs to (required)")
+	resultRevisionID := fs.String("result-revision", "", "the result commit object id to diff to (required unless --working-tree)")
+	resultRevisionGeneration := fs.Uint64("result-revision-generation", 0, "the workspace generation --result-revision belongs to (required unless --working-tree)")
+	workingTree := fs.Bool("working-tree", false, "diff the worktree's UNCOMMITTED state against --base-revision instead of two commits (V11-06): modified, added, deleted and untracked files, with a change-set digest; refused while an attempt is writing")
 	byteLimit := fs.Int64("byte-limit", 0, "maximum patch bytes to return (0 = server default)")
 	fileLimit := fs.Int("file-limit", 0, "maximum changed-file entries to return (0 = server default)")
 	if err := parseFlags(fs, args); err != nil {
@@ -93,11 +118,29 @@ func RunRepositoryWorkspaceDiff(ctx context.Context, deps Dependencies, args []s
 	if *baseRevisionID == "" {
 		return usageErrorf("--base-revision is required")
 	}
-	if *resultRevisionID == "" {
-		return usageErrorf("--result-revision is required")
-	}
-
 	queries := appinspection.New(deps.UOW, deps.Reader)
+	if *workingTree {
+		if *resultRevisionID != "" {
+			return usageErrorf("--working-tree and --result-revision are exclusive: the working tree has no result commit")
+		}
+		uncommitted, err := queries.GetWorkingTreeDiff(ctx, appinspection.GetWorkingTreeDiffRequest{
+			Scope: appinspection.WorkspaceScope{
+				ProjectID: *projectID, RepositoryID: *repositoryID,
+				WorkspaceSetID: *workspaceSetID, RepositoryWorkspaceID: repositoryWorkspaceID,
+			},
+			BaseRevision: workspace.Revision{
+				RepositoryID: project.RepositoryID(*repositoryID), VCSObjectID: *baseRevisionID, WorkspaceGeneration: *baseRevisionGeneration,
+			},
+			ByteLimit: *byteLimit, FileLimit: *fileLimit,
+		})
+		if err != nil {
+			return mapInspectionQueryError(err)
+		}
+		return cli.EncodeQueryResult(stdout, toWorkingTreeDiffResult(uncommitted))
+	}
+	if *resultRevisionID == "" {
+		return usageErrorf("--result-revision is required (or --working-tree)")
+	}
 	result, err := queries.GetDiff(ctx, appinspection.GetDiffRequest{
 		Scope: appinspection.WorkspaceScope{
 			ProjectID: *projectID, RepositoryID: *repositoryID,

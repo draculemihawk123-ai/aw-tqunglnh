@@ -183,6 +183,16 @@ repository web: ACTIVE
   component frontend (frontend)
 ```
 
+**Đăng ký sai thì làm gì (V11-12).** Cả hai script kiểm đường dẫn trước khi đăng ký và dừng với lý do cùng lệnh sửa chép dán được; nếu vẫn đăng ký được rồi `BLOCKED`, chúng in `failureKind`, câu giải thích và gợi ý:
+
+```text
+repository api: không đăng ký được — NOT_A_GIT_REPOSITORY: The folder C:/work/api is not a Git repository yet.
+  → Run: git -C C:/work/api init -b main — then add a first commit (…) — then retry the probe.
+```
+
+Sửa thư mục rồi chạy lại script (an toàn). Đã lỡ đăng ký sai đường dẫn: `aw repository update --expected-version <version> --remote-locator <đường dẫn đúng> <id>` (hoặc nút **Edit**); muốn bỏ: `aw repository disable …` (trả lại tên) hoặc `aw repository delete --reason …`
+nếu chưa từng `ACTIVE` (id đã xóa không dùng lại, đăng ký lại bằng id khác). Chi tiết: [operator/09-troubleshooting.md](../../operator/09-troubleshooting.md).
+
 Id repository là **duy nhất trên cả bản cài**, nên đừng đặt `api` nếu một project khác đã dùng; ở đây mỗi bản cài chỉ
 có một tracker. `aw-state.json` ghi `projectId` và repository chính để các script sau dùng.
 
@@ -301,12 +311,30 @@ Run: 25dbcd50-…  state: RUNNING
 hộ. `evidence list` cho thấy từng lần: `COMMAND_EXECUTION FAILED, FAILED, SUCCEEDED, SUCCEEDED`. Xem spec trong worktree
 (`worktree-path.sh contracts`), rồi duyệt và commit.
 
-> **Xem thay đổi trước khi duyệt.** Tab Diff của UI so sánh hai **commit**, nên ở cổng duyệt (chưa commit) nó hiện "0 files
-> changed". Hãy xem trong worktree, chỉ đọc: `cd "$(worktree-path.sh contracts)" && git status --short && git diff` (file mới
-> chỉ có trong `git status`; xem bằng `cat`). Đừng `git add`, `git commit` hay `checkout` ở đó: commit ngoài `aw` làm lệch HEAD
-> so với revision `aw` đã ghi (xem V11-01 và V11-06 trong `docs/design/14-v11-bugfix.md`).
+> **Xem thay đổi trước khi duyệt.** Mở trang Task → tab Workspace: mục Diff mặc định hiện **thay đổi chưa commit** của worktree
+> (nhãn `UNCOMMITTED`), gồm file sửa, file mới (`untracked`), file xóa; file nhị phân chỉ có tên và kích thước. Thẻ duyệt ở tab
+> Graph cũng ghi "N files changed, +x −y" kèm nút **View changes**. Bằng CLI: `aw repository-workspace diff … --working-tree`
+> (xem `docs/operator/06-source-control-and-releases.md`). Chỉ đọc; trong lúc có attempt đang ghi thì trả 409, chờ nó xong. Đừng
+> `git add`, `git commit` hay `checkout` trong worktree: commit ngoài `aw` làm lệch HEAD so với revision `aw` đã ghi (V11-01).
+> Chưa chạy lại bước này trên bản cài thật sau V11-06; nếu cần xem khi UI chưa bản mới:
+> `cd "$(worktree-path.sh contracts)" && git status --short && git diff`.
 
-Duyệt và commit:
+Duyệt và commit. Từ V11-07, node `review` của `wf-contract-change` bật `release: OFFERED` cho outcome `approved`, nên **duyệt
+và commit là một thao tác**, làm hoàn toàn trên web: trang Task → tab Graph → bấm `approved` → hộp thoại mở ra, tích
+*Commit the worktree's changes with this decision*, chọn file cần commit (mặc định chọn hết; hộp kiểm theo thư mục có ba
+trạng thái), sửa commit message (điền sẵn tiêu đề task), rồi bấm nút. Tác giả commit là `git config user.name/user.email` của
+máy chạy `aw` (hộp thoại hiện dòng "Author: …"; thiếu thì hiện lệnh `git config --global …` cần chạy và chưa cho commit). File
+không chọn thì chọn `Keep` (để nguyên, node chỉ-đọc kế tiếp sẽ bị chặn) hoặc `Park` (cất vào ref ẩn, khôi phục bằng nút
+*Restore*). Sau đó tab Graph hiện từng repository: committing → committed (kèm commit id) hoặc failed (giải thích vì sao, nút
+*Review changes*).
+
+Bằng dòng lệnh, cùng một thao tác (chọn mọi file đang thay đổi):
+
+```bash
+review-task.sh --commit "C-01: hợp đồng API cho quản lý issue" 25dbcd50-… approved "Hợp đồng đủ 6 operation"
+```
+
+Đường thủ công cũ vẫn dùng được (workflow không bật `release`, hoặc commit lại sau một lần `FAILED`):
 
 ```bash
 review-task.sh 25dbcd50-… approved "Hợp đồng đủ 6 operation"
@@ -314,8 +342,15 @@ commit-task.sh "C-01: hợp đồng API cho quản lý issue"
 # repository contracts: {"state":"COMMITTED","parentVcsObjectId":"e8fc7e6…","resultVcsObjectId":"f598e9b…"}
 ```
 
+> Chưa chạy lại bước này trên bản cài thật sau V11-07 (xem `docs/design/14-v11-bugfix.md`, kết quả V11-07); các workflow
+> `wf-task-delivery*` không bật commit ở cổng duyệt vì sau `approved` còn node `sync` có thể ghi file.
+
 `commit-task.sh` tạo một ReleaseSet, seal rồi tạo **local commit thật** trên branch của family, mỗi repository có thay đổi
 một commit, bỏ qua repository không đổi. `aw` không push và không merge (mục 10).
+
+> Đừng tự `git commit` trong worktree của `aw` (IDE hay terminal): HEAD sẽ lệch khỏi revision `aw` đã ghi, `run-task.sh` bị
+> từ chối với `WORKSPACE_HEAD_DRIFT` và `commit-task.sh` dừng lại. Lỡ commit thì giữ nó bằng `adopt-head.sh` (cần worktree sạch),
+> hoặc đưa worktree về revision đã ghi. Chi tiết: `docs/operator/06-source-control-and-releases.md`, mục "A commit made outside aw".
 
 ---
 
@@ -389,6 +424,8 @@ người duyệt cần, và là lý do review của agent không thay cho gate c
 1. **`SCOPE_VIOLATION`**: lần đầu chạy review khi A-01/W-01 chưa commit. `aw` phát hiện thay đổi (30 path) trong repository
    mà task chỉ có quyền READ và hủy attempt. Sửa: commit trước, rồi chạy review. WorkItem hỏng được hủy bằng
    `aw work-item cancel --reason … --yes <id>` và tạo lại với tiêu đề khác (khóa idempotency khác).
+   *(Từ V11-10 không cần làm tay: `recreate-task.sh <id> "lý do"` hoặc nút **Redo with Latest Version** trên web hủy WorkItem cũ,
+   tạo WorkItem mới cùng nội dung trên workflow version mới nhất và start run trong một thao tác — mục 11.)*
 2. **`VALIDATION_FAILED`**: agent đã review xong nhưng tin nhắn **cuối** không có marker (nó viết "marker ở tin trước").
    `aw` chỉ đọc tin cuối. Sửa hai tầng: `skill-review` nay nói rõ "marker phải ở cuối chính tin nhắn cuối cùng", và
    `retry-task.sh <workItemId> "ghi chú"` chạy lại **trên chính WorkItem đó** (lịch sử và evidence ở một chỗ, blocker cũ
@@ -423,7 +460,7 @@ Spec do agent viết có cả các hạn chế đã biết (BR-12: chưa có xá
 
 **Checklist cho người duyệt GATE A** (đọc `02-spec.md`; duyệt `approved`, hoặc `revise` kèm phản hồi cụ thể):
 
-1. **Phạm vi và lý do**: spec nêu cái gì đã có, thay đổi tối thiểu và chế độ phạm vi (giữ, thu hẹp, mở rộng) mà agent chọn. Bạn đồng ý với chế độ đó không? Phần "ngoài phạm vi" có đúng ý bạn không?
+1. **Phạm vi và lý do** (mục "Scope and rationale" từ kit 1.7.0): spec nêu cái gì đã có, thay đổi tối thiểu và chế độ phạm vi (giữ, thu hẹp, mở rộng) mà agent chọn. Bạn đồng ý với chế độ đó không? Phần "ngoài phạm vi" có đúng ý bạn không?
 2. **Quyết định agent tự chốt**: mỗi quyết định ghi rõ ai chốt. Cái nào là của agent mà bạn chưa đồng ý thì `revise` ngay ở đây, vì thiết kế và task sẽ dựa vào nó.
 3. **Acceptance criteria**: có đường lỗi và giá trị biên (rỗng, dài tối đa, không tồn tại) hay chỉ có đường thành công? Mỗi AC có kiểm chứng được bằng một test tự động không?
 4. **Tình huống bị bỏ**: mục "Hạn chế đã biết" liệt kê các tình huống không thành AC. Có cái nào bạn thấy phải thành AC không?
@@ -431,10 +468,10 @@ Spec do agent viết có cả các hạn chế đã biết (BR-12: chưa có xá
 
 **Checklist cho người duyệt GATE B** (đọc `03-design.md` và `tasks.json`; duyệt `approved`, hoặc `revise` kèm phản hồi cụ thể):
 
-1. **Khẳng định về code có kiểm chứng**: các tên file, hàm, endpoint trong thiết kế có kèm `file:dòng` không? Chỗ nào còn `[CHƯA XÁC MINH]` thì thiết kế dựa vào thứ chưa ai kiểm.
+1. **Khẳng định về code có kiểm chứng**: các tên file, hàm, endpoint trong thiết kế có kèm `file:dòng` không? Chỗ nào còn `[UNVERIFIED]` (trước kit 1.7.0: `[CHƯA XÁC MINH]`) thì thiết kế dựa vào thứ chưa ai kiểm.
 2. **Quyết định và phương án đã loại**: mỗi quyết định quan trọng nêu ít nhất hai phương án, đánh đổi và lý do loại. Bạn có đồng ý với đánh đổi đó không?
 3. **Luồng dữ liệu, rủi ro, hoàn tác, tương thích ngược**: có đủ bốn mục này không, và rủi ro cao có cách giảm cụ thể không?
-4. **Phản biện**: mục "Phản biện" ghi điểm yếu nào đã sửa, điểm nào chấp nhận (lý do), điểm nào bác (nguồn kiểm chứng), và kết luận GO, CAUTION hay STOP. CAUTION thì điều kiện có chấp nhận được không?
+4. **Phản biện**: mục "Red team" (trước kit 1.7.0: "Phản biện") ghi điểm yếu nào đã sửa, điểm nào chấp nhận (lý do), điểm nào bác (nguồn kiểm chứng), và kết luận GO, CAUTION hay STOP. CAUTION thì điều kiện có chấp nhận được không?
 5. **`tasks.json`**: thứ tự theo phụ thuộc; không hai task cùng sửa một file hoặc một migration; mỗi task có hành vi, AC đo được, mức rủi ro; số task ít nhất có thể (mỗi task là một lần review và một commit).
 
 Sau GATE B, commit
@@ -553,8 +590,16 @@ bốn gate PASS, gửi tín hiệu `ci-build-2` → `CONSUMED`.
   cho W-01 lần đầu (npm treo vì thiếu CA, xem 12) và R-01 lần đầu.
 - **Chạy lại:** `retry-task.sh <workItemId> ["ghi chú cho agent"]` chạy lại trên chính WorkItem, **từ đầu workflow** (không
   tiếp nối node hỏng), worktree không bị reset: hoàn tác những gì run mới không nên thấy trước khi gọi.
-- **Xem agent đã nói gì:** `agent-log.py <runId> [--node …] [--all] [--denied]` (đọc thẳng database, chỉ đọc;
-  `aw` CLI hiện chưa có lệnh đọc lời của agent). `show-run.sh`, `watch-run.sh` in timeline, evidence, việc đang chờ người.
+  Từ V11-10 script gọi **một** lệnh `aw work-item retry` (ghi chú + gỡ blocker + run mới trong một transaction; trên web là nút
+  **Run Again**). File run trước để lại **ngoài scope** của task làm run sau hỏng `SCOPE_VIOLATION` lần nữa, nên lệnh từ chối cho đến khi
+  bạn chọn `OUT_OF_SCOPE=KEEP` (giữ) hoặc `OUT_OF_SCOPE=PARK` (cất vào một ref Git ẩn, không xóa; chỉ các file ngoài scope).
+- **Làm lại bằng workflow version mới:** `recreate-task.sh <workItemId> "lý do" ["ghi chú"]` (hoặc nút **Redo with Latest Version**).
+  WorkItem ghim đúng một version, nên sau khi sửa kit rồi publish lại, `retry-task.sh` vẫn chạy bản **cũ**. Lệnh này hủy WorkItem cũ
+  (còn lại `CANCELLED`, kèm "replaced by …") và tạo WorkItem con mới cùng parent, cùng nội dung (tiêu đề thêm "(lần N)"), ghim version
+  mới nhất, READY, start run; mang theo ghi chú của bạn (`CARRY_MESSAGES=0` để bỏ). Chỉ cho task con, chỉ khi mọi run đã kết thúc. Sau đó
+  `commit-task.sh` không còn bị WorkItem cũ chặn.
+- **Xem agent đã nói gì:** bấm node trong tab Graph (ngăn chi tiết: đầu vào, tiến trình từng công cụ, kết quả, lỗi và hướng xử lý; tự cập nhật khi đang chạy) hoặc `aw node-run show <nodeRunId>` /
+  `aw node-run events <attemptId> --follow`; Chat có tin hoạt động của engine. `agent-log.py <runId> [--node …] [--all] [--denied]` vẫn đọc thẳng database (chỉ đọc). `show-run.sh`, `watch-run.sh` in timeline, evidence, việc đang chờ người.
 - **Sao lưu:** `aw-maintenance backup --db "$AW_DB" --out ~/aw/backup` ghi `snapshot.db` + `manifest.json` (193 artifact).
   **Artifact và worktree không nằm trong đó**: sao chép `$AW_ARTIFACT_ROOT` riêng, rồi `restore`:
 

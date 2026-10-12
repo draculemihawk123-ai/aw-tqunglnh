@@ -142,6 +142,10 @@ declare an optional `failureOutcome` on the `command` / `machineGate` config: th
 **functional** failure routes to, so the node finishes `SUCCEEDED` with that outcome (no retry — the result is
 deterministic) and the edge leaving it can lead back to the maker. A loop needs a bound as for any other cycle:
 put a `cyclePolicy` on a node of the loop (the maker, or the check itself) whose `escalationOutcome` edge leaves it.
+**Every** node on a loop that carries a `cyclePolicy` must have its own `escalationOutcome` edge lead **outside** that loop
+(V11-03): when that node's budget runs out the engine forces that edge, so one node escaping is not enough — publish
+refuses the definition and names the node, the edge and the target that stays inside (a run of an older version with such an
+edge ends `FAILED` with `WORKFLOW_DEFINITION_DEFECT`, see [09-troubleshooting.md](09-troubleshooting.md)).
 
 ```json
 {"key": "build", "type": "AGENT", "outcomes": ["done", "escalated"],
@@ -186,6 +190,13 @@ version, and only the new run's evidence counts toward completion — see
 When the maker runs again through that edge, its context snapshot carries the evidence of the failing attempt and its
 prompt gets a `checkFailures` section: `what` failed, `why` (the tail of stderr, or stdout if stderr was empty, for a
 command; the criteria that did not pass for a gate — bounded to 4 KiB) and `fix`. Only the latest failure is shown.
+
+The failure also goes **through a diagnosing `CHECKER`** placed between the check and the maker (V11-04, ADR-037):
+`check --failed--> debug (CHECKER) --diagnosed--> build`. `debug` is activated by the failing check, so its prompt gets the
+same `checkFailures` section (it no longer has to reproduce the failure to read it), and `build` — sent back by `debug` —
+gets both `reviewerFeedback` (the diagnosis) and the original `checkFailures`: the diagnosis explains the failure, it does
+not replace the check, which stays authoritative. A `CHECKER` reached by any other edge (a reviewer after a passing
+check) gets no `checkFailures`, and only the check that sent the run there counts, never an older failure.
 
 ## What an agent said, and a reviewer sending a maker back (V9-17)
 
@@ -260,8 +271,8 @@ V9-03 it has this shape (**schema v2**, keys in exactly this order):
   choice), a second marker in an earlier message, a malformed one, or an outcome outside the list fails the attempt
   (all four are `OUTCOME_REJECTED`; see [09-troubleshooting.md](09-troubleshooting.md)). There are no per-outcome
   descriptions yet; the list is the names only.
-- **`checkFailures`** is only present for a maker sent back by a failing check (see the section above), right after
-  the task contract.
+- **`checkFailures`** is only present for a maker sent back by a failing check, or by a `CHECKER` that a failing check sent
+  the run to, and for that `CHECKER` itself (see the section above), right after the task contract.
 - **`reviewerFeedback`** is only present for a maker sent back by a `CHECKER` (V9-17, section above), right after
   `checkFailures`.
 - **`omittedMessages`** is only present when the node's context policy declares a `messages` budget that left some
@@ -553,3 +564,29 @@ aw definition versions <definitionId>                     # every published vers
 aw version show <versionId> [--project-id <id>]            # one version's full compiled document
 aw version diff <versionIdA> <versionIdB> [--project-id <id>]  # field-level diff between two versions
 ```
+
+## An approval that also commits (`approval.release`, V11-07)
+
+By default a decision at an `APPROVAL` node only moves the run on; the files the agent wrote stay uncommitted in the
+worktree until someone runs `aw release-set local-commit` (or the kit's `commit-task.sh`). To let the approver **decide
+and commit in one action**, give the node a `release` policy:
+
+```json
+{"key": "review", "type": "APPROVAL", "outcomes": ["approved", "revise", "rejected"],
+ "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "rejected",
+              "release": {"commit": "OFFERED", "outcomes": ["approved"]}}}
+```
+
+- `commit`: `DISABLED` (the default; an absent `release` is the same, so definitions written before V11-07 keep their
+  hash), `OFFERED` (for an outcome in `outcomes` the approver may tick *Commit* and choose the files) or `REQUIRED`
+  (for those outcomes the decision must pass through the commit step: choose files, or confirm there is nothing to
+  commit — a worktree with no changes is recorded as `NOTHING_TO_COMMIT`, not as an error).
+- `outcomes` must be outcomes the node declares, and each must lead **only to `END` or to nodes that never write to the
+  worktree** — a `CHECKER`, a gate, another approval. The commit runs in the background after the decision, so offering
+  it where a `MAKER` agent or a `COMMAND` node can run next would race with that node; publishing such a definition is
+  refused with `approval release outcome "approved" can reach node "…", which may write to the worktree`. A workflow
+  whose `approved` edge goes to a writing node (the delivery workflows' `sync` step) cannot offer a commit there.
+- Commit authority is decision authority: whoever may resolve the approval (`authorizedRoles`) may commit with it.
+
+How the commit is made, who the author is, what happens to the files you do not choose, and what happens when the
+commit fails are in [06-source-control-and-releases.md](06-source-control-and-releases.md#approve-and-commit-in-one-action).

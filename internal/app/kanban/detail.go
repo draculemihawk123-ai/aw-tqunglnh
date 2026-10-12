@@ -100,7 +100,7 @@ func GetWorkItemProjectedDetail(ctx context.Context, uow ports.UnitOfWork, req D
 		if err != nil {
 			if errors.Is(err, ports.ErrPersistenceNotFound) {
 				detail.Card = cardFromAuthoritative(item)
-				return nil
+				return linkSupersession(ctx, tx, projectID, &detail.Card)
 			}
 			return err
 		}
@@ -117,7 +117,7 @@ func GetWorkItemProjectedDetail(ctx context.Context, uow ports.UnitOfWork, req D
 			return err
 		}
 		detail.Card = newCard(workItemID, projectID, decoded, workspaceSetID, badges)
-		return nil
+		return linkSupersession(ctx, tx, projectID, &detail.Card)
 	})
 	if err != nil {
 		return Detail{}, err
@@ -205,4 +205,14 @@ func cardFromAuthoritative(item workdomain.WorkItem) Card {
 		card.ParentWorkItemID = string(*item.ParentID)
 	}
 	return card
+}
+
+// linkSupersession fills the card's V11-10 supersession links from the live table (they are not projected).
+func linkSupersession(ctx context.Context, tx ports.Tx, projectID string, card *Card) error {
+	links, err := loadSupersessionLinks(ctx, tx, projectID)
+	if err != nil {
+		return err
+	}
+	links.apply(card)
+	return nil
 }

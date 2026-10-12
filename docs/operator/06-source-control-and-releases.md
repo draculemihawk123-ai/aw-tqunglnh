@@ -56,11 +56,12 @@ aw release-set list --project-id <id>
 
 A `RepositoryWorkspace` is the real, provisioned Git worktree a WorkItem's own `WorkspaceSet` holds for one
 repository — created automatically when a root WorkItem's `initialScope` names that repository (see
-[01-quickstart.md](01-quickstart.md)'s own `provisionedRepositories` response field). Two commands manage its
+[01-quickstart.md](01-quickstart.md)'s own `provisionedRepositories` response field). Three commands manage its
 own lifecycle directly:
 
 ```bash
 aw repository-workspace reconcile --project-id <id> --expected-version <n> --idempotency-key r-1 <id>
+aw repository-workspace adopt-head --project-id <id> --expected-version <n> --idempotency-key a-1 <id>   # see below
 aw workspace-set release --project-id <id> --expected-version <n> --idempotency-key rel-1 <workspaceSetId>
 ```
 
@@ -91,6 +92,86 @@ evidence is never reset for you): clean or discard them yourself, then reconcile
 `aw workspace-set show` lists every generation; pick the one with the highest `generation` (the `READY` one) when a
 script needs the current worktree.
 
+### A commit made outside aw (V11-01, ADR-034)
+
+aw records, for each repository workspace, the revision it expects the worktree to be on: `currentRevision` (see
+`aw workspace-set show`). It only moves forward through an aw local commit (above) or `adopt-head` (below). If you —
+or an IDE — run `git commit` in the worktree directly, HEAD moves and aw no longer agrees with Git. aw never papers
+over that: nothing you committed outside aw is treated as aw's own until you say so.
+
+What aw does when HEAD and `currentRevision` differ:
+
+- `aw run start` (and `POST /work-items/{id}/runs`) refuse with `WORKSPACE_HEAD_DRIFT: …`, naming the repository, both
+  revisions, how many commits were made outside aw and the exact `adopt-head` command. This check needs the Git
+  worktree: `aw run start` makes it when `--workspace-root` / `AW_WORKSPACE_ROOT` is set, and skips it otherwise.
+- A run that was already started keeps the revision it pinned (a run's manifest never changes). Its first
+  `MACHINE_GATE` fails closed with `VALIDATION_FAILED`, and the attempt's `failureDetail` in `aw run timeline` is the
+  same typed `WORKSPACE_HEAD_DRIFT` explanation, with the commits (hash, author, subject). Cancel that run and start
+  again after you resolve the drift.
+- `aw release-set local-commit` does not build a commit on top of the outside commits: the operation ends `FAILED`
+  with `failureReason: "HEAD_DRIFT"` before any `git commit` (a failure reason on the operation, like `NO_CHANGES`).
+
+To **keep** the outside commits, record them:
+
+```bash
+aw repository-workspace adopt-head --project-id <id> --expected-version <n> --idempotency-key a-1 <repositoryWorkspaceId>
+# result: previousRevision, adoptedRevision, adoptedCommitCount, adoptedCommits[] (commit, author, subject), version
+```
+
+`adopt-head` is synchronous and is refused unless all of these hold: the workspace is `READY` (a `QUARANTINED` one is
+refused with `WORKSPACE_QUARANTINED`; use `reconcile`), no attempt holds the write lease, the worktree is clean (no
+uncommitted change), HEAD descends from the recorded `currentRevision` in a straight line (it does not after a
+`git reset` or a rebase), and HEAD really differs from it. On success it sets `currentRevision` to HEAD, adds one to the
+workspace `version`, and appends a `WorkspaceHeadAdopted` event with the commits, their authors and the operator.
+Repeating the same `--idempotency-key` replays the result; a stale `--expected-version` is refused. The code in those
+commits did not pass any aw gate, but from now on aw treats it as part of the family's history — the gates of later
+runs still run on it. The kit wraps this as `kit/scripts/adopt-head.sh`.
+
+To **not** keep them, put the worktree back on the recorded revision (for example `git -C <worktree> reset --hard
+<currentRevision>`) before the next run; `aw` never resets a worktree for you.
+
+## Approve and commit in one action
+
+At an approval gate the agent's work is still **uncommitted** in the worktree (see the uncommitted view under
+*Read-only source/diff/log* below). When the approval node has a `release` policy for the outcome you pick
+([04-authoring-workflows.md](04-authoring-workflows.md#an-approval-that-also-commits-approvalrelease-v11-07)), the web
+dialog (and the CLI) lets you decide **and** commit in one action, without a terminal:
+
+1. In the Graph tab, choosing such an outcome opens the dialog instead of deciding at once. Tick *Commit*, choose files
+   (a box per directory is tri-state), type the message (pre-filled with the work item's title) and press the button.
+2. **The author is the machine's git identity**, never typed: aw reads `user.name` and `user.email` with `git config` inside
+   each repository's worktree (a repository-local value wins over the global one) — in the `aw` process, so that process
+   needs `HOME` (`USERPROFILE` on Windows) set to see the global configuration. If either is missing for a repository you
+   are committing to, the dialog shows which, the exact `git config --global user.name "…"` / `user.email "…"` commands and
+   a *Check again* button, and the commit is disabled for it. Deciding without a commit still works. The server refuses
+   such a request too (`422`, `COMMIT_IDENTITY_MISSING` in the error, naming each repository) **before writing anything**:
+   the gate stays pending and the run does not move. `aw workspace-set release-context` shows the same thing.
+3. **Nothing is committed that you did not review.** The request carries each chosen file with the status and content hash
+   you saw. The background job recomputes them under the write lease; if a chosen file changed (or stopped being changed)
+   it commits **nothing** and ends `FAILED` with `CHANGESET_DRIFT`. Staging uses literal paths read from stdin, so names
+   with spaces, unicode, `[ ]`, `*` or a leading `-` are just names; anything staged by hand does not ride along; paths
+   outside the change set, inside `.git`, or escaping the worktree are refused.
+4. **Files you do not choose** (`unselected`): `KEEP` (the default) leaves them in the worktree — the next strictly
+   read-only node of the family (a `CHECKER` or gate) would then fail `SCOPE_VIOLATION`, which the dialog warns about —
+   or `PARK` moves them into the hidden ref `refs/agentkit/parked/<releaseSetId>` and cleans the worktree. Restore them
+   with the *Restore N parked files* button or `aw repository-workspace restore-parked --project-id <p>
+   --release-set-local-commit-id <id> <repositoryWorkspaceId>`; it refuses while an attempt is writing and refuses to
+   overwrite anything that changed since. There is no "delete" choice; to discard files, park them.
+5. **The decision and the request to commit are one transaction**: aw creates a ReleaseSet (base and result are the
+   recorded revision, verdict `PASS`), seals it and requests one local commit per repository, all with the decision; if any
+   of that cannot be requested (a stale workspace version, a refused policy) the decision is not recorded either. The
+   commit itself is the usual background job. The Graph tab shows each repository as committing → committed (with the
+   commit id) or failed, and `aw approval release <runId> <approvalRequestId>` shows the same, plus the patch you reviewed.
+6. **If the commit fails after the decision** (`CHANGESET_DRIFT`, `NO_CHANGES`, `HEAD_DRIFT`, a quarantined workspace)
+   the run has already moved on and is not rolled back. aw opens a `RELEASE_FAILED` blocker on the work item so it shows
+   on the board. Review the changes again (Workspace tab), commit with `aw release-set local-commit … --path <file>…`, then
+   `aw blocker resolve`. The blocker can be resolved but never waived.
+
+The same selection exists for a manual commit: `aw release-set local-commit … --path a.txt --path dir/b.txt
+[--unselected KEEP|PARK]` (HTTP: `files` and `unselected` in the body). Without `--path` the whole worktree is committed,
+exactly as before. The kit's `review-task.sh --commit "<message>" <runId> approved` decides **and** commits every changed
+file (file choice and `PARK` are in the web dialog).
+
 ## Read-only source/diff/log — never an interactive terminal
 
 Three commands give paginated, read-only views over a real repository workspace's own Git object store — this
@@ -110,6 +191,27 @@ aw repository-workspace diff --project-id <id> --repository-id <repoId> --worksp
 aw repository-workspace log --project-id <id> --repository-id <repoId> --workspace-set-id <wsId> \
   --anchor <commitId> --anchor-generation <gen> [--cursor <commitId>] [--limit <n>]
 ```
+
+### Uncommitted changes — what an approval gate has to show
+
+A commit-to-commit diff is empty at an `APPROVAL` gate: the agent wrote files into the worktree, but nothing is committed
+yet, so `currentRevision` has not moved. To see what the agent changed, ask for the worktree itself:
+
+```bash
+aw repository-workspace diff --project-id <id> --repository-id <repoId> --workspace-set-id <wsId> \
+  --base-revision <currentRevision> --base-revision-generation <gen> --working-tree
+```
+
+(HTTP: the same `GET .../diff` route with `result=WORKING_TREE`.) The answer carries `uncommitted: true`, lists every
+modified, added, deleted and untracked file (never ignored files) with line counts, a `contentHash` per file and a
+`changeSetDigest` over the whole set, plus a unified patch. A binary file is a name and a size, never content; a symlink is
+a name, never followed. The web UI's Workspace tab shows this view by default when the worktree has changes, and an
+approval card in the Graph tab says "N files changed, +x −y" with a link to it.
+
+It is read-only (`GIT_OPTIONAL_LOCKS=0`, no `git add`, no index write, HEAD unchanged), and it is **refused with 409 while an
+attempt holds the write lease** on that repository workspace: the worktree is in flux, so wait for the attempt or cancel it.
+A worktree with more than 20000 changed paths is refused (422): add the generated files to `.gitignore` or remove them. The
+base revision must still be one `aw` recorded for the workspace.
 
 Every one of these three takes `--byte-limit`/`--file-limit`/`--line-limit` (server-default if omitted) — a
 genuinely huge diff or file is truncated, never silently loaded in full into memory or into your terminal.

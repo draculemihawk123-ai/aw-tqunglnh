@@ -106,21 +106,22 @@ func installation(id string) HTTPBinding { return HTTPBinding{id, cli.ScopeInsta
 // with the descriptors by construction and prove nothing.
 func PublicOperations() []PublicOperation {
 	const (
-		catalog        = "internal/app/catalog"
-		readinesscheck = "internal/app/readinesscheck"
-		definitions    = "internal/app/definitions"
-		adapterb       = "internal/app/adapterbuild"
-		work           = "internal/app/work"
-		runtimeApp     = "internal/app/runtime"
-		message        = "internal/app/message"
-		safe           = "internal/app/safesettings"
-		proj           = "internal/app/projectionrebuild"
-		wsState        = "internal/app/workspacestate"
-		wsRelease      = "internal/app/workspacerelease"
-		wsReconcile    = "internal/app/workspacereconcile"
-		wsInspect      = "internal/app/workspaceinspection"
-		rsCommit       = "internal/app/releasesetcommit"
-		kanbanApp      = "internal/app/kanban"
+		catalog         = "internal/app/catalog"
+		readinesscheck  = "internal/app/readinesscheck"
+		definitions     = "internal/app/definitions"
+		adapterb        = "internal/app/adapterbuild"
+		work            = "internal/app/work"
+		runtimeApp      = "internal/app/runtime"
+		message         = "internal/app/message"
+		safe            = "internal/app/safesettings"
+		proj            = "internal/app/projectionrebuild"
+		wsState         = "internal/app/workspacestate"
+		wsRelease       = "internal/app/workspacerelease"
+		wsReconcile     = "internal/app/workspacereconcile"
+		wsInspect       = "internal/app/workspaceinspection"
+		rsCommit        = "internal/app/releasesetcommit"
+		kanbanApp       = "internal/app/kanban"
+		approvalRelease = "internal/app/approvalrelease"
 	)
 	return []PublicOperation{
 		// ---- installation health and configuration -----------------------
@@ -139,6 +140,13 @@ func PublicOperations() []PublicOperation {
 		{Name: "GetRepository", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesGet")}, Symbol: catalog + ".GetRepository"},
 		{Name: "RepositoryOnboarding", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesOnboarding")}, Symbol: catalog + ".ListRepositoryProbeAttempts"},
 		{Name: "RetryRepositoryProbe", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesRetryProbe")}, Symbol: catalog + ".RetryRepositoryProbe"},
+		{Name: "RenameProject", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("projectsRename")}, Symbol: catalog + ".RenameProject"},
+		{Name: "ArchiveProject", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("projectsArchive")}, Symbol: catalog + ".ArchiveProject"},
+		{Name: "RestoreProject", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("projectsRestore")}, Symbol: catalog + ".RestoreProject"},
+		{Name: "UpdateRepository", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesUpdate")}, Symbol: catalog + ".UpdateRepository"},
+		{Name: "DisableRepository", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesDisable")}, Symbol: catalog + ".DisableRepository"},
+		{Name: "DeleteRepository", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesDelete")}, Symbol: catalog + ".DeleteRepository"},
+		{Name: "CheckRepository", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("projectRepositoriesCheck")}, Symbol: catalog + ".CheckRepository"},
 		{Name: "GetRepositoryReadiness", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesReadiness")}, Symbol: readinesscheck + ".GetRepositoryReadiness"},
 		{Name: "SetRepositoryReadinessProfile", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesReadinessProfileSet")}, Symbol: readinesscheck + ".SetRepositoryReadinessProfile"},
 		{Name: "RequestBaselineCheck", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("repositoriesReadinessVerify")}, Symbol: readinesscheck + ".RequestBaselineCheck"},
@@ -176,6 +184,11 @@ func PublicOperations() []PublicOperation {
 		{Name: "MarkWorkItemReady", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("markWorkItemReady")}, Symbol: work + ".MarkWorkItemReady"},
 		{Name: "CancelWorkItem", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("cancelWorkItem")}, Symbol: runtimeApp + ".CancelWorkItem",
 			HighImpact: true, Cite: "cancel run/cancel task"},
+		{Name: "GetNodeRunDetail", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getNodeRunDetail")}, Symbol: runtimeApp + ".GetNodeRunDetail"},
+		{Name: "ListAttemptEvents", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("listAttemptEvents")}, Symbol: runtimeApp + ".ListAttemptEvents"},
+		{Name: "RetryWorkItem", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("retryWorkItem")}, Symbol: runtimeApp + ".RetryWorkItem"},
+		{Name: "RecreateWorkItem", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("recreateWorkItem")}, Symbol: runtimeApp + ".RecreateWorkItem"},
+		{Name: "GetWorkItemRedoPreview", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkItemRedoPreview")}, Symbol: "internal/app/workitemredo.Service.Preview"},
 		{Name: "ResolveWorkItemBlocker", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("resolveWorkItemBlocker")}, Symbol: runtimeApp + ".ResolveWorkItemBlocker"},
 		{Name: "RequestScopeExpansion", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("requestScopeExpansion")}, Symbol: work + ".RequestScopeExpansion"},
 		{Name: "GetScopeExpansionRequest", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getScopeExpansionRequest")}, Symbol: work + ".GetScopeExpansionRequest"},
@@ -218,6 +231,10 @@ func PublicOperations() []PublicOperation {
 		{Name: "RequestWorkspaceSetRelease", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("requestWorkspaceSetRelease")}, Symbol: wsRelease + ".RequestWorkspaceSetRelease",
 			HighImpact: true, Cite: "confirm phải nêu rõ đây là intent"},
 		{Name: "RequestWorkspaceReconciliation", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("requestWorkspaceReconciliation")}, Symbol: wsReconcile + ".RequestWorkspaceReconciliation"},
+		{Name: "AdoptWorkspaceHead", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("adoptWorkspaceHead")}, Symbol: wsReconcile + ".AdoptWorkspaceHead"},
+		{Name: "GetFamilyReleaseContext", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getFamilyReleaseContext")}, Symbol: approvalRelease + ".Queries.FamilyReleaseContext"},
+		{Name: "GetApprovalRelease", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getApprovalRelease")}, Symbol: approvalRelease + ".Queries.ApprovalRelease"},
+		{Name: "RestoreParkedChanges", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("restoreParkedChanges")}, Symbol: approvalRelease + ".RestoreParked"},
 		{Name: "GetSource", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceSource")}, Symbol: wsInspect + ".Queries.GetSource"},
 		{Name: "GetDiff", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceDiff")}, Symbol: wsInspect + ".Queries.GetDiff"},
 		{Name: "GetRepositoryLog", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceRepositoryLog")}, Symbol: wsInspect + ".Queries.GetRepositoryLog"},

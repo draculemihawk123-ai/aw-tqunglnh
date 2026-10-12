@@ -6,6 +6,7 @@ import (
 	appcatalog "github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 )
 
 // createProject handles `POST /projects`. Scope is always
@@ -45,8 +46,13 @@ func (h *handler) listProjects(w http.ResponseWriter, r *http.Request) {
 		writeCatalogError(w, err)
 		return
 	}
+	// An ARCHIVED project is hidden from the default list; ?includeArchived=true shows it (read-only, with Restore).
+	includeArchived := r.URL.Query().Get("includeArchived") == "true"
 	views := make([]projectView, 0, len(projects))
 	for _, p := range projects {
+		if p.Status == project.ProjectArchived && !includeArchived {
+			continue
+		}
 		views = append(views, newProjectView(p))
 	}
 	_ = httpapi.EncodeResult(w, http.StatusOK, projectListView{Projects: views}, "")

@@ -68,6 +68,10 @@ type Message struct {
 	// in the prompt however old they are. It is chosen when the message is
 	// appended and, like the rest of the row, never changes afterwards.
 	Pinned bool
+	// DisplayOnly (V11-11, ADR-042) marks an activity message the engine wrote for people to read: the context scheduler never puts it in a
+	// prompt. NodeRunID names the node run it is about (empty for a person's message).
+	DisplayOnly bool
+	NodeRunID   string
 }
 
 // NewMessage validates and constructs a Message. sequence must already be

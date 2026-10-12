@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-build.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Trước khi viết code của mỗi bước, xác nhận: (1) tên, cấu trúc thư mục và cách xử lý lỗi vẫn đúng với repository (đọc quy chuẩn trong docs/ và code lân cận); (2) bám cùng kiểu import, ghi log và bọc lỗi với file bạn đang sửa; (3) tìm helper hoặc tiện ích có sẵn trước khi tạo cái mới; (4) mở rộng giao diện hiện có thay vì tạo một giao diện song song; (5) đối chiếu danh sách file trong plan.md để mọi file đều được xử lý. Sau mỗi file sửa, đọc lại: code khớp quy ước lân cận, không thêm import thừa hay vòng phụ thuộc, chữ ký và kiểu khớp nơi gọi."
+   "instruction": "Before writing the code of each step, confirm: (1) names, directory structure and error handling still match the repository (read the conventions in docs/ and the nearby code); (2) follow the same import, logging and error-wrapping style as the file you are changing; (3) look for an existing helper or utility before creating a new one; (4) extend the existing interface instead of creating a parallel one; (5) check the file list in plan.md so every file is handled. After each changed file, read it again: the code matches the nearby conventions, adds no needless import or dependency cycle, and its signatures and types match the call sites."
   },
   {
    "key": "build.checklist",
@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-build.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Trước khi kết thúc, tự rà từng mục: mọi thao tác bất đồng bộ hoặc gọi ra ngoài có xử lý lỗi rõ ràng, không nuốt lỗi; dữ liệu từ bên ngoài được kiểm tra ở biên hệ thống; không để TODO hoặc FIXME mới (cần giải pháp tạm thì ghi rõ trong câu trả lời cuối); giao diện công khai nhỏ nhất có thể, có kiểu và khớp đúng spec hoặc hợp đồng; chỉ sửa file thuộc phạm vi task; logic mới có test cho đường thành công và các lỗi chính; không dùng kiểu lỏng (`any`, ép kiểu trần) khi chưa có lý do ghi trong comment. Bằng chứng trước lời khẳng định: đừng viết \"đã qua\" hay \"đã sửa\" nếu chưa ai chạy; nếu bạn không chạy được lệnh thì nói rõ \"chưa chạy X\" thay vì \"chắc sẽ qua\"."
+   "instruction": "Before finishing, check each item yourself: every asynchronous or external call has explicit error handling and does not swallow errors; data from outside is validated at the system boundary; no new TODO or FIXME (if you need a temporary solution, say so clearly in the final answer); the public interface is as small as possible, typed, and matches the spec or contract exactly; only files within the task's scope are changed; new logic has tests for the success path and the main errors; no loose types (`any`, bare casts) without a reason in a comment. Evidence before claims: do not write \"passed\" or \"fixed\" if no one ran it; if you could not run a command, say \"did not run X\" rather than \"should pass\"."
   }
  ]
 }

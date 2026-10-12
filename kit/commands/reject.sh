@@ -1,6 +1,6 @@
 #!/bin/sh
-# COMMAND node "reject": điểm dừng của một run không được hoàn thành — người duyệt chọn "rejected"/"abandon",
-# hoặc một vòng sửa đã hết ngân sách (cyclePolicy). Thoát mã 1 để run kết thúc FAILED thay vì đi tới END
-# (END được tính là hoàn thành). WorkItem khi đó BLOCKED với blocker RUN_FAILED: xem README mục 4.7.
-echo "Run dừng: thay đổi bị từ chối hoặc đã hết số vòng sửa cho phép." >&2
+# COMMAND node "reject": the stop point of a run that is not completed - the reviewer chooses "rejected"/"abandon",
+# or a fix loop has run out of budget (cyclePolicy). Exits 1 so the run ends FAILED instead of reaching END
+# (END counts as completed). The WorkItem is then BLOCKED with a RUN_FAILED blocker: see README section 4.7.
+echo "Run stopped: the change was rejected or the allowed number of fix rounds is used up." >&2
 exit 1

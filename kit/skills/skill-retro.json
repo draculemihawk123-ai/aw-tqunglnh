@@ -8,10 +8,10 @@
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-retro.json",
-        "revision": "v1",
+        "revision": "v2",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "instruction": "Giai đoạn của bạn: RÚT BÀI HỌC. Chỉ dựa trên dữ liệu có thật trong messages của WorkItem (tóm tắt số đo của các lượt chạy: vòng sửa theo node, kiểm tra không qua ngay lần đầu, mã lỗi attempt, và nguyên văn nhận xét của reviewer) và trong repository. Không bịa số liệu: thiếu dữ liệu thì ghi \"không có dữ liệu\" thay vì ước lượng. Một bài học chỉ được đề xuất khi có bằng chứng cụ thể (trích nguyên văn một dòng hoặc nêu node, mã lỗi, lượt chạy) và hoặc lặp lại từ hai lượt chạy hoặc hai nhận xét trở lên, hoặc là lỗi mức Critical. Nói thẳng nguyên nhân gốc, không dùng từ giảm nhẹ (\"sơ suất\" thay cho \"không kiểm tra migration\"). Không viết lại điều mà một resource hiện có đã nói; nếu bài học thực chất là một luật đã có mà agent không làm theo, ghi rõ đó là vấn đề tuân thủ chứ không phải luật mới. Không sửa code, không sửa file nào ngoài docs/lessons/."
+      "instruction": "Your stage: DRAW LESSONS. Rely only on real data in the WorkItem's messages (a summary of the measurements of the runs: fix rounds per node, checks that did not pass the first time, attempt error codes, and the verbatim reviewer comments) and in the repository. Do not invent figures: when data is missing write \"no data\" instead of estimating. A lesson may be proposed only with concrete evidence (quote one line verbatim, or name the node, error code, run) and either it repeats in two or more runs or comments, or it is a Critical level error. State the root cause plainly, without softening words (\"carelessness\" rather than \"did not check the migration\"). Do not rewrite what an existing resource already says; if the lesson is really an existing rule the agent did not follow, say clearly that it is a compliance problem and not a new rule. Do not change code, do not change any file outside docs/lessons/."
     },
     {
       "key": "retro.lessons-format",
@@ -21,10 +21,10 @@
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-retro.json",
-        "revision": "v1",
+        "revision": "v3",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "instruction": "Ghi kết quả vào docs/lessons/<yyyy-mm-dd>.md, đầu file là tiêu đề cấp một và một dòng \"Nguồn:\" nêu các lượt chạy đã đọc. Mỗi bài học là một mục cấp ba đánh số: \"### L-1: <tiêu đề ngắn>\", rồi đúng năm dòng gạch đầu dòng: \"- Bằng chứng:\" (trích nguyên văn ngắn hoặc nêu node, mã lỗi, lượt chạy); \"- Số lần lặp:\" (một số kèm các lượt chạy); \"- Luật đề xuất:\" (một đến hai câu, ra lệnh được và kiểm được, tối đa 500 ký tự, không mơ hồ như \"cẩn thận hơn\"); \"- Gắn vào:\" (id của một hoặc nhiều agent sẽ nhận luật, ví dụ agent-flow-build, agent-reviewer; chỉ chọn agent thực sự cần); \"- Mức:\" (REQUIRED_PROCEDURE hoặc GUIDANCE; HARD_CONSTRAINT chỉ cho luật mà vi phạm là sai và kiểm bằng máy được). Tối đa 5 bài học, xếp theo mức ảnh hưởng. Cuối file thêm mục \"## Không rút thành luật\" liệt kê điều bạn thấy nhưng chưa đủ bằng chứng, mỗi điều một dòng. Người duyệt sẽ xóa, sửa hoặc đổi một bài học thành \"- Trạng thái: bỏ\" trước khi nó được biến thành resource. Nếu feedback của người duyệt có trong messages thì sửa theo đó rồi kết thúc lại."
+      "instruction": "Write the result to docs/lessons/<yyyy-mm-dd>.md, with a first-level heading at the top and one \"Source:\" line naming the runs you read. Each lesson is a numbered third-level section: \"### L-1: <short title>\", then exactly five bullet lines: \"- Evidence:\" (a short verbatim quote, or the node, error code, run); \"- Occurrences:\" (a number with the runs); \"- Proposed rule:\" (one or two sentences, commandable and checkable, at most 500 characters, nothing vague like \"be more careful\"); \"- Attach to:\" (the id of one or more agents that will receive the rule, for example agent-flow-build, agent-reviewer; choose only agents that really need it); \"- Level:\" (REQUIRED_PROCEDURE or GUIDANCE; HARD_CONSTRAINT only for a rule whose violation is simply wrong and can be checked by machine). At most 5 lessons, ordered by impact. At the end of the file add a section \"## Not turned into rules\" listing what you saw but without enough evidence, one per line. The reviewer will delete, edit or change a lesson to \"- Status: skip\" before it is turned into a resource. If the reviewer's feedback is in messages, revise accordingly and finish again."
     }
   ]
 }

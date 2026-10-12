@@ -3,7 +3,10 @@ package clicompose
 import (
 	"context"
 
+	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	workapp "github.com/taQuangLing/agent-workflow/internal/app/work"
+	"github.com/taQuangLing/agent-workflow/internal/app/workitemredo"
+	appworkspaceinspection "github.com/taQuangLing/agent-workflow/internal/app/workspaceinspection"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/adapterbuild"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/decision"
@@ -15,6 +18,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/message"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/noderun"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/projection"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/redo"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/releaseset"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/run"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli/scopeexpansion"
@@ -102,7 +106,9 @@ func settingsRoutes() []Route {
 // V6-15D ---------------------------------------------------------------
 
 func catalogRoutes() []Route {
-	deps := func(d *Deps) catalog.Dependencies { return catalog.Dependencies{UoW: d.UoW, IDs: d.ids(), Now: d.Now} }
+	deps := func(d *Deps) catalog.Dependencies {
+		return catalog.Dependencies{UoW: d.UoW, IDs: d.ids(), Now: d.Now, Prober: d.RepositoryProber}
+	}
 	return []Route{
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectList(ctx, deps(d), a, s.Stdout, s.Stderr)
@@ -113,6 +119,15 @@ func catalogRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectShow(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "project", "show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectRename(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "rename"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectArchive(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "archive"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectRestore(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "restore"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "list"),
@@ -128,6 +143,18 @@ func catalogRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryRetryProbe(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "retry-probe"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryUpdate(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "update"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryDisable(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "disable"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryDelete(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "delete"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunRepositoryCheck(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository", "check"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunRepositoryReadinessShow(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository", "readiness", "show"),
@@ -214,7 +241,28 @@ func workItemRoutes() []Route {
 	deps := func(d *Deps) workitem.Dependencies {
 		return workitem.Dependencies{UoW: d.UoW, IDs: d.ids(), Now: d.Now}
 	}
+	// V11-10 (ADR-041): retry / redo with the newest workflow version. The Git workspace provider is optional: without one files outside
+	// the scope are not inspected and PARK is refused.
+	redoDeps := func(d *Deps) redo.Dependencies {
+		service := workitemredo.Service{
+			RedoDeps: runtime.RedoDeps{UnitOfWork: d.UoW, ArtifactStore: d.ArtifactStore, IDs: d.ids(), Clock: d.clock(), Matcher: d.Matcher},
+			Parker:   d.RedoParker,
+		}
+		if d.WorkspaceReader != nil {
+			service.Inspection = appworkspaceinspection.New(d.UoW, d.WorkspaceReader)
+		}
+		return redo.Dependencies{UoW: d.UoW, Service: service, Now: d.Now}
+	}
 	return []Route{
+		route(NeedUoW|NeedArtifactStore|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Retry(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "retry"),
+		route(NeedUoW|NeedArtifactStore|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Recreate(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "recreate"),
+		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Preview(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "redo-preview"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workitem.RunWorkItemList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "list"),
@@ -259,11 +307,13 @@ func workItemRoutes() []Route {
 func runRoutes() []Route {
 	deps := func(d *Deps) run.Dependencies {
 		return run.Dependencies{
-			UOW: d.UoW, IDs: d.ids(), Isolation: d.Isolation, Agents: d.Agents,
+			UOW: d.UoW, IDs: d.ids(), HeadAuditor: d.WorkspaceHeadAuditor, Isolation: d.Isolation, Agents: d.Agents,
 			Matcher: d.Matcher, Now: d.Now, Sleep: d.Sleep,
 		}
 	}
-	const runNeeds = NeedUoW | NeedIsolation | NeedAgents
+	// NeedWorkspaceIfConfigured: `run start` audits worktree HEADs when
+	// --workspace-root is given, and works exactly as before without it.
+	const runNeeds = NeedUoW | NeedIsolation | NeedAgents | NeedWorkspaceIfConfigured
 	return []Route{
 		route(runNeeds, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return run.Start(ctx, deps(d), a, s.Stdout, s.Stderr)
@@ -288,6 +338,12 @@ func runRoutes() []Route {
 				UOW: d.UoW, IDs: d.ids(), Isolation: d.Isolation, Agents: d.Agents,
 			}, a, s.Stdout, s.Stderr)
 		}, "node-run", "retry-blocked"),
+		route(NeedUoW|NeedArtifactStore, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return noderun.Show(ctx, noderun.Dependencies{UOW: d.UoW, ArtifactStore: d.ArtifactStore, Matcher: d.Matcher}, a, s.Stdout, s.Stderr)
+		}, "node-run", "show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return noderun.Events(ctx, noderun.Dependencies{UOW: d.UoW, Matcher: d.Matcher, Sleep: d.Sleep}, a, s.Stdout, s.Stderr)
+		}, "node-run", "events"),
 	}
 }
 
@@ -298,7 +354,10 @@ func decisionRoutes() []Route {
 		return scopeexpansion.Dependencies{UOW: d.UoW, IDs: d.ids(), Now: d.Now}
 	}
 	decisionDeps := func(d *Deps) decision.Dependencies {
-		return decision.Dependencies{UOW: d.UoW, IDs: d.ids(), Now: d.Now}
+		return decision.Dependencies{
+			UOW: d.UoW, IDs: d.ids(), Now: d.Now,
+			Release: decision.ReleaseSupport{Identities: d.GitIdentities, Inspection: d.WorkspaceReader, Parker: d.ParkedChanges},
+		}
 	}
 	return []Route{
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
@@ -319,9 +378,18 @@ func decisionRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return scopeexpansion.List(ctx, scopeDeps(d), a, s.Stdout, s.Stderr)
 		}, "scope-expansion", "list"),
-		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return decision.ResolveApproval(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
 		}, "approval", "resolve"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return decision.ApprovalRelease(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
+		}, "approval", "release"),
+		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return decision.WorkspaceSetReleaseContext(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
+		}, "workspace-set", "release-context"),
+		route(NeedUoW|NeedWorkspaceIfConfigured, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return decision.RepositoryWorkspaceRestoreParked(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "restore-parked"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return decision.SignalWait(ctx, decisionDeps(d), a, s.Stdout, s.Stderr)
 		}, "wait", "signal"),
@@ -391,7 +459,7 @@ func workspaceRoutes() []Route {
 	deps := func(d *Deps) workspace.Dependencies {
 		return workspace.Dependencies{
 			UOW: d.UoW, IDs: d.ids(), Authority: workapp.NewEligibilityAuthority(d.UoW),
-			Reader: d.WorkspaceReader, Now: d.Now,
+			Reader: d.WorkspaceReader, HeadAuditor: d.WorkspaceHeadAuditor, Now: d.Now,
 		}
 	}
 	const needs = NeedUoW | NeedWorkspace
@@ -417,6 +485,9 @@ func workspaceRoutes() []Route {
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceReconcile(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "reconcile"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceAdoptHead(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "adopt-head"),
 	}
 }
 

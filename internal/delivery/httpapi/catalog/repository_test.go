@@ -137,8 +137,12 @@ func TestGetRepositoryOnboarding_NoProbeYet_ReturnsEmptyAttempts(t *testing.T) {
 	if len(body.Attempts) != 0 {
 		t.Fatalf("attempts = %+v, want empty (no probe has run yet)", body.Attempts)
 	}
-	if len(body.ValidActions) != 0 {
-		t.Fatalf("validActions = %+v, want empty (retry-probe is only advertised for a BLOCKED repository)", body.ValidActions)
+	// A REGISTERING repository can only be deleted (V11-12): retry-probe, update and disable are advertised for BLOCKED/ACTIVE ones.
+	if len(body.ValidActions) != 1 {
+		t.Fatalf("validActions = %+v, want only repositoriesDelete (retry-probe is only advertised for a BLOCKED repository)", body.ValidActions)
+	}
+	if action, _ := body.ValidActions[0].(map[string]interface{}); action["operationId"] != "repositoriesDelete" {
+		t.Fatalf("validActions[0] = %+v, want repositoriesDelete", body.ValidActions[0])
 	}
 }
 

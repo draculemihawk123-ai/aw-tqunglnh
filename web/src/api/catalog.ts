@@ -18,6 +18,8 @@ export interface ProjectView {
   name: string;
   status: string;
   version: number;
+  /** Advisory (V11-13): projectsRename + projectsArchive for an ACTIVE project, projectsRestore for an ARCHIVED one. */
+  validActions?: { operationId: string; targetVersion: number }[];
 }
 
 export interface RepositoryView {
@@ -28,7 +30,18 @@ export interface RepositoryView {
   defaultRef: string;
   status: RepositoryStatus;
   lastProbeErrorCode?: string;
+  /** V11-12: why a BLOCKED repository is blocked — what, what kind, what to do. `detail` (Git's redacted output) only comes with onboarding. */
+  lastProbeError?: ProbeErrorView;
   version: number;
+  /** Advisory: which lifecycle operations the repository allows right now (repositoriesRetryProbe, repositoriesUpdate, repositoriesDisable, repositoriesDelete). */
+  validActions?: { operationId: string; targetVersion: number }[];
+}
+
+export interface ProbeErrorView {
+  failureKind?: string;
+  message: string;
+  hint?: string;
+  detail?: string;
 }
 
 export interface ProbeAttemptView {
@@ -48,6 +61,7 @@ export interface OnboardingView {
   projectId: string;
   status: RepositoryStatus;
   lastProbeErrorCode?: string;
+  lastProbeError?: ProbeErrorView;
   version: number;
   attempts: ProbeAttemptView[];
 }

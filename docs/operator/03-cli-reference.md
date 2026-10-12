@@ -23,7 +23,7 @@ Process commands:
 
 Resource commands (aw <resource> <action> [flags]):
   adapter                list|probe|register|show
-  approval               resolve
+  approval               release|resolve
   artifact               get|list
   blocker                resolve
   component              list
@@ -40,7 +40,7 @@ Resource commands (aw <resource> <action> [flags]):
   projection             rebuild|rebuild-status|status
   release-set            abandon|create|list|local-commit|local-commit status|seal|show
   repository             list|onboarding|readiness|register|retry-probe|show
-  repository-workspace   diff|log|reconcile|show|source
+  repository-workspace   adopt-head|diff|log|reconcile|restore-parked|show|source
   run                    cancel|diagnostics|graph|show|start|timeline
   scope-expansion        approve|list|reject|request|show|withdraw
   settings               show|update
@@ -48,7 +48,7 @@ Resource commands (aw <resource> <action> [flags]):
   version                diff|show
   wait                   signal
   work-item              cancel|children|create|create-child|detail|kanban|list|mark-ready|readiness|show
-  workspace-set          release|show
+  workspace-set          release|release-context|show
 
 Global options (any resource command; env AW_DB, AW_ARTIFACT_ROOT, ...):
   --db <path>                 sqlite database of the installation
@@ -131,6 +131,8 @@ UI you can script. Most are `show`/`list`; the ones whose name or arguments are 
 | `aw repository show <repositoryId>` | One repository's status and `version` (what `repository retry-probe --expected-version` takes). Like `repository onboarding`, it takes no `--project-id`: the project is read from the repository. |
 | `aw repository-workspace show --project-id <p> <repositoryWorkspaceId>` | One repository workspace's state, lease and quarantine; `workspace-set show` lists every workspace of a family. |
 | `aw release-set local-commit status --project-id <p> <releaseSetId> <localCommitId>` | A local-commit operation's state (the one `local-commit --wait` observes). |
+| `aw workspace-set release-context --project-id <p> <familyId>` | Before an approval that can commit (V11-07): per repository, the git author a commit would carry (`user.name`/`user.email` as git reports them, with their scope) or why there is none, and the files a `PARK` commit moved out of the worktree that are not restored yet. |
+| `aw approval release <runId> <approvalRequestId>` | The commits a decision requested: state per repository, files, the digest, what happened to the unselected files, and the patch the approver reviewed (base64). |
 | `aw evidence show --project-id <p> <workItemId> <evidenceId>` | One evidence record; `aw artifact list --project-id <p> <workItemId> <evidenceId>` lists the artifacts it references. |
 | `aw message content --project-id <p> --output <path\|-> <workItemId> <messageId>` | A message's own text or attachment bytes, streamed to a file or stdout after the store verifies them. |
 | `aw message context-snapshot --project-id <p> <workItemId> <messageId>` | The context snapshot of the attempt a message started. |
@@ -156,6 +158,7 @@ blocker of a work item is resolved the work item becomes `READY`, so `aw run sta
 | `RUN_CANCELLED`, `COMPLETION_POLICY_FAILED` | yes | yes, with `--policy-grant-ref` |
 | the four admission reasons (`ISOLATION_ENFORCEMENT_UNAVAILABLE`, `ADAPTER_BUILD_DRIFT`, `CAPABILITY_REQUIREMENT_UNSATISFIED`, `WRITE_CAPABILITY_OR_GRANT_MISSING`) | yes | no |
 | `SCOPE_EXPANSION_REQUIRED` | no — only its own approval flow (`aw scope-expansion`) clears it | no |
+| `RELEASE_FAILED` (a commit requested together with an approval decision ended `FAILED`; V11-07) | yes | **no** — commit again from the current changes, then resolve it |
 
 The failure loop for `RUN_FAILED` — resolve, then `aw run start` again on the same work item — is in
 [09-troubleshooting.md](09-troubleshooting.md).

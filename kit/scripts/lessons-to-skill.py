@@ -7,13 +7,16 @@ Cách dùng:
 
 Mỗi bài học có dạng (xem skill retro.lessons-format; wf-retro có bước check-lessons kiểm định dạng này):
 
-    ### L-1: <tiêu đề ngắn>
-    - Bằng chứng: …
-    - Số lần lặp: …
-    - Luật đề xuất: <luật, tối đa 500 ký tự>
-    - Gắn vào: agent-flow-build, agent-reviewer
-    - Mức: REQUIRED_PROCEDURE | GUIDANCE | HARD_CONSTRAINT
-    - Trạng thái: bỏ        (tùy chọn; người duyệt đánh dấu bài học không lấy)
+    ### L-1: <short title>
+    - Evidence: ...
+    - Occurrences: ...
+    - Proposed rule: <the rule, at most 500 characters>
+    - Attach to: agent-flow-build, agent-reviewer
+    - Level: REQUIRED_PROCEDURE | GUIDANCE | HARD_CONSTRAINT
+    - Status: skip          (optional; the reviewer marks a lesson that is not taken)
+
+Từ V11-08 nhãn là tiếng Anh (như trên). Nhãn tiếng Việt dùng trước đó (Bằng chứng, Số lần lặp, Luật đề xuất, Gắn vào, Mức,
+Trạng thái: bỏ) vẫn được đọc, để file bài học cũ không phải sửa.
 
 Kết quả:
   - <skill>: mỗi bài học thành một resource `lesson.<slug-tiêu-đề>`. Chạy lại với cùng tiêu đề thì cập nhật tại chỗ: nội dung
@@ -32,11 +35,14 @@ import unicodedata
 
 sys.dont_write_bytecode = True
 LEVELS = ("REQUIRED_PROCEDURE", "GUIDANCE", "HARD_CONSTRAINT")
-FIELDS = ("Bằng chứng", "Số lần lặp", "Luật đề xuất", "Gắn vào", "Mức")
+FIELDS = ("Evidence", "Occurrences", "Proposed rule", "Attach to", "Level")
+# Nhãn tiếng Việt dùng trước V11-08 -> nhãn chuẩn (tiếng Anh).
+LEGACY_LABELS = {"Bằng chứng": "Evidence", "Số lần lặp": "Occurrences", "Luật đề xuất": "Proposed rule",
+                 "Gắn vào": "Attach to", "Mức": "Level", "Trạng thái": "Status"}
 MAX_RULE = 500
 SKILL_ID = "skill-project-lessons"
 HEADING = re.compile(r"^### (L-\d+): (.+?)\s*$")
-FIELD = re.compile(r"^- (Bằng chứng|Số lần lặp|Luật đề xuất|Gắn vào|Mức|Trạng thái):\s*(.*?)\s*$")
+FIELD = re.compile(r"^- (%s):\s*(.*?)\s*$" % "|".join([*FIELDS, "Status", *LEGACY_LABELS]))
 
 
 def fail(message):
@@ -64,19 +70,19 @@ def parse(path):
             elif current is not None:
                 field = FIELD.match(line)
                 if field:
-                    current["fields"][field.group(1)] = field.group(2)
+                    current["fields"][LEGACY_LABELS.get(field.group(1), field.group(1))] = field.group(2)
     for lesson in lessons:
         name = f"{path}: {lesson['id']}"
         for field in FIELDS:
             if not lesson["fields"].get(field):
                 fail(f"{name} thiếu \"{field}\"")
-        rule = lesson["fields"]["Luật đề xuất"]
+        rule = lesson["fields"]["Proposed rule"]
         if len(rule) > MAX_RULE:
             fail(f"{name}: luật dài {len(rule)} ký tự (tối đa {MAX_RULE})")
-        if lesson["fields"]["Mức"] not in LEVELS:
-            fail(f"{name}: Mức {lesson['fields']['Mức']!r} không hợp lệ ({', '.join(LEVELS)})")
-        lesson["agents"] = [a.strip() for a in lesson["fields"]["Gắn vào"].split(",") if a.strip()]
-        lesson["skipped"] = lesson["fields"].get("Trạng thái", "").lower().startswith("bỏ")
+        if lesson["fields"]["Level"] not in LEVELS:
+            fail(f"{name}: Level {lesson['fields']['Level']!r} không hợp lệ ({', '.join(LEVELS)})")
+        lesson["agents"] = [a.strip() for a in lesson["fields"]["Attach to"].split(",") if a.strip()]
+        lesson["skipped"] = lesson["fields"].get("Status", "").lower().startswith(("skip", "bỏ"))
     return lessons
 
 
@@ -87,8 +93,8 @@ def merge(skill_path, lessons, owner):
     added, updated, same = [], [], []
     for lesson in lessons:
         key = "lesson." + slug(lesson["title"])
-        text = lesson["fields"]["Luật đề xuất"]
-        priority = lesson["fields"]["Mức"]
+        text = lesson["fields"]["Proposed rule"]
+        priority = lesson["fields"]["Level"]
         existing = by_key.get(key)
         if existing is None:
             resource = {"key": key, "priority": priority, "global": True, "selector": {},

@@ -46,5 +46,9 @@ func RunRepositoryShow(ctx context.Context, deps Dependencies, args []string, st
 	if err != nil {
 		return err
 	}
-	return cli.EncodeQueryResult(stdout, newRepositoryView(repo))
+	attempts, err := appcatalog.ListRepositoryProbeAttempts(ctx, deps.UoW, repositoryID)
+	if err != nil {
+		return err
+	}
+	return cli.EncodeQueryResult(stdout, newRepositoryView(repo, attempts))
 }

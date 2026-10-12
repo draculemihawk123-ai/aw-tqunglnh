@@ -3,7 +3,9 @@ package catalog
 import (
 	"time"
 
+	appcatalog "github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 )
 
@@ -25,14 +27,19 @@ import (
 // projectView is `aw project list`/`aw project show`'s own wire shape for
 // a project.Project.
 type projectView struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Status  string `json:"status"`
-	Version uint64 `json:"version"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	Status       string                `json:"status"`
+	Version      uint64                `json:"version"`
+	ValidActions []httpapi.ValidAction `json:"validActions,omitempty"`
 }
 
 func newProjectView(p project.Project) projectView {
-	return projectView{ID: string(p.ID), Name: p.Name, Status: string(p.Status), Version: p.Version}
+	view := projectView{ID: string(p.ID), Name: p.Name, Status: string(p.Status), Version: p.Version}
+	for _, id := range appcatalog.ProjectActionIDs(p) {
+		view.ValidActions = append(view.ValidActions, httpapi.ValidAction{OperationID: id, ScopeKind: httpapi.ScopeProject, TargetVersion: int64(p.Version)})
+	}
+	return view
 }
 
 type projectListView struct {
@@ -49,14 +56,17 @@ type repositoryView struct {
 	DefaultRef         string  `json:"defaultRef"`
 	Status             string  `json:"status"`
 	LastProbeErrorCode *string `json:"lastProbeErrorCode,omitempty"`
-	Version            uint64  `json:"version"`
+	// LastProbeError (V11-12) says why a BLOCKED repository is blocked: what, what kind, what to do.
+	LastProbeError *appcatalog.ProbeErrorView `json:"lastProbeError,omitempty"`
+	Version        uint64                     `json:"version"`
 }
 
-func newRepositoryView(r project.Repository) repositoryView {
+func newRepositoryView(r project.Repository, attempts []ports.RepositoryProbeAttempt) repositoryView {
 	return repositoryView{
 		ID: string(r.ID), ProjectID: string(r.ProjectID), Name: r.Name,
 		RemoteLocator: r.RemoteLocator, DefaultRef: r.DefaultRef,
 		Status: string(r.Status), LastProbeErrorCode: r.LastProbeErrorCode, Version: r.Version,
+		LastProbeError: appcatalog.LastProbeError(r, attempts, false),
 	}
 }
 
@@ -73,6 +83,9 @@ type probeAttemptView struct {
 	Result       *string   `json:"result,omitempty"`
 	ErrorCode    *string   `json:"errorCode,omitempty"`
 	ErrorMessage *string   `json:"errorMessage,omitempty"`
+	FailureKind  *string   `json:"failureKind,omitempty"`
+	ErrorDetail  *string   `json:"errorDetail,omitempty"`
+	ErrorHint    *string   `json:"errorHint,omitempty"`
 	BaseCommit   *string   `json:"baseCommit,omitempty"`
 	Dirty        *bool     `json:"dirty,omitempty"`
 	CreatedAt    time.Time `json:"createdAt"`
@@ -81,7 +94,8 @@ type probeAttemptView struct {
 func newProbeAttemptView(a ports.RepositoryProbeAttempt) probeAttemptView {
 	view := probeAttemptView{
 		ID: a.ID, JobID: a.JobID, State: string(a.State),
-		ErrorCode: a.ErrorCode, ErrorMessage: a.ErrorMessage, BaseCommit: a.BaseCommit, Dirty: a.Dirty,
+		ErrorCode: a.ErrorCode, ErrorMessage: a.ErrorMessage, FailureKind: a.FailureKind, ErrorDetail: a.ErrorDetail, ErrorHint: a.ErrorHint,
+		BaseCommit: a.BaseCommit, Dirty: a.Dirty,
 		CreatedAt: a.CreatedAt,
 	}
 	if a.Result != nil {
@@ -102,12 +116,13 @@ func newProbeAttemptView(a ports.RepositoryProbeAttempt) probeAttemptView {
 // carrying the attempt(s) that produced it) — the "async onboarding" Verify
 // bullet this task's own brief names, made concrete.
 type onboardingView struct {
-	RepositoryID       string             `json:"repositoryId"`
-	ProjectID          string             `json:"projectId"`
-	Status             string             `json:"status"`
-	LastProbeErrorCode *string            `json:"lastProbeErrorCode,omitempty"`
-	Version            uint64             `json:"version"`
-	Attempts           []probeAttemptView `json:"attempts"`
+	RepositoryID       string                     `json:"repositoryId"`
+	ProjectID          string                     `json:"projectId"`
+	Status             string                     `json:"status"`
+	LastProbeErrorCode *string                    `json:"lastProbeErrorCode,omitempty"`
+	LastProbeError     *appcatalog.ProbeErrorView `json:"lastProbeError,omitempty"`
+	Version            uint64                     `json:"version"`
+	Attempts           []probeAttemptView         `json:"attempts"`
 }
 
 func newOnboardingView(r project.Repository, attempts []ports.RepositoryProbeAttempt) onboardingView {
@@ -117,7 +132,7 @@ func newOnboardingView(r project.Repository, attempts []ports.RepositoryProbeAtt
 	}
 	return onboardingView{
 		RepositoryID: string(r.ID), ProjectID: string(r.ProjectID), Status: string(r.Status),
-		LastProbeErrorCode: r.LastProbeErrorCode, Version: r.Version, Attempts: views,
+		LastProbeErrorCode: r.LastProbeErrorCode, LastProbeError: appcatalog.LastProbeError(r, attempts, true), Version: r.Version, Attempts: views,
 	}
 }
 

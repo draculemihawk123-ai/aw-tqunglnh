@@ -142,6 +142,51 @@ type EvidenceDetail struct {
 	RevisionSetHash    string         `json:"revisionSetHash"`
 	PolicyVersion      string         `json:"policyVersion"`
 	CreatedAt          time.Time      `json:"createdAt"`
+	// V11-11: the node this evidence belongs to, with its iteration and the attempt number, so the Evidence tab can say
+	// "implement · attempt 2" and filter by node instead of showing bare IDs. NodeKey is empty when the row cannot be placed; iteration is zero-based so it is always sent.
+	NodeKey       string `json:"nodeKey,omitempty"`
+	Iteration     uint32 `json:"iteration"`
+	AttemptNumber uint32 `json:"attemptNumber,omitempty"`
+}
+
+// labelEvidenceNodes fills NodeKey/Iteration/AttemptNumber from the run's node runs and attempts (two reads per distinct run).
+func labelEvidenceNodes(ctx context.Context, tx ports.Tx, details []EvidenceDetail) error {
+	type nodeLabel struct {
+		key       string
+		iteration uint32
+	}
+	nodes := map[string]map[string]nodeLabel{}
+	attempts := map[string]map[string]uint32{}
+	for i := range details {
+		runID := details[i].RunID
+		if _, ok := nodes[runID]; !ok {
+			nodeRuns, err := tx.Runtime().ListNodeRunsForRun(ctx, runID)
+			if err != nil {
+				return err
+			}
+			byID := make(map[string]nodeLabel, len(nodeRuns))
+			for _, n := range nodeRuns {
+				byID[string(n.ID)] = nodeLabel{key: n.NodeKey, iteration: n.Iteration}
+			}
+			nodes[runID] = byID
+			list, err := tx.Runtime().ListExecutionAttemptsForRun(ctx, runID)
+			if err != nil {
+				return err
+			}
+			byAttempt := make(map[string]uint32, len(list))
+			for _, a := range list {
+				byAttempt[string(a.ID)] = a.AttemptNumber
+			}
+			attempts[runID] = byAttempt
+		}
+		if label, ok := nodes[runID][details[i].NodeRunID]; ok {
+			details[i].NodeKey, details[i].Iteration = label.key, label.iteration
+		}
+		if details[i].AttemptID != "" {
+			details[i].AttemptNumber = attempts[runID][details[i].AttemptID]
+		}
+	}
+	return nil
 }
 
 func evidenceToDetail(e runtimedomain.Evidence) EvidenceDetail {
@@ -196,7 +241,7 @@ func ListEvidenceForWorkItem(ctx context.Context, uow ports.UnitOfWork, scope po
 			}
 			result = append(result, evidenceToDetail(row))
 		}
-		return nil
+		return labelEvidenceNodes(ctx, tx, result)
 	})
 	return result, err
 }
@@ -224,6 +269,11 @@ func GetEvidence(ctx context.Context, uow ports.UnitOfWork, scope ports.CommandS
 			return scopeMismatch("evidence", evidenceID)
 		}
 		detail = evidenceToDetail(evidence)
+		labelled := []EvidenceDetail{detail}
+		if err := labelEvidenceNodes(ctx, tx, labelled); err != nil {
+			return err
+		}
+		detail = labelled[0]
 		return nil
 	})
 	return detail, err

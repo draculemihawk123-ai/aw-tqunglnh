@@ -45,7 +45,15 @@ type Config struct {
 	// may spend, start and resume alike. Zero means no ceiling. It is a
 	// ceiling the CLI enforces on itself, not an accounting: what an attempt
 	// actually spent is the USAGE_REPORTED event.
-	MaxBudgetUSD         float64
+	MaxBudgetUSD float64
+	// SafeMode (V11-05, spike V10-17) starts the CLI with --safe-mode, start and
+	// resume alike: it loads none of the user's or the repository's customizations
+	// (skills, agents, slash commands, hooks, MCP servers, CLAUDE.md, output styles)
+	// while auth, model selection and the built-in tools work as usual. Without it
+	// the CLI reads ~/.claude and the worktree's .claude/ — knowledge that sits
+	// outside the ContextSnapshot, and hooks that write into the worktree and
+	// fail an attempt with SCOPE_VIOLATION. Off by default.
+	SafeMode             bool
 	InheritedEnvironment []string
 	MaxJSONLLineBytes    int
 	// OutputLimitBytes caps the stdout+stderr one attempt may write before the
@@ -220,6 +228,9 @@ func (a *Adapter) execute(
 	}
 	if a.config.MaxBudgetUSD > 0 {
 		arguments = append(arguments, "--max-budget-usd", strconv.FormatFloat(a.config.MaxBudgetUSD, 'f', -1, 64))
+	}
+	if a.config.SafeMode {
+		arguments = append(arguments, "--safe-mode")
 	}
 	arguments = append(arguments, mountArguments(request)...)
 	if resume == nil {
@@ -409,6 +420,10 @@ type normalizer struct {
 	usage        ports.AgentUsage
 	terminalSeen bool
 	providerOK   bool
+	// quotaExceeded (V11-02): the failed result's own words say the account hit
+	// a session/usage/rate limit; finalStatus then reports
+	// ports.TerminationProviderQuotaExceeded whatever the CLI's exit code.
+	quotaExceeded bool
 	// outcomeOccurrences/outcomeValid/outcomeValue track the terminal
 	// <agentkit-outcome> marker (V5-08B, ports.AgentProposedOutcome's own
 	// doc comment) across every ASSISTANT_MESSAGE this normalizer emits —
@@ -573,6 +588,7 @@ func (n *normalizer) consumeResult(line []byte, rawType string) error {
 		// V9-20: the CLI says why in `result` ("You've hit your limit · resets
 		// 5pm", "Credit balance is too low", ...); without it the attempt failed
 		// with a code and nothing to read.
+		n.quotaExceeded = ports.IsProviderQuotaMessage(event.Result)
 		summary := "Claude reported a failed result"
 		if event.Subtype != "" && event.Subtype != "success" {
 			summary += " (" + event.Subtype + ")"
@@ -723,6 +739,11 @@ func (n *normalizer) finalStatus(
 	}
 	if process.Cancelled {
 		return ports.AgentExecutionCancelled, "cancelled", nil, nil
+	}
+	// V11-02: the CLI said, in its own terminal result, that the account hit a
+	// limit. That is the cause whatever the exit code the CLI then returned with.
+	if n.quotaExceeded {
+		return ports.AgentExecutionFailed, ports.TerminationProviderQuotaExceeded, nil, nil
 	}
 	if process.ExitCode != 0 {
 		return ports.AgentExecutionFailed, "process_exit", nil, nil

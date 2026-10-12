@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-test.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Viết test theo hành vi quan sát được (đầu vào dẫn tới kết quả hoặc trạng thái dữ liệu), không theo cách cài đặt. Mỗi acceptanceCriteria có ít nhất một test; đặt tên test nêu hành vi (ví dụ \"từ chối tiêu đề rỗng\"), đừng dùng mã AC. Chọn test hẹp nhất đủ chứng minh hành vi: unit trước, tích hợp khi hành vi đi qua ranh giới. Mỗi test độc lập, không phụ thuộc thứ tự, tự dọn dữ liệu, cho kết quả xác định (không phụ thuộc đồng hồ, thứ tự ngẫu nhiên, mạng). Dùng tiện ích test và dữ liệu mẫu có sẵn của repository."
+   "instruction": "Write tests by observable behaviour (an input leading to a result or a data state), not by implementation. Each acceptanceCriteria has at least one test; name a test after the behaviour (for example \"rejects an empty title\"), do not use the AC code. Choose the narrowest test that proves the behaviour: unit first, integration when the behaviour crosses a boundary. Each test is independent, does not depend on order, cleans up its own data, and gives a deterministic result (no dependence on the clock, random order, the network). Use the repository's existing test utilities and sample data."
   },
   {
    "key": "test.error-paths",
@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-test.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Phủ đường lỗi và giá trị biên: mỗi thao tác có đường thành công thì có test cho đầu vào sai (thiếu, rỗng, chỉ khoảng trắng, quá dài, sai kiểu), giá trị biên (đúng ngưỡng cho phép và vượt ngưỡng một đơn vị), đối tượng không tồn tại và xung đột (trùng). Kiểm cả mã hoặc thông điệp lỗi trả về, không chỉ \"có lỗi\". Xác nhận lỗi không để lại tác dụng phụ (không có bản ghi nửa vời). Đừng viết test chỉ để tăng độ phủ mà không khẳng định điều gì."
+   "instruction": "Cover error paths and boundary values: every operation that has a success path has tests for wrong input (missing, empty, only whitespace, too long, wrong type), boundary values (exactly at the allowed limit and one unit over it), objects that do not exist, and conflicts (duplicates). Check the returned error code or message too, not just \"there is an error\". Confirm the error leaves no side effects (no half-written record). Do not write a test only to raise coverage without asserting anything."
   }
  ]
 }

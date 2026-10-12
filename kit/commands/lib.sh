@@ -1,30 +1,35 @@
-# Thư viện dùng chung cho script của node COMMAND (không chạy trực tiếp). Nạp bằng đúng một dòng ở đầu script:
+# Shared library for COMMAND node scripts (not run directly). Load it with exactly one line at the top of a script:
 #
-#   . "${AW_KIT:?đặt AW_KIT=<thư mục kit> khi chạy tay}/commands/lib.sh" # @aw-include
+#   . "${AW_KIT:?set AW_KIT=<kit directory> when running by hand}/commands/lib.sh" # @aw-include
 #
-# Khi publish, aw-publish.py thay dòng đó bằng chính nội dung file này, nên script đã publish tự chứa đủ và hash của
-# script đổi theo thư viện. Khi chạy tay (AW_KIT trỏ tới thư mục kit) dòng đó nạp file thật.
+# When published, aw-publish.py replaces that line with the contents of this file, so a published script is
+# self-contained and its hash changes with the library. When run by hand (AW_KIT points at the kit directory) the line
+# loads the real file.
 #
-# Hợp đồng của script COMMAND (README mục 3.4): mã thoát 0 là đạt; lỗi in ra STDERR vì agent chỉ nhận 4 KiB cuối của
-# stderr; không màu (NO_COLOR=1) để mã ANSI không chiếm chỗ trong 4 KiB đó. Các hàm dưới đây thực hiện hợp đồng ấy.
-# COLORS=false và FORCE_COLOR=0: một số thư viện (Testing Library in cây DOM khi test hỏng) không đọc NO_COLOR mà đọc COLORS.
+# Contract of a COMMAND script (README section 3.4): exit code 0 means pass; errors go to STDERR because the agent only
+# receives the last 4 KiB of stderr; no colour (NO_COLOR=1) so ANSI codes do not take space in those 4 KiB. The functions
+# below implement that contract.
+# COLORS=false and FORCE_COLOR=0: some libraries (Testing Library printing the DOM tree on a failed test) do not read
+# NO_COLOR but read COLORS.
 export NO_COLOR=1 CI=true COLORS=false FORCE_COLOR=0
 
-# aw_fail <thông báo…>: in lỗi của code ra stderr rồi thoát mã 1 (agent sẽ sửa code).
+# aw_fail <message...>: print a code error to stderr and exit 1 (the agent will fix the code).
 aw_fail() { echo "$@" >&2; exit 1; }
 
-# aw_env_fail <thông báo…>: lỗi của MÁY chạy, không sửa được bằng code. Mã thoát không phân biệt được hai loại lỗi,
-# nên thông báo bắt đầu bằng "MÔI TRƯỜNG:" và dặn agent dừng bằng outcome needs_info thay vì sửa code vô ích.
+# aw_env_fail <message...>: an error of the MACHINE running the step, not fixable by changing code. The exit code cannot tell
+# the two kinds of error apart, so the message starts with "ENVIRONMENT:" and tells the agent to finish with the outcome
+# needs_info instead of changing code to no purpose.
 aw_env_fail() {
-  echo "MÔI TRƯỜNG: $* — không phải lỗi code; đừng sửa code, hãy kết thúc bằng outcome needs_info và nêu rõ." >&2
+  echo "ENVIRONMENT: $* - not a code error; do not change code, finish with the outcome needs_info and state this clearly." >&2
   exit 1
 }
 
-# aw_step <tên bước> <lệnh…>: chạy lệnh; đạt thì im lặng. Hỏng thì in "<AW_STEP_HEAD> '<tên>' không đạt" cùng
-# ${AW_TAIL:-60} dòng cuối của output (mỗi dòng cắt 300 ký tự) ra stderr rồi thoát mã 1.
-# AW_STEP_HEAD (mặc định "bước") là phần đầu thông báo, ví dụ "frontend: bước".
-# AW_ENV_ERRORS (regex, mặc định rỗng): output của bước hỏng khớp regex này thì đó là lỗi MÁY CHẠY (mạng, chứng chỉ), không phải
-# lỗi code: in vài dòng cuối rồi báo bằng aw_env_fail để agent không tốn vòng sửa code vô ích.
+# aw_step <step name> <command...>: run the command; silent on success. On failure print "<AW_STEP_HEAD> '<name>' failed"
+# and the last ${AW_TAIL:-60} lines of its output (each line cut to 300 characters) to stderr, then exit 1.
+# AW_STEP_HEAD (default "step") is the start of the message, for example "frontend: step".
+# AW_ENV_ERRORS (regex, default empty): if the output of the failed step matches it, the error belongs to the MACHINE
+# (network, certificate), not the code: print the last few lines and report it with aw_env_fail so the agent does not
+# spend fix rounds on code in vain.
 aw_step() {
   _aw_name=$1; shift
   _aw_log=$(mktemp)
@@ -32,22 +37,22 @@ aw_step() {
   if [ -n "${AW_ENV_ERRORS:-}" ] && grep -q -E "$AW_ENV_ERRORS" "$_aw_log"; then
     tail -n 8 "$_aw_log" | cut -c1-300 >&2
     rm -f "$_aw_log"
-    aw_env_fail "bước '$_aw_name' không chạy được vì mạng hoặc chứng chỉ của máy chạy"
+    aw_env_fail "step '$_aw_name' cannot run because of the network or a certificate on the machine running it"
   fi
-  echo "${AW_STEP_HEAD:-bước} '$_aw_name' không đạt" >&2
+  echo "${AW_STEP_HEAD:-step} '$_aw_name' failed" >&2
   tail -n "${AW_TAIL:-60}" "$_aw_log" | cut -c1-300 >&2
   rm -f "$_aw_log"
   exit 1
 }
 
-# aw_wait_http <url> <tên> <file log> [số giây, mặc định 120]: chờ tới khi url trả lời HTTP (cần curl).
-# Quá hạn thì in lỗi kèm 40 dòng cuối của file log rồi thoát mã 1.
+# aw_wait_http <url> <name> <log file> [seconds, default 120]: wait until the url answers HTTP (needs curl).
+# On timeout print an error with the last 40 lines of the log file and exit 1.
 aw_wait_http() {
   _aw_i=0
   until curl -s -o /dev/null --max-time 2 "$1"; do
     _aw_i=$((_aw_i + 1))
     if [ "$_aw_i" -gt "${4:-120}" ]; then
-      echo "$2 không lên sau ${4:-120} giây" >&2
+      echo "$2 did not come up within ${4:-120} seconds" >&2
       tail -n 40 "$3" | cut -c1-300 >&2
       exit 1
     fi

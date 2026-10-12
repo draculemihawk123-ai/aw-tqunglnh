@@ -33,6 +33,7 @@ const (
 	CodeAdapterBuildDrift               Code = "ADAPTER_BUILD_DRIFT"
 	CodeUnavailable                     Code = "UNAVAILABLE"
 	CodeProviderUnavailable             Code = "PROVIDER_UNAVAILABLE"
+	CodeProviderQuotaExceeded           Code = "PROVIDER_QUOTA_EXCEEDED" // V11-02, ADR-035: a provider session/usage/rate limit; never retryable
 	CodeExecutionFailed                 Code = "EXECUTION_FAILED"
 	CodeTimeout                         Code = "TIMEOUT"
 	CodeCancelled                       Code = "CANCELLED"
@@ -47,12 +48,13 @@ var validCodes = map[Code]bool{
 	CodeValidationFailed: true, CodePolicyDenied: true, CodeScopeViolation: true,
 	CodeLeaseLost: true, CodeFenceRejected: true, CodeWorkspaceQuarantined: true,
 	CodeIsolationEnforcementUnavailable: true, CodeAdapterBuildDrift: true,
-	CodeUnavailable: true, CodeProviderUnavailable: true, CodeExecutionFailed: true,
+	CodeUnavailable: true, CodeProviderUnavailable: true, CodeProviderQuotaExceeded: true, CodeExecutionFailed: true,
 	CodeTimeout: true, CodeCancelled: true, CodeIndeterminate: true,
 	CodeRetryExhausted: true, CodeInternal: true,
 }
 
-// Valid reports whether c is one of the 22 codes go-core-spec §18 defines.
+// Valid reports whether c is one of the 23 codes go-core-spec §18 defines (22 originally, plus
+// PROVIDER_QUOTA_EXCEEDED from V11-02, ADR-035).
 func (c Code) Valid() bool { return validCodes[c] }
 
 // neverRetryable is go-core-spec §14/§18's own explicit carve-out: these
@@ -63,8 +65,10 @@ func (c Code) Valid() bool { return validCodes[c] }
 var neverRetryable = map[Code]bool{
 	CodeIsolationEnforcementUnavailable: true,
 	CodeIndeterminate:                   true,
+	CodeProviderQuotaExceeded:           true,
 }
 
 // NeverRetryable reports whether c is one of go-core-spec §14/§18's own
-// explicit "never retryable" codes.
+// explicit "never retryable" codes — ISOLATION_ENFORCEMENT_UNAVAILABLE and INDETERMINATE, plus (V11-02,
+// ADR-035) PROVIDER_QUOTA_EXCEEDED: a provider limit resets in hours, never in the next attempt.
 func (c Code) NeverRetryable() bool { return neverRetryable[c] }

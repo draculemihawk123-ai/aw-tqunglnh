@@ -11,10 +11,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/layers/layer-sql-quality.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "convention": "Truy vấn dữ liệu. Luôn tham số hóa (tham số của JPA hoặc JDBC), không bao giờ nối chuỗi từ đầu vào vào SQL. Chỉ lấy cột và hàng cần dùng: tránh `SELECT *` khi chỉ cần vài cột và luôn giới hạn kích thước kết quả của truy vấn danh sách. Tránh N+1: đừng chạy truy vấn trong vòng lặp qua các bản ghi; gộp bằng fetch join, truy vấn theo lô hoặc một câu `IN`. Giao dịch ngắn, chỉ bao các thao tác phải cùng thành công hoặc cùng thất bại; ghi nhiều bảng thì nằm trong một giao dịch. Với xóa dây chuyền, quyết định rõ (`ON DELETE` hay xóa tường minh trong service) và có test."
+   "convention": "Querying data. Always parameterise (JPA or JDBC parameters); never concatenate input into SQL. Fetch only the columns and rows you need: avoid `SELECT *` when a few columns are enough, and always bound the size of a list query's result. Avoid N+1: do not run a query inside a loop over records; combine with a fetch join, a batched query or a single `IN` statement. Keep transactions short and covering only the operations that must succeed or fail together; a write to several tables belongs in one transaction. For cascading deletes, decide explicitly (`ON DELETE` or an explicit delete in the service) and have a test."
   },
   {
    "key": "sql.indexes",
@@ -27,10 +27,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/layers/layer-sql-quality.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "convention": "Chỉ mục: tạo cho cột thường dùng để lọc, sắp xếp hoặc làm khóa ngoại; chỉ mục tổ hợp xếp cột lọc đẳng thức trước, rồi cột khoảng hoặc sắp xếp; đừng thêm chỉ mục mà không truy vấn nào dùng vì nó làm chậm ghi. Migration đã chạy ở bất kỳ môi trường nào thì không sửa: thêm migration mới; mỗi migration một thay đổi mạch lạc, đặt tên theo hành động."
+   "convention": "Indexes: create them for columns often used to filter, sort or as foreign keys; in a composite index put equality-filter columns first, then range or sort columns; do not add an index no query uses, because it slows writes. A migration that has run in any environment is not edited: add a new migration, each migration one coherent change, named after the action."
   }
  ]
 }

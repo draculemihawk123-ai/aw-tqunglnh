@@ -13,8 +13,11 @@
 > ADR-030…033 chốt ngày 2026-10-01 cho V9 (`docs/design/12-v9-harness-alignment.md`, task V9-00): orchestrator
 > viết và chốt theo ủy quyền của product owner; product owner duyệt ở PR của V9-00.
 >
+> ADR-034…038 chốt ngày 2026-10-10 cho V11-01…V11-05 (`docs/design/14-v11-bugfix.md`): thiết kế do product owner duyệt, orchestrator
+> viết ADR khi triển khai.
+>
 > Ngày lập baseline hiện hành: 2026-08-31 (ADR-001…025); 2026-09-05 (ADR-026, ADR-027);
-> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033).
+> 2026-09-06 (ADR-028); 2026-09-24 (ADR-029); 2026-10-01 (ADR-030…033); 2026-10-10 (ADR-034…038); 2026-10-11 (ADR-039…044).
 
 ## 1. Các ràng buộc đã xác nhận
 
@@ -1024,9 +1027,323 @@ cùng một việc vì vậy bị tách ra nhiều WorkItem (HE-08-M02, HE-08-M0
 **Hệ quả:** vòng làm việc khi fail là `aw blocker resolve <id> --mode RESOLVED --reason …` rồi `aw run start`, trên
 cùng WorkItem. Kanban hiện WorkItem ở cột BLOCKED thay vì kẹt ở ACTIVE. Không cần trạng thái WorkItem mới.
 
-## 36. Baseline sau review thiết kế
+## 36. ADR-034 — Commit ngoài aw: chẩn đoán có kiểu, lệnh nhận có audit, chặn commit và run trên HEAD lệch
 
-ADR-001…033 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh:** người dùng tự `git commit` (IDE, terminal) trong worktree do aw quản lý làm HEAD thật lệch khỏi
+`RepositoryWorkspace.CurrentRevision`, thứ duy nhất aw ghi. Ca tái hiện trong `docs/spikes/v11-01-external-commit/`:
+một `MACHINE_GATE` sau commit tay thất bại `VALIDATION_FAILED` không nêu nguyên nhân (`staleMountRevision` so HEAD
+với revision đã ghim và trả mã trần); `commit-task.sh` báo "không có gì để commit" vì commit tay đã lấy hết thay đổi;
+và `CreateLocalCommit` chạy trên HEAD lệch sẽ đưa các commit ngoài vào lịch sử mà aw coi là của mình, không qua
+cổng nào. `CurrentRevision` chỉ tiến lên bằng local commit của ReleaseSet (V9-16); không đường nào để aw biết commit
+ngoài.
+
+**Quyết định:**
+
+1. **Chẩn đoán có kiểu.** Khi `MACHINE_GATE` thấy HEAD lệch revision đã ghim, attempt vẫn thất bại fail-closed với
+   `VALIDATION_FAILED`, kèm một sự kiện `DIAGNOSTIC` mã `WORKSPACE_HEAD_DRIFT` ghi vào `agent_events` của attempt
+   (cùng đường V9-09 dùng cho danh sách vi phạm scope): repository, revision đã ghim, HEAD thật, các commit nằm ngoài
+   aw (hash, tác giả, tiêu đề, giới hạn 5 commit mới nhất) và cách xử lý. `GetRunTimeline` đọc nó thành
+   `failureDetail` của attempt, nên `aw run timeline`, `show-run.sh` và UI hiện nó. Không thêm mã lỗi vào enum đóng
+   của go-core-spec §18; tên kiểu là mã của diagnostic. Việc đọc Git đi qua port hẹp mới
+   `ports.WorkspaceHeadAuditor` (`gitworktree.Provider` thỏa bằng structural typing); provider không kiểm được thì
+   diagnostic chỉ nói HEAD khác.
+2. **Lệnh nhận commit ngoài, tường minh và có audit:** `AdoptWorkspaceHead` — CLI `aw repository-workspace adopt-head
+   --project-id P --expected-version N [--idempotency-key K] <repositoryWorkspaceId>`, HTTP `POST
+   /projects/{projectId}/repository-workspaces/{id}/adopt-head` (If-Match theo version của workspace, operationId
+   `adoptWorkspaceHead`). Đồng bộ, không có job nền: đọc Git ngoài transaction, một transaction ghi ngắn kiểm lại mọi
+   hàng rào. Chỉ chạy khi workspace `READY` (`QUARANTINED` bị từ chối với `WORKSPACE_QUARANTINED`), không attempt nào
+   giữ write lease, worktree sạch, HEAD là hậu duệ tuyến tính của `CurrentRevision` và khác nó. Khi đó ghi
+   `CurrentRevision = HEAD`, `version + 1`, sự kiện `WorkspaceHeadAdopted` (commit, tác giả, người thao tác) và biên nhận
+   idempotent. HEAD sau `reset`/`rebase` bị từ chối, hướng dẫn đưa worktree về revision đã ghi hoặc reconcile. Nhận
+   commit ngoài là việc của người vận hành, không bao giờ tự động; gate của các run sau vẫn chạy trên mã đó.
+3. **Run đang chờ duyệt không đổi pin.** `ExecutionManifest` bất biến (ADR-011) và `run_manifest_amendments` chỉ ghi
+   phiên bản scope đã duyệt, không ghi revision; mở rộng nó để cập nhật revision cần migration và đổi ngữ nghĩa
+   ghim. Vì vậy sau `adopt-head`, run đã bắt đầu giữ revision cũ, và gate của nó vẫn báo `WORKSPACE_HEAD_DRIFT`; diagnostic
+   nói rõ run phải được hủy và bắt đầu lại.
+4. **Run mới kiểm trước, mặc định từ chối.** `POST /work-items/{id}/runs` và `aw run start` gọi
+   `CheckFamilyWorkspaceHeads` trước `StartWorkflowRun`: mỗi repository có HEAD khác `CurrentRevision` thì từ chối
+   (HTTP 409, mã `CONFLICT`, thông báo `WORKSPACE_HEAD_DRIFT: …` nêu repository, hai revision, số commit, tác giả commit mới
+   nhất và đúng lệnh `adopt-head` kèm `--expected-version`). Không có cờ tự nhận. `aw run start` kiểm khi có
+   `--workspace-root`/`AW_WORKSPACE_ROOT`; không có thì chạy như trước. Worktree không đọc được thì bỏ qua repository đó
+   (best effort): `StartWorkflowRun` và gate vẫn giữ kiểm tra của chúng.
+5. **Local commit chặn trên HEAD lệch.** `ExecuteReleaseSetLocalCommit` so HEAD với `CurrentRevision` trước khi tạo commit;
+   lệch thì operation kết thúc `FAILED` lý do `HEAD_DRIFT` (migration 0049 mở rộng CHECK của
+   `release_set_local_commits.failure_reason`), không `git commit`, job hoàn tất (xác định, không retry). Lý do là typed
+   reason của operation như `NO_CHANGES` (ADR đã dùng ở V9-09), không phải mã lỗi mới.
+
+**Hệ quả:** commit ngoài không còn gây hỏng khó hiểu: lỗi nói nguyên nhân và lệnh sửa; không đường nào đưa commit
+ngoài vào lịch sử aw mà không có lệnh tường minh và sự kiện audit. Cạnh bất biến cần biết: một lệnh `adopt-head`
+chạy khi một local commit của chính aw đang giữa chừng có thể nhận commit của aw; `Advance` của local commit khi đó
+thất bại version fence và job retry theo marker. Không đổi hành vi cho workflow không bị commit ngoài.
+
+## 37. ADR-035 — Hết hạn mức của nhà cung cấp là `PROVIDER_QUOTA_EXCEEDED`, không bao giờ retry
+
+**Bối cảnh:** khi đo B0/B1 (2026-10-07), CLI Claude trả "You've hit your session limit · resets 5:30pm (UTC)". Adapter ghi
+diagnostic `PROVIDER_REPORTED_FAILURE` (V9-20) rồi attempt kết thúc `FAILED` / `EXECUTION_FAILED`, và attempt policy retry
+mã này: ở mọi node agent chạy song song, hai lần thử cháy hết trong vài giây rồi run `FAILED`. Hạn mức reset sau vài giờ, nên
+thử lại ngay không bao giờ có ích. Cả hai CLI chỉ báo lý do bằng văn bản (`result` của Claude, `error.message` của
+Codex); không có mã hay thời điểm reset đọc được bằng máy.
+
+**Quyết định:**
+
+1. Thêm mã lỗi `PROVIDER_QUOTA_EXCEEDED` vào tập đóng của go-core-spec §18 (22 → 23) và vào `neverRetryable` cùng
+   `ISOLATION_ENFORCEMENT_UNAVAILABLE` và `INDETERMINATE`: publish policy liệt kê nó trong `retryableErrorCodes` bị từ chối,
+   và `decideRetryOrExhaustion` không bao giờ thử lại nó.
+2. Adapter nhận diện từ lời của CLI (`ports.IsProviderQuotaMessage`: "hit your limit", "session limit", "usage limit",
+   "rate limit", "quota", "too many requests", "credit balance"…; không khớp "context limit" hay "output token limit") và báo
+   `AgentExecutionResult.TerminationReason = "provider_quota_exceeded"`, **trước** kiểm tra mã thoát của tiến trình (CLI có
+   thể thoát mã khác 0 sau kết quả lỗi). `AgentNodeExecutor` ánh xạ nó sang attempt `FAILED` /
+   `EXECUTION_FAILED` (termination) với mã `PROVIDER_QUOTA_EXCEEDED`. Lỗi không phải hạn mức vẫn là `EXECUTION_FAILED`.
+3. Lời của CLI, gồm giờ reset, vẫn nằm trong diagnostic `PROVIDER_REPORTED_FAILURE` và hiện ở `failureDetail` của timeline
+   (V9-20); `show-run.sh` in thêm một dòng hướng dẫn.
+4. **Dừng có thể tiếp tục = đường sẵn có.** Attempt đầu kết thúc node, run `FAILED` mở blocker `RUN_FAILED` (ADR-033), và
+   người vận hành chạy lại trên cùng WorkItem sau giờ reset (`retry-task.sh`). Không thêm loại blocker hay trạng thái `BLOCKED`
+   mới: thiết kế V11 đề xuất blocker `retry-blocked` sau giờ reset, nhưng giờ reset không đọc được bằng máy nên aw không có thời
+   điểm để hẹn, và `retry-blocked` dành cho admission chặn trước khi attempt chạy, không cho attempt đã chạy giữa chừng.
+
+**Hệ quả:** hạn mức không còn đốt ngân sách retry; mã phân biệt hạn mức với lỗi thực thi thường ở timeline, Kanban và event
+`NODE_RUN_FAILED`. Không đổi hành vi cho lỗi khác. Giới hạn: phân loại theo văn bản của CLI, nên một câu báo hạn mức mà CLI diễn
+đạt khác sẽ vẫn là `EXECUTION_FAILED` cho đến khi thêm cụm từ.
+
+## 38. ADR-036 — Cạnh escalation của mọi node có `cyclePolicy` phải rời vòng; lỗi định nghĩa làm run thất bại có lý do
+
+**Bối cảnh:** `wf-task-delivery-plus` có node `simplify` với `cyclePolicy` và cạnh `escalated → quality`, mà `quality` nằm trong
+cùng vòng (`quality` quay lại `build`). Compiler (`validateBoundedCycles`) chỉ đòi **một node nào đó** của thành phần liên thông
+có `cyclePolicy` và cạnh escalation rời vòng (ở đây là `build`), nên định nghĩa được publish. Khi `simplify` hết ngân sách,
+`advanceRunTx` từ chối cạnh (`ErrCycleEscalationNotBounded`) **bên trong** transaction của `FinalizeExecutionAttempt`, nên cả
+finalize của node đứng trước bị rollback: attempt đó vẫn `RUNNING` mất lease, run đứng ở `RUNNING`, và 30 giây sau recovery reaper
+đánh dấu attempt `INDETERMINATE (OWNERSHIP_LOST_MUTATING)`, không có thông báo nào.
+
+**Quyết định:**
+
+1. **Compiler kiểm theo từng node.** `validateBoundedCycles` giữ luật cũ (vòng phải có ít nhất một node có ngân sách và lối ra),
+   thêm: mỗi node nằm trên một vòng và có `cyclePolicy.maxIterations > 0` phải có cạnh `escalationOutcome` dẫn **ra ngoài** vòng
+   của nó. Thông báo nêu node, cạnh, đích và vòng.
+2. **Version đã lưu vẫn đọc được.** Persistence nạp version bằng cách dựng lại qua compiler, nên luật mới sẽ làm mọi run, đồ thị
+   và lịch sử của version cũ không đọc được. Thêm `workflow.Rehydrate` (dùng ở loader của sqlite): mọi kiểm tra của `Compile`
+   **trừ** luật mới. Luật chỉ siết việc **publish**.
+3. **Lỗi lúc chạy phải rõ.** `advanceRunTx` kiểm trước khi ghi bất cứ thứ gì (`checkCycleEscalationRoutable`) và trả
+   `*RoutingDefectError` (`ErrWorkflowRoutingDefect`) khi node sắp được kích hoạt hết ngân sách mà cạnh escalation thiếu hoặc
+   không rời vòng. `FinalizeExecutionAttempt` bắt lỗi này: attempt và NodeRun của node vừa xong được ghi `SUCCEEDED`
+   (việc đã làm xong thật), rồi khi không còn node nào sống hoặc bị chặn thì run `FAILED` với lý do
+   `WORKFLOW_DEFINITION_DEFECT: …` (hiện ở blocker `RUN_FAILED` và `aw run diagnostics`). Còn nhánh khác đang chạy thì việc
+   đóng run để cho reconcile thông thường. Các đường khác gọi `advanceRunTx` (duyệt, chờ tín hiệu) vẫn trả lỗi cho người gọi,
+   tức đã thấy được, không treo.
+
+**Hệ quả:** định nghĩa như `simplify → quality` bị từ chối lúc publish với lý do nêu tên; version cũ đã publish không còn làm run
+treo âm thầm. Workflow mẫu của kit không đổi (mọi cạnh escalation đã rời vòng).
+
+## 39. ADR-037 — `checkFailures` đi qua CHECKER chẩn đoán nằm giữa kiểm tra và maker
+
+**Bối cảnh:** ADR-031 quyết định 6 cho MAKER vừa bị `failureOutcome` của một node kiểm tra gửi lại nhận `checkFailures`, và V9-17 cho MAKER bị
+CHECKER gửi lại nhận `reviewerFeedback`. Trong `wf-task-delivery-plus`, `gate1 (failed) → debug (CHECKER) → build` rơi vào khoảng trống giữa hai
+đường: prompt của `debug` không có `checkFailures` (assembler bỏ qua mọi CHECKER), và prompt của `build` sau đó chỉ có báo cáo của `debug`.
+Agent chẩn đoán phải tự tái hiện lỗi mà kit đang dặn, và maker không thấy lại đầu ra của chính kiểm tra đã gửi nó đi.
+
+**Quyết định:** đưa `checkFailures` đi tiếp, chỉ dọc theo cạnh do kiểm tra thất bại kích hoạt.
+
+1. Một CHECKER AGENT được kích hoạt bằng cạnh `failureOutcome` của một node kiểm tra nhận `checkFailures` của kiểm tra đó, cùng nhãn
+   WHAT/WHY/FIX, cùng giới hạn 4 KiB, cùng ghi chú baseline. Chỉ kiểm tra đã kích hoạt NodeRun này được tính (`activatingFailedCheck`),
+   không phải mọi bằng chứng mà snapshot của CHECKER ghim cho allowlist đầu vào của V5-12. Snapshot của CHECKER không đổi (nó đã ghim
+   evidence của node đứng trước), nên không hash nào đổi; chỉ phần dựng prompt đổi.
+2. Một MAKER được kích hoạt bằng cạnh của một CHECKER mà chính CHECKER đó được kích hoạt bằng cạnh `failureOutcome` của một kiểm tra nhận thêm evidence của
+   kiểm tra gốc (`gatherCheckFailureEvidenceRefs` nhìn xuyên một CHECKER). Nó có cả `reviewerFeedback` (chẩn đoán) lẫn `checkFailures` (kiểm
+   tra gốc). Chẩn đoán giải thích lỗi, không thay thế kiểm tra, vốn vẫn là thẩm quyền cuối (ADR-032, V9-13b). Snapshot của maker này có
+   thêm evidence ref nên hash của nó khác trước, chỉ cho kích hoạt này.
+3. Một CHECKER không đi qua kiểm tra thất bại (reviewer sau kiểm tra đạt), và maker mà nó gửi lại, không có `checkFailures`; prompt của họ không đổi.
+   Chỉ đi xuyên một CHECKER, không đệ quy xa hơn.
+
+**Hệ quả:** workflow mẫu `wf-task-delivery-plus` không cần sửa; agent `debug` đọc được lỗi thật của `gate1` thay vì tái hiện nó, và kit có thể
+rút gọn dặn dò "tự tái hiện" khi cần. Hành vi prompt của workflow không có CHECKER nằm giữa không đổi.
+
+## 40. ADR-038 — Cô lập cấu hình của CLI Claude bằng `--safe-mode` (tùy chọn của worker)
+
+**Bối cảnh:** spike V10-17 đo (`docs/spikes/v10-17-claude-skills/README.md`) rằng aw gọi `claude -p …` không chọn nguồn cấu hình, nên CLI nạp
+`~/.claude` của máy chạy worker và `.claude/` cùng `CLAUDE.md` của repository: skill, agent, slash command, hook, MCP server nằm **ngoài** ContextSnapshot
+(không băm, không audit, không tái hiện); hook ghi file vào worktree làm attempt MAKER hỏng `SCOPE_VIOLATION`; CHECKER cũng trả tiền cho danh sách
+skill. Thiết kế V11 đề xuất hai hướng: cô lập cấu hình, hoặc ghi băm cây `.claude/` vào manifest, sau khi kiểm cờ của CLI.
+
+**Quyết định:**
+
+1. Làm hướng cô lập, bằng cờ `--safe-mode` của CLI (không phải `CLAUDE_CONFIG_DIR`: đổi thư mục cấu hình mất thông tin đăng nhập; không phải `--bare`: nó
+   không đọc OAuth/keychain nên hỏng với người dùng đăng nhập bằng tài khoản). Kiểm với Claude Code 2.1.288 bằng sự kiện `system init`, không gọi API: có skill
+   cấp người dùng, skill của repository và hook `SessionStart` thì không cờ liệt kê cả hai skill và hook chạy (2 sự kiện); có `--safe-mode` thì không skill nào
+   trong hai và 0 sự kiện hook. Đăng nhập và model dùng bình thường.
+2. Tùy chọn của worker `aw worker --claude-safe-mode` (mặc định tắt), trường `claude.Config.SafeMode`: `--safe-mode` có trên **mọi** lần gọi CLI, start và resume, giống
+   effort và ngân sách (V9-13a). Mặc định tắt vì nó đổi cái CLI thấy (mất `~/.claude` và `CLAUDE.md` của repository) và cần CLI biết cờ này.
+3. Không làm hướng băm `.claude/`: với `--safe-mode` bật, không có tri thức ngoài manifest để băm; còn khi tắt, hành vi cũ giữ nguyên (nạp, không kiểm). Không đổi
+   phép kiểm scope: hook không còn chạy nên không còn ghi vào worktree.
+4. Không đổi AdapterBuild: cờ là cấu hình của worker như `--permission-mode`, không thuộc định nghĩa hay snapshot.
+
+**Hệ quả:** cài đặt muốn tái hiện được dùng `--claude-safe-mode` và đưa quy ước vào Layer/Skill của kit (đi qua ContextSnapshot). Cảnh báo kích thước file hướng dẫn
+(`--instruction-file-warn-bytes`, V9-10) vẫn ghi file mà CLI sẽ nạp; dưới `--safe-mode` CLI không nạp chúng nên cảnh báo chỉ còn tính chất thông tin. Codex chưa có cờ tương đương.
+
+## 41. ADR-039 — Diff của working tree là chế độ `result=WORKING_TREE` của route diff hiện có, chỉ đọc
+
+**Bối cảnh:** ở cổng `APPROVAL` agent đã ghi file vào worktree nhưng chưa commit, nên `currentRevision` chưa tiến. API diff chỉ so hai commit
+(`git diff <base> <result>`), tab Diff hiện "No changes between the base and current revision" và người duyệt quyết định mà không thấy agent đã sửa gì.
+Xem thay đổi bằng terminal lại là thao tác Git ngoài aw, chính là lỗi của V11-01.
+
+**Quyết định:**
+
+1. Không thêm route mới: `GET .../repository-workspaces/{id}/diff` nhận `result=WORKING_TREE` (thay cho revision đích). Giữ 1:1 giữa parity registry, CLI
+   (`aw repository-workspace diff --working-tree`), contract và UI; phản hồi thêm `uncommitted`, `totalFiles`, `changeSetDigest`, và mỗi file có `status`,
+   `untracked`, `symlink`, `sizeBytes`, `contentHash`. Diff giữa hai commit không có các trường này (test khẳng định).
+2. Chỉ đọc, kể cả với repository đang dùng: `GIT_OPTIONAL_LOCKS=0` cho mọi lệnh git của adapter (cả đọc commit), không `git add`/`reset`, không ghi index,
+   HEAD không đổi. Tracked đọc bằng `git diff <base> --`, untracked bằng `git ls-files --others --exclude-standard` rồi `git diff --no-index` với file rỗng,
+   từng file, có giới hạn byte/file/dòng của `ReadDiff`. Không đi theo symlink ra ngoài worktree; file nhị phân chỉ trả tên và kích thước; bỏ `.git`.
+3. Từ chối khi có attempt ghi (`409`, giữ lease ghi): worktree đang đổi thì kết quả nửa chừng còn tệ hơn không có kết quả. Quá 20000 đường dẫn đổi thì `422`
+   thay vì mô tả sai.
+4. `base` vẫn phải là revision đã được ủy quyền của workspace (cùng `authorizeRevision` như diff giữa hai commit).
+5. `contentHash` từng file và `changeSetDigest` là đầu vào cho V11-07 (commit đúng cái đã duyệt); V11-06 chỉ tính và trả, không đối chiếu.
+6. UI: mặc định tab Workspace hiện thay đổi chưa commit khi worktree có thay đổi, nếu không thì hiện diff commit và nói rõ là "No committed changes";
+   thẻ duyệt ở tab Graph có dòng tóm tắt và nút mở tab Workspace; lỗi đọc (vd 409) hiện lý do thay vì "không có thay đổi".
+
+**Hệ quả:** cổng duyệt có cái để quyết định. Không có thao tác ghi nào từ UI (stage, sửa) — nằm ngoài V11-06; commit đúng cái đã duyệt là V11-07.
+
+## 42. ADR-040 — Duyệt và commit là một thao tác: ý định commit nằm trong transaction của quyết định, Git chạy ở job nền
+
+**Bối cảnh:** ADR-014 cho phép local commit "khi workflow policy cho phép hoặc operator phát typed command", nhưng chỉ có đường thứ hai, và nó gom MỌI thay đổi
+(`git add -A`). Hệ quả khi chạy issue-tracker: người duyệt phải rời web để chạy `commit-task.sh`; quên bước này thì task sau bị `SCOPE_VIOLATION` mà thông báo không nói
+nguyên nhân; không commit một phần được; worktree thuộc về family chứ không phải một task nên commit đóng dấu cả phần việc chưa duyệt của task khác. §11.1 của
+go-core-spec cấm gọi Git trong transaction nên không thể gọi `git commit` ngay trong `ResolveApproval`.
+
+**Quyết định:**
+
+1. Node APPROVAL có `approval.release {commit: DISABLED|OFFERED|REQUIRED, outcomes}`; vắng = DISABLED (định nghĩa cũ không đổi hash, không đổi hành vi). Compiler chỉ cho
+   outcome mà đường đi từ nó chỉ tới `END` hoặc node không ghi worktree (AGENT khác CHECKER, và COMMAND, bị coi là ghi), vì commit chạy nền sẽ đua với node ghi.
+   Kit chỉ bật `OFFERED`; `REQUIRED` với tập thay đổi rỗng được ghi `NOTHING_TO_COMMIT`, không phải lỗi.
+2. `ResolveApproval` nhận `commit`. Trong **cùng transaction** với quyết định: kiểm policy và danh tính tác giả TRƯỚC khi ghi gì (bị từ chối thì cổng vẫn PENDING), ghi quyết
+   định, rồi tạo ReleaseSet (base = result = revision đã ghi, PASS), seal, và một `ReleaseSetLocalCommit` REQUESTED + job + selection cho từng repository. Lỗi ở bất cứ bước nào
+   thì quyết định cũng rollback; mất race thì không commit; replay trả lại đúng các operation. Quyền commit = quyền duyệt (`authorizedRoles`); không có role release riêng.
+3. **Tác giả lấy từ `git config` của máy chạy aw** (cấu hình repository đè toàn cục), đọc NGOÀI transaction (`ports.GitIdentityReader`) và truyền vào lệnh như giá trị; job dùng
+   đúng giá trị đã lưu, không đọc lại. Không có ô nhập tay. Thiếu thì từ chối cả lệnh bằng `COMMIT_IDENTITY_MISSING` (nằm trong `details` của lỗi 422, không thêm mã vào enum lỗi
+   đóng của §18) kèm lệnh cấu hình.
+4. **Chọn theo file, và duyệt đúng cái đã thấy.** Request mang `{path, status, contentHash}` của các file được chọn; adapter tính lại dưới write lease và từ chối
+   (`CHANGESET_DRIFT`, determinate, không commit gì) nếu khác. Staging bằng `git --literal-pathspecs add -A --pathspec-from-file=- --pathspec-file-nul` sau `git reset -q`
+   (chỉ index), đọc lại index và cây commit để bảo đảm đúng bằng tập đã chọn. Tập thay đổi (`collectChangeSet`) là MỘT định nghĩa dùng chung với diff của V11-06.
+5. **File không chọn: `KEEP` (mặc định) hoặc `PARK`.** PARK ghi phần còn lại thành commit dưới `refs/agentkit/parked/<releaseSetId>` bằng index tạm rồi dọn đúng các đường dẫn đó;
+   idempotent và chạy cả trên commit tái dùng sau crash (trả lại danh sách đã cất nếu ref đã có). Khôi phục từ chối ghi đè mọi thứ đã đổi và từ chối khi có attempt ghi. Không có
+   "xóa hẳn" (muốn bỏ thì PARK).
+6. **Commit lỗi sau quyết định không rollback quyết định**; nó đóng operation `FAILED` (+ `CHANGESET_DRIFT` mới) và mở blocker `RELEASE_FAILED` (RESOLVED-only) trên WorkItem trong
+   cùng transaction (hook `OnFailed`, nối ở worker để `releasesetcommit` không import `runtime`). "Thử commit lại" là commit mới từ tập thay đổi hiện tại (đường thủ công có `--path`),
+   rồi resolve blocker. Số đếm "attempt ordinal" của marker (V9-09) tính cả HEAD_DRIFT và CHANGESET_DRIFT vì cả hai đóng trước `git commit`.
+7. Bằng chứng của cái đã duyệt: file + hash + digest + patch working tree (có giới hạn 1 MiB) lưu trong `release_set_local_commit_selections` (migration 0050), đọc lại bằng
+   `getApprovalRelease`. Route mới: `getApprovalRelease`, `getFamilyReleaseContext`, `restoreParkedChanges`; CLI tương ứng; `getRunDetail` báo `release` của node.
+
+**Hệ quả:** quy trình mặc định của kit không còn cần `commit-task.sh` ở cổng duyệt của workflow kết thúc ở `END`; workflow có node ghi sau `approved` (delivery `sync`) vẫn commit thủ công.
+Không push/PR/merge (ADR-014 giữ nguyên). Chưa có: chọn file cho commit thủ công trên UI (backend/CLI/HTTP có), ghép cặp đổi tên (đổi tên là một xóa + một thêm, chọn độc lập), patch lọc riêng
+từng file đã chọn (lưu patch cả working tree lúc duyệt; file + hash là bằng chứng chính xác phần được chọn).
+
+## 43. ADR-041 — Chạy lại và làm lại một task là hai lệnh có kiểu, mỗi lệnh một transaction; làm lại là hủy-và-tạo-mới
+
+**Bối cảnh:** xử lý một task hỏng là chuỗi gọi rời rạc ở nhiều nơi (gửi ghi chú, gỡ blocker `RUN_FAILED`, start run; hủy WorkItem, tạo WorkItem mới bằng tay), nên một trình duyệt gọi tuần tự
+có thể dừng giữa chừng và để trạng thái dở (đã gỡ blocker mà chưa có run; đã hủy cái cũ mà chưa tạo cái mới). Hơn nữa WorkItem ghim đúng một workflow version (ADR-033 quyết định 4):
+sau khi sửa kit rồi publish lại, chạy lại trên WorkItem cũ vẫn chạy bản cũ, và cách duy nhất để dùng bản mới là tạo WorkItem mới bằng tay. `commit-task.sh` lại từ chối khi family còn
+WorkItem `ACTIVE`/`BLOCKED`, nên quên hủy bản cũ chặn luôn việc commit.
+
+**Quyết định:**
+
+1. Hai lệnh có kiểu, idempotent (một receipt mỗi lệnh), mọi thao tác ghi DB trong **một** transaction:
+   - `RetryWorkItem` (cùng WorkItem, run gần nhất `FAILED`/`CANCELLED`): ghi chú tùy chọn thành message USER, gỡ các blocker `RUN_FAILED`/`RUN_CANCELLED`/`COMPLETION_POLICY_FAILED` đang mở,
+     start run mới **trên version đã ghim** (không đổi ADR-033). Còn blocker loại khác (scope expansion, admission, `RELEASE_FAILED`) hay worktree `QUARANTINED` thì từ chối, không đổi gì.
+   - `RecreateWorkItem` (làm lại bằng version mới nhất của **cùng** workflow definition): hủy WorkItem cũ, tạo WorkItem con mới cùng parent với cùng nội dung (tiêu đề thêm " (lần N)",
+     effective scope, contract) nhưng ghim version mới nhất, READY, mang theo message USER (tùy chọn, mặc định có), start run, ghi `WorkItemSupersession`. Không đổi version đã ghim trên chính
+     WorkItem cũ: bất biến "một WorkItem ghim một version" giữ nguyên, mỗi lần làm lại để lại một WorkItem `CANCELLED` kèm liên kết. Không giới hạn số lần làm lại; số lần và chi phí được hiện ở hộp thoại.
+2. Điều kiện kiểm **trước** khi đổi gì, bằng cùng một hàm lập kế hoạch với bản xem trước (`runtime.AssessRedo`): mọi run của WorkItem đã kết thúc (không cần chờ hủy bất đồng bộ nên hủy WorkItem cũ
+   xong ngay trong transaction và không có hai WorkItem cùng chạy trên một worktree), family không có workspace `QUARANTINED`, chỉ WorkItem con (root có family và workspace riêng nên không làm lại được),
+   WorkItem chưa bị thay. Scope của bản mới là scope của bản cũ đi qua `CreateChildWorkItem` nên luật tập con của GC-INV-05 được áp dụng như mọi child. Từ chối trả mã ổn định (`NOT_RETRYABLE`,
+   `RUN_IN_PROGRESS`, `STILL_BLOCKED`, `WORKSPACE_QUARANTINED`, `ROOT_UNSUPPORTED`, `ALREADY_SUPERSEDED`…) trong `details` của lỗi 409 để UI giải thích bằng lời.
+3. Cách thực hiện: thân transaction của `StartWorkflowRun`, `CancelWorkItem`, `ResolveWorkItemBlocker`, `CreateChildWorkItem`, `MarkWorkItemReady` và `AppendMessage` được tách thành hàm `...Tx` để ghép trong transaction
+   của lệnh mới (không lồng transaction); lệnh con dùng id sự kiện/khóa idempotency dẫn xuất từ lệnh cha. Nội dung ghi chú được lưu vào kho artifact **trước** transaction như mọi message. Message
+   mang theo dùng lại artifact của message gốc (nội dung bất biến, không sao chép blob).
+4. **File thừa ngoài scope.** Git không chạy trong transaction, nên `internal/app/workitemredo` đọc thay đổi chưa commit của worktree (chế độ `WORKING_TREE` của ADR-039), đánh dấu file ngoài WRITE scope
+   (`scopeguard.PathAllowed`), từ chối khi chưa chọn `KEEP` (mặc định, kèm cảnh báo sẽ vi phạm lại) hoặc `PARK`, và với `PARK` cất **đúng các file ngoài scope** (`SelectedChangeParker`, cùng cơ chế ref
+   `refs/agentkit/parked/` của ADR-040, công việc trong scope ở lại cho run sau) **trước** lệnh, vì lệnh khởi tạo một run mà worker có thể nhận ngay. Lệnh chỉ ghi lại việc đã làm (result, receipt, sự kiện).
+   Replay không cất lần hai; lệnh sẽ bị từ chối thì không cất gì. Giới hạn: nếu lệnh bị từ chối sau khi cất (race) file vẫn nằm ở ref (không mất); chưa có nút khôi phục cho phần cất này (dùng `git restore --source=<ref>`).
+5. Dữ liệu: bảng `work_item_supersessions` (migration 0051; khóa chính = WorkItem mới, `UNIQUE` WorkItem cũ: chuỗi làm lại). Sự kiện `WORK_ITEM_RETRIED` và `WORK_ITEM_RECREATED` (ghi nhận, projection bỏ qua).
+   Thẻ Board và chi tiết WorkItem đọc liên kết trực tiếp (không project) bằng một truy vấn cho cả trang.
+6. Bề mặt: route `retryWorkItem`, `recreateWorkItem`, `getWorkItemRedoPreview`; CLI `aw work-item retry|recreate|redo-preview`; `validActions` của run diagnostics thêm `retryWorkItem`/`recreateWorkItem`;
+   UI hai nút **Run Again** / **Redo with Latest Version**; kit `retry-task.sh` gọi `aw work-item retry`, thêm `recreate-task.sh`. Không có lệnh tự động quyết định chạy lại, không chạy lại từng phần (aw không
+   chạy tiếp từ node hỏng), không sửa contract khi làm lại.
+
+**Hệ quả:** luồng sửa kit rồi chạy lại là Publish → một nút/lệnh; không còn bước "hủy trên web rồi `run-task.sh`" và `commit-task.sh` không bị WorkItem cũ chặn. Chưa có: khôi phục file đã cất bằng nút,
+cảnh báo cứng khi làm lại quá nhiều lần (chỉ cảnh báo từ lần thứ ba), kịch bản `walk-workflow.py` cho retry/recreate.
+
+## 44. ADR-042 — Đọc theo node, giữ lời agent khi hỏng, và tin hoạt động trong Chat là tin chỉ-hiển-thị
+
+**Bối cảnh:** người vận hành bấm một node trên web chỉ thấy timeline được lọc; không biết agent đã nói gì, gọi công cụ gì, lệnh in ra gì, hỏng vì sao. Dữ liệu phần lớn đã có trong DB
+(`agent_events`, evidence `COMMAND_EXECUTION`/`AGENT_EXECUTION`, mã lỗi) nhưng không có đường đọc; attempt hỏng không để lại lời agent; engine không bao giờ ghi vào thread Chat. Ghi tin vào thread mà
+không chặn sẽ làm tin đó chui vào khối `messages` của CONTEXT policy (V9-07) và vào prompt của agent kế tiếp.
+
+**Quyết định:**
+
+1. **Hai truy vấn chỉ đọc, không thêm nguồn sự thật.** `getNodeRunDetail` (`GET /node-runs/{nodeRunId}`): đầu vào của node (định nghĩa, vai trò, outcome, pin), các attempt, evidence, kết quả theo loại node
+   (AGENT: outcome, lời cuối, file đổi, chi phí; COMMAND: exit code, thời lượng, stdout/stderr; GATE: từng tiêu chí; APPROVAL: ai quyết định; cấu trúc: một dòng), dòng tiến trình của attempt gần nhất và lỗi đã
+   giải thích (`ExplainFailure`: mã → tiêu đề, câu giải thích, gợi ý, hành động đề nghị). `listAttemptEvents` (`GET /execution-attempts/{attemptId}/events?cursor=&limit=`): phân trang theo `Sequence` bằng
+   `AgentEventStore.ListAfterSequence`, mỗi bản ghi bị cắt kích thước. CLI `aw node-run show` và `aw node-run events [--follow]`.
+2. **Redact ở lúc đọc bằng `Matcher.Redact`** (thay mọi đoạn khớp trong văn bản tự do), không phải `Matcher.String` (chỉ khớp cả giá trị): dữ liệu đã redact lúc ghi, đọc lại bị lọc thêm một lần.
+3. **Giữ lời agent khi FAILED/TIMED_OUT.** `AgentNodeExecutor.StagePartialOutput` lưu artifact văn bản (tin nhắn cuối đã có trong `agent_events`) trước transaction kết thúc attempt; `decideRetryOrExhaustion`
+   gắn nó thành evidence `AGENT_OUTPUT` với verdict `RECORDED` (không thỏa CompletionPolicy) và đánh dấu `partial`. Attempt SUCCEEDED giữ nguyên đường V9-17.
+4. **Tin hoạt động là tin chỉ-hiển-thị.** Migration 0052 thêm `messages.display_only` (mặc định 0) và `messages.node_run_id`. `ActivityPoster` (best-effort, sau khi transaction của engine đã commit, lỗi bị
+   bỏ qua) ghi qua `AppendActivity`: id tất định theo khóa `start:|say:|end:|approval:` + id attempt nên replay không nhân đôi; nội dung đi qua cùng đường redact/lưu artifact như mọi message. Bộ lắp ngữ cảnh
+   (`schedule.go`) **loại mọi message `display_only` khỏi khối `messages`**; test chứng minh khối đó không đổi khi có tin hoạt động. Chat chỉ nhận mốc và tin cuối (bắt đầu node, lời cuối, kết thúc kèm outcome/số file/chi
+   phí hoặc lỗi và lời giải thích, chờ duyệt); luồng từng công cụ nằm ở ngăn chi tiết của node.
+5. **Hiển thị khi đang chạy bằng thăm dò theo cursor `Sequence`** (2–4 giây), không qua SSE: journal chưa phát sự kiện cho `agent_events`; đây là bước tạm. Graph và timeline làm mới mỗi 4 giây khi run còn sống.
+6. **Evidence gắn node.** Chi tiết evidence thêm `nodeKey`, `iteration` (từ 0), `attemptNumber`; hai media type `application/vnd.agentkit.command-output+json` và `...diff-manifest+json` vào danh sách
+   inline-an-toàn để xem trước.
+7. **Chưa làm:** đọc lời nhắc (`InstructionArtifact` chưa được ghi vào DB nên chưa có tham chiếu để đọc; phần "đầu vào" hiện gồm định nghĩa, vai trò, outcome và pin); tin hoạt động cho câu hỏi làm rõ của agent.
+
+**Hệ quả:** thêm hai route chỉ đọc (107 route), một migration, một cột chỉ-hiển-thị. Prompt của agent kế tiếp không đổi khi bật tính năng.
+
+## 45. ADR-043 — Lỗi thăm dò repository có loại, đường dẫn, lời giải thích và gợi ý; repository sửa được, ngừng dùng được, xóa được khi chưa từng ACTIVE
+
+**Bối cảnh:** đăng ký repository sai (ca thật: thư mục chưa `git init`) để lại một repository `BLOCKED` với mã `INVALID_ARGUMENT`; lý do thật nằm ở `repository onboarding`, mà không lệnh nào gợi ý, và không có cách sửa hay bỏ: `retry-probe`
+thăm dò lại đúng đường dẫn đã lưu, `BLOCKED` chỉ đi tiếp được tới `PROBING`, `ACTIVE -> DISABLED` không có lệnh nào thực hiện, và `UNIQUE (project_id, name)` giữ tên mãi.
+
+**Quyết định:**
+
+1. **Lỗi thăm dò có loại.** Mọi lỗi của prober vẫn là `*apperror.Error` với mã công khai cũ (`INVALID_ARGUMENT`, `NOT_FOUND`, `UNAVAILABLE`, không đổi); `Details` mang tập đóng `failureKind` (`PATH_EMPTY`, `PATH_NOT_FOUND`, `PATH_NOT_DIRECTORY`,
+   `NOT_A_GIT_REPOSITORY`, `DUBIOUS_OWNERSHIP`, `BARE_REPOSITORY`, `NOT_TOP_LEVEL`, `NO_COMMITS`, `REF_NOT_FOUND`, `REF_INVALID`, `GIT_NOT_FOUND`, `PERMISSION_DENIED`, `GIT_FAILED`, `TIMEOUT`), `path` (đã khai) và `resolvedPath`, `detail`
+   (stderr của Git đã redact và cắt 2 KiB) và `hint` (việc cần làm, có lệnh chép dán được). Git chạy với `LC_ALL=C` và `LANGUAGE=C` nên việc phân loại theo câu chữ không phụ thuộc ngôn ngữ của hệ điều hành; không nhận ra thì rơi về `GIT_FAILED`
+   kèm nguyên văn đã redact, không đoán. Stderr đi qua `redact.Matcher` và một bước gỡ thông tin xác thực trong URL.
+2. **Lưu và hiển thị.** Migration 0053 thêm `failure_kind`, `error_detail`, `error_hint` vào `repository_probe_attempts`. `list`, `show` và `onboarding` (HTTP và CLI) trả `lastProbeError {failureKind, message, hint}` khi repository `BLOCKED`
+   (`detail` chỉ ở `onboarding`); thẻ repository trên web hiện lý do và gợi ý ngay, tải Git output theo yêu cầu.
+3. **Kiểm tra trước khi đăng ký.** `CheckRepository` chạy đúng bộ thăm dò, không ghi gì: `GET /projects/{id}/repositories/check?path=&ref=` (GET vì chỉ đọc, giống bản xem trước của V11-10, nên không cần Idempotency-Key) và `aw repository check`. Form đăng ký gọi nó khi rời ô đường dẫn;
+   `init-project.sh` và `add-repository.sh` gọi nó trước khi đăng ký.
+4. **Sửa: `UpdateRepository`** (`PATCH /repositories/{id}`, If-Match theo `version`). Chỉ khi `BLOCKED`: một transaction ghi trường mới, `BLOCKED -> PROBING`, xếp job thăm dò, sự kiện `RepositoryUpdated`, biên nhận idempotent. Repository `ACTIVE` có workspace, revision
+   và evidence gắn với đường dẫn cũ nên không sửa đường dẫn: ngừng dùng rồi đăng ký mới. Từ chối có mã `REPOSITORY_NOT_BLOCKED`.
+5. **Ngừng dùng: `DisableRepository`** (`POST /repositories/{id}/disable`). Máy trạng thái thêm cạnh `BLOCKED -> DISABLED` (sửa ADR của V3-01 "chỉ từ ACTIVE") và có lệnh thực hiện `ACTIVE -> DISABLED`. Từ chối `REPOSITORY_IN_USE` kèm danh sách work item/task family chưa kết thúc có
+   repository trong scope, workspace chưa released, release set còn `CREATED`; từ chối khi đang `REGISTERING`/`PROBING`. Ràng buộc tên thành chỉ mục duy nhất một phần `WHERE status <> 'DISABLED'` (bảng `repositories` dựng lại với `foreign_keys=OFF`) nên tên dùng lại được; `id` vẫn duy nhất mãi.
+6. **Xóa cứng: `DeleteRepository`** (`DELETE /repositories/{id}`, body `{reason}` bắt buộc). Chỉ `REGISTERING`/`PROBING`/`BLOCKED` mà **không lần thăm dò nào ra `ACTIVE`** và **không bảng nào tham chiếu** (tìm từ khóa ngoại của schema, nên bảng thêm sau tự được tính). Kiểm tra và xóa cùng một transaction:
+   xóa lịch sử thăm dò, hủy job thăm dò đang chờ, ghi dấu trong `deleted_repositories`, sự kiện `RepositoryDeleted` (id, tên, đường dẫn, lý do, người làm). Từ chối `REPOSITORY_WAS_ACTIVE` (kể cả repository đã `DISABLED` từng `ACTIVE`), `REPOSITORY_REFERENCED` kèm bảng và số dòng, `REPOSITORY_PROBE_IN_PROGRESS`.
+7. **Cạm bẫy.** `id` của repository đã xóa không dùng lại (dấu xóa; đăng ký lại cùng id trả `REPOSITORY_DELETED`); phát lại biên nhận đăng ký sau khi xóa trả `REPOSITORY_DELETED` thay vì báo thành công giả. Ba sự kiện mới đi theo kiểu `RepositoryProbeRetried` (khóa theo id lệnh vì luồng sự kiện của repository đã dùng Sequence 1), đều có
+   golden fixture và được projection bỏ qua có lý do.
+8. **Bề mặt:** `projectRepositoriesCheck`, `repositoriesUpdate`, `repositoriesDisable`, `repositoriesDelete` (111 route); `aw repository check|update|disable|delete`, `list --include-disabled` (cờ đặt trước đối số vị trí, như mọi lệnh `aw`); `validActions` của repository thêm `repositoriesUpdate|Disable|Delete`.
+
+**Hệ quả:** một repository đăng ký sai được sửa hoặc bỏ mà không mở terminal, và lý do cùng cách sửa hiện ngay ở nơi người dùng nhìn. Chưa có: tự `git init`/`git config` thay người dùng (ngoài phạm vi), di chuyển workspace/evidence sang đường dẫn mới, nút khôi phục repository đã ngừng dùng.
+
+## 46. ADR-044 — Project đổi tên được và lưu trữ được (thay cho xóa); project lưu trữ là chỉ đọc, chặn ở một điểm duy nhất
+
+**Bối cảnh:** `aw project` chỉ có `create|list|show`; tạo nhầm hoặc đặt tên sai là kẹt vĩnh viễn. `ProjectArchived` có trong domain và CHECK nhưng không lệnh nào đặt. Xóa cứng không an toàn (25 migration có khóa ngoại tới `projects(id)`, cộng nhật ký sự kiện và biên nhận).
+
+**Quyết định:**
+
+1. **`RenameProject`** (`PATCH /projects/{id}`, If-Match theo `version`, `aw project rename`): một transaction ghi tên đã cắt khoảng trắng (không rỗng, tối đa 200 ký tự), tăng `version`, sự kiện `ProjectRenamed`, biên nhận idempotent. Tên không cần duy nhất, id không đổi. Project `ARCHIVED` bị từ chối.
+2. **`ArchiveProject` / `RestoreProject`** (`POST /projects/{id}/archive|restore`, `aw project archive|restore`): `ACTIVE <-> ARCHIVED`, mỗi lệnh một transaction với sự kiện `ProjectArchived` / `ProjectRestored`. Lưu trữ bị từ chối `PROJECT_BUSY` kèm danh sách từng thứ đang chạy: workflow run chưa kết thúc,
+   work item `ACTIVE`/`BLOCKED`, job nền đang giữ lease, release set còn `CREATED`. Không tự hủy gì. Không xóa dữ liệu; **không có xóa cứng Project trong V11** (kể cả project rỗng).
+3. **Project lưu trữ là chỉ đọc, chặn ở một chỗ.** Mọi lệnh idempotent kết thúc bằng việc ghi biên nhận trong cùng transaction với các thay đổi của nó, nên `Receipts().Record` của sqlite từ chối biên nhận có scope là một project `ARCHIVED` (trừ `ArchiveProject`/`RestoreProject`) bằng
+   `*apperror.Error` CONFLICT `PROJECT_ARCHIVED` kèm cách khôi phục: transaction của lệnh bị hủy, không cần sửa từng lệnh ở 20 điểm vào. Các lệnh của repository nói "đã lưu trữ" trước mọi luật nghiệp vụ khác. `ClaimJob` bỏ qua job của project `ARCHIVED`, nên worker không nhận
+   việc mới của nó và việc đang chờ chạy tiếp khi khôi phục. Đọc vẫn chạy hết (evidence, lịch sử). Lệnh của engine không có biên nhận (scheduler, hoàn tất run) không bị chặn: lưu trữ chỉ được khi không còn gì đang chạy.
+4. **Hiển thị:** `GET /projects` ẩn project lưu trữ, `?includeArchived=true` (`--include-archived`) cho thấy; `validActions` của project (`projectsRename` + `projectsArchive` khi `ACTIVE`, `projectsRestore` khi `ARCHIVED`). Web: Rename / Archive / Restore, "Show archived", banner chỉ đọc và các nút ghi bị tắt trên trang project lưu trữ.
+   Kit: `init-project.sh` gặp project cùng tên đã lưu trữ (khóa idempotency suy ra từ tên nên lệnh trả đúng project cũ) thì in lý do và gợi ý `restore` hoặc dùng tên khác.
+5. **Bề mặt:** `projectsRename`, `projectsArchive`, `projectsRestore` (114 route), parity, UX doc (3 hàng), ba sự kiện có golden fixture. `ProjectArchivedError` nằm ở `apperror` (không phải `ports`) để adapter provider không phụ thuộc thêm.
+
+**Hệ quả:** tạo nhầm project thì đổi tên hoặc lưu trữ được; không thể mất lịch sử. Chưa có: xóa cứng, gộp project, xuất/nhập, tự phát hiện lệnh ghi không có biên nhận (nếu sau này có lệnh người dùng không ghi biên nhận thì phải tự kiểm trạng thái project).
+
+## 47. Baseline sau review thiết kế
+
+ADR-001…044 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1065,5 +1382,19 @@ dụng ma trận sau:
   ngân sách `messages` của CONTEXT policy loại (ghi trong ContextSnapshot, bỏ qua khi rỗng).
 - ADR-033 thêm blocker `RUN_FAILED` để run thất bại đi qua đúng đường `ResolveWorkItemBlocker` sẵn có và chạy lại
   trên cùng WorkItem, không repin.
+- ADR-034 (V11-01) thêm lệnh `AdoptWorkspaceHead`, chẩn đoán `WORKSPACE_HEAD_DRIFT`, kiểm HEAD trước khi start run và lý do
+  `HEAD_DRIFT` của local commit; không đổi ADR-014 (vẫn không push/PR/merge) và không đổi ADR-011 (manifest bất biến).
+- ADR-035 (V11-02) thêm mã lỗi `PROVIDER_QUOTA_EXCEEDED` (tập mã §18: 22 → 23), không bao giờ retry; dừng có thể tiếp tục
+  qua `RUN_FAILED` của ADR-033, không thêm blocker mới.
+- ADR-036 (V11-03) siết luật vòng có chặn theo từng node (chỉ lúc publish, `workflow.Rehydrate` giữ version cũ đọc được) và
+  làm lỗi định tuyến do định nghĩa thành run `FAILED` có lý do `WORKFLOW_DEFINITION_DEFECT`.
+- ADR-037 (V11-04) bổ sung ADR-031 quyết định 6 và V9-17: `checkFailures` đi tiếp qua CHECKER chẩn đoán nằm giữa kiểm tra và maker.
+- ADR-038 (V11-05) thêm tùy chọn worker `--claude-safe-mode` (CLI Claude chạy `--safe-mode`, không nạp cấu hình người dùng và repository); mặc định tắt.
+- ADR-039 (V11-06) thêm chế độ `result=WORKING_TREE` cho route diff của workspace (thay đổi chưa commit, chỉ đọc, từ chối khi attempt đang ghi).
+- ADR-040 (V11-07) hoàn thiện ADR-014: quyết định duyệt kèm yêu cầu commit chọn file trong cùng transaction (policy `approval.release`, danh tính từ git config, drift theo hash, KEEP/PARK, blocker `RELEASE_FAILED`).
+- ADR-041 (V11-10) bổ sung ADR-033: chạy lại (cùng version đã ghim) và làm lại bằng version mới nhất (hủy và tạo WorkItem mới, `WorkItemSupersession`) là hai lệnh có kiểu, mỗi lệnh một transaction; file ngoài scope của run trước được cất (PARK) trước lệnh.
+- ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
+- ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
+- ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

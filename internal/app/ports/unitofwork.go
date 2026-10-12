@@ -196,6 +196,15 @@ type CatalogRepository interface {
 	// unit, so "list scoped to a project" is not a query that exists).
 	ListProjects(ctx context.Context) ([]project.Project, error)
 
+	// RenameProject (V11-13, ADR-044) changes the name of an ACTIVE project: one compare-and-swap on ExpectedVersion (ErrOptimisticConflict when stale
+	// or the project is not ACTIVE), version + 1. The name is validated like a new project's.
+	RenameProject(ctx context.Context, req RenameProjectRequest) (project.Project, error)
+	// TransitionProjectStatus moves a project ACTIVE <-> ARCHIVED against ExpectedStatus and ExpectedVersion, version + 1.
+	TransitionProjectStatus(ctx context.Context, req TransitionProjectStatusRequest) (project.Project, error)
+	// ListProjectHolders lists what is still running or open in the project: workflow runs not finished, work items ACTIVE or BLOCKED, background jobs
+	// holding a lease, release sets still open. Empty means it can be archived.
+	ListProjectHolders(ctx context.Context, projectID string) ([]ProjectHolder, error)
+
 	// RegisterRepository atomically creates a new Repository row —
 	// always RepositoryRegistering (project.NewRepository's own rule) —
 	// after verifying req.ProjectID names a Project that actually exists
@@ -249,6 +258,23 @@ type CatalogRepository interface {
 	// /repositories/{id}/onboarding | trạng thái/error/probe history có
 	// thể hành động").
 	ListRepositoryProbeAttempts(ctx context.Context, repositoryID string) ([]RepositoryProbeAttempt, error)
+
+	// UpdateRepository (V11-12, ADR-043) corrects a BLOCKED repository: new name/locator/default ref, BLOCKED -> PROBING, last probe error cleared,
+	// version + 1, one compare-and-swap on ExpectedVersion (ErrOptimisticConflict when stale or not BLOCKED, ErrPersistenceAlreadyExists when the
+	// new name is taken by another live repository of the project).
+	UpdateRepository(ctx context.Context, req UpdateRepositoryRequest) (project.Repository, error)
+	// ListRepositoryHolders lists what still depends on the repository: unfinished work items and task families whose scope names it, workspaces
+	// not yet released and release sets still open. Empty means it can be disabled.
+	ListRepositoryHolders(ctx context.Context, repositoryID string) ([]RepositoryHolder, error)
+	// RepositoryEverActive reports whether any probe of the repository ended ACTIVE (a repository can have been ACTIVE and moved on, so its status
+	// alone is not enough).
+	RepositoryEverActive(ctx context.Context, repositoryID string) (bool, error)
+	// ListRepositoryReferences counts, per table, the rows that reference the repository other than its own probe history. Found from the schema's
+	// foreign keys, so a table added later is covered without touching this method.
+	ListRepositoryReferences(ctx context.Context, repositoryID string) ([]RepositoryReference, error)
+	// DeleteRepository removes the repository row and its probe history, cancels its waiting probe jobs and records a tombstone for the id. It
+	// refuses when anything references the repository (ErrRepositoryReferenced) and compares ExpectedVersion like any other write.
+	DeleteRepository(ctx context.Context, req DeleteRepositoryRequest) error
 
 	// CreateComponent inserts a new Component row after verifying
 	// req.RepositoryID names a Repository that actually exists and that

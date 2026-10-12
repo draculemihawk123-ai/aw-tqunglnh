@@ -38,6 +38,9 @@ import (
 // known sentinels, not a wrapped persistence failure" leaves only "the
 // domain layer rejected this input" as the realistic remaining cause.
 func writeCatalogError(w http.ResponseWriter, err error) {
+	if writeRepositoryRefusal(w, err) || writeRepositoryDeleted(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, ports.ErrPersistenceNotFound):
 		httpapi.WriteResourceHidden(w)

@@ -2,6 +2,7 @@ package ports
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
@@ -71,6 +72,19 @@ type WorkspaceInspectionReader interface {
 	// to walk history outside the one ancestry chain req.Anchor already
 	// authorized.
 	ReadRepositoryLog(ctx context.Context, req ReadRepositoryLogRequest) (RepositoryLogPage, error)
+	// ReadWorkingTreeDiff (V11-06) returns what the worktree's uncommitted state
+	// differs by from req.BaseRevision — tracked files modified, added or
+	// deleted, and untracked files (their full content as an added file) — the
+	// way a pull request shows a change before it is committed. Unlike ReadDiff
+	// it reads the LIVE working tree, so it is only meaningful when nothing is
+	// writing to it (the application query refuses while an attempt holds the
+	// write lease). It is strictly read-only: every Git invocation runs with
+	// GIT_OPTIONAL_LOCKS=0 and none of them stages, resets, refreshes the index
+	// on disk or moves HEAD, so HEAD, the index and the working tree are
+	// byte-for-byte what they were. req.BaseRevision is authorized exactly as
+	// ReadDiff authorizes its two revisions. Binary files carry a name and a
+	// size, never content.
+	ReadWorkingTreeDiff(ctx context.Context, req ReadWorkingTreeDiffRequest) (WorkingTreeDiff, error)
 }
 
 // ReadSourceRequest is what a caller supplies to
@@ -178,4 +192,66 @@ type RepositoryLogPage struct {
 	Limit      int
 	ByteLimit  int64
 	Truncated  bool
+}
+
+// ErrWorkingTreeTooLarge is returned by ReadWorkingTreeDiff when the worktree has
+// more changed paths than can be described whole (typically build output that no
+// .gitignore covers). The change set is refused, never described partially: the
+// digest, and the commit that V11-07 binds to it, must cover all of it or none.
+// It lives here so delivery code can name it without importing an adapter.
+var ErrWorkingTreeTooLarge = errors.New("workspace working tree has too many changed paths to describe")
+
+// ReadWorkingTreeDiffRequest is what a caller supplies to
+// WorkspaceInspectionReader.ReadWorkingTreeDiff. ByteLimit bounds the returned
+// patch, FileLimit the returned file entries; the digest and TotalFiles always
+// cover the whole change set.
+type ReadWorkingTreeDiffRequest struct {
+	Handle       WorkspaceHandle
+	BaseRevision workspace.Revision
+	ByteLimit    int64
+	FileLimit    int
+}
+
+// WorkingTreeFileStatus classifies one changed path of a working-tree diff.
+type WorkingTreeFileStatus string
+
+const (
+	WorkingTreeFileAdded       WorkingTreeFileStatus = "ADDED"
+	WorkingTreeFileModified    WorkingTreeFileStatus = "MODIFIED"
+	WorkingTreeFileDeleted     WorkingTreeFileStatus = "DELETED"
+	WorkingTreeFileTypeChanged WorkingTreeFileStatus = "TYPE_CHANGED"
+)
+
+// WorkingTreeFileChange is one changed path. Untracked reports that Git does not
+// track the path yet (a new file; Status is ADDED). ContentHash is the SHA-256 of
+// the file's current bytes, empty for a deleted path; with SizeBytes it lets a
+// later step (V11-07) prove the change set it commits is the one a person saw.
+// A symlink is reported with Symlink true and is never followed: its hash is of
+// the link's target text, and nothing outside the worktree is read.
+type WorkingTreeFileChange struct {
+	Path        string
+	Status      WorkingTreeFileStatus
+	Untracked   bool
+	Symlink     bool
+	Binary      bool
+	Additions   int64
+	Deletions   int64
+	SizeBytes   int64
+	ContentHash string
+}
+
+// WorkingTreeDiff is ReadWorkingTreeDiff's bounded result. Files is sorted by
+// path and cut at FileLimit; TotalFiles counts the whole change set and
+// ChangeSetDigest is a SHA-256 over every entry's status, path and content hash,
+// so it changes iff the set of changes changes.
+type WorkingTreeDiff struct {
+	BaseRevision    workspace.Revision
+	Files           []WorkingTreeFileChange
+	TotalFiles      int
+	Patch           []byte
+	ByteLimit       int64
+	FileLimit       int
+	FilesTruncated  bool
+	PatchTruncated  bool
+	ChangeSetDigest string
 }

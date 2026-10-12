@@ -125,6 +125,22 @@ export function abandonReleaseSet(projectId: string, releaseSetId: string, body:
   return request<AbandonReleaseSetResponse>("POST", `/projects/${projectId}/release-sets/${releaseSetId}/abandon`, body, opts);
 }
 
+export interface AdoptWorkspaceHeadResponse {
+  repositoryWorkspaceId: string;
+  projectId: string;
+  repositoryId: string;
+  previousRevision: string;
+  adoptedRevision: string;
+  adoptedCommitCount: number;
+  adoptedCommits: unknown[];
+  version: number;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/adopt-head (scope: PROJECT)
+export function adoptWorkspaceHead(projectId: string, repositoryWorkspaceId: string, body: unknown, opts: RequestOptions = {}): Promise<AdoptWorkspaceHeadResponse> {
+  return request<AdoptWorkspaceHeadResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/adopt-head`, body, opts);
+}
+
 export interface AppendMessageRequest {
   attemptId?: string;
   role: string;
@@ -349,6 +365,17 @@ export function getAdapterBuild(id: string, opts: RequestOptions = {}): Promise<
   return request<GetAdapterBuildResponse>("GET", `/adapter-builds/${id}`, undefined, opts);
 }
 
+export interface GetApprovalReleaseResponse {
+  approvalRequestId: string;
+  projectId: string;
+  operations: unknown[];
+}
+
+// GET /runs/{runId}/approval-requests/{approvalRequestId}/release (scope: PROJECT)
+export function getApprovalRelease(runId: string, approvalRequestId: string, opts: RequestOptions = {}): Promise<GetApprovalReleaseResponse> {
+  return request<GetApprovalReleaseResponse>("GET", `/runs/${runId}/approval-requests/${approvalRequestId}/release`, undefined, opts);
+}
+
 export interface GetContextSnapshotResponse {
   snapshotId: string;
   projectId: string;
@@ -419,11 +446,25 @@ export interface GetEvidenceResponse {
   revisionSetHash: string;
   policyVersion: string;
   createdAt: string;
+  nodeKey?: string;
+  iteration: number;
+  attemptNumber?: number;
 }
 
 // GET /projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId} (scope: PROJECT)
 export function getEvidence(projectId: string, workItemId: string, evidenceId: string, opts: RequestOptions = {}): Promise<GetEvidenceResponse> {
   return request<GetEvidenceResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/evidence/${evidenceId}`, undefined, opts);
+}
+
+export interface GetFamilyReleaseContextResponse {
+  familyId: string;
+  repositories: unknown[];
+  parked: unknown[];
+}
+
+// GET /projects/{projectId}/task-families/{familyId}/release-context (scope: PROJECT)
+export function getFamilyReleaseContext(projectId: string, familyId: string, opts: RequestOptions = {}): Promise<GetFamilyReleaseContextResponse> {
+  return request<GetFamilyReleaseContextResponse>("GET", `/projects/${projectId}/task-families/${familyId}/release-context`, undefined, opts);
 }
 
 export interface GetMessageContextSnapshotResponse {
@@ -445,6 +486,33 @@ export interface GetMessageContextSnapshotResponse {
 // GET /projects/{projectId}/work-items/{workItemId}/messages/{messageId}/context-snapshot (scope: PROJECT)
 export function getMessageContextSnapshot(projectId: string, workItemId: string, messageId: string, opts: RequestOptions = {}): Promise<GetMessageContextSnapshotResponse> {
   return request<GetMessageContextSnapshotResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/messages/${messageId}/context-snapshot`, undefined, opts);
+}
+
+export interface GetNodeRunDetailResponse {
+  nodeRunId: string;
+  runId: string;
+  workItemId: string;
+  projectId: string;
+  nodeKey: string;
+  nodeType: string;
+  state: string;
+  iteration: number;
+  activationSequence: number;
+  selectedOutcome?: string;
+  blockReason?: string;
+  reactivationReason?: string;
+  definition: unknown;
+  attempts: unknown[];
+  evidence: unknown[];
+  approval?: unknown | null;
+  result: unknown;
+  progress?: unknown | null;
+  failure?: unknown | null;
+}
+
+// GET /node-runs/{nodeRunId} (scope: PROJECT)
+export function getNodeRunDetail(nodeRunId: string, opts: RequestOptions = {}): Promise<GetNodeRunDetailResponse> {
+  return request<GetNodeRunDetailResponse>("GET", `/node-runs/${nodeRunId}`, undefined, opts);
 }
 
 export interface GetProjectDefinitionResponse {
@@ -743,6 +811,37 @@ export function getWorkItemReadiness(projectId: string, workItemId: string, opts
   return request<GetWorkItemReadinessResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/readiness`, undefined, opts);
 }
 
+export interface GetWorkItemRedoPreviewResponse {
+  workItemId: string;
+  projectId: string;
+  title: string;
+  status: string;
+  isChild: boolean;
+  canRetry: boolean;
+  retryRefusal?: unknown | null;
+  canRecreate: boolean;
+  recreateRefusal?: unknown | null;
+  pinnedWorkflowVersion: unknown;
+  latestWorkflowVersion: unknown;
+  newerVersionAvailable: boolean;
+  blockersToResolve: unknown[];
+  operatorMessageCount: number;
+  redoNumber: number;
+  priorRunCount: number;
+  priorCostUsd: number;
+  costKnown: boolean;
+  supersedes?: unknown | null;
+  supersededBy?: unknown | null;
+  files: unknown[];
+  outOfScopeCount: number;
+  filesUnavailableReason?: string;
+}
+
+// GET /work-items/{workItemId}/redo-preview (scope: PROJECT)
+export function getWorkItemRedoPreview(workItemId: string, opts: RequestOptions = {}): Promise<GetWorkItemRedoPreviewResponse> {
+  return request<GetWorkItemRedoPreviewResponse>("GET", `/work-items/${workItemId}/redo-preview`, undefined, opts);
+}
+
 export interface GetWorkspaceDiffResponse {
   baseRevision: unknown;
   resultRevision: unknown;
@@ -752,6 +851,9 @@ export interface GetWorkspaceDiffResponse {
   fileLimit: number;
   filesTruncated: boolean;
   patchTruncated: boolean;
+  uncommitted?: boolean;
+  totalFiles?: number;
+  changeSetDigest?: string;
 }
 
 // GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/diff (scope: PROJECT)
@@ -815,6 +917,21 @@ export interface ListArtifactsResponse {
 // GET /projects/{projectId}/work-items/{workItemId}/evidence/{evidenceId}/artifacts (scope: PROJECT)
 export function listArtifacts(projectId: string, workItemId: string, evidenceId: string, opts: RequestOptions = {}): Promise<ListArtifactsResponse> {
   return request<ListArtifactsResponse>("GET", `/projects/${projectId}/work-items/${workItemId}/evidence/${evidenceId}/artifacts`, undefined, opts);
+}
+
+export interface ListAttemptEventsResponse {
+  attemptId: string;
+  nodeRunId: string;
+  attemptState: string;
+  finished: boolean;
+  events: unknown[];
+  nextSequence: number;
+  hasMore: boolean;
+}
+
+// GET /execution-attempts/{attemptId}/events (scope: PROJECT)
+export function listAttemptEvents(attemptId: string, opts: RequestOptions = {}): Promise<ListAttemptEventsResponse> {
+  return request<ListAttemptEventsResponse>("GET", `/execution-attempts/${attemptId}/events`, undefined, opts);
 }
 
 export interface ListChildWorkItemsResponse {
@@ -959,6 +1076,25 @@ export function projectComponentsList(id: string, opts: RequestOptions = {}): Pr
   return request<unknown>("GET", `/projects/${id}/components`, undefined, opts);
 }
 
+export interface ProjectRepositoriesCheckResponse {
+  ok: boolean;
+  failureKind?: string;
+  message?: string;
+  path?: string;
+  resolvedPath?: string;
+  detail?: string;
+  hint?: string;
+  canonicalPath?: string;
+  baseCommit?: string;
+  dirty?: boolean;
+  components?: unknown[];
+}
+
+// GET /projects/{id}/repositories/check (scope: PROJECT)
+export function projectRepositoriesCheck(id: string, opts: RequestOptions = {}): Promise<ProjectRepositoriesCheckResponse> {
+  return request<ProjectRepositoriesCheckResponse>("GET", `/projects/${id}/repositories/check`, undefined, opts);
+}
+
 // GET /projects/{id}/repositories (scope: PROJECT)
 export function projectRepositoriesList(id: string, opts: RequestOptions = {}): Promise<unknown> {
   return request<unknown>("GET", `/projects/${id}/repositories`, undefined, opts);
@@ -967,6 +1103,22 @@ export function projectRepositoriesList(id: string, opts: RequestOptions = {}): 
 // POST /projects/{id}/repositories (scope: PROJECT)
 export function projectRepositoriesRegister(id: string, body: unknown, opts: RequestOptions = {}): Promise<unknown> {
   return request<unknown>("POST", `/projects/${id}/repositories`, body, opts);
+}
+
+export interface ProjectsArchiveRequest {
+  reason: string;
+}
+
+export interface ProjectsArchiveResponse {
+  projectId: string;
+  status: string;
+  previousStatus: string;
+  version: number;
+}
+
+// POST /projects/{id}/archive (scope: PROJECT)
+export function projectsArchive(id: string, body: ProjectsArchiveRequest, opts: RequestOptions = {}): Promise<ProjectsArchiveResponse> {
+  return request<ProjectsArchiveResponse>("POST", `/projects/${id}/archive`, body, opts);
 }
 
 // POST /projects (scope: INSTALLATION)
@@ -982,6 +1134,34 @@ export function projectsGet(id: string, opts: RequestOptions = {}): Promise<unkn
 // GET /projects (scope: INSTALLATION)
 export function projectsList(opts: RequestOptions = {}): Promise<unknown> {
   return request<unknown>("GET", "/projects", undefined, opts);
+}
+
+export interface ProjectsRenameRequest {
+  name: string;
+}
+
+export interface ProjectsRenameResponse {
+  projectId: string;
+  name: string;
+  status: string;
+  version: number;
+}
+
+// PATCH /projects/{id} (scope: PROJECT)
+export function projectsRename(id: string, body: ProjectsRenameRequest, opts: RequestOptions = {}): Promise<ProjectsRenameResponse> {
+  return request<ProjectsRenameResponse>("PATCH", `/projects/${id}`, body, opts);
+}
+
+export interface ProjectsRestoreResponse {
+  projectId: string;
+  status: string;
+  previousStatus: string;
+  version: number;
+}
+
+// POST /projects/{id}/restore (scope: PROJECT)
+export function projectsRestore(id: string, body: unknown, opts: RequestOptions = {}): Promise<ProjectsRestoreResponse> {
+  return request<ProjectsRestoreResponse>("POST", `/projects/${id}/restore`, body, opts);
 }
 
 export interface PublishDefinitionVersionRequest {
@@ -1040,6 +1220,37 @@ export function publishProjectDefinitionVersion(projectId: string, kind: string,
   return request<PublishProjectDefinitionVersionResponse>("POST", `/projects/${projectId}/definitions/${kind}/${id}/publish`, body, opts);
 }
 
+export interface RecreateWorkItemRequest {
+  reason: string;
+  note?: string;
+  carryMessages?: boolean | null;
+  outOfScope?: string;
+}
+
+export interface RecreateWorkItemResponse {
+  oldWorkItemId: string;
+  newWorkItemId: string;
+  parentWorkItemId: string;
+  title: string;
+  redoNumber: number;
+  previousWorkflowVersionId: string;
+  workflowVersionId: string;
+  runId: string;
+  runState: string;
+  nodeRunId: string;
+  jobId: string;
+  oldWorkItemStatus: string;
+  carriedMessageCount: number;
+  noteMessageId?: string;
+  outOfScope?: string;
+  parked?: unknown[];
+}
+
+// POST /work-items/{workItemId}/recreate (scope: PROJECT)
+export function recreateWorkItem(workItemId: string, body: RecreateWorkItemRequest, opts: RequestOptions = {}): Promise<RecreateWorkItemResponse> {
+  return request<RecreateWorkItemResponse>("POST", `/work-items/${workItemId}/recreate`, body, opts);
+}
+
 export interface RegisterAdapterBuildRequest {
   token: unknown;
   capabilityManifest: unknown;
@@ -1067,6 +1278,38 @@ export interface RejectScopeExpansionResponse {
 // POST /projects/{projectId}/scope-expansions/{requestId}/reject (scope: PROJECT)
 export function rejectScopeExpansion(projectId: string, requestId: string, body: RejectScopeExpansionRequest, opts: RequestOptions = {}): Promise<RejectScopeExpansionResponse> {
   return request<RejectScopeExpansionResponse>("POST", `/projects/${projectId}/scope-expansions/${requestId}/reject`, body, opts);
+}
+
+export interface RepositoriesDeleteRequest {
+  reason: string;
+}
+
+export interface RepositoriesDeleteResponse {
+  repositoryId: string;
+  projectId: string;
+  name: string;
+}
+
+// DELETE /repositories/{id} (scope: PROJECT)
+export function repositoriesDelete(id: string, body: RepositoriesDeleteRequest, opts: RequestOptions = {}): Promise<RepositoriesDeleteResponse> {
+  return request<RepositoriesDeleteResponse>("DELETE", `/repositories/${id}`, body, opts);
+}
+
+export interface RepositoriesDisableRequest {
+  reason: string;
+}
+
+export interface RepositoriesDisableResponse {
+  repositoryId: string;
+  projectId: string;
+  status: string;
+  version: number;
+  previousStatus: string;
+}
+
+// POST /repositories/{id}/disable (scope: PROJECT)
+export function repositoriesDisable(id: string, body: RepositoriesDisableRequest, opts: RequestOptions = {}): Promise<RepositoriesDisableResponse> {
+  return request<RepositoriesDisableResponse>("POST", `/repositories/${id}/disable`, body, opts);
 }
 
 // GET /repositories/{id} (scope: PROJECT)
@@ -1141,6 +1384,25 @@ export function repositoriesRetryProbe(id: string, body: unknown, opts: RequestO
   return request<unknown>("POST", `/repositories/${id}/retry-probe`, body, opts);
 }
 
+export interface RepositoriesUpdateRequest {
+  name: string | null;
+  remoteLocator: string | null;
+  defaultRef: string | null;
+}
+
+export interface RepositoriesUpdateResponse {
+  repositoryId: string;
+  projectId: string;
+  status: string;
+  version: number;
+  probeJobId: string;
+}
+
+// PATCH /repositories/{id} (scope: PROJECT)
+export function repositoriesUpdate(id: string, body: RepositoriesUpdateRequest, opts: RequestOptions = {}): Promise<RepositoriesUpdateResponse> {
+  return request<RepositoriesUpdateResponse>("PATCH", `/repositories/${id}`, body, opts);
+}
+
 export interface RequestProjectionRebuildRequest {
   projectionName: string;
 }
@@ -1165,6 +1427,8 @@ export interface RequestReleaseSetLocalCommitRequest {
   message: string;
   authorName: string;
   authorEmail: string;
+  files?: unknown[];
+  unselected?: string;
 }
 
 export interface RequestReleaseSetLocalCommitResponse {
@@ -1227,6 +1491,7 @@ export function requestWorkspaceSetRelease(projectId: string, familyId: string, 
 export interface ResolveApprovalRequest {
   outcome: string;
   reason?: string;
+  commit?: unknown | null;
 }
 
 export interface ResolveApprovalResponse {
@@ -1237,6 +1502,8 @@ export interface ResolveApprovalResponse {
   advanced: boolean;
   nextNodeRunId?: string;
   nextNodeKey?: string;
+  commit?: unknown | null;
+  commitSkipped?: string;
   validActions: unknown[];
 }
 
@@ -1264,6 +1531,21 @@ export function resolveWorkItemBlocker(blockerId: string, body: ResolveWorkItemB
   return request<ResolveWorkItemBlockerResponse>("POST", `/work-item-blockers/${blockerId}/resolve`, body, opts);
 }
 
+export interface RestoreParkedChangesRequest {
+  releaseSetLocalCommitId: string;
+}
+
+export interface RestoreParkedChangesResponse {
+  releaseSetLocalCommitId: string;
+  ref: string;
+  restoredPaths: string[];
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/restore-parked (scope: PROJECT)
+export function restoreParkedChanges(projectId: string, repositoryWorkspaceId: string, body: RestoreParkedChangesRequest, opts: RequestOptions = {}): Promise<RestoreParkedChangesResponse> {
+  return request<RestoreParkedChangesResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/restore-parked`, body, opts);
+}
+
 export interface RetryBlockedActivationRequest {
   reason: string;
 }
@@ -1280,6 +1562,30 @@ export interface RetryBlockedActivationResponse {
 // POST /node-runs/{nodeRunId}/retry-blocked-activation (scope: PROJECT)
 export function retryBlockedActivation(nodeRunId: string, body: RetryBlockedActivationRequest, opts: RequestOptions = {}): Promise<RetryBlockedActivationResponse> {
   return request<RetryBlockedActivationResponse>("POST", `/node-runs/${nodeRunId}/retry-blocked-activation`, body, opts);
+}
+
+export interface RetryWorkItemRequest {
+  note?: string;
+  outOfScope?: string;
+}
+
+export interface RetryWorkItemResponse {
+  workItemId: string;
+  previousRunId: string;
+  runId: string;
+  runState: string;
+  nodeRunId: string;
+  jobId: string;
+  workflowVersionId: string;
+  resolvedBlockerIds: string[];
+  noteMessageId?: string;
+  outOfScope?: string;
+  parked?: unknown[];
+}
+
+// POST /work-items/{workItemId}/retry (scope: PROJECT)
+export function retryWorkItem(workItemId: string, body: RetryWorkItemRequest, opts: RequestOptions = {}): Promise<RetryWorkItemResponse> {
+  return request<RetryWorkItemResponse>("POST", `/work-items/${workItemId}/retry`, body, opts);
 }
 
 export interface SealReleaseSetResponse {

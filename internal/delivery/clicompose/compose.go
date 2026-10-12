@@ -102,6 +102,10 @@ const (
 	// environment --env-allowlist names. Optional for a leaf: a nil probe
 	// simply skips that one check.
 	NeedProviderProbe
+	// NeedWorkspaceIfConfigured (V11-01): like NeedWorkspace, but a missing
+	// --workspace-root is not an error — the leaf simply gets no Git workspace
+	// provider (a nil WorkspaceReader/WorkspaceHeadAuditor) and skips what needs one.
+	NeedWorkspaceIfConfigured
 )
 
 // Deps is the union of every dependency any leaf's own Dependencies struct
@@ -113,9 +117,20 @@ type Deps struct {
 	ArtifactStore   ports.ArtifactStore
 	ArtifactRoot    string
 	WorkspaceReader ports.WorkspaceInspectionReader
-	Isolation       ports.IsolationEnforcementChecker
-	Agents          *agentregistry.Registry
-	Config          config.Config
+	// WorkspaceHeadAuditor (V11-01) is the same Git workspace provider, as the
+	// narrow ports.WorkspaceHeadAuditor `repository-workspace adopt-head` uses.
+	WorkspaceHeadAuditor ports.WorkspaceHeadAuditor
+	// GitIdentities and ParkedChanges (V11-07) are the same Git workspace provider, as the narrow ports
+	// `approval resolve --commit-spec` and `repository-workspace restore-parked` use.
+	GitIdentities ports.GitIdentityReader
+	ParkedChanges ports.UnselectedChangeParker
+	// RedoParker (V11-10) is the same provider as the narrow port `work-item retry/recreate --out-of-scope PARK` uses.
+	RedoParker ports.SelectedChangeParker
+	// RepositoryProber (V11-12) backs `repository check`: the same read-only prober the worker runs.
+	RepositoryProber ports.RepositoryProber
+	Isolation        ports.IsolationEnforcementChecker
+	Agents           *agentregistry.Registry
+	Config           config.Config
 	// ProviderProbe is what `aw doctor` runs the provider executable's
 	// version probe through (V9-05, NeedProviderProbe); nil skips that check.
 	ProviderProbe appdoctor.ProviderProbe

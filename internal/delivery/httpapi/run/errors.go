@@ -6,6 +6,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/app/workspacereconcile"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi"
 )
 
@@ -54,6 +55,10 @@ func writeStartWorkflowRunError(w http.ResponseWriter, err error) {
 	case errors.Is(err, runtime.ErrBaselineNotAdmitted):
 		// V9-08: the text names the repository and what to do (verify again, or
 		// accept the failure); it holds repository ids and attempt ids only.
+		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
+	case errors.Is(err, workspacereconcile.ErrWorkspaceHeadDrift):
+		// V11-01: the text names the repository, both revisions and the command
+		// that resolves it; it holds ids, hashes and one author name only.
 		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
 	case errors.Is(err, runtime.ErrWorkflowVersionMismatch):
 		// This task's own "pinned conflict" Verify bullet: the work item is

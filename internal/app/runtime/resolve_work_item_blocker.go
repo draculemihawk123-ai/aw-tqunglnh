@@ -147,124 +147,140 @@ func ResolveWorkItemBlocker(ctx context.Context, uow ports.UnitOfWork, req Resol
 
 	var result ResolveWorkItemBlockerResult
 	err := uow.WithSerializedWrite(ctx, func(tx ports.Tx) error {
-		blocker, err := tx.Work().GetWorkItemBlocker(ctx, blockerID)
-		if err != nil {
-			return err
-		}
-
-		if blocker.State != workdomain.BlockerOpen {
-			item, err := tx.Work().GetWorkItem(ctx, string(blocker.WorkItemID))
-			if err != nil {
-				return err
-			}
-			result = ResolveWorkItemBlockerResult{
-				BlockerID: blockerID, AlreadyResolved: true, State: string(blocker.State), WorkItemStatus: string(item.Status),
-			}
-			return nil
-		}
-
-		if !blocker.Type.ResolvableViaCommand() {
-			return fmt.Errorf("%w: blocker type %s", ErrBlockerNotResolvableViaCommand, blocker.Type)
-		}
-
-		var nextState workdomain.BlockerState
-		var decisionArtifactID string
-		switch req.Mode {
-		case ResolutionModeResolved:
-			nextState = workdomain.BlockerResolved
-		case ResolutionModeWaived:
-			if !blocker.Type.Waivable() {
-				return fmt.Errorf("%w: blocker type %s", ErrBlockerNotWaivable, blocker.Type)
-			}
-			nextState = workdomain.BlockerWaived
-			decisionArtifactID = blockerID + "-waiver"
-			inputJSON, err := json.Marshal(workItemBlockerWaiverInput{
-				BlockerID: blockerID, BlockerType: string(blocker.Type), Actor: actor, Reason: reason,
-			})
-			if err != nil {
-				return fmt.Errorf("marshal work item blocker waiver decision input: %w", err)
-			}
-			resultJSON, err := json.Marshal(workItemBlockerWaiverResult{Mode: string(workdomain.BlockerWaived)})
-			if err != nil {
-				return fmt.Errorf("marshal work item blocker waiver decision result: %w", err)
-			}
-			artifact, err := runtimedomain.NewDecisionArtifact(
-				runtimedomain.DecisionArtifactID(decisionArtifactID), blocker.ProjectID, "WorkItemBlockerWaiver",
-				policyGrantRef, inputJSON, resultJSON, time.Now().UTC(),
-			)
-			if err != nil {
-				return err
-			}
-			if _, err := tx.Runtime().RecordDecisionArtifact(ctx, artifact); err != nil {
-				return err
-			}
-		}
-
-		// Precondition: no non-terminal Run for this WorkItem.
-		runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, string(blocker.WorkItemID))
-		if err != nil {
-			return err
-		}
-		for _, run := range runs {
-			if !isWorkflowRunTerminal(run.State) {
-				return fmt.Errorf("%w: work item %s run %s is %s", ErrWorkItemHasNonTerminalRun, blocker.WorkItemID, run.ID, run.State)
-			}
-		}
-
-		// Precondition: no QUARANTINED repository workspace in this
-		// WorkItem's own family.
-		item, err := tx.Work().GetWorkItem(ctx, string(blocker.WorkItemID))
-		if err != nil {
-			return err
-		}
-		family, err := tx.Work().GetTaskFamily(ctx, string(item.FamilyID))
-		if err != nil {
-			return err
-		}
-		set, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, string(family.ID))
-		if err != nil {
-			return err
-		}
-		repoWorkspaces, err := tx.Work().ListWorkspaceSetRepositoryWorkspaces(ctx, string(set.ID))
-		if err != nil {
-			return err
-		}
-		// V9-18: only the CURRENT generation of a repository can block. A
-		// quarantined generation that a later one superseded (reconciliation
-		// recreated it) stays QUARANTINED permanently, as evidence, and is no
-		// longer anything a writer could be granted; counting it made the
-		// blocker unresolvable for good once a repository had been recovered.
-		newestGeneration := make(map[string]uint64, len(repoWorkspaces))
-		for _, rw := range repoWorkspaces {
-			if rw.Generation > newestGeneration[string(rw.RepositoryID)] {
-				newestGeneration[string(rw.RepositoryID)] = rw.Generation
-			}
-		}
-		for _, rw := range repoWorkspaces {
-			if rw.State == workspace.RepositoryWorkspaceQuarantined && rw.Generation == newestGeneration[string(rw.RepositoryID)] {
-				return fmt.Errorf("%w: repository workspace %s", ErrWorkspaceQuarantined, rw.ID)
-			}
-		}
-
-		closed, err := closeWorkItemBlockerTx(
-			ctx, tx, blocker, nextState, actor, reason, decisionArtifactID, workdomain.WorkItemReady, req.CorrelationID, "",
-		)
-		if err != nil {
-			return err
-		}
-
-		finalItem, err := tx.Work().GetWorkItem(ctx, string(blocker.WorkItemID))
-		if err != nil {
-			return err
-		}
-		result = ResolveWorkItemBlockerResult{
-			BlockerID: blockerID, State: string(closed.Blocker.State), WorkItemUnblocked: closed.Unblocked,
-			WorkItemStatus: string(finalItem.Status),
-		}
-		return nil
+		var err error
+		result, err = resolveWorkItemBlockerTx(ctx, tx, req.Mode, blockerID, actor, reason, policyGrantRef, req.CorrelationID)
+		return err
 	})
 	if err != nil {
 		return ResolveWorkItemBlockerResult{}, err
 	}
 	return result, nil
+}
+
+// resolveWorkItemBlockerTx is ResolveWorkItemBlocker's transaction body, shared with RetryWorkItem (V11-10) which
+// resolves the failed run's blockers inside its own transaction. Its arguments are already validated and trimmed.
+func resolveWorkItemBlockerTx(ctx context.Context, tx ports.Tx, mode ResolutionMode, blockerID, actor, reason, policyGrantRef, correlationID string) (ResolveWorkItemBlockerResult, error) {
+	blocker, err := tx.Work().GetWorkItemBlocker(ctx, blockerID)
+	if err != nil {
+		return ResolveWorkItemBlockerResult{}, err
+	}
+
+	if blocker.State != workdomain.BlockerOpen {
+		item, err := tx.Work().GetWorkItem(ctx, string(blocker.WorkItemID))
+		if err != nil {
+			return ResolveWorkItemBlockerResult{}, err
+		}
+		return ResolveWorkItemBlockerResult{
+			BlockerID: blockerID, AlreadyResolved: true, State: string(blocker.State), WorkItemStatus: string(item.Status),
+		}, nil
+	}
+
+	if !blocker.Type.ResolvableViaCommand() {
+		return ResolveWorkItemBlockerResult{}, fmt.Errorf("%w: blocker type %s", ErrBlockerNotResolvableViaCommand, blocker.Type)
+	}
+
+	var nextState workdomain.BlockerState
+	var decisionArtifactID string
+	switch mode {
+	case ResolutionModeResolved:
+		nextState = workdomain.BlockerResolved
+	case ResolutionModeWaived:
+		if !blocker.Type.Waivable() {
+			return ResolveWorkItemBlockerResult{}, fmt.Errorf("%w: blocker type %s", ErrBlockerNotWaivable, blocker.Type)
+		}
+		nextState = workdomain.BlockerWaived
+		decisionArtifactID = blockerID + "-waiver"
+		inputJSON, err := json.Marshal(workItemBlockerWaiverInput{
+			BlockerID: blockerID, BlockerType: string(blocker.Type), Actor: actor, Reason: reason,
+		})
+		if err != nil {
+			return ResolveWorkItemBlockerResult{}, fmt.Errorf("marshal work item blocker waiver decision input: %w", err)
+		}
+		resultJSON, err := json.Marshal(workItemBlockerWaiverResult{Mode: string(workdomain.BlockerWaived)})
+		if err != nil {
+			return ResolveWorkItemBlockerResult{}, fmt.Errorf("marshal work item blocker waiver decision result: %w", err)
+		}
+		artifact, err := runtimedomain.NewDecisionArtifact(
+			runtimedomain.DecisionArtifactID(decisionArtifactID), blocker.ProjectID, "WorkItemBlockerWaiver",
+			policyGrantRef, inputJSON, resultJSON, time.Now().UTC(),
+		)
+		if err != nil {
+			return ResolveWorkItemBlockerResult{}, err
+		}
+		if _, err := tx.Runtime().RecordDecisionArtifact(ctx, artifact); err != nil {
+			return ResolveWorkItemBlockerResult{}, err
+		}
+	}
+
+	// Precondition: no non-terminal Run for this WorkItem.
+	runs, err := tx.Runtime().ListWorkflowRunsForWorkItem(ctx, string(blocker.WorkItemID))
+	if err != nil {
+		return ResolveWorkItemBlockerResult{}, err
+	}
+	for _, run := range runs {
+		if !isWorkflowRunTerminal(run.State) {
+			return ResolveWorkItemBlockerResult{}, fmt.Errorf("%w: work item %s run %s is %s", ErrWorkItemHasNonTerminalRun, blocker.WorkItemID, run.ID, run.State)
+		}
+	}
+
+	// Precondition: no QUARANTINED repository workspace in this
+	// WorkItem's own family.
+	item, err := tx.Work().GetWorkItem(ctx, string(blocker.WorkItemID))
+	if err != nil {
+		return ResolveWorkItemBlockerResult{}, err
+	}
+	if err := ensureNoQuarantinedWorkspaceTx(ctx, tx, item); err != nil {
+		return ResolveWorkItemBlockerResult{}, err
+	}
+
+	closed, err := closeWorkItemBlockerTx(
+		ctx, tx, blocker, nextState, actor, reason, decisionArtifactID, workdomain.WorkItemReady, correlationID, "",
+	)
+	if err != nil {
+		return ResolveWorkItemBlockerResult{}, err
+	}
+
+	finalItem, err := tx.Work().GetWorkItem(ctx, string(blocker.WorkItemID))
+	if err != nil {
+		return ResolveWorkItemBlockerResult{}, err
+	}
+	return ResolveWorkItemBlockerResult{
+		BlockerID: blockerID, State: string(closed.Blocker.State), WorkItemUnblocked: closed.Unblocked,
+		WorkItemStatus: string(finalItem.Status),
+	}, nil
+}
+
+// ensureNoQuarantinedWorkspaceTx returns ErrWorkspaceQuarantined when the WorkItem's family has a repository workspace whose
+// CURRENT generation is QUARANTINED. Shared by ResolveWorkItemBlocker and the V11-10 redo commands, which must not start a new
+// run on a workspace an operator still has to reconcile.
+func ensureNoQuarantinedWorkspaceTx(ctx context.Context, tx ports.Tx, item workdomain.WorkItem) error {
+	family, err := tx.Work().GetTaskFamily(ctx, string(item.FamilyID))
+	if err != nil {
+		return err
+	}
+	set, err := tx.Work().GetWorkspaceSetByFamilyID(ctx, string(family.ID))
+	if err != nil {
+		return err
+	}
+	repoWorkspaces, err := tx.Work().ListWorkspaceSetRepositoryWorkspaces(ctx, string(set.ID))
+	if err != nil {
+		return err
+	}
+	// V9-18: only the CURRENT generation of a repository can block. A
+	// quarantined generation that a later one superseded (reconciliation
+	// recreated it) stays QUARANTINED permanently, as evidence, and is no
+	// longer anything a writer could be granted; counting it made the
+	// blocker unresolvable for good once a repository had been recovered.
+	newestGeneration := make(map[string]uint64, len(repoWorkspaces))
+	for _, rw := range repoWorkspaces {
+		if rw.Generation > newestGeneration[string(rw.RepositoryID)] {
+			newestGeneration[string(rw.RepositoryID)] = rw.Generation
+		}
+	}
+	for _, rw := range repoWorkspaces {
+		if rw.State == workspace.RepositoryWorkspaceQuarantined && rw.Generation == newestGeneration[string(rw.RepositoryID)] {
+			return fmt.Errorf("%w: repository workspace %s", ErrWorkspaceQuarantined, rw.ID)
+		}
+	}
+	return nil
 }

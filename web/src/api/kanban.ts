@@ -51,6 +51,12 @@ export interface KanbanCard {
    */
   runCount?: number;
   repositoryBadges?: RepositoryBadge[];
+  /**
+   * V11-10 (ADR-041): the work item this one replaced when the task was redone with a newer workflow version, and the one that replaced
+   * it. Read live, not projected.
+   */
+  supersedesWorkItemId?: string;
+  supersededByWorkItemId?: string;
 }
 
 export interface KanbanListResponse {

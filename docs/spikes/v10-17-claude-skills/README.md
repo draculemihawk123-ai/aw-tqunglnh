@@ -36,5 +36,5 @@ Con đường đúng đã chọn ở V10: chắt lọc thành Layer/Skill của 
 ## Còn lại và đề xuất cho version sau (không làm trong V10)
 
 - Chưa đo bản chỉ có skill, không hook, **qua aw** (chỉ đo trực tiếp ở A, +204 token cho hai skill). Vẫn không khuyến nghị vì skill nằm ngoài snapshot.
-- Đề xuất cho core: (a) cho worker một tùy chọn cô lập cấu hình của CLI (người dùng và dự án) hoặc ghi băm của cây `.claude/` vào manifest của attempt; (b) loại các đường dẫn do hook ghi (`.claude/hooks/.logs/`) khỏi phép kiểm scope hoặc chạy CLI với hook tắt. Cần xác nhận cờ tương ứng của CLI trước khi thiết kế; chưa kiểm.
+- Đã làm ở V11-05 (ADR-038): `aw worker --claude-safe-mode` chạy CLI với `--safe-mode`. Đề xuất cho core: (a) cho worker một tùy chọn cô lập cấu hình của CLI (người dùng và dự án) hoặc ghi băm của cây `.claude/` vào manifest của attempt; (b) loại các đường dẫn do hook ghi (`.claude/hooks/.logs/`) khỏi phép kiểm scope hoặc chạy CLI với hook tắt. Cần xác nhận cờ tương ứng của CLI trước khi thiết kế; chưa kiểm.
 - Script `spike-claude-skills.py` đã được sửa phần đọc snapshot (dùng `aw context-snapshot show`) **sau** lần chạy ghi ở trên và chưa chạy lại; phần snapshot trong báo cáo này do chạy lệnh đó bằng tay trên bản cài của lượt v1-maker.

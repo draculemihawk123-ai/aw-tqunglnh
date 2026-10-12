@@ -56,4 +56,7 @@ type AgentEventsRepository interface {
 	// (V9-13a: the run timeline reads only USAGE_REPORTED, not the whole
 	// stream of every attempt).
 	ListByAttemptAndKind(ctx context.Context, attemptID, kind string) ([]AgentEventRecord, error)
+	// ListAfterSequence (V11-11) returns at most limit records of attemptID with Sequence greater than afterSequence, oldest first:
+	// one page of the stream for a reader that follows an attempt while it runs. limit must be positive.
+	ListAfterSequence(ctx context.Context, attemptID string, afterSequence uint64, limit int) ([]AgentEventRecord, error)
 }

@@ -24,7 +24,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,6 +34,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/apperror"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 )
 
 // Config controls a Prober's git invocation.
@@ -44,11 +44,15 @@ type Config struct {
 	// fail-fast-at-construction discipline gitworktree.New already
 	// establishes.
 	GitExecutable string
+	// Matcher masks known secrets in the Git stderr kept as a failure's detail (V11-12). The zero Matcher masks nothing; a credential embedded in
+	// a URL is always masked regardless.
+	Matcher redact.Matcher
 }
 
 // Prober implements ports.RepositoryProber.
 type Prober struct {
 	gitExecutable string
+	matcher       redact.Matcher
 }
 
 var _ ports.RepositoryProber = (*Prober)(nil)
@@ -67,7 +71,7 @@ func New(config Config) (*Prober, error) {
 	if err != nil {
 		return nil, apperror.Wrap(apperror.CodeUnavailable, "find git executable", true, err)
 	}
-	return &Prober{gitExecutable: resolved}, nil
+	return &Prober{gitExecutable: resolved, matcher: config.Matcher}, nil
 }
 
 // Probe implements ports.RepositoryProber. See that interface method's
@@ -77,7 +81,7 @@ func (p *Prober) Probe(ctx context.Context, localPath string, defaultRef string)
 	if err != nil {
 		return ports.RepositoryProbeEvidence{}, err
 	}
-	baseCommit, err := p.resolveBaseCommit(ctx, canonical, defaultRef)
+	baseCommit, err := p.resolveBaseCommit(ctx, strings.TrimSpace(localPath), canonical, defaultRef)
 	if err != nil {
 		return ports.RepositoryProbeEvidence{}, err
 	}
@@ -109,7 +113,7 @@ func (p *Prober) Probe(ctx context.Context, localPath string, defaultRef string)
 func (p *Prober) resolveCanonicalRepository(ctx context.Context, rawPath string) (string, error) {
 	trimmed := strings.TrimSpace(rawPath)
 	if trimmed == "" || strings.IndexByte(trimmed, 0) >= 0 {
-		return "", apperror.New(apperror.CodeInvalidArgument, "repository local path is empty or contains an invalid character", false)
+		return "", p.pathEmpty()
 	}
 	absolute, err := filepath.Abs(trimmed)
 	if err != nil {
@@ -117,27 +121,33 @@ func (p *Prober) resolveCanonicalRepository(ctx context.Context, rawPath string)
 	}
 	info, err := os.Stat(absolute)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", apperror.Wrap(apperror.CodeNotFound, "repository local path does not exist", false, err)
+		return "", p.pathNotFound(trimmed, absolute, err)
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return "", p.permissionDenied(trimmed, absolute, err)
 	}
 	if err != nil {
 		return "", apperror.Wrap(apperror.CodeUnavailable, "inspect repository local path", true, err)
 	}
 	if !info.IsDir() {
-		return "", apperror.New(apperror.CodeInvalidArgument, "repository local path is not a directory", false)
+		return "", p.pathNotDirectory(trimmed, absolute)
 	}
 
 	canonical, err := canonicalExistingPath(absolute)
+	if errors.Is(err, os.ErrPermission) {
+		return "", p.permissionDenied(trimmed, absolute, err)
+	}
 	if err != nil {
 		return "", apperror.Wrap(apperror.CodeUnavailable, "resolve repository local path symlinks", true, err)
 	}
 	canonical = filepath.Clean(canonical)
 
-	topLevelOutput, exitCode, err := p.runGit(ctx, canonical, "rev-parse", "--show-toplevel")
+	topLevelOutput, stderr, exitCode, err := p.runGitCapture(ctx, canonical, "rev-parse", "--show-toplevel")
 	if err != nil {
-		return "", apperror.Wrap(apperror.CodeUnavailable, "run git rev-parse --show-toplevel", true, err)
+		return "", p.runFailure(ctx, trimmed, canonical, "run git rev-parse --show-toplevel", err)
 	}
 	if exitCode != 0 {
-		return "", apperror.New(apperror.CodeInvalidArgument, "repository local path is not a Git working tree", false)
+		return "", p.notAWorkingTree(trimmed, canonical, stderr)
 	}
 	topLevel, err := canonicalExistingPath(strings.TrimSpace(string(topLevelOutput)))
 	if err != nil {
@@ -145,26 +155,44 @@ func (p *Prober) resolveCanonicalRepository(ctx context.Context, rawPath string)
 	}
 	topLevel = filepath.Clean(topLevel)
 	if !samePath(canonical, topLevel) {
-		return "", apperror.New(apperror.CodeInvalidArgument, "repository local path is not its own Git top-level directory", false)
+		return "", p.notTopLevel(trimmed, canonical, filepath.ToSlash(topLevel))
 	}
 	return canonical, nil
+}
+
+// runFailure turns "git could not be run at all" into a typed failure: Git missing from the PATH, a cancelled or timed-out context, anything else
+// stays an environment error.
+func (p *Prober) runFailure(ctx context.Context, declared, canonical, what string, err error) error {
+	switch {
+	case errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return p.timedOut(declared)
+	case errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist):
+		return p.gitNotFound(err)
+	case errors.Is(err, os.ErrPermission):
+		return p.permissionDenied(declared, canonical, err)
+	}
+	return apperror.Wrap(apperror.CodeUnavailable, what, true, err)
 }
 
 // resolveBaseCommit resolves ref to the exact commit object id it names
 // in the repository rooted at canonical — a ref that does not resolve is
 // a validation/business failure (CodeNotFound: the referenced commit does
 // not exist), never an environment one.
-func (p *Prober) resolveBaseCommit(ctx context.Context, canonical string, ref string) (string, error) {
+func (p *Prober) resolveBaseCommit(ctx context.Context, declared string, canonical string, ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if !validRevisionInput(ref) {
-		return "", apperror.New(apperror.CodeInvalidArgument, "repository default ref contains unsupported characters", false)
+		return "", p.refInvalid(declared, ref)
 	}
-	output, exitCode, err := p.runGit(ctx, canonical, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
+	output, _, exitCode, err := p.runGitCapture(ctx, canonical, "rev-parse", "--verify", "--end-of-options", ref+"^{commit}")
 	if err != nil {
-		return "", apperror.Wrap(apperror.CodeUnavailable, "run git rev-parse to resolve base ref", true, err)
+		return "", p.runFailure(ctx, declared, canonical, "run git rev-parse to resolve base ref", err)
 	}
 	if exitCode != 0 {
-		return "", apperror.New(apperror.CodeNotFound, fmt.Sprintf("repository default ref %q does not resolve to a commit", ref), false)
+		refs := p.existingRefs(ctx, canonical)
+		if len(refs) == 0 {
+			return "", p.noCommits(declared, canonical)
+		}
+		return "", p.refNotFound(declared, canonical, ref, refs)
 	}
 	commit := strings.TrimSpace(string(output))
 	if !validObjectID(commit) {
@@ -173,16 +201,38 @@ func (p *Prober) resolveBaseCommit(ctx context.Context, canonical string, ref st
 	return commit, nil
 }
 
+// existingRefs lists up to 30 branch and remote-branch names; empty means the repository has no refs at all (no commits yet).
+func (p *Prober) existingRefs(ctx context.Context, canonical string) []string {
+	output, _, exitCode, err := p.runGitCapture(ctx, canonical, "for-each-ref", "--count=30", "--format=%(refname:short)", "refs/heads", "refs/remotes")
+	if err != nil || exitCode != 0 {
+		return nil
+	}
+	var refs []string
+	for _, line := range strings.Split(string(output), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			refs = append(refs, line)
+		}
+	}
+	if len(refs) == 0 {
+		// Tags alone are a ref too: a repository with only tags still has commits.
+		tags, _, code, err := p.runGitCapture(ctx, canonical, "for-each-ref", "--count=1", "--format=%(refname:short)", "refs/tags")
+		if err == nil && code == 0 && strings.TrimSpace(string(tags)) != "" {
+			return []string{strings.TrimSpace(string(tags))}
+		}
+	}
+	return refs
+}
+
 // workingTreeDirty reports whether the working tree at canonical has any
 // uncommitted change (staged, unstaged or untracked) — a plain read of
 // `git status`, never a mutation.
 func (p *Prober) workingTreeDirty(ctx context.Context, canonical string) (bool, error) {
-	output, exitCode, err := p.runGit(ctx, canonical, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	output, stderr, exitCode, err := p.runGitCapture(ctx, canonical, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	if err != nil {
-		return false, apperror.Wrap(apperror.CodeUnavailable, "run git status", true, err)
+		return false, p.runFailure(ctx, canonical, canonical, "run git status", err)
 	}
 	if exitCode != 0 {
-		return false, apperror.New(apperror.CodeUnavailable, "git status exited with a non-zero code", true)
+		return false, p.gitFailed(canonical, canonical, "git status exited with a non-zero code.", stderr)
 	}
 	return len(output) != 0, nil
 }
@@ -233,21 +283,28 @@ func discoverComponents(canonical string) ([]ports.ProbedComponent, error) {
 // method's doc comment), duplicated rather than shared for the same
 // reason canonical_windows.go/canonical_other.go are.
 func (p *Prober) runGit(ctx context.Context, directory string, arguments ...string) ([]byte, int, error) {
+	stdout, _, exitCode, err := p.runGitCapture(ctx, directory, arguments...)
+	return stdout, exitCode, err
+}
+
+// runGitCapture is runGit that also returns what Git wrote to stderr. Git runs with LC_ALL=C and LANGUAGE=C so the wording the failure
+// classifier reads does not depend on the language of the operating system (V11-12).
+func (p *Prober) runGitCapture(ctx context.Context, directory string, arguments ...string) ([]byte, []byte, int, error) {
 	commandArguments := append([]string{"-C", directory}, arguments...)
 	command := exec.CommandContext(ctx, p.gitExecutable, commandArguments...)
-	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	command.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "LANGUAGE=C")
 	var stdout, stderr bytes.Buffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	err := command.Run()
 	if err == nil {
-		return stdout.Bytes(), 0, nil
+		return stdout.Bytes(), stderr.Bytes(), 0, nil
 	}
 	var exitError *exec.ExitError
 	if errors.As(err, &exitError) {
-		return stdout.Bytes(), exitError.ExitCode(), nil
+		return stdout.Bytes(), stderr.Bytes(), exitError.ExitCode(), nil
 	}
-	return nil, -1, err
+	return nil, stderr.Bytes(), -1, err
 }
 
 func samePath(left string, right string) bool {

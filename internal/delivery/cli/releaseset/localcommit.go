@@ -12,6 +12,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/releasesetcommit"
 	workapp "github.com/taQuangLing/agent-workflow/internal/app/work"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
+	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
 )
 
 // requestLocalCommitHashPayload mirrors
@@ -31,7 +32,20 @@ type requestLocalCommitHashPayload struct {
 	Message                   string `json:"message"`
 	AuthorName                string `json:"authorName"`
 	AuthorEmail               string `json:"authorEmail"`
+	// Files and Unselected mirror the HTTP body's (V11-07); omitted when no --path is given.
+	Files      []localCommitFileHash `json:"files,omitempty"`
+	Unselected string                `json:"unselected,omitempty"`
 }
+
+type localCommitFileHash struct {
+	Path string `json:"path"`
+}
+
+// pathList is a repeatable string flag (--path a --path b).
+type pathList []string
+
+func (p *pathList) String() string     { return strings.Join(*p, ",") }
+func (p *pathList) Set(v string) error { *p = append(*p, v); return nil }
 
 // LocalCommitResult is `release-set local-commit`'s own JSON result payload
 // (nested inside cli.ResultEnvelope.Result):
@@ -95,6 +109,9 @@ func RunLocalCommit(ctx context.Context, deps Dependencies, args []string, stdou
 	message := fs.String("message", "", "commit message (required)")
 	authorName := fs.String("author-name", "", "commit author name (required)")
 	authorEmail := fs.String("author-email", "", "commit author email (required)")
+	var paths pathList
+	fs.Var(&paths, "path", "V11-07: commit only this file (repeatable); without --path the whole worktree is committed. A path must be a changed path of the worktree")
+	unselected := fs.String("unselected", "", "V11-07: with --path, what happens to the other changes: KEEP (default) leaves them in the worktree, PARK moves them to a hidden ref (restore with `aw repository-workspace restore-parked`)")
 	idempotencyKey := cli.BindIdempotencyKeyFlag(fs)
 	wait, waitTimeout := cli.BindWaitFlags(fs)
 	if err := parseFlags(fs, args); err != nil {
@@ -133,9 +150,34 @@ func RunLocalCommit(ctx context.Context, deps Dependencies, args []string, stdou
 		return err
 	}
 
+	var selection *releasesetcommit.LocalCommitSelectionInput
+	var selectedFiles []localCommitFileHash
+	handling := workdomain.UnselectedHandling(strings.ToUpper(strings.TrimSpace(*unselected)))
+	if len(paths) == 0 && handling != "" {
+		return usageErrorf("--unselected needs at least one --path")
+	}
+	if len(paths) > 0 {
+		if handling == "" {
+			handling = workdomain.UnselectedKeep
+		}
+		if !handling.IsValid() {
+			return usageErrorf("--unselected must be KEEP or PARK")
+		}
+		files := make([]workdomain.LocalCommitFile, 0, len(paths))
+		for _, path := range paths {
+			if strings.TrimSpace(path) == "" {
+				return usageErrorf("--path must not be empty")
+			}
+			files = append(files, workdomain.LocalCommitFile{Path: path})
+			selectedFiles = append(selectedFiles, localCommitFileHash{Path: path})
+		}
+		selection = &releasesetcommit.LocalCommitSelectionInput{Files: files, Unselected: handling}
+	}
+
 	hashPayload, err := json.Marshal(requestLocalCommitHashPayload{
 		ExpectedReleaseSetVersion: *expectedReleaseSetVersion, RepositoryWorkspaceID: *repositoryWorkspaceID,
 		ExpectedWorkspaceVersion: *expectedWorkspaceVersion, Message: *message, AuthorName: *authorName, AuthorEmail: *authorEmail,
+		Files: selectedFiles, Unselected: string(handling),
 	})
 	if err != nil {
 		return fmt.Errorf("cli: release-set local-commit: marshal hash payload: %w", err)
@@ -151,7 +193,7 @@ func RunLocalCommit(ctx context.Context, deps Dependencies, args []string, stdou
 		return releasesetcommit.RequestReleaseSetLocalCommit(ctx, deps.UoW, deps.IDs, envelope.Command, releasesetcommit.RequestReleaseSetLocalCommitRequest{
 			ProjectID: *projectID, ReleaseSetID: *releaseSetID, ExpectedReleaseSetVersion: *expectedReleaseSetVersion,
 			RepositoryWorkspaceID: *repositoryWorkspaceID, ExpectedWorkspaceVersion: *expectedWorkspaceVersion,
-			Message: *message, AuthorName: *authorName, AuthorEmail: *authorEmail,
+			Message: *message, AuthorName: *authorName, AuthorEmail: *authorEmail, Selection: selection,
 		})
 	})
 	if err != nil {

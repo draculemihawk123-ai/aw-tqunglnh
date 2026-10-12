@@ -20,7 +20,7 @@
                "policyRefs": [{"$ref": "policy:policy-attempt"}, {"$ref": "policy:policy-permission"}],
                "adapterBuildId": {"$ref": "adapter"}, "role": "CHECKER"}},
     {"key": "review", "type": "APPROVAL", "outcomes": ["approved", "rework", "rejected"],
-     "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "rejected",
+     "approval": {"release": {"commit": "OFFERED", "outcomes": ["approved"]}, "authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "rejected",
                   "requestedEvidenceKinds": ["COMMAND_EXECUTION"]}},
     {"key": "reject", "type": "COMMAND", "outcomes": ["done"],
      "command": {"commandRef": {"$ref": "command:cmd-reject"},

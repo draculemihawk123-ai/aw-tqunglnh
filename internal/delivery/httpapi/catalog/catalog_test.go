@@ -36,6 +36,12 @@ const testActor = "operator-1"
 // Verify line.
 func newTestHandler(t *testing.T) (http.Handler, ports.UnitOfWork) {
 	t.Helper()
+	return newTestHandlerWithProber(t, nil)
+}
+
+// newTestHandlerWithProber is newTestHandler with a repository prober wired for the pre-registration check (V11-12).
+func newTestHandlerWithProber(t *testing.T, prober ports.RepositoryProber) (http.Handler, ports.UnitOfWork) {
+	t.Helper()
 	store, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "httpapi-catalog.db"))
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
@@ -44,7 +50,7 @@ func newTestHandler(t *testing.T) (http.Handler, ports.UnitOfWork) {
 	uow := sqlite.NewUnitOfWork(store)
 
 	registry := httpapi.NewRouteRegistry()
-	httpcatalog.RegisterRoutes(registry, httpcatalog.Dependencies{UoW: uow, IDs: idsource.Random{}})
+	httpcatalog.RegisterRoutes(registry, httpcatalog.Dependencies{UoW: uow, IDs: idsource.Random{}, Prober: prober})
 
 	mux := http.NewServeMux()
 	for _, d := range registry.Descriptors() {

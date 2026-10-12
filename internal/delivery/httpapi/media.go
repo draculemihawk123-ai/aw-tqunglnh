@@ -145,6 +145,9 @@ var inlineSafeContentTypes = map[string]bool{
 	"image/jpeg":       true,
 	"image/gif":        true,
 	"application/pdf":  true,
+	// V11-11: JSON the Evidence preview formats (the recorded output of a COMMAND node, the manifest of what an agent changed).
+	"application/vnd.agentkit.command-output+json": true,
+	"application/vnd.agentkit.diff-manifest+json":  true,
 }
 
 // ResolveMediaDisposition decides inline vs attachment for contentType (a

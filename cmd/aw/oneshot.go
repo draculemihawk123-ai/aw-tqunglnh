@@ -10,6 +10,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/sqlite"
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
@@ -82,6 +83,11 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 		deps.ArtifactStore = artifacts
 	}
 
+	// V11-12: `repository check` needs the prober; without Git on PATH it is left nil and the command says so.
+	if prober, err := repoprobe.New(repoprobe.Config{}); err == nil {
+		deps.RepositoryProber = prober
+	}
+
 	if needs&clicompose.NeedWorkspace != 0 {
 		if strings.TrimSpace(opts.WorkspaceRoot) == "" {
 			return fail(cli.UsageError{Err: errors.New("--workspace-root is required (or set AW_WORKSPACE_ROOT)")})
@@ -91,6 +97,22 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 			return fail(fmt.Errorf("open git workspace provider: %w", err))
 		}
 		deps.WorkspaceReader = provider
+		deps.WorkspaceHeadAuditor = provider
+		deps.GitIdentities = provider
+		deps.ParkedChanges = provider
+		deps.RedoParker = provider
+	}
+
+	if needs&clicompose.NeedWorkspaceIfConfigured != 0 && needs&clicompose.NeedWorkspace == 0 && strings.TrimSpace(opts.WorkspaceRoot) != "" {
+		provider, err := gitworktree.New(gitworktree.Config{Root: opts.WorkspaceRoot})
+		if err != nil {
+			return fail(fmt.Errorf("open git workspace provider: %w", err))
+		}
+		deps.WorkspaceReader = provider
+		deps.WorkspaceHeadAuditor = provider
+		deps.GitIdentities = provider
+		deps.ParkedChanges = provider
+		deps.RedoParker = provider
 	}
 
 	if needs&clicompose.NeedIsolation != 0 {

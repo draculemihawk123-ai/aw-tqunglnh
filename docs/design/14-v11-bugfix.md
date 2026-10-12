@@ -1,7 +1,7 @@
 # V11 — Sửa lỗi (core engine được phép sửa)
 
-> Trạng thái: **ĐANG SOẠN — chờ product owner duyệt, chưa triển khai.** File này chia task; chưa task nào được thực hiện.
-> Khi triển khai: mỗi task một commit, merge vào `master` khi product owner duyệt.
+> Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-10-10, nhánh `claude/trien-khai-v11-6aac6a`, từ `master` sau PR #174/#175/#176).
+> Đã xong: V11-01 … V11-07; V11-08 bước 1–3 (bước 4 chờ đo); V11-09 (một phần, xem khối kết quả); V11-10 … V11-13 (mỗi task đã chạy thật; xem "Kết quả kiểm chứng bổ sung" ở cuối trước Gate). Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Nhánh thiết kế: `v11-design` (tách từ `master` sau PR #174; mọi thay đổi thiết kế V11 đi vào nhánh này). V10 đã vào `master`; các file
 > V10-19 (`check-feature-docs.sh` bản không kiểm máy, `code-accept.py`, `skill-doc-templates`) và bản vá kit cho Windows nằm ở nhánh
@@ -33,19 +33,19 @@ chưa được xác minh trong mã thì ghi rõ "cần xác minh" và task bắt
 
 | Task | Lỗi | Mức | Trạng thái xác minh |
 |---|---|---|---|
-| V11-01 | Commit ngoài aw (IDE hoặc terminal) làm lệch HEAD so với revision aw ghi | Cao | **Đã tái hiện** (script trong repo) |
-| V11-02 | Nhà cung cấp báo hết hạn mức phiên bị coi là lỗi thực thi thường, đốt hết lần thử | Cao | **Đã gặp thật** (bench B0/B1) |
-| V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | Đã tái hiện; nguyên nhân gốc **cần xác minh** |
-| V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | Đã tái hiện (prompt dump) |
-| V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | Đã đo (spike V10-17) |
-| V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **Đã gặp thật** (chạy issue-tracker C-01 trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
-| V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | Cơ chế **đã đọc trong mã**; thiết kế cần product owner chốt 6 điểm (mục "Quyết định cần chốt" của V11-07) |
-| V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | Chính sách đã nêu; hiệu ứng lên chi phí và chất lượng **chưa đo** |
-| V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **Đã tái hiện và vá tạm** trên Windows 11 (Git 2.55); chạy tay file `.cmd` đã vá cho kết quả đúng; chưa thử trên máy khác |
-| V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | Cơ chế **đã đọc trong mã**; kiểm chứng bằng chính các lần chạy lại của người vận hành |
-| V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | Cơ chế **đã đọc trong mã**; dữ liệu phần lớn đã có trong DB nhưng không có API/UI đọc |
-| V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **Đã gặp thật** (đăng ký thư mục chưa `git init` trên Windows, 2026-10-09); cơ chế đã đọc trong mã |
-| V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | Cơ chế **đã đọc trong mã**: chỉ có `create`, `list`, `show` |
+| V11-01 | Commit ngoài aw (IDE hoặc terminal) làm lệch HEAD so với revision aw ghi | Cao | **XONG 2026-10-10** (ADR-034) |
+| V11-02 | Nhà cung cấp báo hết hạn mức phiên bị coi là lỗi thực thi thường, đốt hết lần thử | Cao | **XONG 2026-10-10** (ADR-035) |
+| V11-03 | Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm | Cao | **XONG 2026-10-10** (ADR-036) |
+| V11-04 | CHECKER sau gate không nhận kết quả kiểm tra; agent sửa sau CHECKER cũng không | Trung bình | **XONG 2026-10-10** (ADR-037) |
+| V11-05 | aw không cô lập cấu hình của CLI nhà cung cấp; hook ghi file gây `SCOPE_VIOLATION` | Trung bình | **XONG 2026-10-10** (ADR-038) |
+| V11-06 | Cổng duyệt của người không cho xem thay đổi chưa commit: tab Diff trống cho tới khi commit | Cao | **XONG 2026-10-10** (ADR-039); đã gặp thật khi chạy issue-tracker C-01 trên Windows, 2026-10-09 |
+| V11-07 | Duyệt xong vẫn phải chạy lệnh riêng để commit; commit luôn lấy toàn bộ worktree, không chọn được file | Cao | **XONG 2026-10-10** (ADR-040; 6 điểm đã được product owner chốt 2026-10-09) |
+| V11-08 | Ngôn ngữ trong kit không thống nhất: tri thức và thông báo của agent là tiếng Việt, tài liệu cho người cũng tiếng Việt | Trung bình | **Bước 1–3 XONG 2026-10-11; bước 4 (đo A/B) chưa chạy** (xem khối kết quả) |
+| V11-09 | Bộ bọc `.cmd` trên Windows làm `cmd.exe` chạy phần bash như lệnh Windows, agent chỉ thấy rác | Cao | **XONG MỘT PHẦN 2026-10-11**: sửa lỗi mất mã thoát của bộ bọc + test hành vi + check `git_shell`; lỗi gốc chưa tái hiện được trên Windows 10 |
+| V11-10 | Chạy lại và làm lại một task phải ghép nhiều bước web và terminal (hủy trên web, `run-task.sh` trên terminal) | Trung bình | **XONG 2026-10-11**; đã chạy thật 2026-10-12 (Playwright trên stack thật, walk-workflow `retry`/`recreate` trên Linux; xem khối kiểm chứng bổ sung) |
+| V11-11 | Bấm vào một node trên web không cho biết node đang làm gì và kết quả là gì; Chat không cho biết agent đang làm việc | Cao | **XONG MỘT PHẦN 2026-10-11** (ADR-042): đọc theo node, lời agent khi hỏng, tin hoạt động, UI; đã chạy thật với Claude thật và Playwright 2026-10-12; chưa đọc được lời nhắc |
+| V11-12 | Đăng ký repository sai không sửa được, không xóa được; lỗi chỉ hiện mã `INVALID_ARGUMENT`, không nói sai chỗ nào | Cao | **XONG 2026-10-12** (ADR-043; ca thật đã tái hiện và sửa bằng CLI thật + worker thật, Playwright, script kit và prober trên Linux) |
+| V11-13 | Project tạo ra không đổi tên được, không xóa hay lưu trữ được | Trung bình | **XONG 2026-10-12** (ADR-044; chạy thật bằng CLI + worker, Playwright, script kit trên Linux) |
 
 Mặc định làm tuần tự theo Task ID.
 
@@ -100,6 +100,43 @@ Mặc định làm tuần tự theo Task ID.
 - **Rủi ro:** nhận commit ngoài làm mã chưa qua gate được ghi vào lịch sử aw coi là hợp lệ; vì vậy chỉ do hành động tường minh
   của người vận hành, có audit, và gate của các run sau vẫn chạy trên mã đó.
 
+### Kết quả triển khai V11-01 (2026-10-10, ADR-034)
+
+Khảo sát đầu task, rồi chỗ đã làm:
+
+- **Nơi so HEAD với revision đã ghim:** chỉ `staleMountRevision` của `MACHINE_GATE`. Node agent/command và
+  `handleMutatingCancellation` không so như vậy: cái sau dùng `CaptureRevision` để phân xử attempt bị hủy, không phải để
+  phát hiện commit ngoài.
+- **Run đang chờ duyệt:** mọi attempt của một run lấy revision từ `ExecutionManifest.BaseRevisionSet` (bất biến, ADR-011) và
+  `run_manifest_amendments` chỉ ghi phiên bản scope đã duyệt, không ghi revision. Dùng nó cần migration và đổi ngữ nghĩa
+  ghim, nên **không** cập nhật pin của run đang chạy: sau `adopt-head` run đó vẫn báo drift và diagnostic nói rõ phải hủy rồi
+  chạy lại.
+- **Báo lệch hiện nay:** `aw workspace-set show` chỉ đọc cơ sở dữ liệu nên không thấy commit ngoài. `repository-workspace
+  diff|source|log` nhận revision do người gọi đưa (UI lấy từ `currentRevision` trong DB) và adapter chỉ cho revision bằng
+  `baseRevision` hoặc HEAD sống (`authorizeRevision`), nên sau commit ngoài, truyền `currentRevision` cũ cho lỗi chung
+  "invalid, unauthorized, or unreadable revision" thay vì nêu nguyên nhân. Chưa sửa (ngoài phạm vi V11-01); hết sau
+  `adopt-head`. Đã thêm `AuditHead` làm nguồn đọc lệch.
+
+Đã làm (khớp thiết kế, kèm hai điều chỉnh):
+
+1. `WORKSPACE_HEAD_DRIFT`: diagnostic ghi vào `agent_events` của attempt gate, đọc thành `failureDetail` trong
+   `aw run timeline` và `show-run.sh`; attempt vẫn `VALIDATION_FAILED` (không thêm mã lỗi vào enum đóng).
+2. `aw repository-workspace adopt-head` / `POST …/adopt-head` / `adopt-head.sh`, sự kiện `WorkspaceHeadAdopted`.
+3. Chạy lại **không đổi pin của run đang chờ**: diagnostic hướng dẫn hủy và bắt đầu lại.
+4. `aw run start` và `POST /work-items/{id}/runs` từ chối khi HEAD lệch (không có cờ `--adopt-head`); CLI chỉ kiểm khi có
+   `--workspace-root`.
+5. **Điều chỉnh ngoài danh sách thiết kế:** `release-set local-commit` cũng chặn trên HEAD lệch (`FAILED/HEAD_DRIFT`,
+   migration 0049), vì nếu không commit của aw sẽ nuốt commit ngoài mà không audit. Đây là điều V11-07 mục "Không hồi quy"
+   đã giả định.
+6. Kit: `commit-task.sh` dừng sớm kèm danh sách commit; `run-task.sh`/`retry-task.sh` gợi ý `adopt-head.sh`.
+7. Tài liệu: `docs/operator/06` (mục "A commit made outside aw"), `09`, `03`; ADR-034; dòng 7 của Screen 9 trong UX artifact.
+
+Chưa chạy được trên máy này: `kit/tests/check-kit.sh` với `WALK_ALL=1` và hai script tái hiện (Linux-only, cần `jq`;
+máy Windows hiện tại không có `jq` và `os.killpg`). Phần engine được chứng minh bằng test Go với Git và SQLite thật
+(`internal/app/workspacereconcile/adopt_head_sqlite_test.go`, `head_preflight_sqlite_test.go`,
+`internal/app/runtime/gate_head_drift_test.go`, `internal/app/releasesetcommit/headdrift_test.go`,
+`internal/adapters/gitworktree/headaudit_test.go`).
+
 ## V11-02 — Hết hạn mức phiên của nhà cung cấp bị coi là lỗi thực thi thường
 
 - **Bằng chứng:** khi đo B0/B1 (2026-10-07), CLI Claude trả "You've hit your session limit · resets 5:30pm (UTC)". aw ghi
@@ -111,6 +148,25 @@ Mặc định làm tuần tự theo Task ID.
 - **Thực hiện (đề xuất):** mã lỗi `PROVIDER_QUOTA_EXCEEDED` không thuộc `RetryableErrorCodes`; attempt kết thúc với lý do này và mở
   blocker có thể `retry-blocked` sau thời điểm reset (nếu đọc được) thay vì làm run `FAILED`; `show-run.sh` nêu rõ giờ reset.
 - **Verify:** adapter giả lập phát thông báo hạn mức: một attempt, không thử lại, run vào trạng thái chờ được; retry sau đó chạy tiếp.
+
+### Kết quả triển khai V11-02 (2026-10-10, ADR-035)
+
+Khảo sát: cả hai CLI chỉ báo hạn mức bằng văn bản — `result` của Claude (`is_error`), `error.message` của Codex
+(`turn.failed`) — không có mã hay giờ reset đọc được bằng máy; `rate_limit_event` của Claude không mang thông tin dùng được và adapter
+vẫn bỏ qua nó. Vì vậy nhận diện theo cụm từ (`ports.IsProviderQuotaMessage`).
+
+Đã làm: mã `PROVIDER_QUOTA_EXCEEDED` (tập mã §18: 22 → 23, thuộc `neverRetryable`, publish policy từ chối liệt kê nó là retryable);
+adapter Claude và Codex báo `TerminationReason = provider_quota_exceeded` trước kiểm tra mã thoát; `AgentNodeExecutor` ánh xạ sang mã mới;
+`show-run.sh` in hướng dẫn; tài liệu operator 09 và ADR-035.
+
+**Điều chỉnh so với đề xuất:** không mở blocker `retry-blocked` sau giờ reset. Giờ reset không đọc được bằng máy nên aw không có
+thời điểm để hẹn, và `retry-blocked` dành cho admission chặn trước khi attempt chạy. "Dừng có thể tiếp tục" dùng đường sẵn có của ADR-033: attempt
+đầu kết thúc node, run `FAILED` mở blocker `RUN_FAILED`, chạy lại cùng WorkItem bằng `retry-task.sh` sau giờ reset. Thứ đã
+sửa là điều gây hại: hai lần thử không còn bị đốt trong vài giây.
+
+Test: `TestIsProviderQuotaMessage`, `TestAgentExecutorProviderQuotaIsReportedWithItsOwnTerminationReason` (Claude và Codex, quota và lỗi khác),
+`TestAgentNodeExecutor_ProviderQuotaExceeded_ReturnsProviderQuotaExceeded`, `TestExecuteNodeHandler_ProviderQuotaExceeded_IsNeverRetried`,
+`TestValidateDocument_Attempt_RejectsProviderQuotaAsRetryable`.
 
 ## V11-03 — Cạnh hết vòng trỏ vào trong chính vòng làm run treo âm thầm
 
@@ -127,6 +183,28 @@ Mặc định làm tuần tự theo Task ID.
 - **Verify:** test compiler với định nghĩa của `wf-task-delivery-plus` bản cũ (cạnh `escalated → quality`) bị từ chối; test runtime
   cho cạnh sai không để lại attempt `INDETERMINATE`.
 
+### Kết quả triển khai V11-03 (2026-10-10, ADR-036)
+
+Nguyên nhân gốc đã xác minh, gồm cả hai câu hỏi của task:
+
+- **Vì sao compiler không bắt:** `validateBoundedCycles` coi vòng là có chặn nếu **một node bất kỳ** của thành phần liên thông có
+  `cyclePolicy` và cạnh escalation rời vòng. Runtime thì kiểm **theo từng node** khi chính node đó hết ngân sách. Trong
+  `wf-task-delivery-plus` bản cũ `build` rời vòng đúng, `simplify` (`escalated → quality`) thì không; compiler nhìn thấy `build` và chấp nhận.
+- **Vì sao thành `INDETERMINATE`:** `advanceRunTx` chạy **bên trong** transaction của `FinalizeExecutionAttempt` (nhánh `SUCCEEDED`). Lỗi
+  định tuyến làm rollback cả finalize: attempt của node trước vẫn `RUNNING`, lease mất, và recovery reaper đánh dấu nó
+  `INDETERMINATE` (`OWNERSHIP_LOST_MUTATING`) sau 30 giây. Không có đường nào đưa lỗi ra ngoài.
+
+Đã làm: luật theo từng node ở compiler; `workflow.Rehydrate` cho loader (version cũ vẫn đọc được); `advanceRunTx` kiểm trước khi ghi và
+trả `*RoutingDefectError`; `FinalizeExecutionAttempt` ghi node vừa xong `SUCCEEDED` và đóng run `FAILED` với lý do
+`WORKFLOW_DEFINITION_DEFECT` (blocker `RUN_FAILED`); `show-run.sh` in lý do của blocker; tài liệu operator 04/09 và ADR-036.
+
+**Điều chỉnh:** nếu còn nhánh khác của run đang chạy thì không đóng run ngay mà để reconcile thông thường (run kết thúc `FAILED` khi nhánh đó
+xong; lý do chung hơn). Các đường duyệt và chờ tín hiệu vẫn trả lỗi cho người gọi (đã thấy được, không treo).
+
+Test: `TestValidateDocument_RejectsACyclePolicyWhoseEscalationEdgeStaysInsideItsCycle` (và hai test bù), `TestKitWorkflowsKeepEveryEscalationEdgeOutsideItsCycle`,
+`TestWorkflowCompile_RefusesWhatRehydrateStillLoads`, `TestExecuteNodeHandler_RoutingDefect_FailsTheRunClearlyInsteadOfHanging`
+(trước khi sửa: `Handle` trả chính lỗi `ErrCycleEscalationNotBounded`).
+
 ## V11-04 — CHECKER sau gate không nhận kết quả kiểm tra
 
 - **Bằng chứng:** trong `wf-task-delivery-plus`, `gate1 (failed) → debug (CHECKER) → build`: prompt của `debug` không có
@@ -138,6 +216,23 @@ Mặc định làm tuần tự theo Task ID.
   task đóng bằng cách ghi rõ giới hạn trong tài liệu và dùng cách đang áp dụng ở kit (agent chẩn đoán tự tái hiện).
 - **Verify:** nếu thay đổi: kịch bản `plus-debug` cho thấy `debug` và `build` nhận lỗi của `gate1`.
 
+### Kết quả triển khai V11-04 (2026-10-10, ADR-037)
+
+Quyết định (do thiết kế để ngỏ cho product owner): **đưa `checkFailures` đi tiếp**, không giữ nguyên giới hạn. Lý do: kiểm tra là thẩm quyền
+cuối (ADR-032, V9-13b); agent chẩn đoán không phải tự tái hiện lỗi mà kit đang dặn, và maker không thấy lại đầu ra của chính kiểm tra đã
+gửi nó đi. Nếu product owner muốn giữ hành vi cũ, đảo lại là bỏ hai khối trong `assemble_execution_request.go` và
+`gatherCheckFailureEvidenceRefs` (xem ADR-037).
+
+Khảo sát: snapshot của một CHECKER đã ghim evidence của các node đứng trước (allowlist V5-12), nên evidence của kiểm tra thất bại đã ở trong snapshot của
+`debug`; chỉ bước dựng prompt bỏ qua CHECKER. Maker sau `debug` thì không có ref nào tới kiểm tra gốc (chỉ AGENT_OUTPUT của `debug`).
+
+Đã làm: CHECKER được kích hoạt bởi `failureOutcome` của một kiểm tra nhận `checkFailures` của đúng kiểm tra đó; maker sau CHECKER ấy nhận cả `reviewerFeedback`
+và `checkFailures` gốc; mọi trường hợp khác không đổi. Tài liệu operator 04 và ADR-037. Kịch bản `plus-debug` của `walk-workflow.py` (khẳng định lúc trước là
+`debug`/`build` không có `checkFailures`) cần chạy lại trên Linux có `jq`; chưa chạy được trên máy này.
+
+Test: `TestDiagnosingCheckerAfterFailingCheck_ReceivesTheCheckFailures`, `TestMakerAfterDiagnosingChecker_ReceivesBothTheDiagnosisAndTheOriginalCheckFailure`,
+`TestCheckerReachedWithoutAFailingCheck_HasNoCheckFailures`, `TestDiagnosingCheckerAfterTheNextFailure_ReceivesOnlyTheLatestFailure` (ba test đầu thất bại trước khi sửa).
+
 ## V11-05 — Cô lập cấu hình CLI của nhà cung cấp
 
 - **Bằng chứng (spike V10-17, [`../spikes/v10-17-claude-skills/README.md`](../spikes/v10-17-claude-skills/README.md)):**
@@ -146,6 +241,19 @@ Mặc định làm tuần tự theo Task ID.
 - **Mục tiêu:** worker có tùy chọn cô lập cấu hình của CLI (thư mục cấu hình riêng, không nạp cấu hình người dùng/dự án) và/hoặc ghi
   băm của cây `.claude/` vào manifest của attempt. Kiểm cờ tương ứng của CLI (ví dụ `CLAUDE_CONFIG_DIR`, chọn nguồn cấu hình) trước.
 - **Verify:** lượt dò giống spike cho thấy skill của repository không còn lọt vào attempt khi bật cô lập, hoặc xuất hiện trong manifest.
+
+### Kết quả triển khai V11-05 (2026-10-10, ADR-038)
+
+Kiểm cờ của CLI (Claude Code 2.1.288, `claude --help`): `--safe-mode` ("tắt mọi tùy biến: CLAUDE.md, skill, plugin cài thêm, hook, MCP server, command và agent
+tùy biến… Đăng nhập, chọn model, công cụ built-in vẫn bình thường"); `--bare` không đọc OAuth/keychain nên không dùng được; `CLAUDE_CONFIG_DIR` mất thông tin đăng nhập.
+Đo lại như spike nhưng **không gọi API** (HOME trống, đọc sự kiện `system init`): fixture có skill cấp người dùng, skill của repository và hook `SessionStart`; không cờ thì thấy cả hai
+skill và 2 sự kiện hook, có `--safe-mode` thì không thấy skill nào trong hai và 0 sự kiện hook.
+
+Đã làm: `claude.Config.SafeMode` và cờ `aw worker --claude-safe-mode` (mặc định tắt, có trên mọi lần gọi CLI kể cả resume); tài liệu operator 02 và 05; ADR-038.
+**Điều chỉnh:** chọn hướng cô lập, không làm hướng băm `.claude/` (xem ADR). Hệ quả cần biết: `CLAUDE.md` của repository cũng không được CLI nạp khi bật cờ, nên quy ước chỉ nằm ở đó phải chuyển
+thành Layer/Skill của kit.
+
+Test: `TestClaudeAdapterPassesSafeModeOnStartAndResumeOnly`, `TestNewAgentExecutor_ClaudeSafeMode`. Chưa chạy lại spike V10-17 qua aw bằng CLI thật có tài khoản (tốn tiền; việc kiểm trên là không gọi API).
 
 ## V11-06 — Duyệt cổng người mà không xem được nội dung thay đổi
 
@@ -187,6 +295,21 @@ Mặc định làm tuần tự theo Task ID.
   chụp màn hình tab Diff trước khi duyệt.
 - **Cách làm tạm trong lúc chưa có:** `cd "$(worktree-path.sh contracts)" && git status --short && git diff`; chỉ xem, không thao
   tác Git ghi. Đã ghi vào hướng dẫn issue-tracker (bước duyệt C-01); chưa ghi vào `docs/operator/`.
+
+### Kết quả triển khai V11-06 (2026-10-10, ADR-039)
+
+Làm theo đề xuất, với một điều chỉnh: **không thêm route**, dùng `result=WORKING_TREE` của route diff hiện có (xem ADR-039) để giữ 1:1 giữa parity, CLI, contract và UI.
+
+- Adapter `gitworktree.ReadWorkingTreeDiff` (`worktreediff.go`): tracked `git diff <base> --`, untracked qua `ls-files --others --exclude-standard` + `diff --no-index`,
+  file nhị phân/symlink chỉ tên và kích thước, `contentHash` từng file, `changeSetDigest`, giới hạn byte/file/dòng và 20000 đường dẫn. Mọi lệnh git của adapter chạy với `GIT_OPTIONAL_LOCKS=0`.
+- App `GetWorkingTreeDiff`: từ chối khi workspace có lease ghi (`ErrWorkspaceWriterActive` → 409), `base` vẫn qua `authorizeRevision`.
+- HTTP + CLI `--working-tree` + contract/`generated.ts` được sinh lại; UI: tab Workspace mặc định hiện `UNCOMMITTED` khi worktree có thay đổi, thông điệp khi trống nói rõ
+  "No committed changes" hoặc "nothing is uncommitted"; thẻ duyệt ở tab Graph có dòng "N files changed, +x −y" và nút View changes; lỗi đọc hiện lý do.
+- Docs: operator 06, hướng dẫn issue-tracker (bước C-01), ADR-039.
+
+Test: adapter với repo Git thật (file sửa, mới, xóa, nhị phân, quá giới hạn, symlink ra ngoài; sau mỗi lần đọc `git status --porcelain`, HEAD và hash `.git/index` không đổi),
+HTTP (`workingtree_test.go`: 200 có thay đổi, worktree sạch, 409 khi lease ghi còn sống, 400 khi base sai/thiếu phạm vi), CLI, Vitest (`TaskDetail.uncommitted.test.tsx`, 8 ca).
+`go test ./...`, `go vet`, docs-coverage, `pnpm typecheck` và toàn bộ Vitest (279) xanh. **Chưa làm:** chạy lại C-01 trên bản cài thật và chụp màn hình tab Diff (không có môi trường để chạy với CLI có tài khoản); chưa có Playwright cho màn này.
 
 ## V11-07 — Duyệt và commit trong một thao tác, chọn được file, làm hoàn toàn trên web
 
@@ -336,6 +459,32 @@ Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; s
   bản cài thật: duyệt kèm commit từ trình duyệt, không dùng terminal ở bước nào, rồi kiểm tab Diff của commit mới.
 - **Kit:** kịch bản `walk-workflow.py` cho duyệt kèm commit; `kit/tests/check-kit.sh` với `WALK_ALL=1` xanh.
 
+### Kết quả triển khai V11-07 (2026-10-10, ADR-040)
+
+Làm theo thiết kế và 6 quyết định đã chốt, trong 5 commit (07a..07e, task lớn):
+
+- **07a — engine:** `CreateLocalCommit(Selection)` chỉ stage đúng các file đã chọn (`--literal-pathspecs … --pathspec-from-file=- --pathspec-file-nul` sau `git reset -q`), kiểm đường dẫn
+  và drift theo `contentHash`/`status`, đọc lại index và cây commit; `ParkRemainingChanges`/`RestoreParkedChanges` (ref `refs/agentkit/parked/<releaseSetId>`, index tạm, idempotent, từ chối ghi đè).
+  `collectChangeSet` là định nghĩa duy nhất của "tập thay đổi", dùng chung với diff của V11-06.
+- **07b — lõi ứng dụng:** `approval.release {commit, outcomes}` (compiler từ chối outcome đi tới node có thể ghi), migration 0050 (`CHANGESET_DRIFT`, `RELEASE_FAILED`, bảng selection),
+  `RequestApprovalBoundCommitsTx` + `ResolveApproval.Commit` trong cùng transaction, blocker `RELEASE_FAILED` qua hook `OnFailed`.
+- **07c — API/CLI:** danh tính từ `git config` (`GitIdentityReader`), `Preparer`, 3 route mới + CLI + parity, `--commit-spec`, `--path/--unselected` cho commit thủ công.
+- **07d — UI:** hộp thoại ở thẻ duyệt (cây thư mục ba trạng thái, KEEP/PARK, tác giả, cảnh báo, trạng thái, khôi phục).
+- **07e — kit và tài liệu:** `review-task.sh --commit`, bật `OFFERED` ở `wf-bugfix.gate2`, `wf-feature-definition.gate-b`, `wf-retro.approve-lessons`, `wf-contract-change.review` (guide issue-tracker),
+  `wf-fullstack-review.review` (guide todolist); không bật ở `wf-task-delivery*` vì sau `approved` còn node `sync` có thể ghi. Docs operator 03/04/06, guide issue-tracker, ADR-040.
+
+**Khác thiết kế (cần product owner biết):**
+- Patch lưu theo quyết định là patch của **cả working tree** lúc duyệt (có giới hạn 1 MiB), không lọc riêng từng file đã chọn; bằng chứng chính xác của phần được chọn là danh sách file + hash + digest.
+- Đổi tên file không ghép cặp: là một xóa + một thêm, chọn độc lập (đã nêu trong ADR-040).
+- `COMMIT_IDENTITY_MISSING` là chuỗi trong `details`/thông báo của lỗi 422, không phải mã mới trong enum lỗi đóng §18.
+- Chưa làm: chọn file cho commit **thủ công** trên tab Workspace (backend, HTTP và CLI đã nhận `files`/`unselected`; UI chỉ ở cổng duyệt); `aw doctor` cảnh báo danh tính git; đọc patch đã duyệt trên UI
+  (chỉ qua `getApprovalRelease`/`aw approval release`).
+
+Test: Git thật cho chọn một phần/tên khó/đường dẫn bị từ chối/drift/file staged tay/nhị phân/PARK/khôi phục/ref ngoài namespace; sqlite + Git thật cho executor (chọn lọc, drift, PARK qua crash, thiếu parker);
+`ResolveApproval` (atomic, replay, race thua, REQUIRED, danh tính, rollback); migration 0050 trên dữ liệu thật; HTTP (commit end-to-end, danh tính, policy, spec sai, replay vs conflict, không Git, release-context, restore);
+14 ca Vitest. `go test ./...`, `go vet`, docs-coverage, `tsc` và Vitest (293) xanh. **Chưa chạy:** kit scripts (`review-task.sh --commit`, `check-kit.sh`/`walk-workflow.py`, cần Linux + `jq`), C-01 trên bản cài thật
+với trình duyệt (Playwright), CLI Claude thật qua toàn bộ luồng.
+
 ## V11-08 — Thống nhất ngôn ngữ của kit
 
 - **Hiện trạng:** skill, layer, thông báo lỗi của script, tên và mô tả định nghĩa đều bằng tiếng Việt (83 tài nguyên tri thức, khoảng
@@ -370,6 +519,19 @@ Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; s
 - **Verify:** `check-kit.sh` với `WALK_ALL=1` xanh; `grep -P '[^\x00-\x7F]' kit/commands/*.sh` rỗng; bench A/B có báo cáo; một lượt chạy
   với work item tiếng Việt cho tài liệu tiếng Việt.
 
+### Kết quả triển khai V11-08 (2026-10-11): bước 1–3 xong, bước 4 (đo A/B) CHƯA CHẠY
+
+- **Bước 1 (`feat(v11-08a)`):** 11 script `kit/commands/*.sh` sang tiếng Anh, chỉ ASCII. Các chuỗi tiếng Việt cần nhận diện (từ khóa tiêu đề `plan.md`, nhãn bài học, dấu `✗` `×`) viết bằng mã octal `printf` để script vẫn ASCII mà vẫn nhận plan và bài học viết tiếng Việt.
+  `aw_env_fail` in `ENVIRONMENT:` thay `MÔI TRƯỜNG:`; hai dòng đánh dấu `@aw-include` do `aw-publish.py` chèn vào script publish cũng là tiếng Anh (trước đó script gửi lên worker còn chứa tiếng Việt).
+  Nhãn bài học đổi sang tiếng Anh (`Evidence`, `Occurrences`, `Proposed rule`, `Attach to`, `Level`, `Status: skip`) vì `check-lessons.sh` không thể giữ nhãn có dấu trong file ASCII; `lessons-to-skill.py` và `check-lessons.sh` vẫn đọc nhãn cũ.
+  `check-kit.sh` thêm kiểm tra ASCII cho `kit/commands/*.sh` và plan tiếng Anh; `test-lessons.py` thêm ca nhãn cũ. `grep -P '[^\x00-\x7F]' kit/commands/*.sh` rỗng.
+- **Bước 2 (`feat(v11-08b)`):** luật "viết tài liệu theo ngôn ngữ của `taskContract.behavior`, tên mục theo khung của skill" nằm ở một chỗ (`flow.working-rules`, v5).
+- **Bước 3 (`feat(v11-08c)`):** 83 tài nguyên (`kit/skills`, `kit/layers`) và 54 tên trong `kit.json` dịch sang tiếng Anh, giữ nguyên nghĩa, tăng `revision` từng tài nguyên, kit 1.6.0 → 1.7.0. Khung tiêu đề của tài liệu agent sinh ra đổi sang tiếng Anh và khớp
+  từ khóa của `check-plan.sh`. Không còn ký tự không ASCII trong `kit/skills`, `kit/layers`, `kit/kit.json`, `kit/commands`. Tài nguyên trong `docs/guides/*/definitions` (hướng dẫn cho người) chưa dịch.
+- **Bước 4 CHƯA CHẠY:** bench A/B (B-series, hai lượt mỗi nhóm, chấm mù, `code-accept.py`) giữa bản tiếng Việt (`git` trước `feat(v11-08c)`) và tiếng Anh cần agent Claude thật (tốn tiền) và máy Linux. Cho tới khi có số đo: chưa biết chi phí và chất lượng đổi theo hướng nào, và luật ngôn ngữ của
+  bước 2 chưa được kiểm trên một work item tiếng Việt. Quyết định giữ hay quay lại thuộc về số đo đó; `git revert f31129b` (bước 3) là đường quay lại và bước 1, 2 độc lập với nó.
+- Kiểm: `aw-publish.py kit/kit.json --check` hợp lệ, không cảnh báo mới; `check-kit.sh` trên Git Bash/Windows cho cùng tập đạt/hỏng trước và sau khi dịch (phần hỏng do môi trường Windows: không có `jq`, symlink, `os.killpg`). Chưa chạy `WALK_ALL=1` (cần Linux + `jq`).
+
 ## V11-09 — Bộ bọc `.cmd` trên Windows chạy phần bash như lệnh Windows
 
 - **Bằng chứng (người vận hành, Windows 11 build 26100, Git 2.55.0.windows.3, 2026-10-09):** task W-01 của issue-tracker; bước
@@ -391,6 +553,21 @@ Push, tạo pull request, merge (ADR-014 vẫn cấm); chọn theo hunk/dòng; s
 - **Verify:** trên máy Windows có Git for Windows: tất cả script `kit/commands` chạy qua `cmd //c` cho đúng mã thoát và đúng thông
   báo, với nội dung có tiếng Việt và không có; một lượt chạy thật của W-01 cho agent nhận đúng lỗi test thay vì rác; kịch bản kiểm
   tra trong CI nếu có runner Windows.
+
+### Kết quả triển khai V11-09 (2026-10-11): sửa được một lỗi thật khác, chưa tái hiện được lỗi gốc
+
+Chạy thử trên Windows 10 (build 19045) với Git 2.55.0.windows.2, bằng `cmd.exe /c <file>.cmd` thật (không giả lập):
+
+- **Lỗi gốc ("cmd.exe chạy phần bash từ giữa dòng") KHÔNG tái hiện được ở đây.** Bài thử 8 tổ hợp (phần đầu một khối / nhiều dòng × đuôi CRLF / LF × thân có tiếng Việt / ASCII) đều chạy đúng phần bash, không có dòng
+  `is not recognized` ở tổ hợp nào, kể cả bản nhiều dòng chỉ LF. Lỗi của người vận hành xảy ra trên Windows 11 build 26100 / Git 2.55.0.windows.3; vì vậy (a) chưa xác định được nguyên nhân và (b) chưa tách được "một khối" với "CRLF":
+  giữ bản vá tạm (khối + CRLF), chưa kết luận nó là cái có tác dụng.
+- **Lỗi thật khác tìm thấy bằng chính bài thử đó: bộ bọc làm mất mã thoát.** Phần đầu kết thúc bằng `exit /b` (và `exit /b %errorlevel%` trong khối ngoặc cũng vậy): cmd.exe trả **mã 0 bất kể script bash trả gì**.
+  Nghĩa là trên Windows một bước kiểm tra hỏng (test đỏ, `diff-size`, `check-plan`...) vẫn **"đạt"**. Sửa thành `exit /b !errorlevel!` (đã có `enabledelayedexpansion`). Bài thử: block × `exit /b` → mã 0; `exit /b !errorlevel!` → mã 3 (đúng).
+- **Test hành vi thật** `kit/tests/test-windows-launcher.py` (chỉ chạy trên Windows có Git for Windows, nơi khác tự bỏ qua; gọi từ `check-kit.sh`): với một repository trong thư mục có dấu cách, chạy cặp `sh script.sh` và `cmd /c script.cmd` cho 4 script tổng hợp
+  (mã 0, 1, 3, 5; nội dung có tiếng Việt, đối số có dấu) và cho cả 11 script của `kit/commands`, bắt buộc **cùng mã thoát và cùng thông báo**. Với launcher cũ (`exit /b` trần) test này hỏng 11 ca; với bản sửa đạt hết.
+- **(d) `aw doctor` thêm check `git_shell`** (chỉ Windows, mở bằng `Options.CheckGitShell` nên báo cáo mặc định và các golden không đổi): DEGRADED kèm đường dẫn `sh.exe` đã tìm khi Git for Windows thiếu bash.
+- **(c) Không làm:** khai thông dịch viên trong Command và để worker tự gọi `sh.exe` là thay đổi engine (schema Command, hash định nghĩa); để lại sau khi có ca tái hiện để biết bộ bọc có còn cần không.
+- **Chưa chạy:** W-01 thật trên máy của người vận hành (Windows 11 build 26100) để xem agent có nhận đúng lỗi test thay vì rác; kịch bản kiểm tra trong CI (chưa có runner Windows). Docs: `docs/operator/09-troubleshooting.md`.
 
 ## V11-10 — Chạy lại và làm lại một task bằng một thao tác trên web
 
@@ -468,6 +645,28 @@ sửa nội dung contract khi làm lại (làm lại giữ nguyên contract); th
 - **UI:** Vitest cho hai hộp thoại và trạng thái nút theo `validActions`; e2e Playwright trên bản cài thật: một run hỏng, bấm `Chạy lại`, rồi bấm
   `Làm lại bằng phiên bản mới` sau khi publish workflow mới, không mở terminal.
 - **Kit:** kịch bản `walk-workflow.py` cho retry và recreate; `kit/tests/check-kit.sh` với `WALK_ALL=1` xanh.
+
+### Kết quả triển khai V11-10 (2026-10-11): chạy lại và làm lại là hai lệnh một transaction; chưa chạy thật trên bản cài và Playwright
+
+Đã làm (4 commit `v11-10a` … `v11-10d`, ADR-041):
+
+- **Lệnh trong core, một transaction mỗi lệnh.** Thân transaction của `StartWorkflowRun`, `CancelWorkItem`, `ResolveWorkItemBlocker`, `CreateChildWorkItem`, `MarkWorkItemReady`, `AppendMessage` được tách thành hàm `...Tx` (không đổi
+  hành vi, toàn bộ test cũ xanh) rồi ghép: `RetryWorkItem` (ghi chú + gỡ blocker + run mới trên version đã ghim) và `RecreateWorkItem` (hủy cũ, tạo WorkItem con mới cùng nội dung trên version mới nhất, READY, mang ghi chú USER,
+  start run, ghi liên kết). Lỗi giữa chừng không để lại gì (test: blocker còn mở sau khi bị từ chối vì blocker khác; không có message/run/sự kiện nào); replay cùng khóa trả đúng kết quả cũ kể cả id WorkItem mới, khác nội dung thì 409.
+- **Luật thật dùng chung với bản xem trước.** `AssessRedo` gọi đúng hàm lập kế hoạch của hai lệnh nên bản xem trước không lệch luật: từ chối có mã ổn định (`NOT_RETRYABLE`, `NEVER_RAN`, `RUN_IN_PROGRESS`, `STILL_BLOCKED`,
+  `WORKSPACE_QUARANTINED`, `ROOT_UNSUPPORTED`, `ALREADY_SUPERSEDED`…). Quyết định thiết kế ghi trong ADR-041: làm lại chỉ khi **mọi run đã kết thúc** (nên hủy WorkItem cũ xong ngay trong transaction, không có lúc hai WorkItem
+  cùng một worktree); chỉ cho WorkItem **con** (root có family riêng).
+- **File thừa ngoài scope (mục 4 của spec): đã làm đủ.** `workitemredo.Service` đọc worktree bằng chế độ `WORKING_TREE` của V11-06, đánh dấu ngoài scope (`scopeguard.PathAllowed`), từ chối khi chưa chọn `KEEP`/`PARK`, và `PARK`
+  cất **đúng các file ngoài scope** (`gitworktree.ParkChangedPaths`, test với Git thật) trước lệnh; replay không cất lần hai, lệnh sẽ bị từ chối thì không cất gì.
+- **Bề mặt.** Route `retryWorkItem`, `recreateWorkItem`, `getWorkItemRedoPreview` (105 route), `aw work-item retry|recreate|redo-preview`, parity, UX doc (3 hàng), `validActions` của run diagnostics, liên kết `supersedes`/`supersededBy` trên thẻ
+  Board và chi tiết WorkItem; migration 0051. UI: nút **Run Again** và **Redo with Latest Version** cạnh Cancel Run/Cancel WorkItem, hộp thoại có version ghim và mới nhất, blocker sẽ gỡ, chi phí các lần trước, cảnh báo từ lần thứ ba,
+  chọn Giữ/Cất, ô mang ghi chú (mặc định có), ô lý do; sau khi làm lại chuyển tới WorkItem mới. Kit: `retry-task.sh` gọi một lệnh, thêm `recreate-task.sh`; docs `operator/09-troubleshooting.md`, hướng dẫn issue-tracker.
+- **Test đã chạy thật:** engine trên sqlite thật (20+ ca: ghi chú/blocker/run, replay/conflict, atomicity, từ chối, version mới/cùng version, mang/không mang ghi chú, làm lại của làm lại, cất file, liên kết Board), migration 0051,
+  Git thật cho cất file, HTTP (6 ca), CLI (đối số), Vitest 11 ca mới (304 test xanh), `go test ./...` và `go vet` xanh.
+
+Chưa làm / chưa chạy được: (1) **e2e Playwright** và kịch bản `walk-workflow.py` cho retry/recreate (cần bản cài thật, Linux + jq; khối kit chỉ được kiểm cú pháp `bash -n`); (2) **chưa chạy với Claude thật**: một run hỏng thật rồi bấm hai nút
+trên bản cài; (3) không có nút khôi phục file đã cất trong lần làm lại (dùng `git restore --source=<ref>`, ref nằm trong kết quả và sự kiện); (4) `commit-task.sh` "không còn bị WorkItem cũ chặn" chỉ được suy ra từ việc WorkItem cũ vào `CANCELLED`
+(không chạy script); (5) `RecreateWorkItem` bỏ `ApprovalException` của contract cũ (không có đường đặt lại qua `CreateChildWorkItem`): WorkItem như vậy bị từ chối ở bước READY với lỗi rõ.
 
 ## V11-11 — Xem tiến trình và kết quả của từng node trên web; Chat thành nguồn tin hoạt động của agent
 
@@ -579,6 +778,24 @@ luồng sự kiện ra file; thay đổi cách agent tạo `agent_events` (adapt
   chạy một workflow nhiều node, bấm từng node trong lúc chạy và sau khi xong, thấy đúng tiến trình và kết quả, Chat có tin hoạt động.
 - **Không hồi quy:** `docs-coverage`, parity API/CLI, `v8-alpha-gate` xanh; không thêm truy vấn nào ghi dữ liệu.
 
+### Kết quả triển khai V11-11 (2026-10-11): đọc theo node, lời agent khi hỏng, tin hoạt động trong Chat; chưa đọc được lời nhắc, chưa Playwright và chạy thật
+
+Đã làm (ADR-042):
+
+- **Đọc theo node.** `getNodeRunDetail` và `listAttemptEvents` (hai route chỉ đọc, 107 route), `aw node-run show|events [--follow]`, parity, UX doc (Screen 8 hàng 8–9), `ExplainFailure` (mã lỗi → giải thích + hành động). Redact lúc đọc bằng
+  `Matcher.Redact` (test bắt được lỗi dùng `Matcher.String` chỉ khớp cả giá trị). Phân trang theo `Sequence` qua `ListAfterSequence`, bản ghi bị cắt kích thước.
+- **Giữ lời agent khi hỏng.** Attempt FAILED/TIMED_OUT để lại evidence `AGENT_OUTPUT` một phần (`RECORDED`, không thỏa CompletionPolicy); đường SUCCEEDED không đổi.
+- **Tin hoạt động.** Migration 0052 (`display_only`, `node_run_id`), `ActivityPoster` best-effort sau commit, id tất định nên replay không nhân đôi, bộ lắp ngữ cảnh loại tin `display_only` khỏi khối `messages` (test: khối không đổi).
+  Chat nhận bắt đầu node, lời cuối, kết thúc (outcome / số file / chi phí hoặc lỗi kèm giải thích), chờ duyệt.
+- **Evidence gắn node.** `nodeKey`, `iteration`, `attemptNumber` trên chi tiết evidence; hai media type JSON xem trước được.
+- **UI.** `NodeDetailPane` (đầu vào, tiến trình tự cập nhật theo cursor, kết quả theo loại node, lỗi + việc cần làm, liên kết sang Evidence), nhãn một dòng trên node và danh sách truy cập, graph/timeline làm mới 4 giây khi run còn sống,
+  Evidence có cột node và lọc theo node, Chat có kiểu riêng cho tin hoạt động, bộ lọc "only my messages" và liên kết "view progress". Văn bản luôn là text.
+- **Test đã chạy thật:** sqlite thật (chi tiết từng loại node, phân trang/redact/giới hạn, lời một phần, tin hoạt động một lần, prompt không đổi), migration 0052, HTTP, Vitest (NodeDetailPane 7 ca có axe, TaskDetail.progress 5 ca; toàn bộ
+  Vitest xanh sau khi chạy lại một ca `CreateWorkItemDialog` timeout do tải), `go build`, `go vet`, `go test ./...` xanh.
+
+Chưa làm / chưa chạy được: (1) **đọc lời nhắc** (mục 3 của thực hiện): `InstructionArtifact` chưa được ghi vào DB nên không có tham chiếu để đọc lại; "đầu vào" hiện là định nghĩa, vai trò, outcome, pin; (2) **e2e Playwright** và chạy thật với
+Claude (bấm node trong lúc chạy); (3) tin hoạt động cho câu hỏi làm rõ của agent (chỉ có lời cuối); (4) cập nhật qua SSE (đang thăm dò theo cursor, ghi trong ADR là bước tạm).
+
 ## V11-12 — Sửa và ngừng dùng repository; thông báo lỗi chi tiết khi đăng ký và thăm dò
 
 > Hai thiếu sót đi cùng nhau: đăng ký sai là lỗi rất thường gặp, mà người dùng vừa **không biết sai gì** vừa **không có cách sửa**.
@@ -677,6 +894,24 @@ Tự động chạy `git init` hay `git config` thay người dùng; đổi `id`
 - **Kit:** `init-project.sh` và `add-repository.sh` in lý do khi `BLOCKED`; `kit/tests/check-kit.sh` xanh.
 - **Không hồi quy:** mã lỗi công khai cũ (`INVALID_ARGUMENT`, `NOT_FOUND`) vẫn giữ nguyên; `go test ./...` và `docs-coverage-check` xanh.
 
+### Kết quả triển khai V11-12 (2026-10-12): lỗi thăm dò có loại, sửa/ngừng dùng/xóa repository; chạy thật bằng CLI và worker, chưa Playwright
+
+Đã làm (3 commit `v11-12a` … `v11-12c`, ADR-043):
+
+- **Lỗi có loại.** `internal/adapters/repoprobe/failure.go`: 14 giá trị `failureKind`, mỗi lỗi có `message`, `path`/`resolvedPath`, `detail` (stderr Git đã redact, thông tin xác thực trong URL bị gỡ, cắt 2 KiB) và `hint` chép dán được; Git chạy `LC_ALL=C`. Mã công khai cũ giữ nguyên.
+  Test với Git thật (thư mục không phải repo, thư mục con, bare, chưa commit, ref không có, đường dẫn không có/là file, ngôn ngữ hệ thống khác) và Git giả (dubious ownership, stderr chứa token, stderr quá dài, Git không có).
+- **Lưu và hiển thị.** Migration 0053; `lastProbeError` trong `list`/`show`/`onboarding` (HTTP, CLI); thẻ repository trên web hiện lý do và gợi ý, tải Git output theo yêu cầu.
+- **Kiểm tra trước đăng ký.** `CheckRepository`, route `projectRepositoriesCheck` (GET, chỉ đọc), `aw repository check`; form đăng ký gọi khi rời ô đường dẫn; `init-project.sh`/`add-repository.sh` gọi trước khi đăng ký và in lý do + hướng sửa khi `BLOCKED`.
+- **Sửa / ngừng dùng / xóa.** `UpdateRepository`, `DisableRepository` (thêm cạnh `BLOCKED -> DISABLED`, từ chối `REPOSITORY_IN_USE` kèm danh sách), `DeleteRepository` (chưa từng `ACTIVE`, không tham chiếu theo khóa ngoại của schema, hủy job chờ, dấu xóa, sự kiện); chỉ mục tên duy nhất một phần; id đã xóa không dùng lại và phát lại biên nhận
+  đăng ký sau khi xóa trả `REPOSITORY_DELETED`. Route `repositoriesUpdate|Disable|Delete`, 111 route, parity, UX doc (4 hàng), `validActions`, ba sự kiện có golden fixture.
+- **Giao diện.** Edit / Disable / Delete / Show disabled, kiểm tra đường dẫn trong form đăng ký và form Edit, hộp thoại Disable liệt kê thứ đang giữ, Delete bắt buộc lý do và cảnh báo vĩnh viễn.
+- **Đã chạy thật** (Windows, `aw.exe` vừa build, sqlite thật, `aw worker` thật, Git thật): `repository check` trên thư mục chưa `git init` cho `NOT_A_GIT_REPOSITORY` + lệnh sửa; đăng ký, worker thăm dò ra `BLOCKED` và `show` trả đúng `lastProbeError`; `update` đường dẫn đúng thì worker đưa lên `ACTIVE`; `delete` repository `BLOCKED`
+  (biến mất), `delete` repository `ACTIVE` bị từ chối `REPOSITORY_WAS_ACTIVE`; `disable` rồi `list` ẩn, `list --include-disabled` hiện. Lần chạy này tìm ra một điểm dễ nhầm: cờ phải đặt **trước** đối số vị trí (bộ phân tích cờ của `aw` dừng ở đối số đầu), đã sửa câu hướng dẫn trong usage, kit và tài liệu.
+- **Test:** Go (probe, migration 0053 trên dữ liệu có workspace tham chiếu, lệnh vòng đời trên sqlite thật, sự kiện, HTTP, CLI), Vitest 8 ca mới (324 test xanh), `go vet`, `go test ./internal/delivery/... ./internal/archtest/...`.
+
+Chưa làm / chưa chạy được: (1) **e2e Playwright** của ca thật trên web; (2) kit `init-project.sh`/`add-repository.sh` chỉ được kiểm cú pháp `bash -n` (cần Linux/WSL + jq), phần gọi `aw repository check` được kiểm bằng lệnh CLI trực tiếp; (3) con số "đếm lần đăng ký trong khóa idempotency" của spec không cần: id đã xóa không dùng lại nên đăng ký lại luôn có id, nên khóa, mới;
+(4) chỉ chạy trên máy Windows 10 cục bộ: chưa chạy trên Linux hay CI (các test Git thật và đường dẫn kiểu Git Bash cần kiểm lại ở đó); (5) không có nút khôi phục repository đã ngừng dùng.
+
 ## V11-13 — Đổi tên và lưu trữ Project
 
 > Cùng loại thiếu sót với V11-12 nhưng ở mức Project: tạo nhầm hoặc đặt tên sai là kẹt vĩnh viễn.
@@ -725,6 +960,38 @@ Gộp hai project; di chuyển repository sang project khác; xuất hoặc nh�
 - **Không hồi quy:** `project create`, `list`, `show` giữ hành vi cũ với project `ACTIVE`; `go test ./...`, `docs-coverage-check` xanh.
 - **UI:** Vitest cho hai hộp thoại, bộ lọc, nút theo `validActions`; e2e Playwright: tạo project, đổi tên, lưu trữ (bị chặn khi còn work item, rồi được khi đã dọn), khôi phục, không mở terminal.
 - **Kit:** `init-project.sh` với tên của project đã lưu trữ in đúng gợi ý; `kit/tests/check-kit.sh` xanh.
+
+### Kết quả triển khai V11-13 (2026-10-12): đổi tên, lưu trữ, khôi phục project; lưu trữ là chỉ đọc; chạy thật bằng CLI và worker, chưa Playwright
+
+Đã làm (ADR-044):
+
+- **Lệnh.** `RenameProject`, `ArchiveProject`, `RestoreProject` (một transaction mỗi lệnh, If-Match, biên nhận idempotent, ba sự kiện có golden fixture); tên cắt khoảng trắng, không rỗng, tối đa 200 ký tự. Lưu trữ bị từ chối `PROJECT_BUSY` và liệt kê từng thứ đang chạy
+  (run chưa kết thúc, work item `ACTIVE`/`BLOCKED`, job giữ lease, release set mở); không tự hủy gì; không có xóa cứng.
+- **Chỉ đọc khi lưu trữ, một điểm chặn.** `Receipts().Record` của sqlite từ chối biên nhận trong scope của project `ARCHIVED` (trừ `ArchiveProject`/`RestoreProject`) bằng `PROJECT_ARCHIVED` kèm cách khôi phục; lệnh bị hủy cả transaction. `ClaimJob` bỏ qua job của project lưu trữ. Lệnh của repository nói
+  "đã lưu trữ" trước các luật khác. Đọc vẫn chạy.
+- **Bề mặt.** `projectsRename` (PATCH), `projectsArchive`, `projectsRestore` (114 route), `aw project rename|archive|restore`, `list --include-archived`, `validActions` của project, parity, UX doc (3 hàng).
+- **Giao diện.** Rename (kiểm tên tại chỗ), Archive (nói rõ không xóa gì, liệt kê thứ đang chặn), Restore, "Show archived", banner chỉ đọc và nút ghi bị tắt trên trang project lưu trữ.
+- **Kit.** `init-project.sh` gặp project lưu trữ cùng tên thì in lý do và gợi ý thay vì im lặng dùng lại.
+- **Đã chạy thật** (Windows, `aw.exe`, sqlite, `aw worker`): đổi tên; đăng ký repository (job thăm dò đang chờ) rồi lưu trữ; `list` ẩn, `--include-archived` hiện; đăng ký thêm repository bị `PROJECT_ARCHIVED`; worker chạy 10 giây mà repository vẫn `REGISTERING`; `restore` rồi worker đưa repository lên `ACTIVE`.
+- **Test:** Go (lệnh trên sqlite thật gồm chặn ghi, worker không nhận job, replay, tên sai, version cũ; sự kiện; HTTP; CLI; mọi gate route/parity/contract/archtest), Vitest 5 ca mới (329 test xanh), `go vet`.
+
+Chưa làm / chưa chạy được: (1) **e2e Playwright** (tạo project, đổi tên, lưu trữ bị chặn khi còn work item rồi được khi đã dọn, khôi phục); (2) lưu trữ bị chặn khi còn work item/run/job/release set mới được thử bằng test sqlite (một work item `ACTIVE`), chưa tự dựng cả bốn loại trong một lần chạy thật; (3) `init-project.sh` chỉ được kiểm cú pháp `bash -n`;
+(4) lệnh ghi không có biên nhận (engine nội bộ) không bị chặn, được chấp nhận vì lưu trữ chỉ khi không còn gì chạy; (5) chưa chạy trên Linux/CI.
+
+### Kết quả kiểm chứng bổ sung (2026-10-12): phần chưa kiểm của V11-10 … V11-13
+
+Chạy sau khi hoàn tất một lượt V11; mọi thứ dưới đây chạy thật (không mô phỏng), trừ chỗ ghi rõ.
+
+- **Playwright trên stack thật** (`web/e2e/v11-operations.spec.ts`, cùng `aw serve` + `aw worker` + provider giả của V7-17; cả hai spec xanh khi chạy chung):
+  - V11-12: form đăng ký báo `NOT_A_GIT_REPOSITORY` kèm `git init -b main` **trước khi** đăng ký; thẻ `BLOCKED` nói đúng lý do, hint và Git output; sau `git init` thẻ báo `REF_NOT_FOUND` và liệt kê nhánh; **Edit** sửa ref và repository lên `ACTIVE`; repository `ACTIVE` không còn nút Edit; xóa một đăng ký sai (đường dẫn không có) cần lý do và biến mất; **Disable** ẩn repository, "Show disabled" hiện lại, tên đăng ký lại được.
+  - V11-13: đổi tên; lưu trữ project nhàn rỗi; ẩn khỏi danh sách; banner chỉ đọc và nút Register bị tắt; API từ chối `PROJECT_ARCHIVED`; **Restore** khôi phục; project còn work item mở bị `PROJECT_BUSY` và hộp thoại liệt kê.
+  - V11-11: một run thật hỏng completion policy; bấm node cho thấy đầu vào, tiến trình, kết quả; Chat có tin hoạt động của engine và "only my messages" ẩn chúng; Evidence lọc theo node.
+  - V11-10: **Run Again** gỡ blocker và tạo run thứ hai ngay trên web; WorkItem gốc không có nút Redo (đúng ADR-041); với một WorkItem **con**, sau khi publish lại version 2 của cùng workflow, **Redo with Latest Version** hủy WorkItem cũ, tạo WorkItem mới "replaces …" và chuyển tới nó.
+- **Claude thật** (`web/e2e/real-claude.spec.ts`, mặc định bỏ qua; Claude CLI trên Windows, model sonnet, trần 0,4 USD mỗi attempt): attempt thành công ($0,0543): ngăn node hiện lệnh `Write` thật, lời agent, outcome `done` và chi phí; Chat có "maker started", lời cuối và "maker finished, outcome done, cost …". Attempt bị cắt bởi timeout 6 giây ($0,0881): ngăn node hiện "Agent's last words before it stopped"
+  (lời một phần được giữ), mã lỗi kèm giải thích và hướng xử lý; Chat có lời cuối kèm nhãn. Tổng khoảng 0,14 USD cho hai lần chạy.
+- **Linux thật (WSL Ubuntu, jq 1.7.1 tải riêng)**: `kit/tests/check-kit.sh` 73 đạt và `WALK_ALL=1` 91 đạt; các ca hỏng (mỗi lần chạy một tập khác nhau, từ 2 đến 15) đều là lỗi ngẫu nhiên `sqlite: unexpected error` / `database disk image is malformed` ở bước publish hoặc init do WSL1 không hỗ trợ khóa SQLite đáng tin, ngoài một ca "kit/drafts chưa được git bỏ qua" vì bản sao thử không phải repo Git (bản `aw` dùng để thử phải đổi journal sang TRUNCATE chỉ trong binary thử, mã nguồn không đổi), chạy lại thì qua. `init-project.sh` và `add-repository.sh` thật: thư mục chưa `git init` bị chặn
+  trước khi đăng ký kèm lệnh sửa, đường dẫn không có bị `PATH_NOT_FOUND`, project đã lưu trữ cùng tên in lý do và gợi ý `restore`. `walk-workflow.py` có bước `after` mới và hai kịch bản (`bugfix-repro-exhaust-retry`, `bugfix-repro-exhaust-recreate`): run hết vòng `FAILED`, `retry-task.sh` / `recreate-task.sh` thật chạy lại và run cuối `SUCCEEDED` đúng thứ tự node. Lần chạy này tìm ra `recreate-task.sh` thiếu quyền thực thi trong Git (đã sửa, `100755`). Các test prober chạy trên Linux (build `go test -c` rồi chạy trong WSL) đều xanh.
+- **Vẫn chưa kiểm:** (1) bench A/B của V11-08 bước 4 (nhiều giờ chạy Claude thật và chấm mù, tốn tiền: cần quyết định riêng); (2) đọc lời nhắc (prompt) của agent ở V11-11 (cần ghi `InstructionArtifact` vào DB, chưa làm); (3) `go test ./...` đầy đủ trên Linux/CI (WSL1 không chạy được SQLite đủ tin cậy; chỉ chạy test prober); (4) kiểm tra trên runner Windows của CI; (5) Playwright chưa chạy trên Linux. Quan sát ngoài phạm vi V11: trong lần chạy Claude thật, agent MAKER ghi file vào thư mục `agentkit-gate-scratch-…` thay vì worktree của task; chưa điều tra.
 
 ## Gate của V11
 

@@ -47,21 +47,28 @@ func (p *Provider) CreateLocalCommit(ctx context.Context, req ports.CreateLocalC
 	if err != nil {
 		return workspace.Revision{}, err
 	}
-	if _, err := p.runGit(ctx, workspacePath, "add", "-A"); err != nil {
-		return workspace.Revision{}, err
-	}
-	status, err := p.runGit(ctx, workspacePath, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil {
-		return workspace.Revision{}, err
-	}
-	if len(status) == 0 {
-		return workspace.Revision{}, ErrNothingToCommit
-	}
-	if _, err := p.runGit(ctx, workspacePath,
-		"-c", "user.name="+authorName, "-c", "user.email="+authorEmail,
-		"commit", "-m", message,
-	); err != nil {
-		return workspace.Revision{}, err
+	if req.Selection != nil {
+		// V11-07: only the selected files (localcommit_selection.go).
+		if err := p.createSelectedLocalCommit(ctx, workspacePath, req, message, authorName, authorEmail); err != nil {
+			return workspace.Revision{}, err
+		}
+	} else {
+		if _, err := p.runGit(ctx, workspacePath, "add", "-A"); err != nil {
+			return workspace.Revision{}, err
+		}
+		status, err := p.runGit(ctx, workspacePath, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+		if err != nil {
+			return workspace.Revision{}, err
+		}
+		if len(status) == 0 {
+			return workspace.Revision{}, ErrNothingToCommit
+		}
+		if _, err := p.runGit(ctx, workspacePath,
+			"-c", "user.name="+authorName, "-c", "user.email="+authorEmail,
+			"commit", "-m", message,
+		); err != nil {
+			return workspace.Revision{}, err
+		}
 	}
 
 	head, err := p.resolveCommit(ctx, workspacePath, "HEAD")

@@ -354,6 +354,18 @@ func (e *AgentNodeExecutor) classify(
 		return e.classifyCancellation(ctx, req, resolved)
 	}
 	if agentResult.Status != ports.AgentExecutionSucceeded {
+		// V11-02 (ADR-035): the provider answered but refused the work because the
+		// account hit a session, usage or rate limit. A determinate FAILED whose
+		// code is never retryable: the limit resets in hours, so a retry would
+		// only spend the attempt budget (both attempts failed in seconds in the
+		// B0/B1 bench). The provider's own words, with the reset time, are in the
+		// attempt's PROVIDER_REPORTED_FAILURE diagnostic (V9-20).
+		if agentResult.TerminationReason == ports.TerminationProviderQuotaExceeded {
+			return ports.NodeExecutionResult{
+				State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
+				ErrorCode: errorcode.CodeProviderQuotaExceeded,
+			}, nil
+		}
 		// The provider itself reported a determinate non-success (row 2):
 		// definite FAILED, EXECUTION_FAILED. TIMED_OUT at the provider's
 		// own internal level folds into the same bucket here — this

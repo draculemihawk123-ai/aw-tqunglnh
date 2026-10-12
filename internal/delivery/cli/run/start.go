@@ -11,6 +11,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
+	"github.com/taQuangLing/agent-workflow/internal/app/workspacereconcile"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
 	runtimedomain "github.com/taQuangLing/agent-workflow/internal/domain/runtime"
 )
@@ -111,6 +112,11 @@ func Start(ctx context.Context, deps Dependencies, args []string, stdout, stderr
 	})
 
 	dispatched, err := cli.Dispatch(ctx, deps.UOW, envelope.Command, func(ctx context.Context) (any, error) {
+		// V11-01: refuse early, with an explanation, when a worktree's HEAD is not
+		// the revision aw recorded; a replayed receipt never reaches this closure.
+		if err := workspacereconcile.CheckFamilyWorkspaceHeads(ctx, deps.UOW, deps.HeadAuditor, workItemID); err != nil {
+			return nil, err
+		}
 		return runtime.StartWorkflowRun(ctx, deps.UOW, deps.IDs, envelope.Command, runtime.StartWorkflowRunRequest{
 			ProjectID: projectID, WorkItemID: workItemID, WorkflowVersionID: *workflowVersionID,
 		})

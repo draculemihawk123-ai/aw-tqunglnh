@@ -53,6 +53,11 @@ WHERE actor = ? AND scope_key = ? AND idempotency_key = ? AND command_type = ?`,
 // while a receipt already present with a different RequestHash is
 // reported as ports.ErrReceiptConflict.
 func (r receiptsRepository) Record(ctx context.Context, receipt ports.Receipt) error {
+	// V11-13: an ARCHIVED project is read-only. Every idempotent command records its receipt in the transaction of its writes, so this one check
+	// refuses them all (see guardProjectWritable).
+	if err := guardProjectWritable(ctx, r.tx, receipt); err != nil {
+		return err
+	}
 	result, err := r.tx.ExecContext(ctx, `
 INSERT INTO command_receipts (actor, scope_key, idempotency_key, command_type, request_hash, result_json, error_code, created_at)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?)

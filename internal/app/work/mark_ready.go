@@ -111,68 +111,11 @@ func MarkWorkItemReady(ctx context.Context, uow ports.UnitOfWork, cmd ports.Comm
 			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
 		}
 
-		// Reload the real, current WorkItem fresh, inside this same
-		// transaction — never a value the caller supplies beyond its own ID,
-		// never a projection.
-		item, err := tx.Work().GetWorkItem(ctx, req.WorkItemID)
+		res, err := MarkWorkItemReadyTx(ctx, tx, cmd, req)
 		if err != nil {
 			return err
 		}
-
-		if item.Status != workdomain.WorkItemBacklog {
-			return fmt.Errorf("%w: work item %s is %s", ErrWorkItemNotEligibleForReady, req.WorkItemID, item.Status)
-		}
-
-		// The REAL canonical validator, the exact same one
-		// ExplainWorkItemReadiness already runs read-only — returned
-		// verbatim (a *workdomain.ReadinessError) rather than wrapped, so a
-		// caller sees the identical problem list/vocabulary.
-		problems, err := readinessProblems(ctx, tx, item)
-		if err != nil {
-			return err
-		}
-		if len(problems) > 0 {
-			return &workdomain.ReadinessError{Problems: problems}
-		}
-
-		updated, err := tx.Work().TransitionWorkItemStatus(ctx, ports.TransitionWorkItemStatusRequest{
-			WorkItemID: req.WorkItemID, ExpectedStatus: workdomain.WorkItemBacklog, ExpectedVersion: item.Version,
-			NextStatus: workdomain.WorkItemReady,
-		})
-		if err != nil {
-			return err
-		}
-
-		eventPayload, err := json.Marshal(workItemMarkedReadyEventPayload{
-			WorkItemID: req.WorkItemID, ProjectID: string(item.ProjectID), FamilyID: string(item.FamilyID),
-			MarkedBy: cmd.Actor,
-		})
-		if err != nil {
-			return fmt.Errorf("marshal WorkItemMarkedReady payload: %w", err)
-		}
-		// AggregateType/AggregateID deliberately mint a fresh, decision-scoped
-		// aggregate identity keyed by cmd.ID rather than reusing
-		// "WorkItem"/req.WorkItemID: this WorkItem's own aggregate identity
-		// already carries a Sequence=1 event from its own creation
-		// (RootWorkItemCreated/ChildWorkItemCreated, commands.go) —
-		// domain_events' own UNIQUE(aggregate_type, aggregate_id, sequence)
-		// constraint would reject a second Sequence=1 row there. This mirrors
-		// ApproveScopeExpansion/RejectScopeExpansion/WithdrawScopeExpansion's
-		// own identical "second decision on an already-existing aggregate"
-		// pattern (scope_expansion.go) exactly.
-		if err := tx.Events().Append(ctx, ports.DomainEvent{
-			ID: cmd.ID + "-marked-ready", ProjectID: string(item.ProjectID),
-			AggregateType: "WorkItemReadyMark", AggregateID: cmd.ID, Sequence: 1,
-			EventType: WorkItemMarkedReadyEventType, SchemaVersion: WorkItemMarkedReadySchemaVersion, PayloadJSON: string(eventPayload),
-			CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
-		}); err != nil {
-			return err
-		}
-
-		result = MarkWorkItemReadyResult{
-			WorkItemID: req.WorkItemID, ProjectID: string(item.ProjectID), FamilyID: string(item.FamilyID),
-			Status: string(updated.Status), Version: updated.Version,
-		}
+		result = res
 		resultJSON, err := json.Marshal(result)
 		if err != nil {
 			return fmt.Errorf("marshal receipt result: %w", err)
@@ -184,4 +127,72 @@ func MarkWorkItemReady(ctx context.Context, uow ports.UnitOfWork, cmd ports.Comm
 		})
 	})
 	return result, err
+}
+
+// MarkWorkItemReadyTx is MarkWorkItemReady's transaction body without its idempotency receipt, so RecreateWorkItem
+// (V11-10) can mark the replacement WorkItem READY inside its own transaction. cmd.ID keys the event's aggregate, so
+// a caller composing several steps gives this one its own cmd.ID.
+func MarkWorkItemReadyTx(ctx context.Context, tx ports.Tx, cmd ports.Command, req MarkWorkItemReadyRequest) (MarkWorkItemReadyResult, error) {
+	// Reload the real, current WorkItem fresh, inside this same
+	// transaction — never a value the caller supplies beyond its own ID,
+	// never a projection.
+	item, err := tx.Work().GetWorkItem(ctx, req.WorkItemID)
+	if err != nil {
+		return MarkWorkItemReadyResult{}, err
+	}
+
+	if item.Status != workdomain.WorkItemBacklog {
+		return MarkWorkItemReadyResult{}, fmt.Errorf("%w: work item %s is %s", ErrWorkItemNotEligibleForReady, req.WorkItemID, item.Status)
+	}
+
+	// The REAL canonical validator, the exact same one
+	// ExplainWorkItemReadiness already runs read-only — returned
+	// verbatim (a *workdomain.ReadinessError) rather than wrapped, so a
+	// caller sees the identical problem list/vocabulary.
+	problems, err := readinessProblems(ctx, tx, item)
+	if err != nil {
+		return MarkWorkItemReadyResult{}, err
+	}
+	if len(problems) > 0 {
+		return MarkWorkItemReadyResult{}, &workdomain.ReadinessError{Problems: problems}
+	}
+
+	updated, err := tx.Work().TransitionWorkItemStatus(ctx, ports.TransitionWorkItemStatusRequest{
+		WorkItemID: req.WorkItemID, ExpectedStatus: workdomain.WorkItemBacklog, ExpectedVersion: item.Version,
+		NextStatus: workdomain.WorkItemReady,
+	})
+	if err != nil {
+		return MarkWorkItemReadyResult{}, err
+	}
+
+	eventPayload, err := json.Marshal(workItemMarkedReadyEventPayload{
+		WorkItemID: req.WorkItemID, ProjectID: string(item.ProjectID), FamilyID: string(item.FamilyID),
+		MarkedBy: cmd.Actor,
+	})
+	if err != nil {
+		return MarkWorkItemReadyResult{}, fmt.Errorf("marshal WorkItemMarkedReady payload: %w", err)
+	}
+	// AggregateType/AggregateID deliberately mint a fresh, decision-scoped
+	// aggregate identity keyed by cmd.ID rather than reusing
+	// "WorkItem"/req.WorkItemID: this WorkItem's own aggregate identity
+	// already carries a Sequence=1 event from its own creation
+	// (RootWorkItemCreated/ChildWorkItemCreated, commands.go) —
+	// domain_events' own UNIQUE(aggregate_type, aggregate_id, sequence)
+	// constraint would reject a second Sequence=1 row there. This mirrors
+	// ApproveScopeExpansion/RejectScopeExpansion/WithdrawScopeExpansion's
+	// own identical "second decision on an already-existing aggregate"
+	// pattern (scope_expansion.go) exactly.
+	if err := tx.Events().Append(ctx, ports.DomainEvent{
+		ID: cmd.ID + "-marked-ready", ProjectID: string(item.ProjectID),
+		AggregateType: "WorkItemReadyMark", AggregateID: cmd.ID, Sequence: 1,
+		EventType: WorkItemMarkedReadyEventType, SchemaVersion: WorkItemMarkedReadySchemaVersion, PayloadJSON: string(eventPayload),
+		CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
+	}); err != nil {
+		return MarkWorkItemReadyResult{}, err
+	}
+
+	return MarkWorkItemReadyResult{
+		WorkItemID: req.WorkItemID, ProjectID: string(item.ProjectID), FamilyID: string(item.FamilyID),
+		Status: string(updated.Status), Version: updated.Version,
+	}, nil
 }

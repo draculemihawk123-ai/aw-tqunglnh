@@ -89,6 +89,22 @@ type RequestReleaseSetLocalCommitRequest struct {
 	Message                   string
 	AuthorName                string
 	AuthorEmail               string
+	// Selection (V11-07), when set, restricts the commit to those files; nil commits the
+	// whole worktree as before.
+	Selection *LocalCommitSelectionInput
+}
+
+// LocalCommitSelectionInput is the selective part of a RequestReleaseSetLocalCommitRequest.
+// ApprovalRequestID/WorkItemID/RunID are set when a decision created the operation (so a
+// failure opens RELEASE_FAILED on the right WorkItem); empty for a manual commit.
+type LocalCommitSelectionInput struct {
+	Files             []workdomain.LocalCommitFile
+	Unselected        workdomain.UnselectedHandling
+	Patch             []byte
+	PatchTruncated    bool
+	ApprovalRequestID string
+	WorkItemID        string
+	RunID             string
 }
 
 // RequestReleaseSetLocalCommitResult is what RequestReleaseSetLocalCommit
@@ -159,6 +175,38 @@ func RequestReleaseSetLocalCommit(
 			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
 		}
 
+		result, err = requestLocalCommitTx(ctx, tx, ids, cmd, req, cmd.ID+"-requested")
+		if err != nil {
+			return err
+		}
+		resultJSON, err := json.Marshal(result)
+		if err != nil {
+			return fmt.Errorf("marshal receipt result: %w", err)
+		}
+		return tx.Receipts().Record(ctx, ports.Receipt{
+			Actor: cmd.Actor, Scope: cmd.Scope, IdempotencyKey: cmd.IdempotencyKey,
+			CommandType: cmd.Type, RequestHash: cmd.RequestHash, ResultJSON: string(resultJSON),
+			CreatedAt: cmd.RequestedAt,
+		})
+	})
+	return result, err
+}
+
+// requestLocalCommitTx is RequestReleaseSetLocalCommit's transactional core, without the
+// command receipt: it checks the ReleaseSet and workspace pins, creates the REQUESTED operation
+// (and, for a selective commit, its selection record), enqueues the job and appends the
+// requested event under eventID. RequestReleaseSetLocalCommit wraps it with the receipt; the
+// approval-bound path (approval_bound.go) calls it once per repository inside the decision's own
+// transaction.
+func requestLocalCommitTx(
+	ctx context.Context, tx ports.Tx, ids idsource.Source, cmd ports.Command, req RequestReleaseSetLocalCommitRequest, eventID string,
+) (RequestReleaseSetLocalCommitResult, error) {
+	message := strings.TrimSpace(req.Message)
+	authorName := strings.TrimSpace(req.AuthorName)
+	authorEmail := strings.TrimSpace(req.AuthorEmail)
+
+	var result RequestReleaseSetLocalCommitResult
+	err := func() error {
 		releaseSet, err := tx.Work().GetReleaseSet(ctx, req.ReleaseSetID)
 		if err != nil {
 			return err
@@ -218,6 +266,19 @@ func RequestReleaseSetLocalCommit(
 		if err != nil {
 			return err
 		}
+		if req.Selection != nil {
+			selection, err := workdomain.NewReleaseSetLocalCommitSelection(
+				stored.ID, req.Selection.ApprovalRequestID, req.Selection.WorkItemID, req.Selection.RunID,
+				req.Selection.Files, SelectionDigest(req.Selection.Files), req.Selection.Unselected,
+				req.Selection.Patch, req.Selection.PatchTruncated, cmd.RequestedAt,
+			)
+			if err != nil {
+				return err
+			}
+			if err := tx.Work().CreateReleaseSetLocalCommitSelection(ctx, selection); err != nil {
+				return err
+			}
+		}
 
 		payload, err := json.Marshal(localCommitJobPayload{ReleaseSetLocalCommitID: string(stored.ID)})
 		if err != nil {
@@ -241,7 +302,7 @@ func RequestReleaseSetLocalCommit(
 			return fmt.Errorf("marshal %s event payload: %w", ReleaseSetLocalCommitRequestedEventType, err)
 		}
 		if err := tx.Events().Append(ctx, ports.DomainEvent{
-			ID: cmd.ID + "-requested", ProjectID: req.ProjectID,
+			ID: eventID, ProjectID: req.ProjectID,
 			AggregateType: aggregateType, AggregateID: string(stored.ID), Sequence: 1,
 			EventType: ReleaseSetLocalCommitRequestedEventType, SchemaVersion: ReleaseSetLocalCommitRequestedSchemaVersion,
 			PayloadJSON: string(eventPayload), CorrelationID: cmd.CorrelationID, CreatedAt: cmd.RequestedAt,
@@ -254,15 +315,7 @@ func RequestReleaseSetLocalCommit(
 			RepositoryWorkspaceID: req.RepositoryWorkspaceID, State: string(stored.State),
 			JobID: string(job.ID), Marker: stored.Marker,
 		}
-		resultJSON, err := json.Marshal(result)
-		if err != nil {
-			return fmt.Errorf("marshal receipt result: %w", err)
-		}
-		return tx.Receipts().Record(ctx, ports.Receipt{
-			Actor: cmd.Actor, Scope: cmd.Scope, IdempotencyKey: cmd.IdempotencyKey,
-			CommandType: cmd.Type, RequestHash: cmd.RequestHash, ResultJSON: string(resultJSON),
-			CreatedAt: cmd.RequestedAt,
-		})
-	})
+		return nil
+	}()
 	return result, err
 }

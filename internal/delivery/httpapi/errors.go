@@ -177,7 +177,7 @@ func StatusForAppErrorCode(code apperror.Code) (int, ErrorCode) {
 		return http.StatusLocked, ErrorCodeConflict
 	case errorcode.CodePolicyDenied, errorcode.CodeScopeViolation:
 		return http.StatusForbidden, ErrorCodeForbidden
-	case errorcode.CodeUnavailable, errorcode.CodeProviderUnavailable, errorcode.CodeIsolationEnforcementUnavailable:
+	case errorcode.CodeUnavailable, errorcode.CodeProviderUnavailable, errorcode.CodeProviderQuotaExceeded, errorcode.CodeIsolationEnforcementUnavailable:
 		return http.StatusServiceUnavailable, ErrorCodeUnavailable
 	case errorcode.CodeTimeout:
 		return http.StatusGatewayTimeout, ErrorCodeUnavailable

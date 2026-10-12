@@ -12,7 +12,7 @@
                  "policyRefs": [{"$ref": "policy:policy-attempt-once"}, {"$ref": "policy:policy-permission"}],
                  "failureOutcome": "failed"}},
     {"key": "approve-lessons", "type": "APPROVAL", "outcomes": ["approved", "revise", "rejected"],
-     "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "rejected"},
+     "approval": {"release": {"commit": "OFFERED", "outcomes": ["approved"]}, "authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "rejected"},
      "cyclePolicy": {"maxIterations": 3, "escalationOutcome": "rejected"}},
     {"key": "needs-info", "type": "APPROVAL", "outcomes": ["provided", "abandon"],
      "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 604800, "escalationOutcome": "abandon"},

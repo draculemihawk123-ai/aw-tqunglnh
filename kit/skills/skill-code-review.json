@@ -8,11 +8,11 @@
           "CHECKER"
         ]
       },
-      "instruction": "Review dựa trên bằng chứng, không dựa trên cảm giác. (1) Mỗi phát hiện phải nêu file và dòng bạn đã đọc, hành vi quan sát được và hậu quả; không có bằng chứng thì không đưa vào danh sách phát hiện, chỉ được ghi riêng dưới tiêu đề \"Nghi ngờ chưa xác minh\". (2) Coi code có thể do AI viết: không tin hình thức gọn gàng, comment tự tin hay test chỉ chạy đường đi thuận; đối chiếu hành vi thật với yêu cầu. (3) Bạn chỉ đọc và không chạy được lệnh: không viết \"test pass\", \"build xanh\", \"đã xác minh\" nếu chưa thấy bằng chứng đó trong prompt hoặc trong file; luôn phân biệt \"đã đọc code\" với \"đã chạy\". Kết luận không được dùng \"có lẽ\", \"chắc là\", \"should\". (4) Không duyệt cho qua để giữ nhịp: `approved` chỉ khi đã đối chiếu từng acceptanceCriteria với code và test thật; không khen chung chung.",
+      "instruction": "Review on evidence, not on feeling. (1) Every finding states the file and line you read, the behaviour observed and the consequence; without evidence it does not go in the list of findings, it may only be written separately under the heading \"Unverified suspicions\". (2) Assume the code may have been written by an AI: do not trust tidy form, confident comments or tests that only run the happy path; compare the real behaviour with the requirements. (3) You only read and cannot run commands: do not write \"tests pass\", \"build is green\" or \"verified\" unless you saw that evidence in the prompt or in a file; always distinguish \"read the code\" from \"ran it\". A conclusion must not use \"probably\", \"most likely\" or \"should\". (4) Do not approve to keep the pace: `approved` only after comparing each acceptanceCriteria with the real code and tests; no generic praise.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-code-review.json",
-        "revision": "v2",
+        "revision": "v3",
         "lastVerified": "2026-10-07T00:00:00Z"
       }
     },
@@ -24,11 +24,11 @@
           "CHECKER"
         ]
       },
-      "instruction": "Review theo hai giai đoạn, đúng thứ tự. Giai đoạn 1 — đúng yêu cầu: với từng acceptanceCriteria, tìm đoạn code hiện thực nó và test kiểm nó; ghi \"thiếu\" khi không tìm thấy, hoặc chỉ có stub, TODO, hàm rỗng, hàm trả giá trị cố định. Tìm phần thừa không ai yêu cầu (tính năng thêm, file ngoài phạm vi, refactor không liên quan) và gọi tên là lệch phạm vi. Giai đoạn 2 — chất lượng, chỉ khi giai đoạn 1 đã xong: lần theo đường đi của dữ liệu từ đầu vào tới nơi lưu và ngược lại, từng đường lỗi, từng biên (rỗng, null, âm, quá dài, trùng, đồng thời), rồi soát: lỗi logic và hồi quy ở code đã có; xử lý lỗi (nuốt exception, mã trạng thái sai); bảo mật và dữ liệu (nối chuỗi vào SQL, thiếu validate, lộ secret); độ tin cậy; bảo trì theo YAGNI, KISS, DRY (trừu tượng thừa, copy-paste, hằng số cứng). Soi kỹ các dấu hiệu code AI cẩu thả: test không có assertion hoặc chỉ assert điều hiển nhiên, mock toàn bộ thứ cần kiểm, test bị tắt (@Disabled, .skip), comment mô tả điều code không làm, khối catch rỗng, dependency thêm mà không dùng.",
+      "instruction": "Review in two stages, in order. Stage 1 - meets the requirements: for each acceptanceCriteria, find the code that implements it and the test that checks it; write \"missing\" when you cannot find it, or when there is only a stub, a TODO, an empty function or a function returning a fixed value. Look for surplus nobody asked for (extra features, files outside the scope, unrelated refactoring) and call it scope drift. Stage 2 - quality, only after stage 1 is done: follow the data from the input to where it is stored and back, each error path, each boundary (empty, null, negative, too long, duplicate, concurrent), then check: logic errors and regressions in existing code; error handling (swallowed exceptions, wrong status codes); security and data (string concatenation into SQL, missing validation, exposed secrets); reliability; maintainability by YAGNI, KISS, DRY (needless abstraction, copy-paste, hard-coded constants). Look closely for the signs of sloppy AI code: tests with no assertion or asserting only the obvious, mocking everything that should be checked, disabled tests (@Disabled, .skip), comments describing what the code does not do, empty catch blocks, dependencies added but unused.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-code-review.json",
-        "revision": "v2",
+        "revision": "v3",
         "lastVerified": "2026-10-07T00:00:00Z"
       }
     },
@@ -40,11 +40,11 @@
           "CHECKER"
         ]
       },
-      "instruction": "Báo cáo cuối ngắn, thẳng, xếp theo mức nghiêm trọng. Mỗi phát hiện một mục: [mức] file:dòng — vấn đề — bằng chứng — cách sửa tối thiểu. Mức Critical: sai chức năng, mất dữ liệu, lỗ hổng bảo mật, hoặc thiếu hẳn một acceptanceCriteria. Mức Important: hồi quy tiềm ẩn, thiếu test cho một acceptanceCriteria, xử lý lỗi sai, hiệu năng hay kiểu dữ liệu có hại, lệch phạm vi. Mức Minor: bảo trì, đặt tên, phong cách, không chặn. Đừng hạ mức một phát hiện để cho qua, và đừng nâng mức điều nằm ngoài acceptanceCriteria của task. Có Critical hoặc Important thì chọn outcome `rework` theo review.checklist; chỉ còn Minor hoặc không có gì thì `approved`. Báo cáo gồm các mục: Phạm vi đã đọc; Phát hiện theo mức; Edge case dò được; Điều không kiểm chứng được vì chỉ đọc; Câu hỏi chưa giải quyết. Khi không có phát hiện nào, vẫn liệt kê đã đối chiếu acceptanceCriteria nào với file nào. Không nhắc lại nội dung task, không mở bài dài dòng.",
+      "instruction": "The final report is short, direct, ordered by severity. One entry per finding: [level] file:line - problem - evidence - minimal fix. Critical: wrong behaviour, data loss, a security hole, or a whole acceptanceCriteria missing. Important: a possible regression, a missing test for an acceptanceCriteria, wrong error handling, harmful performance or data types, scope drift. Minor: maintainability, naming, style, not blocking. Do not lower a finding's level to let it pass, and do not raise the level of something outside the task's acceptanceCriteria. With any Critical or Important choose the outcome `rework` following review.checklist; with only Minor or nothing, `approved`. The report has these sections: Scope read; Findings by level; Edge cases found; What could not be verified because you only read; Unresolved questions. When there are no findings, still list which acceptanceCriteria you compared with which files. Do not restate the task, do not open with a long preamble.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-code-review.json",
-        "revision": "v2",
+        "revision": "v3",
         "lastVerified": "2026-10-07T00:00:00Z"
       }
     },
@@ -59,10 +59,10 @@
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-code-review.json",
-        "revision": "v2",
+        "revision": "v3",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "instruction": "Dò edge case trước khi review. Từ danh sách file thay đổi, tìm điều mà diff không cho thấy: nơi gọi và thành phần phụ thuộc bị ảnh hưởng, luồng dữ liệu đi qua thay đổi, điều kiện biên, thứ tự bất đồng bộ, trạng thái dùng chung bị đổi. Đọc các nơi gọi đó, không suy từ tên. Ghi kết quả vào mục \"Edge case dò được\" của báo cáo; edge case có thật và chưa được test thì là phát hiện, không chỉ ghi chú."
+      "instruction": "Scout edge cases before reviewing. From the list of changed files, look for what the diff does not show: callers and dependents that are affected, data flows that pass through the change, boundary conditions, asynchronous ordering, shared state that is changed. Read those callers, do not infer from names. Write the results in the \"Edge cases found\" section of the report; an edge case that is real and untested is a finding, not just a note."
     },
     {
       "key": "codereview.checklist",
@@ -75,10 +75,10 @@
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-code-review.json",
-        "revision": "v2",
+        "revision": "v3",
         "lastVerified": "2026-10-07T00:00:00Z"
       },
-      "instruction": "Trước khi gửi báo cáo, tự rà từng mục và ghi mục nào bạn thật sự đã xem: tranh chấp và thứ tự bất đồng bộ, trạng thái dùng chung; ranh giới lỗi (mỗi ngoại lệ được bắt và xử lý hoặc được truyền đi có chủ ý); hợp đồng API (bên gọi giả định gì về null, hình dạng, thời điểm so với điều bên được gọi bảo đảm); tương thích ngược (giao diện công khai, lược đồ dữ liệu); kiểm tra đầu vào ở ranh giới hệ thống chứ không chỉ ở giao diện; xác thực và phân quyền cho mọi thao tác nhạy cảm; truy vấn (N+1, thiếu chỉ mục ở cột lọc, vòng lặp không giới hạn); rò rỉ dữ liệu (thông tin cá nhân, bí mật, stack trace ra ngoài)."
+      "instruction": "Before sending the report, check each item yourself and write down which ones you really looked at: races and asynchronous ordering, shared state; error boundaries (each exception is caught and handled, or passed on on purpose); the API contract (what the caller assumes about null, shape and timing against what the callee guarantees); backward compatibility (public interface, data schema); input validation at the system boundary and not only in the UI; authentication and authorization for every sensitive operation; queries (N+1, missing index on filter columns, unbounded loops); data leaks (personal data, secrets, stack traces going out)."
     }
   ]
 }

@@ -1,10 +1,10 @@
 #!/bin/sh
-# COMMAND "temp-artifacts" (V10-15): chặn rác để quên trong diff chưa commit: lệnh gỡ lỗi, test bị tắt hoặc chỉ chạy một phần, TODO mới.
-# Chỉ xét các dòng THÊM VÀO (diff so với HEAD và file chưa theo dõi), không xét code cũ. Mỗi lỗi in theo dạng WHAT / WHY / FIX
-# vì agent chỉ nhận 4 KiB cuối của stderr. Thoát mã 1 nếu có.
+# COMMAND "temp-artifacts" (V10-15): blocks leftovers in the uncommitted diff: debug statements, tests that are disabled or run only in part, new TODOs.
+# Only ADDED lines are examined (the diff against HEAD and untracked files), not old code. Every error is printed as WHAT / WHY / FIX
+# because the agent only receives the last 4 KiB of stderr. Exits 1 if there is any.
 set -eu
-. "${AW_KIT:?đặt AW_KIT=<thư mục kit> khi chạy tay}/commands/lib.sh" # @aw-include
-git rev-parse --verify -q HEAD > /dev/null || aw_fail "temp-artifacts: repository chưa có commit nào"
+. "${AW_KIT:?set AW_KIT=<kit directory> when running by hand}/commands/lib.sh" # @aw-include
+git rev-parse --verify -q HEAD > /dev/null || aw_fail "temp-artifacts: the repository has no commit yet"
 added=$(mktemp)
 trap 'rm -f "$added"' EXIT
 skip='(^|/)(docs/|node_modules/|target/|dist/|build/)|\.md$|(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$|^kit/|(^|/)commands/[^/]*\.sh$'
@@ -19,7 +19,7 @@ skip='(^|/)(docs/|node_modules/|target/|dist/|build/)|\.md$|(package-lock\.json|
   done
 } | grep -v -E "^($skip)" > "$added" || true
 found=0
-report() { # <mã> <regex> <WHAT> <WHY> <FIX>
+report() { # <code> <regex> <WHAT> <WHY> <FIX>
   hits=$(grep -E -e "^[^:]+:[0-9]+:.*($2)" "$added" | head -n 5 | cut -c1-200 || true)
   [ -n "$hits" ] || return 0
   found=1
@@ -29,16 +29,16 @@ report() { # <mã> <regex> <WHAT> <WHY> <FIX>
   echo "FIX: $5" >&2
 }
 report debugger '(^|[^A-Za-z_])debugger;|System\.out\.print|printStackTrace\(\)|console\.(log|debug)\(' \
-  "lệnh gỡ lỗi để quên (debugger, console.log, System.out, printStackTrace)" \
-  "log gỡ lỗi làm bẩn output và có thể lộ dữ liệu" "xóa các dòng trên, hoặc đổi sang logger của dự án nếu cần giữ"
+  "forgotten debug statements (debugger, console.log, System.out, printStackTrace)" \
+  "debug logging pollutes the output and can leak data" "remove the lines above, or switch to the project's logger if the logging must stay"
 report only '(describe|it|test|context)\.only\(|(^|[^A-Za-z_])f(describe|it)\(' \
-  "test chỉ chạy một phần (.only, fit, fdescribe)" \
-  "các test còn lại bị bỏ qua nên bước kiểm tra xanh giả" "bỏ .only và chạy lại toàn bộ test"
+  "tests that run only in part (.only, fit, fdescribe)" \
+  "the other tests are skipped so the check is falsely green" "remove .only and run the whole test suite again"
 report disabled '@Disabled|@Ignore\b|(describe|it|test)\.skip\(|(^|[^A-Za-z_])x(describe|it)\(' \
-  "test bị tắt (@Disabled, @Ignore, .skip, xit)" \
-  "test tắt che lỗi thật, và tắt test để được xanh là lối tắt bị cấm" "bật lại test và sửa code cho test đạt; nếu test thật sự sai thì sửa test và nêu lý do trong báo cáo"
+  "disabled tests (@Disabled, @Ignore, .skip, xit)" \
+  "a disabled test hides a real bug, and disabling a test to get green is a forbidden shortcut" "enable the test again and fix the code so it passes; if the test itself is wrong, fix the test and say why in your report"
 report todo '(TODO|FIXME|XXX)([^A-Za-z]|$)' \
-  "TODO/FIXME mới thêm vào code" \
-  "việc dở dang bị chôn trong code, không ai theo dõi" "làm xong ngay, hoặc ghi vào báo cáo cuối của bạn thay vì để trong code"
+  "a newly added TODO/FIXME in code" \
+  "unfinished work buried in code that nobody tracks" "finish it now, or put it in your final report instead of leaving it in the code"
 [ "$found" = 0 ] || exit 1
-echo "temp-artifacts: không có rác trong các dòng thêm vào"
+echo "temp-artifacts: no leftovers in the added lines"

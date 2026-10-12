@@ -49,3 +49,33 @@ type ProbedComponent struct {
 type RepositoryProber interface {
 	Probe(ctx context.Context, localPath string, defaultRef string) (RepositoryProbeEvidence, error)
 }
+
+// ProbeFailureKind is the closed vocabulary (V11-12, ADR-043) that separates the causes a probe failure used to fold into one sentence. It is
+// carried in apperror.Error.Details[ProbeDetailFailureKind]; the public error Code (INVALID_ARGUMENT, NOT_FOUND, UNAVAILABLE) is unchanged.
+type ProbeFailureKind string
+
+const (
+	ProbeFailurePathEmpty         ProbeFailureKind = "PATH_EMPTY"
+	ProbeFailurePathNotFound      ProbeFailureKind = "PATH_NOT_FOUND"
+	ProbeFailurePathNotDirectory  ProbeFailureKind = "PATH_NOT_DIRECTORY"
+	ProbeFailureNotAGitRepository ProbeFailureKind = "NOT_A_GIT_REPOSITORY"
+	ProbeFailureDubiousOwnership  ProbeFailureKind = "DUBIOUS_OWNERSHIP"
+	ProbeFailureBareRepository    ProbeFailureKind = "BARE_REPOSITORY"
+	ProbeFailureNotTopLevel       ProbeFailureKind = "NOT_TOP_LEVEL"
+	ProbeFailureNoCommits         ProbeFailureKind = "NO_COMMITS"
+	ProbeFailureRefNotFound       ProbeFailureKind = "REF_NOT_FOUND"
+	ProbeFailureRefInvalid        ProbeFailureKind = "REF_INVALID"
+	ProbeFailureGitNotFound       ProbeFailureKind = "GIT_NOT_FOUND"
+	ProbeFailurePermissionDenied  ProbeFailureKind = "PERMISSION_DENIED"
+	ProbeFailureGitFailed         ProbeFailureKind = "GIT_FAILED"
+	ProbeFailureTimeout           ProbeFailureKind = "TIMEOUT"
+)
+
+// The keys of apperror.Error.Details a RepositoryProber sets on every failure.
+const (
+	ProbeDetailFailureKind  = "failureKind"
+	ProbeDetailPath         = "path"
+	ProbeDetailResolvedPath = "resolvedPath"
+	ProbeDetailDetail       = "detail"
+	ProbeDetailHint         = "hint"
+)

@@ -26,7 +26,8 @@
  * below is the one hand-written real fetch this task adds in its place.
  */
 
-import { ApiError } from './generated';
+import { ApiError, getWorkspaceDiff } from './generated';
+import { withSessionToken } from './session';
 import type { ValidAction } from './kanban';
 
 export interface RepositoryWorkspaceState {
@@ -66,6 +67,12 @@ export interface DiffFileChange {
   additions: number;
   deletions: number;
   binary: boolean;
+  /** Working-tree diff only (V11-06). */
+  status?: 'ADDED' | 'MODIFIED' | 'DELETED' | 'TYPE_CHANGED';
+  untracked?: boolean;
+  symlink?: boolean;
+  sizeBytes?: number;
+  contentHash?: string;
 }
 
 export interface DiffContent {
@@ -78,6 +85,45 @@ export interface DiffContent {
   fileLimit: number;
   filesTruncated: boolean;
   patchTruncated: boolean;
+  /**
+   * V11-06: set for a `result=WORKING_TREE` response — the worktree's UNCOMMITTED state on
+   * top of `baseRevision` (there is no result commit). `totalFiles` counts the whole change set
+   * even when `files` is cut at `fileLimit`.
+   */
+  uncommitted?: boolean;
+  totalFiles?: number;
+  changeSetDigest?: string;
+}
+
+/** The server's word for "the worktree's uncommitted state" in a diff request (V11-06). */
+export const WORKING_TREE_RESULT = 'WORKING_TREE';
+
+/** The worktree's uncommitted state on top of a repository workspace's current revision (V11-06). */
+export function fetchWorkingTreeDiff(projectId: string, repo: RepositoryWorkspaceState): Promise<DiffContent> {
+  return getWorkspaceDiff(projectId, repo.repositoryWorkspaceId, {
+    ...withSessionToken(),
+    query: {
+      repositoryId: repo.repositoryId, workspaceSetId: repo.workspaceSetId,
+      base: repo.currentRevision ?? '', baseGeneration: String(repo.generation), result: WORKING_TREE_RESULT,
+    },
+  }) as unknown as Promise<DiffContent>;
+}
+
+/** The query key under which a repository workspace's working-tree diff is cached (shared by every consumer). */
+export function workingTreeQueryKey(projectId: string, repo?: RepositoryWorkspaceState) {
+  return ['workspaceWorkingTreeDiff', projectId, repo?.repositoryWorkspaceId, repo?.currentRevision, repo?.version] as const;
+}
+
+/** Totals of an uncommitted diff, for one-line summaries ("3 files changed, +41 −2"). */
+export function summarizeUncommitted(diff: DiffContent | undefined): { files: number; additions: number; deletions: number } {
+  if (!diff?.uncommitted) return { files: 0, additions: 0, deletions: 0 };
+  let additions = 0;
+  let deletions = 0;
+  for (const file of diff.files) {
+    additions += file.additions;
+    deletions += file.deletions;
+  }
+  return { files: diff.totalFiles ?? diff.files.length, additions, deletions };
 }
 
 /** Decodes GetWorkspaceDiffResponse.patch's own base64 body into the real UTF-8 patch text. */

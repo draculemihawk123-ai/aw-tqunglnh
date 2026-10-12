@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-plan.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Chọn lane dựa trên bằng chứng, không dựa trên cảm giác. Phân loại độ phức tạp của task: đơn giản (một file, chỗ sửa hiển nhiên, nguyên nhân đã xác nhận chứ không đoán); vừa (2 đến 5 file, hoặc cần điều tra mới xác nhận được nguyên nhân); phức tạp (hơn 5 file, quyết định kiến trúc, bảo mật hoặc hiệu năng, nhiều lớp tương tác). Lane `fast` chỉ khi đúng điều kiện cứng của flow.frame; loại \"vừa\" trở lên, hoặc bạn không chắc, thì chọn `full`. Trong frame.md ghi bằng chứng cho phân loại: các file sẽ chạm và cách bạn tìm ra chúng. Nếu task gồm nhiều việc độc lập thì nói rõ để người vận hành chia nhỏ."
+   "instruction": "Choose the lane on evidence, not on feeling. Classify the task's complexity: simple (one file, an obvious change, the cause confirmed and not guessed); medium (2 to 5 files, or investigation is needed before the cause can be confirmed); complex (more than 5 files, an architecture, security or performance decision, several layers interacting). Lane `fast` only when the hard conditions of flow.frame hold; for \"medium\" and above, or when you are unsure, choose `full`. In frame.md record the evidence for the classification: the files you will touch and how you found them. If the task consists of several independent pieces of work, say so clearly so the operator can split it."
   },
   {
    "key": "plan.checklist",
@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-plan.json",
-    "revision": "v2",
+    "revision": "v3",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "plan.md phải đủ cụ thể để BUILD không phải đoán. Gồm: (1) file sẽ tạo hoặc sửa, theo thứ tự làm, mỗi file một dòng lý do; (2) các bước kèm phụ thuộc giữa chúng (bước nào phải xong trước); (3) với mỗi AC của task: test sẽ viết (tên hoặc mô tả) và điều nó chứng minh, gồm cả đường lỗi; (4) lệnh kiểm tra cuối cùng mà workflow sẽ chạy; (5) rủi ro của task kèm cách giảm, và cách hoàn tác nếu thay đổi khó đảo ngược (migration, đổi hợp đồng); (6) tiêu chí xong đo được. Plan bám thiết kế đã duyệt: nếu thấy cần lệch thì nêu lý do trong plan thay vì lặng lẽ đổi. Mỗi mục trong sáu mục trên là một tiêu đề cấp hai (##) riêng, đặt tên: \"Tệp sẽ sửa\", \"Các bước\", \"Test cho từng AC\", \"Lệnh kiểm tra cuối\", \"Rủi ro và hoàn tác\", \"Tiêu chí xong\"; workflow có bước kiểm máy các tiêu đề này và gửi plan về cho bạn nếu thiếu."
+   "instruction": "plan.md must be concrete enough that BUILD does not have to guess. It contains: (1) the files to create or change, in the order of work, one line of reason per file; (2) the steps with the dependencies between them (which step must be done first); (3) for each AC of the task: the test to write (name or description) and what it proves, error paths included; (4) the final verification command the workflow will run; (5) the task's risks with their mitigation, and how to roll back if the change is hard to reverse (a migration, a contract change); (6) measurable done criteria. The plan follows the approved design: if you see a need to deviate, give the reason in the plan instead of silently changing. Each of the six items above is its own second-level heading (##), named: \"Files to change\", \"Steps\", \"Tests for each AC\", \"Final verification command\", \"Risks and rollback\", \"Done criteria\"; the workflow has a machine check of these headings and sends the plan back to you if one is missing."
   }
  ]
 }

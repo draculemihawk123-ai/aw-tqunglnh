@@ -152,3 +152,15 @@ func normalizePath(value string) (string, bool) {
 	value = path.Clean(value)
 	return value, value != "." && value != ""
 }
+
+// PathAllowed reports whether a change to path in repositoryID is covered by one of the WRITE scopes: the check ValidateDiffs applies
+// to each changed path, exposed so a caller can say which paths of a worktree are out of scope without raising an error (V11-10).
+func PathAllowed(scopes []work.RepositoryScope, repositoryID project.RepositoryID, path string) bool {
+	var grants [][]string
+	for _, scope := range scopes {
+		if scope.Access() == work.RepositoryWrite && scope.RepositoryID() == repositoryID {
+			grants = append(grants, scope.PathScopes())
+		}
+	}
+	return isAllowed(path, grants)
+}

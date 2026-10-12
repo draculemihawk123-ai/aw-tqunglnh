@@ -8,11 +8,11 @@
           "CHECKER"
         ]
       },
-      "instruction": "Bạn là agent CHECKER: nhiệm vụ là đánh giá thay đổi mà agent MAKER vừa làm, không phải làm thay. Bạn bắt đầu trong một thư mục trống; repository cần xem nằm ở đường dẫn tuyệt đối được nêu trong system prompt và được đánh dấu READ_ONLY. Chỉ đọc: không tạo, sửa hay xóa file nào trong repository, và cũng không để lại file ở nơi khác. Một thay đổi bất kỳ trong repository làm attempt thất bại với SCOPE_VIOLATION.",
+      "instruction": "You are a CHECKER agent: your job is to assess the change the MAKER agent just made, not to do it for them. You start in an empty directory; the repository to look at is at the absolute path given in the system prompt and is marked READ_ONLY. Read only: do not create, change or delete any file in the repository, and do not leave files anywhere else. Any change in the repository fails the attempt with SCOPE_VIOLATION.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-review.json",
-        "revision": "v3",
+        "revision": "v4",
         "lastVerified": "2026-10-06T00:00:00Z"
       }
     },
@@ -24,11 +24,11 @@
           "CHECKER"
         ]
       },
-      "instruction": "Cách review: (1) đọc taskContract (behavior, acceptanceCriteria) và mọi message; (2) trong repository, xem thay đổi chưa commit bằng `git status` và `git diff` nếu được phép chạy lệnh, nếu không thì đọc trực tiếp các file liên quan tới task; (3) đối chiếu từng acceptanceCriteria với code và test; (4) đối chiếu với các convention trong prompt (hardConstraints và resources) và Definition of Done. Chọn outcome `approved` khi mọi acceptanceCriteria được đáp ứng bằng code thật, có test tương ứng và không vi phạm luật bắt buộc nào. Chọn `rework` trong mọi trường hợp còn lại. Trong câu trả lời cuối, trước dòng marker, liệt kê cụ thể từng điểm: file, vấn đề, và điều cần sửa — người vận hành và vòng sửa sau dựa vào danh sách này. Dòng marker outcome phải nằm cuối CHÍNH tin nhắn cuối cùng của bạn; tin nhắn cuối không có marker thì node bị VALIDATION_FAILED. Đừng viết tin nhắn bổ sung sau marker, và nếu còn đọc thêm file sau khi đã viết kết luận thì lặp lại marker ở tin cuối.",
+      "instruction": "How to review: (1) read taskContract (behavior, acceptanceCriteria) and every message; (2) in the repository, look at the uncommitted change with `git status` and `git diff` if you may run commands, otherwise read the files related to the task directly; (3) compare each acceptanceCriteria with the code and tests; (4) compare with the conventions in the prompt (hardConstraints and resources) and the Definition of Done. Choose the outcome `approved` when every acceptanceCriteria is met by real code, has a matching test and violates no mandatory rule. Choose `rework` in every other case. In the final answer, before the marker line, list each point concretely: file, problem, and what to fix - the operator and the next fix round rely on this list. The outcome marker line must be at the end of YOUR VERY LAST message; if the last message has no marker the node fails with VALIDATION_FAILED. Do not write an extra message after the marker, and if you read more files after writing the conclusion, repeat the marker in the last message.",
       "provenance": {
         "owner": "aw-kit",
         "source": "kit/skills/skill-review.json",
-        "revision": "v3",
+        "revision": "v4",
         "lastVerified": "2026-10-06T00:00:00Z"
       }
     }

@@ -57,6 +57,14 @@ func writeQueryError(w http.ResponseWriter, err error) {
 		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict,
 			"the repository workspace is not currently READY for inspection", nil)
 
+	case errors.Is(err, appinspection.ErrWorkspaceWriterActive):
+		httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict,
+			"an attempt is writing to this repository workspace, so its uncommitted state is in flux; wait for it to finish or cancel it", nil)
+
+	case errors.Is(err, ports.ErrWorkingTreeTooLarge):
+		httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest,
+			"the worktree has too many changed paths to describe; add the generated files to .gitignore or remove them", nil)
+
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		httpapi.WriteError(w, http.StatusServiceUnavailable, httpapi.ErrorCodeUnavailable,
 			"the request was cancelled or timed out before it could complete", nil)

@@ -81,9 +81,11 @@ type workerOptions struct {
 	// claudePermissionMode is the Claude CLI's --permission-mode for every task
 	// (V9-11, finding F1); empty leaves the CLI's default, under which a headless
 	// Claude refuses every file write in an aw worktree.
-	claudePermissionMode          string
-	claudeEffort                  string
-	claudeMaxBudgetUSD            float64
+	claudePermissionMode string
+	claudeEffort         string
+	claudeMaxBudgetUSD   float64
+	// claudeSafeMode (V11-05) is the Claude CLI's --safe-mode for every task.
+	claudeSafeMode                bool
 	workerID                      string
 	concurrency                   int
 	leaseTTL, leaseHeartbeat      time.Duration
@@ -127,6 +129,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 	codexExecutable := flags.String("codex-executable", "", "path to the Codex CLI executable to register as an agent provider (omitted = not registered; AGENT nodes pinned to it cannot run)")
 	claudePermissionMode := flags.String("claude-permission-mode", "", "the Claude CLI's --permission-mode for every task: acceptEdits, auto, bypassPermissions, dontAsk, manual or plan (omitted = the CLI's default, under which a headless Claude refuses every file write in an aw worktree because it is never a trusted workspace; an agent that must change files needs acceptEdits)")
 	claudeEffort := flags.String("claude-effort", "", "the Claude CLI's --effort for every task: low, medium, high, xhigh or max (omitted = the CLI's default)")
+	claudeSafeMode := flags.Bool("claude-safe-mode", false, "start the Claude CLI with --safe-mode for every task: it loads none of the user's (~/.claude) or the repository's (.claude/) skills, agents, slash commands, hooks, MCP servers or CLAUDE.md, so an agent knows only what the ContextSnapshot gives it and a repository hook cannot write into the worktree; auth and the model work as usual (default: off, the CLI loads its normal configuration)")
 	claudeMaxBudgetUSD := flags.Float64("claude-max-budget-usd", 0, "the most ONE Claude attempt may spend, in US dollars, enforced by the CLI itself (--max-budget-usd); 0 = no ceiling. What an attempt actually spent is its USAGE_REPORTED event")
 	workerID := flags.String("worker-id", fmt.Sprintf("aw-worker-%d", os.Getpid()), "lease-owner identity for this process; must be unique among running workers")
 	concurrency := flags.Int("worker-concurrency", defaults.WorkerConcurrency, "maximum jobs run at once")
@@ -163,6 +166,7 @@ func worker(ctx context.Context, arguments []string, stdout io.Writer) error {
 		claudePermissionMode: strings.TrimSpace(*claudePermissionMode),
 		claudeEffort:         strings.TrimSpace(*claudeEffort),
 		claudeMaxBudgetUSD:   *claudeMaxBudgetUSD,
+		claudeSafeMode:       *claudeSafeMode,
 		workerID:             *workerID, concurrency: *concurrency,
 		leaseTTL: *leaseTTL, leaseHeartbeat: *leaseHeartbeat,
 		pollInterval: *pollInterval, shutdownGrace: *shutdownGrace,
@@ -308,7 +312,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	if err != nil {
 		return nil, fmt.Errorf("construct repository prober: %w", err)
 	}
-	agents, err := newWorkerAgentRegistry(ctx, opts.claudeExecutable, opts.codexExecutable, cfg.EnvAllowlist, withClaudePermissionMode(opts.claudePermissionMode), withClaudeEffort(opts.claudeEffort), withClaudeMaxBudgetUSD(opts.claudeMaxBudgetUSD))
+	agents, err := newWorkerAgentRegistry(ctx, opts.claudeExecutable, opts.codexExecutable, cfg.EnvAllowlist, withClaudePermissionMode(opts.claudePermissionMode), withClaudeEffort(opts.claudeEffort), withClaudeMaxBudgetUSD(opts.claudeMaxBudgetUSD), withClaudeSafeMode(opts.claudeSafeMode))
 	if err != nil {
 		return nil, err
 	}
@@ -419,14 +423,16 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 
 	registry := workerpool.NewRegistry()
 	// Run execution.
-	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(d.uow, d.ids))
+	// V11-11: the engine writes its milestones into the task chat (display-only messages; no prompt ever contains them).
+	activity := runtime.NewActivityPoster(d.uow, d.artifacts, d.ids, d.clk, d.matcher)
+	registry.Register(runtime.AdvanceRunJobKind, runtime.NewScheduler(d.uow, d.ids).WithActivityPoster(activity))
 	// V9-10 (gap G9): pin the instruction files the provider CLI loads by itself
 	// (CLAUDE.md, AGENTS.md) in the snapshot of every attempt it schedules. The
 	// adapters declare the names; the worker only maps a profile's provider key.
 	registry.Register(runtime.ScheduleNodeRunJobKind, runtime.NewNodeSchedulingHandlerWithInstructionFiles(d.uow, d.ids, d.execConfig, &runtime.InstructionFileInspector{
 		Directories: d.provider, Declared: providerInstructionFiles, WarnBytes: d.instructionFileWarnBytes,
 	}))
-	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(d.uow, d.ids, router, d.clk, d.isolation, d.agents, d.store))
+	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(d.uow, d.ids, router, d.clk, d.isolation, d.agents, d.store).WithActivityPoster(activity))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(d.uow, d.ids))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(d.uow, d.ids))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(d.uow, d.ids))
@@ -443,6 +449,9 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	registry.Register(releasesetcommit.ReleaseSetLocalCommitJobKind, releasesetcommit.NewHandler(releasesetcommit.ExecuteReleaseSetLocalCommitDeps{
 		UnitOfWork: d.uow, IDs: d.ids, WriteLeases: d.store, MarkerReader: d.provider, Creator: d.provider,
 		Lifecycle: d.store, WriteLeaseTTL: d.localCommitWriteLeaseTTL,
+		// V11-07: park the changes a decision did not select, and open RELEASE_FAILED when a commit
+		// requested together with a decision closes FAILED.
+		Parker: d.provider, OnFailed: runtime.OpenReleaseFailedBlockerTx,
 	}))
 	registry.Register(projectionrebuild.ProjectionRebuildJobKind, projectionrebuildworker.NewHandler(projectionrebuildworker.Deps{
 		UnitOfWork: d.uow, IDs: d.ids, Catalog: d.catalog, BatchSize: d.projectionRebuildBatchSize, RoundDelay: d.projectionRebuildRoundDelay,

@@ -271,7 +271,7 @@ WHERE v.id = ?`, id).Scan(
 		projectID := project.ProjectID(definitionProjectID.String)
 		definition.ProjectID = &projectID
 	}
-	rebuilt, err := workflow.Compile(definition, workflow.PublishRequest{
+	rebuilt, err := workflow.Rehydrate(definition, workflow.PublishRequest{
 		VersionID:     id,
 		VersionNumber: versionNumber,
 		Document:      snapshot.Document,

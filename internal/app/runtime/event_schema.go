@@ -241,6 +241,24 @@ func DecodeExecutionAttemptTerminatedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+// DecodeWorkItemRetriedV1 is WORK_ITEM_RETRIED v1's own eventschema.Decoder (V11-10, redo_work_item.go).
+func DecodeWorkItemRetriedV1(payloadJSON string) (any, error) {
+	var payload workItemRetriedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+// DecodeWorkItemRecreatedV1 is WORK_ITEM_RECREATED v1's own eventschema.Decoder (V11-10, redo_work_item.go).
+func DecodeWorkItemRecreatedV1(payloadJSON string) (any, error) {
+	var payload workItemRecreatedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 // RegisterEventSchemas registers every event type this package produces
 // with registry. A composition root that wires up EnforcingEventsRepository
 // calls this once at startup, the same "register at init/startup time"
@@ -268,4 +286,6 @@ func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(WorkflowRunStartedEventType, WorkflowRunStartedSchemaVersion, DecodeWorkflowRunStartedV1)
 	registry.Register(CompletionDecidedEventType, CompletionDecidedSchemaVersion, DecodeCompletionDecidedV1)
 	registry.Register(executionAttemptTerminatedEventType, executionAttemptTerminatedSchemaVersion, DecodeExecutionAttemptTerminatedV1)
+	registry.Register(WorkItemRetriedEventType, WorkItemRetriedSchemaVersion, DecodeWorkItemRetriedV1)
+	registry.Register(WorkItemRecreatedEventType, WorkItemRecreatedSchemaVersion, DecodeWorkItemRecreatedV1)
 }

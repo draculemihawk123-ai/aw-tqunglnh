@@ -145,8 +145,8 @@ type repositoryWorkspaceDiagResponse struct {
 	RepositoryWorkspaceID string `json:"repositoryWorkspaceId"`
 	RepositoryID          string `json:"repositoryId"`
 	State                 string `json:"state"`
-	Generation             uint64 `json:"generation"`
-	HasActiveWriteLease    bool   `json:"hasActiveWriteLease"`
+	Generation            uint64 `json:"generation"`
+	HasActiveWriteLease   bool   `json:"hasActiveWriteLease"`
 }
 
 func toRepositoryWorkspaceDiagResponse(rw runtime.RepositoryWorkspaceDiagnostic) repositoryWorkspaceDiagResponse {
@@ -184,6 +184,21 @@ func runDiagnosticsValidActions(diag runtime.RunDiagnostics) []httpapi.ValidActi
 	default:
 		actions = append(actions, httpapi.ValidAction{OperationID: "cancelWorkItem", ScopeKind: httpapi.ScopeProject, TargetVersion: int64(diag.WorkItemVersion)})
 	}
+	// V11-10: after a run ended FAILED or CANCELLED, run the same work item again; a child that was not redone yet can also be redone with
+	// the newest workflow version. Advisory: both commands re-derive every condition (quarantine, blockers, versions) themselves.
+	finished := diag.RunState == "FAILED" || diag.RunState == "CANCELLED"
+	switch diag.WorkItemStatus {
+	case "BLOCKED", "READY":
+		if finished {
+			actions = append(actions, httpapi.ValidAction{OperationID: "retryWorkItem", ScopeKind: httpapi.ScopeProject, TargetVersion: int64(diag.WorkItemVersion)})
+		}
+	}
+	switch diag.WorkItemStatus {
+	case "BLOCKED", "READY", "CANCELLED":
+		if finished && diag.WorkItemIsChild && !diag.WorkItemSuperseded {
+			actions = append(actions, httpapi.ValidAction{OperationID: "recreateWorkItem", ScopeKind: httpapi.ScopeProject, TargetVersion: int64(diag.WorkItemVersion)})
+		}
+	}
 	if actions == nil {
 		actions = []httpapi.ValidAction{}
 	}
@@ -206,7 +221,7 @@ type RunDiagnosticsResponse struct {
 	Blockers []blockerResponse `json:"blockers"`
 
 	OrphanedAttempts          []orphanedAttemptResponse `json:"orphanedAttempts"`
-	OrphanedAttemptsTruncated bool                       `json:"orphanedAttemptsTruncated"`
+	OrphanedAttemptsTruncated bool                      `json:"orphanedAttemptsTruncated"`
 
 	Providers []providerResponse  `json:"providers"`
 	Isolation []isolationResponse `json:"isolation"`

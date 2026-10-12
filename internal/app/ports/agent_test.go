@@ -29,3 +29,32 @@ func TestProviderFailureMessage(t *testing.T) {
 		})
 	}
 }
+
+// V11-02: the provider's own words decide whether a failure is a limit. The
+// vocabulary below is what the Claude and Codex CLIs print; a context or output
+// length limit is not a quota.
+func TestIsProviderQuotaMessage(t *testing.T) {
+	for _, reason := range []string{
+		"You've hit your limit · resets 5pm",
+		"You've hit your session limit · resets 5:30pm (UTC)",
+		"You've hit your usage limit.\nTry again at 5pm.",
+		"Rate limit exceeded, retry later",
+		"API Error: 429 {\"type\":\"rate_limit_error\"}",
+		"5-hour limit reached",
+		"Quota exceeded for this project",
+		"Too many requests",
+		"Credit balance is too low",
+	} {
+		if !ports.IsProviderQuotaMessage(reason) {
+			t.Errorf("IsProviderQuotaMessage(%q) = false, want true", reason)
+		}
+	}
+	for _, reason := range []string{
+		"", "Invalid API key · Please run /login", "Prompt is too long", "context limit exceeded", "output token limit exceeded",
+		"Execution error", "The model claude-x does not exist",
+	} {
+		if ports.IsProviderQuotaMessage(reason) {
+			t.Errorf("IsProviderQuotaMessage(%q) = true, want false", reason)
+		}
+	}
+}

@@ -148,6 +148,15 @@ func TestValidateDocument_Attempt_RejectsNonRetryableCode(t *testing.T) {
 	requireProblemPath(t, diags, "attempt.retryableErrorCodes[0]")
 }
 
+// V11-02 (ADR-035): a provider limit resets in hours, so an attempt policy may not
+// declare PROVIDER_QUOTA_EXCEEDED retryable.
+func TestValidateDocument_Attempt_RejectsProviderQuotaAsRetryable(t *testing.T) {
+	doc := validAttemptDocument()
+	doc.Attempt.RetryableErrorCodes = []errorcode.Code{errorcode.CodeProviderQuotaExceeded}
+	diags := policy.ValidateDocument(doc)
+	requireProblemPath(t, diags, "attempt.retryableErrorCodes[0]")
+}
+
 func TestValidateDocument_Attempt_RejectsDuplicateErrorCode(t *testing.T) {
 	doc := validAttemptDocument()
 	doc.Attempt.RetryableErrorCodes = []errorcode.Code{errorcode.CodeTimeout, errorcode.CodeTimeout}

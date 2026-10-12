@@ -267,14 +267,23 @@ func TestGetRunDiagnostics_HTTP_QuarantinedWorkspaceAndRunCancelledBlocker(t *te
 
 	// The Run itself is already CANCELLED — cancelRun is no longer offered;
 	// the WorkItem is BLOCKED (not DONE/CANCELLED) — cancelWorkItem still is.
-	var sawCancelRun, sawCancelWorkItem bool
+	var sawCancelRun, sawCancelWorkItem, sawRetry, sawRecreate bool
 	for _, a := range body.ValidActions {
 		switch a.OperationID {
 		case "cancelRun":
 			sawCancelRun = true
 		case "cancelWorkItem":
 			sawCancelWorkItem = true
+		case "retryWorkItem":
+			sawRetry = true
+		case "recreateWorkItem":
+			sawRecreate = true
 		}
+	}
+	// V11-10: the run ended CANCELLED and the WorkItem is BLOCKED, so it can run again; the fixture's WorkItem is a root, which cannot be
+	// redone with a newer version.
+	if !sawRetry || sawRecreate {
+		t.Fatalf("body.ValidActions = %+v, want retryWorkItem and no recreateWorkItem for a root", body.ValidActions)
 	}
 	if sawCancelRun {
 		t.Fatalf("body.ValidActions = %+v, want no cancelRun advisory action for an already-CANCELLED run", body.ValidActions)

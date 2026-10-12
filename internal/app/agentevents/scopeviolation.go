@@ -141,7 +141,15 @@ func RecordScopeViolation(ctx context.Context, record ScopeViolationRecord, caus
 	if record.AttemptID == "" || record.UOW == nil || record.IDs == nil || record.Clock == nil {
 		return errors.New("agentevents: RecordScopeViolation requires AttemptID, UOW, IDs and Clock")
 	}
-	detail := RedactDetail(record.Matcher, ScopeViolationDetail(cause))
+	return recordOrchestratorDiagnostic(ctx, record, ScopeViolationDiagnosticCode, ScopeViolationDetail(cause))
+}
+
+// recordOrchestratorDiagnostic appends one orchestrator-authored DIAGNOSTIC
+// event (code, redacted message) to the attempt's stream — the one write path
+// every post-mortem annotation shares (RecordScopeViolation, and
+// RecordWorkspaceHeadDrift, V11-01). An empty message is not recorded.
+func recordOrchestratorDiagnostic(ctx context.Context, record ScopeViolationRecord, code, message string) error {
+	detail := RedactDetail(record.Matcher, message)
 	if detail == "" {
 		return nil
 	}
@@ -162,7 +170,7 @@ func RecordScopeViolation(ctx context.Context, record ScopeViolationRecord, caus
 		built, err := buildEventRecord(record.Matcher, record.IDs, record.AttemptID, ports.AgentEvent{
 			AttemptID: ports.ExecutionAttemptID(record.AttemptID), Sequence: last + 1,
 			Kind: ports.AgentEventDiagnostic, ObservedAt: record.Clock.Now(),
-			Diagnostic:       &ports.AgentDiagnostic{Code: ScopeViolationDiagnosticCode, Message: detail},
+			Diagnostic:       &ports.AgentDiagnostic{Code: code, Message: detail},
 			ProviderMetadata: map[string]string{violationSourceMetadataKey: violationSourceOrchestrator},
 		})
 		if err != nil {

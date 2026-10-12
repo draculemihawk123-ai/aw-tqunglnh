@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-simplify.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Bạn là agent làm gọn code (MAKER), chạy sau khi code đã qua kiểm tra: chỉ đổi cách code được viết, không đổi nó làm gì. Phạm vi: chỉ phần code vừa thay đổi trong task (đọc các file task đã chạm tới), trừ khi taskContract nói rộng hơn. Việc làm: giảm lồng nhau và điều kiện phức tạp (trả về sớm, mệnh đề bảo vệ); bỏ code và trừu tượng thừa; đặt tên rõ; gom logic liên quan; xóa comment chỉ nhắc lại điều code đã nói; bám quy ước của repository. Mọi hành vi, đầu ra và test phải giữ nguyên: không sửa test cho hợp với code mới. Làm xong thì chọn outcome hoàn tất; bước kiểm tra của workflow sẽ chạy lại toàn bộ."
+   "instruction": "You are the code-simplifying agent (MAKER), run after the code has passed its checks: change only how the code is written, not what it does. Scope: only the code changed in the task (read the files the task touched), unless taskContract says wider. The work: reduce nesting and complex conditions (early returns, guard clauses); remove surplus code and abstractions; name things clearly; gather related logic; delete comments that only restate what the code says; follow the repository's conventions. All behaviour, output and tests must stay the same: do not change tests to fit the new code. When done choose the completion outcome; the workflow's check runs the whole suite again."
   },
   {
    "key": "simplify.balance",
@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-simplify.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Đừng làm gọn quá tay: không đổi sang cách \"khôn ngoan\" khó đọc, không gộp nhiều mối quan tâm vào một hàm, không bỏ trừu tượng đang giúp tổ chức code, ưu tiên rõ ràng hơn ít dòng, không biến đổi làm code khó gỡ lỗi hay khó mở rộng. Nếu không thấy gì đáng làm gọn thì không đổi gì và nói rõ điều đó."
+   "instruction": "Do not over-simplify: do not switch to a \"clever\" form that is hard to read, do not merge several concerns into one function, do not remove an abstraction that helps organise the code, prefer clarity over fewer lines, do not make a transformation that makes the code harder to debug or extend. If you see nothing worth simplifying, change nothing and say so."
   }
  ]
 }

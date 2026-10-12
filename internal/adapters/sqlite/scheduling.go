@@ -245,6 +245,7 @@ WITH candidate AS (
       AND claim_count < max_claims
       AND julianday(available_at) <= julianday('now')
       AND (job_class = 'CONTROL' OR (job_class = 'RUN_WORK' AND cancel_epoch IS NULL))
+      AND (project_id IS NULL OR project_id NOT IN (SELECT id FROM projects WHERE status = 'ARCHIVED'))
     ORDER BY priority DESC, created_at, id
     LIMIT 1
 )

@@ -80,6 +80,14 @@ pointing at it, then a new gate/workflow version pointing forward through that c
 immutable per version, so there is never an "edit and retry" for a published document; always publish forward.
 See [01-quickstart.md](01-quickstart.md)'s own real walkthrough of hitting and fixing exactly this.
 
+**The kit's COMMAND scripts on Windows (V11-09).** `aw-publish.py` publishes each `kit/commands/*.sh` as a self-contained `.cmd`
+whose header finds Git for Windows' own `sh.exe` (`<git --exec-path>/../../../bin/sh.exe`) and runs the script with it, so a
+Windows worker needs Git for Windows with its bash. `aw doctor` (on Windows) reports it as `git_shell [CAPABILITY]`: DEGRADED with the
+path it looked for when `sh.exe` is missing, and every kit COMMAND node then fails before it runs anything (the launcher exits 127
+and says it could not find `sh.exe`). Before V11-09 the launcher also returned exit code 0 whatever the script returned, so a failing
+check could look like a pass; `kit/tests/test-windows-launcher.py` now runs every `kit/commands` script both ways (`sh` and `cmd /c`)
+and requires the same exit code and the same messages.
+
 ## Attempt `FAILED` with `SCOPE_VIOLATION`
 
 ```bash
@@ -97,8 +105,8 @@ before the field existed has the failure code but no `failureDetail`.
 
 ## An agent attempt `FAILED` with `EXECUTION_FAILED` and the provider said why (V9-20)
 
-When the provider CLI itself reports that the run failed — a session or usage limit ("You've hit your limit ·
-resets 5pm"), an authentication problem, a refused request — the attempt ends `FAILED` / `EXECUTION_FAILED`, and
+When the provider CLI itself reports that the run failed — an authentication problem, a refused request — the
+attempt ends `FAILED` / `EXECUTION_FAILED`, and
 `aw run timeline <runId>` (and `GET /runs/{id}/timeline`) now shows the provider's own words as the attempt's
 `failureDetail`:
 
@@ -107,11 +115,47 @@ resets 5pm"), an authentication problem, a refused request — the attempt ends 
 # "failureDetail": "Claude reported a failed result: You've hit your limit · resets 5pm"
 ```
 
-The text is the CLI's reason, whitespace collapsed, cut at 500 characters and redacted like every stored event. A
-session limit is not something to fix in the task: wait for the reset, then run again (`retry-task` in the guides, or
-`aw run start` with the same workflow version once the `RUN_FAILED` blocker is resolved). An attempt that failed
-before V9-20 has the code but no detail, and so does a failure the provider did not report itself (a crash, a
-timeout).
+The text is the CLI's reason, whitespace collapsed, cut at 500 characters and redacted like every stored event. An
+attempt that failed before V9-20 has the code but no detail, and so does a failure the provider did not report itself
+(a crash, a timeout).
+
+### The account hit a session or usage limit: `PROVIDER_QUOTA_EXCEEDED` (V11-02)
+
+When the CLI's reason says the account hit a limit ("You've hit your limit · resets 5pm", "session limit", "usage
+limit", rate limit, quota, "credit balance is too low"), the attempt ends `FAILED` with the dedicated failure code
+`PROVIDER_QUOTA_EXCEEDED` instead of `EXECUTION_FAILED`:
+
+```
+# "failureCode": "PROVIDER_QUOTA_EXCEEDED",
+# "failureDetail": "Claude reported a failed result: You've hit your limit · resets 5:30pm (UTC)"
+```
+
+The code is **never retryable**: an attempt policy cannot list it in `retryableErrorCodes` (publish refuses), and the
+engine does not retry it. A limit resets in hours, so retrying at once only spent the attempt budget — before this
+code, every parallel agent node burnt all its attempts within seconds and the run ended `FAILED`. Now the first
+attempt of the node ends the node, the run ends `FAILED` with the usual `RUN_FAILED` blocker, and nothing else is
+spent. The reset time is **only** in the provider's words (`failureDetail`): neither CLI reports it in a form aw can
+read, so aw does not schedule a retry. Wait until the time the message names, then run again on the same WorkItem
+(`retry-task.sh` in the kit, the **Run Again** button, or `aw work-item retry`; the older `aw blocker resolve --mode RESOLVED` then `aw run start` still works). `show-run.sh` prints a line
+for it. The classification follows the CLI's text: a limit message the CLI words differently stays `EXECUTION_FAILED`.
+
+## A run ended `FAILED` with `WORKFLOW_DEFINITION_DEFECT` (V11-03)
+
+```bash
+aw run diagnostics --project-id <id> <runId>
+# a RUN_FAILED blocker: "workflow run … failed (WORKFLOW_DEFINITION_DEFECT: node "simplify" ran out of its cyclePolicy
+#   budget (2 iterations) but its escalation edge "simplify-escalated" leads to "quality", inside the same cycle, …)"
+```
+
+A node on a loop ran out of its `cyclePolicy` budget and the engine had to take its `escalationOutcome` edge, but that edge
+points back into the same loop (or does not exist), so the run cannot leave it. The node that had just finished is recorded
+`SUCCEEDED`; the run ends `FAILED` right away with the reason above and the usual `RUN_FAILED` blocker. Before V11-03 such a run
+just stopped moving: the engine hit the problem while routing, aborted the finish of the node before it, and 30 seconds later
+the recovery reaper marked that node's attempt `INDETERMINATE` (`OWNERSHIP_LOST_MUTATING`) with no message.
+
+Fix the **workflow definition** (point that edge outside the loop, for example at the node that rejects the work), publish a new
+version and run a new WorkItem with it: a WorkItem is pinned to the version it started with. Publishing a definition with such an
+edge is refused since V11-03; only versions published earlier can still do this.
 
 ## A COMMAND or gate failed — where is the reason?
 
@@ -151,6 +195,27 @@ retries only if the policy's `retryableErrorCodes` lists `VALIDATION_FAILED`. A 
 terminal event, or is not valid JSONL, is still a provider failure (`PROVIDER_UNAVAILABLE`), not `OUTCOME_REJECTED`.
 An attempt scheduled before the instruction-schema upgrade still has the old prompt (no list), so a multi-outcome
 agent from before the upgrade may need the outcomes in its Skill until it is re-run.
+
+## `WORKSPACE_HEAD_DRIFT`, or a local commit `FAILED` with `HEAD_DRIFT` (V11-01)
+
+```bash
+aw run start <workItemId> --workflow-version-id <v>
+# WORKSPACE_HEAD_DRIFT: a worktree HEAD is not the revision aw recorded … Repository repo-a (workspace rw-1): HEAD 2f5f08d0,
+#   recorded 1ddc449a, 1 commit(s) made outside aw (newest 2f5f08d0 by Ide User). To keep them: aw repository-workspace adopt-head …
+aw run timeline <runId>
+# an EXECUTION_ATTEMPT entry: "failureCode": "VALIDATION_FAILED", "failureDetail": "WORKSPACE_HEAD_DRIFT: repository repo-a: …"
+aw release-set local-commit status --project-id <id> <releaseSetId> <localCommitId>
+# "state": "FAILED", "failureReason": "HEAD_DRIFT"
+```
+
+Somebody committed in the worktree outside aw (an IDE or `git commit` in a terminal), so Git's HEAD is not the revision
+aw recorded. aw stopped before anything unvetted entered its history. Look at what was committed
+(`git -C <worktree> log <recorded>..HEAD`), then either keep it with `aw repository-workspace adopt-head` or put the
+worktree back on the recorded revision. A run that was already running keeps the old pin: cancel it and start it again
+(`retry-task.sh`). Full explanation: [06-source-control-and-releases.md](06-source-control-and-releases.md), section
+"A commit made outside aw". `adopt-head` refuses with a message that says what to fix: uncommitted changes in the
+worktree (commit or discard them), an attempt still writing (wait or cancel it), or a HEAD that no longer descends from
+the recorded revision after a reset or rebase (put the worktree back on the recorded revision).
 
 ## Local commit `FAILED` with `NO_CHANGES`
 
@@ -313,3 +378,92 @@ serves the HTTP/CLI surface and accepts commands. See [01-quickstart.md](01-quic
 - Everything this installation's database/artifacts actually contain, independent of any in-flight run: `aw
   work-item show`, `aw run show`, `aw project list`, `aw repository list` — all real, live queries, never a
   cached or stale summary.
+
+## A task failed: run it again, or redo it with the newest workflow (V11-10)
+
+Two actions on the task page deal with a failed or cancelled run without leaving the web. Both are one request that either
+happens completely or not at all.
+
+**Run Again** (`aw work-item retry <id> [--note …]`, kit: `retry-task.sh`). The same work item runs again from the start of its
+workflow, **on the workflow version it is pinned to**. In one transaction aw sends your note to the agent, resolves the failed
+run's blocker and starts the run. Work already in the worktree stays; the agents continue from it. Use it when the cause was the
+environment, or your note is enough for the agent to get it right.
+
+**Redo with Latest Version** (`aw work-item recreate <id> --reason … [--carry-messages=false]`, kit: `recreate-task.sh`). A work
+item pins one workflow version for good, so after you fix a kit or definition and publish it again, Run Again still runs the *old*
+version. Redo cancels the work item and creates a new one under the same parent with the same title (plus "(lần N)"), scope and
+contract, pinned to the newest version of the same workflow, marks it READY and starts it. The old work item stays `CANCELLED` and
+the Board shows "replaced by …" on it and "replaces …" on the new one. Your notes are carried over unless you untick the box.
+There is no limit on redos; the dialog shows what the earlier attempts cost and warns from the third. A root work item cannot be
+redone, and neither can one with a run still going.
+
+Both dialogs show what will happen first: the pinned and newest versions, the blockers that will be resolved, the cost so far and
+the uncommitted files in the worktree. Files a run left **outside the task's scope** (a stray `docs/needs-info.md`) would make the
+next run fail with `SCOPE_VIOLATION` again, so you must choose: **Keep** them (the next run will probably fail) or **Park** them
+(`--out-of-scope PARK` / `OUT_OF_SCOPE=PARK`): exactly those files move into a hidden Git ref `refs/agentkit/parked/redo-…`, in-scope
+work stays. Nothing is deleted; bring parked files back with
+`git -C <worktree> restore --source=<ref> --worktree -- <path>` (the ref is in the command's result and its event).
+
+A refusal changes nothing and says why: the run is not finished, the family has a `QUARANTINED` workspace (reconcile it first),
+another blocker is open (a scope expansion, a failed release), or the work item was already replaced.
+
+## What is a node doing, what did it produce, why did it fail (V11-10 follow-up: V11-11)
+
+On the task page, **click a node in the Graph tab**. A pane opens above the timeline with four parts, all read from what aw recorded:
+
+- **Asked to do**: the node's type, role, the outcomes it may choose and the agent profile / resources it is pinned to.
+- **Progress**: the agent's messages and every tool call (name, shortened arguments, ok or error), in order. While the attempt runs, the pane follows it (it asks again every few seconds from the last sequence it saw) and the top line
+  says how many tool calls and what happened last. Everything is shown as plain text, never as markup, and anything that looks like a secret is masked again on the way out.
+- **Result**: an agent node shows the outcome it chose, its last words (kept even when the attempt failed, marked as the words before it stopped), the files it changed and the cost; a command node shows the exit code, duration, stdout and
+  stderr; a gate shows each criterion; an approval shows who decided; start/fork/join/end nodes are one line.
+- **Why it failed**: the code with a plain explanation and what to do next (for example `SCOPE_VIOLATION` names the path; a failed run points at **Run Again**).
+
+Each node in the graph also carries a one-line label (for example "approved · 3 files" or "running 02:10") so you do not have to click to see where the run is. The **Evidence** tab names the node, iteration and attempt of each row, can be
+filtered by node, and previews a command node's recorded output as text. The **Chat** tab now also shows the engine's milestones (a node started, the agent's last words, how a node ended, an approval waiting) in a different style;
+"only my messages" hides them. They are for you only: agents never see them, so they cost no tokens and cannot start a feedback loop.
+
+From a terminal: `aw node-run show <nodeRunId>` and `aw node-run events <attemptId> [--follow]` print the same data.
+
+Not available yet: the prompt an agent received (it is not recorded where aw can read it back).
+
+## A repository is BLOCKED, or was registered wrong (V11-12)
+
+A repository is probed when it is registered. If the probe fails the repository is `BLOCKED` and says **why** where you look: `aw repository list|show|onboarding` and the repository card on the project page show `lastProbeError`:
+
+- `failureKind`: the kind of problem. `PATH_NOT_FOUND`, `PATH_NOT_DIRECTORY`, `NOT_A_GIT_REPOSITORY` (the folder was never `git init`ed), `DUBIOUS_OWNERSHIP`, `BARE_REPOSITORY`, `NOT_TOP_LEVEL`
+  (a subfolder of a repository: the message names the real root), `NO_COMMITS`, `REF_NOT_FOUND` (the existing branches are listed), `REF_INVALID`, `GIT_NOT_FOUND`, `PERMISSION_DENIED`, `TIMEOUT`, `GIT_FAILED`.
+- `message`: one sentence naming the folder. `hint`: what to do, with a command you can paste (for example `git -C D:/work/app init -b main`, or `git config --global --add safe.directory …` for dubious ownership). On Windows a Git Bash
+  style path (`/d/work/app`) is reported as `PATH_NOT_FOUND` with the `D:/work/app` spelling.
+- `detail` (only in `onboarding`, and behind "Load Git output" on the web): what Git printed, with secrets and URL credentials masked and cut at 2 KiB.
+
+**Check before you register.** `aw repository check --project-id <id> --path <path> [--ref <ref>]` runs the same probe and writes nothing; the Register dialog does it when you leave the path field; `init-project.sh` and `add-repository.sh` do it before registering.
+
+**Fix a wrong registration.** Flags go before the id (the `aw` flag parser stops at the first argument).
+
+| You want | Command | Web |
+|---|---|---|
+| correct the path / ref / name of a `BLOCKED` repository and probe it again | `aw repository update --expected-version <n> --remote-locator <path> [--default-ref <ref>] [--name <name>] <id>` | **Edit** |
+| retire a repository (`ACTIVE` or `BLOCKED`); its name can be registered again | `aw repository disable --expected-version <n> [--reason <text>] <id>` | **Disable** |
+| remove a registration that never became `ACTIVE` and that nothing references (permanent; the id is never reused) | `aw repository delete --expected-version <n> --reason <text> <id>` | **Delete** |
+| see retired repositories | `aw repository list --include-disabled <projectId>` | **Show disabled** |
+
+`<n>` is the `version` from `aw repository show`. An `ACTIVE` repository cannot be edited (workspaces and evidence are tied to its path): disable it and register a new one. Refusals change nothing and carry a code: `REPOSITORY_NOT_BLOCKED`,
+`REPOSITORY_IN_USE` (lists the unfinished work items, workspaces and release sets that still use it), `REPOSITORY_ALREADY_DISABLED`, `REPOSITORY_PROBE_IN_PROGRESS`, `REPOSITORY_WAS_ACTIVE` (a repository that was ever `ACTIVE` keeps its history and can only be disabled),
+`REPOSITORY_REFERENCED` (lists the tables that reference it) and `REPOSITORY_DELETED` (an id that was deleted cannot be registered again, and replaying the old registration says so instead of reporting success: register under a new id).
+
+## A project was created by mistake, or named wrong (V11-13)
+
+Projects are renamed and **archived**, not deleted: nothing is erased, so history and evidence stay intact. Flags go before the id.
+
+| You want | Command | Web (Projects) |
+|---|---|---|
+| rename a project (the id stays) | `aw project rename --expected-version <n> --name <name> <id>` | **Rename** |
+| archive it: read-only, hidden from the default list | `aw project archive --expected-version <n> [--reason <text>] <id>` | **Archive** |
+| bring it back exactly as it was | `aw project restore --expected-version <n> <id>` | **Show archived**, then **Restore** |
+| list archived projects too | `aw project list --include-archived` | **Show archived** |
+
+`<n>` is the `version` from `aw project show`. A project cannot be archived while something is still running or open in it. The refusal is `PROJECT_BUSY` and lists each item: unfinished workflow runs, work items that are `ACTIVE` or `BLOCKED`, background jobs holding a
+lease, release sets still open. Cancel or finish them, then archive again; aw never cancels anything for you.
+
+An archived project is **read-only**. Reading works (project page, evidence, history). Every command that writes into it, including registering a repository, creating a work item or starting a run, fails with `PROJECT_ARCHIVED` and says how to restore it; the worker does not
+pick up its background jobs until it is restored. `init-project.sh` with the name of an archived project stops and says so (its idempotency key comes from the name, so it would otherwise return that same read-only project): restore it, or use another name.

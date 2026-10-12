@@ -337,6 +337,20 @@ type WorkRepository interface {
 	// ResolveWorkItemBlocker's own "how many OPEN blockers remain" count and
 	// CancelWorkItem's own audit trail both read the full, unfiltered set.
 	ListWorkItemBlockersForWorkItem(ctx context.Context, workItemID string) ([]work.WorkItemBlocker, error)
+	// RecordWorkItemSupersession (V11-10, ADR-041) stores that supersession.NewWorkItemID replaced
+	// supersession.OldWorkItemID. Idempotent by NewWorkItemID: the identical pair returns the stored row; a
+	// different old WorkItem for the same new one, or an old WorkItem already replaced by another, is
+	// ErrPersistenceAlreadyExists. Both WorkItems must exist (ErrPersistenceNotFound otherwise).
+	RecordWorkItemSupersession(ctx context.Context, supersession work.WorkItemSupersession) (work.WorkItemSupersession, error)
+	// GetWorkItemSupersessionByOld returns the supersession that replaced workItemID, or ErrPersistenceNotFound
+	// when nothing replaced it.
+	GetWorkItemSupersessionByOld(ctx context.Context, workItemID string) (work.WorkItemSupersession, error)
+	// GetWorkItemSupersessionByNew returns the supersession that created workItemID as a replacement, or
+	// ErrPersistenceNotFound when workItemID replaced nothing.
+	GetWorkItemSupersessionByNew(ctx context.Context, workItemID string) (work.WorkItemSupersession, error)
+	// ListWorkItemSupersessions returns every supersession of the project's WorkItems, ordered by the replacing WorkItem's id: one
+	// query for the whole board instead of one lookup per card.
+	ListWorkItemSupersessions(ctx context.Context, projectID string) ([]work.WorkItemSupersession, error)
 	// TransitionWorkItemBlockerState is the fenced CAS that closes a
 	// blocker's own lifecycle — OPEN -> RESOLVED or OPEN -> WAIVED — the
 	// identical req.ExpectedState/req.ExpectedVersion CAS discipline every
@@ -409,7 +423,9 @@ type WorkRepository interface {
 	// given ID, or ErrPersistenceNotFound.
 	GetReleaseSetLocalCommit(ctx context.Context, id string) (work.ReleaseSetLocalCommit, error)
 	// CountNoChangesFailedReleaseSetLocalCommits (V9-09) returns how many
-	// operations already closed FAILED with work.FailureNoChanges for the
+	// operations already closed FAILED with work.FailureNoChanges (V11-07: or
+	// FailureHeadDrift / FailureChangeSetDrift, which also close before any
+	// `git commit`) for the
 	// exact same request-time pins a new RequestReleaseSetLocalCommit would
 	// derive its marker from (release set, repository workspace, actor,
 	// message hash). Such an operation provably never created a commit (the
@@ -454,6 +470,25 @@ type WorkRepository interface {
 	// FinalizeExecutionAttempt's identical "validate every WriteLease
 	// fencing proof" step (internal/app/runtime/finalize.go).
 	ValidateLocalCommitWriteLeaseFencing(ctx context.Context, lease JobLease, grant LocalCommitWriteLeaseGrant) error
+
+	// CreateReleaseSetLocalCommitSelection (V11-07, ADR-040) stores the selection record of an
+	// operation that commits only some files: what the approver saw, the digest, what to do with
+	// the rest, and a bounded copy of the reviewed patch. The operation row must already exist
+	// (same transaction). Idempotent by operation id.
+	CreateReleaseSetLocalCommitSelection(ctx context.Context, selection work.ReleaseSetLocalCommitSelection) error
+	// GetReleaseSetLocalCommitSelection returns the selection of operation id; found is false
+	// for an operation that commits the whole worktree.
+	GetReleaseSetLocalCommitSelection(ctx context.Context, releaseSetLocalCommitID string) (selection work.ReleaseSetLocalCommitSelection, found bool, err error)
+	// RecordReleaseSetLocalCommitParked records where the leftover changes of a PARK operation
+	// were moved. Idempotent: the same ref and paths again is a no-op.
+	RecordReleaseSetLocalCommitParked(ctx context.Context, releaseSetLocalCommitID, ref string, paths []string) error
+	// MarkReleaseSetLocalCommitParkedRestored records that the parked files were put back.
+	MarkReleaseSetLocalCommitParkedRestored(ctx context.Context, releaseSetLocalCommitID string, at time.Time) error
+	// ListParkedChanges returns every parked set of familyID not restored yet, oldest first.
+	ListParkedChanges(ctx context.Context, familyID string) ([]work.ParkedChange, error)
+	// ListReleaseSetLocalCommitSelectionsByApproval returns the selection records of the operations
+	// a decision requested (V11-07), ordered by operation id; empty when it requested none.
+	ListReleaseSetLocalCommitSelectionsByApproval(ctx context.Context, approvalRequestID string) ([]work.ReleaseSetLocalCommitSelection, error)
 }
 
 // ErrLocalCommitMarkerCollision is returned by

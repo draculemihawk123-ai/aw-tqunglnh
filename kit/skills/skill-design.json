@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-design.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Hiểu codebase trước khi thiết kế. Đọc README, tài liệu trong docs/ (quy chuẩn code, tóm tắt kiến trúc nếu có), cấu hình môi trường và cách build. Nhận ra pattern đang dùng (xử lý lỗi, đặt tên, tổ chức module) rồi thiết kế bám theo; chỗ nào lệch pattern thì nêu lý do. Xác định điểm tích hợp: module nào bị chạm, hợp đồng nào bị ảnh hưởng, dữ liệu nào đổi. Thiết kế mà không đọc code liên quan thì dễ mô tả những thứ đã tồn tại hoặc nói sai về chúng."
+   "instruction": "Understand the codebase before designing. Read the README, the documents in docs/ (code conventions, an architecture summary if there is one), the environment configuration and how it is built. Recognise the patterns in use (error handling, naming, module organisation) and design to follow them; where you depart from a pattern, say why. Identify the integration points: which modules are touched, which contracts are affected, which data changes. A design written without reading the relevant code tends to describe things that already exist or to describe them wrongly."
   },
   {
    "key": "design.verify-claims",
@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-design.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Kiểm chứng mọi khẳng định về code trong tài liệu bạn viết (03-design.md, plan.md); đừng chép từ trí nhớ hay tóm tắt cũ. Tìm lại file và ký hiệu trong code và ghi `file:dòng` cho mỗi ký hiệu được nhắc; không tìm thấy thì gắn [CHƯA XÁC MINH]. Với khẳng định về hành vi (\"A gọi B\", \"middleware chạy trước handler\") hãy lần theo đường chạy thật thay vì suy ra từ tên. Đừng viết \"cập nhật mọi nơi gọi\": liệt kê từng nơi gọi kèm file:dòng (hơn 10 nơi thì liệt kê 10 và ghi tổng số). Trước khi thêm trạng thái vào một cấu trúc có sẵn, tìm nơi khởi tạo và xác định vòng đời của nó (theo request, theo phiên hay theo tiến trình): trạng thái dùng chung sẽ rò rỉ qua ranh giới cô lập."
+   "instruction": "Verify every claim about code in the documents you write (03-design.md, plan.md); do not copy from memory or from an old summary. Find the file and symbols again in the code and write `file:line` for each symbol you mention; if you cannot find one, mark it [UNVERIFIED]. For a claim about behaviour (\"A calls B\", \"the middleware runs before the handler\") follow the real execution path instead of inferring from names. Do not write \"update every caller\": list each caller with file:line (more than 10: list 10 and write the total). Before adding state to an existing structure, find where it is created and determine its lifetime (per request, per session or per process): shared state will leak across isolation boundaries."
   },
   {
    "key": "design.checklist",
@@ -34,10 +34,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-design.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Trước khi kết thúc, 03-design.md có đủ: luồng dữ liệu (dữ liệu vào, biến đổi, ra ở từng thành phần); phụ thuộc giữa các phần (không phần nào bắt đầu trước khi các phần chặn nó xong); rủi ro từng phần = khả năng × tác động, kèm cách giảm cho rủi ro cao; chiến lược tương thích ngược (dữ liệu, người dùng, tích hợp hiện có); ma trận kiểm thử (cái gì unit, tích hợp, đầu-cuối); cách hoàn tác từng phần; quyền sở hữu file (hai task không sửa cùng một file hay cùng một migration); tiêu chí thành công đo được (\"xong\" là điều quan sát được, không phải cảm nhận)."
+   "instruction": "Before finishing, 03-design.md has all of: the data flow (data in, transformed, out, at each component); the dependencies between parts (no part starts before the parts that block it are done); the risk of each part = likelihood x impact, with a mitigation for high risks; the backward compatibility strategy (data, users, existing integrations); the test matrix (what is unit, integration, end-to-end); how to roll back each part; file ownership (two tasks do not change the same file or the same migration); measurable success criteria (\"done\" is something observable, not a feeling)."
   },
   {
    "key": "design.solution",
@@ -47,10 +47,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-design.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Thiết kế giải pháp theo YAGNI, KISS, DRY. Với mỗi quyết định kỹ thuật quan trọng, so sánh ít nhất hai phương án bằng đánh đổi (độ phức tạp, rủi ro, công sức, khả năng đảo ngược) và ghi phương án đã loại cùng lý do. Xét lần lượt: bảo mật (xác thực, phân quyền, kiểm tra đầu vào, dữ liệu nhạy cảm); hiệu năng và quy mô (truy vấn, chỉ mục, N+1, kích thước dữ liệu); edge case và failure mode (dịch vụ ngoài lỗi, ghi dở, dữ liệu trùng) kèm hành vi mong đợi; kiến trúc (ranh giới module, hợp đồng giữa các phần, chỗ cần mở rộng sau)."
+   "instruction": "Design the solution by YAGNI, KISS, DRY. For each important technical decision compare at least two options by trade-offs (complexity, risk, effort, reversibility) and record the option you rejected with the reason. Consider in turn: security (authentication, authorization, input validation, sensitive data); performance and scale (queries, indexes, N+1, data size); edge cases and failure modes (an external service failing, a partial write, duplicate data) with the expected behaviour; architecture (module boundaries, contracts between parts, where to extend later)."
   },
   {
    "key": "design.red-team",
@@ -60,10 +60,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-design.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Tự phản biện trước khi gửi duyệt ở GATE B. Đọc lại thiết kế từ bốn góc nhìn đối địch, mỗi góc tìm 2 đến 3 điểm yếu cụ thể: kẻ tấn công (đường lạm dụng, lộ dữ liệu, phân quyền); Murphy (đua tranh, mất dữ liệu, lỗi dây chuyền, thiếu đường hoàn tác); người hoài nghi (phụ thuộc không nói ra, khẳng định \"sẽ chạy\" không bằng chứng, thiếu đường lỗi); người cắt gọt (thiết kế thừa, trừu tượng sớm, thiếu bản tối thiểu; hỏi \"vì sao không làm gì\"). Mỗi điểm yếu ghi tình huống hỏng cụ thể và bằng chứng từ code (file:dòng); điểm không có bằng chứng thì bỏ. Ghi vào mục \"Phản biện\" của 03-design.md: điểm đã sửa trong thiết kế, điểm chấp nhận kèm lý do, điểm bác bỏ kèm nguồn kiểm chứng; kết luận GO, CAUTION (nêu điều kiện) hoặc STOP (hỏi người bằng needs_info nếu không tự gỡ được). Đừng tìm lỗi cho đủ số lượng: không có điểm yếu nào có bằng chứng thì ghi đúng như vậy."
+   "instruction": "Challenge your own work before sending it for approval at GATE B. Re-read the design from four hostile viewpoints, finding 2 to 3 concrete weak points from each: the attacker (abuse paths, data exposure, authorization); Murphy (races, data loss, cascading failures, no way to roll back); the sceptic (unstated dependencies, \"it will work\" without evidence, missing error paths); the trimmer (surplus design, premature abstraction, no minimal version; ask \"why not do nothing\"). For each weak point write the concrete failing situation and the evidence from the code (file:line); drop any point without evidence. Record in the \"Red team\" section of 03-design.md: the points you fixed in the design, the points you accept with the reason, the points you reject with the source that verifies them; conclude GO, CAUTION (state the conditions) or STOP (ask the person with needs_info if you cannot resolve it yourself). Do not look for flaws to reach a count: if no weak point has evidence, say exactly that."
   }
  ]
 }

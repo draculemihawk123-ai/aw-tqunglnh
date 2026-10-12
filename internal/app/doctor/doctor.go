@@ -85,6 +85,9 @@ type Options struct {
 	Store        ports.QueryStore
 	WorkerConfig workerpool.Config
 	CheckWorker  bool
+	// CheckGitShell (V11-09) adds CheckGitShell to the report. A composition root sets it on Windows only, where the kit's COMMAND
+	// scripts run through Git for Windows' sh.exe; it is off by default so a report is exactly what it was before.
+	CheckGitShell bool
 	// UnitOfWork is populated now (V6-10G,
 	// docs/design/08-v6-api-projections.md): optional (a nil value skips
 	// CheckSafeSettings, mirroring CheckWorker's own "opt in" pattern for a
@@ -114,6 +117,9 @@ func Run(ctx context.Context, opts Options) Report {
 		CheckDatabase(ctx, opts.Store),
 		CheckRoot("artifact_root", opts.Config.ArtifactRoot),
 		CheckGit(ctx),
+	}
+	if opts.CheckGitShell {
+		checks = append(checks, CheckGitShell(ctx))
 	}
 	if opts.CheckWorker {
 		checks = append(checks, CheckWorkerConfig(opts.WorkerConfig))

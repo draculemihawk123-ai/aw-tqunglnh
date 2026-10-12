@@ -8,10 +8,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-spec.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Thách thức phạm vi trước khi viết quy tắc, và ghi kết quả vào mục \"Phạm vi và lý do\" của 02-spec.md. Trả lời ngắn ba câu: (1) hệ thống đã có gì giải quyết một phần việc này (hàm, endpoint, màn hình, bảng) và spec có đang dựng lại thứ đã có không; (2) thay đổi tối thiểu để đạt mục tiêu là gì, việc nào hoãn được mà không chặn mục tiêu, cái nào là mong muốn đội lốt yêu cầu; (3) độ phức tạp: nếu việc sẽ chạm hơn 8 file, thêm hơn 2 lớp hoặc dịch vụ mới, hoặc cần hơn 3 giai đoạn thì tự hỏi có đạt cùng mục tiêu với ít hơn không và nêu lý do cho từng cái. Rồi chọn một chế độ và ghi lý do để người duyệt xác nhận ở GATE A: GIỮ (phạm vi đúng, tập trung vào đường lỗi, giá trị biên, test), THU HẸP (chuyển mọi thứ không chặn mục tiêu sang \"ngoài phạm vi\") hoặc MỞ RỘNG (chỉ khi brainstorm hoặc messages đã yêu cầu; đánh dấu rõ phần mở rộng). Đã chọn thì giữ: đừng lặng lẽ thu hẹp hay mở rộng về sau. Việc nhỏ và hiển nhiên (sửa chính tả, một dòng cấu hình) thì bỏ qua bước này."
+   "instruction": "Challenge the scope before writing rules, and record the result in the \"Scope and rationale\" section of 02-spec.md. Answer briefly three questions: (1) what the system already has that solves part of this (a function, endpoint, screen, table) and whether the spec is rebuilding something that exists; (2) what the minimal change to reach the goal is, which work can be deferred without blocking the goal, and which is a wish disguised as a requirement; (3) complexity: if the work would touch more than 8 files, add more than 2 new classes or services, or need more than 3 stages, ask yourself whether the same goal can be reached with less and give a reason for each. Then choose one mode and record why for the reviewer to confirm at GATE A: KEEP (the scope is right, focus on error paths, boundary values, tests), REDUCE (move everything that does not block the goal to \"out of scope\") or EXPAND (only when the brainstorm or messages asked for it; mark the expansion clearly). Once chosen, keep to it: do not silently reduce or expand later. For small and obvious work (a typo, a one-line configuration) skip this step."
   },
   {
    "key": "spec.scenarios",
@@ -21,10 +21,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-spec.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Phủ tình huống trước khi chốt acceptance criteria. Duyệt các chiều sau, chỉ giữ chiều thật sự áp dụng và ghi chiều bỏ qua kèm lý do một dòng: loại người dùng; giá trị đầu vào cực đoan (rỗng, null, dài tối đa, unicode, ký tự đặc biệt, chuỗi chỉ gồm khoảng trắng); thời điểm (hai thao tác cùng lúc, thử lại); quy mô (0, 1, nhiều phần tử, ranh giới phân trang); chuyển trạng thái (dùng lần đầu, bỏ dở giữa chừng, làm lại); chuỗi lỗi (cơ sở dữ liệu hay dịch vụ ngoài chậm hoặc hỏng, ghi dở); phân quyền; toàn vẹn dữ liệu (trùng, tham chiếu mồ côi, xóa dây chuyền); tích hợp (hợp đồng đổi, phiên bản lệch); tuân thủ (dữ liệu cá nhân, nhật ký kiểm toán); logic nghiệp vụ (giá trị 0 hoặc âm, giới hạn). Mỗi chiều áp dụng sinh 3 đến 5 tình huống cụ thể, xếp mức Critical, High, Medium hoặc Low (Critical: mất hoặc hỏng dữ liệu, lộ bảo mật; High: hỏng chức năng với một nhóm người dùng). Tình huống từ High trở lên và mọi đường lỗi phải thành acceptance criteria; phần còn lại ghi vào \"Hạn chế đã biết\"."
+   "instruction": "Cover the scenarios before fixing the acceptance criteria. Go through these dimensions, keep only those that really apply and record each one you skip with a one-line reason: kinds of user; extreme input values (empty, null, maximum length, unicode, special characters, a string of only whitespace); timing (two operations at once, retry); scale (0, 1, many elements, pagination boundaries); state transitions (first use, abandoned halfway, redo); failure chains (a slow or failing database or external service, a partial write); authorization; data integrity (duplicates, orphaned references, cascading deletes); integration (a changed contract, version skew); compliance (personal data, audit logs); business logic (a value of 0 or negative, limits). Each applicable dimension yields 3 to 5 concrete scenarios, rated Critical, High, Medium or Low (Critical: data loss or corruption, a security leak; High: broken functionality for a group of users). Scenarios rated High and above and every error path must become acceptance criteria; the rest go into \"Known limitations\"."
   },
   {
    "key": "spec.ac-quality",
@@ -34,10 +34,10 @@
    "provenance": {
     "owner": "aw-kit",
     "source": "kit/skills/skill-spec.json",
-    "revision": "v1",
+    "revision": "v2",
     "lastVerified": "2026-10-07T00:00:00Z"
    },
-   "instruction": "Chất lượng acceptance criteria. Mỗi AC mô tả một hành vi quan sát được (mã trạng thái, thông báo, trạng thái dữ liệu) chứ không mô tả cách cài đặt. Thay từ mơ hồ bằng giá trị cụ thể (\"hợp lệ\" thành 200 ký tự được nhận, 201 ký tự bị từ chối). AC đường lỗi đi cùng AC đường thành công của cùng thao tác. Không có hai AC mâu thuẫn hoặc trùng nhau; mỗi AC kiểm chứng được bằng một test tự động. Rà lại trước khi kết thúc: mỗi quy tắc nghiệp vụ BR có ít nhất một AC, và mỗi AC dẫn về một BR hoặc một user story."
+   "instruction": "Acceptance criteria quality. Each AC describes one observable behaviour (a status code, a message, the state of the data), not how to implement it. Replace vague words with concrete values (\"valid\" becomes 200 characters accepted, 201 characters rejected). The AC for an error path goes with the AC for the success path of the same operation. No two ACs contradict or duplicate each other; each AC is verifiable by an automated test. Check again before finishing: every business rule BR has at least one AC, and every AC leads back to a BR or a user story."
   }
  ]
 }

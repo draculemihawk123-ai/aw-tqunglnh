@@ -114,6 +114,14 @@ type ExecuteNodeHandler struct {
 	// still goes through executor (ports.NodeExecutor) unchanged.
 	isolation ports.IsolationEnforcementChecker
 	agents    *agentregistry.Registry
+	// activity (V11-11) writes the node's milestones into the task chat; nil posts nothing.
+	activity *ActivityPoster
+}
+
+// WithActivityPoster makes the handler write a node's milestones (started, last words, outcome or failure) into the work item's task chat.
+func (h *ExecuteNodeHandler) WithActivityPoster(poster *ActivityPoster) *ExecuteNodeHandler {
+	h.activity = poster
+	return h
 }
 
 // NewExecuteNodeHandler returns a ready-to-register ExecuteNodeHandler. clk
@@ -245,6 +253,12 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 		return nil
 	}
 
+	// V11-11: from here the attempt is running, so say so in the chat, and say how it ended whichever way this function returns.
+	if h.activity != nil {
+		h.activity.NodeStarted(ctx, payload)
+		defer h.activity.NodeFinished(context.WithoutCancel(ctx), payload)
+	}
+
 	// V4-12B's own SECOND worker re-check checkpoint ("ngay trước
 	// ProcessSupervisor.Start" — this codebase's own closest analogue
 	// today, since no real ProcessSupervisor exists yet; V5-08C owns
@@ -353,6 +367,7 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 				RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 				NextState: runtimedomain.ExecutionAttemptTimedOut, TerminationReason: runtimedomain.TerminationReasonDeadlineExceeded,
 				FailureCode: errorcode.CodeTimeout, JobLease: jobLease, CorrelationID: payload.CorrelationID,
+				PartialOutputArtifactID: h.stagePartialOutput(ctx, payload),
 			})
 			return finalizeErr
 		}
@@ -398,6 +413,7 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 			RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 			NextState: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 			FailureCode: errorcode.CodeExecutionFailed, JobLease: jobLease, CorrelationID: payload.CorrelationID,
+			PartialOutputArtifactID: h.stagePartialOutput(ctx, payload),
 		})
 		return finalizeErr
 	}
@@ -448,13 +464,32 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 			reason = execResult.TerminationReason
 		}
 	}
+	// V11-11: a FAILED attempt keeps what the agent had said, unless it already carries evidence of its own.
+	partialOutput := ""
+	if nextState == runtimedomain.ExecutionAttemptFailed && execResult.Evidence == nil {
+		partialOutput = h.stagePartialOutput(ctx, payload)
+	}
 	_, finalizeErr := FinalizeExecutionAttempt(ctx, h.uow, h.ids, h.clk, h.writeLeases, FinalizeExecutionAttemptRequest{
 		RunID: payload.RunID, NodeRunID: payload.NodeRunID, AttemptID: payload.AttemptID, ExpectedVersion: running.Version,
 		NextState: nextState, TerminationReason: reason, FailureCode: failureCode, SelectedOutcome: execResult.SelectedOutcome,
 		RequestedScopeExpansion: scopeProposal, JobLease: jobLease, CorrelationID: payload.CorrelationID,
-		Evidence: execResult.Evidence, WriteLeases: execResult.WriteLeaseGrants,
+		Evidence: execResult.Evidence, WriteLeases: execResult.WriteLeaseGrants, PartialOutputArtifactID: partialOutput,
 	})
 	return finalizeErr
+}
+
+// stagePartialOutput asks the executor, when it can keep an attempt's last words (PartialOutputStager), to store them for a FAILED or
+// TIMED_OUT finalization. Best effort: a failure to stage must never keep the attempt from being finalized, so any error yields "".
+func (h *ExecuteNodeHandler) stagePartialOutput(ctx context.Context, payload ExecuteNodeJobPayload) string {
+	stager, ok := h.executor.(PartialOutputStager)
+	if !ok {
+		return ""
+	}
+	artifactID, err := stager.StagePartialOutput(ctx, payload.RunID, payload.NodeRunID, payload.AttemptID)
+	if err != nil {
+		return ""
+	}
+	return artifactID
 }
 
 // admissionOutcome is admitOrClaimRunning's own three-way result.

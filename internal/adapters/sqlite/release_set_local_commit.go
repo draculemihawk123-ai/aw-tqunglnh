@@ -145,7 +145,7 @@ func (r workRepository) CountNoChangesFailedReleaseSetLocalCommits(ctx context.C
 	err := r.tx.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM release_set_local_commits
 WHERE release_set_id = ? AND repository_workspace_id = ? AND actor = ? AND message_hash = ?
-  AND state = 'FAILED' AND failure_reason = 'NO_CHANGES'`,
+  AND state = 'FAILED' AND failure_reason IN ('NO_CHANGES', 'HEAD_DRIFT', 'CHANGESET_DRIFT')`,
 		releaseSetID, repositoryWorkspaceID, actor, messageHash).Scan(&count)
 	if err != nil {
 		return 0, MapSQLiteError(fmt.Errorf("count no-changes release set local commits: %w", err))

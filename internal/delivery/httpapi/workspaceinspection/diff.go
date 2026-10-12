@@ -9,6 +9,10 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/domain/workspace"
 )
 
+// workingTreeResult is the value of the result query parameter that selects the
+// worktree's uncommitted state (V11-06) instead of a result commit.
+const workingTreeResult = "WORKING_TREE"
+
 // handleGetDiff implements GET
 // /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/diff
 // (operationId getWorkspaceDiff): dispatches appinspection.Queries.GetDiff
@@ -50,9 +54,16 @@ func handleGetDiff(deps Dependencies) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		resultGeneration, ok := requireUint64QueryParam(w, query, "resultGeneration")
-		if !ok {
-			return
+		// V11-06: result=WORKING_TREE asks for the worktree's uncommitted state on
+		// top of base instead of the difference between two commits; no
+		// resultGeneration then. A 40/64-hex commit id can never equal the word.
+		workingTree := resultRevisionID == workingTreeResult
+		var resultGeneration uint64
+		if !workingTree {
+			resultGeneration, ok = requireUint64QueryParam(w, query, "resultGeneration")
+			if !ok {
+				return
+			}
 		}
 		byteLimit, ok := optionalInt64QueryParam(w, query, "byteLimit")
 		if !ok {
@@ -60,6 +71,25 @@ func handleGetDiff(deps Dependencies) http.HandlerFunc {
 		}
 		fileLimit, ok := optionalIntQueryParam(w, query, "fileLimit")
 		if !ok {
+			return
+		}
+
+		if workingTree {
+			uncommitted, err := deps.Queries.GetWorkingTreeDiff(ctx, appinspection.GetWorkingTreeDiffRequest{
+				Scope: appinspection.WorkspaceScope{
+					ProjectID: projectID, RepositoryID: repositoryID,
+					WorkspaceSetID: workspaceSetID, RepositoryWorkspaceID: repositoryWorkspaceID,
+				},
+				BaseRevision: workspace.Revision{
+					RepositoryID: project.RepositoryID(repositoryID), VCSObjectID: baseRevisionID, WorkspaceGeneration: baseGeneration,
+				},
+				ByteLimit: byteLimit, FileLimit: fileLimit,
+			})
+			if err != nil {
+				writeQueryError(w, err)
+				return
+			}
+			_ = httpapi.EncodeResult(w, http.StatusOK, toWorkingTreeDiffResponse(uncommitted), "")
 			return
 		}
 

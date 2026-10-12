@@ -271,7 +271,17 @@ func RegisterRepository(ctx context.Context, uow ports.UnitOfWork, ids idsource.
 			if existingReceipt.RequestHash != cmd.RequestHash {
 				return ports.ErrReceiptConflict
 			}
-			return json.Unmarshal([]byte(existingReceipt.ResultJSON), &result)
+			if err := json.Unmarshal([]byte(existingReceipt.ResultJSON), &result); err != nil {
+				return err
+			}
+			// V11-12: a replayed registration must not report success for a repository that was deleted since. Its id is never reused, so the
+			// caller needs a new id and a new idempotency key.
+			if _, err := tx.Catalog().GetRepository(ctx, result.RepositoryID); errors.Is(err, ports.ErrPersistenceNotFound) {
+				return refuse(RefusalDeleted, fmt.Sprintf("repository %s was registered with this idempotency key but has since been deleted; register it again with a new id and a new idempotency key", result.RepositoryID))
+			} else if err != nil {
+				return err
+			}
+			return nil
 		}
 
 		created, err := tx.Catalog().RegisterRepository(ctx, ports.RegisterRepositoryRequest{

@@ -33,7 +33,7 @@ kit/
 ├── kit.json                    # khai báo của kho: role "kit", name, version, prefix "kit-", danh mục mục
 ├── scripts/                    # script vận hành (đọc aw-project.json / aw-state.json), không gắn với stack nào
 │   ├── init-project.sh  create-root.sh  run-task.sh  watch-run.sh  show-run.sh  review-task.sh
-│   ├── retry-task.sh  commit-task.sh  worktree-path.sh  split-tasks.sh  agent-log.py
+│   ├── retry-task.sh  recreate-task.sh  commit-task.sh  adopt-head.sh  worktree-path.sh  split-tasks.sh  agent-log.py
 │   ├── aw-publish.py  aw-resource-hashes.py
 │   └── import-skill.py  context-check.sh   # công cụ cho người chắt lọc tri thức (mục "Chắt lọc từ nguồn bên ngoài")
 ├── commands/
@@ -148,7 +148,7 @@ flowchart LR
   `reviewerFeedback` (và **không** nhận `checkFailures`). Chẩn đoán dở thì agent sửa mất luôn thông báo lỗi gốc: đây là rủi ro thật, chỉ chạy
   `wf-task-delivery-plus` thật mới biết có đáng không (chưa đo; xem kết luận V10-18).
 - `expect-fail.sh` nhận diện stack như `maven-test.sh` và `npm-test.sh` (`backend/pom.xml` hoặc `frontend/package.json`), chạy test và **đảo nghĩa**:
-  đạt khi test đỏ; không đạt khi test xanh, khi code không biên dịch (đỏ vì lý do khác) hoặc khi lỗi mạng (báo `MÔI TRƯỜNG:`).
+  đạt khi test đỏ; không đạt khi test xanh, khi code không biên dịch (đỏ vì lý do khác) hoặc khi lỗi mạng (báo `ENVIRONMENT:`).
 - Project cần khai `agent-debugger`, `agent-reviewer` (và `agent-flow-repro`, `agent-flow-fix` cho `wf-bugfix`) bằng `"from": "kit"` kèm `addResources`
   của stack mình, và một `cmd-expect-fail` theo repository (`from kit:cmd-expect-fail`). Mẫu: [docs/guides/issue-tracker](../docs/guides/issue-tracker/aw-project.json).
 
@@ -178,6 +178,28 @@ Các tài liệu `01-brainstorm.md`, `02-spec.md`, `03-design.md` có khung tiê
 
 **Không có bước kiểm máy cho khung.** Đã thử (B4): ba bước kiểm đối chiếu khung (đủ mục, `AC-n` có test trong thiết kế, `D-n` có phương án loại) quay tài liệu về cho agent; chi phí tổng không đổi nhưng vòng sửa của bước code tăng và không tách được đóng góp, nên đã bỏ phần kiểm, chỉ giữ khung (xem `kit/bench/reports/V10-tong-quan.md`). Chỉ `check-feature-docs` (đủ file, `tasks.json` đúng schema) và `check-plan` (sáu mục của `plan.md`) còn chạy.
 
+## Ngôn ngữ trong kit (V11-08)
+
+Phần mà agent và engine đọc dùng **tiếng Anh**; phần dành cho người đọc giữ tiếng Việt:
+
+| Phần | Ngôn ngữ |
+|---|---|
+| Skill, layer, tài nguyên của agent (`skills/`, `layers/`) | Tiếng Anh |
+| Script chạy trong worker (`commands/*.sh`): thông báo và chú thích | Tiếng Anh, **chỉ ASCII** (`check-kit.sh` kiểm; nội dung được publish nguyên văn lên worker, kể cả bản bọc `.cmd` của Windows) |
+| Tên (và mô tả) định nghĩa trong `kit.json`, workflow, policy | Tiếng Anh |
+| README, hướng dẫn, `docs/design`, báo cáo | Tiếng Việt |
+| Script vận hành cho người (`scripts/*.sh`, `scripts/*.py`) | Tiếng Việt |
+| **Tài liệu agent sinh ra** (brainstorm, spec, design, plan, báo cáo) | Theo ngôn ngữ của `taskContract.behavior` (luật ở `flow.working-rules`); tên mục theo khung của skill |
+
+Hợp đồng giữa skill và kiểm tra bằng máy khi tài liệu có thể bằng tiếng Việt: `check-plan.sh` nhận tiêu đề `##` tiếng Anh **và** tiếng Việt (từ khóa tiếng Việt viết bằng mã octal để script vẫn ASCII);
+`check-lessons.sh` và `lessons-to-skill.py` dùng nhãn tiếng Anh (`Evidence`, `Occurrences`, `Proposed rule`, `Attach to`, `Level`, `Status: skip`) và vẫn đọc nhãn tiếng Việt cũ;
+`check-feature-docs.sh` chỉ kiểm tên file và schema của `tasks.json`. Các khung tiêu đề của agent là tiếng Anh từ kit 1.7.0: `Current state`, `Root problem`, `Red team`, `Revision history`,
+`[UNVERIFIED]`, `Remaining concerns`, `Unverified suspicions`, `Edge cases found`, `Scope and rationale`, `Files to change`... (trước đó là `Hiện trạng`, `Vấn đề gốc`, `Phản biện`, `Lịch sử sửa`, `[CHƯA XÁC MINH]`...).
+
+**Chưa đo.** Dịch 83 tài nguyên (kit 1.7.0, mỗi tài nguyên tăng `revision`) giữ nguyên nghĩa và không chỉnh nội dung cùng lúc. Chi phí, vòng sửa, điểm tài liệu và mã, và việc agent có viết đúng ngôn ngữ của work item hay không
+**chưa được đo A/B** (bench B-series hai lượt mỗi nhóm, chấm mù, `code-accept.py`); mọi số B0–B4 trong tài liệu này được đo với skill tiếng Việt, nên sau bản dịch phải lập mốc mới, không so thẳng.
+Quyết định giữ hay quay lại bản tiếng Việt dựa trên số đo đó (xem V11-08 trong `docs/design/14-v11-bugfix.md`); `git revert` commit dịch (`feat(v11-08c)`) là đường quay lại, các bước 1 và 2 độc lập với nó.
+
 ## Học dần: bài học thành resource có version (V10-16)
 
 Lỗi lặp lại ở review và gate nên trở thành luật mới **có người duyệt**, thay vì chỉ nằm trong transcript. Quy trình gồm bốn bước, hai trong đó là script của kit:
@@ -196,8 +218,8 @@ flowchart LR
 
 1. **Tóm tắt dữ liệu thật:** `kit-metrics.py lessons-input <thư mục lượt chạy>...` in Markdown: vòng sửa theo node, gate không qua ngay lần đầu, mã lỗi attempt, và nguyên văn nhận xét của reviewer. Gửi nó vào WorkItem của `wf-retro` làm message (`MESSAGE="$(…)" run-task.sh …`).
 2. **`wf-retro`** (`agent-retro`, `skill-retro`): chỉ đề xuất bài học khi có bằng chứng trích được **và** lặp từ hai lượt trở lên (hoặc lỗi Critical); không viết lại điều một resource đã có nói; tối đa 5 bài học, mỗi bài đúng năm dòng (Bằng chứng, Số lần lặp, Luật đề xuất ≤ 500 ký tự, Gắn vào = id agent, Mức) và mục "Không rút thành luật" cho điều chưa đủ bằng chứng.
-   `check-lessons` kiểm định dạng bằng máy, rồi **người duyệt** xóa, sửa hoặc đánh `- Trạng thái: bỏ`. Chưa duyệt thì không có luật nào được sinh ra.
-3. **`lessons-to-skill.py docs/lessons/<ngày>.md --skill definitions/skills/skill-project-lessons.json --manifest aw-project.json`**: mỗi bài học thành resource `lesson.<tiêu đề>` (`global`, Mức làm priority, provenance trỏ về `docs/lessons/<ngày>.md#L-n`). Cùng tiêu đề mà nội dung đổi thì `provenance.revision` tăng `v1 → v2`; không đổi thì giữ. Script thêm skill vào `skills` của `aw-project.json` và thêm `skill-project-lessons#<key>` vào `addResources` của từng agent trong "Gắn vào"; agent không có trong project là lỗi, không sửa gì.
+   `check-lessons` kiểm định dạng bằng máy, rồi **người duyệt** xóa, sửa hoặc đánh `- Status: skip`. Chưa duyệt thì không có luật nào được sinh ra.
+3. **`lessons-to-skill.py docs/lessons/<ngày>.md --skill definitions/skills/skill-project-lessons.json --manifest aw-project.json`**: mỗi bài học thành resource `lesson.<tiêu đề>` (`global`, Mức làm priority, provenance trỏ về `docs/lessons/<ngày>.md#L-n`). Cùng tiêu đề mà nội dung đổi thì `provenance.revision` tăng `v1 → v2`; không đổi thì giữ. Script thêm skill vào `skills` của `aw-project.json` và thêm `skill-project-lessons#<key>` vào `addResources` của từng agent trong "Attach to"; agent không có trong project là lỗi, không sửa gì.
 4. **Publish** như thường. `check-kit.sh` đã kiểm bằng `aw` thật: publish lần hai không đổi bài học thì skill giữ nguyên `versionId`, đổi nội dung thì ra `versionId` mới.
 
 Lưu ý: bài học gắn vào agent chiếm ngân sách context của agent đó và tính vào giới hạn 15 `HARD_CONSTRAINT` mỗi agent, nên dùng `HARD_CONSTRAINT` chỉ cho luật kiểm được bằng máy.
@@ -230,7 +252,7 @@ chỉ nhận 4 KiB cuối của stderr; không màu. Để mọi script thực h
 |---|---|
 | `aw_step <tên> <lệnh…>` | Chạy lệnh; đạt thì im lặng. Hỏng thì in `<AW_STEP_HEAD> '<tên>' không đạt` và `${AW_TAIL:-60}` dòng cuối của output ra stderr, thoát mã 1 |
 | `aw_fail <thông báo>` | Lỗi của code: in stderr, thoát 1 |
-| `aw_env_fail <thông báo>` | Lỗi của máy chạy (thiếu binary, cổng bị chiếm): in `MÔI TRƯỜNG: …` kèm lời dặn agent dừng bằng `needs_info` thay vì sửa code vô ích |
+| `aw_env_fail <thông báo>` | Lỗi của máy chạy (thiếu binary, cổng bị chiếm): in `ENVIRONMENT: …` kèm lời dặn agent dừng bằng `needs_info` thay vì sửa code vô ích |
 | `aw_wait_http <url> <tên> <log> [giây]` | Chờ một URL trả lời; quá hạn thì in lỗi kèm đuôi log |
 
 Cách dùng, một dòng ở đầu script:
@@ -362,7 +384,7 @@ phương pháp dựa trên bằng chứng, hai giai đoạn (đúng yêu cầu r
 trọng, và không tuyên bố điều chưa kiểm chứng. Phần bỏ vì không chạy được trong node CHECKER của `aw` (agent không tương tác,
 chỉ đọc, `git` và lệnh shell bị chặn ở chế độ `acceptEdits`): chọn chế độ review bằng `AskUserQuestion`, `gh pr diff`, subagent
 `code-reviewer`, `/ck:scout`, pipeline Task, và các `references/*.md` (không được cung cấp). Phần bổ sung ở V10-09: dò edge case trước khi
-review và danh sách rà (`codereview.edge-scout`, `codereview.checklist`), báo cáo thêm mục "Edge case dò được" và "Câu hỏi chưa giải quyết".
+review và danh sách rà (`codereview.edge-scout`, `codereview.checklist`), báo cáo thêm mục "Edge cases found" và "Unresolved questions" (tiếng Việt trước kit 1.7.0: "Edge case dò được", "Câu hỏi chưa giải quyết").
 
 Dùng: `agent-reviewer` của project thêm `"skill-code-review"` vào `resources` (cạnh `skill-review`, vốn giữ ràng buộc chỉ đọc
 và quy tắc chọn outcome). Cả ba resource có selector `blockKinds: ["CHECKER"]` nên chỉ agent review nhận.
@@ -377,7 +399,7 @@ và quy tắc chọn outcome). Cả ba resource có selector `blockKinds: ["CHEC
 
 - **Không chứng minh được "tìm nhiều lỗi hơn"**: reviewer cũ đã tìm đủ 9/9, nên bài thử bão hòa ở chỉ số đó.
 - **Khác biệt quan sát được ở hình thức và kỷ luật**: báo cáo xếp Critical/Important/Minor, mỗi mục có `file:dòng`, mở đầu nói rõ
-  "đã đọc, chưa chạy `mvn`", và đặt điều chưa kiểm chứng ở mục "Nghi ngờ chưa xác minh" riêng. Chi phí cao hơn khoảng 12 đến 17%
+  "đã đọc, chưa chạy `mvn`", và đặt điều chưa kiểm chứng ở mục "Unverified suspicions" riêng (trước kit 1.7.0: "Nghi ngờ chưa xác minh"). Chi phí cao hơn khoảng 12 đến 17%
   (0,130 và 0,138 USD so với 0,115 và 0,118).
 - **Tác dụng phụ**: hai lần trên code cài lỗi, reviewer mới xếp "thiếu `GET /{id}` và `PUT`" (không nằm trong tiêu chí của task)
   ở Critical hoặc Important, trong khi một lần của reviewer cũ ghi đúng rằng việc đó không quyết định outcome. Xu hướng nâng mức

@@ -264,7 +264,7 @@ if [ -f "$tmp/p/demo.inlined.sh" ]; then
   ok "aw-publish nhúng thư viện, không còn dòng @aw-include"
   out=$(env -u AW_KIT sh "$tmp/p/demo.inlined.sh" 2>&1 >/dev/null); code=$?
   [ "$code" = 1 ] && ok "bước hỏng thoát mã 1" || bad "bước hỏng phải thoát mã 1, nhận $code"
-  printf '%s' "$out" | grep -q "demo: bước 'bước hỏng' không đạt" && ok "thông báo lỗi ra stderr đúng định dạng" || bad "thông báo lỗi sai: $out"
+  printf '%s' "$out" | grep -q "demo: bước 'bước hỏng' failed" && ok "thông báo lỗi ra stderr đúng định dạng" || bad "thông báo lỗi sai: $out"
   [ "$(printf '%s\n' "$out" | wc -l)" = 4 ] && ok "chỉ in AW_TAIL=3 dòng cuối của output" || bad "số dòng stderr sai: $out"
   printf '%s' "$out" | grep -q "không tới đây" && bad "script chạy tiếp sau bước hỏng" || ok "script dừng ngay ở bước hỏng"
 else
@@ -285,10 +285,10 @@ AW_ENV_ERRORS='SELF_SIGNED_CERT|ENOTFOUND'
 aw_step "cài dependency" sh -c 'echo "npm error code SELF_SIGNED_CERT_IN_CHAIN"; exit 1'
 SH
 out=$(AW_KIT="$kit" sh "$tmp/p/env.sh" 2>&1 >/dev/null); code=$?
-[ "$code" = 1 ] && printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && ok "lỗi mạng/chứng chỉ báo là MÔI TRƯỜNG" || bad "lỗi môi trường bị coi là lỗi code: $out"
+[ "$code" = 1 ] && printf '%s' "$out" | grep -q "^ENVIRONMENT:" && ok "lỗi mạng/chứng chỉ báo là MÔI TRƯỜNG" || bad "lỗi môi trường bị coi là lỗi code: $out"
 sed -i 's/SELF_SIGNED_CERT_IN_CHAIN/Cannot find module x/' "$tmp/p/env.sh"
 out=$(AW_KIT="$kit" sh "$tmp/p/env.sh" 2>&1 >/dev/null)
-printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && bad "lỗi code bị báo nhầm là môi trường" || ok "lỗi code vẫn là lỗi code"
+printf '%s' "$out" | grep -q "^ENVIRONMENT:" && bad "lỗi code bị báo nhầm là môi trường" || ok "lỗi code vẫn là lỗi code"
 
 echo "== workflow mẫu và expect-fail (V10-14)"
 mkdir -p "$tmp/ef/bin" "$tmp/ef/wt/backend"
@@ -311,14 +311,14 @@ chmod +x "$tmp/ef/bin/mvn"
 ef() { (cd "$tmp/ef/wt" && AW_KIT="$kit" FAKE_MVN="$1" PATH="$tmp/ef/bin:$PATH" sh "$kit/commands/expect-fail.sh" 2>&1); }
 mt() { (cd "$tmp/ef/wt" && AW_KIT="$kit" FAKE_MVN="$1" PATH="$tmp/ef/bin:$PATH" sh "$kit/commands/maven-test.sh" 2>&1); }
 out=$(mt context) && bad "maven-test: context lỗi phải không đạt" || { printf '%s' "$out" | grep -q "Caused by: org.flywaydb" && [ "$(printf '%s' "$out" | grep -c 'Caused by')" = 1 ] && ok "maven-test: in nguyên nhân gốc (Caused by), bỏ trùng, không chỉ danh sách test đỏ" || bad "maven-test nguyên nhân: $out"; }
-out=$(mt weird) && bad "maven-test: lỗi lạ phải không đạt" || { printf '%s' "$out" | grep -q "Something unexpected happened" && printf '%s' "$out" | grep -q "mvn thoát mã 1" && ok "maven-test: lỗi dạng lạ không bị nuốt, in mã thoát và phần cuối output" || bad "maven-test lỗi lạ: $out"; }
-out=$(mt nomvn) && bad "maven-test: thiếu mvn phải không đạt" || { printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && ok "maven-test: mvn không chạy được thì báo MÔI TRƯỜNG (agent không sửa code vô ích)" || bad "maven-test thiếu mvn: $out"; }
-out=$(mt javahome) && bad "maven-test: JAVA_HOME sai phải không đạt" || { printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && ok "maven-test: JAVA_HOME sai thì báo MÔI TRƯỜNG" || bad "maven-test JAVA_HOME: $out"; }
-out=$(mt silent) && bad "maven-test: mvn lỗi không output phải không đạt" || { printf '%s' "$out" | grep -q "mvn thoát mã 7" && printf '%s' "$out" | grep -q "output rỗng" && ok "maven-test: mvn lỗi không in gì vẫn báo mã thoát" || bad "maven-test mvn im lặng: $out"; }
-out=$(ef red) && printf '%s' "$out" | grep -q "ĐỎ như mong đợi" && ok "expect-fail: test đỏ thì đạt, in các dòng thất bại" || bad "expect-fail test đỏ: $out"
-out=$(ef green) && bad "expect-fail: test xanh phải không đạt" || { printf '%s' "$out" | grep -q "chưa chạm tới lỗi" && ok "expect-fail: test xanh thì không đạt, dặn sửa test" || bad "expect-fail test xanh: $out"; }
-out=$(ef compile) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "không biên dịch" && ok "expect-fail: lỗi biên dịch không được tính là test đỏ" || bad "expect-fail biên dịch: $out"; }
-out=$(ef net) && bad "expect-fail: lỗi mạng phải không đạt" || { printf '%s' "$out" | grep -q "^MÔI TRƯỜNG:" && ok "expect-fail: lỗi mạng báo là MÔI TRƯỜNG" || bad "expect-fail mạng: $out"; }
+out=$(mt weird) && bad "maven-test: lỗi lạ phải không đạt" || { printf '%s' "$out" | grep -q "Something unexpected happened" && printf '%s' "$out" | grep -q "mvn exited with code 1" && ok "maven-test: lỗi dạng lạ không bị nuốt, in mã thoát và phần cuối output" || bad "maven-test lỗi lạ: $out"; }
+out=$(mt nomvn) && bad "maven-test: thiếu mvn phải không đạt" || { printf '%s' "$out" | grep -q "^ENVIRONMENT:" && ok "maven-test: mvn không chạy được thì báo MÔI TRƯỜNG (agent không sửa code vô ích)" || bad "maven-test thiếu mvn: $out"; }
+out=$(mt javahome) && bad "maven-test: JAVA_HOME sai phải không đạt" || { printf '%s' "$out" | grep -q "^ENVIRONMENT:" && ok "maven-test: JAVA_HOME sai thì báo MÔI TRƯỜNG" || bad "maven-test JAVA_HOME: $out"; }
+out=$(mt silent) && bad "maven-test: mvn lỗi không output phải không đạt" || { printf '%s' "$out" | grep -q "mvn exited with code 7" && printf '%s' "$out" | grep -q "empty output" && ok "maven-test: mvn lỗi không in gì vẫn báo mã thoát" || bad "maven-test mvn im lặng: $out"; }
+out=$(ef red) && printf '%s' "$out" | grep -q "RED as expected" && ok "expect-fail: test đỏ thì đạt, in các dòng thất bại" || bad "expect-fail test đỏ: $out"
+out=$(ef green) && bad "expect-fail: test xanh phải không đạt" || { printf '%s' "$out" | grep -q "does not reach the bug" && ok "expect-fail: test xanh thì không đạt, dặn sửa test" || bad "expect-fail test xanh: $out"; }
+out=$(ef compile) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "does not compile" && ok "expect-fail: lỗi biên dịch không được tính là test đỏ" || bad "expect-fail biên dịch: $out"; }
+out=$(ef net) && bad "expect-fail: lỗi mạng phải không đạt" || { printf '%s' "$out" | grep -q "^ENVIRONMENT:" && ok "expect-fail: lỗi mạng báo là MÔI TRƯỜNG" || bad "expect-fail mạng: $out"; }
 out=$(cd "$tmp/ef" && AW_KIT="$kit" sh "$kit/commands/expect-fail.sh" 2>&1) && bad "expect-fail: thiếu backend/pom.xml phải không đạt" || ok "expect-fail: không nhận ra stack thì không đạt"
 # diff-size, temp-artifacts, check-plan (V10-15) trên một repository Git tạm
 g="$tmp/hyg"; mkdir -p "$g/src" && git -C "$g" init -q -b main && git -C "$g" config user.email t@example.invalid && git -C "$g" config user.name t
@@ -327,7 +327,7 @@ cmdrun() { (cd "$g" && AW_KIT="$kit" sh "$kit/commands/$1" 2>&1); }
 out=$(cmdrun diff-size.sh) && ok "diff-size: không đổi gì thì trong ngưỡng" || bad "diff-size sạch: $out"
 out=$(cmdrun temp-artifacts.sh) && ok "temp-artifacts: không có dòng thêm thì đạt" || bad "temp-artifacts sạch: $out"
 seq 1 30 | sed 's/^/int x/' > "$g/src/Big.java"
-out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && bad "diff-size: vượt ngưỡng phải không đạt" || { printf '%s' "$out" | grep -q "FIX: làm gọn" && ok "diff-size: vượt ngưỡng thì không đạt, dặn làm gọn" || bad "diff-size vượt: $out"; }
+out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && bad "diff-size: vượt ngưỡng phải không đạt" || { printf '%s' "$out" | grep -q "FIX: simplify" && ok "diff-size: vượt ngưỡng thì không đạt, dặn làm gọn" || bad "diff-size vượt: $out"; }
 mkdir -p "$g/docs"; seq 1 500 > "$g/docs/long.md"; rm "$g/src/Big.java"
 out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && ok "diff-size: tài liệu không tính vào ngưỡng" || bad "diff-size tài liệu: $out"
 printf 'class B {\n  void f() { System.out.println("x"); }\n  // TODO later\n  @Disabled void t() {}\n}\n' > "$g/src/B.java"; echo 'it.only("a", () => {});' > "$g/src/a.test.js"
@@ -337,9 +337,16 @@ out=$(cmdrun temp-artifacts.sh) && ok "temp-artifacts: code cũ đã commit khô
 d="$g/docs/features/f/tasks/T-01"; mkdir -p "$d"
 out=$(cmdrun check-plan.sh) && bad "check-plan: không có plan.md phải không đạt" || ok "check-plan: thiếu plan.md thì không đạt"
 printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n' > "$d/plan.md"
-out=$(cmdrun check-plan.sh) && bad "check-plan: plan thiếu mục phải không đạt" || { printf '%s' "$out" | grep -q 'THIẾU mục "rủi ro và hoàn tác"' && ok "check-plan: plan thiếu mục thì không đạt, nêu mục thiếu" || bad "check-plan thiếu mục: $out"; }
+out=$(cmdrun check-plan.sh) && bad "check-plan: plan thiếu mục phải không đạt" || { printf '%s' "$out" | grep -q 'MISSING section "risks and rollback"' && ok "check-plan: plan thiếu mục thì không đạt, nêu mục thiếu" || bad "check-plan thiếu mục: $out"; }
 printf '## Tệp sẽ sửa\nx\n## Các bước\nx\n## Test cho từng AC\nx\n## Lệnh kiểm tra cuối\nx\n## Rủi ro và hoàn tác\nx\n## Tiêu chí xong\nx\n' > "$d/plan.md"
 out=$(cmdrun check-plan.sh) && ok "check-plan: plan đủ sáu mục thì đạt" || bad "check-plan đủ: $out"
+printf '## Files to change\nx\n## Steps\nx\n## Tests for each AC\nx\n## Final verification command\nx\n## Risks and rollback\nx\n## Done criteria\nx\n' > "$d/plan.md"
+out=$(cmdrun check-plan.sh) && ok "check-plan: plan viết bằng tiếng Anh đủ sáu mục thì đạt" || bad "check-plan tiếng Anh: $out"
+# V11-08: script chạy trong worker là tiếng Anh, chỉ ASCII (nội dung được publish nguyên văn lên worker, kể cả bản bọc .cmd của Windows)
+nonascii=$(LC_ALL=C grep -l -P '[^\x00-\x7F]' "$kit"/commands/*.sh 2> /dev/null || true)
+[ -z "$nonascii" ] && ok "kit/commands/*.sh chỉ có ký tự ASCII" || bad "script worker còn ký tự không ASCII: $nonascii"
+# V11-09: chạy thật bộ bọc .cmd bằng cmd.exe (chỉ trên Windows có Git for Windows; nơi khác tự bỏ qua): cùng mã thoát, cùng thông báo như sh
+out=$(python3 "$kit/tests/test-windows-launcher.py" 2>&1) && ok "bộ bọc .cmd chạy đúng mã thoát và thông báo như .sh (hoặc bỏ qua ngoài Windows)" || bad "test-windows-launcher: $out"
 # bộ bọc .cmd của Windows: phần đầu một khối, CRLF, phần script bên dưới giữ LF và nguyên văn; mọi script publish đều có bộ bọc
 KITDIR="$kit" python3 - <<'PY' && ok "bộ bọc Windows: phần đầu một khối + CRLF, phần script giữ nguyên LF" || bad "bộ bọc Windows"
 import importlib.util, os
@@ -364,7 +371,7 @@ out=$(lrun) && bad "check-lessons: không có file bài học phải không đ�
 cp "$kit/bench/lessons/2026-10-07-A0-A1.md" "$l/docs/lessons/2026-10-07.md"
 out=$(lrun) && ok "check-lessons: ví dụ thật từ A0/A1 đạt" || bad "check-lessons ví dụ: $out"
 sed -i '/^- Mức: GUIDANCE/d' "$l/docs/lessons/2026-10-07.md"
-out=$(lrun) && bad "check-lessons: thiếu Mức phải không đạt" || { printf '%s' "$out" | grep -q 'THIẾU "Mức"' && ok "check-lessons: thiếu trường thì không đạt, nêu bài học và trường" || bad "check-lessons thiếu Mức: $out"; }
+out=$(lrun) && bad "check-lessons: thiếu Mức phải không đạt" || { printf '%s' "$out" | grep -q 'MISSING "Level"' && ok "check-lessons: thiếu trường thì không đạt, nêu bài học và trường" || bad "check-lessons thiếu Mức: $out"; }
 # lessons-input trên database giả lập của một lượt chạy
 KITDIR="$kit" python3 - "$tmp/run-fake" <<'PY' && ok "kit-metrics lessons-input: tóm tắt vòng sửa, gate đỏ, nhận xét reviewer" || bad "kit-metrics lessons-input"
 import json, os, sqlite3, subprocess, sys

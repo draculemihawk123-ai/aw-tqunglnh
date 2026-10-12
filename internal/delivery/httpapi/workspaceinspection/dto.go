@@ -23,11 +23,20 @@ func toRevisionResponse(r workspace.Revision) revisionResponse {
 }
 
 // diffFileChangeResponse is the wire shape of one ports.DiffFileChange.
+//
+// The last six fields are only set by a working-tree diff (V11-06,
+// result=WORKING_TREE) and are omitted otherwise, so a committed diff's response
+// is exactly what it always was.
 type diffFileChangeResponse struct {
-	Path      string `json:"path"`
-	Additions int64  `json:"additions"`
-	Deletions int64  `json:"deletions"`
-	Binary    bool   `json:"binary"`
+	Path        string `json:"path"`
+	Additions   int64  `json:"additions"`
+	Deletions   int64  `json:"deletions"`
+	Binary      bool   `json:"binary"`
+	Status      string `json:"status,omitempty"`
+	Untracked   bool   `json:"untracked,omitempty"`
+	Symlink     bool   `json:"symlink,omitempty"`
+	SizeBytes   int64  `json:"sizeBytes,omitempty"`
+	ContentHash string `json:"contentHash,omitempty"`
 }
 
 // diffContentResponse is getWorkspaceDiff's own response body — a direct,
@@ -47,6 +56,14 @@ type diffContentResponse struct {
 	FileLimit      int                      `json:"fileLimit"`
 	FilesTruncated bool                     `json:"filesTruncated"`
 	PatchTruncated bool                     `json:"patchTruncated"`
+	// Uncommitted, TotalFiles and ChangeSetDigest are only set by a working-tree
+	// diff (V11-06, result=WORKING_TREE): the diff is the worktree's uncommitted
+	// state on top of BaseRevision (ResultRevision is then empty, there is no
+	// result commit), TotalFiles counts the whole change set even when Files is cut
+	// at FileLimit, and ChangeSetDigest changes iff the set of changes does.
+	Uncommitted     bool   `json:"uncommitted,omitempty"`
+	TotalFiles      int    `json:"totalFiles,omitempty"`
+	ChangeSetDigest string `json:"changeSetDigest,omitempty"`
 }
 
 func toDiffContentResponse(d ports.DiffContent) diffContentResponse {
@@ -58,6 +75,23 @@ func toDiffContentResponse(d ports.DiffContent) diffContentResponse {
 		BaseRevision: toRevisionResponse(d.BaseRevision), ResultRevision: toRevisionResponse(d.ResultRevision),
 		Files: files, Patch: d.Patch, ByteLimit: d.ByteLimit, FileLimit: d.FileLimit,
 		FilesTruncated: d.FilesTruncated, PatchTruncated: d.PatchTruncated,
+	}
+}
+
+// toWorkingTreeDiffResponse maps ports.WorkingTreeDiff onto the same response
+// type a committed diff uses, marked Uncommitted.
+func toWorkingTreeDiffResponse(d ports.WorkingTreeDiff) diffContentResponse {
+	files := make([]diffFileChangeResponse, 0, len(d.Files))
+	for _, f := range d.Files {
+		files = append(files, diffFileChangeResponse{
+			Path: f.Path, Additions: f.Additions, Deletions: f.Deletions, Binary: f.Binary,
+			Status: string(f.Status), Untracked: f.Untracked, Symlink: f.Symlink, SizeBytes: f.SizeBytes, ContentHash: f.ContentHash,
+		})
+	}
+	return diffContentResponse{
+		BaseRevision: toRevisionResponse(d.BaseRevision), Files: files, Patch: d.Patch, ByteLimit: d.ByteLimit, FileLimit: d.FileLimit,
+		FilesTruncated: d.FilesTruncated, PatchTruncated: d.PatchTruncated,
+		Uncommitted: true, TotalFiles: d.TotalFiles, ChangeSetDigest: d.ChangeSetDigest,
 	}
 }
 

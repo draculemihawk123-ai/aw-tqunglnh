@@ -9,6 +9,7 @@ import (
 	appcatalog "github.com/taQuangLing/agent-workflow/internal/app/catalog"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
+	"github.com/taQuangLing/agent-workflow/internal/domain/project"
 )
 
 // RunProjectList implements `aw project list` — a read-only query over
@@ -18,11 +19,12 @@ import (
 func RunProjectList(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("project list", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	includeArchived := fs.Bool("include-archived", false, "also list ARCHIVED projects (hidden by default; read-only until restored)")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
 	if len(fs.Args()) != 0 {
-		return usageErrorf("usage: aw project list")
+		return usageErrorf("usage: aw project list [--include-archived]")
 	}
 
 	projects, err := appcatalog.ListProjects(ctx, deps.UoW, ports.InstallationScope())
@@ -31,6 +33,9 @@ func RunProjectList(ctx context.Context, deps Dependencies, args []string, stdou
 	}
 	views := make([]projectView, 0, len(projects))
 	for _, p := range projects {
+		if p.Status == project.ProjectArchived && !*includeArchived {
+			continue
+		}
 		views = append(views, newProjectView(p))
 	}
 	return cli.EncodeQueryResult(stdout, projectListView{Projects: views})

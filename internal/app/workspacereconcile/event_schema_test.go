@@ -56,3 +56,27 @@ func TestWorkspaceReconciliationRequestedV1_RealEventPayloadDecodes(t *testing.T
 		t.Fatalf("Decode(marshal(produced)) = %+v, want %+v", got, produced)
 	}
 }
+
+// TestWorkspaceHeadAdoptedV1_GoldenFixtureDecodes is WorkspaceHeadAdopted's own
+// golden-fixture proof (V11-01).
+func TestWorkspaceHeadAdoptedV1_GoldenFixtureDecodes(t *testing.T) {
+	registry := eventschema.NewRegistry()
+	RegisterEventSchemas(registry)
+
+	payload, err := os.ReadFile(filepath.Join("testdata", "golden", "workspace_head_adopted_v1.json"))
+	if err != nil {
+		t.Fatalf("read golden fixture: %v", err)
+	}
+	decoded, err := registry.Decode(WorkspaceHeadAdoptedEventType, WorkspaceHeadAdoptedSchemaVersion, string(payload))
+	if err != nil {
+		t.Fatalf("Decode(%s v%d): %v", WorkspaceHeadAdoptedEventType, WorkspaceHeadAdoptedSchemaVersion, err)
+	}
+	got, ok := decoded.(workspaceHeadAdoptedEventPayload)
+	if !ok {
+		t.Fatalf("Decode returned %T, want workspaceHeadAdoptedEventPayload", decoded)
+	}
+	if got.RepositoryWorkspaceID != "repo-workspace-1" || got.Actor != "operator-1" || got.AdoptedCommitCount != 1 ||
+		len(got.AdoptedCommits) != 1 || got.AdoptedCommits[0].AuthorName != "Ide User" || got.AdoptedRevision != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("Decode(%s v%d) = %+v", WorkspaceHeadAdoptedEventType, WorkspaceHeadAdoptedSchemaVersion, got)
+	}
+}

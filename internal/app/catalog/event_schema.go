@@ -25,6 +25,26 @@ const (
 	RepositoryProbeRetriedEventType     = "RepositoryProbeRetried"
 	RepositoryProbeRetriedSchemaVersion = 1
 
+	// V11-12 (ADR-043): correcting, retiring and removing a repository.
+	RepositoryUpdatedEventType     = "RepositoryUpdated"
+	RepositoryUpdatedSchemaVersion = 1
+
+	RepositoryDisabledEventType     = "RepositoryDisabled"
+	RepositoryDisabledSchemaVersion = 1
+
+	RepositoryDeletedEventType     = "RepositoryDeleted"
+	RepositoryDeletedSchemaVersion = 1
+
+	// V11-13 (ADR-044): renaming, archiving and restoring a project.
+	ProjectRenamedEventType     = "ProjectRenamed"
+	ProjectRenamedSchemaVersion = 1
+
+	ProjectArchivedEventType     = "ProjectArchived"
+	ProjectArchivedSchemaVersion = 1
+
+	ProjectRestoredEventType     = "ProjectRestored"
+	ProjectRestoredSchemaVersion = 1
+
 	ComponentPackAssignedEventType     = "ComponentPackAssigned"
 	ComponentPackAssignedSchemaVersion = 1
 
@@ -58,6 +78,59 @@ type repositoryProbeRetriedEventPayload struct {
 	ProjectID    string `json:"projectId"`
 	Status       string `json:"status"`
 	ProbeJobID   string `json:"probeJobId"`
+}
+
+// repositoryUpdatedEventPayload is RepositoryUpdated v1's own shape (UpdateRepository, repository_lifecycle.go).
+type repositoryUpdatedEventPayload struct {
+	RepositoryID          string `json:"repositoryId"`
+	ProjectID             string `json:"projectId"`
+	Name                  string `json:"name"`
+	RemoteLocator         string `json:"remoteLocator"`
+	DefaultRef            string `json:"defaultRef"`
+	PreviousName          string `json:"previousName"`
+	PreviousRemoteLocator string `json:"previousRemoteLocator"`
+	PreviousDefaultRef    string `json:"previousDefaultRef"`
+	Status                string `json:"status"`
+	ProbeJobID            string `json:"probeJobId"`
+}
+
+// repositoryDisabledEventPayload is RepositoryDisabled v1's own shape (DisableRepository).
+type repositoryDisabledEventPayload struct {
+	RepositoryID   string `json:"repositoryId"`
+	ProjectID      string `json:"projectId"`
+	Name           string `json:"name"`
+	PreviousStatus string `json:"previousStatus"`
+	Reason         string `json:"reason,omitempty"`
+	Actor          string `json:"actor"`
+}
+
+// repositoryDeletedEventPayload is RepositoryDeleted v1's own shape (DeleteRepository): the row is gone, so the event keeps what it was.
+type repositoryDeletedEventPayload struct {
+	RepositoryID   string `json:"repositoryId"`
+	ProjectID      string `json:"projectId"`
+	Name           string `json:"name"`
+	RemoteLocator  string `json:"remoteLocator"`
+	PreviousStatus string `json:"previousStatus"`
+	Reason         string `json:"reason"`
+	Actor          string `json:"actor"`
+}
+
+// projectRenamedEventPayload is ProjectRenamed v1's own shape (RenameProject, project_lifecycle.go).
+type projectRenamedEventPayload struct {
+	ProjectID    string `json:"projectId"`
+	PreviousName string `json:"previousName"`
+	Name         string `json:"name"`
+	Actor        string `json:"actor"`
+}
+
+// projectStatusChangedEventPayload is the shape of both ProjectArchived v1 and ProjectRestored v1 (ArchiveProject / RestoreProject).
+type projectStatusChangedEventPayload struct {
+	ProjectID      string `json:"projectId"`
+	Name           string `json:"name"`
+	PreviousStatus string `json:"previousStatus"`
+	Status         string `json:"status"`
+	Reason         string `json:"reason,omitempty"`
+	Actor          string `json:"actor"`
 }
 
 // componentPackAssignedEventPayload is ComponentPackAssigned v1's own
@@ -98,6 +171,54 @@ func DecodeRepositoryProbeRetriedV1(payloadJSON string) (any, error) {
 	return payload, nil
 }
 
+func DecodeRepositoryUpdatedV1(payloadJSON string) (any, error) {
+	var payload repositoryUpdatedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func DecodeRepositoryDisabledV1(payloadJSON string) (any, error) {
+	var payload repositoryDisabledEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func DecodeRepositoryDeletedV1(payloadJSON string) (any, error) {
+	var payload repositoryDeletedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func DecodeProjectRenamedV1(payloadJSON string) (any, error) {
+	var payload projectRenamedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func decodeProjectStatusChangedV1(payloadJSON string) (any, error) {
+	var payload projectStatusChangedEventPayload
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
+func DecodeProjectArchivedV1(payloadJSON string) (any, error) {
+	return decodeProjectStatusChangedV1(payloadJSON)
+}
+
+func DecodeProjectRestoredV1(payloadJSON string) (any, error) {
+	return decodeProjectStatusChangedV1(payloadJSON)
+}
+
 func DecodeComponentPackAssignedV1(payloadJSON string) (any, error) {
 	var payload componentPackAssignedEventPayload
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
@@ -120,6 +241,12 @@ func DecodeProjectCreatedV1(payloadJSON string) (any, error) {
 func RegisterEventSchemas(registry *eventschema.Registry) {
 	registry.Register(RepositoryRegisteredEventType, RepositoryRegisteredSchemaVersion, DecodeRepositoryRegisteredV1)
 	registry.Register(RepositoryProbeRetriedEventType, RepositoryProbeRetriedSchemaVersion, DecodeRepositoryProbeRetriedV1)
+	registry.Register(RepositoryUpdatedEventType, RepositoryUpdatedSchemaVersion, DecodeRepositoryUpdatedV1)
+	registry.Register(RepositoryDisabledEventType, RepositoryDisabledSchemaVersion, DecodeRepositoryDisabledV1)
+	registry.Register(RepositoryDeletedEventType, RepositoryDeletedSchemaVersion, DecodeRepositoryDeletedV1)
+	registry.Register(ProjectRenamedEventType, ProjectRenamedSchemaVersion, DecodeProjectRenamedV1)
+	registry.Register(ProjectArchivedEventType, ProjectArchivedSchemaVersion, DecodeProjectArchivedV1)
+	registry.Register(ProjectRestoredEventType, ProjectRestoredSchemaVersion, DecodeProjectRestoredV1)
 	registry.Register(ComponentPackAssignedEventType, ComponentPackAssignedSchemaVersion, DecodeComponentPackAssignedV1)
 	registry.Register(ProjectCreatedEventType, ProjectCreatedSchemaVersion, DecodeProjectCreatedV1)
 }

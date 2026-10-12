@@ -55,14 +55,16 @@ WINDOWS_ENV = ["USERPROFILE", "APPDATA", "LOCALAPPDATA", "SystemRoot", "SystemDr
 # và chạy nguyên văn script gốc ở phía dưới. Nội dung script không đổi giữa các hệ điều hành.
 # Phần đầu là MỘT khối lệnh trong ngoặc và có đuôi dòng CRLF (phần script gốc bên dưới giữ nguyên LF): cmd.exe đọc cả khối trước
 # khi chạy nên không phải đọc lại file sau khi chạy lệnh ngoài, và không đọc tiếp xuống phần bash. Bản trước (nhiều dòng, chỉ LF)
-# làm cmd.exe của Windows 11 chạy phần bash như lệnh Windows (lỗi "is not recognized" với chữ trong chú thích). TẠM THỜI: chưa kiểm
-# chứng trên máy khác; xem V11-09 trong docs/design/14-v11-bugfix.md.
+# làm cmd.exe của Windows 11 chạy phần bash như lệnh Windows (lỗi "is not recognized" với chữ trong chú thích). Nguyên nhân đó chưa
+# tái hiện được trên Windows 10 (V11-09); xem docs/design/14-v11-bugfix.md.
+# `exit /b !errorlevel!` (không phải `exit /b` trần hay `%errorlevel%`): trong một khối ngoặc, `exit /b` trần và `%errorlevel%` trả mã 0
+# bất kể sh trả gì, nên một script hỏng sẽ "đạt" trên Windows (đo ở V11-09). `!errorlevel!` cần enabledelayedexpansion ở dòng đầu.
 WINDOWS_LAUNCHER = """: << 'AW_CMD_HEADER'
 @echo off & setlocal enabledelayedexpansion & (
  set "AW_SH=" & for /f "delims=" %%i in ('git --exec-path') do set "AW_SH=%%i\\..\\..\\..\\bin\\sh.exe"
  if not exist "!AW_SH!" ( echo aw-publish launcher: khong tim thay sh.exe cua Git for Windows qua "git --exec-path" 1>&2 & exit /b 127 )
  "!AW_SH!" "%~f0" %*
- exit /b
+ exit /b !errorlevel!
 )
 AW_CMD_HEADER
 """
@@ -231,8 +233,9 @@ def inline_includes(manifest, rel, body):
             raise ManifestError(f"{rel}: @aw-include trỏ tới file không có trong kit: {match.group('rel')}")
         with open(target, encoding="utf-8") as f:
             included = [l for l in f.read().splitlines() if not l.startswith("#!")]
-        lines += [f"# --- @aw-include {match.group('rel')} (aw-publish nhúng nguyên văn) ---", *included,
-                  "# --- hết @aw-include ---"]
+        # These two marker lines end up inside the published script, so they are English and ASCII (V11-08).
+        lines += [f"# --- @aw-include {match.group('rel')} (inlined verbatim by aw-publish) ---", *included,
+                  "# --- end @aw-include ---"]
     return "\n".join(lines) + ("\n" if body.endswith("\n") else "")
 
 

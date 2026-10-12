@@ -38,6 +38,9 @@ export interface MessageRef {
   contentArtifactId: string;
   correlationId?: string;
   createdAt: string;
+  /** V11-11: an activity message the engine wrote for people (never part of a prompt), and the node run it is about. */
+  displayOnly?: boolean;
+  nodeRunId?: string;
 }
 
 export function messageContentUrl(projectId: string, workItemId: string, messageId: string): string {

@@ -101,18 +101,19 @@ export async function publishApprovalWorkflow(
  */
 export async function publishBlockerWorkflow(
   request: APIRequestContext, baseURL: string, token: string, projectId: string, suffix: string, adapterBuildId: string,
-): Promise<PublishedDefinition> {
+): Promise<PublishedDefinition & { republish: () => Promise<PublishedDefinition> }> {
   const contextPolicy = await publishDefinition(request, baseURL, token, '', 'POLICY', `e2e-context-${suffix}`, 'e2e context policy', {
     category: 'CONTEXT', context: { selector: ['e2e-agent-context'], budget: { maxTokens: 4096 } },
   });
   const agentProfile = await publishDefinition(request, baseURL, token, '', 'AGENT_PROFILE', `e2e-agent-profile-${suffix}`, 'e2e agent profile', {
-    providerKey: 'claude', model: 'fake-model', toolRefs: ['read_file'],
+    providerKey: 'claude', model: process.env.AW_E2E_MODEL || 'fake-model', toolRefs: ['read_file'],
+    ...(process.env.AW_E2E_ENV_ALLOWLIST ? { envAllowlist: process.env.AW_E2E_ENV_ALLOWLIST.split(',') } : {}),
     contextPolicyRef: pin(contextPolicy, 'POLICY'),
     compatibility: { os: [process.platform === 'win32' ? 'windows' : 'linux'] },
     budget: { maxTokens: 4096 },
   });
   const attemptPolicy = await publishDefinition(request, baseURL, token, '', 'POLICY', `e2e-attempt-${suffix}`, 'e2e attempt policy', {
-    category: 'ATTEMPT', attempt: { maxAttempts: 1, backoffSeconds: 1, timeoutSeconds: 60 },
+    category: 'ATTEMPT', attempt: { maxAttempts: 1, backoffSeconds: 1, timeoutSeconds: Number(process.env.AW_E2E_ATTEMPT_TIMEOUT || 60) },
   });
   const permissionPolicy = await publishDefinition(request, baseURL, token, '', 'POLICY', `e2e-permission-${suffix}`, 'e2e permission policy', {
     category: 'PERMISSION', permission: { isolationTier: 'OPERATOR_TRUSTED_LOCAL', grantedCapabilities: [] },
@@ -139,5 +140,25 @@ export async function publishBlockerWorkflow(
       { key: 'maker-end', from: 'maker', outcome: 'done', to: 'end' },
     ],
   };
-  return publishDefinition(request, baseURL, token, `/projects/${projectId}`, 'WORKFLOW', `e2e-blocker-workflow-${suffix}`, 'e2e blocker workflow', document);
+  const published = await publishDefinition(request, baseURL, token, `/projects/${projectId}`, 'WORKFLOW', `e2e-blocker-workflow-${suffix}`, 'e2e blocker workflow', document);
+  // V11-10: a second version of the SAME workflow definition (an edge renamed), for "Redo with Latest Version".
+  const republish = () => publishNewVersion(request, baseURL, token, `/projects/${projectId}`, 'WORKFLOW', published.definitionId, {
+    ...document, edges: document.edges.map(e => (e.key === 'maker-end' ? { ...e, key: 'maker-end-v2' } : e)),
+  });
+  return { ...published, republish };
+}
+
+/** publishNewVersion publishes another version of an existing definition (validate + publish, no create). */
+export async function publishNewVersion(
+  request: APIRequestContext, baseURL: string, token: string, scopePrefix: string, kind: string, definitionId: string, document: unknown,
+): Promise<PublishedDefinition> {
+  const headers = { 'X-Aw-Session-Token': token, 'Idempotency-Key': crypto.randomUUID() };
+  const base = `${baseURL}${scopePrefix}/definitions/${kind}/${definitionId}`;
+  const body = { content: JSON.stringify(document), format: 'json', schemaVersion: 1 };
+  const validated = await request.post(`${base}/validate`, { headers, data: body });
+  if (!validated.ok()) throw new Error(`validate ${kind}/${definitionId}: ${validated.status()} ${await validated.text()}`);
+  const published = await request.post(`${base}/publish`, { headers, data: body });
+  if (!published.ok()) throw new Error(`publish ${kind}/${definitionId}: ${published.status()} ${await published.text()}`);
+  const version = await published.json() as { id: string; compiledHash: string };
+  return { definitionId, versionId: version.id, compiledHash: version.compiledHash };
 }

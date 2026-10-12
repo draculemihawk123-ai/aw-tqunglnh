@@ -182,6 +182,33 @@ func TestHandle_ValidationFailure_TransitionsToBlockedWithCode(t *testing.T) {
 	}
 }
 
+// TestHandle_FailureKeepsKindDetailAndHint (V11-12): the typed details a prober sets reach the attempt row.
+func TestHandle_FailureKeepsKindDetailAndHint(t *testing.T) {
+	ctx := context.Background()
+	uow := fake.New()
+	ids := idsource.NewSequential("id")
+	jobID := mustSeedRegisteringRepository(t, uow, ids, "project-1", "repo-1")
+
+	failure := apperror.New(apperror.CodeInvalidArgument, "The folder D:/x is not a Git repository yet.", false).WithDetails(map[string]string{
+		ports.ProbeDetailFailureKind: string(ports.ProbeFailureNotAGitRepository),
+		ports.ProbeDetailDetail:      "fatal: not a git repository",
+		ports.ProbeDetailHint:        "Run git init.",
+	})
+	handler := repositoryprobe.New(uow, ids, &stubProber{err: failure})
+	if err := handler.Handle(ctx, probeJob(jobID, "repo-1", "project-1")); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	attempts, err := uow.Snapshot.Catalog().ListRepositoryProbeAttempts(ctx, "repo-1")
+	if err != nil || len(attempts) != 1 {
+		t.Fatalf("attempts = %+v, %v", attempts, err)
+	}
+	a := attempts[0]
+	if a.FailureKind == nil || *a.FailureKind != "NOT_A_GIT_REPOSITORY" || a.ErrorDetail == nil || *a.ErrorDetail != "fatal: not a git repository" ||
+		a.ErrorHint == nil || *a.ErrorHint != "Run git init." || a.ErrorMessage == nil || *a.ErrorMessage != failure.Message {
+		t.Fatalf("attempt = %+v; want message, kind, detail and hint kept", a)
+	}
+}
+
 // TestHandle_UnclassifiedProbeError_ReturnsErrorForRetry proves a
 // ports.RepositoryProber implementation that violates its own contract
 // (returning a plain error, not *apperror.Error) is treated as a genuine

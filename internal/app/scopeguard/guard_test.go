@@ -64,3 +64,29 @@ func mustScope(t *testing.T, repository string, access work.RepositoryAccess, pa
 	}
 	return scope
 }
+
+func TestPathAllowed(t *testing.T) {
+	scopes := []work.RepositoryScope{
+		mustScope(t, "repo-user", work.RepositoryWrite, []string{"src", "docs"}),
+		mustScope(t, "repo-user", work.RepositoryRead, []string{"private"}),
+		mustScope(t, "repo-web", work.RepositoryWrite, nil),
+	}
+	cases := []struct {
+		repository, path string
+		want             bool
+	}{
+		{"repo-user", "src/a.go", true},
+		{"repo-user", "docs", true},
+		{"repo-user", "docs/needs-info.md", true},
+		{"repo-user", "private/x.txt", false}, // READ only
+		{"repo-user", "srcx/a.go", false},     // prefix of a name is not a path prefix
+		{"repo-user", "../escape", false},
+		{"repo-web", "anything/at/all", true}, // a WRITE grant with no path scopes covers the repository
+		{"repo-other", "src/a.go", false},     // no grant at all
+	}
+	for _, c := range cases {
+		if got := PathAllowed(scopes, project.RepositoryID(c.repository), c.path); got != c.want {
+			t.Errorf("PathAllowed(%s, %q) = %v, want %v", c.repository, c.path, got, c.want)
+		}
+	}
+}
