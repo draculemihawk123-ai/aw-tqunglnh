@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/forge/github"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/repoprobe"
@@ -48,6 +49,8 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 		}
 		return buildManifestRunner(manifests, python, opts.DB, opts.ArtifactRoot, opts.WorkspaceRoot, opts.ClaudeExecutable, deps.Matcher)
 	}
+	// V12-28: the machine's GitHub CLI (AW_GH picks another binary).
+	deps.ForgeClient = github.Client{Executable: os.Getenv("AW_GH")}
 	var cleanups []func()
 	cleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {

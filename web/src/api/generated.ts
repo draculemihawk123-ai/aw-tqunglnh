@@ -311,6 +311,31 @@ export function createRootWorkItem(projectId: string, body: CreateRootWorkItemRe
   return request<CreateRootWorkItemResponse>("POST", `/projects/${projectId}/work-items`, body, opts);
 }
 
+export interface CreateWorkspacePullRequestRequest {
+  title: string;
+  body?: string;
+  draft?: boolean;
+}
+
+export interface CreateWorkspacePullRequestResponse {
+  number: number;
+  url: string;
+  state: string;
+  draft: boolean;
+  headSha: string;
+  base: string;
+  head: string;
+  title: string;
+  mergeable?: string;
+  checks: unknown[];
+  mergedAt?: string | null;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/pull-request (scope: PROJECT)
+export function createWorkspacePullRequest(projectId: string, repositoryWorkspaceId: string, body: CreateWorkspacePullRequestRequest, opts: RequestOptions = {}): Promise<CreateWorkspacePullRequestResponse> {
+  return request<CreateWorkspacePullRequestResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/pull-request`, body, opts);
+}
+
 export interface DiffDefinitionVersionsResponse {
   a: unknown;
   b: unknown;
@@ -947,6 +972,28 @@ export function getWorkspaceDiff(projectId: string, repositoryWorkspaceId: strin
   return request<GetWorkspaceDiffResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/diff`, undefined, opts);
 }
 
+export interface GetWorkspaceRemoteResponse {
+  repositoryWorkspaceId: string;
+  baseBranch: string;
+  remoteUrl?: string;
+  remoteBranch: string;
+  suggestedBranch: string;
+  pushed: boolean;
+  pushedRevision?: string;
+  head: string;
+  unapprovedCommits: string[];
+  pullRequest?: unknown | null;
+  noChecks: boolean;
+  mergeBlockers: string[];
+  mergedRevision?: string;
+  version?: number;
+}
+
+// GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/remote (scope: PROJECT)
+export function getWorkspaceRemote(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<GetWorkspaceRemoteResponse> {
+  return request<GetWorkspaceRemoteResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/remote`, undefined, opts);
+}
+
 export interface GetWorkspaceRepositoryLogResponse {
   anchor: unknown;
   entries: unknown[];
@@ -1146,6 +1193,24 @@ export function markWorkItemReady(workItemId: string, body: unknown, opts: Reque
   return request<MarkWorkItemReadyResponse>("POST", `/work-items/${workItemId}/mark-ready`, body, opts);
 }
 
+export interface MergeWorkspacePullRequestRequest {
+  method?: string;
+  acknowledgeNoChecks?: boolean;
+}
+
+export interface MergeWorkspacePullRequestResponse {
+  number: number;
+  url: string;
+  method: string;
+  head: string;
+  noChecks: boolean;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/pull-request/merge (scope: PROJECT)
+export function mergeWorkspacePullRequest(projectId: string, repositoryWorkspaceId: string, body: MergeWorkspacePullRequestRequest, opts: RequestOptions = {}): Promise<MergeWorkspacePullRequestResponse> {
+  return request<MergeWorkspacePullRequestResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/pull-request/merge`, body, opts);
+}
+
 export interface ProbeAdapterBuildRequest {
   providerKey: string;
   executablePath: string;
@@ -1315,6 +1380,21 @@ export interface PublishProjectDefinitionVersionResponse {
 // POST /projects/{projectId}/definitions/{kind}/{id}/publish (scope: PROJECT)
 export function publishProjectDefinitionVersion(projectId: string, kind: string, id: string, body: PublishProjectDefinitionVersionRequest, opts: RequestOptions = {}): Promise<PublishProjectDefinitionVersionResponse> {
   return request<PublishProjectDefinitionVersionResponse>("POST", `/projects/${projectId}/definitions/${kind}/${id}/publish`, body, opts);
+}
+
+export interface PushWorkspaceBranchRequest {
+  remoteBranch?: string;
+}
+
+export interface PushWorkspaceBranchResponse {
+  remoteBranch: string;
+  pushed: string;
+  created: boolean;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/push (scope: PROJECT)
+export function pushWorkspaceBranch(projectId: string, repositoryWorkspaceId: string, body: PushWorkspaceBranchRequest, opts: RequestOptions = {}): Promise<PushWorkspaceBranchResponse> {
+  return request<PushWorkspaceBranchResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/push`, body, opts);
 }
 
 export interface RecreateWorkItemRequest {

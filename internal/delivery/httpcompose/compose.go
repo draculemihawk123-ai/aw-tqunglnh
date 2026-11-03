@@ -118,6 +118,8 @@ type Dependencies struct {
 	RepositoryProber ports.RepositoryProber
 	// ManifestPublisher (V12-21, ADR-056) runs the kit's publisher over the manifest the operator configured per project. Nil: none configured.
 	ManifestPublisher ports.ManifestPublisher
+	// ForgeClient (V12-28, ADR-060) is the GitHub CLI client for push/PR/merge. Nil: those routes answer UNAVAILABLE.
+	ForgeClient ports.ForgeClient
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -260,6 +262,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// V6-10B: WorkspaceSet/repository-workspace state, lease/fence/quarantine
 	// and release/reconcile request routes.
 	httpapi.RegisterWorkspaceRoutes(routes, deps.UnitOfWork, idsource.Random{}, deps.WorkspaceHeadAuditor, deps.Matcher)
+	httpapi.RegisterForgeRoutes(routes, deps.UnitOfWork, deps.WorkspaceHeadAuditor, deps.ForgeClient) // V12-28
 	// V6-10D: bounded source/diff/repository-log inspection routes, backed
 	// by the real gitworktree-rooted Queries the composition root built.
 	httpworkspaceinspection.RegisterRoutes(routes, httpworkspaceinspection.Dependencies{Queries: deps.WorkspaceInspectionQueries})

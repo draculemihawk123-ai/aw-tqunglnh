@@ -15,6 +15,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/embeddedui"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/forge/github"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/kitpublish"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
@@ -151,6 +152,8 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// V12-21 (ADR-056): the definition manifest of each project, run by the UI's Check/Publish through the kit's aw-publish.py.
 	var projectManifests manifestFlags
 	flags.Var(&projectManifests, "project-manifest", "<projectId>=<path to aw-project.json>: the UI's Project definitions page runs the kit's aw-publish.py on it (repeatable; omitted = the page shows the command to run instead)")
+	// V12-28 (ADR-060): the GitHub CLI that pushes, opens and merges pull requests with the machine's own sign-in.
+	ghExecutable := flags.String("gh", "gh", "GitHub CLI used for pull requests (signed in with `gh auth login`; aw keeps no token)")
 	pythonExecutable := flags.String("python", "python3", "Python interpreter that runs the kit's aw-publish.py for --project-manifest")
 	uiDist := flags.String("ui-dist", "", "directory containing a built V7 UI (`pnpm build` output of web/, i.e. web/dist) to serve at / and /assets/; omitted = no UI, aw serve still works exactly as before V7")
 	if err := flags.Parse(arguments); err != nil {
@@ -445,6 +448,7 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	}
 	httpcompose.ComposeRoutes(routes, httpcompose.Dependencies{
 		ManifestPublisher:          manifestPublisher,
+		ForgeClient:                github.Client{Executable: *ghExecutable},
 		UnitOfWork:                 uow,
 		Hygiene:                    appdefinitions.WarnPolicy{MaxResourceAge: time.Duration(*warnResourceAgeDays) * 24 * time.Hour, MaxHardConstraints: *warnHardConstraints},
 		ArtifactStore:              artifactStore,

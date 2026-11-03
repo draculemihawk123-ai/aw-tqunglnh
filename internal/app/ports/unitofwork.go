@@ -103,6 +103,8 @@ type Tx interface {
 	Budgets() BudgetRepository
 	// ProjectSettings (V12-25, ADR-058) is per-project operator settings (the commit message template).
 	ProjectSettings() ProjectSettingsRepository
+	// Forge (V12-28, ADR-060) is the remote branches and pull requests aw created.
+	Forge() ForgeRepository
 	// AgentEvents is populated now (V5-08A, docs/design/07-v5-execution-evidence.md):
 	// the production, registry-normalized agent_events contract (see
 	// AgentEventsRepository's own doc comment, internal/app/ports/agentevent.go).

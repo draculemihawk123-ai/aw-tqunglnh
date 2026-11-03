@@ -492,7 +492,7 @@ func workspaceRoutes() []Route {
 	deps := func(d *Deps) workspace.Dependencies {
 		return workspace.Dependencies{
 			UOW: d.UoW, IDs: d.ids(), Authority: workapp.NewEligibilityAuthority(d.UoW),
-			Reader: d.WorkspaceReader, HeadAuditor: d.WorkspaceHeadAuditor, Now: d.Now,
+			Reader: d.WorkspaceReader, HeadAuditor: d.WorkspaceHeadAuditor, Now: d.Now, Forge: d.ForgeClient,
 		}
 	}
 	const needs = NeedUoW | NeedWorkspace
@@ -527,6 +527,18 @@ func workspaceRoutes() []Route {
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceBaseStatus(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "base-status"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceRemote(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "remote"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspacePush(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "push"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspacePullRequest(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "pull-request"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceMerge(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "merge"),
 	}
 }
 

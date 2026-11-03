@@ -671,6 +671,92 @@
       }
     },
     {
+      "operationId": "createWorkspacePullRequest",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/pull-request",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "httpapi.createPullRequestBody",
+        "fields": [
+          {
+            "name": "Title",
+            "jsonTag": "title",
+            "type": "string"
+          },
+          {
+            "name": "Body",
+            "jsonTag": "body,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Draft",
+            "jsonTag": "draft,omitempty",
+            "type": "bool"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "ports.PullRequest",
+        "fields": [
+          {
+            "name": "Number",
+            "jsonTag": "number",
+            "type": "int"
+          },
+          {
+            "name": "URL",
+            "jsonTag": "url",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "Draft",
+            "jsonTag": "draft",
+            "type": "bool"
+          },
+          {
+            "name": "HeadSHA",
+            "jsonTag": "headSha",
+            "type": "string"
+          },
+          {
+            "name": "Base",
+            "jsonTag": "base",
+            "type": "string"
+          },
+          {
+            "name": "Head",
+            "jsonTag": "head",
+            "type": "string"
+          },
+          {
+            "name": "Title",
+            "jsonTag": "title",
+            "type": "string"
+          },
+          {
+            "name": "Mergeable",
+            "jsonTag": "mergeable,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Checks",
+            "jsonTag": "checks",
+            "type": "[]ports.ForgeCheck"
+          },
+          {
+            "name": "MergedAt",
+            "jsonTag": "mergedAt,omitempty",
+            "type": "*time.Time"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "diffDefinitionVersions",
       "method": "GET",
       "path": "/definitions/versions/diff",
@@ -2954,6 +3040,91 @@
       }
     },
     {
+      "operationId": "getWorkspaceRemote",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/remote",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "forgerelease.RemoteView",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "BaseBranch",
+            "jsonTag": "baseBranch",
+            "type": "string"
+          },
+          {
+            "name": "RemoteURL",
+            "jsonTag": "remoteUrl,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "RemoteBranch",
+            "jsonTag": "remoteBranch",
+            "type": "string"
+          },
+          {
+            "name": "SuggestedBranch",
+            "jsonTag": "suggestedBranch",
+            "type": "string"
+          },
+          {
+            "name": "Pushed",
+            "jsonTag": "pushed",
+            "type": "bool"
+          },
+          {
+            "name": "PushedRevision",
+            "jsonTag": "pushedRevision,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Head",
+            "jsonTag": "head",
+            "type": "string"
+          },
+          {
+            "name": "UnapprovedCommits",
+            "jsonTag": "unapprovedCommits",
+            "type": "[]string"
+          },
+          {
+            "name": "PullRequest",
+            "jsonTag": "pullRequest,omitempty",
+            "type": "*ports.PullRequest"
+          },
+          {
+            "name": "NoChecks",
+            "jsonTag": "noChecks",
+            "type": "bool"
+          },
+          {
+            "name": "MergeBlockers",
+            "jsonTag": "mergeBlockers",
+            "type": "[]string"
+          },
+          {
+            "name": "MergedRevision",
+            "jsonTag": "mergedRevision,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getWorkspaceRepositoryLog",
       "method": "GET",
       "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/repository-log",
@@ -3485,6 +3656,57 @@
             "name": "Version",
             "jsonTag": "version",
             "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "mergeWorkspacePullRequest",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/pull-request/merge",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "httpapi.mergePullRequestBody",
+        "fields": [
+          {
+            "name": "Method",
+            "jsonTag": "method,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "AcknowledgeNoChecks",
+            "jsonTag": "acknowledgeNoChecks,omitempty",
+            "type": "bool"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "forgerelease.MergeResult",
+        "fields": [
+          {
+            "name": "Number",
+            "jsonTag": "number",
+            "type": "int"
+          },
+          {
+            "name": "URL",
+            "jsonTag": "url",
+            "type": "string"
+          },
+          {
+            "name": "Method",
+            "jsonTag": "method",
+            "type": "string"
+          },
+          {
+            "name": "Head",
+            "jsonTag": "head",
+            "type": "string"
+          },
+          {
+            "name": "NoChecks",
+            "jsonTag": "noChecks",
+            "type": "bool"
           }
         ]
       }
@@ -4028,6 +4250,42 @@
             "name": "Warnings",
             "jsonTag": "warnings,omitempty",
             "type": "[]string"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "pushWorkspaceBranch",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/push",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "httpapi.pushBranchBody",
+        "fields": [
+          {
+            "name": "RemoteBranch",
+            "jsonTag": "remoteBranch,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "forgerelease.PushResult",
+        "fields": [
+          {
+            "name": "RemoteBranch",
+            "jsonTag": "remoteBranch",
+            "type": "string"
+          },
+          {
+            "name": "Pushed",
+            "jsonTag": "pushed",
+            "type": "string"
+          },
+          {
+            "name": "Created",
+            "jsonTag": "created",
+            "type": "bool"
           }
         ]
       }
