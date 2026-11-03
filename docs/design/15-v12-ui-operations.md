@@ -472,6 +472,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 
 - **Mục tiêu:** ở cổng duyệt, xem diff từng file có tô màu và bình luận theo dòng. Nút "Request changes" gom các bình luận
   thành message gửi kèm outcome `revise`. Bình luận được lưu cùng quyết định để làm evidence.
+- **Kết quả (đã xong, chỉ web):** nút **Review diff** trên dải approval của tab Graph mở `web/src/review/DiffReviewDialog.tsx`:
+  diff chưa commit của mọi repository `READY` của family, từng file, dòng thêm/xóa tô màu, bấm một dòng để bình luận.
+  **Request changes** (outcome `revise`, hoặc `rework` ở `size-review`) gửi bình luận thành message USER của task (`appendMessage`,
+  maker đọc ở attempt sau) và quyết định outcome đó với cùng văn bản làm `reason` (lưu cùng quyết định). Khi còn bình luận thì nút
+  Approve tắt; approve kèm commit vẫn đi qua hộp commit của dải approval. Không đổi API. Logic thuần ở `diffReview.ts`; test
+  `diffReview.test.ts`, `DiffReviewDialog.test.tsx`.
 
 ### V12-18 — Message nhắm node (UX-20)
 

@@ -34,6 +34,7 @@ import { getSessionToken, withSessionToken } from '../api/session';
 import { decodeDiffPatch, fetchWorkingTreeDiff, fetchWorkspaceSource, summarizeUncommitted, workingTreeQueryKey } from '../api/workspaceinspection';
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
 import { commitAllowedFor } from '../api/approvalrelease';
+import { DiffReviewDialog } from '../review/DiffReviewDialog';
 import type { ApprovalCommitBody } from '../api/approvalrelease';
 import { ApprovalCommitDialog, ReleaseStatusStrip } from './ApprovalRelease';
 import { RecreateDialog, RetryDialog, SupersessionLinks } from './RedoDialogs';
@@ -648,9 +649,11 @@ interface GraphTimelineTabProps {
   onOpenEvidence?: (nodeKey: string) => void;
   /** V12-12: every run of the work item; their history is merged into the graph and the node panel. */
   runs?: WorkItemRun[];
+  /** V12-17: the work item the review comments are sent to. */
+  workItemId?: string;
 }
 
-function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace, runId: activeRunIdProp, runDiagnostics, isOffline, onActionSettled, focusNodeRunId, onOpenEvidence, runs = [] }: GraphTimelineTabProps) {
+function GraphTimelineTab({ workItemId, projectId, familyId, workItemTitle, onOpenWorkspace, runId: activeRunIdProp, runDiagnostics, isOffline, onActionSettled, focusNodeRunId, onOpenEvidence, runs = [] }: GraphTimelineTabProps) {
   // V12-12: with no active run on the card (the last one finished), the graph shows the newest run.
   const newestRun = [...runs].sort((a, b) => b.runNumber - a.runNumber)[0];
   const runId = activeRunIdProp ?? newestRun?.runId;
@@ -663,6 +666,8 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
   const [retryReason, setRetryReason] = useState('');
   // V11-07: the decision being made through the commit dialog (an outcome the node's release policy offers a commit for).
   const [deciding, setDeciding] = useState<{ approval: ApprovalRequestView; outcome: string } | null>(null);
+  // V12-17: the approval whose changes are being reviewed line by line.
+  const [reviewing, setReviewing] = useState<ApprovalRequestView | null>(null);
   const { toasts, show, dismiss } = useToasts();
 
   const graphQuery = useInfiniteQuery({
@@ -856,6 +861,9 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
                   {approval.authorizedRoles?.length ? ` (${approval.authorizedRoles.join(', ')})` : ''}
                 </span>
                 <div className="flex-1" />
+                {workItemId && familyId && outcomes.length > 0 && (
+                  <Button size="compact" intent="secondary" disabled={isOffline} onClick={() => setReviewing(approval)}>Review diff</Button>
+                )}
                 {outcomes.length === 0 ? (
                   <span className="text-[12px] text-[#3730A3] italic">no declared outcomes on this node</span>
                 ) : outcomes.map(outcome => (
@@ -970,6 +978,18 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
       </div>
       </div>
 
+      {reviewing && workItemId && familyId && (
+        <DiffReviewDialog projectId={projectId} workItemId={workItemId} familyId={familyId} runId={runId}
+          approvalRequestId={reviewing.approvalRequestId} approvalVersion={reviewing.version} nodeKey={reviewing.nodeKey}
+          outcomes={nodes.find(n => n.key === reviewing.nodeKey)?.outcomes ?? []} isOffline={isOffline}
+          onClose={() => setReviewing(null)}
+          onDecided={outcome => {
+            show({ intent: 'success', message: `${reviewing.nodeKey}: ${outcome} recorded.` });
+            setReviewing(null);
+            runDetailQuery.refetch();
+            onActionSettled();
+          }} />
+      )}
       {deciding && (
         <ApprovalCommitDialog
           projectId={projectId} familyId={familyId} approval={deciding.approval} outcome={deciding.outcome}
@@ -2519,7 +2539,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       <div id="workitem-tab-panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0 overflow-hidden">
       {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} />}
       {activeTab === 'task-graph'      && (
-        <GraphTimelineTab projectId={projectId} familyId={familyId} workItemTitle={workItemQuery.data?.title} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled}
+        <GraphTimelineTab workItemId={workItemId} projectId={projectId} familyId={familyId} workItemTitle={workItemQuery.data?.title} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled}
           focusNodeRunId={focusNodeRunId} onOpenEvidence={nodeKey => { setEvidenceNode(nodeKey); onTabChange('task-evidence', { projectId, taskId: workItemId }); }}
           runs={cardQuery.data?.runs} />
       )}

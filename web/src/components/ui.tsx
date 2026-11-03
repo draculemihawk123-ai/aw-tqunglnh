@@ -405,11 +405,13 @@ export function ValidActionBar({ actions }: {
 
 // ─── Dialog with focus trap ───────────────────────────────────────────────────
 
-export function Dialog({ title, description, children, onClose, actions, isDurable = false }: {
+export function Dialog({ title, description, children, onClose, actions, isDurable = false, wide = false }: {
   title: string; description?: string; children?: React.ReactNode;
   onClose: () => void; actions?: React.ReactNode;
   /** If true, Escape key does NOT close (durable operations). */
   isDurable?: boolean;
+  /** A wide dialog (a diff review). */
+  wide?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
@@ -450,7 +452,7 @@ export function Dialog({ title, description, children, onClose, actions, isDurab
         aria-modal="true"
         aria-labelledby={titleId}
         onKeyDown={handleKeyDown}
-        className="bg-white rounded-[12px] border border-[#CDD5DF] shadow-xl w-full max-w-lg max-h-[calc(100vh-32px)] overflow-y-auto island-shadow"
+        className={`bg-white rounded-[12px] border border-[#CDD5DF] shadow-xl w-full ${wide ? 'max-w-5xl' : 'max-w-lg'} max-h-[calc(100vh-32px)] overflow-y-auto island-shadow`}
       >
         <div className="flex items-start justify-between p-6 pb-0">
           <div>

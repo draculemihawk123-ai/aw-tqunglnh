@@ -207,6 +207,10 @@ modified, added, deleted and untracked file (never ignored files) with line coun
 `changeSetDigest` over the whole set, plus a unified patch. A binary file is a name and a size, never content; a symlink is
 a name, never followed. The web UI's Workspace tab shows this view by default when the worktree has changes, and an
 approval card in the Graph tab says "N files changed, +x −y" with a link to it.
+Its **Review diff** button opens the same changes file by file, line by line: click a line to comment on it, then
+**Request changes** sends the comments to the task as your message (the maker reads it on its next attempt) and decides the
+gate's `revise` outcome (`rework` at `size-review`) with the same text as the decision's reason. Approve is off while
+comments are pending; an approval that commits still goes through the commit dialog.
 
 It is read-only (`GIT_OPTIONAL_LOCKS=0`, no `git add`, no index write, HEAD unchanged), and it is **refused with 409 while an
 attempt holds the write lease** on that repository workspace: the worktree is in flux, so wait for the attempt or cancel it.
