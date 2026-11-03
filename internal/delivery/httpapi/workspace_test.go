@@ -607,13 +607,13 @@ func TestRegisterWorkspaceRoutes_RegistersFourProjectScopedRoutes(t *testing.T) 
 	httpapi.RegisterWorkspaceRoutes(routes, uow, idsource.Random{}, nil, redact.NewMatcher())
 
 	descriptors := routes.Descriptors()
-	if len(descriptors) != 5 {
-		t.Fatalf("len(descriptors) = %d, want 5", len(descriptors))
+	if len(descriptors) != 7 {
+		t.Fatalf("len(descriptors) = %d, want 7", len(descriptors))
 	}
 	wantOperationIDs := map[string]bool{
 		"getWorkspaceSetState": false, "getRepositoryWorkspaceState": false,
 		"requestWorkspaceSetRelease": false, "requestWorkspaceReconciliation": false,
-		"adoptWorkspaceHead": false,
+		"adoptWorkspaceHead": false, "syncWorkspaceWithBase": false, "getWorkspaceBaseStatus": false,
 	}
 	for _, d := range descriptors {
 		if d.ScopeKind != httpapi.ScopeProject {

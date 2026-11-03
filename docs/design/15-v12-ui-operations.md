@@ -511,6 +511,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   - Family hiện trạng thái "đã merge vào <nhánh>".
   - Nút "Close work batch": release workspace set, xóa các nhánh đã merge.
 - **Ràng buộc:** chỉ fetch và cập nhật cục bộ; không push (push thuộc V12-28).
+- **Kết quả (đã xong, ADR-055):** `SyncWorkspaceWithBase` (`POST .../sync-base`, `aw repository-workspace sync-base`): fetch default
+  ref từ `origin`, fast-forward worktree, ghi HEAD qua `AdoptWorkspaceHead` (audit `WorkspaceHeadAdopted`); rẽ nhánh báo `NEEDS_MERGE`,
+  worktree bẩn báo `DIRTY`; HEAD chưa ghi thì từ chối (adopt trước). `GetWorkspaceBaseStatus` (`base-status`): ahead/behind/merged.
+  Tab Workspace có dải "Base branch … merged into main" và nút **Sync with base branch**. Đóng đợt việc là release workspace set:
+  release nay xóa nhánh `agentkit/w-…` khi ref khác đã chứa tip (nhánh còn commit riêng thì giữ). Test: `basesync_test.go`
+  (git thật, có origin), `sync_base_sqlite_test.go`, `BaseBranchStrip.test.tsx`; route inventory, security matrix, contract golden.
 
 ### V12-21 — Publish định nghĩa trên giao diện (UX-04)
 

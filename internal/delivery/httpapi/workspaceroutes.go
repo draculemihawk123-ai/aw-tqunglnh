@@ -113,6 +113,20 @@ func RegisterWorkspaceRoutes(routes *RouteRegistry, uow ports.UnitOfWork, ids id
 		RequestSchema: struct{}{}, ResponseSchema: workspacereconcile.AdoptWorkspaceHeadResult{},
 		Handler: adoptWorkspaceHeadHandler(uow, headAuditor, matcher),
 	})
+	// V12-20 (ADR-055): the Git workspace provider that audits HEAD also syncs with the base branch.
+	syncer, _ := headAuditor.(ports.WorkspaceBaseSyncer)
+	routes.Register(RouteDescriptor{
+		Method: http.MethodPost, Path: "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/sync-base",
+		OperationID: "syncWorkspaceWithBase", ScopeKind: ScopeProject,
+		RequestSchema: struct{}{}, ResponseSchema: workspacereconcile.SyncWorkspaceWithBaseResult{},
+		Handler: syncWorkspaceWithBaseHandler(uow, headAuditor, syncer, matcher),
+	})
+	routes.Register(RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/base-status",
+		OperationID: "getWorkspaceBaseStatus", ScopeKind: ScopeProject,
+		RequestSchema: struct{}{}, ResponseSchema: ports.BaseSyncResult{},
+		Handler: getWorkspaceBaseStatusHandler(uow, syncer),
+	})
 }
 
 // newWorkspaceCommand builds the ports.Command envelope every handler in

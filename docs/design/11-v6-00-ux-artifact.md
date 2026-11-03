@@ -412,6 +412,8 @@ màu (không chỉ màu); danh sách log điều hướng và phân trang đư�
 | 8 | query | Tác giả commit (git config) và các file đã cất, trước khi hiện mục Commit ở cổng duyệt | `getFamilyReleaseContext` | `aw workspace-set release-context` | `GetFamilyReleaseContext` [ĐÃ CÓ: `internal/app/approvalrelease/approvalrelease.go:Queries.FamilyReleaseContext`] — chỉ đọc; thiếu `user.name`/`user.email` thì UI vô hiệu hóa tích Commit và hiện lệnh cấu hình | V11-07 |
 | 9 | query | Các commit mà một quyết định duyệt đã yêu cầu: trạng thái từng repository và patch người duyệt đã xem | `getApprovalRelease` | `aw approval release` | `GetApprovalRelease` [ĐÃ CÓ: `internal/app/approvalrelease/approvalrelease.go:Queries.ApprovalRelease`] | V11-07 |
 | 10 | command | Khôi phục các file đã cất bởi một commit PARK | `restoreParkedChanges` | `aw repository-workspace restore-parked` | `RestoreParkedChanges` [ĐÃ CÓ: `internal/app/approvalrelease/approvalrelease.go:RestoreParked`] — từ chối khi có attempt đang ghi hoặc khi sẽ ghi đè thay đổi mới hơn | V11-07 |
+| 11 | command | Đồng bộ worktree với nhánh gốc: fetch nhánh gốc từ origin, fast-forward, ghi HEAD mới (một bước có audit) | `syncWorkspaceWithBase` | `aw repository-workspace sync-base` | `SyncWorkspaceWithBase` [ĐÃ CÓ: `internal/app/workspacereconcile/sync_base.go:SyncWorkspaceWithBase`] — chỉ fast-forward, không merge, không push; nhánh rẽ nhánh báo `NEEDS_MERGE` | V12-20 |
+| 12 | query | Worktree so với nhánh gốc: ahead, behind, đã merge | `getWorkspaceBaseStatus` | `aw repository-workspace base-status` | `GetWorkspaceBaseStatus` [ĐÃ CÓ: `internal/app/workspacereconcile/sync_base.go:GetWorkspaceBaseStatus`] — chỉ đọc, không fetch | V12-20 |
 
 ## 11. Screen 10 — ReleaseSet & local commit
 

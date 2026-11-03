@@ -2659,6 +2659,66 @@
       }
     },
     {
+      "operationId": "getWorkspaceBaseStatus",
+      "method": "GET",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/base-status",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "ports.BaseSyncResult",
+        "fields": [
+          {
+            "name": "BaseRef",
+            "jsonTag": "baseRef",
+            "type": "string"
+          },
+          {
+            "name": "BaseRevision",
+            "jsonTag": "baseRevision",
+            "type": "string"
+          },
+          {
+            "name": "Head",
+            "jsonTag": "head",
+            "type": "string"
+          },
+          {
+            "name": "Outcome",
+            "jsonTag": "outcome,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Merged",
+            "jsonTag": "merged",
+            "type": "bool"
+          },
+          {
+            "name": "Ahead",
+            "jsonTag": "ahead",
+            "type": "int"
+          },
+          {
+            "name": "Behind",
+            "jsonTag": "behind",
+            "type": "int"
+          },
+          {
+            "name": "Fetched",
+            "jsonTag": "fetched",
+            "type": "bool"
+          },
+          {
+            "name": "FetchProblem",
+            "jsonTag": "fetchProblem,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getWorkspaceDiff",
       "method": "GET",
       "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/diff",
@@ -5146,6 +5206,41 @@
             "name": "ValidActions",
             "jsonTag": "validActions",
             "type": "[]httpapi.ValidAction"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "syncWorkspaceWithBase",
+      "method": "POST",
+      "path": "/projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/sync-base",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "workspacereconcile.SyncWorkspaceWithBaseResult",
+        "fields": [
+          {
+            "name": "RepositoryWorkspaceID",
+            "jsonTag": "repositoryWorkspaceId",
+            "type": "string"
+          },
+          {
+            "name": "Sync",
+            "jsonTag": "sync",
+            "type": "ports.BaseSyncResult"
+          },
+          {
+            "name": "Adopted",
+            "jsonTag": "adopted,omitempty",
+            "type": "*workspacereconcile.AdoptWorkspaceHeadResult"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
           }
         ]
       }

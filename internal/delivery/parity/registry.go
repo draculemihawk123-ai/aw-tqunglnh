@@ -235,6 +235,8 @@ func PublicOperations() []PublicOperation {
 		{Name: "RequestWorkspaceSetRelease", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("requestWorkspaceSetRelease")}, Symbol: wsRelease + ".RequestWorkspaceSetRelease",
 			HighImpact: true, Cite: "confirm phải nêu rõ đây là intent"},
 		{Name: "RequestWorkspaceReconciliation", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("requestWorkspaceReconciliation")}, Symbol: wsReconcile + ".RequestWorkspaceReconciliation"},
+		{Name: "SyncWorkspaceWithBase", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("syncWorkspaceWithBase")}, Symbol: wsReconcile + ".SyncWorkspaceWithBase"},
+		{Name: "GetWorkspaceBaseStatus", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getWorkspaceBaseStatus")}, Symbol: wsReconcile + ".GetWorkspaceBaseStatus"},
 		{Name: "AdoptWorkspaceHead", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("adoptWorkspaceHead")}, Symbol: wsReconcile + ".AdoptWorkspaceHead"},
 		{Name: "GetFamilyReleaseContext", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getFamilyReleaseContext")}, Symbol: approvalRelease + ".Queries.FamilyReleaseContext"},
 		{Name: "GetApprovalRelease", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getApprovalRelease")}, Symbol: approvalRelease + ".Queries.ApprovalRelease"},

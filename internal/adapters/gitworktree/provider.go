@@ -306,6 +306,7 @@ func (p *Provider) Release(ctx context.Context, handle ports.WorkspaceHandle) er
 		}
 		return fmt.Errorf("verify released workspace path: %w", err)
 	}
+	p.deleteMergedBranch(ctx, repositoryPath, metadata.BranchRef)
 	if err := p.writeReleaseTombstone(handle); err != nil {
 		return fmt.Errorf("persist workspace release tombstone: %w", err)
 	}
@@ -728,4 +729,29 @@ func validObjectID(value string) bool {
 
 func metadataEqual(left workspaceMetadata, right workspaceMetadata) bool {
 	return left == right
+}
+
+// deleteMergedBranch (V12-20, ADR-055) deletes a released workspace's branch when another branch or remote-tracking ref already
+// contains its tip (the work was merged, or the branch never got a commit of its own), so closing a work batch leaves no
+// `agentkit/w-…` branch behind. A branch whose tip no other ref contains is kept: deleting it would lose commits. Best effort:
+// the release itself never fails on it.
+func (p *Provider) deleteMergedBranch(ctx context.Context, repositoryPath, branchRef string) {
+	if branchRef == "" || !validRevisionInput(branchRef) {
+		return
+	}
+	full := "refs/heads/" + strings.TrimPrefix(branchRef, "refs/heads/")
+	tip, err := p.resolveCommit(ctx, repositoryPath, full)
+	if err != nil {
+		return
+	}
+	out, err := p.runGit(ctx, repositoryPath, "for-each-ref", "--format=%(refname)", "--contains", tip, "refs/heads", "refs/remotes")
+	if err != nil {
+		return
+	}
+	for _, ref := range strings.Fields(string(out)) {
+		if ref != full && !strings.HasSuffix(ref, "/HEAD") {
+			_, _ = p.runGit(ctx, repositoryPath, "branch", "-D", "--", strings.TrimPrefix(full, "refs/heads/"))
+			return
+		}
+	}
 }

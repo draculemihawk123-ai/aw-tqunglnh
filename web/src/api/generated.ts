@@ -858,6 +858,23 @@ export function getWorkItemRedoPreview(workItemId: string, opts: RequestOptions 
   return request<GetWorkItemRedoPreviewResponse>("GET", `/work-items/${workItemId}/redo-preview`, undefined, opts);
 }
 
+export interface GetWorkspaceBaseStatusResponse {
+  baseRef: string;
+  baseRevision: string;
+  head: string;
+  outcome?: string;
+  merged: boolean;
+  ahead: number;
+  behind: number;
+  fetched: boolean;
+  fetchProblem?: string;
+}
+
+// GET /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/base-status (scope: PROJECT)
+export function getWorkspaceBaseStatus(projectId: string, repositoryWorkspaceId: string, opts: RequestOptions = {}): Promise<GetWorkspaceBaseStatusResponse> {
+  return request<GetWorkspaceBaseStatusResponse>("GET", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/base-status`, undefined, opts);
+}
+
 export interface GetWorkspaceDiffResponse {
   baseRevision: unknown;
   resultRevision: unknown;
@@ -1691,6 +1708,18 @@ export interface SubmitWaitSignalResponse {
 // POST /runs/{runId}/wait-registrations/{waitRegistrationId}/signal (scope: PROJECT)
 export function submitWaitSignal(runId: string, waitRegistrationId: string, body: SubmitWaitSignalRequest, opts: RequestOptions = {}): Promise<SubmitWaitSignalResponse> {
   return request<SubmitWaitSignalResponse>("POST", `/runs/${runId}/wait-registrations/${waitRegistrationId}/signal`, body, opts);
+}
+
+export interface SyncWorkspaceWithBaseResponse {
+  repositoryWorkspaceId: string;
+  sync: unknown;
+  adopted?: unknown | null;
+  version: number;
+}
+
+// POST /projects/{projectId}/repository-workspaces/{repositoryWorkspaceId}/sync-base (scope: PROJECT)
+export function syncWorkspaceWithBase(projectId: string, repositoryWorkspaceId: string, body: unknown, opts: RequestOptions = {}): Promise<SyncWorkspaceWithBaseResponse> {
+  return request<SyncWorkspaceWithBaseResponse>("POST", `/projects/${projectId}/repository-workspaces/${repositoryWorkspaceId}/sync-base`, body, opts);
 }
 
 export interface UseNewCliRequest {

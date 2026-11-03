@@ -500,6 +500,12 @@ func workspaceRoutes() []Route {
 		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workspace.RunRepositoryWorkspaceAdoptHead(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "repository-workspace", "adopt-head"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceSyncBase(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "sync-base"),
+		route(needs, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return workspace.RunRepositoryWorkspaceBaseStatus(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "repository-workspace", "base-status"),
 	}
 }
 

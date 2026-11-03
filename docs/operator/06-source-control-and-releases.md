@@ -3,10 +3,10 @@
 ## Local-only Git — the core constraint
 
 Every repository `aw` touches is a real, local Git repository at the absolute filesystem path you registered
-(`remoteLocator` — see [01-quickstart.md](01-quickstart.md)). `aw` never pushes, fetches, or clones from a
-remote — `internal/adapters/gitworktree.Provider` (the ONE real Git adapter this codebase has) never calls any
-of those operations anywhere in its own implementation. A "release" in Agent Kit is a real, local commit
-landing in your own repository's own history — nothing more, nothing networked.
+(`remoteLocator` — see [01-quickstart.md](01-quickstart.md)). `aw` never pushes or clones, and fetches only when
+you ask it to sync a worktree with its base branch (V12-20, below): then it fetches that one branch from the
+repository's `origin` into `refs/remotes/origin/<branch>` and changes no local branch. A "release" in Agent Kit
+is a real, local commit landing in your own repository's own history — nothing more.
 
 ## ReleaseSet lifecycle
 
@@ -64,6 +64,35 @@ aw repository-workspace reconcile --project-id <id> --expected-version <n> --ide
 aw repository-workspace adopt-head --project-id <id> --expected-version <n> --idempotency-key a-1 <id>   # see below
 aw workspace-set release --project-id <id> --expected-version <n> --idempotency-key rel-1 <workspaceSetId>
 ```
+
+### Sync with the base branch, and closing a work batch (V12-20, ADR-055)
+
+After the family's work was merged elsewhere (a PR merged on GitHub), the family branch still stands on its old commit and
+the next task would run on it. Sync brings the worktree up to date in one audited step:
+
+```bash
+aw repository-workspace base-status --project-id <id> <repositoryWorkspaceId>      # ahead / behind / merged, no fetch
+aw repository-workspace sync-base --project-id <id> --expected-version <n> <repositoryWorkspaceId>
+```
+
+`sync-base` fetches the repository's default ref (`defaultRef`, e.g. `main`) from `origin` when the repository has one
+(a failed fetch is reported in `fetchProblem`, and the decision uses the refs already there), takes the newer of the local
+branch and `origin/<branch>`, and then:
+
+- `UP_TO_DATE`: the base branch has nothing the worktree lacks — nothing changes;
+- `FAST_FORWARDED`: HEAD was an ancestor of the base branch, so the worktree is moved forward (`git merge --ff-only`) and the
+  new HEAD is recorded exactly as `adopt-head` would (the `WorkspaceHeadAdopted` event is the audit, `adopted` in the result);
+- `NEEDS_MERGE`: the branches diverged — nothing moves; merge in the worktree yourself, then `adopt-head`;
+- `DIRTY`: the worktree has uncommitted changes — nothing moves.
+
+It has `adopt-head`'s preconditions (READY, no attempt writing, `--expected-version`) and one more: HEAD must be the revision
+aw recorded, so commits made outside aw are adopted on their own first and never folded in unseen. It never merges and
+never pushes. `merged: true` means the family made commits and the base branch contains all of them; the Workspace tab
+shows it as *merged into main*, next to **Sync with base branch**.
+
+**Closing the work batch** is the workspace-set release (`aw workspace-set release`, **Release Workspace** in the UI): the
+worktrees are removed, and each worktree's `agentkit/w-…` branch is deleted when another branch or remote-tracking ref
+already contains its tip. A branch with commits no other ref has is kept.
 
 ### A `QUARANTINED` worktree and how it is recovered (V9-18)
 

@@ -36,6 +36,7 @@ import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceCo
 import { commitAllowedFor } from '../api/approvalrelease';
 import { DiffReviewDialog } from '../review/DiffReviewDialog';
 import { FamilyQueuePanel } from './FamilyQueue';
+import { BaseBranchStrip } from './BaseBranchStrip';
 import type { ApprovalCommitBody } from '../api/approvalrelease';
 import { ApprovalCommitDialog, ReleaseStatusStrip } from './ApprovalRelease';
 import { RecreateDialog, RetryDialog, SupersessionLinks } from './RedoDialogs';
@@ -1289,6 +1290,8 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
         </Button>
       </div>
 
+      {/* V12-20: the worktree against the repository's base branch */}
+      {activeRepo && <BaseBranchStrip projectId={projectId} repo={activeRepo} isOffline={isOffline} onChanged={() => { void workspaceSetQuery.refetch(); }} />}
       {activeRepo && activeRepo.state === 'QUARANTINED' && (
         <div role="alert" className="px-4 py-2 bg-[#FEF3C7] border-b border-[#FCD34D] flex items-center gap-2 flex-shrink-0">
           <AlertTriangle size={13} className="text-[#92400E] flex-shrink-0" aria-hidden />
@@ -1788,7 +1791,7 @@ function ReleaseSetPanel({
       <div className="flex-1 overflow-y-auto">
         {canRelease && (
           <div className="p-4 border-b border-[#CDD5DF] bg-white">
-            <p className="text-[12px] text-[#475569] mb-2">Workspace set is eligible for release{workspaceSetState ? ` (currently ${workspaceSetState})` : ''}.</p>
+            <p className="text-[12px] text-[#475569] mb-2">Workspace set is eligible for release{workspaceSetState ? ` (currently ${workspaceSetState})` : ''}. Releasing closes the work batch: the worktrees are removed, and a branch whose work is already in another branch (merged) is deleted.</p>
             <Button intent="secondary" size="compact" className="w-full justify-center" disabled={isOffline} onClick={() => setReleaseConfirmOpen(true)}>Release Workspace</Button>
           </div>
         )}
