@@ -378,6 +378,22 @@ export function getApprovalRelease(runId: string, approvalRequestId: string, opt
   return request<GetApprovalReleaseResponse>("GET", `/runs/${runId}/approval-requests/${approvalRequestId}/release`, undefined, opts);
 }
 
+export interface GetAttemptPromptResponse {
+  attemptId: string;
+  nodeRunId: string;
+  runId: string;
+  nodeKey: string;
+  contextSnapshotId: string;
+  prompt: string;
+  bytes: number;
+  truncated?: boolean;
+}
+
+// GET /projects/{projectId}/execution-attempts/{attemptId}/prompt (scope: PROJECT)
+export function getAttemptPrompt(projectId: string, attemptId: string, opts: RequestOptions = {}): Promise<GetAttemptPromptResponse> {
+  return request<GetAttemptPromptResponse>("GET", `/projects/${projectId}/execution-attempts/${attemptId}/prompt`, undefined, opts);
+}
+
 export interface GetContextSnapshotResponse {
   snapshotId: string;
   projectId: string;

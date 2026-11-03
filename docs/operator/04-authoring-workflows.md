@@ -443,6 +443,20 @@ limit. It knows a limit once it is hit: the node is BLOCKED with `PROVIDER_QUOTA
 such a blocker is open anywhere in the installation (a provider account's limit is not per project), every family queue is
 paused, and the Costs page lists the limit with the time aw resumes.
 
+## Reading the prompt a node received (V12-26)
+
+The node panel of an AGENT node has a **Prompt** section: **Show prompt** renders the JSON document the attempt was given on the
+provider's stdin (pick the attempt when there were several). It is rendered again from the attempt's context snapshot — the
+same deterministic rendering the worker used, so it is the same bytes — with known secrets redacted and cut at 512 KiB. Reading
+it needs no more than reading the work item's evidence. From a terminal:
+
+```bash
+aw node-run prompt --project-id <p> <attemptId>          # JSON envelope (bytes, snapshot id, prompt)
+aw node-run prompt --project-id <p> --raw <attemptId>    # only the prompt document
+```
+
+A COMMAND or gate attempt has no prompt (the route answers 409).
+
 ## Setting up a repository before an agent writes — readiness profile and baseline (V9-08)
 
 Initialization is a phase of its own with evidence, not something an agent discovers by failing. A repository

@@ -895,6 +895,61 @@
       }
     },
     {
+      "operationId": "getAttemptPrompt",
+      "method": "GET",
+      "path": "/projects/{projectId}/execution-attempts/{attemptId}/prompt",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "runtime.AttemptPrompt",
+        "fields": [
+          {
+            "name": "AttemptID",
+            "jsonTag": "attemptId",
+            "type": "string"
+          },
+          {
+            "name": "NodeRunID",
+            "jsonTag": "nodeRunId",
+            "type": "string"
+          },
+          {
+            "name": "RunID",
+            "jsonTag": "runId",
+            "type": "string"
+          },
+          {
+            "name": "NodeKey",
+            "jsonTag": "nodeKey",
+            "type": "string"
+          },
+          {
+            "name": "ContextSnapshotID",
+            "jsonTag": "contextSnapshotId",
+            "type": "string"
+          },
+          {
+            "name": "Prompt",
+            "jsonTag": "prompt",
+            "type": "string"
+          },
+          {
+            "name": "Bytes",
+            "jsonTag": "bytes",
+            "type": "int"
+          },
+          {
+            "name": "Truncated",
+            "jsonTag": "truncated,omitempty",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getContextSnapshot",
       "method": "GET",
       "path": "/projects/{projectId}/work-items/{workItemId}/context-snapshots/{snapshotId}",

@@ -34,7 +34,7 @@ Resource commands (aw <resource> <action> [flags]):
   evidence               list|show|verify
   health                 live|ready
   message                append|content|context-snapshot|list|upload-attachment
-  node-run               retry-blocked
+  node-run               events|prompt|retry-blocked|show
   pack-assignment        assign|list
   project                archive|commit-template|create|list|rename|restore|set-commit-template|show
   projection             rebuild|rebuild-status|status

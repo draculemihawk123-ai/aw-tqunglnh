@@ -1,3 +1,4 @@
+import { AttemptPromptSection } from './AttemptPrompt';
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useQuery } from '@tanstack/react-query';
@@ -226,6 +227,8 @@ export function NodeDetailPane({ nodeRunId, isOffline, onClose, onOpenEvidence }
           </Section>
           {detail.attempts.length > 0 && <ProgressSection key={detail.attempts[detail.attempts.length - 1].attemptId} detail={detail} />}
           <ResultSection result={detail.result} />
+          {/* V12-26: the prompt each agent attempt received */}
+          {detail.nodeType === 'AGENT' && <AttemptPromptSection projectId={detail.projectId} attempts={detail.attempts.filter(a => !!a.attemptId).map(a => ({ attemptId: a.attemptId!, attemptNumber: a.attemptNumber }))} />}
           {detail.failure && <FailureSection failure={detail.failure} />}
           {detail.evidence.length > 0 && (
             <Section title="Evidence" testId="node-evidence">

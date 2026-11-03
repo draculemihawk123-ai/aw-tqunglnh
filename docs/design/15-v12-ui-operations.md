@@ -579,6 +579,11 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 ### V12-26 — Xem prompt của node (UX-12)
 
 - Tab "Prompt" trong panel của node, đọc từ ContextSnapshot (giới hạn đã ghi ở V11-11).
+- **Kết quả (đã xong, ADR-059):** `ReadAttemptPrompt` dựng lại prompt từ ContextSnapshot bằng chính hàm render của bước lắp request
+  (`renderAttemptInstruction`, tách khỏi `AssembleAgentExecutionRequest`), che secret, tối đa 512 KiB;
+  `GET /projects/{id}/execution-attempts/{attemptId}/prompt`, `aw node-run prompt [--raw]`. Ngăn chi tiết node AGENT có mục Prompt
+  (Show prompt, chọn attempt, Copy). Test: `attempt_prompt_test.go` (bằng đúng prompt đã lắp, che secret, chặn project khác),
+  `AttemptPrompt.test.tsx`; route inventory, security matrix, parity, contract golden.
 
 ### V12-27 — Cờ CLI bị bỏ qua (UX-41)
 

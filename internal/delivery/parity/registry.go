@@ -187,6 +187,7 @@ func PublicOperations() []PublicOperation {
 		{Name: "CancelWorkItem", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("cancelWorkItem")}, Symbol: runtimeApp + ".CancelWorkItem",
 			HighImpact: true, Cite: "cancel run/cancel task"},
 		{Name: "GetNodeRunDetail", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getNodeRunDetail")}, Symbol: runtimeApp + ".GetNodeRunDetail"},
+		{Name: "ReadAttemptPrompt", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getAttemptPrompt")}, Symbol: runtimeApp + ".ReadAttemptPrompt"},
 		{Name: "ListAttemptEvents", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("listAttemptEvents")}, Symbol: runtimeApp + ".ListAttemptEvents"},
 		{Name: "RetryWorkItem", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("retryWorkItem")}, Symbol: runtimeApp + ".RetryWorkItem"},
 		{Name: "RecreateWorkItem", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("recreateWorkItem")}, Symbol: runtimeApp + ".RecreateWorkItem"},

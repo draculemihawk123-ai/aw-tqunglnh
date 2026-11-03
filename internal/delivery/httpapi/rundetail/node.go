@@ -1,6 +1,7 @@
 package rundetail
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -63,5 +64,24 @@ func handleListAttemptEvents(deps Dependencies) http.HandlerFunc {
 			return
 		}
 		_ = httpapi.EncodeResult(w, http.StatusOK, page, "")
+	}
+}
+
+// handleGetAttemptPrompt implements GET /projects/{projectId}/execution-attempts/{attemptId}/prompt (operationId getAttemptPrompt, V12-26,
+// ADR-059): the instruction the attempt received, redacted and bounded. A COMMAND or gate attempt has none (409).
+func handleGetAttemptPrompt(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		projectID := strings.TrimSpace(r.PathValue("projectId"))
+		attemptID := strings.TrimSpace(r.PathValue("attemptId"))
+		prompt, err := runtimeapp.ReadAttemptPrompt(r.Context(), deps.UnitOfWork, deps.ArtifactStore, deps.Matcher, projectID, attemptID)
+		if errors.Is(err, runtimeapp.ErrAttemptHasNoPrompt) {
+			httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
+			return
+		}
+		if err != nil {
+			writeQueryError(w, err)
+			return
+		}
+		_ = httpapi.EncodeResult(w, http.StatusOK, prompt, "")
 	}
 }

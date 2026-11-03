@@ -73,6 +73,7 @@ var noCrossProjectProof = []string{
 	"createRootWorkItem",
 	"diffProjectDefinitionVersions",
 	"getApprovalRelease",
+	"getAttemptPrompt",         // V12-26: ReadAttemptPrompt refuses another project's attempt itself (not found)
 	"getProjectCommitTemplate", // V12-25: a project setting (key/value), read in the project's own scope
 	"getProjectCosts",          // V12-23: a read of the whole project (as listNeedsYou)
 	"getDefinitionManifest",    // V12-21: the project id selects operator configuration, not a stored entity

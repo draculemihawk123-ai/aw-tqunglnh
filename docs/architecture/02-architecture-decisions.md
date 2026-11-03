@@ -1625,9 +1625,26 @@ definition và diff version.
 
 **Hệ quả:** commit cũ (marker trên dòng tiêu đề) vẫn được nhận diện; route 125, 126; hai dòng UX Screen 7 (23, 24); parity.
 
-## 61. Baseline sau review thiết kế
+## 61. ADR-059 — Xem prompt của attempt: dựng lại từ ContextSnapshot, không lưu thêm
 
-ADR-001…058 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-26, UX-12):** `InstructionArtifact` (prompt) được tạo cho mỗi attempt nhưng không có đường đọc (V11-11 đã ghi giới hạn
+này), và không dòng nào trong DB trỏ tới artifact đó.
+
+**Quyết định:**
+
+1. Không thêm cột hay bảng. Prompt được **dựng lại** từ ContextSnapshot của attempt bằng đúng hàm render mà bước lắp request dùng
+   (`renderAttemptInstruction`, tách ra từ `AssembleAgentExecutionRequest`); render là tất định theo snapshot, nên cùng byte.
+2. `ReadAttemptPrompt` (`GET /projects/{projectId}/execution-attempts/{attemptId}/prompt`, `aw node-run prompt`): chỉ attempt AGENT
+   có snapshot; che secret đã biết; tối đa 512 KiB; attempt của project khác là "không tìm thấy". Quyền như xem evidence (V11-11, quyết
+   định 3).
+3. Giao diện: mục Prompt trong ngăn chi tiết node AGENT, chỉ tải khi bấm "Show prompt", chọn attempt.
+
+**Hệ quả:** route 127; dòng UX Screen 8 số 10; parity. Nếu render đổi theo version của binary thì snapshot đã ghi schema
+(`InstructionSchemaV1/V2`) quyết định cách render, như khi chạy.
+
+## 62. Baseline sau review thiết kế
+
+ADR-001…059 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1680,6 +1697,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-059 (V12-26): đọc prompt của attempt AGENT bằng cách dựng lại từ ContextSnapshot (không lưu thêm), che secret, tối đa 512 KiB.
 - ADR-058 (V12-25): commit message nhiều dòng, marker là trailer cuối thân, mẫu commit message theo project (bỏ " (lần N)").
 - ADR-057 (V12-23): trang chi phí theo task/đợt/project từ số liệu provider, trần ngân sách theo WorkItem gốc; hàng đợi dừng khi vượt trần hoặc chạm hạn mức provider.
 - ADR-056 (V12-21): giao diện publish manifest bằng cách server chạy `aw-publish.py` của kit trên đường dẫn người vận hành cấu hình lúc khởi động.

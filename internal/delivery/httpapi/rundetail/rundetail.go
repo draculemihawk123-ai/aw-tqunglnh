@@ -114,4 +114,10 @@ func RegisterRoutes(reg *httpapi.RouteRegistry, deps Dependencies) {
 		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: runtimeapp.AttemptEventsPage{},
 		Handler: handleListAttemptEvents(deps),
 	})
+	// V12-26 (ADR-059): the prompt an agent attempt received, rendered again from its pinned context snapshot.
+	reg.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/projects/{projectId}/execution-attempts/{attemptId}/prompt", OperationID: "getAttemptPrompt",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: runtimeapp.AttemptPrompt{},
+		Handler: handleGetAttemptPrompt(deps),
+	})
 }
