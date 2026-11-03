@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { WorkflowDiagram, workflowGraphFrom } from '../graph/WorkflowDiagram';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   getDefinition, listDefinitions, listProjectDefinitions,
@@ -239,6 +240,16 @@ export function DefinitionsScreen({ project, initialScope, isOffline = false }: 
                 </div>
                 {selectedVersion && (
                   <>
+                    {/* V12-15: a WORKFLOW version is drawn, not only shown as JSON */}
+                    {selectedVersion.kind === 'WORKFLOW' && (() => {
+                      const graph = workflowGraphFrom(selectedVersion.compiledSnapshot, selectedVersion.canonicalSource);
+                      return graph ? (
+                        <div>
+                          <h3 className="text-xs font-semibold text-[#5D697A] mb-2">Diagram</h3>
+                          <WorkflowDiagram nodes={graph.nodes} edges={graph.edges} label={`Workflow ${selectedVersion.definitionId} version ${selectedVersion.versionNumber}`} />
+                        </div>
+                      ) : null;
+                    })()}
                     <div>
                       <h3 className="text-xs font-semibold text-[#5D697A] mb-2">Hashes</h3>
                       <div className="space-y-2 bg-white rounded-[8px] border border-[#CDD5DF] p-3">

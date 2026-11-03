@@ -7,6 +7,7 @@ import { DEFAULT_PARENT_JOIN_POLICY, TEMPLATES, checkDraft, childRequest, draftF
 import type { RiskLevel, TaskDraft, TaskKind, WorkflowChoice } from '../api/newTask';
 import { withSessionToken } from '../api/session';
 import { Button, Dialog, InlineError, Select, TextField } from '../components/ui';
+import { WorkflowDiagram, workflowGraphFrom } from '../graph/WorkflowDiagram';
 
 /**
  * V12-14 (docs/design/15-v12-ui-operations.md, UX-02/03/25/38/42): "New task" inside a family — a child work item with a contract,
@@ -70,6 +71,9 @@ export function NewTaskDialog({ projectId, parentWorkItemId, isOffline, onClose,
     const latest = [...versions].sort((a, b) => b.versionNumber - a.versionNumber)[0];
     return latest ? [{ definitionId: def.id, name: def.name, versionId: latest.id, versionNumber: latest.versionNumber }] : [];
   }), [workflowsQuery.data, versionQueries]);
+  // V12-15: the chosen workflow, drawn.
+  const chosenVersion = (workflowsQuery.data ?? []).flatMap((_, i) => versionQueries[i]?.data ?? []).find(v => v.id === draft.workflowVersionId);
+  const chosenGraph = chosenVersion ? workflowGraphFrom(chosenVersion.compiledSnapshot, chosenVersion.canonicalSource) : null;
 
   const repos = (reposQuery.data?.repositories ?? []).filter(r => r.status === 'ACTIVE');
   const components = componentsQuery.data?.components ?? [];
@@ -187,6 +191,7 @@ export function NewTaskDialog({ projectId, parentWorkItemId, isOffline, onClose,
               ))}
             </div>
           </fieldset>
+          {chosenGraph && <WorkflowDiagram nodes={chosenGraph.nodes} edges={chosenGraph.edges} label="The chosen workflow" height={300} />}
 
           {(warnings.length > 0 || (attempted && errors.length > 0)) && (
             <ul className="space-y-1" data-testid="new-task-problems">

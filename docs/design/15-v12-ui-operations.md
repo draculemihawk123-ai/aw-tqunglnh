@@ -452,6 +452,9 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 ### V12-15 — Sơ đồ workflow trên trang Definitions (UX-44)
 
 - Dùng lại V12-09 và V12-10, không có dữ liệu run, để vẽ sơ đồ workflow trên trang Definitions và trong form tạo task của V12-14.
+- **Kết quả (đã xong):** `web/src/graph/WorkflowDiagram.tsx` dùng `RunGraphCanvas` không có activation (mọi node "not reached"), Main/All
+  paths, bàn phím; chọn node thì liệt kê outcome dẫn tới đâu. Trang Definitions vẽ version WORKFLOW đang chọn (từ `compiledSnapshot`, không
+  được thì `canonicalSource`); form New task vẽ workflow đang chọn. Test: `WorkflowDiagram.test.tsx` (`wf-bugfix` của kit).
 
 ### V12-16 — Hộp "Needs you" và thông báo (UX-28, UX-29)
 
