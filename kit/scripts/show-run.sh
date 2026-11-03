@@ -16,10 +16,10 @@ jq -r '.entries[] | select(.kind == "NODE_RUN") | "  #\(.activationSequence) \(.
 # Attempt hỏng vì lỗi kỹ thuật (không phải vì bước kiểm tra không đạt): mã lỗi và chi tiết nằm ở attempt.
 jq -r '.entries[] | select(.kind == "EXECUTION_ATTEMPT" and (.attemptState == "FAILED" or .attemptState == "INDETERMINATE"))
   | "  attempt \(.nodeKey) #\(.attemptNumber): \(.attemptState) \(.failureCode // .terminationReason // "") \(.failureDetail // "")"' <<<"$timeline"
-# Hết hạn mức phiên/sử dụng của nhà cung cấp (PROVIDER_QUOTA_EXCEEDED, V11-02): aw không thử lại vì thử ngay không có ích.
-# Giờ reset nằm trong chi tiết attempt ở trên (lời của CLI, ví dụ "resets 5pm"); đợi tới đó rồi chạy lại cùng WorkItem.
-jq -r 'first(.entries[] | select(.kind == "EXECUTION_ATTEMPT" and .failureCode == "PROVIDER_QUOTA_EXCEEDED"))
-  | "  HẾT HẠN MỨC của nhà cung cấp (node \(.nodeKey)): đợi tới giờ reset trong dòng attempt trên, rồi chạy retry-task.sh"' <<<"$timeline"
+# Hết hạn mức của nhà cung cấp (PROVIDER_QUOTA_EXCEEDED): từ V12-03 run KHÔNG hỏng; node chờ BLOCKED và aw tự chạy lại
+# đúng node đó sau giờ reset (giờ nằm trong blocker). Muốn chạy ngay khi hạn mức đã reset: aw node-run retry-blocked.
+jq -r '.entries[] | select(.kind == "EXECUTION_ATTEMPT" and (.terminationReason == "PROVIDER_QUOTA_EXCEEDED" or .failureCode == "PROVIDER_QUOTA_EXCEEDED"))
+  | "  HẾT HẠN MỨC của nhà cung cấp (node \(.nodeKey)): aw tự chạy lại node này sau giờ reset; chạy ngay: aw node-run retry-blocked --project-id <id> \(.nodeRunId // "<nodeRunId>") --reason \"limit reset\""' <<<"$timeline"
 # Mức dùng là con số của provider CLI, cộng trên mọi attempt của run; không có khi chưa attempt nào báo cáo.
 jq -r '.usage // empty | "  provider báo cáo: \(.inputTokens) token vào, \(.outputTokens) token ra, \(.costUsd * 10000 | round / 10000) USD"' <<<"$timeline"
 "$AW" evidence list --project-id "$project_id" --run-id "$run_id" "$work_item" \

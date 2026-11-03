@@ -424,6 +424,8 @@ type normalizer struct {
 	// a session/usage/rate limit; finalStatus then reports
 	// ports.TerminationProviderQuotaExceeded whatever the CLI's exit code.
 	quotaExceeded bool
+	// quotaMessage (V12-03) keeps the provider's words when quotaExceeded, so the engine can read the reset time.
+	quotaMessage string
 	// outcomeOccurrences/outcomeValid/outcomeValue track the terminal
 	// <agentkit-outcome> marker (V5-08B, ports.AgentProposedOutcome's own
 	// doc comment) across every ASSISTANT_MESSAGE this normalizer emits —
@@ -589,6 +591,9 @@ func (n *normalizer) consumeResult(line []byte, rawType string) error {
 		// 5pm", "Credit balance is too low", ...); without it the attempt failed
 		// with a code and nothing to read.
 		n.quotaExceeded = ports.IsProviderQuotaMessage(event.Result)
+		if n.quotaExceeded {
+			n.quotaMessage = event.Result
+		}
 		summary := "Claude reported a failed result"
 		if event.Subtype != "" && event.Subtype != "success" {
 			summary += " (" + event.Subtype + ")"
@@ -774,6 +779,8 @@ func (n *normalizer) result(request ports.AgentExecutionRequest, process ports.P
 		StartedAt:    process.StartedAt,
 		FinishedAt:   process.FinishedAt,
 		TreeQuiesced: process.TreeQuiesced,
+		// V12-03: the provider's own words when it refused the work for a usage limit.
+		ProviderMessage: n.quotaMessage,
 	}
 }
 

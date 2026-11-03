@@ -105,14 +105,14 @@ func loadWorkItemProjectID(ctx context.Context, uow ports.UnitOfWork, workItemID
 	return projectID, err
 }
 
-// Retry implements `aw work-item retry <workItemId> [--note <text>] [--out-of-scope KEEP|PARK]`.
+// Retry implements `aw work-item retry <workItemId> [--note <text>] [--out-of-scope KEEP|PARK|PARK_ALL]`.
 func Retry(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("work-item retry", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	principalConfigPath := cli.BindPrincipalFlag(fs)
 	idempotencyKey := cli.BindIdempotencyKeyFlag(fs)
 	note := fs.String("note", "", "a message for the agent, sent before the new run starts (optional)")
-	outOfScope := fs.String("out-of-scope", "", "KEEP or PARK files a previous run left outside the work item's scope (required when there are any)")
+	outOfScope := fs.String("out-of-scope", "", "KEEP or PARK files a previous run left outside the work item's scope (required when there are any), or PARK_ALL to park every uncommitted change")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}
@@ -149,7 +149,7 @@ func Retry(ctx context.Context, deps Dependencies, args []string, stdout, stderr
 	})
 }
 
-// Recreate implements `aw work-item recreate <workItemId> --reason <text> [--note <text>] [--carry-messages=false] [--out-of-scope KEEP|PARK]`.
+// Recreate implements `aw work-item recreate <workItemId> --reason <text> [--note <text>] [--carry-messages=false] [--out-of-scope KEEP|PARK|PARK_ALL]`.
 func Recreate(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("work-item recreate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -158,7 +158,7 @@ func Recreate(ctx context.Context, deps Dependencies, args []string, stdout, std
 	reason := fs.String("reason", "", "why the work item is redone (required; recorded on the cancellation and the link)")
 	note := fs.String("note", "", "an extra message for the new work item's agent (optional)")
 	carry := fs.Bool("carry-messages", true, "copy the operator's messages to the new work item (default true; --carry-messages=false to start clean)")
-	outOfScope := fs.String("out-of-scope", "", "KEEP or PARK files a previous run left outside the work item's scope (required when there are any)")
+	outOfScope := fs.String("out-of-scope", "", "KEEP or PARK files a previous run left outside the work item's scope (required when there are any), or PARK_ALL to park every uncommitted change")
 	if err := parseFlags(fs, args); err != nil {
 		return err
 	}

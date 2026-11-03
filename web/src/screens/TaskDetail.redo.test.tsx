@@ -137,10 +137,31 @@ describe('TaskDetailScreen — run again and redo (V11-10)', () => {
     expect(within(files).getByText(/src\/app\.ts/).closest('li')).not.toHaveTextContent('outside scope');
     expect(within(files).getByRole('radio', { name: /Keep/ })).toBeChecked();
 
-    await userEvent.click(within(files).getByRole('radio', { name: /Park/ }));
+    await userEvent.click(within(files).getByRole('radio', { name: /^Park them/ }));
     await userEvent.click(within(dialog).getByRole('button', { name: 'Run Again' }));
     await waitFor(() => expect(api.retryWorkItem).toHaveBeenCalledWith(
       'wi-1', { note: undefined, outOfScope: 'PARK' }, expect.anything(),
+    ));
+  });
+
+  it('Run Again: PARK_ALL parks every uncommitted change, even with nothing outside the scope (V12-03)', async () => {
+    setup({
+      preview: {
+        files: [{ repositoryId: 'web', repositoryWorkspaceId: 'rw-1', path: 'src/half-fix.ts', status: 'MODIFIED', outOfScope: false }],
+        outOfScopeCount: 0,
+      },
+    });
+    vi.mocked(api.retryWorkItem).mockResolvedValue({
+      workItemId: 'wi-1', previousRunId: 'run-1', runId: 'run-2', runState: 'RUNNING', nodeRunId: 'n', jobId: 'j', workflowVersionId: 'wfv-1', resolvedBlockerIds: [],
+    } as never);
+    await userEvent.click(await screen.findByRole('button', { name: 'Run Again' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Run Again' });
+    const files = await within(dialog).findByTestId('leftover-files');
+    expect(within(files).queryByRole('radio', { name: /^Park them/ })).not.toBeInTheDocument();
+    await userEvent.click(within(files).getByRole('radio', { name: /^Park all/ }));
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Run Again' }));
+    await waitFor(() => expect(api.retryWorkItem).toHaveBeenCalledWith(
+      'wi-1', { note: undefined, outOfScope: 'PARK_ALL' }, expect.anything(),
     ));
   });
 

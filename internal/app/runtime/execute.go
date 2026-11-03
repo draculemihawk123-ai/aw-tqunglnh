@@ -431,6 +431,13 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 		reason = runtimedomain.TerminationReasonCompleted
 		failureCode = ""
 	case runtimedomain.ExecutionAttemptBlocked:
+		if execResult.TerminationReason == runtimedomain.TerminationReasonProviderQuotaExceeded {
+			// V12-03: the provider's usage limit; the node waits BLOCKED and runs again after the reset.
+			nextState = runtimedomain.ExecutionAttemptBlocked
+			reason = runtimedomain.TerminationReasonProviderQuotaExceeded
+			failureCode = ""
+			break
+		}
 		// V4-12A (confirmed with the user before writing this file): a
 		// malformed proposal is treated as a real, non-retryable FAILURE
 		// — OUTCOME_REJECTED — never a legitimate BLOCKED transition
@@ -474,6 +481,7 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 		NextState: nextState, TerminationReason: reason, FailureCode: failureCode, SelectedOutcome: execResult.SelectedOutcome,
 		RequestedScopeExpansion: scopeProposal, JobLease: jobLease, CorrelationID: payload.CorrelationID,
 		Evidence: execResult.Evidence, WriteLeases: execResult.WriteLeaseGrants, PartialOutputArtifactID: partialOutput,
+		BlockedDetail: execResult.BlockedDetail, ResumeAt: execResult.ResumeAt,
 	})
 	return finalizeErr
 }

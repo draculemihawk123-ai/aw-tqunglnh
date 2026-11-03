@@ -1365,9 +1365,34 @@ handler (job chỉ đi tiếp qua lease hết hạn), và không có gì đóng 
 **Hệ quả:** không còn thao tác commit treo `REQUESTED` vô thời hạn; lý do hiện ở API, CLI, giao diện và log. Không đổi ADR-014 (vẫn
 không push/PR/merge) và không thêm mã lỗi vào tập §18.
 
-## 48. Baseline sau review thiết kế
+## 48. ADR-046 — Hết hạn mức của nhà cung cấp chặn node (`BLOCKED`), không làm hỏng run; tự chạy tiếp đúng node khi tới giờ reset
 
-ADR-001…045 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-03, UX-15, UX-17):** ADR-035 làm lỗi hạn mức thành attempt `FAILED` mã `PROVIDER_QUOTA_EXCEEDED`, không retry. Node hỏng,
+run `FAILED`. Chạy lại (ADR-041) bắt đầu từ `START` trên worktree còn code sửa dở: ở chochuyennha P1-01, `fix` hết hạn mức, lần chạy lại
+bắt đầu ở `repro` (không được sửa code sản phẩm) và lặp. Khảo sát: rerun luôn từ `START` là thiết kế (ADR-033/041: run mới là run mới),
+không phải giới hạn; nên sửa ở chỗ khác — đừng để run hỏng.
+
+**Quyết định:**
+
+1. Termination reason mới `PROVIDER_QUOTA_EXCEEDED` (đường `RUNNING -> BLOCKED`) và blocker cùng tên (migration 0055 nới CHECK của
+   `blockers`). Executor AGENT trả `BLOCKED` thay cho `FAILED` khi provider báo hết hạn mức; `FinalizeExecutionAttempt` chuyển NodeRun
+   `RUNNING -> BLOCKED`, mở blocker (lời của provider đã che bí mật, giờ sẽ chạy tiếp) dưới id của blocker admission, rồi đối chiếu tính
+   kết thúc của run như với scope expansion. Run vẫn `RUNNING`. Mã lỗi của ADR-035 vẫn còn cho executor khác và vẫn không bao giờ retry.
+2. Giờ reset đọc từ lời của provider (`ParseQuotaReset`: "resets 5pm", "resets 2:30am (Europe/Paris)", "reset at 21:05"; lần kế
+   tiếp sau bây giờ). Job `PROVIDER_QUOTA_RESUME` (RUN_WORK, gắn run nên bị fence khi hủy run) có sẵn lúc giờ reset + 2 phút, hoặc sau 1
+   giờ khi không đọc được giờ. Tối đa 6 lần tự chạy tiếp cho mỗi node của một run; sau đó chờ người.
+3. Chạy tiếp đi qua `RetryBlockedActivation` (V5-08D) — đường duy nhất được đóng blocker admission: chạy lại các kiểm tra admission
+   trên đúng các pin (không repin), tạo activation mới của **cùng node**, giữ `Iteration` (không tốn ngân sách vòng). Người vận hành
+   dùng cùng thao tác (nút Retry của node bị chặn, `aw node-run retry-blocked`); job đến sau thấy node đã chạy tiếp thì không làm gì.
+4. Chạy lại một run hỏng vì lý do khác có thêm lựa chọn `PARK_ALL` cho thay đổi chưa commit: cất **mọi** thay đổi (cả trong scope)
+   vào ref ẩn, run sau bắt đầu từ commit cuối. Không có "bỏ" phá hủy: `PARK_ALL` là cách bỏ an toàn, khôi phục được.
+
+**Hệ quả:** hết hạn mức không còn làm mất run hay bắt chạy lại từ đầu. Không đổi ADR-011 (manifest bất biến), ADR-033/041 (rerun vẫn
+từ `START`), ADR-035 (mã vẫn không retry). Đọc giờ reset theo lời của CLI: CLI đổi cách nói thì aw chờ 1 giờ rồi thử.
+
+## 49. Baseline sau review thiết kế
+
+ADR-001…046 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1420,6 +1445,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-046 (V12-03) sửa ADR-035: hết hạn mức của provider làm attempt/NodeRun `BLOCKED` (blocker `PROVIDER_QUOTA_EXCEEDED`), run không hỏng; job `PROVIDER_QUOTA_RESUME` chạy tiếp đúng node sau giờ reset qua `RetryBlockedActivation`; chạy lại có `PARK_ALL`.
 - ADR-045 (V12-01) thêm lý do `EXECUTION_ERROR` kèm `failureDetail` cho local commit mà worker không làm xong (lượt claim cuối hoặc job `DEAD`), và log lỗi handler của worker pool.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

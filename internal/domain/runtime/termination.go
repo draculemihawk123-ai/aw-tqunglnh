@@ -86,6 +86,10 @@ const (
 	// TerminationReasonWriteCapabilityOrGrantMissing: QUEUED -> BLOCKED
 	// (admission blocker group).
 	TerminationReasonWriteCapabilityOrGrantMissing TerminationReason = "WRITE_CAPABILITY_OR_GRANT_MISSING"
+	// TerminationReasonProviderQuotaExceeded (V12-03, ADR-046): RUNNING -> BLOCKED. The provider CLI refused the work because
+	// the account hit a session, usage or rate limit. The run does not fail: the NodeRun waits BLOCKED and is retried — by
+	// itself when the provider's reset time passes, or by the operator — as a new activation of the SAME node.
+	TerminationReasonProviderQuotaExceeded TerminationReason = "PROVIDER_QUOTA_EXCEEDED"
 )
 
 // knownTerminationReasons is ADR-020's closed set plus the pre-existing
@@ -109,6 +113,7 @@ var knownTerminationReasons = map[TerminationReason]struct{}{
 	TerminationReasonAdapterBuildDrift:                {},
 	TerminationReasonCapabilityRequirementUnsatisfied: {},
 	TerminationReasonWriteCapabilityOrGrantMissing:    {},
+	TerminationReasonProviderQuotaExceeded:            {},
 }
 
 // IsValid reports whether r is a member of the closed TerminationReason set.

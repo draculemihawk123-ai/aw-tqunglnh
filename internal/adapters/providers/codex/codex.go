@@ -331,6 +331,8 @@ type normalizer struct {
 	providerOK   bool
 	// quotaExceeded (V11-02): see claude.go's field of the same name.
 	quotaExceeded bool
+	// quotaMessage (V12-03) keeps the provider's words when quotaExceeded, so the engine can read the reset time.
+	quotaMessage string
 	// outcomeOccurrences/outcomeValid/outcomeValue track the terminal
 	// <agentkit-outcome> marker (V5-08B, ports.AgentProposedOutcome's own
 	// doc comment, mirroring claude.go's own identical fields) across
@@ -403,6 +405,9 @@ func (n *normalizer) consume(line []byte) error {
 			reason = failure.Message
 		}
 		n.quotaExceeded = ports.IsProviderQuotaMessage(reason)
+		if n.quotaExceeded {
+			n.quotaMessage = reason
+		}
 		return n.emit(ports.AgentEvent{
 			Kind: ports.AgentEventDiagnostic,
 			Diagnostic: &ports.AgentDiagnostic{
@@ -646,6 +651,8 @@ func (n *normalizer) result(request ports.AgentExecutionRequest, process ports.P
 		StartedAt:    process.StartedAt,
 		FinishedAt:   process.FinishedAt,
 		TreeQuiesced: process.TreeQuiesced,
+		// V12-03: the provider's own words when it refused the work for a usage limit.
+		ProviderMessage: n.quotaMessage,
 	}
 }
 

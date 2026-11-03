@@ -140,6 +140,14 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
     giữ, cất (park vào ref ẩn) hoặc bỏ. Hiện chỉ có biến `OUT_OF_SCOPE=KEEP|PARK` của `retry-task.sh`.
 - **Ràng buộc:** cần xác minh xem rerun luôn chạy từ `START` là do thiết kế (ADR) hay do giới hạn hiện tại (guide V9 đã ghi
   khiếm khuyết này).
+- **Kết quả (đã xong, ADR-046):** khảo sát xác nhận rerun luôn từ `START` là thiết kế (ADR-033/041), nên không đổi; thay vào đó lỗi hạn
+  mức không còn làm hỏng run. Attempt AGENT `BLOCKED` lý do `PROVIDER_QUOTA_EXCEEDED`, NodeRun `BLOCKED`, blocker cùng tên (migration
+  0055), run vẫn `RUNNING`. `ParseQuotaReset` đọc giờ reset từ lời của CLI; job `PROVIDER_QUOTA_RESUME` chạy tiếp **đúng node** qua
+  `RetryBlockedActivation` (cùng pin, giữ `Iteration`), tối đa 6 lần mỗi node, mặc định sau 1 giờ khi không đọc được giờ. Nút Retry của
+  node bị chặn (validActions) và `aw node-run retry-blocked` dùng cùng đường. Thay đổi dở: hộp thoại Run Again / Redo có thêm **Park all**
+  (`PARK_ALL`, cất mọi thay đổi chưa commit vào ref ẩn; "bỏ" phá hủy không làm, cất là cách bỏ khôi phục được), CLI và
+  `retry-task.sh OUT_OF_SCOPE=PARK_ALL`. Test: `quota_resume_test.go` (chặn → job → chạy tiếp cùng node, idempotent; parser),
+  `agent_node_executor_test.go`, `redo_service_sqlite_test.go` (PARK_ALL), `TaskDetail.redo.test.tsx`. Chưa chạy: Claude thật hết hạn mức.
 
 ### V12-04 — Sức khỏe worker và provider (UX-16, UX-18, UX-07)
 

@@ -40,7 +40,7 @@ type Dependencies struct {
 type RetryRequest struct {
 	// Note is an optional message for the agent, sent before the new run starts.
 	Note string `json:"note,omitempty"`
-	// OutOfScope is KEEP or PARK: required when a previous run left files outside the work item's scope (the preview lists them).
+	// OutOfScope is KEEP, PARK or PARK_ALL (V12-03: park every uncommitted change): required when a previous run left files outside the work item's scope (the preview lists them).
 	OutOfScope string `json:"outOfScope,omitempty"`
 }
 
@@ -251,7 +251,7 @@ func writeRedoError(w http.ResponseWriter, err error) {
 		httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest, err.Error(), details)
 	case errors.Is(err, workitemredo.ErrInvalidDisposition):
 		httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest, err.Error(),
-			[]httpapi.ErrorDetail{{Field: "outOfScope", Message: "must be KEEP or PARK"}})
+			[]httpapi.ErrorDetail{{Field: "outOfScope", Message: "must be KEEP, PARK or PARK_ALL"}})
 	case errors.Is(err, workitemredo.ErrParkUnavailable):
 		httpapi.WriteError(w, http.StatusServiceUnavailable, httpapi.ErrorCodeUnavailable, err.Error(), nil)
 	case errors.Is(err, workitemredo.ErrWorktreeNotReadable):

@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -652,14 +653,15 @@ func TestAgentNodeExecutor_ProviderDeclaredFailure_ReturnsExecutionFailed(t *tes
 	}
 }
 
-// V11-02 (ADR-035): a provider that refused the work because the account hit a
-// session/usage limit is a determinate FAILED with its own non-retryable code, not
-// the generic EXECUTION_FAILED that a policy may list as retryable.
-func TestAgentNodeExecutor_ProviderQuotaExceeded_ReturnsProviderQuotaExceeded(t *testing.T) {
+// V11-02 (ADR-035) / V12-03 (ADR-046): a provider that refused the work because the account hit a session/usage limit
+// no longer fails the attempt: it ends BLOCKED with PROVIDER_QUOTA_EXCEEDED, the provider's words as the detail and, when
+// they name one, the reset time to resume at.
+func TestAgentNodeExecutor_ProviderQuotaExceeded_BlocksWithResetTime(t *testing.T) {
 	executor, req, _, _, _, _, _ := bridgeFixture(t, bridgeFixtureOptions{
 		diff: defaultInScopeDiff(),
 		agentResult: ports.AgentExecutionResult{
 			Status: ports.AgentExecutionFailed, TerminationReason: ports.TerminationProviderQuotaExceeded, TreeQuiesced: true,
+			ProviderMessage: "You've hit your 5-hour limit · resets 3pm (UTC)",
 		},
 		agentEvents: []ports.AgentEventKind{ports.AgentEventExecutionStarted, ports.AgentEventExecutionFinished},
 	})
@@ -668,12 +670,18 @@ func TestAgentNodeExecutor_ProviderQuotaExceeded_ReturnsProviderQuotaExceeded(t 
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if result.State != domainruntime.ExecutionAttemptFailed || result.TerminationReason != domainruntime.TerminationReasonExecutionFailed ||
-		result.ErrorCode != errorcode.CodeProviderQuotaExceeded {
-		t.Fatalf("result = %+v, want FAILED/EXECUTION_FAILED/PROVIDER_QUOTA_EXCEEDED", result)
+	if result.State != domainruntime.ExecutionAttemptBlocked || result.TerminationReason != domainruntime.TerminationReasonProviderQuotaExceeded ||
+		result.ErrorCode != "" {
+		t.Fatalf("result = %+v, want BLOCKED/PROVIDER_QUOTA_EXCEEDED with no error code", result)
 	}
-	if !result.ErrorCode.NeverRetryable() {
-		t.Fatalf("%s must never be retryable", result.ErrorCode)
+	if !strings.Contains(result.BlockedDetail, "5-hour limit") {
+		t.Fatalf("BlockedDetail = %q, want the provider's words", result.BlockedDetail)
+	}
+	if result.ResumeAt == nil || result.ResumeAt.Hour() != 15 || result.ResumeAt.Location().String() != "UTC" {
+		t.Fatalf("ResumeAt = %v, want the next 15:00 UTC", result.ResumeAt)
+	}
+	if len(result.WriteLeaseGrants) == 0 {
+		t.Fatal("the BLOCKED result must still hand back its write leases so finalize releases them")
 	}
 }
 

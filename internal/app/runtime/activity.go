@@ -45,6 +45,7 @@ type nodeIdentity struct {
 	iteration                                 uint32
 	attemptNumber                             uint32
 	attemptState                              runtimedomain.ExecutionAttemptState
+	attemptReason                             runtimedomain.TerminationReason
 	profileKey                                string
 }
 
@@ -76,6 +77,7 @@ func (p *ActivityPoster) identify(ctx context.Context, nodeRunID, attemptID stri
 				return err
 			}
 			id.attemptNumber, id.attemptState, id.profileKey = attempt.AttemptNumber, attempt.State, attempt.ProviderKey
+			id.attemptReason = attempt.TerminationReason
 		}
 		return nil
 	})
@@ -152,6 +154,9 @@ func (p *ActivityPoster) NodeFinished(ctx context.Context, payload ExecuteNodeJo
 		line.Text = fmt.Sprintf("%s was cancelled.", id.nodeKey)
 	case runtimedomain.ExecutionAttemptBlocked:
 		line.Text = fmt.Sprintf("%s is blocked: it asked for a scope expansion that needs a decision.", id.nodeKey)
+		if id.attemptReason == runtimedomain.TerminationReasonProviderQuotaExceeded {
+			line.Text = fmt.Sprintf("%s is waiting: the provider's usage limit was reached. aw runs this node again by itself when the limit resets (see the blocker), or retry it now.", id.nodeKey)
+		}
 	default:
 		line.Text = fmt.Sprintf("%s failed.", id.nodeKey)
 		if err == nil && detail.Failure != nil {

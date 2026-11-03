@@ -100,7 +100,7 @@ type RetryWorkItemRequest struct {
 	// Note is the optional message for the agent; it is appended as a USER message before the new run starts, so the run's prompt
 	// carries it. It is also the resolution note recorded on the resolved blockers.
 	Note string
-	// OutOfScope (KEEP or PARK, empty when there was nothing out of scope) and Parked record how the caller settled files a
+	// OutOfScope (KEEP, PARK or PARK_ALL, empty when there was nothing out of scope) and Parked record how the caller settled files a
 	// previous run left outside the WorkItem's scope; see RedoParkedSet.
 	OutOfScope string
 	Parked     []RedoParkedSet

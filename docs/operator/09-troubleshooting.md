@@ -119,25 +119,37 @@ The text is the CLI's reason, whitespace collapsed, cut at 500 characters and re
 attempt that failed before V9-20 has the code but no detail, and so does a failure the provider did not report itself
 (a crash, a timeout).
 
-### The account hit a session or usage limit: `PROVIDER_QUOTA_EXCEEDED` (V11-02)
+### The account hit a session or usage limit: `PROVIDER_QUOTA_EXCEEDED` (V11-02, V12-03)
 
 When the CLI's reason says the account hit a limit ("You've hit your limit · resets 5pm", "session limit", "usage
-limit", rate limit, quota, "credit balance is too low"), the attempt ends `FAILED` with the dedicated failure code
-`PROVIDER_QUOTA_EXCEEDED` instead of `EXECUTION_FAILED`:
+limit", rate limit, quota, "credit balance is too low"), the attempt **does not fail** (since V12-03, ADR-046). It ends
+`BLOCKED` with the termination reason `PROVIDER_QUOTA_EXCEEDED`, the node waits `BLOCKED`, the run stays `RUNNING`, and
+the work item carries a `PROVIDER_QUOTA_EXCEEDED` blocker whose reason is the provider's words and the resume time:
 
 ```
-# "failureCode": "PROVIDER_QUOTA_EXCEEDED",
-# "failureDetail": "Claude reported a failed result: You've hit your limit · resets 5:30pm (UTC)"
+aw blocker list --project-id <id> <workItemId>
+# "type": "PROVIDER_QUOTA_EXCEEDED", "state": "OPEN",
+# "reason": "You've hit your 5-hour limit · resets 3pm (Asia/Saigon) — aw resumes this node by itself at 2026-11-03T08:02:00Z, or retry it now"
 ```
 
-The code is **never retryable**: an attempt policy cannot list it in `retryableErrorCodes` (publish refuses), and the
-engine does not retry it. A limit resets in hours, so retrying at once only spent the attempt budget — before this
-code, every parallel agent node burnt all its attempts within seconds and the run ended `FAILED`. Now the first
-attempt of the node ends the node, the run ends `FAILED` with the usual `RUN_FAILED` blocker, and nothing else is
-spent. The reset time is **only** in the provider's words (`failureDetail`): neither CLI reports it in a form aw can
-read, so aw does not schedule a retry. Wait until the time the message names, then run again on the same WorkItem
-(`retry-task.sh` in the kit, the **Run Again** button, or `aw work-item retry`; the older `aw blocker resolve --mode RESOLVED` then `aw run start` still works). `show-run.sh` prints a line
-for it. The classification follows the CLI's text: a limit message the CLI words differently stays `EXECUTION_FAILED`.
+- **Automatic resume.** aw reads the reset time from the provider's words ("resets 3pm", "resets 2:30am (Europe/Paris)",
+  "reset at 21:05"; the next such time, in the zone the message names, else the worker's zone) and enqueues a
+  `PROVIDER_QUOTA_RESUME` job for two minutes after it. When the words name no time, it tries again after one hour. The
+  resume runs the **same node** again as a new activation (`aw node-run retry-blocked`, same pins, no repin, the cycle
+  budget is not used), on the worktree as the stopped attempt left it. At most 6 automatic resumes per node and run: a
+  limit that is not a time window ("credit balance is too low") then waits for you.
+- **Resume by hand** once the limit has reset: the **Retry** action of the blocked node on the task page, or
+  `aw node-run retry-blocked --project-id <id> <nodeRunId> --reason "limit reset"`. If the job runs later it finds the
+  node already resumed and does nothing.
+- An attempt policy still cannot list `PROVIDER_QUOTA_EXCEEDED` in `retryableErrorCodes`, and the engine never retries it
+  at once: a limit resets in hours. The classification follows the CLI's text: a limit message the CLI words differently
+  stays `EXECUTION_FAILED` (and the run fails as before).
+
+Run again a run that FAILED for another reason: **Run Again** asks what to do with what the failed attempt left in the
+worktree — **Keep**, **Park** (only the files outside the scope) or **Park all** (every uncommitted change, in scope too,
+into a hidden Git ref; the next run starts from the last commit). CLI: `aw work-item retry … --out-of-scope KEEP|PARK|PARK_ALL`,
+kit: `OUT_OF_SCOPE=PARK_ALL retry-task.sh <workItemId>`. A rerun still starts at `START` (ADR-041); only a blocked node
+resumes where it stopped.
 
 ## A run ended `FAILED` with `WORKFLOW_DEFINITION_DEFECT` (V11-03)
 

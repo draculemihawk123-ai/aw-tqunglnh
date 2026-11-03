@@ -164,7 +164,7 @@ func (h *RetryBlockedActivationHandler) Retry(ctx context.Context, req RetryBloc
 	if err != nil {
 		return RetryBlockedActivationResult{}, err
 	}
-	if !isAdmissionBlockerReason(blockedAttempt.TerminationReason) {
+	if !isRetryableBlockedReason(blockedAttempt.TerminationReason) {
 		return RetryBlockedActivationResult{}, fmt.Errorf("%w: reason %s", ErrNotAnAdmissionBlockerReason, blockedAttempt.TerminationReason)
 	}
 	if blocker.State != workdomain.BlockerOpen {
@@ -194,7 +194,7 @@ func (h *RetryBlockedActivationHandler) Retry(ctx context.Context, req RetryBloc
 		if err != nil {
 			return err
 		}
-		if !isAdmissionBlockerReason(blockedAttempt.TerminationReason) {
+		if !isRetryableBlockedReason(blockedAttempt.TerminationReason) {
 			return fmt.Errorf("%w: reason %s", ErrNotAnAdmissionBlockerReason, blockedAttempt.TerminationReason)
 		}
 		if blocker.State != workdomain.BlockerOpen {
@@ -270,6 +270,13 @@ func (h *RetryBlockedActivationHandler) Retry(ctx context.Context, req RetryBloc
 		return RetryBlockedActivationResult{}, err
 	}
 	return result, nil
+}
+
+// isRetryableBlockedReason (V12-03) is what RetryBlockedActivation has authority over: the four admission-check reasons and a
+// provider usage limit (PROVIDER_QUOTA_EXCEEDED), whose blocker lives under the same id pattern. For the latter the admission
+// checks run again too, so a node that meanwhile drifted is reported, not started.
+func isRetryableBlockedReason(reason runtimedomain.TerminationReason) bool {
+	return isAdmissionBlockerReason(reason) || reason == runtimedomain.TerminationReasonProviderQuotaExceeded
 }
 
 // loadForRetry is the read-only-transaction wrapper around loadForRetryTx —

@@ -87,6 +87,10 @@ const (
 	// failure visible on the WorkItem. RESOLVED only (never waived): the exits are requesting a
 	// new commit from the current change set and then resolving this blocker, or CancelWorkItem.
 	BlockerReleaseFailed BlockerType = "RELEASE_FAILED"
+	// BlockerProviderQuotaExceeded (V12-03, ADR-046): an AGENT attempt stopped because the provider account hit a usage limit.
+	// The run stays alive with the NodeRun BLOCKED; RetryBlockedActivation (automatically at the provider's reset time, or by the
+	// operator) resolves it with a new activation of the same node. Never waived.
+	BlockerProviderQuotaExceeded BlockerType = "PROVIDER_QUOTA_EXCEEDED"
 )
 
 var knownBlockerTypes = map[BlockerType]struct{}{
@@ -99,6 +103,7 @@ var knownBlockerTypes = map[BlockerType]struct{}{
 	BlockerCapabilityRequirementUnsatisfied: {},
 	BlockerWriteCapabilityOrGrantMissing:    {},
 	BlockerReleaseFailed:                    {},
+	BlockerProviderQuotaExceeded:            {},
 }
 
 // IsValid reports whether t is a member of the closed BlockerType set.

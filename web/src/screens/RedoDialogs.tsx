@@ -53,15 +53,19 @@ function OutOfScopeSection({ preview, choice, onChoice }: { preview: RedoPreview
         ))}
       </ul>
       {preview.filesUnavailableReason && <p className="text-[12px] text-[#92400E] mb-2">The list may be incomplete: {preview.filesUnavailableReason}.</p>}
-      {outside.length > 0 && (
-        <div role="radiogroup" aria-label="Files outside the work item's scope" className="space-y-1.5 text-[13px]">
-          <p className="text-[12px] text-[#172033]">{outside.length} {outside.length === 1 ? 'file is' : 'files are'} outside the scope and would make the next run fail with SCOPE_VIOLATION. What should happen to {outside.length === 1 ? 'it' : 'them'}?</p>
-          <label className="flex items-start gap-2"><input type="radio" name="out-of-scope" checked={choice === 'KEEP'} onChange={() => onChoice('KEEP')} className="mt-1" />
-            <span><strong>Keep</strong> them where they are <span className="text-[#92400E]">(the next run will probably fail again)</span></span></label>
+      <div role="radiogroup" aria-label="Uncommitted changes in the worktree" className="space-y-1.5 text-[13px]">
+        {outside.length > 0
+          ? <p className="text-[12px] text-[#172033]">{outside.length} {outside.length === 1 ? 'file is' : 'files are'} outside the scope and would make the next run fail with SCOPE_VIOLATION. What should happen to {outside.length === 1 ? 'it' : 'them'}?</p>
+          : <p className="text-[12px] text-[#172033]">The next run starts on these changes. Keep them, or park them all to start from the last commit.</p>}
+        <label className="flex items-start gap-2"><input type="radio" name="out-of-scope" checked={(choice ?? 'KEEP') === 'KEEP'} onChange={() => onChoice('KEEP')} className="mt-1" />
+          <span><strong>Keep</strong> {outside.length > 0 ? 'them where they are' : 'every change'} {outside.length > 0 && <span className="text-[#92400E]">(the next run will probably fail again)</span>}</span></label>
+        {outside.length > 0 && (
           <label className="flex items-start gap-2"><input type="radio" name="out-of-scope" checked={choice === 'PARK'} onChange={() => onChoice('PARK')} className="mt-1" />
             <span><strong>Park</strong> them: move them out of the worktree into a hidden Git ref; nothing is deleted</span></label>
-        </div>
-      )}
+        )}
+        <label className="flex items-start gap-2"><input type="radio" name="out-of-scope" checked={choice === 'PARK_ALL'} onChange={() => onChoice('PARK_ALL')} className="mt-1" />
+          <span><strong>Park all</strong> uncommitted changes, in scope too: the next run starts from the last commit; nothing is deleted</span></label>
+      </div>
     </fieldset>
   );
 }

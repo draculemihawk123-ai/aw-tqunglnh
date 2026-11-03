@@ -444,6 +444,9 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 	}))
 	registry.Register(runtime.ExecuteNodeJobKind, runtime.NewExecuteNodeHandler(d.uow, d.ids, router, d.clk, d.isolation, d.agents, d.store).WithActivityPoster(activity))
 	registry.Register(runtime.WaitTimerJobKind, runtime.NewWaitTimeoutHandler(d.uow, d.ids))
+	// V12-03: a node blocked by the provider's usage limit runs again by itself once the limit resets.
+	registry.Register(runtime.ProviderQuotaResumeJobKind, runtime.NewProviderQuotaResumeHandler(
+		runtime.NewRetryBlockedActivationHandler(d.uow, d.ids, d.isolation, d.agents)))
 	registry.Register(runtime.ApprovalTimerJobKind, runtime.NewApprovalTimeoutHandler(d.uow, d.ids))
 	registry.Register(runtime.RequestScopeExpansionJobKind, runtime.NewRequestScopeExpansionHandler(d.uow, d.ids))
 	registry.Register(appwork.ScopeExpansionReconcileJobKind, runtime.NewScopeExpansionReconcileHandler(d.uow, d.ids))

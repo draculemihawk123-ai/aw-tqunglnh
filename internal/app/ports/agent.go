@@ -437,6 +437,10 @@ type AgentExecutionResult struct {
 	// AgentExecutionSucceeded — see AgentProposedOutcome's own doc comment
 	// for the full terminal-marker contract and every rejection case.
 	ProposedOutcome *AgentProposedOutcome
+	// ProviderMessage (V12-03) is the provider CLI's own words for a failed result, set together with
+	// TerminationProviderQuotaExceeded ("You've hit your limit · resets 5pm (Europe/Paris)") so the engine can tell when the
+	// limit resets. Empty otherwise.
+	ProviderMessage string
 }
 
 // AgentExecutor is provider-neutral. Start and Resume block until the

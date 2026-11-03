@@ -34,11 +34,15 @@ const (
 	Keep = "KEEP"
 	// Park moves exactly those files out of the worktree into a hidden Git ref.
 	Park = "PARK"
+	// ParkAll (V12-03) moves EVERY uncommitted change of the family's worktrees — inside the scope too — into a hidden Git ref,
+	// so the next run starts from the last commit. It is the safe form of "discard what the failed attempt left": nothing is
+	// deleted, the ref keeps it (restore with `git checkout <ref> -- <path>`).
+	ParkAll = "PARK_ALL"
 )
 
 var (
 	// ErrInvalidDisposition is returned for an out-of-scope choice that is neither KEEP nor PARK.
-	ErrInvalidDisposition = errors.New("workitemredo: outOfScope must be KEEP or PARK")
+	ErrInvalidDisposition = errors.New("workitemredo: outOfScope must be KEEP, PARK or PARK_ALL")
 	// ErrParkUnavailable is returned when PARK is asked for but this process has no Git workspace provider to do it with.
 	ErrParkUnavailable = errors.New("workitemredo: this process has no Git workspace provider, so it cannot park files")
 	// ErrWorktreeNotReadable is returned when PARK is asked for but the worktree could not be read (a writer is active, too many changes).
@@ -177,7 +181,7 @@ type settlement struct {
 // command would refuse anyway (it reports the refusal itself, and no file must move for a command that does not run), otherwise it reads
 // the worktree and applies the caller's choice for files outside the scope.
 func (s Service) settleBefore(ctx context.Context, cmd ports.Command, projectID, workItemID, disposition string, refusal func(runtime.RedoAssessment) *runtime.RedoRefusal) (settlement, error) {
-	if disposition != "" && disposition != Keep && disposition != Park {
+	if disposition != "" && disposition != Keep && disposition != Park && disposition != ParkAll {
 		return settlement{}, ErrInvalidDisposition
 	}
 	if replay, err := runtime.RedoReceiptExists(ctx, s.UnitOfWork, cmd); err != nil || replay {
@@ -197,12 +201,12 @@ func (s Service) settleBefore(ctx context.Context, cmd ports.Command, projectID,
 	}
 	var outside []LeftoverFile
 	for _, f := range files {
-		if f.OutOfScope {
+		if f.OutOfScope || disposition == ParkAll {
 			outside = append(outside, f)
 		}
 	}
 	if len(outside) == 0 {
-		if disposition == Park && unavailable != "" {
+		if (disposition == Park || disposition == ParkAll) && unavailable != "" {
 			return settlement{}, fmt.Errorf("%w: %s", ErrWorktreeNotReadable, unavailable)
 		}
 		return settlement{}, nil
@@ -225,7 +229,7 @@ func (s Service) settleBefore(ctx context.Context, cmd ports.Command, projectID,
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
-	result := settlement{outOfScope: Park}
+	result := settlement{outOfScope: disposition}
 	for _, id := range ids {
 		w := workspaces[id]
 		handle, err := ports.NewWorkspaceHandle(w.Locator)
