@@ -1,3 +1,4 @@
+import { ManifestPanel } from './ManifestPanel';
 import { useEffect, useMemo, useState } from 'react';
 import { WorkflowDiagram, workflowGraphFrom } from '../graph/WorkflowDiagram';
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -133,6 +134,8 @@ export function DefinitionsScreen({ project, initialScope, isOffline = false }: 
   return (
     <div className="flex-1 flex overflow-hidden">
       <div className="flex-1 flex flex-col overflow-hidden border-r border-[#CDD5DF]">
+        {/* V12-21: check and publish the project's manifest */}
+        {scope === 'project' && projectId && <ManifestPanel projectId={projectId} isOffline={isOffline} />}
         <div className="px-6 py-4 border-b border-[#CDD5DF] bg-white">
           <div className="flex items-center justify-between">
             <div>

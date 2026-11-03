@@ -1020,6 +1020,46 @@
       }
     },
     {
+      "operationId": "getDefinitionManifest",
+      "method": "GET",
+      "path": "/projects/{projectId}/definition-manifest",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "ports.ManifestStatus",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Configured",
+            "jsonTag": "configured",
+            "type": "bool"
+          },
+          {
+            "name": "ManifestPath",
+            "jsonTag": "manifestPath,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "ScriptPath",
+            "jsonTag": "scriptPath,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "LastRun",
+            "jsonTag": "lastRun,omitempty",
+            "type": "*ports.ManifestRun"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getDefinitionVersion",
       "method": "GET",
       "path": "/definitions/versions/{versionId}",
@@ -4945,6 +4985,62 @@
             "name": "Parked",
             "jsonTag": "parked,omitempty",
             "type": "[]runtime.RedoParkedSet"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "runDefinitionManifest",
+      "method": "POST",
+      "path": "/projects/{projectId}/definition-manifest/run",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "manifest.RunRequest",
+        "fields": [
+          {
+            "name": "Mode",
+            "jsonTag": "mode",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "ports.ManifestRun",
+        "fields": [
+          {
+            "name": "Mode",
+            "jsonTag": "mode",
+            "type": "string"
+          },
+          {
+            "name": "ExitCode",
+            "jsonTag": "exitCode",
+            "type": "int"
+          },
+          {
+            "name": "Succeeded",
+            "jsonTag": "succeeded",
+            "type": "bool"
+          },
+          {
+            "name": "Output",
+            "jsonTag": "output",
+            "type": "string"
+          },
+          {
+            "name": "Truncated",
+            "jsonTag": "truncated,omitempty",
+            "type": "bool"
+          },
+          {
+            "name": "StartedAt",
+            "jsonTag": "startedAt",
+            "type": "time.Time"
+          },
+          {
+            "name": "DurationMs",
+            "jsonTag": "durationMs",
+            "type": "int64"
           }
         ]
       }

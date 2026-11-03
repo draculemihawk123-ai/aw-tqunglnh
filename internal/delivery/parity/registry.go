@@ -164,6 +164,8 @@ func PublicOperations() []PublicOperation {
 		{Name: "PublishDefinitionVersion", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{installation("publishDefinitionVersion"), project("publishProjectDefinitionVersion")}, Symbol: definitions + ".PublishDefinitionVersion",
 			HighImpact: true, Cite: "dialog confirm publish"},
 		{Name: "LoadAnyVersion", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{installation("getDefinitionVersion"), project("getProjectDefinitionVersion")}, Symbol: definitions + ".LoadAnyVersion"},
+		{Name: "GetDefinitionManifest", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("getDefinitionManifest")}, Symbol: "internal/app/manifestpublish.Status"},
+		{Name: "RunDefinitionManifest", Kind: KindCommand, Exposure: ExposurePublic, HTTP: []HTTPBinding{project("runDefinitionManifest")}, Symbol: "internal/app/manifestpublish.Run"},
 		{Name: "DiffVersions", Kind: KindQuery, Exposure: ExposurePublic, HTTP: []HTTPBinding{installation("diffDefinitionVersions"), project("diffProjectDefinitionVersions")}, Symbol: definitions + ".DiffVersions"},
 
 		// ---- adapter builds (installation-global, ADR-022/ADR-025) -------

@@ -60,6 +60,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/eventstream"
 	httpevidence "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/evidence"
 	httpkanban "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/kanban"
+	httpmanifest "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/manifest"
 	httpmessage "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/message"
 	httpprojectionrebuild "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/projectionrebuild"
 	recoveryhttp "github.com/taQuangLing/agent-workflow/internal/delivery/httpapi/recovery"
@@ -115,6 +116,8 @@ type Dependencies struct {
 	RedoParker ports.SelectedChangeParker
 	// RepositoryProber (V11-12, ADR-043) backs the pre-registration repository check: the same read-only prober the worker runs. Nil makes the check answer UNAVAILABLE.
 	RepositoryProber ports.RepositoryProber
+	// ManifestPublisher (V12-21, ADR-056) runs the kit's publisher over the manifest the operator configured per project. Nil: none configured.
+	ManifestPublisher ports.ManifestPublisher
 	// Matcher is the ONE process-lifetime known-secrets redact.Matcher
 	// every redacting route in this process reuses (message, rundetail,
 	// safesettings, eventstream) — never a second, differently-scoped one.
@@ -234,6 +237,7 @@ func ComposeRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 	// V6-03A: Project/repository/component catalog routes.
 	httpcatalog.RegisterRoutes(routes, httpcatalog.Dependencies{UoW: deps.UnitOfWork, IDs: idsource.Random{}, Prober: deps.RepositoryProber})
 	// V6-04: WorkItem/family/readiness/scope-expansion routes.
+	httpmanifest.RegisterRoutes(routes, deps.UnitOfWork, deps.ManifestPublisher)
 	workitem.RegisterRoutes(routes, workitem.Dependencies{UnitOfWork: deps.UnitOfWork, IDs: idsource.Random{}, Clock: clock.System{}})
 	// V11-10: run a failed task again / redo it with the newest workflow version, in one action each.
 	redohttp.RegisterRoutes(routes, redohttp.Dependencies{

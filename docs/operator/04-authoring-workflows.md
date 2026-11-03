@@ -347,6 +347,28 @@ snapshots, and `listMessages` reports it as `"delivered": true` (the Chat tab sh
 accepted and reaches no prompt. Running a task again with its notes (`--carry-messages`) carries an aimed message with its
 target, and drops a next-attempt-only message that was already delivered.
 
+## Publishing from the UI (V12-21)
+
+`aw-publish.py aw-project.json` stays the way a project's definitions are published (the kit's own order, templates and
+`$ref`s), and it can now be run from the UI: start the server with `--project-manifest <projectId>=<path>/aw-project.json`
+(see [02-configuration.md](02-configuration.md)), open **Definitions → Project**, and use
+
+- **Check** — `aw-publish.py aw-project.json --check`: the manifest and the templates are checked, nothing is published;
+- **Publish…** (with a confirmation) — `aw-publish.py aw-project.json`: every definition in dependency order; an unchanged
+  one keeps its version, a changed one gets a new version, runs already started keep the versions they pinned.
+
+The output (bounded to 64 KiB, known secrets redacted) and the exit code are shown under the buttons; the definition list
+and the version diff (**Diff** between two versions) then show what changed. One run per project at a time; a run is
+stopped after 10 minutes. The same from a terminal:
+
+```bash
+aw definition manifest-status --project-id <p> --manifest aw-project.json
+aw definition manifest-run --project-id <p> --manifest aw-project.json --mode CHECK     # or PUBLISH
+```
+
+(`AW_PYTHON` picks the interpreter for the CLI; `aw-state.json` is read and written next to the manifest, as when you run
+the script there.)
+
 ## Queueing tasks of a family (V12-19)
 
 A family shares one worktree, so its tasks run one after another. Instead of starting each one when the one before is done,

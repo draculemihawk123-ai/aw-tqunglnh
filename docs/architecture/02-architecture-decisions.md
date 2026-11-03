@@ -1564,9 +1564,31 @@ các task không chạy song song được.
 
 **Hệ quả:** route 119, 120; hai dòng UX Screen 9 (11, 12); parity; doc operator 06 sửa câu "never fetches".
 
-## 58. Baseline sau review thiết kế
+## 58. ADR-056 — Publish định nghĩa từ giao diện: server chạy `aw-publish.py` của kit trên manifest người vận hành cấu hình
 
-ADR-001…055 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-21, UX-04):** publish định nghĩa của project chỉ làm được bằng `aw-publish.py aw-project.json` trong terminal. Script
+(~900 dòng) giữ thứ tự phụ thuộc, template, `$ref`, prefix của kit và trạng thái `aw-state.json`; engine đã có API publish từng
+definition và diff version.
+
+**Quyết định:**
+
+1. Logic publish **ở lại trong kit**. Đưa nó vào engine sẽ buộc engine vào bố cục của kit; giao diện tự gọi từng API publish thì
+   lặp lại script và không đọc được file trên đĩa.
+2. `aw serve --project-manifest <projectId>=<path>` (lặp được) và `--python`: server chạy `<kit>/scripts/aw-publish.py <manifest>
+   [--check]` (kit tìm từ khóa `"kit"` của manifest), cwd là thư mục manifest, với `AW` là chính binary này và `AW_DB`/
+   `AW_ARTIFACT_ROOT`/`AW_WORKSPACE_ROOT`/`AW_CLAUDE_EXECUTABLE` của server. **Đường dẫn chỉ đến từ cấu hình lúc khởi động**,
+   không bao giờ từ request, nên route không chạy được file nào khác.
+3. Port `ManifestPublisher`, adapter `kitpublish` (process), app `manifestpublish` (Status, Run, RunCommand có receipt).
+   `GET /projects/{id}/definition-manifest`, `POST .../definition-manifest/run {mode: CHECK|PUBLISH}` (Idempotency-Key);
+   CLI `aw definition manifest-status`/`manifest-run --manifest`. Một lần chạy mỗi project, dừng sau 10 phút; output tối đa 64 KiB,
+   secret đã biết bị che.
+4. Giao diện: panel Manifest trên Definitions (Check, Publish… có xác nhận, output); diff version dùng API có sẵn.
+
+**Hệ quả:** route 121, 122; hai dòng UX Screen 3 (6, 7); parity; server cần Python khi dùng `--project-manifest`.
+
+## 59. Baseline sau review thiết kế
+
+ADR-001…056 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1619,6 +1641,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-056 (V12-21): giao diện publish manifest bằng cách server chạy `aw-publish.py` của kit trên đường dẫn người vận hành cấu hình lúc khởi động.
 - ADR-055 (V12-20) cho phép fetch nhánh gốc từ `origin` khi người vận hành đồng bộ worktree (chỉ fast-forward, không push); release xóa nhánh worktree đã merge.
 - ADR-054 (V12-19) thêm hàng đợi task của family: worker chạy task kế khi task trước `DONE`, task hỏng làm hàng đợi dừng.
 - ADR-053 (V12-18) cho message có người nhận: `targetNodeKey` (một node) và `nextAttemptOnly` (chỉ attempt kế tiếp, giao một lần, đọc từ snapshot).

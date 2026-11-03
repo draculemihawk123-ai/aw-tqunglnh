@@ -413,6 +413,19 @@ export function getDefinition(kind: string, id: string, opts: RequestOptions = {
   return request<GetDefinitionResponse>("GET", `/definitions/${kind}/${id}`, undefined, opts);
 }
 
+export interface GetDefinitionManifestResponse {
+  projectId: string;
+  configured: boolean;
+  manifestPath?: string;
+  scriptPath?: string;
+  lastRun?: unknown | null;
+}
+
+// GET /projects/{projectId}/definition-manifest (scope: PROJECT)
+export function getDefinitionManifest(projectId: string, opts: RequestOptions = {}): Promise<GetDefinitionManifestResponse> {
+  return request<GetDefinitionManifestResponse>("GET", `/projects/${projectId}/definition-manifest`, undefined, opts);
+}
+
 export interface GetDefinitionVersionResponse {
   id: string;
   definitionId: string;
@@ -1630,6 +1643,25 @@ export interface RetryWorkItemResponse {
 // POST /work-items/{workItemId}/retry (scope: PROJECT)
 export function retryWorkItem(workItemId: string, body: RetryWorkItemRequest, opts: RequestOptions = {}): Promise<RetryWorkItemResponse> {
   return request<RetryWorkItemResponse>("POST", `/work-items/${workItemId}/retry`, body, opts);
+}
+
+export interface RunDefinitionManifestRequest {
+  mode: string;
+}
+
+export interface RunDefinitionManifestResponse {
+  mode: string;
+  exitCode: number;
+  succeeded: boolean;
+  output: string;
+  truncated?: boolean;
+  startedAt: string;
+  durationMs: number;
+}
+
+// POST /projects/{projectId}/definition-manifest/run (scope: PROJECT)
+export function runDefinitionManifest(projectId: string, body: RunDefinitionManifestRequest, opts: RequestOptions = {}): Promise<RunDefinitionManifestResponse> {
+  return request<RunDefinitionManifestResponse>("POST", `/projects/${projectId}/definition-manifest/run`, body, opts);
 }
 
 export interface SealReleaseSetResponse {

@@ -16,6 +16,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/adapters/artifactstore"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/embeddedui"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/gitworktree"
+	"github.com/taQuangLing/agent-workflow/internal/adapters/kitpublish"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/process"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/claude"
 	"github.com/taQuangLing/agent-workflow/internal/adapters/providers/codex"
@@ -147,6 +148,10 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// that warning off.
 	warnResourceAgeDays := flags.Int("warn-resource-age-days", 0, "warn when a published resource's lastVerified is older than this many days (0 = the default of 180; negative = never warn)")
 	warnHardConstraints := flags.Int("warn-hard-constraints", 0, "warn when a published skill/layer version or context policy holds more than this many HARD_CONSTRAINT resources (0 = the default of 15; negative = never warn)")
+	// V12-21 (ADR-056): the definition manifest of each project, run by the UI's Check/Publish through the kit's aw-publish.py.
+	var projectManifests manifestFlags
+	flags.Var(&projectManifests, "project-manifest", "<projectId>=<path to aw-project.json>: the UI's Project definitions page runs the kit's aw-publish.py on it (repeatable; omitted = the page shows the command to run instead)")
+	pythonExecutable := flags.String("python", "python3", "Python interpreter that runs the kit's aw-publish.py for --project-manifest")
 	uiDist := flags.String("ui-dist", "", "directory containing a built V7 UI (`pnpm build` output of web/, i.e. web/dist) to serve at / and /assets/; omitted = no UI, aw serve still works exactly as before V7")
 	if err := flags.Parse(arguments); err != nil {
 		return usageError{err}
@@ -434,7 +439,12 @@ func serve(ctx context.Context, arguments []string, stdout io.Writer) error {
 	// end-to-end tests, and calling httpcompose.ComposeRoutes directly, no
 	// real HTTP server required. See that package's own doc comment for the
 	// full reasoning.
+	manifestPublisher, err := newManifestPublisher(projectManifests, *pythonExecutable, *dbPath, *artifactRoot, *workspaceRoot, *claudeExecutable, matcher)
+	if err != nil {
+		return err
+	}
 	httpcompose.ComposeRoutes(routes, httpcompose.Dependencies{
+		ManifestPublisher:          manifestPublisher,
 		UnitOfWork:                 uow,
 		Hygiene:                    appdefinitions.WarnPolicy{MaxResourceAge: time.Duration(*warnResourceAgeDays) * 24 * time.Hour, MaxHardConstraints: *warnHardConstraints},
 		ArtifactStore:              artifactStore,
@@ -518,4 +528,43 @@ func loadBuiltUIIndex(uiDist string) (indexHTML []byte, assetsDir string, err er
 		return nil, "", fmt.Errorf("--ui-dist %q: %s is not an existing directory", uiDist, assetsDir)
 	}
 	return data, assetsDir, nil
+}
+
+// manifestFlags collects repeated --project-manifest values.
+type manifestFlags []string
+
+func (m *manifestFlags) String() string     { return strings.Join(*m, ",") }
+func (m *manifestFlags) Set(v string) error { *m = append(*m, v); return nil }
+
+// newManifestPublisher (V12-21) builds the kit publisher runner for --project-manifest; nil when none is given.
+func newManifestPublisher(values manifestFlags, python, dbPath, artifactRoot, workspaceRoot, claudeExecutable string, matcher redact.Matcher) (ports.ManifestPublisher, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	manifests := map[string]string{}
+	for _, v := range values {
+		project, path, err := kitpublish.ParseManifestFlag(v)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := kitpublish.ScriptFor(path); err != nil {
+			return nil, fmt.Errorf("--project-manifest %s: %w", v, err)
+		}
+		manifests[project] = path
+	}
+	return buildManifestRunner(manifests, python, dbPath, artifactRoot, workspaceRoot, claudeExecutable, matcher)
+}
+
+// buildManifestRunner is the kit publisher runner `aw serve` and the one-shot CLI share: the script calls this same aw binary with
+// this installation's stores.
+func buildManifestRunner(manifests map[string]string, python, dbPath, artifactRoot, workspaceRoot, claudeExecutable string, matcher redact.Matcher) (ports.ManifestPublisher, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("--project-manifest: locate the aw binary: %w", err)
+	}
+	env := []string{"AW_DB=" + dbPath, "AW_ARTIFACT_ROOT=" + artifactRoot, "AW_WORKSPACE_ROOT=" + workspaceRoot}
+	if claudeExecutable != "" {
+		env = append(env, "AW_CLAUDE_EXECUTABLE="+claudeExecutable)
+	}
+	return kitpublish.New(kitpublish.Config{Python: python, AwExecutable: self, Env: env, Manifests: manifests, Matcher: matcher})
 }

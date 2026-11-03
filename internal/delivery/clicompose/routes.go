@@ -189,6 +189,12 @@ func definitionRoutes() []Route {
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return definitions.RunDefinitionList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "definition", "list"),
+		route(0, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return definitions.RunDefinitionManifestStatus(ctx, definitions.ManifestDependencies{NewPublisher: d.NewManifestPublisher}, a, s.Stdout, s.Stderr)
+		}, "definition", "manifest-status"),
+		route(0, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return definitions.RunDefinitionManifestRun(ctx, definitions.ManifestDependencies{NewPublisher: d.NewManifestPublisher}, a, s.Stdout, s.Stderr)
+		}, "definition", "manifest-run"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return definitions.RunDefinitionCreate(ctx, deps(d), a, s.Stdin, s.Stdout, s.Stderr)
 		}, "definition", "create"),

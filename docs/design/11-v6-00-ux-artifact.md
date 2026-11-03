@@ -196,6 +196,8 @@ màu (không chỉ màu).
 | 3 | query | Danh sách version của một definition | `listDefinitionVersions` | `aw definition versions` | `ListDefinitionVersions` [CHƯA CÓ] | V6-05 |
 | 4 | query | Chi tiết một version (hash/pins) | `getDefinitionVersion` | `aw definition version show` | `GetDefinitionVersion` [CHƯA CÓ] | V6-05 |
 | 5 | query | Diff hai version cùng scope | `diffDefinitionVersions` | `aw definition version diff` | `DiffDefinitionVersions` [CHƯA CÓ] — hai operand phải cùng scope theo đúng Verify V6-05 | V6-05 |
+| 6 | query | Manifest định nghĩa của project (`aw-project.json` người vận hành cấu hình lúc chạy server) và lần chạy gần nhất | `getDefinitionManifest` | `aw definition manifest-status` | `GetDefinitionManifest` [ĐÃ CÓ: `internal/app/manifestpublish/manifestpublish.go:Status`] — chỉ đọc | V12-21 |
+| 7 | command | Check hoặc Publish toàn bộ manifest bằng `aw-publish.py` của kit | `runDefinitionManifest` | `aw definition manifest-run` | `RunDefinitionManifest` [ĐÃ CÓ: `internal/app/manifestpublish/manifestpublish.go:Run`] — đường dẫn manifest do người vận hành cấu hình, không lấy từ request; Publish có confirm | V12-21 |
 
 ## 5. Screen 4 — Definition editor (author / validate / publish)
 

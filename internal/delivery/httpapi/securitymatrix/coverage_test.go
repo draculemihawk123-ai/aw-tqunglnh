@@ -73,6 +73,7 @@ var noCrossProjectProof = []string{
 	"createRootWorkItem",
 	"diffProjectDefinitionVersions",
 	"getApprovalRelease",
+	"getDefinitionManifest", // V12-21: the project id selects operator configuration, not a stored entity
 	"getProjectDefinition",
 	"getProjectDefinitionVersion",
 	"getProjectionRebuildOperationStatus",
@@ -118,6 +119,7 @@ var noCrossProjectProof = []string{
 	"resolveWorkItemBlocker",
 	"retryBlockedActivation",
 	"retryWorkItem",
+	"runDefinitionManifest", // V12-21: as getDefinitionManifest
 	"startWorkflowRun",
 	"submitWaitSignal",
 	"setWorkItemQueue", // V12-19: resolves the project from the work item

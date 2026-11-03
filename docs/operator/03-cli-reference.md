@@ -28,7 +28,7 @@ Resource commands (aw <resource> <action> [flags]):
   blocker                resolve
   component              list
   context-snapshot       show
-  definition             create|list|publish|show|validate|versions
+  definition             create|list|manifest-run|manifest-status|publish|show|validate|versions
   doctor
   events                 watch
   evidence               list|show|verify

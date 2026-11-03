@@ -523,6 +523,11 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 - **Mục tiêu:** màn "Project definitions": chọn manifest (`aw-project.json`), chạy `--check`, xem diff version, bấm Publish.
 - **Ràng buộc:** `kit/scripts/aw-publish.py` hiện là lớp ghép ngoài engine. Phải quyết định đưa logic publish vào engine hay để
   giao diện gọi qua API, và cần ADR.
+- **Kết quả (đã xong, ADR-056):** logic publish ở lại trong kit; `aw serve --project-manifest <projectId>=<path>` cho server chạy
+  `aw-publish.py` của kit trên manifest đó (đường dẫn chỉ từ cấu hình lúc khởi động). Route `getDefinitionManifest`,
+  `runDefinitionManifest {mode: CHECK|PUBLISH}`, CLI `aw definition manifest-status`/`manifest-run`. Trang Definitions (Project) có
+  panel Manifest: Check, Publish… (xác nhận), output và mã thoát; diff version dùng API có sẵn. Test: `kitpublish/runner_test.go`
+  (Python thật, script giả), `ManifestPanel.test.tsx`; route inventory, security matrix, parity, contract golden.
 
 ### V12-22 — Tạo task từ `tasks.json` (UX-09)
 

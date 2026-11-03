@@ -40,6 +40,14 @@ func oneShotFactory(ctx context.Context, opts clicompose.Options, needs clicompo
 		// serve.go feeds its session token to (see clicompose.Deps.Matcher).
 		Matcher: redact.NewMatcher(),
 	}
+	// V12-21: `definition manifest-status/manifest-run` run the kit publisher with this installation's options.
+	deps.NewManifestPublisher = func(manifests map[string]string) (ports.ManifestPublisher, error) {
+		python := os.Getenv("AW_PYTHON")
+		if python == "" {
+			python = "python3"
+		}
+		return buildManifestRunner(manifests, python, opts.DB, opts.ArtifactRoot, opts.WorkspaceRoot, opts.ClaudeExecutable, deps.Matcher)
+	}
 	var cleanups []func()
 	cleanup := func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {

@@ -128,9 +128,11 @@ type Deps struct {
 	RedoParker ports.SelectedChangeParker
 	// RepositoryProber (V11-12) backs `repository check`: the same read-only prober the worker runs.
 	RepositoryProber ports.RepositoryProber
-	Isolation        ports.IsolationEnforcementChecker
-	Agents           *agentregistry.Registry
-	Config           config.Config
+	// NewManifestPublisher (V12-21) builds the kit publisher runner for `definition manifest-status/manifest-run --manifest`.
+	NewManifestPublisher func(manifests map[string]string) (ports.ManifestPublisher, error)
+	Isolation            ports.IsolationEnforcementChecker
+	Agents               *agentregistry.Registry
+	Config               config.Config
 	// ProviderProbe is what `aw doctor` runs the provider executable's
 	// version probe through (V9-05, NeedProviderProbe); nil skips that check.
 	ProviderProbe appdoctor.ProviderProbe
