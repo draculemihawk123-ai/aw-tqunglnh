@@ -1,0 +1,72 @@
+{
+  "name": "wf-task-delivery-plus: diff vẫn lớn sau 3 lần làm gọn → người chấp nhận diff lớn → đi tiếp tới quality",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-task-delivery-plus",
+  "agents": {
+    "frame": [
+      "full"
+    ],
+    "plan": [
+      "done"
+    ],
+    "build": [
+      "done"
+    ],
+    "review": [
+      "approved"
+    ],
+    "sync": [
+      "done"
+    ],
+    "simplify": [
+      "done"
+    ]
+  },
+  "commands": {
+    "size": [
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail",
+      "fail"
+    ]
+  },
+  "approvals": {
+    "gate2": [
+      "approved"
+    ],
+    "size-review": [
+      "accept"
+    ]
+  },
+  "expect": {
+    "state": "SUCCEEDED",
+    "sequence": [
+      "start:next",
+      "frame:full",
+      "plan:done",
+      "check-plan:passed",
+      "build:done",
+      "hygiene:passed",
+      "gate1:passed",
+      "size:large",
+      "simplify:done",
+      "gate1:passed",
+      "size:large",
+      "simplify:done",
+      "gate1:passed",
+      "size:large",
+      "simplify:done",
+      "gate1:passed",
+      "size:large",
+      "simplify:escalated",
+      "size-review:accept",
+      "quality:passed",
+      "review:approved",
+      "sync:done",
+      "gate2:approved",
+      "end:-"
+    ]
+  }
+}

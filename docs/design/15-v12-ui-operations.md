@@ -207,6 +207,12 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
   3. `simplify` không đổi được gì so với lần trước thì sang cổng người ngay.
 - **Ràng buộc:** `diff-size` vẫn không bỏ qua được (V10-15). Component hiện chưa có trường cấu hình, nên cần migration, API,
   giao diện và ADR. Sửa workflow mẫu và `diff-size.sh` để đọc ngưỡng theo component.
+- **Kết quả (phần lớn đã xong, ADR-049, kit 1.9.0):** (1) cổng người `size-review` (accept/rework/rejected) sau khi `simplify` hết 3 lần;
+  cần ngoại lệ của ADR-036 vì cổng nằm trong vòng (rework → build): cạnh escalation được dẫn tới node APPROVAL trong vòng (compiler và
+  `advanceRunTx`). (3) `simplify` báo `no_change` thì tới cổng ngay. (2) ngưỡng theo component làm ở mức kit: file `.aw-diff-size` trong
+  repository, output có số liệu từng component; **chưa làm** phần đặt ngưỡng trên trang Components (cần migration/API/UI). Test:
+  `cycle_escalation_test.go`, 3 kịch bản walk mới (`plus-large-accept`, `plus-large-exhaust` sửa, `plus-simplify-no-change`; chạy với
+  engine thật), `check-kit.sh` có ca ngưỡng component (81/81). Đã chạy `WALK_ALL` cho mọi kịch bản (kể cả các kịch bản V12-02 sửa).
 
 ### V12-07 — Lỗi của kit (UX-17 phần kit, UX-19, UX-21, UX-11, UX-10)
 

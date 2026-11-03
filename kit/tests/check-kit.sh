@@ -328,6 +328,10 @@ out=$(cmdrun diff-size.sh) && ok "diff-size: không đổi gì thì trong ngư�
 out=$(cmdrun temp-artifacts.sh) && ok "temp-artifacts: không có dòng thêm thì đạt" || bad "temp-artifacts sạch: $out"
 seq 1 30 | sed 's/^/int x/' > "$g/src/Big.java"
 out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && bad "diff-size: vượt ngưỡng phải không đạt" || { printf '%s' "$out" | grep -q "FIX: simplify" && ok "diff-size: vượt ngưỡng thì không đạt, dặn làm gọn" || bad "diff-size vượt: $out"; }
+# V12-06: ngưỡng theo component (.aw-diff-size): src/ được 50 dòng thì cùng diff đó đạt, và output nêu số liệu từng component
+printf '# prefix max-lines max-files max-file-lines\nsrc/ 50 5 40\n' > "$g/.aw-diff-size"
+out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && printf '%s' "$out" | grep -q "component src/: 30 lines" && ok "diff-size: ngưỡng riêng của component, có số liệu từng component" || bad "diff-size component: $out"
+rm "$g/.aw-diff-size"
 mkdir -p "$g/docs"; seq 1 500 > "$g/docs/long.md"; rm "$g/src/Big.java"
 out=$(cd "$g" && AW_DIFF_MAX_LOC=20 AW_KIT="$kit" sh "$kit/commands/diff-size.sh" 2>&1) && ok "diff-size: tài liệu không tính vào ngưỡng" || bad "diff-size tài liệu: $out"
 printf 'class B {\n  void f() { System.out.println("x"); }\n  // TODO later\n  @Disabled void t() {}\n}\n' > "$g/src/B.java"; echo 'it.only("a", () => {});' > "$g/src/a.test.js"
@@ -393,7 +397,7 @@ for needle in ("build 1", "gate1 1", "build: SCOPE_VIOLATION ×1", "[Important] 
 PY
 out=$(python3 "$kit/tests/test-lessons.py" 2>&1) && ok "lessons-to-skill: định dạng, gộp, revision, gắn vào agent, publish version mới ($(printf '%s' "$out" | grep -c '^  ok') kiểm tra)" || bad "test-lessons: $out"
 if [ -n "${AW:-}" ] || command -v aw > /dev/null 2>&1 || command -v go > /dev/null 2>&1; then
-  for s in plus-debug bugfix-not-red fd-design-bad; do
+  for s in plus-debug bugfix-not-red fd-design-bad plus-large-accept; do
     out=$(python3 "$kit/scripts/walk-workflow.py" "$kit/tests/walk/scenarios/$s.json" 2>&1) && ok "walk-workflow: $s đi đúng thứ tự node" || bad "walk-workflow $s: $out"
   done
   if [ -n "${WALK_ALL:-}" ]; then

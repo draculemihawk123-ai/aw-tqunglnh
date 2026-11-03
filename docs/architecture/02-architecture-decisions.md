@@ -1435,9 +1435,28 @@ chỉ đọc `validActions` từ chẩn đoán của run đang hiện trên th�
 **Hệ quả:** route thứ 115, dòng UX Screen 7 số 17, parity. Version do lệnh này publish là của engine; lần `aw-publish.py` sau của kit
 publish lại theo manifest như thường.
 
-## 51. Baseline sau review thiết kế
+## 51. ADR-049 — Cạnh escalation của vòng được dẫn tới cổng người (APPROVAL) nằm trong vòng; size-review thay cho reject khi simplify hết lượt
 
-ADR-001…048 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-06, UX-26):** trong `wf-task-delivery-plus`, `simplify` hết 3 lần thì `escalated → reject`, đóng task dù `gate1` đạt cả 3 lần
+(P2-02 tốn khoảng 1,8 USD cho 3 lần simplify không giảm được file nào). Muốn đưa tới một cổng người có lựa chọn "làm lại" thì cổng đó nằm
+trong vòng (rework → build), mà ADR-036 bắt cạnh escalation phải rời vòng (compiler và `advanceRunTx`).
+
+**Quyết định:**
+
+1. Ngoại lệ hẹp của ADR-036: cạnh escalation được ở lại trong vòng **khi đích là node APPROVAL** (`workflow.EscalatesToHumanGate`).
+   Mỗi vòng tiếp theo phải qua quyết định của người nên vòng không thể tự chạy vô hạn. Áp dụng ở cả kiểm tra lúc publish và lúc định
+   tuyến (`advanceRunTx`, kể cả kiểm tra trước khi ghi). Đích khác vẫn bị từ chối như cũ.
+2. Kit 1.9.0: `simplify` có thêm outcome `no_change`; `escalated` và `no_change` dẫn tới APPROVAL `size-review` (`accept → quality`,
+   `rework → build`, `rejected → reject`; `cyclePolicy` 2, hết thì `rejected` ra ngoài vòng).
+3. Ngưỡng `diff-size` theo component: file `.aw-diff-size` trong repository (tiền tố đường dẫn và ba ngưỡng), output luôn liệt kê số liệu
+   từng component. `diff-size` vẫn không bỏ qua được (V10-15).
+
+**Hệ quả:** chưa làm phần đặt ngưỡng trên trang Components của giao diện (cần cột cấu hình, migration, API): ngưỡng nằm trong repository
+và đổi bằng commit. Ghi lại cho task sau.
+
+## 52. Baseline sau review thiết kế
+
+ADR-001…049 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1490,6 +1509,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-049 (V12-06) cho cạnh escalation của vòng dẫn tới node APPROVAL nằm trong vòng (ngoại lệ hẹp của ADR-036); kit dùng nó cho cổng `size-review`.
 - ADR-048 (V12-05) thêm lệnh `UseNewCli` (đo lại CLI, đăng ký build, publish version ghim build mới, tùy chọn làm lại; không repin run đang chạy); nút Redo lấy từ redo-preview khi thẻ không có run.
 - ADR-047 (V12-04): không đo được CLI là `ADAPTER_PROBE_FAILED` (không phải drift, probe thử lại); worker không spawn được thì không nhận việc; lỗi khởi chạy tiến trình có diagnostic `PROCESS_START_FAILED`; mất đăng nhập chặn node (`PROVIDER_LOGIN_REQUIRED`) và `aw doctor` báo.
 - ADR-046 (V12-03) sửa ADR-035: hết hạn mức của provider làm attempt/NodeRun `BLOCKED` (blocker `PROVIDER_QUOTA_EXCEEDED`), run không hỏng; job `PROVIDER_QUOTA_RESUME` chạy tiếp đúng node sau giờ reset qua `RetryBlockedActivation`; chạy lại có `PARK_ALL`.

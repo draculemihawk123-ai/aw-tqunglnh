@@ -112,7 +112,10 @@ flowchart LR
   G1 -->|passed| SZ{size}
   SZ -->|large| SM[simplify] --> G1
   SZ -->|passed| Q{quality}
-  SM -->|escalated| X
+  SM -->|"escalated (sau 3 lần) / no_change"| SR[[size-review người duyệt]]
+  SR -->|accept| Q
+  SR -->|rework| B
+  SR -->|rejected| X
   Q -->|failed| B
   Q -->|passed| R[review<br/>CHECKER độc lập]
   R -->|rework| B
@@ -142,6 +145,11 @@ flowchart LR
 
 Điều cần biết khi dùng:
 
+- **Diff lớn không còn bị đóng task (V12-06, kit 1.9.0).** `simplify` chạy tối đa 3 lần; hết lượt mà `size` vẫn `large`, hoặc
+  agent báo `no_change` (không gọn được gì), run tới cổng người `size-review`: **accept** (chấp nhận diff lớn, đi tiếp `quality`),
+  **rework** (về `build` kèm message của bạn, ví dụ tách bớt) hoặc **rejected**. Cổng hiện output của `size`, có số liệu từng
+  component. Ngưỡng theo component: file `.aw-diff-size` ở gốc repo, mỗi dòng `<tiền tố> <số dòng> <số file> <số dòng một file>`
+  (ví dụ `backend/ 800 15 300`); file không khớp tiền tố nào dùng ngưỡng mặc định (400/8/200).
 - **`sync` chạy TRƯỚC `gate2` (V12-02, kit 1.8.0).** Trước đây `sync` chạy sau khi người duyệt; `sync` hỏng (ví dụ ghi file ngoài scope)
   thì cả run `FAILED` dù code đã được duyệt, và `gate2` không duyệt kèm commit được (engine cấm commit lúc quyết định khi node sau còn
   ghi worktree). Nay người duyệt xem cả code lẫn tài liệu, `gate2` có `release: {commit: OFFERED}` và là bước cuối. `run-task.sh` thêm

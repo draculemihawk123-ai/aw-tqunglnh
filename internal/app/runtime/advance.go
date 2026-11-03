@@ -599,12 +599,14 @@ func advanceRunTx(ctx context.Context, tx ports.Tx, ids idsource.Source, req Adv
 		if !ok {
 			return AdvanceRunResult{}, fmt.Errorf("%w: node %s escalation outcome %q", ErrCycleEscalationRouteNotFound, downstreamNode.Key, downstreamNode.CyclePolicy.EscalationOutcome)
 		}
-		if membership := workflow.CycleMembership(document); membership[downstreamNode.Key] == membership[escalationEdge.To] {
-			return AdvanceRunResult{}, fmt.Errorf("%w: node %s escalation edge %s", ErrCycleEscalationNotBounded, downstreamNode.Key, escalationEdge.Key)
-		}
 		escalationTargetNode, ok := findNode(document, escalationEdge.To)
 		if !ok {
 			return AdvanceRunResult{}, fmt.Errorf("runtime: escalation edge %s targets unknown node %s", escalationEdge.Key, escalationEdge.To)
+		}
+		// V12-06 (ADR-049): an escalation into an APPROVAL node may stay inside the cycle — a human decides every further round.
+		if membership := workflow.CycleMembership(document); membership[downstreamNode.Key] == membership[escalationEdge.To] &&
+			!workflow.EscalatesToHumanGate(escalationTargetNode) {
+			return AdvanceRunResult{}, fmt.Errorf("%w: node %s escalation edge %s", ErrCycleEscalationNotBounded, downstreamNode.Key, escalationEdge.Key)
 		}
 
 		skippedID = ids.NewID()
@@ -1898,7 +1900,9 @@ func checkCycleEscalationRoutable(
 				"publish a corrected version of the workflow", downstream.Key, downstream.CyclePolicy.MaxIterations, downstream.CyclePolicy.EscalationOutcome),
 		}
 	}
-	if membership := workflow.CycleMembership(document); membership[downstream.Key] == membership[escalationEdge.To] {
+	target, _ := findNode(document, escalationEdge.To)
+	if membership := workflow.CycleMembership(document); membership[downstream.Key] == membership[escalationEdge.To] &&
+		!workflow.EscalatesToHumanGate(target) { // V12-06 (ADR-049)
 		return &RoutingDefectError{
 			NodeKey: from.Key, DownstreamKey: downstream.Key, EdgeKey: escalationEdge.Key, Cause: ErrCycleEscalationNotBounded,
 			Detail: fmt.Sprintf("node %q ran out of its cyclePolicy budget (%d iterations) but its escalation edge %q leads to %q, inside the same cycle, "+

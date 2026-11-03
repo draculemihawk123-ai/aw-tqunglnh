@@ -295,6 +295,13 @@ func walkBackward(ends []string, incoming map[string][]Edge) map[string]bool {
 	return visited
 }
 
+// EscalatesToHumanGate (V12-06, ADR-049) reports whether an escalation edge into target may stay inside its cycle: target is an
+// APPROVAL node, so every further round of the cycle waits for a human decision and cannot loop on its own. This is what lets a
+// "simplify ran out of rounds" escalation reach a size-review gate whose "rework" goes back to the maker.
+func EscalatesToHumanGate(target Node) bool {
+	return target.Type == NodeApproval
+}
+
 func validateBoundedCycles(nodes map[string]Node, outgoing map[string][]Edge, publishStrict bool) []string {
 	components := stronglyConnectedComponents(nodes, outgoing)
 	problems := make([]string, 0)
@@ -363,10 +370,10 @@ func validateBoundedCycles(nodes map[string]Node, outgoing map[string][]Edge, pu
 				if edge.Outcome != node.CyclePolicy.EscalationOutcome {
 					continue
 				}
-				if _, targetInCycle := members[edge.To]; targetInCycle {
+				if _, targetInCycle := members[edge.To]; targetInCycle && !EscalatesToHumanGate(nodes[edge.To]) {
 					problems = append(problems, fmt.Sprintf(
 						"node %q: cyclePolicy escalation edge %q (outcome %q) leads to %q, which is inside the same cycle [%s]; "+
-							"an escalation edge must lead outside the cycle it escapes",
+							"an escalation edge must lead outside the cycle it escapes (or to an APPROVAL node)",
 						key, edge.Key, edge.Outcome, edge.To, strings.Join(ordered, ","),
 					))
 				}
