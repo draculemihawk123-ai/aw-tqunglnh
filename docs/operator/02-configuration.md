@@ -48,6 +48,8 @@ Usage of serve:
         bind port (0 = OS-assigned ephemeral port)
   -principal-config string
         path to a trusted JSON config file's localPrincipal.actor/localPrincipal.roles (ADR-028); omitted or missing means the local-operator/[operator] default — this is the only allowed way to select a principal, there is no --actor/--role flag
+  -gh string
+        GitHub CLI used for pull requests (signed in with `gh auth login`; aw keeps no token) (default "gh")
   -project-manifest value
         <projectId>=<path to aw-project.json>: the UI's Project definitions page runs the kit's aw-publish.py on it (repeatable; omitted = the page shows the command to run instead)
   -python string

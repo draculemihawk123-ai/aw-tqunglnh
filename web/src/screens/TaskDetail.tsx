@@ -40,6 +40,7 @@ import { commitAllowedFor } from '../api/approvalrelease';
 import { DiffReviewDialog } from '../review/DiffReviewDialog';
 import { FamilyQueuePanel } from './FamilyQueue';
 import { BaseBranchStrip } from './BaseBranchStrip';
+import { RemotePanel } from './RemotePanel';
 import type { ApprovalCommitBody } from '../api/approvalrelease';
 import { ApprovalCommitDialog, ReleaseStatusStrip } from './ApprovalRelease';
 import { RecreateDialog, RetryDialog, SupersessionLinks } from './RedoDialogs';
@@ -1305,6 +1306,8 @@ function WorkspaceTab({ projectId, familyId, isOffline }: WorkspaceTabProps) {
 
       {/* V12-20: the worktree against the repository's base branch */}
       {activeRepo && <BaseBranchStrip projectId={projectId} repo={activeRepo} isOffline={isOffline} onChanged={() => { void workspaceSetQuery.refetch(); }} />}
+      {/* V12-28: the family branch on GitHub — push, pull request, merge */}
+      {activeRepo && <RemotePanel projectId={projectId} repo={activeRepo} isOffline={isOffline} defaultTitle="" />}
       {activeRepo && activeRepo.state === 'QUARANTINED' && (
         <div role="alert" className="px-4 py-2 bg-[#FEF3C7] border-b border-[#FCD34D] flex items-center gap-2 flex-shrink-0">
           <AlertTriangle size={13} className="text-[#92400E] flex-shrink-0" aria-hidden />

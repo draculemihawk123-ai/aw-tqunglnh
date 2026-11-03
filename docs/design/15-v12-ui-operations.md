@@ -617,12 +617,14 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
 - **Ràng buộc:** đụng nguyên tắc Alpha "không có executor cho push/PR/merge" (`00-start-here` mục 2.11, ADR về ReleaseSet).
   ADR phải quyết: những thao tác nào được phép, ai được bấm, có xác nhận gì, credentials lấy từ đâu (dùng `gh` hay git
   credential của máy), và audit.
-- **Kết quả (đang làm, ADR-060):** phần engine xong — bảng `repository_workspace_remotes` (migration 0061), port `ForgeGit`
+- **Kết quả (đã xong, ADR-060):** bảng `repository_workspace_remotes` (migration 0061), port `ForgeGit`
   (`gitworktree`: push không force, `ls-remote`, nhánh hiện tại) và `ForgeClient` (adapter `gh`), app `forgerelease` (GetRemote, Push,
   CreatePullRequest, Merge) với đủ luật của ADR-060; route `getWorkspaceRemote`, `pushWorkspaceBranch`, `createWorkspacePullRequest`,
   `mergeWorkspacePullRequest`; CLI `aw repository-workspace remote|push|pull-request|merge`; `aw serve --gh`. Parity gate cho phép đúng
   các thao tác này (ADR-060 thay ADR-014 cho chúng). Test: `forgegit_test.go` (origin trần thật), `client_test.go` (gh giả),
-  `forge_sqlite_test.go` (luật push/PR/merge trên SQLite thật). **Còn:** giao diện, tài liệu operator.
+  `forge_sqlite_test.go` (luật push/PR/merge trên SQLite thật). Giao diện: dải **GitHub** trong tab Workspace (Push… đặt tên nhánh lần
+  đầu, Open pull request… ready/Draft, trạng thái check, Merge… chọn kiểu merge, ô xác nhận "no CI", lý do chưa merge được); test
+  `RemotePanel.test.tsx`. Docs: operator 00/02/03/06. Chưa chạy với GitHub thật trong môi trường này (gh được thay bằng script giả).
 
 ### V12-29 — Kho secret theo repository (UX-34)
 

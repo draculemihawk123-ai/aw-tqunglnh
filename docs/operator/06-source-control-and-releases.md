@@ -3,10 +3,10 @@
 ## Local-only Git — the core constraint
 
 Every repository `aw` touches is a real, local Git repository at the absolute filesystem path you registered
-(`remoteLocator` — see [01-quickstart.md](01-quickstart.md)). `aw` never pushes or clones, and fetches only when
-you ask it to sync a worktree with its base branch (V12-20, below): then it fetches that one branch from the
-repository's `origin` into `refs/remotes/origin/<branch>` and changes no local branch. A "release" in Agent Kit
-is a real, local commit landing in your own repository's own history — nothing more.
+(`remoteLocator` — see [01-quickstart.md](01-quickstart.md)). `aw` never clones. It reaches `origin` only when you ask:
+to sync a worktree with its base branch (V12-20), and to push a family branch, open its pull request and merge it
+(V12-28, below) — with the machine's own git credential helper and GitHub CLI, never a token of its own. A "release"
+in Agent Kit is first a local commit landing in your own repository's history.
 
 ## ReleaseSet lifecycle
 
@@ -93,6 +93,35 @@ shows it as *merged into main*, next to **Sync with base branch**.
 **Closing the work batch** is the workspace-set release (`aw workspace-set release`, **Release Workspace** in the UI): the
 worktrees are removed, and each worktree's `agentkit/w-…` branch is deleted when another branch or remote-tracking ref
 already contains its tip. A branch with commits no other ref has is kept.
+
+### Push, pull request and merge on GitHub (V12-28, ADR-060)
+
+The Workspace tab's **GitHub** strip (CLI: `aw repository-workspace remote|push|pull-request|merge`) takes a family branch
+to GitHub. Set up once on the machine: an `origin` remote, a git credential helper that can push to it, and the GitHub
+CLI signed in (`gh auth login`; `aw serve --gh <path>` or `AW_GH` picks another binary). aw keeps no token.
+
+```bash
+aw repository-workspace remote --project-id <p> <repositoryWorkspaceId>                  # branch, PR, checks, what blocks a merge
+aw repository-workspace push --project-id <p> [--remote-branch feature/x] <repositoryWorkspaceId>
+aw repository-workspace pull-request --project-id <p> --title "feat: …" [--draft] <repositoryWorkspaceId>
+aw repository-workspace merge --project-id <p> [--method merge|squash|rebase] [--no-ci] <repositoryWorkspaceId>
+```
+
+- **Push.** The worktree must be READY, with no attempt writing, and its HEAD the revision aw recorded. **Every commit
+  the base branch does not have must have gone through an APPROVAL gate of aw** (a commit made with an approval
+  decision); a commit made outside aw — even adopted — blocks the push. The branch name on `origin` is chosen at the
+  first push (default: the family branch `agentkit/w-…`) and cannot change afterwards. aw never pushes to the base
+  branch, never forces (a remote branch that moved is refused by git), and never pushes onto a branch that already
+  existed on `origin` without aw having created it.
+- **Pull request.** From the pushed branch to the base branch, **ready for review** by default (tick *Draft* for a draft).
+- **Merge** (through GitHub, `gh pr merge --match-head-commit`): the pull request is open, not a draft, not conflicting,
+  its head is the commit aw pushed, every commit went through an approval gate, and every check passed. A repository
+  with **no check at all** can still be merged: the confirmation then says *This pull request has no CI* and must be
+  ticked (`--no-ci`). No GitHub review is required (an author cannot approve their own pull request). The default is a
+  **merge commit**, which keeps each task's commits; squash and rebase can be chosen.
+
+Each push, pull request and merge leaves an audit event (`FamilyBranchPushed`, `PullRequestOpened`, `PullRequestMerged`:
+remote, branch, commit, URL, method, who). After the merge, **Sync with base branch** brings the worktree to the new base.
 
 ### A `QUARANTINED` worktree and how it is recovered (V9-18)
 
