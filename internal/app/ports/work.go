@@ -337,6 +337,9 @@ type WorkRepository interface {
 	// ResolveWorkItemBlocker's own "how many OPEN blockers remain" count and
 	// CancelWorkItem's own audit trail both read the full, unfiltered set.
 	ListWorkItemBlockersForWorkItem(ctx context.Context, workItemID string) ([]work.WorkItemBlocker, error)
+	// ListOpenBlockersOfType (V12-04) returns every OPEN blocker of blockerType in the installation, oldest first, at most
+	// limit rows. `aw doctor` uses it to say that an attempt found the provider CLI signed out.
+	ListOpenBlockersOfType(ctx context.Context, blockerType work.BlockerType, limit int) ([]work.WorkItemBlocker, error)
 	// RecordWorkItemSupersession (V11-10, ADR-041) stores that supersession.NewWorkItemID replaced
 	// supersession.OldWorkItemID. Idempotent by NewWorkItemID: the identical pair returns the stored row; a
 	// different old WorkItem for the same new one, or an old WorkItem already replaced by another, is

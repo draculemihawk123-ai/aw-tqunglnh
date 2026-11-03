@@ -91,6 +91,12 @@ const (
 	// The run stays alive with the NodeRun BLOCKED; RetryBlockedActivation (automatically at the provider's reset time, or by the
 	// operator) resolves it with a new activation of the same node. Never waived.
 	BlockerProviderQuotaExceeded BlockerType = "PROVIDER_QUOTA_EXCEEDED"
+	// BlockerAdapterProbeFailed (V12-04, ADR-047): admission blocker group — the pinned provider CLI could not be probed (not a
+	// drift). Retried as is by RetryBlockedActivation.
+	BlockerAdapterProbeFailed BlockerType = "ADAPTER_PROBE_FAILED"
+	// BlockerProviderLoginRequired (V12-04, ADR-047): an AGENT attempt stopped because the provider CLI is not signed in. The
+	// operator signs in again, then retries the node (RetryBlockedActivation). Never waived.
+	BlockerProviderLoginRequired BlockerType = "PROVIDER_LOGIN_REQUIRED"
 )
 
 var knownBlockerTypes = map[BlockerType]struct{}{
@@ -104,6 +110,8 @@ var knownBlockerTypes = map[BlockerType]struct{}{
 	BlockerWriteCapabilityOrGrantMissing:    {},
 	BlockerReleaseFailed:                    {},
 	BlockerProviderQuotaExceeded:            {},
+	BlockerAdapterProbeFailed:               {},
+	BlockerProviderLoginRequired:            {},
 }
 
 // IsValid reports whether t is a member of the closed BlockerType set.

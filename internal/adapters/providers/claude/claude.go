@@ -426,6 +426,8 @@ type normalizer struct {
 	quotaExceeded bool
 	// quotaMessage (V12-03) keeps the provider's words when quotaExceeded, so the engine can read the reset time.
 	quotaMessage string
+	// loginRequired (V12-04): the failed result's words say the CLI is not signed in.
+	loginRequired bool
 	// outcomeOccurrences/outcomeValid/outcomeValue track the terminal
 	// <agentkit-outcome> marker (V5-08B, ports.AgentProposedOutcome's own
 	// doc comment) across every ASSISTANT_MESSAGE this normalizer emits —
@@ -591,7 +593,8 @@ func (n *normalizer) consumeResult(line []byte, rawType string) error {
 		// 5pm", "Credit balance is too low", ...); without it the attempt failed
 		// with a code and nothing to read.
 		n.quotaExceeded = ports.IsProviderQuotaMessage(event.Result)
-		if n.quotaExceeded {
+		n.loginRequired = !n.quotaExceeded && ports.IsProviderLoginMessage(event.Result)
+		if n.quotaExceeded || n.loginRequired {
 			n.quotaMessage = event.Result
 		}
 		summary := "Claude reported a failed result"
@@ -749,6 +752,9 @@ func (n *normalizer) finalStatus(
 	// limit. That is the cause whatever the exit code the CLI then returned with.
 	if n.quotaExceeded {
 		return ports.AgentExecutionFailed, ports.TerminationProviderQuotaExceeded, nil, nil
+	}
+	if n.loginRequired {
+		return ports.AgentExecutionFailed, ports.TerminationProviderLoginRequired, nil, nil
 	}
 	if process.ExitCode != 0 {
 		return ports.AgentExecutionFailed, "process_exit", nil, nil

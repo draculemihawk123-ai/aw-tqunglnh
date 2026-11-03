@@ -133,3 +133,41 @@ func TestParseQuotaReset(t *testing.T) {
 		}
 	}
 }
+
+// V12-04 (UX-07): the Claude session expired; the attempt used to fail the run. Now the node waits BLOCKED behind
+// PROVIDER_LOGIN_REQUIRED, with no automatic resume, and a retry after signing in runs the same node.
+func TestProviderLoginRequired_BlocksTheNodeWithoutAutomaticResume(t *testing.T) {
+	uow, ids, runID, nodeRunID, attemptID, registry := admissionFixture(t, admissionFixtureOptions{})
+	ctx := context.Background()
+	job := claimableExecuteNodeJob(t, uow, attemptID)
+	executor := &fake.NodeExecutor{Result: ports.NodeExecutionResult{
+		State: runtimedomain.ExecutionAttemptBlocked, TerminationReason: runtimedomain.TerminationReasonProviderLoginRequired,
+		BlockedDetail: "OAuth token has expired · Please run /login",
+	}}
+	handler := runtime.NewExecuteNodeHandler(uow, ids, executor, clock.System{}, fake.IsolationEnforcementChecker{}, registry, nil)
+	if err := handler.Handle(ctx, job); err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	assertBlockedReason(t, uow, attemptID, nodeRunID, runtimedomain.TerminationReasonProviderLoginRequired, workdomain.BlockerProviderLoginRequired)
+	for _, j := range uow.Snapshot.Jobs().(*fake.JobsRepository).Items() {
+		if j.Kind == runtime.ProviderQuotaResumeJobKind {
+			t.Fatal("a lost sign-in must not schedule an automatic resume")
+		}
+	}
+	var run runtimedomain.WorkflowRun
+	if err := uow.WithReadOnly(ctx, func(tx ports.Tx) error {
+		var err error
+		run, err = tx.Runtime().GetWorkflowRun(ctx, runID)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if run.State != runtimedomain.WorkflowRunRunning && run.State != runtimedomain.WorkflowRunWaiting {
+		t.Fatalf("run = %s, want alive", run.State)
+	}
+	result, err := runtime.NewRetryBlockedActivationHandler(uow, ids, fake.IsolationEnforcementChecker{}, registry).Retry(ctx,
+		runtime.RetryBlockedActivationRequest{NodeRunID: nodeRunID, Actor: "operator-1", Reason: "signed in again"})
+	if err != nil || !result.Retried {
+		t.Fatalf("Retry = %+v, %v; want Retried", result, err)
+	}
+}

@@ -168,6 +168,19 @@ function TaskHeader({
     onError: err => show({ intent: 'danger', message: err instanceof Error ? err.message : apiErrorMessage(err).message, duration: 0 }),
   });
 
+  // V12-04: retry a node blocked by an admission check, a provider usage limit or a lost sign-in, right from the
+  // blocker card — offered only when the server lists retryBlockedActivation for that blocker.
+  const retryBlockedMutation = useMutation({
+    mutationFn: (b: BlockerDiagnostic) => retryBlockedActivation(b.sourceNodeRunId!, { reason: 'retried from the task header' }, withSessionToken()),
+    onSuccess: result => {
+      if (result.retried) show({ intent: 'success', message: `Retry accepted — the node runs again (${result.reactivatedNodeRunId}).` });
+      else if (result.alreadyRetried) show({ intent: 'info', message: 'This node was already retried.' });
+      else show({ intent: 'danger', message: `Retry still fails: ${result.failureReason}${result.failureDetail ? ' — ' + result.failureDetail : ''}`, duration: 0 });
+      onActionSettled();
+    },
+    onError: err => show({ intent: 'danger', message: apiErrorMessage(err).message, duration: 0 }),
+  });
+
   const resolveBlockerMutation = useMutation({
     mutationFn: async () => {
       if (!resolvingBlocker || !activeRunId) throw new Error('no blocker selected');
@@ -310,8 +323,11 @@ function TaskHeader({
               actions={
                 b.validActions.some(a => a.operationId === 'resolveWorkItemBlocker')
                   ? [{ label: 'Resolve', onClick: () => { setResolvingBlocker(b); setResolveMode('RESOLVED'); setResolveReason(''); setPolicyGrantRef(''); }, disabled: isOffline }]
-                  : b.validActions.some(a => a.operationId === 'retryBlockedActivation')
-                  ? [{ label: 'View in Graph & Timeline', onClick: () => onTabChange('task-graph', { projectId, taskId: workItemId }) }]
+                  : b.validActions.some(a => a.operationId === 'retryBlockedActivation') && b.sourceNodeRunId
+                  ? [
+                      { label: 'Retry', onClick: () => retryBlockedMutation.mutate(b), disabled: isOffline || retryBlockedMutation.isPending },
+                      { label: 'View in Graph & Timeline', onClick: () => onTabChange('task-graph', { projectId, taskId: workItemId }) },
+                    ]
                   : []
               }
             />

@@ -300,6 +300,8 @@ func (e *GateNodeExecutor) Execute(ctx context.Context, req ports.NodeExecutionR
 		Kind: ports.AgentEventExecutionFinished, ObservedAt: time.Now().UTC(),
 		Message: fmt.Sprintf("exit code %d", result.ExitCode),
 	})
+	// V12-04: a process that never started says why in the attempt's failure detail.
+	recordProcessStartFailure(ctx, sink, req.AttemptID, 3, result, runErr)
 	flushErr := sink.Flush(ctx)
 
 	classified, err := e.classify(ctx, req, request, resolved, inputs.criteria, inputs.failureOutcome, result, runErr, firstNonNil(acceptErr, flushErr), stdout.Bytes(), env)

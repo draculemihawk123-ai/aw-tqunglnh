@@ -136,6 +136,24 @@ func quotaBlockedDetail(providerWords string, resumeAt time.Time, automatic bool
 	return fmt.Sprintf("%s — aw resumes this node by itself at %s, or retry it now", words, resumeAt.UTC().Format(time.RFC3339))
 }
 
+// isProviderBlockReason reports whether reason is one of the two provider refusals that block a node instead of failing it:
+// a usage limit (V12-03) or a lost sign-in (V12-04).
+func isProviderBlockReason(reason runtimedomain.TerminationReason) bool {
+	return reason == runtimedomain.TerminationReasonProviderQuotaExceeded || reason == runtimedomain.TerminationReasonProviderLoginRequired
+}
+
+// loginBlockedDetail is the PROVIDER_LOGIN_REQUIRED blocker reason.
+func loginBlockedDetail(providerWords string) string {
+	words := strings.TrimSpace(providerWords)
+	if len(words) > maxBlockedDetailBytes {
+		words = words[:maxBlockedDetailBytes] + "…"
+	}
+	if words == "" {
+		words = "the provider CLI is not signed in"
+	}
+	return words + " — sign the provider CLI in again on the worker's machine (for Claude: `claude` then /login), then retry this node"
+}
+
 // blockForProviderQuotaTx is FinalizeExecutionAttempt's BLOCKED branch for PROVIDER_QUOTA_EXCEEDED: the NodeRun goes
 // RUNNING -> BLOCKED, a PROVIDER_QUOTA_EXCEEDED blocker opens under the admission-blocker id RetryBlockedActivation reads, and a
 // PROVIDER_QUOTA_RESUME job is enqueued for the reset time — unless this node of this run has already been resumed
@@ -155,6 +173,20 @@ func blockForProviderQuotaTx(
 		return err
 	}
 
+	if req.TerminationReason == runtimedomain.TerminationReasonProviderLoginRequired {
+		// V12-04: no automatic resume — nothing tells aw when the operator signed in again.
+		if _, err := openWorkItemBlockerTx(
+			ctx, tx, run.ProjectID, string(run.WorkItemID), req.AttemptID+"-admission-blocker", workdomain.BlockerProviderLoginRequired,
+			req.RunID, req.NodeRunID, req.AttemptID, loginBlockedDetail(req.BlockedDetail), req.CorrelationID, string(req.JobLease.JobID),
+		); err != nil {
+			return err
+		}
+		version, err := tx.Definitions().GetWorkflowVersion(ctx, string(run.WorkflowVersionID))
+		if err != nil {
+			return err
+		}
+		return reconcileRunTerminalityTx(ctx, tx, run, version.Document(), req.CorrelationID, string(req.JobLease.JobID))
+	}
 	earlier, err := quotaBlocksOfNode(ctx, tx, run, nodeRun.NodeKey, req.AttemptID)
 	if err != nil {
 		return err

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -340,6 +341,15 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	pool, err := workerpool.New(store, registry, workerpool.Config{
 		Concurrency: opts.concurrency, Owner: opts.workerID, LeaseTTL: opts.leaseTTL,
 		HeartbeatEvery: opts.leaseHeartbeat, PollInterval: opts.pollInterval, ShutdownGrace: opts.shutdownGrace,
+		// V12-04: claim nothing while this process cannot start a child process (see spawnGate).
+		ClaimGate: newSpawnGate(spawnProbeInterval, probeChildProcess).check,
+		OnClaimGateChange: func(gateErr error) {
+			if gateErr != nil {
+				_ = logger.Error(identity, "WORKER_CANNOT_SPAWN", "worker stopped claiming jobs: it cannot start a child process", map[string]any{"error": gateErr.Error()})
+				return
+			}
+			_ = logger.Info(identity, "worker can start child processes again; claiming jobs", nil)
+		},
 		// V12-01: a job whose handler fails is retried until its claims run out; say why each time.
 		OnHandlerError: func(job ports.DurableJob, handleErr error) {
 			_ = logger.Warn(identity, "job handler failed", map[string]any{
@@ -597,6 +607,46 @@ func (w *assembledWorker) sweepAttachmentClaims(ctx context.Context) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// spawnProbeInterval is how long a spawn probe answer is reused (V12-04).
+const spawnProbeInterval = 30 * time.Second
+
+// spawnGate (V12-04, UX-18) answers workerpool.Config.ClaimGate: can this worker start a child process right now? A worker
+// started from a shell that was later closed (Windows: the console went away) kept claiming jobs, and each attempt or gate it ran
+// failed to start its process (exit 0xC0000142) with no evidence. The gate runs probe at most once per interval and caches the
+// answer, so a healthy worker pays one `git --version` every 30 seconds and a broken one leaves the jobs to another worker.
+type spawnGate struct {
+	mu       sync.Mutex
+	interval time.Duration
+	probe    func(context.Context) error
+	checked  time.Time
+	last     error
+}
+
+func newSpawnGate(interval time.Duration, probe func(context.Context) error) *spawnGate {
+	return &spawnGate{interval: interval, probe: probe}
+}
+
+func (g *spawnGate) check(ctx context.Context) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.checked.IsZero() && time.Since(g.checked) < g.interval {
+		return g.last
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	g.last, g.checked = g.probe(probeCtx), time.Now()
+	return g.last
+}
+
+// probeChildProcess starts `git --version` — Git is required by aw, so it is always there, and it is not this binary (whose
+// test build would run tests when started).
+func probeChildProcess(ctx context.Context) error {
+	if err := exec.CommandContext(ctx, "git", "--version").Run(); err != nil {
+		return fmt.Errorf("start `git --version`: %w", err)
+	}
+	return nil
 }
 
 // closeDeadLocalCommits (V12-01) closes FAILED/EXECUTION_ERROR every local commit operation whose

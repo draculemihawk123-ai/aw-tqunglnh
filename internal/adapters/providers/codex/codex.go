@@ -333,6 +333,8 @@ type normalizer struct {
 	quotaExceeded bool
 	// quotaMessage (V12-03) keeps the provider's words when quotaExceeded, so the engine can read the reset time.
 	quotaMessage string
+	// loginRequired (V12-04): the failed result's words say the CLI is not signed in.
+	loginRequired bool
 	// outcomeOccurrences/outcomeValid/outcomeValue track the terminal
 	// <agentkit-outcome> marker (V5-08B, ports.AgentProposedOutcome's own
 	// doc comment, mirroring claude.go's own identical fields) across
@@ -405,7 +407,8 @@ func (n *normalizer) consume(line []byte) error {
 			reason = failure.Message
 		}
 		n.quotaExceeded = ports.IsProviderQuotaMessage(reason)
-		if n.quotaExceeded {
+		n.loginRequired = !n.quotaExceeded && ports.IsProviderLoginMessage(reason)
+		if n.quotaExceeded || n.loginRequired {
 			n.quotaMessage = reason
 		}
 		return n.emit(ports.AgentEvent{
@@ -621,6 +624,9 @@ func (n *normalizer) finalStatus(
 	// V11-02: see claude.go's finalStatus.
 	if n.quotaExceeded {
 		return ports.AgentExecutionFailed, ports.TerminationProviderQuotaExceeded, nil, nil
+	}
+	if n.loginRequired {
+		return ports.AgentExecutionFailed, ports.TerminationProviderLoginRequired, nil, nil
 	}
 	if process.ExitCode != 0 {
 		return ports.AgentExecutionFailed, "process_exit", nil, nil

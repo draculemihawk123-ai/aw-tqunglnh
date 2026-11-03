@@ -431,10 +431,11 @@ func (h *ExecuteNodeHandler) Handle(ctx context.Context, job ports.DurableJob) e
 		reason = runtimedomain.TerminationReasonCompleted
 		failureCode = ""
 	case runtimedomain.ExecutionAttemptBlocked:
-		if execResult.TerminationReason == runtimedomain.TerminationReasonProviderQuotaExceeded {
-			// V12-03: the provider's usage limit; the node waits BLOCKED and runs again after the reset.
+		if execResult.TerminationReason == runtimedomain.TerminationReasonProviderQuotaExceeded ||
+			execResult.TerminationReason == runtimedomain.TerminationReasonProviderLoginRequired {
+			// V12-03: the provider's usage limit (V12-04: or a lost sign-in); the node waits BLOCKED and runs again later.
 			nextState = runtimedomain.ExecutionAttemptBlocked
-			reason = runtimedomain.TerminationReasonProviderQuotaExceeded
+			reason = execResult.TerminationReason
 			failureCode = ""
 			break
 		}

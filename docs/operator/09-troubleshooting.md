@@ -43,6 +43,26 @@ If the doctor check is healthy yet an agent still cannot use a variable, compare
 worker's: a name listed in only one of them is not passed (the node's `agentInheritedEnvironment` in its
 execution-profile decision artifact shows what was).
 
+## A node is BLOCKED: `ADAPTER_PROBE_FAILED`, `PROVIDER_LOGIN_REQUIRED`, or the worker stopped claiming jobs (V12-04)
+
+- **`ADAPTER_PROBE_FAILED`** — before an AGENT attempt starts, aw re-measures the pinned provider CLI (file hash, `--version`). If
+  that measurement could not be made at all (the file could not be read, or `--version` did not run three times in a row — on
+  Windows `claude.exe --version` exiting `3221225794` / `0xC0000142`), the node is blocked with `ADAPTER_PROBE_FAILED`. Nothing
+  is known to have changed, so this is **not** `ADAPTER_BUILD_DRIFT`: fix the machine (see the next bullet) and press **Retry**
+  on the blocker (task page header, or the node in Graph & Timeline), or `aw node-run retry-blocked --project-id <id>
+  <nodeRunId> --reason "probe runs again"`. Only a real change of the CLI (another hash or version) is `ADAPTER_BUILD_DRIFT`.
+- **The worker stopped claiming jobs.** Before each claim the worker checks that it can start a child process (`git --version`,
+  cached 30 seconds). When it cannot — typically a worker started from a terminal that was closed on Windows — it logs
+  `WORKER_CANNOT_SPAWN` once and claims nothing, so jobs wait for a healthy worker instead of failing one after another. Start
+  the worker again from a console that stays open (or as a service). A COMMAND or gate whose process did not start still fails,
+  but its attempt now says why: `failureDetail` = `the process could not be started: …` or `the process exited 3221225794
+  (0xC0000142) before it ran: STATUS_DLL_INIT_FAILED …` (diagnostic `PROCESS_START_FAILED`), and it is a technical failure
+  (`PROVIDER_UNAVAILABLE`), never routed as the command's verdict.
+- **`PROVIDER_LOGIN_REQUIRED`** — the provider CLI answered "Invalid API key · Please run /login", "OAuth token has expired", "not
+  logged in". The run does not fail: the node waits `BLOCKED`, and `aw doctor` reports `provider_login: DEGRADED` naming the work
+  items. Sign the CLI in again on the worker's machine (Claude: run `claude`, then `/login`), then **Retry** the node. There is no
+  automatic resume: nothing tells aw when you signed in.
+
 ## `database schema version N is newer than this binary supports`
 
 ```

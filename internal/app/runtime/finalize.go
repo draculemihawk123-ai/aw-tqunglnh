@@ -265,7 +265,7 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 	// before ever calling this function, so this is this function's own
 	// defensive, should-be-unreachable-in-practice re-check, not the
 	// primary enforcement point.
-	if req.NextState == runtimedomain.ExecutionAttemptBlocked && req.TerminationReason == runtimedomain.TerminationReasonProviderQuotaExceeded {
+	if req.NextState == runtimedomain.ExecutionAttemptBlocked && isProviderBlockReason(req.TerminationReason) {
 		// V12-03: a provider usage limit blocks the node; it carries no scope proposal.
 		if req.RequestedScopeExpansion != nil {
 			return FinalizeExecutionAttemptResult{}, errors.New("runtime: a PROVIDER_QUOTA_EXCEEDED block carries no scope expansion")
@@ -379,7 +379,7 @@ func FinalizeExecutionAttempt(ctx context.Context, uow ports.UnitOfWork, ids ids
 			}
 
 		case runtimedomain.ExecutionAttemptBlocked:
-			if req.TerminationReason == runtimedomain.TerminationReasonProviderQuotaExceeded {
+			if isProviderBlockReason(req.TerminationReason) {
 				if err := blockForProviderQuotaTx(ctx, tx, ids, clk.Now().UTC(), req, run); err != nil {
 					return err
 				}

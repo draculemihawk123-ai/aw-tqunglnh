@@ -374,6 +374,14 @@ func (e *AgentNodeExecutor) classify(
 			}
 			return result, nil
 		}
+		// V12-04 (ADR-047): the provider CLI is not signed in. The run does not fail either; the node waits BLOCKED until the
+		// operator signs in again and retries it (no automatic resume: nothing tells aw when that happened).
+		if agentResult.TerminationReason == ports.TerminationProviderLoginRequired {
+			return ports.NodeExecutionResult{
+				State: runtimedomain.ExecutionAttemptBlocked, TerminationReason: runtimedomain.TerminationReasonProviderLoginRequired,
+				BlockedDetail: e.matcher.String(agentResult.ProviderMessage),
+			}, nil
+		}
 		// The provider itself reported a determinate non-success (row 2):
 		// definite FAILED, EXECUTION_FAILED. TIMED_OUT at the provider's
 		// own internal level folds into the same bucket here — this

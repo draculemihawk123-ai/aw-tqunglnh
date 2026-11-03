@@ -51,6 +51,7 @@ import (
 var admissionPriority = []runtimedomain.TerminationReason{
 	runtimedomain.TerminationReasonIsolationEnforcementUnavailable,
 	runtimedomain.TerminationReasonAdapterBuildDrift,
+	runtimedomain.TerminationReasonAdapterProbeFailed, // V12-04: the CLI could not be measured (not a drift)
 	runtimedomain.TerminationReasonCapabilityRequirementUnsatisfied,
 	runtimedomain.TerminationReasonWriteCapabilityOrGrantMissing,
 }
@@ -82,6 +83,9 @@ type admissionProbe struct {
 	pinnedBuild    *domainadapterbuild.Build // nil when the node declares no AdapterBuildID
 	driftSatisfied bool                      // true when pinnedBuild == nil (nothing to check) or VerifyNoDrift found none
 	driftErr       error
+	// probeSatisfied is false when VerifyNoDrift could not measure the executable at all (V12-04); probeErr says why.
+	probeSatisfied bool
+	probeErr       error
 }
 
 // runAdmissionProbePhase is admitOrClaimRunning's own Phase 1: a read-only
@@ -146,10 +150,14 @@ func runAdmissionProbePhase(
 	if err != nil {
 		return admissionProbe{}, fmt.Errorf("runtime: admission: resolve agent executor for provider %s: %w", pinnedBuild.Tuple().ProviderKey, err)
 	}
-	if err := adapterbuild.VerifyNoDrift(ctx, executor, pinnedBuild); err != nil {
-		probe.driftErr = err
-	} else {
-		probe.driftSatisfied = true
+	switch err := adapterbuild.VerifyNoDrift(ctx, executor, pinnedBuild); {
+	case err == nil:
+		probe.driftSatisfied, probe.probeSatisfied = true, true
+	case errors.Is(err, adapterbuild.ErrAdapterBuildProbeFailed):
+		// V12-04: not measured is not drifted — block with ADAPTER_PROBE_FAILED, which a plain retry can clear.
+		probe.driftSatisfied, probe.probeErr = true, err
+	default:
+		probe.driftErr, probe.probeSatisfied = err, true
 	}
 	return probe, nil
 }
@@ -186,18 +194,21 @@ func evaluateAdmission(
 	satisfied := map[runtimedomain.TerminationReason]bool{
 		runtimedomain.TerminationReasonIsolationEnforcementUnavailable:  probe.isolationSatisfied,
 		runtimedomain.TerminationReasonAdapterBuildDrift:                probe.driftSatisfied,
+		runtimedomain.TerminationReasonAdapterProbeFailed:               probe.probeSatisfied || probe.pinnedBuild == nil,
 		runtimedomain.TerminationReasonCapabilityRequirementUnsatisfied: capabilitySatisfied,
 		runtimedomain.TerminationReasonWriteCapabilityOrGrantMissing:    multiRepoSatisfied,
 	}
 	detail := map[runtimedomain.TerminationReason]string{
 		runtimedomain.TerminationReasonIsolationEnforcementUnavailable:  fmt.Sprintf("isolation tier %s is not enforceable: %v", profile.IsolationTier, probe.isolationErr),
 		runtimedomain.TerminationReasonAdapterBuildDrift:                fmt.Sprintf("adapter build drift: %v", probe.driftErr),
+		runtimedomain.TerminationReasonAdapterProbeFailed:               fmt.Sprintf("the provider CLI could not be probed (this is not a drift; retry once the worker can run it): %v", probe.probeErr),
 		runtimedomain.TerminationReasonCapabilityRequirementUnsatisfied: "a required capability is not granted",
 		runtimedomain.TerminationReasonWriteCapabilityOrGrantMissing:    "more than one repository is write-scoped without INTEGRATION_MULTI_REPOSITORY_WRITE granted",
 	}
 	blockerTypes := map[runtimedomain.TerminationReason]workdomain.BlockerType{
 		runtimedomain.TerminationReasonIsolationEnforcementUnavailable:  workdomain.BlockerIsolationEnforcementUnavailable,
 		runtimedomain.TerminationReasonAdapterBuildDrift:                workdomain.BlockerAdapterBuildDrift,
+		runtimedomain.TerminationReasonAdapterProbeFailed:               workdomain.BlockerAdapterProbeFailed,
 		runtimedomain.TerminationReasonCapabilityRequirementUnsatisfied: workdomain.BlockerCapabilityRequirementUnsatisfied,
 		runtimedomain.TerminationReasonWriteCapabilityOrGrantMissing:    workdomain.BlockerWriteCapabilityOrGrantMissing,
 	}

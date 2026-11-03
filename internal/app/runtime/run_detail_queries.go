@@ -839,6 +839,19 @@ func GetRunTimeline(ctx context.Context, uow ports.UnitOfWork, matcher redact.Ma
 			}
 			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.ProviderFailureDetailFromRecords(records))
 		}
+		// V12-04: a COMMAND or MACHINE_GATE attempt whose process never started says why.
+		for i := range timeline.Entries {
+			entry := &timeline.Entries[i]
+			if entry.Kind != TimelineEntryExecutionAttempt || entry.FailureDetail != "" ||
+				entry.AttemptState != string(runtimedomain.ExecutionAttemptFailed) {
+				continue
+			}
+			records, err := tx.AgentEvents().ListByAttemptAndKind(ctx, entry.AttemptID, string(ports.AgentEventDiagnostic))
+			if err != nil {
+				return err
+			}
+			entry.FailureDetail = agentevents.RedactDetail(matcher, agentevents.DiagnosticMessageFromRecords(records, ProcessStartFailedDiagnosticCode))
+		}
 		// V9-13a: what each provider attempt reported using, and the run's total.
 		// Only an attempt with a provider can have usage, and only its
 		// USAGE_REPORTED events are read, never the whole stream.

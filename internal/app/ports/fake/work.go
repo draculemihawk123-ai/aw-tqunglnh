@@ -686,6 +686,26 @@ func (w *WorkRepository) GetWorkItemBlocker(_ context.Context, id string) (work.
 	return blocker, nil
 }
 
+// ListOpenBlockersOfType mirrors sqlite's own method (V12-04).
+func (w *WorkRepository) ListOpenBlockersOfType(_ context.Context, blockerType work.BlockerType, limit int) ([]work.WorkItemBlocker, error) {
+	var out []work.WorkItemBlocker
+	for _, b := range w.blockers {
+		if b.Type == blockerType && b.State == work.BlockerOpen {
+			out = append(out, b)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].OpenedAt.Equal(out[j].OpenedAt) {
+			return out[i].OpenedAt.Before(out[j].OpenedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
 // ListWorkItemBlockersForWorkItem mirrors sqlite's
 // ListWorkItemBlockersForWorkItem, ordered by (OpenedAt, ID) for a stable,
 // deterministic result a test can assert on exactly.

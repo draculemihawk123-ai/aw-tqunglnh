@@ -123,7 +123,8 @@ func isAdmissionBlockerType(t workdomain.BlockerType) bool {
 	switch t {
 	case workdomain.BlockerIsolationEnforcementUnavailable, workdomain.BlockerAdapterBuildDrift,
 		workdomain.BlockerCapabilityRequirementUnsatisfied, workdomain.BlockerWriteCapabilityOrGrantMissing,
-		workdomain.BlockerProviderQuotaExceeded: // V12-03: retried the same way (automatically at the reset time, or now)
+		workdomain.BlockerProviderQuotaExceeded, // V12-03: retried the same way (automatically at the reset time, or now)
+		workdomain.BlockerAdapterProbeFailed, workdomain.BlockerProviderLoginRequired: // V12-04
 		return true
 	default:
 		return false

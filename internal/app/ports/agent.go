@@ -278,6 +278,29 @@ func ProviderFailureMessage(summary, providerReason string) string {
 // it to the non-retryable PROVIDER_QUOTA_EXCEEDED failure code.
 const TerminationProviderQuotaExceeded = "provider_quota_exceeded"
 
+// TerminationProviderLoginRequired (V12-04, ADR-047) is the AgentExecutionResult.TerminationReason an adapter reports when the
+// provider CLI refused the work because it is not signed in or its session expired. The agent executor maps it to a BLOCKED
+// attempt (PROVIDER_LOGIN_REQUIRED): the run waits until the operator signs in again and retries the node.
+const TerminationProviderLoginRequired = "provider_login_required"
+
+// loginPhrases are the provider-reported words that mean "sign in again": Claude's "Invalid API key · Please run /login" and
+// "OAuth token has expired", Codex's "not logged in", and the generic 401 vocabulary.
+var loginPhrases = []string{
+	"please run /login", "run /login", "not logged in", "invalid api key", "oauth token has expired", "token has expired",
+	"authentication_error", "authentication failed", "login required", "please log in", "401 unauthorized",
+}
+
+// IsProviderLoginMessage reports whether providerReason says the provider CLI is not signed in (V12-04). Case-insensitive.
+func IsProviderLoginMessage(providerReason string) bool {
+	lower := strings.ToLower(providerReason)
+	for _, phrase := range loginPhrases {
+		if strings.Contains(lower, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // quotaPhrases are the provider-reported words that mean "the account hit a
 // limit": Claude's "You've hit your limit · resets 5pm" / "session limit",
 // Codex's "You've hit your usage limit. Try again at 5pm", and the generic

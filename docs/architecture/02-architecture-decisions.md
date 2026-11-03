@@ -1390,9 +1390,33 @@ không phải giới hạn; nên sửa ở chỗ khác — đừng để run h�
 **Hệ quả:** hết hạn mức không còn làm mất run hay bắt chạy lại từ đầu. Không đổi ADR-011 (manifest bất biến), ADR-033/041 (rerun vẫn
 từ `START`), ADR-035 (mã vẫn không retry). Đọc giờ reset theo lời của CLI: CLI đổi cách nói thì aw chờ 1 giờ rồi thử.
 
-## 49. Baseline sau review thiết kế
+## 49. ADR-047 — Sức khỏe của worker và provider: không đo được CLI không phải drift; worker không spawn được thì không nhận việc; mất đăng nhập chặn node
 
-ADR-001…046 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-04, UX-16, UX-18, UX-07):** probe `claude.exe --version` thoát `0xC0000142` (tiến trình không khởi động được) nên
+`VerifyNoDrift` báo `ADAPTER_BUILD_DRIFT` dù CLI không đổi; worker mất console vẫn nhận việc rồi mọi tiến trình con không khởi động,
+gate hỏng không evidence, không lý do; phiên OAuth hết hạn nhưng `aw doctor` vẫn `HEALTHY` và run hỏng.
+
+**Quyết định:**
+
+1. `VerifyNoDrift` trả `ErrAdapterBuildProbeFailed` (không phải drift) khi không đọc được file hoặc `--version` không chạy; probe thử 3
+   lần, cách 2 giây. Admission có lý do và blocker mới `ADAPTER_PROBE_FAILED` (nhóm admission, ngay sau drift), retry được như cũ.
+   Chỉ khi đo được và danh tính khác mới là `ADAPTER_BUILD_DRIFT`.
+2. `workerpool.Config.ClaimGate`: trước mỗi lần nhận việc, `aw worker` kiểm tra chạy được tiến trình con (`git --version`, cache 30
+   giây). Không chạy được thì không nhận việc, log `WORKER_CANNOT_SPAWN` một lần, tự nhận lại khi khỏe.
+3. COMMAND/MACHINE_GATE mà tiến trình không khởi động (lỗi spawn, hoặc mã thoát NTSTATUS `0xC0000142`/`0xC0000135`/`0xC0000139`) ghi
+   diagnostic `PROCESS_START_FAILED` có lý do; timeline đưa nó vào `failureDetail`; COMMAND coi là lỗi kỹ thuật (`PROVIDER_UNAVAILABLE`),
+   không bao giờ route như kết luận của lệnh.
+4. Lời của provider báo chưa đăng nhập (`ports.IsProviderLoginMessage`) cho termination reason/blocker `PROVIDER_LOGIN_REQUIRED`: attempt
+   và NodeRun `BLOCKED` như ADR-046 nhưng không tự chạy tiếp; người vận hành đăng nhập lại rồi Retry. `aw doctor` có check
+   `provider_login` (`DEGRADED` khi còn blocker này mở) — aw không hỏi CLI trạng thái đăng nhập vì việc đó tốn một lượt gọi.
+5. Giao diện: thẻ blocker ở đầu trang task có nút **Retry** khi server trả `retryBlockedActivation` trong `validActions`.
+
+**Hệ quả:** migration 0056 nới CHECK của `blockers`. Chưa có: danh sách worker đang chạy trên giao diện (cần bảng heartbeat của worker,
+để task sau).
+
+## 50. Baseline sau review thiết kế
+
+ADR-001…047 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1445,6 +1469,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-047 (V12-04): không đo được CLI là `ADAPTER_PROBE_FAILED` (không phải drift, probe thử lại); worker không spawn được thì không nhận việc; lỗi khởi chạy tiến trình có diagnostic `PROCESS_START_FAILED`; mất đăng nhập chặn node (`PROVIDER_LOGIN_REQUIRED`) và `aw doctor` báo.
 - ADR-046 (V12-03) sửa ADR-035: hết hạn mức của provider làm attempt/NodeRun `BLOCKED` (blocker `PROVIDER_QUOTA_EXCEEDED`), run không hỏng; job `PROVIDER_QUOTA_RESUME` chạy tiếp đúng node sau giờ reset qua `RetryBlockedActivation`; chạy lại có `PARK_ALL`.
 - ADR-045 (V12-01) thêm lý do `EXECUTION_ERROR` kèm `failureDetail` cho local commit mà worker không làm xong (lượt claim cuối hoặc job `DEAD`), và log lỗi handler của worker pool.
 

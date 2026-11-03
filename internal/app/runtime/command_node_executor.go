@@ -204,6 +204,8 @@ func (e *CommandNodeExecutor) Execute(ctx context.Context, req ports.NodeExecuti
 		Kind: ports.AgentEventExecutionFinished, ObservedAt: time.Now().UTC(),
 		Message: fmt.Sprintf("exit code %d", result.ExitCode),
 	})
+	// V12-04: a process that never started says why in the attempt's failure detail.
+	recordProcessStartFailure(ctx, sink, req.AttemptID, 3, result, runErr)
 	flushErr := sink.Flush(ctx)
 
 	classified, err := e.classify(
@@ -269,11 +271,13 @@ func (e *CommandNodeExecutor) classify(
 	if !result.TreeQuiesced && resolved.hasWriteMount {
 		return ports.NodeExecutionResult{}, fmt.Errorf("%w: process tree did not confirm quiescence on a mutating attempt", ErrIndeterminateExecution)
 	}
-	if runErr != nil {
+	if _, notStarted := processStartFailure(result, runErr); notStarted {
 		// A bare Go error spawning the process itself (executable missing,
 		// permission denied) with quiescence otherwise confirmed — the
 		// same row-1 mapping AgentNodeExecutor's own classify already uses
-		// for an analogous bare provider-spawn error.
+		// for an analogous bare provider-spawn error. V12-04: a Windows exit
+		// code that means the process never initialized (0xC0000142) is the
+		// same case, never a functional verdict to route on.
 		return ports.NodeExecutionResult{
 			State: runtimedomain.ExecutionAttemptFailed, TerminationReason: runtimedomain.TerminationReasonExecutionFailed,
 			ErrorCode: errorcode.CodeProviderUnavailable,

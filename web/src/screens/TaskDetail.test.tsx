@@ -125,7 +125,7 @@ describe('TaskDetailScreen (V7-11)', () => {
     expect(await screen.findByText(/resolved/)).toBeInTheDocument();
   });
 
-  it('an admission-reason blocker shows summary + a Graph & Timeline deep link only, never a resolve or retry button', async () => {
+  it('an admission-reason blocker shows summary, a Retry action (V12-04) and a Graph & Timeline deep link, never a resolve button', async () => {
     vi.mocked(api.getWorkItem).mockResolvedValue({
       workItemId: 'wi-1', projectId: 'proj-1', familyId: 'fam-1', kind: 'ROOT', title: 'Add distributed tracing',
       status: 'BLOCKED', version: 4, contract: null,
@@ -146,7 +146,9 @@ describe('TaskDetailScreen (V7-11)', () => {
 
     expect(await screen.findByText('Pinned adapter build drifted')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Resolve' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /retry/i })).not.toBeInTheDocument();
+    vi.mocked(api.retryBlockedActivation).mockResolvedValue({ nodeRunId: 'nr-1', alreadyRetried: false, retried: true, reactivatedNodeRunId: 'nr-2' } as never);
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(api.retryBlockedActivation).toHaveBeenCalledWith('nr-1', { reason: 'retried from the task header' }, expect.anything()));
     await userEvent.click(screen.getByRole('button', { name: 'View in Graph & Timeline' }));
     expect(onTabChange).toHaveBeenCalledWith('task-graph', { projectId: 'proj-1', taskId: 'wi-1' });
   });
@@ -411,7 +413,9 @@ describe('GraphTimelineTab (V7-12)', () => {
     renderGraphTab();
 
     await userEvent.click(await screen.findByRole('button', { name: /Accessible List/ }));
-    await userEvent.click(await screen.findByRole('button', { name: 'Retry' }));
+    // V12-04: the header's blocker card has its own Retry too; the graph's is the last one.
+    const retryButtons = await screen.findAllByRole('button', { name: 'Retry' });
+    await userEvent.click(retryButtons[retryButtons.length - 1]);
     const dialog = await screen.findByRole('dialog', { name: 'Retry Blocked Activation' });
     await userEvent.type(within(dialog).getByLabelText(/Reason/), 'trying again');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));

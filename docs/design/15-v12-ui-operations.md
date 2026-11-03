@@ -165,6 +165,14 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
   - `doctor` kiểm tra trạng thái đăng nhập của provider. Khi chưa đăng nhập, attempt chờ ở trạng thái chặn có lý do rõ, không
     làm hỏng run.
   - Giao diện có danh sách worker đang chạy và nút Retry khi server cho phép.
+- **Kết quả (phần lớn đã xong, ADR-047):** `VerifyNoDrift` tách `ErrAdapterBuildProbeFailed` và thử probe 3 lần; admission có lý do/blocker
+  `ADAPTER_PROBE_FAILED` (retry được, không cần build mới). `ClaimGate` của worker pool: `aw worker` không nhận việc khi không chạy được
+  `git --version` (cache 30 giây), log `WORKER_CANNOT_SPAWN`. Lỗi khởi chạy tiến trình (spawn hoặc `0xC0000142`) ghi diagnostic
+  `PROCESS_START_FAILED` và hiện ở `failureDetail`. Lời "Invalid API key · Please run /login"/"OAuth token has expired" cho
+  `PROVIDER_LOGIN_REQUIRED`: node `BLOCKED`, run sống, `aw doctor` có check `provider_login`. Nút **Retry** trên thẻ blocker ở đầu trang
+  task. Migration 0056. **Chưa làm:** danh sách worker đang chạy trên giao diện (cần bảng heartbeat của worker; ghi lại cho task sau).
+  Test: `drift_test.go`, `admission_test.go` (probe hỏng → retry), `quota_resume_test.go` (đăng nhập), `command_node_executor_test.go`,
+  `pool_handler_error_test.go` (ClaimGate), `provider_login_test.go` (doctor), contract test provider, `TaskDetail.test.tsx`.
 
 ### V12-05 — Claude CLI tự cập nhật và nút Redo bị thiếu (UX-05, UX-06)
 

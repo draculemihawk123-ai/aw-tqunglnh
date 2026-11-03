@@ -148,6 +148,40 @@ func (r workRepository) ListWorkItemBlockersForWorkItem(ctx context.Context, wor
 	return blockers, nil
 }
 
+// ListOpenBlockersOfType implements ports.WorkRepository (V12-04).
+func (r workRepository) ListOpenBlockersOfType(ctx context.Context, blockerType work.BlockerType, limit int) ([]work.WorkItemBlocker, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.tx.QueryContext(ctx, `SELECT id FROM blockers WHERE type = ? AND state = 'OPEN' ORDER BY opened_at, id LIMIT ?`, string(blockerType), limit)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list open %s blockers: %w", blockerType, err))
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan blocker id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("iterate blocker ids: %w", err)
+	}
+	rows.Close()
+	out := make([]work.WorkItemBlocker, 0, len(ids))
+	for _, id := range ids {
+		blocker, err := loadWorkItemBlockerTx(ctx, r.tx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, blocker)
+	}
+	return out, nil
+}
+
 // TransitionWorkItemBlockerState implements ports.WorkRepository (V4-12C):
 // the fenced CAS that closes a blocker's own lifecycle — OPEN -> RESOLVED or
 // OPEN -> WAIVED.

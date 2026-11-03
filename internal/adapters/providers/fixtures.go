@@ -181,14 +181,14 @@ func RunFakeProviderCLI(provider string, arguments []string, mode string, captur
 		// is about the orchestrator never calling Resume in the first
 		// place, not about surviving a process crash. The failure is not a usage
 		// limit (V11-02 gives that its own termination reason), just a dead session.
-		if !writeProviderFailedTurnOther(stdout, provider) {
+		if !writeProviderFailedTurnDeadSession(stdout, provider) {
 			return 4
 		}
 		return 0
 	}
 	if mode == "provider-failure-other" {
 		// V11-02: a failed run whose reason is not a limit (an authentication
-		// problem). It must stay an ordinary provider failure.
+		// problem). V12-04 reports it as provider_login_required.
 		if !writeProviderFailedTurnOther(stdout, provider) {
 			return 4
 		}
@@ -371,6 +371,23 @@ func writeProviderFailedTurn(stdout io.Writer, provider string) bool {
 
 // writeProviderFailedTurnOther is writeProviderFailedTurn for a failure that is
 // not a limit: an invalid API key.
+// writeProviderFailedTurnDeadSession is a failed turn whose reason is a session the provider no longer knows (V12-04: kept apart
+// from writeProviderFailedTurnOther, which is a lost sign-in and now has its own termination reason).
+func writeProviderFailedTurnDeadSession(stdout io.Writer, provider string) bool {
+	switch provider {
+	case "codex":
+		fmt.Fprintln(stdout, `{"type":"thread.started","thread_id":"codex-session-0001"}`)
+		fmt.Fprintln(stdout, `{"type":"turn.failed","error":{"message":"thread not found"}}`)
+		return true
+	case "claude":
+		fmt.Fprintln(stdout, `{"type":"system","subtype":"init","session_id":"claude-session-0001"}`)
+		fmt.Fprintln(stdout, `{"type":"result","subtype":"error_during_execution","is_error":true,"result":"No conversation found with session ID","session_id":"claude-session-0001","usage":{"input_tokens":1,"output_tokens":1}}`)
+		return true
+	default:
+		return false
+	}
+}
+
 func writeProviderFailedTurnOther(stdout io.Writer, provider string) bool {
 	switch provider {
 	case "codex":

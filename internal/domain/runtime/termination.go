@@ -90,6 +90,13 @@ const (
 	// the account hit a session, usage or rate limit. The run does not fail: the NodeRun waits BLOCKED and is retried — by
 	// itself when the provider's reset time passes, or by the operator — as a new activation of the SAME node.
 	TerminationReasonProviderQuotaExceeded TerminationReason = "PROVIDER_QUOTA_EXCEEDED"
+	// TerminationReasonAdapterProbeFailed (V12-04, ADR-047): QUEUED -> BLOCKED (admission blocker group). The pinned provider
+	// CLI could not be measured (its file unreadable, or `--version` did not run even after retries). Unlike ADAPTER_BUILD_DRIFT
+	// nothing is known to have changed, so RetryBlockedActivation retries it as is once the machine can run the CLI again.
+	TerminationReasonAdapterProbeFailed TerminationReason = "ADAPTER_PROBE_FAILED"
+	// TerminationReasonProviderLoginRequired (V12-04, ADR-047): RUNNING -> BLOCKED. The provider CLI refused the work because
+	// it is not signed in or its session expired. The run does not fail; the operator signs in again and retries the node.
+	TerminationReasonProviderLoginRequired TerminationReason = "PROVIDER_LOGIN_REQUIRED"
 )
 
 // knownTerminationReasons is ADR-020's closed set plus the pre-existing
@@ -114,6 +121,8 @@ var knownTerminationReasons = map[TerminationReason]struct{}{
 	TerminationReasonCapabilityRequirementUnsatisfied: {},
 	TerminationReasonWriteCapabilityOrGrantMissing:    {},
 	TerminationReasonProviderQuotaExceeded:            {},
+	TerminationReasonAdapterProbeFailed:               {},
+	TerminationReasonProviderLoginRequired:            {},
 }
 
 // IsValid reports whether r is a member of the closed TerminationReason set.

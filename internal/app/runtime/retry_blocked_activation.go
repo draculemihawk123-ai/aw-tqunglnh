@@ -276,7 +276,8 @@ func (h *RetryBlockedActivationHandler) Retry(ctx context.Context, req RetryBloc
 // provider usage limit (PROVIDER_QUOTA_EXCEEDED), whose blocker lives under the same id pattern. For the latter the admission
 // checks run again too, so a node that meanwhile drifted is reported, not started.
 func isRetryableBlockedReason(reason runtimedomain.TerminationReason) bool {
-	return isAdmissionBlockerReason(reason) || reason == runtimedomain.TerminationReasonProviderQuotaExceeded
+	return isAdmissionBlockerReason(reason) || reason == runtimedomain.TerminationReasonProviderQuotaExceeded ||
+		reason == runtimedomain.TerminationReasonProviderLoginRequired // V12-04
 }
 
 // loadForRetry is the read-only-transaction wrapper around loadForRetryTx —

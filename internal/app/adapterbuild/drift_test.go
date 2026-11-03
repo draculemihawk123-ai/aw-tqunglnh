@@ -115,21 +115,21 @@ func TestVerifyNoDrift_ProtocolVersionChanged_ReturnsDrift(t *testing.T) {
 	}
 }
 
-func TestVerifyNoDrift_ProbeFails_ReturnsDrift(t *testing.T) {
-	t.Parallel()
+func TestVerifyNoDrift_ProbeFails_ReturnsProbeFailedNotDrift(t *testing.T) {
 
 	executablePath := writeDriftFixture(t, "binary-v1")
 	capabilities := ports.AgentCapabilities{Provider: ports.ProviderClaude, ProtocolVersion: "v1", SupportsStart: true}
 	build := pinnedBuild(t, executablePath, capabilities)
+	defer shortProbeRetry(t)()
 	executor := &fake.AgentExecutor{CapabilitiesErr: errors.New("executable not found")}
 
 	err := VerifyNoDrift(context.Background(), executor, build)
-	if !errors.Is(err, ErrAdapterBuildDrifted) {
-		t.Fatalf("VerifyNoDrift = %v, want ErrAdapterBuildDrifted", err)
+	if !errors.Is(err, ErrAdapterBuildProbeFailed) || errors.Is(err, ErrAdapterBuildDrifted) {
+		t.Fatalf("VerifyNoDrift = %v, want ErrAdapterBuildProbeFailed (V12-04: not measuring is not a drift)", err)
 	}
 }
 
-func TestVerifyNoDrift_MissingExecutable_ReturnsDrift(t *testing.T) {
+func TestVerifyNoDrift_MissingExecutable_ReturnsProbeFailedNotDrift(t *testing.T) {
 	t.Parallel()
 
 	executablePath := writeDriftFixture(t, "binary-v1")
@@ -142,7 +142,47 @@ func TestVerifyNoDrift_MissingExecutable_ReturnsDrift(t *testing.T) {
 	executor := &fake.AgentExecutor{CapabilitiesResult: capabilities}
 
 	err := VerifyNoDrift(context.Background(), executor, build)
-	if !errors.Is(err, ErrAdapterBuildDrifted) {
-		t.Fatalf("VerifyNoDrift = %v, want ErrAdapterBuildDrifted", err)
+	if !errors.Is(err, ErrAdapterBuildProbeFailed) || errors.Is(err, ErrAdapterBuildDrifted) {
+		t.Fatalf("VerifyNoDrift = %v, want ErrAdapterBuildProbeFailed (V12-04: not measuring is not a drift)", err)
+	}
+}
+
+// shortProbeRetry makes VerifyNoDrift's probe retries instant for one test (not parallel: the knobs are package variables).
+func shortProbeRetry(t *testing.T) func() {
+	t.Helper()
+	attempts, delay := ProbeAttempts, ProbeRetryDelay
+	ProbeAttempts, ProbeRetryDelay = 3, time.Millisecond
+	return func() { ProbeAttempts, ProbeRetryDelay = attempts, delay }
+}
+
+// flakyExecutor fails its first failures Capabilities calls, then answers result.
+type flakyExecutor struct {
+	*fake.AgentExecutor
+	failures, calls int
+	result          ports.AgentCapabilities
+}
+
+func (e *flakyExecutor) Capabilities(context.Context) (ports.AgentCapabilities, error) {
+	e.calls++
+	if e.calls <= e.failures {
+		return ports.AgentCapabilities{}, errors.New("exit status 3221225794")
+	}
+	return e.result, nil
+}
+
+// V12-04 (UX-16): `claude.exe --version` exited 0xC0000142 once on a busy Windows worker; the node was blocked as a drift although
+// the CLI had not changed. A probe that fails and then runs passes.
+func TestVerifyNoDrift_TransientProbeFailure_IsRetried(t *testing.T) {
+	defer shortProbeRetry(t)()
+	executablePath := writeDriftFixture(t, "binary-v1")
+	capabilities := ports.AgentCapabilities{Provider: ports.ProviderClaude, ProtocolVersion: "v1", SupportsStart: true}
+	build := pinnedBuild(t, executablePath, capabilities)
+	executor := &flakyExecutor{AgentExecutor: &fake.AgentExecutor{}, failures: 2, result: capabilities}
+
+	if err := VerifyNoDrift(context.Background(), executor, build); err != nil {
+		t.Fatalf("VerifyNoDrift = %v, want nil after two failed probes and a good one", err)
+	}
+	if executor.calls != 3 {
+		t.Fatalf("probe calls = %d, want 3", executor.calls)
 	}
 }

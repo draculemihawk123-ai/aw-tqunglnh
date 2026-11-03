@@ -197,6 +197,11 @@ func ProviderFailureDetailFromRecords(records []ports.AgentEventRecord) string {
 	return lastDiagnosticMessage(records, ports.ProviderFailureDiagnosticCode)
 }
 
+// DiagnosticMessageFromRecords (V12-04) returns the message of the last DIAGNOSTIC event with code, or "".
+func DiagnosticMessageFromRecords(records []ports.AgentEventRecord, code string) string {
+	return lastDiagnosticMessage(records, code)
+}
+
 func lastDiagnosticMessage(records []ports.AgentEventRecord, code string) string {
 	for i := len(records) - 1; i >= 0; i-- {
 		if records[i].Kind != string(ports.AgentEventDiagnostic) {
