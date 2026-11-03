@@ -130,9 +130,3 @@ func ListNeedsYou(ctx context.Context, uow ports.UnitOfWork, matcher redact.Matc
 	result.Count = len(result.Items)
 	return result, nil
 }
-
-// redactText replaces every known secret inside free text (Matcher.String only replaces a value that is exactly a secret).
-func redactText(matcher redact.Matcher, text string) string {
-	redacted, _ := matcher.Redact([]byte(text))
-	return string(redacted)
-}
