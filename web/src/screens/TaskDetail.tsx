@@ -23,6 +23,8 @@ import type { GetTaskFamilyResponse, GetWorkItemResponse } from '../api/generate
 import type { WorkItemContract } from '../api/work';
 import type { RedoPreview } from '../api/redo';
 import { RunGraphCanvas } from '../graph/RunGraphCanvas';
+import { RunHistoryPanel } from '../graph/RunHistoryPanel';
+import { mergeRunHistory } from '../graph/runHistory';
 import type { KanbanCard, WorkItemProjectedDetailResponse, WorkItemRun } from '../api/kanban';
 import { isWaivableBlockerType } from '../api/diagnostics';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
@@ -699,9 +701,14 @@ interface GraphTimelineTabProps {
   focusNodeRunId?: string;
   /** Opens the Evidence tab filtered to a node. */
   onOpenEvidence?: (nodeKey: string) => void;
+  /** V12-12: every run of the work item; their history is merged into the graph and the node panel. */
+  runs?: WorkItemRun[];
 }
 
-function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace, runId, runDiagnostics, isOffline, onActionSettled, focusNodeRunId, onOpenEvidence }: GraphTimelineTabProps) {
+function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace, runId: activeRunIdProp, runDiagnostics, isOffline, onActionSettled, focusNodeRunId, onOpenEvidence, runs = [] }: GraphTimelineTabProps) {
+  // V12-12: with no active run on the card (the last one finished), the graph shows the newest run.
+  const newestRun = [...runs].sort((a, b) => b.runNumber - a.runNumber)[0];
+  const runId = activeRunIdProp ?? newestRun?.runId;
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   // V11-11: while the run is going, the graph, timeline and node pane follow it.
   const runLive = !!runDiagnostics && ['RUNNING', 'WAITING', 'VERIFYING', 'CANCELLING', 'PENDING'].includes(runDiagnostics.runState);
@@ -749,6 +756,23 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
     getNextPageParam: last => last.nextCursor,
     enabled: !isOffline && !!runId,
     refetchInterval: followMs,
+  });
+
+  // V12-12: the earlier runs of the work item (graph and timeline, first page each), merged into the history.
+  const priorRuns = runs.filter(r => r.runId !== runId);
+  const priorQueries = useQueries({
+    queries: priorRuns.flatMap(r => [
+      {
+        queryKey: ['runGraphHistory', projectId, r.runId],
+        queryFn: async () => (await getRunGraph(r.runId, { ...withSessionToken(), query: { limit: '200' } })) as unknown as RunGraphResponse,
+        enabled: !isOffline, staleTime: 60_000,
+      },
+      {
+        queryKey: ['runTimelineHistory', projectId, r.runId],
+        queryFn: async () => (await getRunTimeline(r.runId, { ...withSessionToken(), query: { limit: '200' } })) as unknown as RunTimelineResponse,
+        enabled: !isOffline, staleTime: 60_000,
+      },
+    ]),
   });
 
   const focusActivations = graphQuery.data?.pages.flatMap(p => p.activations);
@@ -816,6 +840,18 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
   const possibleEdges = graphQuery.data!.pages[0].possibleEdges;
   const activations = graphQuery.data!.pages.flatMap(p => p.activations);
   const entries = timelineQuery.data?.pages.flatMap(p => p.entries) ?? [];
+  const currentRunNumber = runs.find(r => r.runId === runId)?.runNumber ?? (Math.max(0, ...runs.map(r => r.runNumber)) + 1);
+  const history = mergeRunHistory([
+    ...priorRuns.map((r, i) => ({
+      runId: r.runId, runNumber: r.runNumber, workflowVersionId: r.workflowVersionId,
+      graph: priorQueries[2 * i]?.data as RunGraphResponse | undefined,
+      timeline: (priorQueries[2 * i + 1]?.data as RunTimelineResponse | undefined)?.entries,
+    })),
+    {
+      runId, runNumber: currentRunNumber, workflowVersionId: runs.find(r => r.runId === runId)?.workflowVersionId,
+      graph: { nodes, activations, takenEdges: graphQuery.data!.pages.flatMap(p => p.takenEdges ?? []) }, timeline: entries,
+    },
+  ]);
   // Every page carries the whole run's total; the last page loaded is the freshest.
   const runUsage = timelineQuery.data?.pages[timelineQuery.data.pages.length - 1]?.usage;
 
@@ -920,8 +956,8 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
         ) : (
           // V12-10: the run graph of the decided design (shapes, ×n, +n, Main/All paths, keyboard); the Accessible List stays.
           <RunGraphCanvas
-            nodes={nodes} edges={possibleEdges} activations={activations}
-            takenEdges={graphQuery.data?.pages.flatMap(p => p.takenEdges ?? []) ?? []}
+            nodes={nodes} edges={possibleEdges} activations={history.activations}
+            takenEdges={history.takenEdges}
             selectedNodeKey={selectedNodeKey} onSelect={key => setSelectedNodeKey(selectedNodeKey === key ? null : key)}
             label={`Workflow graph for run ${runId}`}
           />
@@ -931,12 +967,38 @@ function GraphTimelineTab({ projectId, familyId, workItemTitle, onOpenWorkspace,
       <div className="w-1 bg-[#E9EDF3] border-x border-[#CDD5DF] cursor-col-resize flex-shrink-0" aria-hidden title="Resize panels" />
       {/* Timeline panel — 42% */}
       <div className="flex flex-col overflow-hidden" style={{ flex: '0 0 42%', minWidth: 0 }}>
-        {selectedNodeKey && latestActivationByNode.get(selectedNodeKey) && (
-          <NodeDetailPane
-            nodeRunId={latestActivationByNode.get(selectedNodeKey)!.nodeRunId} isOffline={isOffline}
-            onClose={() => setSelectedNodeKey(null)} onOpenEvidence={onOpenEvidence}
-          />
-        )}
+        {selectedNodeKey && (nodes.find(n => n.key === selectedNodeKey) || history.rowsByNode.has(selectedNodeKey)) && (() => {
+          // V12-12: the node's panel — definition, outcomes, every activation of every run; actions only from the server.
+          const node = nodes.find(n => n.key === selectedNodeKey) ?? { key: selectedNodeKey, type: 'UNKNOWN' };
+          const latest = latestActivationByNode.get(selectedNodeKey);
+          const retryable = latest ? retryableByNodeRunId.get(latest.nodeRunId) : undefined;
+          const approval = pendingApprovals.find(a => a.nodeKey === selectedNodeKey);
+          const actions = (retryable && latest) || approval ? (
+            <>
+              {retryable && latest && (
+                <Button size="compact" intent="secondary" disabled={isOffline}
+                  onClick={() => { setRetrying({ nodeRunId: latest.nodeRunId, nodeKey: selectedNodeKey }); setRetryReason(''); }}>Retry</Button>
+              )}
+              {approval && (node.outcomes ?? []).map(outcome => (
+                <Button key={outcome} size="compact" intent="primary" disabled={isOffline}
+                  onClick={() => (commitAllowedFor(approval.release, outcome) ? setDeciding({ approval, outcome }) : resolveApprovalMutation.mutate({ approval, outcome }))}>
+                  {outcome}
+                </Button>
+              ))}
+            </>
+          ) : undefined;
+          return (
+            <div className="flex-1 min-h-0 border-b border-[#CDD5DF]" style={{ maxHeight: '70%' }}>
+              <RunHistoryPanel
+                key={selectedNodeKey}
+                node={node} edges={possibleEdges} takenEdges={history.takenEdges}
+                rows={history.rowsByNode.get(selectedNodeKey) ?? []} actions={actions}
+                renderDetail={nodeRunId => <NodeDetailPane nodeRunId={nodeRunId} isOffline={isOffline} onClose={() => {}} onOpenEvidence={onOpenEvidence} />}
+                onClose={() => setSelectedNodeKey(null)}
+              />
+            </div>
+          );
+        })()}
         <div className="px-4 py-2 border-b border-[#CDD5DF] bg-[#F3F5F8] flex items-center justify-between">
           <span className="text-[12px] font-semibold text-[#475569]">Timeline{selectedNodeKey ? ` — ${selectedNodeKey}` : ''}</span>
           {runUsage && <span className="text-[12px] text-[#475569]" title="Reported by the provider CLI, summed over every attempt of the run">Run usage: <span className="font-mono text-[#172033]">{formatUsage(runUsage)}</span></span>}
@@ -2532,7 +2594,8 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
       {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} />}
       {activeTab === 'task-graph'      && (
         <GraphTimelineTab projectId={projectId} familyId={familyId} workItemTitle={workItemQuery.data?.title} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled}
-          focusNodeRunId={focusNodeRunId} onOpenEvidence={nodeKey => { setEvidenceNode(nodeKey); onTabChange('task-evidence', { projectId, taskId: workItemId }); }} />
+          focusNodeRunId={focusNodeRunId} onOpenEvidence={nodeKey => { setEvidenceNode(nodeKey); onTabChange('task-evidence', { projectId, taskId: workItemId }); }}
+          runs={cardQuery.data?.runs} />
       )}
       {activeTab === 'task-workspace'  && <WorkspaceTab projectId={projectId} familyId={familyId} isOffline={isOffline} />}
       {activeTab === 'task-evidence'   && <EvidenceTab projectId={projectId} workItemId={workItemId} isOffline={isOffline} nodeFilter={evidenceNode} onNodeFilterChange={setEvidenceNode} />}

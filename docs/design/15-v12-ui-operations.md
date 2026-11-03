@@ -403,6 +403,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 - **Thực hiện:** gộp activation của mọi run theo `nodeKey`. Mỗi dòng lịch sử ghi số run. Mở rộng dòng thì dùng lại nội dung
   `NodeDetailPane`. Nút hành động lấy từ `validActions`.
 - **Test:** component test với fixture P2-01: lịch sử của run 1 (hỏng ở `build`) và run 2 (thành công) cùng hiện ở node `build`.
+- **Kết quả (đã xong):** khảo sát: `getWorkItemProjectedDetail.runs` đã liệt kê mọi run (số thứ tự, version) — không cần API mới. Tab Graph
+  tải graph và timeline (trang đầu) của các run trước, `web/src/graph/runHistory.ts` (`mergeRunHistory`, thuần) gộp theo `nodeKey`: `×n` và
+  cạnh đã đi đếm mọi run, dòng lịch sử ghi số run, giờ, thời lượng, chi phí, outcome, `resultSummary`; run khác version gắn nhãn "older
+  version". `RunHistoryPanel` bên phải: tên, loại, giới hạn vòng, outcome và số lần đi, lịch sử (dòng mới nhất mở sẵn, mở dòng thì là
+  `NodeDetailPane` của activation đó), hành động chỉ từ `validActions` (Retry) và approval đang chờ. Không còn run hoạt động thì sơ đồ vẽ
+  run mới nhất. Test: `RunHistoryPanel.test.tsx` (fixture dạng P2-01, version cũ, axe).
 
 ### V12-13 — Banner, dọn mã cũ, Playwright
 
