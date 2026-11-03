@@ -569,6 +569,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 - **Mục tiêu:** ô commit message có mẫu mặc định cấu hình theo project (ví dụ Conventional Commits). Marker chuyển xuống trailer
   cuối thân commit. Bỏ hậu tố "(lần N)".
 - **Ràng buộc:** marker cần để truy ngược ReleaseSet, chỉ đổi vị trí, không bỏ.
+- **Kết quả (đã xong, ADR-058):** adapter Git nhận message nhiều dòng (`git commit --cleanup=verbatim -F -`); marker là trailer cuối
+  thân (`commitMessageWithMarker`, nối vào khối trailer có sẵn); mẫu commit message theo project (`project_settings`, migration 0060;
+  `GET`/`POST /projects/{id}/commit-template`, `aw project commit-template`/`set-commit-template`) với `{title}` (bỏ " (lần N)"),
+  `{taskId}`, `{workItemId}`; hộp commit ở cổng duyệt điền sẵn từ mẫu; panel sửa mẫu trên Overview của project. Test:
+  `localcommit_test.go` (message nhiều dòng, git đọc được trailer), `marker_trailer_test.go`, `commit_template_test.go`,
+  `commitTemplate.test.ts`; route inventory, security matrix, parity, contract golden.
 
 ### V12-26 — Xem prompt của node (UX-12)
 

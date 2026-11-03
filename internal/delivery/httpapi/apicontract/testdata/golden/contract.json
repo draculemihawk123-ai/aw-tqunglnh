@@ -1469,6 +1469,41 @@
       }
     },
     {
+      "operationId": "getProjectCommitTemplate",
+      "method": "GET",
+      "path": "/projects/{id}/commit-template",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "catalog.CommitTemplateView",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Template",
+            "jsonTag": "template",
+            "type": "string"
+          },
+          {
+            "name": "Default",
+            "jsonTag": "default",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getProjectCosts",
       "method": "GET",
       "path": "/projects/{projectId}/costs",
@@ -5119,6 +5154,47 @@
           {
             "name": "Version",
             "jsonTag": "version",
+            "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setProjectCommitTemplate",
+      "method": "POST",
+      "path": "/projects/{id}/commit-template",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "catalog.commitTemplateRequestBody",
+        "fields": [
+          {
+            "name": "Template",
+            "jsonTag": "template",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "catalog.CommitTemplateView",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "Template",
+            "jsonTag": "template",
+            "type": "string"
+          },
+          {
+            "name": "Default",
+            "jsonTag": "default",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version,omitempty",
             "type": "uint64"
           }
         ]

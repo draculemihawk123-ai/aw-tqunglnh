@@ -97,7 +97,10 @@ func TestProvider_CreateLocalCommit_RejectsInvalidFields(t *testing.T) {
 		{Handle: handle, Message: "", AuthorName: "Release Bot", AuthorEmail: "release-bot@example.invalid"},
 		{Handle: handle, Message: "ok", AuthorName: "", AuthorEmail: "release-bot@example.invalid"},
 		{Handle: handle, Message: "ok", AuthorName: "Release Bot", AuthorEmail: ""},
-		{Handle: handle, Message: "bad\nmessage", AuthorName: "Release Bot", AuthorEmail: "release-bot@example.invalid"},
+		// V12-25: a multi-line message is fine, but not a NUL, a lone CR or a message with no subject line.
+		{Handle: handle, Message: "bad\x00message", AuthorName: "Release Bot", AuthorEmail: "release-bot@example.invalid"},
+		{Handle: handle, Message: "bad\rmessage", AuthorName: "Release Bot", AuthorEmail: "release-bot@example.invalid"},
+		{Handle: handle, Message: "bad\x1bmessage", AuthorName: "Release Bot", AuthorEmail: "release-bot@example.invalid"},
 	}
 	for _, req := range cases {
 		if _, err := provider.CreateLocalCommit(context.Background(), req); err == nil {
@@ -169,5 +172,33 @@ func TestProvider_CreateLocalCommit_NeverTouchesRemote(t *testing.T) {
 	}
 	if remotes := strings.TrimSpace(runTestGit(t, workspacePath, "remote")); remotes != "" {
 		t.Fatalf("workspace has remotes configured after CreateLocalCommit: %q — a real remote mutation would need one", remotes)
+	}
+}
+
+// V12-25 (ADR-058): a subject, a body and trailers are committed exactly as given, a line starting with # included.
+func TestProvider_CreateLocalCommit_KeepsAMultiLineMessageVerbatim(t *testing.T) {
+	t.Parallel()
+	provider, handle, _, _ := provisionLocalCommitFixture(t)
+	workspacePath, err := provider.workspacePath(handle)
+	if err != nil {
+		t.Fatalf("workspacePath: %v", err)
+	}
+	writeTestFile(t, filepath.Join(workspacePath, "service.txt"), "changed\n")
+	message := "feat(orders): keep the status on reopen\r\n\n#12 was closing it again.\n\nRelease-Set-Local-Commit-Marker: sha256:abc"
+	if _, err := provider.CreateLocalCommit(context.Background(), ports.CreateLocalCommitRequest{
+		Handle: handle, Message: message, AuthorName: "Release Bot", AuthorEmail: "release-bot@example.invalid",
+	}); err != nil {
+		t.Fatalf("CreateLocalCommit: %v", err)
+	}
+	got := runTestGit(t, workspacePath, "log", "-1", "--format=%B")
+	want := "feat(orders): keep the status on reopen\n\n#12 was closing it again.\n\nRelease-Set-Local-Commit-Marker: sha256:abc\n"
+	if strings.TrimRight(got, "\n") != strings.TrimRight(want, "\n") {
+		t.Fatalf("commit message = %q, want %q", got, want)
+	}
+	if subject := strings.TrimSpace(runTestGit(t, workspacePath, "log", "-1", "--format=%s")); subject != "feat(orders): keep the status on reopen" {
+		t.Fatalf("subject = %q", subject)
+	}
+	if trailer := strings.TrimSpace(runTestGit(t, workspacePath, "log", "-1", "--format=%(trailers:key=Release-Set-Local-Commit-Marker,valueonly)")); trailer != "sha256:abc" {
+		t.Fatalf("marker trailer = %q, want git to read it as a trailer", trailer)
 	}
 }

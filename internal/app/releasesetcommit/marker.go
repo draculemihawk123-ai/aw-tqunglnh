@@ -3,6 +3,7 @@ package releasesetcommit
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -73,14 +74,29 @@ func markerTrailer(marker string) string {
 	return ports.LocalCommitMarkerTrailerKey + ": " + marker
 }
 
-// commitMessageWithMarker appends markerTrailer(marker) to message on the
-// SAME line, never as a separate trailing paragraph: gitworktree.Provider.
-// CreateLocalCommit's own validCommitField rejects any message containing
-// "\r" or "\n" (single-line commit messages only, this port's own
-// established contract — V5-10A's own localcommit_test.go asserts exactly
-// this: `{Message: "bad\nmessage", ...}` is rejected). Still trivially
-// found by LocalCommitMarkerReader's own plain substring search over the
-// full raw commit body, regardless of where in that single line it sits.
+// commitMessageWithMarker (V12-25, ADR-058) puts markerTrailer(marker) as a Git trailer at the end of the message: the subject line
+// stays the operator's ("feat: …", the repository's convention), and the marker — still needed to trace the commit back to its
+// ReleaseSet operation — joins the message's last paragraph when that paragraph is already trailers (Co-Authored-By, Refs, …), or
+// becomes a trailer paragraph of its own. LocalCommitMarkerReader finds it by substring as before.
 func commitMessageWithMarker(message, marker string) string {
-	return message + " [" + markerTrailer(marker) + "]"
+	message = strings.TrimRight(message, " \t\r\n")
+	trailer := markerTrailer(marker)
+	paragraphs := strings.Split(message, "\n\n")
+	last := paragraphs[len(paragraphs)-1]
+	if len(paragraphs) > 1 && isTrailerBlock(last) {
+		return message + "\n" + trailer
+	}
+	return message + "\n\n" + trailer
+}
+
+// trailerLine is a Git trailer: "Key: value" with a token key.
+var trailerLine = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*: \S`)
+
+func isTrailerBlock(paragraph string) bool {
+	for _, line := range strings.Split(paragraph, "\n") {
+		if !trailerLine.MatchString(line) {
+			return false
+		}
+	}
+	return true
 }

@@ -25,6 +25,8 @@ import type { RedoPreview } from '../api/redo';
 import { RunGraphCanvas } from '../graph/RunGraphCanvas';
 import { NewTaskDialog } from './NewTaskDialog';
 import { CreateTasksDialog } from './CreateTasksDialog';
+import { commitTemplateQueryOptions } from './CommitTemplatePanel';
+import { renderCommitTemplate } from '../api/commitTemplate';
 import { RunHistoryPanel } from '../graph/RunHistoryPanel';
 import { formatDuration, mergeRunHistory } from '../graph/runHistory';
 import type { KanbanCard, WorkItemProjectedDetailResponse, WorkItemRun } from '../api/kanban';
@@ -679,6 +681,8 @@ function GraphTimelineTab({ workItemId, projectId, familyId, workItemTitle, onOp
   const [retryReason, setRetryReason] = useState('');
   // V11-07: the decision being made through the commit dialog (an outcome the node's release policy offers a commit for).
   const [deciding, setDeciding] = useState<{ approval: ApprovalRequestView; outcome: string } | null>(null);
+  // V12-25: the project's commit message template gives the commit dialog its default message.
+  const commitTemplateQuery = useQuery(commitTemplateQueryOptions(projectId, isOffline));
   // V12-17: the approval whose changes are being reviewed line by line.
   const [reviewing, setReviewing] = useState<ApprovalRequestView | null>(null);
   const { toasts, show, dismiss } = useToasts();
@@ -1006,7 +1010,7 @@ function GraphTimelineTab({ workItemId, projectId, familyId, workItemTitle, onOp
       {deciding && (
         <ApprovalCommitDialog
           projectId={projectId} familyId={familyId} approval={deciding.approval} outcome={deciding.outcome}
-          defaultMessage={workItemTitle ?? ''} isOffline={isOffline}
+          defaultMessage={renderCommitTemplate(commitTemplateQuery.data?.template, workItemTitle ?? '', workItemId ?? '')} isOffline={isOffline}
           pending={resolveApprovalMutation.isPending} error={resolveApprovalMutation.error}
           onClose={() => { setDeciding(null); resolveApprovalMutation.reset(); }}
           onSubmit={commit => resolveApprovalMutation.mutate({ approval: deciding.approval, outcome: deciding.outcome, commit })}

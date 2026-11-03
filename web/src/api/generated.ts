@@ -530,6 +530,18 @@ export function getNodeRunDetail(nodeRunId: string, opts: RequestOptions = {}): 
   return request<GetNodeRunDetailResponse>("GET", `/node-runs/${nodeRunId}`, undefined, opts);
 }
 
+export interface GetProjectCommitTemplateResponse {
+  projectId: string;
+  template: string;
+  default: string;
+  version?: number;
+}
+
+// GET /projects/{id}/commit-template (scope: PROJECT)
+export function getProjectCommitTemplate(id: string, opts: RequestOptions = {}): Promise<GetProjectCommitTemplateResponse> {
+  return request<GetProjectCommitTemplateResponse>("GET", `/projects/${id}/commit-template`, undefined, opts);
+}
+
 export interface GetProjectCostsResponse {
   projectId: string;
   usage: unknown;
@@ -1688,6 +1700,22 @@ export interface SealReleaseSetResponse {
 // POST /projects/{projectId}/release-sets/{releaseSetId}/seal (scope: PROJECT)
 export function sealReleaseSet(projectId: string, releaseSetId: string, body: unknown, opts: RequestOptions = {}): Promise<SealReleaseSetResponse> {
   return request<SealReleaseSetResponse>("POST", `/projects/${projectId}/release-sets/${releaseSetId}/seal`, body, opts);
+}
+
+export interface SetProjectCommitTemplateRequest {
+  template: string;
+}
+
+export interface SetProjectCommitTemplateResponse {
+  projectId: string;
+  template: string;
+  default: string;
+  version?: number;
+}
+
+// POST /projects/{id}/commit-template (scope: PROJECT)
+export function setProjectCommitTemplate(id: string, body: SetProjectCommitTemplateRequest, opts: RequestOptions = {}): Promise<SetProjectCommitTemplateResponse> {
+  return request<SetProjectCommitTemplateResponse>("POST", `/projects/${id}/commit-template`, body, opts);
 }
 
 export interface SetWorkItemBudgetRequest {

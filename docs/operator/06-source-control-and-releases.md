@@ -167,7 +167,7 @@ At an approval gate the agent's work is still **uncommitted** in the worktree (s
 dialog (and the CLI) lets you decide **and** commit in one action, without a terminal:
 
 1. In the Graph tab, choosing such an outcome opens the dialog instead of deciding at once. Tick *Commit*, choose files
-   (a box per directory is tri-state), type the message (pre-filled with the work item's title) and press the button.
+   (a box per directory is tri-state), type the message (pre-filled from the project's commit message template, below) and press the button.
 2. **The author is the machine's git identity**, never typed: aw reads `user.name` and `user.email` with `git config` inside
    each repository's worktree (a repository-local value wins over the global one) — in the `aw` process, so that process
    needs `HOME` (`USERPROFILE` on Windows) set to see the global configuration. If either is missing for a repository you
@@ -200,6 +200,25 @@ The same selection exists for a manual commit: `aw release-set local-commit … 
 [--unselected KEEP|PARK]` (HTTP: `files` and `unselected` in the body). Without `--path` the whole worktree is committed,
 exactly as before. The kit's `review-task.sh --commit "<message>" <runId> approved` decides **and** commits every changed
 file (file choice and `PARK` are in the web dialog).
+
+### Commit messages in the repository's convention (V12-25, ADR-058)
+
+A commit aw makes has the message you give it — a subject line, then an optional body — and aw adds **one trailer** at the
+end, `Release-Set-Local-Commit-Marker: sha256:…`, which ties the commit to its ReleaseSet operation (it joins your last
+paragraph when that paragraph is already trailers such as `Co-Authored-By:`, otherwise it is a paragraph of its own). The
+subject line is yours: no marker in brackets, no " (lần N)" suffix from a redone task.
+
+The message the dialog suggests comes from the project's **commit message template** (Project overview → *Commit message
+template*, or):
+
+```bash
+aw project set-commit-template --template "feat({taskId}): {title}" <projectId>   # --clear goes back to "{title}"
+aw project commit-template <projectId>
+```
+
+`{title}` is the work item's title without " (lần N)" (and without a leading `T-01: ` when the template places `{taskId}`
+itself), `{taskId}` that `T-01`, `{workItemId}` the id. A template may have a body (several lines); it cannot name another
+placeholder. A message may contain lines starting with `#` (they are kept: the commit is written verbatim).
 
 ## Read-only source/diff/log — never an interactive terminal
 

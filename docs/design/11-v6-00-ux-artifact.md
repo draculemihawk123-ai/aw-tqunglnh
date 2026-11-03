@@ -333,6 +333,8 @@ chỉ icon) để phân biệt `CancelRun` / `CancelWorkItem` / `ResolveWorkItem
 | 20 | query | Hàng đợi của family: thứ tự, trạng thái từng mục, đang chờ gì | `getWorkItemQueue` | `aw work-item queue-show` | `GetFamilyQueue` [ĐÃ CÓ: `internal/app/runtime/queue.go:GetFamilyQueue`] — chỉ đọc | V12-19 |
 | 21 | query | Chi phí theo task, đợt (WorkItem gốc) và project; ngân sách; hạn mức provider đang chạm | `getProjectCosts` | `aw run costs` | `GetProjectCosts` [ĐÃ CÓ: `internal/app/runtime/costs.go:GetProjectCosts`] — số liệu do CLI của provider báo, không phải hóa đơn | V12-23 |
 | 22 | command | Đặt hoặc bỏ trần ngân sách của một đợt (WorkItem gốc); vượt thì hàng đợi dừng | `setWorkItemBudget` | `aw work-item budget` | `SetWorkItemBudget` [ĐÃ CÓ: `internal/app/runtime/costs.go:SetWorkItemBudget`] | V12-23 |
+| 23 | query | Mẫu commit message của project (mặc định `{title}`) | `getProjectCommitTemplate` | `aw project commit-template` | `GetProjectCommitTemplate` [ĐÃ CÓ: `internal/app/catalog/commit_template.go:GetCommitTemplate`] | V12-25 |
+| 24 | command | Đặt hoặc bỏ mẫu commit message (`{title}`, `{taskId}`, `{workItemId}`); marker luôn là trailer cuối thân commit | `setProjectCommitTemplate` | `aw project set-commit-template` | `SetProjectCommitTemplate` [ĐÃ CÓ: `internal/app/catalog/commit_template.go:SetCommitTemplate`] | V12-25 |
 
 ## 9. Screen 8 — Run graph & timeline (+ diagnostics/recovery)
 

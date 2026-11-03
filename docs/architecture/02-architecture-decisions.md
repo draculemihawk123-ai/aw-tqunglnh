@@ -1606,9 +1606,28 @@ definition và diff version.
 
 **Hệ quả:** route 123, 124; hai dòng UX Screen 7 (21, 22); parity; `Tx.Budgets()`.
 
-## 60. Baseline sau review thiết kế
+## 60. ADR-058 — Commit message theo quy ước của repository: marker là trailer cuối thân, mẫu message theo project
 
-ADR-001…057 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-25, UX-13):** commit do aw tạo có tiêu đề là tiêu đề WorkItem kèm "(lần 3)" và chuỗi
+`[Release-Set-Local-Commit-Marker: sha256:…]` ngay trên dòng tiêu đề, không có thân. Lý do cũ: adapter Git chỉ nhận message một dòng.
+
+**Quyết định:**
+
+1. Adapter Git nhận message nhiều dòng (dòng tiêu đề không rỗng, thân tùy chọn; cấm NUL, CR đơn và ký tự điều khiển khác ngoài
+   xuống dòng và tab), ghi bằng `git commit --cleanup=verbatim -F -` (dòng bắt đầu bằng `#` được giữ).
+2. Marker vẫn bắt buộc (truy ngược ReleaseSet), nhưng là **trailer** cuối thân: nối vào đoạn cuối nếu đoạn đó đã là trailer,
+   không thì thành đoạn riêng. `FindLocalCommitByMarker` tìm như cũ (chuỗi con).
+3. Mẫu message theo project (`project_settings`, migration 0060, khóa `commit_message_template`): `GetProjectCommitTemplate`/
+   `SetProjectCommitTemplate` (`GET`/`POST /projects/{id}/commit-template`, `aw project commit-template`/`set-commit-template`).
+   Biến: `{title}` (bỏ hậu tố " (lần N)", bỏ tiền tố `T-01: ` khi mẫu có `{taskId}`), `{taskId}`, `{workItemId}`; mặc định `{title}`.
+   Giao diện điền message mặc định của hộp commit ở cổng duyệt từ mẫu.
+4. Tiêu đề WorkItem khi làm lại vẫn giữ " (lần N)" (để phân biệt trên bảng); chỉ commit message bỏ nó.
+
+**Hệ quả:** commit cũ (marker trên dòng tiêu đề) vẫn được nhận diện; route 125, 126; hai dòng UX Screen 7 (23, 24); parity.
+
+## 61. Baseline sau review thiết kế
+
+ADR-001…058 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1661,6 +1680,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-058 (V12-25): commit message nhiều dòng, marker là trailer cuối thân, mẫu commit message theo project (bỏ " (lần N)").
 - ADR-057 (V12-23): trang chi phí theo task/đợt/project từ số liệu provider, trần ngân sách theo WorkItem gốc; hàng đợi dừng khi vượt trần hoặc chạm hạn mức provider.
 - ADR-056 (V12-21): giao diện publish manifest bằng cách server chạy `aw-publish.py` của kit trên đường dẫn người vận hành cấu hình lúc khởi động.
 - ADR-055 (V12-20) cho phép fetch nhánh gốc từ `origin` khi người vận hành đồng bộ worktree (chỉ fast-forward, không push); release xóa nhánh worktree đã merge.

@@ -35,12 +35,12 @@ func (p *Provider) CreateLocalCommit(ctx context.Context, req ports.CreateLocalC
 		return workspace.Revision{}, ErrWorkspaceReleased
 	}
 
-	message := strings.TrimSpace(req.Message)
+	message := normalizeCommitMessage(req.Message)
 	authorName := strings.TrimSpace(req.AuthorName)
 	authorEmail := strings.TrimSpace(req.AuthorEmail)
-	if !validCommitField(message) || !validCommitField(authorName) || !validCommitField(authorEmail) {
+	if !validCommitMessage(message) || !validCommitField(authorName) || !validCommitField(authorEmail) {
 		return workspace.Revision{}, fmt.Errorf(
-			"%w: commit message and author name/email are required and must not contain control characters", ErrInvalidSpec)
+			"%w: commit message (a subject line, then an optional body) and author name/email are required and must not contain control characters", ErrInvalidSpec)
 	}
 
 	workspacePath, err := p.workspacePath(req.Handle)
@@ -63,10 +63,7 @@ func (p *Provider) CreateLocalCommit(ctx context.Context, req ports.CreateLocalC
 		if len(status) == 0 {
 			return workspace.Revision{}, ErrNothingToCommit
 		}
-		if _, err := p.runGit(ctx, workspacePath,
-			"-c", "user.name="+authorName, "-c", "user.email="+authorEmail,
-			"commit", "-m", message,
-		); err != nil {
+		if err := p.commitWithMessage(ctx, workspacePath, message, authorName, authorEmail); err != nil {
 			return workspace.Revision{}, err
 		}
 	}
@@ -78,6 +75,51 @@ func (p *Provider) CreateLocalCommit(ctx context.Context, req ports.CreateLocalC
 	return workspace.Revision{
 		RepositoryID: inspection.RepositoryID, VCSObjectID: head, WorkspaceGeneration: inspection.Generation,
 	}, nil
+}
+
+// normalizeCommitMessage (V12-25, ADR-058) trims the message and its lines' trailing spaces and turns CRLF into LF.
+func normalizeCommitMessage(message string) string {
+	message = strings.ReplaceAll(message, "\r\n", "\n")
+	lines := strings.Split(strings.TrimSpace(message), "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+	return strings.Join(lines, "\n")
+}
+
+// validCommitMessage (V12-25) accepts a subject line and an optional body: valid UTF-8, a non-empty first line, no NUL, CR or other
+// control characters than newline and tab.
+func validCommitMessage(message string) bool {
+	if message == "" || !utf8.ValidString(message) {
+		return false
+	}
+	if subject, _, _ := strings.Cut(message, "\n"); strings.TrimSpace(subject) == "" {
+		return false
+	}
+	for _, r := range message {
+		if r == '\n' || r == '\t' {
+			continue
+		}
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+// commitWithMessage commits the staged changes with message exactly as given (read from stdin, `--cleanup=verbatim`: a line that
+// starts with # is kept, nothing is rewrapped).
+func (p *Provider) commitWithMessage(ctx context.Context, workspacePath, message, authorName, authorEmail string) error {
+	_, code, err := p.runGitIO(ctx, workspacePath, nil, []byte(message+"\n"),
+		"-c", "user.name="+authorName, "-c", "user.email="+authorEmail,
+		"commit", "--cleanup=verbatim", "-F", "-")
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("%w: git commit exited with code %d", ErrGit, code)
+	}
+	return nil
 }
 
 func validCommitField(value string) bool {

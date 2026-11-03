@@ -123,6 +123,12 @@ func catalogRoutes() []Route {
 			return catalog.RunProjectRename(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "project", "rename"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectCommitTemplate(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "commit-template"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return catalog.RunProjectSetCommitTemplate(ctx, deps(d), a, s.Stdout, s.Stderr)
+		}, "project", "set-commit-template"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return catalog.RunProjectArchive(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "project", "archive"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {

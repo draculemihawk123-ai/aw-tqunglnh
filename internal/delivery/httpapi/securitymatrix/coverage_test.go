@@ -73,8 +73,9 @@ var noCrossProjectProof = []string{
 	"createRootWorkItem",
 	"diffProjectDefinitionVersions",
 	"getApprovalRelease",
-	"getProjectCosts", // V12-23: a read of the whole project (as listNeedsYou)
-	"getDefinitionManifest", // V12-21: the project id selects operator configuration, not a stored entity
+	"getProjectCommitTemplate", // V12-25: a project setting (key/value), read in the project's own scope
+	"getProjectCosts",          // V12-23: a read of the whole project (as listNeedsYou)
+	"getDefinitionManifest",    // V12-21: the project id selects operator configuration, not a stored entity
 	"getProjectDefinition",
 	"getProjectDefinitionVersion",
 	"getProjectionRebuildOperationStatus",
@@ -123,9 +124,10 @@ var noCrossProjectProof = []string{
 	"runDefinitionManifest", // V12-21: as getDefinitionManifest
 	"startWorkflowRun",
 	"submitWaitSignal",
-	"setWorkItemBudget", // V12-23: resolves the project from the work item
-	"setWorkItemQueue", // V12-19: resolves the project from the work item
-	"useNewCli", // V12-05: resolves the project from the work item like recreateWorkItem
+	"setProjectCommitTemplate", // V12-25: as getProjectCommitTemplate
+	"setWorkItemBudget",        // V12-23: resolves the project from the work item
+	"setWorkItemQueue",         // V12-19: resolves the project from the work item
+	"useNewCli",                // V12-05: resolves the project from the work item like recreateWorkItem
 	"validateProjectDefinitionDraft",
 	"watchProjectEvents",
 	"withdrawScopeExpansion",

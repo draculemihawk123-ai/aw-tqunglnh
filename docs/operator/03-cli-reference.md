@@ -36,7 +36,7 @@ Resource commands (aw <resource> <action> [flags]):
   message                append|content|context-snapshot|list|upload-attachment
   node-run               retry-blocked
   pack-assignment        assign|list
-  project                create|list|show
+  project                archive|commit-template|create|list|rename|restore|set-commit-template|show
   projection             rebuild|rebuild-status|status
   release-set            abandon|create|list|local-commit|local-commit status|seal|show
   repository             list|onboarding|readiness|register|retry-probe|show

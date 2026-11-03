@@ -15,6 +15,7 @@ import {
 import { ArrowLeft, Boxes, ChevronRight, Columns3, FolderGit2, Plus } from '../components/icons';
 import { AssignPackDialog } from './AssignPackDialog';
 import { ProjectStatus } from './ProjectStatus';
+import { CommitTemplatePanel } from './CommitTemplatePanel';
 import { RepositoryReadinessDialog } from './RepositoryReadinessDialog';
 import { ArchiveProjectDialog, RenameProjectDialog } from './ProjectDialogs';
 import {
@@ -455,6 +456,8 @@ export function ProjectsScreen({ view, projectId, onSelectProject, onNavigate, o
         <ProjectIdentity project={project} repoCount={repos.length} componentCount={components.length} blockerCount={blockerCount} onBack={() => onNavigate?.('projects')} onRestore={() => restoreProject(project)} />
         {/* V12-24: the project's status, and the report */}
         <ProjectStatus projectId={project.id} projectName={project.name} isOffline={isOffline} onOpenTask={onOpenTask} />
+        {/* V12-25: the default commit message, in the repository's convention */}
+        <CommitTemplatePanel projectId={project.id} isOffline={isOffline} readOnly={readOnly} />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
           <section className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow overflow-hidden">
             <div className="px-5 py-3 border-b border-[#CDD5DF] bg-[#F8FAFC] flex items-center justify-between"><h2 className="text-sm font-semibold">Repository onboarding</h2><FolderGit2 size={15} aria-hidden className="text-[#475569]" /></div>

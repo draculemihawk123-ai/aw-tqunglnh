@@ -131,10 +131,7 @@ func (p *Provider) createSelectedLocalCommit(ctx context.Context, workspacePath 
 		_, _ = p.runGit(ctx, workspacePath, "reset", "-q")
 		return fmt.Errorf("%w: staging produced %d paths for a selection of %d", ErrGit, len(staged), len(paths))
 	}
-	if _, err := p.runGit(ctx, workspacePath,
-		"-c", "user.name="+authorName, "-c", "user.email="+authorEmail,
-		"commit", "-m", message,
-	); err != nil {
+	if err := p.commitWithMessage(ctx, workspacePath, message, authorName, authorEmail); err != nil {
 		return err
 	}
 	committed, err := p.nameList(ctx, workspacePath, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", "HEAD")

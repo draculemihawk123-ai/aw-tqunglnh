@@ -105,6 +105,7 @@ func RegisterRoutes(registry *httpapi.RouteRegistry, deps Dependencies) {
 		ScopeKind: httpapi.ScopeProject, RequestSchema: renameProjectRequestBody{}, ResponseSchema: appcatalog.RenameProjectResult{},
 		Handler: h.renameProject,
 	})
+	registerCommitTemplateRoutes(registry, h) // V12-25
 	registry.Register(httpapi.RouteDescriptor{
 		Method: http.MethodPost, Path: "/projects/{id}/archive", OperationID: "projectsArchive",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: reasonRequestBody{}, ResponseSchema: appcatalog.ProjectStatusResult{},
