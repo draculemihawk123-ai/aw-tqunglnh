@@ -102,6 +102,7 @@ type Tx struct {
 	artifacts          *ArtifactRepository
 	messages           *MessageRepository
 	contextSnapshots   *ContextSnapshotRepository
+	queue              *QueueRepository
 	agentEvents        *AgentEventsRepository
 	checkpoints        *CheckpointsRepository
 	safeSettings       *SafeSettingsRepository
@@ -141,6 +142,7 @@ func newTx() Tx {
 		artifacts:        &ArtifactRepository{catalog: catalog},
 		messages:         &MessageRepository{work: workRepo, runtime: runtimeRepo},
 		contextSnapshots: &ContextSnapshotRepository{runtime: runtimeRepo},
+		queue:            &QueueRepository{},
 		agentEvents:      &AgentEventsRepository{},
 		checkpoints:      &CheckpointsRepository{},
 		// safeSettings is seeded at Version 1 with the zero-value ("never
@@ -173,6 +175,7 @@ func (t Tx) clone() Tx {
 	clone.artifacts = t.artifacts.cloneWith(clone.catalog)
 	clone.messages = t.messages.cloneWith(clone.work, clone.runtime)
 	clone.contextSnapshots = t.contextSnapshots.cloneWith(clone.runtime)
+	clone.queue = t.queue.clone()
 	clone.agentEvents = t.agentEvents.clone()
 	clone.checkpoints = t.checkpoints.clone()
 	clone.safeSettings = t.safeSettings.clone()
@@ -198,6 +201,7 @@ func (t Tx) Approvals() ports.ApprovalRepository                   { return t.ap
 func (t Tx) Artifacts() ports.ArtifactRepository                   { return t.artifacts }
 func (t Tx) Messages() ports.MessageRepository                     { return t.messages }
 func (t Tx) ContextSnapshots() ports.ContextSnapshotRepository     { return t.contextSnapshots }
+func (t Tx) Queue() ports.QueueRepository                          { return t.queue }
 func (t Tx) AgentEvents() ports.AgentEventsRepository              { return t.agentEvents }
 func (t Tx) Checkpoints() ports.CheckpointsRepository              { return t.checkpoints }
 func (t Tx) SafeSettings() ports.SafeSettingsRepository            { return t.safeSettings }

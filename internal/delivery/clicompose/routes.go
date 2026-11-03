@@ -267,6 +267,12 @@ func workItemRoutes() []Route {
 			return redo.UseNewCLI(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "use-new-cli"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.Queue(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "queue"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
+			return redo.QueueShow(ctx, redoDeps(d), a, s.Stdout, s.Stderr)
+		}, "work-item", "queue-show"),
+		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {
 			return workitem.RunWorkItemList(ctx, deps(d), a, s.Stdout, s.Stderr)
 		}, "work-item", "list"),
 		route(NeedUoW, func(ctx context.Context, d *Deps, a []string, s IO) error {

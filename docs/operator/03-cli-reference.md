@@ -47,7 +47,7 @@ Resource commands (aw <resource> <action> [flags]):
   task-family            show
   version                diff|show
   wait                   signal
-  work-item              cancel|children|create|create-child|detail|kanban|list|mark-ready|readiness|show
+  work-item              cancel|children|create|create-child|detail|kanban|list|mark-ready|queue|queue-show|readiness|recreate|redo-preview|retry|show|use-new-cli
   workspace-set          release|release-context|show
 
 Global options (any resource command; env AW_DB, AW_ARTIFACT_ROOT, ...):
@@ -118,6 +118,7 @@ UI you can script. Most are `show`/`list`; the ones whose name or arguments are 
 | Command | Reads |
 |---|---|
 | `aw work-item kanban --project-id <p> [--status <S>]... [--family-id <f>]` | The board: **projected** cards (status, blocker count, active run, run count, repository badges) plus `freshness`. A `STALE` board is a real answer, not an error. `--status` repeats. |
+| `aw work-item queue-show <workItemId>` | The queue of the work item's family (V12-19): entries in order (`QUEUED`/`STARTED`, the run the queue started, why the head could not start) and `waiting` — what the next task waits for. |
 | `aw work-item detail --project-id <p> <workItemId>` | One card (projected, possibly stale) next to its **freshly recomputed** readiness and the **authoritative** `runs` list — every run the work item has had, oldest first. Act on `readiness`, never on `card`. |
 | `aw work-item list` / `aw work-item show` | The **authoritative** list / detail, straight from the work-item rows. |
 | `aw work-item children --project-id <p> <workItemId>` | The work item's direct children (not grandchildren). |

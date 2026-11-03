@@ -347,6 +347,34 @@ snapshots, and `listMessages` reports it as `"delivered": true` (the Chat tab sh
 accepted and reaches no prompt. Running a task again with its notes (`--carry-messages`) carries an aimed message with its
 target, and drops a next-attempt-only message that was already delivered.
 
+## Queueing tasks of a family (V12-19)
+
+A family shares one worktree, so its tasks run one after another. Instead of starting each one when the one before is done,
+queue them:
+
+```bash
+aw work-item queue <T-01>                       # last in the family queue
+aw work-item queue <T-02>
+aw work-item queue <T-03> --waits-for <T-01>    # also wait for T-01 to be DONE
+aw work-item queue <T-02> --remove              # take a queued task out
+aw work-item queue-show <T-01>                  # the queue and what it waits for
+```
+
+HTTP: `POST /work-items/{id}/queue` with `{"queued": true, "position": 2, "waitsForWorkItemId": "..."}` (Idempotency-Key
+required), `GET /work-items/{id}/queue`. The web UI shows the queue on a task's Overview (**Add to queue**, **Remove from queue**).
+
+The worker checks the queues every 10 seconds and starts the first `QUEUED` task (lowest position) with its pinned workflow
+version, as `aw run start` would, when all of these hold:
+
+- the task the queue started before it is `DONE`;
+- no run of the family is active;
+- the task it waits for (`--waits-for`), if any, is `DONE`.
+
+A task the queue started that **failed or was cancelled pauses the queue** (`waiting` says `paused: …`): run it again (the queue
+moves on when it is `DONE`) or take the next task out. A task that cannot start (not `READY`, a baseline not admitted, …) stays
+`QUEUED` with the reason in `problem`, and the next check tries again. Only a `READY`-able work item with a pinned workflow
+version can be queued; a `DONE` or `CANCELLED` one is refused.
+
 ## Setting up a repository before an agent writes — readiness profile and baseline (V9-08)
 
 Initialization is a phase of its own with evidence, not something an agent discovers by failing. A repository

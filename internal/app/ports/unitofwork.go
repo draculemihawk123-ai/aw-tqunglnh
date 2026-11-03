@@ -97,6 +97,8 @@ type Tx interface {
 	// ContextSnapshotRepository's own doc comment,
 	// internal/app/ports/contextsnapshot.go).
 	ContextSnapshots() ContextSnapshotRepository
+	// Queue (V12-19, ADR-054) is the family task queues.
+	Queue() QueueRepository
 	// AgentEvents is populated now (V5-08A, docs/design/07-v5-execution-evidence.md):
 	// the production, registry-normalized agent_events contract (see
 	// AgentEventsRepository's own doc comment, internal/app/ports/agentevent.go).

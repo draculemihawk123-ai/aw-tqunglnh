@@ -18,6 +18,7 @@ import (
 	"github.com/taQuangLing/agent-workflow/internal/app/cliupgrade"
 	"github.com/taQuangLing/agent-workflow/internal/app/config"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/runtime"
 	"github.com/taQuangLing/agent-workflow/internal/app/workitemredo"
 	"github.com/taQuangLing/agent-workflow/internal/delivery/cli"
 )
@@ -53,6 +54,14 @@ func init() {
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"work-item", "use-new-cli"}, Scope: cli.ScopeProject,
 		AppOperation: commandTypeUseNewCLI, HTTPOperationID: "useNewCli",
+	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"work-item", "queue"}, Scope: cli.ScopeProject,
+		AppOperation: commandTypeSetQueue, HTTPOperationID: "setWorkItemQueue",
+	})
+	cli.MustRegister(cli.Descriptor{
+		Path: []string{"work-item", "queue-show"}, Scope: cli.ScopeProject,
+		AppOperation: appOpGetQueue, HTTPOperationID: "getWorkItemQueue",
 	})
 	cli.MustRegister(cli.Descriptor{
 		Path: []string{"work-item", "redo-preview"}, Scope: cli.ScopeProject,
@@ -265,6 +274,106 @@ func UseNewCLI(ctx context.Context, deps Dependencies, args []string, stdout, st
 	return cli.EncodeCommandResult(stdout, cli.ResultEnvelope{
 		IdempotencyKey: envelope.Command.IdempotencyKey, Replayed: dispatched.Replayed, Result: dispatched.Result,
 	})
+}
+
+// commandTypeSetQueue and appOpGetQueue name the V12-19 queue operations (HTTP setWorkItemQueue / getWorkItemQueue).
+const (
+	commandTypeSetQueue = "SetWorkItemQueue"
+	appOpGetQueue       = "GetFamilyQueue"
+)
+
+// setQueueWire mirrors internal/delivery/httpapi/redo's SetQueueRequest, and setQueueHash its request hash, so the HTTP route and
+// this command replay identically.
+type setQueueWire struct {
+	Queued             bool   `json:"queued"`
+	Position           *int   `json:"position,omitempty"`
+	WaitsForWorkItemID string `json:"waitsForWorkItemId,omitempty"`
+}
+
+type setQueueHash struct {
+	WorkItemID string       `json:"workItemId"`
+	Body       setQueueWire `json:"body"`
+}
+
+// Queue implements `aw work-item queue <workItemId> [--waits-for <workItemId>] [--position <n>] [--remove]` (V12-19, ADR-054): put
+// the work item in its family's queue (the worker starts it when its turn comes) or take it out.
+func Queue(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("work-item queue", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	principalConfigPath := cli.BindPrincipalFlag(fs)
+	idempotencyKey := cli.BindIdempotencyKeyFlag(fs)
+	waitsFor := fs.String("waits-for", "", "start only once this work item of the same family is DONE")
+	position := fs.Int("position", 0, "place in the family queue (lower first); 0 = last")
+	remove := fs.Bool("remove", false, "take the work item out of the queue")
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		return usageErrorf("usage: aw work-item queue <workItemId> [--waits-for <workItemId>] [--position <n>] [--remove]")
+	}
+	workItemID := fs.Arg(0)
+	wire := setQueueWire{Queued: !*remove, WaitsForWorkItemID: *waitsFor}
+	if *position > 0 {
+		p := *position
+		wire.Position = &p
+	}
+	principal, err := loadPrincipal(*principalConfigPath)
+	if err != nil {
+		return err
+	}
+	projectID, err := loadWorkItemProjectID(ctx, deps.UoW, workItemID)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(setQueueHash{WorkItemID: workItemID, Body: wire})
+	if err != nil {
+		return err
+	}
+	envelope := cli.BuildEnvelope(cli.EnvelopeRequest{
+		Principal: principal, CommandType: commandTypeSetQueue, Scope: ports.ProjectScope(projectID),
+		NormalizedPayload: payload, IdempotencyKey: *idempotencyKey, IDSource: deps.Service.IDs, Now: deps.Now,
+	})
+	dispatched, err := cli.Dispatch(ctx, deps.UoW, envelope.Command, func(ctx context.Context) (any, error) {
+		return runtime.SetWorkItemQueue(ctx, deps.UoW, envelope.Command, runtime.SetQueueRequest{
+			ProjectID: projectID, WorkItemID: workItemID, Queued: wire.Queued, Position: wire.Position, WaitsForWorkItemID: wire.WaitsForWorkItemID,
+		})
+	})
+	if err != nil {
+		return err
+	}
+	return cli.EncodeCommandResult(stdout, cli.ResultEnvelope{
+		IdempotencyKey: envelope.Command.IdempotencyKey, Replayed: dispatched.Replayed, Result: dispatched.Result,
+	})
+}
+
+// QueueShow implements `aw work-item queue-show <workItemId>`: the queue of the work item's family and what it waits for.
+func QueueShow(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("work-item queue-show", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := parseFlags(fs, args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(fs.Arg(0)) == "" {
+		return usageErrorf("usage: aw work-item queue-show <workItemId>")
+	}
+	workItemID := fs.Arg(0)
+	projectID, err := loadWorkItemProjectID(ctx, deps.UoW, workItemID)
+	if err != nil {
+		return err
+	}
+	var familyID string
+	if err := deps.UoW.WithReadOnly(ctx, func(tx ports.Tx) error {
+		item, err := tx.Work().GetWorkItem(ctx, workItemID)
+		familyID = string(item.FamilyID)
+		return err
+	}); err != nil {
+		return err
+	}
+	queue, err := runtime.GetFamilyQueue(ctx, deps.UoW, projectID, familyID)
+	if err != nil {
+		return err
+	}
+	return cli.EncodeQueryResult(stdout, queue)
 }
 
 // Preview implements `aw work-item redo-preview <workItemId>`: what a retry or a redo would do and why one would refuse.

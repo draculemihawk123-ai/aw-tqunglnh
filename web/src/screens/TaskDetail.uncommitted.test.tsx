@@ -14,6 +14,7 @@ vi.mock('../api/generated', async () => {
   const actual = await vi.importActual<typeof import('../api/generated')>('../api/generated');
   return {
     ...actual,
+    getWorkItemQueue: vi.fn(async () => ({ projectId: 'proj-1', familyId: 'fam-1', entries: [] })), setWorkItemQueue: vi.fn(),
     getWorkItem: vi.fn(), getTaskFamily: vi.fn(), getWorkItemProjectedDetail: vi.fn(), getRunDiagnostics: vi.fn(),
     getRunGraph: vi.fn(), getRunTimeline: vi.fn(), getRunDetail: vi.fn(), resolveApproval: vi.fn(),
     getWorkspaceSetState: vi.fn(), getWorkspaceDiff: vi.fn(), getWorkspaceRepositoryLog: vi.fn(), requestWorkspaceReconciliation: vi.fn(),

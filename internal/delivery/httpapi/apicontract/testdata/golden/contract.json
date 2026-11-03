@@ -2454,6 +2454,41 @@
       }
     },
     {
+      "operationId": "getWorkItemQueue",
+      "method": "GET",
+      "path": "/work-items/{workItemId}/queue",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "struct {}",
+        "opaque": true
+      },
+      "responseSchema": {
+        "typeName": "redo.QueueResponse",
+        "fields": [
+          {
+            "name": "ProjectID",
+            "jsonTag": "projectId",
+            "type": "string"
+          },
+          {
+            "name": "FamilyID",
+            "jsonTag": "familyId",
+            "type": "string"
+          },
+          {
+            "name": "Entries",
+            "jsonTag": "entries",
+            "type": "[]runtime.QueueEntryView"
+          },
+          {
+            "name": "Waiting",
+            "jsonTag": "waiting,omitempty",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    {
       "operationId": "getWorkItemReadiness",
       "method": "GET",
       "path": "/projects/{projectId}/work-items/{workItemId}/readiness",
@@ -4894,6 +4929,87 @@
             "name": "Version",
             "jsonTag": "version",
             "type": "uint64"
+          }
+        ]
+      }
+    },
+    {
+      "operationId": "setWorkItemQueue",
+      "method": "POST",
+      "path": "/work-items/{workItemId}/queue",
+      "scopeKind": "PROJECT",
+      "requestSchema": {
+        "typeName": "redo.SetQueueRequest",
+        "fields": [
+          {
+            "name": "Queued",
+            "jsonTag": "queued",
+            "type": "bool"
+          },
+          {
+            "name": "Position",
+            "jsonTag": "position,omitempty",
+            "type": "*int"
+          },
+          {
+            "name": "WaitsForWorkItemID",
+            "jsonTag": "waitsForWorkItemId,omitempty",
+            "type": "string"
+          }
+        ]
+      },
+      "responseSchema": {
+        "typeName": "redo.SetQueueResponse",
+        "fields": [
+          {
+            "name": "WorkItemID",
+            "jsonTag": "workItemId",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemTitle",
+            "jsonTag": "workItemTitle",
+            "type": "string"
+          },
+          {
+            "name": "WorkItemStatus",
+            "jsonTag": "workItemStatus",
+            "type": "string"
+          },
+          {
+            "name": "Position",
+            "jsonTag": "position",
+            "type": "int"
+          },
+          {
+            "name": "WaitsForWorkItemID",
+            "jsonTag": "waitsForWorkItemId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "State",
+            "jsonTag": "state",
+            "type": "string"
+          },
+          {
+            "name": "RunID",
+            "jsonTag": "runId,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Problem",
+            "jsonTag": "problem,omitempty",
+            "type": "string"
+          },
+          {
+            "name": "Version",
+            "jsonTag": "version",
+            "type": "uint64"
+          },
+          {
+            "name": "UpdatedAt",
+            "jsonTag": "updatedAt",
+            "type": "time.Time"
           }
         ]
       }

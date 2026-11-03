@@ -495,6 +495,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 
 - **Mục tiêu:** xếp nhiều task vào hàng đợi của family. Task kế tự chạy khi task trước đi qua cổng duyệt cuối. Khai báo được
   "chờ task X". Family dùng chung một worktree nên hàng đợi luôn chạy tuần tự.
+- **Kết quả (đã xong, ADR-054):** bảng `work_item_queue_entries` (migration 0058), `SetWorkItemQueue`/`GetFamilyQueue`
+  (`POST`/`GET /work-items/{id}/queue`, `aw work-item queue`, `queue-show`). Worker quét mỗi 10 giây (`AdvanceFamilyQueues`), chạy
+  mục đầu khi task trước `DONE`, family không có run đang chạy và task được chờ `DONE`. Task trước hỏng thì hàng đợi dừng
+  ("paused: …"); không chạy được thì ghi `problem`. Điều kiện là `DONE` thay cho "qua cổng duyệt cuối" để không tranh worktree với
+  commit. Tab Overview có panel Queue (Add to queue, Wait for, Remove from queue). Test: `queue_sqlite_test.go`,
+  `FamilyQueue.test.tsx`; route inventory, security matrix, contract golden, UX doc.
 
 ### V12-20 — Đồng bộ với nhánh gốc và dọn nhánh (UX-24, UX-14)
 

@@ -327,6 +327,8 @@ chỉ icon) để phân biệt `CancelRun` / `CancelWorkItem` / `ResolveWorkItem
 | 16 | query | Xem trước chạy lại/làm lại: điều kiện, version, blocker sẽ gỡ, chi phí đã tiêu, file ngoài scope | `getWorkItemRedoPreview` | `aw work-item redo-preview` | `GetWorkItemRedoPreview` [ĐÃ CÓ: `internal/app/workitemredo/workitemredo.go:Service.Preview`] — chỉ đọc | V11-10 |
 | 17 | command | Dùng bản CLI mới cho node bị chặn vì drift: đo lại CLI, đăng ký build mới, publish workflow version mới ghim build đó, tùy chọn làm lại task | `useNewCli` | `aw work-item use-new-cli` | `UseNewCli` [ĐÃ CÓ: `internal/app/cliupgrade/cliupgrade.go:UseNewCLI`] — không repin run đang chạy; có xác nhận | V12-05 |
 | 18 | query | Needs you: mọi cổng duyệt đang chờ và blocker đang mở của các task trong project | `listNeedsYou` | `aw run needs-you` | `ListNeedsYou` [ĐÃ CÓ: `internal/app/runtime/needs_you.go:ListNeedsYou`] — chỉ đọc; hành động một chạm dùng các lệnh có sẵn | V12-16 |
+| 19 | command | Xếp task vào hàng đợi của family (vị trí, chờ task X) hoặc bỏ ra; worker chạy task kế khi task trước DONE | `setWorkItemQueue` | `aw work-item queue` | `SetWorkItemQueue` [ĐÃ CÓ: `internal/app/runtime/queue.go:SetWorkItemQueue`] — task trước hỏng thì hàng đợi dừng | V12-19 |
+| 20 | query | Hàng đợi của family: thứ tự, trạng thái từng mục, đang chờ gì | `getWorkItemQueue` | `aw work-item queue-show` | `GetFamilyQueue` [ĐÃ CÓ: `internal/app/runtime/queue.go:GetFamilyQueue`] — chỉ đọc | V12-19 |
 
 ## 9. Screen 8 — Run graph & timeline (+ diagnostics/recovery)
 

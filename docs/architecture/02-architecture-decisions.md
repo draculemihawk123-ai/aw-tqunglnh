@@ -1521,9 +1521,30 @@ code sản phẩm" viết cho `repro` làm `fix` cũng không sửa code, mất 
 **Hệ quả:** cảnh báo trong doc về "MessageRefs cùng OmittedMessageRefs là mọi message của WorkItem" nay hiểu là mọi message
 nhắm tới node đó; thêm trường vào schema `appendMessage`/`listMessages` (bổ sung, không phá vỡ).
 
-## 56. Baseline sau review thiết kế
+## 56. ADR-054 — Hàng đợi task của family: worker chạy task kế khi task trước DONE; task hỏng làm hàng đợi dừng
 
-ADR-001…053 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-19, UX-30):** người vận hành phải đợi task trước xong rồi tự bấm chạy task sau. Family dùng chung một worktree nên
+các task không chạy song song được.
+
+**Quyết định:**
+
+1. Bảng `work_item_queue_entries` (migration 0058): mỗi WorkItem tối đa một chỗ trong hàng đợi của family, có `position`,
+   `waitsForWorkItemId` (cùng family), trạng thái `QUEUED → STARTED | REMOVED`, `problem`, version CAS.
+   Lệnh `SetWorkItemQueue` (`POST /work-items/{id}/queue`, `aw work-item queue`) và truy vấn `GetFamilyQueue`
+   (`GET /work-items/{id}/queue`, `aw work-item queue-show`).
+2. Worker quét mỗi 10 giây (`AdvanceFamilyQueues`): chỉ mục `QUEUED` đứng đầu được chạy, và chỉ khi task hàng đợi chạy trước nó
+   đã `DONE`, family không có run đang chạy, task nó chờ (nếu có) đã `DONE`. Run được tạo qua `StartWorkflowRun` với version đã
+   ghim của WorkItem, actor `aw-queue`, idempotency key gắn version của mục (hai worker quét cùng lúc chỉ tạo một run).
+3. Fail-closed: task hàng đợi chạy mà hỏng hoặc bị hủy thì hàng đợi dừng; chạy lại task đó (khi `DONE` thì đi tiếp) hoặc bỏ task kế
+   ra. Không chạy được (chưa `READY`, baseline chưa đạt…) thì giữ `QUEUED` và ghi `problem`.
+4. Điều kiện là `DONE`, không phải "qua cổng duyệt cuối": sau cổng cuối còn commit và hoàn tất run, chạy task kế lúc đó sẽ tranh
+   worktree. Tạm dừng theo hạn mức để V12-23.
+
+**Hệ quả:** route 117 và 118, hai dòng UX Screen 7 (19, 20), parity; `Tx.Queue()`.
+
+## 57. Baseline sau review thiết kế
+
+ADR-001…054 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1576,6 +1597,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-054 (V12-19) thêm hàng đợi task của family: worker chạy task kế khi task trước `DONE`, task hỏng làm hàng đợi dừng.
 - ADR-053 (V12-18) cho message có người nhận: `targetNodeKey` (một node) và `nextAttemptOnly` (chỉ attempt kế tiếp, giao một lần, đọc từ snapshot).
 - ADR-052 (V12-16) thêm truy vấn `ListNeedsYou` (cổng duyệt đang chờ và blocker đang mở của project), trang Needs you, bộ đếm và thông báo trình duyệt; kênh ngoài để ADR sau.
 - ADR-051 (V12-11) thêm `resultSummary` cho mỗi activation và `stopReason` có kiểu cho chẩn đoán run.

@@ -84,6 +84,7 @@ var noCrossProjectProof = []string{
 	"getNodeRunDetail",
 	"getWorkItemProjectedDetail",
 	"getWorkItemRedoPreview",
+	"getWorkItemQueue", // V12-19: resolves the project from the work item
 	"listAttemptEvents",
 	"listProjectDefinitionVersions",
 	"listProjectDefinitions",
@@ -119,6 +120,7 @@ var noCrossProjectProof = []string{
 	"retryWorkItem",
 	"startWorkflowRun",
 	"submitWaitSignal",
+	"setWorkItemQueue", // V12-19: resolves the project from the work item
 	"useNewCli", // V12-05: resolves the project from the work item like recreateWorkItem
 	"validateProjectDefinitionDraft",
 	"watchProjectEvents",

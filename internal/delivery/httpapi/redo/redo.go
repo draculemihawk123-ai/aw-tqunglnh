@@ -85,6 +85,16 @@ func RegisterRoutes(routes *httpapi.RouteRegistry, deps Dependencies) {
 		Handler: retryHandler(deps),
 	})
 	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodGet, Path: "/work-items/{workItemId}/queue", OperationID: "getWorkItemQueue",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: struct{}{}, ResponseSchema: QueueResponse{},
+		Handler: getQueueHandler(deps),
+	})
+	routes.Register(httpapi.RouteDescriptor{
+		Method: http.MethodPost, Path: "/work-items/{workItemId}/queue", OperationID: "setWorkItemQueue",
+		ScopeKind: httpapi.ScopeProject, RequestSchema: SetQueueRequest{}, ResponseSchema: SetQueueResponse{},
+		Handler: setQueueHandler(deps),
+	})
+	routes.Register(httpapi.RouteDescriptor{
 		Method: http.MethodPost, Path: "/work-items/{workItemId}/use-new-cli", OperationID: "useNewCli",
 		ScopeKind: httpapi.ScopeProject, RequestSchema: UseNewCLIRequest{}, ResponseSchema: UseNewCLIResponse{},
 		Handler: useNewCLIHandler(deps),
@@ -262,6 +272,84 @@ func useNewCLIHandler(deps Dependencies) http.HandlerFunc {
 			return
 		}
 		_ = httpapi.EncodeResult(w, http.StatusCreated, UseNewCLIResponse{Result: result}, "")
+	}
+}
+
+// QueueResponse is GET /work-items/{workItemId}/queue's body: the queue of the work item's family (V12-19, ADR-054).
+type QueueResponse struct {
+	runtime.FamilyQueue
+}
+
+// SetQueueRequest is POST /work-items/{workItemId}/queue's body: queue the work item (queued true) or take it out.
+type SetQueueRequest struct {
+	Queued bool `json:"queued"`
+	// Position orders the family queue (lower first); omitted = last.
+	Position *int `json:"position,omitempty"`
+	// WaitsForWorkItemId: start only once this work item of the same family is DONE.
+	WaitsForWorkItemID string `json:"waitsForWorkItemId,omitempty"`
+}
+
+// SetQueueResponse is the work item's queue entry after the change.
+type SetQueueResponse struct {
+	runtime.QueueEntryView
+}
+
+func getQueueHandler(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		workItemID := r.PathValue("workItemId")
+		projectID, ok := resolveProject(w, ctx, deps, workItemID)
+		if !ok {
+			return
+		}
+		item, err := work.GetWorkItem(ctx, deps.UOW, ports.ProjectScope(projectID), workItemID)
+		if err != nil {
+			writeRedoError(w, err)
+			return
+		}
+		queue, err := runtime.GetFamilyQueue(ctx, deps.UOW, projectID, string(item.FamilyID))
+		if err != nil {
+			writeRedoError(w, err)
+			return
+		}
+		_ = httpapi.EncodeResult(w, http.StatusOK, QueueResponse{FamilyQueue: queue}, "")
+	}
+}
+
+func setQueueHandler(deps Dependencies) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := r.Context()
+		workItemID := r.PathValue("workItemId")
+		projectID, ok := resolveProject(w, ctx, deps, workItemID)
+		if !ok {
+			return
+		}
+		var body SetQueueRequest
+		cmd, ok := prepareCommand(w, r, projectID, "SetWorkItemQueue", &body, func() any {
+			return struct {
+				WorkItemID string          `json:"workItemId"`
+				Body       SetQueueRequest `json:"body"`
+			}{workItemID, body}
+		})
+		if !ok {
+			return
+		}
+		entry, err := runtime.SetWorkItemQueue(ctx, deps.UOW, cmd, runtime.SetQueueRequest{
+			ProjectID: projectID, WorkItemID: workItemID, Queued: body.Queued, Position: body.Position, WaitsForWorkItemID: body.WaitsForWorkItemID,
+		})
+		switch {
+		case errors.Is(err, runtime.ErrQueueNoWorkflowVersion), errors.Is(err, runtime.ErrQueueWorkItemClosed),
+			errors.Is(err, runtime.ErrQueueWrongFamily), errors.Is(err, runtime.ErrQueueWaitsForItself):
+			httpapi.WriteError(w, http.StatusUnprocessableEntity, httpapi.ErrorCodeInvalidRequest, err.Error(), nil)
+			return
+		case errors.Is(err, ports.ErrOptimisticConflict):
+			httpapi.WriteError(w, http.StatusConflict, httpapi.ErrorCodeConflict, err.Error(), nil)
+			return
+		case err != nil:
+			writeRedoError(w, err)
+			return
+		}
+		_ = httpapi.EncodeResult(w, http.StatusOK, SetQueueResponse{QueueEntryView: entry}, "")
 	}
 }
 

@@ -61,9 +61,11 @@ const (
 	projectionBatchSize        = 200
 	projectionLeaseTTL         = 30 * time.Second
 	attachmentClaimSweepPeriod = time.Minute
-	defaultShutdownGrace       = 30 * time.Second
-	localCommitWriteLeaseTTL   = 2 * time.Minute
-	pollIntervalDefault        = 200 * time.Millisecond
+	// queueAdvancePeriod (V12-19): how often the worker starts the next queued task of a family.
+	queueAdvancePeriod       = 10 * time.Second
+	defaultShutdownGrace     = 30 * time.Second
+	localCommitWriteLeaseTTL = 2 * time.Minute
+	pollIntervalDefault      = 200 * time.Millisecond
 )
 
 // runWorker is `aw worker`'s entry point: it wires SIGINT/SIGTERM into a
@@ -499,8 +501,9 @@ func (w *assembledWorker) run(ctx context.Context, stdout io.Writer) error {
 
 	loopCtx, cancelLoops := context.WithCancel(ctx)
 	var loops sync.WaitGroup
-	loops.Add(4)
+	loops.Add(5)
 	go func() { defer loops.Done(); w.closeDeadLocalCommits(loopCtx) }()
+	go func() { defer loops.Done(); w.advanceQueues(loopCtx) }()
 	go func() { defer loops.Done(); w.driveProjections(loopCtx) }()
 	go func() { defer loops.Done(); w.sweepAttachmentClaims(loopCtx) }()
 	go func() { defer loops.Done(); w.driveCompletion(loopCtx) }()
@@ -647,6 +650,27 @@ func probeChildProcess(ctx context.Context) error {
 		return fmt.Errorf("start `git --version`: %w", err)
 	}
 	return nil
+}
+
+// advanceQueues (V12-19, ADR-054) starts the next queued task of every family whose queue may move on
+// (runtime.AdvanceFamilyQueues: one task at a time, after the one before is DONE).
+func (w *assembledWorker) advanceQueues(ctx context.Context) {
+	ticker := time.NewTicker(queueAdvancePeriod)
+	defer ticker.Stop()
+	for {
+		report, err := runtime.AdvanceFamilyQueues(ctx, w.uow, w.ids, time.Now().UTC())
+		switch {
+		case err != nil && ctx.Err() == nil:
+			_ = w.logger.Warn(w.identity(), "queue advance failed", map[string]any{"error": err.Error()})
+		case len(report.Started) > 0:
+			_ = w.logger.Info(w.identity(), "started queued tasks", map[string]any{"workItems": report.Started})
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // closeDeadLocalCommits (V12-01) closes FAILED/EXECUTION_ERROR every local commit operation whose

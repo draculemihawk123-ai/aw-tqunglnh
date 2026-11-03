@@ -802,6 +802,18 @@ export function getWorkItemProjectedDetail(workItemId: string, opts: RequestOpti
   return request<GetWorkItemProjectedDetailResponse>("GET", `/work-items/${workItemId}/detail`, undefined, opts);
 }
 
+export interface GetWorkItemQueueResponse {
+  projectId: string;
+  familyId: string;
+  entries: unknown[];
+  waiting?: string;
+}
+
+// GET /work-items/{workItemId}/queue (scope: PROJECT)
+export function getWorkItemQueue(workItemId: string, opts: RequestOptions = {}): Promise<GetWorkItemQueueResponse> {
+  return request<GetWorkItemQueueResponse>("GET", `/work-items/${workItemId}/queue`, undefined, opts);
+}
+
 export interface GetWorkItemReadinessResponse {
   workItemId: string;
   status: string;
@@ -1615,6 +1627,30 @@ export interface SealReleaseSetResponse {
 // POST /projects/{projectId}/release-sets/{releaseSetId}/seal (scope: PROJECT)
 export function sealReleaseSet(projectId: string, releaseSetId: string, body: unknown, opts: RequestOptions = {}): Promise<SealReleaseSetResponse> {
   return request<SealReleaseSetResponse>("POST", `/projects/${projectId}/release-sets/${releaseSetId}/seal`, body, opts);
+}
+
+export interface SetWorkItemQueueRequest {
+  queued: boolean;
+  position?: number | null;
+  waitsForWorkItemId?: string;
+}
+
+export interface SetWorkItemQueueResponse {
+  workItemId: string;
+  workItemTitle: string;
+  workItemStatus: string;
+  position: number;
+  waitsForWorkItemId?: string;
+  state: string;
+  runId?: string;
+  problem?: string;
+  version: number;
+  updatedAt: string;
+}
+
+// POST /work-items/{workItemId}/queue (scope: PROJECT)
+export function setWorkItemQueue(workItemId: string, body: SetWorkItemQueueRequest, opts: RequestOptions = {}): Promise<SetWorkItemQueueResponse> {
+  return request<SetWorkItemQueueResponse>("POST", `/work-items/${workItemId}/queue`, body, opts);
 }
 
 export interface StartWorkflowRunRequest {

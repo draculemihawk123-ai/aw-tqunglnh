@@ -35,6 +35,7 @@ import { decodeDiffPatch, fetchWorkingTreeDiff, fetchWorkspaceSource, summarizeU
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
 import { commitAllowedFor } from '../api/approvalrelease';
 import { DiffReviewDialog } from '../review/DiffReviewDialog';
+import { FamilyQueuePanel } from './FamilyQueue';
 import type { ApprovalCommitBody } from '../api/approvalrelease';
 import { ApprovalCommitDialog, ReleaseStatusStrip } from './ApprovalRelease';
 import { RecreateDialog, RetryDialog, SupersessionLinks } from './RedoDialogs';
@@ -543,12 +544,14 @@ function TaskHeader({
 
 // ─── Overview Tab ─────────────────────────────────────────────────────────────
 
-function OverviewTab({ workItem, runDiagnostics, runs }: { workItem?: GetWorkItemResponse; runDiagnostics?: RunDiagnosticsResponse; runs?: WorkItemRun[] }) {
+function OverviewTab({ workItem, runDiagnostics, runs, workItemId, isOffline }: { workItem?: GetWorkItemResponse; runDiagnostics?: RunDiagnosticsResponse; runs?: WorkItemRun[]; workItemId?: string; isOffline?: boolean }) {
   const contract = (workItem?.contract ?? null) as WorkItemContract | null;
 
   return (
     <div className="flex-1 overflow-y-auto p-6 bg-[#E9EDF3]">
       <div className="max-w-4xl mx-auto space-y-4">
+        {/* V12-19: the family queue */}
+        {workItemId && <FamilyQueuePanel workItemId={workItemId} isOffline={isOffline} />}
         <div className="bg-white rounded-[12px] border border-[#CDD5DF] island-shadow p-5">
           <h2 className="text-sm font-semibold text-[#172033] mb-4">Contract</h2>
           {!contract ? (
@@ -2584,7 +2587,7 @@ export function TaskDetailScreen({ projectId, projectName, workItemId, activeTab
         runDiagnostics={runDiagnosticsQuery.data} onActionSettled={onActionSettled}
       />
       <div id="workitem-tab-panel" role="tabpanel" aria-labelledby={`tab-${activeTab}`} className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} />}
+      {activeTab === 'task-overview'   && <OverviewTab workItem={workItemQuery.data} runDiagnostics={runDiagnosticsQuery.data} runs={cardQuery.data?.runs} workItemId={workItemId} isOffline={isOffline} />}
       {activeTab === 'task-graph'      && (
         <GraphTimelineTab workItemId={workItemId} projectId={projectId} familyId={familyId} workItemTitle={workItemQuery.data?.title} onOpenWorkspace={() => onTabChange('task-workspace', { projectId, taskId: workItemId })} runId={activeRunId} runDiagnostics={runDiagnosticsQuery.data} isOffline={isOffline} onActionSettled={onActionSettled}
           focusNodeRunId={focusNodeRunId} onOpenEvidence={nodeKey => { setEvidenceNode(nodeKey); onTabChange('task-evidence', { projectId, taskId: workItemId }); }}
