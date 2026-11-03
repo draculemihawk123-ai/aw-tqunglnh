@@ -391,7 +391,7 @@ describe('GraphTimelineTab (V7-12)', () => {
     expect(within(joinRow).getByText('not yet reached')).toBeInTheDocument();
   });
 
-  it('shows what the provider reported an attempt used and the run total (V9-13a), and no usage for an attempt that reported none', async () => {
+  it('shows the run total in the banner and what each activation cost in the node history (V9-13a, V12-13)', async () => {
     vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1' } as never) } as never);
     vi.mocked(api.getRunDiagnostics).mockResolvedValue({
       runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'ACTIVE', runState: 'RUNNING',
@@ -414,12 +414,35 @@ describe('GraphTimelineTab (V7-12)', () => {
     } as never);
     renderGraphTab();
 
-    expect(await screen.findByText(/11,251 in \/ 563 out \(41,515 cached\) · \$0\.0884/, { selector: 'span' })).toBeInTheDocument();
-    await userEvent.click(screen.getByText('EXECUTION_ATTEMPT #1').closest('button')!);
-    expect(screen.getAllByText(/11,251 in \/ 563 out/).length).toBe(2); // run header + the expanded attempt
-    await userEvent.click(screen.getByText('EXECUTION_ATTEMPT #2').closest('button')!);
-    expect(screen.getAllByText(/11,251 in \/ 563 out/).length).toBe(1); // #1 collapsed; #2 reported nothing, so only the run header remains
-    expect(screen.queryByText(/^Usage:/)).not.toBeInTheDocument();
+    const banner = await screen.findByTestId('run-banner');
+    expect(await within(banner).findByText(/11,251 in \/ 563 out \(41,515 cached\) · \$0\.0884/)).toBeInTheDocument();
+    // the old Timeline column is gone (V12-13)
+    expect(screen.queryByRole('list', { name: 'Run timeline' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: /^agent-a, AGENT/ }));
+    const history = await screen.findByTestId('node-history');
+    expect(within(history).getByTestId('history-row-nr-a')).toHaveTextContent('$0.09');
+  });
+
+  it('the banner says why the run stopped (stopReason) and opens that node (V12-13)', async () => {
+    vi.mocked(api.getWorkItemProjectedDetail).mockResolvedValue({ ...cardDetail({ activeRunId: 'run-1', status: 'BLOCKED' } as never) } as never);
+    vi.mocked(api.getRunDiagnostics).mockResolvedValue({
+      runId: 'run-1', projectId: 'proj-1', workItemId: 'wi-1', workItemStatus: 'BLOCKED', runState: 'FAILED',
+      blockers: [], orphanedAttempts: [], orphanedAttemptsTruncated: false, providers: [], isolation: [], repositoryWorkspaces: [],
+      stopReason: { code: 'COMMAND_NOT_STARTED', nodeKey: 'agent-a', nodeRunId: 'nr-a', message: 'The agent-a command could not be started (attempt 4); no evidence was recorded.' },
+      validActions: [],
+    } as never);
+    vi.mocked(api.getRunGraph).mockResolvedValue({
+      runId: 'run-1', manifestRevision: 1, nodes: FORK_JOIN_NODES, possibleEdges: FORK_JOIN_EDGES, takenEdges: [],
+      activations: [fixtureActivation({ nodeRunId: 'nr-a', nodeKey: 'agent-a', activationSequence: 1, state: 'FAILED' })],
+      branchTokens: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' },
+    } as never);
+    vi.mocked(api.getRunTimeline).mockResolvedValue({ runId: 'run-1', entries: [], freshness: { generation: 1, asOfJournalPosition: 1, status: 'LIVE' } } as never);
+    renderGraphTab();
+    const reason = await screen.findByTestId('stop-reason');
+    expect(reason).toHaveTextContent('could not be started (attempt 4)');
+    expect(screen.getByTestId('node-history-hint')).toBeInTheDocument();
+    await userEvent.click(reason);
+    expect(await screen.findByRole('complementary', { name: 'History of agent-a' })).toBeInTheDocument();
   });
 
   it('an admission-blocked node offers a real Retry action; a failed retry never fabricates a second blocked activation', async () => {

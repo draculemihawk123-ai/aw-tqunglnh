@@ -416,6 +416,13 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 - **Test:** Playwright trên stack thật (`aw serve` và worker với agent giả lập) cho các hành trình: run có vòng lặp, run hỏng
   giữa chừng, task hai run, node bị chặn rồi retry, cổng duyệt đang chờ. Kiểm tra bàn phím mở được panel của mọi node. Đọc phần
   bài học Playwright của V7-17C trước khi viết.
+- **Kết quả (đã xong một phần):** banner trên sơ đồ: run thứ mấy, trạng thái, `stopReason` (bấm thì mở panel của node đó), thời gian, chi
+  phí. Bỏ cột Timeline, `computeLayout`, `NODE_STYLE`, `STRUCTURAL_KINDS`; panel lịch sử chiếm cột phải, có gợi ý khi chưa chọn node. Test cũ
+  của tab cập nhật (chi phí ở banner và ở dòng lịch sử). Playwright `web/e2e/v12-run-graph.spec.ts` trên stack thật (`aw serve` + worker,
+  fake provider): task hai run (gộp `×2`, Run 1 và Run 2 trong panel), Tab + Enter mở panel của **mọi** node, banner, không còn Timeline;
+  cổng duyệt đang chờ: banner nói, bấm mở panel của cổng, quyết định ở đó. **Chưa có** hành trình Playwright cho run có vòng lặp và node bị
+  chặn rồi retry (cần workflow có COMMAND trên stack e2e; phần này có component test ở V12-10/V12-12). Accessible List giữ lại: sơ đồ mới
+  đạt bàn phím và axe trong test, nhưng chưa thay hợp đồng accessibility của V7 bằng một quyết định của product owner.
 
 ---
 
