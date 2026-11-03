@@ -2,6 +2,8 @@
 
 > Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-11-03, nhánh `claude/admiring-brown-d1uf4r`). Phần B (run graph) đã được product
 > owner chốt 7 quyết định ngày 2026-11-03. Tiến độ: xem khối "Kết quả" dưới từng task.
+> Tiến độ tổng: phần A, B, C (V12-01 … V12-27) đã làm, việc còn để lại ghi trong khối "Kết quả" của từng task; phần D
+> (V12-28 … V12-33) có ADR đề xuất (ADR-060 … ADR-065), chưa có mã, chờ product owner duyệt.
 > Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Exit: gate V12 ở cuối file.
@@ -601,6 +603,11 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
 ## Phần D — Cần ADR hoặc quyết định của product owner trước
 
 Mỗi task ở phần này bắt đầu bằng một ADR. Không viết mã trước khi product owner duyệt ADR.
+
+**Trạng thái (V12-28 … V12-33):** đã viết ADR đề xuất, **chưa có mã**, chờ product owner duyệt:
+ADR-060 (merge/push/PR/CI), ADR-061 (kho secret), ADR-062 (chạy ứng dụng), ADR-063 (QA), ADR-064 (truy cập từ xa),
+ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architecture-decisions.md` mục 62–67. Mỗi ADR có phương án,
+đề xuất và câu hỏi cho product owner.
 
 ### V12-28 — Merge, push, PR và CI từ giao diện (UX-01, UX-39)
 

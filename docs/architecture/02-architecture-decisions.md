@@ -1642,9 +1642,132 @@ này), và không dòng nào trong DB trỏ tới artifact đó.
 **Hệ quả:** route 127; dòng UX Screen 8 số 10; parity. Nếu render đổi theo version của binary thì snapshot đã ghi schema
 (`InstructionSchemaV1/V2`) quyết định cách render, như khi chạy.
 
-## 62. Baseline sau review thiết kế
+## 62. ADR-060 (ĐỀ XUẤT, chờ product owner duyệt) — Merge, push, PR và trạng thái CI từ giao diện
 
-ADR-001…059 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Trạng thái:** đề xuất. Chưa duyệt; không thuộc baseline; chưa có mã (V12-28).
+
+**Bối cảnh (UX-01, UX-39):** duyệt kèm commit làm được trên giao diện (V11-07), đồng bộ nhánh gốc cũng vậy (V12-20, ADR-055), nhưng
+đưa commit lên remote, mở PR, xem CI và merge vẫn phải làm trong terminal. ADR-014 nói push/PR/merge "không có executor/API trong
+Alpha" cho tới khi một ADR sau bổ sung capability.
+
+**Phương án:**
+
+- **A. Không làm (giữ ADR-014).** Giao diện chỉ hiện lệnh `git push` / `gh pr create` để chép.
+- **B. Push và tạo PR bằng công cụ của máy.** aw gọi `git push` với credential helper của máy, và `gh` (GitHub CLI) đã đăng nhập để
+  tạo PR, đọc check, merge. aw không giữ token.
+- **C. aw giữ token của forge** (GitHub App hoặc PAT) trong kho secret (ADR-061) và gọi API trực tiếp.
+
+**Đề xuất: B, chia hai bước.** Bước 1 gồm push nhánh family và tạo PR (draft mặc định), rồi đọc trạng thái PR và check theo chu kỳ.
+Bước 2, chỉ khi bước 1 đã chạy ổn, thêm merge và chỉ cho phép khi check xanh và PR đã có review của người.
+
+- Ai được bấm: role `operator` (như quyết định cổng duyệt). Mỗi thao tác có hộp xác nhận nêu đúng remote, nhánh và commit.
+- Chỉ push nhánh `agentkit/w-…` của family. Không push nhánh gốc, không force-push, không xóa nhánh remote. Merge do forge thực hiện
+  (`gh pr merge`), aw không tự merge cục bộ rồi push.
+- Credentials: chỉ của máy (credential helper, `gh auth`). aw không lưu và không hiện token; khi `gh` chưa đăng nhập thì báo đúng
+  lệnh cần chạy.
+- Audit: event cho mỗi thao tác (remote, ref, commit, URL của PR, người bấm); trạng thái PR/CI là một projection đọc lại được.
+- Fail-closed: không có `origin`, không có `gh`, hoặc nhánh có commit chưa đi qua cổng duyệt thì từ chối và nói lý do.
+
+**Câu hỏi cho product owner:** (1) chọn B hay C; (2) có làm merge (bước 2) không; (3) PR draft hay ready mặc định; (4) có cần GitLab
+không, hay chỉ GitHub.
+
+## 63. ADR-061 (ĐỀ XUẤT, chờ product owner duyệt) — Kho secret theo repository
+
+**Trạng thái:** đề xuất. Chưa duyệt; chưa có mã (V12-29).
+
+**Bối cảnh (UX-34):** `SecretResolver` hiện chỉ đọc biến môi trường của tiến trình worker (`internal/adapters/secretenv`), nên giá trị
+cho gate và ứng dụng (DB, R2…) phải nằm trong file local của repo (`backend/local.properties`). Mật khẩu DB dev của chochuyennha từng
+bị commit.
+
+**Đề xuất:**
+
+1. Bảng `repository_secrets` (project, repository, tên, giá trị **đã mã hóa**, version, người sửa, thời điểm). Mã hóa AES-256-GCM với
+   khóa dữ liệu nằm **ngoài** SQLite: lấy từ keychain của hệ điều hành nếu có, nếu không thì file khóa `0600` cạnh `--artifact-root`
+   do `aw` tạo. Backup DB không kèm khóa, nên một bản sao DB bị lộ không lộ secret (ghi rõ trong doc backup).
+2. API và giao diện: thêm, đổi, xóa, liệt kê **tên** (không bao giờ trả giá trị; đổi là ghi đè). Quyền: role `operator`.
+3. Dùng ở đâu: `SecretRefs` của COMMAND/gate được giải từ kho trước, rồi mới tới biến môi trường (giữ cách cũ). Hồ sơ "Run app" (ADR-062)
+   tiêm cùng cách. **Không bao giờ** vào prompt, ContextSnapshot, evidence hay log: giá trị được đưa vào `redact.Matcher` của lần chạy để
+   che nếu lỡ in ra.
+4. `env-allowlist` vẫn áp cho biến môi trường thừa kế; secret tiêm theo tên là danh sách riêng, ghi rõ trong ExecutionProfile.
+
+**Câu hỏi cho product owner:** (1) keychain có bắt buộc không, hay chấp nhận file khóa; (2) secret theo repository hay theo project;
+(3) có cần nhập từ file `.env` có sẵn không.
+
+## 64. ADR-062 (ĐỀ XUẤT, chờ product owner duyệt) — Chạy ứng dụng của worktree để QA tay
+
+**Trạng thái:** đề xuất. Chưa duyệt; chưa có mã (V12-30). Phụ thuộc ADR-061 cho biến môi trường bí mật.
+
+**Đề xuất:**
+
+1. Hồ sơ "Run app" theo repository: danh sách tiến trình (ví dụ backend, frontend), mỗi tiến trình có lệnh dạng argv (không chuỗi
+   shell), thư mục con, cổng, biến môi trường thường và tên secret (ADR-061), URL preview.
+2. Start/Stop trên giao diện; log từng tiến trình (có giới hạn, che secret); link mở preview. Chỉ một phiên chạy mỗi worktree.
+3. Dọn tiến trình: chạy trong process group (Unix) / Job Object (Windows) do supervisor có sẵn quản lý; Stop, đóng server hay
+   worker chết đều giết cả cây. Trước khi Start, kiểm cổng còn trống và báo tiến trình đang giữ cổng (đã gặp với backend và next dev).
+4. Tự tắt sau một thời gian không dùng (mặc định 2 giờ) và khi worktree được release.
+5. Không chạy khi có attempt đang giữ write lease trên worktree (ứng dụng có thể ghi file).
+
+**Câu hỏi cho product owner:** (1) tiến trình chạy trong `aw serve` hay `aw worker`; (2) thời gian tự tắt; (3) có cần nhiều phiên
+song song cho nhiều family không.
+
+## 65. ADR-063 (ĐỀ XUẤT, chờ product owner duyệt) — QA trong aw
+
+**Trạng thái:** đề xuất. Chưa duyệt; chưa có mã (V12-31).
+
+**Đề xuất:**
+
+1. Workflow kit mới `wf-qa`: một node APPROVAL dạng checklist. Mục QA lấy từ acceptance criteria của task được QA, thêm mục tay.
+   Mỗi mục có đạt hoặc không đạt, ghi chú và ảnh đính kèm (dùng attachment có sẵn của message). Kết quả là evidence `QA_CHECKLIST`.
+2. Nút "Create fix task" trên mục không đạt mở form New task (V12-14), điền sẵn: kind bugfix, behavior từ ghi chú, ảnh đính kèm,
+   scope của task gốc.
+3. Biến thể bugfix cho UI chưa có test: bước tái hiện là script Playwright do agent viết, chạy như COMMAND với
+   evidence là ảnh trước và sau. Không có Playwright thì dùng checklist QA có ảnh trước/sau làm evidence ở cổng người.
+4. Cần ADR-062 để người QA mở được ứng dụng của worktree.
+
+**Câu hỏi cho product owner:** (1) checklist là node APPROVAL mở rộng hay một loại node mới; (2) có cho agent viết script Playwright
+trong repo sản phẩm không, hay chỉ trong artifact của aw.
+
+## 66. ADR-064 (ĐỀ XUẤT, chờ product owner duyệt) — Truy cập từ xa và màn duyệt cho điện thoại
+
+**Trạng thái:** đề xuất. Chưa duyệt; chưa có mã (V12-32). Đây là thay đổi ranh giới tin cậy của ADR-016 (HTTP chỉ loopback).
+
+**Đề xuất:**
+
+1. Server vẫn chỉ nghe loopback. Truy cập từ xa đi qua một tunnel có xác thực do người vận hành tự dựng (Tailscale, Cloudflare
+   Tunnel có Access…). aw không mở cổng ra ngoài và không tự làm tunnel.
+2. Thêm xác thực cho phiên từ xa: đăng nhập bằng mã một lần ghép cặp từ máy chạy aw (QR), token gắn thiết bị, thu hồi được, hết hạn.
+   Phiên local giữ như cũ.
+3. Phạm vi cho phiên từ xa: chỉ đọc, cộng đúng các thao tác của màn "Needs you" (quyết định approval không kèm commit, Retry,
+   Run Again). Không publish, không commit, không xóa, không đổi cấu hình.
+4. Màn duyệt cho điện thoại: Needs you, chi tiết approval kèm diff (V12-17), nút quyết định.
+
+**Câu hỏi cho product owner:** (1) chấp nhận phụ thuộc tunnel bên ngoài không; (2) phạm vi thao tác từ xa như trên có đủ không;
+(3) có cần thông báo đẩy (gắn với kênh ngoài của ADR-052) không.
+
+## 67. ADR-065 (ĐỀ XUẤT, chờ product owner duyệt) — Nơi lưu tài liệu trung gian của kit
+
+**Trạng thái:** đề xuất. Chưa duyệt; chưa có mã (V12-33). Thiết kế hiện hành là của V10.
+
+**Bối cảnh (UX-45):** các node của kit ghi `frame.md`, `plan.md` vào `docs/features/<feature>/tasks/<task>/` trong repo sản phẩm;
+mỗi task thêm một thư mục, và chúng đi vào commit của task.
+
+**Phương án:**
+
+- **A. Giữ như V10** (trong repo): tài liệu được review cùng code, ai clone repo cũng đọc được; nhưng repo đầy file trung gian.
+- **B. Chỉ trong artifact của aw:** node ghi vào thư mục tạm của attempt, aw lưu thành artifact và hiện trên giao diện; repo sạch;
+  nhưng mất khi xóa bản cài, và agent của task sau phải đọc qua ContextSnapshot thay vì file.
+- **C. Cấu hình theo project:** mặc định A; project chọn B bằng một cờ trong `aw-project.json`.
+
+**Đề xuất: C.** Đổi ít nhất cho người đang dùng A, cho người muốn repo sạch một lựa chọn. Với B, `check-feature-docs`/`check-plan`
+đọc artifact thay cho file, và scope của task không còn cần thư mục `docs/features/…`.
+
+**Câu hỏi cho product owner:** (1) có làm B không; (2) nếu làm thì mặc định là A hay B; (3) `02-spec.md`, `03-design.md`, `tasks.json`
+(tài liệu của tính năng, không phải của task) có giữ trong repo trong mọi trường hợp không.
+
+## 68. Baseline sau review thiết kế
+
+ADR-001…059 là baseline hiện hành. ADR-060…065 là **đề xuất** của V12 phần D, chờ product owner duyệt; chúng chưa có hiệu lực và
+không có mã nào dựa trên chúng. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
