@@ -101,5 +101,15 @@ export interface RunDiagnosticsResponse {
   providers: ProviderDiagnostic[];
   isolation: IsolationDiagnostic[];
   repositoryWorkspaces: RepositoryWorkspaceDiagnostic[];
+  /** V12-11: why the run stopped or is waiting (typed code, node, a sentence); absent while it moves on its own. */
+  stopReason?: StopReason;
   validActions: ValidAction[];
+}
+
+export interface StopReason {
+  code: 'COMMAND_NOT_STARTED' | 'SCOPE_VIOLATION' | 'PROVIDER_QUOTA_EXCEEDED' | 'CYCLE_ESCALATED' | 'APPROVAL_REJECTED' | 'APPROVAL_PENDING'
+    | 'WORKFLOW_DEFINITION_DEFECT' | 'ATTEMPT_FAILED' | 'RUN_CANCELLED' | 'RUN_FAILED' | string;
+  nodeKey?: string;
+  nodeRunId?: string;
+  message: string;
 }

@@ -2041,6 +2041,11 @@
             "type": "[]diagnostics.repositoryWorkspaceDiagResponse"
           },
           {
+            "name": "StopReason",
+            "jsonTag": "stopReason,omitempty",
+            "type": "*runtime.StopReason"
+          },
+          {
             "name": "ValidActions",
             "jsonTag": "validActions",
             "type": "[]httpapi.ValidAction"

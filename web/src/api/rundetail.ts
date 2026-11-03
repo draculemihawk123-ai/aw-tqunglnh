@@ -45,6 +45,8 @@ export interface NodeActivationView {
   branchTokenId?: string;
   reactivationReason?: string;
   blockReason?: string;
+  /** V12-11: what this activation produced, in one line. */
+  resultSummary?: string;
 }
 
 export interface BranchTokenView {
@@ -146,6 +148,8 @@ export interface ApprovalRequestView {
   dueAt: string;
   escalationOutcome: string;
   resolvedOutcome?: string;
+  /** V12-11: who decided. */
+  resolvedBy?: string;
   /** V11-07: the node's release policy (which outcomes may carry a commit); absent when it has none. */
   release?: ApprovalReleasePolicy;
 }

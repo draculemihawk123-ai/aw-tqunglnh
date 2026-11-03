@@ -388,6 +388,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
      `message` tiếng Anh.
   3. Cập nhật OpenAPI và sinh lại `web/src/api/generated`. Viết ADR mới vì đổi API công khai. Cập nhật `docs/operator/`.
 - **Test:** Go test cho từng mã `stopReason`, gồm ca command không khởi chạy được.
+- **Kết quả (đã xong, ADR-051):** khảo sát: `AGENT_OUTPUT` là lời cuối của agent; `COMMAND_EXECUTION` là JSON argv/stdout/stderr/exit;
+  attempt `EXECUTION_FAILED` không evidence của P2-02 là lỗi spawn, từ V12-04 có diagnostic `PROCESS_START_FAILED`. Đã làm:
+  `runtime.ResultSummary` + `SummarizeRunActivations` (route graph điền `resultSummary` cho trang activation), `DeriveStopReason` (thuần)
+  vào `RunDiagnostics.stopReason` (HTTP và CLI), `ApprovalRequestView.resolvedBy`. OpenAPI/contract golden và `generated.ts` sinh lại;
+  kiểu tay ở `web/src/api/diagnostics.ts`, `rundetail.ts`. Test: `run_summary_test.go` (mỗi mã một ca, gồm hai ca command không khởi chạy
+  được; ResultSummary theo loại node).
 
 ### V12-12 — Panel lịch sử bên phải
 

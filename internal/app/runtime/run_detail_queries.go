@@ -175,6 +175,8 @@ type ApprovalRequestView struct {
 	// (an escalation has no deciding actor and no chosen outcome — see
 	// EscalationOutcome for what the timer routed with).
 	ResolvedOutcome string `json:"resolvedOutcome,omitempty"`
+	// ResolvedBy (V12-11) is the actor who decided; empty until a decision lands (and for an escalation).
+	ResolvedBy string `json:"resolvedBy,omitempty"`
 	// Release (V11-07, ADR-040) is the approval node's release policy — which outcomes may carry a commit and
 	// whether it is OFFERED or REQUIRED. Omitted for a node with none (DISABLED), so every response from before
 	// V11-07 stays byte-identical.
@@ -252,7 +254,7 @@ func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[
 			State: string(r.State), Version: r.Version,
 			AuthorizedRoles:        append([]string(nil), r.AuthorizedRoles...),
 			RequestedEvidenceKinds: append([]string(nil), r.RequestedEvidenceKinds...),
-			DueAt:                  r.DueAt, EscalationOutcome: r.EscalationOutcome, ResolvedOutcome: r.DecidedOutcome,
+			DueAt:                  r.DueAt, EscalationOutcome: r.EscalationOutcome, ResolvedOutcome: r.DecidedOutcome, ResolvedBy: r.DecidedBy,
 		}
 		if node, ok := findNode(document, r.NodeKey); ok && node.Approval != nil && node.Approval.Release.Mode() != workflow.ReleaseCommitDisabled {
 			view.Release = &ApprovalReleaseView{
@@ -517,6 +519,8 @@ type NodeActivationView struct {
 	BranchTokenID      string `json:"branchTokenId,omitempty"`
 	ReactivationReason string `json:"reactivationReason,omitempty"`
 	BlockReason        string `json:"blockReason,omitempty"`
+	// ResultSummary (V12-11) is what this activation produced, in one redacted line (ResultSummary); filled by the graph route.
+	ResultSummary string `json:"resultSummary,omitempty"`
 }
 
 func toNodeActivationView(nr runtimedomain.NodeRun, matcher redact.Matcher) NodeActivationView {

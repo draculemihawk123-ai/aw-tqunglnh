@@ -1,5 +1,14 @@
 # Troubleshooting
 
+## Why did this run stop? (`stopReason`, V12-11)
+
+`aw run diagnostics --project-id <id> <runId>` (and the banner of the task's Graph tab) carries `stopReason`:
+`{"code": "COMMAND_NOT_STARTED", "nodeKey": "gate1", "message": "The gate1 command could not be started (attempt 4); no evidence was
+recorded."}`. Codes: `COMMAND_NOT_STARTED` (see "A node is BLOCKED … the worker stopped claiming jobs" below), `SCOPE_VIOLATION`,
+`PROVIDER_QUOTA_EXCEEDED`, `CYCLE_ESCALATED` (a node ran out of rounds), `APPROVAL_REJECTED`, `APPROVAL_PENDING`,
+`WORKFLOW_DEFINITION_DEFECT`, `ATTEMPT_FAILED` (the failure code is in the message), `RUN_CANCELLED`, and the blocker type when a node is
+blocked (`ADAPTER_BUILD_DRIFT`, `PROVIDER_LOGIN_REQUIRED`, …). `aw run graph <runId>` gives each activation a one-line `resultSummary`.
+
 ## Start here: `aw doctor`
 
 ```bash

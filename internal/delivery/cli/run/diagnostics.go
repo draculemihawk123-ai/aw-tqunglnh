@@ -135,6 +135,8 @@ type DiagnosticsResult struct {
 	Isolation []DiagnosticsIsolationView `json:"isolation"`
 
 	RepositoryWorkspaces []DiagnosticsRepositoryWorkspaceView `json:"repositoryWorkspaces"`
+	// StopReason (V12-11): why the run stopped or is waiting.
+	StopReason *runtime.StopReason `json:"stopReason,omitempty"`
 }
 
 func toDiagnosticsResult(diag runtime.RunDiagnostics) DiagnosticsResult {
@@ -164,6 +166,7 @@ func toDiagnosticsResult(diag runtime.RunDiagnostics) DiagnosticsResult {
 		RunState: diag.RunState, RunVersion: diag.RunVersion,
 		Blockers: blockers, OrphanedAttempts: orphaned, OrphanedAttemptsTruncated: diag.OrphanedAttemptsTruncated,
 		Providers: providers, Isolation: isolationViews, RepositoryWorkspaces: repoWorkspaces,
+		StopReason: diag.StopReason,
 	}
 }
 

@@ -678,6 +678,7 @@ export interface GetRunDiagnosticsResponse {
   providers: unknown[];
   isolation: unknown[];
   repositoryWorkspaces: unknown[];
+  stopReason?: unknown | null;
   validActions: unknown[];
 }
 

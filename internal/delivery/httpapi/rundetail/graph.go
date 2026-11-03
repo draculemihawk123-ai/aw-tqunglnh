@@ -175,7 +175,13 @@ func handleGetRunGraph(deps Dependencies) http.HandlerFunc {
 		if pageCount > len(candidates) {
 			pageCount = len(candidates)
 		}
-		page := candidates[:pageCount]
+		page := append([]runtimeapp.NodeActivationView(nil), candidates[:pageCount]...)
+		// V12-11: one line of what each activation of this page produced (the history panel and the node labels show it).
+		if deps.ArtifactStore != nil {
+			summarized := runtimeapp.RunGraph{Activations: page}
+			runtimeapp.SummarizeRunActivations(ctx, deps.UnitOfWork, deps.ArtifactStore, deps.Matcher, &summarized)
+			page = summarized.Activations
+		}
 
 		response := runGraphResponse{
 			RunID: graph.RunID, ManifestRevision: graph.ManifestRevision,

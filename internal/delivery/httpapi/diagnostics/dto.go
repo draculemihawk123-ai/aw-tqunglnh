@@ -228,6 +228,9 @@ type RunDiagnosticsResponse struct {
 
 	RepositoryWorkspaces []repositoryWorkspaceDiagResponse `json:"repositoryWorkspaces"`
 
+	// StopReason (V12-11) is why the run stopped or is waiting: code, node and a sentence; omitted while it moves on its own.
+	StopReason *runtime.StopReason `json:"stopReason,omitempty"`
+
 	ValidActions []httpapi.ValidAction `json:"validActions"`
 }
 
@@ -257,6 +260,7 @@ func toRunDiagnosticsResponse(diag runtime.RunDiagnostics) RunDiagnosticsRespons
 		WorkItemStatus: diag.WorkItemStatus, RunState: diag.RunState,
 		Blockers: blockers, OrphanedAttempts: orphaned, OrphanedAttemptsTruncated: diag.OrphanedAttemptsTruncated,
 		Providers: providers, Isolation: isolationDiags, RepositoryWorkspaces: repoWorkspaces,
+		StopReason:   diag.StopReason,
 		ValidActions: runDiagnosticsValidActions(diag),
 	}
 }

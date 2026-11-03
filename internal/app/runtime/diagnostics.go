@@ -97,6 +97,7 @@ import (
 
 	"github.com/taQuangLing/agent-workflow/internal/app/agentregistry"
 	"github.com/taQuangLing/agent-workflow/internal/app/ports"
+	"github.com/taQuangLing/agent-workflow/internal/app/redact"
 	"github.com/taQuangLing/agent-workflow/internal/app/workspacestate"
 	domainadapterbuild "github.com/taQuangLing/agent-workflow/internal/domain/adapterbuild"
 	workdomain "github.com/taQuangLing/agent-workflow/internal/domain/work"
@@ -249,6 +250,9 @@ type RunDiagnostics struct {
 	Isolation []IsolationDiagnostic
 
 	RepositoryWorkspaces []RepositoryWorkspaceDiagnostic
+
+	// StopReason (V12-11) is why the run stopped or is waiting, typed and in words; nil while it moves on its own.
+	StopReason *StopReason
 }
 
 // runDiagnosticsBase is the one WithReadOnly transaction GetRunDiagnostics
@@ -400,6 +404,11 @@ func GetRunDiagnostics(
 		return RunDiagnostics{}, err
 	}
 	result.RepositoryWorkspaces = repoWorkspaces
+
+	// V12-11: the timeline's attempt rows already carry the redacted failure detail; an empty matcher adds nothing to them.
+	if timeline, err := GetRunTimeline(ctx, uow, redact.NewMatcher(), runID); err == nil {
+		result.StopReason = DeriveStopReason(result.RunState, timeline.Entries, result.Blockers)
+	}
 
 	return result, nil
 }

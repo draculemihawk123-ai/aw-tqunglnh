@@ -1468,9 +1468,27 @@ name`, hoặc `table projects already exists`): cả hai đọc "chưa áp dụn
 
 **Hệ quả:** tập lệnh tiến trình là `serve`, `worker`, `up`, `version`.
 
-## 53. Baseline sau review thiết kế
+## 53. ADR-051 — Tóm tắt kết quả mỗi activation (`resultSummary`) và lý do dừng có kiểu (`stopReason`) trong projection đọc của run
 
-ADR-001…050 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-11, UX-27):** banner chỉ ghi `RUN_FAILED`; nguyên nhân thật (P2-02: `gate1` lần 4 không khởi chạy được, không evidence)
+phải đọc bằng CLI; mỗi node chỉ có trạng thái, không có "nó đã làm gì".
+
+**Quyết định:**
+
+1. `NodeActivationView.resultSummary` (thêm, tùy chọn): một dòng đã che bí mật, tối đa 200 ký tự, do route `getRunGraph` điền cho các
+   activation của trang (đọc chi tiết node như `getNodeRunDetail`). AGENT: dòng có nghĩa đầu tiên của báo cáo cuối; COMMAND: dòng tóm tắt
+   theo quy ước của kit (`<lệnh>: …`), không có thì dòng cuối không rỗng; MACHINE_GATE: số tiêu chí đạt; APPROVAL: quyết định và người duyệt
+   (`ApprovalRequestView.resolvedBy` mới); node hỏng hoặc bị chặn: lỗi bằng lời.
+2. `RunDiagnostics.stopReason` (API `getRunDiagnostics`, `aw run diagnostics`): `{code, nodeKey, nodeRunId, message}` tiếng Anh. Mã:
+   `COMMAND_NOT_STARTED`, `SCOPE_VIOLATION`, `PROVIDER_QUOTA_EXCEEDED`, `CYCLE_ESCALATED`, `APPROVAL_REJECTED`, `APPROVAL_PENDING`,
+   `WORKFLOW_DEFINITION_DEFECT`, `ATTEMPT_FAILED`, `RUN_CANCELLED`, `RUN_FAILED`, và loại blocker (ví dụ `ADAPTER_BUILD_DRIFT`) khi một node
+   đang bị chặn. Suy ra từ timeline và blocker của run (`DeriveStopReason`, hàm thuần), không ghi thêm dữ liệu.
+
+**Hệ quả:** hai trường thêm vào, không phá vỡ client cũ. Không đổi tập mã lỗi §18 (stopReason là mã hiển thị, không phải mã lỗi).
+
+## 54. Baseline sau review thiết kế
+
+ADR-001…051 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1523,6 +1541,7 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-051 (V12-11) thêm `resultSummary` cho mỗi activation và `stopReason` có kiểu cho chẩn đoán run.
 - ADR-050 (V12-08): migration kiểm lại dưới khóa ghi (không còn tranh chấp khi bật serve và worker cùng lúc); lệnh `aw up`.
 - ADR-049 (V12-06) cho cạnh escalation của vòng dẫn tới node APPROVAL nằm trong vòng (ngoại lệ hẹp của ADR-036); kit dùng nó cho cổng `size-review`.
 - ADR-048 (V12-05) thêm lệnh `UseNewCli` (đo lại CLI, đăng ký build, publish version ghim build mới, tùy chọn làm lại; không repin run đang chạy); nút Redo lấy từ redo-preview khi thẻ không có run.
