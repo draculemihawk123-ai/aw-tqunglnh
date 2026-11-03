@@ -10,6 +10,8 @@
 #                WAIT_SECONDS (mặc định 2700), xem watch-run.sh.
 # Không dùng được cho WorkItem gốc (root) và chỉ khi mọi run của WorkItem đã kết thúc.
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 work_item=$1 reason=$2 note=${3:-}
 out=$(mktemp) err=$(mktemp)

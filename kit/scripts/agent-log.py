@@ -20,6 +20,17 @@ import os
 import sqlite3
 import sys
 
+# V12-07: Vietnamese messages must not turn into mojibake in a Windows console (CP437/CP850): print UTF-8 and switch the console.
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)

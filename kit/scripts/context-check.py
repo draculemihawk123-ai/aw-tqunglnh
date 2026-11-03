@@ -27,6 +27,17 @@ import sys
 import tempfile
 import time
 
+# V12-07: Vietnamese messages must not turn into mojibake in a Windows console (CP437/CP850): print UTF-8 and switch the console.
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 sys.dont_write_bytecode = True
 HERE = os.path.dirname(os.path.abspath(__file__))
 KIT_ROOT = os.path.dirname(HERE)
@@ -36,6 +47,29 @@ publish = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(publish)
 
 HELPER_ENV = ["AGENTKIT_HELPER_MODE", "AGENTKIT_HELPER_OUTCOME_PICK"]
+
+
+def new_process_group():
+    """V12-07: start the temporary worker in its own process group on every OS (start_new_session is POSIX only)."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def stop_worker(worker):
+    """V12-07: stop the temporary worker and everything it started. os.killpg does not exist on Windows, where the old code
+    raised AttributeError and left the worker running; there `taskkill /T` ends the whole tree."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(worker.pid), "/T", "/F"], capture_output=True)
+        else:
+            os.killpg(worker.pid, signal.SIGTERM)
+    except (ProcessLookupError, OSError):
+        pass
+    try:
+        worker.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        worker.kill()
 
 
 def fail(message):
@@ -202,7 +236,7 @@ def main():
                                    "--workspace-root", env["AW_WORKSPACE_ROOT"], "--claude-executable", fake,
                                    "--env-allowlist", ",".join(["PATH", "HOME"] + HELPER_ENV),
                                    "--claude-permission-mode", "acceptEdits"],
-                                  env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                                  env=env, stdout=log, stderr=subprocess.STDOUT, **new_process_group())
         time.sleep(1.0)
 
         def run(cmd, **kw):
@@ -252,10 +286,7 @@ def main():
             print(f"(giữ thư mục tạm: {work})", file=sys.stderr)
     finally:
         if worker is not None:
-            try:
-                os.killpg(worker.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            stop_worker(worker)
         if not args.keep:
             shutil.rmtree(work, ignore_errors=True)
     sys.exit(exit_code)

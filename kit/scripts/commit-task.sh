@@ -5,6 +5,8 @@
 # COMMIT_ATTEMPT=2,3,… để thử lại một commit đã FAILED (khóa idempotency mới).
 # Family có nhiều repository: commit từng repository có thay đổi (mỗi repo một commit), bỏ qua repo không đổi.
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 AW_STATE=${AW_STATE:-./aw-state.json}
 AUTHOR_NAME=${AUTHOR_NAME:-$(git config user.name)}

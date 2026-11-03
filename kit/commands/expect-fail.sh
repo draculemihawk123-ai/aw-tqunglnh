@@ -7,6 +7,13 @@ set -eu
 . "${AW_KIT:?set AW_KIT=<kit directory> when running by hand}/commands/lib.sh" # @aw-include
 ENV_ERRORS='PKIX path|Could not transfer artifact|UnknownHostException|Connection (timed out|refused)|Temporary failure in name resolution|Network is unreachable|SELF_SIGNED_CERT|UNABLE_TO_VERIFY|ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT'
 NOT_A_TEST_FAILURE='COMPILATION ERROR|cannot find symbol|SyntaxError|Cannot find module|error TS[0-9]+|Failed to resolve import|ReferenceError'
+# V12-07: the lines that say WHERE a compile error is (javac "File.java:[12,5] ...", tsc "file.ts(12,5): ..."), printed with the
+# reason so the agent knows what to fix - "[ERROR] COMPILATION ERROR :" alone said nothing.
+COMPILE_LOCATION='\.(java|kt|scala|ts|tsx|js|jsx|mjs)(:\[[0-9]+,[0-9]+\]|\([0-9]+,[0-9]+\)|:[0-9]+:[0-9]+)'
+# V12-07: a red test is accepted only when it fails at an ASSERTION. A test that dies while building its data (a constraint
+# violation, an NPE in @BeforeEach, a context that does not start) proves nothing about the bug.
+SETUP_ERRORS='DataIntegrityViolationException|ConstraintViolationException|SQLIntegrityConstraintViolation|violates (unique|not-null|foreign key|check) constraint|UNIQUE constraint failed|NOT NULL constraint failed|FOREIGN KEY constraint failed|Failed to load ApplicationContext|BeanCreationException|ExceptionInInitializerError|@BeforeEach|@BeforeAll|beforeEach|beforeAll'
+ASSERTIONS='AssertionError|AssertionFailedError|ComparisonFailure|expected:? *<|Expected:|expect\(|toBe|toEqual|toHaveBeenCalled|expected .* (to|but)'
 log=$(mktemp)
 trap 'rm -f "$log"' EXIT
 # Failure marks printed by the JavaScript test runners (a cross and a multiplication sign), written as octal escapes: this script is ASCII only.
@@ -42,7 +49,26 @@ if grep -q -E "$ENV_ERRORS" "$log"; then
 fi
 if grep -q -E "$NOT_A_TEST_FAILURE" "$log"; then
   echo "expect-fail: $stack: the tests are red because the code does not compile or load, not because of the bug to reproduce. Make the test run, then let it fail for the right reason:" >&2
-  grep -E "$NOT_A_TEST_FAILURE" "$log" | head -n 8 | cut -c1-300 >&2
+  grep -E "$NOT_A_TEST_FAILURE|$COMPILE_LOCATION" "$log" | grep -v -E '^\[ERROR\] *(COMPILATION ERROR *:?)? *$' | head -n 12 | cut -c1-300 >&2
+  exit 1
+fi
+# Maven: the last "Tests run: n, Failures: f, Errors: e" line is the summary. Errors without failures are exceptions, not assertions.
+failures=0 errors=0
+if [ "$stack" = backend ]; then
+  counts=$(grep -E 'Tests run: *[0-9]+, *Failures: *[0-9]+, *Errors: *[0-9]+' "$log" | tail -n 1 | sed -E 's/.*Failures: *([0-9]+), *Errors: *([0-9]+).*/\1 \2/')
+  [ -z "$counts" ] || { failures=${counts% *} errors=${counts#* }; }
+fi
+not_assertion=""
+if [ "$stack" = backend ] && [ "$failures" = 0 ] && [ "$errors" != 0 ]; then
+  not_assertion="$errors test(s) ended with an exception, none failed an assertion"
+elif [ "$failures" = 0 ] && grep -q -E "$SETUP_ERRORS" "$log"; then
+  not_assertion="the tests died while preparing their data or context"
+elif [ "$stack" = frontend ] && ! grep -q -E "$ASSERTIONS" "$log"; then
+  not_assertion="no assertion failed (the output names no expected/received value)"
+fi
+if [ -n "$not_assertion" ]; then
+  echo "expect-fail: $stack: the tests are red, but not at an assertion: $not_assertion. A test that crashes while setting up proves nothing about the bug: fix the test data or setup so the test reaches its assertion, and let THAT fail because of the bug. Lines:" >&2
+  grep -E "$SETUP_ERRORS|Exception|Error:|Tests run:" "$log" | head -n 10 | cut -c1-300 >&2
   exit 1
 fi
 echo "expect-fail: $stack: the tests are RED as expected (bug not fixed yet). Failing lines:"

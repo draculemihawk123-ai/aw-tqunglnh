@@ -37,6 +37,17 @@ import sys
 import tempfile
 import time
 
+# V12-07: Vietnamese messages must not turn into mojibake in a Windows console (CP437/CP850): print UTF-8 and switch the console.
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+
 sys.dont_write_bytecode = True  # không để lại __pycache__ cạnh script khi nạp aw-resource-hashes.py
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("aw_resource_hashes", os.path.join(HERE, "aw-resource-hashes.py"))

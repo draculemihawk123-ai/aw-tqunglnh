@@ -300,6 +300,8 @@ case "$FAKE_MVN" in
   red) echo "[ERROR] Tests run: 3, Failures: 1, Errors: 0, Skipped: 0"; echo "[ERROR]   IssueServiceTest.reopen:42 expected: <OPEN> but was: <CLOSED>"; exit 1 ;;
   context) echo "[ERROR] Tests run: 1, Failures: 0, Errors: 1, Skipped: 0 <<< FAILURE! -- in AppTests"; echo "java.lang.IllegalStateException: Failed to load ApplicationContext"; echo "Caused by: org.flywaydb.core.api.FlywayException: Found non-empty schema without schema history table"; echo "Caused by: org.flywaydb.core.api.FlywayException: Found non-empty schema without schema history table"; exit 1 ;;
   compile) echo "[ERROR] COMPILATION ERROR :"; echo "[ERROR] cannot find symbol"; exit 1 ;;
+  compileloc) echo "[ERROR] COMPILATION ERROR :"; echo "[ERROR] /w/backend/src/main/java/a/IssueService.java:[42,17] incompatible types: int cannot be converted to String"; exit 1 ;;
+  setup) echo "[ERROR] Tests run: 2, Failures: 0, Errors: 2, Skipped: 0"; echo "[ERROR]   IssueServiceTest.reopen » DataIntegrityViolation could not execute statement; SQL [n/a]; constraint [fk_issue_project]"; exit 1 ;;
   net) echo "PKIX path building failed"; exit 1 ;;
   weird) echo "Something unexpected happened in the build tool"; exit 1 ;;
   nomvn) echo "mvn: command not found"; exit 127 ;;
@@ -318,6 +320,8 @@ out=$(mt silent) && bad "maven-test: mvn lỗi không output phải không đạ
 out=$(ef red) && printf '%s' "$out" | grep -q "RED as expected" && ok "expect-fail: test đỏ thì đạt, in các dòng thất bại" || bad "expect-fail test đỏ: $out"
 out=$(ef green) && bad "expect-fail: test xanh phải không đạt" || { printf '%s' "$out" | grep -q "does not reach the bug" && ok "expect-fail: test xanh thì không đạt, dặn sửa test" || bad "expect-fail test xanh: $out"; }
 out=$(ef compile) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "does not compile" && ok "expect-fail: lỗi biên dịch không được tính là test đỏ" || bad "expect-fail biên dịch: $out"; }
+out=$(ef compileloc) && bad "expect-fail: lỗi biên dịch phải không đạt" || { printf '%s' "$out" | grep -q "IssueService.java:\[42,17\] incompatible types" && ok "expect-fail: in dòng lỗi biên dịch thật (file:[dòng,cột]) (V12-07)" || bad "expect-fail vị trí lỗi biên dịch: $out"; }
+out=$(ef setup) && bad "expect-fail: test chết lúc dựng dữ liệu phải không đạt" || { printf '%s' "$out" | grep -q "not at an assertion" && ok "expect-fail: lỗi dựng dữ liệu (constraint, Errors không Failures) không được tính là test đỏ (V12-07)" || bad "expect-fail dựng dữ liệu: $out"; }
 out=$(ef net) && bad "expect-fail: lỗi mạng phải không đạt" || { printf '%s' "$out" | grep -q "^ENVIRONMENT:" && ok "expect-fail: lỗi mạng báo là MÔI TRƯỜNG" || bad "expect-fail mạng: $out"; }
 out=$(cd "$tmp/ef" && AW_KIT="$kit" sh "$kit/commands/expect-fail.sh" 2>&1) && bad "expect-fail: thiếu backend/pom.xml phải không đạt" || ok "expect-fail: không nhận ra stack thì không đạt"
 # diff-size, temp-artifacts, check-plan (V10-15) trên một repository Git tạm

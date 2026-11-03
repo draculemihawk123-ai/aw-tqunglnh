@@ -6,6 +6,8 @@
 #                WAIT_SECONDS (mặc định 2700) thời gian chờ tối đa, xem watch-run.sh.
 # Run FAILED thì chạy lại trên chính WorkItem đó bằng retry-task.sh, không tạo WorkItem mới.
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 AW_STATE=${AW_STATE:-./aw-state.json}
 file=$1 workflow=$2

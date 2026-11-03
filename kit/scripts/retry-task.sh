@@ -13,6 +13,8 @@
 # Ghi chú Windows: jq.exe in CRLF. `$(…)` của Git Bash tự bỏ CR cuối, còn `read` thì không, nên các vòng
 # `while read` lọc CR bằng tr.
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 AW_STATE=${AW_STATE:-./aw-state.json}
 work_item=$1 note=${2:-}

@@ -5,7 +5,18 @@ Cách dùng: python3 aw-resource-hashes.py <document.json>
 Tái tạo đúng internal/domain/{skill,layer}/resource_identity.go:
 SHA-256 của JSON canonical gồm {instruction|convention, priority, global (nếu true), selector}.
 """
-import hashlib, json, sys
+import hashlib, json, os, sys
+
+# V12-07: Vietnamese messages must not turn into mojibake in a Windows console (CP437/CP850): print UTF-8 and switch the console.
+if os.name == "nt":
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except Exception:
+        pass
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="replace")
 
 SELECTOR_SETS = ("componentTags", "pathTags", "taskKinds", "blockKinds", "riskClasses")
 

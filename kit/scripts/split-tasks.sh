@@ -6,6 +6,8 @@
 # ghi vào repository đó (mặc định: repository chính), và mọi repository khác của family thành READ trong scope của task.
 # Sau đó chạy lần lượt: run-task.sh ./tasks/<slug>/T-01.json wf-task-delivery   (rồi duyệt, commit, task tiếp)
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW_STATE=${AW_STATE:-./aw-state.json}
 slug=$1
 out=${2:-./tasks/$slug}

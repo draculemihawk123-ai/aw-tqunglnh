@@ -12,6 +12,8 @@
 #   Phản hồi được append thành message USER của WorkItem; các node AGENT chạy sau đó nhận nó trong phần
 #   messages của prompt (trong giới hạn messageBudget của agent; message mới nhất luôn được giữ).
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW=${AW:-aw}
 AW_STATE=${AW_STATE:-./aw-state.json}
 if [ "${1:-}" = "--commit" ]; then COMMIT_MESSAGE=${2:?--commit cần một commit message}; shift 2; fi
@@ -39,7 +41,8 @@ if [ -n "${COMMIT_MESSAGE:-}" ]; then
     [ "$(jq -r '.state' <<<"$ws")" = READY ] || continue
     diff=$("$AW" repository-workspace diff --project-id "$project_id" --repository-id "$(jq -r '.repositoryId' <<<"$ws")" \
       --workspace-set-id "$set_id" --base-revision "$(jq -r '.currentRevision' <<<"$ws")" \
-      --base-revision-generation "$(jq -r '.generation' <<<"$ws")" --working-tree)
+      --base-revision-generation "$(jq -r '.generation' <<<"$ws")" --working-tree \
+      "$(jq -r '.repositoryWorkspaceId' <<<"$ws")")  # V12-07: <repositoryWorkspaceId> is required, after the flags
     files=$(jq -c '[.files[] | {path, status, contentHash}]' <<<"$diff")
     [ "$files" != "[]" ] || continue
     repos=$(jq -c --argjson f "$files" --argjson w "$ws" --arg u "${UNSELECTED:-KEEP}" \

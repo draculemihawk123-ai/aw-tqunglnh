@@ -225,6 +225,12 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
 - `context-check` dùng `os.killpg` nên không chạy trên Windows, và để lại một worker tạm mồ côi.
 - Script của kit in tiếng Việt lỗi font trong console CP437. Script phải tự đặt UTF-8 hoặc in ASCII.
 - **Test:** test của kit (`kit/tests`) cho từng lỗi, chạy trên Windows.
+- **Kết quả (đã xong ở mức kit; chưa chạy trên Windows):** `expect-fail` in dòng lỗi biên dịch có vị trí (`File.java:[l,c]`, `file.ts(l,c)`)
+  và chỉ cho qua khi test đỏ ở assertion (Maven: `Failures` > 0; `Errors` không kèm `Failures`, lỗi constraint/`@BeforeEach`/context
+  thì không đạt; frontend: phải có dòng assertion). `review-task.sh --commit` truyền `<repositoryWorkspaceId>` sau các cờ. `context-check.py`
+  dừng worker tạm bằng `taskkill /T` trên Windows (không dùng `os.killpg`), chờ nó thoát. Mọi script Python của kit in UTF-8 và đặt code
+  page console 65001 trên Windows; script bash gọi `chcp.com 65001`. Test: `check-kit.sh` 83/83 (2 ca `expect-fail` mới). Chưa có lần
+  chạy thật `review-task.sh --commit` trong check của kit (cần stack aw đầy đủ); lỗi cú pháp lệnh được sửa theo usage hiện tại.
 
 ### V12-08 — Một lệnh khởi động và khóa migration (UX-08)
 

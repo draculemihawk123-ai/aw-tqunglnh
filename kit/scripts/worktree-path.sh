@@ -3,6 +3,8 @@
 # Dựa trên bố cục file của gitworktree adapter trong Alpha: $AW_WORKSPACE_ROOT/metadata/<handle>.json
 # + $AW_WORKSPACE_ROOT/worktrees/<handle>. Đây là chi tiết cài đặt, không phải API công khai.
 set -euo pipefail
+# V12-07: tiếng Việt không bị lỗi font trong console Windows (CP437): chuyển console sang UTF-8.
+[ "${OS:-}" != Windows_NT ] || chcp.com 65001 > /dev/null 2>&1 || true
 AW_STATE=${AW_STATE:-./aw-state.json}
 : "${AW_WORKSPACE_ROOT:?}"
 family=$(jq -er '.root.familyId' "$AW_STATE")
