@@ -719,3 +719,47 @@ and commit in one action**, give the node a `release` policy:
 
 How the commit is made, who the author is, what happens to the files you do not choose, and what happens when the
 commit fails are in [06-source-control-and-releases.md](06-source-control-and-releases.md#approve-and-commit-in-one-action).
+
+## A QA checklist approval (`approval.checklist`, V12-31, ADR-063)
+
+An `APPROVAL` node with a `checklist` is a **QA gate**: the person checks each item by hand — usually in the application the
+Workspace tab's **Run app** started — and marks it *Passed* or *Failed*, with a note (required for a failed item) and images. The
+outcome is not chosen: it **follows the items**.
+
+```json
+{"key": "qa", "type": "APPROVAL", "outcomes": ["passed", "failed"],
+ "approval": {"authorizedRoles": ["operator"], "timeoutSeconds": 1209600, "escalationOutcome": "failed",
+              "checklist": {"fromAcceptanceCriteria": true, "items": ["No error in the browser console"],
+                            "passedOutcome": "passed", "failedOutcome": "failed"}}}
+```
+
+- Items: one per acceptance criterion of the run's work item when `fromAcceptanceCriteria` is true (ids `ac-1`, `ac-2`, …), then the
+  node's own `items` (`item-1`, …). At least one source; at most 50 items.
+- `passedOutcome` (every item passed) and `failedOutcome` (any failed) are two different outcomes the node declares. The role, the
+  timeout, `escalationOutcome` and `release` work as for any approval; a timeout routes `escalationOutcome` with no checklist.
+- The decision must carry a result for **every** item and the outcome that follows from them; anything else is refused (422,
+  `checklist`) and the gate stays pending. A plain approval refuses a checklist.
+- What was decided is kept as the gate's **QA_CHECKLIST** record (items, result, note, the attached images' message ids, who and
+  when): `aw run show` (`approvalRequests[].checklist`) and the node panel's **QA checklist** section. The images are attachments of
+  the task's conversation (Chat tab).
+- In the UI: the pending approval shows **QA checklist…** instead of the outcome buttons. A failed item has **Create fix task**: New
+  task opens prefilled — kind bugfix, title and behavior from the item and its note, the item as acceptance criterion — as a child of
+  the QA task (choose its scope and workflow there).
+- CLI: `aw approval resolve --outcome failed --checklist @results.json …` with `[{"id": "ac-1", "result": "PASSED"}, {"id": "item-1",
+  "result": "FAILED", "note": "TypeError in the console"}]`; the kit's `review-task.sh` takes `CHECKLIST=results.json`, and without it
+  marks every item PASSED for the passed outcome, FAILED (note = the feedback) otherwise.
+
+The kit has **`wf-qa`** (one checklist gate from the acceptance criteria; failed ends the run FAILED through `reject`) and
+**`wf-bugfix-ui`**, for a UI without a test suite: the `repro` agent writes a browser script `.aw-qa/<name>.mjs` (Node and
+Playwright) that prints `QA-ASSERT-FAILED: …` and exits 1 while the bug is there; `ui-expect-fail` passes only when a script reports
+it, `ui-verify` after `gate1` passes only when every script passes, and `gate2` is a checklist (before and after screenshots, the fix
+tried by hand). Screenshots are written to `.aw-qa/out/expect-fail` and `.aw-qa/out/expect-pass` and listed, with their SHA-256, in
+those steps' output. Requirements, not added to the project:
+
+- Playwright installed outside the project, where node finds it: `npm i -g playwright && npx playwright install chromium`, and the
+  worker started with `NODE_PATH` (`$(npm root -g)`) in `--env-allowlist` (`PLAYWRIGHT_BROWSERS_PATH` too if you moved the
+  browsers). Missing, the step ends with `ENVIRONMENT: … cannot find the Playwright library`.
+- The application running at `AW_QA_BASE_URL` (default `http://localhost:3000`): start it with **Run app** before the run reaches
+  `ui-expect-fail`.
+- The scripts stay **out of the repository** (`.aw-qa/` is added to `.git/info/exclude`) and are kept by aw in those steps' output; a
+  project that wants them committed sets `AW_QA_SCRIPTS_IN_REPO=1` for the worker (only `.aw-qa/out/` stays excluded).

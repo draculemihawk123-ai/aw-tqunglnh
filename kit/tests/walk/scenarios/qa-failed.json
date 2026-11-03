@@ -1,0 +1,20 @@
+{
+  "name": "wf-qa: có mục không đạt",
+  "manifest": "../aw-project.json",
+  "workflow": "wf-qa",
+  "agents": {},
+  "commands": {},
+  "approvals": {
+    "qa": [
+      "failed"
+    ]
+  },
+  "expect": {
+    "state": "FAILED",
+    "sequence": [
+      "start:next",
+      "qa:failed",
+      "reject:-"
+    ]
+  }
+}

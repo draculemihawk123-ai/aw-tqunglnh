@@ -1,7 +1,7 @@
 {
   "role": "kit",
   "name": "aw-kit",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "prefix": "kit-",
 
   "layers": [
@@ -40,7 +40,8 @@
     {"id": "scripts-common", "name": "Scripts shared by the Commands", "owner": "aw-kit",
      "files": ["commands/reject.sh", "commands/check-feature-docs.sh", "commands/secrets-gate.sh",
                "commands/maven-test.sh", "commands/npm-test.sh", "commands/expect-fail.sh", "commands/diff-size.sh",
-               "commands/temp-artifacts.sh", "commands/check-plan.sh", "commands/check-lessons.sh"]}
+               "commands/temp-artifacts.sh", "commands/check-plan.sh", "commands/check-lessons.sh",
+               "commands/ui-expect-fail.sh", "commands/ui-verify.sh"]}
   ],
 
   "policies": [
@@ -50,6 +51,7 @@
     {"id": "policy-permission-network", "name": "Permission: network allowed", "file": "policies/policy-permission-network.json"},
     {"id": "policy-completion", "name": "Completion: test PASS", "file": "policies/policy-completion.json"},
     {"id": "policy-completion-reviewed", "name": "Completion: tests PASS + reviewer", "file": "policies/policy-completion-reviewed.json"},
+    {"id": "policy-completion-qa", "name": "Completion: a person decided the QA checklist", "file": "policies/policy-completion-qa.json"},
     {"id": "policy-completion-feature", "name": "Completion: document check + reviewer", "file": "policies/policy-completion-feature.json"}
   ],
 
@@ -70,6 +72,8 @@
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.sync", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-docs#docs.when", "skill-docs#docs.how"]},
     {"id": "agent-flow-repro", "name": "Agent: reproduce a bug (write a red test)",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-bugfix#bugfix.repro", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-debug#debug.root-cause", "skill-test#test.behavior", "skill-test#test.error-paths", "layer-frontend-testing"]},
+    {"id": "agent-flow-repro-ui", "name": "Agent: reproduce a UI bug with a browser script (no UI test suite yet)",
+     "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-bugfix#bugfix.repro-ui", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-debug#debug.root-cause", "layer-frontend-testing"]},
     {"id": "agent-flow-fix", "name": "Agent: fix a bug once a red test exists",
      "resources": ["skill-feature-flow#flow.working-rules", "skill-feature-flow#flow.needs-info", "skill-dev-rules#rules.decisions", "skill-dev-rules#rules.finish", "skill-dev-rules#rules.no-shortcuts", "skill-dev-rules#rules.principles", "skill-dev-rules#rules.stable-artifacts", "skill-ask#ask.analysis-first", "skill-ask#ask.question-groups", "skill-bugfix#bugfix.fix", "skill-bugfix#bugfix.prevention", "skill-build#build.conformance", "skill-build#build.checklist", "skill-debug#debug.root-cause", "skill-debug#debug.hypotheses", "skill-debug#debug.fix-discipline", "skill-debug#debug.red-flags", "skill-test#test.behavior", "skill-test#test.error-paths", "layer-api-design", "layer-sql-quality", "layer-backend-security", "layer-react-quality", "layer-frontend-testing"]},
     {"id": "agent-retro", "name": "Agent: draw lessons from measurements and review",
@@ -89,6 +93,12 @@
      "network": "ALLOWED", "policies": ["policy-permission-network"]},
     {"id": "cmd-expect-fail", "name": "Command: the reproduction test must be red (inverted)", "script": "scripts-common#expect-fail.sh",
      "network": "ALLOWED", "policies": ["policy-permission-network"]},
+    {"id": "cmd-ui-expect-fail", "name": "Command: the browser reproduction script must report the bug (inverted)", "script": "scripts-common#ui-expect-fail.sh",
+     "envAllowlist": ["PATH", "HOME", "NODE_PATH", "PLAYWRIGHT_BROWSERS_PATH", "AW_QA_BASE_URL", "AW_QA_SCRIPTS_IN_REPO", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"],
+     "timeoutSeconds": 600},
+    {"id": "cmd-ui-verify", "name": "Command: after the fix every browser script passes", "script": "scripts-common#ui-verify.sh",
+     "envAllowlist": ["PATH", "HOME", "NODE_PATH", "PLAYWRIGHT_BROWSERS_PATH", "AW_QA_BASE_URL", "AW_QA_SCRIPTS_IN_REPO", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "NODE_EXTRA_CA_CERTS"],
+     "timeoutSeconds": 600},
     {"id": "cmd-diff-size", "name": "Command: a diff over the threshold goes to the simplify node", "script": "scripts-common#diff-size.sh"},
     {"id": "cmd-temp-artifacts", "name": "Command: block leftovers in the diff (debug, .only, @Disabled, TODO)", "script": "scripts-common#temp-artifacts.sh"},
     {"id": "cmd-check-plan", "name": "Command: the task's plan.md has all six sections", "script": "scripts-common#check-plan.sh"},
@@ -109,6 +119,8 @@
     {"id": "wf-task-delivery", "name": "Workflow: deliver a task", "template": "workflows/wf-task-delivery.json"},
     {"id": "wf-task-delivery-plus", "name": "Workflow: deliver a task, with diagnosis when red and an independent review", "template": "workflows/wf-task-delivery-plus.json"},
     {"id": "wf-retro", "name": "Workflow: draw lessons from measurements, the reviewer approves before they become rules", "template": "workflows/wf-retro.json"},
-    {"id": "wf-bugfix", "name": "Workflow: bug fix - red test first, fix after", "template": "workflows/wf-bugfix.json"}
+    {"id": "wf-bugfix", "name": "Workflow: bug fix - red test first, fix after", "template": "workflows/wf-bugfix.json"},
+    {"id": "wf-bugfix-ui", "name": "Workflow: UI bug fix without a UI test suite - a browser script reproduces it, before/after screenshots at the human gate", "template": "workflows/wf-bugfix-ui.json"},
+    {"id": "wf-qa", "name": "Workflow: manual QA - a checklist from the acceptance criteria, passed or failed per item", "template": "workflows/wf-qa.json"}
   ]
 }

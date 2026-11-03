@@ -14,6 +14,7 @@ import (
 type ApprovalRepository struct {
 	requests      map[string]runtime.ApprovalRequest // by ID
 	requestByNode map[string]string                  // NodeRunID -> ApprovalRequestID, UNIQUE(node_run_id)
+	checklists    []ports.ApprovalChecklistRecord    // V12-31
 }
 
 var _ ports.ApprovalRepository = (*ApprovalRepository)(nil)
@@ -27,7 +28,29 @@ func (r *ApprovalRepository) clone() *ApprovalRepository {
 	for k, v := range r.requestByNode {
 		requestByNode[k] = v
 	}
-	return &ApprovalRepository{requests: requests, requestByNode: requestByNode}
+	return &ApprovalRepository{requests: requests, requestByNode: requestByNode, checklists: append([]ports.ApprovalChecklistRecord(nil), r.checklists...)}
+}
+
+// PutApprovalChecklist implements ports.ApprovalRepository.
+func (r *ApprovalRepository) PutApprovalChecklist(_ context.Context, record ports.ApprovalChecklistRecord) error {
+	for _, c := range r.checklists {
+		if c.ApprovalRequestID == record.ApprovalRequestID {
+			return fmt.Errorf("fake: %w: checklist of %s", ports.ErrPersistenceAlreadyExists, record.ApprovalRequestID)
+		}
+	}
+	r.checklists = append(r.checklists, record)
+	return nil
+}
+
+// ListApprovalChecklistsForRun implements ports.ApprovalRepository.
+func (r *ApprovalRepository) ListApprovalChecklistsForRun(_ context.Context, runID string) ([]ports.ApprovalChecklistRecord, error) {
+	out := []ports.ApprovalChecklistRecord{}
+	for _, c := range r.checklists {
+		if c.RunID == runID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (r *ApprovalRepository) CreateApprovalRequest(_ context.Context, request runtime.ApprovalRequest) (runtime.ApprovalRequest, error) {

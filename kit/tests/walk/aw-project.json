@@ -11,7 +11,8 @@
   "scriptSkills": [
     {"id": "walk-scripts", "name": "Script giả lập của walk-workflow", "owner": "aw-kit",
      "files": ["commands/gate1.sh", "commands/quality.sh", "commands/expectfail.sh",
-               "commands/hygiene.sh", "commands/size.sh", "commands/checkplan.sh", "commands/checklessons.sh", "commands/checkdocs.sh"]}
+               "commands/hygiene.sh", "commands/size.sh", "commands/checkplan.sh", "commands/checklessons.sh", "commands/checkdocs.sh",
+               "commands/uiexpectfail.sh", "commands/uiverify.sh"]}
   ],
 
   "agents": [
@@ -20,6 +21,7 @@
     {"id": "agent-flow-build", "from": "kit"},
     {"id": "agent-flow-sync", "from": "kit"},
     {"id": "agent-flow-repro", "from": "kit"},
+    {"id": "agent-flow-repro-ui", "from": "kit"},
     {"id": "agent-flow-fix", "from": "kit"},
     {"id": "agent-debugger", "from": "kit"},
     {"id": "agent-simplifier", "from": "kit"},
@@ -39,12 +41,16 @@
     {"id": "cmd-diff-size", "name": "Command giả lập: size", "script": "walk-scripts#size.sh"},
     {"id": "cmd-check-plan", "name": "Command giả lập: check-plan", "script": "walk-scripts#checkplan.sh"},
     {"id": "cmd-check-lessons", "name": "Command giả lập: check-lessons", "script": "walk-scripts#checklessons.sh"},
-    {"id": "cmd-check-feature-docs", "name": "Command giả lập: check-feature-docs", "script": "walk-scripts#checkdocs.sh"}
+    {"id": "cmd-check-feature-docs", "name": "Command giả lập: check-feature-docs", "script": "walk-scripts#checkdocs.sh"},
+    {"id": "cmd-ui-expect-fail", "name": "Command giả lập: ui-expect-fail", "script": "walk-scripts#uiexpectfail.sh"},
+    {"id": "cmd-ui-verify", "name": "Command giả lập: ui-verify", "script": "walk-scripts#uiverify.sh"}
   ],
 
   "workflows": [
     {"id": "wf-task-delivery-plus", "from": "kit"},
     {"id": "wf-bugfix", "from": "kit"},
+    {"id": "wf-bugfix-ui", "from": "kit"},
+    {"id": "wf-qa", "from": "kit"},
     {"id": "wf-retro", "from": "kit"},
     {"id": "wf-feature-definition", "from": "kit"}
   ]

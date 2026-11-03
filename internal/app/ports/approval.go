@@ -36,6 +36,26 @@ type ApprovalRepository interface {
 	// ExpectedState/ExpectedVersion mismatch is ErrOptimisticConflict — the
 	// exact mechanism a concurrent loser observes, never a silent no-op.
 	TransitionApprovalRequest(ctx context.Context, req TransitionApprovalRequestRequest) (runtime.ApprovalRequest, error)
+
+	// PutApprovalChecklist (V12-31, ADR-063) stores the QA checklist of a decided checklist approval; ErrPersistenceAlreadyExists
+	// when the request already has one.
+	PutApprovalChecklist(ctx context.Context, record ApprovalChecklistRecord) error
+	// ListApprovalChecklistsForRun returns the checklists of a run's approvals, oldest first.
+	ListApprovalChecklistsForRun(ctx context.Context, runID string) ([]ApprovalChecklistRecord, error)
+}
+
+// ApprovalChecklistRecord is the QA_CHECKLIST record of one checklist approval (V12-31). ItemsJSON is the items as decided.
+type ApprovalChecklistRecord struct {
+	ApprovalRequestID string
+	ProjectID         string
+	RunID             string
+	NodeRunID         string
+	WorkItemID        string
+	// Verdict is PASSED (every item passed) or FAILED.
+	Verdict   string
+	ItemsJSON string
+	DecidedBy string
+	CreatedAt time.Time
 }
 
 // TransitionApprovalRequestRequest is the CAS request for

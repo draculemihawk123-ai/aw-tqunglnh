@@ -5239,6 +5239,11 @@
             "name": "Commit",
             "jsonTag": "commit,omitempty",
             "type": "*decision.ResolveApprovalCommitBody"
+          },
+          {
+            "name": "Checklist",
+            "jsonTag": "checklist,omitempty",
+            "type": "[]runtime.ChecklistItemResult"
           }
         ]
       },

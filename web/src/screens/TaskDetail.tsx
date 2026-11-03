@@ -32,7 +32,7 @@ import { formatDuration, mergeRunHistory } from '../graph/runHistory';
 import type { KanbanCard, WorkItemProjectedDetailResponse, WorkItemRun } from '../api/kanban';
 import { isWaivableBlockerType } from '../api/diagnostics';
 import type { BlockerDiagnostic, RunDiagnosticsResponse } from '../api/diagnostics';
-import type { ApprovalRequestView, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView, UsageView } from '../api/rundetail';
+import type { ApprovalRequestView, ChecklistItemResult, GraphEdgeView, GraphNodeView, NodeActivationView, RunGraphResponse, RunTimelineResponse, TimelineEntryView, UsageView } from '../api/rundetail';
 import { getSessionToken, withSessionToken } from '../api/session';
 import { decodeDiffPatch, fetchWorkingTreeDiff, fetchWorkspaceSource, summarizeUncommitted, workingTreeQueryKey } from '../api/workspaceinspection';
 import type { DiffContent, RepositoryLogPage, RepositoryWorkspaceState, SourceContentResult, WorkspaceSetState } from '../api/workspaceinspection';
@@ -42,6 +42,7 @@ import { FamilyQueuePanel } from './FamilyQueue';
 import { BaseBranchStrip } from './BaseBranchStrip';
 import { RemotePanel } from './RemotePanel';
 import { RunAppPanel } from './RunAppPanel';
+import { QAChecklistDialog } from './QAChecklistDialog';
 import type { ApprovalCommitBody } from '../api/approvalrelease';
 import { ApprovalCommitDialog, ReleaseStatusStrip } from './ApprovalRelease';
 import { RecreateDialog, RetryDialog, SupersessionLinks } from './RedoDialogs';
@@ -682,7 +683,8 @@ function GraphTimelineTab({ workItemId, projectId, familyId, workItemTitle, onOp
   const [retrying, setRetrying] = useState<{ nodeRunId: string; nodeKey: string } | null>(null);
   const [retryReason, setRetryReason] = useState('');
   // V11-07: the decision being made through the commit dialog (an outcome the node's release policy offers a commit for).
-  const [deciding, setDeciding] = useState<{ approval: ApprovalRequestView; outcome: string } | null>(null);
+  const [deciding, setDeciding] = useState<{ approval: ApprovalRequestView; outcome: string; checklist?: ChecklistItemResult[] } | null>(null);
+  const [checking, setChecking] = useState<ApprovalRequestView | null>(null); // V12-31: a QA checklist approval being filled in
   // V12-25: the project's commit message template gives the commit dialog its default message.
   const commitTemplateQuery = useQuery(commitTemplateQueryOptions(projectId, isOffline));
   // V12-17: the approval whose changes are being reviewed line by line.
@@ -775,19 +777,20 @@ function GraphTimelineTab({ workItemId, projectId, familyId, workItemTitle, onOp
   // real current version right before submitting, never trust the version
   // this tab loaded whenever it first fetched the run.
   const resolveApprovalMutation = useMutation({
-    mutationFn: async ({ approval, outcome, commit }: { approval: ApprovalRequestView; outcome: string; commit?: ApprovalCommitBody }) => {
+    mutationFn: async ({ approval, outcome, commit, checklist }: { approval: ApprovalRequestView; outcome: string; commit?: ApprovalCommitBody; checklist?: ChecklistItemResult[] }) => {
       const fresh = (await getRunDetail(runId!, withSessionToken())) as unknown as { approvalRequests?: ApprovalRequestView[] };
       const freshApproval = (fresh.approvalRequests ?? []).find(a => a.approvalRequestId === approval.approvalRequestId);
       if (!freshApproval || freshApproval.state !== 'PENDING') {
         throw new Error('This approval is no longer pending — it may have already been decided elsewhere. Refresh to see the current state.');
       }
-      return resolveApproval(runId!, approval.approvalRequestId, { outcome, ...(commit ? { commit } : {}) }, withSessionToken({ ifMatch: `"${freshApproval.version}"` }));
+      return resolveApproval(runId!, approval.approvalRequestId, { outcome, ...(commit ? { commit } : {}), ...(checklist ? { checklist } : {}) }, withSessionToken({ ifMatch: `"${freshApproval.version}"` }));
     },
     onSuccess: result => {
       const commit = result.commit as { operations?: unknown[] } | null | undefined;
       const commitNote = commit?.operations?.length ? ` A commit was requested for ${commit.operations.length} repositor${commit.operations.length === 1 ? 'y' : 'ies'}.` : '';
       show({ intent: 'success', message: `Approval resolved — ${result.advanced ? `advanced to ${result.nextNodeKey ?? 'the next step'}` : 'recorded'}.${commitNote}` });
       setDeciding(null);
+      setChecking(null);
       runDetailQuery.refetch();
       onActionSettled();
     },
@@ -883,7 +886,9 @@ function GraphTimelineTab({ workItemId, projectId, familyId, workItemTitle, onOp
                 {workItemId && familyId && outcomes.length > 0 && (
                   <Button size="compact" intent="secondary" disabled={isOffline} onClick={() => setReviewing(approval)}>Review diff</Button>
                 )}
-                {outcomes.length === 0 ? (
+                {approval.checklist ? (
+                  <Button size="compact" intent="primary" disabled={isOffline} onClick={() => setChecking(approval)}>QA checklist…</Button>
+                ) : outcomes.length === 0 ? (
                   <span className="text-[12px] text-[#3730A3] italic">no declared outcomes on this node</span>
                 ) : outcomes.map(outcome => (
                   <Button key={outcome} size="compact" intent="primary" disabled={isOffline}
@@ -969,7 +974,8 @@ function GraphTimelineTab({ workItemId, projectId, familyId, workItemTitle, onOp
                 <Button size="compact" intent="secondary" disabled={isOffline}
                   onClick={() => { setRetrying({ nodeRunId: latest.nodeRunId, nodeKey: selectedNodeKey }); setRetryReason(''); }}>Retry</Button>
               )}
-              {approval && (node.outcomes ?? []).map(outcome => (
+              {approval?.checklist && <Button size="compact" intent="primary" disabled={isOffline} onClick={() => setChecking(approval)}>QA checklist…</Button>}
+              {approval && !approval.checklist && (node.outcomes ?? []).map(outcome => (
                 <Button key={outcome} size="compact" intent="primary" disabled={isOffline}
                   onClick={() => (commitAllowedFor(approval.release, outcome) ? setDeciding({ approval, outcome }) : resolveApprovalMutation.mutate({ approval, outcome }))}>
                   {outcome}
@@ -1015,8 +1021,16 @@ function GraphTimelineTab({ workItemId, projectId, familyId, workItemTitle, onOp
           defaultMessage={renderCommitTemplate(commitTemplateQuery.data?.template, workItemTitle ?? '', workItemId ?? '')} isOffline={isOffline}
           pending={resolveApprovalMutation.isPending} error={resolveApprovalMutation.error}
           onClose={() => { setDeciding(null); resolveApprovalMutation.reset(); }}
-          onSubmit={commit => resolveApprovalMutation.mutate({ approval: deciding.approval, outcome: deciding.outcome, commit })}
+          onSubmit={commit => resolveApprovalMutation.mutate({ approval: deciding.approval, outcome: deciding.outcome, commit, checklist: deciding.checklist })}
         />
+      )}
+      {checking?.checklist && workItemId && !deciding && (
+        <QAChecklistDialog projectId={projectId} workItemId={workItemId} qaTitle={workItemTitle ?? ''} checklist={checking.checklist} isOffline={isOffline}
+          pending={resolveApprovalMutation.isPending} error={resolveApprovalMutation.error}
+          onClose={() => { setChecking(null); resolveApprovalMutation.reset(); }}
+          onSubmit={(outcome, checklist) => (commitAllowedFor(checking.release, outcome)
+            ? setDeciding({ approval: checking, outcome, checklist })
+            : resolveApprovalMutation.mutate({ approval: checking, outcome, checklist }))} />
       )}
       {retrying && (
         <Dialog

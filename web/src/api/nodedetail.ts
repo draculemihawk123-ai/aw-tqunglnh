@@ -1,3 +1,4 @@
+import type { ApprovalChecklistView } from './rundetail';
 /**
  * Hand-declared wire shapes and pure helpers for V11-11's node detail pane (ADR-042).
  *
@@ -111,6 +112,8 @@ export interface NodeApproval {
   authorizedRoles?: string[];
   resolvedOutcome?: string;
   dueAt: string;
+  /** V12-31: the QA checklist (decided items once resolved). */
+  checklist?: ApprovalChecklistView;
 }
 
 export interface NodeRunDetail {

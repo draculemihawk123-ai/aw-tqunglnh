@@ -230,6 +230,20 @@ export function NodeDetailPane({ nodeRunId, isOffline, onClose, onOpenEvidence }
           {/* V12-26: the prompt each agent attempt received */}
           {detail.nodeType === 'AGENT' && <AttemptPromptSection projectId={detail.projectId} attempts={detail.attempts.filter(a => !!a.attemptId).map(a => ({ attemptId: a.attemptId!, attemptNumber: a.attemptNumber }))} />}
           {detail.failure && <FailureSection failure={detail.failure} />}
+          {/* V12-31: the QA_CHECKLIST record of a decided checklist approval */}
+          {detail.approval?.checklist?.verdict && (
+            <Section title="QA checklist" testId="node-qa-checklist">
+              <p className="text-[12px] text-[#475569]">{detail.approval.checklist.verdict === 'PASSED' ? 'Every item passed' : 'Some items failed'} · {detail.approval.checklist.decidedBy}</p>
+              <ul className="text-[12px] space-y-0.5">
+                {detail.approval.checklist.items.map(i => (
+                  <li key={i.id} className="flex items-start gap-2">
+                    <StatusBadge state={i.result === 'PASSED' ? 'PASS' : 'FAIL'} entity="workitem" />
+                    <span>{i.text}{i.note ? <span className="text-[#475569]"> — {i.note}</span> : null}{i.attachmentMessageIds?.length ? <span className="text-[#475569]"> ({i.attachmentMessageIds.length} image{i.attachmentMessageIds.length === 1 ? '' : 's'} in Chat)</span> : null}</span>
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
           {detail.evidence.length > 0 && (
             <Section title="Evidence" testId="node-evidence">
               <ul className="text-[12px] space-y-0.5">

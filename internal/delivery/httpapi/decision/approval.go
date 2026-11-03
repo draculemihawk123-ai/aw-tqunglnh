@@ -47,6 +47,8 @@ type ResolveApprovalBody struct {
 	// changes for the repositories it names. The approval node's release policy decides whether that
 	// is allowed for Outcome; an empty Repositories list is the "nothing to commit" answer.
 	Commit *ResolveApprovalCommitBody `json:"commit,omitempty"`
+	// Checklist (V12-31, ADR-063) is the result of every item of a checklist approval (required for one, refused otherwise).
+	Checklist []runtime.ChecklistItemResult `json:"checklist,omitempty"`
 }
 
 // ResolveApprovalCommitBody is the commit a decision carries.
@@ -86,6 +88,8 @@ type resolveApprovalHashPayload struct {
 	Reason            string `json:"reason,omitempty"`
 	// Commit is folded in so the same Idempotency-Key with a different commit is a conflict, not a replay.
 	Commit *ResolveApprovalCommitBody `json:"commit,omitempty"`
+	// Checklist is folded in for the same reason (V12-31).
+	Checklist []runtime.ChecklistItemResult `json:"checklist,omitempty"`
 }
 
 // ResolveApprovalResponse is a successful (fresh or replayed) decision's
@@ -154,7 +158,7 @@ func ResolveApprovalHandler(deps Dependencies) http.HandlerFunc {
 
 		scope := ports.ProjectScope(string(request.ProjectID))
 		hashPayload, err := json.Marshal(resolveApprovalHashPayload{
-			ApprovalRequestID: approvalRequestID, Outcome: body.Outcome, Reason: body.Reason, Commit: body.Commit,
+			ApprovalRequestID: approvalRequestID, Outcome: body.Outcome, Reason: body.Reason, Commit: body.Commit, Checklist: body.Checklist,
 		})
 		if err != nil {
 			httpapi.WriteError(w, http.StatusInternalServerError, httpapi.ErrorCodeInternal, "internal error", nil)
@@ -241,7 +245,7 @@ func ResolveApprovalHandler(deps Dependencies) http.HandlerFunc {
 			}
 		}
 		result, err := runtime.ResolveApproval(ctx, deps.UOW, deps.IDs, cmd, runtime.ResolveApprovalRequest{
-			RunID: runID, ApprovalRequestID: approvalRequestID, Outcome: body.Outcome, Reason: body.Reason, Commit: commit,
+			RunID: runID, ApprovalRequestID: approvalRequestID, Outcome: body.Outcome, Reason: body.Reason, Commit: commit, Checklist: body.Checklist,
 		})
 		if err != nil {
 			writeResolveApprovalError(w, err)

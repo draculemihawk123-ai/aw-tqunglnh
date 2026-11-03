@@ -43,7 +43,7 @@ kit/
 ├── layers/                     # layer-stack-spring-sqlite, layer-stack-react-vite, layer-api-design, layer-sql-quality,
 │                               # layer-backend-security, layer-react-quality, layer-frontend-testing
 ├── skills/                     # skill-feature-flow, skill-maker, skill-review, skill-code-review, skill-dev-rules, skill-ask, skill-brainstorm, skill-spec, skill-design, skill-plan, skill-build, skill-debug, skill-test, skill-security, skill-docs
-├── workflows/                  # wf-feature-definition, wf-task-delivery, wf-task-delivery-plus, wf-bugfix, wf-retro (mẫu, có chỗ trống cho project điền)
+├── workflows/                  # wf-feature-definition, wf-task-delivery, wf-task-delivery-plus, wf-bugfix, wf-bugfix-ui, wf-qa, wf-retro (mẫu, có chỗ trống cho project điền)
 ├── schema/aw-project.schema.json   # đặc tả của aw-project.json và kit.json
 ├── drafts/                     # bản nháp do import-skill.py sinh (git bỏ qua, không bao giờ publish)
 └── tests/check-kit.sh          # kiểm tra tự động (mục 7)
@@ -126,6 +126,12 @@ flowchart LR
   P -->|escalated| X
   G2 -->|rejected| X
 ```
+
+`wf-qa` (V12-31) là một cổng duyệt có **checklist QA** (hoàn thành theo `policy-completion-qa`: một người đã quyết định): mỗi tiêu chí chấp nhận của task là một mục, người QA đánh đạt/không đạt
+(ghi chú bắt buộc khi không đạt, đính ảnh), outcome đi theo các mục; mục không đạt có nút **Create fix task**. `wf-bugfix-ui` dành cho
+UI chưa có bộ test: agent `repro` viết script trình duyệt `.aw-qa/*.mjs` (Playwright, không thêm vào `package.json`), `ui-expect-fail`
+cho qua khi script báo lỗi, `ui-verify` sau `gate1` cho qua khi mọi script đạt, `gate2` là checklist có ảnh trước/sau. Chi tiết và yêu
+cầu (Playwright cài ngoài project, `NODE_PATH`, ứng dụng chạy bằng Run app): docs/operator/04-authoring-workflows.md.
 
 `wf-bugfix` bắt buộc có **test đỏ trước khi sửa**: agent `repro` chỉ được viết test tái hiện, bước `expect-fail` (Command) chạy bộ test và
 chỉ cho qua khi test **đang đỏ vì đúng một lỗi test**, rồi agent `fix` mới sửa:

@@ -668,6 +668,20 @@ ADR-065 (tài liệu trung gian của kit), trong `docs/architecture/02-architec
   qua form của V12-14).
 - Biến thể bugfix cho UI chưa có bộ test: tái hiện bằng script trình duyệt (Playwright), hoặc dùng checklist QA có ảnh trước và
   sau làm evidence ở cổng người.
+- **Kết quả (đã xong, ADR-063):** `ApprovalNodeConfig.checklist` (`fromAcceptanceCriteria`, `items`, `passedOutcome`, `failedOutcome`;
+  kiểm khi publish: hai outcome khác nhau và có khai báo, có mục, tối đa 50, không trùng). `ResolveApproval` nhận `checklist`: đủ mọi mục,
+  PASSED/FAILED, mục FAILED phải có ghi chú, outcome phải đúng theo các mục (sai thì 422, cổng vẫn chờ); approval thường từ chối checklist.
+  Kết quả lưu ở bảng `approval_checklists` (migration 0064) — bản ghi QA_CHECKLIST của cổng (bảng `evidence` gắn với attempt nên không
+  dùng được cho cổng người); `getRunDetail`/`getNodeRunDetail` trả `approvalRequests[].checklist` (mục đang chờ, hoặc mục đã chốt). CLI
+  `aw approval resolve --checklist`; `review-task.sh` nhận `CHECKLIST=`. Giao diện: nút **QA checklist…** (đạt/không đạt, ghi chú, đính ảnh
+  qua attachment của task, outcome tự suy ra, rồi tới bước commit nếu node bật release), **Create fix task** mở New task điền sẵn (bugfix,
+  tiêu đề, behavior, tiêu chí); khung node hiện checklist đã chốt. Kit 1.10.0: `wf-qa`, `wf-bugfix-ui` (agent `agent-flow-repro-ui`, skill
+  `bugfix.repro-ui`, lệnh `cmd-ui-expect-fail`/`cmd-ui-verify` qua `ui-check.sh`: script `.aw-qa/*.mjs` ngoài repo mặc định, bật
+  `AW_QA_SCRIPTS_IN_REPO=1` để đưa vào repo, ảnh và SHA-256 trong output). Test: `approval_checklist_test.go` (SQLite thật),
+  `checklist_config_test.go`, `QAChecklistDialog.test.tsx`, walk `qa-passed`, `qa-failed`, `bugfix-ui-happy`. Chưa làm: scope của fix task
+  không tự điền (chọn trong form), ảnh trước/sau không tự gắn vào checklist (người duyệt mở từ worktree). `ui-check.sh` đã chạy với Playwright
+  và Chromium thật trên Linux (lỗi tái hiện được, sau khi sửa thì đạt, script không chạm lỗi thì bị từ chối, không có ứng dụng thì báo
+  ENVIRONMENT); chưa chạy trên Windows.
 
 ### V12-32 — Truy cập từ xa và màn duyệt cho điện thoại (UX-40)
 

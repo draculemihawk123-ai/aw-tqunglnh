@@ -8,6 +8,8 @@
 #     thì dùng giao diện web. Thiếu user.name/user.email thì aw từ chối cả lệnh và cổng vẫn chờ.
 #   UNSELECTED=KEEP|PARK: file không được commit (mặc định KEEP; với lệnh này mọi file đều được chọn nên chỉ có ý nghĩa
 #     khi bạn tự sửa --commit-spec).
+#   CHECKLIST=<file> (V12-31): kết quả từng mục của node duyệt có checklist QA; thiếu thì outcome đạt = mọi mục PASSED,
+#     outcome không đạt = mọi mục FAILED với ghi chú là phản hồi.
 #   outcome là một outcome khai báo của node đó (show-run.sh in sẵn danh sách).
 #   Phản hồi được append thành message USER của WorkItem; các node AGENT chạy sau đó nhận nó trong phần
 #   messages của prompt (trong giới hạn messageBudget của agent; message mới nhất luôn được giữ).
@@ -51,8 +53,21 @@ if [ -n "${COMMIT_MESSAGE:-}" ]; then
   # Không có file nào thay đổi: commit rỗng (aw ghi NOTHING_TO_COMMIT, không phải lỗi).
   commit_args=(--commit-spec "$(jq -cn --arg m "$COMMIT_MESSAGE" --argjson r "$repos" '{message: $m, repositories: $r}')")
 fi
+# V12-31: a QA checklist approval needs a result for every item. CHECKLIST=<file> gives them ([{"id","result","note"}], ids as
+# `aw run show` lists them under checklist.items); without it, the passed outcome marks every item PASSED and the failed outcome marks
+# every item FAILED with the feedback as the note.
+checklist_args=()
+if jq -e '.checklist != null' <<<"$request" > /dev/null; then
+  if [ -n "${CHECKLIST:-}" ]; then
+    checklist_args=(--checklist "@$CHECKLIST")
+  elif [ "$outcome" = "$(jq -r '.checklist.passedOutcome' <<<"$request")" ]; then
+    checklist_args=(--checklist "$(jq -c '[.checklist.items[] | {id, result: "PASSED"}]' <<<"$request")")
+  else
+    checklist_args=(--checklist "$(jq -c --arg n "${feedback:-$outcome}" '[.checklist.items[] | {id, result: "FAILED", note: $n}]' <<<"$request")")
+  fi
+fi
 "$AW" approval resolve --outcome "$outcome" --reason "${feedback:-$outcome}" \
   --expected-version "$(jq -r '.version' <<<"$request")" --idempotency-key "resolve-$request_id" \
-  ${commit_args[@]+"${commit_args[@]}"} "$run_id" "$request_id" > /dev/null
+  ${commit_args[@]+"${commit_args[@]}"} ${checklist_args[@]+"${checklist_args[@]}"} "$run_id" "$request_id" > /dev/null
 echo "Đã chọn '$outcome' cho node $(jq -r '.nodeKey' <<<"$request"); chờ run chạy tiếp..."
 "$(dirname "$0")/watch-run.sh" "$run_id" "$request_id"

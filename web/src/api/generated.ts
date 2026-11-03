@@ -1719,6 +1719,7 @@ export interface ResolveApprovalRequest {
   outcome: string;
   reason?: string;
   commit?: unknown | null;
+  checklist?: unknown[];
 }
 
 export interface ResolveApprovalResponse {

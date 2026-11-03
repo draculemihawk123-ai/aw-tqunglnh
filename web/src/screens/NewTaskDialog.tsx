@@ -21,6 +21,8 @@ export interface NewTaskDialogProps {
   isOffline?: boolean;
   onClose: () => void;
   onCreated: (workItemId: string) => void;
+  /** V12-31: a draft to start from (e.g. "Create fix task" from a failed QA item). */
+  initial?: Partial<TaskDraft>;
 }
 
 function templateDraft(kind: TaskKind, prev?: TaskDraft): TaskDraft {
@@ -37,8 +39,8 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : 'unexpected error';
 }
 
-export function NewTaskDialog({ projectId, parentWorkItemId, isOffline, onClose, onCreated }: NewTaskDialogProps) {
-  const [draft, setDraft] = useState<TaskDraft>(() => templateDraft('feature'));
+export function NewTaskDialog({ projectId, parentWorkItemId, isOffline, onClose, onCreated, initial }: NewTaskDialogProps) {
+  const [draft, setDraft] = useState<TaskDraft>(() => ({ ...templateDraft(initial?.kind ?? 'feature'), ...initial }));
   const [mode, setMode] = useState<'form' | 'json'>('form');
   const [json, setJson] = useState('');
   const [jsonError, setJsonError] = useState('');

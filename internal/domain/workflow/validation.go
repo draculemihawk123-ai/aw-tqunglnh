@@ -882,6 +882,7 @@ func validateApprovalConfig(node Node) []string {
 	}
 
 	problems = append(problems, validateApprovalReleaseFields(node)...)
+	problems = append(problems, validateApprovalChecklistFields(node)...)
 	return problems
 }
 

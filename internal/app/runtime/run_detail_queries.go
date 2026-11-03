@@ -181,6 +181,9 @@ type ApprovalRequestView struct {
 	// whether it is OFFERED or REQUIRED. Omitted for a node with none (DISABLED), so every response from before
 	// V11-07 stays byte-identical.
 	Release *ApprovalReleaseView `json:"release,omitempty"`
+	// Checklist (V12-31, ADR-063) is the QA checklist of a checklist approval: its items while pending, the items as decided
+	// (the QA_CHECKLIST record) afterwards. Omitted for a plain approval.
+	Checklist *ApprovalChecklistView `json:"checklist,omitempty"`
 }
 
 // ApprovalReleaseView is an approval node's non-disabled release policy as the dialog reads it.
@@ -233,7 +236,7 @@ func activationOrder(nodeRuns []runtimedomain.NodeRun) map[runtimedomain.NodeRun
 // order tiebreak — ActivationSequence can legitimately tie across fork
 // branches, see sortedNodeRuns). Returns nil (never an empty slice) for no
 // requests so the caller's omitempty tag drops the whole key.
-func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[runtimedomain.NodeRunID]uint64, document workflow.WorkflowDocument) []ApprovalRequestView {
+func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[runtimedomain.NodeRunID]uint64, document workflow.WorkflowDocument, qa checklistContext) []ApprovalRequestView {
 	if len(requests) == 0 {
 		return nil
 	}
@@ -260,6 +263,13 @@ func toApprovalRequestViews(requests []runtimedomain.ApprovalRequest, order map[
 			view.Release = &ApprovalReleaseView{
 				Commit: string(node.Approval.Release.Mode()), Outcomes: append([]string(nil), node.Approval.Release.Outcomes...),
 			}
+		}
+		if node, ok := findNode(document, r.NodeKey); ok {
+			var record *ports.ApprovalChecklistRecord
+			if rec, found := qa.records[string(r.ID)]; found {
+				record = &rec
+			}
+			view.Checklist = approvalChecklistView(node, qa.item, record)
 		}
 		views = append(views, view)
 	}
@@ -391,6 +401,10 @@ func GetRunDetail(ctx context.Context, uow ports.UnitOfWork, runID string) (RunD
 			}
 			document = version.Document()
 		}
+		qa, err := loadChecklistContext(ctx, tx, run, document)
+		if err != nil {
+			return err
+		}
 		detail = RunDetail{
 			RunID: string(run.ID), ProjectID: string(run.ProjectID), WorkItemID: string(run.WorkItemID),
 			FamilyID: string(run.FamilyID), State: string(run.State), Version: run.Version, ScopeVersion: run.ScopeVersion,
@@ -398,7 +412,7 @@ func GetRunDetail(ctx context.Context, uow ports.UnitOfWork, runID string) (RunD
 			StartedAt: run.StartedAt, FinishedAt: run.FinishedAt, Cancelling: run.CancelEpoch != nil,
 			Manifest: toExecutionManifestDetail(manifest), Amendments: amendmentViews,
 			NodeRunCount: len(nodeRuns), ExecutionAttemptCount: len(attempts),
-			ApprovalRequests:  toApprovalRequestViews(approvalRequests, order, document),
+			ApprovalRequests:  toApprovalRequestViews(approvalRequests, order, document, qa),
 			WaitRegistrations: toWaitRegistrationViews(waitRegistrations, order),
 		}
 		return nil
