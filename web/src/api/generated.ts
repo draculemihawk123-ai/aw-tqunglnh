@@ -608,6 +608,7 @@ export interface GetReleaseSetLocalCommitStatusResponse {
   failureReason?: string;
   parentVcsObjectId?: string;
   resultVcsObjectId?: string;
+  failureDetail?: string;
   jobId: string;
   createdAt: string;
   completedAt?: string | null;

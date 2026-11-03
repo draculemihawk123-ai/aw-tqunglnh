@@ -1,7 +1,7 @@
 # V12 — Vận hành aw trên giao diện: sửa bất cập từ dùng thật
 
-> Trạng thái: **ĐANG SOẠN, chưa triển khai.** Phần B (run graph) đã được product owner chốt 7 quyết định ngày 2026-11-03.
-> Các phần A, C, D mới chia task, chờ product owner duyệt thứ tự và phạm vi.
+> Trạng thái: **ĐANG TRIỂN KHAI** (bắt đầu 2026-11-03, nhánh `claude/admiring-brown-d1uf4r`). Phần B (run graph) đã được product
+> owner chốt 7 quyết định ngày 2026-11-03. Tiến độ: xem khối "Kết quả" dưới từng task.
 > Làm tuần tự theo Task ID; mỗi task một commit, merge vào `master` khi product owner duyệt.
 >
 > Exit: gate V12 ở cuối file.
@@ -102,6 +102,14 @@ diện mới sớm, phần B có thể làm trước phần A; khi đó V12-11 p
 - **Mục tiêu:** job commit hoặc thành công, hoặc kết thúc `FAILED` kèm lý do có kiểu, hiện trên giao diện và CLI. Có thao tác
   "thử commit lại" có kiểm soát (idempotency key, expected version).
 - **Test:** tái hiện treo bằng handler giả lập; job `DEAD` phải đóng bản ghi commit ở `FAILED`; worker ghi log lý do.
+- **Kết quả (đã xong, ADR-045):** khảo sát mã xác nhận nghi ngờ (2): `workerpool.runJob` bỏ lỗi handler, job chỉ đi tiếp qua lease
+  hết hạn, và không có gì đóng thao tác khi job `DEAD`. Nghi ngờ (1) không đúng: không có kiểm tra nào chặn commit mới vì thao tác cũ
+  còn `REQUESTED` (write lease của local commit chỉ giữ tối đa `--local-commit-write-lease-ttl`). Nguyên nhân gốc của lỗi handler ở
+  máy Windows chưa tái hiện được ở đây; nay nó hiện ra trong `failureDetail` và log. Đã làm: lý do `EXECUTION_ERROR` + cột
+  `failure_detail` (migration 0054); lượt claim cuối đóng `FAILED` cùng transaction hoàn tất job; worker quét job `DEAD` mỗi phút;
+  `OnHandlerError` ghi log; `RELEASE_FAILED` mang chi tiết; thử lại bằng yêu cầu mới (marker mới), `commit-task.sh` in lý do và nhận
+  `COMMIT_ATTEMPT`. Test: `releasesetcommit/execution_error_test.go` (Git + SQLite thật), `workerpool/pool_handler_error_test.go`.
+  Chưa chạy: lần chạy thật trên Windows.
 
 ### V12-02 — Lỗi ở bước sau cổng duyệt làm mất kết quả đã duyệt (UX-23)
 

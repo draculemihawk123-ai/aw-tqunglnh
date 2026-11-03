@@ -87,19 +87,19 @@ func loadReleaseSetLocalCommitTx(ctx context.Context, tx *sql.Tx, id string) (wo
 	row := tx.QueryRowContext(ctx, `
 SELECT id, project_id, release_set_id, expected_release_set_version, repository_workspace_id, repository_id,
        expected_generation, expected_workspace_version, actor, message, author_name, author_email, message_hash,
-       marker, state, failure_reason, parent_vcs_object_id, result_vcs_object_id, job_id, created_at, completed_at, version
+       marker, state, failure_reason, failure_detail, parent_vcs_object_id, result_vcs_object_id, job_id, created_at, completed_at, version
 FROM release_set_local_commits WHERE id = ?`, id)
 
 	var intent work.ReleaseSetLocalCommit
 	var releaseSetLocalCommitID, projectID, releaseSetID, repositoryWorkspaceID, repositoryID string
 	var actor, message, authorName, authorEmail, messageHash, marker, state string
-	var failureReason, parentVCSObjectID, resultVCSObjectID, jobID sql.NullString
+	var failureReason, failureDetail, parentVCSObjectID, resultVCSObjectID, jobID sql.NullString
 	var createdAtRaw string
 	var completedAtRaw sql.NullString
 	if err := row.Scan(
 		&releaseSetLocalCommitID, &projectID, &releaseSetID, &intent.ExpectedReleaseSetVersion, &repositoryWorkspaceID, &repositoryID,
 		&intent.ExpectedGeneration, &intent.ExpectedWorkspaceVersion, &actor, &message, &authorName, &authorEmail, &messageHash,
-		&marker, &state, &failureReason, &parentVCSObjectID, &resultVCSObjectID, &jobID, &createdAtRaw, &completedAtRaw, &intent.Version,
+		&marker, &state, &failureReason, &failureDetail, &parentVCSObjectID, &resultVCSObjectID, &jobID, &createdAtRaw, &completedAtRaw, &intent.Version,
 	); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return work.ReleaseSetLocalCommit{}, fmt.Errorf("%w: release set local commit %s", ports.ErrPersistenceNotFound, id)
@@ -124,6 +124,7 @@ FROM release_set_local_commits WHERE id = ?`, id)
 	intent.Marker = marker
 	intent.State = work.ReleaseSetLocalCommitState(state)
 	intent.FailureReason = work.ReleaseSetLocalCommitFailureReason(failureReason.String)
+	intent.FailureDetail = failureDetail.String
 	intent.ParentVCSObjectID = parentVCSObjectID.String
 	intent.ResultVCSObjectID = resultVCSObjectID.String
 	intent.JobID = jobID.String
@@ -145,7 +146,7 @@ func (r workRepository) CountNoChangesFailedReleaseSetLocalCommits(ctx context.C
 	err := r.tx.QueryRowContext(ctx, `
 SELECT COUNT(*) FROM release_set_local_commits
 WHERE release_set_id = ? AND repository_workspace_id = ? AND actor = ? AND message_hash = ?
-  AND state = 'FAILED' AND failure_reason IN ('NO_CHANGES', 'HEAD_DRIFT', 'CHANGESET_DRIFT')`,
+  AND state = 'FAILED' AND failure_reason IN ('NO_CHANGES', 'HEAD_DRIFT', 'CHANGESET_DRIFT', 'EXECUTION_ERROR')`,
 		releaseSetID, repositoryWorkspaceID, actor, messageHash).Scan(&count)
 	if err != nil {
 		return 0, MapSQLiteError(fmt.Errorf("count no-changes release set local commits: %w", err))
@@ -203,9 +204,9 @@ func (r workRepository) TransitionReleaseSetLocalCommitToFailed(ctx context.Cont
 	}
 	result, err := r.tx.ExecContext(ctx, `
 UPDATE release_set_local_commits
-SET state = 'FAILED', failure_reason = ?, completed_at = ?, version = version + 1
+SET state = 'FAILED', failure_reason = ?, failure_detail = ?, completed_at = ?, version = version + 1
 WHERE id = ? AND state = 'REQUESTED' AND version = ?`,
-		string(req.FailureReason), formatWorkflowTime(req.OccurredAt),
+		string(req.FailureReason), nullableString(req.FailureDetail), formatWorkflowTime(req.OccurredAt),
 		req.ReleaseSetLocalCommitID, req.ExpectedVersion,
 	)
 	if err != nil {
@@ -271,4 +272,47 @@ WHERE lease.repository_workspace_id = ? AND lease.generation = ? AND lease.fence
 		return MapSQLiteError(fmt.Errorf("validate local commit write lease fencing: %w", err))
 	}
 	return nil
+}
+
+// ListLocalCommitsWithDeadJob implements ports.WorkRepository (V12-01): every REQUESTED operation
+// whose RELEASE_SET_LOCAL_COMMIT job (aggregate_id = operation id) is DEAD.
+func (r workRepository) ListLocalCommitsWithDeadJob(ctx context.Context) ([]ports.DeadLocalCommitJob, error) {
+	rows, err := r.tx.QueryContext(ctx, `
+SELECT op.id, job.id, job.claim_count, COALESCE(job.last_error_code, '')
+FROM release_set_local_commits AS op
+JOIN durable_jobs AS job ON job.aggregate_id = op.id AND job.kind = 'RELEASE_SET_LOCAL_COMMIT'
+WHERE op.state = 'REQUESTED' AND job.state = 'DEAD'
+ORDER BY op.created_at, op.id`)
+	if err != nil {
+		return nil, MapSQLiteError(fmt.Errorf("list release set local commits with a dead job: %w", err))
+	}
+	type row struct {
+		id, jobID, lastError string
+		claims               uint32
+	}
+	var found []row
+	for rows.Next() {
+		var item row
+		if err := rows.Scan(&item.id, &item.jobID, &item.claims, &item.lastError); err != nil {
+			_ = rows.Close()
+			return nil, MapSQLiteError(fmt.Errorf("scan release set local commit with a dead job: %w", err))
+		}
+		found = append(found, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, MapSQLiteError(err)
+	}
+	_ = rows.Close()
+	out := make([]ports.DeadLocalCommitJob, 0, len(found))
+	for _, item := range found {
+		intent, err := loadReleaseSetLocalCommitTx(ctx, r.tx, item.id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ports.DeadLocalCommitJob{
+			Intent: intent, JobID: ports.JobID(item.jobID), ClaimCount: item.claims, LastErrorCode: item.lastError,
+		})
+	}
+	return out, nil
 }

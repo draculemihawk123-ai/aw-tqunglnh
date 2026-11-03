@@ -1341,9 +1341,33 @@ thăm dò lại đúng đường dẫn đã lưu, `BLOCKED` chỉ đi tiếp đ�
 
 **Hệ quả:** tạo nhầm project thì đổi tên hoặc lưu trữ được; không thể mất lịch sử. Chưa có: xóa cứng, gộp project, xuất/nhập, tự phát hiện lệnh ghi không có biên nhận (nếu sau này có lệnh người dùng không ghi biên nhận thì phải tự kiểm trạng thái project).
 
-## 47. Baseline sau review thiết kế
+## 47. ADR-045 — Local commit mà worker không làm xong thì đóng `FAILED`/`EXECUTION_ERROR` có lý do; job DEAD không để lại thao tác `REQUESTED`
 
-ADR-001…044 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
+**Bối cảnh (V12-01, UX-22):** ở chochuyennha, job `RELEASE_SET_LOCAL_COMMIT` bị nhận 5 lần, lần nào cũng `LEASE_EXPIRED` rồi `DEAD`;
+bản ghi local commit giữ `REQUESTED` mãi, không có lỗi ở giao diện, CLI hay log. Hai nguyên nhân trong mã: `workerpool` bỏ qua lỗi của
+handler (job chỉ đi tiếp qua lease hết hạn), và không có gì đóng thao tác khi job thành `DEAD`.
+
+**Quyết định:**
+
+1. Thêm lý do thất bại `EXECUTION_ERROR` (tập đóng của `ReleaseSetLocalCommitFailureReason`) và cột `failure_detail` (migration 0054):
+   chuỗi ngắn đã che bí mật, tối đa 1000 byte. API trạng thái local commit, `aw approval release` và sự kiện
+   `ReleaseSetLocalCommitFailed` v1 có thêm trường tùy chọn `failureDetail` (thêm, không phá vỡ).
+2. Ở lượt claim **cuối** (`claimCount = maxClaims`), lỗi của handler không còn để cho lease hết hạn: thao tác đóng
+   `FAILED/EXECUTION_ERROR` kèm lỗi, cùng transaction có fence hoàn tất job (như `NO_CHANGES`). Mất job lease thì không đóng.
+3. Worker quét định kỳ (mỗi phút và lúc khởi động) các thao tác `REQUESTED` có job `DEAD` (worker treo hoặc chết ở mọi lượt) và
+   đóng chúng `FAILED/EXECUTION_ERROR`, idempotent.
+4. Khi thao tác được yêu cầu cùng quyết định duyệt, blocker `RELEASE_FAILED` (ADR-040) mang cả chi tiết.
+5. `workerpool.Config.OnHandlerError`: worker ghi log mỗi lần handler lỗi (`jobId`, `kind`, `claim`, `maxClaims`, `error`).
+6. "Thử commit lại" là một yêu cầu local commit mới (idempotency key mới, expected version như cũ): thao tác `EXECUTION_ERROR`
+   được đếm như `NO_CHANGES` khi tính marker nên yêu cầu y hệt không đụng marker cũ. Nếu lần hỏng đã kịp tạo commit trước khi
+   worker chết, lần thử lại dừng `HEAD_DRIFT` (ADR-034) thay vì commit chồng: người vận hành xem rồi `adopt-head`.
+
+**Hệ quả:** không còn thao tác commit treo `REQUESTED` vô thời hạn; lý do hiện ở API, CLI, giao diện và log. Không đổi ADR-014 (vẫn
+không push/PR/merge) và không thêm mã lỗi vào tập §18.
+
+## 48. Baseline sau review thiết kế
+
+ADR-001…045 là baseline hiện hành. Các mục ADR-001…010 giữ lịch sử quyết định ban đầu; khi đọc phải áp
 dụng ma trận sau:
 
 - ADR-011 supersede retry cùng NodeRun trong ADR-002 và bổ sung completion candidate;
@@ -1396,5 +1420,6 @@ dụng ma trận sau:
 - ADR-044 (V11-13) cho project đổi tên được và lưu trữ được thay cho xóa; project `ARCHIVED` là chỉ đọc (chặn ở biên nhận, worker không nhận job của nó), không có xóa cứng.
 - ADR-043 (V11-12) cho lỗi thăm dò repository có loại và gợi ý (`failureKind`), thêm kiểm tra trước đăng ký, sửa (`BLOCKED`), ngừng dùng (`ACTIVE`/`BLOCKED -> DISABLED`, sửa ADR V3-01) và xóa cứng repository chưa từng `ACTIVE`; tên dùng lại được sau khi ngừng dùng, id đã xóa không bao giờ dùng lại.
 - ADR-042 (V11-11) thêm đường đọc theo node (`getNodeRunDetail`, `listAttemptEvents`), giữ lời agent khi attempt hỏng (evidence `AGENT_OUTPUT` một phần) và tin hoạt động chỉ-hiển-thị trong Chat (bị loại khỏi ngữ cảnh của agent).
+- ADR-045 (V12-01) thêm lý do `EXECUTION_ERROR` kèm `failureDetail` cho local commit mà worker không làm xong (lượt claim cuối hoặc job `DEAD`), và log lỗi handler của worker pool.
 
 Thay đổi semantics tiếp theo vẫn cần ADR mới; không sửa âm thầm lịch sử quyết định.

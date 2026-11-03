@@ -206,6 +206,7 @@ type assembledWorker struct {
 	catalog    *projection.Catalog
 	completion *runtime.CompletionOrchestrator
 	logger     *logging.Logger
+	matcher    redact.Matcher
 }
 
 func (w *assembledWorker) close() { _ = w.store.Close() }
@@ -334,9 +335,18 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 	}
 	registry := buildWorkerRegistry(deps)
 
+	logger := logging.New(os.Stderr, logging.JSON, matcher)
+	identity := logging.Identity{ActorType: "worker", ActorID: opts.workerID}
 	pool, err := workerpool.New(store, registry, workerpool.Config{
 		Concurrency: opts.concurrency, Owner: opts.workerID, LeaseTTL: opts.leaseTTL,
 		HeartbeatEvery: opts.leaseHeartbeat, PollInterval: opts.pollInterval, ShutdownGrace: opts.shutdownGrace,
+		// V12-01: a job whose handler fails is retried until its claims run out; say why each time.
+		OnHandlerError: func(job ports.DurableJob, handleErr error) {
+			_ = logger.Warn(identity, "job handler failed", map[string]any{
+				"jobId": string(job.ID), "kind": job.Kind, "aggregateId": job.AggregateID,
+				"claim": job.ClaimCount, "maxClaims": job.MaxClaims, "error": handleErr.Error(),
+			})
+		},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct worker pool: %w", err)
@@ -347,7 +357,7 @@ func assembleWorker(ctx context.Context, opts workerOptions) (*assembledWorker, 
 		opts: opts, store: store, uow: uow, ids: deps.ids, clk: deps.clk, artifacts: artifacts,
 		registry: registry, pool: pool, catalog: deps.catalog,
 		completion: runtime.NewCompletionOrchestrator(uow, deps.ids, deps.clk),
-		logger:     logging.New(os.Stderr, logging.JSON, matcher),
+		logger:     logger, matcher: matcher,
 	}, nil
 }
 
@@ -452,6 +462,8 @@ func buildWorkerRegistry(d workerDeps) *workerpool.Registry {
 		// V11-07: park the changes a decision did not select, and open RELEASE_FAILED when a commit
 		// requested together with a decision closes FAILED.
 		Parker: d.provider, OnFailed: runtime.OpenReleaseFailedBlockerTx,
+		// V12-01: the failure detail of an EXECUTION_ERROR is shown in the API, CLI and UI.
+		Redact: d.matcher.String,
 	}))
 	registry.Register(projectionrebuild.ProjectionRebuildJobKind, projectionrebuildworker.NewHandler(projectionrebuildworker.Deps{
 		UnitOfWork: d.uow, IDs: d.ids, Catalog: d.catalog, BatchSize: d.projectionRebuildBatchSize, RoundDelay: d.projectionRebuildRoundDelay,
@@ -474,7 +486,8 @@ func (w *assembledWorker) run(ctx context.Context, stdout io.Writer) error {
 
 	loopCtx, cancelLoops := context.WithCancel(ctx)
 	var loops sync.WaitGroup
-	loops.Add(3)
+	loops.Add(4)
+	go func() { defer loops.Done(); w.closeDeadLocalCommits(loopCtx) }()
 	go func() { defer loops.Done(); w.driveProjections(loopCtx) }()
 	go func() { defer loops.Done(); w.sweepAttachmentClaims(loopCtx) }()
 	go func() { defer loops.Done(); w.driveCompletion(loopCtx) }()
@@ -574,6 +587,32 @@ func (w *assembledWorker) sweepAttachmentClaims(ctx context.Context) {
 			_ = w.logger.Warn(w.identity(), "attachment claim sweep failed", map[string]any{"error": err.Error()})
 		case err == nil && (report.Released > 0 || report.Purged > 0):
 			_ = w.logger.Info(w.identity(), "attachment claim sweep", map[string]any{"released": report.Released, "purged": report.Purged})
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// closeDeadLocalCommits (V12-01) closes FAILED/EXECUTION_ERROR every local commit operation whose
+// job went DEAD while the operation was still REQUESTED (the lease expired on every claim, so no
+// handler ever reached the last-claim close). Without it such an operation stayed REQUESTED for
+// ever and commit-task.sh waited until its own timeout.
+func (w *assembledWorker) closeDeadLocalCommits(ctx context.Context) {
+	ticker := time.NewTicker(attachmentClaimSweepPeriod)
+	defer ticker.Stop()
+	deps := releasesetcommit.ExecuteReleaseSetLocalCommitDeps{
+		UnitOfWork: w.uow, OnFailed: runtime.OpenReleaseFailedBlockerTx, Redact: w.matcher.String,
+	}
+	for {
+		closed, err := releasesetcommit.CloseLocalCommitsWithDeadJob(ctx, deps, time.Now().UTC())
+		switch {
+		case err != nil && ctx.Err() == nil:
+			_ = w.logger.Warn(w.identity(), "dead local commit sweep failed", map[string]any{"error": err.Error()})
+		case closed > 0:
+			_ = w.logger.Warn(w.identity(), "closed local commits whose job went DEAD", map[string]any{"closed": closed})
 		}
 		select {
 		case <-ctx.Done():

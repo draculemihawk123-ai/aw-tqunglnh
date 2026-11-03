@@ -36,6 +36,10 @@ func OpenReleaseFailedBlockerTx(
 		return err
 	}
 	blockerID := releaseFailedBlockerID(intent.ID)
+	message := fmt.Sprintf("the commit requested with approval %s failed (%s) for repository workspace %s", selection.ApprovalRequestID, reason, intent.RepositoryWorkspaceID)
+	if intent.FailureDetail != "" {
+		message += ": " + intent.FailureDetail // V12-01: say why, not only that it failed
+	}
 	switch _, getErr := tx.Work().GetWorkItemBlocker(ctx, blockerID); {
 	case getErr == nil:
 		return nil // already opened by an earlier delivery of this same FAILED transition
@@ -45,7 +49,7 @@ func OpenReleaseFailedBlockerTx(
 	_, err = openWorkItemBlockerTx(
 		ctx, tx, intent.ProjectID, selection.WorkItemID, blockerID, workdomain.BlockerReleaseFailed,
 		selection.RunID, "", "",
-		fmt.Sprintf("the commit requested with approval %s failed (%s) for repository workspace %s", selection.ApprovalRequestID, reason, intent.RepositoryWorkspaceID),
+		message,
 		"", string(intent.ID),
 	)
 	return err

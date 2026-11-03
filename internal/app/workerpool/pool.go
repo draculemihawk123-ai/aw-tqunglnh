@@ -52,6 +52,11 @@ type Config struct {
 	// RecoverExpiredJobs, independent of the startup scan Run always
 	// does once immediately.
 	RecoveryInterval time.Duration
+	// OnHandlerError (V12-01), when set, is told about every job whose Handler returned an error
+	// (or panicked, or has no Handler), before the job is left for its lease to expire. Before
+	// V12-01 that error was dropped and a job could go DEAD five times over with nothing in any log
+	// saying why. It must not block for long: it runs on the worker goroutine.
+	OnHandlerError func(job ports.DurableJob, err error)
 }
 
 // Validate fills in sane defaults for any zero-value field it can, and
@@ -228,6 +233,9 @@ func (p *Pool) runJob(jobsCtx context.Context, job ports.DurableJob, lease ports
 	<-heartbeatDone
 
 	if handleErr != nil {
+		if p.config.OnHandlerError != nil {
+			p.config.OnHandlerError(job, handleErr)
+		}
 		return // leave it un-completed; lease expiry + recovery reaper decide retry vs DEAD
 	}
 	// Best-effort: if the lease was lost between the last successful

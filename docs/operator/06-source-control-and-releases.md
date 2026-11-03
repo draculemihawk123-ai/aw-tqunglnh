@@ -162,7 +162,7 @@ dialog (and the CLI) lets you decide **and** commit in one action, without a ter
    of that cannot be requested (a stale workspace version, a refused policy) the decision is not recorded either. The
    commit itself is the usual background job. The Graph tab shows each repository as committing → committed (with the
    commit id) or failed, and `aw approval release <runId> <approvalRequestId>` shows the same, plus the patch you reviewed.
-6. **If the commit fails after the decision** (`CHANGESET_DRIFT`, `NO_CHANGES`, `HEAD_DRIFT`, a quarantined workspace)
+6. **If the commit fails after the decision** (`CHANGESET_DRIFT`, `NO_CHANGES`, `HEAD_DRIFT`, `EXECUTION_ERROR`, a quarantined workspace)
    the run has already moved on and is not rolled back. aw opens a `RELEASE_FAILED` blocker on the work item so it shows
    on the board. Review the changes again (Workspace tab), commit with `aw release-set local-commit … --path <file>…`, then
    `aw blocker resolve`. The blocker can be resolved but never waived.

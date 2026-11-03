@@ -1668,7 +1668,7 @@ function ReleaseSetPanel({
 
   const localCommitStatusQuery = useQuery({
     queryKey: ['releaseSetLocalCommit', projectId, pollingLocalCommitId],
-    queryFn: async () => (await getReleaseSetLocalCommitStatus(projectId, committing!.releaseSet.releaseSetId, pollingLocalCommitId!, withSessionToken())) as unknown as { state: string; failureReason?: string },
+    queryFn: async () => (await getReleaseSetLocalCommitStatus(projectId, committing!.releaseSet.releaseSetId, pollingLocalCommitId!, withSessionToken())) as unknown as { state: string; failureReason?: string; failureDetail?: string },
     enabled: !!pollingLocalCommitId,
     refetchInterval: q => (q.state.data?.state === 'REQUESTED' ? 1000 : false),
   });
@@ -1926,7 +1926,7 @@ function ReleaseSetPanel({
             <div className="mt-3">
               <OperationNotice
                 state={localCommitStatusQuery.data?.state === 'COMMITTED' ? 'Completed' : localCommitStatusQuery.data?.state === 'FAILED' ? 'Failed' : 'Running'}
-                message={localCommitStatusQuery.data?.state === 'FAILED' ? localCommitStatusQuery.data?.failureReason : `Local commit ${localCommitStatusQuery.data?.state ?? 'REQUESTED'}`}
+                message={localCommitStatusQuery.data?.state === 'FAILED' ? [localCommitStatusQuery.data?.failureReason, localCommitStatusQuery.data?.failureDetail].filter(Boolean).join(': ') : `Local commit ${localCommitStatusQuery.data?.state ?? 'REQUESTED'}`}
                 ref={pollingLocalCommitId}
               />
             </div>

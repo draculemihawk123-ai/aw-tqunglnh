@@ -217,6 +217,25 @@ worktree back on the recorded revision. A run that was already running keeps the
 worktree (commit or discard them), an attempt still writing (wait or cancel it), or a HEAD that no longer descends from
 the recorded revision after a reset or rebase (put the worktree back on the recorded revision).
 
+## Local commit `FAILED` with `EXECUTION_ERROR` (V12-01)
+
+```bash
+aw release-set local-commit status --project-id <id> <releaseSetId> <localCommitId>
+# "state": "FAILED", "failureReason": "EXECUTION_ERROR",
+# "failureDetail": "claim 5 of 5 failed: … git commit: … index.lock exists"
+#   or "job <id> is DEAD after 5 claims (last error LEASE_EXPIRED): no worker finished the commit; see the worker log"
+```
+
+The worker could not finish the commit: every claim of the job ended with an error, or the job's lease kept expiring (a
+worker that hung or crashed). Before V12 such a commit stayed `REQUESTED` for ever and `commit-task.sh` waited until its
+own timeout; now the operation closes `FAILED` and `failureDetail` says why. Every failed claim is also in the worker
+log (`"msg":"job handler failed"`, with `jobId`, `kind`, `claim`, `maxClaims` and `error`). Fix the cause (another
+process holding the worktree, a Git error, a worker without a console), then request the commit again with the same
+fields and a new `--idempotency-key`: an `EXECUTION_ERROR` failure gets a fresh marker, like `NO_CHANGES`. If the commit
+was requested with an approval, the work item carries `RELEASE_FAILED` with the same detail; resolve it after committing.
+If the retry ends `HEAD_DRIFT`, the failed attempt did create its commit before the worker died: check
+`git -C <worktree> log -1` and adopt it with `aw repository-workspace adopt-head`.
+
 ## Local commit `FAILED` with `NO_CHANGES`
 
 ```bash

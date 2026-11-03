@@ -140,6 +140,9 @@ var migrationsRequiringForeignKeysOff = map[int]bool{
 	// 53 (V11-12, 0053_repository_lifecycle.sql) rebuilds repositories to turn UNIQUE (project_id, name) into a partial index that ignores
 	// DISABLED rows; more than ten tables REFERENCE repositories(id), so the DROP needs foreign_keys=OFF like 25, 32 and 34.
 	53: true,
+	// 54 (V12-01, 0054_release_set_local_commit_execution_error.sql) rebuilds release_set_local_commits, which
+	// release_set_local_commit_selections REFERENCES since 0050.
+	54: true,
 }
 
 // Migrate applies every pending numbered migration in version order. Each

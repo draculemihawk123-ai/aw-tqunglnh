@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Sau khi đã review thay đổi trong worktree: tạo ReleaseSet, seal và tạo local commit thật trên branch
 # agentkit/w-… của TaskFamily hiện tại. Cách dùng: commit-task.sh "<commit message>"
-# Biến tùy chọn: AUTHOR_NAME, AUTHOR_EMAIL (mặc định lấy từ git config); FORCE=1 để commit dù family còn task dở.
+# Biến tùy chọn: AUTHOR_NAME, AUTHOR_EMAIL (mặc định lấy từ git config); FORCE=1 để commit dù family còn task dở;
+# COMMIT_ATTEMPT=2,3,… để thử lại một commit đã FAILED (khóa idempotency mới).
 # Family có nhiều repository: commit từng repository có thay đổi (mỗi repo một commit), bỏ qua repo không đổi.
 set -euo pipefail
 AW=${AW:-aw}
@@ -55,8 +56,16 @@ for r in $repos; do
     --repository-workspace-id "$(jq -r '.repositoryWorkspaceId' <<<"$ws")" --expected-release-set-version 2 \
     --expected-workspace-version "$(jq -r '.version' <<<"$ws")" \
     --author-name "$AUTHOR_NAME" --author-email "$AUTHOR_EMAIL" --message "$message" \
-    --idempotency-key "commit-$key" --yes --wait --wait-timeout 5m \
-    | jq -c '.result.wait | {state, parentVcsObjectId, resultVcsObjectId}')
+    --idempotency-key "commit-$key${COMMIT_ATTEMPT:+-$COMMIT_ATTEMPT}" --yes --wait --wait-timeout 5m \
+    | jq -c '.result.wait | {state, parentVcsObjectId, resultVcsObjectId, failureReason, failureDetail}
+             | with_entries(select(.value != null))')
+  # V12-01: worker không làm xong commit thì aw đóng FAILED/EXECUTION_ERROR kèm failureDetail (trước đây kẹt
+  # REQUESTED tới hết --wait-timeout). Sửa nguyên nhân rồi chạy lại với COMMIT_ATTEMPT=2 (khóa idempotency mới).
+  if [ "$(jq -r '.state' <<<"$result")" = FAILED ]; then
+    echo "repository $r: commit FAILED: $result" >&2
+    echo "Sửa nguyên nhân rồi chạy lại: COMMIT_ATTEMPT=$(( ${COMMIT_ATTEMPT:-1} + 1 )) $0 $*" >&2
+    exit 1
+  fi
   if [ "$(printf '%s\n' "$repos" | wc -l)" -gt 1 ]; then echo "repository $r: $result"; else echo "$result"; fi
   committed=$((committed + 1))
 done
