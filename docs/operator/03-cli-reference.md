@@ -164,12 +164,15 @@ blocker of a work item is resolved the work item becomes `READY`, so `aw run sta
 The failure loop for `RUN_FAILED` — resolve, then `aw run start` again on the same work item — is in
 [09-troubleshooting.md](09-troubleshooting.md).
 
-## Positional arguments come after flags
+## Flags and positional arguments, in any order (V12-27)
 
-Every resource command that takes a positional argument (an ID) expects flags FIRST, then the positional
-argument last — standard Go `flag` package behavior (it stops recognizing flags at the first non-flag
-argument). `aw definition publish --kind POLICY --yes my-policy-id` works; `aw definition publish my-policy-id
---kind POLICY --yes` does not (the reordered flags are read as extra positional arguments and rejected).
+A resource command reads its flags wherever they are written: `aw evidence list <workItemId> --project-id <p>` and
+`aw evidence list --project-id <p> <workItemId>` are the same command, as are `aw definition publish my-policy-id --kind POLICY
+--yes` and `aw definition publish --kind POLICY --yes my-policy-id`. (Before V12-27 Go's `flag` package stopped at the first
+positional argument, so a flag after it was silently not read and the command printed its usage.) An unknown flag is an error
+wherever it is; a flag that takes a value takes the next argument (or `--flag=value`); `--` ends the flags, so an argument that
+starts with `-` can still be passed after it. The global options (`--db`, `--artifact-root`, …) still go before the resource
+name, as `aw help` shows.
 
 ## Two worked examples (real, verified)
 

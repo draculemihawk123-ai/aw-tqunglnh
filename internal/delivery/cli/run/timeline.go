@@ -53,7 +53,7 @@ func Timeline(ctx context.Context, deps Dependencies, args []string, stdout, std
 	fs.SetOutput(stderr)
 	limitFlag := fs.String("limit", "", "max entries per page (default 50, max 200)")
 	cursorFlag := fs.String("cursor", "", "opaque continuation cursor from a previous page's nextCursor")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 

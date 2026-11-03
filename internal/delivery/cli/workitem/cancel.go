@@ -65,7 +65,7 @@ func RunWorkItemCancel(ctx context.Context, deps Dependencies, args []string, st
 	fs.SetOutput(stderr)
 	principalConfigPath := cli.BindPrincipalFlag(fs)
 	reason := fs.String("reason", "", "reason for cancelling this work item (required)")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 

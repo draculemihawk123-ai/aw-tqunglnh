@@ -94,7 +94,7 @@ func Resolve(ctx context.Context, deps Dependencies, args []string, stdout, stde
 	mode := fs.String("mode", "", "resolution mode: RESOLVED or WAIVED (required, no default)")
 	reason := fs.String("reason", "", "reason for this resolution (required)")
 	policyGrantRef := fs.String("policy-grant-ref", "", "policy grant reference authorizing a WAIVED resolution (required when --mode=WAIVED)")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 

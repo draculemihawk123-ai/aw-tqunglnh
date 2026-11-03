@@ -284,7 +284,7 @@ func writeHumanField(stdout io.Writer, name string, f stringFieldWire) {
 func RunShow(ctx context.Context, deps Dependencies, arguments []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("settings show", flag.ContinueOnError)
 	jsonOutput := cli.BindJSONFlag(fs)
-	if err := fs.Parse(arguments); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, arguments)); err != nil {
 		return cli.UsageError{Err: err}
 	}
 	current, effective, err := resolveEffective(ctx, deps.UnitOfWork)
@@ -329,7 +329,7 @@ func RunUpdate(ctx context.Context, deps Dependencies, arguments []string, stdin
 	expectedVersion := cli.BindExpectedVersionFlag(fs)
 	idempotencyKey := cli.BindIdempotencyKeyFlag(fs)
 	filePath := cli.BindFileFlag(fs)
-	if err := fs.Parse(arguments); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, arguments)); err != nil {
 		return cli.UsageError{Err: err}
 	}
 	if *expectedVersion == 0 {

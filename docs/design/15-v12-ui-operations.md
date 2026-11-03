@@ -591,6 +591,10 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   của Go bỏ qua, và lệnh chỉ in lại usage.
 - **Mục tiêu:** chấp nhận cờ ở mọi vị trí cho mọi lệnh, hoặc usage ghi đúng thứ tự và báo rõ "cờ đặt sau tham số bị bỏ qua".
   Rà mọi lệnh dùng cùng kiểu parse.
+- **Kết quả (đã xong):** `cli.Interspersed` đưa mọi cờ của FlagSet lên trước tham số vị trí (đặt sau `--`); mọi leaf trong
+  `internal/delivery/cli` (27 chỗ `fs.Parse(args)` và doctor/health/settings) parse qua nó, nên cờ đặt ở đâu cũng được đọc. Cờ lạ vẫn
+  báo lỗi; cờ cần giá trị mà thiếu vẫn báo lỗi (không lấy `--` làm giá trị); `--` vẫn kết thúc cờ. Tùy chọn toàn cục của `aw` (đứng
+  trước tên resource) giữ nguyên. Test: `interspersed_test.go`, toàn bộ test CLI. Docs: operator 03.
 
 ---
 

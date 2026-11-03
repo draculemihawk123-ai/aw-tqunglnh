@@ -37,7 +37,7 @@ func Prompt(ctx context.Context, deps Dependencies, args []string, stdout, stder
 	fs.SetOutput(stderr)
 	projectID := cli.BindProjectFlag(fs)
 	raw := fs.Bool("raw", false, "print only the prompt document, not the JSON envelope")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 	attemptID := fs.Arg(0)
@@ -59,7 +59,7 @@ func Prompt(ctx context.Context, deps Dependencies, args []string, stdout, stder
 func Show(ctx context.Context, deps Dependencies, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("node-run show", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 	nodeRunID := fs.Arg(0)
@@ -85,7 +85,7 @@ func Events(ctx context.Context, deps Dependencies, args []string, stdout, stder
 	cursor := fs.Uint64("cursor", 0, "print events after this sequence (the previous page's nextSequence)")
 	limit := fs.Int("limit", 0, "events per page (default 100, max 500)")
 	follow := fs.Bool("follow", false, "keep printing new events, one JSON object per line, until the attempt is finished")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 	attemptID := fs.Arg(0)

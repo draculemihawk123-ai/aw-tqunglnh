@@ -33,7 +33,7 @@ func Costs(ctx context.Context, deps Dependencies, args []string, stdout, stderr
 	fs := flag.NewFlagSet("run costs", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	projectID := cli.BindProjectFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*projectID) == "" {
@@ -52,7 +52,7 @@ func NeedsYou(ctx context.Context, deps Dependencies, args []string, stdout, std
 	fs := flag.NewFlagSet("run needs-you", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	projectID := cli.BindProjectFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 	if strings.TrimSpace(*projectID) == "" {
@@ -226,7 +226,7 @@ func Diagnostics(ctx context.Context, deps Dependencies, args []string, stdout, 
 	fs := flag.NewFlagSet("run diagnostics", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	projectID := cli.BindProjectFlag(fs)
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 

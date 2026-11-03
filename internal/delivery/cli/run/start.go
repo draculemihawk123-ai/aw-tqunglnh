@@ -78,7 +78,7 @@ func Start(ctx context.Context, deps Dependencies, args []string, stdout, stderr
 	idempotencyKey := cli.BindIdempotencyKeyFlag(fs)
 	wait, waitTimeout := cli.BindWaitFlags(fs)
 	_ = cli.BindJSONFlag(fs) // reserved for a future output-mode switch; this leaf always emits JSON today.
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 

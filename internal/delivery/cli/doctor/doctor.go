@@ -236,7 +236,7 @@ func operationLinks() map[string]string {
 func RunDoctor(ctx context.Context, deps Dependencies, arguments []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	jsonOutput := cli.BindJSONFlag(fs)
-	if err := fs.Parse(arguments); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, arguments)); err != nil {
 		return cli.UsageError{Err: err}
 	}
 	report := BuildReport(ctx, deps)

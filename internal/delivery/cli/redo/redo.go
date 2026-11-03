@@ -93,7 +93,7 @@ func usageErrorf(format string, args ...any) error {
 }
 
 func parseFlags(fs *flag.FlagSet, args []string) error {
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return err
 		}

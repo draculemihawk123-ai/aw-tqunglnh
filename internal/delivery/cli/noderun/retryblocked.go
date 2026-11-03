@@ -74,7 +74,7 @@ func RetryBlocked(ctx context.Context, deps Dependencies, args []string, stdout,
 	fs.SetOutput(stderr)
 	principalConfigPath := cli.BindPrincipalFlag(fs)
 	reason := fs.String("reason", "", "reason for retrying this blocked activation (required)")
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cli.Interspersed(fs, args)); err != nil {
 		return err
 	}
 
