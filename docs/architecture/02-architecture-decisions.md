@@ -1562,7 +1562,7 @@ các task không chạy song song được.
    còn commit riêng thì giữ. Lỗi xóa nhánh không làm release hỏng.
 5. Port `WorkspaceBaseSyncer` do `gitworktree.Provider` cài; route nhận nó từ cùng provider với `WorkspaceHeadAuditor`.
 
-**Hệ quả:** route 119, 120; hai dòng UX Screen 9 (11, 12); parity; doc operator 06 sửa câu "never fetches".
+**Hệ quả:** route 119, 120; hai dòng UX Screen 9 (11, 12); parity; doc operator 00 và 06 sửa câu "never fetches".
 
 ## 58. ADR-056 — Publish định nghĩa từ giao diện: server chạy `aw-publish.py` của kit trên manifest người vận hành cấu hình
 
