@@ -345,6 +345,12 @@ người vận hành cần: run đang ở bước nào, vì sao hỏng, giờ l�
   - mọi cạnh có đường đi;
   - tập node thoát đúng, hình dạng đúng theo bảng;
   - các làn không cắt nhau theo quy tắc ở bước 4.
+- **Kết quả (đã xong):** `web/src/graph/layoutRunGraph.ts` (thuần, không React). Tinh chỉnh so với bước 3: "dài nhất" xếp sau "ít đường
+  vòng nhất" — đường vòng là cạnh không phải outcome khai báo đầu tiên của nút nguồn **và** nằm trong cùng một vòng (SCC) với nguồn; nếu
+  không, `size → simplify → size-review → quality` (V12-06) sẽ "dài hơn" luồng chính, còn `frame → build` (`fast` là outcome đầu) vẫn là
+  cạnh tắt. Hai cạnh vào cùng đích có làn lồng nhau thì làn ngoài vào cao hơn; hai khoảng xen kẽ (không lồng) không thể tránh cắt trên một
+  phía, test chỉ khẳng định cho cặp lồng nhau. Test: `layoutRunGraph.test.ts` (67 ca: mọi workflow của `kit/workflows` ở hai chế độ, một
+  workflow FORK/JOIN, fallback, quy tắc hình dạng, node thoát, làn). Chưa có fixture `wf-docs-change` của chochuyennha (không có trong repo).
 
 ### V12-10 — Vẽ sơ đồ mới
 
